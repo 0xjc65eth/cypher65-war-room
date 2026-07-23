@@ -8,20 +8,28 @@ Usage:
 
 Commands:
     network                          — Show live network difficulty + BTC price
-    calc --hashrate <H> --duration <h> [--difficulty <D>]
+    calc --hashrate <H> --duration <h> [--difficulty <D>] [--json]
                                      — Calculate block probability
-    compare --budget <BTC> --duration <h> [--braiins <p>] [--mrr <p>]
+    compare --budget <BTC> --duration <h> [--braiins <p>] [--mrr <p>] [--json]
                                      — Compare Braiins vs MRR rental options
+    status [--json]                  — Full mining dashboard
     ask <free-text query>            — Natural language mining query
     help                             — Show this help
     clear                            — Clear the screen
     exit / quit                      — Exit the terminal
+
+    Append  > filename  to redirect output to a file.
+    Append  --json      to get parseable JSON output.
 """
 
 import os
 import math
+import io
+import json
+import sys
 import atexit
 from pathlib import Path
+from contextlib import redirect_stdout
 
 # ── ANSI colors ───────────────────────────────────────────────────────────
 class C:
@@ -230,24 +238,30 @@ def cmd_help():
     """Print help text."""
     print()
     print(f"{C.AMBER}{C.BOLD}COMMANDS:{C.RST}")
-    print(f"  {C.GREEN}status{C.RST}")
+    print(f"  {C.GREEN}status{C.RST} {C.MUTED}[--json]{C.RST}")
     print(f"       Show full mining dashboard: difficulty, BTC price, worker stats, 24h probability")
     print()
-    print(f"  {C.GREEN}network{C.RST}")
+    print(f"  {C.GREEN}network{C.RST} {C.MUTED}[--json]{C.RST}")
     print(f"       Show live Bitcoin network difficulty + BTC price")
     print()
-    print(f"  {C.GREEN}calc --hashrate <value> --duration <h>{C.RST} {C.MUTED}[--difficulty <d>]{C.RST}")
+    print(f"  {C.GREEN}calc --hashrate <value> --duration <h>{C.RST} {C.MUTED}[--difficulty <d>] [--json]{C.RST}")
     print(f"       Calculate solo mining probability (auto-fetches live difficulty)")
     print(f"       Examples: calc --hashrate 225TH --duration 24h")
     print(f"                 calc --hashrate 1.5PH --duration 168h --difficulty 127T")
     print()
-    print(f"  {C.GREEN}compare --budget <btc> --duration <h>{C.RST} {C.MUTED}[--braiins <p>] [--mrr <p>]{C.RST}")
+    print(f"  {C.GREEN}compare --budget <btc> --duration <h>{C.RST} {C.MUTED}[--braiins <p>] [--mrr <p>] [--json]{C.RST}")
     print(f"       Compare Braiins vs MRR rental options (auto-fetches live prices)")
     print(f"       Example: compare --budget 0.01 --duration 24h")
     print()
     print(f"  {C.GREEN}ask <free-text query>{C.RST}")
     print(f"       Natural language mining query")
     print(f"       Example: ask what is the current network difficulty?")
+    print()
+    print(f"  {C.GREEN}Piping & JSON:{C.RST}")
+    print(f"       Append {C.GREEN}> filename{C.RST} to save output to a file")
+    print(f"       Append {C.GREEN}--json{C.RST} to get machine-parseable JSON output")
+    print(f"       Examples: network > /tmp/stats.txt")
+    print(f"                 calc --hashrate 225TH --duration 24h --json")
     print()
     print(f"  {C.GREEN}clear{C.RST}")
     print(f"       Clear the screen")
@@ -265,15 +279,16 @@ def cmd_clear():
     os.system("clear" if os.name == "posix" else "cls")
 
 
-def cmd_status():
+def cmd_status(json_mode=False):
     """Show a comprehensive mining dashboard in a single response.
     Fetches difficulty, BTC price, and parasite.space worker stats in parallel,
     then calculates 24h block probability using the worker's hashrate."""
     execute_tool = _get_execute_tool()
     sm = _get_solo_mining()
 
-    print()
-    print(f"{C.MUTED}fetching live data from agent tools...{C.RST}")
+    if not json_mode:
+        print()
+        print(f"{C.MUTED}fetching live data from agent tools...{C.RST}")
 
     # Fetch all three data sources in sequence (tools.py doesn't support async)
     diff_result = execute_tool("get_network_difficulty")
@@ -284,6 +299,47 @@ def cmd_status():
     prices = price_result.get("prices", {})
     worker_hr = _coerce_float(pool_result.get("worker_hashrate", 0))
     pool_hr = _coerce_float(pool_result.get("pool_hashrate", 0))
+
+    # Compute probability
+    prob_data = None
+    if worker_hr and difficulty:
+        prob = sm.calc_block_probability(worker_hr, difficulty, 86400)
+        exp_time = sm.calc_expected_time(worker_hr, difficulty)
+        prob_data = {
+            "p_at_least_1_block_pct": prob["p_at_least_1_block_pct"],
+            "p_zero_blocks_pct": prob["p_zero_blocks_pct"],
+            "expected_time_days": exp_time["days"],
+            "expected_time_years": exp_time["years"],
+            "hashes_24h": worker_hr * 86400,
+            "lambda": prob["lambda"],
+        }
+
+    if json_mode:
+        out = {
+            "network": {
+                "difficulty": difficulty,
+                "difficulty_formatted": _fmt_diff_human(difficulty),
+                "difficulty_source": diff_result.get("source"),
+                "btc_prices": prices,
+                "btc_source": price_result.get("source"),
+            },
+            "worker": {
+                "hashrate": worker_hr,
+                "hashrate_formatted": _fmt_hashrate_human(worker_hr),
+                "best_share": pool_result.get("worker_best_diff"),
+                "status": pool_result.get("worker_status"),
+                "uptime_seconds": pool_result.get("worker_uptime"),
+            },
+            "pool": {
+                "hashrate": pool_hr,
+                "hashrate_formatted": _fmt_hashrate_human(pool_hr),
+                "workers": pool_result.get("pool_workers"),
+                "users": pool_result.get("pool_users"),
+                "data_status": pool_result.get("pool_status"),
+            },
+            "probability_24h": prob_data,
+        }
+        return out
 
     print()
     print(C.ok("Live data fetched"))
@@ -340,12 +396,9 @@ def cmd_status():
     print()
 
     # ── Probability section (24h default) ──
-    if worker_hr and difficulty:
+    if prob_data:
         print(C.header("24h Block Probability"))
-        prob = sm.calc_block_probability(worker_hr, difficulty, 86400)
-        exp_time = sm.calc_expected_time(worker_hr, difficulty)
-
-        pct = prob["p_at_least_1_block_pct"]
+        pct = prob_data["p_at_least_1_block_pct"]
         if pct < 0.0001:
             pct_str = f"{pct:.6f}%"
         elif pct < 0.01:
@@ -354,9 +407,9 @@ def cmd_status():
             pct_str = f"{pct:.2f}%"
 
         print(f"  {C.BOLD}P(>=1 block){C.RST}     {C.WHITE}{pct_str}{C.RST}")
-        print(f"  {C.BOLD}P(0 blocks){C.RST}      {C.MUTED}{prob['p_zero_blocks_pct']:.1f}%{C.RST}")
-        print(f"  {C.BOLD}E[time]{C.RST}           {C.WHITE}{exp_time['days']:,.0f} days{C.RST} {C.MUTED}({exp_time['years']:.1f} years){C.RST}")
-        print(f"  {C.BOLD}Hashes/24h{C.RST}      {C.WHITE}{worker_hr * 86400:,.0f}{C.RST}")
+        print(f"  {C.BOLD}P(0 blocks){C.RST}      {C.MUTED}{prob_data['p_zero_blocks_pct']:.1f}%{C.RST}")
+        print(f"  {C.BOLD}E[time]{C.RST}           {C.WHITE}{prob_data['expected_time_days']:,.0f} days{C.RST} {C.MUTED}({prob_data['expected_time_years']:.1f} years){C.RST}")
+        print(f"  {C.BOLD}Hashes/24h{C.RST}      {C.WHITE}{prob_data['hashes_24h']:,.0f}{C.RST}")
         print()
         if pct < 0.01:
             print(C.warn("Extremely low probability — solo mining is a lottery."))
@@ -374,17 +427,32 @@ def cmd_status():
     print()
 
 
-def cmd_network():
+def cmd_network(json_mode=False):
     """Fetch and display live network difficulty + BTC price using agent tools."""
     execute_tool = _get_execute_tool()
 
-    print()
-    print(f"{C.MUTED}fetching live data from agent tools...{C.RST}")
+    if not json_mode:
+        print()
+        print(f"{C.MUTED}fetching live data from agent tools...{C.RST}")
 
     # Fetch difficulty
     diff_result = execute_tool("get_network_difficulty")
     # Fetch BTC price
     price_result = execute_tool("get_btc_price", {"currencies": "usd,brl"})
+
+    if json_mode:
+        out = {
+            "difficulty": diff_result.get("difficulty"),
+            "difficulty_formatted": _fmt_diff_human(diff_result.get("difficulty", 0)),
+            "difficulty_source": diff_result.get("source"),
+            "btc_prices": price_result.get("prices", {}),
+            "btc_source": price_result.get("source"),
+        }
+        if diff_result.get("error"):
+            out["difficulty_error"] = diff_result["error"]
+        if price_result.get("error"):
+            out["btc_error"] = price_result["error"]
+        return out
 
     print()
     print(C.ok("Agent tools executed"))
@@ -415,7 +483,7 @@ def cmd_network():
     print()
 
 
-def cmd_calc(args):
+def cmd_calc(args, json_mode=False):
     """Parse calc command and run probability calculations."""
     sm = _get_solo_mining()
     execute_tool = _get_execute_tool()
@@ -450,26 +518,53 @@ def cmd_calc(args):
 
     # Auto-fetch difficulty if not provided
     if not difficulty:
-        print()
-        print(f"{C.MUTED}fetching live difficulty from agent tools...{C.RST}")
+        if not json_mode:
+            print()
+            print(f"{C.MUTED}fetching live difficulty from agent tools...{C.RST}")
         diff_result = execute_tool("get_network_difficulty")
         if diff_result.get("difficulty"):
             difficulty = diff_result["difficulty"]
-            print(C.ok(f"Using live difficulty: {_fmt_diff_human(difficulty)} ({diff_result.get('source', 'agent')})"))
+            if not json_mode:
+                print(C.ok(f"Using live difficulty: {_fmt_diff_human(difficulty)} ({diff_result.get('source', 'agent')})"))
         else:
-            print(C.warn("Could not fetch live difficulty — using default 127T"))
-            difficulty = 127e12  # ~127T fallback
+            if not json_mode:
+                print(C.warn("Could not fetch live difficulty — using default 127T"))
+            difficulty = 127e12
     else:
-        # Parse difficulty string
         difficulty = _parse_diff_float(difficulty)
 
     hashrate_hs = sm._parse_hashrate(hashrate)
     duration_seconds = duration * 3600
 
-    # Run calculations
     prob = sm.calc_block_probability(hashrate_hs, difficulty, duration_seconds)
     exp_time = sm.calc_expected_time(hashrate_hs, difficulty)
     best_diff = sm.calc_best_diff_expected(hashrate_hs, duration_seconds)
+
+    if json_mode:
+        return {
+            "hashrate": hashrate,
+            "hashrate_hs": hashrate_hs,
+            "duration_hours": duration,
+            "duration_seconds": duration_seconds,
+            "difficulty": difficulty,
+            "difficulty_formatted": _fmt_diff_human(difficulty),
+            "probability": {
+                "hashes_per_block": prob["hashes_per_block"],
+                "block_rate_per_sec": prob["block_rate_per_sec"],
+                "lambda": prob["lambda"],
+                "p_at_least_1_block_pct": prob["p_at_least_1_block_pct"],
+                "p_zero_blocks_pct": prob["p_zero_blocks_pct"],
+            },
+            "expected_time": {
+                "seconds": exp_time["seconds"],
+                "days": exp_time["days"],
+                "years": exp_time["years"],
+            },
+            "best_diff_expected": {
+                "total_hashes": best_diff["total_hashes"],
+                "expected_best_diff": best_diff["expected_best_diff"],
+            },
+        }
 
     print()
     print(C.ok("Parameters received"))
@@ -501,7 +596,7 @@ def cmd_calc(args):
     print()
 
 
-def cmd_compare(args):
+def cmd_compare(args, json_mode=False):
     """Parse compare command and run rental comparison."""
     sm = _get_solo_mining()
     execute_tool = _get_execute_tool()
@@ -555,31 +650,35 @@ def cmd_compare(args):
 
     # Auto-fetch prices if not provided
     if braiins_price is None or mrr_price is None:
-        print()
-        print(f"{C.MUTED}fetching live rental prices from agent tools...{C.RST}")
+        if not json_mode:
+            print()
+            print(f"{C.MUTED}fetching live rental prices from agent tools...{C.RST}")
 
     if braiins_price is None:
         result = execute_tool("get_braiins_orderbook")
         if result.get("price_btc_per_ph_day") is not None:
             braiins_price = result["price_btc_per_ph_day"]
-            print(C.ok(f"Braiins: {braiins_price:.8f} BTC/PH/day ({result.get('available_asks', '?')} asks)"))
-        else:
+            if not json_mode:
+                print(C.ok(f"Braiins: {braiins_price:.8f} BTC/PH/day ({result.get('available_asks', '?')} asks)"))
+        elif not json_mode:
             print(C.warn(f"Braiins unavailable: {result.get('error', 'no data')}"))
 
     if mrr_price is None:
         result = execute_tool("get_mrr_listings")
         if result.get("price_btc_per_ph_day") is not None:
             mrr_price = result["price_btc_per_ph_day"]
-            print(C.ok(f"MRR: {mrr_price:.8f} BTC/PH/day ({result.get('total_listings', '?')} listings)"))
-        elif result.get("needs_auth"):
-            print(C.warn(f"MRR: {result.get('error', 'credentials required')}"))
-        else:
-            print(C.warn(f"MRR unavailable: {result.get('error', 'no data')}"))
+            if not json_mode:
+                print(C.ok(f"MRR: {mrr_price:.8f} BTC/PH/day ({result.get('total_listings', '?')} listings)"))
+        elif not json_mode:
+            if result.get("needs_auth"):
+                print(C.warn(f"MRR: {result.get('error', 'credentials required')}"))
+            else:
+                print(C.warn(f"MRR unavailable: {result.get('error', 'no data')}"))
 
     # Get difficulty
     diff_result = execute_tool("get_network_difficulty")
     difficulty = diff_result.get("difficulty", 127e12)
-    if not diff_result.get("difficulty"):
+    if not diff_result.get("difficulty") and not json_mode:
         print(C.warn("Could not fetch live difficulty — using default 127T"))
 
     # Run comparison
@@ -587,8 +686,19 @@ def cmd_compare(args):
         budget, difficulty, duration,
         braiins_price, mrr_price,
         objective=objective,
-        auto_fetch=False,  # Already fetched above
+        auto_fetch=False,
     )
+
+    if json_mode:
+        return {
+            "budget_btc": budget,
+            "duration_hours": duration,
+            "difficulty": difficulty,
+            "braiins_price_btc_per_ph_day": braiins_price,
+            "mrr_price_btc_per_ph_day": mrr_price,
+            "objective": objective,
+            "options": results,
+        }
 
     print()
     print(C.ok(f"Budget: {budget} BTC | Duration: {duration}h | Difficulty: {_fmt_diff_human(difficulty)}"))
@@ -790,28 +900,41 @@ def main():
 
     print(BANNER)
 
-    # Dispatch table
+    # Commands that take args
+    _ARGS_COMMANDS = {"calc", "compare", "ask", "query"}
+    # Commands that support --json mode
+    _JSON_COMMANDS = {"network", "status", "calc", "compare"}
+
+    # Dispatch table: verb → handler function (no lambdas)
     commands = {
-        "help": lambda _: cmd_help(),
-        "status": lambda _: cmd_status(),
-        "network": lambda _: cmd_network(),
-        "calc": lambda args: cmd_calc(args),
-        "compare": lambda args: cmd_compare(args),
-        "ask": lambda args: cmd_ask(args),
-        "query": lambda args: cmd_ask(args),  # alias
-        "clear": lambda _: cmd_clear(),
-        "cls": lambda _: cmd_clear(),
+        "help": cmd_help,
+        "status": cmd_status,
+        "network": cmd_network,
+        "calc": cmd_calc,
+        "compare": cmd_compare,
+        "ask": cmd_ask,
+        "query": cmd_ask,
+        "clear": cmd_clear,
+        "cls": cmd_clear,
     }
 
     while True:
         try:
-            line = input(PROMPT).strip()
+            raw_line = input(PROMPT)
         except (EOFError, KeyboardInterrupt):
             print()
             break
 
+        line = raw_line.strip()
         if not line:
             continue
+
+        # ── Parse pipe redirect (> filename) ──
+        out_file = None
+        if " >" in line:
+            pipe_idx = line.rfind(" >")
+            out_file = line[pipe_idx + 2:].strip()
+            line = line[:pipe_idx].strip()
 
         tokens = _parse_command(line)
         verb = tokens[0].lower() if tokens else ""
@@ -821,13 +944,57 @@ def main():
             print(f"{C.MUTED}exiting...{C.RST}")
             break
 
+        # ── Parse --json flag ──
+        json_mode = "--json" in args
+        if json_mode:
+            args = [a for a in args if a != "--json"]
+
         if verb in commands:
             try:
-                commands[verb](args)
+                result = None
+                buf = io.StringIO()
+
+                # Run command (with stdout capture if piping)
+                if out_file:
+                    with redirect_stdout(buf):
+                        result = _dispatch(verb, args, json_mode, commands, _ARGS_COMMANDS, _JSON_COMMANDS)
+                else:
+                    result = _dispatch(verb, args, json_mode, commands, _ARGS_COMMANDS, _JSON_COMMANDS)
+
+                # Handle JSON + piping: write JSON directly to file
+                if json_mode and result is not None:
+                    if out_file:
+                        target = os.path.expanduser(out_file)
+                        with open(target, "w") as f:
+                            json.dump(result, f, indent=2, default=str)
+                        print(f"{C.ok(f'Saved JSON to {out_file}')}")
+                    else:
+                        print(json.dumps(result, indent=2, default=str))
+                # Handle text piping: write captured stdout to file
+                elif out_file:
+                    captured = buf.getvalue()
+                    target = os.path.expanduser(out_file)
+                    with open(target, "w") as f:
+                        f.write(captured)
+                    print(f"{C.ok(f'Saved {len(captured)} bytes to {out_file}')}")
+
             except Exception as e:
                 print(C.err(f"Command failed: {e}"))
         else:
             print(C.err(f"Unknown command: {C.RED}{verb}{C.RST}. Type {C.GREEN}help{C.RST} for available commands."))
+
+
+def _dispatch(verb, args, json_mode, commands, _ARGS_COMMANDS, _JSON_COMMANDS):
+    """Call the command handler with appropriate arguments.
+    Returns the handler's result (dict for json_mode, None otherwise)."""
+    handler = commands[verb]
+    if json_mode and verb in _JSON_COMMANDS:
+        if verb in _ARGS_COMMANDS:
+            return handler(args, json_mode=True)
+        return handler(json_mode=True)
+    if verb in _ARGS_COMMANDS:
+        return handler(args)
+    return handler()
 
 
 if __name__ == "__main__":
