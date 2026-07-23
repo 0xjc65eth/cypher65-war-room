@@ -60,17 +60,114 @@ class C:
 
 
 # ── readline setup ────────────────────────────────────────────────────────
+
+# Command → allowed flags mapping (for tab completion)
+_COMPLETIONS = {
+    # first-word completions (command names + aliases)
+    "__commands__": [
+        "network", "calc", "compare", "ask", "query",
+        "help", "clear", "cls", "exit", "quit",
+    ],
+    # per-command flags and value hints
+    "network": [],
+    "calc": ["--hashrate", "--duration", "--difficulty"],
+    "compare": ["--budget", "--duration", "--braiins", "--mrr", "--objective"],
+    "ask": [],
+    "query": [],
+    "help": [],
+    "clear": [],
+    "cls": [],
+    "exit": [],
+    "quit": [],
+    # flag-value completions
+    "--objective": ["EV", "JACKPOT", "VARIANCE_MIN"],
+}
+
 try:
     import readline
     _HISTFILE = os.path.join(os.path.expanduser("~"), ".cypher_solo_mining_history")
     _HISTORY_MAX = 500
+
+    def _make_completer():
+        """Build a readline completer function with context-aware suggestions."""
+        def completer(text, state):
+            """
+            Readline completer callback.
+            Called repeatedly with state=0,1,2,... until it returns None.
+            text = the current word being completed (prefix).
+            """
+            # Get the full line buffer and cursor position
+            line = readline.get_line_buffer()
+            tokens = line.lstrip().split()
+
+            # Case 1: completing the first token → suggest command names
+            # Also handles partial commands with trailing space (e.g. "net " → "network")
+            if not tokens or len(tokens) == 1:
+                if tokens and line.endswith(" ") and tokens[0] in _COMPLETIONS:
+                    pass  # full command + space → let Case 3 offer flags
+                else:
+                    # When line ends with space, readline passes text="" for the new word.
+                    # Use the first token as the filter prefix instead.
+                    prefix = tokens[0] if (tokens and line.endswith(" ") and not text) else text
+                    options = [c for c in _COMPLETIONS["__commands__"] if c.startswith(prefix)]
+                    if state < len(options):
+                        return options[state]
+                    return None
+
+            # We have at least one token — determine the command
+            verb = tokens[0].lower() if tokens else ""
+
+            # Case 2: completing a flag value (previous token was a flag with value options)
+            # e.g. "--objective " → [EV, JACKPOT, VARIANCE_MIN]
+            #       "--objective E" → [EV]
+            if tokens:
+                # Determine which token is the flag whose value we're completing
+                if line.endswith(" "):
+                    prev = tokens[-1]           # just-completed flag before cursor
+                else:
+                    prev = tokens[-2] if len(tokens) >= 2 else None  # flag before current word
+                if prev and prev in _COMPLETIONS and prev.startswith("--"):
+                    options = [v for v in _COMPLETIONS[prev] if v.startswith(text)]
+                    if state < len(options):
+                        return options[state]
+                    return None
+
+            # Case 3: completing a flag for the current command
+            if verb in _COMPLETIONS:
+                flags = _COMPLETIONS[verb]
+                # Only suggest flags that aren't already in the line
+                already_used = set(t for t in tokens if t.startswith("--"))
+                available = [f for f in flags if f not in already_used and f.startswith(text)]
+                if state < len(available):
+                    return available[state]
+                return None
+
+            # Case 4: generic flag completion when command is unknown but text starts with --
+            if text.startswith("--"):
+                all_flags = ["--hashrate", "--duration", "--difficulty",
+                            "--budget", "--braiins", "--mrr", "--objective"]
+                options = [f for f in all_flags if f.startswith(text)]
+                if state < len(options):
+                    return options[state]
+                return None
+
+            return None
+        return completer
+
     def _setup_readline():
-        """Configure readline with history persistence."""
+        """Configure readline with history persistence and tab completion."""
         try:
             readline.read_history_file(_HISTFILE)
         except (FileNotFoundError, PermissionError):
             pass
         readline.set_history_length(_HISTORY_MAX)
+        readline.set_completer(_make_completer())
+        readline.parse_and_bind("tab: complete")
+        # Also show all matches on double-tab (some readline builds use different binding)
+        try:
+            readline.parse_and_bind("set show-all-if-ambiguous on")
+        except Exception:
+            pass
         atexit.register(readline.write_history_file, _HISTFILE)
     _HAS_READLINE = True
 except ImportError:
