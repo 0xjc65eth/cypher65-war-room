@@ -744,49 +744,159 @@ def cmd_compare(args, json_mode=False):
 
 
 def cmd_ask(args):
-    """Handle free-text natural language queries via keyword parsing."""
+    """Handle free-text natural language queries with forgiving keyword parsing.
+    Understands casual Portuguese, English, typos, slang, and mixed language."""
     query = " ".join(args)
     if not query:
-        print(C.err("Usage: ask <free-text query>"))
-        print(C.hint("Example: ask what is the current network difficulty?"))
+        print(C.err("Usage: ask <your question>"))
+        print(C.hint("Examples: ask qual a chance de achar bloco? | ask what's the difficulty?"))
         return
 
     print()
-    print(f"{C.MUTED}querying agent: {C.RST}\"{query[:80]}\"")
+    print(f"{C.MUTED}entendi: {C.RST}\"{query[:80]}\"")
 
-    query_lower = query.lower()
+    query_lower = query.lower().strip()
+    import re
+    # Normalize for keyword matching: strip sentence punctuation but preserve decimal dots
+    # Replace ?, !, ;, : and commas that aren't part of numbers (e.g., "0,01")
+    q = re.sub(r'[?!;:]', ' ', query_lower)
+    # Preserve dots in numbers (e.g., "0.01 btc") but strip trailing sentence dots
+    q = re.sub(r'\.(?!\d)', ' ', q)
 
-    # Pattern 1: network/difficulty/price
-    network_kw = ["network", "difficulty", "difficult", "price", "btc", "bitcoin price", "current"]
-    if any(k in query_lower for k in network_kw):
+    # ══ Check patterns: compare first (most specific), then calc, network, status, help
+
+    # ── Pattern: compare / rental / aluguel ──
+    compare_kw = [
+        # Portuguese
+        "compara", "comparar", "comparação", "comparacao", "compare",
+        "aluguel", "alugar", "aluga", "rental", "alocação", "alocacao",
+        "braiins", "brain", "brains", "brians",
+        "mrr", "miningrigrentals", "mining rig", "miningrig",
+        "qual melhor", "qual vale mais", "qual compensa",
+        "vale a pena", "compensa", "mais barato", "melhor opção",
+        "custo", "orçamento", "orcamento", "budget",
+        # English
+        "which one", "better", "worth it", "cheaper", "best option",
+        "rent", "renting",
+    ]
+    if any(k in q for k in compare_kw):
+        btc_match = re.search(r'(\d+\.?\d*)\s*(btc|sat|sats|bitcoin)', q, re.IGNORECASE)
+        dur_match = re.search(r'(\d+\.?\d*)\s*(h|hour|hr|hours|horas|hora|d|day|days|dia|dias)', q)
+        if btc_match and dur_match:
+            budget = btc_match.group(1)
+            dur_val = float(dur_match.group(1))
+            dur_unit = dur_match.group(2).lower()
+            if dur_unit in ('d', 'day', 'days', 'dia', 'dias'):
+                dur_val *= 24
+            print()
+            print(C.ok(f"Entendi: budget={budget} BTC, duration={dur_val:.0f}h"))
+            cmd_compare(["--budget", budget, "--duration", str(int(dur_val))])
+            return
+
+        print()
+        print(C.ok("Entendi que é pergunta sobre aluguel de hashrate"))
+        print(C.warn("Preciso de orçamento e duração pra comparar. Tente algo como:"))
+        print(C.hint("ask compara braiins vs mrr com 0.01 btc por 24h"))
+        print(C.hint("Ou use: compare --budget 0.01 --duration 24h"))
+        return
+
+    # ── Pattern: compare / rental / aluguel (check FIRST — more specific than generic price/difficulty) ──
+    network_kw = [
+        # Portuguese
+        "rede", "dificuldade", "difculdade", "dificudade", "dificul", "network",
+        "preco", "preço", "cotação", "cotacao", "quanto ta", "quanto tá",
+        "ta valendo", "tá valendo", "valor", "preço btc", "preco btc",
+        "bitcoin price", "btc price", "btc/usd", "btc/brl",
+        # English
+        "difficulty", "dificulty", "diff", "current", "price", "btc",
+        "what's the", "what is the", "how much",
+        # Common queries
+        "como ta", "como tá", "como esta", "como está",
+        "me mostra", "mostra", "show me", "show",
+        "da rede", "atual", "hoje", "now", "today",
+    ]
+    if any(k in q for k in network_kw):
         cmd_network()
         return
 
-    # Pattern 2: calc/probability
-    calc_kw = ["calc", "calculate", "probability", "prob", "chance", "odds", "hashrate", "th/s", "ph/s", "eh/s"]
-    if any(k in query_lower for k in calc_kw):
+    # ── Pattern: calc / probability / chance ──
+    calc_kw = [
+        # Portuguese
+        "calcular", "calcula", "calc", "calulo", "calculo", "cálculo",
+        "probabilidade", "probabilida", "prob", "chance", "chances",
+        "qual a chance", "quais as chances", "quanto tempo", "tempo esperado",
+        "acha bloco", "achar bloco", "encontra bloco", "encontrar bloco",
+        "minerar", "minerando", "mineração", "mineracao",
+        "quantos blocos", "quantos bloco",
+        # English
+        "probability", "probablity", "probabilty", "odds",
+        "chance of", "chances of", "likely", "likelihood",
+        "how long", "expected time", "how many",
+        "find a block", "finding", "block chance",
+        # Units (signal it's a mining calc question)
+        "th/s", "ph/s", "eh/s", "gh/s", "mh/s",
+        "ths", "phs", "ehs", "ths",
+        "th ", "ph ", "eh ",
+        "hashrate", "hash rate", "hash",
+        # Common queries
+        "se eu", "com ", "usando", "durante", "por ",
+        "solo", "solo mining",
+    ]
+    if any(k in q for k in calc_kw):
+        # Try to extract hashrate and duration from the query
+        hr_match = re.search(r'(\d+\.?\d*)\s*(th/s|ph/s|eh/s|gh/s|mh/s|th|ph|eh|gh|mh)', q, re.IGNORECASE)
+        dur_match = re.search(r'(\d+\.?\d*)\s*(h|hour|hr|hours|horas|hora|d|day|days|dia|dias|w|week|weeks|semana|semanas)', q)
+        if hr_match and dur_match:
+            hashrate = hr_match.group(1) + hr_match.group(2).upper().replace('/S', '')
+            dur_val = float(dur_match.group(1))
+            dur_unit = dur_match.group(2).lower()
+            if dur_unit in ('d', 'day', 'days', 'dia', 'dias'):
+                dur_val *= 24
+            elif dur_unit in ('w', 'week', 'weeks', 'semana', 'semanas'):
+                dur_val *= 168
+            print()
+            print(C.ok(f"Entendi: hashrate={hashrate}, duration={dur_val:.0f}h"))
+            cmd_calc(["--hashrate", hashrate, "--duration", str(int(dur_val))])
+            return
+
         print()
-        print(C.ok("Calculation query detected"))
-        print(C.warn("Natural-language parsing is limited — use structured command for precise results"))
-        print(C.hint("Example: calc --hashrate 225TH --duration 24h"))
+        print(C.ok("Entendi que é pergunta sobre probabilidade de mineração"))
+        print(C.warn("Preciso de hashrate e duração pra calcular. Tente algo como:"))
+        print(C.hint("ask qual a chance de achar bloco com 225TH por 24h?"))
+        print(C.hint("Ou use: calc --hashrate 225TH --duration 24h"))
         return
 
-    # Pattern 3: compare/rental
-    compare_kw = ["compare", "rental", "rent", "braiins", "mrr", "miningrigrentals", "which", "better", "worth"]
-    if any(k in query_lower for k in compare_kw):
-        print()
-        print(C.ok("Comparison query detected"))
-        print(C.warn("Natural-language parsing is limited — use structured command for precise results"))
-        print(C.hint("Example: compare --budget 0.01 --duration 24h"))
+    # ── Pattern: status / dashboard / how am I doing ──
+    status_kw = [
+        # Portuguese
+        "status", "dashboard", "resumo", "sumario", "sumário",
+        "como estou", "como eu to", "como eu tô", "como ta minha",
+        "minha mineração", "minha mineracao", "meu minerador",
+        "ta funcionando", "tá funcionando", "funcionando",
+        "online", "offline", "conectado",
+        # English
+        "how am i", "how's my", "am i mining", "my miner",
+        "stats", "summary", "overview",
+    ]
+    if any(k in q for k in status_kw):
+        cmd_status()
         return
 
-    # Fallback
+    # ── Pattern: help ──
+    help_kw = ["help", "ajuda", "ajudar", "socorro", "comandos", "commands", "o que faz", "o que vc faz"]
+    if any(k in q for k in help_kw):
+        cmd_help()
+        return
+
+    # ── Fallback: can't parse, but be friendly ──
     print()
-    print(C.warn("Could not parse query — try one of:"))
-    print(f"  {C.GREEN}•{C.RST} Type '{C.GREEN}network{C.RST}' for live difficulty & BTC price")
-    print(f"  {C.GREEN}•{C.RST} Type '{C.GREEN}calc --hashrate <value> --duration <h>{C.RST}' for mining probabilities")
-    print(f"  {C.GREEN}•{C.RST} Type '{C.GREEN}compare --budget <btc> --duration <h>{C.RST}' to compare rental options")
-    print(f"  {C.GREEN}•{C.RST} Type '{C.GREEN}help{C.RST}' for full command reference")
+    print(C.warn("Não entendi exatamente o que você quer, mas posso ajudar com:"))
+    print(f"  {C.GREEN}•{C.RST} Digite '{C.GREEN}network{C.RST}' — dificuldade e preço do BTC agora")
+    print(f"  {C.GREEN}•{C.RST} Digite '{C.GREEN}status{C.RST}' — resumo completo da sua mineração")
+    print(f"  {C.GREEN}•{C.RST} Digite '{C.GREEN}calc --hashrate 225TH --duration 24h{C.RST}' — chance de achar bloco")
+    print(f"  {C.GREEN}•{C.RST} Digite '{C.GREEN}compare --budget 0.01 --duration 24h{C.RST}' — comparar aluguel")
+    print(f"  {C.GREEN}•{C.RST} Digite '{C.GREEN}help{C.RST}' — todos os comandos")
+    print(f"  {C.GREEN}•{C.RST} Ou me pergunte de outro jeito: 'qual a chance de achar bloco com 500th por 7 dias?'")
 
 
 # ═══════════════════════════════════════════════════════════════════════════
