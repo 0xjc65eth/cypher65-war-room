@@ -1187,13 +1187,16 @@
       _soloTermPrint('');
       _soloTermPrintHTML('<span class="c-amber">COMMANDS:</span>');
       _soloTermPrint('  calc --hashrate <value> --duration <h> [--difficulty <d>]');
-      _soloTermPrint('       Calculate solo mining probabilities for a given hashrate');
+      _soloTermPrint('       Calculate solo mining probabilities (auto-fetches live difficulty)');
       _soloTermPrint('');
-      _soloTermPrint('  compare --budget <btc> --duration <h> --braiins <price> --mrr <price>');
-      _soloTermPrint('          Compare Braiins vs MRR rental options');
+      _soloTermPrint('  compare --budget <btc> --duration <h> [--braiins <price>] [--mrr <price>]');
+      _soloTermPrint('          Compare Braiins vs MRR rental (auto-fetches live prices)');
       _soloTermPrint('');
       _soloTermPrint('  network');
-      _soloTermPrint('          Show current Bitcoin network difficulty and price');
+      _soloTermPrint('          Show live Bitcoin network difficulty and BTC price (agent tools)');
+      _soloTermPrint('');
+      _soloTermPrint('  ask <free-text query>');
+_soloTermPrint('          Natural language mining query (e.g. "what is the probability...")');
       _soloTermPrint('');
       _soloTermPrint('  clear');
       _soloTermPrint('          Clear terminal output');
@@ -1202,23 +1205,40 @@
     }
 
     if (verb === 'network') {
-      _soloTermPrintHTML('<span class="c-muted">fetching network data...</span>');
+      _soloTermPrintHTML('<span class="c-muted">fetching live data from agent tools...</span>');
       try {
-        const r = await fetch('/api/solo-mining/network');
-        const data = await r.json();
-        if (data.error) {
-          _soloTermPrintHTML('<span class="c-red">[ERROR] ' + escapeHtml(data.error) + '</span>');
-          _soloTerm.loading = false;
-          return;
-        }
+        const [diffRes, priceRes] = await Promise.all([
+          fetch('/api/agents/solo-mining/tools', {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({tool: 'get_network_difficulty'})
+          }).then(r => r.json()),
+          fetch('/api/agents/solo-mining/tools', {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({tool: 'get_btc_price', params: {currencies: 'usd,brl'}})
+          }).then(r => r.json())
+        ]);
+
         _soloTermPrint('');
-        _soloTermPrintHTML('<span class="c-green">[OK] Network data fetched</span>');
-        _soloTermPrint('  difficulty........ ' + (data.difficulty ? fmt.diff(data.difficulty) : 'UNAVAILABLE'));
-        _soloTermPrint('  btc/usd........... ' + (data.btc_price_usd ? '$' + Number(data.btc_price_usd).toLocaleString() : 'UNAVAILABLE'));
-        _soloTermPrint('  height............ ' + (data.height ? '#' + data.height : 'UNAVAILABLE'));
-        _soloTermPrint('  source............ ' + (data.source || 'mempool.space'));
+        _soloTermPrintHTML('<span class="c-green">[OK] Agent tools executed</span>');
+
+        if (diffRes.difficulty) {
+          _soloTermPrintHTML('<span class="c-cyan">─── Network Difficulty ───</span>');
+          _soloTermPrint('  difficulty........ ' + fmt.diff(diffRes.difficulty));
+          _soloTermPrint('  source............ ' + (diffRes.source || 'agent tool'));
+        } else {
+          _soloTermPrintHTML('<span class="c-red">[ERROR] Difficulty: ' + escapeHtml(diffRes.error || 'unavailable') + '</span>');
+        }
+
+        if (priceRes.prices) {
+          _soloTermPrintHTML('<span class="c-cyan">─── BTC Price ───</span>');
+          if (priceRes.prices.usd) _soloTermPrint('  btc/usd........... $' + Number(priceRes.prices.usd).toLocaleString());
+          if (priceRes.prices.brl) _soloTermPrint('  btc/brl........... R$' + Number(priceRes.prices.brl).toLocaleString());
+          _soloTermPrint('  source............ ' + (priceRes.source || 'coingecko.com'));
+        } else {
+          _soloTermPrintHTML('<span class="c-red">[ERROR] BTC price: ' + escapeHtml(priceRes.error || 'unavailable') + '</span>');
+        }
       } catch (e) {
-        _soloTermPrintHTML('<span class="c-red">[ERROR] Failed to fetch network data: ' + escapeHtml(e.message) + '</span>');
+        _soloTermPrintHTML('<span class="c-red">[ERROR] Agent tools failed: ' + escapeHtml(e.message) + '</span>');
       }
       _soloTerm.loading = false;
       return;
@@ -1235,6 +1255,24 @@
         _soloTermPrintHTML('<span class="c-red">[ERROR] Missing required flags. Usage: calc --hashrate <value> --duration <h></span>');
         _soloTerm.loading = false;
         return;
+      }
+      // If difficulty not provided, fetch live from agent tools
+      if (!difficulty) {
+        _soloTermPrintHTML('<span class="c-muted">fetching live difficulty from agent tools...</span>');
+        try {
+          const diffRes = await fetch('/api/agents/solo-mining/tools', {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({tool: 'get_network_difficulty'})
+          }).then(r => r.json());
+          if (diffRes.difficulty) {
+            difficulty = String(Math.round(diffRes.difficulty));
+            _soloTermPrintHTML('<span class="c-muted">  using live difficulty: ' + fmt.diff(diffRes.difficulty) + ' (source: ' + (diffRes.source || 'agent tool') + ')</span>');
+          } else {
+            _soloTermPrintHTML('<span class="c-amber">[WARN] Could not fetch live difficulty — using default</span>');
+          }
+        } catch (e) {
+          _soloTermPrintHTML('<span class="c-amber">[WARN] Failed to fetch difficulty: ' + escapeHtml(e.message) + '</span>');
+        }
       }
       const params = new URLSearchParams({ hashrate: hashrate, duration: duration });
       if (difficulty) params.set('difficulty', difficulty);
@@ -1277,6 +1315,45 @@
         _soloTerm.loading = false;
         return;
       }
+      // Fetch live prices from agent tools if not provided by user
+      if (!braiins || !mrr) {
+        _soloTermPrintHTML('<span class="c-muted">fetching live rental prices from agent tools...</span>');
+        try {
+          const promises = [];
+          if (!braiins) promises.push(
+            fetch('/api/agents/solo-mining/tools', {
+              method: 'POST', headers: {'Content-Type': 'application/json'},
+              body: JSON.stringify({tool: 'get_braiins_orderbook'})
+            }).then(r => r.json()).catch(e => ({error: e.message}))
+          );
+          if (!mrr) promises.push(
+            fetch('/api/agents/solo-mining/tools', {
+              method: 'POST', headers: {'Content-Type': 'application/json'},
+              body: JSON.stringify({tool: 'get_mrr_listings'})
+            }).then(r => r.json()).catch(e => ({error: e.message}))
+          );
+          const results = await Promise.all(promises);
+          // Shape-based detection — safer than positional indexing
+          for (const r of results) {
+            if (!r) continue;
+            if (r.price_btc_per_ph_day != null && !braiins) {
+              braiins = String(r.price_btc_per_ph_day);
+              _soloTermPrintHTML('<span class="c-muted">  braiins: ' + Number(r.price_btc_per_ph_day).toFixed(8) + ' BTC/PH/day (' + (r.available_ph_s || 'N/A') + ' PH avail)</span>');
+            } else if (r.best_price_btc_per_ph_day != null && !mrr) {
+              mrr = String(r.best_price_btc_per_ph_day);
+              _soloTermPrintHTML('<span class="c-muted">  mrr: ' + Number(r.best_price_btc_per_ph_day).toFixed(8) + ' BTC/PH/day (' + (r.available_listings || 'N/A') + ' listings)</span>');
+            }
+          }
+          if (!braiins) {
+            _soloTermPrintHTML('<span class="c-amber">[WARN] braiins price unavailable — no data in agent response</span>');
+          }
+          if (!mrr) {
+            _soloTermPrintHTML('<span class="c-amber">[WARN] MRR price unavailable — no data in agent response</span>');
+          }
+        } catch (e) {
+          _soloTermPrintHTML('<span class="c-amber">[WARN] Failed to fetch prices: ' + escapeHtml(e.message) + '</span>');
+        }
+      }
       const params = new URLSearchParams({ budget: budget, duration: duration, objective, auto_fetch: '1' });
       if (braiins) params.set('braiins_price', braiins);
       if (mrr) params.set('mrr_price', mrr);
@@ -1295,6 +1372,43 @@
         for (const line of lines) {
           if (line.startsWith('[OK]')) _soloTermPrintHTML('<span class="c-green">' + escapeHtml(line) + '</span>');
           else if (line.startsWith('[WARN]')) _soloTermPrintHTML('<span class="c-amber">' + escapeHtml(line) + '</span>');
+          else if (line.startsWith('[ERROR]')) _soloTermPrintHTML('<span class="c-red">' + escapeHtml(line) + '</span>');
+          else _soloTermPrint(line);
+        }
+      } catch (e) {
+        _soloTermPrintHTML('<span class="c-red">[ERROR] ' + escapeHtml(e.message) + '</span>');
+      }
+      _soloTerm.loading = false;
+      return;
+    }
+
+    if (verb === 'ask' || verb === 'query') {
+      const query = parts.slice(1).join(' ');
+      if (!query) {
+        _soloTermPrintHTML('<span class="c-red">[ERROR] Usage: ask <free-text query></span>');
+        _soloTerm.loading = false;
+        return;
+      }
+      _soloTermPrintHTML('<span class="c-muted">querying agent...</span>');
+      try {
+        const r = await fetch('/api/agents/solo-mining/ask', {
+          method: 'POST', headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({query: query})
+        });
+        const data = await r.json();
+        if (data.error) {
+          _soloTermPrintHTML('<span class="c-red">[ERROR] ' + escapeHtml(data.error) + '</span>');
+          _soloTerm.loading = false;
+          return;
+        }
+        _soloTermPrint('');
+        const output = data.output || '';
+        const lines = output.split("\n");
+
+        for (const line of lines) {
+          if (line.startsWith('[OK]')) _soloTermPrintHTML('<span class="c-green">' + escapeHtml(line) + '</span>');
+          else if (line.startsWith('[WARN]')) _soloTermPrintHTML('<span class="c-amber">' + escapeHtml(line) + '</span>');
+          else if (line.startsWith('[HINT]')) _soloTermPrintHTML('<span class="c-muted">' + escapeHtml(line) + '</span>');
           else if (line.startsWith('[ERROR]')) _soloTermPrintHTML('<span class="c-red">' + escapeHtml(line) + '</span>');
           else _soloTermPrint(line);
         }

@@ -909,6 +909,85 @@ def api_agent_solo_mining_tool():
     return jsonify(result)
 
 
+@app.route("/api/agents/solo-mining/ask", methods=["POST"])
+def api_agent_solo_mining_ask():
+    """Free-text natural-language query endpoint for the Solo Mining Advisor.
+    Accepts: {"query": "what's the probability of finding a block..."}
+    Parses the query for recognized patterns (calc, compare, network) and
+    delegates to the appropriate agent tools + solo_mining calculation engine.
+
+    This is a structured parser — not an LLM call. It maps natural-language
+    mining questions to the backend tool pipeline.
+    """
+    if not _solo_advisor_loaded:
+        return jsonify({"error": "Agent not loaded"}), 503
+
+    body = request.get_json(silent=True) or {}
+    query = (body.get("query") or "").strip().lower()
+    if not query:
+        return jsonify({"error": "Missing 'query' field", "hint": "Try: what is the current network difficulty?"}), 400
+
+    output_lines = []
+    output_lines.append(f"julio@cypher:~/solo-mining$ ask \"{query[:80]}\"")
+    output_lines.append("")
+
+    # ── Pattern 1: network/difficulty/price questions ──
+    network_keywords = ["network", "difficulty", "difficult", "price", "btc", "bitcoin price", "current"]
+    if any(k in query for k in network_keywords):
+        output_lines.append("[OK] Network query detected — fetching live data")
+        output_lines.append("")
+        try:
+            diff = execute_tool("get_network_difficulty")
+            price = execute_tool("get_btc_price", {"currencies": "usd,brl"})
+        except Exception as e:
+            output_lines.append(f"[ERROR] Agent tool error: {e}")
+            return jsonify({"output": "\n".join(output_lines), "status": "error"})
+
+        if diff.get("difficulty"):
+            output_lines.append("─── Network Difficulty ───")
+            output_lines.append(f"  difficulty........ {fmt_diff(diff['difficulty'])}")
+            output_lines.append(f"  source............ {diff.get('source', 'agent tool')}")
+        else:
+            output_lines.append(f"[ERROR] Difficulty: {diff.get('error', 'unavailable')}")
+
+        output_lines.append("")
+        if price.get("prices"):
+            output_lines.append("─── BTC Price ───")
+            if price["prices"].get("usd"):
+                output_lines.append(f"  btc/usd........... ${price['prices']['usd']:,.0f}")
+            if price["prices"].get("brl"):
+                output_lines.append(f"  btc/brl........... R${price['prices']['brl']:,.0f}")
+            output_lines.append(f"  source............ {price.get('source', 'coingecko.com')}")
+        else:
+            output_lines.append(f"[ERROR] BTC price: {price.get('error', 'unavailable')}")
+
+        return jsonify({"output": "\n".join(output_lines), "status": "success"})
+
+    # ── Pattern 2: calc / probability questions ──
+    calc_keywords = ["calc", "calculate", "probability", "prob", "chance", "hashrate", "hash", "th/s", "ph/s", "eh/s"]
+    if any(k in query for k in calc_keywords):
+        output_lines.append("[OK] Calculation query detected")
+        output_lines.append("[WARN] Natural-language parsing is limited — use 'calc --hashrate <value> --duration <h>' for precise results")
+        output_lines.append("[HINT] Example: calc --hashrate 225TH --duration 24h")
+        return jsonify({"output": "\n".join(output_lines), "status": "partial"})
+
+    # ── Pattern 3: compare / rental questions ──
+    compare_keywords = ["compare", "rental", "rent", "braiins", "mrr", "miningrigrentals", "which", "better", "worth"]
+    if any(k in query for k in compare_keywords):
+        output_lines.append("[OK] Comparison query detected")
+        output_lines.append("[WARN] Natural-language parsing is limited — use 'compare --budget <btc> --duration <h>' for precise results")
+        output_lines.append("[HINT] Example: compare --budget 0.01 --duration 24h")
+        return jsonify({"output": "\n".join(output_lines), "status": "partial"})
+
+    # ── Fallback ──
+    output_lines.append("[WARN] Could not parse query — try one of:")
+    output_lines.append("  • Type 'network' for live difficulty & BTC price")
+    output_lines.append("  • Type 'calc --hashrate <value> --duration <h>' for mining probabilities")
+    output_lines.append("  • Type 'compare --budget <btc> --duration <h>' to compare rental options")
+    output_lines.append("  • Type 'help' for full command reference")
+    return jsonify({"output": "\n".join(output_lines), "status": "unrecognized"})
+
+
 if __name__ == "__main__":
     banner = r"""
    ▄████████  ▄██   ▄    ▄███████▄ ▄██   ▄      ▄████████  ▄████████
