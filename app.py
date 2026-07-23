@@ -913,78 +913,323 @@ def api_agent_solo_mining_tool():
 def api_agent_solo_mining_ask():
     """Free-text natural-language query endpoint for the Solo Mining Advisor.
     Accepts: {"query": "what's the probability of finding a block..."}
-    Parses the query for recognized patterns (calc, compare, network) and
-    delegates to the appropriate agent tools + solo_mining calculation engine.
+    Parses the query for recognized patterns (compare, status, calc, network, help)
+    and delegates to the appropriate agent tools + solo_mining calculation engine.
 
-    This is a structured parser — not an LLM call. It maps natural-language
-    mining questions to the backend tool pipeline.
+    Supports casual Portuguese, English, typos, and mixed language.
     """
     if not _solo_advisor_loaded:
         return jsonify({"error": "Agent not loaded"}), 503
 
     body = request.get_json(silent=True) or {}
-    query = (body.get("query") or "").strip().lower()
+    query = (body.get("query") or "").strip()[:300]
     if not query:
-        return jsonify({"error": "Missing 'query' field", "hint": "Try: what is the current network difficulty?"}), 400
+        return jsonify({
+            "output": "julio@cypher:~/solo-mining$ ask \"\"\n\n[ERROR] Digite uma pergunta!\n\nSugestões:\n  • qual a dificuldade da rede agora?\n  • qual a chance de achar bloco com 500th por 7 dias?\n  • como ta minha mineracao?\n  • compara aluguel de 0.01 btc por 24h\n",
+            "status": "error"
+        })
 
-    output_lines = []
-    output_lines.append(f"julio@cypher:~/solo-mining$ ask \"{query[:80]}\"")
-    output_lines.append("")
+    output_lines = [f"julio@cypher:~/solo-mining$ ask \"{query[:80]}\"", ""]
 
-    # ── Pattern 1: network/difficulty/price questions ──
-    network_keywords = ["network", "difficulty", "difficult", "price", "btc", "bitcoin price", "current"]
-    if any(k in query for k in network_keywords):
-        output_lines.append("[OK] Network query detected — fetching live data")
+    import re
+    query_lower = query.lower().strip()
+    # Normalize for keyword matching: strip sentence punctuation but preserve decimal dots
+    q = re.sub(r'[?!;:]', ' ', query_lower)
+    q = re.sub(r'\.(?!\d)', ' ', q)
+
+    # ══ Check patterns: compare first (most specific), then status, calc, network, help ══
+
+    # ── Pattern 1: compare / rental / aluguel ──
+    compare_kw = [
+        "compara", "comparar", "comparação", "comparacao", "compare",
+        "aluguel", "alugar", "aluga", "rental", "alocação", "alocacao",
+        "braiins", "brain", "brains", "brians",
+        "mrr", "miningrigrentals", "mining rig", "miningrig",
+        "qual melhor", "qual vale mais", "qual compensa",
+        "vale a pena", "compensa", "mais barato", "melhor opção",
+        "custo", "orçamento", "orcamento", "budget",
+        "which one", "better", "worth it", "cheaper", "best option",
+        "rent", "renting",
+    ]
+    if any(k in q for k in compare_kw):
+        btc_match = re.search(r'(\d+\.?\d*)\s*(btc|sat|sats|bitcoin)', q, re.IGNORECASE)
+        dur_match = re.search(r'(\d+\.?\d*)\s*(h|hour|hr|hours|horas|hora|d|day|days|dia|dias)', q)
+        if btc_match and dur_match:
+            budget = float(btc_match.group(1))
+            dur_val = float(dur_match.group(1))
+            dur_unit = dur_match.group(2).lower()
+            if dur_unit in ('d', 'day', 'days', 'dia', 'dias'):
+                dur_val *= 24
+
+            output_lines.append("[OK] Comparação de aluguel detectada")
+            output_lines.append(f"      budget={budget} BTC, duração={dur_val:.0f}h")
+            output_lines.append("")
+
+            try:
+                diff_res = execute_tool("get_network_difficulty")
+                difficulty = diff_res.get("difficulty", 127e12)
+                braiins_res = execute_tool("get_braiins_orderbook")
+                mrr_res = execute_tool("get_mrr_listings")
+                braiins_price = braiins_res.get("price_btc_per_ph_day")
+                mrr_price = mrr_res.get("price_btc_per_ph_day")
+
+                sm = solo_mining
+                results = sm.compare_rentals(
+                    budget, difficulty, dur_val,
+                    braiins_price, mrr_price,
+                    objective="EV", auto_fetch=False,
+                )
+
+                if not results:
+                    output_lines.append("[ERROR] Nenhuma opção válida de aluguel")
+                    output_lines.append("[HINT] Forneça preços manualmente: --braiins <preço> --mrr <preço>")
+                else:
+                    output_lines.append(f"{'Plataforma':<22s}  {'Preço/PH/d':>10s}   {'Hashpower':>10s}  {'P(bloco)':>9s}  {'E[tempo]':>10s}   {'EV(BTC)':>10s}")
+                    output_lines.append(f"{'─'*22}  {'─'*10}   {'─'*10}  {'─'*9}  {'─'*10}   {'─'*10}")
+                    for r in results:
+                        output_lines.append(
+                            f"  {r['platform']:<22s}  {r['price_btc_per_ph_day']:>10.6f}   "
+                            f"{r['hashpower_ph']:>8.2f}PH  {r['p_block_pct']:>7.4f}%  "
+                            f"{r['expected_time_days']:>8.0f}d  {r['ev_btc']:>+10.6f}"
+                        )
+                    if any(r.get('ev_btc', -1) < 0 for r in results):
+                        output_lines.append("")
+                        output_lines.append("[WARN] Todas as opções têm EV negativo. Solo mining é loteria.")
+            except Exception as e:
+                output_lines.append(f"[ERROR] Falha ao buscar dados: {e}")
+                output_lines.append("[HINT] Tente: compare --budget 0.01 --duration 24h")
+
+            return jsonify({"output": "\n".join(output_lines), "status": "success"})
+
+        output_lines.append("[OK] Entendi que é pergunta sobre aluguel de hashrate")
+        output_lines.append("[WARN] Preciso de orçamento e duração pra comparar. Exemplo:")
+        output_lines.append("[HINT] 'compara braiins vs mrr com 0.01 btc por 24h'")
+        output_lines.append("[HINT] Ou use: compare --budget 0.01 --duration 24h")
+        return jsonify({"output": "\n".join(output_lines), "status": "partial"})
+
+    # ── Pattern 2: status / dashboard ──
+    status_kw = [
+        "status", "dashboard", "resumo", "sumario", "sumário",
+        "como estou", "como eu to", "como eu tô", "como ta minha",
+        "minha mineração", "minha mineracao", "meu minerador",
+        "ta funcionando", "tá funcionando", "funcionando",
+        "online", "offline", "conectado",
+        "how am i", "how's my", "am i mining", "my miner",
+        "stats", "summary", "overview",
+    ]
+    if any(k in q for k in status_kw):
+        output_lines.append("[OK] Consulta de status detectada — buscando dados")
         output_lines.append("")
+
         try:
-            diff = execute_tool("get_network_difficulty")
-            price = execute_tool("get_btc_price", {"currencies": "usd,brl"})
+            diff_res = execute_tool("get_network_difficulty")
+            price_res = execute_tool("get_btc_price", {"currencies": "usd,brl"})
+            pool_res = execute_tool("get_parasite_pool_stats")
+
+            difficulty = diff_res.get("difficulty", 0)
+            prices = price_res.get("prices", {})
+            worker_hr = pool_res.get("worker_hashrate", 0)
+            pool_hr = pool_res.get("pool_hashrate", 0)
+
+            output_lines.append("╔══════════════════════════════════════════════╗")
+            output_lines.append("║          CYPHER MINING STATUS              ║")
+            output_lines.append("╚══════════════════════════════════════════════╝")
+            output_lines.append("")
+
+            output_lines.append("─── Network ───")
+            if difficulty:
+                output_lines.append(f"  Difficulty        {difficulty:,.0f}  ({fmt_diff(difficulty)})")
+            else:
+                output_lines.append("  Difficulty        unavailable")
+            if prices:
+                parts = []
+                if prices.get("usd"): parts.append(f"${prices['usd']:,.0f}")
+                if prices.get("brl"): parts.append(f"R${prices['brl']:,.0f}")
+                output_lines.append(f"  BTC Price         {' / '.join(parts)}")
+            output_lines.append("")
+
+            output_lines.append("─── Worker ───")
+            output_lines.append(f"  Hashrate          {worker_hr}" if worker_hr else "  Hashrate          no worker data")
+            output_lines.append(f"  Best Share        {pool_res.get('worker_best_diff', '—')}")
+            output_lines.append(f"  Status            {pool_res.get('worker_status', 'unknown').upper()}")
+
+            if pool_res.get("worker_uptime"):
+                output_lines.append(f"  Uptime            {pool_res['worker_uptime']}")
+            output_lines.append("")
+
+            output_lines.append("─── Pool (parasite.space) ───")
+            output_lines.append(f"  Pool Hashrate     {pool_hr}" if pool_hr else "  Pool Hashrate     —")
+            output_lines.append(f"  Workers           {pool_res.get('pool_workers', '—')} / {pool_res.get('pool_users', '—')} users")
+            output_lines.append("")
+
+            try:
+                sm = solo_mining
+                w_hr = float(worker_hr) if worker_hr else 0
+                diff_f = float(difficulty) if difficulty else 0
+                if w_hr and diff_f:
+                    prob = sm.calc_block_probability(w_hr, diff_f, 86400)
+                    exp_time = sm.calc_expected_time(w_hr, diff_f)
+                    pct = prob["p_at_least_1_block_pct"]
+                    pct_str = f"{pct:.6f}%" if pct < 0.0001 else f"{pct:.4f}%" if pct < 0.01 else f"{pct:.2f}%"
+
+                    output_lines.append("─── 24h Block Probability ───")
+                    output_lines.append(f"  P(>=1 block)      {pct_str}")
+                    output_lines.append(f"  P(0 blocks)       {prob['p_zero_blocks_pct']:.1f}%")
+                    output_lines.append(f"  E[time]           {exp_time['days']:,.0f} dias ({exp_time['years']:.1f} anos)")
+                    output_lines.append(f"  Hashes/24h        {w_hr * 86400:,.0f}")
+                    output_lines.append("")
+                    if pct < 0.01:
+                        output_lines.append("[WARN] Probabilidade extremamente baixa — solo mining é loteria.")
+            except Exception:
+                pass
         except Exception as e:
-            output_lines.append(f"[ERROR] Agent tool error: {e}")
-            return jsonify({"output": "\n".join(output_lines), "status": "error"})
-
-        if diff.get("difficulty"):
-            output_lines.append("─── Network Difficulty ───")
-            output_lines.append(f"  difficulty........ {fmt_diff(diff['difficulty'])}")
-            output_lines.append(f"  source............ {diff.get('source', 'agent tool')}")
-        else:
-            output_lines.append(f"[ERROR] Difficulty: {diff.get('error', 'unavailable')}")
-
-        output_lines.append("")
-        if price.get("prices"):
-            output_lines.append("─── BTC Price ───")
-            if price["prices"].get("usd"):
-                output_lines.append(f"  btc/usd........... ${price['prices']['usd']:,.0f}")
-            if price["prices"].get("brl"):
-                output_lines.append(f"  btc/brl........... R${price['prices']['brl']:,.0f}")
-            output_lines.append(f"  source............ {price.get('source', 'coingecko.com')}")
-        else:
-            output_lines.append(f"[ERROR] BTC price: {price.get('error', 'unavailable')}")
+            output_lines.append(f"[ERROR] Falha ao buscar dados: {e}")
 
         return jsonify({"output": "\n".join(output_lines), "status": "success"})
 
-    # ── Pattern 2: calc / probability questions ──
-    calc_keywords = ["calc", "calculate", "probability", "prob", "chance", "hashrate", "hash", "th/s", "ph/s", "eh/s"]
-    if any(k in query for k in calc_keywords):
-        output_lines.append("[OK] Calculation query detected")
-        output_lines.append("[WARN] Natural-language parsing is limited — use 'calc --hashrate <value> --duration <h>' for precise results")
-        output_lines.append("[HINT] Example: calc --hashrate 225TH --duration 24h")
+    # ── Pattern 3: calc / probability / chance ──
+    calc_kw = [
+        "calcular", "calcula", "calc", "calulo", "calculo", "cálculo",
+        "probabilidade", "probabilida", "prob", "chance", "chances",
+        "qual a chance", "quais as chances", "quanto tempo", "tempo esperado",
+        "acha bloco", "achar bloco", "encontra bloco", "encontrar bloco",
+        "minerar", "minerando", "mineração", "mineracao",
+        "quantos blocos", "quantos bloco",
+        "probability", "probablity", "probabilty", "odds",
+        "chance of", "chances of", "likely", "likelihood",
+        "how long", "expected time", "how many",
+        "find a block", "finding", "block chance",
+        "th/s", "ph/s", "eh/s", "gh/s", "mh/s",
+        "ths", "phs", "ehs",
+        "hashrate", "hash rate", "hash",
+        "se eu", "usando", "durante",
+        "solo", "solo mining",
+    ]
+    if any(k in q for k in calc_kw):
+        hr_match = re.search(r'(\d+\.?\d*)\s*(th/s|ph/s|eh/s|gh/s|mh/s|th|ph|eh|gh|mh)', q, re.IGNORECASE)
+        dur_match = re.search(r'(\d+\.?\d*)\s*(h|hour|hr|hours|horas|hora|d|day|days|dia|dias|w|week|weeks|semana|semanas)', q)
+        if hr_match and dur_match:
+            hashrate_str = hr_match.group(1) + hr_match.group(2).upper().replace('/S', '')
+            dur_val = float(dur_match.group(1))
+            dur_unit = dur_match.group(2).lower()
+            if dur_unit in ('d', 'day', 'days', 'dia', 'dias'):
+                dur_val *= 24
+            elif dur_unit in ('w', 'week', 'weeks', 'semana', 'semanas'):
+                dur_val *= 168
+
+            output_lines.append(f"[OK] Entendi: hashrate={hashrate_str}, duração={dur_val:.0f}h")
+            output_lines.append("")
+
+            try:
+                sm = solo_mining
+                hashrate_hs = sm._parse_hashrate(hashrate_str)
+                duration_seconds = dur_val * 3600
+                diff_res = execute_tool("get_network_difficulty")
+                difficulty = diff_res.get("difficulty", 127e12)
+
+                prob = sm.calc_block_probability(hashrate_hs, difficulty, duration_seconds)
+                exp_time = sm.calc_expected_time(hashrate_hs, difficulty)
+
+                output_lines.append("─── Block Discovery ───")
+                output_lines.append(f"  Hashrate............ {hashrate_hs:,.0f} H/s ({hashrate_str.upper()})")
+                output_lines.append(f"  Duração............. {dur_val:.0f}h ({dur_val / 24:.2f} dias)")
+                output_lines.append(f"  Dificuldade......... {difficulty:,.0f}")
+                output_lines.append(f"  Hashes/bloco........ {prob['hashes_per_block']:,.0f}")
+                output_lines.append(f"  Lambda(t)........... {prob['lambda']:.6e}")
+                output_lines.append("")
+                output_lines.append(f"  P(>=1 bloco)........ {prob['p_at_least_1_block_pct']:.6f}%")
+                output_lines.append(f"  P(0 blocos)......... {prob['p_zero_blocks_pct']:.2f}%")
+                output_lines.append(f"  E[tempo]............ {exp_time['days']:,.1f} dias ({exp_time['years']:.2f} anos)")
+                output_lines.append("")
+                output_lines.append("[WARN] Solo mining é loteria. EV é negativo vs pool mining.")
+            except Exception as e:
+                output_lines.append(f"[ERROR] Falha no cálculo: {e}")
+                output_lines.append("[HINT] Tente: calc --hashrate 225TH --duration 24h")
+
+            return jsonify({"output": "\n".join(output_lines), "status": "success"})
+
+        output_lines.append("[OK] Entendi que é pergunta sobre probabilidade de mineração")
+        output_lines.append("[WARN] Preciso de hashrate e duração pra calcular. Exemplo:")
+        output_lines.append("[HINT] 'qual a chance de achar bloco com 225TH por 24h?'")
+        output_lines.append("[HINT] Ou use: calc --hashrate 225TH --duration 24h")
         return jsonify({"output": "\n".join(output_lines), "status": "partial"})
 
-    # ── Pattern 3: compare / rental questions ──
-    compare_keywords = ["compare", "rental", "rent", "braiins", "mrr", "miningrigrentals", "which", "better", "worth"]
-    if any(k in query for k in compare_keywords):
-        output_lines.append("[OK] Comparison query detected")
-        output_lines.append("[WARN] Natural-language parsing is limited — use 'compare --budget <btc> --duration <h>' for precise results")
-        output_lines.append("[HINT] Example: compare --budget 0.01 --duration 24h")
-        return jsonify({"output": "\n".join(output_lines), "status": "partial"})
+    # ── Pattern 4: network / difficulty / price ──
+    network_kw = [
+        "rede", "dificuldade", "difculdade", "dificudade", "dificul", "network",
+        "preco", "preço", "cotação", "cotacao", "quanto ta", "quanto tá",
+        "ta valendo", "tá valendo", "valor", "preço btc", "preco btc",
+        "bitcoin price", "btc price", "btc/usd", "btc/brl",
+        "difficulty", "dificulty", "diff", "current", "price", "btc",
+        "what's the", "what is the", "how much",
+        "como ta", "como tá", "como esta", "como está",
+        "me mostra", "mostra", "show me", "show",
+        "da rede", "atual", "hoje", "now", "today",
+    ]
+    if any(k in q for k in network_kw):
+        output_lines.append("[OK] Consulta de rede detectada — buscando dados")
+        output_lines.append("")
 
-    # ── Fallback ──
-    output_lines.append("[WARN] Could not parse query — try one of:")
-    output_lines.append("  • Type 'network' for live difficulty & BTC price")
-    output_lines.append("  • Type 'calc --hashrate <value> --duration <h>' for mining probabilities")
-    output_lines.append("  • Type 'compare --budget <btc> --duration <h>' to compare rental options")
-    output_lines.append("  • Type 'help' for full command reference")
+        try:
+            diff_res = execute_tool("get_network_difficulty")
+            price_res = execute_tool("get_btc_price", {"currencies": "usd,brl"})
+            prices = price_res.get("prices", {})
+
+            if diff_res.get("difficulty"):
+                diff = diff_res["difficulty"]
+                output_lines.append("─── Network Difficulty ───")
+                output_lines.append(f"  difficulty........ {diff:,.0f}")
+                output_lines.append(f"  formatted......... {fmt_diff(diff)}")
+                output_lines.append(f"  source............ {diff_res.get('source', 'agent tool')}")
+            else:
+                output_lines.append(f"[ERROR] Difficulty: {diff_res.get('error', 'unavailable')}")
+
+            output_lines.append("")
+            output_lines.append("─── BTC Price ───")
+            if prices:
+                if prices.get("usd"):
+                    output_lines.append(f"  btc/usd........... ${prices['usd']:,.0f}")
+                if prices.get("brl"):
+                    output_lines.append(f"  btc/brl........... R${prices['brl']:,.0f}")
+                output_lines.append(f"  source............ {price_res.get('source', 'coingecko.com')}")
+            else:
+                output_lines.append(f"[ERROR] BTC price: {price_res.get('error', 'unavailable')}")
+        except Exception as e:
+            output_lines.append(f"[ERROR] Falha ao buscar dados: {e}")
+
+        return jsonify({"output": "\n".join(output_lines), "status": "success"})
+
+    # ── Pattern 5: help ──
+    help_kw = ["help", "ajuda", "ajudar", "socorro", "comandos", "commands", "o que faz", "o que vc faz"]
+    if any(k in q for k in help_kw):
+        output_lines.append("[OK] Ajuda:")
+        output_lines.append("")
+        output_lines.append("  network                          — Dificuldade da rede + preço do BTC")
+        output_lines.append("  calc --hashrate <H> --duration <h> — Probabilidade de minerar")
+        output_lines.append("  compare --budget <BTC> --duration <h> — Comparar aluguel")
+        output_lines.append("  status                           — Dashboard completo")
+        output_lines.append("  ask <pergunta>                    — Pergunta em linguagem natural")
+        output_lines.append("")
+        output_lines.append("  Exemplos:")
+        output_lines.append("    • 'qual a dificuldade da rede?'")
+        output_lines.append("    • 'chance de achar bloco com 500th por 7 dias'")
+        output_lines.append("    • 'compara aluguel de 0.01 btc por 24h'")
+        output_lines.append("    • 'como ta minha mineracao?'")
+        return jsonify({"output": "\n".join(output_lines), "status": "success"})
+
+    # ── Fallback: can't parse, but be friendly ──
+    output_lines.append("[WARN] Não entendi exatamente o que você quer, mas posso ajudar com:")
+    output_lines.append("")
+    output_lines.append("  • 'network' — dificuldade e preço do BTC agora")
+    output_lines.append("  • 'status' — resumo completo da sua mineração")
+    output_lines.append("  • 'calc --hashrate 225TH --duration 24h' — chance de achar bloco")
+    output_lines.append("  • 'compare --budget 0.01 --duration 24h' — comparar aluguel de hashrate")
+    output_lines.append("  • 'help' — todos os comandos")
+    output_lines.append("")
+    output_lines.append("  Ou me pergunte de outro jeito, tipo:")
+    output_lines.append("  'qual a chance de achar bloco com 500th por 7 dias?'")
+    output_lines.append("  'compara braiins vs mrr com 0.01 btc por 24h'")
+    output_lines.append("  'como ta minha mineracao?'")
     return jsonify({"output": "\n".join(output_lines), "status": "unrecognized"})
 
 
