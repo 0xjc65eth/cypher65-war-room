@@ -113,6 +113,7 @@
         <span class="badge" id="prox-pct-badge">— of network</span>
         <span class="badge" id="prox-alltime-badge">peak —</span>
         <span class="badge" id="prox-streak-badge">streak —</span>
+        <span class="badge api-status" id="api-proximity" data-api="proximity">—</span>
       </div>
     </div>
 
@@ -214,7 +215,7 @@
 
     <!-- ─── LIVE HASH CALCULATOR · per-share math, updated in real time ─── -->
     <div class="prox-live-calc" id="prox-live-calc">
-      <div class="prox-live-calc__title">⚡ LIVE HASH CALCULATOR · PER-SHARE BREAKDOWN</div>
+      <div class="prox-live-calc__title">⚡ LIVE HASH CALCULATOR · PER-SHARE BREAKDOWN <span class="badge api-status api-status--inline" id="api-livecalc" data-api="livecalc">—</span></div>
 
       <div class="prox-live-calc__latest">
         <div class="prox-live-calc__latest-head">
@@ -289,7 +290,8 @@
   <section class="panel" id="pool-overview">
     <div class="panel__header">
       <div class="panel__eyebrow"># POOL CONTEXT</div>
-      <div class="panel__tools"><span class="badge badge--mute" id="pool-uptime">up —</span></div>
+      <div class="panel__tools"><span class="badge badge--mute" id="pool-uptime">up —</span>
+        <span class="badge api-status" id="api-pool" data-api="pool">—</span></div>
     </div>
     <div class="stat-row">
       <div class="stat">
@@ -371,7 +373,7 @@
   <section class="panel" id="network-panel">
     <div class="panel__header">
       <div class="panel__eyebrow">⌬ NETWORK · MEMPOOL</div>
-      <div class="panel__tools"><span class="badge badge--mute" id="net-status">fetching…</span></div>
+      <div class="panel__tools"><span class="badge api-status" id="api-network" data-api="network">—</span></div>
     </div>
     <div class="stat-row stat-row--compact">
       <div class="stat">
@@ -444,7 +446,7 @@
   <section class="panel" id="fees-panel">
     <div class="panel__header">
       <div class="panel__eyebrow">⛽ MEMPOOL FEE TIERS · SAT/VB</div>
-      <div class="panel__tools"><span class="badge badge--mute" id="fees-status">—</span></div>
+      <div class="panel__tools"><span class="badge api-status" id="api-fees" data-api="fees">—</span></div>
     </div>
     <div class="fee-row">
       <div class="fee-cell"><div class="fee-cell__label">ECONOMY</div><div class="fee-cell__val" id="fee-economy">—</div></div>
@@ -581,7 +583,7 @@
         </div>
       </div>
       <div class="lm-cyber-header__badges">
-        <span class="badge badge--green" id="lm-status-badge">LIVE</span>
+        <span class="badge api-status" id="api-livemining" data-api="livemining">—</span>
         <span class="badge badge--mute" id="lm-workers-badge">0 workers</span>
       </div>
     </div>
@@ -710,7 +712,7 @@
     <div class="panel__header">
       <div class="panel__eyebrow">Ξ CFO TERMINAL · RISK & PROBABILITY</div>
       <div class="panel__tools">
-        <span class="badge badge--mute" id="cfo-status">SIMULATED</span>
+        <span class="badge api-status" id="api-cfo" data-api="cfo">ESTIMATED</span>
         <select class="field__input" id="cfo-hours" style="width:auto;padding:2px 6px;font-size:10px;" onchange="loadMonteCarlo()">
           <option value="1">1h</option><option value="6">6h</option><option value="12">12h</option>
           <option value="24" selected>24h</option><option value="168">7d</option>

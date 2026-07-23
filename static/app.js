@@ -513,7 +513,7 @@
   function loadMonteCarlo() {
     if (!dom.cfoPBlock) return;
     const hours = parseInt(dom.cfoHours?.value || 24);
-    if (dom.cfoStatus) dom.cfoStatus.textContent = 'SIMULATING...';
+    document.getElementById('api-cfo')?.classList.add('badge--estimated'); document.getElementById('api-cfo') && (document.getElementById('api-cfo').textContent = 'SIMULATING...');
 
     // Get current hashrate and difficulty from DOM
     const hrText = dom.mHashrate?.textContent || '0 TH/s';
@@ -578,7 +578,7 @@
     if (dom.cfoMedian) dom.cfoMedian.textContent = medianBlocks;
     if (dom.cfoP90) dom.cfoP90.textContent = 'P10=' + p10Blocks + ' · P90=' + p90Blocks;
     if (dom.cfoFootnote) dom.cfoFootnote.textContent = 'λ=' + lambda.toExponential(2) + ' · D=' + fmt.diff(difficulty) + ' · HR=' + fmt.hashrate(hashrateHs);
-    if (dom.cfoStatus) dom.cfoStatus.textContent = 'SIMULATED';
+    document.getElementById('api-cfo')?.classList.remove('badge--error','badge--live'); document.getElementById('api-cfo')?.classList.add('badge--estimated'); document.getElementById('api-cfo') && (document.getElementById('api-cfo').textContent = 'SIMULATED');
 
     // Distribution bars
     if (dom.cfoDist) {
@@ -642,6 +642,48 @@
   }
 
 
+  // ══════════════════════════════════════════════════════════════════════
+  // API STATUS BADGES — LIVE / ESTIMATED / ERROR
+  // ══════════════════════════════════════════════════════════════════════
+
+  function _updateApiStatusBadges(snap) {
+    const set = (id, status) => {
+      const el = document.getElementById(id);
+      if (!el) return;
+      el.textContent = status;
+      el.classList.remove('badge--live', 'badge--estimated', 'badge--error'); el.classList.add('badge--' + status.toLowerCase());
+    };
+
+    // paraspace API — worker, pool, account, leaderboard, events, proximity, livecalc, livemining
+    const workerOk = !!(snap.worker && (snap.worker.hashrate || snap.worker.bestDifficulty));
+    const poolOk = !!(snap.pool && snap.pool.hashrate);
+    set('api-worker', workerOk ? 'LIVE' : 'ERROR');
+    set('api-pool', poolOk ? 'LIVE' : 'ERROR');
+    set('api-proximity', snap.proximity && !snap.proximity.insufficient_data ? 'LIVE' : 'ESTIMATED');
+    set('api-livecalc', snap.proximity?.live_calc?.latest ? 'LIVE' : 'ESTIMATED');
+    set('api-livemining', (snap.all_workers && snap.all_workers.length > 0) ? 'LIVE' : 'ERROR');
+
+    // mempool.space + blockchain.info — network height, difficulty, hashrate
+    const netOk = !!(snap.network && snap.network.difficulty);
+    set('api-network', netOk ? 'LIVE' : 'ERROR');
+
+    // mempool.space fees
+    const feesOk = !!(snap.mempool_fees && Object.keys(snap.mempool_fees).length > 0);
+    set('api-fees', feesOk ? 'LIVE' : 'ERROR');
+
+    // CoinGecko BTC price
+    const btcOk = !!(snap.btc_price && (snap.btc_price.usd || snap.btc_price.brl));
+    // Network panel also shows BTC price — update if network is live but price might not be
+    if (!btcOk && netOk) set('api-network', 'ESTIMATED');
+
+    // Profitability — derived from all above, always ESTIMATED (formulas, not raw API)
+    set('api-profit', workerOk && netOk ? 'ESTIMATED' : 'ERROR');
+
+    // CFO Monte Carlo — always simulated
+    set('api-cfo', 'ESTIMATED');
+  }
+
+
   function renderProfitability(p) {
     if (!p || !Object.keys(p).length) return;
     const cur = (SETTINGS_CACHE.data?.active_currency?.value) || "USD"; const symMap = {USD:"$",BRL:"R$",EUR:"€",GBP:"£"}; const sym = symMap[cur] || "$";
@@ -660,6 +702,7 @@
   // ── Main render ──
   let prevSnapshot = null;
   function render(snap) {
+    _updateApiStatusBadges(snap);
     if (!_skeletonsHidden) hideSkeletons();
     if (dom.topbarAddress) dom.topbarAddress.textContent = `${fmt.shortAddr(window.BTC_ADDRESS || '')} · WORKER ${(window.WORKER_NAME || '').toUpperCase()}`;
     if (dom.statusText) dom.statusText.textContent = snap.worker ? 'ONLINE' : 'OFFLINE';
@@ -877,8 +920,8 @@
   function renderLiveMining(allWorkers, primaryWorker) {
     if (!dom.lmGrid) return;
     const workers = allWorkers || [];
-    if (!workers.length) { dom.lmGrid.innerHTML = '<div class="lm-empty">awaiting worker data</div>'; if (dom.lmStatusBadge) dom.lmStatusBadge.textContent = 'IDLE'; return; }
-    if (dom.lmStatusBadge) dom.lmStatusBadge.textContent = 'LIVE';
+    if (!workers.length) { dom.lmGrid.innerHTML = '<div class="lm-empty">awaiting worker data</div>'; document.getElementById('api-livemining')?.classList.remove('badge--error','badge--estimated'); document.getElementById('api-livemining')?.classList.add('badge--live'); document.getElementById('api-livemining') && (document.getElementById('api-livemining').textContent = 'IDLE'); return; }
+    document.getElementById('api-livemining')?.classList.remove('badge--error','badge--estimated'); document.getElementById('api-livemining')?.classList.add('badge--live'); document.getElementById('api-livemining') && (document.getElementById('api-livemining').textContent = 'LIVE');
     if (dom.lmWorkersBadge) dom.lmWorkersBadge.textContent = `${workers.length} worker${workers.length === 1 ? '' : 's'}`;
     _updateLiveMiningSummary(workers, primaryWorker);
     _updateBestShare(workers);

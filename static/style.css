@@ -325,6 +325,23 @@ body {
 .badge--red    { background: var(--accent-red-bg);    border-color: rgba(239,68,68,0.25); color: var(--accent-red); }
 .badge--mute   { background: var(--bg-surface); border-color: var(--border-subtle); color: var(--text-tertiary); }
 
+/* ── API Status Badges ─────────────────────────────────────────────── */
+.api-status {
+  font-size: 9px; padding: 1px 8px; border-radius: 3px;
+  font-family: var(--font-mono); text-transform: uppercase; letter-spacing: 0.5px;
+}
+.api-status--inline { margin-left: 10px; }
+.badge--live {
+  background: rgba(16,185,129,0.15); color: #10b981; border: 1px solid rgba(16,185,129,0.3);
+}
+.badge--estimated {
+  background: rgba(245,185,66,0.12); color: #f5b942; border: 1px solid rgba(245,185,66,0.25);
+}
+.badge--error {
+  background: rgba(255,107,107,0.12); color: #ff6b6b; border: 1px solid rgba(255,107,107,0.25);
+}
+
+
 /* ── Hero Metrics ─────────────────────────────────────────────────────── */
 .hero-grid {
   display: grid; grid-template-columns: repeat(4, 1fr);
