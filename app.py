@@ -871,6 +871,42 @@ from routes.solo_mining_routes import solo_mining_bp
 app.register_blueprint(solo_mining_bp, url_prefix="/api/solo-mining")
 
 
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#  Agent registry — exposes the Solo Mining Advisor agent to freebuff
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+try:
+    from agents.solo_mining_advisor import get_agent_descriptor, execute_tool
+    _solo_advisor_loaded = True
+    log.info("[agents] Solo Mining Advisor loaded")
+except Exception as e:
+    _solo_advisor_loaded = False
+    log.warning("[agents] Solo Mining Advisor failed to load: %s", e)
+
+
+@app.route("/api/agents/solo-mining")
+def api_agent_solo_mining():
+    """Return the Solo Mining Advisor agent descriptor.
+    This is the endpoint freebuff calls to discover and register the agent."""
+    if not _solo_advisor_loaded:
+        return jsonify({"error": "Agent not loaded", "loaded": False}), 503
+    return jsonify(get_agent_descriptor())
+
+
+@app.route("/api/agents/solo-mining/tools", methods=["POST"])
+def api_agent_solo_mining_tool():
+    """Execute a tool on behalf of the Solo Mining Advisor.
+    POST JSON: {"tool": "get_network_difficulty", "params": {}}"""
+    if not _solo_advisor_loaded:
+        return jsonify({"error": "Agent not loaded"}), 503
+    body = request.get_json(silent=True) or {}
+    tool_name = body.get("tool", "")
+    params = body.get("params")
+    if not tool_name:
+        return jsonify({"error": "Missing 'tool' field"}), 400
+    result = execute_tool(tool_name, params)
+    return jsonify(result)
+
+
 if __name__ == "__main__":
     banner = r"""
    ▄████████  ▄██   ▄    ▄███████▄ ▄██   ▄      ▄████████  ▄████████

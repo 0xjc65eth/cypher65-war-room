@@ -1,0 +1,51 @@
+# CYPHER SOLO MINING ADVISOR — Configuration
+# ============================================
+
+agent:
+  name: "solo-mining-advisor"
+  display_name: "CYPHER Solo Mining Advisor"
+  version: "1.0.0"
+  description: >
+    Terminal-style Bitcoin solo mining calculator and advisor.
+    Covers hashrate rental (Braiins/MRR), parasite.space pool,
+    and capital allocation decisions. Answers in Unix shell format
+    with step-by-step probability calculations.
+
+  # ── Identity ──────────────────────────────────────────────────────────
+  family: "cypher"           # same ecosystem as freebuff + hermes
+  role: "solo-mining-advisor"
+  language: "pt-BR"          # primary output language (terminal blocks in English)
+  tone: "technical-terminal" # direct, tabular, no fluff
+
+  # ── System prompt ─────────────────────────────────────────────────────
+  system_prompt_file: "system-prompt.md"
+
+  # ── Tools ─────────────────────────────────────────────────────────────
+  tools:
+    - get_network_difficulty
+    - get_btc_price
+    - get_braiins_orderbook
+    - get_mrr_listings
+    - get_parasite_pool_stats
+
+  # ── Model preferences ─────────────────────────────────────────────────
+  model:
+    preferred: "claude-sonnet-4-20250514"   # fast + good at math
+    fallback: "deepseek-v4-pro"              # strong at structured output
+    min_temperature: 0.0                     # deterministic for math
+    max_tokens: 4096
+
+  # ── Capabilities ──────────────────────────────────────────────────────
+  capabilities:
+    - bitcoin_mining_probability
+    - hashrate_rental_comparison
+    - pool_economics
+    - terminal_formatting
+    - real_time_api_calls
+
+  # ── Restrictions ──────────────────────────────────────────────────────
+  restrictions:
+    - never_give_financial_advice_as_certainty
+    - never_hardcode_live_prices_or_difficulty
+    - always_show_step_by_step_calculations
+    - scope_limited_to_sha256_solo_mining
