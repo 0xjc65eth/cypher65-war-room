@@ -46,6 +46,7 @@ def get_network_difficulty():
         {"difficulty": float, "source": str} on success
         {"error": str} on failure
     """
+    last_err = None
     # Primary: blockchain.info (most reliable as of 2024-2026)
     try:
         r = requests.get(
@@ -58,7 +59,9 @@ def get_network_difficulty():
                 "difficulty": float(r.text.strip()),
                 "source": "blockchain.info/q/getdifficulty",
             }
+        last_err = f"HTTP {r.status_code}"
     except Exception as e:
+        last_err = str(e)[:100]
         log.warning("[get_network_difficulty] blockchain.info failed: %s", e)
 
     # Fallback: mempool.space
@@ -76,10 +79,14 @@ def get_network_difficulty():
                     "difficulty": float(diff),
                     "source": "mempool.space/v1/difficulty-adjustment",
                 }
+            last_err = "mempool response missing 'difficulty' key"
+        else:
+            last_err = f"HTTP {r.status_code}"
     except Exception as e:
+        last_err = str(e)[:100]
         log.warning("[get_network_difficulty] mempool.space failed: %s", e)
 
-    return {"error": "All difficulty sources unreachable"}
+    return {"error": f"All difficulty sources unreachable (last: {last_err})"}
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -94,6 +101,7 @@ def get_btc_price(currencies="usd,brl,eur,gbp"):
         {"prices": {"usd": float, ...}, "source": str} on success
         {"error": str} on failure
     """
+    last_err = None
     try:
         r = requests.get(
             COINGECKO_API,
@@ -107,10 +115,12 @@ def get_btc_price(currencies="usd,brl,eur,gbp"):
                 "prices": {k.lower(): v for k, v in prices.items()},
                 "source": "coingecko.com",
             }
+        last_err = f"HTTP {r.status_code}"
     except Exception as e:
+        last_err = str(e)[:100]
         log.warning("[get_btc_price] error: %s", e)
 
-    return {"error": f"CoinGecko unreachable: {str(e)[:100]}"}
+    return {"error": f"CoinGecko unreachable: {last_err or 'unknown'}"}
 
 
 # ═══════════════════════════════════════════════════════════════════════════
