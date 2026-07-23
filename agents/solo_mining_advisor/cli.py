@@ -1271,7 +1271,8 @@ def main():
             except Exception as e:
                 print(C.err(f"Command failed: {e}"))
         else:
-            print(C.err(f"Unknown command: {C.RED}{verb}{C.RST}. Type {C.GREEN}help{C.RST} for available commands."))
+            # Not a known command — treat as natural language query (no 'ask' prefix needed)
+            cmd_ask(tokens)
 
 
 def _dispatch(verb, args, json_mode, commands, _ARGS_COMMANDS, _JSON_COMMANDS):
