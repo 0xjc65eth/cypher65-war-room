@@ -65,13 +65,14 @@ class C:
 _COMPLETIONS = {
     # first-word completions (command names + aliases)
     "__commands__": [
-        "network", "calc", "compare", "ask", "query",
+        "network", "calc", "compare", "status", "ask", "query",
         "help", "clear", "cls", "exit", "quit",
     ],
     # per-command flags and value hints
     "network": [],
     "calc": ["--hashrate", "--duration", "--difficulty"],
     "compare": ["--budget", "--duration", "--braiins", "--mrr", "--objective"],
+    "status": [],
     "ask": [],
     "query": [],
     "help": [],
@@ -229,6 +230,9 @@ def cmd_help():
     """Print help text."""
     print()
     print(f"{C.AMBER}{C.BOLD}COMMANDS:{C.RST}")
+    print(f"  {C.GREEN}status{C.RST}")
+    print(f"       Show full mining dashboard: difficulty, BTC price, worker stats, 24h probability")
+    print()
     print(f"  {C.GREEN}network{C.RST}")
     print(f"       Show live Bitcoin network difficulty + BTC price")
     print()
@@ -259,6 +263,115 @@ def cmd_help():
 def cmd_clear():
     """Clear the terminal screen."""
     os.system("clear" if os.name == "posix" else "cls")
+
+
+def cmd_status():
+    """Show a comprehensive mining dashboard in a single response.
+    Fetches difficulty, BTC price, and parasite.space worker stats in parallel,
+    then calculates 24h block probability using the worker's hashrate."""
+    execute_tool = _get_execute_tool()
+    sm = _get_solo_mining()
+
+    print()
+    print(f"{C.MUTED}fetching live data from agent tools...{C.RST}")
+
+    # Fetch all three data sources in sequence (tools.py doesn't support async)
+    diff_result = execute_tool("get_network_difficulty")
+    price_result = execute_tool("get_btc_price", {"currencies": "usd,brl"})
+    pool_result = execute_tool("get_parasite_pool_stats")
+
+    difficulty = diff_result.get("difficulty", 0)
+    prices = price_result.get("prices", {})
+    worker_hr = _coerce_float(pool_result.get("worker_hashrate", 0))
+    pool_hr = _coerce_float(pool_result.get("pool_hashrate", 0))
+
+    print()
+    print(C.ok("Live data fetched"))
+    print()
+
+    # ══ Header block ══
+    print(f"{C.CYAN}{C.BOLD}╔══════════════════════════════════════════════╗{C.RST}")
+    print(f"{C.CYAN}{C.BOLD}║{C.RST}          {C.BOLD}CYPHER MINING STATUS{C.RST}              {C.CYAN}{C.BOLD}║{C.RST}")
+    print(f"{C.CYAN}{C.BOLD}╚══════════════════════════════════════════════╝{C.RST}")
+    print()
+
+    # ── Network section ──
+    print(C.header("Network"))
+    if difficulty:
+        print(f"  {C.BOLD}Difficulty{C.RST}        {C.WHITE}{difficulty:,.0f}{C.RST}  ({C.MUTED}{_fmt_diff_human(difficulty)}{C.RST})")
+        print(f"  {C.BOLD}Source{C.RST}           {C.MUTED}{diff_result.get('source', 'agent')}{C.RST}")
+    else:
+        print(f"  {C.RED}Difficulty unavailable{C.RST}")
+
+    print()
+    if prices:
+        parts = []
+        if prices.get("usd"): parts.append(f"{C.WHITE}${prices['usd']:,.0f}{C.RST}")
+        if prices.get("brl"): parts.append(f"{C.WHITE}R${prices['brl']:,.0f}{C.RST}")
+        print(f"  {C.BOLD}BTC Price{C.RST}        {' / '.join(parts)}")
+    print()
+
+    # ── Worker section ──
+    print(C.header("Worker"))
+    if worker_hr:
+        print(f"  {C.BOLD}Hashrate{C.RST}        {C.WHITE}{_fmt_hashrate_human(worker_hr)}{C.RST}")
+    else:
+        print(f"  {C.BOLD}Hashrate{C.RST}        {C.MUTED}no worker data from pool{C.RST}")
+
+    best_diff_str = pool_result.get("worker_best_diff", "—")
+    print(f"  {C.BOLD}Best Share{C.RST}      {C.WHITE}{best_diff_str}{C.RST}")
+
+    worker_status = pool_result.get("worker_status", "unknown")
+    status_color = C.GREEN if worker_status == "online" else C.RED
+    print(f"  {C.BOLD}Status{C.RST}          {status_color}{worker_status.upper()}{C.RST}")
+
+    uptime = pool_result.get("worker_uptime")
+    if uptime:
+        print(f"  {C.BOLD}Uptime{C.RST}          {C.WHITE}{_fmt_uptime_human(uptime)}{C.RST}")
+
+    print()
+
+    # ── Pool section ──
+    print(C.header("Pool (parasite.space)"))
+    if pool_hr:
+        print(f"  {C.BOLD}Pool Hashrate{C.RST}   {C.WHITE}{_fmt_hashrate_human(pool_hr)}{C.RST}")
+    print(f"  {C.BOLD}Workers{C.RST}         {C.WHITE}{pool_result.get('pool_workers', '—')}{C.RST} / {C.WHITE}{pool_result.get('pool_users', '—')} users{C.RST}")
+    print(f"  {C.BOLD}Data Status{C.RST}     {C.MUTED}{pool_result.get('pool_status', 'unknown')}{C.RST}")
+    print()
+
+    # ── Probability section (24h default) ──
+    if worker_hr and difficulty:
+        print(C.header("24h Block Probability"))
+        prob = sm.calc_block_probability(worker_hr, difficulty, 86400)
+        exp_time = sm.calc_expected_time(worker_hr, difficulty)
+
+        pct = prob["p_at_least_1_block_pct"]
+        if pct < 0.0001:
+            pct_str = f"{pct:.6f}%"
+        elif pct < 0.01:
+            pct_str = f"{pct:.4f}%"
+        else:
+            pct_str = f"{pct:.2f}%"
+
+        print(f"  {C.BOLD}P(>=1 block){C.RST}     {C.WHITE}{pct_str}{C.RST}")
+        print(f"  {C.BOLD}P(0 blocks){C.RST}      {C.MUTED}{prob['p_zero_blocks_pct']:.1f}%{C.RST}")
+        print(f"  {C.BOLD}E[time]{C.RST}           {C.WHITE}{exp_time['days']:,.0f} days{C.RST} {C.MUTED}({exp_time['years']:.1f} years){C.RST}")
+        print(f"  {C.BOLD}Hashes/24h{C.RST}      {C.WHITE}{worker_hr * 86400:,.0f}{C.RST}")
+        print()
+        if pct < 0.01:
+            print(C.warn("Extremely low probability — solo mining is a lottery."))
+        print()
+    else:
+        if not worker_hr and not difficulty:
+            print(C.warn("Block probability skipped — both hashrate and difficulty are missing."))
+        elif not worker_hr:
+            print(C.warn("Block probability skipped — no worker hashrate from parasite.space."))
+        elif not difficulty:
+            print(C.warn("Block probability skipped — network difficulty unavailable."))
+        print()
+
+    print(C.ok("Status complete."))
+    print()
 
 
 def cmd_network():
@@ -601,6 +714,62 @@ def _parse_diff_float(s):
         return 127e12
 
 
+def _fmt_hashrate_human(v):
+    """Format hashrate in H/s to human-readable string (e.g. '225 TH/s')."""
+    if not v or not math.isfinite(v):
+        return "0 H/s"
+    v = abs(v)
+    units = ["H/s", "kH/s", "MH/s", "GH/s", "TH/s", "PH/s", "EH/s"]
+    i = 0
+    while v >= 1000 and i < len(units) - 1:
+        v /= 1000
+        i += 1
+    return f"{v:.{0 if v >= 100 else 1}f} {units[i]}"
+
+
+def _coerce_float(v):
+    """Safely convert a value to float, handling strings with units like '1.5 PH/s'."""
+    if v is None:
+        return 0
+    if isinstance(v, (int, float)):
+        return float(v)
+    try:
+        return float(v)
+    except (ValueError, TypeError):
+        pass
+    import re
+    m = re.match(r'([\d.,]+)\s*([EPTGMk]?)', str(v).strip().upper())
+    if m:
+        num = float(m.group(1).replace(',', ''))
+        unit = m.group(2).upper()
+        mult = {'E': 1e18, 'P': 1e15, 'T': 1e12, 'G': 1e9, 'M': 1e6, 'K': 1e3, '': 1}
+        return num * mult.get(unit, 1)
+    return 0
+
+
+def _fmt_uptime_human(s):
+    """Format seconds to human-readable uptime (e.g. '3d 12h')."""
+    if not s:
+        return "\u2014"
+    try:
+        s = int(s)
+    except (ValueError, TypeError):
+        return str(s)
+    if s < 60:
+        return f"{s}s"
+    d = s // 86400
+    h = (s % 86400) // 3600
+    m = (s % 3600) // 60
+    parts = []
+    if d:
+        parts.append(f"{d}d")
+    if h:
+        parts.append(f"{h}h")
+    if m and not d:
+        parts.append(f"{m}m")
+    return " ".join(parts) or "0m"
+
+
 def _parse_command(line):
     """Split a command line into tokens, respecting quoted strings."""
     import shlex
@@ -624,6 +793,7 @@ def main():
     # Dispatch table
     commands = {
         "help": lambda _: cmd_help(),
+        "status": lambda _: cmd_status(),
         "network": lambda _: cmd_network(),
         "calc": lambda args: cmd_calc(args),
         "compare": lambda args: cmd_compare(args),
