@@ -62,8 +62,8 @@ _rate_limit_store = {}  # {ip: [timestamps]}
 @app.before_request
 def rate_limit():
     """Simple rate limiter: max RATE_LIMIT_PER_MINUTE requests per IP per minute.
-    Skips static files and the /healthz endpoint."""
-    if request.path.startswith('/static') or request.path == '/healthz' or request.path == '/api/healthz':
+    Skips static files, healthz, and agent discovery endpoints."""
+    if request.path.startswith('/static') or request.path == '/healthz' or request.path == '/api/healthz' or request.path.startswith('/api/agents'):
         return None
     ip = request.remote_addr or '127.0.0.1'
     now = time.time()
@@ -877,9 +877,11 @@ app.register_blueprint(solo_mining_bp, url_prefix="/api/solo-mining")
 try:
     from agents.solo_mining_advisor import get_agent_descriptor, execute_tool
     _solo_advisor_loaded = True
+    _solo_advisor_error = None
     log.info("[agents] Solo Mining Advisor loaded")
 except Exception as e:
     _solo_advisor_loaded = False
+    _solo_advisor_error = str(e)
     log.warning("[agents] Solo Mining Advisor failed to load: %s", e)
 
 
@@ -888,7 +890,7 @@ def api_agent_solo_mining():
     """Return the Solo Mining Advisor agent descriptor.
     This is the endpoint freebuff calls to discover and register the agent."""
     if not _solo_advisor_loaded:
-        return jsonify({"error": "Agent not loaded", "loaded": False}), 503
+        return jsonify({"error": "Agent not loaded", "detail": _solo_advisor_error or "unknown", "loaded": False}), 503
     return jsonify(get_agent_descriptor())
 
 
