@@ -1,0 +1,1151 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CYPHER65 // PARASITE POOL WAR ROOM</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700&family=Inter:wght@300;400;500;600;700;800;900&family=Space+Grotesk:wght@400;500;700&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<link rel="stylesheet" href="/static/style.css">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%2304060a'/%3E%3Ctext x='16' y='22' text-anchor='middle' font-family='monospace' font-weight='bold' font-size='18' fill='%2300ff9f'%3E65%3C/text%3E%3C/svg%3E">
+</head>
+<body>
+
+<!-- Matrix rain canvas backdrop -->
+<canvas id="matrix-canvas"></canvas>
+
+<!-- Scanline overlay -->
+<div class="scanlines"></div>
+<div class="vignette"></div>
+
+<!-- ═══════════ TOP STATUS BAR ═══════════ -->
+<header class="topbar">
+  <div class="brand">
+    <div class="brand__logo" aria-hidden="true">65</div>
+    <div class="brand__meta">
+      <div class="brand__title">CYPHER65 · MISSION CONTROL</div>
+      <div class="brand__sub" id="topbar-address">—</div>
+    </div>
+  </div>
+
+  <div class="topbar-right">
+    <div class="pill pill--status" id="status-pill">
+      <span class="led" id="led-status"></span>
+      <span id="status-text">INITIALIZING</span>
+    </div>
+    <div class="pill pill--clock" id="clock">--:--:--</div>
+    <div class="pill" title="Next poll">
+      <span class="pulse-dot"></span>
+      <span id="next-poll">--</span>
+    </div>
+    <button id="refresh-now" class="btn btn--mini" title="Refresh now (R)">⟳</button>
+    <button id="open-settings" class="btn btn--mini" title="Settings (S)">⚙</button>
+    <button id="open-exports" class="btn btn--mini" title="Export data">↓</button>
+    <button id="toggle-sound" class="btn btn--mini" title="Toggle sound (N)">🔇</button>
+    <button id="toggle-theme" class="btn btn--mini" title="Toggle theme (M)">🕶</button>
+    <button id="open-help" class="btn btn--mini" title="Help (H)">?</button>
+  </div>
+</header>
+
+<!-- ═══════════ MAIN GRID ═══════════ -->
+<main class="grid">
+
+  <!-- ─── HERO WORKER ─── -->
+  <section class="panel panel--hero" id="hero-worker">
+    <div class="panel__header">
+      <div class="panel__eyebrow">▣ WORKER // {{worker|upper }}</div>
+      <div class="panel__tools">
+        <span class="badge" id="worker-rank-badge">RANK ?</span>
+        <span class="badge badge--mute" id="worker-uptime-badge">UP —</span>
+      </div>
+    </div>
+
+    <div class="hero-grid">
+      <div class="metric metric--xl">
+        <div class="metric__label">HASHRATE</div>
+        <div class="metric__value" id="m-hashrate">—</div>
+        <div class="metric__sub" id="m-hashrate-sub">aguardando dados</div>
+      </div>
+      <div class="metric metric--xl">
+        <div class="metric__label">BEST DIFFICULTY</div>
+        <div class="metric__value metric__value--gold" id="m-bestdiff">—</div>
+        <div class="metric__sub" id="m-bestdiff-sub">highest share so far</div>
+      </div>
+      <div class="metric metric--xl">
+        <div class="metric__label">LAST SHARE</div>
+        <div class="metric__value" id="m-lastshare">—</div>
+        <div class="metric__sub" id="m-lastshare-sub">—</div>
+      </div>
+      <div class="metric metric--xl">
+        <div class="metric__label">STATE</div>
+        <div class="metric__value" id="m-state">—</div>
+        <div class="metric__sub" id="m-state-sub">idle</div>
+      </div>
+    </div>
+
+    <div class="hero-extra">
+      <div class="hero-extra__cell">
+        <div class="cell__label">SHARE-OF-POOL</div>
+        <div class="cell__val" id="m-share-pct">—%</div>
+      </div>
+      <div class="hero-extra__cell">
+        <div class="cell__label">FAIR DIFF SINCE BLOCK</div>
+        <div class="cell__val" id="m-fair-diff">—</div>
+      </div>
+      <div class="hero-extra__cell">
+        <div class="cell__label">EXPECTED SHARE DIFF</div>
+        <div class="cell__val" id="m-expected-share">—</div>
+      </div>
+      <div class="hero-extra__cell">
+        <div class="cell__label">EXPECTED TIME / BLOCK</div>
+        <div class="cell__val" id="m-expected-block">—</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ─── HASH PROXIMITY METER ─── -->
+  <section class="panel panel--proximity" id="proximity-panel">
+    <div class="panel__header">
+      <div class="panel__eyebrow">⌖ HASH PROXIMITY METER · QUANTUM-LOCK ASSESSMENT</div>
+      <div class="panel__tools">
+        <span class="badge" id="prox-pct-badge">— of network</span>
+        <span class="badge" id="prox-alltime-badge">peak —</span>
+        <span class="badge" id="prox-streak-badge">streak —</span>
+      </div>
+    </div>
+
+    <div class="prox-grid">
+      <!-- Hero: SVG arc with center % -->
+      <div class="prox-hero">
+        <svg class="prox-svg" viewBox="0 0 220 130" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <linearGradient id="proxArcGrad" x1="0" x2="1" y1="0" y2="0">
+              <stop offset="0%"  stop-color="#00ff9f"></stop>
+              <stop offset="50%" stop-color="#06d6f0"></stop>
+              <stop offset="100%" stop-color="#f5b942"></stop>
+            </linearGradient>
+            <radialGradient id="proxCenterGlow" cx="0.5" cy="0.5" r="0.5">
+              <stop offset="0%"  stop-color="rgba(6,214,240,0.30)"></stop>
+              <stop offset="100%" stop-color="rgba(6,214,240,0)"></stop>
+            </radialGradient>
+          </defs>
+          <!-- background arc -->
+          <path
+            d="M 20 110 A 90 90 0 0 1 200 110"
+            fill="none"
+            stroke="rgba(255,255,255,0.06)"
+            stroke-width="14"
+            stroke-linecap="round"/>
+          <!-- fill arc (dasharray-based progress) -->
+          <path
+            id="prox-arc"
+            d="M 20 110 A 90 90 0 0 1 200 110"
+            fill="none"
+            stroke="url(#proxArcGrad)"
+            stroke-width="14"
+            stroke-linecap="round"
+            stroke-dasharray="283"
+            stroke-dashoffset="283"
+            pathLength="283"/>
+          <!-- tick marks at 25/50/75% -->
+          <g id="prox-ticks" stroke="rgba(255,255,255,0.15)" stroke-width="1">
+            <line x1="33" y1="62" x2="44" y2="68"/>
+            <line x1="110" y1="20" x2="110" y2="32"/>
+            <line x1="187" y1="62" x2="176" y2="68"/>
+          </g>
+          <!-- center radial glow -->
+          <circle cx="110" cy="110" r="55" fill="url(#proxCenterGlow)"/>
+          <!-- pulsing tip dot (animated, JS-controlled) -->
+          <circle id="prox-tip" cx="200" cy="110" r="6" fill="#f5b942" opacity="0"/>
+        </svg>
+        <div class="prox-hero__center">
+          <div class="prox-hero__pct" id="prox-hero-pct">—</div>
+          <div class="prox-hero__sub" id="prox-hero-sub">of network challenge</div>
+          <div class="prox-hero__best" id="prox-hero-best">best —</div>
+        </div>
+      </div>
+
+      <!-- Right side: stats + chart + ladder -->
+      <div class="prox-side">
+        <div class="prox-stats">
+          <div class="prox-stat">
+            <div class="prox-stat__label">CHANCE / SHARE</div>
+            <div class="prox-stat__val mono" id="prox-chance">—</div>
+            <div class="prox-stat__sub">vs. network block</div>
+          </div>
+          <div class="prox-stat">
+            <div class="prox-stat__label">EXPECTED TIME / BLOCK</div>
+            <div class="prox-stat__val mono" id="prox-time">—</div>
+            <div class="prox-stat__sub" id="prox-time-sub">@ current hashrate</div>
+          </div>
+          <div class="prox-stat">
+            <div class="prox-stat__label">DISTANCE FACTOR</div>
+            <div class="prox-stat__val mono" id="prox-distance">—</div>
+            <div class="prox-stat__sub">× smaller than block</div>
+          </div>
+          <div class="prox-stat">
+            <div class="prox-stat__label">TREND · 1H</div>
+            <div class="prox-stat__val mono" id="prox-trend">—</div>
+            <div class="prox-stat__sub" id="prox-trend-sub">— settled</div>
+          </div>
+        </div>
+
+        <!-- Mini sparkline of last 24h best_diff -->
+        <div class="prox-chart-wrap">
+          <div class="prox-chart-title">BEST DIFFICULTY · LAST 24H</div>
+          <canvas id="prox-sparkline"></canvas>
+        </div>
+
+        <!-- Milestone ladder -->
+        <div class="prox-ladder">
+          <div class="prox-ladder__title">PROXIMITY LADDER · % OF NETWORK DIFFICULTY</div>
+          <div class="prox-ladder__row" id="prox-ladder-row">
+            <!-- dots injected by JS -->
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="prox-footnote" id="prox-footnote">
+      ⌖ Proximity = worker.bestDifficulty ÷ network.difficulty. Each share is a chance at the network challenge; higher best-difficulty = closer to a real block find. Peak persists across restarts.
+    </div>
+
+    <!-- ─── LIVE HASH CALCULATOR · per-share math, updated in real time ─── -->
+    <div class="prox-live-calc" id="prox-live-calc">
+      <div class="prox-live-calc__title">⚡ LIVE HASH CALCULATOR · PER-SHARE BREAKDOWN</div>
+
+      <div class="prox-live-calc__latest">
+        <div class="prox-live-calc__latest-head">
+          <span class="lc-head-label">⌖ LAST HASH @</span>
+          <span class="lc-time-big" id="lc-time-big">—</span>
+          <span class="lc-meta" id="lc-session-share-count">session share #—</span>
+        </div>
+        <div class="prox-live-calc__breakdown">
+          <div class="lc-stat">
+            <div class="lc-k">share_difficulty</div>
+            <div class="lc-v" id="lc-share-diff">—</div>
+            <div class="lc-f">= current vardiff target</div>
+          </div>
+          <div class="lc-stat">
+            <div class="lc-k">hashes attempted</div>
+            <div class="lc-v" id="lc-hashes">—</div>
+            <div class="lc-f">= share_diff × 2³²</div>
+          </div>
+          <div class="lc-stat">
+            <div class="lc-k">time observed</div>
+            <div class="lc-v" id="lc-time-obs">—</div>
+            <div class="lc-f">= share_ts − prev_ts</div>
+          </div>
+          <div class="lc-stat">
+            <div class="lc-k">P(block · this share)</div>
+            <div class="lc-v" id="lc-p-block">—</div>
+            <div class="lc-f">= share_diff ÷ network_diff</div>
+          </div>
+          <div class="lc-stat">
+            <div class="lc-k">instantaneous_hr</div>
+            <div class="lc-v" id="lc-inst-hr">—</div>
+            <div class="lc-f">= hashes_attempted ÷ time_observed</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="prox-live-calc__totals">
+        <div class="lc-total">
+          <div class="lc-k">SESSION SHARES</div>
+          <div class="lc-v" id="lc-session-shares">—</div>
+          <div class="lc-f">since process start</div>
+        </div>
+        <div class="lc-total">
+          <div class="lc-k">AVG SHARE DIFF</div>
+          <div class="lc-v" id="lc-avg-share-diff">—</div>
+          <div class="lc-f">over last 20 shares</div>
+        </div>
+        <div class="lc-total">
+          <div class="lc-k">P(BLOCK) · CUMULATIVE</div>
+          <div class="lc-v" id="lc-cum-p">—</div>
+          <div class="lc-f">= 1 − (1 − p)<sup>session_shares</sup></div>
+        </div>
+        <div class="lc-total">
+          <div class="lc-k">EXPECTED BLOCKS</div>
+          <div class="lc-v" id="lc-expected-blocks">—</div>
+          <div class="lc-f">= N · p (linear)</div>
+        </div>
+      </div>
+
+      <div class="prox-live-calc__ticker">
+        <div class="prox-live-calc__ticker-title">RECENT SHARES · NEWEST FIRST</div>
+        <div class="prox-live-calc__ticker-list" id="lc-ticker-list">
+          <div class="prox-live-calc__ticker-empty">awaiting share detection — once one hits, math runs in real time</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+
+
+  <!-- ─── POOL OVERVIEW ─── -->
+  <section class="panel" id="pool-overview">
+    <div class="panel__header">
+      <div class="panel__eyebrow"># POOL CONTEXT</div>
+      <div class="panel__tools"><span class="badge badge--mute" id="pool-uptime">up —</span></div>
+    </div>
+    <div class="stat-row">
+      <div class="stat">
+        <div class="stat__label">POOL HASHRATE</div>
+        <div class="stat__val" id="p-hashrate">—</div>
+        <div class="stat__sub">aggregate</div>
+      </div>
+      <div class="stat">
+        <div class="stat__label">WORKERS / USERS</div>
+        <div class="stat__val" id="p-workers">— / —</div>
+        <div class="stat__sub">active rigs</div>
+      </div>
+      <div class="stat">
+        <div class="stat__label">HIGHEST DIFF</div>
+        <div class="stat__val stat__val--gold" id="p-high-diff">—</div>
+        <div class="stat__sub">pool record</div>
+      </div>
+      <div class="stat">
+        <div class="stat__label">LAST BLOCK</div>
+        <div class="stat__val" id="p-last-block">—</div>
+        <div class="stat__sub" id="p-last-block-time">— ago</div>
+      </div>
+    </div>
+
+    <div class="progress-block">
+      <div class="progress-block__label">
+        <span>WORK SINCE LAST BLOCK</span>
+        <span id="p-work-num" class="progress-block__num">—</span>
+      </div>
+      <div class="progress-track">
+        <div class="progress-fill" id="p-work-fill"></div>
+        <div class="progress-track__milestone" style="left: 25%"></div>
+        <div class="progress-track__milestone" style="left: 50%"></div>
+        <div class="progress-track__milestone" style="left: 75%"></div>
+        <div class="progress-track__milestone" style="left: 100%"></div>
+      </div>
+      <div class="progress-block__sub">
+        Next expected block roughly every <b id="p-expected-blocks">—</b>
+      </div>
+    </div>
+  </section>
+
+  <!-- ─── ACCOUNT ─── -->
+  <section class="panel" id="account-panel">
+    <div class="panel__header">
+      <div class="panel__eyebrow">§ ACCOUNT</div>
+      <div class="panel__tools"><span class="badge badge--gold" id="acct-blocks-badge">0 BLOCKS</span></div>
+    </div>
+
+    <div class="account-grid">
+      <div class="acct-row">
+        <span class="acct-row__label">LN ADDRESS</span>
+        <span class="acct-row__val mono copyable" id="acct-ln" title="click to copy">—</span>
+      </div>
+      <div class="acct-row">
+        <span class="acct-row__label">TOTAL DIFFICULTY</span>
+        <span class="acct-row__val mono stat__val--gold" id="acct-total-diff">—</span>
+      </div>
+      <div class="acct-row">
+        <span class="acct-row__label">HIGHEST BLOCK</span>
+        <span class="acct-row__val mono" id="acct-highest-block">—</span>
+      </div>
+      <div class="acct-row">
+        <span class="acct-row__label">LEADERBOARD COMBINED</span>
+        <span class="acct-row__val mono" id="acct-combined">—</span>
+      </div>
+      <div class="acct-row">
+        <span class="acct-row__label">DIFF RANK</span>
+        <span class="acct-row__val mono" id="acct-diff-rank">—</span>
+      </div>
+      <div class="acct-row">
+        <span class="acct-row__label">LOYALTY RANK</span>
+        <span class="acct-row__val mono" id="acct-loyalty-rank">—</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- ─── NETWORK ─── -->
+  <section class="panel" id="network-panel">
+    <div class="panel__header">
+      <div class="panel__eyebrow">⌬ NETWORK · MEMPOOL</div>
+      <div class="panel__tools"><span class="badge badge--mute" id="net-status">fetching…</span></div>
+    </div>
+    <div class="stat-row stat-row--compact">
+      <div class="stat">
+        <div class="stat__label">HEIGHT</div>
+        <div class="stat__val" id="n-height">—</div>
+      </div>
+      <div class="stat">
+        <div class="stat__label">NETWORK DIFF</div>
+        <div class="stat__val" id="n-diff">—</div>
+      </div>
+      <div class="stat">
+        <div class="stat__label">NETWORK HASHRATE</div>
+        <div class="stat__val" id="n-hashrate">—</div>
+      </div>
+      <div class="stat">
+        <div class="stat__label">BTC USD</div>
+        <div class="stat__val stat__val--green" id="n-btc-usd">—</div>
+      </div>
+      <div class="stat">
+        <div class="stat__label">BTC BRL</div>
+        <div class="stat__val" id="n-btc-brl">—</div>
+      </div>
+      <div class="stat">
+        <div class="stat__label">BTC EUR</div>
+        <div class="stat__val stat__val--gold" id="n-btc-eur">—</div>
+      </div>
+      <div class="stat">
+        <div class="stat__label">BTC GBP</div>
+        <div class="stat__val" id="n-btc-gbp">—</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ─── HALVING ─── -->
+  <section class="panel" id="halving-panel">
+    <div class="panel__header">
+      <div class="panel__eyebrow">⚒ HALVING COUNTDOWN</div>
+      <div class="panel__tools"><span class="badge" id="halving-epoch-badge">epoch —</span></div>
+    </div>
+    <div class="stat-row stat-row--compact">
+      <div class="stat">
+        <div class="stat__label">BLOCKS REMAINING</div>
+        <div class="stat__val" id="h-blocks">—</div>
+        <div class="stat__sub">to next halving</div>
+      </div>
+      <div class="stat">
+        <div class="stat__label">DAYS REMAINING</div>
+        <div class="stat__val" id="h-days">—</div>
+        <div class="stat__sub">@ 600s/block avg</div>
+      </div>
+      <div class="stat">
+        <div class="stat__label">CURRENT REWARD</div>
+        <div class="stat__val stat__val--gold" id="h-cur-reward">—</div>
+        <div class="stat__sub">BTC per block</div>
+      </div>
+      <div class="stat">
+        <div class="stat__label">NEXT REWARD</div>
+        <div class="stat__val" id="h-next-reward">—</div>
+        <div class="stat__sub">after halving</div>
+      </div>
+      <div class="stat">
+        <div class="stat__label">NEXT @ HEIGHT</div>
+        <div class="stat__val" id="h-next-height">—</div>
+        <div class="stat__sub">blocks left = next − current</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ─── MEMPOOL FEES ─── -->
+  <section class="panel" id="fees-panel">
+    <div class="panel__header">
+      <div class="panel__eyebrow">⛽ MEMPOOL FEE TIERS · SAT/VB</div>
+      <div class="panel__tools"><span class="badge badge--mute" id="fees-status">—</span></div>
+    </div>
+    <div class="fee-row">
+      <div class="fee-cell"><div class="fee-cell__label">ECONOMY</div><div class="fee-cell__val" id="fee-economy">—</div></div>
+      <div class="fee-cell"><div class="fee-cell__label">HOUR</div><div class="fee-cell__val" id="fee-hour">—</div></div>
+      <div class="fee-cell"><div class="fee-cell__label">HALF-HOUR</div><div class="fee-cell__val" id="fee-halfhour">—</div></div>
+      <div class="fee-cell fee-cell--fast"><div class="fee-cell__label">FASTEST</div><div class="fee-cell__val" id="fee-fastest">—</div></div>
+      <div class="fee-cell"><div class="fee-cell__label">MINIMUM</div><div class="fee-cell__val" id="fee-minimum">—</div></div>
+    </div>
+  </section>
+
+  <!-- ─── PROFITABILITY ─── -->
+  <section class="panel panel--profit" id="profit-panel">
+    <div class="panel__header">
+      <div class="panel__eyebrow">Ξ PROFITABILITY · REAL-TIME</div>
+      <div class="panel__tools">
+        <span class="badge badge--green" id="profit-share-badge">0% of network</span>
+        <span class="badge badge--mute" id="profit-cost-badge">cost: $0.00/d</span>
+      </div>
+    </div>
+    <!-- Mode selector -->
+    <div class="profit-modes">
+      <button class="btn profit-mode-btn active" data-mode="pool" onclick="setProfitMode('pool')">⛏ POOL</button>
+      <button class="btn profit-mode-btn" data-mode="solo" onclick="setProfitMode('solo')">☀ SOLO</button>
+      <button class="btn profit-mode-btn" data-mode="rental" onclick="setProfitMode('rental')">📦 RENTAL</button>
+    </div>
+    <div class="profit-grid">
+      <div class="profit-cell profit-cell--xl">
+        <div class="profit-cell__label">NET BTC / DAY</div>
+        <div class="profit-cell__val" id="p-btc-day">—</div>
+        <div class="profit-cell__sub" id="p-btc-sub">after pool fee &amp; orphan</div>
+      </div>
+      <div class="profit-cell">
+        <div class="profit-cell__label">FIAT / DAY <span id="p-cur-badge" class="profit-cur-pill">USD</span></div>
+        <div class="profit-cell__val stat__val--green" id="p-fiat-day">—</div>
+        <div class="profit-cell__sub" id="p-fiat-day-week">~ — / week</div>
+      </div>
+      <div class="profit-cell">
+        <div class="profit-cell__label">FIAT / MONTH</div>
+        <div class="profit-cell__val" id="p-fiat-month">—</div>
+        <div class="profit-cell__sub" id="p-fiat-month-sub">net of cost</div>
+      </div>
+      <div class="profit-cell">
+        <div class="profit-cell__label">BREAK-EVEN</div>
+        <div class="profit-cell__val stat__val--gold" id="p-breakeven">—</div>
+        <div class="profit-cell__sub" id="p-breakeven-sub">rental $/TH·d</div>
+      </div>
+    </div>
+    <!-- Solo mining extra stats (hidden by default) -->
+    <div class="profit-solo-stats" id="solo-extra-stats" style="display:none">
+      <div class="profit-cell">
+        <div class="profit-cell__label">P(BLOCK) TODAY</div>
+        <div class="profit-cell__val stat__val--gold" id="solo-p-day">—</div>
+      </div>
+      <div class="profit-cell">
+        <div class="profit-cell__label">P(BLOCK) THIS YEAR</div>
+        <div class="profit-cell__val stat__val--gold" id="solo-p-year">—</div>
+      </div>
+      <div class="profit-cell">
+        <div class="profit-cell__label">P(BLOCK) IN 5 YEARS</div>
+        <div class="profit-cell__val" id="solo-p-5y">—</div>
+      </div>
+      <div class="profit-cell">
+        <div class="profit-cell__label">EXPECTED BLOCKS / YEAR</div>
+        <div class="profit-cell__val" id="solo-expected-blocks">—</div>
+      </div>
+      <div class="profit-cell">
+        <div class="profit-cell__label">EXPECTED TIME TO BLOCK</div>
+        <div class="profit-cell__val" id="solo-expected-time">—</div>
+      </div>
+    </div>
+    <div class="profit-fiat-row" id="profit-fiat-row">
+      <div class="profit-fiat-cell" data-cur="USD"><span class="cur">USD</span><span class="val" data-cur="USD">—</span><span class="per">/day</span></div>
+      <div class="profit-fiat-cell" data-cur="BRL"><span class="cur">BRL</span><span class="val" data-cur="BRL">—</span><span class="per">/day</span></div>
+      <div class="profit-fiat-cell" data-cur="EUR"><span class="cur">EUR</span><span class="val" data-cur="EUR">—</span><span class="per">/day</span></div>
+      <div class="profit-fiat-cell" data-cur="GBP"><span class="cur">GBP</span><span class="val" data-cur="GBP">—</span><span class="per">/day</span></div>
+    </div>
+    <div class="profit-footnote" id="profit-footnote">Cost model: none (set via ⚙ SETTINGS)</div>
+  </section>
+
+  <!-- ─── NETWORK-SHARE GAUGE ─── -->
+  <section class="panel" id="gauge-panel">
+    <div class="panel__header">
+      <div class="panel__eyebrow">◉ NETWORK-SHARE GAUGE</div>
+      <div class="panel__tools"><span class="badge badge--mute" id="gauge-label">—</span></div>
+    </div>
+    <div class="gauge-grid">
+      <div class="gauge-cell">
+        <div class="gauge-cell__label">cypher65 vs NETWORK</div>
+        <div class="gauge-cell__canvas-wrap">
+          <canvas id="gauge-worker-canvas" width="180" height="100"></canvas>
+          <div class="gauge-cell__val" id="gauge-worker-pct">—</div>
+        </div>
+        <div class="gauge-cell__sub">22-min block chance ≈ <span id="gauge-worker-blockchance">—</span></div>
+      </div>
+      <div class="gauge-cell">
+        <div class="gauge-cell__label">POOL vs NETWORK</div>
+        <div class="gauge-cell__canvas-wrap">
+          <canvas id="gauge-pool-canvas" width="180" height="100"></canvas>
+          <div class="gauge-cell__val" id="gauge-pool-pct">—</div>
+        </div>
+        <div class="gauge-cell__sub">share of total Bitcoin hashrate</div>
+      </div>
+      <div class="gauge-cell">
+        <div class="gauge-cell__label">POOL-LUCK · THIS ROUND</div>
+        <div class="gauge-cell__canvas-wrap">
+          <canvas id="gauge-luck-canvas" width="180" height="100"></canvas>
+          <div class="gauge-cell__val" id="gauge-luck-pct">—</div>
+        </div>
+        <div class="gauge-cell__sub">&gt;100% = lucky · &lt;100% = unlucky</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ─── MILESTONES ─── -->
+  <section class="panel" id="milestones-panel">
+    <div class="panel__header">
+      <div class="panel__eyebrow">★ ACHIEVEMENTS · MILESTONES</div>
+      <div class="panel__tools"><span class="badge badge--mute" id="milestones-count">0 unlocked</span></div>
+    </div>
+    <div class="badges-strip" id="badges-strip">
+      <div class="empty">awaiting data — submit a share to unlock your first badge.</div>
+    </div>
+  </section>
+
+  <!-- ─── CYPHER // LIVE MINING ─── -->
+  <section class="panel panel--live-mining" id="live-mining-panel">
+    <!-- Cyberpunk Header -->
+    <div class="lm-cyber-header">
+      <div class="lm-cyber-header__top">
+        <div class="lm-cyber-header__logo" aria-hidden="true">◈</div>
+        <div class="lm-cyber-header__text">
+          <div class="lm-cyber-header__title">CYPHER // LIVE MINING</div>
+          <div class="lm-cyber-header__sub">REAL-TIME HASH SEARCH &amp; WORKER INTELLIGENCE</div>
+        </div>
+      </div>
+      <div class="lm-cyber-header__badges">
+        <span class="badge badge--green" id="lm-status-badge">LIVE</span>
+        <span class="badge badge--mute" id="lm-workers-badge">0 workers</span>
+      </div>
+    </div>
+
+    <!-- Summary Stats Bar -->
+    <div class="lm-summary" id="lm-summary">
+      <div class="lm-summary__item">
+        <span class="lm-summary__label">WALLET</span>
+        <span class="lm-summary__val mono" id="lm-summary-wallet">—</span>
+      </div>
+      <div class="lm-summary__item">
+        <span class="lm-summary__label">POOL</span>
+        <span class="lm-summary__val">
+          <span id="lm-summary-pool">PARASITE.SPACE</span>
+          <span class="lm-summary__dot" id="lm-summary-dot" title="connected"></span>
+        </span>
+      </div>
+      <div class="lm-summary__item">
+        <span class="lm-summary__label">WORKERS</span>
+        <span class="lm-summary__val" id="lm-summary-workers">0</span>
+      </div>
+      <div class="lm-summary__item">
+        <span class="lm-summary__label">TOTAL HASHRATE</span>
+        <span class="lm-summary__val" id="lm-summary-hr">—</span>
+      </div>
+      <div class="lm-summary__item">
+        <span class="lm-summary__label">BEST DIFFICULTY</span>
+        <span class="lm-summary__val lm-summary__val--gold" id="lm-summary-best">—</span>
+      </div>
+    </div>
+
+    <!-- ─── HASH HUNT TERMINAL ─── -->
+    <div class="hunt-layout" id="hunt-layout">
+      <!-- LEFT: Calculation Stream -->
+      <div class="hunt-stream" id="hunt-stream">
+        <div class="hunt-stream__head">
+          <span class="hunt-stream__title">> CALC STREAM</span>
+          <span class="tx-badge tx-badge--live">LIVE</span>
+        </div>
+        <div class="hunt-stream__feed" id="hunt-stream-feed">
+          <div class="hunt-stream__line"><span class="ts">--:--:--</span><span class="n">nonce</span><span class="h">partial hash</span><span class="d">diff</span></div>
+        </div>
+      </div>
+
+      <!-- CENTER: Hash Hunt Canvas -->
+      <div class="hunt-canvas-wrap" id="hunt-canvas-wrap">
+        <canvas id="hunt-canvas"></canvas>
+        <div class="hunt-canvas__overlay">
+          <div class="hunt-canvas__target-label">◈ TARGET ZONE ◈</div>
+          <div class="hunt-canvas__frontier" id="hunt-frontier-label">SEARCH FRONTIER</div>
+          <div class="hunt-canvas__status" id="hunt-status-label">INITIALIZING</div>
+        </div>
+      </div>
+
+      <!-- RIGHT: Real-time Metrics -->
+      <div class="hunt-metrics" id="hunt-metrics">
+        <div class="hunt-metrics__section">
+          <div class="hunt-metrics__label">INSTANT HASHRATE</div>
+          <canvas id="hunt-sparkline" class="hunt-sparkline"></canvas>
+          <div class="hunt-metrics__val" id="hunt-metrics-hr">—</div>
+        </div>
+        <div class="hunt-metrics__section">
+          <div class="hunt-metrics__label">CUMULATIVE P(BLOCK)</div>
+          <canvas id="hunt-gauge" class="hunt-gauge" width="120" height="60"></canvas>
+          <div class="hunt-metrics__val hunt-metrics__val--gold" id="hunt-metrics-pblock">0.00%</div>
+        </div>
+        <div class="hunt-metrics__section">
+          <div class="hunt-metrics__label">EXPECTED BLOCKS</div>
+          <div class="hunt-metrics__val hunt-metrics__val--cyan" id="hunt-metrics-expblocks">0.0000</div>
+          <div class="hunt-metrics__sub">per selected period</div>
+        </div>
+        <div class="hunt-metrics__section">
+          <div class="hunt-metrics__label">BEST DIFFICULTY</div>
+          <div class="hunt-metrics__val hunt-metrics__val--green" id="hunt-metrics-bestdiff">—</div>
+          <div class="hunt-metrics__sub">vs network target</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ─── RECENT SHARES · GLITCH CARDS ─── -->
+    <div class="hunt-shares" id="hunt-shares">
+      <div class="hunt-shares__head">
+        <span class="hunt-shares__title">⌖ RECENT SHARES</span>
+        <span class="badge badge--mute" id="hunt-shares-count">0 shares</span>
+      </div>
+      <div class="hunt-shares__grid" id="hunt-shares-grid">
+        <div class="hunt-shares__empty">awaiting share data</div>
+      </div>
+    </div>
+
+
+    <!-- ─── BEST SHARE CARD ─── -->
+    <div class="lm-best-share" id="lm-best-share" style="display:none">
+      <div class="lm-best-share__inner">
+        <div class="lm-best-share__glow"></div>
+        <div class="lm-best-share__content">
+          <div class="lm-best-share__label">⚡ BEST SHARE FOUND</div>
+          <div class="lm-best-share__val" id="lm-best-share-val">—</div>
+          <div class="lm-best-share__meta">
+            <span id="lm-best-share-worker">—</span>
+            <span id="lm-best-share-time">—</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ─── MINING EVENT LOG ─── -->
+    <div class="lm-event-log" id="lm-event-log">
+      <div class="lm-event-log__head">
+        <span class="lm-event-log__title">> LIVE MINING EVENTS</span>
+        <button class="chip" id="lm-event-log-clear" title="Clear events">clear</button>
+      </div>
+      <div class="lm-event-log__terminal" id="lm-event-log-terminal">
+        <div class="lm-event-log__line ts-mute">> SYSTEM ONLINE</div>
+        <div class="lm-event-log__line ts-mute">> AWAITING FIRST POLL</div>
+      </div>
+    </div>
+
+    <div class="lm-footnote">
+      ⚡ Visual representation of worker activity based on real API data. Each bar = worker hashrate proportional to total. Animations reflect live polling cadence. ASICs perform the actual SHA-256 hashing — this dashboard visualizes the process.
+    </div>
+  </section>
+
+  <!-- ─── MONTE CARLO + CFO EXPANDED ─── -->
+  <section class="panel panel--cfo" id="cfo-panel">
+    <div class="panel__header">
+      <div class="panel__eyebrow">Ξ CFO TERMINAL · RISK & PROBABILITY</div>
+      <div class="panel__tools">
+        <span class="badge badge--mute" id="cfo-status">SIMULATED</span>
+        <select class="field__input" id="cfo-hours" style="width:auto;padding:2px 6px;font-size:10px;" onchange="loadMonteCarlo()">
+          <option value="1">1h</option><option value="6">6h</option><option value="12">12h</option>
+          <option value="24" selected>24h</option><option value="168">7d</option>
+          <option value="720">30d</option><option value="2160">90d</option><option value="8760">1yr</option>
+        </select>
+        <button class="btn btn--mini" onclick="loadMonteCarlo()" title="Run simulation">⟳ RUN</button>
+      </div>
+    </div>
+    <div class="cfo-grid">
+      <div class="cfo-cell cfo-cell--main">
+        <div class="cfo-cell__label">MONTE CARLO · P(≥1 BLOCK)</div>
+        <div class="cfo-cell__val" id="cfo-p-block">—</div>
+        <div class="cfo-cell__sub" id="cfo-p-block-sub">over selected period</div>
+      </div>
+      <div class="cfo-cell">
+        <div class="cfo-cell__label">EXPECTED BLOCKS</div>
+        <div class="cfo-cell__val" id="cfo-expected">—</div>
+        <div class="cfo-cell__sub" id="cfo-expected-sub">mean of simulation</div>
+      </div>
+      <div class="cfo-cell">
+        <div class="cfo-cell__label">MEDIAN BLOCKS</div>
+        <div class="cfo-cell__val" id="cfo-median">—</div>
+        <div class="cfo-cell__sub">50th percentile</div>
+      </div>
+      <div class="cfo-cell">
+        <div class="cfo-cell__label">P90 BLOCKS</div>
+        <div class="cfo-cell__val" id="cfo-p90">—</div>
+        <div class="cfo-cell__sub">90th percentile (optimistic)</div>
+      </div>
+      <div class="cfo-cell cfo-cell--wide">
+        <div class="cfo-cell__label">DISTRIBUTION</div>
+        <div class="cfo-dist" id="cfo-dist">
+          <span class="cfo-dist__empty">click RUN to simulate</span>
+        </div>
+      </div>
+    </div>
+    <div class="cfo-footnote" id="cfo-footnote">
+      ⚠ MONTE CARLO SIMULATION — 10,000 runs using Poisson process. Results are statistical estimates, not predictions. Variance is extreme in Bitcoin mining. Past performance does not guarantee future results.
+    </div>
+  </section>
+
+  <!-- ─── CHARTS ─── -->
+  <section class="panel panel--chart" id="chart-hashrate-panel">
+    <div class="panel__header">
+      <div class="panel__eyebrow">▤ CYPHER65 HASHRATE OVER TIME</div>
+      <div class="panel__tools chart-range" data-target="chart-hashrate">
+        <button data-range="15m" class="chip">15m</button>
+        <button data-range="1h" class="chip">1h</button>
+        <button data-range="6h" class="chip">6h</button>
+        <button data-range="24h" class="chip active">24h</button>
+        <button data-range="7d" class="chip">7d</button>
+        <button data-range="all" class="chip">all</button>
+      </div>
+    </div>
+    <div class="chart-wrap"><canvas id="chart-hashrate"></canvas></div>
+  </section>
+
+  <section class="panel panel--chart" id="chart-pool-panel">
+    <div class="panel__header">
+      <div class="panel__eyebrow">▤ POOL HASHRATE</div>
+      <div class="panel__tools chart-range" data-target="chart-pool">
+        <button data-range="1h" class="chip">1h</button>
+        <button data-range="6h" class="chip">6h</button>
+        <button data-range="24h" class="chip active">24h</button>
+        <button data-range="7d" class="chip">7d</button>
+        <button data-range="all" class="chip">all</button>
+      </div>
+    </div>
+    <div class="chart-wrap"><canvas id="chart-pool"></canvas></div>
+  </section>
+
+  <section class="panel panel--chart" id="chart-bestdiff-panel">
+    <div class="panel__header">
+      <div class="panel__eyebrow">▤ CYPHER65 · BEST DIFFICULTY OVER TIME</div>
+      <div class="panel__tools chart-range" data-target="chart-bestdiff">
+        <button data-range="1h" class="chip">1h</button>
+        <button data-range="6h" class="chip">6h</button>
+        <button data-range="24h" class="chip active">24h</button>
+        <button data-range="7d" class="chip">7d</button>
+        <button data-range="all" class="chip">all</button>
+      </div>
+    </div>
+    <div class="chart-wrap"><canvas id="chart-bestdiff"></canvas></div>
+  </section>
+
+  <section class="panel panel--chart" id="chart-net-panel">
+    <div class="panel__header">
+      <div class="panel__eyebrow">▤ NETWORK DIFFICULTY</div>
+      <div class="panel__tools chart-range" data-target="chart-net">
+        <button data-range="24h" class="chip active">24h</button>
+        <button data-range="7d" class="chip">7d</button>
+        <button data-range="30d" class="chip">30d</button>
+        <button data-range="all" class="chip">all</button>
+      </div>
+    </div>
+    <div class="chart-wrap"><canvas id="chart-net"></canvas></div>
+  </section>
+
+  <!-- ─── HIGH-DIFF EVENTS TABLE ─── -->
+  <section class="panel" id="events-panel">
+    <div class="panel__header">
+      <div class="panel__eyebrow">⌖ RECENT HIGH-DIFF EVENTS · POOL WIDE</div>
+      <div class="panel__tools">
+        <button class="chip active" id="events-toggle-all">all</button>
+        <button class="chip" id="events-toggle-mine">mine only</button>
+      </div>
+    </div>
+    <div class="table-wrap">
+      <table class="events-table">
+        <thead>
+          <tr>
+            <th>block</th>
+            <th>top address</th>
+            <th>difficulty</th>
+            <th>time</th>
+            <th>claimed</th>
+          </tr>
+        </thead>
+        <tbody id="events-tbody"><tr><td colspan="5" class="empty">awaiting data…</td></tr></tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ─── SHARE TIMELINE (delta-tracked proxy events) ─── -->
+  <section class="panel panel--timeline" id="timeline-panel">
+    <div class="panel__header">
+      <div class="panel__eyebrow">▤ CYPHER65 · SHARE TIMELINE</div>
+      <div class="panel__tools">
+        <span class="badge badge--green" id="timeline-shares-badge">0 shares</span>
+        <span class="badge badge--gold" id="timeline-bumps-badge">0 best-diffs</span>
+        <span class="badge badge--mute" id="timeline-rate-badge">— shares/h</span>
+      </div>
+    </div>
+
+    <div class="timeline-stats" id="timeline-stats">
+      <div class="timeline-stats__cell">
+        <div class="tsc__label">LAST SHARE</div>
+        <div class="tsc__val" id="t-stat-lastshare">—</div>
+      </div>
+      <div class="timeline-stats__cell">
+        <div class="tsc__label">SHARES · 1H</div>
+        <div class="tsc__val" id="t-stat-1h">—</div>
+      </div>
+      <div class="timeline-stats__cell">
+        <div class="tsc__label">SHARES · 24H</div>
+        <div class="tsc__val" id="t-stat-24h">—</div>
+      </div>
+      <div class="timeline-stats__cell">
+        <div class="tsc__label">BEST-DIFF BUMPS · 24H</div>
+        <div class="tsc__val" id="t-stat-bumps">—</div>
+      </div>
+    </div>
+
+    <div class="timeline-feed" id="timeline-feed">
+      <div class="timeline__empty">awaiting first delta…</div>
+    </div>
+    <div class="timeline-footnote">
+      ▲ Delta-tracked events derived from public API polling.
+      Last-update of each value is genuinely when the pool saw your share,
+      the best-diff bump, or the work accumulate — not synthetic.
+    </div>
+  </section>
+
+  <!-- ─── LEADERBOARD ─── -->
+  <section class="panel" id="leaderboard-panel">
+    <div class="panel__header">
+      <div class="panel__eyebrow">⌬ POOL LEADERBOARD</div>
+      <div class="panel__tools"><span class="badge badge--mute" id="leaderboard-total">0 miners</span></div>
+    </div>
+    <div class="table-wrap">
+      <table class="lb-table">
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>address</th>
+            <th>diff rank</th>
+            <th>loyalty</th>
+            <th>score</th>
+            <th>blocks</th>
+          </tr>
+        </thead>
+        <tbody id="lb-tbody"><tr><td colspan="6" class="empty">awaiting data…</td></tr></tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ─── LIVE LOG ─── -->
+  <section class="panel panel--logs" id="logs-panel">
+    <div class="panel__header">
+      <div class="panel__eyebrow">&gt; LIVE LOG FEED</div>
+      <div class="panel__tools">
+        <span class="badge badge--mute" id="log-events-count">0 events</span>
+        <button class="chip" id="clear-logs">clear</button>
+      </div>
+    </div>
+    <div class="terminal" id="terminal"><div class="terminal__line ts-mute">awaiting first poll…</div></div>
+  </section>
+
+  <!-- ─── ALERTS ─── -->
+  <section class="panel panel--alerts" id="alerts-panel">
+    <div class="panel__header">
+      <div class="panel__eyebrow">⚠ ALERTS</div>
+      <div class="panel__tools"><span class="badge badge--mute" id="alerts-count-badge">0 active</span></div>
+    </div>
+    <ul class="alerts-list" id="alerts-list">
+      <li class="alert-empty">no alerts — all systems nominal</li>
+    </ul>
+  </section>
+
+  <!-- ─── SOLO MINING TERMINAL ─── -->
+  <section class="panel panel--terminal" id="solo-terminal-panel">
+    <div class="panel__header">
+      <div class="panel__eyebrow">>_ SOLO MINING ADVISOR · TERMINAL</div>
+      <div class="panel__tools">
+        <span class="badge badge--green" id="solo-term-status">READY</span>
+        <button class="chip" id="solo-term-clear">clear</button>
+        <button class="chip" id="solo-term-help">help</button>
+      </div>
+    </div>
+
+    <div class="solo-term" id="solo-term">
+      <div class="solo-term__output" id="solo-term-output">
+        <div class="solo-term__line solo-term__line--welcome">
+          <span class="c-green">julio@cypher</span>:<span class="c-blue">~/solo-mining</span>$ <span class="c-mute">// CYPHER SOLO MINING ADVISOR v1.0</span>
+        </div>
+        <div class="solo-term__line solo-term__line--welcome">
+          <span class="c-mute">// Type </span><span class="c-cyan">help</span><span class="c-mute"> for available commands. Type </span><span class="c-cyan">clear</span><span class="c-mute"> to reset.</span>
+        </div>
+      </div>
+      <div class="solo-term__input-line">
+        <span class="solo-term__prompt">
+          <span class="c-green">julio@cypher</span>:<span class="c-blue">~/solo-mining</span>$
+        </span>
+        <input
+          type="text"
+          id="solo-term-input"
+          class="solo-term__input"
+          placeholder="calc --hashrate 225TH --duration 24h"
+          autocomplete="off"
+          spellcheck="false"
+        />
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<footer class="footer">
+  <div>
+    DATA · parasite.space/api · mempool.space/api · CoinGecko ·
+    STORAGE · local SQLite · refresh every {{poll_interval }}s
+  </div>
+  <div class="footer__sig">
+    ▣ cannot reveal per-share server logs (pool operator only).
+    ▣ This dashboard shows everything that is publicly available plus computed estimates.
+  </div>
+</footer>
+
+<!-- ═══════════ SETTINGS MODAL ═══════════ -->
+<div class="modal modal--hidden" id="settings-modal" role="dialog" aria-modal="true">
+  <div class="modal__backdrop" data-close></div>
+  <div class="modal__panel">
+    <div class="modal__header">
+      <div class="modal__title">⚙ CYPHER65 SETTINGS</div>
+      <button class="modal__close" data-close aria-label="Close">×</button>
+    </div>
+    <div class="modal__body" id="settings-body">
+      <div class="settings-group">
+        <div class="settings-group__title">COST MODEL</div>
+        <label class="field" data-key="cost_mode">
+          <span class="field__label">Cost model</span>
+          <select class="field__input" name="cost_mode">
+            <option value="none">None (pure revenue)</option>
+            <option value="rental">Rental ($ per TH/s · day)</option>
+            <option value="power">Power ($/kWh)</option>
+          </select>
+          <span class="field__hint">Subtracts chosen cost from profit.</span>
+        </label>
+        <label class="field" data-key="rental_usd_per_th_day">
+          <span class="field__label">Rental $/TH · day</span>
+          <input class="field__input" type="number" step="0.001" min="0" name="rental_usd_per_th_day">
+        </label>
+        <label class="field" data-key="power_watts">
+          <span class="field__label">Power (W)</span>
+          <input class="field__input" type="number" step="1" min="0" name="power_watts">
+        </label>
+        <label class="field" data-key="power_kwh_usd">
+          <span class="field__label">$/kWh</span>
+          <input class="field__input" type="number" step="0.001" min="0" name="power_kwh_usd">
+        </label>
+      </div>
+      <div class="settings-group">
+        <div class="settings-group__title">PROFIT ASSUMPTIONS</div>
+        <label class="field" data-key="btc_block_reward"><span class="field__label">Block reward (BTC)</span><input class="field__input" type="number" step="0.001" min="0" name="btc_block_reward"></label>
+        <label class="field" data-key="btc_avg_tx_fee"><span class="field__label">Avg. fee per block (BTC)</span><input class="field__input" type="number" step="0.01" min="0" name="btc_avg_tx_fee"></label>
+        <label class="field" data-key="pool_fee_pct"><span class="field__label">Pool fee (%)</span><input class="field__input" type="number" step="0.1" min="0" max="100" name="pool_fee_pct"></label>
+        <label class="field" data-key="orphan_rate_pct"><span class="field__label">Orphan rate (%)</span><input class="field__input" type="number" step="0.1" min="0" max="100" name="orphan_rate_pct"></label>
+      </div>
+      <div class="settings-group">
+        <div class="settings-group__title">DISPLAY CURRENCY</div>
+        <label class="field" data-key="active_currency">
+          <span class="field__label">Currency</span>
+          <select class="field__input" name="active_currency">
+            <option value="USD">USD</option><option value="BRL">BRL</option><option value="EUR">EUR</option><option value="GBP">GBP</option>
+          </select>
+        </label>
+      </div>
+      <div class="settings-group">
+        <div class="settings-group__title">ALERT THRESHOLDS</div>
+        <label class="field" data-key="stale_share_minutes"><span class="field__label">Stale share (min)</span><input class="field__input" type="number" step="1" min="1" name="stale_share_minutes"></label>
+        <label class="field" data-key="hashrate_drop_pct"><span class="field__label">Hashrate drop (%)</span><input class="field__input" type="number" step="1" min="1" max="99" name="hashrate_drop_pct"></label>
+        <label class="field" data-key="webhook_url"><span class="field__label">Webhook URL (Telegram/Discord)</span><input class="field__input" type="text" placeholder="https://..." name="webhook_url"></label>
+        <label class="field" data-key="webhook_min_severity">
+          <span class="field__label">Min severity to fire</span>
+          <select class="field__input" name="webhook_min_severity">
+            <option value="INFO">INFO</option><option value="SUCCESS">SUCCESS</option>
+            <option value="WARN">WARN</option><option value="GOLD">GOLD</option>
+            <option value="CRIT">CRIT</option>
+          </select>
+        </label>
+      </div>
+    </div>
+    <div class="modal__footer">
+      <button class="btn btn--ghost" id="settings-cancel" data-close>Cancel</button>
+      <button class="btn btn--primary" id="settings-save">SAVE</button>
+      <span class="modal__status" id="settings-status"></span>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════ EXPORT MODAL ═══════════ -->
+<div class="modal modal--hidden" id="export-modal" role="dialog" aria-modal="true">
+  <div class="modal__backdrop" data-close></div>
+  <div class="modal__panel modal__panel--small">
+    <div class="modal__header">
+      <div class="modal__title">↓ EXPORT · DOWNLOAD & BACKUP</div>
+      <button class="modal__close" data-close aria-label="Close">×</button>
+    </div>
+    <div class="modal__body export-options">
+      <div class="export-row">
+        <div class="export-label">Snapshots (hashtate history)</div>
+        <div class="export-actions">
+          <select class="field__input" id="export-snapshots-range">
+            <option value="24h">24h</option><option value="7d">7d</option><option value="30d">30d</option><option value="all">all</option>
+          </select>
+          <a class="btn btn--mini" href="/api/export/snapshots.csv?range=24h" id="export-snapshots-csv">CSV</a>
+          <a class="btn btn--mini" href="/api/export/snapshots.json?range=24h" id="export-snapshots-json">JSON</a>
+        </div>
+      </div>
+      <div class="export-row">
+        <div class="export-label">Alerts (severity history)</div>
+        <div class="export-actions">
+          <select class="field__input" id="export-alerts-range">
+            <option value="24h">24h</option><option value="7d">7d</option><option value="30d">30d</option><option value="all">all</option>
+          </select>
+          <a class="btn btn--mini" href="/api/export/alerts.csv?range=24h" id="export-alerts-csv">CSV</a>
+          <a class="btn btn--mini" href="/api/export/alerts.json?range=24h" id="export-alerts-json">JSON</a>
+        </div>
+      </div>
+      <div class="export-row">
+        <div class="export-label">Share timeline events</div>
+        <div class="export-actions">
+          <select class="field__input" id="export-st-range">
+            <option value="24h">24h</option><option value="7d">7d</option><option value="30d">30d</option><option value="all">all</option>
+          </select>
+          <a class="btn btn--mini" href="/api/export/share_timeline.csv?range=24h" id="export-st-csv">CSV</a>
+          <a class="btn btn--mini" href="/api/export/share_timeline.json?range=24h" id="export-st-json">JSON</a>
+        </div>
+      </div>
+      <div class="export-row">
+        <div class="export-label">High-diff events</div>
+        <div class="export-actions">
+          <select class="field__input" id="export-diff-range">
+            <option value="24h">24h</option><option value="7d">7d</option><option value="30d">30d</option><option value="all">all</option>
+          </select>
+          <a class="btn btn--mini" href="/api/export/highest_diff_events.csv?range=24h" id="export-diff-csv">CSV</a>
+          <a class="btn btn--mini" href="/api/export/highest_diff_events.json?range=24h" id="export-diff-json">JSON</a>
+        </div>
+      </div>
+      <div class="export-row export-row--divider">
+        <div class="export-label">Config backup / restore</div>
+        <div class="export-actions">
+          <a class="btn btn--primary" href="/api/config/backup" id="export-config-download">DOWNLOAD CONFIG</a>
+          <label class="btn btn--ghost">
+            UPLOAD + RESTORE
+            <input type="file" accept=".json,application/json" id="export-config-upload" hidden>
+          </label>
+          <span class="modal__status" id="export-config-status"></span>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+  window.BTC_ADDRESS = {{ address|tojson }};
+  window.WORKER_NAME = {{ worker|tojson }};
+  window.POLL_INTERVAL_MS = {{ (poll_interval * 1000)|int }};
+</script>
+<!-- ═══════════ HELP MODAL (keyboard shortcuts) ═══════════ -->
+<div class="modal modal--hidden" id="help-modal" role="dialog" aria-modal="true">
+  <div class="modal__backdrop" data-close></div>
+  <div class="modal__panel modal__panel--small">
+    <div class="modal__header">
+      <div class="modal__title">? KEYBOARD SHORTCUTS</div>
+      <button class="modal__close" data-close aria-label="Close">×</button>
+    </div>
+    <div class="modal__body">
+      <div class="settings-group">
+        <div class="settings-group__title">NAVIGATION</div>
+        <div class="kbd-hint__row"><kbd>R</kbd><span class="kbd-hint__label">Refresh dashboard now</span></div>
+        <div class="kbd-hint__row"><kbd>S</kbd><span class="kbd-hint__label">Open settings</span></div>
+        <div class="kbd-hint__row"><kbd>H</kbd><span class="kbd-hint__label">Toggle this help panel</span></div>
+        <div class="kbd-hint__row"><kbd>Esc</kbd><span class="kbd-hint__label">Close current modal</span></div>
+      </div>
+      <div class="settings-group">
+        <div class="settings-group__title">DISPLAY</div>
+        <div class="kbd-hint__row"><kbd>M</kbd><span class="kbd-hint__label">Toggle Matrix rain effect</span></div>
+        <div class="kbd-hint__row"><kbd>N</kbd><span class="kbd-hint__label">Toggle alert sound notifications</span></div>
+        <div class="kbd-hint__row"><kbd>L</kbd><span class="kbd-hint__label">Clear terminal log</span></div>
+    </div>
+    <div class="modal__footer">
+      <div class="modal__status">Press <kbd>H</kbd> anytime to toggle this panel</div>
+      <button class="btn btn--ghost" data-close>Close</button>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════ Keyboard hint toast ── shown after 3s idle on first load ── -->
+<div class="kbd-hint" id="kbd-hint">
+  <div class="kbd-hint__row"><kbd>H</kbd><span class="kbd-hint__label">Help &amp; shortcuts</span></div>
+  <div class="kbd-hint__row"><kbd>M</kbd><span class="kbd-hint__label">Toggle Matrix rain</span></div>
+  <div class="kbd-hint__row"><kbd>R</kbd><span class="kbd-hint__label">Refresh now</span></div>
+</div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>
