@@ -610,6 +610,38 @@
   }
 
 
+  function renderLiveCalc(liveCalc) {
+    if (!liveCalc || !dom.lcTimeBig) return;
+    const latest = liveCalc.latest;
+    const totals = liveCalc.session_totals || {};
+    const ticker = liveCalc.ticker || [];
+    if (latest && latest.ts) {
+      const d = new Date(latest.ts * 1000);
+      const ts = String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0')+':'+String(d.getSeconds()).padStart(2,'0');
+      if (dom.lcTimeBig) dom.lcTimeBig.textContent = ts;
+      if (dom.lcSessionShareCount) dom.lcSessionShareCount.textContent = 'session share #' + (totals.shares_so_far || '\u2014');
+      if (dom.lcShareDiff) dom.lcShareDiff.textContent = latest.share_diff_str || '\u2014';
+      if (dom.lcHashes) dom.lcHashes.textContent = latest.hashes_attempted_str || '\u2014';
+      if (dom.lcTimeObs) dom.lcTimeObs.textContent = latest.gap ? Number(latest.gap).toFixed(1) + 's' : '\u2014';
+      if (dom.lcPBlock) dom.lcPBlock.textContent = latest.p_block_this_share_pct_str || '\u2014';
+      if (dom.lcInstHr) dom.lcInstHr.textContent = latest.instantaneous_hr_str || '\u2014';
+    }
+    if (dom.lcSessionShares) dom.lcSessionShares.textContent = totals.shares_so_far != null ? totals.shares_so_far : '\u2014';
+    if (dom.lcAvgShareDiff) dom.lcAvgShareDiff.textContent = totals.avg_share_diff_str || '\u2014';
+    if (dom.lcCumP) dom.lcCumP.textContent = totals.cum_p_block_pct_str || '\u2014';
+    if (dom.lcExpectedBlocks) dom.lcExpectedBlocks.textContent = totals.expected_blocks_str || '\u2014';
+    if (dom.lcTickerList && ticker.length) {
+      dom.lcTickerList.innerHTML = ticker.slice().reverse().map(s => {
+        const d = new Date((s.ts || 0) * 1000);
+        const ts = String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0')+':'+String(d.getSeconds()).padStart(2,'0');
+        return '<div class="lc-ticker__row"><span class="lc-ticker__ts">' + ts + '</span><span class="lc-ticker__diff">' + (s.share_diff_str || '\u2014') + '</span><span class="lc-ticker__p">' + (s.p_block_this_share_pct_str || '\u2014') + '</span><span class="lc-ticker__hr">' + (s.instantaneous_hr_str || '\u2014') + '</span></div>';
+      }).join('');
+    } else if (dom.lcTickerList && !ticker.length) {
+      dom.lcTickerList.innerHTML = '<div class="lc-ticker__empty">awaiting share detection</div>';
+    }
+  }
+
+
   function renderProfitability(p) {
     if (!p || !Object.keys(p).length) return;
     const cur = (SETTINGS_CACHE.data?.active_currency?.value) || "USD"; const symMap = {USD:"$",BRL:"R$",EUR:"€",GBP:"£"}; const sym = symMap[cur] || "$";
@@ -641,6 +673,7 @@
     renderMempoolFees(snap.mempool_fees);
     renderProfitability(snap.profitability);
     renderProximity(snap.proximity);
+    renderLiveCalc(snap.proximity?.live_calc);
     renderNetworkGauge(snap);
     renderMilestones(snap.milestones);
     renderAlerts(snap.alerts_recent);
@@ -749,13 +782,14 @@
         body: JSON.stringify(data)
       });
       const result = await r.json();
+      const ok = result.applied && result.applied.length > 0;
       const status = document.getElementById('settings-status');
       if (status) {
-        status.textContent = result.ok ? 'SAVED' : 'ERROR';
-        status.className = result.ok ? 'badge badge--green' : 'badge badge--red';
+        status.textContent = ok ? 'SAVED (' + result.applied.length + ')' : 'ERROR';
+        status.className = ok ? 'badge badge--green' : 'badge badge--red';
         setTimeout(() => { if (status) status.textContent = ''; }, 2000);
       }
-      if (result.ok) setTimeout(() => closeSettingsModal(), 800);
+      if (ok) setTimeout(() => closeSettingsModal(), 800);
     } catch (e) {
       const status = document.getElementById('settings-status');
       if (status) { status.textContent = 'NETWORK ERROR'; status.className = 'badge badge--red'; }
@@ -1325,14 +1359,7 @@
     showSkeletons();
     _huntStart();
     _soloTermInit();
-    await fetchSnapshot();
-    setInterval(fetchSnapshot, POLL_MS);
-    logMessage('SYSTEM', 'WAR ROOM ONLINE', 'SUCCESS');
-  }
-
-  boot();
-})();
-button
+    // Help button
     document.getElementById('solo-term-help')?.addEventListener('click', () => {
       _soloTermExecute('help');
     });
