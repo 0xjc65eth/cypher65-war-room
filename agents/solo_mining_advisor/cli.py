@@ -74,6 +74,7 @@ _COMPLETIONS = {
     # first-word completions (command names + aliases)
     "__commands__": [
         "network", "calc", "compare", "status", "ask", "query",
+        "chat", "conversa", "conversar", "talk",
         "help", "clear", "cls", "exit", "quit",
     ],
     # per-command flags and value hints
@@ -83,6 +84,10 @@ _COMPLETIONS = {
     "status": [],
     "ask": [],
     "query": [],
+    "chat": [],
+    "conversa": [],
+    "conversar": [],
+    "talk": [],
     "help": [],
     "clear": [],
     "cls": [],
@@ -200,10 +205,12 @@ BANNER = rf"""
 {C.BOLD}  CYPHER // SOLO MINING ADVISOR v1.0{C.RST}
   Real-time mining probability & rental comparison engine
 
+  Type {C.GREEN}chat{C.RST} to enter continuous conversation mode.
   Type {C.GREEN}help{C.RST} for commands, {C.GREEN}exit{C.RST} to quit.
 """
 
 PROMPT = f"{C.GREEN}julio@cypher{C.RST}:{C.BLUE}~/solo-mining{C.RST}$ "
+CHAT_PROMPT = f"{C.CYAN}💬 {C.RST}"
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -256,6 +263,11 @@ def cmd_help():
     print(f"  {C.GREEN}ask <free-text query>{C.RST}")
     print(f"       Natural language mining query")
     print(f"       Example: ask what is the current network difficulty?")
+    print()
+    print(f"  {C.GREEN}chat / conversa / conversar / talk{C.RST}")
+    print(f"       Enter continuous conversation mode — every line is a")
+    print(f"       natural language mining query. Type 'sair' to return.")
+    print(f"       No 'ask' prefix needed: just type 'qual a chance com 500th?'")
     print()
     print(f"  {C.GREEN}Piping & JSON:{C.RST}")
     print(f"       Append {C.GREEN}> filename{C.RST} to save output to a file")
@@ -899,6 +911,160 @@ def cmd_ask(args):
     print(f"  {C.GREEN}•{C.RST} Ou me pergunte de outro jeito: 'qual a chance de achar bloco com 500th por 7 dias?'")
 
 
+def cmd_chat(args=None):
+    """Enter continuous chat mode — every line is a natural language query.
+    Type 'exit', 'sair', or 'voltar' to return to the main terminal."""
+    print()
+    print(C.ok("Modo conversa ativado!"))
+    print(C.hint("Digite qualquer pergunta em linguagem natural. Ex: 'qual a chance de achar bloco com 500th?'"))
+    print(C.hint(f"Digite '{C.GREEN}exit{C.RST}', '{C.GREEN}sair{C.RST}' ou '{C.GREEN}voltar{C.RST}' para retornar ao terminal principal."))
+    print()
+
+    exit_words = {"exit", "quit", "q", "sair", "voltar", "back", "menu", "stop", "fim"}
+
+    while True:
+        try:
+            line = input(CHAT_PROMPT)
+        except (EOFError, KeyboardInterrupt):
+            print()
+            print()
+            print(C.ok("Voltando ao terminal principal..."))
+            print()
+            break
+
+        line = line.strip()
+        if not line:
+            print(C.hint("Digite uma pergunta ou 'sair' para voltar."))
+            continue
+
+        if line.lower() in exit_words:
+            print()
+            print(C.ok("Voltando ao terminal principal..."))
+            print()
+            break
+
+        # Process as natural language query — reuse cmd_ask without the "ask" prompt line
+        query_lower = line.lower().strip()
+        import re
+        q = re.sub(r'[?!;:]', ' ', query_lower)
+        q = re.sub(r'\.(?!\d)', ' ', q)
+
+        compare_kw = [
+            "compara", "comparar", "comparação", "comparacao", "compare",
+            "aluguel", "alugar", "aluga", "rental", "alocação", "alocacao",
+            "braiins", "brain", "brains", "brians",
+            "mrr", "miningrigrentals", "mining rig", "miningrig",
+            "qual melhor", "qual vale mais", "qual compensa",
+            "vale a pena", "compensa", "mais barato", "melhor opção",
+            "custo", "orçamento", "orcamento", "budget",
+            "which one", "better", "worth it", "cheaper", "best option",
+            "rent", "renting",
+        ]
+        network_kw = [
+            "rede", "dificuldade", "difculdade", "dificudade", "dificul", "network",
+            "preco", "preço", "cotação", "cotacao", "quanto ta", "quanto tá",
+            "ta valendo", "tá valendo", "valor", "preço btc", "preco btc",
+            "bitcoin price", "btc price", "btc/usd", "btc/brl",
+            "difficulty", "dificulty", "diff", "current", "price", "btc",
+            "what's the", "what is the", "how much",
+            "como ta", "como tá", "como esta", "como está",
+            "me mostra", "mostra", "show me", "show",
+            "da rede", "atual", "hoje", "now", "today",
+        ]
+        calc_kw = [
+            "calcular", "calcula", "calc", "calulo", "calculo", "cálculo",
+            "probabilidade", "probabilida", "prob", "chance", "chances",
+            "qual a chance", "quais as chances", "quanto tempo", "tempo esperado",
+            "acha bloco", "achar bloco", "encontra bloco", "encontrar bloco",
+            "minerar", "minerando", "mineração", "mineracao",
+            "quantos blocos", "quantos bloco",
+            "probability", "probablity", "probabilty", "odds",
+            "chance of", "chances of", "likely", "likelihood",
+            "how long", "expected time", "how many",
+            "find a block", "finding", "block chance",
+            "th/s", "ph/s", "eh/s", "gh/s", "mh/s",
+            "ths", "phs", "ehs",
+            "th ", "ph ", "eh ",
+            "hashrate", "hash rate", "hash",
+            "se eu", "com ", "usando", "durante", "por ",
+            "solo", "solo mining",
+        ]
+        status_kw = [
+            "status", "dashboard", "resumo", "sumario", "sumário",
+            "como estou", "como eu to", "como eu tô", "como ta minha",
+            "minha mineração", "minha mineracao", "meu minerador",
+            "ta funcionando", "tá funcionando", "funcionando",
+            "online", "offline", "conectado",
+            "how am i", "how's my", "am i mining", "my miner",
+            "stats", "summary", "overview",
+        ]
+        help_kw = ["help", "ajuda", "ajudar", "socorro", "comandos", "commands", "o que faz", "o que vc faz"]
+
+        # ── Compare ──
+        if any(k in q for k in compare_kw):
+            btc_match = re.search(r'(\d+\.?\d*)\s*(btc|sat|sats|bitcoin)', q, re.IGNORECASE)
+            dur_match = re.search(r'(\d+\.?\d*)\s*(h|hour|hr|hours|horas|hora|d|day|days|dia|dias)', q)
+            if btc_match and dur_match:
+                budget = btc_match.group(1)
+                dur_val = float(dur_match.group(1))
+                dur_unit = dur_match.group(2).lower()
+                if dur_unit in ('d', 'day', 'days', 'dia', 'dias'):
+                    dur_val *= 24
+                print()
+                print(C.ok(f"Entendi: budget={budget} BTC, duration={dur_val:.0f}h"))
+                cmd_compare(["--budget", budget, "--duration", str(int(dur_val))])
+            else:
+                print()
+                print(C.warn("Consegui identificar que é sobre aluguel. Me passe orçamento e duração."))
+                print(C.hint("Ex: 'compara 0.01 btc por 24h'"))
+            continue
+
+        # ── Status ──
+        if any(k in q for k in status_kw):
+            cmd_status()
+            continue
+
+        # ── Calc ──
+        if any(k in q for k in calc_kw):
+            hr_match = re.search(r'(\d+\.?\d*)\s*(th/s|ph/s|eh/s|gh/s|mh/s|th|ph|eh|gh|mh)', q, re.IGNORECASE)
+            dur_match = re.search(r'(\d+\.?\d*)\s*(h|hour|hr|hours|horas|hora|d|day|days|dia|dias|w|week|weeks|semana|semanas)', q)
+            if hr_match and dur_match:
+                hashrate = hr_match.group(1) + hr_match.group(2).upper().replace('/S', '')
+                dur_val = float(dur_match.group(1))
+                dur_unit = dur_match.group(2).lower()
+                if dur_unit in ('d', 'day', 'days', 'dia', 'dias'):
+                    dur_val *= 24
+                elif dur_unit in ('w', 'week', 'weeks', 'semana', 'semanas'):
+                    dur_val *= 168
+                print()
+                print(C.ok(f"Entendi: hashrate={hashrate}, duration={dur_val:.0f}h"))
+                cmd_calc(["--hashrate", hashrate, "--duration", str(int(dur_val))])
+            else:
+                print()
+                print(C.warn("Consegui identificar que é sobre mineração. Me passe hashrate e tempo."))
+                print(C.hint("Ex: 'chance com 500th por 7 dias'"))
+            continue
+
+        # ── Network ──
+        if any(k in q for k in network_kw):
+            cmd_network()
+            continue
+
+        # ── Help ──
+        if any(k in q for k in help_kw):
+            cmd_help()
+            continue
+
+        # ── Fallback ──
+        print()
+        print(C.warn("Não entendi. Tente:"))
+        print(f"  {C.GREEN}•{C.RST} '{C.GREEN}network{C.RST}' — dificuldade e preço")
+        print(f"  {C.GREEN}•{C.RST} '{C.GREEN}status{C.RST}' — resumo da mineração")
+        print(f"  {C.GREEN}•{C.RST} 'chance com 500th por 7 dias' — probabilidade")
+        print(f"  {C.GREEN}•{C.RST} '{C.GREEN}compara 0.01 btc 24h{C.RST}' — aluguel")
+        print()
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 #  HELPERS
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1014,6 +1180,8 @@ def main():
     _ARGS_COMMANDS = {"calc", "compare", "ask", "query"}
     # Commands that support --json mode
     _JSON_COMMANDS = {"network", "status", "calc", "compare"}
+    # Commands that open a sub-loop (no text piping, no --json)
+    _SUBLOOP_COMMANDS = {"chat", "conversa", "conversar", "talk"}
 
     # Dispatch table: verb → handler function (no lambdas)
     commands = {
@@ -1024,6 +1192,10 @@ def main():
         "compare": cmd_compare,
         "ask": cmd_ask,
         "query": cmd_ask,
+        "chat": cmd_chat,
+        "conversa": cmd_chat,
+        "conversar": cmd_chat,
+        "talk": cmd_chat,
         "clear": cmd_clear,
         "cls": cmd_clear,
     }
@@ -1060,6 +1232,14 @@ def main():
             args = [a for a in args if a != "--json"]
 
         if verb in commands:
+            # Subloop commands (chat, conversa) handle their own I/O — skip piping/JSON
+            if verb in _SUBLOOP_COMMANDS:
+                try:
+                    commands[verb]()
+                except Exception as e:
+                    print(C.err(f"Command failed: {e}"))
+                continue
+
             try:
                 result = None
                 buf = io.StringIO()
