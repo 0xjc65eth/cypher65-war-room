@@ -41,7 +41,7 @@ timeline_state = {
     "last_best_diff_str": "",      # str form of last known worker.bestDifficulty
     "all_time_best_diff_raw": 0.0, # never decreases across proxy reconnects (persisted in settings)
     "share_submit_history": collections.deque(maxlen=64),  # recent submit ts list
-    "share_calc_history": collections.deque(maxlen=20),    # per-share live-calc entries (latest at right)
+    "share_calc_history": collections.deque(maxlen=120),   # per-share live-calc entries (latest at right)
     "session_share_count": 0,      # total SHARES observed since process start
     "session_best_diff_bumps": 0,  # total BEST_DIFF bumps since process start
 }
@@ -52,6 +52,16 @@ PERSIST_FAILURE_LADDER = (2, 5, 10, 25, 60, 120)
 persist_consec_failures = 0
 memory_critical_alerts = []  # injected into alerts_recent via make_memory_alert helper
 _next_memory_alert_id = 0    # monotonic counter so JS renderAlerts sees stable ids
+
+# ── Mock opportunity injection (for visual testing)
+test_opportunities = None  # set by POST /api/opportunities/mock; bypasses real scan
+
+# ── Last known market prices (fallback when live scan returns empty)
+# Each entry: {"price": float, "ts": int, "label": str}
+last_known_prices = {
+    "braiins": None,  # e.g. {"price": 0.000123, "ts": 1700000000, "label": "123.0 sats/PH/day"}
+    "mrr": None,
+}
 
 # ── BTC price cache (CoinGecko free tier: 10-50 req/min)
 BTC_PRICE_CACHE_TTL = 300  # 5 minutes

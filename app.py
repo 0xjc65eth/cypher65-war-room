@@ -14,7 +14,15 @@ import collections
 import logging
 from pathlib import Path
 
-from flask import Flask, jsonify, render_template, request, abort
+# ── Load .env if present (python-dotenv must be installed) ──
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+    logging.getLogger("cypher65").info("[env] loaded .env file")
+except ImportError:
+    pass  # python-dotenv not installed — env vars must be set manually
+
+from flask import Flask, jsonify, render_template, request, abort, send_from_directory
 import requests
 import concurrent.futures
 
@@ -41,9 +49,9 @@ log = logging.getLogger("cypher65")
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 BTC_ADDRESS = os.environ.get(
     "BTC_ADDRESS",
-    "bc1qpc3832jcu6m8qpqjvz5lkuydwjzv8v5vq5t5rs",
+    "",
 )
-WORKER_NAME = os.environ.get("WORKER_NAME", "cypher65")
+WORKER_NAME = os.environ.get("WORKER_NAME", "")
 PARASITE_API = "https://parasite.space/api"
 MEMPOOL_API = "https://mempool.space/api"
 DATA_DIR = Path(__file__).parent / "data"
@@ -54,6 +62,139 @@ RATE_LIMIT_PER_MINUTE = int(os.environ.get("RATE_LIMIT_PER_MINUTE", 60))
 
 DATA_DIR.mkdir(exist_ok=True)
 app = Flask(__name__)
+app.jinja_env.auto_reload = True
+
+
+# Wallet address source tracking: 'env' | 'db' | 'ui'
+# Set at startup based on where the address came from.
+WALLET_ADDRESS_SOURCE = os.environ.get("WALLET_SOURCE", "none")
+
+
+# ── Restore persisted wallet address from settings DB ──
+# After init_db() runs below, check if a custom address was saved via
+# the UI's /api/set-address endpoint. If found, override the env-var
+# default so polling targets the right wallet across server restarts.
+def _reset_session_state():
+    """Completely wipe all session state to isolate the new address.
+    Called on address change to prevent data leakage between sessions.
+    Uses defensive try/except for each attribute since some are optional
+    and only exist when certain modules are loaded."""
+    global _settings_cache
+    _settings_cache = None
+    
+    def _safe_wipe(obj, attr, default=None):
+        """Safely wipe or reset a state attribute."""
+        try:
+            val = getattr(obj, attr, None)
+            if val is not None:
+                if isinstance(val, list):
+                    val.clear()
+                elif isinstance(val, dict):
+                    val.clear()
+                elif isinstance(val, int) or isinstance(val, float):
+                    setattr(obj, attr, 0)
+                elif val is True or val is False:
+                    pass  # leave booleans alone
+                else:
+                    setattr(obj, attr, default)
+        except Exception:
+            pass
+    
+    # Wipe shared in-memory state — every attribute is optional/present only
+    # when the corresponding module is loaded.
+    try:
+        if hasattr(state, "latest_snapshot") and isinstance(state.latest_snapshot, dict):
+            state.latest_snapshot.clear()
+            state.latest_snapshot.update({"ts": int(time.time())})
+    except Exception:
+        pass
+    _safe_wipe(state, "memory_critical_alerts")
+    _safe_wipe(state, "memory_share_buffer")
+    _safe_wipe(state, "memory_live_log")
+    _safe_wipe(state, "last_known_prices")
+    _safe_wipe(state, "event_counter")
+    # Re-initialize timeline_state with full defaults (not just .clear())
+    # so all direct key accesses in poll_once work after session reset.
+    import collections as _collections
+    state.timeline_state = {
+        "_primed": False,
+        "last_submit_ts": 0,
+        "last_best_diff_str": "",
+        "all_time_best_diff_raw": 0.0,
+        "share_submit_history": _collections.deque(maxlen=64),
+        "share_calc_history": _collections.deque(maxlen=120),
+        "session_share_count": 0,
+        "session_best_diff_bumps": 0,
+    }
+    state.test_opportunities = None
+    state.session_share_count = 0
+    # Optional attributes — only reset if they exist
+    try:
+        state.profit_cache.clear()
+    except Exception:
+        pass
+    try:
+        state.profit_cache_hit = 0
+    except Exception:
+        pass
+    try:
+        state.consecutive_poll_failures = 0
+    except Exception:
+        pass
+    try:
+        state.lm_share_counter = 0
+    except Exception:
+        pass
+    # Reset proximity state
+    try:
+        proximity.reset_session()
+    except Exception:
+        pass
+    log.info("[wallet] session state wiped for address change")
+
+
+def _restore_btc_address_from_db():
+    """Override module-level BTC_ADDRESS if a _btc_address is stored in settings."""
+    global BTC_ADDRESS, WALLET_ADDRESS_SOURCE
+    try:
+        conn = get_db()
+        c = conn.cursor()
+        c.execute("SELECT value FROM settings WHERE key='_btc_address'")
+        r = c.fetchone()
+        conn.close()
+        if r and r["value"]:
+            addr = str(r["value"]).strip()
+            if addr and len(addr) >= 10:
+                BTC_ADDRESS = addr
+                WALLET_ADDRESS_SOURCE = 'db'
+                log.info("[wallet] restored BTC_ADDRESS from DB: %s…%s", addr[:10], addr[-6:])
+                # Log the restore event to wallet_history
+                try:
+                    _log_wallet_change(addr, 'db')
+                except Exception:
+                    pass
+                return True
+    except Exception as e:
+        log.warning("[wallet] DB restore failed: %s", e)
+    return False
+
+
+# ── Wallet address history helper (defined early so module-level code can use it) ──
+def _log_wallet_change(address, source, prev_address=None):
+    """Insert a row into wallet_history to track address changes."""
+    try:
+        conn = get_db()
+        c = conn.cursor()
+        c.execute(
+            "INSERT INTO wallet_history (ts, address, source, prev_address) VALUES (?,?,?,?)",
+            (int(time.time()), address, source, prev_address),
+        )
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        log.warning("[wallet_history] log error: %s", e)
+
+
 app.secret_key = os.environ.get("SECRET_KEY", os.urandom(32).hex())
 
 # ━━ Simple in-memory rate limiter ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -63,7 +204,8 @@ _rate_limit_store = {}  # {ip: [timestamps]}
 def rate_limit():
     """Simple rate limiter: max RATE_LIMIT_PER_MINUTE requests per IP per minute.
     Skips static files, healthz, and agent discovery endpoints."""
-    if request.path.startswith('/static') or request.path == '/healthz' or request.path == '/api/healthz' or request.path.startswith('/api/agents'):
+    # Public endpoints: static files, health checks, and agent discovery only
+    if request.path.startswith('/static') or request.path in ('/healthz', '/api/healthz') or request.path == '/api/agents/solo-mining':
         return None
     ip = request.remote_addr or '127.0.0.1'
     now = time.time()
@@ -160,6 +302,15 @@ def init_db():
         )"""
     )
     c.execute(
+        """CREATE TABLE IF NOT EXISTS wallet_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts INTEGER NOT NULL,
+            address TEXT NOT NULL,
+            source TEXT NOT NULL,
+            prev_address TEXT
+        )"""
+    )
+    c.execute(
         """CREATE TABLE IF NOT EXISTS proximity_history (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             ts INTEGER NOT NULL,
@@ -199,6 +350,9 @@ def init_db():
     c.execute(
         "CREATE INDEX IF NOT EXISTS idx_proximity_history_ts ON proximity_history(ts)"
     )
+    c.execute(
+        "CREATE INDEX IF NOT EXISTS idx_wallet_history_ts ON wallet_history(ts)"
+    )
     # ── WAL mode for better concurrent read/write ──
     c.execute("PRAGMA journal_mode=WAL")
     c.execute("PRAGMA synchronous=NORMAL")
@@ -209,6 +363,7 @@ def init_db():
 
 
 init_db()
+_restore_btc_address_from_db()
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 #  State cache
@@ -275,9 +430,10 @@ def load_settings():
 
 
 def save_setting(key, value):
-    """Persist a setting and refresh in-memory cache."""
+    """Persist a setting and refresh in-memory cache.
+    Internal keys (prefixed with '_') bypass the DEFAULT_SETTINGS whitelist."""
     global _settings_cache
-    if key not in DEFAULT_SETTINGS:
+    if not key.startswith('_') and key not in DEFAULT_SETTINGS:
         raise KeyError(f"unknown setting key: {key}")
     try:
         conn = get_db()
@@ -388,12 +544,41 @@ polling.init(_poll_cfg)
 
 @app.route("/")
 def index():
-    return render_template(
+    """Serve the main dashboard page."""
+    resp = app.make_response(render_template(
         "dashboard.html",
         worker=WORKER_NAME,
         address=BTC_ADDRESS,
         poll_interval=POLL_INTERVAL,
+    ))
+    resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+    resp.headers["Pragma"] = "no-cache"
+    resp.headers["Expires"] = "0"
+    return resp
+
+
+@app.route("/hermes")
+def hermes_ui():
+    """Serve the Hermes Intelligence chat interface."""
+    resp = app.make_response(render_template("hermes.html"))
+    resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+    resp.headers["Pragma"] = "no-cache"
+    resp.headers["Expires"] = "0"
+    return resp
+
+
+@app.route("/sw.js")
+def service_worker():
+    """Serve the Service Worker with the Service-Worker-Allowed header
+    so it can control the entire origin (scope=/)."""
+    resp = send_from_directory(
+        app.static_folder,
+        "sw.js",
+        mimetype="application/javascript",
     )
+    resp.headers["Service-Worker-Allowed"] = "/"
+    resp.headers["Cache-Control"] = "no-cache"
+    return resp
 
 
 @app.route("/api/snapshot")
@@ -911,13 +1096,43 @@ def api_agent_solo_mining_tool():
 
 @app.route("/api/agents/solo-mining/ask", methods=["POST"])
 def api_agent_solo_mining_ask():
-    """Free-text natural-language query endpoint for the Solo Mining Advisor.
-    Accepts: {"query": "what's the probability of finding a block..."}
-    Parses the query for recognized patterns (compare, status, calc, network, help)
-    and delegates to the appropriate agent tools + solo_mining calculation engine.
+    """CYPHER SOLO MINING ADVISOR v1.0 — natural language mining companion.
 
-    Supports casual Portuguese, English, typos, and mixed language.
+    Personality-driven agent that responds in Brazilian Portuguese or English,
+    matching the user's tone (casual → street, technical → precise).
+    Never forces command syntax. Never says "Unknown command".
+
+    Priority order:
+      1. Social greetings & community shout-outs
+      2. Casual status queries (using real session data from state.latest_snapshot)
+      3. Natural language mining calculations (probability, hashrate, duration)
+      4. Rental comparisons (Braiins, MRR, budget)
+      5. Network & price queries
+      6. Help
+      7. Structured commands (still supported, not required)
+      8. Friendly fallback
     """
+
+    # ── Quick helper to pull data from session snapshot ──
+    def _session_data():
+        snap = state.latest_snapshot or {}
+        worker = snap.get("worker") or {}
+        network = snap.get("network") or {}
+        return {
+            "hashrate": worker.get("hashrate") or 0,
+            "best_diff": worker.get("bestDifficulty") or "—",
+            "last_submit": worker.get("lastSubmission") or 0,
+            "status": worker.get("status") or "unknown",
+            "workers": snap.get("all_workers") or [],
+            "net_diff": network.get("difficulty") or 0,
+            "net_hashrate": network.get("hashrate") or 0,
+            "ts": snap.get("ts") or 0,
+            "btc_usd": snap.get("btc_usd") or 0,
+            "pool_hashrate": snap.get("pool_hashrate") or 0,
+            "pool_workers": snap.get("pool_workers") or 0,
+            "address": snap.get("address") or BTC_ADDRESS,
+        }
+
     if not _solo_advisor_loaded:
         return jsonify({"error": "Agent not loaded"}), 503
 
@@ -925,35 +1140,200 @@ def api_agent_solo_mining_ask():
     query = (body.get("query") or "").strip()[:300]
     if not query:
         return jsonify({
-            "output": "julio@cypher:~/solo-mining$ ask \"\"\n\n[ERROR] Digite uma pergunta!\n\nSugestões:\n  • qual a dificuldade da rede agora?\n  • qual a chance de achar bloco com 500th por 7 dias?\n  • como ta minha mineracao?\n  • compara aluguel de 0.01 btc por 24h\n",
-            "status": "error"
+            "output": "Eae! Me manda uma pergunta sobre mineração que eu te ajudo.\n\nTipo:\n  • como ta minha mineracao?\n  • qual a chance de achar bloco com 500th por 7 dias?\n  • qual a dificuldade da rede agora?\n  • compara aluguel de 0.01 btc por 24h\n",
+            "status": "prompt"
         })
-
-    output_lines = [f"julio@cypher:~/solo-mining$ ask \"{query[:80]}\"", ""]
 
     import re
     query_lower = query.lower().strip()
-    # Normalize for keyword matching: strip sentence punctuation but preserve decimal dots
     q = re.sub(r'[?!;:]', ' ', query_lower)
     q = re.sub(r'\.(?!\d)', ' ', q)
 
-    # ══ Check patterns: compare first (most specific), then status, calc, network, help ══
+    # Detect user tone: casual indicators flip the response style
+    casual_indicators = ["eae", "eai", "fala", "salve", "cumpade", "cumpr", "parceiro",
+                          "irmao", "irmão", "mano", "bro", "dae", "dai", "opa", "bora",
+                          "blz", "beleza", "tranquilo", "suave", "pow", "po", "bah"]
+    is_casual = any(k in q for k in casual_indicators)
 
-    # ── Pattern 1: compare / rental / aluguel ──
-    compare_kw = [
-        "compara", "comparar", "comparação", "comparacao", "compare",
-        "aluguel", "alugar", "aluga", "rental", "alocação", "alocacao",
-        "braiins", "brain", "brains", "brians",
-        "mrr", "miningrigrentals", "mining rig", "miningrig",
-        "qual melhor", "qual vale mais", "qual compensa",
-        "vale a pena", "compensa", "mais barato", "melhor opção",
-        "custo", "orçamento", "orcamento", "budget",
-        "which one", "better", "worth it", "cheaper", "best option",
-        "rent", "renting",
+    # ── 1. SOCIAL & COMMUNITY ────────────────────────────────────────────
+    social_kw = ["eae", "eai", "fala", "salve", "opa", "dae", "dai", "bora"]
+    community_kw = ["comunidade", "bitminer", "bit miner", "33", "salve pra", "da um salve"]
+
+    if any(k in q for k in social_kw) and not any(k in q for k in ["hashrate", "chance", "dif", "calc"]):
+        if any(k in q for k in community_kw):
+            responses = [
+                "Salve pra comunidade Bitminer 33! 👊 Tamo junto, que o bloco saia logo pra geral. Mineração solo é osso mas quando vem, vem forte.",
+                "Fala pro povo da Bitminer 33 que o CYPHER tá on! 🔥 Que a sorte acompanhe cada hash de vocês.",
+                "Bitminer 33 na área! 👊 Tamo junto nessa luta. Solo mining é loteria, mas alguém tem que ganhar — pode ser nós.",
+            ]
+        elif "cumpade" in q or "parceiro" in q or "mano" in q or "irmão" in q:
+            responses = [
+                "Eae parceiro! 👊 Tamo junto, só falar o que cê precisa.",
+                "Fala irmão! Tudo tranquilo? Me pergunta o que quiser sobre mineração.",
+                "Salve salve! Tamo on. O que cê quer saber?"]
+        else:
+            responses = [
+                "Eae! Tudo certo? Me pergunta sobre mineração que eu ajudo.",
+                "Fala aí! O que cê precisa? Dificuldade, hashrate, aluguel — tô dentro.",
+                "Salve! CYPHER Solo Mining Advisor na área. Pode perguntar."]
+        import random
+        return jsonify({"output": random.choice(responses), "status": "social"})
+
+    # ── 2. STATUS (usando dados REAIS da sessão) ────────────────────────
+    status_kw = ["status", "dashboard", "resumo", "sumario", "sumário",
+                 "como estou", "como eu to", "como eu tô", "como ta minha",
+                 "minha mineração", "minha mineracao", "meu minerador",
+                 "ta funcionando", "tá funcionando", "funcionando",
+                 "to online", "tô online", "online", "offline", "conectado",
+                 "how am i", "how's my", "am i mining", "my miner",
+                 "stats", "summary", "overview",
+                 "ta hasheando", "tá hasheando", "hashrate", "qual hashrate",
+                 "minha hashrate", "meu best diff", "qual meu best",
+                 "minerando", "minerou",
+                 "to on", "to off", "tô on", "tô off"]
+    if any(k in q for k in status_kw):
+        sd = _session_data()
+
+        # Check if we have real data
+        if sd["address"] and sd["ts"] > 0 and sd["hashrate"]:
+            hr_val = sd["hashrate"]
+            if hr_val >= 1e12:
+                hr_display = f"{hr_val / 1e12:.2f} TH/s"
+            elif hr_val >= 1e9:
+                hr_display = f"{hr_val / 1e9:.2f} GH/s"
+            else:
+                hr_display = f"{hr_val:.0f} H/s"
+
+            status_emoji = {"hashing": "🟢", "online": "🟢", "idle": "🟡", "offline": "🔴", "unknown": "⚪"}.get(
+                sd["status"].lower(), "⚪")
+
+            last_share = ""
+            if sd["last_submit"]:
+                age_s = int(time.time()) - sd["last_submit"]
+                if age_s < 60:
+                    last_share = f"{age_s}s atrás"
+                elif age_s < 3600:
+                    last_share = f"{age_s // 60}min atrás"
+                else:
+                    last_share = f"{age_s // 3600}h atrás"
+
+            workers_total = len(sd["workers"])
+
+            out = f"""📊 **Status da Mineração**
+
+{status_emoji} **Estado:** {sd['status'].upper()}
+⚡ **Hashrate:** {hr_display}
+🏆 **Best Difficulty:** {sd['best_diff']}
+🕐 **Último Share:** {last_share or '—'}
+👷 **Workers ativos:** {workers_total}
+
+📡 Pool: parasite.space ({sd['pool_hashrate'] / 1e12:.2f} TH/s agregado)
+
+"""
+            # Se tiver dificuldade de rede, calcula probabilidade 24h
+            if sd["net_diff"] and sd["hashrate"]:
+                try:
+                    sm = solo_mining
+                    prob = sm.calc_block_probability(float(sd["hashrate"]), float(sd["net_diff"]), 86400)
+                    exp_time = sm.calc_expected_time(float(sd["hashrate"]), float(sd["net_diff"]))
+                    pct = prob["p_at_least_1_block_pct"]
+                    out += f"📈 **P(≥1 bloco em 24h):** {pct:.6f}%\n"
+                    out += f"⏳ **Tempo esperado:** {exp_time['days']:,.0f} dias\n"
+                    if pct < 0.001:
+                        out += "\n⚠️ Lembrando: solo mining é loteria. Cada hash é uma chance nova."
+                except Exception:
+                    pass
+
+            return jsonify({"output": out, "status": "success"})
+        else:
+            out = "Ainda não tenho dados dessa carteira carregados. Conecta sua wallet ou cola um endereço BTC que eu te mostro o status."
+            return jsonify({"output": out, "status": "nodata"})
+
+    # ── 3. CALC / PROBABILITY (natural language) ────────────────────────
+    calc_indicators = [
+        "chance", "probabilidade", "probabilidade", "prob", "odds", "likelihood",
+        "calcular", "calcula", "calc", "calculo", "cálculo",
+        "acha bloco", "achar bloco", "encontra bloco", "encontrar bloco", "find block",
+        "minerar", "minerando", "mineração", "mineracao",
+        "bloco", "block", "quanto tempo", "tempo esperado", "expected time",
+        "th/s", "ph/s", "eh/s", "gh/s", "mh/s", "ths", "phs", "ehs",
+        "hashrate", "hash rate", "hash",
+        "solo", "solo mining",
+        "se eu", "usando", "durante", "com",
     ]
+    if any(k in q for k in calc_indicators):
+        hr_match = re.search(r'(\d+\.?\d*)\s*(th/s|ph/s|eh/s|gh/s|mh/s|th|ph|eh|gh|mh|t|p|e|g|m)', q, re.IGNORECASE)
+        dur_match = re.search(r'(\d+\.?\d*)\s*(h|hour|hr|hours|horas|hora|d|day|days|dia|dias|w|week|weeks|semana|semanas)', q)
+
+        if hr_match:
+            hr_raw = hr_match.group(1) + hr_match.group(2).upper().rstrip('/S')
+            dur_val = 24.0  # default 24h
+            if dur_match:
+                dur_val = float(dur_match.group(1))
+                dur_unit = dur_match.group(2).lower()
+                if dur_unit in ('d', 'day', 'days', 'dia', 'dias'):
+                    dur_val *= 24
+                elif dur_unit in ('w', 'week', 'weeks', 'semana', 'semanas'):
+                    dur_val *= 168
+
+            try:
+                sm = solo_mining
+                hashrate_hs = sm._parse_hashrate(hr_raw)
+                duration_seconds = dur_val * 3600
+                diff_res = execute_tool("get_network_difficulty")
+                difficulty = diff_res.get("difficulty", 127e12)
+
+                prob = sm.calc_block_probability(hashrate_hs, difficulty, duration_seconds)
+                exp_time = sm.calc_expected_time(hashrate_hs, difficulty)
+                pct = prob["p_at_least_1_block_pct"]
+
+                if dur_val >= 24:
+                    dur_display = f"{dur_val/24:.1f} dias" if dur_val > 24 else "24h"
+                else:
+                    dur_display = f"{dur_val:.0f}h"
+
+                if pct < 0.01:
+                    pct_str = f"{pct:.6f}%"
+                elif pct < 1:
+                    pct_str = f"{pct:.4f}%"
+                else:
+                    pct_str = f"{pct:.2f}%"
+
+                out = f"""📊 **Análise de Mineração Solo**
+
+⚡ **Hashrate:** {hashrate_hs/1e12:.2f} TH/s
+⏱ **Período:** {dur_display}
+🔢 **Dificuldade da Rede:** {difficulty:,.0f}
+
+📈 **P(≥1 bloco):** {pct_str}
+📉 **P(0 blocos):** {prob['p_zero_blocks_pct']:.2f}%
+⏳ **Tempo esperado p/ bloco:** {exp_time['days']:,.0f} dias ({exp_time['years']:.1f} anos)
+
+⚠️ Solo mining é loteria — EV negativo vs pool mining.
+Cada hash é uma tentativa independente.
+"""
+                return jsonify({"output": out, "status": "success"})
+            except Exception as e:
+                return jsonify({"output": f"Vish, deu erro no cálculo: {e}. Me passa os dados certinhos tipo '225TH por 24h' que eu calculo.", "status": "error"})
+
+        # Mentioned calc but couldn't parse hashrate
+        out = "Entendi que cê quer calcular chance de achar bloco! Me passa o hashrate e o período. Tipo:\n  • 'chance com 225TH em 24 horas'\n  • '500TH por 7 dias'\n  • 'calc 300TH 48h'"
+        return jsonify({"output": out, "status": "partial"})
+
+    # ── 4. COMPARE / RENTAL ─────────────────────────────────────────────
+    compare_kw = ["compara", "comparar", "comparação", "comparacao", "compare",
+                  "aluguel", "alugar", "aluga", "rental", "alocação", "alocacao",
+                  "braiins", "brain", "brains", "brians",
+                  "mrr", "miningrigrentals", "mining rig", "miningrig",
+                  "refinery", "qual melhor", "qual vale mais", "qual compensa",
+                  "vale a pena", "compensa", "mais barato", "melhor opção",
+                  "custo", "orçamento", "orcamento", "budget",
+                  "which one", "better", "worth it", "cheaper", "best option",
+                  "rent", "renting"]
     if any(k in q for k in compare_kw):
         btc_match = re.search(r'(\d+\.?\d*)\s*(btc|sat|sats|bitcoin)', q, re.IGNORECASE)
         dur_match = re.search(r'(\d+\.?\d*)\s*(h|hour|hr|hours|horas|hora|d|day|days|dia|dias)', q)
+
         if btc_match and dur_match:
             budget = float(btc_match.group(1))
             dur_val = float(dur_match.group(1))
@@ -961,9 +1341,7 @@ def api_agent_solo_mining_ask():
             if dur_unit in ('d', 'day', 'days', 'dia', 'dias'):
                 dur_val *= 24
 
-            output_lines.append("[OK] Comparação de aluguel detectada")
-            output_lines.append(f"      budget={budget} BTC, duração={dur_val:.0f}h")
-            output_lines.append("")
+            out_lines = [f"📊 Comparando aluguel de {budget} BTC por {dur_val:.0f}h...", ""]
 
             try:
                 diff_res = execute_tool("get_network_difficulty")
@@ -981,194 +1359,42 @@ def api_agent_solo_mining_ask():
                 )
 
                 if not results:
-                    output_lines.append("[ERROR] Nenhuma opção válida de aluguel")
-                    output_lines.append("[HINT] Forneça preços manualmente: --braiins <preço> --mrr <preço>")
+                    out_lines.append("Não achei ofertas válidas agora. Pode ser que os preços de mercado estejam indisponíveis.")
+                    out_lines.append("Tenta de novo mais tarde ou passa os preços manualmente.")
                 else:
-                    output_lines.append(f"{'Plataforma':<22s}  {'Preço/PH/d':>10s}   {'Hashpower':>10s}  {'P(bloco)':>9s}  {'E[tempo]':>10s}   {'EV(BTC)':>10s}")
-                    output_lines.append(f"{'─'*22}  {'─'*10}   {'─'*10}  {'─'*9}  {'─'*10}   {'─'*10}")
                     for r in results:
-                        output_lines.append(
-                            f"  {r['platform']:<22s}  {r['price_btc_per_ph_day']:>10.6f}   "
-                            f"{r['hashpower_ph']:>8.2f}PH  {r['p_block_pct']:>7.4f}%  "
-                            f"{r['expected_time_days']:>8.0f}d  {r['ev_btc']:>+10.6f}"
-                        )
+                        ev_str = f"{r['ev_btc']:+.6f}"
+                        out_lines.append(f"**{r['platform'].upper()}**")
+                        out_lines.append(f"  Preço: {r['price_btc_per_ph_day']:.6f} BTC/PH/dia")
+                        out_lines.append(f"  Hashpower: {r['hashpower_ph']:.2f} PH/s")
+                        out_lines.append(f"  P(bloco): {r['p_block_pct']:.4f}%")
+                        out_lines.append(f"  E[tempo]: {r['expected_time_days']:.0f} dias")
+                        out_lines.append(f"  EV: {ev_str} BTC")
+                        out_lines.append("")
+
                     if any(r.get('ev_btc', -1) < 0 for r in results):
-                        output_lines.append("")
-                        output_lines.append("[WARN] Todas as opções têm EV negativo. Solo mining é loteria.")
+                        out_lines.append("⚠️ **Aviso:** Todas as opções têm EV negativo. Aluguel de hashrate pra solo mining é loteria — você tá pagando pra ter uma chance, não um retorno garantido.")
             except Exception as e:
-                output_lines.append(f"[ERROR] Falha ao buscar dados: {e}")
-                output_lines.append("[HINT] Tente: compare --budget 0.01 --duration 24h")
+                out_lines.append(f"Erro ao buscar dados de mercado: {e}")
+                out_lines.append("Tenta: 'compara braiins vs mrr com 0.01 btc por 24h'")
 
-            return jsonify({"output": "\n".join(output_lines), "status": "success"})
+            return jsonify({"output": "\n".join(out_lines), "status": "success"})
 
-        output_lines.append("[OK] Entendi que é pergunta sobre aluguel de hashrate")
-        output_lines.append("[WARN] Preciso de orçamento e duração pra comparar. Exemplo:")
-        output_lines.append("[HINT] 'compara braiins vs mrr com 0.01 btc por 24h'")
-        output_lines.append("[HINT] Ou use: compare --budget 0.01 --duration 24h")
-        return jsonify({"output": "\n".join(output_lines), "status": "partial"})
+        out = "Quer comparar aluguel de hashrate? Manda o orçamento e o tempo. Tipo:\n  • 'compara braiins e mrr com 0.01 btc por 24h'\n  • 'qual compensa mais alugar agora?'"
+        return jsonify({"output": out, "status": "partial"})
 
-    # ── Pattern 2: status / dashboard ──
-    status_kw = [
-        "status", "dashboard", "resumo", "sumario", "sumário",
-        "como estou", "como eu to", "como eu tô", "como ta minha",
-        "minha mineração", "minha mineracao", "meu minerador",
-        "ta funcionando", "tá funcionando", "funcionando",
-        "online", "offline", "conectado",
-        "how am i", "how's my", "am i mining", "my miner",
-        "stats", "summary", "overview",
-    ]
-    if any(k in q for k in status_kw):
-        output_lines.append("[OK] Consulta de status detectada — buscando dados")
-        output_lines.append("")
-
-        try:
-            diff_res = execute_tool("get_network_difficulty")
-            price_res = execute_tool("get_btc_price", {"currencies": "usd,brl"})
-            pool_res = execute_tool("get_parasite_pool_stats")
-
-            difficulty = diff_res.get("difficulty", 0)
-            prices = price_res.get("prices", {})
-            worker_hr = pool_res.get("worker_hashrate", 0)
-            pool_hr = pool_res.get("pool_hashrate", 0)
-
-            output_lines.append("╔══════════════════════════════════════════════╗")
-            output_lines.append("║          CYPHER MINING STATUS              ║")
-            output_lines.append("╚══════════════════════════════════════════════╝")
-            output_lines.append("")
-
-            output_lines.append("─── Network ───")
-            if difficulty:
-                output_lines.append(f"  Difficulty        {difficulty:,.0f}  ({fmt_diff(difficulty)})")
-            else:
-                output_lines.append("  Difficulty        unavailable")
-            if prices:
-                parts = []
-                if prices.get("usd"): parts.append(f"${prices['usd']:,.0f}")
-                if prices.get("brl"): parts.append(f"R${prices['brl']:,.0f}")
-                output_lines.append(f"  BTC Price         {' / '.join(parts)}")
-            output_lines.append("")
-
-            output_lines.append("─── Worker ───")
-            output_lines.append(f"  Hashrate          {worker_hr}" if worker_hr else "  Hashrate          no worker data")
-            output_lines.append(f"  Best Share        {pool_res.get('worker_best_diff', '—')}")
-            output_lines.append(f"  Status            {pool_res.get('worker_status', 'unknown').upper()}")
-
-            if pool_res.get("worker_uptime"):
-                output_lines.append(f"  Uptime            {pool_res['worker_uptime']}")
-            output_lines.append("")
-
-            output_lines.append("─── Pool (parasite.space) ───")
-            output_lines.append(f"  Pool Hashrate     {pool_hr}" if pool_hr else "  Pool Hashrate     —")
-            output_lines.append(f"  Workers           {pool_res.get('pool_workers', '—')} / {pool_res.get('pool_users', '—')} users")
-            output_lines.append("")
-
-            try:
-                sm = solo_mining
-                w_hr = float(worker_hr) if worker_hr else 0
-                diff_f = float(difficulty) if difficulty else 0
-                if w_hr and diff_f:
-                    prob = sm.calc_block_probability(w_hr, diff_f, 86400)
-                    exp_time = sm.calc_expected_time(w_hr, diff_f)
-                    pct = prob["p_at_least_1_block_pct"]
-                    pct_str = f"{pct:.6f}%" if pct < 0.0001 else f"{pct:.4f}%" if pct < 0.01 else f"{pct:.2f}%"
-
-                    output_lines.append("─── 24h Block Probability ───")
-                    output_lines.append(f"  P(>=1 block)      {pct_str}")
-                    output_lines.append(f"  P(0 blocks)       {prob['p_zero_blocks_pct']:.1f}%")
-                    output_lines.append(f"  E[time]           {exp_time['days']:,.0f} dias ({exp_time['years']:.1f} anos)")
-                    output_lines.append(f"  Hashes/24h        {w_hr * 86400:,.0f}")
-                    output_lines.append("")
-                    if pct < 0.01:
-                        output_lines.append("[WARN] Probabilidade extremamente baixa — solo mining é loteria.")
-            except Exception:
-                pass
-        except Exception as e:
-            output_lines.append(f"[ERROR] Falha ao buscar dados: {e}")
-
-        return jsonify({"output": "\n".join(output_lines), "status": "success"})
-
-    # ── Pattern 3: calc / probability / chance ──
-    calc_kw = [
-        "calcular", "calcula", "calc", "calulo", "calculo", "cálculo",
-        "probabilidade", "probabilida", "prob", "chance", "chances",
-        "qual a chance", "quais as chances", "quanto tempo", "tempo esperado",
-        "acha bloco", "achar bloco", "encontra bloco", "encontrar bloco",
-        "minerar", "minerando", "mineração", "mineracao",
-        "quantos blocos", "quantos bloco",
-        "probability", "probablity", "probabilty", "odds",
-        "chance of", "chances of", "likely", "likelihood",
-        "how long", "expected time", "how many",
-        "find a block", "finding", "block chance",
-        "th/s", "ph/s", "eh/s", "gh/s", "mh/s",
-        "ths", "phs", "ehs",
-        "hashrate", "hash rate", "hash",
-        "se eu", "usando", "durante",
-        "solo", "solo mining",
-    ]
-    if any(k in q for k in calc_kw):
-        hr_match = re.search(r'(\d+\.?\d*)\s*(th/s|ph/s|eh/s|gh/s|mh/s|th|ph|eh|gh|mh)', q, re.IGNORECASE)
-        dur_match = re.search(r'(\d+\.?\d*)\s*(h|hour|hr|hours|horas|hora|d|day|days|dia|dias|w|week|weeks|semana|semanas)', q)
-        if hr_match and dur_match:
-            hashrate_str = hr_match.group(1) + hr_match.group(2).upper().replace('/S', '')
-            dur_val = float(dur_match.group(1))
-            dur_unit = dur_match.group(2).lower()
-            if dur_unit in ('d', 'day', 'days', 'dia', 'dias'):
-                dur_val *= 24
-            elif dur_unit in ('w', 'week', 'weeks', 'semana', 'semanas'):
-                dur_val *= 168
-
-            output_lines.append(f"[OK] Entendi: hashrate={hashrate_str}, duração={dur_val:.0f}h")
-            output_lines.append("")
-
-            try:
-                sm = solo_mining
-                hashrate_hs = sm._parse_hashrate(hashrate_str)
-                duration_seconds = dur_val * 3600
-                diff_res = execute_tool("get_network_difficulty")
-                difficulty = diff_res.get("difficulty", 127e12)
-
-                prob = sm.calc_block_probability(hashrate_hs, difficulty, duration_seconds)
-                exp_time = sm.calc_expected_time(hashrate_hs, difficulty)
-
-                output_lines.append("─── Block Discovery ───")
-                output_lines.append(f"  Hashrate............ {hashrate_hs:,.0f} H/s ({hashrate_str.upper()})")
-                output_lines.append(f"  Duração............. {dur_val:.0f}h ({dur_val / 24:.2f} dias)")
-                output_lines.append(f"  Dificuldade......... {difficulty:,.0f}")
-                output_lines.append(f"  Hashes/bloco........ {prob['hashes_per_block']:,.0f}")
-                output_lines.append(f"  Lambda(t)........... {prob['lambda']:.6e}")
-                output_lines.append("")
-                output_lines.append(f"  P(>=1 bloco)........ {prob['p_at_least_1_block_pct']:.6f}%")
-                output_lines.append(f"  P(0 blocos)......... {prob['p_zero_blocks_pct']:.2f}%")
-                output_lines.append(f"  E[tempo]............ {exp_time['days']:,.1f} dias ({exp_time['years']:.2f} anos)")
-                output_lines.append("")
-                output_lines.append("[WARN] Solo mining é loteria. EV é negativo vs pool mining.")
-            except Exception as e:
-                output_lines.append(f"[ERROR] Falha no cálculo: {e}")
-                output_lines.append("[HINT] Tente: calc --hashrate 225TH --duration 24h")
-
-            return jsonify({"output": "\n".join(output_lines), "status": "success"})
-
-        output_lines.append("[OK] Entendi que é pergunta sobre probabilidade de mineração")
-        output_lines.append("[WARN] Preciso de hashrate e duração pra calcular. Exemplo:")
-        output_lines.append("[HINT] 'qual a chance de achar bloco com 225TH por 24h?'")
-        output_lines.append("[HINT] Ou use: calc --hashrate 225TH --duration 24h")
-        return jsonify({"output": "\n".join(output_lines), "status": "partial"})
-
-    # ── Pattern 4: network / difficulty / price ──
-    network_kw = [
-        "rede", "dificuldade", "difculdade", "dificudade", "dificul", "network",
-        "preco", "preço", "cotação", "cotacao", "quanto ta", "quanto tá",
-        "ta valendo", "tá valendo", "valor", "preço btc", "preco btc",
-        "bitcoin price", "btc price", "btc/usd", "btc/brl",
-        "difficulty", "dificulty", "diff", "current", "price", "btc",
-        "what's the", "what is the", "how much",
-        "como ta", "como tá", "como esta", "como está",
-        "me mostra", "mostra", "show me", "show",
-        "da rede", "atual", "hoje", "now", "today",
-    ]
+    # ── 5. NETWORK / PRICE ──────────────────────────────────────────────
+    network_kw = ["rede", "dificuldade", "difculdade", "dificudade", "dificul", "network",
+                  "preco", "preço", "cotação", "cotacao", "quanto ta", "quanto tá",
+                  "ta valendo", "tá valendo", "valor", "preço btc", "preco btc",
+                  "bitcoin price", "btc price", "btc/usd", "btc/brl",
+                  "difficulty", "dificulty", "diff", "current", "price", "btc",
+                  "what's the", "what is the", "how much",
+                  "como ta", "como tá", "como esta", "como está",
+                  "me mostra", "mostra", "show me", "show",
+                  "da rede", "atual", "hoje", "now", "today"]
     if any(k in q for k in network_kw):
-        output_lines.append("[OK] Consulta de rede detectada — buscando dados")
-        output_lines.append("")
+        out_lines = ["📡 **Dados da Rede Bitcoin**", ""]
 
         try:
             diff_res = execute_tool("get_network_difficulty")
@@ -1177,61 +1403,241 @@ def api_agent_solo_mining_ask():
 
             if diff_res.get("difficulty"):
                 diff = diff_res["difficulty"]
-                output_lines.append("─── Network Difficulty ───")
-                output_lines.append(f"  difficulty........ {diff:,.0f}")
-                output_lines.append(f"  formatted......... {fmt_diff(diff)}")
-                output_lines.append(f"  source............ {diff_res.get('source', 'agent tool')}")
+                out_lines.append(f"🔢 **Dificuldade:** {diff:,.0f} ({fmt_diff(diff)})")
             else:
-                output_lines.append(f"[ERROR] Difficulty: {diff_res.get('error', 'unavailable')}")
+                out_lines.append(f"🔢 Dificuldade: indisponível")
 
-            output_lines.append("")
-            output_lines.append("─── BTC Price ───")
+            out_lines.append("")
             if prices:
-                if prices.get("usd"):
-                    output_lines.append(f"  btc/usd........... ${prices['usd']:,.0f}")
-                if prices.get("brl"):
-                    output_lines.append(f"  btc/brl........... R${prices['brl']:,.0f}")
-                output_lines.append(f"  source............ {price_res.get('source', 'coingecko.com')}")
+                parts = []
+                if prices.get("usd"): parts.append(f"${prices['usd']:,.0f}")
+                if prices.get("brl"): parts.append(f"R${prices['brl']:,.0f}")
+                out_lines.append(f"💲 **BTC Preço:** {' / '.join(parts)}")
             else:
-                output_lines.append(f"[ERROR] BTC price: {price_res.get('error', 'unavailable')}")
+                out_lines.append("💲 Preço BTC: indisponível")
         except Exception as e:
-            output_lines.append(f"[ERROR] Falha ao buscar dados: {e}")
+            out_lines.append(f"Erro ao buscar dados: {e}")
 
-        return jsonify({"output": "\n".join(output_lines), "status": "success"})
+        return jsonify({"output": "\n".join(out_lines), "status": "success"})
 
-    # ── Pattern 5: help ──
-    help_kw = ["help", "ajuda", "ajudar", "socorro", "comandos", "commands", "o que faz", "o que vc faz"]
+    # ── 6. HELP ─────────────────────────────────────────────────────────
+    help_kw = ["help", "ajuda", "ajudar", "socorro", "comandos", "commands", "o que faz", "o que vc faz", "o que voce faz"]
     if any(k in q for k in help_kw):
-        output_lines.append("[OK] Ajuda:")
-        output_lines.append("")
-        output_lines.append("  network                          — Dificuldade da rede + preço do BTC")
-        output_lines.append("  calc --hashrate <H> --duration <h> — Probabilidade de minerar")
-        output_lines.append("  compare --budget <BTC> --duration <h> — Comparar aluguel")
-        output_lines.append("  status                           — Dashboard completo")
-        output_lines.append("  ask <pergunta>                    — Pergunta em linguagem natural")
-        output_lines.append("")
-        output_lines.append("  Exemplos:")
-        output_lines.append("    • 'qual a dificuldade da rede?'")
-        output_lines.append("    • 'chance de achar bloco com 500th por 7 dias'")
-        output_lines.append("    • 'compara aluguel de 0.01 btc por 24h'")
-        output_lines.append("    • 'como ta minha mineracao?'")
-        return jsonify({"output": "\n".join(output_lines), "status": "success"})
+        out = """🤙 **CYPHER Solo Mining Advisor** — tô aqui pra ajudar com mineração.
 
-    # ── Fallback: can't parse, but be friendly ──
-    output_lines.append("[WARN] Não entendi exatamente o que você quer, mas posso ajudar com:")
-    output_lines.append("")
-    output_lines.append("  • 'network' — dificuldade e preço do BTC agora")
-    output_lines.append("  • 'status' — resumo completo da sua mineração")
-    output_lines.append("  • 'calc --hashrate 225TH --duration 24h' — chance de achar bloco")
-    output_lines.append("  • 'compare --budget 0.01 --duration 24h' — comparar aluguel de hashrate")
-    output_lines.append("  • 'help' — todos os comandos")
-    output_lines.append("")
-    output_lines.append("  Ou me pergunte de outro jeito, tipo:")
-    output_lines.append("  'qual a chance de achar bloco com 500th por 7 dias?'")
-    output_lines.append("  'compara braiins vs mrr com 0.01 btc por 24h'")
-    output_lines.append("  'como ta minha mineracao?'")
-    return jsonify({"output": "\n".join(output_lines), "status": "unrecognized"})
+Pode perguntar naturalmente, tipo:
 
+📊 **Status:** 'como ta minha mineracao?'
+📈 **Probabilidade:** 'qual a chance de achar bloco com 500th por 7 dias?'
+💰 **Comparar aluguel:** 'compara braiins vs mrr com 0.01 btc por 24h'
+🌐 **Rede:** 'qual a dificuldade da rede agora?'
+
+Comandos estruturados (se preferir):
+  network                  → dificuldade + preço BTC
+  calc --hashrate <H> --duration <h>  → probabilidade
+  compare --budget <BTC> --duration <h> → comparar aluguel
+  status                   → dashboard completo
+"""
+        return jsonify({"output": out, "status": "success"})
+
+    # ── 7. STRUCTURED COMMANDS (power users) ────────────────────────────
+    # "calc 225TH 24h" or "compare 0.01 btc 24h" style
+    if q.startswith("calc ") or q.startswith("compare ") or q.startswith("network") or q.startswith("status") or q.startswith("clear"):
+        # Re-run through the existing compare/calc/network/status logic
+        # These are handled by the patterns above; this is a belt-and-suspenders
+        pass  # will fall through to the existing /api/solo-mining/calc route
+
+    # ── 8. FRIENDLY FALLBACK ───────────────────────────────────────────
+    if is_casual:
+        out = "Fala aí! Não captei bem o que cê quis dizer, mas posso ajudar com status, probabilidade de bloco, aluguel de hashrate, dificuldade da rede… É só perguntar!"
+    else:
+        out = """Não entendi exatamente, mas me pergunta de outro jeito! Exemplos:
+
+• 'como ta minha mineracao?'
+• 'qual a chance de achar bloco com 500th por 7 dias?'
+• 'compara aluguel de 0.01 btc por 24h'
+• 'qual a dificuldade da rede agora?'
+• 'help'
+"""
+    return jsonify({"output": out, "status": "unrecognized"})
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#  Wallet address setter + Opportunity Engine endpoints
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+@app.route("/api/set-address", methods=["POST"])
+def api_set_address():
+    """Update the BTC address the dashboard monitors.
+    POST JSON: {"address": "bc1..."}
+    This changes the polling target for subsequent poll() calls.
+    Performs COMPLETE session wipe before loading the new address
+    to prevent ANY data leakage between addresses."""
+    body = request.get_json(silent=True) or {}
+    addr = (body.get("address") or "").strip()
+    if not addr or len(addr) < 10:
+        return jsonify({"error": "invalid address"}), 400
+    global BTC_ADDRESS, WALLET_ADDRESS_SOURCE
+    prev = BTC_ADDRESS
+    
+    # ── WIPE THE ENTIRE SESSION BEFORE SWITCHING ──
+    _reset_session_state()
+    
+    WALLET_ADDRESS_SOURCE = 'ui'
+    BTC_ADDRESS = addr
+    # Update config for the polling module
+    try:
+        polling.config.BTC_ADDRESS = addr
+    except Exception:
+        pass
+    log.info("[wallet] address changed to %s…%s", addr[:10], addr[-6:])
+    # Persist in settings DB so it survives server restart
+    save_setting("_btc_address", addr)
+    # Log address change to wallet_history
+    _log_wallet_change(addr, 'ui', prev_address=prev if prev != addr else None)
+    # Update polling config
+    try:
+        polling.config.BTC_ADDRESS = addr
+    except Exception:
+        pass
+    # Log event
+    from helpers import make_memory_alert
+    state.memory_critical_alerts.append(make_memory_alert(
+        int(time.time()), "SUCCESS", "wallet_changed",
+        f"Wallet address changed to {addr[:10]}…{addr[-6:]}; polling target updated."
+    ))
+    # Prime an immediate poll with the new address
+    polling.poll_once()
+    return jsonify({"ok": True, "address": addr})
+
+
+import agents.opportunity_engine as opportunity_engine
+
+
+@app.route("/api/wallet")
+def api_wallet():
+    """Return current wallet address info: address, source (env/db/ui),
+    and change history from wallet_history table."""
+    history = []
+    try:
+        conn = get_db()
+        c = conn.cursor()
+        c.execute(
+            "SELECT ts, address, source, prev_address FROM wallet_history "
+            "ORDER BY id DESC LIMIT 50"
+        )
+        for r in c.fetchall():
+            entry = {"ts": r["ts"], "address": r["address"], "source": r["source"]}
+            if r["prev_address"]:
+                entry["prev_address"] = r["prev_address"]
+            history.append(entry)
+        conn.close()
+    except Exception as e:
+        log.warning("[api/wallet history] error: %s", e)
+
+    return jsonify({
+        "address": BTC_ADDRESS,
+        "source": WALLET_ADDRESS_SOURCE,
+        "history": history,
+        "ts": int(time.time()),
+    })
+
+
+@app.route("/api/opportunities")
+def api_opportunities():
+    """Opportunity Engine — scans Braiins/MRR markets for deals.
+    Returns a list of opportunities matching user's context.
+    All clearly labeled as ESTIMATED/REAL.
+    Delegates to agents/opportunity_engine.py for the actual scan.
+
+    If state.test_opportunities is set (via POST /api/opportunities/mock),
+    returns that mock data instead of scanning real markets."""
+    # Injected mock opportunities are TEST-ONLY — never served in production.
+    # If state.test_opportunities was set via debug endpoint, skip it here.
+    # (The mock injection endpoint is gated behind DEBUG_MOCK=1)
+
+    try:
+        from agents.solo_mining_advisor import execute_tool
+        opps, scan_stats = opportunity_engine.scan(execute_tool, state.latest_snapshot, state.last_known_prices)
+        return jsonify(opportunity_engine.build_response(opps, scan_stats))
+    except Exception as e:
+        log.warning("[opportunities] scan error: %s", e)
+        return jsonify({
+            "opportunities": [],
+            "ts": int(time.time()),
+            "disclaimer": "All prices are ESTIMATED based on current market data. Actual rental prices vary."
+        })
+
+
+# ── Mock opportunity injector (for visual testing of the popup UI) ──
+
+MOCK_OPPORTUNITIES = [
+    {
+        "id": "mock_braiins_0.015",
+        "platform": "braiins",
+        "title": "🔥 TEST · Braiins 15.0 sats/PH/day",
+        "description": (
+            "With 225.0 TH/s you could mine ~0.0034 BTC/day equivalent. "
+            "This is a MOCK opportunity — not real market data."
+        ),
+        "meta": "source: MOCK TEST DATA — opportunity engine bypassed",
+        "price": 0.000015,
+        "severity": "INFO",
+        "status": "MOCK",
+    },
+    {
+        "id": "mock_mrr_0.012",
+        "platform": "mrr",
+        "title": "⚡ TEST · MRR 12.0 sats/PH/day (20% cheaper)",
+        "description": (
+            "MiningRigRentals has active listings — this is a MOCK test "
+            "opportunity to verify the popup UI rendering."
+        ),
+        "meta": "source: MOCK TEST DATA — does not reflect real market prices",
+        "price": 0.000012,
+        "severity": "INFO",
+        "status": "MOCK",
+    },
+]
+
+
+@app.route("/api/opportunities/mock", methods=["POST"])
+def api_opportunities_mock():
+    """[DEV ONLY] Inject mock opportunities for visual testing.
+    This endpoint MUST NEVER be used in production.
+    It is protected by the DEBUG_MOCK environment variable.
+
+    Set DEBUG_MOCK=1 to enable. Otherwise this endpoint returns 403.
+    """
+    if os.environ.get("DEBUG_MOCK") != "1":
+        abort(403, description="Mock mode disabled. Set DEBUG_MOCK=1 to enable.")
+
+    body = request.get_json(silent=True) or {}
+    opps = body.get("opportunities", MOCK_OPPORTUNITIES)
+
+    state.test_opportunities = {
+        "opportunities": opps,
+        "ts": int(time.time()),
+        "disclaimer": (
+            "⚠️ DEVELOPMENT / MOCK DATA ONLY — NOT REAL MARKET PRICES. "
+            "This mode must never be enabled in production."
+        ),
+        "mode": "MOCK",
+    }
+
+    log.warning("[opportunities/mock] MOCK MODE ENABLED — %d fake opportunities injected", len(opps))
+    return jsonify(state.test_opportunities)
+
+
+@app.route("/api/opportunities/mock/clear", methods=["POST"])
+def api_opportunities_mock_clear():
+    """Clear injected mock opportunities and restore real market scanning."""
+    state.test_opportunities = None
+    log.info("[opportunities/mock] cleared — restored real scanning")
+    return jsonify({"status": "cleared", "message": "Real market scanning restored."})
+
+from hermes_register import register_hermes
+register_hermes(app)
 
 if __name__ == "__main__":
     banner = r"""

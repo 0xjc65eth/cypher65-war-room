@@ -1,0 +1,52 @@
+{
+  "name": "CYPHER65 · Bitcoin Mining Command Center",
+  "short_name": "CYPHER65",
+  "description": "Real-time Bitcoin mining dashboard for Parasite Pool — monitor workers, hashrate, shares, and block probability with SpaceX-grade mission control UI.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#04060a",
+  "theme_color": "#06d6f0",
+  "categories": ["bitcoin", "mining", "finance", "utilities"],
+  "lang": "en",
+  "dir": "ltr",
+  "icons": [
+    {
+      "src": "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 192 192'%3E%3Crect width='192' height='192' fill='%2304060a'/%3E%3Ctext x='96' y='132' text-anchor='middle' font-family='monospace' font-weight='bold' font-size='96' fill='%2300ff9f'%3E65%3C/text%3E%3C/svg%3E",
+      "sizes": "192x192",
+      "type": "image/svg+xml",
+      "purpose": "any monochrome"
+    },
+    {
+      "src": "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 512 512'%3E%3Crect width='512' height='512' fill='%2304060a'/%3E%3Ctext x='256' y='352' text-anchor='middle' font-family='monospace' font-weight='bold' font-size='256' fill='%2300ff9f'%3E65%3C/text%3E%3C/svg%3E",
+      "sizes": "512x512",
+      "type": "image/svg+xml",
+      "purpose": "any monochrome"
+    },
+    {
+      "src": "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 512 512'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' x2='1' y1='0' y2='1'%3E%3Cstop offset='0%25' stop-color='%2306d6f0'/%3E%3Cstop offset='100%25' stop-color='%2300ff9f'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='512' height='512' fill='url(%23g)' rx='96'/%3E%3Crect x='48' y='48' width='416' height='416' fill='%2304060a' rx='72'/%3E%3Ctext x='256' y='352' text-anchor='middle' font-family='monospace' font-weight='bold' font-size='256' fill='%2300ff9f'%3E65%3C/text%3E%3C/svg%3E",
+      "sizes": "512x512",
+      "type": "image/svg+xml",
+      "purpose": "maskable"
+    }
+  ],
+  "splash_pages": null,
+  "display_override": ["standalone", "minimal-ui"],
+  "shortcuts": [
+    {
+      "name": "Dashboard",
+      "short_name": "Dashboard",
+      "description": "Main mining dashboard",
+      "url": "/",
+      "icons": [{ "src": "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 96 96'%3E%3Crect width='96' height='96' fill='%2306d6f0'/%3E%3Ctext x='48' y='66' text-anchor='middle' font-family='monospace' font-weight='bold' font-size='48' fill='%23000'%3E65%3C/text%3E%3C/svg%3E", "sizes": "96x96", "type": "image/svg+xml" }]
+    },
+    {
+      "name": "Live Mining",
+      "short_name": "Live",
+      "description": "Real-time hash search visualization",
+      "url": "/#live-mining",
+      "icons": [{ "src": "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 96 96'%3E%3Crect width='96' height='96' fill='%2300ff9f'/%3E%3Ctext x='48' y='66' text-anchor='middle' font-family='monospace' font-weight='bold' font-size='48' fill='%23000'%3E⚡%3C/text%3E%3C/svg%3E", "sizes": "96x96", "type": "image/svg+xml" }]
+    }
+  ]
+}

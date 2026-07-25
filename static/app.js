@@ -7,7 +7,11 @@
 
   // ── constants ─────────────────────────────────────────────────────────
   const POLL_MS = window.POLL_INTERVAL_MS || 15000;
+  const POLL_MS_BACKGROUND = POLL_MS * 3;  // 3x slower when tab hidden (battery save)
   let nextPollAt = Date.now() + POLL_MS;
+  let _pollTimer = null;
+  let _isTabHidden = false;
+  let _matrixRunning = false;
 
   // ── formatters ────────────────────────────────────────────────────────
   const fmt = {
@@ -67,7 +71,8 @@
     usd(n) { if (!n) return '\u2014'; return `$${Number(n).toLocaleString('en-US', { maximumFractionDigits: 0 })}`; },
     expectedBlock(workerHr, networkDiff) {
       if (!workerHr || !networkDiff) return null;
-      const secs = (networkDiff * Math.pow(2, 32)) / workerHr * 65536;
+      // E[time] = difficulty * 2^32 / hashrate  (seconds to find a block)
+      const secs = (networkDiff * Math.pow(2, 32)) / workerHr;
       return secs;
     },
     secsToHuman(s) {
@@ -100,7 +105,7 @@
     timelineFeed: $('#timeline-feed'), timelineSharesBadge: $('#timeline-shares-badge'), timelineBumpsBadge: $('#timeline-bumps-badge'), timelineRateBadge: $('#timeline-rate-badge'),
     tStatLastShare: $('#t-stat-lastshare'), tStat1h: $('#t-stat-1h'), tStat24h: $('#t-stat-24h'), tStatBumps: $('#t-stat-bumps'),
     hBlocks: $('#h-blocks'), hDays: $('#h-days'), hCurReward: $('#h-cur-reward'), hNextReward: $('#h-next-reward'), hNextHeight: $('#h-next-height'), halvingEpochBadge: $('#halving-epoch-badge'),
-    feesStatus: $('#fees-status'), feeEconomy: $('#fee-economy'), feeHour: $('#fee-hour'), feeHalfhour: $('#fee-halfhour'), feeFastest: $('#fee-fastest'), feeMinimum: $('#fee-minimum'),
+    feeEconomy: $('#fee-economy'), feeHour: $('#fee-hour'), feeHalfhour: $('#fee-halfhour'), feeFastest: $('#fee-fastest'), feeMinimum: $('#fee-minimum'),
     profitShareBadge: $('#profit-share-badge'), profitCostBadge: $('#profit-cost-badge'), pBtcDay: $('#p-btc-day'),
     pFiatDay: $('#p-fiat-day'), pFiatDayWeek: $('#p-fiat-day-week'), pFiatMonth: $('#p-fiat-month'), pFiatMonthSub: $('#p-fiat-month-sub'),
     pBreakeven: $('#p-breakeven'), pBreakevenSub: $('#p-breakeven-sub'), pBtcSub: $('#p-btc-sub'), profitFootnote: $('#profit-footnote'), pCurBadge: $('#p-cur-badge'), profitFiatRow: $('#profit-fiat-row'),
@@ -111,9 +116,18 @@
     proxHeroPct: $('#prox-hero-pct'), proxHeroSub: $('#prox-hero-sub'), proxHeroBest: $('#prox-hero-best'),
     proxChance: $('#prox-chance'), proxTime: $('#prox-time'), proxTimeSub: $('#prox-time-sub'), proxDistance: $('#prox-distance'), proxTrend: $('#prox-trend'), proxTrendSub: $('#prox-trend-sub'),
     proxLadderRow: $('#prox-ladder-row'), proxSparkline: $('#prox-sparkline'), proxTip: document.getElementById('prox-tip'),
+    qlBadge: $('#ql-badge'), qlScoreNum: $('#ql-score-num'), qlScoreArc: document.getElementById('ql-score-arc'),
+    qlStatus: $('#ql-status'), qlLabel: $('#ql-label'), qlConfidence: $('#ql-confidence'),
+    qlCompShares: $('#ql-comp-shares'), qlCompSharesVal: $('#ql-comp-shares-val'),
+    qlCompProximity: $('#ql-comp-proximity'), qlCompProximityVal: $('#ql-comp-proximity-val'),
+    qlCompPower: $('#ql-comp-power'), qlCompPowerVal: $('#ql-comp-power-val'),
+    qlCompMomentum: $('#ql-comp-momentum'), qlCompMomentumVal: $('#ql-comp-momentum-val'),
     lcTimeBig: $('#lc-time-big'), lcSessionShareCount: $('#lc-session-share-count'), lcShareDiff: $('#lc-share-diff'), lcHashes: $('#lc-hashes'),
     lcTimeObs: $('#lc-time-obs'), lcPBlock: $('#lc-p-block'), lcInstHr: $('#lc-inst-hr'), lcSessionShares: $('#lc-session-shares'),
-    lcAvgShareDiff: $('#lc-avg-share-diff'), lcCumP: $('#lc-cum-p'), lcExpectedBlocks: $('#lc-expected-blocks'), lcTickerList: $('#lc-ticker-list'),
+    lcAvgShareDiff: $('#lc-avg-share-diff'), lcCumP: $('#lc-cum-p'), lcExpectedBlocks: $('#lc-expected-blocks'), lcTickerList: $('#lc-ticker-list'), lcTickerCount: $('#lc-ticker-count'),
+    lcChartDiff: document.getElementById('lc-chart-diff'), lcChartPBlock: document.getElementById('lc-chart-pblock'),
+    lcChartHr: document.getElementById('lc-chart-hr'), lcChartCumulative: document.getElementById('lc-chart-cumulative'),
+    lcConsistencyBadge: $('#lc-consistency-badge'),
     lmGrid: $('#lm-grid'), lmStatusBadge: $('#lm-status-badge'), lmWorkersBadge: $('#lm-workers-badge'),
     lmSummaryWallet: $('#lm-summary-wallet'), lmSummaryPool: $('#lm-summary-pool'), lmSummaryDot: $('#lm-summary-dot'),
     lmSummaryWorkers: $('#lm-summary-workers'), lmSummaryHr: $('#lm-summary-hr'), lmSummaryBest: $('#lm-summary-best'),
@@ -205,11 +219,33 @@
     if (!pool) return;
     if (dom.pHashrate) dom.pHashrate.textContent = fmt.hashrate(pool.hashrate);
     if (dom.pWorkers) dom.pWorkers.textContent = `${pool.workers || 0} / ${pool.users || 0}`;
-    if (dom.pHighDiff) dom.pHighDiff.textContent = fmt.diff(pool.highestDiff);
-    if (dom.pLastBlock) dom.pLastBlock.textContent = pool.lastBlock ? `#${pool.lastBlock}` : '\u2014';
-    if (dom.pLastBlockTime && pool.lastBlockTime) dom.pLastBlockTime.textContent = fmt.age(pool.lastBlockTime);
+    if (dom.pHighDiff) dom.pHighDiff.textContent = fmt.diff(pool.highestDiff || pool.highestDifficulty);
+    if (dom.pLastBlock) dom.pLastBlock.textContent = pool.lastBlockHeight ? `#${pool.lastBlockHeight}` : (pool.lastBlock ? `#${pool.lastBlock}` : '\u2014');
+    if (dom.pLastBlockTime && (pool.lastBlockTime || pool.lastBlockTimestamp)) dom.pLastBlockTime.textContent = fmt.age(pool.lastBlockTime || pool.lastBlockTimestamp);
     if (dom.pWorkFill && pool.workPct != null) dom.pWorkFill.style.width = `${pool.workPct}%`;
     if (dom.pWorkNum) dom.pWorkNum.textContent = pool.workStr || '\u2014';
+    // Expected seconds per block (pool-wide)
+    if (dom.pExpectedBlocks && pool.expectedSecondsPerBlock) {
+      const secs = pool.expectedSecondsPerBlock;
+      if (secs < 86400) dom.pExpectedBlocks.textContent = fmt.secsToHuman(secs);
+      else dom.pExpectedBlocks.textContent = (secs / 86400).toFixed(1) + 'd';
+    }
+    // API status: LIVE if pool data is present
+    setPoolStatus(pool);
+  }
+
+  function setPoolStatus(pool) {
+    if (!pool || !pool.hashrate) {
+      const el = document.getElementById('api-pool');
+      if (el) { el.textContent = 'ERROR'; el.className = 'badge api-status badge--error'; }
+      return;
+    }
+    const el = document.getElementById('api-pool');
+    if (!el) return;
+    const wslb = pool.workSinceLastBlock != null ? pool.workSinceLastBlock : pool.workPct;
+    const hasWork = wslb != null;
+    el.textContent = hasWork ? 'LIVE' : 'ESTIMATED';
+    el.className = 'badge api-status badge--' + (hasWork ? 'live' : 'estimated');
   }
 
   function renderNetwork(net) {
@@ -221,10 +257,16 @@
 
   function renderAccount(acct) {
     if (!acct) return;
+    // LN address from account API response
     if (dom.acctLn) dom.acctLn.textContent = acct.lightning || '\u2014';
-    if (dom.acctTotalDiff) dom.acctTotalDiff.textContent = fmt.diff(acct.totalDifficulty);
-    if (dom.acctDiffRank) dom.acctDiffRank.textContent = acct.diffRank || '\u2014';
-    if (dom.acctLoyaltyRank) dom.acctLoyaltyRank.textContent = acct.loyaltyRank || '\u2014';
+    // totalDifficulty (alias) or total_diff (API field)
+    const td = acct.totalDifficulty != null ? acct.totalDifficulty : acct.total_diff;
+    if (dom.acctTotalDiff) dom.acctTotalDiff.textContent = td ? fmt.diff(td) : '\u2014';
+    if (dom.acctHighestBlock) dom.acctHighestBlock.textContent = acct.highestBlock || acct.highest_blockheight || '\u2014';
+    if (dom.acctCombined) dom.acctCombined.textContent = acct.combinedScore != null ? Number(acct.combinedScore).toLocaleString() : '\u2014';
+    if (dom.acctDiffRank) dom.acctDiffRank.textContent = acct.diffRank != null ? '#' + acct.diffRank : '\u2014';
+    if (dom.acctLoyaltyRank) dom.acctLoyaltyRank.textContent = acct.loyaltyRank != null ? '#' + acct.loyaltyRank : '\u2014';
+    if (dom.acctBlocksBadge) dom.acctBlocksBadge.textContent = (acct.blocksFound || 0) + ' BLOCKS';
   }
 
   function renderBtcPrices(btc) {
@@ -237,9 +279,29 @@
 
   function renderHalving(h) {
     if (!h) return;
+    // Blocks remaining
     if (dom.hBlocks) dom.hBlocks.textContent = h.blocks_remaining != null ? h.blocks_remaining.toLocaleString() : '\u2014';
+    // Days remaining (using rolling avg block time)
     if (dom.hDays) dom.hDays.textContent = h.estimated_days_remaining != null ? `${Math.round(h.estimated_days_remaining)}d` : '\u2014';
+    // Current reward
     if (dom.hCurReward) dom.hCurReward.textContent = h.current_reward_btc != null ? `${h.current_reward_btc} BTC` : '\u2014';
+    // Next reward
+    if (dom.hNextReward) dom.hNextReward.textContent = h.next_reward_btc != null ? `${h.next_reward_btc} BTC` : '\u2014';
+    // Next height
+    if (dom.hNextHeight) dom.hNextHeight.textContent = h.next_height != null ? `#${h.next_height.toLocaleString()}` : '\u2014';
+    // Epoch badge
+    if (dom.halvingEpochBadge) dom.halvingEpochBadge.textContent = h.epoch_label || '--';
+    // Progress bar (pct_complete)
+    const pct = h.pct_complete != null ? h.pct_complete : 0;
+    const progressEl = document.getElementById('halving-progress-fill');
+    if (progressEl) progressEl.style.width = pct + '%';
+    const progressLabel = document.getElementById('halving-progress-label');
+    if (progressLabel) progressLabel.textContent = pct.toFixed(1) + '%';
+    // Block time info
+    const avgTimeEl = document.getElementById('halving-avg-time');
+    if (avgTimeEl && h.avg_block_time_s) {
+      avgTimeEl.textContent = `avg ${h.avg_block_time_s.toFixed(0)}s/block`;
+    }
   }
 
   function renderMempoolFees(f) {
@@ -247,6 +309,51 @@
     const set = (el, v) => { if (el) el.textContent = v != null ? `${v} sat/vB` : '\u2014'; };
     set(dom.feeEconomy, f.economyFee); set(dom.feeHour, f.hourFee); set(dom.feeHalfhour, f.halfHourFee);
     set(dom.feeFastest, f.fastestFee); set(dom.feeMinimum, f.minimumFee);
+
+    // Congestion assessment + recommendations
+    const fastest = f.fastestFee;
+    const el = document.getElementById('fees-status');
+    const recEl = document.getElementById('fee-recommendation');
+    if (!el) return;
+    if (fastest == null) {
+      el.textContent = 'FEES UNAVAILABLE';
+      el.className = 'badge badge--mute';
+      if (recEl) recEl.textContent = '⛔ Fee data unavailable — mempool.space may be unreachable';
+      return;
+    }
+    let status, cls;
+    if (fastest >= 200) {
+      status = 'HIGH CONGESTION';
+      cls = 'badge--red';
+    } else if (fastest >= 100) {
+      status = 'MODERATE';
+      cls = 'badge--gold';
+    } else if (fastest >= 30) {
+      status = 'NORMAL';
+      cls = 'badge--green';
+    } else {
+      status = 'LOW';
+      cls = 'badge--green';
+    }
+    el.textContent = status;
+    el.className = 'badge ' + cls;
+
+    // Recommendation text
+    if (recEl) {
+      if (fastest <= 5) {
+        recEl.textContent = '⇩ Mempool clear — minimum fee sufficient for next block';
+      } else if (fastest <= 20) {
+        recEl.textContent = '→ Normal conditions — hour fee should confirm within 1-2 blocks';
+      } else if (fastest <= 50) {
+        recEl.textContent = '↗ Elevated — consider half-hour fee for reliable next-block inclusion';
+      } else if (fastest <= 100) {
+        recEl.textContent = '↗ Busy — fastest fee recommended for timely confirmation';
+      } else if (fastest <= 200) {
+        recEl.textContent = '⇈ Congested — high fees; fastest fee required for next-block';
+      } else {
+        recEl.textContent = '⇈⚠ EXTREME — wait for congestion to clear or pay premium for next-block';
+      }
+    }
   }
 
   function renderAlerts(alerts) {
@@ -362,14 +469,21 @@
     }
 
     // Side stats
-    if (dom.proxChance) dom.proxChance.textContent = prox.chance_per_share_label || '—';
+    if (dom.proxChance) {
+      const sourceLabel = prox.chance_per_share_source === 'avg' ? 'avg share' : 'best share';
+      dom.proxChance.textContent = (prox.chance_per_share_label || '—') + ' (' + sourceLabel + ')';
+    }
     if (dom.proxTime) dom.proxTime.textContent = prox.expected_time_human || '—';
     if (dom.proxTimeSub && prox.blocks_per_year != null) {
       dom.proxTimeSub.textContent = '~' + prox.blocks_per_year.toFixed(4) + ' blocks/yr @ current HR';
     }
     if (dom.proxDistance) dom.proxDistance.textContent = prox.distance_label || '—';
     if (dom.proxTrend) dom.proxTrend.textContent = (prox.trend_1h_pct != null ? (prox.trend_1h_pct >= 0 ? '+' : '') + prox.trend_1h_pct.toFixed(1) + '%' : '—') + ' · ' + (prox.trend_label || 'flat');
-    if (dom.proxTrendSub) dom.proxTrendSub.textContent = '1h change vs. network';
+    if (dom.proxTrendSub) {
+      const rolling = prox.trend_rolling || {};
+      const shareInfo = rolling.recent_avg_str ? 'avg share: ' + rolling.recent_avg_str + ' (' + rolling.recent_count + ' shares)' : '';
+      dom.proxTrendSub.textContent = 'rolling avg share diff · 1h' + (shareInfo ? ' · ' + shareInfo : '');
+    }
 
     // Milestone ladder
     if (dom.proxLadderRow) {
@@ -381,6 +495,69 @@
 
     // Sparkline canvas
     _drawProximitySparkline(prox);
+
+    // Quantum-lock assessment
+    _renderQuantumLock(prox);
+  }
+
+  // ── Quantum-lock render helper ──
+  function _renderQuantumLock(prox) {
+    const ql = prox.quantum_lock;
+    if (!ql) {
+      if (dom.qlStatus) dom.qlStatus.textContent = 'NO DATA';
+      if (dom.qlLabel) dom.qlLabel.textContent = 'awaiting share data';
+      if (dom.qlBadge) dom.qlBadge.textContent = '—';
+      if (dom.qlScoreNum) dom.qlScoreNum.textContent = '—';
+      return;
+    }
+
+    // Badge
+    const statusColors = {
+      'STRONG_LOCK': 'badge--green',
+      'MODERATE_LOCK': 'badge--gold',
+      'WEAK_LOCK': 'badge--yellow',
+      'TRACKING': 'badge--mute',
+      'NO_DATA': 'badge--mute',
+    };
+    if (dom.qlBadge) {
+      dom.qlBadge.textContent = ql.status || '—';
+      dom.qlBadge.className = 'badge ql-badge ' + (statusColors[ql.status] || 'badge--mute');
+    }
+
+    // Score arc
+    const score = Math.min(100, Math.max(0, ql.score || 0));
+    const arc = dom.qlScoreArc;
+    if (arc) {
+      const circumference = 2 * Math.PI * 52;
+      const offset = circumference * (1 - score / 100);
+      arc.setAttribute('stroke-dasharray', circumference);
+      arc.setAttribute('stroke-dashoffset', offset);
+    }
+    if (dom.qlScoreNum) dom.qlScoreNum.textContent = score;
+
+    // Status + label + confidence
+    if (dom.qlStatus) {
+      dom.qlStatus.textContent = ql.status ? ql.status.replace(/_/g, ' ') : '—';
+      const statusCls = (ql.status || 'NO_DATA').toLowerCase();
+      dom.qlStatus.className = 'ql-status ql-status--' + statusCls;
+    }
+    if (dom.qlLabel) dom.qlLabel.textContent = ql.label || 'awaiting data';
+    if (dom.qlConfidence) dom.qlConfidence.textContent = ql.confidence || 'NONE';
+
+    // Components
+    const comps = ql.components || {};
+    const maxScores = { shares: 30, proximity: 40, power: 20, momentum: 10 };
+    const setComp = (barEl, valEl, key, defaultMax) => {
+      const raw = comps[key] || 0;
+      const max = maxScores[key] || defaultMax || 100;
+      const pct = max > 0 ? (raw / max * 100) : 0;
+      if (barEl) barEl.style.width = Math.min(100, pct) + '%';
+      if (valEl) valEl.textContent = raw + '/' + max;
+    };
+    setComp(dom.qlCompShares, dom.qlCompSharesVal, 'shares', 30);
+    setComp(dom.qlCompProximity, dom.qlCompProximityVal, 'proximity', 40);
+    setComp(dom.qlCompPower, dom.qlCompPowerVal, 'power', 20);
+    setComp(dom.qlCompMomentum, dom.qlCompMomentumVal, 'momentum', 10);
   }
 
   let _proxSparklineData = [];
@@ -437,32 +614,79 @@
   // ══════════════════════════════════════════════════════════════════════
 
   function renderNetworkGauge(snap) {
-    const gauge = snap.network_share_gauge;
+    const gauge = snap.network_share_gauge || {};
     const luck = snap.luck_estimate || {};
     const worker = snap.worker || {};
     const pool = snap.pool || {};
     const net = snap.network || {};
 
-    if (dom.gaugeLabel && gauge) dom.gaugeLabel.textContent = gauge.label || '—';
+    const hasData = gauge.has_data === true;
 
-    // Worker gauge
-    if (dom.gaugeWorkerPct && gauge) dom.gaugeWorkerPct.textContent = (gauge.worker_pct || 0).toFixed(6) + '%';
-    if (dom.gaugeWorkerBlockchance && worker.hashrate && net.difficulty) {
-      const hr = Number(worker.hashrate) || 0;
-      const diff = Number(net.difficulty) || 1;
-      const p22min = 1 - Math.exp(-(hr * 1320) / (diff * Math.pow(2, 32)));
-      dom.gaugeWorkerBlockchance.textContent = p22min > 0 ? (p22min * 100).toFixed(4) + '%' : '~0%';
+    // Label — shows worker % of network and pool % of network
+    if (dom.gaugeLabel) {
+      dom.gaugeLabel.textContent = hasData && gauge.label ? gauge.label : '—';
     }
-    _drawGauge('gauge-worker-canvas', gauge && gauge.worker_pct ? gauge.worker_pct : 0);
 
-    // Pool gauge
-    if (dom.gaugePoolPct && gauge) dom.gaugePoolPct.textContent = (gauge.pool_pct || 0).toFixed(4) + '%';
-    _drawGauge('gauge-pool-canvas', gauge && gauge.pool_pct ? gauge.pool_pct : 0);
+    // ── Worker gauge: % of total network hashrate ──
+    if (dom.gaugeWorkerPct) {
+      if (hasData && gauge.worker_pct != null) {
+        dom.gaugeWorkerPct.textContent = gauge.worker_pct.toFixed(6) + '%';
+      } else {
+        dom.gaugeWorkerPct.textContent = '—';
+      }
+    }
+    // 22-min block chance (Poisson: P(≥1 block in 22 min))
+    if (dom.gaugeWorkerBlockchance) {
+      if (worker.hashrate && net.difficulty) {
+        const hr = Number(worker.hashrate) || 0;
+        const diff = Number(net.difficulty) || 1;
+        const p22min = 1 - Math.exp(-(hr * 1320) / (diff * Math.pow(2, 32)));
+        dom.gaugeWorkerBlockchance.textContent = p22min > 0 ? (p22min * 100).toFixed(4) + '%' : '~0%';
+      } else {
+        dom.gaugeWorkerBlockchance.textContent = '—';
+      }
+    }
+    _drawGauge('gauge-worker-canvas', hasData && gauge.worker_pct != null ? gauge.worker_pct : 0);
 
-    // Luck gauge
+    // ── Pool gauge: % of network the pool controls ──
+    if (dom.gaugePoolPct) {
+      if (hasData && gauge.pool_pct != null) {
+        dom.gaugePoolPct.textContent = gauge.pool_pct.toFixed(4) + '%';
+      } else {
+        dom.gaugePoolPct.textContent = '—';
+      }
+    }
+    _drawGauge('gauge-pool-canvas', hasData && gauge.pool_pct != null ? gauge.pool_pct : 0);
+
+    // ── Luck gauge: round progress (0-100+%) ──
     const luckPct = luck.round_progress_pct || luck.pool_luck_pct || 0;
-    if (dom.gaugeLuckPct) dom.gaugeLuckPct.textContent = luckPct.toFixed(1) + '%';
-    _drawGauge('gauge-luck-canvas', Math.min(150, luckPct));
+    if (dom.gaugeLuckPct) {
+      dom.gaugeLuckPct.textContent = luckPct.toFixed(1) + '%';
+    }
+    // Cap arc at 100% for visual, but show real text value
+    _drawGauge('gauge-luck-canvas', Math.min(100, luckPct));
+
+    // ── Worker share of pool (new) — inline text ──
+    if (hasData && gauge.worker_share_of_pool_pct != null) {
+      // Update or create the pool-share indicator element
+      const el = document.getElementById('gauge-pool-share');
+      if (el) el.textContent = `you = ${gauge.worker_share_of_pool_pct.toFixed(4)}% of pool`;
+    }
+
+    // ── API status badge ──
+    const apiEl = document.getElementById('api-gauge');
+    if (apiEl) {
+      if (hasData) {
+        apiEl.textContent = 'LIVE';
+        apiEl.className = 'badge api-status badge--live';
+      } else if (snap.worker) {
+        apiEl.textContent = 'ESTIMATED';
+        apiEl.className = 'badge api-status badge--estimated';
+      } else {
+        apiEl.textContent = 'UNAVAILABLE';
+        apiEl.className = 'badge api-status badge--error';
+      }
+    }
   }
 
   function _drawGauge(canvasId, pct) {
@@ -510,9 +734,40 @@
   // CFO MONTE CARLO — block discovery simulation
   // ══════════════════════════════════════════════════════════════════════
 
+  // ── Slider helpers: convert slider value to human-readable label ──
+  function _cfoSliderLabel(v) {
+    const num = parseInt(v) || 24;
+    if (num < 24) return num + 'h';
+    if (num < 168) return (num / 24).toFixed(0) + 'd';
+    if (num < 720) return (num / 24).toFixed(0) + 'd';
+    if (num < 8760) return (num / 24 / 30).toFixed(0) + 'mo';
+    return '1yr';
+  }
+
+  // ── Debounced Monte Carlo ──
+  let _mcDebounceTimer = null;
+  function _scheduleMC() {
+    if (_mcDebounceTimer) clearTimeout(_mcDebounceTimer);
+    _mcDebounceTimer = setTimeout(() => { _mcDebounceTimer = null; loadMonteCarlo(); }, 300);
+  }
+
+  // ── Wire up the slider on DOM ready ──
+  document.addEventListener('DOMContentLoaded', () => {
+    const slider = document.getElementById('cfo-slider');
+    const label = document.getElementById('cfo-slider-label');
+    if (slider && label) {
+      slider.addEventListener('input', () => {
+        label.textContent = _cfoSliderLabel(slider.value);
+        _scheduleMC();
+      });
+    }
+    // Initial run after settings load
+    setTimeout(loadMonteCarlo, 500);
+  });
   function loadMonteCarlo() {
     if (!dom.cfoPBlock) return;
-    const hours = parseInt(dom.cfoHours?.value || 24);
+    const slider = document.getElementById('cfo-slider');
+    const hours = parseInt(slider?.value || 24);
     document.getElementById('api-cfo')?.classList.add('badge--estimated'); document.getElementById('api-cfo') && (document.getElementById('api-cfo').textContent = 'SIMULATING...');
 
     // Get current hashrate and difficulty from DOM
@@ -525,11 +780,11 @@
       const mult = { 'EH/S': 1e18, 'PH/S': 1e15, 'TH/S': 1e12, 'GH/S': 1e9, 'MH/S': 1e6, 'KH/S': 1e3, 'H/S': 1 };
       hashrateHs = val * (mult[unit] || 1);
     }
-    if (hashrateHs <= 0) hashrateHs = 225e12; // fallback 225 TH/s
+    if (hashrateHs <= 0) hashrateHs = window.__lastSnapshotHr || 225e12; // fallback from poll data
 
-    const diffText = dom.nDiff?.textContent || '110 T';
+    const diffText = dom.nDiff?.textContent || fmt.diff(window.__lastSnapshotDiff || 110e12);
     const diffMatch = diffText.match(/([\d.,]+)\s*([EPTGMk]?)/i);
-    let difficulty = 110e12;
+    let difficulty = window.__lastSnapshotDiff || 110e12;
     if (diffMatch) {
       let dval = parseFloat(diffMatch[1].replace(/,/g, ''));
       const dunit = (diffMatch[2] || 'T').toUpperCase();
@@ -601,6 +856,8 @@
   }
 
   window.loadMonteCarlo = loadMonteCarlo;
+  window.setProfitMode = setProfitMode;
+  window._disconnectWallet = _disconnectWallet;
 
   function _calcMCPercentile(buckets, total, pct) {
     let cum = 0; const target = total * pct / 100;
@@ -610,11 +867,136 @@
   }
 
 
+  let _lcChartsInitialized = false;
+  let _lcCharts = {};
+
+  function _drawLcSparkline(canvas, data, color, label, fixedDec) {
+    if (!canvas || !data || data.length < 2) return;
+    const dpr = window.devicePixelRatio || 1;
+    const cssW = canvas.clientWidth || 200;
+    const cssH = canvas.clientHeight || 40;
+    if (cssW < 10) return;
+    canvas.width = cssW * dpr;
+    canvas.height = cssH * dpr;
+    const ctx = canvas.getContext('2d');
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, cssW, cssH);
+
+    const pad = { top: 8, bottom: 12, left: 4, right: 4 };
+    const w = cssW - pad.left - pad.right;
+    const h = cssH - pad.top - pad.bottom;
+    const max = Math.max(...data, 0.001);
+    const min = Math.min(...data, 0);
+    const range = max - min || 1;
+
+    const x = (i) => pad.left + (i / Math.max(1, data.length - 1)) * w;
+    const y = (v) => pad.top + h - ((v - min) / range) * h;
+
+    // Fill gradient
+    const grad = ctx.createLinearGradient(0, pad.top, 0, pad.top + h);
+    grad.addColorStop(0, color.replace(')', ',0.3)').replace('rgb', 'rgba'));
+    grad.addColorStop(1, color.replace(')', ',0)').replace('rgb', 'rgba'));
+    ctx.fillStyle = grad;
+    ctx.beginPath();
+    ctx.moveTo(x(0), cssH);
+    data.forEach((v, i) => ctx.lineTo(x(i), y(v)));
+    ctx.lineTo(x(data.length - 1), cssH);
+    ctx.closePath();
+    ctx.fill();
+
+    // Line
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    data.forEach((v, i) => i === 0 ? ctx.moveTo(x(i), y(v)) : ctx.lineTo(x(i), y(v)));
+    ctx.stroke();
+
+    // Dot at end
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.arc(x(data.length - 1), y(data[data.length - 1]), 2.5, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Labels: min and max
+    ctx.fillStyle = 'rgba(255,255,255,0.35)';
+    ctx.font = '8px JetBrains Mono';
+    ctx.textAlign = 'left';
+    ctx.fillText(max.toExponential(2), pad.left, pad.top - 2);
+    ctx.textAlign = 'right';
+    ctx.fillText(min.toExponential(2), cssW - pad.right, cssH - 2);
+  }
+
+  function _drawLcCumulativeChart(canvas, timeline, color) {
+    if (!canvas || !timeline || timeline.length < 2) return;
+    const data = timeline.map(p => p.cum_p_block * 100);
+    const labels = timeline.map(p => '#' + p.share_idx);
+    const dpr = window.devicePixelRatio || 1;
+    const cssW = canvas.clientWidth || 400;
+    const cssH = canvas.clientHeight || 60;
+    if (cssW < 20) return;
+    canvas.width = cssW * dpr;
+    canvas.height = cssH * dpr;
+    const ctx = canvas.getContext('2d');
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, cssW, cssH);
+
+    const pad = { top: 10, bottom: 14, left: 8, right: 8 };
+    const w = cssW - pad.left - pad.right;
+    const h = cssH - pad.top - pad.bottom;
+    const max = Math.max(...data, 0.01);
+    const x = (i) => pad.left + (i / Math.max(1, data.length - 1)) * w;
+    const y = (v) => pad.top + h - (v / max) * h;
+
+    // Fill
+    const grad = ctx.createLinearGradient(0, pad.top, 0, pad.top + h);
+    grad.addColorStop(0, 'rgba(0,255,159,0.25)');
+    grad.addColorStop(1, 'rgba(0,255,159,0)');
+    ctx.fillStyle = grad;
+    ctx.beginPath();
+    ctx.moveTo(x(0), cssH);
+    data.forEach((v, i) => ctx.lineTo(x(i), y(v)));
+    ctx.lineTo(x(data.length - 1), cssH);
+    ctx.closePath();
+    ctx.fill();
+
+    // Line
+    ctx.strokeStyle = '#00ff9f';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    data.forEach((v, i) => i === 0 ? ctx.moveTo(x(i), y(v)) : ctx.lineTo(x(i), y(v)));
+    ctx.stroke();
+
+    // Dot at end
+    ctx.fillStyle = '#00ff9f';
+    ctx.beginPath();
+    ctx.arc(x(data.length - 1), y(data[data.length - 1]), 3, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Current value label
+    ctx.fillStyle = '#f0f0f0';
+    ctx.font = 'bold 9px JetBrains Mono';
+    ctx.textAlign = 'right';
+    ctx.fillText(data[data.length - 1].toFixed(4) + '%', cssW - pad.right, pad.top + 8);
+
+    // Axis labels
+    ctx.fillStyle = 'rgba(255,255,255,0.25)';
+    ctx.font = '7px JetBrains Mono';
+    ctx.textAlign = 'left';
+    ctx.fillText('share ' + labels[0], pad.left, cssH - 2);
+    ctx.textAlign = 'right';
+    ctx.fillText('share ' + labels[labels.length - 1], cssW - pad.right, cssH - 2);
+  }
+
   function renderLiveCalc(liveCalc) {
     if (!liveCalc || !dom.lcTimeBig) return;
     const latest = liveCalc.latest;
     const totals = liveCalc.session_totals || {};
     const ticker = liveCalc.ticker || [];
+    const chartsData = liveCalc.charts_data || {};
+    const cumTimeline = chartsData.cumulative_timeline || [];
+    const consistency = chartsData.consistency_check || {};
+
+    // Latest share info
     if (latest && latest.ts) {
       const d = new Date(latest.ts * 1000);
       const ts = String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0')+':'+String(d.getSeconds()).padStart(2,'0');
@@ -626,19 +1008,54 @@
       if (dom.lcPBlock) dom.lcPBlock.textContent = latest.p_block_this_share_pct_str || '\u2014';
       if (dom.lcInstHr) dom.lcInstHr.textContent = latest.instantaneous_hr_str || '\u2014';
     }
+
+    // Session totals
     if (dom.lcSessionShares) dom.lcSessionShares.textContent = totals.shares_so_far != null ? totals.shares_so_far : '\u2014';
     if (dom.lcAvgShareDiff) dom.lcAvgShareDiff.textContent = totals.avg_share_diff_str || '\u2014';
     if (dom.lcCumP) dom.lcCumP.textContent = totals.cum_p_block_pct_str || '\u2014';
     if (dom.lcExpectedBlocks) dom.lcExpectedBlocks.textContent = totals.expected_blocks_str || '\u2014';
-    if (dom.lcTickerList && ticker.length) {
-      dom.lcTickerList.innerHTML = ticker.slice().reverse().map(s => {
-        const d = new Date((s.ts || 0) * 1000);
-        const ts = String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0')+':'+String(d.getSeconds()).padStart(2,'0');
-        return '<div class="lc-ticker__row"><span class="lc-ticker__ts">' + ts + '</span><span class="lc-ticker__diff">' + (s.share_diff_str || '\u2014') + '</span><span class="lc-ticker__p">' + (s.p_block_this_share_pct_str || '\u2014') + '</span><span class="lc-ticker__hr">' + (s.instantaneous_hr_str || '\u2014') + '</span></div>';
-      }).join('');
-    } else if (dom.lcTickerList && !ticker.length) {
-      dom.lcTickerList.innerHTML = '<div class="lc-ticker__empty">awaiting share detection</div>';
+
+    // Consistency badge
+    if (dom.lcConsistencyBadge && consistency.status) {
+      const badgeCls = consistency.status === 'CONSISTENT' ? 'badge--green' : 'badge--red';
+      dom.lcConsistencyBadge.textContent = consistency.status;
+      dom.lcConsistencyBadge.className = 'badge ' + badgeCls;
+      dom.lcConsistencyBadge.title = (consistency.checks || []).map(c => c.check + ': ' + c.status).join('; ');
     }
+
+    // Ticker list (compact text version)
+    if (dom.lcTickerList) {
+      if (ticker.length) {
+        dom.lcTickerList.innerHTML = ticker.slice().reverse().map(s => {
+          const d = new Date((s.ts || 0) * 1000);
+          const ts = String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0')+':'+String(d.getSeconds()).padStart(2,'0');
+          return '<div class="lc-ticker__row"><span class="lc-ticker__ts">' + ts + '</span><span class="lc-ticker__diff">' + (s.share_diff_str || '\u2014') + '</span><span class="lc-ticker__p">' + (s.p_block_this_share_pct_str || '\u2014') + '</span><span class="lc-ticker__hr">' + (s.instantaneous_hr_str || '\u2014') + '</span></div>';
+        }).join('');
+      } else {
+        dom.lcTickerList.innerHTML = '<div class="lc-ticker__empty">awaiting share detection</div>';
+      }
+    }
+    if (dom.lcTickerCount) dom.lcTickerCount.textContent = ticker.length + ' shares';
+
+    // ── Charts (deferred to next frame for layout) ──
+    requestAnimationFrame(() => {
+      // Share diff sparkline
+      if (ticker.length >= 2) {
+        const diffData = ticker.map(s => s.share_diff_raw || 0);
+        _drawLcSparkline(dom.lcChartDiff, diffData, 'rgb(6,214,240)', 'share diff');
+
+        const pBlockData = ticker.map(s => (s.p_block_this_share || 0) * 100);
+        _drawLcSparkline(dom.lcChartPBlock, pBlockData, 'rgb(247,147,26)', 'P(block) %');
+
+        const hrData = ticker.map(s => (s.instantaneous_hr_hps || 0) / 1e12);
+        _drawLcSparkline(dom.lcChartHr, hrData, 'rgb(16,185,129)', 'TH/s');
+      }
+
+      // Cumulative P(block) chart
+      if (cumTimeline.length >= 2) {
+        _drawLcCumulativeChart(dom.lcChartCumulative, cumTimeline, '#00ff9f');
+      }
+    });
   }
 
 
@@ -662,6 +1079,7 @@
     set('api-proximity', snap.proximity && !snap.proximity.insufficient_data ? 'LIVE' : 'ESTIMATED');
     set('api-livecalc', snap.proximity?.live_calc?.latest ? 'LIVE' : 'ESTIMATED');
     set('api-livemining', (snap.all_workers && snap.all_workers.length > 0) ? 'LIVE' : 'ERROR');
+    set('api-worker-details', (snap.all_workers && snap.all_workers.length > 0 && snap.all_workers[0].rejectionRatePct != null) ? 'ESTIMATED' : 'ERROR');
 
     // mempool.space + blockchain.info — network height, difficulty, hashrate
     const netOk = !!(snap.network && snap.network.difficulty);
@@ -684,13 +1102,208 @@
   }
 
 
+  // ── Profitability mode state ──
+  let _profitMode = 'pool';
+
+  function setProfitMode(mode) {
+    _profitMode = mode;
+    // Toggle button active state
+    document.querySelectorAll('.profit-mode-btn').forEach(btn => {
+      btn.classList.toggle('active', btn.dataset.mode === mode);
+    });
+    // Toggle solo extra stats visibility
+    const soloExtra = document.getElementById('solo-extra-stats');
+    if (soloExtra) soloExtra.style.display = mode === 'solo' ? 'flex' : 'none';
+    // Skip re-fetch: re-render from existing snapshot
+    if (window.__lastProfitability) renderProfitability(window.__lastProfitability);
+  }
+
   function renderProfitability(p) {
     if (!p || !Object.keys(p).length) return;
-    const cur = (SETTINGS_CACHE.data?.active_currency?.value) || "USD"; const symMap = {USD:"$",BRL:"R$",EUR:"€",GBP:"£"}; const sym = symMap[cur] || "$";
+    window.__lastProfitability = p;
+    const cur = (SETTINGS_CACHE.data?.active_currency?.value) || 'USD';
+    const symMap = {USD:'$',BRL:'R$',EUR:'€',GBP:'£'}; const sym = symMap[cur] || '$';
     const fiatPerCur = (b) => b != null ? `${sym}${Number(b).toLocaleString(undefined,{maximumFractionDigits:2})}` : '\u2014';
-    if (dom.pBtcDay) dom.pBtcDay.textContent = p.net_btc_per_day_pool != null ? `${Number(p.net_btc_per_day_pool).toFixed(8)} BTC` : '\u2014';
-    if (dom.pFiatDay) dom.pFiatDay.textContent = fiatPerCur((p.fiat_per_day_pool || {})[cur]);
-    if (dom.pFiatMonth) dom.pFiatMonth.textContent = fiatPerCur((p.fiat_per_month_pool || {})[cur]);
+
+    // ── Data for all 3 modes ──
+    const pool = {
+      netBtc: p.net_btc_per_day_pool,
+      fiatDay: (p.fiat_per_day_pool || {})[cur],
+      fiatWeek: (p.fiat_per_week_pool || {})[cur],
+      fiatMonth: (p.fiat_per_month_pool || {})[cur],
+      netUsdDay: p.pool_net_usd_per_day,
+      netUsdMonth: p.pool_net_usd_per_month,
+    };
+    const soloDefined = p.net_btc_per_day_solo != null;
+    const solo = {
+      netBtc: p.net_btc_per_day_solo,
+      fiatDay: (p.fiat_per_day_solo || {})[cur],
+      fiatMonth: null, // not computed server-side; use day*30
+      pDay: p.solo_p_day_pct,
+      pYear: p.solo_p_year_pct,
+      p5y: p.solo_p_5year_pct,
+      expectedBlocks: p.solo_expected_blocks_per_year,
+      expectedTime: p.solo_expected_time_to_block_days,
+    };
+    const rentalDefined = p.net_btc_per_day_rental != null;
+    const rental = {
+      netBtc: p.net_btc_per_day_rental,
+      fiatDay: (p.fiat_per_day_rental || {})[cur],
+      fiatMonth: null,
+      rentalGrossBtc: p.rental_net_btc_per_day,
+      rentalNetUsdDay: p.rental_net_usd_per_day,
+      rentalNetUsdMonth: p.rental_net_usd_per_month,
+    };
+    const breakEven = p.break_even_rental_usd_per_th_day;
+    const costUsd = p.cost_per_day_usd;
+    const sharePct = p.share_of_network_pct;
+    const riskComp = p.risk_comparison;
+
+    // ── Share of network badge ──
+    if (dom.profitShareBadge) {
+      dom.profitShareBadge.textContent = sharePct != null ? sharePct.toFixed(6) + '% of network' : '—%';
+    }
+
+    // ── Cost badge ──
+    if (dom.profitCostBadge) {
+      dom.profitCostBadge.textContent = costUsd != null && costUsd > 0 ? `cost: $${costUsd.toFixed(2)}/d` : 'cost: $0.00/d';
+    }
+
+    // ── Pick data by active mode ──
+    let activeData, activeLabel, activeVariance, activeRisk;
+    if (_profitMode === 'solo' && soloDefined) {
+      activeData = solo;
+      activeLabel = '☀ SOLO · no pool fee';
+      activeVariance = 'EXTREME — lottery-like';
+      activeRisk = riskComp?.solo?.risk_score || 10;
+    } else if (_profitMode === 'rental' && rentalDefined) {
+      activeData = rental;
+      activeLabel = '📦 RENTAL · after rental cost';
+      activeVariance = 'MODERATE — pool + price risk';
+      activeRisk = riskComp?.rental?.risk_score || 6;
+    } else {
+      // Default: pool mode
+      activeData = pool;
+      activeLabel = '⛏ POOL · after fee & orphan';
+      activeVariance = 'LOW — steady daily BTC';
+      activeRisk = riskComp?.pool?.risk_score || 2;
+    }
+
+    // ── NET BTC / DAY ──
+    if (dom.pBtcDay) {
+      dom.pBtcDay.textContent = activeData.netBtc != null ? `${Number(activeData.netBtc).toFixed(8)} BTC` : '\u2014';
+    }
+    if (dom.pBtcSub) dom.pBtcSub.textContent = activeLabel;
+
+    // ── FIAT / DAY · FIAT / WEEK ──
+    if (dom.pFiatDay) dom.pFiatDay.textContent = fiatPerCur(activeData.fiatDay);
+    if (dom.pFiatDayWeek) {
+      const weekVal = activeData.fiatDay != null ? activeData.fiatDay * 7 : null;
+      dom.pFiatDayWeek.textContent = weekVal ? `~ ${fiatPerCur(weekVal)} / week` : '\u2014';
+    }
+
+    // ── FIAT / MONTH ──
+    if (dom.pFiatMonth) dom.pFiatMonth.textContent = fiatPerCur(activeData.fiatMonth != null ? activeData.fiatMonth : (activeData.fiatDay != null ? activeData.fiatDay * 30 : null));
+    if (dom.pFiatMonthSub) {
+      const netUsd = activeData.netUsdDay != null ? activeData.netUsdDay : activeData.rentalNetUsdDay;
+      dom.pFiatMonthSub.textContent = netUsd != null ? (netUsd >= 0 ? 'net profit' : 'net loss') : 'net of cost';
+    }
+
+    // ── BREAK-EVEN ──
+    if (dom.pBreakeven) {
+      dom.pBreakeven.textContent = breakEven != null ? `$${breakEven.toFixed(4)}` : '\u2014';
+    }
+    if (dom.pBreakevenSub) {
+      dom.pBreakevenSub.textContent = breakEven != null ? 'rental $/TH·d break-even' : 'set cost in ⚙ Settings';
+    }
+
+    // ── FOOTNOTE ──
+    if (dom.profitFootnote) {
+      const costInfo = p.cost_label || 'none';
+      const modeInfo = riskComp ? Object.values(riskComp).map(m => `${m.label} risk ${m.risk_score}/10`).join(' · ') : '';
+      dom.profitFootnote.textContent = `Mode: ${activeLabel} · Risk: ${activeRisk}/10 · Cost: ${costInfo}${modeInfo ? ' · ' + modeInfo : ''}`;
+    }
+
+    // ── SOLO EXTRA STATS ──
+    const updateSolo = (id, val, suffix) => {
+      const el = document.getElementById(id);
+      if (el) el.textContent = val != null ? val + (suffix || '') : '\u2014';
+    };
+    updateSolo('solo-p-day', p.solo_p_day_pct != null ? Number(p.solo_p_day_pct).toExponential(4) : null, '%');
+    updateSolo('solo-p-year', p.solo_p_year_pct != null ? Number(p.solo_p_year_pct).toFixed(4) : null, '%');
+    updateSolo('solo-p-5y', p.solo_p_5year_pct != null ? Number(p.solo_p_5year_pct).toFixed(2) : null, '%');
+    updateSolo('solo-expected-blocks', p.solo_expected_blocks_per_year != null ? Number(p.solo_expected_blocks_per_year).toFixed(4) : null, '');
+    updateSolo('solo-expected-time', p.solo_expected_time_to_block_days != null ? Math.round(Number(p.solo_expected_time_to_block_days)).toLocaleString() : null, ' days');
+
+    // ── FIAT CURRENCY ROW — update all currencies ──
+    if (dom.profitFiatRow) {
+      const modeKey = _profitMode === 'solo' ? 'fiat_per_day_solo' : (_profitMode === 'rental' ? 'fiat_per_day_rental' : 'fiat_per_day_pool');
+      const fiatData = p[modeKey] || {};
+      dom.profitFiatRow.querySelectorAll('.profit-fiat-cell').forEach(cell => {
+        const curCode = cell.dataset.cur;
+        const valEl = cell.querySelector('.val');
+        if (valEl) {
+          const v = fiatData[curCode];
+          const rowSym = symMap[curCode] || '$';
+          valEl.textContent = v != null ? `${rowSym}${Number(v).toLocaleString(undefined,{maximumFractionDigits:2})}` : '\u2014';
+        }
+      });
+    }
+
+    // ── Curr badge ──
+    if (dom.pCurBadge) dom.pCurBadge.textContent = cur;
+
+    // ── API STATUS ──
+    const apiEl = document.getElementById('api-profit');
+    if (apiEl && costUsd != null && (p.net_btc_per_day_pool != null || soloDefined)) {
+      apiEl.textContent = 'ESTIMATED';
+      apiEl.className = 'badge api-status badge--estimated';
+    } else if (apiEl) {
+      apiEl.textContent = 'ERROR';
+      apiEl.className = 'badge api-status badge--error';
+    }
+  }
+
+  // ══════════════════════════════════════════════════════════════════
+  //  CFO · RISK-ADJUSTED COMPARISON — 3 modes side-by-side
+  // ══════════════════════════════════════════════════════════════════
+  function renderCfoPanel(p) {
+    if (!p || !p.risk_comparison) {
+      const set = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v || '\u2014'; };
+      ['cforisk-pool-risk','cforisk-solo-risk','cforisk-rental-risk'].forEach(id => set(id, '—'));
+      ['cforisk-pool-btc','cforisk-solo-btc','cforisk-rental-btc'].forEach(id => set(id, '—'));
+      ['cforisk-pool-usd','cforisk-solo-usd','cforisk-rental-usd'].forEach(id => set(id, '—'));
+      ['cforisk-pool-cv','cforisk-solo-cv','cforisk-rental-cv'].forEach(id => set(id, '—'));
+      const apiEl = document.getElementById('api-cfo-risk');
+      if (apiEl) { apiEl.textContent = 'NO DATA'; apiEl.className = 'badge api-status badge--error'; }
+      return;
+    }
+    const rc = p.risk_comparison;
+    const modes = ['pool','solo','rental'];
+    const apiEl = document.getElementById('api-cfo-risk');
+    if (apiEl) { apiEl.textContent = 'LIVE'; apiEl.className = 'badge api-status badge--live'; }
+
+    for (const mode of modes) {
+      const m = rc[mode];
+      if (!m) continue;
+      const set = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v != null ? String(v) : '\u2014'; };
+      set('cforisk-' + mode + '-risk', m.risk_score + '/10');
+      set('cforisk-' + mode + '-btc', m.net_btc_daily != null ? m.net_btc_daily + ' BTC' : '—');
+      set('cforisk-' + mode + '-usd', m.net_usd_daily != null ? '$' + Number(m.net_usd_daily).toLocaleString() : '—');
+      set('cforisk-' + mode + '-cv', m.cv || '—');
+      set('cforisk-' + mode + '-variance', m.variance || '—');
+      set('cforisk-' + mode + '-bestfor', m.best_for || '—');
+
+      // Color the risk badge based on score
+      const badge = document.getElementById('cforisk-' + mode + '-risk');
+      if (badge && m.risk_score != null) {
+        const score = Number(m.risk_score);
+        badge.className = 'cforisk-card__badge cforisk-badge';
+        if (score <= 3) badge.classList.add('cforisk-badge--low');
+        else if (score <= 6) badge.classList.add('cforisk-badge--mid');
+        else badge.classList.add('cforisk-badge--crit');
+      }
+    }
   }
 
   function renderMilestones(list) {
@@ -702,11 +1315,15 @@
   // ── Main render ──
   let prevSnapshot = null;
   function render(snap) {
+    // Expose live snapshot values for downstream consumers (e.g. loadMonteCarlo)
+    window.__lastSnapshotHr = (snap.worker && snap.worker.hashrate) ? Number(snap.worker.hashrate) : 0;
+    window.__lastSnapshotDiff = (snap.network && snap.network.difficulty) ? Number(snap.network.difficulty) : 0;
     _updateApiStatusBadges(snap);
     if (!_skeletonsHidden) hideSkeletons();
     if (dom.topbarAddress) dom.topbarAddress.textContent = `${fmt.shortAddr(window.BTC_ADDRESS || '')} · WORKER ${(window.WORKER_NAME || '').toUpperCase()}`;
     if (dom.statusText) dom.statusText.textContent = snap.worker ? 'ONLINE' : 'OFFLINE';
     dom.statusPill.classList.toggle('is-online', !!snap.worker);
+    _updateEmptyState();
     renderHero(snap);
     renderPool(snap.pool);
     renderNetwork(snap.network);
@@ -715,6 +1332,7 @@
     renderHalving(snap.halving);
     renderMempoolFees(snap.mempool_fees);
     renderProfitability(snap.profitability);
+    renderCfoPanel(snap.profitability);
     renderProximity(snap.proximity);
     renderLiveCalc(snap.proximity?.live_calc);
     renderNetworkGauge(snap);
@@ -722,8 +1340,9 @@
     renderAlerts(snap.alerts_recent);
     renderEvents(snap.highest_diffs);
     renderLeaderboard(snap.leaderboard_table_top_30);
-    renderTimelineFeed(snap.timeline_last_n);
+    renderTimelineFeed(snap.timeline_recent);
     renderLiveMining(snap.all_workers, snap.worker);
+    renderWorkerDetails(snap.all_workers);
     _updateHashSearchState(snap.worker, snap.network);
     _huntUpdateState(snap.worker, snap.network, parseFloat(snap.proximity?.live_calc?.session_totals?.cum_p_block_pct_str) || 0, parseFloat(snap.proximity?.live_calc?.session_totals?.expected_blocks) || 0, snap.proximity?.live_calc?.ticker || []);
     prevSnapshot = snap;
@@ -779,8 +1398,10 @@
   }
 
   // ── Matrix Rain ──
+  let _matrixRafId = null;
   function initMatrix() {
     const c = document.getElementById('matrix-canvas'); if (!c) return;
+    _matrixRunning = true;
     const ctx = c.getContext('2d'); let w, h, cols, drops;
     const chars = '01アイウエオカキクケコサシスセソタチツテトABCDEF123456789#$%&*+<=>?';
     function resize() { w = c.width = window.innerWidth; h = c.height = window.innerHeight; cols = Math.floor(w / 14); drops = Array(cols).fill(0).map(() => Math.random() * h / 14); }
@@ -845,19 +1466,190 @@
   dom.exportModal?.addEventListener('click', (e) => { if (e.target.matches('[data-close]')) closeExportModal(); });
   dom.openExports?.addEventListener('click', openExportModal);
 
+  // ── Wallet Connection ──
+  // Xverse wallet provider detection
+  function getXverseProvider() {
+    if (typeof window.BitcoinProvider !== 'undefined') return window.BitcoinProvider;
+    if (typeof window.btc !== 'undefined' && window.btc?.request) return window.btc;
+    if (typeof window.ethereum !== 'undefined' && window.ethereum?.isXverse) return window.ethereum;
+    return null;
+  }
+
+  async function connectXverse() {
+    const provider = getXverseProvider();
+    if (!provider) {
+      _logMiningEvent('WALLET', 'Xverse not detected — install from xverse.app');
+      document.getElementById('wallet-connect-xverse').textContent = '✕ NOT DETECTED';
+      setTimeout(() => { document.getElementById('wallet-connect-xverse').innerHTML = '<span class="wallet-btn__icon">◆</span> XVERSE'; }, 3000);
+      return;
+    }
+    try {
+      // Xverse getAddresses
+      const addrs = await provider.request('getAddresses', { purposes: ['ordinals', 'payment'] });
+      const btcAddr = addrs?.result?.addresses?.find(a => a.address?.startsWith('bc1') || a.address?.startsWith('1'))?.address
+                    || addrs?.addresses?.[0]?.address
+                    || addrs?.[0]?.address;
+      if (btcAddr) {
+        _setWalletAddress(btcAddr, 'xverse');
+      }
+    } catch (e) {
+      _logMiningEvent('WALLET', 'Xverse connection failed: ' + e.message);
+    }
+  }
+
+  function _setWalletAddress(addr, source) {
+    if (!addr || addr.length < 10) return;
+    window.BTC_ADDRESS = addr;
+    window._userConnectedWallet = true;
+    localStorage.setItem('cypher65_wallet', JSON.stringify({ address: addr, source }));
+    document.getElementById('wallet-banner').style.display = 'none';
+    const dcBtn = document.getElementById('disconnect-wallet');
+    if (dcBtn) dcBtn.style.display = '';
+    _updateEmptyState();
+    _logMiningEvent('WALLET', 'Connected: ' + fmt.shortAddr(addr) + ' (' + source + ')');
+    // Refresh the server with new address, then trigger immediate poll
+    fetch('/api/set-address', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ address: addr }),
+    }).then(() => { fetchSnapshot(); }).catch(() => {});
+  }
+
+  function _checkSavedWallet() {
+    try {
+      const saved = localStorage.getItem('cypher65_wallet');
+      if (saved) {
+        const { address, source } = JSON.parse(saved);
+        if (address && address.length >= 10) {
+          window.BTC_ADDRESS = address;
+          window._userConnectedWallet = true;
+          document.getElementById('wallet-banner').style.display = 'none';
+          const dcBtn = document.getElementById('disconnect-wallet');
+          if (dcBtn) dcBtn.style.display = '';
+          _logMiningEvent('WALLET', 'Restored: ' + fmt.shortAddr(address) + ' (' + (source || 'saved') + ')');
+        }
+      }
+    } catch (e) {}
+  }
+
+  // Wallet UI events
+  document.getElementById('wallet-connect-xverse')?.addEventListener('click', connectXverse);
+  document.getElementById('wallet-connect-manual')?.addEventListener('click', () => {
+    document.getElementById('wallet-modal')?.classList.remove('modal--hidden');
+  });
+  document.getElementById('wallet-address-confirm')?.addEventListener('click', () => {
+    const input = document.getElementById('wallet-address-input');
+    if (!input) return;
+    const addr = input.value.trim();
+    if (addr.length >= 10 && (addr.startsWith('bc1') || addr.startsWith('1') || addr.startsWith('3') || addr.startsWith('tb1') || addr.startsWith('2'))) {
+      _setWalletAddress(addr, 'manual');
+      document.getElementById('wallet-modal')?.classList.add('modal--hidden');
+    } else {
+      document.getElementById('wallet-input-hint').textContent = 'Invalid Bitcoin address — must start with bc1, 1, or 3';
+      document.getElementById('wallet-input-hint').style.color = '#ff6b6b';
+    }
+  });
+  // Validate address input as user types (basic prefix check)
+  document.getElementById('wallet-address-input')?.addEventListener('input', (e) => {
+    const hint = document.getElementById('wallet-input-hint');
+    if (hint) {
+      hint.textContent = 'Paste your mining wallet address to view workers and stats';
+      hint.style.color = '';
+    }
+  });
+
+  // ── Disconnect Wallet ──
+  function _disconnectWallet() {
+    if (!window.BTC_ADDRESS) return;
+    if (!confirm('Desconectar carteira? Os dados do dashboard serão limpos.')) return;
+    window.BTC_ADDRESS = null;
+    window._userConnectedWallet = false;
+    localStorage.removeItem('cypher65_wallet');
+    if (dom.topbarAddress) dom.topbarAddress.textContent = '—';
+    const banner = document.getElementById('wallet-banner');
+    if (banner) banner.style.display = '';
+    const dcBtn = document.getElementById('disconnect-wallet');
+    if (dcBtn) dcBtn.style.display = 'none';
+    _updateEmptyState();
+    fetch('/api/set-address', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ address: '' }) }).catch(() => {}).finally(() => { fetchSnapshot(); });
+    logMessage('WALLET', 'disconnected — session reset');
+  }
+
+  document.getElementById('disconnect-wallet')?.addEventListener('click', _disconnectWallet);
+
+  // ── Opportunity Engine Popup ──
+  // ── _oppShown with localStorage persistence ──
+  const _OPP_LS_KEY = 'cypher_oppShown';
+  function _loadOppShown() {
+    try {
+      const raw = localStorage.getItem(_OPP_LS_KEY);
+      if (raw) {
+        const obj = JSON.parse(raw);
+        // Prune entries older than 7 days to keep localStorage lean
+        const cutoff = Date.now() - 7 * 86400 * 1000;
+        for (const k of Object.keys(obj)) {
+          if (obj[k] < cutoff) delete obj[k];
+        }
+        return obj;
+      }
+    } catch (_) { /* ignore corrupt data */ }
+    return {};
+  }
+  function _saveOppShown() {
+    try { localStorage.setItem(_OPP_LS_KEY, JSON.stringify(_oppShown)); } catch (_) { /* quota exceeded */ }
+  }
+  let _oppShown = _loadOppShown(); // dedup by id, persisted across refresh
+  async function _checkOpportunities() {
+    try {
+      const r = await fetch('/api/opportunities');
+      if (!r.ok) return;
+      const data = await r.json();
+      const opps = data.opportunities || [];
+      if (!opps.length) {
+        document.getElementById('opp-popup').style.display = 'none';
+        return;
+      }
+      // Show best opportunity
+      const best = opps[0];
+      const isObsolete = best.status === 'OBSOLETE';
+      if (!_oppShown[best.id]) {
+        _oppShown[best.id] = Date.now();
+        _saveOppShown();
+        const body = document.getElementById('opp-popup-body');
+        if (body) {
+          const statusBadge = isObsolete
+            ? '<span class="badge badge--obsolete opp-popup__status">OBSOLETE</span>'
+            : '<span class="badge badge--live opp-popup__status">LIVE</span>';
+          body.innerHTML = statusBadge
+            + '<div class="opp-popup__headline">' + escapeHtml(best.title || '') + '</div>'
+            + '<div class="opp-popup__desc">' + escapeHtml(best.description || '') + '</div>'
+            + '<div class="opp-popup__meta">' + escapeHtml(best.meta || '') + '</div>';
+        }
+        document.getElementById('opp-popup').style.display = 'block';
+        // Auto-hide after 15s for live; 8s for obsolete (less intrusive)
+        const hideMs = isObsolete ? 8000 : 15000;
+        setTimeout(() => { document.getElementById('opp-popup').style.display = 'none'; }, hideMs);
+      }
+    } catch (e) { /* silent */ }
+  }
+  document.getElementById('opp-popup-close')?.addEventListener('click', () => {
+    document.getElementById('opp-popup').style.display = 'none';
+  });
+
   // ── Keyboard shortcuts ──
   document.addEventListener('keydown', (e) => {
     if (e.key.toLowerCase() === 'r' && !document.querySelector('.modal:not(.modal--hidden)') && document.activeElement.tagName !== 'INPUT' && !e.metaKey && !e.ctrlKey) fetchSnapshot();
-    else if (e.key === 'Escape') { closeSettingsModal(); closeExportModal(); }
+    else if (e.key === 'Escape') { closeSettingsModal(); closeExportModal(); document.getElementById('opp-popup').style.display = 'none'; }
   });
 
   // ══════════════════════════════════════════════════════════════════════
   // CYPHER // LIVE MINING — Summary, Best Share, Event Log
-  // ══════════════════════════════════════════════════════════════════════
-
-  let _lmLoggedActive = false;
-  let _lmBestShareEver = 0; let _lmBestShareWorker = ''; let _lmBestShareTime = '';
+  // ══════════════════════════════════════════════════════════════════════  let _lmLastWorkerCount = -1; let _lmBestShareEver = 0; let _lmBestShareWorker = ''; let _lmBestShareTime = '';
   let _lmEventCount = 0; const _LM_EVENT_MAX = 50;
+  // Track last-seen share ts and best-diff string to fire REAL events at the log terminal
+  let _lmPrimed = false;  // first-poll guard: capture baseline without firing events
+  let _lmLastSubmitTs = 0;
+  let _lmLastBestDiffStr = '';
 
   function parseBestDiff(bd) {
     if (!bd) return 0;
@@ -917,15 +1709,84 @@
     _lmEventCount = 1;
   });
 
+  // ══════════════════════════════════════════════════════════════════════
+  // WORKER DETAILS — deep monitoring: rejection rate, temperature, hw errors
+  // ══════════════════════════════════════════════════════════════════════
+  function renderWorkerDetails(allWorkers) {
+    const grid = document.getElementById('wd-grid');
+    if (!grid) return;
+    const workers = allWorkers || [];
+    if (!workers.length) {
+      grid.innerHTML = '<div class="wd-empty">Connect wallet and await share data for deep worker metrics.</div>';
+      return;
+    }
+    const badge = document.getElementById('api-worker-details');
+    if (badge) { badge.textContent = 'ESTIMATED'; badge.className = 'badge badge--estimated'; }
+    const html = workers.map((w, i) => {
+      const hr = Number(w.hashrate || 0);
+      const bestDiffStr = w.bestDifficulty ? fmt.diff(w.bestDifficulty) : '—';
+      const now_sec = Date.now() / 1000;
+      const is_recent = w.lastSubmission && (now_sec - Number(w.lastSubmission)) < 3600;
+      const state = w.state || (hr > 0 ? 'HASHING' : (is_recent ? 'ONLINE' : (w.lastSubmission ? 'STALE' : 'IDLE')));
+      const stateCls = state === 'HASHING' ? 'wd-state--hashing' : state === 'ONLINE' ? 'wd-state--online' : 'wd-state--idle';
+      const rejection = w.rejectionRatePct != null ? `<div class="wd-cell"><span class="wd-cell__label">REJECTION RATE</span><span class="wd-cell__val wd-cell__val--warn">${escapeHtml(w.rejectionRateLabel || '—')}</span><span class="wd-cell__formula">= (1 − best_diff_bumps / shares) × 100  ·  session-wide estimate</span></div>` : '';
+      const temp = `<div class="wd-cell"><span class="wd-cell__label">TEMPERATURE</span><span class="wd-cell__val wd-cell__val--mute">${w.temperatureLabel || 'UNAVAILABLE'}</span><span class="wd-cell__formula">ASIC-level — pool API does not expose</span></div>`;
+      const hw = `<div class="wd-cell"><span class="wd-cell__label">HARDWARE ERRORS</span><span class="wd-cell__val wd-cell__val--mute">${w.hardwareErrorsLabel || 'UNAVAILABLE'}</span><span class="wd-cell__formula">ASIC-level — pool API does not expose</span></div>`;
+      const sph = w.sharesPerHour != null ? `<div class="wd-cell"><span class="wd-cell__label">SHARES/HOUR</span><span class="wd-cell__val">${w.sharesPerHour}</span></div>` : '';
+      return `<div class="wd-card ${stateCls}">
+        <div class="wd-card__head">
+          <span class="wd-card__name">${escapeHtml(w.name || w.id || 'Worker ' + (i+1))}</span>
+          <span class="wd-card__state">${state}</span>
+        </div>
+        <div class="wd-card__body">
+          <div class="wd-cell"><span class="wd-cell__label">HASHRATE</span><span class="wd-cell__val">${fmt.hashrate(hr)}</span></div>
+          <div class="wd-cell"><span class="wd-cell__label">BEST DIFFICULTY</span><span class="wd-cell__val wd-cell__val--gold">${bestDiffStr}</span></div>
+          <div class="wd-cell"><span class="wd-cell__label">LAST SHARE</span><span class="wd-cell__val">${w.lastShareAgoLabel || (w.lastSubmission ? fmt.age(w.lastSubmission) : '—')}</span></div>
+          <div class="wd-cell"><span class="wd-cell__label">UPTIME</span><span class="wd-cell__val">${w.uptime ? fmt.uptime(w.uptime) : '—'}</span></div>
+          ${rejection}
+          ${temp}
+          ${hw}
+          ${sph}
+        </div>
+      </div>`;
+    }).join('');
+    grid.innerHTML = html;
+  }
+
   function renderLiveMining(allWorkers, primaryWorker) {
     if (!dom.lmGrid) return;
     const workers = allWorkers || [];
     if (!workers.length) { dom.lmGrid.innerHTML = '<div class="lm-empty">awaiting worker data</div>'; document.getElementById('api-livemining')?.classList.remove('badge--error','badge--estimated'); document.getElementById('api-livemining')?.classList.add('badge--live'); document.getElementById('api-livemining') && (document.getElementById('api-livemining').textContent = 'IDLE'); return; }
     document.getElementById('api-livemining')?.classList.remove('badge--error','badge--estimated'); document.getElementById('api-livemining')?.classList.add('badge--live'); document.getElementById('api-livemining') && (document.getElementById('api-livemining').textContent = 'LIVE');
-    if (dom.lmWorkersBadge) dom.lmWorkersBadge.textContent = `${workers.length} worker${workers.length === 1 ? '' : 's'}`;
-    _updateLiveMiningSummary(workers, primaryWorker);
+    if (dom.lmWorkersBadge) dom.lmWorkersBadge.textContent = `${workers.length} worker${workers.length === 1 ? '' : 's'}`;    _updateLiveMiningSummary(workers, primaryWorker);
     _updateBestShare(workers);
-    if (workers.length > 0 && !_lmLoggedActive) { _logMiningEvent('JOB', `${workers.length} worker${workers.length===1?'':'s'} active`); _lmLoggedActive = true; }
+
+    if (workers.length > 0 && workers.length !== _lmLastWorkerCount) {
+      _lmLastWorkerCount = workers.length;
+      _logMiningEvent('JOB', `${workers.length} worker${workers.length===1?'':'s'} active`);
+    } else if (workers.length === 0 && _lmLastWorkerCount !== 0) {
+      _lmLastWorkerCount = 0;
+      _logMiningEvent('WARN', '0 workers online');
+    }
+
+    // ── REAL SHARE + BEST_DIFF event detection from pool API deltas ──
+    // First-poll guard: capture baseline without firing false events
+    if (primaryWorker && !_lmPrimed) {
+      _lmLastSubmitTs = Number(primaryWorker.lastSubmission) || 0;
+      _lmLastBestDiffStr = String(primaryWorker.bestDifficulty || '');
+      _lmPrimed = true;
+    } else if (primaryWorker) {
+      const curSubmit = Number(primaryWorker.lastSubmission) || 0;
+      if (curSubmit > 0 && curSubmit !== _lmLastSubmitTs) {
+        _lmLastSubmitTs = curSubmit;
+        _logMiningEvent('SHARE', `share validated by pool — last: ${fmt.age(curSubmit)}`);
+      }
+      const curBestDiff = String(primaryWorker.bestDifficulty || '');
+      if (curBestDiff && curBestDiff !== _lmLastBestDiffStr) {
+        _lmLastBestDiffStr = curBestDiff;
+        _logMiningEvent('BEST', `best difficulty improved to ${fmt.diff(curBestDiff)}`);
+      }
+    }
 
     let maxHr = 0; workers.forEach(w => { const h = Number(w.hashrate || 0); if (h > maxHr) maxHr = h; });
     const html = workers.map((w, i) => {
@@ -1123,7 +1984,11 @@
       const d = new Date((s.ts||0)*1000);
       const ts = String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0')+':'+String(d.getSeconds()).padStart(2,'0');
       const isNewest = newest && s.ts === newest.ts;
-      return `<div class="hunt-share-card${isNewest?' is-newest':''}"><span class="sc-lbl">TIME</span><span class="sc-val cyan">${ts}</span><span class="sc-lbl">DIFF</span><span class="sc-val">${s.share_diff_str||'\u2014'}</span><span class="sc-lbl">GAP</span><span class="sc-val green">${s.gap?Number(s.gap).toFixed(1)+'s':'\u2014'}</span><span class="sc-lbl">HASHRATE</span><span class="sc-val">${s.instantaneous_hr_str||'\u2014'}</span><div class="sc-bar"><div class="sc-bar-fill" style="width:${Math.min(100,(s.p_block_this_share||0)*100)}%"></div></div></div>`;
+      const source = s.source || 'CALCULATED';
+      const sourceBadge = source === 'CALCULATED'
+        ? '<span class="sc-source badge badge--live" title="Derived from pool API vardiff">CALC.</span>'
+        : '<span class="sc-source badge badge--estimated" title="Estimated from bestDifficulty/2 when vardiff unavailable">EST.</span>';
+      return `<div class="hunt-share-card${isNewest?' is-newest':''}">${sourceBadge}<span class="sc-lbl">TIME</span><span class="sc-val cyan">${ts}</span><span class="sc-lbl">DIFF</span><span class="sc-val">${s.share_diff_str||'\u2014'}</span><span class="sc-lbl">GAP</span><span class="sc-val green">${s.gap?Number(s.gap).toFixed(1)+'s':'\u2014'}</span><span class="sc-lbl">HASHRATE</span><span class="sc-val">${s.instantaneous_hr_str||'\u2014'}</span><div class="sc-bar"><div class="sc-bar-fill" style="width:${Math.min(100,(s.p_block_this_share||0)*100)}%"></div></div></div>`;
     }).join('');
     grid.innerHTML = cards || '<div class="hunt-shares__empty">awaiting share data</div>';
   };
@@ -1419,8 +2284,36 @@ _soloTermPrint('          Natural language mining query (e.g. "what is the proba
       return;
     }
 
-    _soloTermPrintHTML('<span class="c-red">[ERROR] Unknown command: ' + escapeHtml(verb) + '. Type help for available commands.</span>');
+    // ── Unrecognized command: route to NLP agent for natural language ──
+    // Instead of 'Unknown command', treat every input as a natural language
+    // mining question. The ask endpoint handles Portuguese, English, typos, etc.
+    _soloTermPrintHTML('<span class="c-muted">querying agent...</span>');
+    try {
+      const r = await fetch('/api/agents/solo-mining/ask', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({query: cmd})
+      });
+      const data = await r.json();
+      if (data.error) {
+        _soloTermPrintHTML('<span class="c-red">[ERROR] ' + escapeHtml(data.error) + '</span>');
+        _soloTerm.loading = false;
+        return;
+      }
+      _soloTermPrint('');
+      const output = data.output || '';
+      const lines = output.split("\n");
+      for (const line of lines) {
+        if (line.startsWith('[OK]')) _soloTermPrintHTML('<span class="c-green">' + escapeHtml(line) + '</span>');
+        else if (line.startsWith('[WARN]')) _soloTermPrintHTML('<span class="c-amber">' + escapeHtml(line) + '</span>');
+        else if (line.startsWith('[HINT]')) _soloTermPrintHTML('<span class="c-muted">' + escapeHtml(line) + '</span>');
+        else if (line.startsWith('[ERROR]')) _soloTermPrintHTML('<span class="c-red">' + escapeHtml(line) + '</span>');
+        else _soloTermPrint(line);
+      }
+    } catch (e) {
+      _soloTermPrintHTML('<span class="c-red">[ERROR] ' + escapeHtml(e.message) + '</span>');
+    }
     _soloTerm.loading = false;
+    return;
   }
 
   function _soloTermInit() {
@@ -1467,27 +2360,19 @@ _soloTermPrint('          Natural language mining query (e.g. "what is the proba
       _soloTermPrintHTML('<span class="c-muted">terminal cleared — type help for commands</span>');
     });
 
-    // Help button
-    document.getElementById('solo-term-help')?.addEventListener('click', () => {
-      _soloTermExecute('help');
-    });
-
-    // Welcome message
-    _soloTermPrintHTML('<span class="c-muted">CYPHER SOLO MINING ADVISOR v1.0</span>');
-    _soloTermPrintHTML('<span class="c-muted">Type </span><span class="c-green">help</span><span class="c-muted"> for available commands.</span>');
-    _soloTermPrintHTML('<span class="c-muted">Examples:</span>');
-    _soloTermPrintHTML('<span class="c-muted">  calc --hashrate 225TH --duration 24h</span>');
-    _soloTermPrintHTML('<span class="c-muted">  compare --budget 0.01 --duration 24 --braiins 0.002 --mrr 0.0015</span>');
-    _soloTermPrintHTML('<span class="c-muted">  network</span>');
-    _soloTermPrint('');
-
-    // Focus input
-    _soloTerm.input.focus();
-  }
+    // Focus input is handled inside boot() after welcome messages
+    // (boot() registers help listener + prints welcome + focuses input)
+  }  // end _soloTermInit
 
 // ══════════════════════════════════════════════════════════════════════
   // POLLING
   // ══════════════════════════════════════════════════════════════════════
+
+  // ── Error rate limiter for fetch errors ──
+  // Prevents flooding the live log / console with repeated "Failed to fetch"
+  // messages when the server is temporarily unreachable.
+  var _fetchErrorCount = 0;
+  var _fetchErrorSuppressed = false;
 
   async function fetchSnapshot() {
     try {
@@ -1496,7 +2381,18 @@ _soloTermPrint('          Natural language mining query (e.g. "what is the proba
       const snap = await r.json();
       render(snap);
       updateNextPoll();
-    } catch (e) { logMessage('ERROR', e.message, 'WARN'); }
+      // Reset error counter on success
+      _fetchErrorCount = 0;
+      _fetchErrorSuppressed = false;
+    } catch (e) {
+      _fetchErrorCount++;
+      if (_fetchErrorCount <= 3) {
+        logMessage('ERROR', e.message, 'WARN');
+      } else if (!_fetchErrorSuppressed) {
+        _fetchErrorSuppressed = true;
+        logMessage('WARN', 'Connection issues — suppressing further fetch errors (will retry silently)', 'WARN');
+      }
+    }
   }
 
   function updateNextPoll() {
@@ -1509,18 +2405,50 @@ _soloTermPrint('          Natural language mining query (e.g. "what is the proba
     if (dom.clock) dom.clock.textContent = new Date().toLocaleTimeString();
   }
 
+  // ── Empty state management ──────────────────────────────────────────────
+  function _updateEmptyState() {
+    // Only show empty state if user EXPLICITLY connected a wallet
+    // (not when BTC_ADDRESS comes from server env var via template)
+    var hasWallet = !!(window._userConnectedWallet && window.BTC_ADDRESS && window.BTC_ADDRESS.length >= 10);
+    var panels = document.querySelectorAll('.grid > .panel, .grid section.panel');
+    panels.forEach(function(panel) {
+      if (hasWallet) {
+        panel.classList.remove('panel--no-wallet');
+        var badge = panel.querySelector('.panel__empty-badge');
+        if (badge) badge.remove();
+      } else {
+        if (!panel.classList.contains('panel--no-wallet')) {
+          panel.classList.add('panel--no-wallet');
+          var badge = document.createElement('div');
+          badge.className = 'panel__empty-badge';
+          badge.innerHTML = '<div class="panel__empty-icon">⛓</div><div class="panel__empty-badge-tag">NO WALLET</div><div class="panel__empty-label">Connect a Bitcoin address to view mining data</div>';
+          panel.appendChild(badge);
+        }
+      }
+    });
+  }
+
   // ── Boot ──
   async function boot() {
-    initMatrix(); initCharts(); bindChartRanges(); loadSettings();
+    initMatrix(); initCharts(); bindChartRanges(); loadSettings(); _checkSavedWallet();
+    _updateEmptyState();
     updateClock(); setInterval(updateClock, 1000);
     showSkeletons();
     _huntStart();
     _soloTermInit();
+    // Auto-load initial chart data
+    ['chart-hashrate','chart-pool','chart-bestdiff','chart-net'].forEach(function(id){
+      var row = document.querySelector('.chart-range[data-target="'+id+'"]');
+      if (!row) return;
+      var active = row.querySelector('.active');
+      var range = active && active.dataset.range ? active.dataset.range : '1h';
+      var metricMap = {'chart-hashrate':'worker_hashrate','chart-pool':'pool_hashrate','chart-bestdiff':'worker_best_diff','chart-net':'network_difficulty'};
+      loadChart(id, metricMap[id] || id.replace('chart-',''), range);
+    });
     // Help button
-    document.getElementById('solo-term-help')?.addEventListener('click', () => {
+    document.getElementById('solo-term-help')?.addEventListener('click', function(){
       _soloTermExecute('help');
     });
-
     // Welcome message
     _soloTermPrintHTML('<span class="c-muted">CYPHER SOLO MINING ADVISOR v1.0</span>');
     _soloTermPrintHTML('<span class="c-muted">Type </span><span class="c-green">help</span><span class="c-muted"> for available commands.</span>');
@@ -1529,45 +2457,60 @@ _soloTermPrint('          Natural language mining query (e.g. "what is the proba
     _soloTermPrintHTML('<span class="c-muted">  compare --budget 0.01 --duration 24 --braiins 0.002 --mrr 0.0015</span>');
     _soloTermPrintHTML('<span class="c-muted">  network</span>');
     _soloTermPrint('');
-
     // Focus input
     _soloTerm.input.focus();
-  }
-
-// ══════════════════════════════════════════════════════════════════════
-  // POLLING
-  // ══════════════════════════════════════════════════════════════════════
-
-  async function fetchSnapshot() {
-    try {
-      const r = await fetch('/api/snapshot');
-      if (!r.ok) throw new Error('snapshot failed');
-      const snap = await r.json();
-      render(snap);
-      updateNextPoll();
-    } catch (e) { logMessage('ERROR', e.message, 'WARN'); }
-  }
-
-  function updateNextPoll() {
-    nextPollAt = Date.now() + POLL_MS;
-    if (dom.nextPoll) dom.nextPoll.textContent = `${Math.ceil(POLL_MS/1000)}s`;
-  }
-
-  // ── Clock ──
-  function updateClock() {
-    if (dom.clock) dom.clock.textContent = new Date().toLocaleTimeString();
-  }
-
-  // ── Boot ──
-  async function boot() {
-    initMatrix(); initCharts(); bindChartRanges(); loadSettings();
-    updateClock(); setInterval(updateClock, 1000);
-    showSkeletons();
-    _huntStart();
-    _soloTermInit();
+    // Start data polling with adaptive intervals (battery-optimized)
     await fetchSnapshot();
-    setInterval(fetchSnapshot, POLL_MS);
+    _startAdaptivePolling();
+    // Check for rental market opportunities every ~2 min (8 polls at 15s)
+    setInterval(_checkOpportunities, POLL_MS * 8);
     logMessage('SYSTEM', 'WAR ROOM ONLINE', 'SUCCESS');
+
+    // ── Battery Optimization: Visibility API ──────────────────────
+    document.addEventListener('visibilitychange', _onVisibilityChange);
+    window.addEventListener('pagehide', () => { _isTabHidden = true; _stopMatrix(); });
+    window.addEventListener('pageshow', () => { _isTabHidden = false; _startMatrix(); });
+
+    // ── Mobile: touch-friendly controls ──────────────────────────
+    _initMobileNav();
+  }
+
+  // ── Adaptive polling: faster when visible, slower when hidden ──
+  function _startAdaptivePolling() {
+    if (_pollTimer) clearInterval(_pollTimer);
+    const interval = _isTabHidden ? POLL_MS_BACKGROUND : POLL_MS;
+    _pollTimer = setInterval(() => {
+      if (!_isTabHidden) fetchSnapshot();
+    }, interval);
+  }
+
+  function _onVisibilityChange() {
+    if (document.hidden) {
+      _isTabHidden = true;
+      _stopMatrix();
+      _startAdaptivePolling();
+    } else {
+      _isTabHidden = false;
+      _startMatrix();
+      _startAdaptivePolling();
+      fetchSnapshot();
+      nextPollAt = Date.now() + POLL_MS;
+      if (dom.nextPoll) dom.nextPoll.textContent = `${Math.ceil(POLL_MS/1000)}s`;
+    }
+  }
+
+  function _stopMatrix() {
+    _matrixRunning = false;
+    if (_matrixRafId) { cancelAnimationFrame(_matrixRafId); _matrixRafId = null; }
+  }
+
+  function _startMatrix() {
+    if (!_matrixRunning) initMatrix();
+  }
+
+  // ── Mobile navigation ─────────────────────────────────────────
+  function _initMobileNav() {
+    // Handled by responsive CSS breakpoints (see style.css media queries)
   }
 
   boot();
