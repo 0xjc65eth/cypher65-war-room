@@ -352,6 +352,9 @@ def poll_once():
     all_workers = []
     worker = None
     worker_index = None
+    # Track best worker candidate for dynamic primary selection
+    best_candidate = None
+    best_score = -1
     session_shares = state.timeline_state.get("session_share_count", 0)
     session_bumps = state.timeline_state.get("session_best_diff_bumps", 0)
     if user and isinstance(user.get("workerData"), list):
@@ -364,6 +367,18 @@ def poll_once():
             wr_last_sub = w.get("lastSubmission")
             wr_now = int(time.time())
             last_share_ago = (wr_now - int(wr_last_sub)) if wr_last_sub else None
+            # Dynamic primary scoring: hashrate (TH/s) + recency bonus
+            # Score = hashrate_THs + (3600 / max(last_share_ago_s, 60))
+            # Workers with hashrate > 0 AND recent submissions score highest
+            wr_hr = float(w.get("hashrate") or 0)
+            wr_hr_ths = wr_hr / 1e12
+            recency_bonus = 0.0
+            if last_share_ago is not None and last_share_ago > 0:
+                recency_bonus = 3600.0 / max(last_share_ago, 60)
+            score = wr_hr_ths + recency_bonus
+            if score > best_score:
+                best_score = score
+                best_candidate = (idx, w)
             # Rejection rate estimate: if few bumps vs session shares, some % are stale/rejected
             rejection_pct = None
             if session_shares > 10 and session_bumps >= 0:
@@ -384,15 +399,18 @@ def poll_once():
                 "bestDifficultyVal": wr_best_val,
                 "lastSubmission": wr_last_sub,
                 "uptime": wr_uptime,
-                "is_primary": str(w.get("name", "")).lower() == config.WORKER_NAME.lower()
-                              or str(w.get("id", "")).lower() == config.WORKER_NAME.lower(),
+            "is_primary": False,  # Set dynamically below after scoring all workers
                 # Deep metrics
                 "rejectionRatePct": rejection_pct,
                 "rejectionRateLabel": f"{rejection_pct}%" if rejection_pct is not None else "—",
-                "temperature": None,
-                "temperatureLabel": "UNAVAILABLE",
-                "hardwareErrors": None,
-                "hardwareErrorsLabel": "UNAVAILABLE",
+                "temperature": "NOT AVAILABLE",
+                "temperatureLabel": "NOT AVAILABLE",
+                "powerWatts": "NOT AVAILABLE",
+                "powerWattsLabel": "NOT AVAILABLE",
+                "fanSpeed": "NOT AVAILABLE",
+                "fanSpeedLabel": "NOT AVAILABLE",
+                "hardwareErrors": "NOT AVAILABLE",
+                "hardwareErrorsLabel": "NOT AVAILABLE",
                 "lastShareAgo": last_share_ago,
                 "lastShareAgoLabel": fmt_age(wr_last_sub) if wr_last_sub else "—",
                 "sharesPerHour": round(sph, 1),
@@ -401,9 +419,32 @@ def poll_once():
                 "state": "HASHING" if w.get("hashrate") else ("ONLINE" if wr_last_sub else "IDLE"),
             }
             all_workers.append(entry)
-            if entry["is_primary"]:
-                worker = w
+
+    # ── Dynamic primary worker selection ──
+    # After scoring all workers, mark the best candidate as primary.
+    # Falls back to WORKER_NAME match if no worker has hashrate or recency.
+    if best_candidate is not None:
+        best_idx, best_w = best_candidate
+        all_workers[best_idx]["is_primary"] = True
+        worker = best_w
+        worker_index = best_idx
+    elif all_workers:
+        # Fallback: match by WORKER_NAME (static, for empty wallets)
+        for idx, entry in enumerate(all_workers):
+            if (str(entry.get("name", "")).lower() == config.WORKER_NAME.lower()
+                    or str(entry.get("id", "")).lower() == config.WORKER_NAME.lower()):
+                entry["is_primary"] = True
+                worker = user["workerData"][idx] if idx < len(user.get("workerData", [])) else None
                 worker_index = idx
+                break
+
+    # ── Override user_aggregate.workers with our own count ──
+    # The pool API may report workers=0 even when workerData has entries.
+    # Count workers with hashrate > 0 as the real active count.
+    if isinstance(user, dict):
+        wd = user.get("workerData") or []
+        active_count = sum(1 for w in wd if isinstance(w, dict) and coerce_float(w.get("hashrate"), 0) > 0)
+        user["workers"] = active_count
 
     # ━━ Leaderboard lookup ━━
     leaderboard_entry = None
