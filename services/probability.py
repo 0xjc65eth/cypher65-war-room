@@ -1,6 +1,6 @@
 """
-HERMES P0.3 — Block Probability Engine
-======================================
+CYPHER65 — Block Probability Engine
+====================================
 Calcula probabilidades reais de encontrar blocos usando modelo Poisson.
 
 Bitcoin block finding é um processo de Poisson com taxa:

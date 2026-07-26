@@ -1,6 +1,6 @@
 """
-HERMES P0.3 — Probability Engine Integration
-===========================================
+CYPHER65 — Probability Engine Integration
+========================================
 Endpoint e funções para expor o Block Probability Engine via API.
 """
 
