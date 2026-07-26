@@ -8,14 +8,8 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700&family=Inter:wght@300;400;500;600;700;800;900&family=Space+Grotesk:wght@400;500;700&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
-<link rel="stylesheet" href="/static/style.css?v={{ range(99999) | random }}">
-<link rel="manifest" href="/static/manifest.json">
-<meta name="theme-color" content="#04060a">
-<meta name="apple-mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<meta name="apple-mobile-web-app-title" content="CYPHER65">
+<link rel="stylesheet" href="/static/style.css">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%2304060a'/%3E%3Ctext x='16' y='22' text-anchor='middle' font-family='monospace' font-weight='bold' font-size='18' fill='%2300ff9f'%3E65%3C/text%3E%3C/svg%3E">
-<link rel="apple-touch-icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 180 180'%3E%3Crect width='180' height='180' fill='%2304060a'/%3E%3Ctext x='90' y='124' text-anchor='middle' font-family='monospace' font-weight='bold' font-size='90' fill='%2300ff9f'%3E65%3C/text%3E%3C/svg%3E">
 </head>
 <body>
 
@@ -47,7 +41,6 @@
       <span id="next-poll">--</span>
     </div>
     <button id="refresh-now" class="btn btn--mini" title="Refresh now (R)">⟳</button>
-    <button id="disconnect-wallet" class="btn btn--mini" title="Disconnect wallet" style="display:none">✕</button>
     <button id="open-settings" class="btn btn--mini" title="Settings (S)">⚙</button>
     <button id="open-exports" class="btn btn--mini" title="Export data">↓</button>
     <button id="toggle-sound" class="btn btn--mini" title="Toggle sound (N)">🔇</button>
@@ -55,70 +48,6 @@
     <button id="open-help" class="btn btn--mini" title="Help (H)">?</button>
   </div>
 </header>
-
-<!-- ═══════════ WALLET CONNECT BANNER ═══════════ -->
-<div class="wallet-banner" id="wallet-banner">
-  <div class="wallet-banner__inner">
-    <div class="wallet-banner__icon" aria-hidden="true">⛓</div>
-    <div class="wallet-banner__text">
-      <div class="wallet-banner__title">Connect Your Bitcoin Wallet</div>
-      <div class="wallet-banner__sub">Link Xverse or paste any Bitcoin address to view mining workers</div>
-    </div>
-    <div class="wallet-banner__actions">
-      <button class="btn btn--primary wallet-btn" id="wallet-connect-xverse">
-        <span class="wallet-btn__icon">◆</span> XVERSE
-      </button>
-      <button class="btn btn--ghost wallet-btn" id="wallet-connect-manual">
-        <span class="wallet-btn__icon">⌨</span> PASTE ADDRESS
-      </button>
-    </div>
-  </div>
-</div>
-
-<!-- ═══════════ WALLET ADDRESS MODAL ═══════════ -->
-<div class="modal modal--hidden" id="wallet-modal" role="dialog" aria-modal="true">
-  <div class="modal__backdrop" data-close></div>
-  <div class="modal__panel modal__panel--small">
-    <div class="modal__header">
-      <div class="modal__title">⌨ ENTER BITCOIN ADDRESS</div>
-      <button class="modal__close" data-close aria-label="Close">×</button>
-    </div>
-    <div class="modal__body">
-      <div class="wallet-input-group">
-        <label class="field">
-          <span class="field__label">Bitcoin Address (P2PKH, P2SH, Bech32, Bech32m)</span>
-          <input
-            type="text"
-            class="field__input field__input--mono"
-            id="wallet-address-input"
-            placeholder="bc1q... or 1... or 3..."
-            autocomplete="off"
-            spellcheck="false"
-          />
-          <span class="field__hint" id="wallet-input-hint">Paste your mining wallet address to view workers and stats</span>
-        </label>
-      </div>
-    </div>
-    <div class="modal__footer">
-      <button class="btn btn--ghost" data-close>Cancel</button>
-      <button class="btn btn--primary" id="wallet-address-confirm">CONNECT</button>
-    </div>
-  </div>
-</div>
-
-<!-- ═══════════ OPPORTUNITY ENGINE POPUP ═══════════ -->
-<div class="opp-popup" id="opp-popup" style="display:none">
-  <div class="opp-popup__inner">
-    <div class="opp-popup__head">
-      <span class="opp-popup__icon">⚡</span>
-      <span class="opp-popup__title">OPPORTUNITY ALERT</span>
-      <button class="opp-popup__close" id="opp-popup-close">×</button>
-    </div>
-    <div class="opp-popup__body" id="opp-popup-body">
-      <div class="opp-popup__loading">Scanning markets...</div>
-    </div>
-  </div>
-</div>
 
 <!-- ═══════════ MAIN GRID ═══════════ -->
 <main class="grid">
@@ -184,7 +113,6 @@
         <span class="badge" id="prox-pct-badge">— of network</span>
         <span class="badge" id="prox-alltime-badge">peak —</span>
         <span class="badge" id="prox-streak-badge">streak —</span>
-        <span class="badge api-status" id="api-proximity" data-api="proximity">—</span>
       </div>
     </div>
 
@@ -284,61 +212,9 @@
       ⌖ Proximity = worker.bestDifficulty ÷ network.difficulty. Each share is a chance at the network challenge; higher best-difficulty = closer to a real block find. Peak persists across restarts.
     </div>
 
-    <!-- ─── QUANTUM-LOCK ASSESSMENT ─── -->
-    <div class="ql-section" id="ql-section">
-      <div class="ql-header">
-        <span class="ql-header__icon">⊚</span>
-        <span class="ql-header__title">QUANTUM-LOCK ASSESSMENT</span>
-        <span class="badge ql-badge" id="ql-badge">—</span>
-      </div>
-      <div class="ql-body">
-        <div class="ql-score-wrap">
-          <div class="ql-score-ring">
-            <svg viewBox="0 0 120 120" class="ql-svg">
-              <circle cx="60" cy="60" r="52" fill="none" stroke="rgba(255,255,255,0.06)" stroke-width="8"/>
-              <circle id="ql-score-arc" cx="60" cy="60" r="52" fill="none" stroke="url(#qlGrad)" stroke-width="8" stroke-linecap="round"
-                      stroke-dasharray="326" stroke-dashoffset="326" transform="rotate(-90 60 60)"/>
-              <defs>
-                <linearGradient id="qlGrad" x1="0" y1="0" x2="1" y2="0">
-                  <stop offset="0%" stop-color="#ff6b6b"/>
-                  <stop offset="50%" stop-color="#06d6f0"/>
-                  <stop offset="100%" stop-color="#00ff9f"/>
-                </linearGradient>
-              </defs>
-            </svg>
-            <div class="ql-score-num" id="ql-score-num">—</div>
-            <div class="ql-score-label">QL SCORE</div>
-          </div>
-          <div class="ql-status-area">
-            <div class="ql-status" id="ql-status">—</div>
-            <div class="ql-label" id="ql-label">awaiting share data</div>
-            <div class="ql-confidence">confidence: <span id="ql-confidence">NONE</span></div>
-          </div>
-        </div>
-        <div class="ql-components">
-          <div class="ql-comp">
-            <div class="ql-comp__bar-wrap"><div class="ql-comp__bar" id="ql-comp-shares" style="width:0%"></div></div>
-            <div class="ql-comp__meta"><span class="ql-comp__label">SHARES</span><span class="ql-comp__val" id="ql-comp-shares-val">0/30</span></div>
-          </div>
-          <div class="ql-comp">
-            <div class="ql-comp__bar-wrap"><div class="ql-comp__bar" id="ql-comp-proximity" style="width:0%"></div></div>
-            <div class="ql-comp__meta"><span class="ql-comp__label">PROXIMITY</span><span class="ql-comp__val" id="ql-comp-proximity-val">0/40</span></div>
-          </div>
-          <div class="ql-comp">
-            <div class="ql-comp__bar-wrap"><div class="ql-comp__bar" id="ql-comp-power" style="width:0%"></div></div>
-            <div class="ql-comp__meta"><span class="ql-comp__label">POWER</span><span class="ql-comp__val" id="ql-comp-power-val">0/20</span></div>
-          </div>
-          <div class="ql-comp">
-            <div class="ql-comp__bar-wrap"><div class="ql-comp__bar" id="ql-comp-momentum" style="width:0%"></div></div>
-            <div class="ql-comp__meta"><span class="ql-comp__label">MOMENTUM</span><span class="ql-comp__val" id="ql-comp-momentum-val">0/10</span></div>
-          </div>
-        </div>
-      </div>
-    </div>
-
     <!-- ─── LIVE HASH CALCULATOR · per-share math, updated in real time ─── -->
     <div class="prox-live-calc" id="prox-live-calc">
-      <div class="prox-live-calc__title">⚡ LIVE HASH CALCULATOR · PER-SHARE BREAKDOWN <span class="badge api-status api-status--inline" id="api-livecalc" data-api="livecalc">—</span></div>
+      <div class="prox-live-calc__title">⚡ LIVE HASH CALCULATOR · PER-SHARE BREAKDOWN</div>
 
       <div class="prox-live-calc__latest">
         <div class="prox-live-calc__latest-head">
@@ -398,29 +274,8 @@
         </div>
       </div>
 
-      <div class="lc-charts">
-        <div class="lc-charts__row">
-          <div class="lc-chart-cell">
-            <div class="lc-chart-cell__label">SHARE DIFFICULTY · LAST 12</div>
-            <canvas id="lc-chart-diff" class="lc-chart-canvas"></canvas>
-          </div>
-          <div class="lc-chart-cell">
-            <div class="lc-chart-cell__label">P(BLOCK) PER SHARE · LAST 12</div>
-            <canvas id="lc-chart-pblock" class="lc-chart-canvas"></canvas>
-          </div>
-          <div class="lc-chart-cell">
-            <div class="lc-chart-cell__label">INSTANTANEOUS HASHRATE · LAST 12</div>
-            <canvas id="lc-chart-hr" class="lc-chart-canvas"></canvas>
-          </div>
-        </div>
-        <div class="lc-charts__cumulative">
-          <div class="lc-charts__cumulative-label">CUMULATIVE P(BLOCK) PROGRESSION <span class="badge" id="lc-consistency-badge"></span></div>
-          <canvas id="lc-chart-cumulative" class="lc-chart-canvas lc-chart-canvas--wide"></canvas>
-        </div>
-      </div>
-
       <div class="prox-live-calc__ticker">
-        <div class="prox-live-calc__ticker-title">RECENT SHARES · NEWEST FIRST <span class="badge badge--mute" id="lc-ticker-count">0</span></div>
+        <div class="prox-live-calc__ticker-title">RECENT SHARES · NEWEST FIRST</div>
         <div class="prox-live-calc__ticker-list" id="lc-ticker-list">
           <div class="prox-live-calc__ticker-empty">awaiting share detection — once one hits, math runs in real time</div>
         </div>
@@ -434,8 +289,7 @@
   <section class="panel" id="pool-overview">
     <div class="panel__header">
       <div class="panel__eyebrow"># POOL CONTEXT</div>
-      <div class="panel__tools"><span class="badge badge--mute" id="pool-uptime">up —</span>
-        <span class="badge api-status" id="api-pool" data-api="pool">—</span></div>
+      <div class="panel__tools"><span class="badge badge--mute" id="pool-uptime">up —</span></div>
     </div>
     <div class="stat-row">
       <div class="stat">
@@ -517,7 +371,7 @@
   <section class="panel" id="network-panel">
     <div class="panel__header">
       <div class="panel__eyebrow">⌬ NETWORK · MEMPOOL</div>
-      <div class="panel__tools"><span class="badge api-status" id="api-network" data-api="network">—</span></div>
+      <div class="panel__tools"><span class="badge badge--mute" id="net-status">fetching…</span></div>
     </div>
     <div class="stat-row stat-row--compact">
       <div class="stat">
@@ -566,7 +420,7 @@
       <div class="stat">
         <div class="stat__label">DAYS REMAINING</div>
         <div class="stat__val" id="h-days">—</div>
-        <div class="stat__sub" id="halving-avg-time">@ rolling avg</div>
+        <div class="stat__sub">@ 600s/block avg</div>
       </div>
       <div class="stat">
         <div class="stat__label">CURRENT REWARD</div>
@@ -581,16 +435,8 @@
       <div class="stat">
         <div class="stat__label">NEXT @ HEIGHT</div>
         <div class="stat__val" id="h-next-height">—</div>
-        <div class="stat__sub" id="halving-progress-label">— complete</div>
+        <div class="stat__sub">blocks left = next − current</div>
       </div>
-    </div>
-    <!-- Halving progress bar -->
-    <div class="progress-track" style="margin-top:8px">
-      <div class="progress-fill" id="halving-progress-fill" style="width:0%;background:linear-gradient(90deg,#f5b942,#a855f7)"></div>
-      <div class="progress-track__milestone" style="left:25%"></div>
-      <div class="progress-track__milestone" style="left:50%"></div>
-      <div class="progress-track__milestone" style="left:75%"></div>
-      <div class="progress-track__milestone" style="left:100%"></div>
     </div>
   </section>
 
@@ -598,10 +444,7 @@
   <section class="panel" id="fees-panel">
     <div class="panel__header">
       <div class="panel__eyebrow">⛽ MEMPOOL FEE TIERS · SAT/VB</div>
-      <div class="panel__tools">
-        <span class="badge api-status" id="api-fees" data-api="fees">—</span>
-        <span class="badge badge--mute" id="fees-status">—</span>
-      </div>
+      <div class="panel__tools"><span class="badge badge--mute" id="fees-status">—</span></div>
     </div>
     <div class="fee-row">
       <div class="fee-cell"><div class="fee-cell__label">ECONOMY</div><div class="fee-cell__val" id="fee-economy">—</div></div>
@@ -609,9 +452,6 @@
       <div class="fee-cell"><div class="fee-cell__label">HALF-HOUR</div><div class="fee-cell__val" id="fee-halfhour">—</div></div>
       <div class="fee-cell fee-cell--fast"><div class="fee-cell__label">FASTEST</div><div class="fee-cell__val" id="fee-fastest">—</div></div>
       <div class="fee-cell"><div class="fee-cell__label">MINIMUM</div><div class="fee-cell__val" id="fee-minimum">—</div></div>
-    </div>
-    <div class="fee-recommendation" id="fee-recommendation">
-      ⌖ Fee data from mempool.space — updated every poll
     </div>
   </section>
 
@@ -741,7 +581,7 @@
         </div>
       </div>
       <div class="lm-cyber-header__badges">
-        <span class="badge api-status" id="api-livemining" data-api="livemining">—</span>
+        <span class="badge badge--green" id="lm-status-badge">LIVE</span>
         <span class="badge badge--mute" id="lm-workers-badge">0 workers</span>
       </div>
     </div>
@@ -833,20 +673,6 @@
     </div>
 
 
-    <!-- ─── WORKER DETAILS PANEL · WhatsHash-level precision ─── -->
-    <div class="wd-panel" id="wd-panel">
-      <div class="wd-panel__head">
-        <span class="wd-panel__title">⊞ WORKER DETAILS · DEEP MONITORING</span>
-        <span class="badge api-status" id="api-worker-details" data-api="worker-details">ESTIMATED</span>
-      </div>
-      <div class="wd-grid" id="wd-grid">
-        <div class="wd-empty">Connect wallet and await share data for deep worker metrics.</div>
-      </div>
-      <div class="wd-footnote">
-        🔵 LIVE · 🟡 ESTIMATED · 🔴 ERROR · ⊘ UNAVAILABLE — Temperature and hardware errors require ASIC-level access not exposed by pool API.
-      </div>
-    </div>
-
     <!-- ─── BEST SHARE CARD ─── -->
     <div class="lm-best-share" id="lm-best-share" style="display:none">
       <div class="lm-best-share__inner">
@@ -884,13 +710,12 @@
     <div class="panel__header">
       <div class="panel__eyebrow">Ξ CFO TERMINAL · RISK & PROBABILITY</div>
       <div class="panel__tools">
-        <span class="badge api-status" id="api-cfo" data-api="cfo">ESTIMATED</span>
-        <div class="cfo-slider-wrap">
-          <input type="range" class="cfo-slider" id="cfo-slider"
-                 min="1" max="8760" value="24" step="1"
-                 title="Drag to change time horizon">
-          <span class="cfo-slider-label" id="cfo-slider-label">1d</span>
-        </div>
+        <span class="badge badge--mute" id="cfo-status">SIMULATED</span>
+        <select class="field__input" id="cfo-hours" style="width:auto;padding:2px 6px;font-size:10px;" onchange="loadMonteCarlo()">
+          <option value="1">1h</option><option value="6">6h</option><option value="12">12h</option>
+          <option value="24" selected>24h</option><option value="168">7d</option>
+          <option value="720">30d</option><option value="2160">90d</option><option value="8760">1yr</option>
+        </select>
         <button class="btn btn--mini" onclick="loadMonteCarlo()" title="Run simulation">⟳ RUN</button>
       </div>
     </div>
@@ -924,116 +749,6 @@
     </div>
     <div class="cfo-footnote" id="cfo-footnote">
       ⚠ MONTE CARLO SIMULATION — 10,000 runs using Poisson process. Results are statistical estimates, not predictions. Variance is extreme in Bitcoin mining. Past performance does not guarantee future results.
-    </div>
-  </section>
-
-  <!-- ─── CFO RISK COMPARISON ─── -->
-  <section class="panel panel--cfo-risk" id="cfo-risk-panel">
-    <div class="panel__header">
-      <div class="panel__eyebrow">Ξ CFO · RISK-ADJUSTED COMPARISON</div>
-      <div class="panel__tools">
-        <span class="badge badge--mute">CV = coefficient of variation</span>
-        <span class="badge api-status" id="api-cfo-risk" data-api="cfo">—</span>
-      </div>
-    </div>
-    <div class="cforisk-grid">
-      <!-- Pool card -->
-      <div class="cforisk-card" data-mode="pool">
-        <div class="cforisk-card__head">
-          <span class="cforisk-card__icon">⛏</span>
-          <span class="cforisk-card__title">POOL</span>
-          <span class="cforisk-card__badge cforisk-badge" id="cforisk-pool-risk">—</span>
-        </div>
-        <div class="cforisk-card__body">
-          <div class="cforisk-row">
-            <span class="cforisk-row__label">NET BTC / DAY</span>
-            <span class="cforisk-row__val mono" id="cforisk-pool-btc">—</span>
-          </div>
-          <div class="cforisk-row">
-            <span class="cforisk-row__label">NET USD / DAY</span>
-            <span class="cforisk-row__val mono" id="cforisk-pool-usd">—</span>
-          </div>
-          <div class="cforisk-row">
-            <span class="cforisk-row__label">CV (σ/μ)</span>
-            <span class="cforisk-row__val mono" id="cforisk-pool-cv">—</span>
-          </div>
-          <div class="cforisk-row">
-            <span class="cforisk-row__label">VARIANCE</span>
-            <span class="cforisk-row__val" id="cforisk-pool-variance">—</span>
-          </div>
-          <div class="cforisk-row cforisk-row--last">
-            <span class="cforisk-row__label">BEST FOR</span>
-            <span class="cforisk-row__val" id="cforisk-pool-bestfor">—</span>
-          </div>
-        </div>
-      </div>
-
-      <!-- Solo card -->
-      <div class="cforisk-card" data-mode="solo">
-        <div class="cforisk-card__head">
-          <span class="cforisk-card__icon">☀</span>
-          <span class="cforisk-card__title">SOLO</span>
-          <span class="cforisk-card__badge cforisk-badge cforisk-badge--warn" id="cforisk-solo-risk">—</span>
-        </div>
-        <div class="cforisk-card__body">
-          <div class="cforisk-row">
-            <span class="cforisk-row__label">NET BTC / DAY</span>
-            <span class="cforisk-row__val mono" id="cforisk-solo-btc">—</span>
-          </div>
-          <div class="cforisk-row">
-            <span class="cforisk-row__label">NET USD / DAY</span>
-            <span class="cforisk-row__val mono" id="cforisk-solo-usd">—</span>
-          </div>
-          <div class="cforisk-row">
-            <span class="cforisk-row__label">CV (σ/μ)</span>
-            <span class="cforisk-row__val mono" id="cforisk-solo-cv">—</span>
-          </div>
-          <div class="cforisk-row">
-            <span class="cforisk-row__label">VARIANCE</span>
-            <span class="cforisk-row__val" id="cforisk-solo-variance">—</span>
-          </div>
-          <div class="cforisk-row cforisk-row--last">
-            <span class="cforisk-row__label">BEST FOR</span>
-            <span class="cforisk-row__val" id="cforisk-solo-bestfor">—</span>
-          </div>
-        </div>
-      </div>
-
-      <!-- Rental card -->
-      <div class="cforisk-card" data-mode="rental">
-        <div class="cforisk-card__head">
-          <span class="cforisk-card__icon">📦</span>
-          <span class="cforisk-card__title">RENTAL</span>
-          <span class="cforisk-card__badge cforisk-badge cforisk-badge--crit" id="cforisk-rental-risk">—</span>
-        </div>
-        <div class="cforisk-card__body">
-          <div class="cforisk-row">
-            <span class="cforisk-row__label">NET BTC / DAY</span>
-            <span class="cforisk-row__val mono" id="cforisk-rental-btc">—</span>
-          </div>
-          <div class="cforisk-row">
-            <span class="cforisk-row__label">NET USD / DAY</span>
-            <span class="cforisk-row__val mono" id="cforisk-rental-usd">—</span>
-          </div>
-          <div class="cforisk-row">
-            <span class="cforisk-row__label">CV (σ/μ)</span>
-            <span class="cforisk-row__val mono" id="cforisk-rental-cv">—</span>
-          </div>
-          <div class="cforisk-row">
-            <span class="cforisk-row__label">VARIANCE</span>
-            <span class="cforisk-row__val" id="cforisk-rental-variance">—</span>
-          </div>
-          <div class="cforisk-row cforisk-row--last">
-            <span class="cforisk-row__label">BEST FOR</span>
-            <span class="cforisk-row__val" id="cforisk-rental-bestfor">—</span>
-          </div>
-        </div>
-      </div>
-    </div>
-    <div class="cforisk-footnote" id="cforisk-footnote">
-      📊 Risk scores based on coefficient of variation (CV = σ/μ) of daily revenue.
-      Pool = Poisson(λ) · Solo = Bernoulli(p) · Rental = Pool × 2 (price exposure).
-      1 = lowest risk · 10 = highest risk.
     </div>
   </section>
 
@@ -1392,7 +1107,6 @@
 
 <script>
   window.BTC_ADDRESS = {{ address|tojson }};
-  window._userConnectedWallet = false;
   window.WORKER_NAME = {{ worker|tojson }};
   window.POLL_INTERVAL_MS = {{ (poll_interval * 1000)|int }};
 </script>
@@ -1432,16 +1146,6 @@
   <div class="kbd-hint__row"><kbd>R</kbd><span class="kbd-hint__label">Refresh now</span></div>
 </div>
 
-<script src="/static/app.js?v={{ range(99999) | random }}"></script>
-<script>
-  // ── Register Service Worker for PWA ──
-  if ('serviceWorker' in navigator) {
-    window.addEventListener('load', () => {
-      navigator.serviceWorker.register('/sw.js', { scope: '/' })
-        .then((reg) => { console.log('[PWA] SW registered:', reg.scope); })
-        .catch((err) => { console.warn('[PWA] SW registration failed:', err); });
-    });
-  }
-</script>
+<script src="/static/app.js"></script>
 </body>
 </html>

@@ -256,17 +256,12 @@ def compare_rentals(budget_btc, difficulty, duration_hours,
         prob = calc_block_probability(hashrate_hs, difficulty, duration_seconds)
         exp_time = calc_expected_time(hashrate_hs, difficulty)
 
-        # EV calculation (parasite.space model)
+        # EV calculation (simplified: assume finder gets 1 BTC bonus)
         block_reward = 3.125  # current subsidy
+        # EV = P(block) * (1 BTC finder bonus + proportional share of remaining reward)
+        # Conservative estimate: finder bonus is the main value driver for solo miners
         finder_bonus = 1.0  # parasite.space guarantees 1 BTC to block finder
-        # Proportional share: your hashrate / (pool_hr) × pool_blocks_found × (reward − 1 BTC)
-        # Derive net_hr from canonical formula: net_hr = difficulty × 2^32 / 600
-        _net_hr = difficulty * HASHES_PER_DIFF / SECONDS_PER_BLOCK  # H/s
-        # Estimate pool as ~2% of network (typical mid-size pool, updated: parasite.space)
-        _pool_hr_est = _net_hr * 0.02
-        _pool_share_ratio = hashrate_hs / max(_pool_hr_est, 1e-12)
-        _pool_blocks_in_period = (_pool_hr_est / max(_net_hr, 1e-12)) * (duration_seconds / SECONDS_PER_BLOCK)
-        proportional_share = _pool_share_ratio * _pool_blocks_in_period * (block_reward - finder_bonus)
+        proportional_share = prob["p_at_least_1_block"] * block_reward * 0.01  # ~1% of block reward as pool share
         ev_bruto = prob["p_at_least_1_block"] * finder_bonus + proportional_share
         ev_liquido = ev_bruto - budget_btc
 

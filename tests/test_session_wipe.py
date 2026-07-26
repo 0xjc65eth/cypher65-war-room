@@ -280,16 +280,17 @@ class TestResetSessionState:
     # ── _settings_cache is reset ────────────────────────────────────────────
 
     def test_resets_settings_cache(self, monkeypatch):
-        """Should set _settings_cache to None."""
+        """Should set _settings_cache to None (now in services.settings after P0.4)."""
+        import services.settings as _settings_module
         mock_state = MockState()
         monkeypatch.setattr(_app_module, "state", mock_state)
         monkeypatch.setattr(_app_module, "proximity", _proximity_module)
         monkeypatch.setattr(_proximity_module, "state", mock_state)
 
-        # Set a non-None value first
-        _app_module._settings_cache = {"some": "cache"}
+        # Set a non-None value first (cache now lives in services.settings)
+        _settings_module._settings_cache = {"some": "cache"}
         _reset_session_state()
-        assert _app_module._settings_cache is None
+        assert _settings_module._settings_cache is None
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
