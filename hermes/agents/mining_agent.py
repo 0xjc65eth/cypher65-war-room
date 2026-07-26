@@ -55,7 +55,12 @@ def _get_real_data():
         "pool_workers": snap.get("pool_workers", 0),
         "btc_usd": _safe_float(btc.get("usd")),
         "session_share_count": getattr(_state, "session_share_count", 0),
-        "_data_source": "REAL" if _safe_float(worker.get("hashrate")) > 0 else "NO_DATA",
+        "_data_source": "REAL" if (
+            _safe_float(worker.get("hashrate")) > 0
+            or len(snap.get("all_workers") or []) > 0
+            or getattr(_state, "session_share_count", 0) > 0
+            or (worker.get("bestDifficulty") and worker.get("bestDifficulty") != "—")
+        ) else "NO_DATA",
     }
 
 
@@ -80,6 +85,7 @@ class MiningAgent:
         user_hashrate = payload.get("user_hashrate", 0)
         network_hashrate = payload.get("network_hashrate", 6e20)
         worker_status = payload.get("worker_status", "unknown")
+        worker_name = payload.get("worker_name", "")
         worker_best_diff = payload.get("worker_best_diff", "—")
         worker_last_submit = _safe_int(payload.get("worker_last_submit", 0))
         worker_uptime = _safe_int(payload.get("worker_uptime", 0))
@@ -171,22 +177,28 @@ class MiningAgent:
 
         result["analysis"] = worker_analysis
 
-        # Natural language summary (for chat response)
-        if data_source == "REAL":
-            lines = [
-                f"Current hashrate: {hashrate_ths:.2f} TH/s",
-                f"Status: {status_display}",
-                f"Best difficulty: {worker_best_diff}",
-                f"Last share: {worker_analysis.get('last_share_age', '—')}",
-                f"Active workers: {len(all_workers)}",
-            ]
-            if worker_analysis.get("probability"):
-                p = worker_analysis["probability"]
-                lines.append(
-                    f"P(>=1 block in 24h): {p['probability_at_least_one']:.6f} "
-                    f"(≈{p['probability_at_least_one']*100:.4f}%)"
-                )
-            result["summary"] = " | ".join(lines)
+        # Natural language summary — report what we have, not just when hashrate > 0
+        summary_parts = []
+        if worker_name and worker_name not in ("unknown", ""):
+            summary_parts.append(f"Worker: {worker_name}")
+        if hashrate_ths > 0:
+            summary_parts.append(f"Current hashrate: {hashrate_ths:.2f} TH/s")
+        if status_display and status_display != "UNKNOWN":
+            summary_parts.append(f"Status: {status_display}")
+        if worker_best_diff and str(worker_best_diff) not in ("", "—", "0"):
+            summary_parts.append(f"Best difficulty: {worker_best_diff}")
+        if worker_analysis.get("last_share_age") not in (None, "no shares yet", ""):
+            summary_parts.append(f"Last share: {worker_analysis['last_share_age']}")
+        if len(all_workers) > 0:
+            summary_parts.append(f"Active workers: {len(all_workers)}")
+        if worker_analysis.get("probability"):
+            p = worker_analysis["probability"]
+            summary_parts.append(
+                f"P(>=1 block in 24h): {p['probability_at_least_one']:.6f} "
+                f"(≈{p['probability_at_least_one']*100:.4f}%)"
+            )
+        if summary_parts:
+            result["summary"] = " | ".join(summary_parts)
         else:
             result["summary"] = (
                 "No real mining data available. "

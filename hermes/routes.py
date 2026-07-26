@@ -178,6 +178,7 @@ def chat():
         "intent": intent,
         # Real worker data
         "user_hashrate": _safe_float(worker_data.get("hashrate")),
+        "worker_name": worker_data.get("name", "unknown"),
         "worker_status": worker_data.get("status", "unknown"),
         "worker_best_diff": worker_data.get("bestDifficulty", "—"),
         "worker_last_submit": _safe_int(worker_data.get("lastSubmission", 0)),
@@ -198,8 +199,14 @@ def chat():
         "duration": 86400,
     }
 
-    # Mark data provenance
-    has_real_data = payload["user_hashrate"] > 0
+    # Mark data provenance — REAL if we have ANY meaningful data (not just hashrate)
+    has_real_data = (
+        payload["user_hashrate"] > 0
+        or len(payload.get("all_workers", [])) > 0
+        or (isinstance(payload.get("worker_best_diff"), (int, float)) and payload["worker_best_diff"] > 0)
+        or (isinstance(payload.get("worker_best_diff"), str) and payload["worker_best_diff"] not in ("", "—", "0"))
+        or payload.get("session_share_count", 0) > 0
+    )
     payload["_data_source"] = "REAL" if has_real_data else "NO_DATA"
 
     if intent == "PROBABILITY":

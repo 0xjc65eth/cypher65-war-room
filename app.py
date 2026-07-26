@@ -622,7 +622,7 @@ def api_history():
     )
     rows = [{"ts": r["ts"], "value": r[metric]} for r in c.fetchall()]
     conn.close()
-    return jsonify({"metric": metric, "rows": rows, "range": rng})
+    return jsonify({"metric": metric, "history": rows, "range": rng})
 
 
 @app.route("/api/alerts")
