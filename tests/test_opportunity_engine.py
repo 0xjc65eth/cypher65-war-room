@@ -112,9 +112,9 @@ class TestOppEngineIDStability:
             resp = client.get("/api/opportunities")
             data = json.loads(resp.data)
             opps = data.get("opportunities", [])
-            # MRR is the 2nd opportunity (index 1)
-            mrr_id = opps[1]["id"] if len(opps) > 1 else None
-            ids.append(mrr_id)
+            # Find the MRR opportunity (order now depends on score)
+            mrr_opp = next((o for o in opps if o.get("platform") == "mrr"), None)
+            ids.append(mrr_opp["id"] if mrr_opp else None)
 
         assert ids[0] == ids[1] == ids[2], (
             f"Esperava MRR IDs iguais, obtive {ids}"
@@ -191,11 +191,11 @@ class TestOppEngineEdgeCases:
     """Casos extremos: dados faltando, plataforma única, etc."""
 
     def test_both_platforms_available(self, monkeypatch, client):
-        """Ambas as plataformas retornam preços → 2 oportunidades."""
+        """Ambas as plataformas retornam preços → 2 oportunidades ordenadas por score."""
         _ensure_snapshot_data()
         mock_tool = _mock_execute_tool(
             price_braiins=0.000200,
-            price_mrr=0.000150,  # cheaper → appears
+            price_mrr=0.000150,  # cheaper → better score
         )
         monkeypatch.setattr(
             "agents.solo_mining_advisor.execute_tool",
@@ -207,8 +207,11 @@ class TestOppEngineEdgeCases:
         opps = data.get("opportunities", [])
 
         assert len(opps) == 2, f"Esperava 2 oportunidades, obtive {len(opps)}"
-        assert opps[0]["platform"] == "braiins"
-        assert opps[1]["platform"] == "mrr"
+        platforms = {o["platform"] for o in opps}
+        assert platforms == {"braiins", "mrr"}
+        # Should be sorted by score descending.
+        scores = [o["metrics"]["score"] for o in opps]
+        assert scores[0] >= scores[1]
 
     def test_only_braiins_available(self, monkeypatch, client):
         """Apenas Braiins disponível → 1 oportunidade."""

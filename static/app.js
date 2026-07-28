@@ -82,6 +82,7 @@
 
   // ── DOM cache ─────────────────────────────────────────────────────────
   const $ = (s) => document.querySelector(s);
+  const $$ = (s) => document.querySelectorAll(s);
   const dom = {
     topbarAddress: $('#topbar-address'), statusPill: $('#status-pill'), statusText: $('#status-text'),
     clock: $('#clock'), nextPoll: $('#next-poll'), refreshNow: $('#refresh-now'),
@@ -122,13 +123,70 @@
     hsNonceBar: $('#hs-nonce-bar'), hsNoncesSearched: $('#hs-nonces-searched'), hsNoncePct: $('#hs-nonce-pct'), hsHashesPerSec: $('#hs-hashes-per-sec'),
     hsBestDiff: $('#hs-best-diff'), hsTargetDiff: $('#hs-target-diff'), hsTargetBar: $('#hs-target-bar'), hsTargetMarker: $('#hs-target-marker'),
     hsBlockProb: $('#hs-block-prob'), hsExpectedTime: $('#hs-expected-time'), hsStatusText: $('#hs-status-text'),
-    cfoPBlock: $('#cfo-p-block'), cfoPBlockSub: $('#cfo-p-block-sub'), cfoExpected: $('#cfo-expected'), cfoMedian: $('#cfo-median'), cfoP90: $('#cfo-p90'),
-    cfoDist: $('#cfo-dist'), cfoHours: $('#cfo-hours'), cfoFootnote: $('#cfo-footnote'), cfoStatus: $('#cfo-status'),
+    openWallet: $('#open-wallet'), walletModal: $('#wallet-modal'), walletStatus: $('#wallet-status'),
+    walletAddressInput: $('#wallet-address-input'), walletWorkerInput: $('#wallet-worker-input'),
+    walletCurrentAddr: $('#wallet-current-addr'), walletCurrentWorker: $('#wallet-current-worker'),
+    walletSave: $('#wallet-save'),
     openSettings: $('#open-settings'), openExports: $('#open-exports'), settingsModal: $('#settings-modal'), exportModal: $('#export-modal'),
     settingsBody: $('#settings-body'), settingsStatus: $('#settings-status'),
+    openAlertCenter: $('#open-alert-center'), alertCenterModal: $('#alert-center-modal'), alertCenterStatus: $('#alert-center-status'),
+    acTabs: $$('.ac-tab'), acPanes: $$('.ac-pane'), acFilters: $$('.ac-filter'),
+    acActiveList: $('#ac-active-list'), acHistoryList: $('#ac-history-list'), acRulesList: $('#ac-rules-list'),
+    acRefreshActive: $('#ac-refresh-active'), acRefreshHistory: $('#ac-refresh-history'), acRefreshRules: $('#ac-refresh-rules'),
+    acAddRule: $('#ac-add-rule'), acRuleForm: $('#ac-rule-form'), acRuleSave: $('#ac-rule-save'), acRuleCancel: $('#ac-rule-cancel'),
+    acRuleName: $('#ac-rule-name'), acRuleDevice: $('#ac-rule-device'), acRuleMetric: $('#ac-rule-metric'), acRuleOp: $('#ac-rule-op'),
+    acRuleValue: $('#ac-rule-value'), acRuleAction: $('#ac-rule-action'), acRuleStatus: $('#ac-rule-status'),
     huntStreamFeed: $('#hunt-stream-feed'), huntMetricsHr: $('#hunt-metrics-hr'), huntMetricsPblock: $('#hunt-metrics-pblock'),
     huntMetricsExpblocks: $('#hunt-metrics-expblocks'), huntMetricsBestdiff: $('#hunt-metrics-bestdiff'),
     huntSharesGrid: $('#hunt-shares-grid'), huntSharesCount: $('#hunt-shares-count'),
+
+    // ── AXE FLEET ──
+    axeFleetPanel: $('#axe-fleet-panel'),
+    axeFleetStatusBadge: $('#axe-fleet-status-badge'),
+    axeFleetCountBadge: $('#axe-fleet-count-badge'),
+    axeSummaryHr: $('#axe-summary-hr'),
+    axeSummaryOnline: $('#axe-summary-online'),
+    axeSummaryOffline: $('#axe-summary-offline'),
+    axeSummaryTemp: $('#axe-summary-temp'),
+    axeSummaryBest: $('#axe-summary-best'),
+    axeGrid: $('#axe-grid'),
+    axeAddForm: $('#axe-add-form'),
+    axeAddIp: $('#axe-add-ip'),
+    axeAddName: $('#axe-add-name'),
+    axeAddSave: $('#axe-add-save'),
+    axeAddCancel: $('#axe-add-cancel'),
+    axeAddStatus: $('#axe-add-status'),
+    axeFleetAdd: $('#axe-fleet-add'),
+
+    // New summary items
+    axeSummaryWarning: $('#axe-summary-warning'),
+    axeSummaryHealth: $('#axe-summary-health'),
+    axeSummaryPower: $('#axe-summary-power'),
+    axeSummaryEff: $('#axe-summary-eff'),
+
+    // Device detail panel
+    axeDetail: $('#axe-detail'),
+    axeDetailTitle: $('#axe-detail-title'),
+    axeDetailBody: $('#axe-detail-body'),
+    axeDetailClose: $('#axe-detail-close'),
+
+    // ── STATUS BAR ──
+    sbLed: $('#sb-led'),
+    sbStatus: $('#sb-status'),
+    sbWorkers: $('#sb-workers'),
+    sbHashrate: $('#sb-hashrate'),
+    sbBestdiff: $('#sb-bestdiff'),
+    sbLastshare: $('#sb-lastshare'),
+    sbPoolHr: $('#sb-pool-hr'),
+    sbPoolWorkers: $('#sb-pool-workers'),
+    sbPoolBlock: $('#sb-pool-block'),
+    sbNetDiff: $('#sb-net-diff'),
+    sbNetPrice: $('#sb-net-price'),
+    sbNetHeight: $('#sb-net-height'),
+    sbFleetOnline: $('#sb-fleet-online'),
+    sbFleetTotal: $('#sb-fleet-total'),
+    sbFleetHr: $('#sb-fleet-hr'),
+    statusBar: $('#status-bar'),
   };
 
   // ── escape HTML ───────────────────────────────────────────────────────
@@ -192,6 +250,80 @@
   // ══════════════════════════════════════════════════════════════════════
   // RENDER FUNCTIONS
   // ══════════════════════════════════════════════════════════════════════
+
+  function renderStatusBar(snap) {
+    const w = snap.worker || {};
+    const pool = snap.pool || {};
+    const net = snap.network || {};
+    const btc = snap.btc_price || {};
+    const workers = snap.all_workers || [];
+    const axeFleet = snap.axe_fleet || [];
+
+    // System block
+    if (dom.sbLed) {
+      const isOnline = !!snap.worker;
+      dom.statusBar?.classList.toggle('is-online', isOnline);
+      dom.sbLed.style.background = isOnline ? 'var(--accent-green)' : 'var(--accent-red)';
+    }
+    if (dom.sbStatus) dom.sbStatus.textContent = snap.worker ? 'ONLINE' : 'OFFLINE';
+    if (dom.sbWorkers) dom.sbWorkers.textContent = `${workers.length} worker${workers.length === 1 ? '' : 's'}`;
+
+    // Mining block
+    if (dom.sbHashrate) dom.sbHashrate.textContent = fmt.hashrate(w.hashrate);
+    if (dom.sbBestdiff) dom.sbBestdiff.textContent = fmt.diff(w.bestDifficulty);
+    if (dom.sbLastshare) dom.sbLastshare.textContent = w.lastSubmission ? fmt.age(w.lastSubmission) : '\u2014';
+
+    // Pool block
+    if (dom.sbPoolHr) dom.sbPoolHr.textContent = fmt.hashrate(pool.hashrate);
+    if (dom.sbPoolWorkers) dom.sbPoolWorkers.textContent = `${pool.workers || 0}`;
+    if (dom.sbPoolBlock) dom.sbPoolBlock.textContent = pool.lastBlock ? `#${pool.lastBlock}` : '\u2014';
+
+    // Network block
+    if (dom.sbNetDiff) dom.sbNetDiff.textContent = fmt.diff(net.difficulty);
+    if (dom.sbNetPrice) dom.sbNetPrice.textContent = btc.usd ? `$${Number(btc.usd).toLocaleString()}` : '\u2014';
+    if (dom.sbNetHeight) dom.sbNetHeight.textContent = net.height ? `#${net.height}` : '\u2014';
+
+    // Fleet block
+    const online = axeFleet.filter(d => d.status === 'ONLINE').length;
+    const total = axeFleet.length;
+    if (dom.sbFleetOnline) dom.sbFleetOnline.textContent = online;
+    if (dom.sbFleetTotal) dom.sbFleetTotal.textContent = total;
+    let fleetHr = 0;
+    axeFleet.forEach(d => { fleetHr += Number(d.hashrate || 0); });
+    if (dom.sbFleetHr) dom.sbFleetHr.textContent = fleetHr > 0 ? fmt.hashrate(fleetHr) : '\u2014';
+  }
+
+  // ── HOST CORE — populate the organism mission-control hub ──
+  function renderHostCore(snap) {
+    const w = snap.worker || {};
+    const net = snap.network || {};
+    const pool = snap.pool || {};
+    const axeFleet = snap.axe_fleet || [];
+    const prox = snap.proximity || {};
+    const alerts = snap.alerts_recent || [];
+
+    const hcBadge = (id, text) => { const el = document.getElementById(id); if (el) el.textContent = text; };
+
+    hcBadge('hc-hr-badge', fmt.hashrate(w.hashrate));
+    hcBadge('hc-net-badge', net.difficulty ? 'diff ' + fmt.diff(net.difficulty) : '—');
+    hcBadge('hc-colony-hr', fmt.hashrate(w.hashrate) + ' / ' + fmt.hashrate(net.hashrate));
+    hcBadge('hc-best-diff', fmt.diff(w.bestDifficulty));
+    hcBadge('hc-network', net.height ? '#' + net.height : '—');
+
+    // Fleet health
+    const total = axeFleet.length;
+    const online = axeFleet.filter(d => d.status === 'ONLINE').length;
+    const healthStr = total > 0 ? (online / total * 100).toFixed(0) + '%' : '—';
+    hcBadge('hc-fleet-health', total > 0 ? online + '/' + total + ' (' + healthStr + ')' : '—');
+
+    // Block probability — show ~0% for vanishingly small values
+    const pBlock = prox.chance_per_share_pct;
+    const pctVal = pBlock != null ? Number(pBlock) * 100 : 0;
+    hcBadge('hc-block-prob', pBlock != null ? (pctVal < 0.000001 ? '~0%' : pctVal.toFixed(6) + '%') : '—');
+
+    // Alerts
+    hcBadge('hc-alerts', alerts.length > 0 ? alerts.length + ' active' : 'nominal');
+  }
 
   function renderHero(snap) {
     const w = snap.worker || {};
@@ -506,110 +638,6 @@
     ctx.fillText(displayPct.toFixed(displayPct < 1 ? 4 : 1) + '%', cx, cy - 6);
   }
 
-  // ══════════════════════════════════════════════════════════════════════
-  // CFO MONTE CARLO — block discovery simulation
-  // ══════════════════════════════════════════════════════════════════════
-
-  function loadMonteCarlo() {
-    if (!dom.cfoPBlock) return;
-    const hours = parseInt(dom.cfoHours?.value || 24);
-    if (dom.cfoStatus) dom.cfoStatus.textContent = 'SIMULATING...';
-
-    // Get current hashrate and difficulty from DOM
-    const hrText = dom.mHashrate?.textContent || '0 TH/s';
-    const hrMatch = hrText.match(/([\d.,]+)\s*([EPTGMk]?H\/s)/i);
-    let hashrateHs = 0;
-    if (hrMatch) {
-      let val = parseFloat(hrMatch[1].replace(/,/g, ''));
-      const unit = (hrMatch[2] || 'H/s').toUpperCase();
-      const mult = { 'EH/S': 1e18, 'PH/S': 1e15, 'TH/S': 1e12, 'GH/S': 1e9, 'MH/S': 1e6, 'KH/S': 1e3, 'H/S': 1 };
-      hashrateHs = val * (mult[unit] || 1);
-    }
-    if (hashrateHs <= 0) hashrateHs = 225e12; // fallback 225 TH/s
-
-    const diffText = dom.nDiff?.textContent || '110 T';
-    const diffMatch = diffText.match(/([\d.,]+)\s*([EPTGMk]?)/i);
-    let difficulty = 110e12;
-    if (diffMatch) {
-      let dval = parseFloat(diffMatch[1].replace(/,/g, ''));
-      const dunit = (diffMatch[2] || 'T').toUpperCase();
-      const dmult = { 'E': 1e18, 'P': 1e15, 'T': 1e12, 'G': 1e9, 'M': 1e6, 'K': 1e3, '': 1 };
-      difficulty = dval * (dmult[dunit] || 1);
-    }
-
-    const durationSeconds = hours * 3600;
-    const hashesPerBlock = difficulty * Math.pow(2, 32);
-    const blockRate = hashrateHs / hashesPerBlock;
-    const lambda = blockRate * durationSeconds;
-
-    // Monte Carlo: N runs
-    const N = 20000;
-    const buckets = {};
-    let maxBlocks = 0;
-    for (let i = 0; i < N; i++) {
-      // Poisson(lambda)
-      const L = Math.exp(-lambda);
-      let k = 0, p = 1;
-      while (p > L) { k++; p *= Math.random(); }
-      const blocks = k - 1;
-      buckets[blocks] = (buckets[blocks] || 0) + 1;
-      if (blocks > maxBlocks) maxBlocks = blocks;
-    }
-
-    // Statistics
-    let cumulative = 0, totalBlocks = 0;
-    const distEntries = [];
-    for (let b = 0; b <= maxBlocks; b++) {
-      const count = buckets[b] || 0;
-      totalBlocks += b * count;
-      distEntries.push({ blocks: b, count, pct: count / N * 100 });
-    }
-    const atLeast1 = N - (buckets[0] || 0);
-    const pAtLeast1 = atLeast1 / N * 100;
-    const expectedBlocks = totalBlocks / N;
-    const medianBlocks = _calcMCMedian(buckets, N);
-    const p90Blocks = _calcMCPercentile(buckets, N, 90);
-    const p10Blocks = _calcMCPercentile(buckets, N, 10);
-
-    // Display
-    if (dom.cfoPBlock) dom.cfoPBlock.textContent = pAtLeast1 < 0.01 ? pAtLeast1.toExponential(2) + '%' : pAtLeast1.toFixed(4) + '%';
-    if (dom.cfoPBlockSub) dom.cfoPBlockSub.textContent = 'over ' + hours + 'h · ' + N.toLocaleString() + ' runs';
-    if (dom.cfoExpected) dom.cfoExpected.textContent = expectedBlocks < 0.001 ? expectedBlocks.toExponential(2) : expectedBlocks.toFixed(4);
-    if (dom.cfoMedian) dom.cfoMedian.textContent = medianBlocks;
-    if (dom.cfoP90) dom.cfoP90.textContent = 'P10=' + p10Blocks + ' · P90=' + p90Blocks;
-    if (dom.cfoFootnote) dom.cfoFootnote.textContent = 'λ=' + lambda.toExponential(2) + ' · D=' + fmt.diff(difficulty) + ' · HR=' + fmt.hashrate(hashrateHs);
-    if (dom.cfoStatus) dom.cfoStatus.textContent = 'SIMULATED';
-
-    // Distribution bars
-    if (dom.cfoDist) {
-      const maxPct = Math.max(...distEntries.map(d => d.pct), 1);
-      dom.cfoDist.innerHTML = distEntries.slice(0, 10).map(d => {
-        const barW = (d.pct / maxPct) * 100;
-        const barColor = d.blocks === 0 ? '#06d6f0' : d.blocks === 1 ? '#16b981' : '#f5b942';
-        return '<div class="cfo-dist-row"><span class="cfo-dist-label">' + d.blocks + ' blk</span>'
-          + '<div class="cfo-dist-bar-wrap"><div class="cfo-dist-bar" style="width:' + barW + '%;background:' + barColor + '"></div></div>'
-          + '<span class="cfo-dist-pct">' + d.pct.toFixed(1) + '%</span></div>';
-      }).join('');
-    }
-  }
-
-  function _calcMCMedian(buckets, total) {
-    let cum = 0; const half = total / 2;
-    const keys = Object.keys(buckets).map(Number).sort((a, b) => a - b);
-    for (const k of keys) { cum += buckets[k]; if (cum >= half) return k; }
-    return keys[keys.length - 1] || 0;
-  }
-
-  window.loadMonteCarlo = loadMonteCarlo;
-
-  function _calcMCPercentile(buckets, total, pct) {
-    let cum = 0; const target = total * pct / 100;
-    const keys = Object.keys(buckets).map(Number).sort((a, b) => a - b);
-    for (const k of keys) { cum += buckets[k]; if (cum >= target) return k; }
-    return keys[keys.length - 1] || 0;
-  }
-
-
   function renderProfitability(p) {
     if (!p || !Object.keys(p).length) return;
     const cur = (SETTINGS_CACHE.data?.active_currency?.value) || "USD"; const symMap = {USD:"$",BRL:"R$",EUR:"€",GBP:"£"}; const sym = symMap[cur] || "$";
@@ -625,14 +653,209 @@
     dom.badgesStrip.innerHTML = list.map(m => `<div class="badge-card"><div class="badge-card__tier">${m.tier}</div><div class="badge-card__label">${escapeHtml(m.label)}</div></div>`).join('');
   }
 
+  // ── Block Hunt render ──
+  function renderBlockHunt(snap) {
+    const net = snap.network || {};
+    const w = snap.worker || {};
+    const prox = snap.proximity || {};
+    const bh = snap.block_hunt || {};
+
+    const netDiff = net.difficulty || bh.network_difficulty || 0;
+    const bestDiff = w.bestDifficulty || bh.best_difficulty || 0;
+    const pBlock = bh.p_block_per_share != null ? bh.p_block_per_share : prox.chance_per_share_pct;
+    const expectedTime = bh.expected_time_seconds || prox.expected_time_seconds;
+    const cumulativeP = bh.cumulative_p_block;
+
+    document.getElementById('bh-network-diff') && (document.getElementById('bh-network-diff').textContent = fmt.diff(netDiff));
+    document.getElementById('bh-best-diff') && (document.getElementById('bh-best-diff').textContent = fmt.diff(bestDiff));
+    document.getElementById('bh-chance-badge') && (document.getElementById('bh-chance-badge').textContent = pBlock != null ? (Number(pBlock) * 100).toFixed(6) + '% per share' : '—');
+    document.getElementById('bh-difficulty-badge') && (document.getElementById('bh-difficulty-badge').textContent = 'diff ' + fmt.diff(netDiff));
+
+    // Distance
+    if (bestDiff > 0 && netDiff > 0) {
+      const dist = netDiff / bestDiff;
+      document.getElementById('bh-distance') && (document.getElementById('bh-distance').textContent = dist.toFixed(1) + '×');
+      document.getElementById('bh-distance-sub') && (document.getElementById('bh-distance-sub').textContent = 'your best is ' + (dist > 1 ? 'smaller' : 'larger') + ' than network');
+    } else {
+      document.getElementById('bh-distance') && (document.getElementById('bh-distance').textContent = '—');
+    }
+
+    // P(block) per share
+    document.getElementById('bh-p-block') && (document.getElementById('bh-p-block').textContent = pBlock != null ? (Number(pBlock) * 100).toFixed(8) + '%' : '—');
+
+    // Expected time
+    document.getElementById('bh-expected-time') && (document.getElementById('bh-expected-time').textContent = expectedTime ? fmt.secsToHuman(expectedTime) : '—');
+    if (typeof expectedTime === 'number') {
+      const blocksPerYear = expectedTime > 0 ? (365 * 86400) / expectedTime : 0;
+      document.getElementById('bh-expected-time-sub') && (document.getElementById('bh-expected-time-sub').textContent = '~' + blocksPerYear.toFixed(4) + ' blocks/yr');
+    }
+
+    // Cumulative P(block)
+    document.getElementById('bh-cumulative-p') && (document.getElementById('bh-cumulative-p').textContent = cumulativeP != null ? (Number(cumulativeP) * 100).toFixed(4) + '%' : '—');
+    document.getElementById('bh-cumulative-p-sub') && (document.getElementById('bh-cumulative-p-sub').textContent = 'since session start');
+
+    // Best diff sub
+    document.getElementById('bh-best-diff-sub') && (document.getElementById('bh-best-diff-sub').textContent = bh.best_diff_worker ? 'by ' + bh.best_diff_worker : 'highest share found');
+  }
+
+  // ── Hashrate Market render ──
+  function renderMarket(snap) {
+    const mkt = snap.market_data || {};
+    const grid = document.getElementById('mkt-grid');
+    if (!grid) return;
+
+    const offers = mkt.offers || [];
+    const bestPrice = mkt.best_price;
+
+    if (!offers.length) {
+      grid.innerHTML = '<div class="mkt-empty">no market data available — configure MRR credentials or wait for data to load</div>';
+      document.getElementById('mkt-best-price-badge') && (document.getElementById('mkt-best-price-badge').textContent = 'best price —');
+      document.getElementById('mkt-count-badge') && (document.getElementById('mkt-count-badge').textContent = '0 offers');
+      return;
+    }
+
+    document.getElementById('mkt-best-price-badge') && (document.getElementById('mkt-best-price-badge').textContent = bestPrice ? 'best: ' + bestPrice : '—');
+    document.getElementById('mkt-count-badge') && (document.getElementById('mkt-count-badge').textContent = offers.length + ' offers');
+
+    grid.innerHTML = offers.map((o, i) => `
+      <div class="mkt-card${o.is_best ? ' mkt-card--best' : ''}">
+        <div class="mkt-card__provider">${escapeHtml(o.provider || 'Unknown')}</div>
+        <div class="mkt-card__price">${o.price_btc_per_th_day ? Number(o.price_btc_per_th_day).toFixed(8) + ' BTC/TH/d' : '—'}</div>
+        <div class="mkt-card__detail">
+          <span><span class="mkt-card__label">HR:</span>${fmt.hashrate(o.hashrate)}</span>
+          <span><span class="mkt-card__label">Fee:</span>${o.fee_pct != null ? o.fee_pct + '%' : '—'}</span>
+          <span><span class="mkt-card__label">Duration:</span>${o.duration_days ? o.duration_days + 'd' : '—'}</span>
+        </div>
+      </div>
+    `).join('');
+  }
+
+  // ── AI Operator render ──
+  let _aiInited = false;
+  function renderAiOperator(snap) {
+    if (!_aiInited) {
+      _aiInited = true;
+      _initAiChat();
+    }
+
+    // Update context sidebar
+    const w = snap.worker || {};
+    const net = snap.network || {};
+    const fleet = snap.axe_fleet || [];
+    const prox = snap.proximity || {};
+
+    document.getElementById('ai-ctx-status') && (document.getElementById('ai-ctx-status').textContent = snap.worker ? 'ONLINE' : 'OFFLINE');
+    document.getElementById('ai-ctx-hr') && (document.getElementById('ai-ctx-hr').textContent = fmt.hashrate(w.hashrate));
+    document.getElementById('ai-ctx-best') && (document.getElementById('ai-ctx-best').textContent = fmt.diff(w.bestDifficulty));
+    document.getElementById('ai-ctx-net') && (document.getElementById('ai-ctx-net').textContent = fmt.diff(net.difficulty));
+    document.getElementById('ai-ctx-fleet') && (document.getElementById('ai-ctx-fleet').textContent = fleet.length + ' devices');
+    document.getElementById('ai-ctx-pblock') && (document.getElementById('ai-ctx-pblock').textContent = prox.chance_per_share_pct ? (Number(prox.chance_per_share_pct) * 100).toFixed(6) + '%' : '—');
+  }
+
+  function _initAiChat() {
+    const input = document.getElementById('ai-input');
+    const send = document.getElementById('ai-send');
+    const clear = document.getElementById('ai-clear');
+    const messages = document.getElementById('ai-messages');
+    if (!input || !send || !messages) return;
+
+    const responses = {
+      'hashrate': 'Current hashrate is **{hr}**. This is the speed at which your miners are computing SHA-256 hashes. To improve: add more ASICs, optimize your fleet, or rent hashpower from the market.',
+      'temperature': 'Monitoring fleet temperature is critical. Keep ASICs below 75°C for optimal lifespan. Check the Axe Fleet panel for per-device telemetry.',
+      'probability': 'Block finding probability depends on your hashrate vs the network difficulty. Currently {pblock}. With solo mining, each share is an independent lottery ticket.',
+      'difficulty': 'Network difficulty adjusts every 2016 blocks (~2 weeks). Higher difficulty = more competition. Your best difficulty shows how close you\'ve come to finding a block.',
+      'best diff': 'Your best difficulty is the highest share difficulty you\'ve found. The closer to network difficulty, the closer to a block.',
+      'market': 'Hashrate market data shows rental prices from various providers. Compare costs and expected value before renting hashpower.',
+      'fleet': 'Your fleet dashboard shows {fleet} devices. Each device reports hashrate, temperature, power draw, and shares. Monitor for anomalies.',
+      'profitability': 'Profitability depends on hashrate, power cost, and BTC price. Use the Profitability panel to estimate returns across pool, solo, and rental modes.',
+      'hello': 'I\'m CYPHER AI, your mining operations intelligence. Ask me about your fleet, probability calculations, market opportunities, or mining metrics.',
+    };
+
+    function addMessage(role, content) {
+      const div = document.createElement('div');
+      div.className = 'ai-msg ai-msg--' + role;
+      div.innerHTML = '<div class="ai-msg__header">' + (role === 'user' ? 'You' : '◆ CYPHER AI') + '</div><div class="ai-msg__content">' + content + '</div>';
+      messages.appendChild(div);
+      messages.scrollTop = messages.scrollHeight;
+    }
+
+    function findBestResponse(query) {
+      const q = query.toLowerCase();
+      const keys = Object.keys(responses);
+      let bestKey = 'default';
+      let bestScore = 0;
+      for (const k of keys) {
+        let score = 0;
+        const words = k.split(' ');
+        for (const w of words) { if (q.includes(w)) score += 10; }
+        for (const w of q.split(' ')) { if (k.includes(w) && w.length > 2) score += 5; }
+        if (score > bestScore) { bestScore = score; bestKey = k; }
+      }
+      if (bestScore < 5) return null;
+      return bestKey;
+    }
+
+    function getResponse(query) {
+      const key = findBestResponse(query);
+      if (!key) {
+        return 'I\'m not sure about that. Try asking about: hashrate, probability, difficulty, market, fleet, profitability, or temperature.';
+      }
+      let resp = responses[key] || 'Processing your query...';
+      // Fill in dynamic context
+      const hr = document.getElementById('ai-ctx-hr')?.textContent || '—';
+      const pblock = document.getElementById('ai-ctx-pblock')?.textContent || '—';
+      const fleetCt = document.getElementById('ai-ctx-fleet')?.textContent || '—';
+      resp = resp.replace('{hr}', hr).replace('{pblock}', pblock).replace('{fleet}', fleetCt);
+      return resp;
+    }
+
+    async function handleSend() {
+      try {
+        const text = input.value.trim();
+        if (!text) return;
+        input.value = '';
+        send.disabled = true;
+
+        addMessage('user', escapeHtml(text));
+
+        // Show typing indicator
+        const typingDiv = document.createElement('div');
+        typingDiv.className = 'ai-msg ai-msg--assistant';
+        typingDiv.innerHTML = '<div class="ai-msg__header">◆ CYPHER AI</div><div class="ai-typing"><span class="ai-typing__dot"></span><span class="ai-typing__dot"></span><span class="ai-typing__dot"></span></div>';
+        messages.appendChild(typingDiv);
+        messages.scrollTop = messages.scrollHeight;
+
+        // Brief processing delay
+        await new Promise(r => setTimeout(r, 200 + Math.random() * 300));
+
+        typingDiv.remove();
+
+        const response = getResponse(text);
+        const formatted = response.replace(/\*\*(.*?)\*\*/g, '<strong style="color:var(--accent-btc)">$1</strong>');
+        addMessage('assistant', formatted);
+      } finally {
+        send.disabled = false;
+      }
+    }
+
+    send.addEventListener('click', handleSend);
+    input.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); } });
+    clear.addEventListener('click', () => {
+      messages.innerHTML = '';
+      addMessage('assistant', 'Chat cleared. Ask me anything about your mining operation.');
+    });
+  }
+
   // ── Main render ──
   let prevSnapshot = null;
   function render(snap) {
     if (!_skeletonsHidden) hideSkeletons();
+    renderStatusBar(snap);
     if (dom.topbarAddress) dom.topbarAddress.textContent = `${fmt.shortAddr(window.BTC_ADDRESS || '')} · WORKER ${(window.WORKER_NAME || '').toUpperCase()}`;
     if (dom.statusText) dom.statusText.textContent = snap.worker ? 'ONLINE' : 'OFFLINE';
     dom.statusPill.classList.toggle('is-online', !!snap.worker);
     renderHero(snap);
+    renderHostCore(snap);
     renderPool(snap.pool);
     renderNetwork(snap.network);
     renderAccount(snap.account);
@@ -646,7 +869,13 @@
     renderAlerts(snap.alerts_recent);
     renderEvents(snap.highest_diffs);
     renderLeaderboard(snap.leaderboard_table_top_30);
+    if (typeof updateSidebarStatus === 'function') {
+      updateSidebarStatus(!!snap.worker);
+    }
     renderTimelineFeed(snap.timeline_last_n);
+    renderBlockHunt(snap);
+    renderMarket(snap);
+    renderAiOperator(snap);
     renderLiveMining(snap.all_workers, snap.worker);
     _updateHashSearchState(snap.worker, snap.network);
     _huntUpdateState(snap.worker, snap.network, parseFloat(snap.proximity?.live_calc?.session_totals?.cum_p_block_pct_str) || 0, parseFloat(snap.proximity?.live_calc?.session_totals?.expected_blocks) || 0, snap.proximity?.live_calc?.ticker || []);
@@ -735,6 +964,77 @@
   function closeSettingsModal() { dom.settingsModal?.classList.add('modal--hidden'); }
   dom.settingsModal?.addEventListener('click', (e) => { if (e.target.matches('[data-close]')) closeSettingsModal(); });
   dom.openSettings?.addEventListener('click', openSettingsModal);
+
+  // ── Wallet modal ──
+  function openWalletModal() {
+    dom.walletModal?.classList.remove('modal--hidden');
+    // Fill current address info
+    if (dom.walletCurrentAddr) dom.walletCurrentAddr.textContent = window.BTC_ADDRESS || '—';
+    if (dom.walletCurrentWorker) dom.walletCurrentWorker.textContent = window.WORKER_NAME || '—';
+    if (dom.walletAddressInput) dom.walletAddressInput.value = '';
+    if (dom.walletWorkerInput) dom.walletWorkerInput.value = '';
+    if (dom.walletStatus) dom.walletStatus.textContent = '';
+    // Focus the address input
+    setTimeout(() => dom.walletAddressInput?.focus(), 100);
+  }
+  function closeWalletModal() {
+    dom.walletModal?.classList.add('modal--hidden');
+    if (dom.walletStatus) dom.walletStatus.textContent = '';
+  }
+  dom.walletModal?.addEventListener('click', (e) => { if (e.target.matches('[data-close]')) closeWalletModal(); });
+  dom.openWallet?.addEventListener('click', openWalletModal);
+
+  // Save wallet
+  dom.walletSave?.addEventListener('click', async () => {
+    const status = dom.walletStatus;
+    if (!status) return;
+    const address = dom.walletAddressInput?.value?.trim() || '';
+    if (!address) {
+      status.textContent = '⚠ paste a BTC address first';
+      status.style.color = 'var(--accent-red)';
+      return;
+    }
+    status.textContent = '⏳ connecting...';
+    status.style.color = 'var(--text-tertiary)';
+    try {
+      const resp = await fetch('/api/set-address', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          address,
+          worker: dom.walletWorkerInput?.value?.trim() || '',
+        }),
+      });
+      const data = await resp.json();
+      if (!resp.ok) {
+        status.textContent = '⚠ ' + (data.error || 'request failed');
+        status.style.color = 'var(--accent-red)';
+        return;
+      }
+      status.textContent = '✅ connected — updating...';
+      status.style.color = 'var(--accent-green)';
+      // Update globals
+      window.BTC_ADDRESS = data.address;
+      window.WORKER_NAME = data.worker;
+      // Update topbar
+      if (dom.topbarAddress) {
+        dom.topbarAddress.textContent = fmt.shortAddr(data.address) + ' · WORKER ' + (data.worker || '').toUpperCase();
+      }
+      // Update live mining summary wallet display
+      if (dom.lmSummaryWallet) {
+        dom.lmSummaryWallet.textContent = fmt.shortAddr(data.address);
+      }
+      // Close modal after delay
+      setTimeout(() => {
+        closeWalletModal();
+        // Trigger immediate re-fetch so new worker data shows up
+        fetchSnapshot();
+      }, 1200);
+    } catch (e) {
+      status.textContent = '⚠ network error: ' + e.message;
+      status.style.color = 'var(--accent-red)';
+    }
+  });
   document.getElementById('settings-save')?.addEventListener('click', async () => {
     const form = document.getElementById('settings-body');
     if (!form) return;
@@ -771,7 +1071,10 @@
   // ── Keyboard shortcuts ──
   document.addEventListener('keydown', (e) => {
     if (e.key.toLowerCase() === 'r' && !document.querySelector('.modal:not(.modal--hidden)') && document.activeElement.tagName !== 'INPUT' && !e.metaKey && !e.ctrlKey) fetchSnapshot();
-    else if (e.key === 'Escape') { closeSettingsModal(); closeExportModal(); }
+    else if (e.key === 'Escape') { closeWalletModal(); closeSettingsModal(); closeExportModal(); }
+    else if (e.key.toLowerCase() === 'w' && !document.querySelector('.modal:not(.modal--hidden)') && document.activeElement.tagName !== 'INPUT' && !e.metaKey && !e.ctrlKey) {
+      openWalletModal();
+    }
   });
 
   // ══════════════════════════════════════════════════════════════════════
@@ -867,6 +1170,244 @@
       </div>`;
     }).join('');
     dom.lmGrid.innerHTML = html;
+  }
+
+  // ══════════════════════════════════════════════════════════════════════
+  // AXE FLEET — render device cards from snapshot.axe_fleet
+  // ══════════════════════════════════════════════════════════════════════
+
+  async function fetchAxeFleet() {
+    try {
+      const r = await fetch('/api/axe-fleet/health');
+      if (!r.ok) return;
+      const data = await r.json();
+      renderAxeFleet(data);
+    } catch (e) {
+      if (dom.axeFleetStatusBadge) dom.axeFleetStatusBadge.textContent = 'ERROR';
+    }
+  }
+
+  function renderAxeFleet(data) {
+    if (!data || !dom.axeGrid) return;
+
+    const fleet = data.fleet_stats || {};
+    const devices = data.device_health || [];
+
+    // Summary stats
+    if (dom.axeSummaryHr) dom.axeSummaryHr.textContent = fleet.total_hashrate_str || '—';
+    if (dom.axeSummaryOnline) countUpValue(dom.axeSummaryOnline, String(fleet.online || 0));
+    if (dom.axeSummaryWarning) countUpValue(dom.axeSummaryWarning, String(fleet.warning || 0));
+    if (dom.axeSummaryOffline) countUpValue(dom.axeSummaryOffline, String(fleet.offline || 0));
+    if (dom.axeSummaryHealth) dom.axeSummaryHealth.textContent = fleet.avg_health_score != null ? Math.round(fleet.avg_health_score) + '/100' : '—';
+    if (dom.axeSummaryTemp) dom.axeSummaryTemp.textContent = fleet.avg_temperature_c != null ? fleet.avg_temperature_c.toFixed(1) + '°C' : '—';
+    if (dom.axeSummaryPower) dom.axeSummaryPower.textContent = fleet.total_power_w ? fleet.total_power_w.toFixed(0) + 'W' : '—';
+    if (dom.axeSummaryEff) dom.axeSummaryEff.textContent = fleet.efficiency_jth != null ? fleet.efficiency_jth.toFixed(1) + ' J/TH' : '—';
+    if (dom.axeSummaryBest) dom.axeSummaryBest.textContent = fleet.best_diff ? fmt.diff(fleet.best_diff) : '—';
+
+    // Count badge
+    const total = fleet.total_devices || 0;
+    if (dom.axeFleetCountBadge) dom.axeFleetCountBadge.textContent = total + ' device' + (total === 1 ? '' : 's');
+
+    // Status badge
+    if (dom.axeFleetStatusBadge) {
+      if (total === 0) dom.axeFleetStatusBadge.textContent = 'NO DEVICES';
+      else if (fleet.offline === total) dom.axeFleetStatusBadge.textContent = 'ALL OFFLINE';
+      else if (fleet.warning > 0) dom.axeFleetStatusBadge.textContent = fleet.warning + ' WARNING';
+      else if (fleet.online === total) dom.axeFleetStatusBadge.textContent = 'ALL ONLINE';
+      else dom.axeFleetStatusBadge.textContent = fleet.online + '/' + total + ' ONLINE';
+      dom.axeFleetStatusBadge.className = 'badge';
+      if (fleet.offline === total) dom.axeFleetStatusBadge.classList.add('badge--red');
+      else if (fleet.warning > 0) dom.axeFleetStatusBadge.classList.add('badge--amber');
+      else dom.axeFleetStatusBadge.classList.add('badge--green');
+    }
+
+    // Group devices by status
+    const onlineDevs = devices.filter(d => d.status === 'ONLINE' || d.status === 'HASHING');
+    const warningDevs = devices.filter(d => d.status === 'WARNING');
+    const offlineDevs = devices.filter(d => d.status !== 'ONLINE' && d.status !== 'HASHING' && d.status !== 'WARNING');
+
+    if (!devices.length) {
+      dom.axeGrid.innerHTML = '<div class="axe-empty">no devices registered — add your first Bitaxe/NerdAxe via the + ADD button</div>';
+      return;
+    }
+
+    // Compute max hashrate for proportional bars
+    const maxHr = Math.max(...devices.map(d => (d.telemetry && d.telemetry.hashrate_hs) || 0), 1);
+
+    let html = '';
+
+    // Online group
+    if (onlineDevs.length) {
+      html += '<div class="axe-group-header"><strong>' + onlineDevs.length + '</strong> ONLINE</div>';
+      html += onlineDevs.map(d => _renderAxeCard(d, maxHr)).join('');
+    }
+
+    // Warning group
+    if (warningDevs.length) {
+      html += '<div class="axe-group-header"><strong>' + warningDevs.length + '</strong> WARNING</div>';
+      html += warningDevs.map(d => _renderAxeCard(d, maxHr)).join('');
+    }
+
+    // Offline group
+    if (offlineDevs.length) {
+      html += '<div class="axe-group-header"><strong>' + offlineDevs.length + '</strong> OFFLINE</div>';
+      html += offlineDevs.map(d => _renderAxeCard(d, maxHr)).join('');
+    }
+
+    dom.axeGrid.innerHTML = html;
+
+    // Attach click handlers for detail panel
+    dom.axeGrid.querySelectorAll('.axe-card').forEach(card => {
+      card.addEventListener('click', () => {
+        const id = card.dataset.deviceId;
+        if (id) openAxeDetail(id);
+      });
+    });
+  }
+
+  function _renderAxeCard(d, maxHr) {
+    maxHr = maxHr || 1;
+    const tel = d.telemetry || {};
+    const status = d.status || 'OFFLINE';
+    const isOnline = status === 'ONLINE' || status === 'HASHING';
+    const isWarning = status === 'WARNING';
+    const isOffline = !isOnline && !isWarning;
+    const statusClass = isOnline ? 'online' : isWarning ? 'warning' : 'offline';
+    const hrStr = tel.hashrate_str || '—';
+
+    // Health score ring
+    const hs = d.health_score || 0;
+    const circumference = 2 * Math.PI * 14; // r=14
+    const offset = circumference * (1 - hs / 100);
+    const healthColor = hs >= 80 ? 'var(--accent-green)' : hs >= 50 ? 'var(--accent-amber)' : 'var(--accent-red)';
+    const healthSvg = '<svg viewBox="0 0 32 32"><circle class="axe-card__health-bg" cx="16" cy="16" r="14"/><circle class="axe-card__health-fill" cx="16" cy="16" r="14" stroke="' + healthColor + '" stroke-dasharray="' + circumference + '" stroke-dashoffset="' + offset + '"/></svg>';
+
+    // Capability badges
+    const caps = d.capabilities || [];
+    const capHtml = caps.slice(0, 5).map(c => '<span class="axe-cap-badge is-supported">' + escapeHtml(c) + '</span>').join('');
+
+    // Stats
+    const temp = tel.temperature != null ? tel.temperature.toFixed(0) + '°C' : '—';
+    const bestDiff = tel.best_diff ? fmt.diff(tel.best_diff) : '—';
+    const shares = tel.shares_accepted != null ? tel.shares_accepted.toLocaleString() : '—';
+    const uptime = tel.uptime_str || '—';
+    const freq = tel.frequency_mhz ? tel.frequency_mhz + ' MHz' : '—';
+    const hw = tel.hw_error_pct != null ? tel.hw_error_pct.toFixed(2) + '%' : '—';
+    const power = tel.power_watts ? tel.power_watts.toFixed(0) + 'W' : '—';
+
+    return '<div class="axe-card ' + (isOnline ? 'is-online' : isWarning ? 'is-warning' : 'is-offline') + '" data-device-id="' + escapeHtml(d.id) + '">' +
+      '<div class="axe-card__head">' +
+        '<div class="axe-card__health">' + healthSvg + '<span class="axe-card__health-label" style="color:' + healthColor + '">' + hs + '</span></div>' +
+        '<div style="display:flex;flex-direction:column;gap:2px;flex:1;padding-left:10px">' +
+          '<div style="display:flex;align-items:center;gap:6px">' +
+            '<span class="axe-card__name">' + escapeHtml(d.name) + '</span>' +
+            '<span class="axe-card__status-dot ' + statusClass + '"></span>' +
+          '</div>' +
+          '<div class="axe-card__model">' + escapeHtml(d.model || 'unknown') + ' · ' + hrStr + '</div>' +
+        '</div>' +
+      '</div>' +
+      (caps.length ? '<div class="axe-card__caps">' + capHtml + '</div>' : '') +
+      '<div class="axe-card__mh-wrap"><div class="axe-card__mh-bar" style="width:' + Math.min(100, ((tel.hashrate_hs || 0) / maxHr) * 100) + '%"></div></div>' +
+      '<div class="axe-card__stats">' +
+        '<div class="axe-card__stat"><div class="lbl">TEMP</div><div class="val ' + (tel.temperature != null && tel.temperature > 70 ? 'red' : tel.temperature != null && tel.temperature > 55 ? 'gold' : 'green') + '">' + temp + '</div></div>' +
+        '<div class="axe-card__stat"><div class="lbl">DIFF</div><div class="val gold">' + bestDiff + '</div></div>' +
+        '<div class="axe-card__stat"><div class="lbl">UPTIME</div><div class="val cyan">' + uptime + '</div></div>' +
+      '</div>' +
+    '</div>';
+  }
+
+  function openAxeDetail(deviceId) {
+    if (!dom.axeDetail || !dom.axeDetailTitle || !dom.axeDetailBody) return;
+    dom.axeDetail.style.display = 'block';
+    dom.axeDetailTitle.textContent = 'Loading device...';
+    dom.axeDetailBody.innerHTML = '<div class="axe-detail__loading">loading telemetry…</div>';
+
+    fetch('/api/axe-fleet/devices/' + encodeURIComponent(deviceId))
+      .then(r => r.json())
+      .then(data => {
+        const dev = data.device || {};
+        const tel = data.latest_telemetry || {};
+        dom.axeDetailTitle.textContent = dev.name || 'Device';
+
+        const items = [
+          { lbl: 'Model', val: dev.model || 'unknown' },
+          { lbl: 'Firmware', val: (dev.firmware || '') + ' ' + (dev.firmware_version || '') },
+          { lbl: 'IP Address', val: dev.ip_address || '—' },
+          { lbl: 'Status', val: dev.status || 'OFFLINE', cls: dev.status === 'ONLINE' ? 'green' : 'red' },
+          { lbl: 'Hashrate', val: fmt.hashrate(tel.hashrate_hs || 0) },
+          { lbl: 'Temperature', val: tel.temperature != null ? tel.temperature + '°C' : '—', cls: tel.temperature != null && tel.temperature > 70 ? 'red' : 'green' },
+          { lbl: 'Power', val: tel.power_watts ? tel.power_watts + ' W' : '—' },
+          { lbl: 'Frequency', val: tel.frequency_mhz ? tel.frequency_mhz + ' MHz' : '—' },
+          { lbl: 'Voltage', val: tel.voltage_mv ? tel.voltage_mv + ' mV' : '—' },
+          { lbl: 'Best Diff', val: tel.best_diff ? fmt.diff(tel.best_diff) : '—', cls: 'gold' },
+          { lbl: 'Shares Accepted', val: tel.shares_accepted != null ? tel.shares_accepted.toLocaleString() : '—' },
+          { lbl: 'Shares Rejected', val: tel.shares_rejected != null ? tel.shares_rejected.toLocaleString() : '—' },
+          { lbl: 'HW Error %', val: tel.hw_error_pct != null ? tel.hw_error_pct.toFixed(2) + '%' : '—', cls: tel.hw_error_pct != null && tel.hw_error_pct > 1 ? 'red' : 'green' },
+          { lbl: 'Efficiency', val: tel.efficiency_jth ? tel.efficiency_jth.toFixed(1) + ' J/TH' : '—' },
+          { lbl: 'Uptime', val: tel.uptime_str || '—' },
+          { lbl: 'Free Heap', val: tel.free_heap ? tel.free_heap.toLocaleString() + ' B' : '—' },
+          { lbl: 'WiFi RSSI', val: tel.wifi_rssi != null ? tel.wifi_rssi + ' dBm' : '—' },
+          { lbl: 'Last Seen', val: dev.last_seen ? fmt.age(dev.last_seen) : '—' },
+        ];
+
+        dom.axeDetailBody.innerHTML = items.map(it =>
+          '<div class="axe-detail__item"><div class="lbl">' + escapeHtml(it.lbl) + '</div><div class="val' + (it.cls ? ' ' + it.cls : '') + '">' + escapeHtml(String(it.val)) + '</div></div>'
+        ).join('');
+      })
+      .catch(() => {
+        dom.axeDetailBody.innerHTML = '<div class="axe-detail__loading">error loading device telemetry</div>';
+      });
+  }
+
+  function initAxeFleetControls() {
+    const addBtn = document.getElementById('axe-fleet-add');
+    const form = document.getElementById('axe-add-form');
+    const cancelBtn = document.getElementById('axe-add-cancel');
+    const saveBtn = document.getElementById('axe-add-save');
+    const ipInput = document.getElementById('axe-add-ip');
+    const nameInput = document.getElementById('axe-add-name');
+    const statusEl = document.getElementById('axe-add-status');
+    if (!addBtn || !form) return;
+
+    addBtn.addEventListener('click', () => {
+      form.style.display = 'block';
+      setTimeout(() => ipInput?.focus(), 100);
+    });
+    cancelBtn?.addEventListener('click', () => {
+      form.style.display = 'none';
+      if (statusEl) statusEl.textContent = '';
+      if (ipInput) ipInput.value = '';
+      if (nameInput) nameInput.value = '';
+    });
+
+    // Device detail close
+    if (dom.axeDetailClose) {
+      dom.axeDetailClose.addEventListener('click', () => {
+        if (dom.axeDetail) dom.axeDetail.style.display = 'none';
+      });
+    }
+    saveBtn?.addEventListener('click', async () => {
+      if (!statusEl || !ipInput) return;
+      const ip = ipInput.value.trim();
+      if (!ip) { statusEl.textContent = '? enter IP address'; statusEl.style.color = 'var(--accent-red)'; return; }
+      statusEl.textContent = '> connecting...';
+      statusEl.style.color = 'var(--text-tertiary)';
+      try {
+        const r = await fetch('/api/axe-fleet/devices', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ip_address: ip, name: nameInput?.value?.trim() || '' })
+        });
+        const data = await r.json();
+        if (!r.ok) { statusEl.textContent = '? ' + (data.error || 'failed'); statusEl.style.color = 'var(--accent-red)'; return; }
+        statusEl.textContent = '? added — refreshing...';
+        statusEl.style.color = 'var(--accent-green)';
+        setTimeout(() => { form.style.display = 'none'; if (ipInput) ipInput.value = ''; if (nameInput) nameInput.value = ''; statusEl.textContent = ''; fetchAxeFleet(); }, 1500);
+      } catch (e) {
+        statusEl.textContent = '? network error: ' + e.message;
+        statusEl.style.color = 'var(--accent-red)';
+      }
+    });
   }
 
   // ══════════════════════════════════════════════════════════════════════
@@ -1304,6 +1845,7 @@
       if (!r.ok) throw new Error('snapshot failed');
       const snap = await r.json();
       render(snap);
+      fetchAxeFleet();
       updateNextPoll();
     } catch (e) { logMessage('ERROR', e.message, 'WARN'); }
   }
@@ -1322,13 +1864,295 @@
   async function boot() {
     initMatrix(); initCharts(); bindChartRanges(); loadSettings();
     updateClock(); setInterval(updateClock, 1000);
+    // ── Service Worker: unregister old caches, force fresh install ──
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.getRegistrations().then(registrations => {
+        for (const reg of registrations) {
+          reg.unregister();
+          console.log('[boot] unregistered old SW:', reg.scope);
+        }
+        // Register fresh with cache bust
+        navigator.serviceWorker.register('/sw.js', { scope: '/' }).then(() => {
+          console.log('[boot] new SW registered');
+        }).catch(e => {
+          console.warn('[boot] SW registration failed:', e);
+        });
+      });
+      // Listen for updates and reload when a new SW takes over
+      navigator.serviceWorker.addEventListener('controllerchange', () => {
+        console.log('[boot] new SW activated — reloading');
+        window.location.reload();
+      });
+    }
+
     showSkeletons();
     _huntStart();
-    _soloTermInit();
+    initAxeFleetControls();
     await fetchSnapshot();
     setInterval(fetchSnapshot, POLL_MS);
     logMessage('SYSTEM', 'WAR ROOM ONLINE', 'SUCCESS');
   }
 
   boot();
+
+  // ═════════════════════════════════════════════════════════════════════
+  // ALERT CENTER (Milestone 9)
+  // ══════════════════════════════════════════════════════════════════════
+  let acState = { active: [], history: [], rules: [] };
+  const severityClass = { CRIT: 'severity--crit', WARN: 'severity--warn', INFO: 'severity--info', GOLD: 'severity--gold', SUCCESS: 'severity--success' };
+  const severityLabel = { CRIT: 'CRIT', WARN: 'WARN', INFO: 'INFO', GOLD: 'GOLD', SUCCESS: 'OK' };
+
+  function acSetStatus(msg, isErr) {
+    if (!dom.alertCenterStatus) return;
+    dom.alertCenterStatus.textContent = msg;
+    dom.alertCenterStatus.className = 'modal__status' + (isErr ? ' modal__status--error' : '');
+    setTimeout(() => { dom.alertCenterStatus.textContent = ''; }, 3000);
+  }
+
+  function acFormatTime(ts) {
+    if (!ts) return '—';
+    const d = new Date(ts * 1000);
+    return d.toLocaleString();
+  }
+
+  async function acFetchJson(url, opts) {
+    const res = await fetch(url, opts);
+    if (!res.ok) {
+      let msg;
+      try { msg = (await res.json()).error; } catch (_) { /* ignore */ }
+      throw new Error(msg || res.statusText || ('HTTP ' + res.status));
+    }
+    return res.json();
+  }
+
+  function acRenderActive() {
+    if (!dom.acActiveList) return;
+    const filter = (document.querySelector('.ac-filter.active')?.dataset.filter) || 'all';
+    const list = acState.active.filter(a => filter === 'all' || a.severity === filter);
+    if (!list.length) {
+      dom.acActiveList.innerHTML = '<div class="ac-empty">no active alerts</div>';
+      return;
+    }
+    dom.acActiveList.innerHTML = list.map(a => `
+      <div class="ac-item ac-item--${(a.severity || 'INFO').toLowerCase()}">
+        <div class="ac-item__meta">
+          <span class="ac-item__sev ${severityClass[a.severity] || ''}">${severityLabel[a.severity] || a.severity}</span>
+          <span class="ac-item__cat">${a.category}</span>
+          <span class="ac-item__ts">${acFormatTime(a.ts)}</span>
+        </div>
+        <div class="ac-item__msg">${a.message}</div>
+        <div class="ac-item__actions">
+          <button class="btn btn--mini ac-ack" data-id="${a.id}">Acknowledge</button>
+        </div>
+      </div>
+    `).join('');
+    dom.acActiveList.querySelectorAll('.ac-ack').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        try {
+          await acFetchJson('/api/alerts/acknowledge', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ id: parseInt(btn.dataset.id, 10) }),
+          });
+          acLoadActive();
+        } catch (e) { acSetStatus('Acknowledge failed: ' + e.message, true); }
+      });
+    });
+  }
+
+  function acRenderHistory() {
+    if (!dom.acHistoryList) return;
+    if (!acState.history.length) {
+      dom.acHistoryList.innerHTML = '<div class="ac-empty">no history entries</div>';
+      return;
+    }
+    dom.acHistoryList.innerHTML = acState.history.map(h => `
+      <div class="ac-item ac-item--history">
+        <div class="ac-item__meta">
+          <span class="ac-item__sev ${severityClass[h.severity] || ''}">${severityLabel[h.severity] || h.severity}</span>
+          <span class="ac-item__cat">${h.alert_type}</span>
+          <span class="ac-item__ts">${acFormatTime(h.ts)}</span>
+        </div>
+        <div class="ac-item__msg">${h.action_taken || h.message}</div>
+      </div>
+    `).join('');
+  }
+
+  function acRenderRules() {
+    if (!dom.acRulesList) return;
+    if (!acState.rules.length) {
+      dom.acRulesList.innerHTML = '<div class="ac-empty">no automation rules</div>';
+      return;
+    }
+    dom.acRulesList.innerHTML = acState.rules.map(r => `
+      <div class="ac-item ac-item--rule">
+        <div class="ac-item__meta">
+          <span class="ac-item__sev">${r.is_enabled ? 'ON' : 'OFF'}</span>
+          <span class="ac-item__cat">${r.name}</span>
+        </div>
+        <div class="ac-item__msg">WHEN ${r.condition_metric} ${r.condition_operator} ${r.condition_value} THEN ${r.action_command}</div>
+        <div class="ac-item__actions">
+          <button class="btn btn--danger btn--mini ac-rule-del" data-id="${r.id}">Delete</button>
+        </div>
+      </div>
+    `).join('');
+    dom.acRulesList.querySelectorAll('.ac-rule-del').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        try {
+          await acFetchJson('/api/automation-rules/' + btn.dataset.id, { method: 'DELETE' });
+          acLoadRules();
+        } catch (e) { acSetStatus('Delete failed: ' + e.message, true); }
+      });
+    });
+  }
+
+  async function acLoadActive() {
+    try {
+      acState.active = (await acFetchJson('/api/alerts?limit=100')).alerts || [];
+      acRenderActive();
+    } catch (e) { acSetStatus('Load alerts failed: ' + e.message, true); }
+  }
+
+  async function acLoadHistory() {
+    try {
+      acState.history = (await acFetchJson('/api/alerts/history?limit=100')).history || [];
+      acRenderHistory();
+    } catch (e) { acSetStatus('Load history failed: ' + e.message, true); }
+  }
+
+  async function acLoadRules() {
+    try {
+      acState.rules = (await acFetchJson('/api/automation-rules')).rules || [];
+      acRenderRules();
+    } catch (e) { acSetStatus('Load rules failed: ' + e.message, true); }
+  }
+
+  function acShowTab(tab) {
+    dom.acTabs.forEach(t => t.classList.toggle('active', t.dataset.tab === tab));
+    dom.acPanes.forEach(p => p.style.display = (p.id === 'ac-pane-' + tab ? '' : 'none'));
+    if (tab === 'active') acLoadActive();
+    if (tab === 'history') acLoadHistory();
+    if (tab === 'rules') acLoadRules();
+  }
+
+  if (dom.openAlertCenter) {
+    dom.openAlertCenter.addEventListener('click', () => {
+      dom.alertCenterModal.classList.remove('modal--hidden');
+      acShowTab('active');
+    });
+    dom.alertCenterModal?.querySelectorAll('[data-close]').forEach(el => {
+      el.addEventListener('click', () => dom.alertCenterModal.classList.add('modal--hidden'));
+    });
+    dom.acTabs.forEach(t => t.addEventListener('click', () => acShowTab(t.dataset.tab)));
+    dom.acFilters.forEach(f => f.addEventListener('click', () => {
+      dom.acFilters.forEach(x => x.classList.remove('active'));
+      f.classList.add('active');
+      acRenderActive();
+    }));
+    dom.acRefreshActive?.addEventListener('click', acLoadActive);
+    dom.acRefreshHistory?.addEventListener('click', acLoadHistory);
+    dom.acRefreshRules?.addEventListener('click', acLoadRules);
+    dom.acAddRule?.addEventListener('click', () => { dom.acRuleForm.style.display = ''; });
+    dom.acRuleCancel?.addEventListener('click', () => { dom.acRuleForm.style.display = 'none'; });
+    dom.acRuleSave?.addEventListener('click', async () => {
+      const payload = {
+        name: dom.acRuleName.value.trim() || 'rule',
+        target_device_id: dom.acRuleDevice.value.trim(),
+        condition_metric: dom.acRuleMetric.value,
+        condition_operator: dom.acRuleOp.value,
+        condition_value: parseFloat(dom.acRuleValue.value),
+        action_command: dom.acRuleAction.value.trim(),
+        action_parameters: {},
+        is_enabled: true,
+      };
+      if (!payload.target_device_id || isNaN(payload.condition_value) || !payload.action_command) {
+        acSetStatus('Please fill all fields', true); return;
+      }
+      try {
+        await acFetchJson('/api/automation-rules', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        dom.acRuleForm.style.display = 'none';
+        dom.acRuleName.value = ''; dom.acRuleDevice.value = ''; dom.acRuleValue.value = ''; dom.acRuleAction.value = '';
+        acLoadRules();
+      } catch (e) { acSetStatus('Save rule failed: ' + e.message, true); }
+    });
+  }
+
+  // ── Sidebar toggle ──
+  const sidebar = document.getElementById('sidebar');
+  const sidebarBackdrop = document.getElementById('sidebar-backdrop');
+  const sidebarToggle = document.getElementById('sidebar-toggle');
+  const sidebarHamburger = document.getElementById('sidebar-hamburger');
+  const sidebarItems = document.querySelectorAll('.sidebar__item');
+
+  if (sidebarToggle) {
+    sidebarToggle.addEventListener('click', () => {
+      sidebar.classList.toggle('sidebar--collapsed');
+      sidebarToggle.textContent = sidebar.classList.contains('sidebar--collapsed') ? '▶' : '◀';
+    });
+  }
+
+  if (sidebarHamburger) {
+    sidebarHamburger.addEventListener('click', () => {
+      sidebar.classList.toggle('sidebar--open');
+      if (sidebarBackdrop) sidebarBackdrop.classList.toggle('sidebar-backdrop--visible');
+    });
+  }
+
+  // Close sidebar via backdrop click
+  if (sidebarBackdrop) {
+    sidebarBackdrop.addEventListener('click', () => {
+      sidebar.classList.remove('sidebar--open');
+      sidebarBackdrop.classList.remove('sidebar-backdrop--visible');
+    });
+  }
+
+  // Close sidebar on nav item click (mobile)
+  sidebarItems.forEach(item => {
+    item.addEventListener('click', () => {
+      if (window.innerWidth <= 1100) {
+        sidebar.classList.remove('sidebar--open');
+        if (sidebarBackdrop) sidebarBackdrop.classList.remove('sidebar-backdrop--visible');
+      }
+      // Update active state
+      sidebarItems.forEach(i => i.classList.remove('active'));
+      item.classList.add('active');
+    });
+  });
+
+  // Close sidebar on Escape key
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && sidebar.classList.contains('sidebar--open')) {
+      sidebar.classList.remove('sidebar--open');
+      if (sidebarBackdrop) sidebarBackdrop.classList.remove('sidebar-backdrop--visible');
+    }
+  });
+
+  // IntersectionObserver for active section tracking
+  if ('IntersectionObserver' in window) {
+    const sections = document.querySelectorAll('[id]');
+    const observer = new IntersectionObserver((entries) => {
+      entries.forEach(entry => {
+        if (entry.isIntersecting) {
+          const id = entry.target.id;
+          sidebarItems.forEach(item => {
+            item.classList.toggle('active', item.getAttribute('href') === '#' + id);
+          });
+        }
+      });
+    }, { rootMargin: '-20% 0px -70% 0px' });
+    sections.forEach(s => observer.observe(s));
+  }
+
+  // Update sidebar status (called from render)
+  function updateSidebarStatus(isOnline) {
+    const led = document.getElementById('sidebar-led');
+    const text = document.getElementById('sidebar-status-text');
+    if (led) led.style.background = isOnline ? 'var(--accent-green)' : 'var(--accent-red)';
+    if (text) text.textContent = isOnline ? 'ONLINE' : 'OFFLINE';
+  }
+
 })();

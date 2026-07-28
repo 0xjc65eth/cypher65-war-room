@@ -66,3 +66,15 @@ last_known_prices = {
 # ── BTC price cache (CoinGecko free tier: 10-50 req/min)
 BTC_PRICE_CACHE_TTL = 300  # 5 minutes
 btc_price_cache = {"ts": 0, "data": None}
+
+# ── Axe Fleet state ─────────────────────────────────────────────────────────
+# Cached telemetry for each device, updated by _poll_axe_fleet()
+# Format: {device_id: telemetry_dict}
+axe_telemetry_cache = {}
+
+# Last poll timestamp per device (for throttling)
+# Format: {device_id: unix_ts}
+axe_last_poll_ts = {}
+
+# Axe fleet polling interval (seconds) — conservative to avoid network load
+AXE_POLL_INTERVAL = 60

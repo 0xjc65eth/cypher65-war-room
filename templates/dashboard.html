@@ -7,26 +7,85 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700&family=Inter:wght@300;400;500;600;700;800;900&family=Space+Grotesk:wght@400;500;700&display=swap" rel="stylesheet">
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
-<link rel="stylesheet" href="/static/style.css">
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%2304060a'/%3E%3Ctext x='16' y='22' text-anchor='middle' font-family='monospace' font-weight='bold' font-size='18' fill='%2300ff9f'%3E65%3C/text%3E%3C/svg%3E">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>  <link rel="stylesheet" href="/static/style.css">
+  <link rel="icon" href="/static/favicon.ico" sizes="any">
+  <link rel="icon" type="image/png" sizes="32x32" href="/static/icon-32x32.png">
+  <link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
+  <meta name="theme-color" content="#06d6f0">
+  <!-- iOS splash screens -->
+  <link rel="apple-touch-startup-image" media="screen and (device-width: 375px) and (device-height: 812px) and (-webkit-device-pixel-ratio: 3)" href="/static/splash-1125x2436.png">
+  <link rel="apple-touch-startup-image" media="screen and (device-width: 414px) and (device-height: 896px) and (-webkit-device-pixel-ratio: 3)" href="/static/splash-1242x2688.png">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 </head>
 <body>
 
-<!-- Matrix rain canvas backdrop -->
-<canvas id="matrix-canvas"></canvas>
+<!-- No decorative overlays — removed per v2 design system -->
 
-<!-- Scanline overlay -->
-<div class="scanlines"></div>
-<div class="vignette"></div>
+<div class="app-layout" id="app-layout">
+  <!-- Sidebar backdrop for mobile overlay -->
+  <div class="sidebar-backdrop" id="sidebar-backdrop"></div>
 
-<!-- ═══════════ TOP STATUS BAR ═══════════ -->
+  <!-- ═══════════ SIDEBAR ═══════════ -->
+  <aside class="sidebar" id="sidebar">
+    <div class="sidebar__brand">
+      <div class="sidebar__logo" aria-hidden="true">65</div>
+      <div class="sidebar__title">CYPHER65</div>
+    </div>
+
+    <nav class="sidebar__nav" id="sidebar-nav">
+      <a class="sidebar__item active" href="#hero-worker" data-section="command">
+        <span class="sidebar__icon">⌘</span>
+        <span class="sidebar__label">Command</span>
+      </a>
+      <a class="sidebar__item" href="#axe-fleet-panel" data-section="fleet">
+        <span class="sidebar__icon">⚙</span>
+        <span class="sidebar__label">Fleet</span>
+      </a>
+      <a class="sidebar__item" href="#block-hunt-panel" data-section="block">
+        <span class="sidebar__icon">◈</span>
+        <span class="sidebar__label">Block Hunt</span>
+      </a>
+      <a class="sidebar__item" href="#market-panel" data-section="market">
+        <span class="sidebar__icon">⟐</span>
+        <span class="sidebar__label">Market</span>
+      </a>
+      <a class="sidebar__item" href="#ai-operator-panel" data-section="ai">
+        <span class="sidebar__icon">◆</span>
+        <span class="sidebar__label">AI</span>
+      </a>
+      <a class="sidebar__item" href="#alerts-panel" data-section="alerts">
+        <span class="sidebar__icon">⚠</span>
+        <span class="sidebar__label">Alerts</span>
+      </a>
+      <a class="sidebar__item" href="#profit-panel" data-section="profit">
+        <span class="sidebar__icon">Ξ</span>
+        <span class="sidebar__label">P&amp;L</span>
+      </a>
+    </nav>
+
+    <div class="sidebar__footer">
+      <div class="sidebar__status" id="sidebar-status">
+        <span class="led" id="sidebar-led"></span>
+        <span id="sidebar-status-text">INIT</span>
+      </div>
+      <button class="sidebar__toggle" id="sidebar-toggle" title="Toggle sidebar">◀</button>
+    </div>
+  </aside>
+
+  <!-- ═══════════ MAIN CONTENT AREA ═══════════ -->
+  <div class="app-main" id="app-main">
+
+<!-- ═══════════ TOP BAR ═══════════ -->
 <header class="topbar">
-  <div class="brand">
-    <div class="brand__logo" aria-hidden="true">65</div>
-    <div class="brand__meta">
-      <div class="brand__title">CYPHER65 · MISSION CONTROL</div>
-      <div class="brand__sub" id="topbar-address">—</div>
+  <div class="topbar__left">
+    <button class="topbar__hamburger" id="sidebar-hamburger" title="Toggle menu">☰</button>
+    <div class="brand">
+      <div class="brand__meta">
+        <div class="brand__title">MISSION CONTROL</div>
+        <div class="brand__sub" id="topbar-address">—</div>
+      </div>
     </div>
   </div>
 
@@ -40,25 +99,110 @@
       <span class="pulse-dot"></span>
       <span id="next-poll">--</span>
     </div>
-    <button id="refresh-now" class="btn btn--mini" title="Refresh now (R)">⟳</button>
-    <button id="open-settings" class="btn btn--mini" title="Settings (S)">⚙</button>
+    <button id="refresh-now" class="btn btn--mini" title="Refresh now (R) ⟳ Keyboard: R">⟳</button>
+    <button id="open-wallet" class="btn btn--mini" title="Connect Wallet (W) ⟳ Keyboard: W">⟐</button>
+    <button id="open-settings" class="btn btn--mini" title="Settings (S) ⟳ Keyboard: S">⚙</button>
+    <button id="open-alert-center" class="btn btn--mini" title="Alert Center (A) ⟳ Keyboard: A">🚨</button>
     <button id="open-exports" class="btn btn--mini" title="Export data">↓</button>
-    <button id="toggle-sound" class="btn btn--mini" title="Toggle sound (N)">🔇</button>
-    <button id="toggle-theme" class="btn btn--mini" title="Toggle theme (M)">🕶</button>
-    <button id="open-help" class="btn btn--mini" title="Help (H)">?</button>
+    <button id="toggle-sound" class="btn btn--mini" title="Toggle sound (N) ⟳ Keyboard: N">🔇</button>
   </div>
 </header>
 
-<!-- ═══════════ MAIN GRID ═══════════ -->
+<!-- ═══════════ GLOBAL STATUS BAR ═══════════ -->
+<div class="status-bar" id="status-bar">
+  <div class="status-block status-block--system" id="sb-system">
+    <div class="status-block__label">SYSTEM</div>
+    <div class="status-block__row">
+      <span class="led" id="sb-led"></span>
+      <span class="status-block__val" id="sb-status">INIT</span>
+      <span class="status-block__sub" id="sb-workers">0 workers</span>
+    </div>
+  </div>
+  <div class="status-block status-block--mining" id="sb-mining">
+    <div class="status-block__label">MINING</div>
+    <div class="status-block__row">
+      <span class="status-block__val" id="sb-hashrate">—</span>
+      <span class="status-block__sep"></span>
+      <span class="status-block__val status-block__val--gold" id="sb-bestdiff">—</span>
+      <span class="status-block__sub" id="sb-lastshare">—</span>
+    </div>
+  </div>
+  <div class="status-block status-block--pool" id="sb-pool">
+    <div class="status-block__label">POOL</div>
+    <div class="status-block__row">
+      <span class="status-block__val" id="sb-pool-hr">—</span>
+      <span class="status-block__sep"></span>
+      <span class="status-block__val" id="sb-pool-workers">0</span>
+      <span class="status-block__sub" id="sb-pool-block">—</span>
+    </div>
+  </div>
+  <div class="status-block status-block--network" id="sb-network">
+    <div class="status-block__label">NETWORK</div>
+    <div class="status-block__row">
+      <span class="status-block__val" id="sb-net-diff">—</span>
+      <span class="status-block__sep"></span>
+      <span class="status-block__val status-block__val--green" id="sb-net-price">—</span>
+      <span class="status-block__sub" id="sb-net-height">—</span>
+    </div>
+  </div>
+  <div class="status-block status-block--fleet" id="sb-fleet">
+    <div class="status-block__label">FLEET</div>
+    <div class="status-block__row">
+      <span class="status-block__val" id="sb-fleet-online">0</span>
+      <span class="status-block__sep">/</span>
+      <span class="status-block__val" id="sb-fleet-total">0</span>
+      <span class="status-block__sub" id="sb-fleet-hr">—</span>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════ COMMAND CENTER GRID ═══════════ -->
 <main class="grid">
 
-  <!-- ─── HERO WORKER ─── -->
-  <section class="panel panel--hero" id="hero-worker">
+  <!-- ─── HOST CORE ─── -->
+  <section class="panel" id="hero-worker">
     <div class="panel__header">
-      <div class="panel__eyebrow">▣ WORKER // {{worker|upper }}</div>
+      <div class="panel__eyebrow">HOST CORE // {{worker|upper }}</div>
       <div class="panel__tools">
         <span class="badge" id="worker-rank-badge">RANK ?</span>
         <span class="badge badge--mute" id="worker-uptime-badge">UP —</span>
+      </div>
+    </div>
+
+    <!-- ═══ HOST CORE — unified mission control hub ═══ -->
+    <div class="host-core">
+      <div class="host-core__header">
+        <div class="host-core__title">⧩ CENTRAL NERVOUS SYSTEM · REAL-TIME COLONY STATUS</div>
+        <div class="host-core__badges">
+          <span class="host-core__badge" id="hc-hr-badge">—</span>
+          <span class="host-core__badge" id="hc-net-badge">—</span>
+        </div>
+      </div>
+      <div class="host-core__meta">
+        <div class="host-core__stat">
+          <span class="host-core__stat-label">COLONY HASHRATE</span>
+          <span class="host-core__stat-val" id="hc-colony-hr">—</span>
+        </div>
+        <div class="host-core__stat">
+          <span class="host-core__stat-label">BEST DIFF</span>
+          <span class="host-core__stat-val" id="hc-best-diff">—</span>
+        </div>
+        <div class="host-core__stat">
+          <span class="host-core__stat-label">NETWORK</span>
+          <span class="host-core__stat-val" id="hc-network">—</span>
+        </div>
+        <div class="host-core__stat">
+          <span class="host-core__stat-label">FLEET HEALTH</span>
+          <span class="host-core__stat-val" id="hc-fleet-health">—</span>
+        </div>
+        <div class="host-core__stat">
+          <span class="host-core__stat-label">BLOCK PROBABILITY</span>
+          <span class="host-core__stat-val" id="hc-block-prob">—</span>
+        </div>
+        <div class="host-core__stat">
+          <span class="host-core__stat-label">ALERTS</span>
+          <span class="host-core__stat-val" id="hc-alerts">—</span>
+        </div>
       </div>
     </div>
 
@@ -66,7 +210,7 @@
       <div class="metric metric--xl">
         <div class="metric__label">HASHRATE</div>
         <div class="metric__value" id="m-hashrate">—</div>
-        <div class="metric__sub" id="m-hashrate-sub">aguardando dados</div>
+        <div class="metric__sub" id="m-hashrate-sub">core processing speed</div>
       </div>
       <div class="metric metric--xl">
         <div class="metric__label">BEST DIFFICULTY</div>
@@ -81,7 +225,7 @@
       <div class="metric metric--xl">
         <div class="metric__label">STATE</div>
         <div class="metric__value" id="m-state">—</div>
-        <div class="metric__sub" id="m-state-sub">idle</div>
+        <div class="metric__sub" id="m-state-sub">colony status</div>
       </div>
     </div>
 
@@ -705,53 +849,6 @@
     </div>
   </section>
 
-  <!-- ─── MONTE CARLO + CFO EXPANDED ─── -->
-  <section class="panel panel--cfo" id="cfo-panel">
-    <div class="panel__header">
-      <div class="panel__eyebrow">Ξ CFO TERMINAL · RISK & PROBABILITY</div>
-      <div class="panel__tools">
-        <span class="badge badge--mute" id="cfo-status">SIMULATED</span>
-        <select class="field__input" id="cfo-hours" style="width:auto;padding:2px 6px;font-size:10px;" onchange="loadMonteCarlo()">
-          <option value="1">1h</option><option value="6">6h</option><option value="12">12h</option>
-          <option value="24" selected>24h</option><option value="168">7d</option>
-          <option value="720">30d</option><option value="2160">90d</option><option value="8760">1yr</option>
-        </select>
-        <button class="btn btn--mini" onclick="loadMonteCarlo()" title="Run simulation">⟳ RUN</button>
-      </div>
-    </div>
-    <div class="cfo-grid">
-      <div class="cfo-cell cfo-cell--main">
-        <div class="cfo-cell__label">MONTE CARLO · P(≥1 BLOCK)</div>
-        <div class="cfo-cell__val" id="cfo-p-block">—</div>
-        <div class="cfo-cell__sub" id="cfo-p-block-sub">over selected period</div>
-      </div>
-      <div class="cfo-cell">
-        <div class="cfo-cell__label">EXPECTED BLOCKS</div>
-        <div class="cfo-cell__val" id="cfo-expected">—</div>
-        <div class="cfo-cell__sub" id="cfo-expected-sub">mean of simulation</div>
-      </div>
-      <div class="cfo-cell">
-        <div class="cfo-cell__label">MEDIAN BLOCKS</div>
-        <div class="cfo-cell__val" id="cfo-median">—</div>
-        <div class="cfo-cell__sub">50th percentile</div>
-      </div>
-      <div class="cfo-cell">
-        <div class="cfo-cell__label">P90 BLOCKS</div>
-        <div class="cfo-cell__val" id="cfo-p90">—</div>
-        <div class="cfo-cell__sub">90th percentile (optimistic)</div>
-      </div>
-      <div class="cfo-cell cfo-cell--wide">
-        <div class="cfo-cell__label">DISTRIBUTION</div>
-        <div class="cfo-dist" id="cfo-dist">
-          <span class="cfo-dist__empty">click RUN to simulate</span>
-        </div>
-      </div>
-    </div>
-    <div class="cfo-footnote" id="cfo-footnote">
-      ⚠ MONTE CARLO SIMULATION — 10,000 runs using Poisson process. Results are statistical estimates, not predictions. Variance is extreme in Bitcoin mining. Past performance does not guarantee future results.
-    </div>
-  </section>
-
   <!-- ─── CHARTS ─── -->
   <section class="panel panel--chart" id="chart-hashrate-panel">
     <div class="panel__header">
@@ -920,43 +1017,208 @@
     </ul>
   </section>
 
-  <!-- ─── SOLO MINING TERMINAL ─── -->
-  <section class="panel panel--terminal" id="solo-terminal-panel">
+  <!-- ─── BLOCK HUNT ─── -->
+  <section class="panel panel--block-hunt" id="block-hunt-panel">
     <div class="panel__header">
-      <div class="panel__eyebrow">>_ SOLO MINING ADVISOR · TERMINAL</div>
+      <div class="panel__eyebrow">◈ BLOCK HUNT · FIND YOUR BLOCK</div>
       <div class="panel__tools">
-        <span class="badge badge--green" id="solo-term-status">READY</span>
-        <button class="chip" id="solo-term-clear">clear</button>
-        <button class="chip" id="solo-term-help">help</button>
+        <span class="badge" id="bh-chance-badge">—</span>
+        <span class="badge badge--mute" id="bh-difficulty-badge">diff —</span>
       </div>
     </div>
 
-    <div class="solo-term" id="solo-term">
-      <div class="solo-term__output" id="solo-term-output">
-        <div class="solo-term__line solo-term__line--welcome">
-          <span class="c-green">julio@cypher</span>:<span class="c-blue">~/solo-mining</span>$ <span class="c-mute">// CYPHER SOLO MINING ADVISOR v1.0</span>
+    <div class="bh-grid">
+      <div class="bh-card">
+        <div class="bh-card__title">NETWORK DIFFICULTY</div>
+        <div class="bh-card__value" id="bh-network-diff">—</div>
+        <div class="bh-card__sub">current mining target</div>
+      </div>
+      <div class="bh-card">
+        <div class="bh-card__title">YOUR BEST DIFFICULTY</div>
+        <div class="bh-card__value bh-card__value--green" id="bh-best-diff">—</div>
+        <div class="bh-card__sub" id="bh-best-diff-sub">highest share found</div>
+      </div>
+      <div class="bh-card">
+        <div class="bh-card__title">DISTANCE TO BLOCK</div>
+        <div class="bh-card__value bh-card__value--cyan" id="bh-distance">—</div>
+        <div class="bh-card__sub" id="bh-distance-sub">× smaller than network target</div>
+      </div>
+      <div class="bh-card">
+        <div class="bh-card__title">P(BLOCK) · THIS SHARE</div>
+        <div class="bh-card__value bh-card__value--purple" id="bh-p-block">—</div>
+        <div class="bh-card__sub">each share = a chance</div>
+      </div>
+      <div class="bh-card">
+        <div class="bh-card__title">EXPECTED TIME TO BLOCK</div>
+        <div class="bh-card__value" id="bh-expected-time">—</div>
+        <div class="bh-card__sub" id="bh-expected-time-sub">@ current hashrate</div>
+      </div>
+      <div class="bh-card">
+        <div class="bh-card__title">CUMULATIVE P(BLOCK)</div>
+        <div class="bh-card__value" id="bh-cumulative-p">—</div>
+        <div class="bh-card__sub" id="bh-cumulative-p-sub">since session start</div>
+      </div>
+    </div>
+
+    <div class="prox-footnote" style="margin-top: 10px">
+      ◈ Each submitted share is a lottery ticket against the network difficulty.
+      The closer your best difficulty approaches the network target, the closer
+      you are to finding a block. Hashpower × time = probability.
+    </div>
+  </section>
+
+  <!-- ─── MARKET OPPORTUNITIES ─── -->
+  <section class="panel panel--market" id="market-panel">
+    <div class="panel__header">
+      <div class="panel__eyebrow">⟐ HASHMARKET · OPPORTUNITIES</div>
+      <div class="panel__tools">
+        <span class="badge badge--btc" id="mkt-best-price-badge">best price —</span>
+        <span class="badge badge--mute" id="mkt-count-badge">0 offers</span>
+      </div>
+    </div>
+
+    <div class="mkt-grid" id="mkt-grid">
+      <div class="mkt-empty">loading market data — connect MRR credentials in settings</div>
+    </div>
+    <div class="mkt-footnote" id="mkt-footnote">
+      Prices shown are estimates. Verify directly on each platform before renting.
+      MRR credentials can be configured via environment variables (MRR_API_KEY, MRR_API_SECRET).
+    </div>
+  </section>
+
+  <!-- ─── AI OPERATOR ─── -->
+  <section class="panel panel--ai-operator" id="ai-operator-panel">
+    <div class="panel__header">
+      <div class="panel__eyebrow">◆ AI OPERATOR · OPERATIONAL INTELLIGENCE</div>
+      <div class="panel__tools">
+        <span class="badge badge--green" id="ai-status-badge">ACTIVE</span>
+        <button class="chip" id="ai-clear">clear</button>
+      </div>
+    </div>
+
+    <div class="ai-layout">
+      <div class="ai-chat">
+        <div class="ai-chat__messages" id="ai-messages">
+          <div class="ai-msg ai-msg--assistant">
+            <div class="ai-msg__header">◆ CYPHER AI</div>
+            <div class="ai-msg__content">
+              I'm your mining operations AI. I can:
+              • Analyze fleet health and telemetry<br>
+              • Calculate block-finding probability<br>
+              • Compare rental opportunities<br>
+              • Run diagnostics on devices<br>
+              • Explain mining metrics
+            </div>
+          </div>
         </div>
-        <div class="solo-term__line solo-term__line--welcome">
-          <span class="c-mute">// Type </span><span class="c-cyan">help</span><span class="c-mute"> for available commands. Type </span><span class="c-cyan">clear</span><span class="c-mute"> to reset.</span>
+        <div class="ai-chat__input-row">
+          <input
+            type="text"
+            id="ai-input"
+            class="ai-chat__input"
+            placeholder="Ask about your fleet, probability, or market…"
+            autocomplete="off"
+            spellcheck="false"
+          />
+          <button class="ai-chat__send" id="ai-send" title="Send query">→</button>
         </div>
       </div>
-      <div class="solo-term__input-line">
-        <span class="solo-term__prompt">
-          <span class="c-green">julio@cypher</span>:<span class="c-blue">~/solo-mining</span>$
-        </span>
-        <input
-          type="text"
-          id="solo-term-input"
-          class="solo-term__input"
-          placeholder="calc --hashrate 225TH --duration 24h"
-          autocomplete="off"
-          spellcheck="false"
-        />
+
+      <div class="ai-context" id="ai-context">
+        <div class="ai-context__title">SYSTEM CONTEXT</div>
+        <div class="ai-context__row"><span class="lbl">Status</span><span class="val val--green" id="ai-ctx-status">—</span></div>
+        <div class="ai-context__row"><span class="lbl">Hashrate</span><span class="val" id="ai-ctx-hr">—</span></div>
+        <div class="ai-context__row"><span class="lbl">Best Diff</span><span class="val" id="ai-ctx-best">—</span></div>
+        <div class="ai-context__row"><span class="lbl">Network</span><span class="val" id="ai-ctx-net">—</span></div>
+        <div class="ai-context__row"><span class="lbl">Fleet</span><span class="val" id="ai-ctx-fleet">—</span></div>
+        <div class="ai-context__row"><span class="lbl">P(Block)</span><span class="val" id="ai-ctx-pblock">—</span></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ─── AXE FLEET ─── -->
+  <section class="panel panel--axe-fleet" id="axe-fleet-panel">
+    <div class="panel__header">
+      <div class="panel__eyebrow">⚙ AXE FLEET COMMAND · AXEOS REMOTE CONTROL</div>
+      <div class="panel__tools">
+        <span class="badge badge--green" id="axe-fleet-status-badge">INITIALIZING</span>
+        <span class="badge badge--mute" id="axe-fleet-count-badge">0 devices</span>
+        <button class="chip" id="axe-fleet-add" title="Add device">+ ADD</button>
+      </div>
+    </div>
+
+    <!-- Fleet Summary bar — enhanced -->
+    <div class="axe-summary" id="axe-summary">
+      <div class="axe-summary__item">
+        <span class="axe-summary__label">TOTAL HASHRATE</span>
+        <span class="axe-summary__val" id="axe-summary-hr">—</span>
+      </div>
+      <div class="axe-summary__item">
+        <span class="axe-summary__label">ONLINE</span>
+        <span class="axe-summary__val axe-summary__val--green" id="axe-summary-online">0</span>
+      </div>
+      <div class="axe-summary__item">
+        <span class="axe-summary__label">WARNING</span>
+        <span class="axe-summary__val axe-summary__val--amber" id="axe-summary-warning">0</span>
+      </div>
+      <div class="axe-summary__item">
+        <span class="axe-summary__label">OFFLINE</span>
+        <span class="axe-summary__val axe-summary__val--red" id="axe-summary-offline">0</span>
+      </div>
+      <div class="axe-summary__item">
+        <span class="axe-summary__label">FLEET HEALTH</span>
+        <span class="axe-summary__val" id="axe-summary-health">—</span>
+      </div>
+      <div class="axe-summary__item">
+        <span class="axe-summary__label">AVG TEMP</span>
+        <span class="axe-summary__val" id="axe-summary-temp">—</span>
+      </div>
+      <div class="axe-summary__item">
+        <span class="axe-summary__label">TOTAL POWER</span>
+        <span class="axe-summary__val" id="axe-summary-power">—</span>
+      </div>
+      <div class="axe-summary__item">
+        <span class="axe-summary__label">EFFICIENCY</span>
+        <span class="axe-summary__val" id="axe-summary-eff">—</span>
+      </div>
+      <div class="axe-summary__item">
+        <span class="axe-summary__label">BEST DIFF</span>
+        <span class="axe-summary__val axe-summary__val--gold" id="axe-summary-best">—</span>
+      </div>
+    </div>
+
+    <!-- Device grid — grouped by status, with health score + capability badges + detail -->
+    <div class="axe-grid" id="axe-grid">
+      <div class="axe-empty">no devices registered — add your first Bitaxe/NerdAxe via the + ADD button</div>
+    </div>
+
+    <!-- Add device form (hidden by default) -->
+    <div class="axe-add-form" id="axe-add-form" style="display:none">
+      <div class="axe-add-form__row">
+        <input type="text" class="axe-add-form__input" id="axe-add-ip" placeholder="192.168.1.100" autocomplete="off" spellcheck="false">
+        <input type="text" class="axe-add-form__input" id="axe-add-name" placeholder="Garage Bitaxe" autocomplete="off" spellcheck="false">
+        <button class="btn btn--primary btn--mini" id="axe-add-save">CONNECT</button>
+        <button class="btn btn--ghost btn--mini" id="axe-add-cancel">CANCEL</button>
+        <span class="axe-add-form__status" id="axe-add-status"></span>
+      </div>
+    </div>
+
+    <!-- Device detail panel (expanded when clicking a card, hidden by default) -->
+    <div class="axe-detail" id="axe-detail" style="display:none">
+      <div class="axe-detail__head">
+        <span class="axe-detail__title" id="axe-detail-title">—</span>
+        <button class="chip" id="axe-detail-close">✕ CLOSE</button>
+      </div>
+      <div class="axe-detail__body" id="axe-detail-body">
+        <div class="axe-detail__loading">loading…</div>
       </div>
     </div>
   </section>
 
 </main>
+
+  </div><!-- /app-main -->
+</div><!-- /app-layout -->
 
 <footer class="footer">
   <div>
@@ -968,6 +1230,128 @@
     ▣ This dashboard shows everything that is publicly available plus computed estimates.
   </div>
 </footer>
+
+<!-- ═══════════ WALLET MODAL ═══════════ -->
+<div class="modal modal--hidden" id="wallet-modal" role="dialog" aria-modal="true">
+  <div class="modal__backdrop" data-close></div>
+  <div class="modal__panel modal__panel--small">
+    <div class="modal__header">
+      <div class="modal__title">⟐ CONNECT WALLET</div>
+      <button class="modal__close" data-close aria-label="Close">×</button>
+    </div>
+    <div class="modal__body" id="wallet-body">
+      <label class="field" data-key="wallet_address">
+        <span class="field__label">BTC ADDRESS</span>
+        <input class="field__input field__input--mono" type="text" id="wallet-address-input"
+          placeholder="bc1q..." autocomplete="off" spellcheck="false">
+        <span class="field__hint">Paste your BTC address (starts with bc1 or 1).</span>
+      </label>
+      <label class="field" data-key="wallet_worker">
+        <span class="field__label">WORKER NAME (optional)</span>
+        <input class="field__input" type="text" id="wallet-worker-input"
+          placeholder="cypher65" autocomplete="off" spellcheck="false">
+        <span class="field__hint">Leave empty to keep current worker name.</span>
+      </label>
+      <div class="wallet-current" id="wallet-current">
+        <span class="wallet-current__label">CURRENT WALLET</span>
+        <span class="wallet-current__addr mono" id="wallet-current-addr">—</span>
+        <span class="wallet-current__worker mono" id="wallet-current-worker">—</span>
+      </div>
+    </div>
+    <div class="modal__footer">
+      <button class="btn btn--ghost" data-close>Cancel</button>
+      <button class="btn btn--primary" id="wallet-save">CONNECT</button>
+      <span class="modal__status" id="wallet-status"></span>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════ ALERT CENTER MODAL ═══════════ -->
+<div class="modal modal--hidden" id="alert-center-modal" role="dialog" aria-modal="true">
+  <div class="modal__backdrop" data-close></div>
+  <div class="modal__panel modal__panel--wide">
+    <div class="modal__header">
+      <div class="modal__title">🚨 ALERT CENTER</div>
+      <button class="modal__close" data-close aria-label="Close">×</button>
+    </div>
+    <div class="modal__body" id="alert-center-body">
+      <div class="ac-tabs">
+        <button class="chip ac-tab active" data-tab="active">Active Alerts</button>
+        <button class="chip ac-tab" data-tab="history">History</button>
+        <button class="chip ac-tab" data-tab="rules">Automation Rules</button>
+      </div>
+
+      <!-- Active Alerts -->
+      <div class="ac-pane" id="ac-pane-active">
+        <div class="ac-toolbar">
+          <span class="ac-filter-label">Filter:</span>
+          <button class="chip ac-filter active" data-filter="all">All</button>
+          <button class="chip ac-filter" data-filter="CRIT">Critical</button>
+          <button class="chip ac-filter" data-filter="WARN">Warning</button>
+          <button class="chip ac-filter" data-filter="INFO">Info</button>
+          <button class="btn btn--mini" id="ac-refresh-active">⟳ Refresh</button>
+        </div>
+        <div class="ac-list" id="ac-active-list">
+          <div class="ac-empty">loading alerts…</div>
+        </div>
+      </div>
+
+      <!-- History -->
+      <div class="ac-pane" id="ac-pane-history" style="display:none">
+        <div class="ac-toolbar">
+          <button class="btn btn--mini" id="ac-refresh-history">⟳ Refresh</button>
+        </div>
+        <div class="ac-list" id="ac-history-list">
+          <div class="ac-empty">loading history…</div>
+        </div>
+      </div>
+
+      <!-- Automation Rules -->
+      <div class="ac-pane" id="ac-pane-rules" style="display:none">
+        <div class="ac-toolbar">
+          <button class="btn btn--primary btn--mini" id="ac-add-rule">+ Add Rule</button>
+          <button class="btn btn--mini" id="ac-refresh-rules"> Refresh</button>
+        </div>
+        <div class="ac-form" id="ac-rule-form" style="display:none">
+          <div class="ac-form__row">
+            <input type="text" id="ac-rule-name" placeholder="Rule name" class="ac-input">
+            <input type="text" id="ac-rule-device" placeholder="Device ID" class="ac-input">
+          </div>
+          <div class="ac-form__row">
+            <select id="ac-rule-metric" class="ac-input">
+              <option value="temperature">Temperature</option>
+              <option value="hashrate">Hashrate</option>
+              <option value="reject_rate">Reject rate</option>
+              <option value="stale_rate">Stale rate</option>
+              <option value="status">Status</option>
+            </select>
+            <select id="ac-rule-op" class="ac-input">
+              <option value=">">&gt;</option>
+              <option value="<">&lt;</option>
+              <option value=">=">≥</option>
+              <option value="<=">≤</option>
+              <option value="==">==</option>
+              <option value="!=">!=</option>
+            </select>
+            <input type="number" id="ac-rule-value" placeholder="Value" class="ac-input">
+          </div>
+          <div class="ac-form__row">
+            <input type="text" id="ac-rule-action" placeholder="Action command (e.g. restart)" class="ac-input">
+            <button class="btn btn--primary btn--mini" id="ac-rule-save">Save Rule</button>
+            <button class="btn btn--ghost btn--mini" id="ac-rule-cancel">Cancel</button>
+          </div>
+          <div class="ac-form__status" id="ac-rule-status"></div>
+        </div>
+        <div class="ac-list" id="ac-rules-list">
+          <div class="ac-empty">loading rules…</div>
+        </div>
+      </div>
+    </div>
+    <div class="modal__footer">
+      <span class="modal__status" id="alert-center-status"></span>
+    </div>
+  </div>
+</div>
 
 <!-- ═══════════ SETTINGS MODAL ═══════════ -->
 <div class="modal modal--hidden" id="settings-modal" role="dialog" aria-modal="true">
@@ -1146,6 +1530,6 @@
   <div class="kbd-hint__row"><kbd>R</kbd><span class="kbd-hint__label">Refresh now</span></div>
 </div>
 
-<script src="/static/app.js"></script>
+<script src="/static/app.js?v=2"></script>
 </body>
 </html>

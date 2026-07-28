@@ -8,6 +8,8 @@ import json
 import time
 import logging
 
+import os
+
 from flask import Blueprint, jsonify, request
 
 import services.state as state
@@ -45,7 +47,7 @@ def api_solo_mining_calc():
     if not difficulty:
         # Try live data from latest snapshot
         net = state.latest_snapshot.get("network", {})
-        difficulty = float(net.get("difficulty", 0))
+        difficulty = float(net.get("difficulty") or 0)
         if not difficulty:
             # Fallback: fetch from mempool
             d = solo_mining.get_network_difficulty()
@@ -95,7 +97,7 @@ def api_solo_mining_compare():
 
     # Get difficulty
     net = state.latest_snapshot.get("network", {})
-    difficulty = float(net.get("difficulty", 0))
+    difficulty = float(net.get("difficulty") or 0)
     if not difficulty:
         d = solo_mining.get_network_difficulty()
         difficulty = d or 110e12  # last resort fallback

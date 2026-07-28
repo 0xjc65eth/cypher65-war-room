@@ -14,8 +14,8 @@ load_dotenv()
 # ── Core Settings ─────────────────────────────────────────────────────
 BTC_ADDRESS = os.environ.get("BTC_ADDRESS", "")
 WORKER_NAME = os.environ.get("WORKER_NAME", "")
-PARASITE_API = "https://parasite.space/api"
-MEMPOOL_API = "https://mempool.space/api"
+PARASITE_API = os.environ.get("PARASITE_API", "https://parasite.space/api")
+MEMPOOL_API = os.environ.get("MEMPOOL_API", "https://mempool.space/api")
 DATA_DIR = Path(__file__).parent / "data"
 DB_PATH = "data/war_room.sqlite"
 

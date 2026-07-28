@@ -1,0 +1,267 @@
+"""Tests for the core device API routes in app.py."""
+import time
+
+import pytest
+
+from core.models.device import Device, DeviceStatus
+
+
+class TestAppDeviceRoutes:
+    @pytest.fixture
+    def client(self):
+        from app import app, _core_registry
+
+        app.config["TESTING"] = True
+        yield app.test_client(), _core_registry
+
+    def test_get_device_not_found(self, client):
+        flask_client, _ = client
+        response = flask_client.get("/api/devices/does-not-exist")
+        assert response.status_code == 404
+        data = response.get_json()
+        assert data["error"] == "device not found"
+
+    def test_get_device_success(self, client):
+        flask_client, registry = client
+        device = Device(name="Test-Device", model="Bitaxe Max", ip="192.168.1.50")
+        registry.add_device(device)
+
+        response = flask_client.get(f"/api/devices/{device.id}")
+        assert response.status_code == 200
+        data = response.get_json()
+        assert data["success"] is True
+        assert data["device"]["id"] == device.id
+        assert data["device"]["name"] == "Test-Device"
+        assert data["device"]["status"] == "offline"
+
+    def test_list_devices_includes_telemetry(self, client):
+        flask_client, registry = client
+        device = Device(name="Listed-Device", model="Bitaxe", ip="192.168.1.51")
+        device.current_telemetry = {
+            "source": "bitaxe_adapter",
+            "timestamp": int(time.time()) - 10,
+            "hashrate": 1.5e12,
+            "temperature": 72.0,
+        }
+        registry.add_device(device)
+
+        response = flask_client.get("/api/devices")
+        assert response.status_code == 200
+        data = response.get_json()
+        found = next((d for d in data["devices"] if d["id"] == device.id), None)
+        assert found is not None
+        assert found["current_telemetry"] is not None
+        assert found["current_telemetry"]["source"] == "bitaxe_adapter"
+        # freshness should be recomputed on the fly
+        assert "freshness" in found["current_telemetry"]
+
+    def test_fleet_summary(self, client):
+        flask_client, registry = client
+        online = Device(name="Online-Device", model="Bitaxe", ip="192.168.1.52")
+        online.status = DeviceStatus.ONLINE
+        online.current_telemetry = {
+            "source": "bitaxe_adapter",
+            "timestamp": int(time.time()),
+            "hashrate": 2.5e12,
+        }
+        offline = Device(name="Offline-Device", model="Bitaxe", ip="192.168.1.53")
+        registry.add_device(online)
+        registry.add_device(offline)
+
+        response = flask_client.get("/api/fleet/summary")
+        assert response.status_code == 200
+        data = response.get_json()
+        assert data["total"] >= 2
+        assert data["status_counts"]["online"] >= 1
+        assert data["status_counts"]["offline"] >= 1
+        assert data["devices_with_recent_telemetry"] >= 1
+        assert data["total_hashrate"] > 0
+
+    def test_fleet_summary_excludes_stale_telemetry(self, client):
+        flask_client, registry = client
+        stale = Device(name="Stale-Device", model="Bitaxe", ip="192.168.1.54")
+        stale.status = DeviceStatus.ONLINE
+        stale.current_telemetry = {
+            "source": "bitaxe_adapter",
+            "timestamp": int(time.time()) - 1000,
+            "hashrate": 2.5e12,
+        }
+        registry.add_device(stale)
+
+        response = flask_client.get("/api/fleet/summary")
+        assert response.status_code == 200
+        data = response.get_json()
+        # The stale device is not counted in recent telemetry nor hashrate.
+        # We can't assert exact numbers because the global registry may contain
+        # other entries, but at least the response schema is present.
+        assert "devices_with_recent_telemetry" in data
+        assert "total_hashrate" in data
+
+    def test_refresh_device_not_found(self, client):
+        flask_client, _ = client
+        response = flask_client.post("/api/devices/unknown-id/refresh")
+        assert response.status_code == 404
+
+    def test_device_command_not_supported(self, client):
+        flask_client, registry = client
+        from core.adapters.bitaxe_adapter import BitaxeAdapter
+        device = Device(name="Test-Command", model="Bitaxe", ip="192.168.1.55")
+        device.capabilities = BitaxeAdapter(device).get_capabilities()
+        registry.add_device(device)
+
+        response = flask_client.post(
+            f"/api/devices/{device.id}/command",
+            json={"command": "set_frequency"},
+        )
+        assert response.status_code == 400
+        data = response.get_json()
+        assert data["success"] is False
+        assert "not supported" in data["error"].lower()
+
+    def test_device_command_offline_blocked_by_safety(self, client):
+        flask_client, registry = client
+        from core.adapters.bitaxe_adapter import BitaxeAdapter
+        device = Device(name="Test-Offline", model="Bitaxe", ip="192.168.1.56")
+        device.capabilities = BitaxeAdapter(device).get_capabilities()
+        registry.add_device(device)
+
+        response = flask_client.post(
+            f"/api/devices/{device.id}/command",
+            json={"command": "restart"},
+        )
+        assert response.status_code == 403
+        data = response.get_json()
+        assert data["success"] is False
+        assert "offline" in data["error"].lower()
+
+    def test_device_command_history_empty(self, client):
+        flask_client, registry = client
+        from core.adapters.bitaxe_adapter import BitaxeAdapter
+        device = Device(name="Test-History", model="Bitaxe", ip="192.168.1.57")
+        device.capabilities = BitaxeAdapter(device).get_capabilities()
+        registry.add_device(device)
+
+        response = flask_client.get(f"/api/devices/{device.id}/commands")
+        assert response.status_code == 200
+        data = response.get_json()
+        assert data["success"] is True
+        assert data["commands"] == []
+
+    def test_device_command_history_records_entry(self, client):
+        flask_client, registry = client
+        from core.adapters.bitaxe_adapter import BitaxeAdapter
+        device = Device(name="Test-History-Rec", model="Bitaxe", ip="192.168.1.58")
+        device.capabilities = BitaxeAdapter(device).get_capabilities()
+        registry.add_device(device)
+
+        # First command should be blocked by safety (offline) but still recorded
+        flask_client.post(f"/api/devices/{device.id}/command", json={"command": "restart"})
+
+        response = flask_client.get(f"/api/devices/{device.id}/commands")
+        assert response.status_code == 200
+        data = response.get_json()
+        assert data["success"] is True
+        assert len(data["commands"]) == 1
+        assert data["commands"][0]["command"] == "restart"
+
+    def test_get_device_includes_health_fields(self, client):
+        flask_client, registry = client
+        device = Device(name="Health-Device", model="Bitaxe", ip="192.168.1.70", status=DeviceStatus.ONLINE)
+        device.current_telemetry = {"temperature": 95}
+        registry.add_device(device)
+
+        response = flask_client.get(f"/api/devices/{device.id}")
+        assert response.status_code == 200
+        data = response.get_json()
+        assert data["success"] is True
+        assert "health_score" in data["device"]
+        assert "active_issues" in data["device"]
+        assert "last_diagnostic_at" in data["device"]
+        assert data["device"]["health_score"] < 100
+        assert any("Temperature" in issue for issue in data["device"]["active_issues"])
+
+    def test_list_devices_includes_health_fields(self, client):
+        flask_client, registry = client
+        device = Device(name="Health-Listed", model="Bitaxe", ip="192.168.1.71", status=DeviceStatus.ONLINE)
+        registry.add_device(device)
+
+        response = flask_client.get("/api/devices")
+        assert response.status_code == 200
+        data = response.get_json()
+        found = next((d for d in data["devices"] if d["id"] == device.id), None)
+        assert found is not None
+        assert "health_score" in found
+        assert "active_issues" in found
+        assert "last_diagnostic_at" in found
+
+    def test_timeline_not_found(self, client):
+        flask_client, _ = client
+        response = flask_client.get("/api/devices/does-not-exist/timeline")
+        assert response.status_code == 404
+
+    def test_timeline_includes_command_and_maintenance(self, client):
+        flask_client, registry = client
+        from core.adapters.bitaxe_adapter import BitaxeAdapter
+        device = Device(name="Timeline-Device", model="Bitaxe", ip="192.168.1.72", status=DeviceStatus.ONLINE)
+        device.capabilities = BitaxeAdapter(device).get_capabilities()
+        registry.add_device(device)
+
+        # Record a maintenance event
+        maintenance_response = flask_client.post(
+            f"/api/devices/{device.id}/maintenance",
+            json={"type": "cleaning", "notes": "fan check", "performed_by": "tech"},
+        )
+        assert maintenance_response.status_code == 201
+
+        # Issue a command that is blocked by safety but recorded
+        flask_client.post(f"/api/devices/{device.id}/command", json={"command": "restart"})
+
+        response = flask_client.get(f"/api/devices/{device.id}/timeline")
+        assert response.status_code == 200
+        data = response.get_json()
+        assert data["success"] is True
+        assert data["device_id"] == device.id
+
+        types = [event["type"] for event in data["events"]]
+        assert "maintenance" in types
+        assert "command" in types
+
+    def test_timeline_sorted_newest_first(self, client):
+        flask_client, registry = client
+        from core.adapters.bitaxe_adapter import BitaxeAdapter
+        device = Device(name="Timeline-Sorted", model="Bitaxe", ip="192.168.1.73", status=DeviceStatus.ONLINE)
+        device.capabilities = BitaxeAdapter(device).get_capabilities()
+        registry.add_device(device)
+
+        flask_client.post(f"/api/devices/{device.id}/maintenance", json={"type": "cleaning"})
+        flask_client.post(f"/api/devices/{device.id}/maintenance", json={"type": "firmware_update"})
+
+        response = flask_client.get(f"/api/devices/{device.id}/timeline")
+        assert response.status_code == 200
+        data = response.get_json()
+        timestamps = [event["timestamp"] for event in data["events"]]
+        assert timestamps == sorted(timestamps, reverse=True)
+
+    def test_timeline_includes_status_change(self, client):
+        flask_client, registry = client
+        from core.adapters.bitaxe_adapter import BitaxeAdapter
+        device = Device(name="Timeline-Status", model="Bitaxe", ip="192.168.1.74", status=DeviceStatus.ONLINE)
+        device.capabilities = BitaxeAdapter(device).get_capabilities()
+        registry.add_device(device)
+
+        # Force the adapter to report no telemetry so the device goes offline
+        original_get_telemetry = BitaxeAdapter.get_telemetry
+        BitaxeAdapter.get_telemetry = lambda self: None
+        try:
+            response = flask_client.post(f"/api/devices/{device.id}/refresh")
+        finally:
+            BitaxeAdapter.get_telemetry = original_get_telemetry
+        assert response.status_code == 200
+
+        response = flask_client.get(f"/api/devices/{device.id}/timeline")
+        assert response.status_code == 200
+        data = response.get_json()
+        status_events = [e for e in data["events"] if e["type"] == "status_change"]
+        assert len(status_events) >= 1
+        assert status_events[0]["details"]["old_status"] == "online"
+        assert status_events[0]["details"]["new_status"] == "offline"

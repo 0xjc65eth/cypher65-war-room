@@ -13,6 +13,8 @@ import threading
 import collections
 import logging
 from pathlib import Path
+from typing import Any, Dict, List, Optional
+from datetime import datetime, timezone
 
 from flask import Flask, jsonify, render_template, request, abort
 import requests
@@ -25,6 +27,35 @@ from helpers import (
     safe_int, safe_num_from_str, coerce_float, coerce_int,
     human_int, human_secs_long, isfinite_v, make_memory_alert,
 )
+
+import services.state as _shared_state
+from agents.opportunity_engine import scan as _opp_scan, build_response as _opp_build_response
+from agents import solo_mining_advisor as _opp_advisor  # monkeypatch-safe: accessed dynamically in route
+from routes.solo_mining_routes import solo_mining_bp
+from services.probability_engine import register_probability_routes
+from services.probability import calculate_multiple_periods, _seconds_to_human
+from services.hashrate_market import (
+    fetch_all_offers as _fetch_all_offers,
+    score_offer as _score_offer,
+    build_highlights as _build_market_highlights,
+    persist_market_history as _persist_market_history,
+    fetch_market_history as _fetch_market_history,
+    enrich_opportunity_dict as _enrich_opportunity,
+)
+from axe_fleet.routes import axe_fleet_bp, init_routes as _init_axe_routes
+from axe_fleet.registry import DeviceRegistry
+from routes.alerts_routes import alerts_bp, _set_get_db as _alerts_set_get_db
+
+# ── Core CYPHER65 device registry ───────────────────────────────────────────
+from core.registry.device_registry import DeviceRegistry as CoreDeviceRegistry
+from core.adapters import get_adapter
+from core.models.device import Device as CoreDevice, DeviceStatus as CoreDeviceStatus
+from core.safety.safety_engine import SafetyEngine
+from core.diagnostics.diagnostics_engine import DiagnosticsEngine, DiagnosticSeverity
+
+# ── Fleet telemetry freshness threshold (seconds) ─────────────────────────────
+# Telemetry snapshots older than this are no longer considered "recent".
+TELEMETRY_FRESHNESS_THRESHOLD = 300
 
 # ── Structured logging ───────────────────────────────────────────────────────
 # ISO-ts + module.tag + level. diagnostic prefix in messages preserved so
@@ -56,13 +87,27 @@ DATA_DIR.mkdir(exist_ok=True)
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", os.urandom(32).hex())
 
+# ── Register blueprints ─────────────────────────────────────────────────────
+app.register_blueprint(solo_mining_bp, url_prefix='/api/solo-mining')
+register_probability_routes(app)
+
+# ── Register Axe Fleet blueprint ────────────────────────────────────────────
+app.register_blueprint(axe_fleet_bp, url_prefix='/api/axe-fleet')
+
+# ── Register Auth blueprint (MILESTONE 11: Security Hardening) ──────────────
+from routes.auth_routes import auth_bp
+app.register_blueprint(auth_bp)
+
 # ━━ Simple in-memory rate limiter ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 _rate_limit_store = {}  # {ip: [timestamps]}
 
 @app.before_request
 def rate_limit():
     """Simple rate limiter: max RATE_LIMIT_PER_MINUTE requests per IP per minute.
-    Skips static files and the /healthz endpoint."""
+    Skips static files and the /healthz endpoint.
+    Disabled in TESTING mode so test suites can call endpoints freely."""
+    if app.config.get("TESTING", False):
+        return None
     if request.path.startswith('/static') or request.path == '/healthz' or request.path == '/api/healthz':
         return None
     ip = request.remote_addr or '127.0.0.1'
@@ -74,10 +119,34 @@ def rate_limit():
     _rate_limit_store[ip] = [t for t in _rate_limit_store[ip] if now - t < window]
     if len(_rate_limit_store[ip]) >= RATE_LIMIT_PER_MINUTE:
             abort(429, description="Rate limit exceeded. Please slow down.")
-    _rate_limit_store[ip].append(now)
-    # GC old IPs periodically
+    _rate_limit_store[ip].append(now)    # GC old IPs periodically
     if len(_rate_limit_store) > 5000:
         _rate_limit_store.clear()
+
+
+@app.after_request
+def add_cache_headers(response):
+    """Set Cache-Control headers to prevent stale cache:
+    - HTML responses (no static): no-cache, must-revalidate
+    - Static JS/CSS: short max-age (5 min) so updates propagate
+    - API responses: no-cache
+    - SW.js: no-cache (never cache the SW itself!)"""
+    path = request.path
+    if path == '/static/sw.js' or path.endswith('/sw.js'):
+        # Service Worker MUST NOT be cached by the browser
+        response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+        response.headers['Pragma'] = 'no-cache'
+        response.headers['Expires'] = '0'
+    elif path.startswith('/static/'):
+        # Static assets: short cache (5 min) so updates propagate
+        response.headers['Cache-Control'] = 'public, max-age=300'
+    else:
+        # HTML pages and API responses: always fresh
+        response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+        response.headers['Pragma'] = 'no-cache'
+        response.headers['Expires'] = '0'
+    return response
+
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 #  SQLite
@@ -86,6 +155,12 @@ def get_db():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     return conn
+
+
+# Inject the real get_db factory into the alerts blueprint so it doesn't need
+# to import the app module at runtime (avoids circular dependency).
+_alerts_set_get_db(get_db)
+app.register_blueprint(alerts_bp)
 
 
 def init_db():
@@ -139,9 +214,32 @@ def init_db():
             ts INTEGER NOT NULL,
             severity TEXT,
             category TEXT,
-            message TEXT
+            message TEXT,
+            device_id TEXT DEFAULT '',
+            alert_type TEXT DEFAULT 'threshold',
+            is_acknowledged INTEGER DEFAULT 0,
+            active INTEGER DEFAULT 1,
+            meta TEXT DEFAULT '{}'
         )"""
     )
+    # ── Milestone 9: ensure legacy alerts tables have the new columns ──
+    c.execute("PRAGMA table_info(alerts)")
+    existing_cols = {row[1] for row in c.fetchall()}
+    col_defs = {
+        "device_id": "TEXT DEFAULT ''",
+        "alert_type": "TEXT DEFAULT 'threshold'",
+        "is_acknowledged": "INTEGER DEFAULT 0",
+        "active": "INTEGER DEFAULT 1",
+        "meta": "TEXT DEFAULT '{}'",
+    }
+    for col, defn in col_defs.items():
+        if col not in existing_cols:
+            try:
+                c.execute(f"ALTER TABLE alerts ADD COLUMN {col} {defn}")
+            except Exception as e:
+                log.warning("[init_db] could not add column %s: %s", col, e)
+    c.execute("CREATE INDEX IF NOT EXISTS idx_alerts_active ON alerts(active)")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_alerts_device ON alerts(device_id)")
     c.execute(
         """CREATE TABLE IF NOT EXISTS share_timeline (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -199,6 +297,148 @@ def init_db():
     c.execute(
         "CREATE INDEX IF NOT EXISTS idx_proximity_history_ts ON proximity_history(ts)"
     )
+
+    # ── Axe Fleet tables ──
+    c.execute(
+        """CREATE TABLE IF NOT EXISTS axe_devices (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            model TEXT DEFAULT '',
+            manufacturer TEXT DEFAULT '',
+            firmware TEXT DEFAULT '',
+            firmware_version TEXT DEFAULT '',
+            api_version TEXT DEFAULT '',
+            ip_address TEXT NOT NULL,
+            hostname TEXT DEFAULT '',
+            mac_address TEXT DEFAULT '',
+            last_seen INTEGER DEFAULT 0,
+            status TEXT DEFAULT 'OFFLINE',
+            group_id TEXT DEFAULT '',
+            capabilities TEXT DEFAULT '{}',
+            added_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+        )"""
+    )
+    c.execute(
+        """CREATE TABLE IF NOT EXISTS axe_telemetry (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts INTEGER NOT NULL,
+            device_id TEXT NOT NULL,
+            payload TEXT NOT NULL
+        )"""
+    )
+    # ── Maintenance history table (Milestone 5) ──
+    c.execute(
+        """CREATE TABLE IF NOT EXISTS maintenance_records (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts INTEGER NOT NULL,
+            device_id TEXT NOT NULL,
+            type TEXT NOT NULL,
+            notes TEXT DEFAULT '',
+            performed_by TEXT DEFAULT ''
+        )"""
+    )
+    # ── Best difficulty history table (Milestone 6) ──
+    c.execute(
+        """CREATE TABLE IF NOT EXISTS best_diff_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts INTEGER NOT NULL,
+            device_id TEXT,
+            best_diff REAL NOT NULL,
+            best_diff_str TEXT DEFAULT '',
+            pool TEXT DEFAULT ''
+        )"""
+    )
+    c.execute("CREATE INDEX IF NOT EXISTS idx_best_diff_history_ts ON best_diff_history(ts)")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_best_diff_history_device ON best_diff_history(device_id)")
+    # ── Hashrate market history table (Milestone 7) ──
+    c.execute(
+        """CREATE TABLE IF NOT EXISTS hashrate_market_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts INTEGER NOT NULL,
+            provider TEXT NOT NULL,
+            hashrate REAL,
+            price_per_th_day REAL,
+            duration_days REAL,
+            fee_pct REAL,
+            algorithm TEXT,
+            score REAL,
+            raw_data TEXT
+        )"""
+    )
+    c.execute("CREATE INDEX IF NOT EXISTS idx_hashrate_market_history_ts ON hashrate_market_history(ts)")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_hashrate_market_history_provider ON hashrate_market_history(provider)")
+    # ── Milestone 9: Alert Rules (configurable thresholds) ──
+    c.execute(
+        """CREATE TABLE IF NOT EXISTS alert_rules (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            metric TEXT NOT NULL,
+            operator TEXT NOT NULL DEFAULT '>',  -- >, <, >=, <=, ==, !=
+            threshold REAL NOT NULL,
+            severity TEXT NOT NULL,  -- CRIT, WARN, INFO, GOLD
+            category TEXT NOT NULL,
+            device_id TEXT DEFAULT '',
+            model TEXT DEFAULT '',
+            enabled INTEGER DEFAULT 1,
+            cooldown_seconds INTEGER DEFAULT 300
+        )"""
+    )
+    c.execute("CREATE INDEX IF NOT EXISTS idx_alert_rules_enabled ON alert_rules(enabled)")
+    # ── Milestone 9: Automation Rules ──
+    c.execute(
+        """CREATE TABLE IF NOT EXISTS automation_rules (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            target_device_id TEXT NOT NULL,
+            condition_metric TEXT NOT NULL,
+            condition_operator TEXT NOT NULL,
+            condition_value REAL NOT NULL,
+            action_command TEXT NOT NULL,
+            action_parameters TEXT DEFAULT '{}',
+            is_enabled INTEGER DEFAULT 1,
+            min_interval_seconds INTEGER DEFAULT 60
+        )"""
+    )
+    # ── Milestone 9: ensure legacy automation_rules tables have the new column ──
+    c.execute("PRAGMA table_info(automation_rules)")
+    auto_cols = {row[1] for row in c.fetchall()}
+    if "min_interval_seconds" not in auto_cols:
+        try:
+            c.execute("ALTER TABLE automation_rules ADD COLUMN min_interval_seconds INTEGER DEFAULT 60")
+        except Exception as e:
+            log.warning("[init_db] could not add column min_interval_seconds: %s", e)
+    c.execute("CREATE INDEX IF NOT EXISTS idx_automation_rules_enabled ON automation_rules(is_enabled)")
+    # ── Milestone 9: Alert History / Audit ──
+    c.execute(
+        """CREATE TABLE IF NOT EXISTS alert_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts INTEGER NOT NULL,
+            alert_type TEXT NOT NULL,
+            device_id TEXT DEFAULT '',
+            severity TEXT NOT NULL,
+            action_taken TEXT DEFAULT ''
+        )"""
+    )
+    c.execute("CREATE INDEX IF NOT EXISTS idx_alert_history_ts ON alert_history(ts)")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_alert_history_device ON alert_history(device_id)")
+    # ── Milestone 9: Automation Execution Log ──
+    c.execute(
+        """CREATE TABLE IF NOT EXISTS automation_execution_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts INTEGER NOT NULL,
+            rule_id INTEGER,
+            rule_name TEXT DEFAULT '',
+            device_id TEXT DEFAULT '',
+            action_command TEXT DEFAULT '',
+            status TEXT DEFAULT '',
+            reason TEXT DEFAULT '',
+            result TEXT DEFAULT '{}'
+        )"""
+    )
+    c.execute("CREATE INDEX IF NOT EXISTS idx_automation_execution_log_ts ON automation_execution_log(ts)")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_automation_execution_log_rule ON automation_execution_log(rule_id)")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_automation_execution_log_device ON automation_execution_log(device_id)")
     # ── WAL mode for better concurrent read/write ──
     c.execute("PRAGMA journal_mode=WAL")
     c.execute("PRAGMA synchronous=NORMAL")
@@ -210,9 +450,153 @@ def init_db():
 
 init_db()
 
+# ── Initialize Axe Fleet registry (after get_db/init_db are defined) ──
+_axe_registry = DeviceRegistry(get_db)
+_init_axe_routes(_axe_registry)
+
+# ── Initialize Core CYPHER65 device registry ───────────────────────────────
+# Uses the same SQLite file (WAL mode enabled above) but a separate `devices`
+# table managed by core/registry/device_registry.py.
+_core_registry = CoreDeviceRegistry(DB_PATH)
+_core_registry.load_from_db()
+
+# ── In-memory command history store ──────────────────────────────────────────
+# Stores executed commands per device for lightweight audit logging.
+# Each entry: { "device_id": str, "command": str, "parameters": dict,
+#              "timestamp": int, "result": dict }
+_command_history: Dict[str, List[Dict[str, Any]]] = {}
+
+# ── Module-level SafetyEngine ────────────────────────────────────────────────
+# Shared across requests so restart cooldowns and other safety state persist.
+_safety_engine = SafetyEngine()
+
+# ── Milestone 9: Alert & Automation engines ──────────────────────────────────
+from core.alerts.alert_engine import AlertEngine
+from core.alerts.automation_engine import AutomationEngine
+from services.push_notifier import notify_alert
+
+
+_alert_engine = None
+_automation_engine = None
+
+
+def _init_alert_engines():
+    """Initialize alert/automation engines after all helper functions are defined."""
+    global _alert_engine, _automation_engine
+    if _alert_engine is None:
+        _alert_engine = AlertEngine(DB_PATH, push_callback=notify_alert)
+    if _automation_engine is None:
+        _automation_engine = AutomationEngine(
+            DB_PATH, _safety_engine,
+            execute_command_callback=_execute_command_for_automation,
+            audit_callback=_audit_automation_result,
+        )
+
+
+def _audit_automation_result(*, ts=None, alert_type="automation", device_id="", severity="INFO", action_taken="", rule_id=None, rule_name="", action_command="", status="", reason="", result=""):
+    """Persist automation rule execution outcome to the dedicated execution log.
+
+    Accepts keyword arguments so it can be used as AutomationEngine.audit_callback.
+    Also mirrors a short entry to alert_history for backward compatibility.
+    """
+    try:
+        conn = get_db()
+        c = conn.cursor()
+        c.execute(
+            """INSERT INTO automation_execution_log
+            (ts, rule_id, rule_name, device_id, action_command, status, reason, result)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                int(ts or time.time()),
+                rule_id,
+                rule_name or "",
+                device_id or "",
+                action_command or "",
+                status or "",
+                reason or "",
+                json.dumps(result) if isinstance(result, dict) else str(result),
+            ),
+        )
+        c.execute(
+            "INSERT INTO alert_history (ts, alert_type, device_id, severity, action_taken) VALUES (?, ?, ?, ?, ?)",
+            (
+                int(ts or time.time()),
+                alert_type,
+                device_id or "",
+                severity,
+                f"{status}: {action_taken}" if action_taken else status,
+            ),
+        )
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        log.warning("[automation audit] error: %s", e)
+
+
+def _execute_command_for_automation(device_id: str, command: str, parameters: Dict[str, Any]) -> Dict[str, Any]:
+    """Adapter used by AutomationEngine to run a device command through the
+    same path as the REST endpoint (lookup, supports, safety, execute)."""
+    device = _core_registry.get_device(device_id)
+    if not device:
+        return {"success": False, "error": "device not found"}
+    try:
+        adapter = get_adapter(device)
+    except NotImplementedError as e:
+        return {"success": False, "error": str(e)}
+    if not adapter.supports(command):
+        return {"success": False, "error": f"command '{command}' not supported"}
+    safety_result = _safety_engine.validate_command(device, command, parameters)
+    if not safety_result.allowed:
+        return {"success": False, "error": safety_result.reason}
+    result = adapter.execute_command(device, command, parameters)
+    _record_command(device_id, command, parameters, result)
+    if command in ("restart", "reboot") and result.get("success"):
+        device.status = "OFFLINE"
+        _core_registry.update_device(device.id, status="OFFLINE")
+    return result
+
+# ── Command history lock ─────────────────────────────────────────────────────
+# Guard the in-memory command history against concurrent request mutation.
+_command_history_lock = threading.Lock()
+
+# ── Hashrate market in-memory cache (Milestone 7) ─────────────────────────────
+# Avoids hitting live provider APIs on every request. TTL in seconds.
+_HASHRATE_MARKET_CACHE = {"ts": 0, "offers": None}
+_HASHRATE_MARKET_CACHE_TTL = 60          # successful fetches
+_HASHRATE_MARKET_EMPTY_CACHE_TTL = 15      # empty fetches (avoid hammering APIs)
+
+
+def _record_command(device_id: str, command: str, parameters: Optional[Dict[str, Any]], result: Dict[str, Any]):
+    """Append a command execution record to the in-memory history.
+
+    Each entry exposes a top-level "success" boolean plus the original
+    "result" payload, making the history easy to consume by the frontend.
+    """
+    entry = {
+        "device_id": device_id,
+        "command": command,
+        "parameters": parameters or {},
+        "timestamp": int(time.time()),
+        "success": bool(result.get("success")),
+        "result": result,
+    }
+    with _command_history_lock:
+        _command_history.setdefault(device_id, []).append(entry)
+        # Keep the last 100 entries per device to avoid unbounded growth.
+        _command_history[device_id] = _command_history[device_id][-100:]
+
+# ── Initialize engines now that all callbacks are defined ────────────────────
+try:
+    _init_alert_engines()
+except Exception as e:
+    log.warning("[alert_automation] failed to initialize engines: %s", e)
+
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-#  State cache
+#  State cache — single source of truth
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# poll_once() writes to latest_snapshot; Flask blueprints read
+# services.state.latest_snapshot. We ensure both refer to the SAME dict
+# by explicitly pointing _shared_state.latest_snapshot at our dict.
 latest_snapshot = {
     "ts": 0,
     "worker": None,
@@ -236,19 +620,13 @@ latest_snapshot = {
     "leaderboard_table_top_30": [],
 }
 
-# Timeline delta tracker ─ tracks last known values across polls
-# so we can flag REAL events (share submit, best-diff bump, work deltas)
-# without exposing per-share logs (which the pool simply doesn't publish).
-timeline_state = {
-    "_primed": False,              # becomes True after the first priming poll
-    "last_submit_ts": 0,           # unix ts of last known worker.lastSubmission
-    "last_best_diff_str": "",      # str form of last known worker.bestDifficulty
-    "all_time_best_diff_raw": 0.0, # never decreases across proxy reconnects (persisted in settings)
-    "share_submit_history": collections.deque(maxlen=64),  # recent submit ts list
-    "share_calc_history": collections.deque(maxlen=20),    # per-share live-calc entries (latest at right)
-    "session_share_count": 0,      # total SHARES observed since process start
-    "session_best_diff_bumps": 0,  # total BEST_DIFF bumps since process start
-}
+# Point _shared_state.latest_snapshot to the SAME dict so the
+# solo_mining_bp blueprint (which reads state.latest_snapshot)
+# sees the data that poll_once() writes.
+_shared_state.latest_snapshot = latest_snapshot
+
+# Timeline delta tracker — same approach: sync both names to one dict
+timeline_state = _shared_state.timeline_state
 
 # ── Disk-failure watchdog ─────────────────────────────────────────────────────
 # Tracks consecutive SQLite write failures and surfaces them to the UI as a
@@ -299,6 +677,29 @@ DEFAULT_SETTINGS = {
 }
 
 _settings_cache = None
+
+# ── Persisted wallet address ──
+# When user changes address via /api/set-address, we save it here and
+# in the settings DB so it survives a server restart.
+def _load_persisted_address():
+    """Restore a previously-saved wallet address from the settings table."""
+    global BTC_ADDRESS, WORKER_NAME
+    try:
+        conn = get_db()
+        c = conn.cursor()
+        c.execute("SELECT value FROM settings WHERE key='_wallet_address'")
+        r = c.fetchone()
+        if r and r["value"]:
+            BTC_ADDRESS = r["value"]
+        c.execute("SELECT value FROM settings WHERE key='_wallet_worker'")
+        r = c.fetchone()
+        if r and r["value"]:
+            WORKER_NAME = r["value"]
+        conn.close()
+    except Exception:
+        pass
+
+_load_persisted_address()
 
 
 def load_settings():
@@ -444,6 +845,21 @@ def _persist_all_time_best_diff(value):
         conn.close()
     except Exception as e:
         log.warning("[persist_all_time_best_diff] error: %s", e)
+
+
+def _persist_best_diff_history(ts: int, best_diff_raw: float, best_diff_str: str, device_id: str = "", pool: str = ""):
+    """Persist a new best-difficulty record to the SQLite history table."""
+    try:
+        conn = get_db()
+        c = conn.cursor()
+        c.execute(
+            "INSERT INTO best_diff_history (ts, device_id, best_diff, best_diff_str, pool) VALUES (?, ?, ?, ?, ?)",
+            (int(ts), device_id or "", best_diff_raw, best_diff_str or "", pool or ""),
+        )
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        log.warning("[persist_best_diff_history] error: %s", e)
 
 
 def _update_all_time_best_diff(raw_now):
@@ -677,6 +1093,74 @@ _human_secs_long = human_secs_long
 
 # Restore all-time best-difficulty from settings on module load.
 _restore_all_time_best_diff()
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#  Session reset helper (used by /api/set-address)
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+def _reset_session_state():
+    """Wipe all mutable in-memory state so a new wallet starts fresh.
+    Called by /api/set-address after validating the new address."""
+    global latest_snapshot, memory_critical_alerts, _next_memory_alert_id
+    global persist_consec_failures
+    global _last_proximity_sample_ts
+
+    # Reset latest_snapshot to defaults (in-place, preserves alias to _shared_state)
+    latest_snapshot.clear()
+    latest_snapshot.update({
+        "ts": 0,
+        "worker": None,
+        "user_aggregate": None,
+        "pool": None,
+        "account": None,
+        "lightning": None,
+        "leaderboard_entry": None,
+        "leaderboard_total": 0,
+        "highest_diffs": [],
+        "network": {"height": None, "difficulty": None, "hashrate": None},
+        "btc_price": {"usd": None, "brl": None},
+        "luck_estimate": {},
+        "alerts_recent": [],
+        "timeline_recent": [],
+        "event_stats": {},
+        "leaderboard_table_top_30": [],
+    })
+
+    # Clear critical alerts
+    memory_critical_alerts.clear()
+    _next_memory_alert_id = 0
+
+    # Reset timeline_state with fresh defaults
+    timeline_state["_primed"] = False
+    timeline_state["last_submit_ts"] = 0
+    timeline_state["last_best_diff_str"] = ""
+    timeline_state["all_time_best_diff_raw"] = 0.0
+    timeline_state["share_submit_history"].clear()
+    timeline_state["share_calc_history"].clear()
+    timeline_state["session_share_count"] = 0
+    timeline_state["session_best_diff_bumps"] = 0
+
+    # Clear alert dedup cache
+    if hasattr(poll_once, '_alert_seen'):
+        poll_once._alert_seen.clear()
+    if hasattr(poll_once, '_worker_was_present'):
+        poll_once._worker_was_present = False
+
+    # Reset proximity sample throttle
+    _last_proximity_sample_ts = 0
+
+    # Reset persist failure counter
+    persist_consec_failures = 0
+
+    # Clear BTC price cache so next poll fetches fresh
+    global btc_price_cache  # already global at module level
+    btc_price_cache = {"ts": 0, "data": None}
+
+    # Reset _shared_state.test_opportunities (mock bypass)
+    _shared_state.test_opportunities = None
+
+    # ── Re-sync state alias after in-place mutations ──
+    _shared_state.latest_snapshot = latest_snapshot
 
 
 # parse_diff_to_float, fmt_diff, fmt_hashrate, fmt_uptime, fmt_age
@@ -1009,6 +1493,14 @@ def poll_once():
                         json.dumps({"from": old_str or "0", "to": best_diff_str, "pct": round(pct, 2)}),
                     )
                 )
+                # Persist milestone best-difficulty entry for the history endpoint.
+                _persist_best_diff_history(
+                    ts,
+                    new_val,
+                    best_diff_str,
+                    device_id=WORKER_NAME,
+                    pool="parasite",
+                )
 
     if pool:
         cur_wslb = pool.get("workSinceLastBlock") or 0
@@ -1164,10 +1656,21 @@ def poll_once():
                     f"cypher65 hashrate dropped from {fmt_hashrate(prev_hr)} to {fmt_hashrate(cur_hr)} (-{hr_drop_pct:.0f}%)"))
                 alert_seen.add(sig)
     else:
+        # Track online→offline transition — only fire once per transition.
+        # Use identifier based on the last known state so we can re-fire
+        # if the worker comes back and goes offline again.
         sig = ("worker_offline", "1")
-        if sig not in alert_seen:
+        if sig not in alert_seen and getattr(poll_once, '_worker_was_present', False):
             alerts.append(("CRIT", "worker_offline", "cypher65 not found in workerData"))
             alert_seen.add(sig)
+    # Track worker presence for transition detection
+    if worker:
+        poll_once._worker_was_present = True
+        # Clear the offline sig so it can fire again next time
+        if ("worker_offline", "1") in alert_seen:
+            alert_seen.discard(("worker_offline", "1"))
+    else:
+        poll_once._worker_was_present = getattr(poll_once, '_worker_was_present', False)
 
     if pool:
         cur_high = str(pool.get("highestDifficulty") or "")
@@ -1481,7 +1984,7 @@ def poll_once():
     try:
         conn = get_db()
         c = conn.cursor()
-        c.execute("SELECT * FROM alerts ORDER BY ts DESC LIMIT 12")
+        c.execute("SELECT * FROM alerts WHERE ts > ? ORDER BY ts DESC LIMIT 12", (int(time.time()) - 604800,))
         recent_alerts = [dict(r) for r in c.fetchall()]
         conn.close()
     except Exception:
@@ -1597,6 +2100,42 @@ def poll_once():
     # poll, and the DB SELECT also returns the INSERTed row — pushing the
     # memory alert would DUPLICATE the entry on poll N+1.
 
+    # ── Axe Fleet background polling ──
+    # Poll each registered device at AXE_POLL_INTERVAL frequency.
+    try:
+        if _axe_registry:
+            devices = _axe_registry.list_devices()
+            for device in devices:
+                did = device["id"]
+                last = _shared_state.axe_last_poll_ts.get(did, 0)
+                if ts - last >= _shared_state.AXE_POLL_INTERVAL:
+                    _shared_state.axe_last_poll_ts[did] = ts
+                    tel = _axe_registry.poll_device(did)
+                    if tel:
+                        _shared_state.axe_telemetry_cache[did] = tel
+    except Exception as e:
+        log.warning("[axe poll] error: %s", e)
+
+    # ── Milestone 9: Alert & Automation engines ───────────────────────────────
+    try:
+        # Build a list of core Device objects from the registry
+        _core_devices = _core_registry.list_devices()
+        _alerts_generated = _alert_engine.evaluate(_core_devices, pool=pool)
+        if _alerts_generated:
+            _alert_engine.persist(_alerts_generated)
+            _alert_engine.dispatch_push(_alerts_generated)
+            # Also append recent in-memory alerts to the live snapshot feed
+            for _a in _alerts_generated[:10]:
+                memory_critical_alerts.append(_make_memory_alert(
+                    _a.ts, _a.severity, _a.category, _a.message
+                ))
+
+        # Automation rules: any triggered action must pass SafetyEngine.
+        # Results are already audited by the engine's audit callback.
+        _automation_engine.evaluate_rules(_core_devices)
+    except Exception as e:
+        log.warning("[alert_automation] error: %s", e)
+
     latest_snapshot = {
         "ts": ts,
         "worker": worker,
@@ -1626,9 +2165,12 @@ def poll_once():
         "timeline_recent": timeline_recent[:60],
         "event_stats": event_stats,
         "timeline_last_n": timeline_events[-30:],  # brand-new this poll; for live log
-    "leaderboard_table_top_30": leaderboard[:30] if isinstance(leaderboard, list) else [],
-    "all_workers": all_workers,
+    "leaderboard_table_top_30": leaderboard[:30] if isinstance(leaderboard, list) else [],    "all_workers": all_workers,
+    "axe_fleet": list(_shared_state.axe_telemetry_cache.values()),
 }
+
+# ── Sync shared state after each poll ──
+    _shared_state.latest_snapshot = latest_snapshot
 
 
 CLEANUP_EVERY_N_POLLS = max(60, int(86400 / POLL_INTERVAL))  # ~once a day
@@ -1683,7 +2225,19 @@ def index():
 
 @app.route("/api/snapshot")
 def api_snapshot():
-    return jsonify(latest_snapshot)
+    """Return the full dashboard snapshot, including a small set of
+    market highlights derived from cached prices (no extra HTTP calls)."""
+    resp = dict(latest_snapshot)
+    resp["market_highlights"] = _build_market_highlights(
+        latest_snapshot, _shared_state.last_known_prices, max_age_seconds=300
+    )
+    return jsonify(resp)
+
+
+@app.route("/api/pool-stats")
+def api_pool_stats():
+    """Return the latest pool statistics snapshot."""
+    return jsonify(latest_snapshot.get("pool") or {})
 
 
 @app.route("/api/history")
@@ -2042,6 +2596,153 @@ def api_proximity():
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#  Block Hunt + Best Difficulty (Milestone 6)
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+def _get_best_diff_history(device_id: Optional[str] = None, limit: int = 100) -> List[Dict[str, Any]]:
+    """Return best-difficulty history records, newest first.
+
+    If device_id is provided, filter to that device. Otherwise all records.
+    """
+    records: List[Dict[str, Any]] = []
+    try:
+        conn = get_db()
+        c = conn.cursor()
+        if device_id:
+            c.execute(
+                "SELECT ts, device_id, best_diff, best_diff_str, pool "
+                "FROM best_diff_history WHERE device_id = ? "
+                "ORDER BY ts DESC, id DESC LIMIT ?",
+                (device_id, limit),
+            )
+        else:
+            c.execute(
+                "SELECT ts, device_id, best_diff, best_diff_str, pool "
+                "FROM best_diff_history ORDER BY ts DESC, id DESC LIMIT ?",
+                (limit,),
+            )
+        for r in c.fetchall():
+            records.append({
+                "timestamp": r["ts"],
+                "device_id": r["device_id"],
+                "best_diff": r["best_diff"],
+                "best_diff_str": r["best_diff_str"],
+                "pool": r["pool"],
+            })
+        conn.close()
+    except Exception as e:
+        log.warning("[get_best_diff_history] error: %s", e)
+    return records
+
+
+@app.route("/api/block-hunt", methods=["GET"])
+def api_block_hunt():
+    """Return the Block Hunt panel: network stats, user stats, probabilities
+    and network comparison metrics.
+
+    Probabilities are computed from the latest worker hashrate vs network
+    hashrate using the Poisson model in services/probability.
+    """
+    snap = latest_snapshot
+    net = snap.get("network") or {}
+    worker = snap.get("worker") or {}
+
+    user_hr = float(worker.get("hashrate") or 0)
+    net_hr = float(net.get("hashrate") or 0)
+    net_diff = float(net.get("difficulty") or 0)
+    block_height = net.get("height")
+
+    best_diff_str = worker.get("bestDifficulty") or ""
+    best_diff_raw = parse_diff_to_float(best_diff_str) if best_diff_str else 0.0
+
+    # Probabilities for key windows
+    prob_periods = {}
+    expected_time = None
+    expected_time_human = None
+    if user_hr > 0 and net_hr > 0:
+        try:
+            prob_result = calculate_multiple_periods(user_hr, net_hr)
+            prob_periods = prob_result.get("periods", {})
+            expected_time = prob_periods.get("24h", {}).get("expected_time_to_block_seconds")
+            if expected_time is not None:
+                expected_time_human = _seconds_to_human(expected_time)
+        except Exception as e:
+            log.warning("[block-hunt] probability calculation failed: %s", e)
+
+    # Network comparison
+    hashrate_pct = 0.0
+    if user_hr > 0 and net_hr > 0:
+        hashrate_pct = user_hr / net_hr * 100.0
+
+    distance_to_block = None
+    if net_diff and best_diff_raw:
+        distance_to_block = net_diff / best_diff_raw
+
+    # Distance to the user's all-time best difficulty record
+    all_time_best = (snap.get("proximity") or {}).get("all_time_best_diff_raw") or 0.0
+    if all_time_best and best_diff_raw:
+        distance_to_all_time_best = all_time_best / best_diff_raw
+    else:
+        distance_to_all_time_best = None
+
+    # Approximate difficulty ranking from leaderboard if available
+    leaderboard_entry = snap.get("leaderboard_entry") or {}
+    approx_diff_rank = (
+        leaderboard_entry.get("diffRank")
+        or leaderboard_entry.get("rankDifficulty")
+        or leaderboard_entry.get("rank")
+    )
+
+    return jsonify({
+        "success": True,
+        "ts": int(time.time()),
+        "network": {
+            "hashrate": net_hr,
+            "difficulty": net_diff,
+            "block_height": block_height,
+        },
+        "user": {
+            "hashrate": user_hr,
+            "best_difficulty": best_diff_raw,
+            "best_difficulty_str": best_diff_str,
+        },
+        "probability": {
+            "chance_1h": prob_periods.get("1h", {}).get("probability_at_least_one"),
+            "chance_24h": prob_periods.get("24h", {}).get("probability_at_least_one"),
+            "chance_7d": prob_periods.get("7d", {}).get("probability_at_least_one"),
+            "expected_time_to_block_seconds": expected_time,
+            "expected_time_to_block_human": expected_time_human,
+        },
+        "network_comparison": {
+            "hashrate_pct_of_network": round(hashrate_pct, 8),
+            "distance_to_block_factor": distance_to_block,
+            "distance_to_all_time_best_factor": distance_to_all_time_best,
+            "approx_difficulty_rank": approx_diff_rank,
+        },
+    })
+
+
+@app.route("/api/best-diff-history", methods=["GET"])
+def api_best_diff_history():
+    """Return the global best-difficulty history."""
+    limit = request.args.get("limit", 100, type=int)
+    return jsonify({
+        "success": True,
+        "records": _get_best_diff_history(device_id=None, limit=limit),
+    })
+
+
+@app.route("/api/devices/<device_id>/best-diff-history", methods=["GET"])
+def api_device_best_diff_history(device_id: str):
+    """Return the best-difficulty history for a specific device."""
+    limit = request.args.get("limit", 100, type=int)
+    return jsonify({
+        "success": True,
+        "device_id": device_id,
+        "records": _get_best_diff_history(device_id=device_id, limit=limit),
+    })
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 #  CSV / JSON exports + Config backup/restore
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 import csv as _csv
@@ -2130,6 +2831,471 @@ def api_config_restore():
     return jsonify({"applied": applied, "rejected": rejected})
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# CORE DEVICE API
+# ═══════════════════════════════════════════════════════════════════════════
+
+# ── Device serialization helpers ─────────────────────────────────────────────
+def _enrich_telemetry(telemetry: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """Add runtime freshness info to a telemetry snapshot.
+
+    freshness is the number of seconds between the telemetry timestamp and now.
+    If the telemetry has no timestamp, freshness is omitted.
+    """
+    if telemetry is None:
+        return None
+    enriched = dict(telemetry)
+    ts = enriched.get("timestamp")
+    if ts is not None:
+        enriched["freshness"] = max(0, int(time.time()) - int(ts))
+    return enriched
+
+
+def _compute_device_health(device: CoreDevice) -> Dict[str, Any]:
+    """Run DiagnosticsEngine and derive health_score, active_issues and timestamp."""
+    engine = DiagnosticsEngine()
+    diagnostics = engine.analyze(device)
+    score = 100.0
+    active_issues: List[str] = []
+    for diag in diagnostics:
+        if diag.severity == DiagnosticSeverity.CRITICAL:
+            score -= 25.0
+        elif diag.severity == DiagnosticSeverity.WARNING:
+            score -= 10.0
+        if diag.severity in (DiagnosticSeverity.CRITICAL, DiagnosticSeverity.WARNING):
+            active_issues.append(diag.message)
+    score = max(0.0, min(100.0, score))
+    return {
+        "health_score": round(score, 1),
+        "active_issues": active_issues,
+        "last_diagnostic_at": int(datetime.now(timezone.utc).timestamp()),
+    }
+
+
+def _record_status_change(device: CoreDevice, old_status: str, new_status: str):
+    """Append a status change event to device.metadata['status_history']."""
+    if old_status == new_status:
+        return
+    metadata = device.metadata or {}
+    history = metadata.setdefault("status_history", [])
+    history.append({
+        "ts": int(time.time()),
+        "old_status": old_status,
+        "new_status": new_status,
+    })
+    # Keep last 100 status changes to avoid unbounded growth.
+    metadata["status_history"] = history[-100:]
+    device.metadata = metadata
+
+
+def _serialize_device(device: CoreDevice, include_telemetry: bool = True) -> Dict[str, Any]:
+    """Serialize a core Device, optionally enriching current_telemetry.
+
+    The device dict always contains last_seen, ip and status.  When
+    current_telemetry exists, the freshness field is recomputed at call time.
+    Health fields (health_score, active_issues, last_diagnostic_at) are
+    recomputed on every serialization so they reflect the latest diagnostics.
+    """
+    health = _compute_device_health(device)
+    device.health_score = health["health_score"]
+    device.active_issues = health["active_issues"]
+    device.last_diagnostic_at = health["last_diagnostic_at"]
+
+    data = device.to_dict()
+    if include_telemetry:
+        data["current_telemetry"] = _enrich_telemetry(data.get("current_telemetry"))
+    return data
+
+
+@app.route("/api/devices", methods=["GET"])
+def api_list_devices():
+    """List all devices registered in the core DeviceRegistry.
+
+    Returns:
+      devices: list of device dicts (with current_telemetry when available)
+      summary: count per status (online, offline, warning, critical)
+      total: total number of registered devices
+    """
+    devices = _core_registry.list_devices()
+    summary = _core_registry.count_by_status()
+    return jsonify({
+        "devices": [_serialize_device(d) for d in devices],
+        "summary": summary,
+        "total": len(devices),
+    })
+
+
+@app.route("/api/devices/<device_id>", methods=["GET"])
+def api_get_device(device_id: str):
+    """Return full details for a single device, including telemetry and capabilities."""
+    device = _core_registry.get_device(device_id)
+    if not device:
+        return jsonify({"error": "device not found", "success": False}), 404
+    return jsonify({
+        "success": True,
+        "device": _serialize_device(device, include_telemetry=True),
+    })
+
+
+@app.route("/api/devices/<device_id>/refresh", methods=["POST"])
+def api_refresh_device(device_id: str):
+    """Refresh a single device: fetch telemetry, update status, persist.
+
+    Steps:
+      1. Look up the device in the core registry.
+      2. Select the correct adapter based on device model.
+      3. Call get_telemetry() on the adapter.
+      4. Determine device status from the telemetry.
+      5. Save telemetry in the device object and update the registry.
+    """
+    device = _core_registry.get_device(device_id)
+    if not device:
+        return jsonify({"error": "device not found", "success": False}), 404
+
+    try:
+        adapter = get_adapter(device)
+    except NotImplementedError as e:
+        return jsonify({"error": str(e), "success": False}), 501
+
+    telemetry = adapter.get_telemetry()
+    previous_status = device.status
+
+    if telemetry is None:
+        device.status = CoreDeviceStatus.OFFLINE
+        device.current_telemetry = None
+    else:
+        device.current_telemetry = telemetry
+        temperature = float(telemetry.get("temperature") or 0)
+        hashrate = float(telemetry.get("hashrate") or 0)
+        if temperature > 90:
+            device.status = CoreDeviceStatus.CRITICAL
+        elif temperature > 80 or hashrate <= 0:
+            device.status = CoreDeviceStatus.WARNING
+        else:
+            device.status = CoreDeviceStatus.ONLINE
+        device.last_seen = datetime.now(timezone.utc)
+
+    # Track reconnects when the device comes back online from offline.
+    if previous_status == CoreDeviceStatus.OFFLINE and device.status == CoreDeviceStatus.ONLINE:
+        metadata = device.metadata or {}
+        metadata["reconnect_count"] = metadata.get("reconnect_count", 0) + 1
+        device.metadata = metadata
+
+    device.update_status(device.status)
+
+    # Record status transitions for the timeline.
+    if previous_status != device.status:
+        _record_status_change(device, previous_status.value, device.status.value)
+
+    _core_registry.update_device(device)
+
+    return jsonify({
+        "success": True,
+        "device": _serialize_device(device, include_telemetry=True),
+        "telemetry": _enrich_telemetry(device.current_telemetry),
+    })
+
+
+@app.route("/api/fleet/summary", methods=["GET"])
+def api_fleet_summary():
+    """Return a high-level health summary for the entire device fleet."""
+    devices = _core_registry.list_devices()
+    summary = _core_registry.count_by_status()
+    now = int(time.time())
+    threshold = TELEMETRY_FRESHNESS_THRESHOLD
+
+    devices_with_recent_telemetry = 0
+    total_hashrate = 0.0
+
+    for d in devices:
+        tel = d.current_telemetry
+        if not tel:
+            continue
+        ts = tel.get("timestamp")
+        if ts is not None and (now - int(ts)) <= threshold:
+            devices_with_recent_telemetry += 1
+            total_hashrate += float(tel.get("hashrate") or 0.0)
+
+    return jsonify({
+        "total": len(devices),
+        "status_counts": summary,
+        "devices_with_recent_telemetry": devices_with_recent_telemetry,
+        "total_hashrate": total_hashrate,
+    })
+
+
+@app.route("/api/devices/<device_id>/command", methods=["POST"])
+def api_device_command(device_id: str):
+    """Execute a command on a device after safety validation.
+
+    Body (JSON):
+      - command (str, required): command to execute (e.g. "restart", "identify")
+      - parameters (dict, optional): command-specific parameters
+
+    Flow:
+      1. Find the device in the registry.
+      2. Instantiate the correct adapter.
+      3. Check that the adapter supports the command.
+      4. Run SafetyEngine.validate_command().
+      5. Execute via the adapter.
+      6. Record the command in the in-memory history.
+      7. Update the device status when applicable.
+    """
+    device = _core_registry.get_device(device_id)
+    if not device:
+        return jsonify({"error": "device not found", "success": False}), 404
+
+    payload = request.get_json(silent=True) or {}
+    command = (payload.get("command") or "").strip()
+    parameters = payload.get("parameters") or {}
+
+    if not command:
+        return jsonify({"error": "command is required", "success": False}), 400
+
+    try:
+        adapter = get_adapter(device)
+    except NotImplementedError as e:
+        return jsonify({"error": str(e), "success": False}), 501
+
+    if not adapter.supports(command):
+        return jsonify({"error": f"command '{command}' not supported", "success": False}), 400
+
+    previous_status = device.status
+
+    safety_result = _safety_engine.validate_command(device, command, parameters)
+    if not safety_result.allowed:
+        record = {
+            "success": False,
+            "allowed": False,
+            "reason": safety_result.reason,
+            "risk_level": safety_result.risk_level.value,
+            "requires_confirmation": safety_result.requires_confirmation,
+        }
+        _record_command(device_id, command, parameters, record)
+        return jsonify({
+            "success": False,
+            "error": safety_result.reason,
+            "risk_level": safety_result.risk_level.value,
+            "requires_confirmation": safety_result.requires_confirmation,
+        }), 403
+
+    result = adapter.execute_command(command, parameters)
+    _record_command(device_id, command, parameters, result)
+
+    # Update restart cooldown tracking and device status when command succeeds
+    if command == "restart" and result.get("success"):
+        _safety_engine.record_restart(device)
+        device.status = CoreDeviceStatus.OFFLINE
+
+    if previous_status != device.status:
+        _record_status_change(device, previous_status.value, device.status.value)
+        _core_registry.update_device(device)
+
+    return jsonify({
+        "success": bool(result.get("success")),
+        "device_id": device_id,
+        "command": command,
+        "result": result,
+    })
+
+
+@app.route("/api/devices/<device_id>/commands", methods=["GET"])
+def api_device_command_history(device_id: str):
+    """Return the command execution history for a single device.
+
+    Returns the last 100 entries, newest first.
+    """
+    device = _core_registry.get_device(device_id)
+    if not device:
+        return jsonify({"error": "device not found", "success": False}), 404
+
+    history = _command_history.get(device_id, [])
+    return jsonify({
+        "success": True,
+        "device_id": device_id,
+        "commands": history[::-1],  # newest first
+    })
+
+
+@app.route("/api/devices/<device_id>/diagnostics", methods=["GET"])
+def api_device_diagnostics(device_id: str):
+    """Return operational diagnostics for a single device.
+
+    Analyzes the device's current telemetry and metadata and returns a list
+    of detected issues (empty list when everything looks healthy).
+    """
+    device = _core_registry.get_device(device_id)
+    if not device:
+        return jsonify({"error": "device not found", "success": False}), 404
+
+    engine = DiagnosticsEngine()
+    diagnostics = engine.analyze(device)
+    return jsonify({
+        "success": True,
+        "device_id": device_id,
+        "diagnostics": [d.to_dict() for d in diagnostics],
+    })
+
+
+def _add_maintenance_record(device_id: str, record_type: str, notes: str, performed_by: str) -> dict:
+    """Persist a maintenance record to the SQLite database."""
+    ts = int(time.time())
+    conn = get_db()
+    c = conn.cursor()
+    c.execute(
+        """INSERT INTO maintenance_records (ts, device_id, type, notes, performed_by)
+           VALUES (?, ?, ?, ?, ?)""",
+        (ts, device_id, record_type, notes, performed_by),
+    )
+    conn.commit()
+    record_id = c.lastrowid
+    conn.close()
+    return {
+        "id": record_id,
+        "timestamp": ts,
+        "device_id": device_id,
+        "type": record_type,
+        "notes": notes,
+        "performed_by": performed_by,
+    }
+
+
+def _get_maintenance_records(device_id: str, limit: int = 100) -> list:
+    """Return maintenance records for a device, newest first."""
+    conn = get_db()
+    c = conn.cursor()
+    c.execute(
+        """SELECT id, ts, device_id, type, notes, performed_by
+           FROM maintenance_records
+           WHERE device_id = ?
+           ORDER BY ts DESC, id DESC
+           LIMIT ?""",
+        (device_id, limit),
+    )
+    rows = c.fetchall()
+    conn.close()
+    return [
+        {
+            "id": row["id"],
+            "timestamp": row["ts"],
+            "device_id": row["device_id"],
+            "type": row["type"],
+            "notes": row["notes"],
+            "performed_by": row["performed_by"],
+        }
+        for row in rows
+    ]
+
+
+@app.route("/api/devices/<device_id>/maintenance", methods=["POST", "GET"])
+def api_device_maintenance(device_id: str):
+    """Record or list maintenance events for a single device.
+
+    POST body (JSON):
+      - type (str, required): e.g. firmware_update, cleaning, hardware_check
+      - notes (str, optional)
+      - performed_by (str, optional)
+    """
+    device = _core_registry.get_device(device_id)
+    if not device:
+        return jsonify({"error": "device not found", "success": False}), 404
+
+    if request.method == "POST":
+        data = request.get_json(silent=True) or {}
+        record_type = (data.get("type") or "").strip()
+        notes = (data.get("notes") or "").strip()
+        performed_by = (data.get("performed_by") or "").strip()
+
+        if not record_type:
+            return jsonify({"error": "type is required", "success": False}), 400
+
+        record = _add_maintenance_record(device_id, record_type, notes, performed_by)
+        return jsonify({
+            "success": True,
+            "record": record,
+        }), 201
+
+    # GET
+    records = _get_maintenance_records(device_id)
+    return jsonify({
+        "success": True,
+        "device_id": device_id,
+        "records": records,
+    })
+
+
+@app.route("/api/devices/<device_id>/timeline", methods=["GET"])
+def api_device_timeline(device_id: str):
+    """Return a combined timeline of events for a single device.
+
+    Events include: executed commands, maintenance records, status changes
+    and current diagnostics. The result is limited to the 50 most recent
+    events and sorted newest first.
+    """
+    device = _core_registry.get_device(device_id)
+    if not device:
+        return jsonify({"error": "device not found", "success": False}), 404
+
+    events: List[Dict[str, Any]] = []
+
+    # Commands
+    for entry in _command_history.get(device_id, [])[::-1][:50]:
+        events.append({
+            "timestamp": entry["timestamp"],
+            "type": "command",
+            "source": "command_history",
+            "title": f"Command executed: {entry['command']}",
+            "details": entry,
+        })
+
+    # Maintenance records
+    for rec in _get_maintenance_records(device_id, limit=50):
+        events.append({
+            "timestamp": rec["timestamp"],
+            "type": "maintenance",
+            "source": "maintenance_records",
+            "title": f"Maintenance: {rec['type']}",
+            "details": rec,
+        })
+
+    # Status changes
+    for change in (device.metadata or {}).get("status_history", [])[::-1][:50]:
+        events.append({
+            "timestamp": change["ts"],
+            "type": "status_change",
+            "source": "status_history",
+            "title": f"Status changed {change['old_status']} → {change['new_status']}",
+            "details": change,
+        })
+
+    # Current diagnostics
+    engine = DiagnosticsEngine()
+    for diag in engine.analyze(device):
+        events.append({
+            "timestamp": diag.timestamp,
+            "type": "diagnostic",
+            "source": "diagnostics",
+            "title": diag.message,
+            "severity": diag.severity.value,
+            "details": diag.to_dict(),
+        })
+
+    events.sort(key=lambda e: e["timestamp"], reverse=True)
+    events = events[:50]
+
+    return jsonify({
+        "success": True,
+        "device_id": device_id,
+        "events": events,
+    })
+
+
+# Serve the service worker from root so it can control the entire app scope
+@app.route("/sw.js")
+def service_worker():
+    return app.send_static_file("sw.js")
+
+
 @app.route("/healthz")
 @app.route("/api/healthz")
 def healthz():
@@ -2145,132 +3311,254 @@ def healthz():
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# SOLO MINING ADVISOR API
-# ═══════════════════════════════════════════════════════════════════════════
+#  OPPORTUNITY ENGINE API
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-@app.route("/api/solo-mining/calc")
-def api_solo_mining_calc():
-    """Calculate solo mining probabilities.
-    Params: hashrate (e.g. 225TH), duration (hours), difficulty (optional)
+@app.route("/api/opportunities")
+def api_opportunities():
+    """Run a full opportunity scan across Braiins + MRR marketplaces.
+
+    Returns a JSON envelope with:
+      - opportunities: list of deal dicts (id, platform, title, price, ...)
+      - scan_stats: dict with braiins_ok, braiins_errors, mrr_ok, mrr_errors
+      - ts: unix timestamp
+      - disclaimer: standard caveat
+
+    Reads snapshot data (network difficulty + worker hashrate) from shared
+    service state, and executes marketplace API calls through the solo_mining
+    advisor tool dispatch.
     """
-    hashrate = request.args.get("hashrate", "")
-    duration = request.args.get("duration", 24)
-    difficulty = request.args.get("difficulty", None)
+    # ── Mock injection bypass (for visual testing) ──
+    if _shared_state.test_opportunities is not None:
+        return jsonify(_shared_state.test_opportunities)
 
-    if not hashrate:
-        return jsonify({"error": "hashrate required (e.g. 225TH)"}), 400
+    snapshot = _shared_state.latest_snapshot
+    last_known = _shared_state.last_known_prices
 
-    try:
-        duration = float(duration)
-    except ValueError:
-        return jsonify({"error": "invalid duration"}), 400
+    opportunities, scan_stats = _opp_scan(
+        _opp_advisor.execute_tool,  # accessed dynamically → monkeypatch-safe
+        snapshot,
+        last_known_prices=last_known,
+    )
 
-    # Use provided difficulty or fetch from live data
-    if difficulty:
+    # Enrich each opportunity with cost/revenue/EV/score/risk metrics and sort by score.
+    network_hashrate = (snapshot.get("network") or {}).get("hashrate")
+    enriched = [
+        _enrich_opportunity(dict(opp), snapshot=snapshot, network_hashrate=network_hashrate)
+        for opp in opportunities
+    ]
+    enriched.sort(
+        key=lambda o: (o.get("metrics") or {}).get("score", 0.0),
+        reverse=True,
+    )
+
+    return jsonify(_opp_build_response(enriched, scan_stats))
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#  Hashrate market + Opportunity comparison (Milestone 7)
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+def _get_hashrate_market_offers() -> list:
+    """Fetch live hashrate offers, caching them for a short TTL.
+
+    Empty results are not cached, so a temporary provider failure can
+    recover on the next request. Successful fetches are persisted to the
+    hashrate_market_history table.
+    """
+    now = int(time.time())
+    cache = _HASHRATE_MARKET_CACHE
+    ttl = _HASHRATE_MARKET_CACHE_TTL if cache["offers"] else _HASHRATE_MARKET_EMPTY_CACHE_TTL
+    if (now - cache["ts"] < ttl) and cache["offers"] is not None:
+        return cache["offers"]
+
+    offers = _fetch_all_offers()
+    if offers:
         try:
-            difficulty = float(difficulty)
-        except ValueError:
-            difficulty = None
+            conn = get_db()
+            _persist_market_history(conn, offers)
+            conn.close()
+        except Exception as e:
+            log.warning("[hashrate_market] history persistence failed: %s", e)
+        cache["ts"] = now
+        cache["offers"] = offers
+    else:
+        # Cache empty results briefly to avoid hammering APIs, while still
+        # allowing quick recovery once the market is available again.
+        cache["ts"] = now
+        cache["offers"] = []
 
-    if not difficulty:
-        # Try live data from latest snapshot
-        net = latest_snapshot.get("network", {})
-        difficulty = float(net.get("difficulty", 0))
-        if not difficulty:
-            # Fallback: fetch from mempool
-            d = solo_mining.get_network_difficulty()
-            if d:
-                difficulty = d
-
-    if not difficulty or difficulty <= 0:
-        return jsonify({"error": "could not determine network difficulty",
-                        "hint": "pass ?difficulty=N as query param"}), 400
-
-    hashrate_hs = solo_mining._parse_hashrate(hashrate)
-    result = {
-        "hashrate": hashrate,
-        "hashrate_hs": hashrate_hs,
-        "duration_hours": duration,
-        "difficulty": difficulty,
-        "probability": solo_mining.calc_block_probability(hashrate_hs, difficulty, duration * 3600),
-        "expected_time": solo_mining.calc_expected_time(hashrate_hs, difficulty),
-        "best_diff": solo_mining.calc_best_diff_expected(hashrate_hs, duration * 3600),
-        "terminal_output": solo_mining.format_calc_output(hashrate, difficulty, duration),
-    }
-    return jsonify(result)
+    return offers
 
 
-@app.route("/api/solo-mining/compare")
-def api_solo_mining_compare():
-    """Compare rental platforms. Auto-fetches Braiins orderbook + MRR listings.
-    Params: budget (BTC), duration (hours), braiins_price, mrr_price (optional),
-            mrr_api_key, mrr_api_secret (optional, for MRR auth)
+@app.route("/api/hashrate-market")
+def api_hashrate_market():
+    """Return normalized hashrate rental offers from supported providers.
+
+    Persists the fetched snapshot to hashrate_market_history so the
+    /api/hashrate-market/history endpoint can serve historical data.
     """
-    budget = request.args.get("budget", 0)
-    duration = request.args.get("duration", 24)
-    braiins_price = request.args.get("braiins_price", None)
-    mrr_price = request.args.get("mrr_price", None)
-    auto_fetch = request.args.get("auto_fetch", "1") != "0"
-    mrr_api_key = request.args.get("mrr_api_key") or os.environ.get("MRR_API_KEY")
-    mrr_api_secret = request.args.get("mrr_api_secret") or os.environ.get("MRR_API_SECRET")
-
-    try:
-        budget = float(budget)
-        duration = float(duration)
-    except ValueError:
-        return jsonify({"error": "invalid budget or duration"}), 400
-
-    if budget <= 0:
-        return jsonify({"error": "budget must be > 0 BTC"}), 400
-
-    # Get difficulty
-    net = latest_snapshot.get("network", {})
-    difficulty = float(net.get("difficulty", 0))
-    if not difficulty:
-        d = solo_mining.get_network_difficulty()
-        difficulty = d or 110e12  # last resort fallback
-
-    results = solo_mining.compare_rentals(
-        budget, difficulty, duration,
-        float(braiins_price) if braiins_price else None,
-        float(mrr_price) if mrr_price else None,
-        auto_fetch=auto_fetch,
-        mrr_api_key=mrr_api_key,
-        mrr_api_secret=mrr_api_secret,
-    )
-
-    terminal = solo_mining.format_compare_output(
-        budget, difficulty, duration,
-        float(braiins_price) if braiins_price else None,
-        float(mrr_price) if mrr_price else None,
-        auto_fetch=auto_fetch,
-        mrr_api_key=mrr_api_key,
-        mrr_api_secret=mrr_api_secret,
-    )
+    offers = _get_hashrate_market_offers()
+    network_hashrate = (latest_snapshot.get("network") or {}).get("hashrate")
+    scored = [_score_offer(offer, network_hashrate) for offer in offers]
+    scored.sort(key=lambda o: o["metrics"]["score"], reverse=True)
 
     return jsonify({
-        "budget_btc": budget,
-        "duration_hours": duration,
-        "difficulty": difficulty,
-        "options": results,
-        "terminal_output": terminal,
+        "success": True,
+        "ts": int(time.time()),
+        "offers": scored,
     })
 
 
-@app.route("/api/solo-mining/network")
-def api_solo_mining_network():
-    """Get current network stats for solo mining calculations."""
-    difficulty = solo_mining.get_network_difficulty()
-    btc_price = solo_mining.get_btc_price()
-    pool_stats = solo_mining.get_parasite_best_diff()
+@app.route("/api/hashrate-market/history")
+def api_hashrate_market_history():
+    """Return persisted hashrate market snapshots.
 
-    net = latest_snapshot.get("network", {})
+    Query params:
+        limit: max rows to return (default 100)
+    """
+    try:
+        limit = int(request.args.get("limit", 100))
+    except (TypeError, ValueError):
+        limit = 100
+
+    try:
+        conn = get_db()
+        rows = _fetch_market_history(conn, limit)
+        conn.close()
+        return jsonify({"success": True, "records": rows})
+    except Exception as e:
+        log.warning("[hashrate_market_history] error: %s", e)
+        return jsonify({"success": False, "error": "failed to fetch history"}), 500
+
+
+@app.route("/api/opportunities/compare")
+def api_opportunities_compare():
+    """Compare rental offers side-by-side.
+
+    Query params:
+        providers: comma-separated list of providers to include, e.g. braiins,mrr
+        ids:       comma-separated list of stable IDs (currently provider names)
+    """
+    offers = _fetch_all_offers()
+    network_hashrate = (latest_snapshot.get("network") or {}).get("hashrate")
+    scored = [_score_offer(offer, network_hashrate) for offer in offers]
+
+    offers = _get_hashrate_market_offers()
+    network_hashrate = (latest_snapshot.get("network") or {}).get("hashrate")
+    scored = [_score_offer(offer, network_hashrate) for offer in offers]
+
+    providers_filter = request.args.get("providers", "")
+    ids_filter = request.args.get("ids", "")
+
+    if providers_filter:
+        wanted = {p.strip().lower() for p in providers_filter.split(",") if p.strip()}
+        scored = [o for o in scored if o["provider"].lower() in wanted]
+
+    if ids_filter:
+        wanted = {i.strip() for i in ids_filter.split(",") if i.strip()}
+        scored = [o for o in scored if o.get("id") in wanted or o["provider"] in wanted]
+
+    scored.sort(key=lambda o: o["metrics"]["score"], reverse=True)
+
     return jsonify({
-        "difficulty": difficulty or float(net.get("difficulty", 0)),
-        "btc_price_usd": btc_price.get("usd", 0),
-        "btc_price_brl": btc_price.get("brl", 0),
-        "pool_hashrate": pool_stats.get("pool_hashrate", 0),
-        "pool_workers": pool_stats.get("pool_workers", 0),
+        "success": True,
+        "ts": int(time.time()),
+        "offers": scored,
+    })
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#  Wallet management — change address via UI
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+@app.route("/api/set-address", methods=["POST"])
+def api_set_address():
+    """Change the monitored BTC address and worker name.
+    Validates input, persists to DB, resets session state, and returns
+    the new address for the UI to update.
+
+    Body (JSON):
+      - address (str, required): BTC address (bc1… or 1…)
+      - worker (str, optional): worker name (default: existing)
+
+    Returns 400 on invalid input, 200 on success.
+    """
+    # ── Declare globals at the very top, before any reference ──
+    global BTC_ADDRESS, WORKER_NAME
+
+    data = request.get_json(silent=True) or {}
+    new_addr = (data.get("address") or "").strip()
+    new_worker = (data.get("worker") or "").strip()
+
+    # ── Validation ──
+    errors = []
+    if not new_addr:
+        errors.append("address is required")
+    elif not (new_addr.startswith("bc1") or new_addr.startswith("1")):
+        errors.append("address must start with bc1 (bech32) or 1 (legacy)")
+    elif len(new_addr) < 26 or len(new_addr) > 64:
+        errors.append(f"address length {len(new_addr)} is invalid (must be 26-64 chars)")
+    elif new_addr == BTC_ADDRESS and not new_worker:
+        errors.append("address is the same as current — no change needed")
+
+    # Validate worker name if provided
+    if new_worker and (len(new_worker) < 1 or len(new_worker) > 64):
+        errors.append("worker name must be 1-64 characters")
+
+    if errors:
+        return jsonify({"error": "; ".join(errors), "success": False}), 400
+
+    # ── Unchanged? Only proceed if worker changed. ──
+    if new_addr == BTC_ADDRESS and new_worker == WORKER_NAME:
+        return jsonify({"error": "address and worker are unchanged", "success": False}), 400
+
+    old_addr = BTC_ADDRESS
+    old_worker = WORKER_NAME
+
+    # ── Persist to DB ──
+    try:
+        conn = get_db()
+        c = conn.cursor()
+        c.execute(
+            "INSERT INTO settings(key,value,updated_ts) VALUES(?,?,?) "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_ts=excluded.updated_ts",
+            ("_wallet_address", new_addr, int(time.time())),
+        )
+        if new_worker:
+            c.execute(
+                "INSERT INTO settings(key,value,updated_ts) VALUES(?,?,?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_ts=excluded.updated_ts",
+                ("_wallet_worker", new_worker, int(time.time())),
+            )
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        log.warning("[set-address persist] error: %s", e)
+        return jsonify({"error": "failed to persist address", "success": False}), 500
+
+    # ── Update globals ──
+    BTC_ADDRESS = new_addr
+    if new_worker:
+        WORKER_NAME = new_worker
+
+    # ── Reset session state ──
+    _reset_session_state()
+
+    # ── Add a SUCCESS alert ──
+    ts = int(time.time())
+    memory_critical_alerts.append(_make_memory_alert(
+        ts, "SUCCESS", "wallet_changed",
+        f"Wallet changed from {old_addr[:12]}… → {new_addr[:12]}…"
+    ))
+
+    log.info("[set-address] %s → %s (%s)", old_addr[:12], new_addr[:12], new_worker or WORKER_NAME)
+
+    return jsonify({
+        "success": True,
+        "address": new_addr,
+        "worker": WORKER_NAME,
+        "old_address": old_addr,
     })
 
 

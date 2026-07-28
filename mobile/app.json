@@ -1,0 +1,53 @@
+{
+  "expo": {
+    "name": "CYPHER65 War Room",
+    "slug": "cypher65-war-room",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "splash": {
+      "image": "./assets/splash.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#0b0f19"
+    },
+    "assetBundlePatterns": ["**/*"],
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.cypher65.warroom",
+      "infoPlist": {
+        "UIBackgroundModes": ["fetch", "remote-notification"]
+      }
+    },
+    "android": {
+      "package": "com.cypher65.warroom",
+      "permissions": [
+        "android.permission.USE_BIOMETRIC",
+        "android.permission.USE_FINGERPRINT",
+        "android.permission.RECEIVE_BOOT_COMPLETED",
+        "android.permission.ACCESS_NETWORK_STATE"
+      ]
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    },
+    "plugins": [
+      [
+        "expo-notifications",
+        {
+          "sounds": ["./assets/notification.wav"],
+          "color": "#0ea5e9"
+        }
+      ],
+      [
+        "expo-secure-store"
+      ],
+      [
+        "expo-local-authentication"
+      ]
+    ],
+    "extra": {
+      "apiBaseUrl": "https://cypher65.local/api",
+      "apiBaseUrlDev": "http://127.0.0.1:8765/api"
+    }
+  }
+}

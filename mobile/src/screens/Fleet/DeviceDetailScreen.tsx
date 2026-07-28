@@ -1,0 +1,163 @@
+import React, { useEffect, useState, useCallback } from 'react';
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Alert, ActivityIndicator } from 'react-native';
+import { useRoute, useNavigation } from '@react-navigation/native';
+import type { NativeStackNavigationProp, NativeStackScreenProps } from '@react-navigation/native-stack';
+import { fetchDevice } from '../../api/client';
+import { useCommands } from '../../hooks/useCommands';
+import { MetricCard } from '../../components/MetricCard';
+import { StatusBadge } from '../../components/StatusBadge';
+import { CommandButton } from '../../components/CommandButton';
+import { promptCriticalAction } from '../../services/biometrics';
+import type { Capability, Device as DeviceType } from '../../types';
+import type { FleetStackParamList } from '../../types/navigation';
+
+type Props = NativeStackScreenProps<FleetStackParamList, 'DeviceDetail'>;
+
+export const DeviceDetailScreen = () => {
+  const route = useRoute<Props['route']>();
+  const navigation = useNavigation<NativeStackNavigationProp<FleetStackParamList>>();
+  const { deviceId } = route.params;
+  const [device, setDevice] = useState<DeviceType | null>(null);
+  const [loading, setLoading] = useState(true);
+  const { sendCommand, loading: commandLoading } = useCommands(deviceId);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const data = await fetchDevice(deviceId);
+      setDevice(data.device);
+    } catch (err) {
+      Alert.alert('Error', (err as Error).message);
+    } finally {
+      setLoading(false);
+    }
+  }, [deviceId]);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  const handleCommand = async (capability: Capability) => {
+    if (!device) return;
+
+    if (capability.requires_confirmation) {
+      const biometric = await promptCriticalAction(capability.name);
+      if (!biometric.success) {
+        Alert.alert('Cancelled', biometric.error || 'Biometric check failed');
+        return;
+      }
+    }
+
+    const result = await sendCommand(capability.name);
+    if (result.success) {
+      Alert.alert('Success', `${capability.name} executed successfully`);
+    } else {
+      Alert.alert('Error', result.error || 'Command failed');
+    }
+  };
+
+  if (loading || !device) {
+    return (
+      <View style={styles.center}>
+        <ActivityIndicator size="large" color="#38bdf8" />
+      </View>
+    );
+  }
+
+  const t = device.current_telemetry;
+
+  return (
+    <ScrollView style={styles.container}>
+      <TouchableOpacity onPress={() => navigation.goBack()}>
+        <Text style={styles.back}>← Back</Text>
+      </TouchableOpacity>
+
+      <Text style={styles.heading}>{device.name}</Text>
+      <View style={styles.statusRow}>
+        <StatusBadge status={device.status} />
+        <Text style={styles.ip}>{device.ip_address}</Text>
+        <Text style={styles.model}>{device.model}</Text>
+      </View>
+
+      <Text style={styles.section}>Telemetry</Text>
+      <View style={styles.grid}>
+        <MetricCard title="Hashrate" value={t ? `${(t.hashrate / 1e12).toFixed(2)} TH/s` : '—'} />
+        <MetricCard title="Temp" value={t ? `${t.temperature}°C` : '—'} />
+        <MetricCard title="Power" value={t?.power ? `${t.power}W` : '—'} />
+        <MetricCard title="Fan" value={t?.fan_speed ? `${t.fan_speed} rpm` : '—'} />
+        <MetricCard title="Voltage" value={t?.voltage ? `${t.voltage}V` : '—'} />
+        <MetricCard title="Freq" value={t?.frequency ? `${t.frequency} MHz` : '—'} />
+        <MetricCard title="Accepted" value={t?.accepted_shares ?? '—'} />
+        <MetricCard title="Rejected" value={t?.rejected_shares ?? '—'} />
+        <MetricCard title="Best Diff" value={t?.best_difficulty || '—'} />
+        <MetricCard title="Uptime" value={t?.uptime ? `${Math.floor(t.uptime / 3600)}h` : '—'} />
+      </View>
+
+      <Text style={styles.section}>Capabilities</Text>
+      {commandLoading && <ActivityIndicator color="#38bdf8" style={styles.loader} />}
+      <View style={styles.commands}>
+        {device.capabilities?.map((cap) => (
+          <CommandButton key={cap.name} capability={cap} onPress={handleCommand} />
+        ))}
+      </View>
+    </ScrollView>
+  );
+};
+
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+    backgroundColor: '#0b0f19',
+    padding: 16,
+  },
+  center: {
+    flex: 1,
+    backgroundColor: '#0b0f19',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  back: {
+    color: '#38bdf8',
+    fontSize: 14,
+    marginTop: 16,
+    marginBottom: 8,
+  },
+  heading: {
+    color: '#f8fafc',
+    fontSize: 24,
+    fontWeight: '700',
+  },
+  statusRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    marginTop: 8,
+    marginBottom: 16,
+  },
+  ip: {
+    color: '#94a3b8',
+    fontSize: 13,
+  },
+  model: {
+    color: '#64748b',
+    fontSize: 13,
+  },
+  section: {
+    color: '#f8fafc',
+    fontSize: 18,
+    fontWeight: '600',
+    marginTop: 24,
+    marginBottom: 12,
+  },
+  grid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  commands: {
+    marginBottom: 32,
+  },
+  loader: {
+    marginVertical: 12,
+  },
+});

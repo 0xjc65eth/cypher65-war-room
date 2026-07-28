@@ -1,7 +1,7 @@
 """
 Unit tests for wallet address persistence logic in app.py.
 
-Tests `_restore_btc_address_from_db()` which reads `_btc_address`
+Tests `_load_persisted_address()` which reads `_btc_address`
 from the settings DB and overrides the module-level BTC_ADDRESS global.
 
 Each test monkeypatches `app.get_db` to control what the DB returns,
@@ -14,14 +14,14 @@ import logging
 
 # ── Module-level test helpers ────────────────────────────────────────────────
 # We import app at module level so all tests share the same module reference.
-# The import triggers init_db() and _restore_btc_address_from_db() once (runs
+# The import triggers init_db() and _load_persisted_address() once (runs
 # the real DB on first import), but each test replaces app.get_db with a mock
 # and calls the function again under controlled conditions.
 
 import app as _app_module  # noqa: E402
 
 # Reference the function under test
-_restore_btc_address_from_db = _app_module._restore_btc_address_from_db
+_load_persisted_address = _app_module._load_persisted_address
 
 
 # ── Fixtures ─────────────────────────────────────────────────────────────────
@@ -46,7 +46,7 @@ def mock_conn_empty():
 # ── Test 1: DB has a saved address → BTC_ADDRESS is overwritten ──────────────
 
 class TestRestoreWithAddress:
-    """_restore_btc_address_from_db reads a valid _btc_address from DB."""
+    """_load_persisted_address reads a valid _btc_address from DB."""
 
     def test_overwrites_global(self, monkeypatch, mock_conn_with_address):
         """Should set app.BTC_ADDRESS to the persisted address."""
@@ -56,7 +56,7 @@ class TestRestoreWithAddress:
         original = _app_module.BTC_ADDRESS
         _app_module.BTC_ADDRESS = "bc1qdefaultaddress0000000000000000000000000"
         try:
-            result = _restore_btc_address_from_db()
+            result = _load_persisted_address()
             assert result is True, "Expected True when address is restored"
             assert _app_module.BTC_ADDRESS == "bc1qtestwallet123abc456def789ghi012jklmno"
         finally:
@@ -68,7 +68,7 @@ class TestRestoreWithAddress:
         original = _app_module.BTC_ADDRESS
         _app_module.BTC_ADDRESS = "bc1qoriginalxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
         try:
-            result = _restore_btc_address_from_db()
+            result = _load_persisted_address()
             assert result is True
         finally:
             _app_module.BTC_ADDRESS = original
@@ -79,7 +79,7 @@ class TestRestoreWithAddress:
         original = _app_module.BTC_ADDRESS
         _app_module.BTC_ADDRESS = "bc1qoriginalxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
         try:
-            _restore_btc_address_from_db()
+            _load_persisted_address()
             assert mock_conn_with_address.closed is True
         finally:
             _app_module.BTC_ADDRESS = original
@@ -88,7 +88,7 @@ class TestRestoreWithAddress:
 # ── Test 2: DB is empty → BTC_ADDRESS unchanged, returns False ───────────────
 
 class TestRestoreEmptyDB:
-    """_restore_btc_address_from_db when DB has no _btc_address."""
+    """_load_persisted_address when DB has no _btc_address."""
 
     def test_keeps_original_global(self, monkeypatch, mock_conn_empty):
         """Should NOT modify app.BTC_ADDRESS when DB is empty."""
@@ -96,7 +96,7 @@ class TestRestoreEmptyDB:
         original = _app_module.BTC_ADDRESS
         _app_module.BTC_ADDRESS = "bc1qkeepsamexxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
         try:
-            result = _restore_btc_address_from_db()
+            result = _load_persisted_address()
             assert result is False, "Expected False when no address in DB"
             assert _app_module.BTC_ADDRESS == "bc1qkeepsamexxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
         finally:
@@ -108,7 +108,7 @@ class TestRestoreEmptyDB:
         original = _app_module.BTC_ADDRESS
         _app_module.BTC_ADDRESS = "bc1qanotherxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
         try:
-            result = _restore_btc_address_from_db()
+            result = _load_persisted_address()
             assert result is False
         finally:
             _app_module.BTC_ADDRESS = original
@@ -124,7 +124,7 @@ class TestRestoreEmptyDB:
         original = _app_module.BTC_ADDRESS
         _app_module.BTC_ADDRESS = "bc1qpreservexxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
         try:
-            result = _restore_btc_address_from_db()
+            result = _load_persisted_address()
             assert result is False, "Expected False for address < 10 chars"
             assert _app_module.BTC_ADDRESS == "bc1qpreservexxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
         finally:
@@ -136,7 +136,7 @@ class TestRestoreEmptyDB:
         original = _app_module.BTC_ADDRESS
         _app_module.BTC_ADDRESS = "bc1qclosesconnxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
         try:
-            _restore_btc_address_from_db()
+            _load_persisted_address()
             assert mock_conn_empty.closed is True
         finally:
             _app_module.BTC_ADDRESS = original
@@ -145,7 +145,7 @@ class TestRestoreEmptyDB:
 # ── Test 3: DB access raises exception → BTC_ADDRESS unchanged, returns False ─
 
 class TestRestoreDBError:
-    """_restore_btc_address_from_db when get_db() raises an exception."""
+    """_load_persisted_address when get_db() raises an exception."""
 
     def test_keeps_original_on_exception(self, monkeypatch):
         """Should NOT modify BTC_ADDRESS when get_db raises."""
@@ -156,7 +156,7 @@ class TestRestoreDBError:
         original = _app_module.BTC_ADDRESS
         _app_module.BTC_ADDRESS = "bc1qpreserveonerrorxxxxxxxxxxxxxxxxxxxxxxx"
         try:
-            result = _restore_btc_address_from_db()
+            result = _load_persisted_address()
             assert result is False, "Expected False when get_db raises"
             assert _app_module.BTC_ADDRESS == "bc1qpreserveonerrorxxxxxxxxxxxxxxxxxxxxxxx"
         finally:
@@ -171,7 +171,7 @@ class TestRestoreDBError:
         original = _app_module.BTC_ADDRESS
         _app_module.BTC_ADDRESS = "bc1qshouldstayxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
         try:
-            result = _restore_btc_address_from_db()
+            result = _load_persisted_address()
             assert result is False
         finally:
             _app_module.BTC_ADDRESS = original
@@ -194,7 +194,7 @@ class TestRestoreDBError:
         original = _app_module.BTC_ADDRESS
         _app_module.BTC_ADDRESS = "bc1qhandlesexecerrorxxxxxxxxxxxxxxxxxxxxxxx"
         try:
-            result = _restore_btc_address_from_db()
+            result = _load_persisted_address()
             assert result is False, "Expected False when execute raises"
             assert _app_module.BTC_ADDRESS == "bc1qhandlesexecerrorxxxxxxxxxxxxxxxxxxxxxxx"
         finally:
