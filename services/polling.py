@@ -16,6 +16,8 @@ import requests
 
 import services.state as state
 import services.proximity as proximity
+import services.names as names  # name normalization + sanitization
+
 from helpers import (
     parse_diff_to_float, fmt_diff, fmt_hashrate, fmt_uptime, fmt_age,
     safe_int, safe_num_from_str, coerce_float, coerce_int,
@@ -153,7 +155,7 @@ def poll_once():
             poll_once._no_wallet_log_count = 0
         poll_once._no_wallet_log_count += 1
         if poll_once._no_wallet_log_count % 30 == 1:
-            log.info("[poll] No wallet address configured — fetching only public data")
+            log.info("[poll] No wallet configured — fetching only public data")
 
     prev_worker = state.latest_snapshot.get("worker") or {}
     prev_pool = state.latest_snapshot.get("pool") or {}
@@ -225,6 +227,16 @@ def poll_once():
 
     user = results.get("user")
     pool = results["pool"]
+
+    # ── FASE 1 FIX: Pool API failure fallback ──
+    # When the pool-stats endpoint fails (timeout, 5xx, rate limit),
+    # pool arrives as None. Fall back to prev_pool with a _stale flag
+    # so the frontend shows stale-but-valid data instead of a blank panel.
+    if not isinstance(pool, dict) and isinstance(prev_pool, dict) and prev_pool:
+        pool = dict(prev_pool)
+        pool["_stale"] = True
+        pool["_stale_since_ts"] = int(time.time())
+
     account_data = results.get("account")
     leaderboard = results.get("leaderboard") or []
     highest = results.get("highest") or []
@@ -265,6 +277,13 @@ def poll_once():
     network_height = network_height_data if isinstance(network_height_data, int) else None
     # Difficulty: use blockchain.info /q/getdifficulty as primary source
     current_difficulty = float(bc_diff_val) if bc_diff_val is not None else None
+    # Safety: if difficulty is zero/negative after all fallbacks, use default (126.23T)
+    # and emit a warning so operators know the API returned bad data.
+    DEFAULT_DIFFICULTY = 126231507121868.0  # ~126.23T — typical late-2025 value
+    if current_difficulty is not None and current_difficulty <= 0:
+        log.warning("[poll] network difficulty is %.4e (invalid) — falling back to default %.4e",
+                    current_difficulty, DEFAULT_DIFFICULTY)
+        current_difficulty = DEFAULT_DIFFICULTY
     # Fallback: derive net_hashrate from difficulty + target block time
     if current_difficulty is not None and (net_hashrate is None or net_hashrate == 0):
         net_hashrate = current_difficulty * (2 ** 32) / 600
@@ -391,9 +410,11 @@ def poll_once():
                 sph = (len(hist) - 1) * (3600.0 / span)
             else:
                 sph = 0.0
+            clean_name = names.sanitize(str(w.get("name", "") or ""))
+            clean_id = names.sanitize(str(w.get("id", "") or ""))
             entry = {
-                "id": w.get("id", ""),
-                "name": w.get("name", ""),
+                "id": clean_id,
+                "name": clean_name,
                 "hashrate": w.get("hashrate"),
                 "bestDifficulty": wr_best,
                 "bestDifficultyVal": wr_best_val,
@@ -420,6 +441,35 @@ def poll_once():
             }
             all_workers.append(entry)
 
+        # ── Dedup workers by normalized name ──
+    # Workers with the same normalized name (e.g. CYPHERORDIFUTURE vs cypherordifuture)
+    # are merged: keep the entry with highest hashrate (most recent/active).
+    seen = {}
+    deduped = []
+    for entry in all_workers:
+        key = names.dedup_key(entry.get("name", "")) or names.dedup_key(entry.get("id", ""))
+        if not key:
+            deduped.append(entry)
+            continue
+        existing = seen.get(key)
+        if existing is None:
+            seen[key] = entry
+            deduped.append(entry)
+        else:
+            # Merge: keep the one with higher hashrate (active beats dead)
+            existing_hr = float(existing.get("hashrate") or 0)
+            incoming_hr = float(entry.get("hashrate") or 0)
+            if incoming_hr > existing_hr:
+                # Replace the existing entry with the incoming one
+                deduped[deduped.index(existing)] = entry
+                seen[key] = entry
+                log.info("[dedup] Merged worker '%s' into '%s' (hashrate %.0f > %.0f)",
+                         entry.get("name", "?"), existing.get("name", "?"), incoming_hr, existing_hr)
+    if len(deduped) < len(all_workers):
+        log.info("[dedup] Reduced %d workers → %d by normalized name merging",
+                 len(all_workers), len(deduped))
+        all_workers = deduped
+
     # ── Dynamic primary worker selection ──
     # After scoring all workers, mark the best candidate as primary.
     # Falls back to WORKER_NAME match if no worker has hashrate or recency.
@@ -431,12 +481,40 @@ def poll_once():
     elif all_workers:
         # Fallback: match by WORKER_NAME (static, for empty wallets)
         for idx, entry in enumerate(all_workers):
-            if (str(entry.get("name", "")).lower() == config.WORKER_NAME.lower()
-                    or str(entry.get("id", "")).lower() == config.WORKER_NAME.lower()):
+            normalized_worker_name = names.normalize(config.WORKER_NAME)
+            if (names.normalize(entry.get("name", "")) == normalized_worker_name
+                    or names.normalize(entry.get("id", "")) == normalized_worker_name):
                 entry["is_primary"] = True
                 worker = user["workerData"][idx] if idx < len(user.get("workerData", [])) else None
                 worker_index = idx
                 break
+
+    # ── FASE 1 FIX: Worker API failure fallback ──
+    # When the user/wallet endpoint fails, worker is None.
+    # Fall back to prev_worker with a _stale flag so the frontend
+    # shows stale-but-valid data instead of blank panels.
+    if worker is None and isinstance(prev_worker, dict) and prev_worker.get("name"):
+        worker = dict(prev_worker)
+        worker["_stale"] = True
+        worker["_stale_since_ts"] = int(time.time())
+
+    # ── DIAGNOSTIC: Worker null despite all_workers having entries ──
+    # If worker is still None but all_workers has entries, log a warning
+    # and use the first available worker as the primary. This prevents the
+    # frontend from showing blank panels when the scoring/match fails.
+    if worker is None and all_workers:
+        log.warning("[poll] Worker is None but all_workers has %d entries — falling back to first worker: %s",
+                    len(all_workers), all_workers[0].get("name", "?"))
+        # Use the first worker as primary fallback
+        all_workers[0]["is_primary"] = True
+        idx = 0
+        # Try to get the raw worker data from the API response
+        if user and isinstance(user.get("workerData"), list) and idx < len(user["workerData"]):
+            worker = user["workerData"][idx]
+        else:
+            # Fall back to the enriched all_workers entry as a dict
+            worker = dict(all_workers[0])
+        worker_index = idx
 
     # ── Override user_aggregate.workers with our own count ──
     # The pool API may report workers=0 even when workerData has entries.
@@ -524,7 +602,7 @@ def poll_once():
                         ts,
                         "SHARE_FOUND",
                         "INFO",
-                        f"cypher65 share validated by pool (gap Δ{gap}s)",
+                        f"{(config.WORKER_NAME or 'worker').upper()} share validated by pool (gap Δ{gap}s)",
                         json.dumps({"gap": gap, "shares_per_hour": round(sph, 2)}),
                     )
                 )
@@ -603,7 +681,7 @@ def poll_once():
                         ts,
                         "BEST_DIFF_BUMP",
                         "GOLD",
-                        f"cypher65 best difficulty raised to {best_diff_str} ({pct_txt})",
+                        f"{(config.WORKER_NAME or 'worker').upper()} best difficulty raised to {best_diff_str} ({pct_txt})",
                         json.dumps({"from": old_str or "0", "to": best_diff_str, "pct": round(pct, 2)}),
                     )
                 )
@@ -751,7 +829,7 @@ def poll_once():
             sig = ("stale_submission", str(ls))
             if sig not in alert_seen:
                 alerts.append((sev, "stale_submission",
-                    f"cypher65 last submit {int((ts - int(ls)) / 60)}min ago (threshold {stale_min}m)"))
+                    f"{(config.WORKER_NAME or 'worker').upper()} last submit {int((ts - int(ls)) / 60)}min ago (threshold {stale_min}m)"))
                 alert_seen.add(sig)
         prev_hr = float(prev_worker.get("hashrate") or 0)
         cur_hr = float(worker.get("hashrate") or 0)
@@ -759,12 +837,12 @@ def poll_once():
             sig = ("hashrate_drop", f"{prev_hr:.0f}->{cur_hr:.0f}")
             if sig not in alert_seen:
                 alerts.append(("WARN", "hashrate_drop",
-                    f"cypher65 hashrate dropped from {fmt_hashrate(prev_hr)} to {fmt_hashrate(cur_hr)} (-{hr_drop_pct:.0f}%)"))
+                    f"{(config.WORKER_NAME or 'worker').upper()} hashrate dropped from {fmt_hashrate(prev_hr)} to {fmt_hashrate(cur_hr)} (-{hr_drop_pct:.0f}%)"))
                 alert_seen.add(sig)
     else:
         sig = ("worker_offline", "1")
         if sig not in alert_seen:
-            alerts.append(("CRIT", "worker_offline", "cypher65 not found in workerData"))
+            alerts.append(("CRIT", "worker_offline", f"{(config.WORKER_NAME or 'worker').upper()} not found in workerData"))
             alert_seen.add(sig)
 
     if pool:
@@ -790,7 +868,7 @@ def poll_once():
             day_num = up // 86400
             sig = ("uptime_milestone", str(day_num))
             if sig not in alert_seen:
-                alerts.append(("INFO", "uptime", f"cypher65 uptime crossed {fmt_uptime(up)}"))
+                alerts.append(("INFO", "uptime", f"{(config.WORKER_NAME or 'worker').upper()} uptime crossed {fmt_uptime(up)}"))
                 alert_seen.add(sig)
 
     # GC old signatures (keep last 1000)
@@ -898,8 +976,8 @@ def poll_once():
         s = config.load_settings()
         reward = coerce_float(s.get("btc_block_reward"), 3.125)
         fee = coerce_float(s.get("btc_avg_tx_fee"), 0.05)
-        pool_fee_pct = coerce_float(s.get("pool_fee_pct"), 1.5)
-        orphan_pct = coerce_float(s.get("orphan_rate_pct"), 0.5)
+        pool_fee_pct = max(0, min(100, coerce_float(s.get("pool_fee_pct"), 1.5)))
+        orphan_pct = max(0, min(100, coerce_float(s.get("orphan_rate_pct"), 0.5)))
         cost_mode = s.get("cost_mode", "none")
         btc_prices = {"USD": btc_usd, "BRL": btc_brl, "EUR": btc_eur, "GBP": btc_gbp}
 
@@ -1162,7 +1240,7 @@ def poll_once():
             "severity": "SUCCESS",
             "category": "hot_streak",
             "message": (
-                f"cypher65 best-diff HOT STREAK: {prox['best_diff_str']} "
+                f"{(config.WORKER_NAME or 'worker').upper()} best-diff HOT STREAK: {prox['best_diff_str']} "
                 f"(+{prox['trend_1h_pct']:.1f}% in 1h) — keep going!"
             ),
         }

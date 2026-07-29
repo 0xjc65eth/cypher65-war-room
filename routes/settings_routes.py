@@ -39,3 +39,21 @@ def api_settings_post():
         else:
             rejected.append({"key": k, "reason": "db error"})
     return jsonify({"applied": applied, "rejected": rejected})
+
+
+# ── FASE 2: Wallet history endpoint ──
+
+@settings_bp.route("/wallet/history", methods=["GET"])
+def get_wallet_history():
+    """Return list of past wallet addresses, most recent first."""
+    try:
+        from app import get_db
+        conn = get_db()
+        rows = conn.execute(
+            "SELECT address, worker, connected_at, label FROM wallet_address_history "
+            "ORDER BY connected_at DESC LIMIT 20"
+        ).fetchall()
+        conn.close()
+        return jsonify({"success": True, "history": [dict(r) for r in rows]})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500

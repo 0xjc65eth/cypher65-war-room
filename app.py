@@ -29,9 +29,13 @@ from helpers import (
 )
 
 import services.state as _shared_state
+import services.names as _names  # name sanitization + normalization
+from services.session_manager import SessionManager
+from services.user_polling import UserPollingWorker, _build_snapshot
 from agents.opportunity_engine import scan as _opp_scan, build_response as _opp_build_response
 from agents import solo_mining_advisor as _opp_advisor  # monkeypatch-safe: accessed dynamically in route
 from routes.solo_mining_routes import solo_mining_bp
+from routes.device_control import device_control_bp
 from services.probability_engine import register_probability_routes
 from services.probability import calculate_multiple_periods, _seconds_to_human
 from services.hashrate_market import (
@@ -45,6 +49,7 @@ from services.hashrate_market import (
 from axe_fleet.routes import axe_fleet_bp, init_routes as _init_axe_routes
 from axe_fleet.registry import DeviceRegistry
 from routes.alerts_routes import alerts_bp, _set_get_db as _alerts_set_get_db
+from routes.settings_routes import settings_bp
 
 # ── Core CYPHER65 device registry ───────────────────────────────────────────
 from core.registry.device_registry import DeviceRegistry as CoreDeviceRegistry
@@ -74,7 +79,7 @@ BTC_ADDRESS = os.environ.get(
     "BTC_ADDRESS",
     "bc1qpc3832jcu6m8qpqjvz5lkuydwjzv8v5vq5t5rs",
 )
-WORKER_NAME = os.environ.get("WORKER_NAME", "cypher65")
+WORKER_NAME = os.environ.get("WORKER_NAME", "")
 PARASITE_API = "https://parasite.space/api"
 MEMPOOL_API = "https://mempool.space/api"
 DATA_DIR = Path(__file__).parent / "data"
@@ -94,9 +99,15 @@ register_probability_routes(app)
 # ── Register Axe Fleet blueprint ────────────────────────────────────────────
 app.register_blueprint(axe_fleet_bp, url_prefix='/api/axe-fleet')
 
+# ── Register Device Control blueprint ────────────────────────────────────
+app.register_blueprint(device_control_bp)
+
 # ── Register Auth blueprint (MILESTONE 11: Security Hardening) ──────────────
 from routes.auth_routes import auth_bp
 app.register_blueprint(auth_bp)
+
+# ── Register Settings blueprint (FASE 2: wallet history) ───────────────
+app.register_blueprint(settings_bp)
 
 # ━━ Simple in-memory rate limiter ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 _rate_limit_store = {}  # {ip: [timestamps]}
@@ -439,7 +450,20 @@ def init_db():
     c.execute("CREATE INDEX IF NOT EXISTS idx_automation_execution_log_ts ON automation_execution_log(ts)")
     c.execute("CREATE INDEX IF NOT EXISTS idx_automation_execution_log_rule ON automation_execution_log(rule_id)")
     c.execute("CREATE INDEX IF NOT EXISTS idx_automation_execution_log_device ON automation_execution_log(device_id)")
-    # ── WAL mode for better concurrent read/write ──
+        # ── FASE 2: Wallet address history (past wallets) ──
+    c.execute(
+        """CREATE TABLE IF NOT EXISTS wallet_address_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            address TEXT NOT NULL,
+            worker TEXT DEFAULT '',
+            connected_at INTEGER NOT NULL,
+            label TEXT DEFAULT ''
+        )"""
+    )
+    c.execute("CREATE INDEX IF NOT EXISTS idx_wallet_history_addr ON wallet_address_history(address)")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_wallet_history_ts ON wallet_address_history(connected_at)")
+
+# ── WAL mode for better concurrent read/write ──
     c.execute("PRAGMA journal_mode=WAL")
     c.execute("PRAGMA synchronous=NORMAL")
     c.execute("PRAGMA cache_size=-8000")  # 8MB cache
@@ -454,6 +478,11 @@ init_db()
 _axe_registry = DeviceRegistry(get_db)
 _init_axe_routes(_axe_registry)
 
+# ── Initialize Device Control (SafetyEngine + Registry) ──
+from core.safety.safety_engine import SafetyEngine
+from routes.device_control import init_device_control
+init_device_control(_axe_registry, SafetyEngine())
+
 # ── Initialize Core CYPHER65 device registry ───────────────────────────────
 # Uses the same SQLite file (WAL mode enabled above) but a separate `devices`
 # table managed by core/registry/device_registry.py.
@@ -465,6 +494,10 @@ _core_registry.load_from_db()
 # Each entry: { "device_id": str, "command": str, "parameters": dict,
 #              "timestamp": int, "result": dict }
 _command_history: Dict[str, List[Dict[str, Any]]] = {}
+
+# ── Session Manager (multi-user support) ──────────────────────────────────────
+_session_manager = SessionManager()
+_session_workers: dict[str, UserPollingWorker] = {}  # session_id → worker
 
 # ── Module-level SafetyEngine ────────────────────────────────────────────────
 # Shared across requests so restart cooldowns and other safety state persist.
@@ -599,6 +632,7 @@ except Exception as e:
 # by explicitly pointing _shared_state.latest_snapshot at our dict.
 latest_snapshot = {
     "ts": 0,
+    "btc_address": BTC_ADDRESS,
     "worker": None,
     "user_aggregate": None,
     "pool": None,
@@ -700,6 +734,27 @@ def _load_persisted_address():
         pass
 
 _load_persisted_address()
+
+
+def _log_wallet_change(old_address: str, old_worker: str) -> bool:
+    """Persist the outgoing address/worker to history before it's replaced.
+    Returns True on success, False on failure (never raises — a history
+    write must never block the actual wallet switch)."""
+    if not old_address:
+        return False  # nothing to log on first-ever connect
+    try:
+        conn = get_db()
+        c = conn.cursor()
+        c.execute(
+            "INSERT INTO wallet_address_history(address, worker, connected_at) VALUES (?,?,?)",
+            (old_address, old_worker, int(time.time())),
+        )
+        conn.commit()
+        conn.close()
+        return True
+    except Exception as e:
+        log.warning("[_log_wallet_change] failed to persist history: %s", e)
+        return False
 
 
 def load_settings():
@@ -1008,12 +1063,14 @@ def _compute_proximity(worker, current_difficulty, net_hashrate, ts):
                 else f"{distance:.2f}× smaller than a block"
             ),
             "expected_time_secs": expected_secs,
+            "expected_time_seconds": expected_secs,  # alias for frontend consistency
             "expected_time_human": _human_secs_long(expected_secs) if expected_secs else "—",
             "blocks_per_year": blocks_per_year,
             "chance_per_share_label": (
                 f"1 in {int(round(net_diff / best_diff_raw)):,}"
                 if best_diff_raw else "—"
             ),
+            "chance_per_share_pct": (best_diff_raw / net_diff) if best_diff_raw and net_diff else 0.0,  # decimal for frontend
             "trend_1h_pct": trend_1h_pct,
             "trend_6h_pct": trend_6h_pct,
             "trend_24h_pct": trend_24h_pct,
@@ -1109,6 +1166,7 @@ def _reset_session_state():
     latest_snapshot.clear()
     latest_snapshot.update({
         "ts": 0,
+        "btc_address": BTC_ADDRESS,
         "worker": None,
         "user_aggregate": None,
         "pool": None,
@@ -1141,10 +1199,10 @@ def _reset_session_state():
     timeline_state["session_best_diff_bumps"] = 0
 
     # Clear alert dedup cache
-    if hasattr(poll_once, '_alert_seen'):
-        poll_once._alert_seen.clear()
-    if hasattr(poll_once, '_worker_was_present'):
-        poll_once._worker_was_present = False
+    if hasattr(_do_poll, '_alert_seen'):
+        _do_poll._alert_seen.clear()
+    if hasattr(_do_poll, '_worker_was_present'):
+        _do_poll._worker_was_present = False
 
     # Reset proximity sample throttle
     _last_proximity_sample_ts = 0
@@ -1153,14 +1211,155 @@ def _reset_session_state():
     persist_consec_failures = 0
 
     # Clear BTC price cache so next poll fetches fresh
-    global btc_price_cache  # already global at module level
+    global btc_price_cache, _shared_state
     btc_price_cache = {"ts": 0, "data": None}
+
+    # Clear last_known_prices (opportunity engine market data)
+    _shared_state.last_known_prices["braiins"] = None
+    _shared_state.last_known_prices["mrr"] = None
 
     # Reset _shared_state.test_opportunities (mock bypass)
     _shared_state.test_opportunities = None
 
     # ── Re-sync state alias after in-place mutations ──
     _shared_state.latest_snapshot = latest_snapshot
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  MULTI-USER SESSION ROUTES
+# ═══════════════════════════════════════════════════════════════════════════
+
+@app.route("/api/connect-wallet", methods=["POST"])
+def api_connect_wallet():
+    """Create a new session and start per-user polling.
+
+    Body (JSON):
+      - address (str): BTC address to monitor
+      - worker (str, optional): worker name
+
+    Returns:
+      - success, session_id, snapshot (first poll result)
+    """
+    global _session_manager, _session_workers
+
+    data = request.get_json(silent=True) or {}
+    address = (data.get("address") or "").strip()
+    worker_name = (data.get("worker") or "").strip()
+
+    # Validate
+    if not address:
+        return jsonify({"success": False, "error": "address is required"}), 400
+    if not (address.startswith("bc1") or address.startswith("1")):
+        return jsonify({"success": False, "error": "invalid address prefix"}), 400
+    if len(address) < 26 or len(address) > 64:
+        return jsonify({"success": False, "error": "invalid address length"}), 400
+
+    # Create session
+    session = _session_manager.create_session(address, worker_name)
+    sid = session.session_id
+
+    # Start polling worker for this session
+    worker = UserPollingWorker(sid, _session_manager, address, worker_name)
+    _session_workers[sid] = worker
+    worker.start()
+
+    # Do an immediate first poll so the snapshot is ready
+    snapshot = worker.poll_now()
+
+    log.info("[connect] session %s wallet=%s", sid[:8], address[:10])
+
+    return jsonify({
+        "success": True,
+        "session_id": sid,
+        "snapshot": snapshot,
+        "has_wallet": True,
+    })
+
+
+@app.route("/api/session-snapshot", methods=["GET"])
+def api_session_snapshot():
+    """Return the snapshot for the current session.
+    Session ID is passed as query param 'session_id'.
+    """
+    global _session_manager
+
+    sid = request.args.get("session_id") or \
+          request.headers.get("X-Session-Id") or ""
+
+    if not sid:
+        return jsonify({"error": "session_id required", "has_wallet": False}), 400
+
+    session = _session_manager.get_session(sid)
+    if not session:
+        return jsonify({"error": "session not found or expired",
+                        "has_wallet": False}), 404
+
+    # If session has no wallet yet, return empty state
+    if not session.has_wallet:
+        return jsonify({"has_wallet": False, "session_id": sid})
+
+    snapshot = _session_manager.get_snapshot(sid) or {}
+
+    return jsonify({
+        "has_wallet": True,
+        "session_id": sid,
+        "btc_address": session.btc_address,
+        "snapshot": snapshot,
+    })
+
+
+@app.route("/api/disconnect", methods=["POST"])
+def api_disconnect():
+    """Stop polling and destroy the session."""
+    global _session_manager, _session_workers
+
+    data = request.get_json(silent=True) or {}
+    sid = data.get("session_id") or \
+          request.headers.get("X-Session-Id") or ""
+
+    if not sid:
+        return jsonify({"success": False, "error": "session_id required"}), 400
+
+    # Stop the worker thread
+    worker = _session_workers.pop(sid, None)
+    if worker:
+        worker.stop()
+        log.info("[disconnect] stopped worker for %s", sid[:8])
+
+    # Destroy session
+    existed = _session_manager.destroy_session(sid)
+
+    return jsonify({"success": True, "session_id": sid, "existed": existed})
+
+
+@app.route("/api/session-status", methods=["GET"])
+def api_session_status():
+    """Check if a session is valid."""
+    sid = request.args.get("session_id") or \
+          request.headers.get("X-Session-Id") or ""
+    if not sid:
+        return jsonify({"valid": False})
+    session = _session_manager.get_session(sid)
+    if not session:
+        return jsonify({"valid": False})
+    return jsonify({
+        "valid": True,
+        "session_id": sid,
+        "has_wallet": session.has_wallet,
+        "btc_address": session.btc_address,
+        "created_at": session.created_at,
+        "last_activity": session.last_activity,
+    })
+
+
+@app.route("/api/admin/sessions", methods=["GET"])
+def api_admin_sessions():
+    """List all active sessions (debug/admin)."""
+    sessions = _session_manager.get_all_sessions()
+    return jsonify({
+        "count": len(sessions),
+        "sessions": [s.to_dict() for s in sessions],
+    })
 
 
 # parse_diff_to_float, fmt_diff, fmt_hashrate, fmt_uptime, fmt_age
@@ -1170,7 +1369,22 @@ def _reset_session_state():
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 #  Polling worker
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+_poll_lock = threading.Lock()
+
+
 def poll_once():
+    """Wrapper with concurrency guard — lock prevents concurrent polls between
+    the forced poll (from set-address) and the scheduled poll_loop()."""
+    if not _poll_lock.acquire(blocking=False):
+        log.debug("[poll] skipped — another poll is already running")
+        return
+    try:
+        _do_poll()
+    finally:
+        _poll_lock.release()
+
+
+def _do_poll():
     global latest_snapshot
     global persist_consec_failures
     global memory_critical_alerts
@@ -1333,22 +1547,71 @@ def poll_once():
     worker_index = None
     if user and isinstance(user.get("workerData"), list):
         for idx, w in enumerate(user["workerData"]):
+            raw_name = str(w.get("name", ""))
+            raw_id = str(w.get("id", ""))
+            clean_name = _names.sanitize(raw_name)
+            clean_id = _names.sanitize(raw_id)
             entry = {
-                "id": w.get("id", ""),
-                "name": w.get("name", ""),
+                "id": clean_id,
+                "name": clean_name,
                 "hashrate": w.get("hashrate"),
                 "bestDifficulty": w.get("bestDifficulty", ""),
                 "lastSubmission": w.get("lastSubmission"),
                 "uptime": w.get("uptime"),
-                "is_primary": str(w.get("name", "")).lower() == WORKER_NAME.lower()
-                              or str(w.get("id", "")).lower() == WORKER_NAME.lower(),
+                "is_primary": _names.normalize(raw_name) == _names.normalize(WORKER_NAME)
+                              or _names.normalize(raw_id) == _names.normalize(WORKER_NAME),
             }
             all_workers.append(entry)
             if entry["is_primary"]:
                 worker = w
                 worker_index = idx
 
-    # ━━ Leaderboard lookup ━━
+    # ── Fallback: if no primary worker matched WORKER_NAME, pick best by hashrate ──
+    if worker is None and all_workers and user and isinstance(user.get("workerData"), list):
+        best_idx = 0
+        best_hr = 0
+        for i, entry in enumerate(all_workers):
+            hr = float(entry.get("hashrate") or 0)
+            if hr > best_hr:
+                best_hr = hr
+                best_idx = i
+        if best_hr > 0:
+            all_workers[best_idx]["is_primary"] = True
+            worker = user["workerData"][best_idx] if best_idx < len(user["workerData"]) else None
+            worker_index = best_idx
+            log.info("[primary] auto-selected worker %s with HR %s (best of %d)",
+                     all_workers[best_idx]["name"], best_hr, len(all_workers))
+
+    # ── Dedup workers with case-insensitive merging ──
+    # Workers with the same normalized name (e.g. CYPHERORDIFUTURE vs cypherordifuture)
+    # are merged — keep the entry with the highest hashrate (active beats dead).
+    _orig_worker_count = len(all_workers)
+    if all_workers:
+        seen = {}  # normalized_key -> index in deduped list
+        deduped = []
+        for entry in all_workers:
+            key = _names.dedup_key(entry.get("name", "") or "")
+            if not key:
+                # Empty name means no dedup possible; keep verbatim
+                deduped.append(entry)
+                continue
+            if key in seen:
+                existing_idx = seen[key]
+                existing = deduped[existing_idx]
+                incoming_hr = entry.get("hashrate") or 0
+                existing_hr = existing.get("hashrate") or 0
+                if incoming_hr > existing_hr:
+                    deduped[existing_idx] = entry
+                    log.debug("[dedup] merged %s → %s (HR %s > %s)",
+                              existing.get("name"), entry.get("name"),
+                              incoming_hr, existing_hr)
+            else:
+                seen[key] = len(deduped)
+                deduped.append(entry)
+        all_workers = deduped
+        log.info("[dedup] %d workers after dedup (was %d)", len(all_workers), _orig_worker_count)
+
+    # ── Leaderboard lookup ──
     leaderboard_entry = None
     for entry in leaderboard:
         if entry.get("address") == BTC_ADDRESS:
@@ -1635,8 +1898,8 @@ def poll_once():
     # never fires twice. Signature = (category, identifier) where identifier is
     # the unique value (block_hash, highest_diff_str, etc.)
     if not hasattr(poll_once, '_alert_seen'):
-        poll_once._alert_seen = set()  # set of (category, identifier) seen across restarts
-    alert_seen = poll_once._alert_seen
+        _do_poll._alert_seen = set()  # set of (category, identifier) seen across restarts
+    alert_seen = _do_poll._alert_seen
 
     if worker:
         ls = worker.get("lastSubmission")
@@ -1665,12 +1928,12 @@ def poll_once():
             alert_seen.add(sig)
     # Track worker presence for transition detection
     if worker:
-        poll_once._worker_was_present = True
+        _do_poll._worker_was_present = True
         # Clear the offline sig so it can fire again next time
         if ("worker_offline", "1") in alert_seen:
             alert_seen.discard(("worker_offline", "1"))
     else:
-        poll_once._worker_was_present = getattr(poll_once, '_worker_was_present', False)
+        _do_poll._worker_was_present = getattr(_do_poll, '_worker_was_present', False)
 
     if pool:
         cur_high = str(pool.get("highestDifficulty") or "")
@@ -1700,7 +1963,7 @@ def poll_once():
 
     # GC old signatures (keep last 1000)
     if len(alert_seen) > 1000:
-        poll_once._alert_seen = set(list(alert_seen)[-500:])
+        _do_poll._alert_seen = set(list(alert_seen)[-500:])
 
     if alerts:
         try:
@@ -2138,6 +2401,7 @@ def poll_once():
 
     latest_snapshot = {
         "ts": ts,
+        "btc_address": BTC_ADDRESS,
         "worker": worker,
         "worker_index": worker_index,
         "user_aggregate": user,
@@ -2167,9 +2431,7 @@ def poll_once():
         "timeline_last_n": timeline_events[-30:],  # brand-new this poll; for live log
     "leaderboard_table_top_30": leaderboard[:30] if isinstance(leaderboard, list) else [],    "all_workers": all_workers,
     "axe_fleet": list(_shared_state.axe_telemetry_cache.values()),
-}
-
-# ── Sync shared state after each poll ──
+}    # ── Sync shared state after each poll ──
     _shared_state.latest_snapshot = latest_snapshot
 
 
@@ -3472,6 +3734,88 @@ def api_opportunities_compare():
 #  Wallet management — change address via UI
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+@app.route('/api/chart-data')
+def api_chart_data():
+    """Return historical chart data for the 4 charts.
+    Params: chart (hashrate|pool|bestdiff|net), range (1h|6h|24h|7d|all).
+    Reads from proximity_history table (sampled every ~60s)."""
+    chart = request.args.get('chart', 'hashrate')
+    rng = request.args.get('range', '1h')
+    window_seconds = {'1h': 3600, '6h': 21600, '24h': 86400, '7d': 604800, 'all': 2592000}
+    window = window_seconds.get(rng, 3600)
+    cutoff = int(time.time()) - window
+    max_points = {'1h': 120, '6h': 360, '24h': 500, '7d': 1000, 'all': 2000}
+    limit = max_points.get(rng, 500)
+
+    labels = []
+    values = []
+
+    try:
+        conn = get_db()
+        c = conn.cursor()
+        if chart == 'hashrate':
+            c.execute(
+                "SELECT ts, worker_hashrate FROM proximity_history "
+                "WHERE ts > ? AND worker_hashrate > 0 ORDER BY ts ASC LIMIT ?",
+                (cutoff, limit),
+            )
+        elif chart == 'bestdiff':
+            c.execute(
+                "SELECT ts, best_diff FROM proximity_history "
+                "WHERE ts > ? AND best_diff > 0 ORDER BY ts ASC LIMIT ?",
+                (cutoff, limit),
+            )
+        elif chart == 'pool':
+            # Pool hashrate not in proximity_history; use snapshots table
+            c.execute(
+                "SELECT ts, pool_hashrate FROM snapshots "
+                "WHERE ts > ? AND pool_hashrate > 0 ORDER BY ts ASC LIMIT ?",
+                (cutoff, limit),
+            )
+        elif chart == 'net':
+            c.execute(
+                "SELECT ts, network_difficulty FROM proximity_history "
+                "WHERE ts > ? AND network_difficulty > 0 ORDER BY ts ASC LIMIT ?",
+                (cutoff, limit),
+            )
+        rows = c.fetchall()
+        conn.close()
+        for row in rows:
+            labels.append(int(row['ts']) * 1000)  # JS expects ms timestamps
+            values.append(float(row[1]))  # second column is the value
+    except Exception as e:
+        logging.getLogger("cypher65").warning("[chart-data] error: %s", e)
+
+    # Fallback: if no history data, return current snapshot value as single point
+    if not labels:
+        labels = [int(time.time()) * 1000]
+        if chart == 'hashrate':
+            values = [float(latest_snapshot.get('worker', {}).get('hashrate') or 0)]
+        elif chart == 'bestdiff':
+            bd = latest_snapshot.get('worker', {}).get('bestDifficulty') or 0
+            try:
+                values = [float(bd)]
+            except (ValueError, TypeError):
+                values = [0]
+        elif chart == 'pool':
+            values = [float(latest_snapshot.get('pool', {}).get('hashrate') or 0)]
+        elif chart == 'net':
+            net = latest_snapshot.get('network', {}) or {}
+            values = [float(net.get('difficulty') or 0)]
+
+    return jsonify({
+        'labels': labels,
+        'datasets': [{
+            'label': 'Worker Hashrate' if chart == 'hashrate' else 'Best Difficulty' if chart == 'bestdiff' else 'Pool Hashrate' if chart == 'pool' else 'Network Difficulty',
+            'data': values,
+            'fill': True,
+            'borderColor': '#06d6f0',
+            'backgroundColor': 'rgba(6,214,240,0.1)',
+            'tension': 0.3,
+        }],
+    })
+
+
 @app.route("/api/set-address", methods=["POST"])
 def api_set_address():
     """Change the monitored BTC address and worker name.
@@ -3486,6 +3830,7 @@ def api_set_address():
     """
     # ── Declare globals at the very top, before any reference ──
     global BTC_ADDRESS, WORKER_NAME
+    import re
 
     data = request.get_json(silent=True) or {}
     new_addr = (data.get("address") or "").strip()
@@ -3501,6 +3846,15 @@ def api_set_address():
         errors.append(f"address length {len(new_addr)} is invalid (must be 26-64 chars)")
     elif new_addr == BTC_ADDRESS and not new_worker:
         errors.append("address is the same as current — no change needed")
+    # FASE 2: Checksum validation
+    if not errors and new_addr.startswith("bc1"):
+        if not re.match(r"^bc1[02-9ac-hj-np-z]+$", new_addr):
+            errors.append("address checksum is invalid - invalid bech32 characters")
+    elif not errors and new_addr.startswith("1"):
+        b58_chars = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
+        if not all(c in b58_chars for c in new_addr[1:]):
+            errors.append("address checksum is invalid - invalid base58 characters")
+
 
     # Validate worker name if provided
     if new_worker and (len(new_worker) < 1 or len(new_worker) > 64):
@@ -3542,8 +3896,16 @@ def api_set_address():
     if new_worker:
         WORKER_NAME = new_worker
 
+    # ── Log the OLD address to history before reset ──
+    _log_wallet_change(old_addr, old_worker)
+
     # ── Reset session state ──
     _reset_session_state()
+
+    # ── Force immediate poll with the NEW address ──
+    # Without this, the snapshot stays empty until the next scheduled poll
+    # (up to 15s later), leaving the dashboard blank after connect wallet.
+    threading.Thread(target=poll_once, daemon=True).start()
 
     # ── Add a SUCCESS alert ──
     ts = int(time.time())
@@ -3556,6 +3918,7 @@ def api_set_address():
 
     return jsonify({
         "success": True,
+        "ok": True,          # alias for test compatibility
         "address": new_addr,
         "worker": WORKER_NAME,
         "old_address": old_addr,
@@ -3576,3 +3939,6 @@ if __name__ == "__main__":
     """ % (PORT, BTC_ADDRESS[:14] + "…", WORKER_NAME, POLL_INTERVAL, DB_PATH)
     print(art)
     app.run(host="0.0.0.0", port=PORT, debug=False, threaded=True)
+
+# ── FASE 2: Wallet address history table ──
+# In init_db(), add the wallet_address_history table

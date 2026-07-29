@@ -380,6 +380,9 @@ def compute_proximity(worker, current_difficulty, net_hashrate, ts):
     # Collect missing inputs for validation
     missing_inputs = []
 
+    log.debug("[proximity] compute_proximity entry — worker=%s, net_diff=%s, ts=%s",
+              worker.get("name") if worker else None, current_difficulty, ts)
+
     try:
         best_diff_raw = parse_diff_to_float(worker.get("bestDifficulty")) if worker else None
         if not best_diff_raw:
@@ -388,12 +391,18 @@ def compute_proximity(worker, current_difficulty, net_hashrate, ts):
         net_diff = float(current_difficulty) if current_difficulty else None
         if not net_diff:
             missing_inputs.append("network.difficulty")
+        elif net_diff <= 0:
+            # Safety: network difficulty must be positive
+            log.warning("[proximity] network difficulty is <= 0 (%.4e) — treating as missing", net_diff)
+            missing_inputs.append("network.difficulty.invalid")
+            net_diff = None
 
         worker_hps = float(worker.get("hashrate") or 0) if worker else 0
         if not worker_hps:
             missing_inputs.append("worker.hashrate")
 
         if missing_inputs:
+            log.info("[proximity] insufficient data — missing: %s", ", ".join(missing_inputs))
             return {
                 **out,
                 "insufficient_data": True,
@@ -491,9 +500,11 @@ def compute_proximity(worker, current_difficulty, net_hashrate, ts):
                 else f"{distance:.2f}× smaller than a block"
             ),
             "expected_time_secs": expected_secs,
+            "expected_time_seconds": expected_secs,  # alias for frontend consistency
             "expected_time_human": _human_secs_long(expected_secs) if expected_secs else "—",
             "blocks_per_year": blocks_per_year,
             "chance_per_share_label": chance_per_share_label,
+            "chance_per_share_pct": (chance_per_share_raw / net_diff) if (chance_per_share_raw and net_diff) else 0.0,  # alias as decimal for frontend
             "chance_per_share_raw": chance_per_share_raw,
             "chance_per_share_source": chance_source,
             "trend_1h_pct": trend_1h_pct,
