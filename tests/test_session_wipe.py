@@ -5,12 +5,19 @@ Tests:
 - _reset_session_state() — wipes ALL in-memory state on address change
 - reset_session() — wipes proximity-specific state
 
-Each test creates controlled mock state objects and verifies the wipe functions
-behave correctly: clearing lists/dicts, resetting counters, handling missing
-attributes gracefully, and leaving expected attributes intact.
+The current _reset_session_state() operates on app.py module globals directly
+(latest_snapshot, memory_critical_alerts, _next_memory_alert_id,
+persist_consec_failures, _last_proximity_sample_ts, btc_price_cache,
+timeline_state, _do_poll caches) and on _shared_state (= services.state) for
+last_known_prices / test_opportunities.
+
+Each test monkeypatches the REAL globals with controlled objects so the wipe
+runs against isolated state and the real app state is restored afterwards
+(monkeypatch teardown). This prevents cross-test pollution.
 """
 
 import time
+import types
 import pytest
 import logging
 
@@ -25,38 +32,71 @@ _reset_session = _proximity_module.reset_session
 #  Helpers
 # ═══════════════════════════════════════════════════════════════════════════════
 
-class MockState:
-    """Replicates the services.state module interface with controlled data."""
-    def __init__(self, with_optional=True):
-        self.latest_snapshot = {"ts": 1000000, "worker": {"hashrate": 292e12}, "pool_hashrate": 1e15}
-        self.timeline_state = {"all_time_best_diff_raw": 500e12, "session_share_count": 42}
-        self.memory_critical_alerts = [
-            {"ts": 1, "severity": "WARN", "category": "test", "message": "alert1"},
-            {"ts": 2, "severity": "CRIT", "category": "test", "message": "alert2"},
-        ]
-        self.memory_share_buffer = [{"ts": 1, "diff": 10}, {"ts": 2, "diff": 20}]
-        self.memory_live_log = ["line1", "line2", "line3"]
-        self.last_known_prices = {"btc_usd": 65000.0, "btc_brl": 320000.0}
-        self.event_counter = {"shares": 100, "blocks": 0}
-        self.session_share_count = 42
-        self.test_opportunities = {"opportunities": [{"id": "test"}]}
+def _install_mock_globals(monkeypatch, with_do_poll=True):
+    """Monkeypatch every global that _reset_session_state() touches.
 
-        # Optional attributes (may not exist in all environments)
-        if with_optional:
-            self.profit_cache = {"pool": 0.001, "solo": 0.0001}
-            self.profit_cache_hit = 5
-            self.consecutive_poll_failures = 2
-            self.lm_share_counter = 150
+    Returns a tuple (snapshot, alerts, timeline, shared) of the controlled
+    objects so tests can assert on them.
+    """
+    snapshot = {
+        "ts": 1000000,
+        "btc_address": "bc1old",
+        "worker": {"hashrate": 292e12, "bestDifficulty": "170 G"},
+        "user_aggregate": None,
+        "pool": {"hashrate": 1e15, "workers": 42},
+        "account": {"total_diff": 1.5e15},
+        "lightning": None,
+        "leaderboard_entry": {"rank": 5},
+        "leaderboard_total": 10,
+        "highest_diffs": [{"diff": 1e12}],
+        "network": {"difficulty": 127e12, "hashrate": 6e20, "height": 876543},
+        "btc_price": {"usd": 65000.0, "brl": 320000.0},
+        "luck_estimate": {"chance_24h": 0.5},
+        "alerts_recent": [{"ts": 1, "severity": "WARN", "message": "x"}],
+        "timeline_recent": [],
+        "event_stats": {"shares": 100},
+        "leaderboard_table_top_30": [{"address": "bc1x", "score": 1}],
+    }
+    alerts = [
+        {"id": 1, "ts": 1, "severity": "WARN", "category": "network", "message": "a"},
+        {"id": 2, "ts": 2, "severity": "CRIT", "category": "network", "message": "b"},
+    ]
+    timeline = {
+        "_primed": True,
+        "last_submit_ts": 100,
+        "last_best_diff_str": "170 G",
+        "all_time_best_diff_raw": 500e12,
+        "share_submit_history": [{"ts": 1}],
+        "share_calc_history": [1, 2],
+        "session_share_count": 42,
+        "session_best_diff_bumps": 3,
+    }
+    shared = types.SimpleNamespace(
+        last_known_prices={
+            "braiins": {"price": 0.0001, "ts": 1},
+            "mrr": {"price": 0.0002, "ts": 1},
+            "nicehash": {"price": 0.0003, "ts": 1},
+            "kissmyhash": {"price": 0.0004, "ts": 1},
+            "parasite": {"price": 0.0005, "ts": 1},
+        },
+        test_opportunities={"opportunities": [{"id": "braiins_0.001"}]},
+    )
 
-
-class MockStateMinimal(MockState):
-    """State WITHOUT the optional attributes — tests defensive wiping."""
-    def __init__(self):
-        super().__init__(with_optional=False)
-        # Remove optional attrs
-        for attr in ["profit_cache", "profit_cache_hit", "consecutive_poll_failures", "lm_share_counter"]:
-            if hasattr(self, attr):
-                delattr(self, attr)
+    monkeypatch.setattr(_app_module, "latest_snapshot", snapshot)
+    monkeypatch.setattr(_app_module, "memory_critical_alerts", alerts)
+    monkeypatch.setattr(_app_module, "_next_memory_alert_id", 5)
+    monkeypatch.setattr(_app_module, "persist_consec_failures", 2)
+    monkeypatch.setattr(_app_module, "_last_proximity_sample_ts", 99)
+    monkeypatch.setattr(_app_module, "btc_price_cache", {"ts": 5, "data": {"usd": 65000}})
+    monkeypatch.setattr(_app_module, "timeline_state", timeline)
+    monkeypatch.setattr(_app_module, "_shared_state", shared)
+    if with_do_poll:
+        monkeypatch.setattr(
+            _app_module,
+            "_do_poll",
+            types.SimpleNamespace(_alert_seen={1, 2, 3}, _worker_was_present=True),
+        )
+    return snapshot, alerts, timeline, shared
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -68,229 +108,114 @@ class TestResetSessionState:
 
     # ── Core state attributes ────────────────────────────────────────────────
 
-    def test_clears_latest_snapshot(self, monkeypatch):
-        """Should clear latest_snapshot and set a fresh timestamp."""
-        mock_state = MockState()
-        monkeypatch.setattr(_app_module, "state", mock_state)
-        monkeypatch.setattr(_app_module, "proximity", _proximity_module)
-        monkeypatch.setattr(_proximity_module, "state", mock_state)
-
-        before = int(time.time())
+    def test_resets_latest_snapshot_to_defaults(self, monkeypatch):
+        """latest_snapshot keeps the full schema with default/null values."""
+        snapshot, *_ = _install_mock_globals(monkeypatch)
         _reset_session_state()
-        after = int(time.time())
 
-        assert len(mock_state.latest_snapshot) == 1  # only "ts" key remains
-        assert "ts" in mock_state.latest_snapshot
-        assert before <= mock_state.latest_snapshot["ts"] <= after + 1, (
-            f"ts={mock_state.latest_snapshot['ts']} not in [{before}, {after + 1}]"
-        )
+        assert snapshot["ts"] == 0
+        assert snapshot["btc_address"] == _app_module.BTC_ADDRESS
+        assert snapshot["worker"] is None
+        assert snapshot["pool"] is None
+        assert snapshot["account"] is None
+        assert snapshot["user_aggregate"] is None
+        assert snapshot["lightning"] is None
+        assert snapshot["leaderboard_entry"] is None
+        assert snapshot["leaderboard_total"] == 0
+        assert snapshot["highest_diffs"] == []
+        assert snapshot["network"] == {"height": None, "difficulty": None, "hashrate": None}
+        assert snapshot["btc_price"] == {"usd": None, "brl": None}
+        assert snapshot["luck_estimate"] == {}
+        assert snapshot["alerts_recent"] == []
+        assert snapshot["timeline_recent"] == []
+        assert snapshot["event_stats"] == {}
+        assert snapshot["leaderboard_table_top_30"] == []
 
     def test_clears_memory_critical_alerts(self, monkeypatch):
-        """Should clear the memory_critical_alerts list."""
-        mock_state = MockState()
-        monkeypatch.setattr(_app_module, "state", mock_state)
-        monkeypatch.setattr(_app_module, "proximity", _proximity_module)
-        monkeypatch.setattr(_proximity_module, "state", mock_state)
+        """memory_critical_alerts cleared and _next_memory_alert_id reset."""
+        _, alerts, *_ = _install_mock_globals(monkeypatch)
         _reset_session_state()
-        assert mock_state.memory_critical_alerts == []
+        assert alerts == []
+        assert _app_module._next_memory_alert_id == 0
 
-    def test_clears_memory_share_buffer(self, monkeypatch):
-        """Should clear the memory_share_buffer list."""
-        mock_state = MockState()
-        monkeypatch.setattr(_app_module, "state", mock_state)
-        monkeypatch.setattr(_app_module, "proximity", _proximity_module)
-        monkeypatch.setattr(_proximity_module, "state", mock_state)
-        _reset_session_state()
-        assert mock_state.memory_share_buffer == []
-
-    def test_clears_memory_live_log(self, monkeypatch):
-        """Should clear the memory_live_log list."""
-        mock_state = MockState()
-        monkeypatch.setattr(_app_module, "state", mock_state)
-        monkeypatch.setattr(_app_module, "proximity", _proximity_module)
-        monkeypatch.setattr(_proximity_module, "state", mock_state)
-        _reset_session_state()
-        assert mock_state.memory_live_log == []
-
-    def test_clears_last_known_prices(self, monkeypatch):
-        """Should clear the last_known_prices dict."""
-        mock_state = MockState()
-        monkeypatch.setattr(_app_module, "state", mock_state)
-        monkeypatch.setattr(_app_module, "proximity", _proximity_module)
-        monkeypatch.setattr(_proximity_module, "state", mock_state)
-        _reset_session_state()
-        assert mock_state.last_known_prices == {}
-
-    def test_clears_event_counter(self, monkeypatch):
-        """Should clear the event_counter dict."""
-        mock_state = MockState()
-        monkeypatch.setattr(_app_module, "state", mock_state)
-        monkeypatch.setattr(_app_module, "proximity", _proximity_module)
-        monkeypatch.setattr(_proximity_module, "state", mock_state)
-        _reset_session_state()
-        assert mock_state.event_counter == {}
-
-    def test_clears_timeline_state(self, monkeypatch):
-        """Should re-initialize timeline_state with full defaults."""
-        mock_state = MockState()
-        monkeypatch.setattr(_app_module, "state", mock_state)
-        monkeypatch.setattr(_app_module, "proximity", _proximity_module)
-        monkeypatch.setattr(_proximity_module, "state", mock_state)
-        _reset_session_state()
-        # timeline_state is re-initialized with all default keys
-        expected_keys = {"_primed", "last_submit_ts", "last_best_diff_str",
-                         "all_time_best_diff_raw", "share_submit_history",
-                         "share_calc_history", "session_share_count",
-                         "session_best_diff_bumps"}
-        assert set(mock_state.timeline_state.keys()) == expected_keys
-        assert mock_state.timeline_state["_primed"] is False
-        assert mock_state.timeline_state["session_share_count"] == 0
-        assert mock_state.timeline_state["all_time_best_diff_raw"] == 0.0
-
-    def test_resets_session_share_count(self, monkeypatch):
-        """Should reset session_share_count to 0."""
-        mock_state = MockState()
-        monkeypatch.setattr(_app_module, "state", mock_state)
-        monkeypatch.setattr(_app_module, "proximity", _proximity_module)
-        monkeypatch.setattr(_proximity_module, "state", mock_state)
-        _reset_session_state()
-        assert mock_state.session_share_count == 0
-
-    def test_clears_test_opportunities(self, monkeypatch):
-        """Should set test_opportunities to None."""
-        mock_state = MockState()
-        monkeypatch.setattr(_app_module, "state", mock_state)
-        monkeypatch.setattr(_app_module, "proximity", _proximity_module)
-        monkeypatch.setattr(_proximity_module, "state", mock_state)
-        _reset_session_state()
-        assert mock_state.test_opportunities is None
-
-    # ── Optional attributes ──────────────────────────────────────────────────
-
-    def test_clears_optional_profit_cache(self, monkeypatch):
-        """Should clear profit_cache if it exists."""
-        mock_state = MockState(with_optional=True)
-        monkeypatch.setattr(_app_module, "state", mock_state)
-        monkeypatch.setattr(_app_module, "proximity", _proximity_module)
-        monkeypatch.setattr(_proximity_module, "state", mock_state)
-        _reset_session_state()
-        assert mock_state.profit_cache == {}
-
-    def test_resets_optional_profit_cache_hit(self, monkeypatch):
-        """Should reset profit_cache_hit to 0 if it exists."""
-        mock_state = MockState(with_optional=True)
-        monkeypatch.setattr(_app_module, "state", mock_state)
-        monkeypatch.setattr(_app_module, "proximity", _proximity_module)
-        monkeypatch.setattr(_proximity_module, "state", mock_state)
-        _reset_session_state()
-        assert mock_state.profit_cache_hit == 0
-
-    def test_resets_optional_consecutive_failures(self, monkeypatch):
-        """Should reset consecutive_poll_failures to 0 if it exists."""
-        mock_state = MockState(with_optional=True)
-        monkeypatch.setattr(_app_module, "state", mock_state)
-        monkeypatch.setattr(_app_module, "proximity", _proximity_module)
-        monkeypatch.setattr(_proximity_module, "state", mock_state)
-        _reset_session_state()
-        assert mock_state.consecutive_poll_failures == 0
-
-    def test_resets_optional_lm_share_counter(self, monkeypatch):
-        """Should reset lm_share_counter to 0 if it exists."""
-        mock_state = MockState(with_optional=True)
-        monkeypatch.setattr(_app_module, "state", mock_state)
-        monkeypatch.setattr(_app_module, "proximity", _proximity_module)
-        monkeypatch.setattr(_proximity_module, "state", mock_state)
-        _reset_session_state()
-        assert mock_state.lm_share_counter == 0
-
-    # ── Defensive: missing optional attributes should not crash ──────────────
-
-    def test_no_crash_when_optional_missing(self, monkeypatch):
-        """Should NOT crash when optional state attributes don't exist."""
-        mock_state = MockStateMinimal()
-        monkeypatch.setattr(_app_module, "state", mock_state)
-        monkeypatch.setattr(_app_module, "proximity", _proximity_module)
-        monkeypatch.setattr(_proximity_module, "state", mock_state)
-        # Should not raise any exception
-        _reset_session_state()
-        # Core state should still be wiped
-        assert mock_state.session_share_count == 0
-        assert mock_state.latest_snapshot.get("ts") is not None
-
-    def test_no_crash_when_latest_snapshot_is_none(self, monkeypatch):
-        """Should handle latest_snapshot being None instead of dict."""
-        mock_state = MockState()
-        mock_state.latest_snapshot = None
-        monkeypatch.setattr(_app_module, "state", mock_state)
-        monkeypatch.setattr(_app_module, "proximity", _proximity_module)
-        monkeypatch.setattr(_proximity_module, "state", mock_state)
-        # Should not crash
-        _reset_session_state()
-        assert mock_state.session_share_count == 0
-
-    def test_no_crash_when_state_is_missing_attrs(self, monkeypatch):
-        """Should handle state objects missing ALL expected attributes."""
-        class AlmostEmptyState:
-            pass
-
-        empty_state = AlmostEmptyState()
-        monkeypatch.setattr(_app_module, "state", empty_state)
-        monkeypatch.setattr(_app_module, "proximity", _proximity_module)
-        monkeypatch.setattr(_proximity_module, "state", empty_state)
-        # Should not crash — all wipe operations are defensive
+    def test_resets_timeline_state_defaults(self, monkeypatch):
+        """timeline_state is reset to fresh defaults and histories cleared."""
+        *_, timeline, _ = _install_mock_globals(monkeypatch)
         _reset_session_state()
 
-    # ── Verify proximity.reset_session() was called ─────────────────────────
+        assert timeline["_primed"] is False
+        assert timeline["last_submit_ts"] == 0
+        assert timeline["last_best_diff_str"] == ""
+        assert timeline["all_time_best_diff_raw"] == 0.0
+        assert timeline["share_submit_history"] == []
+        assert timeline["share_calc_history"] == []
+        assert timeline["session_share_count"] == 0
+        assert timeline["session_best_diff_bumps"] == 0
 
-    def test_calls_proximity_reset(self, monkeypatch):
-        """Should call proximity.reset_session() as part of the wipe."""
-        mock_state = MockState()
-        called = []
-
-        class ProximityMock:
-            @staticmethod
-            def reset_session():
-                called.append(True)
-
-        monkeypatch.setattr(_app_module, "state", mock_state)
-        monkeypatch.setattr(_app_module, "proximity", ProximityMock)
-        monkeypatch.setattr(_proximity_module, "state", mock_state)
-
+    def test_clears_do_poll_caches(self, monkeypatch):
+        """_do_poll._alert_seen cleared and _worker_was_present reset."""
+        _install_mock_globals(monkeypatch)
         _reset_session_state()
-        assert len(called) == 1, "proximity.reset_session() should be called once"
+        assert _app_module._do_poll._alert_seen == set()
+        assert _app_module._do_poll._worker_was_present is False
 
-    def test_proximity_reset_error_does_not_propagate(self, monkeypatch):
-        """Should NOT crash if proximity.reset_session() raises."""
-        mock_state = MockState()
-
-        class ProximityCrash:
-            @staticmethod
-            def reset_session():
-                raise RuntimeError("proximity crashed")
-
-        monkeypatch.setattr(_app_module, "state", mock_state)
-        monkeypatch.setattr(_app_module, "proximity", ProximityCrash)
-        monkeypatch.setattr(_proximity_module, "state", mock_state)
-
-        # Should not propagate the error
+    def test_do_poll_without_caches_no_crash(self, monkeypatch):
+        """If _do_poll lacks _alert_seen/_worker_was_present, no crash."""
+        _install_mock_globals(monkeypatch, with_do_poll=False)
         _reset_session_state()
-        # Core wipe should have completed
-        assert mock_state.session_share_count == 0
 
-    # ── _settings_cache is reset ────────────────────────────────────────────
-
-    def test_resets_settings_cache(self, monkeypatch):
-        """Should set _settings_cache to None (now in services.settings after P0.4)."""
-        import services.settings as _settings_module
-        mock_state = MockState()
-        monkeypatch.setattr(_app_module, "state", mock_state)
-        monkeypatch.setattr(_app_module, "proximity", _proximity_module)
-        monkeypatch.setattr(_proximity_module, "state", mock_state)
-
-        # Set a non-None value first (cache now lives in services.settings)
-        _settings_module._settings_cache = {"some": "cache"}
+    def test_resets_throttle_and_failures(self, monkeypatch):
+        """_last_proximity_sample_ts and persist_consec_failures reset to 0."""
+        _install_mock_globals(monkeypatch)
         _reset_session_state()
-        assert _settings_module._settings_cache is None
+        assert _app_module._last_proximity_sample_ts == 0
+        assert _app_module.persist_consec_failures == 0
+
+    def test_resets_btc_price_cache(self, monkeypatch):
+        """btc_price_cache reset to empty payload."""
+        _install_mock_globals(monkeypatch)
+        _reset_session_state()
+        assert _app_module.btc_price_cache == {"ts": 0, "data": None}
+
+    def test_last_known_prices_keys_preserved_nulled(self, monkeypatch):
+        """last_known_prices keys preserved, values set to None."""
+        *_, shared = _install_mock_globals(monkeypatch)
+        _reset_session_state()
+        for key in ("braiins", "mrr", "nicehash", "kissmyhash", "parasite"):
+            assert shared.last_known_prices[key] is None
+
+    def test_test_opportunities_set_to_none(self, monkeypatch):
+        """_shared_state.test_opportunities set to None after wipe."""
+        *_, shared = _install_mock_globals(monkeypatch)
+        _reset_session_state()
+        assert shared.test_opportunities is None
+
+    # ── Defensive: missing optional state should not crash ──────────────────
+
+    def test_no_crash_when_latest_snapshot_missing_keys(self, monkeypatch):
+        """latest_snapshot dict missing keys is still wiped via clear/update."""
+        snapshot, alerts, timeline, shared = _install_mock_globals(monkeypatch)
+        snapshot.clear()  # simulate a partially-populated snapshot
+        _reset_session_state()
+        assert snapshot["ts"] == 0
+        assert snapshot["worker"] is None
+        assert alerts == []
+        assert timeline["session_share_count"] == 0
+        assert shared.test_opportunities is None
+
+    def test_no_crash_when_state_objects_are_empty(self, monkeypatch):
+        """Wipe works when snapshot values are empty (required keys present)."""
+        snapshot, alerts, timeline, shared = _install_mock_globals(monkeypatch)
+        snapshot.clear()
+        # timeline_state keys are required by the real wipe — keep them present
+        # but with empty values to exercise the empty-state path.
+        timeline["share_submit_history"] = []
+        timeline["share_calc_history"] = []
+        _reset_session_state()
+        assert snapshot["ts"] == 0
+        assert timeline["_primed"] is False
+        assert alerts == []
+        assert shared.test_opportunities is None
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

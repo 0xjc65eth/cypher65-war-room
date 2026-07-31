@@ -1108,15 +1108,6 @@ body {
   border-color: var(--green, #00C853) !important;
   color: var(--green, #00C853) !important;
 }
-  color: var(--text-tertiary);
-  cursor: pointer;
-  padding: 2px 5px;
-  font-size: 9px;
-  font-family: var(--font-mono);
-  border-radius: 2px;
-  transition: all var(--dur-fast) var(--ease-out);
-  line-height: 1;
-}
 .topbar__btn:hover {
   border-color: var(--green-dim);
   color: var(--green);
@@ -1316,6 +1307,7 @@ body {
 
 /* ── Panels ────────────────────────────────────────────────────────── */
 .panel {
+  position: relative; /* containing block for .skel-overlay so it can't escape and cover the topbar */
   background: var(--bg-surface);
   border: 1px solid var(--border-default);
   padding: 8px;
@@ -2457,8 +2449,10 @@ td { padding: 4px 8px; border-bottom: 1px solid var(--border-subtle); color: var
   transition: opacity 0.2s ease;
 }
 .modal-overlay.open {
+  display: flex;
   opacity: 1;
   pointer-events: auto;
+  z-index: 8000;
 }
 .modal-box {
   background: var(--bg-card);
@@ -2728,7 +2722,12 @@ td { padding: 4px 8px; border-bottom: 1px solid var(--border-subtle); color: var
   align-items: flex-start;
   padding-top: 60px;
 }
-.modal-overlay.modal--open { display: flex; }
+.modal-overlay.modal--open {
+  display: flex;
+  opacity: 1;
+  pointer-events: auto;
+  z-index: 1000;
+}
 .modal {
   background: var(--bg-surface);
   border: 1px solid var(--border-strong);
@@ -3106,7 +3105,7 @@ td { padding: 4px 8px; border-bottom: 1px solid var(--border-subtle); color: var
 .value-flash { animation: value-flash 0.6s ease-out; }
 
 /* ── Skeleton loading ────────────────────────────────────────────────── */
-.skel-overlay { position: absolute; inset: 0; background: var(--bg-surface); display: flex; flex-direction: column; gap: 6px; padding: 16px; z-index: 10; }
+.skel-overlay { position: absolute; inset: 0; background: var(--bg-surface); display: flex; flex-direction: column; gap: 6px; padding: 16px; z-index: 10; pointer-events: none; /* skeletons are decorative — must never block clicks */ }
 .skel { height: 12px; background: var(--bg-hover); border-radius: 0; animation: pulse-green 1.5s infinite; }
 .skel.w-60 { width: 60%; } .skel.w-80 { width: 80%; } .skel.w-40 { width: 40%; }
 
@@ -3114,7 +3113,6 @@ td { padding: 4px 8px; border-bottom: 1px solid var(--border-subtle); color: var
 #pool-overview.is-stale { opacity: 0.75; border-color: var(--orange); }
 
 /* ── Empty wallet banner ─────────────────────────────────────────────── */
-#empty-wallet-banner { text-align: center; padding: 20px; border: 1px solid var(--border-subtle); margin: 10px 0; }
 
 /* ═══════════════════════════════════════════════════════════════════════════
    INSTITUTIONAL DESIGN SYSTEM — merged from Parasite Space theme
@@ -3312,8 +3310,10 @@ td { padding: 4px 8px; border-bottom: 1px solid var(--border-subtle); color: var
     inset: 0;
     background: rgba(0,0,0,0.5);
     z-index: 499;
+    /* pointer-events guard: overlays must NEVER swallow sidebar clicks while hidden */
+    pointer-events: none;
   }
-  .sidebar-overlay.visible { display: block; }
+  .sidebar-overlay.visible { display: block; pointer-events: auto; }
 
   .topbar { flex-wrap: wrap; gap: 6px; padding: 8px 10px; }
   .topbar__right { flex-wrap: wrap; gap: 4px; }
@@ -3810,3 +3810,64 @@ td { padding: 4px 8px; border-bottom: 1px solid var(--border-subtle); color: var
   gap: 4px;
   margin-bottom: 4px;
 }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   MODULE SYSTEM — navegação por módulos (sidebar → data-module)
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/* Painéis fora do módulo ativo ficam ocultos */
+.module-hidden { display: none !important; }
+
+/* Em module-mode, o tabs-nav antigo some (a sidebar assume a navegação) */
+body.module-mode .tabs-nav { display: none; }
+
+/* Tab-panes vazios (sem painel visível) também somem */
+body.module-mode .tab-pane:not(.active) { display: none; }
+
+/* Module header — breadcrumb do módulo ativo */
+.module-header {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 8px 14px;
+  background: var(--bg-surface);
+  border-bottom: 1px solid var(--border-default);
+  flex-wrap: wrap;
+}
+.module-header__eyebrow {
+  font-size: 9px;
+  letter-spacing: 0.14em;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+}
+.module-header__title {
+  font-family: var(--font-mono);
+  font-size: var(--fs-md);
+  font-weight: 700;
+  color: var(--green);
+  letter-spacing: 0.06em;
+}
+.module-header__desc {
+  font-size: 10px;
+  color: var(--text-secondary);
+  margin-left: 4px;
+}
+@media (max-width: 600px) {
+  .module-header { gap: 6px; padding: 6px 10px; }
+  .module-header__desc { display: none; }
+}
+
+/* Sidebar backdrop (mobile overlay) */
+.sidebar-backdrop {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  z-index: 490;
+  /* pointer-events guard: overlays must NEVER swallow sidebar clicks while hidden */
+  pointer-events: none;
+}
+.sidebar-backdrop.visible { display: block; pointer-events: auto; }
+
+/* Sidebar nav scroll suave quando há muitos itens */
+.sidebar__nav { overflow-y: auto; }

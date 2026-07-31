@@ -765,10 +765,10 @@ class TestBuildHighlights:
         assert highlights[0]["metrics"]["score"] >= highlights[1]["metrics"]["score"]
 
     def test_stale_prices_filtered(self):
-        """Prices older than max_age_seconds are excluded."""
-        stale_ts = int(time.time()) - 600  # 10 min ago
+        """Prices older than 2x max_age_seconds are excluded entirely."""
+        too_old_ts = int(time.time()) - 700  # > 2 * 300s grace
         prices = {
-            "braiins": {"price": 0.000500, "ts": stale_ts, "label": "Braiins"},
+            "braiins": {"price": 0.000500, "ts": too_old_ts, "label": "Braiins"},
         }
         highlights = build_highlights(
             snapshot=None,
@@ -777,6 +777,22 @@ class TestBuildHighlights:
             max_age_seconds=300,  # 5 min max
         )
         assert highlights == []
+
+    def test_stale_within_grace_included_with_flag(self):
+        """Data within 1x-2x max_age is kept but flagged as _stale (SWR)."""
+        stale_ts = int(time.time()) - 400  # within 2x grace (600s)
+        prices = {
+            "braiins": {"price": 0.000500, "ts": stale_ts, "label": "Braiins"},
+        }
+        highlights = build_highlights(
+            snapshot=None,
+            last_known_prices=prices,
+            max_items=5,
+            max_age_seconds=300,
+        )
+        assert len(highlights) == 1
+        assert highlights[0]["meta"]["_stale"] is True
+        assert highlights[0]["meta"]["_age_s"] > 300
 
     def test_fresh_prices_included(self):
         """Prices within max_age_seconds are included."""

@@ -74,8 +74,12 @@ class TestProbabilityFullEndpoint:
         assert "network_hashrate" in data
         assert "source" in data
 
-    def test_returns_400_without_hashrate_and_no_snapshot(self, client):
+    def test_returns_400_without_hashrate_and_no_snapshot(self, client, monkeypatch):
         """Without hashrate param AND no snapshot, should return 400."""
+        # Ensure the shared snapshot carries no worker hashrate — a prior
+        # test in the suite may have left a hashrate behind.
+        import services.state as _state
+        monkeypatch.setattr(_state, "latest_snapshot", {"worker": {}, "network": {}})
         resp = client.get(self.ENDPOINT)
         assert resp.status_code == 400
         data = resp.get_json()

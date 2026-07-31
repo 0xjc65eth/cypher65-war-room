@@ -81,7 +81,9 @@ if [ ! -f "$VENV_PYTHON" ]; then
   VENV_PYTHON="python3"
 fi
 
-$VENV_PYTHON app.py &>"$FLASK_LOG" &
+# E2E suites fire dozens of requests per minute (page load + 15s polling +
+# panel fetches) — raise the per-IP rate limit so the suite never hits 429.
+RATE_LIMIT_PER_MINUTE="${RATE_LIMIT_PER_MINUTE:-1000}" $VENV_PYTHON app.py &>"$FLASK_LOG" &
 SERVER_PID=$!
 
 # Wait for server to start

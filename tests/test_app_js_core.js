@@ -99,6 +99,27 @@ function computeBestPrice(offers) {
   return best;
 }
 
+// Format BTC/TH/day price for display — mirrors app.js _fmtBtcPerTh()
+// (P2 schema fix: backend sends price_per_th_day, not price_btc_per_th_day)
+function fmtBtcPerTh(v) {
+  var n = Number(v);
+  if (!isFinite(n) || n <= 0) return '\u2014';
+  if (n >= 0.001) return n.toFixed(6) + ' BTC/TH/d';
+  return (n * 1e8).toLocaleString('en-US', { maximumFractionDigits: 2 }) + ' sats/TH/d';
+}
+
+// Index of the best (lowest valid price_per_th_day) offer — mirrors renderMarket()
+function findBestOfferIndex(offers) {
+  if (!offers || !offers.length) return -1;
+  var bestIdx = -1;
+  var bestVal = Infinity;
+  offers.forEach(function (o, idx) {
+    var p = Number(o.price_per_th_day);
+    if (isFinite(p) && p > 0 && p < bestVal) { bestVal = p; bestIdx = idx; }
+  });
+  return bestIdx;
+}
+
 // Filter offers by provider name (case-insensitive)
 function filterOffersByProvider(offers, provider) {
   if (!offers || !offers.length) return [];
@@ -2077,6 +2098,30 @@ var allZero = [{ price_btc_per_th_day: 0 }, { price_btc_per_th_day: 0 }];
 assertEqual('bestPrice all zero → null', computeBestPrice(allZero), null);
 
 
+// ── fmtBtcPerTh / findBestOfferIndex tests (P2 schema-mismatch regression) ─
+assertEqual('fmtBtcPerTh null → —', fmtBtcPerTh(null), '\u2014');
+assertEqual('fmtBtcPerTh 0 → —', fmtBtcPerTh(0), '\u2014');
+assertEqual('fmtBtcPerTh -1 → —', fmtBtcPerTh(-1), '\u2014');
+assertEqual('fmtBtcPerTh NaN → —', fmtBtcPerTh(NaN), '\u2014');
+assertEqual('fmtBtcPerTh 1e-10 → 0.01 sats/TH/d', fmtBtcPerTh(1e-10), '0.01 sats/TH/d');
+assertEqual('fmtBtcPerTh 1e-8 → 1 sats/TH/d', fmtBtcPerTh(1e-8), '1 sats/TH/d');
+assertEqual('fmtBtcPerTh 0.001 → 0.001000 BTC/TH/d', fmtBtcPerTh(0.001), '0.001000 BTC/TH/d');
+assertEqual('fmtBtcPerTh 0.0025 → 0.002500 BTC/TH/d', fmtBtcPerTh(0.0025), '0.002500 BTC/TH/d');
+
+var bestOffers = [
+  { provider: 'braiins', price_per_th_day: 2e-8 },
+  { provider: 'nicehash', price_per_th_day: 1e-10 },
+  { provider: 'mrr', price_per_th_day: 5e-9 },
+];
+assertEqual('bestIdx lowest → 1', findBestOfferIndex(bestOffers), 1);
+var bestSkipZero = [{ price_per_th_day: 0 }, { price_per_th_day: 1e-8 }];
+assertEqual('bestIdx skips zero → 1', findBestOfferIndex(bestSkipZero), 1);
+var bestAllInvalid = [{ price_per_th_day: 0 }, { price_per_th_day: NaN }];
+assertEqual('bestIdx all invalid → -1', findBestOfferIndex(bestAllInvalid), -1);
+assertEqual('bestIdx null → -1', findBestOfferIndex(null), -1);
+assertEqual('bestIdx [] → -1', findBestOfferIndex([]), -1);
+
+
 // ── filterOffersByProvider tests ───────────────────────────────────────
 assertEqual('filterOffers null → []', filterOffersByProvider(null, 'all').length, 0);
 assertEqual('filterOffers [] → []', filterOffersByProvider([], 'all').length, 0);
@@ -2303,18 +2348,6 @@ assertEqual('singlePointResult labels → 0 (<2 points)', singlePointResult.labe
 
 
 // ═══════════════════════════════════════════════════════════════════════════
-//  RESULTS
-// ═══════════════════════════════════════════════════════════════════════════
-
-console.log(`\n${'═'.repeat(50)}`);
-if (failed === 0) {
-  console.log(`✅ ALL ${passed} TESTS PASSED`);
-} else {
-  console.log(`❌ ${failed}/${passed + failed} TESTS FAILED`);
-  failures.forEach(f => console.log(f));
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
 //  SUITE 19: _renderAxeCard() — pure HTML generation logic for Axe Fleet
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -2430,7 +2463,8 @@ assertTruthy('cmdBtns restart has Restart', /Restart/.test(restartHtml));
 assertTruthy('cmdBtns restart has data-cmd=restart', /data-cmd="restart"/.test(restartHtml));
 
 var multiCmds = renderCmdBtns(['restart','identify','pause'], 'dev-456');
-assertEqual('cmdBtns 3 cmds -> 3 buttons', multiCmds.match(/axe-cmd-btn/g).length, 3);
+// NOTE: count via data-cmd= — /axe-cmd-btn/g matches 2x per button (base class + --modifier)
+assertEqual('cmdBtns 3 cmds -> 3 buttons', multiCmds.match(/data-cmd=/g).length, 3);
 
 // ── Device status classification ──
 function classifyDevStatus(d) {
@@ -2470,5 +2504,49 @@ assertTruthy('cold has temp-green', /temp-green/.test(cold));
 
 var emptyStats = renderAxeStats({});
 assertTruthy('empty temp → —', /—/.test(emptyStats));
+
+// ── Module visibility — mirrors activateModule() data-module toggle ────────
+// A panel/element with data-module="a b c" is visible when the active module
+// is one of its tokens. Mirrors the split(/\s+/).indexOf(name) !== -1 logic.
+function moduleShouldShow(modAttr, activeModule) {
+  var mods = (modAttr || '').split(/\s+/);
+  return mods.indexOf(activeModule) !== -1;
+}
+
+// Sidebar links carry data-module but must NEVER be hidden by activateModule()
+// (that was the original P1 navigation killer). Mirrors the classList check.
+function isSidebarLinkExempt(cls) {
+  var classes = (cls || '').split(/\s+/);
+  return classes.indexOf('sidebar__link') !== -1;
+}
+
+assertTruthy('module dashboard shows dashboard', moduleShouldShow('dashboard', 'dashboard'));
+assertEqual('module dashboard hides market', moduleShouldShow('dashboard', 'market'), false);
+assertTruthy('module fleet multi-token shows fleet', moduleShouldShow('dashboard fleet', 'fleet'));
+assertTruthy('module fleet multi-token shows dashboard', moduleShouldShow('dashboard fleet', 'dashboard'));
+assertTruthy('module market shows market', moduleShouldShow('market', 'market'));
+assertEqual('module empty attr', moduleShouldShow('', 'dashboard'), false);
+assertEqual('module null attr', moduleShouldShow(null, 'dashboard'), false);
+assertEqual('module undefined attr', moduleShouldShow(undefined, 'dashboard'), false);
+assertEqual('module no-match token', moduleShouldShow('alerts', 'docs'), false);
+assertTruthy('module padded whitespace attr', moduleShouldShow(' dashboard ', 'dashboard'));
+assertTruthy('sidebar link exempt', isSidebarLinkExempt('sidebar__link'));
+assertTruthy('sidebar link exempt with other classes', isSidebarLinkExempt('foo sidebar__link bar'));
+assertEqual('panel not exempt', isSidebarLinkExempt('panel'), false);
+assertEqual('empty class not exempt', isSidebarLinkExempt(''), false);
+assertEqual('null class not exempt', isSidebarLinkExempt(null), false);
+
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  RESULTS
+// ═══════════════════════════════════════════════════════════════════════════
+
+console.log(`\n${'═'.repeat(50)}`);
+if (failed === 0) {
+  console.log(`✅ ALL ${passed} TESTS PASSED`);
+} else {
+  console.log(`❌ ${failed}/${passed + failed} TESTS FAILED`);
+  failures.forEach(f => console.log(f));
+}
 
 process.exit(failed > 0 ? 1 : 0);

@@ -430,3 +430,173 @@ class TestDeviceHealth:
         assert "last_seen" in data
         assert "age_seconds" in data
         assert data["last_seen"] == 1700000000
+
+
+# ══════════════════════════════════════════════════════════════════════════
+#  GET /api/axe-fleet/health
+#  P1.1 — fleet_stats schema alignment: online/warning/offline counts,
+#  aggregates (avg health/temp, total power, efficiency, best diff) and
+#  normalized per-device cards consumed by renderAxeFleet/_renderAxeCard.
+# ══════════════════════════════════════════════════════════════════════════
+
+class TestFleetHealth:
+    """Tests for GET /api/axe-fleet/health — fleet_stats schema (P1.1)."""
+
+    ENDPOINT = "/api/axe-fleet/health"
+
+    def _device(self, device_id, name, status, last_seen=1700000000):
+        return {
+            "id": device_id,
+            "name": name,
+            "model": "Bitaxe ULP",
+            "ip_address": "192.168.1.100",
+            "last_seen": last_seen,
+            "status": status,
+            "capabilities": {"telemetry": True, "restart": True},
+        }
+
+    def _telemetry(self, hashrate_hs, temperature=None, power_watts=None,
+                   best_diff="", uptime_seconds=0, efficiency_jth=None,
+                   hw_error_pct=0.0, shares_accepted=0, shares_rejected=0,
+                   frequency_mhz=None, voltage_mv=None, ts=1700000000):
+        return [{"ts": ts, "payload": {
+            "hashrate_hs": hashrate_hs,
+            "temperature": temperature,
+            "fan_speed": 80,
+            "fan_rpm": 4200,
+            "power_watts": power_watts,
+            "frequency_mhz": frequency_mhz,
+            "voltage_mv": voltage_mv,
+            "best_diff": best_diff,
+            "uptime_seconds": uptime_seconds,
+            "efficiency_jth": efficiency_jth,
+            "shares_accepted": shares_accepted,
+            "shares_rejected": shares_rejected,
+            "hw_error_pct": hw_error_pct,
+        }}]
+
+    def test_returns_fleet_stats_with_status_counts(self, client):
+        """fleet_stats should expose online/warning/offline counts and aggregates."""
+        mock_registry = MagicMock()
+        mock_registry.list_devices.return_value = [
+            self._device("d1", "Online A", "ONLINE"),
+            self._device("d2", "Hashing B", "HASHING"),
+            self._device("d3", "Warn C", "WARNING"),
+            self._device("d4", "Off D", "OFFLINE"),
+        ]
+        mock_registry.get_recent_telemetry.side_effect = [
+            self._telemetry(5200000000000, 62, 42, "42.8T", 259200, 8.08, 0.3, 15823, 47, 525, 1200),
+            self._telemetry(2100000000000, 58, 18, "12.5T", 604800, 8.57, 0.2, 45231, 89, 450, 1100),
+            self._telemetry(3800000000000, 82, 38, "28.3T", 43200, 10.0, 3.5, 5872, 215, 500, 1250),
+            self._telemetry(0, None, 0, "", 0, None, 0.0),
+        ]
+
+        with patch("axe_fleet.routes._registry", mock_registry):
+            with patch("axe_fleet.models.infer_health_score", return_value=70):
+                resp = client.get(self.ENDPOINT)
+        assert resp.status_code == 200
+        data = resp.get_json()
+
+        fs = data["fleet_stats"]
+        # P1.1: online/warning/offline present and counted correctly
+        assert fs["total_devices"] == 4
+        assert fs["online"] == 2     # ONLINE + HASHING
+        assert fs["warning"] == 1
+        assert fs["offline"] == 1
+        # Aggregates
+        assert fs["total_hashrate_hs"] == 5200000000000 + 2100000000000 + 3800000000000
+        assert fs["total_hashrate_str"] == "11.10 TH/s"
+        assert fs["total_power_w"] == 42 + 18 + 38
+        assert fs["avg_temperature_c"] == 67.3
+        assert fs["avg_health_score"] == 70
+        assert fs["best_diff"] == "42.8T"
+        assert fs["efficiency_jth"] == 8.83
+
+    def test_zeroed_fleet_stats_when_no_devices(self, client):
+        """Empty fleet should return zeroed stats, not crash."""
+        mock_registry = MagicMock()
+        mock_registry.list_devices.return_value = []
+
+        with patch("axe_fleet.routes._registry", mock_registry):
+            resp = client.get(self.ENDPOINT)
+        assert resp.status_code == 200
+        fs = resp.get_json()["fleet_stats"]
+        assert fs["total_devices"] == 0
+        assert fs["online"] == 0
+        assert fs["warning"] == 0
+        assert fs["offline"] == 0
+        assert fs["avg_temperature_c"] is None
+        assert fs["avg_health_score"] == 0
+        assert fs["total_hashrate_hs"] == 0
+
+    def test_device_health_normalized_for_cards(self, client):
+        """device_health items should carry the fields _renderAxeCard reads."""
+        mock_registry = MagicMock()
+        mock_registry.list_devices.return_value = [
+            self._device("d1", "Online A", "ONLINE"),
+            self._device("d2", "Warn C", "WARNING"),
+        ]
+        mock_registry.get_recent_telemetry.side_effect = [
+            self._telemetry(5200000000000, 62, 42, "42.8T", 259200, 8.08, 0.3, 15823, 47, 525, 1200),
+            self._telemetry(3800000000000, 82, 38, "28.3T", 43200, 10.0, 3.5, 5872, 215, 500, 1250),
+        ]
+
+        with patch("axe_fleet.routes._registry", mock_registry):
+            with patch("axe_fleet.models.infer_health_score", return_value=65):
+                resp = client.get(self.ENDPOINT)
+        data = resp.get_json()
+
+        assert len(data["device_health"]) == 2
+        d = data["device_health"][0]
+        # Card fields: status, health_score, capabilities, telemetry.*
+        assert d["id"] == "d1"
+        assert d["name"] == "Online A"
+        assert d["status"] == "ONLINE"
+        assert d["health_score"] == 65
+        assert "restart" in d["capabilities"]
+        tel = d["telemetry"]
+        assert tel["hashrate_str"] == "5.20 TH/s"
+        assert tel["temperature"] == 62
+        assert tel["best_diff"] == "42.8T"
+        assert tel["uptime_str"] == "3d"
+        assert tel["frequency_mhz"] == 525
+        assert tel["voltage_mv"] == 1200
+        assert tel["shares_accepted"] == 15823
+        assert tel["shares_rejected"] == 47
+        assert tel["hw_error_pct"] == 0.3
+        assert tel["power_watts"] == 42
+        assert tel["efficiency_jth"] == 8.08
+        assert "age_seconds" in tel
+
+    def test_groups_breakdown(self, client):
+        """groups should bucket device ids by online/warning/offline."""
+        mock_registry = MagicMock()
+        mock_registry.list_devices.return_value = [
+            self._device("d1", "Online A", "ONLINE"),
+            self._device("d2", "Hashing B", "HASHING"),
+            self._device("d3", "Warn C", "WARNING"),
+            self._device("d4", "Off D", "OFFLINE"),
+        ]
+        mock_registry.get_recent_telemetry.side_effect = [
+            self._telemetry(1000000000000, 55, 10, "5T", 100, 10.0),
+            self._telemetry(2000000000000, 60, 20, "9T", 200, 10.0),
+            self._telemetry(3000000000000, 82, 30, "7T", 300, 10.0),
+            self._telemetry(0, None, 0),
+        ]
+
+        with patch("axe_fleet.routes._registry", mock_registry):
+            with patch("axe_fleet.models.infer_health_score", return_value=50):
+                resp = client.get(self.ENDPOINT)
+        data = resp.get_json()
+        assert data["groups"] == {
+            "online": ["d1", "d2"],
+            "warning": ["d3"],
+            "offline": ["d4"],
+        }
+
+    def test_handles_registry_uninitialized(self, client):
+        """When registry is None, return 500 with clear error."""
+        with patch("axe_fleet.routes._registry", None):
+            resp = client.get(self.ENDPOINT)
+        assert resp.status_code == 500
+        assert "error" in resp.get_json()

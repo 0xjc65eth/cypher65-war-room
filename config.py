@@ -21,7 +21,7 @@ DB_PATH = "data/war_room.sqlite"
 
 POLL_INTERVAL = int(os.environ.get("POLL_INTERVAL", 15))
 PORT = int(os.environ.get("PORT", 8765))
-RATE_LIMIT_PER_MINUTE = int(os.environ.get("RATE_LIMIT_PER_MINUTE", 60))
+RATE_LIMIT_PER_MINUTE = int(os.environ.get("RATE_LIMIT_PER_MINUTE", 300))  # keep in sync with app.py; E2E overrides to 1000
 
 # Optional security
 API_KEY = os.environ.get("API_KEY")

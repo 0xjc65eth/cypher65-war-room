@@ -3,14 +3,30 @@ import { test, expect } from '@playwright/test';
 
 const BASE_URL = process.env.BASE_URL || 'http://127.0.0.1:8765';
 
+/** Ensure the sidebar is open so sidebar links are clickable (mobile off-canvas) */
+async function ensureSidebarOpen(page) {
+  const isOpen = await page.evaluate(() => {
+    const sb = document.getElementById('sidebar');
+    return sb && sb.classList.contains('open');
+  });
+  if (!isOpen) {
+    const toggle = page.locator('#sidebar-mobile-toggle');
+    if (await toggle.isVisible()) {
+      await toggle.click();
+      await page.waitForTimeout(400);
+    }
+  }
+}
+
 test.describe('Live Terminal', () => {
 
   test('terminal tab contains input and body elements', async ({ page }) => {
     await page.goto(BASE_URL);
     await page.waitForTimeout(3000);
 
-    // Click the Terminal sidebar link
-    const terminalSidebarBtn = page.locator('.sidebar__link[data-section="terminal"]');
+    // Click the Live Mining sidebar link (module: live → terminal pane)
+    await ensureSidebarOpen(page);
+    const terminalSidebarBtn = page.locator('.sidebar__link[data-module="live"]');
     await expect(terminalSidebarBtn).toBeVisible({ timeout: 5000 });
     await terminalSidebarBtn.click();
     await page.waitForTimeout(2000);
@@ -38,8 +54,9 @@ test.describe('Live Terminal', () => {
     await page.goto(BASE_URL);
     await page.waitForTimeout(3000);
 
-    // Navigate to terminal
-    await page.locator('.sidebar__link[data-section="terminal"]').click();
+    // Navigate to terminal via the Live Mining module
+    await ensureSidebarOpen(page);
+    await page.locator('.sidebar__link[data-module="live"]').click();
     await page.waitForTimeout(2000);
 
     // Type 'help' and press Enter
@@ -59,8 +76,9 @@ test.describe('Live Terminal', () => {
     await page.goto(BASE_URL);
     await page.waitForTimeout(8000); // Wait for polling data
 
-    // Navigate to terminal
-    await page.locator('.sidebar__link[data-section="terminal"]').click();
+    // Navigate to terminal via the Live Mining module
+    await ensureSidebarOpen(page);
+    await page.locator('.sidebar__link[data-module="live"]').click();
     await page.waitForTimeout(2000);
 
     // Type 'status' and press Enter
@@ -80,8 +98,9 @@ test.describe('Live Terminal', () => {
     await page.goto(BASE_URL);
     await page.waitForTimeout(3000);
 
-    // Navigate to terminal
-    await page.locator('.sidebar__link[data-section="terminal"]').click();
+    // Navigate to terminal via the Live Mining module
+    await ensureSidebarOpen(page);
+    await page.locator('.sidebar__link[data-module="live"]').click();
     await page.waitForTimeout(2000);
 
     // Type unknown command
@@ -101,8 +120,9 @@ test.describe('Live Terminal', () => {
     await page.goto(BASE_URL);
     await page.waitForTimeout(3000);
 
-    // Navigate to terminal
-    await page.locator('.sidebar__link[data-section="terminal"]').click();
+    // Navigate to terminal via the Live Mining module
+    await ensureSidebarOpen(page);
+    await page.locator('.sidebar__link[data-module="live"]').click();
     await page.waitForTimeout(2000);
 
     const input = page.locator('#terminal-input');
@@ -129,8 +149,9 @@ test.describe('Live Terminal', () => {
     await page.goto(BASE_URL);
     await page.waitForTimeout(10000); // Wait for polling data
 
-    // Navigate to terminal
-    await page.locator('.sidebar__link[data-section="terminal"]').click();
+    // Navigate to terminal via the Live Mining module
+    await ensureSidebarOpen(page);
+    await page.locator('.sidebar__link[data-module="live"]').click();
     await page.waitForTimeout(2000);
 
     // Type 'workers'
@@ -150,8 +171,9 @@ test.describe('Live Terminal', () => {
     await page.goto(BASE_URL);
     await page.waitForTimeout(10000);
 
-    // Navigate to terminal
-    await page.locator('.sidebar__link[data-section="terminal"]').click();
+    // Navigate to terminal via the Live Mining module
+    await ensureSidebarOpen(page);
+    await page.locator('.sidebar__link[data-module="live"]').click();
     await page.waitForTimeout(2000);
 
     // Type 'price'
@@ -170,8 +192,9 @@ test.describe('Live Terminal', () => {
     await page.goto(BASE_URL);
     await page.waitForTimeout(3000);
 
-    // Navigate to terminal
-    await page.locator('.sidebar__link[data-section="terminal"]').click();
+    // Navigate to terminal via the Live Mining module
+    await ensureSidebarOpen(page);
+    await page.locator('.sidebar__link[data-module="live"]').click();
     await page.waitForTimeout(2000);
 
     const input = page.locator('#terminal-input');

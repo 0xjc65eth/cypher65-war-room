@@ -141,6 +141,9 @@ class TestApiHashrateMarket:
             ]
 
         monkeypatch.setattr("app._fetch_all_offers", fake_fetch_all_offers)
+        # Reset the in-memory market cache so the mocked fetcher is actually used
+        # (a prior test in the suite may have populated it with real offers).
+        monkeypatch.setattr("app._HASHRATE_MARKET_CACHE", {"ts": 0, "offers": None})
         res = client.get("/api/hashrate-market")
         assert res.status_code == 200
         data = res.get_json()

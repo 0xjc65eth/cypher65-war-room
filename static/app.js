@@ -205,7 +205,6 @@
     sbFleetTotal: $('#sb-fleet-total'),
     sbFleetHr: $('#sb-fleet-hr'),
     sbWalletAddr: $('#sb-wallet-addr'),
-    emptyWalletBanner: $('#empty-wallet-banner'),
     statusBar: $('#status-bar'),
 
     // ── HUD bar elements ──
@@ -597,10 +596,8 @@
       dom.sbWalletAddr.innerHTML = addr ? '<span title="' + escapeHtml(addr) + '">' + fmt.shortAddrChunk(addr) + '</span>' : '—';
       dom.sbWalletAddr.title = addr || 'no wallet connected';
     }
-    // Toggle empty wallet banner
-    if (dom.emptyWalletBanner) {
-      dom.emptyWalletBanner.style.display = (window.BTC_ADDRESS) ? 'none' : '';
-    }
+    // Wallet connection state — only topbar button remains
+    // Connection state tracked via localStorage.getItem('_wallet_connected')
   }
 
   // ── HOST CORE — populate the organism mission-control hub ──
@@ -852,13 +849,19 @@ function renderAccount(acct) {
     } catch (e) { /* chart load silently */ }
   }
   function renderCharts() {
-    // Only create/update charts when the Deep Analytics tab is visible
-    // (canvases have display:none otherwise; Chart.js can't measure them)
+    // Charts can only be measured when their canvases are visible.
+    // In module-mode the tab panes are controlled by activateModule();
+    // in legacy tab mode they are gated by the .active class.
     var chartsTab = document.getElementById('tab-charts');
-    if (!chartsTab || !chartsTab.classList.contains('active')) return;
+    var inModuleMode = document.body.classList.contains('module-mode');
+    if (!chartsTab) return;
+    if (!inModuleMode && !chartsTab.classList.contains('active')) return;
     Object.keys(CHART_METRICS).forEach(id => {
       const canvas = document.getElementById(id);
       if (!canvas) return;
+      // Pula canvases dentro de painéis ocultos (outro módulo) —
+      // Chart.js não consegue medir display:none
+      if (inModuleMode && canvas.offsetParent === null) return;
       // init chart if not yet created
       if (!charts[id]) {
         const cfg = CHART_METRICS[id];
@@ -1179,13 +1182,23 @@ function renderAccount(acct) {
   }
 
   // ── Hashrate Market render ──
+  // Backend schema: offers carry `price_per_th_day` (BTC/TH/day, often ~1e-8..1e-10).
+  // The old field name `price_btc_per_th_day` never exists in the payload, which
+  // made every card render '—'. `is_best` is NOT sent by the backend, so the
+  // best offer is derived client-side from the lowest valid price_per_th_day.
+  function _fmtBtcPerTh(v) {
+    const n = Number(v);
+    if (!isFinite(n) || n <= 0) return '—';
+    if (n >= 0.001) return n.toFixed(6) + ' BTC/TH/d';          // readable BTC scale
+    return (n * 1e8).toLocaleString('en-US', { maximumFractionDigits: 2 }) + ' sats/TH/d';  // tiny prices → sats (community convention)
+  }
+
   function renderMarket(snap) {
     const mkt = snap.market_data || {};
     const grid = document.getElementById('mkt-grid');
     if (!grid) return;
 
     const offers = mkt.offers || [];
-    const bestPrice = mkt.best_price;
 
     if (!offers.length) {
       grid.innerHTML = '<div class="mkt-empty">no market data available — configure MRR credentials or wait for data to load</div>';
@@ -1194,13 +1207,25 @@ function renderAccount(acct) {
       return;
     }
 
-    document.getElementById('mkt-best-price-badge') && (document.getElementById('mkt-best-price-badge').textContent = bestPrice ? 'best: ' + bestPrice : '—');
+    // Best offer = lowest valid price_per_th_day (client-side, since backend sends no is_best)
+    let bestIdx = -1;
+    let bestVal = Infinity;
+    offers.forEach((o, idx) => {
+      const p = Number(o.price_per_th_day);
+      if (isFinite(p) && p > 0 && p < bestVal) {
+        bestVal = p;
+        bestIdx = idx;
+      }
+    });
+    const bestLabel = bestIdx >= 0 ? _fmtBtcPerTh(bestVal) : '—';
+
+    document.getElementById('mkt-best-price-badge') && (document.getElementById('mkt-best-price-badge').textContent = 'best: ' + bestLabel);
     document.getElementById('mkt-count-badge') && (document.getElementById('mkt-count-badge').textContent = offers.length + ' offers');
 
-    grid.innerHTML = offers.map((o, i) => `
-      <div class="mkt-card${o.is_best ? ' mkt-card--best' : ''}">
+    grid.innerHTML = offers.map((o, idx) => `
+      <div class="mkt-card${idx === bestIdx ? ' mkt-card--best' : ''}">
         <div class="mkt-card__provider">${escapeHtml(o.provider || 'Unknown')}</div>
-        <div class="mkt-card__price">${o.price_btc_per_th_day ? Number(o.price_btc_per_th_day).toFixed(8) + ' BTC/TH/d' : '—'}</div>
+        <div class="mkt-card__price">${_fmtBtcPerTh(o.price_per_th_day)}</div>
         <div class="mkt-card__detail">
           <span><span class="mkt-card__label">HR:</span>${fmt.hashrate(o.hashrate)}</span>
           <span><span class="mkt-card__label">Fee:</span>${o.fee_pct != null ? o.fee_pct + '%' : '—'}</span>
@@ -1445,8 +1470,8 @@ function renderAccount(acct) {
   async function loadSettings() {
     try { const r = await fetch('/api/settings'); SETTINGS_CACHE.data = (await r.json()).settings.reduce((acc, s) => { acc[s.key] = s; return acc; }, {}); } catch (e) {}
   }
-  function openSettingsModal() { dom.settingsModal?.classList.remove('modal--hidden'); }
-  function closeSettingsModal() { dom.settingsModal?.classList.add('modal--hidden'); }
+  function openSettingsModal() { dom.settingsModal?.classList.add('modal--open'); }
+  function closeSettingsModal() { dom.settingsModal?.classList.remove('modal--open'); }
   dom.settingsModal?.addEventListener('click', (e) => { if (e.target.matches('[data-close]')) closeSettingsModal(); });
   dom.openSettings?.addEventListener('click', openSettingsModal);
 
@@ -1462,9 +1487,16 @@ function renderAccount(acct) {
       if (ln && ln.address) el.textContent = ln.address;
     }).catch(function() { /* support config not available */ });
   }
-  // Listen for support panel opening
+  // Listen for support panel opening — only the ◈ Details button opens the
+  // modal (clicks on the compact bar's copy chips must NOT open the full
+  // panel); both entry points still populate the LN address.
   document.addEventListener('click', function _onSupportOpen(e) {
-    if (e.target.closest('#support-expand-btn') || e.target.closest('#support-bar-methods')) {
+    var onExpand = e.target.closest('#support-expand-btn');
+    if (onExpand || e.target.closest('#support-bar-methods')) {
+      if (onExpand) {
+        var panel = document.getElementById('support-panel');
+        if (panel) panel.classList.add('modal--open');
+      }
       setTimeout(_populateLNAddress, 200);
     }
   });
@@ -1543,8 +1575,6 @@ function renderAccount(acct) {
   }
   dom.walletModal?.addEventListener('click', (e) => { if (e.target.matches('[data-close]')) closeWalletModal(); });
   dom.openWallet?.addEventListener('click', openWalletModal);
-  document.getElementById('empty-wallet-cta')?.addEventListener('click', openWalletModal);
-  document.getElementById('empty-wallet-ln')?.addEventListener('click', connectWebLN);
   document.getElementById('webln-connect-btn')?.addEventListener('click', connectWebLN);
 
   // Save wallet
@@ -1605,6 +1635,7 @@ dom.walletSave?.addEventListener('click', async () => {
       status.style.color = 'var(--accent-green)';
       // Update globals
       window.BTC_ADDRESS = data.address;
+      localStorage.setItem('_wallet_connected', 'true');
       showToast('success', 'Wallet connectada: ' + data.address.slice(0, 10) + '...');
       // HOTFIX: Trigger immediate data fetch after wallet connect
       // This forces an immediate poll instead of waiting ~15s
@@ -1656,16 +1687,17 @@ dom.walletSave?.addEventListener('click', async () => {
   });
 
   // ── Export ──
-  function openExportModal() { dom.exportModal?.classList.remove('modal--hidden'); }
-  function closeExportModal() { dom.exportModal?.classList.add('modal--hidden'); }
+  function openExportModal() { dom.exportModal?.classList.add('modal--open'); }
+  function closeExportModal() { dom.exportModal?.classList.remove('modal--open'); }
   dom.exportModal?.addEventListener('click', (e) => { if (e.target.matches('[data-close]')) closeExportModal(); });
   dom.openExports?.addEventListener('click', openExportModal);
 
   // ── Keyboard shortcuts ──
   document.addEventListener('keydown', (e) => {
-    if (e.key.toLowerCase() === 'r' && !document.querySelector('.modal:not(.modal--hidden)') && document.activeElement.tagName !== 'INPUT' && !e.metaKey && !e.ctrlKey) fetchSnapshot();
+    const anyModalOpen = () => !!document.querySelector('.modal-overlay.modal--open');
+    if (e.key.toLowerCase() === 'r' && !anyModalOpen() && document.activeElement.tagName !== 'INPUT' && !e.metaKey && !e.ctrlKey) fetchSnapshot();
     else if (e.key === 'Escape') { closeWalletModal(); closeSettingsModal(); closeExportModal(); }
-    else if (e.key.toLowerCase() === 'w' && !document.querySelector('.modal:not(.modal--hidden)') && document.activeElement.tagName !== 'INPUT' && !e.metaKey && !e.ctrlKey) {
+    else if (e.key.toLowerCase() === 'w' && !anyModalOpen() && document.activeElement.tagName !== 'INPUT' && !e.metaKey && !e.ctrlKey) {
       openWalletModal();
     }
   });
@@ -2539,6 +2571,43 @@ dom.walletSave?.addEventListener('click', async () => {
     initAxeFleetControls();
     await fetchSnapshot();
     setInterval(fetchSnapshot, POLL_MS);
+    // ── SSE live stream ── subscribe to push updates at ~3s intervals
+    // Fallback: if EventSource fails, the regular 15s poll still works.
+    try {
+      if (typeof EventSource !== 'undefined') {
+        var es = new EventSource('/api/stream');
+        var sseRetries = 0;
+        var sseLastErrorTs = 0;
+        var sseLastFleetFetch = 0;
+        es.onmessage = function(e) {
+          try {
+            var snap = JSON.parse(e.data);
+            if (snap && snap.ts) {
+              render(snap);
+              // Debounce fleet fetch to avoid 5x request rate
+              var now = Date.now();
+              if (now - sseLastFleetFetch > 10000) {
+                sseLastFleetFetch = now;
+                fetchAxeFleet();
+              }
+            }
+          } catch(err) { /* ignore parse errors */ }
+        };
+        es.onerror = function() {
+          var now = Date.now();
+          // Debounce: ignore errors within 2s (EventSource auto-reconnects)
+          if (now - sseLastErrorTs < 2000) return;
+          sseLastErrorTs = now;
+          sseRetries++;
+          if (sseRetries > 5) {
+            // After 5 distinct error events (>=2s apart), close SSE and rely on polling
+            es.close();
+            logMessage('SSE', 'Live stream disconnected — falling back to polling', 'WARN');
+          }
+        };
+      }
+    } catch(e) { /* SSE not supported */ }
+
     logMessage('SYSTEM', 'WAR ROOM ONLINE', 'SUCCESS');
   }
 
@@ -2686,11 +2755,11 @@ dom.walletSave?.addEventListener('click', async () => {
 
   if (dom.openAlertCenter) {
     dom.openAlertCenter.addEventListener('click', () => {
-      dom.alertCenterModal.classList.remove('modal--hidden');
+      dom.alertCenterModal.classList.add('modal--open');
       acShowTab('active');
     });
     dom.alertCenterModal?.querySelectorAll('[data-close]').forEach(el => {
-      el.addEventListener('click', () => dom.alertCenterModal.classList.add('modal--hidden'));
+      el.addEventListener('click', () => dom.alertCenterModal.classList.remove('modal--open'));
     });
     dom.acTabs.forEach(t => t.addEventListener('click', () => acShowTab(t.dataset.tab)));
     dom.acFilters.forEach(f => f.addEventListener('click', () => {
@@ -2730,71 +2799,127 @@ dom.walletSave?.addEventListener('click', async () => {
     });
   }
 
-  // ── Sidebar toggle ──
+  // ── Sidebar toggle (desktop collapse + mobile open/close) ──
   const sidebar = document.getElementById('sidebar');
   const sidebarBackdrop = document.getElementById('sidebar-backdrop');
-  const sidebarToggle = document.getElementById('sidebar-toggle'); // sidebar removed
-  const sidebarHamburger = document.getElementById('sidebar-hamburger'); // sidebar removed
-  const sidebarItems = document.querySelectorAll('.sidebar__item');
+  const sidebarOverlay = document.getElementById('sidebar-overlay');
+  const sidebarToggle = document.getElementById('sidebar-toggle');
+  const sidebarMobileToggle = document.getElementById('sidebar-mobile-toggle');
+  const sidebarLinks = document.querySelectorAll('.sidebar__link');
+
+  // MODULE_MAP — módulo → título/descrição do header
+  const MODULE_MAP = {
+    'dashboard':   { title: 'DASHBOARD',     desc: 'Visão geral — pool, worker e rede' },
+    'wallet':      { title: 'WALLET',        desc: 'Conexão e status da wallet' },
+    'fleet':       { title: 'FLEET',         desc: 'Visão dos miners' },
+    'live':        { title: 'LIVE MINING',   desc: 'Dados ao vivo' },
+    'probability': { title: 'PROBABILITY',   desc: 'Chance e probabilidade' },
+    'market':      { title: 'HASH MARKET',   desc: 'Mercado e cotações' },
+    'alerts':      { title: 'ALERTS',        desc: 'Alertas e eventos' },
+    'automations': { title: 'AUTOMATIONS',   desc: 'Regras e automação' },
+    'docs':        { title: 'DOCS / GUIDE',  desc: 'Manual de uso' },
+    'support':     { title: 'SUPPORT',       desc: 'Doação e apoio' },
+  };
+
+  function openSidebar() {
+    sidebar.classList.add('open');
+    if (sidebarBackdrop) sidebarBackdrop.classList.add('visible');
+    if (sidebarOverlay) sidebarOverlay.classList.add('visible');
+  }
+  function closeSidebar() {
+    sidebar.classList.remove('open');
+    if (sidebarBackdrop) sidebarBackdrop.classList.remove('visible');
+    if (sidebarOverlay) sidebarOverlay.classList.remove('visible');
+  }
+  function toggleSidebar() {
+    sidebar.classList.contains('open') ? closeSidebar() : openSidebar();
+  }
 
   if (sidebarToggle) {
     sidebarToggle.addEventListener('click', () => {
-      sidebar.classList.toggle('sidebar--collapsed');
-      sidebarToggle.textContent = sidebar.classList.contains('sidebar--collapsed') ? '▶' : '◀';
+      // Em viewport mobile, o ☰ do topbar ABRE a sidebar (não colapsa)
+      if (window.innerWidth <= 1100) { toggleSidebar(); return; }
+      // CSS usa .sidebar.collapsed (compatível com o media query mobile)
+      sidebar.classList.toggle('collapsed');
+      sidebarToggle.textContent = sidebar.classList.contains('collapsed') ? '▶' : '◀';
     });
   }
 
-  if (sidebarHamburger) {
-    sidebarHamburger.addEventListener('click', () => {
-      sidebar.classList.toggle('sidebar--open');
-      if (sidebarBackdrop) sidebarBackdrop.classList.toggle('sidebar-backdrop--visible');
-    });
-  }
+  if (sidebarMobileToggle) sidebarMobileToggle.addEventListener('click', toggleSidebar);
+  if (sidebarBackdrop) sidebarBackdrop.addEventListener('click', closeSidebar);
+  if (sidebarOverlay) sidebarOverlay.addEventListener('click', closeSidebar);
 
-  // Close sidebar via backdrop click
-  if (sidebarBackdrop) {
-    sidebarBackdrop.addEventListener('click', () => {
-      sidebar.classList.remove('sidebar--open');
-      sidebarBackdrop.classList.remove('sidebar-backdrop--visible');
+  // ── MODULE SYSTEM: mostra só os painéis do módulo ativo ──
+  function activateModule(name) {
+    document.body.classList.add('module-mode');
+    // Mostra/esconde cada painel com data-module — MAS nunca os links da
+    // sidebar (eles também têm data-module; escondê-los quebraria a navegação)
+    document.querySelectorAll('[data-module]').forEach(function(el) {
+      // Links da sidebar nunca são escondidos (senão a navegação quebra)
+      if (el.classList.contains('sidebar__link')) return;
+      const mods = (el.getAttribute('data-module') || '').split(/\s+/);
+      const show = mods.indexOf(name) !== -1;
+      el.classList.toggle('module-hidden', !show);
     });
-  }
-
-  // Close sidebar on nav item click (mobile)
-  sidebarItems.forEach(item => {
-    item.addEventListener('click', () => {
-      if (window.innerWidth <= 1100) {
-        sidebar.classList.remove('sidebar--open');
-        if (sidebarBackdrop) sidebarBackdrop.classList.remove('sidebar-backdrop--visible');
+    // Tab panes só ficam visíveis se contiverem painel visível
+    document.querySelectorAll('.tab-pane').forEach(function(pane) {
+      const hasVisible = pane.querySelector('[data-module]:not(.module-hidden)');
+      pane.classList.toggle('active', !!hasVisible);
+    });
+    // Sidebar active state
+    sidebarLinks.forEach(function(l) {
+      l.classList.toggle('active', l.getAttribute('data-module') === name);
+    });
+    // Module header
+    const info = MODULE_MAP[name] || {};
+    const mhTitle = document.getElementById('module-header-title');
+    const mhDesc = document.getElementById('module-header-desc');
+    if (mhTitle) mhTitle.textContent = info.title || name.toUpperCase();
+    if (mhDesc) mhDesc.textContent = info.desc || '';
+    // Persist
+    try { localStorage.setItem('_active_module', name); } catch(e) {}
+    closeSidebar();
+    // Depois que a visibilidade estabiliza: resize dos charts já criados
+    // E cria/atualiza charts dos canvases que acabaram de ficar visíveis
+    // (renderCharts pula canvases ocultos, então é seguro chamá-lo aqui)
+    requestAnimationFrame(function() {
+      Object.keys(charts).forEach(function(id) {
+        const ch = charts[id];
+        if (ch && typeof ch.resize === 'function') ch.resize();
+      });
+      if (typeof renderCharts === 'function') renderCharts();
+      // Live Mining / Terminal: foca o input para digitação imediata
+      if (name === 'live') {
+        const termInput = document.getElementById('terminal-input');
+        if (termInput) termInput.focus();
       }
-      // Update active state
-      sidebarItems.forEach(i => i.classList.remove('active'));
-      item.classList.add('active');
+      // Support: rola até a barra de doação (módulo não tem painel próprio)
+      if (name === 'support') {
+        const sb = document.getElementById('support-bar');
+        if (sb) sb.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }
+    });
+  }
+
+  sidebarLinks.forEach(function(link) {
+    link.addEventListener('click', function() {
+      const name = link.getAttribute('data-module');
+      if (name) activateModule(name);
     });
   });
+
+  // Restore active module from localStorage on boot
+  (function restoreActiveModule() {
+    try {
+      const saved = localStorage.getItem('_active_module');
+      activateModule(saved && MODULE_MAP[saved] ? saved : 'dashboard');
+    } catch(e) { activateModule('dashboard'); }
+  })();
 
   // Close sidebar on Escape key
   document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape' && sidebar.classList.contains('sidebar--open')) {
-      sidebar.classList.remove('sidebar--open');
-      if (sidebarBackdrop) sidebarBackdrop.classList.remove('sidebar-backdrop--visible');
-    }
+    if (e.key === 'Escape' && sidebar.classList.contains('open')) closeSidebar();
   });
-
-  // IntersectionObserver for active section tracking
-  if ('IntersectionObserver' in window) {
-    const sections = document.querySelectorAll('[id]');
-    const observer = new IntersectionObserver((entries) => {
-      entries.forEach(entry => {
-        if (entry.isIntersecting) {
-          const id = entry.target.id;
-          sidebarItems.forEach(item => {
-            item.classList.toggle('active', item.getAttribute('href') === '#' + id);
-          });
-        }
-      });
-    }, { rootMargin: '-20% 0px -70% 0px' });
-    sections.forEach(s => observer.observe(s));
-  }
 
   // Update sidebar status (called from render)
   function updateSidebarStatus(isOnline) {
@@ -3109,35 +3234,8 @@ dom.walletSave?.addEventListener('click', async () => {
     }
   });
 
-  // ── Sidebar section map: data-section → action ──
-  var SECTION_MAP = {
-    'dashboard': { type: 'scroll', id: 'app-main' },       // scroll to top
-    'fleet':     { type: 'scroll', id: 'section-fleet' },
-    'analytics': { type: 'tabClick', target: 'tab-charts' },
-    'fleet-cmd': { type: 'scroll', id: 'axe-fleet-panel' },
-    'terminal':  { type: 'tabClick', target: 'tab-terminal' },
-    'docs':      { type: 'scroll', id: 'section-docs' },
-  };
-  // ── Sidebar navigation — scroll or switch tab ──
-  document.querySelectorAll('.sidebar__link').forEach(function(link) {
-    link.addEventListener('click', function() {
-      document.querySelectorAll('.sidebar__link').forEach(function(l) { l.classList.remove('active'); });
-      link.classList.add('active');
-
-      var section = link.getAttribute('data-section');
-      if (!section) return;
-      var action = SECTION_MAP[section];
-      if (!action) return;
-
-      if (action.type === 'scroll') {
-        var target = document.getElementById(action.id);
-        if (target) target.scrollIntoView({ behavior: 'smooth', block: 'start' });
-      } else if (action.type === 'tabClick') {
-        var tabBtn = document.querySelector('[data-target="' + action.target + '"]');
-        if (tabBtn) { tabBtn.click(); }
-      }
-    });
-  });
+  // ── Sidebar module navigation — implemented via activateModule() above ──
+  // (SECTION_MAP removido — a navegação agora usa data-module)
 
   // ── Collapsible panels toggle ──
   document.addEventListener('click', function(e) {

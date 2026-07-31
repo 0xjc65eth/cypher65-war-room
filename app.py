@@ -19,6 +19,7 @@ from datetime import datetime, timezone
 from flask import Flask, jsonify, render_template, request, abort, Response
 import requests
 import concurrent.futures
+import queue
 
 import solo_mining
 
@@ -86,7 +87,12 @@ DATA_DIR = Path(__file__).parent / "data"
 DB_PATH = 'data/war_room.sqlite'
 POLL_INTERVAL = int(os.environ.get("POLL_INTERVAL", 15))  # seconds
 PORT = int(os.environ.get("PORT", 8765))
-RATE_LIMIT_PER_MINUTE = int(os.environ.get("RATE_LIMIT_PER_MINUTE", 60))
+# Per-IP request budget. Each active dashboard client fires /api/snapshot every
+# 15s plus several panel fetches (market history, chart-data, opportunities,
+# fleet) and page loads — so a single real user can exceed 60 incoming req/min
+# and get spurious 429s. 300 keeps abuse protection while avoiding false
+# positives (E2E runner overrides to 1000 via run-e2e.sh).
+RATE_LIMIT_PER_MINUTE = int(os.environ.get("RATE_LIMIT_PER_MINUTE", 300))
 
 DATA_DIR.mkdir(exist_ok=True)
 app = Flask(__name__)
@@ -755,10 +761,9 @@ _init_axe_routes(_axe_registry)
 # ── Auto-seed Axe Fleet with test devices if registry is empty ──
 _auto_seed_axe_fleet(_axe_registry)
 
-# ── Initialize Device Control (SafetyEngine + Registry) ──
-from core.safety.safety_engine import SafetyEngine
+# ── Device Control: import now, but init is deferred until after
+#    _record_command is defined (below) so commands can be audited.
 from routes.device_control import init_device_control
-init_device_control(_axe_registry, SafetyEngine())
 
 # ── Initialize Core CYPHER65 device registry ───────────────────────────────
 # Uses the same SQLite file (WAL mode enabled above) but a separate `devices`
@@ -896,6 +901,14 @@ def _record_command(device_id: str, command: str, parameters: Optional[Dict[str,
         # Keep the last 100 entries per device to avoid unbounded growth.
         _command_history[device_id] = _command_history[device_id][-100:]
 
+
+# ── Wire Device Control to the CORE registry + safety + command history ──────
+# Uses _core_registry (NOT the Axe Fleet registry) so the
+# /api/devices/<device_id>/command endpoints operate on the same devices as
+# the rest of the core module. record_command audits every attempt (including
+# blocked ones) so the command history / timeline stay complete.
+init_device_control(_core_registry, _safety_engine, record_command=_record_command)
+
 # ── Initialize engines now that all callbacks are defined ────────────────────
 try:
     _init_alert_engines()
@@ -995,23 +1008,34 @@ _settings_cache = None
 # ── Persisted wallet address ──
 # When user changes address via /api/set-address, we save it here and
 # in the settings DB so it survives a server restart.
-def _load_persisted_address():
-    """Restore a previously-saved wallet address from the settings table."""
+def _load_persisted_address() -> bool:
+    """Restore a previously-saved wallet address from the settings table.
+    Returns True if a valid persisted address (>= 10 chars) was restored,
+    False otherwise (no address, too short, or DB error)."""
     global BTC_ADDRESS, WORKER_NAME
+    restored = False
+    conn = None
     try:
         conn = get_db()
         c = conn.cursor()
         c.execute("SELECT value FROM settings WHERE key='_wallet_address'")
         r = c.fetchone()
-        if r and r["value"]:
+        if r and r["value"] and len(r["value"]) >= 10:
             BTC_ADDRESS = r["value"]
+            restored = True
         c.execute("SELECT value FROM settings WHERE key='_wallet_worker'")
         r = c.fetchone()
         if r and r["value"]:
             WORKER_NAME = r["value"]
-        conn.close()
     except Exception:
-        pass
+        restored = False
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+    return restored
 
 _load_persisted_address()
 
@@ -2775,6 +2799,11 @@ def poll_loop():
     while True:
         try:
             poll_once()
+            # Broadcast updated snapshot to SSE clients
+            try:
+                _broadcast_snapshot(latest_snapshot)
+            except Exception:
+                pass
             n += 1
             if n >= CLEANUP_EVERY_N_POLLS:
                 purge_old()
@@ -2807,6 +2836,9 @@ def api_snapshot():
     """Return the full dashboard snapshot, including a small set of
     market highlights derived from cached prices (no extra HTTP calls)."""
     resp = dict(latest_snapshot)
+    # Block Hunt panel: inject computed payload so renderBlockHunt(snap)
+    # reads snap.block_hunt directly (no separate fetch needed).
+    resp["block_hunt"] = _compute_block_hunt(latest_snapshot)
     # Ensure market data is populated by fetching offers (cached internally)
     # This populates _shared_state.last_known_prices for build_highlights
     _get_hashrate_market_offers()
@@ -2821,7 +2853,15 @@ def api_snapshot():
         # Sort by score descending; best price = lowest price_per_th_day
         sorted_hl = sorted(highlights, key=lambda x: x.get("metrics", {}).get("score", 0), reverse=True)
         best_offer = min(sorted_hl, key=lambda x: x.get("price_per_th_day", 999))
-        best_price_str = "{:.6f} BTC/TH/d".format(best_offer["price_per_th_day"]) if best_offer.get("price_per_th_day") else None
+        best_price_raw = best_offer.get("price_per_th_day")
+        # Same sats/BTC convention as the frontend _fmtBtcPerTh() — a raw
+        # "{:.6f}" would render 1e-10 as a misleading "0.000000 BTC/TH/d".
+        if best_price_raw and best_price_raw >= 0.001:
+            best_price_str = "{:.6f} BTC/TH/d".format(best_price_raw)
+        elif best_price_raw:
+            best_price_str = "{:.2f} sats/TH/d".format(best_price_raw * 1e8)
+        else:
+            best_price_str = None
         resp["market_data"] = {
             "offers": sorted_hl,
             "best_price": best_price_str,
@@ -3255,15 +3295,19 @@ def _get_best_diff_history(device_id: Optional[str] = None, limit: int = 100) ->
     return records
 
 
-@app.route("/api/block-hunt", methods=["GET"])
-def api_block_hunt():
-    """Return the Block Hunt panel: network stats, user stats, probabilities
-    and network comparison metrics.
+def _compute_block_hunt(snap: dict) -> dict:
+    """Compute the Block Hunt payload from a snapshot.
 
-    Probabilities are computed from the latest worker hashrate vs network
-    hashrate using the Poisson model in services/probability.
+    Returns BOTH:
+      - flat fields consumed by renderBlockHunt() via `snap.block_hunt`
+        (network_difficulty, best_difficulty, p_block_per_share,
+         expected_time_seconds, cumulative_p_block, best_diff_worker)
+      - the grouped fields historically returned by /api/block-hunt
+        (network, user, probability, network_comparison)
+
+    Probabilities use the Poisson model in services/probability.
+    Pure compute — never raises (returns zeros/Nones on missing data).
     """
-    snap = latest_snapshot
     net = snap.get("network") or {}
     worker = snap.get("worker") or {}
 
@@ -3313,9 +3357,25 @@ def api_block_hunt():
         or leaderboard_entry.get("rank")
     )
 
-    return jsonify({
-        "success": True,
-        "ts": int(time.time()),
+    # Session cumulative probability (from proximity live_calc when available)
+    cumulative_p_block = None
+    try:
+        cumulative_p_block = (
+            (snap.get("proximity") or {}).get("live_calc", {})
+            .get("session_totals", {}).get("cum_p_block")
+        )
+    except Exception:
+        cumulative_p_block = None
+
+    return {
+        # ── flat fields consumed by renderBlockHunt(snap) via snap.block_hunt ──
+        "network_difficulty": net_diff,
+        "best_difficulty": best_diff_raw,
+        "p_block_per_share": (best_diff_raw / net_diff) if net_diff and best_diff_raw else None,
+        "expected_time_seconds": expected_time,
+        "cumulative_p_block": cumulative_p_block,
+        "best_diff_worker": worker.get("name") or WORKER_NAME or "",
+        # ── grouped fields (legacy /api/block-hunt contract) ──
         "network": {
             "hashrate": net_hr,
             "difficulty": net_diff,
@@ -3339,7 +3399,20 @@ def api_block_hunt():
             "distance_to_all_time_best_factor": distance_to_all_time_best,
             "approx_difficulty_rank": approx_diff_rank,
         },
-    })
+    }
+
+
+@app.route("/api/block-hunt", methods=["GET"])
+def api_block_hunt():
+    """Return the Block Hunt panel: network stats, user stats, probabilities
+    and network comparison metrics.
+
+    Probabilities are computed from the latest worker hashrate vs network
+    hashrate using the Poisson model in services/probability.
+    Same payload is injected into /api/snapshot under `block_hunt`.
+    """
+    payload = _compute_block_hunt(latest_snapshot)
+    return jsonify({"success": True, "ts": int(time.time()), **payload})
 
 
 @app.route("/api/best-diff-history", methods=["GET"])
@@ -4468,6 +4541,70 @@ if __name__ == "__main__":
     """ % (PORT, BTC_ADDRESS[:14] + "…", WORKER_NAME, POLL_INTERVAL, DB_PATH)
     print(art)
     app.run(host="0.0.0.0", port=PORT, debug=False, threaded=True)
+
+# ── SSE live stream endpoint ──────────────────────────────────────────────
+# Pushes snapshot updates to the frontend via Server-Sent Events (EventSource)
+# so the UI updates in near-real-time without polling.
+_sse_clients: List["queue.Queue"] = []
+_sse_clients_lock = threading.Lock()
+
+@app.route("/api/stream")
+def sse_stream():
+    """SSE endpoint: yields latest snapshot data when it changes.
+    Frontend connects via EventSource and receives push updates at ~3s intervals.
+    Falls back gracefully to polling if SSE disconnects."""
+    def event_stream():
+        q = queue.Queue(maxsize=5)
+        with _sse_clients_lock:
+            _sse_clients.append(q)
+            _sse_client_count = len(_sse_clients)
+        try:
+            # Yield initial keepalive
+            yield ": connected\n\n"
+            while True:
+                try:
+                    data = q.get(timeout=3)
+                    yield f"data: {data}\n\n"
+                except queue.Empty:
+                    # Send keepalive comment to prevent proxy timeouts
+                    yield ": keepalive\n\n"
+        except GeneratorExit:
+            pass
+        finally:
+            with _sse_clients_lock:
+                try:
+                    _sse_clients.remove(q)
+                except ValueError:
+                    pass
+
+    return Response(
+        event_stream(),
+        mimetype="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+def _broadcast_snapshot(snapshot: dict):
+    """Send the latest snapshot to all connected SSE clients.
+    Called by poll_loop after fetching and processing data."""
+    try:
+        payload = json.dumps(snapshot, default=str)
+        dead_clients = []
+        with _sse_clients_lock:
+            for q in _sse_clients:
+                try:
+                    q.put_nowait(payload)
+                except queue.Full:
+                    dead_clients.append(q)
+            for q in dead_clients:
+                _sse_clients.remove(q)
+    except Exception as e:
+        log.warning("[sse broadcast] error: %s", e)
+
 
 # ── FASE 2: Wallet address history table ──
 # In init_db(), add the wallet_address_history table

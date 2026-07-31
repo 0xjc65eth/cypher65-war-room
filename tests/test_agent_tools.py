@@ -188,7 +188,7 @@ class TestGetBraiinsOrderbook:
         mock_orderbook = Mock()
         mock_orderbook.ok = True
         mock_orderbook.json.return_value = {
-            "asks": [{"price": "2847"}, {"price": "3200"}, {"price": "2900"}],
+            "asks": [{"price_sat": "2847"}, {"price_sat": "3200"}, {"price_sat": "2900"}],
             "bids": [],
         }
 
@@ -212,7 +212,7 @@ class TestGetBraiinsOrderbook:
         mock_orderbook = Mock()
         mock_orderbook.ok = True
         mock_orderbook.json.return_value = {
-            "asks": [{"price": "0.00002847"}],
+            "asks": [{"price_sat": "2847"}],
             "bids": [],
         }
 
@@ -231,9 +231,9 @@ class TestGetBraiinsOrderbook:
         mock_orderbook.json.return_value = {
             "asks": [],
             "bids": [
-                {"price": "2500"},
-                {"price": "2800"},  # highest bid
-                {"price": "2600"},
+                {"price_sat": "2500"},
+                {"price_sat": "2800"},  # highest bid
+                {"price_sat": "2600"},
             ],
         }
 
@@ -265,7 +265,7 @@ class TestGetBraiinsOrderbook:
         mock_orderbook = Mock()
         mock_orderbook.ok = True
         mock_orderbook.json.return_value = {
-            "asks": [{"price": "5000"}],
+            "asks": [{"price_sat": "5000"}],
             "bids": [],
         }
 
@@ -340,70 +340,78 @@ class TestGetMrrListings:
         mock_resp.ok = True
         mock_resp.json.return_value = {
             "success": True,
-            "data": [
-                {
-                    "name": "Antminer S21 Pro",
-                    "hash": 234,  # TH
-                    "price": {"amount": "0.00000012", "currency": "BTC", "unit": "th*day"},
-                },
-                {
-                    "name": "Whatsminer M60",
-                    "hash": 200,
-                    "price": {"amount": "0.00000015", "currency": "BTC", "unit": "th*day"},
-                },
-            ],
+            "data": {
+                "records": [
+                    {
+                        "name": "Antminer S21 Pro",
+                        "hashrate": {"advertised": {"hash": 100}},
+                        "price": {"BTC": {"price": "0.0000005"}},
+                    },
+                    {
+                        "name": "Whatsminer M60",
+                        "hashrate": {"advertised": {"hash": 100}},
+                        "price": {"BTC": {"price": "0.0000006"}},
+                    },
+                ]
+            },
         }
 
         with patch("agents.solo_mining_advisor.tools.requests.get", return_value=mock_resp):
             result = get_mrr_listings(api_key="test_key", api_secret="test_secret")
 
-        assert result["price_btc_per_ph_day"] == pytest.approx(0.12)  # 0.00000012 * 1e6
+        # (price/hour 0.0000005 * 24 / 100 TH) * 1e6 = 0.12 BTC/PH/day
+        assert result["price_btc_per_ph_day"] == pytest.approx(0.12)
         assert result["total_listings"] == 2
         assert result["best_rig_name"] == "Antminer S21 Pro"
         assert "miningrigrentals.com" in result["source"]
 
     def test_gh_unit_pricing(self):
-        """Rig priced in GH/day → converted to TH/day by multiplying by 1000."""
+        """Rig hashrate from advertised.hash (TH) is used for the conversion."""
         mock_resp = Mock()
         mock_resp.ok = True
         mock_resp.json.return_value = {
             "success": True,
-            "data": [
-                {
-                    "name": "Old Rig",
-                    "hash": 100000,  # GH
-                    "price": {"amount": "0.00000001", "currency": "BTC", "unit": "gh*day"},
-                },
-            ],
+            "data": {
+                "records": [
+                    {
+                        "name": "Old Rig",
+                        "hashrate": {"advertised": {"hash": 100}},
+                        "price": {"BTC": {"price": "0.0000005"}},
+                    },
+                ]
+            },
         }
 
         with patch("agents.solo_mining_advisor.tools.requests.get", return_value=mock_resp):
             result = get_mrr_listings(api_key="k", api_secret="s")
 
-        # 0.00000001 BTC/GH/day * 1000 = 0.00001 BTC/TH/day  → * 1e6 = 10 BTC/PH/day
-        assert result["price_btc_per_ph_day"] == pytest.approx(10.0)
+        # price/hour 0.0000005 * 24 / 100 TH → 1.2e-7 BTC/TH/day → * 1e6 = 0.12 BTC/PH/day
+        assert result["price_btc_per_ph_day"] == pytest.approx(0.12)
+        assert result["best_rig_hash_th"] == 100
 
     def test_ph_unit_pricing(self):
-        """Rig priced in PH/day — rare but should be divided by 1e6."""
+        """Higher hashrate rig with the same hourly price is cheaper per TH/day."""
         mock_resp = Mock()
         mock_resp.ok = True
         mock_resp.json.return_value = {
             "success": True,
-            "data": [
-                {
-                    "name": "Farm Rig",
-                    "hash": 1,  # PH
-                    "price": {"amount": "0.001", "currency": "BTC", "unit": "ph*day"},
-                },
-            ],
+            "data": {
+                "records": [
+                    {
+                        "name": "Farm Rig",
+                        "hashrate": {"advertised": {"hash": 200}},
+                        "price": {"BTC": {"price": "0.0000005"}},
+                    },
+                ]
+            },
         }
 
         with patch("agents.solo_mining_advisor.tools.requests.get", return_value=mock_resp):
             result = get_mrr_listings(api_key="k", api_secret="s")
 
-        # 0.001 BTC/PH/day / 1e6 = very small per TH → * 1e6 = 0.001 BTC/PH/day
-        # Wait: 0.001 BTC/PH/day / 1_000_000 * 1_000_000 = 0.001
-        assert result["price_btc_per_ph_day"] == pytest.approx(0.001)
+        # price/hour 0.0000005 * 24 / 200 TH → 6e-8 BTC/TH/day → * 1e6 = 0.06 BTC/PH/day
+        assert result["price_btc_per_ph_day"] == pytest.approx(0.06)
+        assert result["best_rig_hash_th"] == 200
 
     def test_api_not_success(self):
         """MRR API returns success=False."""
@@ -679,12 +687,13 @@ class TestRegistryIntegrity:
     """Verify the tool registry and schemas are correctly configured."""
 
     def test_all_five_tools_registered(self):
-        assert len(TOOL_REGISTRY) == 5
+        assert len(TOOL_REGISTRY) == 6
         expected = {
             "get_network_difficulty",
             "get_btc_price",
             "get_braiins_orderbook",
             "get_mrr_listings",
+            "get_nicehash_orderbook",
             "get_parasite_pool_stats",
         }
         assert set(TOOL_REGISTRY.keys()) == expected
@@ -698,7 +707,7 @@ class TestRegistryIntegrity:
             assert fn.__doc__, f"{name} has no docstring"
 
     def test_all_tool_schemas_have_descriptions(self):
-        assert len(TOOL_SCHEMAS) == 5
+        assert len(TOOL_SCHEMAS) == 6
         for name, schema in TOOL_SCHEMAS.items():
             assert "description" in schema, f"{name} schema missing description"
             assert "parameters" in schema, f"{name} schema missing parameters"

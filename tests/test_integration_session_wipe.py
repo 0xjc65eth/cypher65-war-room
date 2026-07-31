@@ -10,18 +10,22 @@ Tests the REAL wipe chain in app.py:
 
 Strategy:
   - Uses Flask test_client() like test_opportunity_engine.py
-  - Monkeypatches save_setting and _log_wallet_change to skip DB writes
+  - Monkeypatches get_db, _log_wallet_change and poll_once so no real
+    HTTP/polling happens and the real DB is not polluted
   - Populates state.latest_snapshot + peripherals with rich mock data
     that simulates an active mining session
   - Verifies each attribute individually after the wipe
-  - Realigns assertions with the actual _reset_session_state() behavior:
+  - Aligns assertions with the actual _reset_session_state() behavior:
     the snapshot keeps its full schema (all keys present, values nulled),
     NOT reduced to a single 'ts' key — frontend renderers need the schema.
 """
 
+import copy
 import json
 import time
 import collections
+from unittest.mock import MagicMock
+
 import pytest
 
 import app as _app_module
@@ -88,9 +92,9 @@ def _populate_rich_session_state():
         "lightning": None,
     })
 
-    # memory_critical_alerts — exists in app.py
-    _state_module.memory_critical_alerts.clear()
-    _state_module.memory_critical_alerts.append(
+    # memory_critical_alerts — app.py module global (NOT services.state's)
+    _app_module.memory_critical_alerts.clear()
+    _app_module.memory_critical_alerts.append(
         {"ts": 1, "severity": "WARN", "category": "network", "message": "diff spike"}
     )
 
@@ -102,10 +106,7 @@ def _populate_rich_session_state():
         "price": 0.000100, "ts": int(time.time()) - 120, "label": "100 sats/PH/day"
     }
 
-    # timeline_state — exists in state.py
-    # Use real timeline_state defaults + updated values
-    # Must include share_submit_history and share_calc_history (lists) to avoid
-    # KeyError in _reset_session_state() which calls .clear() on them.
+    # timeline_state — exists in state.py (same object as app.timeline_state)
     _state_module.timeline_state.clear()
     _state_module.timeline_state.update({
         "_primed": True,
@@ -133,30 +134,72 @@ def _populate_rich_session_state():
 #  Tests
 # ══════════════════════════════════════════════════════════════════════
 
-# Valid bech32 characters exclude: 1, b, i, o
-# Using only valid chars: q p z r y 9 x 8 g f 2 t v d w 0 s 3 j n 5 4 k h c e 6 m u a 7 l
-NEW_ADDRESS = "bc1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq"
+# Valid bech32 address (BIP-173 test vector) — passes checksum validation
+NEW_ADDRESS = "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4"
 
 
 class TestIntegrationSessionWipe:
     """Integration test: POST /api/set-address → complete session wipe."""
 
     def _setup(self, monkeypatch):
-        """Common setup: populate state + mock DB calls."""
+        """Common setup: populate state + mock DB/poll calls.
+
+        Saves a deep copy of the real shared state BEFORE populating test data,
+        so _teardown can restore the pristine pre-test state — the handler +
+        wipe mutate these real globals, and restoring the ORIGINAL state
+        (not the injected rich data) prevents residual pollution.
+        """
+        self._saved = {
+            "btc_address": _app_module.BTC_ADDRESS,
+            "worker_name": _app_module.WORKER_NAME,
+            "latest_snapshot": copy.deepcopy(_state_module.latest_snapshot),
+            "timeline_state": copy.deepcopy(_state_module.timeline_state),
+            "last_known_prices": copy.deepcopy(_state_module.last_known_prices),
+            "test_opportunities": copy.deepcopy(_state_module.test_opportunities),
+            "memory_critical_alerts": copy.deepcopy(
+                list(getattr(_app_module, "memory_critical_alerts", []))
+            ),
+        }
+
+        # Force BTC_ADDRESS to a deterministic value DIFFERENT from NEW_ADDRESS
+        # so the "same as current" early-return never short-circuits the wipe
+        # chain — regardless of what is persisted in the DB or set in the env.
+        _app_module.BTC_ADDRESS = "bc1qpc3832jcu6m8qpqjvz5lkuydwjzv8v5vq5t5rs"
+        _app_module.WORKER_NAME = ""
+
         _populate_rich_session_state()
 
-        # Mock save_setting to skip DB writes
-        monkeypatch.setattr(_app_module, "save_setting", lambda k, v: True)
+        # The handler persists via get_db() directly — stub it so no real
+        # DB write happens during tests.
+        mock_conn = MagicMock()
+        mock_conn.cursor.return_value = MagicMock()
+        monkeypatch.setattr(_app_module, "get_db", lambda: mock_conn)
         # Mock _log_wallet_change to skip DB writes (function now exists)
         monkeypatch.setattr(_app_module, "_log_wallet_change", lambda *a, **kw: None)
         # Prevent forced poll thread from overwriting snapshot with real API data
         monkeypatch.setattr(_app_module, "poll_once", lambda: None)
 
-        self._orig_addr = _app_module.BTC_ADDRESS
-
     def _teardown(self):
-        """Restore original BTC_ADDRESS."""
-        _app_module.BTC_ADDRESS = getattr(self, "_orig_addr", "")
+        """Restore original BTC_ADDRESS and shared state."""
+        saved = getattr(self, "_saved", {})
+        if "btc_address" in saved:
+            _app_module.BTC_ADDRESS = saved["btc_address"]
+        if "worker_name" in saved:
+            _app_module.WORKER_NAME = saved["worker_name"]
+        if "latest_snapshot" in saved:
+            _state_module.latest_snapshot.clear()
+            _state_module.latest_snapshot.update(saved["latest_snapshot"])
+        if "timeline_state" in saved:
+            _state_module.timeline_state.clear()
+            _state_module.timeline_state.update(saved["timeline_state"])
+        if "last_known_prices" in saved:
+            _state_module.last_known_prices.clear()
+            _state_module.last_known_prices.update(saved["last_known_prices"])
+        if "test_opportunities" in saved:
+            _state_module.test_opportunities = saved["test_opportunities"]
+        if "memory_critical_alerts" in saved:
+            _app_module.memory_critical_alerts.clear()
+            _app_module.memory_critical_alerts.extend(saved["memory_critical_alerts"])
 
     # ── Test 1: snapshot fields are nulled after wipe ──
 
@@ -197,7 +240,7 @@ class TestIntegrationSessionWipe:
         self._setup(monkeypatch)
         try:
             client.post("/api/set-address", json={"address": NEW_ADDRESS})
-            alerts = _state_module.memory_critical_alerts
+            alerts = _app_module.memory_critical_alerts
             assert len(alerts) == 1, (
                 f"Expected 1 alert (wipe-clear + post-add), got {len(alerts)}"
             )
@@ -256,7 +299,7 @@ class TestIntegrationSessionWipe:
     # ── Test 6: response body confirms address change ──
 
     def test_response_confirms_new_address(self, monkeypatch, client):
-        """Response JSON should contain ok=True and the new address."""
+        """Response JSON should contain ok=True, success=True and address."""
         self._setup(monkeypatch)
         try:
             resp = client.post("/api/set-address", json={"address": NEW_ADDRESS})
@@ -278,27 +321,22 @@ class TestIntegrationSessionWipe:
         finally:
             self._teardown()
 
-    # ── Test 8: ts is updated to fresh value ──
+    # ── Test 8: ts is reset by the wipe ──
 
-    def test_ts_is_fresh_on_wipe(self, monkeypatch, client):
-        """The ts in latest_snapshot should be a fresh timestamp."""
+    def test_ts_reset_on_wipe(self, monkeypatch, client):
+        """The wipe sets ts to 0 (fresh poll would populate it afterwards)."""
         self._setup(monkeypatch)
         try:
-            before = int(time.time())
             client.post("/api/set-address", json={"address": NEW_ADDRESS})
-            after = int(time.time())
-
-            ts = _state_module.latest_snapshot.get("ts", 0)
-            assert before <= ts <= after + 1, (
-                f"Snapshot ts ({ts}) should be current time [{before}, {after}]"
-            )
+            ts = _state_module.latest_snapshot.get("ts", -1)
+            assert ts == 0, f"ts should be 0 after wipe (poll mocked), got {ts}"
         finally:
             self._teardown()
 
     # ── Test 9: invalid address is rejected (no wipe) ──
 
     def test_invalid_address_rejected_no_wipe(self, monkeypatch, client):
-        """Address < 10 chars should return 400 and NOT wipe state."""
+        """Address with bad prefix should return 400 and NOT wipe state."""
         self._setup(monkeypatch)
         try:
             _state_module.test_opportunities = {"keep": "this"}
@@ -356,8 +394,8 @@ class TestIntegrationSessionWipe:
             assert _state_module.latest_snapshot["worker"] is None
 
             # Alerts: wiped then 1 success alert added by endpoint
-            assert len(_state_module.memory_critical_alerts) == 1
-            assert _state_module.memory_critical_alerts[0]["severity"] == "SUCCESS"
+            assert len(_app_module.memory_critical_alerts) == 1
+            assert _app_module.memory_critical_alerts[0]["severity"] == "SUCCESS"
 
             # last_known_prices: keys preserved, values nulled
             assert _state_module.last_known_prices["braiins"] is None

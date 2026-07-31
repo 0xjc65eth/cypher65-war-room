@@ -8,7 +8,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
-<link rel="stylesheet" href="/static/style.css?v21">
+<link rel="stylesheet" href="/static/style.css?v36">
 <link rel="icon" href="/static/favicon.ico" sizes="any">
 <link rel="icon" type="image/png" sizes="32x32" href="/static/icon-32x32.png">
 <link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
@@ -28,35 +28,57 @@
      ══════════════════════════════════════════════════════════════════════ -->
 <div class="sidebar-overlay" id="sidebar-overlay"></div>
 <button class="sidebar-mobile-toggle" id="sidebar-mobile-toggle" title="Open menu">☰</button>
+<div id="sidebar-backdrop" class="sidebar-backdrop"></div>
+<!-- NOTE: #sidebar-hamburger was intentionally removed — it had no CSS rules
+     and rendered a stray ☰ on desktop. Use #sidebar-mobile-toggle or the
+     topbar #sidebar-toggle instead. Do not re-add without styling it. -->
 <aside class="sidebar" id="sidebar">
-  <div class="sidebar__logo">
-    <span class="sidebar__brand">CYPHER65</span>
-    <button class="sidebar__toggle" id="sidebar-collapse" title="Collapse">◀</button>
-  </div>
+      <div class="sidebar__logo">
+        <span class="sidebar__brand">CYPHER65</span>
+        <span id="sidebar-led" class="sidebar-led" style="display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--accent-red);margin-left:6px"></span>
+        <span id="sidebar-status-text" class="sidebar-status-text" style="font-size:8px;color:var(--text-tertiary);margin-left:4px">INIT</span>
+        <button class="sidebar__toggle" id="sidebar-collapse" title="Collapse">◀</button>
+      </div>
   <nav class="sidebar__nav">
-    <button class="sidebar__link active" data-section="dashboard">
+    <button class="sidebar__link active" data-module="dashboard">
       <span class="icon">⧩</span>
       <span class="label">Dashboard</span>
     </button>
-    <button class="sidebar__link" data-section="fleet">
+    <button class="sidebar__link" data-module="wallet">
+      <span class="icon">⚡</span>
+      <span class="label">Wallet</span>
+    </button>
+    <button class="sidebar__link" data-module="fleet">
       <span class="icon">⛏</span>
-      <span class="label">Miners</span>
-    </button>
-    <button class="sidebar__link" data-section="analytics">
-      <span class="icon">▤</span>
-      <span class="label">Analytics</span>
-    </button>
-    <button class="sidebar__link" data-section="fleet-cmd">
-      <span class="icon">⚙</span>
       <span class="label">Fleet</span>
     </button>
-    <button class="sidebar__link" data-section="terminal">
-      <span class="icon">≫</span>
-      <span class="label">Terminal</span>
+    <button class="sidebar__link" data-module="live">
+      <span class="icon">◉</span>
+      <span class="label">Live Mining</span>
     </button>
-    <button class="sidebar__link" data-section="docs">
+    <button class="sidebar__link" data-module="probability">
+      <span class="icon">◈</span>
+      <span class="label">Probability</span>
+    </button>
+    <button class="sidebar__link" data-module="market">
+      <span class="icon">⟐</span>
+      <span class="label">Hash Market</span>
+    </button>
+    <button class="sidebar__link" data-module="alerts">
+      <span class="icon">⚠</span>
+      <span class="label">Alerts</span>
+    </button>
+    <button class="sidebar__link" data-module="automations">
+      <span class="icon">⚙</span>
+      <span class="label">Automations</span>
+    </button>
+    <button class="sidebar__link" data-module="docs">
       <span class="icon">?</span>
       <span class="label">Docs</span>
+    </button>
+    <button class="sidebar__link" data-module="support">
+      <span class="icon">♥</span>
+      <span class="label">Support</span>
     </button>
   </nav>
 </aside>
@@ -112,6 +134,15 @@
 </header>
 
 <!-- ══════════════════════════════════════════════════════════════════════
+     MODULE HEADER — indica o módulo ativo
+     ══════════════════════════════════════════════════════════════════════ -->
+<div class="module-header" id="module-header">
+  <span class="module-header__eyebrow">MODULE</span>
+  <span class="module-header__title" id="module-header-title">DASHBOARD</span>
+  <span class="module-header__desc" id="module-header-desc">Visão geral — pool, worker e rede</span>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════════════
      SECTION 0: HUD FIXO — sempre visível, dados críticos
      ══════════════════════════════════════════════════════════════════════ -->
 <div id="hud-bar" style="display:none">
@@ -127,7 +158,7 @@
 <!-- ══════════════════════════════════════════════════════════════════════
      STATUS BAR — 6 blocos compactos
      ══════════════════════════════════════════════════════════════════════ -->
-<div class="status-bar" id="status-bar">
+<div class="status-bar" id="status-bar" data-module="dashboard">
   <div class="status-block status-block--system" id="sb-system">
     <div class="status-block__label">SYSTEM</div>
     <div class="status-block__row">
@@ -183,7 +214,7 @@
 <!-- ══════════════════════════════════════════════════════════════════════
      KPI CARDS — 4 métricas principais
      ══════════════════════════════════════════════════════════════════════ -->
-<div class="kpi-row" id="kpi-row">
+<div class="kpi-row" id="kpi-row" data-module="dashboard">
   <div class="kpi-card">
     <span class="kpi-label">Hashrate <span class="tip-wrap" data-tip="Taxa de processamento do minerador principal"><span class="tip-wrap__icon">?</span></span></span>
     <div class="kpi-value-row">
@@ -221,22 +252,17 @@
 <!-- ══════════════════════════════════════════════════════════════════════
      EMPTY WALLET BANNER
      ══════════════════════════════════════════════════════════════════════ -->
-<div id="empty-wallet-banner">
-  <div style="font-size:12px;color:var(--green-dim);margin-bottom:6px">>> NO WALLET CONNECTED</div>
-  <div style="font-size:10px;color:var(--text-tertiary);margin-bottom:8px">Connect a BTC address to start monitoring your miners</div>
-  <button class="btn btn--primary" id="empty-wallet-cta">⛏ CONNECT WALLET</button>
-  <button class="btn" id="empty-wallet-ln" style="margin-left:6px;border-color:var(--gold,#f5b942);color:var(--gold,#f5b942)">⚡ LN WALLET</button>
-</div>
+<!-- empty-wallet-banner removed — only topbar ⚡ CONNECT button remains -->
 
 <!-- ══════════════════════════════════════════════════════════════════════
      SECTION 1: WORKER FLEET — Raio X + Host Core + Hero
      ══════════════════════════════════════════════════════════════════════ -->
-<section class="section" id="section-fleet">
+<section class="section" id="section-fleet" data-module="dashboard fleet">
   <div class="section__header">SECTION 1 :: WORKER FLEET</div>
   <div class="section__body">
 
 <!-- Raio X -->
-<section class="raio-x" id="raio-x" style="display:none">
+<section class="raio-x" id="raio-x" data-module="fleet" style="display:none">
   <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px">
     <span style="font-size:10px;color:var(--green-dim);letter-spacing:0.08em">>> RAIO X · MINER FLEET</span>
     <span style="font-size:9px;color:var(--text-tertiary)" id="raio-x-count">0 miners · hashrate —</span>
@@ -247,7 +273,7 @@
 </section>
 
 <!-- HOST CORE + HERO -->
-<section class="panel panel--large" id="hero-worker">
+<section class="panel panel--large" id="hero-worker" data-module="dashboard">
   <div class="panel__header">
     <div class="panel__eyebrow">>> HOST CORE :: CENTRAL NERVOUS SYSTEM</div>
     <div class="panel__tools">
@@ -343,7 +369,7 @@
 <main class="grid">
 
 <!-- ── POOL OVERVIEW ── -->
-<section class="panel panel--large panel--collapsible" id="pool-overview">
+<section class="panel panel--large panel--collapsible" id="pool-overview" data-module="dashboard">
   <div class="panel__header">
     <div class="panel__eyebrow"># POOL CONTEXT <span class="badge badge--amber" id="p-stale-badge" style="display:none">STALE</span></div>
     <div class="panel__tools"><span class="badge badge--mute" id="pool-uptime">up —</span><button class="panel__toggle" data-panel="pool-overview"></button></div>
@@ -367,7 +393,7 @@
 </section>
 
 <!-- ── ACCOUNT ── -->
-<section class="panel panel--large panel--collapsible" id="account-panel">
+<section class="panel panel--large panel--collapsible" id="account-panel" data-module="wallet">
   <div class="panel__header">
     <div class="panel__eyebrow">§ ACCOUNT</div>
     <div class="panel__tools"><span class="badge badge--gold" id="acct-blocks-badge">0 BLOCKS</span><button class="panel__toggle" data-panel="account-panel"></button></div>
@@ -383,7 +409,7 @@
 </section>
 
 <!-- ── NETWORK ── -->
-<section class="panel panel--large panel--collapsible" id="network-panel">
+<section class="panel panel--large panel--collapsible" id="network-panel" data-module="dashboard">
   <div class="panel__header">
     <div class="panel__eyebrow">⌬ NETWORK · MEMPOOL</div>
     <div class="panel__tools"><span class="badge badge--mute" id="net-status">fetching</span><button class="panel__toggle" data-panel="network-panel"></button></div>
@@ -400,7 +426,7 @@
 </section>
 
 <!-- ── HALVING ── -->
-<section class="panel panel--large panel--collapsible" id="halving-panel">
+<section class="panel panel--large panel--collapsible" id="halving-panel" data-module="dashboard">
   <div class="panel__header">
     <div class="panel__eyebrow">⚒ HALVING COUNTDOWN</div>
     <div class="panel__tools"><span class="badge" id="halving-epoch-badge">epoch —</span><button class="panel__toggle" data-panel="halving-panel"></button></div>
@@ -415,7 +441,7 @@
 </section>
 
 <!-- ── MEMPOOL FEES ── -->
-<section class="panel panel--large panel--collapsible" id="fees-panel">
+<section class="panel panel--large panel--collapsible" id="fees-panel" data-module="dashboard">
   <div class="panel__header">
     <div class="panel__eyebrow">⛽ FEE TIERS · SAT/VB</div>
     <div class="panel__tools"><span class="badge badge--mute" id="fees-status">—</span><button class="panel__toggle" data-panel="fees-panel"></button></div>
@@ -430,7 +456,7 @@
 </section>
 
 <!-- ── PROFITABILITY ── -->
-<section class="panel panel--profit panel--large panel--collapsible" id="profit-panel">
+<section class="panel panel--profit panel--large panel--collapsible" id="profit-panel" data-module="dashboard">
   <div class="panel__header">
     <div class="panel__eyebrow">Ξ PROFITABILITY</div>
     <div class="panel__tools">
@@ -470,7 +496,7 @@
 </section>
 
 <!-- ─── NETWORK-SHARE GAUGE ─── -->
-<section class="panel panel--large" id="gauge-panel">
+<section class="panel panel--large" id="gauge-panel" data-module="dashboard">
   <div class="panel__header">
     <div class="panel__eyebrow">◉ NETWORK-SHARE GAUGE</div>
     <div class="panel__tools"><span class="badge badge--mute" id="gauge-label">—</span></div>
@@ -504,7 +530,7 @@
 </section>
 
 <!-- ─── MILESTONES ─── -->
-<section class="panel panel--large" id="milestones-panel">
+<section class="panel panel--large" id="milestones-panel" data-module="dashboard">
   <div class="panel__header">
     <div class="panel__eyebrow">★ ACHIEVEMENTS</div>
     <div class="panel__tools"><span class="badge badge--mute" id="milestones-count">0 unlocked</span></div>
@@ -519,7 +545,7 @@
 </section>
 
 <!-- ─── BLOCK HUNT ─── -->
-<section class="panel panel--block-hunt panel--large" id="block-hunt-panel">
+<section class="panel panel--block-hunt panel--large" id="block-hunt-panel" data-module="probability">
   <div class="panel__header">
     <div class="panel__eyebrow">◈ BLOCK HUNT</div>
     <div class="panel__tools">
@@ -538,7 +564,7 @@
 </section>
 
 <!-- ─── HASHMARKET ─── -->
-<section class="panel panel--market panel--large" id="market-panel">
+<section class="panel panel--market panel--large" id="market-panel" data-module="market">
   <div class="panel__header">
     <div class="panel__eyebrow">⟐ HASHMARKET · OPPORTUNITIES</div>
     <div class="panel__tools">
@@ -575,11 +601,12 @@
 </section>
 
 <!-- ─── AI OPERATOR ─── -->
-<section class="panel panel--ai-operator panel--large" id="ai-operator-panel">
+<section class="panel panel--ai-operator panel--large" id="ai-operator-panel" data-module="automations">
   <div class="panel__header">
     <div class="panel__eyebrow">◆ AI OPERATOR · INTELLIGENCE</div>
     <div class="panel__tools">
       <span class="badge badge--green" id="ai-status-badge">ACTIVE</span>
+      <button class="chip" id="open-alert-center" title="Alert Center">⚠ RULES</button>
       <button class="chip" id="ai-clear">clear</button>
     </div>
   </div>
@@ -612,7 +639,7 @@
 </section>
 
 <!-- ─── AXE FLEET ─── -->
-<section class="panel panel--axe-fleet panel--large" id="axe-fleet-panel">
+<section class="panel panel--axe-fleet panel--large" id="axe-fleet-panel" data-module="fleet">
   <div class="panel__header">
     <div class="panel__eyebrow">⚙ AXE FLEET COMMAND</div>
     <div class="panel__tools">
@@ -662,7 +689,7 @@
 </section>
 
 <!-- ─── HIGH-DIFF EVENTS TABLE ─── -->
-<section class="panel panel--large" id="events-panel">
+<section class="panel panel--large" id="events-panel" data-module="alerts">
   <div class="panel__header">
     <div class="panel__eyebrow">⌖ HIGH-DIFF EVENTS · POOL</div>
     <div class="panel__tools">
@@ -679,7 +706,7 @@
 </section>
 
 <!-- ─── LEADERBOARD ─── -->
-<section class="panel panel--large" id="leaderboard-panel">
+<section class="panel panel--large" id="leaderboard-panel" data-module="dashboard">
   <div class="panel__header">
     <div class="panel__eyebrow">⌬ POOL LEADERBOARD</div>
     <div class="panel__tools"><span class="badge badge--mute" id="leaderboard-total">0 miners</span></div>
@@ -693,7 +720,7 @@
 </section>
 
 <!-- ─── SHARE TIMELINE ─── -->
-<section class="panel panel--timeline panel--large" id="timeline-panel">
+<section class="panel panel--timeline panel--large" id="timeline-panel" data-module="live">
   <div class="panel__header">
     <div class="panel__eyebrow">▤ SHARE TIMELINE</div>
     <div class="panel__tools">
@@ -718,7 +745,7 @@
 </section>
 
 <!-- ─── REMOTE ACCESS ─── -->
-<section class="panel panel--remote panel--large" id="remote-panel">
+<section class="panel panel--remote panel--large" id="remote-panel" data-module="fleet">
   <div class="panel__header">
     <div class="panel__eyebrow">📡 REMOTE ACCESS · TAILSCALE</div>
     <div class="panel__tools">
@@ -809,7 +836,7 @@
 </section>
 
 <!-- ─── ALERTS ─── -->
-<section class="panel panel--alerts panel--large" id="alerts-panel">
+<section class="panel panel--alerts panel--large" id="alerts-panel" data-module="alerts">
   <div class="panel__header">
     <div class="panel__eyebrow">⚠ ALERTS</div>
     <div class="panel__tools"><span class="badge badge--mute" id="alerts-count-badge">0 active</span></div>
@@ -820,7 +847,7 @@
 </section>
 
 <!-- ─── LIVE LOG ─── -->
-<section class="panel panel--logs panel--large" id="logs-panel">
+<section class="panel panel--logs panel--large" id="logs-panel" data-module="live">
   <div class="panel__header">
     <div class="panel__eyebrow"><span class="terminal-rec-dot"></span> LIVE LOG</div>
     <div class="panel__tools">
@@ -846,7 +873,7 @@
 </section>
 
 <!-- ─── CHARTS ─── -->
-<section class="panel panel--chart panel--large" id="chart-hashrate-panel">
+<section class="panel panel--chart panel--large" id="chart-hashrate-panel" data-module="live">
   <div class="panel__header">
     <div style="display:flex;align-items:center;gap:8px">
       <div class="panel__eyebrow">▤ WORKER HASHRATE</div>
@@ -868,7 +895,7 @@
   <div class="chart-canvas-wrap"><canvas id="chart-hashrate"></canvas></div>
 </section>
 
-<section class="panel panel--chart panel--large" id="chart-pool-panel">
+<section class="panel panel--chart panel--large" id="chart-pool-panel" data-module="live">
   <div class="panel__header">
     <div style="display:flex;align-items:center;gap:8px">
       <div class="panel__eyebrow">▤ POOL HASHRATE</div>
@@ -889,7 +916,7 @@
   <div class="chart-canvas-wrap"><canvas id="chart-pool"></canvas></div>
 </section>
 
-<section class="panel panel--chart panel--large" id="chart-bestdiff-panel">
+<section class="panel panel--chart panel--large" id="chart-bestdiff-panel" data-module="live">
   <div class="panel__header">
     <div class="panel__eyebrow">▤ BEST DIFFICULTY</div>
     <div class="panel__tools chart-range" data-target="chart-bestdiff">
@@ -903,7 +930,7 @@
   <div class="chart-wrap"><canvas id="chart-bestdiff"></canvas></div>
 </section>
 
-<section class="panel panel--chart panel--large" id="chart-net-panel">
+<section class="panel panel--chart panel--large" id="chart-net-panel" data-module="live">
   <div class="panel__header">
     <div class="panel__eyebrow">▤ NETWORK DIFFICULTY</div>
     <div class="panel__tools chart-range" data-target="chart-net">
@@ -925,7 +952,7 @@
 <div class="tab-pane" id="tab-charts">
 
 <!-- ─── HASH PROXIMITY METER ─── -->
-<section class="panel panel--proximity panel--large" id="proximity-panel">
+<section class="panel panel--proximity panel--large" id="proximity-panel" data-module="probability">
   <div class="panel__header">
     <div class="panel__eyebrow">⌖ HASH PROXIMITY · QUANTUM-LOCK</div>
     <div class="panel__tools">
@@ -1021,7 +1048,7 @@
 </section>
 
 <!-- ─── CUMULATIVE PROBABILITY CHART ─── -->
-<section class="panel panel--chart panel--large" id="chart-cumulative-p-panel">
+<section class="panel panel--chart panel--large" id="chart-cumulative-p-panel" data-module="probability">
   <div class="panel__header">
     <div class="panel__eyebrow">⬡ CUMULATIVE P(BLOCK) PROGRESSION</div>
     <div class="panel__tools"><span class="badge badge--green" id="cum-p-status-badge">live</span></div>
@@ -1030,7 +1057,7 @@
 </section>
 
 <!-- ─── SHARE DISTRIBUTION HISTOGRAM ─── -->
-<section class="panel panel--chart panel--large" id="chart-share-dist-panel">
+<section class="panel panel--chart panel--large" id="chart-share-dist-panel" data-module="probability">
   <div class="panel__header">
     <div class="panel__eyebrow">▦ SHARE DIFFICULTY DISTRIBUTION</div>
     <div class="panel__tools"><span class="badge badge--mute" id="share-dist-count-badge">0 shares</span></div>
@@ -1039,7 +1066,7 @@
 </section>
 
 <!-- ─── QUANTUM LOCK HEALTH SCORE ─── -->
-<section class="panel panel--large" id="quantum-lock-panel">
+<section class="panel panel--large" id="quantum-lock-panel" data-module="probability">
   <div class="panel__header">
     <div class="panel__eyebrow">◈ QUANTUM LOCK · HEALTH SCORE</div>
     <div class="panel__tools">
@@ -1063,7 +1090,7 @@
 </section>
 
 <!-- ─── HR COMPARISON: REPORTED vs POOL ─── -->
-<section class="panel panel--large" id="hr-compare-panel">
+<section class="panel panel--large" id="hr-compare-panel" data-module="fleet">
   <div class="panel__header">
     <div class="panel__eyebrow">⤒ HASHRATE COMPARISON · REPORTED vs POOL</div>
     <div class="panel__tools"><span class="badge" id="hr-deviation-badge">—</span></div>
@@ -1078,7 +1105,7 @@
 </section>
 
 <!-- ─── CYPHER // LIVE MINING ─── -->
-<section class="panel panel--live-mining panel--large" id="live-mining-panel">
+<section class="panel panel--live-mining panel--large" id="live-mining-panel" data-module="live">
   <div class="lm-cyber-header">
     <div class="lm-cyber-header__top">
       <div class="lm-cyber-header__logo">◈</div>
@@ -1172,7 +1199,7 @@
      ══════════════════════════════════════════════════════════════════════ -->
 <div class="tab-pane" id="tab-stats">
   <main class="grid">
-    <section class="panel panel--large" id="solo-stats-panel">
+    <section class="panel panel--large" id="solo-stats-panel" data-module="probability">
       <div class="panel__header">
         <div class="panel__eyebrow">☀ SOLO & STATS</div>
         <div class="panel__tools">
@@ -1197,7 +1224,7 @@
      ══════════════════════════════════════════════════════════════════════ -->
 <div class="tab-pane" id="tab-terminal">
   <main class="grid">
-    <section class="panel panel--large" id="terminal-panel">
+    <section class="panel panel--large" id="terminal-panel" data-module="live">
       <div class="panel__header">
         <div class="panel__eyebrow">>> LIVE TERMINAL</div>
         <div class="panel__tools">
@@ -1214,7 +1241,21 @@
       </div>
       <div class="terminal-footnote">Type <kbd>help</kbd> for available commands.</div>
     </section>
-    <section class="panel panel--large" id="terminal-events-panel">
+    <!-- Solo Mining Advisor terminal (hidden by default, toggled via sidebar Solo Mining tab) -->
+    <div id="solo-term" data-module="live" style="display:none">
+      <div class="solo-term__toolbar" style="display:flex;gap:4px;padding:4px 8px;border-bottom:1px solid var(--border-subtle)">
+        <span style="font-size:9px;color:var(--text-tertiary)">SOLO MINING ADVISOR</span>
+        <span style="flex:1"></span>
+        <button class="chip" id="solo-term-clear">clear</button>
+        <button class="chip" id="solo-term-help">help</button>
+      </div>
+      <div class="solo-term__output" id="solo-term-output" style="height:200px;overflow-y:auto;font-family:var(--font-mono);font-size:11px;padding:8px;background:var(--bg-tertiary)"></div>
+      <div class="solo-term__input-row" style="display:flex;border-top:1px solid var(--border-subtle)">
+        <span class="solo-term__prompt" style="padding:4px 8px;font-family:var(--font-mono);font-size:11px;color:var(--accent-cyan)">></span>
+        <input type="text" id="solo-term-input" class="solo-term__input" style="flex:1;border:none;background:transparent;font-family:var(--font-mono);font-size:11px;color:var(--text-primary);outline:none;padding:4px 4px" placeholder="type a command..." autocomplete="off" spellcheck="false">
+      </div>
+    </div>
+    <section class="panel panel--large" id="terminal-events-panel" data-module="live">
       <div class="panel__header">
         <div class="panel__eyebrow">* EVENT STREAM</div>
         <div class="panel__tools"><span class="badge badge--mute" id="terminal-event-count">0</span></div>
@@ -1244,11 +1285,11 @@
   </div>
 </footer>
 
-<div class="modal-overlay" id="support-panel" style="display:none">
+<div class="modal-overlay" id="support-panel">
   <div class="modal support-modal">
     <div class="modal__header">
       <div class="modal__title">♥ SUPPORT CYPHER65</div>
-      <button class="modal__close" onclick="closeSupportPanel()">⛌</button>
+      <button class="modal__close" onclick="document.getElementById('support-panel').classList.remove('modal--open')">⛌</button>
     </div>
     <div class="modal__body support-modal__body">
       <div class="support-modal__hero">
@@ -1305,7 +1346,7 @@
 <!-- ══════════════════════════════════════════════════════════════════════
      SECTION DOCS / GUIDE
      ══════════════════════════════════════════════════════════════════════ -->
-<section class="section" id="section-docs">
+<section class="section" id="section-docs" data-module="docs">
   <div class="section__header">📖 AXE FLEET · GUIDE</div>
   <div class="section__body">
 
@@ -1401,7 +1442,7 @@
 <!-- 5 ── Hash Market ── -->
 <section class="doc-section" id="docs-market">
   <h2 class="doc-section__title">5 · Hash Market</h2>
-  <p class="doc-section__text">The Hash Market panel aggregates live hashrate pricing from Braiins, NiceHash, MiningRigRentals, KissMyHash, and Parasite Pool. Prices are shown in BTC/TH/day and automatically scale to PH/s when appropriate.</p>
+  <p class="doc-section__text">The Hash Market panel aggregates live hashrate pricing from Braiins, NiceHash, MiningRigRentals, KissMyHash, and Parasite Pool. Prices are shown in BTC/TH/day — or sats/TH/day for tiny values (below 0.001 BTC/TH/d) — and hashrate automatically scales to PH/s when appropriate.</p>
   <ul class="doc-list">
     <li><strong>Price per TH/d</strong> — how much 1 TH/s earns in 24 hours at current market rate</li>
     <li><strong>Best offer</strong> — the highest paying source right now, highlighted with a badge</li>
@@ -1655,6 +1696,9 @@
       <div id="settings-body"></div>
       <span class="modal__status" id="settings-status"></span>
     </div>
+    <div class="modal__footer" style="padding:8px 16px;border-top:1px solid var(--border-subtle);display:flex;justify-content:flex-end;gap:8px">
+      <button class="btn btn--primary" id="settings-save">SAVE SETTINGS</button>
+    </div>
   </div>
 </div>
 
@@ -1698,12 +1742,13 @@
     <span id="hs-target-marker"></span>
     <div id="lm-grid"></div>
     <span id="next-poll"></span>
-    <span id="open-exports"></span>
   </div>
 
-  <script src="/static/app.js?v27"></script>
+  <script src="/static/app.js?v36"></script>
 </div> <!-- end #app-main -->
 </div> <!-- end #app-layout -->
+  <!-- Matrix rain canvas (full-screen background effect) -->
+  <canvas id="matrix-canvas" style="position:fixed;top:0;left:0;width:100%;height:100%;z-index:-1;pointer-events:none;opacity:0.12"></canvas>
 </div> <!-- end #main-area -->
 </div> <!-- end #app-shell -->
 

@@ -8,7 +8,7 @@
    - Clicking a notification focuses / opens the dashboard
    ════════════════════════════════════════════════════════════════════════ */
 
-const CACHE_NAME = 'cypher65-v3';
+const CACHE_NAME = 'cypher65-v4';
 const ASSETS_TO_CACHE = [
   '/',
   '/static/style.css',
@@ -59,9 +59,16 @@ self.addEventListener('fetch', (event) => {
         return response;
       })
       .catch(() => {
-        // Offline: serve from cache
+        // Offline: serve from cache (exact match, then query-stripped)
         return caches.match(event.request).then((cached) => {
-          return cached || new Response('Offline', { status: 503 });
+          if (cached) return cached;
+          // The page requests versioned URLs (e.g. /static/app.js?v34) but
+          // the SW pre-caches the un-versioned paths — fall back to those.
+          const url = new URL(event.request.url);
+          url.search = '';
+          return caches.match(new Request(url.href, { method: 'GET' })).then((c2) => {
+            return c2 || new Response('Offline', { status: 503 });
+          });
         });
       })
   );

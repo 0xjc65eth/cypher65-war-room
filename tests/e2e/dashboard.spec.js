@@ -134,6 +134,9 @@ test.describe('CYPHER65 War Room — Dashboard E2E', () => {
     });
 
     test('Live Log contains system message', async ({ page }) => {
+      // Live Log lives in the LIVE MINING module — navigate there first
+      await page.locator('.sidebar__link[data-module="live"]').click();
+      await page.waitForTimeout(600);
       const terminal = page.locator('#terminal');
       await expect(terminal).toBeVisible();
       // Should show at least one event or "SYSTEM" message
@@ -141,6 +144,9 @@ test.describe('CYPHER65 War Room — Dashboard E2E', () => {
     });
 
     test('AI Operator panel responds to input', async ({ page }) => {
+      // AI Operator lives in the AUTOMATIONS module — navigate there first
+      await page.locator('.sidebar__link[data-module="automations"]').click();
+      await page.waitForTimeout(600);
       const aiInput = page.locator('#ai-input');
       await expect(aiInput).toBeVisible({ timeout: 10000 });
       await aiInput.fill('help');
@@ -152,6 +158,9 @@ test.describe('CYPHER65 War Room — Dashboard E2E', () => {
     });
 
     test('Axe Fleet panel renders', async ({ page }) => {
+      // Axe Fleet lives in the FLEET module — navigate there first
+      await page.locator('.sidebar__link[data-module="fleet"]').click();
+      await page.waitForTimeout(600);
       await expect(page.locator('#axe-fleet-panel')).toBeVisible();
     });
   });
@@ -212,29 +221,29 @@ test.describe('CYPHER65 War Room — Dashboard E2E', () => {
       await waitForDashboard(page);
     });
 
-    test('sidebar links navigate to sections', async ({ page }) => {
-      // Click Fleet sidebar link
-      const fleetLink = page.locator('.sidebar__link[data-section="fleet"]');
+    test('sidebar links navigate to modules', async ({ page }) => {
+      // Click Fleet sidebar link (module: fleet)
+      const fleetLink = page.locator('.sidebar__link[data-module="fleet"]');
       await expect(fleetLink).toBeVisible();
       await fleetLink.click();
-      await page.waitForTimeout(1000);
+      await page.waitForTimeout(600);
       await expect(page.locator('#section-fleet')).toBeVisible();
 
-      // Click Analytics sidebar link
-      const analyticsLink = page.locator('.sidebar__link[data-section="analytics"]');
-      await expect(analyticsLink).toBeVisible();
-      await analyticsLink.click();
-      await page.waitForTimeout(1000);
-      // The Deep Analytics tab should be active
+      // Click Probability sidebar link (module: probability → charts pane)
+      const probLink = page.locator('.sidebar__link[data-module="probability"]');
+      await expect(probLink).toBeVisible();
+      await probLink.click();
+      await page.waitForTimeout(600);
+      // The Deep Analytics pane should be active
       await expect(page.locator('#tab-charts.active')).toBeVisible({ timeout: 5000 });
     });
 
     test('Live Terminal tab is accessible and input accepts commands', async ({ page }) => {
-      // Click Terminal sidebar link
-      const terminalLink = page.locator('.sidebar__link[data-section="terminal"]');
-      await expect(terminalLink).toBeVisible();
-      await terminalLink.click();
-      await page.waitForTimeout(1000);
+      // Click Live Mining sidebar link (module: live → terminal pane)
+      const liveLink = page.locator('.sidebar__link[data-module="live"]');
+      await expect(liveLink).toBeVisible();
+      await liveLink.click();
+      await page.waitForTimeout(600);
 
       // The terminal tab should now be active
       await expect(page.locator('#tab-terminal.active')).toBeVisible({ timeout: 5000 });
@@ -282,6 +291,9 @@ test.describe('CYPHER65 War Room — Dashboard E2E', () => {
     });
 
     test('Hashmarket filters show provider chips', async ({ page }) => {
+      // Hashmarket lives in the HASH MARKET module — navigate there first
+      await page.locator('.sidebar__link[data-module="market"]').click();
+      await page.waitForTimeout(600);
       const filterContainer = page.locator('#mkt-filters');
       await expect(filterContainer).toBeVisible({ timeout: 10000 });
       const chips = filterContainer.locator('[data-mkt-filter]');
@@ -290,7 +302,9 @@ test.describe('CYPHER65 War Room — Dashboard E2E', () => {
     });
 
     test('Export modal opens', async ({ page }) => {
-      const exportBtn = page.locator('#open-exports');
+      // button#open-exports: a stray <span id="open-exports"> exists later in
+      // the DOM, so the bare #open-exports selector is ambiguous in strict mode.
+      const exportBtn = page.locator('button#open-exports');
       await expect(exportBtn).toBeVisible();
       await exportBtn.click();
       await page.waitForTimeout(500);
@@ -361,10 +375,9 @@ test.describe('CYPHER65 War Room — Dashboard E2E', () => {
     test.beforeEach(async ({ page }) => {
       await page.goto('/');
       await waitForDashboard(page);
-      // Navigate to terminal
-      const terminalLink = page.locator('.sidebar__link[data-section="terminal"]');
-      await terminalLink.click();
-      await page.waitForTimeout(1000);
+      // Navigate to the Live Mining module (contains the terminal pane)
+      await page.locator('.sidebar__link[data-module="live"]').click();
+      await page.waitForTimeout(600);
       await expect(page.locator('#tab-terminal.active')).toBeVisible({ timeout: 5000 });
     });
 
