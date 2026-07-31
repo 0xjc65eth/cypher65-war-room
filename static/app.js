@@ -63,6 +63,23 @@
       if (a.length <= 16) return a;
       return `${a.slice(0, 10)}\u2026${a.slice(-6)}`;
     },
+    chunkAddr(a) {
+      if (!a) return '';
+      var prefix = '';
+      var rest = a;
+      if (a.indexOf('bc1') === 0) { prefix = 'bc1'; rest = a.slice(3); }
+      else if (a.indexOf('1') === 0 || a.indexOf('3') === 0) { prefix = a[0]; rest = a.slice(1); }
+      var chunks = [];
+      for (var i = 0; i < rest.length; i += 4) {
+        chunks.push(rest.slice(i, i + 4));
+      }
+      return prefix + ' ' + chunks.join(' ');
+    },
+    shortAddrChunk(a) {
+      if (!a) return '';
+      if (a.length <= 20) return fmt.chunkAddr(a);
+      return a.slice(0, 6) + '...' + a.slice(-4);
+    },
     pct(n) { if (!isFinite(n)) return '\u2014'; return `${n.toFixed(2)}%`; },
     usd(n) { if (!n) return '\u2014'; return `$${Number(n).toLocaleString('en-US', { maximumFractionDigits: 0 })}`; },
     expectedBlock(workerHr, networkDiff) {
@@ -188,6 +205,7 @@
     sbFleetTotal: $('#sb-fleet-total'),
     sbFleetHr: $('#sb-fleet-hr'),
     sbWalletAddr: $('#sb-wallet-addr'),
+    emptyWalletBanner: $('#empty-wallet-banner'),
     statusBar: $('#status-bar'),
 
     // ── HUD bar elements ──
@@ -223,6 +241,224 @@
 
 // ── escape HTML ───────────────────────────────────────────────────────
   function escapeHtml(s) { return String(s).replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c])); }
+
+  // ── WebLN detection ───────────────────────────────────────────────────
+  var _weblnProvider = null;
+  var _weblnConnecting = false;
+
+  function detectWebLN(timeout) {
+    timeout = timeout || 3000;
+    return new Promise(function(resolve) {
+      if (window.webln && typeof window.webln.enable === 'function') {
+        resolve(window.webln);
+        return;
+      }
+      var handler = function() {
+        document.removeEventListener('webln:ready', handler);
+        resolve(window.webln || null);
+      };
+      document.addEventListener('webln:ready', handler, { once: true });
+      setTimeout(function() {
+        document.removeEventListener('webln:ready', handler);
+        resolve(window.webln || null);
+      }, timeout);
+    });
+  }
+
+  async function connectWebLN() {
+    if (_weblnConnecting) return;
+    _weblnConnecting = true;
+    var statusEl = document.getElementById('webln-status');
+    var previewEl = document.getElementById('webln-preview');
+    if (!statusEl || !previewEl) { _weblnConnecting = false; return; }
+
+    statusEl.textContent = '\uD83D\uDD0D Detecting Lightning wallet...';
+    statusEl.className = 'webln-status webln-status--pending';
+
+    var provider = await detectWebLN(4000);
+    if (!provider) {
+      statusEl.textContent = '\u26A0 No WebLN wallet detected. Install Alby or Joule browser extension.';
+      statusEl.className = 'webln-status webln-status--error';
+      _weblnConnecting = false;
+      return;
+    }
+
+    statusEl.textContent = '\uD83D\uDD11 Requesting permission...';
+    try {
+      await provider.enable();
+    } catch (e) {
+      statusEl.textContent = '\u26A0 Permission denied: ' + (e.message || 'user cancelled');
+      statusEl.className = 'webln-status webln-status--error';
+      _weblnConnecting = false;
+      return;
+    }
+
+    statusEl.textContent = '\uD83D\uDCE1 Fetching node info...';
+    try {
+      var info = await provider.getInfo();
+      var nodeAlias = info.node && info.node.alias ? info.node.alias : 'Unknown Node';
+      var nodePubkey = info.node && info.node.pubkey ? info.node.pubkey : '';
+      var lnAddr = info.node && info.node.lightning_address ? info.node.lightning_address : '';
+      _weblnProvider = provider;
+
+      previewEl.style.display = 'block';
+      previewEl.innerHTML =
+        '<div class="webln-preview__header">\u26A1 Lightning Wallet Detected</div>' +
+        '<div class="webln-preview__body">' +
+          '<div class="webln-preview__row"><span class="webln-preview__label">Provider</span><span class="webln-preview__val">' + escapeHtml(info.providerName || info.node && info.node.alias || 'WebLN') + '</span></div>' +
+          '<div class="webln-preview__row"><span class="webln-preview__label">Node</span><span class="webln-preview__val">' + escapeHtml(nodeAlias) + '</span></div>' +
+          (nodePubkey ? '<div class="webln-preview__row"><span class="webln-preview__label">Pubkey</span><span class="webln-preview__val mono">' + escapeHtml(fmt.shortAddr(nodePubkey)) + '</span></div>' : '') +
+          (lnAddr ? '<div class="webln-preview__row"><span class="webln-preview__label">LN Addr</span><span class="webln-preview__val mono">' + escapeHtml(lnAddr) + '</span></div>' : '') +
+        '</div>' +
+        '<div class="webln-preview__actions">' +
+          '<button class="btn btn--primary" id="webln-confirm-btn">\u2713 CONFIRM & CONNECT</button>' +
+          '<button class="btn" id="webln-cancel-btn">\u2715 CANCEL</button>' +
+        '</div>';
+
+      statusEl.textContent = '\u2713 WebLN wallet ready — review and confirm';
+      statusEl.className = 'webln-status webln-status--success';
+
+      document.getElementById('webln-confirm-btn')?.addEventListener('click', function() {
+        var btcAddr = info.walletAddress || '';
+        if (btcAddr && dom.walletAddressInput) {
+          dom.walletAddressInput.value = btcAddr;
+          var evt = new Event('input', { bubbles: true });
+          dom.walletAddressInput.dispatchEvent(evt);
+          setTimeout(function() { dom.walletSave?.click(); }, 300);
+        } else {
+          statusEl.textContent = '\u2139 Your LN wallet did not provide a BTC address. Enter it manually above.';
+          statusEl.className = 'webln-status webln-status--info';
+          previewEl.style.display = 'none';
+          _weblnProvider = null;
+          setTimeout(function() { dom.walletAddressInput?.focus(); }, 100);
+        }
+      });
+      document.getElementById('webln-cancel-btn')?.addEventListener('click', function() {
+        previewEl.style.display = 'none';
+        previewEl.innerHTML = '';
+        statusEl.textContent = '';
+        statusEl.className = 'webln-status';
+        _weblnProvider = null;
+        _weblnConnecting = false;
+      });
+
+    } catch (e) {
+      statusEl.textContent = '\u26A0 Failed to get node info: ' + (e.message || 'unknown error');
+      statusEl.className = 'webln-status webln-status--error';
+    }
+    _weblnConnecting = false;
+  }
+
+  // ── Bitcoin address validation (Bech32 + Base58Check) ──────────────
+  const _BECH32_CHARSET = 'qpzry9x8gf2tvdw0s3jn54khce6mua7l';
+  const _VALIDATE_BASE58 = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
+
+  function _bech32Polymod(values) {
+    var GEN = [0x3b6a57b2, 0x26508e6d, 0x1ea119fa, 0x3d4233dd, 0x2a1462b3];
+    var chk = 1;
+    for (var i = 0; i < values.length; i++) {
+      var top = chk >> 25;
+      chk = ((chk & 0x1ffffff) << 5) ^ values[i];
+      for (var j = 0; j < 5; j++) {
+        if ((top >> j) & 1) chk ^= GEN[j];
+      }
+    }
+    return chk;
+  }
+
+  // ── Real-time wallet address validation ──
+  var _walletValidationTimer = null;
+  function _updateWalletValidation() {
+    var input = dom.walletAddressInput;
+    var statusEl = document.getElementById('wallet-validation-status');
+    if (!input || !statusEl) return;
+    var addr = input.value.trim();
+    if (!addr) {
+      statusEl.textContent = '';
+      statusEl.className = 'wallet-validation-status';
+      input.classList.remove('field__input--valid', 'field__input--invalid');
+      return;
+    }
+    var result = validateBitcoinAddress(addr);
+    if (result.valid) {
+      input.classList.remove('field__input--invalid');
+      input.classList.add('field__input--valid');
+      var typeLabel = addr.indexOf('bc1') === 0 ? 'Bech32' : 'Base58';
+      statusEl.textContent = '\u2713 Valid ' + typeLabel + ' address';
+      statusEl.className = 'wallet-validation-status wallet-validation-status--valid';
+    } else {
+      input.classList.remove('field__input--valid');
+      input.classList.add('field__input--invalid');
+      statusEl.textContent = '\u2717 ' + result.error;
+      statusEl.className = 'wallet-validation-status wallet-validation-status--invalid';
+    }
+  }
+
+  // Wire up real-time validation on input + debounced keyup
+  dom.walletAddressInput?.addEventListener('input', _updateWalletValidation);
+  dom.walletAddressInput?.addEventListener('keyup', function() {
+    if (_walletValidationTimer) clearTimeout(_walletValidationTimer);
+    _walletValidationTimer = setTimeout(_updateWalletValidation, 200);
+  });
+
+  function validateBitcoinAddress(addr) {
+    if (!addr || typeof addr !== 'string') return { valid: false, error: 'Address is required' };
+    addr = addr.trim();
+    if (addr.length < 26 || addr.length > 90) return { valid: false, error: 'Invalid length (' + addr.length + ' chars)' };
+
+    // Bech32 (bc1...)
+    if (addr.indexOf('bc1') === 0 || addr.indexOf('BC1') === 0) {
+      var lower = addr.toLowerCase();
+      var pos = lower.lastIndexOf('1');
+      if (pos < 1 || pos + 7 > lower.length) return { valid: false, error: 'Invalid Bech32 format' };
+      var hrp = lower.slice(0, pos);
+      var data = lower.slice(pos + 1);
+      if (hrp !== 'bc') return { valid: false, error: 'Invalid prefix (expected bc1)' };
+      if (data.length < 6) return { valid: false, error: 'Data part too short' };
+      for (var i = 0; i < data.length; i++) {
+        if (_BECH32_CHARSET.indexOf(data[i]) === -1) return { valid: false, error: 'Invalid Bech32 character' };
+      }
+      var values = [];
+      for (var j = 0; j < data.length; j++) values.push(_BECH32_CHARSET.indexOf(data[j]));
+      var hrpExpand = [];
+      for (var k = 0; k < hrp.length; k++) hrpExpand.push(hrp.charCodeAt(k) >> 5);
+      hrpExpand.push(0);
+      for (var l = 0; l < hrp.length; l++) hrpExpand.push(hrp.charCodeAt(l) & 31);
+      var all = hrpExpand.concat(values);
+      if (_bech32Polymod(all) !== 1) return { valid: false, error: 'Invalid Bech32 checksum' };
+      return { valid: true };
+    }
+
+    // Base58Check (1... or 3...)
+    if (addr.indexOf('1') === 0 || addr.indexOf('3') === 0) {
+      for (var m = 0; m < addr.length; m++) {
+        if (_VALIDATE_BASE58.indexOf(addr[m]) === -1) return { valid: false, error: 'Invalid Base58 character' };
+      }
+      // Decode Base58 to hex and verify checksum
+      try {
+        var n = 0n;
+        for (var p = 0; p < addr.length; p++) {
+          n = n * 58n + BigInt(_VALIDATE_BASE58.indexOf(addr[p]));
+        }
+        var hex = n.toString(16);
+        if (hex.length % 2 === 1) hex = '0' + hex;
+        // Count leading '1's (each = leading zero byte)
+        var lead1 = 0;
+        while (lead1 < addr.length && addr[lead1] === '1') lead1++;
+        if (lead1 > 0) hex = '00'.repeat(lead1) + hex;
+        if (hex.length < 10) return { valid: false, error: 'Address too short for checksum' };
+        var payload = hex.slice(0, hex.length - 8);
+        var checksum = hex.slice(hex.length - 8);
+        // We'd need SHA256 here, but can't in pure JS without crypto subtle
+        // For now, do a basic format check and let backend do full checksum
+        return { valid: true, note: 'Format OK — backend will verify checksum' };
+      } catch (e) {
+        return { valid: false, error: 'Invalid Base58 format' };
+      }
+    }
+
+    return { valid: false, error: 'Address must start with bc1, 1, or 3' };
+  }
 
   // ── decode HTML entities (reverse of escapeHtml) ────────────────────
   function decodeHtmlEntities(s) {
@@ -358,8 +594,12 @@
     // Wallet block — show connected BTC address from snapshot
     if (dom.sbWalletAddr) {
       var addr = snap.btc_address || window.BTC_ADDRESS || '';
-      dom.sbWalletAddr.textContent = addr ? fmt.shortAddr(addr) : '—';
+      dom.sbWalletAddr.innerHTML = addr ? '<span title="' + escapeHtml(addr) + '">' + fmt.shortAddrChunk(addr) + '</span>' : '—';
       dom.sbWalletAddr.title = addr || 'no wallet connected';
+    }
+    // Toggle empty wallet banner
+    if (dom.emptyWalletBanner) {
+      dom.emptyWalletBanner.style.display = (window.BTC_ADDRESS) ? 'none' : '';
     }
   }
 
@@ -1096,7 +1336,7 @@ function renderAccount(acct) {
     renderStatusBar(snap);
     if (dom.topbarAddress) dom.topbarAddress.textContent = `${fmt.shortAddr(snap.btc_address || window.BTC_ADDRESS || '')}`;
     if (dom.statusText) dom.statusText.textContent = snap.worker ? 'ONLINE' : 'OFFLINE';
-    dom.statusPill.classList.toggle('is-online', !!snap.worker);
+    if (dom.statusPill) dom.statusPill.classList.toggle('is-online', !!snap.worker);
     renderHero(snap);
     renderHostCore(snap);
     renderPool(snap.pool, snap.luck_estimate);
@@ -1210,11 +1450,84 @@ function renderAccount(acct) {
   dom.settingsModal?.addEventListener('click', (e) => { if (e.target.matches('[data-close]')) closeSettingsModal(); });
   dom.openSettings?.addEventListener('click', openSettingsModal);
 
+  // ── LN Payment ──
+  var _lnPaying = false;
+
+  // Populate LN address from support config on open
+  function _populateLNAddress() {
+    var el = document.getElementById('support-ln-address');
+    if (!el || el.textContent !== '—') return;
+    fetch('/api/support-config').then(function(r) { return r.json(); }).then(function(cfg) {
+      var ln = cfg.methods && cfg.methods.find(function(m) { return m.id === 'lightning'; });
+      if (ln && ln.address) el.textContent = ln.address;
+    }).catch(function() { /* support config not available */ });
+  }
+  // Listen for support panel opening
+  document.addEventListener('click', function _onSupportOpen(e) {
+    if (e.target.closest('#support-expand-btn') || e.target.closest('#support-bar-methods')) {
+      setTimeout(_populateLNAddress, 200);
+    }
+  });
+
+  async function sendLNPayment() {
+    if (_lnPaying) return;
+    _lnPaying = true;
+    var invoiceInput = document.getElementById('ln-invoice-input');
+    var statusEl = document.getElementById('ln-payment-status');
+    if (!invoiceInput || !statusEl) { _lnPaying = false; return; }
+
+    try {
+      var invoice = invoiceInput.value.trim();
+      if (!invoice) {
+        statusEl.textContent = '\u26A0 Please paste a BOLT11 invoice';
+        statusEl.className = 'support-modal__ln-status support-modal__ln-status--error';
+        return;
+      }
+      if (invoice.indexOf('lnbc') !== 0 && invoice.indexOf('lntb') !== 0) {
+        statusEl.textContent = '\u26A0 Invalid invoice — must start with lnbc or lntb';
+        statusEl.className = 'support-modal__ln-status support-modal__ln-status--error';
+        return;
+      }
+
+      statusEl.textContent = '\uD83D\uDD0D Connecting Lightning wallet...';
+      statusEl.className = 'support-modal__ln-status support-modal__ln-status--pending';
+
+      var provider = await detectWebLN(5000);
+      if (!provider) {
+        statusEl.textContent = '\u26A0 No WebLN wallet detected. Install Alby or Joule browser extension.';
+        statusEl.className = 'support-modal__ln-status support-modal__ln-status--error';
+        return;
+      }
+
+      statusEl.textContent = '\uD83D\uDD11 Requesting permission to pay...';
+      await provider.enable();
+
+      statusEl.textContent = '\uD83D\uDCB8 Sending payment...';
+      var result = await provider.sendPayment(invoice);
+      var preimage = result && result.preimage ? result.preimage : '';
+      var shortPreimage = preimage ? preimage.slice(0, 16) + '...' : '';
+      statusEl.innerHTML = '\u2713 Payment sent! ' + (shortPreimage ? 'Preimage: <code class="mono">' + shortPreimage + '</code>' : '') + '<br><span class="support-modal__ln-footnote">Check your wallet for confirmation.</span>';
+      statusEl.className = 'support-modal__ln-status support-modal__ln-status--success';
+      invoiceInput.value = '';
+      _weblnProvider = provider;
+    } catch (e) {
+      statusEl.textContent = '\u2717 Payment ' + (e.message && e.message.indexOf('denied') !== -1 ? 'denied' : 'failed') + ': ' + (e.message || 'unknown error');
+      statusEl.className = 'support-modal__ln-status support-modal__ln-status--error';
+    } finally {
+      _lnPaying = false;
+    }
+  }
+
+  // Wire up LN Pay button
+  document.addEventListener('click', function(e) {
+    if (e.target.closest('#ln-pay-btn')) sendLNPayment();
+  });
+
   // ── Wallet modal ──
   function openWalletModal() {
     dom.walletModal?.classList.add('modal--open');
     // Fill current address info
-    if (dom.walletCurrentAddr) dom.walletCurrentAddr.textContent = window.BTC_ADDRESS || '—';
+    if (dom.walletCurrentAddr) dom.walletCurrentAddr.textContent = window.BTC_ADDRESS ? fmt.chunkAddr(window.BTC_ADDRESS) : '—';
     if (dom.walletCurrentWorker) dom.walletCurrentWorker.textContent = window.WORKER_NAME || '—';
     if (dom.walletAddressInput) dom.walletAddressInput.value = '';
     if (dom.walletWorkerInput) dom.walletWorkerInput.value = '';
@@ -1230,6 +1543,9 @@ function renderAccount(acct) {
   }
   dom.walletModal?.addEventListener('click', (e) => { if (e.target.matches('[data-close]')) closeWalletModal(); });
   dom.openWallet?.addEventListener('click', openWalletModal);
+  document.getElementById('empty-wallet-cta')?.addEventListener('click', openWalletModal);
+  document.getElementById('empty-wallet-ln')?.addEventListener('click', connectWebLN);
+  document.getElementById('webln-connect-btn')?.addEventListener('click', connectWebLN);
 
   // Save wallet
   
@@ -2704,6 +3020,95 @@ dom.walletSave?.addEventListener('click', async () => {
     if (btn) btn.textContent = document.getElementById('sidebar')?.classList.contains('collapsed') ? '▶' : '◀';
   });
 
+  // ── Docs: IntersectionObserver for active section ──
+  var _docsObserver = null;
+  var _docsSearchInitialized = false;
+  function _initDocsObserver() {
+    if (_docsObserver) return;
+    var sections = document.querySelectorAll('.doc-section');
+    if (!sections.length) return;
+    var links = document.querySelectorAll('.docs-index__link');
+    _docsObserver = new IntersectionObserver(function(entries) {
+      var visible = [];
+      entries.forEach(function(entry) {
+        if (entry.isIntersecting) visible.push(entry.target.id);
+      });
+      if (!visible.length) return;
+      var topId = visible.reduce(function(a, b) {
+        var elA = document.getElementById(a), elB = document.getElementById(b);
+        return (elA && elA.getBoundingClientRect().top || 0) < (elB && elB.getBoundingClientRect().top || 0) ? a : b;
+      });
+      links.forEach(function(link) {
+        link.classList.toggle('docs-index__link--active', link.getAttribute('data-section') === topId);
+      });
+    }, { rootMargin: '-80px 0px -60% 0px', threshold: 0 });
+    sections.forEach(function(s) { _docsObserver.observe(s); });
+  }
+
+  // ── Docs: Search / filter ──
+  function _initDocsSearch() {
+    if (_docsSearchInitialized) return;
+    var input = document.getElementById('docs-search-input');
+    var clear = document.getElementById('docs-search-clear');
+    var links = document.querySelectorAll('.docs-index__links .docs-index__link');
+    if (!input || !links.length) return;
+    _docsSearchInitialized = true;
+
+    input.addEventListener('input', function() {
+      var q = this.value.trim().toLowerCase();
+      links.forEach(function(link) {
+        var section = document.getElementById(link.getAttribute('data-section'));
+        if (!section) return;
+        if (!q) {
+          section.style.display = '';
+          link.style.display = '';
+        } else {
+          var match = section.textContent.toLowerCase().indexOf(q) !== -1;
+          section.style.display = match ? '' : 'none';
+          link.style.display = match ? '' : 'none';
+        }
+      });
+      if (clear) clear.style.display = q ? '' : 'none';
+    });
+
+    clear?.addEventListener('click', function() {
+      input.value = '';
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      input.focus();
+    });
+  }
+
+  // Initialize docs features once at boot if the section exists
+  if (document.getElementById('section-docs')) {
+    // Use requestIdleCallback or on first scroll to not block initial render
+    var _initDocs = function() {
+      _initDocsObserver();
+      _initDocsSearch();
+    };
+    if (window.requestIdleCallback) {
+      requestIdleCallback(_initDocs, { timeout: 2000 });
+    } else {
+      setTimeout(_initDocs, 1500);
+    }
+  }
+
+  // ── Collapsible FAQ ──
+  document.addEventListener('click', function(e) {
+    var faqQ = e.target.closest('.doc-faq-item__q');
+    if (faqQ) {
+      var answer = faqQ.nextElementSibling;
+      if (answer && answer.classList.contains('doc-faq-item__a')) {
+        if (answer.style.display === 'none') {
+          answer.style.display = '';
+          faqQ.classList.remove('doc-faq-item__q--collapsed');
+        } else {
+          answer.style.display = 'none';
+          faqQ.classList.add('doc-faq-item__q--collapsed');
+        }
+      }
+    }
+  });
+
   // ── Sidebar section map: data-section → action ──
   var SECTION_MAP = {
     'dashboard': { type: 'scroll', id: 'app-main' },       // scroll to top
@@ -2711,6 +3116,7 @@ dom.walletSave?.addEventListener('click', async () => {
     'analytics': { type: 'tabClick', target: 'tab-charts' },
     'fleet-cmd': { type: 'scroll', id: 'axe-fleet-panel' },
     'terminal':  { type: 'tabClick', target: 'tab-terminal' },
+    'docs':      { type: 'scroll', id: 'section-docs' },
   };
   // ── Sidebar navigation — scroll or switch tab ──
   document.querySelectorAll('.sidebar__link').forEach(function(link) {

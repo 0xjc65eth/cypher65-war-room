@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 from datetime import datetime, timezone
 
-from flask import Flask, jsonify, render_template, request, abort
+from flask import Flask, jsonify, render_template, request, abort, Response
 import requests
 import concurrent.futures
 
@@ -91,6 +91,7 @@ RATE_LIMIT_PER_MINUTE = int(os.environ.get("RATE_LIMIT_PER_MINUTE", 60))
 DATA_DIR.mkdir(exist_ok=True)
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", os.urandom(32).hex())
+app.config['TEMPLATES_AUTO_RELOAD'] = True
 
 # ── Register blueprints ─────────────────────────────────────────────────────
 app.register_blueprint(solo_mining_bp, url_prefix='/api/solo-mining')
@@ -463,6 +464,22 @@ def init_db():
     c.execute("CREATE INDEX IF NOT EXISTS idx_wallet_history_addr ON wallet_address_history(address)")
     c.execute("CREATE INDEX IF NOT EXISTS idx_wallet_history_ts ON wallet_address_history(connected_at)")
 
+    # ── Multi-tenant migration: add tenant_id to axe_fleet tables ──
+    for table_name in ("axe_devices", "axe_telemetry"):
+        try:
+            c.execute(f"PRAGMA table_info({table_name})")
+            cols = {row[1] for row in c.fetchall()}
+            if "tenant_id" not in cols:
+                c.execute(f"ALTER TABLE {table_name} ADD COLUMN tenant_id TEXT DEFAULT 'default'")
+                log.info("[migrate] added tenant_id to %s", table_name)
+        except Exception as e:
+            log.warning("[migrate] could not add tenant_id to %s: %s", table_name, e)
+    try:
+        c.execute("CREATE INDEX IF NOT EXISTS idx_axe_devices_tenant ON axe_devices(tenant_id)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_axe_telemetry_tenant ON axe_telemetry(tenant_id)")
+    except Exception:
+        pass
+
 # ── WAL mode for better concurrent read/write ──
     c.execute("PRAGMA journal_mode=WAL")
     c.execute("PRAGMA synchronous=NORMAL")
@@ -474,9 +491,269 @@ def init_db():
 
 init_db()
 
+
+def _auto_seed_axe_fleet(registry):
+    """Auto-seed test devices if the Axe Fleet registry is empty.
+    Creates 4 mock devices (3 online/varying health, 1 offline) with
+    10 historical telemetry points each so the dashboard has data immediately.
+    """
+    import uuid, time
+    try:
+        devices = registry.list_devices()
+        if devices and len(devices) > 0:
+            return  # already has devices, skip
+        log = logging.getLogger("cypher65.app")
+        log.info("[axe] registry empty — auto-seeding 4 test devices")
+        now = int(time.time())
+
+        mock_devices = [
+            {
+                "name": "Garage Bitaxe",
+                "ip": "192.168.1.100",
+                "model": "Bitaxe ULP",
+                "firmware": "AxeOS", "version": "2.6.0",
+                "hostname": "bitaxe-garage", "status": "ONLINE",
+                "hashrate_hs": 5200000000000,
+                "temperature": 62, "fan_speed": 80, "fan_rpm": 4200,
+                "power_watts": 42, "voltage_mv": 1200, "frequency_mhz": 525,
+                "best_diff": "42.8T", "uptime_seconds": 259200,
+                "efficiency_jth": 8.08,
+                "shares_accepted": 15823, "shares_rejected": 47,
+                "hw_error_pct": 0.3, "wifi_rssi": -65, "free_heap": 128000,
+            },
+            {
+                "name": "Office NerdAxe",
+                "ip": "192.168.1.101",
+                "model": "NerdAxe v2",
+                "firmware": "AxeOS", "version": "2.5.1",
+                "hostname": "nerdaxe-office", "status": "ONLINE",
+                "hashrate_hs": 2100000000000,
+                "temperature": 58, "fan_speed": 65, "fan_rpm": 3800,
+                "power_watts": 18, "voltage_mv": 1100, "frequency_mhz": 450,
+                "best_diff": "12.5T", "uptime_seconds": 604800,
+                "efficiency_jth": 8.57,
+                "shares_accepted": 45231, "shares_rejected": 89,
+                "hw_error_pct": 0.2, "wifi_rssi": -72, "free_heap": 95000,
+            },
+            {
+                "name": "Lab Bitaxe (hot)",
+                "ip": "192.168.1.102",
+                "model": "Bitaxe Max",
+                "firmware": "AxeOS", "version": "2.6.0",
+                "hostname": "bitaxe-lab", "status": "WARNING",
+                "hashrate_hs": 3800000000000,
+                "temperature": 82, "fan_speed": 100, "fan_rpm": 5200,
+                "power_watts": 38, "voltage_mv": 1250, "frequency_mhz": 500,
+                "best_diff": "28.3T", "uptime_seconds": 43200,
+                "efficiency_jth": 10.0,
+                "shares_accepted": 5872, "shares_rejected": 215,
+                "hw_error_pct": 3.5, "wifi_rssi": -85, "free_heap": 72000,
+            },
+            {
+                "name": "Basement S19",
+                "ip": "192.168.1.200",
+                "model": "Antminer S19 Pro",
+                "firmware": "Braiins OS+", "version": "22.0",
+                "hostname": "s19-basement", "status": "OFFLINE",
+                "hashrate_hs": 0,
+                "temperature": None, "fan_speed": 0, "fan_rpm": 0,
+                "power_watts": 0, "voltage_mv": None, "frequency_mhz": 0,
+                "best_diff": "", "uptime_seconds": 0,
+                "efficiency_jth": None,
+                "shares_accepted": 0, "shares_rejected": 0,
+                "hw_error_pct": 0.0, "wifi_rssi": None, "free_heap": 0,
+            },
+        ]
+
+        for m in mock_devices:
+            device_id = uuid.uuid4().hex[:12]
+            caps = {
+                "telemetry": True, "statistics": True,
+                "restart": m["status"] in ("ONLINE", "WARNING"),
+                "identify": m["status"] in ("ONLINE", "WARNING"),
+                "pause": m["firmware"] == "AxeOS",
+                "resume": m["firmware"] == "AxeOS",
+                "frequencyControl": m["firmware"] == "AxeOS",
+                "voltageControl": m["firmware"] == "AxeOS",
+                "powerControl": False,
+                "configure": m["firmware"] == "AxeOS",
+            }
+            device_dict = {
+                "id": device_id,
+                "name": m["name"],
+                "model": m["model"],
+                "manufacturer": "Bitaxe" if "Bitaxe" in m["model"] or "NerdAxe" in m["model"] else "Bitmain",
+                "firmware": m["firmware"],
+                "firmware_version": m["version"],
+                "api_version": "2.0.0",
+                "ip_address": m["ip"],
+                "hostname": m["hostname"],
+                "mac_address": "",
+                "last_seen": now if m["hashrate_hs"] > 0 else 0,
+                "status": m["status"],
+                "group_id": "auto-seed",
+                "added_at": now,
+                "updated_at": now,
+                "capabilities": caps,
+            }
+            registry._persist_device(device_dict)
+
+            for i in range(10):
+                ts = now - (9 - i) * 300
+                hr_variation = m["hashrate_hs"] * (1 + (i % 5 - 2) * 0.02)
+                temp_variation = (i % 3 - 1) * 2
+                tel = {
+                    "ts": ts,
+                    "device_id": device_id,
+                    "hashrate_hs": int(hr_variation) if m["hashrate_hs"] > 0 else 0,
+                    "temperature": m["temperature"] + temp_variation if m["temperature"] is not None else None,
+                    "fan_speed": m["fan_speed"],
+                    "fan_rpm": m["fan_rpm"],
+                    "power_watts": m["power_watts"],
+                    "voltage_mv": m["voltage_mv"],
+                    "frequency_mhz": m["frequency_mhz"],
+                    "best_diff": m["best_diff"],
+                    "uptime_seconds": m["uptime_seconds"] + ts - now,
+                    "efficiency_jth": m["efficiency_jth"],
+                    "shares_accepted": max(0, m["shares_accepted"] + (i - 5) * 100),
+                    "shares_rejected": max(0, m["shares_rejected"] + (i - 5) * 5),
+                    "hw_error_pct": m["hw_error_pct"],
+                    "wifi_rssi": m["wifi_rssi"],
+                    "free_heap": m["free_heap"],
+                    "stratum_status": "connected" if m["hashrate_hs"] > 0 else "disconnected",
+                }
+                registry.save_telemetry(device_id, tel)
+
+        log.info("[axe] auto-seeded %d test devices", len(mock_devices))
+    except Exception as e:
+        log = logging.getLogger("cypher65.app")
+        log.warning("[axe] auto-seed failed: %s", e)
+
+
+def _auto_seed_core_devices(registry):
+    """Auto-seed core device registry with test devices so the alert engine
+    has data to evaluate. Creates 4 CoreDevice objects (3 online, 1 offline).
+    If existing devices lack telemetry (stale test data), replaces them.
+    """
+    import uuid
+    try:
+        existing = registry.list_devices()
+        # Check if existing devices have real telemetry; if not, clear stale data
+        needs_replacement = False
+        for d in existing:
+            tel = getattr(d, 'current_telemetry', None) or {}
+            if not tel.get('temperature'):
+                needs_replacement = True
+                break
+        if existing and len(existing) > 0 and not needs_replacement:
+            return
+        if needs_replacement:
+            log = logging.getLogger("cypher65.app")
+            log.info("[core] replacing %d stale test devices with fresh ones", len(existing))
+            # Clear stale test devices from DB
+            try:
+                conn = sqlite3.connect(registry.db_path)
+                c = conn.cursor()
+                c.execute("DELETE FROM devices")
+                conn.commit()
+                conn.close()
+            except Exception:
+                pass
+            registry.devices.clear()
+        else:
+            log = logging.getLogger("cypher65.app")
+            log.info("[core] registry empty — auto-seeding 4 core devices")
+        now = int(time.time())
+
+        mock = [
+            {"name":"Garage Bitaxe","model":"Bitaxe ULP","firmware":"AxeOS","ip":"192.168.1.100","hostname":"bitaxe-garage","status":"ONLINE","hashrate":5200000000000,"temp":62},
+            {"name":"Office NerdAxe","model":"NerdAxe v2","firmware":"AxeOS","ip":"192.168.1.101","hostname":"nerdaxe-office","status":"ONLINE","hashrate":2100000000000,"temp":58},
+            {"name":"Lab Bitaxe (hot)","model":"Bitaxe Max","firmware":"AxeOS","ip":"192.168.1.102","hostname":"bitaxe-lab","status":"WARNING","hashrate":3800000000000,"temp":82},
+            {"name":"Basement S19","model":"Antminer S19 Pro","firmware":"Braiins OS+","ip":"192.168.1.200","hostname":"s19-basement","status":"OFFLINE","hashrate":0,"temp":None},
+        ]
+
+        for m in mock:
+            status = getattr(CoreDeviceStatus, m["status"], CoreDeviceStatus.OFFLINE)
+            device = CoreDevice(
+                id=uuid.uuid4().hex[:12],
+                name=m["name"],
+                model=m["model"],
+                firmware=m["firmware"],
+                ip=m["ip"],
+                hostname=m["hostname"],
+                status=status,
+                last_seen=datetime.now(timezone.utc) if m["status"] != "OFFLINE" else None,
+                current_telemetry={
+                    "temperature": m["temp"],
+                    "hashrate_hs": m["hashrate"],
+                    "hashrate_drop_pct": 0.0 if m["hashrate"] > 0 else 100.0,
+                    "reject_rate": 0.5 if m["temp"] and m["temp"] > 75 else 0.1,
+                    "stale_rate": 0.2,
+                    "pool_online": 1 if m["hashrate"] > 0 else 0,
+                },
+                capabilities=[],
+                metadata={"health_score": 100.0 if m["temp"] and m["temp"] < 65 else (50.0 if m["status"] == "WARNING" else 0.0)},
+            )
+            registry.add_device(device)
+        log.info("[core] auto-seeded %d core devices", len(mock))
+    except Exception as e:
+        log = logging.getLogger("cypher65.app")
+        log.warning("[core] auto-seed failed: %s", e)
+        import traceback
+        log.warning("[core] auto-seed traceback: %s", traceback.format_exc())
+
+
+# ── Support/Donation configuration endpoint ──────────────────────────────────
+# Addresses configurable via env vars. Falls back to hardcoded defaults.
+_SUPPORT_CONFIG = {
+    "title": "Support Cypher65",
+    "subtitle": "Cypherpunks support cypherpunks.",
+    "description": "If this tool helps you, support it so it can keep evolving. BTC, Lightning, and hashpower accepted to sustain development.",
+    "methods": [
+        {
+            "id": "btc",
+            "label": "Bitcoin",
+            "icon": "₿",
+            "color": "#f7931a",
+            "address": os.environ.get("SUPPORT_BTC", "35gjAoadgQxrNc1Kx6QiSLx7wCCXRnRFkM"),
+        },
+        {
+            "id": "lightning",
+            "label": "Lightning",
+            "icon": "⚡",
+            "color": "#f5b942",
+            "address": os.environ.get("SUPPORT_LN", "spark1pgss98nvpcsssdfekenznqqmmaea6nxltz65e0srj7nh7hfkaufpu53nslvtpc"),
+        },
+        {
+            "id": "hashpower",
+            "label": "Hashpower",
+            "icon": "⛏",
+            "color": "#06d6f0",
+            "address": os.environ.get("SUPPORT_HASHPOWER", "bc1qvfct7p8ggsxlfy3257pytcqnsvjv77qzpy9pnv"),
+            "note": "Braiins / any pool",
+        },
+    ],
+    "cta_text": "Support the project",
+    "status": "active",
+    "version": "1.1.0",
+}
+
+
+@app.route("/api/support-config")
+def api_support_config():
+    """Return donation/support configuration.
+    Addresses can be updated via env vars SUPPORT_BTC, SUPPORT_LN, SUPPORT_HASHPOWER
+    without requiring a code rebuild.
+    """
+    return jsonify(_SUPPORT_CONFIG)
+
+
 # ── Initialize Axe Fleet registry (after get_db/init_db are defined) ──
 _axe_registry = DeviceRegistry(get_db)
 _init_axe_routes(_axe_registry)
+
+# ── Auto-seed Axe Fleet with test devices if registry is empty ──
+_auto_seed_axe_fleet(_axe_registry)
 
 # ── Initialize Device Control (SafetyEngine + Registry) ──
 from core.safety.safety_engine import SafetyEngine
@@ -488,6 +765,7 @@ init_device_control(_axe_registry, SafetyEngine())
 # table managed by core/registry/device_registry.py.
 _core_registry = CoreDeviceRegistry(DB_PATH)
 _core_registry.load_from_db()
+_auto_seed_core_devices(_core_registry)
 
 # ── In-memory command history store ──────────────────────────────────────────
 # Stores executed commands per device for lightweight audit logging.
@@ -674,8 +952,10 @@ _next_memory_alert_id = 0  # monotonic counter so JS renderAlerts sees stable id
 
 # ── BTC price cache (CoinGecko free tier: 10-50 req/min, mas chamamos a cada 15s)
 # Cache por 5 minutos para evitar 429 Too Many Requests.
-BTC_PRICE_CACHE_TTL = 300  # 5 minutos em segundos
+BTC_PRICE_CACHE_TTL = 600  # 10 minutos (CoinGecko free tier: 10-50 req/min)
 btc_price_cache = {"ts": 0, "data": None}  # último timestamp e dados cacheados
+_btc_consec_failures = 0  # contagem de falhas consecutivas para fallback
+_btc_last_fetch_ts = 0     # throttle: último instante em que tentamos fetch
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -1217,6 +1497,9 @@ def _reset_session_state():
     # Clear last_known_prices (opportunity engine market data)
     _shared_state.last_known_prices["braiins"] = None
     _shared_state.last_known_prices["mrr"] = None
+    _shared_state.last_known_prices["nicehash"] = None
+    _shared_state.last_known_prices["kissmyhash"] = None
+    _shared_state.last_known_prices["parasite"] = None
 
     # Reset _shared_state.test_opportunities (mock bypass)
     _shared_state.test_opportunities = None
@@ -1408,8 +1691,15 @@ def _do_poll():
         # net_diff removed from main fetch — mempool.space /v1/difficulty deprecated Oct 2024.
         # blockchain.info /q/getdifficulty handles this via bc_specs below.
         ("mempool_fee", f"{MEMPOOL_API}/v1/fees/recommended",                                   6),
-        ("btc",         "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd,brl,eur,gbp", 6),
     ]
+    # BTC price: só adiciona ao fan-out se passou >= 60s desde a última tentativa
+    global _btc_consec_failures, _btc_last_fetch_ts
+    _btc_now = int(time.time())
+    if _btc_now - _btc_last_fetch_ts >= 60:
+        fetch_specs.append(("btc", "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd,brl,eur,gbp", 6))
+    else:
+        # Cache recente — pula fetch, usa o cache existente
+        fetch_specs.append(("btc", None, 0))
 
     # blockchain.info /q/* endpoints return PLAIN TEXT (not JSON), so they
     # live in a separate text-fetch fan-out below. mempool.space /v1/difficulty
@@ -1428,6 +1718,7 @@ def _do_poll():
         future_to_key = {
             executor.submit(fetch_json, url, timeout): key
             for key, url, timeout in fetch_specs
+            if url is not None  # skip throttled entries (e.g. BTC price when cache is fresh)
         }
         # No outer timeout: each fetch_json belongs to a request with its own
         # per-endpoint timeout (≤10s). Worst-case poll wall = max(latencies),
@@ -1487,18 +1778,37 @@ def _do_poll():
     if current_difficulty is not None and (net_hashrate is None or net_hashrate == 0):
         net_hashrate = current_difficulty * (2 ** 32) / 600
 
-    # BTC price (CoinGecko) — com cache de 5 min para evitar 429 rate limit
+    # BTC price (CoinGecko) — throttle + cache + fallback
     _now = int(time.time())
+    # _btc_consec_failures, _btc_last_fetch_ts declared global above (fetch_specs section)
     btc_quote = results["btc"]
-    # Se a API retornou dados, atualiza o cache
-    if isinstance(btc_quote, dict) and btc_quote.get("bitcoin"):
+
+    # Throttle: só tenta fetch se passou >= 60s desde a última tentativa
+    _fetch_allowed = (_now - _btc_last_fetch_ts) >= 60
+    if _fetch_allowed:
+        _btc_last_fetch_ts = _now
+        # Se a API retornou dados, atualiza o cache e zera contagem de falhas
+        if isinstance(btc_quote, dict) and btc_quote.get("bitcoin"):
+            btc_price_cache["data"] = btc_quote
+            btc_price_cache["ts"] = _now
+            _btc_consec_failures = 0
+        else:
+            # Falhou — incrementa contador
+            _btc_consec_failures += 1
+    else:
+        # Throttle ativo — usa cache mesmo que um pouco velho
+        if _now - btc_price_cache["ts"] < BTC_PRICE_CACHE_TTL and btc_price_cache["data"]:
+            btc_quote = btc_price_cache["data"]
+        else:
+            btc_quote = None
+
+    # Fallback: se falhou consecutivamente > 2x E não temos cache, usa $60k USD
+    if _btc_consec_failures > 2 and not (isinstance(btc_quote, dict) and btc_quote.get("bitcoin")):
+        log.warning("[btc] %d consecutive failures — using fallback $60k USD", _btc_consec_failures)
+        btc_quote = {"bitcoin": {"usd": 60000.0, "brl": 330000.0, "eur": 55000.0, "gbp": 47000.0}}
         btc_price_cache["data"] = btc_quote
         btc_price_cache["ts"] = _now
-    # Se falhou (429 etc), usa cache se ainda válido (< 5 min)
-    elif _now - btc_price_cache["ts"] < BTC_PRICE_CACHE_TTL and btc_price_cache["data"]:
-        btc_quote = btc_price_cache["data"]
-    else:
-        btc_quote = None
+
     btc_usd = (btc_quote or {}).get("bitcoin", {}).get("usd") if isinstance(btc_quote, dict) else None
     btc_brl = (btc_quote or {}).get("bitcoin", {}).get("brl") if isinstance(btc_quote, dict) else None
     btc_eur = (btc_quote or {}).get("bitcoin", {}).get("eur") if isinstance(btc_quote, dict) else None
@@ -2072,6 +2382,14 @@ def _do_poll():
         btc_prices = {"USD": btc_usd, "BRL": btc_brl, "EUR": btc_eur, "GBP": btc_gbp}
 
         profitability["cost_mode"] = cost_mode
+        profitability["cost_model_configured"] = cost_mode != "none"
+        profitability["cost_per_kwh"] = coerce_float(s.get('power_kwh_usd'), 0.10)
+        profitability["cost_label"] = (
+            f"${coerce_float(s.get('rental_usd_per_th_day'),0.0):.2f}/d rental"
+            if cost_mode == "rental" else
+            f"${coerce_float(s.get('power_kwh_usd'),0.10):.4f}/kWh power ({coerce_float(s.get('power_watts'),0.0):.0f}W)"
+            if cost_mode == "power" else "no cost model"
+        )
         profitability["active_currency_val"] = s.get("active_currency", "USD")
         profitability["pool_fee_pct"] = pool_fee_pct
         profitability["orphan_pct"] = orphan_pct
@@ -2141,18 +2459,17 @@ def _do_poll():
                 "rental_net_btc_per_day": round(pool_net_btc_per_day, 8),  # gross pool BTC
                 "rental_net_usd_per_day": round((pool_net_btc_per_day * (btc_usd or 0)) - cost_per_day, 4),
                 "rental_net_usd_per_month": round(((pool_net_btc_per_day * (btc_usd or 0)) - cost_per_day) * 30, 2),
-                # Cost info
+                # Cost info (cost_model_configured, cost_per_kwh, cost_label
+                # already set above; cost_per_day_usd is dynamic)
                 "cost_per_day_usd": round(cost_per_day, 4),
-                "cost_label": (
-                    f"${rental_cost_per_day:.2f}/d rental ({ths:.2f} TH/s × ${coerce_float(s.get('rental_usd_per_th_day'),0.0):.4f})"
-                    if cost_mode == "rental" else
-                    f"${power_cost_per_day:.2f}/d power ({coerce_float(s.get('power_watts'),0.0):.0f}W × 24h × ${coerce_float(s.get('power_kwh_usd'),0.10):.4f}/kWh)"
-                    if cost_mode == "power" else"."
-                ),
                 # Break-even: rental rate at which pool_net = rental_cost
                 "break_even_rental_usd_per_th_day": round(
                     (pool_net_btc_per_day * (btc_usd or 0)) / max(ths, 1e-12), 4
                 ) if cost_mode == "rental" and btc_usd and ths > 0 else None,
+                # General break-even cost per TH/day (always computed)
+                "breakeven_cost_per_th_day": round(
+                    (pool_net_btc_per_day * (btc_usd or 0)) / max(ths, 1e-12), 4
+                ) if btc_usd and ths > 0 else None,
                 # Effective BTC/TH/s/day (marginal)
                 "effective_btc_per_th_per_day": round(
                     (1.0 / 1e12 / net_hr) * blocks_per_day * total_reward_per_block
@@ -2490,9 +2807,51 @@ def api_snapshot():
     """Return the full dashboard snapshot, including a small set of
     market highlights derived from cached prices (no extra HTTP calls)."""
     resp = dict(latest_snapshot)
-    resp["market_highlights"] = _build_market_highlights(
-        latest_snapshot, _shared_state.last_known_prices, max_age_seconds=300
+    # Ensure market data is populated by fetching offers (cached internally)
+    # This populates _shared_state.last_known_prices for build_highlights
+    _get_hashrate_market_offers()
+    # Build market highlights from cached prices (no HTTP calls — safe on every poll)
+    highlights = _build_market_highlights(
+        latest_snapshot, _shared_state.last_known_prices, max_age_seconds=120
     )
+    resp["market_highlights"] = highlights
+    # market_data: structured {offers, best_price, updated_at} expected by frontend renderMarket()
+    cache = _shared_state.market_data_cache
+    if highlights and len(highlights) > 0:
+        # Sort by score descending; best price = lowest price_per_th_day
+        sorted_hl = sorted(highlights, key=lambda x: x.get("metrics", {}).get("score", 0), reverse=True)
+        best_offer = min(sorted_hl, key=lambda x: x.get("price_per_th_day", 999))
+        best_price_str = "{:.6f} BTC/TH/d".format(best_offer["price_per_th_day"]) if best_offer.get("price_per_th_day") else None
+        resp["market_data"] = {
+            "offers": sorted_hl,
+            "best_price": best_price_str,
+            "updated_at": int(time.time()),
+            "provider_count": len(sorted_hl),
+        }
+        # Update shared cache
+        cache["offers"] = sorted_hl
+        cache["best_price"] = best_price_str
+        cache["updated_at"] = int(time.time())
+        cache["loading"] = False
+        cache["error"] = None
+    else:
+        # Use cache if available (even if slightly stale), fall back to empty
+        if cache["offers"] and cache["offers"] != []:
+            resp["market_data"] = {
+                "offers": cache["offers"],
+                "best_price": cache["best_price"],
+                "updated_at": cache["updated_at"],
+                "provider_count": len(cache["offers"]),
+                "cached": True,
+            }
+        else:
+            resp["market_data"] = {
+                "offers": [],
+                "best_price": None,
+                "updated_at": 0,
+                "provider_count": 0,
+                "loading": True,
+            }
     return jsonify(resp)
 
 
@@ -3627,11 +3986,15 @@ def _get_hashrate_market_offers() -> list:
     Empty results are not cached, so a temporary provider failure can
     recover on the next request. Successful fetches are persisted to the
     hashrate_market_history table.
+
+    Also updates _shared_state.last_known_prices so that build_highlights
+    (called by /api/snapshot) can serve market_data without extra HTTP calls.
     """
     now = int(time.time())
     cache = _HASHRATE_MARKET_CACHE
     ttl = _HASHRATE_MARKET_CACHE_TTL if cache["offers"] else _HASHRATE_MARKET_EMPTY_CACHE_TTL
     if (now - cache["ts"] < ttl) and cache["offers"] is not None:
+        _sync_market_prices_to_state(cache["offers"])
         return cache["offers"]
 
     offers = _fetch_all_offers()
@@ -3644,13 +4007,33 @@ def _get_hashrate_market_offers() -> list:
             log.warning("[hashrate_market] history persistence failed: %s", e)
         cache["ts"] = now
         cache["offers"] = offers
+        _sync_market_prices_to_state(offers)
     else:
-        # Cache empty results briefly to avoid hammering APIs, while still
-        # allowing quick recovery once the market is available again.
         cache["ts"] = now
         cache["offers"] = []
 
     return offers
+
+
+def _sync_market_prices_to_state(offers: list):
+    """Update _shared_state.last_known_prices with current offer data.
+    This feeds build_highlights() so that /api/snapshot can serve market_data
+    without extra HTTP calls."""
+    for offer in offers:
+        provider = getattr(offer, "provider", None) or offer.get("provider")
+        if not provider:
+            continue
+        price = getattr(offer, "price_per_th_day", None)
+        if price is None:
+            price = offer.get("price_per_th_day")
+        if price is None:
+            continue
+        price_ph = price * 1_000_000
+        _shared_state.last_known_prices[provider] = {
+            "price": price_ph,
+            "ts": int(time.time()),
+            "label": provider.capitalize(),
+        }
 
 
 @app.route("/api/hashrate-market")
@@ -3692,6 +4075,101 @@ def api_hashrate_market_history():
     except Exception as e:
         log.warning("[hashrate_market_history] error: %s", e)
         return jsonify({"success": False, "error": "failed to fetch history"}), 500
+
+
+@app.route("/api/market/history")
+def api_market_history():
+    """Return raw time-series market data for the price history chart.
+
+    Returns all historical market records as a flat array with timestamps
+    and prices in both TH/s and PH/s units. Optimized for frontend charting.
+
+    Query params:
+        limit: max rows per provider (default 200)
+        hours: lookback window in hours (default 168 = 7 days)
+    """
+    try:
+        limit = int(request.args.get("limit", 200))
+        hours = int(request.args.get("hours", 168))
+    except (TypeError, ValueError):
+        limit = 200
+        hours = 168
+
+    try:
+        conn = get_db()
+        c = conn.cursor()
+        cutoff = int(time.time()) - hours * 3600
+        c.execute(
+            """SELECT ts, provider, hashrate, price_per_th_day, score
+               FROM hashrate_market_history
+               WHERE ts >= ?
+               ORDER BY ts ASC""",
+            (cutoff,),
+        )
+        rows = c.fetchall()
+        conn.close()
+
+        records = []
+        for r in rows:
+            ppth = r["price_per_th_day"]
+            records.append({
+                "ts": r["ts"],
+                "provider": r["provider"],
+                "hashrate": r["hashrate"],
+                "price_btc_per_th_day": ppth,
+                "price_btc_per_ph_day": (ppth * 1000) if ppth is not None else None,
+                "score": r["score"],
+            })
+
+        return jsonify({
+            "success": True,
+            "records": records,
+            "count": len(records),
+            "updated_at": int(time.time()),
+        })
+    except Exception as e:
+        log.warning("[market/history] error: %s", e)
+        return jsonify({"success": False, "error": "failed to fetch history"}), 500
+
+
+@app.route("/api/market/trend")
+def api_market_trend():
+    """Return time-series price data aggregated by provider for the 7-day trend chart.
+    Returns datasets per provider with timestamps and prices in both TH/s and PH/s units.
+    """
+    try:
+        conn = get_db()
+        c = conn.cursor()
+        cutoff = int(time.time()) - 7 * 86400  # last 7 days
+        c.execute(
+            """SELECT ts, provider, price_per_th_day, score
+               FROM hashrate_market_history
+               WHERE ts >= ?
+               ORDER BY ts ASC""",
+            (cutoff,),
+        )
+        rows = c.fetchall()
+        conn.close()
+
+        from collections import defaultdict
+        by_provider = defaultdict(list)
+        for r in rows:
+            ppth = r["price_per_th_day"]
+            by_provider[r["provider"]].append({
+                "ts": r["ts"],
+                "price_btc_per_th_day": ppth,
+                "price_btc_per_ph_day": (ppth * 1000) if ppth is not None else None,
+                "score": r["score"],
+            })
+
+        return jsonify({
+            "success": True,
+            "providers": dict(by_provider),
+            "updated_at": int(time.time()),
+        })
+    except Exception as e:
+        log.warning("[market/trend] error: %s", e)
+        return jsonify({"success": False, "error": "failed to fetch trend"}), 500
 
 
 @app.route("/api/opportunities/compare")
@@ -3840,20 +4318,16 @@ def api_set_address():
     errors = []
     if not new_addr:
         errors.append("address is required")
-    elif not (new_addr.startswith("bc1") or new_addr.startswith("1")):
-        errors.append("address must start with bc1 (bech32) or 1 (legacy)")
-    elif len(new_addr) < 26 or len(new_addr) > 64:
-        errors.append(f"address length {len(new_addr)} is invalid (must be 26-64 chars)")
+    elif not (new_addr.startswith("bc1") or new_addr.startswith("1") or new_addr.startswith("3")):
+        errors.append("address must start with bc1 (bech32), 1 (legacy) or 3 (P2SH)")
     elif new_addr == BTC_ADDRESS and not new_worker:
         errors.append("address is the same as current — no change needed")
-    # FASE 2: Checksum validation
-    if not errors and new_addr.startswith("bc1"):
-        if not re.match(r"^bc1[02-9ac-hj-np-z]+$", new_addr):
-            errors.append("address checksum is invalid - invalid bech32 characters")
-    elif not errors and new_addr.startswith("1"):
-        b58_chars = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
-        if not all(c in b58_chars for c in new_addr[1:]):
-            errors.append("address checksum is invalid - invalid base58 characters")
+    else:
+        # Proper checksum validation via helpers.py
+        from helpers import validate_btc_address as _val_btc
+        val = _val_btc(new_addr)
+        if not val.get("valid"):
+            errors.append(val.get("error", "invalid address"))
 
 
     # Validate worker name if provided
@@ -3923,6 +4397,61 @@ def api_set_address():
         "worker": WORKER_NAME,
         "old_address": old_addr,
     })
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  AI OPERATOR — POST /api/ai/query  (SSE streaming)
+# ═══════════════════════════════════════════════════════════════════════════
+
+from services.ai_operator import stream_response, AI_QUERIES_PER_MINUTE
+
+# Per-IP rate limiter for AI queries
+_ai_rate_store: Dict[str, List[float]] = {}
+
+
+@app.route("/api/ai/query", methods=["POST"])
+def api_ai_query():
+    """AI Operator chat endpoint. Accepts a JSON body with `query` and
+    streams the LLM response as Server-Sent Events (SSE).
+
+    Request body:
+        {"query": "What is my current hashrate?"}
+
+    Response (SSE stream):
+        data: {"type":"text","content":"..."}\n\n
+        data: {"type":"action","action":{"device_id":"...","command":"restart","reason":"..."}}\n\n
+        data: {"type":"done"}\n\n
+    """
+    # Rate limiting: max AI_QUERIES_PER_MINUTE per IP
+    ip = request.remote_addr or "127.0.0.1"
+    now = time.time()
+    if ip not in _ai_rate_store:
+        _ai_rate_store[ip] = []
+    _ai_rate_store[ip] = [t for t in _ai_rate_store[ip] if now - t < 60]
+    if len(_ai_rate_store[ip]) >= AI_QUERIES_PER_MINUTE:
+        return jsonify({"error": "Rate limit: max 10 queries per minute"}), 429
+    _ai_rate_store[ip].append(now)
+
+    data = request.get_json(silent=True) or {}
+    query = (data.get("query") or "").strip()
+    if not query:
+        return jsonify({"error": "query is required"}), 400
+
+    def generate():
+        # Use the global latest_snapshot as context
+        snapshot = latest_snapshot if latest_snapshot.get("ts") else {}
+        for chunk in stream_response(query, snapshot):
+            yield f"data: {chunk}\n\n"
+
+    return Response(
+        generate(),
+        mimetype="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )
 
 
 if __name__ == "__main__":

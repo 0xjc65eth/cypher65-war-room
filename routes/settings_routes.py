@@ -31,7 +31,8 @@ def api_settings_post():
     applied = []
     rejected = []
     for k, v in body.items():
-        if k not in DEFAULT_SETTINGS:
+        # Allow internal keys (prefixed with '_') and known settings
+        if not k.startswith('_') and k not in DEFAULT_SETTINGS:
             rejected.append({"key": k, "reason": "unknown key"})
             continue
         if save_setting(k, v):

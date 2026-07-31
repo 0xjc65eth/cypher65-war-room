@@ -191,6 +191,148 @@ def isfinite_v(v):
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#  Bitcoin address validation (Bech32 + Base58Check)
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+# Bech32 character set (BIP-173)
+_BECH32_CHARSET = "qpzry9x8gf2tvdw0s3jn54khce6mua7l"
+# Base58 alphabet (no 0, O, I, l)
+_BASE58_ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
+
+
+def _bech32_polymod(values):
+    """Compute Bech32 checksum using GF(32) generator."""
+    GEN = [0x3b6a57b2, 0x26508e6d, 0x1ea119fa, 0x3d4233dd, 0x2a1462b3]
+    chk = 1
+    for v in values:
+        top = chk >> 25
+        chk = ((chk & 0x1ffffff) << 5) ^ v
+        for i in range(5):
+            if (top >> i) & 1:
+                chk ^= GEN[i]
+    return chk
+
+
+def _bech32_hrp_expand(hrp):
+    """Expand HRP for checksum computation."""
+    return [ord(c) >> 5 for c in hrp] + [0] + [ord(c) & 31 for c in hrp]
+
+
+def _bech32_verify_checksum(hrp, data):
+    """Verify Bech32 checksum. Returns True if valid."""
+    return _bech32_polymod(_bech32_hrp_expand(hrp) + data) == 1
+
+
+def _decode_bech32(addr):
+    """Decode a Bech32 address. Returns (hrp, data_part) or None.
+    Handles both Bech32 (BIP-173) and Bech32m (BIP-350) but for
+    Bitcoin addresses we only need Bech32 (bc1).
+    """
+    addr = addr.lower()
+    # Find the last '1' separator
+    pos = addr.rfind('1')
+    if pos < 1 or pos + 7 > len(addr):
+        return None
+    hrp = addr[:pos]
+    data = addr[pos + 1:]
+    if len(data) < 6:
+        return None
+    # Check all characters are valid bech32
+    for c in data:
+        if c not in _BECH32_CHARSET:
+            return None
+    # Convert to 5-bit values
+    values = [_BECH32_CHARSET.index(c) for c in data]
+    # Verify checksum
+    if not _bech32_verify_checksum(hrp, values):
+        return None
+    return (hrp, values[:-6])  # Strip checksum
+
+
+def _decode_base58(addr):
+    """Decode a Base58 string to an integer."""
+    n = 0
+    for c in addr:
+        idx = _BASE58_ALPHABET.find(c)
+        if idx == -1:
+            return None
+        n = n * 58 + idx
+    return n
+
+
+def _base58check_decode(addr):
+    """Decode and verify Base58Check address.
+    Returns (version_byte, payload) or None if invalid."""
+    n = _decode_base58(addr)
+    if n is None:
+        return None
+    # Convert to bytes (big-endian, minimum size)
+    b = n.to_bytes((n.bit_length() + 7) // 8, 'big')
+    # Add leading zero bytes from Base58 encoding
+    leading_zeros = 0
+    for c in addr:
+        if c == '1':
+            leading_zeros += 1
+        else:
+            break
+    if leading_zeros > 0:
+        b = b'\x00' * leading_zeros + b
+    if len(b) < 5:  # version(1) + payload + checksum(4)
+        return None
+    payload = b[:-4]
+    checksum = b[-4:]
+    # Verify checksum: first 4 bytes of double-SHA256 of payload
+    import hashlib
+    h = hashlib.sha256(hashlib.sha256(payload).digest()).digest()[:4]
+    if h != checksum:
+        return None
+    return (payload[0], payload[1:])
+
+
+def validate_btc_address(addr: str) -> dict:
+    """Validate a Bitcoin address. Returns dict with 'valid' bool and optional 'error' message.
+    Supports Bech32 (bc1..., BIP-173), P2PKH (1..., Base58Check), P2SH (3..., Base58Check)."""
+    if not addr or not isinstance(addr, str):
+        return {"valid": False, "error": "Address is required"}
+    addr = addr.strip()
+    if len(addr) < 26 or len(addr) > 90:
+        return {"valid": False, "error": f"Invalid address length ({len(addr)} chars)"}
+
+    if addr.startswith('bc1'):
+        # Bech32 (SegWit / Taproot)
+        result = _decode_bech32(addr)
+        if result is None:
+            return {"valid": False, "error": "Invalid Bech32 checksum or format"}
+        hrp, data = result
+        if hrp != 'bc':
+            return {"valid": False, "error": "Invalid human-readable part (expected 'bc')"}
+        if len(data) < 2 or len(data) > 40:
+            return {"valid": False, "error": "Invalid data length for Bech32 address"}
+        return {"valid": True}
+
+    elif addr.startswith('1') or addr.startswith('3'):
+        # P2PKH (1...) or P2SH (3...) — Base58Check
+        result = _base58check_decode(addr)
+        if result is None:
+            return {"valid": False, "error": "Invalid Base58Check checksum or format"}
+        version, _ = result
+        expected_version = 0x00 if addr.startswith('1') else 0x05
+        if version != expected_version:
+            return {"valid": False, "error": "Invalid version byte for address type"}
+        return {"valid": True}
+
+    elif addr.startswith('2'):
+        # P2WPKH-in-P2SH (starts with '2'? Rare but some use it)
+        result = _base58check_decode(addr)
+        if result is not None:
+            return {"valid": True}
+        return {"valid": False, "error": "Invalid address format"}
+
+    else:
+        return {"valid": False, "error": "Address must start with 'bc1' (SegWit), '1' (Legacy), or '3' (P2SH)"}
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 #  Memory alert builder
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 

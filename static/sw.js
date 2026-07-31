@@ -8,7 +8,7 @@
    - Clicking a notification focuses / opens the dashboard
    ════════════════════════════════════════════════════════════════════════ */
 
-const CACHE_NAME = 'cypher65-v2';
+const CACHE_NAME = 'cypher65-v3';
 const ASSETS_TO_CACHE = [
   '/',
   '/static/style.css',

@@ -49,11 +49,23 @@ class AlertEngine:
     """
 
     DEFAULT_RULES = [
-        AlertRule("temperature_high", "temperature", ">", 85.0, "CRIT", "temperature"),
-        AlertRule("temperature_warn", "temperature", ">", 75.0, "WARN", "temperature"),
-        AlertRule("hashrate_drop", "hashrate_drop_pct", ">", 50.0, "WARN", "hashrate_drop"),
-        AlertRule("reject_rate_high", "reject_rate", ">", 5.0, "WARN", "reject_rate"),
-        AlertRule("stale_rate_high", "stale_rate", ">", 5.0, "WARN", "stale_rate"),
+        # ── Temperature ──
+        AlertRule("temp_critical", "temperature", ">", 75.0, "CRIT", "temperature"),
+        AlertRule("temp_high", "temperature", ">", 65.0, "WARN", "temperature"),
+        AlertRule("temp_warm", "temperature", ">", 55.0, "INFO", "temperature"),
+
+        # ── Hashrate ──
+        AlertRule("hashrate_zero", "hashrate_hs", "==", 0, "CRIT", "hashrate_drop"),
+        AlertRule("hashrate_drop_severe", "hashrate_drop_pct", ">", 80.0, "CRIT", "hashrate_drop"),
+        AlertRule("hashrate_drop", "hashrate_drop_pct", ">", 30.0, "WARN", "hashrate_drop"),
+
+        # ── Reject / Stale ──
+        AlertRule("reject_rate_crit", "reject_rate", ">", 10.0, "CRIT", "reject_rate"),
+        AlertRule("reject_rate_high", "reject_rate", ">", 3.0, "WARN", "reject_rate"),
+        AlertRule("stale_rate_crit", "stale_rate", ">", 10.0, "CRIT", "stale_rate"),
+        AlertRule("stale_rate_high", "stale_rate", ">", 3.0, "WARN", "stale_rate"),
+
+        # ── Connectivity ──
         AlertRule("device_offline", "status", "==", 0, "CRIT", "device_offline"),
         AlertRule("pool_disconnect", "pool_online", "==", 0, "CRIT", "pool_disconnect"),
     ]
@@ -73,6 +85,9 @@ class AlertEngine:
             c.execute("SELECT * FROM alert_rules WHERE enabled=1")
             rows = c.fetchall()
             conn.close()
+            if not rows:
+                # No custom rules configured — fall back to defaults
+                return copy.deepcopy(self._rules)
             rules = []
             for r in rows:
                 rules.append(AlertRule(

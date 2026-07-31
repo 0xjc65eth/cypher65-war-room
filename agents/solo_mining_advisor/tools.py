@@ -9,6 +9,7 @@ Tools:
   get_btc_price()           → BTC price in USD, BRL, EUR, GBP
   get_braiins_orderbook()   → Braiins Hashpower market rates
   get_mrr_listings()        → MiningRigRentals active listings
+  get_nicehash_orderbook()  → NiceHash Hashpower marketplace
   get_parasite_pool_stats() → parasite.space worker/pool stats
 """
 
@@ -27,6 +28,7 @@ MEMPOOL_API = "https://mempool.space/api"
 COINGECKO_API = "https://api.coingecko.com/api/v3/simple/price"
 BRAIINS_API = "https://hashpower.braiins.com/v1"
 MRR_BASE = "https://www.miningrigrentals.com/api/v2"
+NICEHASH_PUBLIC_API = "https://api2.nicehash.com/main/api/v2/hashpower/orderBook"
 PARASITE_API = "https://parasite.space/api"
 
 # Default worker address (configurable)
@@ -163,31 +165,30 @@ def get_braiins_orderbook():
             return {"error": "Braiins orderbook is empty (no asks or bids)"}
 
         # Cheapest hashrate = lowest ask price
+        # Braiins API returns 'price_sat' (price in satoshis) per PH/day
         if asks:
-            best = min(asks, key=lambda a: float(a.get("price", 0)))
-            price_raw = float(best.get("price", 0))
+            best = min(asks, key=lambda a: float(a.get("price_sat", 0)))
+            price_sat = float(best.get("price_sat", 0))
         else:
-            best = max(bids, key=lambda b: float(b.get("price", 0)))
-            price_raw = float(best.get("price", 0))
+            best = max(bids, key=lambda b: float(b.get("price_sat", 0)))
+            price_sat = float(best.get("price_sat", 0))
 
-        if price_raw <= 0:
+        if price_sat <= 0:
             return {"error": "Braiins orderbook has no valid prices"}
 
-        # Normalize to BTC/PH/day
-        if "sats" in price_unit.lower():
-            btc_per_ph_day = price_raw / 100_000_000
-        elif "btc" in price_unit.lower():
-            btc_per_ph_day = price_raw
-        else:
-            btc_per_ph_day = price_raw / 100_000_000  # assume sats
+        # Convert satoshis to BTC/PH/day
+        btc_per_ph_day = price_sat / 100_000_000
+        available_hr_ph = float(best.get("hr_matched_ph", 0)) or float(best.get("hr_available_ph", 0))
 
         return {
             "price_btc_per_ph_day": btc_per_ph_day,
-            "price_raw": price_raw,
+            "price_raw": price_sat,
+            "price_raw_unit": "sats/PH/day",
             "price_unit": price_unit,
             "source": "hashpower.braiins.com/v1/spot/orderbook",
             "available_asks": len(asks),
             "available_bids": len(bids),
+            "best_order_hr_ph": available_hr_ph,
         }
 
     except Exception as e:
@@ -253,50 +254,91 @@ def get_mrr_listings(algo="sha256", api_key=None, api_secret=None):
         if not data.get("success"):
             return {"error": data.get("message", "MRR API error")}
 
-        listings = data.get("data", [])
-        if not listings:
+        raw_data = data.get("data", {})
+        # MRR API v2: "data" is a dict with "records" key containing the array
+        if isinstance(raw_data, dict):
+            records = raw_data.get("records", [])
+        elif isinstance(raw_data, list):
+            records = raw_data
+        else:
+            records = []
+
+        if not records:
             return {"error": "No active SHA-256 listings found on MRR"}
 
         # Find cheapest listing (lowest price per TH/day)
         best_price_btc_per_th_day = float("inf")
         best_listing = None
-        for rig in listings:
-            price_obj = rig.get("price", {})
-            amount = float(price_obj.get("amount", 0))
-            currency = price_obj.get("currency", "BTC").upper()
-            unit = price_obj.get("unit", "th*day")
-            hashrate_th = float(rig.get("hash", 0))
-
-            if amount <= 0 or hashrate_th <= 0:
+        for rig in records:
+            if not isinstance(rig, dict):
                 continue
 
-            # Normalize to BTC per TH per day
-            if "th" in unit.lower() and "day" in unit.lower():
-                btc_per_th_day = amount if currency == "BTC" else amount / 1e8
-            elif "gh" in unit.lower():
-                btc_per_th_day = (amount if currency == "BTC" else amount / 1e8) * 1000
-            elif "ph" in unit.lower():
-                btc_per_th_day = (amount if currency == "BTC" else amount / 1e8) / 1_000_000
+            # MRR API v2: price is a dict keyed by currency, e.g. {"BTC": {"price": "0.0001", "hour": "0.0001", ...}}
+            price_currencies = rig.get("price", {})
+            if not isinstance(price_currencies, dict):
+                continue
+            btc_price_data = price_currencies.get("BTC")
+            if not btc_price_data or not isinstance(btc_price_data, dict):
+                continue
+
+            # Price comes in BTC per hour
+            price_per_hour = float(btc_price_data.get("price", 0))
+            if price_per_hour <= 0:
+                price_per_hour = float(btc_price_data.get("hour", 0))
+            if price_per_hour <= 0:
+                continue
+
+            # Hashrate: MRR API v2 hashrate.advertised.hash (in TH/s)
+            hashrate_obj = rig.get("hashrate", {})
+            if isinstance(hashrate_obj, dict):
+                advertised = hashrate_obj.get("advertised", {})
+                if isinstance(advertised, dict):
+                    hashrate_th = float(advertised.get("hash", 0))
+                else:
+                    hashrate_th = float(hashrate_obj.get("hash", 0)) if isinstance(hashrate_obj.get("hash"), (int, float, str)) else 0
             else:
-                btc_per_th_day = amount if currency == "BTC" else amount / 1e8
+                hashrate_th = float(rig.get("hash", 0))
+
+            if hashrate_th <= 0:
+                continue
+
+            # Price per TH per day = (price_per_hour * 24) / hashrate_in_th
+            btc_per_th_day = (price_per_hour * 24) / hashrate_th
 
             if btc_per_th_day < best_price_btc_per_th_day:
                 best_price_btc_per_th_day = btc_per_th_day
                 best_listing = rig
 
         if not best_listing:
-            return {"error": "Could not parse MRR listing prices"}
+            return {
+                "error": "Could not parse MRR listing prices",
+                "debug": {
+                    "total_records": len(records),
+                    "sample_keys": list(records[0].keys()) if records else [],
+                },
+            }
 
         # TH/day → PH/day: multiply by 1,000,000
         btc_per_ph_day = best_price_btc_per_th_day * 1_000_000
+
+        # Extract hashrate from best listing for return
+        hashrate_obj = best_listing.get("hashrate", {})
+        if isinstance(hashrate_obj, dict):
+            advertised = hashrate_obj.get("advertised", {})
+            if isinstance(advertised, dict):
+                best_hashrate_th = float(advertised.get("hash", 0))
+            else:
+                best_hashrate_th = float(hashrate_obj.get("hash", 0))
+        else:
+            best_hashrate_th = float(best_listing.get("hash", 0))
 
         return {
             "price_btc_per_ph_day": btc_per_ph_day,
             "price_btc_per_th_day": best_price_btc_per_th_day,
             "source": "miningrigrentals.com/api/v2",
             "best_rig_name": best_listing.get("name", "unknown"),
-            "best_rig_hash_th": best_listing.get("hash", 0),
-            "total_listings": len(listings),
+            "best_rig_hash_th": best_hashrate_th,
+            "total_listings": len(records),
             "algo": algo,
         }
 
@@ -306,7 +348,95 @@ def get_mrr_listings(algo="sha256", api_key=None, api_secret=None):
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-#  TOOL 5: get_parasite_pool_stats()
+#  TOOL 5: get_nicehash_orderbook()
+# ═══════════════════════════════════════════════════════════════════════════
+
+def get_nicehash_orderbook(algorithm="SHA256", location=None):
+    """Fetch real-time NiceHash Hashpower orderbook (public, no auth needed).
+
+    Args:
+        algorithm: "SHA256" (default) or "SHA256ASICBOOST"
+        location: optional market location ID (0=Europe, 1=USA, None=all)
+
+    Returns:
+        {"price_btc_per_ph_day": float, "source": str, "available_orders": int, ...}
+        {"error": str} on failure
+    """
+    try:
+        params = {"algorithm": algorithm}
+        if location is not None:
+            params["location"] = location
+
+        r = requests.get(
+            NICEHASH_PUBLIC_API,
+            params=params,
+            timeout=10,
+            headers={"User-Agent": "cypher65-solo-mining-advisor/1.0"},
+        )
+        if not r.ok:
+            return {"error": f"NiceHash API returned HTTP {r.status_code}"}
+
+        data = r.json()
+
+        # NiceHash v2 API: orders are nested under stats.{currency}.orders
+        # The top-level response has only a 'stats' key with per-currency data.
+        stats = data.get("stats", {})
+        btc_stats = stats.get("BTC", stats.get("btc", {})) if isinstance(stats, dict) else {}
+        orders = btc_stats.get("orders", [])
+
+        if not orders:
+            return {"error": "NiceHash orderbook is empty (no orders found)"}
+
+        # Filter active STANDARD/MARKET sell orders
+        active_orders = [
+            o for o in orders
+            if o.get("alive", False) and float(o.get("price", 0)) > 0
+        ]
+        if not active_orders:
+            return {"error": "NiceHash has no active sell orders"}
+
+        # Find cheapest: lowest price wins
+        best = min(active_orders, key=lambda o: float(o.get("price", float("inf"))))
+        price_raw = float(best.get("price", 0))
+        if price_raw <= 0:
+            return {"error": "NiceHash best order has invalid price"}
+
+        # NiceHash v2 API price is in BTC/PH/day (the standard unit for the marketplace)
+        # The priceFactor/displayPriceFactor are UI metadata, not base unit indicators.
+        btc_per_ph_day = price_raw  # already BTC/PH/day
+
+        # Speed is in H/s (marketFactor = 1e18 for EH)
+        speed_hs = float(best.get("acceptedSpeed", 0) or best.get("speed", 0))
+        speed_ph = speed_hs / 1e15 if speed_hs > 0 else 0
+
+        # Limit in H/s
+        limit_hs = float(best.get("limit", 0))
+
+        return {
+            "price_btc_per_ph_day": btc_per_ph_day,
+            "price_btc_per_th_day": price_raw,
+            "price_raw": price_raw,
+            "price_unit": "BTC/TH/day",
+            "source": "api2.nicehash.com (stats.BTC.orders)",
+            "algorithm": algorithm,
+            "available_orders": len(active_orders),
+            "best_order_speed_ph": speed_ph,
+            "best_order_speed_hs": speed_hs,
+            "best_order_limit_hs": limit_hs,
+            "market": "global",
+        }
+
+    except Exception as e:
+        log.warning("[get_nicehash_orderbook] error: %s", e)
+        return {"error": f"NiceHash API unreachable: {str(e)[:100]}"}
+
+    except Exception as e:
+        log.warning("[get_nicehash_orderbook] error: %s", e)
+        return {"error": f"NiceHash API unreachable: {str(e)[:100]}"}
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  TOOL 6: get_parasite_pool_stats()
 # ═══════════════════════════════════════════════════════════════════════════
 
 def get_parasite_pool_stats(worker_id=None):
@@ -397,6 +527,7 @@ TOOL_REGISTRY = {
     "get_btc_price": get_btc_price,
     "get_braiins_orderbook": get_braiins_orderbook,
     "get_mrr_listings": get_mrr_listings,
+    "get_nicehash_orderbook": get_nicehash_orderbook,
     "get_parasite_pool_stats": get_parasite_pool_stats,
 }
 
@@ -426,6 +557,20 @@ TOOL_SCHEMAS = {
                 "type": "string",
                 "description": "Algorithm to search: sha256 or sha256_asicboost",
                 "default": "sha256",
+            },
+        },
+    },
+    "get_nicehash_orderbook": {
+        "description": "Fetch real-time NiceHash Hashpower orderbook (public, no auth needed). Returns cheapest SHA256 sell order in BTC/PH/day.",
+        "parameters": {
+            "algorithm": {
+                "type": "string",
+                "description": "Algorithm: SHA256 or SHA256ASICBOOST",
+                "default": "SHA256",
+            },
+            "location": {
+                "type": "integer",
+                "description": "Market location: 0=Europe, 1=USA (optional, returns all)",
             },
         },
     },

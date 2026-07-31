@@ -8,7 +8,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
-<link rel="stylesheet" href="/static/style.css?v14">
+<link rel="stylesheet" href="/static/style.css?v21">
 <link rel="icon" href="/static/favicon.ico" sizes="any">
 <link rel="icon" type="image/png" sizes="32x32" href="/static/icon-32x32.png">
 <link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
@@ -26,6 +26,8 @@
 <!-- ══════════════════════════════════════════════════════════════════════
      SIDEBAR — fixed left navigation
      ══════════════════════════════════════════════════════════════════════ -->
+<div class="sidebar-overlay" id="sidebar-overlay"></div>
+<button class="sidebar-mobile-toggle" id="sidebar-mobile-toggle" title="Open menu">☰</button>
 <aside class="sidebar" id="sidebar">
   <div class="sidebar__logo">
     <span class="sidebar__brand">CYPHER65</span>
@@ -52,6 +54,10 @@
       <span class="icon">≫</span>
       <span class="label">Terminal</span>
     </button>
+    <button class="sidebar__link" data-section="docs">
+      <span class="icon">?</span>
+      <span class="label">Docs</span>
+    </button>
   </nav>
 </aside>
 
@@ -61,29 +67,47 @@
   <div class="app-main" id="app-main">
 
 <!-- ══════════════════════════════════════════════════════════════════════
-     TOPBAR — CYPHER-65 CORE OS v2.7
+     TOPBAR — compacta, status em tempo real
      ══════════════════════════════════════════════════════════════════════ -->
 <header class="topbar">
   <div class="topbar__left">
-    <div class="brand">
-      <div class="brand__meta">
-        <div class="brand__title">CYPHER65 :: CORE OS v2.7</div>
-        <div class="brand__sub mono" id="topbar-address">—</div>
-      </div>
+    <div class="topbar__brand-group">
+      <span class="topbar__brand">CYPHER65</span>
+      <span class="topbar__brand-sub" id="topbar-address">—</span>
+    </div>
+    <div class="topbar__status-group">
+      <span class="topbar__led" id="tbar-led"></span>
+      <span class="topbar__status" id="tbar-status">INIT</span>
+      <span class="topbar__sep">|</span>
+      <span class="topbar__clock" id="clock">--:--:--</span>
     </div>
   </div>
-  <div class="topbar-right">
-    <div class="pill pill--status" id="status-pill">
-      <span class="led" id="led-status"></span>
-      <span id="status-text">INIT</span>
+  <div class="topbar__right">
+    <div class="topbar__metric">
+      <span class="topbar__metric-label">HR</span>
+      <span class="topbar__metric-val" id="tbar-hr">—</span>
     </div>
-    <div class="pill pill--clock" id="clock">--:--:--</div>
-    <button class="btn btn--primary" id="open-wallet" style="font-size:10px;padding:3px 8px" title="Connect Wallet">> CONNECT</button>
-    <button id="refresh-now" class="btn btn--mini" title="Refresh now">↻</button>
-    <button id="open-alert-center" class="btn btn--mini" title="Alert Center">!!</button>
-    <button id="open-exports" class="btn btn--mini" title="Exports">EXP</button>
-    <button id="open-settings" class="btn btn--mini" title="Settings">::</button>
-    <button id="sidebar-toggle" class="btn btn--mini" title="AI Operator">AI</button>
+    <div class="topbar__metric">
+      <span class="topbar__metric-label">BEST</span>
+      <span class="topbar__metric-val topbar__metric-val--gold" id="tbar-best">—</span>
+    </div>
+    <div class="topbar__metric">
+      <span class="topbar__metric-label">WORKERS</span>
+      <span class="topbar__metric-val" id="tbar-workers">0</span>
+    </div>
+    <div class="topbar__metric">
+      <span class="topbar__metric-label">BTC</span>
+      <span class="topbar__metric-val topbar__metric-val--green" id="tbar-btc">—</span>
+    </div>
+    <div class="topbar__actions">
+      <button id="refresh-now" class="topbar__btn" title="Refresh now">↻</button>
+      <button id="open-exports" class="topbar__btn" title="Exports">EXP</button>
+      <button id="open-settings" class="topbar__btn" title="Settings">::</button>
+      <button id="theme-toggle" class="topbar__btn" title="Toggle theme">☀</button>
+      <button id="sidebar-toggle" class="topbar__btn" title="Toggle Sidebar">☰</button>
+      <button id="open-wallet" class="topbar__btn topbar__btn--wallet" title="Connect Wallet">⚡ CONNECT</button>
+      <span id="status-pill" style="display:none"></span>
+    </div>
   </div>
 </header>
 
@@ -161,23 +185,35 @@
      ══════════════════════════════════════════════════════════════════════ -->
 <div class="kpi-row" id="kpi-row">
   <div class="kpi-card">
-    <span class="kpi-label">Hashrate</span>
-    <span class="kpi-value" id="kpi-hashrate">—</span>
+    <span class="kpi-label">Hashrate <span class="tip-wrap" data-tip="Taxa de processamento do minerador principal"><span class="tip-wrap__icon">?</span></span></span>
+    <div class="kpi-value-row">
+      <span class="kpi-value" id="kpi-hashrate">—</span>
+      <span class="kpi-spark" id="kpi-spark-hashrate"></span>
+    </div>
     <span class="kpi-sub">primary worker</span>
   </div>
   <div class="kpi-card">
-    <span class="kpi-label">Best Difficulty</span>
-    <span class="kpi-value kpi-value--gold" id="kpi-bestdiff">—</span>
+    <span class="kpi-label">Best Difficulty <span class="tip-wrap" data-tip="Maior dificuldade de share já encontrada"><span class="tip-wrap__icon">?</span></span></span>
+    <div class="kpi-value-row">
+      <span class="kpi-value kpi-value--gold" id="kpi-bestdiff">—</span>
+      <span class="kpi-spark" id="kpi-spark-bestdiff"></span>
+    </div>
     <span class="kpi-sub">all-time</span>
   </div>
   <div class="kpi-card">
-    <span class="kpi-label">Share Rate</span>
-    <span class="kpi-value" id="kpi-shares">—</span>
+    <span class="kpi-label">Share Rate <span class="tip-wrap" data-tip="Shares submetidos na última hora"><span class="tip-wrap__icon">?</span></span></span>
+    <div class="kpi-value-row">
+      <span class="kpi-value" id="kpi-shares">—</span>
+      <span class="kpi-spark" id="kpi-spark-shares"></span>
+    </div>
     <span class="kpi-sub">last hour</span>
   </div>
   <div class="kpi-card">
-    <span class="kpi-label">Pool Hashrate</span>
-    <span class="kpi-value kpi-value--cyan" id="kpi-poolhr">—</span>
+    <span class="kpi-label">Pool Hashrate <span class="tip-wrap" data-tip="Taxa de processamento total da pool"><span class="tip-wrap__icon">?</span></span></span>
+    <div class="kpi-value-row">
+      <span class="kpi-value kpi-value--cyan" id="kpi-poolhr">—</span>
+      <span class="kpi-spark" id="kpi-spark-poolhr"></span>
+    </div>
     <span class="kpi-sub">161.6 PH/s total</span>
   </div>
 </div>
@@ -185,10 +221,11 @@
 <!-- ══════════════════════════════════════════════════════════════════════
      EMPTY WALLET BANNER
      ══════════════════════════════════════════════════════════════════════ -->
-<div id="empty-wallet-banner" style="display:none">
+<div id="empty-wallet-banner">
   <div style="font-size:12px;color:var(--green-dim);margin-bottom:6px">>> NO WALLET CONNECTED</div>
   <div style="font-size:10px;color:var(--text-tertiary);margin-bottom:8px">Connect a BTC address to start monitoring your miners</div>
-  <button class="btn btn--primary" id="empty-wallet-cta">> CONNECT WALLET</button>
+  <button class="btn btn--primary" id="empty-wallet-cta">⛏ CONNECT WALLET</button>
+  <button class="btn" id="empty-wallet-ln" style="margin-left:6px;border-color:var(--gold,#f5b942);color:var(--gold,#f5b942)">⚡ LN WALLET</button>
 </div>
 
 <!-- ══════════════════════════════════════════════════════════════════════
@@ -257,22 +294,22 @@
 
   <div class="hero-grid">
     <div class="metric metric--xl">
-      <div class="metric__label">HASHRATE</div>
+      <div class="metric__label">HASHRATE <span class="tip-wrap" data-tip="Taxa de processamento do minerador principal. Calculada a partir dos shares submetidos à pool"><span class="tip-wrap__icon">?</span></span></div>
       <div class="metric__value" id="m-hashrate">—</div>
       <div class="metric__sub" id="m-hashrate-sub">core processing speed</div>
     </div>
     <div class="metric metric--xl">
-      <div class="metric__label">BEST DIFFICULTY</div>
+      <div class="metric__label">BEST DIFFICULTY <span class="tip-wrap" data-tip="Maior dificuldade de share já encontrada. Quanto mais próxima da dificuldade da rede, maior a chance de encontrar um bloco"><span class="tip-wrap__icon">?</span></span></div>
       <div class="metric__value metric__value--gold" id="m-bestdiff">—</div>
       <div class="metric__sub" id="m-bestdiff-sub">highest share</div>
     </div>
     <div class="metric metric--xl">
-      <div class="metric__label">LAST SHARE</div>
+      <div class="metric__label">LAST SHARE <span class="tip-wrap" data-tip="Tempo desde o último share submetido. Gaps maiores que 5 minutos podem indicar problemas de conexão"><span class="tip-wrap__icon">?</span></span></div>
       <div class="metric__value" id="m-lastshare">—</div>
       <div class="metric__sub" id="m-lastshare-sub">—</div>
     </div>
     <div class="metric metric--xl">
-      <div class="metric__label">STATE</div>
+      <div class="metric__label">STATE <span class="tip-wrap" data-tip="Estado operacional: HASHING = minerando ativamente, IDLE = sem hashrate detectado"><span class="tip-wrap__icon">?</span></span></div>
       <div class="metric__value" id="m-state">—</div>
       <div class="metric__sub" id="m-state-sub">colony status</div>
     </div>
@@ -407,26 +444,29 @@
     <button class="btn profit-mode-btn" data-mode="solo" onclick="setProfitMode('solo')">☀ SOLO</button>
     <button class="btn profit-mode-btn" data-mode="rental" onclick="setProfitMode('rental')">📦 RENTAL</button>
   </div>
+  <div class="profi-no-worker" id="profi-no-worker" style="display:none;padding:12px;text-align:center;color:var(--text-muted);font-size:12px;border:1px dashed var(--border);border-radius:6px;margin:8px 0">
+    ⚡ Conecte seu endereço BTC e aguarde dados do miner para ver cálculos de rentabilidade
+  </div>
   <div class="profit-grid">
-    <div class="profit-cell profit-cell--xl"><div class="profit-cell__label">NET BTC/DAY</div><div class="profit-cell__val" id="p-btc-day">—</div><div class="profit-cell__sub" id="p-btc-sub">after fees</div></div>
-    <div class="profit-cell"><div class="profit-cell__label">FIAT/DAY <span id="p-cur-badge" class="profit-cur-pill">USD</span></div><div class="profit-cell__val stat__val--green" id="p-fiat-day">—</div><div class="profit-cell__sub" id="p-fiat-day-week">—/week</div></div>
-    <div class="profit-cell"><div class="profit-cell__label">FIAT/MONTH</div><div class="profit-cell__val" id="p-fiat-month">—</div><div class="profit-cell__sub" id="p-fiat-month-sub">net cost</div></div>
-    <div class="profit-cell"><div class="profit-cell__label">BREAK-EVEN</div><div class="profit-cell__val stat__val--gold" id="p-breakeven">—</div><div class="profit-cell__sub" id="p-breakeven-sub">$/TH·d</div></div>
+    <div class="profit-cell profit-cell--xl"><div class="profit-cell__label">NET BTC/DAY <span class="tip-wrap" data-tip="BTC estimado por dia, já descontando taxa da pool e custo de energia. Fórmula: (hashrate ÷ rede) × blocos/dia × recompensa"><span class="tip-wrap__icon">?</span></span></div><div class="profit-cell__val" id="p-btc-day">—</div><div class="profit-cell__sub" id="p-btc-sub">after fees</div></div>
+    <div class="profit-cell"><div class="profit-cell__label">FIAT/DAY <span id="p-cur-badge" class="profit-cur-pill">USD</span> <span class="tip-wrap" data-tip="Valor em moeda local do BTC estimado por dia. Calculado usando taxa de câmbio atual"><span class="tip-wrap__icon">?</span></span></div><div class="profit-cell__val stat__val--green" id="p-fiat-day">—</div><div class="profit-cell__sub" id="p-fiat-day-week">—/week</div></div>
+    <div class="profit-cell"><div class="profit-cell__label">FIAT/MONTH <span class="tip-wrap" data-tip="Projeção mensal: (BTC/dia × 30) × preço BTC. Não considera variação de dificuldade"><span class="tip-wrap__icon">?</span></span></div><div class="profit-cell__val" id="p-fiat-month">—</div><div class="profit-cell__sub" id="p-fiat-month-sub">net cost</div></div>
+    <div class="profit-cell"><div class="profit-cell__label">BREAK-EVEN <span class="tip-wrap" data-tip="Preço mínimo do BTC para não ter prejuízo. Se o BTC cair abaixo disso, a receita não cobre o custo de energia"><span class="tip-wrap__icon">?</span></span></div><div class="profit-cell__val stat__val--gold" id="p-breakeven">—</div><div class="profit-cell__sub" id="p-breakeven-sub">$/TH·d</div></div>
   </div>
   <div class="profit-solo-stats" id="solo-extra-stats" style="display:none">
-    <div class="profit-cell"><div class="profit-cell__label">P(BLOCK) TODAY</div><div class="profit-cell__val stat__val--gold" id="solo-p-day">—</div></div>
+    <div class="profit-cell"><div class="profit-cell__label">P(BLOCK) TODAY</div><div class="profit-cell__val stat__val--gold" id="solo-p-today">—</div></div>
     <div class="profit-cell"><div class="profit-cell__label">P(BLOCK) YEAR</div><div class="profit-cell__val" id="solo-p-year">—</div></div>
     <div class="profit-cell"><div class="profit-cell__label">P(BLOCK) 5Y</div><div class="profit-cell__val" id="solo-p-5y">—</div></div>
-    <div class="profit-cell"><div class="profit-cell__label">BLOCKS/YEAR</div><div class="profit-cell__val" id="solo-expected-blocks">—</div></div>
+    <div class="profit-cell"><div class="profit-cell__label">BLOCKS/YEAR</div><div class="profit-cell__val" id="solo-blocks-year">—</div></div>
     <div class="profit-cell"><div class="profit-cell__label">TIME TO BLOCK</div><div class="profit-cell__val" id="solo-expected-time">—</div></div>
   </div>
   <div class="profit-fiat-row" id="profit-fiat-row">
-    <div class="profit-fiat-cell" data-cur="USD"><span class="cur">USD</span><span class="val" data-cur="USD">—</span><span class="per">/d</span></div>
-    <div class="profit-fiat-cell" data-cur="BRL"><span class="cur">BRL</span><span class="val" data-cur="BRL">—</span><span class="per">/d</span></div>
-    <div class="profit-fiat-cell" data-cur="EUR"><span class="cur">EUR</span><span class="val" data-cur="EUR">—</span><span class="per">/d</span></div>
-    <div class="profit-fiat-cell" data-cur="GBP"><span class="cur">GBP</span><span class="val" data-cur="GBP">—</span><span class="per">/d</span></div>
+    <div class="profit-fiat-cell" data-cur="USD"><span class="cur">USD</span><span class="val" id="profit-fiat-USD">—</span><span class="per">/d</span></div>
+    <div class="profit-fiat-cell" data-cur="BRL"><span class="cur">BRL</span><span class="val" id="profit-fiat-BRL">—</span><span class="per">/d</span></div>
+    <div class="profit-fiat-cell" data-cur="EUR"><span class="cur">EUR</span><span class="val" id="profit-fiat-EUR">—</span><span class="per">/d</span></div>
+    <div class="profit-fiat-cell" data-cur="GBP"><span class="cur">GBP</span><span class="val" id="profit-fiat-GBP">—</span><span class="per">/d</span></div>
   </div>
-  <div class="profit-footnote" id="profit-footnote">Cost model: none (set in :: SETTINGS)</div>
+  <div class="profit-footnote" id="profit-footnote">⚙️ <a href="#" onclick="document.getElementById('open-settings').click();return false" style="color:var(--green);text-decoration:underline">Configurar custo de energia</a> para cálculos precisos</div>
 </section>
 
 <!-- ─── NETWORK-SHARE GAUGE ─── -->
@@ -470,7 +510,11 @@
     <div class="panel__tools"><span class="badge badge--mute" id="milestones-count">0 unlocked</span></div>
   </div>
   <div class="badges-strip" id="badges-strip">
-    <div class="empty">awaiting data</div>
+    <div class="empty-state" style="grid-column:1/-1;border:none;padding:12px">
+      <div class="empty-state__icon">★</div>
+      <div class="empty-state__title">awaiting data</div>
+      <div class="empty-state__desc">Milestones appear as you mine — come back after more shares</div>
+    </div>
   </div>
 </section>
 
@@ -500,10 +544,32 @@
     <div class="panel__tools">
       <span class="badge badge--btc" id="mkt-best-price-badge">best —</span>
       <span class="badge badge--mute" id="mkt-count-badge">0 offers</span>
+      <button class="chip" id="mkt-config-btn" title="Configure API keys">⚙</button>
     </div>
   </div>
+  <div class="mkt-filters" id="mkt-filters">
+    <button class="chip active" data-mkt-filter="all">All</button>
+    <button class="chip" data-mkt-filter="braiins">⊛ Braiins</button>
+    <button class="chip" data-mkt-filter="nicehash">◈ NiceHash</button>
+    <button class="chip" data-mkt-filter="mrr">⛁ MRR</button>
+    <button class="chip" data-mkt-filter="kissmyhash">♡ KissMyHash</button>
+    <button class="chip" data-mkt-filter="parasite">⌂ Parasite</button>
+  </div>
   <div class="mkt-grid" id="mkt-grid">
-    <div class="mkt-empty">loading — configure MRR credentials</div>
+    <div class="empty-state" style="grid-column:1/-1;border:none">
+      <div class="empty-state__icon">⟐</div>
+      <div class="empty-state__title">No market data</div>
+      <div class="empty-state__desc">Configure API keys in Settings to load offers from Braiins, NiceHash, MRR, and more</div>
+      <div class="empty-state__action"><button class="btn btn--primary btn--mini" onclick="document.getElementById('open-settings').click()">⚙ Configure</button></div>
+    </div>
+  </div>
+  <div class="mkt-trend" id="mkt-trend">
+    <div class="mkt-trend__header">
+      <span class="mkt-trend__title">Price Trend (7d) · BTC/TH/d</span>
+      <span class="badge badge--mute" id="mkt-trend-count">—</span>
+    </div>
+    <div class="chart-wrap"><canvas id="mkt-trend-chart"></canvas></div>
+    <div class="mkt-trend__legend" id="mkt-trend-legend"></div>
   </div>
   <div class="mkt-footnote" id="mkt-footnote">Prices are estimates. Verify on each platform.</div>
 </section>
@@ -536,6 +602,9 @@
       <div class="ai-context__row"><span class="lbl">HR</span><span class="val" id="ai-ctx-hr">—</span></div>
       <div class="ai-context__row"><span class="lbl">Best</span><span class="val" id="ai-ctx-best">—</span></div>
       <div class="ai-context__row"><span class="lbl">Net</span><span class="val" id="ai-ctx-net">—</span></div>
+      <div class="ai-context__row"><span class="lbl">Net HR</span><span class="val" id="ai-ctx-nethr">—</span></div>
+      <div class="ai-context__row"><span class="lbl">Height</span><span class="val" id="ai-ctx-net-height">—</span></div>
+      <div class="ai-context__row"><span class="lbl">Price</span><span class="val" id="ai-ctx-price">—</span></div>
       <div class="ai-context__row"><span class="lbl">Fleet</span><span class="val" id="ai-ctx-fleet">—</span></div>
       <div class="ai-context__row"><span class="lbl">P(Block)</span><span class="val" id="ai-ctx-pblock">—</span></div>
     </div>
@@ -549,7 +618,9 @@
     <div class="panel__tools">
       <span class="badge badge--green" id="axe-fleet-status-badge">INIT</span>
       <span class="badge badge--mute" id="axe-fleet-count-badge">0 devices</span>
+      <span class="badge badge--green" id="fleet-live-badge" style="display:none;font-size:7px">● LIVE</span>
       <button class="chip" id="axe-fleet-add">+ ADD</button>
+      <button class="chip" id="axe-seed-btn" style="border-color:var(--cyan);color:var(--cyan)">🧪 SEED TEST</button>
     </div>
   </div>
   <div class="axe-summary" id="axe-summary">
@@ -564,7 +635,15 @@
     <div class="axe-summary__item"><span class="axe-summary__label">HEALTH</span><span class="axe-summary__val" id="axe-summary-health">—</span></div>
   </div>
   <div class="axe-grid" id="axe-grid">
-    <div class="mkt-empty" style="grid-column:1/-1">No devices — add via IP</div>
+    <div class="empty-state" style="grid-column:1/-1;border:none">
+      <div class="empty-state__icon">⚙</div>
+      <div class="empty-state__title">No devices</div>
+      <div class="empty-state__desc">Add a miner by IP address or seed test devices to start monitoring</div>
+      <div class="empty-state__action">
+        <button class="btn btn--primary btn--mini" id="axe-empty-add">+ Add Device</button>
+        <button class="btn btn--mini" id="axe-empty-seed" style="border-color:var(--cyan);color:var(--cyan)">🧪 Seed Test</button>
+      </div>
+    </div>
   </div>
   <div class="axe-fleet__add-form" id="axe-add-form" style="display:none">
     <input class="field__input" type="text" id="axe-add-ip" placeholder="192.168.1.x" style="width:140px">
@@ -594,7 +673,7 @@
   <div class="table-wrap">
     <table class="events-table">
       <thead><tr><th>block</th><th>address</th><th>diff</th><th>time</th><th>claimed</th></tr></thead>
-      <tbody id="events-tbody"><tr><td colspan="5" class="empty">awaiting data…</td></tr></tbody>
+      <tbody id="events-tbody"><tr><td colspan="5" style="text-align:center;padding:12px"><div class="empty-state" style="border:none;display:inline-block"><div class="empty-state__title">awaiting data…</div></div></td></tr></tbody>
     </table>
   </div>
 </section>
@@ -608,7 +687,7 @@
   <div class="table-wrap">
     <table class="lb-table">
       <thead><tr><th>#</th><th>address</th><th>diff rank</th><th>loyalty</th><th>score</th><th>blocks</th></tr></thead>
-      <tbody id="lb-tbody"><tr><td colspan="6" class="empty">awaiting data…</td></tr></tbody>
+      <tbody id="lb-tbody"><tr><td colspan="6" style="text-align:center;padding:12px"><div class="empty-state" style="border:none;display:inline-block"><div class="empty-state__title">awaiting data…</div></div></td></tr></tbody>
     </table>
   </div>
 </section>
@@ -630,9 +709,103 @@
     <div class="timeline-stats__cell"><div class="tsc__label">BUMPS 24H</div><div class="tsc__val" id="t-stat-bumps">—</div></div>
   </div>
   <div class="timeline-feed" id="timeline-feed">
-    <div class="timeline__empty">awaiting data…</div>
+    <div class="empty-state" style="border:none;padding:8px">
+      <div class="empty-state__title">awaiting data…</div>
+      <div class="empty-state__desc">Timeline events appear as the pool processes work</div>
+    </div>
   </div>
   <div class="timeline-footnote">▲ Delta-tracked events from public API polling.</div>
+</section>
+
+<!-- ─── REMOTE ACCESS ─── -->
+<section class="panel panel--remote panel--large" id="remote-panel">
+  <div class="panel__header">
+    <div class="panel__eyebrow">📡 REMOTE ACCESS · TAILSCALE</div>
+    <div class="panel__tools">
+      <span class="badge badge--mute" id="remote-status-badge">checking</span>
+      <button class="chip" id="remote-test-btn" title="Test connection">⟳ TEST</button>
+    </div>
+  </div>
+
+  <!-- Status Card -->
+  <div class="remote-status-card" id="remote-status-card">
+    <div class="remote-status-card__header">
+      <span class="remote-status-indicator" id="remote-indicator"></span>
+      <span class="remote-status-text" id="remote-status-text">Verificando conexão…</span>
+    </div>
+    <div class="remote-details">
+      <div class="remote-detail"><span class="remote-detail__label">Host IP</span><span class="remote-detail__val mono copyable" id="remote-host-ip">—</span></div>
+      <div class="remote-detail"><span class="remote-detail__label">Hostname</span><span class="remote-detail__val" id="remote-hostname">—</span></div>
+      <div class="remote-detail"><span class="remote-detail__label">Tailnet</span><span class="remote-detail__val" id="remote-tailnet">—</span></div>
+      <div class="remote-detail"><span class="remote-detail__label">Online Since</span><span class="remote-detail__val" id="remote-online-since">—</span></div>
+      <div class="remote-detail"><span class="remote-detail__label">Last Check</span><span class="remote-detail__val" id="remote-last-check">—</span></div>
+    </div>
+  </div>
+
+  <!-- Health Grid -->
+  <div class="remote-health-grid" id="remote-health-grid">
+    <div class="remote-health-item">
+      <span class="remote-health-item__dot" id="health-dot-host"></span>
+      <span class="remote-health-item__label">Host</span>
+      <span class="remote-health-item__val" id="health-val-host">—</span>
+    </div>
+    <div class="remote-health-item">
+      <span class="remote-health-item__dot" id="health-dot-tailscale"></span>
+      <span class="remote-health-item__label">Tailscale</span>
+      <span class="remote-health-item__val" id="health-val-tailscale">—</span>
+    </div>
+    <div class="remote-health-item">
+      <span class="remote-health-item__dot" id="health-dot-miners"></span>
+      <span class="remote-health-item__label">Miners</span>
+      <span class="remote-health-item__val" id="health-val-miners">—</span>
+    </div>
+    <div class="remote-health-item">
+      <span class="remote-health-item__dot" id="health-dot-tuya"></span>
+      <span class="remote-health-item__label">Smart Plugs</span>
+      <span class="remote-health-item__val" id="health-val-tuya">—</span>
+    </div>
+  </div>
+
+  <!-- Onboarding Checklist -->
+  <div class="remote-checklist" id="remote-checklist">
+    <div class="remote-checklist__title">🔖 Onboarding Checklist</div>
+    <ul class="remote-checklist__list" id="checklist-list">
+      <li class="remote-checklist__item pending" data-step="1">
+        <span class="rci-icon">○</span>
+        <span class="rci-text">Instalar Tailscale no host doméstico</span>
+        <span class="rci-status" id="rci-step-1">pendente</span>
+      </li>
+      <li class="remote-checklist__item pending" data-step="2">
+        <span class="rci-icon">○</span>
+        <span class="rci-text">Conectar dispositivos ao mesmo tailnet</span>
+        <span class="rci-status" id="rci-step-2">pendente</span>
+      </li>
+      <li class="remote-checklist__item pending" data-step="3">
+        <span class="rci-icon">○</span>
+        <span class="rci-text">Verificar conectividade com miners</span>
+        <span class="rci-status" id="rci-step-3">pendente</span>
+      </li>
+      <li class="remote-checklist__item pending" data-step="4">
+        <span class="rci-icon">○</span>
+        <span class="rci-text">Configurar tomadas Tuya (opcional)</span>
+        <span class="rci-status" id="rci-step-4">pendente</span>
+      </li>
+      <li class="remote-checklist__item pending" data-step="5">
+        <span class="rci-icon">○</span>
+        <span class="rci-text">Testar acesso fora de casa</span>
+        <span class="rci-status" id="rci-step-5">pendente</span>
+      </li>
+    </ul>
+    <div class="remote-checklist__actions">
+      <button class="btn btn--mini" id="remote-copy-ip" title="Copy Tailscale IP">📋 Copy IP</button>
+    </div>
+  </div>
+
+  <!-- Troubleshooting Message -->
+  <div class="remote-trouble" id="remote-trouble" style="display:none">
+    <div class="remote-trouble__title">⚠️ Troubleshooting</div>
+    <div class="remote-trouble__msg" id="remote-trouble-msg"></div>
+  </div>
 </section>
 
 <!-- ─── ALERTS ─── -->
@@ -649,19 +822,40 @@
 <!-- ─── LIVE LOG ─── -->
 <section class="panel panel--logs panel--large" id="logs-panel">
   <div class="panel__header">
-    <div class="panel__eyebrow">> LIVE LOG</div>
+    <div class="panel__eyebrow"><span class="terminal-rec-dot"></span> LIVE LOG</div>
     <div class="panel__tools">
-      <span class="badge badge--mute" id="log-events-count">0 events</span>
+      <span class="chart-live" id="log-stats">
+        <span class="chart-live__dot"></span>
+        <span class="chart-live__label">events</span>
+        <span class="chart-live__val" id="log-events-count">0</span>
+      </span>
       <button class="chip" id="clear-logs">clear</button>
     </div>
   </div>
-  <div class="terminal" id="terminal"><div class="terminal__line ts-mute">>> system online</div></div>
+  <div class="log-toolbar">
+    <input type="text" class="log-search" id="log-search" placeholder="filter logs..." autocomplete="off" spellcheck="false">
+    <div class="log-filters" id="log-filters">
+      <button class="chip active" data-log-filter="all">All</button>
+      <button class="chip" data-log-filter="success">OK</button>
+      <button class="chip" data-log-filter="info">Info</button>
+      <button class="chip" data-log-filter="warn">Warn</button>
+      <button class="chip" data-log-filter="error">Error</button>
+    </div>
+  </div>
+  <div class="terminal" id="terminal"><div class="terminal__line terminal__line--info"><span class="ts">[--:--:--]</span><span class="tag tag-info">SYSTEM</span>war room online</div></div>
 </section>
 
 <!-- ─── CHARTS ─── -->
 <section class="panel panel--chart panel--large" id="chart-hashrate-panel">
   <div class="panel__header">
-    <div class="panel__eyebrow">▤ WORKER HASHRATE</div>
+    <div style="display:flex;align-items:center;gap:8px">
+      <div class="panel__eyebrow">▤ WORKER HASHRATE</div>
+      <span class="chart-live" id="chart-hashrate-live">
+        <span class="chart-live__dot"></span>
+        <span class="chart-live__label">now</span>
+        <span class="chart-live__val" id="chart-hashrate-now">—</span>
+      </span>
+    </div>
     <div class="panel__tools chart-range" data-target="chart-hashrate">
       <button data-range="15m" class="chip">15m</button>
       <button data-range="1h" class="chip">1h</button>
@@ -671,12 +865,19 @@
       <button data-range="all" class="chip">all</button>
     </div>
   </div>
-  <div class="chart-wrap"><canvas id="chart-hashrate"></canvas></div>
+  <div class="chart-canvas-wrap"><canvas id="chart-hashrate"></canvas></div>
 </section>
 
 <section class="panel panel--chart panel--large" id="chart-pool-panel">
   <div class="panel__header">
-    <div class="panel__eyebrow">▤ POOL HASHRATE</div>
+    <div style="display:flex;align-items:center;gap:8px">
+      <div class="panel__eyebrow">▤ POOL HASHRATE</div>
+      <span class="chart-live" id="chart-pool-live">
+        <span class="chart-live__dot"></span>
+        <span class="chart-live__label">now</span>
+        <span class="chart-live__val" id="chart-pool-now">—</span>
+      </span>
+    </div>
     <div class="panel__tools chart-range" data-target="chart-pool">
       <button data-range="1h" class="chip">1h</button>
       <button data-range="6h" class="chip">6h</button>
@@ -685,7 +886,7 @@
       <button data-range="all" class="chip">all</button>
     </div>
   </div>
-  <div class="chart-wrap"><canvas id="chart-pool"></canvas></div>
+  <div class="chart-canvas-wrap"><canvas id="chart-pool"></canvas></div>
 </section>
 
 <section class="panel panel--chart panel--large" id="chart-bestdiff-panel">
@@ -819,6 +1020,63 @@
   </div>
 </section>
 
+<!-- ─── CUMULATIVE PROBABILITY CHART ─── -->
+<section class="panel panel--chart panel--large" id="chart-cumulative-p-panel">
+  <div class="panel__header">
+    <div class="panel__eyebrow">⬡ CUMULATIVE P(BLOCK) PROGRESSION</div>
+    <div class="panel__tools"><span class="badge badge--green" id="cum-p-status-badge">live</span></div>
+  </div>
+  <div class="chart-wrap"><canvas id="chart-cumulative-p"></canvas></div>
+</section>
+
+<!-- ─── SHARE DISTRIBUTION HISTOGRAM ─── -->
+<section class="panel panel--chart panel--large" id="chart-share-dist-panel">
+  <div class="panel__header">
+    <div class="panel__eyebrow">▦ SHARE DIFFICULTY DISTRIBUTION</div>
+    <div class="panel__tools"><span class="badge badge--mute" id="share-dist-count-badge">0 shares</span></div>
+  </div>
+  <div class="chart-wrap"><canvas id="chart-share-dist"></canvas></div>
+</section>
+
+<!-- ─── QUANTUM LOCK HEALTH SCORE ─── -->
+<section class="panel panel--large" id="quantum-lock-panel">
+  <div class="panel__header">
+    <div class="panel__eyebrow">◈ QUANTUM LOCK · HEALTH SCORE</div>
+    <div class="panel__tools">
+      <span class="badge" id="ql-status-badge">NO DATA</span>
+      <span class="badge badge--mute" id="ql-score-badge">0/100</span>
+    </div>
+  </div>
+  <div class="ql-grid">
+    <div class="ql-bar-wrap">
+      <div class="ql-bar" id="ql-bar"><div class="ql-bar__fill" id="ql-bar-fill" style="width:0%"></div></div>
+      <div class="ql-bar__labels"><span>0</span><span>25</span><span>50</span><span>75</span><span>100</span></div>
+    </div>
+    <div class="ql-components" id="ql-components">
+      <div class="ql-comp"><span class="ql-comp__label">Shares</span><span class="ql-comp__bar" id="ql-comp-shares"><span style="width:0%"></span></span></div>
+      <div class="ql-comp"><span class="ql-comp__label">Proximity</span><span class="ql-comp__bar" id="ql-comp-prox"><span style="width:0%"></span></span></div>
+      <div class="ql-comp"><span class="ql-comp__label">Power</span><span class="ql-comp__bar" id="ql-comp-power"><span style="width:0%"></span></span></div>
+      <div class="ql-comp"><span class="ql-comp__label">Momentum</span><span class="ql-comp__bar" id="ql-comp-momentum"><span style="width:0%"></span></span></div>
+    </div>
+    <div class="ql-label" id="ql-label">awaiting share data — submit share to compute quantum lock</div>
+  </div>
+</section>
+
+<!-- ─── HR COMPARISON: REPORTED vs POOL ─── -->
+<section class="panel panel--large" id="hr-compare-panel">
+  <div class="panel__header">
+    <div class="panel__eyebrow">⤒ HASHRATE COMPARISON · REPORTED vs POOL</div>
+    <div class="panel__tools"><span class="badge" id="hr-deviation-badge">—</span></div>
+  </div>
+  <div class="hr-compare-grid">
+    <div class="hr-compare-cell"><div class="hr-compare__label">Worker (reported)</div><div class="hr-compare__val" id="hr-reported">—</div></div>
+    <div class="hr-compare-cell"><div class="hr-compare__label">Pool (observed)</div><div class="hr-compare__val" id="hr-observed">—</div></div>
+    <div class="hr-compare-cell"><div class="hr-compare__label">Deviation</div><div class="hr-compare__val" id="hr-deviation-val">—</div></div>
+    <div class="hr-compare-cell"><div class="hr-compare__label">Status</div><div class="hr-compare__val" id="hr-status">—</div></div>
+  </div>
+  <div class="hr-compare-footnote">Pool-observed hashrate is estimated from submitted shares. Large deviation may indicate stale shares or pool-side variance.</div>
+</section>
+
 <!-- ─── CYPHER // LIVE MINING ─── -->
 <section class="panel panel--live-mining panel--large" id="live-mining-panel">
   <div class="lm-cyber-header">
@@ -910,29 +1168,117 @@
 </div> <!-- end #tab-charts -->
 
 <!-- ══════════════════════════════════════════════════════════════════════
+     TAB 3: Solo & Stats — solo mining probability + stats
+     ══════════════════════════════════════════════════════════════════════ -->
+<div class="tab-pane" id="tab-stats">
+  <main class="grid">
+    <section class="panel panel--large" id="solo-stats-panel">
+      <div class="panel__header">
+        <div class="panel__eyebrow">☀ SOLO & STATS</div>
+        <div class="panel__tools">
+          <span class="badge" id="solo-status-badge">—</span>
+        </div>
+      </div>
+      <div class="solo-grid" id="solo-grid">
+        <div class="solo-card"><div class="solo-card__title">Network Diff</div><div class="solo-card__value" id="solo-net-diff">—</div><div class="solo-card__sub">current</div></div>
+        <div class="solo-card"><div class="solo-card__title">Worker HR</div><div class="solo-card__value solo-card__value--green" id="solo-worker-hr">—</div><div class="solo-card__sub">your hashrate</div></div>
+        <div class="solo-card"><div class="solo-card__title">P(Block)/Share</div><div class="solo-card__value solo-card__value--purple" id="solo-p-block">—</div><div class="solo-card__sub">per share chance</div></div>
+        <div class="solo-card"><div class="solo-card__title">Expected Time</div><div class="solo-card__value" id="solo-expected-time">—</div><div class="solo-card__sub" id="solo-expected-time-sub">@ current HR</div></div>
+        <div class="solo-card"><div class="solo-card__title">Blocks/Year</div><div class="solo-card__value" id="solo-blocks-year">—</div><div class="solo-card__sub">expected</div></div>
+        <div class="solo-card"><div class="solo-card__title">Best Diff</div><div class="solo-card__value solo-card__value--gold" id="solo-best-diff">—</div><div class="solo-card__sub" id="solo-best-diff-sub">all-time</div></div>
+      </div>
+    </section>
+  </main>
+
+</div> <!-- end #tab-stats -->
+
+<!-- ══════════════════════════════════════════════════════════════════════
+     TAB 4: Live Terminal -- real-time system log & event viewer
+     ══════════════════════════════════════════════════════════════════════ -->
+<div class="tab-pane" id="tab-terminal">
+  <main class="grid">
+    <section class="panel panel--large" id="terminal-panel">
+      <div class="panel__header">
+        <div class="panel__eyebrow">>> LIVE TERMINAL</div>
+        <div class="panel__tools">
+          <span class="badge badge--mute" id="terminal-line-count">0 lines</span>
+          <button class="chip" id="terminal-clear">clear</button>
+        </div>
+      </div>
+      <div class="terminal-body" id="terminal-body">
+        <div class="terminal-line"><span class="terminal-ts">[--:--:--]</span><span class="terminal-tag tag-info">SYSTEM</span><span class="terminal-msg">CYPHER65 Terminal v2.7 - awaiting data</span></div>
+      </div>
+      <div class="terminal-input-row">
+        <span class="terminal-prompt">$</span>
+        <input type="text" class="terminal-input" id="terminal-input" placeholder="type command..." autocomplete="off" spellcheck="false">
+      </div>
+      <div class="terminal-footnote">Type <kbd>help</kbd> for available commands.</div>
+    </section>
+    <section class="panel panel--large" id="terminal-events-panel">
+      <div class="panel__header">
+        <div class="panel__eyebrow">* EVENT STREAM</div>
+        <div class="panel__tools"><span class="badge badge--mute" id="terminal-event-count">0</span></div>
+      </div>
+      <div class="terminal-events-list" id="terminal-events-list">
+        <div class="terminal-empty">awaiting events from pool polling...</div>
+      </div>
+    </section>
+  </main>
+</div>
+
+
+
+<!-- ══════════════════════════════════════════════════════════════════════
      FOOTER — Donation addresses
      ══════════════════════════════════════════════════════════════════════ -->
-<footer class="footer">
-  <div class="footer__donate">
-    <span class="footer__donate-label">>> SUPPORT CYPHER65</span>
-    <div class="footer__donate-row">
-      <span class="footer__donate-tag">BTC</span>
-      <code class="footer__donate-addr mono" data-copy="35gjAoadgQxrNc1Kx6QiSLx7wCCXRnRFkM">35gjAoadgQxrNc1Kx6QiSLx7wCCXRnRFkM</code>
-      <button class="footer__donate-copy" data-copy-btn aria-label="Copy BTC address">⧉</button>
+<footer class="support-bar" id="support-bar">
+  <div class="support-bar__inner">
+    <div class="support-bar__brand">
+      <span class="support-bar__icon">♥</span>
+      <span class="support-bar__title">Support Cypher65</span>
     </div>
-    <div class="footer__donate-row">
-      <span class="footer__donate-tag">LN</span>
-      <code class="footer__donate-addr mono" data-copy="spark1pgss98nvpcsssdfekenznqqmmaea6nxltz65e0srj7nh7hfkaufpu53nslvtpc">spark1pgss98nvpcsssdfekenznqqmmaea6nxltz65e0srj7nh7hfkaufpu53nslvtpc</code>
-      <button class="footer__donate-copy" data-copy-btn aria-label="Copy LN address">⧉</button>
-    </div>
-    <div class="footer__donate-row">
-      <span class="footer__donate-tag">BRAIINS</span>
-      <code class="footer__donate-addr mono" data-copy="bc1qvfct7p8ggsxlfy3257pytcqnsvjv77qzpy9pnv">bc1qvfct7p8ggsxlfy3257pytcqnsvjv77qzpy9pnv</code>
-      <button class="footer__donate-copy" data-copy-btn aria-label="Copy Braiins address">⧉</button>
+    <div class="support-bar__methods" id="support-bar-methods"></div>
+    <div class="support-bar__actions">
+      <button class="support-bar__expand-btn" id="support-expand-btn">◈ Details</button>
     </div>
   </div>
-  <div class="footer__sig">CYPHER65 // WAR ROOM v2.7</div>
 </footer>
+
+<div class="modal-overlay" id="support-panel" style="display:none">
+  <div class="modal support-modal">
+    <div class="modal__header">
+      <div class="modal__title">♥ SUPPORT CYPHER65</div>
+      <button class="modal__close" onclick="closeSupportPanel()">⛌</button>
+    </div>
+    <div class="modal__body support-modal__body">
+      <div class="support-modal__hero">
+        <div class="support-modal__subtitle" id="support-modal-subtitle">Cypherpunks support cypherpunks.</div>
+        <div class="support-modal__desc" id="support-modal-desc">If this tool helps you, support it so it can keep evolving.</div>
+      </div>
+      <div class="support-modal__grid" id="support-modal-grid"></div>
+      <div class="support-modal__ln" id="support-modal-ln">
+        <div class="support-modal__ln-header">⚡ Lightning Payment</div>
+        <div class="support-modal__ln-body">
+          <div class="support-modal__ln-row">
+            <span class="support-modal__ln-label">Recipient</span>
+            <span class="support-modal__ln-val mono copyable" id="support-ln-address">—</span>
+          </div>
+          <div class="support-modal__ln-row">
+            <span class="support-modal__ln-label">Invoice</span>
+            <input class="support-modal__ln-input" type="text" id="ln-invoice-input" placeholder="lnbc1... paste BOLT11 invoice" autocomplete="off" spellcheck="false">
+          </div>
+          <div id="ln-payment-status" class="support-modal__ln-status"></div>
+          <div class="support-modal__ln-actions">
+            <button class="btn btn--primary" id="ln-pay-btn">⚡ Pay Invoice</button>
+          </div>
+        </div>
+      </div>
+      <div class="support-modal__footer">
+        <span class="support-modal__footnote">Addresses loaded from server — no rebuild needed.</span>
+      </div>
+    </div>
+  </div>
+</div>
 
 <!-- ══════════════════════════════════════════════════════════════════════
      OFF-CANVAS AI OPERATOR PANEL — slide-in from right
@@ -957,6 +1303,250 @@
 </aside>
 
 <!-- ══════════════════════════════════════════════════════════════════════
+     SECTION DOCS / GUIDE
+     ══════════════════════════════════════════════════════════════════════ -->
+<section class="section" id="section-docs">
+  <div class="section__header">📖 AXE FLEET · GUIDE</div>
+  <div class="section__body">
+
+<div class="docs-container">
+
+<!-- ── Index ── -->
+<nav class="docs-index" id="docs-index">
+  <div class="docs-index__title">SECTIONS</div>
+  <div class="docs-search" id="docs-search">
+    <input type="text" class="docs-search__input" id="docs-search-input" placeholder="filter docs…" autocomplete="off" spellcheck="false">
+    <span class="docs-search__clear" id="docs-search-clear">✕</span>
+  </div>
+  <div class="docs-index__links" id="docs-index-links">
+    <a href="#docs-overview" class="docs-index__link" data-section="docs-overview">1. Overview</a>
+    <a href="#docs-fleet" class="docs-index__link" data-section="docs-fleet">2. Fleet View</a>
+    <a href="#docs-health" class="docs-index__link" data-section="docs-health">3. Device Health</a>
+    <a href="#docs-probability" class="docs-index__link" data-section="docs-probability">4. Probability</a>
+    <a href="#docs-market" class="docs-index__link" data-section="docs-market">5. Hash Market</a>
+    <a href="#docs-live" class="docs-index__link" data-section="docs-live">6. Live Mining</a>
+    <a href="#docs-automations" class="docs-index__link" data-section="docs-automations">7. Automations</a>
+    <a href="#docs-latency" class="docs-index__link" data-section="docs-latency">8. Latency / Ping</a>
+    <a href="#docs-alerts" class="docs-index__link" data-section="docs-alerts">9. Alerts</a>
+    <a href="#docs-multiuser" class="docs-index__link" data-section="docs-multiuser">10. Multi-User</a>
+    <a href="#docs-support" class="docs-index__link" data-section="docs-support">11. Support</a>
+    <a href="#docs-faq" class="docs-index__link" data-section="docs-faq">12. FAQ</a>
+  </div>
+</nav>
+
+<div class="docs-content">
+
+<!-- 1 ── Overview ── -->
+<section class="doc-section" id="docs-overview">
+  <h2 class="doc-section__title">1 · Overview</h2>
+  <p class="doc-section__text">Axe Fleet is a real-time monitoring and operations platform for Bitcoin home miners. It connects to your wallet via the Parasite Pool public API and provides fleet telemetry, probability analysis, hash market intelligence, automation rules, and latency diagnostics — all from a single dashboard.</p>
+  <p class="doc-section__text">The platform works with any BTC address. Data comes from public pool endpoints, on-chain sources (Mempool, CoinGecko), and optionally from your local AxeOS/Bitaxe devices if you add them to the Axe Fleet.</p>
+  <div class="doc-callout doc-callout--info">
+    <span class="doc-callout__icon">i</span>
+    <span class="doc-callout__text"><strong>Pool data vs device data:</strong> Pool data shows what the pool sees about your workers (aggregated hashrate, shares, best diff). Device data comes directly from your miners via AxeOS API and shows temperature, efficiency, fan speed, and individual performance.</span>
+  </div>
+</section>
+
+<!-- 2 ── Fleet View ── -->
+<section class="doc-section" id="docs-fleet">
+  <h2 class="doc-section__title">2 · Fleet View</h2>
+  <p class="doc-section__text">The Fleet section displays all your miners as individual cards. Each card shows real-time status in a compact layout:</p>
+  <ul class="doc-list">
+    <li><strong>Status dot</strong> — green pulse (online), red (offline), orange (warning)</li>
+    <li><strong>Hashrate</strong> — current processing speed in TH/s or GH/s</li>
+    <li><strong>Temperature</strong> — ASIC temp in °C. Above 70°C is warning territory</li>
+    <li><strong>Efficiency</strong> — J/TH ratio. Lower is better (target &lt; 35 J/TH for Bitaxe)</li>
+    <li><strong>Best Diff</strong> — highest share difficulty found by this device</li>
+    <li><strong>Last Share</strong> — time since last accepted share</li>
+    <li><strong>Uptime</strong> — how long the device has been running since last restart</li>
+    <li><strong>Health Score</strong> — aggregate score based on temp, reject rate, uptime, and hashrate stability</li>
+  </ul>
+  <p class="doc-section__text">The fleet summary bar shows aggregate HR, online/offline counts, average temperature, best overall diff, total power consumption, and fleet health percentage.</p>
+  <div class="doc-callout doc-callout--tip">
+    <span class="doc-callout__icon">✦</span>
+    <span class="doc-callout__text">Click on a miner card to expand device details including voltage, frequency, firmware version, and pool connection status.</span>
+  </div>
+</section>
+
+<!-- 3 ── Device Health ── -->
+<section class="doc-section" id="docs-health">
+  <h2 class="doc-section__title">3 · Device Health</h2>
+  <p class="doc-section__text">Device Health is computed from multiple telemetry signals and expressed as a score from 0–100%. Components:</p>
+  <ul class="doc-list">
+    <li><strong>Temperature (30%)</strong> — &lt; 60°C = healthy, 60–70°C = warn, &gt; 70°C = critical</li>
+    <li><strong>Reject Rate (20%)</strong> — &lt; 1% = excellent, 1–3% = normal, &gt; 3% = investigate</li>
+    <li><strong>Uptime (25%)</strong> — &gt; 24h = full score, decreases proportionally below that</li>
+    <li><strong>Hashrate Stability (25%)</strong> — variance &lt; 5% from expected = healthy</li>
+  </ul>
+  <p class="doc-section__text">A health score below 60% triggers a WARN alert. Below 30% triggers a CRIT alert. Use the Alerts panel to configure custom thresholds for your fleet.</p>
+</section>
+
+<!-- 4 ── Probability ── -->
+<section class="doc-section" id="docs-probability">
+  <h2 class="doc-section__title">4 · Probability</h2>
+  <p class="doc-section__text">Probability shows your estimated chance of finding a block given your hashrate, the network difficulty, and the time window. Calculated per share and per time period:</p>
+  <ul class="doc-list">
+    <li><strong>P(Block)/Share</strong> — chance per individual share submission</li>
+    <li><strong>P(Block) 24h</strong> — cumulative probability over 24 hours</li>
+    <li><strong>P(Block) 7d</strong> — cumulative probability over 7 days</li>
+    <li><strong>Cumulative P</strong> — total probability since your session started</li>
+  </ul>
+  <div class="doc-callout doc-callout--info">
+    <span class="doc-callout__icon">i</span>
+    <span class="doc-callout__text">Formula: <code>P = 1 - exp(-(hashrate * time) / (network_difficulty * 2^32))</code>. Results are estimates — actual luck varies.</span>
+  </div>
+  <p class="doc-section__text">Three scenarios are shown: <strong>conservative</strong> (95% of current HR), <strong>base</strong> (current HR), and <strong>aggressive</strong> (110% of current HR). This helps you understand the range of possible outcomes.</p>
+</section>
+
+<!-- 5 ── Hash Market ── -->
+<section class="doc-section" id="docs-market">
+  <h2 class="doc-section__title">5 · Hash Market</h2>
+  <p class="doc-section__text">The Hash Market panel aggregates live hashrate pricing from Braiins, NiceHash, MiningRigRentals, KissMyHash, and Parasite Pool. Prices are shown in BTC/TH/day and automatically scale to PH/s when appropriate.</p>
+  <ul class="doc-list">
+    <li><strong>Price per TH/d</strong> — how much 1 TH/s earns in 24 hours at current market rate</li>
+    <li><strong>Best offer</strong> — the highest paying source right now, highlighted with a badge</li>
+    <li><strong>Price Trend</strong> — 7-day chart showing price history across sources</li>
+    <li><strong>Comparison</strong> — see all sources side-by-side to choose the best payout</li>
+  </ul>
+  <div class="doc-callout doc-callout--tip">
+    <span class="doc-callout__icon">✦</span>
+    <span class="doc-callout__text">Configure API keys for Braiins, NiceHash, and MRR in Settings → Market to unlock live pricing. Without keys, only Parasite Pool public data is shown.</span>
+  </div>
+</section>
+
+<!-- 6 ── Live Mining ── -->
+<section class="doc-section" id="docs-live">
+  <h2 class="doc-section__title">6 · Live Mining</h2>
+  <p class="doc-section__text">Live Mining provides real-time telemetry for your fleet with automatic updates every 5 seconds. The live indicators show:</p>
+  <ul class="doc-list">
+    <li><strong>Live dot</strong> — green pulsing dot next to each online miner card</li>
+    <li><strong>Freshness badge</strong> — shows "just now", "32s ago", etc. updates every 1 second</li>
+    <li><strong>Fleet heartbeat</strong> — polls device health every 5 seconds for faster card updates</li>
+    <li><strong>LIVE badge</strong> — shown in the fleet panel header when at least one device is online</li>
+  </ul>
+  <p class="doc-section__text">If a miner stops responding, the status transitions: ONLINE → WARN (after 30s of no data) → OFFLINE (after 120s). Alerts are generated at each transition.</p>
+</section>
+
+<!-- 7 ── Automations ── -->
+<section class="doc-section" id="docs-automations">
+  <h2 class="doc-section__title">7 · Automations</h2>
+  <p class="doc-section__text">Automations let you define rules that trigger actions when certain conditions are met. This reduces manual intervention and keeps your fleet running optimally.</p>
+  <div class="doc-subsection">
+    <h3 class="doc-subsection__title">Rule Components</h3>
+    <ul class="doc-list">
+      <li><strong>Trigger</strong> — metric + operator + threshold (e.g., temperature > 70°C)</li>
+      <li><strong>Device filter</strong> — apply to all devices, a specific miner, or a group</li>
+      <li><strong>Action</strong> — alert, restart miner, power-cycle switch, switch pool, or notify</li>
+      <li><strong>Cooldown</strong> — minimum time between repeated firings (prevents alert storms)</li>
+    </ul>
+  </div>
+  <div class="doc-callout doc-callout--warn">
+    <span class="doc-callout__icon">⚠</span>
+    <span class="doc-callout__text"><strong>Safety:</strong> Power-cycle and restart actions require explicit confirmation. Batch actions on multiple devices require double confirmation. Every action is logged in the audit trail.</span>
+  </div>
+</section>
+
+<!-- 8 ── Latency / Ping ── -->
+<section class="doc-section" id="docs-latency">
+  <h2 class="doc-section__title">8 · Latency / Ping</h2>
+  <p class="doc-section__text">Latency between your miner and the pool directly impacts stale share rates and efficiency. Every millisecond matters in Bitcoin mining.</p>
+  <ul class="doc-list">
+    <li><strong>Ping</strong> — round-trip time to the pool server in milliseconds</li>
+    <li><strong>Stale share rate</strong> — shares submitted after the job expired. Above 2% indicates latency issues</li>
+    <li><strong>Handshake time</strong> — how long the Stratum connection handshake takes</li>
+    <li><strong>Submit roundtrip</strong> — time from share submission to acknowledgment</li>
+  </ul>
+  <div class="doc-callout doc-callout--tip">
+    <span class="doc-callout__icon">✦</span>
+    <span class="doc-callout__text"><strong>How to reduce ping:</strong> Use wired Ethernet instead of Wi-Fi (reduces 10–50ms). Choose a pool server geographically closer to you. Avoid VPNs that route traffic through distant locations. Keep DNS resolution fast by using a local resolver.</span>
+  </div>
+  <p class="doc-section__text">Latency above 200ms typically increases stale shares noticeably. Below 50ms is excellent for home mining.</p>
+</section>
+
+<!-- 9 ── Alerts ── -->
+<section class="doc-section" id="docs-alerts">
+  <h2 class="doc-section__title">9 · Alerts</h2>
+  <p class="doc-section__text">The Alert Engine monitors your fleet and generates events when conditions deviate from normal. Alerts are categorized by severity:</p>
+  <ul class="doc-list">
+    <li><strong>CRIT</strong> — immediate attention required: miner offline, 0 GH/s, temperature &gt; 80°C</li>
+    <li><strong>WARN</strong> — should investigate soon: temperature &gt; 65°C, reject rate &gt; 3%, stale shares &gt; 5%</li>
+    <li><strong>INFO</strong> — informational: miner came online, new best diff, pool connection restored</li>
+    <li><strong>GOLD</strong> — positive events: new block found, new all-time best diff</li>
+  </ul>
+  <p class="doc-section__text">Active alerts are shown in the Alerts panel with count badge. Click on any alert to see details. Use the Alert Center (Settings → Alerts) to configure custom thresholds and notification channels.</p>
+</section>
+
+<!-- 10 ── Multi-User ── -->
+<section class="doc-section" id="docs-multiuser">
+  <h2 class="doc-section__title">10 · Multi-User Isolation</h2>
+  <p class="doc-section__text">Axe Fleet supports multi-tenant isolation. Each user account sees only their own wallets, miners, alerts, and automation rules. There is no data leakage between tenants.</p>
+  <ul class="doc-list">
+    <li>Every query is filtered by <code>tenant_id</code></li>
+    <li>Session data is encrypted and validated on each request</li>
+    <li>Miners from different users never appear in the same view</li>
+    <li>Alert and automation rules are scoped per tenant</li>
+    <li>Audit logs include user and tenant ID for traceability</li>
+  </ul>
+  <div class="doc-callout doc-callout--info">
+    <span class="doc-callout__icon">i</span>
+    <span class="doc-callout__text">Multi-user mode is ideal for hosting providers, mining farms offering dashboards to clients, or teams managing shared infrastructure.</span>
+  </div>
+</section>
+
+<!-- 11 ── Support ── -->
+<section class="doc-section" id="docs-support">
+  <h2 class="doc-section__title">11 · Support the Project</h2>
+  <p class="doc-section__text">Axe Fleet is maintained by a small independent team. Your support keeps the project alive, funds development, and helps cover infrastructure costs. Every contribution matters — no amount is too small.</p>
+  <p class="doc-section__text">You can support via:</p>
+  <ul class="doc-list">
+    <li><strong>Bitcoin (on-chain)</strong> — send directly to the project BTC address</li>
+    <li><strong>Lightning Network</strong> — instant, low-fee micropayments</li>
+    <li><strong>Hashpower donation</strong> — point hashrate to the project pool for a few hours</li>
+  </ul>
+  <p class="doc-section__text">Find the support panel at the bottom of the dashboard. Your contribution directly funds server costs, API integrations, and new feature development.</p>
+</section>
+
+<!-- 12 ── FAQ ── -->
+<section class="doc-section" id="docs-faq">
+  <h2 class="doc-section__title">12 · FAQ</h2>
+
+  <div class="doc-faq-item">
+    <div class="doc-faq-item__q">Why are some fields showing "—" (dash)?</div>
+    <div class="doc-faq-item__a">Fields show dashes when data hasn't arrived yet or is not available from the source. Pool data updates every 15 seconds. Device telemetry requires the miner to be added to Axe Fleet and reachable on the network. Some metrics (efficiency, reject rate) require multiple data points before they appear.</div>
+  </div>
+  <div class="doc-faq-item">
+    <div class="doc-faq-item__q">How does the app read my miners?</div>
+    <div class="doc-faq-item__a">When you add a miner by IP address, the app connects to the AxeOS API on the device directly (port 80 or 443). No cloud service or third party is involved. The connection stays within your local network (or Tailscale private network for remote access).</div>
+  </div>
+  <div class="doc-faq-item">
+    <div class="doc-faq-item__q">How can I improve data accuracy?</div>
+    <div class="doc-faq-item__a">For best results: (1) connect miners via wired Ethernet, (2) use a dedicated host that stays online 24/7, (3) add miners to Axe Fleet by IP for direct telemetry, (4) keep the dashboard open in a browser tab for continuous polling.</div>
+  </div>
+  <div class="doc-faq-item">
+    <div class="doc-faq-item__q">What should I do when a miner shows 0 GH/s?</div>
+    <div class="doc-faq-item__a">First, check if the miner is reachable (ping it). If reachable, try restarting the miner from the Fleet control panel. If unreachable, check power supply and network cable. For persistent issues, configure a power-cycle automation with a smart plug.</div>
+  </div>
+  <div class="doc-faq-item">
+    <div class="doc-faq-item__q">Why is my reject rate high?</div>
+    <div class="doc-faq-item__a">High reject rate is usually caused by: (1) high latency to the pool server, (2) overly aggressive overclocking, (3) stale shares due to slow network, (4) pool server issues. Use the Latency panel to diagnose, and consider switching to a geographically closer pool server.</div>
+  </div>
+  <div class="doc-faq-item">
+    <div class="doc-faq-item__q">How do automations work?</div>
+    <div class="doc-faq-item__a">Automations watch for specific conditions (e.g., temperature > 70°C) and trigger actions (alert, restart, power-cycle). Create a rule in the Alert Center, select the metric and threshold, choose the action, and set a cooldown period to prevent repeated firing. All actions require confirmation.</div>
+  </div>
+  <div class="doc-faq-item">
+    <div class="doc-faq-item__q">Can I access my dashboard remotely?</div>
+    <div class="doc-faq-item__a">Yes. The recommended approach is Tailscale — install it on your home host and your remote devices, then access the dashboard via the Tailscale IP. This keeps all traffic encrypted and private without exposing ports to the internet. See the Remote Access panel for setup instructions.</div>
+  </div>
+</section>
+
+</div><!-- .docs-content -->
+</div><!-- .docs-container -->
+
+  </div>
+</section>
+
+<!-- ══════════════════════════════════════════════════════════════════════
      MODAIS
      ══════════════════════════════════════════════════════════════════════ -->
 
@@ -977,6 +1567,7 @@
         <span class="field__label">BTC ADDRESS</span>
         <input class="field__input field__input--mono" type="text" id="wallet-address-input" placeholder="bc1q..." autocomplete="off" spellcheck="false">
         <span class="field__hint">Paste your BTC address (starts with bc1 or 1).</span>
+        <span class="wallet-validation-status" id="wallet-validation-status"></span>
       </div>
       <div class="field" style="display:none">
         <span class="field__label">WORKER (optional)</span>
@@ -987,7 +1578,12 @@
         <ul class="wallet-history__list" id="wallet-history-list"></ul>
       </div>
       <span class="modal__status" id="wallet-status"></span>
-      <button class="btn btn--primary" id="wallet-save" style="width:100%;margin-top:6px">CONNECT</button>
+      <div id="webln-preview" style="display:none;margin-top:8px"></div>
+      <div id="webln-status" class="webln-status" style="margin-top:4px"></div>
+      <div style="display:flex;gap:6px;margin-top:6px">
+        <button class="btn btn--primary" id="wallet-save" style="flex:1">CONNECT</button>
+        <button class="btn" id="webln-connect-btn" style="flex:1;border-color:var(--gold, #f5b942);color:var(--gold, #f5b942)">⚡ LN WALLET</button>
+      </div>
     </div>
   </div>
 </div>
@@ -1100,12 +1696,12 @@
     <span id="hs-target-bar"></span>
     <span id="hs-target-diff"></span>
     <span id="hs-target-marker"></span>
-    <span id="lm-grid"></span>
+    <div id="lm-grid"></div>
     <span id="next-poll"></span>
     <span id="open-exports"></span>
   </div>
 
-  <script src="/static/app.js?v15"></script>
+  <script src="/static/app.js?v27"></script>
 </div> <!-- end #app-main -->
 </div> <!-- end #app-layout -->
 </div> <!-- end #main-area -->

@@ -9,3 +9,11 @@ __pycache__/
 .env
 .agents/
 .github/workflows/
+
+# Backup files
+*.backup*
+*.backup.*
+backup*
+
+node_modules/
+test-results/

@@ -61,6 +61,19 @@ test_opportunities = None  # set by POST /api/opportunities/mock; bypasses real 
 last_known_prices = {
     "braiins": None,  # e.g. {"price": 0.000123, "ts": 1700000000, "label": "123.0 sats/PH/day"}
     "mrr": None,
+    "nicehash": None,
+    "kissmyhash": None,
+    "parasite": None,
+}
+
+# ── Market data cache (full offers with metrics, refreshed by background poll)
+# Structure: {"offers": [...], "best_price": str, "updated_at": int (unix ts), "loading": bool}
+market_data_cache = {
+    "offers": [],
+    "best_price": None,
+    "updated_at": 0,
+    "loading": True,
+    "error": None,
 }
 
 # ── BTC price cache (CoinGecko free tier: 10-50 req/min)

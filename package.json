@@ -1,0 +1,16 @@
+{
+  "name": "cypher65-war-room-e2e",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "E2E tests for CYPHER65 War Room dashboard",
+  "scripts": {
+    "test:e2e": "npx playwright test",
+    "test:e2e:headed": "npx playwright test --headed",
+    "test:e2e:debug": "npx playwright test --debug",
+    "test:e2e:report": "npx playwright show-report e2e-report"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.52.0"
+  }
+}

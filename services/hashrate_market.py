@@ -11,10 +11,11 @@ be added later without changing consumers.
 import json
 import time
 import logging
+import requests
 from dataclasses import dataclass, asdict, field
 from typing import Any, Dict, List, Optional
 
-from agents.solo_mining_advisor.tools import get_braiins_orderbook, get_mrr_listings
+from agents.solo_mining_advisor.tools import get_braiins_orderbook, get_mrr_listings, get_nicehash_orderbook
 
 log = logging.getLogger("cypher65")
 
@@ -105,23 +106,153 @@ def fetch_mrr_offer() -> Optional[NormalizedOffer]:
     )
 
 
+def fetch_nicehash_offer() -> Optional[NormalizedOffer]:
+    """Fetch the cheapest NiceHash SHA256 sell order and normalize it."""
+    data = get_nicehash_orderbook()
+    if not data or data.get("error") or "price_btc_per_ph_day" not in data:
+        return None
+
+    price_per_ph_day = float(data["price_btc_per_ph_day"])
+    if price_per_ph_day <= 0:
+        return None
+
+    # price_btc_per_ph_day -> BTC/TH/day
+    price_per_th_day = price_per_ph_day / 1_000_000.0
+
+    # Speed in PH/s -> TH/s
+    hashrate_ph = _safe_float(data.get("best_order_speed_ph"), 0)
+    hashrate_th = hashrate_ph * 1000.0 if hashrate_ph > 0 else DEFAULT_RENTAL_HASHRATE_TH
+
+    return NormalizedOffer(
+        provider="nicehash",
+        hashrate=hashrate_th,
+        price_per_th_day=price_per_th_day,
+        duration_days=1.0,
+        fee_pct=0.0,
+        algorithm="sha256",
+        meta={
+            "source": "api2.nicehash.com",
+            "available_orders": data.get("available_orders"),
+            "algorithm": data.get("algorithm"),
+            "market": data.get("market"),
+        },
+    )
+
+
+def fetch_kissmyhash_offer() -> Optional[NormalizedOffer]:
+    """Fetch from KissMyHash API. Falls back to NiceHash +10% markup if KMH API unavailable."""
+    try:
+        r = requests.get(
+            "https://app.kissmyhash.com/api/v1/market",
+            params={"algorithm": "SHA256"},
+            timeout=6,
+            headers={"User-Agent": "cypher65-hashrate-market/1.0"},
+        )
+        if r.ok:
+            data = r.json()
+            price_btc_per_ph = _safe_float(data.get("price_btc_per_ph_day") or data.get("price"), 0)
+            if price_btc_per_ph > 0:
+                return NormalizedOffer(
+                    provider="kissmyhash",
+                    hashrate=DEFAULT_RENTAL_HASHRATE_TH,
+                    price_per_th_day=price_btc_per_ph / 1_000_000.0,
+                    duration_days=1.0,
+                    fee_pct=0.0,
+                    algorithm="sha256",
+                    meta={"source": "app.kissmyhash.com", "data": data},
+                )
+    except Exception:
+        log.info("[hashrate_market] KissMyHash API unavailable, fallback to NiceHash+10%%")
+
+    # Fallback: derive from NiceHash with 10% markup
+    try:
+        nh = fetch_nicehash_offer()
+        if nh and nh.price_per_th_day > 0:
+            return NormalizedOffer(
+                provider="kissmyhash",
+                hashrate=nh.hashrate,
+                price_per_th_day=nh.price_per_th_day * 1.10,
+                duration_days=nh.duration_days,
+                fee_pct=nh.fee_pct,
+                algorithm=nh.algorithm,
+                meta={
+                    "source": "derived_from_nicehash",
+                    "nicehash_price": nh.price_per_th_day,
+                    "markup_pct": 10.0,
+                },
+            )
+    except Exception:
+        pass
+
+    return None
+
+
+def fetch_parasite_offer() -> Optional[NormalizedOffer]:
+    """Fetch a 'refinery' rental offer from Parasite Space pool.
+    Parasite is a mining pool (not a marketplace), but we model their
+    pool-fee-based mining as a 'rental' where cost = pool fee + opportunity cost.
+    The price is estimated from the pool's share of network and fee structure."""
+    from agents.solo_mining_advisor.tools import get_parasite_pool_stats
+    try:
+        stats = get_parasite_pool_stats()
+        if not stats or stats.get("error") or stats.get("pool_status") == "empty":
+            return None
+
+        pool_hr = _safe_float(stats.get("pool_hashrate"), 0)
+        if pool_hr <= 0:
+            return None
+
+        # Parasite fee is ~1%. Convert to BTC/TH/day equivalent
+        # Cost = (pool_fee / pool_hashrate_share) * daily_reward
+        # Simplified: 1% fee on estimated daily BTC = 0.01 * 144 * 3.125 * (your_hr / net_hr)
+        pool_hr_hs = pool_hr  # already in H/s from API
+        net_hr = 6e20  # ~600 EH/s
+        share_of_network = pool_hr_hs / net_hr
+        daily_pool_revenue_btc = share_of_network * 144 * 3.125
+
+        # Price = pool fee (1%) of daily revenue per TH/day
+        fee_pct = 1.0
+        price_per_th_day = (daily_pool_revenue_btc * (fee_pct / 100.0)) / (pool_hr_hs / 1e12) if pool_hr_hs > 0 else 1e-8
+
+        return NormalizedOffer(
+            provider="parasite",
+            hashrate=pool_hr_hs / 1e12 if pool_hr_hs > 0 else DEFAULT_RENTAL_HASHRATE_TH,
+            price_per_th_day=max(price_per_th_day, 1e-8),
+            duration_days=1.0,
+            fee_pct=fee_pct,
+            algorithm="sha256",
+            meta={
+                "source": "parasite.space/api/pool-stats",
+                "pool_hashrate_hs": pool_hr_hs,
+                "pool_workers": stats.get("pool_workers"),
+                "pool_users": stats.get("pool_users"),
+                "pool_highest_diff": stats.get("pool_highest_diff"),
+                "label": "Parasite Pool (own hardware required)",
+                "disclaimer": "Pool mining cost (fee) — not a rental marketplace",
+            },
+        )
+    except Exception as e:
+        log.warning("[hashrate_market] Parasite fetch failed: %s", e)
+        return None
+
+
 def fetch_all_offers() -> List[NormalizedOffer]:
     """Fetch offers from all supported providers, isolating failures."""
     offers: List[NormalizedOffer] = []
 
-    try:
-        b = fetch_braiins_offer()
-        if b:
-            offers.append(b)
-    except Exception as e:
-        log.warning("[hashrate_market] Braiins fetch failed: %s", e)
-
-    try:
-        m = fetch_mrr_offer()
-        if m:
-            offers.append(m)
-    except Exception as e:
-        log.warning("[hashrate_market] MRR fetch failed: %s", e)
+    for name, fetcher in [
+        ("Braiins", fetch_braiins_offer),
+        ("MRR", fetch_mrr_offer),
+        ("NiceHash", fetch_nicehash_offer),
+        ("KissMyHash", fetch_kissmyhash_offer),
+        ("Parasite", fetch_parasite_offer),
+    ]:
+        try:
+            o = fetcher()
+            if o:
+                offers.append(o)
+        except Exception as e:
+            log.warning("[hashrate_market] %s fetch failed: %s", name, e)
 
     return offers
 
@@ -305,12 +436,18 @@ def build_highlights(
 ) -> List[Dict[str, Any]]:
     """Build a small list of market highlights from cached prices.
 
+    Implements stale-while-revalidate: if data exceeds max_age_seconds
+    but is less than 2x max_age_seconds, it is included with a ``_stale``
+    flag so the frontend can show it while fresh data loads in the
+    background. Data older than 2x max_age_seconds is discarded entirely.
+
     Does not call external APIs, so it is safe to run on every /api/snapshot.
     """
     network_hashrate = None
     if snapshot is not None:
         network_hashrate = (snapshot.get("network") or {}).get("hashrate")
 
+    stale_grace = max_age_seconds * 2  # allow up to 2x TTL before discarding
     ts_now = int(time.time())
     offers: List[NormalizedOffer] = []
     if last_known_prices:
@@ -318,11 +455,13 @@ def build_highlights(
             if not entry or not entry.get("price"):
                 continue
             entry_ts = entry.get("ts") or 0
-            if max_age_seconds > 0 and (ts_now - entry_ts) > max_age_seconds:
-                continue
+            age = ts_now - entry_ts
+            if max_age_seconds > 0 and age > stale_grace:
+                continue  # too old, discard
             price_per_ph_day = float(entry["price"])
             if price_per_ph_day <= 0:
                 continue
+            is_stale = max_age_seconds > 0 and age > max_age_seconds
             offers.append(
                 NormalizedOffer(
                     provider=provider,
@@ -331,7 +470,12 @@ def build_highlights(
                     duration_days=1.0,
                     fee_pct=0.0,
                     algorithm="sha256",
-                    meta={"cached_ts": entry.get("ts"), "label": entry.get("label", "")},
+                    meta={
+                        "cached_ts": entry.get("ts"),
+                        "label": entry.get("label", ""),
+                        "_stale": is_stale,
+                        "_age_s": age,
+                    },
                 )
             )
 

@@ -51,49 +51,128 @@ class AxeOSConnector:
     def _get(self, path: str, timeout: int = None) -> dict:
         """GET request to device. Returns parsed JSON dict or raises."""
         url = f"{self.base_url}{path}"
+        t0 = time.time()
         try:
             r = requests.get(url, timeout=timeout or self.timeout)
+            elapsed = time.time() - t0
+            log.info("[%s] GET %s → %s (%.2fs)", self.ip, path, r.status_code, elapsed)
             r.raise_for_status()
             return r.json()
         except requests.exceptions.ConnectionError as e:
-            raise AxeOSConnectorError(f"Connection failed to {self.ip}: {e}")
+            elapsed = time.time() - t0
+            err_type = self._classify_connection_error(e)
+            log.error("[%s] GET %s FAILED after %.2fs — %s: %s",
+                      self.ip, path, elapsed, err_type, e)
+            raise AxeOSConnectorError(
+                f"Connection failed to {self.ip} (GET {path}): "
+                f"{err_type} after {elapsed:.1f}s — {e}"
+            )
         except requests.exceptions.Timeout as e:
-            raise AxeOSConnectorError(f"Timeout connecting to {self.ip}: {e}")
+            elapsed = time.time() - t0
+            log.error("[%s] GET %s TIMEOUT after %.2fs (timeout=%ss)",
+                      self.ip, path, elapsed, timeout or self.timeout)
+            raise AxeOSConnectorError(
+                f"Timeout connecting to {self.ip} (GET {path}): "
+                f"no response after {elapsed:.1f}s (timeout={timeout or self.timeout}s)"
+            )
         except requests.exceptions.HTTPError as e:
-            raise AxeOSConnectorError(f"HTTP error from {self.ip}{path}: {e}")
+            elapsed = time.time() - t0
+            status = e.response.status_code if e.response is not None else "N/A"
+            log.error("[%s] GET %s HTTP %s after %.2fs — %s",
+                      self.ip, path, status, elapsed, e)
+            raise AxeOSConnectorError(
+                f"HTTP error from {self.ip}{path}: status={status} — {e}"
+            )
         except json.JSONDecodeError as e:
-            raise AxeOSConnectorError(f"Invalid JSON from {self.ip}: {e}")
+            elapsed = time.time() - t0
+            log.error("[%s] GET %s INVALID JSON after %.2fs — %s",
+                      self.ip, path, elapsed, e)
+            raise AxeOSConnectorError(
+                f"Invalid JSON from {self.ip} (GET {path}): {e}"
+            )
 
     def _post(self, path: str, data: dict = None, timeout: int = None) -> dict:
         """POST request to device."""
         url = f"{self.base_url}{path}"
+        t0 = time.time()
         try:
             r = requests.post(url, json=data, timeout=timeout or self.timeout)
+            elapsed = time.time() - t0
+            log.info("[%s] POST %s → %s (%.2fs)", self.ip, path, r.status_code, elapsed)
             r.raise_for_status()
             if r.text and r.text.strip():
                 return r.json()
             return {"success": True}
         except requests.exceptions.ConnectionError as e:
-            raise AxeOSConnectorError(f"Connection failed to {self.ip}: {e}")
+            elapsed = time.time() - t0
+            err_type = self._classify_connection_error(e)
+            log.error("[%s] POST %s FAILED after %.2fs — %s: %s",
+                      self.ip, path, elapsed, err_type, e)
+            raise AxeOSConnectorError(
+                f"Connection failed to {self.ip} (POST {path}): "
+                f"{err_type} after {elapsed:.1f}s — {e}"
+            )
         except requests.exceptions.Timeout as e:
-            raise AxeOSConnectorError(f"Timeout connecting to {self.ip}: {e}")
+            elapsed = time.time() - t0
+            log.error("[%s] POST %s TIMEOUT after %.2fs (timeout=%ss)",
+                      self.ip, path, elapsed, timeout or self.timeout)
+            raise AxeOSConnectorError(
+                f"Timeout connecting to {self.ip} (POST {path}): "
+                f"no response after {elapsed:.1f}s"
+            )
         except json.JSONDecodeError:
             # Some AxeOS POST endpoints return plain text, not JSON
+            elapsed = time.time() - t0
+            log.warning("[%s] POST %s → non-JSON response (%.2fs), treating as success",
+                        self.ip, path, elapsed)
             return {"success": True}
 
     def _patch(self, path: str, data: dict, timeout: int = None) -> dict:
         """PATCH request to device (used for settings updates)."""
         url = f"{self.base_url}{path}"
+        t0 = time.time()
         try:
             r = requests.patch(url, json=data, timeout=timeout or self.timeout)
+            elapsed = time.time() - t0
+            log.info("[%s] PATCH %s → %s (%.2fs)", self.ip, path, r.status_code, elapsed)
             r.raise_for_status()
             if r.text and r.text.strip():
                 return r.json()
             return {"success": True}
         except requests.exceptions.ConnectionError as e:
-            raise AxeOSConnectorError(f"Connection failed to {self.ip}: {e}")
+            elapsed = time.time() - t0
+            err_type = self._classify_connection_error(e)
+            log.error("[%s] PATCH %s FAILED after %.2fs — %s: %s",
+                      self.ip, path, elapsed, err_type, e)
+            raise AxeOSConnectorError(
+                f"Connection failed to {self.ip} (PATCH {path}): "
+                f"{err_type} after {elapsed:.1f}s — {e}"
+            )
         except requests.exceptions.Timeout as e:
-            raise AxeOSConnectorError(f"Timeout connecting to {self.ip}: {e}")
+            elapsed = time.time() - t0
+            log.error("[%s] PATCH %s TIMEOUT after %.2fs (timeout=%ss)",
+                      self.ip, path, elapsed, timeout or self.timeout)
+            raise AxeOSConnectorError(
+                f"Timeout connecting to {self.ip} (PATCH {path}): "
+                f"no response after {elapsed:.1f}s"
+            )
+
+    def _classify_connection_error(self, exc: requests.exceptions.ConnectionError) -> str:
+        """Classify the type of connection error for better diagnostics."""
+        msg = str(exc).lower()
+        if "no route to host" in msg or "network is unreachable" in msg:
+            return "NO_ROUTE"
+        if "connection refused" in msg or "actively refused" in msg:
+            return "REFUSED"
+        if "dns" in msg or "name resolution" in msg or "name or service not known" in msg:
+            return "DNS_FAILURE"
+        if "connection reset" in msg:
+            return "RESET"
+        if "connection aborted" in msg:
+            return "ABORTED"
+        if "eof" in msg or "end of file" in msg:
+            return "EOF"
+        return "UNKNOWN"
 
     # ── Read endpoints ────────────────────────────────────────────────
 
@@ -146,6 +225,8 @@ class AxeOSConnector:
             caps_base = infer_capabilities(info)
         except AxeOSConnectorError:
             # If basic info fails, all capabilities are off
+            log.warning("[%s] detect_capabilities: fetch_info failed — "
+                        "all capabilities disabled", self.ip)
             return {k: False for k in DEFAULT_CAPABILITIES}
 
         # Try ASIC endpoint for frequency/voltage capabilities
@@ -156,7 +237,8 @@ class AxeOSConnector:
             if asic.get("coreVoltage") is not None:
                 caps_base["voltageControl"] = True
         except AxeOSConnectorError:
-            pass  # ASIC endpoint not available — keep info-based inference
+            log.info("[%s] detect_capabilities: ASIC endpoint unavailable — "
+                     "frequency/voltage control disabled", self.ip)
 
         return caps_base
 
@@ -170,7 +252,9 @@ class AxeOSConnector:
         if info is None:
             try:
                 info = self.fetch_info()
-            except AxeOSConnectorError:
+            except AxeOSConnectorError as e:
+                log.warning("[%s] extract_telemetry: fetch_info failed — "
+                           "returning empty telemetry: %s", self.ip, e)
                 return {}
 
         t = new_telemetry("")
@@ -254,11 +338,82 @@ class AxeOSConnector:
     def ping(self) -> bool:
         """Quick connectivity check. True if device responds to /api/system/info
         within timeout."""
+        t0 = time.time()
         try:
             self._get("/api/system/info", timeout=3)
+            elapsed = time.time() - t0
+            log.info("[%s] ping OK (%.2fs)", self.ip, elapsed)
             return True
-        except AxeOSConnectorError:
+        except AxeOSConnectorError as e:
+            elapsed = time.time() - t0
+            log.info("[%s] ping FAILED (%.2fs): %s", self.ip, max(elapsed, 0), e)
             return False
+
+    def _diagnose_connectivity(self) -> dict:
+        """Run a full connectivity diagnostic against this device.
+        Returns a dict with results from multiple diagnostics:
+        {
+            'ip': str,
+            'port': int,
+            'dns_resolution': bool,
+            'arp_entry': bool,
+            'ping_icmp': bool,       # not yet implemented
+            'http_connect': bool,
+            'api_response': bool,
+            'http_status': int or None,
+            'elapsed_ms': int,
+            'error_type': str or None,
+            'error_detail': str or None,
+        }
+        This method does NOT raise — it always returns a result dict.
+        """
+        result = {
+            "ip": self.ip,
+            "port": self.port,
+            "dns_resolution": None,
+            "http_connect": False,
+            "api_response": False,
+            "http_status": None,
+            "elapsed_ms": None,
+            "error_type": None,
+            "error_detail": None,
+        }
+        t0 = time.time()
+        try:
+            r = requests.get(
+                f"{self.base_url}/api/system/info",
+                timeout=3
+            )
+            result["elapsed_ms"] = int((time.time() - t0) * 1000)
+            result["http_status"] = r.status_code
+            result["http_connect"] = True
+            if r.status_code == 200:
+                try:
+                    data = r.json()
+                    result["api_response"] = True
+                    result["device_info"] = {
+                        "model": data.get("model"),
+                        "firmware": data.get("firmware"),
+                        "hostname": data.get("hostname"),
+                        "hashrate": data.get("hashrate"),
+                    }
+                except json.JSONDecodeError:
+                    result["api_response"] = False
+                    result["error_detail"] = "Response was not valid JSON"
+        except requests.exceptions.ConnectionError as e:
+            result["elapsed_ms"] = int((time.time() - t0) * 1000)
+            result["error_type"] = self._classify_connection_error(e)
+            result["error_detail"] = str(e)
+        except requests.exceptions.Timeout as e:
+            result["elapsed_ms"] = int((time.time() - t0) * 1000)
+            result["error_type"] = "TIMEOUT"
+            result["error_detail"] = f"No response after {self.timeout}s"
+        except requests.exceptions.RequestException as e:
+            result["elapsed_ms"] = int((time.time() - t0) * 1000)
+            result["error_type"] = "REQUEST_ERROR"
+            result["error_detail"] = str(e)
+
+        return result
 
 
 # ── Convenience ──────────────────────────────────────────────────────────
@@ -290,6 +445,7 @@ def batch_fetch_telemetry(devices: list, timeout: int = AXEOS_HTTP_TIMEOUT) -> d
                 if tel:
                     tel["device_id"] = did
                 results[did] = tel
-            except Exception:
+            except Exception as exc:
+                log.error("[batch_fetch_telemetry] device=%s exception: %s", did, exc)
                 results[did] = {}
     return results
