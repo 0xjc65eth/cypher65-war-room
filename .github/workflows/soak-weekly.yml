@@ -49,10 +49,6 @@ jobs:
         with:
           node-version: "20"
 
-      - name: Run JS unit tests (disconnect wallet)
-        run: node tests/test_disconnect_wallet.js
-        id: js-tests
-
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
@@ -100,9 +96,6 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: "20"
-
-      - name: Run JS unit tests (disconnect wallet)
-        run: node tests/test_disconnect_wallet.js
 
       - name: Setup Python
         uses: actions/setup-python@v5

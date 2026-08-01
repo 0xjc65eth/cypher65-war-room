@@ -179,7 +179,7 @@ app.BTC_ADDRESS
 
 1. **Sem histórico de endereços** — Quando o usuário troca de address via `/api/set-address`, o anterior é sobrescrito. Não há "past addresses" armazenados.
 2. **Sem fallback se address for inválido** — Se `BTC_ADDRESS` estiver vazio (ou inválido), o poll_once() loga "No wallet address configured" mas continua rodando. A UI mostra travessões (—) nos lugares dos dados.
-3. **Monitor de disconnect wallet não integrado** — Existe `tests/test_disconnect_wallet.js` com testes, mas a funcionalidade de desconectar wallet não está implementada na UI.
+3. **Monitor de disconnect wallet não integrado** — Existe `tests/test_app_js_core.js` com testes, mas a funcionalidade de desconectar wallet não está implementada na UI.
 
 ---
 
