@@ -1,8 +1,26 @@
 """
-CYPHER65 // Polling worker
-===========================
-Background polling: poll_once, purge_old, poll_loop.
-Extracted from app.py — uses services.state + services.proximity.
+CYPHER65 // Polling worker  ⚠ LEGACY MODULE ⚠
+================================================
+**DO NOT USE THIS MODULE IN PRODUCTION.**
+
+The canonical polling path is:
+  - `app.py::poll_once()`  (the real poll loop that feeds the dashboard)
+  - `services/user_polling.py::_build_snapshot()`  (per-session snapshots)
+
+This file is a HISTORICAL copy extracted from app.py and is imported ONLY
+by the test suite (`test_polling_integration.py`, `test_polling.py`,
+`test_risk_formulas.py`). It is retained for two reasons:
+  1. The pure risk-score helpers `_cv_to_score` / `_pool_cv` / `_solo_cv` /
+     `_rental_cv` are unit-tested here (module-level, no I/O).
+  2. The legacy `poll_once` integration contract is still covered.
+
+⚠ DRIFT WARNING: the profitability/solo math in `poll_once()` below is a
+STALE COPY that has already diverged from the canonical implementation
+(e.g. Poisson `1 - e^-λ` here vs `1 - (1-share)^(144·N)` in app.py/helpers.py;
+`(btc_usd or 0)` instead of the null-safe guards). **Never** edit the math
+here expecting it to affect production — the source of truth is
+`app.py` + `helpers.py` (`compute_solo_probabilities`,
+`compute_lender_profitability`, `compute_pool_rental_break_even`).
 """
 import json
 import math
@@ -999,6 +1017,10 @@ def poll_once():
     #   Net BTC/day (rental) = net_btc_pool - rental_cost
     #   Hashrate from shares: H = (shares / Δt) × share_diff × 2^32
     #
+    # ⚠ LEGACY: this profitability math is a STALE COPY — see the module
+    # docstring. The canonical implementation lives in app.py + helpers.py
+    # (compute_solo_probabilities / compute_lender_profitability /
+    # compute_pool_rental_break_even). Do not fix drift here.
     profitability = {}
     # Hoist cur_hr / net_hr BEFORE the try block so downstream readers
     # (network_share_gauge block) always see well-defined values even if the

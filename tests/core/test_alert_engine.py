@@ -4,7 +4,7 @@ import pytest
 from core.alerts.alert_engine import AlertEngine, AlertRule
 from core.alerts.automation_engine import AutomationEngine
 from core.safety.safety_engine import SafetyEngine
-from core.models.device import Device, DeviceStatus
+from core.models.device import Device, DeviceStatus, device_status_is_online
 
 
 @pytest.fixture
@@ -174,6 +174,108 @@ def test_alert_engine_no_crit_when_temperature_moderate(alert_engine):
 def test_alert_engine_pool_disconnect(alert_engine):
     alerts = alert_engine.evaluate([], pool={})
     assert any(a.category == "pool_disconnect" for a in alerts)
+
+
+# ── Fase 5 · P1 fix: DeviceStatus is a str-Enum with LOWERCASE values ──
+# Regression: _get_metric previously compared device.status == "ONLINE" (uppercase
+# literal) which is ALWAYS False for core Device objects → every online device
+# evaluated status as 0 and fired a false CRIT "status=0 == 0" offline alert.
+
+
+def test_alert_engine_online_enum_device_does_not_fire_offline(alert_engine):
+    """An ONLINE core device (DeviceStatus.ONLINE, value 'online') must NOT
+    trigger the device_offline rule — the old uppercase literal comparison
+    made this fire a false CRIT for every online device.
+    temperature=50 isolates the status path (no temp alerts fire at 50°C)."""
+    device = _make_device(status="ONLINE", temperature=50.0)
+    alerts = alert_engine.evaluate([device])
+    offline_alerts = [a for a in alerts if a.category == "device_offline"]
+    assert len(offline_alerts) == 0, (
+        f"online device fired false offline alert: {[a.message for a in offline_alerts]}"
+    )
+
+
+def test_alert_engine_offline_enum_device_fires_offline(alert_engine):
+    """An OFFLINE core device (DeviceStatus.OFFLINE) must still fire the
+    device_offline CRIT rule after the fix."""
+    device = _make_device(status="OFFLINE", temperature=50.0)
+    alerts = alert_engine.evaluate([device])
+    offline_alerts = [a for a in alerts if a.category == "device_offline"]
+    assert len(offline_alerts) == 1
+    assert offline_alerts[0].severity == "CRIT"
+
+
+def test_alert_engine_status_metric_normalizes_enum_and_string():
+    """_get_metric must normalize BOTH the core str-Enum (lowercase value)
+    and plain-string statuses ('ONLINE'/'online') to the same result."""
+    online_enum = _make_device(status="ONLINE")
+    assert AlertEngine._get_metric(online_enum, "status") == 1
+
+    offline_enum = _make_device(status="OFFLINE")
+    assert AlertEngine._get_metric(offline_enum, "status") == 0
+
+    # Plain-string statuses (axe-fleet style: 'ONLINE' or 'online')
+    str_device = _make_device(status="ONLINE")
+    str_device.status = "ONLINE"
+    assert AlertEngine._get_metric(str_device, "status") == 1
+
+    str_device.status = "online"
+    assert AlertEngine._get_metric(str_device, "status") == 1
+
+
+def test_automation_engine_online_enum_device_status_metric():
+    """AutomationEngine._get_metric has the same enum/string normalization —
+    an online device must evaluate as 1 (no false offline trigger)."""
+    online_enum = _make_device(status="ONLINE")
+    assert AutomationEngine._get_metric(online_enum, "status") == 1
+
+    offline_enum = _make_device(status="OFFLINE")
+    assert AutomationEngine._get_metric(offline_enum, "status") == 0
+
+
+def test_alert_engine_warning_device_does_not_fire_offline(alert_engine):
+    """A WARNING device is degraded but REACHABLE — it must not fire the
+    device_offline CRIT rule. Only truly offline statuses (OFFLINE,
+    CRITICAL, MAINTENANCE, None) evaluate status=0."""
+    device = _make_device(status="WARNING", temperature=50.0)
+    alerts = alert_engine.evaluate([device])
+    offline_alerts = [a for a in alerts if a.category == "device_offline"]
+    assert len(offline_alerts) == 0, (
+        f"warning device fired false offline alert: {[a.message for a in offline_alerts]}"
+    )
+
+
+def test_alert_engine_critical_and_maintenance_fire_offline(alert_engine):
+    """CRITICAL and MAINTENANCE are NOT reachable — both must still fire the
+    device_offline CRIT rule after the WARNING-as-online change.
+    NOTE: _make_device() hardcodes id='test-dev', so each iteration must use
+    a distinct device id — otherwise the engine's per-signature cooldown
+    (device_offline:<id>, 300s) suppresses the second alert."""
+    for status in ("CRITICAL", "MAINTENANCE"):
+        device = _make_device(status=status, temperature=50.0)
+        device.id = f"test-{status.lower()}"  # distinct sig → cooldown can't suppress
+        alerts = alert_engine.evaluate([device])
+        offline_alerts = [a for a in alerts if a.category == "device_offline"]
+        assert len(offline_alerts) == 1, (
+            f"{status} device should fire offline alert, got {len(offline_alerts)}"
+        )
+
+
+def test_device_status_is_online_shared_helper():
+    """The shared helper is the single source of truth: enum + plain strings,
+    WARNING counts as online, offline statuses (incl. None) do not."""
+    assert device_status_is_online(DeviceStatus.ONLINE) is True
+    assert device_status_is_online(DeviceStatus.WARNING) is True
+    assert device_status_is_online("ONLINE") is True
+    assert device_status_is_online("online") is True
+    assert device_status_is_online("WARNING") is True
+    assert device_status_is_online("HASHING") is True  # axe_fleet STATUS_HASHING
+    assert device_status_is_online("hashing") is True
+    assert device_status_is_online(DeviceStatus.OFFLINE) is False
+    assert device_status_is_online(DeviceStatus.CRITICAL) is False
+    assert device_status_is_online(DeviceStatus.MAINTENANCE) is False
+    assert device_status_is_online("OFFLINE") is False
+    assert device_status_is_online(None) is False
 
 
 def test_automation_engine_loads_rules(automation_engine):

@@ -5,6 +5,7 @@ Calculates block probability, expected time, EV, and hashpower rental comparison
 """
 
 import math
+import re
 import requests
 import json
 from datetime import datetime
@@ -321,8 +322,11 @@ def compare_rentals(budget_btc, difficulty, duration_hours,
 # TERMINAL OUTPUT FORMATTER
 # ═══════════════════════════════════════════════════════════════════════════
 
-def format_calc_output(hashrate, difficulty, duration_hours):
-    """Format a full solo mining calculation as terminal output."""
+def format_calc_output(hashrate, difficulty, duration_hours, user=None):
+    """Format a full solo mining calculation as terminal output.
+    user: prompt identity (e.g. the connected wallet short-form).
+    Defaults to a neutral 'miner' — never a hardcoded person."""
+    who = _safe_term_user(user)
     hashrate_hs = _parse_hashrate(hashrate)
     duration_seconds = duration_hours * 3600
     prob = calc_block_probability(hashrate_hs, difficulty, duration_seconds)
@@ -330,7 +334,7 @@ def format_calc_output(hashrate, difficulty, duration_hours):
     best_diff = calc_best_diff_expected(hashrate_hs, duration_seconds)
 
     lines = []
-    lines.append(f"julio@cypher:~/solo-mining$ calc --hashrate {hashrate} --duration {duration_hours}h")
+    lines.append(f"{who}@cypher:~/solo-mining$ calc --hashrate {hashrate} --duration {duration_hours}h")
     lines.append("")
     lines.append("[OK] Parameters received")
     lines.append(f"  hashrate........... {hashrate}")
@@ -360,13 +364,17 @@ def format_calc_output(hashrate, difficulty, duration_hours):
 
 def format_compare_output(budget_btc, difficulty, duration_hours,
                           braiins_price=None, mrr_price=None,
-                          auto_fetch=True, mrr_api_key=None, mrr_api_secret=None):
+                          auto_fetch=True, mrr_api_key=None, mrr_api_secret=None,
+                          user=None):
+    """Format rental comparison as terminal table.
+    user: prompt identity (e.g. the connected wallet short-form).
+    Defaults to a neutral 'miner' — never a hardcoded person."""
     import os
     if mrr_api_key is None:
         mrr_api_key = os.environ.get("MRR_API_KEY")
     if mrr_api_secret is None:
         mrr_api_secret = os.environ.get("MRR_API_SECRET")
-    """Format rental comparison as terminal table."""
+    who = _safe_term_user(user)
     results = compare_rentals(
         budget_btc, difficulty, duration_hours,
         braiins_price, mrr_price,
@@ -376,7 +384,7 @@ def format_compare_output(budget_btc, difficulty, duration_hours,
     )
 
     lines = []
-    lines.append(f"julio@cypher:~/solo-mining$ compare --budget {budget_btc}BTC --duration {duration_hours}h")
+    lines.append(f"{who}@cypher:~/solo-mining$ compare --budget {budget_btc}BTC --duration {duration_hours}h")
     lines.append("")
     lines.append(f"[OK] Budget: {budget_btc} BTC | Duration: {duration_hours}h | Difficulty: {difficulty:,.0f}")
     lines.append("")
@@ -601,6 +609,18 @@ def get_mrr_listings(algo="sha256", api_key=None, api_secret=None):
             "price_btc_per_ph_day": None,
             "error": str(e),
         }
+
+
+def _safe_term_user(user):
+    """Sanitize the terminal prompt identity: strip to a safe charset.
+    Falls back to 'miner' for empty/invalid values."""
+    # Keep the U+2026 ellipsis (…): the frontend sends fmt.shortAddr() output
+    # (e.g. "bc1qar0srr…wf5mdq") as the prompt identity — stripping it would
+    # make the backend echo differ from the client echo. The literal char is
+    # used instead of \u2026 to avoid raw-string escape ambiguity.
+    who = (user or "").strip()
+    who = re.sub(r"[^A-Za-z0-9_.:\-…]", "", who)[:48]
+    return who or "miner"
 
 
 def _parse_hashrate(hr_str):

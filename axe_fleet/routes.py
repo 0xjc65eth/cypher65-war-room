@@ -19,6 +19,7 @@ Endpoints:
 import json
 import logging
 import os
+import socket
 import sqlite3
 import threading
 import time
@@ -28,6 +29,8 @@ from functools import wraps
 from flask import Blueprint, jsonify, request, session
 
 from services.tenant import get_tenant_id as _get_tenant_id, require_tenant
+
+from core.models.device import device_status_is_online
 
 from .connector import AxeOSConnector, AxeOSConnectorError
 from .models import infer_capabilities
@@ -46,6 +49,148 @@ def init_routes(registry: DeviceRegistry):
 
 
 axe_fleet_bp = Blueprint("axe_fleet", __name__)
+
+
+# ── Telemetry trust helpers (FLEET audit hardening) ─────────────────────
+# Legacy rows written before the poll fix may be bare {"device_id": ...}
+# stubs. Only payloads containing hashrate_hs are trusted; anything else is
+# treated as empty so the UI never shows zeroed fake data.
+
+
+def _is_trusted_payload(payload) -> bool:
+    """True only for well-formed telemetry dicts (must contain hashrate_hs)."""
+    return isinstance(payload, dict) and "hashrate_hs" in payload
+
+
+def _latest_telemetry(tel_raw) -> dict:
+    """Return the latest trusted telemetry payload from a
+    get_recent_telemetry(limit=1) result, or {} if none/untrusted."""
+    if tel_raw and isinstance(tel_raw[0], dict) and _is_trusted_payload(tel_raw[0].get("payload")):
+        return tel_raw[0]["payload"]
+    return {}
+
+
+# Per-IP latency probe cache (FLEET audit). Probing every reachable device
+# synchronously per /health call would block the endpoint for large fleets
+# (N × timeout worst case). A short TTL keeps PING fresh while capping the
+# probe cost to one pass per IP per window.
+_latency_cache: dict = {}
+_latency_cache_lock = threading.Lock()
+_LATENCY_TTL = 30  # seconds
+# Long-running servers could otherwise grow one entry per unique IP forever
+# (a NAT/scan re-assigning IPs, churned device list, etc.). The cap is
+# enforced with TTL-first eviction: expired entries (older than the TTL) are
+# swept before the cap applies, and only if the cache is STILL over the cap
+# are the oldest fresh entries dropped (FIFO by probe timestamp). A full
+# clear is never used, so live miner PINGs survive a burst of new IPs.
+_LATENCY_CACHE_MAX = 500
+
+
+def _cache_latency_ms(ip: str, elapsed: int) -> None:
+    """Store a successful probe in the latency cache under lock.
+
+    Enforces _LATENCY_CACHE_MAX with TTL-first eviction: entries older than
+    _LATENCY_TTL are removed first (fresh entries preserved), then — only if
+    the cache is still over the cap — the oldest entries by probe timestamp
+    are dropped (FIFO). Never a full clear. Never raises: the probe is
+    best-effort and must stay on the hot path of /health.
+    """
+    try:
+        with _latency_cache_lock:
+            now = time.time()
+            # 1) TTL sweep: drop stale entries, keep fresh ones.
+            stale = [k for k, v in _latency_cache.items() if now - v.get("ts", 0) >= _LATENCY_TTL]
+            for k in stale:
+                del _latency_cache[k]
+            # 2) Cap fallback: evict the oldest fresh entries (FIFO by ts)
+            #    until the new entry fits — never wipe the whole cache.
+            over = len(_latency_cache) - _LATENCY_CACHE_MAX + 1
+            if over > 0:
+                oldest = sorted(_latency_cache, key=lambda k: _latency_cache[k].get("ts", 0))[:over]
+                for k in oldest:
+                    del _latency_cache[k]
+            _latency_cache[ip] = {"ms": elapsed, "ts": now}
+    except Exception:
+        pass
+
+
+def _probe_miner_latency_ms(ip: str = "", timeout: float = 0.75) -> int | None:
+    """Measure reachability latency to a miner's HTTP API (port 80).
+
+    Returns the TCP connect round-trip in milliseconds (cached for 30s per
+    IP), or None when the probe fails/times out (never raises). The fleet
+    card renders PING from this value; a dead device honestly reports '—'.
+    """
+    if not ip:
+        return None
+    now = time.time()
+    try:
+        with _latency_cache_lock:
+            hit = _latency_cache.get(ip)
+            if hit and now - hit["ts"] < _LATENCY_TTL:
+                return hit["ms"]
+    except Exception:
+        pass
+    try:
+        t0 = now
+        with socket.create_connection((ip, 80), timeout=timeout):
+            # round() not int() — float deltas like 44.999…ms are 45ms.
+            elapsed = round((time.time() - t0) * 1000)
+    except OSError:
+        elapsed = None  # socket.timeout subclasses OSError in py3.10+
+    # Only cache SUCCESSFUL probes — a dead miner that recovers must be
+    # detected on the next poll, and a cached None would keep the card at
+    # '—' for up to the TTL. Failed probes are cheap anyway (fast refusal).
+    if elapsed is not None:
+        _cache_latency_ms(ip, elapsed)
+    return elapsed
+
+
+def _device_advice(status: str, tel: dict, latency_ms: int | None = None) -> list:
+    """Rule-based per-device advice derived from telemetry.
+
+    Returns a list of actionable recommendations (empty when the miner is
+    healthy). Pure function — unit-testable without I/O.
+    """
+    advice = []
+    # Normalize case like device_status_is_online — axe_fleet stores uppercase
+    # STATUS_* today, but a lowercase status must not silently change advice.
+    status = str(status or "").upper()
+    # Non-reachable statuses short-circuit: a paused/errored miner isn't
+    # broken-in-a-way-telemetry-can-explain, so don't emit misleading
+    # "hashrate zero" advice. A missing status defaults to offline.
+    if not status:
+        advice.append("device offline — checar energia/rede")
+        return advice
+    if status in ("OFFLINE", "ERROR", "CRITICAL", "MAINTENANCE"):
+        advice.append("device " + status.lower() + " — checar energia/rede")
+        return advice
+    if status == "PAUSED":
+        advice.append("device pausado — miner não está hasheando")
+        return advice
+
+    temp = tel.get("temperature")
+    if temp is not None and temp >= 80:
+        advice.append("temp ≥80°C — melhorar ventilação ou reduzir overclock")
+    chip = tel.get("chip_temp") or tel.get("temp_asic")
+    if chip is not None and chip >= 85:
+        advice.append("chip ≥85°C — considerar undervolt/reduzir freq")
+    hw = tel.get("hw_error_pct")
+    if hw is not None and hw >= 5:
+        advice.append("HW errors ≥5% — reduzir frequência/voltagem")
+    accepted = tel.get("shares_accepted") or 0
+    stale = tel.get("shares_stale") or 0
+    if accepted + stale > 0 and (stale / (accepted + stale)) > 0.01:
+        advice.append("stale shares >1% — latência de rede, usar cabo/QoS no stratum")
+    if latency_ms is not None and latency_ms > 150:
+        advice.append("ping alto (>150ms) — usar Ethernet/QoS no stratum")
+    rssi = tel.get("wifi_rssi")
+    if rssi is not None and rssi <= -75:
+        advice.append("Wi-Fi fraco (≤-75dBm) — usar cabo de rede")
+    hr = int(tel.get("hashrate_hs") or 0)
+    if hr == 0 and status in ("ONLINE", "WARNING", "HASHING"):
+        advice.append("hashrate zero — checar conexão stratum/pool")
+    return advice
 
 
 # ── Device management ──────────────────────────────────────────────────
@@ -113,7 +258,7 @@ def get_device(device_id: str, tenant_id: str = ""):
         return jsonify({"error": "device not found"}), 404
 
     telemetry = _registry.get_recent_telemetry(device_id, limit=60, tenant_id=tenant_id)
-    latest = telemetry[0]["payload"] if telemetry else None
+    latest = _latest_telemetry(telemetry) or None
 
     return jsonify({
         "device": device,
@@ -149,7 +294,8 @@ def device_telemetry(device_id: str, tenant_id: str = ""):
             "ip_address": device["ip_address"],
             "status": device["status"],
         },
-        "telemetry": [{"ts": e["ts"], "payload": e["payload"]} for e in telemetry],
+        "telemetry": [{"ts": e["ts"], "payload": e["payload"]} for e in telemetry
+                      if _is_trusted_payload(e.get("payload"))],
         "count": len(telemetry),
     })
 
@@ -199,7 +345,9 @@ def device_health(device_id: str, tenant_id: str = ""):
 
     now = int(time.time())
     tel_raw = _registry.get_recent_telemetry(device_id, limit=1, tenant_id=tenant_id)
-    tel = tel_raw[0]["payload"] if tel_raw else {}
+    # Hardening: only well-formed payloads (must contain hashrate_hs) are
+    # trusted. Legacy broken stubs {"device_id": ...} are treated as empty.
+    tel = _latest_telemetry(tel_raw)
     health_score = infer_health_score(tel) if tel else 0
 
     # Build active issues
@@ -360,26 +508,50 @@ def configure_device(device_id: str):
 @axe_fleet_bp.route("/summary", methods=["GET"])
 @require_tenant
 def fleet_summary(tenant_id: str = ""):
-    """Fleet-wide summary: total, online, offline, total hashrate, etc."""
+    """Fleet-wide summary: total, online, offline, total hashrate, etc.
+
+    Payload mirrors fleet_health: every device entry carries the same
+    per-device advice/latency layer (latency_ms + advice) so consumers can
+    swap endpoints without schema drift.
+    """
     if _registry is None:
         return jsonify({"error": "registry not initialized"}), 500
     devices = _registry.list_devices(tenant_id=tenant_id)
     total = len(devices)
-    online = sum(1 for d in devices if d.get("status") == "ONLINE" or d.get("status") == "HASHING")
-    offline = total - online
+    # Reachability via the shared helper (ONLINE/WARNING/HASHING). WARNING is
+    # kept in its own bucket (mirrors fleet_health) — a degraded-but-reachable
+    # miner must never be counted as offline.
+    online = 0
+    warning = 0
+    for d in devices:
+        status = d.get("status", "OFFLINE")
+        if status == "WARNING":
+            warning += 1
+        elif device_status_is_online(status):
+            online += 1
+    offline = total - online - warning
     from .models import infer_health_score
+    now = int(time.time())
     total_hr = 0
     enriched_devices = []
     for d in devices:
         tel = _registry.get_recent_telemetry(d["id"], limit=1, tenant_id=tenant_id)
-        p = {}
-        if tel:
-            p = tel[0].get("payload", {})
-            total_hr += int(p.get("hashrate_hs", 0))
+        p = _latest_telemetry(tel)
+        total_hr += int(p.get("hashrate_hs", 0))
+        status = d.get("status", "OFFLINE")
+        # Reachability latency (PING) — only probed for reachable statuses so
+        # the endpoint never blocks on dead IPs (mirrors fleet_health).
+        latency_ms = None
+        if device_status_is_online(status):
+            latency_ms = _probe_miner_latency_ms(d.get("ip_address", ""))
+        advice = _device_advice(status, p, latency_ms)
         # Enrich device with latest telemetry metrics
         enriched = dict(d)
+        enriched["latency_ms"] = latency_ms
+        enriched["advice"] = advice
         enriched["_telemetry"] = {
             "hashrate_hs": p.get("hashrate_hs", 0),
+            "hashrate_str": _fmt_hr(int(p.get("hashrate_hs", 0))),
             "temperature": p.get("temperature"),
             "fan_speed": p.get("fan_speed"),
             "fan_rpm": p.get("fan_rpm"),
@@ -387,11 +559,29 @@ def fleet_summary(tenant_id: str = ""):
             "efficiency_jth": p.get("efficiency_jth"),
             "shares_accepted": p.get("shares_accepted", 0),
             "shares_rejected": p.get("shares_rejected", 0),
+            "shares_stale": p.get("shares_stale", 0),
             "uptime_seconds": p.get("uptime_seconds", 0),
+            "uptime_str": _fmt_uptime(p.get("uptime_seconds", 0)),
             "best_diff": p.get("best_diff"),
             "hw_error_pct": p.get("hw_error_pct", 0),
             "voltage_mv": p.get("voltage_mv"),
             "frequency_mhz": p.get("frequency_mhz"),
+            "wifi_rssi": p.get("wifi_rssi"),
+            "free_heap": p.get("free_heap"),
+            # Fase 5 parity with fleet_health: chip/ASIC/VR temps, hashrate
+            # windows and pool passthrough — consumers can swap endpoints.
+            "chip_temp": p.get("chip_temp"),
+            "vr_temp": p.get("vr_temp"),
+            "temp_asic": p.get("temp_asic"),
+            "temp_vreg": p.get("temp_vreg"),
+            "hashrate_1m": p.get("hashrate_1m"),
+            "hashrate_10m": p.get("hashrate_10m"),
+            "hashrate_1h": p.get("hashrate_1h"),
+            "stratum_status": p.get("stratum_status", ""),
+            "pool_url": p.get("pool_url", ""),
+            "pool_user": p.get("pool_user", ""),
+            "ts": p.get("ts", now),
+            "age_seconds": now - p.get("ts", now),
         }
         # Compute health score from model (import outside loop)
         try:
@@ -408,6 +598,7 @@ def fleet_summary(tenant_id: str = ""):
     return jsonify({
         "total_devices": total,
         "online": online,
+        "warning": warning,
         "offline": offline,
         "total_hashrate_hs": total_hr,
         "total_hashrate_str": _fmt_hr(total_hr),
@@ -592,6 +783,15 @@ def seed_test_devices():
                 "device_id": device_id,
                 "hashrate_hs": int(hr_variation) if m["hashrate_hs"] > 0 else 0,
                 "temperature": m["temperature"] + temp_variation if m["temperature"] is not None else None,
+                # Fase 5: chip/ASIC/VR temps + hashrate windows (matches the
+                # app.py auto-seed) so SEED TEST cards show real values.
+                "chip_temp": m["temperature"] + temp_variation + 8 if m["temperature"] is not None else None,
+                "vr_temp": m["temperature"] + temp_variation + 5 if m["temperature"] is not None else None,
+                "temp_asic": m["temperature"] + temp_variation + 8 if m["temperature"] is not None else None,
+                "temp_vreg": m["temperature"] + temp_variation + 5 if m["temperature"] is not None else None,
+                "hashrate_1m": int(hr_variation) if m["hashrate_hs"] > 0 else None,
+                "hashrate_10m": int(hr_variation) if m["hashrate_hs"] > 0 else None,
+                "hashrate_1h": int(m["hashrate_hs"]) if m["hashrate_hs"] > 0 else None,
                 "fan_speed": m["fan_speed"],
                 "fan_rpm": m["fan_rpm"],
                 "power_watts": m["power_watts"],
@@ -1156,33 +1356,33 @@ def remote_onboarding():
     steps = [
         {
             "id": "tailscale_install",
-            "label": "Install Tailscale",
+            "label": "Instalar Tailscale no host",
             "done": ts["tailscale_installed"],
-            "instructions": "Install Tailscale on your host machine: https://tailscale.com/download",
+            "instructions": "Instale o Tailscale na máquina host: https://tailscale.com/download",
         },
         {
             "id": "tailscale_login",
-            "label": "Log in to Tailscale",
+            "label": "Fazer login no Tailscale",
             "done": ts["connected"],
-            "instructions": "Run 'tailscale up' and authenticate with your Tailscale account",
+            "instructions": "Rode 'tailscale up' e autentique com sua conta Tailscale",
         },
         {
             "id": "tailnet_connect",
-            "label": "Connect devices to same tailnet",
+            "label": "Conectar dispositivos ao mesmo tailnet",
             "done": ts["connected"],
-            "instructions": f"Install Tailscale on your phone/laptop and log in with the same account. Your host IP is: {ts['ip'] or 'N/A'}",
+            "instructions": f"Instale o Tailscale no celular/notebook e faça login com a mesma conta. IP do host: {ts['ip'] or 'N/A'}",
         },
         {
             "id": "dashboard_reachable",
-            "label": "Dashboard reachable via tailnet",
+            "label": "Dashboard acessível via tailnet",
             "done": False,
-            "instructions": f"Open http://{ts['ip']}:8765 from your phone/laptop to verify remote access" if ts["ip"] else "Connect Tailscale first",
+            "instructions": f"Abra http://{ts['ip']}:8765 do celular/notebook para verificar o acesso remoto" if ts["ip"] else "Conecte o Tailscale primeiro",
         },
         {
             "id": "tuya_configured",
-            "label": "Tuya smart plugs configured",
+            "label": "Tomadas Tuya configuradas",
             "done": bool(_get_tuya_credentials().get("access_id")),
-            "instructions": "Add Tuya Cloud credentials (Access ID, Secret, Region) via Settings or .env file",
+            "instructions": "Adicione as credenciais Tuya Cloud (Access ID, Secret, Region) em Settings ou no .env",
         },
     ]
 
@@ -1196,12 +1396,34 @@ def remote_onboarding():
 
     all_done = all(s["done"] for s in steps)
 
+    # FLEET audit G3: what the user can actually DO remotely vs Tailscale's
+    # constraints. Rendered by the REMOTE ACCESS panel so expectations are
+    # set before the user wires everything up (honest scope, no surprises).
+    # pt-BR — the whole dashboard UI is Portuguese, and G3's goal is an
+    # explanatory tutorial the user actually reads.
+    scope = [
+        "Monitorar a frota, telemetria (temp/hashrate/ping) e alertas de qualquer lugar do tailnet",
+        "Executar comandos nos devices (restart / identify / pause) e power-cycle via tomadas Tuya",
+        "Alterar configurações do miner (frequência / voltagem) quando o firmware suportar",
+        "Abrir o dashboard completo (Live Mining, Probability, Hash Market, AI Operator) remotamente",
+    ]
+    limitations = [
+        "O Tailscale só alcança devices do seu tailnet — o host e seu celular/notebook precisam usar a mesma conta Tailscale",
+        "Acesso remoto exige o host LIGADO e o Tailscale conectado (sem relay na nuvem para o próprio dashboard)",
+        "Comandos nos devices só são permitidos pelo tailnet ou sessão autenticada — IP público na internet não libera comandos",
+        "Os miners precisam estar alcançáveis pela rede do host (o Tailscale conecta o controle, não o firewall LAN de cada miner)",
+        "Sem DNS/HTTPS público: o acesso é pelo IP do tailnet (ex.: http://100.x.x.x:8765), não por domínio",
+        "Frotas grandes podem ter polling mais lento: os probes de latência são cacheados por IP (TTL 30s)",
+    ]
+
     return jsonify({
         "onboarding_complete": all_done,
         "progress": f"{sum(1 for s in steps if s['done'])}/{len(steps)}",
         "steps": steps,
         "remote_ip": ts.get("ip"),
         "remote_hostname": ts.get("hostname"),
+        "scope": scope,
+        "limitations": limitations,
     })
 
 
@@ -1270,22 +1492,35 @@ def fleet_health(tenant_id: str = ""):
     for d in devices:
         did = d["id"]
         tel_raw = _registry.get_recent_telemetry(did, limit=1, tenant_id=tenant_id)
-        tel = tel_raw[0]["payload"] if tel_raw else {}
+        # Hardening: trust only well-formed telemetry payloads. Legacy rows
+        # written before the poll fix may be a bare {"device_id": ...} stub —
+        # treat those as empty so the UI never shows zeroed fake data.
+        tel = _latest_telemetry(tel_raw)
         status = d.get("status", "OFFLINE")
 
         # Calculate health score
         health_score = infer_health_score(tel) if tel else 0
 
-        # Aggregate
-        if status in ("ONLINE", "HASHING"):
-            online += 1
-            groups["online"].append(did)
-        elif status == "WARNING":
+        # Aggregate. WARNING is intentionally its own bucket (the frontend
+        # renders ONLINE/WARN/OFFLINE separately) — a degraded miner is not
+        # offline. Everything else delegates to the shared reachability
+        # helper (ONLINE/HASHING → online; OFFLINE/unknown → offline).
+        if status == "WARNING":
             warning += 1
             groups["warning"].append(did)
+        elif device_status_is_online(status):
+            online += 1
+            groups["online"].append(did)
         else:
             offline += 1
             groups["offline"].append(did)
+
+        # Reachability latency (PING on the card) — only probed for
+        # reachable statuses so the endpoint never blocks on dead IPs.
+        latency_ms = None
+        if device_status_is_online(status):
+            latency_ms = _probe_miner_latency_ms(d.get("ip_address", ""))
+        advice = _device_advice(status, tel, latency_ms)
 
         hr = int(tel.get("hashrate_hs", 0))
         pw = tel.get("power_watts")
@@ -1312,7 +1547,11 @@ def fleet_health(tenant_id: str = ""):
             "id": did,
             "name": d.get("name", ""),
             "model": d.get("model", ""),
+            "manufacturer": d.get("manufacturer", ""),
+            "firmware": d.get("firmware", ""),
+            "firmware_version": d.get("firmware_version", ""),
             "ip_address": d.get("ip_address", ""),
+            "hostname": d.get("hostname", ""),
             "status": status,
             "health_score": health_score,
             "capabilities": supported_cmds,
@@ -1330,11 +1569,29 @@ def fleet_health(tenant_id: str = ""):
                 "wifi_rssi": tel.get("wifi_rssi"),
                 "shares_accepted": tel.get("shares_accepted", 0),
                 "shares_rejected": tel.get("shares_rejected", 0),
+                "shares_stale": tel.get("shares_stale", 0),
                 "hw_error_pct": tel.get("hw_error_pct", 0.0),
                 "efficiency_jth": tel.get("efficiency_jth"),
+                # Fase 5: expose chip/ASIC/VR temps + hashrate windows the
+                # frontend cards render. Without these the cards always show
+                # NOT AVAILABLE even when the firmware reports real values.
+                "chip_temp": tel.get("chip_temp"),
+                "vr_temp": tel.get("vr_temp"),
+                "temp_asic": tel.get("temp_asic"),
+                "temp_vreg": tel.get("temp_vreg"),
+                "hashrate_1m": tel.get("hashrate_1m"),
+                "hashrate_10m": tel.get("hashrate_10m"),
+                "hashrate_1h": tel.get("hashrate_1h"),
+                "fan_speed": tel.get("fan_speed"),
+                "fan_rpm": tel.get("fan_rpm"),
+                "stratum_status": tel.get("stratum_status", ""),
+                "pool_url": tel.get("pool_url", ""),
+                "pool_user": tel.get("pool_user", ""),
                 "ts": tel.get("ts", now),
                 "age_seconds": now - tel.get("ts", now),
             },
+            "latency_ms": latency_ms,
+            "advice": advice,
             "last_seen": d.get("last_seen", 0),
         })
 

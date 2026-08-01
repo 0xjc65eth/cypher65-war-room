@@ -12,7 +12,7 @@ import logging
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
-from core.models.device import Device
+from core.models.device import Device, device_status_is_online
 from core.safety.safety_engine import SafetyEngine, SafetyResult
 
 log = logging.getLogger("cypher65.automation")
@@ -104,7 +104,10 @@ class AutomationEngine:
     @staticmethod
     def _get_metric(device: Device, metric: str):
         if metric == "status":
-            return 1 if device.status == "ONLINE" else 0
+            # Shared normalization (handles str-Enum lowercase values AND plain
+            # strings) — WARNING counts as reachable, so a degraded device
+            # never evaluates as offline for automation conditions.
+            return 1 if device_status_is_online(device.status) else 0
         if metric in ("temperature", "hashrate", "power", "fan_speed", "voltage",
                         "frequency", "accepted_shares", "rejected_shares",
                         "stale_shares"):

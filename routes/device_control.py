@@ -110,13 +110,20 @@ def _dict_to_device(d: Any) -> Device:
     )
     # Attach telemetry snapshot if the registry supports it
     tel = d.get("current_telemetry")
-    if isinstance(tel, dict):
+    # Trust only well-formed telemetry — must carry a hashrate key
+    # (axe_fleet uses hashrate_hs, core uses the canonical hashrate).
+    # Legacy broken stubs {"device_id": ...} are never attached.
+    if isinstance(tel, dict) and ("hashrate_hs" in tel or "hashrate" in tel):
         device.current_telemetry = tel
     elif _registry and hasattr(_registry, "get_recent_telemetry"):
         try:
             tel_raw = _registry.get_recent_telemetry(d["id"], limit=1)
+            # Trust only well-formed telemetry payloads (must carry a
+            # hashrate key) — legacy broken stubs are ignored.
             if tel_raw:
-                device.current_telemetry = tel_raw[0].get("payload", {})
+                payload = tel_raw[0].get("payload", {})
+                if isinstance(payload, dict) and ("hashrate_hs" in payload or "hashrate" in payload):
+                    device.current_telemetry = payload
         except Exception as e:  # defensive — telemetry is best-effort
             log.debug("[device_control] telemetry attach failed: %s", e)
     return device

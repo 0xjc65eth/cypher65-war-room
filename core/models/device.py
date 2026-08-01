@@ -19,6 +19,27 @@ class DeviceStatus(str, Enum):
     MAINTENANCE = "maintenance"
 
 
+def device_status_is_online(status) -> bool:
+    """Return True when a device status means the miner is reachable/hashing.
+
+    Normalizes BOTH representations used across the codebase:
+      - core DeviceStatus str-Enum with lowercase values ('online', 'warning')
+      - plain strings ('ONLINE' / 'online' / 'WARNING' / 'HASHING') — e.g. the
+        axe-fleet dicts
+
+    Reachable set: ONLINE, WARNING and HASHING.
+      - WARNING is treated as reachable: a degraded miner is still online and
+        must never fire the `device_offline` CRIT rule.
+      - HASHING (axe_fleet STATUS_HASHING) is an actively-mining device —
+        always reachable, so fleet counters must count it as online.
+    Only OFFLINE/CRITICAL/MAINTENANCE/None/unknown evaluate as offline.
+    This is the single source of truth so alert_engine, automation_engine and
+    the axe_fleet fleet counters can't drift apart on the semantics.
+    """
+    st = getattr(status, "value", status)
+    return str(st).upper() in ("ONLINE", "WARNING", "HASHING")
+
+
 # ── Fase 5 · telemetria completa (NOT AVAILABLE explícito) ──────────────
 # Campos canônicos que todo device deve expor na telemetria. Quando o
 # hardware/firmware não fornece um valor, a serialização preenche com

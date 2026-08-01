@@ -11,7 +11,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Callable
 
-from core.models.device import Device
+from core.models.device import Device, device_status_is_online
 
 log = logging.getLogger("cypher65.alerts")
 
@@ -176,9 +176,13 @@ class AlertEngine:
             alert_type="threshold",
         )
 
-    def _get_metric(self, device: Device, metric: str):
+    @staticmethod
+    def _get_metric(device: Device, metric: str):
         if metric == "status":
-            return 1 if device.status == "ONLINE" else 0
+            # Shared normalization (handles str-Enum lowercase values AND plain
+            # strings) — WARNING counts as reachable, so a degraded device
+            # never fires a false status==0 CRIT offline alert.
+            return 1 if device_status_is_online(device.status) else 0
         if metric == "temperature":
             return (device.current_telemetry or {}).get("temperature")
         if metric == "hashrate_drop_pct":

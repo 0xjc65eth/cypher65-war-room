@@ -91,7 +91,7 @@ def settings_label(k):
     """Human-readable label for a settings key."""
     return {
         "cost_mode": "Cost model (none|rental|power)",
-        "rental_usd_per_th_day": "Rental cost ($ per TH/s per day)",
+        "rental_usd_per_th_day": "Rental rate ($ per TH/s per day) — what YOU charge to lease out hashrate (revenue)",
         "power_watts": "Estimated rig power (W)",
         "power_kwh_usd": "Electricity rate ($ per kWh)",
         "btc_block_reward": "Current BTC block reward",

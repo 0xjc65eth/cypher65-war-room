@@ -837,6 +837,8 @@
     if (dom.sbNetDiff) dom.sbNetDiff.textContent = fmt.diff(net.difficulty);
     if (dom.sbNetPrice) dom.sbNetPrice.textContent = btc.usd ? `$${Number(btc.usd).toLocaleString()}` : '\u2014';
     if (dom.sbNetHeight) dom.sbNetHeight.textContent = net.height ? `#${net.height}` : '\u2014';
+    _staleChip(dom.sbNetPrice, btc.stale, 'cache');
+    _staleChip(dom.sbNetDiff, net.stale, 'cache');
 
     // Fleet block
     const online = axeFleet.filter(d => d.status === 'ONLINE').length;
@@ -1006,6 +1008,7 @@ function renderPool(pool, luck) {
     if (dom.nHeight) dom.nHeight.textContent = net.height ? `#${net.height}` : '\u2014';
     if (dom.nDiff) dom.nDiff.textContent = fmt.diff(net.difficulty);
     if (dom.nHashrate) dom.nHashrate.textContent = fmt.hashrate(net.hashrate);
+    _staleChip(dom.nDiff, net.stale, 'dados em cache');
   }
 
 function renderAccount(acct) {
@@ -1034,7 +1037,33 @@ function renderAccount(acct) {
   }
 }
 
+  // Stale-while-revalidate badge: when the backend serves the last REAL
+  // cached value (provider briefly down), show an honest "dados em cache"
+  // chip instead of pretending the number is live. Each element owns its own
+  // chip (el._staleChipEl) so sibling fields in the SAME parent row (e.g.
+  // sbNetDiff + sbNetPrice) never remove/overwrite each other's chip.
+  function _staleChip(el, stale, label) {
+    if (!el) return;
+    if (!stale) {
+      if (el._staleChipEl) {
+        el._staleChipEl.remove();
+        el._staleChipEl = null;
+      }
+      return;
+    }
+    if (!el._staleChipEl) {
+      el._staleChipEl = document.createElement('span');
+      el._staleChipEl.className = 'stale-chip';
+      el.after(el._staleChipEl);
+    }
+    el._staleChipEl.textContent = label || 'dados em cache';
+    el._staleChipEl.title = 'Fonte externa indisponível — exibindo o último valor real coletado';
+  }
+
   function renderBtcPrices(btc) {
+    // Call _staleChip BEFORE the early return so an orphan chip is removed
+    // when a later snapshot arrives without a btc_price block (honest state).
+    _staleChip(dom.nBtcUsd, !!(btc && btc.stale), 'preço em cache');
     if (!btc) return;
     if (dom.nBtcUsd) dom.nBtcUsd.textContent = btc.usd ? `$${Number(btc.usd).toLocaleString()}` : '\u2014';
     if (dom.nBtcBrl) dom.nBtcBrl.textContent = btc.brl ? `R$${Number(btc.brl).toLocaleString()}` : '\u2014';
@@ -1491,8 +1520,8 @@ function renderAccount(acct) {
 
   function profitModeView(p, mode) {
     if (!p || !Object.keys(p).length) return null;
-    const m = (mode === 'solo' || mode === 'rental') ? mode : 'pool';
-    const view = { mode: m, btcDay: null, fiatDay: {}, fiatWeek: {}, fiatMonth: {}, breakeven: null, soloStats: null };
+    const m = (mode === 'solo' || mode === 'rental' || mode === 'lender') ? mode : 'pool';
+    const view = { mode: m, btcDay: null, fiatDay: {}, fiatWeek: {}, fiatMonth: {}, breakeven: null, soloStats: null, lenderStats: null };
     if (m === 'solo') {
       view.btcDay = p.net_btc_per_day_solo;
       view.fiatDay = p.fiat_per_day_solo || {};
@@ -1510,6 +1539,18 @@ function renderAccount(acct) {
       view.fiatDay = p.fiat_per_day_rental || {};
       view.fiatMonth = p.fiat_per_month_rental || {};
       view.breakeven = p.break_even_rental_usd_per_th_day;
+    } else if (m === 'lender') {
+      view.btcDay = p.lender_net_btc_per_day;
+      view.fiatDay = p.lender_fiat_per_day || {};
+      view.fiatMonth = p.lender_fiat_per_month || {};
+      view.breakeven = p.lender_breakeven_usd_per_th_day;
+      view.lenderStats = {
+        marketRateUsd: p.lender_market_rate_usd_per_th_day,
+        leaseNetUsd: p.lender_net_usd_per_day,
+        mineNetUsd: p.lender_mine_net_usd_per_day,
+        vsMiningUsd: p.lender_vs_mining_usd_per_day,
+        recommendation: p.lender_recommendation,
+      };
     } else {
       view.btcDay = p.net_btc_per_day_pool;
       view.fiatDay = p.fiat_per_day_pool || {};
@@ -1524,13 +1565,15 @@ function renderAccount(acct) {
   }
 
   function setProfitMode(mode) {
-    if (!['pool', 'solo', 'rental'].includes(mode)) return;
+    if (!['pool', 'solo', 'rental', 'lender'].includes(mode)) return;
     _profitMode = mode;
     document.querySelectorAll('.profit-mode-btn').forEach(b => {
       b.classList.toggle('active', b.getAttribute('data-mode') === mode);
     });
     const soloStats = document.getElementById('solo-extra-stats');
     if (soloStats) soloStats.style.display = mode === 'solo' ? '' : 'none';
+    const lenderStats = document.getElementById('lender-extra-stats');
+    if (lenderStats) lenderStats.style.display = mode === 'lender' ? '' : 'none';
     if (_lastProfitability) renderProfitability(_lastProfitability);
   }
   window.setProfitMode = setProfitMode;
@@ -1587,6 +1630,36 @@ function renderAccount(acct) {
       if (expEl) {
         const expDays = view.soloStats.expectedDays;
         expEl.textContent = expDays != null ? fmt.secsToHuman(expDays * 86400) : '\u2014';
+      }
+    }
+    // Lender stats strip (Scenario D: rent OUT your own hashrate vs mining)
+    if (view.lenderStats) {
+      const setL = (id, v, suffix, cls) => {
+        const el = document.getElementById(id);
+        if (!el) return;
+        el.textContent = v != null ? `$${Number(v).toLocaleString(undefined,{maximumFractionDigits:2})}${suffix || ''}` : '\u2014';
+        if (cls) el.className = cls;
+      };
+      setL('lender-market-rate', view.lenderStats.marketRateUsd, '/TH·d');
+      setL('lender-lease-net', view.lenderStats.leaseNetUsd, '/d');
+      setL('lender-mine-net', view.lenderStats.mineNetUsd, '/d');
+      const vs = view.lenderStats.vsMiningUsd;
+      const vsEl = document.getElementById('lender-vs-mining');
+      if (vsEl) {
+        vsEl.textContent = vs != null
+          ? `${vs >= 0 ? '+' : '\u2212'}$${Math.abs(vs).toLocaleString(undefined,{maximumFractionDigits:2})}/d`
+          : '\u2014';
+        vsEl.className = vs == null ? 'badge badge--mute'
+          : vs > 0 ? 'badge badge--green' : 'badge badge--red';
+      }
+      const rec = view.lenderStats.recommendation;
+      const recEl = document.getElementById('lender-recommendation');
+      if (recEl) {
+        const labels = { lease: 'LEASE > MINE', mine: 'MINE > LEASE', equal: 'EQUAL', insufficient: 'NEEDS DATA' };
+        recEl.textContent = labels[rec] || 'NEEDS DATA';
+        recEl.className = rec === 'lease' ? 'badge badge--green'
+          : rec === 'mine' ? 'badge badge--gold'
+          : rec === 'equal' ? 'badge badge--mute' : 'badge badge--mute';
       }
     }
   }
@@ -2121,6 +2194,17 @@ function renderAccount(acct) {
   const SETTINGS_CACHE = { data: null };
   const SETTINGS_SELECTS = { cost_mode: ['none','rental','power'], active_currency: ['USD','BRL','EUR','GBP'], webhook_min_severity: ['INFO','WARN','CRIT','GOLD','SUCCESS'] };
   const SETTINGS_CHECKBOX = { show_test_alerts: true };
+  // Didactic hints shown under each settings field so users configure the
+  // cost model correctly (Fase: LEASE mode — rental_usd_per_th_day is the
+  // rate the LENDER charges, i.e. revenue, not a plain "cost").
+  const SETTINGS_HINTS = {
+    cost_mode: 'none = no cost · rental = pay per TH/s rented · power = rig kWh cost',
+    rental_usd_per_th_day: '📤 LEASE: o que VOCÊ cobra ao alugar seu hashrate (receita) · 📦 RENTAL: o que você paga para alugar hashrate. Usado no modo LEASE do Profitability.',
+    power_watts: 'Consumo do rig (W) — usado para o custo de energia no modo POWER e no LEASE.',
+    power_kwh_usd: 'Tarifa de eletricidade ($/kWh) — usada junto com power_watts no modo POWER e no LEASE.',
+    pool_fee_pct: 'Taxa da pool (%) aplicada à receita de mineração.',
+    active_currency: 'Moeda exibida nos valores fiat (USD|BRL|EUR|GBP).',
+  };
   function renderSettingsForm() {
     const box = dom.settingsBody;
     if (!box) return;
@@ -2138,15 +2222,16 @@ function renderAccount(acct) {
     keys.forEach(k => {
       const s = settings[k] || {};
       const val = (s.value !== undefined && s.value !== null && s.value !== '') ? s.value : s.default;
-      const label = escapeHtml(s.label || k);
-      if (SETTINGS_SELECTS[k]) {
-        const opts = SETTINGS_SELECTS[k].map(o => `<option value="${o}" ${String(val)===o?'selected':''}>${o}</option>`).join('');
-        html += `<label style="display:flex;flex-direction:column;gap:2px;font-size:11px"><span>${label}</span><select name="${k}" class="field__input">${opts}</select></label>`;
-      } else if (SETTINGS_CHECKBOX[k]) {
-        html += `<label style="display:flex;gap:6px;font-size:11px;align-items:center"><input type="checkbox" name="${k}" ${String(val)==='1'?'checked':''}> ${label}</label>`;
-      } else {
-        html += `<label style="display:flex;flex-direction:column;gap:2px;font-size:11px"><span>${label}</span><input type="text" name="${k}" value="${escapeHtml(String(val ?? ''))}" class="field__input"></label>`;
-      }
+    const label = escapeHtml(s.label || k);
+    const hint = SETTINGS_HINTS[k] ? `<small style="color:#8b93a7;font-size:10px;line-height:1.3">${escapeHtml(SETTINGS_HINTS[k])}</small>` : '';
+    if (SETTINGS_SELECTS[k]) {
+      const opts = SETTINGS_SELECTS[k].map(o => `<option value="${o}" ${String(val)===o?'selected':''}>${o}</option>`).join('');
+      html += `<label style="display:flex;flex-direction:column;gap:2px;font-size:11px"><span>${label}</span><select name="${k}" class="field__input">${opts}</select>${hint}</label>`;
+    } else if (SETTINGS_CHECKBOX[k]) {
+      html += `<label style="display:flex;gap:6px;font-size:11px;align-items:center"><input type="checkbox" name="${k}" ${String(val)==='1'?'checked':''}> ${label}${hint}</label>`;
+    } else {
+      html += `<label style="display:flex;flex-direction:column;gap:2px;font-size:11px"><span>${label}</span><input type="text" name="${k}" value="${escapeHtml(String(val ?? ''))}" class="field__input">${hint}</label>`;
+    }
     });
     html += '</div>';
     box.innerHTML = html;
@@ -2174,6 +2259,108 @@ function renderAccount(acct) {
       if (ln && ln.address) el.textContent = ln.address;
     }).catch(function() { /* support config not available */ });
   }
+
+  // ── Render donation methods into the compact bar + full modal grid ──
+  // Fixes the orphaned containers (#support-bar-methods / #support-modal-grid)
+  // which had CSS + a copy handler but were never populated by JS. The copy
+  // button reads the previous sibling's data-copy attribute (see FASE 3).
+  function renderSupportMethods() {
+    fetch('/api/support-config').then(function(r) { return r.json(); }).then(function(cfg) {
+      var methods = (cfg && cfg.methods) || [];
+      var manifesto = cfg && cfg.manifesto ? cfg.manifesto : '';
+
+      // Manifesto (authored, cypherpunk) into the dedicated modal block.
+      // Injected BEFORE the methods guard so it renders even if the config
+      // ever ships with an empty methods list.
+      var maniEl = document.getElementById('support-modal-manifesto');
+      if (maniEl && manifesto) {
+        maniEl.innerHTML = manifesto.split('\n').map(function(line) {
+          if (!line.trim()) return '<br>';
+          return line.replace(/^— (.*)$/, '<span class="support-modal__sign">— $1</span>');
+        }).join(' ');
+      }
+
+      if (!methods.length) return;
+
+      // Compact chips for the fixed footer bar
+      var bar = document.getElementById('support-bar-methods');
+      if (bar) {
+        bar.innerHTML = methods.map(function(m) {
+          return '<span class="support-method" title="' + escapeHtml(m.label) + '">' +
+            '<span class="support-method-tag" style="color:' + (m.color || '#00ff41') + '">' + (m.icon || '₿') + ' ' + escapeHtml(m.label) + '</span>' +
+            '<span class="support-method-addr" data-copy="' + escapeHtml(m.address) + '">' + escapeHtml(m.address) + '</span>' +
+            '<button class="support-method-copy" data-copy-btn aria-label="Copy ' + escapeHtml(m.label) + ' address">⧉</button>' +
+            '</span>';
+        }).join('');
+      }
+
+      // Full cards for the modal grid
+      var grid = document.getElementById('support-modal-grid');
+      if (grid) {
+        grid.innerHTML = methods.map(function(m) {
+          return '<div class="support-modal__card">' +
+            '<div class="support-modal__card-icon" style="color:' + (m.color || '#00ff41') + '">' + (m.icon || '₿') + '</div>' +
+            '<div class="support-modal__card-label">' + escapeHtml(m.label) + '</div>' +
+            (m.note ? '<div class="support-modal__card-note">' + escapeHtml(m.note) + '</div>' : '') +
+            '<div class="support-modal__card-addr" data-copy="' + escapeHtml(m.address) + '">' + escapeHtml(m.address) + '</div>' +
+            '<button class="support-modal__card-copy" data-copy-btn>⧉ copy</button>' +
+            '</div>';
+        }).join('');
+      }
+
+      // LN recipient row — same config object, no second fetch needed
+      var lnEl = document.getElementById('support-ln-address');
+      var ln = methods.find(function(m) { return m.id === 'lightning'; });
+      if (lnEl && ln && ln.address && lnEl.textContent === '—') {
+        lnEl.textContent = ln.address;
+      }
+    }).catch(function() { /* support config not available */ });
+  }
+
+  // ── Recent Donations list (Support modal) ──
+  // Fed by GET /api/donations. Shows total + recent confirmed donations so
+  // the operator can answer "como saber quem doou".
+  function loadDonations() {
+    fetch('/api/donations').then(function(r) { return r.json(); }).then(function(d) {
+      var box = document.getElementById('support-modal-donations');
+      if (!box) return;
+      var stats = document.getElementById('donations-stats');
+      var list = document.getElementById('donations-list');
+      if (!stats || !list) return;
+      var don = d.donations || [];
+      if (!don.length) {
+        box.style.display = 'none';
+        return;
+      }
+      box.style.display = '';
+      var total = d.total || 0;
+      var totalSat = d.total_sat || 0;
+      stats.textContent = total + ' doação' + (total === 1 ? '' : 'ões') + ' · ' + (totalSat >= 1e8 ? (totalSat / 1e8).toFixed(8).replace(/\.?0+$/, '') + ' BTC' : totalSat.toLocaleString('en-US') + ' sats') + ' recebidos';
+      list.innerHTML = don.slice(0, 6).map(function(row) {
+        var methodIcon = { lightning: '⚡', btc: '₿', hashpower: '⛏' }[row.method] || '♥';
+        var amt = row.amount_sat != null ? (row.amount_sat >= 1e8 ? (row.amount_sat / 1e8).toFixed(8).replace(/\.?0+$/, '') + ' BTC' : row.amount_sat.toLocaleString('en-US') + ' sats') : '—';
+        var t = new Date((row.ts || 0) * 1000);
+        var ts = t.toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+        var proof = row.txid ? row.txid.slice(0, 10) + '…' : (row.preimage ? 'preimage ' + row.preimage.slice(0, 10) + '…' : '');
+        // verified = onchain (mempool watcher) or manual (operator-confirmed);
+        // webln = client-reported, not verified on-chain
+        var badge = row.source !== 'webln'
+          ? '<span class="donation-row__badge is-verified" title="Confirmado on-chain (mempool)">✓</span>'
+          : '<span class="donation-row__badge" title="Relatado pelo doador via WebLN — não verificado on-chain">~</span>';
+        return '<div class="donation-row">' +
+          '<span class="donation-row__icon">' + methodIcon + '</span>' +
+          '<span class="donation-row__amt">' + amt + '</span>' +
+          '<span class="donation-row__proof mono">' + (proof ? proof : (row.note || '')) + '</span>' +
+          badge +
+          '<span class="donation-row__ts">' + ts + '</span>' +
+          '</div>';
+      }).join('');
+    }).catch(function() { /* donations not available */ });
+  }
+
+  // Render once on boot so the footer bar has the chips immediately
+  renderSupportMethods();
+  loadDonations();
   // Listen for support panel opening — only the ◈ Details button opens the
   // modal (clicks on the compact bar's copy chips must NOT open the full
   // panel); both entry points still populate the LN address.
@@ -2185,6 +2372,10 @@ function renderAccount(acct) {
         if (panel) panel.classList.add('modal--open');
       }
       setTimeout(_populateLNAddress, 200);
+      // Re-render on open so a failed boot fetch self-heals when the panel
+      // is actually opened (same retry semantics as _populateLNAddress).
+      setTimeout(renderSupportMethods, 250);
+      setTimeout(loadDonations, 300);
     }
   });
 
@@ -2202,10 +2393,57 @@ function renderAccount(acct) {
         statusEl.className = 'support-modal__ln-status support-modal__ln-status--error';
         return;
       }
-      if (invoice.indexOf('lnbc') !== 0 && invoice.indexOf('lntb') !== 0) {
-        statusEl.textContent = '\u26A0 Invalid invoice — must start with lnbc or lntb';
+      // Smart validation: help the donor paste the RIGHT thing. The spark
+      // address / lightning addresses / on-chain addrs are NOT BOLT11 —
+      // give a specific hint instead of a generic rejection. Flat chain:
+      // spark1 → lnurl → lightning-address → on-chain → BOLT12 → BOLT11 ok.
+      var lower = invoice.toLowerCase();
+      if (lower.indexOf('spark1') === 0) {
+        statusEl.textContent = '\u26A0 Essa é a spark address (destino), não um invoice. Gere um invoice BOLT11 (lnbc1...) na sua wallet para pagar aqui.';
         statusEl.className = 'support-modal__ln-status support-modal__ln-status--error';
         return;
+      }
+      if (lower.indexOf('lnurl') === 0) {
+        statusEl.textContent = '\u26A0 Isso é um lnurl, não um invoice BOLT11. Cole o invoice (lnbc1...) que sua wallet gerou para pagar.';
+        statusEl.className = 'support-modal__ln-status support-modal__ln-status--error';
+        return;
+      }
+      if (lower.indexOf('@') > 0) {
+        statusEl.textContent = '\u26A0 Isso é um lightning address (user@domínio). Cole o invoice BOLT11 (lnbc1...) gerado na sua wallet.';
+        statusEl.className = 'support-modal__ln-status support-modal__ln-status--error';
+        return;
+      }
+      if (lower.indexOf('bc1') === 0 || lower.indexOf('1') === 0 || lower.indexOf('3') === 0) {
+        statusEl.textContent = '\u26A0 Isso é um endereço on-chain (BTC). Para Lightning, cole um invoice BOLT11 (lnbc1...).';
+        statusEl.className = 'support-modal__ln-status support-modal__ln-status--error';
+        return;
+      }
+      if (lower.indexOf('lno1') === 0) {
+        statusEl.textContent = '\u26A0 Isso é um offer BOLT12 (lno1...), ainda não suportado. Cole um invoice BOLT11 (lnbc1...).';
+        statusEl.className = 'support-modal__ln-status support-modal__ln-status--error';
+        return;
+      }
+      if (lower.indexOf('lnbc') !== 0 && lower.indexOf('lntb') !== 0) {
+        statusEl.textContent = '\u26A0 Invoice inválido — um invoice BOLT11 começa com lnbc1 (mainnet) ou lntb1 (testnet).';
+        statusEl.className = 'support-modal__ln-status support-modal__ln-status--error';
+        return;
+      }
+      // Extract the invoice amount (msat → sat) for the donation record.
+      // BOLT11 encodes amount as lnbc<number><multiplier>1... where the
+      // multiplier (m/u/n/p) scales the BTC figure to millisatoshis.
+      var invAmtSat = null;
+      // BOLT11 amount = digits + optional multiplier (m/u/n/p) followed by
+      // the mandatory '1' HRP separator. Requiring the separator avoids
+      // misreading amountless invoices (lnbc1... — the '1' is the separator,
+      // and the wallet decides the value) as '1 BTC'.
+      var m = invoice.match(/^(?:lnbc|lntb)(?:(\d+)([munp]?))?1/i);
+      if (m && m[1] !== undefined) {
+        // Multipliers per BOLT11: bare = BTC (1e11 msat), m/u/n/p scale down.
+        var mult = { '': 1e11, m: 1e8, u: 1e5, n: 1e2, p: 1e-1 }[m[2] || ''];
+        if (mult !== undefined) {
+          var msat = parseInt(m[1], 10) * mult;
+          invAmtSat = Math.round(msat / 1000);
+        }
       }
 
       statusEl.textContent = '\uD83D\uDD0D Connecting Lightning wallet...';
@@ -2229,6 +2467,18 @@ function renderAccount(acct) {
       statusEl.className = 'support-modal__ln-status support-modal__ln-status--success';
       invoiceInput.value = '';
       _weblnProvider = provider;
+      // Record the donation server-side (dedup by preimage) so the operator
+      // can see it in the Recent Donations list + Alerts panel. Sends the
+      // invoice amount (parsed above) so the list shows sats, not '—'.
+      if (preimage) {
+        try {
+          fetch('/api/donations', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ method: 'lightning', preimage: preimage, amount_sat: invAmtSat, source: 'webln' })
+          }).then(function() { loadDonations(); }).catch(function() {});
+        } catch (e) { /* non-fatal */ }
+      }
     } catch (e) {
       statusEl.textContent = '\u2717 Payment ' + (e.message && e.message.indexOf('denied') !== -1 ? 'denied' : 'failed') + ': ' + (e.message || 'unknown error');
       statusEl.className = 'support-modal__ln-status support-modal__ln-status--error';
@@ -2546,6 +2796,47 @@ dom.walletSave?.addEventListener('click', async () => {
   }
   document.getElementById('remote-test-btn')?.addEventListener('click', () => fetchTailscale());
 
+  // ── REMOTE ACCESS · TAILSCALE — onboarding scope + limitations (G3) ──
+  // The backend /api/axe-fleet/remote/onboarding returns the step checklist
+  // PLUS an honest scope (what the user can do remotely) and limitations
+  // (Tailscale constraints). Rendered here so the tutorial sets expectations
+  // before the user wires everything up.
+  function renderRemoteOnboarding(d) {
+    if (!d) return;
+    const set = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
+    // Checklist: rebuild from the payload — the backend is the source of
+    // truth (label + instructions + done per step). Mapping onto the static
+    // li items was semantically wrong (dashboard_reachable → 'verificar
+    // miners', li[5] never updated, install+login collapsed into one item).
+    const listEl = document.getElementById('checklist-list');
+    if (listEl && Array.isArray(d.steps)) {
+      listEl.innerHTML = d.steps.map(s =>
+        '<li class="remote-checklist__item ' + (s.done ? 'completed' : 'pending') + '" data-step="' + escapeHtml(String(s.id)) + '">' +
+          '<span class="rci-icon">' + (s.done ? '●' : '○') + '</span>' +
+          '<span class="rci-text">' + escapeHtml(s.label || s.id) + '</span>' +
+          '<span class="rci-status">' + (s.done ? 'ok' : 'pendente') + '</span>' +
+        '</li>'
+      ).join('');
+    }
+    // Scope + limitations lists (fill the empty containers).
+    const scopeEl = document.getElementById('remote-scope-list');
+    if (scopeEl && Array.isArray(d.scope)) {
+      scopeEl.innerHTML = d.scope.map(s => '<li>' + escapeHtml(s) + '</li>').join('') || '<li>—</li>';
+    }
+    const limEl = document.getElementById('remote-limits-list');
+    if (limEl && Array.isArray(d.limitations)) {
+      limEl.innerHTML = d.limitations.map(s => '<li>' + escapeHtml(s) + '</li>').join('') || '<li>—</li>';
+    }
+    set('remote-checklist-progress', d.progress || '—/—');
+  }
+  async function fetchRemoteOnboarding() {
+    try {
+      const r = await fetch('/api/axe-fleet/remote/onboarding');
+      if (!r.ok) return;
+      renderRemoteOnboarding(await r.json());
+    } catch (e) { /* best-effort: the static checklist stays pending */ }
+  }
+
   async function fetchAxeFleet() {
     try {
       const r = await authFetch('/api/axe-fleet/health');
@@ -2719,7 +3010,29 @@ dom.walletSave?.addEventListener('click', async () => {
     const uptime = tel.uptime_str || '—';
     const freq = tel.frequency_mhz ? tel.frequency_mhz + ' MHz' : '—';
     const hw = tel.hw_error_pct != null ? tel.hw_error_pct.toFixed(2) + '%' : '—';
-    const power = tel.power_watts ? tel.power_watts.toFixed(0) + 'W' : '—';
+    // FLEET audit G1: EFF + POWER were computed but never rendered on the
+    // card. Fallback NOT AVAILABLE like CHIP/VR/HR 1H (honest, no zeros).
+    const power = fmt.num(tel.power_watts) ? tel.power_watts.toFixed(0) + 'W' : _NA;
+    const eff = fmt.num(tel.efficiency_jth) ? tel.efficiency_jth.toFixed(2) + ' J/TH' : _NA;
+
+    // ── FLEET audit: PING + POOL + advice chips ──
+    // latency_ms is probed by the backend per reachable device; the card
+    // colors it by band (green ≤50ms, amber ≤150ms, red >150ms).
+    const pingMs = fmt.num(d.latency_ms) ? d.latency_ms : null;
+    const pingStr = pingMs != null ? pingMs + 'ms' : '—';
+    const pingClass = pingMs == null ? '' : (pingMs <= 50 ? 'green' : pingMs <= 150 ? 'gold' : 'red');
+    // POOL: prefer the pool host from pool_url, fall back to stratum_status.
+    let poolStr = tel.stratum_status || '—';
+    const poolRaw = tel.pool_url || '';
+    if (poolRaw) {
+      const host = String(poolRaw).replace(/^stratum\+tcp:\/\//, '').replace(/^[^@]+@/, '').split(':')[0];
+      if (host) poolStr = host;
+    }
+    // Advice chips from the backend rule engine (healthy fleet → empty).
+    const adviceList = Array.isArray(d.advice) ? d.advice : [];
+    const adviceHtml = adviceList.length
+      ? '<div class="axe-card__advice">' + adviceList.map(a => '<span class="axe-card__advice-chip">' + escapeHtml(a) + '</span>').join('') + '</div>'
+      : '';
 
     // Check if any commands are supported
     var supportedCmds = d.capabilities || [];
@@ -2733,7 +3046,9 @@ dom.walletSave?.addEventListener('click', async () => {
             '<span class="axe-card__name">' + escapeHtml(d.name) + '</span>' +
             '<span class="axe-card__status-dot ' + statusClass + '"></span>' +
           '</div>' +
-          '<div class="axe-card__model">' + escapeHtml(d.model || 'unknown') + ' · ' + hrStr + '</div>' +
+          // FLEET audit G2: manufacturer from the payload (fleet_health
+          // serializes it). Fallback NOT AVAILABLE when absent.
+          '<div class="axe-card__model">' + escapeHtml(d.manufacturer || _NA) + ' · ' + escapeHtml(d.model || 'unknown') + ' · ' + hrStr + '</div>' +
         '</div>' +
       '</div>' +
       (caps.length ? '<div class="axe-card__caps">' + capHtml + '</div>' : '') +
@@ -2743,9 +3058,14 @@ dom.walletSave?.addEventListener('click', async () => {
         '<div class="axe-card__stat"><div class="lbl">CHIP</div><div class="val cyan">' + chipTemp + '</div></div>' +
         '<div class="axe-card__stat"><div class="lbl">VR</div><div class="val cyan">' + vrTemp + '</div></div>' +
         '<div class="axe-card__stat"><div class="lbl">HR 1H</div><div class="val cyan">' + hr1h + '</div></div>' +
+        '<div class="axe-card__stat"><div class="lbl">EFF</div><div class="val cyan">' + eff + '</div></div>' +
+        '<div class="axe-card__stat"><div class="lbl">POWER</div><div class="val cyan">' + power + '</div></div>' +
         '<div class="axe-card__stat"><div class="lbl">DIFF</div><div class="val gold">' + bestDiff + '</div></div>' +
         '<div class="axe-card__stat"><div class="lbl">UPTIME</div><div class="val cyan">' + uptime + '</div></div>' +
+        '<div class="axe-card__stat"><div class="lbl">PING</div><div class="val ' + pingClass + '">' + pingStr + '</div></div>' +
+        '<div class="axe-card__stat"><div class="lbl">POOL</div><div class="val cyan" title="' + escapeHtml(tel.pool_url || tel.stratum_status || '') + '">' + escapeHtml(poolStr) + '</div></div>' +
       '</div>' +
+      adviceHtml +
       (hasCommands ? '<div class="axe-card__cmds">' +
         (supportedCmds.indexOf('restart') >= 0 ? '<button class="axe-cmd-btn axe-cmd-btn--restart" data-device-id="' + escapeHtml(d.id) + '" data-cmd="restart">↻ Restart</button>' : '') +
         (supportedCmds.indexOf('identify') >= 0 ? '<button class="axe-cmd-btn axe-cmd-btn--identify" data-device-id="' + escapeHtml(d.id) + '" data-cmd="identify">◈ Identify</button>' : '') +
@@ -3126,13 +3446,21 @@ dom.walletSave?.addEventListener('click', async () => {
     });
   }
 
+  // Terminal prompt user: the connected wallet address (short form) when
+  // available, falling back to a neutral 'miner' for anonymous sessions.
+  function _soloTermUser() {
+    var addr = window.BTC_ADDRESS || '';
+    if (addr) return fmt.shortAddr(addr);
+    return 'miner';
+  }
+
   async function _soloTermExecute(cmd, out) {
     if (_soloTerm.loading) return;
     _soloTerm.loading = true;
     out = out || _soloTerm.output;
 
-    // Echo command
-    _soloTermPrintHTML('<span class="c-green">julio@cypher</span>:<span class="c-blue">~/solo-mining</span>$ <span class="c-white">' + escapeHtml(cmd) + '</span>', out);
+    // Echo command — prompt shows the connected wallet, never a hardcoded user
+    _soloTermPrintHTML('<span class="c-green">' + escapeHtml(_soloTermUser()) + '@cypher</span>:<span class="c-blue">~/solo-mining</span>$ <span class="c-white">' + escapeHtml(cmd) + '</span>', out);
 
     const parts = cmd.split(/\s+/);
     const verb = (parts[0] || '').toLowerCase();
@@ -3264,7 +3592,7 @@ dom.walletSave?.addEventListener('click', async () => {
         _soloTerm.loading = false;
         return;
       }
-      const params = new URLSearchParams({ hashrate: hashrate, duration: duration });
+      const params = new URLSearchParams({ hashrate: hashrate, duration: duration, user: _soloTermUser() });
       if (difficulty) params.set('difficulty', difficulty);
       _soloTermPrintHTML('<span class="c-muted">running calculations...</span>', out);
       try {
@@ -3276,7 +3604,7 @@ dom.walletSave?.addEventListener('click', async () => {
           return;
         }
         _soloTermPrint('', out);
-        const output = data.output || '';
+        const output = data.terminal_output || data.output || '';
         const lines = output.split('\n');
         for (const line of lines) {
           if (line.startsWith('[OK]')) _soloTermPrintHTML('<span class="c-green">' + escapeHtml(line) + '</span>', out);
@@ -3305,7 +3633,7 @@ dom.walletSave?.addEventListener('click', async () => {
         _soloTerm.loading = false;
         return;
       }
-      const params = new URLSearchParams({ budget: budget, duration: duration, objective, auto_fetch: '1' });
+      const params = new URLSearchParams({ budget: budget, duration: duration, objective, auto_fetch: '1', user: _soloTermUser() });
       if (braiins) params.set('braiins_price', braiins);
       if (mrr) params.set('mrr_price', mrr);
       _soloTermPrintHTML('<span class="c-muted">comparing rental options...</span>', out);
@@ -3318,7 +3646,7 @@ dom.walletSave?.addEventListener('click', async () => {
           return;
         }
         _soloTermPrint('', out);
-        const output = data.output || '';
+        const output = data.terminal_output || data.output || '';
         const lines = output.split('\n');
         for (const line of lines) {
           if (line.startsWith('[OK]')) _soloTermPrintHTML('<span class="c-green">' + escapeHtml(line) + '</span>', out);
@@ -3407,17 +3735,7 @@ dom.walletSave?.addEventListener('click', async () => {
   // POLLING
   // ══════════════════════════════════════════════════════════════════════
 
-  async function fetchSnapshot() {
-    try {
-      const r = await fetch('/api/snapshot');
-      if (!r.ok) throw new Error('snapshot failed');
-      const snap = await r.json();
-      _lastSnapshot = snap;
-      render(snap);
-      fetchAxeFleet();
-      updateNextPoll();
-    } catch (e) { logMessage('ERROR', e.message, 'WARN'); }
-  }
+
 
   function updateNextPoll() {
     nextPollAt = Date.now() + POLL_MS;
@@ -3429,10 +3747,32 @@ dom.walletSave?.addEventListener('click', async () => {
     if (dom.clock) dom.clock.textContent = new Date().toLocaleTimeString();
   }
 
+  // ── Snapshot fetch dedup ──
+  // Guards against concurrent /api/snapshot fetches (e.g. rapid market-module
+  // activations each firing fetchSnapshot) so render() never runs twice in
+  // parallel with two different snapshots. The poll loop and manual refreshes
+  // both go through fetchSnapshot, so this keeps a single in-flight fetch.
+  let _snapshotFetching = false;
+  async function fetchSnapshot() {
+    if (_snapshotFetching) return;
+    _snapshotFetching = true;
+    try {
+      const r = await fetch('/api/snapshot');
+      if (!r.ok) throw new Error('snapshot failed');
+      const snap = await r.json();
+      _lastSnapshot = snap;
+      render(snap);
+      fetchAxeFleet();
+      updateNextPoll();
+    } catch (e) { logMessage('ERROR', e.message, 'WARN'); }
+    finally { _snapshotFetching = false; }
+  }
+
   // ── Boot ──
   async function boot() {
     initMatrix(); initCharts(); bindChartRanges(); loadSettings(); initMarketControls();
     fetchTailscale();
+    if (typeof fetchRemoteOnboarding === 'function') fetchRemoteOnboarding();
     updateClock(); setInterval(updateClock, 1000);
     // ── Service Worker: unregister old caches, force fresh install ──
     if ('serviceWorker' in navigator) {
@@ -3788,15 +4128,33 @@ dom.walletSave?.addEventListener('click', async () => {
         _mktTrendLoaded = true;
         loadMarketTrend().then(ok => { if (!ok) _mktTrendLoaded = false; });
       }
+      // Hash Market: also refresh the snapshot — the boot-time snapshot can be
+      // stale (fetched before the warmup cache is hot), so the grid would open
+      // with 0 offers until the next 15s poll. Same pattern as the fleet fix.
+      if (name === 'market' && typeof fetchSnapshot === 'function') {
+        fetchSnapshot();
+      }
       // Live Mining / Terminal: foca o input para digitação imediata
       if (name === 'live') {
         const termInput = document.getElementById('terminal-input');
         if (termInput) termInput.focus();
       }
-      // Support: rola até a barra de doação (módulo não tem painel próprio)
+      // Fleet: garante que o grid renderize imediatamente ao ativar a aba.
+      // Antes o fetchAxeFleet() só rodava no poll/SSE, então a aba abria
+      // com o empty-state estático mesmo com devices registrados.
+      if (name === 'fleet' && typeof fetchAxeFleet === 'function') {
+        if (typeof fetchRemoteOnboarding === 'function') fetchRemoteOnboarding();
+        fetchAxeFleet();
+      }
+      // Support: abre o modal completo (manifesto + endereços) em vez de só
+      // rolar até a barra compacta — o texto autoral e os endereços grandes
+      // ficam no modal.
       if (name === 'support') {
-        const sb = document.getElementById('support-bar');
-        if (sb) sb.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        const panel = document.getElementById('support-panel');
+        if (panel) {
+          panel.classList.add('modal--open');
+          renderSupportMethods();  // also fills the LN recipient row
+        }
       }
     });
   }

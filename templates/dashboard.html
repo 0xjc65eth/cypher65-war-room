@@ -8,7 +8,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
-<link rel="stylesheet" href="/static/style.css?v36">
+<link rel="stylesheet" href="/static/style.css?v38">
 <link rel="icon" href="/static/favicon.ico" sizes="any">
 <link rel="icon" type="image/png" sizes="32x32" href="/static/icon-32x32.png">
 <link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
@@ -474,6 +474,7 @@
     <button class="btn profit-mode-btn active" data-mode="pool" onclick="setProfitMode('pool')">⛏ POOL</button>
     <button class="btn profit-mode-btn" data-mode="solo" onclick="setProfitMode('solo')">☀ SOLO</button>
     <button class="btn profit-mode-btn" data-mode="rental" onclick="setProfitMode('rental')">📦 RENTAL</button>
+    <button class="btn profit-mode-btn" data-mode="lender" onclick="setProfitMode('lender')">📤 LEASE</button>
   </div>
   <div class="profi-no-worker" id="profi-no-worker" style="display:none;padding:12px;text-align:center;color:var(--text-muted);font-size:12px;border:1px dashed var(--border);border-radius:6px;margin:8px 0">
     ⚡ Conecte seu endereço BTC e aguarde dados do miner para ver cálculos de rentabilidade
@@ -490,6 +491,13 @@
     <div class="profit-cell"><div class="profit-cell__label">P(BLOCK) 5Y</div><div class="profit-cell__val" id="solo-p-5y">—</div></div>
     <div class="profit-cell"><div class="profit-cell__label">BLOCKS/YEAR</div><div class="profit-cell__val" id="solo-blocks-year">—</div></div>
     <div class="profit-cell"><div class="profit-cell__label">TIME TO BLOCK</div><div class="profit-cell__val" id="solo-expected-time">—</div></div>
+  </div>
+  <div class="profit-lender-stats" id="lender-extra-stats" style="display:none">
+    <div class="profit-cell"><div class="profit-cell__label">MARKET RATE</div><div class="profit-cell__val" id="lender-market-rate">—</div></div>
+    <div class="profit-cell"><div class="profit-cell__label">LEASE NET</div><div class="profit-cell__val stat__val--green" id="lender-lease-net">—</div></div>
+    <div class="profit-cell"><div class="profit-cell__label">MINE NET</div><div class="profit-cell__val" id="lender-mine-net">—</div></div>
+    <div class="profit-cell"><div class="profit-cell__label">vs MINING</div><div class="profit-cell__val" id="lender-vs-mining">—</div></div>
+    <div class="profit-cell"><div class="profit-cell__label">RECOMMENDATION</div><div class="profit-cell__val" id="lender-recommendation">—</div></div>
   </div>
   <div class="profit-fiat-row" id="profit-fiat-row">
     <div class="profit-fiat-cell" data-cur="USD"><span class="cur">USD</span><span class="val" id="profit-fiat-USD">—</span><span class="per">/d</span></div>
@@ -831,6 +839,20 @@
     </ul>
     <div class="remote-checklist__actions">
       <button class="btn btn--mini" id="remote-copy-ip" title="Copy Tailscale IP">📋 Copy IP</button>
+    </div>
+    <!-- FLEET audit G3: honest scope + limitations from the onboarding payload -->
+    <div class="remote-info">
+      <div class="remote-info__head">
+        <span class="remote-info__title">🎯 O QUE VOCÊ PODERÁ FAZER</span>
+        <span class="badge badge--mute" id="remote-checklist-progress">—/—</span>
+      </div>
+      <ul class="remote-info__list" id="remote-scope-list">
+        <li>aguardando dados…</li>
+      </ul>
+      <div class="remote-info__title remote-info__title--limits">⚠ LIMITAÇÕES DO TAILSCALE</div>
+      <ul class="remote-info__list" id="remote-limits-list">
+        <li>aguardando dados…</li>
+      </ul>
     </div>
   </div>
 
@@ -1302,6 +1324,7 @@
         <div class="support-modal__subtitle" id="support-modal-subtitle">Cypherpunks support cypherpunks.</div>
         <div class="support-modal__desc" id="support-modal-desc">Este painel é um instrumento da resistência digital: código aberto, sem intermediários, soberano por design. Sua contribuição mantém o desenvolvimento rodando, financia infraestrutura descentralizada e garante que esta ferramenta continue nas mãos de quem a usa — não de corporações. Sem donos. Sem permissão. Apenas criptografia e comunidade. BTC, Lightning e hashpower são aceitos.</div>
       </div>
+      <div class="support-modal__manifesto" id="support-modal-manifesto">Nós não acreditamos em permissão. Acreditamos em chaves privadas, em código aberto e em uma rede sem dono. Este painel é um instrumento de soberania digital: ele não pertence a uma corporação — pertence a quem o usa.<br><br>Cada linha deste código existe para um único fim: colocar o minerador no controle dos próprios dados. Sem intermediários. Sem vigilância. Sem pedir licença.<br><br>Se esta ferramenta te serve, devolve algo à rede que a tornou possível. Não por caridade — por continuidade. Cada sat reinvestido mantém os servidores de pé, o código evoluindo e a porta aberta para o próximo cypherpunk.<br><br>A descentralização não é um slogan. É infraestrutura. E infraestrutura se mantém com trabalho e com sats.<br><span class="support-modal__sign">— 1BCP_0XJC65.BTC</span></div>
       <div class="support-modal__grid" id="support-modal-grid"></div>
       <div class="support-modal__ln" id="support-modal-ln">
         <div class="support-modal__ln-header">⚡ Lightning Payment</div>
@@ -1319,6 +1342,11 @@
             <button class="btn btn--primary" id="ln-pay-btn">⚡ Pay Invoice</button>
           </div>
         </div>
+      </div>
+      <div class="support-modal__donations" id="support-modal-donations" style="display:none">
+        <div class="support-modal__ln-header">♥ RECENT DONATIONS</div>
+        <div class="support-modal__donations-stats" id="donations-stats"></div>
+        <div class="support-modal__donations-list" id="donations-list"></div>
       </div>
       <div class="support-modal__footer">
         <span class="support-modal__footnote">Addresses loaded from server — no rebuild needed.</span>
@@ -2006,7 +2034,7 @@
     <span id="next-poll"></span>
   </div>
 
-  <script src="/static/app.js?v36"></script>
+  <script src="/static/app.js?v38"></script>
 </div> <!-- end #app-main -->
 </div> <!-- end #app-layout -->
   <!-- Matrix rain canvas (full-screen background effect) -->

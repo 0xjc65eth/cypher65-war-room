@@ -2862,14 +2862,42 @@ console.log('\n📊 SUITE 24: renderLiveCalc() — lc-* values + sparkline DPR')
 })();
 
 
+(function testSoloTermUser() {
+  // Mirror of static/app.js _soloTermUser() — the Live Terminal prompt
+  // identity: the connected wallet (short form) when present, else 'miner'.
+  // Never a hardcoded person. Uses the same fmt.shortAddr() semantics.
+  function shortAddr(a) {
+    if (!a) return '';
+    if (a.length <= 16) return a;
+    return a.slice(0, 10) + '\u2026' + a.slice(-6);
+  }
+  function soloTermUser(btcAddress) {
+    var addr = btcAddress || '';
+    if (addr) return shortAddr(addr);
+    return 'miner';
+  }
+
+  assertEqual('no wallet → miner', soloTermUser(''), 'miner');
+  assertEqual('null wallet → miner', soloTermUser(null), 'miner');
+  assertEqual('undefined wallet → miner', soloTermUser(undefined), 'miner');
+  assertEqual('short wallet kept as-is', soloTermUser('bc1qshort'), 'bc1qshort');
+  assertEqual('full wallet → short form',
+    soloTermUser('bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq'),
+    'bc1qar0srr\u2026wf5mdq');
+  assertEqual('legacy wallet → short form',
+    soloTermUser('1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa'),
+    '1A1zP1eP5Q\u2026DivfNa');
+})();
+
+
 (function testProfitModeView() {
   // Mirror of static/app.js profitModeView() — pure selector that returns the
   // values to display for the requested profitability mode (pool|solo|rental).
   // Validates the corrected solo math keys + per-mode fiat/break-even wiring.
   function profitModeView(p, mode) {
     if (!p || !Object.keys(p).length) return null;
-    const m = (mode === 'solo' || mode === 'rental') ? mode : 'pool';
-    const view = { mode: m, btcDay: null, fiatDay: {}, fiatWeek: {}, fiatMonth: {}, breakeven: null, soloStats: null };
+    const m = (mode === 'solo' || mode === 'rental' || mode === 'lender') ? mode : 'pool';
+    const view = { mode: m, btcDay: null, fiatDay: {}, fiatWeek: {}, fiatMonth: {}, breakeven: null, soloStats: null, lenderStats: null };
     if (m === 'solo') {
       view.btcDay = p.net_btc_per_day_solo;
       view.fiatDay = p.fiat_per_day_solo || {};
@@ -2887,6 +2915,18 @@ console.log('\n📊 SUITE 24: renderLiveCalc() — lc-* values + sparkline DPR')
       view.fiatDay = p.fiat_per_day_rental || {};
       view.fiatMonth = p.fiat_per_month_rental || {};
       view.breakeven = p.break_even_rental_usd_per_th_day;
+    } else if (m === 'lender') {
+      view.btcDay = p.lender_net_btc_per_day;
+      view.fiatDay = p.lender_fiat_per_day || {};
+      view.fiatMonth = p.lender_fiat_per_month || {};
+      view.breakeven = p.lender_breakeven_usd_per_th_day;
+      view.lenderStats = {
+        marketRateUsd: p.lender_market_rate_usd_per_th_day,
+        leaseNetUsd: p.lender_net_usd_per_day,
+        mineNetUsd: p.lender_mine_net_usd_per_day,
+        vsMiningUsd: p.lender_vs_mining_usd_per_day,
+        recommendation: p.lender_recommendation,
+      };
     } else {
       view.btcDay = p.net_btc_per_day_pool;
       view.fiatDay = p.fiat_per_day_pool || {};
@@ -2916,6 +2956,16 @@ console.log('\n📊 SUITE 24: renderLiveCalc() — lc-* values + sparkline DPR')
     fiat_per_day_rental: { USD: 6.1, BRL: 32.0 },
     fiat_per_month_rental: { USD: 183.0, BRL: 960.0 },
     break_even_rental_usd_per_th_day: 0.0144,
+    // Lender (Scenario D) keys
+    lender_net_btc_per_day: 0.00009090,
+    lender_fiat_per_day: { USD: 5.45, BRL: 29.0 },
+    lender_fiat_per_month: { USD: 163.5, BRL: 870.0 },
+    lender_breakeven_usd_per_th_day: 0.0133,
+    lender_market_rate_usd_per_th_day: 0.0140,
+    lender_net_usd_per_day: 5.45,
+    lender_mine_net_usd_per_day: 7.5,
+    lender_vs_mining_usd_per_day: -2.05,
+    lender_recommendation: 'mine',
   };
 
   // Pool mode (default)
@@ -2945,6 +2995,18 @@ console.log('\n📊 SUITE 24: renderLiveCalc() — lc-* values + sparkline DPR')
   assertApprox('rental fiatMonth', rental.fiatMonth.USD, 183.0, 1e-9);
   assertApprox('rental breakeven', rental.breakeven, 0.0144, 1e-9);
   assertEqual('rental soloStats null', rental.soloStats, null);
+
+  // Lender mode (Scenario D: rent out own hashrate vs mining)
+  const lender = profitModeView(p, 'lender');
+  assertEqual('lender mode', lender.mode, 'lender');
+  assertApprox('lender btcDay', lender.btcDay, 0.00009090, 1e-9);
+  assertApprox('lender fiatMonth', lender.fiatMonth.USD, 163.5, 1e-9);
+  assertApprox('lender breakeven', lender.breakeven, 0.0133, 1e-9);
+  assertApprox('lender marketRateUsd', lender.lenderStats.marketRateUsd, 0.0140, 1e-9);
+  assertApprox('lender leaseNetUsd', lender.lenderStats.leaseNetUsd, 5.45, 1e-9);
+  assertApprox('lender mineNetUsd', lender.lenderStats.mineNetUsd, 7.5, 1e-9);
+  assertApprox('lender vsMiningUsd', lender.lenderStats.vsMiningUsd, -2.05, 1e-9);
+  assertEqual('lender recommendation', lender.lenderStats.recommendation, 'mine');
 
   // Unknown mode falls back to pool; empty payload → null
   assertEqual('unknown mode → pool', profitModeView(p, 'bogus').mode, 'pool');

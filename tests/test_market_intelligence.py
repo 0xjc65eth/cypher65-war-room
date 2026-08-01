@@ -3,6 +3,13 @@ import sqlite3
 
 import pytest
 
+from app import (
+    _hashrate_market_health,
+    _hashrate_market_warmup_cycle,
+    _HASHRATE_MARKET_CACHE_TTL,
+    _HASHRATE_MARKET_EMPTY_CACHE_TTL,
+)
+
 from services.hashrate_market import (
     NormalizedOffer,
     compute_metrics,
@@ -152,6 +159,32 @@ class TestApiHashrateMarket:
         assert data["offers"][0]["provider"] == "braiins"
         assert "metrics" in data["offers"][0]
 
+    def test_hashrate_market_exposes_warmup_health(self, client, monkeypatch):
+        def fake_fetch_all_offers(network_hashrate=None):
+            return [
+                NormalizedOffer(
+                    provider="braiins",
+                    hashrate=1000.0,
+                    price_per_th_day=1e-6,
+                    duration_days=1.0,
+                    fee_pct=0.0,
+                    algorithm="sha256",
+                )
+            ]
+
+        monkeypatch.setattr("app._fetch_all_offers", fake_fetch_all_offers)
+        # Reset the in-memory market cache so the mocked fetcher is actually used
+        # (a prior test in the suite may have populated it with real offers).
+        monkeypatch.setattr("app._HASHRATE_MARKET_CACHE", {"ts": 0, "offers": None})
+        res = client.get("/api/hashrate-market")
+        assert res.status_code == 200
+        health = res.get_json()["health"]
+        assert health["last_fetch_ts"] > 0   # cache just filled by this request
+        assert health["offers_count"] == 1
+        assert health["age_s"] >= 0
+        assert health["stale"] is False
+        assert health["warmup_interval_s"] >= 1
+
     def test_hashrate_market_history_returns_records(self, client, monkeypatch):
         def fake_fetch_history(conn, limit=100):
             return [
@@ -289,3 +322,69 @@ class TestSnapshotMarketHighlights:
         assert res.status_code == 200
         data = res.get_json()
         assert "market_highlights" in data
+
+
+class TestHashrateMarketHealth:
+    """Warmup/cache health exposed via _hashrate_market_health() — the field
+    surfaced on /api/hashrate-market and the snapshot's market_data. Lets
+    operators confirm the 5-min background warm-up is running."""
+
+    def test_health_cold_cache(self, monkeypatch):
+        monkeypatch.setattr("app._HASHRATE_MARKET_CACHE", {"ts": 0, "offers": None})
+        h = _hashrate_market_health()
+        assert h["last_fetch_ts"] == 0
+        assert h["offers_count"] == 0
+        assert h["age_s"] is None          # never fetched → no age
+        assert h["stale"] is False
+        assert h["ttl_s"] == _HASHRATE_MARKET_EMPTY_CACHE_TTL
+        assert h["warmup_interval_s"] >= 1
+
+    def test_health_warm_cache(self, monkeypatch):
+        monkeypatch.setattr(
+            "app._HASHRATE_MARKET_CACHE",
+            {"ts": int(time.time()) - 5, "offers": ["a", "b"]},
+        )
+        h = _hashrate_market_health()
+        assert h["offers_count"] == 2
+        # ts was set 5s ago but a wall-clock second boundary between the two
+        # time.time() calls can make this 5 or 6 — accept both (no flake).
+        assert h["age_s"] in (5, 6)
+        assert h["stale"] is False
+        assert h["ttl_s"] == _HASHRATE_MARKET_CACHE_TTL
+
+    def test_health_stale_cache(self, monkeypatch):
+        monkeypatch.setattr(
+            "app._HASHRATE_MARKET_CACHE",
+            {"ts": int(time.time()) - 600, "offers": ["a"]},
+        )
+        h = _hashrate_market_health()
+        assert h["stale"] is True
+
+
+# ══════════════════════════════════════════════════════════════════════
+# Background warm-up (keeps the LEASE mode cache hot)
+# ══════════════════════════════════════════════════════════════════════
+
+class TestHashrateMarketWarmup:
+    """The 5-min background warm-up must reuse the shared getter (so the
+    cache write + history persistence + _shared_state sync all stay in one
+    place) and never raise — a provider outage must not kill the thread."""
+
+    def test_warmup_cycle_calls_shared_getter(self, monkeypatch):
+        calls = []
+
+        def fake_getter():
+            calls.append(1)
+            return ["offer"]
+
+        monkeypatch.setattr("app._get_hashrate_market_offers", fake_getter)
+        _hashrate_market_warmup_cycle()
+        assert calls == [1]
+
+    def test_warmup_cycle_swallows_errors(self, monkeypatch):
+        def broken_getter():
+            raise RuntimeError("provider down")
+
+        monkeypatch.setattr("app._get_hashrate_market_offers", broken_getter)
+        # Must not raise — the background thread stays alive on outage.
+        _hashrate_market_warmup_cycle()

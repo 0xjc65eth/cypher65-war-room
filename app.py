@@ -28,6 +28,9 @@ from helpers import (
     safe_int, safe_num_from_str, coerce_float, coerce_int,
     human_int, human_secs_long, isfinite_v, make_memory_alert,
     derive_worker_hashrate,
+    compute_solo_probabilities,
+    compute_lender_profitability,
+    compute_pool_rental_break_even,
 )
 
 import services.state as _shared_state
@@ -130,7 +133,7 @@ def rate_limit():
     Disabled in TESTING mode so test suites can call endpoints freely."""
     if app.config.get("TESTING", False):
         return None
-    if request.path.startswith('/static') or request.path == '/healthz' or request.path == '/api/healthz':
+    if request.path.startswith('/static') or request.path == '/healthz' or request.path == '/api/healthz' or request.path == '/api/v1/status':
         return None
     ip = request.remote_addr or '127.0.0.1'
     now = time.time()
@@ -473,6 +476,24 @@ def init_db():
     )
     c.execute("CREATE INDEX IF NOT EXISTS idx_wallet_history_addr ON wallet_address_history(address)")
     c.execute("CREATE INDEX IF NOT EXISTS idx_wallet_history_ts ON wallet_address_history(connected_at)")
+    # ── Donation tracking (FASE 7: "como saber quem doou") ──
+    # Records confirmed donations (auto via WebLN preimage, on-chain via the
+    # mempool.space watcher, or manual logging). txid/preimage are dedup keys.
+    c.execute(
+        """CREATE TABLE IF NOT EXISTS donations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts INTEGER NOT NULL,
+            method TEXT NOT NULL DEFAULT 'lightning',  -- lightning | btc | hashpower
+            amount_sat INTEGER,
+            txid TEXT DEFAULT '',
+            preimage TEXT DEFAULT '',
+            note TEXT DEFAULT '',
+            source TEXT DEFAULT 'webln'  -- webln | onchain | manual
+        )"""
+    )
+    c.execute("CREATE INDEX IF NOT EXISTS idx_donations_ts ON donations(ts)")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_donations_txid ON donations(txid)")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_donations_preimage ON donations(preimage)")
 
     # ── Multi-tenant migration: add tenant_id to axe_fleet tables ──
     for table_name in ("axe_devices", "axe_telemetry"):
@@ -693,6 +714,15 @@ def _auto_seed_axe_fleet(registry):
                     "device_id": device_id,
                     "hashrate_hs": int(hr_variation) if m["hashrate_hs"] > 0 else 0,
                     "temperature": m["temperature"] + temp_variation if m["temperature"] is not None else None,
+                    # Fase 5: chip/ASIC/VR temps + hashrate windows so the fleet
+                    # cards show real values instead of NOT AVAILABLE.
+                    "chip_temp": m["temperature"] + temp_variation + 8 if m["temperature"] is not None else None,
+                    "vr_temp": m["temperature"] + temp_variation + 5 if m["temperature"] is not None else None,
+                    "temp_asic": m["temperature"] + temp_variation + 8 if m["temperature"] is not None else None,
+                    "temp_vreg": m["temperature"] + temp_variation + 5 if m["temperature"] is not None else None,
+                    "hashrate_1m": int(hr_variation) if m["hashrate_hs"] > 0 else None,
+                    "hashrate_10m": int(hr_variation) if m["hashrate_hs"] > 0 else None,
+                    "hashrate_1h": int(m["hashrate_hs"]) if m["hashrate_hs"] > 0 else None,
                     "fan_speed": m["fan_speed"],
                     "fan_rpm": m["fan_rpm"],
                     "power_watts": m["power_watts"],
@@ -907,6 +937,7 @@ _SUPPORT_CONFIG = {
     "title": "Support Cypher65",
     "subtitle": "Cypherpunks support cypherpunks.",
     "description": "Este painel é um instrumento da resistência digital: código aberto, sem intermediários, soberano por design. Sua contribuição mantém o desenvolvimento rodando, financia infraestrutura descentralizada e garante que esta ferramenta continue nas mãos de quem a usa — não de corporações. Sem donos. Sem permissão. Apenas criptografia e comunidade. BTC, Lightning e hashpower são aceitos.",
+    "manifesto": "Nós não acreditamos em permissão. Acreditamos em chaves privadas, em código aberto e em uma rede sem dono. Este painel é um instrumento de soberania digital: ele não pertence a uma corporação — pertence a quem o usa.\n\nCada linha deste código existe para um único fim: colocar o minerador no controle dos próprios dados. Sem intermediários. Sem vigilância. Sem pedir licença.\n\nSe esta ferramenta te serve, devolve algo à rede que a tornou possível. Não por caridade — por continuidade. Cada sat reinvestido mantém os servidores de pé, o código evoluindo e a porta aberta para o próximo cypherpunk.\n\nA descentralização não é um slogan. É infraestrutura. E infraestrutura se mantém com trabalho e com sats.\n\n— 1BCP_0XJC65.BTC",
     "methods": [
         {
             "id": "btc",
@@ -933,7 +964,7 @@ _SUPPORT_CONFIG = {
     ],
     "cta_text": "Support the project",
     "status": "active",
-    "version": "1.1.0",
+    "version": "1.2.0",
 }
 
 
@@ -944,6 +975,169 @@ def api_support_config():
     without requiring a code rebuild.
     """
     return jsonify(_SUPPORT_CONFIG)
+
+
+# ── Donation tracking ──────────────────────────────────────────────────────
+# Records confirmed donations so the operator can see who donated (the
+# Support modal shows a Recent Donations list fed by GET /api/donations).
+_donation_watch_lock = threading.Lock()
+
+
+def _record_donation(method="lightning", amount_sat=None, txid="", preimage="", note="", source="webln"):
+    """Persist a confirmed donation and raise a GOLD alert + push notification.
+
+    Dedupes by txid/preimage so a re-poll or double-submit never double-counts.
+    Returns the row dict, or None if it was a duplicate / failed to persist.
+    """
+    if not (txid or preimage):
+        return None
+    with _donation_watch_lock:
+        try:
+            conn = get_db()
+            c = conn.cursor()
+            # Dedup: same txid or preimage must not be recorded twice
+            c.execute("SELECT id FROM donations WHERE txid=? OR preimage=? LIMIT 1", (txid or "", preimage or ""))
+            if c.fetchone():
+                conn.close()
+                return None
+            ts = int(time.time())
+            c.execute(
+                "INSERT INTO donations (ts, method, amount_sat, txid, preimage, note, source) VALUES (?,?,?,?,?,?,?)",
+                (ts, method, amount_sat, txid or "", preimage or "", note or "", source or "webln"),
+            )
+            row_id = c.lastrowid
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            log.warning("[donation] persist failed: %s", e)
+            return None
+    # In-memory GOLD alert so the Alerts panel lights up immediately
+    label = {"lightning": "⚡ Lightning", "btc": "₿ Bitcoin", "hashpower": "⛏ Hashpower"}.get(method, method)
+    amt = f" · {amount_sat:,} sats" if amount_sat else ""
+    memory_critical_alerts.append(_make_memory_alert(ts, "GOLD", "donation", f"♥ Donation received via {label}{amt}"))
+    try:
+        notify_alert("GOLD", "donation", f"Donation received via {label}{amt}")
+    except Exception as e:
+        log.warning("[donation] push failed: %s", e)
+    log.info("[donation] recorded %s (%s) amount=%s", method, source, amount_sat)
+    return {"id": row_id, "ts": ts, "method": method, "amount_sat": amount_sat,
+            "txid": txid, "preimage": preimage, "note": note, "source": source}
+
+
+@app.route("/api/donations", methods=["GET", "POST"])
+def api_donations():
+    """List recent donations (GET) or record a confirmed donation (POST).
+
+    GET ?limit=20 → {donations: [...], total: n, total_sat: sum}
+    POST body: {method, amount_sat, txid, preimage, note, source}
+      - txid or preimage is REQUIRED (dedup key) — without proof of payment
+        the record is rejected so the list stays honest.
+      - source: 'webln' (auto from provider.sendPayment) | 'onchain' (watcher)
+        | 'manual' (operator logging an on-chain/other donation)
+    """
+    if request.method == "POST":
+        data = request.get_json(silent=True) or {}
+        method = (data.get("method") or "lightning").strip()
+        if method not in ("lightning", "btc", "hashpower"):
+            method = "lightning"
+        amount_sat = None
+        try:
+            if data.get("amount_sat") is not None:
+                amount_sat = int(float(data["amount_sat"]))
+        except (TypeError, ValueError):
+            amount_sat = None
+        row = _record_donation(
+            method=method,
+            amount_sat=amount_sat,
+            txid=(data.get("txid") or "").strip()[:128],
+            preimage=(data.get("preimage") or "").strip()[:128],
+            note=(data.get("note") or "").strip()[:500],
+            source=(data.get("source") or "webln").strip()[:16],
+        )
+        if not row:
+            return jsonify({"success": False, "error": "duplicate or missing proof (txid/preimage required)"}), 409
+        return jsonify({"success": True, "donation": row}), 201
+    # GET
+    limit = min(request.args.get("limit", 20, type=int) or 20, 100)
+    try:
+        conn = get_db()
+        c = conn.cursor()
+        c.execute("SELECT * FROM donations ORDER BY ts DESC LIMIT ?", (limit,))
+        rows = [dict(r) for r in c.fetchall()]
+        c.execute("SELECT COUNT(*) AS total, COALESCE(SUM(amount_sat),0) AS total_sat FROM donations")
+        agg = c.fetchone()
+        conn.close()
+        return jsonify({"donations": rows, "total": agg["total"], "total_sat": agg["total_sat"]})
+    except Exception as e:
+        log.warning("[donation] list failed: %s", e)
+        return jsonify({"donations": [], "total": 0, "total_sat": 0})
+
+
+# ── On-chain donation watcher ──────────────────────────────────────────────
+# Polls mempool.space for incoming txs to the configured BTC donation
+# addresses (SUPPORT_BTC + SUPPORT_HASHPOWER) and auto-records them, so the
+# operator is alerted in real time instead of only seeing the list manually.
+_DONATION_WATCH_INTERVAL = int(os.environ.get("DONATION_WATCH_INTERVAL", 120))  # seconds
+# Ignore dust-spam (a known attack on public donation addresses). Any incoming
+# tx below this threshold is NOT recorded as a donation — prevents an attacker
+# from flooding the Alerts panel + push with hundreds of fake 'donations'.
+_DONATION_MIN_SATS = int(os.environ.get("DONATION_MIN_SATS", 1000))
+_DONATION_WATCH_LAST_TX = {}  # address → set of seen txids (in-memory only)
+
+
+def _donation_watcher_loop():
+    """Background thread: watch on-chain donation addresses via mempool.space.
+    Polls every DONATION_WATCH_INTERVAL (default 2 min), finds unconfirmed+
+    confirmed incoming txs to the BTC + hashpower addresses, and records them
+    once each (deduped by txid both in-memory and via the donations table)."""
+    addresses = set()
+    for m in _SUPPORT_CONFIG.get("methods", []):
+        if m.get("id") in ("btc", "hashpower") and m.get("address"):
+            addresses.add(m["address"])
+    if not addresses:
+        return
+    while True:
+        for addr in addresses:
+            try:
+                data = fetch_json(f"{MEMPOOL_API}/address/{addr}/txs", timeout=10)
+                if not isinstance(data, list):
+                    continue
+                for tx in data:
+                    txid = tx.get("txid") or ""
+                    if not txid:
+                        continue
+                    seen = _DONATION_WATCH_LAST_TX.setdefault(addr, set())
+                    if txid in seen:
+                        continue
+                    seen.add(txid)
+                    # Cap in-memory dedup sets — DB dedup (txid UNIQUE-check in
+                    # _record_donation) is the real guard; this is just a
+                    # short-circuit to avoid re-polling the same recent txs.
+                    if len(seen) > 1000:
+                        _DONATION_WATCH_LAST_TX[addr] = set(list(seen)[-1000:])
+                    # Incoming value: sum of vout to this address (round to
+                    # avoid float BTC→sats drift of ±1 sat)
+                    got = 0
+                    for vout in tx.get("vout") or []:
+                        if (vout.get("scriptpubkey_address") or "") == addr:
+                            got += int(round((vout.get("value") or 0) * 1e8))
+                    if got <= 0:
+                        continue
+                    # Dust-spam guard: tiny spam txs never become 'donations'
+                    if got < _DONATION_MIN_SATS:
+                        log.info("[donation watch] skipped dust tx %s (%.0f sats < %d)", txid[:12], got, _DONATION_MIN_SATS)
+                        continue
+                    # method: 'btc' for the SUPPORT_BTC address, else 'hashpower'
+                    method = "btc"
+                    for m in _SUPPORT_CONFIG.get("methods", []):
+                        if m.get("address") == addr and m.get("id") == "hashpower":
+                            method = "hashpower"
+                            break
+                    _record_donation(method=method, amount_sat=got, txid=txid,
+                                     note=f"on-chain to {addr[:10]}…", source="onchain")
+            except Exception as e:
+                log.warning("[donation watch] %s: %s", addr[:10], e)
+        time.sleep(_DONATION_WATCH_INTERVAL)
 
 
 # ── Initialize Axe Fleet registry (after get_db/init_db are defined) ──
@@ -1077,6 +1271,14 @@ _command_history_lock = threading.Lock()
 _HASHRATE_MARKET_CACHE = {"ts": 0, "offers": None}
 _HASHRATE_MARKET_CACHE_TTL = 60          # successful fetches
 _HASHRATE_MARKET_EMPTY_CACHE_TTL = 15      # empty fetches (avoid hammering APIs)
+# Serializes the TTL-check-then-fetch so the 5-min warmup thread and a
+# concurrent /api/hashrate-market request can't both pass the TTL check and
+# double-fetch (duplicate provider load + duplicate history rows).
+_HASHRATE_MARKET_FETCH_LOCK = threading.Lock()
+# Background warm-up: refresh the cache every 5 min so the LEASE (lender)
+# profitability block always has a real market rate, even when no client
+# ever opens the Hash Market panel (see _hashrate_market_warmup_loop).
+_HASHRATE_MARKET_WARMUP_INTERVAL_S = int(os.environ.get("HASHRATE_MARKET_WARMUP_INTERVAL", 300))
 
 
 def _record_command(device_id: str, command: str, parameters: Optional[Dict[str, Any]], result: Dict[str, Any]):
@@ -1133,8 +1335,9 @@ latest_snapshot = {
         "height": None,
         "difficulty": None,
         "hashrate": None,
+        "stale": False,
     },
-    "btc_price": {"usd": None, "brl": None},
+    "btc_price": {"usd": None, "brl": None, "stale": False},
     "luck_estimate": {},
     "alerts_recent": [],
     "timeline_recent": [],
@@ -1166,6 +1369,11 @@ BTC_PRICE_CACHE_TTL = 600  # 10 minutos (CoinGecko free tier: 10-50 req/min)
 btc_price_cache = {"ts": 0, "data": None}  # último timestamp e dados cacheados
 _btc_consec_failures = 0  # contagem de falhas consecutivas para fallback
 _btc_last_fetch_ts = 0     # throttle: último instante em que tentamos fetch
+# ── Stale-while-revalidate (Honest Telemetry) ───────────────────────────────
+# Últimos valores REAIS conhecidos — nunca inventados. Quando uma fonte externa
+# falha, o snapshot serve estes valores marcados como stale (selo "dados em
+# cache") — o frontend nunca vê um número falso nem um "—" evitável.
+_last_valid_network = {"difficulty": None, "hashrate": None}
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -1745,6 +1953,10 @@ def _reset_session_state():
     _shared_state.last_known_prices["nicehash"] = None
     _shared_state.last_known_prices["kissmyhash"] = None
     _shared_state.last_known_prices["parasite"] = None
+    # Reset stale-while-revalidate caches so a fresh session never inherits
+    # another wallet's "last valid" network/price values.
+    _last_valid_network["difficulty"] = None
+    _last_valid_network["hashrate"] = None
 
     # Reset _shared_state.test_opportunities (mock bypass)
     _shared_state.test_opportunities = None
@@ -2022,6 +2234,18 @@ def _do_poll():
     # Fallback: derive net_hashrate from difficulty + target block time
     if current_difficulty is not None and (net_hashrate is None or net_hashrate == 0):
         net_hashrate = current_difficulty * (2 ** 32) / 600
+    # Stale-while-revalidate da rede: se a fonte falhou, serve o último valor
+    # REAL conhecido marcado como stale (nunca inventa difficulty/hashrate).
+    network_stale = False
+    if current_difficulty is not None and net_hashrate is not None:
+        _last_valid_network["difficulty"] = current_difficulty
+        _last_valid_network["hashrate"] = net_hashrate
+    else:
+        if _last_valid_network["difficulty"] is not None:
+            log.warning("[network] source failed — serving last real values (stale)")
+            current_difficulty = _last_valid_network["difficulty"]
+            net_hashrate = _last_valid_network["hashrate"]
+            network_stale = True
 
     # BTC price (CoinGecko) — throttle + cache + fallback
     _now = int(time.time())
@@ -2047,12 +2271,19 @@ def _do_poll():
         else:
             btc_quote = None
 
-    # Fallback: se falhou consecutivamente > 2x E não temos cache, usa $60k USD
-    if _btc_consec_failures > 2 and not (isinstance(btc_quote, dict) and btc_quote.get("bitcoin")):
-        log.warning("[btc] %d consecutive failures — using fallback $60k USD", _btc_consec_failures)
-        btc_quote = {"bitcoin": {"usd": 60000.0, "brl": 330000.0, "eur": 55000.0, "gbp": 47000.0}}
-        btc_price_cache["data"] = btc_quote
-        btc_price_cache["ts"] = _now
+    # Stale-while-revalidate (Honest Telemetry): se a API falhou, NUNCA
+    # inventar preço — serve o último valor REAL do cache marcado como stale
+    # para o frontend exibir o selo "dados em cache". Sem cache real → sem
+    # preço (honesto), nunca um número falso.
+    btc_price_stale = False
+    if not (isinstance(btc_quote, dict) and btc_quote.get("bitcoin")):
+        _cached = btc_price_cache.get("data")
+        if isinstance(_cached, dict) and _cached.get("bitcoin"):
+            log.warning("[btc] %d consecutive failures — serving last real cached price (stale)", _btc_consec_failures)
+            btc_quote = _cached
+            btc_price_stale = True
+        else:
+            btc_quote = None
 
     btc_usd = (btc_quote or {}).get("bitcoin", {}).get("usd") if isinstance(btc_quote, dict) else None
     btc_brl = (btc_quote or {}).get("bitcoin", {}).get("brl") if isinstance(btc_quote, dict) else None
@@ -2671,6 +2902,42 @@ def _do_poll():
         profitability["pool_fee_pct"] = pool_fee_pct
         profitability["orphan_pct"] = orphan_pct
 
+        # ── Lender market rate (Scenario D) — emitted WITHOUT a worker ──
+        # The rental market price only needs the warm hashrate-market cache
+        # (plus btc_usd for the USD conversion) — NOT the user's hashrate.
+        # Computed outside the cur_hr gate so the LEASE panel always shows the
+        # real market rate even on a worker-less / cold-address server.
+        lender_market_rate_btc = None
+        try:
+            _offers = (_HASHRATE_MARKET_CACHE.get("offers") or [])
+            _real = [o for o in _offers
+                     if not getattr(o, "estimated", False)
+                     and (getattr(o, "price_per_th_day", 0) or 0) > 0]
+            _pool = _real or [o for o in _offers if (getattr(o, "price_per_th_day", 0) or 0) > 0]
+            if _pool:
+                lender_market_rate_btc = min(o.price_per_th_day for o in _pool)
+        except Exception:
+            lender_market_rate_btc = None
+        if not lender_market_rate_btc and btc_usd:
+            cfg_rate_usd = coerce_float(s.get("rental_usd_per_th_day"), 0.0)
+            if cfg_rate_usd > 0:
+                lender_market_rate_btc = cfg_rate_usd / btc_usd
+        profitability["lender_market_rate_btc_per_th_day"] = (
+            round(lender_market_rate_btc, 12) if lender_market_rate_btc else None
+        )
+        # The USD market rate needs a BTC price. The live fetch may be briefly
+        # unavailable (provider 429, throttle) — fall back to the cached quote
+        # or the same hardcoded fallback the price fetch itself uses, so the
+        # LEASE panel shows the real market rate instead of '—' on a cold box.
+        _btc_conv = btc_usd
+        if not _btc_conv:
+            _cached_quote = (btc_price_cache.get("data") or {}).get("bitcoin") or {}
+            _btc_conv = _cached_quote.get("usd")  # stale-while-revalidate: último real, nunca mock
+        profitability["lender_market_rate_usd_per_th_day"] = (
+            round(lender_market_rate_btc * _btc_conv, 4)
+            if lender_market_rate_btc else None
+        )
+
         if cur_hr > 0 and net_hr > 0:
             share_of_network = cur_hr / net_hr
             blocks_per_day = 144.0
@@ -2686,34 +2953,71 @@ def _do_poll():
             # Same formula but no pool fee. Expected blocks PER YEAR = your_share × 144 × 365
             # Solo variance is extreme: share_of_network is the per-BLOCK chance, and
             # with ~144 blocks/day, P(≥1 block in N days) = 1 - (1 - share)^(144·N).
+            # Math extracted to helpers.compute_solo_probabilities (pure, unit-tested).
             solo_net_btc_per_day = gross_btc_per_day * (1 - orphan_pct / 100.0)  # no pool fee
-            solo_p_day = 1 - (1 - share_of_network) ** blocks_per_day          # P(≥1 block today)
-            solo_p_year = 1 - (1 - share_of_network) ** (blocks_per_day * 365)
-            solo_p_5year = 1 - (1 - share_of_network) ** (blocks_per_day * 365 * 5)
-            solo_expected_blocks_per_year = share_of_network * blocks_per_day * 365
-            solo_expected_time_to_block_days = (
-                1.0 / (share_of_network * blocks_per_day) if share_of_network > 0 else None
-            )
+            _solo = compute_solo_probabilities(share_of_network, blocks_per_day)
+            solo_p_day = _solo["solo_p_day"]
+            solo_p_year = _solo["solo_p_year"]
+            solo_p_5year = _solo["solo_p_5year"]
+            solo_expected_blocks_per_year = _solo["solo_expected_blocks_per_year"]
+            solo_expected_time_to_block_days = _solo["solo_expected_time_to_block_days"]
 
-            # ── Rental cost ──
+            # ── Rental/power cost + break-even (pure, unit-tested) ──
+            # Math extracted to helpers.compute_pool_rental_break_even so the
+            # profitability formulas have a single source of truth.
             ths = cur_hr / 1e12
-            rental_cost_per_day = 0.0
-            power_cost_per_day = 0.0
-            if cost_mode == "rental":
-                rental_cost_per_day = ths * coerce_float(s.get("rental_usd_per_th_day"), 0.0)
-            elif cost_mode == "power":
-                watts = coerce_float(s.get("power_watts"), 0.0)
-                kwh_rate_usd = coerce_float(s.get("power_kwh_usd"), 0.0)
-                power_cost_per_day = (watts / 1000.0) * 24.0 * kwh_rate_usd
-
-            # ── Net after cost ──
-            cost_per_day = rental_cost_per_day + power_cost_per_day
+            _be = compute_pool_rental_break_even(
+                ths=ths,
+                pool_net_btc_per_day=pool_net_btc_per_day,
+                btc_usd=btc_usd or 0,
+                cost_mode=cost_mode,
+                rental_usd_per_th_day=coerce_float(s.get("rental_usd_per_th_day"), 0.0),
+                power_watts=coerce_float(s.get("power_watts"), 0.0),
+                power_kwh_usd=coerce_float(s.get("power_kwh_usd"), 0.0),
+            )
+            rental_cost_per_day = _be["rental_cost_per_day"]
+            power_cost_per_day = _be["power_cost_per_day"]
+            cost_per_day = _be["cost_per_day"]
 
             def _fiat_convert(btc_val):
                 return {
                     cur: (round(btc_val * px, 4) if px else None)
                     for cur, px in btc_prices.items()
                 }
+
+            # ── Lender (Scenario D): rent OUT your own hashrate vs mining ──
+            # Revenue = ths × market rental rate (BTC/TH/day); the locador keeps
+            # paying electricity. lender_market_rate_btc is computed above,
+            # outside the cur_hr gate (market price does not need a worker).
+            # Math extracted to helpers.compute_lender_profitability (pure).
+            lender_watts = coerce_float(s.get("power_watts"), 0.0)
+            lender_kwh_usd = coerce_float(s.get("power_kwh_usd"), 0.10)
+            lender_power_cost = (lender_watts / 1000.0) * 24.0 * lender_kwh_usd if lender_watts > 0 else 0.0
+            _lender = compute_lender_profitability(
+                ths=ths,
+                market_btc_per_th_day=lender_market_rate_btc or 0,
+                power_cost_usd_per_day=lender_power_cost,
+                pool_net_btc_per_day=pool_net_btc_per_day,
+                btc_usd=btc_usd or 0,
+            )
+            _lender_net_btc = _lender.get("lender_net_btc_per_day")
+            profitability.update({
+                "lender_net_btc_per_day": _lender["lender_net_btc_per_day"],
+                "lender_net_usd_per_day": _lender["lender_net_usd_per_day"],
+                "lender_revenue_btc_per_day": _lender["lender_revenue_btc_per_day"],
+                "lender_power_cost_usd_per_day": _lender["lender_power_cost_usd_per_day"],
+                "lender_mine_net_usd_per_day": _lender["lender_mine_net_usd_per_day"],
+                "lender_vs_mining_usd_per_day": _lender["lender_vs_mining_usd_per_day"],
+                "lender_recommendation": _lender["lender_recommendation"],
+                "lender_breakeven_btc_per_th_day": _lender["lender_breakeven_btc_per_th_day"],
+                "lender_breakeven_usd_per_th_day": _lender["lender_breakeven_usd_per_th_day"],
+                "lender_fiat_per_day": (
+                    _fiat_convert(_lender_net_btc) if _lender_net_btc is not None else {}
+                ),
+                "lender_fiat_per_month": (
+                    _fiat_convert(_lender_net_btc * 30) if _lender_net_btc is not None else {}
+                ),
+            })
 
             # Pool mining output
             profitability.update({
@@ -2725,8 +3029,8 @@ def _do_poll():
                 "fiat_per_day_pool": _fiat_convert(pool_net_btc_per_day),
                 "fiat_per_week_pool": _fiat_convert(pool_net_btc_per_day * 7),
                 "fiat_per_month_pool": _fiat_convert(pool_net_btc_per_day * 30),
-                "pool_net_usd_per_day": round((pool_net_btc_per_day * (btc_usd or 0)) - cost_per_day, 4),
-                "pool_net_usd_per_month": round(((pool_net_btc_per_day * (btc_usd or 0)) - cost_per_day) * 30, 2),
+                "pool_net_usd_per_day": round((pool_net_btc_per_day * btc_usd) - cost_per_day, 4) if btc_usd else None,
+                "pool_net_usd_per_month": round(((pool_net_btc_per_day * btc_usd) - cost_per_day) * 30, 2) if btc_usd else None,
                 # Solo mode
                 "net_btc_per_day_solo": round(solo_net_btc_per_day, 8),
                 "fiat_per_day_solo": _fiat_convert(solo_net_btc_per_day),
@@ -2747,13 +3051,10 @@ def _do_poll():
                 # already set above; cost_per_day_usd is dynamic)
                 "cost_per_day_usd": round(cost_per_day, 4),
                 # Break-even: rental rate at which pool_net = rental_cost
-                "break_even_rental_usd_per_th_day": round(
-                    (pool_net_btc_per_day * (btc_usd or 0)) / max(ths, 1e-12), 4
-                ) if cost_mode == "rental" and btc_usd and ths > 0 else None,
+                # (computed by helpers.compute_pool_rental_break_even)
+                "break_even_rental_usd_per_th_day": _be["break_even_rental_usd_per_th_day"],
                 # General break-even cost per TH/day (always computed)
-                "breakeven_cost_per_th_day": round(
-                    (pool_net_btc_per_day * (btc_usd or 0)) / max(ths, 1e-12), 4
-                ) if btc_usd and ths > 0 else None,
+                "breakeven_cost_per_th_day": _be["breakeven_cost_per_th_day"],
                 # Effective BTC/TH/s/day (marginal)
                 "effective_btc_per_th_per_day": round(
                     (1.0 / 1e12 / net_hr) * blocks_per_day * total_reward_per_block
@@ -3017,8 +3318,9 @@ def _do_poll():
             "height": network_height,
             "difficulty": current_difficulty,
             "hashrate": net_hashrate,
+            "stale": network_stale,
         },
-        "btc_price": {"usd": btc_usd, "brl": btc_brl, "eur": btc_eur, "gbp": btc_gbp},
+        "btc_price": {"usd": btc_usd, "brl": btc_brl, "eur": btc_eur, "gbp": btc_gbp, "stale": btc_price_stale},
         "luck_estimate": luck,
         "halving": halving,
         "mempool_fees": mempool_fees,
@@ -3073,9 +3375,36 @@ def poll_loop():
         time.sleep(POLL_INTERVAL)
 
 
-# Kick off a poll on startup, then run loop in background.
-poll_once()
-threading.Thread(target=poll_loop, daemon=True).start()
+def _start_background_threads():
+    """Start every background worker for the server process.
+
+    Consolidates boot: the initial poll + poll_loop thread (previously
+    started at module level, which also fired on plain test-suite imports)
+    and the 5-min Hash Market warmup thread all start here, called from the
+    __main__ block before app.run(). Test-suite imports of app.py no longer
+    spawn ANY network thread.
+
+    Note: deliberately __main__-gated; a WSGI/gunicorn deployment must call
+    this explicitly (the project convention is `python app.py`).
+    """
+    # Kick off a poll on startup, then run the loop in background. Wrapped
+    # so a cold-start provider outage can't take down boot — the loop retries
+    # on its next cycle anyway.
+    try:
+        poll_once()
+    except Exception as e:
+        log.error("[boot] initial poll failed: %s", e)
+    threading.Thread(target=poll_loop, daemon=True).start()
+    # Warm the Hash Market cache in the background (5 min loop) so the
+    # LEASE profitability mode always has real offers to compare against,
+    # regardless of whether the Hash Market panel was ever opened.
+    threading.Thread(target=_hashrate_market_warmup_loop, daemon=True).start()
+    # Watch on-chain donation addresses (mempool.space) so the operator is
+    # alerted as soon as someone sends BTC/hashpower donations.
+    try:
+        threading.Thread(target=_donation_watcher_loop, daemon=True).start()
+    except Exception as e:
+        log.warning("[boot] donation watcher failed to start: %s", e)
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -3127,6 +3456,7 @@ def api_snapshot():
             "best_price": best_price_str,
             "updated_at": int(time.time()),
             "provider_count": len(sorted_hl),
+            "health": _hashrate_market_health(),
         }
         # Update shared cache
         cache["offers"] = sorted_hl
@@ -3332,7 +3662,7 @@ def api_settings_post():
 def _settings_label(k):
     return {
         "cost_mode": "Cost model (none|rental|power)",
-        "rental_usd_per_th_day": "Rental cost ($ per TH/s per day)",
+        "rental_usd_per_th_day": "Rental rate ($ per TH/s per day) — what YOU charge to lease out hashrate (revenue)",
         "power_watts": "Estimated rig power (W)",
         "power_kwh_usd": "Electricity rate ($ per kWh)",
         "btc_block_reward": "Current BTC block reward",
@@ -4279,6 +4609,52 @@ def healthz():
     )
 
 
+@app.route("/api/v1/status")
+def api_v1_status():
+    """Health of external integrations (blockchain, exchange, pool).
+
+    Returns per-source status: 'online' (fresh real data), 'stale' (serving
+    last real cached value — provider briefly down, see stale-while-revalidate)
+    or 'offline' (no real data yet). Consumed by the operator to distinguish
+    "our bug" from "provider down", and by the frontend cache badge.
+    """
+    now = int(time.time())
+    net = latest_snapshot.get("network") or {}
+    btc = latest_snapshot.get("btc_price") or {}
+    worker = latest_snapshot.get("worker") or {}
+    pool = latest_snapshot.get("pool") or {}
+
+    def _status(has_value: bool, stale: bool) -> str:
+        if has_value:
+            return "stale" if stale else "online"
+        return "offline"
+
+    return jsonify(
+        {
+            "ok": True,
+            "ts": now,
+            "last_poll_ts": latest_snapshot.get("ts"),
+            "integrations": {
+                "blockchain_api": {
+                    "status": _status(net.get("difficulty") is not None, bool(net.get("stale"))),
+                    "difficulty": net.get("difficulty"),
+                    "hashrate": net.get("hashrate"),
+                },
+                "exchange_api": {
+                    "status": _status(btc.get("usd") is not None, bool(btc.get("stale"))),
+                    "btc_usd": btc.get("usd"),
+                    "btc_brl": btc.get("brl"),
+                },
+                "pool_stratum": {
+                    "status": "online" if (worker or pool) else "offline",
+                    "worker_hashrate": worker.get("hashrate") if worker else None,
+                    "pool_workers": pool.get("workers") if pool else None,
+                },
+            },
+        }
+    )
+
+
 @app.route("/api/tailscale")
 def api_tailscale():
     """Report local Tailscale connection status for the remote-access panel.
@@ -4351,6 +4727,9 @@ def _get_hashrate_market_offers() -> list:
 
     Also updates _shared_state.last_known_prices so that build_highlights
     (called by /api/snapshot) can serve market_data without extra HTTP calls.
+
+    The TTL-check-then-fetch is serialized with _HASHRATE_MARKET_FETCH_LOCK so
+    the background warm-up thread and HTTP requests never double-fetch.
     """
     now = int(time.time())
     cache = _HASHRATE_MARKET_CACHE
@@ -4359,24 +4738,93 @@ def _get_hashrate_market_offers() -> list:
         _sync_market_prices_to_state(cache["offers"])
         return cache["offers"]
 
-    # Real network hashrate (H/s) feeds the Parasite EV model + metrics
-    network_hashrate = (latest_snapshot.get("network") or {}).get("hashrate")
-    offers = _fetch_all_offers(network_hashrate=network_hashrate)
-    if offers:
-        try:
-            conn = get_db()
-            _persist_market_history(conn, offers)
-            conn.close()
-        except Exception as e:
-            log.warning("[hashrate_market] history persistence failed: %s", e)
-        cache["ts"] = now
-        cache["offers"] = offers
-        _sync_market_prices_to_state(offers)
-    else:
-        cache["ts"] = now
-        cache["offers"] = []
+    with _HASHRATE_MARKET_FETCH_LOCK:
+        # Re-check under the lock: another thread may have just refreshed it.
+        now = int(time.time())
+        ttl = _HASHRATE_MARKET_CACHE_TTL if cache["offers"] else _HASHRATE_MARKET_EMPTY_CACHE_TTL
+        if (now - cache["ts"] < ttl) and cache["offers"] is not None:
+            _sync_market_prices_to_state(cache["offers"])
+            return cache["offers"]
+
+        # Real network hashrate (H/s) feeds the Parasite EV model + metrics
+        network_hashrate = (latest_snapshot.get("network") or {}).get("hashrate")
+        offers = _fetch_all_offers(network_hashrate=network_hashrate)
+        if offers:
+            try:
+                conn = get_db()
+                _persist_market_history(conn, offers)
+                conn.close()
+            except Exception as e:
+                log.warning("[hashrate_market] history persistence failed: %s", e)
+            cache["ts"] = now
+            cache["offers"] = offers
+            _sync_market_prices_to_state(offers)
+        else:
+            cache["ts"] = now
+            cache["offers"] = []
 
     return offers
+
+
+def _hashrate_market_health() -> dict:
+    """Expose warmup/cache health for /api/hashrate-market and the snapshot's
+    market_data: when the in-memory cache was last filled and how many offers
+    it holds. Lets operators confirm the 5-min background warm-up is actually
+    running (last_fetch_ts keeps advancing, stale stays False).
+
+    Notes:
+      - offers_count reflects the RAW fetch cache (_HASHRATE_MARKET_CACHE);
+        it may differ from market_data.provider_count, which counts scored
+        highlights that can drop stale/unpriced offers.
+      - stale means "older than the cache TTL" (60s success / 15s empty),
+        NOT "warmup broken": with the 300s warmup interval the cache is
+        legitimately stale for ~240s of every cycle. Watch age_s instead —
+        it should stay below ~interval + TTL.
+    """
+    cache = _HASHRATE_MARKET_CACHE
+    now = int(time.time())
+    ts = cache.get("ts") or 0
+    offers = cache.get("offers")
+    count = len(offers) if offers else 0
+    ttl = _HASHRATE_MARKET_CACHE_TTL if offers else _HASHRATE_MARKET_EMPTY_CACHE_TTL
+    age = (now - ts) if ts else None
+    return {
+        "last_fetch_ts": ts,
+        "offers_count": count,
+        "age_s": age,
+        "ttl_s": ttl,
+        "stale": age is not None and age > ttl,
+        "warmup_interval_s": _HASHRATE_MARKET_WARMUP_INTERVAL_S,
+    }
+
+
+def _hashrate_market_warmup_cycle():
+    """One warm-up cycle: refresh the market cache via the shared getter.
+
+    Reuses _get_hashrate_market_offers() so the cache write, history
+    persistence and _shared_state.last_known_prices sync all stay in one
+    place. Never raises — errors are logged and swallowed so a provider
+    outage can't kill the background thread.
+    """
+    try:
+        _get_hashrate_market_offers()
+    except Exception as e:
+        log.warning("[hashrate_market] warmup cycle error: %s", e)
+
+
+def _hashrate_market_warmup_loop():
+    """Slow background loop (default 5 min) that keeps the Hash Market cache
+    warm so the LEASE (lender) profitability block in _do_poll() always has a
+    real market rate to compare against, instead of falling back to the
+    user-configured rental rate or 'NEEDS DATA'.
+
+    Started by _start_background_threads() from the __main__ block (NOT at
+    import time) so no network thread spawns on plain test-suite imports;
+    only the real server process (python app.py) boots the workers.
+    """
+    while True:
+        _hashrate_market_warmup_cycle()
+        time.sleep(_HASHRATE_MARKET_WARMUP_INTERVAL_S)
 
 
 def _sync_market_prices_to_state(offers: list):
@@ -4425,6 +4873,7 @@ def api_hashrate_market():
         "success": True,
         "ts": int(time.time()),
         "offers": scored,
+        "health": _hashrate_market_health(),
     })
 
 
@@ -4960,4 +5409,13 @@ if __name__ == "__main__":
    ⇢  poll every: %ds — DB at %s
     """ % (PORT, BTC_ADDRESS[:14] + "…", WORKER_NAME, POLL_INTERVAL, DB_PATH)
     print(art)
-    app.run(host="0.0.0.0", port=PORT, debug=False, threaded=True)
+    # ── Start all background workers (initial poll + poll loop + 5-min
+    #    Hash Market warmup) from one place — see _start_background_threads. ──
+    _start_background_threads()
+    # TLS opcional: defina CERT_FILE/KEY_FILE para servir HTTPS. Sem elas o
+    # app continua HTTP (uso típico: atrás de Tailscale/tailnet).
+    _ssl_ctx = None
+    if os.environ.get("CERT_FILE") and os.environ.get("KEY_FILE"):
+        _ssl_ctx = (os.environ["CERT_FILE"], os.environ["KEY_FILE"])
+        print("⇢  TLS habilitado (HTTPS)")
+    app.run(host="0.0.0.0", port=PORT, debug=False, threaded=True, ssl_context=_ssl_ctx)

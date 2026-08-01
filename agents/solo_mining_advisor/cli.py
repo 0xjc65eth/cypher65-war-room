@@ -209,7 +209,9 @@ BANNER = rf"""
   Type {C.GREEN}help{C.RST} for commands, {C.GREEN}exit{C.RST} to quit.
 """
 
-PROMPT = f"{C.GREEN}julio@cypher{C.RST}:{C.BLUE}~/solo-mining{C.RST}$ "
+# Neutral prompt identity — the CLI is a generic tool, not a personal shell.
+_CLI_USER = os.environ.get("USER") or os.environ.get("USERNAME") or "miner"
+PROMPT = f"{C.GREEN}{_CLI_USER}@cypher{C.RST}:{C.BLUE}~/solo-mining{C.RST}$ "
 CHAT_PROMPT = f"{C.CYAN}💬 {C.RST}"
 
 

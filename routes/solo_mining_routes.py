@@ -28,6 +28,7 @@ def api_solo_mining_calc():
     hashrate = request.args.get("hashrate", "")
     duration = request.args.get("duration", 24)
     difficulty = request.args.get("difficulty", None)
+    user = request.args.get("user", "")
 
     if not hashrate:
         return jsonify({"error": "hashrate required (e.g. 225TH)"}), 400
@@ -67,7 +68,7 @@ def api_solo_mining_calc():
         "probability": solo_mining.calc_block_probability(hashrate_hs, difficulty, duration * 3600),
         "expected_time": solo_mining.calc_expected_time(hashrate_hs, difficulty),
         "best_diff": solo_mining.calc_best_diff_expected(hashrate_hs, duration * 3600),
-        "terminal_output": solo_mining.format_calc_output(hashrate, difficulty, duration),
+        "terminal_output": solo_mining.format_calc_output(hashrate, difficulty, duration, user=user or None),
     }
     return jsonify(result)
 
@@ -80,6 +81,7 @@ def api_solo_mining_compare():
     """
     budget = request.args.get("budget", 0)
     duration = request.args.get("duration", 24)
+    user = request.args.get("user", "")
     braiins_price = request.args.get("braiins_price", None)
     mrr_price = request.args.get("mrr_price", None)
     auto_fetch = request.args.get("auto_fetch", "1") != "0"
@@ -118,6 +120,7 @@ def api_solo_mining_compare():
         auto_fetch=auto_fetch,
         mrr_api_key=mrr_api_key,
         mrr_api_secret=mrr_api_secret,
+        user=user or None,
     )
 
     return jsonify({

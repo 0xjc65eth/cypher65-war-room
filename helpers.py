@@ -373,6 +373,200 @@ def validate_btc_address(addr: str) -> dict:
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#  Solo-mining probability math (single source of truth)
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+def compute_solo_probabilities(share_of_network: float, blocks_per_day: float = 144.0) -> dict:
+    """Solo-mining probability math — single source of truth for app.py._do_poll().
+
+    `share_of_network` is the per-BLOCK chance (worker hashrate ÷ network
+    hashrate). With ~144 blocks/day:
+      - P(≥1 block in N days) = 1 - (1 - share)^(144·N)
+      - expected blocks/year   = share × 144 × 365
+      - expected time (days)   = 1 / (share × 144)
+
+    Returns a dict with keys: solo_p_day, solo_p_year, solo_p_5year,
+    solo_expected_blocks_per_year, solo_expected_time_to_block_days.
+    When share <= 0, all probabilities are 0 and expected time is None
+    (guards the divide-by-zero; never raises).
+    """
+    if share_of_network is None or share_of_network <= 0:
+        return {
+            "solo_p_day": 0.0,
+            "solo_p_year": 0.0,
+            "solo_p_5year": 0.0,
+            "solo_expected_blocks_per_year": 0.0,
+            "solo_expected_time_to_block_days": None,
+        }
+    solo_p_day = 1 - (1 - share_of_network) ** blocks_per_day          # P(≥1 block today)
+    solo_p_year = 1 - (1 - share_of_network) ** (blocks_per_day * 365)
+    solo_p_5year = 1 - (1 - share_of_network) ** (blocks_per_day * 365 * 5)
+    solo_expected_blocks_per_year = share_of_network * blocks_per_day * 365
+    solo_expected_time_to_block_days = 1.0 / (share_of_network * blocks_per_day)
+    return {
+        "solo_p_day": solo_p_day,
+        "solo_p_year": solo_p_year,
+        "solo_p_5year": solo_p_5year,
+        "solo_expected_blocks_per_year": solo_expected_blocks_per_year,
+        "solo_expected_time_to_block_days": solo_expected_time_to_block_days,
+    }
+
+
+
+def compute_lender_profitability(
+    ths: float,
+    market_btc_per_th_day: float,
+    power_cost_usd_per_day: float = 0.0,
+    pool_net_btc_per_day: float = 0.0,
+    btc_usd: float = 0.0,
+) -> dict:
+    """Scenario D — rent OUT your own hashrate vs mining directly.
+
+    Revenue from leasing your rigs = hashrate(TH/s) × market rental rate
+    (BTC/TH/day). The locador pays electricity in BOTH scenarios (the rigs
+    run either way), so the power cost CANCELS in the lease-vs-mine
+    comparison:
+        lease net = revenue − power
+        mine  net = mining income − power
+        vs_mining = lease net − mine net = revenue − mining income
+    The comparison therefore reduces to revenue vs mining income — power is
+    subtracted on both sides only to expose the per-scenario net figures.
+
+    Returns a dict with keys:
+      - lender_net_btc_per_day        : lease revenue − power cost (BTC)
+      - lender_net_usd_per_day        : same in USD
+      - lender_revenue_btc_per_day    : gross lease revenue (BTC)
+      - lender_power_cost_usd_per_day
+      - lender_mine_net_usd_per_day   : mining income − power cost (USD)
+      - lender_vs_mining_usd_per_day  : lease net − mine net (positive → lease)
+      - lender_recommendation         : 'lease' | 'mine' | 'equal' | 'insufficient'
+      - lender_breakeven_btc_per_th_day : market rate where lease == mine
+      - lender_breakeven_usd_per_th_day : same in USD
+
+    Never raises. When inputs are missing/zero the recommendation is
+    'insufficient' and money fields are None.
+    """
+    out = {
+        "lender_net_btc_per_day": None,
+        "lender_net_usd_per_day": None,
+        "lender_revenue_btc_per_day": None,
+        "lender_power_cost_usd_per_day": None,
+        "lender_mine_net_usd_per_day": None,
+        "lender_vs_mining_usd_per_day": None,
+        "lender_recommendation": "insufficient",
+        "lender_breakeven_btc_per_th_day": None,
+        "lender_breakeven_usd_per_th_day": None,
+    }
+    try:
+        ths = float(ths or 0)
+        rate = float(market_btc_per_th_day or 0)
+        power_usd = float(power_cost_usd_per_day or 0)
+        mining_btc = float(pool_net_btc_per_day or 0)
+        price = float(btc_usd or 0)
+        if ths <= 0 or rate <= 0:
+            return out
+
+        revenue_btc = ths * rate
+        power_btc = power_usd / price if price > 0 and power_usd > 0 else 0.0
+        net_btc = revenue_btc - power_btc                     # lease net
+        mine_btc = mining_btc - power_btc                     # mine net (same power)
+        net_usd = net_btc * price if price > 0 else None
+        mine_usd = mine_btc * price if price > 0 else None
+
+        out.update({
+            "lender_net_btc_per_day": round(net_btc, 10),
+            "lender_revenue_btc_per_day": round(revenue_btc, 10),
+            "lender_power_cost_usd_per_day": round(power_usd, 4),
+        })
+        if net_usd is not None and mine_usd is not None:
+            out["lender_net_usd_per_day"] = round(net_usd, 4)
+            out["lender_mine_net_usd_per_day"] = round(mine_usd, 4)
+            out["lender_vs_mining_usd_per_day"] = round(net_usd - mine_usd, 4)
+            if abs(net_usd - mine_usd) < 0.005:
+                out["lender_recommendation"] = "equal"
+            elif net_usd > mine_usd:
+                out["lender_recommendation"] = "lease"
+            else:
+                out["lender_recommendation"] = "mine"
+
+        # Market rate where lease net == mine net. Power cancels (both sides
+        # pay it), so breakeven rate = mining income / ths.
+        breakeven_btc = mining_btc / ths if ths > 0 else None
+        if breakeven_btc is not None:
+            out["lender_breakeven_btc_per_th_day"] = round(breakeven_btc, 12)
+            if price > 0:
+                out["lender_breakeven_usd_per_th_day"] = round(breakeven_btc * price, 4)
+        return out
+    except Exception:
+        return out
+
+
+def compute_pool_rental_break_even(
+    ths: float,
+    pool_net_btc_per_day: float,
+    btc_usd: float = 0.0,
+    cost_mode: str = "none",
+    rental_usd_per_th_day: float = 0.0,
+    power_watts: float = 0.0,
+    power_kwh_usd: float = 0.0,
+) -> dict:
+    """Pool/rental cost model + break-even math — single source of truth for
+    app.py._do_poll() profitability block.
+
+    Cost model (cost_mode):
+      - 'rental': daily cost = hashrate(TH/s) × rental rate ($/TH/day)
+      - 'power':  daily cost = (watts / 1000) × 24h × $/kWh
+      - 'none' (default): no cost
+    Only ONE branch applies (the elif), mirroring the original inline logic.
+
+    Break-even:
+      break_even_rental_usd_per_th_day = (pool_net_btc_per_day × BTC price) / ths
+        → the rental rate at which the pool income equals the rental cost.
+        Only computed when cost_mode == 'rental' AND a BTC price exists.
+      breakeven_cost_per_th_day = same figure, always computed when a BTC
+        price exists and ths > 0.
+
+    Returns a dict with keys: rental_cost_per_day, power_cost_per_day,
+    cost_per_day, break_even_rental_usd_per_th_day, breakeven_cost_per_th_day.
+    Never raises. When inputs are missing/zero the break-even fields are None.
+    """
+    out = {
+        "rental_cost_per_day": 0.0,
+        "power_cost_per_day": 0.0,
+        "cost_per_day": 0.0,
+        "break_even_rental_usd_per_th_day": None,
+        "breakeven_cost_per_th_day": None,
+    }
+    try:
+        ths = float(ths or 0)
+        net_btc = float(pool_net_btc_per_day or 0)
+        price = float(btc_usd or 0)
+        mode = str(cost_mode or "none")
+
+        # NOTE: deliberately NOT rounded here — the original inline math in
+        # app.py kept these raw and only rounded at each dict usage site
+        # (cost_per_day_usd, rental_net_usd_per_day, net_btc_per_day_rental,
+        # fiat_*). Rounding early would double-round and drift the payload.
+        if mode == "rental":
+            out["rental_cost_per_day"] = ths * float(rental_usd_per_th_day or 0)
+        elif mode == "power":
+            watts = float(power_watts or 0)
+            kwh_rate = float(power_kwh_usd or 0)
+            out["power_cost_per_day"] = (watts / 1000.0) * 24.0 * kwh_rate
+        out["cost_per_day"] = out["rental_cost_per_day"] + out["power_cost_per_day"]
+
+        if price > 0 and ths > 0:
+            be = (net_btc * price) / max(ths, 1e-12)
+            out["breakeven_cost_per_th_day"] = round(be, 4)
+            if mode == "rental":
+                out["break_even_rental_usd_per_th_day"] = round(be, 4)
+        return out
+    except Exception:
+        return out
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 #  Memory alert builder
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 

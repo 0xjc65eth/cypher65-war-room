@@ -179,6 +179,162 @@ test.describe('CYPHER65 War Room — Dashboard E2E', () => {
       await page.waitForTimeout(600);
       await expect(page.locator('#axe-fleet-panel')).toBeVisible();
     });
+
+    test('Fleet grid renders device cards with Fase 5 telemetry', async ({ page }) => {
+      // Regression: activateModule('fleet') must trigger fetchAxeFleet() so the
+      // grid is populated on tab open (previously the static HTML empty-state
+      // stayed until the next 15s poll). The static empty-state is identified
+      // by #axe-empty-add; after the fix the grid is replaced by JS output.
+      // ensureSidebarOpen: the mobile-chrome project runs with a collapsed
+      // sidebar, so open it before clicking the fleet link (same as the AI
+      // Operator test in this file).
+      await ensureSidebarOpen(page);
+      await page.locator('.sidebar__link[data-module="fleet"]').click();
+      await page.waitForTimeout(600);
+
+      // Wait until the static empty-state is replaced by JS-rendered content
+      await page.waitForFunction(() => {
+        const grid = document.getElementById('axe-grid');
+        if (!grid) return false;
+        return !grid.querySelector('#axe-empty-add');
+      }, { timeout: 10000 });
+
+      const cards = page.locator('#axe-grid .axe-card');
+      const count = await cards.count();
+
+      if (count > 0) {
+        // Gate on the synchronously-rendered card status classes (.is-online
+        // lives in the card HTML string) — NOT on #axe-summary-online, which
+        // countUpValue() animates from 0, so reading it mid-animation returns
+        // "0" and would skip this assertion. When at least one device is
+        // online, the HR summary cell must be populated (all-offline fleets
+        // legitimately show '—').
+        const onlineCards = await page.locator('#axe-grid .axe-card.is-online').count();
+        if (onlineCards > 0) {
+          const hr = await page.locator('#axe-summary-hr').textContent();
+          expect(hr).not.toBe('—');
+        }
+
+        // Each card exposes the Fase 5 stat labels (TEMP/CHIP/VR/HR 1H)
+        const first = cards.first();
+        await expect(first.locator('.axe-card__stat .lbl', { hasText: 'CHIP' })).toBeVisible();
+        await expect(first.locator('.axe-card__stat .lbl', { hasText: 'VR' })).toBeVisible();
+        await expect(first.locator('.axe-card__stat .lbl', { hasText: 'HR 1H' })).toBeVisible();
+      } else {
+        // No devices registered — the JS-rendered empty state must be present
+        await expect(page.locator('#axe-grid .axe-empty, #axe-grid .mkt-empty')).toBeVisible();
+      }
+    });
+
+    test('Fleet cards render PING/POOL stats and advice chips', async ({ page }) => {
+      // FLEET audit gap coverage: the card must render the PING stat (latency
+      // probe, color-coded green ≤50 / gold ≤150 / red >150ms), the POOL stat
+      // (pool_url host else stratum_status) and the advice chips (from
+      // _device_advice). On a seeded server (DEBUG_MOCK=1) the fleet always
+      // contains an OFFLINE miner, which deterministically carries the
+      // 'device offline — checar energia/rede' advice chip.
+      //
+      // Data-agnostic by design (same invariant style as the Fase 5 test):
+      // when cards render, the labels and the advice wrapper must exist;
+      // when the fleet is empty the JS-rendered empty state is asserted.
+      await ensureSidebarOpen(page);
+      await page.locator('.sidebar__link[data-module="fleet"]').click();
+      await page.waitForTimeout(600);
+
+      // Wait until the static empty-state is replaced by JS-rendered content
+      await page.waitForFunction(() => {
+        const grid = document.getElementById('axe-grid');
+        if (!grid) return false;
+        return !grid.querySelector('#axe-empty-add');
+      }, { timeout: 10000 });
+
+      const cards = page.locator('#axe-grid .axe-card');
+      const count = await cards.count();
+
+      if (count > 0) {
+        const first = cards.first();
+        // PING + POOL stat labels always render on a JS card
+        await expect(first.locator('.axe-card__stat .lbl', { hasText: 'PING' })).toBeVisible();
+        await expect(first.locator('.axe-card__stat .lbl', { hasText: 'POOL' })).toBeVisible();
+
+        // POOL value must be a real cell, not the bare placeholder: every
+        // seeded device carries stratum_status ('disconnected' for dead
+        // miners, a host for live ones), so the val cell is never '—'.
+        const poolVal = first.locator('.axe-card__stat', { has: page.locator('.lbl', { hasText: 'POOL' }) }).locator('.val');
+        await expect(poolVal).not.toHaveText('\u2014', { timeout: 5000 });
+
+        // FLEET audit G1: EFF + POWER stat labels render on every card
+        // (value is 'NOT AVAILABLE' when the firmware reports none).
+        await expect(first.locator('.axe-card__stat .lbl', { hasText: 'EFF' })).toBeVisible();
+        await expect(first.locator('.axe-card__stat .lbl', { hasText: 'POWER' })).toBeVisible();
+
+        // FLEET audit G2: the card header shows MANUFACTURER · MODEL · HR
+        // (fleet_health serializes manufacturer; absent → NOT AVAILABLE).
+        // The '·' separator is baked into the template, and the line always
+        // carries at least the manufacturer or its NOT AVAILABLE fallback.
+        const modelLine = await first.locator('.axe-card__model').textContent();
+        expect(modelLine).toContain('·');
+        expect(modelLine.trim().length).toBeGreaterThan(0);
+
+        // Advice chips: the seeded OFFLINE miner always emits the offline
+        // recommendation, so at least one chip must render across the grid.
+        // (A fully-healthy online-only fleet legitimately has none — gate.)
+        const chipCount = await page.locator('#axe-grid .axe-card__advice-chip').count();
+        if (chipCount > 0) {
+          await expect(page.locator('#axe-grid .axe-card__advice-chip').first()).toBeVisible();
+          // The advice wrapper itself must be present wherever chips live
+          await expect(page.locator('#axe-grid .axe-card__advice').first()).toBeVisible();
+        } else {
+          // No recommendations on a fully-healthy fleet — wrapper legitimately absent
+          await expect(first.locator('.axe-card__advice')).toHaveCount(0);
+        }
+      } else {
+        // No devices registered — the JS-rendered empty state must be present
+        await expect(page.locator('#axe-grid .axe-empty, #axe-grid .mkt-empty')).toBeVisible();
+      }
+    });
+
+    test('Hash Market grid refreshes offers on module activation', async ({ page }) => {
+      // Regression: activateModule('market') must trigger fetchSnapshot() so
+      // the grid reflects fresh data on tab open. The boot-time snapshot can
+      // predate the warmup cache (0 offers); without the fix the grid shows
+      // the static HTML empty-state (with the ⚙ Configure button) until the
+      // next 15s poll. The static empty-state is identified by .empty-state;
+      // after the fix the grid is replaced by JS output (.mkt-card / .mkt-empty).
+      // ensureSidebarOpen: the mobile-chrome project runs with a collapsed
+      // sidebar, so open it before clicking the market link.
+      await ensureSidebarOpen(page);
+      await page.locator('.sidebar__link[data-module="market"]').click();
+      await page.waitForTimeout(600);
+
+      // Wait until the static HTML empty-state is replaced by JS-rendered
+      // content (times out if the activation fix regresses).
+      await page.waitForFunction(() => {
+        const grid = document.getElementById('mkt-grid');
+        if (!grid) return false;
+        return !grid.querySelector('.empty-state');
+      }, { timeout: 10000 });
+
+      const cards = page.locator('#mkt-grid .mkt-card');
+      const count = await cards.count();
+
+      if (count > 0) {
+        // Offers rendered — each card exposes provider + price, and the
+        // count badge reflects the number of offers. The best-price badge
+        // must also be populated (not the initial 'best —').
+        const countBadge = await page.locator('#mkt-count-badge').textContent();
+        expect(parseInt(countBadge, 10)).toBeGreaterThan(0);
+        const best = await page.locator('#mkt-best-price-badge').textContent();
+        expect(best).not.toContain('—');
+        const first = cards.first();
+        await expect(first.locator('.mkt-card__provider')).toBeVisible();
+        await expect(first.locator('.mkt-card__price')).toBeVisible();
+      } else {
+        // Cache cold / providers down — the JS-rendered empty state must be
+        // present (proves the grid was re-rendered, not left as static HTML).
+        await expect(page.locator('#mkt-grid .mkt-empty')).toBeVisible();
+      }
+    });
   });
 
   // ──────────────────────────────────────────────────────────────────
@@ -290,20 +446,171 @@ test.describe('CYPHER65 War Room — Dashboard E2E', () => {
       await waitForDashboard(page);
     });
 
-    test('profit mode buttons switch POOL/SOLO/RENTAL', async ({ page }) => {
-      const profitModes = page.locator('.profit-mode-btn, [data-profit-mode]');
-      const count = await profitModes.count();
-      expect(count).toBeGreaterThanOrEqual(2); // at least POOL and SOLO
+    test('profit mode buttons switch POOL/SOLO/RENTAL and reveal solo stats', async ({ page }) => {
+      // ── Button inventory ──
+      const buttons = page.locator('.profit-mode-btn');
+      const count = await buttons.count();
+      expect(count).toBeGreaterThanOrEqual(3); // POOL + SOLO + RENTAL
 
-      // Click the SOLO button
-      const soloBtn = profitModes.filter({ hasText: /solo/i }).first();
+      const poolBtn = page.locator('.profit-mode-btn[data-mode="pool"]');
+      const soloBtn = page.locator('.profit-mode-btn[data-mode="solo"]');
+      const rentalBtn = page.locator('.profit-mode-btn[data-mode="rental"]');
+      await expect(poolBtn).toBeVisible();
       await expect(soloBtn).toBeVisible();
-      await soloBtn.click();
-      await page.waitForTimeout(500);
+      await expect(rentalBtn).toBeVisible();
 
-      // Verify the BTC/day value changed (solo is different from pool)
-      const btcDay = page.locator('#p-btc-day');
-      await expect(btcDay).toBeVisible();
+      // ── Initial state: POOL active, solo strip hidden ──
+      await expect(poolBtn).toHaveClass(/active/);
+      await expect(soloBtn).not.toHaveClass(/active/);
+      const soloStrip = page.locator('#solo-extra-stats');
+      await expect(soloStrip).toBeHidden();
+
+      // ── SOLO: strip reveals, SOLO becomes active, cells re-render ──
+      await soloBtn.click();
+      await page.waitForTimeout(400);
+      await expect(soloStrip).toBeVisible();
+      await expect(soloBtn).toHaveClass(/active/);
+      await expect(poolBtn).not.toHaveClass(/active/);
+
+      // The BREAK-EVEN cell is the mode signal: its sub-label flips to
+      // 'to block' once solo profitability data renders, and stays
+      // '$/TH·d' on a worker-less/cold server. Poll so a late snapshot can
+      // populate the panel either way (race-proof vs the 15s poll).
+      await expect.poll(async () =>
+        (await page.locator('#p-breakeven-sub').textContent()) || ''
+      , { timeout: 10000 }).toMatch(/to block|\$\/TH·d/);
+      const subAfterSolo = (await page.locator('#p-breakeven-sub').textContent()) || '';
+
+      if (subAfterSolo.includes('to block')) {
+        // Solo data present → the revealed cells carry real values.
+        // NOTE: #solo-expected-time and #solo-blocks-year also exist in the
+        // SOLO & STATS panel (duplicate IDs in the template), so scope the
+        // locators to the profit strip to avoid strict-mode violations.
+        await expect(soloStrip.locator('#solo-p-today')).not.toHaveText('\u2014', { timeout: 5000 });
+        await expect(soloStrip.locator('#solo-expected-time')).not.toHaveText('\u2014', { timeout: 5000 });
+        // NET BTC/DAY switches to the solo figure (no pool fee in solo).
+        await expect(page.locator('#p-btc-day')).not.toHaveText('\u2014', { timeout: 5000 });
+      }
+
+      // ── RENTAL: strip hides, RENTAL becomes active ──
+      await rentalBtn.click();
+      await page.waitForTimeout(400);
+      await expect(soloStrip).toBeHidden();
+      await expect(rentalBtn).toHaveClass(/active/);
+      await expect(soloBtn).not.toHaveClass(/active/);
+      // BREAK-EVEN cell returns to the '$/TH·d' rental label when data
+      // exists (solo's 'to block' must be gone).
+      if (subAfterSolo.includes('to block')) {
+        await expect.poll(async () =>
+          (await page.locator('#p-breakeven-sub').textContent()) || ''
+        , { timeout: 5000 }).toContain('$/TH·d');
+      }
+
+      // ── POOL: back to the initial active mode, strip stays hidden ──
+      await poolBtn.click();
+      await page.waitForTimeout(400);
+      await expect(poolBtn).toHaveClass(/active/);
+      await expect(soloStrip).toBeHidden();
+    });
+
+    test('LEASE button reveals lender extra stats (lender mode)', async ({ page }) => {
+      // ── Button inventory: POOL + SOLO + RENTAL + LEASE ──
+      const buttons = page.locator('.profit-mode-btn');
+      expect(await buttons.count()).toBeGreaterThanOrEqual(4);
+
+      const poolBtn = page.locator('.profit-mode-btn[data-mode="pool"]');
+      const lenderBtn = page.locator('.profit-mode-btn[data-mode="lender"]');
+      const rentalBtn = page.locator('.profit-mode-btn[data-mode="rental"]');
+      await expect(poolBtn).toBeVisible();
+      await expect(lenderBtn).toBeVisible();
+      await expect(rentalBtn).toBeVisible();
+
+      // ── Initial state: POOL active, lender strip hidden ──
+      await expect(poolBtn).toHaveClass(/active/);
+      await expect(lenderBtn).not.toHaveClass(/active/);
+      const lenderStrip = page.locator('#lender-extra-stats');
+      await expect(lenderStrip).toBeHidden();
+
+      // ── LEASE: strip reveals, LEASE becomes active, POOL/RENTAL lose it ──
+      await lenderBtn.click();
+      await page.waitForTimeout(400);
+      await expect(lenderStrip).toBeVisible();
+      await expect(lenderBtn).toHaveClass(/active/);
+      await expect(poolBtn).not.toHaveClass(/active/);
+      await expect(rentalBtn).not.toHaveClass(/active/);
+
+      // The RECOMMENDATION cell is the mode/data signal: once renderProfitability
+      // runs in lender mode it shows 'LEASE > MINE' / 'MINE > LEASE' / 'EQUAL' /
+      // 'NEEDS DATA', and stays '—' on a worker-less/cold server. Poll so a late
+      // snapshot can populate the strip either way (race-proof vs the 15s poll).
+      await expect.poll(async () =>
+        (await page.locator('#lender-recommendation').textContent()) || ''
+      , { timeout: 10000 }).toMatch(/LEASE > MINE|MINE > LEASE|EQUAL|NEEDS DATA|—/);
+      const recAfterLease = (await page.locator('#lender-recommendation').textContent()) || '';
+
+      // Only assert real data when the recommendation is a REAL verdict.
+      // 'NEEDS DATA' means the backend computed an 'insufficient' lender
+      // block (no market rate + no configured rental rate) — the cells stay
+      // '—' in that case, so asserting them would flake.
+      const hasLenderData = /LEASE > MINE|MINE > LEASE|EQUAL/.test(recAfterLease);
+      if (hasLenderData) {
+        // Lender data present → the revealed cells carry real values.
+        // IDs here are unique to the lender strip (no duplicates like the
+        // SOLO & STATS panel), so global locators are safe.
+        await expect(page.locator('#lender-market-rate')).not.toHaveText('\u2014', { timeout: 5000 });
+        await expect(page.locator('#lender-lease-net')).not.toHaveText('\u2014', { timeout: 5000 });
+        await expect(page.locator('#lender-mine-net')).not.toHaveText('\u2014', { timeout: 5000 });
+        await expect(page.locator('#lender-vs-mining')).not.toHaveText('\u2014', { timeout: 5000 });
+      }
+
+      // ── Back to POOL: strip hides again, POOL regains active ──
+      await poolBtn.click();
+      await page.waitForTimeout(400);
+      await expect(poolBtn).toHaveClass(/active/);
+      await expect(lenderBtn).not.toHaveClass(/active/);
+      await expect(lenderStrip).toBeHidden();
+    });
+
+    test('LEASE shows real market data after background warm-up (market panel never opened)', async ({ page }) => {
+      // Warm-up + rate convergence can take ~20-40s on a cold server (first
+      // warmup cycle fetches all providers before the cache fills), which
+      // exceeds the 60s global test timeout once the beforeEach dashboard
+      // load (~5-20s) is added. Raise the per-test budget explicitly.
+      test.setTimeout(120000);
+
+      // The Hash Market panel is NEVER opened in this test — the frontend
+      // only fetches /api/hashrate-market when the market module activates.
+      // The cache is kept warm by the background warm-up thread
+      // (_hashrate_market_warmup_loop, started in __main__).
+      //
+      // Backend gate: since the app.py fix, lender_market_rate_* is emitted
+      // UNCONDITIONALLY (outside the `cur_hr > 0` gate) whenever the warm
+      // cache + btc_usd exist — it does NOT need a worker/wallet. So the
+      // deterministic gate is: warm cache (offers_count > 0) AND a real USD
+      // market rate present. The recommendation cell is data-agnostic
+      // (NEEDS DATA on a worker-less server) and asserted separately.
+      await expect.poll(async () => {
+        const res = await page.request.get('/api/snapshot');
+        if (!res.ok()) return null;
+        const d = await res.json();
+        const offers = (d.market_data || {}).health?.offers_count || 0;
+        const rateUsd = (d.profitability || {}).lender_market_rate_usd_per_th_day;
+        return (offers > 0 && rateUsd > 0) ? rateUsd : null;
+      }, { timeout: 45000 }).not.toBeNull();
+
+      // ── LEASE: strip reveals and carries REAL data from the warm cache ──
+      const lenderBtn = page.locator('.profit-mode-btn[data-mode="lender"]');
+      await expect(lenderBtn).toBeVisible();
+      await lenderBtn.click();
+      const lenderStrip = page.locator('#lender-extra-stats');
+      await expect(lenderStrip).toBeVisible();
+
+      // The backend gate above proved the snapshot carries the warm-cache
+      // market rate (btc_usd > 0 implied). The frontend renders the SAME
+      // snapshot within one SSE/poll cycle (≤15s); the assertions auto-retry
+      // until the '—' placeholder is gone.
+      await expect(page.locator('#lender-market-rate')).not.toHaveText('\u2014', { timeout: 20000 });
+      await expect(page.locator('#lender-recommendation')).toHaveText(/LEASE > MINE|MINE > LEASE|EQUAL|NEEDS DATA/, { timeout: 20000 });
     });
 
     test('Hashmarket filters show provider chips', async ({ page }) => {

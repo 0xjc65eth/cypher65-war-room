@@ -258,6 +258,10 @@ class DeviceRegistry:
                   "frequency_mhz": []}
         for entry in raw:
             p = entry["payload"]
+            # Trust only well-formed telemetry (must contain hashrate_hs) —
+            # legacy broken stubs would otherwise render as a 0-H/s point.
+            if not (isinstance(p, dict) and "hashrate_hs" in p):
+                continue
             series["ts"].append(entry["ts"])
             series["hashrate_hs"].append(p.get("hashrate_hs", 0))
             series["temperature"].append(p.get("temperature"))
@@ -283,6 +287,12 @@ class DeviceRegistry:
         try:
             conn_ax = AxeOSConnector(device["ip_address"])
             telemetry = conn_ax.extract_telemetry()
+            if not telemetry:
+                # extract_telemetry() swallows the connector error internally and
+                # returns {} — treat that as unreachable. Never persist or cache
+                # a broken {"device_id": ...} stub, which zeroed the whole fleet.
+                raise AxeOSConnectorError("empty telemetry (device unreachable)")
+
             telemetry["device_id"] = device_id
 
             now = int(time.time())
@@ -298,7 +308,9 @@ class DeviceRegistry:
         except AxeOSConnectorError:
             self.update_device(device_id, {"last_seen": int(time.time()), "status": STATUS_OFFLINE},
                               tenant_id=tenant_id)
-            return {"device_id": device_id, "ts": int(time.time()), "error": "device unreachable"}
+            # Return a FALSY dict so the background poll loop never caches
+            # error stubs into axe_telemetry_cache / the /api/snapshot payload.
+            return {}
 
     # ── Internals ─────────────────────────────────────────────────────
 

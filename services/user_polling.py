@@ -256,8 +256,8 @@ def _build_snapshot(address: str, worker_name: str) -> dict:
         "leaderboard_entry": None,
         "leaderboard_total": 0,
         "highest_diffs": [],
-        "network": {"height": None, "difficulty": None, "hashrate": None},
-        "btc_price": {"usd": None, "brl": None, "eur": None, "gbp": None},
+        "network": {"height": None, "difficulty": None, "hashrate": None, "stale": False},
+        "btc_price": {"usd": None, "brl": None, "eur": None, "gbp": None, "stale": False},
         "luck_estimate": {},
         "halving": {},
         "mempool_fees": {},
@@ -305,12 +305,14 @@ def _build_snapshot(address: str, worker_name: str) -> dict:
             "height": height,
             "difficulty": difficulty,
             "hashrate": hashrate,
+            "stale": False,
         }
 
         # ── BTC price ──
         btc_price_data = {
             "usd": btc_usd, "brl": btc_brl,
             "eur": btc_eur, "gbp": btc_gbp,
+            "stale": False,
         }
 
         # ── Account ──
