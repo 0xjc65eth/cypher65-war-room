@@ -474,6 +474,33 @@ function shouldRenderCharts(chartsTabActive, panelDisplay) {
   return true;
 }
 
+// ── formatClientError mirror: global error boundary (Fase 1.2) ───────────
+// Converts any thrown value / event into { msg, sev } for the Live Log.
+// Matches static/app.js formatClientError() — includes ErrorEvent
+// filename/lineno shortening and PromiseRejectionEvent .reason unwrapping.
+function formatClientErrorMirror(err) {
+  if (err == null) return { msg: 'unknown error', sev: 'WARN' };
+  if (typeof err === 'string') return { msg: err.slice(0, 200), sev: 'WARN' };
+  if (err instanceof Error) {
+    return { msg: String(err.message || err).slice(0, 200), sev: 'WARN' };
+  }
+  if (typeof err === 'object' && err !== null) {
+    if (err.reason != null && err.reason !== err) return formatClientErrorMirror(err.reason);
+    if (err.message) {
+      let m = String(err.message);
+      if (err.filename) {
+        const base = String(err.filename).split('/').pop();
+        m += ` (${base}:${err.lineno || '?'})`;
+      }
+      return { msg: m.slice(0, 200), sev: 'WARN' };
+    }
+    // Event object with no message/reason — clean fallback (matches app.js).
+    return { msg: 'unhandled error (no message)', sev: 'WARN' };
+  }
+  try { return { msg: String(err).slice(0, 200), sev: 'WARN' }; }
+  catch (e) { return { msg: 'unknown error', sev: 'WARN' }; }
+}
+
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  TEST SUITE 1: fmt.hashrate()
@@ -792,6 +819,27 @@ assertTruthy('shouldRender(false, null) → true', shouldRenderCharts(false, nul
 assertFalsy('shouldRender(true, "block") → false (tab-charts active)', shouldRenderCharts(true, 'block'));
 assertFalsy('shouldRender(false, "none") → false (panel hidden)', shouldRenderCharts(false, 'none'));
 assertFalsy('shouldRender(true, "none") → false (both hidden)', shouldRenderCharts(true, 'none'));
+
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  TEST SUITE 9b: formatClientError — global error boundary
+// ═══════════════════════════════════════════════════════════════════════════
+
+console.log('📊 SUITE 9b: formatClientError() — global error boundary');
+
+assertEqual('err null → unknown error', formatClientErrorMirror(null), { msg: 'unknown error', sev: 'WARN' });
+assertEqual('err undefined → unknown error', formatClientErrorMirror(undefined), { msg: 'unknown error', sev: 'WARN' });
+assertEqual('err string', formatClientErrorMirror('boom'), { msg: 'boom', sev: 'WARN' });
+assertEqual('err Error message', formatClientErrorMirror(new Error('render failed')), { msg: 'render failed', sev: 'WARN' });
+assertEqual('err Error no message', formatClientErrorMirror(new Error()), { msg: 'Error', sev: 'WARN' });
+assertEqual('err plain object message', formatClientErrorMirror({ message: 'oops' }), { msg: 'oops', sev: 'WARN' });
+assertEqual('err object with filename', formatClientErrorMirror({ message: 'x', filename: 'https://h/app.js', lineno: 42 }), { msg: 'x (app.js:42)', sev: 'WARN' });
+assertEqual('err rejection unwraps reason', formatClientErrorMirror({ reason: new Error('async fail') }), { msg: 'async fail', sev: 'WARN' });
+assertEqual('err rejection self-reference ignored', formatClientErrorMirror({ reason: null, message: 'direct' }), { msg: 'direct', sev: 'WARN' });
+assertEqual('err number coerced', formatClientErrorMirror(123), { msg: '123', sev: 'WARN' });
+assertEqual('err long message truncated', formatClientErrorMirror('a'.repeat(500)), { msg: 'a'.repeat(200), sev: 'WARN' });
+assertEqual('err bare object no message → clean fallback', formatClientErrorMirror({}), { msg: 'unhandled error (no message)', sev: 'WARN' });
+assertEqual('err PromiseRejectionEvent-like no reason/message → clean fallback', formatClientErrorMirror({ type: 'unhandledrejection' }), { msg: 'unhandled error (no message)', sev: 'WARN' });
 
 
 // ═══════════════════════════════════════════════════════════════════════════

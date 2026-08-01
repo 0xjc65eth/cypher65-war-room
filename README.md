@@ -114,6 +114,7 @@ The CI workflow (`.github/workflows/ci.yml`) gates merges on all suites plus a *
 - [`docs/SECURITY_AUDIT.md`](docs/SECURITY_AUDIT.md) — security review
 - [`docs/DESIGN_SYSTEM_V2.md`](docs/DESIGN_SYSTEM_V2.md) — UI design system
 - [`docs/REMOTE_ACCESS_TUTORIAL.md`](docs/REMOTE_ACCESS_TUTORIAL.md) — Tailscale remote access
+- [`docs/WALLET_POOL_SETUP.md`](docs/WALLET_POOL_SETUP.md) — wallet & pool configuration guide
 - [`docs/AUDITORIA_PROD_READINESS.md`](docs/AUDITORIA_PROD_READINESS.md) — production-readiness audit
 - [`docs/`](docs/) — full index (mobile, milestones, audits)
 

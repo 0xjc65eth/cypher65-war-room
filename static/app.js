@@ -1178,6 +1178,88 @@ function renderAccount(acct) {
     if (dom.logEventsCount) dom.logEventsCount.textContent = `${renderedEventCount} events`;
   }
 
+  // ── Global error boundary (Fase 1.2 · UI audit) ─────────────────────
+  // The dashboard had no global safety net: a render exception or an
+  // unhandled promise rejection died silently, leaving a frozen panel with
+  // zero signal. These handlers catch both and surface them in the Live Log
+  // (tag ERROR) instead of failing silently. Best-effort by design: the
+  // handlers are wrapped so a logging failure can never recurse into itself.
+  // Throttled so a repeating error (e.g. a broken poll payload) logs once per
+  // window instead of spamming 1000 lines/min.
+  const _EB_MAX_PER_MIN = 5;
+  const _EB_WINDOW_MS = 60000;
+  const _ebRecent = {};  // msgKey → { count, firstTs }
+
+  // Pure: converts any thrown value / event into { msg, sev } for the log.
+  // Mirrored in tests/test_app_js_core.js (formatClientErrorMirror).
+  function formatClientError(err) {
+    if (err == null) return { msg: 'unknown error', sev: 'WARN' };
+    if (typeof err === 'string') return { msg: err.slice(0, 200), sev: 'WARN' };
+    if (err instanceof Error) {
+      return { msg: String(err.message || err).slice(0, 200), sev: 'WARN' };
+    }
+    // ErrorEvent ('error') carries message + filename/lineno; keep the file
+    // short (basename:line) so the terminal line stays readable.
+    if (typeof err === 'object' && err !== null) {
+      if (err.reason != null && err.reason !== err) return formatClientError(err.reason);
+      if (err.message) {
+        let m = String(err.message);
+        if (err.filename) {
+          const base = String(err.filename).split('/').pop();
+          m += ` (${base}:${err.lineno || '?'})`;
+        }
+        return { msg: m.slice(0, 200), sev: 'WARN' };
+      }
+      // Event object with no message/reason (e.g. bare PromiseRejectionEvent)
+      // — a clean fallback beats logging "[object X]" garbage.
+      return { msg: 'unhandled error (no message)', sev: 'WARN' };
+    }
+    try { return { msg: String(err).slice(0, 200), sev: 'WARN' }; }
+    catch (e) { return { msg: 'unknown error', sev: 'WARN' }; }
+  }
+
+  function _ebThrottled(msg) {
+    const now = Date.now();
+    const key = String(msg).slice(0, 80);
+    const hit = _ebRecent[key];
+    if (hit && now - hit.firstTs < _EB_WINDOW_MS) {
+      if (hit.count >= _EB_MAX_PER_MIN) return false;
+      hit.count++;
+    } else {
+      _ebRecent[key] = { count: 1, firstTs: now };
+    }
+    // Keep the throttle map bounded on long-running dashboards.
+    if (Object.keys(_ebRecent).length > 200) {
+      for (const k of Object.keys(_ebRecent)) {
+        if (now - _ebRecent[k].firstTs > _EB_WINDOW_MS) delete _ebRecent[k];
+      }
+    }
+    return true;
+  }
+
+  function _surfaceClientError(source, err) {
+    try {
+      const { msg, sev } = formatClientError(err);
+      const full = (source ? `[${source}] ` : '') + msg;
+      if (_ebThrottled(full)) logMessage('ERROR', full, sev);
+    } catch (e) { /* never let the boundary itself throw */ }
+  }
+
+  // Register once — errors that occur before this point (very early boot) are
+  // not caught, which is acceptable: the boundary covers runtime failures.
+  window.addEventListener('error', function (e) {
+    // Only surface real JS runtime errors. The 'error' event ALSO fires for
+    // resource-load failures (broken <script>/<img>/CSS or cross-origin
+    // scripts), where e.target is the failing element and the message is
+    // empty/'Script error.' — those aren't exceptions and would spam the
+    // Live Log with noise. A real window error has e.target === window.
+    if (e && e.target && e.target !== window) return;
+    _surfaceClientError('window', e);
+  });
+  window.addEventListener('unhandledrejection', function (e) {
+    _surfaceClientError('promise', e);
+  });
+
   document.getElementById('clear-logs')?.addEventListener('click', () => {
     events.length = 0; renderedEventCount = 0;
     dom.terminal.innerHTML = '<div class="terminal__line ts-mute">cleared</div>';
