@@ -57,7 +57,7 @@ from axe_fleet.routes import axe_fleet_bp, init_routes as _init_axe_routes
 from axe_fleet.registry import DeviceRegistry
 from routes.alerts_routes import alerts_bp, _set_get_db as _alerts_set_get_db
 from routes.settings_routes import settings_bp
-from services.tenant import require_tenant
+from services.tenant import require_tenant, SELF_HOST_MAX_WORKERS
 
 # ── Core CYPHER65 device registry ───────────────────────────────────────────
 from core.registry.device_registry import DeviceRegistry as CoreDeviceRegistry
@@ -516,9 +516,60 @@ def init_db():
         """CREATE TABLE IF NOT EXISTS tenants (
             id TEXT PRIMARY KEY,
             name TEXT NOT NULL DEFAULT '',
+            plan TEXT NOT NULL DEFAULT 'free',
+            max_workers INTEGER NOT NULL DEFAULT 5,
             created_at INTEGER NOT NULL
         )"""
     )
+    # ── Fase 4 · B3: migrate legacy tenants tables (pre-plan) ──
+    # CREATE TABLE IF NOT EXISTS does NOT alter existing tables, so a tenants
+    # table created before B3 lacks plan/max_workers. Add them if missing;
+    # SQLite fills existing rows with the FREE-plan defaults.
+    try:
+        c.execute("PRAGMA table_info(tenants)")
+        tenant_cols = {row[1] for row in c.fetchall()}
+        for col, col_def in (("plan", "TEXT NOT NULL DEFAULT 'free'"),
+                             ("max_workers", "INTEGER NOT NULL DEFAULT 5")):
+            if col not in tenant_cols:
+                c.execute(f"ALTER TABLE tenants ADD COLUMN {col} {col_def}")
+                log.info("[migrate] added %s to tenants", col)
+    except Exception as e:
+        log.warning("[migrate] could not migrate tenants table: %s", e)
+
+    # ── Fase 4 · B3: provision the operator's own tenant (self-host) ──
+    # The "default" tenant is the operator's own deployment — it must NEVER be
+    # silently capped by the free tier (that would 403 the 6th add with no UI
+    # to raise the limit). INSERT OR IGNORE provisions it once with a generous
+    # SELF_HOST_MAX_WORKERS cap; named tenants provisioned via TENANT_API_KEYS
+    # still get the strict free defaults until a row is created for them.
+    try:
+        c.execute(
+            "INSERT OR IGNORE INTO tenants (id, name, plan, max_workers, created_at) "
+            "VALUES ('default', 'Self-host', 'free', ?, ?)",
+            (SELF_HOST_MAX_WORKERS, int(time.time())),
+        )
+        # The provisioned row is authoritative for the default tenant cap
+        # (the in-code fallback in get_tenant_plan only applies pre-row).
+        # Commit IMMEDIATELY: sqlite3 auto-opens a transaction before DML, and
+        # the PRAGMA synchronous=NORMAL below fails with "Safety level may
+        # not be changed inside a transaction" if one is still open.
+        conn.commit()
+    except Exception as e:
+        log.warning("[migrate] could not provision default tenant: %s", e)
+
+    # ── Fase 4 · B3: structured audit log (multi-tenant) ──
+    c.execute(
+        """CREATE TABLE IF NOT EXISTS audit_logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts INTEGER NOT NULL,
+            tenant_id TEXT NOT NULL DEFAULT 'default',
+            user_id TEXT NOT NULL DEFAULT '',
+            action TEXT NOT NULL,
+            target TEXT NOT NULL DEFAULT '',
+            details TEXT NOT NULL DEFAULT '{}'
+        )"""
+    )
+    c.execute("CREATE INDEX IF NOT EXISTS idx_audit_logs_tenant_ts ON audit_logs(tenant_id, ts)")
     c.execute(
         """CREATE TABLE IF NOT EXISTS users (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -977,6 +1028,26 @@ def api_support_config():
     return jsonify(_SUPPORT_CONFIG)
 
 
+@app.route("/api/tenant/status")
+@require_tenant
+def api_tenant_status(tenant_id: str = ""):
+    """Return the current tenant's plan and worker usage (multi-tenant free tier).
+
+    Honest by default: when the tenant row doesn't exist (single-tenant mode)
+    the FREE-plan defaults (max 5 workers) are reported — never fabricated.
+    """
+    from services.tenant import get_tenant_plan, count_tenant_workers
+    plan = get_tenant_plan(tenant_id)
+    used = count_tenant_workers(tenant_id)
+    return jsonify({
+        "tenant_id": tenant_id or "default",
+        "plan": plan["plan"],
+        "max_workers": plan["max_workers"],
+        "used_workers": used,
+        "remaining_workers": max(0, plan["max_workers"] - used),
+    })
+
+
 # ── Donation tracking ──────────────────────────────────────────────────────
 # Records confirmed donations so the operator can see who donated (the
 # Support modal shows a Recent Donations list fed by GET /api/donations).
@@ -1299,6 +1370,25 @@ def _record_command(device_id: str, command: str, parameters: Optional[Dict[str,
         _command_history.setdefault(device_id, []).append(entry)
         # Keep the last 100 entries per device to avoid unbounded growth.
         _command_history[device_id] = _command_history[device_id][-100:]
+
+    # ── Fase 4 · B3: structured audit — every command attempt (including
+    #    blocked ones) is recorded so the operator can trace who/what ran
+    #    which command on which device. Best-effort: never raises.
+    try:
+        from services.tenant import log_audit, get_tenant_id
+        log_audit(
+            get_tenant_id(),
+            "device.command",
+            target=device_id,
+            details={
+                "command": command,
+                "parameters": parameters or {},
+                "success": bool(result.get("success")),
+                "error": result.get("error", ""),
+            },
+        )
+    except Exception:
+        pass
 
 
 # ── Wire Device Control to the CORE registry + safety + command history ──────

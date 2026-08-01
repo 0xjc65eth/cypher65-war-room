@@ -28,7 +28,13 @@ from functools import wraps
 
 from flask import Blueprint, jsonify, request, session
 
-from services.tenant import get_tenant_id as _get_tenant_id, require_tenant
+from services.tenant import (
+    get_tenant_id as _get_tenant_id,
+    require_tenant,
+    can_add_worker as _can_add_worker,
+    get_tenant_plan as _get_tenant_plan,
+    log_audit as _log_audit,
+)
 
 from core.models.device import device_status_is_online
 
@@ -222,13 +228,32 @@ def add_device(tenant_id: str = ""):
     if not ip:
         return jsonify({"error": "ip_address is required"}), 400
 
-    # Check if already registered
-    existing = _registry.get_device_by_ip(ip)
+    # Check if already registered (tenant-scoped — the same IP may exist in
+    # another tenant's fleet and must not 409 this request).
+    existing = _registry.get_device_by_ip(ip, tenant_id=tenant_id)
     if existing:
         return jsonify({"error": "device already registered", "device": existing}), 409
 
+    # ── Fase 4 · B3: plan enforcement — the FREE tier caps workers per
+    #    tenant. Honest rejection: the operator sees the limit and usage
+    #    instead of a silent success that exceeds the plan.
+    if not _can_add_worker(tenant_id):
+        plan = _get_tenant_plan(tenant_id)
+        _log_audit(tenant_id, "fleet.device_add_blocked",
+                   target=ip, details={"reason": "plan_worker_limit", "max_workers": plan["max_workers"]})
+        return jsonify({
+            "success": False,
+            "error": "plan worker limit reached",
+            "message": f"O plano {plan['plan']} permite no máximo {plan['max_workers']} workers. Remova um device ou aumente o limite.",
+            "plan": plan["plan"],
+            "max_workers": plan["max_workers"],
+        }), 403
+
     try:
         device = _registry.add_device(ip, name or ip, tenant_id=tenant_id)
+        _log_audit(tenant_id, "fleet.device_added",
+                   target=device.get("id", ""),
+                   details={"ip": ip, "name": name or ip})
         return jsonify({"success": True, "device": device}), 201
     except Exception as e:
         log.error("[axe] add_device error: %s", e)
@@ -244,6 +269,7 @@ def remove_device(device_id: str, tenant_id: str = ""):
     removed = _registry.remove_device(device_id, tenant_id=tenant_id)
     if not removed:
         return jsonify({"error": "device not found"}), 404
+    _log_audit(tenant_id, "fleet.device_removed", target=device_id)
     return jsonify({"success": True})
 
 

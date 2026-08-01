@@ -9,7 +9,7 @@ from typing import Any, Dict
 
 from flask import Blueprint, jsonify, request
 
-from services.tenant import require_tenant
+from services.tenant import require_tenant, log_audit as _log_audit
 
 alerts_bp = Blueprint("alerts", __name__, url_prefix="/api")
 
@@ -89,6 +89,7 @@ def api_acknowledge_alert(tenant_id: str = ""):
     )
     conn.commit()
     conn.close()
+    _log_audit(tid, "alert.acknowledge", details={"ids": alert_ids})
     return jsonify({"success": True, "acknowledged_ids": alert_ids})
 
 
@@ -179,6 +180,8 @@ def api_automation_rules(tenant_id: str = ""):
     conn.commit()
     rule_id = c.lastrowid
     conn.close()
+    _log_audit(tid, "automation.rule.create", target=str(rule_id),
+               details={"name": data["name"], "action_command": data["action_command"]})
     return jsonify({"success": True, "id": rule_id})
 
 
@@ -193,6 +196,7 @@ def api_automation_rule(rule_id: int, tenant_id: str = ""):
         c.execute("DELETE FROM automation_rules WHERE id=? AND tenant_id=?", (rule_id, tid))
         conn.commit()
         conn.close()
+        _log_audit(tid, "automation.rule.delete", target=str(rule_id))
         return jsonify({"success": True})
 
     data = request.get_json(silent=True) or {}
@@ -238,4 +242,5 @@ def api_automation_rule(rule_id: int, tenant_id: str = ""):
     c.execute(f"UPDATE automation_rules SET {','.join(fields)} WHERE id=? AND tenant_id=?", tuple(values))
     conn.commit()
     conn.close()
+    _log_audit(tid, "automation.rule.update", target=str(rule_id), details={"fields": fields})
     return jsonify({"success": True})

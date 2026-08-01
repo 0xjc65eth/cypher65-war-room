@@ -13,6 +13,7 @@ from services.auth import (
     require_auth,
     resolve_tenant_for_api_key,
 )
+from services.tenant import log_audit as _log_audit
 
 log = logging.getLogger("cypher65.auth")
 security_log = logging.getLogger("cypher65.security")
@@ -47,6 +48,7 @@ def api_auth_login():
     tenant_id = resolve_tenant_for_api_key(provided_key)
     if tenant_id is None:
         security_log.warning("[auth] failed login attempt from %s", request.remote_addr)
+        _log_audit("default", "auth.login_failed", details={"ip": request.remote_addr})
         return jsonify({"error": "invalid api_key"}), 401
 
     # Successful login — subject is the tenant_id so axe_fleet's
@@ -55,6 +57,7 @@ def api_auth_login():
     refresh_token, expires_at = create_refresh_token(subject=tenant_id)
 
     security_log.info("[auth] successful login (tenant=%s) from %s", tenant_id, request.remote_addr)
+    _log_audit(tenant_id, "auth.login", details={"ip": request.remote_addr})
 
     return jsonify({
         "success": True,
@@ -91,6 +94,7 @@ def api_auth_refresh():
     tenant_id = payload.get("sub", "default")
     access_token = create_token(subject=tenant_id)
     expires_at = int(time.time()) + 3600
+    _log_audit(tenant_id, "auth.refresh", details={"ip": request.remote_addr})
 
     return jsonify({
         "success": True,
@@ -115,8 +119,13 @@ def api_auth_logout():
     token = (data.get("access_token") or data.get("refresh_token") or "").strip()
 
     if token:
+        # Resolve tenant from the token before revoking so the logout audit
+        # lands on the right tenant even without an Authorization header.
+        payload = verify_token(token, expected_type="access") or verify_token(token, expected_type="refresh")
+        tid = payload.get("sub", "default") if payload else "default"
         revoke_token(token)
         log.info("[auth] token revoked")
+        _log_audit(tid, "auth.logout", details={"ip": request.remote_addr})
     else:
         return jsonify({"error": "access_token or refresh_token is required"}), 400
 
