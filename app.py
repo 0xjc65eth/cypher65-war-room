@@ -198,7 +198,12 @@ def add_cache_headers(response):
 #  SQLite
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 def get_db():
-    conn = sqlite3.connect(DB_PATH)
+    # Honest Telemetry: read DB_PATH from env at call time (mirroring
+    # services/tenant.py) so tests can redirect EVERY route — including the
+    # axe_fleet registry — to a scratch DB via monkeypatch.setenv("DB_PATH").
+    # A static module constant made RBAC integration tests write Test-*
+    # devices into the real data/war_room.sqlite.
+    conn = sqlite3.connect(os.environ.get("DB_PATH", DB_PATH))
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -663,9 +668,13 @@ _SEED_GROUP_MARKERS = ("auto-seed", "test-fleet")
 
 
 def _purge_seed_marked_devices(registry):
-    """Remove devices left behind by previous DEBUG_MOCK=1 demo runs.
-    Only rows carrying the explicit seed group markers are removed; devices
-    added by the user (default group) are never touched.
+    """Remove devices left behind by previous DEBUG_MOCK=1 demo runs or by
+    integration tests that hit the real app.
+    Removal criteria (never touches user devices):
+      - group_id in _SEED_GROUP_MARKERS (auto-seed / test-fleet), OR
+      - name starting with the Test- test convention (RBAC tests name their
+        devices Test-*; see tests/test_rbac_register.py).
+    Also purges ORPHANED axe_telemetry rows whose device no longer exists.
     Returns the number of devices purged. Logs each removed device for audit.
 
     Note: list_devices() spans tenants but remove_device targets the default
@@ -674,11 +683,25 @@ def _purge_seed_marked_devices(registry):
     removed = 0
     try:
         for d in registry.list_devices():
-            if d.get("group_id") in _SEED_GROUP_MARKERS:
+            name = d.get("name", "")
+            if d.get("group_id") in _SEED_GROUP_MARKERS or name.startswith("Test-") or name.startswith("test-"):
                 dev_id = d.get("id")
                 if registry.remove_device(dev_id):
                     removed += 1
-                    log.info("[axe] purged demo-seeded device %s (%s)", dev_id, d.get("name", ""))
+                    log.info("[axe] purged demo-seeded device %s (%s)", dev_id, name)
+        # Drop orphaned telemetry history (removing a device never deleted
+        # its axe_telemetry rows — long-running servers accumulated them).
+        try:
+            conn = registry._get_db()
+            c = conn.cursor()
+            c.execute("DELETE FROM axe_telemetry WHERE device_id NOT IN (SELECT id FROM axe_devices)")
+            orphaned = c.rowcount
+            conn.commit()
+            conn.close()
+            if orphaned:
+                log.info("[axe] purged %d orphaned telemetry rows (no device)", orphaned)
+        except Exception as e:
+            log.warning("[axe] telemetry orphan purge failed: %s", e)
         if removed:
             log.info("[axe] purged %d demo-seeded devices (DEBUG_MOCK off)", removed)
     except Exception as e:
@@ -878,7 +901,8 @@ def _purge_test_devices(axe_registry, core_registry):
     Targets (name-based, all unambiguous test artifacts):
       - core devices: name starts with Test-/Listed-/Health-/Maint-/Diag-/
         Timeline- or is one of Online/Offline/Stale-Device
-      - axe devices: name == ip_address (auto-added junk) or name in {x, ss}
+      - axe devices: name starts with Test-/test- (RBAC suite convention),
+        name == ip_address (auto-added junk) or name in {x, ss}
       - automation rule 'test-rule'
       - alerts whose message references those test devices / 'status=0 == 0'
     Returns a dict with per-table counts for logging.
@@ -906,7 +930,7 @@ def _purge_test_devices(axe_registry, core_registry):
         for d in axe_registry.list_devices():
             nm = (d.get("name") or "").strip()
             ip = (d.get("ip_address") or "").strip()
-            if nm in ("x", "ss") or (nm == ip and ip):
+            if nm.startswith(("Test-", "test-")) or nm in ("x", "ss") or (nm == ip and ip):
                 try:
                     axe_registry.remove_device(d.get("id"))
                     counts["axe"] += 1
@@ -2016,6 +2040,31 @@ _human_secs_long = human_secs_long
 
 # Restore all-time best-difficulty from settings on module load.
 _restore_all_time_best_diff()
+
+
+def _clear_wallet_scoped_history():
+    """Delete per-wallet chart history so a wallet switch never mixes data.
+
+    The chart tables (proximity_history, snapshots, share_timeline) have NO
+    wallet column — rows accumulate across wallets. On a wallet change the
+    previous wallet's real data would otherwise appear in the new session's
+    hashrate / best-diff / pool charts as if it belonged to the new wallet.
+    Clearing them keeps the honest-telemetry premise: the charts refill from
+    the next poll with data for the CURRENT wallet only.
+
+    The in-memory share_calc_history (cum_p / share_dist charts) is already
+    cleared by _reset_session_state(); this covers the DB-backed charts.
+    """
+    tables = ("proximity_history", "snapshots", "share_timeline")
+    for t in tables:
+        try:
+            conn = get_db()
+            c = conn.cursor()
+            c.execute(f"DELETE FROM {t}")
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            log.warning("[set-address] could not clear %s: %s", t, e)
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -5180,10 +5229,12 @@ def api_chart_data():
     Reads from proximity_history table (sampled every ~60s)."""
     chart = request.args.get('chart', 'hashrate')
     rng = request.args.get('range', '1h')
-    window_seconds = {'1h': 3600, '6h': 21600, '24h': 86400, '7d': 604800, 'all': 2592000}
+    # Fase 2.1: full range set — 15m (hashrate toolbar) and 30d (net toolbar)
+    # previously fell back to 1h, silently showing the wrong window.
+    window_seconds = {'15m': 900, '1h': 3600, '6h': 21600, '24h': 86400, '7d': 604800, '30d': 2592000, 'all': 2592000}
     window = window_seconds.get(rng, 3600)
     cutoff = int(time.time()) - window
-    max_points = {'1h': 120, '6h': 360, '24h': 500, '7d': 1000, 'all': 2000}
+    max_points = {'15m': 60, '1h': 120, '6h': 360, '24h': 500, '7d': 1000, '30d': 1500, 'all': 2000}
     limit = max_points.get(rng, 500)
 
     labels = []
@@ -5271,6 +5322,46 @@ def api_chart_data():
     except Exception as e:
         logging.getLogger("cypher65").warning("[chart-data] error: %s", e)
 
+    # ── Fase 2.1: event annotations + share-volume overlay ──
+    # Events feed the vertical annotation lines on the charts (bumps are
+    # drawn as critical, share finds as subtle); shares powers the bar
+    # overlay on the hashrate chart. Both are honest telemetry — only real
+    # persisted timeline events are returned, never invented.
+    events = []
+    shares = None
+    try:
+        import bisect
+        conn = get_db()
+        c = conn.cursor()
+        c.execute(
+            """SELECT ts, event_type, severity, message FROM share_timeline
+               WHERE ts > ? AND event_type IN ('SHARE_FOUND', 'BEST_DIFF_BUMP')
+               ORDER BY ts ASC LIMIT 600""",
+            (cutoff,),
+        )
+        for r in c.fetchall():
+            events.append({
+                "ts": int(r["ts"]),
+                "event_type": r["event_type"],
+                "severity": r["severity"] or "INFO",
+                "message": r["message"] or "",
+            })
+        # Shares-per-bucket overlay aligned to the label timestamps (ms).
+        # Only the hashrate chart renders the bar overlay.
+        if chart == "hashrate" and labels:
+            pts = [int(t) for t in labels]  # already ms
+            buckets = [0] * len(pts)
+            for e in events:
+                if e["event_type"] != "SHARE_FOUND":
+                    continue
+                idx = bisect.bisect_right(pts, e["ts"] * 1000) - 1
+                if 0 <= idx < len(buckets):
+                    buckets[idx] += 1
+            shares = buckets
+        conn.close()
+    except Exception as e:
+        logging.getLogger("cypher65").warning("[chart-data] events: %s", e)
+
     # Fallback: if no history data, return current snapshot value as single point
     if not labels:
         labels = [int(time.time()) * 1000]
@@ -5304,6 +5395,9 @@ def api_chart_data():
             'backgroundColor': 'rgba(6,214,240,0.1)',
             'tension': 0.3,
         }],
+        # Fase 2.1: event annotations (ts in seconds) + share-volume overlay
+        'events': events,
+        'shares': shares,
     })
 
 
@@ -5407,6 +5501,13 @@ def api_set_address():
 
     # ── Reset session state ──
     _reset_session_state()
+
+    # ── Honest Telemetry: a wallet SWITCH must not leak the previous
+    #    wallet's DB-backed chart history into the new session. Clearing only
+    #    happens when the address actually changed (worker-only updates keep
+    #    the existing history). Charts refill from the immediate poll below.
+    if old_addr.lower() != new_addr.lower():
+        _clear_wallet_scoped_history()
 
     # ── Force immediate poll with the NEW address ──
     # Without this, the snapshot stays empty until the next scheduled poll

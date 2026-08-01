@@ -1,0 +1,56 @@
+# ═══════════════════════════════════════════════════════════════════════
+#  CYPHER65 WAR ROOM — Render blueprint
+# ═══════════════════════════════════════════════════════════════════════
+# Deploy:  push to GitHub → Render → New Blueprint → select the repo.
+#
+# ⚠️ CRITICAL — do NOT switch the start command to gunicorn:
+#   _start_background_threads() (poll loop + hash-market warmup + donation
+#   watcher) is deliberately gated behind `if __name__ == "__main__"` in
+#   app.py. `python app.py` is the ONLY start command that boots the
+#   background workers. gunicorn app:app would serve HTTP with NO polling —
+#   the dashboard would stay blank forever.
+#
+# ⚠️ SQLite persistence:
+#   - FREE tier: filesystem is EPHEMERAL — data/war_room.sqlite is wiped on
+#     every redeploy/restart (wallet, telemetry, alerts, settings).
+#   - PAID tier: attach the Persistent Disk below; DB_PATH points at the
+#     mount so the SQLite file survives deploys. Uncomment the disk block
+#     and set DB_PATH to /opt/render/project/src/data/war_room.sqlite
+#     (only ONE instance may mount the disk — don't run a second service).
+#   The app boots with zero state and re-polls real data within seconds, so
+#   an ephemeral DB is acceptable for a personal dashboard.
+services:
+  - type: web
+    name: cypher65-war-room
+    runtime: python
+    plan: free            # free | starter (starter + disk = persistent SQLite)
+    buildCommand: pip install -r requirements.txt
+    startCommand: python app.py
+    healthCheckPath: /api/healthz
+    autoDeploy: true
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.13"
+      - key: PORT
+        value: 8765
+      # ── Which wallet to monitor on boot (overrides the hardcoded default) ──
+      - key: BTC_ADDRESS
+        value: bc1qpc3832jcu6m8qpqjvz5lkuydwjzv8v5vq5t5rs
+      - key: WORKER_NAME
+        value: ""
+      # ── Secrets ──────────────────────────────────────────────────────────
+      - key: SECRET_KEY
+        generateValue: true
+      # Optional: API_KEY / TENANT_API_KEYS to lock the API behind auth.
+      # Optional: SENTRY_DSN for error monitoring.
+      # ── SQLite path (paid tier + disk) ──────────────────────────────────
+      # - key: DB_PATH
+      #   value: /opt/render/project/src/data/war_room.sqlite
+      # ── Hash market warmup / donation watch tuning (optional) ──────────
+      # - key: POLL_INTERVAL
+      #   value: "15"
+    # ── Persistent disk (PAID tier only — free tier ignores/errors) ─────
+    # disk:
+    #   name: war-room-data
+    #   mountPath: /opt/render/project/src/data
+    #   sizeGB: 1
