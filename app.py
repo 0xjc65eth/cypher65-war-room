@@ -150,6 +150,27 @@ def rate_limit():
 
 
 @app.after_request
+def add_cors_headers(response):
+    """Env-gated CORS for the React Native mobile companion.
+
+    Enabled only when CORS_ORIGINS is set (comma-separated allow-list, or
+    '*' for any origin). Same-origin dashboard users are unaffected — no
+    CORS headers are emitted unless configured, so self-host stays locked
+    down by default.
+    """
+    origins = os.environ.get("CORS_ORIGINS", "").strip()
+    if origins:
+        origin = request.headers.get("Origin", "")
+        allowed = origins == "*" or (origin and origin in [o.strip() for o in origins.split(",")])
+        if allowed:
+            response.headers["Access-Control-Allow-Origin"] = "*" if origins == "*" else origin
+            response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
+            response.headers["Access-Control-Allow-Headers"] = "Authorization, Content-Type, X-API-Key"
+            response.headers["Access-Control-Max-Age"] = "86400"
+    return response
+
+
+@app.after_request
 def add_cache_headers(response):
     """Set Cache-Control headers to prevent stale cache:
     - HTML responses (no static): no-cache, must-revalidate
@@ -612,6 +633,28 @@ def init_db():
 
 
 init_db()
+
+# ── Fase 4 · B4: idempotent RBAC schema migration (users.role/password_hash)
+# Safe on every boot — ALTER only runs when the column is missing. Runs after
+# init_db() so the users table already exists.
+from services.tenant import ensure_users_schema as _ensure_users_schema
+_ensure_users_schema()
+
+# ── Optional monitoring: Sentry (env-gated) ────────────────────────────────
+# Enabled only when SENTRY_DSN is set. Never a hard dependency: if sentry-sdk
+# isn't installed the app boots normally (honest telemetry — no fake errors).
+_SENTRY_DSN = os.environ.get("SENTRY_DSN", "").strip()
+if _SENTRY_DSN:
+    try:
+        import sentry_sdk
+        sentry_sdk.init(
+            dsn=_SENTRY_DSN,
+            traces_sample_rate=float(os.environ.get("SENTRY_TRACES_SAMPLE_RATE", "0.1")),
+            release="cypher65-war-room",
+        )
+        log.info("[monitor] Sentry enabled (DSN configured)")
+    except Exception as e:
+        log.warning("[monitor] Sentry init skipped: %s", e)
 
 
 # Markers written exclusively by the demo seeders. Devices carrying these

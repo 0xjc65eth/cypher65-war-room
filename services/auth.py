@@ -130,8 +130,17 @@ def create_token(subject: str = "user", ttl: Optional[int] = None,
     return _encode(payload, secret)
 
 
-def create_refresh_token(subject: str = "user") -> Tuple[str, int]:
+def create_refresh_token(subject: str = "user",
+                         extra_claims: Optional[dict] = None) -> Tuple[str, int]:
     """Create a JWT refresh token with longer TTL.
+
+    Args:
+        subject: Token subject (tenant_id)
+        extra_claims: Additional claims to include (e.g. role, username) so
+            the refresh flow can re-issue access tokens with the SAME role —
+            otherwise a viewer/member would silently escalate to admin after
+            a token refresh (get_current_role treats a valid token without a
+            role claim as the operator/admin).
 
     Returns:
         (token_string, expires_at_timestamp)
@@ -148,6 +157,8 @@ def create_refresh_token(subject: str = "user") -> Tuple[str, int]:
         "iss": DEFAULT_ISSUER,
         "type": "refresh",
     }
+    if extra_claims:
+        payload.update(extra_claims)
     return _encode(payload, secret), now + ttl
 
 

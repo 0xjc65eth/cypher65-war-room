@@ -21,12 +21,72 @@ security_log = logging.getLogger("cypher65.security")
 auth_bp = Blueprint("auth", __name__)
 
 
+@auth_bp.route("/api/auth/register", methods=["POST"])
+def api_auth_register():
+    """Register a new user (self-service onboarding).
+
+    Creates a named tenant (free plan) + admin user and returns JWT tokens.
+    Password is hashed (pbkdf2) — never stored in plaintext.
+
+    Body (JSON):
+        - username (str, required): 3-32 chars
+        - password (str, required): min 8 chars
+
+    Returns:
+        - access_token, refresh_token, expires_at, tenant_id, role
+    """
+    data = request.get_json(silent=True) or {}
+    username = (data.get("username") or "").strip()
+    password = data.get("password") or ""
+
+    errors = []
+    if not username or len(username) < 3 or len(username) > 32:
+        errors.append("username must be 3-32 characters")
+    if not password or len(password) < 8:
+        errors.append("password must be at least 8 characters")
+    if errors:
+        return jsonify({"error": "; ".join(errors)}), 400
+
+    from services.tenant import provision_tenant_with_admin
+    # Each signup gets a FRESH tenant (free plan, 5 workers) + admin user —
+    # an anonymous caller must never land in the operator's own "default"
+    # tenant (privilege escalation: default carries the generous self-host
+    # cap and is the deployment owner's).
+    created = provision_tenant_with_admin(username, password, tenant_name=username)
+    if not created.get("ok"):
+        return jsonify({"error": created.get("error", "registration failed")}), 409
+    tenant_id = created["tenant_id"]
+
+    # Issue tokens with the role claim so RBAC (@role_required) works — the
+    # refresh token carries the role too, so a later /refresh re-issues an
+    # access token with the SAME role (no silent escalation to admin).
+    access_token = create_token(subject=tenant_id, extra_claims={"role": "admin", "username": username})
+    refresh_token, expires_at = create_refresh_token(
+        subject=tenant_id, extra_claims={"role": "admin", "username": username}
+    )
+
+    security_log.info("[auth] registered user=%s tenant=%s from %s", username, tenant_id, request.remote_addr)
+    _log_audit(tenant_id, "auth.register", details={"username": username, "ip": request.remote_addr})
+
+    return jsonify({
+        "success": True,
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+        "expires_at": expires_at,
+        "token_type": "Bearer",
+        "tenant_id": tenant_id,
+        "username": username,
+        "role": "admin",
+    }), 201
+
+
 @auth_bp.route("/api/auth/login", methods=["POST"])
 def api_auth_login():
     """Authenticate and receive JWT tokens.
 
-    Body (JSON):
-        - api_key (str): The API key configured via API_KEY env var.
+    Two supported credentials:
+      - api_key (str): The API key configured via API_KEY / TENANT_API_KEYS env.
+      - username + password (str): a registered user (see /api/auth/register).
 
     Returns:
         - access_token (str): Short-lived JWT (default 1h)
@@ -35,7 +95,41 @@ def api_auth_login():
     """
     data = request.get_json(silent=True) or {}
     provided_key = (data.get("api_key") or "").strip()
+    username = (data.get("username") or "").strip()
+    password = data.get("password") or ""
 
+    # Username/password path (registered users) — no env API key needed.
+    # authenticate_user resolves the tenant GLOBALLY by username (each signup
+    # provisions a fresh tenant), so the matched tenant becomes the subject.
+    if username and password:
+        from services.tenant import authenticate_user, get_tenant_id as _gid
+        resolved_tenant = _gid()
+        # In open/single-tenant mode resolve_tenant is "default" — the global
+        # lookup finds the registered user in their provisioned tenant.
+        user = authenticate_user(username, password, tenant_id=resolved_tenant)
+        if user is None:
+            security_log.warning("[auth] failed user login %s from %s", username, request.remote_addr)
+            _log_audit(resolved_tenant, "auth.login_failed", details={"username": username, "ip": request.remote_addr})
+            return jsonify({"error": "invalid username or password"}), 401
+        tenant_id = user["tenant_id"]
+        access_token = create_token(subject=tenant_id, extra_claims={"role": user["role"], "username": user["username"]})
+        refresh_token, expires_at = create_refresh_token(
+            subject=tenant_id, extra_claims={"role": user["role"], "username": user["username"]}
+        )
+        security_log.info("[auth] user login ok=%s role=%s tenant=%s", user["username"], user["role"], tenant_id)
+        _log_audit(tenant_id, "auth.login", details={"username": user["username"], "ip": request.remote_addr})
+        return jsonify({
+            "success": True,
+            "access_token": access_token,
+            "refresh_token": refresh_token,
+            "expires_at": expires_at,
+            "token_type": "Bearer",
+            "tenant_id": tenant_id,
+            "username": user["username"],
+            "role": user["role"],
+        })
+
+    # ── API-key path (env-configured operators) ──
     if not os.environ.get("API_KEY") and not os.environ.get("TENANT_API_KEYS"):
         log.warning("[auth] no API key configured in env — login disabled until API_KEY/TENANT_API_KEYS is set")
         return jsonify({"error": "authentication is not configured on this server",
@@ -53,8 +147,10 @@ def api_auth_login():
 
     # Successful login — subject is the tenant_id so axe_fleet's
     # _get_tenant_id() (which reads payload["sub"]) isolates per tenant.
-    access_token = create_token(subject=tenant_id)
-    refresh_token, expires_at = create_refresh_token(subject=tenant_id)
+    # Operator API-key logins get the "admin" role claim by default; the
+    # refresh token carries it so a later /refresh keeps the role.
+    access_token = create_token(subject=tenant_id, extra_claims={"role": "admin"})
+    refresh_token, expires_at = create_refresh_token(subject=tenant_id, extra_claims={"role": "admin"})
 
     security_log.info("[auth] successful login (tenant=%s) from %s", tenant_id, request.remote_addr)
     _log_audit(tenant_id, "auth.login", details={"ip": request.remote_addr})
@@ -66,6 +162,7 @@ def api_auth_login():
         "expires_at": expires_at,
         "token_type": "Bearer",
         "tenant_id": tenant_id,
+        "role": "admin",
     })
 
 
@@ -90,9 +187,14 @@ def api_auth_refresh():
     if payload is None:
         return jsonify({"error": "invalid or expired refresh token"}), 401
 
-    # Issue new access token — preserve the original tenant_id subject
+    # Issue new access token — preserve the original tenant_id subject AND
+    # the role claim carried by the refresh token, so a viewer/member does
+    # not silently escalate to admin after a refresh. Legacy refresh tokens
+    # (issued before RBAC) carry no role claim → default to the LEAST
+    # privilege (viewer) rather than the admin the fallback would grant.
     tenant_id = payload.get("sub", "default")
-    access_token = create_token(subject=tenant_id)
+    role = payload.get("role") or "viewer"
+    access_token = create_token(subject=tenant_id, extra_claims={"role": role})
     expires_at = int(time.time()) + 3600
     _log_audit(tenant_id, "auth.refresh", details={"ip": request.remote_addr})
 
@@ -102,6 +204,7 @@ def api_auth_refresh():
         "expires_at": expires_at,
         "token_type": "Bearer",
         "tenant_id": tenant_id,
+        "role": role,
     })
 
 

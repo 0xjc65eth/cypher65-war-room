@@ -31,6 +31,7 @@ from flask import Blueprint, jsonify, request, session
 from services.tenant import (
     get_tenant_id as _get_tenant_id,
     require_tenant,
+    role_required as _role_required,
     can_add_worker as _can_add_worker,
     get_tenant_plan as _get_tenant_plan,
     log_audit as _log_audit,
@@ -214,6 +215,7 @@ def list_devices(tenant_id: str = ""):
 
 @axe_fleet_bp.route("/devices", methods=["POST"])
 @require_tenant
+@_role_required("member")
 def add_device(tenant_id: str = ""):
     """Register a new AxeOS device.
     JSON body: { "ip_address": "...", "name": "..." }
@@ -262,6 +264,7 @@ def add_device(tenant_id: str = ""):
 
 @axe_fleet_bp.route("/devices/<device_id>", methods=["DELETE"])
 @require_tenant
+@_role_required("member")
 def remove_device(device_id: str, tenant_id: str = ""):
     """Remove a device from the registry."""
     if _registry is None:
@@ -407,6 +410,7 @@ def device_health(device_id: str, tenant_id: str = ""):
 
 
 @axe_fleet_bp.route("/devices/<device_id>/refresh", methods=["POST"])
+@_role_required("member")
 def refresh_device(device_id: str):
     """Re-detect capabilities and refresh device info."""
     if _registry is None:
@@ -476,6 +480,7 @@ def _require_local_or_session(f):
 
 @axe_fleet_bp.route("/devices/<device_id>/restart", methods=["POST"])
 @_require_local_or_session
+@_role_required("member")
 def restart_device(device_id: str):
     """Restart a device. Requires restart capability."""
     if _registry is None:
@@ -485,6 +490,7 @@ def restart_device(device_id: str):
 
 @axe_fleet_bp.route("/devices/<device_id>/identify", methods=["POST"])
 @_require_local_or_session
+@_role_required("member")
 def identify_device(device_id: str):
     """Flash device LED/screen for identification."""
     if _registry is None:
@@ -494,6 +500,7 @@ def identify_device(device_id: str):
 
 @axe_fleet_bp.route("/devices/<device_id>/config", methods=["POST"])
 @_require_local_or_session
+@_role_required("member")
 def configure_device(device_id: str):
     """Update device settings.
     JSON body: { "settings": { "frequency": 600, "coreVoltage": 1200 } }
@@ -636,6 +643,7 @@ def fleet_summary(tenant_id: str = ""):
 
 
 @axe_fleet_bp.route("/test-devices", methods=["POST"])
+@_role_required("member")
 def seed_test_devices():
     """Populate fleet with simulated AxeOS devices for testing.
     Creates 4 devices with realistic telemetry (hashrate, temp, fan, power,
@@ -968,6 +976,7 @@ def remote_devices():
 
 
 @axe_fleet_bp.route("/remote/test-connection", methods=["POST"])
+@_role_required("member")
 def remote_test_connection():
     """Run a full remote connectivity test suite.
     Returns per-test results with pass/fail and timing.
@@ -1088,6 +1097,7 @@ def list_power_plugs():
 
 @axe_fleet_bp.route("/power-plugs/save-credentials", methods=["POST"])
 @_require_local_or_session
+@_role_required("member")
 def save_tuya_credentials():
     """Save Tuya Cloud credentials to the settings DB.
     Body (JSON):
@@ -1140,6 +1150,7 @@ def save_tuya_credentials():
 
 
 @axe_fleet_bp.route("/power-plugs/validate", methods=["POST"])
+@_role_required("member")
 def validate_tuya_credentials():
     """Validate Tuya credentials without listing devices.
     Body (JSON, optional): override stored credentials.
@@ -1166,6 +1177,7 @@ def validate_tuya_credentials():
 
 @axe_fleet_bp.route("/power-plugs/<plug_id>/on", methods=["POST"])
 @_require_local_or_session
+@_role_required("member")
 def power_plug_on(plug_id: str):
     """Turn a Tuya smart plug ON."""
     return _execute_plug_command(plug_id, "power_on")
@@ -1173,6 +1185,7 @@ def power_plug_on(plug_id: str):
 
 @axe_fleet_bp.route("/power-plugs/<plug_id>/off", methods=["POST"])
 @_require_local_or_session
+@_role_required("member")
 def power_plug_off(plug_id: str):
     """Turn a Tuya smart plug OFF."""
     return _execute_plug_command(plug_id, "power_off")
@@ -1180,6 +1193,7 @@ def power_plug_off(plug_id: str):
 
 @axe_fleet_bp.route("/power-plugs/<plug_id>/toggle", methods=["POST"])
 @_require_local_or_session
+@_role_required("member")
 def power_plug_toggle(plug_id: str):
     """Toggle a Tuya smart plug ON/OFF."""
     return _execute_plug_command(plug_id, "toggle")
@@ -1206,6 +1220,7 @@ _power_cycle_lock = threading.Lock()
 
 @axe_fleet_bp.route("/miners/<device_id>/power-cycle", methods=["POST"])
 @_require_local_or_session
+@_role_required("member")
 def miner_power_cycle(device_id: str):
     """Power-cycle a miner: turn plug OFF, wait, turn ON.
     Runs asynchronously in a background thread so the request returns

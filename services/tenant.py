@@ -22,7 +22,7 @@ import time
 from functools import wraps
 from typing import Any, Dict, Optional
 
-from flask import g, request, session
+from flask import g, jsonify, request, session
 
 log = logging.getLogger("cypher65.tenant")
 
@@ -218,3 +218,252 @@ def require_tenant(f):
         kwargs["tenant_id"] = get_tenant_id()
         return f(*args, **kwargs)
     return wrapper
+
+
+# ── RBAC (Role-Based Access Control) ─────────────────────────────────────
+# Roles: admin (full) > member (view + execute) > viewer (read-only).
+# Priority values for comparison — higher wins.
+ROLE_PRIORITY = {"viewer": 1, "member": 2, "admin": 3}
+
+
+def auth_configured() -> bool:
+    """True when the server has any auth mechanism configured.
+
+    Self-host operators may run without API_KEY/TENANT_API_KEYS — in that
+    open mode the operator is implicitly admin and role checks never block.
+    """
+    return bool(os.environ.get("API_KEY") or os.environ.get("TENANT_API_KEYS"))
+
+
+def get_current_role() -> str:
+    """Resolve the caller's RBAC role from the request context.
+
+    Priority:
+      1. JWT payload claim "role" (set at login/register time).
+      2. Authenticated (valid token) without a role claim → "admin"
+         (operator login via API key — the deployment owner).
+      3. Auth not configured on the server → "admin" (open self-host mode;
+         the operator is the owner, never locked out).
+      4. Otherwise → "viewer" (least privilege; e.g. a token that
+         authenticated but carries no role — never escalate silently).
+    """
+    try:
+        payload = g.auth_payload
+        if payload and payload.get("role"):
+            return str(payload["role"])
+        if payload:
+            return "admin"  # valid token, operator login
+    except (AttributeError, RuntimeError):
+        pass
+    try:
+        from services.auth import verify_token
+        auth_header = request.headers.get("Authorization", "")
+        if auth_header.startswith("Bearer "):
+            payload = verify_token(auth_header[7:], expected_type="access")
+            if payload and payload.get("role"):
+                return str(payload["role"])
+            if payload:
+                return "admin"
+    except Exception:
+        pass
+    # Localhost is the deployment operator by definition (dev + VPS shell) —
+    # keep the documented "localhost always allowed" behavior even when auth
+    # is configured, so a tokenless local curl never 403s on write endpoints.
+    try:
+        remote = request.remote_addr or ""
+        if remote in ("127.0.0.1", "::1", "localhost"):
+            return "admin"
+    except RuntimeError:
+        pass
+    if not auth_configured():
+        return "admin"  # open self-host mode
+    return "viewer"
+
+
+def role_required(min_role: str = "member"):
+    """Flask decorator: require the caller's role to be at least ``min_role``.
+
+    Roles (priority order): viewer(1) < member(2) < admin(3).
+    In open self-host mode (no auth configured) every request passes — the
+    operator is the owner by definition and must never be locked out.
+
+    Usage:
+        @app.route("/api/write")
+        @role_required("member")   # viewer → 403
+        def write():
+            ...
+    """
+    def decorator(f):
+        @wraps(f)
+        def wrapper(*args, **kwargs):
+            if not auth_configured():
+                return f(*args, **kwargs)
+            role = get_current_role()
+            if ROLE_PRIORITY.get(role, 0) < ROLE_PRIORITY.get(min_role, 0):
+                return jsonify({
+                    "error": "permission denied",
+                    "required_role": min_role,
+                    "role": role,
+                }), 403
+            return f(*args, **kwargs)
+        return wrapper
+    return decorator
+
+
+# ── Users (self-registration) ────────────────────────────────────────────
+
+def provision_tenant_with_admin(username: str, password: str, tenant_name: str = "") -> Dict[str, Any]:
+    """Create a FRESH tenant (free plan, 5 workers) + its first admin user.
+
+    This is the self-registration path: each signup gets an isolated tenant
+    so an anonymous caller can NEVER land in the operator's own "default"
+    tenant (which would be a privilege-escalation path — default has the
+    generous SELF_HOST_MAX_WORKERS cap and is the deployment owner's).
+
+    Returns {"ok": True, "tenant_id": ..., "username": ..., "role": "admin"}
+    or {"error": reason}.
+    """
+    import uuid as _uuid
+    username = (username or "").strip()
+    if not username or not password:
+        return {"error": "username and password are required"}
+    try:
+        from werkzeug.security import generate_password_hash
+        tenant_id = _uuid.uuid4().hex[:16]
+        now = int(time.time())
+        conn = _db_conn()
+        c = conn.cursor()
+        # Global username uniqueness: authenticate_user() resolves logins by
+        # username ACROSS all tenants (each signup provisions a fresh tenant),
+        # so a duplicate would make the login lookup ambiguous. Enforce it at
+        # signup time.
+        c.execute("SELECT id FROM users WHERE username=? LIMIT 1", (username,))
+        if c.fetchone():
+            conn.close()
+            return {"error": "username already taken"}
+        c.execute(
+            "INSERT INTO tenants (id, name, plan, max_workers, created_at) "
+            "VALUES (?, ?, 'free', ?, ?)",
+            (tenant_id, (tenant_name or username)[:100], DEFAULT_MAX_WORKERS, now),
+        )
+        c.execute(
+            "INSERT INTO users (tenant_id, username, password_hash, role, created_at) "
+            "VALUES (?, ?, ?, 'admin', ?)",
+            (tenant_id, username, generate_password_hash(password), now),
+        )
+        conn.commit()
+        conn.close()
+        log.info("[tenant] provisioned tenant=%s admin=%s", tenant_id[:8], username)
+        return {"ok": True, "tenant_id": tenant_id, "username": username, "role": "admin"}
+    except Exception as e:
+        log.warning("[tenant] provision_tenant_with_admin(%s) failed: %s", username, e)
+        return {"error": "could not create account"}
+
+
+def create_user(tenant_id: str, username: str, password: str,
+                role: str = "member") -> Dict[str, Any]:
+    """Create a user row with a hashed password.
+
+    Returns {"ok": True, "id": n} on success or {"error": reason} on
+    failure (duplicate username / db error). Passwords are hashed with
+    werkzeug (pbkdf2) — never stored in plaintext.
+    """
+    username = (username or "").strip()
+    if not username or not password:
+        return {"error": "username and password are required"}
+    try:
+        from werkzeug.security import generate_password_hash
+        conn = _db_conn()
+        c = conn.cursor()
+        # Global username uniqueness: authenticate_user() resolves logins by
+        # username ACROSS all tenants, so a duplicate anywhere would make the
+        # login lookup ambiguous. Enforce it for operator-created users too
+        # (this subsumes any per-tenant duplicate check).
+        c.execute("SELECT id FROM users WHERE username=? LIMIT 1", (username,))
+        if c.fetchone():
+            conn.close()
+            return {"error": "username already exists"}
+        c.execute(
+            "INSERT INTO users (tenant_id, username, password_hash, role, created_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (tenant_id, username, generate_password_hash(password), role, int(time.time())),
+        )
+        row_id = c.lastrowid
+        conn.commit()
+        conn.close()
+        return {"ok": True, "id": row_id}
+    except Exception as e:
+        log.warning("[tenant] create_user(%s) failed: %s", username, e)
+        return {"error": "could not create user"}
+
+
+def authenticate_user(username: str, password: str, tenant_id: str = "") -> Optional[Dict[str, Any]]:
+    """Verify username+password against the users table.
+
+    Lookup scope:
+      - tenant_id empty or "default" (open / single-tenant mode): GLOBAL by
+        username across all tenants — matching the self-registration flow
+        where each signup provisions a fresh tenant, so a registered user can
+        always log in and the matched tenant becomes the token subject.
+      - explicit non-default tenant_id (multi-tenant request context): scoped
+        to that tenant.
+
+    Returns {"id", "tenant_id", "username", "role"} on success or None on
+    failure / missing row. Constant-time hash check via werkzeug.
+    """
+    try:
+        from werkzeug.security import check_password_hash
+        conn = _db_conn()
+        c = conn.cursor()
+        if tenant_id and tenant_id != "default":
+            c.execute(
+                "SELECT id, tenant_id, username, password_hash, role FROM users "
+                "WHERE tenant_id=? AND username=? LIMIT 1",
+                (tenant_id, username),
+            )
+        else:
+            # Global lookup — first-registered wins deterministically so a
+            # stray duplicate (e.g. pre-existing data) never resolves
+            # arbitrarily.
+            c.execute(
+                "SELECT id, tenant_id, username, password_hash, role FROM users "
+                "WHERE username=? ORDER BY created_at ASC, id ASC LIMIT 1",
+                (username,),
+            )
+        row = c.fetchone()
+        conn.close()
+        if row is None or not row["password_hash"]:
+            return None
+        if not check_password_hash(row["password_hash"], password):
+            return None
+        return {
+            "id": row["id"],
+            "tenant_id": row["tenant_id"],
+            "username": row["username"],
+            "role": row["role"] or "member",
+        }
+    except Exception as e:
+        log.warning("[tenant] authenticate_user(%s) failed: %s", username, e)
+        return None
+
+
+def ensure_users_schema() -> None:
+    """Idempotent migration: add role + password_hash columns to users.
+
+    Safe to call on every boot — ALTER TABLE only runs when the column is
+    missing (legacy DBs created before RBAC).
+    """
+    try:
+        conn = _db_conn()
+        c = conn.cursor()
+        c.execute("PRAGMA table_info(users)")
+        cols = {row[1] for row in c.fetchall()}
+        for col, col_def in (("role", "TEXT DEFAULT 'member'"),
+                             ("password_hash", "TEXT DEFAULT ''")):
+            if col not in cols:
+                c.execute(f"ALTER TABLE users ADD COLUMN {col} {col_def}")
+                log.info("[tenant] added users.%s column", col)
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        log.warning("[tenant] ensure_users_schema failed: %s", e)
