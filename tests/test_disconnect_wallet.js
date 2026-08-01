@@ -56,6 +56,9 @@ const _dcBtn = stub({ style: stub({ display: '' }) });
 const _topbarAddr = stub({ textContent: '—' });
 
 const _mockDoc = {
+  body: stub(),
+  documentElement: stub(),
+  head: stub(),
   addEventListener() {},
   removeEventListener() {},
   createElement() { return stub(); },
@@ -77,15 +80,15 @@ const _mockDoc = {
   },
   querySelectorAll() { return stub({ forEach() {}, length: 0 }); },
 };
-document = _mockDoc;
+globalThis.document = _mockDoc;
 
 // ── Mock confirm ──
 let _confirmResult = true;
-confirm = (msg) => _confirmResult;
+globalThis.confirm = (msg) => _confirmResult;
 
 // ── Mock localStorage ──
 let _storage = {};
-localStorage = {
+globalThis.localStorage = {
   getItem(k) { return _storage[k] || null; },
   setItem(k, v) { _storage[k] = String(v); },
   removeItem(k) { delete _storage[k]; },
@@ -96,7 +99,7 @@ localStorage = {
 
 // ── Mock fetch ──
 let _fetchCalls = [];
-fetch = (url, opts) => {
+globalThis.fetch = (url, opts) => {
   _fetchCalls.push({ url, opts });
   return Promise.resolve(stub({ ok: true, json: () => Promise.resolve({ history: [] }) }));
 };
@@ -105,7 +108,7 @@ fetch = (url, opts) => {
 let _BTC_ADDRESS = null;
 let _userConnectedWallet = false;
 
-window = stub({
+globalThis.window = stub({
   BTC_ADDRESS: null,
   _userConnectedWallet: false,
   POLL_INTERVAL_MS: 15000,
@@ -122,30 +125,33 @@ window = stub({
 const _now = 1700000000000;
 Date.now = () => _now;
 Date.parse = Date.parse || ((s) => NaN);
-performance = { now: () => _now };
+globalThis.performance = { now: () => _now };
 
-requestAnimationFrame = (fn) => { fn(_now); return 1; };
-cancelAnimationFrame = () => {};
+globalThis.requestAnimationFrame = (fn) => { fn(_now); return 1; };
+globalThis.cancelAnimationFrame = () => {};
 
-matchMedia = () => stub({ matches: false, addListener() {}, removeListener() {} });
+globalThis.matchMedia = () => stub({ matches: false, addListener() {}, removeListener() {} });
 
 // ── Mock setTimeout/setInterval ──
 let _timerId = 1;
-setTimeout = (fn, ms) => { return _timerId++; };
-clearTimeout = (id) => {};
-setInterval = (fn, ms) => { return _timerId++; };
-clearInterval = (id) => {};
+globalThis.setTimeout = (fn, ms) => { return _timerId++; };
+globalThis.clearTimeout = (id) => {};
+globalThis.setInterval = (fn, ms) => { return _timerId++; };
+globalThis.clearInterval = (id) => {};
 
 // ── Mock Chart.js ──
-Chart = class {
+globalThis.Chart = class {
   constructor(ctx, opts) { this.ctx = ctx; this.opts = opts; this.data = opts.data; }
   update() {}
   destroy() {}
 };
 
 // ── Execute the IIFE ──
-const fs = require('fs');
-const jsCode = fs.readFileSync(__dirname + '/../static/app.js', 'utf8');
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const jsCode = fs.readFileSync(path.join(__dirname, '/../static/app.js'), 'utf8');
 eval(jsCode);
 
 // ── Tests ─────────────────────────────────────────────────────────
