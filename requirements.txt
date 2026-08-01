@@ -1,2 +1,5 @@
+# ── CYPHER65 War Room · Runtime dependencies ────────────────────────────
 flask>=3.0,<4.0
 requests>=2.31
+python-dotenv>=1.0
+pywebpush>=1.14
