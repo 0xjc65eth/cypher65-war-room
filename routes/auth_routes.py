@@ -3,9 +3,10 @@ import time
 import logging
 import os
 
-from flask import Blueprint, jsonify, request, g
+from flask import Blueprint, current_app, jsonify, request, g
 
 from services.auth import (
+    DEFAULT_ACCESS_TTL,
     create_token,
     create_refresh_token,
     verify_token,
@@ -195,7 +196,11 @@ def api_auth_refresh():
     tenant_id = payload.get("sub", "default")
     role = payload.get("role") or "viewer"
     access_token = create_token(subject=tenant_id, extra_claims={"role": role})
-    expires_at = int(time.time()) + 3600
+    # Align with the configured access-token TTL (same default 3600) so a
+    # raised TTL never leaves the client with a stale expires_at.
+    ttl = int(current_app.config.get("JWT_ACCESS_TOKEN_TTL", DEFAULT_ACCESS_TTL)
+              if current_app else DEFAULT_ACCESS_TTL)
+    expires_at = int(time.time()) + ttl
     _log_audit(tenant_id, "auth.refresh", details={"ip": request.remote_addr})
 
     return jsonify({

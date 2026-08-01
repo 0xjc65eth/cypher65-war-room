@@ -357,6 +357,10 @@ def provision_tenant_with_admin(username: str, password: str, tenant_name: str =
         return {"ok": True, "tenant_id": tenant_id, "username": username, "role": "admin"}
     except Exception as e:
         log.warning("[tenant] provision_tenant_with_admin(%s) failed: %s", username, e)
+        try:
+            conn.close()
+        except Exception:
+            pass
         return {"error": "could not create account"}
 
 
@@ -394,6 +398,10 @@ def create_user(tenant_id: str, username: str, password: str,
         return {"ok": True, "id": row_id}
     except Exception as e:
         log.warning("[tenant] create_user(%s) failed: %s", username, e)
+        try:
+            conn.close()
+        except Exception:
+            pass
         return {"error": "could not create user"}
 
 
