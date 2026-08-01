@@ -158,10 +158,10 @@
 
 | Fonte | Valor | Origem |
 |-------|-------|--------|
-| `config.BTC_ADDRESS` | `bc1qpc3832jcu6m8qpqjvz5lkuydwjzv8v5vq5t5rs` | Env ou vazio |
+| `config.BTC_ADDRESS` | `""` (vazio por padrão — sem wallet default) | Env ou vazio |
 | `app.BTC_ADDRESS` | Mesmo valor + persistido | DB ou env |
 | `window.BTC_ADDRESS` (JS) | Mesmo valor | Injeta via `<script>` no HTML |
-| `config.WORKER_NAME` | `cypher65` | Env ou default |
+| `config.WORKER_NAME` | `""` | Env ou default |
 
 ### 4.2 Como o Endereço é Usado
 
