@@ -1137,11 +1137,22 @@ function renderAccount(acct) {
       const data = await r.json();
       const chart = charts[id];
       if (!chart) return;
-      chart.data.labels = (data.labels || []).map(t => {
+      const rawLabels = (data.labels || []);
+      const values = (data.datasets?.[0]?.data || data.datasets?.[0]?.values || []);
+      chart.data.labels = rawLabels.map(t => {
         if (cfg.chart === 'share_dist') return String(t); // histogram bucket labels
         const d = new Date(t); return d.getHours()+':'+String(d.getMinutes()).padStart(2,'0');
       });
-      chart.data.datasets[0].data = (data.datasets?.[0]?.data || data.datasets?.[0]?.values || []);
+      chart.data.datasets[0].data = values;
+      // Fase 2.1: SMA overlay + shares bar + event annotations
+      if (chart.data.datasets[1] && cfg.chart !== 'share_dist') {
+        chart.data.datasets[1].data = computeSMA(values, Math.max(3, Math.round(values.length / 10)));
+      }
+      if (chart.data.datasets[2] && Array.isArray(data.shares)) {
+        chart.data.datasets[2].data = data.shares;
+        chart.options.scales.y1.display = data.shares.some(s => s > 0);
+      }
+      chart._annotations = buildChartAnnotations(data.events || [], rawLabels);
       chart.update('none');
     } catch (e) { /* chart load silently */ }
   }
@@ -2221,15 +2232,200 @@ function renderAccount(acct) {
   // CHARTS
   // ══════════════════════════════════════════════════════════════════════
   const charts = {};
+  // ══════════════════════════════════════════════════════════════════════
+  //  FASE 2.1 — PROFESSIONAL CHARTS
+  //  moving averages · bar+line overlays · zoom/pan · event annotations
+  //  Pure helpers below are mirrored in tests/test_app_js_core.js.
+  // ══════════════════════════════════════════════════════════════════════
+
+  // Simple moving average (window in points). Mirrors numpy-rolling mean so
+  // the SMA line starts at the first point (partial window at the head).
+  function computeSMA(values, windowSize) {
+    if (!Array.isArray(values) || !values.length) return [];
+    windowSize = Math.max(1, Math.floor(Number(windowSize) || 7));
+    const out = [];
+    let sum = 0;
+    for (let i = 0; i < values.length; i++) {
+      sum += Number(values[i]) || 0;
+      if (i >= windowSize) sum -= Number(values[i - windowSize]) || 0;
+      const n = Math.min(i + 1, windowSize);
+      out.push(Number((sum / n).toFixed(2)));
+    }
+    return out;
+  }
+
+  // Map persisted timeline events (ts in seconds) to the nearest label index
+  // so the annotation plugin can draw vertical lines at the right x position
+  // (category axis — no time adapter needed, stays offline-friendly).
+  function buildChartAnnotations(events, labels) {
+    if (!Array.isArray(events) || !Array.isArray(labels) || !labels.length) return [];
+    const out = [];
+    events.forEach(ev => {
+      const ts = Number(ev.ts || 0) * 1000;
+      if (!ts) return;
+      let idx = 0, best = Infinity;
+      for (let i = 0; i < labels.length; i++) {
+        const d = Math.abs(Number(labels[i]) - ts);
+        if (d < best) { best = d; idx = i; }
+      }
+      out.push({
+        index: idx,
+        severity: ev.severity || 'INFO',
+        message: String(ev.message || ev.event_type || ''),
+      });
+    });
+    return out;
+  }
+
+  // ── Zero-dependency annotation plugin (inline, per-chart) ───────────
+  // Draws subtle vertical dashed lines at event positions. Bumps/alerts are
+  // critical (red), share finds are neutral (amber). Driven by
+  // chart._annotations = buildChartAnnotations(...) set on each load.
+  const chartEventAnnotationsPlugin = {
+    id: 'cypher65EventAnnotations',
+    afterDraw(chart) {
+      const anns = chart._annotations || [];
+      if (!anns.length) return;
+      const xScale = chart.scales.x;
+      const area = chart.chartArea;
+      if (!xScale || !area) return;
+      const ctx = chart.ctx;
+      ctx.save();
+      anns.forEach(a => {
+        const x = xScale.getPixelForValue(a.index);
+        if (x < area.left || x > area.right) return;
+        const critical = a.severity === 'CRIT' || a.severity === 'GOLD';
+        ctx.strokeStyle = critical ? 'rgba(255,94,94,0.55)' : 'rgba(255,196,0,0.30)';
+        ctx.lineWidth = 1;
+        ctx.setLineDash([4, 3]);
+        ctx.beginPath(); ctx.moveTo(x, area.top); ctx.lineTo(x, area.bottom); ctx.stroke();
+        ctx.setLineDash([]);
+      });
+      ctx.restore();
+    },
+  };
+
+  // Pure zoom-range clamp for the category axis (x min/max are POINT INDICES,
+  // not timestamps). Expressed in point counts so it works on any dataset size.
+  // Mirrored in tests/test_app_js_core.js.
+  function clampZoomRange(currentRange, factor, minPoints, maxPoints) {
+    const next = currentRange * factor;
+    const upper = Math.max(minPoints, maxPoints);
+    return Math.max(minPoints, Math.min(next, upper));
+  }
+
+  // ── Lightweight zoom/pan (wheel zoom + drag pan + dblclick reset) ───
+  // Implemented against Chart.js scale min/max directly — no CDN plugin, so
+  // the self-hosted dashboard keeps working fully offline.
+  // IMPORTANT: the x scale is CATEGORY (labels are HH:mm strings), so min/max
+  // are point indices — zoom bounds are clamped in POINT COUNTS (min 5 points,
+  // max = full label count), never wall-clock ms.
+  // Drag uses Pointer Capture bound to the canvas only — no window listeners,
+  // so re-initializing charts can never leak handlers.
+  function _attachChartZoom(chart) {
+    const canvas = chart.canvas;
+    if (!canvas) return;
+    const MIN_POINTS = 5;
+    const maxPoints = () => Math.max(MIN_POINTS, (chart.data.labels || []).length);
+    const resetZoom = () => {
+      delete chart.options.scales.x.min;
+      delete chart.options.scales.x.max;
+      chart.update('none');
+    };
+    canvas.addEventListener('wheel', e => {
+      e.preventDefault();
+      const xs = chart.scales.x;
+      if (!xs) return;
+      const range = xs.max - xs.min;
+      if (!range) return;
+      const cursor = (e.offsetX / canvas.clientWidth);
+      const anchor = xs.min + range * cursor;
+      const factor = e.deltaY > 0 ? 1.2 : 0.8333;
+      const newRange = clampZoomRange(range, factor, MIN_POINTS, maxPoints());
+      const newMin = anchor - newRange * cursor;
+      chart.options.scales.x.min = newMin;
+      chart.options.scales.x.max = newMin + newRange;
+      chart.update('none');
+    }, { passive: false });
+    let drag = null;
+    canvas.addEventListener('pointerdown', e => {
+      if (e.button !== 0) return;
+      const xs = chart.scales.x;
+      if (!xs) return;
+      drag = { startX: e.clientX, startMin: xs.min };
+      try { canvas.setPointerCapture(e.pointerId); } catch (err) { /* ignore */ }
+      canvas.style.cursor = 'grabbing';
+    });
+    canvas.addEventListener('pointermove', e => {
+      if (!drag) return;
+      const xs = chart.scales.x;
+      if (!xs || !(xs.max - xs.min)) return;
+      const dx = (e.clientX - drag.startX) / canvas.clientWidth * (xs.max - xs.min);
+      const newMin = drag.startMin - dx;
+      chart.options.scales.x.min = newMin;
+      chart.options.scales.x.max = newMin + (xs.max - xs.min);
+      chart.update('none');
+    });
+    canvas.addEventListener('pointerup', () => {
+      drag = null;
+      canvas.style.cursor = '';
+    });
+    canvas.addEventListener('pointercancel', () => {
+      drag = null;
+      canvas.style.cursor = '';
+    });
+    canvas.addEventListener('dblclick', resetZoom);
+    canvas.title = 'scroll to zoom · drag to pan · double-click to reset';
+  }
+
   function makeChart(id, label, color) {
     const canvas = document.getElementById(id);
     if (!canvas) return null;
     const ctx = canvas.getContext('2d');
-    return new Chart(ctx, {
+    const cfg = CHART_METRICS[id];
+    const isHistogram = cfg && cfg.chart === 'share_dist';
+    const datasets = [
+      { label, data: [], borderColor: color, backgroundColor: color.replace(')', ',0.1)').replace('rgb','rgba'), fill: true, tension: 0.4, pointRadius: 0 },
+    ];
+    // Fase 2.1: moving-average overlay (dashed, no fill) on time series
+    if (!isHistogram) {
+      datasets.push({ label: label + ' · SMA', data: [], borderColor: 'rgba(234,234,235,0.55)', backgroundColor: 'transparent', borderDash: [5, 3], fill: false, tension: 0.4, pointRadius: 0, borderWidth: 1.5 });
+    }
+    // Fase 2.1: share-volume bar overlay (2nd y-axis, right) on hashrate
+    if (cfg && cfg.chart === 'hashrate') {
+      datasets.push({ type: 'bar', label: 'Shares/min', data: [], yAxisID: 'y1', backgroundColor: 'rgba(6,214,240,0.14)', borderColor: 'rgba(6,214,240,0.35)', borderWidth: 1, order: 3 });
+    }
+    const chart = new Chart(ctx, {
       type: 'line',
-      data: { labels: [], datasets: [{ label, data: [], borderColor: color, backgroundColor: color.replace(')', ',0.1)').replace('rgb','rgba'), fill: true, tension: 0.4, pointRadius: 0 }] },
-      options: { responsive: true, maintainAspectRatio: false, scales: { x: { ticks: { color: '#5E5952', maxTicksLimit: 8 } }, y: { ticks: { color: '#5E5952' } } }, plugins: { legend: { display: false } } }
+      data: { labels: [], datasets },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        interaction: { mode: 'index', intersect: false },
+        scales: {
+          x: { ticks: { color: '#5E5952', maxTicksLimit: 8, font: { family: 'JetBrains Mono, monospace', size: 10 } }, grid: { color: 'rgba(94,89,82,0.14)' } },
+          y: { ticks: { color: '#5E5952', font: { family: 'JetBrains Mono, monospace', size: 10 } }, grid: { color: 'rgba(94,89,82,0.14)' } },
+          y1: { position: 'right', display: false, grid: { drawOnChartArea: false }, ticks: { color: '#06d6f0', font: { family: 'JetBrains Mono, monospace', size: 10 } } },
+        },
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            backgroundColor: 'rgba(17,18,20,0.94)',
+            borderColor: 'rgba(255,255,255,0.08)',
+            borderWidth: 1,
+            titleColor: '#EAEAEB',
+            bodyColor: '#C9C5BC',
+            padding: 10,
+            boxPadding: 4,
+            usePointStyle: true,
+            font: { family: 'JetBrains Mono, monospace', size: 11 },
+          },
+        },
+      },
+      plugins: [chartEventAnnotationsPlugin],
     });
+    if (!isHistogram) _attachChartZoom(chart);
+    return chart;
   }
 
   async function loadChart(id, metric, range) {
@@ -2239,8 +2435,23 @@ function renderAccount(acct) {
       const data = await r.json();
       const chart = charts[id];
       if (!chart) return;
-      chart.data.labels = (data.labels || []).map(t => { const d = new Date(t); return d.getHours()+':'+String(d.getMinutes()).padStart(2,'0'); });
-      chart.data.datasets[0].data = (data.datasets?.[0]?.data || data.datasets?.[0]?.values || []);
+      const cfg = CHART_METRICS[id] || {};
+      const rawLabels = (data.labels || []);
+      const values = (data.datasets?.[0]?.data || data.datasets?.[0]?.values || []);
+      chart.data.labels = rawLabels.map(t => {
+        if (cfg.chart === 'share_dist') return String(t); // histogram bucket labels
+        const d = new Date(t); return d.getHours()+':'+String(d.getMinutes()).padStart(2,'0');
+      });
+      chart.data.datasets[0].data = values;
+      // Fase 2.1: SMA overlay + shares bar + event annotations
+      if (chart.data.datasets[1] && cfg.chart !== 'share_dist') {
+        chart.data.datasets[1].data = computeSMA(values, Math.max(3, Math.round(values.length / 10)));
+      }
+      if (chart.data.datasets[2] && Array.isArray(data.shares)) {
+        chart.data.datasets[2].data = data.shares;
+        chart.options.scales.y1.display = data.shares.some(s => s > 0);
+      }
+      chart._annotations = buildChartAnnotations(data.events || [], rawLabels);
       chart.update('none');
     } catch (e) { /* chart load silently */ }
   }
@@ -2254,16 +2465,37 @@ function renderAccount(acct) {
     charts['chart-share-dist'] = makeChart('chart-share-dist', 'Share Dist', 'rgb(16,185,129)');
   }
 
+  // Fase 2.1: clear any manual zoom/pan state so the chart renders the full
+  // window again (used when switching ranges or pressing the ⟲ button).
+  // Only re-renders when zoom state actually existed (cheap no-op otherwise).
+  function _resetChartZoom(chart) {
+    if (!chart || !chart.options || !chart.options.scales || !chart.options.scales.x) return;
+    const hadZoom = chart.options.scales.x.min !== undefined || chart.options.scales.x.max !== undefined;
+    delete chart.options.scales.x.min;
+    delete chart.options.scales.x.max;
+    if (hadZoom) chart.update('none');
+  }
+
   function bindChartRanges() {
     document.querySelectorAll('.chart-range').forEach(row => {
       const target = row.dataset.target;
-      row.querySelectorAll('button').forEach(btn => {
+      // Only real range chips carry data-range; the ⟲ reset button (data-zoom-reset)
+      // is bound separately below so it is never treated as a range.
+      row.querySelectorAll('button[data-range]').forEach(btn => {
         btn.addEventListener('click', () => {
-          row.querySelectorAll('button').forEach(b => b.classList.remove('active'));
+          row.querySelectorAll('button[data-range]').forEach(b => b.classList.remove('active'));
           btn.classList.add('active');
           const metricMap = { 'chart-hashrate': 'worker_hashrate', 'chart-pool': 'pool_hashrate', 'chart-bestdiff': 'worker_best_diff', 'chart-net': 'network_difficulty' };
+          // Switching ranges resets any manual zoom/pan from the old window.
+          _resetChartZoom(charts[target]);
           loadChart(target, metricMap[target] || target.replace('chart-',''), btn.dataset.range);
         });
+      });
+    });
+    // Fase 2.1: explicit ⟲ reset-zoom buttons in each chart toolbar.
+    document.querySelectorAll('[data-zoom-reset]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        _resetChartZoom(charts[btn.dataset.zoomReset]);
       });
     });
   }

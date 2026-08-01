@@ -1882,6 +1882,28 @@ body {
   color: var(--green);
   border-color: var(--green);
 }
+/* Fase 2.1: reset-zoom chip (⟲) + chart interaction hint */
+.chart-range .chip--zoom {
+  border-color: transparent;
+  color: var(--text-tertiary);
+  font-size: 11px;
+  padding: 2px 7px;
+  line-height: 1;
+}
+.chart-range .chip--zoom:hover {
+  background: rgba(255,255,255,0.06);
+  color: var(--accent, #06d6f0);
+  border-color: var(--green-dim);
+}
+.chart-hint {
+  display: block;
+  margin-top: 4px;
+  font-size: 9px;
+  letter-spacing: 0.3px;
+  color: var(--text-tertiary);
+  opacity: 0.65;
+  user-select: none;
+}
 
 /* ── Chart live value indicator ── */
 .chart-live {

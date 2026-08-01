@@ -285,10 +285,21 @@ class TestApiRegister:
 class TestRbacEnforcement:
     """RBAC on axe_fleet write endpoints.
 
-    Device names use the Test- prefix so _purge_test_devices (boot) removes
-    any rows these tests leave in the real DB — matching the existing test
-    convention.
+    Hermetic by construction: DB_PATH is monkeypatched to a scratch SQLite
+    (users + tenants + axe_fleet tables) so the POST /api/axe-fleet/devices
+    calls never write rows into data/war_room.sqlite. As a second line of
+    defense, device names keep the Test- prefix so the boot purge
+    (_purge_seed_marked_devices / _purge_test_devices) removes any leftovers.
     """
+
+    @pytest.fixture(autouse=True)
+    def _scratch_db(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("DB_PATH", str(_seed_users_db(tmp_path)))
+        monkeypatch.setenv("SECRET_KEY", "test-secret-key-123")
+        # Create the axe_fleet tables in the scratch DB so the real add path
+        # (registry → get_db → env DB_PATH) persists into the scratch file.
+        from app import _axe_registry
+        _axe_registry.ensure_tables()
 
     def test_open_mode_never_blocks_selfhost(self, client, monkeypatch):
         # No API_KEY / TENANT_API_KEYS → operator is admin, writes pass RBAC.

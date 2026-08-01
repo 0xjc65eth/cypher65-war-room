@@ -3151,6 +3151,99 @@ console.log('\n📊 SUITE 24: renderLiveCalc() — lc-* values + sparkline DPR')
 
 
 // ═══════════════════════════════════════════════════════════════════════════
+//  TEST SUITE 25: Fase 2.1 chart helpers — computeSMA + buildChartAnnotations
+// ═══════════════════════════════════════════════════════════════════════════
+console.log('📊 SUITE 25: Fase 2.1 chart helpers (computeSMA + buildChartAnnotations)');
+(() => {
+  // Mirror of static/app.js computeSMA — simple moving average with a partial
+  // window at the head so the SMA line starts at the first point.
+  function computeSMA(values, windowSize) {
+    if (!Array.isArray(values) || !values.length) return [];
+    windowSize = Math.max(1, Math.floor(Number(windowSize) || 7));
+    const out = [];
+    let sum = 0;
+    for (let i = 0; i < values.length; i++) {
+      sum += Number(values[i]) || 0;
+      if (i >= windowSize) sum -= Number(values[i - windowSize]) || 0;
+      const n = Math.min(i + 1, windowSize);
+      out.push(Number((sum / n).toFixed(2)));
+    }
+    return out;
+  }
+
+  // Mirror of static/app.js buildChartAnnotations — maps persisted timeline
+  // events (ts in seconds) to the nearest label index (labels in ms) so the
+  // annotation plugin can draw vertical lines on the category axis.
+  function buildChartAnnotations(events, labels) {
+    if (!Array.isArray(events) || !Array.isArray(labels) || !labels.length) return [];
+    const out = [];
+    events.forEach(ev => {
+      const ts = Number(ev.ts || 0) * 1000;
+      if (!ts) return;
+      let idx = 0, best = Infinity;
+      for (let i = 0; i < labels.length; i++) {
+        const d = Math.abs(Number(labels[i]) - ts);
+        if (d < best) { best = d; idx = i; }
+      }
+      out.push({ index: idx, severity: ev.severity || 'INFO', message: String(ev.message || ev.event_type || '') });
+    });
+    return out;
+  }
+
+  // Mirror of static/app.js clampZoomRange — category-axis zoom clamp in
+  // POINT COUNTS (the x scale min/max are indices, not timestamps). This
+  // mirrors the exact bounds the wheel-zoom handler applies.
+  function clampZoomRange(currentRange, factor, minPoints, maxPoints) {
+    const next = currentRange * factor;
+    const upper = Math.max(minPoints, maxPoints);
+    return Math.max(minPoints, Math.min(next, upper));
+  }
+
+  // ── computeSMA ──
+  assertEqual('SMA empty → []', JSON.stringify(computeSMA([], 5)), '[]');
+  assertEqual('SMA non-array → []', JSON.stringify(computeSMA(null, 5)), '[]');
+  const sma3 = computeSMA([1, 2, 3, 4, 5], 3);
+  assertEqual('SMA len preserved', sma3.length, 5);
+  assertEqual('SMA head partial window', sma3[0], 1);
+  assertEqual('SMA 2nd partial window', sma3[1], 1.5);
+  assertEqual('SMA full window', sma3[2], 2);
+  assertEqual('SMA rolling value', sma3[3], 3);
+  assertEqual('SMA trailing value', sma3[4], 4);
+  // windowSize 0 falls through to the default 7 (Number(0) || 7), so the
+  // whole series averages — assert the REAL behavior, not a phantom clamp.
+  assertEqual('SMA window 0 → default 7', JSON.stringify(computeSMA([10, 20], 0)), '[10,15]');
+  assertEqual('SMA window huge → full avg', computeSMA([10, 20, 30], 99).length, 3);
+  assertEqual('SMA nulls treated as 0', JSON.stringify(computeSMA([null, 4, 8], 3)), '[0,2,4]');
+
+  // ── clampZoomRange (category-axis zoom bounds in point counts) ──
+  assertApprox('zoom zoom-in 120pts ×0.83', clampZoomRange(120, 0.8333, 5, 120), 99.996, 0.01);
+  assertApprox('zoom zoom-out 50pts ×1.2', clampZoomRange(50, 1.2, 5, 120), 60, 0.01);
+  assertEqual('zoom min clamp (below 5 pts)', clampZoomRange(3, 0.8, 5, 120), 5);
+  assertEqual('zoom max clamp (above label count)', clampZoomRange(200, 1.2, 5, 120), 120);
+  assertEqual('zoom maxPoints below min → min wins', clampZoomRange(10, 2, 5, 2), 5);
+  assertApprox('zoom identity factor 1', clampZoomRange(60, 1, 5, 120), 60, 0.001);
+
+  // ── buildChartAnnotations ──
+  const labels = [1700000000000, 1700000060000, 1700000120000];
+  const events = [
+    { ts: 1700000061, severity: 'GOLD', message: 'BUMP found' },
+    { ts: 1700000122, severity: 'INFO', event_type: 'SHARE_FOUND' },
+    { ts: 0, severity: 'INFO', message: 'skipped' },
+  ];
+  const anns = buildChartAnnotations(events, labels);
+  assertEqual('annotations count (zero-ts skipped)', anns.length, 2);
+  assertEqual('annotation nearest index', anns[0].index, 1);
+  assertEqual('annotation severity', anns[0].severity, 'GOLD');
+  assertEqual('annotation message', anns[0].message, 'BUMP found');
+  assertEqual('annotation fallback to event_type', anns[1].message, 'SHARE_FOUND');
+  assertEqual('annotation severity default INFO', anns[1].severity, 'INFO');
+  assertEqual('no events → []', JSON.stringify(buildChartAnnotations([], labels)), '[]');
+  assertEqual('no labels → []', JSON.stringify(buildChartAnnotations(events, [])), '[]');
+  assertEqual('null events → []', JSON.stringify(buildChartAnnotations(null, labels)), '[]');
+})();
+
+
+// ═══════════════════════════════════════════════════════════════════════════
 //  RESULTS
 // ═══════════════════════════════════════════════════════════════════════════
 

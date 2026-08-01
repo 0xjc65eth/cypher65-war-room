@@ -679,10 +679,9 @@
     <div class="empty-state" style="grid-column:1/-1;border:none">
       <div class="empty-state__icon">⚙</div>
       <div class="empty-state__title">No devices</div>
-      <div class="empty-state__desc">Add a miner by IP address or seed test devices to start monitoring</div>
+      <div class="empty-state__desc">Add a miner by IP address to start monitoring</div>
       <div class="empty-state__action">
         <button class="btn btn--primary btn--mini" id="axe-empty-add">+ Add Device</button>
-        <button class="btn btn--mini" id="axe-empty-seed" style="border-color:var(--cyan);color:var(--cyan)">🧪 Seed Test</button>
       </div>
     </div>
   </div>
@@ -918,7 +917,9 @@
       <button data-range="24h" class="chip active">24h</button>
       <button data-range="7d" class="chip">7d</button>
       <button data-range="all" class="chip">all</button>
+      <button type="button" class="chip chip--zoom" data-zoom-reset="chart-hashrate" title="Reset zoom (dbl-click também reseta)">⟲</button>
     </div>
+    <span class="chart-hint">scroll: zoom · drag: pan · dbl-click/⟲: reset</span>
   </div>
   <div class="chart-canvas-wrap"><canvas id="chart-hashrate"></canvas></div>
 </section>
@@ -939,7 +940,9 @@
       <button data-range="24h" class="chip active">24h</button>
       <button data-range="7d" class="chip">7d</button>
       <button data-range="all" class="chip">all</button>
+      <button type="button" class="chip chip--zoom" data-zoom-reset="chart-pool" title="Reset zoom (dbl-click também reseta)">⟲</button>
     </div>
+    <span class="chart-hint">scroll: zoom · drag: pan · dbl-click/⟲: reset</span>
   </div>
   <div class="chart-canvas-wrap"><canvas id="chart-pool"></canvas></div>
 </section>
@@ -953,7 +956,9 @@
       <button data-range="24h" class="chip active">24h</button>
       <button data-range="7d" class="chip">7d</button>
       <button data-range="all" class="chip">all</button>
+      <button type="button" class="chip chip--zoom" data-zoom-reset="chart-bestdiff" title="Reset zoom (dbl-click também reseta)">⟲</button>
     </div>
+    <span class="chart-hint">scroll: zoom · drag: pan · dbl-click/⟲: reset</span>
   </div>
   <div class="chart-wrap"><canvas id="chart-bestdiff"></canvas></div>
 </section>
@@ -966,7 +971,9 @@
       <button data-range="7d" class="chip">7d</button>
       <button data-range="30d" class="chip">30d</button>
       <button data-range="all" class="chip">all</button>
+      <button type="button" class="chip chip--zoom" data-zoom-reset="chart-net" title="Reset zoom (dbl-click também reseta)">⟲</button>
     </div>
+    <span class="chart-hint">scroll: zoom · drag: pan · dbl-click/⟲: reset</span>
   </div>
   <div class="chart-wrap"><canvas id="chart-net"></canvas></div>
 </section>

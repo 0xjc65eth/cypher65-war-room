@@ -92,6 +92,48 @@ class TestAutoSeedAxeFleetGating:
         _app_module._auto_seed_axe_fleet(registry)
         registry.remove_device.assert_not_called()
 
+    def test_purges_test_prefixed_names_when_disabled(self, monkeypatch):
+        """DEBUG_MOCK off removes Test-* / test-* named devices too.
+        The RBAC suite (tests/test_rbac_register.py) names its devices with
+        the Test- prefix; if those rows ever land in the real DB they must be
+        purged at boot — never shown to the user as fleet devices.
+        """
+        monkeypatch.delenv("DEBUG_MOCK", raising=False)
+        registry = MagicMock()
+        registry.list_devices.return_value = [
+            {"id": "t1", "group_id": "", "name": "Test-rbac-open"},
+            {"id": "t2", "group_id": "", "name": "test-rbac-member"},
+            {"id": "u1", "group_id": "", "name": "Garage Bitaxe"},   # user — kept
+            {"id": "u2", "group_id": "custom-group", "name": "Miner A"},  # user — kept
+        ]
+        registry.remove_device.return_value = True
+        removed = _app_module._auto_seed_axe_fleet(registry)
+        assert removed == 2
+        calls = [c.args[0] for c in registry.remove_device.call_args_list]
+        assert calls == ["t1", "t2"]
+
+    def test_orphaned_telemetry_purged_when_disabled(self, monkeypatch):
+        """DEBUG_MOCK off also deletes axe_telemetry rows whose device no
+        longer exists (remove_device never cleaned history — long-running
+        servers accumulated orphaned telemetry from old seed runs).
+        """
+        monkeypatch.delenv("DEBUG_MOCK", raising=False)
+        registry = MagicMock()
+        registry.list_devices.return_value = []  # no devices at all
+        conn = MagicMock()
+        c = MagicMock()
+        c.rowcount = 42
+        conn.cursor.return_value = c
+        registry._get_db.return_value = conn
+
+        removed = _app_module._auto_seed_axe_fleet(registry)
+        assert removed == 0  # no devices purged
+        # Orphaned-telemetry DELETE executed against the registry's DB
+        sql = c.execute.call_args[0][0]
+        assert "DELETE FROM axe_telemetry" in sql
+        assert "NOT IN" in sql
+        conn.commit.assert_called_once()
+
 
 # ══════════════════════════════════════════════════════════════════════════
 #  _auto_seed_core_devices gating + purge (incl. destructive stale-DELETE path)
