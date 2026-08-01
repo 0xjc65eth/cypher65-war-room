@@ -18,3 +18,7 @@ backup*
 node_modules/
 test-results/
 e2e-report/
+
+# Runtime artifacts
+.coverage
+data/*.db
