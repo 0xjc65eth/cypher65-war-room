@@ -1,0 +1,237 @@
+# ── CYPHER65 · Weekly Soak Test ──────────────────────────────────────────
+# Runs the short soak test every Sunday at midnight UTC to catch stability
+# regressions before the work week starts.
+#
+# Manual trigger also supported via GitHub UI (workflow_dispatch).
+
+name: "Soak Test · CI"
+
+on:
+  # Post-deploy: runs on every push to main
+  push:
+    branches: [main]
+  # Pull request: run on every PR
+  pull_request:
+    branches: [main]
+  schedule:
+    # Nightly soak at 03:00 UTC (off-peak hours for GitHub Actions)
+    - cron: "0 3 * * *"
+    # Weekly deep soak on Sunday at 00:00 UTC (runs more iterations)
+    - cron: "0 0 * * 0"
+  workflow_dispatch:
+    inputs:
+      iters:
+        description: "Number of poll iterations"
+        required: false
+        default: "10"
+        type: choice
+        options:
+          - "5"
+          - "10"
+          - "20"
+
+jobs:
+  test:
+    name: "Unit Tests"
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    defaults:
+      run:
+        working-directory: ./
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Run JS unit tests (disconnect wallet)
+        run: node tests/test_disconnect_wallet.js
+        id: js-tests
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: "pip"
+          cache-dependency-path: requirements.txt
+
+      - name: Install dependencies
+        run: |
+          python -m venv .venv
+          source .venv/bin/activate
+          pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run Python unit tests
+        run: |
+          source .venv/bin/activate
+          python -m pytest tests/ -v --tb=short --junitxml=/tmp/pytest-results.xml
+        id: python-tests
+
+      - name: Upload test results (JUnit XML)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pytest-results
+          path: /tmp/pytest-results.xml
+          retention-days: 30
+
+  soak:
+    name: "Soak · ${{ github.event.inputs.iters || '10' }} iters"
+    needs: [test]
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    defaults:
+      run:
+        working-directory: ./
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Run JS unit tests (disconnect wallet)
+        run: node tests/test_disconnect_wallet.js
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: "pip"
+          cache-dependency-path: requirements.txt
+
+      - name: Install dependencies
+        run: |
+          python -m venv .venv
+          source .venv/bin/activate
+          pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run Python unit tests
+        run: |
+          source .venv/bin/activate
+          python -m pytest tests/ -v --tb=short --junitxml=/tmp/pytest-results.xml
+
+      - name: Start Flask server
+        run: |
+          source .venv/bin/activate
+          nohup .venv/bin/python app.py > /tmp/soak_server.log 2>&1 &
+          echo "PID=$!"
+          # Wait for boot + first poll cycle
+          for i in $(seq 1 15); do
+            sleep 1
+            STATUS=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8765/ 2>/dev/null || echo "000")
+            if [ "$STATUS" = "200" ]; then
+              echo "Server ready after ${i}s"
+              break
+            fi
+            if [ "$i" = "15" ]; then
+              echo "Server failed to start"
+              cat /tmp/soak_server.log
+              exit 1
+            fi
+          done
+
+      - name: Run soak test
+        run: |
+          source .venv/bin/activate
+          QUICK_ITERS="${{ github.event.inputs.iters || '10' }}" \
+            bash tests/soak_quick.sh
+
+      - name: Upload soak log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: soak-log
+          path: /tmp/cypher_soak_quick.log
+          retention-days: 30
+
+      - name: Upload server log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: soak-server-log
+          path: /tmp/soak_server.log
+          retention-days: 30
+
+      - name: Upload test results (JUnit XML)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pytest-results
+          path: /tmp/pytest-results.xml
+          retention-days: 30
+
+      - name: Notify on failure
+        if: failure()
+        run: |
+          echo "::error::Soak test FAILED — check artifacts for details"
+          echo "Workflow: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
+      - name: Start Flask server
+        run: |
+          source .venv/bin/activate
+          nohup .venv/bin/python app.py > /tmp/soak_server.log 2>&1 &
+          echo "PID=$!"
+          # Wait for boot + first poll cycle
+          for i in $(seq 1 15); do
+            sleep 1
+            STATUS=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8765/ 2>/dev/null || echo "000")
+            if [ "$STATUS" = "200" ]; then
+              echo "Server ready after ${i}s"
+              break
+            fi
+            if [ "$i" = "15" ]; then
+              echo "Server failed to start"
+              cat /tmp/soak_server.log
+              exit 1
+            fi
+          done
+
+      - name: Run soak test
+        run: |
+          source .venv/bin/activate
+          QUICK_ITERS="${{ github.event.inputs.iters || '10' }}" \
+            bash tests/soak_quick.sh
+        id: soak-test
+
+      - name: Upload soak log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: soak-log
+          path: /tmp/cypher_soak_quick.log
+          retention-days: 30
+
+      - name: Upload server log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: soak-server-log
+          path: /tmp/soak_server.log
+          retention-days: 30
+
+      - name: Upload test results (JUnit XML)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pytest-results
+          path: /tmp/pytest-results.xml
+          retention-days: 30
+
+      - name: Notify on failure
+        if: failure()
+        run: |
+          echo "::error::Soak test FAILED — check artifacts for details"
+          echo "Workflow: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"

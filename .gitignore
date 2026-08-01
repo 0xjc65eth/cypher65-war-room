@@ -8,7 +8,6 @@ __pycache__/
 *.log
 .env
 .agents/
-.github/workflows/
 
 # Backup files
 *.backup*

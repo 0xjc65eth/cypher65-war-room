@@ -1,0 +1,87 @@
+# ── CYPHER65 · CI Gate ───────────────────────────────────────────────────
+# Runs the full test suite (Python + JS core) on every push and pull request
+# to main. This is the merge gate: if either suite fails, the PR is blocked.
+# Coverage is regenerated each run and uploaded as an artifact.
+#
+# Audit item (Produção · Estágio 1/5): sem gate de CI, a cobertura não era
+# mensurada e nenhuma falha bloqueava merge. Este workflow fecha o gap.
+#
+# COVERAGE BASELINE (2026-08-01, pytest --cov local, targets app/helpers/
+# axe_fleet/services/core): TOTAL = 53%. O --cov-fail-under=45 é o gate real:
+# abaixo de 45% o merge é bloqueado. A margem (53% → 45%) absorve variação
+# entre ambientes (CI vs local) sem deixar o gate frouxo.
+
+name: "CI · Gate"
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  gate:
+    name: "pytest + JS core"
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    defaults:
+      run:
+        working-directory: ./
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Run JS core tests (app.js helpers)
+        run: node --test tests/test_app_js_core.js
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: "pip"
+          cache-dependency-path: requirements.txt
+
+      - name: Install dependencies
+        run: |
+          python -m venv .venv
+          source .venv/bin/activate
+          pip install --upgrade pip
+          pip install -r requirements.txt pytest pytest-cov
+
+      - name: Run Python tests with coverage
+        run: |
+          source .venv/bin/activate
+          python -m pytest tests/ -q --tb=short --junitxml=/tmp/pytest-results.xml \
+            --cov=app --cov=helpers --cov=axe_fleet --cov=services --cov=core \
+            --cov-report=term-missing --cov-report=html:/tmp/coverage_html \
+            --cov-fail-under=45
+
+      - name: Upload pytest results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pytest-results
+          path: /tmp/pytest-results.xml
+          retention-days: 30
+
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-html
+          path: /tmp/coverage_html
+          retention-days: 30
+
+      - name: Notify on failure
+        if: failure()
+        run: |
+          echo "::error::CI gate FAILED — merge blocked"
+          echo "Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
