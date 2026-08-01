@@ -76,6 +76,10 @@
       <span class="icon">?</span>
       <span class="label">Docs</span>
     </button>
+    <button class="sidebar__link" data-module="learning">
+      <span class="icon">📚</span>
+      <span class="label">Learning</span>
+    </button>
     <button class="sidebar__link" data-module="support">
       <span class="icon">♥</span>
       <span class="label">Support</span>
@@ -127,6 +131,7 @@
       <button id="open-settings" class="topbar__btn" title="Settings">::</button>
       <button id="theme-toggle" class="topbar__btn" title="Toggle theme">☀</button>
       <button id="sidebar-toggle" class="topbar__btn" title="Toggle Sidebar">☰</button>
+      <button id="auth-toggle" class="topbar__btn topbar__btn--auth" title="Tenant Login">🔑 LOGIN</button>
       <button id="open-wallet" class="topbar__btn topbar__btn--wallet" title="Connect Wallet">⚡ CONNECT</button>
       <span id="status-pill" style="display:none"></span>
     </div>
@@ -477,7 +482,7 @@
     <div class="profit-cell profit-cell--xl"><div class="profit-cell__label">NET BTC/DAY <span class="tip-wrap" data-tip="BTC estimado por dia, já descontando taxa da pool e custo de energia. Fórmula: (hashrate ÷ rede) × blocos/dia × recompensa"><span class="tip-wrap__icon">?</span></span></div><div class="profit-cell__val" id="p-btc-day">—</div><div class="profit-cell__sub" id="p-btc-sub">after fees</div></div>
     <div class="profit-cell"><div class="profit-cell__label">FIAT/DAY <span id="p-cur-badge" class="profit-cur-pill">USD</span> <span class="tip-wrap" data-tip="Valor em moeda local do BTC estimado por dia. Calculado usando taxa de câmbio atual"><span class="tip-wrap__icon">?</span></span></div><div class="profit-cell__val stat__val--green" id="p-fiat-day">—</div><div class="profit-cell__sub" id="p-fiat-day-week">—/week</div></div>
     <div class="profit-cell"><div class="profit-cell__label">FIAT/MONTH <span class="tip-wrap" data-tip="Projeção mensal: (BTC/dia × 30) × preço BTC. Não considera variação de dificuldade"><span class="tip-wrap__icon">?</span></span></div><div class="profit-cell__val" id="p-fiat-month">—</div><div class="profit-cell__sub" id="p-fiat-month-sub">net cost</div></div>
-    <div class="profit-cell"><div class="profit-cell__label">BREAK-EVEN <span class="tip-wrap" data-tip="Preço mínimo do BTC para não ter prejuízo. Se o BTC cair abaixo disso, a receita não cobre o custo de energia"><span class="tip-wrap__icon">?</span></span></div><div class="profit-cell__val stat__val--gold" id="p-breakeven">—</div><div class="profit-cell__sub" id="p-breakeven-sub">$/TH·d</div></div>
+    <div class="profit-cell"><div class="profit-cell__label">BREAK-EVEN <span class="tip-wrap" data-tip="Custo máximo por TH/s/dia antes de prejuízo (ex.: aluguel de hashrate). Se o custo ultrapassar esse valor, a operação fica no vermelho. No modo SOLO mostra o tempo esperado até o próximo bloco"><span class="tip-wrap__icon">?</span></span></div><div class="profit-cell__val stat__val--gold" id="p-breakeven">—</div><div class="profit-cell__sub" id="p-breakeven-sub">$/TH·d</div></div>
   </div>
   <div class="profit-solo-stats" id="solo-extra-stats" style="display:none">
     <div class="profit-cell"><div class="profit-cell__label">P(BLOCK) TODAY</div><div class="profit-cell__val stat__val--gold" id="solo-p-today">—</div></div>
@@ -645,6 +650,7 @@
     <div class="panel__tools">
       <span class="badge badge--green" id="axe-fleet-status-badge">INIT</span>
       <span class="badge badge--mute" id="axe-fleet-count-badge">0 devices</span>
+      <span class="badge badge--mute" id="axe-fleet-tenant-badge" title="Active tenant">TENANT: default</span>
       <span class="badge badge--green" id="fleet-live-badge" style="display:none;font-size:7px">● LIVE</span>
       <button class="chip" id="axe-fleet-add">+ ADD</button>
       <button class="chip" id="axe-seed-btn" style="border-color:var(--cyan);color:var(--cyan)">🧪 SEED TEST</button>
@@ -1294,7 +1300,7 @@
     <div class="modal__body support-modal__body">
       <div class="support-modal__hero">
         <div class="support-modal__subtitle" id="support-modal-subtitle">Cypherpunks support cypherpunks.</div>
-        <div class="support-modal__desc" id="support-modal-desc">If this tool helps you, support it so it can keep evolving.</div>
+        <div class="support-modal__desc" id="support-modal-desc">Este painel é um instrumento da resistência digital: código aberto, sem intermediários, soberano por design. Sua contribuição mantém o desenvolvimento rodando, financia infraestrutura descentralizada e garante que esta ferramenta continue nas mãos de quem a usa — não de corporações. Sem donos. Sem permissão. Apenas criptografia e comunidade. BTC, Lightning e hashpower são aceitos.</div>
       </div>
       <div class="support-modal__grid" id="support-modal-grid"></div>
       <div class="support-modal__ln" id="support-modal-ln">
@@ -1372,6 +1378,7 @@
     <a href="#docs-multiuser" class="docs-index__link" data-section="docs-multiuser">10. Multi-User</a>
     <a href="#docs-support" class="docs-index__link" data-section="docs-support">11. Support</a>
     <a href="#docs-faq" class="docs-index__link" data-section="docs-faq">12. FAQ</a>
+    <a href="#docs-feedback" class="docs-index__link" data-section="docs-feedback">13. Feedback</a>
   </div>
 </nav>
 
@@ -1581,9 +1588,232 @@
   </div>
 </section>
 
+<!-- 13 ── Feedback ── -->
+<section class="doc-section" id="docs-feedback">
+  <h2 class="doc-section__title">13 · Feedback &amp; Contribuição</h2>
+  <p class="doc-section__text">Encontrou um bug, quer sugerir uma feature ou tem uma ideia para melhorar a ferramenta?
+  Todo feedback é bem-vindo e deve ser enviado pelo <strong>GitHub</strong> — é a fonte oficial do projeto.</p>
+  <div class="doc-callout doc-callout--info">
+    <span class="doc-callout__icon">⌨</span>
+    <span class="doc-callout__text">
+      <strong>CYPHER65 War Room:</strong>
+      <a href="https://github.com/0xjc65eth/cypher65-war-room" target="_blank" rel="noopener noreferrer" style="color:var(--accent-cyan, #06d6f0)">github.com/0xjc65eth/cypher65-war-room</a>
+      — abra uma <em>issue</em> para reportar problemas e sugestões, ou um <em>pull request</em> para contribuir com código.
+    </span>
+  </div>
+</section>
+
 </div><!-- .docs-content -->
 </div><!-- .docs-container -->
 
+  </div>
+</section>
+
+<!-- ══════════════════════════════════════════════════════════════════════
+     LEARNING — Bitcoin whitepaper + book library + sponsor
+     ══════════════════════════════════════════════════════════════════════ -->
+<section class="section" id="learning-panel" data-module="learning">
+  <div class="panel panel--large">
+    <div class="panel__header">
+      <div class="panel__eyebrow">📚 LEARNING · BITCOIN ACADEMY</div>
+      <div class="panel__tools"><span class="badge badge--gold">FREE</span></div>
+    </div>
+
+    <!-- Whitepaper -->
+    <div class="doc-section" id="learning-whitepaper">
+      <h2 class="doc-section__title">≋ Bitcoin Whitepaper · O Manifesto</h2>
+      <p class="doc-section__text">
+        <strong>“Bitcoin: A Peer-to-Peer Electronic Cash System”</strong> — Satoshi Nakamoto, 31 de outubro de 2008.
+        O documento fundacional que deu origem à primeira moeda digital descentralizada da história.
+      </p>
+
+      <div class="doc-callout doc-callout--tip">
+        <span class="doc-callout__icon">✦</span>
+        <span class="doc-callout__text">
+          <strong>Resumo do Manifesto:</strong> Bitcoin resolve o problema do <em>double-spend</em> sem
+          intermediários. Uma rede peer-to-peer valida transações por <em>Proof-of-Work</em>, registra-as em
+          blocos encadeados (blockchain) e incentiva os participantes a manter a rede honesta com recompensas.
+          A dificuldade de mineração se ajusta automaticamente para manter ~10 minutos por bloco.
+        </span>
+      </div>
+
+      <ul class="doc-list">
+        <li><strong>Capítulo 1 · Transações</strong> — cadeia de assinaturas digitais: cada dono transfere moedas assinando o hash da transação anterior + a chave pública do próximo dono.</li>
+        <li><strong>Capítulo 2 · Servidor de Timestamp</strong> — cada bloco carimba o anterior, formando uma corrente imutável que prova a ordem dos eventos.</li>
+        <li><strong>Capítulo 3 · Proof-of-Work</strong> — mineradores buscam um nonce cujo hash comece com N zeros; a rede aceita a maior cadeia de trabalho acumulado (cadeia mais longa).</li>
+        <li><strong>Capítulo 4 · Rede</strong> — regras: transmitir transações novas, juntá-las em bloco, provar o trabalho, e sempre trabalhar sobre o bloco mais longo.</li>
+        <li><strong>Capítulo 5 · Incentivo</strong> — o primeiro bloco de uma transação cria moedas novas (subsídio); mineradores também recebem taxas. O incentivo econômico mantém a honestidade.</li>
+        <li><strong>Capítulo 6 · Disco</strong> — árvore de Merkle permite descartar transações antigas já confirmadas sem perder a integridade do bloco.</li>
+        <li><strong>Capítulo 7 · Verificação simplificada (SPV)</strong> — sem rodar a rede inteira, basta manter os cabeçalhos e verificar o branch da Merkle tree.</li>
+        <li><strong>Capítulo 8 · Privacidade</strong> — as chaves públicas são anônimas; recomenda-se uma nova chave a cada transação.</li>
+        <li><strong>Capítulo 9 · Cálculos</strong> — a probabilidade de um atacante alcançar a cadeia honesta decai exponencialmente (raiz do processo de Poisson).</li>
+        <li><strong>Capítulo 10 · Conclusão</strong> — um sistema de dinheiro eletrônico sem confiança em terceiros: robusto, descentralizado e verificável por qualquer participante.</li>
+      </ul>
+
+      <details class="learning-whitepaper" open>
+        <summary class="learning-whitepaper__summary">📜 Manifesto · texto original (Satoshi Nakamoto)</summary>
+        <div class="learning-whitepaper__body">
+          <p class="learning-whitepaper__h">Abstract</p>
+          <p class="learning-whitepaper__p">
+            A purely peer-to-peer version of electronic cash would allow online payments to be sent
+            directly from one party to another without going through a financial institution.
+            Digital signatures provide part of the solution, but the main benefits are lost if a
+            trusted third party is still required to prevent double-spending. We propose a solution
+            to the double-spending problem using a peer-to-peer network. The network timestamps
+            transactions by hashing them into an ongoing chain of hash-based proof-of-work, forming
+            a record that cannot be changed without redoing the proof-of-work. The longest chain
+            not only serves as proof of the sequence of events witnessed, but proof that it came
+            from the largest pool of CPU power. As long as a majority of CPU power is controlled by
+            nodes that are not cooperating to attack the network, they'll generate the longest chain
+            and outpace attackers. The network itself requires minimal structure. Messages are
+            broadcast on a best effort basis, and nodes can leave and rejoin the network at will,
+            accepting the longest proof-of-work chain as proof of what happened while they were gone.
+          </p>
+          <p class="learning-whitepaper__h">1. Introduction</p>
+          <p class="learning-whitepaper__p">
+            Commerce on the Internet has come to rely almost exclusively on financial institutions
+            serving as trusted third parties to process electronic payments. While the system works
+            well enough for most transactions, it still suffers from the inherent weaknesses of the
+            trust based model. Completely non-reversible transactions are not really possible, since
+            financial institutions cannot avoid mediating disputes. The cost of mediation increases
+            transaction costs, limiting the minimum practical transaction size and cutting off the
+            possibility for small casual transactions, and there is a broader cost in the loss of
+            ability to make non-reversible payments for non-reversible services. With the possibility
+            of reversal, the need for trust spreads. Merchants must be wary of their customers,
+            hassling them for more information than they would otherwise need.
+          </p>
+          <p class="learning-whitepaper__p">
+            What is needed is an electronic payment system based on cryptographic proof instead of
+            trust, allowing any two willing parties to transact directly with each other without the
+            need for a trusted third party. Transactions that are computationally impractical to
+            reverse would protect sellers from fraud, and routine escrow mechanisms could easily be
+            implemented to protect buyers. In this paper, we propose a system for electronic
+            transactions without relying on trust.
+          </p>
+        </div>
+      </details>
+
+      <div class="learning-actions">
+        <a class="btn btn--primary" href="https://bitcoin.org/bitcoin.pdf" target="_blank" rel="noopener noreferrer">📄 LER O WHITEPAPER COMPLETO (PDF)</a>
+        <a class="btn" href="https://bitcoin.org/en/bitcoin-paper" target="_blank" rel="noopener noreferrer">🌐 Traduções (bitcoin.org)</a>
+      </div>
+    </div>
+
+    <!-- Book library -->
+    <div class="doc-section" id="learning-books">
+      <h2 class="doc-section__title">📖 Biblioteca · Livros essenciais sobre Bitcoin</h2>
+      <p class="doc-section__text">Curadoria para aprender Bitcoin de verdade — economia, história, programação e o protocolo Ordinal.</p>
+
+      <div class="learning-books">
+        <!-- Economia & História -->
+        <div class="learning-category">
+          <h3 class="learning-category__title">🪙 Economia & História</h3>
+          <div class="book-card">
+            <div class="book-card__title">21 Lessons</div>
+            <div class="book-card__author">Gigi</div>
+            <div class="book-card__desc">Filosofia e economia do Bitcoin em 21 lições curtas — o mergulho no rabbit hole, gratuito e direto.</div>
+            <a class="book-card__link" href="https://21lessons.com/" target="_blank" rel="noopener noreferrer">21lessons.com →</a>
+          </div>
+          <div class="book-card">
+            <div class="book-card__title">The Little Bitcoin Book</div>
+            <div class="book-card__author">Timi Ajiboye et al.</div>
+            <div class="book-card__desc">Por que o dinheiro falha e como o Bitcoin emerge como alternativa — visão macroeconômica acessível e gratuita (PDFs por idioma).</div>
+            <a class="book-card__link" href="https://europeanbitcoiners.com/the-little-bitcoin-book/" target="_blank" rel="noopener noreferrer">europeanbitcoiners.com →</a>
+          </div>
+          <div class="book-card">
+            <div class="book-card__title">Grokking Bitcoin</div>
+            <div class="book-card__author">Kalle Rosenbaum</div>
+            <div class="book-card__desc">Bitcoin explicado de baixo para cima com ilustrações — do protocolo à economia, gratuito no navegador.</div>
+            <a class="book-card__link" href="https://rosenbaum.se/book/" target="_blank" rel="noopener noreferrer">rosenbaum.se →</a>
+          </div>
+          <div class="book-card">
+            <div class="book-card__title">Bitcoin: A Work in Progress</div>
+            <div class="book-card__author">Sjors Provoost</div>
+            <div class="book-card__desc">O funcionamento interno do Bitcoin — do consenso à verificação, gratuito e em constante atualização.</div>
+            <a class="book-card__link" href="https://bitcoin-resources.com/books/bitcoin-a-work-in-progress" target="_blank" rel="noopener noreferrer">bitcoin-resources.com →</a>
+          </div>
+          <div class="book-card">
+            <div class="book-card__title">Mastering the Lightning Network</div>
+            <div class="book-card__author">Antonopoulos, Osuntokun, Pickhardt</div>
+            <div class="book-card__desc">O guia definitivo da segunda camada — canais, HTLCs, roteamento e a economia do Lightning, gratuito no GitHub.</div>
+            <a class="book-card__link" href="https://github.com/lnbook/lnbook" target="_blank" rel="noopener noreferrer">github.com/lnbook →</a>
+          </div>
+        </div>
+
+        <!-- Técnica & Programação -->
+        <div class="learning-category">
+          <h3 class="learning-category__title">⚙ Técnica & Programação</h3>
+          <div class="book-card">
+            <div class="book-card__title">Mastering Bitcoin</div>
+            <div class="book-card__author">Andreas M. Antonopoulos</div>
+            <div class="book-card__desc">A bíblia técnica — transações, script, blocks, wallets, mining. Disponível gratuitamente.</div>
+            <a class="book-card__link" href="https://github.com/bitcoinbook/bitcoinbook" target="_blank" rel="noopener noreferrer">github.com/bitcoinbook →</a>
+          </div>
+          <div class="book-card">
+            <div class="book-card__title">Programming Bitcoin</div>
+            <div class="book-card__author">Jimmy Song</div>
+            <div class="book-card__desc">Aprenda implementando: transações, assinaturas, blocos e segwit do zero em Python.</div>
+            <a class="book-card__link" href="https://github.com/jimmysong/programmingbitcoin" target="_blank" rel="noopener noreferrer">github.com/jimmysong →</a>
+          </div>
+          <div class="book-card">
+            <div class="book-card__title">Inventing Bitcoin</div>
+            <div class="book-card__author">Yan Pritzker</div>
+            <div class="book-card__desc">O jeito mais rápido de entender o mecanismo do Bitcoin — leitura em poucas horas.</div>
+            <a class="book-card__link" href="https://www.inventingbitcoin.com/" target="_blank" rel="noopener noreferrer">inventingbitcoin.com →</a>
+          </div>
+          <div class="book-card">
+            <div class="book-card__title">Bitcoin Developer Docs</div>
+            <div class="book-card__author">Bitcoin Core</div>
+            <div class="book-card__desc">Documentação técnica oficial do protocolo — referência definitiva do desenvolvedor.</div>
+            <a class="book-card__link" href="https://developer.bitcoin.org/" target="_blank" rel="noopener noreferrer">developer.bitcoin.org →</a>
+          </div>
+        </div>
+
+        <!-- Ordinals -->
+        <div class="learning-category">
+          <h3 class="learning-category__title">🔢 Protocolo Ordinal</h3>
+          <div class="book-card">
+            <div class="book-card__title">Ordinal Theory Handbook</div>
+            <div class="book-card__author">Casey Rodarmor</div>
+            <div class="book-card__desc">O manual oficial da teoria ordinal — satoshis numerados, inscrições e NFTs on-chain.</div>
+            <a class="book-card__link" href="https://docs.ordinals.com/" target="_blank" rel="noopener noreferrer">docs.ordinals.com →</a>
+          </div>
+          <div class="book-card">
+            <div class="book-card__title">Ordinals Explorer</div>
+            <div class="book-card__author">Ordinals.com</div>
+            <div class="book-card__desc">Explore inscrições, rare sats e o estado atual do protocolo Ordinal.</div>
+            <a class="book-card__link" href="https://ordinals.com/" target="_blank" rel="noopener noreferrer">ordinals.com →</a>
+          </div>
+        </div>
+
+        <!-- Recursos gratuitos -->
+        <div class="learning-category">
+          <h3 class="learning-category__title">🌐 Recursos Gratuitos</h3>
+          <div class="book-card">
+            <div class="book-card__title">Learn Me A Bitcoin</div>
+            <div class="book-card__author">Greg Walker</div>
+            <div class="book-card__desc">O melhor site visual para entender Bitcoin por dentro — gratuito e didático.</div>
+            <a class="book-card__link" href="https://learnmeabitcoin.com/" target="_blank" rel="noopener noreferrer">learnmeabitcoin.com →</a>
+          </div>
+          <div class="book-card">
+            <div class="book-card__title">Bitcoin.org — Recursos</div>
+            <div class="book-card__author">Comunidade</div>
+            <div class="book-card__desc">Curadoria oficial de guias, artigos e materiais para começar.</div>
+            <a class="book-card__link" href="https://bitcoin.org/en/resources" target="_blank" rel="noopener noreferrer">bitcoin.org/en/resources →</a>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Sponsor -->
+    <div class="doc-section" id="learning-sponsor">
+      <div class="learning-sponsor">
+        <div class="learning-sponsor__badge">SPONSOR</div>
+        <div class="learning-sponsor__title">⭐ x.barone.club</div>
+        <div class="learning-sponsor__desc">Este espaço educacional é apoiado pelo nosso patrocinador. Visite e descubra o conteúdo exclusivo do Barone Club.</div>
+        <a class="btn btn--primary btn--mini" href="https://x.barone.club/" target="_blank" rel="noopener noreferrer">➜ IR PARA x.barone.club</a>
+      </div>
+    </div>
   </div>
 </section>
 
@@ -1629,6 +1859,32 @@
   </div>
 </div>
 
+<!-- AUTH MODAL (tenant login · Fase 4 · B1-frontend) -->
+<div class="modal-overlay" id="auth-modal">
+  <div class="modal">
+    <div class="modal__header">
+      <div class="modal__title">>> TENANT LOGIN</div>
+      <button class="modal__close" onclick="document.getElementById('auth-modal').classList.remove('modal--open')">⛌</button>
+    </div>
+    <div class="modal__body">
+      <div class="wallet-current">
+        <div class="wallet-current__label">CURRENT TENANT</div>
+        <div class="wallet-current__addr" id="auth-current-tenant">—</div>
+      </div>
+      <div class="field" data-key="api_key">
+        <span class="field__label">API KEY</span>
+        <input class="field__input field__input--mono" type="password" id="auth-api-key" placeholder="tenant api key" autocomplete="off" spellcheck="false">
+        <span class="field__hint">Login activates per-tenant isolation. Key comes from API_KEY or TENANT_API_KEYS.</span>
+      </div>
+      <span class="modal__status" id="auth-status"></span>
+      <div style="display:flex;gap:6px;margin-top:6px">
+        <button class="btn btn--primary" id="auth-login" style="flex:1">LOGIN</button>
+        <button class="btn" id="auth-logout" style="flex:1;border-color:var(--accent-red, #FF1744);color:var(--accent-red, #FF1744)">LOGOUT</button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <!-- ALERT CENTER MODAL -->
 <div class="modal-overlay" id="alert-center-modal">
   <div class="modal" style="width:600px">
@@ -1659,6 +1915,12 @@
           <button class="chip" id="ac-refresh-history">⟳ refresh</button>
         </div>
         <div class="ac-pane" id="ac-rules-pane">
+          <div class="ac-hint" style="font-size:11px;color:var(--text-muted);padding:6px 8px;border:1px dashed var(--border);border-radius:4px;margin-bottom:8px;line-height:1.5">
+            ⚙ <strong>COMO FUNCIONA:</strong> crie uma regra com uma <em>condição</em> (ex.: temperatura &gt; 80°C) e uma <em>ação</em>
+            (restart, power-cycle, alert). O servidor avalia as regras a cada ciclo de polling; quando a condição dispara,
+            a ação passa pelo <strong>Safety Engine</strong> (que exige confirmação para comandos destrutivos) e é registrada no log de auditoria.
+            Use o <em>cooldown</em> para evitar disparos repetidos (ex.: mínimo de 60s entre execuções).
+          </div>
           <div class="ac-rules-list" id="ac-rules-list">
             <div class="empty">no rules</div>
           </div>

@@ -112,6 +112,46 @@ def fmt_hashrate(h):
     return f"{h:.2f} ZH/s"
 
 
+def derive_worker_hashrate(share_calc_history=None, prev_pool=None, pool=None, elapsed_s=0.0):
+    """Derive worker hashrate (H/s) when the pool reports 0 or missing.
+
+    FENIX E1 (P1) fallback. Sources, in priority:
+      1. "shares" — median of the most recent per-share instantaneous
+         hashrates from share_calc_history (each = hashes_attempted /
+         gap between submissions). Worker-specific, most representative.
+      2. "work_delta" — pool workSinceLastBlock growth between two polls:
+         ((cur_wslb - prev_wslb) * 2**32) / elapsed_s. Pool-wide proxy.
+
+    Returns (hps, source_label) or (0.0, None) when nothing can be derived.
+    Never raises.
+    """
+    try:
+        # 1) Per-share instantaneous hashrate history (worker-specific)
+        sch = list(share_calc_history or [])
+        inst = [
+            float(e.get("instantaneous_hr_hps") or 0)
+            for e in sch if e.get("instantaneous_hr_hps")
+        ]
+        inst = [v for v in inst if v > 0]
+        if inst:
+            window = inst[-5:]  # last 5 shares, median for stability
+            window.sort()
+            median = window[len(window) // 2]
+            if median > 0:
+                return median, "shares"
+        # 2) Pool workSinceLastBlock delta across polls
+        if pool and prev_pool and elapsed_s and elapsed_s > 0:
+            cur = float(pool.get("workSinceLastBlock") or 0)
+            prev = float(prev_pool.get("workSinceLastBlock") or 0)
+            if cur > prev:
+                hps = (cur - prev) * (2 ** 32) / float(elapsed_s)
+                if hps > 0:
+                    return hps, "work_delta"
+    except Exception:
+        pass
+    return 0.0, None
+
+
 def fmt_uptime(seconds):
     if not seconds:
         return "—"

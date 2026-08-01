@@ -22,8 +22,10 @@ import pytest
 
 from services.hashrate_market import (
     NormalizedOffer,
+    _cached_fetch,
     _safe_float,
     build_highlights,
+    clear_fetch_cache,
     compute_metrics,
     enrich_opportunity_dict,
     fetch_all_offers,
@@ -36,6 +38,19 @@ from services.hashrate_market import (
     persist_market_history,
     score_offer,
 )
+
+
+@pytest.fixture(autouse=True)
+def _clear_fetch_cache():
+    """Clear the module-level provider fetch cache between tests.
+
+    fetch_all_offers() caches per-provider results for a TTL; without this,
+    a test that patches providers to return None can receive offers cached by
+    an earlier test in the same process.
+    """
+    clear_fetch_cache()
+    yield
+    clear_fetch_cache()
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -152,7 +167,7 @@ class TestFetchBraiinsOffer:
         offer = fetch_braiins_offer()
         assert offer is not None
         assert offer.provider == "braiins"
-        assert offer.price_per_th_day == pytest.approx(5e-10)  # 0.000500 / 1_000_000
+        assert offer.price_per_th_day == pytest.approx(5e-7)  # 0.000500 / 1000 (1 PH = 1000 TH)
         assert offer.hashrate == 1000.0  # DEFAULT_RENTAL_HASHRATE_TH
         assert offer.algorithm == "sha256"
 
@@ -215,7 +230,7 @@ class TestFetchMrtOffer:
         offer = fetch_mrr_offer()
         assert offer is not None
         assert offer.provider == "mrr"
-        assert offer.price_per_th_day == pytest.approx(4e-10)
+        assert offer.price_per_th_day == pytest.approx(4e-7)
         assert offer.hashrate == 2000.0
 
     def test_none_data_returns_none(self, monkeypatch):
@@ -239,7 +254,7 @@ class TestFetchMrtOffer:
         offer = fetch_mrr_offer()
         assert offer is not None
         assert offer.hashrate == 1000.0  # DEFAULT_RENTAL_HASHRATE_TH
-        assert offer.price_per_th_day == pytest.approx(3e-10)
+        assert offer.price_per_th_day == pytest.approx(3e-7)
 
     def test_zero_hashrate_uses_default(self, monkeypatch):
         self._mock({"price_btc_per_ph_day": 0.000300, "best_rig_hash_th": 0}, monkeypatch)
@@ -275,7 +290,7 @@ class TestFetchNicehashOffer:
         offer = fetch_nicehash_offer()
         assert offer is not None
         assert offer.provider == "nicehash"
-        assert offer.price_per_th_day == pytest.approx(6e-10)
+        assert offer.price_per_th_day == pytest.approx(6e-7)
         assert offer.hashrate == 500.0  # 0.5 PH/s * 1000
 
     def test_none_data_returns_none(self, monkeypatch):
@@ -329,7 +344,7 @@ class TestFetchKissmyhashOffer:
         offer = fetch_kissmyhash_offer()
         assert offer is not None
         assert offer.provider == "kissmyhash"
-        assert offer.price_per_th_day == pytest.approx(7e-10)
+        assert offer.price_per_th_day == pytest.approx(7e-7)
 
     def test_fallback_to_nicehash_when_api_fails(self, monkeypatch):
         """requests.get raises → falls back to NiceHash +10% markup."""
@@ -341,8 +356,8 @@ class TestFetchKissmyhashOffer:
         offer = fetch_kissmyhash_offer()
         assert offer is not None
         assert offer.provider == "kissmyhash"
-        # NiceHash price = 0.000500 / 1e6 = 5e-10, markup * 1.10 = 5.5e-10
-        assert offer.price_per_th_day == pytest.approx(5.5e-10)
+        # NiceHash price = 0.000500 / 1000 = 5e-7, markup * 1.10 = 5.5e-7
+        assert offer.price_per_th_day == pytest.approx(5.5e-7)
         assert offer.meta["source"] == "derived_from_nicehash"
         assert offer.meta["markup_pct"] == 10.0
 
@@ -359,7 +374,7 @@ class TestFetchKissmyhashOffer:
         offer = fetch_kissmyhash_offer()
         assert offer is not None
         assert offer.provider == "kissmyhash"
-        assert offer.price_per_th_day == pytest.approx(4.4e-10)
+        assert offer.price_per_th_day == pytest.approx(4.4e-7)
 
     def test_nicehash_also_fails(self, monkeypatch):
         """Both API and NiceHash fallback fail → None."""
@@ -382,7 +397,7 @@ class TestFetchKissmyhashOffer:
         )
         offer = fetch_kissmyhash_offer()
         assert offer is not None
-        assert offer.price_per_th_day == pytest.approx(3.3e-10)
+        assert offer.price_per_th_day == pytest.approx(3.3e-7)
 
     def test_api_zero_price_ignored(self, monkeypatch):
         """API returns zero price → treated as no data → fallback."""
@@ -396,7 +411,7 @@ class TestFetchKissmyhashOffer:
         )
         offer = fetch_kissmyhash_offer()
         assert offer is not None  # fallback
-        assert offer.price_per_th_day == pytest.approx(2.2e-10)
+        assert offer.price_per_th_day == pytest.approx(2.2e-7)
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -468,6 +483,134 @@ class TestFetchParasiteOffer:
         assert offer is not None
         assert "disclaimer" in offer.meta
         assert "rental marketplace" in offer.meta["disclaimer"]
+
+
+# ══════════════════════════════════════════════════════════════════════
+#  _cached_fetch — retry/backoff (Fase 3 · P1)
+# ══════════════════════════════════════════════════════════════════════
+
+class TestCachedFetchRetry:
+    """Retry/backoff behavior of _cached_fetch on transient failures.
+
+    The provider tools surface HTTP errors (429/5xx) as error-dicts or
+    raise, so _cached_fetch retries the whole fetch when it yields
+    nothing/raises, up to _FETCH_RETRIES extra attempts with a short
+    linear backoff. Cache TTL still bounds the total request rate.
+    """
+
+    @staticmethod
+    def _offer(provider="t"):
+        return NormalizedOffer(
+            provider=provider, hashrate=1000.0, price_per_th_day=1e-9,
+            duration_days=1.0, fee_pct=0.0, algorithm="sha256",
+        )
+
+    def test_success_first_try_calls_once(self):
+        calls = []
+
+        def _f():
+            calls.append(1)
+            return self._offer()
+
+        clear_fetch_cache()
+        offer = _cached_fetch("t-succ", _f)
+        assert offer is not None
+        assert len(calls) == 1  # no retry on success
+
+    def test_none_retries_then_returns_none(self, monkeypatch):
+        import services.hashrate_market as m
+        monkeypatch.setattr(m, "_FETCH_RETRIES", 2)
+        monkeypatch.setattr(m, "_FETCH_BACKOFF_BASE", 0.0)
+        calls = []
+
+        def _f():
+            calls.append(1)
+            return None
+
+        clear_fetch_cache()
+        assert _cached_fetch("t-none", _f) is None
+        assert len(calls) == 3  # 1 initial + _FETCH_RETRIES extra
+
+    def test_exception_retries_then_returns_none(self, monkeypatch):
+        import services.hashrate_market as m
+        monkeypatch.setattr(m, "_FETCH_RETRIES", 1)
+        monkeypatch.setattr(m, "_FETCH_BACKOFF_BASE", 0.0)
+        calls = []
+
+        def _f():
+            calls.append(1)
+            raise RuntimeError("API unreachable")
+
+        clear_fetch_cache()
+        assert _cached_fetch("t-exc", _f) is None
+        assert len(calls) == 2
+
+    def test_recovers_after_transient_failure(self, monkeypatch):
+        import services.hashrate_market as m
+        monkeypatch.setattr(m, "_FETCH_RETRIES", 2)
+        monkeypatch.setattr(m, "_FETCH_BACKOFF_BASE", 0.0)
+        calls = []
+
+        def _f():
+            calls.append(1)
+            if len(calls) < 3:
+                raise RuntimeError("429-ish transient")
+            return self._offer()
+
+        clear_fetch_cache()
+        offer = _cached_fetch("t-recover", _f)
+        assert offer is not None
+        assert len(calls) == 3  # 2 failures + success on 3rd attempt
+
+    def test_failed_result_cached_short_ttl(self, monkeypatch):
+        """A None result is cached for _FETCH_CACHE_EMPTY_TTL only — the
+        second call within TTL is served from cache (no extra fetches)."""
+        import services.hashrate_market as m
+        monkeypatch.setattr(m, "_FETCH_RETRIES", 0)
+        monkeypatch.setattr(m, "_FETCH_CACHE_EMPTY_TTL", 60)
+        calls = []
+
+        def _f():
+            calls.append(1)
+            return None
+
+        clear_fetch_cache()
+        assert _cached_fetch("t-short", _f) is None
+        assert _cached_fetch("t-short", _f) is None
+        assert len(calls) == 1  # second call hit the cache
+
+    def test_success_result_cached_full_ttl(self, monkeypatch):
+        import services.hashrate_market as m
+        monkeypatch.setattr(m, "_FETCH_RETRIES", 0)
+        monkeypatch.setattr(m, "_FETCH_CACHE_TTL", 60)
+        calls = []
+
+        def _f():
+            calls.append(1)
+            return self._offer()
+
+        clear_fetch_cache()
+        assert _cached_fetch("t-full", _f) is not None
+        assert _cached_fetch("t-full", _f) is not None
+        assert len(calls) == 1
+
+    def test_backoff_sleeps_between_retries(self, monkeypatch):
+        """Linear backoff: sleep = _FETCH_BACKOFF_BASE * attempt before
+        each retry."""
+        import services.hashrate_market as m
+        monkeypatch.setattr(m, "_FETCH_RETRIES", 2)
+        monkeypatch.setattr(m, "_FETCH_BACKOFF_BASE", 0.5)
+        sleeps = []
+        monkeypatch.setattr(m.time, "sleep", lambda s: sleeps.append(s))
+        calls = []
+
+        def _f():
+            calls.append(1)
+            return None
+
+        clear_fetch_cache()
+        assert _cached_fetch("t-sleep", _f) is None
+        assert sleeps == [0.5, 1.0]
 
 
 # ══════════════════════════════════════════════════════════════════════

@@ -721,3 +721,99 @@ class TestPollOnceWebhook:
 
         polling.poll_once()
         assert not mock_post.called, "Webhook POST should not fire without URL"
+
+
+class TestPollOnceDerivedHashrate:
+    """FENIX E1 (P1): worker hashrate is derived when the pool reports 0.
+
+    When parasite reports worker hashrate 0 (or missing) while shares are
+    flowing, poll_once must fall back to the per-share instantaneous
+    hashrate math (share_calc_history) or the pool workSinceLastBlock delta,
+    and write the derived value into the worker dict so the snapshot row,
+    /api/snapshot worker payload and KPI all show a real number.
+    """
+
+    def _zero_hr_config(self, config):
+        """Wrap fetch_json so the worker reports hashrate 0."""
+        original_fetch = config.fetch_json
+
+        def patched_fetch(url, timeout=10):
+            data = original_fetch(url, timeout)
+            if "user/" in url and data:
+                data = dict(data)
+                data["workerData"] = [dict(w) for w in data.get("workerData", [])]
+                for w in data["workerData"]:
+                    w["hashrate"] = 0
+            return data
+
+        config.fetch_json = patched_fetch
+
+    def test_derives_from_share_calc_history(self, config, mock_state, db_conn):
+        """Worker hashrate 0 + share_calc_history → derived value in snapshot + worker dict."""
+        from services import polling
+
+        self._zero_hr_config(config)
+
+        # Seed per-share instantaneous hashrate history (as if shares flowed)
+        mock_state.timeline_state["share_calc_history"] = [
+            {"ts": 1, "instantaneous_hr_hps": 1e12},
+            {"ts": 2, "instantaneous_hr_hps": 3e12},
+            {"ts": 3, "instantaneous_hr_hps": 2e12},
+        ]
+
+        if hasattr(polling.poll_once, '_alert_seen'):
+            delattr(polling.poll_once, '_alert_seen')
+
+        polling.poll_once()
+
+        snap = mock_state.latest_snapshot
+        assert snap["worker"]["hashrate"] > 0, "derived hashrate should replace reported 0"
+        assert snap["worker"].get("hashrate_source") == "shares"
+        assert snap["worker"].get("hashrate_derived") is True
+
+        # KPI reads snap.worker.hashrate → same derived value
+        c = db_conn.cursor()
+        c.execute("SELECT worker_hashrate FROM snapshots ORDER BY ts DESC LIMIT 1")
+        row = c.fetchone()
+        assert row["worker_hashrate"] == snap["worker"]["hashrate"]
+
+    def test_derives_from_work_delta(self, config, mock_state):
+        """No share history + pool workSinceLastBlock delta → derived from work_delta."""
+        from services import polling
+
+        self._zero_hr_config(config)
+
+        # No share history; pool work delta across polls
+        mock_state.timeline_state["share_calc_history"] = []
+        mock_state.latest_snapshot["pool"] = {
+            "hashrate": 161.6e15,
+            "workSinceLastBlock": 1.4e14,
+            "workers": 1200,
+        }
+        # current pool fetch returns workSinceLastBlock 1.5e14 → delta 1e13
+
+        if hasattr(polling.poll_once, '_alert_seen'):
+            delattr(polling.poll_once, '_alert_seen')
+
+        polling.poll_once()
+
+        snap = mock_state.latest_snapshot
+        assert snap["worker"]["hashrate"] > 0
+        assert snap["worker"].get("hashrate_source") == "work_delta"
+
+    def test_reported_positive_hashrate_kept(self, config, mock_state, db_conn):
+        """A healthy reported hashrate is NOT overridden (regression guard)."""
+        from services import polling
+
+        mock_state.timeline_state["share_calc_history"] = [
+            {"ts": 1, "instantaneous_hr_hps": 1e12},
+        ]
+
+        if hasattr(polling.poll_once, '_alert_seen'):
+            delattr(polling.poll_once, '_alert_seen')
+
+        polling.poll_once()
+
+        snap = mock_state.latest_snapshot
+        assert snap["worker"]["hashrate"] == 219e12  # unchanged
+        assert snap["worker"].get("hashrate_derived") is None

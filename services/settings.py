@@ -27,6 +27,8 @@ DEFAULT_SETTINGS = {
     "webhook_url": "",
     "webhook_min_severity": "WARN",
     "show_test_alerts": "0",
+    "mrr_api_key": "",
+    "mrr_api_secret": "",
 }
 
 _settings_cache = None

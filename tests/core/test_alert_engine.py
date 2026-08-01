@@ -29,7 +29,8 @@ def alert_engine(db_path):
             alert_type TEXT DEFAULT 'threshold',
             is_acknowledged INTEGER DEFAULT 0,
             active INTEGER DEFAULT 1,
-            meta TEXT DEFAULT '{}'
+            meta TEXT DEFAULT '{}',
+            tenant_id TEXT DEFAULT 'default'
         )"""
     )
     c.execute(
@@ -39,7 +40,8 @@ def alert_engine(db_path):
             alert_type TEXT NOT NULL,
             device_id TEXT DEFAULT '',
             severity TEXT NOT NULL,
-            action_taken TEXT DEFAULT ''
+            action_taken TEXT DEFAULT '',
+            tenant_id TEXT DEFAULT 'default'
         )"""
     )
     conn.commit()
@@ -63,7 +65,8 @@ def automation_engine(db_path):
             action_command TEXT NOT NULL,
             action_parameters TEXT DEFAULT '{}',
             is_enabled INTEGER DEFAULT 1,
-            min_interval_seconds INTEGER DEFAULT 60
+            min_interval_seconds INTEGER DEFAULT 60,
+            tenant_id TEXT DEFAULT 'default'
         )"""
     )
     c.execute(
@@ -73,7 +76,8 @@ def automation_engine(db_path):
             alert_type TEXT NOT NULL,
             device_id TEXT DEFAULT '',
             severity TEXT NOT NULL,
-            action_taken TEXT DEFAULT ''
+            action_taken TEXT DEFAULT '',
+            tenant_id TEXT DEFAULT 'default'
         )"""
     )
     c.execute(
@@ -144,7 +148,8 @@ def _ensure_alert_rules_table(db_path):
         device_id TEXT DEFAULT NULL,
         model TEXT DEFAULT NULL,
         enabled INTEGER DEFAULT 1,
-        cooldown_seconds INTEGER DEFAULT 300
+        cooldown_seconds INTEGER DEFAULT 300,
+        tenant_id TEXT DEFAULT 'default'
     )""")
     conn.commit()
     conn.close()

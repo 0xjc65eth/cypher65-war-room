@@ -97,16 +97,22 @@ class CgminerAdapter(BaseAdapter):
 
         # Temperature from stats (per-chain)
         temp = None
+        vr_temp = None
         if stats and "STATS" in stats:
             stats_list = stats["STATS"]
             if isinstance(stats_list, list) and len(stats_list) > 1:
                 temp = stats_list[1].get("temp2_0", stats_list[1].get("temp", None))
+                # Fase 5: VR/board temperature when the chain reports it.
+                vr_temp = stats_list[1].get("temp2_1", stats_list[1].get("temp2_2", None))
 
         return {
             "source": "cgminer_adapter",
             "timestamp": collected_at,
             "freshness": 0,
             "hashrate": hr,
+            # Fase 5: chip_temp = ASIC temp (same as temperature for cgminer)
+            "chip_temp": temp,
+            "vr_temp": vr_temp,
             "temperature": temp,
             "accepted_shares": accepted,
             "rejected_shares": rejected,

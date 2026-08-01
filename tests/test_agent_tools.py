@@ -359,8 +359,10 @@ class TestGetMrrListings:
         with patch("agents.solo_mining_advisor.tools.requests.get", return_value=mock_resp):
             result = get_mrr_listings(api_key="test_key", api_secret="test_secret")
 
-        # (price/hour 0.0000005 * 24 / 100 TH) * 1e6 = 0.12 BTC/PH/day
-        assert result["price_btc_per_ph_day"] == pytest.approx(0.12)
+        # (price/hour 0.0000005 * 24 / 100 TH) = 1.2e-7 BTC/TH/day
+        # per-PH/day = per-TH/day × PH_TO_TH(1000) = 1.2e-4 BTC/PH/day
+        assert result["price_btc_per_th_day"] == pytest.approx(1.2e-7)
+        assert result["price_btc_per_ph_day"] == pytest.approx(1.2e-4)
         assert result["total_listings"] == 2
         assert result["best_rig_name"] == "Antminer S21 Pro"
         assert "miningrigrentals.com" in result["source"]
@@ -385,8 +387,9 @@ class TestGetMrrListings:
         with patch("agents.solo_mining_advisor.tools.requests.get", return_value=mock_resp):
             result = get_mrr_listings(api_key="k", api_secret="s")
 
-        # price/hour 0.0000005 * 24 / 100 TH → 1.2e-7 BTC/TH/day → * 1e6 = 0.12 BTC/PH/day
-        assert result["price_btc_per_ph_day"] == pytest.approx(0.12)
+        # price/hour 0.0000005 * 24 / 100 TH → 1.2e-7 BTC/TH/day → per-PH ×1000 = 1.2e-4
+        assert result["price_btc_per_th_day"] == pytest.approx(1.2e-7)
+        assert result["price_btc_per_ph_day"] == pytest.approx(1.2e-4)
         assert result["best_rig_hash_th"] == 100
 
     def test_ph_unit_pricing(self):
@@ -409,8 +412,9 @@ class TestGetMrrListings:
         with patch("agents.solo_mining_advisor.tools.requests.get", return_value=mock_resp):
             result = get_mrr_listings(api_key="k", api_secret="s")
 
-        # price/hour 0.0000005 * 24 / 200 TH → 6e-8 BTC/TH/day → * 1e6 = 0.06 BTC/PH/day
-        assert result["price_btc_per_ph_day"] == pytest.approx(0.06)
+        # price/hour 0.0000005 * 24 / 200 TH → 6e-8 BTC/TH/day → per-PH ×1000 = 6e-5
+        assert result["price_btc_per_th_day"] == pytest.approx(6e-8)
+        assert result["price_btc_per_ph_day"] == pytest.approx(6e-5)
         assert result["best_rig_hash_th"] == 200
 
     def test_api_not_success(self):

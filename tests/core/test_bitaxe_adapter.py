@@ -37,6 +37,10 @@ class TestBitaxeAdapter:
         mock_response = Mock()
         mock_response.json.return_value = {
             "hashRate": 1234567890,
+            "hashRate1m": 1200000000,
+            "hashRate5m": 1180000000,
+            "hashRate10m": 1170000000,
+            "hashRate1hr": 1150000000,
             "temp": 75,
             "temp2": 70,
             "vrTemp": 68,
@@ -72,6 +76,13 @@ class TestBitaxeAdapter:
         assert telemetry["source"] == "bitaxe_adapter"
         assert telemetry["stub"] is False
         assert telemetry["hashrate"] == 1234567890
+        # Fase 5: hashrate windows (hashRate10m read directly; 5m never
+        # promoted to 10m — Honest Telemetry)
+        assert telemetry["hashrate_1m"] == 1200000000
+        assert telemetry["hashrate_10m"] == 1170000000
+        assert telemetry["hashrate_1h"] == 1150000000
+        # Fase 5: chip temp falls back to main temp when tempChip absent
+        assert telemetry["chip_temp"] == 75
         assert telemetry["temperature"] == 75
         assert telemetry["temperature_2"] == 70
         assert telemetry["vr_temp"] == 68
@@ -89,6 +100,7 @@ class TestBitaxeAdapter:
         assert telemetry["stale_shares"] == 1
         assert telemetry["pool_difficulty"] == 65536
         assert telemetry["mining_paused"] is False
+        assert telemetry["pool_status"] == "CONNECTED"
         assert telemetry["pool"] == {"url": "pool.example.com", "port": 3333, "user": "worker.001"}
         assert telemetry["worker"] == "worker.001"
         assert telemetry["hostname"] == "bitaxe-001"
@@ -114,6 +126,31 @@ class TestBitaxeAdapter:
 
         assert telemetry is not None
         assert telemetry["stale_shares"] == 0
+
+    def test_get_telemetry_missing_windows_are_none(self):
+        """Fase 5: when the firmware does not expose hash-rate windows, the
+        fields are None (serialization turns them into NOT AVAILABLE)."""
+        device = Device(name="Bitaxe", model="Bitaxe Max", ip="192.168.1.100")
+        adapter = BitaxeAdapter(device)
+
+        mock_response = Mock()
+        mock_response.json.return_value = {
+            "hashRate": 1e12,
+            "temp": 60,
+            "vrTemp": 55,
+            "miningPaused": True,
+        }
+        mock_response.raise_for_status = Mock()
+
+        with patch("core.adapters.bitaxe_adapter.requests.get", return_value=mock_response):
+            telemetry = adapter.get_telemetry()
+
+        assert telemetry is not None
+        assert telemetry["hashrate_1m"] is None
+        assert telemetry["hashrate_10m"] is None
+        assert telemetry["hashrate_1h"] is None
+        assert telemetry["pool_status"] == "PAUSED"
+        assert telemetry["chip_temp"] == 60
 
     def test_get_telemetry_offline(self):
         device = Device(name="Bitaxe", model="Bitaxe Max", ip="192.168.1.100")

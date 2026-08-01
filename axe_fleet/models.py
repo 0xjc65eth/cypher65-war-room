@@ -59,6 +59,10 @@ TELEMETRY_SCHEMA = {
     "hashrate_hs": 0,         # H/s
     "hashrate_str": "",       # formatted (e.g. "1.21 TH/s")
     "expected_hashrate": 0,   # H/s (from ASIC config)
+    # Fase 5: hashrate windows (H/s) — None/0 when firmware does not expose them
+    "hashrate_1m": None,      # H/s 1-minute average
+    "hashrate_10m": None,     # H/s 10-minute average
+    "hashrate_1h": None,      # H/s 1-hour average
     "temperature": None,      # °C (board temp)
     "temp_asic": None,        # °C (ASIC junction temp, if available)
     "temp_vreg": None,        # °C (voltage regulator temp)

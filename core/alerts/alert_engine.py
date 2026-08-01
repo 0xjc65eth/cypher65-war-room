@@ -28,6 +28,7 @@ class AlertRule:
     model: Optional[str] = None
     enabled: bool = True
     cooldown_seconds: int = 300
+    tenant_id: str = "default"  # Fase 4 · B2
 
 
 @dataclass
@@ -40,6 +41,7 @@ class Alert:
     alert_type: str = "threshold"
     is_acknowledged: bool = False
     meta: Dict[str, Any] = field(default_factory=dict)
+    tenant_id: str = "default"  # Fase 4 · B2
 
 
 class AlertEngine:
@@ -76,13 +78,16 @@ class AlertEngine:
         self._last_fired: Dict[str, int] = {}
         self._rules: List[AlertRule] = list(self.DEFAULT_RULES)
 
-    def _load_rules(self) -> List[AlertRule]:
+    def _load_rules(self, tenant_id: str = "") -> List[AlertRule]:
         try:
             import sqlite3
             conn = sqlite3.connect(self.db_path)
             conn.row_factory = sqlite3.Row
             c = conn.cursor()
-            c.execute("SELECT * FROM alert_rules WHERE enabled=1")
+            if tenant_id:
+                c.execute("SELECT * FROM alert_rules WHERE enabled=1 AND tenant_id=?", (tenant_id,))
+            else:
+                c.execute("SELECT * FROM alert_rules WHERE enabled=1")
             rows = c.fetchall()
             conn.close()
             if not rows:
@@ -101,6 +106,7 @@ class AlertEngine:
                     model=r["model"],
                     enabled=bool(r["enabled"]),
                     cooldown_seconds=int(r["cooldown_seconds"]),
+                    tenant_id=r["tenant_id"] if "tenant_id" in r.keys() else "default",
                 ))
             return rules
         except Exception as e:
@@ -214,11 +220,14 @@ class AlertEngine:
             conn = sqlite3.connect(self.db_path)
             c = conn.cursor()
             for a in alerts:
+                # active=1 explicit: the legacy alerts table's default is 0,
+                # so relying on the schema default would make alerts invisible
+                # to /api/alerts (which filters WHERE active=1).
                 c.execute(
-                    """INSERT INTO alerts (ts, severity, category, message, device_id, alert_type, is_acknowledged, meta)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                    """INSERT INTO alerts (ts, severity, category, message, device_id, alert_type, is_acknowledged, active, meta, tenant_id)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)""",
                     (a.ts, a.severity, a.category, a.message, a.device_id or "", a.alert_type,
-                     1 if a.is_acknowledged else 0, json.dumps(a.meta)),
+                     1 if a.is_acknowledged else 0, json.dumps(a.meta), a.tenant_id or "default"),
                 )
             conn.commit()
             conn.close()
@@ -233,14 +242,15 @@ class AlertEngine:
             c = conn.cursor()
             for a in alerts:
                 c.execute(
-                    """INSERT INTO alert_history (ts, alert_type, device_id, severity, action_taken)
-                    VALUES (?, ?, ?, ?, ?)""",
+                    """INSERT INTO alert_history (ts, alert_type, device_id, severity, action_taken, tenant_id)
+                    VALUES (?, ?, ?, ?, ?, ?)""",
                     (
                         a.ts,
                         a.alert_type or "threshold",
                         a.device_id or "",
                         a.severity,
                         a.message,
+                        a.tenant_id or "default",
                     ),
                 )
             conn.commit()

@@ -3,6 +3,19 @@ CYPHER65 // Export & Config routes
 ===================================
 Flask Blueprint for CSV/JSON exports and config backup/restore.
 Extracted from app.py — Phase 2a of P0.4 refactoring.
+
+⚠️ DEPRECATED — DO NOT EDIT (docs/EXECUTION_PLAN.md · Fase 2)
+============================================================
+This blueprint is NEVER registered: export/backup/restore are already
+handled directly in app.py. This file is kept only as a signature reference
+for the Fase 6 monolith refactor, where these routes migrate OUT of app.py
+INTO this blueprint.
+
+- Do NOT edit, extend, or import this module until Fase 6 starts.
+- Editing here has ZERO effect on the running app (duplicate code only).
+- Fase 6: remove the @app.route versions, then register this blueprint.
+- Quick dead-code check (avoids self-match — file lives in routes/):
+  `grep -rn "export_routes" app.py services/ axe_fleet/ core/` → must output nothing.
 """
 import json
 import time

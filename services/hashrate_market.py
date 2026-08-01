@@ -24,6 +24,7 @@ BTC_BLOCK_REWARD = 3.125
 BLOCKS_PER_DAY = 144
 DEFAULT_NETWORK_HASHRATE = 6e20  # ~600 EH/s fallback
 DEFAULT_RENTAL_HASHRATE_TH = 1000.0  # 1 PH — used when provider does not expose size
+PH_TO_TH = 1000.0  # 1 PH = 1000 TH — per-PH/day → per-TH/day conversion
 
 
 @dataclass
@@ -36,6 +37,8 @@ class NormalizedOffer:
     duration_days: float
     fee_pct: float
     algorithm: str
+    source: str = ""         # origin label: braiins|mrr|nicehash|kissmyhash|parasite|derived
+    estimated: bool = False  # True → price is derived/estimated, not a live quote
     meta: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
@@ -56,8 +59,8 @@ def fetch_braiins_offer() -> Optional[NormalizedOffer]:
     if price_per_ph_day <= 0:
         return None
 
-    # price_btc_per_ph_day -> BTC/TH/day
-    price_per_th_day = price_per_ph_day / 1_000_000.0
+    # price_btc_per_ph_day -> BTC/TH/day (1 PH = 1000 TH)
+    price_per_th_day = price_per_ph_day / PH_TO_TH
 
     return NormalizedOffer(
         provider="braiins",
@@ -66,6 +69,7 @@ def fetch_braiins_offer() -> Optional[NormalizedOffer]:
         duration_days=1.0,
         fee_pct=0.0,
         algorithm="sha256",
+        source="braiins",
         meta={
             "source": "hashpower.braiins.com",
             "available_asks": data.get("available_asks"),
@@ -86,7 +90,7 @@ def fetch_mrr_offer() -> Optional[NormalizedOffer]:
     if price_per_ph_day <= 0:
         return None
 
-    price_per_th_day = price_per_ph_day / 1_000_000.0
+    price_per_th_day = price_per_ph_day / PH_TO_TH
     hashrate_th = _safe_float(data.get("best_rig_hash_th"), DEFAULT_RENTAL_HASHRATE_TH)
     if hashrate_th <= 0:
         hashrate_th = DEFAULT_RENTAL_HASHRATE_TH
@@ -98,6 +102,7 @@ def fetch_mrr_offer() -> Optional[NormalizedOffer]:
         duration_days=1.0,
         fee_pct=0.0,
         algorithm=data.get("algo", "sha256"),
+        source="mrr",
         meta={
             "source": "miningrigrentals.com",
             "rig_name": data.get("best_rig_name"),
@@ -116,8 +121,8 @@ def fetch_nicehash_offer() -> Optional[NormalizedOffer]:
     if price_per_ph_day <= 0:
         return None
 
-    # price_btc_per_ph_day -> BTC/TH/day
-    price_per_th_day = price_per_ph_day / 1_000_000.0
+    # price_btc_per_ph_day -> BTC/TH/day (1 PH = 1000 TH)
+    price_per_th_day = price_per_ph_day / PH_TO_TH
 
     # Speed in PH/s -> TH/s
     hashrate_ph = _safe_float(data.get("best_order_speed_ph"), 0)
@@ -130,6 +135,7 @@ def fetch_nicehash_offer() -> Optional[NormalizedOffer]:
         duration_days=1.0,
         fee_pct=0.0,
         algorithm="sha256",
+        source="nicehash",
         meta={
             "source": "api2.nicehash.com",
             "available_orders": data.get("available_orders"),
@@ -155,10 +161,11 @@ def fetch_kissmyhash_offer() -> Optional[NormalizedOffer]:
                 return NormalizedOffer(
                     provider="kissmyhash",
                     hashrate=DEFAULT_RENTAL_HASHRATE_TH,
-                    price_per_th_day=price_btc_per_ph / 1_000_000.0,
+                    price_per_th_day=price_btc_per_ph / PH_TO_TH,
                     duration_days=1.0,
                     fee_pct=0.0,
                     algorithm="sha256",
+                    source="kissmyhash",
                     meta={"source": "app.kissmyhash.com", "data": data},
                 )
     except Exception:
@@ -175,6 +182,8 @@ def fetch_kissmyhash_offer() -> Optional[NormalizedOffer]:
                 duration_days=nh.duration_days,
                 fee_pct=nh.fee_pct,
                 algorithm=nh.algorithm,
+                source="derived",
+                estimated=True,
                 meta={
                     "source": "derived_from_nicehash",
                     "nicehash_price": nh.price_per_th_day,
@@ -187,7 +196,7 @@ def fetch_kissmyhash_offer() -> Optional[NormalizedOffer]:
     return None
 
 
-def fetch_parasite_offer() -> Optional[NormalizedOffer]:
+def fetch_parasite_offer(network_hashrate: Optional[float] = None) -> Optional[NormalizedOffer]:
     """Fetch a 'refinery' rental offer from Parasite Space pool.
     Parasite is a mining pool (not a marketplace), but we model their
     pool-fee-based mining as a 'rental' where cost = pool fee + opportunity cost.
@@ -206,7 +215,8 @@ def fetch_parasite_offer() -> Optional[NormalizedOffer]:
         # Cost = (pool_fee / pool_hashrate_share) * daily_reward
         # Simplified: 1% fee on estimated daily BTC = 0.01 * 144 * 3.125 * (your_hr / net_hr)
         pool_hr_hs = pool_hr  # already in H/s from API
-        net_hr = 6e20  # ~600 EH/s
+        # Use the real network hashrate when known (snapshot), else fall back.
+        net_hr = network_hashrate if network_hashrate and network_hashrate > 0 else DEFAULT_NETWORK_HASHRATE
         share_of_network = pool_hr_hs / net_hr
         daily_pool_revenue_btc = share_of_network * 144 * 3.125
 
@@ -221,6 +231,8 @@ def fetch_parasite_offer() -> Optional[NormalizedOffer]:
             duration_days=1.0,
             fee_pct=fee_pct,
             algorithm="sha256",
+            source="parasite",
+            estimated=True,
             meta={
                 "source": "parasite.space/api/pool-stats",
                 "pool_hashrate_hs": pool_hr_hs,
@@ -236,23 +248,88 @@ def fetch_parasite_offer() -> Optional[NormalizedOffer]:
         return None
 
 
-def fetch_all_offers() -> List[NormalizedOffer]:
-    """Fetch offers from all supported providers, isolating failures."""
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#  Module-level TTL cache (Fase 3)
+#  ── layered below app.py's _HASHRATE_MARKET_CACHE so every consumer
+#     (/api/hashrate-market, /api/opportunities/compare, /api/snapshot
+#     highlights) benefits from a short-lived in-memory cache without
+#     hammering the provider APIs on rapid polls.
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+_FETCH_CACHE: Dict[str, Dict[str, Any]] = {}
+_FETCH_CACHE_TTL = 60          # seconds — successful fetches
+_FETCH_CACHE_EMPTY_TTL = 15    # seconds — empty/errored fetches (retry sooner)
+# Fase 3 · P1: simple retry/backoff on transient provider failures (429/5xx).
+# The provider tools already surface HTTP errors as error-dicts → fetchers
+# return None, so we retry the whole fetch when it yields nothing, with a
+# short linear backoff. Bounded (1 retry) so we never hammer the APIs.
+_FETCH_RETRIES = 1             # extra attempts after the first
+_FETCH_BACKOFF_BASE = 0.15     # seconds — linear backoff before each retry
+
+
+def clear_fetch_cache() -> None:
+    """Drop all cached provider results (used by tests)."""
+    _FETCH_CACHE.clear()
+
+
+def _cached_fetch(key: str, fetcher: Any) -> Optional[NormalizedOffer]:
+    """Run ``fetcher`` and cache its result for a short TTL.
+
+    Empty results (None) get a shorter TTL so a transient provider outage
+    recovers quickly; successful results are kept for the full TTL.
+
+    Retry/backoff (Fase 3 · P1): a transient 429/5xx provider hiccup yields
+    None through the tools layer, so we retry the fetch up to ``_FETCH_RETRIES``
+    extra times with a short linear backoff before giving up. The TTL cache
+    above also bounds the request rate, preventing 429 loops.
+    """
+    now = time.time()
+    entry = _FETCH_CACHE.get(key)
+    if entry is not None:
+        ttl = _FETCH_CACHE_TTL if entry.get("value") is not None else _FETCH_CACHE_EMPTY_TTL
+        if now - entry.get("ts", 0) < ttl:
+            return entry["value"]
+
+    value = None
+    for attempt in range(_FETCH_RETRIES + 1):
+        try:
+            value = fetcher()
+            if value is not None:
+                break
+        except Exception as e:  # keep cache consistent on failure
+            log.warning("[hashrate_market] %s fetch failed (attempt %d/%d): %s",
+                        key, attempt + 1, _FETCH_RETRIES + 1, e)
+            value = None
+        if attempt < _FETCH_RETRIES:
+            time.sleep(_FETCH_BACKOFF_BASE * (attempt + 1))
+
+    # Record completion time, not the pre-fetch time, so backoff/slow
+    # fetches don't silently eat into the TTL.
+    _FETCH_CACHE[key] = {"ts": time.time(), "value": value}
+    return value
+
+
+def fetch_all_offers(network_hashrate: Optional[float] = None) -> List[NormalizedOffer]:
+    """Fetch offers from all supported providers, isolating failures.
+
+    Results are cached for a short TTL (_FETCH_CACHE) so rapid polls from
+    multiple endpoints don't hammer the provider APIs.
+    """
     offers: List[NormalizedOffer] = []
 
-    for name, fetcher in [
-        ("Braiins", fetch_braiins_offer),
-        ("MRR", fetch_mrr_offer),
-        ("NiceHash", fetch_nicehash_offer),
-        ("KissMyHash", fetch_kissmyhash_offer),
-        ("Parasite", fetch_parasite_offer),
+    for key, fetcher in [
+        ("braiins", fetch_braiins_offer),
+        ("mrr", fetch_mrr_offer),
+        ("nicehash", fetch_nicehash_offer),
+        ("kissmyhash", fetch_kissmyhash_offer),
+        ("parasite", lambda: fetch_parasite_offer(network_hashrate)),
     ]:
         try:
-            o = fetcher()
+            o = _cached_fetch(key, fetcher)
             if o:
                 offers.append(o)
         except Exception as e:
-            log.warning("[hashrate_market] %s fetch failed: %s", name, e)
+            log.warning("[hashrate_market] %s fetch failed: %s", key, e)
 
     return offers
 
@@ -332,7 +409,7 @@ def enrich_opportunity_dict(
     offer = NormalizedOffer(
         provider=opp.get("platform", "unknown"),
         hashrate=DEFAULT_RENTAL_HASHRATE_TH,
-        price_per_th_day=float(price) / 1_000_000.0,
+        price_per_th_day=float(price) / PH_TO_TH,
         duration_days=1.0,
         fee_pct=0.0,
         algorithm="sha256",
@@ -466,10 +543,12 @@ def build_highlights(
                 NormalizedOffer(
                     provider=provider,
                     hashrate=DEFAULT_RENTAL_HASHRATE_TH,
-                    price_per_th_day=price_per_ph_day / 1_000_000.0,
+                    price_per_th_day=price_per_ph_day / PH_TO_TH,
                     duration_days=1.0,
                     fee_pct=0.0,
                     algorithm="sha256",
+                    source=entry.get("source") or provider,
+                    estimated=bool(entry.get("estimated", False)),
                     meta={
                         "cached_ts": entry.get("ts"),
                         "label": entry.get("label", ""),

@@ -263,10 +263,23 @@ class AxeOSConnector:
         t["hashrate_hs"] = int(info.get("hashrate") or 0)
         t["expected_hashrate"] = int(info.get("hashrate") or 0)
 
+        # Fase 5: hashrate windows (H/s) — AxeOS exposes hashRate1m/10m/1hr.
+        # Honest Telemetry: hashRate5m is never promoted to hashrate_10m.
+        hr_1m = info.get("hashRate1m")
+        hr_10m = info.get("hashRate10m")
+        hr_1h = info.get("hashRate1hr") or info.get("hashRate1h")
+        t["hashrate_1m"] = int(hr_1m) if hr_1m is not None else None
+        t["hashrate_10m"] = int(hr_10m) if hr_10m is not None else None
+        t["hashrate_1h"] = int(hr_1h) if hr_1h is not None else None
+
         # Temperature
         t["temperature"] = info.get("temp")
         if t["temperature"] is None:
             t["temperature"] = info.get("temperature")
+
+        # Fase 5: ASIC + VR temperatures
+        t["temp_asic"] = info.get("tempChip") or info.get("temp_asic")
+        t["temp_vreg"] = info.get("vrTemp") or info.get("temp2") or info.get("temp_vreg")
 
         # Fan
         t["fan_speed"] = info.get("fanSpeed")

@@ -53,6 +53,17 @@ class BitaxeAdapter(BaseAdapter):
                 float,
                 0,
             )
+            # Fase 5 · janelas de hashrate (AxeOS / ESP-Miner): hashRate1m,
+            # hashRate10m, hashRate1hr. Sem valor → None (a serialização
+            # preenche NOT AVAILABLE). NOTA: hashRate5m NÃO é promovido a
+            # hashRate10m — Honest Telemetry: um janela de 5m não é 10m.
+            hashrate_1m = self._safe_number(data.get("hashRate1m"), float, None)
+            hashrate_10m = self._safe_number(data.get("hashRate10m"), float, None)
+            hashrate_1h = self._safe_number(
+                data.get("hashRate1hr") if data.get("hashRate1hr") is not None else data.get("hashRate1h"),
+                float,
+                None,
+            )
             temperature = self._safe_number(
                 data.get("temp")
                 if data.get("temp") is not None
@@ -62,6 +73,12 @@ class BitaxeAdapter(BaseAdapter):
             )
             temperature_2 = self._safe_number(data.get("temp2"), float, 0)
             vr_temp = self._safe_number(data.get("vrTemp"), float, 0)
+            # Fase 5 · chip_temp = temperatura do ASIC (temp principal)
+            chip_temp = self._safe_number(
+                data.get("tempChip") if data.get("tempChip") is not None else temperature,
+                float,
+                None,
+            )
             voltage = self._safe_number(
                 data.get("voltage")
                 if data.get("voltage") is not None
@@ -122,6 +139,13 @@ class BitaxeAdapter(BaseAdapter):
             worker = str(data.get("stratumUser") or data.get("worker") or "")
             hostname = str(data.get("hostname") or "")
             wifi_rssi = self._safe_number(data.get("wifiRSSI"), int, 0)
+            # Fase 5 · pool status derivado (CONNECTED / PAUSED / NOT CONFIGURED)
+            if mining_paused:
+                pool_status = "PAUSED"
+            elif pool_url:
+                pool_status = "CONNECTED"
+            else:
+                pool_status = "NOT CONFIGURED"
 
             # Build pool/worker summary objects
             pool = {
@@ -137,8 +161,12 @@ class BitaxeAdapter(BaseAdapter):
                 "freshness": 0,
                 # Core telemetry
                 "hashrate": hashrate,
+                "hashrate_1m": hashrate_1m,
+                "hashrate_10m": hashrate_10m,
+                "hashrate_1h": hashrate_1h,
                 "temperature": temperature,
                 "temperature_2": temperature_2,
+                "chip_temp": chip_temp,
                 "vr_temp": vr_temp,
                 "voltage": voltage,
                 "core_voltage_actual": core_voltage_actual,
@@ -156,6 +184,7 @@ class BitaxeAdapter(BaseAdapter):
                 "stale_shares": stale_shares,
                 "pool_difficulty": pool_difficulty,
                 "mining_paused": mining_paused,
+                "pool_status": pool_status,
                 # Pool / worker
                 "pool": pool,
                 "worker": worker,

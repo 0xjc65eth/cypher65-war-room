@@ -1,14 +1,14 @@
 /* ════════════════════════════════════════════════════════════════════════
-   CYPHER65 · SERVICE WORKER · v2 — cache busted
+   CYPHER65 · SERVICE WORKER · v5 — cache busted
    ════════════════════════════════════════════════════════════════════════
    - Caches static assets on install for offline resilience
-   - VERSION = 2026-07-27 (bump this when CSS/JS/HTML changes)
+   - VERSION = 2026-08-01 (bump this when CSS/JS/HTML changes)
    - Listens for 'show-notification' messages from the client to display
      OS-level notifications for critical mining alerts
    - Clicking a notification focuses / opens the dashboard
    ════════════════════════════════════════════════════════════════════════ */
 
-const CACHE_NAME = 'cypher65-v4';
+const CACHE_NAME = 'cypher65-v5';
 const ASSETS_TO_CACHE = [
   '/',
   '/static/style.css',

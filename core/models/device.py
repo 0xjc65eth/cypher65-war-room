@@ -19,6 +19,42 @@ class DeviceStatus(str, Enum):
     MAINTENANCE = "maintenance"
 
 
+# ── Fase 5 · telemetria completa (NOT AVAILABLE explícito) ──────────────
+# Campos canônicos que todo device deve expor na telemetria. Quando o
+# hardware/firmware não fornece um valor, a serialização preenche com
+# NOT_AVAILABLE — a UI nunca adivinha um número.
+NOT_AVAILABLE = "NOT AVAILABLE"
+
+TELEMETRY_KEYS = (
+    "chip_temp",     # °C temperatura do ASIC/junction
+    "vr_temp",       # °C temperatura do voltage regulator
+    "temperature",   # °C temperatura da placa
+    "hashrate",      # H/s atual
+    "hashrate_1m",   # H/s média 1 minuto
+    "hashrate_10m",  # H/s média 10 minutos
+    "hashrate_1h",   # H/s média 1 hora
+    "fan_rpm",
+    "voltage",
+    "power",
+    "pool_status",
+)
+
+
+def normalize_telemetry(telemetry: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """Fill missing canonical telemetry keys with the explicit NOT_AVAILABLE
+    marker so consumers (API + UI) never see empty/guessed values.
+
+    Returns None when telemetry is None (device offline / no snapshot).
+    """
+    if telemetry is None:
+        return None
+    out = dict(telemetry)
+    for key in TELEMETRY_KEYS:
+        if key not in out or out[key] is None:
+            out[key] = NOT_AVAILABLE
+    return out
+
+
 @dataclass
 class Device:
     id: str = field(default_factory=lambda: str(uuid4()))
@@ -34,6 +70,7 @@ class Device:
     created_at: datetime = field(default_factory=_utc_now)
     updated_at: datetime = field(default_factory=_utc_now)
     metadata: Dict[str, Any] = field(default_factory=dict)
+    tenant_id: str = "default"  # Fase 4 · B2: tenant isolation
     current_telemetry: Optional[Dict[str, Any]] = None
     # Health/diagnostic summary (computed on demand; not persisted independently)
     health_score: float = 100.0

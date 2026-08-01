@@ -392,6 +392,140 @@ body {
   margin-bottom: 32px;
   scroll-margin-top: 64px;
 }
+
+/* ── LEARNING · Bitcoin Academy ── */
+.learning-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin: 12px 0 4px;
+}
+.learning-books {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 14px;
+  margin-top: 10px;
+}
+.learning-category {
+  background: var(--bg-tertiary, #141416);
+  border: 1px solid var(--border-subtle, #2a2a2e);
+  border-radius: 6px;
+  padding: 12px;
+}
+.learning-category__title {
+  font-size: 11px;
+  color: var(--accent-cyan, #06d6f0);
+  letter-spacing: 0.05em;
+  margin: 0 0 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+.book-card {
+  border: 1px solid var(--border-subtle, #2a2a2e);
+  border-left: 2px solid var(--green, #00C853);
+  background: var(--bg-secondary, #1A1B1D);
+  border-radius: 4px;
+  padding: 10px 12px;
+  margin-bottom: 10px;
+  transition: border-color 0.15s ease, transform 0.15s ease;
+}
+.book-card:hover {
+  border-color: var(--green, #00C853);
+  transform: translateX(2px);
+}
+.book-card__title {
+  font-size: 12px;
+  color: var(--text-primary, #f0f0f0);
+  font-weight: 600;
+}
+.book-card__author {
+  font-size: 10px;
+  color: var(--green-dim, #7dd8a0);
+  margin: 2px 0 6px;
+}
+.book-card__desc {
+  font-size: 10px;
+  line-height: 1.6;
+  color: var(--text-secondary, #cfcfcf);
+  margin-bottom: 8px;
+}
+.book-card__link {
+  font-size: 10px;
+  color: var(--accent-cyan, #06d6f0);
+  text-decoration: none;
+  border-bottom: 1px dashed rgba(6,214,240,0.4);
+}
+.book-card__link:hover {
+  color: var(--green, #00C853);
+  border-bottom-color: var(--green, #00C853);
+}
+.learning-whitepaper {
+  border: 1px solid var(--border-subtle, #2a2a2e);
+  border-radius: 6px;
+  background: var(--bg-tertiary, #141416);
+  margin: 12px 0;
+  max-width: 720px;
+}
+.learning-whitepaper__summary {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--accent-gold, #d4a017);
+  cursor: pointer;
+  padding: 10px 12px;
+  letter-spacing: 0.04em;
+  user-select: none;
+}
+.learning-whitepaper__summary:hover {
+  color: var(--green, #00C853);
+}
+.learning-whitepaper__body {
+  padding: 0 14px 12px;
+  border-top: 1px solid var(--border-subtle, #2a2a2e);
+}
+.learning-whitepaper__h {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--accent-cyan, #06d6f0);
+  margin: 12px 0 4px;
+  letter-spacing: 0.03em;
+}
+.learning-whitepaper__p {
+  font-size: 10px;
+  line-height: 1.75;
+  color: var(--text-secondary, #cfcfcf);
+  margin: 0 0 8px;
+}
+.learning-sponsor {
+  border: 1px solid var(--accent-gold, #d4a017);
+  border-radius: 8px;
+  background: linear-gradient(135deg, rgba(212,160,23,0.10), rgba(212,160,23,0.02));
+  padding: 18px;
+  text-align: center;
+}
+.learning-sponsor__badge {
+  display: inline-block;
+  font-size: 9px;
+  letter-spacing: 0.18em;
+  color: #1a1a1a;
+  background: var(--accent-gold, #d4a017);
+  padding: 2px 8px;
+  border-radius: 2px;
+  font-weight: 700;
+  margin-bottom: 8px;
+}
+.learning-sponsor__title {
+  font-size: 15px;
+  color: var(--text-primary, #f0f0f0);
+  font-weight: 700;
+  margin-bottom: 6px;
+}
+.learning-sponsor__desc {
+  font-size: 10.5px;
+  color: var(--text-secondary, #cfcfcf);
+  max-width: 480px;
+  margin: 0 auto 12px;
+  line-height: 1.7;
+}
 .doc-section__title {
   font-size: 13px;
   color: var(--green, #00C853);
@@ -1108,6 +1242,32 @@ body {
   border-color: var(--green, #00C853) !important;
   color: var(--green, #00C853) !important;
 }
+
+/* ── Tenant auth button (Fase 4 · B1-frontend) ─────────────────────── */
+.topbar__actions .topbar__btn--auth {
+  font-size: 8px;
+  letter-spacing: 0.06em;
+  border-color: var(--cyan, #06d6f0);
+  color: var(--cyan, #06d6f0);
+  padding: 1px 6px;
+}
+.topbar__btn--auth:hover {
+  border-color: var(--cyan, #06d6f0) !important;
+  color: var(--cyan, #06d6f0) !important;
+  box-shadow: 0 0 6px rgba(6, 214, 240, 0.35);
+}
+.topbar__btn--auth.is-authed {
+  border-color: var(--green, #00C853);
+  color: var(--green, #00C853);
+}
+.topbar__btn--auth.is-authed:hover {
+  border-color: var(--green, #00C853) !important;
+  color: var(--green, #00C853) !important;
+}
+
+/* ── Auth modal status states ──────────────────────────────────────── */
+.modal__status--ok { color: var(--green, #00C853) !important; }
+.modal__status--err { color: var(--accent-red, #FF1744) !important; }
 .topbar__btn:hover {
   border-color: var(--green-dim);
   color: var(--green);
@@ -1457,6 +1617,9 @@ body {
 .prox-stat__val { font-size: var(--fs-sm); color: var(--text-primary); }
 .prox-stat__sub { font-size: 9px; color: var(--text-tertiary); }
 .prox-chart-wrap { padding: 4px; border: 1px solid var(--border-subtle); }
+/* Fixed size so _drawProximitySparkline never inherits a growing canvas
+   attribute as its CSS height (avoids layout inflation on retina/DPR). */
+#prox-sparkline { width: 100%; height: 28px; display: block; }
 .prox-chart-title { font-size: 8px; color: var(--text-tertiary); text-transform: uppercase; }
 .prox-ladder { padding: 4px; border: 1px solid var(--border-subtle); }
 .prox-ladder__title { font-size: 8px; color: var(--text-tertiary); text-transform: uppercase; margin-bottom: 2px; }
@@ -2561,8 +2724,18 @@ td { padding: 4px 8px; border-bottom: 1px solid var(--border-subtle); color: var
 .mkt-card--braiins { border-left: 3px solid #06d6f0; }
 .mkt-card--nicehash { border-left: 3px solid #a855f7; }
 .mkt-card--mrr { border-left: 3px solid #f59e0b; }
+.mkt-card__head { display: flex; align-items: center; flex-wrap: wrap; gap: 4px; }
 .mkt-card__provider { font-size: var(--fs-xs); color: var(--green); font-weight: 600; letter-spacing: 0.05em; }
+.mkt-card__src { font-size: 8px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; padding: 1px 4px; border: 1px solid var(--border-subtle); border-radius: 3px; color: var(--text-tertiary); }
+.mkt-card__src--braiins { color: #06d6f0; border-color: rgba(6, 214, 240, 0.45); }
+.mkt-card__src--nicehash { color: #a855f7; border-color: rgba(168, 85, 247, 0.45); }
+.mkt-card__src--mrr { color: #f59e0b; border-color: rgba(245, 158, 11, 0.45); }
+.mkt-card__src--kissmyhash { color: var(--green); border-color: var(--green-dim); }
+.mkt-card__src--parasite { color: #fb923c; border-color: rgba(251, 146, 60, 0.45); }
+.mkt-card__src--derived { color: #eab308; border-color: rgba(234, 179, 8, 0.45); }
+.mkt-card__est { font-size: 8px; font-weight: 700; letter-spacing: 0.06em; color: #eab308; }
 .mkt-card__price { font-size: var(--fs-sm); color: var(--text-primary); font-family: 'JetBrains Mono', monospace; }
+.mkt-card__usd { display: inline-block; font-size: 8px; font-weight: 400; color: var(--text-tertiary); opacity: 0.85; margin-left: 2px; }
 .mkt-card__detail { display: flex; flex-wrap: wrap; gap: 6px; font-size: 9px; color: var(--text-tertiary); }
 .mkt-card__detail span { white-space: nowrap; }
 .mkt-card__label { color: var(--text-tertiary); opacity: 0.7; }
@@ -2629,6 +2802,8 @@ td { padding: 4px 8px; border-bottom: 1px solid var(--border-subtle); color: var
 .axe-summary__val--green { color: var(--green); }
 .axe-summary__val--amber { color: var(--orange); }
 .axe-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 4px; }
+.axe-empty { padding: 20px; text-align: center; color: var(--text-muted); font-size: 12px; border: 1px dashed var(--border); border-radius: 6px; }
+.axe-empty__hint { margin-top: 8px; font-size: 11px; line-height: 1.5; color: var(--text-muted); opacity: .85; }
 .axe-card { padding: 6px; border: 1px solid var(--border-subtle); cursor: pointer; transition: border-color 0.2s, box-shadow 0.2s; }
 .axe-card:hover { border-color: var(--border-default); box-shadow: 0 0 0 1px rgba(255,255,255,0.04); }
 .axe-card--online    { border-left: 2px solid var(--green); }

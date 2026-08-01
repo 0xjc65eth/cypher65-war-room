@@ -9,6 +9,8 @@ from typing import Any, Dict
 
 from flask import Blueprint, jsonify, request
 
+from services.tenant import require_tenant
+
 alerts_bp = Blueprint("alerts", __name__, url_prefix="/api")
 
 VALID_OPS = {">", "<", ">=", "<=", "==", "!="}
@@ -46,27 +48,32 @@ def _row_to_alert(row) -> Dict[str, Any]:
 
 
 @alerts_bp.route("/alerts", methods=["GET"])
-def api_alerts():
-    """Return active alerts, optionally filtered by severity."""
+@require_tenant
+def api_alerts(tenant_id: str = ""):
+    """Return active alerts for the current tenant, optionally filtered by severity."""
     severity = request.args.get("severity")
     limit = int(request.args.get("limit", 80))
     conn = get_db()
     c = conn.cursor()
     if severity:
         c.execute(
-            "SELECT * FROM alerts WHERE active=1 AND severity=? ORDER BY ts DESC LIMIT ?",
-            (severity, limit),
+            "SELECT * FROM alerts WHERE active=1 AND severity=? AND tenant_id=? ORDER BY ts DESC LIMIT ?",
+            (severity, tenant_id or "default", limit),
         )
     else:
-        c.execute("SELECT * FROM alerts WHERE active=1 ORDER BY ts DESC LIMIT ?", (limit,))
+        c.execute(
+            "SELECT * FROM alerts WHERE active=1 AND tenant_id=? ORDER BY ts DESC LIMIT ?",
+            (tenant_id or "default", limit),
+        )
     rows = [_row_to_alert(r) for r in c.fetchall()]
     conn.close()
     return jsonify({"alerts": rows})
 
 
 @alerts_bp.route("/alerts/acknowledge", methods=["POST"])
-def api_acknowledge_alert():
-    """Acknowledge one or more alerts by ID."""
+@require_tenant
+def api_acknowledge_alert(tenant_id: str = ""):
+    """Acknowledge one or more alerts by ID (scoped to tenant)."""
     data = request.get_json(silent=True) or {}
     alert_ids = data.get("ids") or [data.get("id")]
     if not alert_ids or alert_ids == [None]:
@@ -75,9 +82,10 @@ def api_acknowledge_alert():
     conn = get_db()
     c = conn.cursor()
     placeholders = ",".join(["?"] * len(alert_ids))
+    tid = tenant_id or "default"
     c.execute(
-        f"UPDATE alerts SET is_acknowledged=1, active=0 WHERE id IN ({placeholders})",
-        tuple(alert_ids),
+        f"UPDATE alerts SET is_acknowledged=1, active=0 WHERE id IN ({placeholders}) AND tenant_id=?",
+        tuple(alert_ids) + (tid,),
     )
     conn.commit()
     conn.close()
@@ -85,31 +93,40 @@ def api_acknowledge_alert():
 
 
 @alerts_bp.route("/alerts/history", methods=["GET"])
-def api_alert_history():
-    """Return the full alert history/audit log."""
+@require_tenant
+def api_alert_history(tenant_id: str = ""):
+    """Return the tenant's alert history/audit log."""
     limit = int(request.args.get("limit", 200))
     device_id = request.args.get("device_id")
     conn = get_db()
     c = conn.cursor()
     if device_id:
         c.execute(
-            "SELECT * FROM alert_history WHERE device_id=? ORDER BY ts DESC LIMIT ?",
-            (device_id, limit),
+            "SELECT * FROM alert_history WHERE device_id=? AND tenant_id=? ORDER BY ts DESC LIMIT ?",
+            (device_id, tenant_id or "default", limit),
         )
     else:
-        c.execute("SELECT * FROM alert_history ORDER BY ts DESC LIMIT ?", (limit,))
+        c.execute(
+            "SELECT * FROM alert_history WHERE tenant_id=? ORDER BY ts DESC LIMIT ?",
+            (tenant_id or "default", limit),
+        )
     rows = [dict(r) for r in c.fetchall()]
     conn.close()
     return jsonify({"history": rows})
 
 
 @alerts_bp.route("/automation-rules", methods=["GET", "POST"])
-def api_automation_rules():
+@require_tenant
+def api_automation_rules(tenant_id: str = ""):
+    tid = tenant_id or "default"
     conn = get_db()
     c = conn.cursor()
 
     if request.method == "GET":
-        c.execute("SELECT * FROM automation_rules ORDER BY id DESC")
+        c.execute(
+            "SELECT * FROM automation_rules WHERE tenant_id=? ORDER BY id DESC",
+            (tid,),
+        )
         rows = []
         for r in c.fetchall():
             row = dict(r)
@@ -144,8 +161,8 @@ def api_automation_rules():
     c.execute(
         """INSERT INTO automation_rules
         (name, target_device_id, condition_metric, condition_operator,
-         condition_value, action_command, action_parameters, is_enabled, min_interval_seconds)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+         condition_value, action_command, action_parameters, is_enabled, min_interval_seconds, tenant_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             data["name"],
             data["target_device_id"],
@@ -156,6 +173,7 @@ def api_automation_rules():
             json.dumps(data.get("action_parameters", {})),
             int(data.get("is_enabled", True)),
             min_interval,
+            tid,
         ),
     )
     conn.commit()
@@ -165,12 +183,14 @@ def api_automation_rules():
 
 
 @alerts_bp.route("/automation-rules/<int:rule_id>", methods=["PUT", "DELETE"])
-def api_automation_rule(rule_id: int):
+@require_tenant
+def api_automation_rule(rule_id: int, tenant_id: str = ""):
+    tid = tenant_id or "default"
     conn = get_db()
     c = conn.cursor()
 
     if request.method == "DELETE":
-        c.execute("DELETE FROM automation_rules WHERE id=?", (rule_id,))
+        c.execute("DELETE FROM automation_rules WHERE id=? AND tenant_id=?", (rule_id, tid))
         conn.commit()
         conn.close()
         return jsonify({"success": True})
@@ -214,7 +234,8 @@ def api_automation_rule(rule_id: int):
         return jsonify({"success": False, "error": "no fields to update"}), 400
 
     values.append(rule_id)
-    c.execute(f"UPDATE automation_rules SET {','.join(fields)} WHERE id=?", tuple(values))
+    values.append(tid)
+    c.execute(f"UPDATE automation_rules SET {','.join(fields)} WHERE id=? AND tenant_id=?", tuple(values))
     conn.commit()
     conn.close()
     return jsonify({"success": True})

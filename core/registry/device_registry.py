@@ -39,9 +39,20 @@ class DeviceRegistry:
                 last_seen TEXT,
                 metadata TEXT,
                 created_at TEXT,
-                updated_at TEXT
+                updated_at TEXT,
+                tenant_id TEXT DEFAULT 'default'
             )
         """)
+        # ── Fase 4 · B2: migrate legacy DBs (pre-tenant_id) ──
+        # CREATE TABLE IF NOT EXISTS does NOT alter existing tables, so a DB
+        # created before B2 lacks the tenant_id column. Add it if missing;
+        # SQLite fills existing rows with the DEFAULT ('default').
+        try:
+            cols = [r[1] for r in cursor.execute("PRAGMA table_info(devices)").fetchall()]
+            if "tenant_id" not in cols:
+                cursor.execute("ALTER TABLE devices ADD COLUMN tenant_id TEXT DEFAULT 'default'")
+        except sqlite3.Error:
+            pass
         conn.commit()
         conn.close()
 
@@ -51,34 +62,56 @@ class DeviceRegistry:
         self._save_to_db(device)
         return device
 
-    def get_device(self, device_id: str) -> Optional[Device]:
-        return self.devices.get(device_id)
+    def get_device(self, device_id: str, tenant_id: str = "") -> Optional[Device]:
+        """Get a device, scoped to tenant if provided."""
+        device = self.devices.get(device_id)
+        if device is None:
+            return None
+        if tenant_id and device.tenant_id != tenant_id:
+            return None
+        return device
 
-    def list_devices(self, status: Optional[DeviceStatus] = None) -> List[Device]:
+    def list_devices(self, status: Optional[DeviceStatus] = None, tenant_id: str = "") -> List[Device]:
+        """List devices, optionally filtered by status and tenant."""
+        if tenant_id:
+            devices = [d for d in self.devices.values() if d.tenant_id == tenant_id]
+        else:
+            devices = list(self.devices.values())
         if status:
-            return [d for d in self.devices.values() if d.status == status]
-        return list(self.devices.values())
+            return [d for d in devices if d.status == status]
+        return devices
 
     def update_device(self, device: Device):
         device.updated_at = _utc_now()
         self.devices[device.id] = device
         self._save_to_db(device)
 
-    def remove_device(self, device_id: str):
+    def remove_device(self, device_id: str, tenant_id: str = "") -> bool:
+        """Remove a device. Only removes if it belongs to the given tenant.
+
+        Returns True if the device existed and was removed.
+        """
+        device = self.devices.get(device_id)
+        if device is not None and tenant_id and device.tenant_id != tenant_id:
+            return False
         if device_id in self.devices:
             del self.devices[device_id]
         conn = sqlite3.connect(self.db_path)
-        conn.execute("DELETE FROM devices WHERE id = ?", (device_id,))
+        if tenant_id:
+            conn.execute("DELETE FROM devices WHERE id = ? AND tenant_id = ?", (device_id, tenant_id))
+        else:
+            conn.execute("DELETE FROM devices WHERE id = ?", (device_id,))
         conn.commit()
         conn.close()
+        return True
 
     def _save_to_db(self, device: Device):
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         cursor.execute("""
             INSERT OR REPLACE INTO devices
-            (id, name, model, firmware, ip, hostname, mac, status, last_seen, metadata, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (id, name, model, firmware, ip, hostname, mac, status, last_seen, metadata, created_at, updated_at, tenant_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             device.id,
             device.name,
@@ -91,7 +124,8 @@ class DeviceRegistry:
             device.last_seen.isoformat() if device.last_seen else None,
             json.dumps(device.metadata) if device.metadata else "{}",
             device.created_at.isoformat(),
-            device.updated_at.isoformat()
+            device.updated_at.isoformat(),
+            device.tenant_id or "default"
         ))
         conn.commit()
         conn.close()
@@ -111,6 +145,7 @@ class DeviceRegistry:
             except (json.JSONDecodeError, TypeError):
                 metadata = {}
 
+            tenant_id = row[12] if len(row) > 12 else "default"
             device = Device(
                 id=row[0],
                 name=row[1],
@@ -124,6 +159,7 @@ class DeviceRegistry:
                 metadata=metadata,
                 created_at=datetime.fromisoformat(row[10]),
                 updated_at=datetime.fromisoformat(row[11]),
+                tenant_id=tenant_id,
             )
             device = self._ensure_capabilities(device)
             self.devices[device.id] = device

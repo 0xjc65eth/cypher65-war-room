@@ -22,6 +22,7 @@ from helpers import (
     parse_diff_to_float, fmt_diff, fmt_hashrate, fmt_uptime, fmt_age,
     safe_int, safe_num_from_str, coerce_float, coerce_int,
     human_int, human_secs_long, isfinite_v, make_memory_alert,
+    derive_worker_hashrate,
 )
 
 log = logging.getLogger("cypher65")
@@ -704,6 +705,38 @@ def poll_once():
                         json.dumps({"delta": wslb_delta, "total": cur_wslb_f}),
                     )
                 )
+
+    # ━━ FENIX E1 (P1): derive worker hashrate when the pool reports 0 ━━
+    # Same contract as app.py:_do_poll — the public API sometimes reports
+    # worker hashrate as 0 even while shares flow. Fall back to the per-share
+    # instantaneous hashrate math (share_calc_history) or the pool
+    # workSinceLastBlock delta, and write the derived value into the worker
+    # dict so the snapshot row, /api/snapshot worker payload, KPI cards and
+    # proximity meter all show a real number instead of 0/—.
+    if worker:
+        _reported_hr = float(worker.get("hashrate") or 0)
+        if _reported_hr <= 0:
+            _prev_ts = state.latest_snapshot.get("ts") if isinstance(state.latest_snapshot, dict) else 0
+            _elapsed_s = (ts - _prev_ts) if _prev_ts else float(config.POLL_INTERVAL)
+            _derived_hr, _hr_source = derive_worker_hashrate(
+                share_calc_history=state.timeline_state.get("share_calc_history") or [],
+                prev_pool=prev_pool,
+                pool=pool,
+                elapsed_s=_elapsed_s,
+            )
+            if _derived_hr > 0:
+                worker["hashrate"] = _derived_hr
+                worker["hashrate_source"] = _hr_source
+                worker["hashrate_derived"] = True
+                # mirror into the fleet panel's primary worker entry — match by
+                # the is_primary flag (robust to dedup index shifts)
+                for _entry in all_workers:
+                    if _entry.get("is_primary"):
+                        _entry["hashrate"] = _derived_hr
+                        _entry["hashrate_source"] = _hr_source
+                        break
+                log.info("[poll] worker %s hashrate derived from %s: %s H/s (pool reported 0)",
+                         worker.get("name") or "?", _hr_source, fmt_hashrate(_derived_hr))
 
     # ━━ Persist snapshot ━━
     try:

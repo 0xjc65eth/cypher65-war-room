@@ -31,6 +31,9 @@ MRR_BASE = "https://www.miningrigrentals.com/api/v2"
 NICEHASH_PUBLIC_API = "https://api2.nicehash.com/main/api/v2/hashpower/orderBook"
 PARASITE_API = "https://parasite.space/api"
 
+# 1 PH = 1000 TH — canonical unit conversion for per-PH/day → per-TH/day
+PH_TO_TH = 1000.0
+
 # Default worker address (configurable)
 DEFAULT_WORKER = os.environ.get(
     "BTC_ADDRESS",
@@ -176,14 +179,23 @@ def get_braiins_orderbook():
         if price_sat <= 0:
             return {"error": "Braiins orderbook has no valid prices"}
 
-        # Convert satoshis to BTC/PH/day
-        btc_per_ph_day = price_sat / 100_000_000
+        # Convert satoshis to BTC, honoring the API's reported price unit.
+        # Braiins quotes in sats/PH/day by default; if settings report
+        # sats/TH/day, scale by PH_TO_TH (1 PH = 1000 TH).
+        unit_norm = (price_unit or "sats/PH/day").lower()
+        if "th" in unit_norm:
+            btc_per_th_day = price_sat / 100_000_000
+            btc_per_ph_day = btc_per_th_day * PH_TO_TH
+        else:
+            btc_per_ph_day = price_sat / 100_000_000
+            btc_per_th_day = btc_per_ph_day / PH_TO_TH
         available_hr_ph = float(best.get("hr_matched_ph", 0)) or float(best.get("hr_available_ph", 0))
 
         return {
             "price_btc_per_ph_day": btc_per_ph_day,
+            "price_btc_per_th_day": btc_per_th_day,
             "price_raw": price_sat,
-            "price_raw_unit": "sats/PH/day",
+            "price_raw_unit": "sats/TH/day" if "th" in unit_norm else "sats/PH/day",
             "price_unit": price_unit,
             "source": "hashpower.braiins.com/v1/spot/orderbook",
             "available_asks": len(asks),
@@ -215,6 +227,16 @@ def get_mrr_listings(algo="sha256", api_key=None, api_secret=None):
     """
     api_key = api_key or os.environ.get("MRR_API_KEY")
     api_secret = api_secret or os.environ.get("MRR_API_SECRET")
+
+    if not api_key or not api_secret:
+        # Fase 5: fall back to user-configured Settings (Settings modal MRR fields)
+        try:
+            from services.settings import load_settings
+            _s = load_settings()
+            api_key = api_key or (_s.get("mrr_api_key") or "")
+            api_secret = api_secret or (_s.get("mrr_api_secret") or "")
+        except Exception:
+            pass
 
     if not api_key or not api_secret:
         return {
@@ -318,8 +340,8 @@ def get_mrr_listings(algo="sha256", api_key=None, api_secret=None):
                 },
             }
 
-        # TH/day → PH/day: multiply by 1,000,000
-        btc_per_ph_day = best_price_btc_per_th_day * 1_000_000
+        # TH/day → PH/day: multiply by PH_TO_TH (1 PH = 1000 TH)
+        btc_per_ph_day = best_price_btc_per_th_day * PH_TO_TH
 
         # Extract hashrate from best listing for return
         hashrate_obj = best_listing.get("hashrate", {})
@@ -401,9 +423,11 @@ def get_nicehash_orderbook(algorithm="SHA256", location=None):
         if price_raw <= 0:
             return {"error": "NiceHash best order has invalid price"}
 
-        # NiceHash v2 API price is in BTC/PH/day (the standard unit for the marketplace)
-        # The priceFactor/displayPriceFactor are UI metadata, not base unit indicators.
-        btc_per_ph_day = price_raw  # already BTC/PH/day
+        # NiceHash v2 orderBook `price` is BTC/TH/day (per API docs). The old
+        # code assigned the same number to both PH and TH keys — impossible.
+        # per-PH = per-TH × 1000 (1 PH = 1000 TH).
+        btc_per_th_day = price_raw  # already BTC/TH/day
+        btc_per_ph_day = price_raw * PH_TO_TH
 
         # Speed is in H/s (marketFactor = 1e18 for EH)
         speed_hs = float(best.get("acceptedSpeed", 0) or best.get("speed", 0))
@@ -414,7 +438,7 @@ def get_nicehash_orderbook(algorithm="SHA256", location=None):
 
         return {
             "price_btc_per_ph_day": btc_per_ph_day,
-            "price_btc_per_th_day": price_raw,
+            "price_btc_per_th_day": btc_per_th_day,
             "price_raw": price_raw,
             "price_unit": "BTC/TH/day",
             "source": "api2.nicehash.com (stats.BTC.orders)",
@@ -425,10 +449,6 @@ def get_nicehash_orderbook(algorithm="SHA256", location=None):
             "best_order_limit_hs": limit_hs,
             "market": "global",
         }
-
-    except Exception as e:
-        log.warning("[get_nicehash_orderbook] error: %s", e)
-        return {"error": f"NiceHash API unreachable: {str(e)[:100]}"}
 
     except Exception as e:
         log.warning("[get_nicehash_orderbook] error: %s", e)

@@ -27,10 +27,12 @@ from helpers import (
     parse_diff_to_float, fmt_diff, fmt_hashrate, fmt_uptime, fmt_age,
     safe_int, safe_num_from_str, coerce_float, coerce_int,
     human_int, human_secs_long, isfinite_v, make_memory_alert,
+    derive_worker_hashrate,
 )
 
 import services.state as _shared_state
 import services.names as _names  # name sanitization + normalization
+from services.proximity import _compute_quantum_lock  # FENIX: composite confidence score for the Quantum-Lock panel
 from services.session_manager import SessionManager
 from services.user_polling import UserPollingWorker, _build_snapshot
 from agents.opportunity_engine import scan as _opp_scan, build_response as _opp_build_response
@@ -40,6 +42,7 @@ from routes.device_control import device_control_bp
 from services.probability_engine import register_probability_routes
 from services.probability import calculate_multiple_periods, _seconds_to_human
 from services.hashrate_market import (
+    PH_TO_TH,
     fetch_all_offers as _fetch_all_offers,
     score_offer as _score_offer,
     build_highlights as _build_market_highlights,
@@ -51,11 +54,12 @@ from axe_fleet.routes import axe_fleet_bp, init_routes as _init_axe_routes
 from axe_fleet.registry import DeviceRegistry
 from routes.alerts_routes import alerts_bp, _set_get_db as _alerts_set_get_db
 from routes.settings_routes import settings_bp
+from services.tenant import require_tenant
 
 # ── Core CYPHER65 device registry ───────────────────────────────────────────
 from core.registry.device_registry import DeviceRegistry as CoreDeviceRegistry
 from core.adapters import get_adapter
-from core.models.device import Device as CoreDevice, DeviceStatus as CoreDeviceStatus
+from core.models.device import Device as CoreDevice, DeviceStatus as CoreDeviceStatus, normalize_telemetry
 from core.safety.safety_engine import SafetyEngine
 from core.diagnostics.diagnostics_engine import DiagnosticsEngine, DiagnosticSeverity
 
@@ -486,6 +490,46 @@ def init_db():
     except Exception:
         pass
 
+    # ── Fase 4 · B2: tenants + users tables ──
+    c.execute(
+        """CREATE TABLE IF NOT EXISTS tenants (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL DEFAULT '',
+            created_at INTEGER NOT NULL
+        )"""
+    )
+    c.execute(
+        """CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            tenant_id TEXT NOT NULL,
+            username TEXT NOT NULL,
+            api_key TEXT DEFAULT '',
+            created_at INTEGER NOT NULL,
+            UNIQUE(tenant_id, username)
+        )"""
+    )
+    c.execute("CREATE INDEX IF NOT EXISTS idx_users_tenant ON users(tenant_id)")
+
+    # ── Fase 4 · B2: add tenant_id to alerts/automations/core tables ──
+    for table_name in (
+        "alerts", "alert_history", "alert_rules",
+        "automation_rules", "automation_execution_log",
+    ):
+        try:
+            c.execute(f"PRAGMA table_info({table_name})")
+            cols = {row[1] for row in c.fetchall()}
+            if "tenant_id" not in cols:
+                c.execute(f"ALTER TABLE {table_name} ADD COLUMN tenant_id TEXT DEFAULT 'default'")
+                log.info("[migrate] added tenant_id to %s", table_name)
+        except Exception as e:
+            log.warning("[migrate] could not add tenant_id to %s: %s", table_name, e)
+    try:
+        c.execute("CREATE INDEX IF NOT EXISTS idx_alerts_tenant ON alerts(tenant_id)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_alert_rules_tenant ON alert_rules(tenant_id)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_automation_rules_tenant ON automation_rules(tenant_id)")
+    except Exception:
+        pass
+
 # ── WAL mode for better concurrent read/write ──
     c.execute("PRAGMA journal_mode=WAL")
     c.execute("PRAGMA synchronous=NORMAL")
@@ -498,16 +542,52 @@ def init_db():
 init_db()
 
 
+# Markers written exclusively by the demo seeders. Devices carrying these
+# groups are demo data — safe to purge when DEBUG_MOCK is off.
+_SEED_GROUP_MARKERS = ("auto-seed", "test-fleet")
+
+
+def _purge_seed_marked_devices(registry):
+    """Remove devices left behind by previous DEBUG_MOCK=1 demo runs.
+    Only rows carrying the explicit seed group markers are removed; devices
+    added by the user (default group) are never touched.
+    Returns the number of devices purged. Logs each removed device for audit.
+
+    Note: list_devices() spans tenants but remove_device targets the default
+    tenant — acceptable for the current single-tenant deployment.
+    """
+    removed = 0
+    try:
+        for d in registry.list_devices():
+            if d.get("group_id") in _SEED_GROUP_MARKERS:
+                dev_id = d.get("id")
+                if registry.remove_device(dev_id):
+                    removed += 1
+                    log.info("[axe] purged demo-seeded device %s (%s)", dev_id, d.get("name", ""))
+        if removed:
+            log.info("[axe] purged %d demo-seeded devices (DEBUG_MOCK off)", removed)
+    except Exception as e:
+        log.warning("[axe] seed purge failed: %s", e)
+    return removed
+
+
 def _auto_seed_axe_fleet(registry):
     """Auto-seed test devices if the Axe Fleet registry is empty.
     Creates 4 mock devices (3 online/varying health, 1 offline) with
     10 historical telemetry points each so the dashboard has data immediately.
+
+    GATED by DEBUG_MOCK (config.py): in production (default off) this is a
+    no-op — and any rows from previous demo runs are purged — so the
+    dashboard never shows invented telemetry. Set DEBUG_MOCK=1 for local
+    dev/demo seeding.
     """
+    if os.environ.get("DEBUG_MOCK") != "1":
+        return _purge_seed_marked_devices(registry)  # Honest Telemetry: cleanup leftovers
     import uuid, time
     try:
         devices = registry.list_devices()
         if devices and len(devices) > 0:
-            return  # already has devices, skip
+            return 0  # already has devices, skip
         log = logging.getLogger("cypher65.app")
         log.info("[axe] registry empty — auto-seeding 4 test devices")
         now = int(time.time())
@@ -631,16 +711,126 @@ def _auto_seed_axe_fleet(registry):
                 registry.save_telemetry(device_id, tel)
 
         log.info("[axe] auto-seeded %d test devices", len(mock_devices))
+        return len(mock_devices)
     except Exception as e:
         log = logging.getLogger("cypher65.app")
         log.warning("[axe] auto-seed failed: %s", e)
+        return 0
+
+
+def _purge_core_seed_marked_devices(registry):
+    """Remove core devices carrying the seed_marker metadata (written only by
+    the core demo seeder). Safe: real devices never carry that marker.
+    Returns the number purged; logs each for audit.
+    """
+    removed = 0
+    try:
+        for d in registry.list_devices():
+            meta = getattr(d, "metadata", None) or {}
+            if meta.get("seed_marker") == "auto-seed":
+                try:
+                    registry.remove_device(d.id)
+                    removed += 1
+                    log.info("[core] purged demo-seeded device %s (%s)", d.id, getattr(d, "name", ""))
+                except Exception:
+                    pass
+        if removed:
+            log.info("[core] purged %d demo-seeded core devices (DEBUG_MOCK off)", removed)
+    except Exception as e:
+        log.warning("[core] seed purge failed: %s", e)
+    return removed
+
+
+def _purge_test_devices(axe_registry, core_registry):
+    """Remove leftover test-suite artifacts from the production DB.
+
+    The test suites (test_alerts_routes, test_maintenance, test_integration_*,
+    ...) register devices named Test-*, Listed-*, Health-*, Maint-*, Diag-*,
+    Timeline-* plus a 'test-rule' automation rule directly into the same
+    SQLite file when run locally. Those rows are NOT demo seeds (no
+    seed_marker), so the DEBUG_MOCK purge above doesn't catch them — and they
+    surface in the UI as fake offline devices + CRIT 'status=0 == 0' alerts.
+
+    Targets (name-based, all unambiguous test artifacts):
+      - core devices: name starts with Test-/Listed-/Health-/Maint-/Diag-/
+        Timeline- or is one of Online/Offline/Stale-Device
+      - axe devices: name == ip_address (auto-added junk) or name in {x, ss}
+      - automation rule 'test-rule'
+      - alerts whose message references those test devices / 'status=0 == 0'
+    Returns a dict with per-table counts for logging.
+    """
+    counts = {"core": 0, "axe": 0, "rules": 0, "alerts": 0}
+    _TEST_PREFIXES = ("Test-", "Listed-", "Health-", "Maint-", "Diag-", "Timeline-")
+    _TEST_EXACT = ("Online-Device", "Offline-Device", "Stale-Device")
+
+    # ── Core registry ──
+    try:
+        for d in core_registry.list_devices():
+            name = getattr(d, "name", "") or ""
+            if name.startswith(_TEST_PREFIXES) or name in _TEST_EXACT:
+                try:
+                    core_registry.remove_device(d.id)
+                    counts["core"] += 1
+                    log.info("[purge] removed test core device %s (%s)", d.id, name)
+                except Exception:
+                    pass
+    except Exception as e:
+        log.warning("[purge] core test-device purge failed: %s", e)
+
+    # ── Axe registry ──
+    try:
+        for d in axe_registry.list_devices():
+            nm = (d.get("name") or "").strip()
+            ip = (d.get("ip_address") or "").strip()
+            if nm in ("x", "ss") or (nm == ip and ip):
+                try:
+                    axe_registry.remove_device(d.get("id"))
+                    counts["axe"] += 1
+                    log.info("[purge] removed test axe device %s (%s)", d.get("id"), nm)
+                except Exception:
+                    pass
+    except Exception as e:
+        log.warning("[purge] axe test-device purge failed: %s", e)
+
+    # ── Automation rule + test alerts ──
+    try:
+        conn = get_db()
+        c = conn.cursor()
+        # Any rule the test suites create is named test-* (the integration
+        # suite re-seeds 'test-rule' on every run, so match the prefix).
+        c.execute("DELETE FROM automation_rules WHERE name LIKE 'test-%'")
+        counts["rules"] = c.rowcount
+        c.execute(
+            "DELETE FROM alerts WHERE message LIKE '%status=0 == 0%' "
+            "OR message LIKE 'Test-%' OR message LIKE 'Listed-%' "
+            "OR message LIKE 'Health-%' OR message LIKE 'Maint-%' "
+            "OR message LIKE 'Diag-%' OR message LIKE 'Timeline-%' "
+            "OR message LIKE 'Online-Device%' OR message LIKE 'Offline-Device%' "
+            "OR message LIKE 'Stale-Device%'"
+        )
+        counts["alerts"] = c.rowcount
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        log.warning("[purge] test rule/alert purge failed: %s", e)
+
+    total = sum(counts.values())
+    if total:
+        log.info("[purge] removed %d test artifacts from DB: %s", total, counts)
+    return counts
 
 
 def _auto_seed_core_devices(registry):
     """Auto-seed core device registry with test devices so the alert engine
     has data to evaluate. Creates 4 CoreDevice objects (3 online, 1 offline).
     If existing devices lack telemetry (stale test data), replaces them.
+
+    GATED by DEBUG_MOCK (config.py): in production (default off) this is a
+    no-op — and any seed-marked rows from previous demo runs are purged —
+    so the alert engine only ever sees real devices.
     """
+    if os.environ.get("DEBUG_MOCK") != "1":
+        return _purge_core_seed_marked_devices(registry)  # Honest Telemetry: cleanup leftovers
     import uuid
     try:
         existing = registry.list_devices()
@@ -652,7 +842,7 @@ def _auto_seed_core_devices(registry):
                 needs_replacement = True
                 break
         if existing and len(existing) > 0 and not needs_replacement:
-            return
+            return 0  # already has fresh devices, skip
         if needs_replacement:
             log = logging.getLogger("cypher65.app")
             log.info("[core] replacing %d stale test devices with fresh ones", len(existing))
@@ -698,15 +888,17 @@ def _auto_seed_core_devices(registry):
                     "pool_online": 1 if m["hashrate"] > 0 else 0,
                 },
                 capabilities=[],
-                metadata={"health_score": 100.0 if m["temp"] and m["temp"] < 65 else (50.0 if m["status"] == "WARNING" else 0.0)},
+                metadata={"seed_marker": "auto-seed", "health_score": 100.0 if m["temp"] and m["temp"] < 65 else (50.0 if m["status"] == "WARNING" else 0.0)},
             )
             registry.add_device(device)
         log.info("[core] auto-seeded %d core devices", len(mock))
+        return len(mock)
     except Exception as e:
         log = logging.getLogger("cypher65.app")
         log.warning("[core] auto-seed failed: %s", e)
         import traceback
         log.warning("[core] auto-seed traceback: %s", traceback.format_exc())
+        return 0
 
 
 # ── Support/Donation configuration endpoint ──────────────────────────────────
@@ -714,7 +906,7 @@ def _auto_seed_core_devices(registry):
 _SUPPORT_CONFIG = {
     "title": "Support Cypher65",
     "subtitle": "Cypherpunks support cypherpunks.",
-    "description": "If this tool helps you, support it so it can keep evolving. BTC, Lightning, and hashpower accepted to sustain development.",
+    "description": "Este painel é um instrumento da resistência digital: código aberto, sem intermediários, soberano por design. Sua contribuição mantém o desenvolvimento rodando, financia infraestrutura descentralizada e garante que esta ferramenta continue nas mãos de quem a usa — não de corporações. Sem donos. Sem permissão. Apenas criptografia e comunidade. BTC, Lightning e hashpower são aceitos.",
     "methods": [
         {
             "id": "btc",
@@ -771,6 +963,11 @@ from routes.device_control import init_device_control
 _core_registry = CoreDeviceRegistry(DB_PATH)
 _core_registry.load_from_db()
 _auto_seed_core_devices(_core_registry)
+
+# ── Purge leftover test-suite artifacts (devices/rules/alerts) so the
+#    dashboard never shows invented data in production. Runs after both
+#    seeders so seed-marked demo rows and raw test rows are both removed. ──
+_purge_test_devices(_axe_registry, _core_registry)
 
 # ── In-memory command history store ──────────────────────────────────────────
 # Stores executed commands per device for lightweight audit logging.
@@ -1440,6 +1637,30 @@ def _compute_proximity(worker, current_difficulty, net_hashrate, ts):
             }
         except Exception as e:
             log.warning("[compute_proximity live_calc] error: %s", e)
+
+        # QUANTUM-LOCK assessment (composite confidence score). The pure math
+        # lives in services/proximity.py (_compute_quantum_lock) — we reuse it
+        # here so production /api/snapshot + /api/proximity expose the payload
+        # that the front-end Quantum-Lock panel renders.
+        try:
+            _sch = list(timeline_state.get("share_calc_history") or [])
+            _session_shares = timeline_state.get("session_share_count", 0) or 0
+            out["quantum_lock"] = _compute_quantum_lock(
+                pct_cur, best_diff_raw, net_diff,
+                _sch, _session_shares, trend_1h_pct, worker_hps,
+            )
+        except Exception as e:
+            log.warning("[compute_proximity quantum_lock] error: %s", e)
+
+        # Share rate (shares/hour) — sliding 10-min window over the session's
+        # share_calc_history timestamps. Drives the Share Rate KPI + timeline
+        # rate badge. Mirrors the E1 derive approach (never raises).
+        try:
+            _cutoff_ts = int(time.time()) - 600
+            _recent = [e for e in (timeline_state.get("share_calc_history") or []) if (e.get("ts") or 0) >= _cutoff_ts]
+            out["share_rate_hourly"] = round(len(_recent) * 6.0, 2)  # 600s window x6 = per-hour
+        except Exception:
+            out["share_rate_hourly"] = 0.0
 
         return out
     except Exception as e:
@@ -2118,6 +2339,38 @@ def _do_poll():
                     )
                 )
 
+    # ━━ FENIX E1 (P1): derive worker hashrate when the pool reports 0 ━━
+    # The public API sometimes reports worker hashrate as 0 even while the
+    # worker is actively submitting shares. When that happens we fall back to
+    # the per-share instantaneous hashrate math (share_calc_history) or the
+    # pool workSinceLastBlock delta, and write the derived value into the
+    # worker dict so the snapshot row, /api/snapshot worker payload, KPI cards
+    # and proximity meter all show a real number instead of 0/—.
+    if worker:
+        _reported_hr = float(worker.get("hashrate") or 0)
+        if _reported_hr <= 0:
+            _prev_ts = latest_snapshot.get("ts") if isinstance(latest_snapshot, dict) else 0
+            _elapsed_s = (ts - _prev_ts) if _prev_ts else float(POLL_INTERVAL)
+            _derived_hr, _hr_source = derive_worker_hashrate(
+                share_calc_history=timeline_state.get("share_calc_history") or [],
+                prev_pool=prev_pool,
+                pool=pool,
+                elapsed_s=_elapsed_s,
+            )
+            if _derived_hr > 0:
+                worker["hashrate"] = _derived_hr
+                worker["hashrate_source"] = _hr_source
+                worker["hashrate_derived"] = True
+                # mirror into the fleet panel's primary worker entry — match by
+                # the is_primary flag (robust to dedup index shifts)
+                for _entry in all_workers:
+                    if _entry.get("is_primary"):
+                        _entry["hashrate"] = _derived_hr
+                        _entry["hashrate_source"] = _hr_source
+                        break
+                log.info("[poll] worker %s hashrate derived from %s: %s H/s (pool reported 0)",
+                         worker.get("name") or "?", _hr_source, fmt_hashrate(_derived_hr))
+
     # ━━ Persist snapshot ━━
     try:
         conn = get_db()
@@ -2431,11 +2684,16 @@ def _do_poll():
 
             # ── Solo mining ──
             # Same formula but no pool fee. Expected blocks PER YEAR = your_share × 144 × 365
-            # Solo variance is extreme: P(at least one block in N days) = 1 - (1 - p)^N
+            # Solo variance is extreme: share_of_network is the per-BLOCK chance, and
+            # with ~144 blocks/day, P(≥1 block in N days) = 1 - (1 - share)^(144·N).
             solo_net_btc_per_day = gross_btc_per_day * (1 - orphan_pct / 100.0)  # no pool fee
-            solo_p_day = share_of_network  # probability of finding a block on any given day
-            solo_p_year = 1 - (1 - solo_p_day) ** 365
-            solo_p_5year = 1 - (1 - solo_p_day) ** (365 * 5)
+            solo_p_day = 1 - (1 - share_of_network) ** blocks_per_day          # P(≥1 block today)
+            solo_p_year = 1 - (1 - share_of_network) ** (blocks_per_day * 365)
+            solo_p_5year = 1 - (1 - share_of_network) ** (blocks_per_day * 365 * 5)
+            solo_expected_blocks_per_year = share_of_network * blocks_per_day * 365
+            solo_expected_time_to_block_days = (
+                1.0 / (share_of_network * blocks_per_day) if share_of_network > 0 else None
+            )
 
             # ── Rental cost ──
             ths = cur_hr / 1e12
@@ -2472,14 +2730,16 @@ def _do_poll():
                 # Solo mode
                 "net_btc_per_day_solo": round(solo_net_btc_per_day, 8),
                 "fiat_per_day_solo": _fiat_convert(solo_net_btc_per_day),
+                "fiat_per_month_solo": _fiat_convert(solo_net_btc_per_day * 30),
                 "solo_p_day_pct": round(solo_p_day * 100, 8),
                 "solo_p_year_pct": round(solo_p_year * 100, 4),
                 "solo_p_5year_pct": round(solo_p_5year * 100, 2),
-                "solo_expected_blocks_per_year": round(solo_p_day * 365, 4),
-                "solo_expected_time_to_block_days": round(1 / solo_p_day, 1) if solo_p_day > 0 else None,
+                "solo_expected_blocks_per_year": round(solo_expected_blocks_per_year, 4),
+                "solo_expected_time_to_block_days": round(solo_expected_time_to_block_days, 1) if solo_expected_time_to_block_days else None,
                 # Rental mode (cost subtracted)
                 "net_btc_per_day_rental": round(pool_net_btc_per_day - (cost_per_day / (btc_usd or 1)), 8) if btc_usd else None,
                 "fiat_per_day_rental": _fiat_convert(max(0, pool_net_btc_per_day - (cost_per_day / (btc_usd or 1)))) if btc_usd else None,
+                "fiat_per_month_rental": _fiat_convert(max(0, pool_net_btc_per_day - (cost_per_day / (btc_usd or 1))) * 30) if btc_usd else None,
                 "rental_net_btc_per_day": round(pool_net_btc_per_day, 8),  # gross pool BTC
                 "rental_net_usd_per_day": round((pool_net_btc_per_day * (btc_usd or 0)) - cost_per_day, 4),
                 "rental_net_usd_per_month": round(((pool_net_btc_per_day * (btc_usd or 0)) - cost_per_day) * 30, 2),
@@ -3086,6 +3346,8 @@ def _settings_label(k):
         "webhook_url": "Webhook URL (Discord/Telegram-compatible)",
         "webhook_min_severity": "Min severity to fire webhook (INFO|WARN|CRIT|GOLD|SUCCESS)",
         "show_test_alerts": "Allow synthetic demo alerts (0|1)",
+        "mrr_api_key": "MiningRigRentals API key (Settings → MRR credentials)",
+        "mrr_api_secret": "MiningRigRentals API secret (Settings → MRR credentials)",
     }.get(k, k)
 
 
@@ -3426,7 +3688,8 @@ def api_best_diff_history():
 
 
 @app.route("/api/devices/<device_id>/best-diff-history", methods=["GET"])
-def api_device_best_diff_history(device_id: str):
+@require_tenant
+def api_device_best_diff_history(device_id: str, tenant_id: str = ""):
     """Return the best-difficulty history for a specific device."""
     limit = request.args.get("limit", 100, type=int)
     return jsonify({
@@ -3535,6 +3798,10 @@ def _enrich_telemetry(telemetry: Optional[Dict[str, Any]]) -> Optional[Dict[str,
 
     freshness is the number of seconds between the telemetry timestamp and now.
     If the telemetry has no timestamp, freshness is omitted.
+
+    Fase 5: canonical telemetry fields (chip_temp, vr_temp, hashrate 1m/10m/1h,
+    pool_status, ...) missing from the snapshot are filled with the explicit
+    NOT_AVAILABLE marker so the UI never displays a guessed value.
     """
     if telemetry is None:
         return None
@@ -3542,7 +3809,7 @@ def _enrich_telemetry(telemetry: Optional[Dict[str, Any]]) -> Optional[Dict[str,
     ts = enriched.get("timestamp")
     if ts is not None:
         enriched["freshness"] = max(0, int(time.time()) - int(ts))
-    return enriched
+    return normalize_telemetry(enriched)
 
 
 def _compute_device_health(device: CoreDevice) -> Dict[str, Any]:
@@ -3602,15 +3869,16 @@ def _serialize_device(device: CoreDevice, include_telemetry: bool = True) -> Dic
 
 
 @app.route("/api/devices", methods=["GET"])
-def api_list_devices():
-    """List all devices registered in the core DeviceRegistry.
+@require_tenant
+def api_list_devices(tenant_id: str = ""):
+    """List all devices registered in the core DeviceRegistry (tenant-scoped).
 
     Returns:
       devices: list of device dicts (with current_telemetry when available)
       summary: count per status (online, offline, warning, critical)
       total: total number of registered devices
     """
-    devices = _core_registry.list_devices()
+    devices = _core_registry.list_devices(tenant_id=tenant_id)
     summary = _core_registry.count_by_status()
     return jsonify({
         "devices": [_serialize_device(d) for d in devices],
@@ -3620,9 +3888,10 @@ def api_list_devices():
 
 
 @app.route("/api/devices/<device_id>", methods=["GET"])
-def api_get_device(device_id: str):
+@require_tenant
+def api_get_device(device_id: str, tenant_id: str = ""):
     """Return full details for a single device, including telemetry and capabilities."""
-    device = _core_registry.get_device(device_id)
+    device = _core_registry.get_device(device_id, tenant_id=tenant_id)
     if not device:
         return jsonify({"error": "device not found", "success": False}), 404
     return jsonify({
@@ -3632,17 +3901,18 @@ def api_get_device(device_id: str):
 
 
 @app.route("/api/devices/<device_id>/refresh", methods=["POST"])
-def api_refresh_device(device_id: str):
+@require_tenant
+def api_refresh_device(device_id: str, tenant_id: str = ""):
     """Refresh a single device: fetch telemetry, update status, persist.
 
     Steps:
-      1. Look up the device in the core registry.
+      1. Look up the device in the core registry (tenant-scoped).
       2. Select the correct adapter based on device model.
       3. Call get_telemetry() on the adapter.
       4. Determine device status from the telemetry.
       5. Save telemetry in the device object and update the registry.
     """
-    device = _core_registry.get_device(device_id)
+    device = _core_registry.get_device(device_id, tenant_id=tenant_id)
     if not device:
         return jsonify({"error": "device not found", "success": False}), 404
 
@@ -3691,9 +3961,10 @@ def api_refresh_device(device_id: str):
 
 
 @app.route("/api/fleet/summary", methods=["GET"])
-def api_fleet_summary():
-    """Return a high-level health summary for the entire device fleet."""
-    devices = _core_registry.list_devices()
+@require_tenant
+def api_fleet_summary(tenant_id: str = ""):
+    """Return a high-level health summary for the tenant's device fleet."""
+    devices = _core_registry.list_devices(tenant_id=tenant_id)
     summary = _core_registry.count_by_status()
     now = int(time.time())
     threshold = TELEMETRY_FRESHNESS_THRESHOLD
@@ -3719,15 +3990,16 @@ def api_fleet_summary():
 
 
 @app.route("/api/devices/<device_id>/command", methods=["POST"])
-def api_device_command(device_id: str):
-    """Execute a command on a device after safety validation.
+@require_tenant
+def api_device_command(device_id: str, tenant_id: str = ""):
+    """Execute a command on a device after safety validation (tenant-scoped).
 
     Body (JSON):
       - command (str, required): command to execute (e.g. "restart", "identify")
       - parameters (dict, optional): command-specific parameters
 
     Flow:
-      1. Find the device in the registry.
+      1. Find the device in the registry (tenant-scoped).
       2. Instantiate the correct adapter.
       3. Check that the adapter supports the command.
       4. Run SafetyEngine.validate_command().
@@ -3735,7 +4007,7 @@ def api_device_command(device_id: str):
       6. Record the command in the in-memory history.
       7. Update the device status when applicable.
     """
-    device = _core_registry.get_device(device_id)
+    device = _core_registry.get_device(device_id, tenant_id=tenant_id)
     if not device:
         return jsonify({"error": "device not found", "success": False}), 404
 
@@ -3794,12 +4066,13 @@ def api_device_command(device_id: str):
 
 
 @app.route("/api/devices/<device_id>/commands", methods=["GET"])
-def api_device_command_history(device_id: str):
+@require_tenant
+def api_device_command_history(device_id: str, tenant_id: str = ""):
     """Return the command execution history for a single device.
 
     Returns the last 100 entries, newest first.
     """
-    device = _core_registry.get_device(device_id)
+    device = _core_registry.get_device(device_id, tenant_id=tenant_id)
     if not device:
         return jsonify({"error": "device not found", "success": False}), 404
 
@@ -3812,13 +4085,14 @@ def api_device_command_history(device_id: str):
 
 
 @app.route("/api/devices/<device_id>/diagnostics", methods=["GET"])
-def api_device_diagnostics(device_id: str):
-    """Return operational diagnostics for a single device.
+@require_tenant
+def api_device_diagnostics(device_id: str, tenant_id: str = ""):
+    """Return operational diagnostics for a single device (tenant-scoped).
 
     Analyzes the device's current telemetry and metadata and returns a list
     of detected issues (empty list when everything looks healthy).
     """
-    device = _core_registry.get_device(device_id)
+    device = _core_registry.get_device(device_id, tenant_id=tenant_id)
     if not device:
         return jsonify({"error": "device not found", "success": False}), 404
 
@@ -3882,15 +4156,16 @@ def _get_maintenance_records(device_id: str, limit: int = 100) -> list:
 
 
 @app.route("/api/devices/<device_id>/maintenance", methods=["POST", "GET"])
-def api_device_maintenance(device_id: str):
-    """Record or list maintenance events for a single device.
+@require_tenant
+def api_device_maintenance(device_id: str, tenant_id: str = ""):
+    """Record or list maintenance events for a single device (tenant-scoped).
 
     POST body (JSON):
       - type (str, required): e.g. firmware_update, cleaning, hardware_check
       - notes (str, optional)
       - performed_by (str, optional)
     """
-    device = _core_registry.get_device(device_id)
+    device = _core_registry.get_device(device_id, tenant_id=tenant_id)
     if not device:
         return jsonify({"error": "device not found", "success": False}), 404
 
@@ -3919,14 +4194,15 @@ def api_device_maintenance(device_id: str):
 
 
 @app.route("/api/devices/<device_id>/timeline", methods=["GET"])
-def api_device_timeline(device_id: str):
-    """Return a combined timeline of events for a single device.
+@require_tenant
+def api_device_timeline(device_id: str, tenant_id: str = ""):
+    """Return a combined timeline of events for a single device (tenant-scoped).
 
     Events include: executed commands, maintenance records, status changes
     and current diagnostics. The result is limited to the 50 most recent
     events and sorted newest first.
     """
-    device = _core_registry.get_device(device_id)
+    device = _core_registry.get_device(device_id, tenant_id=tenant_id)
     if not device:
         return jsonify({"error": "device not found", "success": False}), 404
 
@@ -4003,6 +4279,19 @@ def healthz():
     )
 
 
+@app.route("/api/tailscale")
+def api_tailscale():
+    """Report local Tailscale connection status for the remote-access panel.
+    Uses services.tailscale_adapter.get_local_status() (CLI + tailnet API).
+    Returns tailscale_installed/connected/ip/hostname/magic_dns_name etc."""
+    try:
+        from services.tailscale_adapter import get_local_status
+        return jsonify(get_local_status())
+    except Exception as e:
+        log.warning("[tailscale] endpoint error: %s", e)
+        return jsonify({"tailscale_installed": False, "connected": False, "error": str(e)})
+
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 #  OPPORTUNITY ENGINE API
@@ -4070,7 +4359,9 @@ def _get_hashrate_market_offers() -> list:
         _sync_market_prices_to_state(cache["offers"])
         return cache["offers"]
 
-    offers = _fetch_all_offers()
+    # Real network hashrate (H/s) feeds the Parasite EV model + metrics
+    network_hashrate = (latest_snapshot.get("network") or {}).get("hashrate")
+    offers = _fetch_all_offers(network_hashrate=network_hashrate)
     if offers:
         try:
             conn = get_db()
@@ -4101,11 +4392,20 @@ def _sync_market_prices_to_state(offers: list):
             price = offer.get("price_per_th_day")
         if price is None:
             continue
-        price_ph = price * 1_000_000
+        price_ph = price * PH_TO_TH  # 1 PH = 1000 TH
+        # offer may be a NormalizedOffer (attr access) or a dict (in tests)
+        source = getattr(offer, "source", "")
+        if not source and isinstance(offer, dict):
+            source = offer.get("source") or ""
+        estimated = bool(getattr(offer, "estimated", False))
+        if isinstance(offer, dict):
+            estimated = bool(offer.get("estimated", False))
         _shared_state.last_known_prices[provider] = {
             "price": price_ph,
             "ts": int(time.time()),
             "label": provider.capitalize(),
+            "source": source or provider,
+            "estimated": estimated,
         }
 
 
@@ -4301,6 +4601,52 @@ def api_chart_data():
     labels = []
     values = []
 
+    # ── Live-session charts (no DB): cumulative P progression + share
+    # difficulty histogram — fed from in-memory share_calc_history ──
+    if chart in ('cum_p', 'share_dist'):
+        sch = list(timeline_state.get("share_calc_history") or [])
+        if chart == 'cum_p':
+            # Cumulative P(block) = 1-(1-p)^n compounded over the session
+            cum = 0.0
+            for e in sch:
+                p = float(e.get("p_block_this_share") or 0)
+                if p > 0:
+                    cum = 1.0 - (1.0 - cum) * (1.0 - p)
+                labels.append(int(e.get("ts") or 0) * 1000)
+                values.append(round(cum * 100, 6))
+        else:
+            # Histogram of share difficulty across the session
+            diffs = [float(e.get("share_diff_raw") or 0) for e in sch if e.get("share_diff_raw")]
+            if diffs:
+                lo, hi = min(diffs), max(diffs)
+                nb = min(12, max(5, len(diffs) // 3))
+                if hi > lo:
+                    step = (hi - lo) / nb
+                    buckets = [0] * nb
+                    for d in diffs:
+                        bi = min(nb - 1, int((d - lo) / step))
+                        buckets[bi] += 1
+                    for i in range(nb):
+                        labels.append(f"{lo + i*step:.2e}")
+                        values.append(buckets[i])
+                else:
+                    labels.append(f"{lo:.2e}")
+                    values.append(len(diffs))
+            if not labels:
+                labels = []
+                values = []
+        return jsonify({
+            'labels': labels,
+            'datasets': [{
+                'label': 'Cumulative P(Block) %' if chart == 'cum_p' else 'Shares',
+                'data': values,
+                'fill': True,
+                'borderColor': '#a855f7' if chart == 'cum_p' else '#10b981',
+                'backgroundColor': 'rgba(168,85,247,0.1)' if chart == 'cum_p' else 'rgba(16,185,129,0.1)',
+                'tension': 0.3,
+            }],
+        })
+
     try:
         conn = get_db()
         c = conn.cursor()
@@ -4340,7 +4686,13 @@ def api_chart_data():
     # Fallback: if no history data, return current snapshot value as single point
     if not labels:
         labels = [int(time.time()) * 1000]
-        if chart == 'hashrate':
+        if chart == 'cum_p':
+            lc = (latest_snapshot.get("proximity") or {}).get("live_calc") or {}
+            values = [float((lc.get("session_totals") or {}).get("cum_p_block") or 0) * 100]
+        elif chart == 'share_dist':
+            labels = []
+            values = []
+        elif chart == 'hashrate':
             values = [float(latest_snapshot.get('worker', {}).get('hashrate') or 0)]
         elif chart == 'bestdiff':
             bd = latest_snapshot.get('worker', {}).get('bestDifficulty') or 0
@@ -4527,21 +4879,6 @@ def api_ai_query():
     )
 
 
-if __name__ == "__main__":
-    art = r"""
-   ___ __  __ ____  _   _ ____  __  __ ___ ______   __
-  / __|  \/  |  _ \| \ | |  _ \ \ \/ // ___/ __\ \ / /
- | (__| |\/| | |_) |  \| | |_) | \  / \___ \__ \\ V /
-  \___|_|  |_|____/|_|\__|____/   |_| |___/___/ \_/
-
-   ⇢  cypher65 war room starting on http://localhost:%d
-   ⇢  address:    %s
-   ⇢  worker:     %s
-   ⇢  poll every: %ds — DB at %s
-    """ % (PORT, BTC_ADDRESS[:14] + "…", WORKER_NAME, POLL_INTERVAL, DB_PATH)
-    print(art)
-    app.run(host="0.0.0.0", port=PORT, debug=False, threaded=True)
-
 # ── SSE live stream endpoint ──────────────────────────────────────────────
 # Pushes snapshot updates to the frontend via Server-Sent Events (EventSource)
 # so the UI updates in near-real-time without polling.
@@ -4608,3 +4945,19 @@ def _broadcast_snapshot(snapshot: dict):
 
 # ── FASE 2: Wallet address history table ──
 # In init_db(), add the wallet_address_history table
+
+
+if __name__ == "__main__":
+    art = r"""
+   ___ __  __ ____  _   _ ____  __  __ ___ ______   __
+  / __|  \/  |  _ \| \ | |  _ \ \ \/ // ___/ __\ \ / /
+ | (__| |\/| | |_) |  \| | |_) | \  / \___ \__ \\ V /
+  \___|_|  |_|____/|_|\__|____/   |_| |___/___/ \_/
+
+   ⇢  cypher65 war room starting on http://localhost:%d
+   ⇢  address:    %s
+   ⇢  worker:     %s
+   ⇢  poll every: %ds — DB at %s
+    """ % (PORT, BTC_ADDRESS[:14] + "…", WORKER_NAME, POLL_INTERVAL, DB_PATH)
+    print(art)
+    app.run(host="0.0.0.0", port=PORT, debug=False, threaded=True)

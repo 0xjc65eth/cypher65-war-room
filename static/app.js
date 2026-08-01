@@ -82,6 +82,10 @@
     },
     pct(n) { if (!isFinite(n)) return '\u2014'; return `${n.toFixed(2)}%`; },
     usd(n) { if (!n) return '\u2014'; return `$${Number(n).toLocaleString('en-US', { maximumFractionDigits: 0 })}`; },
+    // Shared numeric guard (Fase 5): telemetry fields may hold the literal
+    // string "NOT AVAILABLE" after backend normalization — only real finite
+    // numbers are treated as values.
+    num(v) { return typeof v === 'number' && isFinite(v); },
     expectedBlock(workerHr, networkDiff) {
       if (!workerHr || !networkDiff) return null;
       const secs = (networkDiff * Math.pow(2, 32)) / workerHr * 65536;
@@ -117,12 +121,14 @@
     eventsTbody: $('#events-tbody'), lbTbody: $('#lb-tbody'), logEventsCount: $('#log-events-count'), terminal: $('#terminal'),
     alertsList: $('#alerts-list'), alertsCountBadge: $('#alerts-count-badge'),
     timelineFeed: $('#timeline-feed'), timelineSharesBadge: $('#timeline-shares-badge'), timelineBumpsBadge: $('#timeline-bumps-badge'), timelineRateBadge: $('#timeline-rate-badge'),
+    terminalEventsList: $('#terminal-events-list'), terminalEventCount: $('#terminal-event-count'),
     tStatLastShare: $('#t-stat-lastshare'), tStat1h: $('#t-stat-1h'), tStat24h: $('#t-stat-24h'), tStatBumps: $('#t-stat-bumps'),
     hBlocks: $('#h-blocks'), hDays: $('#h-days'), hCurReward: $('#h-cur-reward'), hNextReward: $('#h-next-reward'), hNextHeight: $('#h-next-height'), halvingEpochBadge: $('#halving-epoch-badge'),
     feesStatus: $('#fees-status'), feeEconomy: $('#fee-economy'), feeHour: $('#fee-hour'), feeHalfhour: $('#fee-halfhour'), feeFastest: $('#fee-fastest'), feeMinimum: $('#fee-minimum'),
     profitShareBadge: $('#profit-share-badge'), profitCostBadge: $('#profit-cost-badge'), pBtcDay: $('#p-btc-day'),
     pFiatDay: $('#p-fiat-day'), pFiatDayWeek: $('#p-fiat-day-week'), pFiatMonth: $('#p-fiat-month'), pFiatMonthSub: $('#p-fiat-month-sub'),
     pBreakeven: $('#p-breakeven'), pBreakevenSub: $('#p-breakeven-sub'), pBtcSub: $('#p-btc-sub'), profitFootnote: $('#profit-footnote'), pCurBadge: $('#p-cur-badge'), profitFiatRow: $('#profit-fiat-row'),
+    hrReported: $('#hr-reported'), hrObserved: $('#hr-observed'), hrDeviationVal: $('#hr-deviation-val'), hrDeviationBadge: $('#hr-deviation-badge'),
     gaugeLabel: $('#gauge-label'), gaugeWorkerCanvas: $('#gauge-worker-canvas'), gaugePoolCanvas: $('#gauge-pool-canvas'), gaugeLuckCanvas: $('#gauge-luck-canvas'),
     gaugeWorkerPct: $('#gauge-worker-pct'), gaugePoolPct: $('#gauge-pool-pct'), gaugeLuckPct: $('#gauge-luck-pct'), gaugeWorkerBlockchance: $('#gauge-worker-blockchance'),
     badgesStrip: $('#badges-strip'), milestonesCount: $('#milestones-count'),
@@ -133,6 +139,8 @@
     lcTimeBig: $('#lc-time-big'), lcSessionShareCount: $('#lc-session-share-count'), lcShareDiff: $('#lc-share-diff'), lcHashes: $('#lc-hashes'),
     lcTimeObs: $('#lc-time-obs'), lcPBlock: $('#lc-p-block'), lcInstHr: $('#lc-inst-hr'), lcSessionShares: $('#lc-session-shares'),
     lcAvgShareDiff: $('#lc-avg-share-diff'), lcCumP: $('#lc-cum-p'), lcExpectedBlocks: $('#lc-expected-blocks'), lcTickerList: $('#lc-ticker-list'),
+    qlStatusBadge: $('#ql-status-badge'), qlScoreBadge: $('#ql-score-badge'), qlBarFill: $('#ql-bar-fill'),
+    qlCompShares: $('#ql-comp-shares'), qlCompProx: $('#ql-comp-prox'), qlCompPower: $('#ql-comp-power'), qlCompMomentum: $('#ql-comp-momentum'), qlLabel: $('#ql-label'),
     lmGrid: $('#lm-grid'), lmStatusBadge: $('#lm-status-badge'), lmWorkersBadge: $('#lm-workers-badge'),
     lmSummaryWallet: $('#lm-summary-wallet'), lmSummaryPool: $('#lm-summary-pool'), lmSummaryDot: $('#lm-summary-dot'),
     lmSummaryWorkers: $('#lm-summary-workers'), lmSummaryHr: $('#lm-summary-hr'), lmSummaryBest: $('#lm-summary-best'),
@@ -219,6 +227,18 @@
     kpiBestdiff: $('#kpi-bestdiff'),
     kpiShares: $('#kpi-shares'),
     kpiPoolhr: $('#kpi-poolhr'),
+
+    // ── TENANT AUTH ──
+    // Note: authLoginBtn/authLogoutBtn use the `Btn` suffix to avoid
+    // clashing with the authLogin()/authLogout() functions in this scope.
+    authToggle: $('#auth-toggle'),
+    authModal: $('#auth-modal'),
+    authStatus: $('#auth-status'),
+    authApiKey: $('#auth-api-key'),
+    authLoginBtn: $('#auth-login'),
+    authLogoutBtn: $('#auth-logout'),
+    authCurrentTenant: $('#auth-current-tenant'),
+    axeFleetTenantBadge: $('#axe-fleet-tenant-badge'),
   };
 
   
@@ -240,6 +260,243 @@
 
 // ── escape HTML ───────────────────────────────────────────────────────
   function escapeHtml(s) { return String(s).replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c])); }
+
+  // ── Tenant Auth (Fase 4 · B1-frontend) ─────────────────────────────
+  // Stores the JWT session in localStorage and attaches
+  // `Authorization: Bearer <token>` to every /api/axe-fleet/* request so
+  // the backend's require_tenant() isolates per tenant.
+  // Pure helpers below (authBuildHeaders/authIsExpired/authSessionValid)
+  // are mirrored in tests/test_app_js_core.js.
+  const AUTH_SESSION_KEY = '_cypher65_auth_session';
+
+  function authLoadSession() {
+    try {
+      const raw = localStorage.getItem(AUTH_SESSION_KEY);
+      if (!raw) return null;
+      const s = JSON.parse(raw);
+      return (s && s.access_token) ? s : null;
+    } catch (e) { return null; }
+  }
+  function authSaveSession(s) {
+    try { localStorage.setItem(AUTH_SESSION_KEY, JSON.stringify(s)); } catch (e) {}
+  }
+  function authClearSession() {
+    try { localStorage.removeItem(AUTH_SESSION_KEY); } catch (e) {}
+  }
+
+  function authBuildHeaders(token) {
+    if (!token) return {};
+    return { 'Authorization': 'Bearer ' + token };
+  }
+  function authIsExpired(expiresAt, now) {
+    if (!expiresAt) return true;
+    now = now || Math.floor(Date.now() / 1000);
+    return now >= (Number(expiresAt) - 30); // 30s safety margin
+  }
+  function authSessionValid(session, now) {
+    if (!session || !session.access_token) return false;
+    return !authIsExpired(session.expires_at, now);
+  }
+
+  function authGetToken() {
+    const s = authLoadSession();
+    return (s && authSessionValid(s)) ? s.access_token : null;
+  }
+
+  // Fetch wrapper: attach Bearer header; on 401 try a refresh once, retry.
+  // IMPORTANT: /api/axe-fleet/* routes use @require_tenant (not @require_auth),
+  // so an invalid/expired token NEVER returns 401 — the server silently falls
+  // back to tenant 'default'. We therefore refresh PROACTIVELY whenever the
+  // stored token is near/past expiry (authIsExpired already applies a 30s
+  // safety margin), so the isolated tenant is never dropped at the refresh
+  // boundary. The 401-retry below is a belt-and-suspenders for routes that
+  // DO hard-require auth.
+  async function authFetch(url, opts) {
+    opts = opts || {};
+    const session = authLoadSession();
+    if (session && session.refresh_token && authIsExpired(session.expires_at)) {
+      await authRefresh();
+    }
+    const token = authGetToken();
+    const headers = Object.assign({}, opts.headers || {}, authBuildHeaders(token));
+    let res = await fetch(url, Object.assign({}, opts, { headers }));
+    if (res.status === 401 && token) {
+      const refreshed = await authRefresh();
+      if (refreshed) {
+        const headers2 = Object.assign({}, opts.headers || {}, authBuildHeaders(authGetToken()));
+        res = await fetch(url, Object.assign({}, opts, { headers: headers2 }));
+      }
+    }
+    return res;
+  }
+
+  async function authRefresh() {
+    const s = authLoadSession();
+    if (!s || !s.refresh_token) return false;
+    try {
+      const r = await fetch('/api/auth/refresh', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ refresh_token: s.refresh_token }),
+      });
+      if (!r.ok) return false;
+      const data = await r.json();
+      if (!data.access_token) return false;
+      authSaveSession({
+        access_token: data.access_token,
+        refresh_token: s.refresh_token,
+        expires_at: data.expires_at,
+        tenant_id: data.tenant_id || s.tenant_id || 'default',
+      });
+      return true;
+    } catch (e) { return false; }
+  }
+
+  async function authLogin(apiKey) {
+    if (!apiKey) return { ok: false, error: 'API key is required' };
+    try {
+      const r = await fetch('/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ api_key: apiKey }),
+      });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) return { ok: false, error: data.error || ('login failed (' + r.status + ')') };
+      authSaveSession({
+        access_token: data.access_token,
+        refresh_token: data.refresh_token,
+        expires_at: data.expires_at,
+        tenant_id: data.tenant_id || 'default',
+      });
+      authUpdateUi();
+      return { ok: true, tenant_id: data.tenant_id || 'default' };
+    } catch (e) {
+      return { ok: false, error: e.message || 'network error' };
+    }
+  }
+
+  async function authLogout() {
+    const s = authLoadSession();
+    if (s && s.access_token) {
+      try {
+        await fetch('/api/auth/logout', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ access_token: s.access_token }),
+        });
+      } catch (e) {}
+    }
+    authClearSession();
+    authUpdateUi();
+  }
+
+  function authUpdateUi() {
+    const s = authLoadSession();
+    const connected = authSessionValid(s);
+    const tenant = connected ? (s.tenant_id || 'default') : 'default';
+    const toggle = dom.authToggle;
+    if (toggle) {
+      toggle.textContent = connected ? '🔑 ' + tenant.toUpperCase() : '🔑 LOGIN';
+      toggle.classList.toggle('is-authed', connected);
+      toggle.title = connected ? 'Tenant: ' + tenant + ' — click to manage' : 'Tenant Login';
+    }
+    const badge = dom.axeFleetTenantBadge;
+    if (badge) {
+      badge.textContent = 'TENANT: ' + tenant;
+      badge.classList.toggle('badge--green', connected);
+      badge.classList.toggle('badge--mute', !connected);
+    }
+    const cur = dom.authCurrentTenant;
+    if (cur) cur.textContent = connected ? tenant : '—';
+    if (dom.authLogoutBtn) dom.authLogoutBtn.style.display = connected ? '' : 'none';
+    if (dom.authStatus && !connected) dom.authStatus.textContent = '';
+  }
+
+  function initAuth() {
+    authUpdateUi();
+    const toggle = dom.authToggle;
+    const modal = dom.authModal;
+    if (toggle && modal) {
+      toggle.addEventListener('click', function() {
+        authUpdateUi();
+        modal.classList.add('modal--open');
+      });
+    }
+    const loginBtn = dom.authLoginBtn;
+    if (loginBtn) {
+      loginBtn.addEventListener('click', async function() {
+        const keyInput = dom.authApiKey;
+        const statusEl = dom.authStatus;
+        const key = keyInput ? keyInput.value.trim() : '';
+        if (!key) { if (statusEl) statusEl.textContent = '⚠ API key required'; return; }
+        if (statusEl) { statusEl.textContent = 'connecting…'; statusEl.className = 'modal__status'; }
+        const res = await authLogin(key);
+        if (statusEl) {
+          statusEl.textContent = res.ok ? '✓ connected as ' + res.tenant_id : '✗ ' + res.error;
+          statusEl.className = res.ok ? 'modal__status modal__status--ok' : 'modal__status modal__status--err';
+        }
+        if (res.ok) {
+          setTimeout(function() {
+            if (modal) modal.classList.remove('modal--open');
+            fetchAxeFleet();
+          }, 400);
+        }
+      });
+    }
+    if (dom.authLogoutBtn) {
+      dom.authLogoutBtn.addEventListener('click', async function() {
+        await authLogout();
+        if (modal) modal.classList.remove('modal--open');
+        fetchAxeFleet();
+      });
+    }
+    if (dom.authApiKey && loginBtn) {
+      dom.authApiKey.addEventListener('keydown', function(e) {
+        if (e.key === 'Enter') loginBtn.click();
+      });
+    }
+  }
+
+  // ── Theme Toggle ─────────────────────────────────────────────────────
+  // Persists the light/dark preference and toggles the <html data-theme>
+  // attribute consumed by the CSS :root[data-theme='light'] selectors.
+  // Dark = attribute absent (null) — matches the E2E theme test assertions.
+  const THEME_STORAGE_KEY = '_cypher65_theme';
+
+  function themeApply(pref) {
+    const isLight = pref === 'light';
+    const root = document.documentElement;
+    if (isLight) root.setAttribute('data-theme', 'light');
+    else root.removeAttribute('data-theme');
+  }
+
+  function themeCurrent() {
+    return document.documentElement.getAttribute('data-theme') === 'light' ? 'light' : 'dark';
+  }
+
+  function themeToggle() {
+    const next = themeCurrent() === 'light' ? 'dark' : 'light';
+    themeApply(next);
+    try { localStorage.setItem(THEME_STORAGE_KEY, next); } catch (e) { /* storage unavailable */ }
+    const btn = document.getElementById('theme-toggle');
+    if (btn) {
+      btn.textContent = next === 'light' ? '☾' : '☀';
+      btn.title = next === 'light' ? 'Switch to dark theme' : 'Switch to light theme';
+    }
+  }
+
+  function initThemeToggle() {
+    // Apply persisted preference on boot (fresh sessions default to dark).
+    try {
+      const saved = localStorage.getItem(THEME_STORAGE_KEY);
+      themeApply(saved === 'light' ? 'light' : 'dark');
+    } catch (e) { /* storage unavailable */ }
+    const btn = document.getElementById('theme-toggle');
+    if (btn) {
+      btn.addEventListener('click', function() { themeToggle(); });
+      btn.textContent = themeCurrent() === 'light' ? '☾' : '☀';
+    }
+  }
 
   // ── WebLN detection ───────────────────────────────────────────────────
   var _weblnProvider = null;
@@ -833,6 +1090,8 @@ function renderAccount(acct) {
     'chart-pool': { chart: 'pool', label: 'Pool Hashrate', color: 'rgb(247,147,26)' },
     'chart-bestdiff': { chart: 'bestdiff', label: 'Best Difficulty', color: 'rgb(16,185,129)' },
     'chart-net': { chart: 'net', label: 'Network Difficulty', color: 'rgb(168,85,247)' },
+    'chart-cumulative-p': { chart: 'cum_p', label: 'Cumulative P(Block)', color: 'rgb(168,85,247)' },
+    'chart-share-dist': { chart: 'share_dist', label: 'Share Difficulty', color: 'rgb(16,185,129)' },
   };
   async function loadChartData(id) {
     const cfg = CHART_METRICS[id];
@@ -843,7 +1102,10 @@ function renderAccount(acct) {
       const data = await r.json();
       const chart = charts[id];
       if (!chart) return;
-      chart.data.labels = (data.labels || []).map(t => { const d = new Date(t); return d.getHours()+':'+String(d.getMinutes()).padStart(2,'0'); });
+      chart.data.labels = (data.labels || []).map(t => {
+        if (cfg.chart === 'share_dist') return String(t); // histogram bucket labels
+        const d = new Date(t); return d.getHours()+':'+String(d.getMinutes()).padStart(2,'0');
+      });
       chart.data.datasets[0].data = (data.datasets?.[0]?.data || data.datasets?.[0]?.values || []);
       chart.update('none');
     } catch (e) { /* chart load silently */ }
@@ -924,6 +1186,26 @@ function renderAccount(acct) {
     dom.timelineFeed.scrollTop = dom.timelineFeed.scrollHeight;
   }
 
+  // ── EVENT STREAM — mirror of timeline_last_n into the terminal panel ──
+  function renderTerminalEvents(list) {
+    if (!dom.terminalEventsList) return;
+    if (!list || !list.length) {
+      dom.terminalEventsList.innerHTML = '<div class="terminal-empty">awaiting events from pool polling...</div>';
+      if (dom.terminalEventCount) dom.terminalEventCount.textContent = '0';
+      return;
+    }
+    const normalized = list.map(_normalizeTimelineEvent);
+    const ordered = normalized.slice().reverse();
+    const rows = ordered.slice(0, 60).map(ev => {
+      const d = new Date((ev.ts || 0) * 1000);
+      const ts = String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0')+':'+String(d.getSeconds()).padStart(2,'0');
+      const sev = (ev.severity || 'INFO').toLowerCase();
+      return `<div class="terminal-events-row"><span class="ts">[${ts}]</span><span class="tag tag-${sev}">${escapeHtml(ev.event_type || 'EVENT')}</span>${escapeHtml(ev.message || '')}</div>`;
+    }).join('');
+    dom.terminalEventsList.innerHTML = rows;
+    if (dom.terminalEventCount) dom.terminalEventCount.textContent = String(normalized.length);
+  }
+
   // ══════════════════════════════════════════════════════════════════════
   // HASH PROXIMITY METER — best diff vs network difficulty
   // ══════════════════════════════════════════════════════════════════════
@@ -1000,8 +1282,13 @@ function renderAccount(acct) {
     if (_proxSparklineData.length > 180) _proxSparklineData.shift(); // 3h at 1/min
 
     const dpr = window.devicePixelRatio || 1;
-    const cssW = c.clientWidth || 220, cssH = c.clientHeight || 28;
-    c.width = cssW * dpr; c.height = cssH * dpr;
+    // Read the CSS box size (fixed by the #prox-sparkline rule) instead of
+    // relying on clientHeight, which can mirror the canvas attribute and
+    // grow unboundedly on high-DPI displays.
+    const cs = getComputedStyle(c);
+    const cssW = parseFloat(cs.width) || c.clientWidth || 220;
+    const cssH = parseFloat(cs.height) || c.clientHeight || 28;
+    c.width = Math.round(cssW * dpr); c.height = Math.round(cssH * dpr);
     const ctx = c.getContext('2d');
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, cssW, cssH);
@@ -1037,6 +1324,89 @@ function renderAccount(acct) {
     ctx.beginPath();
     ctx.arc(x(data.length - 1), y(data[data.length - 1]), 2.5, 0, Math.PI * 2);
     ctx.fill();
+  }
+
+  // ══════════════════════════════════════════════════════════════════════
+  // QUANTUM LOCK HEALTH SCORE — composite confidence score (0-100)
+  // ══════════════════════════════════════════════════════════════════════
+
+  function renderQuantumLock(prox) {
+    if (!prox || !dom.qlStatusBadge) return;
+    const ql = prox.quantum_lock;
+    if (!ql || !ql.score) {
+      if (dom.qlStatusBadge) dom.qlStatusBadge.textContent = 'NO DATA';
+      if (dom.qlScoreBadge) dom.qlScoreBadge.textContent = '0/100';
+      if (dom.qlBarFill) dom.qlBarFill.style.width = '0%';
+      if (dom.qlLabel) dom.qlLabel.textContent = 'awaiting share data — submit share to compute quantum lock';
+      _setQlComp('ql-comp-shares', 0, 30);
+      _setQlComp('ql-comp-prox', 0, 40);
+      _setQlComp('ql-comp-power', 0, 20);
+      _setQlComp('ql-comp-momentum', 0, 10);
+      return;
+    }
+    const score = Math.min(100, Math.max(0, Number(ql.score) || 0));
+    if (dom.qlStatusBadge) dom.qlStatusBadge.textContent = ql.status || 'TRACKING';
+    if (dom.qlScoreBadge) dom.qlScoreBadge.textContent = Math.round(score) + '/100';
+    if (dom.qlBarFill) dom.qlBarFill.style.width = score + '%';
+    if (dom.qlLabel) dom.qlLabel.textContent = ql.label || '';
+    const comps = ql.components || {};
+    _setQlComp('ql-comp-shares', comps.shares, 30);
+    _setQlComp('ql-comp-prox', comps.proximity, 40);
+    _setQlComp('ql-comp-power', comps.power, 20);
+    _setQlComp('ql-comp-momentum', comps.momentum, 10);
+  }
+
+  function _setQlComp(barId, val, max) {
+    const bar = document.getElementById(barId);
+    if (!bar) return;
+    const fill = bar.querySelector('span');
+    if (!fill) return;
+    const pct = Math.min(100, Math.max(0, (Number(val) || 0) / max * 100));
+    fill.style.width = pct + '%';
+  }
+
+  // ══════════════════════════════════════════════════════════════════════
+  // LIVE HASH CALCULATOR — per-share breakdown from proximity.live_calc
+  // ══════════════════════════════════════════════════════════════════════
+
+  function renderLiveCalc(prox) {
+    if (!prox || !dom.lcShareDiff) return;
+    const lc = prox.live_calc || {};
+    const latest = lc.latest || {};
+    const totals = lc.session_totals || {};
+    const dash = '\u2014';
+
+    // Latest per-share breakdown
+    if (dom.lcTimeBig) dom.lcTimeBig.textContent = latest.ts ? fmt.age(latest.ts) : dash;
+    if (dom.lcSessionShareCount) dom.lcSessionShareCount.textContent = latest.session_share_count_at_time != null ? 'share #' + latest.session_share_count_at_time : dash;
+    if (dom.lcShareDiff) dom.lcShareDiff.textContent = latest.share_diff_str || dash;
+    if (dom.lcHashes) dom.lcHashes.textContent = latest.hashes_attempted_str || dash;
+    if (dom.lcTimeObs) dom.lcTimeObs.textContent = latest.gap != null ? latest.gap + 's' : dash;
+    if (dom.lcPBlock) dom.lcPBlock.textContent = latest.p_block_this_share_pct_str || dash;
+    if (dom.lcInstHr) dom.lcInstHr.textContent = latest.instantaneous_hr_str || dash;
+
+    // Session totals
+    if (dom.lcSessionShares) dom.lcSessionShares.textContent = totals.shares_so_far != null ? totals.shares_so_far : dash;
+    if (dom.lcAvgShareDiff) dom.lcAvgShareDiff.textContent = totals.avg_share_diff_str || dash;
+    if (dom.lcCumP) dom.lcCumP.textContent = totals.cum_p_block_pct_str || dash;
+    if (dom.lcExpectedBlocks) dom.lcExpectedBlocks.textContent = totals.expected_blocks_str || dash;
+
+    // Ticker — newest first
+    if (dom.lcTickerList) {
+      const ticker = (lc.ticker || []).slice().reverse();
+      if (!ticker.length) {
+        dom.lcTickerList.innerHTML = '<div class="prox-live-calc__ticker-empty">awaiting share data</div>';
+      } else {
+        dom.lcTickerList.innerHTML = ticker.map(function(e) {
+          return '<div class="lc-ticker-row">' +
+            '<span class="lc-ticker-time">' + (e.ts ? fmt.age(e.ts) : '--:--:--') + '</span>' +
+            '<span class="lc-ticker-diff">' + (e.share_diff_str || dash) + '</span>' +
+            '<span class="lc-ticker-gap">\u0394' + (e.gap || '\u2014') + 's</span>' +
+            '<span class="lc-ticker-hr">' + (e.instantaneous_hr_str || dash) + '</span>' +
+            '</div>';
+        }).join('');
+      }
+    }
   }
 
   // ══════════════════════════════════════════════════════════════════════
@@ -1113,13 +1483,155 @@ function renderAccount(acct) {
     ctx.fillText(displayPct.toFixed(displayPct < 1 ? 4 : 1) + '%', cx, cy - 6);
   }
 
+  // ── Profitability mode state (POOL | SOLO | RENTAL) ───────────────────
+  // Pure selector: returns the values to display for a given mode.
+  // Isolated so unit tests can exercise the mode math without DOM.
+  let _profitMode = 'pool';
+  let _lastProfitability = null;
+
+  function profitModeView(p, mode) {
+    if (!p || !Object.keys(p).length) return null;
+    const m = (mode === 'solo' || mode === 'rental') ? mode : 'pool';
+    const view = { mode: m, btcDay: null, fiatDay: {}, fiatWeek: {}, fiatMonth: {}, breakeven: null, soloStats: null };
+    if (m === 'solo') {
+      view.btcDay = p.net_btc_per_day_solo;
+      view.fiatDay = p.fiat_per_day_solo || {};
+      view.fiatMonth = p.fiat_per_month_solo || {};
+      view.breakeven = null; // solo has no rental break-even — expected time shown instead
+      view.soloStats = {
+        pToday: p.solo_p_day_pct,
+        pYear: p.solo_p_year_pct,
+        p5y: p.solo_p_5year_pct,
+        blocksYear: p.solo_expected_blocks_per_year,
+        expectedDays: p.solo_expected_time_to_block_days,
+      };
+    } else if (m === 'rental') {
+      view.btcDay = p.net_btc_per_day_rental;
+      view.fiatDay = p.fiat_per_day_rental || {};
+      view.fiatMonth = p.fiat_per_month_rental || {};
+      view.breakeven = p.break_even_rental_usd_per_th_day;
+    } else {
+      view.btcDay = p.net_btc_per_day_pool;
+      view.fiatDay = p.fiat_per_day_pool || {};
+      view.fiatMonth = p.fiat_per_month_pool || {};
+      view.breakeven = p.breakeven_cost_per_th_day;
+    }
+    // Weekly fiat = daily × 7 (client-side; backend only ships daily/monthly per mode)
+    Object.keys(view.fiatDay).forEach(c => {
+      view.fiatWeek[c] = view.fiatDay[c] != null ? view.fiatDay[c] * 7 : null;
+    });
+    return view;
+  }
+
+  function setProfitMode(mode) {
+    if (!['pool', 'solo', 'rental'].includes(mode)) return;
+    _profitMode = mode;
+    document.querySelectorAll('.profit-mode-btn').forEach(b => {
+      b.classList.toggle('active', b.getAttribute('data-mode') === mode);
+    });
+    const soloStats = document.getElementById('solo-extra-stats');
+    if (soloStats) soloStats.style.display = mode === 'solo' ? '' : 'none';
+    if (_lastProfitability) renderProfitability(_lastProfitability);
+  }
+  window.setProfitMode = setProfitMode;
+
   function renderProfitability(p) {
     if (!p || !Object.keys(p).length) return;
+    _lastProfitability = p;
     const cur = (SETTINGS_CACHE.data?.active_currency?.value) || "USD"; const symMap = {USD:"$",BRL:"R$",EUR:"€",GBP:"£"}; const sym = symMap[cur] || "$";
     const fiatPerCur = (b) => b != null ? `${sym}${Number(b).toLocaleString(undefined,{maximumFractionDigits:2})}` : '\u2014';
-    if (dom.pBtcDay) dom.pBtcDay.textContent = p.net_btc_per_day_pool != null ? `${Number(p.net_btc_per_day_pool).toFixed(8)} BTC` : '\u2014';
-    if (dom.pFiatDay) dom.pFiatDay.textContent = fiatPerCur((p.fiat_per_day_pool || {})[cur]);
-    if (dom.pFiatMonth) dom.pFiatMonth.textContent = fiatPerCur((p.fiat_per_month_pool || {})[cur]);
+    const view = profitModeView(p, _profitMode);
+    if (dom.pBtcDay) dom.pBtcDay.textContent = view.btcDay != null ? `${Number(view.btcDay).toFixed(8)} BTC` : '\u2014';
+    if (dom.pFiatDay) dom.pFiatDay.textContent = fiatPerCur(view.fiatDay[cur]);
+    if (dom.pFiatDayWeek) dom.pFiatDayWeek.textContent = fiatPerCur(view.fiatWeek[cur]) + '/week';
+    if (dom.pFiatMonth) dom.pFiatMonth.textContent = fiatPerCur(view.fiatMonth[cur]);
+    // Break-even: rental → max rental cost per TH/day; solo → expected time to
+    // block (matches the BREAK-EVEN tooltip: 'no modo SOLO mostra o tempo
+    // esperado até o próximo bloco').
+    if (dom.pBreakeven) {
+      if (_profitMode === 'solo' && view.soloStats && view.soloStats.expectedDays != null) {
+        dom.pBreakeven.textContent = fmt.secsToHuman(view.soloStats.expectedDays * 86400);
+        if (dom.pBreakevenSub) dom.pBreakevenSub.textContent = 'to block';
+      } else if (_profitMode === 'solo') {
+        dom.pBreakeven.textContent = '\u2014';
+        if (dom.pBreakevenSub) dom.pBreakevenSub.textContent = 'to block';
+      } else {
+        dom.pBreakeven.textContent = view.breakeven != null ? `$${Number(view.breakeven).toFixed(4)}` : '\u2014';
+        if (dom.pBreakevenSub) dom.pBreakevenSub.textContent = '$/TH·d';
+      }
+    }
+    if (dom.profitCostBadge) dom.profitCostBadge.textContent = 'cost: ' + (p.cost_model_configured ? (p.cost_label || '$0') : '$0 (configure ⚙)');
+    // Share badge: worker share of network hashrate (pool mode), else 0%
+    if (dom.profitShareBadge) {
+      const so = p.share_of_network_pct;
+      dom.profitShareBadge.textContent = so != null && Number(so) > 0 ? Number(so).toFixed(6) + '%' : '0%';
+    }
+    if (dom.profitFiatRow) {
+      ['USD','BRL','EUR','GBP'].forEach(c => {
+        const el = document.getElementById('profit-fiat-' + c);
+        if (el) el.textContent = fiatPerCur(view.fiatDay[c]);
+      });
+    }
+    // Solo stats cells (populated whenever solo data exists — they only show
+    // when setProfitMode('solo') reveals the #solo-extra-stats strip)
+    if (view.soloStats) {
+      const setTxt = (id, v, suffix) => {
+        const el = document.getElementById(id);
+        if (el) el.textContent = v != null ? `${Number(v).toLocaleString(undefined,{maximumFractionDigits:6})}${suffix || ''}` : '\u2014';
+      };
+      setTxt('solo-p-today', view.soloStats.pToday, '%');
+      setTxt('solo-p-year', view.soloStats.pYear, '%');
+      setTxt('solo-p-5y', view.soloStats.p5y, '%');
+      setTxt('solo-blocks-year', view.soloStats.blocksYear);
+      const expEl = document.getElementById('solo-expected-time');
+      if (expEl) {
+        const expDays = view.soloStats.expectedDays;
+        expEl.textContent = expDays != null ? fmt.secsToHuman(expDays * 86400) : '\u2014';
+      }
+    }
+  }
+
+  // ── Hashrate Comparison: worker (reported) vs pool-observed (share-derived) ──
+  // The panel footnote says "Pool-observed hashrate is estimated from submitted
+  // shares" — so `observed` comes from the worker's share_calc_history
+  // instantaneous hashrate (mean of the last 8 shares), NOT the pool-wide
+  // total (which would always skew deviation to ≈ -100%).
+  function renderComparison(snap) {
+    const w = snap.worker || {};
+    const prox = snap.proximity || {};
+    const reported = Number(w.hashrate || 0);
+    let observed = 0;
+    const ticker = (prox.live_calc && prox.live_calc.ticker) || [];
+    const hrs = ticker.map(e => Number(e.instantaneous_hr_hps || 0)).filter(h => h > 0);
+    if (hrs.length) observed = hrs.reduce((a, b) => a + b, 0) / hrs.length;
+    const dash = '\u2014';
+    if (dom.hrReported) dom.hrReported.textContent = reported > 0 ? fmt.hashrate(reported) : dash;
+    if (dom.hrObserved) dom.hrObserved.textContent = observed > 0 ? fmt.hashrate(observed) : dash;
+    let dev = null;
+    if (reported > 0 && observed > 0) dev = ((reported - observed) / observed) * 100;
+    if (dom.hrDeviationVal) dom.hrDeviationVal.textContent = dev != null ? (dev >= 0 ? '+' : '') + dev.toFixed(1) + '%' : dash;
+    if (dom.hrDeviationBadge) {
+      if (dev == null) { dom.hrDeviationBadge.textContent = dash; dom.hrDeviationBadge.className = 'badge badge--mute'; }
+      else if (Math.abs(dev) < 10) { dom.hrDeviationBadge.textContent = 'NOMINAL'; dom.hrDeviationBadge.className = 'badge badge--green'; }
+      else if (dev > 0) { dom.hrDeviationBadge.textContent = 'REPORTED > OBSERVED'; dom.hrDeviationBadge.className = 'badge badge--gold'; }
+      else { dom.hrDeviationBadge.textContent = 'REPORTED < OBSERVED'; dom.hrDeviationBadge.className = 'badge badge--red'; }
+    }
+  }
+
+  // ── SOLO & STATS — writes proximity payload into solo-* ids ──
+  function renderSoloStats(prox) {
+    if (!prox) return;
+    const dash = '\u2014';
+    // #solo-expected-time / #solo-blocks-year appear in TWO panels (profit
+    // solo-stats + solo-stats-panel) — write every match.
+    const setAll = (id, v) => document.querySelectorAll('#' + id).forEach(el => { el.textContent = v; });
+    setAll('solo-net-diff', prox.network_difficulty_str || dash);
+    setAll('solo-worker-hr', prox.worker_hashrate_ths ? fmt.hashrate(prox.worker_hashrate_ths * 1e12) : dash);
+    setAll('solo-p-block', prox.chance_per_share_label || dash);
+    setAll('solo-expected-time', prox.expected_time_human || dash);
+    setAll('solo-blocks-year', prox.blocks_per_year != null ? prox.blocks_per_year.toFixed(2) : dash);
+    setAll('solo-best-diff', prox.all_time_best_diff_str || dash);
+    setAll('solo-status-badge', prox.insufficient_data ? '—' : (prox.best_diff_raw ? 'READY' : '—'));
   }
 
   function renderMilestones(list) {
@@ -1185,7 +1697,13 @@ function renderAccount(acct) {
   // Backend schema: offers carry `price_per_th_day` (BTC/TH/day, often ~1e-8..1e-10).
   // The old field name `price_btc_per_th_day` never exists in the payload, which
   // made every card render '—'. `is_best` is NOT sent by the backend, so the
-  // best offer is derived client-side from the lowest valid price_per_th_day.
+  // best offer is derived client-side from the highest metrics.score (ROI),
+  // falling back to the lowest valid price_per_th_day.
+  let _mktFilter = 'all';
+  let _mktOffers = [];
+  let _mktBtcUsd = null;  // BTC/USD from snapshot — for the USD/TH/d line on cards
+  let _mktTrendLoaded = false;  // lazy: /api/market/trend fetched on first module activation
+
   function _fmtBtcPerTh(v) {
     const n = Number(v);
     if (!isFinite(n) || n <= 0) return '—';
@@ -1193,46 +1711,173 @@ function renderAccount(acct) {
     return (n * 1e8).toLocaleString('en-US', { maximumFractionDigits: 2 }) + ' sats/TH/d';  // tiny prices → sats (community convention)
   }
 
-  function renderMarket(snap) {
-    const mkt = snap.market_data || {};
-    const grid = document.getElementById('mkt-grid');
-    if (!grid) return;
+  // USD/TH/d companion line — BTC/TH/day × BTC/USD. Returns null when the
+  // price or the BTC price is unavailable so the card simply omits the USD.
+  // $1+ → 2 decimals; below $1 → 3 significant figures (no trailing zeros).
+  function _mktUsdPerTh(v, btcUsd) {
+    const n = Number(v);
+    const usd = Number(btcUsd);
+    if (!isFinite(n) || n <= 0 || !isFinite(usd) || usd <= 0) return null;
+    const x = n * usd;
+    if (x >= 1) return '$' + x.toLocaleString('en-US', { maximumFractionDigits: 2 }) + '/TH/d';
+    let s = x.toPrecision(3);
+    if (s.indexOf('e') !== -1) s = Number(s).toString();
+    else s = s.replace(/\.?0+$/, '');
+    return '$' + s + '/TH/d';
+  }
 
-    const offers = mkt.offers || [];
+  // Origin labels: backend `source` field (braiins|mrr|nicehash|kissmyhash|parasite|derived)
+  function _mktSourceLabel(src) {
+    const map = { braiins: 'BRAIINS', mrr: 'MRR', nicehash: 'NICEHASH', kissmyhash: 'KISSMYHASH', parasite: 'PARASITE', derived: 'DERIVED' };
+    return map[src] || (src || 'UNKNOWN').toUpperCase();
+  }
 
-    if (!offers.length) {
-      grid.innerHTML = '<div class="mkt-empty">no market data available — configure MRR credentials or wait for data to load</div>';
-      document.getElementById('mkt-best-price-badge') && (document.getElementById('mkt-best-price-badge').textContent = 'best price —');
-      document.getElementById('mkt-count-badge') && (document.getElementById('mkt-count-badge').textContent = '0 offers');
-      return;
-    }
-
-    // Best offer = lowest valid price_per_th_day (client-side, since backend sends no is_best)
+  // Best offer: highest metrics.score (backend ROI) wins; only when NO offer
+  // carries a finite score do we fall back to the lowest valid price.
+  // Two-pass so a low-score offer can never override the score winner via the
+  // price fallback (single-pass mixing had that bug).
+  function _mktBestIndex(offers) {
+    if (!offers || !offers.length) return -1;
+    // Pass 1: highest finite metrics.score (first max wins on ties).
     let bestIdx = -1;
+    let bestScore = -Infinity;
+    offers.forEach((o, idx) => {
+      const sc = Number(o.metrics && o.metrics.score);
+      if (isFinite(sc) && sc > bestScore) { bestScore = sc; bestIdx = idx; }
+    });
+    if (bestIdx >= 0) return bestIdx;
+    // Pass 2: no scores anywhere → lowest valid price_per_th_day.
     let bestVal = Infinity;
     offers.forEach((o, idx) => {
       const p = Number(o.price_per_th_day);
-      if (isFinite(p) && p > 0 && p < bestVal) {
-        bestVal = p;
-        bestIdx = idx;
-      }
+      if (isFinite(p) && p > 0 && p < bestVal) { bestVal = p; bestIdx = idx; }
     });
+    return bestIdx;
+  }
+
+  function renderMarketGrid() {
+    const grid = document.getElementById('mkt-grid');
+    if (!grid) return;
+
+    const offers = _mktFilter === 'all'
+      ? _mktOffers
+      : _mktOffers.filter(o => (o.provider || '').toLowerCase() === _mktFilter);
+
+    if (!offers.length) {
+      grid.innerHTML = '<div class="mkt-empty">' + (_mktOffers.length
+        ? 'no offers for selected provider — adjust filter'
+        : 'no market data available — configure MRR credentials or wait for data to load') + '</div>';
+      document.getElementById('mkt-best-price-badge') && (document.getElementById('mkt-best-price-badge').textContent = 'best price —');
+      document.getElementById('mkt-count-badge') && (document.getElementById('mkt-count-badge').textContent = _mktOffers.length + ' offers');
+      return;
+    }
+
+    const bestIdx = _mktBestIndex(offers);
+    const bestVal = bestIdx >= 0 ? Number(offers[bestIdx].price_per_th_day) : 0;
     const bestLabel = bestIdx >= 0 ? _fmtBtcPerTh(bestVal) : '—';
 
     document.getElementById('mkt-best-price-badge') && (document.getElementById('mkt-best-price-badge').textContent = 'best: ' + bestLabel);
     document.getElementById('mkt-count-badge') && (document.getElementById('mkt-count-badge').textContent = offers.length + ' offers');
 
-    grid.innerHTML = offers.map((o, idx) => `
-      <div class="mkt-card${idx === bestIdx ? ' mkt-card--best' : ''}">
-        <div class="mkt-card__provider">${escapeHtml(o.provider || 'Unknown')}</div>
-        <div class="mkt-card__price">${_fmtBtcPerTh(o.price_per_th_day)}</div>
+    grid.innerHTML = offers.map((o, idx) => {
+      const src = o.source || o.provider || 'unknown';
+      const srcLabel = _mktSourceLabel(src);
+      const estTag = o.estimated ? '<span class="mkt-card__est">ESTIMATED</span>' : '';
+      const staleCls = (o.meta && o.meta._stale) ? ' mkt-card--stale' : '';
+      // Backend hashrate is TH/s — fmt.hashrate expects H/s.
+      const hrHps = Number(o.hashrate) > 0 ? Number(o.hashrate) * 1e12 : 0;
+      // sats/TH/d (primary) + USD/TH/d (companion, from snapshot BTC price)
+      const priceLabel = _fmtBtcPerTh(o.price_per_th_day);
+      const usdLabel = _mktUsdPerTh(o.price_per_th_day, _mktBtcUsd);
+      return `
+      <div class="mkt-card${idx === bestIdx ? ' mkt-card--best' : ''}${staleCls}">
+        <div class="mkt-card__head">
+          <span class="mkt-card__provider">${escapeHtml(o.provider || 'Unknown')}</span>
+          <span class="mkt-card__src mkt-card__src--${escapeHtml(src)}">${srcLabel}</span>
+          ${estTag}
+        </div>
+        <div class="mkt-card__price">${priceLabel}${usdLabel ? ' <span class="mkt-card__usd">≈ ' + usdLabel + '</span>' : ''}</div>
         <div class="mkt-card__detail">
-          <span><span class="mkt-card__label">HR:</span>${fmt.hashrate(o.hashrate)}</span>
+          <span><span class="mkt-card__label">HR:</span>${hrHps > 0 ? fmt.hashrate(hrHps) : '—'}</span>
           <span><span class="mkt-card__label">Fee:</span>${o.fee_pct != null ? o.fee_pct + '%' : '—'}</span>
           <span><span class="mkt-card__label">Duration:</span>${o.duration_days ? o.duration_days + 'd' : '—'}</span>
         </div>
       </div>
-    `).join('');
+    `;
+    }).join('');
+  }
+
+  function renderMarket(snap) {
+    const mkt = snap.market_data || {};
+    const grid = document.getElementById('mkt-grid');
+    if (!grid) return;
+    _mktOffers = mkt.offers || [];
+    _mktBtcUsd = Number(snap.btc_price && snap.btc_price.usd) || null;
+    renderMarketGrid();
+  }
+
+  // Wire the provider filter chips + ⚙ config button + 7d trend chart.
+  function initMarketControls() {
+    const filtersEl = document.getElementById('mkt-filters');
+    if (filtersEl) {
+      filtersEl.querySelectorAll('.chip[data-mkt-filter]').forEach(chip => {
+        chip.addEventListener('click', () => {
+          filtersEl.querySelectorAll('.chip[data-mkt-filter]').forEach(c => c.classList.remove('active'));
+          chip.classList.add('active');
+          _mktFilter = chip.getAttribute('data-mkt-filter') || 'all';
+          renderMarketGrid();
+        });
+      });
+    }
+    const cfgBtn = document.getElementById('mkt-config-btn');
+    if (cfgBtn) cfgBtn.addEventListener('click', () => { if (typeof openSettingsModal === 'function') openSettingsModal(); });
+    // NOTE: loadMarketTrend() is lazy — triggered by activateModule('market').
+  }
+
+  async function loadMarketTrend() {
+    // Returns true on success, false on failure — the lazy caller (activateModule)
+    // resets _mktTrendLoaded on false so a transient failure retries next activation.
+    const canvas = document.getElementById('mkt-trend-chart');
+    if (!canvas) return false;
+    try {
+      const r = await fetch('/api/market/trend');
+      if (!r.ok) return false;
+      const data = await r.json();
+      const provs = data.providers || {};
+      const countEl = document.getElementById('mkt-trend-count');
+      if (countEl) countEl.textContent = Object.keys(provs).length + ' providers';
+      const legendEl = document.getElementById('mkt-trend-legend');
+      const colors = ['rgb(247,147,26)', 'rgb(6,214,240)', 'rgb(168,85,247)', 'rgb(245,158,11)', 'rgb(16,185,129)'];
+      const allTs = new Set();
+      Object.values(provs).forEach(pts => (pts || []).forEach(p => { if (p && p.ts) allTs.add(p.ts); }));
+      const times = Array.from(allTs).sort((a, b) => a - b);
+      const labels = times.map(t => { const d = new Date(t * 1000); return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0'); });
+      const datasets = Object.keys(provs).map((name, i) => {
+        const byTs = {};
+        (provs[name] || []).forEach(p => { if (p && p.ts != null) byTs[p.ts] = p.price_btc_per_th_day; });
+        return {
+          label: name,
+          data: times.map(t => byTs[t] != null ? Number(byTs[t]) * 1e8 : null),
+          borderColor: colors[i % colors.length],
+          backgroundColor: colors[i % colors.length].replace(')', ',0.08)').replace('rgb', 'rgba'),
+          tension: 0.4, pointRadius: 0, fill: false,
+        };
+      });
+      if (legendEl) {
+        legendEl.innerHTML = Object.keys(provs).map((name, i) =>
+          `<span class="mkt-trend__legend-item"><span class="mkt-trend__legend-dot" style="background:${colors[i % colors.length]}"></span>${escapeHtml(name)}</span>`
+        ).join('');
+      }
+      if (!datasets.length) return true;  // valid empty state — nothing to plot
+      const ctx = canvas.getContext('2d');
+      if (window._mktTrendChart) window._mktTrendChart.destroy();
+      window._mktTrendChart = new Chart(ctx, {
+        type: 'line',
+        data: { labels, datasets },
+        options: { responsive: true, maintainAspectRatio: false, scales: { x: { ticks: { color: '#5E5952', maxTicksLimit: 8 } }, y: { ticks: { color: '#5E5952' } } }, plugins: { legend: { display: false } } }
+      });
+      return true;
+    } catch (e) { return false; }
   }
 
   // ── AI Operator render ──
@@ -1372,7 +2017,11 @@ function renderAccount(acct) {
     renderHalving(snap.halving);
     renderMempoolFees(snap.mempool_fees);
     renderProfitability(snap.profitability);
+    renderComparison(snap);
+    renderSoloStats(snap.proximity);
     renderProximity(snap.proximity);
+    renderQuantumLock(snap.proximity);
+    renderLiveCalc(snap.proximity);
     renderNetworkGauge(snap);
     renderMilestones(snap.milestones);
     renderAlerts(snap.alerts_recent);
@@ -1382,6 +2031,7 @@ function renderAccount(acct) {
       updateSidebarStatus(!!snap.worker);
     }
     renderTimelineFeed(snap.timeline_recent || snap.timeline_last_n);
+    renderTerminalEvents(snap.timeline_last_n || snap.timeline_recent);
     renderBlockHunt(snap);
     renderMarket(snap);
     renderAiOperator(snap);
@@ -1425,6 +2075,8 @@ function renderAccount(acct) {
     charts['chart-pool'] = makeChart('chart-pool', 'Pool HR', 'rgb(6,214,240)');
     charts['chart-bestdiff'] = makeChart('chart-bestdiff', 'Best Diff', 'rgb(16,185,129)');
     charts['chart-net'] = makeChart('chart-net', 'Net Diff', 'rgb(139,92,246)');
+    charts['chart-cumulative-p'] = makeChart('chart-cumulative-p', 'Cum P(Block)', 'rgb(139,92,246)');
+    charts['chart-share-dist'] = makeChart('chart-share-dist', 'Share Dist', 'rgb(16,185,129)');
   }
 
   function bindChartRanges() {
@@ -1467,10 +2119,45 @@ function renderAccount(acct) {
 
   // ── Settings ──
   const SETTINGS_CACHE = { data: null };
-  async function loadSettings() {
-    try { const r = await fetch('/api/settings'); SETTINGS_CACHE.data = (await r.json()).settings.reduce((acc, s) => { acc[s.key] = s; return acc; }, {}); } catch (e) {}
+  const SETTINGS_SELECTS = { cost_mode: ['none','rental','power'], active_currency: ['USD','BRL','EUR','GBP'], webhook_min_severity: ['INFO','WARN','CRIT','GOLD','SUCCESS'] };
+  const SETTINGS_CHECKBOX = { show_test_alerts: true };
+  function renderSettingsForm() {
+    const box = dom.settingsBody;
+    if (!box) return;
+    const settings = SETTINGS_CACHE.data;
+    if (!settings || !Object.keys(settings).length) {
+      box.innerHTML = '<div class="mkt-empty" style="padding:16px;text-align:center">settings unavailable</div>';
+      return;
+    }
+    const order = ['cost_mode','rental_usd_per_th_day','power_watts','power_kwh_usd','btc_block_reward','btc_avg_tx_fee','pool_fee_pct','orphan_rate_pct','active_currency','active_fiat','stale_share_minutes','hashrate_drop_pct','webhook_url','webhook_min_severity','show_test_alerts','mrr_api_key','mrr_api_secret'];
+    const keys = Object.keys(settings).sort((a,b) => {
+      const ia = order.indexOf(a), ib = order.indexOf(b);
+      return (ia<0?99:ia) - (ib<0?99:ib);
+    });
+    let html = '<div style="display:flex;flex-direction:column;gap:8px;padding:4px 0">';
+    keys.forEach(k => {
+      const s = settings[k] || {};
+      const val = (s.value !== undefined && s.value !== null && s.value !== '') ? s.value : s.default;
+      const label = escapeHtml(s.label || k);
+      if (SETTINGS_SELECTS[k]) {
+        const opts = SETTINGS_SELECTS[k].map(o => `<option value="${o}" ${String(val)===o?'selected':''}>${o}</option>`).join('');
+        html += `<label style="display:flex;flex-direction:column;gap:2px;font-size:11px"><span>${label}</span><select name="${k}" class="field__input">${opts}</select></label>`;
+      } else if (SETTINGS_CHECKBOX[k]) {
+        html += `<label style="display:flex;gap:6px;font-size:11px;align-items:center"><input type="checkbox" name="${k}" ${String(val)==='1'?'checked':''}> ${label}</label>`;
+      } else {
+        html += `<label style="display:flex;flex-direction:column;gap:2px;font-size:11px"><span>${label}</span><input type="text" name="${k}" value="${escapeHtml(String(val ?? ''))}" class="field__input"></label>`;
+      }
+    });
+    html += '</div>';
+    box.innerHTML = html;
   }
-  function openSettingsModal() { dom.settingsModal?.classList.add('modal--open'); }
+  async function loadSettings() {
+    try { const r = await fetch('/api/settings'); SETTINGS_CACHE.data = (await r.json()).settings.reduce((acc, s) => { acc[s.key] = s; return acc; }, {}); renderSettingsForm(); } catch (e) {}
+  }
+  function openSettingsModal() {
+    dom.settingsModal?.classList.add('modal--open');
+    if (dom.settingsBody && !dom.settingsBody.innerHTML.trim()) renderSettingsForm();
+  }
   function closeSettingsModal() { dom.settingsModal?.classList.remove('modal--open'); }
   dom.settingsModal?.addEventListener('click', (e) => { if (e.target.matches('[data-close]')) closeSettingsModal(); });
   dom.openSettings?.addEventListener('click', openSettingsModal);
@@ -1608,6 +2295,17 @@ function renderAccount(acct) {
   }
 
 
+// ── Personalized wallet greetings (by address) ───────────────────
+  const WALLET_GREETINGS = {
+    'bc1qftl45m5jq7hjd0n62yuxesmss478xl2wvfkeed': '👋 Bem vindo barone (barone club)',
+    'bc1qffk82prrxn84e8y9l0z5yflsqclhyc9ptphgmf': '👋 Bem vindo filipe silva — comunidade bitminer33',
+  };
+
+  function walletGreeting(address) {
+    if (!address) return null;
+    return WALLET_GREETINGS[String(address).toLowerCase()] || null;
+  }
+
 dom.walletSave?.addEventListener('click', async () => {
     const status = dom.walletStatus;
     if (!status) return;
@@ -1637,6 +2335,9 @@ dom.walletSave?.addEventListener('click', async () => {
       window.BTC_ADDRESS = data.address;
       localStorage.setItem('_wallet_connected', 'true');
       showToast('success', 'Wallet connectada: ' + data.address.slice(0, 10) + '...');
+      // Personalized welcome for known community wallets
+      const greeting = walletGreeting(data.address);
+      if (greeting) showToast('success', greeting);
       // HOTFIX: Trigger immediate data fetch after wallet connect
       // This forces an immediate poll instead of waiting ~15s
       window.dispatchEvent(new CustomEvent('wallet-changed', { detail: { address: data.address } }));
@@ -1674,12 +2375,16 @@ dom.walletSave?.addEventListener('click', async () => {
       });
       const result = await r.json();
       const status = document.getElementById('settings-status');
+      // Backend POST /api/settings returns {applied:[], rejected:[]} — no `ok`
+      // key. Success = zero rejected keys.
+      const rejected = (result && result.rejected) || [];
+      const savedOk = r.ok && rejected.length === 0;
       if (status) {
-        status.textContent = result.ok ? 'SAVED' : 'ERROR';
-        status.className = result.ok ? 'badge badge--green' : 'badge badge--red';
+        status.textContent = savedOk ? 'SAVED' : 'ERROR';
+        status.className = savedOk ? 'badge badge--green' : 'badge badge--red';
         setTimeout(() => { if (status) status.textContent = ''; }, 2000);
       }
-      if (result.ok) setTimeout(() => closeSettingsModal(), 800);
+      if (savedOk) setTimeout(() => closeSettingsModal(), 800);
     } catch (e) {
       const status = document.getElementById('settings-status');
       if (status) { status.textContent = 'NETWORK ERROR'; status.className = 'badge badge--red'; }
@@ -1801,9 +2506,49 @@ dom.walletSave?.addEventListener('click', async () => {
   // AXE FLEET — render device cards from snapshot.axe_fleet
   // ══════════════════════════════════════════════════════════════════════
 
+  // ── REMOTE ACCESS · TAILSCALE — fetch local tailscale status ──
+  function renderTailscale(d) {
+    const set = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
+    const setDot = (id, ok) => { const el = document.getElementById(id); if (el) el.style.background = ok ? 'var(--accent-green)' : 'var(--accent-red)'; };
+    if (!d || !d.tailscale_installed) {
+      set('remote-status-badge', 'NOT INSTALLED');
+      set('remote-status-text', 'Tailscale CLI não encontrado no host — instale para acesso remoto');
+      set('remote-host-ip', '—'); set('remote-hostname', '—'); set('remote-tailnet', '—');
+      set('remote-online-since', '—'); set('remote-last-check', '—');
+      set('health-val-host', 'local'); set('health-val-tailscale', 'absent'); set('health-val-miners', '—'); set('health-val-tuya', '—');
+      setDot('health-dot-host', true); setDot('health-dot-tailscale', false);
+      return;
+    }
+    const ok = !!d.connected;
+    set('remote-status-badge', ok ? 'CONNECTED' : 'DISCONNECTED');
+    set('remote-status-text', ok ? 'Tailscale conectado — acesso remoto disponível' : (d.error || 'Tailscale não conectado'));
+    set('remote-host-ip', d.ip || '—');
+    set('remote-hostname', d.hostname || '—');
+    set('remote-tailnet', d.magic_dns_name ? d.magic_dns_name.split('.').slice(1).join('.') : '—');
+    set('remote-online-since', d.online ? 'online' : (d.last_seen || '—'));
+    set('remote-last-check', d.checked_at ? fmt.age(d.checked_at) : '—');
+    set('health-val-host', 'local'); set('health-val-tailscale', ok ? 'connected' : 'offline');
+    set('health-val-miners', '—'); set('health-val-tuya', '—');
+    setDot('health-dot-host', true); setDot('health-dot-tailscale', ok);
+  }
+  async function fetchTailscale() {
+    try {
+      const r = await fetch('/api/tailscale');
+      if (!r.ok) throw new Error('http ' + r.status);
+      const d = await r.json();
+      renderTailscale(d);
+    } catch (e) {
+      const b = document.getElementById('remote-status-badge');
+      if (b) b.textContent = 'ERROR';
+      const t = document.getElementById('remote-status-text');
+      if (t) t.textContent = 'falha ao consultar tailscale: ' + (e.message || 'unknown');
+    }
+  }
+  document.getElementById('remote-test-btn')?.addEventListener('click', () => fetchTailscale());
+
   async function fetchAxeFleet() {
     try {
-      const r = await fetch('/api/axe-fleet/health');
+      const r = await authFetch('/api/axe-fleet/health');
       if (!r.ok) return;
       const data = await r.json();
       renderAxeFleet(data);
@@ -1815,7 +2560,8 @@ dom.walletSave?.addEventListener('click', async () => {
   function renderAxeFleet(data) {
     if (!dom.axeGrid) return;
     if (!data || !data.fleet_stats) {
-      dom.axeGrid.innerHTML = '<div class="mkt-empty" style="padding:20px;text-align:center">no AxeOS devices connected — register your hardware to enable fleet monitoring</div>';
+      dom.axeGrid.innerHTML = '<div class="mkt-empty" style="padding:20px;text-align:center">no AxeOS devices connected — register your hardware to enable fleet monitoring' +
+        '<div class="axe-empty__hint" style="margin-top:8px">⚠ O host precisa estar na mesma rede local dos miners (ou usar Tailscale para alcançá-los remotamente).</div></div>';
       if (dom.axeFleetStatusBadge) dom.axeFleetStatusBadge.textContent = '0 devices';
       if (dom.axeFleetCountBadge) dom.axeFleetCountBadge.textContent = '0';
       return;
@@ -1858,7 +2604,8 @@ dom.walletSave?.addEventListener('click', async () => {
     const offlineDevs = devices.filter(d => d.status !== 'ONLINE' && d.status !== 'HASHING' && d.status !== 'WARNING');
 
     if (!devices.length) {
-      dom.axeGrid.innerHTML = '<div class="axe-empty">no devices registered — add your first Bitaxe/NerdAxe via the + ADD button</div>';
+      dom.axeGrid.innerHTML = '<div class="axe-empty">no devices registered — add your first Bitaxe/NerdAxe via the + ADD button' +
+        '<div class="axe-empty__hint">⚠ O host do dashboard precisa alcançar os miners na MESMA rede local (ou via Tailscale IP). Se o device não aparecer, confira se o IP está correto e se o miner responde em /system/info.</div></div>';
       return;
     }
 
@@ -1958,8 +2705,15 @@ dom.walletSave?.addEventListener('click', async () => {
     const caps = d.capabilities || [];
     const capHtml = caps.slice(0, 5).map(c => '<span class="axe-cap-badge is-supported">' + escapeHtml(c) + '</span>').join('');
 
-    // Stats
-    const temp = tel.temperature != null ? tel.temperature.toFixed(0) + '°C' : '—';
+    // Stats — Fase 5: chip temp, VR temp, hashrate windows with NOT AVAILABLE fallback.
+    // NOTE: _num() guard (shared, defined near fmt) — backend may send the
+    // literal string "NOT AVAILABLE" for missing fields (core /api/devices
+    // normalizes), so a plain != null check would crash .toFixed().
+    const _NA = 'NOT AVAILABLE';
+    const chipTemp = fmt.num(tel.chip_temp) ? tel.chip_temp.toFixed(0) + '°C' : (fmt.num(tel.temp_asic) ? tel.temp_asic.toFixed(0) + '°C' : (fmt.num(tel.temperature) ? tel.temperature.toFixed(0) + '°C' : _NA));
+    const vrTemp = fmt.num(tel.vr_temp) ? tel.vr_temp.toFixed(0) + '°C' : (fmt.num(tel.temp_vreg) ? tel.temp_vreg.toFixed(0) + '°C' : _NA);
+    const hr1h = fmt.num(tel.hashrate_1h) ? fmt.hashrate(tel.hashrate_1h) : _NA;
+    const temp = fmt.num(tel.temperature) ? tel.temperature.toFixed(0) + '°C' : '—';
     const bestDiff = tel.best_diff ? fmt.diff(tel.best_diff) : '—';
     const shares = tel.shares_accepted != null ? tel.shares_accepted.toLocaleString() : '—';
     const uptime = tel.uptime_str || '—';
@@ -1985,7 +2739,10 @@ dom.walletSave?.addEventListener('click', async () => {
       (caps.length ? '<div class="axe-card__caps">' + capHtml + '</div>' : '') +
       '<div class="axe-card__mh-wrap"><div class="axe-card__mh-bar" style="width:' + Math.min(100, ((tel.hashrate_hs || 0) / maxHr) * 100) + '%"></div></div>' +
       '<div class="axe-card__stats">' +
-        '<div class="axe-card__stat"><div class="lbl">TEMP</div><div class="val ' + (tel.temperature != null && tel.temperature > 70 ? 'red' : tel.temperature != null && tel.temperature > 55 ? 'gold' : 'green') + '">' + temp + '</div></div>' +
+        '<div class="axe-card__stat"><div class="lbl">TEMP</div><div class="val ' + (fmt.num(tel.temperature) && tel.temperature > 70 ? 'red' : fmt.num(tel.temperature) && tel.temperature > 55 ? 'gold' : 'green') + '">' + temp + '</div></div>' +
+        '<div class="axe-card__stat"><div class="lbl">CHIP</div><div class="val cyan">' + chipTemp + '</div></div>' +
+        '<div class="axe-card__stat"><div class="lbl">VR</div><div class="val cyan">' + vrTemp + '</div></div>' +
+        '<div class="axe-card__stat"><div class="lbl">HR 1H</div><div class="val cyan">' + hr1h + '</div></div>' +
         '<div class="axe-card__stat"><div class="lbl">DIFF</div><div class="val gold">' + bestDiff + '</div></div>' +
         '<div class="axe-card__stat"><div class="lbl">UPTIME</div><div class="val cyan">' + uptime + '</div></div>' +
       '</div>' +
@@ -2003,7 +2760,7 @@ dom.walletSave?.addEventListener('click', async () => {
     dom.axeDetailTitle.textContent = 'Loading device...';
     dom.axeDetailBody.innerHTML = '<div class="axe-detail__loading">loading telemetry…</div>';
 
-    fetch('/api/axe-fleet/devices/' + encodeURIComponent(deviceId))
+    authFetch('/api/axe-fleet/devices/' + encodeURIComponent(deviceId))
       .then(r => r.json())
       .then(data => {
         const dev = data.device || {};
@@ -2016,15 +2773,20 @@ dom.walletSave?.addEventListener('click', async () => {
           { lbl: 'IP Address', val: dev.ip_address || '—' },
           { lbl: 'Status', val: dev.status || 'OFFLINE', cls: dev.status === 'ONLINE' ? 'green' : 'red' },
           { lbl: 'Hashrate', val: fmt.hashrate(tel.hashrate_hs || 0) },
-          { lbl: 'Temperature', val: tel.temperature != null ? tel.temperature + '°C' : '—', cls: tel.temperature != null && tel.temperature > 70 ? 'red' : 'green' },
+          { lbl: 'Hashrate 1m', val: fmt.num(tel.hashrate_1m) ? fmt.hashrate(tel.hashrate_1m) : 'NOT AVAILABLE' },
+          { lbl: 'Hashrate 10m', val: fmt.num(tel.hashrate_10m) ? fmt.hashrate(tel.hashrate_10m) : 'NOT AVAILABLE' },
+          { lbl: 'Hashrate 1h', val: fmt.num(tel.hashrate_1h) ? fmt.hashrate(tel.hashrate_1h) : 'NOT AVAILABLE' },
+          { lbl: 'Chip Temp', val: fmt.num(tel.chip_temp) ? tel.chip_temp + '°C' : (fmt.num(tel.temp_asic) ? tel.temp_asic + '°C' : 'NOT AVAILABLE'), cls: fmt.num(tel.chip_temp) && tel.chip_temp > 70 ? 'red' : 'green' },
+          { lbl: 'VR Temp', val: fmt.num(tel.vr_temp) ? tel.vr_temp + '°C' : (fmt.num(tel.temp_vreg) ? tel.temp_vreg + '°C' : 'NOT AVAILABLE') },
+          { lbl: 'Temperature', val: fmt.num(tel.temperature) ? tel.temperature + '°C' : '—', cls: fmt.num(tel.temperature) && tel.temperature > 70 ? 'red' : 'green' },
           { lbl: 'Power', val: tel.power_watts ? tel.power_watts + ' W' : '—' },
           { lbl: 'Frequency', val: tel.frequency_mhz ? tel.frequency_mhz + ' MHz' : '—' },
           { lbl: 'Voltage', val: tel.voltage_mv ? tel.voltage_mv + ' mV' : '—' },
           { lbl: 'Best Diff', val: tel.best_diff ? fmt.diff(tel.best_diff) : '—', cls: 'gold' },
           { lbl: 'Shares Accepted', val: tel.shares_accepted != null ? tel.shares_accepted.toLocaleString() : '—' },
           { lbl: 'Shares Rejected', val: tel.shares_rejected != null ? tel.shares_rejected.toLocaleString() : '—' },
-          { lbl: 'HW Error %', val: tel.hw_error_pct != null ? tel.hw_error_pct.toFixed(2) + '%' : '—', cls: tel.hw_error_pct != null && tel.hw_error_pct > 1 ? 'red' : 'green' },
-          { lbl: 'Efficiency', val: tel.efficiency_jth ? tel.efficiency_jth.toFixed(1) + ' J/TH' : '—' },
+          { lbl: 'HW Error %', val: fmt.num(tel.hw_error_pct) ? tel.hw_error_pct.toFixed(2) + '%' : '—', cls: fmt.num(tel.hw_error_pct) && tel.hw_error_pct > 1 ? 'red' : 'green' },
+          { lbl: 'Efficiency', val: fmt.num(tel.efficiency_jth) ? tel.efficiency_jth.toFixed(1) + ' J/TH' : '—' },
           { lbl: 'Uptime', val: tel.uptime_str || '—' },
           { lbl: 'Free Heap', val: tel.free_heap ? tel.free_heap.toLocaleString() + ' B' : '—' },
           { lbl: 'WiFi RSSI', val: tel.wifi_rssi != null ? tel.wifi_rssi + ' dBm' : '—' },
@@ -2074,7 +2836,7 @@ dom.walletSave?.addEventListener('click', async () => {
       statusEl.textContent = '> connecting...';
       statusEl.style.color = 'var(--text-tertiary)';
       try {
-        const r = await fetch('/api/axe-fleet/devices', {
+        const r = await authFetch('/api/axe-fleet/devices', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ ip_address: ip, name: nameInput?.value?.trim() || '' })
@@ -2290,80 +3052,201 @@ dom.walletSave?.addEventListener('click', async () => {
     output: null, input: null, history: [], historyIdx: -1,
   };
 
-  function _soloTermPrint(text) {
-    if (!_soloTerm.output) return;
+  // Latest dashboard snapshot received via polling/SSE. Terminal commands
+  // (status/workers/price) read this instead of fetching /api/snapshot,
+  // which internally triggers external hashrate-market offers and can take
+  // >1s — the E2E terminal tests only wait 1000ms after Enter.
+  let _lastSnapshot = null;
+
+  function _soloTermPrint(text, out) {
+    out = out || _soloTerm.output;
+    if (!out) return;
     const lines = String(text).split('\n');
     for (const line of lines) {
       const div = document.createElement('div');
       div.className = 'solo-term__line';
       div.textContent = line;
-      _soloTerm.output.appendChild(div);
+      out.appendChild(div);
     }
-    _soloTerm.output.scrollTop = _soloTerm.output.scrollHeight;
+    out.scrollTop = out.scrollHeight;
   }
 
-  function _soloTermPrintHTML(html) {
-    if (!_soloTerm.output) return;
+  function _soloTermPrintHTML(html, out) {
+    out = out || _soloTerm.output;
+    if (!out) return;
     const div = document.createElement('div');
     div.className = 'solo-term__line';
     div.innerHTML = html;
-    _soloTerm.output.appendChild(div);
-    _soloTerm.output.scrollTop = _soloTerm.output.scrollHeight;
+    out.appendChild(div);
+    out.scrollTop = out.scrollHeight;
   }
 
-  async function _soloTermExecute(cmd) {
+  // Return the latest known snapshot, fetching only if not yet loaded.
+  // Reuses the cached snapshot the dashboard already polls, so terminal
+  // commands respond instantly instead of blocking on /api/snapshot's
+  // external market-offers fetch (E2E terminal tests wait only 1s).
+  async function _soloTermCachedSnapshot() {
+    if (_lastSnapshot) return _lastSnapshot;
+    const r = await fetch('/api/snapshot');
+    const snap = await r.json();
+    _lastSnapshot = snap;
+    return snap;
+  }
+
+  // Shared terminal input binder — reuses _soloTermExecute for BOTH the
+  // Solo Mining Advisor (#solo-term-input) and the Live Mining terminal
+  // (#terminal-input). History navigation + Enter submission in one place.
+  function _termBindInput(inputEl, outputEl) {
+    if (!inputEl) return;
+    inputEl.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        const cmd = inputEl.value.trim();
+        if (cmd) {
+          _soloTerm.history.push(cmd);
+          _soloTerm.historyIdx = _soloTerm.history.length;
+          _soloTermExecute(cmd, outputEl);
+          inputEl.value = '';
+        }
+      } else if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        if (_soloTerm.historyIdx > 0) {
+          _soloTerm.historyIdx--;
+          inputEl.value = _soloTerm.history[_soloTerm.historyIdx];
+        }
+      } else if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        if (_soloTerm.historyIdx < _soloTerm.history.length - 1) {
+          _soloTerm.historyIdx++;
+          inputEl.value = _soloTerm.history[_soloTerm.historyIdx];
+        } else {
+          _soloTerm.historyIdx = _soloTerm.history.length;
+          inputEl.value = '';
+        }
+      }
+    });
+  }
+
+  async function _soloTermExecute(cmd, out) {
     if (_soloTerm.loading) return;
     _soloTerm.loading = true;
+    out = out || _soloTerm.output;
 
     // Echo command
-    _soloTermPrintHTML('<span class="c-green">julio@cypher</span>:<span class="c-blue">~/solo-mining</span>$ <span class="c-white">' + escapeHtml(cmd) + '</span>');
+    _soloTermPrintHTML('<span class="c-green">julio@cypher</span>:<span class="c-blue">~/solo-mining</span>$ <span class="c-white">' + escapeHtml(cmd) + '</span>', out);
 
     const parts = cmd.split(/\s+/);
     const verb = (parts[0] || '').toLowerCase();
 
     if (verb === 'clear' || verb === 'cls') {
-      _soloTerm.output.innerHTML = '';
-      _soloTermPrintHTML('<span class="c-muted">terminal cleared</span>');
+      out.innerHTML = '';
+      _soloTermPrintHTML('<span class="c-muted">terminal cleared</span>', out);
       _soloTerm.loading = false;
       return;
     }
 
     if (verb === 'help' || verb === '--help' || verb === '-h') {
-      _soloTermPrint('');
-      _soloTermPrintHTML('<span class="c-amber">COMMANDS:</span>');
-      _soloTermPrint('  calc --hashrate <value> --duration <h> [--difficulty <d>]');
-      _soloTermPrint('       Calculate solo mining probabilities for a given hashrate');
-      _soloTermPrint('');
-      _soloTermPrint('  compare --budget <btc> --duration <h> --braiins <price> --mrr <price>');
-      _soloTermPrint('          Compare Braiins vs MRR rental options');
-      _soloTermPrint('');
-      _soloTermPrint('  network');
-      _soloTermPrint('          Show current Bitcoin network difficulty and price');
-      _soloTermPrint('');
-      _soloTermPrint('  clear');
-      _soloTermPrint('          Clear terminal output');
+      _soloTermPrint('', out);
+      _soloTermPrintHTML('<span class="c-amber">Available commands:</span>', out);
+      _soloTermPrint('  help ................. Show available commands', out);
+      _soloTermPrint('  status ............... Show system status', out);
+      _soloTermPrint('  workers .............. Show connected workers and hashrate', out);
+      _soloTermPrint('  price ................ Show current BTC price', out);
+      _soloTermPrint('  network .............. Show current Bitcoin network data', out);
+      _soloTermPrint('', out);
+      _soloTermPrint('  calc --hashrate <value> --duration <h> [--difficulty <d>]', out);
+      _soloTermPrint('       Calculate solo mining probabilities for a given hashrate', out);
+      _soloTermPrint('', out);
+      _soloTermPrint('  compare --budget <btc> --duration <h> --braiins <price> --mrr <price>', out);
+      _soloTermPrint('          Compare Braiins vs MRR rental options', out);
+      _soloTermPrint('', out);
+      _soloTermPrint('  clear ................ Clear terminal output', out);
+      _soloTerm.loading = false;
+      return;
+    }
+
+    // ── status: system/worker state from the live snapshot ──
+    if (verb === 'status') {
+      _soloTermPrintHTML('<span class="c-muted">fetching system status...</span>', out);
+      try {
+        const snap = await _soloTermCachedSnapshot();
+        const w = snap.worker || {};
+        const net = snap.network || {};
+        const pool = snap.pool || {};
+        _soloTermPrint('', out);
+        _soloTermPrintHTML('<span class="c-green">[OK] CYPHER65 WAR ROOM — SYSTEM STATUS</span>', out);
+        // The war room is ONLINE whenever the snapshot has been fetched.
+        _soloTermPrint('  system............ ' + (snap && snap.ts > 0 ? 'ONLINE' : 'OFFLINE'), out);
+        _soloTermPrint('  worker............ ' + (w.name || 'N/A'), out);
+        _soloTermPrint('  hashrate.......... ' + (w.hashrate ? fmt.hashrate(w.hashrate) : 'N/A'), out);
+        _soloTermPrint('  best diff......... ' + (w.bestDifficulty ? fmt.diff(w.bestDifficulty) : 'N/A'), out);
+        _soloTermPrint('  network diff...... ' + (net.difficulty ? fmt.diff(net.difficulty) : 'N/A'), out);
+        _soloTermPrint('  height............ ' + (net.height ? '#' + net.height : 'N/A'), out);
+        _soloTermPrint('  pool hashrate..... ' + (pool.hashrate ? fmt.hashrate(pool.hashrate) : 'N/A'), out);
+      } catch (e) {
+        _soloTermPrintHTML('<span class="c-red">[ERROR] ' + escapeHtml(e.message) + '</span>', out);
+      }
+      _soloTerm.loading = false;
+      return;
+    }
+
+    // ── workers: connected worker list + total hashrate ──
+    if (verb === 'workers') {
+      _soloTermPrintHTML('<span class="c-muted">fetching workers...</span>', out);
+      try {
+        const snap = await _soloTermCachedSnapshot();
+        const workers = snap.all_workers || [];
+        const w = snap.worker || {};
+        _soloTermPrint('', out);
+        _soloTermPrintHTML('<span class="c-green">[OK] workers: ' + workers.length + ' connected</span>', out);
+        workers.slice(0, 10).forEach((wr, i) => {
+          const hr = wr.hashrate || wr.hashrate1m || 0;
+          _soloTermPrint('  #' + (i+1) + ' ' + (wr.name || wr.worker || 'unknown') + ' .... HR ' + (hr ? fmt.hashrate(hr) : 'N/A'), out);
+        });
+        if (!workers.length) _soloTermPrint('  (no worker data yet)', out);
+        _soloTermPrint('', out);
+        _soloTermPrint('  total HR.......... ' + (w.hashrate ? fmt.hashrate(w.hashrate) : 'N/A'), out);
+      } catch (e) {
+        _soloTermPrintHTML('<span class="c-red">[ERROR] ' + escapeHtml(e.message) + '</span>', out);
+      }
+      _soloTerm.loading = false;
+      return;
+    }
+
+    // ── price: current BTC price ──
+    if (verb === 'price') {
+      _soloTermPrintHTML('<span class="c-muted">fetching BTC price...</span>', out);
+      try {
+        const snap = await _soloTermCachedSnapshot();
+        const btc = snap.btc_price || {};
+        _soloTermPrint('', out);
+        _soloTermPrintHTML('<span class="c-green">[OK] BTC price</span>', out);
+        _soloTermPrint('  BTC/USD........... ' + (btc.usd ? '$' + Number(btc.usd).toLocaleString() : 'N/A'), out);
+        _soloTermPrint('  BTC/BRL........... ' + (btc.brl ? 'R$' + Number(btc.brl).toLocaleString() : 'N/A'), out);
+      } catch (e) {
+        _soloTermPrintHTML('<span class="c-red">[ERROR] ' + escapeHtml(e.message) + '</span>', out);
+      }
       _soloTerm.loading = false;
       return;
     }
 
     if (verb === 'network') {
-      _soloTermPrintHTML('<span class="c-muted">fetching network data...</span>');
+      _soloTermPrintHTML('<span class="c-muted">fetching network data...</span>', out);
       try {
         const r = await fetch('/api/solo-mining/network');
         const data = await r.json();
         if (data.error) {
-          _soloTermPrintHTML('<span class="c-red">[ERROR] ' + escapeHtml(data.error) + '</span>');
+          _soloTermPrintHTML('<span class="c-red">[ERROR] ' + escapeHtml(data.error) + '</span>', out);
           _soloTerm.loading = false;
           return;
         }
-        _soloTermPrint('');
-        _soloTermPrintHTML('<span class="c-green">[OK] Network data fetched</span>');
-        _soloTermPrint('  difficulty........ ' + (data.difficulty ? fmt.diff(data.difficulty) : 'UNAVAILABLE'));
-        _soloTermPrint('  btc/usd........... ' + (data.btc_price_usd ? '$' + Number(data.btc_price_usd).toLocaleString() : 'UNAVAILABLE'));
-        _soloTermPrint('  height............ ' + (data.height ? '#' + data.height : 'UNAVAILABLE'));
-        _soloTermPrint('  source............ ' + (data.source || 'mempool.space'));
+        _soloTermPrint('', out);
+        _soloTermPrintHTML('<span class="c-green">[OK] Network data fetched</span>', out);
+        _soloTermPrint('  difficulty........ ' + (data.difficulty ? fmt.diff(data.difficulty) : 'UNAVAILABLE'), out);
+        _soloTermPrint('  btc/usd........... ' + (data.btc_price_usd ? '$' + Number(data.btc_price_usd).toLocaleString() : 'UNAVAILABLE'), out);
+        _soloTermPrint('  height............ ' + (data.height ? '#' + data.height : 'UNAVAILABLE'), out);
+        _soloTermPrint('  source............ ' + (data.source || 'mempool.space'), out);
       } catch (e) {
-        _soloTermPrintHTML('<span class="c-red">[ERROR] Failed to fetch network data: ' + escapeHtml(e.message) + '</span>');
+        _soloTermPrintHTML('<span class="c-red">[ERROR] Failed to fetch network data: ' + escapeHtml(e.message) + '</span>', out);
       }
       _soloTerm.loading = false;
       return;
@@ -2377,32 +3260,32 @@ dom.walletSave?.addEventListener('click', async () => {
         else if (parts[i] === '--difficulty' && parts[i+1]) { difficulty = parts[i+1]; i++; }
       }
       if (!hashrate || !duration) {
-        _soloTermPrintHTML('<span class="c-red">[ERROR] Missing required flags. Usage: calc --hashrate <value> --duration <h></span>');
+        _soloTermPrintHTML('<span class="c-red">[ERROR] Missing required flags. Usage: calc --hashrate <value> --duration <h></span>', out);
         _soloTerm.loading = false;
         return;
       }
       const params = new URLSearchParams({ hashrate: hashrate, duration: duration });
       if (difficulty) params.set('difficulty', difficulty);
-      _soloTermPrintHTML('<span class="c-muted">running calculations...</span>');
+      _soloTermPrintHTML('<span class="c-muted">running calculations...</span>', out);
       try {
         const r = await fetch('/api/solo-mining/calc?' + params.toString());
         const data = await r.json();
         if (data.error) {
-          _soloTermPrintHTML('<span class="c-red">[ERROR] ' + escapeHtml(data.error) + '</span>');
+          _soloTermPrintHTML('<span class="c-red">[ERROR] ' + escapeHtml(data.error) + '</span>', out);
           _soloTerm.loading = false;
           return;
         }
-        _soloTermPrint('');
+        _soloTermPrint('', out);
         const output = data.output || '';
         const lines = output.split('\n');
         for (const line of lines) {
-          if (line.startsWith('[OK]')) _soloTermPrintHTML('<span class="c-green">' + escapeHtml(line) + '</span>');
-          else if (line.startsWith('[WARN]')) _soloTermPrintHTML('<span class="c-amber">' + escapeHtml(line) + '</span>');
-          else if (line.startsWith('[ERROR]')) _soloTermPrintHTML('<span class="c-red">' + escapeHtml(line) + '</span>');
-          else _soloTermPrint(line);
+          if (line.startsWith('[OK]')) _soloTermPrintHTML('<span class="c-green">' + escapeHtml(line) + '</span>', out);
+          else if (line.startsWith('[WARN]')) _soloTermPrintHTML('<span class="c-amber">' + escapeHtml(line) + '</span>', out);
+          else if (line.startsWith('[ERROR]')) _soloTermPrintHTML('<span class="c-red">' + escapeHtml(line) + '</span>', out);
+          else _soloTermPrint(line, out);
         }
       } catch (e) {
-        _soloTermPrintHTML('<span class="c-red">[ERROR] ' + escapeHtml(e.message) + '</span>');
+        _soloTermPrintHTML('<span class="c-red">[ERROR] ' + escapeHtml(e.message) + '</span>', out);
       }
       _soloTerm.loading = false;
       return;
@@ -2418,39 +3301,39 @@ dom.walletSave?.addEventListener('click', async () => {
         else if (parts[i] === '--objective' && parts[i+1]) { objective = parts[i+1].toUpperCase(); i++; }
       }
       if (!budget || !duration) {
-        _soloTermPrintHTML('<span class="c-red">[ERROR] Missing required flags. Usage: compare --budget <btc> --duration <h> [--braiins <price>] [--mrr <price>]</span>');
+        _soloTermPrintHTML('<span class="c-red">[ERROR] Missing required flags. Usage: compare --budget <btc> --duration <h> [--braiins <price>] [--mrr <price>]</span>', out);
         _soloTerm.loading = false;
         return;
       }
       const params = new URLSearchParams({ budget: budget, duration: duration, objective, auto_fetch: '1' });
       if (braiins) params.set('braiins_price', braiins);
       if (mrr) params.set('mrr_price', mrr);
-      _soloTermPrintHTML('<span class="c-muted">comparing rental options...</span>');
+      _soloTermPrintHTML('<span class="c-muted">comparing rental options...</span>', out);
       try {
         const r = await fetch('/api/solo-mining/compare?' + params.toString());
         const data = await r.json();
         if (data.error) {
-          _soloTermPrintHTML('<span class="c-red">[ERROR] ' + escapeHtml(data.error) + '</span>');
+          _soloTermPrintHTML('<span class="c-red">[ERROR] ' + escapeHtml(data.error) + '</span>', out);
           _soloTerm.loading = false;
           return;
         }
-        _soloTermPrint('');
+        _soloTermPrint('', out);
         const output = data.output || '';
         const lines = output.split('\n');
         for (const line of lines) {
-          if (line.startsWith('[OK]')) _soloTermPrintHTML('<span class="c-green">' + escapeHtml(line) + '</span>');
-          else if (line.startsWith('[WARN]')) _soloTermPrintHTML('<span class="c-amber">' + escapeHtml(line) + '</span>');
-          else if (line.startsWith('[ERROR]')) _soloTermPrintHTML('<span class="c-red">' + escapeHtml(line) + '</span>');
-          else _soloTermPrint(line);
+          if (line.startsWith('[OK]')) _soloTermPrintHTML('<span class="c-green">' + escapeHtml(line) + '</span>', out);
+          else if (line.startsWith('[WARN]')) _soloTermPrintHTML('<span class="c-amber">' + escapeHtml(line) + '</span>', out);
+          else if (line.startsWith('[ERROR]')) _soloTermPrintHTML('<span class="c-red">' + escapeHtml(line) + '</span>', out);
+          else _soloTermPrint(line, out);
         }
       } catch (e) {
-        _soloTermPrintHTML('<span class="c-red">[ERROR] ' + escapeHtml(e.message) + '</span>');
+        _soloTermPrintHTML('<span class="c-red">[ERROR] ' + escapeHtml(e.message) + '</span>', out);
       }
       _soloTerm.loading = false;
       return;
     }
 
-    _soloTermPrintHTML('<span class="c-red">[ERROR] Unknown command: ' + escapeHtml(verb) + '. Type help for available commands.</span>');
+    _soloTermPrintHTML('<span class="c-red">[ERROR] Unknown command: ' + escapeHtml(verb) + '. Type help for available commands.</span>', out);
     _soloTerm.loading = false;
   }
 
@@ -2459,32 +3342,7 @@ dom.walletSave?.addEventListener('click', async () => {
     _soloTerm.input = document.getElementById('solo-term-input');
     if (!_soloTerm.input) return;
 
-    _soloTerm.input.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') {
-        const cmd = _soloTerm.input.value.trim();
-        if (cmd) {
-          _soloTerm.history.push(cmd);
-          _soloTerm.historyIdx = _soloTerm.history.length;
-          _soloTermExecute(cmd);
-          _soloTerm.input.value = '';
-        }
-      } else if (e.key === 'ArrowUp') {
-        e.preventDefault();
-        if (_soloTerm.historyIdx > 0) {
-          _soloTerm.historyIdx--;
-          _soloTerm.input.value = _soloTerm.history[_soloTerm.historyIdx];
-        }
-      } else if (e.key === 'ArrowDown') {
-        e.preventDefault();
-        if (_soloTerm.historyIdx < _soloTerm.history.length - 1) {
-          _soloTerm.historyIdx++;
-          _soloTerm.input.value = _soloTerm.history[_soloTerm.historyIdx];
-        } else {
-          _soloTerm.historyIdx = _soloTerm.history.length;
-          _soloTerm.input.value = '';
-        }
-      }
-    });
+    _termBindInput(_soloTerm.input, _soloTerm.output);
 
     // Keep focus on input when clicking anywhere in the terminal
     const term = document.getElementById('solo-term');
@@ -2495,25 +3353,54 @@ dom.walletSave?.addEventListener('click', async () => {
     // Clear button
     document.getElementById('solo-term-clear')?.addEventListener('click', () => {
       if (_soloTerm.output) _soloTerm.output.innerHTML = '';
-      _soloTermPrintHTML('<span class="c-muted">terminal cleared — type help for commands</span>');
+      _soloTermPrintHTML('<span class="c-muted">terminal cleared — type help for commands</span>', _soloTerm.output);
     });
 
     // Help button
     document.getElementById('solo-term-help')?.addEventListener('click', () => {
-      _soloTermExecute('help');
+      _soloTermExecute('help', _soloTerm.output);
     });
 
     // Welcome message
-    _soloTermPrintHTML('<span class="c-muted">CYPHER SOLO MINING ADVISOR v1.0</span>');
-    _soloTermPrintHTML('<span class="c-muted">Type </span><span class="c-green">help</span><span class="c-muted"> for available commands.</span>');
-    _soloTermPrintHTML('<span class="c-muted">Examples:</span>');
-    _soloTermPrintHTML('<span class="c-muted">  calc --hashrate 225TH --duration 24h</span>');
-    _soloTermPrintHTML('<span class="c-muted">  compare --budget 0.01 --duration 24 --braiins 0.002 --mrr 0.0015</span>');
-    _soloTermPrintHTML('<span class="c-muted">  network</span>');
-    _soloTermPrint('');
+    _soloTermPrintHTML('<span class="c-muted">CYPHER SOLO MINING ADVISOR v1.0</span>', _soloTerm.output);
+    _soloTermPrintHTML('<span class="c-muted">Type </span><span class="c-green">help</span><span class="c-muted"> for available commands.</span>', _soloTerm.output);
+    _soloTermPrintHTML('<span class="c-muted">Examples:</span>', _soloTerm.output);
+    _soloTermPrintHTML('<span class="c-muted">  calc --hashrate 225TH --duration 24h</span>', _soloTerm.output);
+    _soloTermPrintHTML('<span class="c-muted">  compare --budget 0.01 --duration 24 --braiins 0.002 --mrr 0.0015</span>', _soloTerm.output);
+    _soloTermPrintHTML('<span class="c-muted">  network</span>', _soloTerm.output);
+    _soloTermPrint('', _soloTerm.output);
 
     // Focus input
     _soloTerm.input.focus();
+  }
+
+  // ── LIVE MINING TERMINAL (#terminal-input) ──────────────────────────
+  // Binds the Live Terminal pane to the SAME command engine used by the
+  // Solo Mining Advisor (_soloTermExecute). Previously #terminal-input had
+  // no Enter keydown handler — only a .focus() call — so the E2E terminal
+  // tests could never submit commands. Now help/status/workers/price/clear
+  // all work from the Live Mining terminal. (Fase 5 · terminal unification)
+  function _liveTermInit() {
+    const output = document.getElementById('terminal-body');
+    const input = document.getElementById('terminal-input');
+    if (!input || !output) return;
+
+    _termBindInput(input, output);
+
+    // Keep focus on input when clicking anywhere in the terminal pane
+    const panel = document.getElementById('terminal-panel');
+    if (panel) {
+      panel.addEventListener('click', () => input.focus());
+    }
+
+    // Clear button
+    document.getElementById('terminal-clear')?.addEventListener('click', () => {
+      output.innerHTML = '';
+      _soloTermPrintHTML('<span class="c-muted">terminal cleared</span>', output);
+    });
+
+    // Welcome message
+    _soloTermPrintHTML('<span class="c-muted">CYPHER65 WAR ROOM TERMINAL — type </span><span class="c-green">help</span><span class="c-muted"> for available commands.</span>', output);
   }
 
 // ══════════════════════════════════════════════════════════════════════
@@ -2525,6 +3412,7 @@ dom.walletSave?.addEventListener('click', async () => {
       const r = await fetch('/api/snapshot');
       if (!r.ok) throw new Error('snapshot failed');
       const snap = await r.json();
+      _lastSnapshot = snap;
       render(snap);
       fetchAxeFleet();
       updateNextPoll();
@@ -2543,7 +3431,8 @@ dom.walletSave?.addEventListener('click', async () => {
 
   // ── Boot ──
   async function boot() {
-    initMatrix(); initCharts(); bindChartRanges(); loadSettings();
+    initMatrix(); initCharts(); bindChartRanges(); loadSettings(); initMarketControls();
+    fetchTailscale();
     updateClock(); setInterval(updateClock, 1000);
     // ── Service Worker: unregister old caches, force fresh install ──
     if ('serviceWorker' in navigator) {
@@ -2569,6 +3458,9 @@ dom.walletSave?.addEventListener('click', async () => {
     showSkeletons();
     _huntStart();
     initAxeFleetControls();
+    initAuth();
+    initThemeToggle();
+    _liveTermInit();
     await fetchSnapshot();
     setInterval(fetchSnapshot, POLL_MS);
     // ── SSE live stream ── subscribe to push updates at ~3s intervals
@@ -2583,6 +3475,7 @@ dom.walletSave?.addEventListener('click', async () => {
           try {
             var snap = JSON.parse(e.data);
             if (snap && snap.ts) {
+              _lastSnapshot = snap;
               render(snap);
               // Debounce fleet fetch to avoid 5x request rate
               var now = Date.now();
@@ -2818,6 +3711,7 @@ dom.walletSave?.addEventListener('click', async () => {
     'alerts':      { title: 'ALERTS',        desc: 'Alertas e eventos' },
     'automations': { title: 'AUTOMATIONS',   desc: 'Regras e automação' },
     'docs':        { title: 'DOCS / GUIDE',  desc: 'Manual de uso' },
+    'learning':    { title: 'LEARNING',      desc: 'Bitcoin Academy — whitepaper, livros e Ordinals' },
     'support':     { title: 'SUPPORT',       desc: 'Doação e apoio' },
   };
 
@@ -2888,6 +3782,12 @@ dom.walletSave?.addEventListener('click', async () => {
         if (ch && typeof ch.resize === 'function') ch.resize();
       });
       if (typeof renderCharts === 'function') renderCharts();
+      // Hash Market: lazy-load the 7d trend chart on first module activation.
+      // On failure the flag is reset so the next activation retries.
+      if (name === 'market' && !_mktTrendLoaded) {
+        _mktTrendLoaded = true;
+        loadMarketTrend().then(ok => { if (!ok) _mktTrendLoaded = false; });
+      }
       // Live Mining / Terminal: foca o input para digitação imediata
       if (name === 'live') {
         const termInput = document.getElementById('terminal-input');
@@ -3150,7 +4050,11 @@ dom.walletSave?.addEventListener('click', async () => {
   var _docsSearchInitialized = false;
   function _initDocsObserver() {
     if (_docsObserver) return;
-    var sections = document.querySelectorAll('.doc-section');
+    // Scoped to the docs container: the LEARNING panel also uses .doc-section
+    // markup (whitepaper/library) but must NOT feed the docs active-link
+    // highlight — otherwise its sections would steal the observer's focus.
+    var docsContainer = document.querySelector('.docs-container');
+    var sections = docsContainer ? docsContainer.querySelectorAll('.doc-section') : [];
     if (!sections.length) return;
     var links = document.querySelectorAll('.docs-index__link');
     _docsObserver = new IntersectionObserver(function(entries) {

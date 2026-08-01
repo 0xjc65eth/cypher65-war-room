@@ -9,6 +9,7 @@ import pytest
 
 from services.hashrate_market import (
     NormalizedOffer,
+    clear_fetch_cache,
     fetch_braiins_offer,
     fetch_nicehash_offer,
     fetch_mrr_offer,
@@ -17,6 +18,19 @@ from services.hashrate_market import (
     fetch_all_offers,
     DEFAULT_RENTAL_HASHRATE_TH,
 )
+
+
+@pytest.fixture(autouse=True)
+def _clear_fetch_cache():
+    """Clear the module-level provider fetch cache between tests.
+
+    fetch_all_offers() caches per-provider results for a TTL; without this,
+    a test that patches providers to return None can receive offers cached by
+    an earlier test in the same process.
+    """
+    clear_fetch_cache()
+    yield
+    clear_fetch_cache()
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -218,7 +232,9 @@ class TestGetNicehashOrderbook:
         from agents.solo_mining_advisor.tools import get_nicehash_orderbook
         result = get_nicehash_orderbook()
         assert "error" not in result, f"Unexpected error: {result.get('error')}"
-        assert result["price_btc_per_ph_day"] == pytest.approx(0.0005, rel=1e-6)
+        # price is BTC/TH/day → per_ph = per_th × 1000 (1 PH = 1000 TH)
+        assert result["price_btc_per_th_day"] == pytest.approx(0.0005, rel=1e-6)
+        assert result["price_btc_per_ph_day"] == pytest.approx(0.5, rel=1e-6)
         assert result["available_orders"] == 2
 
     def test_empty_orders(self, monkeypatch):
@@ -285,8 +301,8 @@ class TestFetchBraiinsOffer:
             result = fetch_braiins_offer()
             assert result is not None
             assert result.provider == "braiins"
-            # price_per_th_day = price_btc_per_ph_day / 1_000_000
-            assert result.price_per_th_day == pytest.approx(0.00005 / 1_000_000, rel=1e-9)
+            # price_per_th_day = price_btc_per_ph_day / 1000 (1 PH = 1000 TH)
+            assert result.price_per_th_day == pytest.approx(0.00005 / 1000, rel=1e-9)
             # fetch_braiins_offer always uses DEFAULT_RENTAL_HASHRATE_TH
             assert result.hashrate == DEFAULT_RENTAL_HASHRATE_TH
             assert result.duration_days == 1.0
@@ -325,7 +341,7 @@ class TestFetchNicehashOffer:
             result = fetch_nicehash_offer()
             assert result is not None
             assert result.provider == "nicehash"
-            assert result.price_per_th_day == pytest.approx(0.0005 / 1_000_000, rel=1e-9)
+            assert result.price_per_th_day == pytest.approx(0.0005 / 1000, rel=1e-9)
             # 5.0 PH = 5000 TH/s
             assert result.hashrate == pytest.approx(5000.0, rel=1e-6)
 
@@ -353,7 +369,7 @@ class TestFetchMrrOffer:
             result = fetch_mrr_offer()
             assert result is not None
             assert result.provider == "mrr"
-            assert result.price_per_th_day == pytest.approx(0.0001 / 1_000_000, rel=1e-9)
+            assert result.price_per_th_day == pytest.approx(0.0001 / 1000, rel=1e-9)
             # best_rig_hash_th is already in TH/s
             assert result.hashrate == pytest.approx(1000.0, rel=1e-6)
 

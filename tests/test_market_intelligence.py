@@ -128,7 +128,7 @@ class TestStalePriceFiltering:
 
 class TestApiHashrateMarket:
     def test_hashrate_market_returns_success(self, client, monkeypatch):
-        def fake_fetch_all_offers():
+        def fake_fetch_all_offers(network_hashrate=None):
             return [
                 NormalizedOffer(
                     provider="braiins",
@@ -203,7 +203,7 @@ class TestApiHashrateMarket:
         assert mock_fetch.call_count == 1
 
     def test_opportunities_compare_filters_providers(self, client, monkeypatch):
-        def fake_fetch_all_offers():
+        def fake_fetch_all_offers(network_hashrate=None):
             return [
                 NormalizedOffer(
                     provider="braiins",

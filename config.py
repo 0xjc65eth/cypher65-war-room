@@ -27,6 +27,14 @@ RATE_LIMIT_PER_MINUTE = int(os.environ.get("RATE_LIMIT_PER_MINUTE", 300))  # kee
 API_KEY = os.environ.get("API_KEY")
 DEBUG_MOCK = os.environ.get("DEBUG_MOCK") == "1"
 
+# ── Multi-tenant API keys (Fase 4 · B1) ──────────────────────────────
+# JSON dict mapping tenant_id -> api_key, e.g. '{"default":"k1","acme":"k2"}'.
+# When set, /api/auth/login validates against these and issues JWTs with
+# sub=tenant_id, activating the axe_fleet tenant isolation that already
+# exists in axe_fleet/routes.py + axe_fleet/registry.py.
+# Falls back to the legacy single API_KEY (tenant "default").
+TENANT_API_KEYS = os.environ.get("TENANT_API_KEYS", "")
+
 DATA_DIR.mkdir(exist_ok=True)
 
 # ── Wallet source tracking ────────────────────────────────────────────

@@ -254,18 +254,51 @@ def optional_auth(f):
     return decorated
 
 
+def resolve_tenant_for_api_key(api_key: str) -> Optional[str]:
+    """Map an API key to a tenant_id.
+
+    Uses the TENANT_API_KEYS env var (JSON dict tenant_id → api_key) when
+    set; otherwise falls back to the legacy single API_KEY env var, which
+    maps to tenant "default".
+
+    Returns:
+        tenant_id (str) if the key is valid, None otherwise.
+    """
+    if not api_key:
+        return None
+
+    import json
+    import hmac as _hmac
+
+    raw = os.environ.get("TENANT_API_KEYS", "")
+    if raw.strip():
+        try:
+            mapping = json.loads(raw)
+            if isinstance(mapping, dict):
+                for tid, key in mapping.items():
+                    if isinstance(key, str) and key and _hmac.compare_digest(api_key, key):
+                        return str(tid)
+        except (ValueError, TypeError):
+            log.warning("[auth] TENANT_API_KEYS is not valid JSON — falling back to API_KEY")
+
+    expected_key = os.environ.get("API_KEY")
+    if expected_key and _hmac.compare_digest(api_key, expected_key):
+        return "default"
+
+    return None
+
+
 def authenticate_with_api_key() -> bool:
     """Check if the request has a valid API key (via X-API-Key header).
 
-    Uses the API_KEY env var as the expected key. If API_KEY is not set,
-    this check always passes (no API key protection configured).
+    Uses TENANT_API_KEYS (multi-tenant) or the legacy API_KEY env var.
+    If neither is configured, this check always passes.
 
     Returns:
         True if authenticated or no API key is configured
     """
-    expected_key = os.environ.get("API_KEY")
-    if not expected_key:
+    if not os.environ.get("API_KEY") and not os.environ.get("TENANT_API_KEYS"):
         return True  # No API key configured → open access
 
     provided_key = request.headers.get("X-API-Key", "")
-    return provided_key == expected_key
+    return resolve_tenant_for_api_key(provided_key) is not None

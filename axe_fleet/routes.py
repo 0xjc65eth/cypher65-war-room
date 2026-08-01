@@ -27,6 +27,8 @@ from functools import wraps
 
 from flask import Blueprint, jsonify, request, session
 
+from services.tenant import get_tenant_id as _get_tenant_id, require_tenant
+
 from .connector import AxeOSConnector, AxeOSConnectorError
 from .models import infer_capabilities
 from .registry import DeviceRegistry
@@ -44,41 +46,6 @@ def init_routes(registry: DeviceRegistry):
 
 
 axe_fleet_bp = Blueprint("axe_fleet", __name__)
-
-
-# ── Tenant helpers (defined before routes that use @require_tenant) ──
-
-
-def _get_tenant_id() -> str:
-    """Extract tenant ID from the current request context.
-    Priority: JWT auth payload > session > remote IP hash.
-    Returns 'default' as fallback."""
-    from flask import g
-    # 1) JWT auth (from require_auth decorator)
-    try:
-        payload = g.auth_payload
-        if payload and payload.get("sub"):
-            return payload["sub"]
-    except (AttributeError, RuntimeError):
-        pass
-    # 2) Flask session (legacy)
-    try:
-        if session and session.get("authenticated"):
-            return session.get("tenant_id", "default")
-    except RuntimeError:
-        pass
-    # 3) IP-based tenant (single-user mode)
-    return "default"
-
-
-def require_tenant(f):
-    """Flask decorator: extract tenant_id from JWT/session and inject
-    as keyword argument `tenant_id` to the route handler."""
-    @wraps(f)
-    def wrapper(*args, **kwargs):
-        kwargs["tenant_id"] = _get_tenant_id()
-        return f(*args, **kwargs)
-    return wrapper
 
 
 # ── Device management ──────────────────────────────────────────────────
@@ -270,7 +237,7 @@ def refresh_device(device_id: str):
     """Re-detect capabilities and refresh device info."""
     if _registry is None:
         return jsonify({"error": "registry not initialized"}), 500
-    device = _registry.get_device(device_id)
+    device = _registry.get_device(device_id, tenant_id=_get_tenant_id())
     if not device:
         return jsonify({"error": "device not found"}), 404
 
@@ -359,7 +326,7 @@ def configure_device(device_id: str):
     """
     if _registry is None:
         return jsonify({"error": "registry not initialized"}), 500
-    device = _registry.get_device(device_id)
+    device = _registry.get_device(device_id, tenant_id=_get_tenant_id())
     if not device:
         return jsonify({"error": "device not found"}), 404
 
@@ -456,10 +423,15 @@ def seed_test_devices():
     """Populate fleet with simulated AxeOS devices for testing.
     Creates 4 devices with realistic telemetry (hashrate, temp, fan, power,
     uptime, best diff) and capabilities (restart, identify, pause).
-    
+
+    GATED by DEBUG_MOCK (config.py): disabled in production so mock devices
+    are never exposed via the public API. Set DEBUG_MOCK=1 for local dev.
+
     Use DELETE /api/axe-fleet/devices/<id> to remove individual devices
     after testing.
     """
+    if os.environ.get("DEBUG_MOCK") != "1":
+        return jsonify({"error": "test-devices endpoint disabled (set DEBUG_MOCK=1)"}), 403
     if _registry is None:
         return jsonify({"error": "registry not initialized"}), 500
 
@@ -1035,7 +1007,7 @@ def miner_power_cycle(device_id: str):
         return jsonify({"success": False, "error": "power-cycle requires confirmation (confirm: true)"})
 
     if _registry:
-        device = _registry.get_device(device_id)
+        device = _registry.get_device(device_id, tenant_id=_get_tenant_id())
         if not device:
             return jsonify({"success": False, "error": "miner not found"})
 
@@ -1238,7 +1210,7 @@ def remote_onboarding():
 
 def _execute_device_command(device_id: str, command: str):
     """Execute a command on a device. Shared by restart/identify endpoints."""
-    device = _registry.get_device(device_id)
+    device = _registry.get_device(device_id, tenant_id=_get_tenant_id())
     if not device:
         return jsonify({"error": "device not found"}), 404
 

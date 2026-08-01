@@ -10,6 +10,59 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from solo_mining import calc_block_probability, _parse_hashrate, normalize_cost
 from helpers import parse_diff_to_float, fmt_diff
+from core.models.device import NOT_AVAILABLE, normalize_telemetry
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 0. normalize_telemetry — Fase 5 (NOT AVAILABLE fallback)
+# ═══════════════════════════════════════════════════════════════════════════
+
+class TestNormalizeTelemetry:
+    """Canonical F5 fields must always be present — real value or NOT_AVAILABLE."""
+
+    def test_none_passthrough(self):
+        assert normalize_telemetry(None) is None
+
+    def test_missing_fields_become_not_available(self):
+        out = normalize_telemetry({"hashrate": 1e12, "temperature": 70})
+        assert out["hashrate"] == 1e12
+        assert out["temperature"] == 70
+        assert out["chip_temp"] == NOT_AVAILABLE
+        assert out["vr_temp"] == NOT_AVAILABLE
+        assert out["hashrate_1m"] == NOT_AVAILABLE
+        assert out["hashrate_10m"] == NOT_AVAILABLE
+        assert out["hashrate_1h"] == NOT_AVAILABLE
+        assert out["fan_rpm"] == NOT_AVAILABLE
+        assert out["voltage"] == NOT_AVAILABLE
+        assert out["power"] == NOT_AVAILABLE
+        assert out["pool_status"] == NOT_AVAILABLE
+
+    def test_none_values_become_not_available(self):
+        out = normalize_telemetry({"chip_temp": None, "vr_temp": 55})
+        assert out["chip_temp"] == NOT_AVAILABLE
+        assert out["vr_temp"] == 55
+
+    def test_present_values_preserved(self):
+        out = normalize_telemetry({
+            "chip_temp": 72, "vr_temp": 60, "hashrate_1m": 1.2e12,
+            "hashrate_10m": 1.1e12, "hashrate_1h": 1.0e12,
+            "fan_rpm": 4500, "voltage": 1200, "power": 30,
+            "pool_status": "CONNECTED",
+        })
+        assert out["chip_temp"] == 72
+        assert out["vr_temp"] == 60
+        assert out["hashrate_1m"] == 1.2e12
+        assert out["hashrate_10m"] == 1.1e12
+        assert out["hashrate_1h"] == 1.0e12
+        assert out["fan_rpm"] == 4500
+        assert out["voltage"] == 1200
+        assert out["power"] == 30
+        assert out["pool_status"] == "CONNECTED"
+
+    def test_extra_keys_preserved(self):
+        out = normalize_telemetry({"hashrate": 5e11, "source": "bitaxe_adapter"})
+        assert out["source"] == "bitaxe_adapter"
+        assert out["hashrate"] == 5e11
 
 
 # ═══════════════════════════════════════════════════════════════════════════

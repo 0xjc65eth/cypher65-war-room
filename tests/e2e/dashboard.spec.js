@@ -55,6 +55,21 @@ async function expectElementHasContent(page, selector, timeout = 8000) {
   expect(text.trim()).not.toBe('—');
 }
 
+/** Ensure the sidebar is open so sidebar links are clickable (mobile off-canvas) */
+async function ensureSidebarOpen(page) {
+  const isOpen = await page.evaluate(() => {
+    const sb = document.getElementById('sidebar');
+    return sb && sb.classList.contains('open');
+  });
+  if (!isOpen) {
+    const toggle = page.locator('#sidebar-mobile-toggle');
+    if (await toggle.isVisible()) {
+      await toggle.click();
+      await page.waitForTimeout(400);
+    }
+  }
+}
+
 // ══════════════════════════════════════════════════════════════════════
 //  Tests
 // ══════════════════════════════════════════════════════════════════════
@@ -145,6 +160,7 @@ test.describe('CYPHER65 War Room — Dashboard E2E', () => {
 
     test('AI Operator panel responds to input', async ({ page }) => {
       // AI Operator lives in the AUTOMATIONS module — navigate there first
+      await ensureSidebarOpen(page);
       await page.locator('.sidebar__link[data-module="automations"]').click();
       await page.waitForTimeout(600);
       const aiInput = page.locator('#ai-input');
@@ -153,8 +169,8 @@ test.describe('CYPHER65 War Room — Dashboard E2E', () => {
       await page.keyboard.press('Enter');
       await page.waitForTimeout(1500);
       // Check that the AI responded
-      const aiBody = page.locator('#ai-operator-body, .ai-messages, .ai-response');
-      await expect(aiBody.first()).not.toBeEmpty();
+      const aiBody = page.locator('#ai-messages');
+      await expect(aiBody).not.toBeEmpty();
     });
 
     test('Axe Fleet panel renders', async ({ page }) => {
@@ -299,6 +315,62 @@ test.describe('CYPHER65 War Room — Dashboard E2E', () => {
       const chips = filterContainer.locator('[data-mkt-filter]');
       const chipCount = await chips.count();
       expect(chipCount).toBeGreaterThanOrEqual(2); // All + at least 1 provider
+    });
+
+    test('Hashmarket filter chips restrict the grid to the selected provider', async ({ page }) => {
+      // Data-agnostic by design: the app registers a Service Worker whose
+      // network-first fetch is NOT intercepted by page.route, so mocked API
+      // data would be overwritten by the live SSE stream. Instead we assert the
+      // filtering INVARIANT against whatever offers the live snapshot has:
+      // clicking a provider chip must leave only that provider's cards (or the
+      // empty state when that provider currently has no offers).
+      await ensureSidebarOpen(page);
+      await page.locator('.sidebar__link[data-module="market"]').click();
+      await page.waitForTimeout(800);
+
+      const grid = page.locator('#mkt-grid');
+      await expect(grid).toBeVisible({ timeout: 10000 });
+
+      const chips = page.locator('#mkt-filters [data-mkt-filter]');
+      const chipData = await chips.evaluateAll(els =>
+        els.map(e => (e.getAttribute('data-mkt-filter') || '').toLowerCase()).filter(Boolean)
+      );
+      expect(chipData.length).toBeGreaterThanOrEqual(2); // All + at least 1 provider
+      // Known providers = all chips except 'all' (self-maintaining, no hardcode)
+      const knownProviders = chipData.filter(v => v !== 'all');
+
+      // For each provider chip: assert the filtering INVARIANT — every visible
+      // card's provider equals the selected chip, or the empty state shows when
+      // that provider currently has no offers. expect.poll re-reads the DOM so
+      // the assertion is race-proof against the SSE stream re-rendering the
+      // grid with fresh market data every ~3s (re-renders preserve _mktFilter,
+      // so cards stay consistent with the active filter mid-check).
+      for (const provider of knownProviders) {
+        await page.locator(`#mkt-filters [data-mkt-filter="${provider}"]`).click();
+        await expect.poll(async () => {
+          const count = await grid.locator('.mkt-card').count();
+          if (count === 0) {
+            return (await grid.locator('.mkt-empty').count()) > 0 ? 'empty' : 'pending';
+          }
+          const texts = await grid.locator('.mkt-card__provider').allTextContents();
+          const allMatch = texts.every(t => t.trim().toLowerCase() === provider);
+          return allMatch ? 'matched' : 'invalid';  // 'invalid' = a real filter bug
+        }, { timeout: 5000 }).toMatch(/^(empty|matched)$/);
+      }
+
+      // Back to 'all': the grid must leave the filtered state — either cards
+      // whose providers are all known provider names (never stuck on a single
+      // filter), or the empty state when the market is cold.
+      await page.locator('#mkt-filters [data-mkt-filter="all"]').click();
+      await expect.poll(async () => {
+        const texts = (await grid.locator('.mkt-card__provider').allTextContents())
+          .map(t => t.trim().toLowerCase())
+          .filter(Boolean);
+        if (texts.length === 0) {
+          return (await grid.locator('.mkt-empty').count()) > 0 ? 'empty' : 'pending';
+        }
+        return texts.every(p => knownProviders.includes(p)) ? 'known' : 'unknown';
+      }, { timeout: 5000 }).toMatch(/^(empty|known)$/);
     });
 
     test('Export modal opens', async ({ page }) => {

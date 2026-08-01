@@ -2114,6 +2114,75 @@ var bestOffers = [
   { provider: 'mrr', price_per_th_day: 5e-9 },
 ];
 assertEqual('bestIdx lowest → 1', findBestOfferIndex(bestOffers), 1);
+
+// ── _mktBestIndex mirror: highest metrics.score wins; only with NO scores at
+// all does it fall back to lowest valid price (two-pass, first-max on ties). ─
+function mktBestIndexMirror(offers) {
+  if (!offers || !offers.length) return -1;
+  var bestIdx = -1, bestScore = -Infinity;
+  offers.forEach(function (o, idx) {
+    var sc = Number(o.metrics && o.metrics.score);
+    if (isFinite(sc) && sc > bestScore) { bestScore = sc; bestIdx = idx; }
+  });
+  if (bestIdx >= 0) return bestIdx;
+  var bestVal = Infinity;
+  offers.forEach(function (o, idx) {
+    var p = Number(o.price_per_th_day);
+    if (isFinite(p) && p > 0 && p < bestVal) { bestVal = p; bestIdx = idx; }
+  });
+  return bestIdx;
+}
+var scoredOffers = [
+  { provider: 'braiins', price_per_th_day: 1e-8, metrics: { score: 5.0 } },
+  { provider: 'mrr', price_per_th_day: 2e-9, metrics: { score: 12.5 } },
+  { provider: 'nicehash', price_per_th_day: 1e-9, metrics: { score: 3.0 } },
+];
+assertEqual('scored best → mrr (highest score)', mktBestIndexMirror(scoredOffers), 1);
+var scoredTieFallback = [
+  { provider: 'a', price_per_th_day: 3e-8, metrics: { score: 4.0 } },
+  { provider: 'b', price_per_th_day: 1e-8 },
+  { provider: 'c', price_per_th_day: 2e-8, metrics: { score: 4.0 } },
+];
+assertEqual('scored tie → first max score', mktBestIndexMirror(scoredTieFallback), 0);
+var scoredNone = [{ provider: 'a', price_per_th_day: 2e-8 }, { provider: 'b', price_per_th_day: 1e-8 }];
+assertEqual('scored none → lowest price (idx 1)', mktBestIndexMirror(scoredNone), 1);
+assertEqual('scored null → -1', mktBestIndexMirror(null), -1);
+assertEqual('scored [] → -1', mktBestIndexMirror([]), -1);
+
+// ── USD/TH/d companion on market cards (BTC/TH/day × snapshot BTC/USD) ─
+// Mirrors app.js _mktUsdPerTh(): $1+ → 2 decimals; below $1 → 3 sig figs.
+function mktUsdPerThMirror(v, btcUsd) {
+  var n = Number(v), usd = Number(btcUsd);
+  if (!isFinite(n) || n <= 0 || !isFinite(usd) || usd <= 0) return null;
+  var x = n * usd;
+  if (x >= 1) return '$' + x.toLocaleString('en-US', { maximumFractionDigits: 2 }) + '/TH/d';
+  var s = x.toPrecision(3);
+  if (s.indexOf('e') !== -1) s = Number(s).toString();
+  else s = s.replace(/\.?0+$/, '');
+  return '$' + s + '/TH/d';
+}
+assertEqual('usd 50 sats @$60k → $0.03/TH/d', mktUsdPerThMirror(50e-8, 60000), '$0.03/TH/d');
+assertEqual('usd 10k sats @$60k → $6/TH/d', mktUsdPerThMirror(10000e-8, 60000), '$6/TH/d');
+assertEqual('usd 1 sat @$60k → $0.0006/TH/d', mktUsdPerThMirror(1e-8, 60000), '$0.0006/TH/d');
+assertEqual('usd 30 sats @$60k → $0.018/TH/d', mktUsdPerThMirror(30e-8, 60000), '$0.018/TH/d');
+assertEqual('usd no price → null', mktUsdPerThMirror(0, 60000), null);
+assertEqual('usd no btc price → null', mktUsdPerThMirror(1e-8, 0), null);
+assertEqual('usd null → null', mktUsdPerThMirror(null, 60000), null);
+
+// ── hashrate TH/s → H/s display (Fase 5 fix: backend sends TH/s, fmt.hashrate expects H/s) ─
+function fmtHashrateThToHps(th) {
+  var hrHps = Number(th) > 0 ? Number(th) * 1e12 : 0;
+  if (hrHps <= 0) return '\u2014';
+  var units = ['H/s', 'kH/s', 'MH/s', 'GH/s', 'TH/s', 'PH/s', 'EH/s'];
+  var i = 0, x = hrHps;
+  while (x >= 1000 && i < units.length - 1) { x /= 1000; i++; }
+  return x.toFixed(x >= 100 ? 1 : 2) + ' ' + units[i];
+}
+assertEqual('hr 1000 TH → 1.00 PH/s', fmtHashrateThToHps(1000), '1.00 PH/s');
+assertEqual('hr 100 TH → 100.0 TH/s', fmtHashrateThToHps(100), '100.0 TH/s');
+assertEqual('hr 0 → —', fmtHashrateThToHps(0), '\u2014');
+assertEqual('hr null → —', fmtHashrateThToHps(null), '\u2014');
+assertEqual('hr 0.5 TH → 500.0 GH/s', fmtHashrateThToHps(0.5), '500.0 GH/s');
 var bestSkipZero = [{ price_per_th_day: 0 }, { price_per_th_day: 1e-8 }];
 assertEqual('bestIdx skips zero → 1', findBestOfferIndex(bestSkipZero), 1);
 var bestAllInvalid = [{ price_per_th_day: 0 }, { price_per_th_day: NaN }];
@@ -2505,6 +2574,45 @@ assertTruthy('cold has temp-green', /temp-green/.test(cold));
 var emptyStats = renderAxeStats({});
 assertTruthy('empty temp → —', /—/.test(emptyStats));
 
+// ── Fase 5: telemetry completeness — chip/VR temp + hashrate 1h ──
+// Mirrors _renderAxeCard F5 stats: real finite number or explicit NOT
+// AVAILABLE. Uses a fmt.num()-style guard (typeof === 'number') because the
+// backend may send the literal string "NOT AVAILABLE" for missing fields.
+function isFiniteNum(v) { return typeof v === 'number' && isFinite(v); }
+function renderAxeF5Stats(tel) {
+  tel = tel || {};
+  var NA = 'NOT AVAILABLE';
+  var chip = isFiniteNum(tel.chip_temp) ? tel.chip_temp.toFixed(0) + '°C'
+    : (isFiniteNum(tel.temp_asic) ? tel.temp_asic.toFixed(0) + '°C'
+    : (isFiniteNum(tel.temperature) ? tel.temperature.toFixed(0) + '°C' : NA));
+  var vr = isFiniteNum(tel.vr_temp) ? tel.vr_temp.toFixed(0) + '°C'
+    : (isFiniteNum(tel.temp_vreg) ? tel.temp_vreg.toFixed(0) + '°C' : NA);
+  var hr1h = isFiniteNum(tel.hashrate_1h) ? fmt.hashrate(tel.hashrate_1h) : NA;
+  return { chip: chip, vr: vr, hr1h: hr1h };
+}
+
+var f5full = renderAxeF5Stats({ chip_temp: 72, vr_temp: 60, hashrate_1h: 1.2e12 });
+assertEqual('f5 chip real value', f5full.chip, '72°C');
+assertEqual('f5 vr real value', f5full.vr, '60°C');
+assertTruthy('f5 hr1h real value', /TH\/s/.test(f5full.hr1h));
+
+var f5fallback = renderAxeF5Stats({});
+assertEqual('f5 chip NOT AVAILABLE', f5fallback.chip, 'NOT AVAILABLE');
+assertEqual('f5 vr NOT AVAILABLE', f5fallback.vr, 'NOT AVAILABLE');
+assertEqual('f5 hr1h NOT AVAILABLE', f5fallback.hr1h, 'NOT AVAILABLE');
+
+var f5alias = renderAxeF5Stats({ temp_asic: 71, temp_vreg: 59, hashrate_1m: 1e12 });
+assertEqual('f5 chip alias temp_asic', f5alias.chip, '71°C');
+assertEqual('f5 vr alias temp_vreg', f5alias.vr, '59°C');
+assertEqual('f5 hr1h no 1h → NOT AVAILABLE', f5alias.hr1h, 'NOT AVAILABLE');
+
+// Literal 'NOT AVAILABLE' strings (normalized backend payloads) must never
+// crash the card — guards treat them as missing.
+var f5normalized = renderAxeF5Stats({ chip_temp: 'NOT AVAILABLE', vr_temp: 'NOT AVAILABLE', hashrate_1h: 'NOT AVAILABLE' });
+assertEqual('f5 normalized chip → NOT AVAILABLE', f5normalized.chip, 'NOT AVAILABLE');
+assertEqual('f5 normalized vr → NOT AVAILABLE', f5normalized.vr, 'NOT AVAILABLE');
+assertEqual('f5 normalized hr1h → NOT AVAILABLE', f5normalized.hr1h, 'NOT AVAILABLE');
+
 // ── Module visibility — mirrors activateModule() data-module toggle ────────
 // A panel/element with data-module="a b c" is visible when the active module
 // is one of its tokens. Mirrors the split(/\s+/).indexOf(name) !== -1 logic.
@@ -2535,6 +2643,314 @@ assertTruthy('sidebar link exempt with other classes', isSidebarLinkExempt('foo 
 assertEqual('panel not exempt', isSidebarLinkExempt('panel'), false);
 assertEqual('empty class not exempt', isSidebarLinkExempt(''), false);
 assertEqual('null class not exempt', isSidebarLinkExempt(null), false);
+
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  TENANT AUTH HELPERS (mirrors static/app.js — Fase 4 · B1-frontend)
+// ═══════════════════════════════════════════════════════════════════════════
+
+function authBuildHeaders(token) {
+  if (!token) return {};
+  return { 'Authorization': 'Bearer ' + token };
+}
+
+function authIsExpired(expiresAt, now) {
+  if (!expiresAt) return true;
+  now = now || Math.floor(Date.now() / 1000);
+  return now >= (Number(expiresAt) - 30); // 30s safety margin
+}
+
+function authSessionValid(session, now) {
+  if (!session || !session.access_token) return false;
+  return !authIsExpired(session.expires_at, now);
+}
+
+(function testTenantAuthHelpers() {
+  // authBuildHeaders
+  assertEqual('no token -> empty headers', authBuildHeaders(null), {});
+  assertEqual('empty token -> empty headers', authBuildHeaders(''), {});
+  assertEqual('valid token -> Bearer header', authBuildHeaders('abc.def.ghi'),
+    { 'Authorization': 'Bearer abc.def.ghi' });
+  assertEqual('token with extra spaces preserved', authBuildHeaders('  x.y.z  '),
+    { 'Authorization': 'Bearer   x.y.z  ' });
+
+  // authIsExpired
+  assertEqual('null expiresAt -> expired', authIsExpired(null, 1000), true);
+  assertEqual('undefined expiresAt -> expired', authIsExpired(undefined, 1000), true);
+  assertEqual('future expiry -> not expired', authIsExpired(2000, 1000), false);
+  assertEqual('past expiry -> expired', authIsExpired(900, 1000), true);
+  assertEqual('exact boundary minus margin -> expired', authIsExpired(1030, 1000), true);
+  assertEqual('just past margin -> not expired', authIsExpired(1031, 1000), false);
+  assertEqual('now defaults to Date.now', authIsExpired(Math.floor(Date.now() / 1000) - 5), true);
+  assertEqual('string expiresAt handled', authIsExpired('2000', 1000), false);
+
+  // authSessionValid
+  assertEqual('null session -> invalid', authSessionValid(null, 1000), false);
+  assertEqual('empty session -> invalid', authSessionValid({}, 1000), false);
+  assertEqual('session without token -> invalid', authSessionValid({ expires_at: 2000 }, 1000), false);
+  assertEqual('valid token + future expiry -> valid',
+    authSessionValid({ access_token: 't', expires_at: 2000 }, 1000), true);
+  assertEqual('valid token + past expiry -> invalid',
+    authSessionValid({ access_token: 't', expires_at: 900 }, 1000), false);
+  assertEqual('no expiry -> invalid',
+    authSessionValid({ access_token: 't' }, 1000), false);
+})();
+
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  LIVE HASH CALCULATOR + SPARKLINE DPR (mirrors static/app.js)
+// ═══════════════════════════════════════════════════════════════════════════
+
+// Pure mirror of renderLiveCalc() — returns {elementId: text} map exactly as
+// the DOM writes would produce, so every lc-* value can be asserted without a
+// real DOM.
+function liveCalcValues(prox) {
+  const lc = (prox && prox.live_calc) || {};
+  const latest = lc.latest || {};
+  const totals = lc.session_totals || {};
+  const dash = '\u2014';
+  return {
+    'lc-time-big': latest.ts ? fmt.age(latest.ts) : dash,
+    'lc-session-share-count': latest.session_share_count_at_time != null ? 'share #' + latest.session_share_count_at_time : dash,
+    'lc-share-diff': latest.share_diff_str || dash,
+    'lc-hashes': latest.hashes_attempted_str || dash,
+    'lc-time-obs': latest.gap != null ? latest.gap + 's' : dash,
+    'lc-p-block': latest.p_block_this_share_pct_str || dash,
+    'lc-inst-hr': latest.instantaneous_hr_str || dash,
+    'lc-session-shares': totals.shares_so_far != null ? totals.shares_so_far : dash,
+    'lc-avg-share-diff': totals.avg_share_diff_str || dash,
+    'lc-cum-p': totals.cum_p_block_pct_str || dash,
+    'lc-expected-blocks': totals.expected_blocks_str || dash,
+  };
+}
+
+// Pure mirror of the ticker HTML written into #lc-ticker-list.
+function liveCalcTickerHtml(lc) {
+  const dash = '\u2014';
+  const ticker = ((lc && lc.ticker) || []).slice().reverse();
+  if (!ticker.length) return '<div class="prox-live-calc__ticker-empty">awaiting share data</div>';
+  return ticker.map(function(e) {
+    return '<div class="lc-ticker-row">' +
+      '<span class="lc-ticker-time">' + (e.ts ? fmt.age(e.ts) : '--:--:--') + '</span>' +
+      '<span class="lc-ticker-diff">' + (e.share_diff_str || dash) + '</span>' +
+      '<span class="lc-ticker-gap">\u0394' + (e.gap || '\u2014') + 's</span>' +
+      '<span class="lc-ticker-hr">' + (e.instantaneous_hr_str || dash) + '</span>' +
+      '</div>';
+  }).join('');
+}
+
+// Pure mirror of _drawProximitySparkline() canvas sizing (getComputedStyle
+// + Math.round(css * dpr)). Fixed CSS height (28px) means the backing store
+// scales with DPR but never compounds across re-renders.
+function sparklineSize(computedW, computedH, clientW, clientH, dpr) {
+  const cssW = parseFloat(computedW) || clientW || 220;
+  const cssH = parseFloat(computedH) || clientH || 28;
+  return { width: Math.round(cssW * dpr), height: Math.round(cssH * dpr) };
+}
+
+console.log('\n📊 SUITE 24: renderLiveCalc() — lc-* values + sparkline DPR');
+
+(function testLiveCalcValues() {
+  const now = Math.floor(Date.now() / 1000);
+  const prox = {
+    live_calc: {
+      latest: {
+        ts: now - 30,
+        gap: 30,
+        session_share_count_at_time: 7,
+        share_diff_str: '16.00 K',
+        hashes_attempted_str: '6.871e13',
+        p_block_this_share_pct_str: '1.2393e-07%',
+        instantaneous_hr_str: '2.29 TH/s',
+      },
+      ticker: [
+        { ts: now - 60, share_diff_str: '16.00 K', gap: 30, instantaneous_hr_str: '2.29 TH/s' },
+        { ts: now - 90, share_diff_str: '15.50 K', gap: 60, instantaneous_hr_str: '1.14 TH/s' },
+      ],
+      session_totals: {
+        shares_so_far: 12,
+        avg_share_diff_str: '15.75 K',
+        cum_p_block_pct_str: '1.4870e-06%',
+        expected_blocks_str: '1.4870e-08',
+      },
+    },
+  };
+
+  const vals = liveCalcValues(prox);
+  assertEqual('lc-share-diff set', vals['lc-share-diff'], '16.00 K');
+  assertEqual('lc-hashes set', vals['lc-hashes'], '6.871e13');
+  assertEqual('lc-time-obs set', vals['lc-time-obs'], '30s');
+  assertEqual('lc-p-block set', vals['lc-p-block'], '1.2393e-07%');
+  assertEqual('lc-inst-hr set', vals['lc-inst-hr'], '2.29 TH/s');
+  assertEqual('lc-session-shares set', vals['lc-session-shares'], 12);
+  assertEqual('lc-avg-share-diff set', vals['lc-avg-share-diff'], '15.75 K');
+  assertEqual('lc-cum-p set', vals['lc-cum-p'], '1.4870e-06%');
+  assertEqual('lc-expected-blocks set', vals['lc-expected-blocks'], '1.4870e-08');
+  assertEqual('lc-session-share-count set', vals['lc-session-share-count'], 'share #7');
+  assertTruthy('lc-time-big shows ago', /ago/.test(vals['lc-time-big']));
+
+  // Missing data → em-dash everywhere
+  const emptyVals = liveCalcValues({});
+  assertEqual('empty lc-share-diff → dash', emptyVals['lc-share-diff'], '\u2014');
+  assertEqual('empty lc-cum-p → dash', emptyVals['lc-cum-p'], '\u2014');
+  assertEqual('empty lc-session-shares → dash', emptyVals['lc-session-shares'], '\u2014');
+  assertEqual('empty lc-session-share-count → dash', emptyVals['lc-session-share-count'], '\u2014');
+  assertEqual('null prox → all dash', liveCalcValues(null)['lc-share-diff'], '\u2014');
+})();
+
+(function testLiveCalcTicker() {
+  const now = Math.floor(Date.now() / 1000);
+  // Backend payload is sch[-8:] (oldest→newest). After .slice().reverse()
+  // the top row must be the NEWEST share (16.00 K, ts now-60).
+  const ticker = [
+    { ts: now - 90, share_diff_str: '15.50 K', gap: 60, instantaneous_hr_str: '1.14 TH/s' },
+    { ts: now - 60, share_diff_str: '16.00 K', gap: 30, instantaneous_hr_str: '2.29 TH/s' },
+  ];
+  const html = liveCalcTickerHtml({ ticker: ticker });
+  assertEqual('ticker rows count', (html.match(/lc-ticker-row/g) || []).length, 2);
+  assertTruthy('ticker newest-first (16.00K before 15.50K)', html.indexOf('16.00 K') < html.indexOf('15.50 K'));
+  assertTruthy('ticker has diff cell', /lc-ticker-diff/.test(html));
+  assertTruthy('ticker has gap cell', /lc-ticker-gap/.test(html));
+  assertTruthy('ticker has hr cell', /lc-ticker-hr/.test(html));
+  assertEqual('empty ticker → awaiting', liveCalcTickerHtml({ ticker: [] }),
+    '<div class="prox-live-calc__ticker-empty">awaiting share data</div>');
+  assertEqual('missing ticker → awaiting', liveCalcTickerHtml({}),
+    '<div class="prox-live-calc__ticker-empty">awaiting share data</div>');
+})();
+
+(function testSparklineDprStability() {
+  // Fixed CSS box (28px) must NOT grow with DPR — the backing store scales
+  // (28*dpr) but the CSS size never compounds across re-renders.
+  assertEqual('dpr1 width 352', sparklineSize('352px', '28px', 0, 0, 1).width, 352);
+  assertEqual('dpr1 height 28', sparklineSize('352px', '28px', 0, 0, 1).height, 28);
+  assertEqual('dpr2 width 704 (2x backing)', sparklineSize('352px', '28px', 0, 0, 2).width, 704);
+  assertEqual('dpr2 height 56 (2x backing)', sparklineSize('352px', '28px', 0, 0, 2).height, 56);
+  assertEqual('size idempotent at dpr2 (no growth)',
+    JSON.stringify(sparklineSize('352px', '28px', 0, 0, 2)),
+    JSON.stringify(sparklineSize('352px', '28px', 0, 0, 2)));
+  // Fallback when getComputedStyle returns non-px (e.g. 'auto' while hidden)
+  assertEqual('fallback to clientWidth', sparklineSize('auto', 'auto', 300, 60, 1).width, 300);
+  assertEqual('fallback to clientHeight', sparklineSize('auto', 'auto', 300, 60, 1).height, 60);
+  // Default fallback when everything is missing
+  assertEqual('default width 220', sparklineSize(NaN, NaN, 0, 0, 1).width, 220);
+  assertEqual('default height 28', sparklineSize(NaN, NaN, 0, 0, 1).height, 28);
+})();
+
+
+(function testWalletGreeting() {
+  // Mirror of static/app.js WALLET_GREETINGS + walletGreeting() — returns
+  // the personalized welcome for a known community wallet, null otherwise.
+  const WALLET_GREETINGS = {
+    'bc1qftl45m5jq7hjd0n62yuxesmss478xl2wvfkeed': '👋 Bem vindo barone (barone club)',
+    'bc1qffk82prrxn84e8y9l0z5yflsqclhyc9ptphgmf': '👋 Bem vindo filipe silva — comunidade bitminer33',
+  };
+  function walletGreeting(address) {
+    if (!address) return null;
+    return WALLET_GREETINGS[String(address).toLowerCase()] || null;
+  }
+
+  assertEqual('barone welcome', walletGreeting('bc1qftl45m5jq7hjd0n62yuxesmss478xl2wvfkeed'),
+    '👋 Bem vindo barone (barone club)');
+  assertEqual('bitminer33 welcome', walletGreeting('bc1qffk82prrxn84e8y9l0z5yflsqclhyc9ptphgmf'),
+    '👋 Bem vindo filipe silva — comunidade bitminer33');
+  assertEqual('uppercase address still matches (lowercased lookup)',
+    walletGreeting('BC1QFFK82PRRXN84E8Y9L0Z5YFLSQCLHYC9PTPHGMF'),
+    '👋 Bem vindo filipe silva — comunidade bitminer33');
+  assertEqual('unknown wallet → null', walletGreeting('bc1qunknown123'), null);
+  assertEqual('empty address → null', walletGreeting(''), null);
+  assertEqual('null address → null', walletGreeting(null), null);
+})();
+
+
+(function testProfitModeView() {
+  // Mirror of static/app.js profitModeView() — pure selector that returns the
+  // values to display for the requested profitability mode (pool|solo|rental).
+  // Validates the corrected solo math keys + per-mode fiat/break-even wiring.
+  function profitModeView(p, mode) {
+    if (!p || !Object.keys(p).length) return null;
+    const m = (mode === 'solo' || mode === 'rental') ? mode : 'pool';
+    const view = { mode: m, btcDay: null, fiatDay: {}, fiatWeek: {}, fiatMonth: {}, breakeven: null, soloStats: null };
+    if (m === 'solo') {
+      view.btcDay = p.net_btc_per_day_solo;
+      view.fiatDay = p.fiat_per_day_solo || {};
+      view.fiatMonth = p.fiat_per_month_solo || {};
+      view.breakeven = null;
+      view.soloStats = {
+        pToday: p.solo_p_day_pct,
+        pYear: p.solo_p_year_pct,
+        p5y: p.solo_p_5year_pct,
+        blocksYear: p.solo_expected_blocks_per_year,
+        expectedDays: p.solo_expected_time_to_block_days,
+      };
+    } else if (m === 'rental') {
+      view.btcDay = p.net_btc_per_day_rental;
+      view.fiatDay = p.fiat_per_day_rental || {};
+      view.fiatMonth = p.fiat_per_month_rental || {};
+      view.breakeven = p.break_even_rental_usd_per_th_day;
+    } else {
+      view.btcDay = p.net_btc_per_day_pool;
+      view.fiatDay = p.fiat_per_day_pool || {};
+      view.fiatMonth = p.fiat_per_month_pool || {};
+      view.breakeven = p.breakeven_cost_per_th_day;
+    }
+    Object.keys(view.fiatDay).forEach(c => {
+      view.fiatWeek[c] = view.fiatDay[c] != null ? view.fiatDay[c] * 7 : null;
+    });
+    return view;
+  }
+
+  const p = {
+    net_btc_per_day_pool: 0.00012345,
+    fiat_per_day_pool: { USD: 7.5, BRL: 40.0 },
+    fiat_per_month_pool: { USD: 225.0, BRL: 1200.0 },
+    breakeven_cost_per_th_day: 0.0123,
+    net_btc_per_day_solo: 0.00011111,
+    fiat_per_day_solo: { USD: 6.75, BRL: 36.0 },
+    fiat_per_month_solo: { USD: 202.5, BRL: 1080.0 },
+    solo_p_day_pct: 0.0012,
+    solo_p_year_pct: 0.35,
+    solo_p_5year_pct: 1.75,
+    solo_expected_blocks_per_year: 0.0044,
+    solo_expected_time_to_block_days: 227.3,
+    net_btc_per_day_rental: 0.00010101,
+    fiat_per_day_rental: { USD: 6.1, BRL: 32.0 },
+    fiat_per_month_rental: { USD: 183.0, BRL: 960.0 },
+    break_even_rental_usd_per_th_day: 0.0144,
+  };
+
+  // Pool mode (default)
+  const pool = profitModeView(p, 'pool');
+  assertEqual('pool mode', pool.mode, 'pool');
+  assertApprox('pool btcDay', pool.btcDay, 0.00012345, 1e-9);
+  assertApprox('pool fiatWeek derived ×7', pool.fiatWeek.USD, 52.5, 1e-9);
+  assertApprox('pool breakeven', pool.breakeven, 0.0123, 1e-9);
+  assertEqual('pool soloStats null', pool.soloStats, null);
+
+  // Solo mode — corrected math keys surfaced
+  const solo = profitModeView(p, 'solo');
+  assertEqual('solo mode', solo.mode, 'solo');
+  assertApprox('solo btcDay', solo.btcDay, 0.00011111, 1e-9);
+  assertApprox('solo fiatMonth', solo.fiatMonth.USD, 202.5, 1e-9);
+  assertEqual('solo breakeven null (expected time instead)', solo.breakeven, null);
+  assertApprox('solo pToday', solo.soloStats.pToday, 0.0012, 1e-9);
+  assertApprox('solo pYear', solo.soloStats.pYear, 0.35, 1e-9);
+  assertApprox('solo p5y', solo.soloStats.p5y, 1.75, 1e-9);
+  assertApprox('solo blocksYear', solo.soloStats.blocksYear, 0.0044, 1e-9);
+  assertApprox('solo expectedDays', solo.soloStats.expectedDays, 227.3, 1e-9);
+
+  // Rental mode
+  const rental = profitModeView(p, 'rental');
+  assertEqual('rental mode', rental.mode, 'rental');
+  assertApprox('rental btcDay', rental.btcDay, 0.00010101, 1e-9);
+  assertApprox('rental fiatMonth', rental.fiatMonth.USD, 183.0, 1e-9);
+  assertApprox('rental breakeven', rental.breakeven, 0.0144, 1e-9);
+  assertEqual('rental soloStats null', rental.soloStats, null);
+
+  // Unknown mode falls back to pool; empty payload → null
+  assertEqual('unknown mode → pool', profitModeView(p, 'bogus').mode, 'pool');
+  assertEqual('empty payload → null', profitModeView({}, 'solo'), null);
+  assertEqual('null payload → null', profitModeView(null, 'solo'), null);
+})();
 
 
 // ═══════════════════════════════════════════════════════════════════════════

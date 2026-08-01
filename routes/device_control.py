@@ -21,6 +21,8 @@ from typing import Any, Callable, Dict, List, Optional
 
 from flask import Blueprint, jsonify, request
 
+from services.tenant import require_tenant
+
 from core.adapters.bitaxe_adapter import BitaxeAdapter
 from core.adapters.cgminer_adapter import CgminerAdapter
 from core.models.device import Device, DeviceStatus
@@ -178,14 +180,15 @@ def _record_attempt(device_id: str, command: str, parameters: Dict[str, Any],
 
 
 @device_control_bp.route("/api/devices/<device_id>/command", methods=["POST"])
-def execute_device_command(device_id: str):
-    """Execute a command on a device.
+@require_tenant
+def execute_device_command(device_id: str, tenant_id: str = ""):
+    """Execute a command on a device (scoped to the request tenant).
 
     JSON body:
       { "command": "restart|identify|pause|resume", "parameters": {} }
 
     Flow:
-      1. Lookup device in registry
+      1. Lookup device in registry (scoped by tenant)
       2. Check if command is supported via capabilities
       3. Validate through SafetyEngine (blocked → 403, audited)
       4. Execute via adapter (record result)
@@ -200,8 +203,8 @@ def execute_device_command(device_id: str):
     if _registry is None:
         return jsonify({"success": False, "error": "registry not initialized"}), 500
 
-    # 1. Lookup device
-    raw = _registry.get_device(device_id)
+    # 1. Lookup device (tenant-scoped)
+    raw = _registry.get_device(device_id, tenant_id=tenant_id)
     if not raw:
         return jsonify({"success": False, "error": "device not found"}), 404
 
@@ -306,8 +309,9 @@ def execute_device_command(device_id: str):
 
 
 @device_control_bp.route("/api/devices/<device_id>/test", methods=["POST"])
-def test_device_command(device_id: str):
-    """Simulate a command on a device for UI testing.
+@require_tenant
+def test_device_command(device_id: str, tenant_id: str = ""):
+    """Simulate a command on a device for UI testing (tenant-scoped).
     Does NOT contact real hardware. Returns simulated success response.
 
     JSON body:
@@ -318,7 +322,7 @@ def test_device_command(device_id: str):
     if _registry is None:
         return jsonify({"success": False, "error": "registry not initialized"}), 500
 
-    raw = _registry.get_device(device_id)
+    raw = _registry.get_device(device_id, tenant_id=tenant_id)
     if not raw:
         return jsonify({"success": False, "error": "device not found"}), 404
 
@@ -376,14 +380,15 @@ def test_device_command(device_id: str):
 
 
 @device_control_bp.route("/api/devices/<device_id>/capabilities", methods=["GET"])
-def get_device_capabilities(device_id: str):
-    """Get supported commands and their metadata for a device.
+@require_tenant
+def get_device_capabilities(device_id: str, tenant_id: str = ""):
+    """Get supported commands and their metadata for a device (tenant-scoped).
     Returns both raw capabilities and enriched command list with metadata.
     Used by the UI to render only supported command buttons."""
     if _registry is None:
         return jsonify({"success": False, "error": "registry not initialized"}), 500
 
-    raw = _registry.get_device(device_id)
+    raw = _registry.get_device(device_id, tenant_id=tenant_id)
     if not raw:
         return jsonify({"success": False, "error": "device not found"}), 404
 

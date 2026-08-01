@@ -11,6 +11,7 @@ from services.auth import (
     verify_token,
     revoke_token,
     require_auth,
+    resolve_tenant_for_api_key,
 )
 
 log = logging.getLogger("cypher65.auth")
@@ -34,25 +35,26 @@ def api_auth_login():
     data = request.get_json(silent=True) or {}
     provided_key = (data.get("api_key") or "").strip()
 
-    expected_key = os.environ.get("API_KEY")
-    if not expected_key:
-        log.warning("[auth] API_KEY not set in env — login disabled until API_KEY is configured")
+    if not os.environ.get("API_KEY") and not os.environ.get("TENANT_API_KEYS"):
+        log.warning("[auth] no API key configured in env — login disabled until API_KEY/TENANT_API_KEYS is set")
         return jsonify({"error": "authentication is not configured on this server",
-                        "hint": "Set API_KEY environment variable"}), 503
+                        "hint": "Set API_KEY or TENANT_API_KEYS environment variable"}), 503
 
     if not provided_key:
         security_log.warning("[auth] login attempt without api_key from %s", request.remote_addr)
         return jsonify({"error": "api_key is required"}), 400
 
-    if provided_key != expected_key:
+    tenant_id = resolve_tenant_for_api_key(provided_key)
+    if tenant_id is None:
         security_log.warning("[auth] failed login attempt from %s", request.remote_addr)
         return jsonify({"error": "invalid api_key"}), 401
 
-    # Successful login
-    access_token = create_token(subject="user")
-    refresh_token, expires_at = create_refresh_token(subject="user")
+    # Successful login — subject is the tenant_id so axe_fleet's
+    # _get_tenant_id() (which reads payload["sub"]) isolates per tenant.
+    access_token = create_token(subject=tenant_id)
+    refresh_token, expires_at = create_refresh_token(subject=tenant_id)
 
-    security_log.info("[auth] successful login from %s", request.remote_addr)
+    security_log.info("[auth] successful login (tenant=%s) from %s", tenant_id, request.remote_addr)
 
     return jsonify({
         "success": True,
@@ -60,6 +62,7 @@ def api_auth_login():
         "refresh_token": refresh_token,
         "expires_at": expires_at,
         "token_type": "Bearer",
+        "tenant_id": tenant_id,
     })
 
 
@@ -84,8 +87,9 @@ def api_auth_refresh():
     if payload is None:
         return jsonify({"error": "invalid or expired refresh token"}), 401
 
-    # Issue new access token
-    access_token = create_token(subject=payload.get("sub", "user"))
+    # Issue new access token — preserve the original tenant_id subject
+    tenant_id = payload.get("sub", "default")
+    access_token = create_token(subject=tenant_id)
     expires_at = int(time.time()) + 3600
 
     return jsonify({
@@ -93,6 +97,7 @@ def api_auth_refresh():
         "access_token": access_token,
         "expires_at": expires_at,
         "token_type": "Bearer",
+        "tenant_id": tenant_id,
     })
 
 

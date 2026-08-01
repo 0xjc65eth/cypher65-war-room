@@ -30,6 +30,7 @@ class AutomationRule:
     action_parameters: Dict[str, Any]
     is_enabled: bool = True
     min_interval_seconds: int = 60
+    tenant_id: str = "default"  # Fase 4 · B2
 
 
 class AutomationEngine:
@@ -46,13 +47,16 @@ class AutomationEngine:
         self.audit_callback = audit_callback
         self._last_fired: Dict[str, int] = {}
 
-    def load_rules(self) -> List[AutomationRule]:
+    def load_rules(self, tenant_id: str = "") -> List[AutomationRule]:
         try:
             import sqlite3
             conn = sqlite3.connect(self.db_path)
             conn.row_factory = sqlite3.Row
             c = conn.cursor()
-            c.execute("SELECT * FROM automation_rules WHERE is_enabled=1")
+            if tenant_id:
+                c.execute("SELECT * FROM automation_rules WHERE is_enabled=1 AND tenant_id=?", (tenant_id,))
+            else:
+                c.execute("SELECT * FROM automation_rules WHERE is_enabled=1")
             rows = c.fetchall()
             conn.close()
             return [
@@ -67,6 +71,7 @@ class AutomationEngine:
                     action_parameters=json.loads(r["action_parameters"] or "{}"),
                     is_enabled=bool(r["is_enabled"]),
                     min_interval_seconds=int(r["min_interval_seconds"]) if "min_interval_seconds" in r.keys() else 60,
+                    tenant_id=r["tenant_id"] if "tenant_id" in r.keys() else "default",
                 )
                 for r in rows
             ]
@@ -204,6 +209,7 @@ class AutomationEngine:
                     status=status,
                     reason=reason,
                     result=result,
+                    tenant_id=getattr(rule, "tenant_id", "default"),
                 )
             except Exception as e:
                 log.warning("[automation_engine] audit callback error: %s", e)
