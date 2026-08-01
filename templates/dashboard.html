@@ -255,9 +255,27 @@
 </div>
 
 <!-- ══════════════════════════════════════════════════════════════════════
-     EMPTY WALLET BANNER
+     WALLET CTA — onboarding quando nenhuma wallet está conectada
+     (honest telemetry: sem endereço conectado não há dados de wallet)
      ══════════════════════════════════════════════════════════════════════ -->
-<!-- empty-wallet-banner removed — only topbar ⚡ CONNECT button remains -->
+<div class="wallet-cta" id="wallet-cta" style="display:none">
+  <div class="wallet-cta__lead">
+    <div class="wallet-cta__icon">⚡</div>
+    <div>
+      <div class="wallet-cta__title">CONNECT YOUR WALLET</div>
+      <div class="wallet-cta__sub">No wallet connected — this dashboard only shows data for the BTC address you own. Connect yours to start monitoring hashrate, shares and profitability.</div>
+    </div>
+  </div>
+  <div class="wallet-cta__steps">
+    <div class="wallet-cta__step"><span class="wallet-cta__step-num">1</span><span>Click <b>⚡ CONNECT</b> (top bar) or the button on the right</span></div>
+    <div class="wallet-cta__step"><span class="wallet-cta__step-num">2</span><span>Paste your BTC address (starts with <code>bc1</code> / <code>1</code> / <code>3</code>)</span></div>
+    <div class="wallet-cta__step"><span class="wallet-cta__step-num">3</span><span>Done — telemetry starts streaming within seconds</span></div>
+  </div>
+  <div class="wallet-cta__actions">
+    <button class="btn btn--primary" id="wallet-cta-open">⚡ CONNECT WALLET</button>
+    <span class="wallet-cta__hint">Your address is stored locally · never shared</span>
+  </div>
+</div>
 
 <!-- ══════════════════════════════════════════════════════════════════════
      SECTION 1: WORKER FLEET — Raio X + Host Core + Hero
@@ -1868,6 +1886,7 @@
         <div class="wallet-current__label">CURRENT WALLET</div>
         <div class="wallet-current__addr" id="wallet-current-addr">—</div>
         <div class="wallet-current__worker" id="wallet-current-worker">—</div>
+        <div class="wallet-current__status" id="wallet-current-status" style="display:none"></div>
       </div>
       <div class="field" data-key="wallet_address">
         <span class="field__label">BTC ADDRESS</span>

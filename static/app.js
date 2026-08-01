@@ -151,7 +151,7 @@
     hsBlockProb: $('#hs-block-prob'), hsExpectedTime: $('#hs-expected-time'), hsStatusText: $('#hs-status-text'),
     openWallet: $('#open-wallet'), walletModal: $('#wallet-modal'), walletStatus: $('#wallet-status'),
     walletAddressInput: $('#wallet-address-input'), walletWorkerInput: $('#wallet-worker-input'),
-    walletCurrentAddr: $('#wallet-current-addr'), walletCurrentWorker: $('#wallet-current-worker'),
+    walletCurrentAddr: $('#wallet-current-addr'), walletCurrentWorker: $('#wallet-current-worker'), walletCurrentStatus: $('#wallet-current-status'),
     walletSave: $('#wallet-save'),
     openSettings: $('#open-settings'), openExports: $('#open-exports'), settingsModal: $('#settings-modal'), exportModal: $('#export-modal'),
     settingsBody: $('#settings-body'), settingsStatus: $('#settings-status'),
@@ -2188,6 +2188,7 @@ function renderAccount(acct) {
     if (!_skeletonsHidden) hideSkeletons();
     // Sync window.BTC_ADDRESS from snapshot so modal and other components stay consistent
     window.BTC_ADDRESS = snap.btc_address || window.BTC_ADDRESS || '';
+    toggleWalletCTA();
     renderHUD(snap);
     renderStatusBar(snap);
     if (dom.topbarAddress) dom.topbarAddress.textContent = `${fmt.shortAddr(snap.btc_address || window.BTC_ADDRESS || '')}`;
@@ -2829,9 +2830,19 @@ function renderAccount(acct) {
   // ── Wallet modal ──
   function openWalletModal() {
     dom.walletModal?.classList.add('modal--open');
-    // Fill current address info
-    if (dom.walletCurrentAddr) dom.walletCurrentAddr.textContent = window.BTC_ADDRESS ? fmt.chunkAddr(window.BTC_ADDRESS) : '—';
-    if (dom.walletCurrentWorker) dom.walletCurrentWorker.textContent = window.WORKER_NAME || '—';
+    // Fill current address info (NOT CONNECTED state when no wallet yet)
+    var walletConnected = !!window.BTC_ADDRESS;
+    if (dom.walletCurrentAddr) {
+      dom.walletCurrentAddr.textContent = walletConnected ? fmt.chunkAddr(window.BTC_ADDRESS) : 'NOT CONNECTED';
+      dom.walletCurrentAddr.classList.toggle('wallet-current__addr--empty', !walletConnected);
+    }
+    if (dom.walletCurrentWorker) dom.walletCurrentWorker.textContent = walletConnected ? (window.WORKER_NAME || '—') : '—';
+    if (dom.walletCurrentStatus) {
+      dom.walletCurrentStatus.style.display = 'inline-flex';
+      dom.walletCurrentStatus.textContent = walletConnected ? '● CONNECTED' : '○ NO WALLET CONNECTED';
+      dom.walletCurrentStatus.classList.toggle('wallet-current__status--ok', walletConnected);
+      dom.walletCurrentStatus.classList.toggle('wallet-current__status--empty', !walletConnected);
+    }
     if (dom.walletAddressInput) dom.walletAddressInput.value = '';
     if (dom.walletWorkerInput) dom.walletWorkerInput.value = '';
     if (dom.walletStatus) dom.walletStatus.textContent = '';
@@ -2844,6 +2855,17 @@ function renderAccount(acct) {
     dom.walletModal?.classList.remove('modal--open');
     if (dom.walletStatus) dom.walletStatus.textContent = '';
   }
+  // Onboarding CTA: show when NO wallet is connected, hide once one is
+  function toggleWalletCTA() {
+    var cta = document.getElementById('wallet-cta');
+    if (!cta) return;
+    cta.style.display = window.BTC_ADDRESS ? 'none' : 'flex';
+  }
+  // CTA button opens the same wallet modal as the topbar ⚡ CONNECT
+  document.getElementById('wallet-cta-open')?.addEventListener('click', openWalletModal);
+  // Show the onboarding CTA immediately at boot (no wallet yet) instead of
+  // waiting for the first snapshot render (~15s)
+  toggleWalletCTA();
   dom.walletModal?.addEventListener('click', (e) => { if (e.target.matches('[data-close]')) closeWalletModal(); });
   dom.openWallet?.addEventListener('click', openWalletModal);
   document.getElementById('webln-connect-btn')?.addEventListener('click', connectWebLN);
@@ -2927,6 +2949,7 @@ dom.walletSave?.addEventListener('click', async () => {
       status.style.color = 'var(--accent-green)';
       // Update globals
       window.BTC_ADDRESS = data.address;
+      toggleWalletCTA(); // instant feedback: hide the onboarding CTA now
       localStorage.setItem('_wallet_connected', 'true');
       showToast('success', 'Wallet connectada: ' + data.address.slice(0, 10) + '...');
       // Personalized welcome for known community wallets
