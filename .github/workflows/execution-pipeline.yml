@@ -35,8 +35,11 @@ jobs:
         run: |
           python -m compileall -q app.py helpers.py config.py solo_mining.py core routes services axe_fleet agents || exit 1
       - name: Run test suite
+        # NO pipe to tail here: GH Actions run: uses bash -e but NOT pipefail,
+        # so `pytest ... | tail` would always exit 0 (false green). Full output
+        # is fine in CI logs — the exit code must be pytest's own.
         run: |
-          python -m pytest tests/ -q --cov=core --cov=routes --cov-report=term-missing 2>&1 | tail -20
+          python -m pytest tests/ -q --cov=core --cov=routes --cov-report=term-missing
       - name: Lint (advisory)
         continue-on-error: true
         run: |

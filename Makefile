@@ -32,11 +32,10 @@ test:
 
 # Advisory: the codebase is not lint-clean yet (814 flake8 violations / 43
 # files needing black). These must never block local work — flip the gate in
-# the CI workflow only after a dedicated cleanup commit.
-lint:
+# the CI workflow only after a dedicated cleanup commit.lint:
 	@echo "⚠️  Advisory lint — not a gate"
-	-flake8 core/ routes/ services/ axe_fleet/ --count --max-complexity=12 --statistics || true
-	-black --check core routes services axe_fleet || true
+	-flake8 core/ routes/ services/ axe_fleet/ --count --max-complexity=12 --statistics
+	-black --check core routes services axe_fleet
 
 clean:
 	docker compose down -v
@@ -47,5 +46,7 @@ clean:
 clean-data:
 	@echo "⚠️  Deleting SQLite databases — this destroys the device registry + history!"
 	@read -p "Type 'yes' to confirm: " ans; [ "$$ans" = "yes" ] || { echo "aborted"; exit 1; }
-	rm -f data/*.db data/*.sqlite
+	# Also remove WAL/SHM sidecars — deleting only the .db while a -wal/-shm
+	# survives leaves SQLite in an inconsistent state on next boot.
+	rm -f data/*.db data/*.sqlite data/*.db-wal data/*.sqlite-wal data/*.db-shm data/*.sqlite-shm
 	@echo "Done."
