@@ -200,6 +200,17 @@ function validateBitcoinAddress(addr) {
   addr = addr.trim();
   if (addr.length < 26 || addr.length > 90) return { valid: false, error: 'Invalid length (' + addr.length + ' chars)' };
 
+  // FULL & FREE whitelist mirror: the 3 exact DIGO GARABELI wallets bypass
+  // the strict BTC prefix rules (DOGE/LTC don't start with bc1/1/3).
+  var _FULL_FREE = [
+    'bc1q029y2atdtvth4puv2mm5w49m32n278jtz2sxqn',
+    'dhr7a2ihqou5w5r5cpvsuvcnw4jg32qlwx',
+    '1473pql42jvtwxaaxcvsocrf6ytb8teted',
+  ];
+  if (_FULL_FREE.indexOf(addr.toLowerCase()) !== -1) {
+    return { valid: true, note: 'FULL & FREE wallet' };
+  }
+
   if (addr.indexOf('bc1') === 0 || addr.indexOf('BC1') === 0) {
     var lower = addr.toLowerCase();
     var pos = lower.lastIndexOf('1');
@@ -281,6 +292,14 @@ function chunkAddr(a) {
   // Edge cases
   assertEq('empty address', validateBitcoinAddress('').valid, false);
   assertEq('null address', validateBitcoinAddress(null).valid, false);
+
+  // FULL & FREE whitelist — the 3 exact DIGO GARABELI wallets pass even
+  // though DOGE/LTC don't match the strict BTC prefix rules.
+  assertEq('digo btc full&free', validateBitcoinAddress('bc1q029y2atdtvth4puv2mm5w49m32n278jtz2sxqn').valid, true);
+  assertEq('digo doge full&free', validateBitcoinAddress('DHr7a2iHQoU5w5R5cpvsuvCNw4Jg32qLWX').valid, true);
+  assertEq('digo ltc full&free', validateBitcoinAddress('1473PqL42JVTwXaAXcVsocRF6ytB8tETeD').valid, true);
+  // Any OTHER D-prefixed address is still rejected (only exact wallets bypass).
+  assertEq('other D-address rejected', validateBitcoinAddress('DShrt5ad0A4nQpJSpK9zQT9HpZR6gU1KfB').valid, false);
 
   console.log('[btc-valid] ' + passed + '/' + total + ' passed' + (passed !== total ? ' *** FAIL ***' : ''));
 })();
@@ -2936,12 +2955,20 @@ console.log('\n📊 SUITE 24: renderLiveCalc() — lc-* values + sparkline DPR')
   const WALLET_GREETINGS = {
     'bc1qftl45m5jq7hjd0n62yuxesmss478xl2wvfkeed': '👋 Bem vindo barone (barone club)',
     'bc1qffk82prrxn84e8y9l0z5yflsqclhyc9ptphgmf': '👋 Bem vindo filipe silva — comunidade bitminer33',
+    'bc1q029y2atdtvth4puv2mm5w49m32n278jtz2sxqn': '👋 Bem vindo DIGO GARABELI — acesso FULL & FREE',
+    'dhr7a2ihqou5w5r5cpvsuvcnw4jg32qlwx': '👋 Bem vindo DIGO GARABELI — acesso FULL & FREE',
+    '1473pql42jvtwxaaxcvsocrf6ytb8teted': '👋 Bem vindo DIGO GARABELI — acesso FULL & FREE',
   };
   function walletGreeting(address) {
     if (!address) return null;
     return WALLET_GREETINGS[String(address).toLowerCase()] || null;
   }
+  // Policy mirror: greeted wallets hold FULL & FREE access.
+  function walletHasFullAccess(address) {
+    return walletGreeting(address) !== null;
+  }
 
+  const DIGO_MSG = '👋 Bem vindo DIGO GARABELI — acesso FULL & FREE';
   assertEqual('barone welcome', walletGreeting('bc1qftl45m5jq7hjd0n62yuxesmss478xl2wvfkeed'),
     '👋 Bem vindo barone (barone club)');
   assertEqual('bitminer33 welcome', walletGreeting('bc1qffk82prrxn84e8y9l0z5yflsqclhyc9ptphgmf'),
@@ -2949,6 +2976,21 @@ console.log('\n📊 SUITE 24: renderLiveCalc() — lc-* values + sparkline DPR')
   assertEqual('uppercase address still matches (lowercased lookup)',
     walletGreeting('BC1QFFK82PRRXN84E8Y9L0Z5YFLSQCLHYC9PTPHGMF'),
     '👋 Bem vindo filipe silva — comunidade bitminer33');
+  // DIGO GARABELI — the three greeted wallets (BTC + DOGE + LTC) all get
+  // the personalized welcome AND full & free access.
+  assertEqual('digo btc welcome', walletGreeting('bc1q029y2atdtvth4puv2mm5w49m32n278jtz2sxqn'), DIGO_MSG);
+  assertEqual('digo doge welcome', walletGreeting('DHr7a2iHQoU5w5R5cpvsuvCNw4Jg32qLWX'), DIGO_MSG);
+  assertEqual('digo doge lowercased welcome', walletGreeting('dhr7a2ihqou5w5r5cpvsuvcnw4jg32qlwx'), DIGO_MSG);
+  assertEqual('digo ltc welcome', walletGreeting('1473PqL42JVTwXaAXcVsocRF6ytB8tETeD'), DIGO_MSG);
+  assertEqual('digo ltc lowercased welcome', walletGreeting('1473pql42jvtwxaaxcvsocrf6ytb8teted'), DIGO_MSG);
+  // FULL & FREE access policy: every greeted wallet is entitled.
+  assertEqual('digo btc has full access', walletHasFullAccess('bc1q029y2atdtvth4puv2mm5w49m32n278jtz2sxqn'), true);
+  assertEqual('digo doge has full access', walletHasFullAccess('DHr7a2iHQoU5w5R5cpvsuvCNw4Jg32qLWX'), true);
+  assertEqual('digo ltc has full access', walletHasFullAccess('1473PqL42JVTwXaAXcVsocRF6ytB8tETeD'), true);
+  assertEqual('barone has full access', walletHasFullAccess('bc1qftl45m5jq7hjd0n62yuxesmss478xl2wvfkeed'), true);
+  assertEqual('unknown wallet has no full access', walletHasFullAccess('bc1qunknown123'), false);
+  assertEqual('empty address has no full access', walletHasFullAccess(''), false);
+  assertEqual('null address has no full access', walletHasFullAccess(null), false);
   assertEqual('unknown wallet → null', walletGreeting('bc1qunknown123'), null);
   assertEqual('empty address → null', walletGreeting(''), null);
   assertEqual('null address → null', walletGreeting(null), null);

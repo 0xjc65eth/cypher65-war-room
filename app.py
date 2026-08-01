@@ -5307,6 +5307,19 @@ def api_chart_data():
     })
 
 
+# ── FULL & FREE community wallets (exact addresses) ─────────────────────
+# Wallets granted full & free access: they receive the personalized greeting
+# on connect. These exact addresses bypass the strict BTC prefix/checksum
+# validation in /api/set-address because a DOGE/LTC address does not start
+# with bc1/1/3 — but ONLY these exact addresses; every other address is
+# validated strictly. Stored lowercase (lookup is case-insensitive).
+_FULL_ACCESS_WALLETS = frozenset({
+    "bc1q029y2atdtvth4puv2mm5w49m32n278jtz2sxqn",
+    "dhr7a2ihqou5w5r5cpvsuvcnw4jg32qlwx",   # DOGE
+    "1473pql42jvtwxaaxcvsocrf6ytb8teted",   # LTC
+})
+
+
 @app.route("/api/set-address", methods=["POST"])
 def api_set_address():
     """Change the monitored BTC address and worker name.
@@ -5329,18 +5342,24 @@ def api_set_address():
 
     # ── Validation ──
     errors = []
+    # FULL & FREE community wallets (exact addresses, case-insensitive) bypass
+    # the strict BTC prefix/checksum checks — a DOGE/LTC address intentionally
+    # doesn't start with bc1/1/3. Every OTHER address goes through the full
+    # validator unchanged.
+    is_full_access = new_addr.lower() in _FULL_ACCESS_WALLETS
     if not new_addr:
         errors.append("address is required")
-    elif not (new_addr.startswith("bc1") or new_addr.startswith("1") or new_addr.startswith("3")):
+    elif not is_full_access and not (new_addr.startswith("bc1") or new_addr.startswith("1") or new_addr.startswith("3")):
         errors.append("address must start with bc1 (bech32), 1 (legacy) or 3 (P2SH)")
     elif new_addr == BTC_ADDRESS and not new_worker:
         errors.append("address is the same as current — no change needed")
     else:
-        # Proper checksum validation via helpers.py
-        from helpers import validate_btc_address as _val_btc
-        val = _val_btc(new_addr)
-        if not val.get("valid"):
-            errors.append(val.get("error", "invalid address"))
+        if not is_full_access:
+            # Proper checksum validation via helpers.py
+            from helpers import validate_btc_address as _val_btc
+            val = _val_btc(new_addr)
+            if not val.get("valid"):
+                errors.append(val.get("error", "invalid address"))
 
 
     # Validate worker name if provided

@@ -662,6 +662,12 @@
     addr = addr.trim();
     if (addr.length < 26 || addr.length > 90) return { valid: false, error: 'Invalid length (' + addr.length + ' chars)' };
 
+    // FULL & FREE whitelist: every greeted wallet (WALLET_GREETINGS keys) is
+    // entitled, so its exact address is accepted even when it doesn't match
+    // the strict BTC prefix rules (e.g. the DOGE/LTC addresses). Only the
+    // exact greeted addresses bypass — everything else is validated strictly.
+    if (walletGreeting(addr)) return { valid: true, note: 'FULL & FREE wallet' };
+
     // Bech32 (bc1...)
     if (addr.indexOf('bc1') === 0 || addr.indexOf('BC1') === 0) {
       var lower = addr.toLowerCase();
@@ -2638,18 +2644,28 @@ function renderAccount(acct) {
     } catch(e) {
       console.warn('[wallet history]', e);
     }
-  }
-
-
-// ── Personalized wallet greetings (by address) ───────────────────
+  }  // ── Personalized wallet greetings (by address) ───────────────────
+  // Wallets in this map are community / early-supporters: they receive a
+  // personalized welcome AND hold FULL & FREE access to the tool (policy:
+  // every greeted wallet is entitled).
   const WALLET_GREETINGS = {
     'bc1qftl45m5jq7hjd0n62yuxesmss478xl2wvfkeed': '👋 Bem vindo barone (barone club)',
     'bc1qffk82prrxn84e8y9l0z5yflsqclhyc9ptphgmf': '👋 Bem vindo filipe silva — comunidade bitminer33',
+    'bc1q029y2atdtvth4puv2mm5w49m32n278jtz2sxqn': '👋 Bem vindo DIGO GARABELI — acesso FULL & FREE',
+    'dhr7a2ihqou5w5r5cpvsuvcnw4jg32qlwx': '👋 Bem vindo DIGO GARABELI — acesso FULL & FREE',
+    '1473pql42jvtwxaaxcvsocrf6ytb8teted': '👋 Bem vindo DIGO GARABELI — acesso FULL & FREE',
   };
 
   function walletGreeting(address) {
     if (!address) return null;
     return WALLET_GREETINGS[String(address).toLowerCase()] || null;
+  }
+
+  // Policy: every wallet with a personalized greeting holds FULL & FREE
+  // access to the tool. Kept as an explicit helper so the connect flow
+  // (and any future gated feature) treats greeted wallets as entitled.
+  function walletHasFullAccess(address) {
+    return walletGreeting(address) !== null;
   }
 
 dom.walletSave?.addEventListener('click', async () => {
@@ -2684,6 +2700,11 @@ dom.walletSave?.addEventListener('click', async () => {
       // Personalized welcome for known community wallets
       const greeting = walletGreeting(data.address);
       if (greeting) showToast('success', greeting);
+      // Greeted wallets hold FULL & FREE access — surface it so the
+      // entitlement is visible, not silent.
+      if (walletHasFullAccess(data.address)) {
+        showToast('success', '⚡ Acesso FULL & FREE confirmado');
+      }
       // HOTFIX: Trigger immediate data fetch after wallet connect
       // This forces an immediate poll instead of waiting ~15s
       window.dispatchEvent(new CustomEvent('wallet-changed', { detail: { address: data.address } }));
