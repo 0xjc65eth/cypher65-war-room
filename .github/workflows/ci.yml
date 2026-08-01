@@ -1,6 +1,7 @@
 # ── CYPHER65 · CI Gate ───────────────────────────────────────────────────
 # Runs the full test suite (Python + JS core) on every push and pull request
-# to main. This is the merge gate: if either suite fails, the PR is blocked.
+# to master (the default/active branch). This is the merge gate: if either
+# suite fails, the PR is blocked.
 # Coverage is regenerated each run and uploaded as an artifact.
 #
 # Audit item (Produção · Estágio 1/5): sem gate de CI, a cobertura não era
@@ -15,9 +16,9 @@ name: "CI · Gate"
 
 on:
   push:
-    branches: [main]
+    branches: [master]
   pull_request:
-    branches: [main]
+    branches: [master]
   workflow_dispatch:
 
 jobs:

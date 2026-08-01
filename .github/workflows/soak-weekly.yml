@@ -7,12 +7,12 @@
 name: "Soak Test · CI"
 
 on:
-  # Post-deploy: runs on every push to main
+  # Post-deploy: runs on every push to master (default/active branch)
   push:
-    branches: [main]
+    branches: [master]
   # Pull request: run on every PR
   pull_request:
-    branches: [main]
+    branches: [master]
   schedule:
     # Nightly soak at 03:00 UTC (off-peak hours for GitHub Actions)
     - cron: "0 3 * * *"
@@ -122,62 +122,6 @@ jobs:
         run: |
           source .venv/bin/activate
           python -m pytest tests/ -v --tb=short --junitxml=/tmp/pytest-results.xml
-
-      - name: Start Flask server
-        run: |
-          source .venv/bin/activate
-          nohup .venv/bin/python app.py > /tmp/soak_server.log 2>&1 &
-          echo "PID=$!"
-          # Wait for boot + first poll cycle
-          for i in $(seq 1 15); do
-            sleep 1
-            STATUS=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8765/ 2>/dev/null || echo "000")
-            if [ "$STATUS" = "200" ]; then
-              echo "Server ready after ${i}s"
-              break
-            fi
-            if [ "$i" = "15" ]; then
-              echo "Server failed to start"
-              cat /tmp/soak_server.log
-              exit 1
-            fi
-          done
-
-      - name: Run soak test
-        run: |
-          source .venv/bin/activate
-          QUICK_ITERS="${{ github.event.inputs.iters || '10' }}" \
-            bash tests/soak_quick.sh
-
-      - name: Upload soak log
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: soak-log
-          path: /tmp/cypher_soak_quick.log
-          retention-days: 30
-
-      - name: Upload server log
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: soak-server-log
-          path: /tmp/soak_server.log
-          retention-days: 30
-
-      - name: Upload test results (JUnit XML)
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: pytest-results
-          path: /tmp/pytest-results.xml
-          retention-days: 30
-
-      - name: Notify on failure
-        if: failure()
-        run: |
-          echo "::error::Soak test FAILED — check artifacts for details"
-          echo "Workflow: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
 
       - name: Start Flask server
         run: |
