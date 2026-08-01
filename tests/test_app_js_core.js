@@ -2116,21 +2116,36 @@ var bestOffers = [
 assertEqual('bestIdx lowest → 1', findBestOfferIndex(bestOffers), 1);
 
 // ── _mktBestIndex mirror: highest metrics.score wins; only with NO scores at
-// all does it fall back to lowest valid price (two-pass, first-max on ties). ─
+// all does it fall back to lowest valid price (two-pass, first-max on ties).
+// Estimated offers (parasite pool-fee model, kissmyhash fallback) are NEVER
+// crowned best — they are filtered out first, keeping original indices for
+// mapping back; if ALL offers are estimated, the full list is used as fallback
+// (matches static/app.js _mktBestIndex). ─
 function mktBestIndexMirror(offers) {
   if (!offers || !offers.length) return -1;
-  var bestIdx = -1, bestScore = -Infinity;
+  // Build the market-only subset, keeping original indices for mapping back.
+  var market = [];
+  var marketIdx = [];
   offers.forEach(function (o, idx) {
+    if (!o.estimated) { market.push(o); marketIdx.push(idx); }
+  });
+  var pool = market.length ? market : offers;           // all-estimated → fallback to full list
+  var poolIdx = market.length ? marketIdx : offers.map(function (_, i) { return i; });
+  // Pass 1: highest finite metrics.score (first max wins on ties).
+  var bestPos = -1;
+  var bestScore = -Infinity;
+  pool.forEach(function (o, i) {
     var sc = Number(o.metrics && o.metrics.score);
-    if (isFinite(sc) && sc > bestScore) { bestScore = sc; bestIdx = idx; }
+    if (isFinite(sc) && sc > bestScore) { bestScore = sc; bestPos = i; }
   });
-  if (bestIdx >= 0) return bestIdx;
+  if (bestPos >= 0) return poolIdx[bestPos];
+  // Pass 2: no scores anywhere → lowest valid price_per_th_day.
   var bestVal = Infinity;
-  offers.forEach(function (o, idx) {
+  pool.forEach(function (o, i) {
     var p = Number(o.price_per_th_day);
-    if (isFinite(p) && p > 0 && p < bestVal) { bestVal = p; bestIdx = idx; }
+    if (isFinite(p) && p > 0 && p < bestVal) { bestVal = p; bestPos = i; }
   });
-  return bestIdx;
+  return bestPos >= 0 ? poolIdx[bestPos] : -1;
 }
 var scoredOffers = [
   { provider: 'braiins', price_per_th_day: 1e-8, metrics: { score: 5.0 } },
@@ -2148,6 +2163,36 @@ var scoredNone = [{ provider: 'a', price_per_th_day: 2e-8 }, { provider: 'b', pr
 assertEqual('scored none → lowest price (idx 1)', mktBestIndexMirror(scoredNone), 1);
 assertEqual('scored null → -1', mktBestIndexMirror(null), -1);
 assertEqual('scored [] → -1', mktBestIndexMirror([]), -1);
+
+// Regression: estimated offers (parasite pool-fee model — measured live
+// ~1 sat/TH/d with an inflated ROI score 7325) must NEVER be crowned "best"
+// while a real marketplace quote exists.
+var parasiteScenario = [
+  { provider: 'parasite', price_per_th_day: 1e-8, estimated: true, metrics: { score: 7325 } },
+  { provider: 'braiins', price_per_th_day: 4.966e-6, metrics: { score: 5.0 } },
+  { provider: 'nicehash', price_per_th_day: 1e-6, metrics: { score: 3.0 } },
+];
+assertEqual('estimated high-score never wins → braiins (idx 1)', mktBestIndexMirror(parasiteScenario), 1);
+var parasiteVsReal = [
+  { provider: 'parasite', price_per_th_day: 1e-8, estimated: true, metrics: { score: 7325 } },
+  { provider: 'mrr', price_per_th_day: 2e-6, metrics: { score: 12.5 } },
+];
+assertEqual('estimated skipped in score pass → mrr (idx 1)', mktBestIndexMirror(parasiteVsReal), 1);
+var allEstimated = [
+  { provider: 'parasite', price_per_th_day: 1e-8, estimated: true, metrics: { score: 7 } },
+  { provider: 'kissmyhash', price_per_th_day: 5e-8, estimated: true, metrics: { score: 9 } },
+];
+assertEqual('all estimated → fallback score pass → kissmyhash (idx 1)', mktBestIndexMirror(allEstimated), 1);
+var allEstimatedNoScores = [
+  { provider: 'parasite', price_per_th_day: 1e-8, estimated: true },
+  { provider: 'kissmyhash', price_per_th_day: 5e-8, estimated: true },
+];
+assertEqual('all estimated no scores → lowest price → parasite (idx 0)', mktBestIndexMirror(allEstimatedNoScores), 0);
+var mixedNoScores = [
+  { provider: 'parasite', price_per_th_day: 1e-8, estimated: true },
+  { provider: 'braiins', price_per_th_day: 4.966e-6 },
+];
+assertEqual('mixed no scores → estimated skipped → braiins (idx 1)', mktBestIndexMirror(mixedNoScores), 1);
 
 // ── USD/TH/d companion on market cards (BTC/TH/day × snapshot BTC/USD) ─
 // Mirrors app.js _mktUsdPerTh(): $1+ → 2 decimals; below $1 → 3 sig figs.

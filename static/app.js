@@ -1809,23 +1809,37 @@ function renderAccount(acct) {
   // carries a finite score do we fall back to the lowest valid price.
   // Two-pass so a low-score offer can never override the score winner via the
   // price fallback (single-pass mixing had that bug).
+  // ONLY real marketplace quotes may be crowned "best": estimated offers
+  // (parasite pool-fee model, kissmyhash fallback) are NOT rental prices —
+  // their score is inflated by the fee-only cost base (measured live: ~1
+  // sat/TH/d vs ~10k-50k real market), so they must never win the "best"
+  // highlight. They still render as cards (ESTIMATED label) but are skipped
+  // here — mirroring the backend best_price fix in app.py.
   function _mktBestIndex(offers) {
     if (!offers || !offers.length) return -1;
-    // Pass 1: highest finite metrics.score (first max wins on ties).
-    let bestIdx = -1;
-    let bestScore = -Infinity;
+    // Build the market-only subset, keeping original indices for mapping back.
+    const market = [];
+    const marketIdx = [];
     offers.forEach((o, idx) => {
-      const sc = Number(o.metrics && o.metrics.score);
-      if (isFinite(sc) && sc > bestScore) { bestScore = sc; bestIdx = idx; }
+      if (!o.estimated) { market.push(o); marketIdx.push(idx); }
     });
-    if (bestIdx >= 0) return bestIdx;
+    const pool = market.length ? market : offers;           // all-estimated → fallback to full list
+    const poolIdx = market.length ? marketIdx : offers.map((_, i) => i);
+    // Pass 1: highest finite metrics.score (first max wins on ties).
+    let bestPos = -1;
+    let bestScore = -Infinity;
+    pool.forEach((o, i) => {
+      const sc = Number(o.metrics && o.metrics.score);
+      if (isFinite(sc) && sc > bestScore) { bestScore = sc; bestPos = i; }
+    });
+    if (bestPos >= 0) return poolIdx[bestPos];
     // Pass 2: no scores anywhere → lowest valid price_per_th_day.
     let bestVal = Infinity;
-    offers.forEach((o, idx) => {
+    pool.forEach((o, i) => {
       const p = Number(o.price_per_th_day);
-      if (isFinite(p) && p > 0 && p < bestVal) { bestVal = p; bestIdx = idx; }
+      if (isFinite(p) && p > 0 && p < bestVal) { bestVal = p; bestPos = i; }
     });
-    return bestIdx;
+    return bestPos >= 0 ? poolIdx[bestPos] : -1;
   }
 
   function renderMarketGrid() {

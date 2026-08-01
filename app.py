@@ -3439,9 +3439,15 @@ def api_snapshot():
     # market_data: structured {offers, best_price, updated_at} expected by frontend renderMarket()
     cache = _shared_state.market_data_cache
     if highlights and len(highlights) > 0:
-        # Sort by score descending; best price = lowest price_per_th_day
+        # Sort by score descending; best price = lowest price_per_th_day.
+        # ONLY real marketplace quotes may win "best price": estimated offers
+        # (parasite pool-fee model, kissmyhash fallback) are NOT rental prices
+        # — crowning them would claim you can rent hashrate at a pool-fee rate
+        # (measured live: ~1 sat/TH/d vs ~10k-50k real market). They still
+        # render in the cards (flagged ESTIMATED) but never as "best deal".
         sorted_hl = sorted(highlights, key=lambda x: x.get("metrics", {}).get("score", 0), reverse=True)
-        best_offer = min(sorted_hl, key=lambda x: x.get("price_per_th_day", 999))
+        market_hl = [x for x in sorted_hl if not x.get("estimated")]
+        best_offer = min(market_hl or sorted_hl, key=lambda x: x.get("price_per_th_day", 999))
         best_price_raw = best_offer.get("price_per_th_day")
         # Same sats/BTC convention as the frontend _fmtBtcPerTh() — a raw
         # "{:.6f}" would render 1e-10 as a misleading "0.000000 BTC/TH/d".

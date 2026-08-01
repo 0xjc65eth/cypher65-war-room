@@ -324,6 +324,73 @@ class TestSnapshotMarketHighlights:
         assert "market_highlights" in data
 
 
+class TestSnapshotBestPriceEstimatedExclusion:
+    """Parasite regression: estimated offers (parasite pool-fee model,
+    kissmyhash fallback) must NEVER be crowned 'best price' on /api/snapshot.
+    Only real marketplace quotes may win — estimated offers still render as
+    ESTIMATED cards but never as the 'best deal' highlight. Mirrors the
+    frontend _mktBestIndex fix in static/app.js."""
+
+    def _seed(self, monkeypatch, prices):
+        # Skip the live provider fetch (would overwrite our injected prices).
+        monkeypatch.setattr("app._get_hashrate_market_offers", lambda: None)
+        monkeypatch.setattr(
+            "app.latest_snapshot",
+            {"ts": 1700000000, "network": {"hashrate": 6e20}, "btc_price": {"usd": 100000}},
+        )
+        monkeypatch.setattr("services.state.last_known_prices", prices)
+
+    def test_estimated_offer_never_wins_best_price(self, client, monkeypatch):
+        """A real quote (5k sats/TH/d) beats a cheap estimated parasite quote
+        (~1 sat/TH/d): the estimated offer must not win despite the lower
+        price — the whole point of the market_hl fix in api_snapshot."""
+        now = int(time.time())
+        self._seed(monkeypatch, {
+            "parasite": {"price": 1e-5, "ts": now, "label": "Parasite", "estimated": True},
+            "braiins": {"price": 5e-2, "ts": now, "label": "Braiins"},
+        })
+        res = client.get("/api/snapshot")
+        assert res.status_code == 200
+        md = res.get_json()["market_data"]
+        # Best price reflects the REAL Braiins quote, not the estimated parasite.
+        assert md["best_price"] == "5000.00 sats/TH/d"
+        # Both offers still render in the cards; parasite stays flagged.
+        offers = md["offers"]
+        by_provider = {o["provider"]: o for o in offers}
+        assert set(by_provider) == {"parasite", "braiins"}
+        assert by_provider["parasite"]["estimated"] is True
+        assert by_provider["braiins"]["estimated"] is False
+
+    def test_all_estimated_falls_back_to_lowest_price(self, client, monkeypatch):
+        """When every offer is estimated there is no real quote — the documented
+        fallback (market_hl or sorted_hl) picks the lowest price, honest about
+        the absence of a real marketplace price."""
+        now = int(time.time())
+        self._seed(monkeypatch, {
+            "parasite": {"price": 1e-5, "ts": now, "label": "Parasite", "estimated": True},
+            "kissmyhash": {"price": 5e-2, "ts": now, "label": "KissMyHash", "estimated": True},
+        })
+        res = client.get("/api/snapshot")
+        assert res.status_code == 200
+        md = res.get_json()["market_data"]
+        assert md["best_price"] == "1.00 sats/TH/d"
+
+    def test_mixed_real_and_estimated_keeps_real_winner(self, client, monkeypatch):
+        """Real quotes compete among themselves; the estimated offer never
+        displaces them even when it has the lowest price of all."""
+        now = int(time.time())
+        self._seed(monkeypatch, {
+            "parasite": {"price": 1e-5, "ts": now, "label": "Parasite", "estimated": True},
+            "braiins": {"price": 1e-1, "ts": now, "label": "Braiins"},
+            "mrr": {"price": 5e-2, "ts": now, "label": "MRR"},
+        })
+        res = client.get("/api/snapshot")
+        assert res.status_code == 200
+        md = res.get_json()["market_data"]
+        # MRR (5e-2 → 5000 sats/TH/d) is the cheapest REAL quote → wins.
+        assert md["best_price"] == "5000.00 sats/TH/d"
+
+
 class TestHashrateMarketHealth:
     """Warmup/cache health exposed via _hashrate_market_health() — the field
     surfaced on /api/hashrate-market and the snapshot's market_data. Lets
