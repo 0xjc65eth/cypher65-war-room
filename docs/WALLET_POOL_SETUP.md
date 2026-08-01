@@ -29,11 +29,13 @@ configuradas), calcula hashrate, shares, dificuldade e lucratividade.
 No `.env` (ou exportado antes de iniciar):
 
 ```bash
-# Endereço BTC monitorado (bc1…, 1… ou 3…)
-BTC_ADDRESS=bc1qpc3832jcu6m8qpqjvz5lkuydwjzv8v5vq5t5rs
+# Endereço BTC monitorado (bc1…, 1… ou 3…) — opcional. Se vazio, o
+# dashboard inicia VAZIO: os dados só aparecem depois de conectar a
+# própria wallet pela UI (⚡ CONNECT), que persiste em settings.
+# BTC_ADDRESS=
 
 # Nome do worker (opcional; aparece na telemetria e no terminal)
-WORKER_NAME=cypher65
+# WORKER_NAME=
 ```
 
 O boot carrega estes valores (`app.py`) e, se a tabela `settings` tiver valores

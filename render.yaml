@@ -33,11 +33,14 @@ services:
         value: "3.13"
       - key: PORT
         value: 8765
-      # ── Which wallet to monitor on boot (overrides the hardcoded default) ──
-      - key: BTC_ADDRESS
-        value: bc1qpc3832jcu6m8qpqjvz5lkuydwjzv8v5vq5t5rs
-      - key: WORKER_NAME
-        value: ""
+      # ── Wallet to monitor (OPTIONAL — do not set a default address).
+      #    Honest-telemetry premise: the app boots EMPTY and only starts
+      #    showing data once the user connects their own wallet via the UI
+      #    (⚡ CONNECT) or sets this var. Leave unset for a blank dashboard.
+      # - key: BTC_ADDRESS
+      #   value: your-bc1-address
+      # - key: WORKER_NAME
+      #   value: ""
       # ── Secrets ──────────────────────────────────────────────────────────
       - key: SECRET_KEY
         generateValue: true

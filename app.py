@@ -83,10 +83,11 @@ log = logging.getLogger("cypher65")
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 #  CONFIG
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-BTC_ADDRESS = os.environ.get(
-    "BTC_ADDRESS",
-    "bc1qpc3832jcu6m8qpqjvz5lkuydwjzv8v5vq5t5rs",
-)
+# Honest-telemetry premise: NO default wallet. The dashboard boots EMPTY and
+# only starts showing data once the user connects their own address via the
+# UI (⚡ CONNECT) or by setting BTC_ADDRESS in the environment. Remove this
+# default permanently: each deployment monitors only its own user's wallet.
+BTC_ADDRESS = os.environ.get("BTC_ADDRESS", "")
 WORKER_NAME = os.environ.get("WORKER_NAME", "")
 PARASITE_API = "https://parasite.space/api"
 MEMPOOL_API = "https://mempool.space/api"
