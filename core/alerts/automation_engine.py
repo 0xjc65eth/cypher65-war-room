@@ -31,6 +31,7 @@ class AutomationRule:
     is_enabled: bool = True
     min_interval_seconds: int = 60
     tenant_id: str = "default"  # Fase 4 · B2
+    priority: int = 0  # Deadlock prevention: higher wins conflicting pairs
 
 
 class AutomationEngine:
@@ -72,6 +73,7 @@ class AutomationEngine:
                     is_enabled=bool(r["is_enabled"]),
                     min_interval_seconds=int(r["min_interval_seconds"]) if "min_interval_seconds" in r.keys() else 60,
                     tenant_id=r["tenant_id"] if "tenant_id" in r.keys() else "default",
+                    priority=int(r["priority"]) if "priority" in r.keys() else 0,
                 )
                 for r in rows
             ]
@@ -79,21 +81,132 @@ class AutomationEngine:
             log.warning("[automation_engine] failed to load rules: %s", e)
             return []
 
+    # Action pairs that are mutually exclusive on the SAME device. When two
+    # rules would fire conflicting actions in one cycle, deadlock prevention
+    # elects the higher-priority rule (or cancels both when tied) and logs.
+    _CONFLICTING_ACTIONS: Dict[str, str] = {
+        "overclock": "underclock",
+        "underclock": "overclock",
+        "pause": "resume",
+        "resume": "pause",
+        "restart": "poweroff",
+        "poweroff": "restart",
+        "start": "stop",
+        "stop": "start",
+    }
+
     def evaluate_rules(self, devices: List[Device]) -> List[Dict[str, Any]]:
-        """Evaluate all active rules against the provided devices."""
+        """Evaluate all active rules against the provided devices.
+
+        Deadlock prevention: triggered rules are collected per device first;
+        when two rules would execute CONFLICTING actions on the same device
+        in the same cycle, the higher-priority rule wins and the loser is
+        audited as CANCELLED (conflict). Ties cancel both and log.
+        """
         rules = self.load_rules()
-        results = []
         now = int(time.time())
+        triggered: List[tuple] = []  # (rule, device)
         for rule in rules:
             device = next((d for d in devices if d.id == rule.target_device_id), None)
             if device is None:
                 continue
             if not self._can_fire(rule, device.id, now):
                 continue
-            triggered = self._evaluate_condition(device, rule)
-            if triggered:
-                results.append(self._execute(rule, device, now))
+            if self._evaluate_condition(device, rule):
+                triggered.append((rule, device))
+
+        survivors = self._resolve_conflicts(triggered, now)
+        results = []
+        for rule, device in survivors:
+            results.append(self._execute(rule, device, now))
         return results
+
+    def _resolve_conflicts(self, triggered: List[tuple],
+                           now: Optional[int] = None) -> List[tuple]:
+        """Drop conflicting rules on the same device, keeping higher priority.
+
+        Non-conflicting rules always survive. Conflicting pairs are resolved
+        by priority alone: higher priority wins; equal priorities cancel BOTH
+        with a log (a stale/uncertain rule should never fight the other). The
+        rule id never breaks a tie — insertion order must not decide a
+        conflict. Losers are audited as CANCELLED_BY_CONFLICT so operators
+        see why nothing ran.
+
+        Cancelled rules ALSO record their cooldown (like execution does), so a
+        persistent conflict re-audits at most once per min_interval_seconds
+        instead of spamming the log every poll cycle.
+        """
+        now = int(time.time()) if now is None else now
+        if len(triggered) <= 1:
+            return triggered
+        by_device: Dict[str, List[tuple]] = {}
+        for rule, device in triggered:
+            by_device.setdefault(device.id, []).append((rule, device))
+
+        survivors: List[tuple] = []
+        for device_id, pairs in by_device.items():
+            if len(pairs) == 1:
+                survivors.append(pairs[0])
+                continue
+            cancelled: set = set()  # indices into `pairs`
+            for i in range(len(pairs)):
+                for j in range(i + 1, len(pairs)):
+                    rule_i, dev_i = pairs[i]
+                    rule_j, dev_j = pairs[j]
+                    if not self._actions_conflict(rule_i.action_command,
+                                                  rule_j.action_command):
+                        continue
+                    # Compare priority ONLY: equal priorities are a genuine
+                    # tie (cancel both). The rule id must never break the tie —
+                    # that would let insertion order decide a conflict.
+                    if rule_i.priority > rule_j.priority:
+                        cancelled.add(j)
+                        self._audit_conflict(rule_j, dev_j, blocked_by=rule_i.name)
+                    elif rule_j.priority > rule_i.priority:
+                        cancelled.add(i)
+                        self._audit_conflict(rule_i, dev_i, blocked_by=rule_j.name)
+                    else:  # tie → cancel both, never let them fight
+                        cancelled.add(i)
+                        cancelled.add(j)
+                        self._audit_conflict(rule_i, dev_i,
+                                             blocked_by=rule_j.name + " (tie)")
+                        self._audit_conflict(rule_j, dev_j,
+                                             blocked_by=rule_i.name + " (tie)")
+            for idx, (rule, dev) in enumerate(pairs):
+                if idx in cancelled:
+                    # Rate-limit re-audits for persistent conflicts.
+                    self._last_fired[f"{rule.id}:{dev.id}"] = now
+            survivors.extend(p for idx, p in enumerate(pairs) if idx not in cancelled)
+        return survivors
+
+    @staticmethod
+    def _actions_conflict(a: str, b: str) -> bool:
+        if a == b:
+            return False  # same action twice is harmless (idempotent)
+        return AutomationEngine._CONFLICTING_ACTIONS.get(a) == b
+
+    def _audit_conflict(self, rule: AutomationRule, device: Device,
+                        *, blocked_by: str):
+        log.warning("[automation] rule=%s device=%s CANCELLED_BY_CONFLICT "
+                    "(blocked by %s)", rule.name, device.id, blocked_by)
+        if self.audit_callback:
+            try:
+                self.audit_callback(
+                    ts=int(time.time()),
+                    alert_type="automation",
+                    device_id=device.id,
+                    severity="WARN",
+                    action_taken="CANCELLED_BY_CONFLICT",
+                    rule_id=rule.id,
+                    rule_name=rule.name,
+                    action_command=rule.action_command,
+                    status="cancelled",
+                    reason=f"conflicting action with {blocked_by}",
+                    result="",
+                    tenant_id=getattr(rule, "tenant_id", "default"),
+                )
+            except Exception as e:
+                log.warning("[automation_engine] audit callback error: %s", e)
 
     def _evaluate_condition(self, device: Device, rule: AutomationRule) -> bool:
         value = self._get_metric(device, rule.condition_metric)

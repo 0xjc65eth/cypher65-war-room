@@ -1,0 +1,75 @@
+# ── CYPHER65 War Room · docker-compose ──────────────────────────────────
+# Usage:
+#   docker compose up -d                              # app only (local)
+#   docker compose --profile tailscale up -d          # app + remote access
+#
+# The app is self-contained (Flask + SQLite at ./data). The Tailscale
+# sidecar is OPTIONAL (profile-gated) and turns the host into a subnet
+# router so you can reach your miners remotely — no port forwarding needed.
+version: "3.9"
+
+services:
+  cypher65-app:
+    build: .
+    image: 0xjc65eth/cypher65-war-room:latest
+    container_name: cypher65-app
+    restart: unless-stopped
+    ports:
+      # Bind to loopback only — expose publicly via Tailscale Serve, not ports.
+      - "127.0.0.1:8765:8765"
+    volumes:
+      - ./data:/app/data
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      PORT: "8765"
+      RATE_LIMIT_PER_MINUTE: "${RATE_LIMIT_PER_MINUTE:-300}"
+    # Optional TLS in-container (CERT_FILE/KEY_FILE paths must exist).
+    # ports:
+    #   - "127.0.0.1:8766:8766"
+    networks:
+      - cypher65-net
+
+  # ── Optional: Tailscale sidecar (remote access) ────────────────────────
+  # Enable with: docker compose --profile tailscale up -d
+  # Requires TAILSCALE_AUTH_KEY and optionally LOCAL_SUBNET in .env.
+  # After boot, the dashboard is reachable at https://<hostname>.ts.net
+  tailscale-sidecar:
+    image: tailscale/tailscale:latest
+    container_name: cypher65-tailscale
+    restart: unless-stopped
+    profiles: ["tailscale"]
+    environment:
+      TS_AUTHKEY: "${TAILSCALE_AUTH_KEY:-}"
+      TS_ROUTES: "${LOCAL_SUBNET:-}"
+      TS_ACCEPT_ROUTES: "true"
+      TS_HOSTNAME: "cypher65-${HOSTNAME:-node}"
+      TS_STATE_DIR: "/var/lib/tailscale"
+      # NOTE: subnet routing (TS_ROUTES) is enough to reach the miners.
+      # --advertise-exit-node is intentionally NOT set — it would route ALL
+      # tailnet peers' internet traffic through the mining host.
+    volumes:
+      - ./tailscale-data:/var/lib/tailscale
+      - /dev/net/tun:/dev/net/tun
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+      - SYS_MODULE
+    # Shares the app's network namespace so `tailscale serve` can proxy
+    # straight to 127.0.0.1:8765 inside this container.
+    network_mode: "service:cypher65-app"
+    depends_on:
+      - cypher65-app
+    command:
+      - sh
+      - -c
+      - |
+        tailscaled &
+        sleep 3
+        tailscale up --authkey=$${TS_AUTHKEY} --hostname=cypher65-$${HOSTNAME:-node}
+        exec tailscale serve --bg --https=443 http://127.0.0.1:8765
+
+networks:
+  cypher65-net:
+    driver: bridge
