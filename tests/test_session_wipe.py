@@ -124,7 +124,8 @@ class TestResetSessionState:
         assert snapshot["leaderboard_total"] == 0
         assert snapshot["highest_diffs"] == []
         assert snapshot["network"] == {"height": None, "difficulty": None, "hashrate": None}
-        assert snapshot["btc_price"] == {"usd": None, "brl": None}
+        assert snapshot["btc_price"] == {"usd": None, "brl": None, "eur": None, "gbp": None,
+                                        "jpy": None, "krw": None, "cny": None}
         assert snapshot["luck_estimate"] == {}
         assert snapshot["alerts_recent"] == []
         assert snapshot["timeline_recent"] == []

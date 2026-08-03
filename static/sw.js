@@ -8,7 +8,7 @@
    - Clicking a notification focuses / opens the dashboard
    ════════════════════════════════════════════════════════════════════════ */
 
-const CACHE_NAME = 'cypher65-v5';
+const CACHE_NAME = 'cypher65-v9';  // v6 IIFE fix · v7 timeline cards · v8 LAN scan UI · v9 onboarding wizard
 const ASSETS_TO_CACHE = [
   '/',
   '/static/style.css',

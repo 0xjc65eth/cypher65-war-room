@@ -15,11 +15,13 @@ Usage:
 
 import os
 import time
-import json
+import sqlite3
 import logging
+from collections import OrderedDict
 from functools import wraps
 from typing import Optional, Dict, Any, Tuple
 
+import jwt as _jwt
 from flask import request, jsonify, current_app, g
 
 log = logging.getLogger("cypher65.auth")
@@ -33,10 +35,107 @@ log = logging.getLogger("cypher65.auth")
 DEFAULT_ACCESS_TTL = 3600          # 1 hour
 DEFAULT_REFRESH_TTL = 86400 * 7    # 7 days
 DEFAULT_ISSUER = "cypher65"
+DEFAULT_AUDIENCE = "cypher65"
 
-# ── Token Blacklist (in-memory, lost on restart) ─────────────────────────
-# For a production deployment, move this to Redis or SQLite.
-_blacklisted_tokens: set = set()
+# ── Token Blacklist (in-memory + optional SQLite persistence) ────────────
+# FIFO-pruned OrderedDict: token -> revoke timestamp. When the cap is hit,
+# the OLDEST revocations are dropped — never a wholesale clear() (a clear()
+# would silently re-validate every previously-revoked token → replay).
+#
+# Single-process deploys (python app.py) are fully covered by memory alone.
+# For MULTI-PROCESS topologies (gunicorn workers + python -m services.workers)
+# each process has its own dict, so a logout in process A wouldn't be seen by
+# process B. Setting REVOKED_TOKENS_DB=1 persists revocations to the SQLite
+# DB (revoked_tokens table) — then every process honors the shared blacklist.
+# Persistence is strictly best-effort: a DB error degrades to memory-only and
+# NEVER breaks authentication.
+_blacklisted_tokens: "OrderedDict[str, float]" = OrderedDict()
+_BLACKLIST_MAX = 10000
+_BLACKLIST_KEEP = 5000
+# Guards the revoked_tokens DDL — created ONCE per process per DB path
+# (avoids running CREATE TABLE IF NOT EXISTS on every verify/revoke in
+# multi-worker mode; the path check also resets correctly if DB_PATH is
+# redirected at runtime, e.g. per-test scratch DBs).
+_revoked_table_ready: Optional[str] = None
+
+
+def _revoked_db_path() -> Optional[str]:
+    """Return the SQLite path for revoked-token persistence, or None when
+    disabled (REVOKED_TOKENS_DB != 1). Reads DB_PATH at call time so test
+    redirects (conftest sets os.environ["DB_PATH"]) are always honored."""
+    if os.environ.get("REVOKED_TOKENS_DB") != "1":
+        return None
+    try:
+        from config import DB_PATH as _cfg_db_path
+    except Exception:
+        _cfg_db_path = "data/war_room.sqlite"
+    return os.environ.get("DB_PATH") or _cfg_db_path
+
+
+def _ensure_revoked_table(conn, path: str) -> None:
+    """Create the revoked_tokens table once per process AND per DB path."""
+    global _revoked_table_ready
+    if _revoked_table_ready == path:
+        return
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS revoked_tokens ("
+        " token TEXT PRIMARY KEY, revoked_at REAL NOT NULL)"
+    )
+    conn.commit()
+    _revoked_table_ready = path
+
+
+def _persist_revocation(token: str) -> None:
+    """Best-effort write of a revocation to SQLite (shared across processes).
+    Also opportunistically prunes rows older than refresh TTL + 1h margin.
+    Never raises — persistence is an enhancement, auth must not depend on it.
+
+    NOTE: sqlite3.Connection.__exit__ commits but does NOT close the
+    connection — we close explicitly (codebase get_db() convention)."""
+    path = _revoked_db_path()
+    if not path:
+        return
+    conn = None
+    try:
+        conn = sqlite3.connect(path, timeout=3)
+        conn.execute("PRAGMA busy_timeout=3000")
+        _ensure_revoked_table(conn, path)
+        conn.execute(
+            "INSERT OR IGNORE INTO revoked_tokens(token, revoked_at) VALUES (?, ?)",
+            (token, time.time()),
+        )
+        conn.execute(
+            "DELETE FROM revoked_tokens WHERE revoked_at < ?",
+            (time.time() - (DEFAULT_REFRESH_TTL + 3600),),
+        )
+        conn.commit()
+    except Exception as e:
+        log.warning("[auth] revoked-token persist skipped (best-effort): %s", e)
+    finally:
+        if conn is not None:
+            conn.close()
+
+
+def _revocation_persisted(token: str) -> bool:
+    """Best-effort check against the shared SQLite blacklist. Never raises."""
+    path = _revoked_db_path()
+    if not path:
+        return False
+    conn = None
+    try:
+        conn = sqlite3.connect(path, timeout=3)
+        conn.execute("PRAGMA busy_timeout=3000")
+        _ensure_revoked_table(conn, path)
+        row = conn.execute(
+            "SELECT 1 FROM revoked_tokens WHERE token = ?", (token,)
+        ).fetchone()
+        return row is not None
+    except Exception as e:
+        log.warning("[auth] revoked-token lookup failed (best-effort): %s", e)
+        return False
+    finally:
+        if conn is not None:
+            conn.close()
 
 
 def _get_secret() -> str:
@@ -47,52 +146,26 @@ def _get_secret() -> str:
 
 
 def _encode(payload: dict, secret: str) -> str:
-    """Slim JWT encoder: base64url-encoded JSON header.payload.signature.
-    Uses HMAC-SHA256 (HS256). No external dependency beyond hashlib + hmac.
+    """Encode a JWT using PyJWT (HS256).
+
+    Migrated from the handcrafted hmac/base64 implementation (audit C4) so
+    signing/verification is delegated to a battle-tested library instead of
+    bespoke crypto.
     """
-    import base64, hmac, hashlib
-
-    header = json.dumps({"alg": "HS256", "typ": "JWT"}).encode()
-    payload_bytes = json.dumps(payload).encode()
-
-    def b64url(data: bytes) -> str:
-        return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
-
-    header_b64 = b64url(header)
-    payload_b64 = b64url(payload_bytes)
-    signing_input = f"{header_b64}.{payload_b64}".encode()
-
-    signature = hmac.new(secret.encode(), signing_input, hashlib.sha256).digest()
-    sig_b64 = b64url(signature)
-
-    return f"{header_b64}.{payload_b64}.{sig_b64}"
+    return _jwt.encode(payload, secret, algorithm="HS256")
 
 
 def _decode(token: str, secret: str) -> Optional[dict]:
-    """Decode and verify a JWT token. Returns payload dict or None."""
-    import base64, hmac, hashlib
+    """Decode and verify a JWT token. Returns payload dict or None.
 
-    parts = token.split(".")
-    if len(parts) != 3:
-        return None
-
-    header_b64, payload_b64, sig_b64 = parts
-
-    # Verify signature
-    signing_input = f"{header_b64}.{payload_b64}".encode()
-    expected_sig = hmac.new(secret.encode(), signing_input, hashlib.sha256).digest()
-    actual_sig = base64.urlsafe_b64decode(sig_b64 + "==")
-
-    if not hmac.compare_digest(expected_sig, actual_sig):
-        return None
-
-    # Decode payload
+    PyJWT validates the signature AND the `alg` header (rejects alg-confusion
+    like 'none'), and enforces `exp` automatically. Any invalid/expired/
+    tampered token → None (never raises).
+    """
     try:
-        # Add padding back
-        padded = payload_b64 + "=" * (4 - len(payload_b64) % 4)
-        payload_bytes = base64.urlsafe_b64decode(padded)
-        return json.loads(payload_bytes)
-    except Exception:
+        return _jwt.decode(token, secret, algorithms=["HS256"],
+                           audience=DEFAULT_AUDIENCE)
+    except _jwt.InvalidTokenError:
         return None
 
 
@@ -110,8 +183,12 @@ def create_token(subject: str = "user", ttl: Optional[int] = None,
     """
     secret = _get_secret()
     if not secret:
-        log.warning("[auth] SECRET_KEY not set — generated tokens won't be verifiable across restarts")
-        secret = os.urandom(32).hex()
+        # Audit C2: never mint tokens with a missing/volatile secret — they
+        # would be silently unverifiable (every login issues a token, every
+        # verify fails, auth appears broken with no error). Fail loud instead.
+        log.error("[auth] SECRET_KEY is not configured — refusing to issue JWTs. "
+                  "Set SECRET_KEY in the environment (or app.config JWT_SECRET_KEY).")
+        raise RuntimeError("SECRET_KEY is not configured; refusing to issue JWTs")
 
     ttl = ttl or (current_app.config.get("JWT_ACCESS_TOKEN_TTL", DEFAULT_ACCESS_TTL)
                   if current_app else DEFAULT_ACCESS_TTL)
@@ -120,8 +197,10 @@ def create_token(subject: str = "user", ttl: Optional[int] = None,
     payload = {
         "sub": subject,
         "iat": now,
+        "nbf": now - 5,          # 5s skew tolerance
         "exp": now + ttl,
         "iss": DEFAULT_ISSUER,
+        "aud": DEFAULT_AUDIENCE,
         "type": "access",
     }
     if extra_claims:
@@ -149,12 +228,19 @@ def create_refresh_token(subject: str = "user",
            if current_app else DEFAULT_REFRESH_TTL)
     now = int(time.time())
     secret = _get_secret()
+    if not secret:
+        # Audit C2: same fail-loud policy as create_token — a refresh token
+        # signed with a missing secret would be silently unverifiable.
+        log.error("[auth] SECRET_KEY is not configured — refusing to issue refresh tokens.")
+        raise RuntimeError("SECRET_KEY is not configured; refusing to issue JWTs")
 
     payload = {
         "sub": subject,
         "iat": now,
+        "nbf": now - 5,          # 5s skew tolerance
         "exp": now + ttl,
         "iss": DEFAULT_ISSUER,
+        "aud": DEFAULT_AUDIENCE,
         "type": "refresh",
     }
     if extra_claims:
@@ -175,8 +261,16 @@ def verify_token(token: str, expected_type: str = "access") -> Optional[dict]:
     if not token:
         return None
 
-    # Check blacklist
+    # Check in-memory blacklist
     if token in _blacklisted_tokens:
+        return None
+
+    # Multi-process: honor revocations persisted to SQLite by another
+    # process (only when REVOKED_TOKENS_DB=1). Cache the hit locally so a
+    # repeated token skips the DB round-trip.
+    if _revocation_persisted(token):
+        if len(_blacklisted_tokens) < _BLACKLIST_MAX:
+            _blacklisted_tokens[token] = time.time()
         return None
 
     secret = _get_secret()
@@ -208,11 +302,16 @@ def revoke_token(token: str) -> bool:
     Returns:
         True if added to blacklist
     """
-    _blacklisted_tokens.add(token)
-    # Keep blacklist from growing unbounded (simple cleanup)
-    if len(_blacklisted_tokens) > 10000:
-        # Keep only the most recent 5000
-        _blacklisted_tokens.clear()
+    _blacklisted_tokens[token] = time.time()
+    # FIFO prune: keep only the most recent _BLACKLIST_KEEP revocations.
+    # (OrderedDict preserves first-insertion order — assigning to an
+    # existing key does NOT move it to the end, which is fine: the token
+    # stays revoked while present, and old entries are the first pruned.)
+    if len(_blacklisted_tokens) > _BLACKLIST_MAX:
+        while len(_blacklisted_tokens) > _BLACKLIST_KEEP:
+            _blacklisted_tokens.popitem(last=False)
+    # Persist to the shared SQLite blacklist when enabled (multi-process).
+    _persist_revocation(token)
     return True
 
 

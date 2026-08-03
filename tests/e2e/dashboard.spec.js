@@ -111,6 +111,20 @@ test.describe('CYPHER65 War Room — Dashboard E2E', () => {
       expect(capture.all().length).toBe(0,
         `All page errors: ${JSON.stringify(capture.all())}`
       );
+
+      // The app's global error boundary swallows window errors into the LIVE
+      // LOG panel (#terminal) instead of the console — a console-only capture
+      // misses them (the exact hole that hid "dom is not defined" for months:
+      // renderKpiCards lived OUTSIDE the main IIFE, so every render threw and
+      // the throttle showed it in the LIVE LOG every ~30-60s). Read the panel
+      // text directly so boundary-caught errors are covered too.
+      const liveLog = await page.locator('#terminal').textContent();
+      expect(liveLog || '').not.toContain('dom is not defined');
+
+      // renderKpiCards() must have populated the KPI cards — if it throws
+      // before touching the DOM, they stay at the '\u2014' placeholder.
+      // toHaveText auto-retries, so a slow first render can't flake the test.
+      await expect(page.locator('#kpi-hashrate')).not.toHaveText('\u2014');
     });
   });
 
@@ -140,7 +154,16 @@ test.describe('CYPHER65 War Room — Dashboard E2E', () => {
     });
 
     test('worker hashrate displays a value', async ({ page }) => {
-      await expectElementHasContent(page, '#hud-hashrate, #m-hashrate, #kpi-hashrate');
+      // Strict-mode fix: the old comma selector matched BOTH #hud-hashrate and
+      // #kpi-hashrate (Playwright refuses ambiguous locators). Target the HUD
+      // cell (the worker hashrate) when a worker is connected; on an honest
+      // worker-less boot the KPI card renders the '—' empty state instead.
+      const hudCell = page.locator('#hud-hashrate');
+      if (await hudCell.isVisible().catch(() => false)) {
+        await expectElementHasContent(page, '#hud-hashrate');
+      } else {
+        await expect(page.locator('#kpi-hashrate')).toBeVisible();
+      }
     });
 
     test('BTC price visible in network block', async ({ page }) => {
@@ -150,6 +173,7 @@ test.describe('CYPHER65 War Room — Dashboard E2E', () => {
 
     test('Live Log contains system message', async ({ page }) => {
       // Live Log lives in the LIVE MINING module — navigate there first
+      await ensureSidebarOpen(page);
       await page.locator('.sidebar__link[data-module="live"]').click();
       await page.waitForTimeout(600);
       const terminal = page.locator('#terminal');
@@ -175,6 +199,7 @@ test.describe('CYPHER65 War Room — Dashboard E2E', () => {
 
     test('Axe Fleet panel renders', async ({ page }) => {
       // Axe Fleet lives in the FLEET module — navigate there first
+      await ensureSidebarOpen(page);
       await page.locator('.sidebar__link[data-module="fleet"]').click();
       await page.waitForTimeout(600);
       await expect(page.locator('#axe-fleet-panel')).toBeVisible();
@@ -395,6 +420,7 @@ test.describe('CYPHER65 War Room — Dashboard E2E', () => {
 
     test('sidebar links navigate to modules', async ({ page }) => {
       // Click Fleet sidebar link (module: fleet)
+      await ensureSidebarOpen(page);
       const fleetLink = page.locator('.sidebar__link[data-module="fleet"]');
       await expect(fleetLink).toBeVisible();
       await fleetLink.click();
@@ -402,6 +428,9 @@ test.describe('CYPHER65 War Room — Dashboard E2E', () => {
       await expect(page.locator('#section-fleet')).toBeVisible();
 
       // Click Probability sidebar link (module: probability → charts pane)
+      // activateModule() closes the drawer after each navigation, so re-open
+      // it on mobile before the second link click.
+      await ensureSidebarOpen(page);
       const probLink = page.locator('.sidebar__link[data-module="probability"]');
       await expect(probLink).toBeVisible();
       await probLink.click();
@@ -412,6 +441,7 @@ test.describe('CYPHER65 War Room — Dashboard E2E', () => {
 
     test('Live Terminal tab is accessible and input accepts commands', async ({ page }) => {
       // Click Live Mining sidebar link (module: live → terminal pane)
+      await ensureSidebarOpen(page);
       const liveLink = page.locator('.sidebar__link[data-module="live"]');
       await expect(liveLink).toBeVisible();
       await liveLink.click();
@@ -615,6 +645,7 @@ test.describe('CYPHER65 War Room — Dashboard E2E', () => {
 
     test('Hashmarket filters show provider chips', async ({ page }) => {
       // Hashmarket lives in the HASH MARKET module — navigate there first
+      await ensureSidebarOpen(page);
       await page.locator('.sidebar__link[data-module="market"]').click();
       await page.waitForTimeout(600);
       const filterContainer = page.locator('#mkt-filters');
@@ -729,9 +760,10 @@ test.describe('CYPHER65 War Room — Dashboard E2E', () => {
       await page.waitForTimeout(500);
       expect(await sidebar.getAttribute('class')).toContain('open');
 
-      // Click overlay to close
-      const overlay = page.locator('#sidebar-overlay');
-      await overlay.click();
+      // Close via the ☰ toggle: on ≤480px the drawer is full-screen (100vw),
+      // so the scrim (#sidebar-overlay) sits BELOW the open sidebar and cannot
+      // receive the tap — the toggle (or Escape) is the real close affordance.
+      await mobileToggle.click();
       await page.waitForTimeout(500);
       expect(await sidebar.getAttribute('class')).not.toContain('open');
     });
@@ -755,6 +787,7 @@ test.describe('CYPHER65 War Room — Dashboard E2E', () => {
       await page.goto('/');
       await waitForDashboard(page);
       // Navigate to the Live Mining module (contains the terminal pane)
+      await ensureSidebarOpen(page);
       await page.locator('.sidebar__link[data-module="live"]').click();
       await page.waitForTimeout(600);
       await expect(page.locator('#tab-terminal.active')).toBeVisible({ timeout: 5000 });

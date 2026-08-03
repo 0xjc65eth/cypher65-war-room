@@ -33,9 +33,16 @@ from core.alerts.automation_engine import AutomationEngine, AutomationRule
 @pytest.fixture
 def client():
     app.config["TESTING"] = True
+    saved = app.config.get("JWT_SECRET_KEY")
     app.config["JWT_SECRET_KEY"] = "tenant-b2-secret"
     with app.test_client() as c:
         yield c
+    # Restore any pre-existing secret (cross-file config pollution broke
+    # test_rbac_register.py, which relies on the env SECRET_KEY fallback).
+    if saved is not None:
+        app.config["JWT_SECRET_KEY"] = saved
+    else:
+        app.config.pop("JWT_SECRET_KEY", None)
 
 
 def _bearer(tenant_id: str) -> dict:

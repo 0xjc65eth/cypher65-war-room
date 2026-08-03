@@ -7,7 +7,7 @@
 
 ## Security Audit Findings
 
-*See docs/SECURITY_AUDIT.md for the initial full audit.*
+*See docs/archive/SECURITY_AUDIT.md for the initial full audit.*
 
 ---
 

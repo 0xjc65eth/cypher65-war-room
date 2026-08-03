@@ -1,0 +1,25 @@
+# ── CYPHER65 War Room · Development dependencies ─────────────────────────
+# Install with:  pip install -r requirements-dev.txt
+# (pulls the runtime requirements in too).
+# Dev-only — never installed in the Docker image / production.
+# Versions verified locally on Python 3.12/3.13; CI gates on pytest-cov.
+-r requirements.txt
+
+pytest==9.0.2
+pytest-cov==7.1.0
+pytest-mock==3.15.1
+coverage==7.15.0
+
+# ── Lint / format (ADVISORY — the repo is not lint-clean yet; see the
+#    Makefile `lint` target. Do not gate CI on these until a dedicated
+#    cleanup commit lands.) ────────────────────────────────────────────────
+black==25.1.0
+flake8==7.1.1
+
+# ── Quality / security scanning (local use; CI integration pending) ──────
+bandit==1.8.2
+mypy==1.14.1
+pre-commit==4.0.1
+
+# ── Property-based testing for the probability/profitability math ────────
+hypothesis==6.123.2

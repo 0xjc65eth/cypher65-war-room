@@ -111,11 +111,11 @@ The CI workflow (`.github/workflows/ci.yml`) gates merges on all suites plus a *
 
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — system design & data flow
 - [`docs/DATA_MODEL.md`](docs/DATA_MODEL.md) — persistence model
-- [`docs/SECURITY_AUDIT.md`](docs/SECURITY_AUDIT.md) — security review
+- [`docs/DEPLOYMENT_OPS.md`](docs/DEPLOYMENT_OPS.md) — deploy & operations guide
 - [`docs/DESIGN_SYSTEM_V2.md`](docs/DESIGN_SYSTEM_V2.md) — UI design system
 - [`docs/REMOTE_ACCESS_TUTORIAL.md`](docs/REMOTE_ACCESS_TUTORIAL.md) — Tailscale remote access
 - [`docs/WALLET_POOL_SETUP.md`](docs/WALLET_POOL_SETUP.md) — wallet & pool configuration guide
-- [`docs/AUDITORIA_PROD_READINESS.md`](docs/AUDITORIA_PROD_READINESS.md) — production-readiness audit
+- [`docs/archive/`](docs/archive/) — consolidated historical audits (stale, kept for reference)
 - [`docs/`](docs/) — full index (mobile, milestones, audits)
 
 ## 🛡 Honest Telemetry
@@ -123,6 +123,29 @@ The CI workflow (`.github/workflows/ci.yml`) gates merges on all suites plus a *
 - External APIs (pool, mempool, CoinGecko) are polled in the background; failures never fabricate data.
 - Stale responses are served from the last **real** cached value with a `stale` badge in the UI.
 - `/api/v1/status` reports integration health (`online` / `stale` / `offline`).
+
+## ⚡ R1 — Activating PRO revenue (off-by-default)
+
+The PRO gate (`Monte Carlo`, `proximity meter`, `30d history`, `webhooks`) is a
+no-op until the operator activates it. All of the following flip the gate ON:
+
+| Env var | Purpose |
+| --- | --- |
+| `PRO_LICENSE_KEYS` | Static comma-separated keys (manual mode) |
+| `LEMON_SQUEEZY_API_KEY` | Dynamic keys issued from paid checkouts (recommended) |
+| `PRO_KEYS_DB=1` | Dynamic keys issued manually via `POST /api/admin/licenses` |
+
+When using Lemon Squeezy (Merchant of Record — handles global tax/VAT, cards,
+PayPal; 5% + $0.50 per sale), also set:
+
+- `LEMON_SQUEEZY_WEBHOOK_SECRET` — verifies `x-signature` on `/api/payments/webhook`
+- `LEMON_SQUEEZY_STORE_ID` / `LEMON_SQUEEZY_VARIANT_ID` — checkout creation
+
+Flow: **Buy PRO** (upgrade modal) → hosted checkout → `order_created` webhook →
+a `C65-XXXX-XXXX-XXXX-XXXX` key is issued and honored immediately by the existing
+`X-License-Key` header. Lemon Squeezy emails the key to the buyer natively; the
+webhook keeps the gate in sync. Manual/beta keys: `POST /api/admin/licenses`
+with `X-API-Key` (or from localhost).
 
 ## 📄 License
 

@@ -7,7 +7,9 @@ import math
 import time
 import logging
 import json
+import os
 from collections import deque
+from typing import Optional
 
 log = logging.getLogger("cypher65")
 
@@ -564,6 +566,359 @@ def compute_pool_rental_break_even(
         return out
     except Exception:
         return out
+
+
+def build_decision_matrix(
+    pool_net_usd_per_day=None,
+    solo_expected_time_days=None,
+    solo_p_year_pct=None,
+    lender_net_usd_per_day=None,
+    lender_recommendation=None,
+    breakeven_cost_per_th_day=None,
+) -> dict:
+    """P0-2 // Unified solo vs pool vs lease comparison for the Decision Matrix.
+
+    Pure aggregation over the profitability payload already computed by
+    app.py._do_poll() — no network, no DB, never raises. Answers the capital
+    allocation question in one glance: "where does my hashrate yield most?".
+
+    Returns:
+      - rows: pool / solo / lease dicts with only the fields the panel needs
+      - best_option: 'pool' | 'lease' | 'solo' | 'insufficient'
+      - recommendation: human string
+      - breakeven_cost_per_th_day (pass-through)
+
+    Deterministic tie-break: pool vs lease are both deterministic USD/day
+    figures, so the higher wins; solo is probabilistic (expected time) and is
+    only crowned when neither pool nor lease has a usable number.
+    """
+    def _num(v):
+        try:
+            f = float(v)
+            return f if (f == f and f != float("inf") and f != float("-inf")) else None
+        except (TypeError, ValueError):
+            return None
+
+    pool_usd = _num(pool_net_usd_per_day)
+    lease_usd = _num(lender_net_usd_per_day)
+    exp_days = _num(solo_expected_time_days)
+    p_year = _num(solo_p_year_pct)
+    be = _num(breakeven_cost_per_th_day)
+    rec = str(lender_recommendation or "").lower()
+
+    rows = {
+        "pool": {
+            "net_usd_per_day": pool_usd,
+            "net_btc_per_day": None,  # filled by caller when available
+        },
+        "solo": {
+            "expected_time_days": round(exp_days, 1) if exp_days else None,
+            "p_year_pct": round(p_year, 4) if p_year is not None else None,
+        },
+        "lease": {
+            "net_usd_per_day": lease_usd,
+            "recommendation": rec or None,
+        },
+    }
+
+    if pool_usd is not None and lease_usd is not None:
+        best = "pool" if pool_usd >= lease_usd else "lease"
+    elif pool_usd is not None:
+        best = "pool"
+    elif lease_usd is not None:
+        best = "lease"
+    elif exp_days is not None:
+        best = "solo"
+    else:
+        best = "insufficient"
+
+    if best == "pool":
+        recommendation = "Pool mining nets the highest deterministic USD/day."
+    elif best == "lease":
+        recommendation = "Renting out hashrate (lease) nets more than pool mining."
+    elif best == "solo":
+        recommendation = "Only probabilistic data available — expected %.0f days to a block." % exp_days
+    else:
+        recommendation = "Not enough data to compare strategies yet."
+
+    return {
+        "rows": rows,
+        "best_option": best,
+        "recommendation": recommendation,
+        "breakeven_cost_per_th_day": be,
+    }
+
+
+def affiliate_map_from_env() -> dict:
+    """Parse HASH_MARKET_AFFILIATE_URLS (JSON {provider: url}) into a dict.
+
+    Off-by-default: missing/invalid env → {}. The operator configures REAL
+    affiliate links; the app never fabricates one. Keys are lowercased and
+    only http(s) URLs are kept.
+    """
+    raw = os.environ.get("HASH_MARKET_AFFILIATE_URLS", "") or ""
+    if not raw.strip():
+        return {}
+    try:
+        data = json.loads(raw)
+    except (ValueError, TypeError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    out = {}
+    for k, v in data.items():
+        key = str(k).strip().lower()
+        val = str(v).strip()
+        if key and val.startswith(("http://", "https://")):
+            out[key] = val
+    return out
+
+
+def resolve_affiliate_link(offers, affiliate_map=None) -> dict | None:
+    """P0-3 // One-click affiliate link for the best buyable lease offer.
+
+    Pure + honest: only offers whose provider is in the operator's affiliate
+    map are eligible (real configured URLs). Prefers non-estimated (real
+    marketplace) quotes; among the eligible pool picks the cheapest
+    price_per_th_day. Returns {provider, url, price_per_th_day} or None — a
+    missing/invalid entry never raises and never fabricates a link.
+    """
+    if not offers:
+        return None
+    mapping = dict(affiliate_map or {})
+    if not mapping:
+        return None
+    eligible = []
+    for o in offers:
+        if not isinstance(o, dict):
+            continue
+        prov = str(o.get("provider") or o.get("source") or "").strip().lower()
+        url = mapping.get(prov)
+        if not url:
+            continue
+        try:
+            price = float(o.get("price_per_th_day"))
+        except (TypeError, ValueError):
+            continue
+        eligible.append({
+            "provider": prov,
+            "url": url,
+            "price_per_th_day": price,
+            "estimated": bool(o.get("estimated")),
+        })
+    if not eligible:
+        return None
+    real = [e for e in eligible if not e["estimated"]]
+    pool = real or eligible
+    best = min(pool, key=lambda e: e["price_per_th_day"])
+    return {
+        "provider": best["provider"],
+        "url": best["url"],
+        "price_per_th_day": best["price_per_th_day"],
+    }
+
+
+def attach_affiliate(snapshot: dict, offers, affiliate_map=None) -> None:
+    """P0-3 // Attach the one-click affiliate link to a snapshot in place.
+
+    Sets snapshot['market_data']['affiliate'] and, when a link is available,
+    mirrors it into snapshot['profitability']['decision_matrix']['affiliate']
+    so the Decision Matrix panel is self-contained. Honest: only URLs from
+    the operator's affiliate_map; never fabricates. Missing sections no-op.
+    """
+    aff = resolve_affiliate_link(offers, affiliate_map)
+    md = snapshot.get("market_data")
+    if isinstance(md, dict):
+        md["affiliate"] = aff
+    dm = (snapshot.get("profitability") or {}).get("decision_matrix")
+    if isinstance(dm, dict) and aff:
+        dm["affiliate"] = aff
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#  P0-3 // Command Center — contextual action cards
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+# Severity order used to rank Command Center cards (highest wins).
+_CC_SEVERITY_ORDER = {"crit": 0, "gold": 1, "warn": 2, "info": 3}
+CC_MAX_ACTIONS = 3
+
+
+def build_command_center(snapshot: Optional[dict] = None) -> list:
+    """P0-3 // Build up to CC_MAX_ACTIONS contextual action cards.
+
+    The Command Center is the advisory read-only layer that precedes the
+    Auto-Pilot Big Bet: instead of raw metrics, it surfaces the ONE action to
+    take right now (check the fleet, see the probability, buy hashrate) as a
+    decision card — each carrying a navigation target so a single click takes
+    the operator to the right module.
+
+    Pure + honest: reads ONLY data already present in the snapshot (no
+    network, no DB, never raises). A card is emitted only when a real
+    condition holds — never fabricated advice. When nothing fires it returns
+    [] and the panel renders its quiet state.
+
+    Card shape (frontend contract):
+      {
+        "id": str,            // stable id (dedup key for tests/UI)
+        "severity": str,      // crit | gold | warn | info
+        "title": str,
+        "message": str,
+        "action": str,        // CTA label, e.g. "VER FLEET"
+        "target": str,        // module to navigate to: fleet|probability|market
+        "panel": str,         // optional panel id to scroll into view
+        "url": str | None,    // optional external link (affiliate buy)
+      }
+
+    Rule set (all fed by REAL snapshot data):
+      1. worker_offline      (crit) — snapshot.worker is missing
+      2. fleet_attention     (warn) — axe_fleet devices OFFLINE/WARNING
+      3. proximity_streak    (gold) — proximity.hot_streak
+      4. proximity_milestone (info) — pct_of_network_cur >= 1.0%
+      5. capital_lease       (info) — decision_matrix.best_option == 'lease'
+      6. negative_operation  (warn) — pool_net_usd_per_day < 0
+      7. affiliate_buy       (info) — market_data.affiliate.url configured
+
+    Cards are ranked by severity (crit > gold > warn > info), then emitted in
+    rule order, capped at CC_MAX_ACTIONS.
+    """
+    def _num(v):
+        try:
+            f = float(v)
+            return f if (f == f and f != float("inf") and f != float("-inf")) else None
+        except (TypeError, ValueError):
+            return None
+
+    snap = snapshot if isinstance(snapshot, dict) else {}
+    cards: list = []
+
+    def _add(card: dict):
+        cards.append(card)
+
+    # ── 1. Worker offline (crit) ──
+    # Honest gate: a worker-less snapshot is normal on a cold boot / before
+    # the first poll (no wallet connected yet, ts == 0 — the pool/network
+    # dicts exist but hold only None). Only once a poll has actually run
+    # (ts > 0) and the worker is missing is that a real "offline" condition.
+    worker = snap.get("worker")
+    _has_polled = bool(_num(snap.get("ts")))
+    if not worker and _has_polled:
+        _add({
+            "id": "worker_offline",
+            "severity": "crit",
+            "title": "Worker offline",
+            "message": "Nenhum worker ativo na pool — verifique a conexão do minerador.",
+            "action": "VER FLEET",
+            "target": "fleet",
+            "panel": "axe-fleet-panel",
+            "url": None,
+        })
+
+    # ── 2. Fleet device attention (warn) ──
+    fleet = snap.get("axe_fleet") or []
+    if isinstance(fleet, list):
+        problem_devices = [
+            d for d in fleet
+            if isinstance(d, dict) and (d.get("status") or "").upper() in ("OFFLINE", "WARNING")
+        ]
+        if problem_devices:
+            _add({
+                "id": "fleet_attention",
+                "severity": "warn",
+                "title": f"{len(problem_devices)} minerador(es) precisam de atenção",
+                "message": "Há device(s) OFFLINE ou WARNING na frota — inspecione antes de prosseguir.",
+                "action": "VER FLEET",
+                "target": "fleet",
+                "panel": "axe-fleet-panel",
+                "url": None,
+            })
+
+    # ── 3. Proximity hot streak (gold) ──
+    prox = snap.get("proximity") or {}
+    if isinstance(prox, dict) and prox.get("hot_streak"):
+        trend = _num(prox.get("trend_1h_pct"))
+        _add({
+            "id": "proximity_streak",
+            "severity": "gold",
+            "title": "HOT STREAK na proximidade",
+            "message": (
+                f"Best-diff subiu {trend:.1f}% em 1h — a proximidade de bloco está acelerando."
+                if trend is not None
+                else "Best-diff subindo — a proximidade de bloco está acelerando."
+            ),
+            "action": "VER PROBABILITY",
+            "target": "probability",
+            "panel": "proximity-panel",
+            "url": None,
+        })
+    elif isinstance(prox, dict):
+        # ── 4. Proximity milestone reached (info) ──
+        pct = _num(prox.get("milestone_cur_pct"))
+        if pct is not None and pct >= 1.0:
+            _add({
+                "id": "proximity_milestone",
+                "severity": "info",
+                "title": "Proximidade de bloco relevante",
+                "message": f"Você está a {pct:.2f}% da dificuldade da rede — cada share tem valor real.",
+                "action": "VER PROBABILITY",
+                "target": "probability",
+                "panel": "proximity-panel",
+                "url": None,
+            })
+
+    # ── 5. Capital allocation — lease wins (info) ──
+    dm = (snap.get("profitability") or {}).get("decision_matrix") or {}
+    if isinstance(dm, dict) and dm.get("best_option") == "lease":
+        _add({
+            "id": "capital_lease",
+            "severity": "info",
+            "title": "Lease rende mais que pool",
+            "message": "A Decision Matrix aponta o aluguel de hashrate como a melhor alocação de capital.",
+            "action": "VER MARKET",
+            "target": "market",
+            "panel": "decision-matrix-panel",
+            "url": None,
+        })
+
+    # ── 6. Negative operation (warn) ──
+    profit = snap.get("profitability") or {}
+    pool_net = _num(profit.get("pool_net_usd_per_day"))
+    if pool_net is not None and pool_net < 0:
+        _add({
+            "id": "negative_operation",
+            "severity": "warn",
+            "title": "Operação no vermelho",
+            "message": (
+                f"Custo diário supera a receita do pool (net ${abs(pool_net):.2f}/dia) — "
+                "revise energia, pool ou alugue hashrate."
+            ),
+            "action": "VER MARKET",
+            "target": "market",
+            "panel": "decision-matrix-panel",
+            "url": None,
+        })
+
+    # ── 7. Affiliate buy CTA (info) ──
+    md = snap.get("market_data") or {}
+    aff = (md.get("affiliate") or {}) if isinstance(md, dict) else {}
+    if isinstance(aff, dict) and aff.get("url"):
+        _add({
+            "id": "affiliate_buy",
+            "severity": "info",
+            "title": "Comprar hashrate em 1 clique",
+            "message": (
+                f"Melhor oferta afiliada: {str(aff.get('provider') or 'hashrate').upper()} "
+                "— link direto para o marketplace."
+            ),
+            "action": "COMPRAR HASHRATE",
+            "target": "market",
+            "panel": "market-panel",
+            "url": aff.get("url"),
+        })
+
+    # Rank by severity (crit > gold > warn > info), stable by rule order.
+    cards.sort(key=lambda c: _CC_SEVERITY_ORDER.get(c.get("severity", "info"), 99))
+    return cards[:CC_MAX_ACTIONS]
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

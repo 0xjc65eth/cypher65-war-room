@@ -98,7 +98,7 @@ def settings_label(k):
         "btc_avg_tx_fee": "Assumed average fee per block (BTC)",
         "pool_fee_pct": "Pool fee (%)",
         "orphan_rate_pct": "Assumed orphan/stale rate (%)",
-        "active_currency": "Display currency (USD|BRL|EUR|GBP)",
+        "active_currency": "Display currency (USD|BRL|EUR|GBP|JPY|KRW|CNY)",
         "active_fiat": "Display currency (alias)",
         "stale_share_minutes": "Stale-share alert threshold (minutes)",
         "hashrate_drop_pct": "Hashrate drop alert threshold (%)",

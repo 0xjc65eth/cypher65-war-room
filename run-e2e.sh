@@ -83,7 +83,9 @@ fi
 
 # E2E suites fire dozens of requests per minute (page load + 15s polling +
 # panel fetches) — raise the per-IP rate limit so the suite never hits 429.
-RATE_LIMIT_PER_MINUTE="${RATE_LIMIT_PER_MINUTE:-1000}" $VENV_PYTHON app.py &>"$FLASK_LOG" &
+# SECRET_KEY is pinned so the P1 #8 boot-time guard never aborts the E2E
+# server when API_KEY happens to be exported in the calling shell.
+RATE_LIMIT_PER_MINUTE="${RATE_LIMIT_PER_MINUTE:-1000}" SECRET_KEY="${SECRET_KEY:-e2e-test-secret-key}" $VENV_PYTHON app.py &>"$FLASK_LOG" &
 SERVER_PID=$!
 
 # Wait for server to start

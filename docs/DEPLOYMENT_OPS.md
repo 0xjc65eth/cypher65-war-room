@@ -66,6 +66,34 @@ docker compose --profile tailscale up -d     # com acesso remoto
 
 ---
 
+## ⚙ Multi-processo (gunicorn + workers) — opcional
+
+O default é **single-process**: `python app.py` serve HTTP **e** roda os
+workers de background (poll loop, hash-market warmup, donation watcher,
+auto-backup) no mesmo processo. Isso funciona perfeitamente para
+self-host/Tailscale/Render free tier.
+
+Para uma topologia **multi-processo** (escala ou deploy em container com
+`gunicorn`), o projeto agora oferece um entrypoint separado de workers:
+
+```bash
+# Processo 1 — HTTP (gunicorn):
+gunicorn -k gevent -w 2 -b 0.0.0.0:8765 app:app
+
+# Processo 2 — telemetria/workers (em outro container ou no mesmo host):
+python -m services.workers
+```
+
+**Limitação honesta (SSE):** `/api/stream` (live-push) fan-out é
+in-process. Na topologia de dois processos, o live-push só chega a quem
+está conectado ao processo HTTP dono da conexão; o dashboard cobre com o
+poll de 15s (cache) — suficiente para telemetria. Para live-push total
+multi-worker seria preciso um pub/sub compartilhado (Redis) — não
+implementado. Prefira `python app.py` quando live-push importar.
+
+`render.yaml` documenta o mesmo: **nunca** rode `gunicorn app:app` sozinho
+sem o processo de workers — o dashboard ficaria vazio para sempre.
+
 ## 🛰 Acesso Remoto (Tailscale)
 
 O sidecar (`--profile tailscale`) transforma o servidor em **subnet router**:

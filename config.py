@@ -17,11 +17,17 @@ WORKER_NAME = os.environ.get("WORKER_NAME", "")
 PARASITE_API = os.environ.get("PARASITE_API", "https://parasite.space/api")
 MEMPOOL_API = os.environ.get("MEMPOOL_API", "https://mempool.space/api")
 DATA_DIR = Path(__file__).parent / "data"
-DB_PATH = "data/war_room.sqlite"
+# Read DB_PATH from the environment at IMPORT time so test suites that set
+# os.environ["DB_PATH"] before importing `app` redirect every query to a
+# scratch DB (the Core registry is constructed at module level with DB_PATH).
+DB_PATH = os.environ.get("DB_PATH", "data/war_room.sqlite")
 
 POLL_INTERVAL = int(os.environ.get("POLL_INTERVAL", 15))
 PORT = int(os.environ.get("PORT", 8765))
-RATE_LIMIT_PER_MINUTE = int(os.environ.get("RATE_LIMIT_PER_MINUTE", 300))  # keep in sync with app.py; E2E overrides to 1000
+RATE_LIMIT_PER_MINUTE = int(os.environ.get("RATE_LIMIT_PER_MINUTE", 300))  # E2E overrides to 1000
+# Stricter per-IP budget for the auth endpoints (login/register/refresh/
+# logout) — credential brute-force protection. Tight budget, separate store.
+AUTH_RATE_LIMIT_PER_MINUTE = int(os.environ.get("AUTH_RATE_LIMIT_PER_MINUTE", 10))
 
 # Optional security
 API_KEY = os.environ.get("API_KEY")

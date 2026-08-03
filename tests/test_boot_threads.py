@@ -2,9 +2,9 @@
 CYPHER65 // Boot consolidation — _start_background_threads()
 ============================================================
 The server's background workers (initial poll + poll_loop + 5-min Hash
-Market warmup + on-chain donation watcher) start from ONE helper called
-only in the __main__ block — never on plain test-suite imports, so
-`import app` spawns no network threads.
+Market warmup + on-chain donation watcher + C4 auto-backup worker) start
+from ONE helper called only in the __main__ block — never on plain
+``test-suite imports, so `import app` spawns no network threads.
 """
 import app as _app_module
 
@@ -32,13 +32,16 @@ class TestStartBackgroundThreads:
     # NOTE: if a new background worker is added in app.py's
     # _start_background_threads(), update BOTH lists below — this is the
     # boot-contract lock that catches accidental thread regressions.
-    EXPECTED_TARGETS = ("poll_loop", "_hashrate_market_warmup_loop", "_donation_watcher_loop")
-    EXPECTED_COUNT = 3
+    EXPECTED_TARGETS = ("poll_loop", "_hashrate_market_warmup_loop", "_donation_watcher_loop", "_auto_backup_loop")
+    EXPECTED_COUNT = 4
 
     def test_starts_poll_loop_and_warmup(self, monkeypatch):
         FakeThread.started = []
         started = FakeThread.started
         poll_calls = []
+        # C4: pin the backup worker ON so the boot contract is deterministic
+        # regardless of a developer/CI exporting AUTO_BACKUP_INTERVAL=0.
+        monkeypatch.setenv("AUTO_BACKUP_INTERVAL", "3600")
         monkeypatch.setattr(_app_module.threading, "Thread", FakeThread)
         monkeypatch.setattr(_app_module, "poll_once", lambda: poll_calls.append(1))
 
@@ -52,6 +55,21 @@ class TestStartBackgroundThreads:
         assert len(started) == self.EXPECTED_COUNT
         assert all(t.daemon for t in started)
 
+    def test_backup_worker_respects_env_off(self, monkeypatch):
+        """AUTO_BACKUP_INTERVAL=0 disables the C4 backup worker — the boot
+        contract then starts only the 3 network/telemetry workers."""
+        FakeThread.started = []
+        started = FakeThread.started
+        monkeypatch.setenv("AUTO_BACKUP_INTERVAL", "0")
+        monkeypatch.setattr(_app_module.threading, "Thread", FakeThread)
+        monkeypatch.setattr(_app_module, "poll_once", lambda: None)
+
+        _app_module._start_background_threads()
+
+        targets = [t.target for t in started]
+        assert _app_module._auto_backup_loop not in targets, "backup worker must be disabled"
+        assert len(started) == self.EXPECTED_COUNT - 1
+
     def test_survives_initial_poll_failure(self, monkeypatch):
         """A cold-start provider outage must not take down boot — the loop
         retries on its own cycle, but all workers still start."""
@@ -61,6 +79,8 @@ class TestStartBackgroundThreads:
         def broken_poll():
             raise RuntimeError("pool API down at boot")
 
+        # C4: pin the backup worker ON for a deterministic boot contract.
+        monkeypatch.setenv("AUTO_BACKUP_INTERVAL", "3600")
         monkeypatch.setattr(_app_module.threading, "Thread", FakeThread)
         monkeypatch.setattr(_app_module, "poll_once", broken_poll)
 

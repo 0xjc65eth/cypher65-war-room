@@ -21,3 +21,8 @@ e2e-report/
 # Runtime artifacts
 .coverage
 data/*.db
+# Production SQLite backups / corrupt snapshots must never reach the repo
+data/*.bak*
+data/*.corrupt*
+data/*-wal
+data/*-shm

@@ -12,7 +12,7 @@ import sqlite3
 import threading
 import collections
 import logging
-from pathlib import Path
+import hmac
 from typing import Any, Dict, List, Optional
 from datetime import datetime, timezone
 
@@ -31,6 +31,10 @@ from helpers import (
     compute_solo_probabilities,
     compute_lender_profitability,
     compute_pool_rental_break_even,
+    build_decision_matrix,
+    affiliate_map_from_env,
+    attach_affiliate,
+    build_command_center,
 )
 
 import services.state as _shared_state
@@ -57,7 +61,15 @@ from axe_fleet.routes import axe_fleet_bp, init_routes as _init_axe_routes
 from axe_fleet.registry import DeviceRegistry
 from routes.alerts_routes import alerts_bp, _set_get_db as _alerts_set_get_db
 from routes.settings_routes import settings_bp
-from services.tenant import require_tenant, SELF_HOST_MAX_WORKERS
+from services.tenant import require_tenant, role_required, SELF_HOST_MAX_WORKERS
+import services.db_backup as _db_backup  # C4: automatic SQLite backup + boot integrity check
+from services.licensing import (
+    pro_required,
+    is_pro,
+    license_status as _license_status,
+    issue_license as _licensing_issue,
+)
+from services import payments as _payments  # R1 revenue: Lemon Squeezy adapter (off-by-default)
 
 # ── Core CYPHER65 device registry ───────────────────────────────────────────
 from core.registry.device_registry import DeviceRegistry as CoreDeviceRegistry
@@ -87,25 +99,39 @@ log = logging.getLogger("cypher65")
 # boots EMPTY and only starts showing data once the user connects their own
 # address via the UI (⚡ CONNECT) or by setting BTC_ADDRESS in the
 # environment. Each deployment monitors only its own user's wallet.
-BTC_ADDRESS = os.environ.get("BTC_ADDRESS", "")
-WORKER_NAME = os.environ.get("WORKER_NAME", "")
-PARASITE_API = "https://parasite.space/api"
-MEMPOOL_API = "https://mempool.space/api"
-DATA_DIR = Path(__file__).parent / "data"
-DB_PATH = 'data/war_room.sqlite'
-POLL_INTERVAL = int(os.environ.get("POLL_INTERVAL", 15))  # seconds
-PORT = int(os.environ.get("PORT", 8765))
-# Per-IP request budget. Each active dashboard client fires /api/snapshot every
-# 15s plus several panel fetches (market history, chart-data, opportunities,
-# fleet) and page loads — so a single real user can exceed 60 incoming req/min
-# and get spurious 429s. 300 keeps abuse protection while avoiding false
-# positives (E2E runner overrides to 1000 via run-e2e.sh).
-RATE_LIMIT_PER_MINUTE = int(os.environ.get("RATE_LIMIT_PER_MINUTE", 300))
+# External-review quick win (P0 #2): single source of truth. config.py reads
+# env vars at import time (including DB_PATH, which the Core registry consumes
+# at module level — tests that set os.environ["DB_PATH"] before `import app`
+# still redirect every query to a scratch DB). No more "keep in sync" drift.
+from config import (
+    BTC_ADDRESS, WORKER_NAME, PARASITE_API, MEMPOOL_API, DATA_DIR, DB_PATH,
+    POLL_INTERVAL, PORT, RATE_LIMIT_PER_MINUTE, AUTH_RATE_LIMIT_PER_MINUTE,
+    API_KEY, TENANT_API_KEYS,
+)
 
-DATA_DIR.mkdir(exist_ok=True)
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", os.urandom(32).hex())
 app.config['TEMPLATES_AUTO_RELOAD'] = True
+
+
+# CFO quick-win: gzip/brotli compression of JSON/HTML responses. Transparent
+# to routes (flask-compress wraps the response) — smaller snapshot/history
+# payloads on mobile/Tailscale links. Skipped automatically for tiny payloads.
+from flask_compress import Compress
+Compress(app)
+
+# ── Audit C2: refuse to run with auth configured but no SECRET_KEY ──────
+# services.auth now raises on token issuance when the secret is missing
+# (no more silent ephemeral fallback). Surface the misconfiguration at boot
+# too — but only when auth is actually configured, so open self-host mode
+# (no API keys) keeps working without one. In open mode the failure still
+# surfaces at runtime: username/password register/login call create_token,
+# which raises a clear RuntimeError (500) instead of minting unverifiable
+# tokens.
+if (os.environ.get("API_KEY") or os.environ.get("TENANT_API_KEYS")) \
+        and not os.environ.get("SECRET_KEY"):
+    log.error("[boot] SECRET_KEY is not set but auth (API_KEY/TENANT_API_KEYS) is configured — "
+              "JWT issuance/verification will fail. Set SECRET_KEY in the environment.")
 
 # ── Register blueprints ─────────────────────────────────────────────────────
 app.register_blueprint(solo_mining_bp, url_prefix='/api/solo-mining')
@@ -126,6 +152,7 @@ app.register_blueprint(settings_bp)
 
 # ━━ Simple in-memory rate limiter ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 _rate_limit_store = {}  # {ip: [timestamps]}
+_auth_rate_limit_store = {}  # {ip: [timestamps]} — stricter /api/auth/* budget
 
 @app.before_request
 def rate_limit():
@@ -139,15 +166,41 @@ def rate_limit():
     ip = request.remote_addr or '127.0.0.1'
     now = time.time()
     window = 60.0
+    # Stricter budget for credential endpoints (brute-force protection).
+    # POST /api/auth/* = login/register/refresh/logout — never bursty for a
+    # legit user, so a tight per-IP limit blocks password sprays without
+    # false positives. Auth requests don't consume the generic budget.
+    if request.method == "POST" and request.path.startswith("/api/auth/"):
+        auth_ips = _auth_rate_limit_store.setdefault(ip, [])
+        auth_ips[:] = [t for t in auth_ips if now - t < window]
+        if len(auth_ips) >= AUTH_RATE_LIMIT_PER_MINUTE:
+            abort(429, description="Too many authentication attempts. Please slow down.")
+        auth_ips.append(now)
+        # GC stale auth-limit IPs by EXPIRY (same pattern as the generic store)
+        if len(_auth_rate_limit_store) > 1000:
+            cutoff = now - window
+            stale = [k for k, stamps in _auth_rate_limit_store.items()
+                     if not stamps or stamps[-1] < cutoff]
+            for k in stale:
+                del _auth_rate_limit_store[k]
+        return None
     if ip not in _rate_limit_store:
         _rate_limit_store[ip] = []
     # Prune old entries
     _rate_limit_store[ip] = [t for t in _rate_limit_store[ip] if now - t < window]
     if len(_rate_limit_store[ip]) >= RATE_LIMIT_PER_MINUTE:
             abort(429, description="Rate limit exceeded. Please slow down.")
-    _rate_limit_store[ip].append(now)    # GC old IPs periodically
+    _rate_limit_store[ip].append(now)
+    # GC stale IPs by EXPIRY, never a global wipe: prune entries whose most
+    # recent request fell outside the window (their budget fully reset). A
+    # wholesale clear() would let every previously-limited IP burst again at
+    # once — audit C3.
     if len(_rate_limit_store) > 5000:
-        _rate_limit_store.clear()
+        cutoff = now - window
+        stale = [ip for ip, stamps in _rate_limit_store.items()
+                 if not stamps or stamps[-1] < cutoff]
+        for ip in stale:
+            del _rate_limit_store[ip]
 
 
 @app.after_request
@@ -168,6 +221,37 @@ def add_cors_headers(response):
             response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
             response.headers["Access-Control-Allow-Headers"] = "Authorization, Content-Type, X-API-Key"
             response.headers["Access-Control-Max-Age"] = "86400"
+    return response
+
+
+@app.after_request
+def add_security_headers(response):
+    """Content-Security-Policy + hardening headers (defense-in-depth).
+
+    The dashboard template uses a small inline <script> boot block (window
+    globals injected from Flask) plus legacy inline onclick handlers, so
+    script-src keeps 'unsafe-inline' — the meaningful restrictions here are
+    connect-src 'self' (no data exfiltration to third parties), object-src
+    'none' (no plugin/embed attacks) and frame-ancestors 'self' (no
+    clickjacking). Chart.js is loaded from the jsDelivr CDN and fonts from
+    Google Fonts, so those origins are explicitly allowed.
+    """
+    csp = (
+        "default-src 'self'; "
+        "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
+        "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+        "font-src 'self' https://fonts.gstatic.com; "
+        "img-src 'self' data:; "
+        "connect-src 'self'; "
+        "object-src 'none'; "
+        "base-uri 'self'; "
+        "frame-ancestors 'self'; "
+        "form-action 'self'"
+    )
+    response.headers.setdefault("Content-Security-Policy", csp)
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "SAMEORIGIN")
+    response.headers.setdefault("Referrer-Policy", "no-referrer")
     return response
 
 
@@ -206,6 +290,15 @@ def get_db():
     # devices into the real data/war_room.sqlite.
     conn = sqlite3.connect(os.environ.get("DB_PATH", DB_PATH))
     conn.row_factory = sqlite3.Row
+    # Audit C5: per-connection pragmas so concurrent polling writers never
+    # hit "database is locked" and readers benefit from WAL. Best-effort:
+    # WAL is unavailable on :memory: DBs (returns 'memory') — never fatal.
+    try:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
+        conn.execute("PRAGMA busy_timeout=3000")
+    except sqlite3.Error:
+        pass
     return conn
 
 
@@ -245,9 +338,25 @@ def init_db():
             network_difficulty REAL,
             network_hashrate REAL,
             btc_usd REAL,
-            btc_brl REAL
+            btc_brl REAL,
+            btc_jpy REAL,
+            btc_krw REAL,
+            btc_cny REAL
         )"""
     )
+    # ── Multi-currency migration: add fiat columns to EXISTING snapshots tables ──
+    # CREATE TABLE IF NOT EXISTS does NOT alter existing tables, so legacy DBs
+    # (pre-JPY/KRW/CNY) need ALTER TABLE to expose the new columns. Column names
+    # are allowlisted constants — safe to interpolate into DDL.
+    c.execute("PRAGMA table_info(snapshots)")
+    snap_cols = {row[1] for row in c.fetchall()}
+    for _col, _def in (("btc_jpy", "REAL"), ("btc_krw", "REAL"), ("btc_cny", "REAL")):
+        if _col not in snap_cols:
+            try:
+                c.execute(f"ALTER TABLE snapshots ADD COLUMN {_col} {_def}")
+                log.info("[migrate] added snapshots.%s column", _col)
+            except Exception as e:
+                log.warning("[migrate] could not add snapshots.%s: %s", _col, e)
     c.execute(
         """CREATE TABLE IF NOT EXISTS highest_diff_events (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -329,7 +438,9 @@ def init_db():
     # cleanup just runs at startup; periodic purge handled by purge_old() in poll_loop
     conn.commit()
     conn.close()
-    conn = sqlite3.connect("data/war_room.sqlite")
+    # Honest Telemetry: use the env-aware get_db() instead of a hardcoded
+    # path so tests that redirect DB_PATH never touch the real database.
+    conn = get_db()
     c = conn.cursor()
     c.execute(
         "CREATE INDEX IF NOT EXISTS idx_snapshots_ts ON snapshots(ts)"
@@ -349,6 +460,18 @@ def init_db():
     c.execute(
         "CREATE INDEX IF NOT EXISTS idx_proximity_history_ts ON proximity_history(ts)"
     )
+    # ── Data audit (2026-08-02): missing time-series ts indexes ──
+    c.execute("CREATE INDEX IF NOT EXISTS idx_highest_diff_events_ts ON highest_diff_events(ts)")
+    # NOTE: idx_maintenance_records_ts is created AFTER the maintenance_records
+    # table below (a fresh DB would otherwise fail with "no such table").
+    # One snapshot row per poll second — enforce uniqueness so the forced
+    # poll and scheduled poll can never double-write the same ts (9,612 dup
+    # groups found in the audit). Best-effort: a legacy DB still holding
+    # duplicates logs a warning and skips (the migration cleans them).
+    try:
+        c.execute("CREATE UNIQUE INDEX IF NOT EXISTS uq_snapshots_ts ON snapshots(ts)")
+    except sqlite3.Error as e:
+        log.warning("[init_db] could not create unique snapshots(ts) index (duplicates?): %s", e)
 
     # ── Axe Fleet tables ──
     c.execute(
@@ -390,6 +513,7 @@ def init_db():
             performed_by TEXT DEFAULT ''
         )"""
     )
+    c.execute("CREATE INDEX IF NOT EXISTS idx_maintenance_records_ts ON maintenance_records(ts)")
     # ── Best difficulty history table (Milestone 6) ──
     c.execute(
         """CREATE TABLE IF NOT EXISTS best_diff_history (
@@ -1163,40 +1287,57 @@ def _record_donation(method="lightning", amount_sat=None, txid="", preimage="", 
             "txid": txid, "preimage": preimage, "note": note, "source": source}
 
 
-@app.route("/api/donations", methods=["GET", "POST"])
-def api_donations():
-    """List recent donations (GET) or record a confirmed donation (POST).
+@app.route("/api/donations", methods=["POST"])
+@require_tenant
+def api_donations_record(tenant_id: str = ""):
+    """Record a confirmed donation (POST) — kept OPEN to anonymous donors.
 
-    GET ?limit=20 → {donations: [...], total: n, total_sat: sum}
-    POST body: {method, amount_sat, txid, preimage, note, source}
+    This is the public WebLN/manual donation flow (Support modal): a donor
+    who paid a Lightning invoice or sent on-chain funds reports the proof
+    (txid/preimage) so the operator can see who contributed. Requiring a
+    login here would silently drop anonymous donations, so only tenant
+    resolution applies — no RBAC gate.
+
+    Body: {method, amount_sat, txid, preimage, note, source}
       - txid or preimage is REQUIRED (dedup key) — without proof of payment
         the record is rejected so the list stays honest.
       - source: 'webln' (auto from provider.sendPayment) | 'onchain' (watcher)
         | 'manual' (operator logging an on-chain/other donation)
     """
-    if request.method == "POST":
-        data = request.get_json(silent=True) or {}
-        method = (data.get("method") or "lightning").strip()
-        if method not in ("lightning", "btc", "hashpower"):
-            method = "lightning"
+    data = request.get_json(silent=True) or {}
+    method = (data.get("method") or "lightning").strip()
+    if method not in ("lightning", "btc", "hashpower"):
+        method = "lightning"
+    amount_sat = None
+    try:
+        if data.get("amount_sat") is not None:
+            amount_sat = int(float(data["amount_sat"]))
+    except (TypeError, ValueError):
         amount_sat = None
-        try:
-            if data.get("amount_sat") is not None:
-                amount_sat = int(float(data["amount_sat"]))
-        except (TypeError, ValueError):
-            amount_sat = None
-        row = _record_donation(
-            method=method,
-            amount_sat=amount_sat,
-            txid=(data.get("txid") or "").strip()[:128],
-            preimage=(data.get("preimage") or "").strip()[:128],
-            note=(data.get("note") or "").strip()[:500],
-            source=(data.get("source") or "webln").strip()[:16],
-        )
-        if not row:
-            return jsonify({"success": False, "error": "duplicate or missing proof (txid/preimage required)"}), 409
-        return jsonify({"success": True, "donation": row}), 201
-    # GET
+    row = _record_donation(
+        method=method,
+        amount_sat=amount_sat,
+        txid=(data.get("txid") or "").strip()[:128],
+        preimage=(data.get("preimage") or "").strip()[:128],
+        note=(data.get("note") or "").strip()[:500],
+        source=(data.get("source") or "webln").strip()[:16],
+    )
+    if not row:
+        return jsonify({"success": False, "error": "duplicate or missing proof (txid/preimage required)"}), 409
+    return jsonify({"success": True, "donation": row}), 201
+
+
+@app.route("/api/donations", methods=["GET"])
+@require_tenant
+@role_required("viewer")
+def api_donations_list(tenant_id: str = ""):
+    """List recent donations (GET) — login required when auth is configured.
+
+    ?limit=20 → {donations: [...], total: n, total_sat: sum}
+    Reading who donated reveals operational/community data, so this read is
+    gated by @role_required("viewer") — anonymous remote callers get 403 in
+    auth-configured deployments (open self-host mode stays unaffected).
+    """
     limit = min(request.args.get("limit", 20, type=int) or 20, 100)
     try:
         conn = get_db()
@@ -1495,7 +1636,8 @@ latest_snapshot = {
         "hashrate": None,
         "stale": False,
     },
-    "btc_price": {"usd": None, "brl": None, "stale": False},
+    "btc_price": {"usd": None, "brl": None, "eur": None, "gbp": None,
+                  "jpy": None, "krw": None, "cny": None, "stale": False},
     "luck_estimate": {},
     "alerts_recent": [],
     "timeline_recent": [],
@@ -2092,7 +2234,8 @@ def _reset_session_state():
         "leaderboard_total": 0,
         "highest_diffs": [],
         "network": {"height": None, "difficulty": None, "hashrate": None},
-        "btc_price": {"usd": None, "brl": None},
+        "btc_price": {"usd": None, "brl": None, "eur": None, "gbp": None,
+                      "jpy": None, "krw": None, "cny": None},
         "luck_estimate": {},
         "alerts_recent": [],
         "timeline_recent": [],
@@ -2153,7 +2296,9 @@ def _reset_session_state():
 # ═══════════════════════════════════════════════════════════════════════════
 
 @app.route("/api/connect-wallet", methods=["POST"])
-def api_connect_wallet():
+@require_tenant
+@role_required("member")
+def api_connect_wallet(tenant_id: str = ""):
     """Create a new session and start per-user polling.
 
     Body (JSON):
@@ -2295,16 +2440,68 @@ def api_admin_sessions():
 _poll_lock = threading.Lock()
 
 
+def _coerce_uptime(v):
+    """Coerce worker uptime to an int, or None for non-numeric junk.
+
+    The pool API sometimes returns the literal string 'N/A' for uptime (seen
+    in production rows). Storing it in the INTEGER column made fmt.uptime()
+    render NaN in the UI instead of a clean em-dash — honest telemetry: a
+    non-numeric value means no data."""
+    if v is None:
+        return None
+    try:
+        return int(float(v))
+    except (TypeError, ValueError):
+        return None
+_poll_start_ts = 0.0  # when the current poll began (watchdog); 0 = idle
+_POLL_HANG_TIMEOUT = 60.0  # seconds — a poll must never hold the lock this long
+
+
 def poll_once():
     """Wrapper with concurrency guard — lock prevents concurrent polls between
-    the forced poll (from set-address) and the scheduled poll_loop()."""
+    the forced poll (from set-address) and the scheduled poll_loop().
+
+    Data-audit watchdog (2026-08-02): if _do_poll hangs (e.g. a blocking
+    fetch that ignores its timeout), the lock would be held forever and every
+    later poll would silently skip at debug level — freezing the snapshots
+    table while the rest of the app keeps writing (the exact failure mode
+    observed in the audit: snapshots stale ~50 min while market/maintenance
+    writers kept flowing). If a poll holds the lock past _POLL_HANG_TIMEOUT,
+    replace the lock so polling resumes and surface a CRIT alert instead of a
+    silent skip.
+    """
+    global _poll_lock, _poll_start_ts
+    now = time.time()
+
+    # Watchdog: a poll that has held the lock past the hang timeout is stuck.
+    # Replace the lock so the next poll can run (the hung thread still holds
+    # the old lock object, which is now orphaned — it will release a lock
+    # nobody references).
+    if _poll_start_ts and (now - _poll_start_ts) > _POLL_HANG_TIMEOUT:
+        log.error("[poll] poll hung for %.0fs — replacing lock so snapshots resume",
+                  now - _poll_start_ts)
+        memory_critical_alerts.append(_make_memory_alert(
+            int(now), "CRIT", "poll_hang",
+            f"Polling stalled {now - _poll_start_ts:.0f}s — replaced lock to resume telemetry.",
+        ))
+        _poll_lock = threading.Lock()
+        _poll_start_ts = 0.0
+
     if not _poll_lock.acquire(blocking=False):
-        log.debug("[poll] skipped — another poll is already running")
+        # Only warn once a poll has been running suspiciously long; normal
+        # overlap (poll still finishing while the next tick fires) stays debug.
+        if _poll_start_ts and (now - _poll_start_ts) > _POLL_HANG_TIMEOUT * 0.5:
+            log.warning("[poll] skipped — previous poll running %.0fs (slow/hung?)",
+                        now - _poll_start_ts)
+        else:
+            log.debug("[poll] skipped — another poll is already running")
         return
+    _poll_start_ts = now
     try:
         _do_poll()
     finally:
         _poll_lock.release()
+        _poll_start_ts = 0.0
 
 
 def _do_poll():
@@ -2325,7 +2522,7 @@ def _do_poll():
         ("user",        f"{PARASITE_API}/user/{BTC_ADDRESS}",                                  10),
         ("pool",        f"{PARASITE_API}/pool-stats",                                          10),
         ("account",     f"{PARASITE_API}/account/{BTC_ADDRESS}",                               10),
-        ("leaderboard", f"{PARASITE_API}/leaderboard?limit=30",                                         10),
+        ("leaderboard", f"{PARASITE_API}/leaderboard?limit=100",                                        10),
         ("highest",     f"{PARASITE_API}/highest-diff?type=user-diffs&address={BTC_ADDRESS}&limit=30",       10),
         ("net_height",  f"{MEMPOOL_API}/blocks/tip/height",                                     6),
         # net_diff removed from main fetch — mempool.space /v1/difficulty deprecated Oct 2024.
@@ -2336,7 +2533,7 @@ def _do_poll():
     global _btc_consec_failures, _btc_last_fetch_ts
     _btc_now = int(time.time())
     if _btc_now - _btc_last_fetch_ts >= 60:
-        fetch_specs.append(("btc", "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd,brl,eur,gbp", 6))
+        fetch_specs.append(("btc", "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd,brl,eur,gbp,jpy,krw,cny", 6))
     else:
         # Cache recente — pula fetch, usa o cache existente
         fetch_specs.append(("btc", None, 0))
@@ -2472,6 +2669,9 @@ def _do_poll():
     btc_brl = (btc_quote or {}).get("bitcoin", {}).get("brl") if isinstance(btc_quote, dict) else None
     btc_eur = (btc_quote or {}).get("bitcoin", {}).get("eur") if isinstance(btc_quote, dict) else None
     btc_gbp = (btc_quote or {}).get("bitcoin", {}).get("gbp") if isinstance(btc_quote, dict) else None
+    btc_jpy = (btc_quote or {}).get("bitcoin", {}).get("jpy") if isinstance(btc_quote, dict) else None
+    btc_krw = (btc_quote or {}).get("bitcoin", {}).get("krw") if isinstance(btc_quote, dict) else None
+    btc_cny = (btc_quote or {}).get("bitcoin", {}).get("cny") if isinstance(btc_quote, dict) else None
 
     # Mempool fees (sat/vB) — for "what fee should I include if I want fast"
     mf_raw = results["mempool_fee"]
@@ -2790,27 +2990,31 @@ def _do_poll():
         conn = get_db()
         c = conn.cursor()
         c.execute(
-            """INSERT INTO snapshots
+            """INSERT OR IGNORE INTO snapshots
             (ts, worker_hashrate, worker_best_diff, worker_last_submit, worker_uptime, worker_status,
              pool_hashrate, pool_workers, pool_users, pool_highest_diff, pool_last_block_height,
              pool_last_block_time, pool_work_since_last_block,
              account_total_diff, account_block_count, account_highest_block,
              leaderboard_rank, leaderboard_diff_rank, leaderboard_loyalty_rank, leaderboard_combined_score,
              network_height, network_difficulty, network_hashrate,
-             btc_usd, btc_brl)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+             btc_usd, btc_brl, btc_jpy, btc_krw, btc_cny)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 ts,
                 worker.get("hashrate") if worker else None,
                 worker.get("bestDifficulty") if worker else None,
                 worker.get("lastSubmission") if worker else None,
-                worker.get("uptime") if worker else None,
+                _coerce_uptime(worker.get("uptime")) if worker else None,
                 "online" if worker else "missing",
                 pool.get("hashrate") if pool else None,
                 pool.get("workers") if pool else None,
                 pool.get("users") if pool else None,
                 pool.get("highestDifficulty") if pool else None,
-                pool.get("lastBlockHeight") if pool else None,
+                # The pool API exposes the last block HEIGHT under the
+                # lastBlockTime field (the old lastBlockHeight key no longer
+                # exists — it was 100% NULL). Fall back to lastBlockTime so
+                # pool_last_block_height finally gets real data.
+                (pool.get("lastBlockHeight") or pool.get("lastBlockTime")) if pool else None,
                 pool.get("lastBlockTime") if pool else None,
                 pool.get("workSinceLastBlock") if pool else None,
                 account.get("total_diff") if isinstance(account, dict) else None,
@@ -2825,6 +3029,9 @@ def _do_poll():
                 net_hashrate,
                 btc_usd,
                 btc_brl,
+                btc_jpy,
+                btc_krw,
+                btc_cny,
             ),
         )
 
@@ -3070,7 +3277,8 @@ def _do_poll():
         pool_fee_pct = coerce_float(s.get("pool_fee_pct"), 1.5)
         orphan_pct = coerce_float(s.get("orphan_rate_pct"), 0.5)
         cost_mode = s.get("cost_mode", "none")
-        btc_prices = {"USD": btc_usd, "BRL": btc_brl, "EUR": btc_eur, "GBP": btc_gbp}
+        btc_prices = {"USD": btc_usd, "BRL": btc_brl, "EUR": btc_eur, "GBP": btc_gbp,
+                      "JPY": btc_jpy, "KRW": btc_krw, "CNY": btc_cny}
 
         profitability["cost_mode"] = cost_mode
         profitability["cost_model_configured"] = cost_mode != "none"
@@ -3249,6 +3457,17 @@ def _do_poll():
                 # Disclaimer
                 "disclaimer": "Estimates based on current hashrate, network difficulty, and BTC price. Actual results vary significantly due to variance, pool luck, and difficulty changes.",
             })
+            # P0-2: unified solo vs pool vs lease Decision Matrix (pure agg).
+            # Aggregates the per-mode numbers already computed above into one
+            # capital-allocation comparison for the market module panel.
+            profitability["decision_matrix"] = build_decision_matrix(
+                pool_net_usd_per_day=profitability.get("pool_net_usd_per_day"),
+                solo_expected_time_days=profitability.get("solo_expected_time_to_block_days"),
+                solo_p_year_pct=profitability.get("solo_p_year_pct"),
+                lender_net_usd_per_day=profitability.get("lender_net_usd_per_day"),
+                lender_recommendation=profitability.get("lender_recommendation"),
+                breakeven_cost_per_th_day=profitability.get("breakeven_cost_per_th_day"),
+            )
         else:
             profitability["unavailable_reason"] = "no hashrate or network hashrate"
     except Exception as e:
@@ -3503,7 +3722,8 @@ def _do_poll():
             "hashrate": net_hashrate,
             "stale": network_stale,
         },
-        "btc_price": {"usd": btc_usd, "brl": btc_brl, "eur": btc_eur, "gbp": btc_gbp, "stale": btc_price_stale},
+        "btc_price": {"usd": btc_usd, "brl": btc_brl, "eur": btc_eur, "gbp": btc_gbp,
+                      "jpy": btc_jpy, "krw": btc_krw, "cny": btc_cny, "stale": btc_price_stale},
         "luck_estimate": luck,
         "halving": halving,
         "mempool_fees": mempool_fees,
@@ -3558,6 +3778,17 @@ def poll_loop():
         time.sleep(POLL_INTERVAL)
 
 
+def _auto_backup_loop():
+    """C4 // periodic SQLite online-backup worker (daemon).
+
+    Snapshots the DB via the crash-safe online backup API every
+    AUTO_BACKUP_INTERVAL seconds (default 3600; 0 disables the worker).
+    Never auto-restores over a live writer — corruption is reported at boot
+    instead, pointing at the newest backup.
+    """
+    _db_backup.backup_loop()
+
+
 def _start_background_threads():
     """Start every background worker for the server process.
 
@@ -3567,9 +3798,30 @@ def _start_background_threads():
     __main__ block before app.run(). Test-suite imports of app.py no longer
     spawn ANY network thread.
 
+    C4: also runs a boot-time SQLite integrity check (warning-only) and,
+    when enabled (AUTO_BACKUP_INTERVAL != 0), starts the automatic backup
+    worker.
+
     Note: deliberately __main__-gated; a WSGI/gunicorn deployment must call
     this explicitly (the project convention is `python app.py`).
     """
+    # C4 // boot-time integrity check — detect the recurring index
+    # corruption (idx_maintenance_records_ts / idx_audit_logs_tenant_ts)
+    # early and point at the newest backup. Warning-only: restoring over a
+    # possibly-live writer (Docker/Colima volume mount) would be destructive.
+    boot_db_ok = True
+    try:
+        if not _db_backup.integrity_ok():
+            boot_db_ok = False
+            latest = _db_backup.latest_backup()
+            log.critical(
+                "[boot] SQLite integrity_check FAILED on %s — DB is corrupt. "
+                "Newest backup: %s. Stop the container, restore, restart.",
+                DB_PATH, latest or "NONE (no backups yet)",
+            )
+    except Exception as e:
+        boot_db_ok = False
+        log.warning("[boot] integrity check error: %s", e)
     # Kick off a poll on startup, then run the loop in background. Wrapped
     # so a cold-start provider outage can't take down boot — the loop retries
     # on its next cycle anyway.
@@ -3588,6 +3840,13 @@ def _start_background_threads():
         threading.Thread(target=_donation_watcher_loop, daemon=True).start()
     except Exception as e:
         log.warning("[boot] donation watcher failed to start: %s", e)
+    # C4 // automatic SQLite backup (online backup API — safe with the live
+    # Docker/Colima writer that caused the recurring index corruption).
+    # Skipped when the boot integrity check failed: snapshotting a corrupt
+    # DB would fill retention slots with garbage an operator might mistake
+    # for a good restore point.
+    if boot_db_ok and _db_backup.backup_enabled():
+        threading.Thread(target=_auto_backup_loop, daemon=True).start()
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -3608,6 +3867,29 @@ def api_snapshot():
     """Return the full dashboard snapshot, including a small set of
     market highlights derived from cached prices (no extra HTTP calls)."""
     resp = dict(latest_snapshot)
+    # Multi-tenant isolation (fleet-scope audit): latest_snapshot is a single
+    # GLOBAL dict fed by the deployment-wide poll loop (which polls every
+    # tenant's devices), so resp["axe_fleet"] would leak all tenants' miners
+    # to every caller. Scope it to the resolved tenant's registered devices:
+    # open self-host mode resolves to "default" (all devices live there → the
+    # dashboard keeps showing the full fleet, unchanged); multi-tenant
+    # deployments only see their own miners. Never raises on failure — the
+    # snapshot must not break because of a scoping hiccup.
+    try:
+        from services.tenant import get_tenant_id as _resolve_tenant
+        _fleet = resp.get("axe_fleet") or []
+        if _fleet and _axe_registry is not None:
+            _tenant_ids = {
+                _d["id"] for _d in _axe_registry.list_devices(tenant_id=_resolve_tenant())
+            }
+            resp["axe_fleet"] = [
+                _t for _t in _fleet
+                if _t.get("device_id") in _tenant_ids or _t.get("id") in _tenant_ids
+            ]
+    except Exception:
+        # FAIL-CLOSED: a scoping hiccup must never re-expose the global
+        # (cross-tenant) fleet — serve an empty fleet instead.
+        resp["axe_fleet"] = []
     # Block Hunt panel: inject computed payload so renderBlockHunt(snap)
     # reads snap.block_hunt directly (no separate fetch needed).
     resp["block_hunt"] = _compute_block_hunt(latest_snapshot)
@@ -3647,6 +3929,11 @@ def api_snapshot():
             "provider_count": len(sorted_hl),
             "health": _hashrate_market_health(),
         }
+        # P0-3: one-click affiliate link (honest — operator-configured URLs
+        # only; None → the panel falls back to the offers-grid CTA). Attaches
+        # to market_data AND mirrors into the Decision Matrix so the panel is
+        # self-contained (same shape on the cached path below).
+        attach_affiliate(resp, sorted_hl, affiliate_map_from_env())
         # Update shared cache
         cache["offers"] = sorted_hl
         cache["best_price"] = best_price_str
@@ -3663,6 +3950,7 @@ def api_snapshot():
                 "provider_count": len(cache["offers"]),
                 "cached": True,
             }
+            attach_affiliate(resp, cache["offers"], affiliate_map_from_env())
         else:
             resp["market_data"] = {
                 "offers": [],
@@ -3670,7 +3958,15 @@ def api_snapshot():
                 "updated_at": 0,
                 "provider_count": 0,
                 "loading": True,
+                "affiliate": None,
             }
+    # P0-3: Command Center — contextual action cards (advisory, read-only).
+    # Computed from `resp` (NOT latest_snapshot) and AFTER attach_affiliate,
+    # so the affiliate_buy rule sees the real market_data.affiliate link the
+    # way the frontend will. Pure aggregation, no network/DB — safe on every
+    # /api/snapshot poll. Frontend renders up to 3 cards; each card navigates
+    # the operator to the right module.
+    resp["command_center"] = build_command_center(resp)
     return jsonify(resp)
 
 
@@ -3820,7 +4116,8 @@ def api_event_stats():
 #  Settings API (GET/POST) — drives cost model, currency, thresholds
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 @app.route("/api/settings", methods=["GET"])
-def api_settings_get():
+@require_tenant
+def api_settings_get(tenant_id: str = ""):
     s = load_settings()
     out = []
     for k, v in DEFAULT_SETTINGS.items():
@@ -3829,7 +4126,9 @@ def api_settings_get():
 
 
 @app.route("/api/settings", methods=["POST"])
-def api_settings_post():
+@require_tenant
+@role_required("member")
+def api_settings_post(tenant_id: str = ""):
     """POST JSON body: {key: value, key: value, ...}
     Validates known keys, coerces to str, persists to SQLite, refreshes cache."""
     body = request.get_json(silent=True) or {}
@@ -3890,6 +4189,87 @@ def api_profitability():
     return jsonify(p)
 
 
+@app.route("/api/license-status")
+def api_license_status():
+    """Return current PRO licensing state (open/free/pro) + feature matrix.
+
+    Drives the topbar PRO badge and the frontend lock overlays. Always 200
+    — this endpoint reports state, it never gates."""
+    return jsonify(_license_status())
+
+
+@app.route("/api/upgrade/checkout", methods=["POST"])
+def api_upgrade_checkout():
+    """R1 revenue: create a hosted Lemon Squeezy checkout for PRO.
+
+    Off-by-default — returns 503 until the operator sets LEMON_SQUEEZY_*.
+    """
+    if not _payments.payments_configured():
+        return jsonify({
+            "error": "Payments are not configured on this server",
+            "code": "PAYMENTS_NOT_CONFIGURED",
+            "upgrade": {"plan": "PRO", "price_usd_month": 9},
+        }), 503
+    body = request.get_json(silent=True) or {}
+    plan = (body.get("plan") or "pro").strip()
+    email = (body.get("email") or "").strip()
+    url = _payments.create_checkout(plan=plan, email=email)
+    if not url:
+        return jsonify({
+            "error": "Could not create a checkout — check LEMON_SQUEEZY_* env vars",
+            "code": "CHECKOUT_FAILED",
+        }), 502
+    return jsonify({"checkout_url": url, "plan": plan})
+
+
+@app.route("/api/payments/webhook", methods=["POST"])
+def api_payments_webhook():
+    """Lemon Squeezy webhook: verify x-signature, fulfill order_created.
+
+    Server-to-server — no auth decorator; trust comes from the HMAC-SHA256
+    signature over the raw body (x-signature header)."""
+    if not _payments.payments_configured():
+        return jsonify({"error": "not configured"}), 400
+    raw = request.get_data()
+    sig = (request.headers.get("X-Signature") or "").strip()
+    if not _payments.verify_webhook_signature(raw, sig):
+        return jsonify({"error": "invalid signature"}), 403
+    payload = request.get_json(silent=True) or {}
+    key = _payments.handle_webhook(payload)
+    if key:
+        return jsonify({"ok": True, "license_key": key}), 200
+    # Unhandled event (subscription_created etc.) — acknowledge, no-op.
+    return jsonify({"ok": True, "handled": False}), 200
+
+
+@app.route("/api/admin/licenses", methods=["POST"])
+def api_admin_issue_license():
+    """Manual PRO key issuance (community/beta keys).
+
+    Gated to localhost requests or a valid X-API-Key matching the operator's
+    API_KEY env var — never exposed to the public checkout path."""
+    remote = request.remote_addr or ""
+    local = remote in ("127.0.0.1", "::1", "localhost")
+    operator_key = os.environ.get("API_KEY") or ""
+    sent = (request.headers.get("X-API-Key") or "").strip()
+    if not local and not (operator_key and hmac.compare_digest(sent, operator_key)):
+        return jsonify({"error": "admin access required"}), 403
+    body = request.get_json(silent=True) or {}
+    months = body.get("months")
+    if months is not None:
+        try:
+            months = int(months)
+        except (TypeError, ValueError):
+            months = None
+    key = _licensing_issue(
+        plan=(body.get("plan") or "pro").strip(),
+        email=(body.get("email") or "").strip(),
+        source=(body.get("source") or "admin").strip(),
+        months=months,
+    )
+    return jsonify({"ok": True, "license_key": key}), 200
+
+
 @app.route("/api/network_share")
 def api_network_share():
     return jsonify(latest_snapshot.get("network_share_gauge") or {})
@@ -3907,6 +4287,7 @@ def api_workers():
 
 
 @app.route("/api/monte_carlo")
+@pro_required
 def api_monte_carlo():
     """Monte Carlo simulation engine.
     Accepts ?hours=N (default 24) and ?runs=N (default 10000).
@@ -4003,6 +4384,7 @@ def api_monte_carlo():
 
 
 @app.route("/api/proximity")
+@pro_required
 def api_proximity():
     """Returns the current proximity meter payload PLUS a 24h history slice
     for the front-end mini-chart. History is read from the proximity_history
@@ -4226,7 +4608,9 @@ from io import StringIO as _StringIO
 
 
 @app.route("/api/export/<table>.<fmt>")
-def api_export(table, fmt):
+@require_tenant
+@role_required("viewer")
+def api_export(table, fmt, tenant_id: str = ""):
     """Export a table as csv or json. Tables: snapshots, alerts, share_timeline,
     highest_diff_events."""
     allowed = {"snapshots", "alerts", "share_timeline", "highest_diff_events"}
@@ -4271,8 +4655,112 @@ def api_export(table, fmt):
         return jsonify({"error": f"unknown format {fmt}"}), 400
 
 
+@app.route("/api/tax/export")
+@require_tenant
+@role_required("viewer")
+def api_tax_export(tenant_id: str = ""):
+    """Export a tax-report CSV (Japan 雑所得 / Korea 2027 gains / generic).
+
+    Honest-telemetry export: rows come ONLY from recorded data — mined block
+    events (highest_diff_events.is_mine=1) valued at the BTC price recorded in
+    snapshots for the requested currency, plus a daily BTC price ledger so any
+    other received coins can be valued at receipt time. No invented figures.
+
+    Query params:
+      - currency (default JPY): JPY | KRW | CNY | USD | BRL | EUR | GBP
+      - year (optional int): restrict to that calendar year (UTC)
+
+    Returns a CSV attachment: event rows + daily price ledger.
+    """
+    currency = (request.args.get("currency") or "JPY").upper()
+    col = {
+        "JPY": "btc_jpy", "KRW": "btc_krw", "CNY": "btc_cny",
+        "USD": "btc_usd", "BRL": "btc_brl", "EUR": "btc_eur", "GBP": "btc_gbp",
+    }.get(currency)
+    if col is None:
+        return jsonify({"error": f"unsupported currency {currency}"}), 400
+    year = request.args.get("year", type=int)
+    since = int(time.time()) - 10 ** 10
+    if year:
+        since = int(datetime(year, 1, 1, tzinfo=timezone.utc).timestamp())
+
+    try:
+        s = load_settings()
+        block_reward = coerce_float(s.get("btc_block_reward"), 3.125)
+    except Exception:
+        block_reward = 3.125
+
+    conn = get_db()
+    c = conn.cursor()
+    # ── Mined block events (the actual taxable income events) ──
+    c.execute(
+        "SELECT ts, block_height, difficulty, block_timestamp FROM highest_diff_events "
+        "WHERE is_mine=1 AND ts >= ? ORDER BY ts ASC",
+        (since,),
+    )
+    blocks = [dict(r) for r in c.fetchall()]
+    # ── Daily BTC price ledger (last snapshot per UTC day) ──
+    # Correlated subquery so `price` is the value at MAX(ts) of each day —
+    # a bare GROUP BY would return an arbitrary (first) row's price.
+    c.execute(
+        f"SELECT MAX(s.ts) AS ts, "
+        f"(SELECT s2.{col} FROM snapshots s2 WHERE s2.ts/86400 = s.ts/86400 "
+        f" ORDER BY s2.ts DESC LIMIT 1) AS price "
+        "FROM snapshots s WHERE s.ts >= ? GROUP BY s.ts/86400 ORDER BY s.ts ASC",
+        (since,),
+    )
+    ledger = [dict(r) for r in c.fetchall()]
+    conn.close()
+
+    buf = _StringIO()
+    writer = _csv.writer(buf)
+    writer.writerow(["# CYPHER65 tax export", f"currency={currency}",
+                     f"generated_utc={datetime.now(timezone.utc).isoformat(timespec='seconds')}"])
+    writer.writerow(["# Mined-block income events (is_mine=1) — value at block time using recorded price"])
+    writer.writerow(["type", "ts", "date_utc", "block_height", "difficulty",
+                     f"btc_price_{currency}", "reward_btc", f"value_{currency}"])
+    for b in blocks:
+        # Value the block at the last recorded price at/after block discovery.
+        price = None
+        try:
+            conn2 = get_db()
+            c2 = conn2.cursor()
+            c2.execute(
+                f"SELECT {col} AS price FROM snapshots WHERE ts <= ? ORDER BY ts DESC LIMIT 1",
+                (b.get("block_timestamp") or b.get("ts") or 0,),
+            )
+            row = c2.fetchone()
+            price = row["price"] if row else None
+            conn2.close()
+        except Exception:
+            price = None
+        bts = b.get("ts") or 0
+        value = round(block_reward * price, 2) if price is not None else ""
+        writer.writerow(["block_hit", bts,
+                         datetime.fromtimestamp(bts, tz=timezone.utc).isoformat(timespec="seconds") if bts else "",
+                         b.get("block_height"), b.get("difficulty"),
+                         price, block_reward, value])
+    writer.writerow(["# Daily BTC price ledger — value any other received coin at receipt time"])
+    writer.writerow(["type", "ts", "date_utc", "block_height", "difficulty",
+                     f"btc_price_{currency}", "reward_btc", f"value_{currency}"])
+    for r in ledger:
+        ts = r.get("ts") or 0
+        writer.writerow(["price_ledger", ts,
+                         datetime.fromtimestamp(ts, tz=timezone.utc).isoformat(timespec="seconds") if ts else "",
+                         "", "", r.get("price"), "", ""])
+
+    out = buf.getvalue()
+    return app.response_class(
+        out,
+        mimetype="text/csv",
+        headers={"Content-Disposition": f"attachment; filename=cypher65_tax_{currency.lower()}.csv"},
+    )
+
+
 @app.route("/api/config/backup")
-def api_config_backup():
+@require_tenant
+@role_required("viewer")
+def api_config_backup(tenant_id: str = ""):
     """Download entire config (settings + worker + btc_address) as JSON."""
     s = load_settings()
     payload = {
@@ -4290,7 +4778,9 @@ def api_config_backup():
 
 
 @app.route("/api/config/restore", methods=["POST"])
-def api_config_restore():
+@require_tenant
+@role_required("member")
+def api_config_restore(tenant_id: str = ""):
     """Restore settings from a backup JSON body.
     Only updates keys that exist in DEFAULT_SETTINGS."""
     body = request.get_json(silent=True) or {}
@@ -4845,7 +5335,8 @@ def api_v1_status():
 
 
 @app.route("/api/tailscale")
-def api_tailscale():
+@require_tenant
+def api_tailscale(tenant_id: str = ""):
     """Report local Tailscale connection status for the remote-access panel.
     Uses services.tailscale_adapter.get_local_status() (CLI + tailnet API).
     Returns tailscale_installed/connected/ip/hostname/magic_dns_name etc."""
@@ -5230,6 +5721,16 @@ def api_chart_data():
     Reads from proximity_history table (sampled every ~60s)."""
     chart = request.args.get('chart', 'hashrate')
     rng = request.args.get('range', '1h')
+    # R1 (PRO tier): 30d/all history is a PRO feature. Off-by-default — the
+    # gate only fires when the operator sets PRO_LICENSE_KEYS and the caller
+    # has no valid key; otherwise is_pro() is True in open mode.
+    if rng in ('30d', 'all') and not is_pro():
+        return jsonify({
+            "error": "30d history is a PRO feature — requires a license key",
+            "code": "LICENSE_REQUIRED",
+            "required_tier": "pro",
+            "upgrade": {"plan": "PRO", "price_usd_month": 9},
+        }), 402
     # Fase 2.1: full range set — 15m (hashrate toolbar) and 30d (net toolbar)
     # previously fell back to 1h, silently showing the wrong window.
     window_seconds = {'15m': 900, '1h': 3600, '6h': 21600, '24h': 86400, '7d': 604800, '30d': 2592000, 'all': 2592000}
@@ -5257,6 +5758,8 @@ def api_chart_data():
         else:
             # Histogram of share difficulty across the session
             diffs = [float(e.get("share_diff_raw") or 0) for e in sch if e.get("share_diff_raw")]
+            target_diff = None
+            target_bucket = None
             if diffs:
                 lo, hi = min(diffs), max(diffs)
                 nb = min(12, max(5, len(diffs) // 3))
@@ -5267,16 +5770,37 @@ def api_chart_data():
                         bi = min(nb - 1, int((d - lo) / step))
                         buckets[bi] += 1
                     for i in range(nb):
-                        labels.append(f"{lo + i*step:.2e}")
+                        # Audit 2026-08-02: labels were raw scientific notation
+                        # ("7.19e+07") — unreadable. Format as human diff (71.9M).
+                        labels.append(fmt_diff(lo + i * step))
                         values.append(buckets[i])
+                    # P0-1: map the network difficulty onto the histogram so the
+                    # UI can draw a "target" reference line — actionable intel
+                    # ("how far are my shares from block-winning difficulty?").
+                    net_diff = float(_last_valid_network.get("difficulty") or 0)
+                    if net_diff > 0:
+                        target_diff = net_diff
+                        if net_diff < lo:
+                            target_bucket = 0
+                        elif net_diff > hi:
+                            target_bucket = nb - 1
+                        else:
+                            target_bucket = min(nb - 1, int((net_diff - lo) / step))
                 else:
-                    labels.append(f"{lo:.2e}")
+                    labels.append(fmt_diff(lo))
                     values.append(len(diffs))
             if not labels:
                 labels = []
                 values = []
         return jsonify({
             'labels': labels,
+            # Fase 2.2: expose the real share count so the panel badge
+            # ("0 shares" was hardcoded in the HTML) can reflect reality.
+            'count': len(diffs) if chart == 'share_dist' else None,
+            # P0-1: network target difficulty + its histogram bucket (for the
+            # purple reference line overlay). Null when unavailable.
+            'target_diff': target_diff if chart == 'share_dist' else None,
+            'target_bucket': target_bucket if chart == 'share_dist' else None,
             'datasets': [{
                 'label': 'Cumulative P(Block) %' if chart == 'cum_p' else 'Shares',
                 'data': values,
@@ -5365,25 +5889,33 @@ def api_chart_data():
 
     # Fallback: if no history data, return current snapshot value as single point
     if not labels:
+        # Audit 2026-08-02: latest_snapshot is None before the first poll
+        # completes (and in tests) — .get() on None raised AttributeError (500)
+        # for any chart request hitting the fallback. The snapshot dict also
+        # initializes worker/pool/account to None (not missing), so the guard
+        # must be `(snap.get(k) or {})` — the `, {}` default only applies to
+        # ABSENT keys, not keys present with a None value.
+        snap = latest_snapshot or {}
+        worker = snap.get('worker') or {}
         labels = [int(time.time()) * 1000]
         if chart == 'cum_p':
-            lc = (latest_snapshot.get("proximity") or {}).get("live_calc") or {}
+            lc = (snap.get("proximity") or {}).get("live_calc") or {}
             values = [float((lc.get("session_totals") or {}).get("cum_p_block") or 0) * 100]
         elif chart == 'share_dist':
             labels = []
             values = []
         elif chart == 'hashrate':
-            values = [float(latest_snapshot.get('worker', {}).get('hashrate') or 0)]
+            values = [float(worker.get('hashrate') or 0)]
         elif chart == 'bestdiff':
-            bd = latest_snapshot.get('worker', {}).get('bestDifficulty') or 0
+            bd = worker.get('bestDifficulty') or 0
             try:
                 values = [float(bd)]
             except (ValueError, TypeError):
                 values = [0]
         elif chart == 'pool':
-            values = [float(latest_snapshot.get('pool', {}).get('hashrate') or 0)]
+            values = [float((snap.get('pool') or {}).get('hashrate') or 0)]
         elif chart == 'net':
-            net = latest_snapshot.get('network', {}) or {}
+            net = snap.get('network') or {}
             values = [float(net.get('difficulty') or 0)]
 
     return jsonify({
@@ -5416,7 +5948,9 @@ _FULL_ACCESS_WALLETS = frozenset({
 
 
 @app.route("/api/set-address", methods=["POST"])
-def api_set_address():
+@require_tenant
+@role_required("member")
+def api_set_address(tenant_id: str = ""):
     """Change the monitored BTC address and worker name.
     Validates input, persists to DB, resets session state, and returns
     the new address for the UI to update.
@@ -5544,7 +6078,9 @@ _ai_rate_store: Dict[str, List[float]] = {}
 
 
 @app.route("/api/ai/query", methods=["POST"])
-def api_ai_query():
+@require_tenant
+@role_required("member")
+def api_ai_query(tenant_id: str = ""):
     """AI Operator chat endpoint. Accepts a JSON body with `query` and
     streams the LLM response as Server-Sent Events (SSE).
 
@@ -5657,6 +6193,18 @@ def _broadcast_snapshot(snapshot: dict):
 
 
 if __name__ == "__main__":
+    # External-review quick win (P1 #8): when the API is locked behind API
+    # keys, SECRET_KEY must be stable — a missing/volatile secret silently
+    # invalidates every JWT and Flask session on restart. Refuse to boot
+    # instead of running with broken auth. Open mode (no API_KEY /
+    # TENANT_API_KEYS) is unaffected. Checked here (not at import) so pytest
+    # and gunicorn app:app imports never abort.
+    if (API_KEY or TENANT_API_KEYS) and not (os.environ.get("SECRET_KEY")
+                                             or os.environ.get("JWT_SECRET_KEY")):
+        raise SystemExit(
+            "FATAL: SECRET_KEY is required when API_KEY/TENANT_API_KEYS is set. "
+            "Set a stable SECRET_KEY in the environment."
+        )
     art = r"""
    ___ __  __ ____  _   _ ____  __  __ ___ ______   __
   / __|  \/  |  _ \| \ | |  _ \ \ \/ // ___/ __\ \ / /

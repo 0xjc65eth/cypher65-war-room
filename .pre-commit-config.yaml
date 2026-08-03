@@ -1,0 +1,19 @@
+# ── CYPHER65 War Room · pre-commit ───────────────────────────────────────
+# Install:  pip install -r requirements-dev.txt && pre-commit install
+#
+# Deliberately LIMITED to safe hygiene hooks. black/flake8/bandit are NOT
+# gated here because the repo still carries a large pre-existing violation
+# backlog (see the Makefile `lint` advisory) — gating them would block every
+# commit until a dedicated cleanup lands. Add them here AFTER that cleanup.
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-json
+      - id: check-merge-conflict
+      - id: debug-statements
+      - id: check-added-large-files
+        args: ["--maxkb=512"]

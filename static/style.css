@@ -1159,6 +1159,40 @@ body {
   white-space: nowrap;
   font-family: var(--font-mono);
 }
+/* R1 (PRO tier): topbar license badge — quiet tag in open/pro mode, upgrade
+   CTA when the gate is live and the caller has no valid key. */
+.topbar__pro-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  margin-left: 4px;
+  border-radius: 999px;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  background: rgba(168, 85, 247, 0.15);
+  color: #b388ff;
+  border: 1px solid rgba(168, 85, 247, 0.4);
+  cursor: default;
+  vertical-align: middle;
+  font-family: var(--font-mono);
+  transition: background 0.2s ease, color 0.2s ease, border-color 0.2s ease;
+}
+.topbar__pro-badge.is-pro {
+  background: rgba(0, 200, 83, 0.12);
+  color: var(--green);
+  border-color: rgba(0, 200, 83, 0.4);
+}
+.topbar__pro-badge:not(.is-pro)[title]:not([title=""]) {
+  background: rgba(255, 145, 0, 0.15);
+  color: var(--orange);
+  border-color: rgba(255, 145, 0, 0.5);
+  cursor: pointer;
+}
+.topbar__pro-badge:not(.is-pro):hover {
+  background: rgba(255, 145, 0, 0.25);
+  border-color: var(--orange);
+}
 .topbar__status-group {
   display: flex;
   align-items: center;
@@ -1395,8 +1429,64 @@ body {
 .badge--green { border-color: var(--green); color: var(--green); }
 .badge--gold   { border-color: var(--amber); color: var(--amber); }
 .badge--amber  { border-color: var(--orange); color: var(--orange); }
+.badge--purple { border-color: #a855f7; color: #a855f7; }
 .badge--mute { opacity: 0.7; }
+
+/* ── P0-2 Decision Matrix ─────────────────────────────────────────── */
+.dm-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; margin-bottom: 6px; }
+.dm-card { padding: 8px; border: 1px solid var(--border-subtle); background: var(--bg-surface); }
+.dm-card__title { font-size: 8px; color: var(--text-tertiary); text-transform: uppercase; letter-spacing: 0.06em; }
+.dm-card__value { font-family: var(--font-mono); font-size: 16px; margin: 4px 0 2px; }
+.dm-card--pool .dm-card__value { color: var(--cyan); }
+.dm-card--solo .dm-card__value { color: #a855f7; }
+.dm-card--lease .dm-card__value { color: var(--green); }
+.dm-card__sub { font-size: 8px; color: var(--text-tertiary); }
+.dm-reco { font-size: 10px; color: var(--text-secondary); border-top: 1px dashed var(--border-subtle); padding-top: 6px; margin-bottom: 6px; }
+.dm-actions { display: flex; justify-content: flex-end; }
 .badge--btc  { border-color: var(--cyan); color: var(--cyan); }
+
+/* ── P0-3 Command Center — contextual action cards ────────────────── */
+.panel--command-center { border-color: rgba(0,255,65,0.25); }
+.cc-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 6px; }
+.cc-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 10px 8px;
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-surface);
+  cursor: pointer;
+  text-align: left;
+  transition: border-color var(--dur-fast) var(--ease-out), background var(--dur-fast) var(--ease-out);
+}
+.cc-card::before {
+  content: '';
+  position: absolute;
+  left: 0; top: 0; bottom: 0;
+  width: 3px;
+  background: var(--text-tertiary);
+}
+.cc-card:hover { border-color: var(--border-default); background: var(--bg-hover); }
+.cc-card--crit::before { background: var(--accent-red, #ff4d4d); }
+.cc-card--crit .cc-card__title { color: var(--accent-red, #ff4d4d); }
+.cc-card--gold::before { background: var(--gold, #ffd700); }
+.cc-card--gold .cc-card__title { color: var(--gold, #ffd700); }
+.cc-card--warn::before { background: var(--orange, #ff8c00); }
+.cc-card--warn .cc-card__title { color: var(--orange, #ff8c00); }
+.cc-card--info::before { background: var(--cyan); }
+.cc-card--info .cc-card__title { color: var(--cyan); }
+.cc-card__title { font-family: var(--font-mono); font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em; }
+.cc-card__message { font-size: 9px; color: var(--text-secondary); line-height: 1.4; }
+.cc-card__action {
+  margin-top: 2px;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  color: var(--green);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.cc-card__action:hover { text-decoration: underline; }
 
 /* ── Buttons ────────────────────────────────────────────────────────── */
 .btn {
@@ -2761,6 +2851,10 @@ td { padding: 4px 8px; border-bottom: 1px solid var(--border-subtle); color: var
 .mkt-card__detail { display: flex; flex-wrap: wrap; gap: 6px; font-size: 9px; color: var(--text-tertiary); }
 .mkt-card__detail span { white-space: nowrap; }
 .mkt-card__label { color: var(--text-tertiary); opacity: 0.7; }
+/* P0-4: one-click affiliate BUY on the offer card — same chip--affiliate
+   treatment as the Decision Matrix CTA, full-width under the details. */
+.mkt-card__buy { display: block; margin-top: 8px; width: 100%; text-align: center; font-size: 10px; letter-spacing: 0.06em; }
+.mkt-card__buy:hover { transform: translateY(-1px); }
 .mkt-empty { font-size: var(--fs-xs); color: var(--text-tertiary); padding: 12px; text-align: center; }
 .mkt-card--stale { opacity: 0.7; }
 
@@ -2943,6 +3037,23 @@ td { padding: 4px 8px; border-bottom: 1px solid var(--border-subtle); color: var
 .modal__title { font-size: var(--fs-md); color: var(--green); letter-spacing: 0.1em; }
 .modal__close { font-size: var(--fs-lg); color: var(--text-tertiary); cursor: pointer; background: none; border: none; font-family: var(--font-mono); }
 .modal__close:hover { color: var(--red); }
+
+/* ── R1 revenue: PRO upgrade modal ─────────────────────────────── */
+.upgrade-modal { max-width: 420px; }
+.upgrade-modal__copy { font-size: var(--fs-sm, 13px); line-height: 1.55; color: var(--text-secondary); margin-bottom: 14px; }
+.upgrade-modal__copy strong { color: var(--amber, #f5b942); }
+.upgrade-modal__buy { width: 100%; margin-bottom: 6px; font-family: var(--font-mono); }
+.upgrade-modal__divider { display: flex; align-items: center; gap: 8px; margin: 10px 0; color: var(--text-tertiary); font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; }
+.upgrade-modal__divider::before,
+.upgrade-modal__divider::after { content: ''; flex: 1; height: 1px; background: var(--border-subtle, rgba(255,255,255,0.08)); }
+.upgrade-modal__redeem { display: flex; gap: 6px; }
+.upgrade-modal__redeem .field__input { flex: 1; }
+.upgrade-modal__activate { white-space: nowrap; font-family: var(--font-mono); }
+.upgrade-modal .modal__status { display: block; margin-top: 8px; min-height: 14px; font-size: 12px; }
+
+/* ── P0-3: one-click affiliate buy CTA in the Decision Matrix panel ── */
+.chip--affiliate { border-color: var(--amber, #f5b942); color: var(--amber, #f5b942); }
+.chip--affiliate:hover { background: rgba(245, 185, 66, 0.12); }
 .modal__body { display: flex; flex-direction: column; gap: 8px; }
 .modal__status { font-size: var(--fs-xs); color: var(--text-tertiary); min-height: 16px; }
 
@@ -4289,3 +4400,124 @@ body.module-mode .tab-pane:not(.active) { display: none; }
   background: var(--green-bg);
 }
 .wallet-current__addr--empty { color: var(--text-tertiary); font-style: italic; }
+
+/* ═══════════════════════════════════════════════════════════════════
+   AXE FLEET · onboarding wizard (3 steps)
+   ═══════════════════════════════════════════════════════════════════ */
+.axe-wiz__steps {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  margin-bottom: 8px;
+}
+.axe-wiz__step {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 8px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-tertiary);
+  padding: 2px 6px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 10px;
+  transition: color 0.2s, border-color 0.2s, background 0.2s;
+}
+.axe-wiz__step.is-active {
+  color: var(--cyan);
+  border-color: var(--cyan-dim);
+  background: var(--cyan-bg);
+}
+.axe-wiz__step.is-done {
+  color: var(--green);
+  border-color: var(--green-dim);
+  background: var(--green-bg);
+}
+.axe-wiz__num {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  font-size: 8px;
+  background: var(--border-subtle);
+  color: var(--text-secondary);
+}
+.axe-wiz__step.is-active .axe-wiz__num { background: var(--cyan-dim); color: #000; }
+.axe-wiz__step.is-done .axe-wiz__num { background: var(--green-dim); color: #000; }
+
+.axe-wiz__methods {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+}
+.axe-wiz__method {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+  padding: 8px;
+  text-align: left;
+  background: var(--surface-1, rgba(255,255,255,0.02));
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+  cursor: pointer;
+  transition: border-color 0.2s, box-shadow 0.2s, background 0.2s;
+}
+.axe-wiz__method:hover {
+  border-color: var(--cyan-dim);
+  box-shadow: 0 0 0 1px rgba(0,184,212,0.25);
+  background: var(--cyan-bg);
+}
+.axe-wiz__method-icon { font-size: 16px; }
+.axe-wiz__method-title { font-size: 10px; font-weight: 600; color: var(--text-primary); }
+.axe-wiz__method-desc { font-size: 8px; color: var(--text-tertiary); line-height: 1.3; }
+
+.axe-wiz__back {
+  color: var(--text-tertiary);
+}
+.axe-wiz__back:hover { color: var(--cyan); }
+
+/* Connectivity test report */
+.axe-wiz__test { font-size: 9px; }
+.axe-wiz-check {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 0;
+  color: var(--text-secondary);
+}
+.axe-wiz-check--ok { color: var(--green); }
+.axe-wiz-check--fail { color: var(--orange); }
+.axe-wiz-check--idle { color: var(--text-tertiary); }
+.axe-wiz-check__label { text-transform: uppercase; font-size: 8px; letter-spacing: 0.06em; color: var(--text-tertiary); min-width: 90px; }
+.axe-wiz-check__val { margin-left: auto; font-family: var(--mono, monospace); }
+.axe-wiz__spinner {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  border: 1.5px solid var(--border-default);
+  border-top-color: var(--cyan);
+  border-radius: 50%;
+  animation: axe-wiz-spin 0.7s linear infinite;
+  vertical-align: middle;
+}
+@keyframes axe-wiz-spin { to { transform: rotate(360deg); } }
+
+.axe-wiz__confirm {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 10px;
+  color: var(--text-secondary);
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+  padding: 8px;
+  background: var(--surface-1, rgba(255,255,255,0.02));
+}
+.axe-wiz__confirm .axe-wiz-check--ok { color: var(--green); }
+.axe-wiz__confirm-title { font-size: 10px; font-weight: 600; color: var(--green); }
+
+/* Manual add row — keep legacy name input visible only on confirm */
+#axe-add-name { font-size: 10px; }

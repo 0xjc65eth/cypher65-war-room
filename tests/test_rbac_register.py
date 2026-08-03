@@ -24,9 +24,24 @@ from services.tenant import (
 
 
 @pytest.fixture
-def client():
+def client(monkeypatch):
+    """Test client that pins the JWT secret in BOTH app.config and env.
+
+    Handlers verify tokens inside a request context where _get_secret()
+    prefers current_app.config["JWT_SECRET_KEY"]; tokens minted at test
+    level (no app context) use the env SECRET_KEY fallback. Pinning both to
+    the same value keeps create/verify in sync and immune to leftover config
+    secrets leaked by other test files (cross-file pollution)."""
     _app.config["TESTING"] = True
-    return _app.test_client()
+    saved = _app.config.get("JWT_SECRET_KEY")
+    _app.config["JWT_SECRET_KEY"] = "test-secret-key-123"
+    monkeypatch.setenv("SECRET_KEY", "test-secret-key-123")
+    c = _app.test_client()
+    yield c
+    if saved is not None:
+        _app.config["JWT_SECRET_KEY"] = saved
+    else:
+        _app.config.pop("JWT_SECRET_KEY", None)
 
 
 def _auth_headers(token):
@@ -342,6 +357,95 @@ class TestRbacEnforcement:
         # never the RBAC 403.
         assert res.status_code != 403
         assert res.get_json().get("error") != "permission denied"
+
+
+# ── RBAC on read routes (login required even for reads) ──────────────────
+
+class TestRbacReadRoutes:
+    """Read routes (export, backup, wallet/history, donations) now require
+    login when auth is configured — anonymous remote callers get 403, while
+    viewer+ tokens pass and open self-host mode stays unaffected.
+
+    Requests are made with a non-localhost REMOTE_ADDR because
+    get_current_role() maps localhost to admin by design (the deployment
+    operator) — the anonymous 403 path must be exercised from a remote
+    address to prove the "login even for reads" rule.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _scratch_db(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("DB_PATH", str(_seed_users_db(tmp_path)))
+        monkeypatch.setenv("SECRET_KEY", "test-secret-key-123")
+        # Seed the read-route tables so viewer/member/open-mode requests that
+        # PASS the RBAC gate reach the handler without crashing (api_export has
+        # no try/except, so a missing snapshots table would raise in-test).
+        import sqlite3
+        conn = sqlite3.connect(str(tmp_path / "rbac.sqlite"))
+        conn.execute("CREATE TABLE IF NOT EXISTS snapshots (id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL)")
+        conn.execute("CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT, updated_ts INTEGER)")
+        conn.execute("CREATE TABLE IF NOT EXISTS wallet_address_history (id INTEGER PRIMARY KEY AUTOINCREMENT, address TEXT NOT NULL, worker TEXT DEFAULT '', connected_at INTEGER NOT NULL, label TEXT DEFAULT '')")
+        conn.execute("CREATE TABLE IF NOT EXISTS donations (id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL, method TEXT DEFAULT 'lightning', amount_sat INTEGER, txid TEXT DEFAULT '', preimage TEXT DEFAULT '', note TEXT DEFAULT '', source TEXT DEFAULT 'webln')")
+        conn.commit()
+        conn.close()
+
+    READ_ROUTES = [
+        "/api/export/snapshots.csv",
+        "/api/config/backup",
+        "/api/wallet/history",
+        "/api/donations",
+    ]
+
+    def test_donation_post_stays_open_to_anonymous(self, client, monkeypatch):
+        """The public WebLN/manual donation-record POST must NOT be RBAC-gated
+        (anonymous donors report proof of payment) — only tenant resolution."""
+        monkeypatch.setenv("API_KEY", "master-key")
+        res = client.post("/api/donations", json={"txid": "anon-tx-123", "amount_sat": 5000},
+                          environ_base={"REMOTE_ADDR": "203.0.113.7"})
+        # Not 403: anonymous donation recording must keep working.
+        assert res.status_code in (201, 409)
+
+    def _get_remote(self, client, path, headers=None):
+        """GET as a non-localhost remote caller (bypasses localhost→admin)."""
+        return client.get(path, headers=headers or {},
+                          environ_base={"REMOTE_ADDR": "203.0.113.7"})
+
+    def test_anonymous_remote_blocked_from_reads(self, client, monkeypatch):
+        monkeypatch.setenv("API_KEY", "master-key")
+        for route in self.READ_ROUTES:
+            res = self._get_remote(client, route)
+            assert res.status_code == 403, f"{route}: expected 403, got {res.status_code}"
+            body = res.get_json()
+            assert body.get("required_role") == "viewer"
+
+    def test_viewer_token_allowed_on_reads(self, client, monkeypatch):
+        monkeypatch.setenv("API_KEY", "master-key")
+        from services.auth import create_token
+        viewer_token = create_token(subject="default", extra_claims={"role": "viewer"})
+        for route in self.READ_ROUTES:
+            res = self._get_remote(client, route, headers=_auth_headers(viewer_token))
+            # RBAC must pass (never the 403 shape) — the route itself may
+            # 200/400/500 depending on scratch-DB tables; that's out of scope.
+            # Note: /api/export/snapshots.csv returns CSV text, so use
+            # get_json(silent=True) (None for non-JSON bodies).
+            assert res.status_code != 403, f"{route}: viewer should not be blocked"
+            data = res.get_json(silent=True) or {}
+            assert data.get("error") != "permission denied"
+
+    def test_member_and_admin_tokens_allowed_on_reads(self, client, monkeypatch):
+        monkeypatch.setenv("API_KEY", "master-key")
+        from services.auth import create_token
+        for role in ("member", "admin"):
+            token = create_token(subject="default", extra_claims={"role": role})
+            for route in self.READ_ROUTES:
+                res = self._get_remote(client, route, headers=_auth_headers(token))
+                assert res.status_code != 403, f"{route}: {role} should not be blocked"
+
+    def test_open_mode_reads_unaffected(self, client, monkeypatch):
+        monkeypatch.delenv("API_KEY", raising=False)
+        monkeypatch.delenv("TENANT_API_KEYS", raising=False)
+        for route in self.READ_ROUTES:
+            res = self._get_remote(client, route)
+            assert res.status_code != 403, f"{route}: open mode must not block"
 
 
 # ── CORS (env-gated) ─────────────────────────────────────────────────────

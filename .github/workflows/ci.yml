@@ -86,3 +86,31 @@ jobs:
         run: |
           echo "::error::CI gate FAILED — merge blocked"
           echo "Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
+  mobile:
+    name: "mobile: typecheck + jest"
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    defaults:
+      run:
+        working-directory: mobile/
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      # No lockfile committed yet, so npm install (not npm ci).
+      - name: Install dependencies
+        run: npm install
+
+      - name: Typecheck (tsc --noEmit)
+        run: npm run typecheck
+
+      - name: Run jest suite
+        run: npm test -- --ci

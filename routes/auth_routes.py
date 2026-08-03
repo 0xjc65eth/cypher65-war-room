@@ -67,7 +67,9 @@ def api_auth_register():
     )
 
     security_log.info("[auth] registered user=%s tenant=%s from %s", username, tenant_id, request.remote_addr)
-    _log_audit(tenant_id, "auth.register", details={"username": username, "ip": request.remote_addr})
+    # user_id is the username (known pre-token); the JWT doesn't exist yet so
+    # log_audit's auto-resolve can't help here — pass it explicitly.
+    _log_audit(tenant_id, "auth.register", user_id=username, details={"username": username, "ip": request.remote_addr})
 
     return jsonify({
         "success": True,
@@ -110,7 +112,8 @@ def api_auth_login():
         user = authenticate_user(username, password, tenant_id=resolved_tenant)
         if user is None:
             security_log.warning("[auth] failed user login %s from %s", username, request.remote_addr)
-            _log_audit(resolved_tenant, "auth.login_failed", details={"username": username, "ip": request.remote_addr})
+            _log_audit(resolved_tenant, "auth.login_failed", user_id=username,
+                       details={"username": username, "ip": request.remote_addr})
             return jsonify({"error": "invalid username or password"}), 401
         tenant_id = user["tenant_id"]
         access_token = create_token(subject=tenant_id, extra_claims={"role": user["role"], "username": user["username"]})
@@ -118,7 +121,8 @@ def api_auth_login():
             subject=tenant_id, extra_claims={"role": user["role"], "username": user["username"]}
         )
         security_log.info("[auth] user login ok=%s role=%s tenant=%s", user["username"], user["role"], tenant_id)
-        _log_audit(tenant_id, "auth.login", details={"username": user["username"], "ip": request.remote_addr})
+        _log_audit(tenant_id, "auth.login", user_id=user["username"],
+                   details={"username": user["username"], "ip": request.remote_addr})
         return jsonify({
             "success": True,
             "access_token": access_token,
@@ -201,7 +205,8 @@ def api_auth_refresh():
     ttl = int(current_app.config.get("JWT_ACCESS_TOKEN_TTL", DEFAULT_ACCESS_TTL)
               if current_app else DEFAULT_ACCESS_TTL)
     expires_at = int(time.time()) + ttl
-    _log_audit(tenant_id, "auth.refresh", details={"ip": request.remote_addr})
+    _log_audit(tenant_id, "auth.refresh", user_id=payload.get("username") or "",
+               details={"ip": request.remote_addr})
 
     return jsonify({
         "success": True,
@@ -233,7 +238,8 @@ def api_auth_logout():
         tid = payload.get("sub", "default") if payload else "default"
         revoke_token(token)
         log.info("[auth] token revoked")
-        _log_audit(tid, "auth.logout", details={"ip": request.remote_addr})
+        _log_audit(tid, "auth.logout", user_id=payload.get("username") or "",
+                   details={"ip": request.remote_addr})
     else:
         return jsonify({"error": "access_token or refresh_token is required"}), 400
 

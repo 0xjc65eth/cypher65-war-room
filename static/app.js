@@ -40,6 +40,9 @@
     },
     uptime(s) {
       if (!s && s !== 0) return '\u2014';
+      // The pool API can return the literal string 'N/A' — guard non-numeric
+      // values so we render a clean em-dash instead of NaN.
+      if (!isFinite(Number(s))) return '\u2014';
       s = Math.floor(Number(s));
       if (s < 60) return `${s}s`;
       const d = Math.floor(s / 86400), h = Math.floor((s % 86400) / 3600),
@@ -112,12 +115,13 @@
     mLastShare: $('#m-lastshare'), mLastShareSub: $('#m-lastshare-sub'), mState: $('#m-state'), mStateSub: $('#m-state-sub'),
     mSharePct: $('#m-share-pct'), mFairDiff: $('#m-fair-diff'), mExpectedShare: $('#m-expected-share'), mExpectedBlock: $('#m-expected-block'),
     poolUptime: $('#pool-uptime'), pHashrate: $('#p-hashrate'), pWorkers: $('#p-workers'), pHighDiff: $('#p-high-diff'),
+    topbarProBadge: $('#topbar-pro-badge'),
     pLastBlock: $('#p-last-block'), pLastBlockTime: $('#p-last-block-time'), pWorkNum: $('#p-work-num'), pWorkFill: $('#p-work-fill'), pExpectedBlocks: $('#p-expected-blocks'),
     pStaleBadge: $('#p-stale-badge'),
     acctBlocksBadge: $('#acct-blocks-badge'), acctLn: $('#acct-ln'), acctTotalDiff: $('#acct-total-diff'),
     acctHighestBlock: $('#acct-highest-block'), acctCombined: $('#acct-combined'), acctDiffRank: $('#acct-diff-rank'), acctLoyaltyRank: $('#acct-loyalty-rank'),
     netStatus: $('#net-status'), nHeight: $('#n-height'), nDiff: $('#n-diff'), nHashrate: $('#n-hashrate'),
-    nBtcUsd: $('#n-btc-usd'), nBtcBrl: $('#n-btc-brl'), nBtcEur: $('#n-btc-eur'), nBtcGbp: $('#n-btc-gbp'),
+    nBtcUsd: $('#n-btc-usd'), nBtcBrl: $('#n-btc-brl'), nBtcEur: $('#n-btc-eur'), nBtcGbp: $('#n-btc-gbp'), nBtcJpy: $('#n-btc-jpy'), nBtcKrw: $('#n-btc-krw'), nBtcCny: $('#n-btc-cny'),
     eventsTbody: $('#events-tbody'), lbTbody: $('#lb-tbody'), logEventsCount: $('#log-events-count'), terminal: $('#terminal'),
     alertsList: $('#alerts-list'), alertsCountBadge: $('#alerts-count-badge'),
     timelineFeed: $('#timeline-feed'), timelineSharesBadge: $('#timeline-shares-badge'), timelineBumpsBadge: $('#timeline-bumps-badge'), timelineRateBadge: $('#timeline-rate-badge'),
@@ -182,7 +186,17 @@
     axeAddSave: $('#axe-add-save'),
     axeAddCancel: $('#axe-add-cancel'),
     axeAddStatus: $('#axe-add-status'),
+    axeScanCidr: $('#axe-scan-cidr'),
+    axeScanBtn: $('#axe-scan-btn'),
+    axeScanStatus: $('#axe-scan-status'),
+    axeScanResults: $('#axe-scan-results'),
     axeFleetAdd: $('#axe-fleet-add'),
+    axeTestConn: $('#axe-test-conn'),
+    axeTestResult: $('#axe-test-result'),
+    axeWizSteps: $('#axe-wiz-steps'),
+    axeWizConfirm: $('#axe-wiz-confirm'),
+    axeManualNameRow: $('#axe-manual-name-row'),
+    axeEmptyAdd: $('#axe-empty-add'),
 
     // New summary items
     axeSummaryWarning: $('#axe-summary-warning'),
@@ -284,9 +298,116 @@
     try { localStorage.removeItem(AUTH_SESSION_KEY); } catch (e) {}
   }
 
+  // R1 (PRO tier): the operator's license key rides along on every API call
+  // via X-License-Key (persisted in localStorage by initLicensing). Open
+  // mode (no PRO_LICENSE_KEYS on the server) ignores it — this header only
+  // matters once the gate is active.
+  const LICENSE_STORAGE_KEY = '_cypher65_license';
+  function licenseKey() {
+    try { return localStorage.getItem(LICENSE_STORAGE_KEY) || ''; } catch (e) { return ''; }
+  }
   function authBuildHeaders(token) {
-    if (!token) return {};
-    return { 'Authorization': 'Bearer ' + token };
+    const h = {};
+    const lk = licenseKey();
+    if (lk) h['X-License-Key'] = lk;
+    if (token) h['Authorization'] = 'Bearer ' + token;
+    return h;
+  }
+  // PRO licensing state (open/free/pro) — populated by initLicensing() on
+  // boot and used to render the topbar badge + upgrade CTA on 402s.
+  let _license = { mode: 'open', tier: 'pro', pro: true };
+  async function initLicensing() {
+    try {
+      const r = await fetch('/api/license-status');
+      if (!r.ok) return;
+      _license = await r.json();
+    } catch (e) { return; }
+    renderLicenseBadge();
+    syncUpgradeModal();
+  }
+  function renderLicenseBadge() {
+    const badge = dom.topbarProBadge;
+    if (!badge) return;
+    if (_license.mode === 'open' || _license.pro) {
+      // Open mode (everything free) or active PRO — show a quiet PRO tag.
+      badge.hidden = false;
+      badge.textContent = _license.pro ? 'PRO' : 'FREE';
+      badge.classList.toggle('is-pro', !!_license.pro);
+      badge.title = _license.pro ? 'PRO license active' : 'Open mode — all features free';
+      badge.onclick = null;  // clear any leftover upgrade-CTA handler (audit)
+      syncUpgradeModal();
+      return;
+    }
+    // Licensed mode + free tier → gate is live; badge is the upgrade CTA.
+    badge.hidden = false;
+    badge.textContent = 'UPGRADE';
+    badge.classList.toggle('is-pro', false);
+    badge.title = 'PRO features locked — click to upgrade';
+    badge.onclick = openUpgradeModal;
+    syncUpgradeModal();
+  }
+  // R1 revenue: upgrade modal — buy via Lemon Squeezy checkout or redeem a key.
+  function openUpgradeModal() {
+    const m = document.getElementById('upgrade-modal');
+    if (m) m.classList.add('modal--open');
+  }
+  function closeUpgradeModal() {
+    const m = document.getElementById('upgrade-modal');
+    if (m) m.classList.remove('modal--open');
+  }
+  // Show the Buy button only when the server has a payment provider configured,
+  // and drive its price copy from the server payload (single source of truth).
+  function syncUpgradeModal() {
+    const buy = document.getElementById('upgrade-buy-btn');
+    const div = document.getElementById('upgrade-divider');
+    if (buy) {
+      buy.hidden = !_license.payments;
+      const up = _license.upgrade;
+      const price = (up && up.price_usd_month) || 9;
+      buy.textContent = 'Buy PRO — $' + price + '/mo';
+    }
+    if (div) div.hidden = !_license.payments;
+  }
+  async function buyPro() {
+    const btn = document.getElementById('upgrade-buy-btn');
+    if (btn) btn.disabled = true;
+    try {
+      const r = await fetch('/api/upgrade/checkout', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ plan: 'pro' }),
+      });
+      let data = {};
+      try { data = await r.json(); } catch (e) {}
+      if (r.ok && data.checkout_url) {
+        window.open(data.checkout_url, '_blank', 'noopener');
+      } else {
+        logMessage('PRO', (data && data.error) || 'Checkout unavailable', 'WARN');
+      }
+    } catch (e) {
+      logMessage('PRO', 'Checkout unavailable', 'WARN');
+    } finally {
+      if (btn) btn.disabled = false;
+    }
+  }
+  async function redeemLicenseKey() {
+    const input = document.getElementById('upgrade-key-input');
+    const key = (input && input.value || '').trim();
+    if (!key) return;
+    try { localStorage.setItem(LICENSE_STORAGE_KEY, key); } catch (e) {}
+    await initLicensing();
+    closeUpgradeModal();
+    // Re-run the current snapshot render so gated panels refresh.
+    renderCharts();
+    logMessage('PRO', _license.pro ? 'license key accepted — PRO unlocked' : 'license key rejected', _license.pro ? 'SUCCESS' : 'WARN');
+    if (input) input.value = '';  // clear the field for the next activation
+  }
+  // Shared handler for 402 (PRO required) responses: surface the upgrade CTA.
+  async function handleLicenseRequired(res) {
+    let data = {};
+    try { data = await res.json(); } catch (e) {}
+    renderLicenseBadge();
+    logMessage('PRO', (data && data.error) || 'PRO feature locked — license key required', 'WARN');
   }
   function authIsExpired(expiresAt, now) {
     if (!expiresAt) return true;
@@ -837,7 +958,10 @@
     // Pool block
     if (dom.sbPoolHr) dom.sbPoolHr.textContent = fmt.hashrate(pool.hashrate);
     if (dom.sbPoolWorkers) dom.sbPoolWorkers.textContent = `${pool.workers || 0}`;
-    if (dom.sbPoolBlock) dom.sbPoolBlock.textContent = pool.lastBlock ? `#${pool.lastBlock}` : '\u2014';
+    // The pool API exposes the last block height under lastBlockTime (the
+    // old lastBlock key no longer exists). Accept both for backward compat.
+    const poolBlock = pool.lastBlock || pool.lastBlockTime;
+    if (dom.sbPoolBlock) dom.sbPoolBlock.textContent = poolBlock ? `#${poolBlock.toLocaleString()}` : '\u2014';
 
     // Network block
     if (dom.sbNetDiff) dom.sbNetDiff.textContent = fmt.diff(net.difficulty);
@@ -1075,6 +1199,9 @@ function renderAccount(acct) {
     if (dom.nBtcBrl) dom.nBtcBrl.textContent = btc.brl ? `R$${Number(btc.brl).toLocaleString()}` : '\u2014';
     if (dom.nBtcEur) dom.nBtcEur.textContent = btc.eur ? `€${Number(btc.eur).toLocaleString()}` : '\u2014';
     if (dom.nBtcGbp) dom.nBtcGbp.textContent = btc.gbp ? `£${Number(btc.gbp).toLocaleString()}` : '\u2014';
+    if (dom.nBtcJpy) dom.nBtcJpy.textContent = btc.jpy ? `¥${Number(btc.jpy).toLocaleString()}` : '\u2014';
+    if (dom.nBtcKrw) dom.nBtcKrw.textContent = btc.krw ? `₩${Number(btc.krw).toLocaleString()}` : '\u2014';
+    if (dom.nBtcCny) dom.nBtcCny.textContent = btc.cny ? `CN¥${Number(btc.cny).toLocaleString()}` : '\u2014';
   }
 
   function renderHalving(h) {
@@ -1128,22 +1255,60 @@ function renderAccount(acct) {
     'chart-cumulative-p': { chart: 'cum_p', label: 'Cumulative P(Block)', color: 'rgb(168,85,247)' },
     'chart-share-dist': { chart: 'share_dist', label: 'Share Difficulty', color: 'rgb(16,185,129)' },
   };
+  // Selected time-range per chart id (default 1h). Persisted so the 15s
+  // renderCharts refresh keeps the user's toolbar choice instead of silently
+  // resetting every chart back to 1h (audit: range chips were being ignored).
+  const _chartRange = {};
+  function _fmtChartLabel(t, cfg, id) {
+    if (cfg.chart === 'share_dist') return String(t); // histogram bucket labels
+    const d = new Date(t);
+    const rng = _chartRange[id] || '1h';
+    const hm = d.getHours() + ':' + String(d.getMinutes()).padStart(2, '0');
+    // Ranges ≥24h span multiple days — include dd/mm so the axis stays honest.
+    if (rng === '24h' || rng === '7d' || rng === '30d' || rng === 'all') {
+      return String(d.getDate()).padStart(2, '0') + '/' + String(d.getMonth() + 1).padStart(2, '0') + ' ' + hm;
+    }
+    return hm;
+  }
+  // The Share-Distribution panel badge was hardcoded to "0 shares" in the HTML
+  // and never updated. Reflect the real histogram count from the API.
+  function _updateShareDistBadge(cfg, data, values) {
+    if (!cfg || cfg.chart !== 'share_dist') return;
+    const badge = document.getElementById('share-dist-count-badge');
+    if (!badge) return;
+    const n = (data && data.count != null) ? data.count : values.reduce((a, b) => a + (Number(b) || 0), 0);
+    badge.textContent = `${n} shares`;
+  }
+  // P0-1: overlay the network target difficulty on the share histogram — a
+  // solid purple reference line + readable badge so the operator sees how far
+  // shares are from block-winning difficulty at a glance.
+  function _applyShareDistTarget(cfg, data, chart) {
+    if (!cfg || cfg.chart !== 'share_dist' || !chart) return;
+    const bucket = (data && data.target_bucket != null) ? data.target_bucket : null;
+    if (bucket != null) {
+      chart._annotations = (chart._annotations || []).concat([{ index: bucket, target: true }]);
+    }
+    const badge = document.getElementById('share-dist-target-badge');
+    if (badge) {
+      badge.textContent = (data && data.target_diff) ? 'target ' + fmt.diff(data.target_diff) : 'target —';
+    }
+  }
+
   async function loadChartData(id) {
     const cfg = CHART_METRICS[id];
     if (!cfg) return;
     try {
-      const r = await fetch(`/api/chart-data?chart=${cfg.chart}&range=1h`);
+      const r = await fetch(`/api/chart-data?chart=${cfg.chart}&range=${_chartRange[id] || '1h'}`);
+      if (r.status === 402) { await handleLicenseRequired(r); _chartRange[id] = '1h'; const _tb = document.getElementById('share-dist-target-badge'); if (_tb) _tb.textContent = 'target —'; return; }
       if (!r.ok) return;
       const data = await r.json();
       const chart = charts[id];
       if (!chart) return;
       const rawLabels = (data.labels || []);
       const values = (data.datasets?.[0]?.data || data.datasets?.[0]?.values || []);
-      chart.data.labels = rawLabels.map(t => {
-        if (cfg.chart === 'share_dist') return String(t); // histogram bucket labels
-        const d = new Date(t); return d.getHours()+':'+String(d.getMinutes()).padStart(2,'0');
-      });
+      chart.data.labels = rawLabels.map(t => _fmtChartLabel(t, cfg, id));
       chart.data.datasets[0].data = values;
+      _updateShareDistBadge(cfg, data, values);
       // Fase 2.1: SMA overlay + shares bar + event annotations
       if (chart.data.datasets[1] && cfg.chart !== 'share_dist') {
         chart.data.datasets[1].data = computeSMA(values, Math.max(3, Math.round(values.length / 10)));
@@ -1153,9 +1318,13 @@ function renderAccount(acct) {
         chart.options.scales.y1.display = data.shares.some(s => s > 0);
       }
       chart._annotations = buildChartAnnotations(data.events || [], rawLabels);
+      _applyShareDistTarget(cfg, data, chart);
       chart.update('none');
     } catch (e) { /* chart load silently */ }
   }
+  // R1: gated chart-data ranges (30d/all) return 402 when the gate is live
+  // and no key is present — reset the range to 1h and surface the CTA so the
+  // chart never silently renders an empty panel.
   function renderCharts() {
     // Charts can only be measured when their canvases are visible.
     // In module-mode the tab panes are controlled by activateModule();
@@ -1332,6 +1501,91 @@ function renderAccount(acct) {
     }).join('');
     dom.terminalEventsList.innerHTML = rows;
     if (dom.terminalEventCount) dom.terminalEventCount.textContent = String(normalized.length);
+  }
+
+  // ── SHARE TIMELINE summary cards + badges ──
+  // Pure aggregation (mirrored in tests/test_app_js_core.js): counts
+  // SHARE_FOUND / BEST_DIFF_BUMP events inside the 1h / 24h windows from a
+  // timeline event list. Used as a client-side fallback when the DB-derived
+  // aggregates (event_stats.db_*) are absent — e.g. on the very first poll
+  // or after a SQLite write failure. Returns numbers; 0 is a real count.
+  function computeTimelineStats(list, nowSec) {
+    const now = nowSec || Math.floor(Date.now() / 1000);
+    const out = { shares1h: 0, shares24h: 0, bumps24h: 0 };
+    if (!list || !list.length) return out;
+    list.forEach(e => {
+      if (!e) return;
+      const ev = _normalizeTimelineEvent(e);
+      const t = Number(ev.ts);
+      if (!t || !isFinite(t)) return;
+      const age = now - t;
+      if (age < 0) return; // future ts (clock skew) never counts
+      if (ev.event_type === 'SHARE_FOUND') {
+        if (age <= 3600) out.shares1h++;
+        if (age <= 86400) out.shares24h++;
+      } else if (ev.event_type === 'BEST_DIFF_BUMP') {
+        if (age <= 86400) out.bumps24h++;
+      }
+    });
+    return out;
+  }
+
+  // Latest SHARE_FOUND ts from the timeline list (fallback for LAST SHARE
+  // when the session-scoped last_submit_ts is 0 — e.g. right after a server
+  // restart, where the DB still holds rows but the in-memory tracker is
+  // freshly primed). Only events within the last 24h count, so an old share
+  // never claims to be "last".
+  function lastShareTsFromTimeline(list, nowSec) {
+    const now = nowSec || Math.floor(Date.now() / 1000);
+    let latest = 0;
+    if (!list || !list.length) return 0;
+    list.forEach(e => {
+      if (!e) return;
+      const ev = _normalizeTimelineEvent(e);
+      const t = Number(ev.ts);
+      if (!t || !isFinite(t)) return;
+      if (ev.event_type !== 'SHARE_FOUND') return;
+      const age = now - t;
+      if (age < 0 || age > 86400) return;
+      if (t > latest) latest = t;
+    });
+    return latest;
+  }
+
+  // Renders the 4 summary cards (LAST SHARE / 1H / 24H / BUMPS 24H) and the
+  // 3 header badges from snap.event_stats. DB-derived window counts are
+  // authoritative; client-side aggregation of the current timeline list is
+  // the fallback. A 0 renders as "0" (a real count) — only a missing value
+  // renders as the em-dash placeholder.
+  function renderTimelineStats(snap) {
+    const es = (snap && snap.event_stats) || {};
+    const fb = computeTimelineStats(snap && snap.timeline_recent, Math.floor(Date.now() / 1000));
+    const shares1h = es.db_shares_last_hour != null ? Number(es.db_shares_last_hour) : fb.shares1h;
+    const shares24h = es.db_shares_last_day != null ? Number(es.db_shares_last_day) : fb.shares24h;
+    const bumps24h = es.db_best_diffs_last_day != null ? Number(es.db_best_diffs_last_day) : fb.bumps24h;
+    if (dom.tStatLastShare) {
+      const lastTs = es.last_submit_ts || lastShareTsFromTimeline(snap && snap.timeline_recent, Math.floor(Date.now() / 1000));
+      if (lastTs) {
+        const d = new Date(Number(lastTs) * 1000);
+        dom.tStatLastShare.textContent =
+          String(d.getHours()).padStart(2, '0') + ':' +
+          String(d.getMinutes()).padStart(2, '0') + ':' +
+          String(d.getSeconds()).padStart(2, '0');
+      } else {
+        dom.tStatLastShare.textContent = '\u2014';
+      }
+    }
+    if (dom.tStat1h) dom.tStat1h.textContent = String(shares1h);
+    if (dom.tStat24h) dom.tStat24h.textContent = String(shares24h);
+    if (dom.tStatBumps) dom.tStatBumps.textContent = String(bumps24h);
+    if (dom.timelineSharesBadge) dom.timelineSharesBadge.textContent = String(es.session_share_count || 0);
+    if (dom.timelineBumpsBadge) dom.timelineBumpsBadge.textContent = String(es.session_best_diff_bumps || 0) + ' best';
+    if (dom.timelineRateBadge) {
+      const rate = Number(es.rolling_shares_per_hour);
+      dom.timelineRateBadge.textContent = (es.rolling_shares_per_hour != null && isFinite(rate))
+        ? rate.toFixed(1) + '/h'
+        : '\u2014/h';
+    }
   }
 
   // ══════════════════════════════════════════════════════════════════════
@@ -1680,7 +1934,7 @@ function renderAccount(acct) {
   function renderProfitability(p) {
     if (!p || !Object.keys(p).length) return;
     _lastProfitability = p;
-    const cur = (SETTINGS_CACHE.data?.active_currency?.value) || "USD"; const symMap = {USD:"$",BRL:"R$",EUR:"€",GBP:"£"}; const sym = symMap[cur] || "$";
+    const cur = (SETTINGS_CACHE.data?.active_currency?.value) || "USD"; const symMap = {USD:"$",BRL:"R$",EUR:"€",GBP:"£",JPY:"¥",KRW:"₩",CNY:"CN¥"}; const sym = symMap[cur] || "$";
     const fiatPerCur = (b) => b != null ? `${sym}${Number(b).toLocaleString(undefined,{maximumFractionDigits:2})}` : '\u2014';
     const view = profitModeView(p, _profitMode);
     if (dom.pBtcDay) dom.pBtcDay.textContent = view.btcDay != null ? `${Number(view.btcDay).toFixed(8)} BTC` : '\u2014';
@@ -1874,6 +2128,7 @@ function renderAccount(acct) {
   let _mktFilter = 'all';
   let _mktOffers = [];
   let _mktBtcUsd = null;  // BTC/USD from snapshot — for the USD/TH/d line on cards
+  let _mktAffiliate = null;  // market_data.affiliate {provider,url,...} — one-click BUY on the offer card
   let _mktTrendLoaded = false;  // lazy: /api/market/trend fetched on first module activation
 
   function _fmtBtcPerTh(v) {
@@ -1975,6 +2230,16 @@ function renderAccount(acct) {
       // sats/TH/d (primary) + USD/TH/d (companion, from snapshot BTC price)
       const priceLabel = _fmtBtcPerTh(o.price_per_th_day);
       const usdLabel = _mktUsdPerTh(o.price_per_th_day, _mktBtcUsd);
+      // P0-4: one-click affiliate BUY on the offer card that the backend
+      // resolved (provider match — never mislabel another provider's card).
+      // Reuses the same market_data.affiliate payload as the Decision Matrix.
+      const isAffCard = _mktAffiliate && _mktAffiliate.url
+        && (o.provider || '').toLowerCase() === String(_mktAffiliate.provider || '').toLowerCase();
+      const affBtn = isAffCard
+        ? `<button type="button" class="mkt-card__buy chip chip--affiliate"
+             data-aff-url="${escapeHtml(_mktAffiliate.url)}" data-aff-provider="${escapeHtml(_mktAffiliate.provider)}"
+             title="Comprar hashrate em um clique (link de afiliado)">⚡ BUY ${escapeHtml(String(_mktAffiliate.provider).toUpperCase())}</button>`
+        : '';
       return `
       <div class="mkt-card${idx === bestIdx ? ' mkt-card--best' : ''}${staleCls}">
         <div class="mkt-card__head">
@@ -1988,6 +2253,7 @@ function renderAccount(acct) {
           <span><span class="mkt-card__label">Fee:</span>${o.fee_pct != null ? o.fee_pct + '%' : '—'}</span>
           <span><span class="mkt-card__label">Duration:</span>${o.duration_days ? o.duration_days + 'd' : '—'}</span>
         </div>
+        ${affBtn}
       </div>
     `;
     }).join('');
@@ -1999,7 +2265,134 @@ function renderAccount(acct) {
     if (!grid) return;
     _mktOffers = mkt.offers || [];
     _mktBtcUsd = Number(snap.btc_price && snap.btc_price.usd) || null;
+    _mktAffiliate = mkt.affiliate || null;
     renderMarketGrid();
+    // NOTE: renderDecisionMatrix is NOT called here — the main render path
+    // calls it on every snapshot (panel DOM exists regardless of module
+    // visibility), so calling it again here would be a redundant double render.
+  }
+
+  // ── P0-2: Decision Matrix — solo vs pool vs lease (capital allocation) ──
+  // Pure render of the backend-aggregated decision_matrix block; every field
+  // is read defensively and shows '—' when the strategy has no data yet.
+  function renderDecisionMatrix(p) {
+    const dm = (p && p.decision_matrix) || null;
+    const rows = (dm && dm.rows) || {};
+    const el = (id) => document.getElementById(id);
+    const usd = (v) => (v != null && isFinite(v)) ? '$' + Number(v).toLocaleString('en-US', { maximumFractionDigits: 2 }) + '/d' : '—';
+    const days = (v) => (v != null && isFinite(v)) ? (v >= 365 ? (v/365).toFixed(1) + 'y' : Math.round(v) + 'd') : '—';
+    const pct = (v) => (v != null && isFinite(v)) ? (v < 1 ? v.toFixed(4) : v.toFixed(1)) + '%' : '—';
+
+    const poolEl = el('dm-pool-usd'); if (poolEl) poolEl.textContent = usd(rows.pool && rows.pool.net_usd_per_day);
+    const soloTime = el('dm-solo-time'); if (soloTime) soloTime.textContent = days(rows.solo && rows.solo.expected_time_days);
+    const soloSub = el('dm-solo-sub');
+    if (soloSub) {
+      const py = rows.solo && rows.solo.p_year_pct;
+      soloSub.textContent = (py != null && isFinite(py)) ? 'P(bloco no ano) ' + pct(py) : 'tempo esperado até bloco';
+    }
+    const leaseEl = el('dm-lease-usd'); if (leaseEl) leaseEl.textContent = usd(rows.lease && rows.lease.net_usd_per_day);
+    const bestEl = el('dm-best-badge'); if (bestEl) bestEl.textContent = dm ? 'BEST: ' + String(dm.best_option || '—').toUpperCase() : '—';
+    const recoEl = el('dm-reco'); if (recoEl && dm && dm.recommendation) recoEl.textContent = dm.recommendation;
+    const beEl = el('dm-breakeven');
+    if (beEl) {
+      const be = dm && dm.breakeven_cost_per_th_day;
+      beEl.textContent = (be != null && isFinite(be)) ? 'break-even $' + Number(be).toFixed(4) + '/TH·d' : 'break-even —';
+    }
+    // P0-3: one-click affiliate link — honest, only operator-configured URLs.
+    // Null/absent → button stays hidden; the BEST OFFER CTA remains the fallback.
+    const buyEl = el('dm-buy-affiliate');
+    const aff = dm && dm.affiliate;
+    if (buyEl) {
+      if (aff && aff.url) {
+        buyEl.hidden = false;
+        buyEl.textContent = '⚡ BUY ' + String(aff.provider || '').toUpperCase();
+        buyEl.onclick = () => { window.open(aff.url, '_blank', 'noopener'); };
+      } else {
+        buyEl.hidden = true;
+        buyEl.onclick = null;
+      }
+    }
+  }
+
+  // P0-2: CTA — jump to the best offer in the offers grid (no fake affiliate
+  // link: the honest action is to surface the cheapest real market quote).
+  function initDecisionMatrixControls() {
+    const btn = document.getElementById('dm-goto-offers');
+    if (!btn) return;
+    btn.addEventListener('click', () => {
+      const grid = document.getElementById('mkt-grid');
+      if (grid) grid.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    });
+  }
+
+  // ── P0-3: Command Center — contextual action cards ──
+  // Renders snap.command_center (backend-aggregated, advisory-only) into the
+  // cc-grid. Each card carries data-cc-target (module to navigate to),
+  // data-cc-panel (panel id to scroll) and data-cc-url (optional external
+  // link — affiliate buy). Pure helper mirrored in tests/test_app_js_core.js.
+  function commandCenterCardHtml(card) {
+    if (!card || typeof card !== 'object') return '';
+    const sev = String(card.severity || 'info').toLowerCase();
+    const esc = escapeHtml;
+    const target = String(card.target || '');
+    const panel = String(card.panel || '');
+    const url = String(card.url || '');
+    return (
+      '<button type="button" class="cc-card cc-card--' + sev + '" ' +
+      'data-cc-target="' + esc(target) + '" ' +
+      'data-cc-panel="' + esc(panel) + '" ' +
+      'data-cc-url="' + esc(url) + '">' +
+      '<span class="cc-card__title">' + esc(card.title || 'Atenção') + '</span>' +
+      '<span class="cc-card__message">' + esc(card.message || '') + '</span>' +
+      '<span class="cc-card__action">' + esc(card.action || 'IR') + ' →</span>' +
+      '</button>'
+    );
+  }
+
+  function renderCommandCenter(snap) {
+    const grid = document.getElementById('cc-grid');
+    if (!grid) return;
+    const badge = document.getElementById('cc-status-badge');
+    const cards = (snap && Array.isArray(snap.command_center)) ? snap.command_center : [];
+    if (cards.length === 0) {
+      grid.innerHTML = (
+        '<div class="empty-state" style="grid-column:1/-1;border:none;padding:10px">' +
+        '<div class="empty-state__icon">⌘</div>' +
+        '<div class="empty-state__title">All systems nominal</div>' +
+        '<div class="empty-state__desc">No action needed right now — the dashboard is monitoring your operation.</div>' +
+        '</div>'
+      );
+      if (badge) { badge.textContent = '0 actions'; badge.className = 'badge badge--mute'; }
+      return;
+    }
+    grid.innerHTML = cards.map(commandCenterCardHtml).join('');
+    if (badge) {
+      badge.textContent = cards.length + ' action' + (cards.length === 1 ? '' : 's');
+      const topSev = cards[0] && cards[0].severity;
+      badge.className = 'badge ' + (topSev === 'crit' || topSev === 'warn' ? 'badge--amber' : topSev === 'gold' ? 'badge--gold' : 'badge--green');
+    }
+  }
+
+  function initCommandCenterControls() {
+    const grid = document.getElementById('cc-grid');
+    if (!grid) return;
+    grid.addEventListener('click', (e) => {
+      const card = e.target.closest ? e.target.closest('.cc-card') : null;
+      if (!card) return;
+      const url = card.getAttribute('data-cc-url');
+      if (url) { window.open(url, '_blank', 'noopener'); return; }
+      const target = card.getAttribute('data-cc-target');
+      if (target) activateModule(target);
+      const panel = card.getAttribute('data-cc-panel');
+      if (panel) {
+        // Scroll after module activation settles visibility (charts resize,
+        // panels unhide). Small delay keeps the scroll target measurable.
+        setTimeout(() => {
+          const el = document.getElementById(panel);
+          if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }, 120);
+      }
+    });
   }
 
   // Wire the provider filter chips + ⚙ config button + 7d trend chart.
@@ -2017,6 +2410,18 @@ function renderAccount(acct) {
     }
     const cfgBtn = document.getElementById('mkt-config-btn');
     if (cfgBtn) cfgBtn.addEventListener('click', () => { if (typeof openSettingsModal === 'function') openSettingsModal(); });
+    // P0-4: delegated one-click affiliate BUY — the grid re-renders via
+    // innerHTML every snapshot, so the listener lives on the grid itself and
+    // reads data-aff-url from the clicked button (window.open, new tab).
+    const grid = document.getElementById('mkt-grid');
+    if (grid) {
+      grid.addEventListener('click', (e) => {
+        const btn = e.target.closest ? e.target.closest('.mkt-card__buy') : null;
+        if (!btn) return;
+        const url = btn.getAttribute('data-aff-url');
+        if (url) window.open(url, '_blank', 'noopener');
+      });
+    }
     // NOTE: loadMarketTrend() is lazy — triggered by activateModule('market').
   }
 
@@ -2204,6 +2609,7 @@ function renderAccount(acct) {
     renderHalving(snap.halving);
     renderMempoolFees(snap.mempool_fees);
     renderProfitability(snap.profitability);
+    renderDecisionMatrix(snap.profitability);
     renderComparison(snap);
     renderSoloStats(snap.proximity);
     renderProximity(snap.proximity);
@@ -2219,7 +2625,9 @@ function renderAccount(acct) {
     }
     renderTimelineFeed(snap.timeline_recent || snap.timeline_last_n);
     renderTerminalEvents(snap.timeline_last_n || snap.timeline_recent);
+    renderTimelineStats(snap);
     renderBlockHunt(snap);
+    renderCommandCenter(snap);
     renderMarket(snap);
     renderAiOperator(snap);
     renderLiveMining(snap.all_workers, snap.worker);
@@ -2295,6 +2703,14 @@ function renderAccount(acct) {
       anns.forEach(a => {
         const x = xScale.getPixelForValue(a.index);
         if (x < area.left || x > area.right) return;
+        // P0-1: network target difficulty reference line (solid purple).
+        if (a.target) {
+          ctx.strokeStyle = 'rgba(168,85,247,0.9)';
+          ctx.lineWidth = 1.5;
+          ctx.setLineDash([]);
+          ctx.beginPath(); ctx.moveTo(x, area.top); ctx.lineTo(x, area.bottom); ctx.stroke();
+          return;
+        }
         const critical = a.severity === 'CRIT' || a.severity === 'GOLD';
         ctx.strokeStyle = critical ? 'rgba(255,94,94,0.55)' : 'rgba(255,196,0,0.30)';
         ctx.lineWidth = 1;
@@ -2385,6 +2801,11 @@ function renderAccount(acct) {
     const ctx = canvas.getContext('2d');
     const cfg = CHART_METRICS[id];
     const isHistogram = cfg && cfg.chart === 'share_dist';
+    // Human-readable Y ticks: hashrate/pool render fmt.hashrate (TH/s), best
+    // diff/net render fmt.diff — raw 4.7e12 / 1.26e14 labels were unreadable.
+    const isHrAxis = cfg && (cfg.chart === 'hashrate' || cfg.chart === 'pool');
+    const isDiffAxis = cfg && (cfg.chart === 'bestdiff' || cfg.chart === 'net');
+    const yTickCb = isHrAxis ? (v) => fmt.hashrate(v) : isDiffAxis ? (v) => fmt.diff(v) : undefined;
     const datasets = [
       { label, data: [], borderColor: color, backgroundColor: color.replace(')', ',0.1)').replace('rgb','rgba'), fill: true, tension: 0.4, pointRadius: 0 },
     ];
@@ -2405,7 +2826,7 @@ function renderAccount(acct) {
         interaction: { mode: 'index', intersect: false },
         scales: {
           x: { ticks: { color: '#5E5952', maxTicksLimit: 8, font: { family: 'JetBrains Mono, monospace', size: 10 } }, grid: { color: 'rgba(94,89,82,0.14)' } },
-          y: { ticks: { color: '#5E5952', font: { family: 'JetBrains Mono, monospace', size: 10 } }, grid: { color: 'rgba(94,89,82,0.14)' } },
+          y: { ticks: { color: '#5E5952', font: { family: 'JetBrains Mono, monospace', size: 10 }, ...(yTickCb ? { callback: yTickCb } : {}) }, grid: { color: 'rgba(94,89,82,0.14)' } },
           y1: { position: 'right', display: false, grid: { drawOnChartArea: false }, ticks: { color: '#06d6f0', font: { family: 'JetBrains Mono, monospace', size: 10 } } },
         },
         plugins: {
@@ -2431,7 +2852,9 @@ function renderAccount(acct) {
 
   async function loadChart(id, metric, range) {
     try {
+      _chartRange[id] = range || '1h'; // persist the toolbar choice across refreshes
       const r = await fetch(`/api/chart-data?chart=${metric}&range=${range}`);
+      if (r.status === 402) { await handleLicenseRequired(r); _chartRange[id] = '1h'; const _tb = document.getElementById('share-dist-target-badge'); if (_tb) _tb.textContent = 'target —'; return; }
       if (!r.ok) return;
       const data = await r.json();
       const chart = charts[id];
@@ -2439,11 +2862,9 @@ function renderAccount(acct) {
       const cfg = CHART_METRICS[id] || {};
       const rawLabels = (data.labels || []);
       const values = (data.datasets?.[0]?.data || data.datasets?.[0]?.values || []);
-      chart.data.labels = rawLabels.map(t => {
-        if (cfg.chart === 'share_dist') return String(t); // histogram bucket labels
-        const d = new Date(t); return d.getHours()+':'+String(d.getMinutes()).padStart(2,'0');
-      });
+      chart.data.labels = rawLabels.map(t => _fmtChartLabel(t, cfg, id));
       chart.data.datasets[0].data = values;
+      _updateShareDistBadge(cfg, data, values);
       // Fase 2.1: SMA overlay + shares bar + event annotations
       if (chart.data.datasets[1] && cfg.chart !== 'share_dist') {
         chart.data.datasets[1].data = computeSMA(values, Math.max(3, Math.round(values.length / 10)));
@@ -2453,6 +2874,7 @@ function renderAccount(acct) {
         chart.options.scales.y1.display = data.shares.some(s => s > 0);
       }
       chart._annotations = buildChartAnnotations(data.events || [], rawLabels);
+      _applyShareDistTarget(cfg, data, chart);
       chart.update('none');
     } catch (e) { /* chart load silently */ }
   }
@@ -2486,7 +2908,10 @@ function renderAccount(acct) {
         btn.addEventListener('click', () => {
           row.querySelectorAll('button[data-range]').forEach(b => b.classList.remove('active'));
           btn.classList.add('active');
-          const metricMap = { 'chart-hashrate': 'worker_hashrate', 'chart-pool': 'pool_hashrate', 'chart-bestdiff': 'worker_best_diff', 'chart-net': 'network_difficulty' };
+          // Fase 2.2: use the BACKEND chart names (hashrate|pool|bestdiff|net).
+          // Passing DB column names (worker_hashrate etc.) made every range
+          // click fetch an unknown chart and render the panel blank.
+          const metricMap = { 'chart-hashrate': 'hashrate', 'chart-pool': 'pool', 'chart-bestdiff': 'bestdiff', 'chart-net': 'net' };
           // Switching ranges resets any manual zoom/pan from the old window.
           _resetChartZoom(charts[target]);
           loadChart(target, metricMap[target] || target.replace('chart-',''), btn.dataset.range);
@@ -2527,7 +2952,7 @@ function renderAccount(acct) {
 
   // ── Settings ──
   const SETTINGS_CACHE = { data: null };
-  const SETTINGS_SELECTS = { cost_mode: ['none','rental','power'], active_currency: ['USD','BRL','EUR','GBP'], webhook_min_severity: ['INFO','WARN','CRIT','GOLD','SUCCESS'] };
+  const SETTINGS_SELECTS = { cost_mode: ['none','rental','power'], active_currency: ['USD','BRL','EUR','GBP','JPY','KRW','CNY'], webhook_min_severity: ['INFO','WARN','CRIT','GOLD','SUCCESS'] };
   const SETTINGS_CHECKBOX = { show_test_alerts: true };
   // Didactic hints shown under each settings field so users configure the
   // cost model correctly (Fase: LEASE mode — rental_usd_per_th_day is the
@@ -2538,7 +2963,7 @@ function renderAccount(acct) {
     power_watts: 'Consumo do rig (W) — usado para o custo de energia no modo POWER e no LEASE.',
     power_kwh_usd: 'Tarifa de eletricidade ($/kWh) — usada junto com power_watts no modo POWER e no LEASE.',
     pool_fee_pct: 'Taxa da pool (%) aplicada à receita de mineração.',
-    active_currency: 'Moeda exibida nos valores fiat (USD|BRL|EUR|GBP).',
+    active_currency: 'Moeda exibida nos valores fiat (USD|BRL|EUR|GBP|JPY|KRW|CNY).',
   };
   function renderSettingsForm() {
     const box = dom.settingsBody;
@@ -2572,7 +2997,7 @@ function renderAccount(acct) {
     box.innerHTML = html;
   }
   async function loadSettings() {
-    try { const r = await fetch('/api/settings'); SETTINGS_CACHE.data = (await r.json()).settings.reduce((acc, s) => { acc[s.key] = s; return acc; }, {}); renderSettingsForm(); } catch (e) {}
+    try {      const r = await authFetch('/api/settings'); SETTINGS_CACHE.data = (await r.json()).settings.reduce((acc, s) => { acc[s.key] = s; return acc; }, {}); renderSettingsForm(); } catch (e) {}
   }
   function openSettingsModal() {
     dom.settingsModal?.classList.add('modal--open');
@@ -2656,7 +3081,7 @@ function renderAccount(acct) {
   // Fed by GET /api/donations. Shows total + recent confirmed donations so
   // the operator can answer "como saber quem doou".
   function loadDonations() {
-    fetch('/api/donations').then(function(r) { return r.json(); }).then(function(d) {
+    authFetch('/api/donations').then(function(r) { return r.json(); }).then(function(d) {
       var box = document.getElementById('support-modal-donations');
       if (!box) return;
       var stats = document.getElementById('donations-stats');
@@ -2807,7 +3232,7 @@ function renderAccount(acct) {
       // invoice amount (parsed above) so the list shows sats, not '—'.
       if (preimage) {
         try {
-          fetch('/api/donations', {
+          authFetch('/api/donations', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ method: 'lightning', preimage: preimage, amount_sat: invAmtSat, source: 'webln' })
@@ -2875,7 +3300,7 @@ function renderAccount(acct) {
   // ── FASE 2: Fetch wallet history ──
   async function fetchWalletHistory() {
     try {
-      var resp = await fetch('/api/wallet/history');
+      var resp = await authFetch('/api/wallet/history');
       var data = await resp.json();
       if (data.success && data.history) {
         var list = document.getElementById('wallet-history-list');
@@ -2934,7 +3359,7 @@ dom.walletSave?.addEventListener('click', async () => {
     status.textContent = '⏳ connecting...';
     status.style.color = 'var(--text-tertiary)';
     try {
-      const resp = await fetch('/api/set-address', {
+      const resp = await authFetch('/api/set-address', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ address }),
@@ -2971,12 +3396,12 @@ dom.walletSave?.addEventListener('click', async () => {
       if (dom.lmSummaryWallet) {
         dom.lmSummaryWallet.textContent = fmt.shortAddr(data.address);
       }
-      // Close modal after delay
+      // Close modal after a short delay. The refresh itself is handled by
+      // the wallet-changed listener (dispatched above) — refreshUntilWalletReady
+      // — so no second retry chain is started here.
       setTimeout(() => {
         closeWalletModal();
-        // Trigger immediate re-fetch so new worker data shows up
-        fetchSnapshot();
-      }, 1200);
+      }, 300);
     } catch (e) {
       status.textContent = '⚠ network error: ' + e.message;
       status.style.color = 'var(--accent-red)';
@@ -2990,7 +3415,7 @@ dom.walletSave?.addEventListener('click', async () => {
       if (el.name) data[el.name] = el.type === 'checkbox' ? (el.checked ? '1' : '0') : el.value;
     });
     try {
-      const r = await fetch('/api/settings', {
+      const r = await authFetch('/api/settings', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(data)
@@ -3155,7 +3580,7 @@ dom.walletSave?.addEventListener('click', async () => {
   }
   async function fetchTailscale() {
     try {
-      const r = await fetch('/api/tailscale');
+      const r = await authFetch('/api/tailscale');
       if (!r.ok) throw new Error('http ' + r.status);
       const d = await r.json();
       renderTailscale(d);
@@ -3203,7 +3628,7 @@ dom.walletSave?.addEventListener('click', async () => {
   }
   async function fetchRemoteOnboarding() {
     try {
-      const r = await fetch('/api/axe-fleet/remote/onboarding');
+      const r = await authFetch('/api/axe-fleet/remote/onboarding');
       if (!r.ok) return;
       renderRemoteOnboarding(await r.json());
     } catch (e) { /* best-effort: the static checklist stays pending */ }
@@ -3494,22 +3919,306 @@ dom.walletSave?.addEventListener('click', async () => {
       });
   }
 
+  // ── AXE FLEET: LAN discovery (subnet scan) ───────────────────────────
+  // Automatic miner detection so the operator never types an IP. Flow:
+  //  1. POST /api/axe-fleet/scan {cidr}  → 202 {scan_id}
+  //  2. Poll GET /api/axe-fleet/scan/<id> every 1.5s (progress + found)
+  //  3. Render found miners as rows with a per-row ADD button that reuses
+  //     the same addAxeDevice() as the manual form.
+  function renderAxeScanResults(found) {
+    const box = dom.axeScanResults;
+    if (!box) return;
+    if (!found || !found.length) {
+      box.innerHTML = '<div style="font-size:9px;color:var(--text-tertiary)">no miners found on this subnet</div>';
+      return;
+    }
+    const rows = found.map(d => {
+      const ip = escapeHtml(d.ip || '');
+      const model = escapeHtml(d.model || 'unknown');
+      const host = escapeHtml(d.hostname || '');
+      const type = d.type === 'cgminer' ? 'CGMINER' : 'BITAXE';
+      const hr = d.hashrate_hs ? fmt.hashrate(d.hashrate_hs) : '';
+      const title = escapeHtml([d.firmware, d.version].filter(Boolean).join(' ') || 'miner');
+      return `<div class="axe-scan__row" data-ip="${ip}" style="display:flex;gap:6px;align-items:center;padding:2px 0;border-bottom:1px dashed var(--border-subtle);font-size:10px">
+        <span class="badge badge--green" style="font-size:7px;min-width:48px">${type}</span>
+        <span style="color:var(--text-primary)" title="${title}">${ip}</span>
+        <span style="color:var(--text-secondary)" title="${title}">${model}${host ? ' · ' + host : ''}</span>
+        ${hr ? `<span style="color:var(--text-tertiary)">${escapeHtml(hr)}</span>` : ''}
+        <button class="chip axe-scan-add" data-ip="${ip}" data-model="${model}" data-host="${host}" data-fw="${escapeHtml(d.firmware || '')}" data-ver="${escapeHtml(d.version || '')}" data-hr="${Number(d.hashrate_hs) || 0}" style="margin-left:auto;font-size:8px">+ ADD</button>
+      </div>`;
+    }).join('');
+    box.innerHTML = rows;
+    // Scan ADD opens the wizard's confirm step (step 3) with the detected
+    // miner pre-filled — a single place to review + name before registering.
+    box.querySelectorAll('.axe-scan-add').forEach(btn => {
+      btn.addEventListener('click', () => {
+        _axeWizState.ip = btn.getAttribute('data-ip') || '';
+        _axeWizState.mode = 'scan';
+        _axeWizState.device = {
+          protocol: btn.getAttribute('data-model') ? 'bitaxe' : '',
+          model: btn.getAttribute('data-model') || 'miner',
+          hostname: btn.getAttribute('data-host') || '',
+          firmware: btn.getAttribute('data-fw') || '',
+          version: btn.getAttribute('data-ver') || '',
+          hashrate_hs: Number(btn.getAttribute('data-hr') || 0),
+        };
+        if (dom.axeAddName) dom.axeAddName.value = btn.getAttribute('data-model') || '';
+        if (dom.axeManualNameRow) dom.axeManualNameRow.style.display = 'block';
+        renderAxeConfirm();
+        gotoAxeWizStep(3);
+      });
+    });
+  }
+
+  async function startAxeScan(cidr) {
+    const statusEl = dom.axeScanStatus;
+    const btn = dom.axeScanBtn;
+    const cidrInput = dom.axeScanCidr;
+    if (btn) btn.disabled = true;
+    if (statusEl) { statusEl.textContent = '> scanning ' + cidr + '…'; statusEl.style.color = 'var(--text-tertiary)'; }
+    try {
+      const r = await authFetch('/api/axe-fleet/scan', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ cidr })
+      });
+      const data = await r.json();
+      if (!r.ok || !data.scan_id) {
+        if (statusEl) { statusEl.textContent = '? ' + ((data && data.error) || 'scan failed'); statusEl.style.color = 'var(--accent-red)'; }
+        return;
+      }
+      const scanId = data.scan_id;
+      // Poll until done
+      for (let i = 0; i < 240; i++) {  // ~6 min cap
+        await new Promise(res => setTimeout(res, 1500));
+        try {
+          const p = await authFetch('/api/axe-fleet/scan/' + scanId);
+          const pd = await p.json();
+          const s = pd.scan || {};
+          const scanned = s.scanned || 0;
+          const total = s.total || 0;
+          if (statusEl) statusEl.textContent = `> probing ${scanned}/${total} hosts…`;
+          if (s.status === 'done' || s.status === 'error') {
+            if (statusEl) {
+              statusEl.textContent = s.error ? '? ' + s.error : `✓ ${(s.found || []).length} miner(s) found`;
+              statusEl.style.color = s.error ? 'var(--accent-red)' : 'var(--accent-green)';
+            }
+            renderAxeScanResults(s.found || []);
+            return;
+          }
+        } catch (e) { /* transient poll failure — keep polling */ }
+      }
+      if (statusEl) { statusEl.textContent = '? scan timed out'; statusEl.style.color = 'var(--accent-red)'; }
+    } catch (e) {
+      if (statusEl) { statusEl.textContent = '? network error: ' + e.message; statusEl.style.color = 'var(--accent-red)'; }
+    } finally {
+      if (btn) btn.disabled = false;
+      if (cidrInput) cidrInput.disabled = false;
+    }
+  }
+
+  function initAxeScanControls() {
+    const cidrInput = dom.axeScanCidr;
+    const btn = dom.axeScanBtn;
+    if (!cidrInput || !btn) return;
+    // Prefill with a suggested local subnet (best-effort; backend derives it
+    // from this host's interfaces).
+    authFetch('/api/axe-fleet/scan/subnets')
+      .then(r => r.ok ? r.json() : { subnets: [] })
+      .then(d => {
+        const s = (d.subnets || [])[0];
+        if (s && !cidrInput.value.trim()) cidrInput.value = s;
+      })
+      .catch(() => {});
+    btn.addEventListener('click', () => {
+      const cidr = (cidrInput.value || '').trim() || '192.168.1.0/24';
+      cidrInput.disabled = true;
+      // Clear stale results BEFORE the scan starts (a null/empty call must
+      // blank the box, not render the "no miners found" placeholder).
+      if (dom.axeScanResults) dom.axeScanResults.innerHTML = '';
+      startAxeScan(cidr);
+    });
+    cidrInput.addEventListener('keydown', e => {
+      if (e.key === 'Enter') { e.preventDefault(); btn.click(); }
+    });
+  }
+
+  // ── AXE FLEET onboarding wizard ──────────────────────────────────────
+  // 3 steps: 1 · method → 2 · connect (scan OR manual+test) → 3 · confirm.
+  // Pure helpers are mirrored in tests/test_app_js_core.js.
+
+  // Build the connectivity report rows from the /diagnose response. Pure —
+  // returns an array of {label, ok, val, detail} for rendering + tests.
+  function buildConnectivityReport(result) {
+    const r = result || {};
+    const rows = [];
+    rows.push({ label: 'DNS', ok: !!r.dns_resolution, val: r.dns_resolution ? 'OK' : 'FAIL', detail: r.dns_resolution ? '' : (r.error_detail || 'hostname did not resolve') });
+    if (r.bitaxe_http) {
+      const di = r.device_info || {};
+      rows.push({ label: 'AxeOS :80', ok: true, val: 'BITAXE', detail: [di.model, di.firmware].filter(Boolean).join(' · ') });
+    } else {
+      rows.push({ label: 'AxeOS :80', ok: false, val: 'no', detail: 'no ESP-Miner API on port 80' });
+    }
+    if (r.cgminer_tcp) {
+      const di = r.device_info || {};
+      rows.push({ label: 'cgminer :4028', ok: true, val: 'CGMINER', detail: [di.model, di.version].filter(Boolean).join(' · ') });
+    } else {
+      rows.push({ label: 'cgminer :4028', ok: false, val: 'no', detail: 'no cgminer protocol on port 4028' });
+    }
+    rows.push({ label: 'elapsed', ok: true, val: (r.elapsed_ms != null ? r.elapsed_ms + 'ms' : '—'), detail: '' });
+    return rows;
+  }
+
+  // Render the connectivity report into #axe-test-result. Pure-ish (DOM
+  // writes only) so a failed test leaves clear actionable guidance.
+  function renderConnectivityReport(result) {
+    const box = dom.axeTestResult;
+    if (!box) return;
+    const rows = buildConnectivityReport(result);
+    const reachable = !!(result || {}).reachable;
+    const proto = (result || {}).protocol;
+    const html = rows.map(row => {
+      const cls = row.ok ? 'axe-wiz-check--ok' : 'axe-wiz-check--fail';
+      const icon = row.ok ? '✓' : '✗';
+      const detail = row.detail ? `<span style="color:var(--text-tertiary);margin-left:6px">${escapeHtml(row.detail)}</span>` : '';
+      return `<div class="axe-wiz-check ${cls}"><span>${icon}</span><span class="axe-wiz-check__label">${row.label}</span><span class="axe-wiz-check__val">${escapeHtml(row.val)}</span>${detail}</div>`;
+    }).join('');
+    const verdict = reachable
+      ? `<div class="axe-wiz-check axe-wiz-check--ok" style="margin-top:4px"><span>✓</span><span class="axe-wiz-check__label">READY</span><span class="axe-wiz-check__val">${escapeHtml(String(proto || '').toUpperCase())} miner detected</span></div>`
+      : `<div class="axe-wiz-check axe-wiz-check--fail" style="margin-top:4px"><span>✗</span><span class="axe-wiz-check__label">UNREACHABLE</span><span class="axe-wiz-check__val">check power / network / firewall</span></div>`;
+    box.innerHTML = html + verdict;
+    // Reveal the optional name field only when the miner is reachable
+    if (dom.axeManualNameRow) dom.axeManualNameRow.style.display = reachable ? 'block' : 'none';
+    return reachable;
+  }
+
+  // Test connectivity for the manual-IP step. Shows a spinner, calls the
+  // backend /diagnose endpoint, renders the report, then advances to step 3
+  // when a miner is reachable.
+  async function testAxeConnectivity() {
+    const ipInput = dom.axeAddIp;
+    const btn = dom.axeTestConn;
+    const box = dom.axeTestResult;
+    if (!ipInput || !btn) return false;
+    const ip = (ipInput.value || '').trim();
+    if (!ip) {
+      if (box) box.innerHTML = '<div class="axe-wiz-check axe-wiz-check--fail"><span>✗</span><span class="axe-wiz-check__label">INPUT</span><span class="axe-wiz-check__val">enter an IP or hostname</span></div>';
+      return false;
+    }
+    const prev = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = '… testing';
+    if (box) box.innerHTML = '<div class="axe-wiz-check axe-wiz-check--idle"><span class="axe-wiz__spinner"></span><span class="axe-wiz-check__label">PROBING</span><span class="axe-wiz-check__val">' + escapeHtml(ip) + '</span></div>';
+    try {
+      const r = await authFetch('/api/axe-fleet/diagnose/' + encodeURIComponent(ip));
+      const data = await r.json();
+      const reachable = renderConnectivityReport(data);
+      if (reachable) {
+        // Advance to confirm step with the detected device. Carry the
+        // protocol from the diagnose response (top-level) into device so
+        // the confirm summary can display it.
+        _axeWizState.device = Object.assign({}, (data && data.device_info) || {}, { protocol: data && data.protocol });
+        _axeWizState.ip = ip;
+        gotoAxeWizStep(3);
+        return true;
+      }
+      return false;
+    } catch (e) {
+      if (box) box.innerHTML = '<div class="axe-wiz-check axe-wiz-check--fail"><span>✗</span><span class="axe-wiz-check__label">ERROR</span><span class="axe-wiz-check__val">' + escapeHtml(e.message) + '</span></div>';
+      return false;
+    } finally {
+      btn.disabled = false;
+      btn.textContent = prev;
+    }
+  }
+
+  const _axeWizState = { ip: '', name: '', device: null, mode: null };
+
+  function gotoAxeWizStep(step) {
+    const form = dom.axeAddForm;
+    if (!form) return;
+    step = Math.max(1, Math.min(3, step));
+    // Panels: data-wiz-panel="1|2|3" — show matching, hide others
+    form.querySelectorAll('[data-wiz-panel]').forEach(p => {
+      p.style.display = (Number(p.getAttribute('data-wiz-panel')) === step) ? 'block' : 'none';
+    });
+    // Within step 2, choose scan vs manual mode
+    if (step === 2) {
+      form.querySelectorAll('[data-wiz-panel][data-wiz-mode]').forEach(p => {
+        const on = p.getAttribute('data-wiz-mode') === (_axeWizState.mode || 'scan');
+        p.style.display = on ? 'block' : 'none';
+      });
+    }
+    // Step indicator
+    if (dom.axeWizSteps) {
+      dom.axeWizSteps.querySelectorAll('[data-wiz-step]').forEach(s => {
+        const n = Number(s.getAttribute('data-wiz-step'));
+        s.classList.toggle('is-active', n === step);
+        s.classList.toggle('is-done', n < step);
+      });
+    }
+    // Focus primary input of the active panel
+    if (step === 1 && dom.axeEmptyAdd) dom.axeEmptyAdd.blur();
+    if (step === 2 && _axeWizState.mode === 'manual') { setTimeout(() => dom.axeAddIp?.focus(), 60); }
+    if (step === 2 && _axeWizState.mode !== 'manual') { setTimeout(() => dom.axeScanCidr?.focus(), 60); }
+    if (step === 3) { setTimeout(() => dom.axeAddName?.focus(), 60); }
+  }
+
+  function setAxeWizMode(mode) {
+    _axeWizState.mode = mode === 'manual' ? 'manual' : 'scan';
+    gotoAxeWizStep(2);
+  }
+
+  function resetAxeWizard() {
+    _axeWizState.ip = '';
+    _axeWizState.name = '';
+    _axeWizState.device = null;
+    if (dom.axeTestResult) dom.axeTestResult.innerHTML = '';
+    if (dom.axeManualNameRow) dom.axeManualNameRow.style.display = 'none';
+    if (dom.axeWizConfirm) dom.axeWizConfirm.innerHTML = '';
+    if (dom.axeScanResults) dom.axeScanResults.innerHTML = '';
+    if (dom.axeScanStatus) dom.axeScanStatus.textContent = '';
+    if (dom.axeAddStatus) dom.axeAddStatus.textContent = '';
+  }
+
+  // Render the detected device summary in the confirm step.
+  function renderAxeConfirm() {
+    const box = dom.axeWizConfirm;
+    if (!box) return;
+    const d = _axeWizState.device || {};
+    const proto = d.protocol || (_axeWizState.mode === 'manual' ? 'manual' : '');
+    const rows = [
+      ['IP', _axeWizState.ip],
+      ['model', d.model || '—'],
+      ['hostname', d.hostname || '—'],
+      ['firmware', [d.firmware, d.version].filter(Boolean).join(' ') || '—'],
+      ['hashrate', d.hashrate_hs ? fmt.hashrate(d.hashrate_hs) : '—'],
+    ].map(([k, v]) => `<div style="display:flex;gap:6px"><span style="color:var(--text-tertiary);min-width:64px">${k}</span><span style="color:var(--text-primary)">${escapeHtml(String(v))}</span></div>`).join('');
+    box.innerHTML = `<div class="axe-wiz__confirm-title">✓ ready to add</div>${rows}`;
+  }
+
   function initAxeFleetControls() {
-    const addBtn = document.getElementById('axe-fleet-add');
-    const form = document.getElementById('axe-add-form');
+    const addBtn = dom.axeFleetAdd || document.getElementById('axe-fleet-add');
+    const form = dom.axeAddForm || document.getElementById('axe-add-form');
     const cancelBtn = document.getElementById('axe-add-cancel');
     const saveBtn = document.getElementById('axe-add-save');
     const ipInput = document.getElementById('axe-add-ip');
     const nameInput = document.getElementById('axe-add-name');
     const statusEl = document.getElementById('axe-add-status');
+    const emptyAdd = dom.axeEmptyAdd || document.getElementById('axe-empty-add');
     if (!addBtn || !form) return;
 
-    addBtn.addEventListener('click', () => {
+    const openWizard = () => {
+      resetAxeWizard();
       form.style.display = 'block';
-      setTimeout(() => ipInput?.focus(), 100);
-    });
+      gotoAxeWizStep(1);
+    };
+
+    addBtn.addEventListener('click', openWizard);
+    emptyAdd?.addEventListener('click', openWizard);
     cancelBtn?.addEventListener('click', () => {
       form.style.display = 'none';
+      resetAxeWizard();
       if (statusEl) statusEl.textContent = '';
       if (ipInput) ipInput.value = '';
       if (nameInput) nameInput.value = '';
@@ -3521,28 +4230,62 @@ dom.walletSave?.addEventListener('click', async () => {
         if (dom.axeDetail) dom.axeDetail.style.display = 'none';
       });
     }
+
+    // Step 1 method cards
+    form.querySelectorAll('[data-wiz-method]').forEach(m => {
+      m.addEventListener('click', () => setAxeWizMode(m.getAttribute('data-wiz-method')));
+    });
+    // Back buttons (data-wiz-back="1|2")
+    form.querySelectorAll('[data-wiz-back]').forEach(b => {
+      b.addEventListener('click', () => gotoAxeWizStep(Number(b.getAttribute('data-wiz-back'))));
+    });
+
+    // Manual: test connectivity
+    dom.axeTestConn?.addEventListener('click', testAxeConnectivity);
+    ipInput?.addEventListener('keydown', e => {
+      if (e.key === 'Enter') { e.preventDefault(); testAxeConnectivity(); }
+    });
+
     saveBtn?.addEventListener('click', async () => {
-      if (!statusEl || !ipInput) return;
-      const ip = ipInput.value.trim();
-      if (!ip) { statusEl.textContent = '? enter IP address'; statusEl.style.color = 'var(--accent-red)'; return; }
-      statusEl.textContent = '> connecting...';
-      statusEl.style.color = 'var(--text-tertiary)';
-      try {
-        const r = await authFetch('/api/axe-fleet/devices', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ ip_address: ip, name: nameInput?.value?.trim() || '' })
-        });
-        const data = await r.json();
-        if (!r.ok) { statusEl.textContent = '? ' + (data.error || 'failed'); statusEl.style.color = 'var(--accent-red)'; return; }
-        statusEl.textContent = '? added — refreshing...';
-        statusEl.style.color = 'var(--accent-green)';
-        setTimeout(() => { form.style.display = 'none'; if (ipInput) ipInput.value = ''; if (nameInput) nameInput.value = ''; statusEl.textContent = ''; fetchAxeFleet(); }, 1500);
-      } catch (e) {
-        statusEl.textContent = '? network error: ' + e.message;
-        statusEl.style.color = 'var(--accent-red)';
+      const ip = (_axeWizState.ip || ipInput?.value || '').trim();
+      if (!ip) { if (statusEl) { statusEl.textContent = '? enter IP address'; statusEl.style.color = 'var(--accent-red)'; } gotoAxeWizStep(1); return; }
+      const name = (nameInput?.value || '').trim();
+      if (statusEl) { statusEl.textContent = '> connecting...'; statusEl.style.color = 'var(--text-tertiary)'; }
+      const ok = await addAxeDevice(ip, name);
+      if (statusEl) {
+        statusEl.textContent = ok ? '? added — refreshing...' : '? failed — see console';
+        statusEl.style.color = ok ? 'var(--accent-green)' : 'var(--accent-red)';
+      }
+      if (ok) {
+        setTimeout(() => {
+          form.style.display = 'none';
+          resetAxeWizard();
+          if (ipInput) ipInput.value = '';
+          if (nameInput) nameInput.value = '';
+          if (statusEl) statusEl.textContent = '';
+          fetchAxeFleet();
+        }, 1500);
       }
     });
+
+    initAxeScanControls();
+  }
+
+  // Shared device-add helper (used by the manual form + scan ADD buttons).
+  // Returns true on success.
+  async function addAxeDevice(ip, name) {
+    if (!ip) return false;
+    try {
+      const r = await authFetch('/api/axe-fleet/devices', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ip_address: ip, name: name || '' })
+      });
+      const data = await r.json();
+      return r.ok;
+    } catch (e) {
+      return false;
+    }
   }
 
   // ══════════════════════════════════════════════════════════════════════
@@ -3593,7 +4336,14 @@ dom.walletSave?.addEventListener('click', async () => {
     color: Math.random() < 0.6 ? 'cyan' : (Math.random() < 0.7 ? 'green' : 'gold'), size: 0.5 + Math.random() * 2,
   });
 
-  _hunt.loop = () => { if (!_hunt.running) return; _hunt.frameCount++; const dt = Math.min(0.05, 1/60); _hunt.update(dt); _hunt.draw(); _hunt.rafId = requestAnimationFrame(_hunt.loop); };
+  _hunt.loop = () => {
+    if (!_hunt.running) return;
+    // CFO quick-win: skip update/draw while the tab is hidden — the rAF
+    // loop stays alive (resumes instantly on focus) but does ZERO canvas
+    // work in the background, saving CPU/battery. Same pattern as Matrix rain.
+    if (document.hidden) { _hunt.rafId = requestAnimationFrame(_hunt.loop); return; }
+    _hunt.frameCount++; const dt = Math.min(0.05, 1/60); _hunt.update(dt); _hunt.draw(); _hunt.rafId = requestAnimationFrame(_hunt.loop);
+  };
 
   _hunt.update = (dt) => {
     const { particles, w, h, targetY, hr } = _hunt; if (!w) return;
@@ -4142,7 +4892,8 @@ dom.walletSave?.addEventListener('click', async () => {
 
   // ── Boot ──
   async function boot() {
-    initMatrix(); initCharts(); bindChartRanges(); loadSettings(); initMarketControls();
+    initMatrix(); initCharts(); bindChartRanges(); loadSettings(); initMarketControls(); initDecisionMatrixControls(); initCommandCenterControls();
+    initLicensing();  // R1: PRO badge + license state (off-by-default, no-op in open mode)
     fetchTailscale();
     if (typeof fetchRemoteOnboarding === 'function') fetchRemoteOnboarding();
     updateClock(); setInterval(updateClock, 1000);
@@ -4538,6 +5289,17 @@ dom.walletSave?.addEventListener('click', async () => {
     });
   });
 
+  // P0-1: CTA do histograma de Share Difficulty → Probability (solo stats).
+  // Live Mining alimenta a previsão — um clique leva ao cálculo já carregado.
+  const shareDistGotoProb = document.getElementById('share-dist-goto-prob');
+  if (shareDistGotoProb) {
+    shareDistGotoProb.addEventListener('click', function() {
+      activateModule('probability');
+      const solo = document.getElementById('solo-stats-panel');
+      if (solo) solo.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+  }
+
   // Restore active module from localStorage on boot
   (function restoreActiveModule() {
     try {
@@ -4560,18 +5322,58 @@ dom.walletSave?.addEventListener('click', async () => {
   }
 
 
-  // ── HOTFIX: Immediate fetch on wallet connect ──
+  // ── Wallet-refresh gate (pure, mirrored in tests) ──
+  // A snapshot is "fresh for the new wallet" when it carries the new address
+  // AND has been re-polled (ts > 0). /api/set-address resets the snapshot
+  // (ts=0) and forces a background poll; a brand-new wallet legitimately has
+  // worker=null (pool returns 0 — a valid response, not an error), so ts is
+  // the reliable "poll landed" signal — not worker presence.
+  function snapshotFreshForWallet(snap, address) {
+    return !!(snap &&
+      String(snap.btc_address || '').toLowerCase() === String(address || '').toLowerCase() &&
+      snap.ts > 0);
+  }
+
+  // ── HOTFIX v2: deterministic refresh after wallet connect ──
+  // A fixed-delay fetch (1.2s) can race a slow pool API and render the
+  // still-empty snapshot (ts=0), leaving the dashboard blank until the next
+  // poll. The forced poll (set-address → poll_once) runs many external
+  // fetches and only stamps ts at the END, so it can take 10-30s. Retry
+  // every 1.5s for up to ~30s until the snapshot carries the new address
+  // AND ts>0, so the dashboard lights up the moment real data lands. Give
+  // up after the budget and render whatever exists — honest: the wallet IS
+  // connected; data will arrive on the next scheduled poll.
+  //
+  // Generation guard: _walletRefreshTarget holds the LATEST wallet the user
+  // asked to refresh. A retry chain that started for an older wallet stops
+  // silently on its next tick (rapid A→B switching must never let the A
+  // chain render B's data or a stale reset state). Only the newest chain
+  // renders.
+  var _walletRefreshTarget = '';
+  function refreshUntilWalletReady(address, attempt) {
+    _walletRefreshTarget = address;
+    attempt = attempt || 0;
+    fetch('/api/snapshot')
+      .then(function(r) { return r.json(); })
+      .then(function(snap) {
+        // A newer wallet was connected — this chain is obsolete, stop now.
+        if (address !== _walletRefreshTarget) return;
+        if (snapshotFreshForWallet(snap, address)) {
+          render(snap);
+          return;
+        }
+        if (attempt < 20) {
+          setTimeout(function() { refreshUntilWalletReady(address, attempt + 1); }, 1500);
+        } else if (snap) {
+          render(snap);
+        }
+      })
+      .catch(function(err) { console.warn('[wallet-changed] refresh error:', err); });
+  }
+
   window.addEventListener('wallet-changed', function(e) {
     var addr = e.detail && e.detail.address;
-    if (addr) {
-      // Force immediate snapshot refresh — render ALL panels, not just Raio X
-      fetch('/api/snapshot')
-        .then(function(r) { return r.json(); })
-        .then(function(snap) {
-          render(snap);
-        })
-        .catch(function(err) { console.warn('[wallet-changed] fetch error:', err); });
-    }
+    if (addr) refreshUntilWalletReady(addr);
   });
   // The IIFE continues below — do NOT close it here!
 
@@ -4766,7 +5568,13 @@ dom.walletSave?.addEventListener('click', async () => {
       DashboardCore.renderSnapshot(snap);
       renderKpiCards(snap);
     };
-  })();
+
+    // NOTE (dom-scope fix): the main IIFE opened at the top of this file must
+    // close at the very END of the file. Previously a stray `})();` here closed
+    // the IIFE early, pushing renderKpiCards() and everything below into GLOBAL
+    // scope where `dom` (a const inside the IIFE) does not exist — every render
+    // threw "ReferenceError: dom is not defined" (throttled to ~5/min in the
+    // LIVE LOG). The IIFE now continues to the file's last line.
 
   // ── Sidebar collapse toggle ──
   document.getElementById('sidebar-collapse')?.addEventListener('click', function() {
@@ -4906,3 +5714,8 @@ dom.walletSave?.addEventListener('click', async () => {
       }
     }
   }
+
+  // ── Close the main IIFE (opened at the top of the file) ──
+  // The renderKpiCards() helper and every handler above live INSIDE this scope
+  // so `dom`, `fmt`, etc. resolve correctly. Do not add code after this line.
+})();

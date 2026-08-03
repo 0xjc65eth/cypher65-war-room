@@ -3,12 +3,19 @@
 # ═══════════════════════════════════════════════════════════════════════
 # Deploy:  push to GitHub → Render → New Blueprint → select the repo.
 #
-# ⚠️ CRITICAL — do NOT switch the start command to gunicorn:
+# ⚠️ CRITICAL — do NOT switch the start command to gunicorn by itself:
 #   _start_background_threads() (poll loop + hash-market warmup + donation
-#   watcher) is deliberately gated behind `if __name__ == "__main__"` in
-#   app.py. `python app.py` is the ONLY start command that boots the
-#   background workers. gunicorn app:app would serve HTTP with NO polling —
-#   the dashboard would stay blank forever.
+#   watcher + auto-backup) is deliberately gated behind
+#   `if __name__ == "__main__"` in app.py. `python app.py` boots the
+#   background workers AND serves HTTP. `gunicorn app:app` ALONE would serve
+#   HTTP with NO polling — the dashboard would stay blank forever.
+#
+#   Multi-process option (services/workers.py): run the workers in a SEPARATE
+#   process — `python -m services.workers` — alongside a gunicorn HTTP
+#   process. NOTE: /api/stream (SSE live-push) fans out in-process only, so
+#   in a two-process topology the dashboard relies on its 15s poll fallback
+#   for fresh data (fine for telemetry). Prefer `python app.py` on the free
+#   tier.
 #
 # ⚠️ SQLite persistence:
 #   - FREE tier: filesystem is EPHEMERAL — data/war_room.sqlite is wiped on

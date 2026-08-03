@@ -1,14 +1,55 @@
-import React from 'react';
-import { View, Text, StyleSheet, ScrollView, RefreshControl } from 'react-native';
+import React, { useEffect, useState } from 'react';
+import {
+  View,
+  Text,
+  StyleSheet,
+  ScrollView,
+  RefreshControl,
+  TouchableOpacity,
+} from 'react-native';
+import { useNavigation } from '@react-navigation/native';
+import type { BottomTabNavigationProp } from '@react-navigation/bottom-tabs';
 import { MetricCard } from '../../components/MetricCard';
 import { StatusBadge } from '../../components/StatusBadge';
+import { ShareDistChart } from '../../components/ShareDistChart';
 import { useSnapshot } from '../../hooks/useSnapshot';
 import { useAppStore } from '../../store';
+import { fetchShareDist } from '../../api/client';
+import type { ShareDistData } from '../../types';
+import type { RootTabParamList } from '../../types/navigation';
 import { formatDistance } from 'date-fns';
 
 export const CommandScreen = () => {
   const { snapshot, refreshing, refresh } = useSnapshot();
   const { alerts } = useAppStore();
+  const navigation = useNavigation<BottomTabNavigationProp<RootTabParamList>>();
+
+  // Live Mining → Probability parity (P0-1): share-difficulty histogram with
+  // the network target overlay + CTA into the Block (probability) tab.
+  const [dist, setDist] = useState<ShareDistData | null>(null);
+  const [distLoading, setDistLoading] = useState(false);
+  const [distError, setDistError] = useState<string | null>(null);
+
+  const loadDist = async () => {
+    setDistLoading(true);
+    setDistError(null);
+    try {
+      setDist(await fetchShareDist('1h'));
+    } catch (err) {
+      setDistError((err as Error).message);
+    } finally {
+      setDistLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    loadDist();
+  }, []);
+
+  const onRefresh = async () => {
+    await refresh();
+    loadDist();
+  };
 
   const worker = (snapshot?.worker as Record<string, unknown>) || {};
   const pool = (snapshot?.pool as Record<string, unknown>) || {};
@@ -25,7 +66,7 @@ export const CommandScreen = () => {
   return (
     <ScrollView
       style={styles.container}
-      refreshControl={<RefreshControl refreshing={refreshing} onRefresh={refresh} tintColor="#38bdf8" />}
+      refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#38bdf8" />}
     >
       <Text style={styles.heading}>Command Center</Text>
       <Text style={styles.updated}>
@@ -39,6 +80,18 @@ export const CommandScreen = () => {
         <MetricCard title="Workers" value={workers} />
         <MetricCard title="Net Difficulty" value={netDiff > 0 ? netDiff.toExponential(2) : '—'} />
         <MetricCard title="Block Height" value={height || '—'} />
+      </View>
+
+      <Text style={styles.sectionTitle}>Share Difficulty</Text>
+      <View style={styles.sharePanel}>
+        <ShareDistChart data={dist} loading={distLoading} error={distError} />
+        <TouchableOpacity
+          style={styles.cta}
+          onPress={() => navigation.navigate('Block')}
+          accessibilityRole="button"
+        >
+          <Text style={styles.ctaText}>⚡ P(block) → Probability</Text>
+        </TouchableOpacity>
       </View>
 
       <Text style={styles.sectionTitle}>Recent Alerts</Text>
@@ -99,5 +152,24 @@ const styles = StyleSheet.create({
   empty: {
     color: '#64748b',
     fontStyle: 'italic',
+  },
+  sharePanel: {
+    backgroundColor: '#111827',
+    borderRadius: 8,
+    padding: 12,
+    marginBottom: 8,
+  },
+  cta: {
+    borderWidth: 1,
+    borderColor: '#a855f7',
+    borderRadius: 8,
+    paddingVertical: 10,
+    alignItems: 'center',
+    marginTop: 10,
+  },
+  ctaText: {
+    color: '#a855f7',
+    fontSize: 13,
+    fontWeight: '700',
   },
 });

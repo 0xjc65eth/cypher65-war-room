@@ -108,7 +108,7 @@ def _fetch_global_pool() -> dict:
     return data
 
 
-def _fetch_global_leaderboard(limit: int = 30) -> list:
+def _fetch_global_leaderboard(limit: int = 100) -> list:
     """Leaderboard — cached globally."""
     cached = _get_global("leaderboard")
     if cached is not None:
@@ -197,7 +197,7 @@ def _fetch_global_btc_price() -> dict:
 
     quote = _fetch_json(
         "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&"
-        "vs_currencies=usd,brl,eur,gbp",
+        "vs_currencies=usd,brl,eur,gbp,jpy,krw,cny",
         timeout=6
     )
     if isinstance(quote, dict) and quote.get("bitcoin"):
@@ -257,7 +257,8 @@ def _build_snapshot(address: str, worker_name: str) -> dict:
         "leaderboard_total": 0,
         "highest_diffs": [],
         "network": {"height": None, "difficulty": None, "hashrate": None, "stale": False},
-        "btc_price": {"usd": None, "brl": None, "eur": None, "gbp": None, "stale": False},
+        "btc_price": {"usd": None, "brl": None, "eur": None, "gbp": None,
+                      "jpy": None, "krw": None, "cny": None, "stale": False},
         "luck_estimate": {},
         "halving": {},
         "mempool_fees": {},
@@ -282,7 +283,7 @@ def _build_snapshot(address: str, worker_name: str) -> dict:
 
         # ── Fetch global data ──
         pool = _fetch_global_pool()
-        leaderboard = _fetch_global_leaderboard(30)
+        leaderboard = _fetch_global_leaderboard(100)
         highest = _fetch_global_highest_diffs(address, 20)
         height, difficulty, hashrate = _fetch_global_network()
         btc_quote = _fetch_global_btc_price()
@@ -293,6 +294,9 @@ def _build_snapshot(address: str, worker_name: str) -> dict:
         btc_brl = (btc_quote or {}).get("bitcoin", {}).get("brl")
         btc_eur = (btc_quote or {}).get("bitcoin", {}).get("eur")
         btc_gbp = (btc_quote or {}).get("bitcoin", {}).get("gbp")
+        btc_jpy = (btc_quote or {}).get("bitcoin", {}).get("jpy")
+        btc_krw = (btc_quote or {}).get("bitcoin", {}).get("krw")
+        btc_cny = (btc_quote or {}).get("bitcoin", {}).get("cny")
 
         # ── Pool state ──
         pool_stale = False
@@ -312,6 +316,7 @@ def _build_snapshot(address: str, worker_name: str) -> dict:
         btc_price_data = {
             "usd": btc_usd, "brl": btc_brl,
             "eur": btc_eur, "gbp": btc_gbp,
+            "jpy": btc_jpy, "krw": btc_krw, "cny": btc_cny,
             "stale": False,
         }
 

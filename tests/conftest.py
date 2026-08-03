@@ -5,9 +5,26 @@ Shared mock utilities for unit-testing app.py persistence functions.
 """
 
 import logging
+import os
+import tempfile
 
 # Silence noisy loggers during tests
 logging.disable(logging.CRITICAL)
+
+# ── C4 // HERMETIC SUITE ────────────────────────────────────────────────────
+# Never touch the production data/war_room.sqlite. The recurring index
+# corruption (idx_maintenance_records_ts / idx_audit_logs_tenant_ts) was
+# caused by TWO WRITERS on the same file: the Docker/Colima app writing via
+# its volume mount, and pytest's `import app` — which runs init_db() +
+# _core_registry.load_from_db() at module scope in ~20 test files — hitting
+# the real DB from the host.
+#
+# Redirect the env var BEFORE any test module imports `app` (conftest is
+# imported first by pytest, so the scratch path is in effect for every
+# module-level `import app`). Per-test DB_PATH overrides still win where a
+# test needs its own scratch DB via monkeypatch.setenv.
+_SCRATCH_DIR = tempfile.mkdtemp(prefix="cypher65_tests_")
+os.environ["DB_PATH"] = os.path.join(_SCRATCH_DIR, "war_room.sqlite")
 
 
 class MockRow:

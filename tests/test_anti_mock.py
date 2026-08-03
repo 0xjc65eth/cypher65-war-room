@@ -86,3 +86,17 @@ def test_snapshot_carries_stale_flags():
     assert "stale" in built.get("btc_price", {}), "poll-built snapshot lost btc_price.stale"
     assert built["network"]["stale"] is False
     assert built["btc_price"]["stale"] is False
+
+
+def test_gzip_compression_enabled():
+    """CFO quick-win: flask-compress is wired into the app, so responses are
+    gzip-encoded when the client sends Accept-Encoding: gzip. Locks the
+    behavior against a future refactor silently removing the Compress(app)
+    init."""
+    app.config["TESTING"] = True
+    with app.test_client() as c:
+        r = c.get("/", headers={"Accept-Encoding": "gzip"})
+        assert r.status_code == 200
+        assert r.headers.get("Content-Encoding") == "gzip", (
+            "gzip not applied — Compress(app) missing or misconfigured"
+        )

@@ -8,7 +8,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
-<link rel="stylesheet" href="/static/style.css?v38">
+<link rel="stylesheet" href="/static/style.css?v39">
 <link rel="icon" href="/static/favicon.ico" sizes="any">
 <link rel="icon" type="image/png" sizes="32x32" href="/static/icon-32x32.png">
 <link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
@@ -100,6 +100,7 @@
     <div class="topbar__brand-group">
       <span class="topbar__brand">CYPHER65</span>
       <span class="topbar__brand-sub" id="topbar-address">—</span>
+      <span class="topbar__pro-badge" id="topbar-pro-badge" title="" hidden></span>
     </div>
     <div class="topbar__status-group">
       <span class="topbar__led" id="tbar-led"></span>
@@ -391,6 +392,23 @@
      ══════════════════════════════════════════════════════════════════════ -->
 <main class="grid">
 
+<!-- ── COMMAND CENTER (P0-3) — 3 ações contextuais ── -->
+<section class="panel panel--command-center panel--large" id="command-center-panel" data-module="dashboard">
+  <div class="panel__header">
+    <div class="panel__eyebrow">⌘ COMMAND CENTER · O QUE FAZER AGORA?</div>
+    <div class="panel__tools">
+      <span class="badge badge--mute" id="cc-status-badge">—</span>
+    </div>
+  </div>
+  <div class="cc-grid" id="cc-grid">
+    <div class="empty-state" style="grid-column:1/-1;border:none;padding:10px">
+      <div class="empty-state__icon">⌘</div>
+      <div class="empty-state__title">No contextual actions</div>
+      <div class="empty-state__desc">Action cards appear when the dashboard detects something worth your attention — an offline worker, a proximity streak, or a capital-allocation signal.</div>
+    </div>
+  </div>
+</section>
+
 <!-- ── POOL OVERVIEW ── -->
 <section class="panel panel--large panel--collapsible" id="pool-overview" data-module="dashboard">
   <div class="panel__header">
@@ -445,6 +463,9 @@
     <div class="stat"><div class="stat__label">BRL</div><div class="stat__val" id="n-btc-brl">—</div></div>
     <div class="stat"><div class="stat__label">EUR</div><div class="stat__val stat__val--gold" id="n-btc-eur">—</div></div>
     <div class="stat"><div class="stat__label">GBP</div><div class="stat__val" id="n-btc-gbp">—</div></div>
+    <div class="stat"><div class="stat__label">JPY</div><div class="stat__val" id="n-btc-jpy">—</div></div>
+    <div class="stat"><div class="stat__label">KRW</div><div class="stat__val" id="n-btc-krw">—</div></div>
+    <div class="stat"><div class="stat__label">CNY</div><div class="stat__val" id="n-btc-cny">—</div></div>
   </div>
 </section>
 
@@ -631,6 +652,39 @@
   <div class="mkt-footnote" id="mkt-footnote">Prices are estimates. Verify on each platform.</div>
 </section>
 
+<!-- ─── DECISION MATRIX (P0-2) — solo vs pool vs lease ─── -->
+<section class="panel panel--decision panel--large" id="decision-matrix-panel" data-module="market">
+  <div class="panel__header">
+    <div class="panel__eyebrow">◈ DECISION MATRIX · ONDE SEU HASHRATE RENDE MAIS?</div>
+    <div class="panel__tools">
+      <span class="badge badge--purple" id="dm-best-badge">—</span>
+      <span class="badge badge--mute" id="dm-breakeven">break-even —</span>
+    </div>
+  </div>
+  <div class="dm-grid">
+    <div class="dm-card dm-card--pool">
+      <div class="dm-card__title">POOL</div>
+      <div class="dm-card__value" id="dm-pool-usd">—</div>
+      <div class="dm-card__sub">net USD/dia (pool mining)</div>
+    </div>
+    <div class="dm-card dm-card--solo">
+      <div class="dm-card__title">SOLO</div>
+      <div class="dm-card__value" id="dm-solo-time">—</div>
+      <div class="dm-card__sub" id="dm-solo-sub">tempo esperado até bloco</div>
+    </div>
+    <div class="dm-card dm-card--lease">
+      <div class="dm-card__title">LEASE</div>
+      <div class="dm-card__value" id="dm-lease-usd">—</div>
+      <div class="dm-card__sub">net USD/dia (alugar hashrate)</div>
+    </div>
+  </div>
+  <div class="dm-reco" id="dm-reco">Conecte a wallet para comparar estratégias.</div>
+  <div class="dm-actions">
+    <button class="chip" id="dm-goto-offers" title="Ver a melhor oferta do mercado">⚡ BEST OFFER</button>
+    <button class="chip chip--affiliate" id="dm-buy-affiliate" title="Comprar hashrate em um clique (link de afiliado)" hidden>⚡ BUY</button>
+  </div>
+</section>
+
 <!-- ─── AI OPERATOR ─── -->
 <section class="panel panel--ai-operator panel--large" id="ai-operator-panel" data-module="automations">
   <div class="panel__header">
@@ -703,12 +757,74 @@
       </div>
     </div>
   </div>
+  <!-- ── AXE FLEET onboarding wizard (3 steps) ──
+       1 · method   (auto scan vs manual IP)
+       2 · connect  (scan progress OR connectivity test)
+       3 · confirm  (review detected miner + ADD)
+       All legacy ids (axe-add-*, axe-scan-*) kept so existing controls/tests
+       that reference them keep working. -->
   <div class="axe-fleet__add-form" id="axe-add-form" style="display:none">
-    <input class="field__input" type="text" id="axe-add-ip" placeholder="192.168.1.x" style="width:140px">
-    <input class="field__input" type="text" id="axe-add-name" placeholder="miner name" style="width:120px">
-    <button class="btn" id="axe-add-save">SAVE</button>
-    <button class="btn" id="axe-add-cancel">X</button>
-    <span id="axe-add-status" style="font-size:9px;color:var(--text-tertiary)"></span>
+    <!-- Wizard header: steps + always-visible close -->
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
+      <div class="axe-wiz__steps" id="axe-wiz-steps">
+        <span class="axe-wiz__step is-active" data-wiz-step="1"><span class="axe-wiz__num">1</span> method</span>
+        <span class="axe-wiz__step" data-wiz-step="2"><span class="axe-wiz__num">2</span> connect</span>
+        <span class="axe-wiz__step" data-wiz-step="3"><span class="axe-wiz__num">3</span> confirm</span>
+      </div>
+      <button class="btn" id="axe-add-cancel" title="close wizard" style="padding:1px 7px;font-size:10px">✕</button>
+    </div>
+
+    <!-- STEP 1 · method choice -->
+    <div class="axe-wiz__panel" data-wiz-panel="1">
+      <div class="axe-wiz__methods">
+        <button type="button" class="axe-wiz__method" data-wiz-method="scan">
+          <span class="axe-wiz__method-icon">🔍</span>
+          <span class="axe-wiz__method-title">Scan network</span>
+          <span class="axe-wiz__method-desc">Auto-detect miners on your LAN subnet</span>
+        </button>
+        <button type="button" class="axe-wiz__method" data-wiz-method="manual">
+          <span class="axe-wiz__method-icon">⌨️</span>
+          <span class="axe-wiz__method-title">Enter IP manually</span>
+          <span class="axe-wiz__method-desc">Test connectivity and register a single miner</span>
+        </button>
+      </div>
+    </div>
+
+    <!-- STEP 2 · scan (auto-discovery) -->
+    <div class="axe-wiz__panel" data-wiz-panel="2" data-wiz-mode="scan" style="display:none">
+      <div class="axe-scan">
+        <div class="axe-scan__row" style="display:flex;gap:4px;align-items:center;flex-wrap:wrap">
+          <input class="field__input" type="text" id="axe-scan-cidr" placeholder="192.168.1.0/24" style="width:120px" title="Subnet to scan (CIDR, range or single IP)">
+          <button class="btn btn--mini" id="axe-scan-btn">🔍 SCAN LAN</button>
+          <button type="button" class="btn btn--mini axe-wiz__back" data-wiz-back="1">← method</button>
+          <span id="axe-scan-status" style="font-size:9px;color:var(--text-tertiary)"></span>
+        </div>
+        <div class="axe-scan__results" id="axe-scan-results" style="margin-top:4px"></div>
+      </div>
+    </div>
+
+    <!-- STEP 2 · manual IP + connectivity test -->
+    <div class="axe-wiz__panel" data-wiz-panel="2" data-wiz-mode="manual" style="display:none">
+      <div class="axe-wiz__manual" style="display:flex;gap:4px;align-items:center;flex-wrap:wrap">
+        <input class="field__input" type="text" id="axe-add-ip" placeholder="192.168.1.x" style="width:120px" autocomplete="off" spellcheck="false">
+        <button type="button" class="btn btn--mini" id="axe-test-conn">🔌 TEST CONNECTIVITY</button>
+        <button type="button" class="btn btn--mini axe-wiz__back" data-wiz-back="1">← method</button>
+      </div>
+      <div class="axe-wiz__test" id="axe-test-result" style="margin-top:6px"></div>
+      <div class="axe-wiz__manual-name" style="margin-top:6px;display:none" id="axe-manual-name-row">
+        <input class="field__input" type="text" id="axe-add-name" placeholder="miner name (optional)" style="width:180px">
+      </div>
+    </div>
+
+    <!-- STEP 3 · confirm & add -->
+    <div class="axe-wiz__panel" data-wiz-panel="3" style="display:none">
+      <div class="axe-wiz__confirm" id="axe-wiz-confirm"></div>
+      <div style="display:flex;gap:4px;align-items:center;margin-top:6px">
+        <button class="btn" id="axe-add-save">✓ ADD DEVICE</button>
+        <button type="button" class="btn btn--mini axe-wiz__back" data-wiz-back="2">← back</button>
+      </div>
+      <span id="axe-add-status" style="font-size:9px;color:var(--text-tertiary);display:block;margin-top:4px"></span>
+    </div>
   </div>
   <div id="axe-detail" style="display:none;margin-top:6px;padding:6px;border:1px solid var(--border-subtle)">
     <div style="display:flex;justify-content:space-between">
@@ -1113,7 +1229,11 @@
 <section class="panel panel--chart panel--large" id="chart-share-dist-panel" data-module="probability">
   <div class="panel__header">
     <div class="panel__eyebrow">▦ SHARE DIFFICULTY DISTRIBUTION</div>
-    <div class="panel__tools"><span class="badge badge--mute" id="share-dist-count-badge">0 shares</span></div>
+    <div class="panel__tools">
+      <span class="badge badge--mute" id="share-dist-count-badge">0 shares</span>
+      <span class="badge badge--purple" id="share-dist-target-badge" title="Network target difficulty — quão longe seus shares estão da difficulty de bloco">target —</span>
+      <button class="chip" id="share-dist-goto-prob" title="Ver chance de bloco agora com este hashrate">⚡ P(block)</button>
+    </div>
   </div>
   <div class="chart-wrap"><canvas id="chart-share-dist"></canvas></div>
 </section>
@@ -1913,6 +2033,26 @@
   </div>
 </div>
 
+<!-- PRO UPGRADE MODAL (R1 revenue: buy via Lemon Squeezy / redeem a key) -->
+<div class="modal-overlay" id="upgrade-modal">
+  <div class="modal upgrade-modal">
+    <div class="modal__header">
+      <div class="modal__title">⚡ CYPHER65 PRO</div>
+      <button class="modal__close" onclick="document.getElementById('upgrade-modal').classList.remove('modal--open')">⛌</button>
+    </div>
+    <div class="modal__body">
+      <p class="upgrade-modal__copy">Unlock <strong>Monte Carlo</strong>, <strong>proximity meter</strong>, <strong>30d history</strong> &amp; <strong>webhooks</strong>.</p>
+      <button class="btn btn--primary upgrade-modal__buy" id="upgrade-buy-btn" hidden>Buy PRO — $9/mo</button>
+      <div class="upgrade-modal__divider" id="upgrade-divider" hidden><span>or activate a key</span></div>
+      <div class="upgrade-modal__redeem">
+        <input class="field__input field__input--mono" type="text" id="upgrade-key-input" placeholder="C65-XXXX-XXXX-XXXX-XXXX" autocomplete="off" spellcheck="false">
+        <button class="btn upgrade-modal__activate" id="upgrade-redeem-btn">ACTIVATE KEY</button>
+      </div>
+      <span class="modal__status" id="upgrade-status"></span>
+    </div>
+  </div>
+</div>
+
 <!-- AUTH MODAL (tenant login · Fase 4 · B1-frontend) -->
 <div class="modal-overlay" id="auth-modal">
   <div class="modal">
@@ -2060,7 +2200,7 @@
     <span id="next-poll"></span>
   </div>
 
-  <script src="/static/app.js?v38"></script>
+  <script src="/static/app.js?v43"></script>
 </div> <!-- end #app-main -->
 </div> <!-- end #app-layout -->
   <!-- Matrix rain canvas (full-screen background effect) -->

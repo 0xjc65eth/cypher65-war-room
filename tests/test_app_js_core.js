@@ -130,7 +130,9 @@ function filterOffersByProvider(offers, provider) {
 }
 
 // Generate market offer card HTML (pure function)
-function renderMarketOfferHtml(offer, isBest) {
+// P0-4: `affiliate` = market_data.affiliate {provider,url} — when it matches
+// the card's provider, render the one-click BUY button (mirrors app.js).
+function renderMarketOfferHtml(offer, isBest, affiliate) {
   var provider = offer.provider || offer.name || 'unknown';
   var price = formatMarketPrice(parseFloat(offer.price_btc_per_th_day || offer.price || 0));
   var hashrate = formatOfferHashrate(offer.hashrate || 0);
@@ -140,6 +142,13 @@ function renderMarketOfferHtml(offer, isBest) {
   var bestClass = isBest ? ' mkt-card--best' : '';
   var staleClass = stale ? ' mkt-card--stale' : '';
   var staleBadge = stale ? '<span class="badge badge--amber" style="font-size:7px">stale</span>' : '';
+  var isAffCard = !!(affiliate && affiliate.url
+    && provider.toLowerCase() === String(affiliate.provider || '').toLowerCase());
+  var affBtn = isAffCard
+    ? '<button type="button" class="mkt-card__buy chip chip--affiliate" data-aff-url="'
+      + escapeHtml(affiliate.url) + '" data-aff-provider="' + escapeHtml(affiliate.provider) + '">⚡ BUY '
+      + escapeHtml(String(affiliate.provider).toUpperCase()) + '</button>'
+    : '';
   // Grab a simple provider icon from name
   var icon = (provider.slice(0, 2).toUpperCase());
   return '<div class="mkt-card' + bestClass + staleClass + '" data-provider="' + escapeHtml(provider) + '">' +
@@ -150,6 +159,7 @@ function renderMarketOfferHtml(offer, isBest) {
     '</div>' +
     '<div class="mkt-card__price">' + price + '</div>' +
     '<div class="mkt-card__meta">' + hashrate + ' · ' + fee + ' fee · ' + duration + '</div>' +
+    affBtn +
   '</div>';
 }
 
@@ -1277,6 +1287,176 @@ assertEqual('max 80 rendered, but returns all new (trim happens in DOM)', maxRes
 
 
 // ═══════════════════════════════════════════════════════════════════════════
+//  SUITE 15b: computeTimelineStats() — SHARE TIMELINE summary aggregation
+// ═══════════════════════════════════════════════════════════════════════════
+// Mirrors static/app.js computeTimelineStats(): counts SHARE_FOUND /
+// BEST_DIFF_BUMP events inside the 1h / 24h windows from a timeline list.
+// This is the client-side fallback that finally populates the LAST SHARE /
+// 1H / 24H / BUMPS 24H cards (previously stuck on em-dash forever because
+// the DOM nodes were defined but never written).
+
+console.log('📊 SUITE 15b: computeTimelineStats() — summary aggregation');
+
+function _normalizeTimelineEventTest(e) {
+  if (Array.isArray(e)) {
+    return { ts: e[0], event_type: e[1] || 'EVENT', severity: e[2] || 'INFO', message: e.length > 3 ? e[3] : (e[2] || '') };
+  }
+  return e;
+}
+
+function computeTimelineStatsTest(list, nowSec) {
+  var now = nowSec || Math.floor(Date.now() / 1000);
+  var out = { shares1h: 0, shares24h: 0, bumps24h: 0 };
+  if (!list || !list.length) return out;
+  list.forEach(function(e) {
+    if (!e) return;
+    var ev = _normalizeTimelineEventTest(e);
+    var t = Number(ev.ts);
+    if (!t || !isFinite(t)) return;
+    var age = now - t;
+    if (age < 0) return;
+    if (ev.event_type === 'SHARE_FOUND') {
+      if (age <= 3600) out.shares1h++;
+      if (age <= 86400) out.shares24h++;
+    } else if (ev.event_type === 'BEST_DIFF_BUMP') {
+      if (age <= 86400) out.bumps24h++;
+    }
+  });
+  return out;
+}
+
+// Mirrors renderTimelineStats() value selection: DB aggregates win, else
+// client-side aggregation of the timeline list.
+function resolveTimelineCardValuesTest(es, timelineList, nowSec) {
+  es = es || {};
+  var fb = computeTimelineStatsTest(timelineList, nowSec);
+  return {
+    shares1h: es.db_shares_last_hour != null ? Number(es.db_shares_last_hour) : fb.shares1h,
+    shares24h: es.db_shares_last_day != null ? Number(es.db_shares_last_day) : fb.shares24h,
+    bumps24h: es.db_best_diffs_last_day != null ? Number(es.db_best_diffs_last_day) : fb.bumps24h,
+  };
+}
+
+var tsNow = 1785714000;
+
+// Empty / null inputs → zero counts (never NaN)
+assertEqual('timelineStats([]) → zeros', computeTimelineStatsTest([], tsNow), { shares1h: 0, shares24h: 0, bumps24h: 0 });
+assertEqual('timelineStats(null) → zeros', computeTimelineStatsTest(null, tsNow), { shares1h: 0, shares24h: 0, bumps24h: 0 });
+assertEqual('timelineStats(undefined) → zeros', computeTimelineStatsTest(undefined, tsNow), { shares1h: 0, shares24h: 0, bumps24h: 0 });
+
+// Single SHARE_FOUND within the 1h window → counts in both windows
+var oneShare = [{ ts: tsNow - 600, event_type: 'SHARE_FOUND', severity: 'INFO', message: 'share' }];
+assertEqual('1h window counts a fresh share', computeTimelineStatsTest(oneShare, tsNow).shares1h, 1);
+assertEqual('24h window counts a fresh share', computeTimelineStatsTest(oneShare, tsNow).shares24h, 1);
+assertEqual('fresh share is not a bump', computeTimelineStatsTest(oneShare, tsNow).bumps24h, 0);
+
+// Share older than 1h but within 24h → 24h only
+var oldShare = [{ ts: tsNow - 7200, event_type: 'SHARE_FOUND', severity: 'INFO', message: 'old share' }];
+assertEqual('2h-old share excluded from 1h', computeTimelineStatsTest(oldShare, tsNow).shares1h, 0);
+assertEqual('2h-old share counted in 24h', computeTimelineStatsTest(oldShare, tsNow).shares24h, 1);
+
+// Share older than 24h → excluded everywhere
+var staleShare = [{ ts: tsNow - 90000, event_type: 'SHARE_FOUND', severity: 'INFO', message: 'stale share' }];
+assertEqual('25h-old share excluded from 1h', computeTimelineStatsTest(staleShare, tsNow).shares1h, 0);
+assertEqual('25h-old share excluded from 24h', computeTimelineStatsTest(staleShare, tsNow).shares24h, 0);
+
+// BEST_DIFF_BUMP counting
+var oneBump = [{ ts: tsNow - 300, event_type: 'BEST_DIFF_BUMP', severity: 'GOLD', message: 'new best' }];
+assertEqual('fresh bump counted in 24h', computeTimelineStatsTest(oneBump, tsNow).bumps24h, 1);
+assertEqual('fresh bump is not a share', computeTimelineStatsTest(oneBump, tsNow).shares1h, 0);
+var oldBump = [{ ts: tsNow - 90000, event_type: 'BEST_DIFF_BUMP', severity: 'GOLD', message: 'old best' }];
+assertEqual('old bump excluded from 24h', computeTimelineStatsTest(oldBump, tsNow).bumps24h, 0);
+
+// Mixed event list — the user's exact scenario (dozens of SHARE_FOUND + 3 bumps)
+var mixed = [
+  { ts: tsNow - 60, event_type: 'SHARE_FOUND', severity: 'INFO', message: 's1' },
+  { ts: tsNow - 300, event_type: 'SHARE_FOUND', severity: 'INFO', message: 's2' },
+  { ts: tsNow - 1900, event_type: 'BEST_DIFF_BUMP', severity: 'GOLD', message: 'b1' },
+  { ts: tsNow - 3600, event_type: 'SHARE_FOUND', severity: 'INFO', message: 's3' },
+  { ts: tsNow - 7200, event_type: 'SHARE_FOUND', severity: 'INFO', message: 's4 (outside 1h)' },
+  { ts: tsNow - 2500, event_type: 'BEST_DIFF_BUMP', severity: 'GOLD', message: 'b2' },
+  { ts: tsNow - 90000, event_type: 'BEST_DIFF_BUMP', severity: 'GOLD', message: 'b3 (outside 24h)' },
+];
+var mixedRes = computeTimelineStatsTest(mixed, tsNow);
+assertEqual('mixed: 3 shares in 1h (s1,s2,s3)', mixedRes.shares1h, 3);
+assertEqual('mixed: 4 shares in 24h (s1,s2,s3,s4)', mixedRes.shares24h, 4);
+assertEqual('mixed: 2 bumps in 24h (b1,b2)', mixedRes.bumps24h, 2);
+
+// Array-format events (backend timeline_last_n format) are normalized too
+var arrEvents = [
+  [tsNow - 120, 'SHARE_FOUND', 'INFO', 'share via array'],
+  [tsNow - 200, 'BEST_DIFF_BUMP', 'GOLD', 'bump via array'],
+];
+var arrRes = computeTimelineStatsTest(arrEvents, tsNow);
+assertEqual('array events: 1 share in 1h', arrRes.shares1h, 1);
+assertEqual('array events: 1 bump in 24h', arrRes.bumps24h, 1);
+
+// Future timestamps (clock skew) never count
+var future = [{ ts: tsNow + 5000, event_type: 'SHARE_FOUND', severity: 'INFO', message: 'future' }];
+assertEqual('future share never counts', computeTimelineStatsTest(future, tsNow).shares1h, 0);
+
+// Malformed entries are skipped without throwing
+var malformed = [
+  null,
+  { ts: 'garbage', event_type: 'SHARE_FOUND' },
+  { ts: NaN, event_type: 'SHARE_FOUND' },
+  'string',
+];
+assertEqual('malformed entries skipped → zeros', computeTimelineStatsTest(malformed, tsNow), { shares1h: 0, shares24h: 0, bumps24h: 0 });
+
+// renderTimelineStats() value selection: DB aggregates are authoritative…
+var esWithDb = { db_shares_last_hour: 15, db_shares_last_day: 30, db_best_diffs_last_day: 4 };
+var selDb = resolveTimelineCardValuesTest(esWithDb, mixed, tsNow);
+assertEqual('DB 1h value wins over client calc', selDb.shares1h, 15);
+assertEqual('DB 24h value wins over client calc', selDb.shares24h, 30);
+assertEqual('DB bumps value wins over client calc', selDb.bumps24h, 4);
+
+// …but client-side aggregation is the fallback when DB keys are absent
+var selFb = resolveTimelineCardValuesTest({}, mixed, tsNow);
+assertEqual('fallback 1h from timeline list', selFb.shares1h, mixedRes.shares1h);
+assertEqual('fallback 24h from timeline list', selFb.shares24h, mixedRes.shares24h);
+assertEqual('fallback bumps from timeline list', selFb.bumps24h, mixedRes.bumps24h);
+
+// Zero is a real count — never coerced to em-dash
+var selZero = resolveTimelineCardValuesTest({ db_shares_last_hour: 0, db_shares_last_day: 0, db_best_diffs_last_day: 0 }, [], tsNow);
+assertEqual('explicit DB 0 stays 0 (not dash)', selZero.shares1h, 0);
+assertEqual('explicit DB 0 24h stays 0', selZero.shares24h, 0);
+assertEqual('explicit DB 0 bumps stays 0', selZero.bumps24h, 0);
+
+// LAST SHARE fallback: latest SHARE_FOUND ts from the timeline list
+function lastShareTsFromTimelineTest(list, nowSec) {
+  var now = nowSec || Math.floor(Date.now() / 1000);
+  var latest = 0;
+  if (!list || !list.length) return 0;
+  list.forEach(function(e) {
+    if (!e) return;
+    var ev = _normalizeTimelineEventTest(e);
+    var t = Number(ev.ts);
+    if (!t || !isFinite(t)) return;
+    if (ev.event_type !== 'SHARE_FOUND') return;
+    var age = now - t;
+    if (age < 0 || age > 86400) return;
+    if (t > latest) latest = t;
+  });
+  return latest;
+}
+
+assertEqual('lastShare empty list → 0', lastShareTsFromTimelineTest([], tsNow), 0);
+assertEqual('lastShare null list → 0', lastShareTsFromTimelineTest(null, tsNow), 0);
+assertEqual('lastShare picks newest share', lastShareTsFromTimelineTest(mixed, tsNow), tsNow - 60);
+var lastBumpOnly = lastShareTsFromTimelineTest([{ ts: tsNow - 500, event_type: 'BEST_DIFF_BUMP', severity: 'GOLD' }], tsNow);
+assertEqual('lastShare ignores bumps (not shares)', lastBumpOnly, 0);
+var lastStale = lastShareTsFromTimelineTest([{ ts: tsNow - 90000, event_type: 'SHARE_FOUND', severity: 'INFO' }], tsNow);
+assertEqual('lastShare ignores shares older than 24h', lastStale, 0);
+var lastArray = lastShareTsFromTimelineTest([[tsNow - 90, 'SHARE_FOUND', 'INFO', 'arr']], tsNow);
+assertEqual('lastShare works with array events', lastArray, tsNow - 90);
+var lastFuture = lastShareTsFromTimelineTest([{ ts: tsNow + 100, event_type: 'SHARE_FOUND', severity: 'INFO' }], tsNow);
+assertEqual('lastShare ignores future shares', lastFuture, 0);
+// LAST SHARE prefers the session-scoped ts when present
+assertEqual('lastShare prefers es.last_submit_ts', esWithDb && 1785714000 > lastShareTsFromTimelineTest(mixed, tsNow), true);
+
+
+// ═══════════════════════════════════════════════════════════════════════════
 //  SUITE 16: Combined edge cases — all 5 functions
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -2181,6 +2361,23 @@ var bestOffers = [
   { provider: 'mrr', price_per_th_day: 5e-9 },
 ];
 assertEqual('bestIdx lowest → 1', findBestOfferIndex(bestOffers), 1);
+
+// ── renderMarketOfferHtml affiliate BUY button (P0-4) ──────────────────
+var affOffer = { provider: 'mrr', price_btc_per_th_day: 0.00001234, hashrate: 1e12, fee: 3, duration: 30 };
+var affMatch = { provider: 'mrr', url: 'https://www.miningrigrentals.com/?ref=test' };
+var affOther = { provider: 'nicehash', url: 'https://www.nicehash.com/?ref=test' };
+
+var htmlAffMatch = renderMarketOfferHtml(affOffer, true, affMatch);
+assertEqual('affiliate match → has BUY btn', htmlAffMatch.indexOf('mkt-card__buy') !== -1, true);
+assertEqual('affiliate match → data-aff-url present', htmlAffMatch.indexOf('https://www.miningrigrentals.com/?ref=test') !== -1, true);
+assertEqual('affiliate match → BUY MRR label', htmlAffMatch.indexOf('BUY MRR') !== -1, true);
+assertEqual('affiliate match → best class kept', htmlAffMatch.indexOf('mkt-card--best') !== -1, true);
+
+var htmlNoAff = renderMarketOfferHtml(affOffer, true, null);
+assertEqual('no affiliate → no BUY btn', htmlNoAff.indexOf('mkt-card__buy') === -1, true);
+
+var htmlOtherProv = renderMarketOfferHtml(affOffer, true, affOther);
+assertEqual('mismatched provider → no BUY btn', htmlOtherProv.indexOf('mkt-card__buy') === -1, true);
 
 // ── _mktBestIndex mirror: highest metrics.score wins; only with NO scores at
 // all does it fall back to lowest valid price (two-pass, first-max on ties).
@@ -3240,6 +3437,192 @@ console.log('📊 SUITE 25: Fase 2.1 chart helpers (computeSMA + buildChartAnnot
   assertEqual('no events → []', JSON.stringify(buildChartAnnotations([], labels)), '[]');
   assertEqual('no labels → []', JSON.stringify(buildChartAnnotations(events, [])), '[]');
   assertEqual('null events → []', JSON.stringify(buildChartAnnotations(null, labels)), '[]');
+})();
+
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  SUITE 22: Command Center — contextual action cards (P0-3)
+// ═══════════════════════════════════════════════════════════════════════════
+// Mirrors static/app.js commandCenterCardHtml() — pure HTML generation for
+// the P0-3 Command Center panel. Severity maps to a modifier class; every
+// card carries data-cc-* attributes consumed by the delegated click handler
+// (module navigation + optional external affiliate link).
+
+console.log('⌘ SUITE 22: renderCommandCenter() — action card HTML + severity');
+
+function escapeHtmlTest(s) { return String(s).replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c])); }
+
+function commandCenterCardHtmlTest(card) {
+  if (!card || typeof card !== 'object') return '';
+  const sev = String(card.severity || 'info').toLowerCase();
+  const esc = escapeHtmlTest;
+  const target = String(card.target || '');
+  const panel = String(card.panel || '');
+  const url = String(card.url || '');
+  return (
+    '<button type="button" class="cc-card cc-card--' + sev + '" ' +
+    'data-cc-target="' + esc(target) + '" ' +
+    'data-cc-panel="' + esc(panel) + '" ' +
+    'data-cc-url="' + esc(url) + '">' +
+    '<span class="cc-card__title">' + esc(card.title || 'Atenção') + '</span>' +
+    '<span class="cc-card__message">' + esc(card.message || '') + '</span>' +
+    '<span class="cc-card__action">' + esc(card.action || 'IR') + ' →</span>' +
+    '</button>'
+  );
+}
+
+// Severity modifier + structure
+var critCard = commandCenterCardHtmlTest({ id: 'worker_offline', severity: 'crit', title: 'Worker offline', message: 'Sem worker', action: 'VER FLEET', target: 'fleet', panel: 'axe-fleet-panel', url: null });
+assertTruthy('crit card has cc-card--crit class', /cc-card--crit/.test(critCard));
+assertTruthy('crit card is a button', /<button/.test(critCard));
+assertTruthy('crit card has title', /Worker offline/.test(critCard));
+assertTruthy('crit card has message', /Sem worker/.test(critCard));
+assertTruthy('crit card has action label', /VER FLEET/.test(critCard));
+assertTruthy('crit card has target fleet', /data-cc-target="fleet"/.test(critCard));
+assertTruthy('crit card has panel id', /data-cc-panel="axe-fleet-panel"/.test(critCard));
+assertTruthy('crit card no url attr', /data-cc-url=""/.test(critCard));
+
+// Severity defaults to info
+var plainCard = commandCenterCardHtmlTest({ title: 'x' });
+assertTruthy('missing severity defaults to info', /cc-card--info/.test(plainCard));
+assertTruthy('missing action defaults to IR', /IR/.test(plainCard));
+
+// Gold / warn / info modifiers
+assertTruthy('gold modifier', /cc-card--gold/.test(commandCenterCardHtmlTest({ severity: 'gold' })));
+assertTruthy('warn modifier', /cc-card--warn/.test(commandCenterCardHtmlTest({ severity: 'warn' })));
+assertTruthy('info modifier', /cc-card--info/.test(commandCenterCardHtmlTest({ severity: 'info' })));
+
+// Affiliate card carries the URL for the one-click buy
+var buyCard = commandCenterCardHtmlTest({ severity: 'info', action: 'COMPRAR HASHRATE', url: 'https://mrr.example/ref?a=1&b=2', target: 'market' });
+assertTruthy('buy card has url escaped', /data-cc-url="https:\/\/mrr\.example\/ref\?a=1&amp;b=2"/.test(buyCard));
+assertTruthy('buy card has COMPRAR label', /COMPRAR HASHRATE/.test(buyCard));
+assertTruthy('buy card has market target', /data-cc-target="market"/.test(buyCard));
+
+// Null / garbage never produce HTML
+assertEqual('null card → empty string', commandCenterCardHtmlTest(null), '');
+assertEqual('undefined card → empty string', commandCenterCardHtmlTest(undefined), '');
+assertEqual('string card → empty string', commandCenterCardHtmlTest('junk'), '');
+
+// HTML-injection safety: title/message escaped
+var evil = commandCenterCardHtmlTest({ title: '<img src=x onerror=alert(1)>', message: '"&<>"' });
+assertFalsy('title is escaped (no raw <img>)', /<img/.test(evil));
+assertTruthy('title escapes to &lt;img', /&lt;img/.test(evil));
+assertFalsy('message quotes escaped', /"&<>"/.test(evil));
+assertTruthy('message &lt; entity', /&lt;/.test(evil));
+
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  WALLET-REFRESH GATE — mirrors snapshotFreshForWallet() in static/app.js
+// ═══════════════════════════════════════════════════════════════════════════
+// A snapshot is "fresh for the new wallet" only when it carries the new
+// address AND has been re-polled (ts > 0). /api/set-address resets ts=0 and
+// forces a background poll; a brand-new wallet legitimately has worker=null
+// (pool returns 0 — a valid response), so ts is the reliable signal.
+function snapshotFreshForWalletTest(snap, address) {
+  return !!(snap &&
+    String(snap.btc_address || '').toLowerCase() === String(address || '').toLowerCase() &&
+    snap.ts > 0);
+}
+
+(function walletRefreshGateSuite() {
+  // Fresh: address matches + poll landed
+  assertEqual('matching address + ts>0 -> fresh',
+    snapshotFreshForWalletTest({ btc_address: 'bc1QUERYEXAMPLE1234567890', ts: 1785710000 }, 'bc1queryexample1234567890'), true);
+  assertEqual('exact match + ts>0 -> fresh',
+    snapshotFreshForWalletTest({ btc_address: 'bc1abc', ts: 5 }, 'bc1abc'), true);
+
+  // Reset state (right after set-address, poll not landed): ts=0
+  assertEqual('matching address + ts=0 -> NOT fresh (poll pending)',
+    snapshotFreshForWalletTest({ btc_address: 'bc1abc', ts: 0 }, 'bc1abc'), false);
+  assertEqual('missing ts -> NOT fresh',
+    snapshotFreshForWalletTest({ btc_address: 'bc1abc' }, 'bc1abc'), false);
+
+  // Wrong address (still the OLD wallet's snapshot)
+  assertEqual('old address + ts>0 -> NOT fresh',
+    snapshotFreshForWalletTest({ btc_address: 'bc1old', ts: 5 }, 'bc1new'), false);
+  assertEqual('empty btc_address -> NOT fresh',
+    snapshotFreshForWalletTest({ btc_address: '', ts: 5 }, 'bc1new'), false);
+
+  // Garbage never fresh
+  assertEqual('null snapshot -> NOT fresh', snapshotFreshForWalletTest(null, 'bc1abc'), false);
+  assertEqual('undefined snapshot -> NOT fresh', snapshotFreshForWalletTest(undefined, 'bc1abc'), false);
+  assertEqual('string snapshot -> NOT fresh', snapshotFreshForWalletTest('junk', 'bc1abc'), false);
+  assertEqual('empty address -> NOT fresh', snapshotFreshForWalletTest({ btc_address: 'bc1abc', ts: 5 }, ''), false);
+})();
+
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  SUITE 26: AXE FLEET onboarding wizard — connectivity report helpers
+// ═══════════════════════════════════════════════════════════════════════════
+
+console.log('⚙ SUITE 26: buildConnectivityReport() — wizard connectivity report');
+
+// Mirror of static/app.js buildConnectivityReport() — pure, no DOM.
+function buildConnectivityReportTest(r) {
+  r = r || {};
+  const rows = [];
+  rows.push({ label: 'DNS', ok: !!r.dns_resolution, val: r.dns_resolution ? 'OK' : 'FAIL', detail: r.dns_resolution ? '' : (r.error_detail || 'hostname did not resolve') });
+  if (r.bitaxe_http) {
+    const di = r.device_info || {};
+    rows.push({ label: 'AxeOS :80', ok: true, val: 'BITAXE', detail: [di.model, di.firmware].filter(Boolean).join(' · ') });
+  } else {
+    rows.push({ label: 'AxeOS :80', ok: false, val: 'no', detail: 'no ESP-Miner API on port 80' });
+  }
+  if (r.cgminer_tcp) {
+    const di = r.device_info || {};
+    rows.push({ label: 'cgminer :4028', ok: true, val: 'CGMINER', detail: [di.model, di.version].filter(Boolean).join(' · ') });
+  } else {
+    rows.push({ label: 'cgminer :4028', ok: false, val: 'no', detail: 'no cgminer protocol on port 4028' });
+  }
+  rows.push({ label: 'elapsed', ok: true, val: (r.elapsed_ms != null ? r.elapsed_ms + 'ms' : '—'), detail: '' });
+  return rows;
+}
+
+(function axeWizardReportSuite() {
+  // Bitaxe detected: DNS ok, HTTP ok, cgminer not probed
+  const bitaxe = buildConnectivityReportTest({
+    dns_resolution: true, bitaxe_http: true, cgminer_tcp: false,
+    reachable: true, protocol: 'bitaxe', elapsed_ms: 42,
+    device_info: { model: 'Bitaxe Gamma', firmware: 'v2.1' },
+  });
+  assertEqual('bitaxe report has 4 rows', bitaxe.length, 4);
+  assertEqual('bitaxe DNS ok', bitaxe[0].ok, true);
+  assertEqual('bitaxe HTTP ok', bitaxe[1].ok, true);
+  assertEqual('bitaxe HTTP label', bitaxe[1].val, 'BITAXE');
+  assertEqual('bitaxe HTTP detail', bitaxe[1].detail, 'Bitaxe Gamma · v2.1');
+  assertEqual('bitaxe cgminer row present but false', bitaxe[2].ok, false);
+  assertEqual('bitaxe elapsed', bitaxe[3].val, '42ms');
+
+  // cgminer fallback: HTTP failed, TCP answered
+  const cg = buildConnectivityReportTest({
+    dns_resolution: true, bitaxe_http: false, cgminer_tcp: true,
+    reachable: true, protocol: 'cgminer', elapsed_ms: 133,
+    device_info: { model: 'Antminer S19 Pro', version: '4.12.0' },
+  });
+  assertEqual('cgminer HTTP row fails', cg[1].ok, false);
+  assertEqual('cgminer row ok', cg[2].ok, true);
+  assertEqual('cgminer row val', cg[2].val, 'CGMINER');
+  assertEqual('cgminer row detail', cg[2].detail, 'Antminer S19 Pro · 4.12.0');
+
+  // DNS failure: everything else short-circuits
+  const bad = buildConnectivityReportTest({ dns_resolution: false, error_detail: 'no such host' });
+  assertEqual('dns fail row ok=false', bad[0].ok, false);
+  assertEqual('dns fail detail', bad[0].detail, 'no such host');
+  assertEqual('dns fail http false', bad[1].ok, false);
+
+  // Empty payload: graceful defaults
+  const empty = buildConnectivityReportTest({});
+  assertEqual('empty payload still 4 rows', empty.length, 4);
+  assertEqual('empty payload dns false', empty[0].ok, false);
+  assertEqual('empty payload elapsed placeholder', empty[3].val, '—');
+
+  // Hostname (non-IP) with successful resolution + HTTP
+  const host = buildConnectivityReportTest({
+    dns_resolution: true, bitaxe_http: true, cgminer_tcp: false,
+    reachable: true, protocol: 'bitaxe',
+    device_info: { model: 'NerdAxe', firmware: '' },
+  });
+  assertEqual('hostname bitaxe detail skips empty firmware', host[1].detail, 'NerdAxe');
 })();
 
 

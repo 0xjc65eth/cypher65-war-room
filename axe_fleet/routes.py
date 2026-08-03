@@ -205,6 +205,7 @@ def _device_advice(status: str, tel: dict, latency_ms: int | None = None) -> lis
 
 @axe_fleet_bp.route("/devices", methods=["GET"])
 @require_tenant
+@_role_required("viewer")
 def list_devices(tenant_id: str = ""):
     """List all registered AxeOS devices with latest telemetry."""
     if _registry is None:
@@ -278,6 +279,7 @@ def remove_device(device_id: str, tenant_id: str = ""):
 
 @axe_fleet_bp.route("/devices/<device_id>", methods=["GET"])
 @require_tenant
+@_role_required("viewer")
 def get_device(device_id: str, tenant_id: str = ""):
     """Get device details with recent telemetry."""
     if _registry is None:
@@ -301,6 +303,7 @@ def get_device(device_id: str, tenant_id: str = ""):
 
 @axe_fleet_bp.route("/devices/<device_id>/telemetry", methods=["GET"])
 @require_tenant
+@_role_required("viewer")
 def device_telemetry(device_id: str, tenant_id: str = ""):
     """Get detailed telemetry history for a specific device.
     Query params:
@@ -334,6 +337,7 @@ def device_telemetry(device_id: str, tenant_id: str = ""):
 
 @axe_fleet_bp.route("/devices/<device_id>/chart-data", methods=["GET"])
 @require_tenant
+@_role_required("viewer")
 def device_chart_data(device_id: str, tenant_id: str = ""):
     """Get chart-ready telemetry series for a device.
     Query params:
@@ -361,6 +365,7 @@ def device_chart_data(device_id: str, tenant_id: str = ""):
 
 @axe_fleet_bp.route("/devices/<device_id>/health", methods=["GET"])
 @require_tenant
+@_role_required("viewer")
 def device_health(device_id: str, tenant_id: str = ""):
     """Get health score and status for a specific device.
     Returns health_score (0-100), active issues, and latest telemetry."""
@@ -410,12 +415,13 @@ def device_health(device_id: str, tenant_id: str = ""):
 
 
 @axe_fleet_bp.route("/devices/<device_id>/refresh", methods=["POST"])
+@require_tenant
 @_role_required("member")
-def refresh_device(device_id: str):
+def refresh_device(device_id: str, tenant_id: str = ""):
     """Re-detect capabilities and refresh device info."""
     if _registry is None:
         return jsonify({"error": "registry not initialized"}), 500
-    device = _registry.get_device(device_id, tenant_id=_get_tenant_id())
+    device = _registry.get_device(device_id, tenant_id=tenant_id)
     if not device:
         return jsonify({"error": "device not found"}), 404
 
@@ -460,15 +466,23 @@ def _require_local_or_session(f):
         if session and session.get("authenticated"):
             return f(*args, **kwargs)
         
-        # Check for Authorization header (Bearer token or API key)
+        # Validate credentials — NEVER trust a raw opaque header. A Bearer
+        # token must decode/verify as a real JWT; an X-API-Key must resolve
+        # to a configured tenant key (multi-tenant isolation preserved).
+        from services.auth import verify_token, resolve_tenant_for_api_key
         auth = request.headers.get("Authorization", "")
-        if auth.startswith("Bearer ") and len(auth) > 20:
+        if auth.startswith("Bearer ") and verify_token(auth[7:], expected_type="access"):
             return f(*args, **kwargs)
-        
-        # Check for X-API-Key header (simple key-based auth)
         api_key = request.headers.get("X-API-Key", "")
-        if api_key and len(api_key) >= 16:
+        if api_key and resolve_tenant_for_api_key(api_key) is not None:
             return f(*args, **kwargs)
+        # Open self-host mode (no auth configured): fall back to the legacy
+        # lenient header check so the documented tailnet/session flow keeps
+        # working exactly as before — there is no auth to validate against.
+        from services.tenant import auth_configured
+        if not auth_configured():
+            if len(auth) > 20 or (api_key and len(api_key) >= 16):
+                return f(*args, **kwargs)
         
         log.warning("[axe] Unauthorized device control attempt from %s", remote)
         return jsonify({"error": "authentication required — device control restricted to localhost or authenticated session"}), 401
@@ -540,6 +554,7 @@ def configure_device(device_id: str):
 
 @axe_fleet_bp.route("/summary", methods=["GET"])
 @require_tenant
+@_role_required("viewer")
 def fleet_summary(tenant_id: str = ""):
     """Fleet-wide summary: total, online, offline, total hashrate, etc.
 
@@ -643,14 +658,18 @@ def fleet_summary(tenant_id: str = ""):
 
 
 @axe_fleet_bp.route("/test-devices", methods=["POST"])
+@require_tenant
 @_role_required("member")
-def seed_test_devices():
+def seed_test_devices(tenant_id: str = ""):
     """Populate fleet with simulated AxeOS devices for testing.
     Creates 4 devices with realistic telemetry (hashrate, temp, fan, power,
     uptime, best diff) and capabilities (restart, identify, pause).
 
     GATED by DEBUG_MOCK (config.py): disabled in production so mock devices
     are never exposed via the public API. Set DEBUG_MOCK=1 for local dev.
+
+    Tenant-scoped: seeded devices are persisted under the caller's tenant
+    so they never pollute another tenant's fleet.
 
     Use DELETE /api/axe-fleet/devices/<id> to remove individual devices
     after testing.
@@ -661,7 +680,7 @@ def seed_test_devices():
         return jsonify({"error": "registry not initialized"}), 500
 
     now = int(time.time())
-    devices = _registry.list_devices()
+    devices = _registry.list_devices(tenant_id=tenant_id)
     if len(devices) >= 4:
         return jsonify({"error": "Fleet already has devices — remove them first or use individual IP add",
                         "device_count": len(devices)}), 409
@@ -786,6 +805,7 @@ def seed_test_devices():
             "group_id": "test-fleet",
             "added_at": now,
             "updated_at": now,
+            "tenant_id": tenant_id,
         }
 
         # Set capabilities based on firmware
@@ -849,10 +869,147 @@ def seed_test_devices():
     return jsonify({"success": True, "devices": created, "count": len(created)}), 201
 
 
+# ── LAN miner discovery (subnet scan) ────────────────────────────────────
+# Background scan store: scan_id → {status, cidr, total, scanned, found, error,
+# created_at, tenant_id}. Scans run in a daemon thread; the UI polls
+# GET /scan/<id> for progress. Tenant-scoped: a scan started by one tenant is
+# never readable by another (mirrors _power_cycle_tasks isolation).
+_scans: dict = {}
+_scans_lock = threading.Lock()
+_SCANS_MAX = 20
+
+
+def _gc_scans() -> None:
+    """Evict scans when the store exceeds _SCANS_MAX (FIFO by age).
+
+    Finished scans are evicted first; if the store is STILL over the cap
+    (e.g. many concurrent scans still running), the oldest entries are
+    dropped regardless of status so a flood of scan requests can never grow
+    the store unboundedly.
+    """
+    if len(_scans) <= _SCANS_MAX:
+        return
+    # 1) Drop finished scans (oldest first).
+    finished = [sid for sid, s in _scans.items() if s.get("status") in ("done", "error")]
+    finished.sort(key=lambda sid: _scans[sid].get("created_at", 0))
+    for sid in finished[: len(_scans) - _SCANS_MAX]:
+        _scans.pop(sid, None)
+    # 2) Fallback: still over the cap → drop oldest regardless of status.
+    if len(_scans) > _SCANS_MAX:
+        overflow = len(_scans) - _SCANS_MAX
+        oldest = sorted(_scans, key=lambda sid: _scans[sid].get("created_at", 0))[:overflow]
+        for sid in oldest:
+            _scans.pop(sid, None)
+
+
+@axe_fleet_bp.route("/scan/subnets", methods=["GET"])
+@require_tenant
+@_role_required("viewer")
+def scan_suggest_subnets(tenant_id: str = ""):
+    """Suggest local subnets to scan, derived from this host's interfaces."""
+    from .scanner import suggest_subnets
+    try:
+        subnets = suggest_subnets()
+    except Exception as e:  # noqa: BLE001
+        log.warning("[axe] suggest_subnets error: %s", e)
+        subnets = []
+    return jsonify({"subnets": subnets})
+
+
+@axe_fleet_bp.route("/scan", methods=["POST"])
+@require_tenant
+@_role_required("member")
+def start_scan(tenant_id: str = ""):
+    """Start an asynchronous LAN scan for miners.
+    JSON body: { "cidr": "192.168.1.0/24" }
+    Returns { scan_id } immediately; poll GET /api/axe-fleet/scan/<id> for
+    progress. The scan thread is daemonized and capped by scanner.MAX_HOSTS.
+    """
+    from .scanner import scan_subnet
+
+    data = request.get_json(silent=True) or {}
+    cidr = (data.get("cidr") or "").strip()
+    if not cidr:
+        from .scanner import suggest_subnets
+        try:
+            suggested = suggest_subnets()
+        except Exception:  # noqa: BLE001
+            suggested = []
+        cidr = suggested[0] if suggested else ""
+    if not cidr:
+        return jsonify({"error": "cidr is required — e.g. 192.168.1.0/24"}), 400
+
+    # ── Anti-flood guard: one active scan per tenant. A LAN scan fans out up
+    #    to 64 concurrent probes; without this cap, a member could spam POST
+    #    /scan and saturate the network with parallel probe threads. The
+    #    store cap alone only bounds memory, not thread/socket churn.
+    #    Check + insert happen under ONE lock acquisition so two racing
+    #    requests for the same tenant can never both pass the guard.
+    scan_id = uuid.uuid4().hex[:12]
+    now = int(time.time())
+    with _scans_lock:
+        for _sid, _s in _scans.items():
+            if _s.get("tenant_id") == tenant_id and _s.get("status") == "running":
+                return jsonify({"error": "scan already running for this tenant",
+                                "scan_id": _sid}), 409
+        _scans[scan_id] = {
+            "id": scan_id,
+            "tenant_id": tenant_id,
+            "cidr": cidr,
+            "status": "running",
+            "total": 0,
+            "scanned": 0,
+            "found": [],
+            "error": None,
+            "created_at": now,
+        }
+        _gc_scans()
+    # Local reference for the daemon thread's closures (the store dict itself
+    # is the source of truth; mutations below are visible to readers).
+    scan = _scans[scan_id]
+
+    def _progress(scanned, total):
+        scan["scanned"] = scanned
+        scan["total"] = total
+
+    def _run():
+        try:
+            result = scan_subnet(cidr, progress_cb=_progress)
+            scan["total"] = result.get("total", scan.get("total", 0))
+            scan["scanned"] = result.get("total", 0)
+            scan["found"] = result.get("found", [])
+            scan["error"] = result.get("error")
+            scan["status"] = "done" if not result.get("error") else "error"
+            log.info("[axe] scan %s (%s) done: %d/%d found",
+                     scan_id, cidr, len(scan["found"]), scan["total"])
+        except Exception as e:  # noqa: BLE001
+            scan["error"] = str(e)
+            scan["status"] = "error"
+            log.error("[axe] scan %s failed: %s", scan_id, e)
+
+    t = threading.Thread(target=_run, daemon=True, name=f"axe-scan-{scan_id}")
+    t.start()
+
+    return jsonify({"success": True, "scan_id": scan_id, "cidr": cidr, "status": "running"}), 202
+
+
+@axe_fleet_bp.route("/scan/<scan_id>", methods=["GET"])
+@require_tenant
+@_role_required("viewer")
+def scan_status(scan_id: str, tenant_id: str = ""):
+    """Poll progress/results of a scan. Tenant-scoped read."""
+    with _scans_lock:
+        scan = _scans.get(scan_id)
+    if not scan or scan.get("tenant_id", "") != tenant_id:
+        return jsonify({"error": "scan not found"}), 404
+    return jsonify({"scan": scan})
+
+
 # ── Connectivity diagnostic endpoint ─────────────────────────────────────
 
 
 @axe_fleet_bp.route("/diagnose/<path:ip_or_host>", methods=["GET"])
+@_require_local_or_session
 def diagnose_device(ip_or_host: str):
     """Run a full connectivity diagnostic against a device IP/hostname.
 
@@ -868,10 +1025,17 @@ def diagnose_device(ip_or_host: str):
       GET /api/axe-fleet/diagnose/192.168.1.100
       GET /api/axe-fleet/diagnose/192.168.1.50?port=8080
     """
+    # NOTE: `port` is accepted for backward compatibility with the legacy
+    # Bitaxe-only endpoint but is IGNORED — diagnose_host() always probes
+    # AxeOS HTTP :80 and cgminer TCP :4028.
     port = request.args.get("port", 80, type=int)
     try:
-        conn = AxeOSConnector(ip_or_host, port=port)
-        result = conn._diagnose_connectivity()
+        # Unified diagnosis: AxeOS HTTP (:80) + cgminer TCP (:4028) with
+        # per-protocol flags so the onboarding wizard can render a
+        # step-by-step connectivity report (DNS → Bitaxe → cgminer).
+        from .scanner import diagnose_host as _diagnose_host
+        result = _diagnose_host(ip_or_host)
+        result["port"] = port
         return jsonify(result)
     except Exception as e:
         return jsonify({
@@ -880,7 +1044,7 @@ def diagnose_device(ip_or_host: str):
             "error": True,
             "error_type": "EXCEPTION",
             "error_detail": str(e),
-            "http_connect": False,
+            "reachable": False,
         })
 
 
@@ -888,7 +1052,9 @@ def diagnose_device(ip_or_host: str):
 
 
 @axe_fleet_bp.route("/remote/status", methods=["GET"])
-def remote_status():
+@require_tenant
+@_role_required("viewer")
+def remote_status(tenant_id: str = ""):
     """Get Tailscale remote access status for the host.
     Checks local tailscale daemon and returns connection info.
     """
@@ -898,7 +1064,9 @@ def remote_status():
 
 
 @axe_fleet_bp.route("/remote/health", methods=["GET"])
-def remote_health():
+@require_tenant
+@_role_required("viewer")
+def remote_health(tenant_id: str = ""):
     """Full remote health check: tailscale status + Axe Fleet reachability.
     Returns a combined health payload.
     """
@@ -920,9 +1088,10 @@ def remote_health():
         health["errors"].append("Tailscale not connected")
         return jsonify(health)
 
-    # Test reachability of registered devices
+    # Test reachability of registered devices (tenant-scoped — the remote
+    # panel must never probe or expose another tenant's miners).
     if _registry:
-        devices = _registry.list_devices()
+        devices = _registry.list_devices(tenant_id=tenant_id)
         reachable = 0
         for d in devices:
             diag = diagnose_connection(d["ip_address"], timeout=3)
@@ -939,7 +1108,9 @@ def remote_health():
 
 
 @axe_fleet_bp.route("/remote/devices", methods=["GET"])
-def remote_devices():
+@require_tenant
+@_role_required("viewer")
+def remote_devices(tenant_id: str = ""):
     """List devices reachable via the tailnet.
     Only returns devices that respond to ping.
     Uses optional Tailscale API key from settings for enhanced info.
@@ -957,7 +1128,7 @@ def remote_devices():
         return jsonify(result)
 
     if _registry:
-        for d in _registry.list_devices():
+        for d in _registry.list_devices(tenant_id=tenant_id):
             from services.tailscale_adapter import diagnose_connection
             diag = diagnose_connection(d["ip_address"], timeout=3)
             entry = {
@@ -976,8 +1147,9 @@ def remote_devices():
 
 
 @axe_fleet_bp.route("/remote/test-connection", methods=["POST"])
+@require_tenant
 @_role_required("member")
-def remote_test_connection():
+def remote_test_connection(tenant_id: str = ""):
     """Run a full remote connectivity test suite.
     Returns per-test results with pass/fail and timing.
     """
@@ -1014,9 +1186,9 @@ def remote_test_connection():
             "detail": f"{target_test.get('elapsed_ms', 'N/A')}ms" if target_test["reachable"] else target_test.get("error", "unreachable"),
         })
 
-    # Test 4: Registered devices
+    # Test 4: Registered devices (tenant-scoped)
     if _registry:
-        devices = _registry.list_devices()
+        devices = _registry.list_devices(tenant_id=tenant_id)
         reachable_count = 0
         for d in devices:
             diag = diagnose_connection(d["ip_address"], timeout=3)
@@ -1071,7 +1243,9 @@ def _get_tuya_credentials() -> dict:
 
 
 @axe_fleet_bp.route("/power-plugs", methods=["GET"])
-def list_power_plugs():
+@require_tenant
+@_role_required("viewer")
+def list_power_plugs(tenant_id: str = ""):
     """List all Tuya smart plugs associated with the user account.
     Credentials from settings DB or environment variables.
     """
@@ -1200,7 +1374,9 @@ def power_plug_toggle(plug_id: str):
 
 
 @axe_fleet_bp.route("/power-plugs/<plug_id>/status", methods=["GET"])
-def power_plug_status(plug_id: str):
+@require_tenant
+@_role_required("viewer")
+def power_plug_status(plug_id: str, tenant_id: str = ""):
     """Get current status of a specific Tuya plug."""
     from services.tuya_adapter import TuyaCloudAdapter
 
@@ -1260,6 +1436,7 @@ def miner_power_cycle(device_id: str):
     task_id = uuid.uuid4().hex[:12]
     task = {
         "id": task_id,
+        "tenant_id": _get_tenant_id(),
         "device_id": device_id,
         "plug_id": plug_id,
         "status": "pending",
@@ -1321,10 +1498,15 @@ def miner_power_cycle(device_id: str):
 
 
 @axe_fleet_bp.route("/power-cycle/status/<task_id>", methods=["GET"])
-def power_cycle_status(task_id: str):
+@require_tenant
+@_role_required("viewer")
+def power_cycle_status(task_id: str, tenant_id: str = ""):
     """Get the status of an async power-cycle task."""
     with _power_cycle_lock:
         task = _power_cycle_tasks.get(task_id)
+    # Tenant-scoped: another tenant's viewer must never read this task.
+    if task and task.get("tenant_id", "") != tenant_id:
+        task = None
     if not task:
         return jsonify({"success": False, "error": "task not found"}), 404
     return jsonify({"success": True, "task": task})
@@ -1386,7 +1568,9 @@ def _execute_plug_command(plug_id: str, method: str) -> tuple:
 
 
 @axe_fleet_bp.route("/remote/onboarding", methods=["GET"])
-def remote_onboarding():
+@require_tenant
+@_role_required("viewer")
+def remote_onboarding(tenant_id: str = ""):
     """Return a structured onboarding checklist for remote access setup.
     Returns JSON with steps, status, and instructions.
     """
@@ -1451,7 +1635,7 @@ def remote_onboarding():
     limitations = [
         "O Tailscale só alcança devices do seu tailnet — o host e seu celular/notebook precisam usar a mesma conta Tailscale",
         "Acesso remoto exige o host LIGADO e o Tailscale conectado (sem relay na nuvem para o próprio dashboard)",
-        "Comandos nos devices só são permitidos pelo tailnet ou sessão autenticada — IP público na internet não libera comandos",
+        "Comandos nos devices exigem um JWT válido (login) ou sessão autenticada — estar no tailnet sozinho não libera comandos; IP público na internet não libera",
         "Os miners precisam estar alcançáveis pela rede do host (o Tailscale conecta o controle, não o firewall LAN de cada miner)",
         "Sem DNS/HTTPS público: o acesso é pelo IP do tailnet (ex.: http://100.x.x.x:8765), não por domínio",
         "Frotas grandes podem ter polling mais lento: os probes de latência são cacheados por IP (TTL 30s)",
@@ -1496,6 +1680,7 @@ def _execute_device_command(device_id: str, command: str):
 
 @axe_fleet_bp.route("/health", methods=["GET"])
 @require_tenant
+@_role_required("viewer")
 def fleet_health(tenant_id: str = ""):
     """Fleet-wide health summary with per-device health scores, capabilities,
     fleet-level averages and grouped device lists.

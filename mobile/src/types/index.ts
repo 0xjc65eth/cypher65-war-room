@@ -68,14 +68,36 @@ export interface BlockHuntData {
   user_vs_network_pct: number;
 }
 
+export interface ShareDistDataset {
+  label: string;
+  data: number[];
+  fill: boolean;
+  borderColor: string;
+  backgroundColor: string;
+  tension: number;
+}
+
+// /api/chart-data?chart=share_dist — Live→Probability parity (P0-1).
+// `target_diff` is the network difficulty and `target_bucket` its histogram
+// bucket, both null when unavailable — mirrors the web dashboard overlay.
+export interface ShareDistData {
+  labels: string[];
+  count: number | null;
+  target_diff: number | null;
+  target_bucket: number | null;
+  datasets: ShareDistDataset[];
+}
+
 export interface MarketOffer {
   id: string;
   provider: string;
+  source?: string;
   hashrate: number;
   price_per_th_day: number;
   duration_days: number;
   fee_pct: number;
   algorithm: string;
+  estimated?: boolean;
   metrics?: {
     daily_cost_btc: number;
     daily_revenue_btc: number;
@@ -84,6 +106,24 @@ export interface MarketOffer {
     score: number;
     risk_level: string;
   };
+}
+
+// P0-3/P0-4 — one-click affiliate link resolved by the backend
+// (market_data.affiliate, same shape the web dashboard renders as the
+// ⚡ BUY button on the matching offer card). Honest: only present when the
+// operator configured HASH_MARKET_AFFILIATE_URLS — never fabricated.
+export interface MarketAffiliate {
+  provider: string;
+  url: string;
+  price_per_th_day?: number;
+}
+
+export interface MarketData {
+  offers: MarketOffer[];
+  best_price?: string | null;
+  updated_at?: number;
+  provider_count?: number;
+  affiliate?: MarketAffiliate | null;
 }
 
 export interface PushPreferences {

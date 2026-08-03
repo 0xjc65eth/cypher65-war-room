@@ -1,7 +1,15 @@
 import axios, { AxiosInstance, AxiosError } from 'axios';
 import * as SecureStore from 'expo-secure-store';
 import Constants from 'expo-constants';
-import type { Device, FleetSummary, BlockHuntData, MarketOffer, PushPreferences } from '../types';
+import type {
+  Device,
+  FleetSummary,
+  BlockHuntData,
+  ShareDistData,
+  MarketOffer,
+  MarketData,
+  PushPreferences,
+} from '../types';
 
 const isDev = __DEV__;
 const baseURL =
@@ -110,10 +118,20 @@ export const fetchBestDiffHistory = async () => {
   return data;
 };
 
-// ── Market ──────────────────────────────────────────────────────────────────
-export const fetchHashrateMarket = async (): Promise<{ offers: MarketOffer[]; ts: number }> => {
-  const { data } = await api.get('/hashrate-market');
+// ── Live Mining → Probability (P0-1 parity) ────────────────────────────────
+export const fetchShareDist = async (range = '1h'): Promise<ShareDistData> => {
+  const { data } = await api.get('/chart-data', { params: { chart: 'share_dist', range } });
   return data;
+};
+
+// ── Market ──────────────────────────────────────────────────────────────────
+// P0-4 parity: the server nests everything under `market_data` ({offers,
+// best_price, updated_at, provider_count, affiliate}) — unwrap it so the
+// screen gets offers AND the one-click affiliate link in one payload
+// (same shape the web dashboard reads from the snapshot).
+export const fetchHashrateMarket = async (): Promise<MarketData> => {
+  const { data } = await api.get('/hashrate-market');
+  return data?.market_data ?? { offers: data?.offers ?? [] };
 };
 
 export const fetchMarketHistory = async (limit = 100) => {

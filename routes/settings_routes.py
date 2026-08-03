@@ -9,12 +9,15 @@ import time
 from flask import Blueprint, jsonify, request
 
 from services.settings import DEFAULT_SETTINGS, load_settings, save_setting, settings_label
+from services.tenant import require_tenant, role_required
+from services.licensing import is_pro
 
 settings_bp = Blueprint("settings", __name__, url_prefix="/api")
 
 
 @settings_bp.route("/settings", methods=["GET"])
-def api_settings_get():
+@require_tenant
+def api_settings_get(tenant_id: str = ""):
     s = load_settings()
     out = []
     for k, v in DEFAULT_SETTINGS.items():
@@ -23,7 +26,9 @@ def api_settings_get():
 
 
 @settings_bp.route("/settings", methods=["POST"])
-def api_settings_post():
+@require_tenant
+@role_required("member")
+def api_settings_post(tenant_id: str = ""):
     """POST JSON body: {key: value, key: value, ...}"""
     body = request.get_json(silent=True) or {}
     if not isinstance(body, dict):
@@ -31,6 +36,12 @@ def api_settings_post():
     applied = []
     rejected = []
     for k, v in body.items():
+        # R1 (PRO tier): webhooks are a PRO feature. Off-by-default — the
+        # gate only fires when the operator sets PRO_LICENSE_KEYS and the
+        # caller has no valid key; otherwise is_pro() is True in open mode.
+        if k == "webhook_url" and not is_pro():
+            rejected.append({"key": k, "reason": "PRO feature — requires a license key"})
+            continue
         # Allow internal keys (prefixed with '_') and known settings
         if not k.startswith('_') and k not in DEFAULT_SETTINGS:
             rejected.append({"key": k, "reason": "unknown key"})
@@ -45,7 +56,9 @@ def api_settings_post():
 # ── FASE 2: Wallet history endpoint ──
 
 @settings_bp.route("/wallet/history", methods=["GET"])
-def get_wallet_history():
+@require_tenant
+@role_required("viewer")
+def get_wallet_history(tenant_id: str = ""):
     """Return list of past wallet addresses, most recent first."""
     try:
         from app import get_db

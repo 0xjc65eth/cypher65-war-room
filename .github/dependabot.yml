@@ -1,0 +1,34 @@
+# ── CYPHER65 War Room · Dependabot ───────────────────────────────────────
+# Keep runtime/dev dependencies, GitHub Actions and the Docker base image
+# patched. Weekly cadence for Python (low-noise), monthly for the Docker
+# base image (immutable-tag workflows change less often).
+version: 2
+updates:
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "pip"
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "ci"
+
+  - package-ecosystem: "docker"
+    directory: "/"
+    schedule:
+      interval: "monthly"
+    open-pull-requests-limit: 3
+    labels:
+      - "dependencies"
+      - "docker"

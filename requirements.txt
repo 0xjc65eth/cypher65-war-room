@@ -1,5 +1,13 @@
 # ── CYPHER65 War Room · Runtime dependencies ────────────────────────────
-flask>=3.0,<4.0
-requests>=2.31
-python-dotenv>=1.0
+# Audit C6: exact pins so deploys reproduce the tested environment.
+flask==3.1.3
+requests==2.34.2
+python-dotenv==1.2.2
+pyjwt==2.13.0
+# pywebpush is optional (Web Push notifications). services/push_notifier.py
+# imports it lazily and degrades gracefully when it is not installed, so a
+# minimal deploy can omit it safely.
 pywebpush>=1.14
+# CFO quick-win: gzip/brotli compression of JSON/HTML responses (smaller
+# snapshot/history payloads on mobile/slow links, near-zero CPU cost).
+flask-compress==1.24

@@ -1,6 +1,6 @@
 import { api } from '../src/api/client';
 
-jest.mock('expo-secure-store', () => ( ({
+jest.mock('expo-secure-store', () => ({
   getItemAsync: jest.fn(),
   setItemAsync: jest.fn(),
   deleteItemAsync: jest.fn(),

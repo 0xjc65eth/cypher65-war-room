@@ -17,6 +17,7 @@ isolates with exactly the same logic.
 import json
 import logging
 import os
+import re
 import sqlite3
 import time
 from functools import wraps
@@ -25,6 +26,12 @@ from typing import Any, Dict, Optional
 from flask import g, jsonify, request, session
 
 log = logging.getLogger("cypher65.tenant")
+
+# ── Allowlist for the users-table DDL (audit C7) ─────────────────────────
+# Only identifiers matching this pattern may be interpolated into ALTER
+# TABLE — defense-in-depth so a schema migration can never inject SQL even
+# if a future caller passes unsanitized input.
+_ALLOWED_COLUMN_NAME = re.compile(r"^[a-z_][a-z0-9_]*$")
 
 # Defaults for the FREE plan — used when a tenant row doesn't exist yet (or
 # the column is missing), so the system is honest instead of crashing or
@@ -45,10 +52,20 @@ SELF_HOST_MAX_WORKERS = int(os.environ.get("SELF_HOST_MAX_WORKERS", "50"))
 
 
 def _db_conn():
-    """Open a SQLite connection to the war-room DB (env DB_PATH or default)."""
+    """Open a SQLite connection to the war-room DB (env DB_PATH or default).
+
+    Audit C5: per-connection WAL + busy_timeout so concurrent polling writers
+    never hit "database is locked". Best-effort — skipped on :memory: DBs.
+    """
     db_path = os.environ.get("DB_PATH", "data/war_room.sqlite")
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
+    try:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
+        conn.execute("PRAGMA busy_timeout=3000")
+    except sqlite3.Error:
+        pass
     return conn
 
 
@@ -123,10 +140,23 @@ def log_audit(tenant_id: str = "", action: str = "", target: str = "",
     Best-effort by design: audit must never break the request it records,
     so any failure is logged and swallowed. Returns the new row id or None.
 
+    user_id resolution (data provenance — audit C8): when the caller does not
+    pass an explicit user_id, it is auto-resolved from the authenticated JWT
+    payload (the `username` claim) when available. This fixes the audit trail
+    being 100% anonymous (audit_logs.user_id was NULL on every row) while
+    staying safe outside request context (no g → empty user_id).
+
     Columns: ts, tenant_id, user_id, action, target, details (JSON).
     """
     if not action:
         return None
+    if not user_id:
+        try:
+            payload = g.auth_payload
+            if payload and payload.get("username"):
+                user_id = str(payload["username"])
+        except (AttributeError, RuntimeError):
+            pass
     try:
         conn = _db_conn()
         c = conn.cursor()
@@ -244,8 +274,10 @@ def get_current_role() -> str:
          (operator login via API key — the deployment owner).
       3. Auth not configured on the server → "admin" (open self-host mode;
          the operator is the owner, never locked out).
-      4. Otherwise → "viewer" (least privilege; e.g. a token that
-         authenticated but carries no role — never escalate silently).
+      4. Otherwise → "anonymous" (no credentials at all). This is NOT the
+         viewer role — viewer is reserved for a logged-in read-only user,
+         so @role_required("viewer") blocks anonymous callers (403) and
+         genuinely requires login even on read endpoints.
     """
     try:
         payload = g.auth_payload
@@ -277,7 +309,11 @@ def get_current_role() -> str:
         pass
     if not auth_configured():
         return "admin"  # open self-host mode
-    return "viewer"
+    # Anonymous remote caller with auth configured → NO role (priority 0,
+    # since "anonymous" is not in ROLE_PRIORITY). This is the enforcement
+    # point for "login required even on reads": @role_required("viewer")
+    # will 403 these callers instead of letting them through as viewer.
+    return "anonymous"
 
 
 def role_required(min_role: str = "member"):
@@ -468,9 +504,13 @@ def ensure_users_schema() -> None:
         cols = {row[1] for row in c.fetchall()}
         for col, col_def in (("role", "TEXT DEFAULT 'member'"),
                              ("password_hash", "TEXT DEFAULT ''")):
-            if col not in cols:
-                c.execute(f"ALTER TABLE users ADD COLUMN {col} {col_def}")
-                log.info("[tenant] added users.%s column", col)
+            if col in cols:
+                continue
+            if not _ALLOWED_COLUMN_NAME.fullmatch(col):
+                log.warning("[tenant] refusing DDL for non-allowlisted column %r", col)
+                continue
+            c.execute(f"ALTER TABLE users ADD COLUMN {col} {col_def}")
+            log.info("[tenant] added users.%s column", col)
         conn.commit()
         conn.close()
     except Exception as e:
