@@ -1,6 +1,10 @@
 name: 🚀 Execution Pipeline
 
-# Full pipeline: validate → build image → integration → deploy.
+# Full pipeline: validate → build image → integration → diagnose Render deploy.
+# The real deploy is Render's native autoDeploy (render.yaml) on push to master;
+# this pipeline verifies the release is healthy locally AND that the deployed
+# bundle matches the commit (parity gate with a CDN-proof backend marker).
+#
 # Adapted to the real repo: default branch is `master`, the app entrypoint is
 # `app.py` (port 8765), health is /api/healthz, and Docker Compose v2 is used
 # (not the legacy `docker-compose` command).
@@ -78,25 +82,103 @@ jobs:
       - uses: actions/checkout@v4
       - name: Start services with docker compose
         run: |
+          # Root-cause fix: the compose file bind-mounts ./data:/app/data. On a
+          # fresh runner ./data does not exist, so Docker creates it owned by
+          # root — but the container runs as the `cypher` system user
+          # (UID<1000, see Dockerfile), which then cannot create the SQLite
+          # file and the app dies at init_db ("unable to open database file"),
+          # making every endpoint check fail with curl exit 7. Make the bind
+          # source world-writable so the container can persist telemetry.
+          mkdir -p data && chmod 777 data
           docker compose up -d --build
           sleep 10
       - name: Validate endpoints
         run: |
+          set -e
+          # Boot takes a moment (init_db + first poll) — retry healthz up to
+          # 60s so a slow cold start doesn't flake the gate.
+          ok=""
+          for i in $(seq 1 30); do
+            if curl -fsS http://localhost:8765/api/healthz >/dev/null 2>&1; then
+              echo "healthz OK (attempt $i)"
+              ok="1"
+              break
+            fi
+            sleep 2
+          done
+          [ -n "$ok" ] || { echo "healthz never came up"; docker compose logs; exit 1; }
+          echo "── healthz ──"
           curl -fsS http://localhost:8765/api/healthz
+          echo ""
+          echo "── index ──"
           curl -fsS -o /dev/null -w 'index=%{http_code}\n' http://localhost:8765/
+          echo "── snapshot JSON shape ──"
+          curl -fsS http://localhost:8765/api/snapshot | python3 -c \
+            "import json,sys; d=json.load(sys.stdin); assert 'worker' in d and 'pool' in d; print('snapshot ok, keys:', sorted(d.keys())[:8])"
       - name: Show logs on failure
         if: failure()
         run: docker compose logs
 
-  # ── JOB 4: DEPLOY (MASTER ONLY) ────────────────────────────────────────
-  deploy:
+  # ── JOB 4: DIAGNOSE RENDER DEPLOY (MASTER ONLY) ────────────────────────
+  # Render autoDeploys on push to master (render.yaml). This job turns the old
+  # placeholder "Deploy to production server" into a real release verification:
+  #   1. healthz must answer 200 on the live URL (hard gate — prod down fails).
+  #   2. The served /static/app.js must byte-match the commit (soft gate — the
+  #      deploy is async, so we retry up to ~9 min; Render build typically
+  #      lands in 2-5 min).
+  #   3. If the bundle still differs, probe a BACKEND marker (the private-IP
+  #      hint from axe_fleet/scanner.py) — the API is not CDN-cached, so it
+  #      proves the new code reached the server even when Cloudflare caches a
+  #      stale static file. Only a fully-missing deploy (no bundle AND no
+  #      marker) fails the gate.
+  diagnose-render:
     runs-on: ubuntu-latest
     needs: integration
     if: github.ref == 'refs/heads/master'
     steps:
-      - name: Deploy to production server
+      - uses: actions/checkout@v4
+      - name: Diagnose Render deploy
         run: |
-          echo "🚀 Deploying to production..."
-          echo "Replace with your real deploy method (SSH / ECS / K8s)."
-          echo "Example:"
-          echo "# ssh user@server \"cd /opt/cypher65 && docker compose pull && docker compose up -d\""
+          BASE="https://cypher65-war-room.onrender.com"
+          set -e
+
+          # 1) healthz — hard gate
+          echo "── 1. healthz (live) ──"
+          ok=""
+          for i in $(seq 1 15); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 "$BASE/api/healthz" 2>/dev/null || echo 000)
+            echo "  attempt $i: healthz=$code"
+            if [ "$code" = "200" ]; then ok="1"; break; fi
+            sleep 20
+          done
+          [ -n "$ok" ] || { echo "❌ Render healthz never returned 200 — production is DOWN"; exit 1; }
+          echo "  ✅ healthz OK"
+
+          # 2) bundle parity — soft gate with retry
+          local_md5=$(md5sum static/app.js | awk '{print $1}')
+          echo "── 2. bundle parity (local app.js md5=$local_md5) ──"
+          match=""
+          for i in $(seq 1 27); do  # 27 × 20s ≈ 9 min for the async build
+            live_md5=$(curl -s --max-time 25 "$BASE/static/app.js" --compressed 2>/dev/null | python3 -c "import sys,hashlib,gzip; d=sys.stdin.buffer.read(); d=gzip.decompress(d) if d[:2]==b'\x1f\x8b' else d; print(hashlib.md5(d).hexdigest())" 2>/dev/null || echo "")
+            echo "  check $i: live=$live_md5"
+            if [ "$live_md5" = "$local_md5" ]; then match="1"; break; fi
+            sleep 20
+          done
+          if [ -n "$match" ]; then
+            echo "  ✅ served bundle matches this commit"
+            exit 0
+          fi
+
+          # 3) CDN-proof backend marker — the new code may be live behind a
+          # cached static file (Cloudflare). Diagnose a private LAN IP; the
+          # 'IP privado' hint lives in scanner.py, not the CDN-cached bundle.
+          echo "  ⚠ bundle still differs after ~9 min — probing backend marker"
+          marker=$(curl -s --max-time 20 "$BASE/api/axe-fleet/diagnose/192.168.1.27" 2>/dev/null | python3 -c "import json,sys; d=json.load(sys.stdin); print('IP privado' in (d.get('error_detail') or ''))" 2>/dev/null || echo "False")
+          echo "  backend marker (private-IP hint present): $marker"
+          if [ "$marker" = "True" ]; then
+            echo "  ⚠ Deploy IS live (backend marker found) — static is CDN-cached. Check Render dashboard for the completed deploy."
+            exit 0
+          fi
+          echo "❌ No new code detected: bundle mismatch AND no backend marker — the deploy likely failed."
+          echo "   Check: https://dashboard.render.com → cypher65-war-room → deploys"
+          exit 1
