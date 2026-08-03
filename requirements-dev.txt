@@ -14,7 +14,7 @@ coverage==7.15.0
 #    Makefile `lint` target. Do not gate CI on these until a dedicated
 #    cleanup commit lands.) ────────────────────────────────────────────────
 black==25.1.0
-flake8==7.1.1
+flake8==7.3.0
 
 # ── Quality / security scanning (local use; CI integration pending) ──────
 bandit==1.8.2
