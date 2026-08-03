@@ -300,6 +300,14 @@ class AxeOSConnector:
 
         # Shares / best diff
         t["best_diff"] = str(info.get("bestDiff") or "")
+        # Worker-intelligence extras (best-effort — many AxeOS builds expose
+        # the current stratum difficulty target; last-share time is rarer).
+        # None → the UI renders an honest '—'.
+        t["pool_diff"] = info.get("poolDifficulty") or info.get("difficulty") or info.get("poolDiff")
+        _last_share = info.get("lastShare")
+        if _last_share is None:
+            _last_share = info.get("lastShareTime") or info.get("lastShareTimestamp")
+        t["last_share_ts"] = _last_share
         t["shares_accepted"] = int(info.get("sharesAccepted") or 0)
         t["shares_rejected"] = int(info.get("sharesRejected") or 0)
         accepted = t["shares_accepted"]

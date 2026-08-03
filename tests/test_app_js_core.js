@@ -3627,6 +3627,96 @@ function buildConnectivityReportTest(r) {
 
 
 // ═══════════════════════════════════════════════════════════════════════════
+//  SUITE 26b: FASE_2 Worker Intelligence — buildWorkerIntelligenceRows()
+//  (per-worker live telemetry: shares, reject ratio, stratum diff target,
+//  last share, latency, health). Mirrors static/app.js.
+// ═══════════════════════════════════════════════════════════════════════════
+console.log('⛏ SUITE 26b: buildWorkerIntelligenceRows() — per-worker live telemetry');
+
+// Mirror of static/app.js buildWorkerIntelligenceRows() — pure, no DOM, no fmt.
+function buildWorkerIntelligenceRowsTest(devices) {
+  const rows = [];
+  (devices || []).forEach(function (d) {
+    const tel = d._telemetry || {};
+    const health = d._health || {};
+    const accepted = Number(tel.shares_accepted) || 0;
+    const rejected = Number(tel.shares_rejected) || 0;
+    const stale = Number(tel.shares_stale) || 0;
+    const total = accepted + rejected;
+    let rejectPct = null;
+    if (total > 0) rejectPct = Number(tel.hw_error_pct != null ? tel.hw_error_pct : (rejected / total) * 100);
+    let lastShareAgo = null;
+    const lst = tel.last_share_ts;
+    if (lst != null && lst !== '') {
+      let t = Number(lst);
+      if (!isFinite(t) || t > 1e12) t = Date.parse(String(lst)) / 1000;
+      if (isFinite(t) && t > 0) lastShareAgo = Math.max(0, Math.floor(Date.now() / 1000 - t));
+    }
+    rows.push({
+      id: d.id || '', name: d.name || d.ip_address || '?', ip: d.ip_address || '',
+      status: d.status || 'OFFLINE', hr: Number(tel.hashrate_hs) || 0,
+      temp: tel.temperature, sharesA: accepted, sharesR: rejected, sharesS: stale,
+      rejectPct: rejectPct, bestDiff: tel.best_diff, poolDiff: tel.pool_diff,
+      lastShareAgo: lastShareAgo, dataAge: tel.age_seconds,
+      latencyMs: d.latency_ms, stratum: tel.stratum_status || '',
+      healthScore: health.score != null ? health.score : null,
+    });
+  });
+  const order = { ONLINE: 0, HASHING: 0, WARNING: 1, IDLE: 2, PAUSED: 3, OFFLINE: 4, ERROR: 5, CRITICAL: 6 };
+  rows.sort(function (a, b) {
+    const oa = order[a.status] != null ? order[a.status] : 9;
+    const ob = order[b.status] != null ? order[b.status] : 9;
+    if (oa !== ob) return oa - ob;
+    return String(a.name).localeCompare(String(b.name));
+  });
+  return rows;
+}
+
+(function workerIntelligenceSuite() {
+  const devices = [
+    { id: 'd1', name: 'Garage', ip_address: '192.168.1.100', status: 'ONLINE', latency_ms: 12,
+      _telemetry: { hashrate_hs: 5200000000000, shares_accepted: 15823, shares_rejected: 47, shares_stale: 2, hw_error_pct: 0.3, best_diff: '42.8T', pool_diff: '256M', stratum_status: 'connected', age_seconds: 4 },
+      _health: { score: 92 } },
+    { id: 'd2', name: 'Hot Lab', ip_address: '192.168.1.102', status: 'WARNING', latency_ms: null,
+      _telemetry: { hashrate_hs: 3800000000000, shares_accepted: 5872, shares_rejected: 215, shares_stale: 0, hw_error_pct: 3.5, best_diff: '28.3T', stratum_status: 'connected', age_seconds: 9 },
+      _health: { score: 41 } },
+    { id: 'd3', name: 'Basement', ip_address: '192.168.1.200', status: 'OFFLINE',
+      _telemetry: { hashrate_hs: 0 }, _health: { score: 0 } },
+  ];
+  const rows = buildWorkerIntelligenceRowsTest(devices);
+  assertEqual('3 workers parsed', rows.length, 3);
+  assertEqual('ordering: ONLINE first', rows[0].name, 'Garage');
+  assertEqual('ordering: WARNING second', rows[1].name, 'Hot Lab');
+  assertEqual('ordering: OFFLINE last', rows[2].name, 'Basement');
+  assertEqual('reject pct from hw_error_pct', rows[0].rejectPct, 0.3);
+  assertEqual('hr parsed', rows[0].hr, 5200000000000);
+  assertEqual('shares a/r/s', rows[0].sharesA + '/' + rows[0].sharesR + '/' + rows[0].sharesS, '15823/47/2');
+  assertEqual('stratum passthrough', rows[0].stratum, 'connected');
+  assertEqual('latency passthrough', rows[0].latencyMs, 12);
+  assertEqual('health score passthrough', rows[0].healthScore, 92);
+  assertEqual('offline has no reject pct', rows[2].rejectPct, null);
+
+  // hw_error_pct missing → derive from rejected/(accepted+rejected)
+  const derived = buildWorkerIntelligenceRowsTest([{
+    id: 'x', name: 'X', status: 'ONLINE',
+    _telemetry: { hashrate_hs: 100, shares_accepted: 90, shares_rejected: 10 },
+  }]);
+  assertEqual('derived reject pct', derived[0].rejectPct, 10);
+
+  // last_share_ts ISO string parsing (best-effort)
+  const iso = buildWorkerIntelligenceRowsTest([{
+    id: 'y', name: 'Y', status: 'ONLINE',
+    _telemetry: { hashrate_hs: 1, last_share_ts: new Date(Date.now() - 60000).toISOString() },
+  }]);
+  assertEqual('last share age parsed from ISO (~60s)', iso[0].lastShareAgo >= 55 && iso[0].lastShareAgo <= 70, true);
+
+  // empty/null input → no rows, no crash
+  assertEqual('empty input yields no rows', buildWorkerIntelligenceRowsTest([]).length, 0);
+  assertEqual('null input yields no rows', buildWorkerIntelligenceRowsTest(null).length, 0);
+})();
+
+
+// ═══════════════════════════════════════════════════════════════════════════
 //  SUITE 27: P0-5 wallet ranks — acctRankLabels() pure resolver
 //  (COMBINED / DIFF RANK / LOYALTY RANK with C3 fallback labels). Mirrors
 //  static/app.js acctRankLabels().

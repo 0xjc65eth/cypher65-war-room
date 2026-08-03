@@ -1302,6 +1302,24 @@
     <div class="lm-summary__item"><span class="lm-summary__label">BEST DIFF</span><span class="lm-summary__val lm-summary__val--gold" id="lm-summary-best">—</span></div>
   </div>
 
+  <!-- ── WORKER INTELLIGENCE (FASE_2) — per-worker live telemetry feed.
+       Fed by the AXE FLEET /summary endpoint (shares, reject ratio, stratum
+       diff target, last share, latency). Honest '—' when a field is absent. -->
+  <div class="lm-workers" id="lm-workers" data-module="live" style="display:none">
+    <div class="lm-workers__head">
+      <span class="lm-workers__title">> WORKER INTELLIGENCE · LIVE TELEMETRY</span>
+      <span class="badge badge--mute" id="lm-workers-count">0</span>
+    </div>
+    <div class="lm-workers__grid" id="lm-workers-grid"></div>
+    <div class="lm-flow" id="lm-flow" style="display:none">
+      <div class="lm-flow__head">
+        <span class="lm-flow__title">⌖ HASH FLOW · LAST SAMPLES</span>
+        <span class="lm-flow__legend"><span class="lm-flow__dot lm-flow__dot--ok"></span>online&nbsp;<span class="lm-flow__dot lm-flow__dot--warn"></span>warn&nbsp;<span class="lm-flow__dot lm-flow__dot--bad"></span>offline</span>
+      </div>
+      <div class="lm-flow__raster" id="lm-flow-raster"></div>
+    </div>
+  </div>
+
   <div class="hunt-layout" id="hunt-layout">
     <div class="hunt-stream" id="hunt-stream">
       <div class="hunt-stream__head">

@@ -149,6 +149,7 @@
     lmSummaryWallet: $('#lm-summary-wallet'), lmSummaryPool: $('#lm-summary-pool'), lmSummaryDot: $('#lm-summary-dot'),
     lmSummaryWorkers: $('#lm-summary-workers'), lmSummaryHr: $('#lm-summary-hr'), lmSummaryBest: $('#lm-summary-best'),
     lmBestShare: $('#lm-best-share'), lmBestShareVal: $('#lm-best-share-val'), lmBestShareWorker: $('#lm-best-share-worker'), lmBestShareTime: $('#lm-best-share-time'),
+    lmWorkers: $('#lm-workers'), lmWorkersGrid: $('#lm-workers-grid'), lmWorkersCount: $('#lm-workers-count'), lmFlow: $('#lm-flow'), lmFlowRaster: $('#lm-flow-raster'),
     lmEventLogTerminal: $('#lm-event-log-terminal'),
     hsNonceBar: $('#hs-nonce-bar'), hsNoncesSearched: $('#hs-nonces-searched'), hsNoncePct: $('#hs-nonce-pct'), hsHashesPerSec: $('#hs-hashes-per-sec'),
     hsBestDiff: $('#hs-best-diff'), hsTargetDiff: $('#hs-target-diff'), hsTargetBar: $('#hs-target-bar'), hsTargetMarker: $('#hs-target-marker'),
@@ -3841,6 +3842,165 @@ dom.walletSave?.addEventListener('click', async () => {
     } catch (e) {
       if (dom.axeFleetStatusBadge) dom.axeFleetStatusBadge.textContent = 'ERROR';
     }
+    // FASE_2 — Worker Intelligence rides the same poll/SSE cadence.
+    fetchWorkerIntelligence();
+  }
+
+  // ── FASE_2 · WORKER INTELLIGENCE (CYPHER // LIVE MINING) ───────────────
+  // Per-worker live telemetry feed fed by the AXE FLEET /summary endpoint
+  // (shares, reject ratio, stratum diff target, last share, latency). Honest
+  // '—' whenever a firmware doesn't expose a field — no invented numbers.
+  // Pure builder mirrored in tests/test_app_js_core.js.
+  function buildWorkerIntelligenceRows(devices) {
+    const rows = [];
+    (devices || []).forEach(function (d) {
+      const tel = d._telemetry || {};
+      const health = d._health || {};
+      const accepted = Number(tel.shares_accepted) || 0;
+      const rejected = Number(tel.shares_rejected) || 0;
+      const stale = Number(tel.shares_stale) || 0;
+      const total = accepted + rejected;
+      let rejectPct = null;
+      if (total > 0) {
+        rejectPct = Number(tel.hw_error_pct != null ? tel.hw_error_pct : (rejected / total) * 100);
+      }
+      // Last-share age in seconds (best-effort — firmware may not expose it).
+      let lastShareAgo = null;
+      const lst = tel.last_share_ts;
+      if (lst != null && lst !== '') {
+        let t = Number(lst);
+        if (!isFinite(t) || t > 1e12) t = Date.parse(String(lst)) / 1000;
+        if (isFinite(t) && t > 0) lastShareAgo = Math.max(0, Math.floor(Date.now() / 1000 - t));
+      }
+      rows.push({
+        id: d.id || '',
+        name: d.name || d.ip_address || '?',
+        ip: d.ip_address || '',
+        status: d.status || 'OFFLINE',
+        hr: Number(tel.hashrate_hs) || 0,
+        hrStr: fmt.hashrate(tel.hashrate_hs),
+        temp: tel.temperature,
+        sharesA: accepted, sharesR: rejected, sharesS: stale,
+        rejectPct: rejectPct,
+        bestDiff: tel.best_diff,
+        poolDiff: tel.pool_diff,
+        lastShareAgo: lastShareAgo,
+        latencyMs: d.latency_ms,
+        stratum: tel.stratum_status || '',
+        healthScore: health.score != null ? health.score : null,
+      });
+    });
+    // Online first → warn → offline; stable by name within each bucket.
+    const order = { ONLINE: 0, HASHING: 0, WARNING: 1, IDLE: 2, PAUSED: 3, OFFLINE: 4, ERROR: 5, CRITICAL: 6 };
+    rows.sort(function (a, b) {
+      const oa = order[a.status] != null ? order[a.status] : 9;
+      const ob = order[b.status] != null ? order[b.status] : 9;
+      if (oa !== ob) return oa - ob;
+      return String(a.name).localeCompare(String(b.name));
+    });
+    return rows;
+  }
+
+  // Hash Flow Raster — rolling per-worker status samples (client-side ring
+  // buffer, one column per poll tick, max 24) so the feed shows worker
+  // health over time without requiring a new backend series.
+  const _lmFlow = {};
+  const _LM_FLOW_MAX = 24;
+  function _lmFlowSample(status) {
+    const s = String(status || '').toUpperCase();
+    if (s === 'ONLINE' || s === 'HASHING') return 'ok';
+    if (s === 'WARNING' || s === 'IDLE' || s === 'PAUSED') return 'warn';
+    if (s === 'OFFLINE' || s === 'ERROR' || s === 'CRITICAL') return 'bad';
+    return 'mute';
+  }
+  function _pushLmFlowSample(id, code) {
+    if (!_lmFlow[id]) _lmFlow[id] = [];
+    const buf = _lmFlow[id];
+    buf.push(code);
+    if (buf.length > _LM_FLOW_MAX) buf.shift();
+  }
+
+  // FASE_2 — render the worker table + hash-flow raster into #lm-workers.
+  function renderWorkerIntelligence(devices) {
+    const box = dom.lmWorkersGrid;
+    if (!box) return;
+    const rows = buildWorkerIntelligenceRows(devices);
+    if (dom.lmWorkersCount) dom.lmWorkersCount.textContent = rows.length + (rows.length === 1 ? ' worker' : ' workers');
+    if (dom.lmWorkers) dom.lmWorkers.style.display = rows.length ? 'block' : 'none';
+    if (dom.lmFlow) dom.lmFlow.style.display = rows.length ? 'block' : 'none';
+    if (!rows.length) {
+      box.innerHTML = '<div class="lm-workers__empty">no fleet workers registered — add miners in AXE FLEET (⚙) to see live per-worker telemetry here</div>';
+      return;
+    }
+
+    // Push this tick's sample, drop buffers of removed devices.
+    rows.forEach(r => _pushLmFlowSample(r.id, _lmFlowSample(r.status)));
+    const alive = {}; rows.forEach(r => alive[r.id] = 1);
+    Object.keys(_lmFlow).forEach(id => { if (!alive[id]) delete _lmFlow[id]; });
+
+    const esc = escapeHtml;
+    const cell = (v, cls, title) => `<span class="lm-w__cell${cls ? ' ' + cls : ''}"${title ? ' title="' + title + '"' : ''}>${v}</span>`;
+    // 'DIFF' column: current stratum difficulty target when the firmware
+    // exposes it (pool_diff), else the worker's best share diff — honest
+    // telemetry, never invented. The cell tooltip carries which source was
+    // used so the number is never mistaken for the live target.
+    const head = () => ['WORKER', 'HR', 'LAST SHARE', 'DIFF', 'REJ%', 'SHARES A/R/S', 'STRATUM', 'PING', 'HEALTH']
+      .map(h => cell(h, 'lm-w__cell--head')).join('');
+    const body = rows.map(r => {
+      const stCls = (r.status === 'ONLINE' || r.status === 'HASHING') ? 'lm-w__st--ok'
+        : (r.status === 'WARNING' || r.status === 'IDLE' || r.status === 'PAUSED' ? 'lm-w__st--warn' : 'lm-w__st--bad');
+      // fmt.age(now - delta) === delta — lastShareAgo is already seconds
+      // since the last share, so this renders "Xs ago / Xm ago".
+      const lastShare = r.lastShareAgo != null ? fmt.age(Date.now() / 1000 - r.lastShareAgo) : '\u2014';
+      const diffT = (r.poolDiff != null && r.poolDiff !== '')
+        ? fmt.diff(r.poolDiff)
+        : (r.bestDiff ? fmt.diff(r.bestDiff) : '\u2014');
+      const diffSrc = (r.poolDiff != null && r.poolDiff !== '')
+        ? 'stratum difficulty target'
+        : (r.bestDiff ? 'best share diff (stratum target not exposed)' : null);
+      const rej = r.rejectPct != null ? Number(r.rejectPct).toFixed(1) + '%' : '\u2014';
+      const shares = `${r.sharesA}/${r.sharesR}/${r.sharesS}`;
+      const health = r.healthScore != null ? r.healthScore + '/100' : '\u2014';
+      const ping = r.latencyMs != null ? r.latencyMs + 'ms' : '\u2014';
+      const stratum = r.stratum ? esc(String(r.stratum)) : '\u2014';
+      const temp = r.temp != null ? Math.round(r.temp) + '°C' : null;
+      return `<div class="lm-w__row">` +
+        cell(`<span class="lm-w__name lm-w__st ${stCls}">${esc(r.name)}</span><span class="lm-w__ip">${esc(r.ip)}${temp ? ' · ' + temp : ''}</span>`)
+        + cell(r.hrStr)
+        + cell(lastShare)
+        + cell(diffT, '', diffSrc)
+        + cell(rej, r.rejectPct != null && r.rejectPct >= 5 ? 'lm-w__cell--bad' : '')
+        + cell(shares)
+        + cell(stratum)
+        + cell(ping)
+        + cell(health) + `</div>`;
+    }).join('');
+    box.innerHTML = `<div class="lm-w__row lm-w__row--head">${head()}</div>${body}`;
+
+    // Raster — rows = workers, cols = last N samples (oldest left, newest right).
+    const cols = _LM_FLOW_MAX;
+    const raster = rows.map(r => {
+      const buf = _lmFlow[r.id] || [];
+      let cellsHtml = '';
+      for (let i = 0; i < cols; i++) {
+        const idx = i - (cols - buf.length);
+        const code = idx < 0 ? 'mute' : (buf[idx] || 'mute');
+        cellsHtml += `<span class="lm-flow__cell lm-flow__cell--${code}" title="${code}"></span>`;
+      }
+      return `<div class="lm-flow__row"><span class="lm-flow__label" title="${esc(r.ip)}">${esc(r.name)}</span><div class="lm-flow__cells">${cellsHtml}</div></div>`;
+    }).join('');
+    if (dom.lmFlowRaster) dom.lmFlowRaster.innerHTML = raster;
+  }
+
+  // FASE_2 — fetch fleet /summary and render Worker Intelligence. Non-fatal:
+  // on failure the panel simply keeps the last good data.
+  async function fetchWorkerIntelligence() {
+    try {
+      const r = await authFetch('/api/axe-fleet/summary');
+      if (!r.ok) return;
+      const data = await r.json();
+      renderWorkerIntelligence((data && data.devices) || []);
+    } catch (e) { /* non-fatal */ }
   }
 
   function renderAxeFleet(data) {

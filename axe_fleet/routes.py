@@ -628,6 +628,11 @@ def fleet_summary(tenant_id: str = ""):
             "stratum_status": p.get("stratum_status", ""),
             "pool_url": p.get("pool_url", ""),
             "pool_user": p.get("pool_user", ""),
+            # Worker-intelligence: current stratum diff target + last-share
+            # timestamp (best-effort — None when the firmware doesn't expose
+            # them; the LIVE MINING panel renders an honest '—').
+            "pool_diff": p.get("pool_diff"),
+            "last_share_ts": p.get("last_share_ts"),
             "ts": p.get("ts", now),
             "age_seconds": now - p.get("ts", now),
         }
@@ -1789,6 +1794,8 @@ def fleet_health(tenant_id: str = ""):
                 "frequency_mhz": tel.get("frequency_mhz"),
                 "voltage_mv": tel.get("voltage_mv"),
                 "best_diff": tel.get("best_diff", ""),
+                "pool_diff": tel.get("pool_diff"),
+                "last_share_ts": tel.get("last_share_ts"),
                 "uptime_seconds": tel.get("uptime_seconds", 0),
                 "uptime_str": _fmt_uptime(tel.get("uptime_seconds", 0)),
                 "free_heap": tel.get("free_heap"),

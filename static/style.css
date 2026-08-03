@@ -1906,6 +1906,39 @@ body {
 .hunt-shares__grid { display: flex; gap: 4px; flex-wrap: wrap; }
 .hunt-shares__empty { font-size: 9px; color: var(--text-tertiary); font-style: italic; padding: 8px; }
 
+/* ── FASE_2 · WORKER INTELLIGENCE (LIVE MINING) ────────────────────── */
+.lm-workers { margin-top: 6px; }
+.lm-workers__head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px; }
+.lm-workers__title { font-size: 10px; color: var(--green-dim); letter-spacing: 0.08em; }
+.lm-workers__grid { display: flex; flex-direction: column; gap: 2px; overflow-x: auto; }
+.lm-workers__empty { padding: 12px; text-align: center; color: var(--text-tertiary); font-size: 10px; border: 1px dashed var(--border); border-radius: 6px; }
+.lm-w__row { display: grid; grid-template-columns: 1.6fr 1fr 1fr 1fr 0.7fr 1.2fr 1fr 0.7fr 0.8fr; gap: 6px; align-items: center; padding: 3px 6px; border-bottom: 1px solid var(--border-subtle); font-size: 10px; white-space: nowrap; }
+.lm-w__row--head { color: var(--text-tertiary); font-size: 8px; text-transform: uppercase; letter-spacing: 0.05em; border-bottom-color: var(--border); }
+.lm-w__cell { display: flex; align-items: center; gap: 4px; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.lm-w__cell--head { font-size: 8px; }
+.lm-w__cell--bad { color: var(--accent-red); }
+.lm-w__name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; }
+.lm-w__ip { font-size: 8px; color: var(--text-tertiary); font-family: 'JetBrains Mono', monospace; }
+.lm-w__st--ok { color: var(--green); }
+.lm-w__st--warn { color: var(--amber); }
+.lm-w__st--bad { color: var(--accent-red); }
+.lm-flow { margin-top: 6px; padding-top: 4px; border-top: 1px solid var(--border-subtle); }
+.lm-flow__head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 3px; }
+.lm-flow__title { font-size: 9px; color: var(--green-dim); letter-spacing: 0.08em; }
+.lm-flow__legend { font-size: 8px; color: var(--text-tertiary); display: flex; align-items: center; gap: 3px; }
+.lm-flow__dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; }
+.lm-flow__dot--ok { background: var(--green); }
+.lm-flow__dot--warn { background: var(--amber); }
+.lm-flow__dot--bad { background: var(--accent-red); }
+.lm-flow__raster { display: flex; flex-direction: column; gap: 2px; }
+.lm-flow__row { display: grid; grid-template-columns: 1.6fr 24fr; gap: 6px; align-items: center; }
+.lm-flow__label { font-size: 9px; color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lm-flow__cells { display: grid; grid-template-columns: repeat(24, 1fr); gap: 1px; } /* 24 = _LM_FLOW_MAX in static/app.js — keep in sync */
+.lm-flow__cell { height: 10px; border-radius: 1px; background: var(--border-subtle); }
+.lm-flow__cell--ok { background: var(--green); }
+.lm-flow__cell--warn { background: var(--amber); }
+.lm-flow__cell--bad { background: var(--accent-red); }
+.lm-flow__cell--mute { background: var(--border-subtle); }
 .lm-best-share { margin-top: 6px; }
 .lm-best-share__inner { position: relative; padding: 8px; border: 1px solid var(--orange); text-align: center; }
 .lm-best-share__label { font-size: 9px; color: var(--orange); text-transform: uppercase; }
