@@ -26,7 +26,7 @@ import time
 import uuid
 from functools import wraps
 
-from flask import Blueprint, jsonify, request, session
+from flask import Blueprint, jsonify, request, session, send_file
 
 from services.tenant import (
     get_tenant_id as _get_tenant_id,
@@ -965,6 +965,10 @@ def start_scan(tenant_id: str = ""):
             "total": 0,
             "scanned": 0,
             "found": [],
+            # Alive-vs-miner layer + private-LAN topology hint (scanner).
+            "alive": 0,
+            "alive_ips": [],
+            "hint": None,
             "error": None,
             "created_at": now,
         }
@@ -983,6 +987,9 @@ def start_scan(tenant_id: str = ""):
             scan["total"] = result.get("total", scan.get("total", 0))
             scan["scanned"] = result.get("total", 0)
             scan["found"] = result.get("found", [])
+            scan["alive"] = result.get("alive", 0)
+            scan["alive_ips"] = result.get("alive_ips", [])
+            scan["hint"] = result.get("hint")
             scan["error"] = result.get("error")
             scan["status"] = "done" if not result.get("error") else "error"
             log.info("[axe] scan %s (%s) done: %d/%d found",
@@ -1661,7 +1668,11 @@ def remote_onboarding(tenant_id: str = ""):
 
 
 def _execute_device_command(device_id: str, command: str):
-    """Execute a command on a device. Shared by restart/identify endpoints."""
+    """Execute a command on a device. Shared by restart/identify endpoints.
+
+    SaaS agent model: when the device is agent_managed (polled by the user's
+    LOCAL agent), the command cannot be executed from the cloud — it is
+    ENQUEUED so the agent pulls and runs it on the home LAN."""
     device = _registry.get_device(device_id, tenant_id=_get_tenant_id())
     if not device:
         return jsonify({"error": "device not found"}), 404
@@ -1669,6 +1680,18 @@ def _execute_device_command(device_id: str, command: str):
     caps = device.get("capabilities", {})
     if not caps.get(command):
         return jsonify({"error": f"'{command}' not supported by this device"}), 400
+
+    # Agent-managed → route through the command queue (agent executes locally).
+    if int(device.get("agent_managed", 0) or 0):
+        queued = _registry.enqueue_agent_command(
+            device_id, command, tenant_id=_get_tenant_id())
+        if not queued:
+            return jsonify({"error": "could not enqueue agent command"}), 500
+        _log_audit(_get_tenant_id(), "fleet.agent_command_queued",
+                   target=device_id, details={"command": command, "cmd_id": queued.get("id")})
+        return jsonify({"success": True, "queued": True,
+                        "message": f"'{command}' enviado para o agente local executar",
+                        "command_id": queued.get("id")})
 
     try:
         conn = AxeOSConnector(device["ip_address"])
@@ -1908,3 +1931,179 @@ def parse_diff_to_float(diff_str: str) -> float:
         return num * mult.get(suf, 1)
     except (ValueError, TypeError):
         return 0.0
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# AGENT API — /api/agent/*  (SaaS: local agent → cloud dashboard)
+# ══════════════════════════════════════════════════════════════════════════
+# The user runs a LIGHTWEIGHT agent on their home LAN (Docker). The agent
+# connects OUT to this cloud dashboard (no open ports needed — NAT/CGNAT
+# safe) and:
+#   • registers devices it discovers (scan ARP/subnet local)
+#   • pushes telemetry in batches (every ~30s)
+#   • pulls queued commands (restart/identify) and acks the result
+# Auth: `Authorization: Bearer <agent-token>` — a long-lived JWT minted via
+# POST /api/agent/token by a logged-in user, scoped to their tenant.
+# The agent token is a JWT with the `agent: true` claim; tenant comes from
+# `sub` (same as user tokens).
+
+agent_bp = Blueprint("agent", __name__, url_prefix="/api/agent")
+
+# Long-lived agent token: 1 year. The agent runs unattended on the home LAN;
+# a short-lived token would break polling until the user re-generates it.
+AGENT_TOKEN_TTL = 365 * 86400
+
+
+def _require_agent(f):
+    """Require a valid agent token (JWT with `agent: true` claim).
+    Injects `agent_tenant_id` (the tenant that owns the agent) into kwargs."""
+    @wraps(f)
+    def wrapper(*args, **kwargs):
+        from services.auth import verify_token
+        auth_header = request.headers.get("Authorization", "")
+        if not auth_header.startswith("Bearer "):
+            return jsonify({"error": "agent token required"}), 401
+        payload = verify_token(auth_header[7:], expected_type="access")
+        if not payload or not payload.get("agent"):
+            return jsonify({"error": "invalid agent token"}), 401
+        kwargs["agent_tenant_id"] = payload.get("sub") or "default"
+        return f(*args, **kwargs)
+    return wrapper
+
+
+@agent_bp.route("/token", methods=["POST"])
+@require_tenant
+@_role_required("member")
+def agent_issue_token(tenant_id: str = ""):
+    """Mint a long-lived agent token for the caller's tenant.
+    Requires a logged-in user (member+). Returns the JWT the user pastes
+    into the agent's env (CYPHER65_AGENT_TOKEN)."""
+    from services.auth import create_token
+    tid = tenant_id or "default"
+    token = create_token(subject=tid, ttl=AGENT_TOKEN_TTL,
+                         extra_claims={"agent": True, "role": "agent"})
+    _log_audit(tid, "agent.token_issued", details={"ttl_days": 365})
+    return jsonify({
+        "success": True,
+        "token": token,
+        "tenant_id": tid,
+        "expires_in": AGENT_TOKEN_TTL,
+        "usage": "CYPHER65_AGENT_TOKEN=<token> em Docker na sua LAN (o agente conecta para fora)",
+    })
+
+
+@agent_bp.route("/register", methods=["POST"])
+@_require_agent
+def agent_register_devices(agent_tenant_id: str = ""):
+    """Register devices discovered by the agent (upsert by IP+tenant).
+    Body: {"devices": [{"ip": ..., "name": ..., "model": ...,
+           "firmware": ..., "version": ..., "hostname": ...,
+           "type": "bitaxe"|"cgminer", "mac": ...}, ...]}
+    Returns the registered device dicts."""
+    data = request.get_json(silent=True) or {}
+    devices = data.get("devices") or []
+    if not isinstance(devices, list) or not devices:
+        return jsonify({"error": "devices array required"}), 400
+    out = []
+    for d in devices:
+        ip = (d.get("ip") or "").strip()
+        if not ip:
+            continue
+        dev = _registry.upsert_agent_device(
+            ip, name=(d.get("name") or "").strip(),
+            tenant_id=agent_tenant_id,
+            info={
+                "model": d.get("model"), "firmware": d.get("firmware"),
+                "version": d.get("version"), "hostname": d.get("hostname"),
+                "mac": d.get("mac"), "manufacturer": d.get("manufacturer"),
+            },
+        )
+        out.append(dev)
+    _log_audit(agent_tenant_id, "agent.register", details={"count": len(out)})
+    return jsonify({"success": True, "registered": out, "count": len(out)}), 201
+
+
+@agent_bp.route("/telemetry", methods=["POST"])
+@_require_agent
+def agent_telemetry(agent_tenant_id: str = ""):
+    """Push telemetry for one device (agent polling result).
+    Body: {"ip": ..., "telemetry": {...}} — telemetry uses the SAME
+    normalized shape as the registry's extract_telemetry (hashrate_hs,
+    temperature, fan_rpm, power_watts, best_diff, shares_*, ...)."""
+    data = request.get_json(silent=True) or {}
+    ip = (data.get("ip") or "").strip()
+    tel = data.get("telemetry")
+    # Require the explicit key: `telemetry: {}` (empty) is legal (a device
+    # that answered nothing), but a MISSING key is a malformed push.
+    if not ip or not isinstance(tel, dict):
+        return jsonify({"error": "ip and telemetry object required"}), 400
+    device = _registry.get_device_by_ip(ip, tenant_id=agent_tenant_id)
+    if not device:
+        # Agent reported a device it registered earlier but the row is gone
+        # (e.g. server DB reset). Re-upsert with the telemetry as identity.
+        device = _registry.upsert_agent_device(ip, tenant_id=agent_tenant_id,
+                                               info={"model": tel.get("model")})
+    _registry.save_agent_telemetry(device["id"], tel, tenant_id=agent_tenant_id)
+    return jsonify({"success": True, "device_id": device["id"],
+                    "status": "ONLINE" if int(tel.get("hashrate_hs") or 0) > 0 else "IDLE"})
+
+
+@agent_bp.route("/commands/pull", methods=["POST"])
+@_require_agent
+def agent_pull_commands(agent_tenant_id: str = ""):
+    """Pull queued commands (restart/identify) for this tenant's devices.
+    Returns [] when nothing is pending."""
+    cmds = _registry.pending_agent_commands(tenant_id=agent_tenant_id)
+    pulled = []
+    for c in cmds:
+        if _registry.mark_command_pulled(c["id"], tenant_id=agent_tenant_id):
+            pulled.append({"id": c["id"], "device_id": c["device_id"],
+                           "command": c["command"], "params": c.get("params", {})})
+    return jsonify({"success": True, "commands": pulled})
+
+
+@agent_bp.route("/commands/<command_id>/ack", methods=["POST"])
+@_require_agent
+def agent_ack_command(command_id: str, agent_tenant_id: str = ""):
+    """Ack a command result after executing it locally.
+    Body: {"success": bool, "result": str|dict}"""
+    data = request.get_json(silent=True) or {}
+    success = bool(data.get("success"))
+    result = data.get("result") or ""
+    if isinstance(result, (dict, list)):
+        result = json.dumps(result)
+    ok = _registry.ack_agent_command(command_id, agent_tenant_id,
+                                     success=success, result=str(result))
+    return jsonify({"success": ok}) if ok else (jsonify({"error": "command not found"}), 404)
+
+
+# ── Agent assets: the 1-line installer + the stdlib-only agent.py ─────────
+# The user's dashboard shows `curl -sSL <origin>/agent/install.sh | bash`.
+# The installer downloads agent.py from here — both served from the repo's
+# agent/ directory, public (no auth: they are scripts the user must be able
+# to fetch from a machine OUTSIDE the dashboard session).
+
+agent_assets_bp = Blueprint("agent_assets", __name__, url_prefix="/agent")
+
+_AGENT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "agent")
+
+
+@agent_assets_bp.route("/install.sh", methods=["GET"])
+def agent_install_script():
+    """Serve the one-line installer (bash). Public — the whole point is a
+    curl|bash from a machine on the user's LAN."""
+    path = os.path.join(_AGENT_DIR, "install.sh")
+    if not os.path.exists(path):
+        return jsonify({"error": "installer not found"}), 404
+    return send_file(path, mimetype="text/x-shellscript",
+                     max_age=300, conditional=True)
+
+
+@agent_assets_bp.route("/agent.py", methods=["GET"])
+def agent_script():
+    """Serve the stdlib-only agent source the installer downloads. Public."""
+    path = os.path.join(_AGENT_DIR, "agent.py")
+    if not os.path.exists(path):
+        return jsonify({"error": "agent script not found"}), 404
+    return send_file(path, mimetype="text/x-python",
+                     max_age=300, conditional=True)

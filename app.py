@@ -20,6 +20,8 @@ from flask import Flask, jsonify, render_template, request, abort, Response
 import requests
 import concurrent.futures
 import queue
+import markdown as _md
+from markupsafe import Markup
 
 import solo_mining
 
@@ -58,7 +60,7 @@ from services.hashrate_market import (
     fetch_market_history as _fetch_market_history,
     enrich_opportunity_dict as _enrich_opportunity,
 )
-from axe_fleet.routes import axe_fleet_bp, init_routes as _init_axe_routes
+from axe_fleet.routes import axe_fleet_bp, agent_bp, agent_assets_bp, init_routes as _init_axe_routes
 from axe_fleet.registry import DeviceRegistry
 from routes.alerts_routes import alerts_bp, _set_get_db as _alerts_set_get_db
 from routes.settings_routes import settings_bp
@@ -140,6 +142,9 @@ register_probability_routes(app)
 
 # ── Register Axe Fleet blueprint ────────────────────────────────────────────
 app.register_blueprint(axe_fleet_bp, url_prefix='/api/axe-fleet')
+# ── Register Agent API blueprint (SaaS: local agent → cloud dashboard) ───
+app.register_blueprint(agent_bp)
+app.register_blueprint(agent_assets_bp)
 
 # ── Register Device Control blueprint ────────────────────────────────────
 app.register_blueprint(device_control_bp)
@@ -1433,6 +1438,10 @@ def _donation_watcher_loop():
 
 # ── Initialize Axe Fleet registry (after get_db/init_db are defined) ──
 _axe_registry = DeviceRegistry(get_db)
+# ensure_tables() applies the schema migrations the app's init_db() does not
+# (agent_managed column + axe_agent_commands queue — SaaS agent model). Must
+# run here or fleet writes crash on a fresh DB.
+_axe_registry.ensure_tables()
 _init_axe_routes(_axe_registry)
 
 # ── Auto-seed Axe Fleet with test devices if registry is empty ──
@@ -2513,6 +2522,31 @@ def poll_once():
     finally:
         _poll_lock.release()
         _poll_start_ts = 0.0
+
+
+def _poll_axe_fleet(ts: int) -> None:
+    """Server-side poll of non-agent-managed fleet devices.
+
+    SaaS agent model: devices reported by the user's LOCAL agent
+    (agent_managed=1) are polled from the home LAN by that agent — the cloud
+    cannot reach them, so they are skipped here (never marked OFFLINE by a
+    poll that cannot connect). Extracted from _do_poll for unit testing.
+    """
+    try:
+        if _axe_registry:
+            devices = _axe_registry.list_devices()
+            for device in devices:
+                if int(device.get("agent_managed", 0) or 0):
+                    continue
+                did = device["id"]
+                last = _shared_state.axe_last_poll_ts.get(did, 0)
+                if ts - last >= _shared_state.AXE_POLL_INTERVAL:
+                    _shared_state.axe_last_poll_ts[did] = ts
+                    tel = _axe_registry.poll_device(did)
+                    if tel:
+                        _shared_state.axe_telemetry_cache[did] = tel
+    except Exception as e:
+        log.warning("[axe poll] error: %s", e)
 
 
 def _do_poll():
@@ -3704,20 +3738,11 @@ def _do_poll():
     # memory alert would DUPLICATE the entry on poll N+1.
 
     # ── Axe Fleet background polling ──
-    # Poll each registered device at AXE_POLL_INTERVAL frequency.
-    try:
-        if _axe_registry:
-            devices = _axe_registry.list_devices()
-            for device in devices:
-                did = device["id"]
-                last = _shared_state.axe_last_poll_ts.get(did, 0)
-                if ts - last >= _shared_state.AXE_POLL_INTERVAL:
-                    _shared_state.axe_last_poll_ts[did] = ts
-                    tel = _axe_registry.poll_device(did)
-                    if tel:
-                        _shared_state.axe_telemetry_cache[did] = tel
-    except Exception as e:
-        log.warning("[axe poll] error: %s", e)
+    # Poll each registered device at AXE_POLL_INTERVAL frequency. IMPORTANT
+    # (SaaS agent model): agent_managed devices are polled by the user's
+    # LOCAL agent (the cloud cannot reach the home LAN) — the server poll
+    # must NEVER touch them, or it would mark them OFFLINE on every tick.
+    _poll_axe_fleet(ts)
 
     # ── Milestone 9: Alert & Automation engines ───────────────────────────────
     try:
@@ -3896,6 +3921,27 @@ def index():
         address=BTC_ADDRESS,
         poll_interval=POLL_INTERVAL,
     )
+
+
+# ── Docs: guia do usuário renderizado dentro do app ────────────────────────
+# Serves docs/AGENT_SETUP_GUIDE.md (single source of truth — o mesmo arquivo
+# do repo) convertido para HTML com a lib `markdown`. Página pública, como o
+# index; o guia não expõe dados sensíveis do tenant.
+_GUIDE_MD_PATH = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "docs", "AGENT_SETUP_GUIDE.md"
+)
+
+
+@app.route("/docs/agent")
+def docs_agent_guide():
+    """Render the agent setup guide inside the dashboard (public)."""
+    try:
+        with open(_GUIDE_MD_PATH, encoding="utf-8") as f:
+            raw = f.read()
+    except OSError:
+        abort(404)
+    html = _md.markdown(raw, extensions=["tables", "fenced_code", "nl2br"])
+    return render_template("agent_guide.html", guide_html=Markup(html))
 
 
 @app.route("/api/snapshot")

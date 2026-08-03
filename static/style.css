@@ -1880,17 +1880,56 @@ body {
 .lm-summary__val--gold { color: var(--amber); }
 .lm-summary__dot { display: inline-block; width: 4px; height: 4px; background: var(--green); border-radius: 50%; }
 
-.hunt-layout { display: grid; grid-template-columns: 1fr 2fr 1fr; gap: 6px; margin-bottom: 6px; }
+.hunt-layout { display: grid; grid-template-columns: 2fr 1fr; gap: 6px; margin-bottom: 6px; }
 .hunt-stream { border: 1px solid var(--border-subtle); padding: 4px; }
 .hunt-stream__head { display: flex; justify-content: space-between; margin-bottom: 4px; }
 .hunt-stream__title { font-size: 10px; color: var(--green); }
-.hunt-stream__feed { max-height: 200px; overflow-y: auto; font-size: 9px; }
+.hunt-stream__feed { max-height: 96px; overflow-y: auto; font-size: 9px; }
 .hunt-stream__line { padding: 1px 0; color: var(--text-secondary); }
-.hunt-canvas-wrap { position: relative; border: 1px solid var(--border-subtle); min-height: 150px; }
-.hunt-canvas__overlay { position: absolute; top: 0; left: 0; right: 0; bottom: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; }
-.hunt-canvas__target-label { font-size: 9px; color: var(--cyan); letter-spacing: 0.1em; }
-.hunt-canvas__frontier { font-size: 8px; color: var(--text-tertiary); }
-.hunt-canvas__status { font-size: 8px; color: var(--green-dim); }
+
+/* ── LIVE ACTION FEED (substitui '> CALC STREAM' + header TIME EVENT
+     DIFFICULTY GAP): eventos reais categorizados, cor por tipo, clique
+     abre modal com log bruto, ação inline em eventos acionáveis. ── */
+.laf-empty { padding: 4px 2px; color: var(--text-tertiary); font-size: 9px; }
+.laf-row {
+  display: flex; align-items: center; gap: 6px;
+  padding: 3px 4px; margin-bottom: 2px;
+  border-left: 2px solid var(--text-tertiary);
+  background: rgba(255,255,255,0.02);
+  cursor: pointer; font-size: 9px;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+.laf-row:hover { background: rgba(255,255,255,0.06); }
+.laf-row--success { border-left-color: var(--accent-green, #00ff9f); }
+.laf-row--success .laf-msg { color: var(--green); }
+.laf-row--warn { border-left-color: var(--amber, #f5b942); }
+.laf-row--warn .laf-msg { color: var(--amber, #f5b942); }
+.laf-row--error { border-left-color: var(--accent-red, #ff4d4d); }
+.laf-row--error .laf-msg { color: var(--accent-red, #ff4d4d); }
+.laf-row--info { border-left-color: var(--cyan, #06d6f0); }
+.laf-row--info .laf-msg { color: var(--cyan, #06d6f0); }
+.laf-time { font-family: var(--font-mono, monospace); color: var(--text-tertiary); flex-shrink: 0; }
+.laf-msg { flex: 0 1 auto; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.laf-worker { color: var(--text-secondary); margin-left: 4px; }
+.laf-meta { flex: 1 1 auto; text-align: right; color: var(--text-tertiary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.laf-chev { color: var(--text-tertiary); font-size: 8px; flex-shrink: 0; }
+.laf-action {
+  flex-shrink: 0;
+  font-size: 8px; padding: 1px 6px; cursor: pointer;
+  color: var(--amber, #f5b942);
+  border: 1px solid var(--amber, #f5b942);
+  background: transparent; border-radius: 2px;
+  transition: background 0.15s ease;
+}
+.laf-action:hover { background: rgba(245,185,66,0.15); }
+.laf-modal__raw {
+  font-family: var(--font-mono, monospace); font-size: 10px;
+  background: var(--bg-deep, #050505); color: var(--cyan);
+  border: 1px solid var(--border-subtle); padding: 8px;
+  white-space: pre-wrap; word-break: break-all;
+  max-height: 50vh; overflow: auto;
+}
+.laf-modal { width: 520px; }
 .hunt-metrics { display: flex; flex-direction: column; gap: 4px; }
 .hunt-metrics__section { padding: 4px; border: 1px solid var(--border-subtle); text-align: center; }
 .hunt-metrics__label { font-size: 8px; color: var(--text-tertiary); text-transform: uppercase; }

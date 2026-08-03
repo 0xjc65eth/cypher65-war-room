@@ -23,6 +23,7 @@ runs while the operator explicitly asks for a scan via the fleet UI.
 import ipaddress
 import json
 import logging
+import re
 import socket
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -37,6 +38,53 @@ MAX_HOSTS_PER_SCAN = 1024  # hard cap: a /22 = 1024 hosts is already huge
 
 CGMINER_PORT = 4028
 BITAXE_PORT = 80
+HTTPS_PORT = 443
+
+# Alive-presence probe timeout: a TCP connect that opens a port marks the
+# host "up but not a miner" — capped low so firewalled subnets don't explode
+# scan wall time (on top of the HTTP/TCP probe timeouts already spent).
+ALIVE_PROBE_TIMEOUT = 0.4
+
+# cgminer-family line terminators: \x00 (stock cgminer/BMMiner) and ~ (some
+# Avalon builds). NOTE: newline is deliberately NOT an EOL token — strict
+# cgminer is single-line JSON + \x00, and cutting at the first \n would
+# truncate pretty-printed multi-line responses; _extract_json_lenient handles
+# any line framing instead.
+_CGMINER_EOL_TOKENS = (b"\x00", b"\x7e")
+
+
+def _extract_json_lenient(raw: bytes):
+    """Parse a JSON object out of a cgminer-family response even when the
+    device wraps it in junk (leading banner, tilde frames, stray bytes,
+    multi-line pretty-printing). Tries strict json.loads first, then the
+    first balanced {...} block. Returns None when nothing JSON-like is
+    present. Never raises."""
+    text = raw.decode(errors="replace").strip()
+    if not text:
+        return None
+    try:
+        parsed = json.loads(text)
+        return parsed if isinstance(parsed, dict) else None
+    except json.JSONDecodeError:
+        pass
+    m = re.search(r"\{.*\}", text, flags=re.DOTALL)
+    if not m:
+        return None
+    try:
+        parsed = json.loads(m.group(0))
+        return parsed if isinstance(parsed, dict) else None
+    except json.JSONDecodeError:
+        return None
+
+
+def _tcp_open(ip: str, port: int, timeout: float = ALIVE_PROBE_TIMEOUT) -> bool:
+    """True when a TCP connect to ip:port succeeds (host is up and the
+    port is listening) — regardless of protocol. Cheap, never raises."""
+    try:
+        with socket.create_connection((ip, port), timeout=timeout):
+            return True
+    except OSError:
+        return False
 
 # ── Private / non-routable detection ──────────────────────────────────────
 # RFC1918 + CGNAT + loopback + link-local ranges only exist INSIDE the
@@ -45,10 +93,10 @@ BITAXE_PORT = 80
 # — not necessarily a dead miner. Surfacing this in the wizard saves the
 # operator from chasing power/firewall on a miner that is actually fine.
 PRIVATE_IP_HINT = (
-    "IP privado (LAN) — o servidor do dashboard só alcança o miner se "
-    "estiver na MESMA rede (rode o app na mesma Wi-Fi local) ou via um IP "
-    "do Tailscale; um servidor na nuvem (ex. Render) não roteia para este "
-    "endereço."
+    "IP privado (LAN) — um servidor na nuvem (ex. Render) não roteia para "
+    "a rede caseira. Rode o app na MESMA Wi-Fi/local do miner (self-host), "
+    "use um IP do Tailscale, ou — no modelo SaaS — instale o AGENTE LOCAL "
+    "(Fleet → CONNECT AGENT): ele roda na sua rede e conecta para fora."
 )
 
 
@@ -128,7 +176,11 @@ def parse_cidr(cidr: str) -> list:
 
 def _probe_cgminer_version(ip: str, port: int = CGMINER_PORT, timeout: float = TCP_PROBE_TIMEOUT):
     """Fingerprint a cgminer-family miner via the JSON-over-TCP `version`
-    command. Returns parsed version dict or None. Never raises."""
+    command. Returns parsed version dict or None. Never raises.
+
+    Tolerant framing (C): accepts `\x00` (stock cgminer/BMMiner), `~` (some
+    Avalon builds) or newline terminators, and falls back to lenient JSON
+    extraction when the response carries leading garbage."""
     sock = None
     try:
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -141,12 +193,9 @@ def _probe_cgminer_version(ip: str, port: int = CGMINER_PORT, timeout: float = T
             if not chunk:
                 break
             data += chunk
-            if b"\x00" in chunk or len(data) > 65536:
+            if any(tok in chunk for tok in _CGMINER_EOL_TOKENS) or len(data) > 65536:
                 break
-        text = data.decode(errors="replace").rstrip("\x00").strip()
-        if not text:
-            return None
-        return json.loads(text)
+        return _extract_json_lenient(data)
     except (socket.timeout, OSError, json.JSONDecodeError) as e:
         log.debug("[scan] cgminer probe %s:%s failed: %s", ip, port, e)
         return None
@@ -242,6 +291,8 @@ def diagnose_host(ip: str, timeout: float = HTTP_PROBE_TIMEOUT) -> dict:
         'dns_resolution': bool,      # hostname resolved (IPs are always OK)
         'bitaxe_http': bool,         # AxeOS/ESP-Miner API answered on :80
         'cgminer_tcp': bool,         # cgminer protocol answered on :4028
+        'https_tcp': bool,           # TCP :443 open (modern Braiins/Antminer)
+        'http_server': bool,         # TCP :80 open but NOT ESP-Miner (auth page)
         'reachable': bool,           # any protocol detected
         'protocol': 'bitaxe'|'cgminer'|None,
         'device_info': {...} | None, # model/hostname/firmware/hashrate when detected
@@ -256,6 +307,8 @@ def diagnose_host(ip: str, timeout: float = HTTP_PROBE_TIMEOUT) -> dict:
         "dns_resolution": False,
         "bitaxe_http": False,
         "cgminer_tcp": False,
+        "https_tcp": False,
+        "http_server": False,
         "reachable": False,
         "protocol": None,
         "device_info": None,
@@ -327,6 +380,16 @@ def diagnose_host(ip: str, timeout: float = HTTP_PROBE_TIMEOUT) -> dict:
 
     if not result["reachable"]:
         detail = result["error_detail"] or "no miner protocol responded (checked AxeOS :80 and cgminer :4028)"
+        # D · Protocol-presence probes: even when no miner protocol answered,
+        # a TCP :443 or a non-ESP-Miner web server on :80 is strong evidence
+        # of a MODERN authenticated miner (Braiins OS+/Antminer login page).
+        # Surface it instead of a flat "no miner protocol".
+        if _tcp_open(ip, HTTPS_PORT):
+            result["https_tcp"] = True
+            detail = f"{detail} · porta TCP :443 aberta — possível firmware moderno (Braiins OS+/Antminer) com API autenticada; tente a porta 443 ou autentique no painel do miner"
+        if _tcp_open(ip, BITAXE_PORT):
+            result["http_server"] = True
+            detail = f"{detail} · porta TCP :80 aberta mas NÃO respondeu como ESP-Miner — pode ser a página de login de um ASIC (Antminer/Braiins) que exige auth"
         # Private LAN target + nothing answered = almost certainly a
         # network-topology gap (cloud host vs local miner), not a dead miner.
         # Append the actionable hint so the wizard explains WHY it's
@@ -340,12 +403,40 @@ def diagnose_host(ip: str, timeout: float = HTTP_PROBE_TIMEOUT) -> dict:
 
 # ── Concurrent subnet scan ───────────────────────────────────────────────
 
+def _cidr_is_private(cidr: str) -> bool:
+    """True when the CIDR targets a private (RFC1918/CGNAT/etc.) block — used
+    to attach the cloud-vs-LAN topology hint to empty scans. Parses the
+    network directly (no host-list expansion, no DNS resolution for
+    hostname inputs — a hostname is never a "private CIDR" anyway).
+    Never raises."""
+    if not cidr:
+        return False
+    cidr = str(cidr).strip()
+    try:
+        if "/" in cidr:
+            net = ipaddress.ip_network(cidr, strict=False)
+            return is_private_ip(str(net.network_address))
+        if "-" in cidr:
+            base, _, _ = cidr.rpartition("-")
+            return is_private_ip(base)
+        return is_private_ip(cidr)
+    except ValueError:
+        return False
+
+
 def scan_subnet(cidr: str, progress_cb=None, max_hosts: int = MAX_HOSTS_PER_SCAN,
                 timeout: float = HTTP_PROBE_TIMEOUT, workers: int = SCAN_WORKERS) -> dict:
     """Scan a subnet/range for miners.
 
     Returns:
-      {'cidr', 'total', 'found': [discovery dicts...], 'elapsed_ms', 'error'}
+      {'cidr', 'total', 'found': [discovery dicts...], 'alive': int,
+       'alive_ips': [str...], 'hint': str|None, 'elapsed_ms', 'error'}
+
+    - `alive` / `alive_ips`: hosts whose TCP port 80 or 4028 opened (host is
+      up) but no miner protocol answered — the "alive but not a miner" layer
+      that turns a flat "no miners found" into an actionable diagnosis.
+    - `hint`: private-LAN topology hint when the scanned CIDR is a private
+      range AND nothing was found — the cloud-dashboard-vs-home-LAN gap.
 
     `progress_cb(scanned, total)` is invoked after every host completes so
     callers can stream progress to the UI.
@@ -353,15 +444,18 @@ def scan_subnet(cidr: str, progress_cb=None, max_hosts: int = MAX_HOSTS_PER_SCAN
     hosts = parse_cidr(cidr)
     t0 = time.time()
     if not hosts:
-        return {"cidr": cidr, "total": 0, "found": [], "elapsed_ms": 0, "error": "invalid or empty subnet"}
+        return {"cidr": cidr, "total": 0, "found": [], "alive": 0, "alive_ips": [],
+                "hint": None, "elapsed_ms": 0, "error": "invalid or empty subnet"}
     hosts = hosts[:max_hosts]
     found = []
+    alive_ips = []
     scanned = 0
     try:
         with ThreadPoolExecutor(max_workers=min(workers, max(1, len(hosts)))) as ex:
             futures = {ex.submit(probe_host, ip, timeout): ip for ip in hosts}
             for fut in as_completed(futures):
                 scanned += 1
+                ip = futures[fut]
                 try:
                     result = fut.result()
                 except Exception as e:  # noqa: BLE001 — per-host isolation
@@ -369,17 +463,30 @@ def scan_subnet(cidr: str, progress_cb=None, max_hosts: int = MAX_HOSTS_PER_SCAN
                     result = None
                 if result:
                     found.append(result)
+                elif _tcp_open(ip, BITAXE_PORT) or _tcp_open(ip, CGMINER_PORT):
+                    # Alive (a TCP port opened) but no miner protocol — the
+                    # host could be a router/switch/PC or a miner with a
+                    # firewalled/authenticated API. Reported separately so the
+                    # operator knows the subnet is reachable.
+                    alive_ips.append(ip)
                 if progress_cb:
                     try:
                         progress_cb(scanned, len(hosts))
                     except Exception:
                         pass
     except Exception as e:  # noqa: BLE001 — scan must never crash the caller
-        return {"cidr": cidr, "total": len(hosts), "found": found,
+        return {"cidr": cidr, "total": len(hosts), "found": found, "alive": len(alive_ips),
+                "alive_ips": alive_ips, "hint": None,
                 "elapsed_ms": int((time.time() - t0) * 1000), "error": str(e)}
     # Most-recent-first keeps the freshest discovery on top.
     found.sort(key=lambda d: (d.get("hashrate_hs") or 0), reverse=True)
-    return {"cidr": cidr, "total": len(hosts), "found": found,
+    # A · topology hint: private CIDR scanned + nothing found at all → the
+    # dashboard is very likely cloud-hosted and cannot route to the home LAN.
+    hint = None
+    if not found and not alive_ips and _cidr_is_private(cidr):
+        hint = PRIVATE_IP_HINT
+    return {"cidr": cidr, "total": len(hosts), "found": found, "alive": len(alive_ips),
+            "alive_ips": alive_ips, "hint": hint,
             "elapsed_ms": int((time.time() - t0) * 1000), "error": None}
 
 

@@ -3574,6 +3574,12 @@ function buildConnectivityReportTest(r) {
   } else {
     rows.push({ label: 'cgminer :4028', ok: false, val: 'no', detail: 'no cgminer protocol on port 4028' });
   }
+  if (r.https_tcp && !r.bitaxe_http && !r.cgminer_tcp) {
+    rows.push({ label: 'HTTPS :443', ok: true, val: 'OPEN', detail: 'porta 443 aberta — firmware moderno (Braiins/Antminer) com API autenticada' });
+  }
+  if (r.http_server && !r.bitaxe_http && !r.cgminer_tcp) {
+    rows.push({ label: 'HTTP :80', ok: true, val: 'server', detail: 'servidor HTTP presente mas NÃO é ESP-Miner — possível página de login de ASIC' });
+  }
   rows.push({ label: 'elapsed', ok: true, val: (r.elapsed_ms != null ? r.elapsed_ms + 'ms' : '—'), detail: '' });
   return rows;
 }
@@ -3623,6 +3629,32 @@ function buildConnectivityReportTest(r) {
     device_info: { model: 'NerdAxe', firmware: '' },
   });
   assertEqual('hostname bitaxe detail skips empty firmware', host[1].detail, 'NerdAxe');
+
+  // Modern authenticated miner (D): nothing on classic probes, but HTTPS
+  // :443 is open → extra diagnostic row appears (Braiins/Antminer auth).
+  const httpsMiner = buildConnectivityReportTest({
+    dns_resolution: true, bitaxe_http: false, cgminer_tcp: false,
+    https_tcp: true, http_server: false, reachable: false,
+    error_detail: 'no miner protocol responded (checked AxeOS :80 and cgminer :4028)',
+  });
+  assertEqual('https miner has 5 rows', httpsMiner.length, 5);
+  assertEqual('https row val', httpsMiner[3].val, 'OPEN');
+  assertEqual('https row label', httpsMiner[3].label, 'HTTPS :443');
+
+  // ASIC login page (D): TCP :80 open but not ESP-Miner → HTTP server row.
+  const httpServer = buildConnectivityReportTest({
+    dns_resolution: true, bitaxe_http: false, cgminer_tcp: false,
+    https_tcp: false, http_server: true, reachable: false,
+  });
+  assertEqual('http server row val', httpServer[3].val, 'server');
+  assertEqual('http server row label', httpServer[3].label, 'HTTP :80');
+
+  // Suppressed when a real protocol won (never add noise rows on success).
+  const suppressHttps = buildConnectivityReportTest({
+    dns_resolution: true, bitaxe_http: true, cgminer_tcp: true,
+    https_tcp: true, http_server: true, reachable: true, protocol: 'bitaxe',
+  });
+  assertEqual('success suppresses presence rows', suppressHttps.length, 4);
 })();
 
 
@@ -3987,6 +4019,116 @@ function lmFleetKpiAggTest(fleet) {
   const bl = lmFleetKpiAggTest(badLat);
   assertEqual('only valid latencies averaged', bl.avgLatency, 100);
   assertEqual('efficiency from all live', Math.round(bl.effPct), 100);
+})();
+
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  SUITE 28: LIVE ACTION FEED — buildLafShareEvent() + buildLafWorkerEvent()
+//  Pure mirrors of static/app.js — categorized events, colors, actions.
+// ═══════════════════════════════════════════════════════════════════════════
+
+console.log('⚡ SUITE 28: LIVE ACTION FEED — event builders (pure)');
+
+function buildLafShareEvent(s) {
+  const d = new Date((s && s.ts) ? Number(s.ts) * 1000 : Date.now());
+  const time = String(d.getHours()).padStart(2,'0') + ':' + String(d.getMinutes()).padStart(2,'0') + ':' + String(d.getSeconds()).padStart(2,'0');
+  const diff = (s && s.share_diff_str) || '\u2014';
+  const gap = (s && s.gap != null) ? Number(s.gap).toFixed(1) + 's' : '\u2014';
+  const hrStr = (s && s.instantaneous_hr_str) || '\u2014';
+  const status = (s && (s.status || s.share_status)) || '';
+  const isRej = /rej|stale|invalid/i.test(status);
+  const isStale = /stale/i.test(status);
+  return {
+    ts: (s && s.ts) || Math.floor(Date.now() / 1000),
+    time, diff, gap, hrStr,
+    type: isStale ? 'warn' : (isRej ? 'warn' : 'success'),
+    message: isRej ? 'Share ' + (isStale ? 'stale' : 'rejeitada') : 'Share aceita',
+    worker: (s && s.worker_name) || '',
+    actionable: false, action: '', actionLabel: '',
+    raw: JSON.stringify(s || {}),
+  };
+}
+
+function buildLafWorkerEvent(prev, row) {
+  const now = Math.floor(Date.now() / 1000);
+  const d = new Date(now * 1000);
+  const time = String(d.getHours()).padStart(2,'0') + ':' + String(d.getMinutes()).padStart(2,'0') + ':' + String(d.getSeconds()).padStart(2,'0');
+  const online = (row.status === 'ONLINE' || row.status === 'HASHING');
+  const offline = (row.status === 'OFFLINE' || row.status === 'ERROR' || row.status === 'CRITICAL');
+  if (offline) {
+    return {
+      ts: now, time, type: 'error', message: 'Worker offline',
+      diff: '', gap: '', hrStr: row.hrStr || '',
+      worker: row.name || row.ip || '?',
+      actionable: true, action: 'restart', actionLabel: '↻ Reconectar',
+      raw: JSON.stringify({ worker: row.name || row.ip, ip: row.ip || '', status: row.status, hr: row.hr || 0, ts: now }),
+    };
+  }
+  if (online) {
+    return {
+      ts: now, time, type: 'success', message: 'Worker online',
+      diff: '', gap: '', hrStr: row.hrStr || '',
+      worker: row.name || row.ip || '?',
+      actionable: false, action: '', actionLabel: '',
+      raw: JSON.stringify({ worker: row.name || row.ip, ip: row.ip || '', status: row.status, ts: now }),
+    };
+  }
+  return null;
+}
+
+(function () {
+  // ── buildLafShareEvent: accepted share ──
+  const acc = buildLafShareEvent({ ts: 1700000000, share_diff_str: '8.2T', gap: 1.5, instantaneous_hr_str: '500 GH/s' });
+  assertEqual('accepted share type', acc.type, 'success');
+  assertEqual('accepted share message', acc.message, 'Share aceita');
+  assertEqual('accepted share diff', acc.diff, '8.2T');
+  assertEqual('accepted share gap formatted', acc.gap, '1.5s');
+  assertEqual('accepted share NOT actionable', acc.actionable, false);
+
+  // ── buildLafShareEvent: rejected share ──
+  const rej = buildLafShareEvent({ ts: 1700000001, share_diff_str: '1.1T', status: 'rejected' });
+  assertEqual('rejected share type', rej.type, 'warn');
+  assertEqual('rejected share message', rej.message, 'Share rejeitada');
+
+  // ── buildLafShareEvent: stale share ──
+  const stale = buildLafShareEvent({ ts: 1700000002, share_diff_str: '2T', status: 'stale' });
+  assertEqual('stale share type', stale.type, 'warn');
+  assertEqual('stale share message', stale.message, 'Share stale');
+
+  // ── buildLafShareEvent: missing fields → em-dash, no crash ──
+  const empty = buildLafShareEvent(null);
+  assertEqual('null share diff fallback', empty.diff, '\u2014');
+  assertEqual('null share gap fallback', empty.gap, '\u2014');
+  assertEqual('null share still success-typed', empty.type, 'success');
+  assertEqual('null share raw is {}', JSON.parse(empty.raw), {});
+
+  // ── buildLafWorkerEvent: online → offline (actionable error) ──
+  const down = buildLafWorkerEvent('ONLINE', { name: 'rack-03', ip: '192.168.1.50', status: 'OFFLINE' });
+  assertEqual('worker offline type', down.type, 'error');
+  assertEqual('worker offline message', down.message, 'Worker offline');
+  assertEqual('worker offline actionable', down.actionable, true);
+  assertEqual('worker offline action', down.action, 'restart');
+  assertEqual('worker offline label', down.actionLabel, '↻ Reconectar');
+  assertEqual('worker offline raw has ip', JSON.parse(down.raw).ip, '192.168.1.50');
+
+  // ── buildLafWorkerEvent: offline → back online (success) ──
+  const up = buildLafWorkerEvent('OFFLINE', { name: 'rack-03', ip: '192.168.1.50', status: 'ONLINE', hrStr: '500 GH/s' });
+  assertEqual('worker online type', up.type, 'success');
+  assertEqual('worker online message', up.message, 'Worker online');
+  assertEqual('worker online NOT actionable', up.actionable, false);
+  assertEqual('worker online hrStr', up.hrStr, '500 GH/s');
+
+  // ── buildLafWorkerEvent: mid-state (IDLE/WARNING/PAUSED) → NO event ──
+  assertEqual('IDLE no event', buildLafWorkerEvent('ONLINE', { name: 'x', status: 'IDLE' }), null);
+  assertEqual('WARNING no event', buildLafWorkerEvent('ONLINE', { name: 'x', status: 'WARNING' }), null);
+  assertEqual('PAUSED no event', buildLafWorkerEvent('ONLINE', { name: 'x', status: 'PAUSED' }), null);
+
+  // ── CAP: newest-first unshift logic (mirror of _lafPushEvent) ──
+  const events = [];
+  for (let i = 0; i < 10; i++) { events.unshift({ id: i }); while (events.length > 6) events.pop(); }
+  assertEqual('cap keeps newest first (length 6)', events.length, 6);
+  assertEqual('newest id on top', events[0].id, 9);
+  assertEqual('oldest dropped', events[events.length - 1].id, 4);
 })();
 
 

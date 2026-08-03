@@ -8,7 +8,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
-<link rel="stylesheet" href="/static/style.css?v40">
+<link rel="stylesheet" href="/static/style.css?v42">
 <link rel="icon" href="/static/favicon.ico" sizes="any">
 <link rel="icon" type="image/png" sizes="32x32" href="/static/icon-32x32.png">
 <link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
@@ -734,6 +734,7 @@
       <span class="badge badge--mute" id="axe-fleet-tenant-badge" title="Active tenant">TENANT: default</span>
       <span class="badge badge--green" id="fleet-live-badge" style="display:none;font-size:7px">● LIVE</span>
       <button class="chip" id="axe-fleet-add">+ ADD</button>
+      <button class="chip" id="axe-agent-btn" style="border-color:var(--cyan);color:var(--cyan)">🤖 CONNECT AGENT</button>
       <button class="chip" id="axe-seed-btn" style="border-color:var(--cyan);color:var(--cyan)">🧪 SEED TEST</button>
     </div>
   </div>
@@ -825,6 +826,47 @@
         <button type="button" class="btn btn--mini axe-wiz__back" data-wiz-back="2">← back</button>
       </div>
       <span id="axe-add-status" style="font-size:9px;color:var(--text-tertiary);display:block;margin-top:4px"></span>
+    </div>
+  </div>
+  <!-- ── SaaS AGENT onboarding: token + docker run ──
+       The cloud dashboard can't reach the user's LAN (192.168.x.x is not
+       routable from Render). The local agent connects OUT and pushes
+       telemetry — this panel mints the per-tenant JWT and prints the
+       one-liner the user pastes into Docker on their home network. -->
+  <div class="axe-agent" id="axe-agent-panel" style="display:none">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
+      <div class="axe-wiz__eyebrow" style="font-size:9px;letter-spacing:0.08em;color:var(--cyan)">🤖 LOCAL AGENT · CLOUD-CONTROLLED FLEET</div>
+      <button class="btn" id="axe-agent-close" title="close" style="padding:1px 7px;font-size:10px">✕</button>
+    </div>
+    <div style="font-size:10px;color:var(--text-secondary);line-height:1.5">
+      O dashboard na nuvem não alcança a sua LAN (<code>192.168.x.x</code> não é roteável
+      a partir do Render). Rode o <strong>agente local</strong> (Docker/Pi/PC ligado na
+      mesma rede dos miners) — ele conecta <strong>para fora</strong> e empurra telemetria
+      para este painel. Sem abrir porta, NAT/CGNAT-safe.
+      <a href="/docs/agent" target="_blank" rel="noopener"
+         style="display:inline-block;margin-top:6px;font-size:9px;letter-spacing:0.06em;color:var(--cyan);border:1px solid var(--border-subtle);padding:2px 8px;text-decoration:none">📖 GUIA COMPLETO DO AGENTE</a>
+    </div>
+    <div style="display:flex;gap:4px;align-items:center;margin-top:8px">
+      <button class="btn btn--mini" id="axe-agent-gen" style="border-color:var(--cyan);color:var(--cyan)">🔑 GENERATE AGENT TOKEN</button>
+      <span id="axe-agent-status" style="font-size:9px;color:var(--text-tertiary)"></span>
+    </div>
+    <div id="axe-agent-token-row" style="display:none;margin-top:8px">
+      <div style="font-size:9px;letter-spacing:0.08em;color:var(--text-tertiary);margin-bottom:2px">AGENT TOKEN (secreto — vale 365 dias, escopo do seu tenant)</div>
+      <textarea id="axe-agent-token" readonly rows="2" style="width:100%;font-family:var(--mono,monospace);font-size:10px;background:var(--bg-deep,#050505);color:var(--cyan);border:1px solid var(--border-subtle);padding:4px"></textarea>
+      <div style="display:flex;gap:4px;margin-top:4px">
+        <button class="btn btn--mini" id="axe-agent-copy-token">⧉ COPY TOKEN</button>
+        <button class="btn btn--mini" id="axe-agent-hide-token" style="color:var(--text-tertiary)">hide</button>
+      </div>
+      <div style="font-size:9px;letter-spacing:0.08em;color:var(--text-tertiary);margin:8px 0 2px">▶ PASSO 1 · RODE ESTA ÚNICA LINHA NA MÁQUINA DA SUA REDE (macOS / Linux / Raspberry Pi — sem Docker, sem pip)</div>
+      <pre id="axe-agent-one-liner" style="white-space:pre-wrap;font-size:10px;background:var(--bg-deep,#050505);color:var(--green);border:1px solid var(--border-subtle);padding:6px;margin:0;line-height:1.5"></pre>
+      <button class="btn btn--mini" id="axe-agent-copy-one" style="margin-top:4px">⧉ COPY COMMAND</button>
+      <div style="font-size:9px;color:var(--text-tertiary);margin-top:6px;line-height:1.5">
+        Precisa de <code>python3</code> (já vem instalado). O agente descobre os miners na sua
+        LAN, conecta <strong>para fora</strong> (sem abrir porta) e o fleet aparece aqui em ~1 min.
+      </div>
+      <div style="font-size:9px;letter-spacing:0.08em;color:var(--text-tertiary);margin:8px 0 2px">▶ ALTERNATIVA · Docker (para NAS/PC com Docker instalado)</div>
+      <pre id="axe-agent-docker" style="white-space:pre-wrap;font-size:10px;background:var(--bg-deep,#050505);color:var(--cyan);border:1px solid var(--border-subtle);padding:6px;margin:0"></pre>
+      <button class="btn btn--mini" id="axe-agent-copy-docker" style="margin-top:4px">⧉ COPY COMMAND</button>
     </div>
   </div>
   <div id="axe-detail" style="display:none;margin-top:6px;padding:6px;border:1px solid var(--border-subtle)">
@@ -1335,22 +1377,18 @@
   </div>
 
   <div class="hunt-layout" id="hunt-layout">
+    <!-- LIVE ACTION FEED (substitui o debug '> CALC STREAM' + header
+         TIME EVENT DIFFICULTY GAP): eventos reais em tempo real — shares
+         aceitas/rejeitadas e mudanças de status dos workers do fleet —
+         com cor por tipo, clique para log bruto e ação inline quando
+         acionável. Auto-scroll: os mais novos entram por cima. -->
     <div class="hunt-stream" id="hunt-stream">
       <div class="hunt-stream__head">
-        <span class="hunt-stream__title">> CALC STREAM</span>
-        <span class="badge badge--green">LIVE</span>
+        <span class="hunt-stream__title" id="laf-title">⚡ LIVE ACTION FEED</span>
+        <span class="badge badge--green" id="laf-live-badge">LIVE</span>
       </div>
-      <div class="hunt-stream__feed" id="hunt-stream-feed">
-        <div class="hunt-stream__line"><span class="ts">--:--:--</span><span class="n">nonce</span></div>
-      </div>
-    </div>
-
-    <div class="hunt-canvas-wrap" id="hunt-canvas-wrap">
-      <canvas id="hunt-canvas"></canvas>
-      <div class="hunt-canvas__overlay">
-        <div class="hunt-canvas__target-label">◈ TARGET ZONE ◈</div>
-        <div class="hunt-canvas__frontier" id="hunt-frontier-label">SEARCH FRONTIER</div>
-        <div class="hunt-canvas__status" id="hunt-status-label">INITIALIZING</div>
+      <div class="hunt-stream__feed" id="live-action-feed">
+        <div class="laf-empty" id="laf-empty">📡 Aguardando atividades dos workers...</div>
       </div>
     </div>
 
@@ -1510,6 +1548,20 @@
     </div>
   </div>
 </footer>
+
+<!-- LIVE ACTION FEED — raw-log modal (click a feed event to open) -->
+<div class="modal-overlay" id="laf-modal">
+  <div class="modal laf-modal">
+    <div class="modal__header">
+      <div class="modal__title" id="laf-modal-title">EVENT LOG</div>
+      <button class="modal__close" id="laf-modal-close">⛌</button>
+    </div>
+    <div class="modal__body">
+      <pre id="laf-modal-raw" class="laf-modal__raw"></pre>
+      <div class="laf-modal__actions" id="laf-modal-actions"></div>
+    </div>
+  </div>
+</div>
 
 <div class="modal-overlay" id="support-panel">
   <div class="modal support-modal">
@@ -2253,7 +2305,7 @@
     <span id="next-poll"></span>
   </div>
 
-  <script src="/static/app.js?v45"></script>
+  <script src="/static/app.js?v47"></script>
 </div> <!-- end #app-main -->
 </div> <!-- end #app-layout -->
   <!-- Matrix rain canvas (full-screen background effect) -->

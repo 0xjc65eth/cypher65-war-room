@@ -144,6 +144,35 @@ class TestProbeCgminerVersion:
             sock.recv.side_effect = [b"not json\x00", b""]
             assert _probe_cgminer_version("192.168.1.50") is None
 
+    def test_tilde_delimited_avalon_parsed(self):
+        """C: some Avalon builds frame the JSON with ~ instead of \x00 — the
+        tolerant reader must stop at \x7e and still parse the payload."""
+        payload = json.dumps({"STATUS": [{"STATUS": "S"}], "VERSION": [{"CGMiner": "4.9.0", "Description": "Avalon 8"}]})
+        with patch("axe_fleet.scanner.socket.socket") as mock_sock:
+            sock = mock_sock.return_value
+            sock.recv.side_effect = [b"~" + payload.encode() + b"~", b""]
+            result = _probe_cgminer_version("192.168.1.60")
+        assert result is not None
+        assert result["VERSION"][0]["Description"] == "Avalon 8"
+
+    def test_leading_garbage_lenient_json(self):
+        """C: a banner/extra bytes before the JSON must not hide the miner —
+        lenient extraction pulls the first balanced {...} block."""
+        payload = json.dumps({"STATUS": [{"STATUS": "S"}], "VERSION": [{"CGMiner": "1.0.0"}]})
+        with patch("axe_fleet.scanner.socket.socket") as mock_sock:
+            sock = mock_sock.return_value
+            sock.recv.side_effect = [b"welcome\r\n" + payload.encode() + b"\x00", b""]
+            result = _probe_cgminer_version("192.168.1.70")
+        assert result is not None
+        assert result["VERSION"][0]["CGMiner"] == "1.0.0"
+
+    def test_unbalanced_junk_returns_none(self):
+        """C: junk that never forms a JSON object stays a miss (no crash)."""
+        with patch("axe_fleet.scanner.socket.socket") as mock_sock:
+            sock = mock_sock.return_value
+            sock.recv.side_effect = [b"{{{ not json at all \x00", b""]
+            assert _probe_cgminer_version("192.168.1.80") is None
+
 
 # ══════════════════════════════════════════════════════════════════════════
 #  probe_host
@@ -221,6 +250,46 @@ class TestScanSubnet:
         with patch("axe_fleet.scanner.probe_host", return_value=None):
             scan_subnet("192.168.9.0/29", progress_cb=lambda s, t: calls.append((s, t)))
         assert calls and calls[-1][0] == 6  # all hosts eventually scanned
+
+    def test_alive_but_not_miner_layer(self):
+        """B: hosts whose TCP port opens but no miner protocol answers are
+        reported separately (alive/alive_ips) — never silently dropped."""
+        with patch("axe_fleet.scanner.probe_host", return_value=None), \
+                patch("axe_fleet.scanner._tcp_open", side_effect=lambda ip, port, timeout=0.4: ip.endswith(".2") or ip.endswith(".5")):
+            result = scan_subnet("192.168.9.0/29")  # 6 hosts
+        assert result["found"] == []
+        assert result["alive"] == 2
+        assert "192.168.9.2" in result["alive_ips"]
+        assert "192.168.9.5" in result["alive_ips"]
+
+    def test_private_cidr_empty_scan_gets_hint(self):
+        """A: private CIDR + nothing found at all → topology hint (cloud
+        dashboard can't route to the home LAN) instead of a flat miss."""
+        with patch("axe_fleet.scanner.probe_host", return_value=None), \
+                patch("axe_fleet.scanner._tcp_open", return_value=False):
+            result = scan_subnet("10.29.176.0/24")
+        assert result["found"] == []
+        assert result["hint"] is not None
+        assert "AGENTE LOCAL" in result["hint"]  # SaaS answer for cloud-hosted dashboards
+
+    def test_public_cidr_empty_scan_no_hint(self):
+        """A: a public CIDR that finds nothing keeps no hint — the private-LAN
+        message would be noise for a reachable-but-dead range."""
+        with patch("axe_fleet.scanner.probe_host", return_value=None), \
+                patch("axe_fleet.scanner._tcp_open", return_value=False):
+            result = scan_subnet("8.8.8.0/29")
+        assert result["found"] == []
+        assert result["hint"] is None
+
+    def test_private_cidr_with_alive_hosts_no_hint(self):
+        """A: alive hosts mean the subnet IS reachable — the topology hint
+        would be wrong, so it must not appear."""
+        with patch("axe_fleet.scanner.probe_host", return_value=None), \
+                patch("axe_fleet.scanner._tcp_open", side_effect=lambda ip, port, timeout=0.4: ip.endswith(".1")):
+            result = scan_subnet("10.29.176.0/24")
+        assert result["found"] == []
+        assert result["alive"] == 1
+        assert result["hint"] is None
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -326,6 +395,25 @@ class TestScanRoutes:
             assert third.status_code == 202
             _wait_scan_done(third.get_json()["scan_id"])
 
+    def test_scan_status_passes_alive_and_hint_through(self, client):
+        """The route store must forward the scanner's alive-vs-miner layer
+        and the private-LAN topology hint to the status endpoint."""
+        with patch("axe_fleet.scanner.scan_subnet") as mock_scan:
+            mock_scan.return_value = {
+                "total": 4, "found": [], "alive": 2,
+                "alive_ips": ["192.168.1.2", "192.168.1.5"],
+                "hint": "IP privado (LAN)", "error": None,
+            }
+            started = client.post("/api/axe-fleet/scan", json={"cidr": "192.168.1.0/24"})
+            scan_id = started.get_json()["scan_id"]
+            _wait_scan_done(scan_id)
+            ok = client.get(f"/api/axe-fleet/scan/{scan_id}")
+        assert ok.status_code == 200
+        s = ok.get_json()["scan"]
+        assert s["alive"] == 2
+        assert "192.168.1.2" in s["alive_ips"]
+        assert s["hint"] == "IP privado (LAN)"
+
     def test_scan_status_unknown_returns_404(self, client):
         resp = client.get("/api/axe-fleet/scan/doesnotexist")
         assert resp.status_code == 404
@@ -393,7 +481,8 @@ class TestDiagnoseHost:
         with patch("axe_fleet.scanner.socket.getaddrinfo", side_effect=AssertionError("must not hit DNS")) \
                 as ga, \
                 patch("axe_fleet.connector.AxeOSConnector.fetch_info", side_effect=Exception("no http")), \
-                patch("axe_fleet.scanner._probe_cgminer_version", return_value=None):
+                patch("axe_fleet.scanner._probe_cgminer_version", return_value=None), \
+                patch("axe_fleet.scanner._tcp_open", return_value=False):
             r = diagnose_host("10.0.0.5")
             ga.assert_not_called()
         assert r["dns_resolution"] is True
@@ -425,7 +514,8 @@ class TestDiagnoseHost:
 
     def test_nothing_reachable(self):
         with patch("axe_fleet.connector.AxeOSConnector.fetch_info", side_effect=Exception("refused")), \
-                patch("axe_fleet.scanner._probe_cgminer_version", return_value=None):
+                patch("axe_fleet.scanner._probe_cgminer_version", return_value=None), \
+                patch("axe_fleet.scanner._tcp_open", return_value=False):
             r = diagnose_host("192.168.1.99")
         assert r["reachable"] is False
         assert r["protocol"] is None
@@ -437,26 +527,57 @@ class TestDiagnoseHost:
         (cloud dashboard can't route to 192.168.x.x) — the exact scenario the
         operator hit testing a friend's miner from a hosted dashboard."""
         with patch("axe_fleet.connector.AxeOSConnector.fetch_info", side_effect=Exception("refused")), \
-                patch("axe_fleet.scanner._probe_cgminer_version", return_value=None):
+                patch("axe_fleet.scanner._probe_cgminer_version", return_value=None), \
+                patch("axe_fleet.scanner._tcp_open", return_value=False):
             r = diagnose_host("192.168.1.27")
         assert r["reachable"] is False
         assert "IP privado" in r["error_detail"]
-        assert "MESMA rede" in r["error_detail"]
+        assert "AGENTE LOCAL" in r["error_detail"]  # SaaS answer for cloud-hosted dashboards
 
     def test_public_ip_unreachable_no_hint(self):
         """A public IP that answers nothing keeps the plain protocol message —
         the private-LAN hint would be noise here (public IPs CAN be reached
         from a cloud host; the miner is genuinely down/firewalled)."""
         with patch("axe_fleet.connector.AxeOSConnector.fetch_info", side_effect=Exception("refused")), \
-                patch("axe_fleet.scanner._probe_cgminer_version", return_value=None):
+                patch("axe_fleet.scanner._probe_cgminer_version", return_value=None), \
+                patch("axe_fleet.scanner._tcp_open", return_value=False):
             r = diagnose_host("8.8.8.8")
         assert r["reachable"] is False
         assert "no miner protocol" in r["error_detail"]
         assert "IP privado" not in r["error_detail"]
+        assert r["https_tcp"] is False
+        assert r["http_server"] is False
+
+    def test_https_open_hints_modern_authenticated_miner(self):
+        """D: TCP :443 open but no classic miner protocol → flag + actionable
+        message (Braiins OS+/Antminer with authenticated API)."""
+        def fake_tcp(ip, port, timeout=0.4):
+            return port == 443
+        with patch("axe_fleet.connector.AxeOSConnector.fetch_info", side_effect=Exception("refused")), \
+                patch("axe_fleet.scanner._probe_cgminer_version", return_value=None), \
+                patch("axe_fleet.scanner._tcp_open", side_effect=fake_tcp):
+            r = diagnose_host("192.168.1.55")
+        assert r["reachable"] is False
+        assert r["https_tcp"] is True
+        assert "TCP :443 aberta" in r["error_detail"]
+
+    def test_http_server_non_esp_hints_asic_login(self):
+        """D: TCP :80 open but the body is not ESP-Miner (Antminer/Braiins
+        login page) → http_server flag + message instead of a flat miss."""
+        def fake_tcp(ip, port, timeout=0.4):
+            return port == 80
+        with patch("axe_fleet.connector.AxeOSConnector.fetch_info", side_effect=Exception("no esp api")), \
+                patch("axe_fleet.scanner._probe_cgminer_version", return_value=None), \
+                patch("axe_fleet.scanner._tcp_open", side_effect=fake_tcp):
+            r = diagnose_host("192.168.1.56")
+        assert r["reachable"] is False
+        assert r["http_server"] is True
+        assert "TCP :80 aberta" in r["error_detail"]
 
     def test_elapsed_ms_set(self):
         with patch("axe_fleet.connector.AxeOSConnector.fetch_info", side_effect=Exception("x")), \
-                patch("axe_fleet.scanner._probe_cgminer_version", return_value=None):
+                patch("axe_fleet.scanner._probe_cgminer_version", return_value=None), \
+                patch("axe_fleet.scanner._tcp_open", return_value=False):
             r = diagnose_host("192.168.1.9")
         assert r["elapsed_ms"] >= 0
 
@@ -472,7 +593,8 @@ class TestDiagnoseHost:
 
     def test_diagnose_route_unreachable(self, client):
         with patch("axe_fleet.connector.AxeOSConnector.fetch_info", side_effect=Exception("refused")), \
-                patch("axe_fleet.scanner._probe_cgminer_version", return_value=None):
+                patch("axe_fleet.scanner._probe_cgminer_version", return_value=None), \
+                patch("axe_fleet.scanner._tcp_open", return_value=False):
             resp = client.get("/api/axe-fleet/diagnose/192.168.1.99")
         assert resp.status_code == 200
         assert resp.get_json()["reachable"] is False

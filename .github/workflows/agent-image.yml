@@ -1,0 +1,71 @@
+# ── CYPHER65 · Agent Image → GHCR ─────────────────────────────────────────
+# Builds and publishes the local SaaS agent image (agent/Dockerfile) to the
+# GitHub Container Registry on every push to master (the default/active
+# branch). Manual re-publish is available via workflow_dispatch.
+#
+# Why GHCR: free, uses the same GitHub credentials, no extra Docker Hub
+# account. The image is consumed by the dashboard's "docker run" one-liner
+# (Fleet → CONNECT AGENT), docs and README:
+#
+#   docker run -d --name cypher65-agent --network host \
+#     -e CYPHER65_SERVER_URL=<url> -e CYPHER65_AGENT_TOKEN=<token> \
+#     ghcr.io/0xjc65eth/cypher65-agent
+#
+# Tags pushed: `latest` (rolling) + `sha-<full>` (immutable per commit).
+# The smoke test imports agent.py in the built image — the module has an
+# `if __name__ == "__main__"` guard, so the import is side-effect free.
+#
+# ⚠ OPERAÇÃO (uma vez, após o 1º push): pacotes GHCR criados via GITHUB_TOKEN
+# nascem PRIVADOS — o `docker run ghcr.io/0xjc65eth/cypher65-agent` dos
+# usuários falharia com "unauthorized". Tornar público uma vez:
+#   https://github.com/users/0xjc65eth/packages/container/package/cypher65-agent
+#   → Package settings → Danger Zone → Change visibility → Public
+# (GITHUB_TOKEN não consegue mudar visibilidade; é preciso PAT com
+# `write:packages` ou o clique na UI acima.)
+
+name: "Agent Image · GHCR"
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write  # required to push to ghcr.io
+
+jobs:
+  build-and-push:
+    name: "build + push ghcr.io/0xjc65eth/cypher65-agent"
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./agent
+          file: agent/Dockerfile
+          push: true
+          tags: |
+            ghcr.io/0xjc65eth/cypher65-agent:latest
+            ghcr.io/0xjc65eth/cypher65-agent:sha-${{ github.sha }}
+
+      - name: Smoke test (import agent.py in the built image)
+        run: |
+          docker run --rm --entrypoint python3 \
+            ghcr.io/0xjc65eth/cypher65-agent:sha-${{ github.sha }} \
+            -c "import agent; print('agent.py import OK')"

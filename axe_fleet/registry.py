@@ -69,6 +69,25 @@ class DeviceRegistry:
         )
         # ── Multi-tenant migration: add tenant_id columns ──
         self._migrate_add_tenant_id(c)
+        # ── Agent-managed migration: devices polled by the user's LOCAL
+        #    agent (SaaS: cloud dashboard can't reach the home LAN) must be
+        #    marked so the server-side poll never touches them. ──
+        self._migrate_add_agent_managed(c)
+        # ── Agent command queue (restart/identify routed through the agent) ──
+        c.execute(
+            """CREATE TABLE IF NOT EXISTS axe_agent_commands (
+                id TEXT PRIMARY KEY,
+                tenant_id TEXT DEFAULT 'default',
+                device_id TEXT NOT NULL,
+                command TEXT NOT NULL,
+                params TEXT DEFAULT '{}',
+                status TEXT DEFAULT 'pending',
+                created_at INTEGER NOT NULL,
+                pulled_at INTEGER DEFAULT 0,
+                acked_at INTEGER DEFAULT 0,
+                result TEXT DEFAULT ''
+            )"""
+        )
         conn.commit()
         conn.close()
 
@@ -93,6 +112,18 @@ class DeviceRegistry:
             c.execute("CREATE INDEX IF NOT EXISTS idx_axe_telemetry_tenant ON axe_telemetry(tenant_id)")
         except Exception:
             pass
+
+    def _migrate_add_agent_managed(self, c):
+        """Add agent_managed column to axe_devices if missing (SaaS agent
+        model: 1 = polled by the user's local agent, never by this server)."""
+        c.execute("PRAGMA table_info(axe_devices)")
+        cols = {row[1] for row in c.fetchall()}
+        if "agent_managed" not in cols:
+            try:
+                c.execute("ALTER TABLE axe_devices ADD COLUMN agent_managed INTEGER DEFAULT 0")
+                log.info("[migrate] added agent_managed to axe_devices")
+            except Exception as e:
+                log.warning("[migrate] could not add agent_managed: %s", e)
 
     # ── CRUD ──────────────────────────────────────────────────────────
 
@@ -174,11 +205,86 @@ class DeviceRegistry:
         conn.close()
         return self._row_to_device(r) if r else {}
 
+    def upsert_agent_device(self, ip_address: str, name: str = "",
+                            tenant_id: str = "default", info: dict = None) -> dict:
+        """Register (or refresh) a device reported by the user's LOCAL agent.
+
+        SaaS model: the cloud dashboard cannot reach the home LAN, so devices
+        arrive here from the agent instead of a server-side probe. Upserts by
+        (ip_address, tenant_id) WITHOUT connecting to the miner; telemetry
+        arrives separately via save_agent_telemetry. Marks agent_managed=1 so
+        the server-side poll never touches it. Returns the device dict.
+        """
+        info = info or {}
+        now = int(time.time())
+        existing = self.get_device_by_ip(ip_address, tenant_id=tenant_id)
+        if existing:
+            updates = {
+                "model": str(info.get("model") or existing.get("model", "")),
+                "firmware": str(info.get("firmware") or existing.get("firmware", "")),
+                "firmware_version": str(info.get("version") or existing.get("firmware_version", "")),
+                "hostname": str(info.get("hostname") or existing.get("hostname", "")),
+                "agent_managed": 1,
+                "last_seen": now,
+            }
+            if name:
+                updates["name"] = name
+            self.update_device(existing["id"], updates, tenant_id=tenant_id)
+            return self.get_device(existing["id"], tenant_id=tenant_id)
+
+        device_id = uuid.uuid4().hex[:12]
+        caps = {
+            "telemetry": True,
+            "restart": True,
+            "identify": True,
+            "configure": bool(info.get("firmware")) and "axe" in str(info.get("firmware", "")).lower(),
+        }
+        device = {
+            "id": device_id,
+            "name": name or str(info.get("hostname") or info.get("model") or ip_address),
+            "model": str(info.get("model") or ""),
+            "manufacturer": str(info.get("manufacturer") or ""),
+            "firmware": str(info.get("firmware") or ""),
+            "firmware_version": str(info.get("version") or ""),
+            "api_version": "",
+            "ip_address": ip_address,
+            "hostname": str(info.get("hostname") or ""),
+            "mac_address": str(info.get("mac") or ""),
+            "last_seen": now,
+            "status": STATUS_OFFLINE,  # telemetry decides ONLINE/IDLE
+            "group_id": "",
+            "capabilities": caps,
+            "added_at": now,
+            "updated_at": now,
+            "tenant_id": tenant_id,
+            "agent_managed": 1,
+        }
+        self._persist_device(device)
+        return device
+
+    def save_agent_telemetry(self, device_id: str, telemetry: dict,
+                             tenant_id: str = "default") -> None:
+        """Persist telemetry pushed by the user's local agent and update the
+        device status (ONLINE when hashrate > 0, IDLE otherwise)."""
+        now = int(time.time())
+        payload = dict(telemetry or {})
+        payload["ts"] = payload.get("ts") or now
+        payload["device_id"] = device_id
+        self.save_telemetry(device_id, payload, tenant_id=tenant_id)
+        hr = int(payload.get("hashrate_hs") or 0)
+        self.update_device(device_id, {
+            "last_seen": now,
+            "status": STATUS_ONLINE if hr > 0 else "IDLE",
+            "agent_managed": 1,
+        }, tenant_id=tenant_id)
+
     def update_device(self, device_id: str, updates: dict, tenant_id: str = "") -> bool:
         """Update device fields. Keys in 'updates' overwrite stored values.
         Returns True if device exists and was updated.
         If tenant_id is provided, only updates devices belonging to that tenant."""
-        fields = ["name", "model", "ip_address", "hostname", "group_id", "status"]
+        fields = ["name", "model", "ip_address", "hostname", "group_id", "status",
+                  "last_seen", "agent_managed", "firmware", "firmware_version",
+                  "manufacturer", "mac_address", "api_version"]
         set_parts = []
         vals = []
         for k, v in updates.items():
@@ -322,8 +428,9 @@ class DeviceRegistry:
             """INSERT OR REPLACE INTO axe_devices
             (id, name, model, manufacturer, firmware, firmware_version,
              api_version, ip_address, hostname, mac_address,
-             last_seen, status, group_id, capabilities, added_at, updated_at, tenant_id)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+             last_seen, status, group_id, capabilities, added_at, updated_at,
+             tenant_id, agent_managed)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 device.get("id", ""),
                 device.get("name", ""),
@@ -342,10 +449,118 @@ class DeviceRegistry:
                 device.get("added_at", int(time.time())),
                 int(time.time()),
                 device.get("tenant_id", "default"),
+                int(device.get("agent_managed", 0) or 0),
             ),
         )
         conn.commit()
         conn.close()
+
+    # ── Agent command queue (SaaS: commands routed through the local agent) ─
+
+    def enqueue_agent_command(self, device_id: str, command: str,
+                              params: dict = None, tenant_id: str = "default") -> dict:
+        """Queue a command for a device polled by the user's local agent.
+        Returns {"id": ..., "status": "pending"} or {} when the device is
+        not agent-managed / unknown. Never raises."""
+        cmd_id = uuid.uuid4().hex[:12]
+        now = int(time.time())
+        conn = self._get_db()
+        c = conn.cursor()
+        try:
+            c.execute(
+                "INSERT INTO axe_agent_commands "
+                "(id, tenant_id, device_id, command, params, status, created_at) "
+                "VALUES (?,?,?,?,?,?,?)",
+                (cmd_id, tenant_id, device_id, command,
+                 json.dumps(params or {}), "pending", now),
+            )
+            conn.commit()
+        except Exception as e:
+            log.warning("[agent-cmd] enqueue failed: %s", e)
+            cmd_id = ""
+        finally:
+            conn.close()
+        if not cmd_id:
+            return {}
+        return {"id": cmd_id, "command": command, "status": "pending"}
+
+    def pending_agent_commands(self, tenant_id: str = "default",
+                               requeue_after: int = 60) -> list:
+        """Pending commands for a tenant (for the agent's pull). Commands
+        pulled but never acked within `requeue_after` seconds are returned
+        again so a crashed agent doesn't lose the command forever."""
+        now = int(time.time())
+        conn = self._get_db()
+        c = conn.cursor()
+        try:
+            c.execute(
+                "SELECT * FROM axe_agent_commands WHERE tenant_id=? "
+                "AND (status='pending' OR (status='pulled' AND ? - pulled_at > ?)) "
+                "ORDER BY created_at LIMIT 20",
+                (tenant_id, now, requeue_after),
+            )
+            rows = [dict(r) for r in c.fetchall()]
+        except Exception as e:
+            log.warning("[agent-cmd] pull failed: %s", e)
+            rows = []
+        finally:
+            conn.close()
+        for r in rows:
+            try:
+                r["params"] = json.loads(r.get("params") or "{}")
+            except (json.JSONDecodeError, TypeError):
+                r["params"] = {}
+        return rows
+
+    def mark_command_pulled(self, command_id: str, tenant_id: str = "default") -> bool:
+        """Mark a command as pulled (agent will ack after executing)."""
+        conn = self._get_db()
+        c = conn.cursor()
+        try:
+            c.execute(
+                "UPDATE axe_agent_commands SET status='pulled', pulled_at=? "
+                "WHERE id=? AND tenant_id=?",
+                (int(time.time()), command_id, tenant_id),
+            )
+            conn.commit()
+            return c.rowcount > 0
+        except Exception as e:
+            log.warning("[agent-cmd] mark pulled failed: %s", e)
+            return False
+        finally:
+            conn.close()
+
+    def ack_agent_command(self, command_id: str, tenant_id: str, success: bool,
+                          result: str = "") -> bool:
+        """Ack a command result (agent executed it). Idempotent.
+        A duplicate ack (agent network retry) returns True as long as the
+        command belongs to the tenant — an already-acked command must not
+        surface as a 404 to the agent."""
+        conn = self._get_db()
+        c = conn.cursor()
+        try:
+            c.execute(
+                "UPDATE axe_agent_commands SET status=?, result=?, acked_at=? "
+                "WHERE id=? AND tenant_id=? AND status='pulled'",
+                ("done" if success else "failed", result[:2000],
+                 int(time.time()), command_id, tenant_id),
+            )
+            conn.commit()
+            if c.rowcount > 0:
+                return True
+            # Not currently 'pulled' — either unknown/wrong tenant (False)
+            # or already acked (idempotent True).
+            c.execute(
+                "SELECT status FROM axe_agent_commands WHERE id=? AND tenant_id=?",
+                (command_id, tenant_id),
+            )
+            row = c.fetchone()
+            return bool(row and row["status"] in ("done", "failed"))
+        except Exception as e:
+            log.warning("[agent-cmd] ack failed: %s", e)
+            return False
+        finally:
+            conn.close()
 
     @staticmethod
     def _row_to_device(row) -> dict:

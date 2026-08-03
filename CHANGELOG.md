@@ -6,6 +6,108 @@ e versionamento semântico ([SemVer](https://semver.org/lang/pt-BR/)).
 
 ## [Unreleased]
 
+### Removido — Canvas de partículas "nonce search" (Live Mining)
+- **Removido por completo** o quadro preto de radar com gradiente gold, linha
+  pontilhada do alvo e rodapé `NONCES SEARCHED` (`#hunt-canvas-wrap` + engine
+  `_hunt.draw`/`resize`/`fmtNum`/`totalHashes`) — o usuário não queria mais
+  ele no projeto.
+- **Intocados**: ⚡ LIVE ACTION FEED (agora ocupa a coluna da esquerda),
+  métricas (INSTANT HR / CUMULATIVE P / EXP BLOCKS / BEST DIFF + sparkline +
+  gauge), RECENT SHARES, topbar e demais painéis. O tick de 1s que alimenta o
+  feed e as métricas continua (sem o draw do canvas). Grid do hunt-layout
+  passou de `1fr 2fr 1fr` para `1fr 1fr`.
+- Grid do hunt-layout: `2fr 1fr` (feed com 2/3 da largura, métricas 1/3).
+- Bumps CDN-safe: `app.js?v46→v47`, `style.css?v40→v42`.
+
+### Adicionado — Guia do agente dentro do app (`/docs/agent`)
+- **Nova rota pública** `/docs/agent`: renderiza `docs/AGENT_SETUP_GUIDE.md`
+  (fonte única de verdade — o mesmo arquivo do repo) convertido para HTML com
+  a lib `markdown` (nova dep pinada `markdown==3.10.3`). Página standalone
+  `templates/agent_guide.html` reutilizando o tema do dashboard (style.css +
+  CSS vars), com voltar ao dashboard.
+- **Link no painel CONNECT AGENT** (Fleet → 🤖 CONNECT AGENT): "📖 GUIA
+  COMPLETO DO AGENTE" abre o guia em nova aba.
+- Extensões markdown: `tables`, `fenced_code`, `nl2br` (cobre code blocks,
+  tabela de troubleshooting e blockquotes do guia). 404 honesto se o arquivo
+  faltar. Testes: `TestDocsAgent` (render 200, público sem auth, 404).
+
+### Adicionado — CI: imagem do agente publicada no GHCR
+- **Novo workflow** `.github/workflows/agent-image.yml`: builda `agent/Dockerfile`
+  e publica `ghcr.io/0xjc65eth/cypher65-agent` (tags `latest` + `sha-<commit>`)
+  a cada push na branch `master` (+ `workflow_dispatch`). Permissão `packages:
+  write` via `GITHUB_TOKEN` — sem credenciais extras. Smoke test pós-push
+  (import do agent.py na imagem, guard `__main__`).
+- **One-liner Docker do painel** (Fleet → CONNECT AGENT), `docs/AGENT_SETUP_GUIDE.md`,
+  `docs/AGENT_ARCHITECTURE_NOTE.md` e `agent/README.md` agora apontam para
+  `ghcr.io/0xjc65eth/cypher65-agent` (antes: `cypher65/agent` no Docker Hub,
+  que não era publicado por CI). Bump CDN-safe `app.js?v45→v46`.
+
+### Adicionado — Live Mining: LIVE ACTION FEED (substitui debug CALC STREAM)
+- **Removido** o header de debug `> CALC STREAM` e o cabeçalho de colunas
+  `TIME EVENT DIFFICULTY GAP` — lixo de interface interna sem valor pro usuário.
+- **Novo feed de eventos** (`#live-action-feed`): shares aceitas/rejeitadas/stale
+  (verde/âmbar) + transições de status dos workers do fleet (offline → vermelho
+  acionável, online → verde) — auto-scroll com os mais novos por cima, cap 6.
+- **Clique → modal** com o log bruto do evento (substitui a "função CALC STREAM"
+  de debug). **Ação inline**: worker offline → botão ↻ Reconectar (rota de
+  restart do fleet; devices agent-managed vão para a fila do agente local).
+- Estado vazio honesto: "📡 Aguardando atividades dos workers...". Métricas
+  superiores (WALLET/WORKERS/HR/BEST DIFF/…), NETWORK strip, canvas e share
+  cards intocados. Engine `_laf` em `static/app.js` + CSS + SUITE 28 de testes
+  JS (event builders puros mirror).
+
+### Adicionado — SaaS: agente local (dashboard na nuvem → LAN do usuário)
+- **`agent/` (novo)**: agente standalone (Docker/Pi/PC na rede do usuário) que
+  conecta PARA FORA ao dashboard no Render — resolve o caso "deploy na nuvem,
+  miners em casa": a nuvem não roteia para `192.168.x.x`, então o agente
+  descobre a LAN local (AxeOS :80 / cgminer :4028), registra os devices e
+  empurra telemetria em batch a cada 30s (NAT/CGNAT-safe, sem abrir porta).
+- **Instalador de 1 linha (novo)**: `curl -sSL <url>/agent/install.sh \
+  | CYPHER65_SERVER_URL=… CYPHER65_AGENT_TOKEN=… bash` — sem Docker, sem pip
+  (agente 100% stdlib/urllib): baixa o agent.py do próprio dashboard, instala
+  como serviço (launchd no macOS / systemd no Linux / nohup fallback) e sobe.
+  O painel CONNECT AGENT imprime o comando pronto com token+URL embutidos.
+- **`/agent/install.sh` + `/agent/agent.py`**: rotas públicas que servem o
+  instalador e o agente (o usuário os baixa de uma máquina FORA do dashboard).
+- **Fix**: `CYPHER65_DEVICES` roda o probe de descoberta completo (cgminer :4028
+  incluído) — antes forçava `type=bitaxe` e só tentava :80, perdendo ASICs.
+- **Fixes do teste E2E real (curl|bash)**: (1) `$SERVER_URL…` com reticências
+  unicode coladas no nome da variável quebrava sob `set -u` — agora `${SERVER_URL}`;
+  (2) branch launchd não criava `~/Library/LaunchAgents/` — agora `mkdir -p`.
+- **Docs**: `docs/AGENT_SETUP_GUIDE.md` (guia do usuário com comandos copy-paste)
+  e `docs/AGENT_ARCHITECTURE_NOTE.md` (por que agente conecta para fora).
+- **API `/api/agent/*`**: `token` (JWT de 1 ano scoped ao tenant), `register`,
+  `telemetry`, `commands/pull` + `commands/<id>/ack` — autenticação por JWT
+  com claim `agent:true`, isolamento estrito por tenant.
+- **Fila de comandos**: restart/identify em devices agent-managed são
+  enfileirados no servidor e executados pelo agente local (com re-queue se o
+  agente cair antes do ack).
+- **Poll skip**: `_do_poll` nunca toca devices `agent_managed` (o servidor não
+  alcança a LAN deles — pollaria OFFLINE em todo tick). Schema migrado no boot
+  (`ensure_tables()` no app.py: coluna `agent_managed` + tabela
+  `axe_agent_commands`).
+- **UI**: painel "CONNECT AGENT" no Fleet — gera o token e imprime o comando
+  `docker run` para colar na rede do usuário.
+
+### Corrigido — AXE FLEET descoberta cega (engenharia de protocolo)
+- **Hint de topologia no scan (A)**: CIDR privado + 0 found → o scan agora
+  anexa o aviso "IP privado (LAN)" ao resultado (dashboard na nuvem não
+  roteia para a rede caseira) — antes o wizard explicava, o scan ficava mudo.
+- **Camada alive-vs-miner (B)**: `scan_subnet` agora reporta `alive` /
+  `alive_ips` — hosts cuja porta TCP abriu mas não responderam como miner
+  (ASIC com API autenticada/firewall) — transformando "no miners found"
+  genérico em diagnóstico acionável na UI.
+- **Fingerprint cgminer tolerante (C)**: aceita delimitadores `\x00` e `~`
+  (Avalon) e extrai JSON leniente (banner/bytes extras/pretty-print) em vez
+  de descartar a resposta — cobre variações de firmware que antes davam
+  falso-negativo.
+- **Probes de presença (D)**: `diagnose_host` agora detecta porta TCP :443
+  aberta (Braiins OS+/Antminer moderno com API autenticada) e servidor HTTP
+  em :80 que não é ESP-Miner (página de login de ASIC) — mensagens acionáveis
+  no wizard em vez de "no miner protocol" seco.
+- Scan-store repassa `alive`/`alive_ips`/`hint` para o endpoint de status;
+  UI mostra contagem de hosts alive + hint no resultado vazio.
+
 ### Adicionado — Cobertura 62% → 66% (gate CI 45% → 65%)
 - **108 testes novos** cobrindo módulos de baixa cobertura:
   `services/ai_operator.py` (12% → ~72%), `services/session_manager.py`

@@ -170,7 +170,7 @@
     acAddRule: $('#ac-add-rule'), acRuleForm: $('#ac-rule-form'), acRuleSave: $('#ac-rule-save'), acRuleCancel: $('#ac-rule-cancel'),
     acRuleName: $('#ac-rule-name'), acRuleDevice: $('#ac-rule-device'), acRuleMetric: $('#ac-rule-metric'), acRuleOp: $('#ac-rule-op'),
     acRuleValue: $('#ac-rule-value'), acRuleAction: $('#ac-rule-action'), acRuleStatus: $('#ac-rule-status'),
-    huntStreamFeed: $('#hunt-stream-feed'), huntMetricsHr: $('#hunt-metrics-hr'), huntMetricsPblock: $('#hunt-metrics-pblock'),
+    huntMetricsHr: $('#hunt-metrics-hr'), huntMetricsPblock: $('#hunt-metrics-pblock'),
     huntMetricsExpblocks: $('#hunt-metrics-expblocks'), huntMetricsBestdiff: $('#hunt-metrics-bestdiff'),
     huntSharesGrid: $('#hunt-shares-grid'), huntSharesCount: $('#hunt-shares-count'),
 
@@ -4091,6 +4091,14 @@ dom.walletSave?.addEventListener('click', async () => {
     Object.keys(_lmFlow).forEach(id => {
       if (!alive[id]) { delete _lmFlow[id]; delete _lmLastCounters[id]; }
     });
+    // LIVE ACTION FEED: surface worker status transitions (offline→error
+    // with reconnect action, back-online→success). Only on change.
+    _lafConsumeWorkers(rows);
+    // Prune transition memory of removed devices (same pattern as the flow
+    // buffers above) — never grows per unique id in a long session.
+    Object.keys(_laf.prevWorkerStatus).forEach(id => {
+      if (!alive[id]) delete _laf.prevWorkerStatus[id];
+    });
 
     const esc = escapeHtml;
     const cell = (v, cls, title) => `<span class="lm-w__cell${cls ? ' ' + cls : ''}"${title ? ' title="' + title + '"' : ''}>${v}</span>`;
@@ -4215,7 +4223,7 @@ dom.walletSave?.addEventListener('click', async () => {
 
     if (!devices.length) {
       dom.axeGrid.innerHTML = '<div class="axe-empty">no devices registered — add your first Bitaxe/NerdAxe via the + ADD button' +
-        '<div class="axe-empty__hint">⚠ O host do dashboard precisa alcançar os miners na MESMA rede local (ou via Tailscale IP). Se o device não aparecer, confira se o IP está correto e se o miner responde em /system/info.</div></div>';
+        '<div class="axe-empty__hint">⚠ Dashboard na nuvem não alcança a sua LAN (192.168.x.x não é roteável a partir do Render). Rode o <strong>AGENTE LOCAL</strong> na sua rede — Fleet → 🤖 CONNECT AGENT — ele descobre os miners e conecta para fora. (Self-host: rode o app na mesma Wi-Fi dos miners ou use um IP Tailscale.)</div></div>';
       return;
     }
 
@@ -4447,11 +4455,24 @@ dom.walletSave?.addEventListener('click', async () => {
   //  2. Poll GET /api/axe-fleet/scan/<id> every 1.5s (progress + found)
   //  3. Render found miners as rows with a per-row ADD button that reuses
   //     the same addAxeDevice() as the manual form.
-  function renderAxeScanResults(found) {
+  function renderAxeScanResults(found, scan) {
     const box = dom.axeScanResults;
     if (!box) return;
     if (!found || !found.length) {
-      box.innerHTML = '<div style="font-size:9px;color:var(--text-tertiary)">no miners found on this subnet</div>';
+      // No miners: surface the alive-vs-miner layer (hosts whose TCP port
+      // opened but no miner protocol answered) and the private-LAN topology
+      // hint — a flat "no miners found" hides whether the subnet is even
+      // reachable (cloud dashboard vs home LAN).
+      const alive = (scan && scan.alive) || 0;
+      const hint = (scan && scan.hint) || '';
+      let html = '<div style="font-size:9px;color:var(--text-tertiary)">no miners found on this subnet</div>';
+      if (alive > 0) {
+        html += '<div style="font-size:9px;color:var(--text-secondary);margin-top:4px">' + alive + ' host(s) alive (porta TCP aberta) mas sem protocolo de miner — possíveis ASICs com API autenticada/firewall. Verifique com TEST CONNECTIVITY em um IP específico.</div>';
+      }
+      if (hint) {
+        html += '<div style="font-size:9px;color:var(--amber);margin-top:4px">' + escapeHtml(hint) + '</div>';
+      }
+      box.innerHTML = html;
       return;
     }
     const rows = found.map(d => {
@@ -4522,10 +4543,12 @@ dom.walletSave?.addEventListener('click', async () => {
           if (statusEl) statusEl.textContent = `> probing ${scanned}/${total} hosts…`;
           if (s.status === 'done' || s.status === 'error') {
             if (statusEl) {
-              statusEl.textContent = s.error ? '? ' + s.error : `✓ ${(s.found || []).length} miner(s) found`;
+              const foundN = (s.found || []).length;
+              const aliveN = s.alive || 0;
+              statusEl.textContent = s.error ? '? ' + s.error : foundN > 0 ? `✓ ${foundN} miner(s) found` : (aliveN > 0 ? `✓ 0 miners · ${aliveN} host(s) alive sem protocolo` : '✓ 0 miners — nada respondeu');
               statusEl.style.color = s.error ? 'var(--accent-red)' : 'var(--accent-green)';
             }
-            renderAxeScanResults(s.found || []);
+            renderAxeScanResults(s.found || [], s);
             return;
           }
         } catch (e) { /* transient poll failure — keep polling */ }
@@ -4586,6 +4609,16 @@ dom.walletSave?.addEventListener('click', async () => {
       rows.push({ label: 'cgminer :4028', ok: true, val: 'CGMINER', detail: [di.model, di.version].filter(Boolean).join(' · ') });
     } else {
       rows.push({ label: 'cgminer :4028', ok: false, val: 'no', detail: 'no cgminer protocol on port 4028' });
+    }
+    // Protocol-presence rows (D): a modern authenticated miner (Braiins
+    // OS+/Antminer login page) answers nothing on the classic probes but
+    // shows TCP :443 or a non-ESP-Miner web server on :80 — surface that
+    // instead of a flat "no protocol".
+    if (r.https_tcp && !r.bitaxe_http && !r.cgminer_tcp) {
+      rows.push({ label: 'HTTPS :443', ok: true, val: 'OPEN', detail: 'porta 443 aberta — firmware moderno (Braiins/Antminer) com API autenticada' });
+    }
+    if (r.http_server && !r.bitaxe_http && !r.cgminer_tcp) {
+      rows.push({ label: 'HTTP :80', ok: true, val: 'server', detail: 'servidor HTTP presente mas NÃO é ESP-Miner — possível página de login de ASIC' });
     }
     rows.push({ label: 'elapsed', ok: true, val: (r.elapsed_ms != null ? r.elapsed_ms + 'ms' : '—'), detail: '' });
     return rows;
@@ -4791,6 +4824,98 @@ dom.walletSave?.addEventListener('click', async () => {
     });
 
     initAxeScanControls();
+    initAxeAgentPanel();
+  }
+
+  // ── SaaS AGENT onboarding panel ─────────────────────────────────────
+  // The cloud dashboard cannot reach the user's LAN (192.168.x.x is not
+  // routable from Render), so a local agent connects OUT and pushes
+  // telemetry. This panel mints the per-tenant JWT (POST /api/agent/token)
+  // and prints the docker run one-liner for the user's home network.
+  function initAxeAgentPanel() {
+    const panel = document.getElementById('axe-agent-panel');
+    const btn = document.getElementById('axe-agent-btn');
+    if (!panel || !btn) return;
+
+    const open = () => {
+      // Close the add-wizard if open so the two modals never overlap.
+      const form = dom.axeAddForm || document.getElementById('axe-add-form');
+      if (form && form.style.display !== 'none') form.style.display = 'none';
+      panel.style.display = 'block';
+    };
+    const close = () => { panel.style.display = 'none'; };
+    btn.addEventListener('click', open);
+    document.getElementById('axe-agent-close')?.addEventListener('click', close);
+
+    const statusEl = document.getElementById('axe-agent-status');
+    const tokenRow = document.getElementById('axe-agent-token-row');
+    const tokenArea = document.getElementById('axe-agent-token');
+    const dockerPre = document.getElementById('axe-agent-docker');
+    const oneLinerPre = document.getElementById('axe-agent-one-liner');
+    const setStatus = (msg, color) => {
+      if (!statusEl) return;
+      statusEl.textContent = msg;
+      statusEl.style.color = color || 'var(--text-tertiary)';
+    };
+    // One-line installer: SERVER_URL + token ride as leading env vars so the
+    // piped `bash` process sees them (query-string vars would NOT reach the
+    // script through `curl | bash`). Single command — no Docker, no pip.
+    const renderCommands = (token, serverUrl) => {
+      const origin = (serverUrl || location.origin).replace(/\/$/, '');
+      if (oneLinerPre) {
+        oneLinerPre.textContent =
+          'curl -sSL "' + origin + '/agent/install.sh" \\\n' +
+          '  | CYPHER65_SERVER_URL=' + origin + ' CYPHER65_AGENT_TOKEN=' + token + ' bash';
+      }
+      if (dockerPre) {
+        dockerPre.textContent =
+          'docker run -d --name cypher65-agent --network host \\\n' +
+          '  -e CYPHER65_SERVER_URL=' + origin + ' \\n' +
+          '  -e CYPHER65_AGENT_TOKEN=' + token + ' \\n' +
+          '  -e CYPHER65_POLL_INTERVAL=30 \\n' +
+          '  ghcr.io/0xjc65eth/cypher65-agent';
+      }
+    };
+    const copy = async (text, label) => {
+      try {
+        await navigator.clipboard.writeText(text);
+        setStatus('✓ ' + label + ' copied', 'var(--accent-green)');
+      } catch (e) {
+        setStatus('! copy failed — select manually', 'var(--accent-red)');
+      }
+    };
+
+    document.getElementById('axe-agent-gen')?.addEventListener('click', async () => {
+      setStatus('> minting token...');
+      try {
+        const r = await authFetch('/api/agent/token', { method: 'POST' });
+        const data = await r.json();
+        if (!r.ok || !data.token) {
+          setStatus('✗ ' + (data.error || 'token mint failed (HTTP ' + r.status + ')'), 'var(--accent-red)');
+          return;
+        }
+        if (tokenArea) tokenArea.value = data.token;
+        renderCommands(data.token, data.server_url || '');
+        if (tokenRow) tokenRow.style.display = 'block';
+        setStatus('✓ token issued · tenant ' + (data.tenant_id || ''), 'var(--accent-green)');
+      } catch (e) {
+        setStatus('✗ network error', 'var(--accent-red)');
+      }
+    });
+    document.getElementById('axe-agent-copy-token')?.addEventListener('click', () => {
+      if (tokenArea && tokenArea.value) copy(tokenArea.value, 'token');
+    });
+    document.getElementById('axe-agent-copy-one')?.addEventListener('click', () => {
+      if (oneLinerPre && oneLinerPre.textContent) copy(oneLinerPre.textContent, 'install command');
+    });
+    document.getElementById('axe-agent-copy-docker')?.addEventListener('click', () => {
+      if (dockerPre && dockerPre.textContent) copy(dockerPre.textContent, 'docker command');
+    });
+    document.getElementById('axe-agent-hide-token')?.addEventListener('click', () => {
+      if (tokenArea) tokenArea.value = '';
+      if (tokenRow) tokenRow.style.display = 'none';
+      setStatus('token hidden');
+    });
   }
 
   // Shared device-add helper (used by the manual form + scan ADD buttons).
@@ -4817,117 +4942,43 @@ dom.walletSave?.addEventListener('click', async () => {
   function _updateHashSearchState(worker, network) { /* no-op: superseded by _huntUpdateState */ }
 
   // ══════════════════════════════════════════════════════════════════════
-  // HASH HUNT CANVAS ENGINE
+  // HASH HUNT ENGINE (LIVE ACTION FEED + métricas)
   // ══════════════════════════════════════════════════════════════════════
 
+  // The nonce-search particle CANVAS was removed on request: the black radar
+  // box (gold gradient / dotted target line / 'NONCES SEARCHED' footer) no
+  // longer exists. What remains is the 1s telemetry tick that feeds the
+  // LIVE ACTION FEED (shares) and the metric cards (sparkline / gauge / HR /
+  // P(BLOCK) / EXP BLOCKS / BEST DIFF).
   const _hunt = {
-    canvas: null, ctx: null, running: false, rafId: null,
-    particles: [], maxParticles: 500, targetY: 0, frontierY: 0, w: 0, h: 0,
-    hr: 0, bestDiff: 0, netDiff: 0, startTime: 0,
-    frameCount: 0, totalHashes: 0, dpr: 1,
-    floatingTexts: [], pBlockCum: 0, expBlocks: 0,
-    streamLines: 0, streamQueue: [], shareIdx: 0,
-    metricsHrHistory: [], sharesSeen: new Set(),
+    hr: 0, bestDiff: 0, netDiff: 0,
+    pBlockCum: 0, expBlocks: 0,
+    streamLines: 0, streamQueue: [], metricsHrHistory: [],
+    timerId: null,
   };
 
   function _huntInit() {
-    _hunt.canvas = document.getElementById('hunt-canvas'); if (!_hunt.canvas) return;
-    _hunt.ctx = _hunt.canvas.getContext('2d');
-    setTimeout(() => _hunt.resize(), 50);
-    _hunt.seedParticles();
-    _hunt.running = true; _hunt.startTime = performance.now() / 1000;
-    window.addEventListener('beforeunload', () => { _hunt.running = false; if (_hunt.rafId) { cancelAnimationFrame(_hunt.rafId); _hunt.rafId = null; } });
-    _hunt.loop();
+    _hunt.updateMetrics();
+    // 1s telemetry tick: feeds the LIVE ACTION FEED + metric cards.
+    // Skipped while the tab is hidden to save CPU/battery.
+    _hunt.timerId = setInterval(() => _hunt.tick(), 1000);
+    window.addEventListener('beforeunload', () => { if (_hunt.timerId) clearInterval(_hunt.timerId); });
   }
 
-  _hunt.resize = () => {
-    const wrap = document.getElementById('hunt-canvas-wrap'); if (!wrap || !_hunt.canvas) return;
-    _hunt.dpr = window.devicePixelRatio || 1;
-    _hunt.w = wrap.clientWidth; _hunt.h = wrap.clientHeight;
-    _hunt.canvas.width = _hunt.w * _hunt.dpr; _hunt.canvas.height = _hunt.h * _hunt.dpr;
-    _hunt.ctx.setTransform(_hunt.dpr, 0, 0, _hunt.dpr, 0, 0);
-    _hunt.targetY = _hunt.h * 0.08; _hunt.frontierY = _hunt.h * 0.65;
-  };
-  window.addEventListener('resize', _hunt.resize);
-
-  _hunt.seedParticles = () => { for (let i = 0; i < _hunt.maxParticles; i++) _hunt.particles.push(_hunt.createParticle(true)); };
-  _hunt.createParticle = (randomY) => ({
-    x: Math.random() * (_hunt.w || 800), y: randomY ? Math.random() * (_hunt.h || 400) : (_hunt.h || 400) + 10,
-    vy: -(0.15 + Math.random() * 0.5), vx: (Math.random() - 0.5) * 0.3,
-    life: 1, maxLife: 0.6 + Math.random() * 0.8,
-    color: Math.random() < 0.6 ? 'cyan' : (Math.random() < 0.7 ? 'green' : 'gold'), size: 0.5 + Math.random() * 2,
-  });
-
-  _hunt.loop = () => {
-    if (!_hunt.running) return;
-    // CFO quick-win: skip update/draw while the tab is hidden — the rAF
-    // loop stays alive (resumes instantly on focus) but does ZERO canvas
-    // work in the background, saving CPU/battery. Same pattern as Matrix rain.
-    if (document.hidden) { _hunt.rafId = requestAnimationFrame(_hunt.loop); return; }
-    _hunt.frameCount++; const dt = Math.min(0.05, 1/60); _hunt.update(dt); _hunt.draw(); _hunt.rafId = requestAnimationFrame(_hunt.loop);
-  };
-
-  _hunt.update = (dt) => {
-    const { particles, w, h, targetY, hr } = _hunt; if (!w) return;
-    if (hr > 0) _hunt.totalHashes += hr * dt;
-    for (let i = 0; i < particles.length; i++) {
-      const p = particles[i];
-      p.y += p.vy * 60 * dt; p.x += p.vx * 60 * dt; p.life -= dt / p.maxLife;
-      if (p.x < 0) p.x = w; if (p.x > w) p.x = 0;
-      const distToTarget = (p.y - targetY) / (_hunt.frontierY - targetY);
-      if (distToTarget < 0.3) p.vy *= 0.97;
-      if (p.life <= 0 || p.y < targetY) { p.y = h + Math.random() * 20; p.x = Math.random() * w; p.life = 1; p.maxLife = 0.6 + Math.random() * 0.8; p.vy = -(0.15 + Math.random() * 0.5); p.vx = (Math.random() - 0.5) * 0.3; p.color = Math.random() < 0.6 ? 'cyan' : (Math.random() < 0.7 ? 'green' : 'gold'); p.size = 0.5 + Math.random() * 2; }
-    }
-    if (_hunt.frameCount % 30 === 0 && hr > 0) {
-      const nonce = Math.floor(Math.random() * 0xFFFFFFFF);
-      _hunt.floatingTexts.push({ x: Math.random()*w*0.8+w*0.1, y: h*0.3+Math.random()*h*0.4, text: 'nonce:'+nonce.toString(16).padStart(8,'0'), life:1, maxLife:2+Math.random()*3, color:'rgba(20,184,166,' });
-    }
-    for (let i = _hunt.floatingTexts.length-1; i>=0; i--) { _hunt.floatingTexts[i].life -= dt/_hunt.floatingTexts[i].maxLife; _hunt.floatingTexts[i].y -= 0.3; if (_hunt.floatingTexts[i].life<=0) _hunt.floatingTexts.splice(i,1); }
-    if (_hunt.frameCount % 25 === 0 && _hunt.updateStream) _hunt.updateStream();
-    if (_hunt.frameCount % 60 === 0) _hunt.updateMetrics();
-  };
-
-  _hunt.draw = () => {
-    const { ctx, w, h, targetY, particles, floatingTexts } = _hunt; if (!ctx || !w) return;
-    ctx.fillStyle = 'rgba(5, 5, 5, 0.35)'; ctx.fillRect(0, 0, w, h);
-    const tgGrad = ctx.createRadialGradient(w/2, targetY, 10, w/2, targetY, w*0.5); tgGrad.addColorStop(0, 'rgba(245,185,66,0.08)'); tgGrad.addColorStop(1, 'rgba(245,185,66,0)');
-    ctx.fillStyle = tgGrad; ctx.fillRect(0, 0, w, targetY+30);
-    ctx.strokeStyle = 'rgba(245,185,66,0.3)'; ctx.lineWidth = 1; ctx.setLineDash([4, 8]); ctx.beginPath(); ctx.moveTo(0, targetY); ctx.lineTo(w, targetY); ctx.stroke(); ctx.setLineDash([]);
-    ctx.strokeStyle = 'rgba(6,214,240,0.15)'; ctx.lineWidth = 0.5; ctx.beginPath(); ctx.moveTo(0, _hunt.frontierY); ctx.lineTo(w, _hunt.frontierY); ctx.stroke();
-
-    const batches = { cyan: [], green: [], gold: [] };
-    for (const p of particles) {
-      const alpha = p.life * (p.y < _hunt.frontierY ? 0.5 : 0.8); if (alpha < 0.02) continue;
-      const proximity = 1 - Math.max(0, Math.min(1, (p.y - targetY) / (_hunt.frontierY - targetY)));
-      batches[p.color].push({ x: p.x, y: p.y, size: p.size*(1+proximity*2), alpha, proximity });
-    }
-    ctx.fillStyle = 'rgb(6,214,240)'; for (const p of batches.cyan) { ctx.globalAlpha = p.alpha; ctx.beginPath(); ctx.arc(p.x, p.y, p.size, 0, Math.PI*2); ctx.fill(); }
-    ctx.fillStyle = 'rgb(16,185,129)'; for (const p of batches.green) { ctx.globalAlpha = p.alpha*(1+p.proximity); ctx.beginPath(); ctx.arc(p.x, p.y, p.size, 0, Math.PI*2); ctx.fill(); }
-    ctx.fillStyle = 'rgb(245,185,66)'; for (const p of batches.gold) { ctx.globalAlpha = p.alpha; ctx.beginPath(); ctx.arc(p.x, p.y, p.size, 0, Math.PI*2); ctx.fill(); }
-    ctx.globalAlpha = 1;
-
-    for (const ft of floatingTexts) { if (ft.life<0.05) continue; ctx.fillStyle = ft.color+(ft.life*0.6)+')'; ctx.font = '9px JetBrains Mono'; ctx.fillText(ft.text, ft.x, ft.y); }
-    // Professional telemetry HUD (P3): business-readable labels instead of
-    // the old debug strings ("HASHES: 0" / "PARTICLES: 500").
-    ctx.fillStyle = 'rgba(255,255,255,0.35)'; ctx.font = '8px JetBrains Mono';
-    ctx.fillText('NONCES SEARCHED: '+_hunt.fmtNum(_hunt.totalHashes), 8, h-12);
-    ctx.fillText('HR: '+(_hunt.hr > 0 ? fmt.hashrate(_hunt.hr) : '—'), 8, h-2);
-    if (_hunt.pBlockCum > 0) { ctx.fillStyle = 'rgba(245,185,66,0.5)'; ctx.font = '9px JetBrains Mono'; ctx.fillText('P(BLOCK) CUM: '+_hunt.fmtPct(_hunt.pBlockCum), w-180, h-12); }
-  };
-
-  _hunt.fmtNum = (n) => { if (n<1e3) return n.toFixed(0); if (n<1e6) return (n/1e3).toFixed(1)+'K'; if (n<1e9) return (n/1e6).toFixed(1)+'M'; if (n<1e12) return (n/1e9).toFixed(1)+'G'; if (n<1e15) return (n/1e12).toFixed(1)+'T'; return (n/1e15).toFixed(2)+'P'; };
   _hunt.fmtPct = (n) => { if (n<0.0001) return n.toExponential(2)+'%'; if (n<0.01) return n.toFixed(5)+'%'; return n.toFixed(3)+'%'; };
 
   _hunt.updateStream = () => {
-    const feed = document.getElementById('hunt-stream-feed'); if (!feed || !_hunt.streamQueue.length) return;
+    if (!_hunt.streamQueue.length) return;
     const s = _hunt.streamQueue.shift();
-    const d = new Date((s.ts || 0) * 1000);
-    const ts = String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0')+':'+String(d.getSeconds()).padStart(2,'0');
-    const diff = s.share_diff_str || '\u2014'; const gap = s.gap ? Number(s.gap).toFixed(1)+'s' : '\u2014';
-    _hunt.streamLines++;
-    feed.insertAdjacentHTML('beforeend', `<div class="hunt-stream__line"><span class="ts">${ts}</span><span class="n">SHARE</span><span class="h">${escapeHtml(diff)}</span><span class="d">${gap}</span></div>`);
-    while (_hunt.streamLines > 30) { const f = feed.querySelector('.hunt-stream__line'); if (!f) break; f.remove(); _hunt.streamLines--; }
-    feed.scrollTop = feed.scrollHeight;
+    // Feed the LIVE ACTION FEED with the raw share payload. The event is
+    // categorized + rendered there (color by type, modal on click).
+    _lafPushShare(s);
+  };
+
+  _hunt.tick = () => {
+    if (document.hidden) return;
+    _hunt.updateMetrics();
+    if (_hunt.updateStream) _hunt.updateStream();
   };
 
   _hunt.updateMetrics = () => {
@@ -4937,10 +4988,6 @@ dom.walletSave?.addEventListener('click', async () => {
     const elPBlock = document.getElementById('hunt-metrics-pblock'); if (elPBlock && _hunt.pBlockCum > 0) elPBlock.textContent = _hunt.fmtPct(_hunt.pBlockCum);
     const elExp = document.getElementById('hunt-metrics-expblocks'); if (elExp) elExp.textContent = _hunt.expBlocks.toFixed(4);
     const elBest = document.getElementById('hunt-metrics-bestdiff'); if (elBest && bestDiff > 0) elBest.textContent = fmt.diff(bestDiff);
-    const statusEl = document.getElementById('hunt-status-label');
-    if (statusEl) statusEl.textContent = hr > 0 ? ['HASHING...','SEARCHING...','SCANNING NONCES','COMPUTING SHA-256'][Math.floor(_hunt.frameCount/120)%4] : 'AWAITING DATA';
-    const frontEl = document.getElementById('hunt-frontier-label');
-    if (frontEl && _hunt.totalHashes > 0) frontEl.textContent = 'FRONTIER · '+_hunt.fmtNum(_hunt.totalHashes)+' HASHES';
     _hunt.drawSparkline(); _hunt.drawGauge();
   };
 
@@ -5005,10 +5052,244 @@ dom.walletSave?.addEventListener('click', async () => {
   let _huntStarted = false;
   function _huntStart() { if (_huntStarted) return; _huntStarted = true;
     _hunt.streamLines = 0;
-    const feed = document.getElementById('hunt-stream-feed');
-    if (feed) feed.innerHTML = '<div class="hunt-stream__line"><span class="ts">TIME</span><span class="n">EVENT</span><span class="h">DIFFICULTY</span><span class="d">GAP</span></div>';
+    // LIVE ACTION FEED replaces the debug '> CALC STREAM' + the raw
+    // TIME/EVENT/DIFFICULTY/GAP column header. No debug header injected
+    // anymore — the feed renders categorized, actionable events.
+    _lafInit();
     _huntInit();
   }
+
+  // ═══════════════════════════════════════════════════════════════════
+  // LIVE ACTION FEED (_laf)
+  // Substitui o '> CALC STREAM' + header TIME EVENT DIFFICULTY GAP por
+  // eventos reais categorizados: shares (sucesso/aviso) e mudanças de
+  // status dos workers do fleet (offline → erro acionável). Auto-scroll:
+  // os eventos mais novos entram por cima. Clique → modal com log bruto.
+  // ═══════════════════════════════════════════════════════════════════
+  const _laf = {
+    events: [],          // newest first: {id, ts, time, type, message, diff, worker, actionable, action, actionLabel, raw}
+    prevWorkerStatus: {}, // worker id → last status (for transition events)
+    MAX: 6,              // visible events (compact ~2 lines worth)
+    seq: 0,
+  };
+
+  const LAF_TYPE = {
+    success: 'success', warn: 'warn', error: 'error', info: 'info',
+  };
+
+  function _lafInit() {
+    _laf.events = []; _laf.prevWorkerStatus = {};
+    const feed = document.getElementById('live-action-feed');
+    if (feed) feed.innerHTML = '';
+    _lafRender();
+  }
+
+  // Pure: build a feed event from a share payload. Mirrored in tests.
+  function buildLafShareEvent(s) {
+    const d = new Date((s && s.ts) ? Number(s.ts) * 1000 : Date.now());
+    const time = String(d.getHours()).padStart(2,'0') + ':' + String(d.getMinutes()).padStart(2,'0') + ':' + String(d.getSeconds()).padStart(2,'0');
+    const diff = (s && s.share_diff_str) || '\u2014';
+    const gap = (s && s.gap != null) ? Number(s.gap).toFixed(1) + 's' : '\u2014';
+    const hrStr = (s && s.instantaneous_hr_str) || '\u2014';
+    // Rejected/stale shares are flagged by the server when present.
+    const status = (s && (s.status || s.share_status)) || '';
+    const isRej = /rej|stale|invalid/i.test(status);
+    const isStale = /stale/i.test(status);
+    return {
+      ts: (s && s.ts) || Math.floor(Date.now() / 1000),
+      time, diff, gap, hrStr,
+      type: isStale ? LAF_TYPE.warn : (isRej ? LAF_TYPE.warn : LAF_TYPE.success),
+      message: isRej ? 'Share ' + (isStale ? 'stale' : 'rejeitada') : 'Share aceita',
+      worker: (s && s.worker_name) || '',
+      actionable: false, action: '', actionLabel: '',
+      raw: JSON.stringify(s || {}),
+    };
+  }
+
+  // Pure: build a feed event from a worker status transition. Mirrored.
+  function buildLafWorkerEvent(prev, row) {
+    const now = Math.floor(Date.now() / 1000);
+    const d = new Date(now * 1000);
+    const time = String(d.getHours()).padStart(2,'0') + ':' + String(d.getMinutes()).padStart(2,'0') + ':' + String(d.getSeconds()).padStart(2,'0');
+    const online = (row.status === 'ONLINE' || row.status === 'HASHING');
+    const offline = (row.status === 'OFFLINE' || row.status === 'ERROR' || row.status === 'CRITICAL');
+    if (offline) {
+      return {
+        ts: now, time,
+        type: LAF_TYPE.error,
+        message: 'Worker offline',
+        diff: '', gap: '', hrStr: row.hrStr || '',
+        worker: row.name || row.ip || '?',
+        actionable: true, action: 'restart', actionLabel: '↻ Reconectar',
+        raw: JSON.stringify({ worker: row.name || row.ip, ip: row.ip || '', status: row.status, hr: row.hr || 0, ts: now }),
+      };
+    }
+    if (online) {
+      return {
+        ts: now, time,
+        type: LAF_TYPE.success,
+        message: 'Worker online',
+        diff: '', gap: '', hrStr: row.hrStr || '',
+        worker: row.name || row.ip || '?',
+        actionable: false, action: '', actionLabel: '',
+        raw: JSON.stringify({ worker: row.name || row.ip, ip: row.ip || '', status: row.status, ts: now }),
+      };
+    }
+    return null;  // IDLE/PAUSED/WARNING mid-states: no noisy transition event
+  }
+
+  function _lafPushShare(s) {
+    const ev = buildLafShareEvent(s);
+    _lafPushEvent(ev);
+  }
+
+  // Worker status transitions — feed only on change (no per-poll spam).
+  // `prev === undefined` (first sight of a worker) records the baseline
+  // WITHOUT emitting — otherwise every page load floods the feed with N
+  // "Worker online" lines for N online workers.
+  function _lafConsumeWorkers(rows) {
+    (rows || []).forEach(row => {
+      const id = row.id || row.ip || row.name;
+      if (!id) return;
+      const prev = _laf.prevWorkerStatus[id];
+      if (prev === undefined) { _laf.prevWorkerStatus[id] = row.status; return; }
+      if (prev === row.status) return;
+      _laf.prevWorkerStatus[id] = row.status;
+      const ev = buildLafWorkerEvent(prev, row);
+      if (ev) _lafPushEvent(ev);
+    });
+  }
+
+  function _lafPushEvent(ev) {
+    ev.id = 'laf-' + (++_laf.seq);
+    // Newest on top: unshift, cap to MAX.
+    _laf.events.unshift(ev);
+    while (_laf.events.length > _laf.MAX) _laf.events.pop();
+    _lafRender();
+  }
+
+  function _lafRender() {
+    const feed = document.getElementById('live-action-feed');
+    if (!feed) return;
+    const empty = document.getElementById('laf-empty');
+    if (!_laf.events.length) {
+      feed.innerHTML = '';
+      if (empty) empty.style.display = 'block';
+      return;
+    }
+    if (empty) empty.style.display = 'none';
+    feed.innerHTML = _laf.events.map(ev => {
+      const cls = 'laf-row laf-row--' + ev.type;
+      const workerHtml = ev.worker ? `<span class="laf-worker">${escapeHtml(ev.worker)}</span>` : '';
+      const meta = [ev.diff && ev.diff !== '\u2014' ? 'diff ' + escapeHtml(ev.diff) : '', ev.gap && ev.gap !== '\u2014' ? 'gap ' + escapeHtml(ev.gap) : '', ev.hrStr && ev.hrStr !== '\u2014' ? escapeHtml(ev.hrStr) : ''].filter(Boolean).join(' · ');
+      const actionHtml = ev.actionable ? `<button class="laf-action" data-laf-action="${escapeHtml(ev.action)}" data-laf-id="${ev.id}">${escapeHtml(ev.actionLabel || ev.action)}</button>` : '';
+      return `<div class="${cls}" data-laf-id="${ev.id}" title="clique para log bruto">` +
+        `<span class="laf-time">${ev.time}</span>` +
+        `<span class="laf-msg">${escapeHtml(ev.message)}${workerHtml}</span>` +
+        (meta ? `<span class="laf-meta">${meta}</span>` : '') +
+        actionHtml +
+        `<span class="laf-chev">▸</span>` +
+        `</div>`;
+    }).join('');
+  }
+
+  function _lafOpenModal(id) {
+    const ev = _laf.events.find(e => e.id === id);
+    if (!ev) return;
+    const modal = document.getElementById('laf-modal');
+    const rawEl = document.getElementById('laf-modal-raw');
+    const titleEl = document.getElementById('laf-modal-title');
+    const actionsEl = document.getElementById('laf-modal-actions');
+    if (!modal || !rawEl) return;
+    if (titleEl) titleEl.textContent = ev.message + (ev.worker ? ' · ' + ev.worker : '') + ' · ' + ev.time;
+    let pretty;
+    try { pretty = JSON.stringify(JSON.parse(ev.raw), null, 2); } catch (e) { pretty = ev.raw; }
+    rawEl.textContent = pretty;
+    if (actionsEl) {
+      actionsEl.innerHTML = '';
+      if (ev.actionable && ev.action === 'restart') {
+        const btn = document.createElement('button');
+        btn.className = 'btn btn--mini';
+        btn.textContent = '↻ ' + (ev.actionLabel || 'Reconectar');
+        btn.addEventListener('click', () => _lafRunAction(ev));
+        actionsEl.appendChild(btn);
+      }
+    }
+    modal.classList.add('modal--open');
+  }
+
+  function _lafCloseModal() {
+    const modal = document.getElementById('laf-modal');
+    if (modal) modal.classList.remove('modal--open');
+  }
+
+  // Inline action: reconnect = restart via the fleet API. For agent-managed
+  // devices the server queues it for the LOCAL agent; for LAN-reachable
+  // devices it executes directly. Same route the fleet cards use.
+  function _lafSafeParse(s) {
+    try { return s ? JSON.parse(s) : {}; } catch (e) { return {}; }
+  }
+
+  async function _lafRunAction(ev) {
+    const raw = _lafSafeParse(ev.raw);
+    const ip = raw.ip || ev.worker;
+    // Find the fleet device id by ip/name so we hit /restart correctly.
+    let deviceId = '';
+    try {
+      const r = await authFetch('/api/axe-fleet/devices');
+      const data = await r.json();
+      const dev = (data.devices || []).find(d => (d.ip_address === ip) || (d.name === ev.worker));
+      if (dev) deviceId = dev.id;
+    } catch (e) { /* fall through */ }
+    if (!deviceId) {
+      const actionsEl = document.getElementById('laf-modal-actions');
+      if (actionsEl) actionsEl.innerHTML = '<span style="font-size:9px;color:var(--accent-red)">device not found in fleet — add it first</span>';
+      return;
+    }
+    try {
+      const rr = await authFetch('/api/axe-fleet/devices/' + encodeURIComponent(deviceId) + '/restart', { method: 'POST' });
+      const ok = rr.ok;
+      const actionsEl = document.getElementById('laf-modal-actions');
+      if (actionsEl) actionsEl.innerHTML = '<span style="font-size:9px;color:' + (ok ? 'var(--accent-green)' : 'var(--accent-red)') + '">' + (ok ? '✓ restart command sent' : '✗ restart failed (HTTP ' + rr.status + ')') + '</span>';
+      if (ok) {
+        _lafPushEvent({
+          ts: Math.floor(Date.now()/1000),
+          time: new Date().toTimeString().slice(0,8),
+          type: LAF_TYPE.info,
+          message: 'Restart enviado',
+          diff: '', gap: '', hrStr: '',
+          worker: ev.worker,
+          actionable: false, action: '', actionLabel: '',
+          raw: JSON.stringify({ command: 'restart', worker: ev.worker, device_id: deviceId, ts: Math.floor(Date.now()/1000) }),
+        });
+      }
+    } catch (e) {
+      const actionsEl = document.getElementById('laf-modal-actions');
+      if (actionsEl) actionsEl.innerHTML = '<span style="font-size:9px;color:var(--accent-red)">network error</span>';
+    }
+  }
+
+  // Feed click delegation (row → modal; action button → inline action).
+  document.addEventListener('click', (e) => {
+    const actBtn = e.target.closest('[data-laf-action]');
+    if (actBtn) {
+      const id = actBtn.getAttribute('data-laf-id');
+      const ev = _laf.events.find(x => x.id === id);
+      if (ev) { e.stopPropagation(); _lafRunAction(ev); }
+      return;
+    }
+    const row = e.target.closest('[data-laf-id]');
+    if (row && !row.classList.contains('laf-action')) {
+      _lafOpenModal(row.getAttribute('data-laf-id'));
+    }
+  });
+  document.getElementById('laf-modal-close')?.addEventListener('click', _lafCloseModal);
+  document.getElementById('laf-modal')?.addEventListener('click', (e) => {
+    if (e.target === e.currentTarget) _lafCloseModal();  // overlay click
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') _lafCloseModal();
+  });
 
 
   // ══════════════════════════════════════════════════════════════════════
