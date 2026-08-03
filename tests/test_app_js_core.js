@@ -3627,6 +3627,74 @@ function buildConnectivityReportTest(r) {
 
 
 // ═══════════════════════════════════════════════════════════════════════════
+//  SUITE 27: P0-5 wallet ranks — acctRankLabels() pure resolver
+//  (COMBINED / DIFF RANK / LOYALTY RANK with C3 fallback labels). Mirrors
+//  static/app.js acctRankLabels().
+// ═══════════════════════════════════════════════════════════════════════════
+console.log('\n👛 SUITE 27: acctRankLabels() — wallet rank fallbacks');
+(function () {
+  function acctRankLabelsTest(acct) {
+    acct = acct || {};
+    const bc = (acct.metadata && acct.metadata.block_count) || acct.blocks_found || 0;
+    const rank = acct.diff_rank || acct.diffRank;
+    let diff;
+    if (rank && rank !== '\u2014' && rank !== '--') diff = String(rank);
+    else if (bc >= 10000) diff = 'TOP 1%';
+    else if (bc >= 1000) diff = 'TOP 10%';
+    else if (bc >= 100) diff = 'TOP 25%';
+    else if (bc > 0) diff = 'ACTIVE';
+    else diff = '\u2014';
+    const loyaltyRaw = acct.loyalty_rank || acct.loyaltyRank;
+    const loyalty = (loyaltyRaw && loyaltyRaw !== '\u2014' && loyaltyRaw !== '--') ? String(loyaltyRaw)
+      : (bc > 0 ? 'ACTIVE' : '\u2014');
+    const combinedRaw = acct.combined_score || acct.combinedScore;
+    let combined;
+    if (combinedRaw != null && combinedRaw !== '' && Number(combinedRaw) > 0) {
+      combined = Number(combinedRaw) >= 1000 ? String(Math.round(Number(combinedRaw))) : Number(combinedRaw).toFixed(2);
+    } else if (diff !== '\u2014' && diff !== 'ACTIVE') {
+      combined = 'D:' + diff;
+    } else {
+      combined = '\u2014';
+    }
+    return { diff: diff, loyalty: loyalty, combined: combined };
+  }
+
+  // Real ranks from backend win
+  const real = acctRankLabelsTest({ diff_rank: '42', loyalty_rank: '7', combined_score: 1234, metadata: {} });
+  assertEqual('real diff rank passes through', real.diff, '42');
+  assertEqual('real loyalty passes through', real.loyalty, '7');
+  assertEqual('real combined >=1000 rounds', real.combined, '1234');
+
+  // C3 fallback from block_count (the audit case: pool omits ranks)
+  const fbTop = acctRankLabelsTest({ metadata: { block_count: 15000 } });
+  assertEqual('fallback block_count 15k -> TOP 1%', fbTop.diff, 'TOP 1%');
+  assertEqual('fallback loyalty active with blocks', fbTop.loyalty, 'ACTIVE');
+  const fbTop10 = acctRankLabelsTest({ metadata: { block_count: 5000 } });
+  assertEqual('fallback block_count 5k -> TOP 10%', fbTop10.diff, 'TOP 10%');
+  const fbActive = acctRankLabelsTest({ metadata: { block_count: 3 } });
+  assertEqual('fallback block_count 3 -> ACTIVE', fbActive.diff, 'ACTIVE');
+  const fbNone = acctRankLabelsTest({ metadata: {} });
+  assertEqual('no data -> em-dash diff', fbNone.diff, '\u2014');
+  assertEqual('no data -> em-dash loyalty', fbNone.loyalty, '\u2014');
+  assertEqual('no data -> em-dash combined', fbNone.combined, '\u2014');
+
+  // Combined derivation: diff rank present but no combined_score -> D:label
+  const derived = acctRankLabelsTest({ diff_rank: 'TOP 10%', metadata: {} });
+  assertEqual('combined derived from diff label', derived.combined, 'D:TOP 10%');
+
+  // alt-case key variants (acct.diffRank / loyaltyRank / combinedScore)
+  const alt = acctRankLabelsTest({ diffRank: '9', loyaltyRank: '3', combinedScore: 12.5 });
+  assertEqual('alt diffRank key works', alt.diff, '9');
+  assertEqual('alt loyaltyRank key works', alt.loyalty, '3');
+  assertEqual('alt combinedScore <1000 -> 2dp', alt.combined, '12.50');
+
+  // '--' sentinel treated as missing (backend normalize) -> fallback
+  const sentinel = acctRankLabelsTest({ diff_rank: '--', loyalty_rank: '--', metadata: { block_count: 200 } });
+  assertEqual('-- sentinel falls back to TOP 25%', sentinel.diff, 'TOP 25%');
+})();
+
+
+// ═══════════════════════════════════════════════════════════════════════════
 //  RESULTS
 // ═══════════════════════════════════════════════════════════════════════════
 

@@ -1141,28 +1141,52 @@ function renderPool(pool, luck) {
     _staleChip(dom.nDiff, net.stale, 'dados em cache');
   }
 
+// P0-5 // Pure wallet-rank resolver — single source of truth for the
+// COMBINED / DIFF RANK / LOYALTY RANK account panel. The pool account API
+// often omits these fields, so the C3 fallback derives an honest label from
+// metadata.block_count (blocks found in this pool session). Combined is
+// derived from the diff+block signals when the backend sends no score.
+// Mirrored in tests/test_app_js_core.js.
+function acctRankLabels(acct) {
+  acct = acct || {};
+  const bc = (acct.metadata && acct.metadata.block_count) || acct.blocks_found || 0;
+  const rank = acct.diff_rank || acct.diffRank;
+  let diff;
+  if (rank && rank !== '\u2014' && rank !== '--') diff = String(rank);
+  else if (bc >= 10000) diff = 'TOP 1%';
+  else if (bc >= 1000) diff = 'TOP 10%';
+  else if (bc >= 100) diff = 'TOP 25%';
+  else if (bc > 0) diff = 'ACTIVE';
+  else diff = '\u2014';
+  const loyaltyRaw = acct.loyalty_rank || acct.loyaltyRank;
+  const loyalty = (loyaltyRaw && loyaltyRaw !== '\u2014' && loyaltyRaw !== '--') ? String(loyaltyRaw)
+    : (bc > 0 ? 'ACTIVE' : '\u2014');
+  const combinedRaw = acct.combined_score || acct.combinedScore;
+  let combined;
+  if (combinedRaw != null && combinedRaw !== '' && Number(combinedRaw) > 0) {
+    combined = Number(combinedRaw) >= 1000 ? String(Math.round(Number(combinedRaw))) : Number(combinedRaw).toFixed(2);
+  } else if (diff !== '\u2014' && diff !== 'ACTIVE') {
+    combined = 'D:' + diff;
+  } else {
+    combined = '\u2014';
+  }
+  return { diff: diff, loyalty: loyalty, combined: combined };
+}
+
 function renderAccount(acct) {
   if (!acct) return;
   if (dom.acctLn) dom.acctLn.textContent = acct.ln_address || acct.lightning || '\u2014';
   if (dom.acctTotalDiff) dom.acctTotalDiff.textContent = fmt.diff(acct.total_diff || acct.totalDifficulty);
   if (dom.acctHighestBlock) dom.acctHighestBlock.textContent = acct.metadata?.highest_blockheight != null ? '#' + Number(acct.metadata.highest_blockheight).toLocaleString() : '\u2014';
-  // C3: Calculate approximate rank from block_count relative to leaderboard
-  // If diff_rank is not provided by backend, estimate from metadata.block_count
-  if (dom.acctDiffRank) {
-    var rank = acct.diff_rank || acct.diffRank;
-    if (!rank || rank === '\u2014') {
-      var bc = (acct.metadata && acct.metadata.block_count) || 0;
-      if (bc >= 10000) rank = 'TOP 1%';
-      else if (bc >= 1000) rank = 'TOP 10%';
-      else if (bc >= 100) rank = 'TOP 25%';
-      else if (bc > 0) rank = 'ACTIVE';
-      else rank = '\u2014';
-    }
-    dom.acctDiffRank.textContent = rank;
-  }
-  if (dom.acctLoyaltyRank) dom.acctLoyaltyRank.textContent = acct.loyalty_rank || acct.loyaltyRank || '\u2014';
+  // P0-5: single resolver — diff/loyalty/combined with C3 fallback (was
+  // duplicated inline; the DashboardCore.updateDataGrids pass then stomped
+  // these with '--', hiding every fallback label).
+  const labels = acctRankLabels(acct);
+  if (dom.acctDiffRank) dom.acctDiffRank.textContent = labels.diff;
+  if (dom.acctLoyaltyRank) dom.acctLoyaltyRank.textContent = labels.loyalty;
+  if (dom.acctCombined) dom.acctCombined.textContent = labels.combined;
   if (dom.acctBlocksBadge) {
-    var bc = acct.metadata?.block_count || acct.blocks_found || 0;
+    const bc = acct.metadata?.block_count || acct.blocks_found || 0;
     dom.acctBlocksBadge.textContent = Number(bc).toLocaleString() + ' BLOCK' + (Number(bc) !== 1 ? 'S' : '');
   }
 }
@@ -2349,27 +2373,46 @@ function renderAccount(acct) {
     );
   }
 
+  // P0-5 audit: the Command Center re-wrote #cc-grid.innerHTML on EVERY
+  // 15s snapshot, even when the cards were byte-identical. With the
+  // backend aggregating fresh dicts each poll, the panel visibly flickered
+  // ("infinite blinking") as buttons were destroyed/recreated. Skip the
+  // DOM write when the serialized cards match the previous render — the
+  // badge still updates (cheap), so severity changes always surface.
+  let _lastCcKey = null;
   function renderCommandCenter(snap) {
     const grid = document.getElementById('cc-grid');
     if (!grid) return;
     const badge = document.getElementById('cc-status-badge');
     const cards = (snap && Array.isArray(snap.command_center)) ? snap.command_center : [];
-    if (cards.length === 0) {
-      grid.innerHTML = (
-        '<div class="empty-state" style="grid-column:1/-1;border:none;padding:10px">' +
-        '<div class="empty-state__icon">⌘</div>' +
-        '<div class="empty-state__title">All systems nominal</div>' +
-        '<div class="empty-state__desc">No action needed right now — the dashboard is monitoring your operation.</div>' +
-        '</div>'
-      );
-      if (badge) { badge.textContent = '0 actions'; badge.className = 'badge badge--mute'; }
-      return;
+    // Stable serialization key: id + severity + url + title + message.
+    // Messages are DYNAMIC (proximity_streak embeds the live 1h trend %,
+    // negative_operation embeds the $ amount) — a key of id|severity|url
+    // alone froze the card text on the first render (reviewer catch). Only
+    // skip the DOM write when the rendered text is truly identical.
+    const key = cards.map(c => (c && c.id || '') + '|' + (c && c.severity || '') + '|' + (c && c.url || '') + '|' + (c && c.title || '') + '|' + (c && c.message || '')).join('\n');
+    const keyChanged = key !== _lastCcKey;
+    _lastCcKey = key;
+    if (keyChanged) {
+      if (cards.length === 0) {
+        grid.innerHTML = (
+          '<div class="empty-state" style="grid-column:1/-1;border:none;padding:10px">' +
+          '<div class="empty-state__icon">⌘</div>' +
+          '<div class="empty-state__title">All systems nominal</div>' +
+          '<div class="empty-state__desc">No action needed right now — the dashboard is monitoring your operation.</div>' +
+          '</div>'
+        );
+      } else {
+        grid.innerHTML = cards.map(commandCenterCardHtml).join('');
+      }
     }
-    grid.innerHTML = cards.map(commandCenterCardHtml).join('');
     if (badge) {
-      badge.textContent = cards.length + ' action' + (cards.length === 1 ? '' : 's');
+      const count = cards.length;
+      const next = count + ' action' + (count === 1 ? '' : 's');
+      if (badge.textContent !== next) badge.textContent = next;
       const topSev = cards[0] && cards[0].severity;
-      badge.className = 'badge ' + (topSev === 'crit' || topSev === 'warn' ? 'badge--amber' : topSev === 'gold' ? 'badge--gold' : 'badge--green');
+      const cls = 'badge ' + (topSev === 'crit' || topSev === 'warn' ? 'badge--amber' : topSev === 'gold' ? 'badge--gold' : 'badge--green');
+      if (badge.className !== cls) badge.className = cls;
     }
   }
 
@@ -2800,14 +2843,20 @@ function renderAccount(acct) {
     if (!canvas) return null;
     const ctx = canvas.getContext('2d');
     const cfg = CHART_METRICS[id];
-    const isHistogram = cfg && cfg.chart === 'share_dist';
     // Human-readable Y ticks: hashrate/pool render fmt.hashrate (TH/s), best
     // diff/net render fmt.diff — raw 4.7e12 / 1.26e14 labels were unreadable.
     const isHrAxis = cfg && (cfg.chart === 'hashrate' || cfg.chart === 'pool');
     const isDiffAxis = cfg && (cfg.chart === 'bestdiff' || cfg.chart === 'net');
     const yTickCb = isHrAxis ? (v) => fmt.hashrate(v) : isDiffAxis ? (v) => fmt.diff(v) : undefined;
+    // P0-5 audit: the share-difficulty histogram was rendered as a line chart
+    // with pointRadius 0 + fill alpha 0.1 — with a handful of shares the
+    // series was effectively invisible ("empty graph" despite 13+ shares).
+    // Histograms belong on bars: one visible column per difficulty bucket.
+    const isHistogram = cfg && cfg.chart === 'share_dist';
     const datasets = [
-      { label, data: [], borderColor: color, backgroundColor: color.replace(')', ',0.1)').replace('rgb','rgba'), fill: true, tension: 0.4, pointRadius: 0 },
+      isHistogram
+        ? { label, data: [], borderColor: color, backgroundColor: color.replace(')', ',0.55)').replace('rgb','rgba'), borderWidth: 1, maxBarThickness: 34 }
+        : { label, data: [], borderColor: color, backgroundColor: color.replace(')', ',0.1)').replace('rgb','rgba'), fill: true, tension: 0.4, pointRadius: 0 },
     ];
     // Fase 2.1: moving-average overlay (dashed, no fill) on time series
     if (!isHistogram) {
@@ -2818,7 +2867,7 @@ function renderAccount(acct) {
       datasets.push({ type: 'bar', label: 'Shares/min', data: [], yAxisID: 'y1', backgroundColor: 'rgba(6,214,240,0.14)', borderColor: 'rgba(6,214,240,0.35)', borderWidth: 1, order: 3 });
     }
     const chart = new Chart(ctx, {
-      type: 'line',
+      type: isHistogram ? 'bar' : 'line',
       data: { labels: [], datasets },
       options: {
         responsive: true,
@@ -5516,11 +5565,12 @@ dom.walletSave?.addEventListener('click', async () => {
     },
     updateDataGrids: function(workers, fleet, account, leaderboard) {
     // raio-x grid is rendered by renderMinersXRay() — do not overwrite
-      // (handled by renderAccount)
-      this.setText('acct-ln', account ? (account.ln_address || '--') : '--');
-      this.setText('acct-total-diff', account && account.total_diff ? this.formatHashrate(account.total_diff) : '--');
-      this.setText('acct-diff-rank', account && account.diff_rank != null ? String(account.diff_rank) : '--');
-      this.setText('acct-loyalty-rank', account && account.loyalty_rank != null ? String(account.loyalty_rank) : '--');
+      // The whole ACCOUNT block (ln address, total diff, COMBINED / DIFF /
+      // LOYALTY ranks) is owned by renderAccount() — it applies the C3
+      // fallback labels (TOP X% / ACTIVE) and formats with the shared em-dash.
+      // Stomping any of those fields here with '--' both hid the fallbacks
+      // (P0-5 audit) and rendered a different dash style. This pass only
+      // touches the leaderboard table, which no other renderer writes.
 
       var lbBody = document.getElementById('lb-tbody');
       if (lbBody && leaderboard && leaderboard.length) {

@@ -736,6 +736,47 @@ def attach_affiliate(snapshot: dict, offers, affiliate_map=None) -> None:
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#  P0-5 // Wallet account rank enrichment (leaderboard authoritative)
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+def enrich_account_ranks(account, leaderboard_entry):
+    """P0-5 // Fill diff/loyalty/combined ranks on the account from the pool
+    leaderboard when the account API omits them (measured: it always does).
+
+    Mutates a copy and returns it (pure — the caller may pass the live dict
+    and get a new one back). Leaderboard is authoritative: values are copied
+    only when the account lacks its own. block_count is backfilled from
+    leaderboard.total_blocks so the frontend C3 fallback has real data.
+
+    Returns the (possibly enriched) account; None in → None out. Never raises.
+    """
+    if not isinstance(account, dict):
+        return account
+    if not isinstance(leaderboard_entry, dict):
+        return account
+    out = dict(account)
+    meta = dict(out.get("metadata") or {})
+    le = leaderboard_entry
+    if not out.get("diff_rank") and not out.get("diffRank"):
+        dr = le.get("diff_rank") or le.get("diffRank") or le.get("rankDifficulty")
+        if dr is not None:
+            out["diff_rank"] = dr
+    if not out.get("loyalty_rank") and not out.get("loyaltyRank"):
+        lr = le.get("loyalty_rank") or le.get("loyaltyRank")
+        if lr is not None:
+            out["loyalty_rank"] = lr
+    if not out.get("combined_score") and not out.get("combinedScore"):
+        cs = le.get("combined_score") or le.get("combinedScore")
+        if cs is not None:
+            out["combined_score"] = cs
+    if not meta.get("block_count") and le.get("total_blocks") is not None:
+        meta["block_count"] = le["total_blocks"]
+    if meta:
+        out["metadata"] = meta
+    return out
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 #  P0-3 // Command Center — contextual action cards
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 

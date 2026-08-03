@@ -2929,10 +2929,26 @@ td { padding: 4px 8px; border-bottom: 1px solid var(--border-subtle); color: var
 .axe-card__header { display: flex; justify-content: space-between; align-items: start; margin-bottom: 4px; }
 .axe-card__name { font-size: var(--fs-xs); color: var(--text-primary); font-weight: 600; }
 .axe-card__status { font-size: 9px; }
-.axe-card__stats { display: grid; grid-template-columns: repeat(5, 1fr); gap: 2px; }
-.axe-card__stat { font-size: 9px; }
-.axe-card__stat .lbl { color: var(--text-tertiary); }
-.axe-card__stat .val { color: var(--text-primary); }
+.axe-card__stats { display: grid; grid-template-columns: repeat(auto-fill, minmax(52px, 1fr)); gap: 3px 2px; }
+.axe-card__stat { font-size: 9px; min-width: 0; }
+.axe-card__stat .lbl {
+  color: var(--text-tertiary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+}
+.axe-card__stat .val {
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+  /* P0-5 audit: offline devices render the honest 'NOT AVAILABLE' fallback —
+     clamp it so a 13-char label can never push the 5-up metric grid out of
+     alignment or overlap the next cell. */
+  min-height: 1.2em;
+}
 .axe-card__stat .val.green { color: var(--green); }
 .axe-card__stat .val.gold { color: var(--orange); }
 .axe-card__stat .val.red { color: var(--red); }

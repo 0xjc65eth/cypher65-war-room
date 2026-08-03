@@ -34,6 +34,7 @@ from helpers import (
     build_decision_matrix,
     affiliate_map_from_env,
     attach_affiliate,
+    enrich_account_ranks,
     build_command_center,
 )
 
@@ -2800,6 +2801,19 @@ def _do_poll():
     lightning = account_data.get("lightning") if isinstance(account_data, dict) else None
     meta = account.get("metadata", {}) if isinstance(account, dict) else {}
 
+    # P0-5 audit: the pool account API often omits diff/loyalty/combined
+    # ranks, but the leaderboard (same poll) carries REAL values for the
+    # wallet. Enrich the account with them so the Wallet panel shows the
+    # actual ranks instead of '—' (or a client-side estimate). Values only
+    # when the account itself lacks them — leaderboard is authoritative.
+    # Pure helper (helpers.enrich_account_ranks) — unit-tested. It returns a
+    # COPY, so re-read meta AFTER the call (the copy may carry a backfilled
+    # block_count from the leaderboard — the pre-call `meta` above would be
+    # stale and leak into latest_snapshot["account_meta"]).
+    if isinstance(account, dict) and leaderboard_entry:
+        account = enrich_account_ranks(account, leaderboard_entry)
+        meta = account.get("metadata", {}) if isinstance(account, dict) else {}
+
     ts = int(time.time())
 
     # ━━ Share timeline delta detection ━━
@@ -3309,6 +3323,18 @@ def _do_poll():
                 lender_market_rate_btc = min(o.price_per_th_day for o in _pool)
         except Exception:
             lender_market_rate_btc = None
+        # P0-5 audit (hashmarket honesty guard): a SHA-256 rental rate is
+        # physically bounded — real market asks run ~10-50k sats/TH/d
+        # (1e-4..5e-4 BTC). A "best price" landing outside 1e-8..1e-2 is a
+        # unit-conversion bug (sats vs BTC, TH vs PH), and feeding it into
+        # lender_net_usd_per_day produced absurd lease P&L (measured live:
+        # $55,411/d for an 87 TH rig — 100× reality). Clamp + log instead of
+        # surfacing fake money.
+        if lender_market_rate_btc is not None:
+            _r = float(lender_market_rate_btc)
+            if _r < 1e-8 or _r > 1e-2:
+                log.warning("[profitability] implausible lender market rate %.6g BTC/TH/d — ignoring (unit bug?)", _r)
+                lender_market_rate_btc = None
         if not lender_market_rate_btc and btc_usd:
             cfg_rate_usd = coerce_float(s.get("rental_usd_per_th_day"), 0.0)
             if cfg_rate_usd > 0:

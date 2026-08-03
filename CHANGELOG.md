@@ -6,6 +6,33 @@ e versionamento semântico ([SemVer](https://semver.org/lang/pt-BR/)).
 
 ## [Unreleased]
 
+### Corrigido — P0-5 audit de UI (wallet ranks, share chart, fleet, hashmarket, Command Center)
+- **Wallet ranks**: o account agora é enriquecido com os ranks REAIS da leaderboard
+  (`diff_rank` / `loyalty_rank` / `combined_score` via `helpers.enrich_account_ranks`,
+  puro + testado). O frontend ganhou `acctRankLabels()` com fallback C3 (TOP 1%/
+  10%/25%/ACTIVE a partir de `block_count`) — antes o `DashboardCore.updateDataGrids`
+  sobrescrevia tudo com `--` e o campo COMBINED **nunca era populado**.
+- **Share Difficulty chart**: o histograma era renderizado como line chart com
+  `pointRadius 0` + fill 10% — com poucos shares a série ficava invisível
+  ("gráfico vazio" com 13+ shares no log). Agora renderiza como **bar chart**
+  (`type: 'bar'`, fill 55%) — uma coluna visível por bucket de dificuldade.
+- **Fleet layout**: células de métrica ganharam guards de overflow
+  (`white-space: nowrap` + `text-overflow: ellipsis` + `min-width`) — o fallback
+  honesto `NOT AVAILABLE` (13 chars) não empurra mais a grade 5-up para fora
+  de alinhamento.
+- **Hashmarket / Decision Matrix**: safety guard no `lender_market_rate_btc`
+  (clamp 1e-8..1e-2 BTC/TH/d + log) — um rate implausível (unidade confundida
+  sats↔BTC, TH↔PH) não gera mais lease P&L fake (medido ao vivo: $55.411/d para
+  um rig de ~87 TH, 100× o real). Rate fora da banda → `None` → painel honesto.
+- **Command Center**: `renderCommandCenter` agora pula o write de `innerHTML`
+  quando os cards serializados são idênticos (id|severity|url|title|message) —
+  o "blink infinito" a cada 15s (destroy/recreate de botões) sumiu; o badge
+  continua atualizando a severidade.
+- **DB local**: `data/war_room.sqlite` estava corrompido (index
+  `idx_maintenance_records_ts` com entradas erradas) — restaurado do backup
+  íntegro `war_room.sqlite.bak.audit.1785684824` (86.941 snapshots preservados,
+  o corrupto foi preservado como `war_room.sqlite.corrupt.*`).
+
 ### Adicionado — AXE FLEET onboarding wizard (3 passos + teste de conectividade)
 - **UI**: o formulário de add do AXE FLEET virou um wizard passo a passo:
   1. **method** — escolha entre "🔍 Scan network" (auto-discovery do subnet scan)
