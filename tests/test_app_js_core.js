@@ -3717,6 +3717,79 @@ function buildWorkerIntelligenceRowsTest(devices) {
 
 
 // ═══════════════════════════════════════════════════════════════════════════
+//  SUITE 26c: Hash Flow Raster — share-quality coloring
+//  Mirrors static/app.js _lmFlowSampleFromDelta / _lmShareDelta / _lmFlowDetail.
+// ═══════════════════════════════════════════════════════════════════════════
+console.log('⛏ SUITE 26c: hash flow raster — share-quality cell coloring');
+
+// Mirror of static/app.js _lmFlowSampleFromDelta() — pure.
+function lmFlowSampleFromDeltaTest(status, delta) {
+  if (delta) {
+    if (delta.r > 0) return 'rej';    // reject beats everything
+    if (delta.s > 0) return 'stale';  // stale beats accepted
+    if (delta.a > 0) return 'ok';     // accepted share
+  }
+  const s = String(status || '').toUpperCase();
+  if (s === 'ONLINE' || s === 'HASHING') return 'idle';
+  if (s === 'WARNING' || s === 'IDLE' || s === 'PAUSED') return 'warn';
+  if (s === 'OFFLINE' || s === 'ERROR' || s === 'CRITICAL') return 'bad';
+  return 'mute';
+}
+// Mirror of static/app.js _lmShareDelta() — pure.
+function lmShareDeltaTest(prev, cur) {
+  if (!prev) return null;
+  return {
+    a: Math.max(0, (cur.a || 0) - (prev.a || 0)),
+    r: Math.max(0, (cur.r || 0) - (prev.r || 0)),
+    s: Math.max(0, (cur.s || 0) - (prev.s || 0)),
+  };
+}
+// Mirror of static/app.js _lmFlowDetail() — pure.
+function lmFlowDetailTest(delta) {
+  if (!delta) return '';
+  const parts = [];
+  if (delta.a > 0) parts.push('+' + delta.a + ' acc');
+  if (delta.r > 0) parts.push('+' + delta.r + ' rej');
+  if (delta.s > 0) parts.push('+' + delta.s + ' stale');
+  return parts.join(' · ');
+}
+
+(function hashFlowRasterSuite() {
+  // Delta-driven colors (the new share-quality behavior)
+  assertEqual('accepted delta → ok', lmFlowSampleFromDeltaTest('ONLINE', { a: 5, r: 0, s: 0 }), 'ok');
+  assertEqual('reject delta → rej', lmFlowSampleFromDeltaTest('ONLINE', { a: 0, r: 1, s: 0 }), 'rej');
+  assertEqual('stale delta → stale', lmFlowSampleFromDeltaTest('ONLINE', { a: 0, r: 0, s: 2 }), 'stale');
+  assertEqual('reject beats accepted', lmFlowSampleFromDeltaTest('ONLINE', { a: 5, r: 1, s: 0 }), 'rej');
+  assertEqual('stale beats accepted', lmFlowSampleFromDeltaTest('ONLINE', { a: 5, r: 0, s: 1 }), 'stale');
+  assertEqual('reject beats stale', lmFlowSampleFromDeltaTest('ONLINE', { a: 0, r: 1, s: 2 }), 'rej');
+
+  // Status fallback when no shares moved (or first poll — no baseline)
+  assertEqual('zero delta + ONLINE → idle', lmFlowSampleFromDeltaTest('ONLINE', { a: 0, r: 0, s: 0 }), 'idle');
+  assertEqual('no baseline + ONLINE → idle', lmFlowSampleFromDeltaTest('ONLINE', null), 'idle');
+  assertEqual('zero delta + WARNING → warn', lmFlowSampleFromDeltaTest('WARNING', { a: 0, r: 0, s: 0 }), 'warn');
+  assertEqual('zero delta + OFFLINE → bad', lmFlowSampleFromDeltaTest('OFFLINE', { a: 0, r: 0, s: 0 }), 'bad');
+  assertEqual('unknown status → mute', lmFlowSampleFromDeltaTest('???', null), 'mute');
+
+  // Counter diffing + reboot-reset clamp
+  assertEqual('no baseline → null delta', lmShareDeltaTest(null, { a: 1, r: 0, s: 0 }), null);
+  const inc = lmShareDeltaTest({ a: 100, r: 10, s: 2 }, { a: 105, r: 12, s: 2 });
+  assertEqual('accepted delta counted', inc.a, 5);
+  assertEqual('rejected delta counted', inc.r, 2);
+  assertEqual('stale delta counted', inc.s, 0);
+  // Reboot: counters drop from 100→90 — must clamp to 0, not go negative.
+  const reset = lmShareDeltaTest({ a: 100, r: 10, s: 2 }, { a: 90, r: 12, s: 2 });
+  assertEqual('reboot clamps accepted to 0', reset.a, 0);
+  assertEqual('reboot still counts rejected', reset.r, 2);
+
+  // Tooltip detail formatting
+  assertEqual('detail formats acc+rej', lmFlowDetailTest({ a: 3, r: 1, s: 0 }), '+3 acc · +1 rej');
+  assertEqual('detail formats all three', lmFlowDetailTest({ a: 1, r: 1, s: 1 }), '+1 acc · +1 rej · +1 stale');
+  assertEqual('zero activity → empty detail', lmFlowDetailTest({ a: 0, r: 0, s: 0 }), '');
+  assertEqual('null delta → empty detail', lmFlowDetailTest(null), '');
+})();
+
+
+// ═══════════════════════════════════════════════════════════════════════════
 //  SUITE 27: P0-5 wallet ranks — acctRankLabels() pure resolver
 //  (COMBINED / DIFF RANK / LOYALTY RANK with C3 fallback labels). Mirrors
 //  static/app.js acctRankLabels().

@@ -1935,7 +1935,10 @@ body {
 .lm-flow__label { font-size: 9px; color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .lm-flow__cells { display: grid; grid-template-columns: repeat(24, 1fr); gap: 1px; } /* 24 = _LM_FLOW_MAX in static/app.js — keep in sync */
 .lm-flow__cell { height: 10px; border-radius: 1px; background: var(--border-subtle); }
-.lm-flow__cell--ok { background: var(--green); }
+.lm-flow__cell--ok { background: var(--green); }        /* share accepted this tick */
+.lm-flow__cell--rej { background: var(--red); }         /* share rejected this tick */
+.lm-flow__cell--stale { background: var(--amber); }     /* share stale this tick */
+.lm-flow__cell--idle { background: var(--green-dim); opacity: .55; } /* online, no new shares */
 .lm-flow__cell--warn { background: var(--amber); }
 .lm-flow__cell--bad { background: var(--accent-red); }
 .lm-flow__cell--mute { background: var(--border-subtle); }

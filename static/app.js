@@ -3905,18 +3905,49 @@ dom.walletSave?.addEventListener('click', async () => {
   // buffer, one column per poll tick, max 24) so the feed shows worker
   // health over time without requiring a new backend series.
   const _lmFlow = {};
+  const _lmLastCounters = {}; // per-device previous cumulative share counters
   const _LM_FLOW_MAX = 24;
-  function _lmFlowSample(status) {
+  // Raster cell color reflects SHARE QUALITY for the tick, not just device
+  // status: we diff the firmware's cumulative counters (shares_accepted /
+  // rejected / stale) between consecutive polls. A reject/stale is far more
+  // actionable than a plain "online" cell — it signals pool/hardware trouble.
+  const _LM_FLOW_LABELS = { ok: 'share', rej: 'reject', stale: 'stale', idle: 'online', warn: 'warn', bad: 'offline', mute: '' };
+  // Pure: map (device status, per-tick share delta) → raster cell color code.
+  function _lmFlowSampleFromDelta(status, delta) {
+    if (delta) {
+      if (delta.r > 0) return 'rej';    // reject beats everything
+      if (delta.s > 0) return 'stale';  // stale beats accepted
+      if (delta.a > 0) return 'ok';     // accepted share
+    }
     const s = String(status || '').toUpperCase();
-    if (s === 'ONLINE' || s === 'HASHING') return 'ok';
+    if (s === 'ONLINE' || s === 'HASHING') return 'idle';
     if (s === 'WARNING' || s === 'IDLE' || s === 'PAUSED') return 'warn';
     if (s === 'OFFLINE' || s === 'ERROR' || s === 'CRITICAL') return 'bad';
     return 'mute';
   }
-  function _pushLmFlowSample(id, code) {
+  // Pure: diff cumulative share counters, clamping negatives (a firmware
+  // reboot resets them — a drop is a reset, not negative shares).
+  function _lmShareDelta(prev, cur) {
+    if (!prev) return null;
+    return {
+      a: Math.max(0, (cur.a || 0) - (prev.a || 0)),
+      r: Math.max(0, (cur.r || 0) - (prev.r || 0)),
+      s: Math.max(0, (cur.s || 0) - (prev.s || 0)),
+    };
+  }
+  // Pure: human tooltip for a tick's delta ("+3 acc · +1 rej").
+  function _lmFlowDetail(delta) {
+    if (!delta) return '';
+    const parts = [];
+    if (delta.a > 0) parts.push('+' + delta.a + ' acc');
+    if (delta.r > 0) parts.push('+' + delta.r + ' rej');
+    if (delta.s > 0) parts.push('+' + delta.s + ' stale');
+    return parts.join(' · ');
+  }
+  function _pushLmFlowSample(id, sample) {
     if (!_lmFlow[id]) _lmFlow[id] = [];
     const buf = _lmFlow[id];
-    buf.push(code);
+    buf.push(sample);
     if (buf.length > _LM_FLOW_MAX) buf.shift();
   }
 
@@ -3930,13 +3961,28 @@ dom.walletSave?.addEventListener('click', async () => {
     if (dom.lmFlow) dom.lmFlow.style.display = rows.length ? 'block' : 'none';
     if (!rows.length) {
       box.innerHTML = '<div class="lm-workers__empty">no fleet workers registered — add miners in AXE FLEET (⚙) to see live per-worker telemetry here</div>';
+      // Fleet emptied — drop lingering buffers/counters so a re-added device
+      // with reset counters never produces a bogus first delta.
+      Object.keys(_lmFlow).forEach(k => delete _lmFlow[k]);
+      Object.keys(_lmLastCounters).forEach(k => delete _lmLastCounters[k]);
       return;
     }
 
-    // Push this tick's sample, drop buffers of removed devices.
-    rows.forEach(r => _pushLmFlowSample(r.id, _lmFlowSample(r.status)));
+    // Push this tick's sample (color = share quality via counter deltas),
+    // then drop buffers/counters of removed devices.
+    rows.forEach(r => {
+      const cur = { a: r.sharesA, r: r.sharesR, s: r.sharesS };
+      const delta = _lmShareDelta(_lmLastCounters[r.id], cur);
+      _pushLmFlowSample(r.id, {
+        code: _lmFlowSampleFromDelta(r.status, delta),
+        detail: _lmFlowDetail(delta),
+      });
+      _lmLastCounters[r.id] = cur;
+    });
     const alive = {}; rows.forEach(r => alive[r.id] = 1);
-    Object.keys(_lmFlow).forEach(id => { if (!alive[id]) delete _lmFlow[id]; });
+    Object.keys(_lmFlow).forEach(id => {
+      if (!alive[id]) { delete _lmFlow[id]; delete _lmLastCounters[id]; }
+    });
 
     const esc = escapeHtml;
     const cell = (v, cls, title) => `<span class="lm-w__cell${cls ? ' ' + cls : ''}"${title ? ' title="' + title + '"' : ''}>${v}</span>`;
@@ -3978,14 +4024,20 @@ dom.walletSave?.addEventListener('click', async () => {
     box.innerHTML = `<div class="lm-w__row lm-w__row--head">${head()}</div>${body}`;
 
     // Raster — rows = workers, cols = last N samples (oldest left, newest right).
+    // Cell color = share quality that tick (ok/rej/stale) or device status
+    // when idle/offline; tooltip carries the per-tick share delta.
     const cols = _LM_FLOW_MAX;
     const raster = rows.map(r => {
       const buf = _lmFlow[r.id] || [];
       let cellsHtml = '';
       for (let i = 0; i < cols; i++) {
         const idx = i - (cols - buf.length);
-        const code = idx < 0 ? 'mute' : (buf[idx] || 'mute');
-        cellsHtml += `<span class="lm-flow__cell lm-flow__cell--${code}" title="${code}"></span>`;
+        const s = idx < 0 ? null : (buf[idx] || null);
+        const code = s ? s.code : 'mute';
+        // NB: '' is a valid label (mute) — use nullish check, not `|| code`.
+        const label = _LM_FLOW_LABELS[code] != null ? _LM_FLOW_LABELS[code] : code;
+        const tip = s && s.detail ? label + ' — ' + s.detail : label;
+        cellsHtml += `<span class="lm-flow__cell lm-flow__cell--${code}" title="${esc(tip)}"></span>`;
       }
       return `<div class="lm-flow__row"><span class="lm-flow__label" title="${esc(r.ip)}">${esc(r.name)}</span><div class="lm-flow__cells">${cellsHtml}</div></div>`;
     }).join('');
