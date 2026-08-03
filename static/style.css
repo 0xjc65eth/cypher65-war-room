@@ -1917,8 +1917,8 @@ body {
 .lm-w__cell { display: flex; align-items: center; gap: 4px; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 .lm-w__cell--head { font-size: 8px; }
 .lm-w__cell--bad { color: var(--accent-red); }
-.lm-w__name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; }
-.lm-w__ip { font-size: 8px; color: var(--text-tertiary); font-family: 'JetBrains Mono', monospace; }
+.lm-w__name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.lm-w__ip { font-size: 8px; color: var(--text-tertiary); font-family: 'JetBrains Mono', monospace; overflow: hidden; text-overflow: ellipsis; min-width: 0; flex-shrink: 2; }
 .lm-w__st--ok { color: var(--green); }
 .lm-w__st--warn { color: var(--amber); }
 .lm-w__st--bad { color: var(--accent-red); }
