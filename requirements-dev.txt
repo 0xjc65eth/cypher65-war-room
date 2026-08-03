@@ -19,7 +19,7 @@ flake8==7.1.1
 # ── Quality / security scanning (local use; CI integration pending) ──────
 bandit==1.8.2
 mypy==1.14.1
-pre-commit==4.0.1
+pre-commit==4.6.1
 
 # ── Property-based testing for the probability/profitability math ────────
 hypothesis==6.123.2
