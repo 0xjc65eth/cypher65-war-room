@@ -4283,7 +4283,7 @@ dom.walletSave?.addEventListener('click', async () => {
     }).join('');
     const verdict = reachable
       ? `<div class="axe-wiz-check axe-wiz-check--ok" style="margin-top:4px"><span>✓</span><span class="axe-wiz-check__label">READY</span><span class="axe-wiz-check__val">${escapeHtml(String(proto || '').toUpperCase())} miner detected</span></div>`
-      : `<div class="axe-wiz-check axe-wiz-check--fail" style="margin-top:4px"><span>✗</span><span class="axe-wiz-check__label">UNREACHABLE</span><span class="axe-wiz-check__val">check power / network / firewall</span></div>`;
+      : `<div class="axe-wiz-check axe-wiz-check--fail" style="margin-top:4px"><span>✗</span><span class="axe-wiz-check__label">UNREACHABLE</span><span class="axe-wiz-check__val">check power / network / firewall</span><span style="color:var(--text-tertiary);margin-left:6px">${escapeHtml((result || {}).error_detail || '')}</span></div>`;
     box.innerHTML = html + verdict;
     // Reveal the optional name field only when the miner is reachable
     if (dom.axeManualNameRow) dom.axeManualNameRow.style.display = reachable ? 'block' : 'none';

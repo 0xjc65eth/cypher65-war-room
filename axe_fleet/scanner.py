@@ -38,6 +38,40 @@ MAX_HOSTS_PER_SCAN = 1024  # hard cap: a /22 = 1024 hosts is already huge
 CGMINER_PORT = 4028
 BITAXE_PORT = 80
 
+# ── Private / non-routable detection ──────────────────────────────────────
+# RFC1918 + CGNAT + loopback + link-local ranges only exist INSIDE the
+# network that owns them. A cloud-hosted dashboard (e.g. Render) can NEVER
+# route to them, so a failed probe against one is a network-topology problem
+# — not necessarily a dead miner. Surfacing this in the wizard saves the
+# operator from chasing power/firewall on a miner that is actually fine.
+PRIVATE_IP_HINT = (
+    "IP privado (LAN) — o servidor do dashboard só alcança o miner se "
+    "estiver na MESMA rede (rode o app na mesma Wi-Fi local) ou via um IP "
+    "do Tailscale; um servidor na nuvem (ex. Render) não roteia para este "
+    "endereço."
+)
+
+
+def is_private_ip(ip: str) -> bool:
+    """True for RFC1918 / CGNAT / loopback / link-local IPv4 addresses.
+
+    These ranges are only routable inside the network that owns them, so a
+    cloud host can never reach them. Pure — mirrored in
+    tests/test_axe_fleet_scanner.py."""
+    if not ip:
+        return False
+    try:
+        addr = ipaddress.ip_address(str(ip).strip())
+    except ValueError:
+        return False
+    if addr.version != 4:
+        return False
+    # CGNAT 100.64/10 changed classification across Python versions (it is
+    # NOT is_private on 3.14), so check it explicitly.
+    if addr in ipaddress.ip_network("100.64.0.0/10"):
+        return True
+    return addr.is_private or addr.is_loopback or addr.is_link_local
+
 
 # ── CIDR / range parsing ─────────────────────────────────────────────────
 
@@ -292,7 +326,14 @@ def diagnose_host(ip: str, timeout: float = HTTP_PROBE_TIMEOUT) -> dict:
             }
 
     if not result["reachable"]:
-        result["error_detail"] = result["error_detail"] or "no miner protocol responded (checked AxeOS :80 and cgminer :4028)"
+        detail = result["error_detail"] or "no miner protocol responded (checked AxeOS :80 and cgminer :4028)"
+        # Private LAN target + nothing answered = almost certainly a
+        # network-topology gap (cloud host vs local miner), not a dead miner.
+        # Append the actionable hint so the wizard explains WHY it's
+        # unreachable instead of a generic "check power / network / firewall".
+        if is_private_ip(ip):
+            detail = f"{detail} · {PRIVATE_IP_HINT}"
+        result["error_detail"] = detail
     result["elapsed_ms"] = int((time.time() - t0) * 1000)
     return result
 

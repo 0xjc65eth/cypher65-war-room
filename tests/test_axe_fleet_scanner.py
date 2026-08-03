@@ -338,6 +338,33 @@ class TestScanRoutes:
 
 
 # ═══════════════════════════════════════════════════════════════════════
+#  is_private_ip — private / non-routable LAN detection
+# ═══════════════════════════════════════════════════════════════════════
+
+class TestIsPrivateIp:
+    def test_rfc1918(self):
+        from axe_fleet.scanner import is_private_ip
+        assert is_private_ip("192.168.1.27")
+        assert is_private_ip("10.0.0.5")
+        assert is_private_ip("172.16.0.1")
+        assert is_private_ip("172.31.255.254")
+
+    def test_cgnat_loopback_linklocal(self):
+        from axe_fleet.scanner import is_private_ip
+        assert is_private_ip("100.64.0.1")
+        assert is_private_ip("127.0.0.1")
+        assert is_private_ip("169.254.10.5")
+
+    def test_public_and_invalid(self):
+        from axe_fleet.scanner import is_private_ip
+        assert not is_private_ip("8.8.8.8")
+        assert not is_private_ip("200.147.3.5")
+        assert not is_private_ip("")
+        assert not is_private_ip(None)
+        assert not is_private_ip("not-an-ip")
+
+
+# ═══════════════════════════════════════════════════════════════════════
 #  diagnose_host() — onboarding wizard connectivity test
 # ═══════════════════════════════════════════════════════════════════════
 
@@ -404,6 +431,28 @@ class TestDiagnoseHost:
         assert r["protocol"] is None
         assert r["device_info"] is None
         assert "no miner protocol" in r["error_detail"]
+
+    def test_private_ip_unreachable_carries_lan_hint(self):
+        """A private-LAN target that answers nothing gets the topology hint
+        (cloud dashboard can't route to 192.168.x.x) — the exact scenario the
+        operator hit testing a friend's miner from a hosted dashboard."""
+        with patch("axe_fleet.connector.AxeOSConnector.fetch_info", side_effect=Exception("refused")), \
+                patch("axe_fleet.scanner._probe_cgminer_version", return_value=None):
+            r = diagnose_host("192.168.1.27")
+        assert r["reachable"] is False
+        assert "IP privado" in r["error_detail"]
+        assert "MESMA rede" in r["error_detail"]
+
+    def test_public_ip_unreachable_no_hint(self):
+        """A public IP that answers nothing keeps the plain protocol message —
+        the private-LAN hint would be noise here (public IPs CAN be reached
+        from a cloud host; the miner is genuinely down/firewalled)."""
+        with patch("axe_fleet.connector.AxeOSConnector.fetch_info", side_effect=Exception("refused")), \
+                patch("axe_fleet.scanner._probe_cgminer_version", return_value=None):
+            r = diagnose_host("8.8.8.8")
+        assert r["reachable"] is False
+        assert "no miner protocol" in r["error_detail"]
+        assert "IP privado" not in r["error_detail"]
 
     def test_elapsed_ms_set(self):
         with patch("axe_fleet.connector.AxeOSConnector.fetch_info", side_effect=Exception("x")), \
