@@ -4133,6 +4133,54 @@ function buildLafWorkerEvent(prev, row) {
 
 
 // ═══════════════════════════════════════════════════════════════════════════
+//  SUITE 29: module → tab-pane ownership (moduleActivePanes)
+//  Fix: o módulo LIVE empilhava painéis de 3 abas (scroll infinito +
+//  overflow no mobile). Cada módulo tem abas donas; fora do mapa, mantém
+//  a regra antiga (todas as abas com painel visível).
+// ═══════════════════════════════════════════════════════════════════════════
+console.log('🗂 SUITE 29: moduleActivePanes() — um módulo = abas donas (sem stacking)');
+
+// Mirror of static/app.js moduleActivePanes() — pure, no DOM.
+const _MODULE_OWNED_PANES_TEST = {
+  live: ['tab-charts', 'tab-terminal'],
+};
+function moduleActivePanesTest(name, paneHasVisible) {
+  const owned = _MODULE_OWNED_PANES_TEST[name];
+  if (owned) return owned.slice();
+  return (paneHasVisible || []).filter(p => p.visible).map(p => p.id);
+}
+
+(function modulePaneSuite() {
+  const panes = [
+    { id: 'tab-fleet', visible: true },
+    { id: 'tab-charts', visible: true },
+    { id: 'tab-stats', visible: false },
+    { id: 'tab-terminal', visible: true },
+  ];
+
+  // LIVE: dono de exatamente tab-charts + tab-terminal — nunca empilha tab-fleet
+  const liveActive = moduleActivePanesTest('live', panes);
+  assertEqual('live owns tab-charts', liveActive.indexOf('tab-charts') !== -1, true);
+  assertEqual('live owns tab-terminal', liveActive.indexOf('tab-terminal') !== -1, true);
+  assertEqual('live excludes tab-fleet', liveActive.indexOf('tab-fleet') !== -1, false);
+  assertEqual('live excludes tab-stats', liveActive.indexOf('tab-stats') !== -1, false);
+  assertEqual('live active count = 2', liveActive.length, 2);
+  assertEqual('live result is a copy (imutável)', liveActive !== _MODULE_OWNED_PANES_TEST.live, true);
+
+  // Fora do mapa: regra antiga — ativa TODAS as abas com painel visível
+  const probActive = moduleActivePanesTest('probability', panes);
+  assertEqual('probability ativa abas visíveis', probActive.join(','), 'tab-fleet,tab-charts,tab-terminal');
+  assertEqual('probability exclui aba oculta', probActive.indexOf('tab-stats') !== -1, false);
+
+  // Sem painel visível → nenhuma aba
+  const noneVisible = panes.map(p => ({ id: p.id, visible: false }));
+  assertEqual('sem painéis visíveis → 0 abas', moduleActivePanesTest('docs', noneVisible).length, 0);
+  // Null-safe
+  assertEqual('null input mantém abas donas', moduleActivePanesTest('live', null).join(','), 'tab-charts,tab-terminal');
+})();
+
+
+// ═══════════════════════════════════════════════════════════════════════════
 //  RESULTS
 // ═══════════════════════════════════════════════════════════════════════════
 

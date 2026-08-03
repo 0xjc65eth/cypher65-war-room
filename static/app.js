@@ -3105,7 +3105,7 @@ function renderAccount(acct) {
       var bar = document.getElementById('support-bar-methods');
       if (bar) {
         bar.innerHTML = methods.map(function(m) {
-          return '<span class="support-method" title="' + escapeHtml(m.label) + '">' +
+          return '<span class="support-method support-bar__method" title="' + escapeHtml(m.label) + '">' +
             '<span class="support-method-tag" style="color:' + (m.color || '#00ff41') + '">' + (m.icon || '₿') + ' ' + escapeHtml(m.label) + '</span>' +
             '<span class="support-method-addr" data-copy="' + escapeHtml(m.address) + '">' + escapeHtml(m.address) + '</span>' +
             '<button class="support-method-copy" data-copy-btn aria-label="Copy ' + escapeHtml(m.label) + ' address">⧉</button>' +
@@ -6014,6 +6014,26 @@ dom.walletSave?.addEventListener('click', async () => {
   if (sidebarOverlay) sidebarOverlay.addEventListener('click', closeSidebar);
 
   // ── MODULE SYSTEM: mostra só os painéis do módulo ativo ──
+  // Helper puro (espelhado em tests/test_app_js_core.js): decide quais
+  // abas (tab-panes) ficam ativas para um módulo. Cada módulo tem UMA aba
+  // dona — sem esse mapeamento, painéis do mesmo módulo espalhados por
+  // várias abas (ex.: LIVE MINING — painel principal em tab-charts,
+  // terminal em tab-terminal, timeline/gráficos/logs em tab-fleet)
+  // ativavam VÁRIAS abas ao mesmo tempo: página gigante com scroll
+  // infinito + overflow horizontal no mobile. Módulos fora do mapa
+  // mantêm o comportamento antigo (ativa TODAS as abas com painel
+  // visível — a 1ª que aparecer também, sem exclusividade).
+  const _MODULE_OWNED_PANES = {
+    // LIVE MINING: só o painel principal (CYPHER // LIVE MINING) + o
+    // terminal de comandos. Timeline/gráficos/logs ficam fora do módulo
+    // para o layout voltar a ser focado (sem scroll infinito).
+    live: ['tab-charts', 'tab-terminal'],
+  };
+  function moduleActivePanes(name, paneHasVisible) {
+    const owned = _MODULE_OWNED_PANES[name];
+    if (owned) return owned.slice();
+    return (paneHasVisible || []).filter(p => p.visible).map(p => p.id);
+  }
   function activateModule(name) {
     document.body.classList.add('module-mode');
     // Mostra/esconde cada painel com data-module — MAS nunca os links da
@@ -6025,10 +6045,22 @@ dom.walletSave?.addEventListener('click', async () => {
       const show = mods.indexOf(name) !== -1;
       el.classList.toggle('module-hidden', !show);
     });
-    // Tab panes só ficam visíveis se contiverem painel visível
-    document.querySelectorAll('.tab-pane').forEach(function(pane) {
-      const hasVisible = pane.querySelector('[data-module]:not(.module-hidden)');
-      pane.classList.toggle('active', !!hasVisible);
+    // Tab panes: apenas as abas que o módulo possui (ou, fora do mapa,
+    // as que contêm painel visível) ficam ativas — nunca várias ao mesmo
+    // tempo (causa do scroll infinito / overflow no Live Mining).
+    const paneStates = Array.prototype.map.call(
+      document.querySelectorAll('.tab-pane'),
+      function(pane) {
+        return {
+          id: pane.id,
+          visible: !!pane.querySelector('[data-module]:not(.module-hidden)'),
+          el: pane,
+        };
+      }
+    );
+    const activeIds = moduleActivePanes(name, paneStates);
+    paneStates.forEach(function(p) {
+      p.el.classList.toggle('active', activeIds.indexOf(p.id) !== -1);
     });
     // Sidebar active state
     sidebarLinks.forEach(function(l) {

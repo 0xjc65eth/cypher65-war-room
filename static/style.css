@@ -3347,6 +3347,23 @@ td { padding: 4px 8px; border-bottom: 1px solid var(--border-subtle); color: var
   font-weight: 700;
   font-family: var(--font-mono);
 }
+/* Chips do support bar (footer de doações): o wrapper .support-method é
+   renderizado por JS e reutiliza .support-bar__method. No mobile o media
+   query dá flex:1 aos chips (largura igual) — com endereços longos o
+   conteúdo estourava a viewport (~570px). Correção: chips com tamanho de
+   conteúdo + quebra natural (flex:0 1 auto) e endereço inline-block com cap
+   de largura para o ellipsis existente valer (inline ignora max-width). */
+.support-bar__methods .support-method {
+  flex: 0 1 auto;
+}
+.support-bar__methods .support-method .support-method-addr {
+  display: inline-block;
+  vertical-align: middle;
+  max-width: 88px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 .support-method-addr {
   font-size: 12px;
   color: var(--text-primary);
