@@ -372,11 +372,23 @@ def _fmt_hashrate(h) -> str:
 
 
 def _fmt_diff(d) -> str:
+    """Format a difficulty value into human units.
+
+    Accepts raw floats OR API strings with a magnitude suffix ('2.5P',
+    '123T', '500G') — the pool API returns bestDifficulty as a formatted
+    string, and float() on a suffixed value would crash the prompt builder.
+    """
     if not d:
         return "—"
-    v = float(d)
-    if v == 0:
-        return "0"
+    if isinstance(d, str):
+        from helpers import parse_diff_to_float
+        v = parse_diff_to_float(d)
+        if v == 0:
+            return "0"
+    else:
+        v = float(d)
+        if v == 0:
+            return "0"
     units = ["", "K", "M", "G", "T", "P", "E"]
     i = 0
     x = abs(v)

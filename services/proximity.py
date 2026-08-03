@@ -227,6 +227,11 @@ def _compute_rolling_avg_share_diffs(sch, ts_now, window_seconds=3600):
     result["recent_avg_raw"] = recent_avg
     result["recent_avg_str"] = fmt_diff(recent_avg) if recent_avg else None
     result["recent_count"] = len(recent)
+    # Data-audit fix: old_avg_raw was declared in the result schema but never
+    # populated — consumers (frontend trend widget) always saw null for the
+    # baseline window even when valid old-window shares existed.
+    result["old_avg_raw"] = old_avg
+    result["old_count"] = len(old)
 
     if old_avg and recent_avg and old_avg > 0:
         trend_pct = (recent_avg - old_avg) / old_avg * 100.0

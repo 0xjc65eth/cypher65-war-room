@@ -6,6 +6,25 @@ e versionamento semântico ([SemVer](https://semver.org/lang/pt-BR/)).
 
 ## [Unreleased]
 
+### Adicionado — Cobertura 62% → 66% (gate CI 45% → 65%)
+- **108 testes novos** cobrindo módulos de baixa cobertura:
+  `services/ai_operator.py` (12% → ~72%), `services/session_manager.py`
+  (28% → ~92%), `services/push_notifier.py` (34% → ~86%),
+  `core/adapters/cgminer_adapter.py` (44% → ~80%),
+  `services/proximity.py` (45% → ~85%).
+- **Gate do CI elevado**: `--cov-fail-under` 45 → **65** no `ci.yml`.
+
+### Corrigido (bugs reais descobertos pelos testes novos)
+- `ai_operator._fmt_diff`: quebrava com `ValueError` quando a API enviava
+  bestDifficulty como string com sufixo (ex.: `"2.5P"`) — agora usa
+  `helpers.parse_diff_to_float` (tolerante a K/M/G/T/P).
+- `session_manager.get_session/get_snapshot`: usavam o TTL hardcoded do módulo
+  em vez do `self._ttl` configurável — sessões podiam expirar cedo demais ou
+  sobreviver além do TTL configurado.
+- `proximity._compute_rolling_avg_share_diffs`: `old_avg_raw` era declarado no
+  dict de resultado mas nunca populado (sempre `None`); agora calcula a média
+  da janela antiga corretamente.
+
 ### Adicionado — P0-6 LIVE MINING terminal profissional
 - **Ring buffer**: feed de eventos agora é um buffer limitado a 200 linhas
   (antes crescia sem limite na DOM — risco de memory leak).

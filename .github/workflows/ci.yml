@@ -7,10 +7,14 @@
 # Audit item (Produção · Estágio 1/5): sem gate de CI, a cobertura não era
 # mensurada e nenhuma falha bloqueava merge. Este workflow fecha o gap.
 #
-# COVERAGE BASELINE (2026-08-01, pytest --cov local, targets app/helpers/
-# axe_fleet/services/core): TOTAL = 53%. O --cov-fail-under=45 é o gate real:
-# abaixo de 45% o merge é bloqueado. A margem (53% → 45%) absorve variação
-# entre ambientes (CI vs local) sem deixar o gate frouxo.
+# COVERAGE MILESTONES (pytest --cov local, targets app/helpers/
+# axe_fleet/services/core):
+#   2026-08-01  TOTAL 53% (baseline)  · gate --cov-fail-under=45
+#   2026-08-03  TOTAL 66% (+108 testes: ai_operator, session_manager,
+#              push_notifier, cgminer_adapter, proximity) · gate sobe p/ 65%
+# O --cov-fail-under=65 é o gate real: abaixo de 65% o merge é bloqueado.
+# A margem (66% → 65%) absorve variação entre ambientes (CI vs local) sem
+# deixar o gate frouxo.
 
 name: "CI · Gate"
 
@@ -63,7 +67,7 @@ jobs:
           python -m pytest tests/ -q --tb=short --junitxml=/tmp/pytest-results.xml \
             --cov=app --cov=helpers --cov=axe_fleet --cov=services --cov=core \
             --cov-report=term-missing --cov-report=html:/tmp/coverage_html \
-            --cov-fail-under=45
+            --cov-fail-under=65
 
       - name: Upload pytest results
         if: always()

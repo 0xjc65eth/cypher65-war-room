@@ -97,12 +97,16 @@ class SessionManager:
         return session
 
     def get_session(self, session_id: str) -> UserSession | None:
-        """Return session or None if missing/expired."""
+        """Return session or None if missing/expired.
+
+        Expiry honors the manager's configured TTL (self._ttl), not the
+        module-level SESSION_TTL — a SessionManager(ttl=...) must behave
+        consistently across get/destroy/cleanup."""
         with self._lock:
             session = self._sessions.get(session_id)
             if session is None:
                 return None
-            if session.is_expired:
+            if (int(time.time()) - session.last_activity) > self._ttl:
                 self._sessions.pop(session_id, None)
                 log.info("[session] expired %s", session_id[:8])
                 return None
@@ -144,9 +148,10 @@ class SessionManager:
         """Return the session's latest snapshot, or None."""
         with self._lock:
             session = self._sessions.get(session_id)
-            if session is None or session.is_expired:
-                if session is not None:
-                    self._sessions.pop(session_id, None)
+            if session is None:
+                return None
+            if (int(time.time()) - session.last_activity) > self._ttl:
+                self._sessions.pop(session_id, None)
                 return None
             session.touch()
             return session.snapshot if session.snapshot else {}
