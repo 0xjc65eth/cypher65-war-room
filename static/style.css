@@ -1913,10 +1913,49 @@ body {
 .lm-best-share__meta { font-size: 9px; color: var(--text-tertiary); }
 
 .lm-event-log { margin-top: 6px; }
-.lm-event-log__head { display: flex; justify-content: space-between; margin-bottom: 2px; }
-.lm-event-log__title { font-size: 9px; color: var(--green-dim); }
-.lm-event-log__terminal { max-height: 80px; overflow-y: auto; font-size: 9px; border: 1px solid var(--border-subtle); padding: 4px; }
-.lm-event-log__line { padding: 1px 0; color: var(--text-secondary); }
+.lm-event-log__head { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 4px; }
+.lm-event-log__title { font-size: 9px; color: var(--green-dim); display: inline-flex; align-items: center; gap: 6px; }
+/* P0-6: connection status dot — green live / amber reconnecting / red closed */
+.lm-event-log__conn {
+  display: inline-block; width: 7px; height: 7px; border-radius: 50%;
+  background: var(--green); box-shadow: 0 0 4px var(--green);
+}
+.lm-event-log__conn.is-stale { background: var(--amber); box-shadow: 0 0 4px var(--amber); }
+.lm-event-log__conn.is-down { background: var(--red); box-shadow: 0 0 4px var(--red); }
+/* P0-6: live header stats — EVENTS / SHARES / ERR */
+.lm-event-log__stats { display: inline-flex; gap: 8px; font-size: 9px; color: var(--text-tertiary); }
+.lm-event-log__stat b { color: var(--text-primary); font-variant-numeric: tabular-nums; }
+.lm-event-log__stat--share b { color: var(--cyan); }
+.lm-event-log__stat--err b { color: var(--red); }
+/* P0-6: toolbar — pause / filter chips / clear */
+.lm-event-log__toolbar {
+  display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+  margin-bottom: 4px;
+}
+.lm-event-log__filters { display: inline-flex; gap: 3px; flex: 1; }
+.chip--filter { font-size: 9px; padding: 1px 7px; opacity: 0.75; }
+.chip--filter.is-active { border-color: var(--green); color: var(--green); opacity: 1; }
+.chip--danger { border-color: var(--red-dim, rgba(255,77,77,0.5)); color: var(--red); }
+.chip--danger:hover { border-color: var(--red); background: rgba(255,77,77,0.12); }
+/* P0-6: fixed-height terminal + floating jump-to-bottom button */
+.lm-event-log__wrap { position: relative; }
+.lm-event-log__terminal {
+  height: 168px; overflow-y: auto; font-size: 9px;
+  border: 1px solid var(--border-subtle); padding: 4px;
+  font-family: var(--font-mono, 'JetBrains Mono', 'Courier New', monospace);
+  line-height: 1.55;
+}
+.lm-event-log__line { padding: 1px 0; color: var(--text-secondary); white-space: pre-wrap; word-break: break-all; }
+.lm-event-log__line .ts { color: var(--text-tertiary); }
+.lm-event-log__jump {
+  position: absolute; right: 8px; bottom: 8px;
+  width: 22px; height: 22px; border-radius: 50%;
+  border: 1px solid var(--green-dim); background: var(--bg-surface);
+  color: var(--green); font-size: 12px; cursor: pointer;
+  box-shadow: 0 1px 6px rgba(0,0,0,0.45);
+  transition: border-color var(--dur-fast) var(--ease-out);
+}
+.lm-event-log__jump:hover { border-color: var(--green); }
 .ts-mute { color: var(--text-tertiary); }
 
 .lm-footnote { font-size: 9px; color: var(--text-tertiary); padding: 4px; border-top: 1px solid var(--border-subtle); margin-top: 6px; }
@@ -2119,6 +2158,10 @@ td { padding: 4px 8px; border-bottom: 1px solid var(--border-subtle); color: var
   letter-spacing: 0.04em;
 }
 .tag-info     { border-color: var(--cyan-dim) !important; color: var(--cyan) !important; background: var(--cyan-bg) !important; }
+/* P0-6: live-mining event badges — SHARE blue, JOB amber, BEST gold, ERR red */
+.tag-share    { border-color: rgba(6,214,240,0.55) !important; color: #06d6f0 !important; background: rgba(6,214,240,0.12) !important; }
+.tag-job      { border-color: rgba(255,196,0,0.55) !important; color: #ffc400 !important; background: rgba(255,196,0,0.10) !important; }
+.tag-best     { border-color: var(--amber-dim, rgba(245,185,66,0.55)) !important; color: var(--amber, #f5b942) !important; background: rgba(245,185,66,0.12) !important; }
 .tag-warn     { border-color: var(--orange) !important; color: var(--orange) !important; background: var(--orange-bg) !important; }
 .tag-error    { border-color: var(--red) !important; color: var(--red) !important; background: var(--red-bg) !important; }
 .tag-success  { border-color: var(--green) !important; color: var(--green) !important; background: var(--green-bg) !important; }

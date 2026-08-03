@@ -1354,11 +1354,31 @@
 
   <div class="lm-event-log" id="lm-event-log">
     <div class="lm-event-log__head">
-      <span class="lm-event-log__title">> LIVE MINING EVENTS</span>
-      <button class="chip" id="lm-event-log-clear">clear</button>
+      <span class="lm-event-log__title">> LIVE MINING EVENTS
+        <span class="lm-event-log__conn" id="lm-conn-dot" title="connection status"></span>
+      </span>
+      <span class="lm-event-log__stats" id="lm-event-log-stats">
+        <span class="lm-event-log__stat">EVENTS <b id="lm-stat-total">0</b></span>
+        <span class="lm-event-log__stat lm-event-log__stat--share">SHARES <b id="lm-stat-shares">0</b></span>
+        <span class="lm-event-log__stat lm-event-log__stat--err">ERR <b id="lm-stat-err">0</b></span>
+      </span>
     </div>
-    <div class="lm-event-log__terminal" id="lm-event-log-terminal">
-      <div class="lm-event-log__line ts-mute">> SYSTEM ONLINE</div>
+    <div class="lm-event-log__toolbar">
+      <button class="chip" id="lm-event-log-pause" title="Pause/Resume the event stream">⏸ pause</button>
+      <div class="lm-event-log__filters" id="lm-event-log-filters">
+        <button class="chip chip--filter is-active" data-lm-filter="all">ALL</button>
+        <button class="chip chip--filter" data-lm-filter="SHARE">SHARE</button>
+        <button class="chip chip--filter" data-lm-filter="BEST">BEST</button>
+        <button class="chip chip--filter" data-lm-filter="JOB">JOB</button>
+        <button class="chip chip--filter" data-lm-filter="ERR">ERR</button>
+      </div>
+      <button class="chip chip--danger" id="lm-event-log-clear">✕ clear</button>
+    </div>
+    <div class="lm-event-log__wrap" id="lm-event-log-wrap">
+      <div class="lm-event-log__terminal" id="lm-event-log-terminal">
+        <div class="lm-event-log__line ts-mute">> SYSTEM ONLINE</div>
+      </div>
+      <button class="lm-event-log__jump" id="lm-event-log-jump" title="Jump to newest events" hidden>↓</button>
     </div>
   </div>
 
@@ -2200,7 +2220,7 @@
     <span id="next-poll"></span>
   </div>
 
-  <script src="/static/app.js?v44"></script>
+  <script src="/static/app.js?v45"></script>
 </div> <!-- end #app-main -->
 </div> <!-- end #app-layout -->
   <!-- Matrix rain canvas (full-screen background effect) -->

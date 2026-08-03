@@ -2674,6 +2674,7 @@ function renderAccount(acct) {
     renderMarket(snap);
     renderAiOperator(snap);
     renderLiveMining(snap.all_workers, snap.worker);
+    _lmSetConn(snap);
     renderCharts();
     _updateHashSearchState(snap.worker, snap.network);
     _huntUpdateState(snap.worker, snap.network, parseFloat(snap.proximity?.live_calc?.session_totals?.cum_p_block_pct_str) || 0, parseFloat(snap.proximity?.live_calc?.session_totals?.expected_blocks) || 0, snap.proximity?.live_calc?.ticker || []);
@@ -3509,7 +3510,114 @@ dom.walletSave?.addEventListener('click', async () => {
 
   let _lmLoggedActive = false;
   let _lmBestShareEver = 0; let _lmBestShareWorker = ''; let _lmBestShareTime = '';
-  let _lmEventCount = 0; const _LM_EVENT_MAX = 50;
+  // P0-6 audit: professional terminal — bounded ring buffer (never unbounded
+  // DOM growth), user scroll lock (never yank the reader back down), pause /
+  // filter / live stats. Pure helpers mirrored in tests/test_app_js_core.js.
+  let _lmEventCount = 0; const _LM_EVENT_MAX = 200;
+  let _lmPaused = false;
+  let _lmFilter = 'all';
+  let _lmUserScrolled = false;
+  const _lmStats = { total: 0, shares: 0, err: 0 };
+  // P0-6: event type → badge class (color-coded terminal). Mirrored in tests.
+  function lmEventTypeClass(type) {
+    const t = String(type || '').toUpperCase();
+    if (t === 'SHARE') return 'tag-share';
+    if (t === 'BEST') return 'tag-best';
+    if (t === 'JOB') return 'tag-job';
+    if (t === 'ERR' || t === 'ERROR') return 'tag-error';
+    return 'tag-info';
+  }
+  // P0-6: does an event pass the current filter? Mirrored in tests.
+  function lmFilterMatches(filter, type) {
+    const f = String(filter || 'all').toLowerCase();
+    if (!f || f === 'all') return true;
+    const t = String(type || '').toUpperCase();
+    if (f === 'err') return t === 'ERR' || t === 'ERROR';
+    return t === f.toUpperCase();
+  }
+  // P0-6: is the user reading history (not pinned to the newest line)?
+  // Mirrored in tests.
+  function lmUserScrolled(scrollTop, scrollHeight, clientHeight) {
+    return scrollHeight - scrollTop - clientHeight > 24;
+  }
+  function _lmEventLineHtml(type, msg, ts) {
+    const cls = lmEventTypeClass(type);
+    // The type label is escaped too (defense-in-depth — the classifier maps
+    // known types, but an unexpected value must never become raw HTML).
+    return `<div class="lm-event-log__line"><span class="ts">[${ts}]</span><span class="${cls}">${escapeHtml(String(type).toUpperCase())}</span> ${escapeHtml(msg)}</div>`;
+  }
+  function _lmRenderStats() {
+    const set = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = String(v); };
+    set('lm-stat-total', _lmStats.total);
+    set('lm-stat-shares', _lmStats.shares);
+    set('lm-stat-err', _lmStats.err);
+  }
+  // P0-6: connection status dot — LIVE (green) when the last snapshot is
+  // fresh, STALE (amber) when the poll recently failed/aged, DOWN (red)
+  // when we're pre-first-poll. Called from the main render path. Uses the
+  // server-computed network.stale flag (single source of truth) so client
+  // clock skew never mislabels the state.
+  function _lmSetConn(snap) {
+    const dot = document.getElementById('lm-conn-dot');
+    if (!dot) return;
+    dot.classList.remove('is-stale', 'is-down');
+    const ts = snap && snap.ts;
+    if (!ts) {
+      dot.classList.add('is-down');
+      dot.title = 'waiting for first poll';
+    } else if ((snap.network && snap.network.stale === true) ||
+               (Math.floor(Date.now() / 1000) - Number(ts) > 150)) {
+      dot.classList.add('is-stale');
+      dot.title = 'stale — network data aged';
+    } else {
+      dot.title = 'live';
+    }
+  }
+  function _lmApplyFilter() {
+    const term = dom.lmEventLogTerminal;
+    if (!term) return;
+    const keep = term.querySelectorAll('.lm-event-log__line');
+    keep.forEach(el => {
+      const typeEl = el.querySelector('.tag-share, .tag-best, .tag-job, .tag-error, .tag-info');
+      const type = typeEl ? (typeEl.textContent || '').trim() : '';
+      el.style.display = lmFilterMatches(_lmFilter, type) ? '' : 'none';
+    });
+    _lmSyncScrollLock();
+  }
+  function _lmSyncScrollLock() {
+    const term = dom.lmEventLogTerminal;
+    const jump = document.getElementById('lm-event-log-jump');
+    if (!term) return;
+    _lmUserScrolled = lmUserScrolled(term.scrollTop, term.scrollHeight, term.clientHeight);
+    if (jump) jump.hidden = !_lmUserScrolled;
+  }
+  function _lmJumpToBottom() {
+    const term = dom.lmEventLogTerminal;
+    if (!term) return;
+    _lmUserScrolled = false;
+    term.scrollTop = term.scrollHeight;
+    const jump = document.getElementById('lm-event-log-jump');
+    if (jump) jump.hidden = true;
+  }
+  function _lmAppendEvent(type, msg) {
+    const term = dom.lmEventLogTerminal;
+    if (!term) return;
+    // Every appended line (events AND the pause-resume marker) counts toward
+    // the ring buffer — otherwise the count drifts from the real DOM size.
+    _lmEventCount++;
+    const now = new Date();
+    const pad = (n) => String(n).padStart(2, '0');
+    const ms = String(now.getMilliseconds()).padStart(3, '0');
+    const ts = `${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}.${ms}`;
+    term.insertAdjacentHTML('beforeend', _lmEventLineHtml(type, msg, ts));
+    while (_lmEventCount > _LM_EVENT_MAX) {
+      const f = term.querySelector('.lm-event-log__line');
+      if (!f) break;
+      f.remove(); _lmEventCount--;
+    }
+    if (!_lmUserScrolled) term.scrollTop = term.scrollHeight;
+    _lmRenderStats();
+  }
 
   function parseBestDiff(bd) {
     if (!bd) return 0;
@@ -3555,19 +3663,57 @@ dom.walletSave?.addEventListener('click', async () => {
 
   function _logMiningEvent(type, msg) {
     if (!dom.lmEventLogTerminal) return;
-    _lmEventCount++;
-    const now = new Date();
-    const ts = String(now.getHours()).padStart(2,'0')+':'+String(now.getMinutes()).padStart(2,'0')+':'+String(now.getSeconds()).padStart(2,'0');
-    let cls = ''; if (type==='SHARE') cls='tag-share'; else if (type==='BEST') cls='tag-best'; else if (type==='JOB') cls='tag-job';
-    dom.lmEventLogTerminal.insertAdjacentHTML('beforeend', `<div class="lm-event-log__line"><span class="ts">[${ts}]</span><span class="${cls}">${type}</span> ${escapeHtml(msg)}</div>`);
-    while (_lmEventCount > _LM_EVENT_MAX) { const f = dom.lmEventLogTerminal.querySelector('.lm-event-log__line'); if (!f) break; f.remove(); _lmEventCount--; }
-    dom.lmEventLogTerminal.scrollTop = dom.lmEventLogTerminal.scrollHeight;
+    const t = String(type || '').toUpperCase();
+    // P0-6: paused → drop the event (recommended for speed; the ring buffer
+    // stays bounded and unpause renders a clean single marker line).
+    if (_lmPaused) return;
+    _lmStats.total++;
+    if (t === 'SHARE') _lmStats.shares++;
+    else if (t === 'ERR' || t === 'ERROR') _lmStats.err++;
+    _lmAppendEvent(t, msg);
   }
 
-  document.getElementById('lm-event-log-clear')?.addEventListener('click', () => {
-    if (dom.lmEventLogTerminal) dom.lmEventLogTerminal.innerHTML = '<div class="lm-event-log__line ts-mute">> CLEARED</div>';
-    _lmEventCount = 1;
-  });
+  function _initLmEventLogControls() {
+    const clearBtn = document.getElementById('lm-event-log-clear');
+    if (clearBtn) clearBtn.addEventListener('click', () => {
+      if (dom.lmEventLogTerminal) dom.lmEventLogTerminal.innerHTML = '<div class="lm-event-log__line ts-mute">> CLEARED</div>';
+      _lmEventCount = 1;
+      _lmStats.total = 0; _lmStats.shares = 0; _lmStats.err = 0;
+      _lmRenderStats();
+    });
+    const pauseBtn = document.getElementById('lm-event-log-pause');
+    if (pauseBtn) pauseBtn.addEventListener('click', () => {
+      _lmPaused = !_lmPaused;
+      pauseBtn.textContent = _lmPaused ? '▶ resume' : '⏸ pause';
+      pauseBtn.classList.toggle('is-active', _lmPaused);
+      pauseBtn.title = _lmPaused ? 'Resume the event stream' : 'Pause the event stream';
+      if (!_lmPaused) {
+        // Unpause marker so the operator knows where the stream restarted.
+        _lmAppendEvent('JOB', 'stream resumed');
+      }
+    });
+    const filtersEl = document.getElementById('lm-event-log-filters');
+    if (filtersEl) {
+      filtersEl.querySelectorAll('.chip--filter').forEach(chip => {
+        chip.addEventListener('click', () => {
+          filtersEl.querySelectorAll('.chip--filter').forEach(c => c.classList.remove('is-active'));
+          chip.classList.add('is-active');
+          _lmFilter = chip.getAttribute('data-lm-filter') || 'all';
+          _lmApplyFilter();
+        });
+      });
+    }
+    const jumpBtn = document.getElementById('lm-event-log-jump');
+    if (jumpBtn) jumpBtn.addEventListener('click', _lmJumpToBottom);
+    const term = dom.lmEventLogTerminal;
+    if (term) {
+      term.addEventListener('scroll', _lmSyncScrollLock, { passive: true });
+      term.addEventListener('wheel', _lmSyncScrollLock, { passive: true });
+    }
+    _lmRenderStats();
+  }
+
+
 
   function renderLiveMining(allWorkers, primaryWorker) {
     if (!dom.lmGrid) return;
@@ -4942,6 +5088,7 @@ dom.walletSave?.addEventListener('click', async () => {
   // ── Boot ──
   async function boot() {
     initMatrix(); initCharts(); bindChartRanges(); loadSettings(); initMarketControls(); initDecisionMatrixControls(); initCommandCenterControls();
+    _initLmEventLogControls();
     initLicensing();  // R1: PRO badge + license state (off-by-default, no-op in open mode)
     fetchTailscale();
     if (typeof fetchRemoteOnboarding === 'function') fetchRemoteOnboarding();

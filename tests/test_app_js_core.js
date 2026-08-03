@@ -3695,6 +3695,64 @@ console.log('\n👛 SUITE 27: acctRankLabels() — wallet rank fallbacks');
 
 
 // ═══════════════════════════════════════════════════════════════════════════
+//  SUITE 28: P0-6 professional live-mining terminal — pure helpers
+//  (lmEventTypeClass, lmFilterMatches, lmUserScrolled). Mirrors static/app.js.
+// ═══════════════════════════════════════════════════════════════════════════
+console.log('\n🖥 SUITE 28: live-mining terminal helpers (badges, filter, scroll lock)');
+(function () {
+  function lmEventTypeClassTest(type) {
+    const t = String(type || '').toUpperCase();
+    if (t === 'SHARE') return 'tag-share';
+    if (t === 'BEST') return 'tag-best';
+    if (t === 'JOB') return 'tag-job';
+    if (t === 'ERR' || t === 'ERROR') return 'tag-error';
+    return 'tag-info';
+  }
+  function lmFilterMatchesTest(filter, type) {
+    const f = String(filter || 'all').toLowerCase();
+    if (!f || f === 'all') return true;
+    const t = String(type || '').toUpperCase();
+    if (f === 'err') return t === 'ERR' || t === 'ERROR';
+    return t === f.toUpperCase();
+  }
+  function lmUserScrolledTest(scrollTop, scrollHeight, clientHeight) {
+    return scrollHeight - scrollTop - clientHeight > 24;
+  }
+
+  // lmEventTypeClass — color coding per pipeline (SHARE blue, JOB amber, BEST gold, ERR red)
+  assertEqual('SHARE -> tag-share', lmEventTypeClassTest('SHARE'), 'tag-share');
+  assertEqual('share lowercase -> tag-share', lmEventTypeClassTest('share'), 'tag-share');
+  assertEqual('JOB -> tag-job', lmEventTypeClassTest('JOB'), 'tag-job');
+  assertEqual('BEST -> tag-best', lmEventTypeClassTest('BEST'), 'tag-best');
+  assertEqual('ERR -> tag-error', lmEventTypeClassTest('ERR'), 'tag-error');
+  assertEqual('ERROR -> tag-error', lmEventTypeClassTest('ERROR'), 'tag-error');
+  assertEqual('unknown -> tag-info', lmEventTypeClassTest('NONCE'), 'tag-info');
+  assertEqual('empty -> tag-info', lmEventTypeClassTest(''), 'tag-info');
+  assertEqual('null -> tag-info', lmEventTypeClassTest(null), 'tag-info');
+
+  // lmFilterMatches — reactive filtering without reload
+  assertEqual('filter all accepts SHARE', lmFilterMatchesTest('all', 'SHARE'), true);
+  assertEqual('filter all accepts ERR', lmFilterMatchesTest('all', 'ERR'), true);
+  assertEqual('filter SHARE keeps share', lmFilterMatchesTest('SHARE', 'SHARE'), true);
+  assertEqual('filter SHARE drops JOB', lmFilterMatchesTest('SHARE', 'JOB'), false);
+  assertEqual('filter share (lower) keeps SHARE', lmFilterMatchesTest('share', 'SHARE'), true);
+  assertEqual('filter err keeps ERROR', lmFilterMatchesTest('err', 'ERROR'), true);
+  assertEqual('filter err keeps ERR', lmFilterMatchesTest('err', 'ERR'), true);
+  assertEqual('filter err drops JOB', lmFilterMatchesTest('err', 'JOB'), false);
+  assertEqual('filter BEST drops SHARE', lmFilterMatchesTest('BEST', 'SHARE'), false);
+  assertEqual('empty filter = all', lmFilterMatchesTest('', 'JOB'), true);
+  assertEqual('null filter = all', lmFilterMatchesTest(null, 'JOB'), true);
+
+  // lmUserScrolled — the reader must not be yanked back down
+  const total = 1000, view = 200;
+  assertEqual('pinned to bottom -> not user-scrolled', lmUserScrolledTest(total - view, total, view), false);
+  assertEqual('scrolled up 100px -> user-scrolled', lmUserScrolledTest(total - view - 100, total, view), true);
+  assertEqual('scrolled up 24px (threshold) -> user-scrolled', lmUserScrolledTest(total - view - 24, total, view), false);
+  assertEqual('scrolled up 25px -> user-scrolled', lmUserScrolledTest(total - view - 25, total, view), true);
+})();
+
+
+// ═══════════════════════════════════════════════════════════════════════════
 //  RESULTS
 // ═══════════════════════════════════════════════════════════════════════════
 

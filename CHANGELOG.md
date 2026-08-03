@@ -6,6 +6,24 @@ e versionamento semântico ([SemVer](https://semver.org/lang/pt-BR/)).
 
 ## [Unreleased]
 
+### Adicionado — P0-6 LIVE MINING terminal profissional
+- **Ring buffer**: feed de eventos agora é um buffer limitado a 200 linhas
+  (antes crescia sem limite na DOM — risco de memory leak).
+- **Scroll lock**: o terminal só auto-scrolla quando o usuário está no rodapé
+  (threshold 24px) — nunca mais "puxa" o leitor de volta ao ler histórico.
+- **Botão Jump to Bottom**: aparece quando o usuário rola para cima; um clique
+  volta ao final do stream.
+- **Pause / Resume**: pausa descarta eventos (recomendado p/ velocidade) e
+  mostra um marcador visual de onde o stream reiniciou.
+- **Filtro por tipo**: chips ALL / SHARE / BEST / JOB / ERR — filtragem
+  reativa sem recarregar a página.
+- **Stats ao vivo**: contadores EVENTS / SHARES / ERR no cabeçalho do terminal.
+- **Conexão dot**: LED verde (live) / âmbar (stale) / vermelho (sem poll),
+  baseado no flag `network.stale` do servidor (sem clock skew de cliente).
+- **Timestamps com milissegundos** e cores por tipo de evento
+  (SHARE azul, BEST dourado, JOB âmbar, ERR vermelho).
+- **Altura fixa (220px) + scrollbar customizada** — comportamento previsível.
+
 ### Corrigido — P0-5 audit de UI (wallet ranks, share chart, fleet, hashmarket, Command Center)
 - **Wallet ranks**: o account agora é enriquecido com os ranks REAIS da leaderboard
   (`diff_rank` / `loyalty_rank` / `combined_score` via `helpers.enrich_account_ranks`,
