@@ -1259,8 +1259,18 @@ def _record_donation(method="lightning", amount_sat=None, txid="", preimage="", 
         try:
             conn = get_db()
             c = conn.cursor()
-            # Dedup: same txid or preimage must not be recorded twice
-            c.execute("SELECT id FROM donations WHERE txid=? OR preimage=? LIMIT 1", (txid or "", preimage or ""))
+            # Dedup: same txid or preimage must not be recorded twice.
+            # ONLY match when the incoming value is non-empty AND the stored
+            # value is non-empty: an empty-string txid/preimage must never
+            # collide with an unrelated row (the on-chain watcher / manual
+            # logging can leave txid='' or preimage='' rows — matching those
+            # made EVERY subsequent preimage-only donation 409 as a "dup").
+            c.execute(
+                "SELECT id FROM donations "
+                "WHERE (COALESCE(txid,'') <> '' AND txid=?) "
+                "OR (COALESCE(preimage,'') <> '' AND preimage=?) LIMIT 1",
+                (txid or "", preimage or ""),
+            )
             if c.fetchone():
                 conn.close()
                 return None

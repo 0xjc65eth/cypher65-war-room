@@ -1973,8 +1973,11 @@ function renderAccount(acct) {
         dom.pBreakeven.textContent = fmt.secsToHuman(view.soloStats.expectedDays * 86400);
         if (dom.pBreakevenSub) dom.pBreakevenSub.textContent = 'to block';
       } else if (_profitMode === 'solo') {
+        // Honest telemetry: without solo data the break-even shows '—', so
+        // the sub-label must NOT claim 'to block' (that would imply solo
+        // stats rendered when they didn't — the old copy misled the UI).
         dom.pBreakeven.textContent = '\u2014';
-        if (dom.pBreakevenSub) dom.pBreakevenSub.textContent = 'to block';
+        if (dom.pBreakevenSub) dom.pBreakevenSub.textContent = 'no data';
       } else {
         dom.pBreakeven.textContent = view.breakeven != null ? `$${Number(view.breakeven).toFixed(4)}` : '\u2014';
         if (dom.pBreakevenSub) dom.pBreakevenSub.textContent = '$/TH·d';
@@ -5735,8 +5738,13 @@ dom.walletSave?.addEventListener('click', async () => {
       // Call original binding for inline ai-operator-panel
       if (_origBindAI) _origBindAI.call(this);
 
-      // Also bind off-canvas-ai panel
-      var toggleBtn = document.getElementById('sidebar-toggle');
+      // Also bind off-canvas-ai panel — a DEDICATED trigger (#ai-panel-toggle),
+      // never the #sidebar-toggle: reusing the sidebar button made the
+      // off-canvas panel (z-index 500) cover the ☰ button when both opened,
+      // so the second click never reached the sidebar toggle and the sidebar
+      // stayed stuck open (E2E topbar-responsive caught it). The AI panel
+      // keeps its own close button and outside-click dismiss.
+      var toggleBtn = document.getElementById('ai-panel-toggle');
       var panel = document.getElementById('off-canvas-ai');
       var closeBtn = document.getElementById('off-canvas-ai-close');
       if (!toggleBtn || !panel) return;

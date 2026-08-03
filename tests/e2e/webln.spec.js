@@ -372,7 +372,10 @@ test.describe('CYPHER65 — WebLN flow (mock Alby/Joule provider)', () => {
       await page.locator('#ln-pay-btn').click();
 
       const status = page.locator('#ln-payment-status');
-      await expect(status).toContainText('Invalid invoice — must start with lnbc or lntb', { timeout: 5000 });
+      // PT-BR app copy (the UI is localized; the test previously asserted the
+      // old EN text). Only the actionable parts are matched so a copy tweak
+      // does not break the E2E.
+      await expect(status).toContainText('lnbc1 (mainnet) ou lntb1', { timeout: 5000 });
       await expect(status).toHaveClass(/support-modal__ln-status--error/);
 
       const calls = await page.evaluate(() => window.__weblnMock._calls.sendPayment);
@@ -387,7 +390,13 @@ test.describe('CYPHER65 — WebLN flow (mock Alby/Joule provider)', () => {
   test.describe('04 — Console hygiene', () => {
 
     test('no critical console errors across the full WebLN interaction', async ({ page }) => {
-      await injectMockWebLN(page, { alias: 'hygiene-node' });
+      // Unique preimage per run: the backend dedupes donations by txid/
+      // preimage (honest-telemetry design). Reusing the mock's constant
+      // default across runs against a persistent DB made the donation POST
+      // return 409 on the second run — a console error that is EXPECTED app
+      // behavior, not a bug. A per-run preimage keeps the POST a 201.
+      const uniquePreimage = 'e2e' + Date.now().toString(16).slice(-28);
+      await injectMockWebLN(page, { alias: 'hygiene-node', preimage: uniquePreimage });
       const capture = setupErrorCapture(page);
 
       await page.goto(BASE_URL);

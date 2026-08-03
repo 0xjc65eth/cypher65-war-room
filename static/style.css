@@ -3757,6 +3757,13 @@ td { padding: 4px 8px; border-bottom: 1px solid var(--border-subtle); color: var
   .sidebar.open ~ .main-area { margin-left: 0; }
 
   /* Mobile hamburger overlay */
+  /* Keep the topbar (and its ☰ toggle) ABOVE the open sidebar on mobile.
+     The sidebar is z-index 500 and 100vw wide when open, so without this
+     the ☰ button gets covered and the sidebar can never be closed by the
+     same button (E2E topbar-responsive caught it). The toggle stays
+     reachable at every breakpoint. */
+  .topbar { position: relative; z-index: 600; }
+
   .sidebar-overlay {
     display: none;
     position: fixed;
