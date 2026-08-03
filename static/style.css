@@ -1928,8 +1928,19 @@ body {
 .lm-flow__legend { font-size: 8px; color: var(--text-tertiary); display: flex; align-items: center; gap: 3px; }
 .lm-flow__dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; }
 .lm-flow__dot--ok { background: var(--green); }
+.lm-flow__dot--rej { background: var(--red); }
+.lm-flow__dot--stale { background: var(--amber); }
+.lm-flow__dot--idle { background: var(--green-dim); opacity: .55; }
 .lm-flow__dot--warn { background: var(--amber); }
 .lm-flow__dot--bad { background: var(--accent-red); }
+
+/* NETWORK STATUS strip (P2) — six compact cells, wraps on narrow panels */
+.lm-network { display: flex; gap: 8px; padding: 4px 6px; border: 1px solid var(--border-subtle); margin-bottom: 6px; flex-wrap: wrap; background: rgba(0,0,0,.15); }
+.lm-network__item { display: flex; gap: 4px; align-items: center; }
+.lm-network__label { font-size: 8px; color: var(--text-tertiary); text-transform: uppercase; }
+.lm-network__val { font-size: var(--fs-xs); color: var(--text-primary); }
+.lm-summary__val--good { color: var(--green); }
+.lm-summary__val--warn { color: var(--amber); }
 .lm-flow__raster { display: flex; flex-direction: column; gap: 2px; }
 .lm-flow__row { display: grid; grid-template-columns: 1.6fr 24fr; gap: 6px; align-items: center; }
 .lm-flow__label { font-size: 9px; color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

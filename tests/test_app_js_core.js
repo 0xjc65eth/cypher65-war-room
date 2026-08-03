@@ -3916,6 +3916,81 @@ console.log('\n🖥 SUITE 28: live-mining terminal helpers (badges, filter, scro
 
 
 // ═══════════════════════════════════════════════════════════════════════════
+//  SUITE 26d: P1 fleet-fed KPIs — _lmFleetKpiAgg()
+//  Mirrors static/app.js _lmFleetKpiAgg (EFFICIENCY + PING aggregation).
+// ═══════════════════════════════════════════════════════════════════════════
+console.log('⛏ SUITE 26d: fleet-fed KPIs — EFFICIENCY + PING aggregation');
+
+// Mirror of static/app.js _lmFleetKpiAgg() — pure.
+function lmFleetKpiAggTest(fleet) {
+  fleet = fleet || [];
+  const live = fleet.filter(d => d && String(d.status || '').toUpperCase() === 'ONLINE');
+  let acc = 0, rej = 0;
+  live.forEach(d => {
+    const t = (d && d._telemetry) || {};
+    acc += Number(t.shares_accepted) || 0;
+    rej += Number(t.shares_rejected) || 0;
+  });
+  const total = acc + rej;
+  let effPct = null;
+  if (total > 0) effPct = (acc / total) * 100;
+  const lats = live.map(d => Number(d && d.latency_ms)).filter(v => v > 0 && isFinite(v));
+  let avgLatency = null;
+  if (lats.length) avgLatency = Math.round(lats.reduce((a, b) => a + b, 0) / lats.length);
+  return { effPct, avgLatency };
+}
+
+(function fleetKpiSuite() {
+  // Honest telemetry: OFFLINE devices never contribute, even with huge
+  // cumulative firmware counters in the DB (the P2 review fix).
+  const offline = [
+    { status: 'OFFLINE', _telemetry: { shares_accepted: 50000, shares_rejected: 1 }, latency_ms: 5 },
+    { status: 'OFFLINE', _telemetry: { shares_accepted: 90000, shares_rejected: 2 }, latency_ms: 8 },
+  ];
+  assertEqual('all-offline fleet -> null effPct', lmFleetKpiAggTest(offline).effPct, null);
+  assertEqual('all-offline fleet -> null avgLatency', lmFleetKpiAggTest(offline).avgLatency, null);
+  assertEqual('empty fleet -> null/null', JSON.stringify(lmFleetKpiAggTest([])), JSON.stringify({ effPct: null, avgLatency: null }));
+  assertEqual('null fleet -> null/null', JSON.stringify(lmFleetKpiAggTest(null)), JSON.stringify({ effPct: null, avgLatency: null }));
+
+  // Single ONLINE device: efficiency = accepted / (accepted+rejected)
+  const oneOnline = [
+    { status: 'ONLINE', _telemetry: { shares_accepted: 95, shares_rejected: 5 }, latency_ms: 20 },
+    { status: 'OFFLINE', _telemetry: { shares_accepted: 99999, shares_rejected: 0 }, latency_ms: 1 },
+  ];
+  const one = lmFleetKpiAggTest(oneOnline);
+  assertEqual('online-only accepted counted', Math.round(one.effPct), 95);
+  assertEqual('offline counters ignored', one.effPct, 95);
+  assertEqual('online latency averaged', one.avgLatency, 20);
+
+  // ONLINE with no share activity yet (fresh device): null eff, latency still ok
+  const fresh = [{ status: 'ONLINE', _telemetry: { shares_accepted: 0, shares_rejected: 0 }, latency_ms: 42 }];
+  const fr = lmFleetKpiAggTest(fresh);
+  assertEqual('online no shares -> null effPct', fr.effPct, null);
+  assertEqual('online no shares -> latency kept', fr.avgLatency, 42);
+
+  // Multi-online average latency + aggregate efficiency
+  const multi = [
+    { status: 'online', _telemetry: { shares_accepted: 90, shares_rejected: 10 }, latency_ms: 10 },
+    { status: 'ONLINE', _telemetry: { shares_accepted: 180, shares_rejected: 20 }, latency_ms: 30 },
+  ];
+  const m = lmFleetKpiAggTest(multi);
+  assertEqual('lowercase status accepted', m.effPct, 90);
+  assertEqual('avg latency of live devices', m.avgLatency, 20);
+
+  // Latency NaN/0/negative filtered out
+  const badLat = [
+    { status: 'ONLINE', _telemetry: { shares_accepted: 1, shares_rejected: 0 }, latency_ms: 0 },
+    { status: 'ONLINE', _telemetry: { shares_accepted: 1, shares_rejected: 0 }, latency_ms: -3 },
+    { status: 'ONLINE', _telemetry: { shares_accepted: 1, shares_rejected: 0 }, latency_ms: NaN },
+    { status: 'ONLINE', _telemetry: { shares_accepted: 1, shares_rejected: 0 }, latency_ms: 100 },
+  ];
+  const bl = lmFleetKpiAggTest(badLat);
+  assertEqual('only valid latencies averaged', bl.avgLatency, 100);
+  assertEqual('efficiency from all live', Math.round(bl.effPct), 100);
+})();
+
+
+// ═══════════════════════════════════════════════════════════════════════════
 //  RESULTS
 // ═══════════════════════════════════════════════════════════════════════════
 

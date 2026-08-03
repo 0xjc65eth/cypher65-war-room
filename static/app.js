@@ -148,6 +148,9 @@
     lmGrid: $('#lm-grid'), lmStatusBadge: $('#lm-status-badge'), lmWorkersBadge: $('#lm-workers-badge'),
     lmSummaryWallet: $('#lm-summary-wallet'), lmSummaryPool: $('#lm-summary-pool'), lmSummaryDot: $('#lm-summary-dot'),
     lmSummaryWorkers: $('#lm-summary-workers'), lmSummaryHr: $('#lm-summary-hr'), lmSummaryBest: $('#lm-summary-best'),
+    lmSummaryEff: $('#lm-summary-eff'), lmSummaryPing: $('#lm-summary-ping'), lmSummaryEarnings: $('#lm-summary-earnings'),
+    lmNetworkDiff: $('#lm-network-diff'), lmNetworkHr: $('#lm-network-hr'), lmNetworkHeight: $('#lm-network-height'),
+    lmNetworkBlock: $('#lm-network-block'), lmNetworkPoolWorkers: $('#lm-network-pool-workers'), lmNetworkLastBlock: $('#lm-network-last-block'),
     lmBestShare: $('#lm-best-share'), lmBestShareVal: $('#lm-best-share-val'), lmBestShareWorker: $('#lm-best-share-worker'), lmBestShareTime: $('#lm-best-share-time'),
     lmWorkers: $('#lm-workers'), lmWorkersGrid: $('#lm-workers-grid'), lmWorkersCount: $('#lm-workers-count'), lmFlow: $('#lm-flow'), lmFlowRaster: $('#lm-flow-raster'),
     lmEventLogTerminal: $('#lm-event-log-terminal'),
@@ -2678,6 +2681,8 @@ function renderAccount(acct) {
     renderMarket(snap);
     renderAiOperator(snap);
     renderLiveMining(snap.all_workers, snap.worker);
+    _updateLmSummaryExtras(snap);
+    _updateLmNetworkStatus(snap);
     _lmSetConn(snap);
     renderCharts();
     _updateHashSearchState(snap.worker, snap.network);
@@ -3648,6 +3653,109 @@ dom.walletSave?.addEventListener('click', async () => {
     } else { if (dom.lmSummaryHr) dom.lmSummaryHr.textContent = '\u2014'; if (dom.lmSummaryBest) dom.lmSummaryBest.textContent = '\u2014'; }
   }
 
+  // ── P1: KPI bar extras — EFFICIENCY / PING / EST. EARNINGS ────────────
+  // EFFICIENCY + PING are fed from the LATEST /api/axe-fleet/summary devices
+  // (cached in _lmFleetDevices by fetchWorkerIntelligence — that endpoint
+  // carries latency_ms + per-device telemetry, unlike snap.axe_fleet which
+  // only holds online devices and never latency). EST. EARNINGS comes from
+  // the snapshot profitability. Honest '—' per cell when a source has no
+  // data — never invented numbers.
+  let _lmFleetDevices = [];
+  // Pure aggregation for the fleet-fed KPIs — ONLINE-only, honest telemetry.
+  // Returns {effPct, avgLatency} where each is null when there is no live
+  // data to compute it (no ONLINE device with shares / latency). Cumulative
+  // firmware counters persist after a miner dies, so OFFLINE devices must
+  // never contribute — otherwise EFFICIENCY would freeze a historical %.
+  function _lmFleetKpiAgg(fleet) {
+    fleet = fleet || [];
+    const live = fleet.filter(d => d && String(d.status || '').toUpperCase() === 'ONLINE');
+    let acc = 0, rej = 0;
+    live.forEach(d => {
+      const t = (d && d._telemetry) || {};
+      acc += Number(t.shares_accepted) || 0;
+      rej += Number(t.shares_rejected) || 0;
+    });
+    const total = acc + rej;
+    let effPct = null;
+    if (total > 0) effPct = (acc / total) * 100;
+    const lats = live.map(d => Number(d && d.latency_ms)).filter(v => v > 0 && isFinite(v));
+    let avgLatency = null;
+    if (lats.length) avgLatency = Math.round(lats.reduce((a, b) => a + b, 0) / lats.length);
+    return { effPct, avgLatency };
+  }
+
+  function _applyLmFleetKpis(fleet) {
+    const { effPct, avgLatency } = _lmFleetKpiAgg(fleet);
+    if (dom.lmSummaryEff) {
+      if (effPct != null) {
+        dom.lmSummaryEff.textContent = effPct.toFixed(1) + '%';
+        dom.lmSummaryEff.classList.toggle('lm-summary__val--good', effPct >= 95);
+        dom.lmSummaryEff.classList.toggle('lm-summary__val--warn', effPct < 95);
+      } else {
+        // Clear any stale color class so a green/amber dash never lingers.
+        dom.lmSummaryEff.textContent = '\u2014';
+        dom.lmSummaryEff.classList.remove('lm-summary__val--good', 'lm-summary__val--warn');
+      }
+    }
+    if (dom.lmSummaryPing) {
+      if (avgLatency != null) {
+        dom.lmSummaryPing.textContent = avgLatency + 'ms';
+        dom.lmSummaryPing.classList.toggle('lm-summary__val--good', avgLatency <= 50);
+        dom.lmSummaryPing.classList.toggle('lm-summary__val--warn', avgLatency > 50);
+      } else {
+        dom.lmSummaryPing.textContent = '\u2014';
+        dom.lmSummaryPing.classList.remove('lm-summary__val--good', 'lm-summary__val--warn');
+      }
+    }
+  }
+  function _updateLmSummaryExtras(snap) {
+    if (!snap) return;
+    // EFFICIENCY / PING are fleet-fed by fetchWorkerIntelligence (fresher poll
+    // cadence) — single source of truth is _applyLmFleetKpis at the fleet poll.
+    // EST. EARNINGS = pool profitability USD/day (or BTC/day).
+    if (dom.lmSummaryEarnings) {
+      const p = snap.profitability || {};
+      const usd = Number(p.p_fiat_day);
+      if (isFinite(usd) && usd > 0) {
+        dom.lmSummaryEarnings.textContent = '$' + usd.toFixed(2) + '/d';
+      } else {
+        const btc = Number(p.p_btc_day);
+        dom.lmSummaryEarnings.textContent = (isFinite(btc) && btc > 0)
+          ? btc.toPrecision(4) + ' BTC/d' : '\u2014';
+      }
+    }
+  }
+
+  // ── P2: NETWORK STATUS strip — real network/pool telemetry ─────────────
+  function _updateLmNetworkStatus(snap) {
+    if (!snap) return;
+    const net = snap.network || {};
+    const pool = snap.pool || {};
+    if (dom.lmNetworkDiff) dom.lmNetworkDiff.textContent = fmt.diff(net.difficulty);
+    if (dom.lmNetworkHr) dom.lmNetworkHr.textContent = fmt.hashrate(net.hashrate);
+    if (dom.lmNetworkHeight) dom.lmNetworkHeight.textContent = net.height ? '#' + net.height : '\u2014';
+    // Est. block time: prefer the probability engine's live estimate.
+    if (dom.lmNetworkBlock) {
+      const prox = snap.proximity || {};
+      const lc = prox.live_calc || {};
+      const secs = Number(lc.expected_time_seconds) || Number((prox.time_to_block) || 0);
+      dom.lmNetworkBlock.textContent = secs > 0 ? fmt.secsToHuman(secs) : '\u2014';
+    }
+    if (dom.lmNetworkPoolWorkers) dom.lmNetworkPoolWorkers.textContent = pool.workers != null ? pool.workers : '\u2014';
+    // lastBlockTime from the pool API is SECONDS SINCE the last block (not a
+    // height — the old lastBlockHeight key is always NULL). Render the age
+    // honestly ("1.2d ago") instead of a fake #958527 height.
+    if (dom.lmNetworkLastBlock) {
+      const since = Number(pool.lastBlockTime);
+      if (isFinite(since) && since > 0) {
+        dom.lmNetworkLastBlock.textContent = fmt.secsToHuman(since) + ' ago';
+        dom.lmNetworkLastBlock.title = 'segundos desde o último bloco da pool';
+      } else {
+        dom.lmNetworkLastBlock.textContent = '\u2014';
+      }
+    }
+  }
+
   function _updateBestShare(allWorkers) {
     if (!dom.lmBestShare) return;
     let best = 0, bestW = '';
@@ -4051,7 +4159,11 @@ dom.walletSave?.addEventListener('click', async () => {
       const r = await authFetch('/api/axe-fleet/summary');
       if (!r.ok) return;
       const data = await r.json();
-      renderWorkerIntelligence((data && data.devices) || []);
+      _lmFleetDevices = (data && data.devices) || [];
+      renderWorkerIntelligence(_lmFleetDevices);
+      // Refresh the fleet-fed KPI cells (EFFICIENCY / PING) on each poll so
+      // they track live share counters without waiting for the snapshot.
+      _applyLmFleetKpis(_lmFleetDevices);
     } catch (e) { /* non-fatal */ }
   }
 
@@ -4795,8 +4907,11 @@ dom.walletSave?.addEventListener('click', async () => {
     ctx.globalAlpha = 1;
 
     for (const ft of floatingTexts) { if (ft.life<0.05) continue; ctx.fillStyle = ft.color+(ft.life*0.6)+')'; ctx.font = '9px JetBrains Mono'; ctx.fillText(ft.text, ft.x, ft.y); }
-    ctx.fillStyle = 'rgba(255,255,255,0.3)'; ctx.font = '8px JetBrains Mono';
-    ctx.fillText('HASHES: '+_hunt.fmtNum(_hunt.totalHashes), 8, h-12); ctx.fillText('PARTICLES: '+particles.length, 8, h-2);
+    // Professional telemetry HUD (P3): business-readable labels instead of
+    // the old debug strings ("HASHES: 0" / "PARTICLES: 500").
+    ctx.fillStyle = 'rgba(255,255,255,0.35)'; ctx.font = '8px JetBrains Mono';
+    ctx.fillText('NONCES SEARCHED: '+_hunt.fmtNum(_hunt.totalHashes), 8, h-12);
+    ctx.fillText('HR: '+(_hunt.hr > 0 ? fmt.hashrate(_hunt.hr) : '—'), 8, h-2);
     if (_hunt.pBlockCum > 0) { ctx.fillStyle = 'rgba(245,185,66,0.5)'; ctx.font = '9px JetBrains Mono'; ctx.fillText('P(BLOCK) CUM: '+_hunt.fmtPct(_hunt.pBlockCum), w-180, h-12); }
   };
 

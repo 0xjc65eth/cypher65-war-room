@@ -1300,6 +1300,20 @@
     <div class="lm-summary__item"><span class="lm-summary__label">WORKERS</span><span class="lm-summary__val" id="lm-summary-workers">0</span></div>
     <div class="lm-summary__item"><span class="lm-summary__label">TOTAL HR</span><span class="lm-summary__val" id="lm-summary-hr">—</span></div>
     <div class="lm-summary__item"><span class="lm-summary__label">BEST DIFF</span><span class="lm-summary__val lm-summary__val--gold" id="lm-summary-best">—</span></div>
+    <div class="lm-summary__item" title="Shares aceitas ÷ total (accepted+rejected) no fleet"><span class="lm-summary__label">EFFICIENCY</span><span class="lm-summary__val" id="lm-summary-eff">—</span></div>
+    <div class="lm-summary__item" title="Latência média dos workers do fleet (probe real do host)"><span class="lm-summary__label">PING</span><span class="lm-summary__val" id="lm-summary-ping">—</span></div>
+    <div class="lm-summary__item" title="Receita estimada por dia (pool) — honesta: '—' quando não há dados de lucro"><span class="lm-summary__label">EST. EARNINGS</span><span class="lm-summary__val lm-summary__val--gold" id="lm-summary-earnings">—</span></div>
+  </div>
+
+  <!-- NETWORK STATUS (P2) — real network/pool telemetry from the snapshot.
+       Honest '—' per cell when a source is unavailable. -->
+  <div class="lm-network" id="lm-network">
+    <span class="lm-network__item" title="Dificuldade atual da rede Bitcoin"><span class="lm-network__label">NETWORK DIFF</span><span class="lm-network__val" id="lm-network-diff">—</span></span>
+    <span class="lm-network__item" title="Hashrate total da rede"><span class="lm-network__label">NETWORK HR</span><span class="lm-network__val" id="lm-network-hr">—</span></span>
+    <span class="lm-network__item" title="Altura atual da blockchain"><span class="lm-network__label">HEIGHT</span><span class="lm-network__val" id="lm-network-height">—</span></span>
+    <span class="lm-network__item" title="Tempo esperado até o próximo bloco da rede"><span class="lm-network__label">EST. BLOCK</span><span class="lm-network__val" id="lm-network-block">—</span></span>
+    <span class="lm-network__item" title="Workers conectados na pool (pool API)"><span class="lm-network__label">POOL WORKERS</span><span class="lm-network__val" id="lm-network-pool-workers">—</span></span>
+    <span class="lm-network__item" title="Último bloco encontrado pela pool"><span class="lm-network__label">POOL LAST BLOCK</span><span class="lm-network__val" id="lm-network-last-block">—</span></span>
   </div>
 
   <!-- ── WORKER INTELLIGENCE (FASE_2) — per-worker live telemetry feed.
@@ -1314,7 +1328,7 @@
     <div class="lm-flow" id="lm-flow" style="display:none">
       <div class="lm-flow__head">
         <span class="lm-flow__title">⌖ HASH FLOW · LAST SAMPLES</span>
-        <span class="lm-flow__legend"><span class="lm-flow__dot lm-flow__dot--ok"></span>online&nbsp;<span class="lm-flow__dot lm-flow__dot--warn"></span>warn&nbsp;<span class="lm-flow__dot lm-flow__dot--bad"></span>offline</span>
+        <span class="lm-flow__legend"><span class="lm-flow__dot lm-flow__dot--ok"></span>share&nbsp;<span class="lm-flow__dot lm-flow__dot--rej"></span>reject&nbsp;<span class="lm-flow__dot lm-flow__dot--stale"></span>stale&nbsp;<span class="lm-flow__dot lm-flow__dot--idle"></span>idle&nbsp;<span class="lm-flow__dot lm-flow__dot--bad"></span>offline</span>
       </div>
       <div class="lm-flow__raster" id="lm-flow-raster"></div>
     </div>
