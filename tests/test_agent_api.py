@@ -415,3 +415,155 @@ class TestDocsAgent:
         monkeypatch.setattr(app_module, "_GUIDE_MD_PATH", "/nonexistent/guide.md")
         resp = client.get("/docs/agent")
         assert resp.status_code == 404
+
+
+# ══════════════════════════════════════════════════════════════════════
+#  Agent push → /api/snapshot fleet (write-through cache) — the fix
+# ══════════════════════════════════════════════════════════════════════
+# Root cause fixed: the snapshot fleet block was fed ONLY by the server-side
+# poll (which skips agent-managed devices), so agent pushes reached the DB
+# but never the dashboard. save_telemetry() now writes through to the cache.
+
+class TestSnapshotWriteThrough:
+    @pytest.fixture(autouse=True)
+    def _clean(self):
+        import app as app_module
+        from services import state as shared_state
+        for d in app_module._axe_registry.list_devices():
+            app_module._axe_registry.remove_device(
+                d["id"], tenant_id=d.get("tenant_id") or "default")
+        shared_state.axe_telemetry_cache.clear()
+        app_module.latest_snapshot.pop("axe_fleet", None)
+        yield
+        for d in app_module._axe_registry.list_devices():
+            app_module._axe_registry.remove_device(
+                d["id"], tenant_id=d.get("tenant_id") or "default")
+        shared_state.axe_telemetry_cache.clear()
+        app_module.latest_snapshot.pop("axe_fleet", None)
+
+    def test_agent_push_reaches_snapshot_fleet(self, client, agent_token):
+        """After the agent registers + pushes, the dashboard's snapshot
+        fleet must contain the device with live telemetry."""
+        import app as app_module
+        from services import state as shared_state
+        ip = "192.168.1.77"
+        client.post("/api/agent/register", headers=_headers(agent_token),
+                    json={"devices": [{"ip": ip, "model": "Gamma 900",
+                                       "firmware": "AxeOS 2.13.0",
+                                       "hostname": "gamma-01"}]})
+        client.post("/api/agent/telemetry", headers=_headers(agent_token),
+                    json={"ip": ip, "telemetry": {
+                        "hashrate_hs": 912345678901, "temperature": 53.2,
+                        "power_watts": 15.6, "fan_rpm": 4600,
+                        "best_diff": "8.2T", "shares_accepted": 1450}})
+        # _do_poll assembles snap.axe_fleet from the cache (app.py:3800);
+        # simulate that single line — the write-through is what's under test.
+        app_module.latest_snapshot["axe_fleet"] = list(
+            shared_state.axe_telemetry_cache.values())
+
+        viewer = create_token(subject="acme", extra_claims={"role": "admin"})
+        resp = client.get("/api/snapshot", headers=_headers(viewer))
+        assert resp.status_code == 200
+        fleet = resp.get_json().get("axe_fleet") or []
+        assert len(fleet) == 1, f"expected 1 device in snapshot fleet, got {fleet}"
+        entry = fleet[0]
+        assert entry["hashrate_hs"] == 912345678901
+        assert entry["status"] == "ONLINE"
+        assert entry["device_id"]                      # tenant-scoping key
+        assert entry.get("hashrate") == 912345678901   # sidebar alias
+
+    def test_snapshot_fleet_scoped_per_tenant(self, client, agent_token):
+        """A tenant never sees another tenant's agent-pushed devices."""
+        import app as app_module
+        from services import state as shared_state
+        ip = "192.168.1.78"
+        client.post("/api/agent/register", headers=_headers(agent_token),
+                    json={"devices": [{"ip": ip}]})
+        client.post("/api/agent/telemetry", headers=_headers(agent_token),
+                    json={"ip": ip, "telemetry": {"hashrate_hs": 1e9}})
+        app_module.latest_snapshot["axe_fleet"] = list(
+            shared_state.axe_telemetry_cache.values())
+
+        mine = create_token(subject="acme", extra_claims={"role": "admin"})
+        r = client.get("/api/snapshot", headers=_headers(mine))
+        assert len(r.get_json().get("axe_fleet") or []) == 1
+        other = create_token(subject="brave", extra_claims={"role": "admin"})
+        r = client.get("/api/snapshot", headers=_headers(other))
+        assert (r.get_json().get("axe_fleet") or []) == []
+
+    def test_cache_seed_restores_after_restart(self, client, agent_token):
+        """Boot seed repopulates the cache from the DB after a restart."""
+        import app as app_module
+        from services import state as shared_state
+        ip = "192.168.1.79"
+        client.post("/api/agent/register", headers=_headers(agent_token),
+                    json={"devices": [{"ip": ip}]})
+        client.post("/api/agent/telemetry", headers=_headers(agent_token),
+                    json={"ip": ip, "telemetry": {"hashrate_hs": 5e12}})
+        shared_state.axe_telemetry_cache.clear()        # simulated restart
+        assert shared_state.axe_telemetry_cache == {}
+        app_module._seed_axe_telemetry_cache(app_module._axe_registry)
+        entries = list(shared_state.axe_telemetry_cache.values())
+        assert len(entries) == 1
+        assert entries[0]["hashrate_hs"] == 5e12
+        assert entries[0]["device_id"]
+
+
+# ══════════════════════════════════════════════════════════════════════
+#  list_devices joins latest telemetry (Fix 3)
+# ══════════════════════════════════════════════════════════════════════
+
+class TestDevicesJoinTelemetry:
+    def test_list_devices_with_telemetry_joins_latest(self, registry):
+        dev = registry.upsert_agent_device("192.168.1.60", tenant_id="acme")
+        registry.save_telemetry(dev["id"], {"hashrate_hs": 5e12, "temperature": 61.0},
+                                tenant_id="acme")
+        with_tel = registry.list_devices(tenant_id="acme", with_telemetry=True)
+        assert with_tel[0]["telemetry"]["hashrate_hs"] == 5e12
+        assert with_tel[0]["hashrate_hs"] == 5e12
+        # Default stays cheap (no join) — poll path unchanged.
+        plain = registry.list_devices(tenant_id="acme")
+        assert "telemetry" not in plain[0]
+
+    def test_devices_route_includes_telemetry(self, client, agent_token, user_token, registry):
+        """The fleet list the grid renders must show live hashrate."""
+        with patch("axe_fleet.routes._registry", registry):
+            client.post("/api/agent/register", headers=_headers(agent_token),
+                        json={"devices": [{"ip": "192.168.1.60",
+                                           "model": "Antminer S19j Pro"}]})
+            client.post("/api/agent/telemetry", headers=_headers(agent_token),
+                        json={"ip": "192.168.1.60", "telemetry": {
+                            "hashrate_hs": 91_200_000_000, "temperature": 62.5,
+                            "fan_rpm": 4200}})
+            resp = client.get("/api/axe-fleet/devices", headers=_headers(user_token))
+            assert resp.status_code == 200
+            devs = resp.get_json()["devices"]
+            assert len(devs) == 1
+            d = devs[0]
+            assert d["hashrate_hs"] == 91_200_000_000    # was None before the fix
+            assert d["telemetry"]["temperature"] == 62.5
+
+    def test_empty_heartbeat_does_not_erase_telemetry(self, registry):
+        dev = registry.upsert_agent_device("192.168.1.61", tenant_id="acme")
+        registry.save_telemetry(dev["id"], {"hashrate_hs": 5e12}, tenant_id="acme")
+        # Fix 4: agent now pushes {} heartbeats — they must NOT be joined
+        # as trusted telemetry (the last real reading wins).
+        registry.save_telemetry(dev["id"], {}, tenant_id="acme")
+        with_tel = registry.list_devices(tenant_id="acme", with_telemetry=True)
+        assert with_tel[0]["telemetry"]["hashrate_hs"] == 5e12
+
+
+class TestEmptyHeartbeatAccepted:
+    def test_server_accepts_empty_telemetry_and_marks_idle(self, client, agent_token, registry):
+        """Fix 4 contract: the agent pushes {} when a poll fails; the server
+        must accept it (updating last_seen) instead of rejecting."""
+        with patch("axe_fleet.routes._registry", registry):
+            client.post("/api/agent/register", headers=_headers(agent_token),
+                        json={"devices": [{"ip": "192.168.1.80"}]})
+            resp = client.post("/api/agent/telemetry", headers=_headers(agent_token),
+                               json={"ip": "192.168.1.80", "telemetry": {}})
+            assert resp.status_code == 200
+            assert resp.get_json()["status"] == "IDLE"
+        dev = registry.get_device_by_ip("192.168.1.80", tenant_id="acme")
+        assert dev["status"] == "IDLE"
+        assert dev["last_seen"] > 0

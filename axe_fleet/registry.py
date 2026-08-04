@@ -168,9 +168,14 @@ class DeviceRegistry:
         conn.close()
         return deleted
 
-    def list_devices(self, tenant_id: str = "") -> list:
+    def list_devices(self, tenant_id: str = "", with_telemetry: bool = False) -> list:
         """Return all registered devices, optionally filtered by tenant.
-        If tenant_id is empty, returns all devices (admin)."""
+        If tenant_id is empty, returns all devices (admin).
+
+        with_telemetry=True joins each device's latest TRUSTED telemetry
+        (one pass, no N+1) so list views carry live hashrate — previously
+        the list endpoint returned devices with hashrate_hs=None even after
+        the agent pushed rich telemetry."""
         conn = self._get_db()
         c = conn.cursor()
         if tenant_id:
@@ -179,7 +184,44 @@ class DeviceRegistry:
             c.execute("SELECT * FROM axe_devices ORDER BY name")
         rows = c.fetchall()
         conn.close()
-        return [self._row_to_device(r) for r in rows]
+        devices = [self._row_to_device(r) for r in rows]
+        if with_telemetry:
+            latest = self._latest_telemetry_by_device(tenant_id)
+            for d in devices:
+                tel = latest.get(d["id"])
+                if tel:
+                    d["telemetry"] = tel
+                    d["hashrate_hs"] = tel.get("hashrate_hs")
+        return devices
+
+    def _latest_telemetry_by_device(self, tenant_id: str = "") -> dict:
+        """Latest TRUSTED telemetry payload per device in a single query.
+        Only payloads carrying hashrate_hs count as trusted (mirrors the
+        route layer's _is_trusted_payload); heartbeat-only {} pushes never
+        replace the last real reading."""
+        conn = self._get_db()
+        c = conn.cursor()
+        if tenant_id:
+            c.execute(
+                "SELECT device_id, payload FROM axe_telemetry WHERE tenant_id=? ORDER BY ts DESC",
+                (tenant_id,),
+            )
+        else:
+            c.execute("SELECT device_id, payload FROM axe_telemetry ORDER BY ts DESC")
+        rows = c.fetchall()
+        conn.close()
+        latest = {}
+        for r in rows:
+            did = r["device_id"]
+            if did in latest:
+                continue
+            try:
+                payload = json.loads(r["payload"])
+            except (json.JSONDecodeError, TypeError):
+                payload = {}
+            if isinstance(payload, dict) and payload.get("hashrate_hs") is not None:
+                latest[did] = payload
+        return latest
 
     def get_device(self, device_id: str, tenant_id: str = "") -> dict:
         """Get a single device by ID, scoped to tenant if provided."""

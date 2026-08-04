@@ -50,6 +50,11 @@ SCAN_WORKERS = 64
 MAX_HOSTS = 1024
 RESCAN_EVERY = 10       # full LAN re-scan every N poll cycles (new miners)
 
+# Protocol ports. Defaults match real hardware (AxeOS HTTP :80, cgminer
+# JSON-over-TCP :4028); overridable via env for test rigs/mock miners.
+AXEOS_PORT = int(os.environ.get("CYPHER65_AXEOS_PORT") or 80)
+CGMINER_PORT = int(os.environ.get("CYPHER65_CGMINER_PORT") or 4028)
+
 # cgminer-family framing: most firmwares terminate JSON with \x00, some
 # (Avalon) wrap frames in ~ (\x7e) tildes. Mirror of the server scanner's
 # tolerant parser — the agent is what runs against REAL hardware on the
@@ -94,9 +99,9 @@ def _http_json(method, url, payload=None, headers=None, timeout=10.0,
     return status, parsed
 
 
-def _post(path, payload):
+def _post(path, payload, timeout=10.0):
     return _http_json("POST", f"{SERVER_URL}{path}", payload=payload,
-                      headers=_headers(), log_failures=True)
+                      headers=_headers(), log_failures=True, timeout=timeout)
 
 def _get_json(url, timeout=HTTP_TIMEOUT):
     """GET and parse JSON; returns parsed dict or None. Used for AxeOS :80.
@@ -183,17 +188,20 @@ def _extract_json_lenient(raw):
 
 def _probe_axeos(ip):
     """AxeOS/ESP-Miner HTTP :80 — returns info dict or None."""
-    return _get_json(f"http://{ip}/api/system/info")
+    return _get_json(f"http://{ip}:{AXEOS_PORT}/api/system/info")
 
 
-def _probe_cgminer(ip):
-    """cgminer JSON-over-TCP :4028 — returns parsed version dict or None."""
+def _cgminer_cmd(ip, command):
+    """Send one cgminer-family JSON command over TCP (:4028) and return the
+    parsed response dict (or None). Lenient framing: accepts \x00 (most
+    firmwares) and ~ (Avalon) terminators, banner prefixes and pretty-printed
+    JSON. Shared by discovery (version) and telemetry (summary/stats/pools)."""
     sock = None
     try:
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.settimeout(TCP_TIMEOUT)
-        sock.connect((ip, 4028))
-        sock.sendall(b'{"command":"version"}\n')
+        sock.connect((ip, CGMINER_PORT))
+        sock.sendall((json.dumps({"command": command}) + "\n").encode())
         data = b""
         while True:
             chunk = sock.recv(4096)
@@ -202,8 +210,7 @@ def _probe_cgminer(ip):
             data += chunk
             if any(tok in chunk for tok in _CGMINER_EOL_TOKENS) or len(data) > 65536:
                 break
-        parsed = _extract_json_lenient(data)
-        return parsed if parsed and parsed.get("STATUS") else None
+        return _extract_json_lenient(data)
     except (socket.timeout, OSError):
         return None
     finally:
@@ -212,6 +219,12 @@ def _probe_cgminer(ip):
                 sock.close()
             except OSError:
                 pass
+
+
+def _probe_cgminer(ip):
+    """cgminer JSON-over-TCP :4028 — returns parsed version dict or None."""
+    parsed = _cgminer_cmd(ip, "version")
+    return parsed if parsed and parsed.get("STATUS") else None
 
 
 def _probe_host(ip):
@@ -234,13 +247,20 @@ def _probe_host(ip):
     ver = _probe_cgminer(ip)
     if ver and ver.get("STATUS"):
         model = ""
+        firmware = ""
+        version = ""
         for e in (ver.get("VERSION") or []):
             if isinstance(e, dict):
                 model = str(e.get("Description") or e.get("Type") or "")
+                # VERSION also carries the cgminer/firmware build + API level
+                # (e.g. CGMiner "4.11.1", API "3.1") — surface both so the
+                # dashboard shows firmware for cgminer ASICs, not "".
+                firmware = str(e.get("CGMiner") or "")
+                version = str(e.get("API") or "")
                 break
         return {
             "ip": ip, "type": "cgminer", "model": model or "cgminer",
-            "firmware": "", "version": "", "hostname": "", "mac": "",
+            "firmware": firmware, "version": version, "hostname": "", "mac": "",
             "hashrate_hs": 0,
         }
     return None
@@ -307,44 +327,56 @@ def _poll_telemetry(dev):
         if hr and power and power > 0:
             tel["efficiency_jth"] = round(power / (hr / 1e12), 2)
         return tel
-    # cgminer
-    sock = None
+    # cgminer: summary → hashrate/shares; stats → per-chain temps + fans
+    # (Antminer/Braiins/LuxOS report temp2_0/temp3_0 and fan1/fan2 under the
+    # second STATS entry); pools → pool URL/worker for the dashboard.
+    summary = _cgminer_cmd(ip, "summary")
+    if not summary or not summary.get("SUMMARY"):
+        # Device unreachable — return {} (the agent pushes it as a heartbeat
+        # so the server still refreshes last_seen). Never invent a 0-H/s
+        # reading for a device we could not talk to.
+        return {}
+    # Parse defensively: real firmwares occasionally return non-numeric
+    # strings ("N/A") or non-dict entries — a crash here would kill the
+    # whole agent loop, so malformed data degrades to {} instead.
     try:
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.settimeout(TCP_TIMEOUT)
-        sock.connect((ip, 4028))
-        payload = json.dumps({"command": "summary"}) + "\n"
-        sock.sendall(payload.encode())
-        data = b""
-        while True:
-            chunk = sock.recv(4096)
-            if not chunk:
-                break
-            data += chunk
-            if any(tok in chunk for tok in _CGMINER_EOL_TOKENS) or len(data) > 65536:
-                break
-        summary = _extract_json_lenient(data)
-        s = ((summary or {}).get("SUMMARY") or [{}])[0] if summary and summary.get("SUMMARY") else {}
+        s = summary["SUMMARY"][0] if isinstance(summary["SUMMARY"], list) and summary["SUMMARY"] else {}
+        if not isinstance(s, dict):
+            s = {}
         ghs = float(s.get("GHS 5s", s.get("GHS av", 0)) or 0)
+
+        temperature = None
+        fan_rpm = None
+        stats = _cgminer_cmd(ip, "stats")
+        _st = (stats or {}).get("STATS") or []
+        if len(_st) > 1 and isinstance(_st[1], dict):
+            temperature = _st[1].get("temp2_0") or _st[1].get("temp")
+            fan_rpm = _st[1].get("fan1") or _st[1].get("fan2")
+
+        pool_url = ""
+        pool_user = ""
+        pools = _cgminer_cmd(ip, "pools")
+        if pools and isinstance(pools.get("POOLS"), list) and pools["POOLS"]:
+            _p = pools["POOLS"][0]
+            if isinstance(_p, dict):
+                pool_url = str(_p.get("URL") or "")
+                pool_user = str(_p.get("User") or "")
+
         return {
             "hashrate_hs": int(ghs * 1e9),
-            "temperature": None,
-            "fan_rpm": None,
+            "temperature": temperature,
+            "fan_rpm": fan_rpm,
             "power_watts": None,
             "best_diff": str(s.get("Best Share", "")),
             "shares_accepted": int(s.get("Accepted", 0)),
             "shares_rejected": int(s.get("Rejected", 0)),
             "uptime_seconds": int(s.get("Elapsed", 0)),
+            "pool_url": pool_url,
+            "pool_user": pool_user,
             "model": dev.get("model") or "cgminer",
         }
-    except (socket.timeout, OSError, IndexError, ValueError):
+    except (ValueError, TypeError, AttributeError, IndexError):
         return {}
-    finally:
-        if sock:
-            try:
-                sock.close()
-            except OSError:
-                pass
 
 
 # ── Command execution ────────────────────────────────────────────────────
@@ -355,7 +387,7 @@ def _exec_command(cmd):
     dev_ip = cmd.get("device_ip") or cmd.get("device_id")
     name = cmd.get("command")
     if name in ("restart", "identify"):
-        status, _ = _http_json("POST", f"http://{dev_ip}/api/system/{name}",
+        status, _ = _http_json("POST", f"http://{dev_ip}:{AXEOS_PORT}/api/system/{name}",
                                payload=None, headers={}, timeout=5)
         return status == 200, f"HTTP {status}"
     return False, f"unknown command: {name}"
@@ -403,8 +435,14 @@ def main():
         # 2 · Poll each known device + push telemetry.
         for ip, dev in known.items():
             tel = _poll_telemetry(dev)
-            if tel:
-                _post("/api/agent/telemetry", {"ip": ip, "telemetry": tel})
+            # Push UNCONDITIONALLY: `telemetry: {}` is legal and keeps the
+            # server's last_seen/status fresh, so a device that answered
+            # nothing (firewall, reboot, poll failure) still shows as
+            # present+IDLE instead of looking dead forever. Empty heartbeats
+            # use a shorter timeout so unreachable devices can't stall the
+            # poll loop on a cloud hiccup.
+            _post("/api/agent/telemetry", {"ip": ip, "telemetry": tel},
+                  timeout=3.0 if not tel else 10.0)
         # 3 · Pull queued commands and execute them locally.
         code, resp = _post("/api/agent/commands/pull", {})
         if code == 200:

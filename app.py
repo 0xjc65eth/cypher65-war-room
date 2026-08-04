@@ -1444,8 +1444,64 @@ _axe_registry = DeviceRegistry(get_db)
 _axe_registry.ensure_tables()
 _init_axe_routes(_axe_registry)
 
+# ── Fleet snapshot cache: write-through + boot seed ──────────────────────
+# The /api/snapshot fleet block is assembled from axe_telemetry_cache, which
+# used to be fed ONLY by the server-side poll — a poll that SKIPS
+# agent-managed devices (the cloud can't reach the user's LAN). Result:
+# every agent push landed in the database but never reached the dashboard
+# (empty fleet → "miners not found" + "telemetry missing"). Fix at the
+# single choke point: save_telemetry() is the ONLY writer of axe_telemetry,
+# so wrapping it here makes EVERY push (agent, server poll, manual) feed the
+# cache — it can no longer diverge from the database.
+
+def _cache_axe_telemetry(device_id: str, telemetry, status: str = "") -> None:
+    """Write a normalized entry into the snapshot cache. Carries exactly
+    what the UI/serving needs: device_id (tenant scoping), status, and a
+    `hashrate` alias (the sidebar sums d.hashrate). Non-dict telemetry is
+    ignored (never cache broken stubs)."""
+    if not isinstance(telemetry, dict):
+        return
+    entry = dict(telemetry)
+    entry["device_id"] = device_id
+    hr = entry.get("hashrate_hs") or 0
+    entry["status"] = status or ("ONLINE" if hr > 0 else "IDLE")
+    entry.setdefault("hashrate", entry.get("hashrate_hs"))
+    _shared_state.axe_telemetry_cache[device_id] = entry
+
+
+def _seed_axe_telemetry_cache(registry) -> None:
+    """Rebuild the snapshot cache from the last push per device so a server
+    restart doesn't blank the fleet until the next push. Mirrors the
+    write-through exactly: any dict payload is cached (including {} heartbeats
+    — the device still shows with its real status), and the device row's
+    status wins over the hashrate-derived one."""
+    try:
+        for dev in registry.list_devices():
+            tel = registry.get_recent_telemetry(
+                dev["id"], limit=1, tenant_id=dev.get("tenant_id") or "")
+            if tel and isinstance(tel[0].get("payload"), dict):
+                _cache_axe_telemetry(dev["id"], tel[0]["payload"],
+                                     status=dev.get("status") or "")
+    except Exception as e:
+        log.warning("[axe] telemetry cache seed failed: %s", e)
+
+
+_axe_save_telemetry_orig = _axe_registry.save_telemetry
+
+
+def _axe_save_telemetry_write_through(device_id, telemetry, tenant_id="default"):
+    _axe_save_telemetry_orig(device_id, telemetry, tenant_id=tenant_id)
+    try:
+        _cache_axe_telemetry(device_id, telemetry)
+    except Exception as e:
+        log.warning("[axe] telemetry cache write-through failed: %s", e)
+
+
+_axe_registry.save_telemetry = _axe_save_telemetry_write_through
+
 # ── Auto-seed Axe Fleet with test devices if registry is empty ──
 _auto_seed_axe_fleet(_axe_registry)
+_seed_axe_telemetry_cache(_axe_registry)
 
 # ── Device Control: import now, but init is deferred until after
 #    _record_command is defined (below) so commands can be audited.
@@ -2544,7 +2600,7 @@ def _poll_axe_fleet(ts: int) -> None:
                     _shared_state.axe_last_poll_ts[did] = ts
                     tel = _axe_registry.poll_device(did)
                     if tel:
-                        _shared_state.axe_telemetry_cache[did] = tel
+                        _cache_axe_telemetry(did, tel)
     except Exception as e:
         log.warning("[axe poll] error: %s", e)
 

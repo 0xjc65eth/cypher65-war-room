@@ -210,7 +210,7 @@ def list_devices(tenant_id: str = ""):
     """List all registered AxeOS devices with latest telemetry."""
     if _registry is None:
         return jsonify({"error": "registry not initialized"}), 500
-    devices = _registry.list_devices(tenant_id=tenant_id)
+    devices = _registry.list_devices(tenant_id=tenant_id, with_telemetry=True)
     return jsonify({"devices": devices, "count": len(devices), "tenant_id": tenant_id})
 
 
