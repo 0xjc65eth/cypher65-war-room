@@ -1880,7 +1880,7 @@ body {
 .lm-summary__val--gold { color: var(--amber); }
 .lm-summary__dot { display: inline-block; width: 4px; height: 4px; background: var(--green); border-radius: 50%; }
 
-.hunt-layout { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-bottom: 6px; }
+.hunt-layout { display: grid; grid-template-columns: 2fr 1fr; gap: 6px; margin-bottom: 6px; }
 .hunt-stream { border: 1px solid var(--border-subtle); padding: 4px; }
 .hunt-stream__head { display: flex; justify-content: space-between; margin-bottom: 4px; }
 .hunt-stream__title { font-size: 10px; color: var(--green); }
