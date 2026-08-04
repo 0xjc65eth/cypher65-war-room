@@ -8,7 +8,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
-<link rel="stylesheet" href="/static/style.css?v42">
+<link rel="stylesheet" href="/static/style.css?v44">
 <link rel="icon" href="/static/favicon.ico" sizes="any">
 <link rel="icon" type="image/png" sizes="32x32" href="/static/icon-32x32.png">
 <link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
@@ -1377,18 +1377,13 @@
   </div>
 
   <div class="hunt-layout" id="hunt-layout">
-    <!-- LIVE ACTION FEED (substitui o debug '> CALC STREAM' + header
-         TIME EVENT DIFFICULTY GAP): eventos reais em tempo real — shares
-         aceitas/rejeitadas e mudanças de status dos workers do fleet —
-         com cor por tipo, clique para log bruto e ação inline quando
-         acionável. Auto-scroll: os mais novos entram por cima. -->
     <div class="hunt-stream" id="hunt-stream">
       <div class="hunt-stream__head">
-        <span class="hunt-stream__title" id="laf-title">⚡ LIVE ACTION FEED</span>
-        <span class="badge badge--green" id="laf-live-badge">LIVE</span>
+        <span class="hunt-stream__title">> CALC STREAM</span>
+        <span class="badge badge--green">LIVE</span>
       </div>
-      <div class="hunt-stream__feed" id="live-action-feed">
-        <div class="laf-empty" id="laf-empty">📡 Aguardando atividades dos workers...</div>
+      <div class="hunt-stream__feed" id="hunt-stream-feed">
+        <div class="hunt-stream__line"><span class="ts">--:--:--</span><span class="n">nonce</span></div>
       </div>
     </div>
 
@@ -1548,20 +1543,6 @@
     </div>
   </div>
 </footer>
-
-<!-- LIVE ACTION FEED — raw-log modal (click a feed event to open) -->
-<div class="modal-overlay" id="laf-modal">
-  <div class="modal laf-modal">
-    <div class="modal__header">
-      <div class="modal__title" id="laf-modal-title">EVENT LOG</div>
-      <button class="modal__close" id="laf-modal-close">⛌</button>
-    </div>
-    <div class="modal__body">
-      <pre id="laf-modal-raw" class="laf-modal__raw"></pre>
-      <div class="laf-modal__actions" id="laf-modal-actions"></div>
-    </div>
-  </div>
-</div>
 
 <div class="modal-overlay" id="support-panel">
   <div class="modal support-modal">
@@ -2305,7 +2286,7 @@
     <span id="next-poll"></span>
   </div>
 
-  <script src="/static/app.js?v47"></script>
+  <script src="/static/app.js?v49"></script>
 </div> <!-- end #app-main -->
 </div> <!-- end #app-layout -->
   <!-- Matrix rain canvas (full-screen background effect) -->

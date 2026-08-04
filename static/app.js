@@ -170,7 +170,7 @@
     acAddRule: $('#ac-add-rule'), acRuleForm: $('#ac-rule-form'), acRuleSave: $('#ac-rule-save'), acRuleCancel: $('#ac-rule-cancel'),
     acRuleName: $('#ac-rule-name'), acRuleDevice: $('#ac-rule-device'), acRuleMetric: $('#ac-rule-metric'), acRuleOp: $('#ac-rule-op'),
     acRuleValue: $('#ac-rule-value'), acRuleAction: $('#ac-rule-action'), acRuleStatus: $('#ac-rule-status'),
-    huntMetricsHr: $('#hunt-metrics-hr'), huntMetricsPblock: $('#hunt-metrics-pblock'),
+    huntStreamFeed: $('#hunt-stream-feed'), huntMetricsHr: $('#hunt-metrics-hr'), huntMetricsPblock: $('#hunt-metrics-pblock'),
     huntMetricsExpblocks: $('#hunt-metrics-expblocks'), huntMetricsBestdiff: $('#hunt-metrics-bestdiff'),
     huntSharesGrid: $('#hunt-shares-grid'), huntSharesCount: $('#hunt-shares-count'),
 
@@ -4091,14 +4091,6 @@ dom.walletSave?.addEventListener('click', async () => {
     Object.keys(_lmFlow).forEach(id => {
       if (!alive[id]) { delete _lmFlow[id]; delete _lmLastCounters[id]; }
     });
-    // LIVE ACTION FEED: surface worker status transitions (offline→error
-    // with reconnect action, back-online→success). Only on change.
-    _lafConsumeWorkers(rows);
-    // Prune transition memory of removed devices (same pattern as the flow
-    // buffers above) — never grows per unique id in a long session.
-    Object.keys(_laf.prevWorkerStatus).forEach(id => {
-      if (!alive[id]) delete _laf.prevWorkerStatus[id];
-    });
 
     const esc = escapeHtml;
     const cell = (v, cls, title) => `<span class="lm-w__cell${cls ? ' ' + cls : ''}"${title ? ' title="' + title + '"' : ''}>${v}</span>`;
@@ -4942,43 +4934,39 @@ dom.walletSave?.addEventListener('click', async () => {
   function _updateHashSearchState(worker, network) { /* no-op: superseded by _huntUpdateState */ }
 
   // ══════════════════════════════════════════════════════════════════════
-  // HASH HUNT ENGINE (LIVE ACTION FEED + métricas)
+  // HASH SEARCH — CALC STREAM + live METRICS (canvas de partículas removido)
   // ══════════════════════════════════════════════════════════════════════
 
-  // The nonce-search particle CANVAS was removed on request: the black radar
-  // box (gold gradient / dotted target line / 'NONCES SEARCHED' footer) no
-  // longer exists. What remains is the 1s telemetry tick that feeds the
-  // LIVE ACTION FEED (shares) and the metric cards (sparkline / gauge / HR /
-  // P(BLOCK) / EXP BLOCKS / BEST DIFF).
   const _hunt = {
-    hr: 0, bestDiff: 0, netDiff: 0,
-    pBlockCum: 0, expBlocks: 0,
+    hr: 0, bestDiff: 0, pBlockCum: 0, expBlocks: 0,
     streamLines: 0, streamQueue: [], metricsHrHistory: [],
-    timerId: null,
+    _timer: null,
   };
 
   function _huntInit() {
-    _hunt.updateMetrics();
-    // 1s telemetry tick: feeds the LIVE ACTION FEED + metric cards.
-    // Skipped while the tab is hidden to save CPU/battery.
-    _hunt.timerId = setInterval(() => _hunt.tick(), 1000);
-    window.addEventListener('beforeunload', () => { if (_hunt.timerId) clearInterval(_hunt.timerId); });
+    clearInterval(_hunt._timer);
+    _hunt._timer = setInterval(() => {
+      // background-CPU savings (same pattern as the removed rAF loop)
+      if (document.hidden) return;
+      // drain up to 3 shares per tick so burst catch-up (queue up to 60)
+      // is bounded instead of 1/s (60s lag)
+      for (let n = 0; n < 3 && _hunt.streamQueue.length; n++) _hunt.updateStream();
+      _hunt.updateMetrics();
+    }, 1000);
   }
 
   _hunt.fmtPct = (n) => { if (n<0.0001) return n.toExponential(2)+'%'; if (n<0.01) return n.toFixed(5)+'%'; return n.toFixed(3)+'%'; };
 
   _hunt.updateStream = () => {
-    if (!_hunt.streamQueue.length) return;
+    const feed = document.getElementById('hunt-stream-feed'); if (!feed || !_hunt.streamQueue.length) return;
     const s = _hunt.streamQueue.shift();
-    // Feed the LIVE ACTION FEED with the raw share payload. The event is
-    // categorized + rendered there (color by type, modal on click).
-    _lafPushShare(s);
-  };
-
-  _hunt.tick = () => {
-    if (document.hidden) return;
-    _hunt.updateMetrics();
-    if (_hunt.updateStream) _hunt.updateStream();
+    const d = new Date((s.ts || 0) * 1000);
+    const ts = String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0')+':'+String(d.getSeconds()).padStart(2,'0');
+    const diff = s.share_diff_str || '\u2014'; const gap = s.gap ? Number(s.gap).toFixed(1)+'s' : '\u2014';
+    _hunt.streamLines++;
+    feed.insertAdjacentHTML('beforeend', `<div class="hunt-stream__line"><span class="ts">${ts}</span><span class="n">SHARE</span><span class="h">${escapeHtml(diff)}</span><span class="d">${gap}</span></div>`);
+    while (_hunt.streamLines > 30) { const f = feed.querySelector('.hunt-stream__line'); if (!f) break; f.remove(); _hunt.streamLines--; }
+    feed.scrollTop = feed.scrollHeight;
   };
 
   _hunt.updateMetrics = () => {
@@ -5025,7 +5013,6 @@ dom.walletSave?.addEventListener('click', async () => {
   function _huntUpdateState(worker, network, cumulativeP, expectedBlocks, recentShares) {
     _hunt.hr = (worker && worker.hashrate) ? Number(worker.hashrate) : 0;
     _hunt.bestDiff = worker && worker.bestDifficulty ? parseBestDiff(worker.bestDifficulty) : 0;
-    _hunt.netDiff = (network && network.difficulty) ? Number(network.difficulty) : 0;
     _hunt.pBlockCum = cumulativeP || 0; _hunt.expBlocks = expectedBlocks || 0;
     if (recentShares && recentShares.length) {
       const queuedIds = new Set(_hunt.streamQueue.map(s => s.ts));
@@ -5052,245 +5039,10 @@ dom.walletSave?.addEventListener('click', async () => {
   let _huntStarted = false;
   function _huntStart() { if (_huntStarted) return; _huntStarted = true;
     _hunt.streamLines = 0;
-    // LIVE ACTION FEED replaces the debug '> CALC STREAM' + the raw
-    // TIME/EVENT/DIFFICULTY/GAP column header. No debug header injected
-    // anymore — the feed renders categorized, actionable events.
-    _lafInit();
+    const feed = document.getElementById('hunt-stream-feed');
+    if (feed) feed.innerHTML = '<div class="hunt-stream__line"><span class="ts">TIME</span><span class="n">EVENT</span><span class="h">DIFFICULTY</span><span class="d">GAP</span></div>';
     _huntInit();
   }
-
-  // ═══════════════════════════════════════════════════════════════════
-  // LIVE ACTION FEED (_laf)
-  // Substitui o '> CALC STREAM' + header TIME EVENT DIFFICULTY GAP por
-  // eventos reais categorizados: shares (sucesso/aviso) e mudanças de
-  // status dos workers do fleet (offline → erro acionável). Auto-scroll:
-  // os eventos mais novos entram por cima. Clique → modal com log bruto.
-  // ═══════════════════════════════════════════════════════════════════
-  const _laf = {
-    events: [],          // newest first: {id, ts, time, type, message, diff, worker, actionable, action, actionLabel, raw}
-    prevWorkerStatus: {}, // worker id → last status (for transition events)
-    MAX: 6,              // visible events (compact ~2 lines worth)
-    seq: 0,
-  };
-
-  const LAF_TYPE = {
-    success: 'success', warn: 'warn', error: 'error', info: 'info',
-  };
-
-  function _lafInit() {
-    _laf.events = []; _laf.prevWorkerStatus = {};
-    const feed = document.getElementById('live-action-feed');
-    if (feed) feed.innerHTML = '';
-    _lafRender();
-  }
-
-  // Pure: build a feed event from a share payload. Mirrored in tests.
-  function buildLafShareEvent(s) {
-    const d = new Date((s && s.ts) ? Number(s.ts) * 1000 : Date.now());
-    const time = String(d.getHours()).padStart(2,'0') + ':' + String(d.getMinutes()).padStart(2,'0') + ':' + String(d.getSeconds()).padStart(2,'0');
-    const diff = (s && s.share_diff_str) || '\u2014';
-    const gap = (s && s.gap != null) ? Number(s.gap).toFixed(1) + 's' : '\u2014';
-    const hrStr = (s && s.instantaneous_hr_str) || '\u2014';
-    // Rejected/stale shares are flagged by the server when present.
-    const status = (s && (s.status || s.share_status)) || '';
-    const isRej = /rej|stale|invalid/i.test(status);
-    const isStale = /stale/i.test(status);
-    return {
-      ts: (s && s.ts) || Math.floor(Date.now() / 1000),
-      time, diff, gap, hrStr,
-      type: isStale ? LAF_TYPE.warn : (isRej ? LAF_TYPE.warn : LAF_TYPE.success),
-      message: isRej ? 'Share ' + (isStale ? 'stale' : 'rejeitada') : 'Share aceita',
-      worker: (s && s.worker_name) || '',
-      actionable: false, action: '', actionLabel: '',
-      raw: JSON.stringify(s || {}),
-    };
-  }
-
-  // Pure: build a feed event from a worker status transition. Mirrored.
-  function buildLafWorkerEvent(prev, row) {
-    const now = Math.floor(Date.now() / 1000);
-    const d = new Date(now * 1000);
-    const time = String(d.getHours()).padStart(2,'0') + ':' + String(d.getMinutes()).padStart(2,'0') + ':' + String(d.getSeconds()).padStart(2,'0');
-    const online = (row.status === 'ONLINE' || row.status === 'HASHING');
-    const offline = (row.status === 'OFFLINE' || row.status === 'ERROR' || row.status === 'CRITICAL');
-    if (offline) {
-      return {
-        ts: now, time,
-        type: LAF_TYPE.error,
-        message: 'Worker offline',
-        diff: '', gap: '', hrStr: row.hrStr || '',
-        worker: row.name || row.ip || '?',
-        actionable: true, action: 'restart', actionLabel: '↻ Reconectar',
-        raw: JSON.stringify({ worker: row.name || row.ip, ip: row.ip || '', status: row.status, hr: row.hr || 0, ts: now }),
-      };
-    }
-    if (online) {
-      return {
-        ts: now, time,
-        type: LAF_TYPE.success,
-        message: 'Worker online',
-        diff: '', gap: '', hrStr: row.hrStr || '',
-        worker: row.name || row.ip || '?',
-        actionable: false, action: '', actionLabel: '',
-        raw: JSON.stringify({ worker: row.name || row.ip, ip: row.ip || '', status: row.status, ts: now }),
-      };
-    }
-    return null;  // IDLE/PAUSED/WARNING mid-states: no noisy transition event
-  }
-
-  function _lafPushShare(s) {
-    const ev = buildLafShareEvent(s);
-    _lafPushEvent(ev);
-  }
-
-  // Worker status transitions — feed only on change (no per-poll spam).
-  // `prev === undefined` (first sight of a worker) records the baseline
-  // WITHOUT emitting — otherwise every page load floods the feed with N
-  // "Worker online" lines for N online workers.
-  function _lafConsumeWorkers(rows) {
-    (rows || []).forEach(row => {
-      const id = row.id || row.ip || row.name;
-      if (!id) return;
-      const prev = _laf.prevWorkerStatus[id];
-      if (prev === undefined) { _laf.prevWorkerStatus[id] = row.status; return; }
-      if (prev === row.status) return;
-      _laf.prevWorkerStatus[id] = row.status;
-      const ev = buildLafWorkerEvent(prev, row);
-      if (ev) _lafPushEvent(ev);
-    });
-  }
-
-  function _lafPushEvent(ev) {
-    ev.id = 'laf-' + (++_laf.seq);
-    // Newest on top: unshift, cap to MAX.
-    _laf.events.unshift(ev);
-    while (_laf.events.length > _laf.MAX) _laf.events.pop();
-    _lafRender();
-  }
-
-  function _lafRender() {
-    const feed = document.getElementById('live-action-feed');
-    if (!feed) return;
-    const empty = document.getElementById('laf-empty');
-    if (!_laf.events.length) {
-      feed.innerHTML = '';
-      if (empty) empty.style.display = 'block';
-      return;
-    }
-    if (empty) empty.style.display = 'none';
-    feed.innerHTML = _laf.events.map(ev => {
-      const cls = 'laf-row laf-row--' + ev.type;
-      const workerHtml = ev.worker ? `<span class="laf-worker">${escapeHtml(ev.worker)}</span>` : '';
-      const meta = [ev.diff && ev.diff !== '\u2014' ? 'diff ' + escapeHtml(ev.diff) : '', ev.gap && ev.gap !== '\u2014' ? 'gap ' + escapeHtml(ev.gap) : '', ev.hrStr && ev.hrStr !== '\u2014' ? escapeHtml(ev.hrStr) : ''].filter(Boolean).join(' · ');
-      const actionHtml = ev.actionable ? `<button class="laf-action" data-laf-action="${escapeHtml(ev.action)}" data-laf-id="${ev.id}">${escapeHtml(ev.actionLabel || ev.action)}</button>` : '';
-      return `<div class="${cls}" data-laf-id="${ev.id}" title="clique para log bruto">` +
-        `<span class="laf-time">${ev.time}</span>` +
-        `<span class="laf-msg">${escapeHtml(ev.message)}${workerHtml}</span>` +
-        (meta ? `<span class="laf-meta">${meta}</span>` : '') +
-        actionHtml +
-        `<span class="laf-chev">▸</span>` +
-        `</div>`;
-    }).join('');
-  }
-
-  function _lafOpenModal(id) {
-    const ev = _laf.events.find(e => e.id === id);
-    if (!ev) return;
-    const modal = document.getElementById('laf-modal');
-    const rawEl = document.getElementById('laf-modal-raw');
-    const titleEl = document.getElementById('laf-modal-title');
-    const actionsEl = document.getElementById('laf-modal-actions');
-    if (!modal || !rawEl) return;
-    if (titleEl) titleEl.textContent = ev.message + (ev.worker ? ' · ' + ev.worker : '') + ' · ' + ev.time;
-    let pretty;
-    try { pretty = JSON.stringify(JSON.parse(ev.raw), null, 2); } catch (e) { pretty = ev.raw; }
-    rawEl.textContent = pretty;
-    if (actionsEl) {
-      actionsEl.innerHTML = '';
-      if (ev.actionable && ev.action === 'restart') {
-        const btn = document.createElement('button');
-        btn.className = 'btn btn--mini';
-        btn.textContent = '↻ ' + (ev.actionLabel || 'Reconectar');
-        btn.addEventListener('click', () => _lafRunAction(ev));
-        actionsEl.appendChild(btn);
-      }
-    }
-    modal.classList.add('modal--open');
-  }
-
-  function _lafCloseModal() {
-    const modal = document.getElementById('laf-modal');
-    if (modal) modal.classList.remove('modal--open');
-  }
-
-  // Inline action: reconnect = restart via the fleet API. For agent-managed
-  // devices the server queues it for the LOCAL agent; for LAN-reachable
-  // devices it executes directly. Same route the fleet cards use.
-  function _lafSafeParse(s) {
-    try { return s ? JSON.parse(s) : {}; } catch (e) { return {}; }
-  }
-
-  async function _lafRunAction(ev) {
-    const raw = _lafSafeParse(ev.raw);
-    const ip = raw.ip || ev.worker;
-    // Find the fleet device id by ip/name so we hit /restart correctly.
-    let deviceId = '';
-    try {
-      const r = await authFetch('/api/axe-fleet/devices');
-      const data = await r.json();
-      const dev = (data.devices || []).find(d => (d.ip_address === ip) || (d.name === ev.worker));
-      if (dev) deviceId = dev.id;
-    } catch (e) { /* fall through */ }
-    if (!deviceId) {
-      const actionsEl = document.getElementById('laf-modal-actions');
-      if (actionsEl) actionsEl.innerHTML = '<span style="font-size:9px;color:var(--accent-red)">device not found in fleet — add it first</span>';
-      return;
-    }
-    try {
-      const rr = await authFetch('/api/axe-fleet/devices/' + encodeURIComponent(deviceId) + '/restart', { method: 'POST' });
-      const ok = rr.ok;
-      const actionsEl = document.getElementById('laf-modal-actions');
-      if (actionsEl) actionsEl.innerHTML = '<span style="font-size:9px;color:' + (ok ? 'var(--accent-green)' : 'var(--accent-red)') + '">' + (ok ? '✓ restart command sent' : '✗ restart failed (HTTP ' + rr.status + ')') + '</span>';
-      if (ok) {
-        _lafPushEvent({
-          ts: Math.floor(Date.now()/1000),
-          time: new Date().toTimeString().slice(0,8),
-          type: LAF_TYPE.info,
-          message: 'Restart enviado',
-          diff: '', gap: '', hrStr: '',
-          worker: ev.worker,
-          actionable: false, action: '', actionLabel: '',
-          raw: JSON.stringify({ command: 'restart', worker: ev.worker, device_id: deviceId, ts: Math.floor(Date.now()/1000) }),
-        });
-      }
-    } catch (e) {
-      const actionsEl = document.getElementById('laf-modal-actions');
-      if (actionsEl) actionsEl.innerHTML = '<span style="font-size:9px;color:var(--accent-red)">network error</span>';
-    }
-  }
-
-  // Feed click delegation (row → modal; action button → inline action).
-  document.addEventListener('click', (e) => {
-    const actBtn = e.target.closest('[data-laf-action]');
-    if (actBtn) {
-      const id = actBtn.getAttribute('data-laf-id');
-      const ev = _laf.events.find(x => x.id === id);
-      if (ev) { e.stopPropagation(); _lafRunAction(ev); }
-      return;
-    }
-    const row = e.target.closest('[data-laf-id]');
-    if (row && !row.classList.contains('laf-action')) {
-      _lafOpenModal(row.getAttribute('data-laf-id'));
-    }
-  });
-  document.getElementById('laf-modal-close')?.addEventListener('click', _lafCloseModal);
-  document.getElementById('laf-modal')?.addEventListener('click', (e) => {
-    if (e.target === e.currentTarget) _lafCloseModal();  // overlay click
-  });
-  document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') _lafCloseModal();
-  });
-
 
   // ══════════════════════════════════════════════════════════════════════
   // SOLO MINING TERMINAL — interactive CLI
