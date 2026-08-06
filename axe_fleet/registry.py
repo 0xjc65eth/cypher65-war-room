@@ -21,6 +21,30 @@ from .connector import AxeOSConnector, AxeOSConnectorError
 log = logging.getLogger("cypher65.axe.registry")
 
 
+def _caps_for_type(info: dict) -> dict:
+    """Capabilities derived from the agent's discovery info (type + firmware).
+
+    Single source of truth for agent-managed device capabilities, used by
+    both the create and update branches of upsert_agent_device so a device
+    whose type is only learned on a LATER register still gets honest caps
+    (cgminer must never advertise an identify button it cannot execute).
+
+    - bitaxe/AxeOS: restart+identify over HTTP :80, configure for AxeOS.
+    - cgminer-family: restart over JSON-over-TCP :4028, NO identify (the
+      cgminer API has no such command).
+    - type unknown (telemetry-only re-upsert): conservative — restart yes,
+      identify only if the firmware looks like AxeOS."""
+    dev_type = str(info.get("type") or "").lower()
+    is_cgminer = dev_type == "cgminer"
+    is_axeos = bool(info.get("firmware")) and "axe" in str(info.get("firmware", "")).lower()
+    return {
+        "telemetry": True,
+        "restart": True,
+        "identify": not is_cgminer,
+        "configure": is_axeos,
+    }
+
+
 class DeviceRegistry:
     """Manages the device registry with SQLite persistence.
     Supports multi-tenant isolation via tenant_id filtering.
@@ -73,6 +97,9 @@ class DeviceRegistry:
         #    agent (SaaS: cloud dashboard can't reach the home LAN) must be
         #    marked so the server-side poll never touches them. ──
         self._migrate_add_agent_managed(c)
+        # ── Tombstone migration: soft-delete marker so a removed device
+        #    can't be re-created by the agent's next push (zombie fix). ──
+        self._migrate_add_removed_at(c)
         # ── Agent command queue (restart/identify routed through the agent) ──
         c.execute(
             """CREATE TABLE IF NOT EXISTS axe_agent_commands (
@@ -125,11 +152,49 @@ class DeviceRegistry:
             except Exception as e:
                 log.warning("[migrate] could not add agent_managed: %s", e)
 
+    def _migrate_add_removed_at(self, c):
+        """Add removed_at (tombstone) column to axe_devices if missing.
+
+        Soft-delete marker: when the operator removes a device, the row is
+        NOT physically deleted — removed_at is stamped so the agent's next
+        telemetry push / register can't silently re-create a device the
+        operator explicitly removed (the "zombie" reappearing card). All
+        reads filter tombstoned rows out."""
+        c.execute("PRAGMA table_info(axe_devices)")
+        cols = {row[1] for row in c.fetchall()}
+        if "removed_at" not in cols:
+            try:
+                c.execute("ALTER TABLE axe_devices ADD COLUMN removed_at INTEGER DEFAULT 0")
+                log.info("[migrate] added removed_at to axe_devices")
+            except Exception as e:
+                log.warning("[migrate] could not add removed_at: %s", e)
+
     # ── CRUD ──────────────────────────────────────────────────────────
 
     def add_device(self, ip_address: str, name: str = "", tenant_id: str = "default") -> dict:
         """Register a new device by IP. Attempts to connect and auto-detect.
-        Returns the device dict with detected info, or basic info if connection failed."""
+        Returns the device dict with detected info, or basic info if connection failed.
+
+        Manual operator add UN-TOMBSTONES the IP: the operator explicitly
+        re-adding a device they previously removed must get a fresh active
+        row (the agent path refuses tombstones, the manual path clears them)."""
+        # Revive: purge any tombstoned row for this IP+tenant so the manual
+        # add is authoritative (a removed device the operator explicitly
+        # wants back must not stay blocked by the agent-side tombstone).
+        conn = self._get_db()
+        c = conn.cursor()
+        if tenant_id:
+            c.execute(
+                "DELETE FROM axe_devices WHERE ip_address=? AND tenant_id=? AND COALESCE(removed_at,0)>0",
+                (ip_address, tenant_id),
+            )
+        else:
+            c.execute(
+                "DELETE FROM axe_devices WHERE ip_address=? AND COALESCE(removed_at,0)>0",
+                (ip_address,),
+            )
+        conn.commit()
+        conn.close()
         device_id = uuid.uuid4().hex[:12]
         now = int(time.time())
         device = new_device(ip_address, name)
@@ -157,20 +222,87 @@ class DeviceRegistry:
         self._persist_device(device)
         return device
 
-    def remove_device(self, device_id: str, tenant_id: str = "default") -> bool:
+    def remove_device(self, device_id: str, tenant_id: str = "default",
+                      hard: bool = False) -> bool:
         """Remove a device from the registry. Returns True if removed.
-        Only removes if the device belongs to the given tenant."""
+        Only removes if the device belongs to the given tenant.
+
+        SOFT DELETE (tombstone) by default: the row stays with removed_at
+        stamped so the agent's next telemetry push / register can't re-create
+        a device the operator explicitly removed (zombie fix). All reads
+        filter tombstoned rows out.
+
+        hard=True physically deletes the row (used by the seed/test purges,
+        which must not accumulate tombstones)."""
         conn = self._get_db()
         c = conn.cursor()
-        c.execute("DELETE FROM axe_devices WHERE id=? AND tenant_id=?", (device_id, tenant_id))
+        if hard:
+            c.execute("DELETE FROM axe_devices WHERE id=? AND tenant_id=?",
+                      (device_id, tenant_id))
+        else:
+            c.execute(
+                "UPDATE axe_devices SET removed_at=?, status='OFFLINE' "
+                "WHERE id=? AND tenant_id=? AND COALESCE(removed_at,0)=0",
+                (int(time.time()), device_id, tenant_id),
+            )
         deleted = c.rowcount > 0
         conn.commit()
         conn.close()
         return deleted
 
+    def gc_tombstones(self, max_age_days: int = 30) -> int:
+        """Physically purge tombstoned rows older than max_age_days (and
+        their telemetry) so soft-deleted devices don't grow the DB forever.
+        Returns the number of tombstoned rows removed. Never raises."""
+        cutoff = int(time.time()) - max_age_days * 86400
+        removed = 0
+        try:
+            conn = self._get_db()
+            c = conn.cursor()
+            c.execute("SELECT id FROM axe_devices WHERE COALESCE(removed_at,0)>0 AND removed_at<?",
+                      (cutoff,))
+            ids = [r["id"] for r in c.fetchall()]
+            if ids:
+                placeholders = ",".join("?" * len(ids))
+                c.execute(f"DELETE FROM axe_telemetry WHERE device_id IN ({placeholders})", ids)
+                c.execute(f"DELETE FROM axe_devices WHERE id IN ({placeholders})", ids)
+                removed = len(ids)
+                conn.commit()
+                if removed:
+                    log.info("[gc] purged %d old tombstoned devices", removed)
+            conn.close()
+        except Exception as e:
+            log.warning("[gc] tombstone gc failed: %s", e)
+        return removed
+
+    def _tombstone_query(self):
+        """SQL fragment excluding soft-deleted (tombstoned) rows."""
+        return "COALESCE(removed_at,0)=0"
+
+    def get_removed_by_ip(self, ip_address: str, tenant_id: str = "") -> dict:
+        """Return the tombstoned (removed) row for an IP, or {}.
+        Used to REFUSE re-registration of a device the operator removed —
+        the agent must not resurrect it on the next scan/telemetry."""
+        conn = self._get_db()
+        c = conn.cursor()
+        if tenant_id:
+            c.execute(
+                "SELECT * FROM axe_devices WHERE ip_address=? AND tenant_id=? AND COALESCE(removed_at,0)>0",
+                (ip_address, tenant_id),
+            )
+        else:
+            c.execute(
+                "SELECT * FROM axe_devices WHERE ip_address=? AND COALESCE(removed_at,0)>0",
+                (ip_address,),
+            )
+        r = c.fetchone()
+        conn.close()
+        return self._row_to_device(r) if r else {}
+
     def list_devices(self, tenant_id: str = "", with_telemetry: bool = False) -> list:
         """Return all registered devices, optionally filtered by tenant.
-        If tenant_id is empty, returns all devices (admin).
+        If tenant_id is empty, returns all devices (admin). Tombstoned
+        (removed) rows are never returned.
 
         with_telemetry=True joins each device's latest TRUSTED telemetry
         (one pass, no N+1) so list views carry live hashrate — previously
@@ -179,9 +311,9 @@ class DeviceRegistry:
         conn = self._get_db()
         c = conn.cursor()
         if tenant_id:
-            c.execute("SELECT * FROM axe_devices WHERE tenant_id=? ORDER BY name", (tenant_id,))
+            c.execute(f"SELECT * FROM axe_devices WHERE tenant_id=? AND {self._tombstone_query()} ORDER BY name", (tenant_id,))
         else:
-            c.execute("SELECT * FROM axe_devices ORDER BY name")
+            c.execute(f"SELECT * FROM axe_devices WHERE {self._tombstone_query()} ORDER BY name")
         rows = c.fetchall()
         conn.close()
         devices = [self._row_to_device(r) for r in rows]
@@ -224,25 +356,27 @@ class DeviceRegistry:
         return latest
 
     def get_device(self, device_id: str, tenant_id: str = "") -> dict:
-        """Get a single device by ID, scoped to tenant if provided."""
+        """Get a single device by ID, scoped to tenant if provided.
+        Tombstoned rows are never returned."""
         conn = self._get_db()
         c = conn.cursor()
         if tenant_id:
-            c.execute("SELECT * FROM axe_devices WHERE id=? AND tenant_id=?", (device_id, tenant_id))
+            c.execute(f"SELECT * FROM axe_devices WHERE id=? AND tenant_id=? AND {self._tombstone_query()}", (device_id, tenant_id))
         else:
-            c.execute("SELECT * FROM axe_devices WHERE id=?", (device_id,))
+            c.execute(f"SELECT * FROM axe_devices WHERE id=? AND {self._tombstone_query()}", (device_id,))
         r = c.fetchone()
         conn.close()
         return self._row_to_device(r) if r else {}
 
     def get_device_by_ip(self, ip_address: str, tenant_id: str = "") -> dict:
-        """Get a device by IP address, scoped to tenant if provided."""
+        """Get a device by IP address, scoped to tenant if provided.
+        Tombstoned rows are never returned."""
         conn = self._get_db()
         c = conn.cursor()
         if tenant_id:
-            c.execute("SELECT * FROM axe_devices WHERE ip_address=? AND tenant_id=?", (ip_address, tenant_id))
+            c.execute(f"SELECT * FROM axe_devices WHERE ip_address=? AND tenant_id=? AND {self._tombstone_query()}", (ip_address, tenant_id))
         else:
-            c.execute("SELECT * FROM axe_devices WHERE ip_address=?", (ip_address,))
+            c.execute(f"SELECT * FROM axe_devices WHERE ip_address=? AND {self._tombstone_query()}", (ip_address,))
         r = c.fetchone()
         conn.close()
         return self._row_to_device(r) if r else {}
@@ -256,9 +390,18 @@ class DeviceRegistry:
         (ip_address, tenant_id) WITHOUT connecting to the miner; telemetry
         arrives separately via save_agent_telemetry. Marks agent_managed=1 so
         the server-side poll never touches it. Returns the device dict.
+
+        REFUSES tombstoned IPs: a device the operator removed must not be
+        resurrected by the agent — returns {} so callers treat it as blocked.
         """
         info = info or {}
         now = int(time.time())
+        # Zombie fix: operator removed this IP → agent re-scan must NOT bring
+        # it back. The tombstone is checked BEFORE the upsert so both the
+        # register and telemetry paths refuse it.
+        if self.get_removed_by_ip(ip_address, tenant_id=tenant_id):
+            log.info("[agent] refusing upsert of removed device %s (tombstoned)", ip_address)
+            return {}
         existing = self.get_device_by_ip(ip_address, tenant_id=tenant_id)
         if existing:
             updates = {
@@ -269,18 +412,18 @@ class DeviceRegistry:
                 "agent_managed": 1,
                 "last_seen": now,
             }
+            # Recompute capabilities whenever the agent reports a type or
+            # firmware — a device first seen via telemetry-only upsert (no
+            # type) must still get honest caps once register carries it.
+            if info.get("type") or info.get("firmware"):
+                updates["capabilities"] = _caps_for_type(info)
             if name:
                 updates["name"] = name
             self.update_device(existing["id"], updates, tenant_id=tenant_id)
             return self.get_device(existing["id"], tenant_id=tenant_id)
 
         device_id = uuid.uuid4().hex[:12]
-        caps = {
-            "telemetry": True,
-            "restart": True,
-            "identify": True,
-            "configure": bool(info.get("firmware")) and "axe" in str(info.get("firmware", "")).lower(),
-        }
+        caps = _caps_for_type(info)
         device = {
             "id": device_id,
             "name": name or str(info.get("hostname") or info.get("model") or ip_address),

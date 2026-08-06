@@ -43,6 +43,30 @@ TENANT_API_KEYS = os.environ.get("TENANT_API_KEYS", "")
 
 DATA_DIR.mkdir(exist_ok=True)
 
+# ── Cloud-deployment detection (SaaS fleet topology) ────────────────────
+# A dashboard hosted in the cloud (Render, Fly, Railway, etc.) can NEVER
+# route to RFC1918 private LAN addresses (192.168.x.x / 10.x.x.x) where the
+# user's miners live — only a LOCAL agent on the user's network can reach
+# them. Render sets RENDER=true + RENDER_SERVICE_ID automatically; CLOUD_MODE
+# covers other PaaS. Read at CALL time so tests can monkeypatch the env
+# without re-importing this module.
+_CLOUD_ENV_FLAGS = ("RENDER", "RENDER_SERVICE_ID", "RENDER_INSTANCE_ID", "CLOUD_MODE")
+
+
+def is_cloud_deploy() -> bool:
+    """True when this process is deployed on a PaaS cloud (Render etc.).
+
+    Used by the axe-fleet onboarding to switch the UX to the local-agent
+    model: subnet scan and manual private-IP adds are physically impossible
+    from a cloud host, so they are blocked/redirected instead of letting the
+    user chase an unreachable miner forever.
+    """
+    for flag in _CLOUD_ENV_FLAGS:
+        val = os.environ.get(flag, "")
+        if val and str(val).strip().lower() not in ("", "0", "false", "no"):
+            return True
+    return False
+
 # ── Wallet source tracking ────────────────────────────────────────────
 WALLET_ADDRESS_SOURCE = os.environ.get("WALLET_SOURCE", "none")
 

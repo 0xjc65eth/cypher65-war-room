@@ -73,7 +73,66 @@ Raspberry Pi OS — todos já trazem). O instalador:
 | API do agente | `/api/agent/*` (`axe_fleet/routes.py`) |
 | Fila de comandos + coluna `agent_managed` | `axe_fleet/registry.py` |
 | Skip de poll no servidor | `app.py::_poll_axe_fleet` (nunca polla device agent-managed) |
+| Tombstone de device removido | `axe_fleet/registry.py` (`removed_at` + `gc_tombstones`) |
 | UI (token + comandos) | Fleet → CONNECT AGENT (`dashboard.html` + `app.js`) |
+
+## Comandos: do clique no painel ao miner (fluxo corrigido)
+
+O usuário clica em **Restart/Identify** no card do device. Para um device
+agent-managed o caminho é (o servidor na nuvem não alcança o miner):
+
+```
+Dashboard ──POST /devices/<id>/restart──► servidor
+                                            │ enfileira (axe_agent_commands)
+Agente ──POST /api/agent/commands/pull────► servidor
+     ◄──── {id, ip_address, command} ────── servidor   ← IP resolvido AQUI
+Agente ── executa no miner da LAN ──►  AxeOS HTTP :80 / cgminer TCP :4028
+Agente ──POST /commands/<id>/ack─────────► servidor (done/failed)
+```
+
+Dois detalhes que já foram fonte de bug e agora são garantidos por teste:
+
+- **O payload do pull carrega o `ip_address` do device**, não o UUID do
+  registry. Antes o agente recebia o UUID e tentava abrir um socket para uma
+  string não resolvível — o comando era enfileirado, puxado e ackado como
+  `failed` sem nunca tocar o miner. O E2E (`scripts/e2e_agent_local.py`, etapa
+  7) prova a execução real: os miners mock contam os restarts recebidos.
+- **O protocolo segue o tipo do device** (o agente conhece o tipo pela própria
+  descoberta): AxeOS/Bitaxe usa `POST /api/system/{restart|identify}` em :80;
+  cgminer usa o comando `restart` do JSON-over-TCP em :4028 (a API cgminer não
+  tem `identify` — por isso o card de um Antminer não oferece esse botão).
+- **Nota de contrato — `restart`/`identify` exigem sessão de tenant (ou
+  localhost)** (`@_require_local_or_session` no servidor): o guard aceita
+  localhost (127.0.0.1/::1/mesmo host), sessão Flask autenticada, Bearer JWT
+  de access válido, X-API-Key configurada — ou, em open-mode self-host sem
+  auth, o header leniente legado. Sem nenhum desses, responde **401
+  `"authentication required — device control restricted to localhost or
+  authenticated session"`**. É o motivo pelo qual o botão do dashboard usa
+  `authFetch` (Bearer do tenant): antes de corrigir, o card postava para a
+  rota core `/api/devices/<id>/command`, que respondia **404 "device not
+  found"** (o device não existe no core registry) — o erro honesto agora é
+  401, e o fluxo legítimo (browser logado / agente na LAN) passa sem mudança.
+
+## Device removido: tombstone, sem zumbis
+
+Quando o operador remove um device, a linha **não é apagada** — recebe um
+carimbo `removed_at` (soft delete / tombstone):
+
+- Todas as leituras (`list_devices`, `get_device`, `get_device_by_ip`) filtram
+  tombstoned rows — o card some do dashboard imediatamente.
+- O caminho do **agente não consegue ressuscitá-lo**: `register` retorna o IP
+  no bloco `blocked` e `telemetry` responde `410 removed`. O agente então
+  **remove o IP do próprio poll set** — nunca mais empurra telemetria para um
+  device que o operador removeu (zero 403-spam, provado pelo
+  `scripts/e2e_agent_plan_cap.py`).
+- `count_tenant_workers` ignora tombstones — o device removido **libera a
+  vaga** no plano imediatamente.
+- O **`+ ADD` manual revive**: o operador que removeu por engano (ou quer
+  re-adicionar) usa o wizard; o caminho manual limpa o tombstone e cria uma
+  linha ativa nova.
+- Tombstones antigos (> 30 dias) são purgados fisicamente no boot por
+  `gc_tombstones()` (linha + telemetria), então o soft delete nunca cresce o
+  DB para sempre.
 
 ## Limitações conhecidas
 
@@ -81,6 +140,8 @@ Raspberry Pi OS — todos já trazem). O instalador:
   Pi/NAS/PC). Enquanto ela estiver desligada, o fleet dele fica offline.
 - Descoberta cobre AxeOS :80 e cgminer :4028 (padrão de mercado); miners com
   API não padrão podem precisar de IP explícito (`CYPHER65_DEVICES`).
+- `identify` só é oferecido para AxeOS/Bitaxe — a API cgminer não tem esse
+  comando (o card do Antminer mostra só Restart).
 - A imagem Docker (`ghcr.io/0xjc65eth/cypher65-agent`, publicada por CI a
   cada push em `master`) é oferecida como alternativa; o caminho principal (1
   linha) não depende dela.

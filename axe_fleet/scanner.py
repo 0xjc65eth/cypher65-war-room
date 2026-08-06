@@ -93,11 +93,34 @@ def _tcp_open(ip: str, port: int, timeout: float = ALIVE_PROBE_TIMEOUT) -> bool:
 # — not necessarily a dead miner. Surfacing this in the wizard saves the
 # operator from chasing power/firewall on a miner that is actually fine.
 PRIVATE_IP_HINT = (
-    "IP privado (LAN) — um servidor na nuvem (ex. Render) não roteia para "
-    "a rede caseira. Rode o app na MESMA Wi-Fi/local do miner (self-host), "
-    "use um IP do Tailscale, ou — no modelo SaaS — instale o AGENTE LOCAL "
-    "(Fleet → CONNECT AGENT): ele roda na sua rede e conecta para fora."
+    "IP privado (LAN) — este host não roteia para a rede caseira. Rode o app "
+    "na MESMA Wi-Fi/local do miner (self-host), use um IP do Tailscale, ou — "
+    "no modelo SaaS — instale o AGENTE LOCAL (Fleet → CONNECT AGENT): ele "
+    "roda na sua rede e conecta para fora."
 )
+
+# Cloud variant: the dashboard itself is on a PaaS (Render etc.) — it is NOT
+# part of the user's tailnet, so a Tailscale IP is unreachable from here too.
+# The ONLY working path is the local agent connecting OUT from the user's LAN.
+PRIVATE_IP_HINT_CLOUD = (
+    "IP privado (LAN) — este dashboard está hospedado na NUVEM (ex. Render) "
+    "e não roteia para a rede da sua casa. Instale o AGENTE LOCAL "
+    "(Fleet → CONNECT AGENT): ele roda na sua rede (Docker/Pi/PC), descobre "
+    "os miners e conecta para fora — é a única via que funciona no SaaS."
+)
+
+
+def private_ip_hint() -> str:
+    """Topology hint text, aware of the deployment mode. On a cloud host the
+    Tailscale suggestion is wrong (the cloud box is not in the user's
+    tailnet), so the SaaS text points exclusively to the local agent."""
+    try:
+        from config import is_cloud_deploy
+        if is_cloud_deploy():
+            return PRIVATE_IP_HINT_CLOUD
+    except Exception:  # noqa: BLE001 — hint must never crash a probe
+        pass
+    return PRIVATE_IP_HINT
 
 
 def is_private_ip(ip: str) -> bool:
@@ -395,7 +418,7 @@ def diagnose_host(ip: str, timeout: float = HTTP_PROBE_TIMEOUT) -> dict:
         # Append the actionable hint so the wizard explains WHY it's
         # unreachable instead of a generic "check power / network / firewall".
         if is_private_ip(ip):
-            detail = f"{detail} · {PRIVATE_IP_HINT}"
+            detail = f"{detail} · {private_ip_hint()}"
         result["error_detail"] = detail
     result["elapsed_ms"] = int((time.time() - t0) * 1000)
     return result
@@ -484,7 +507,7 @@ def scan_subnet(cidr: str, progress_cb=None, max_hosts: int = MAX_HOSTS_PER_SCAN
     # dashboard is very likely cloud-hosted and cannot route to the home LAN.
     hint = None
     if not found and not alive_ips and _cidr_is_private(cidr):
-        hint = PRIVATE_IP_HINT
+        hint = private_ip_hint()
     return {"cidr": cidr, "total": len(hosts), "found": found, "alive": len(alive_ips),
             "alive_ips": alive_ips, "hint": hint,
             "elapsed_ms": int((time.time() - t0) * 1000), "error": None}
@@ -518,7 +541,18 @@ def _local_ipv4_addresses() -> list:
 
 def suggest_subnets() -> list:
     """Suggest scan subnets based on this host's local interfaces.
-    Returns a list of CIDR strings (e.g. ['192.168.1.0/24'])."""
+    Returns a list of CIDR strings (e.g. ['192.168.1.0/24']).
+
+    On a CLOUD deployment this returns [] — the host's interfaces belong to
+    the PaaS VPC, NOT the user's home LAN, so prefilling that subnet would
+    send the operator scanning the wrong network (and finding nothing). The
+    SaaS answer is the local agent, not a scan."""
+    try:
+        from config import is_cloud_deploy
+        if is_cloud_deploy():
+            return []
+    except Exception:  # noqa: BLE001 — suggestion is best-effort
+        pass
     subnets = []
     seen = set()
     for ip in _local_ipv4_addresses():

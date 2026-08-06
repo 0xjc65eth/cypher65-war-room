@@ -6,6 +6,119 @@ e versionamento semântico ([SemVer](https://semver.org/lang/pt-BR/)).
 
 ## [Unreleased]
 
+### Corrigido — caps do /summary agora serializam como array (Restart do Fleet Command Center)
+- **Bug real**: `buildCommandCenterRows` (JS) renderiza os botões Restart/Identify
+  a partir de `capabilities` como ARRAY, mas o `GET /api/axe-fleet/summary`
+  devolvia o dict cru do registry — `Array.isArray()` falhava e todo device
+  agent-managed caía em READ-ONLY, tornando o restart inalcançável pela UI.
+- `fleet_summary` agora acha o mesmo `supported_cmds` (lista de chaves
+  truthy) que o `fleet_health` já produzia — paridade de schema mantida.
+- Teste de regressão em `TestFleetSummary.test_capabilities_serialized_as_supported_command_array`
+  + E2E novo `tests/e2e/restart-agent.spec.js` (toast + prova de execução no
+  log do agente real).
+
+### Adicionado — E2E `restart-agent.spec.js` (round-trip completo do comando)
+- Novo teste Playwright que exige o harness `scripts/e2e_browser_session.py`
+  (servidor real + 2 miners mock + agente REAL): clica no botão ↻ Restart de
+  um card agent-managed, aceita o `confirm`, valida o toast de sucesso
+  (`'restart' enviado para o agente local executar`) e PROVA a execução real
+  contando `executing restart` no log do agente (anti-teatro).
+- Sem o harness rodando, o teste dá SKIP (não quebra o `run-e2e.sh`/CI).
+
+### Reformulado — aba Live Mining → FLEET COMMAND CENTER (rebuild total)
+- **Todas as funções da aba antiga removidas**: `renderLiveMining` (já morta —
+  sem `#lm-grid` no HTML), `_updateLiveMiningSummary`, `_updateLmNetworkStatus`,
+  `_updateBestShare`, `_updateLmSummaryExtras`, `_applyLmFleetKpis`/
+  `_lmFleetKpiAgg`, `_logMiningEvent` (mantido), o bloco `_hunt*` inteiro
+  (CALC STREAM / RECENT SHARES / sparkline+gauge canvas), `buildWorkerIntelligenceRows`
+  e `renderWorkerIntelligence` (substituídos) e `fetchWorkerIntelligence`.
+  No HTML: `lm-cyber-header`, `lm-summary`, `lm-network`, `lm-workers` (tabela
+  antiga), `hunt-layout`, `hunt-shares` e `lm-best-share` antigo foram
+  reconstruídos. CSS: blocos `.lm-*`/`.hunt-*` (incl. `.lm-worker*` mortos de
+  versão antiga) trocados por estilos `.fcc-*`; media queries atualizadas.
+- **Novo painel "CYPHER65 // FLEET COMMAND CENTER"** (baseado em pesquisa de
+  dashboards HiveOS/Minerstat/Foreman + padrões de UI):
+  - **KPI strip fleet-fed**: TOTAL HR (com sparkline SVG do histórico),
+    ONLINE / WARNING / OFFLINE, AVG TEMP, POWER (kW), EFFICIENCY (J/TH),
+    AVG PING, EST. EARNINGS — agregados por `_ccKpiAgg` (honesto: OFFLINE
+    nunca contribui com shares/temp/power, senão a EFFICIENCY congelaria).
+  - **Exception hierarchy** (`_ccRenderExceptions`): workers com problema
+    sobem num banner "⚠ N WORKER(S) PRECISAM DE ATENÇÃO" (manage by
+    exception) e a ordenação do grid coloca WARNING/OFFLINE primeiro.
+  - **Worker cards** (grid default) com health ring SVG, hashrate + sparkline
+    SVG inline (`_ccSvgSparkline`, sem canvas/ids), temp colorida por banda
+    (`_ccTempBand` ≤60/70/80), power, eficiência, fan, last share, PING e
+    **share-quality bar** segmentada A/S/R (`_ccShareBar`, estilo HiveOS) +
+    botões Restart/Identify (handler compartilhado `_handleAxeCmdClick` com a
+    grade do Fleet).
+  - **Dense table** (toggle ▦ GRID / ☰ TABLE persistido): colunas WORKER / HR
+    / TEMP / POWER / EFF / SHARES A/S/R / REJ% / LAST SHARE / PING / HEALTH.
+  - **THERMAL MAP** (`_ccRenderThermal`): grade T / CHIP / VR por worker com
+    cores por threshold (crit piscando).
+  - **Network/pool strip** e **event stream** (terminal P0-6 com filtros)
+    mantidos; BEST SHARE agora vem do best_diff do fleet (flash novo).
+- **Dados**: painel alimentado por `/api/axe-fleet/summary` (mesma cadência de
+  poll do Fleet) + snapshot para network/profitability/ticker de shares.
+- **Testes**: SUITE 26b → `buildCommandCenterRows` (ordenação por exceção +
+  campos novos), SUITE 26d → `_ccKpiAgg`, SUITE 26e nova (`_ccShareBar` /
+  `_ccSvgSparkline` / `_ccTempBand`); E2E `live-mining.spec.js` atualizado
+  (cards + KPI + toggle tabela + raster). **1094 testes JS + 127 Python
+  passando**; E2E chromium verde com 0 erros de console; painel verificado no
+  Chrome real com agente mock (2 cards, KPIs populados, 6 células térmicas,
+  48 células de raster).
+
+### Corrigido — botão Restart/Identify do Fleet (auditoria UI no browser)
+- **Bug real encontrado com o dashboard aberto no browser**: os cards do AXE
+  FLEET postavam o comando para a rota **core** `/api/devices/<id>/command`
+  (`_core_registry`), que não conhece devices do axe registry → **404 "device
+  not found"** → toast de erro → o miner **nunca reiniciava** (mesmo padrão
+  "teatro" da auditoria anterior, agora no caminho real da UI).
+- **Fix**: o handler `.axe-cmd-btn` do `static/app.js` agora roteia
+  restart/identify para `/api/axe-fleet/devices/<id>/{restart|identify}` com
+  `authFetch` (Bearer do tenant) — a rota axe-fleet enfileira no AGENTE LOCAL
+  para devices agent-managed (ou executa via `AxeOSConnector` para devices axe
+  não-agent). `pause`/`resume` mantêm a rota core como fallback (caps axe não
+  os anunciam hoje). Toast de sucesso prefere `data.message` do servidor.
+- **Verificação de ponta a ponta (browser + servidor real + mocks)**: novo
+  harness `scripts/e2e_browser_session.py` (servidor+mocks+agente vivos p/ UI),
+  confirmado no Chrome: 2 cards, PING `—` (latency_ms nulo para agent-managed),
+  summary `2 online / 1.00 TH/s`, e o restart enfileirado executado de verdade
+  pelo agente na LAN mock (`executing restart → 127.0.0.1 / localhost`).
+- **Espelhos JS novos** em `tests/test_app_js_core.js` (`routeAxeCmd`):
+  restart/identify → axe-fleet com authFetch; pause/resume → core. 1049 testes
+  JS + 151 testes Python passando.
+- **Nota de contrato**: restart/identify agora exigem sessão de tenant (ou
+  localhost) — em open-mode self-host acessado de outra máquina sem login a
+  resposta passou de 404 (core) para 401 honesto "authentication required".
+
+### Corrigido — auditoria CFO do fluxo SaaS do agente (6 bugs reais)
+- **Comandos restart/identify agora executam de verdade** (`agent_pull_commands`
+  passa `ip_address` no payload — antes o agente recebia o UUID do registry e
+  tentava abrir socket para uma string não-resolvível; o miner nunca reiniciava).
+  O agente executa AxeOS via HTTP :80 e cgminer via JSON-over-TCP :4028.
+- **Heartbeat `{}` não zera mais o hashrate no snapshot**: `_cache_axe_telemetry`
+  preserva a última leitura real quando um poll falha (antes o topo da página
+  caía para 0 enquanto o /health mostrava o dado real — duas verdades).
+- **`/health` e `/summary` não fazem probe TCP a IPs privados de devices
+  agent-managed** (inalcançáveis da nuvem — cada chamada bloqueava N×0.75s).
+- **Capabilities por tipo**: device cgminer não anuncia mais o botão identify
+  (API cgminer não tem esse comando); capabilities são recalculadas quando o
+  tipo chega num register posterior.
+- **Re-scan do agente** só adiciona ao poll set devices que o servidor admitiu
+  (plano cheio / removido → não gera 403-spam de telemetria).
+- **Tombstone soft-delete (`removed_at`)**: device removido pelo operador não
+  ressuscita mais via push do agente (zumbi). Register/telemetria retornam
+  blocked/410, `count_tenant_workers` ignora tombstones, `+ ADD` manual revive,
+  GC de 30 dias limpa tombstones antigos + telemetria.
+- **Testes**: +19 novos (comandos com ip, heartbeat cache, caps por tipo,
+  tombstone, GC, latency skip, protocolo do agente) + etapa 7 no E2E que prova
+  restart real nos miners mock (AXEOS + cgminer). Suíte: 1274 passando.
+- **E2E PLAN CAP** (`scripts/e2e_agent_plan_cap.py`): tenant com max_workers=1
+  e agente descobrindo 2 miners — confirma que o device não admitido é
+  bloqueado no register (audit `agent.register_blocked`) e NUNCA gera
+  403-spam de telemetria (`agent.telemetry_blocked` = 0), estável por ~17
+  ciclos de re-scan. Prova: 43 requests no servidor, 43 × HTTP 200.
+
 ### Removido — Canvas de partículas "nonce search" (Live Mining)
 - **Removido por completo** o quadro preto de radar com gradiente gold, linha
   pontilhada do alvo e rodapé `NONCES SEARCHED` (`#hunt-canvas-wrap` + engine

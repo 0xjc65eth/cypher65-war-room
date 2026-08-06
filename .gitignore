@@ -24,5 +24,12 @@ data/*.db
 # Production SQLite backups / corrupt snapshots must never reach the repo
 data/*.bak*
 data/*.corrupt*
+
+# Backups antigos de assets — o Flask serve qualquer arquivo em static/,
+# então um .bak com código desatualizado (ex. handler quebrado do Restart)
+# não deve ficar exposto publicamente em /static/*.bak.
+static/*.bak*
+static/*.bak2
 data/*-wal
 data/*-shm
+.aider*

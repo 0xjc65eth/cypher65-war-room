@@ -101,6 +101,25 @@ O token só dá acesso ao **seu** fleet, não ao de outros usuários.
 AxeOS/ESP-Miner (Bitaxe, NerdAxe…) e protocolo cgminer (Antminer, Avalon,
 Whatsminer e compatíveis) na porta padrão.
 
+**Os botões Restart/Identify do painel funcionam mesmo com o CYPHER65 na
+nuvem?** Sim. Você clica no card do miner, o servidor **enfileira o comando**
+e o **agente executa de verdade na sua rede** (ele é quem alcança o miner).
+O resultado volta para o painel. Detalhe honesto: `Identify` (piscar o LED)
+só existe em miners AxeOS/Bitaxe — num Antminer o card mostra apenas
+`Restart`, porque a API cgminer não tem o comando de identificar.
+
+**Removi um miner por engano. Ele volta sozinho?** Não — o painel respeita a
+sua remoção: o miner removido não reaparece, e a **vaga é liberada na hora**
+no seu plano. Se você quer re-adicioná-lo, use o botão **+ ADD** no Fleet e
+informe o IP (o agente volta a descobri-lo normalmente).
+
+**Meu plano não aceitou um miner novo (limite de workers).** Se o agente
+descobrir mais miners do que o seu plano permite, os excedentes **não são
+registrados** — você vê um aviso no painel do operador, e o agente loga o
+bloqueio (`plan worker limit`). Nada quebra: os miners já registrados
+continuam enviando telemetria normalmente. Para liberar vaga, remova um
+device (a vaga é liberada na hora) ou aumente o limite do plano.
+
 **Uso Docker?** Também funciona, se você preferir: `docker run -d --name
 cypher65-agent --network host -e CYPHER65_SERVER_URL=<URL> -e
 CYPHER65_AGENT_TOKEN=<TOKEN> ghcr.io/0xjc65eth/cypher65-agent`. Mas o

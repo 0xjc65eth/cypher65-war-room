@@ -145,10 +145,12 @@
     lcAvgShareDiff: $('#lc-avg-share-diff'), lcCumP: $('#lc-cum-p'), lcExpectedBlocks: $('#lc-expected-blocks'), lcTickerList: $('#lc-ticker-list'),
     qlStatusBadge: $('#ql-status-badge'), qlScoreBadge: $('#ql-score-badge'), qlBarFill: $('#ql-bar-fill'),
     qlCompShares: $('#ql-comp-shares'), qlCompProx: $('#ql-comp-prox'), qlCompPower: $('#ql-comp-power'), qlCompMomentum: $('#ql-comp-momentum'), qlLabel: $('#ql-label'),
-    lmGrid: $('#lm-grid'), lmStatusBadge: $('#lm-status-badge'), lmWorkersBadge: $('#lm-workers-badge'),
-    lmSummaryWallet: $('#lm-summary-wallet'), lmSummaryPool: $('#lm-summary-pool'), lmSummaryDot: $('#lm-summary-dot'),
-    lmSummaryWorkers: $('#lm-summary-workers'), lmSummaryHr: $('#lm-summary-hr'), lmSummaryBest: $('#lm-summary-best'),
-    lmSummaryEff: $('#lm-summary-eff'), lmSummaryPing: $('#lm-summary-ping'), lmSummaryEarnings: $('#lm-summary-earnings'),
+    lmStatusBadge: $('#lm-status-badge'), lmWorkersBadge: $('#lm-workers-badge'),
+    fccSummaryHr: $('#fcc-summary-hr'), fccSummaryHrSpark: $('#fcc-summary-hr-spark'),
+    fccSummaryOnline: $('#fcc-summary-online'), fccSummaryWarn: $('#fcc-summary-warn'), fccSummaryOffline: $('#fcc-summary-offline'),
+    fccSummaryTemp: $('#fcc-summary-temp'), fccSummaryPower: $('#fcc-summary-power'), fccSummaryEff: $('#fcc-summary-eff'),
+    fccSummaryPing: $('#fcc-summary-ping'), fccSummaryEarnings: $('#fcc-summary-earnings'),
+    fccExceptions: $('#fcc-exceptions'), fccThermalGrid: $('#fcc-thermal-grid'),
     lmNetworkDiff: $('#lm-network-diff'), lmNetworkHr: $('#lm-network-hr'), lmNetworkHeight: $('#lm-network-height'),
     lmNetworkBlock: $('#lm-network-block'), lmNetworkPoolWorkers: $('#lm-network-pool-workers'), lmNetworkLastBlock: $('#lm-network-last-block'),
     lmBestShare: $('#lm-best-share'), lmBestShareVal: $('#lm-best-share-val'), lmBestShareWorker: $('#lm-best-share-worker'), lmBestShareTime: $('#lm-best-share-time'),
@@ -170,9 +172,6 @@
     acAddRule: $('#ac-add-rule'), acRuleForm: $('#ac-rule-form'), acRuleSave: $('#ac-rule-save'), acRuleCancel: $('#ac-rule-cancel'),
     acRuleName: $('#ac-rule-name'), acRuleDevice: $('#ac-rule-device'), acRuleMetric: $('#ac-rule-metric'), acRuleOp: $('#ac-rule-op'),
     acRuleValue: $('#ac-rule-value'), acRuleAction: $('#ac-rule-action'), acRuleStatus: $('#ac-rule-status'),
-    huntStreamFeed: $('#hunt-stream-feed'), huntMetricsHr: $('#hunt-metrics-hr'), huntMetricsPblock: $('#hunt-metrics-pblock'),
-    huntMetricsExpblocks: $('#hunt-metrics-expblocks'), huntMetricsBestdiff: $('#hunt-metrics-bestdiff'),
-    huntSharesGrid: $('#hunt-shares-grid'), huntSharesCount: $('#hunt-shares-count'),
 
     // ── AXE FLEET ──
     axeFleetPanel: $('#axe-fleet-panel'),
@@ -2680,13 +2679,9 @@ function renderAccount(acct) {
     renderCommandCenter(snap);
     renderMarket(snap);
     renderAiOperator(snap);
-    renderLiveMining(snap.all_workers, snap.worker);
-    _updateLmSummaryExtras(snap);
-    _updateLmNetworkStatus(snap);
+    renderFleetCommandCenter(snap);
     _lmSetConn(snap);
     renderCharts();
-    _updateHashSearchState(snap.worker, snap.network);
-    _huntUpdateState(snap.worker, snap.network, parseFloat(snap.proximity?.live_calc?.session_totals?.cum_p_block_pct_str) || 0, parseFloat(snap.proximity?.live_calc?.session_totals?.expected_blocks) || 0, snap.proximity?.live_calc?.ticker || []);
     prevSnapshot = snap;
   }
 
@@ -3451,10 +3446,6 @@ dom.walletSave?.addEventListener('click', async () => {
       if (dom.topbarAddress) {
         dom.topbarAddress.textContent = fmt.shortAddr(data.address);
       }
-      // Update live mining summary wallet display
-      if (dom.lmSummaryWallet) {
-        dom.lmSummaryWallet.textContent = fmt.shortAddr(data.address);
-      }
       // Close modal after a short delay. The refresh itself is handled by
       // the wallet-changed listener (dispatched above) — refreshUntilWalletReady
       // — so no second retry chain is started here.
@@ -3527,6 +3518,12 @@ dom.walletSave?.addEventListener('click', async () => {
   let _lmFilter = 'all';
   let _lmUserScrolled = false;
   const _lmStats = { total: 0, shares: 0, err: 0 };
+  // FLEET COMMAND CENTER state (fleet-fed panel).
+  let _ccLastFleet = [];
+  let _ccView = 'grid';
+  const _ccHrSeries = [];   // fleet total-HR history (KPI sparkline)
+  const _ccHrHist = {};     // per-device HR history (card sparklines)
+  const _ccShareSeen = {};  // ticker share dedupe (by ts)
   // P0-6: event type → badge class (color-coded terminal). Mirrored in tests.
   function lmEventTypeClass(type) {
     const t = String(type || '').toUpperCase();
@@ -3639,127 +3636,134 @@ dom.walletSave?.addEventListener('click', async () => {
     return val;
   }
 
-  function _updateLiveMiningSummary(allWorkers, primaryWorker) {
-    if (!dom.lmSummaryWallet) return;
-    if (dom.lmSummaryWallet) dom.lmSummaryWallet.textContent = window.BTC_ADDRESS ? fmt.shortAddr(window.BTC_ADDRESS) : '\u2014';
-    if (dom.lmSummaryDot) dom.lmSummaryDot.classList.toggle('offline', !allWorkers || !allWorkers.length);
-    const workers = allWorkers || [];
-    if (dom.lmSummaryWorkers) dom.lmSummaryWorkers.textContent = workers.length;
-    if (workers.length > 0) {
-      let totalHr = 0, bestDiff = 0, bestDiffStr = '\u2014';
-      workers.forEach(w => { const hr = Number(w.hashrate || 0); totalHr += hr; const bd = parseBestDiff(w.bestDifficulty); if (bd > bestDiff) { bestDiff = bd; bestDiffStr = fmt.diff(bd); } });
-      if (dom.lmSummaryHr) dom.lmSummaryHr.textContent = fmt.hashrate(totalHr);
-      if (dom.lmSummaryBest) dom.lmSummaryBest.textContent = bestDiffStr;
-    } else { if (dom.lmSummaryHr) dom.lmSummaryHr.textContent = '\u2014'; if (dom.lmSummaryBest) dom.lmSummaryBest.textContent = '\u2014'; }
+  // Pure numeric guard (mirrored in tests): backend may send the literal
+  // "NOT AVAILABLE" for missing fields, so a plain != null check would
+  // crash .toFixed(). Returns null for absent / non-numeric values.
+  function _numOrNull(v) {
+    if (v == null || v === '') return null;
+    const n = Number(v);
+    return isFinite(n) ? n : null;
   }
 
-  // ── P1: KPI bar extras — EFFICIENCY / PING / EST. EARNINGS ────────────
-  // EFFICIENCY + PING are fed from the LATEST /api/axe-fleet/summary devices
-  // (cached in _lmFleetDevices by fetchWorkerIntelligence — that endpoint
-  // carries latency_ms + per-device telemetry, unlike snap.axe_fleet which
-  // only holds online devices and never latency). EST. EARNINGS comes from
-  // the snapshot profitability. Honest '—' per cell when a source has no
-  // data — never invented numbers.
-  let _lmFleetDevices = [];
-  // Pure aggregation for the fleet-fed KPIs — ONLINE-only, honest telemetry.
-  // Returns {effPct, avgLatency} where each is null when there is no live
-  // data to compute it (no ONLINE device with shares / latency). Cumulative
-  // firmware counters persist after a miner dies, so OFFLINE devices must
-  // never contribute — otherwise EFFICIENCY would freeze a historical %.
-  function _lmFleetKpiAgg(fleet) {
+  // ── FLEET COMMAND CENTER — pure aggregation (mirrored in tests) ─────
+  // Honest nulls when there is no live data to compute a metric — never
+  // invented numbers. OFFLINE devices never contribute share counters
+  // (their cumulative firmware counters persist after death and would
+  // freeze a historical EFFICIENCY).
+  function _ccKpiAgg(fleet) {
     fleet = fleet || [];
     const live = fleet.filter(d => d && String(d.status || '').toUpperCase() === 'ONLINE');
-    let acc = 0, rej = 0;
+    // TOTAL HR = soma de TODOS os devices (paridade com o fleet summary).
+    // Shares/temp/power/eff = APENAS ONLINE — os contadores cumulativos do
+    // firmware persistem depois que o miner morre e congelariam um
+    // EFFICIENCY histórico se OFFLINE contribuísse.
+    let totalHr = 0, acc = 0, rej = 0, stale = 0;
+    let tempSum = 0, tempN = 0, powerSum = 0, powerN = 0, effSum = 0, effN = 0;
+    fleet.forEach(d => {
+      totalHr += Number((d && d._telemetry && d._telemetry.hashrate_hs) || 0);
+    });
     live.forEach(d => {
       const t = (d && d._telemetry) || {};
       acc += Number(t.shares_accepted) || 0;
       rej += Number(t.shares_rejected) || 0;
+      stale += Number(t.shares_stale) || 0;
+      const temp = _numOrNull(t.temperature);
+      if (temp != null) { tempSum += temp; tempN++; }
+      const pw = _numOrNull(t.power_watts);
+      if (pw != null) { powerSum += pw; powerN++; }
+      const eff = _numOrNull(t.efficiency_jth);
+      if (eff != null) { effSum += eff; effN++; }
     });
-    const total = acc + rej;
-    let effPct = null;
-    if (total > 0) effPct = (acc / total) * 100;
     const lats = live.map(d => Number(d && d.latency_ms)).filter(v => v > 0 && isFinite(v));
-    let avgLatency = null;
-    if (lats.length) avgLatency = Math.round(lats.reduce((a, b) => a + b, 0) / lats.length);
-    return { effPct, avgLatency };
+    const shareTotal = acc + rej;
+    return {
+      totalHr: totalHr,
+      effPct: shareTotal > 0 ? (acc / shareTotal) * 100 : null,
+      avgTemp: tempN ? tempSum / tempN : null,
+      totalPowerW: powerSum || null,
+      avgEff: effN ? effSum / effN : null,
+      avgLatency: lats.length ? Math.round(lats.reduce((a, b) => a + b, 0) / lats.length) : null,
+      acc: acc, rej: rej, stale: stale,
+    };
   }
 
-  function _applyLmFleetKpis(fleet) {
-    const { effPct, avgLatency } = _lmFleetKpiAgg(fleet);
-    if (dom.lmSummaryEff) {
-      if (effPct != null) {
-        dom.lmSummaryEff.textContent = effPct.toFixed(1) + '%';
-        dom.lmSummaryEff.classList.toggle('lm-summary__val--good', effPct >= 95);
-        dom.lmSummaryEff.classList.toggle('lm-summary__val--warn', effPct < 95);
-      } else {
-        // Clear any stale color class so a green/amber dash never lingers.
-        dom.lmSummaryEff.textContent = '\u2014';
-        dom.lmSummaryEff.classList.remove('lm-summary__val--good', 'lm-summary__val--warn');
-      }
-    }
-    if (dom.lmSummaryPing) {
-      if (avgLatency != null) {
-        dom.lmSummaryPing.textContent = avgLatency + 'ms';
-        dom.lmSummaryPing.classList.toggle('lm-summary__val--good', avgLatency <= 50);
-        dom.lmSummaryPing.classList.toggle('lm-summary__val--warn', avgLatency > 50);
-      } else {
-        dom.lmSummaryPing.textContent = '\u2014';
-        dom.lmSummaryPing.classList.remove('lm-summary__val--good', 'lm-summary__val--warn');
-      }
-    }
-  }
-  function _updateLmSummaryExtras(snap) {
-    if (!snap) return;
-    // EFFICIENCY / PING are fleet-fed by fetchWorkerIntelligence (fresher poll
-    // cadence) — single source of truth is _applyLmFleetKpis at the fleet poll.
-    // EST. EARNINGS = pool profitability USD/day (or BTC/day).
-    if (dom.lmSummaryEarnings) {
-      const p = snap.profitability || {};
-      const usd = Number(p.p_fiat_day);
-      if (isFinite(usd) && usd > 0) {
-        dom.lmSummaryEarnings.textContent = '$' + usd.toFixed(2) + '/d';
-      } else {
-        const btc = Number(p.p_btc_day);
-        dom.lmSummaryEarnings.textContent = (isFinite(btc) && btc > 0)
-          ? btc.toPrecision(4) + ' BTC/d' : '\u2014';
-      }
-    }
+  // Segmented share-quality bar (accepted / stale / rejected) — HiveOS-style
+  // stacked segments. Empty when no shares have ever been recorded.
+  function _ccShareBar(acc, rej, stale) {
+    const a = Number(acc) || 0, r = Number(rej) || 0, s = Number(stale) || 0;
+    const total = a + r + s;
+    if (!total) return '<div class="cc-sharebar cc-sharebar--empty" title="sem shares registradas">no shares</div>';
+    const wa = (a / total) * 100, ws = (s / total) * 100, wr = (r / total) * 100;
+    return '<div class="cc-sharebar" title="' + a + ' acc · ' + s + ' stale · ' + r + ' rej">' +
+      '<span class="cc-sharebar__seg cc-sharebar__seg--acc" style="width:' + wa.toFixed(1) + '%"></span>' +
+      '<span class="cc-sharebar__seg cc-sharebar__seg--stale" style="width:' + ws.toFixed(1) + '%"></span>' +
+      '<span class="cc-sharebar__seg cc-sharebar__seg--rej" style="width:' + wr.toFixed(1) + '%"></span>' +
+      '</div>';
   }
 
-  // ── P2: NETWORK STATUS strip — real network/pool telemetry ─────────────
-  function _updateLmNetworkStatus(snap) {
+  // Inline SVG area sparkline (no canvas, no gradient ids — collision-free).
+  // Returns '' when fewer than 2 positive samples exist. Mirrored in tests.
+  function _ccSvgSparkline(values, color) {
+    const v = (values || []).map(Number).filter(x => isFinite(x) && x > 0);
+    if (v.length < 2) return '';
+    const w = 96, h = 26, pad = 2;
+    const max = Math.max.apply(null, v), min = Math.min.apply(null, v);
+    const span = (max - min) || 1;
+    const pts = v.map((x, i) => {
+      const px = pad + (i / (v.length - 1)) * (w - 2 * pad);
+      const py = h - pad - ((x - min) / span) * (h - 2 * pad);
+      return px.toFixed(1) + ',' + py.toFixed(1);
+    }).join(' ');
+    const area = pad + ',' + (h - pad) + ' ' + pts + ' ' + (w - pad) + ',' + (h - pad);
+    return '<svg class="cc-spark" viewBox="0 0 ' + w + ' ' + h + '" preserveAspectRatio="none">' +
+      '<polygon points="' + area + '" fill="' + color + '" fill-opacity="0.16"/>' +
+      '<polyline points="' + pts + '" fill="none" stroke="' + color + '" stroke-width="1.4" stroke-linejoin="round" stroke-linecap="round"/>' +
+      '</svg>';
+  }
+
+  // Temperature → thermal band: ≤60 ok · 60–70 warn · 70–80 hot · >80 crit.
+  function _ccTempBand(t) {
+    const n = _numOrNull(t);
+    if (n == null) return 'mute';
+    if (n <= 60) return 'ok';
+    if (n <= 70) return 'warn';
+    if (n <= 80) return 'hot';
+    return 'crit';
+  }
+
+  // ── NETWORK/POOL STRIP — real network/pool telemetry from the snapshot ──
+  function _ccRenderNetwork(snap) {
     if (!snap) return;
     const net = snap.network || {};
     const pool = snap.pool || {};
     if (dom.lmNetworkDiff) dom.lmNetworkDiff.textContent = fmt.diff(net.difficulty);
     if (dom.lmNetworkHr) dom.lmNetworkHr.textContent = fmt.hashrate(net.hashrate);
-    if (dom.lmNetworkHeight) dom.lmNetworkHeight.textContent = net.height ? '#' + net.height : '\u2014';
+    if (dom.lmNetworkHeight) dom.lmNetworkHeight.textContent = net.height ? '#' + net.height : '—';
     // Est. block time: prefer the probability engine's live estimate.
     if (dom.lmNetworkBlock) {
       const prox = snap.proximity || {};
       const lc = prox.live_calc || {};
-      const secs = Number(lc.expected_time_seconds) || Number((prox.time_to_block) || 0);
-      dom.lmNetworkBlock.textContent = secs > 0 ? fmt.secsToHuman(secs) : '\u2014';
+      const secs = Number(lc.expected_time_seconds) || Number(prox.time_to_block || 0);
+      dom.lmNetworkBlock.textContent = secs > 0 ? fmt.secsToHuman(secs) : '—';
     }
-    if (dom.lmNetworkPoolWorkers) dom.lmNetworkPoolWorkers.textContent = pool.workers != null ? pool.workers : '\u2014';
-    // lastBlockTime from the pool API is SECONDS SINCE the last block (not a
-    // height — the old lastBlockHeight key is always NULL). Render the age
-    // honestly ("1.2d ago") instead of a fake #958527 height.
+    if (dom.lmNetworkPoolWorkers) dom.lmNetworkPoolWorkers.textContent = pool.workers != null ? pool.workers : '—';
+    // lastBlockTime from the pool API is SECONDS SINCE the last block.
     if (dom.lmNetworkLastBlock) {
       const since = Number(pool.lastBlockTime);
       if (isFinite(since) && since > 0) {
         dom.lmNetworkLastBlock.textContent = fmt.secsToHuman(since) + ' ago';
         dom.lmNetworkLastBlock.title = 'segundos desde o último bloco da pool';
       } else {
-        dom.lmNetworkLastBlock.textContent = '\u2014';
+        dom.lmNetworkLastBlock.textContent = '—';
       }
     }
   }
 
-  function _updateBestShare(allWorkers) {
+  // Best-share highlight across the FLEET (best_diff per device).
+  function _updateFleetBestShare(rows) {
     if (!dom.lmBestShare) return;
     let best = 0, bestW = '';
-    (allWorkers || []).forEach(w => { const bd = parseBestDiff(w.bestDifficulty); if (bd > best) { best = bd; bestW = w.name || w.id || 'unknown'; } });
+    rows.forEach(r => { const bd = parseBestDiff(r.bestDiff); if (bd > best) { best = bd; bestW = r.name; } });
     if (best > _lmBestShareEver && best > 0) {
       _lmBestShareEver = best; _lmBestShareWorker = bestW; _lmBestShareTime = new Date().toISOString().slice(11, 19) + ' UTC';
       if (dom.lmBestShareVal) dom.lmBestShareVal.textContent = fmt.diff(best);
@@ -3767,12 +3771,45 @@ dom.walletSave?.addEventListener('click', async () => {
       if (dom.lmBestShareTime) dom.lmBestShareTime.textContent = _lmBestShareTime;
       dom.lmBestShare.style.display = 'block';
       dom.lmBestShare.classList.remove('lm-best-share--flash'); void dom.lmBestShare.offsetWidth; dom.lmBestShare.classList.add('lm-best-share--flash');
+      _logMiningEvent('BEST', 'novo best share ' + fmt.diff(best) + ' · ' + bestW);
     } else if (_lmBestShareEver > 0) {
       if (dom.lmBestShareVal) dom.lmBestShareVal.textContent = fmt.diff(_lmBestShareEver);
       dom.lmBestShare.style.display = 'block';
     }
   }
 
+  // ── snapshot-fed parts of the panel: network strip, earnings KPI e
+  //    eventos de share do live-calc ticker (dedupe por ts) ──
+  function renderFleetCommandCenter(snap) {
+    if (!snap) return;
+    _ccRenderNetwork(snap);
+    if (dom.fccSummaryEarnings) {
+      const p = snap.profitability || {};
+      const usd = Number(p.p_fiat_day);
+      if (isFinite(usd) && usd > 0) {
+        dom.fccSummaryEarnings.textContent = '$' + usd.toFixed(2) + '/d';
+      } else {
+        const btc = Number(p.p_btc_day);
+        dom.fccSummaryEarnings.textContent = (isFinite(btc) && btc > 0) ? btc.toPrecision(4) + ' BTC/d' : '—';
+      }
+    }
+    // Share events from the live-calc ticker — dedupe keeps the terminal
+    // from spamming on repeated polls.
+    const ticker = (snap.proximity && snap.proximity.live_calc && snap.proximity.live_calc.ticker) || [];
+    if (ticker.length && !_lmLoggedActive) {
+      _lmLoggedActive = true;
+      _logMiningEvent('JOB', 'live share stream conectado (' + ticker.length + ' share(s) no ticker)');
+    }
+    if (Object.keys(_ccShareSeen).length > 2000) {
+      Object.keys(_ccShareSeen).forEach(k => delete _ccShareSeen[k]);
+    }
+    ticker.forEach(s => {
+      const key = 'sh_' + s.ts;
+      if (_ccShareSeen[key]) return;
+      _ccShareSeen[key] = 1;
+      _logMiningEvent('SHARE', (s.share_diff_str || '—') + (s.gap ? ' · gap ' + Number(s.gap).toFixed(1) + 's' : ''));
+    });
+  }
   function _logMiningEvent(type, msg) {
     if (!dom.lmEventLogTerminal) return;
     const t = String(type || '').toUpperCase();
@@ -3827,36 +3864,201 @@ dom.walletSave?.addEventListener('click', async () => {
 
 
 
-  function renderLiveMining(allWorkers, primaryWorker) {
-    if (!dom.lmGrid) return;
-    const workers = allWorkers || [];
-    if (!workers.length) { dom.lmGrid.innerHTML = '<div class="lm-empty">awaiting worker data</div>'; if (dom.lmStatusBadge) dom.lmStatusBadge.textContent = 'IDLE'; return; }
-    if (dom.lmStatusBadge) dom.lmStatusBadge.textContent = 'LIVE';
-    if (dom.lmWorkersBadge) dom.lmWorkersBadge.textContent = `${workers.length} worker${workers.length === 1 ? '' : 's'}`;
-    _updateLiveMiningSummary(workers, primaryWorker);
-    _updateBestShare(workers);
-    if (workers.length > 0 && !_lmLoggedActive) { _logMiningEvent('JOB', `${workers.length} worker${workers.length===1?'':'s'} active`); _lmLoggedActive = true; }
+  // ── FLEET-fed rendering: KPIs + worker grid + exceptions + thermal ──
+  // Fed by /api/axe-fleet/summary (cached in _ccLastFleet). Runs on every
+  // fleet poll; snapshot-fed parts live in renderFleetCommandCenter().
+  function _ccRenderFleet() {
+    const fleet = _ccLastFleet || [];
+    const rows = buildCommandCenterRows(fleet);
+    if (dom.lmWorkersCount) dom.lmWorkersCount.textContent = rows.length + (rows.length === 1 ? ' worker' : ' workers');
+    if (dom.lmWorkersBadge) dom.lmWorkersBadge.textContent = rows.length + (rows.length === 1 ? ' worker' : ' workers');
+    if (dom.lmStatusBadge) dom.lmStatusBadge.textContent = rows.length ? 'LIVE' : 'IDLE';
+    if (dom.lmWorkers) dom.lmWorkers.style.display = rows.length ? 'block' : 'none';
+    if (dom.lmFlow) dom.lmFlow.style.display = rows.length ? 'block' : 'none';
+    if (!rows.length) {
+      if (dom.lmWorkersGrid) dom.lmWorkersGrid.innerHTML = '<div class="lm-workers__empty">no fleet workers registered — add miners in AXE FLEET (⚙) to see live per-worker telemetry here</div>';
+      if (dom.fccExceptions) { dom.fccExceptions.style.display = 'none'; dom.fccExceptions.innerHTML = ''; }
+      if (dom.fccThermalGrid) dom.fccThermalGrid.innerHTML = '';
+      // Fleet emptied — drop lingering buffers/counters so a re-added device
+      // with reset counters never produces a bogus first delta.
+      Object.keys(_lmFlow).forEach(k => delete _lmFlow[k]);
+      Object.keys(_lmLastCounters).forEach(k => delete _lmLastCounters[k]);
+      return;
+    }
 
-    let maxHr = 0; workers.forEach(w => { const h = Number(w.hashrate || 0); if (h > maxHr) maxHr = h; });
-    const html = workers.map((w, i) => {
-      const hr = Number(w.hashrate || 0);
-      const pct = maxHr > 0 ? Math.min(100, (hr / maxHr) * 100) : 0;
-      const isPrimary = primaryWorker && (w.name === primaryWorker.name || w.id === primaryWorker.id);
-      return `<div class="lm-worker${isPrimary ? ' is-primary' : ''}">
-        <div class="lm-worker__head"><span class="lm-worker__name">${escapeHtml(w.name || w.id || `Worker ${i+1}`)}</span>${isPrimary ? '<span class="lm-worker__badge">PRIMARY</span>' : ''}</div>
-        <div class="lm-worker__hr-bar-wrap"><div class="lm-worker__hr-bar" style="width:${pct.toFixed(1)}%"></div></div>
-        <div class="lm-worker__stats">
-          <div class="lm-worker__stat"><span class="lbl">HASHRATE</span><span class="val">${fmt.hashrate(hr)}</span></div>
-          <div class="lm-worker__stat"><span class="lbl">BEST DIFF</span><span class="val">${fmt.diff(w.bestDifficulty)}</span></div>
-          <div class="lm-worker__stat"><span class="lbl">LAST SHARE</span><span class="val">${w.lastSubmission ? fmt.age(w.lastSubmission) : '\u2014'}</span></div>
-          <div class="lm-worker__stat"><span class="lbl">UPTIME</span><span class="val">${w.uptime ? fmt.uptime(w.uptime) : '\u2014'}</span></div>
-        </div>
-      </div>`;
-    }).join('');
-    dom.lmGrid.innerHTML = html;
+    // KPI strip (fleet-fed).
+    const k = _ccKpiAgg(fleet);
+    if (dom.fccSummaryHr) dom.fccSummaryHr.textContent = k.totalHr ? fmt.hashrate(k.totalHr) : '—';
+    _ccHrSeries.push(k.totalHr); if (_ccHrSeries.length > 40) _ccHrSeries.shift();
+    if (dom.fccSummaryHrSpark) dom.fccSummaryHrSpark.innerHTML = _ccSvgSparkline(_ccHrSeries, '#00b8d4');
+    const onlineN = fleet.filter(d => d.status === 'ONLINE' || d.status === 'HASHING').length;
+    const warnN = fleet.filter(d => d.status === 'WARNING').length;
+    const offlineN = fleet.length - onlineN - warnN;
+    if (dom.fccSummaryOnline) dom.fccSummaryOnline.textContent = String(onlineN);
+    if (dom.fccSummaryWarn) dom.fccSummaryWarn.textContent = String(warnN);
+    if (dom.fccSummaryOffline) dom.fccSummaryOffline.textContent = String(offlineN);
+    if (dom.fccSummaryTemp) dom.fccSummaryTemp.textContent = k.avgTemp != null ? k.avgTemp.toFixed(1) + '°C' : '—';
+    if (dom.fccSummaryPower) dom.fccSummaryPower.textContent = k.totalPowerW ? (k.totalPowerW / 1000).toFixed(2) + ' kW' : '—';
+    if (dom.fccSummaryEff) dom.fccSummaryEff.textContent = k.avgEff != null ? k.avgEff.toFixed(1) + ' J/TH' : '—';
+    if (dom.fccSummaryPing) {
+      if (k.avgLatency != null) {
+        dom.fccSummaryPing.textContent = k.avgLatency + 'ms';
+        dom.fccSummaryPing.classList.toggle('fcc-kpi__val--good', k.avgLatency <= 50);
+        dom.fccSummaryPing.classList.toggle('fcc-kpi__val--warn', k.avgLatency > 50);
+      } else {
+        dom.fccSummaryPing.textContent = '—';
+        dom.fccSummaryPing.classList.remove('fcc-kpi__val--good', 'fcc-kpi__val--warn');
+      }
+    }
+
+    // Flow samples (share-quality raster) + per-device HR history.
+    rows.forEach(r => {
+      const cur = { a: r.sharesA, r: r.sharesR, s: r.sharesS };
+      const delta = _lmShareDelta(_lmLastCounters[r.id], cur);
+      _pushLmFlowSample(r.id, { code: _lmFlowSampleFromDelta(r.status, delta), detail: _lmFlowDetail(delta) });
+      _lmLastCounters[r.id] = cur;
+      if (!_ccHrHist[r.id]) _ccHrHist[r.id] = [];
+      const hh = _ccHrHist[r.id];
+      hh.push(r.hr); if (hh.length > 40) hh.shift();
+    });
+    const alive = {}; rows.forEach(r => alive[r.id] = 1);
+    Object.keys(_lmFlow).forEach(id => { if (!alive[id]) { delete _lmFlow[id]; delete _lmLastCounters[id]; delete _ccHrHist[id]; } });
+
+    _updateFleetBestShare(rows);
+    _ccRenderExceptions(rows);
+    _ccRenderThermal(rows);
+
+    // Worker grid (cards ou dense table) + bind dos comandos do agente.
+    if (dom.lmWorkersGrid) {
+      dom.lmWorkersGrid.innerHTML = (_ccView === 'table') ? _ccRenderTable(rows) : _ccRenderCards(rows);
+      dom.lmWorkersGrid.querySelectorAll('.axe-cmd-btn').forEach(btn => {
+        btn.addEventListener('click', (e) => { e.stopPropagation(); _handleAxeCmdClick(btn); });
+      });
+    }
+
+    // Raster — rows = workers, cols = last N samples (oldest left, newest right).
+    const cols = _LM_FLOW_MAX;
+    if (dom.lmFlowRaster) {
+      const raster = rows.map(r => {
+        const buf = _lmFlow[r.id] || [];
+        let cellsHtml = '';
+        for (let i = 0; i < cols; i++) {
+          const idx = i - (cols - buf.length);
+          const s = idx < 0 ? null : (buf[idx] || null);
+          const code = s ? s.code : 'mute';
+          // NB: '' is a valid label (mute) — use nullish check, not `|| code`.
+          const label = _LM_FLOW_LABELS[code] != null ? _LM_FLOW_LABELS[code] : code;
+          const tip = s && s.detail ? label + ' — ' + s.detail : label;
+          cellsHtml += '<span class="lm-flow__cell lm-flow__cell--' + code + '" title="' + escapeHtml(tip) + '"></span>';
+        }
+        return '<div class="lm-flow__row"><span class="lm-flow__label" title="' + escapeHtml(r.ip) + '">' + escapeHtml(r.name) + '</span><div class="lm-flow__cells">' + cellsHtml + '</div></div>';
+      }).join('');
+      dom.lmFlowRaster.innerHTML = raster;
+    }
   }
 
-  // ══════════════════════════════════════════════════════════════════════
+  // Exception hierarchy — only workers that need a human surface here.
+  function _ccRenderExceptions(rows) {
+    const box = dom.fccExceptions;
+    if (!box) return;
+    const bad = rows.filter(r => r.status !== 'ONLINE' && r.status !== 'HASHING');
+    if (!bad.length) { box.style.display = 'none'; box.innerHTML = ''; return; }
+    const items = bad.map(r => {
+      const st = r.status === 'WARNING' ? 'warning' : 'offline';
+      const reason = r.advice.length ? r.advice[0] : (r.status === 'WARNING' ? 'degradado — checar telemetria' : 'sem resposta do device');
+      return '<span class="fcc-exceptions__item fcc-exceptions__item--' + st + '" title="' + escapeHtml(reason) + '"><span class="fcc-exceptions__dot"></span>' + escapeHtml(r.name) + ' · ' + escapeHtml(reason) + '</span>';
+    }).join('');
+    box.innerHTML = '<div class="fcc-exceptions__label">⚠ ' + bad.length + ' WORKER(S) PRECISAM DE ATENÇÃO</div><div class="fcc-exceptions__items">' + items + '</div>';
+    box.style.display = 'block';
+  }
+
+  // Thermal map — hasboard temperatures com thresholds (research: control-room).
+  function _ccRenderThermal(rows) {
+    const grid = dom.fccThermalGrid;
+    if (!grid) return;
+    if (!rows.length) { grid.innerHTML = '<div class="lm-workers__empty">sem workers — adicione miners no AXE FLEET</div>'; return; }
+    const cell = (label, v, band) => '<div class="fcc-temp fcc-temp--' + band + '" title="' + label + ' ' + (v != null ? Math.round(v) + '°C' : 'n/d') + '"><span class="fcc-temp__lbl">' + label + '</span><span class="fcc-temp__val">' + (v != null ? Math.round(v) + '°' : '—') + '</span></div>';
+    grid.innerHTML = rows.map(r => {
+      const cells = cell('T', r.temp, _ccTempBand(r.temp)) + cell('CHIP', r.chipTemp, _ccTempBand(r.chipTemp)) + cell('VR', r.vrTemp, _ccTempBand(r.vrTemp));
+      return '<div class="fcc-temp-col" title="' + escapeHtml(r.name) + '"><span class="fcc-temp-col__name">' + escapeHtml(r.name) + '</span><div class="fcc-temp-col__cells">' + cells + '</div></div>';
+    }).join('');
+  }
+
+  // Worker cards (grid view) — health ring, sparkline, share-quality bar.
+  function _ccRenderCards(rows) {
+    const esc = escapeHtml;
+    return rows.map(r => {
+      const stCls = (r.status === 'ONLINE' || r.status === 'HASHING') ? 'is-online'
+        : (r.status === 'WARNING' || r.status === 'IDLE' || r.status === 'PAUSED') ? 'is-warning' : 'is-offline';
+      const stDot = '<span class="fcc-card__dot ' + stCls.replace('is-', '') + '"></span>';
+      const hs = r.healthScore != null ? r.healthScore : 0;
+      const circumference = 2 * Math.PI * 13;
+      const offset = circumference * (1 - Math.min(100, hs) / 100);
+      const healthColor = hs >= 80 ? '#00c853' : hs >= 50 ? '#ffd600' : '#ff1744';
+      const healthSvg = '<svg class="fcc-card__ring" viewBox="0 0 32 32"><circle class="fcc-card__ring-bg" cx="16" cy="16" r="13"/><circle class="fcc-card__ring-fill" cx="16" cy="16" r="13" stroke="' + healthColor + '" stroke-dasharray="' + circumference + '" stroke-dashoffset="' + offset + '"/></svg>';
+      const tempTxt = r.temp != null ? Math.round(r.temp) + '°C' : '—';
+      const tempCls = r.temp != null ? 't' + _ccTempBand(r.temp) : '';
+      const ping = r.latencyMs != null ? r.latencyMs + 'ms' : '—';
+      const pingCls = r.latencyMs == null ? '' : (r.latencyMs <= 50 ? 'good' : r.latencyMs <= 150 ? 'warn' : 'bad');
+      const lastShare = r.lastShareAgo != null ? fmt.age(Date.now() / 1000 - r.lastShareAgo) : '—';
+      const eff = r.eff != null ? r.eff.toFixed(1) + ' J/TH' : '—';
+      const power = r.power != null ? r.power.toFixed(0) + 'W' : '—';
+      const fan = r.fan != null ? r.fan + ' rpm' : '—';
+      const adviceHtml = r.advice.length ? '<div class="fcc-card__advice">' + r.advice.map(a => '<span class="fcc-card__advice-chip">' + esc(a) + '</span>').join('') + '</div>' : '';
+      const restartBtn = r.caps.indexOf('restart') >= 0 ? '<button class="axe-cmd-btn axe-cmd-btn--restart" data-device-id="' + esc(r.id) + '" data-cmd="restart">↻ Restart</button>' : '';
+      const identifyBtn = r.caps.indexOf('identify') >= 0 ? '<button class="axe-cmd-btn axe-cmd-btn--identify" data-device-id="' + esc(r.id) + '" data-cmd="identify">◈ Identify</button>' : '';
+      return '<div class="fcc-card ' + stCls + '" data-device-id="' + esc(r.id) + '">' +
+        '<div class="fcc-card__head">' + healthSvg +
+          '<div class="fcc-card__id">' +
+            '<div class="fcc-card__name">' + esc(r.name) + stDot + '</div>' +
+            '<div class="fcc-card__model">' + esc(r.manufacturer || '') + (r.model ? ' · ' + esc(r.model) : '') + (r.agentManaged ? ' · <span class="fcc-card__agent">AGENT</span>' : '') + '</div>' +
+          '</div>' +
+          (restartBtn || identifyBtn ? '<div class="fcc-card__cmds">' + restartBtn + identifyBtn + '</div>' : '<div class="fcc-card__cmds"><span class="axe-card__ro-badge">READ-ONLY</span></div>') +
+        '</div>' +
+        '<div class="fcc-card__hr"><span class="fcc-card__hr-val">' + esc(r.hrStr) + '</span>' + _ccSvgSparkline(_ccHrHist[r.id], '#00b8d4') + '</div>' +
+        '<div class="fcc-card__stats">' +
+          '<div class="fcc-card__stat"><span class="lbl">TEMP</span><span class="val ' + tempCls + '">' + tempTxt + '</span></div>' +
+          '<div class="fcc-card__stat"><span class="lbl">POWER</span><span class="val">' + power + '</span></div>' +
+          '<div class="fcc-card__stat"><span class="lbl">EFF</span><span class="val">' + eff + '</span></div>' +
+          '<div class="fcc-card__stat"><span class="lbl">FAN</span><span class="val">' + fan + '</span></div>' +
+          '<div class="fcc-card__stat"><span class="lbl">LAST SHARE</span><span class="val">' + lastShare + '</span></div>' +
+          '<div class="fcc-card__stat"><span class="lbl">PING</span><span class="val ' + pingCls + '">' + ping + '</span></div>' +
+        '</div>' +
+        '<div class="fcc-card__shares"><span class="fcc-card__shares-lbl">SHARES A/S/R</span>' + _ccShareBar(r.sharesA, r.sharesR, r.sharesS) + '</div>' +
+        adviceHtml +
+      '</div>';
+    }).join('');
+  }
+
+  // Dense table view (HiveOS-style worker list).
+  function _ccRenderTable(rows) {
+    const esc = escapeHtml;
+    const cell = (v, cls) => '<span class="fcc-t__cell' + (cls ? ' ' + cls : '') + '">' + v + '</span>';
+    const head = ['WORKER', 'HR', 'TEMP', 'POWER', 'EFF', 'SHARES A/S/R', 'REJ%', 'LAST SHARE', 'PING', 'HEALTH', '']
+      .map(h => cell(h, 'fcc-t__cell--head')).join('');
+    const body = rows.map(r => {
+      const stCls = (r.status === 'ONLINE' || r.status === 'HASHING') ? 'fcc-t__st--ok'
+        : (r.status === 'WARNING' || r.status === 'IDLE' || r.status === 'PAUSED') ? 'fcc-t__st--warn' : 'fcc-t__st--bad';
+      const tempTxt = r.temp != null ? Math.round(r.temp) + '°C' : '—';
+      const tempCls = r.temp != null ? 'fcc-t__temp t' + _ccTempBand(r.temp) : '';
+      const rej = r.rejectPct != null ? Number(r.rejectPct).toFixed(1) + '%' : '—';
+      const lastShare = r.lastShareAgo != null ? fmt.age(Date.now() / 1000 - r.lastShareAgo) : '—';
+      const ping = r.latencyMs != null ? r.latencyMs + 'ms' : '—';
+      const health = r.healthScore != null ? r.healthScore + '/100' : '—';
+      const shares = r.sharesA + '/' + r.sharesS + '/' + r.sharesR;
+      const restartBtn = r.caps.indexOf('restart') >= 0
+        ? '<button class="axe-cmd-btn axe-cmd-btn--restart axe-cmd-btn--mini" data-device-id="' + esc(r.id) + '" data-cmd="restart" title="Restart">↻</button>' : '';
+      return '<div class="fcc-t__row">' +
+        cell('<span class="fcc-t__name ' + stCls + '">' + esc(r.name) + '</span>' + (r.agentManaged ? '<span class="fcc-t__agent">AGENT</span>' : '')) +
+        cell(esc(r.hrStr)) + cell(tempTxt, tempCls) +
+        cell(r.power != null ? r.power.toFixed(0) + 'W' : '—') +
+        cell(r.eff != null ? r.eff.toFixed(1) + ' J/TH' : '—') +
+        cell(shares) + cell(rej, r.rejectPct != null && r.rejectPct >= 5 ? 'fcc-t__cell--bad' : '') +
+        cell(lastShare) + cell(ping) + cell(health) + cell(restartBtn, 'fcc-t__cell--cmd') +
+      '</div>';
+    }).join('');
+    return '<div class="fcc-t"><div class="fcc-t__row fcc-t__row--head">' + head + '</div>' + body + '</div>';
+  }
   // AXE FLEET — render device cards from snapshot.axe_fleet
   // ══════════════════════════════════════════════════════════════════════
 
@@ -3950,16 +4152,17 @@ dom.walletSave?.addEventListener('click', async () => {
     } catch (e) {
       if (dom.axeFleetStatusBadge) dom.axeFleetStatusBadge.textContent = 'ERROR';
     }
-    // FASE_2 — Worker Intelligence rides the same poll/SSE cadence.
-    fetchWorkerIntelligence();
+    // FLEET COMMAND CENTER rides the same poll/SSE cadence.
+    fetchFleetCommandCenter();
   }
 
-  // ── FASE_2 · WORKER INTELLIGENCE (CYPHER // LIVE MINING) ───────────────
-  // Per-worker live telemetry feed fed by the AXE FLEET /summary endpoint
-  // (shares, reject ratio, stratum diff target, last share, latency). Honest
-  // '—' whenever a firmware doesn't expose a field — no invented numbers.
-  // Pure builder mirrored in tests/test_app_js_core.js.
-  function buildWorkerIntelligenceRows(devices) {
+  // ── FLEET COMMAND CENTER · WORKER INTELLIGENCE ────────────────────────
+  // Per-worker live telemetry fed by the AXE FLEET /summary endpoint
+  // (shares, reject ratio, temps, power, efficiency, latency, health).
+  // Honest '—' whenever a firmware doesn't expose a field. Exception
+  // hierarchy: WARNING/IDLE/PAUSED first, then OFFLINE/ERROR/CRITICAL,
+  // healthy ONLINE workers last. Pure builder mirrored in tests.
+  function buildCommandCenterRows(devices) {
     const rows = [];
     (devices || []).forEach(function (d) {
       const tel = d._telemetry || {};
@@ -3984,10 +4187,18 @@ dom.walletSave?.addEventListener('click', async () => {
         id: d.id || '',
         name: d.name || d.ip_address || '?',
         ip: d.ip_address || '',
+        model: d.model || '',
+        manufacturer: d.manufacturer || '',
         status: d.status || 'OFFLINE',
+        agentManaged: !!d.agent_managed,
         hr: Number(tel.hashrate_hs) || 0,
-        hrStr: fmt.hashrate(tel.hashrate_hs),
-        temp: tel.temperature,
+        hrStr: tel.hashrate_str || fmt.hashrate(tel.hashrate_hs),
+        temp: _numOrNull(tel.temperature),
+        chipTemp: _numOrNull(tel.chip_temp),
+        vrTemp: _numOrNull(tel.vr_temp),
+        fan: tel.fan_rpm != null ? tel.fan_rpm : tel.fan_speed,
+        power: _numOrNull(tel.power_watts),
+        eff: _numOrNull(tel.efficiency_jth),
         sharesA: accepted, sharesR: rejected, sharesS: stale,
         rejectPct: rejectPct,
         bestDiff: tel.best_diff,
@@ -3996,19 +4207,20 @@ dom.walletSave?.addEventListener('click', async () => {
         latencyMs: d.latency_ms,
         stratum: tel.stratum_status || '',
         healthScore: health.score != null ? health.score : null,
+        advice: Array.isArray(d.advice) ? d.advice : [],
+        caps: Array.isArray(d.capabilities) ? d.capabilities : [],
       });
     });
-    // Online first → warn → offline; stable by name within each bucket.
-    const order = { ONLINE: 0, HASHING: 0, WARNING: 1, IDLE: 2, PAUSED: 3, OFFLINE: 4, ERROR: 5, CRITICAL: 6 };
+    // Exception hierarchy (research: manage by exception) — problems first.
+    const order = { WARNING: 0, IDLE: 0, PAUSED: 0, OFFLINE: 1, ERROR: 1, CRITICAL: 1, ONLINE: 2, HASHING: 2 };
     rows.sort(function (a, b) {
-      const oa = order[a.status] != null ? order[a.status] : 9;
-      const ob = order[b.status] != null ? order[b.status] : 9;
+      const oa = order[a.status] != null ? order[a.status] : 3;
+      const ob = order[b.status] != null ? order[b.status] : 3;
       if (oa !== ob) return oa - ob;
       return String(a.name).localeCompare(String(b.name));
     });
     return rows;
   }
-
   // Hash Flow Raster — rolling per-worker status samples (client-side ring
   // buffer, one column per poll tick, max 24) so the feed shows worker
   // health over time without requiring a new backend series.
@@ -4059,114 +4271,32 @@ dom.walletSave?.addEventListener('click', async () => {
     if (buf.length > _LM_FLOW_MAX) buf.shift();
   }
 
-  // FASE_2 — render the worker table + hash-flow raster into #lm-workers.
-  function renderWorkerIntelligence(devices) {
-    const box = dom.lmWorkersGrid;
-    if (!box) return;
-    const rows = buildWorkerIntelligenceRows(devices);
-    if (dom.lmWorkersCount) dom.lmWorkersCount.textContent = rows.length + (rows.length === 1 ? ' worker' : ' workers');
-    if (dom.lmWorkers) dom.lmWorkers.style.display = rows.length ? 'block' : 'none';
-    if (dom.lmFlow) dom.lmFlow.style.display = rows.length ? 'block' : 'none';
-    if (!rows.length) {
-      box.innerHTML = '<div class="lm-workers__empty">no fleet workers registered — add miners in AXE FLEET (⚙) to see live per-worker telemetry here</div>';
-      // Fleet emptied — drop lingering buffers/counters so a re-added device
-      // with reset counters never produces a bogus first delta.
-      Object.keys(_lmFlow).forEach(k => delete _lmFlow[k]);
-      Object.keys(_lmLastCounters).forEach(k => delete _lmLastCounters[k]);
-      return;
-    }
-
-    // Push this tick's sample (color = share quality via counter deltas),
-    // then drop buffers/counters of removed devices.
-    rows.forEach(r => {
-      const cur = { a: r.sharesA, r: r.sharesR, s: r.sharesS };
-      const delta = _lmShareDelta(_lmLastCounters[r.id], cur);
-      _pushLmFlowSample(r.id, {
-        code: _lmFlowSampleFromDelta(r.status, delta),
-        detail: _lmFlowDetail(delta),
-      });
-      _lmLastCounters[r.id] = cur;
-    });
-    const alive = {}; rows.forEach(r => alive[r.id] = 1);
-    Object.keys(_lmFlow).forEach(id => {
-      if (!alive[id]) { delete _lmFlow[id]; delete _lmLastCounters[id]; }
-    });
-
-    const esc = escapeHtml;
-    const cell = (v, cls, title) => `<span class="lm-w__cell${cls ? ' ' + cls : ''}"${title ? ' title="' + title + '"' : ''}>${v}</span>`;
-    // 'DIFF' column: current stratum difficulty target when the firmware
-    // exposes it (pool_diff), else the worker's best share diff — honest
-    // telemetry, never invented. The cell tooltip carries which source was
-    // used so the number is never mistaken for the live target.
-    const head = () => ['WORKER', 'HR', 'LAST SHARE', 'DIFF', 'REJ%', 'SHARES A/R/S', 'STRATUM', 'PING', 'HEALTH']
-      .map(h => cell(h, 'lm-w__cell--head')).join('');
-    const body = rows.map(r => {
-      const stCls = (r.status === 'ONLINE' || r.status === 'HASHING') ? 'lm-w__st--ok'
-        : (r.status === 'WARNING' || r.status === 'IDLE' || r.status === 'PAUSED' ? 'lm-w__st--warn' : 'lm-w__st--bad');
-      // fmt.age(now - delta) === delta — lastShareAgo is already seconds
-      // since the last share, so this renders "Xs ago / Xm ago".
-      const lastShare = r.lastShareAgo != null ? fmt.age(Date.now() / 1000 - r.lastShareAgo) : '\u2014';
-      const diffT = (r.poolDiff != null && r.poolDiff !== '')
-        ? fmt.diff(r.poolDiff)
-        : (r.bestDiff ? fmt.diff(r.bestDiff) : '\u2014');
-      const diffSrc = (r.poolDiff != null && r.poolDiff !== '')
-        ? 'stratum difficulty target'
-        : (r.bestDiff ? 'best share diff (stratum target not exposed)' : null);
-      const rej = r.rejectPct != null ? Number(r.rejectPct).toFixed(1) + '%' : '\u2014';
-      const shares = `${r.sharesA}/${r.sharesR}/${r.sharesS}`;
-      const health = r.healthScore != null ? r.healthScore + '/100' : '\u2014';
-      const ping = r.latencyMs != null ? r.latencyMs + 'ms' : '\u2014';
-      const stratum = r.stratum ? esc(String(r.stratum)) : '\u2014';
-      const temp = r.temp != null ? Math.round(r.temp) + '°C' : null;
-      return `<div class="lm-w__row">` +
-        cell(`<span class="lm-w__name lm-w__st ${stCls}">${esc(r.name)}</span><span class="lm-w__ip">${esc(r.ip)}${temp ? ' · ' + temp : ''}</span>`)
-        + cell(r.hrStr)
-        + cell(lastShare)
-        + cell(diffT, '', diffSrc)
-        + cell(rej, r.rejectPct != null && r.rejectPct >= 5 ? 'lm-w__cell--bad' : '')
-        + cell(shares)
-        + cell(stratum)
-        + cell(ping)
-        + cell(health) + `</div>`;
-    }).join('');
-    box.innerHTML = `<div class="lm-w__row lm-w__row--head">${head()}</div>${body}`;
-
-    // Raster — rows = workers, cols = last N samples (oldest left, newest right).
-    // Cell color = share quality that tick (ok/rej/stale) or device status
-    // when idle/offline; tooltip carries the per-tick share delta.
-    const cols = _LM_FLOW_MAX;
-    const raster = rows.map(r => {
-      const buf = _lmFlow[r.id] || [];
-      let cellsHtml = '';
-      for (let i = 0; i < cols; i++) {
-        const idx = i - (cols - buf.length);
-        const s = idx < 0 ? null : (buf[idx] || null);
-        const code = s ? s.code : 'mute';
-        // NB: '' is a valid label (mute) — use nullish check, not `|| code`.
-        const label = _LM_FLOW_LABELS[code] != null ? _LM_FLOW_LABELS[code] : code;
-        const tip = s && s.detail ? label + ' — ' + s.detail : label;
-        cellsHtml += `<span class="lm-flow__cell lm-flow__cell--${code}" title="${esc(tip)}"></span>`;
-      }
-      return `<div class="lm-flow__row"><span class="lm-flow__label" title="${esc(r.ip)}">${esc(r.name)}</span><div class="lm-flow__cells">${cellsHtml}</div></div>`;
-    }).join('');
-    if (dom.lmFlowRaster) dom.lmFlowRaster.innerHTML = raster;
-  }
-
-  // FASE_2 — fetch fleet /summary and render Worker Intelligence. Non-fatal:
-  // on failure the panel simply keeps the last good data.
-  async function fetchWorkerIntelligence() {
+  // FLEET COMMAND CENTER — fetch /summary and render. Non-fatal: on
+  // failure the panel simply keeps the last good data.
+  async function fetchFleetCommandCenter() {
     try {
       const r = await authFetch('/api/axe-fleet/summary');
       if (!r.ok) return;
       const data = await r.json();
-      _lmFleetDevices = (data && data.devices) || [];
-      renderWorkerIntelligence(_lmFleetDevices);
-      // Refresh the fleet-fed KPI cells (EFFICIENCY / PING) on each poll so
-      // they track live share counters without waiting for the snapshot.
-      _applyLmFleetKpis(_lmFleetDevices);
+      _ccLastFleet = (data && data.devices) || [];
+      _ccRenderFleet();
     } catch (e) { /* non-fatal */ }
   }
 
+  // View toggle (grid cards / dense table) — persisted per browser.
+  function initFleetCommandCenterControls() {
+    try { _ccView = localStorage.getItem('_cc_view') || 'grid'; } catch (e) {}
+    const chips = document.querySelectorAll('.chip--view');
+    chips.forEach(chip => {
+      chip.classList.toggle('is-active', chip.getAttribute('data-cc-view') === _ccView);
+      chip.addEventListener('click', () => {
+        _ccView = chip.getAttribute('data-cc-view') || 'grid';
+        chips.forEach(c => c.classList.toggle('is-active', c.getAttribute('data-cc-view') === _ccView));
+        try { localStorage.setItem('_cc_view', _ccView); } catch (e) {}
+        _ccRenderFleet();
+      });
+    });
+  }
   function renderAxeFleet(data) {
     if (!dom.axeGrid) return;
     if (!data || !data.fleet_stats) {
@@ -4254,46 +4384,67 @@ dom.walletSave?.addEventListener('click', async () => {
       });
     });
 
-    // Attach command button handlers
+    // Attach command button handlers (shared with the FLEET COMMAND CENTER
+    // cards — one implementation via _handleAxeCmdClick).
     dom.axeGrid.querySelectorAll('.axe-cmd-btn').forEach(btn => {
-      btn.addEventListener('click', async (e) => {
-        e.stopPropagation();
-        const deviceId = btn.dataset.deviceId;
-        const command = btn.dataset.cmd;
-        if (!deviceId || !command) return;
-
-        // Confirmation for restart and pause
-        if (command === 'restart') {
-          if (!confirm('Restart this miner? It will go offline for ~30 seconds.')) return;
-        } else if (command === 'pause') {
-          if (!confirm('Pause mining on this device? Use Resume to restart.')) return;
-        }
-
-        btn.disabled = true;
-        btn.textContent = '...';
-
-        try {
-          const resp = await fetch('/api/devices/' + encodeURIComponent(deviceId) + '/command', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ command: command }),
-          });
-          const data = await resp.json();
-          if (data.success) {
-            showToast('success', command + ' sent to ' + (btn.closest('.axe-card')?.querySelector('.axe-card__name')?.textContent || 'device'));
-          } else {
-            showToast('error', data.error || 'Command failed');
-          }
-        } catch (err) {
-          showToast('error', 'Network error: ' + err.message);
-        } finally {
-          btn.disabled = false;
-          btn.textContent = command === 'restart' ? '↻ Restart' : command === 'identify' ? '◈ Identify' : command === 'pause' ? '⎔ Pause' : '⎔ Resume';
-        }
-      });
+      btn.addEventListener('click', (e) => { e.stopPropagation(); _handleAxeCmdClick(btn); });
     });
   }
 
+  // ── Shared axe-fleet command router ──────────────────────────────────
+  // restart/identify → agent queue via authFetch (Bearer); pause/resume →
+  // core route. Used by both the AXE FLEET grid and the FLEET COMMAND
+  // CENTER worker cards. The routing decision is mirrored in tests.
+  async function _handleAxeCmdClick(btn) {
+    const deviceId = btn.dataset.deviceId;
+    const command = btn.dataset.cmd;
+    if (!deviceId || !command) return;
+
+    // Confirmation for restart and pause
+    if (command === 'restart') {
+      if (!confirm('Restart this miner? It will go offline for ~30 seconds.')) return;
+    } else if (command === 'pause') {
+      if (!confirm('Pause mining on this device? Use Resume to restart.')) return;
+    }
+
+    // Captura o label original (ex.: '↻' no botão mini da tabela) para
+    // restaurar exatamente o que havia — sem hardcodar o texto do botão.
+    const originalLabel = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = '...';
+
+    // FIX (auditoria UI): os cards do AXE FLEET vivem no axe registry
+    // (tenant-scoped) e devices agent-managed só podem ser controlados
+    // através da fila do AGENTE LOCAL. A rota core /api/devices/<id>/command
+    // consulta o core registry — para estes devices ela responde 404 e o
+    // miner NUNCA reinicia (teatro). Roteamos restart/identify para os
+    // endpoints /api/axe-fleet/devices/<id>/{restart|identify}, que
+    // enfileiram no agente e exigem o Bearer do tenant (authFetch).
+    const isAgentRouted = command === 'restart' || command === 'identify';
+    const url = isAgentRouted
+      ? '/api/axe-fleet/devices/' + encodeURIComponent(deviceId) + '/' + command
+      : '/api/devices/' + encodeURIComponent(deviceId) + '/command';
+    const opts = {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(isAgentRouted ? {} : { command: command }),
+    };
+    try {
+      const resp = isAgentRouted ? await authFetch(url, opts) : await fetch(url, opts);
+      const data = await resp.json().catch(() => ({}));
+      if (data.success) {
+        const name = btn.closest('.axe-card, .fcc-card')?.querySelector('.axe-card__name, .fcc-card__name')?.textContent || 'device';
+        showToast('success', (data.message || command + ' sent to ' + name));
+      } else {
+        showToast('error', data.error || ('Command failed (' + resp.status + ')'));
+      }
+    } catch (err) {
+      showToast('error', 'Network error: ' + err.message);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = originalLabel;
+    }
+  }
   function _renderAxeCard(d, maxHr) {
     maxHr = maxHr || 1;
     const tel = d.telemetry || {};
@@ -4928,123 +5079,6 @@ dom.walletSave?.addEventListener('click', async () => {
   }
 
   // ══════════════════════════════════════════════════════════════════════
-  // HASH SEARCH ENGINE (old — disabled, superseded by hunt engine)
-  // ══════════════════════════════════════════════════════════════════════
-
-  function _updateHashSearchState(worker, network) { /* no-op: superseded by _huntUpdateState */ }
-
-  // ══════════════════════════════════════════════════════════════════════
-  // HASH SEARCH — CALC STREAM + live METRICS (canvas de partículas removido)
-  // ══════════════════════════════════════════════════════════════════════
-
-  const _hunt = {
-    hr: 0, bestDiff: 0, pBlockCum: 0, expBlocks: 0,
-    streamLines: 0, streamQueue: [], metricsHrHistory: [],
-    _timer: null,
-  };
-
-  function _huntInit() {
-    clearInterval(_hunt._timer);
-    _hunt._timer = setInterval(() => {
-      // background-CPU savings (same pattern as the removed rAF loop)
-      if (document.hidden) return;
-      // drain up to 3 shares per tick so burst catch-up (queue up to 60)
-      // is bounded instead of 1/s (60s lag)
-      for (let n = 0; n < 3 && _hunt.streamQueue.length; n++) _hunt.updateStream();
-      _hunt.updateMetrics();
-    }, 1000);
-  }
-
-  _hunt.fmtPct = (n) => { if (n<0.0001) return n.toExponential(2)+'%'; if (n<0.01) return n.toFixed(5)+'%'; return n.toFixed(3)+'%'; };
-
-  _hunt.updateStream = () => {
-    const feed = document.getElementById('hunt-stream-feed'); if (!feed || !_hunt.streamQueue.length) return;
-    const s = _hunt.streamQueue.shift();
-    const d = new Date((s.ts || 0) * 1000);
-    const ts = String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0')+':'+String(d.getSeconds()).padStart(2,'0');
-    const diff = s.share_diff_str || '\u2014'; const gap = s.gap ? Number(s.gap).toFixed(1)+'s' : '\u2014';
-    _hunt.streamLines++;
-    feed.insertAdjacentHTML('beforeend', `<div class="hunt-stream__line"><span class="ts">${ts}</span><span class="n">SHARE</span><span class="h">${escapeHtml(diff)}</span><span class="d">${gap}</span></div>`);
-    while (_hunt.streamLines > 30) { const f = feed.querySelector('.hunt-stream__line'); if (!f) break; f.remove(); _hunt.streamLines--; }
-    feed.scrollTop = feed.scrollHeight;
-  };
-
-  _hunt.updateMetrics = () => {
-    const { hr, bestDiff } = _hunt;
-    _hunt.metricsHrHistory.push(hr); if (_hunt.metricsHrHistory.length > 80) _hunt.metricsHrHistory.shift();
-    const elHr = document.getElementById('hunt-metrics-hr'); if (elHr && hr > 0) elHr.textContent = fmt.hashrate(hr);
-    const elPBlock = document.getElementById('hunt-metrics-pblock'); if (elPBlock && _hunt.pBlockCum > 0) elPBlock.textContent = _hunt.fmtPct(_hunt.pBlockCum);
-    const elExp = document.getElementById('hunt-metrics-expblocks'); if (elExp) elExp.textContent = _hunt.expBlocks.toFixed(4);
-    const elBest = document.getElementById('hunt-metrics-bestdiff'); if (elBest && bestDiff > 0) elBest.textContent = fmt.diff(bestDiff);
-    _hunt.drawSparkline(); _hunt.drawGauge();
-  };
-
-  _hunt.drawSparkline = () => {
-    const c = document.getElementById('hunt-sparkline'); if (!c) return;
-    const dpr = window.devicePixelRatio || 1; const cssW = c.clientWidth || 200, cssH = c.clientHeight || 40;
-    c.width = cssW*dpr; c.height = cssH*dpr;
-    const ctx = c.getContext('2d'); ctx.setTransform(dpr,0,0,dpr,0,0); ctx.clearRect(0,0,cssW,cssH);
-    const data = _hunt.metricsHrHistory; if (!data.length) return;
-    const max = Math.max(...data, 1); const x = (i) => (i/Math.max(1,data.length-1))*(cssW-4)+2;
-    const y = (v) => cssH-2-((v-0)/max)*(cssH-6);
-    ctx.strokeStyle = '#06d6f0'; ctx.lineWidth = 1; ctx.beginPath();
-    data.forEach((v,i) => { i===0 ? ctx.moveTo(x(i),y(v)) : ctx.lineTo(x(i),y(v)); }); ctx.stroke();
-    const grad = ctx.createLinearGradient(0,0,0,cssH); grad.addColorStop(0,'rgba(6,214,240,0.2)'); grad.addColorStop(1,'rgba(6,214,240,0)');
-    ctx.fillStyle = grad; ctx.lineTo(x(data.length-1),cssH); ctx.lineTo(x(0),cssH); ctx.closePath(); ctx.fill();
-  };
-
-  _hunt.drawGauge = () => {
-    const c = document.getElementById('hunt-gauge'); if (!c) return;
-    const dpr = window.devicePixelRatio || 1; const cssW = c.clientWidth || 120, cssH = c.clientHeight || 55;
-    c.width = cssW*dpr; c.height = cssH*dpr;
-    const ctx = c.getContext('2d'); ctx.setTransform(dpr,0,0,dpr,0,0); ctx.clearRect(0,0,cssW,cssH);
-    const cx = cssW/2, cy = cssH-2, r = Math.min(cx-6, cssH-4);
-    ctx.lineWidth = 8; ctx.lineCap = 'round'; ctx.strokeStyle = 'rgba(255,255,255,0.06)';
-    ctx.beginPath(); ctx.arc(cx, cy, r, Math.PI, 0, false); ctx.stroke();
-    const rawPct = _hunt.pBlockCum || 0;
-    const displayPct = Math.min(100, Math.max(0, rawPct>0 ? (Math.log10(rawPct)+8)/8*80 : 0));
-    const angle = Math.PI - (displayPct/100)*Math.PI;
-    const grad = ctx.createLinearGradient(cx-r,0,cx+r,0); grad.addColorStop(0,'#00ff9f'); grad.addColorStop(0.5,'#06d6f0'); grad.addColorStop(1,'#f5b942');
-    ctx.strokeStyle = grad; ctx.beginPath(); ctx.arc(cx, cy, r, Math.PI, angle, false); ctx.stroke();
-    ctx.fillStyle = '#f5b942'; ctx.font = 'bold 11px Space Grotesk'; ctx.textAlign = 'center';
-    ctx.fillText(rawPct<0.0001 ? rawPct.toExponential(1)+'%' : rawPct.toFixed(4)+'%', cx, cy-6);
-  };
-
-  function _huntUpdateState(worker, network, cumulativeP, expectedBlocks, recentShares) {
-    _hunt.hr = (worker && worker.hashrate) ? Number(worker.hashrate) : 0;
-    _hunt.bestDiff = worker && worker.bestDifficulty ? parseBestDiff(worker.bestDifficulty) : 0;
-    _hunt.pBlockCum = cumulativeP || 0; _hunt.expBlocks = expectedBlocks || 0;
-    if (recentShares && recentShares.length) {
-      const queuedIds = new Set(_hunt.streamQueue.map(s => s.ts));
-      for (const s of recentShares) { if (!queuedIds.has(s.ts)) _hunt.streamQueue.push(s); }
-      while (_hunt.streamQueue.length > 60) _hunt.streamQueue.shift();
-    }
-    if (recentShares && recentShares.length) _hunt.renderShareCards(recentShares);
-  }
-
-  _hunt.renderShareCards = (shares) => {
-    const grid = document.getElementById('hunt-shares-grid');
-    const countEl = document.getElementById('hunt-shares-count');
-    if (!grid) return; if (countEl) countEl.textContent = shares.length + ' shares';
-    const newest = shares[shares.length-1];
-    const cards = shares.slice(-12).reverse().map(s => {
-      const d = new Date((s.ts||0)*1000);
-      const ts = String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0')+':'+String(d.getSeconds()).padStart(2,'0');
-      const isNewest = newest && s.ts === newest.ts;
-      return `<div class="hunt-share-card${isNewest?' is-newest':''}"><span class="sc-lbl">TIME</span><span class="sc-val cyan">${ts}</span><span class="sc-lbl">DIFF</span><span class="sc-val">${s.share_diff_str||'\u2014'}</span><span class="sc-lbl">GAP</span><span class="sc-val green">${s.gap?Number(s.gap).toFixed(1)+'s':'\u2014'}</span><span class="sc-lbl">HASHRATE</span><span class="sc-val">${s.instantaneous_hr_str||'\u2014'}</span><div class="sc-bar"><div class="sc-bar-fill" style="width:${Math.min(100,(s.p_block_this_share||0)*100)}%"></div></div></div>`;
-    }).join('');
-    grid.innerHTML = cards || '<div class="hunt-shares__empty">awaiting share data</div>';
-  };
-
-  let _huntStarted = false;
-  function _huntStart() { if (_huntStarted) return; _huntStarted = true;
-    _hunt.streamLines = 0;
-    const feed = document.getElementById('hunt-stream-feed');
-    if (feed) feed.innerHTML = '<div class="hunt-stream__line"><span class="ts">TIME</span><span class="n">EVENT</span><span class="h">DIFFICULTY</span><span class="d">GAP</span></div>';
-    _huntInit();
-  }
-
-  // ══════════════════════════════════════════════════════════════════════
   // SOLO MINING TERMINAL — interactive CLI
   // ══════════════════════════════════════════════════════════════════════
 
@@ -5478,7 +5512,8 @@ dom.walletSave?.addEventListener('click', async () => {
     }
 
     showSkeletons();
-    _huntStart();
+    initFleetCommandCenterControls();
+    initAxeFleetControls();
     initAxeFleetControls();
     initAuth();
     initThemeToggle();

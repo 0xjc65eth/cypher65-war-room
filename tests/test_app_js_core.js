@@ -2844,6 +2844,36 @@ var multiCmds = renderCmdBtns(['restart','identify','pause'], 'dev-456');
 // NOTE: count via data-cmd= — /axe-cmd-btn/g matches 2x per button (base class + --modifier)
 assertEqual('cmdBtns 3 cmds -> 3 buttons', multiCmds.match(/data-cmd=/g).length, 3);
 
+// ── Command routing (auditoria UI fix) ──
+// Mirror of the axe-grid button handler decision in static/app.js: axe-fleet
+// cards live in the AXE registry, so restart/identify must go through the
+// agent-aware /api/axe-fleet/devices/<id>/{restart|identify} endpoints (which
+// enqueue for the LOCAL agent) instead of the core /api/devices/<id>/command
+// route — that one queries the CORE registry and 404s on axe devices, so the
+// miner would never restart (theater).
+function routeAxeCmd(deviceId, command) {
+  var isAgentRouted = command === 'restart' || command === 'identify';
+  return {
+    url: isAgentRouted
+      ? '/api/axe-fleet/devices/' + encodeURIComponent(deviceId) + '/' + command
+      : '/api/devices/' + encodeURIComponent(deviceId) + '/command',
+    useAuthFetch: isAgentRouted,
+    body: isAgentRouted ? '{}' : '{"command":"' + command + '"}',
+  };
+}
+
+assertEqual('routeAxeCmd restart -> axe-fleet', routeAxeCmd('abc123', 'restart').url,
+  '/api/axe-fleet/devices/abc123/restart');
+assertEqual('routeAxeCmd restart uses authFetch', routeAxeCmd('abc123', 'restart').useAuthFetch, true);
+assertEqual('routeAxeCmd restart body empty', routeAxeCmd('abc123', 'restart').body, '{}');
+assertEqual('routeAxeCmd identify -> axe-fleet', routeAxeCmd('abc123', 'identify').url,
+  '/api/axe-fleet/devices/abc123/identify');
+assertEqual('routeAxeCmd pause -> core fallback', routeAxeCmd('abc123', 'pause').url,
+  '/api/devices/abc123/command');
+assertEqual('routeAxeCmd pause no authFetch', routeAxeCmd('abc123', 'pause').useAuthFetch, false);
+assertEqual('routeAxeCmd resume body has command', routeAxeCmd('abc123', 'resume').body,
+  '{"command":"resume"}');
+
 // ── Device status classification ──
 function classifyDevStatus(d) {
   var tel = d && d.telemetry || {};
@@ -3659,14 +3689,21 @@ function buildConnectivityReportTest(r) {
 
 
 // ═══════════════════════════════════════════════════════════════════════════
-//  SUITE 26b: FASE_2 Worker Intelligence — buildWorkerIntelligenceRows()
-//  (per-worker live telemetry: shares, reject ratio, stratum diff target,
-//  last share, latency, health). Mirrors static/app.js.
+//  SUITE 26b: buildCommandCenterRows() — per-worker live telemetry
+//  Mirrors static/app.js buildCommandCenterRows() — pure, no DOM, no fmt.
+//  Exception hierarchy: WARNING/IDLE/PAUSED → OFFLINE/ERROR/CRITICAL → ONLINE.
 // ═══════════════════════════════════════════════════════════════════════════
-console.log('⛏ SUITE 26b: buildWorkerIntelligenceRows() — per-worker live telemetry');
+console.log('⛏ SUITE 26b: buildCommandCenterRows() — per-worker live telemetry');
 
-// Mirror of static/app.js buildWorkerIntelligenceRows() — pure, no DOM, no fmt.
-function buildWorkerIntelligenceRowsTest(devices) {
+// Mirror of static/app.js _numOrNull() — pure.
+function numOrNullTest(v) {
+  if (v == null || v === '') return null;
+  const n = Number(v);
+  return isFinite(n) ? n : null;
+}
+
+// Mirror of static/app.js buildCommandCenterRows() — pure, no DOM, no fmt.
+function buildCommandCenterRowsTest(devices) {
   const rows = [];
   (devices || []).forEach(function (d) {
     const tel = d._telemetry || {};
@@ -3686,18 +3723,25 @@ function buildWorkerIntelligenceRowsTest(devices) {
     }
     rows.push({
       id: d.id || '', name: d.name || d.ip_address || '?', ip: d.ip_address || '',
-      status: d.status || 'OFFLINE', hr: Number(tel.hashrate_hs) || 0,
-      temp: tel.temperature, sharesA: accepted, sharesR: rejected, sharesS: stale,
+      model: d.model || '', manufacturer: d.manufacturer || '',
+      status: d.status || 'OFFLINE', agentManaged: !!d.agent_managed,
+      hr: Number(tel.hashrate_hs) || 0, hrStr: tel.hashrate_str || '',
+      temp: numOrNullTest(tel.temperature), chipTemp: numOrNullTest(tel.chip_temp), vrTemp: numOrNullTest(tel.vr_temp),
+      fan: tel.fan_rpm != null ? tel.fan_rpm : tel.fan_speed,
+      power: numOrNullTest(tel.power_watts), eff: numOrNullTest(tel.efficiency_jth),
+      sharesA: accepted, sharesR: rejected, sharesS: stale,
       rejectPct: rejectPct, bestDiff: tel.best_diff, poolDiff: tel.pool_diff,
       lastShareAgo: lastShareAgo, dataAge: tel.age_seconds,
       latencyMs: d.latency_ms, stratum: tel.stratum_status || '',
       healthScore: health.score != null ? health.score : null,
+      advice: Array.isArray(d.advice) ? d.advice : [],
+      caps: Array.isArray(d.capabilities) ? d.capabilities : [],
     });
   });
-  const order = { ONLINE: 0, HASHING: 0, WARNING: 1, IDLE: 2, PAUSED: 3, OFFLINE: 4, ERROR: 5, CRITICAL: 6 };
+  const order = { WARNING: 0, IDLE: 0, PAUSED: 0, OFFLINE: 1, ERROR: 1, CRITICAL: 1, ONLINE: 2, HASHING: 2 };
   rows.sort(function (a, b) {
-    const oa = order[a.status] != null ? order[a.status] : 9;
-    const ob = order[b.status] != null ? order[b.status] : 9;
+    const oa = order[a.status] != null ? order[a.status] : 3;
+    const ob = order[b.status] != null ? order[b.status] : 3;
     if (oa !== ob) return oa - ob;
     return String(a.name).localeCompare(String(b.name));
   });
@@ -3707,47 +3751,62 @@ function buildWorkerIntelligenceRowsTest(devices) {
 (function workerIntelligenceSuite() {
   const devices = [
     { id: 'd1', name: 'Garage', ip_address: '192.168.1.100', status: 'ONLINE', latency_ms: 12,
-      _telemetry: { hashrate_hs: 5200000000000, shares_accepted: 15823, shares_rejected: 47, shares_stale: 2, hw_error_pct: 0.3, best_diff: '42.8T', pool_diff: '256M', stratum_status: 'connected', age_seconds: 4 },
+      _telemetry: { hashrate_hs: 5200000000000, hashrate_str: '5.20 TH/s', shares_accepted: 15823, shares_rejected: 47, shares_stale: 2, hw_error_pct: 0.3, best_diff: '42.8T', pool_diff: '256M', stratum_status: 'connected', age_seconds: 4, power_watts: 120, efficiency_jth: 23.1, temperature: 58, chip_temp: 62, vr_temp: 45 },
       _health: { score: 92 } },
     { id: 'd2', name: 'Hot Lab', ip_address: '192.168.1.102', status: 'WARNING', latency_ms: null,
-      _telemetry: { hashrate_hs: 3800000000000, shares_accepted: 5872, shares_rejected: 215, shares_stale: 0, hw_error_pct: 3.5, best_diff: '28.3T', stratum_status: 'connected', age_seconds: 9 },
-      _health: { score: 41 } },
-    { id: 'd3', name: 'Basement', ip_address: '192.168.1.200', status: 'OFFLINE',
+      _telemetry: { hashrate_hs: 3800000000000, shares_accepted: 5872, shares_rejected: 215, shares_stale: 0, hw_error_pct: 3.5, best_diff: '28.3T', stratum_status: 'connected', age_seconds: 9, temperature: 'NOT AVAILABLE' },
+      _health: { score: 41 }, advice: ['temp acima do ideal'], capabilities: ['restart'] },
+    { id: 'd3', name: 'Basement', ip_address: '192.168.1.200', status: 'OFFLINE', agent_managed: 1,
       _telemetry: { hashrate_hs: 0 }, _health: { score: 0 } },
   ];
-  const rows = buildWorkerIntelligenceRowsTest(devices);
+  const rows = buildCommandCenterRowsTest(devices);
   assertEqual('3 workers parsed', rows.length, 3);
-  assertEqual('ordering: ONLINE first', rows[0].name, 'Garage');
-  assertEqual('ordering: WARNING second', rows[1].name, 'Hot Lab');
-  assertEqual('ordering: OFFLINE last', rows[2].name, 'Basement');
-  assertEqual('reject pct from hw_error_pct', rows[0].rejectPct, 0.3);
-  assertEqual('hr parsed', rows[0].hr, 5200000000000);
-  assertEqual('shares a/r/s', rows[0].sharesA + '/' + rows[0].sharesR + '/' + rows[0].sharesS, '15823/47/2');
-  assertEqual('stratum passthrough', rows[0].stratum, 'connected');
-  assertEqual('latency passthrough', rows[0].latencyMs, 12);
-  assertEqual('health score passthrough', rows[0].healthScore, 92);
-  assertEqual('offline has no reject pct', rows[2].rejectPct, null);
+  // Exception hierarchy: problems first, healthy ONLINE last
+  assertEqual('ordering: WARNING first', rows[0].name, 'Hot Lab');
+  assertEqual('ordering: OFFLINE second', rows[1].name, 'Basement');
+  assertEqual('ordering: ONLINE last', rows[2].name, 'Garage');
+  // ONLINE device (rows[2] = Garage) — todos os campos ricos
+  const g = rows[2];
+  assertEqual('reject pct from hw_error_pct', g.rejectPct, 0.3);
+  assertEqual('hr parsed', g.hr, 5200000000000);
+  assertEqual('hrStr passthrough', g.hrStr, '5.20 TH/s');
+  assertEqual('shares a/r/s', g.sharesA + '/' + g.sharesR + '/' + g.sharesS, '15823/47/2');
+  assertEqual('stratum passthrough', g.stratum, 'connected');
+  assertEqual('latency passthrough', g.latencyMs, 12);
+  assertEqual('health score passthrough', g.healthScore, 92);
+  assertEqual('power parsed', g.power, 120);
+  assertEqual('eff parsed', g.eff, 23.1);
+  assertEqual('temp parsed', g.temp, 58);
+  assertEqual('chip temp parsed', g.chipTemp, 62);
+  assertEqual('vr temp parsed', g.vrTemp, 45);
+  // WARNING device (rows[0] = Hot Lab)
+  assertEqual('warning reject pct', rows[0].rejectPct, 3.5);
+  assertEqual('warning hr parsed', rows[0].hr, 3800000000000);
+  assertEqual('agent flag on offline', rows[1].agentManaged, true);
+  assertEqual('offline has no reject pct', rows[1].rejectPct, null);
+  // "NOT AVAILABLE" literal → null (não estoura .toFixed())
+  assertEqual('NOT AVAILABLE temp → null', rows[0].temp, null);
+  assertEqual('advice passthrough', rows[0].advice[0], 'temp acima do ideal');
+  assertEqual('caps passthrough', rows[0].caps.indexOf('restart') !== -1, true);
 
   // hw_error_pct missing → derive from rejected/(accepted+rejected)
-  const derived = buildWorkerIntelligenceRowsTest([{
+  const derived = buildCommandCenterRowsTest([{
     id: 'x', name: 'X', status: 'ONLINE',
     _telemetry: { hashrate_hs: 100, shares_accepted: 90, shares_rejected: 10 },
   }]);
   assertEqual('derived reject pct', derived[0].rejectPct, 10);
 
   // last_share_ts ISO string parsing (best-effort)
-  const iso = buildWorkerIntelligenceRowsTest([{
+  const iso = buildCommandCenterRowsTest([{
     id: 'y', name: 'Y', status: 'ONLINE',
     _telemetry: { hashrate_hs: 1, last_share_ts: new Date(Date.now() - 60000).toISOString() },
   }]);
   assertEqual('last share age parsed from ISO (~60s)', iso[0].lastShareAgo >= 55 && iso[0].lastShareAgo <= 70, true);
 
   // empty/null input → no rows, no crash
-  assertEqual('empty input yields no rows', buildWorkerIntelligenceRowsTest([]).length, 0);
-  assertEqual('null input yields no rows', buildWorkerIntelligenceRowsTest(null).length, 0);
+  assertEqual('empty input yields no rows', buildCommandCenterRowsTest([]).length, 0);
+  assertEqual('null input yields no rows', buildCommandCenterRowsTest(null).length, 0);
 })();
-
-
 // ═══════════════════════════════════════════════════════════════════════════
 //  SUITE 26c: Hash Flow Raster — share-quality coloring
 //  Mirrors static/app.js _lmFlowSampleFromDelta / _lmShareDelta / _lmFlowDetail.
@@ -3948,66 +4007,99 @@ console.log('\n🖥 SUITE 28: live-mining terminal helpers (badges, filter, scro
 
 
 // ═══════════════════════════════════════════════════════════════════════════
-//  SUITE 26d: P1 fleet-fed KPIs — _lmFleetKpiAgg()
-//  Mirrors static/app.js _lmFleetKpiAgg (EFFICIENCY + PING aggregation).
+//  SUITE 26d: _ccKpiAgg() — FLEET COMMAND CENTER KPI aggregation
+//  Mirrors static/app.js _ccKpiAgg (totalHr, effPct, avgTemp, totalPowerW,
+//  avgEff, avgLatency — honest nulls quando não há dados live).
 // ═══════════════════════════════════════════════════════════════════════════
-console.log('⛏ SUITE 26d: fleet-fed KPIs — EFFICIENCY + PING aggregation');
+console.log('⛏ SUITE 26d: _ccKpiAgg() — KPI aggregation do FLEET COMMAND CENTER');
 
-// Mirror of static/app.js _lmFleetKpiAgg() — pure.
-function lmFleetKpiAggTest(fleet) {
+// Mirror of static/app.js _numOrNull() — pure.
+function ccNumOrNullTest(v) {
+  if (v == null || v === '') return null;
+  const n = Number(v);
+  return isFinite(n) ? n : null;
+}
+
+// Mirror of static/app.js _ccKpiAgg() — pure.
+function ccKpiAggTest(fleet) {
   fleet = fleet || [];
   const live = fleet.filter(d => d && String(d.status || '').toUpperCase() === 'ONLINE');
-  let acc = 0, rej = 0;
+  // TOTAL HR = soma de TODOS os devices; shares/temp/power/eff = só ONLINE
+  // (contadores cumulativos de OFFLINE congelariam a EFFICIENCY histórica).
+  let totalHr = 0, acc = 0, rej = 0, stale = 0;
+  let tempSum = 0, tempN = 0, powerSum = 0, powerN = 0, effSum = 0, effN = 0;
+  fleet.forEach(d => {
+    totalHr += Number((d && d._telemetry && d._telemetry.hashrate_hs) || 0);
+  });
   live.forEach(d => {
     const t = (d && d._telemetry) || {};
     acc += Number(t.shares_accepted) || 0;
     rej += Number(t.shares_rejected) || 0;
+    stale += Number(t.shares_stale) || 0;
+    const temp = ccNumOrNullTest(t.temperature);
+    if (temp != null) { tempSum += temp; tempN++; }
+    const pw = ccNumOrNullTest(t.power_watts);
+    if (pw != null) { powerSum += pw; powerN++; }
+    const eff = ccNumOrNullTest(t.efficiency_jth);
+    if (eff != null) { effSum += eff; effN++; }
   });
-  const total = acc + rej;
-  let effPct = null;
-  if (total > 0) effPct = (acc / total) * 100;
   const lats = live.map(d => Number(d && d.latency_ms)).filter(v => v > 0 && isFinite(v));
-  let avgLatency = null;
-  if (lats.length) avgLatency = Math.round(lats.reduce((a, b) => a + b, 0) / lats.length);
-  return { effPct, avgLatency };
+  const shareTotal = acc + rej;
+  return {
+    totalHr: totalHr,
+    effPct: shareTotal > 0 ? (acc / shareTotal) * 100 : null,
+    avgTemp: tempN ? tempSum / tempN : null,
+    totalPowerW: powerSum || null,
+    avgEff: effN ? effSum / effN : null,
+    avgLatency: lats.length ? Math.round(lats.reduce((a, b) => a + b, 0) / lats.length) : null,
+    acc: acc, rej: rej, stale: stale,
+  };
 }
 
-(function fleetKpiSuite() {
-  // Honest telemetry: OFFLINE devices never contribute, even with huge
-  // cumulative firmware counters in the DB (the P2 review fix).
+(function ccKpiSuite() {
+  const EMPTY = JSON.stringify({ totalHr: 0, effPct: null, avgTemp: null, totalPowerW: null, avgEff: null, avgLatency: null, acc: 0, rej: 0, stale: 0 });
+
+  // Honest telemetry: OFFLINE devices never contribute share counters, even
+  // with huge cumulative firmware counters in the DB.
   const offline = [
-    { status: 'OFFLINE', _telemetry: { shares_accepted: 50000, shares_rejected: 1 }, latency_ms: 5 },
-    { status: 'OFFLINE', _telemetry: { shares_accepted: 90000, shares_rejected: 2 }, latency_ms: 8 },
+    { status: 'OFFLINE', _telemetry: { shares_accepted: 50000, shares_rejected: 1, temperature: 88, power_watts: 999 }, latency_ms: 5 },
+    { status: 'OFFLINE', _telemetry: { shares_accepted: 90000, shares_rejected: 2, temperature: 91 }, latency_ms: 8 },
   ];
-  assertEqual('all-offline fleet -> null effPct', lmFleetKpiAggTest(offline).effPct, null);
-  assertEqual('all-offline fleet -> null avgLatency', lmFleetKpiAggTest(offline).avgLatency, null);
-  assertEqual('empty fleet -> null/null', JSON.stringify(lmFleetKpiAggTest([])), JSON.stringify({ effPct: null, avgLatency: null }));
-  assertEqual('null fleet -> null/null', JSON.stringify(lmFleetKpiAggTest(null)), JSON.stringify({ effPct: null, avgLatency: null }));
+  const off = ccKpiAggTest(offline);
+  assertEqual('all-offline fleet -> null effPct', off.effPct, null);
+  assertEqual('all-offline fleet -> null avgLatency', off.avgLatency, null);
+  assertEqual('empty fleet -> nulls', JSON.stringify(ccKpiAggTest([])), EMPTY);
+  assertEqual('null fleet -> nulls', JSON.stringify(ccKpiAggTest(null)), EMPTY);
 
   // Single ONLINE device: efficiency = accepted / (accepted+rejected)
   const oneOnline = [
-    { status: 'ONLINE', _telemetry: { shares_accepted: 95, shares_rejected: 5 }, latency_ms: 20 },
-    { status: 'OFFLINE', _telemetry: { shares_accepted: 99999, shares_rejected: 0 }, latency_ms: 1 },
+    { status: 'ONLINE', _telemetry: { hashrate_hs: 100000, shares_accepted: 95, shares_rejected: 5, temperature: 60, power_watts: 500, efficiency_jth: 25 }, latency_ms: 20 },
+    { status: 'OFFLINE', _telemetry: { shares_accepted: 99999, shares_rejected: 0, temperature: 99, power_watts: 900 }, latency_ms: 1 },
   ];
-  const one = lmFleetKpiAggTest(oneOnline);
+  const one = ccKpiAggTest(oneOnline);
   assertEqual('online-only accepted counted', Math.round(one.effPct), 95);
   assertEqual('offline counters ignored', one.effPct, 95);
   assertEqual('online latency averaged', one.avgLatency, 20);
+  assertEqual('total HR summed', one.totalHr, 100000);
+  assertEqual('avg temp only online', one.avgTemp, 60);
+  assertEqual('power only online', one.totalPowerW, 500);
+  assertEqual('eff only online', one.avgEff, 25);
 
   // ONLINE with no share activity yet (fresh device): null eff, latency still ok
   const fresh = [{ status: 'ONLINE', _telemetry: { shares_accepted: 0, shares_rejected: 0 }, latency_ms: 42 }];
-  const fr = lmFleetKpiAggTest(fresh);
+  const fr = ccKpiAggTest(fresh);
   assertEqual('online no shares -> null effPct', fr.effPct, null);
   assertEqual('online no shares -> latency kept', fr.avgLatency, 42);
 
   // Multi-online average latency + aggregate efficiency
   const multi = [
-    { status: 'online', _telemetry: { shares_accepted: 90, shares_rejected: 10 }, latency_ms: 10 },
-    { status: 'ONLINE', _telemetry: { shares_accepted: 180, shares_rejected: 20 }, latency_ms: 30 },
+    { status: 'online', _telemetry: { hashrate_hs: 1, shares_accepted: 90, shares_rejected: 10 }, latency_ms: 10 },
+    { status: 'ONLINE', _telemetry: { hashrate_hs: 2, shares_accepted: 180, shares_rejected: 20 }, latency_ms: 30 },
   ];
-  const m = lmFleetKpiAggTest(multi);
+  const m = ccKpiAggTest(multi);
   assertEqual('lowercase status accepted', m.effPct, 90);
   assertEqual('avg latency of live devices', m.avgLatency, 20);
+  assertEqual('stale counters summed', ccKpiAggTest([{ status: 'ONLINE', _telemetry: { shares_accepted: 1, shares_rejected: 0, shares_stale: 7 } }]).stale, 7);
 
   // Latency NaN/0/negative filtered out
   const badLat = [
@@ -4016,12 +4108,107 @@ function lmFleetKpiAggTest(fleet) {
     { status: 'ONLINE', _telemetry: { shares_accepted: 1, shares_rejected: 0 }, latency_ms: NaN },
     { status: 'ONLINE', _telemetry: { shares_accepted: 1, shares_rejected: 0 }, latency_ms: 100 },
   ];
-  const bl = lmFleetKpiAggTest(badLat);
+  const bl = ccKpiAggTest(badLat);
   assertEqual('only valid latencies averaged', bl.avgLatency, 100);
   assertEqual('efficiency from all live', Math.round(bl.effPct), 100);
+
+  // 'NOT AVAILABLE' literal em temp/power → null (não conta nas médias)
+  const na = ccKpiAggTest([{ status: 'ONLINE', _telemetry: { shares_accepted: 1, shares_rejected: 0, temperature: 'NOT AVAILABLE', power_watts: 'NOT AVAILABLE' } }]);
+  assertEqual('NOT AVAILABLE temp -> avgTemp null', na.avgTemp, null);
+  assertEqual('NOT AVAILABLE power -> totalPowerW null', na.totalPowerW, null);
 })();
 
 
+// ═══════════════════════════════════════════════════════════════════════════
+//  SUITE 26e: _ccShareBar / _ccSvgSparkline / _ccTempBand — visual helpers
+//  Mirrors static/app.js — pure, sem DOM.
+// ═══════════════════════════════════════════════════════════════════════════
+console.log('⛏ SUITE 26e: _ccShareBar / _ccSvgSparkline / _ccTempBand');
+(function () {
+  function ccShareBarTest(acc, rej, stale) {
+    const a = Number(acc) || 0, r = Number(rej) || 0, s = Number(stale) || 0;
+    const total = a + r + s;
+    if (!total) return '<div class="cc-sharebar cc-sharebar--empty" title="sem shares registradas">no shares</div>';
+    const wa = (a / total) * 100, ws = (s / total) * 100, wr = (r / total) * 100;
+    return '<div class="cc-sharebar" title="' + a + ' acc · ' + s + ' stale · ' + r + ' rej">' +
+      '<span class="cc-sharebar__seg cc-sharebar__seg--acc" style="width:' + wa.toFixed(1) + '%"></span>' +
+      '<span class="cc-sharebar__seg cc-sharebar__seg--stale" style="width:' + ws.toFixed(1) + '%"></span>' +
+      '<span class="cc-sharebar__seg cc-sharebar__seg--rej" style="width:' + wr.toFixed(1) + '%"></span>' +
+      '</div>';
+  }
+  function ccNumOrNull(v) {
+    if (v == null || v === '') return null;
+    const n = Number(v);
+    return isFinite(n) ? n : null;
+  }
+  function ccTempBandTest(t) {
+    const n = ccNumOrNull(t);
+    if (n == null) return 'mute';
+    if (n <= 60) return 'ok';
+    if (n <= 70) return 'warn';
+    if (n <= 80) return 'hot';
+    return 'crit';
+  }
+  function ccSvgSparklineTest(values, color) {
+    const v = (values || []).map(Number).filter(x => isFinite(x) && x > 0);
+    if (v.length < 2) return '';
+    const w = 96, h = 26, pad = 2;
+    const max = Math.max.apply(null, v), min = Math.min.apply(null, v);
+    const span = (max - min) || 1;
+    const pts = v.map((x, i) => {
+      const px = pad + (i / (v.length - 1)) * (w - 2 * pad);
+      const py = h - pad - ((x - min) / span) * (h - 2 * pad);
+      return px.toFixed(1) + ',' + py.toFixed(1);
+    }).join(' ');
+    const area = pad + ',' + (h - pad) + ' ' + pts + ' ' + (w - pad) + ',' + (h - pad);
+    return '<svg class="cc-spark" viewBox="0 0 ' + w + ' ' + h + '" preserveAspectRatio="none">' +
+      '<polygon points="' + area + '" fill="' + color + '" fill-opacity="0.16"/>' +
+      '<polyline points="' + pts + '" fill="none" stroke="' + color + '" stroke-width="1.4" stroke-linejoin="round" stroke-linecap="round"/>' +
+      '</svg>';
+  }
+
+  // _ccShareBar — segmented quality bar
+  const full = ccShareBarTest(90, 5, 5);
+  assertTruthy('bar has accepted segment', /seg--acc/.test(full));
+  assertTruthy('bar has stale segment', /seg--stale/.test(full));
+  assertTruthy('bar has rejected segment', /seg--rej/.test(full));
+  const widths = full.match(/width:([\d.]+)%/g).map(s => parseFloat(s.slice(6)));
+  assertTruthy('segment widths sum ~100%', Math.abs(widths.reduce((a, b) => a + b, 0) - 100) < 0.5);
+  assertTruthy('title carries counts', /90 acc · 5 stale · 5 rej/.test(full));
+  assertTruthy('no shares -> empty bar', /cc-sharebar--empty/.test(ccShareBarTest(0, 0, 0)));
+  assertTruthy('null -> empty bar', /cc-sharebar--empty/.test(ccShareBarTest(null, null, null)));
+
+  // _ccTempBand — thresholds ≤60/70/80
+  assertEqual('60 -> ok', ccTempBandTest(60), 'ok');
+  assertEqual('61 -> warn', ccTempBandTest(61), 'warn');
+  assertEqual('70 -> warn', ccTempBandTest(70), 'warn');
+  assertEqual('71 -> hot', ccTempBandTest(71), 'hot');
+  assertEqual('80 -> hot', ccTempBandTest(80), 'hot');
+  assertEqual('81 -> crit', ccTempBandTest(81), 'crit');
+  assertEqual('null -> mute', ccTempBandTest(null), 'mute');
+  assertEqual('NOT AVAILABLE -> mute', ccTempBandTest('NOT AVAILABLE'), 'mute');
+  assertEqual('empty string -> mute', ccTempBandTest(''), 'mute');
+
+  // _ccSvgSparkline — inline SVG area line
+  assertTruthy('two samples -> svg', /<svg/.test(ccSvgSparklineTest([1, 2], '#00b8d4')));
+  assertTruthy('polyline present', /<polyline/.test(ccSvgSparklineTest([1, 5, 3], '#00b8d4')));
+  assertTruthy('area polygon present', /<polygon/.test(ccSvgSparklineTest([1, 5, 3], '#00b8d4')));
+  assertEqual('one sample -> empty', ccSvgSparklineTest([5], '#00b8d4'), '');
+  assertEqual('null -> empty', ccSvgSparklineTest(null, '#00b8d4'), '');
+  assertEqual('all zeros -> empty', ccSvgSparklineTest([0, 0, 0], '#00b8d4'), '');
+  // geometry: min no fundo (y≈24), max no topo (y≈2), x dentro do viewBox.
+  // O último points= é o do polyline (o primeiro é o polygon da área, que
+  // inclui os cantos de fechamento).
+  const svg = ccSvgSparklineTest([10, 90], '#00b8d4');
+  const allPts = [...svg.matchAll(/points="([^"]+)"/g)].map(m => m[1]);
+  const linePts = allPts[allPts.length - 1].split(' ').map(p => p.split(','));
+  const xs = linePts.map(p => parseFloat(p[0]));
+  assertTruthy('x coords inside viewBox', xs.every(x => x >= 0 && x <= 96));
+  assertTruthy('min maps to bottom (y≈24)', Math.abs(parseFloat(linePts[0][1]) - 24) < 1.5);
+  assertTruthy('max maps to top (y≈2)', Math.abs(parseFloat(linePts[1][1]) - 2) < 1.5);
+  // flat series: min===max → span=1, linha horizontal ainda desenha
+  assertTruthy('flat series still draws', /<polyline/.test(ccSvgSparklineTest([100, 100, 100], '#00b8d4')));
+})();
 // ═══════════════════════════════════════════════════════════════════════════
 //  SUITE 29: module → tab-pane ownership (moduleActivePanes)
 //  Fix: o módulo LIVE empilhava painéis de 3 abas (scroll infinito +

@@ -111,7 +111,9 @@ def count_tenant_workers(tenant_id: str = "") -> int:
     try:
         conn = _db_conn()
         c = conn.cursor()
-        c.execute("SELECT COUNT(*) AS n FROM axe_devices WHERE tenant_id=?", (tid,))
+        # COALESCE(removed_at,0)=0: tombstoned (soft-deleted) devices must NOT
+        # consume a worker slot — a removed miner can't resurrect the cap.
+        c.execute("SELECT COUNT(*) AS n FROM axe_devices WHERE tenant_id=? AND COALESCE(removed_at,0)=0", (tid,))
         row = c.fetchone()
         conn.close()
         return int(row["n"] or 0) if row is not None else 0

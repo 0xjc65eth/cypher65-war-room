@@ -69,6 +69,20 @@ def _is_trusted_payload(payload) -> bool:
     return isinstance(payload, dict) and "hashrate_hs" in payload
 
 
+def _caps_supported_commands(caps) -> list:
+    """Flatten a capabilities dict into the supported-command ARRAY shape
+    every consumer expects (fleet_health, fleet_summary, the FLEET COMMAND
+    CENTER's buildCommandCenterRows — all render command buttons off this
+    list). A raw dict fails Array.isArray() in the JS and drops the device
+    into READ-ONLY; a list passes through (older serializers); junk → []
+    (the honest 'no commands' state)."""
+    if isinstance(caps, dict):
+        return [k for k, v in caps.items() if v]
+    if isinstance(caps, list):
+        return [c for c in caps if isinstance(c, str)]
+    return []
+
+
 def _latest_telemetry(tel_raw) -> dict:
     """Return the latest trusted telemetry payload from a
     get_recent_telemetry(limit=1) result, or {} if none/untrusted."""
@@ -232,10 +246,31 @@ def add_device(tenant_id: str = ""):
         return jsonify({"error": "ip_address is required"}), 400
 
     # Check if already registered (tenant-scoped — the same IP may exist in
-    # another tenant's fleet and must not 409 this request).
+    # another tenant's fleet and must not 409 this request). Runs BEFORE the
+    # cloud guard so re-adding an existing device surfaces the 409 + device
+    # (the operator may have registered it before this deployment change).
     existing = _registry.get_device_by_ip(ip, tenant_id=tenant_id)
     if existing:
         return jsonify({"error": "device already registered", "device": existing}), 409
+
+    # ── SaaS topology guard: on a cloud deploy a private LAN IP is
+    #    unreachable by construction — registering it would create a card
+    #    that stays OFFLINE forever (the server poll can't reach it either),
+    #    which users read as "a ferramenta não reconhece o device". Reject
+    #    with the actionable path instead. Public-IP miners stay allowed
+    #    (rare but reachable), and the wizard's diagnose gate still applies
+    #    for non-cloud self-hosters.
+    from config import is_cloud_deploy
+    from .scanner import is_private_ip
+    if is_cloud_deploy() and is_private_ip(ip):
+        _log_audit(tenant_id, "fleet.device_add_blocked",
+                   target=ip, details={"reason": "cloud_private_ip_unreachable"})
+        return jsonify({
+            "success": False,
+            "is_cloud": True,
+            "error": "private LAN IP unreachable from cloud deploy",
+            "message": "IP privado (LAN) inalcançável a partir da nuvem. Instale o AGENTE LOCAL (Fleet → CONNECT AGENT): ele roda na sua rede, descobre os miners e conecta para fora — é a única via que funciona no SaaS.",
+        }), 403
 
     # ── Fase 4 · B3: plan enforcement — the FREE tier caps workers per
     #    tenant. Honest rejection: the operator sees the limit and usage
@@ -590,11 +625,20 @@ def fleet_summary(tenant_id: str = ""):
         # Reachability latency (PING) — only probed for reachable statuses so
         # the endpoint never blocks on dead IPs (mirrors fleet_health).
         latency_ms = None
-        if device_status_is_online(status):
+        # agent_managed devices live on the user's LAN — the cloud can NEVER
+        # reach them, so a latency probe would block every /summary call with
+        # a useless 0.75s TCP timeout per device. Skip it (PING renders '—').
+        if device_status_is_online(status) and not int(d.get("agent_managed", 0) or 0):
             latency_ms = _probe_miner_latency_ms(d.get("ip_address", ""))
         advice = _device_advice(status, p, latency_ms)
         # Enrich device with latest telemetry metrics
         enriched = dict(d)
+        # Capabilities as a supported-command ARRAY (shared helper with
+        # fleet_health): the FLEET COMMAND CENTER renders the restart/
+        # identify buttons off this list — a dict here would fail
+        # Array.isArray() in the JS and drop every agent-managed device
+        # into READ-ONLY.
+        enriched["capabilities"] = _caps_supported_commands(d.get("capabilities"))
         enriched["latency_ms"] = latency_ms
         enriched["advice"] = advice
         enriched["_telemetry"] = {
@@ -911,14 +955,20 @@ def _gc_scans() -> None:
 @require_tenant
 @_role_required("viewer")
 def scan_suggest_subnets(tenant_id: str = ""):
-    """Suggest local subnets to scan, derived from this host's interfaces."""
+    """Suggest local subnets to scan, derived from this host's interfaces.
+
+    Also reports `is_cloud` so the UI can switch to the local-agent
+    onboarding: on a cloud deploy, suggest_subnets() returns [] (the host's
+    interfaces are the PaaS VPC, not the user's LAN) and scan/IP-add are
+    impossible."""
+    from config import is_cloud_deploy
     from .scanner import suggest_subnets
     try:
         subnets = suggest_subnets()
     except Exception as e:  # noqa: BLE001
         log.warning("[axe] suggest_subnets error: %s", e)
         subnets = []
-    return jsonify({"subnets": subnets})
+    return jsonify({"subnets": subnets, "is_cloud": is_cloud_deploy()})
 
 
 @axe_fleet_bp.route("/scan", methods=["POST"])
@@ -931,6 +981,19 @@ def start_scan(tenant_id: str = ""):
     progress. The scan thread is daemonized and capped by scanner.MAX_HOSTS.
     """
     from .scanner import scan_subnet
+
+    # ── SaaS topology guard: a cloud host (Render etc.) can NEVER reach the
+    #    user's home LAN, so a subnet scan from here is guaranteed to find
+    #    nothing — it would only burn the server on a 250-host probe fan-out.
+    #    Block it and point the operator at the local agent instead.
+    from config import is_cloud_deploy
+    if is_cloud_deploy():
+        return jsonify({
+            "success": False,
+            "is_cloud": True,
+            "error": "subnet scan unavailable on cloud deploy",
+            "message": "Este dashboard roda na nuvem e não alcança a sua LAN. Instale o AGENTE LOCAL (Fleet → CONNECT AGENT) — ele roda na sua rede, descobre os miners e conecta para fora.",
+        }), 400
 
     data = request.get_json(silent=True) or {}
     cidr = (data.get("cidr") or "").strip()
@@ -1772,7 +1835,10 @@ def fleet_health(tenant_id: str = ""):
         # Reachability latency (PING on the card) — only probed for
         # reachable statuses so the endpoint never blocks on dead IPs.
         latency_ms = None
-        if device_status_is_online(status):
+        # Same SaaS guard as fleet_summary: agent_managed IPs are unreachable
+        # from the cloud — probing them only burns 0.75s per device per
+        # /health call. Skip (PING '—'), never mark them down because of it.
+        if device_status_is_online(status) and not int(d.get("agent_managed", 0) or 0):
             latency_ms = _probe_miner_latency_ms(d.get("ip_address", ""))
         advice = _device_advice(status, tel, latency_ms)
 
@@ -1793,9 +1859,9 @@ def fleet_health(tenant_id: str = ""):
             best_diff_global = bd
             best_diff_str_global = tel.get("best_diff", "")
 
-        # Capabilities
-        caps = d.get("capabilities", {}) or {}
-        supported_cmds = [k for k, v in caps.items() if v]
+        # Capabilities — flattened to the supported-command array (shared
+        # helper: fleet_summary must never drift from this shape again).
+        supported_cmds = _caps_supported_commands(d.get("capabilities"))
 
         device_health_list.append({
             "id": did,
@@ -1988,6 +2054,7 @@ def agent_issue_token(tenant_id: str = ""):
         "token": token,
         "tenant_id": tid,
         "expires_in": AGENT_TOKEN_TTL,
+        "server_url": request.url_root.rstrip("/"),
         "usage": "CYPHER65_AGENT_TOKEN=<token> em Docker na sua LAN (o agente conecta para fora)",
     })
 
@@ -2005,9 +2072,21 @@ def agent_register_devices(agent_tenant_id: str = ""):
     if not isinstance(devices, list) or not devices:
         return jsonify({"error": "devices array required"}), 400
     out = []
+    blocked = []
     for d in devices:
         ip = (d.get("ip") or "").strip()
         if not ip:
+            continue
+        # Plan worker cap: only NEW devices consume a slot (an upsert refresh
+        # of an already-registered device must never be rejected). Mirrors the
+        # manual POST /devices gate — the agent path must not bypass the plan.
+        existing = _registry.get_device_by_ip(ip, tenant_id=agent_tenant_id)
+        if not existing and not _can_add_worker(agent_tenant_id):
+            plan = _get_tenant_plan(agent_tenant_id)
+            blocked.append({"ip": ip, "error": "plan worker limit reached",
+                            "max_workers": plan["max_workers"], "plan": plan["plan"]})
+            _log_audit(agent_tenant_id, "agent.register_blocked",
+                       target=ip, details={"reason": "plan_worker_limit"})
             continue
         dev = _registry.upsert_agent_device(
             ip, name=(d.get("name") or "").strip(),
@@ -2016,11 +2095,24 @@ def agent_register_devices(agent_tenant_id: str = ""):
                 "model": d.get("model"), "firmware": d.get("firmware"),
                 "version": d.get("version"), "hostname": d.get("hostname"),
                 "mac": d.get("mac"), "manufacturer": d.get("manufacturer"),
+                # type drives capabilities (bitaxe restart/identify via :80;
+                # cgminer restart via :4028, no identify).
+                "type": d.get("type"),
             },
         )
+        if not dev:
+            # Tombstone: operator removed this IP — the agent must NOT
+            # resurrect it. Report it as blocked so the agent drops it from
+            # its poll set instead of 403-spamming telemetry forever.
+            blocked.append({"ip": ip, "error": "device removed by operator"})
+            _log_audit(agent_tenant_id, "agent.register_blocked",
+                       target=ip, details={"reason": "device_removed"})
+            continue
         out.append(dev)
-    _log_audit(agent_tenant_id, "agent.register", details={"count": len(out)})
-    return jsonify({"success": True, "registered": out, "count": len(out)}), 201
+    _log_audit(agent_tenant_id, "agent.register",
+               details={"count": len(out), "blocked": len(blocked)})
+    return jsonify({"success": True, "registered": out, "count": len(out),
+                    "blocked": blocked, "blocked_count": len(blocked)}), 201
 
 
 @agent_bp.route("/telemetry", methods=["POST"])
@@ -2040,9 +2132,33 @@ def agent_telemetry(agent_tenant_id: str = ""):
     device = _registry.get_device_by_ip(ip, tenant_id=agent_tenant_id)
     if not device:
         # Agent reported a device it registered earlier but the row is gone
-        # (e.g. server DB reset). Re-upsert with the telemetry as identity.
+        # (e.g. server DB reset). Re-upsert with the telemetry as identity —
+        # but respect the plan worker cap so the telemetry path can't bypass
+        # the limit that register enforces.
+        if not _can_add_worker(agent_tenant_id):
+            plan = _get_tenant_plan(agent_tenant_id)
+            _log_audit(agent_tenant_id, "agent.telemetry_blocked",
+                       target=ip, details={"reason": "plan_worker_limit"})
+            return jsonify({
+                "success": False,
+                "error": "plan worker limit reached",
+                "message": f"O plano {plan['plan']} permite no máximo {plan['max_workers']} workers. Remova um device ou aumente o limite.",
+                "plan": plan["plan"],
+                "max_workers": plan["max_workers"],
+            }), 403
         device = _registry.upsert_agent_device(ip, tenant_id=agent_tenant_id,
                                                info={"model": tel.get("model")})
+        if not device:
+            # Tombstoned: the operator removed this device. Acknowledge
+            # with 410 so the agent stops pushing it (it can never come
+            # back via the agent path — only an explicit operator add).
+            _log_audit(agent_tenant_id, "agent.telemetry_blocked",
+                       target=ip, details={"reason": "device_removed"})
+            return jsonify({
+                "success": False,
+                "error": "device removed by operator",
+                "removed": True,
+            }), 410
     _registry.save_agent_telemetry(device["id"], tel, tenant_id=agent_tenant_id)
     return jsonify({"success": True, "device_id": device["id"],
                     "status": "ONLINE" if int(tel.get("hashrate_hs") or 0) > 0 else "IDLE"})
@@ -2057,7 +2173,13 @@ def agent_pull_commands(agent_tenant_id: str = ""):
     pulled = []
     for c in cmds:
         if _registry.mark_command_pulled(c["id"], tenant_id=agent_tenant_id):
+            # Resolve the device's LAN IP server-side. The agent executes
+            # commands on the HOME network — it needs the reachable IP, not
+            # the registry UUID. (The command's device_id alone was useless:
+            # the agent would try to open a TCP/HTTP socket to a UUID string.)
+            dev = _registry.get_device(c["device_id"], tenant_id=agent_tenant_id)
             pulled.append({"id": c["id"], "device_id": c["device_id"],
+                           "ip_address": (dev or {}).get("ip_address", ""),
                            "command": c["command"], "params": c.get("params", {})})
     return jsonify({"success": True, "commands": pulled})
 

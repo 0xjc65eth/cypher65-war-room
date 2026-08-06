@@ -817,7 +817,10 @@ def _purge_seed_marked_devices(registry):
             name = d.get("name", "")
             if d.get("group_id") in _SEED_GROUP_MARKERS or name.startswith("Test-") or name.startswith("test-"):
                 dev_id = d.get("id")
-                if registry.remove_device(dev_id):
+                # hard=True: demo/test rows must be PHYSICALLY gone — they
+                # are never user devices, so no tombstone needed (tombstones
+                # are for agent-removal zombie protection, not for purges).
+                if registry.remove_device(dev_id, hard=True):
                     removed += 1
                     log.info("[axe] purged demo-seeded device %s (%s)", dev_id, name)
         # Drop orphaned telemetry history (removing a device never deleted
@@ -1063,7 +1066,9 @@ def _purge_test_devices(axe_registry, core_registry):
             ip = (d.get("ip_address") or "").strip()
             if nm.startswith(("Test-", "test-")) or nm in ("x", "ss") or (nm == ip and ip):
                 try:
-                    axe_registry.remove_device(d.get("id"))
+                    # hard=True: test artifacts are never user devices — no
+                    # tombstone needed (would accumulate forever).
+                    axe_registry.remove_device(d.get("id"), hard=True)
                     counts["axe"] += 1
                     log.info("[purge] removed test axe device %s (%s)", d.get("id"), nm)
                 except Exception:
@@ -1458,11 +1463,26 @@ def _cache_axe_telemetry(device_id: str, telemetry, status: str = "") -> None:
     """Write a normalized entry into the snapshot cache. Carries exactly
     what the UI/serving needs: device_id (tenant scoping), status, and a
     `hashrate` alias (the sidebar sums d.hashrate). Non-dict telemetry is
-    ignored (never cache broken stubs)."""
+    ignored (never cache broken stubs).
+
+    Heartbeat guard (zombie-data fix): a {} payload (agent poll failure) is
+    a heartbeat — it must refresh status/ts but must NEVER wipe the last
+    real hashrate. Without this, one failed poll zeroed the fleet hashrate
+    in the top bar while /health still showed the real value (two truths).
+    Mirrors the DB-side trusted-payload filter (_is_trusted_payload)."""
     if not isinstance(telemetry, dict):
         return
     entry = dict(telemetry)
     entry["device_id"] = device_id
+    if "hashrate_hs" not in entry:
+        # Heartbeat-only push. Keep the last real reading if we have one.
+        prev = _shared_state.axe_telemetry_cache.get(device_id)
+        if isinstance(prev, dict) and prev.get("hashrate_hs") is not None:
+            merged = dict(prev)
+            merged["status"] = status or "IDLE"
+            merged["ts"] = telemetry.get("ts") or prev.get("ts") or int(time.time())
+            _shared_state.axe_telemetry_cache[device_id] = merged
+            return
     hr = entry.get("hashrate_hs") or 0
     entry["status"] = status or ("ONLINE" if hr > 0 else "IDLE")
     entry.setdefault("hashrate", entry.get("hashrate_hs"))
@@ -1476,12 +1496,14 @@ def _seed_axe_telemetry_cache(registry) -> None:
     — the device still shows with its real status), and the device row's
     status wins over the hashrate-derived one."""
     try:
+        # Use the last TRUSTED payload per device (hashrate_hs present), not
+        # the last row — the final row before a restart may be a {} heartbeat,
+        # which would seed the fleet as IDLE/0 and blank the top bar.
+        latest = registry._latest_telemetry_by_device()
         for dev in registry.list_devices():
-            tel = registry.get_recent_telemetry(
-                dev["id"], limit=1, tenant_id=dev.get("tenant_id") or "")
-            if tel and isinstance(tel[0].get("payload"), dict):
-                _cache_axe_telemetry(dev["id"], tel[0]["payload"],
-                                     status=dev.get("status") or "")
+            tel = latest.get(dev["id"]) or {}
+            _cache_axe_telemetry(dev["id"], tel,
+                                 status=dev.get("status") or "")
     except Exception as e:
         log.warning("[axe] telemetry cache seed failed: %s", e)
 
@@ -1518,6 +1540,10 @@ _auto_seed_core_devices(_core_registry)
 #    dashboard never shows invented data in production. Runs after both
 #    seeders so seed-marked demo rows and raw test rows are both removed. ──
 _purge_test_devices(_axe_registry, _core_registry)
+
+# ── GC old tombstones (soft-deleted devices older than 30 days) so the
+#    removed_at zombie-guard never grows the DB forever. ──
+_axe_registry.gc_tombstones(max_age_days=30)
 
 # ── In-memory command history store ──────────────────────────────────────────
 # Stores executed commands per device for lightweight audit logging.
@@ -2634,7 +2660,13 @@ def _do_poll():
     global _btc_consec_failures, _btc_last_fetch_ts
     _btc_now = int(time.time())
     if _btc_now - _btc_last_fetch_ts >= 60:
+        # Multi-source BTC price: Binance (fast, no key, 1200 req/min) +
+        # CoinGecko (comprehensive, multi-currency). Binance only gives USD;
+        # CoinGecko covers BRL/EUR/GBP/JPY/KRW/CNY. Both fetch in parallel.
         fetch_specs.append(("btc", "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd,brl,eur,gbp,jpy,krw,cny", 6))
+        fetch_specs.append(("btc_binance", "https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT", 4))
+        # Binance BRL pair for direct BRL conversion
+        fetch_specs.append(("btc_binance_brl", "https://api.binance.com/api/v3/ticker/price?symbol=BTCBRL", 4))
     else:
         # Cache recente — pula fetch, usa o cache existente
         fetch_specs.append(("btc", None, 0))
@@ -2766,8 +2798,25 @@ def _do_poll():
         else:
             btc_quote = None
 
+    # Merge Binance (fast, USD-only) with CoinGecko (multi-currency)
+    binance_raw = results.get("btc_binance")
+    binance_brl_raw = results.get("btc_binance_brl")
+    binance_usd = None
+    binance_brl = None
+    if isinstance(binance_raw, dict) and binance_raw.get("price"):
+        try: binance_usd = float(binance_raw["price"])
+        except (ValueError, TypeError): pass
+    if isinstance(binance_brl_raw, dict) and binance_brl_raw.get("price"):
+        try: binance_brl = float(binance_brl_raw["price"])
+        except (ValueError, TypeError): pass
+
     btc_usd = (btc_quote or {}).get("bitcoin", {}).get("usd") if isinstance(btc_quote, dict) else None
     btc_brl = (btc_quote or {}).get("bitcoin", {}).get("brl") if isinstance(btc_quote, dict) else None
+    # Prefer Binance real-time USD/BRL when available (faster, lower latency)
+    if binance_usd is not None and binance_usd > 0:
+        btc_usd = binance_usd
+    if binance_brl is not None and binance_brl > 0:
+        btc_brl = binance_brl
     btc_eur = (btc_quote or {}).get("bitcoin", {}).get("eur") if isinstance(btc_quote, dict) else None
     btc_gbp = (btc_quote or {}).get("bitcoin", {}).get("gbp") if isinstance(btc_quote, dict) else None
     btc_jpy = (btc_quote or {}).get("bitcoin", {}).get("jpy") if isinstance(btc_quote, dict) else None
@@ -3840,7 +3889,7 @@ def _do_poll():
             "stale": network_stale,
         },
         "btc_price": {"usd": btc_usd, "brl": btc_brl, "eur": btc_eur, "gbp": btc_gbp,
-                      "jpy": btc_jpy, "krw": btc_krw, "cny": btc_cny, "stale": btc_price_stale},
+                      "jpy": btc_jpy, "krw": btc_krw, "cny": btc_cny, "stale": btc_price_stale, "_source": "binance+coingecko", "_age_s": max(0, int(time.time()) - btc_price_cache.get("ts", 0))},
         "luck_estimate": luck,
         "halving": halving,
         "mempool_fees": mempool_fees,
@@ -3971,11 +4020,16 @@ def _start_background_threads():
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 @app.route("/")
 def index():
+    from config import is_cloud_deploy
     return render_template(
         "dashboard.html",
         worker=WORKER_NAME,
         address=BTC_ADDRESS,
         poll_interval=POLL_INTERVAL,
+        # SaaS fleet topology: the JS needs to know the dashboard is cloud-
+        # hosted (Render) so the wizard leads users to the LOCAL AGENT instead
+        # of scan/IP-add, which are physically impossible from the cloud.
+        is_cloud=is_cloud_deploy(),
     )
 
 

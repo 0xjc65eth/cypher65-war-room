@@ -315,6 +315,15 @@ class TestSuggestSubnets:
         with patch("axe_fleet.scanner._local_ipv4_addresses", return_value=[]):
             assert suggest_subnets() == []
 
+    def test_cloud_deploy_returns_empty(self, monkeypatch):
+        """On a cloud deploy the host's interfaces belong to the PaaS VPC,
+        NOT the user's home LAN — suggesting them would send the operator
+        scanning the wrong network. Must return [] even with local IPs."""
+        monkeypatch.setenv("RENDER", "true")
+        with patch("axe_fleet.scanner._local_ipv4_addresses", return_value=["10.1.2.3", "192.168.1.42"]):
+            assert suggest_subnets() == []
+        monkeypatch.delenv("RENDER", raising=False)
+
 
 # ══════════════════════════════════════════════════════════════════════════
 #  Routes — /api/axe-fleet/scan*
@@ -418,11 +427,48 @@ class TestScanRoutes:
         resp = client.get("/api/axe-fleet/scan/doesnotexist")
         assert resp.status_code == 404
 
-    def test_scan_subnets_endpoint(self, client):
+    def test_scan_subnets_endpoint(self, client, monkeypatch):
+        """Self-host default: subnets suggested, is_cloud False. RENDER is
+        delenv'd so the assertion is deterministic even when the developer's
+        shell exports RENDER (e.g. running tests inside a deploy box)."""
+        monkeypatch.delenv("RENDER", raising=False)
         with patch("axe_fleet.scanner.suggest_subnets", return_value=["192.168.1.0/24"]):
             resp = client.get("/api/axe-fleet/scan/subnets")
         assert resp.status_code == 200
-        assert resp.get_json()["subnets"] == ["192.168.1.0/24"]
+        data = resp.get_json()
+        assert data["subnets"] == ["192.168.1.0/24"]
+        assert data["is_cloud"] is False  # default test env is self-host
+
+    def test_scan_subnets_cloud_reports_is_cloud(self, client, monkeypatch):
+        """Cloud deploy: /scan/subnets must report is_cloud=True so the UI
+        can skip the misleading prefill and lead to the local agent. (The
+        empty-subnets-on-cloud behaviour lives in suggest_subnets itself,
+        covered by TestSuggestSubnets.test_cloud_deploy_returns_empty.)"""
+        monkeypatch.setenv("RENDER", "true")
+        try:
+            with patch("axe_fleet.scanner.suggest_subnets", return_value=["10.1.2.0/24"]):
+                resp = client.get("/api/axe-fleet/scan/subnets")
+            assert resp.status_code == 200
+            data = resp.get_json()
+            assert data["is_cloud"] is True
+        finally:
+            monkeypatch.delenv("RENDER", raising=False)
+
+    def test_start_scan_blocked_on_cloud(self, client, monkeypatch):
+        """A subnet scan from a cloud host can NEVER reach the user's LAN —
+        block it server-side (no useless 250-host probe fan-out) and point
+        at the local agent."""
+        monkeypatch.setenv("RENDER", "true")
+        try:
+            with patch("axe_fleet.scanner.scan_subnet") as mock_scan:
+                resp = client.post("/api/axe-fleet/scan", json={"cidr": "192.168.1.0/24"})
+                mock_scan.assert_not_called()
+        finally:
+            monkeypatch.delenv("RENDER", raising=False)
+        assert resp.status_code == 400
+        data = resp.get_json()
+        assert data["is_cloud"] is True
+        assert "AGENTE LOCAL" in data["message"]
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -533,6 +579,35 @@ class TestDiagnoseHost:
         assert r["reachable"] is False
         assert "IP privado" in r["error_detail"]
         assert "AGENTE LOCAL" in r["error_detail"]  # SaaS answer for cloud-hosted dashboards
+
+    def test_private_ip_hint_cloud_variant_excludes_tailscale(self, monkeypatch):
+        """On a cloud deploy the hint must point ONLY to the local agent —
+        Tailscale is wrong there (the cloud box is not in the user's tailnet)."""
+        from axe_fleet.scanner import private_ip_hint
+        monkeypatch.setenv("RENDER", "true")
+        try:
+            hint = private_ip_hint()
+            assert "AGENTE LOCAL" in hint
+            assert "Tailscale" not in hint
+        finally:
+            monkeypatch.delenv("RENDER", raising=False)
+        # Self-host variant keeps the Tailscale option.
+        assert "Tailscale" in private_ip_hint()
+
+    def test_cloud_private_ip_unreachable_uses_cloud_hint(self, monkeypatch):
+        """diagnose_host on a cloud deploy attaches the cloud hint (no
+        Tailscale) to a private-IP miss."""
+        monkeypatch.setenv("RENDER", "true")
+        try:
+            with patch("axe_fleet.connector.AxeOSConnector.fetch_info", side_effect=Exception("refused")), \
+                    patch("axe_fleet.scanner._probe_cgminer_version", return_value=None), \
+                    patch("axe_fleet.scanner._tcp_open", return_value=False):
+                r = diagnose_host("192.168.1.28")
+        finally:
+            monkeypatch.delenv("RENDER", raising=False)
+        assert r["reachable"] is False
+        assert "AGENTE LOCAL" in r["error_detail"]
+        assert "Tailscale" not in r["error_detail"]
 
     def test_public_ip_unreachable_no_hint(self):
         """A public IP that answers nothing keeps the plain protocol message —

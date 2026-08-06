@@ -1322,87 +1322,76 @@
 
 <!-- ─── CYPHER // LIVE MINING ─── -->
 <section class="panel panel--live-mining panel--large" id="live-mining-panel" data-module="live">
-  <div class="lm-cyber-header">
-    <div class="lm-cyber-header__top">
-      <div class="lm-cyber-header__logo">◈</div>
-      <div class="lm-cyber-header__text">
-        <div class="lm-cyber-header__title">CYPHER // LIVE MINING</div>
-        <div class="lm-cyber-header__sub">REAL-TIME HASH SEARCH · WORKER INTELLIGENCE</div>
+  <div class="fcc-header">
+    <div class="fcc-header__top">
+      <div class="fcc-header__logo">◈</div>
+      <div class="fcc-header__text">
+        <div class="fcc-header__title">CYPHER65 // FLEET COMMAND CENTER</div>
+        <div class="fcc-header__sub">REAL-TIME WORKER INTELLIGENCE · EXCEPTION HIERARCHY</div>
       </div>
     </div>
-    <div class="lm-cyber-header__badges">
+    <div class="fcc-header__badges">
       <span class="badge badge--green" id="lm-status-badge">LIVE</span>
       <span class="badge badge--mute" id="lm-workers-badge">0 workers</span>
+      <span class="lm-event-log__conn" id="lm-conn-dot" title="connection status"></span>
     </div>
   </div>
 
-  <div class="lm-summary" id="lm-summary">
-    <div class="lm-summary__item"><span class="lm-summary__label">WALLET</span><span class="lm-summary__val mono" id="lm-summary-wallet">—</span></div>
-    <div class="lm-summary__item"><span class="lm-summary__label">POOL</span><span class="lm-summary__val"><span id="lm-summary-pool">PARASITE</span><span class="lm-summary__dot" id="lm-summary-dot"></span></span></div>
-    <div class="lm-summary__item"><span class="lm-summary__label">WORKERS</span><span class="lm-summary__val" id="lm-summary-workers">0</span></div>
-    <div class="lm-summary__item"><span class="lm-summary__label">TOTAL HR</span><span class="lm-summary__val" id="lm-summary-hr">—</span></div>
-    <div class="lm-summary__item"><span class="lm-summary__label">BEST DIFF</span><span class="lm-summary__val lm-summary__val--gold" id="lm-summary-best">—</span></div>
-    <div class="lm-summary__item" title="Shares aceitas ÷ total (accepted+rejected) no fleet"><span class="lm-summary__label">EFFICIENCY</span><span class="lm-summary__val" id="lm-summary-eff">—</span></div>
-    <div class="lm-summary__item" title="Latência média dos workers do fleet (probe real do host)"><span class="lm-summary__label">PING</span><span class="lm-summary__val" id="lm-summary-ping">—</span></div>
-    <div class="lm-summary__item" title="Receita estimada por dia (pool) — honesta: '—' quando não há dados de lucro"><span class="lm-summary__label">EST. EARNINGS</span><span class="lm-summary__val lm-summary__val--gold" id="lm-summary-earnings">—</span></div>
+  <!-- KPI STRIP — fleet-fed, honest '—' quando a fonte não tem dados -->
+  <div class="fcc-kpis" id="fcc-kpis">
+    <div class="fcc-kpi fcc-kpi--hero" title="Hashrate total do fleet (soma dos devices)"><span class="fcc-kpi__label">TOTAL HR</span><span class="fcc-kpi__val fcc-kpi__val--cyan" id="fcc-summary-hr">—</span><span class="fcc-kpi__spark" id="fcc-summary-hr-spark"></span></div>
+    <div class="fcc-kpi" title="Devices online/hashing"><span class="fcc-kpi__label">ONLINE</span><span class="fcc-kpi__val fcc-kpi__val--good" id="fcc-summary-online">—</span></div>
+    <div class="fcc-kpi" title="Devices em warning (degradados mas alcançáveis)"><span class="fcc-kpi__label">WARNING</span><span class="fcc-kpi__val fcc-kpi__val--warn" id="fcc-summary-warn">—</span></div>
+    <div class="fcc-kpi" title="Devices offline"><span class="fcc-kpi__label">OFFLINE</span><span class="fcc-kpi__val fcc-kpi__val--bad" id="fcc-summary-offline">—</span></div>
+    <div class="fcc-kpi" title="Temperatura média dos devices (telemetria real)"><span class="fcc-kpi__label">AVG TEMP</span><span class="fcc-kpi__val" id="fcc-summary-temp">—</span></div>
+    <div class="fcc-kpi" title="Potência total do fleet"><span class="fcc-kpi__label">POWER</span><span class="fcc-kpi__val" id="fcc-summary-power">—</span></div>
+    <div class="fcc-kpi" title="Eficiência média (J/TH)"><span class="fcc-kpi__label">EFFICIENCY</span><span class="fcc-kpi__val" id="fcc-summary-eff">—</span></div>
+    <div class="fcc-kpi" title="Latência média dos workers (probe real do host; '—' para agent-managed)"><span class="fcc-kpi__label">AVG PING</span><span class="fcc-kpi__val" id="fcc-summary-ping">—</span></div>
+    <div class="fcc-kpi" title="Receita estimada por dia (pool) — honesta: '—' quando não há dados de lucro"><span class="fcc-kpi__label">EST. EARNINGS</span><span class="fcc-kpi__val fcc-kpi__val--gold" id="fcc-summary-earnings">—</span></div>
   </div>
 
-  <!-- NETWORK STATUS (P2) — real network/pool telemetry from the snapshot.
+  <!-- EXCEPTION HIERARCHY — workers problemáticos sobem (manage by exception) -->
+  <div class="fcc-exceptions" id="fcc-exceptions" style="display:none"></div>
+
+  <!-- NETWORK STATUS strip — real network/pool telemetry from the snapshot.
        Honest '—' per cell when a source is unavailable. -->
-  <div class="lm-network" id="lm-network">
-    <span class="lm-network__item" title="Dificuldade atual da rede Bitcoin"><span class="lm-network__label">NETWORK DIFF</span><span class="lm-network__val" id="lm-network-diff">—</span></span>
-    <span class="lm-network__item" title="Hashrate total da rede"><span class="lm-network__label">NETWORK HR</span><span class="lm-network__val" id="lm-network-hr">—</span></span>
-    <span class="lm-network__item" title="Altura atual da blockchain"><span class="lm-network__label">HEIGHT</span><span class="lm-network__val" id="lm-network-height">—</span></span>
-    <span class="lm-network__item" title="Tempo esperado até o próximo bloco da rede"><span class="lm-network__label">EST. BLOCK</span><span class="lm-network__val" id="lm-network-block">—</span></span>
-    <span class="lm-network__item" title="Workers conectados na pool (pool API)"><span class="lm-network__label">POOL WORKERS</span><span class="lm-network__val" id="lm-network-pool-workers">—</span></span>
-    <span class="lm-network__item" title="Último bloco encontrado pela pool"><span class="lm-network__label">POOL LAST BLOCK</span><span class="lm-network__val" id="lm-network-last-block">—</span></span>
+  <div class="fcc-network" id="fcc-network">
+    <span class="fcc-network__item" title="Dificuldade atual da rede Bitcoin"><span class="fcc-network__label">NETWORK DIFF</span><span class="fcc-network__val" id="lm-network-diff">—</span></span>
+    <span class="fcc-network__item" title="Hashrate total da rede"><span class="fcc-network__label">NETWORK HR</span><span class="fcc-network__val" id="lm-network-hr">—</span></span>
+    <span class="fcc-network__item" title="Altura atual da blockchain"><span class="fcc-network__label">HEIGHT</span><span class="fcc-network__val" id="lm-network-height">—</span></span>
+    <span class="fcc-network__item" title="Tempo esperado até o próximo bloco da rede"><span class="fcc-network__label">EST. BLOCK</span><span class="fcc-network__val" id="lm-network-block">—</span></span>
+    <span class="fcc-network__item" title="Workers conectados na pool (pool API)"><span class="fcc-network__label">POOL WORKERS</span><span class="fcc-network__val" id="lm-network-pool-workers">—</span></span>
+    <span class="fcc-network__item" title="Último bloco encontrado pela pool"><span class="fcc-network__label">POOL LAST BLOCK</span><span class="fcc-network__val" id="lm-network-last-block">—</span></span>
   </div>
 
-  <!-- ── WORKER INTELLIGENCE (FASE_2) — per-worker live telemetry feed.
-       Fed by the AXE FLEET /summary endpoint (shares, reject ratio, stratum
-       diff target, last share, latency). Honest '—' when a field is absent. -->
-  <div class="lm-workers" id="lm-workers" data-module="live" style="display:none">
-    <div class="lm-workers__head">
-      <span class="lm-workers__title">> WORKER INTELLIGENCE · LIVE TELEMETRY</span>
-      <span class="badge badge--mute" id="lm-workers-count">0</span>
+  <!-- WORKER INTELLIGENCE — per-worker live telemetry (grid / dense table).
+       Fed by the AXE FLEET /summary endpoint. Honest '—' por campo ausente. -->
+  <div class="fcc-workers" id="lm-workers" data-module="live">
+    <div class="fcc-workers__head">
+      <span class="fcc-workers__title">> WORKER INTELLIGENCE · LIVE TELEMETRY</span>
+      <span class="fcc-workers__tools">
+        <button class="chip chip--view is-active" data-cc-view="grid" title="Worker cards">▦ GRID</button>
+        <button class="chip chip--view" data-cc-view="table" title="Dense table">☰ TABLE</button>
+        <span class="badge badge--mute" id="lm-workers-count">0</span>
+      </span>
     </div>
-    <div class="lm-workers__grid" id="lm-workers-grid"></div>
+    <div class="fcc-workers__grid" id="lm-workers-grid"></div>
     <div class="lm-flow" id="lm-flow" style="display:none">
       <div class="lm-flow__head">
-        <span class="lm-flow__title">⌖ HASH FLOW · LAST SAMPLES</span>
+        <span class="lm-flow__title">⌖ SHARE QUALITY FLOW · LAST SAMPLES</span>
         <span class="lm-flow__legend"><span class="lm-flow__dot lm-flow__dot--ok"></span>share&nbsp;<span class="lm-flow__dot lm-flow__dot--rej"></span>reject&nbsp;<span class="lm-flow__dot lm-flow__dot--stale"></span>stale&nbsp;<span class="lm-flow__dot lm-flow__dot--idle"></span>idle&nbsp;<span class="lm-flow__dot lm-flow__dot--bad"></span>offline</span>
       </div>
       <div class="lm-flow__raster" id="lm-flow-raster"></div>
     </div>
   </div>
 
-  <div class="hunt-layout" id="hunt-layout">
-    <div class="hunt-stream" id="hunt-stream">
-      <div class="hunt-stream__head">
-        <span class="hunt-stream__title">> CALC STREAM</span>
-        <span class="badge badge--green">LIVE</span>
-      </div>
-      <div class="hunt-stream__feed" id="hunt-stream-feed">
-        <div class="hunt-stream__line"><span class="ts">--:--:--</span><span class="n">nonce</span></div>
-      </div>
+  <!-- THERMAL MAP — hasboard temperatures com thresholds visuais -->
+  <div class="fcc-thermal" id="fcc-thermal">
+    <div class="fcc-thermal__head">
+      <span class="fcc-thermal__title">♨ THERMAL MAP · HASBOARD TEMPERATURES</span>
+      <span class="fcc-thermal__legend"><span class="fcc-temp-dot fcc-temp-dot--ok"></span>≤60<span class="fcc-temp-dot fcc-temp-dot--warn"></span>60–70<span class="fcc-temp-dot fcc-temp-dot--hot"></span>70–80<span class="fcc-temp-dot fcc-temp-dot--crit"></span>&gt;80</span>
     </div>
-
-    <div class="hunt-metrics" id="hunt-metrics">
-      <div class="hunt-metrics__section"><div class="hunt-metrics__label">INSTANT HR</div><canvas id="hunt-sparkline" class="hunt-sparkline"></canvas><div class="hunt-metrics__val" id="hunt-metrics-hr">—</div></div>
-      <div class="hunt-metrics__section"><div class="hunt-metrics__label">CUMULATIVE P</div><canvas id="hunt-gauge" class="hunt-gauge" width="120" height="60"></canvas><div class="hunt-metrics__val hunt-metrics__val--gold" id="hunt-metrics-pblock">0.00%</div></div>
-      <div class="hunt-metrics__section"><div class="hunt-metrics__label">EXP BLOCKS</div><div class="hunt-metrics__val hunt-metrics__val--cyan" id="hunt-metrics-expblocks">0.0000</div><div class="hunt-metrics__sub">per period</div></div>
-      <div class="hunt-metrics__section"><div class="hunt-metrics__label">BEST DIFF</div><div class="hunt-metrics__val hunt-metrics__val--green" id="hunt-metrics-bestdiff">—</div><div class="hunt-metrics__sub">vs target</div></div>
-    </div>
-  </div>
-
-  <div class="hunt-shares" id="hunt-shares">
-    <div class="hunt-shares__head">
-      <span class="hunt-shares__title">⌖ RECENT SHARES</span>
-      <span class="badge badge--mute" id="hunt-shares-count">0</span>
-    </div>
-    <div class="hunt-shares__grid" id="hunt-shares-grid">
-      <div class="hunt-shares__empty">awaiting data</div>
-    </div>
+    <div class="fcc-thermal__grid" id="fcc-thermal-grid"></div>
   </div>
 
   <div class="lm-best-share" id="lm-best-share" style="display:none">
@@ -1421,7 +1410,7 @@
   <div class="lm-event-log" id="lm-event-log">
     <div class="lm-event-log__head">
       <span class="lm-event-log__title">> LIVE MINING EVENTS
-        <span class="lm-event-log__conn" id="lm-conn-dot" title="connection status"></span>
+        <span class="lm-event-log__conn" title="connection status"></span>
       </span>
       <span class="lm-event-log__stats" id="lm-event-log-stats">
         <span class="lm-event-log__stat">EVENTS <b id="lm-stat-total">0</b></span>
@@ -1448,7 +1437,7 @@
     </div>
   </div>
 
-  <div class="lm-footnote">⚡ Visual representation of worker activity based on real API data.</div>
+  <div class="lm-footnote">⚡ Fleet Command Center — telemetria real do AXE FLEET: shares, temperaturas, eficiência, latência. Hierarquia por exceção: workers problemáticos sobem.</div>
 </section>
 
 </div> <!-- end #tab-charts -->

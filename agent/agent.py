@@ -382,11 +382,29 @@ def _poll_telemetry(dev):
 # ── Command execution ────────────────────────────────────────────────────
 
 
-def _exec_command(cmd):
-    """Execute a queued command on the local device. Returns (success, result)."""
-    dev_ip = cmd.get("device_ip") or cmd.get("device_id")
+def _exec_command(cmd, known=None):
+    """Execute a queued command on the local device. Returns (success, result).
+
+    The server now sends the device's LAN ip_address in the payload (the
+    registry UUID is useless for opening a socket). Protocol by type:
+      - bitaxe/AxeOS: HTTP POST /api/system/{restart|identify} on :80
+      - cgminer-family: JSON-over-TCP restart command on :4028 (cgminer has
+        NO identify command — the server no longer advertises it).
+    """
+    dev_ip = cmd.get("ip_address") or cmd.get("device_ip") or cmd.get("device_id")
     name = cmd.get("command")
     if name in ("restart", "identify"):
+        # Resolve device type from the agent's own discovery map when known
+        # (the server does not persist type; the agent probed it directly).
+        dev = (known or {}).get(dev_ip, {})
+        dev_type = str(dev.get("type") or "").lower()
+        if dev_type == "cgminer":
+            if name != "restart":
+                return False, "identify not supported via cgminer API"
+            parsed = _cgminer_cmd(dev_ip, "restart")
+            if parsed and parsed.get("STATUS"):
+                return True, "cgminer restart accepted"
+            return False, "cgminer restart failed/unreachable"
         status, _ = _http_json("POST", f"http://{dev_ip}:{AXEOS_PORT}/api/system/{name}",
                                payload=None, headers={}, timeout=5)
         return status == 200, f"HTTP {status}"
@@ -406,10 +424,22 @@ def main():
     log.info("scanning LAN…")
     discovered = scan_lan()
     log.info("discovered %d device(s)", len(discovered))
+    blocked_ips = set()
     if discovered:
         code, resp = _post("/api/agent/register", {"devices": discovered})
         if code in (200, 201):
             log.info("registered %s", resp.get("count"))
+            blocked = resp.get("blocked") or []
+            if blocked:
+                # Plan worker cap hit: the server refused NEW devices. The
+                # operator must free a slot or upgrade — surface it once so
+                # the agent log explains why some miners never appear, and
+                # drop them from the poll set so we don't 403-spam the server
+                # with telemetry pushes for devices that were never admitted.
+                blocked_ips = {b.get("ip") for b in blocked if b.get("ip")}
+                log.warning("plan worker limit: %d device(s) blocked — %s",
+                            len(blocked_ips),
+                            resp.get("message") or "remova devices ou aumente o limite do plano")
         else:
             log.warning("register failed (HTTP %s): %s", code, resp.get("error"))
 
@@ -428,6 +458,10 @@ def main():
             known[ip] = {"ip": ip, "type": "bitaxe", "model": "Bitaxe",
                          "firmware": "", "version": "", "hostname": "", "mac": "",
                          "hashrate_hs": 0}
+    # Never poll/push devices the server refused (plan cap) — each push would
+    # 403 forever and the dashboard would never show them anyway.
+    for ip in blocked_ips:
+        known.pop(ip, None)
 
     cycle = 0
     while True:
@@ -441,14 +475,21 @@ def main():
             # present+IDLE instead of looking dead forever. Empty heartbeats
             # use a shorter timeout so unreachable devices can't stall the
             # poll loop on a cloud hiccup.
-            _post("/api/agent/telemetry", {"ip": ip, "telemetry": tel},
-                  timeout=3.0 if not tel else 10.0)
+            code, resp = _post("/api/agent/telemetry", {"ip": ip, "telemetry": tel},
+                               timeout=3.0 if not tel else 10.0)
+            if code == 410 and resp.get("removed"):
+                # Operator removed this device on the dashboard — drop it from
+                # the poll set so we stop pushing a device that can never come
+                # back through the agent path.
+                log.warning("device %s removed by operator on dashboard — dropping", ip)
+                known.pop(ip, None)
         # 3 · Pull queued commands and execute them locally.
         code, resp = _post("/api/agent/commands/pull", {})
         if code == 200:
             for cmd in resp.get("commands") or []:
-                log.info("executing %s → %s", cmd.get("command"), cmd.get("device_id"))
-                ok, result = _exec_command(cmd)
+                log.info("executing %s → %s (%s)", cmd.get("command"),
+                         cmd.get("device_id"), cmd.get("ip_address") or "no-ip")
+                ok, result = _exec_command(cmd, known)
                 _post(f"/api/agent/commands/{cmd['id']}/ack",
                       {"success": ok, "result": result})
         # 4 · Re-scan periodically so newly added miners appear (a miner that
@@ -462,8 +503,19 @@ def main():
             if new:
                 code, resp = _post("/api/agent/register", {"devices": new})
                 log.info("registered %d new device(s)", code in (200, 201) and resp.get("count") or 0)
-                for d in new:
-                    known[d["ip"]] = d
+                if code in (200, 201):
+                    # Only trust the register response: devices the server
+                    # admitted go into the poll set; devices it refused (plan
+                    # cap OR tombstoned/removed) must NOT be polled/pushed —
+                    # otherwise telemetry 403-spams forever for refused ones.
+                    admitted = {b.get("ip") for b in (resp.get("blocked") or []) if b.get("ip")}
+                    for d in new:
+                        if d["ip"] not in admitted:
+                            known[d["ip"]] = d
+                        else:
+                            log.warning("device %s refused by server (plan cap / removed) — skipping", d["ip"])
+                else:
+                    log.warning("re-register failed (HTTP %s): %s", code, resp.get("error"))
         elapsed = time.time() - t0
         sleep = max(1, POLL_INTERVAL - elapsed)
         time.sleep(sleep)

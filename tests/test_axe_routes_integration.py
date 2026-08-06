@@ -861,6 +861,35 @@ class TestFleetSummary:
         assert online["_telemetry"]["uptime_str"] == "—"
         assert offline["_telemetry"]["stratum_status"] == ""
 
+    def test_capabilities_serialized_as_supported_command_array(self, client):
+        """Regression: the FLEET COMMAND CENTER renders the restart/identify
+        buttons off `capabilities` as an ARRAY (mirrors fleet_health). A dict
+        here would fail Array.isArray() in buildCommandCenterRows and drop
+        every agent-managed device into READ-ONLY — the Restart button never
+        renders and the whole agent round-trip is unreachable from the UI.
+        dict → ["telemetry", "restart"] (only truthy entries)."""
+        mock_registry = MagicMock()
+        mock_registry.list_devices.return_value = [{
+            **self._device("d1", "ONLINE"),
+            # Stored caps come back as a DICT (registry _row_to_device json-)
+            # loads the SQLite TEXT column) — the summary must flatten it.
+            "capabilities": {"telemetry": True, "restart": True,
+                             "identify": False, "configure": False},
+        }]
+        mock_registry.get_recent_telemetry.return_value = []
+
+        with patch("axe_fleet.routes._registry", mock_registry):
+            resp = client.get(self.ENDPOINT)
+        assert resp.status_code == 200
+        d = resp.get_json()["devices"][0]
+        assert isinstance(d["capabilities"], list)
+        assert "restart" in d["capabilities"]
+        assert "telemetry" in d["capabilities"]
+        # Falsy flags are dropped — never leaked as literal strings.
+        assert "identify" not in d["capabilities"]
+        assert "configure" not in d["capabilities"]
+        # And the raw dict must not be present either.
+        assert not isinstance(d["capabilities"], dict)
 
 # ══════════════════════════════════════════════════════════════════════════
 #  POST /api/axe-fleet/test-devices
@@ -914,6 +943,84 @@ class TestSeedTestDevices:
             resp = client.post(self.ENDPOINT)
         assert resp.status_code == 403
         assert "disabled" in resp.get_json()["error"]
+
+
+# ══════════════════════════════════════════════════════════════════════════
+#  Cloud-deploy guards (SaaS fleet topology)
+#  A cloud host (Render) can NEVER reach RFC1918 private LAN IPs, so on a
+#  cloud deploy POST /devices must reject private IPs instead of creating a
+#  card that stays OFFLINE forever ("a ferramenta não reconhece o device").
+#  Public-IP miners stay allowed (reachable from anywhere).
+# ══════════════════════════════════════════════════════════════════════════
+
+class TestCloudDeployGuards:
+    """Tests for the cloud-deploy topology guards on device registration."""
+
+    ENDPOINT = "/api/axe-fleet/devices"
+
+    @pytest.fixture
+    def mock_registry(self):
+        r = MagicMock()
+        r.get_device_by_ip.return_value = None
+        r.add_device.return_value = {"id": "d1", "name": "Miner", "status": "OFFLINE"}
+        return r
+
+    def test_private_ip_blocked_on_cloud(self, client, monkeypatch, mock_registry):
+        """Cloud + private LAN IP → 403 with agent CTA, and add_device is
+        NEVER called (no dead OFFLINE card created)."""
+        monkeypatch.setenv("RENDER", "true")
+        try:
+            with patch("axe_fleet.routes._registry", mock_registry):
+                resp = client.post(self.ENDPOINT, json={"ip_address": "192.168.1.100"})
+        finally:
+            monkeypatch.delenv("RENDER", raising=False)
+        assert resp.status_code == 403
+        data = resp.get_json()
+        assert data["is_cloud"] is True
+        assert "AGENTE LOCAL" in data["message"]
+        mock_registry.add_device.assert_not_called()
+
+    def test_public_ip_allowed_on_cloud(self, client, monkeypatch, mock_registry):
+        """Cloud + public IP → still registered (a public miner IS reachable
+        from the cloud). NOTE: use a truly global IP — documentation ranges
+        like 203.0.113.x count as is_private in Python's ipaddress."""
+        monkeypatch.setenv("RENDER", "true")
+        try:
+            with patch("axe_fleet.routes._registry", mock_registry), \
+                    patch("axe_fleet.routes._can_add_worker", return_value=True):
+                resp = client.post(self.ENDPOINT, json={"ip_address": "8.8.8.8", "name": "pub"})
+        finally:
+            monkeypatch.delenv("RENDER", raising=False)
+        assert resp.status_code == 201
+        mock_registry.add_device.assert_called_once_with("8.8.8.8", "pub", tenant_id="default")
+
+    def test_private_ip_allowed_off_cloud(self, client, monkeypatch, mock_registry):
+        """Self-host (not cloud): a private IP can be added — the dashboard
+        may be on the same LAN as the miners (or Tailscale). RENDER is
+        delenv'd so the test is deterministic in any shell."""
+        monkeypatch.delenv("RENDER", raising=False)
+        with patch("axe_fleet.routes._registry", mock_registry), \
+                patch("axe_fleet.routes._can_add_worker", return_value=True):
+            resp = client.post(self.ENDPOINT, json={"ip_address": "192.168.1.100", "name": "lan"})
+        assert resp.status_code == 201
+        mock_registry.add_device.assert_called_once_with("192.168.1.100", "lan", tenant_id="default")
+
+    def test_agent_token_returns_server_url(self, client, monkeypatch):
+        """POST /api/agent/token must return server_url so the frontend can
+        build the agent one-liner from the real origin (behind proxies/CDNs)."""
+        from services.auth import create_token
+        monkeypatch.setenv("SECRET_KEY", "agent-test-secret-123")
+        app.config["JWT_SECRET_KEY"] = "agent-test-secret-123"
+        try:
+            tok = create_token(subject="acme", extra_claims={"role": "admin"})
+            resp = client.post("/api/agent/token", headers={"Authorization": f"Bearer {tok}"})
+        finally:
+            app.config.pop("JWT_SECRET_KEY", None)
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["token"]
+        assert data["server_url"]  # e.g. http://localhost
+        assert data["server_url"].startswith("http")
 
 
 # ══════════════════════════════════════════════════════════════════════════

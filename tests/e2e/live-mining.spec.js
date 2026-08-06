@@ -1,10 +1,10 @@
 /**
  * CYPHER65 War Room — E2E: LIVE MINING / Worker Intelligence
  * ==========================================================
- * Covers the FASE_2 Worker Intelligence panel: opening the LIVE MINING
- * tab with seeded fleet devices and validating that the per-worker rows
- * (table) and the Hash Flow raster (one row per worker × 24 tick cells)
- * render from real /api/axe-fleet/summary data.
+ * Covers the FLEET COMMAND CENTER (Live Mining) panel: opening the LIVE
+ * MINING tab with seeded fleet devices and validating that the per-worker
+ * cards + dense table (toggle) and the Hash Flow raster (one row per
+ * worker × 24 tick cells) render from real /api/axe-fleet/summary data.
  *
  * Seeding is done through the public API because the E2E runner boots the
  * server WITHOUT DEBUG_MOCK (run-e2e.sh) — a fresh server has an empty
@@ -124,28 +124,32 @@ test.describe('LIVE MINING — Worker Intelligence', () => {
       await page.locator('.sidebar__link[data-module="live"]').click();
       await page.waitForTimeout(600);
 
-      // ── Worker rows render. The panel starts with the honest empty state
-      //    (#lm-workers display:none) and renderWorkerIntelligence() flips it
-      //    to block only when /summary returns devices — so visibility IS the
-      //    wait-for-data signal. Timeout covers one full poll cycle. ──
-      await expect(page.locator('#lm-workers-grid .lm-w__row--head')).toBeVisible({ timeout: 30000 });
-      await expect(
-        page.locator('#lm-workers-grid .lm-w__row:not(.lm-w__row--head)').first()
-      ).toBeVisible({ timeout: 30000 });
+      // ── Worker cards render (grid view é o default do FLEET COMMAND
+      //    CENTER). #lm-workers flips para block só quando /summary devolve
+      //    devices — visibilidade É o sinal de dados prontos. ──
+      await expect(page.locator('#lm-workers-grid .fcc-card').first()).toBeVisible({ timeout: 30000 });
 
-      // Head row carries the intelligence columns (not just a bare grid).
-      const headRow = page.locator('#lm-workers-grid .lm-w__row--head');
-      await expect(headRow).toContainText('SHARES A/R/S');
-      await expect(headRow).toContainText('REJ%');
-
-      // Each seeded worker renders its own row with name (+ IP in the cell).
+      // Each seeded worker renders its own card with its name.
       for (const s of seeded) {
         await expect(
-          page.locator('#lm-workers-grid .lm-w__name', { hasText: s.name })
+          page.locator('#lm-workers-grid .fcc-card__name', { hasText: s.name })
         ).toBeVisible({ timeout: 15000 });
       }
-      const bodyRows = page.locator('#lm-workers-grid .lm-w__row:not(.lm-w__row--head)');
-      const rowCount = await bodyRows.count();
+      const cardCount = await page.locator('#lm-workers-grid .fcc-card').count();
+      expect(cardCount).toBeGreaterThanOrEqual(seeded.length,
+        `expected at least ${seeded.length} worker cards, got ${cardCount}`);
+
+      // KPI strip fleet-fed reflete os devices (TOTAL HR / ONLINE etc.).
+      await expect(page.locator('#fcc-summary-online')).toBeVisible({ timeout: 15000 });
+
+      // ── Dense table view (HiveOS-style): toggle + colunas de inteligência ──
+      await page.locator('.chip--view[data-cc-view="table"]').click();
+      await expect(page.locator('#lm-workers-grid .fcc-t__row--head')).toBeVisible({ timeout: 5000 });
+      const headRow = page.locator('#lm-workers-grid .fcc-t__row--head');
+      await expect(headRow).toContainText('SHARES A/S/R');
+      await expect(headRow).toContainText('REJ%');
+      const tableRows = page.locator('#lm-workers-grid .fcc-t__row:not(.fcc-t__row--head)');
+      const rowCount = await tableRows.count();
       expect(rowCount).toBeGreaterThanOrEqual(seeded.length,
         `expected at least ${seeded.length} worker rows, got ${rowCount}`);
 
