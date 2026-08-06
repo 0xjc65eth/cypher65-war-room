@@ -95,6 +95,42 @@ class AutomationEngine:
         "stop": "start",
     }
 
+    def preview_rules(self, devices: List[Device],
+                      tenant_id: str = "") -> List[Dict[str, Any]]:
+        """P1 Auto-Pilot advisory: which enabled rules WOULD fire right now.
+
+        Read-only by design — evaluates conditions + cooldown against the
+        devices but NEVER executes, validates through SafetyEngine or audits.
+        The Command Center consumes this to surface "this rule is ready to
+        fire" as a decision card, keeping autonomous execution gated for the
+        later Auto-Pilot phase.
+
+        Returns a list of dicts (one per would-fire rule):
+          {rule_id, rule_name, device_id, condition_metric, condition_operator,
+           condition_value, action_command, action_parameters}
+        """
+        rules = self.load_rules(tenant_id=tenant_id)
+        now = int(time.time())
+        preview: List[Dict[str, Any]] = []
+        for rule in rules:
+            device = next((d for d in devices if d.id == rule.target_device_id), None)
+            if device is None:
+                continue
+            if not self._can_fire(rule, device.id, now):
+                continue
+            if self._evaluate_condition(device, rule):
+                preview.append({
+                    "rule_id": rule.id,
+                    "rule_name": rule.name,
+                    "device_id": device.id,
+                    "condition_metric": rule.condition_metric,
+                    "condition_operator": rule.condition_operator,
+                    "condition_value": rule.condition_value,
+                    "action_command": rule.action_command,
+                    "action_parameters": dict(rule.action_parameters or {}),
+                })
+        return preview
+
     def evaluate_rules(self, devices: List[Device]) -> List[Dict[str, Any]]:
         """Evaluate all active rules against the provided devices.
 

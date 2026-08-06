@@ -784,6 +784,11 @@ def enrich_account_ranks(account, leaderboard_entry):
 _CC_SEVERITY_ORDER = {"crit": 0, "gold": 1, "warn": 2, "info": 3}
 CC_MAX_ACTIONS = 3
 
+# P1 Auto-Pilot advisory thresholds — REAL data gating (never fabricates).
+AP_HASHRATE_DROP_RATIO = 0.70      # fire when current < 70% of 7d peak
+AP_TEMP_HIGH_C = 75.0              # fire when a fleet device runs ≥ 75°C
+AP_PEAK_WINDOW_S = 7 * 86400       # 7-day window for the hashrate peak
+
 
 def build_command_center(snapshot: Optional[dict] = None) -> list:
     """P0-3 // Build up to CC_MAX_ACTIONS contextual action cards.
@@ -819,6 +824,14 @@ def build_command_center(snapshot: Optional[dict] = None) -> list:
       5. capital_lease       (info) — decision_matrix.best_option == 'lease'
       6. negative_operation  (warn) — pool_net_usd_per_day < 0
       7. affiliate_buy       (info) — market_data.affiliate.url configured
+
+    P1 Auto-Pilot advisory rules (phased start of the Big Bet — read-only,
+    fed by the real `auto_pilot` snapshot block injected in app.py):
+      8. hashrate_drop       (gold) — current hashrate < 70% of the real
+         7-day peak (proximity_history MAX, window AP_PEAK_WINDOW_S)
+      9. temp_high           (warn) — fleet device temperature >= AP_TEMP_HIGH_C
+      10. automation_ready   (info) — AutomationEngine.preview_rules()
+          reports a rule that WOULD fire right now (no execution)
 
     Cards are ranked by severity (crit > gold > warn > info), then emitted in
     rule order, capped at CC_MAX_ACTIONS.
@@ -955,6 +968,77 @@ def build_command_center(snapshot: Optional[dict] = None) -> list:
             "target": "market",
             "panel": "market-panel",
             "url": aff.get("url"),
+        })
+
+    # ── 8. P1 Auto-Pilot: hashrate below its real 7-day peak (gold) ──
+    # Fed by snap["auto_pilot"]["peak_hashrate_7d"] — the true MAX worker
+    # hashrate observed over the last 7 days (from proximity_history, real
+    # data, injected by app.py). When the current hashrate has dropped below
+    # 70% of that peak, the operator loses real revenue: surface a reset /
+    # inspect card instead of a raw metric.
+    ap = snap.get("auto_pilot") if isinstance(snap.get("auto_pilot"), dict) else {}
+    peak_7d = _num(ap.get("peak_hashrate_7d"))
+    cur_hr = _num(worker.get("hashrate") if isinstance(worker, dict) else None)
+    if peak_7d and cur_hr and cur_hr > 0 and cur_hr < peak_7d * AP_HASHRATE_DROP_RATIO:
+        drop_pct = (1 - cur_hr / peak_7d) * 100
+        _add({
+            "id": "hashrate_drop",
+            "severity": "gold",
+            "title": "HASHRATE DROP — abaixo do pico de 7d",
+            "message": (
+                f"Hashrate atual é {drop_pct:.0f}% menor que o pico da semana "
+                "(reset do device ou rede local podem recuperá-lo)."
+            ),
+            "action": "VER FLEET",
+            "target": "fleet",
+            "panel": "axe-fleet-panel",
+            "url": None,
+        })
+
+    # ── 9. P1 Auto-Pilot: fleet device running hot (warn) ──
+    if isinstance(fleet, list):
+        hot_devices = [
+            d for d in fleet
+            if isinstance(d, dict) and _num(d.get("temperature")) is not None
+            and _num(d.get("temperature")) >= AP_TEMP_HIGH_C
+        ]
+        if hot_devices:
+            hot = hot_devices[0]
+            hot_name = str(hot.get("name") or hot.get("device_id") or hot.get("id") or "device")
+            _add({
+                "id": "temp_high",
+                "severity": "warn",
+                "title": f"{hot_name} a {_num(hot.get('temperature')):.0f}°C",
+                "message": "Temperatura acima do limite térmico — reduza overclock, melhore o airflow ou pausa o device antes de dano.",
+                "action": "VER FLEET",
+                "target": "fleet",
+                "panel": "axe-fleet-panel",
+                "url": None,
+            })
+
+    # ── 10. P1 Auto-Pilot: automation rule ready to fire (info) ──
+    # The Big Bet merge with Automations — read-only advisory preview of what
+    # a rule WOULD do right now (AutomationEngine.preview_rules, no execution
+    # by design). The operator sees the pending trigger and can confirm or
+    # disarm the rule in the Automations module.
+    ap_preview = ap.get("automation_preview") or []
+    if isinstance(ap_preview, list) and ap_preview:
+        first = ap_preview[0] if isinstance(ap_preview[0], dict) else {}
+        rule_name = str(first.get("rule_name") or "regra")
+        dev_id = str(first.get("device_id") or "")
+        action = str(first.get("action_command") or "ação")
+        _add({
+            "id": "automation_ready",
+            "severity": "info",
+            "title": "Auto-Pilot: automação pronta",
+            "message": (
+                f"Regra «{rule_name}» dispararia agora: {action}"
+                + (f" em {dev_id}" if dev_id else "") + "."
+            ),
+            "action": "VER AUTOMATIONS",
+            "target": "automations",
+            "panel": "ai-operator-panel",
+            "url": None,
         })
 
     # Rank by severity (crit > gold > warn > info), stable by rule order.

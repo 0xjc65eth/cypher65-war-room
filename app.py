@@ -38,6 +38,7 @@ from helpers import (
     attach_affiliate,
     enrich_account_ranks,
     build_command_center,
+    AP_PEAK_WINDOW_S, AP_TEMP_HIGH_C,
 )
 
 import services.state as _shared_state
@@ -4054,6 +4055,75 @@ def docs_agent_guide():
     return render_template("agent_guide.html", guide_html=Markup(html))
 
 
+def build_auto_pilot_context() -> dict:
+    """P1 Auto-Pilot advisory context block (read-only, never executes).
+
+    Feeds the advisory Command Center rules with REAL data:
+      - peak_hashrate_7d: MAX(worker_hashrate) over the last 7 days from
+        proximity_history (the sampler persists it every poll). 0.0 when the
+        history is empty / DB hiccup — the hashrate_drop rule gates on > 0,
+        so a cold boot never fires a false "drop" card.
+      - automation_preview: AutomationEngine.preview_rules() — which enabled
+        automation rules WOULD fire right now, evaluated against the core
+        registry's devices, WITHOUT executing anything. The advisory card
+        shows "rule X would do Y" and lets the operator confirm/disarm.
+      - temp_high_c: the thermal threshold the frontend/rule uses (shared
+        constant so the panel can label the limit honestly).
+
+    Tenant-scoped + fail-closed: preview_rules() runs with the request's
+    tenant_id (default 'default'), so the advisory card can NEVER surface
+    another tenant's automation rule names — and any hiccup yields the
+    empty/zero block instead of breaking the snapshot.
+    """
+    try:
+        # Tenant resolution mirrors the axe_fleet scoping in /api/snapshot.
+        # Never fall back to '' (unscoped = ALL tenants' rules): a resolution
+        # hiccup must not leak another tenant's rule names into this card.
+        tenant_id = "default"
+        try:
+            from services.tenant import get_tenant_id as _resolve_tenant
+            tenant_id = _resolve_tenant() or "default"
+        except Exception:
+            tenant_id = "default"
+
+        peak_7d = 0.0
+        conn = None
+        try:
+            conn = get_db()
+            row = conn.execute(
+                "SELECT MAX(worker_hashrate) FROM proximity_history "
+                "WHERE ts >= ?",
+                (int(time.time()) - AP_PEAK_WINDOW_S,),
+            ).fetchone()
+            if row and row[0]:
+                peak_7d = float(row[0])
+        except Exception:
+            peak_7d = 0.0
+        finally:
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+
+        automation_preview = []
+        try:
+            if _automation_engine is not None and _core_registry is not None:
+                _core_devices = _core_registry.list_devices()
+                automation_preview = _automation_engine.preview_rules(
+                    _core_devices, tenant_id=tenant_id)
+        except Exception:
+            automation_preview = []
+
+        return {
+            "peak_hashrate_7d": peak_7d,
+            "automation_preview": automation_preview,
+            "temp_high_c": AP_TEMP_HIGH_C,
+        }
+    except Exception:
+        return {"peak_hashrate_7d": 0.0, "automation_preview": [], "temp_high_c": AP_TEMP_HIGH_C}
+
+
 @app.route("/api/snapshot")
 def api_snapshot():
     """Return the full dashboard snapshot, including a small set of
@@ -4152,6 +4222,14 @@ def api_snapshot():
                 "loading": True,
                 "affiliate": None,
             }
+    # P1 Auto-Pilot advisory: real-data context block for the advisory rules.
+    #   - peak_hashrate_7d: true MAX worker hashrate over the last 7 days
+    #     (proximity_history is written by the proximity sampler each poll).
+    #   - automation_preview: read-only evaluation of which enabled automation
+    #     rules WOULD fire right now — never executes (preview_rules).
+    # Injected BEFORE build_command_center so the hashrate_drop / temp_high /
+    # automation_ready rules see it (pure aggregation stays pure).
+    resp["auto_pilot"] = build_auto_pilot_context()
     # P0-3: Command Center — contextual action cards (advisory, read-only).
     # Computed from `resp` (NOT latest_snapshot) and AFTER attach_affiliate,
     # so the affiliate_buy rule sees the real market_data.affiliate link the

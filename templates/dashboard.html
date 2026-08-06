@@ -396,16 +396,17 @@
 <!-- ── COMMAND CENTER (P0-3) — 3 ações contextuais ── -->
 <section class="panel panel--command-center panel--large" id="command-center-panel" data-module="dashboard">
   <div class="panel__header">
-    <div class="panel__eyebrow">⌘ COMMAND CENTER · O QUE FAZER AGORA?</div>
+    <div class="panel__eyebrow">⌘ AUTO-PILOT · O QUE FAZER AGORA?</div>
     <div class="panel__tools">
+      <span class="badge badge--purple" id="cc-mode-badge" title="Fase 1 do Auto-Pilot: modo ADVISORY (read-only) — as automações ainda não executam sozinhas, apenas sinalizam o que fariam.">ADVISORY</span>
       <span class="badge badge--mute" id="cc-status-badge">—</span>
     </div>
   </div>
   <div class="cc-grid" id="cc-grid">
     <div class="empty-state" style="grid-column:1/-1;border:none;padding:10px">
       <div class="empty-state__icon">⌘</div>
-      <div class="empty-state__title">No contextual actions</div>
-      <div class="empty-state__desc">Action cards appear when the dashboard detects something worth your attention — an offline worker, a proximity streak, or a capital-allocation signal.</div>
+      <div class="empty-state__title">All systems nominal</div>
+      <div class="empty-state__desc">Auto-Pilot (advisory) cards appear when the dashboard detects something worth your attention — an offline worker, a hashrate drop below the 7-day peak, a hot miner, a proximity streak, or an automation rule ready to fire.</div>
     </div>
   </div>
 </section>
