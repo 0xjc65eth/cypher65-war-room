@@ -17,9 +17,7 @@ Braiins OS+ and provides a superset of the standard cgminer fields.
 
 Reference: https://academy.braiins.com/braiins-os/papi-bosminer
 """
-import json
 import logging
-import socket
 import time
 from typing import Any, Dict, List, Optional
 
@@ -51,40 +49,15 @@ class BraiinsAdapter(BaseAdapter):
         self.host = host or device.ip
         self.socket_port = socket_port
 
-    # ── cgminer socket helpers (mirrored from CgminerAdapter) ─────────
+    # ── cgminer socket helpers (thin wrapper around BaseAdapter) ──────
 
     def _send_command(self, command: str, port: int = None) -> Optional[dict]:
         """Send a JSON command over TCP to the cgminer API (port 4028)."""
-        if not self.host:
-            return None
         p = port or self.socket_port
-        sock = None
-        try:
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.settimeout(SOCKET_TIMEOUT)
-            sock.connect((self.host, p))
-            payload = json.dumps({"command": command}) + "\n"
-            sock.send(payload.encode())
-            data = b""
-            while True:
-                chunk = sock.recv(4096)
-                if not chunk:
-                    break
-                data += chunk
-                if b"\x00" in chunk:
-                    break
-            text = data.decode(errors="replace").rstrip("\x00").strip()
-            if text:
-                return json.loads(text)
-        except (socket.timeout, ConnectionRefusedError, OSError,
-                json.JSONDecodeError) as e:
-            log.debug("[braiins] %s command '%s' failed: %s",
-                      self.host, command, e)
-            return None
-        finally:
-            if sock:
-                sock.close()
-        return None
+        result = self._send_cgminer_command(command, p, SOCKET_TIMEOUT)
+        if result is None:
+            log.debug("[braiins] %s command '%s' failed", self.host, command)
+        return result
 
     # ── REST probe (modern Braiins OS+ API) ───────────────────────────
 

@@ -1,8 +1,13 @@
 from abc import ABC, abstractmethod
+import json
+import logging
+import socket
 from typing import Any, Dict, List, Optional
 
 from core.models.device import Device
 from core.models.capability import Capability
+
+log = logging.getLogger(__name__)
 
 
 class BaseAdapter(ABC):
@@ -60,3 +65,39 @@ class BaseAdapter(ABC):
             c.name == capability_name and c.supported
             for c in self.get_capabilities()
         )
+
+    def _send_cgminer_command(self, command: str, port: int, timeout: int = 5) -> Optional[dict]:
+        """Send a JSON command over TCP to a cgminer-compatible API.
+
+        Shared by CgminerAdapter and BraiinsAdapter. Returns parsed JSON
+        or ``None`` on any failure (connection refused, timeout, bad JSON).
+
+        Subclasses wrap this with their own logging.
+        """
+        host = getattr(self, 'host', None)
+        if not host:
+            return None
+        sock = None
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(timeout)
+            sock.connect((host, port))
+            payload = json.dumps({"command": command}) + "\n"
+            sock.send(payload.encode())
+            data = b""
+            while True:
+                chunk = sock.recv(4096)
+                if not chunk:
+                    break
+                data += chunk
+                if b"\x00" in chunk:
+                    break
+            text = data.decode(errors="replace").rstrip("\x00").strip()
+            if text:
+                return json.loads(text)
+        except (socket.timeout, ConnectionRefusedError, OSError, json.JSONDecodeError):
+            return None
+        finally:
+            if sock:
+                sock.close()
+        return None
