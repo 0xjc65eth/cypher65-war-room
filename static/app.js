@@ -3101,7 +3101,11 @@ function renderAccount(acct) {
     toggleWalletCTA();
     renderHUD(snap);
     renderStatusBar(snap);
-    if (dom.topbarAddress) dom.topbarAddress.textContent = `${fmt.shortAddr(snap.btc_address || window.BTC_ADDRESS || '')}`;
+    // P0-4 fix: an empty shortAddr('') collapses the topbar span to a
+    // zero-width box (Playwright/flex reports it hidden on wallet-less
+    // boots). Keep the '—' placeholder (same convention as #sb-wallet-addr)
+    // so the element always has a real box.
+    if (dom.topbarAddress) dom.topbarAddress.textContent = `${fmt.shortAddr(snap.btc_address || window.BTC_ADDRESS || '') || '—'}`;
     if (dom.statusText) dom.statusText.textContent = snap.worker ? 'ONLINE' : 'OFFLINE';
     if (dom.statusPill) dom.statusPill.classList.toggle('is-online', !!snap.worker);
     renderHero(snap);
@@ -3904,7 +3908,7 @@ dom.walletSave?.addEventListener('click', async () => {
       window.dispatchEvent(new CustomEvent('wallet-changed', { detail: { address: data.address } }));
       // Update topbar — show just the address
       if (dom.topbarAddress) {
-        dom.topbarAddress.textContent = fmt.shortAddr(data.address);
+        dom.topbarAddress.textContent = fmt.shortAddr(data.address) || '—';
       }
       // Close modal after a short delay. The refresh itself is handled by
       // the wallet-changed listener (dispatched above) — refreshUntilWalletReady
@@ -6272,8 +6276,10 @@ dom.walletSave?.addEventListener('click', async () => {
   // visível — a 1ª que aparecer também, sem exclusividade).
   const _MODULE_OWNED_PANES = {
     // LIVE MINING: só o painel principal (CYPHER // LIVE MINING) + o
-    // terminal de comandos. Timeline/gráficos/logs ficam fora do módulo
-    // para o layout voltar a ser focado (sem scroll infinito).
+    // terminal de comandos. Timeline/gráficos ficam fora do módulo para o
+    // layout voltar a ser focado (sem scroll infinito). O LIVE LOG (#logs-
+    // panel, data-module="live") vive DENTRO de #tab-terminal — painel de
+    // mesmo módulo — para ficar visível aqui (era inalcançável em #tab-fleet).
     live: ['tab-charts', 'tab-terminal'],
   };
   function moduleActivePanes(name, paneHasVisible) {

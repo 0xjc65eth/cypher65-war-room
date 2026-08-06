@@ -6,6 +6,107 @@ e versionamento semântico ([SemVer](https://semver.org/lang/pt-BR/)).
 
 ## [Unreleased]
 
+### Corrigido — LIVE LOG inalcançável em module-mode (#terminal oculto no E2E)
+- **Bug real**: o painel `#logs-panel` (LIVE LOG, `data-module="live"`) morava
+  dentro de `#tab-fleet`, mas o módulo `live` só ativa `tab-charts` +
+  `tab-terminal` (mapa `_MODULE_OWNED_PANES`, fix do overflow de 3 abas).
+  Resultado: o LIVE LOG ficava **invisível em todos os módulos** — nem no
+  dashboard (o `data-module="live"` o escondia) nem no Live Mining (o pane
+  pai desativado o escondia). O E2E `Live Log contains system message`
+  pegou a regressão.
+- Fix: painel **movido para dentro de `#tab-terminal`** (pane owned pelo
+  módulo live) — mantém o layout de 2 abas (sem re-introduzir o scroll
+  infinito) e o LIVE LOG volta a aparecer no LIVE MINING, escondido nos
+  demais módulos pelo próprio `data-module="live"`.
+- Prova: suíte E2E completa no servidor frio — antes `148 passed / 3 failed`,
+  depois **`151 passed / 0 failed`** (3 skips = restart-agent sem harness).
+
+### Corrigido — topbar address colapsava em boot sem wallet (E2E topbar-responsive)
+- **Bug real**: `fmt.shortAddr('')` retorna `''` — o `#topbar-address` ficava
+  com texto vazio → span de largura zero → o Playwright (e flex/UX) o
+  reportava hidden no breakpoint 1100px em servidor frio (sem wallet).
+- Fix: fallback `'—'` nos dois call sites do topbar (mesma convenção do
+  `#sb-wallet-addr` da P0-4) — o elemento sempre tem box real.
+
+### Adicionado — E2E `wallet-identity.spec.js` (P0-4: QR + checksum + health de ponta a ponta)
+- Novo Playwright spec que roda contra o servidor padrão do `run-e2e.sh`
+  (sem harness): conecta um bech32 real via UI (modal → SAVE →
+  `/api/set-address` real), valida o toast do servidor + fechamento
+  automático do modal, e então verifica no card WALLET IDENTITY:
+  - QR SVG inline do encoder puro (viewBox determinístico `0 0 37 37` para
+    o endereço de teste 29×29 ECC M + quiet zone 4, path com centenas de
+    células);
+  - endereço dividido `bc1 | corpo | checksum` (`.addr-ck` = últimos 6
+    chars) e que a recombinação devolve o endereço exato;
+  - botão COPY + health strip conectado (`N/6 checks`, nunca NO WALLET) e
+    os 6 checks honestos renderizados;
+  - status bar também destaca os check-digits (`.addr-ck` em `#sb-wallet-addr`).
+- **Idempotente + sem poluir o DB do dev**: decide o connect pelo snapshot
+  do servidor (não por `window.BTC_ADDRESS`, que tem race), suporta rerun
+  já-conectado sem o erro "same as current", e em `finally` restaura o
+  endereço anterior (ou limpa a chave persistida quando não havia wallet).
+- Roda nos 2 projetos (chromium + mobile-chrome) — 2 testes verdes.
+
+### Adicionado — P0-4: Wallet QR + checksum + health (identity card no modal CONNECT WALLET)
+- **QR code puro JS** (ISO/IEC 18004, byte mode, ECC L/M/Q/H, versions 1-10):
+  encoder do zero em `static/app.js` (~320 linhas, sem dependência externa —
+  o endereço **nunca sai do navegador**, sem serviço de QR de terceiros).
+  Renderiza SVG inline crisp com quiet zone de 4 módulos.
+- **WALLET IDENTITY card** no modal CONNECT WALLET: QR escaneável do endereço
+  completo, endereço com o **checksum destacado** (`addr-ck` — os 6 chars
+  finais de bc1, o trecho que o operador confere na carteira), botão COPY e
+  strip de **health ao vivo** (NO_WALLET / HEALTHY / DEGRADED / CRITICAL com
+  6 checks honestos: address set, data fresh, worker found, hashing, recent
+  share, pool responding — nunca fabrica dados).
+- **Status bar**: o endereço exibido em `sb-wallet-addr` agora destaca os
+  check-digits — o clássico matador de tickets de endereço errado (−15%
+  support tickets, Hidden Tax).
+- Testes: golden fixtures geradas da lib independente `qrcode-terminal`
+  (Kazuhiko Arase QRCode, MIT — agora devDependency raiz) — o encoder
+  reproduz as **12 matrizes cell-for-cell** cobrindo **versões 1-10**
+  (21×21 a 57×57, ECC L/M/Q/H): v1-6 da entrega inicial + v7-10 novas
+  (45×45, 49×49, 53×53, 57×57) que exercitam o path de **BCH version-info**
+  (type number + placement) — antes só coberto até v6. Regenerável via
+  `node scripts/gen_qr_golden.cjs`. + determinismo, guard de capacidade,
+  checksum split e health scoring.
+
+### Adicionado — P1 Auto-Pilot advisory (fase inicial do Big Bet — read-only)
+- **Cards consultivos de decisão** no Command Center alimentados por DADOS
+  reais do snapshot (`auto_pilot` block injetado em `/api/snapshot`):
+  1. `hashrate_drop` (gold) — hashrate atual < 70% do pico REAL de 7d
+     (`MAX(worker_hashrate)` em `proximity_history`, janela `AP_PEAK_WINDOW_S`);
+  2. `temp_high` (warn) — device da frota ≥ `AP_TEMP_HIGH_C` (75°C);
+  3. `automation_ready` (info) — `AutomationEngine.preview_rules()` reporta
+     uma regra que DISPARARIA agora (avalia condição + cooldown, NUNCA
+     executa, valida ou audita).
+- **Fail-closed por design**: qualquer hiccup (DB, registry, engine) vira o
+  bloco vazio/zero — o snapshot nunca quebra e a regra de drop nunca dá
+  falso positivo em boot frio (gate `> 0`).
+- **Tenant-scoped**: o preview roda com o `tenant_id` resolvido da request
+  (fallback 'default') — um card advisory nunca expõe nomes de regra de
+  outro tenant (mesmo rigor do teste B2 de isolamento).
+- Testes: unitários das 3 regras em `test_command_center.py` + testes
+  diretos do `build_auto_pilot_context` real (fail-closed em erro de DB,
+  fechamento de conexão, threading de tenant) + `preview_rules` em
+  `test_automation_engine.py` (seed no DB, cooldown, tenant, never-execute).
+
+### Corrigido — hardening pós-review do P0-4/P1 + validação E2E
+- `build_auto_pilot_context`: conexão sqlite agora fecha em `finally` (sem
+  leak por poll), parâmetro `resp` morto removido, fallback usa a constante
+  compartilhada `AP_TEMP_HIGH_C` (sem drift de 75.0 hardcoded) e o preview
+  de automação é **scoped por tenant** (antes carregava regras de TODOS os
+  tenants — leak de nomes de regra no card advisory).
+- `TestPreviewRules` agora faz seed das regras no sqlite (como o resto da
+  suíte) — `preview_rules` lê do DB, então os testes sem seed falhavam 4/8.
+- E2E `wallet-identity.spec.js` validado nos 2 projetos (chromium +
+  mobile-chrome, rerun idempotente incluso — 2×2 verdes). **Pré-requisito
+  documentado no header**: o servidor precisa subir via `run-e2e.sh`
+  (`RATE_LIMIT_PER_MINUTE=1000`, env vence o `.env`) — um dev server que
+  carrega `.env` com `RATE_LIMIT_PER_MINUTE=60` (via `load_dotenv()` em
+  config.py) 429a o 2º projeto silenciosamente. **Causa raiz investigada**: o
+  `.env` local do projeto tinha 60 (não era default de código antigo) —
+  corrigido para 300 no `.env` local do dev.
+
 ### Corrigido — caps do /summary agora serializam como array (Restart do Fleet Command Center)
 - **Bug real**: `buildCommandCenterRows` (JS) renderiza os botões Restart/Identify
   a partir de `capabilities` como ARRAY, mas o `GET /api/axe-fleet/summary`

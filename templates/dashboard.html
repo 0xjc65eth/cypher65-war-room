@@ -1051,32 +1051,6 @@
   </ul>
 </section>
 
-<!-- ─── LIVE LOG ─── -->
-<section class="panel panel--logs panel--large" id="logs-panel" data-module="live">
-  <div class="panel__header">
-    <div class="panel__eyebrow"><span class="terminal-rec-dot"></span> LIVE LOG</div>
-    <div class="panel__tools">
-      <span class="chart-live" id="log-stats">
-        <span class="chart-live__dot"></span>
-        <span class="chart-live__label">events</span>
-        <span class="chart-live__val" id="log-events-count">0</span>
-      </span>
-      <button class="chip" id="clear-logs">clear</button>
-    </div>
-  </div>
-  <div class="log-toolbar">
-    <input type="text" class="log-search" id="log-search" placeholder="filter logs..." autocomplete="off" spellcheck="false">
-    <div class="log-filters" id="log-filters">
-      <button class="chip active" data-log-filter="all">All</button>
-      <button class="chip" data-log-filter="success">OK</button>
-      <button class="chip" data-log-filter="info">Info</button>
-      <button class="chip" data-log-filter="warn">Warn</button>
-      <button class="chip" data-log-filter="error">Error</button>
-    </div>
-  </div>
-  <div class="terminal" id="terminal"><div class="terminal__line terminal__line--info"><span class="ts">[--:--:--]</span><span class="tag tag-info">SYSTEM</span>war room online</div></div>
-</section>
-
 <!-- ─── CHARTS ─── -->
 <section class="panel panel--chart panel--large" id="chart-hashrate-panel" data-module="live">
   <div class="panel__header">
@@ -1489,6 +1463,35 @@
         <input type="text" class="terminal-input" id="terminal-input" placeholder="type command..." autocomplete="off" spellcheck="false">
       </div>
       <div class="terminal-footnote">Type <kbd>help</kbd> for available commands.</div>
+    </section>
+    <!-- LIVE LOG — moved here from #tab-fleet so it stays visible in the LIVE
+         MINING module (owned panes: tab-charts + tab-terminal). It used to be
+         trapped inside #tab-fleet, which the module deactivates, leaving the
+         LIVE LOG unreachable in module-mode. data-module="live" keeps it hidden
+         in every other module. -->
+    <section class="panel panel--logs panel--large" id="logs-panel" data-module="live">
+      <div class="panel__header">
+        <div class="panel__eyebrow"><span class="terminal-rec-dot"></span> LIVE LOG</div>
+        <div class="panel__tools">
+          <span class="chart-live" id="log-stats">
+            <span class="chart-live__dot"></span>
+            <span class="chart-live__label">events</span>
+            <span class="chart-live__val" id="log-events-count">0</span>
+          </span>
+          <button class="chip" id="clear-logs">clear</button>
+        </div>
+      </div>
+      <div class="log-toolbar">
+        <input type="text" class="log-search" id="log-search" placeholder="filter logs..." autocomplete="off" spellcheck="false">
+        <div class="log-filters" id="log-filters">
+          <button class="chip active" data-log-filter="all">All</button>
+          <button class="chip" data-log-filter="success">OK</button>
+          <button class="chip" data-log-filter="info">Info</button>
+          <button class="chip" data-log-filter="warn">Warn</button>
+          <button class="chip" data-log-filter="error">Error</button>
+        </div>
+      </div>
+      <div class="terminal" id="terminal"><div class="terminal__line terminal__line--info"><span class="ts">[--:--:--]</span><span class="tag tag-info">SYSTEM</span>war room online</div></div>
     </section>
     <!-- Solo Mining Advisor terminal (hidden by default, toggled via sidebar Solo Mining tab) -->
     <div id="solo-term" data-module="live" style="display:none">
