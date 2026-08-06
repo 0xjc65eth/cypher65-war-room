@@ -846,6 +846,381 @@
     return { valid: false, error: 'Address must start with bc1, 1, or 3' };
   }
 
+  // ══════════════════════════════════════════════════════════════════════
+  //  P0-4 · QR CODE CORE — ISO/IEC 18004, byte mode, versions 1-10
+  //  Pure functions (no DOM) — mirrored in tests/test_app_js_core.js and
+  //  validated cell-by-cell against golden matrices produced by the
+  //  independent Kazuhiko Arase QRCode implementation (MIT-licensed, the
+  //  vendor inside qrcode-terminal). All ECC levels L/M/Q/H supported;
+  //  any valid BTC address (<= 90 chars) fits version <= 10.
+  // ══════════════════════════════════════════════════════════════════════
+  const QR_ECC = { L: 1, M: 0, Q: 3, H: 2 }; // values = 2-bit format field
+  const QR_MODE_8BIT = 4;
+  const QR_PAD0 = 0xEC, QR_PAD1 = 0x11;
+  // GF(256) tables (primitive poly x^8+x^4+x^3+x^2+1)
+  const QR_EXP = new Array(256), QR_LOG = new Array(256);
+  (function buildQrMath() {
+    for (let i = 0; i < 8; i++) QR_EXP[i] = 1 << i;
+    for (let i = 8; i < 256; i++) QR_EXP[i] = QR_EXP[i - 4] ^ QR_EXP[i - 5] ^ QR_EXP[i - 6] ^ QR_EXP[i - 8];
+    for (let i = 0; i < 255; i++) QR_LOG[QR_EXP[i]] = i;
+  })();
+  function qrGexp(n) { while (n < 0) n += 255; while (n >= 256) n -= 255; return QR_EXP[n]; }
+  function qrGlog(n) { if (n < 1) throw new Error('qr glog(' + n + ')'); return QR_LOG[n]; }
+
+  // Polynomial over GF(256) with leading-zero trim + shift (Arase semantics)
+  function QrPoly(num, shift) {
+    let offset = 0;
+    while (offset < num.length && num[offset] === 0) offset++;
+    this.num = new Array(num.length - offset + shift);
+    for (let i = 0; i < num.length - offset; i++) this.num[i] = num[i + offset];
+  }
+  QrPoly.prototype.get = function (i) { return this.num[i]; };
+  QrPoly.prototype.getLength = function () { return this.num.length; };
+  QrPoly.prototype.multiply = function (e) {
+    const num = new Array(this.getLength() + e.getLength() - 1);
+    for (let i = 0; i < this.getLength(); i++) {
+      for (let j = 0; j < e.getLength(); j++) {
+        num[i + j] ^= qrGexp(qrGlog(this.get(i)) + qrGlog(e.get(j)));
+      }
+    }
+    return new QrPoly(num, 0);
+  };
+  QrPoly.prototype.mod = function (e) {
+    if (this.getLength() - e.getLength() < 0) return this;
+    const ratio = qrGlog(this.get(0)) - qrGlog(e.get(0));
+    const num = new Array(this.getLength());
+    for (let i = 0; i < this.getLength(); i++) num[i] = this.get(i);
+    for (let x = 0; x < e.getLength(); x++) num[x] ^= qrGexp(qrGlog(e.get(x)) + ratio);
+    return new QrPoly(num, 0).mod(e);
+  };
+
+  // RS block table: rows are [L, M, Q, H] per version (v1-v10)
+  const QR_RS_BLOCKS = [
+    [1, 26, 19], [1, 26, 16], [1, 26, 13], [1, 26, 9],
+    [1, 44, 34], [1, 44, 28], [1, 44, 22], [1, 44, 16],
+    [1, 70, 55], [1, 70, 44], [2, 35, 17], [2, 35, 13],
+    [1, 100, 80], [2, 50, 32], [2, 50, 24], [4, 25, 9],
+    [1, 134, 108], [2, 67, 43], [2, 33, 15, 2, 34, 16], [2, 33, 11, 2, 34, 12],
+    [2, 86, 68], [4, 43, 27], [4, 43, 19], [4, 43, 15],
+    [2, 98, 78], [4, 49, 31], [2, 32, 14, 4, 33, 15], [4, 39, 13, 1, 40, 14],
+    [2, 121, 97], [2, 60, 38, 2, 61, 39], [4, 40, 18, 2, 41, 19], [4, 40, 14, 2, 41, 15],
+    [2, 146, 116], [3, 58, 36, 2, 59, 37], [4, 36, 16, 4, 37, 17], [4, 36, 12, 4, 37, 13],
+    [2, 86, 68, 2, 87, 69], [4, 69, 43, 1, 70, 44], [6, 43, 19, 2, 44, 20], [6, 43, 15, 2, 44, 16],
+  ];
+  function qrGetRsBlocks(type, ecl) {
+    const row = QR_RS_BLOCKS[(type - 1) * 4 + ({ 1: 0, 0: 1, 3: 2, 2: 3 })[ecl]];
+    const list = [];
+    for (let i = 0; i < row.length / 3; i++) {
+      const count = row[i * 3], total = row[i * 3 + 1], data = row[i * 3 + 2];
+      for (let j = 0; j < count; j++) list.push({ totalCount: total, dataCount: data });
+    }
+    return list;
+  }
+
+  const QR_PATTERN_POS = [
+    [], [6, 18], [6, 22], [6, 26], [6, 30], [6, 34], [6, 22, 38], [6, 24, 42], [6, 26, 46], [6, 28, 50],
+  ];
+  const QR_G15 = (1 << 10) | (1 << 8) | (1 << 5) | (1 << 4) | (1 << 2) | (1 << 1) | (1 << 0);
+  const QR_G18 = (1 << 12) | (1 << 11) | (1 << 10) | (1 << 9) | (1 << 8) | (1 << 5) | (1 << 2) | (1 << 0);
+  const QR_G15_MASK = (1 << 14) | (1 << 12) | (1 << 10) | (1 << 4) | (1 << 1);
+  function qrBchDigit(d) { let n = 0; while (d !== 0) { n++; d >>>= 1; } return n; }
+  function qrBchTypeInfo(data) {
+    let d = data << 10;
+    while (qrBchDigit(d) - qrBchDigit(QR_G15) >= 0) d ^= QR_G15 << (qrBchDigit(d) - qrBchDigit(QR_G15));
+    return ((data << 10) | d) ^ QR_G15_MASK;
+  }
+  function qrBchTypeNumber(data) {
+    let d = data << 12;
+    while (qrBchDigit(d) - qrBchDigit(QR_G18) >= 0) d ^= QR_G18 << (qrBchDigit(d) - qrBchDigit(QR_G18));
+    return (data << 12) | d;
+  }
+  function qrGetMask(mask, i, j) {
+    switch (mask) {
+      case 0: return (i + j) % 2 === 0;
+      case 1: return i % 2 === 0;
+      case 2: return j % 3 === 0;
+      case 3: return (i + j) % 3 === 0;
+      case 4: return (Math.floor(i / 2) + Math.floor(j / 3)) % 2 === 0;
+      case 5: return (i * j) % 2 + (i * j) % 3 === 0;
+      case 6: return ((i * j) % 2 + (i * j) % 3) % 2 === 0;
+      case 7: return ((i * j) % 3 + (i + j) % 2) % 2 === 0;
+      default: throw new Error('bad maskPattern:' + mask);
+    }
+  }
+  function qrErrorCorrectPoly(len) {
+    let a = new QrPoly([1], 0);
+    for (let i = 0; i < len; i++) a = a.multiply(new QrPoly([1, qrGexp(i)], 0));
+    return a;
+  }
+  function qrLengthInBits(type) { return type < 10 ? 8 : 16; }
+
+  function qrCreateData(type, ecl, text) {
+    const blocks = qrGetRsBlocks(type, ecl);
+    let totalData = 0;
+    blocks.forEach(b => { totalData += b.dataCount; });
+    const bits = [];
+    let bitLen = 0;
+    function put(num, len) {
+      for (let i = 0; i < len; i++) {
+        bits.push(((num >>> (len - i - 1)) & 1) === 1);
+        bitLen++;
+      }
+    }
+    put(QR_MODE_8BIT, 4);
+    put(text.length, qrLengthInBits(type));
+    for (let i = 0; i < text.length; i++) put(text.charCodeAt(i) & 0xff, 8);
+    if (bitLen + 4 <= totalData * 8) put(0, 4);
+    while (bitLen % 8 !== 0) put(0, 1);
+    while (true) {
+      if (bitLen >= totalData * 8) break;
+      put(QR_PAD0, 8);
+      if (bitLen >= totalData * 8) break;
+      put(QR_PAD1, 8);
+    }
+    const buf = [];
+    for (let i = 0; i < bits.length; i += 8) {
+      let byte = 0;
+      for (let j = 0; j < 8; j++) byte = (byte << 1) | (bits[i + j] ? 1 : 0);
+      buf.push(byte);
+    }
+    let offset = 0, maxDc = 0, maxEc = 0;
+    const dcdata = [], ecdata = [];
+    for (let r = 0; r < blocks.length; r++) {
+      const dcCount = blocks[r].dataCount;
+      const ecCount = blocks[r].totalCount - dcCount;
+      maxDc = Math.max(maxDc, dcCount);
+      maxEc = Math.max(maxEc, ecCount);
+      const dc = [];
+      for (let i = 0; i < dcCount; i++) dc.push(buf[i + offset]);
+      offset += dcCount;
+      const rsPoly = qrErrorCorrectPoly(ecCount);
+      const rawPoly = new QrPoly(dc, rsPoly.getLength() - 1);
+      const modPoly = rawPoly.mod(rsPoly);
+      const ec = new Array(rsPoly.getLength() - 1);
+      for (let x = 0; x < ec.length; x++) {
+        const modIndex = x + modPoly.getLength() - ec.length;
+        ec[x] = modIndex >= 0 ? modPoly.get(modIndex) : 0;
+      }
+      dcdata[r] = dc; ecdata[r] = ec;
+    }
+    let total = 0;
+    blocks.forEach(b => { total += b.totalCount; });
+    const data = new Array(total);
+    let index = 0;
+    for (let z = 0; z < maxDc; z++) for (let s = 0; s < blocks.length; s++) if (z < dcdata[s].length) data[index++] = dcdata[s][z];
+    for (let z = 0; z < maxEc; z++) for (let s = 0; s < blocks.length; s++) if (z < ecdata[s].length) data[index++] = ecdata[s][z];
+    return data;
+  }
+
+  function qrMakeImpl(type, ecl, test, mask, data) {
+    const mc = type * 4 + 17;
+    const mods = [];
+    for (let r = 0; r < mc; r++) { mods[r] = new Array(mc); for (let c = 0; c < mc; c++) mods[r][c] = null; }
+    function probe(row, col) {
+      for (let r = -1; r <= 7; r++) {
+        if (row + r <= -1 || mc <= row + r) continue;
+        for (let c = -1; c <= 7; c++) {
+          if (col + c <= -1 || mc <= col + c) continue;
+          mods[row + r][col + c] =
+            ((0 <= r && r <= 6 && (c === 0 || c === 6)) ||
+             (0 <= c && c <= 6 && (r === 0 || r === 6)) ||
+             (2 <= r && r <= 4 && 2 <= c && c <= 4));
+        }
+      }
+    }
+    probe(0, 0); probe(mc - 7, 0); probe(0, mc - 7);
+    const pos = QR_PATTERN_POS[type - 1];
+    for (let i = 0; i < pos.length; i++) {
+      for (let j = 0; j < pos.length; j++) {
+        const row = pos[i], col = pos[j];
+        if (mods[row][col] !== null) continue;
+        for (let r = -2; r <= 2; r++) {
+          for (let c = -2; c <= 2; c++) {
+            mods[row + r][col + c] = (Math.abs(r) === 2 || Math.abs(c) === 2 || (r === 0 && c === 0));
+          }
+        }
+      }
+    }
+    for (let r = 8; r < mc - 8; r++) if (mods[r][6] === null) mods[r][6] = (r % 2 === 0);
+    for (let c = 8; c < mc - 8; c++) if (mods[6][c] === null) mods[6][c] = (c % 2 === 0);
+    const fbits = qrBchTypeInfo((ecl << 3) | mask);
+    for (let v = 0; v < 15; v++) {
+      const mod = !test && (((fbits >> v) & 1) === 1);
+      if (v < 6) mods[v][8] = mod;
+      else if (v < 8) mods[v + 1][8] = mod;
+      else mods[mc - 15 + v][8] = mod;
+    }
+    for (let h = 0; h < 15; h++) {
+      const mod = !test && (((fbits >> h) & 1) === 1);
+      if (h < 8) mods[8][mc - h - 1] = mod;
+      else if (h < 9) mods[8][15 - h - 1 + 1] = mod;
+      else mods[8][15 - h - 1] = mod;
+    }
+    mods[mc - 8][8] = !test;
+    if (type >= 7) {
+      const vbits = qrBchTypeNumber(type);
+      for (let i = 0; i < 18; i++) {
+        const mod = !test && (((vbits >> i) & 1) === 1);
+        mods[Math.floor(i / 3)][i % 3 + mc - 8 - 3] = mod;
+      }
+      for (let x = 0; x < 18; x++) {
+        const mod = !test && (((vbits >> x) & 1) === 1);
+        mods[x % 3 + mc - 8 - 3][Math.floor(x / 3)] = mod;
+      }
+    }
+    let inc = -1, row = mc - 1, bitIndex = 7, byteIndex = 0;
+    for (let col = mc - 1; col > 0; col -= 2) {
+      if (col === 6) col--;
+      while (true) {
+        for (let c = 0; c < 2; c++) {
+          if (mods[row][col - c] === null) {
+            let dark = false;
+            if (byteIndex < data.length) dark = (((data[byteIndex] >>> bitIndex) & 1) === 1);
+            if (qrGetMask(mask, row, col - c)) dark = !dark;
+            mods[row][col - c] = dark;
+            bitIndex--;
+            if (bitIndex === -1) { byteIndex++; bitIndex = 7; }
+          }
+        }
+        row += inc;
+        if (row < 0 || mc <= row) { row -= inc; inc = -inc; break; }
+      }
+    }
+    return mods;
+  }
+
+  function qrLostPoint(mods) {
+    const mc = mods.length;
+    let lp = 0;
+    for (let row = 0; row < mc; row++) {
+      for (let col = 0; col < mc; col++) {
+        let sameCount = 0; const dark = mods[row][col];
+        for (let r = -1; r <= 1; r++) {
+          if (row + r < 0 || mc <= row + r) continue;
+          for (let c = -1; c <= 1; c++) {
+            if (col + c < 0 || mc <= col + c) continue;
+            if (r === 0 && c === 0) continue;
+            if (dark === mods[row + r][col + c]) sameCount++;
+          }
+        }
+        if (sameCount > 5) lp += 3 + sameCount - 5;
+      }
+    }
+    for (let row = 0; row < mc - 1; row++) {
+      for (let col = 0; col < mc - 1; col++) {
+        let count = 0;
+        if (mods[row][col]) count++;
+        if (mods[row + 1][col]) count++;
+        if (mods[row][col + 1]) count++;
+        if (mods[row + 1][col + 1]) count++;
+        if (count === 0 || count === 4) lp += 3;
+      }
+    }
+    for (let row = 0; row < mc; row++) {
+      for (let col = 0; col < mc - 6; col++) {
+        if (mods[row][col] && !mods[row][col + 1] && mods[row][col + 2] && mods[row][col + 3] && mods[row][col + 4] && !mods[row][col + 5] && mods[row][col + 6]) lp += 40;
+      }
+    }
+    for (let col = 0; col < mc; col++) {
+      for (let row = 0; row < mc - 6; row++) {
+        if (mods[row][col] && !mods[row + 1][col] && mods[row + 2][col] && mods[row + 3][col] && mods[row + 4][col] && !mods[row + 5][col] && mods[row + 6][col]) lp += 40;
+      }
+    }
+    let darkCount = 0;
+    for (let col = 0; col < mc; col++) for (let row = 0; row < mc; row++) if (mods[row][col]) darkCount++;
+    lp += Math.abs(100 * darkCount / mc / mc - 50) / 5 * 10;
+    return lp;
+  }
+
+  // Public encode: returns { modules: 2D bool, size, type, ecl, mask }
+  function qrEncode(text, ecl) {
+    text = String(text || '');
+    ecl = QR_ECC[ecl] !== undefined ? QR_ECC[ecl] : QR_ECC.M;
+    let type = 1;
+    for (type = 1; type <= 10; type++) {
+      const blocks = qrGetRsBlocks(type, ecl);
+      let totalData = 0;
+      blocks.forEach(b => { totalData += b.dataCount; });
+      const bitLen = 4 + qrLengthInBits(type) + text.length * 8;
+      if (bitLen <= totalData * 8) break;
+    }
+    if (type > 10) throw new Error('QR input too long (' + text.length + ' chars)');
+    const data = qrCreateData(type, ecl, text);
+    let minLp = 0, pattern = 0;
+    for (let i = 0; i < 8; i++) {
+      const m = qrMakeImpl(type, ecl, true, i, data);
+      const lp = qrLostPoint(m);
+      if (i === 0 || minLp > lp) { minLp = lp; pattern = i; }
+    }
+    const modules = qrMakeImpl(type, ecl, false, pattern, data);
+    return { modules, size: type * 4 + 17, type, ecl, mask: pattern };
+  }
+
+  // Render the module matrix as a crisp inline SVG (quiet zone = 4 modules)
+  function qrSvg(modules) {
+    const size = modules.length;
+    const q = 4;
+    const cells = [];
+    for (let r = 0; r < size; r++) {
+      for (let c = 0; c < size; c++) {
+        if (modules[r][c]) cells.push('M' + (c + q) + ' ' + (r + q) + 'h1v1h-1z');
+      }
+    }
+    const dim = size + q * 2;
+    return '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ' + dim + ' ' + dim + '" shape-rendering="crispEdges" role="img" aria-label="QR code">' +
+      '<rect width="' + dim + '" height="' + dim + '" fill="#fff"/>' +
+      (cells.length ? '<path d="' + cells.join('') + '" fill="#111"/>' : '') +
+      '</svg>';
+  }
+
+  // ── P0-4 · Wallet identity: checksum split + health ──────────────────
+  // Pure helpers mirrored in tests. walletAddressParts splits an address
+  // into {type, prefix, body, checksum, full} so the UI can highlight the
+  // checksum region (the classic wrong-address ticket killer).
+  function walletAddressParts(addr) {
+    if (!addr) return null;
+    addr = String(addr).trim();
+    if (!addr) return null;
+    const lower = addr.toLowerCase();
+    // Bech32: checksum is exactly the last 6 chars (BIP-173) — highlight them.
+    if (lower.indexOf('bc1') === 0 && addr.length >= 10) {
+      return { type: 'bech32', prefix: 'bc1', body: addr.slice(3, -6), checksum: addr.slice(-6), full: addr };
+    }
+    // Base58 (legacy/P2SH): the trailing chars are the check digits operators
+    // compare against their wallet app — highlight the real trailing substring
+    // (never a byte-derived string that would differ from the displayed address).
+    if ((addr[0] === '1' || addr[0] === '3') && addr.length >= 8) {
+      return { type: 'base58', prefix: addr[0], body: addr.slice(1, -6), checksum: addr.slice(-6), full: addr };
+    }
+    return { type: 'other', prefix: '', body: addr.length > 6 ? addr.slice(0, -6) : '', checksum: addr.slice(-6), full: addr };
+  }
+
+  // Wallet health from the live snapshot (honest: every check gates on real
+  // observed data — never fabricates). Returns {status, score, checks, connected}.
+  function walletHealth(snap, now) {
+    snap = snap || {};
+    now = now || Math.floor(Date.now() / 1000);
+    const connected = !!snap.btc_address;
+    const worker = snap.worker || {};
+    const pool = snap.pool || {};
+    const checks = [
+      { key: 'connected', label: 'Address set', ok: connected },
+      { key: 'fresh', label: 'Data fresh', ok: !!snap.ts && (now - snap.ts) < 300 },
+      { key: 'worker', label: 'Worker found', ok: !!snap.worker },
+      { key: 'hashing', label: 'Hashing', ok: Number(worker.hashrate || 0) > 0 },
+      { key: 'share', label: 'Recent share', ok: !!worker.lastSubmission && (now - Number(worker.lastSubmission)) < 7200 },
+      { key: 'pool', label: 'Pool responding', ok: !!snap.pool && !pool._stale },
+    ];
+    const passed = checks.filter(c => c.ok).length;
+    const score = Math.round(passed / checks.length * 100);
+    let status;
+    if (!connected) status = 'NO_WALLET';
+    else if (score >= 80) status = 'HEALTHY';
+    else if (score >= 50) status = 'DEGRADED';
+    else status = 'CRITICAL';
+    return { status, score, checks, connected, passed };
+  }
+
   // ── decode HTML entities (reverse of escapeHtml) ────────────────────
   function decodeHtmlEntities(s) {
     if (!s) return '';
@@ -982,14 +1357,95 @@
     axeFleet.forEach(d => { fleetHr += Number(d.hashrate || 0); });
     if (dom.sbFleetHr) dom.sbFleetHr.textContent = fleetHr > 0 ? fmt.hashrate(fleetHr) : '\u2014';
 
-    // Wallet block — show connected BTC address from snapshot
+    // Wallet block — show connected BTC address from snapshot with the
+    // checksum region highlighted (P0-4: the wrong-address ticket killer).
+    // shortAddrChunk + a checksum span so the operator can visually verify
+    // the trailing check digits against their own wallet app.
     if (dom.sbWalletAddr) {
       var addr = snap.btc_address || window.BTC_ADDRESS || '';
-      dom.sbWalletAddr.innerHTML = addr ? '<span title="' + escapeHtml(addr) + '">' + fmt.shortAddrChunk(addr) + '</span>' : '—';
+      if (addr) {
+        var parts = walletAddressParts(addr);
+        var ck = (parts && parts.checksum) ? parts.checksum : addr.slice(-6);
+        var head = addr.length > 12 ? addr.slice(0, 6) : addr.slice(0, addr.length - 6);
+        dom.sbWalletAddr.innerHTML = '<span title="' + escapeHtml(addr) + '">' + escapeHtml(head) + '…<span class="addr-ck">' + escapeHtml(ck) + '</span></span>';
+      } else {
+        dom.sbWalletAddr.innerHTML = '—';
+      }
       dom.sbWalletAddr.title = addr || 'no wallet connected';
     }
     // Wallet connection state — only topbar button remains
     // Connection state tracked via localStorage.getItem('_wallet_connected')
+  }
+
+  // ── P0-4 · Wallet identity card (QR + checksum + health) ─────────────
+  // Renders the CONNECT WALLET modal's WALLET IDENTITY block: a scannable
+  // QR of the full address, the address with its checksum highlighted, a
+  // copy button and a live health strip computed from the snapshot.
+  function renderWalletIdentity(snap) {
+    var box = document.getElementById('wallet-id');
+    if (!box) return;
+    var addr = (snap && snap.btc_address) || window.BTC_ADDRESS || '';
+    if (!addr) {
+      box.style.display = 'none';
+      return;
+    }
+    box.style.display = '';
+    // QR (pure JS encoder — no external service, address never leaves browser)
+    var qrBox = document.getElementById('wallet-id-qr');
+    if (qrBox) {
+      try {
+        var qr = qrEncode(addr, 'M');
+        qrBox.innerHTML = qrSvg(qr.modules);
+      } catch (e) {
+        qrBox.innerHTML = '<div class="wallet-id__qr-error">QR unavailable</div>';
+      }
+    }
+    // Checksum-highlighted address
+    var addrEl = document.getElementById('wallet-id-addr');
+    if (addrEl) {
+      var parts = walletAddressParts(addr);
+      if (parts) {
+        addrEl.innerHTML = '<span class="addr-pfx">' + escapeHtml(parts.prefix) + '</span>' +
+          '<span class="addr-body">' + escapeHtml(parts.body) + '</span>' +
+          '<span class="addr-ck">' + escapeHtml(parts.checksum) + '</span>';
+      } else {
+        addrEl.textContent = addr;
+      }
+    }
+    // Copy button
+    var copyBtn = document.getElementById('wallet-id-copy');
+    if (copyBtn) {
+      copyBtn.onclick = function() {
+        if (navigator.clipboard && addr) {
+          navigator.clipboard.writeText(addr).then(function() {
+            var orig = copyBtn.textContent;
+            copyBtn.textContent = '[copied]';
+            setTimeout(function() { copyBtn.textContent = orig; }, 1800);
+          });
+        }
+      };
+    }
+    // Health strip
+    var health = walletHealth(snap || {});
+    var hEl = document.getElementById('wallet-id-health');
+    if (hEl) {
+      hEl.className = 'wallet-id__health wallet-id__health--' + health.status.toLowerCase();
+      hEl.textContent = health.connected
+        ? health.status + ' · ' + health.score + '% (' + health.passed + '/' + health.checks.length + ' checks)'
+        : 'NO WALLET CONNECTED';
+      hEl.title = health.checks.map(function(c) { return (c.ok ? '✓' : '✗') + ' ' + c.label; }).join('\n');
+    }
+    var checksEl = document.getElementById('wallet-id-checks');
+    if (checksEl && health.connected) {
+      checksEl.style.display = '';
+      checksEl.innerHTML = health.checks.map(function(c) {
+        return '<li class="wallet-id__check wallet-id__check--' + (c.ok ? 'ok' : 'bad') + '">' +
+          '<span class="wallet-id__check-dot"></span>' + escapeHtml(c.label) + '</li>';
+      }).join('');
+    } else if (checksEl) {
+      checksEl.style.display = 'none';
+      checksEl.innerHTML = '';
+    }
   }
 
   // ── HOST CORE — populate the organism mission-control hub ──
@@ -2680,6 +3136,7 @@ function renderAccount(acct) {
     renderMarket(snap);
     renderAiOperator(snap);
     renderFleetCommandCenter(snap);
+    renderWalletIdentity(snap);
     _lmSetConn(snap);
     renderCharts();
     prevSnapshot = snap;
@@ -3325,6 +3782,9 @@ function renderAccount(acct) {
     if (dom.walletAddressInput) dom.walletAddressInput.value = '';
     if (dom.walletWorkerInput) dom.walletWorkerInput.value = '';
     if (dom.walletStatus) dom.walletStatus.textContent = '';
+    // P0-4: render the identity card (QR + checksum + health) from the
+    // latest snapshot — a wallet may already be connected on open.
+    renderWalletIdentity(prevSnapshot);
     // Focus the address input
     setTimeout(() => dom.walletAddressInput?.focus(), 100);
     // ── Hitórico de wallets ──

@@ -8,9 +8,11 @@
     "test:e2e": "npx playwright test",
     "test:e2e:headed": "npx playwright test --headed",
     "test:e2e:debug": "npx playwright test --debug",
-    "test:e2e:report": "npx playwright show-report e2e-report"
+    "test:e2e:report": "npx playwright show-report e2e-report",
+    "gen:qr-golden": "node scripts/gen_qr_golden.cjs"
   },
   "devDependencies": {
-    "@playwright/test": "^1.52.0"
+    "@playwright/test": "^1.52.0",
+    "qrcode-terminal": "^0.12.0"
   }
 }

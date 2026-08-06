@@ -8,7 +8,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
-<link rel="stylesheet" href="/static/style.css?v45">
+<link rel="stylesheet" href="/static/style.css?v46">
 <link rel="icon" href="/static/favicon.ico" sizes="any">
 <link rel="icon" type="image/png" sizes="32x32" href="/static/icon-32x32.png">
 <link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
@@ -2077,6 +2077,16 @@
       <button class="modal__close" onclick="document.getElementById('wallet-modal').classList.remove('modal--open')">⛌</button>
     </div>
     <div class="modal__body">
+      <div class="wallet-id" id="wallet-id" style="display:none">
+        <div class="wallet-id__qr-wrap" id="wallet-id-qr"></div>
+        <div class="wallet-id__info">
+          <div class="wallet-id__title">WALLET IDENTITY · CHECKDIGITS</div>
+          <div class="wallet-id__addr mono" id="wallet-id-addr">—</div>
+          <button class="wallet-id__copy" id="wallet-id-copy" title="Copy full address">⧉ COPY</button>
+          <div class="wallet-id__health" id="wallet-id-health"></div>
+          <ul class="wallet-id__checks" id="wallet-id-checks"></ul>
+        </div>
+      </div>
       <div class="wallet-current">
         <div class="wallet-current__label">CURRENT WALLET</div>
         <div class="wallet-current__addr" id="wallet-current-addr">—</div>
@@ -2275,7 +2285,7 @@
     <span id="next-poll"></span>
   </div>
 
-  <script src="/static/app.js?v49"></script>
+  <script src="/static/app.js?v50"></script>
 </div> <!-- end #app-main -->
 </div> <!-- end #app-layout -->
   <!-- Matrix rain canvas (full-screen background effect) -->
