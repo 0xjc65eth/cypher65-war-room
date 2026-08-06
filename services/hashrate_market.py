@@ -11,7 +11,6 @@ be added later without changing consumers.
 import json
 import time
 import logging
-import requests
 from dataclasses import dataclass, asdict, field
 from typing import Any, Dict, List, Optional
 
@@ -37,7 +36,7 @@ class NormalizedOffer:
     duration_days: float
     fee_pct: float
     algorithm: str
-    source: str = ""         # origin label: braiins|mrr|nicehash|kissmyhash|parasite|derived
+    source: str = ""         # origin label: braiins|mrr|nicehash|parasite|derived
     estimated: bool = False  # True → price is derived/estimated, not a live quote
     meta: Dict[str, Any] = field(default_factory=dict)
 
@@ -143,57 +142,6 @@ def fetch_nicehash_offer() -> Optional[NormalizedOffer]:
             "market": data.get("market"),
         },
     )
-
-
-def fetch_kissmyhash_offer() -> Optional[NormalizedOffer]:
-    """Fetch from KissMyHash API. Falls back to NiceHash +10% markup if KMH API unavailable."""
-    try:
-        r = requests.get(
-            "https://app.kissmyhash.com/api/v1/market",
-            params={"algorithm": "SHA256"},
-            timeout=6,
-            headers={"User-Agent": "cypher65-hashrate-market/1.0"},
-        )
-        if r.ok:
-            data = r.json()
-            price_btc_per_ph = _safe_float(data.get("price_btc_per_ph_day") or data.get("price"), 0)
-            if price_btc_per_ph > 0:
-                return NormalizedOffer(
-                    provider="kissmyhash",
-                    hashrate=DEFAULT_RENTAL_HASHRATE_TH,
-                    price_per_th_day=price_btc_per_ph / PH_TO_TH,
-                    duration_days=1.0,
-                    fee_pct=0.0,
-                    algorithm="sha256",
-                    source="kissmyhash",
-                    meta={"source": "app.kissmyhash.com", "data": data},
-                )
-    except Exception:
-        log.info("[hashrate_market] KissMyHash API unavailable, fallback to NiceHash+10%%")
-
-    # Fallback: derive from NiceHash with 10% markup
-    try:
-        nh = fetch_nicehash_offer()
-        if nh and nh.price_per_th_day > 0:
-            return NormalizedOffer(
-                provider="kissmyhash",
-                hashrate=nh.hashrate,
-                price_per_th_day=nh.price_per_th_day * 1.10,
-                duration_days=nh.duration_days,
-                fee_pct=nh.fee_pct,
-                algorithm=nh.algorithm,
-                source="derived",
-                estimated=True,
-                meta={
-                    "source": "derived_from_nicehash",
-                    "nicehash_price": nh.price_per_th_day,
-                    "markup_pct": 10.0,
-                },
-            )
-    except Exception:
-        pass
-
-    return None
 
 
 def fetch_parasite_offer(network_hashrate: Optional[float] = None) -> Optional[NormalizedOffer]:
@@ -321,7 +269,6 @@ def fetch_all_offers(network_hashrate: Optional[float] = None) -> List[Normalize
         ("braiins", fetch_braiins_offer),
         ("mrr", fetch_mrr_offer),
         ("nicehash", fetch_nicehash_offer),
-        ("kissmyhash", fetch_kissmyhash_offer),
         ("parasite", lambda: fetch_parasite_offer(network_hashrate)),
     ]:
         try:
@@ -505,6 +452,24 @@ def fetch_market_history(conn: Any, limit: int = 100) -> List[Dict[str, Any]]:
 #  Command Center highlights (cheap, no external HTTP)
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+def market_offer_sort_key(scored_offer: Dict[str, Any]) -> tuple:
+    """Real-first sort key for the HASH MARKET grid.
+
+    Live marketplace quotes (``estimated=False``) always sort BEFORE
+    estimated/derived offers — the parasite pool-fee model carries an
+    inflated ROI score that would otherwise crown its ~1 sat/TH/d synthetic
+    card at the top of the grid. Within each group the EV score still
+    orders descending, so the best real deal stays first.
+
+    Returns ``(estimated, -score)``: False < True, so real quotes win the
+    first slots; ``max_items`` still caps the final list, real offers fill
+    the slots first and estimated offers only fill what is left.
+    """
+    metrics = scored_offer.get("metrics") or {}
+    score = float(metrics.get("score") or 0.0)
+    return (bool(scored_offer.get("estimated", False)), -score)
+
+
 def build_highlights(
     snapshot: Optional[Dict[str, Any]] = None,
     last_known_prices: Optional[Dict[str, Any]] = None,
@@ -559,7 +524,7 @@ def build_highlights(
             )
 
     scored = [score_offer(o, network_hashrate) for o in offers]
-    scored.sort(key=lambda x: x["metrics"]["score"], reverse=True)
+    scored.sort(key=market_offer_sort_key)
     return scored[:max_items]
 
 

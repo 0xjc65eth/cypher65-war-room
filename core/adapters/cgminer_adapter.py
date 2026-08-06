@@ -73,8 +73,31 @@ class CgminerAdapter(BaseAdapter):
                 sock.close()
         return None
 
+    @staticmethod
+    def _safe_number(value, type_cast=float, default=None):
+        """Coerce cgminer's raw value (often a string) to a number.
+
+        cgminer returns most numeric fields as strings (e.g. ``"4200"`` RPM,
+        ``"12.5"`` volts). This helper mirrors BitaxeAdapter._safe_number so
+        downstream consumers can safely do math on the result.
+        """
+        try:
+            return type_cast(value) if value is not None else default
+        except (ValueError, TypeError):
+            return default
+
     def get_telemetry(self) -> Optional[Dict[str, Any]]:
-        """Fetch telemetry via cgminer 'summary' + 'stats' commands."""
+        """Fetch telemetry via cgminer 'summary' + 'stats' + 'pools' commands.
+
+        Collects every canonical ``TELEMETRY_KEYS`` field the cgminer protocol
+        can expose. Fields the firmware doesn't report are left as ``None`` —
+        the caller MUST run ``normalize_telemetry()`` (core/models/device.py)
+        to fill them with the explicit ``NOT_AVAILABLE`` marker before
+        rendering in the UI.
+
+        cgminer does NOT expose hashrate windows (1m/10m/1h) — those stay
+        ``None`` and are filled by ``normalize_telemetry()``.
+        """
         summary = self._send_command("summary")
         if not summary or not summary.get("STATUS"):
             return None
@@ -83,7 +106,7 @@ class CgminerAdapter(BaseAdapter):
         stats = self._send_command("stats")
         pools = self._send_command("pools")
 
-        # Parse summary - usually a list with one entry
+        # Parse summary — usually a list with one entry
         summary_data = summary.get("SUMMARY", [{}])
         if isinstance(summary_data, list):
             summary_data = summary_data[0] if summary_data else {}
@@ -95,30 +118,89 @@ class CgminerAdapter(BaseAdapter):
         uptime = int(summary_data.get("Elapsed", 0))
         best_share = str(summary_data.get("Best Share", ""))
 
-        # Temperature from stats (per-chain)
+        # ── Per-chain stats (temperature, fan, voltage, power) ──────────
+        # cgminer 'stats' returns STATS[n] per chain (index 1+). Collect
+        # the first chain's values; multi-chain devices can be extended
+        # later with per-chain telemetry arrays.
         temp = None
         vr_temp = None
+        fan_rpm = None
+        voltage = None
+        power = None
         if stats and "STATS" in stats:
             stats_list = stats["STATS"]
             if isinstance(stats_list, list) and len(stats_list) > 1:
-                temp = stats_list[1].get("temp2_0", stats_list[1].get("temp", None))
-                # Fase 5: VR/board temperature when the chain reports it.
-                vr_temp = stats_list[1].get("temp2_1", stats_list[1].get("temp2_2", None))
+                chain = stats_list[1]
+                # ASIC / junction temp (temp2_0 is usually chip 0, temp = board)
+                temp = self._safe_number(
+                    chain.get("temp2_0", chain.get("temp", None)))
+                # VR / board temp (temp2_1/2_2 on multi-PCB, temp3 on newer)
+                vr_temp = self._safe_number(
+                    chain.get("temp2_1", chain.get("temp2_2", chain.get("temp3", None))))
+                # Fan RPM — cgminer reports fan_num + individual fan speeds
+                fan_count = int(chain.get("fan_num", 0))
+                if fan_count > 0:
+                    fan_rpm = self._safe_number(
+                        chain.get("fan1", chain.get("fan_rpm", None)))
+                    if fan_rpm is None:
+                        # Some firmwares use fan_speed (RPM, not PWM %)
+                        fan_rpm = self._safe_number(chain.get("fan_speed", None))
+                # Voltage — chain-level DC/DC regulator reading
+                voltage = self._safe_number(
+                    chain.get("voltage", chain.get("chain_voltage", None)))
+                # Power — watts per chain (BOSminer/LuxOS expose this)
+                power = self._safe_number(
+                    chain.get("power", chain.get("chain_power",
+                            chain.get("power_watts", None))))
+
+        # ── Pool status derivation ──────────────────────────────────────
+        # cgminer 'pools' returns an array; first pool with status="Alive"
+        # means the device is connected and hashing.
+        pool_status = None
+        pool_url = ""
+        pool_user = ""
+        if pools and "POOLS" in pools:
+            pool_list = pools["POOLS"]
+            if isinstance(pool_list, list):
+                alive = [p for p in pool_list if str(p.get("Status", "")).lower() == "alive"]
+                if alive:
+                    pool_status = "CONNECTED"
+                    pool_url = str(alive[0].get("URL", ""))
+                    pool_user = str(alive[0].get("User", ""))
+                elif pool_list:
+                    # Has configured pools but none alive
+                    pool_status = "DISCONNECTED"
+                    pool_url = str(pool_list[0].get("URL", ""))
+                    pool_user = str(pool_list[0].get("User", ""))
+                else:
+                    pool_status = "NOT CONFIGURED"
 
         return {
             "source": "cgminer_adapter",
             "timestamp": collected_at,
             "freshness": 0,
+            # Core hashrate (cgminer has no 1m/10m/1h windows — normalize fills NOT_AVAILABLE)
             "hashrate": hr,
-            # Fase 5: chip_temp = ASIC temp (same as temperature for cgminer)
+            "hashrate_1m": None,
+            "hashrate_10m": None,
+            "hashrate_1h": None,
+            # Thermal (Fase 5)
             "chip_temp": temp,
             "vr_temp": vr_temp,
             "temperature": temp,
+            # Cooling & power (Fase 5)
+            "fan_rpm": fan_rpm,
+            "voltage": voltage,
+            "power": power,
+            # Shares
             "accepted_shares": accepted,
             "rejected_shares": rejected,
             "stale_shares": stale,
             "best_difficulty": best_share,
             "uptime": uptime,
+            # Pool (Fase 5)
+            "pool_status": pool_status,
+            "pool": {"url": pool_url, "user": pool_user} if pool_url else {},
             "stub": False,
         }
 

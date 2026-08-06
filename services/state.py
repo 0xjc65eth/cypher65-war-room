@@ -62,7 +62,6 @@ last_known_prices = {
     "braiins": None,  # e.g. {"price": 0.000123, "ts": 1700000000, "label": "123.0 sats/PH/day"}
     "mrr": None,
     "nicehash": None,
-    "kissmyhash": None,
     "parasite": None,
 }
 

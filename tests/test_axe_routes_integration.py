@@ -958,6 +958,15 @@ class TestCloudDeployGuards:
 
     ENDPOINT = "/api/axe-fleet/devices"
 
+    @pytest.fixture(autouse=True)
+    def _patch_detect(self, monkeypatch):
+        """Prevent real network probes from add_device's auto-detect."""
+        monkeypatch.setattr(
+            "core.registry.detector.detect_firmware",
+            lambda ip: {"firmware": "unknown", "adapter_type": "unknown",
+                        "reachable": False}
+        )
+
     @pytest.fixture
     def mock_registry(self):
         r = MagicMock()

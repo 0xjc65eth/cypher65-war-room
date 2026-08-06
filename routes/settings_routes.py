@@ -8,6 +8,7 @@ import time
 
 from flask import Blueprint, jsonify, request
 
+from config import BTC_ADDRESS, WORKER_NAME
 from services.settings import DEFAULT_SETTINGS, load_settings, save_setting, settings_label
 from services.tenant import require_tenant, role_required
 from services.licensing import is_pro
@@ -51,6 +52,39 @@ def api_settings_post(tenant_id: str = ""):
         else:
             rejected.append({"key": k, "reason": "db error"})
     return jsonify({"applied": applied, "rejected": rejected})
+
+
+@settings_bp.route("/settings/test-webhook", methods=["POST"])
+@require_tenant
+@role_required("member")
+def api_settings_test_webhook(tenant_id: str = ""):
+    """Send a sample alert payload to the configured webhook_url.
+
+    UX audit Quick Win: lets the operator validate the notification channel
+    (Discord/Telegram) without waiting for a real alert event. Same payload
+    shape the polling loop fires on every alert, same PRO gate as webhook_url.
+    """
+    s = load_settings()
+    url = (s.get("webhook_url") or "").strip()
+    if not url:
+        return jsonify({"error": "webhook_url not configured — set it in Settings first"}), 400
+    if not is_pro():
+        return jsonify({"error": "PRO feature — requires a license key"}), 403
+    payload = {
+        "event": "cypher65_war_room_alert",
+        "severity": "TEST",
+        "category": "test",
+        "message": "🧪 Teste do CYPHER65 — se você leu esta mensagem, seu webhook está configurado corretamente",
+        "ts": int(time.time()),
+        "worker": WORKER_NAME,
+        "address": BTC_ADDRESS,
+    }
+    try:
+        import requests  # lazy: this module stays dependency-free at import time
+        r = requests.post(url, json=payload, timeout=6)
+        return jsonify({"success": True, "status_code": r.status_code})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 502
 
 
 # ── FASE 2: Wallet history endpoint ──

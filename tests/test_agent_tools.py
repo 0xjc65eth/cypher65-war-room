@@ -318,6 +318,67 @@ class TestGetBraiinsOrderbook:
         assert "error" in result
         assert "valid prices" in result["error"].lower()
 
+    def test_settings_probe_sends_apikey_header_when_configured(self, monkeypatch):
+        """With BRAIINS_API_KEY configured (env or Settings), the /spot/settings
+        probe must send the `apikey` header so the caller gets their individual
+        pricing layer (the endpoint 401s without it)."""
+        import services.settings as _settings_mod
+        monkeypatch.setenv("BRAIINS_API_KEY", "owner-token")
+        monkeypatch.setattr(_settings_mod, "load_settings", lambda: {})
+
+        mock_settings = Mock()
+        mock_settings.ok = True
+        mock_settings.json.return_value = {"price_unit": "sats/TH/day"}
+        mock_orderbook = Mock()
+        mock_orderbook.ok = True
+        mock_orderbook.json.return_value = {
+            "asks": [{"price_sat": "2847"}],
+            "bids": [],
+        }
+
+        captured = {}
+        def _fake_get(url, timeout=None, headers=None):
+            if "/spot/settings" in url:
+                captured["headers"] = headers
+                return mock_settings
+            return mock_orderbook
+
+        with patch("agents.solo_mining_advisor.tools.requests.get",
+                   side_effect=_fake_get):
+            result = get_braiins_orderbook()
+
+        assert result["price_raw"] == 2847.0
+        assert captured["headers"].get("apikey") == "owner-token"
+
+    def test_settings_probe_no_apikey_without_key(self, monkeypatch):
+        """Without a configured key, the settings probe has no `apikey` header
+        and the fetch still works (degrades to default price unit)."""
+        import services.settings as _settings_mod
+        monkeypatch.delenv("BRAIINS_API_KEY", raising=False)
+        monkeypatch.setattr(_settings_mod, "load_settings", lambda: {})
+
+        mock_settings = Mock(ok=False)  # 401 without key → fallback unit
+        mock_orderbook = Mock()
+        mock_orderbook.ok = True
+        mock_orderbook.json.return_value = {
+            "asks": [{"price_sat": "2847"}],
+            "bids": [],
+        }
+
+        captured = {}
+        def _fake_get(url, timeout=None, headers=None):
+            if "/spot/settings" in url:
+                captured["headers"] = headers
+                return mock_settings
+            return mock_orderbook
+
+        with patch("agents.solo_mining_advisor.tools.requests.get",
+                   side_effect=_fake_get):
+            result = get_braiins_orderbook()
+
+        assert result["price_raw"] == 2847.0
+        assert "apikey" not in (captured["headers"] or {})
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # 4. get_mrr_listings — MiningRigRentals with HMAC-SHA1 auth

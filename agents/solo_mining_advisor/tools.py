@@ -140,11 +140,17 @@ def get_braiins_orderbook():
         {"error": str} on failure
     """
     try:
-        # Check pricing units
+        # Check pricing units — with a configured API key the probe gets the
+        # caller's individual pricing layer; without it, degrades gracefully
+        # to the default unit (spot/settings now 401s without `apikey`).
+        settings_headers = {"User-Agent": "cypher65-solo-mining-advisor/1.0"}
+        _braiins_key = braiins_credentials()["api_key"]
+        if _braiins_key:
+            settings_headers["apikey"] = _braiins_key
         settings_r = requests.get(
             f"{BRAIINS_API}/spot/settings",
             timeout=8,
-            headers={"User-Agent": "cypher65-solo-mining-advisor/1.0"},
+            headers=settings_headers,
         )
         price_unit = "sats/PH/day"
         if settings_r.ok:
@@ -212,6 +218,65 @@ def get_braiins_orderbook():
 #  TOOL 4: get_mrr_listings()
 # ═══════════════════════════════════════════════════════════════════════════
 
+def mrr_credentials() -> dict:
+    """Resolve MRR API credentials: env vars first, Settings modal fallback.
+
+    Shared by every MRR consumer (market quotes, rentals, balance) so the
+    credential resolution lives in one place.
+    """
+    api_key = os.environ.get("MRR_API_KEY") or ""
+    api_secret = os.environ.get("MRR_API_SECRET") or ""
+    if not (api_key and api_secret):
+        try:
+            from services.settings import load_settings
+            _s = load_settings()
+            api_key = api_key or (_s.get("mrr_api_key") or "")
+            api_secret = api_secret or (_s.get("mrr_api_secret") or "")
+        except Exception:
+            pass
+    return {"api_key": api_key, "api_secret": api_secret}
+
+
+def braiins_credentials() -> dict:
+    """Resolve the Braiins Hashpower API key: env first, Settings modal fallback.
+
+    The owner token unlocks bids/contracts/balance; read-only token covers
+    market data. Shared by every Braiins consumer (orderbook settings probe,
+    rentals contracts/speed, future bid management).
+    """
+    api_key = os.environ.get("BRAIINS_API_KEY") or ""
+    if not api_key:
+        try:
+            from services.settings import load_settings
+            _s = load_settings()
+            api_key = api_key or (_s.get("braiins_api_key") or "")
+        except Exception:
+            pass
+    return {"api_key": api_key}
+
+
+def _mrr_signed_headers(api_key: str, api_secret: str, endpoint: str) -> dict:
+    """Build the HMAC-SHA1 auth headers for MRR API v2 requests.
+
+    Signature string = api_key + nonce + endpoint (path WITHOUT the base
+    URL, query params included, no trailing slash). Shared by all MRR
+    calls (market quotes, rentals, balance) so the auth scheme lives in
+    one place.
+    """
+    nonce = str(int(time.time() * 1000))
+    sign = hmac.new(
+        api_secret.encode("utf-8"),
+        (api_key + nonce + endpoint).encode("utf-8"),
+        hashlib.sha1,
+    ).hexdigest()
+    return {
+        "x-api-key": api_key,
+        "x-api-nonce": nonce,
+        "x-api-sign": sign,
+        "Content-Type": "application/json",
+    }
+
+
 def get_mrr_listings(algo="sha256", api_key=None, api_secret=None):
     """Fetch active MiningRigRentals listings for SHA-256/AsicBoost.
     Requires MRR API credentials (key + secret).
@@ -225,18 +290,10 @@ def get_mrr_listings(algo="sha256", api_key=None, api_secret=None):
         {"needs_auth": True, "error": str} if credentials missing
         {"error": str} on other failures
     """
-    api_key = api_key or os.environ.get("MRR_API_KEY")
-    api_secret = api_secret or os.environ.get("MRR_API_SECRET")
-
     if not api_key or not api_secret:
-        # Fase 5: fall back to user-configured Settings (Settings modal MRR fields)
-        try:
-            from services.settings import load_settings
-            _s = load_settings()
-            api_key = api_key or (_s.get("mrr_api_key") or "")
-            api_secret = api_secret or (_s.get("mrr_api_secret") or "")
-        except Exception:
-            pass
+        _creds = mrr_credentials()
+        api_key = api_key or _creds["api_key"]
+        api_secret = api_secret or _creds["api_secret"]
 
     if not api_key or not api_secret:
         return {
@@ -246,22 +303,7 @@ def get_mrr_listings(algo="sha256", api_key=None, api_secret=None):
         }
 
     endpoint = f"/rig?type={algo}&order=price"
-    nonce = str(int(time.time() * 1000))
-
-    # HMAC-SHA1 signature
-    sign_string = api_key + nonce + endpoint
-    sign = hmac.new(
-        api_secret.encode("utf-8"),
-        sign_string.encode("utf-8"),
-        hashlib.sha1,
-    ).hexdigest()
-
-    headers = {
-        "x-api-key": api_key,
-        "x-api-nonce": nonce,
-        "x-api-sign": sign,
-        "Content-Type": "application/json",
-    }
+    headers = _mrr_signed_headers(api_key, api_secret, endpoint)
 
     try:
         r = requests.get(

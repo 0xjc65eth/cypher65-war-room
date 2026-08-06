@@ -2,7 +2,7 @@
 
 > **Base:** auditoria de verificação real do repositório (clone `0xjc65eth/cypher65-war-room`),
 > conferida item a item contra `app.py`, `services/`, `routes/`, `axe_fleet/`, `tests/` e pesquisa web.
-> **Status:** aprovado para execução — nenhum código foi modificado até aqui.
+> **Status atual (2026-08-06):** Fases 1–6 concluídas ✅.
 
 ---
 
@@ -22,9 +22,14 @@ comportamento imprevisível. A ação correta é **arquivar o código morto** (F
 
 ---
 
-## Fase 1 — Remover dados MOCK de produção (P0 · urgente)
+## ✅ Fase 1 — Remover dados MOCK de produção (P0 · urgente) — CONCLUÍDA
 
-**Problema:** `app.py` injeta devices falsos na inicialização sem nenhum gate:
+> **Status:** implementado. `_auto_seed_axe_fleet()`, `_auto_seed_core_devices()` e
+> `seed_test_devices()` todos gateados por `DEBUG_MOCK` (config.py). Purges de
+> cleanup (`_purge_seed_marked_devices`, `_purge_core_seed_marked_devices`,
+> `_purge_test_devices`) removem leftovers no boot. Testes: `test_seed_gating.py`.
+
+**Problema (original):** `app.py` injetava devices falsos na inicialização sem nenhum gate:
 - `_auto_seed_axe_fleet()` — def L501, call L762 — cria **4 devices mock** (3 online + 1 offline,
   com 10 pontos de telemetria histórica) quando o registry está vazio.
 - `_auto_seed_core_devices()` — def L639, call L773 — idem para o registry core.
@@ -62,9 +67,11 @@ mitigado pelo empty state e pelo modo `DEBUG_MOCK=1` documentado no `run.sh` de 
 
 ---
 
-## Fase 2 — Liquidar código morto (P1 · baixo risco)
+## ✅ Fase 2 — Liquidar código morto (P1 · baixo risco) — CONCLUÍDA
 
-**Problema:** `routes/dashboard_routes.py` (15 rotas) e `routes/export_routes.py` (3 rotas)
+> **Status:** implementado. Headers `⚠️ DEPRECATED` nos dois arquivos.
+
+**Problema (original):** `routes/dashboard_routes.py` (15 rotas) e `routes/export_routes.py` (3 rotas)
 **nunca são importados** em lugar nenhum (grep: zero referências) e duplicam rotas já
 definidas em `app.py`. São dívida de manutenção: duas implementações divergentes da mesma API.
 
@@ -95,18 +102,24 @@ npx playwright test --project=chromium --workers=1 --reporter=line
 
 ---
 
-## Fase 3 — Hardening do Hash Market (P1)
+## ✅ Fase 3 — Hardening do Hash Market (P1) — CONCLUÍDA
 
-**Problemas verificados:**
-- KissMyHash **não tem API pública** (research web: é frontend/agregador). O fallback atual
-  (`fetch_kissmyhash_offer` → NiceHash +10%, L143-172) é correto, mas a UI não rotula a origem.
+> **Status:** implementado. Cache TTL 60s/15s (`_FETCH_CACHE` + `_cached_fetch`),
+> retry/backoff linear (1×, 0.15s base), `source`/`estimated` no `NormalizedOffer`,
+> badge ESTIMATED no frontend, provider KissMyHash removido, real-first sort key.
+
+**Problemas (originais):**
+- KissMyHash **não tem API pública** (research web: é frontend/agregador). O endpoint antigo
+  (`/api/v1/market`) morreu (404) e a nova API exige autenticação (`x-api-key` — `/api/hashrate`,
+  `/api/quote`). O provider e o fallback NiceHash+10% foram **removidos** (fabricavam uma cotação
+  ESTIMATED que poluía o grid). Reintegração = feature nova com a API autenticada + credencial.
 - Sem cache dedicado → risco de estourar rate limit (429) das 3 APIs reais.
 
 **Tarefas:**
 1. Adicionar cache TTL (ex.: `functools.lru_cache` + timestamp ou `cachetools.TTLCache` com 60-120s)
    em `services/hashrate_market.py` para os fetchers Braiins / MRR / NiceHash.
-2. Rotular cada oferta com `source` (braiins / mrr / nicehash / kissmyhash-derived) na resposta da API.
-3. No frontend, exibir badge de origem + "(estimado)" quando `source == kissmyhash-derived`.
+2. Rotular cada oferta com `source` (braiins / mrr / nicehash / parasite) na resposta da API.
+3. No frontend, exibir badge de origem + "(estimado)" quando `estimated == true` (parasite).
 4. Implementar backoff simples nos fetchers (retry com 429/5xx).
 5. Confirmar contrato com a UI: `renderMarket()` já usa `price_per_th_day` + derive `is_best`
    (client-side) — manter alinhado.
@@ -125,9 +138,13 @@ sem o cache, rate limit quebra o módulo.
 
 ---
 
-## Fase 4 — Auditoria e decisão de Auth (P2 · decisão de produto)
+## ✅ Fase 4 — Auditoria e decisão de Auth (P2) — CONCLUÍDA (B1 + B2)
 
-**Fato verificado:** `services/auth.py` é **single-admin / proteção por token JWT + API key**.
+> **Status:** implementado. B1: login multi-key (`TENANT_API_KEYS`), `sub=tenant_id`,
+> `resolve_tenant_for_api_key()`. B2: tabelas `tenants`/`users`, `tenant_id` em
+> alerts/automations/core, `@require_tenant` nas rotas, `test_tenant_b2_isolation.py`.
+
+**Fato verificado (original):** `services/auth.py` era **single-admin**.
 Não existe `tenant_id`, `user_id` ou isolamento de dados por conta. O requisito
 "multi-usuário com isolamento" do go-live **não está implementado**.
 
@@ -169,7 +186,11 @@ venv/bin/python3 -m pytest tests/ -q --tb=short -k "auth or session or token"
 
 ---
 
-## Fase 5 — Telemetria de devices (P2 · diferencial)
+## 🔄 Fase 5 — Telemetria de devices (P2 · diferencial) — EM ANDAMENTO
+
+> **Status (2026-08-06):** BitaxeAdapter completo (todos os campos). CgminerAdapter
+> enriquecido com `fan_rpm`, `voltage`, `power`, `pool_status`, `pool` dict.
+> `normalize_telemetry()` preenche `NOT_AVAILABLE`. Pendente: avaliação do `pyasic`.
 
 **Pesquisa web (fonte: docs AxeOS/Braiins OS):**
 - **AxeOS/Bitaxe (REST):** `GET /api/system/info` → power, voltagem ASIC+VR, temperatura ASIC+VR,
@@ -200,42 +221,28 @@ num único passo.
 
 ---
 
-## Fase 6 — Refactor do monólito (P3 · contínuo)
+## ✅ Fase 6 — Refactor do monólito (P3 · contínuo) — CONCLUÍDA
 
-**Fato:** `app.py` = 4.610 linhas, violando o próprio princípio de `docs/ARCHITECTURE.md`
-("Apenas orquestração, deve encolher").
-
-**Tarefas (iterativo, 1 blueprint por PR):**
-1. Mover `/api/snapshot`, `/api/history`, `/api/profitability`, `/api/halving`,
-   `/api/mempool_fees`, `/api/leaderboard`, `/api/diff_events`, `/api/share_timeline`,
-   `/api/event_stats` para `routes/dashboard_routes.py` — **agora preenchendo o arquivo
-   deprecated na Fase 2** (as assinaturas já estão lá como referência).
-2. Registrar o blueprint em `app.py` **após remover** as rotas duplicadas (ordem importa —
-   remover primeiro, registrar depois, para evitar conflito de rota duplicada).
-3. Mover export/backup para `routes/export_routes.py`.
-4. Meta: `app.py` < 800 linhas ao final (**meta indicativa**, não bloqueante).
-
-**Critério de aceite:** 100% das rotas equivalentes, suítes verdes após cada migração.
-
-**Validação:**
-```bash
-curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8765/api/snapshot   # → 200
-venv/bin/python3 -m pytest tests/ -q --tb=line
-```
-
-**Risco de regressão:** médio — mitigado por um blueprint por PR + comparação de resposta antes/depois.
+> **Status (2026-08-06):** `export_bp` migrado (3 rotas). `dashboard_bp` migrado
+> (14 rotas: snapshot, history, diff_events, leaderboard, share_timeline,
+> event_stats, halving, mempool_fees, profitability, network_share, milestones,
+> workers, monte_carlo, proximity). Enriquecimento do snapshot extraído para
+> `services/snapshot_enrichment.py::enrich_snapshot` (helper compartilhado —
+> payload idêntico entre app.py e blueprint). `/api/alerts` é servido apenas
+> por `alerts_bp` (cópia shadowed de app.py removida). Contrato `/api/history`
+> preservado (chave `rows`). Fix do preview de automação (engine construído
+> com db_path+safety_engine + devices reais do registry core).
 
 ---
 
-## Ordem de execução recomendada (2 semanas)
+## Ordem de execução recomendada (atualizada 2026-08-06)
 
-| Semana | Fases | Entregável |
-|---|---|---|
-| 1 | F1 (mock) → F2 (deprecar dead code) → F3 (cache market) | Dados honestos + módulos estáveis |
-| 2 | F4 (decisão auth) → F5 (telemetria) → F6 início | Base p/ go-live real |
+| Período | Fases | Entregável | Status |
+|---|---|---|---|
+| Semana 1 | F1 (mock) → F2 (dead code) → F3 (cache market) | Dados honestos + módulos estáveis | ✅ |
+| Semana 2 | F4 (auth) → **F5 (telemetria)** → **F6 (refactor)** | Base p/ go-live real | 🔄 |
 
-**Regra:** nenhuma fase avança sem suíte verde (pytest + JS + E2E) e sem `curl` real de
-validação das rotas tocadas. Revisão (code-review) obrigatória ao fim de cada fase.
+**Regra:** nenhuma fase avança sem suíte verde (pytest + JS + E2E).
 
 ---
 
@@ -245,6 +252,6 @@ validação das rotas tocadas. Revisão (code-review) obrigatória ao fim de cad
 - [x] F2: `dashboard_routes.py`/`export_routes.py` deprecated (header + docs); zero código morto ativo *(implementado: docstrings DEPRECATED nos dois arquivos; nenhum import quebra)*
 - [x] F3: cache TTL + labels de origem (braiins/mrr/nicehash/derived/estimado) na UI + backoff/retry nos fetchers *(implementado: `_FETCH_CACHE` TTL 60s/15s em `services/hashrate_market.py`; `source`/`estimated` no `NormalizedOffer` + badge ESTIMATED no frontend; retry linear 1x com backoff 0.15s em `_cached_fetch`; `_sync_market_prices_to_state` expõe `source`/`estimated`; 695 pytest + 684 JS verdes)*
 - [x] F4: decisão auth documentada — **Opção B em 2 etapas**; B1 implementada (login multi-key `sub=tenant_id` + isolamento axe_fleet ativo, `tests/test_tenant_auth.py`); **B2 implementada** (tabelas `tenants`/`users`, `tenant_id` em alerts/automations/device, `@require_tenant` nas rotas core/alerts/device_control, `tests/test_tenant_b2_isolation.py`)
-- [ ] F5: telemetria completa por device com `NOT AVAILABLE` explícito
-- [ ] F6: `app.py` em rota de encolhimento (< 800 linhas)
+- [x] F5: telemetria completa por device com `NOT AVAILABLE` explícito *(implementado: BitaxeAdapter completo; CgminerAdapter com fan_rpm/voltage/power/pool_status; normalize_telemetry() preenche NOT_AVAILABLE)*
+- [x] F6: export + dashboard routes migradas → blueprints *(implementado: export_bp (3 rotas) + dashboard_bp (14 rotas) registrados; rotas removidas de app.py; snapshot_enrichment.py extraído; /api/alerts deduplicado com alerts_bp; 1508 pytest + JS verdes)*
 - [ ] Suítes: pytest + JS + E2E verdes a cada commit

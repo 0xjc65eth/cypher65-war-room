@@ -287,11 +287,44 @@ def add_device(tenant_id: str = ""):
             "max_workers": plan["max_workers"],
         }), 403
 
+    # ── Auto-detect firmware (best-effort, never blocks registration) ──
+    firmware = ""
+    model = ""
+    version = ""
+    status = "OFFLINE"
+    try:
+        from core.registry.detector import detect_firmware
+        fw = detect_firmware(ip)
+        if fw and fw.get("reachable"):
+            firmware = fw.get("firmware", "")
+            model = fw.get("model", "")
+            version = fw.get("version", "")
+            status = "ONLINE" if fw.get("adapter_type") else "OFFLINE"
+    except Exception:
+        pass  # probe failure must never prevent registration
+
     try:
         device = _registry.add_device(ip, name or ip, tenant_id=tenant_id)
+        # Enrich with auto-detected metadata when available
+        if firmware or model:
+            try:
+                _registry.update_device(device["id"], {
+                    "firmware": firmware,
+                    "model": model or device.get("model", ""),
+                    "firmware_version": version,
+                    "status": status,
+                })
+                # Re-fetch so the response carries the enriched fields
+                enriched = _registry.get_device(device["id"], tenant_id=tenant_id)
+                if enriched:
+                    device = enriched
+            except Exception:
+                pass  # enrichment is best-effort; base device is still valid
+
         _log_audit(tenant_id, "fleet.device_added",
                    target=device.get("id", ""),
-                   details={"ip": ip, "name": name or ip})
+                   details={"ip": ip, "name": name or ip,
+                            "detected_firmware": firmware or "none"})
         return jsonify({"success": True, "device": device}), 201
     except Exception as e:
         log.error("[axe] add_device error: %s", e)
@@ -1120,6 +1153,49 @@ def diagnose_device(ip_or_host: str):
             "error_type": "EXCEPTION",
             "error_detail": str(e),
             "reachable": False,
+        })
+
+
+# ── Lightweight firmware detection endpoint ──────────────────────────────
+
+
+@axe_fleet_bp.route("/detect/<path:ip_or_host>", methods=["GET"])
+def detect_firmware_endpoint(ip_or_host: str):
+    """Quick firmware detection via ``detect_firmware()``.
+
+    Lighter than /diagnose — calls only the firmware detector (REST APIs +
+    cgminer fingerprint), no TCP connectivity scan or per-protocol flags.
+    Returns the raw detector result for fast firmware preview.
+
+    This endpoint does NOT require auth (local-only for the wizard).
+    The device does NOT need to be registered.
+
+    Example:
+      GET /api/axe-fleet/detect/192.168.1.200
+
+    Returns:
+      {
+        "firmware": "braiins" | "axeos" | "cgminer" | "unknown",
+        "adapter_type": "braiins" | "bitaxe" | "cgminer" | "unknown",
+        "version": "...",
+        "model": "...",
+        "capabilities": {...},
+        "reachable": bool
+      }
+    """
+    try:
+        from core.registry.detector import detect_firmware
+        result = detect_firmware(ip_or_host)
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({
+            "firmware": "unknown",
+            "adapter_type": "unknown",
+            "version": "",
+            "model": "",
+            "capabilities": {},
+            "reachable": False,
+            "error": str(e),
         })
 
 

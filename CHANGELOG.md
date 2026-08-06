@@ -6,6 +6,238 @@ e versionamento semântico ([SemVer](https://semver.org/lang/pt-BR/)).
 
 ## [Unreleased]
 
+### Adicionado — Docs: busca com autocomplete (auditoria UX · Módulo_09)
+- **Dropdown de sugestões** no campo de busca do módulo Docs (`#docs-search-suggestions`):
+  ao digitar, as 6 seções mais relevantes aparecem com **título + snippet** da região
+  do match e o termo destacado em `<mark>` (âmbar). Ranking honesto: hit no **título**
+  vale mais que hit só no corpo (posições anteriores também vencem).
+- **Navegação por teclado**: ↓/↑ movem o cursor (estado `active` visível), **Enter** abre
+  a seção selecionada (`scrollIntoView` + destaque do link no índice), **Escape** fecha
+  o dropdown. Mouse: hover move o cursor e `mousedown` abre — o `blur` nunca engole o
+  clique. Sem match → estado vazio honesto ("no matches for …"), nunca sugestão velha.
+- **Acessibilidade**: `role="combobox"`/`listbox`/`option` + `aria-expanded`/`aria-selected`.
+- **Helpers puros** `docsBuildIndex/docsSearchSuggestions/docsSnippet/docsHighlight` em
+  `static/app.js` espelhados em `tests/test_app_js_core.js` (SUITE 34, 19 asserts): ranking
+  título>corpo, cap de limite, janela de snippet com elipses, highlight case-insensitive
+  com escaping HTML.
+- **Bug pré-existente corrigido no caminho** (achado pelo E2E): o botão ✕ de limpar busca
+  usava `style.display = ''` que remove o inline style e restaura o `display:none` do CSS
+  — o botão **nunca ficava visível**. Agora usa `display:block` (span vira flex-item).
+- **E2E** `tests/e2e/docs-autocomplete.spec.js` (4 testes): sugestões com highlight, teclado
+  ↓+Enter navega, Escape fecha + clear restaura as seções, estado vazio. Bumps CDN-safe
+  `app.js?v54` / `style.css?v50`.
+
+### Adicionado — Probability: slider WHAT-IF de dificuldade (auditoria UX · Módulo_05)
+- **Simulador "e se a dificuldade subir X%?"** no painel Block Hunt (`data-module="probability"`):
+  slider de −50% a +100% que recomputa **na hora** o impacto em P(block)/share,
+  expected time, distance e cumulative P — sem tocar no snapshot ao vivo.
+- **Matemática honesta**: dificuldade ↑ → P(block)/share ↓ (inversa, p = bestDiff/diff);
+  expected time e distance escalam linearmente (Poisson: E[t] = diff·2³²/hashrate);
+  cumulative P é re-derivado do p deslocado × shares da sessão. Sem dados base,
+  células mostram em-dash (estado vazio honesto), nunca valor fabricado.
+- **Pure function** `simulateDifficultyShift(base, pct)` em `static/app.js` — o
+  `renderBlockHunt` captura os valores do snapshot atual em `_bhBase` a cada poll,
+  então o slider preserva a posição do operador e re-renderiza com dados frescos.
+  Espelhada em `tests/test_app_js_core.js` (SUITE 33, 19 asserts): shifts +10%/−25%/0%,
+  fallback de pBlock sem bestDiff, estado vazio.
+- **CSS** `.bh-whatif*`: slider estilo terminal (thumb roxo com glow, faixa cyan→purple),
+  badge `badge--purple` com o shift %, grid de 4 células (2 colunas no mobile).
+- **E2E** `tests/e2e/probability-whatif.spec.js` (3 testes): render do slider+badge+reset,
+  drag live (badge + célula P(block) estritamente menor com shift maior), shift negativo
+  e reset → 0%. Bumps CDN-safe `app.js?v53` / `style.css?v49`.
+
+### Fechado — Hash Market: gráfico 7d por provider (backlog da auditoria UX)
+- **Verificação de ponta a ponta**: o pipeline já existia e estava vivo —
+  `persist_market_history` roda nos 2 pontos de fetch (rota `/api/hashrate-market`
+  + warm-up de 5min) e a tabela real tinha 965 rows braiins/nicehash/parasite,
+  178 mrr (o legado kissmyhash parou de persistir no dia da remoção — correto).
+  O gráfico per-provider já era servido por `/api/market/trend` e renderizado
+  pelo `loadMarketTrend()` lazy (Chart.js multi-line + legend + null-gaps).
+  O gap real era **zero cobertura**: `/api/market/trend` e `/api/market/history`
+  (série flat que o mobile consome) não tinham NENHUM teste.
+- **Backend**: 6 testes novos em `TestApiMarketTrendAndHistory` — agregação por
+  provider com ordem ts asc, cutoff de 7d (trend) / janela `hours` (history),
+  conversão TH→PH (×1000), e asserts **herméticos** (escopados ao provider
+  distintivo `utrend-*`, já que testes anteriores do arquivo persistem
+  providers reais via `/api/hashrate-market` com offers mockadas).
+- **Frontend**: lógica pura do chart extraída para `buildMarketTrendDatasets()`
+  (providers → `{times, labels, datasets}` com gaps null por provider e
+  conversão BTC/TH/d → sats/TH/d ×1e8) e refatorado o `loadMarketTrend` para
+  usá-la; badge agora mostra **frescor honesto** (`N providers · HH:MM` via
+  `updated_at` real do endpoint) e estado vazio explica que o histórico é
+  persistido a cada fetch (warm-up 5min) em vez de silêncio.
+- **Filtro de atividade de 48h no `/api/market/trend`** (pós-review): provider
+  sem cotação há >48h (ex.: kissmyhash, removido do pipeline mas com rows
+  legados dentro da janela de 7d) é **descartado** do chart de comparação —
+  a linha morta não infla mais o badge "N providers" nem engana o operador.
+  Teste de regressão novo (`test_trend_drops_provider_inactive_48h`).
+- **JS**: SUITE 32 (13 asserts do `buildMarketTrendDatasets` — união de ts,
+  gaps null, conversão de sats, empty). Bump CDN-safe `app.js?v51→v52`.
+
+### Adicionado — Quick Wins da auditoria UX (KPIs navegáveis + preview/teste de webhook + fim da caixa-preta de automações)
+- **KPI cards clicáveis** (drill-down): Hashrate/Share Rate → `live`, Best
+  Difficulty/Pool Hashrate → `probability` — `data-kpi-target` no HTML,
+  handler delegado em `#kpi-row` (reusa `activateModule`), affordance de
+  hover (`→` no subtítulo + cursor). Nada de nova navegação — mesmo
+  mecanismo dos links da sidebar.
+- **Settings → WEBHOOK PREVIEW + ENVIAR TESTE**: o modal agora renderiza o
+  JSON exato que o polling dispara a cada alerta (shape idêntico ao
+  `services/polling.py`) e atualiza ao vivo conforme o operador edita
+  `webhook_url`/`webhook_min_severity`. Botão `📡 ENVIAR TESTE` chama o novo
+  `POST /api/settings/test-webhook` (mesmo PRO gate do `webhook_url`, mesmo
+  payload shape, 400 quando não configurado, 502 honesto em erro de rede) —
+  valida o canal Discord/Telegram sem esperar evento real.
+- **Fim da caixa-preta de automações**: `GET /api/automation-executions`
+  (novo) expõe o `automation_execution_log` — que o `_audit_automation_result`
+  já populava em produção desde o boot — tenant-scoped via JOIN nas rules do
+  tenant (a tabela não tem coluna tenant; órfãos de regra deletada nunca
+  vazam). No Alert Center: cada regra mostra **"última: <tempo> — <status>"**
+  (verde/vermelho por status) e um strip **ÚLTIMAS EXECUÇÕES** com as 6 mais
+  recentes (regra → ação → status → motivo).
+- Nota de auditoria: feedback de copy (`[copied]`) já existia em todos os
+  pontos (wallet, footer, support) — nenhuma mudança necessária.
+- Testes: `tests/test_ux_quickwins.py` (8: 400/403/204/502 do test-webhook,
+  isolamento tenant, clamp de limit, órfão de regra deletada) + SUITE 31
+  (mirror do `webhookPreviewPayload`, 10 asserts). Bumps CDN-safe
+  `app.js?v50→v51`, `style.css?v47→v48`.
+
+### Refatorado — Fase 6 completa: export + dashboard migrados para blueprints (app.py encolheu ~700 linhas)
+- **`export_bp`** (`routes/export_routes.py`): 3 rotas migradas de app.py
+  (`api_export`, `api_config_backup`, `api_config_restore`) — mesma auth
+  (`require_tenant` + `role_required`), mesmas respostas.
+- **`dashboard_bp`** (`routes/dashboard_routes.py`): **14 rotas** migradas
+  de app.py — `/snapshot`, `/history`, `/diff_events`, `/leaderboard`,
+  `/share_timeline`, `/event_stats`, `/halving`, `/mempool_fees`,
+  `/profitability`, `/network_share`, `/milestones`, `/workers`,
+  `/monte_carlo`, `/proximity`. Enriquecimento do snapshot extraído para
+  `services/snapshot_enrichment.py::enrich_snapshot` (helper compartilhado
+  entre app.py e o blueprint — payload idêntico). Gates `pro_required` de
+  `/monte_carlo` e `/proximity` preservados.
+- **Contrato `/api/history` preservado**: a rota migrada retorna a chave
+  `rows` (não `history`) — mesma resposta da versão pré-migração, para não
+  quebrar clientes existentes.
+- **`/api/alerts`**: a cópia morta de app.py (shadowed pelo `alerts_bp`,
+  registrado antes) foi **removida** — `routes/alerts_routes.py` é a única
+  fonte (com tenant-scoping da Fase 4 · B2).
+- **Dead code removido de app.py**: implementações legacy shadowed de
+  `build_auto_pilot_context`/`_compute_block_hunt` (wrappers de delegação
+  no fim do arquivo agora são a única fonte), import morto de
+  `enrich_snapshot` e imports de `random`/`pro_required`/`AP_*`.
+- **Fix real da migração**: `snapshot_enrichment.build_auto_pilot_context`
+  construía `AutomationEngine()` sem os args obrigatórios (`db_path` +
+  `safety_engine`) e chamava `preview_rules` sem devices — o preview de
+  automação **falhava silenciosamente em produção** (testes mockavam o
+  engine e não pegavam). Agora o app injeta o `AutomationEngine` +
+  `CoreDeviceRegistry` **vivos** no módulo via `set_auto_pilot_deps()`
+  (mesmo padrão do `_set_get_db` de alerts_routes) — o preview avalia
+  contra a telemetria em memória do poll loop (um reload frio do DB
+  perderia `current_telemetry` e nenhuma regra casaria). Fallback de
+  construção fresca quando não injetado (testes/standalone) e constante
+  compartilhada `AP_TEMP_HIGH_C` (era 75.0 hardcoded).
+- **Testes**: `tests/test_dashboard_routes_migration.py` (15 testes de
+  regressão: chave `rows` do history, rotas simples, gates pro, snapshot
+  enriquecido, non-mutation do `enrich_snapshot`). Suíte completa 1508
+  Python ✅ + JS ✅.
+
+### Adicionado — Fase 5: telemetria completa do CgminerAdapter (fan, voltage, power, pool)
+- **Novos campos** no `get_telemetry()` do `CgminerAdapter`:
+  `fan_rpm` (chain `fan_num` + `fan1`/`fan_rpm`/`fan_speed`),
+  `voltage` (chain `voltage`/`chain_voltage`), `power` (chain
+  `power`/`chain_power`/`power_watts`) — todos com coerção de tipo via
+  `_safe_number()` (cgminer retorna strings).
+- **`pool_status` derivado** do comando `pools` (CONNECTED quando Alive,
+  DISCONNECTED quando configurado mas morto, NOT CONFIGURED quando vazio).
+- **`pool` dict** com `url`/`user` do primeiro pool alive.
+- **`hashrate_1m/10m/1h` explícitos como `None`** — cgminer não expõe janelas;
+  `normalize_telemetry()` preenche `NOT AVAILABLE`.
+- **Helper `_safe_number()`** espelhado do `BitaxeAdapter` para coerção segura
+  de strings→float/int.
+- `BitaxeAdapter` já estava completo (todos os campos da Fase 5 coletados desde
+  a implementação inicial).
+- Suíte completa: 1310 Python ✅ + 1190 JS ✅.
+
+### Corrigido — dedup das rotas /api/settings (shadowed dead code)
+- `app.py` ainda registrava GET/POST `/api/settings` próprios, mas o
+  `settings_bp` (routes/settings_routes.py, registrado antes) já atendia a
+  rota — os handlers do app.py e o `_settings_label()` nunca eram chamados
+  (shadowing silencioso do werkzeug). Removidos; o blueprint é a única fonte
+  (mesma auth + PRO gate do webhook + labels reais de services/settings.py).
+- Sincronizado o `DEFAULT_SETTINGS` local do app.py com as 3 chaves de
+  credenciais (mrr_api_key/mrr_api_secret/braiins_api_key) para parar o drift
+  entre os dois subsistemas de settings.
+- Validação ao vivo: GET 18 keys com labels reais, POST aplica, limpeza OK;
+  1310 Python + 1190 JS ✅.
+
+### Adicionado — BRAIINS_API_KEY no modal Settings (destrava bids/contratos/saldo Braiins)
+- **Novo campo** `braiins_api_key` no modal Settings (⚙) seguindo o padrão MRR:
+  schema em `DEFAULT_SETTINGS`, label humano, hint com instruções (owner token
+  mostrado 1x no registro de hashpower.braiins.com, header `apikey`), ordem no
+  form após as keys MRR.
+- **Resolver compartilhado** `braiins_credentials()` em
+  `agents/solo_mining_advisor/tools.py` (env → Settings DB, igual ao MRR):
+  - painel RENTALS (`fetch_braiins_contracts`/`contract_speed`) agora usa a key
+    do Settings — sem env var, `needs_auth` some e a chamada real é feita;
+  - `get_braiins_orderbook` envia o header `apikey` no probe `/spot/settings`
+    quando a key existe (obtém a camada de pricing individual; sem key, o 401
+    degrada para a unidade padrão como antes).
+- Labels das 3 keys (mrr_api_key/secret + braiins_api_key) adicionadas em
+  `services/settings.py::settings_label` (o modal mostrava label cru).
+- Testes: fallback env→Settings (key do DB vence quando env ausente, env vence
+  quando presente), header `apikey` no settings probe com/sem key, E2E do modal.
+  Suíte completa 1310 Python ✅ + 1190 JS ✅ + E2E rentals 4/4.
+
+### Adicionado — RENTALS panel: performance dos aluguéis do operador (MRR + Braiins)
+- **Novo módulo RENTALS** na sidebar (⛁): lista os rentals do operador com
+  **dados reais da conta MRR** (34 rentals históricos verificados ao vivo),
+  filtros Active / History / Owner / Braiins, strip de resumo
+  (MRR renter/history/owner + Braiins contracts) e detail clicável com
+  grid de métricas, **gráfico de hashrate** e log de eventos.
+- **Backend** (`services/rental_performance.py`):
+  - MRR `GET /rental` (+`/rental/{id}`, `/graph`, `/log`) com HMAC-SHA1
+    via helper compartilhado `_mrr_signed_headers` (extraído do
+    `get_mrr_listings`);
+  - Braiins `GET /contract` + `/contract/{id}/speed` (requer
+    `BRAIINS_API_KEY`, degrada com nota honesta quando ausente);
+  - Rotas `GET /api/rentals` (consolidado) e `/api/rentals/detail`
+    (detail+graph+log) — fail-closed: credencial faltando → `needs_auth`
+    explícito, nunca lista vazia falsa.
+- **Fix de integração real**: o MRR assina o **path SEM query params** —
+  assinar `/rental?type=...` falha com "Signature Failure" (verificado
+  ao vivo); os filtros vão como request params separados.
+- E2E `tests/e2e/rentals.spec.js` (chromium + mobile) valida o histórico
+  real + detail com gráfico. Suíte completa 1305 Python ✅ + 1190 JS ✅.
+
+### Corrigido — HASH MARKET real-first: cotações reais antes das estimadas no grid
+- **Bug real**: o grid ordenava por `metrics.score` (ROI estimado) — o modelo
+  pool-fee do Parasite (ESTIMATED, ~1 sat/TH/d) carrega score inflado e
+  **roubava o topo do grid**, fazendo a aba parecer cheia de cotação fake.
+- **Fix**: chave compartilhada `market_offer_sort_key` (services/hashrate_market.py)
+  aplicada nos 4 pontos que ordenam offers (build_highlights, api_snapshot,
+  /api/hashrate-market ×2): `(estimated, -score)` — quotes reais primeiro,
+  estimadas por último; dentro de cada grupo o EV score segue desc. O
+  `max_items` continua intacto: quotes reais preenchem os slots primeiro e
+  as estimadas só ocupam o que sobrar (parasite nunca desloca uma real).
+- **Efeito ao vivo**: grid agora mostra `nicehash → braiins` (reais) e
+  `parasite` (ESTIMATED) por último.
+- Testes: novo caso em TestBuildHighlights (ordem + max_items=2 corta a
+  estimada) + asserts de ordem real-first nos testes de snapshot
+  (test_market_intelligence). Suíte completa 1296 Python ✅ + 1190 JS ✅ +
+  E2E market-affiliate/wallet-identity 6/6.
+
+### Removido — Provider KissMyHash + fallback NiceHash+10% (quotas fabricadas)
+- **Problema real**: a API pública antiga do KissMyHash morreu —
+  `https://app.kissmyhash.com/api/v1/market` → **404 `Cannot GET`** (verificado
+  ao vivo; a API nova exige `x-api-key`/auth, não configurada). Todo fetch caía
+  no fallback `NiceHash +10%` que **fabricava uma cotação ESTIMATED** e disputava
+  vaga de cotação real no top-3 do grid (HASH MARKET mostrava 2 cards fake).
+- **Fix**: provider `kissmyhash` removido do pipeline (`fetch_all_offers`), do
+  estado (`last_known_prices`), da UI (chip ♡ KissMyHash, badge de origem), dos
+  docs (README, EXECUTION_PLAN) e de 6 suítes de teste (9 testes removidos).
+- **Efeito real ao vivo**: com o cap de 3 slots livre, a **cotação real da Braiins
+  entrou no grid** — HASH MARKET agora mostra `braiins` + `nicehash` reais (e o
+  best price honesto vem do NiceHash, nunca de estimado).
+- Suíte completa: 1295 testes Python ✅ + 1190 JS ✅.
+
 ### Corrigido — LIVE LOG inalcançável em module-mode (#terminal oculto no E2E)
 - **Bug real**: o painel `#logs-panel` (LIVE LOG, `data-module="live"`) morava
   dentro de `#tab-fleet`, mas o módulo `live` só ativa `tab-charts` +

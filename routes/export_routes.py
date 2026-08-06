@@ -2,38 +2,35 @@
 CYPHER65 // Export & Config routes
 ===================================
 Flask Blueprint for CSV/JSON exports and config backup/restore.
-Extracted from app.py — Phase 2a of P0.4 refactoring.
+Fase 6: migrated from app.py — registered in app.py.
 
-⚠️ DEPRECATED — DO NOT EDIT (docs/EXECUTION_PLAN.md · Fase 2)
-============================================================
-This blueprint is NEVER registered: export/backup/restore are already
-handled directly in app.py. This file is kept only as a signature reference
-for the Fase 6 monolith refactor, where these routes migrate OUT of app.py
-INTO this blueprint.
-
-- Do NOT edit, extend, or import this module until Fase 6 starts.
-- Editing here has ZERO effect on the running app (duplicate code only).
-- Fase 6: remove the @app.route versions, then register this blueprint.
-- Quick dead-code check (avoids self-match — file lives in routes/):
-  `grep -rn "export_routes" app.py services/ axe_fleet/ core/` → must output nothing.
+The export routes are auth-gated (require_tenant + role_required) but the
+underlying data is not tenant-filtered yet (Fase 4 · B2 pending for the
+snapshots/alerts/share_timeline tables). The gates prevent anonymous access
+while the data-layer isolation is completed.
 """
 import json
 import time
 import csv as _csv
 from io import StringIO as _StringIO
 
-from flask import Blueprint, jsonify, request, current_app
+from flask import Blueprint, jsonify, request, Response
 
 import config
+import services.state as _state
 from services.db import get_db
-from services.settings import load_settings
+from services.settings import load_settings, DEFAULT_SETTINGS, save_setting
+from services.tenant import require_tenant, role_required
 
 export_bp = Blueprint("export", __name__, url_prefix="/api")
 
 
 @export_bp.route("/export/<table>.<fmt>")
-def api_export(table, fmt):
-    """Export a table as csv or json."""
+@require_tenant
+@role_required("viewer")
+def api_export(table, fmt, tenant_id: str = ""):
+    """Export a table as csv or json. Tables: snapshots, alerts, share_timeline,
+    highest_diff_events."""
     allowed = {"snapshots", "alerts", "share_timeline", "highest_diff_events"}
     if table not in allowed:
         return jsonify({"error": f"unknown table {table}"}), 400
@@ -61,13 +58,13 @@ def api_export(table, fmt):
             for r in rows:
                 writer.writerow(r)
         out = buf.getvalue()
-        return current_app.response_class(
+        return Response(
             out,
             mimetype="text/csv",
             headers={"Content-Disposition": f"attachment; filename={table}_{rng}.csv"},
         )
     elif fmt == "json":
-        return current_app.response_class(
+        return Response(
             json.dumps({"table": table, "range": rng, "rows": rows}, default=str),
             mimetype="application/json",
             headers={"Content-Disposition": f"attachment; filename={table}_{rng}.json"},
@@ -77,8 +74,10 @@ def api_export(table, fmt):
 
 
 @export_bp.route("/config/backup")
-def api_config_backup():
-    """Download entire config as JSON."""
+@require_tenant
+@role_required("viewer")
+def api_config_backup(tenant_id: str = ""):
+    """Download entire config (settings + worker + btc_address) as JSON."""
     s = load_settings()
     payload = {
         "settings": s,
@@ -87,7 +86,7 @@ def api_config_backup():
         "exported_ts": int(time.time()),
         "version": 1,
     }
-    return current_app.response_class(
+    return Response(
         json.dumps(payload, indent=2, default=str),
         mimetype="application/json",
         headers={"Content-Disposition": "attachment; filename=cypher65_config_backup.json"},
@@ -95,10 +94,11 @@ def api_config_backup():
 
 
 @export_bp.route("/config/restore", methods=["POST"])
-def api_config_restore():
-    """Restore settings from a backup JSON body."""
-    from services.settings import DEFAULT_SETTINGS, save_setting
-
+@require_tenant
+@role_required("member")
+def api_config_restore(tenant_id: str = ""):
+    """Restore settings from a backup JSON body.
+    Only updates keys that exist in DEFAULT_SETTINGS."""
     body = request.get_json(silent=True) or {}
     settings = body.get("settings") or {}
     if not isinstance(settings, dict):

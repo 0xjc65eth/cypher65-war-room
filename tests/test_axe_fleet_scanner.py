@@ -179,19 +179,19 @@ class TestProbeCgminerVersion:
 # ══════════════════════════════════════════════════════════════════════════
 
 class TestProbeHost:
-    # NOTE: probe_host imports AxeOSConnector INSIDE the function body
-    # (`from .connector import ...`), so we patch axe_fleet.connector.
+    # NOTE: probe_host imports detect_firmware + AxeOSConnector INSIDE the
+    # function body, so we patch core.registry.detector + axe_fleet.connector.
 
     def test_bitaxe_detected(self):
+        fw = {"firmware": "axeos", "adapter_type": "bitaxe",
+              "version": "2.6.0", "model": "Bitaxe Max", "reachable": True}
         info = {
-            "model": "Bitaxe Max",
-            "hostname": "bitaxe-01",
-            "firmware": "AxeOS",
-            "version": "2.6.0",
-            "hashrate": 3800000000000,
-            "mac": "AA:BB:CC",
+            "model": "Bitaxe Max", "hostname": "bitaxe-01",
+            "firmware": "AxeOS", "version": "2.6.0",
+            "hashrate": 3800000000000, "mac": "AA:BB:CC",
         }
-        with patch("axe_fleet.connector.AxeOSConnector") as mock_conn:
+        with patch("core.registry.detector.detect_firmware", return_value=fw), \
+             patch("axe_fleet.connector.AxeOSConnector") as mock_conn:
             mock_conn.return_value.fetch_info.return_value = info
             result = probe_host("192.168.1.100")
         assert result is not None
@@ -200,23 +200,44 @@ class TestProbeHost:
         assert result["model"] == "Bitaxe Max"
         assert result["hashrate_hs"] == 3800000000000
 
-    def test_cgminer_detected_when_bitaxe_fails(self):
-        with patch("axe_fleet.connector.AxeOSConnector") as mock_conn:
-            mock_conn.return_value.fetch_info.side_effect = Exception("connection failed")
-            with patch("axe_fleet.scanner._probe_cgminer_version") as mock_cg:
-                mock_cg.return_value = {"STATUS": [{"STATUS": "S"}], "VERSION": [{"Description": "Antminer S19 Pro"}]}
-                result = probe_host("192.168.1.200")
+    def test_cgminer_detected(self):
+        fw = {"firmware": "cgminer", "adapter_type": "cgminer",
+              "version": "4.12.0", "model": "Antminer S19 Pro", "reachable": True}
+        with patch("core.registry.detector.detect_firmware", return_value=fw):
+            result = probe_host("192.168.1.200")
         assert result is not None
         assert result["type"] == "cgminer"
         assert result["port"] == CGMINER_PORT
         assert result["model"] == "Antminer S19 Pro"
 
+    def test_braiins_detected(self):
+        """Braiins OS+ detected via detector → type='braiins' with firmware preserved."""
+        fw = {"firmware": "braiins", "adapter_type": "braiins",
+              "version": "braiins-os_2024-10", "model": "Antminer S19 Pro",
+              "reachable": True}
+        # _probe_cgminer_version is patched to skip the version socket call;
+        # the inline summary socket is handled by socket.socket mock below.
+        summary_raw = json.dumps(
+            {"STATUS": [{"STATUS": "S"}],
+             "SUMMARY": [{"GHS 5s": "110.0", "Elapsed": 86400}]}
+        ).encode() + b"\x00"
+        with patch("core.registry.detector.detect_firmware", return_value=fw), \
+             patch("axe_fleet.scanner._probe_cgminer_version",
+                   return_value={"STATUS": [{"STATUS": "S"}]}), \
+             patch("axe_fleet.scanner.socket.socket") as mock_sock:
+            mock_sock.return_value.recv.side_effect = [summary_raw, b""]
+            result = probe_host("192.168.1.150")
+        assert result is not None
+        assert result["type"] == "braiins"
+        assert result["firmware"] == "braiins"
+        assert result["version"] == "braiins-os_2024-10"
+        assert result["model"] == "Antminer S19 Pro"
+        assert result["hashrate_hs"] == 110e9
+
     def test_neither_returns_none(self):
-        with patch("axe_fleet.connector.AxeOSConnector") as mock_conn:
-            mock_conn.return_value.fetch_info.side_effect = Exception("down")
-            with patch("axe_fleet.scanner._probe_cgminer_version") as mock_cg:
-                mock_cg.return_value = None
-                assert probe_host("192.168.1.250") is None
+        fw = {"firmware": "unknown", "adapter_type": "unknown", "reachable": False}
+        with patch("core.registry.detector.detect_firmware", return_value=fw):
+            assert probe_host("192.168.1.250") is None
 
     def test_empty_ip_returns_none(self):
         assert probe_host("") is None
@@ -506,6 +527,17 @@ class TestDiagnoseHost:
     """diagnose_host(): unified single-host connectivity report (AxeOS :80
     + cgminer :4028) used by the onboarding wizard's TEST CONNECTIVITY."""
 
+    @pytest.fixture(autouse=True)
+    def _suppress_detect_firmware(self):
+        """diagnose_host() now calls detect_firmware() as a supplemental
+        detection path. Without this patch the real HTTP requests hang
+        tests. Each test can override the return value by nesting its own
+        patch on top."""
+        with patch("core.registry.detector.detect_firmware",
+                   return_value={"reachable": False, "adapter_type": "",
+                                 "firmware": "", "model": "", "version": ""}):
+            yield
+
     def test_empty_host(self):
         r = diagnose_host("")
         assert r["reachable"] is False
@@ -649,6 +681,54 @@ class TestDiagnoseHost:
         assert r["http_server"] is True
         assert "TCP :80 aberta" in r["error_detail"]
 
+    def test_braiins_detected_via_detect_firmware(self):
+        """Braiins OS+ miner detected via detect_firmware() when legacy
+        probes miss it — protocol='braiins', cgminer_tcp=True, device_info
+        populated from the detector response."""
+        fw = {
+            "firmware": "braiins", "adapter_type": "braiins",
+            "version": "braiins-os_2024-10", "model": "Antminer S19 Pro",
+            "reachable": True,
+        }
+        with patch("axe_fleet.connector.AxeOSConnector.fetch_info", side_effect=Exception("no http")), \
+                patch("axe_fleet.scanner._probe_cgminer_version", return_value=None), \
+                patch("axe_fleet.scanner._tcp_open", return_value=False), \
+                patch("core.registry.detector.detect_firmware", return_value=fw):
+            r = diagnose_host("192.168.1.200")
+        assert r["reachable"] is True
+        assert r["protocol"] == "braiins"
+        assert r["adapter_type"] == "braiins"
+        assert r["detected_firmware"] == "braiins"
+        assert r["detected_model"] == "Antminer S19 Pro"
+        assert r["cgminer_tcp"] is True  # marked by the detector path
+        assert r["device_info"]["model"] == "Antminer S19 Pro"
+        assert r["device_info"]["firmware"] == "braiins"
+
+    def test_detected_fields_present_in_result(self):
+        """Every diagnose_host response must include adapter_type,
+        detected_firmware, and detected_model (even when empty)."""
+        with patch("axe_fleet.connector.AxeOSConnector.fetch_info", side_effect=Exception("refused")), \
+                patch("axe_fleet.scanner._probe_cgminer_version", return_value=None), \
+                patch("axe_fleet.scanner._tcp_open", return_value=False):
+            r = diagnose_host("192.168.1.99")
+        assert "adapter_type" in r
+        assert "detected_firmware" in r
+        assert "detected_model" in r
+        assert r["adapter_type"] == ""
+        assert r["detected_firmware"] == ""
+        assert r["detected_model"] == ""
+
+    def test_detect_firmware_exception_graceful(self):
+        """If detect_firmware() itself explodes, diagnose_host must still
+        return a valid (not-reachable) result — never propagate the crash."""
+        with patch("axe_fleet.connector.AxeOSConnector.fetch_info", side_effect=Exception("refused")), \
+                patch("axe_fleet.scanner._probe_cgminer_version", return_value=None), \
+                patch("axe_fleet.scanner._tcp_open", return_value=False), \
+                patch("core.registry.detector.detect_firmware", side_effect=RuntimeError("detector exploded")):
+            r = diagnose_host("192.168.1.99")
+        assert r["reachable"] is False
+        assert "no miner protocol" in r["error_detail"]
+
     def test_elapsed_ms_set(self):
         with patch("axe_fleet.connector.AxeOSConnector.fetch_info", side_effect=Exception("x")), \
                 patch("axe_fleet.scanner._probe_cgminer_version", return_value=None), \
@@ -682,3 +762,91 @@ class TestDiagnoseHost:
         data = resp.get_json()
         assert data["reachable"] is False
         assert data["error_detail"] == "boom"
+
+
+# ══════════════════════════════════════════════════════════════════════════
+#  Routes — /api/axe-fleet/detect/<ip> (lightweight firmware detection)
+# ══════════════════════════════════════════════════════════════════════════
+
+class TestDetectRoute:
+    """GET /api/axe-fleet/detect/<ip> — lightweight firmware preview.
+    Calls detect_firmware() directly (no TCP scan or per-protocol flags)."""
+
+    def test_detect_bitaxe(self, client):
+        fw = {"firmware": "axeos", "adapter_type": "bitaxe",
+              "version": "2.6.0", "model": "Bitaxe Max",
+              "capabilities": {"telemetry": True, "restart": True},
+              "reachable": True}
+        with patch("core.registry.detector.detect_firmware", return_value=fw):
+            resp = client.get("/api/axe-fleet/detect/192.168.1.100")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["firmware"] == "axeos"
+        assert data["adapter_type"] == "bitaxe"
+        assert data["reachable"] is True
+
+    def test_detect_braiins(self, client):
+        fw = {"firmware": "braiins", "adapter_type": "braiins",
+              "version": "braiins-os_2024-10", "model": "Antminer S19 Pro",
+              "capabilities": {"telemetry": True, "tuner_control": True},
+              "reachable": True}
+        with patch("core.registry.detector.detect_firmware", return_value=fw):
+            resp = client.get("/api/axe-fleet/detect/10.0.0.1")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["firmware"] == "braiins"
+        assert data["adapter_type"] == "braiins"
+        assert data["model"] == "Antminer S19 Pro"
+        assert data["capabilities"]["tuner_control"] is True
+
+    def test_detect_cgminer(self, client):
+        fw = {"firmware": "cgminer", "adapter_type": "cgminer",
+              "version": "4.12.0", "model": "Antminer S19 Pro",
+              "capabilities": {"telemetry": True},
+              "reachable": True}
+        with patch("core.registry.detector.detect_firmware", return_value=fw):
+            resp = client.get("/api/axe-fleet/detect/192.168.1.200")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["firmware"] == "cgminer"
+        assert data["adapter_type"] == "cgminer"
+
+    def test_detect_unreachable(self, client):
+        fw = {"firmware": "unknown", "adapter_type": "unknown",
+              "version": "", "model": "", "capabilities": {},
+              "reachable": False}
+        with patch("core.registry.detector.detect_firmware", return_value=fw):
+            resp = client.get("/api/axe-fleet/detect/192.168.1.250")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["reachable"] is False
+        assert data["firmware"] == "unknown"
+
+    def test_detect_hostname(self, client):
+        """Endpoint accepts hostnames via <path:...> converter."""
+        fw = {"firmware": "braiins", "adapter_type": "braiins",
+              "version": "", "model": "", "capabilities": {},
+              "reachable": True}
+        with patch("core.registry.detector.detect_firmware", return_value=fw):
+            resp = client.get("/api/axe-fleet/detect/miner.lan")
+        assert resp.status_code == 200
+
+    def test_detect_exception_safety(self, client):
+        """If detect_firmware() explodes, the route returns a valid JSON
+        200 with reachable=False, never a 500."""
+        with patch("core.registry.detector.detect_firmware",
+                   side_effect=RuntimeError("detector crash")):
+            resp = client.get("/api/axe-fleet/detect/192.168.1.1")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["reachable"] is False
+        assert data["error"] == "detector crash"
+
+    def test_detect_ip_with_slashes(self, client):
+        """The <path:> converter handles raw IPs correctly (no double-decoding)."""
+        fw = {"firmware": "unknown", "adapter_type": "unknown",
+              "version": "", "model": "", "capabilities": {},
+              "reachable": False}
+        with patch("core.registry.detector.detect_firmware", return_value=fw):
+            resp = client.get("/api/axe-fleet/detect/10.0.0.1")
+        assert resp.status_code == 200

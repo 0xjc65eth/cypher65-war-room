@@ -228,8 +228,9 @@ class TestSnapshotInjection:
     def test_snapshot_injects_command_center(self, client, monkeypatch):
         import app as _app_module
         import services.state as _state
+        # Fase 6 · PR2: /api/snapshot served by dashboard_bp → reads services.state
         monkeypatch.setattr(
-            "app.latest_snapshot",
+            "services.state.latest_snapshot",
             {
                 "ts": int(time.time()),
                 "network": {"hashrate": 6e20, "difficulty": 8e13, "height": 840000},
@@ -242,12 +243,12 @@ class TestSnapshotInjection:
         # No external HTTP: stub the fetch; feed the REAL build_highlights
         # path via last_known_prices so attach_affiliate runs for real
         # (the code path that resolves market_data.affiliate from offers).
-        monkeypatch.setattr("app._get_hashrate_market_offers", lambda: [], raising=False)
+        monkeypatch.setattr("services.snapshot_enrichment._get_hashrate_market_offers", lambda s: [], raising=False)
         _state.last_known_prices = {
             "braiins": {"price": 0.0001, "ts": int(time.time()), "source": "braiins", "label": "Braiins"},
             "mrr": {"price": 0.0004, "ts": int(time.time()), "source": "mrr", "label": "MRR"},
         }
-        monkeypatch.setattr("app.affiliate_map_from_env", lambda: {"mrr": "https://mrr.example/ref"})
+        monkeypatch.setattr("services.snapshot_enrichment.affiliate_map_from_env", lambda: {"mrr": "https://mrr.example/ref"})
 
         response = client.get("/api/snapshot")
         assert response.status_code == 200
@@ -266,7 +267,7 @@ class TestSnapshotInjection:
         (real offline condition, not a cold boot)."""
         import app as _app_module
         monkeypatch.setattr(
-            "app.latest_snapshot",
+            "services.state.latest_snapshot",
             {
                 "ts": int(time.time()),
                 "worker": None,
@@ -274,8 +275,8 @@ class TestSnapshotInjection:
             },
             raising=False,
         )
-        monkeypatch.setattr("app._get_hashrate_market_offers", lambda: [], raising=False)
-        monkeypatch.setattr("app._build_market_highlights", lambda *a, **k: [], raising=False)
+        monkeypatch.setattr("services.snapshot_enrichment._get_hashrate_market_offers", lambda s: [], raising=False)
+        monkeypatch.setattr("services.hashrate_market.build_highlights", lambda *a, **k: [], raising=False)
 
         response = client.get("/api/snapshot")
         assert response.status_code == 200
@@ -287,7 +288,7 @@ class TestSnapshotInjection:
         no wallet connected yet is not an anomaly (honest telemetry)."""
         import app as _app_module
         monkeypatch.setattr(
-            "app.latest_snapshot",
+            "services.state.latest_snapshot",
             {
                 "ts": 0,
                 "worker": None,
@@ -298,8 +299,8 @@ class TestSnapshotInjection:
             },
             raising=False,
         )
-        monkeypatch.setattr("app._get_hashrate_market_offers", lambda: [], raising=False)
-        monkeypatch.setattr("app._build_market_highlights", lambda *a, **k: [], raising=False)
+        monkeypatch.setattr("services.snapshot_enrichment._get_hashrate_market_offers", lambda s: [], raising=False)
+        monkeypatch.setattr("services.hashrate_market.build_highlights", lambda *a, **k: [], raising=False)
 
         response = client.get("/api/snapshot")
         assert response.status_code == 200
@@ -312,7 +313,7 @@ class TestSnapshotInjection:
         command_center, so the hashrate_drop / automation_ready rules see it."""
         import app as _app_module
         monkeypatch.setattr(
-            "app.latest_snapshot",
+            "services.state.latest_snapshot",
             {
                 "ts": int(time.time()),
                 "network": {"hashrate": 6e20, "difficulty": 8e13, "height": 840000},
@@ -322,11 +323,11 @@ class TestSnapshotInjection:
             },
             raising=False,
         )
-        monkeypatch.setattr("app._get_hashrate_market_offers", lambda: [], raising=False)
-        monkeypatch.setattr("app._build_market_highlights", lambda *a, **k: [], raising=False)
+        monkeypatch.setattr("services.snapshot_enrichment._get_hashrate_market_offers", lambda s: [], raising=False)
+        monkeypatch.setattr("services.hashrate_market.build_highlights", lambda *a, **k: [], raising=False)
         # A high 7d peak + low current hashrate must produce hashrate_drop.
         monkeypatch.setattr(
-            "app.build_auto_pilot_context",
+            "services.snapshot_enrichment.build_auto_pilot_context",
             lambda: {
                 "peak_hashrate_7d": 1e14,
                 "automation_preview": [],
@@ -354,18 +355,16 @@ class TestBuildAutoPilotContext:
         """A DB hiccup must yield peak 0.0 + empty preview (never a crash,
         never a false hashrate_drop) and reuse the shared AP_TEMP_HIGH_C
         constant (no 75.0 drift)."""
-        import app as _app_module
         from helpers import AP_TEMP_HIGH_C
+        import services.snapshot_enrichment as sre
+        import services.db  # trigger submodule import for monkeypatch
 
         def _boom(*a, **k):
             raise RuntimeError("db down")
 
-        monkeypatch.setattr("app.get_db", _boom)
-        # Hermetic: skip the preview block (engine/registry unused here).
-        monkeypatch.setattr("app._automation_engine", None)
-        monkeypatch.setattr("app._core_registry", None)
+        monkeypatch.setattr(services.db, "get_db", _boom)
 
-        ctx = _app_module.build_auto_pilot_context()
+        ctx = sre.build_auto_pilot_context()
         assert ctx["peak_hashrate_7d"] == 0.0
         assert ctx["automation_preview"] == []
         assert ctx["temp_high_c"] == AP_TEMP_HIGH_C
@@ -373,7 +372,8 @@ class TestBuildAutoPilotContext:
     def test_conn_closed_on_query_error(self, monkeypatch):
         """Regression: a query error must still close the connection —
         no sqlite conn leak per snapshot poll (review finding #1)."""
-        import app as _app_module
+        import services.snapshot_enrichment as sre
+        import services.db  # trigger submodule import for monkeypatch
         closed = []
 
         class _BrokenConn:
@@ -383,11 +383,9 @@ class TestBuildAutoPilotContext:
             def close(self):
                 closed.append(True)
 
-        monkeypatch.setattr("app.get_db", lambda: _BrokenConn())
-        monkeypatch.setattr("app._automation_engine", None)
-        monkeypatch.setattr("app._core_registry", None)
+        monkeypatch.setattr(services.db, "get_db", lambda: _BrokenConn())
 
-        ctx = _app_module.build_auto_pilot_context()
+        ctx = sre.build_auto_pilot_context()
         assert ctx["peak_hashrate_7d"] == 0.0
         assert closed == [True]
 
@@ -395,11 +393,14 @@ class TestBuildAutoPilotContext:
         """The automation preview must be scoped to the request tenant —
         never unscoped ('' would leak every tenant's rule names into the
         advisory card; review finding #2)."""
-        import app as _app_module
+        import services.snapshot_enrichment as sre
         seen = {}
 
         class _FakeEngine:
-            def preview_rules(self, devices, tenant_id=""):
+            def __init__(self, *a, **k):
+                pass
+
+            def preview_rules(self, devices=None, tenant_id=""):
                 seen["tenant_id"] = tenant_id
                 return []
 
@@ -414,16 +415,17 @@ class TestBuildAutoPilotContext:
             def close(self):
                 pass
 
-        class _FakeRegistry:
-            def list_devices(self):
-                return []
+        import services.db as _sdb
+        import services.tenant as _st
+        monkeypatch.setattr(_sdb, "get_db", lambda: _EmptyConn())
+        # Fase 6: inject the fake engine (and no devices) the way app.py does
+        # via set_auto_pilot_deps — the snapshot path now uses the injected
+        # engine, not a fresh AutomationEngine() construction.
+        monkeypatch.setattr(sre, "_auto_pilot_engine", _FakeEngine(), raising=False)
+        monkeypatch.setattr(sre, "_auto_pilot_registry", None, raising=False)
+        monkeypatch.setattr(_st, "get_tenant_id", lambda: "acme")
 
-        monkeypatch.setattr("app.get_db", lambda: _EmptyConn())
-        monkeypatch.setattr("app._automation_engine", _FakeEngine())
-        monkeypatch.setattr("app._core_registry", _FakeRegistry())
-        monkeypatch.setattr("services.tenant.get_tenant_id", lambda: "acme")
-
-        ctx = _app_module.build_auto_pilot_context()
+        ctx = sre.build_auto_pilot_context()
         assert seen.get("tenant_id") == "acme"
         assert ctx["automation_preview"] == []
 
@@ -431,11 +433,14 @@ class TestBuildAutoPilotContext:
         """If tenant resolution itself fails, the preview must scope to the
         'default' tenant — NOT fall back to '' (unscoped = cross-tenant
         leak)."""
-        import app as _app_module
+        import services.snapshot_enrichment as sre
         seen = {}
 
         class _FakeEngine:
-            def preview_rules(self, devices, tenant_id=""):
+            def __init__(self, *a, **k):
+                pass
+
+            def preview_rules(self, devices=None, tenant_id=""):
                 seen["tenant_id"] = tenant_id
                 return []
 
@@ -450,19 +455,17 @@ class TestBuildAutoPilotContext:
             def close(self):
                 pass
 
-        class _FakeRegistry:
-            def list_devices(self):
-                return []
-
         def _boom(*a, **k):
             raise RuntimeError("no request context")
 
-        monkeypatch.setattr("app.get_db", lambda: _EmptyConn())
-        monkeypatch.setattr("app._automation_engine", _FakeEngine())
-        monkeypatch.setattr("app._core_registry", _FakeRegistry())
-        monkeypatch.setattr("services.tenant.get_tenant_id", _boom)
+        import services.db as _sdb
+        import services.tenant as _st
+        monkeypatch.setattr(_sdb, "get_db", lambda: _EmptyConn())
+        monkeypatch.setattr(sre, "_auto_pilot_engine", _FakeEngine(), raising=False)
+        monkeypatch.setattr(sre, "_auto_pilot_registry", None, raising=False)
+        monkeypatch.setattr(_st, "get_tenant_id", _boom)
 
-        _app_module.build_auto_pilot_context()
+        sre.build_auto_pilot_context()
         assert seen.get("tenant_id") == "default"
 
 

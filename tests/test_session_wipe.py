@@ -76,7 +76,6 @@ def _install_mock_globals(monkeypatch, with_do_poll=True):
             "braiins": {"price": 0.0001, "ts": 1},
             "mrr": {"price": 0.0002, "ts": 1},
             "nicehash": {"price": 0.0003, "ts": 1},
-            "kissmyhash": {"price": 0.0004, "ts": 1},
             "parasite": {"price": 0.0005, "ts": 1},
         },
         test_opportunities={"opportunities": [{"id": "braiins_0.001"}]},
@@ -182,7 +181,7 @@ class TestResetSessionState:
         """last_known_prices keys preserved, values set to None."""
         *_, shared = _install_mock_globals(monkeypatch)
         _reset_session_state()
-        for key in ("braiins", "mrr", "nicehash", "kissmyhash", "parasite"):
+        for key in ("braiins", "mrr", "nicehash", "parasite"):
             assert shared.last_known_prices[key] is None
 
     def test_test_opportunities_set_to_none(self, monkeypatch):

@@ -1990,7 +1990,6 @@ var _mktProviderIcons = {
   braiins: '\u229b',
   nicehash: '\u25c8',
   mrr: '\u26c1',
-  kissmyhash: '\u2661',
   parasite: '\u2302',
 };
 
@@ -2001,7 +2000,7 @@ function renderMarketHtml(offers, activeFilter) {
   if (!filtered.length) return '<div class="mkt-empty">No offers for selected provider \u2014 adjust filter</div>';
   return filtered.map(function(o) {
     var icon = _mktProviderIcons[o.provider] || '?';
-    var label = (o.provider === 'braiins' ? 'Braiins' : o.provider === 'nicehash' ? 'NiceHash' : o.provider === 'mrr' ? 'MRR' : o.provider === 'kissmyhash' ? 'KissMyHash' : o.provider === 'parasite' ? 'Parasite' : escapeHtml(o.provider || 'Unknown'));
+    var label = (o.provider === 'braiins' ? 'Braiins' : o.provider === 'nicehash' ? 'NiceHash' : o.provider === 'mrr' ? 'MRR' : o.provider === 'parasite' ? 'Parasite' : escapeHtml(o.provider || 'Unknown'));
     return '<div class="mkt-card">\n' +
       '<div class="mkt-card__provider"><span class="mkt-provider-icon">' + icon + '</span><span class="mkt-provider-name">' + label + '</span></div>\n' +
       '<div class="mkt-card__price">' + (o.price || '\u2014') + '</div>\n' +
@@ -2034,20 +2033,18 @@ assertTruthy('braiins has hashrate', /100\.0/.test(braiinsHtml));
 assertTruthy('braiins has fee 2.5%', /2\.5%/.test(braiinsHtml));
 assertTruthy('braiins has duration', /24h/.test(braiinsHtml));
 
-// All 5 providers
+// All 4 providers
 var allProviders = [
   { provider: 'braiins', price: '0.0005 BTC/TH/d', hashrate: 100e12, fee: 2.5, duration: '24h' },
   { provider: 'nicehash', price: '0.0006 BTC/TH/d', hashrate: 50e12, fee: 3.0, duration: '12h' },
   { provider: 'mrr', price: '0.0004 BTC/TH/d', hashrate: 200e12, fee: 1.5, duration: '48h' },
-  { provider: 'kissmyhash', price: '0.0007 BTC/TH/d', hashrate: 75e12, fee: 2.0, duration: '6h' },
   { provider: 'parasite', price: '0.0003 BTC/TH/d', hashrate: 300e12, fee: 1.0, duration: '72h' },
 ];
 var allHtml = renderMarketHtml(allProviders, 'all');
-assertEqual('all providers has 5 cards', (allHtml.match(/class="mkt-card"/g) || []).length, 5);
+assertEqual('all providers has 4 cards', (allHtml.match(/class="mkt-card"/g) || []).length, 4);
 assertTruthy('all includes ⊛ (braiins)', /\u229b/.test(allHtml));
 assertTruthy('all includes ◈ (nicehash)', /\u25c8/.test(allHtml));
 assertTruthy('all includes ⛁ (mrr)', /\u26c1/.test(allHtml));
-assertTruthy('all includes ♡ (kissmyhash)', /\u2661/.test(allHtml));
 assertTruthy('all includes ⌂ (parasite)', /\u2302/.test(allHtml));
 
 // Filter: braiins only
@@ -2381,7 +2378,7 @@ assertEqual('mismatched provider → no BUY btn', htmlOtherProv.indexOf('mkt-car
 
 // ── _mktBestIndex mirror: highest metrics.score wins; only with NO scores at
 // all does it fall back to lowest valid price (two-pass, first-max on ties).
-// Estimated offers (parasite pool-fee model, kissmyhash fallback) are NEVER
+// Estimated offers (parasite pool-fee model) are NEVER
 // crowned best — they are filtered out first, keeping original indices for
 // mapping back; if ALL offers are estimated, the full list is used as fallback
 // (matches static/app.js _mktBestIndex). ─
@@ -2444,12 +2441,12 @@ var parasiteVsReal = [
 assertEqual('estimated skipped in score pass → mrr (idx 1)', mktBestIndexMirror(parasiteVsReal), 1);
 var allEstimated = [
   { provider: 'parasite', price_per_th_day: 1e-8, estimated: true, metrics: { score: 7 } },
-  { provider: 'kissmyhash', price_per_th_day: 5e-8, estimated: true, metrics: { score: 9 } },
+  { provider: 'derived', price_per_th_day: 5e-8, estimated: true, metrics: { score: 9 } },
 ];
-assertEqual('all estimated → fallback score pass → kissmyhash (idx 1)', mktBestIndexMirror(allEstimated), 1);
+assertEqual('all estimated → fallback score pass → derived (idx 1)', mktBestIndexMirror(allEstimated), 1);
 var allEstimatedNoScores = [
   { provider: 'parasite', price_per_th_day: 1e-8, estimated: true },
-  { provider: 'kissmyhash', price_per_th_day: 5e-8, estimated: true },
+  { provider: 'derived', price_per_th_day: 5e-8, estimated: true },
 ];
 assertEqual('all estimated no scores → lowest price → parasite (idx 0)', mktBestIndexMirror(allEstimatedNoScores), 0);
 var mixedNoScores = [
@@ -2540,7 +2537,7 @@ var staleOfferHtml = renderMarketOfferHtml({ provider: 'MRR', price_btc_per_th_d
 assertTruthy('staleOfferHtml has mkt-card--stale', /mkt-card--stale/.test(staleOfferHtml));
 assertTruthy('staleOfferHtml has stale badge', /stale/.test(staleOfferHtml));
 
-var metaStale = renderMarketOfferHtml({ provider: 'KissMyHash', price_btc_per_th_day: 0.00003, hashrate: 300e12, fee: 2.0, meta: 'stale' }, false);
+var metaStale = renderMarketOfferHtml({ provider: 'Parasite', price_btc_per_th_day: 0.00003, hashrate: 300e12, fee: 2.0, meta: 'stale' }, false);
 assertTruthy('metaStale has stale via meta string', /mkt-card--stale/.test(metaStale));
 
 var htmlEscaped = renderMarketOfferHtml({ provider: '<script>', price_btc_per_th_day: 0.00001, hashrate: 10e12, fee: 1.0 }, false);
@@ -2593,7 +2590,6 @@ var _providerColors = {
   braiins: '#f7931a',
   nicehash: '#00e676',
   mrr: '#40c4ff',
-  kissmyhash: '#ff4081',
   parasite: '#ce93d8',
 };
 
@@ -2605,7 +2601,6 @@ assertEqual('getProviderColor braiins → #f7931a', getProviderColor('braiins'),
 assertEqual('getProviderColor Braiins → #f7931a (case)', getProviderColor('Braiins'), '#f7931a');
 assertEqual('getProviderColor nicehash → #00e676', getProviderColor('nicehash'), '#00e676');
 assertEqual('getProviderColor mrr → #40c4ff', getProviderColor('mrr'), '#40c4ff');
-assertEqual('getProviderColor kissmyhash → #ff4081', getProviderColor('kissmyhash'), '#ff4081');
 assertEqual('getProviderColor parasite → #ce93d8', getProviderColor('parasite'), '#ce93d8');
 assertEqual('getProviderColor unknown → #888888', getProviderColor('unknown'), '#888888');
 assertEqual('getProviderColor null → #888888', getProviderColor(null), '#888888');
@@ -4763,6 +4758,277 @@ const QR_GOLDEN = {"helloM":{"text":"HELLO WORLD","level":"M","rows":["111111101
   // ── walletHealth: now defaults to Date.now (live path) ──
   const live = walletHealth({ btc_address: 'bc1qtest', ts: Math.floor(Date.now() / 1000), worker: { hashrate: 1 } });
   assertEqual('live connected', live.connected, true);
+})();
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  SUITE 31: webhookPreviewPayload (UX audit Quick Win — Settings preview)
+//  Pure mirror of the builder in static/app.js used to render the exact JSON
+//  payload fired per alert, so the operator can validate the channel.
+// ═══════════════════════════════════════════════════════════════════════════
+(function() {
+  function webhookPreviewPayload(severity, message, worker, address) {
+    return {
+      event: 'cypher65_war_room_alert',
+      severity: severity || 'WARN',
+      category: 'alert',
+      message: message || '⚠ [WARN] exemplo de alerta — configuração de webhook do CYPHER65',
+      ts: Math.floor(Date.now() / 1000),
+      worker: worker || 'primary',
+      address: address || '',
+    };
+  }
+
+  const p = webhookPreviewPayload('CRIT', 'worker offline', 'miner-01', 'bc1qtest');
+  assertEqual('wh event', p.event, 'cypher65_war_room_alert');
+  assertEqual('wh severity passed', p.severity, 'CRIT');
+  assertEqual('wh message passed', p.message, 'worker offline');
+  assertEqual('wh worker passed', p.worker, 'miner-01');
+  assertEqual('wh address passed', p.address, 'bc1qtest');
+  assertEqual('wh ts numeric', typeof p.ts, 'number');
+
+  const d = webhookPreviewPayload();
+  assertEqual('wh default severity', d.severity, 'WARN');
+  assertEqual('wh default worker', d.worker, 'primary');
+  assertEqual('wh default message present', typeof d.message, 'string');
+  assertEqual('wh default address empty', d.address, '');
+})();
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  SUITE 32: buildMarketTrendDatasets (UX backlog — Hash Market 7d chart)
+//  Pure mirror of static/app.js: providers → datasets with per-provider null
+//  gaps, union of timestamps, and BTC/TH/d → sats/TH/d (×1e8) conversion.
+// ═══════════════════════════════════════════════════════════════════════════
+(function() {
+  function buildMarketTrendDatasets(providers) {
+    const colors = ['rgb(247,147,26)', 'rgb(6,214,240)', 'rgb(168,85,247)', 'rgb(245,158,11)', 'rgb(16,185,129)'];
+    const allTs = new Set();
+    Object.values(providers || {}).forEach(pts => (pts || []).forEach(p => { if (p && p.ts) allTs.add(p.ts); }));
+    const times = Array.from(allTs).sort((a, b) => a - b);
+    const labels = times.map(t => { const d = new Date(t * 1000); return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0'); });
+    const datasets = Object.keys(providers || {}).map((name, i) => {
+      const byTs = {};
+      ((providers[name]) || []).forEach(p => { if (p && p.ts != null) byTs[p.ts] = p.price_btc_per_th_day; });
+      return {
+        label: name,
+        data: times.map(t => byTs[t] != null ? Number(byTs[t]) * 1e8 : null),
+        borderColor: colors[i % colors.length],
+        backgroundColor: colors[i % colors.length].replace(')', ',0.08)').replace('rgb', 'rgba'),
+        tension: 0.4, pointRadius: 0, fill: false,
+      };
+    });
+    return { times, labels, datasets };
+  }
+
+  // Two providers at three shared timestamps.
+  const provs = {
+    braiins: [
+      { ts: 100, price_btc_per_th_day: 1e-6 },
+      { ts: 200, price_btc_per_th_day: 1.5e-6 },
+    ],
+    mrr: [
+      { ts: 200, price_btc_per_th_day: 2e-6 },
+    ],
+  };
+  const out = buildMarketTrendDatasets(provs);
+  assertEqual('trend times union sorted', JSON.stringify(out.times), JSON.stringify([100, 200]));
+  assertEqual('trend labels length', out.labels.length, 2);
+  assertEqual('trend datasets count', out.datasets.length, 2);
+  assertEqual('trend dataset order', out.datasets[0].label, 'braiins');
+  // braiins: [1e-6, 1.5e-6] → sats ×1e8; mrr: [null, 2e-6] → null gap at ts 100.
+  assertEqual('braiins first point sats', out.datasets[0].data[0], 100);
+  assertEqual('braiins second point sats', out.datasets[0].data[1], 150);
+  assertEqual('mrr gap null', out.datasets[1].data[0], null);
+  assertEqual('mrr point sats', out.datasets[1].data[1], 200);
+  assertEqual('braiins borderColor set', typeof out.datasets[0].borderColor, 'string');
+  assertEqual('braiins fill false', out.datasets[0].fill, false);
+
+  const empty = buildMarketTrendDatasets({});
+  assertEqual('trend empty datasets', empty.datasets.length, 0);
+  assertEqual('trend empty times', empty.times.length, 0);
+  assertEqual('trend empty labels', empty.labels.length, 0);
+})();
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  SUITE 33: simulateDifficultyShift (UX audit Módulo_05 — WHAT-IF slider)
+//  Pure mirror of static/app.js: given the base Block Hunt values + a
+//  difficulty shift %, recompute netDiff (linear), P(block)/share (inverse),
+//  expected time (linear), distance (linear) and cumulative P (re-derived
+//  from the shifted per-share probability and the session's share count).
+// ═══════════════════════════════════════════════════════════════════════════
+(function() {
+  function simulateDifficultyShift(base, pct) {
+    base = base || {};
+    const mult = 1 + (Number(pct) || 0) / 100;
+    const netDiff = base.netDiff > 0 ? base.netDiff * mult : 0;
+    let pBlock = null;
+    if (base.bestDiff > 0 && netDiff > 0) pBlock = base.bestDiff / netDiff;
+    else if (base.pBlock != null && base.netDiff > 0 && netDiff > 0) pBlock = base.pBlock * (base.netDiff / netDiff);
+    const expectedTime = base.expectedTime > 0 ? base.expectedTime * mult : (base.expectedTime || 0);
+    const distance = base.bestDiff > 0 && netDiff > 0 ? netDiff / base.bestDiff : 0;
+    let cumulativeP = base.cumulativeP;
+    if (base.shares > 0 && pBlock != null && pBlock > 0) cumulativeP = 1 - Math.pow(1 - pBlock, base.shares);
+    return { shiftPct: Number(pct) || 0, netDiff, pBlock, expectedTime, distance, cumulativeP };
+  }
+
+  // Base: 110T difficulty, 10G best share → pBlock = 10e9/110e12.
+  const base = {
+    netDiff: 110e12,
+    bestDiff: 10e9,
+    expectedTime: 123456,
+    cumulativeP: 0.05,
+    shares: 1000,
+  };
+  const basePBlock = 10e9 / 110e12;
+
+  // ── +10% shift ──
+  const up = simulateDifficultyShift(base, 10);
+  assertEqual('whatif up shiftPct', up.shiftPct, 10);
+  assertApprox('whatif up netDiff = 110T×1.1', up.netDiff, 121e12, 1);
+  assertApprox('whatif up pBlock = 10G/121T', up.pBlock, 10e9 / 121e12, 1e-18);
+  assertApprox('whatif up expectedTime ×1.1', up.expectedTime, 123456 * 1.1, 1e-6);
+  assertApprox('whatif up distance = 121T/10G', up.distance, 121e12 / 10e9, 1e-6);
+  // Cumulative P re-derived: 1-(1-p)^1000 with the shifted pBlock.
+  assertApprox('whatif up cumP from shifted p', up.cumulativeP, 1 - Math.pow(1 - (10e9 / 121e12), 1000), 1e-12);
+  // Difficulty UP → P(block) DOWN: strictly smaller than base pBlock.
+  assertTruthy('whatif up pBlock < base pBlock', up.pBlock < basePBlock);
+
+  // ── −25% shift ──
+  const down = simulateDifficultyShift(base, -25);
+  assertApprox('whatif down netDiff = 110T×0.75', down.netDiff, 82.5e12, 1);
+  assertApprox('whatif down pBlock = 10G/82.5T', down.pBlock, 10e9 / 82.5e12, 1e-18);
+  assertApprox('whatif down expectedTime ×0.75', down.expectedTime, 123456 * 0.75, 1e-6);
+  assertTruthy('whatif down pBlock > base pBlock', down.pBlock > basePBlock);
+
+  // ── 0% shift → identity ──
+  const same = simulateDifficultyShift(base, 0);
+  assertEqual('whatif zero netDiff unchanged', same.netDiff, base.netDiff);
+  assertEqual('whatif zero pBlock unchanged', same.pBlock, basePBlock);
+  assertEqual('whatif zero expectedTime unchanged', same.expectedTime, base.expectedTime);
+
+  // ── Fallback: pBlock scaling when bestDiff is absent ──
+  const fb = simulateDifficultyShift({ netDiff: 100, pBlock: 0.01 }, 100);
+  assertApprox('whatif fallback pBlock = 0.01×(100/200)', fb.pBlock, 0.005, 1e-12);
+
+  // ── Honest empty state: no base → zeros, no crash ──
+  const empty = simulateDifficultyShift(null, 10);
+  assertEqual('whatif empty netDiff 0', empty.netDiff, 0);
+  assertEqual('whatif empty pBlock null', empty.pBlock, null);
+  assertEqual('whatif empty expectedTime 0', empty.expectedTime, 0);
+  assertEqual('whatif empty cumulativeP undefined', empty.cumulativeP, undefined);
+})();
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  SUITE 34: docsSearchSuggestions / docsSnippet / docsHighlight
+//  (UX audit Módulo_09 — Docs autocomplete). Pure mirrors of static/app.js:
+//  rank sections by title-over-body relevance, build a snippet window around
+//  the hit, and highlight every query occurrence with <mark> (HTML-escaped).
+// ═══════════════════════════════════════════════════════════════════════════
+(function() {
+  function docsSnippet(text, q, pos, radius) {
+    radius = radius || 60;
+    const t = String(text || '').replace(/\s+/g, ' ');
+    q = String(q || '');
+    const start = Math.max(0, pos - radius);
+    const end = Math.min(t.length, pos + q.length + radius);
+    let snippet = t.slice(start, end);
+    if (start > 0) snippet = '\u2026' + snippet;
+    if (end < t.length) snippet = snippet + '\u2026';
+    return snippet;
+  }
+  function docsSearchSuggestions(index, q, limit) {
+    limit = limit || 6;
+    q = String(q || '').trim().toLowerCase();
+    if (!q || !index.length) return [];
+    const scored = [];
+    index.forEach(function(sec) {
+      const titleLow = (sec.title || '').toLowerCase();
+      const textLow = (sec.text || '').toLowerCase();
+      const titleIdx = titleLow.indexOf(q);
+      const textIdx = textLow.indexOf(q);
+      if (titleIdx === -1 && textIdx === -1) return;
+      const score = titleIdx !== -1 ? 100 - titleIdx : 40 - Math.min(textIdx, 40);
+      scored.push({ sec: sec, score: score, titleIdx: titleIdx, textIdx: textIdx });
+    });
+    scored.sort(function(a, b) { return b.score - a.score; });
+    return scored.slice(0, limit).map(function(item) {
+      const pos = item.titleIdx !== -1 ? Math.max(0, item.titleIdx) : Math.max(0, item.textIdx);
+      return {
+        id: item.sec.id,
+        title: item.sec.title,
+        snippet: docsSnippet(item.sec.text, q, pos),
+      };
+    });
+  }
+  function docsHighlight(text, q) {
+    const t = String(text || '');
+    const needle = String(q || '').trim();
+    if (!needle) return escapeHtml(t);
+    const lower = t.toLowerCase();
+    const nl = needle.toLowerCase();
+    let out = '';
+    let i = 0;
+    while (i < t.length) {
+      const hit = lower.indexOf(nl, i);
+      if (hit === -1) { out += escapeHtml(t.slice(i)); break; }
+      out += escapeHtml(t.slice(i, hit));
+      out += '<mark>' + escapeHtml(t.slice(hit, hit + needle.length)) + '</mark>';
+      i = hit + needle.length;
+    }
+    return out;
+  }
+
+  const index = [
+    { id: 'docs-latency', title: '8 · Latency / Ping', text: 'Diagnose high latency to the pool server with the Latency panel.' },
+    { id: 'docs-probability', title: '4 · Probability', text: 'Block finding probability depends on your hashrate and the network difficulty.' },
+    { id: 'docs-market', title: '5 · Hash Market', text: 'Compare rental offers from Braiins, NiceHash, MRR and Parasite.' },
+  ];
+
+  // ── Title hit ranks above body-only hit ──
+  const lat = docsSearchSuggestions(index, 'latency', 6);
+  assertEqual('docs latency results count', lat.length, 1);
+  assertEqual('docs latency id', lat[0].id, 'docs-latency');
+  assertTruthy('docs latency snippet contains window', lat[0].snippet.indexOf('Latency') !== -1);
+
+  // Body-only hit (no title match) still surfaces — lower rank than any
+  // title hit would be, but present.
+  const pool = docsSearchSuggestions(index, 'pool', 6);
+  assertEqual('docs pool results count', pool.length, 1);
+  assertEqual('docs pool id', pool[0].id, 'docs-latency');
+
+  // Title hit ranks above body-only hit for the same query span.
+  const multi = docsSearchSuggestions(index, 'hashrate', 6);
+  assertEqual('docs hashrate results count', multi.length, 1);
+  assertEqual('docs hashrate id', multi[0].id, 'docs-probability');
+
+  // ── limit caps results ──
+  const capped = docsSearchSuggestions(index, 'e', 2);
+  assertEqual('docs cap to 2', capped.length, 2);
+
+  // ── no matches / empty query ──
+  const none = docsSearchSuggestions(index, 'zzz-no-match', 6);
+  assertEqual('docs no matches', none.length, 0);
+  const emptyQuery = docsSearchSuggestions(index, '', 6);
+  assertEqual('docs empty query', emptyQuery.length, 0);
+  const nullQuery = docsSearchSuggestions(index, null, 6);
+  assertEqual('docs null query', nullQuery.length, 0);
+
+  // ── snippet window adds ellipses ──
+  const longText = 'A'.repeat(200) + 'needle' + 'B'.repeat(200);
+  const snip = docsSnippet(longText, 'needle', 200, 60);
+  assertEqual('snippet starts with ellipsis', snip[0], '\u2026');
+  assertTruthy('snippet contains needle', snip.indexOf('needle') !== -1);
+  assertEqual('snippet window length bounded', snip.length, 60 + 6 + 60 + 2);
+  const shortSnip = docsSnippet('tiny text', 'text', 5, 60);
+  assertEqual('snippet short no ellipsis', shortSnip, 'tiny text');
+
+  // ── highlight wraps every case-insensitive occurrence + escapes HTML ──
+  const hl = docsHighlight('Pool & pool latency', 'pool');
+  assertEqual('highlight marks both occurrences', (hl.match(/<mark>/g) || []).length, 2);
+  assertTruthy('highlight escapes ampersand', hl.indexOf('&amp;') !== -1);
+  const hlEmpty = docsHighlight('some text', '');
+  assertEqual('highlight empty query = escaped text', hlEmpty, 'some text');
+  const hlNone = docsHighlight('no match here', 'zzz');
+  assertEqual('highlight no match = escaped text', hlNone, 'no match here');
 })();
 
 // ═══════════════════════════════════════════════════════════════════════════

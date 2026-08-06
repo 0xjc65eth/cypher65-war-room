@@ -244,3 +244,41 @@ def api_automation_rule(rule_id: int, tenant_id: str = ""):
     conn.close()
     _log_audit(tid, "automation.rule.update", target=str(rule_id), details={"fields": fields})
     return jsonify({"success": True})
+
+
+@alerts_bp.route("/automation-executions", methods=["GET"])
+@require_tenant
+def api_automation_executions(tenant_id: str = ""):
+    """Return recent automation rule executions, scoped to this tenant's rules.
+
+    UX audit Quick Win: ends the "black box" — the operator sees when each
+    rule last ran and with what status. `automation_execution_log` has no
+    tenant column, so tenant isolation is enforced by joining on the tenant's
+    rule ids (rules the tenant owns or once owned).
+    """
+    tid = tenant_id or "default"
+    try:
+        limit = max(1, min(int(request.args.get("limit", 50)), 200))
+    except (TypeError, ValueError):
+        limit = 50
+    try:
+        conn = get_db()
+        c = conn.cursor()
+        c.execute(
+            """SELECT a.id, a.ts, a.rule_id, a.rule_name, a.device_id,
+                      a.action_command, a.status, a.reason, a.result
+               FROM automation_execution_log a
+               INNER JOIN automation_rules r ON r.id = a.rule_id AND r.tenant_id = ?
+               ORDER BY a.ts DESC, a.id DESC LIMIT ?""",
+            (tid, limit),
+        )
+        rows = [dict(r) for r in c.fetchall()]
+        conn.close()
+    except Exception as e:
+        return jsonify({"error": str(e), "executions": []}), 500
+    for r in rows:
+        try:
+            r["result"] = json.loads(r.get("result") or "{}")
+        except Exception:
+            r["result"] = {}
+    return jsonify({"executions": rows})

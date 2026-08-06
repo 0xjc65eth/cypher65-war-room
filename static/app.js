@@ -167,7 +167,7 @@
     settingsBody: $('#settings-body'), settingsStatus: $('#settings-status'),
     openAlertCenter: $('#open-alert-center'), alertCenterModal: $('#alert-center-modal'), alertCenterStatus: $('#alert-center-status'),
     acTabs: $$('.ac-tab'), acPanes: $$('.ac-pane'), acFilters: $$('.ac-filter'),
-    acActiveList: $('#ac-active-list'), acHistoryList: $('#ac-history-list'), acRulesList: $('#ac-rules-list'),
+    acActiveList: $('#ac-active-list'), acHistoryList: $('#ac-history-list'), acRulesList: $('#ac-rules-list'), acExecList: $('#ac-exec-list'),
     acRefreshActive: $('#ac-refresh-active'), acRefreshHistory: $('#ac-refresh-history'), acRefreshRules: $('#ac-refresh-rules'),
     acAddRule: $('#ac-add-rule'), acRuleForm: $('#ac-rule-form'), acRuleSave: $('#ac-rule-save'), acRuleCancel: $('#ac-rule-cancel'),
     acRuleName: $('#ac-rule-name'), acRuleDevice: $('#ac-rule-device'), acRuleMetric: $('#ac-rule-metric'), acRuleOp: $('#ac-rule-op'),
@@ -2552,6 +2552,61 @@ function renderAccount(acct) {
     dom.badgesStrip.innerHTML = list.map(m => `<div class="badge-card"><div class="badge-card__tier">${m.tier}</div><div class="badge-card__label">${escapeHtml(m.label)}</div></div>`).join('');
   }
 
+  // ── WHAT-IF difficulty simulator (UX audit · Módulo_05) ──────────────
+  // Pure math + small state. `_bhBase` captures the LAST snapshot's Block
+  // Hunt values so the simulator recomputes instantly on slider input
+  // (no poll round-trip) and re-renders with the same slider position
+  // after every snapshot. Mirrored in tests/test_app_js_core.js (SUITE 33).
+  let _bhBase = null;          // {netDiff, bestDiff, pBlock, expectedTime, cumulativeP, shares}
+  let _bhSliderEl = null;
+
+  function _bhSliderValue() {
+    if (!_bhSliderEl) _bhSliderEl = document.getElementById('bh-whatif-slider');
+    return _bhSliderEl ? Number(_bhSliderEl.value || 0) : 0;
+  }
+
+  // Pure: given the base Block Hunt values + a difficulty shift %, return
+  // the simulated metrics. Difficulty scaling is linear for expected time
+  // (Poisson: E[time] = diff·2³² / hashrate) and inverse for P(block)/share
+  // (p = bestDiff / diff). Cumulative P re-derives from the shifted per-share
+  // probability and the session's share count.
+  function simulateDifficultyShift(base, pct) {
+    base = base || {};
+    const mult = 1 + (Number(pct) || 0) / 100;
+    const netDiff = base.netDiff > 0 ? base.netDiff * mult : 0;
+    let pBlock = null;
+    if (base.bestDiff > 0 && netDiff > 0) pBlock = base.bestDiff / netDiff;
+    else if (base.pBlock != null && base.netDiff > 0 && netDiff > 0) pBlock = base.pBlock * (base.netDiff / netDiff);
+    const expectedTime = base.expectedTime > 0 ? base.expectedTime * mult : (base.expectedTime || 0);
+    const distance = base.bestDiff > 0 && netDiff > 0 ? netDiff / base.bestDiff : 0;
+    let cumulativeP = base.cumulativeP;
+    if (base.shares > 0 && pBlock != null && pBlock > 0) cumulativeP = 1 - Math.pow(1 - pBlock, base.shares);
+    return { shiftPct: Number(pct) || 0, netDiff, pBlock, expectedTime, distance, cumulativeP };
+  }
+
+  // Render the WHAT-IF readouts from the current slider position. Honest
+  // empty state: without a base netDiff everything shows an em-dash (the
+  // panel renders before the first snapshot has real values).
+  function _bhRenderWhatIf() {
+    const badge = document.getElementById('bh-whatif-badge');
+    const diffEl = document.getElementById('bh-whatif-diff');
+    const pEl = document.getElementById('bh-whatif-pblock');
+    const etEl = document.getElementById('bh-whatif-etime');
+    const cumEl = document.getElementById('bh-whatif-cum');
+    if (!badge || !diffEl) return;
+    const pct = _bhSliderValue();
+    badge.textContent = (pct > 0 ? '+' : '') + pct + '%';
+    if (!_bhBase || !_bhBase.netDiff) {
+      diffEl.textContent = '\u2014'; pEl.textContent = '\u2014'; etEl.textContent = '\u2014'; cumEl.textContent = '\u2014';
+      return;
+    }
+    const sim = simulateDifficultyShift(_bhBase, pct);
+    diffEl.textContent = fmt.diff(sim.netDiff);
+    pEl.textContent = sim.pBlock != null ? (sim.pBlock * 100).toFixed(8) + '%' : '\u2014';
+    etEl.textContent = sim.expectedTime ? fmt.secsToHuman(sim.expectedTime) : '\u2014';
+    cumEl.textContent = sim.cumulativeP != null ? (sim.cumulativeP * 100).toFixed(4) + '%' : '\u2014';
+  }
+
   // ── Block Hunt render ──
   function renderBlockHunt(snap) {
     const net = snap.network || {};
@@ -2603,6 +2658,19 @@ function renderAccount(acct) {
 
     // Best diff sub
     document.getElementById('bh-best-diff-sub') && (document.getElementById('bh-best-diff-sub').textContent = bh.best_diff_worker ? 'by ' + bh.best_diff_worker : 'highest share found');
+
+    // WHAT-IF simulator base: capture the current snapshot's values so the
+    // slider recomputes from fresh data on every poll while preserving the
+    // operator's chosen shift %. Shares feed the cumulative-P re-derivation.
+    _bhBase = {
+      netDiff,
+      bestDiff,
+      pBlock: pBlock != null ? Number(pBlock) : null,
+      expectedTime: typeof expectedTime === 'number' ? expectedTime : 0,
+      cumulativeP: finalCumP != null ? Number(finalCumP) : null,
+      shares: (prox.live_calc && prox.live_calc.session_totals && prox.live_calc.session_totals.shares_so_far) || 0,
+    };
+    _bhRenderWhatIf();
   }
 
   // ── Hashrate Market render ──
@@ -2639,9 +2707,9 @@ function renderAccount(acct) {
     return '$' + s + '/TH/d';
   }
 
-  // Origin labels: backend `source` field (braiins|mrr|nicehash|kissmyhash|parasite|derived)
+  // Origin labels: backend `source` field (braiins|mrr|nicehash|parasite|derived)
   function _mktSourceLabel(src) {
-    const map = { braiins: 'BRAIINS', mrr: 'MRR', nicehash: 'NICEHASH', kissmyhash: 'KISSMYHASH', parasite: 'PARASITE', derived: 'DERIVED' };
+    const map = { braiins: 'BRAIINS', mrr: 'MRR', nicehash: 'NICEHASH', parasite: 'PARASITE', derived: 'DERIVED' };
     return map[src] || (src || 'UNKNOWN').toUpperCase();
   }
 
@@ -2650,7 +2718,7 @@ function renderAccount(acct) {
   // Two-pass so a low-score offer can never override the score winner via the
   // price fallback (single-pass mixing had that bug).
   // ONLY real marketplace quotes may be crowned "best": estimated offers
-  // (parasite pool-fee model, kissmyhash fallback) are NOT rental prices —
+  // (parasite pool-fee model) are NOT rental prices —
   // their score is inflated by the fee-only cost base (measured live: ~1
   // sat/TH/d vs ~10k-50k real market), so they must never win the "best"
   // highlight. They still render as cards (ESTIMATED label) but are skipped
@@ -2930,6 +2998,30 @@ function renderAccount(acct) {
     // NOTE: loadMarketTrend() is lazy — triggered by activateModule('market').
   }
 
+  // Pure builder for the 7d market trend chart (mirrored in JS tests):
+  // providers → { times, labels, datasets } with per-provider null gaps so
+  // each line only connects the timestamps it actually has points for.
+  // Prices arrive in BTC/TH/d and are converted to sats/TH/d for display.
+  function buildMarketTrendDatasets(providers) {
+    const colors = ['rgb(247,147,26)', 'rgb(6,214,240)', 'rgb(168,85,247)', 'rgb(245,158,11)', 'rgb(16,185,129)'];
+    const allTs = new Set();
+    Object.values(providers || {}).forEach(pts => (pts || []).forEach(p => { if (p && p.ts) allTs.add(p.ts); }));
+    const times = Array.from(allTs).sort((a, b) => a - b);
+    const labels = times.map(t => { const d = new Date(t * 1000); return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0'); });
+    const datasets = Object.keys(providers || {}).map((name, i) => {
+      const byTs = {};
+      ((providers[name]) || []).forEach(p => { if (p && p.ts != null) byTs[p.ts] = p.price_btc_per_th_day; });
+      return {
+        label: name,
+        data: times.map(t => byTs[t] != null ? Number(byTs[t]) * 1e8 : null),
+        borderColor: colors[i % colors.length],
+        backgroundColor: colors[i % colors.length].replace(')', ',0.08)').replace('rgb', 'rgba'),
+        tension: 0.4, pointRadius: 0, fill: false,
+      };
+    });
+    return { times, labels, datasets };
+  }
+
   async function loadMarketTrend() {
     // Returns true on success, false on failure — the lazy caller (activateModule)
     // resets _mktTrendLoaded on false so a transient failure retries next activation.
@@ -2941,28 +3033,24 @@ function renderAccount(acct) {
       const data = await r.json();
       const provs = data.providers || {};
       const countEl = document.getElementById('mkt-trend-count');
-      if (countEl) countEl.textContent = Object.keys(provs).length + ' providers';
       const legendEl = document.getElementById('mkt-trend-legend');
-      const colors = ['rgb(247,147,26)', 'rgb(6,214,240)', 'rgb(168,85,247)', 'rgb(245,158,11)', 'rgb(16,185,129)'];
-      const allTs = new Set();
-      Object.values(provs).forEach(pts => (pts || []).forEach(p => { if (p && p.ts) allTs.add(p.ts); }));
-      const times = Array.from(allTs).sort((a, b) => a - b);
-      const labels = times.map(t => { const d = new Date(t * 1000); return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0'); });
-      const datasets = Object.keys(provs).map((name, i) => {
-        const byTs = {};
-        (provs[name] || []).forEach(p => { if (p && p.ts != null) byTs[p.ts] = p.price_btc_per_th_day; });
-        return {
-          label: name,
-          data: times.map(t => byTs[t] != null ? Number(byTs[t]) * 1e8 : null),
-          borderColor: colors[i % colors.length],
-          backgroundColor: colors[i % colors.length].replace(')', ',0.08)').replace('rgb', 'rgba'),
-          tension: 0.4, pointRadius: 0, fill: false,
-        };
-      });
+      const { labels, datasets } = buildMarketTrendDatasets(provs);
+      // Frescor honesto: mostra quantos providers têm histórico e QUANDO o
+      // snapshot mais recente foi persistido (dado real do /api/market/trend).
+      if (countEl) {
+        const upd = data.updated_at || 0;
+        const clock = upd ? new Date(upd * 1000) : null;
+        const hhmm = clock ? String(clock.getHours()).padStart(2, '0') + ':' + String(clock.getMinutes()).padStart(2, '0') : '';
+        countEl.textContent = datasets.length
+          ? (datasets.length + ' providers' + (hhmm ? ' · ' + hhmm : ''))
+          : '0 providers — sem histórico ainda';
+      }
       if (legendEl) {
-        legendEl.innerHTML = Object.keys(provs).map((name, i) =>
-          `<span class="mkt-trend__legend-item"><span class="mkt-trend__legend-dot" style="background:${colors[i % colors.length]}"></span>${escapeHtml(name)}</span>`
-        ).join('');
+        legendEl.innerHTML = datasets.length
+          ? datasets.map(d =>
+              `<span class="mkt-trend__legend-item"><span class="mkt-trend__legend-dot" style="background:${d.borderColor}"></span>${escapeHtml(d.label)}</span>`
+            ).join('')
+          : '<span class="mkt-trend__legend-item" style="color:var(--text-tertiary)">preços são persistidos a cada fetch (warm-up 5min) — volte mais tarde</span>';
       }
       if (!datasets.length) return true;  // valid empty state — nothing to plot
       const ctx = canvas.getContext('2d');
@@ -2974,6 +3062,206 @@ function renderAccount(acct) {
       });
       return true;
     } catch (e) { return false; }
+  }
+
+  // ── RENTALS panel (P2) — operator rental performance (MRR + Braiins) ──
+  let _rentalsLoaded = false;   // lazy: /api/rentals fetched on first module activation
+  let _rentalsData = null;      // last payload (kept so filters re-render without refetch)
+  let _rentalsFilter = 'active';
+  let _rentalsDetailChart = null;
+
+  function _rentalStatus(r) {
+    if (!r) return '—';
+    if (r.ended) return 'ended';
+    const st = (r.rig && r.rig.status) || '';
+    return st || (r.end ? 'running' : 'active');
+  }
+
+  function _rentalHashrateStr(r) {
+    if (!r) return '—';
+    const avg = r.hashrate_average_th;
+    const adv = r.hashrate_advertised_th;
+    if (avg && adv) return fmt.hashrate(avg * 1e12) + ' / ' + fmt.hashrate(adv * 1e12) +
+      (r.hashrate_percent != null ? ' (' + Number(r.hashrate_percent).toFixed(1) + '%)' : '');
+    if (adv) return fmt.hashrate(adv * 1e12);
+    return '—';
+  }
+
+  function _rentalPriceStr(r) {
+    if (!r || r.price_paid_btc == null) return '—';
+    return (r.price_paid_btc * 1e8).toFixed(0) + ' sats';
+  }
+
+  function _rentalCardHtml(r) {
+    const st = _rentalStatus(r);
+    const stCls = r && r.ended ? 'rentals-item--ended' : (st === 'online' ? 'rentals-item--active' : '');
+    const name = (r && r.rig && r.rig.name) || (r && r.id) || '—';
+    const region = (r && r.rig && r.rig.region) || '';
+    const span = (r && r.start && r.end) ? (r.start + ' → ' + r.end) : '';
+    return '<div class="rentals-item ' + stCls + '" data-rental-id="' + escapeHtml(String(r && r.id || '')) + '">' +
+      '<div class="rentals-item__main">' +
+        '<div class="rentals-item__name">#' + escapeHtml(String(r && r.id || '—')) + ' · ' + escapeHtml(name) + '</div>' +
+        '<div class="rentals-item__meta">' + escapeHtml(region || '') + (span ? ' · ' + escapeHtml(span) : '') + '</div>' +
+      '</div>' +
+      '<div class="rentals-item__stats">' +
+        '<div class="rentals-item__stat"><span class="rentals-item__stat-label">HASHRATE</span><span class="rentals-item__stat-value">' + _rentalHashrateStr(r) + '</span></div>' +
+        '<div class="rentals-item__stat"><span class="rentals-item__stat-label">PAID</span><span class="rentals-item__stat-value">' + _rentalPriceStr(r) + '</span></div>' +
+        '<div class="rentals-item__stat"><span class="rentals-item__stat-label">LENGTH</span><span class="rentals-item__stat-value">' + (r && r.length_hours != null ? Number(r.length_hours).toFixed(1) + 'h' : '—') + '</span></div>' +
+      '</div>' +
+      '<div class="rentals-item__status">' + escapeHtml(st) + '</div>' +
+    '</div>';
+  }
+
+  async function loadRentals() {
+    const listEl = document.getElementById('rentals-list');
+    if (!listEl) return false;
+    try {
+      const r = await fetch('/api/rentals');
+      if (!r.ok) return false;
+      _rentalsData = await r.json();
+      renderRentals();
+      return true;
+    } catch (e) { return false; }
+  }
+
+  function renderRentals() {
+    const listEl = document.getElementById('rentals-list');
+    if (!listEl || !_rentalsData) return;
+    const mrr = _rentalsData.mrr || {};
+    const braiins = _rentalsData.braiins || {};
+
+    const cnt = document.getElementById('rentals-count-badge');
+    if (cnt) {
+      const total = (mrr.active || []).length + (mrr.history || []).length +
+        (mrr.owner || []).length + (braiins.contracts || []).length;
+      cnt.textContent = total + ' rentals';
+    }
+    const el = (id) => document.getElementById(id);
+    // Strip shows the MRR-reported TOTAL (the list is capped at 25/50 by the
+    // API) — honest count of the operator's rentals, not just the fetched page.
+    if (el('rentals-mrr-active')) el('rentals-mrr-active').textContent = mrr.total_active != null ? mrr.total_active : (mrr.active || []).length;
+    if (el('rentals-mrr-history')) el('rentals-mrr-history').textContent = mrr.total_history != null ? mrr.total_history : (mrr.history || []).length;
+    if (el('rentals-mrr-owner')) el('rentals-mrr-owner').textContent = mrr.total_owner != null ? mrr.total_owner : (mrr.owner || []).length;
+    if (el('rentals-braiins')) el('rentals-braiins').textContent = (braiins.contracts || []).length;
+
+    let items = [];
+    if (_rentalsFilter === 'active') items = mrr.active || [];
+    else if (_rentalsFilter === 'history') items = mrr.history || [];
+    else if (_rentalsFilter === 'owner') items = mrr.owner || [];
+    else if (_rentalsFilter === 'contracts') items = (braiins.contracts || []).map(c => ({
+      id: c.id, ended: false,
+      rig: { name: 'Braiins contract', status: c.status, region: '' },
+      hashrate_advertised_th: c.speed_limit_ph ? c.speed_limit_ph * 1000 : null,
+      price_paid_btc: c.amount_sat != null ? c.amount_sat / 1e8 : null,
+      length_hours: null, start: c.started_at || null, end: c.ended_at || null,
+    }));
+
+    if (!items.length) {
+      const needsAuth = _rentalsFilter === 'contracts' ? braiins.needs_auth : mrr.needs_auth;
+      listEl.innerHTML = '<div class="empty-state" style="grid-column:1/-1;border:none">' +
+        '<div class="empty-state__icon">⛁</div>' +
+        '<div class="empty-state__title">' + (needsAuth ? 'Credentials required' : 'No rentals') + '</div>' +
+        '<div class="empty-state__desc">' + (needsAuth
+          ? (_rentalsFilter === 'contracts' ? 'Set BRAIINS_API_KEY in Settings to list Braiins contracts' : 'Set MRR_API_KEY/MRR_API_SECRET in Settings to list MRR rentals')
+          : 'No ' + _rentalsFilter + ' rentals on this account') + '</div></div>';
+      return;
+    }
+    listEl.innerHTML = items.map(_rentalCardHtml).join('');
+  }
+
+  async function openRentalDetail(id, provider) {
+    const panel = document.getElementById('rentals-detail');
+    if (!panel) return;
+    try {
+      const r = await fetch('/api/rentals/detail?provider=' + encodeURIComponent(provider) + '&id=' + encodeURIComponent(id));
+      if (!r.ok) return;
+      const data = await r.json();
+      const d = data.detail || {};
+      const g = data.graph || {};
+      const lg = data.log || {};
+      const title = document.getElementById('rentals-detail-title');
+      if (title) title.textContent = (provider === 'braiins' ? 'Braiins contract #' : 'MRR rental #') + id;
+      const grid = document.getElementById('rentals-detail-grid');
+      const hr = d.hashrate || {};
+      const rows = [
+        ['Owner', d.owner || '—'],
+        ['Renter', d.renter || '—'],
+        ['Advertised', hr.advertised ? (hr.advertised.nice || hr.advertised.hash || '—') : '—'],
+        ['Average', hr.average ? (hr.average.nice || '—') + (hr.average.percent != null ? ' (' + hr.average.percent + '%)' : '') : '—'],
+        ['Paid', d.price && d.price.paid != null ? (Number(d.price.paid) * 1e8).toFixed(0) + ' sats' : '—'],
+        ['Length', d.length != null ? d.length + 'h' : '—'],
+        ['Rig', d.rig && d.rig.name ? d.rig.name : '—'],
+        ['Region', d.rig && d.rig.region ? d.rig.region : '—'],
+        ['Start', d.start || '—'],
+        ['End', d.end || '—'],
+      ];
+      grid.innerHTML = rows.map(x => '<div class="rentals-detail__row"><span>' + escapeHtml(x[0]) + '</span><strong>' + escapeHtml(String(x[1])) + '</strong></div>').join('');
+      // Graph
+      const bars = g.chartdata && g.chartdata.bars ? g.chartdata.bars : null;
+      if (typeof Chart !== 'undefined') {
+        const canvas = document.getElementById('rentals-detail-chart');
+        if (canvas) {
+          if (_rentalsDetailChart) { _rentalsDetailChart.destroy(); _rentalsDetailChart = null; }
+          const labels = [];
+          const values = [];
+          if (bars && typeof bars === 'string') {
+            // MRR format: "[[ts,hash],...]" (ms, hashrate in H/s)
+            const m = bars.match(/\[(\d+),([^\]]+)\]/g) || [];
+            m.slice(0, 120).forEach(pair => {
+              const mm = pair.match(/\[(\d+),([^\]]+)\]/);
+              if (mm) { labels.push(new Date(Number(mm[1])).toLocaleTimeString()); values.push(Number(mm[2]) / 1e12); }
+            });
+          } else if (Array.isArray(g.points)) {
+            // Braiins contract speed comes in PH/s — normalize to TH/s so the
+            // dataset matches the MRR bars (both plotted as hashrate TH/s).
+            g.points.slice(0, 120).forEach(p => {
+              labels.push(p.ts ? new Date(p.ts * 1000).toLocaleTimeString() : '');
+              values.push(p.speed_ph != null ? p.speed_ph * 1000 : 0);
+            });
+          }
+          if (values.length) {
+            _rentalsDetailChart = new Chart(canvas.getContext('2d'), {
+              type: 'line',
+              data: { labels, datasets: [{ label: 'hashrate TH/s', data: values, borderColor: 'rgb(6,214,240)', backgroundColor: 'rgba(6,214,240,0.08)', tension: 0.4, pointRadius: 0, fill: true }] },
+              options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } } }
+            });
+          }
+        }
+      }
+      // Log
+      const logEl = document.getElementById('rentals-detail-log');
+      if (logEl) {
+        const items = (lg.rental_log || []).slice(0, 10);
+        logEl.innerHTML = items.length
+          ? items.map(l => '<div class="rentals-detail__log-item">' + escapeHtml(l.msg || '') + '</div>').join('')
+          : '<div class="rentals-detail__log-item">no log entries</div>';
+      }
+      panel.hidden = false;
+    } catch (e) { /* fail-closed: keep panel hidden */ }
+  }
+
+  function _initRentalsPanel() {
+    const refresh = document.getElementById('rentals-refresh');
+    if (refresh) refresh.addEventListener('click', () => { _rentalsLoaded = false; loadRentals(); });
+    const closeBtn = document.getElementById('rentals-detail-close');
+    if (closeBtn) closeBtn.addEventListener('click', () => { const p = document.getElementById('rentals-detail'); if (p) p.hidden = true; });
+    const filters = document.querySelectorAll('[data-rentals-filter]');
+    filters.forEach(chip => {
+      chip.addEventListener('click', () => {
+        filters.forEach(c => c.classList.remove('active'));
+        chip.classList.add('active');
+        _rentalsFilter = chip.getAttribute('data-rentals-filter') || 'active';
+        renderRentals();
+      });
+    });
+    const list = document.getElementById('rentals-list');
+    if (list) list.addEventListener('click', (e) => {
+      const item = e.target.closest ? e.target.closest('.rentals-item') : null;
+      if (!item) return;
+      const id = item.getAttribute('data-rental-id');
+      const provider = _rentalsFilter === 'contracts' ? 'braiins' : 'mrr';
+      if (id) openRentalDetail(id, provider);
+    });
   }
 
   // ── AI Operator render ──
@@ -3472,7 +3760,22 @@ function renderAccount(acct) {
   // Didactic hints shown under each settings field so users configure the
   // cost model correctly (Fase: LEASE mode — rental_usd_per_th_day is the
   // rate the LENDER charges, i.e. revenue, not a plain "cost").
+  // Pure builder for the Settings → webhook preview (mirrored in JS tests).
+  // Shows the operator the exact JSON payload that polling fires per alert.
+  function webhookPreviewPayload(severity, message, worker, address) {
+    return {
+      event: 'cypher65_war_room_alert',
+      severity: severity || 'WARN',
+      category: 'alert',
+      message: message || '⚠ [WARN] exemplo de alerta — configuração de webhook do CYPHER65',
+      ts: Math.floor(Date.now() / 1000),
+      worker: worker || 'primary',
+      address: address || '',
+    };
+  }
+
   const SETTINGS_HINTS = {
+    braiins_api_key: 'Braiins Hashpower owner token (mostrado UMA vez no registro em hashpower.braiins.com) — destrava bids, contratos e saldo no painel RENTALS. Header de auth: `apikey`.',
     cost_mode: 'none = no cost · rental = pay per TH/s rented · power = rig kWh cost',
     rental_usd_per_th_day: '📤 LEASE: o que VOCÊ cobra ao alugar seu hashrate (receita) · 📦 RENTAL: o que você paga para alugar hashrate. Usado no modo LEASE do Profitability.',
     power_watts: 'Consumo do rig (W) — usado para o custo de energia no modo POWER e no LEASE.',
@@ -3488,7 +3791,7 @@ function renderAccount(acct) {
       box.innerHTML = '<div class="mkt-empty" style="padding:16px;text-align:center">settings unavailable</div>';
       return;
     }
-    const order = ['cost_mode','rental_usd_per_th_day','power_watts','power_kwh_usd','btc_block_reward','btc_avg_tx_fee','pool_fee_pct','orphan_rate_pct','active_currency','active_fiat','stale_share_minutes','hashrate_drop_pct','webhook_url','webhook_min_severity','show_test_alerts','mrr_api_key','mrr_api_secret'];
+    const order = ['cost_mode','rental_usd_per_th_day','power_watts','power_kwh_usd','btc_block_reward','btc_avg_tx_fee','pool_fee_pct','orphan_rate_pct','active_currency','active_fiat','stale_share_minutes','hashrate_drop_pct','webhook_url','webhook_min_severity','show_test_alerts','mrr_api_key','mrr_api_secret','braiins_api_key'];
     const keys = Object.keys(settings).sort((a,b) => {
       const ia = order.indexOf(a), ib = order.indexOf(b);
       return (ia<0?99:ia) - (ib<0?99:ib);
@@ -3508,8 +3811,54 @@ function renderAccount(acct) {
       html += `<label style="display:flex;flex-direction:column;gap:2px;font-size:11px"><span>${label}</span><input type="text" name="${k}" value="${escapeHtml(String(val ?? ''))}" class="field__input">${hint}</label>`;
     }
     });
+    // Webhook preview + test send (UX audit Quick Win): the operator sees
+    // the exact JSON payload fired per alert, and can validate the channel
+    // without waiting for a real event. Only rendered when a URL is actually
+    // configured — otherwise the ENVIAR TESTE button would dead-end in a 400.
+    const whConfigured = (settings['webhook_url'] && settings['webhook_url'].value) ? String(settings['webhook_url'].value).trim() : '';
+    if (whConfigured) {
+      html += '<div class="wh-preview" style="margin-top:6px;border:1px dashed var(--border);border-radius:4px;padding:8px">' +
+        '<div style="font-size:10px;color:var(--text-tertiary);letter-spacing:0.06em">WEBHOOK PREVIEW — payload enviado a cada alerta (JSON)</div>' +
+        '<pre id="wh-preview-payload" style="background:#0d0f12;padding:6px;border-radius:4px;font-size:9px;line-height:1.5;overflow:auto;margin:6px 0;max-height:140px;color:var(--green)"></pre>' +
+        '<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">' +
+        '<button type="button" class="btn btn--primary btn--mini" id="wh-send-test">📡 ENVIAR TESTE</button>' +
+        '<span id="wh-test-status" style="font-size:10px;color:var(--text-muted)"></span>' +
+        '</div></div>';
+    }
     html += '</div>';
     box.innerHTML = html;
+    // Live-update the preview as the operator edits webhook fields, and wire
+    // the "send test" button to POST a real sample payload to the channel.
+    const whInput = box.querySelector('input[name="webhook_url"]');
+    const whSev = box.querySelector('select[name="webhook_min_severity"]');
+    const whPreview = document.getElementById('wh-preview-payload');
+    function updateWhPreview() {
+      if (!whPreview) return;
+      const sev = whSev ? whSev.value : (settings['webhook_min_severity'] && settings['webhook_min_severity'].value) || 'WARN';
+      whPreview.textContent = JSON.stringify(webhookPreviewPayload(sev), null, 2);
+    }
+    if (whInput && whPreview) {
+      whInput.addEventListener('input', updateWhPreview);
+      if (whSev) whSev.addEventListener('change', updateWhPreview);
+      updateWhPreview();
+    }
+    const whTestBtn = document.getElementById('wh-send-test');
+    if (whTestBtn) {
+      whTestBtn.addEventListener('click', async function() {
+        const st = document.getElementById('wh-test-status');
+        if (st) { st.textContent = 'enviando…'; st.style.color = 'var(--text-muted)'; }
+        try {
+          const r = await authFetch('/api/settings/test-webhook', { method: 'POST' });
+          const d = await r.json();
+          if (st) {
+            if (r.ok && d.success) { st.textContent = '✓ enviado (HTTP ' + d.status_code + ')'; st.style.color = 'var(--green)'; }
+            else { st.textContent = '✗ ' + (d.error || ('HTTP ' + r.status)); st.style.color = 'var(--accent-red)'; }
+          }
+        } catch (e) {
+          if (st) { st.textContent = '✗ network error: ' + e.message; st.style.color = 'var(--accent-red)'; }
+        }
+      });
+    }
   }
   async function loadSettings() {
     try {      const r = await authFetch('/api/settings'); SETTINGS_CACHE.data = (await r.json()).settings.reduce((acc, s) => { acc[s.key] = s; return acc; }, {}); renderSettingsForm(); } catch (e) {}
@@ -5213,7 +5562,10 @@ dom.walletSave?.addEventListener('click', async () => {
     }
     if (r.cgminer_tcp) {
       const di = r.device_info || {};
-      rows.push({ label: 'cgminer :4028', ok: true, val: 'CGMINER', detail: [di.model, di.version].filter(Boolean).join(' · ') });
+      // Show firmware label for the cgminer row — Braiins OS+ devices
+      // answer on :4028 but the protocol label should reflect the detector.
+      const cgLabel = (r.protocol === 'braiins') ? 'BRAIINS' : 'CGMINER';
+      rows.push({ label: 'cgminer :4028', ok: true, val: cgLabel, detail: [di.model, di.version].filter(Boolean).join(' · ') });
     } else {
       rows.push({ label: 'cgminer :4028', ok: false, val: 'no', detail: 'no cgminer protocol on port 4028' });
     }
@@ -5275,12 +5627,19 @@ dom.walletSave?.addEventListener('click', async () => {
       const r = await authFetch('/api/axe-fleet/diagnose/' + encodeURIComponent(ip));
       const data = await r.json();
       const reachable = renderConnectivityReport(data);
+      // Store the detected firmware/model from the diagnose response so
+      // the confirm screen can preview them before registration.
+      _axeWizState._detectedProtocol = data && data.protocol;
+      _axeWizState._detectedFirmware = data && data.detected_firmware;
+      _axeWizState._detectedModel = data && data.detected_model;
+      _axeWizState._detectedVersion = (data && data.device_info && data.device_info.version) || '';
       if (reachable) {
         // Advance to confirm step with the detected device. Carry the
         // protocol from the diagnose response (top-level) into device so
         // the confirm summary can display it.
         _axeWizState.device = Object.assign({}, (data && data.device_info) || {}, { protocol: data && data.protocol });
         _axeWizState.ip = ip;
+        renderAxeConfirm();
         gotoAxeWizStep(3);
         return true;
       }
@@ -5332,15 +5691,23 @@ dom.walletSave?.addEventListener('click', async () => {
   }
 
   function resetAxeWizard() {
+    clearTimeout(_axeDetectTimer);
+    _axeDetectTimer = null;
     _axeWizState.ip = '';
     _axeWizState.name = '';
     _axeWizState.device = null;
+    _axeWizState._detectedProtocol = '';
+    _axeWizState._detectedFirmware = '';
+    _axeWizState._detectedModel = '';
+    _axeWizState._detectedVersion = '';
     if (dom.axeTestResult) dom.axeTestResult.innerHTML = '';
     if (dom.axeManualNameRow) dom.axeManualNameRow.style.display = 'none';
     if (dom.axeWizConfirm) dom.axeWizConfirm.innerHTML = '';
     if (dom.axeScanResults) dom.axeScanResults.innerHTML = '';
     if (dom.axeScanStatus) dom.axeScanStatus.textContent = '';
     if (dom.axeAddStatus) dom.axeAddStatus.textContent = '';
+    const fwPreview = document.getElementById('axe-fw-preview');
+    if (fwPreview) { fwPreview.innerHTML = ''; fwPreview.style.display = 'none'; }
   }
 
   // Render the detected device summary in the confirm step.
@@ -5348,12 +5715,16 @@ dom.walletSave?.addEventListener('click', async () => {
     const box = dom.axeWizConfirm;
     if (!box) return;
     const d = _axeWizState.device || {};
-    const proto = d.protocol || (_axeWizState.mode === 'manual' ? 'manual' : '');
+    const proto = d.protocol || _axeWizState._detectedProtocol || (_axeWizState.mode === 'manual' ? 'manual' : '');
+    const fwLabel = _axeWizState._detectedFirmware || d.firmware || '';
+    const fwVersion = d.version || _axeWizState._detectedVersion || '';
+    const fwStr = [fwLabel, fwVersion].filter(Boolean).join(' ');
     const rows = [
       ['IP', _axeWizState.ip],
-      ['model', d.model || '—'],
+      ['protocol', proto ? proto.toUpperCase() : '—'],
+      ['model', d.model || _axeWizState._detectedModel || '—'],
       ['hostname', d.hostname || '—'],
-      ['firmware', [d.firmware, d.version].filter(Boolean).join(' ') || '—'],
+      ['firmware', fwStr || '—'],
       ['hashrate', d.hashrate_hs ? fmt.hashrate(d.hashrate_hs) : '—'],
     ].map(([k, v]) => `<div style="display:flex;gap:6px"><span style="color:var(--text-tertiary);min-width:64px">${k}</span><span style="color:var(--text-primary)">${escapeHtml(String(v))}</span></div>`).join('');
     box.innerHTML = `<div class="axe-wiz__confirm-title">✓ ready to add</div>${rows}`;
@@ -5406,6 +5777,99 @@ dom.walletSave?.addEventListener('click', async () => {
     dom.axeTestConn?.addEventListener('click', testAxeConnectivity);
     ipInput?.addEventListener('keydown', e => {
       if (e.key === 'Enter') { e.preventDefault(); testAxeConnectivity(); }
+    });
+
+    // ── Auto-detect firmware on IP input (debounced preview) ─────────
+    // While the operator types an IP, the diagnose endpoint is silently
+    // called in the background (600ms debounce). The result is rendered
+    // as a live firmware preview chip so the operator sees the detected
+    // firmware/model/protocol BEFORE clicking "TEST CONNECTIVITY" or
+    // registering. This turns a blind IP type-in into an informative
+    // discovery flow.
+    let _axeDetectTimer = null;
+    const fwPreview = document.getElementById('axe-fw-preview');
+
+    function _axeAutoDetect(ip) {
+      if (!fwPreview) return;
+      if (!ip || ip.trim().length < 7) {
+        fwPreview.innerHTML = '';
+        fwPreview.style.display = 'none';
+        return;
+      }
+      fwPreview.style.display = 'flex';
+      fwPreview.innerHTML = '<span class="axe-fw-preview__spinner"></span><span class="axe-fw-preview__text">detecting firmware…</span>';
+    }
+
+    async function _axeRunDetect(ip) {
+      if (!ip || ip.trim().length < 7) return;
+      try {
+        // Use the lightweight /detect endpoint — faster than /diagnose
+        // since it only calls detect_firmware() (no TCP port scan).
+        // Response shape: {firmware, adapter_type, version, model, capabilities, reachable}
+        const r = await authFetch('/api/axe-fleet/detect/' + encodeURIComponent(ip.trim()));
+        const data = await r.json();
+        // Populate the wizard state so confirm step has the data.
+        // The /detect response is flat (no device_info wrapper), so
+        // we map fields directly to the wizard state.
+        _axeWizState.ip = ip.trim();
+        _axeWizState._detectedProtocol = data && data.adapter_type;
+        _axeWizState._detectedFirmware = data && data.firmware;
+        _axeWizState._detectedModel = data && data.model;
+        _axeWizState._detectedVersion = (data && data.version) || '';
+        if (data && data.reachable) {
+          _axeWizState.device = {
+            model: data.model || '',
+            firmware: data.firmware || '',
+            version: data.version || '',
+            protocol: data.adapter_type || '',
+            hostname: '',
+            hashrate_hs: 0,
+          };
+        }
+        _axeRenderFwPreview(data);
+      } catch (e) {
+        if (fwPreview) {
+          fwPreview.innerHTML = '';
+          fwPreview.style.display = 'none';
+        }
+      }
+    }
+
+    function _axeRenderFwPreview(data) {
+      if (!fwPreview) return;
+      // /detect response is flat: {firmware, adapter_type, model, version, capabilities, reachable, error}
+      const reachable = !!(data && data.reachable);
+      const proto = (data && data.adapter_type) || '';
+      const fw = (data && data.firmware) || '';
+      const model = (data && data.model) || '';
+      if (reachable && (proto || model || fw)) {
+        const protoLabel = proto.toUpperCase();
+        const protoCls = proto === 'bitaxe' ? 'axe-fw-preview__chip--bitaxe'
+          : proto === 'braiins' ? 'axe-fw-preview__chip--braiins'
+          : proto === 'cgminer' ? 'axe-fw-preview__chip--cgminer'
+          : 'axe-fw-preview__chip--other';
+        const parts = []
+          .concat(protoLabel ? [`<span class="axe-fw-preview__chip ${protoCls}">${escapeHtml(protoLabel)}</span>`] : [])
+          .concat(fw ? [`<span class="axe-fw-preview__text">${escapeHtml(fw)}</span>`] : [])
+          .concat(model ? [`<span class="axe-fw-preview__text axe-fw-preview__text--muted">${escapeHtml(model)}</span>`] : [])
+          .join('');
+        fwPreview.innerHTML = `<span class="axe-fw-preview__icon">✓</span>${parts}`;
+        fwPreview.style.display = 'flex';
+      } else {
+        // Unreachable — show the error from the detector
+        const err = (data && data.error) || 'no miner detected on this IP';
+        fwPreview.innerHTML = `<span class="axe-fw-preview__icon" style="color:var(--orange)">✗</span><span class="axe-fw-preview__text axe-fw-preview__text--muted">${escapeHtml(String(err).substring(0, 80))}</span>`;
+        fwPreview.style.display = 'flex';
+      }
+    }
+
+    ipInput?.addEventListener('input', () => {
+      clearTimeout(_axeDetectTimer);
+      const ip = (ipInput.value || '').trim();
+      _axeAutoDetect(ip);
+      if (ip.length >= 7) {
+        _axeDetectTimer = setTimeout(() => _axeRunDetect(ip), 600);
+      }
     });
 
     saveBtn?.addEventListener('click', async () => {
@@ -5948,7 +6412,7 @@ dom.walletSave?.addEventListener('click', async () => {
 
   // ── Boot ──
   async function boot() {
-    initMatrix(); initCharts(); bindChartRanges(); loadSettings(); initMarketControls(); initDecisionMatrixControls(); initCommandCenterControls();
+    initMatrix(); initCharts(); bindChartRanges(); loadSettings(); initMarketControls(); initDecisionMatrixControls(); initCommandCenterControls(); _initRentalsPanel();
     _initLmEventLogControls();
     initLicensing();  // R1: PRO badge + license state (off-by-default, no-op in open mode)
     fetchTailscale();
@@ -6030,7 +6494,7 @@ dom.walletSave?.addEventListener('click', async () => {
   // ═════════════════════════════════════════════════════════════════════
   // ALERT CENTER (Milestone 9)
   // ══════════════════════════════════════════════════════════════════════
-  let acState = { active: [], history: [], rules: [] };
+  let acState = { active: [], history: [], rules: [], executions: [] };
   const severityClass = { CRIT: 'severity--crit', WARN: 'severity--warn', INFO: 'severity--info', GOLD: 'severity--gold', SUCCESS: 'severity--success' };
   const severityLabel = { CRIT: 'CRIT', WARN: 'WARN', INFO: 'INFO', GOLD: 'GOLD', SUCCESS: 'OK' };
 
@@ -6110,24 +6574,57 @@ dom.walletSave?.addEventListener('click', async () => {
     `).join('');
   }
 
+  function acExecStatusClass(status) {
+    const s = String(status || 'ok').toLowerCase();
+    if (s.indexOf('ok') === 0 || s.indexOf('succ') === 0 || s === '') return 'severity--success';
+    if (s.indexOf('fail') !== -1 || s.indexOf('error') !== -1 || s.indexOf('block') !== -1) return 'severity--crit';
+    return '';
+  }
+
+  function acRenderExecutions() {
+    const list = dom.acExecList;
+    if (!list) return;
+    if (!acState.executions.length) {
+      list.innerHTML = '<span class="ac-empty" style="color:var(--text-muted)">no executions yet — crie uma regra e aguarde o próximo ciclo de polling</span>';
+      return;
+    }
+    list.innerHTML = acState.executions.slice(0, 6).map(x => {
+      const cls = acExecStatusClass(x.status);
+      return `<div style="display:flex;gap:6px;align-items:center;padding:1px 0">` +
+        `<span class="ac-item__sev ${cls}" style="font-size:8px">${escapeHtml(x.status || 'OK')}</span>` +
+        `<span style="color:var(--text-muted)">${acFormatTime(x.ts)}</span>` +
+        `<span style="color:var(--text-secondary);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(x.rule_name || ('rule #' + (x.rule_id || '?')))} → ${escapeHtml(x.action_command || '?')}</span>` +
+        `${x.reason ? `<span style="color:var(--text-tertiary)" title="${escapeHtml(x.reason)}">${escapeHtml(x.reason).slice(0, 28)}</span>` : ''}` +
+        `</div>`;
+    }).join('');
+  }
+
   function acRenderRules() {
     if (!dom.acRulesList) return;
     if (!acState.rules.length) {
       dom.acRulesList.innerHTML = '<div class="ac-empty">no automation rules</div>';
       return;
     }
-    dom.acRulesList.innerHTML = acState.rules.map(r => `
+    const lastRun = {};
+    acState.executions.forEach(function(x) {
+      if (!lastRun[x.rule_id] || x.ts > lastRun[x.rule_id].ts) lastRun[x.rule_id] = x;
+    });
+    dom.acRulesList.innerHTML = acState.rules.map(r => {
+      const lr = lastRun[r.id];
+      const runLine = lr
+        ? `<span class="ac-item__run ${acExecStatusClass(lr.status)}">última: ${acFormatTime(lr.ts)} — ${escapeHtml(lr.status || 'OK')}${lr.reason ? ' (' + escapeHtml(lr.reason) + ')' : ''}</span>`
+        : '<span class="ac-item__run" style="color:var(--text-tertiary)">nunca executou</span>';
+      return `
       <div class="ac-item ac-item--rule">
         <div class="ac-item__meta">
           <span class="ac-item__sev">${r.is_enabled ? 'ON' : 'OFF'}</span>
-          <span class="ac-item__cat">${r.name}</span>
+          <span class="ac-item__cat">${escapeHtml(r.name)}</span>
         </div>
-        <div class="ac-item__msg">WHEN ${r.condition_metric} ${r.condition_operator} ${r.condition_value} THEN ${r.action_command}</div>
-        <div class="ac-item__actions">
-          <button class="btn btn--danger btn--mini ac-rule-del" data-id="${r.id}">Delete</button>
-        </div>
+        <div class="ac-item__msg">WHEN ${escapeHtml(r.condition_metric)} ${escapeHtml(r.condition_operator)} ${escapeHtml(r.condition_value)} THEN ${escapeHtml(r.action_command)}</div>
+        <div class="ac-item__actions">${runLine}<button class="btn btn--danger btn--mini ac-rule-del" data-id="${r.id}">Delete</button></div>
       </div>
-    `).join('');
+    `;
+    }).join('');
     dom.acRulesList.querySelectorAll('.ac-rule-del').forEach(btn => {
       btn.addEventListener('click', async () => {
         try {
@@ -6155,19 +6652,43 @@ dom.walletSave?.addEventListener('click', async () => {
   async function acLoadRules() {
     try {
       acState.rules = (await acFetchJson('/api/automation-rules')).rules || [];
-      acRenderRules();
     } catch (e) { acSetStatus('Load rules failed: ' + e.message, true); }
+    try {
+      acState.executions = (await acFetchJson('/api/automation-executions?limit=50')).executions || [];
+    } catch (e) { /* execution log is best-effort */ }
+    acRenderRules();
+    acRenderExecutions();
   }
 
   function acShowTab(tab) {
     dom.acTabs.forEach(t => t.classList.toggle('active', t.dataset.tab === tab));
-    dom.acPanes.forEach(p => p.style.display = (p.id === 'ac-pane-' + tab ? '' : 'none'));
+    // Panes are id'd `ac-<tab>-pane` (ac-active-pane / ac-history-pane /
+    // ac-rules-pane) and shown via the CSS rule `.ac-pane.active`. The old
+    // code compared against `ac-pane-<tab>` — a shape that doesn't exist —
+    // so NO pane ever matched and every pane stayed hidden (second bug found
+    // by the visual audit; the Rules/History panes were reachable in the DOM
+    // but never visible even with the tab strip injected).
+    dom.acPanes.forEach(p => p.classList.toggle('active', p.id === 'ac-' + tab + '-pane'));
     if (tab === 'active') acLoadActive();
     if (tab === 'history') acLoadHistory();
     if (tab === 'rules') acLoadRules();
   }
 
   if (dom.openAlertCenter) {
+    // Render the Alert Center tab buttons (Active / History / Rules). The
+    // #ac-tabs container ships EMPTY in the template and nothing ever
+    // injected the buttons — a pre-existing bug found by the browser visual
+    // audit: the History and Rules panes (incl. automation rules + execution
+    // log) were unreachable from the UI. The panes exist in the DOM; only
+    // the tab strip was missing.
+    const acTabsHost = document.getElementById('ac-tabs');
+    if (acTabsHost && !acTabsHost.children.length) {
+      acTabsHost.innerHTML =
+        '<button type="button" class="chip ac-tab active" data-tab="active">Active</button>' +
+        '<button type="button" class="chip ac-tab" data-tab="history">History</button>' +
+        '<button type="button" class="chip ac-tab" data-tab="rules">Rules</button>';
+      dom.acTabs = acTabsHost.querySelectorAll('.ac-tab');
+    }
     dom.openAlertCenter.addEventListener('click', () => {
       dom.alertCenterModal.classList.add('modal--open');
       acShowTab('active');
@@ -6229,6 +6750,7 @@ dom.walletSave?.addEventListener('click', async () => {
     'live':        { title: 'LIVE MINING',   desc: 'Dados ao vivo' },
     'probability': { title: 'PROBABILITY',   desc: 'Chance e probabilidade' },
     'market':      { title: 'HASH MARKET',   desc: 'Mercado e cotações' },
+    'rentals':     { title: 'RENTALS',       desc: 'Performance dos aluguéis (MRR + Braiins)' },
     'alerts':      { title: 'ALERTS',        desc: 'Alertas e eventos' },
     'automations': { title: 'AUTOMATIONS',   desc: 'Regras e automação' },
     'docs':        { title: 'DOCS / GUIDE',  desc: 'Manual de uso' },
@@ -6343,6 +6865,11 @@ dom.walletSave?.addEventListener('click', async () => {
         _mktTrendLoaded = true;
         loadMarketTrend().then(ok => { if (!ok) _mktTrendLoaded = false; });
       }
+      // Rentals: lazy-load the operator rental list on first module activation.
+      if (name === 'rentals' && !_rentalsLoaded) {
+        _rentalsLoaded = true;
+        loadRentals().then(ok => { if (!ok) _rentalsLoaded = false; });
+      }
       // Hash Market: also refresh the snapshot — the boot-time snapshot can be
       // stale (fetched before the warmup cache is hot), so the grid would open
       // with 0 offers until the next 15s poll. Same pattern as the fleet fix.
@@ -6381,6 +6908,18 @@ dom.walletSave?.addEventListener('click', async () => {
     });
   });
 
+  // UX audit (Quick Win): KPI cards are drill-down shortcuts to modules.
+  // Clicking Total HR → Live Mining, Best Diff → Probability (Block Hunt),
+  // etc. Uses event delegation so the (re-rendered) cards stay bound.
+  const kpiRow = document.getElementById('kpi-row');
+  if (kpiRow) {
+    kpiRow.addEventListener('click', function(e) {
+      const card = e.target.closest('.kpi-card[data-kpi-target]');
+      if (!card) return;
+      activateModule(card.getAttribute('data-kpi-target'));
+    });
+  }
+
   // P0-1: CTA do histograma de Share Difficulty → Probability (solo stats).
   // Live Mining alimenta a previsão — um clique leva ao cálculo já carregado.
   const shareDistGotoProb = document.getElementById('share-dist-goto-prob');
@@ -6390,6 +6929,21 @@ dom.walletSave?.addEventListener('click', async () => {
       const solo = document.getElementById('solo-stats-panel');
       if (solo) solo.scrollIntoView({ behavior: 'smooth', block: 'start' });
     });
+  }
+
+  // UX audit (Módulo_05): WHAT-IF difficulty slider — simulate the impact of
+  // a network difficulty change on P(block)/share, expected time, distance
+  // and cumulative P. Pure simulation, never mutates the live snapshot.
+  const bhSlider = document.getElementById('bh-whatif-slider');
+  if (bhSlider) {
+    bhSlider.addEventListener('input', _bhRenderWhatIf);
+    const bhReset = document.getElementById('bh-whatif-reset');
+    if (bhReset) {
+      bhReset.addEventListener('click', function() {
+        bhSlider.value = 0;
+        _bhRenderWhatIf();
+      });
+    }
   }
 
   // Restore active module from localStorage on boot
@@ -6710,17 +7264,149 @@ dom.walletSave?.addEventListener('click', async () => {
     sections.forEach(function(s) { _docsObserver.observe(s); });
   }
 
-  // ── Docs: Search / filter ──
+  // ── Docs: Search / filter + AUTOCOMPLETE (UX audit · Módulo_09) ──
+  // Pure helpers below (docsBuildIndex/docsSearchSuggestions/docsSnippet/
+  // docsHighlight) are mirrored in tests/test_app_js_core.js (SUITE 34).
+  var _docsIndex = [];       // built once from the .docs-container sections
+  var _docsSuggestions = []; // current autocomplete results
+  var _docsActive = -1;      // keyboard cursor into _docsSuggestions
+
+  // Build the search index from the docs container (scoped — the LEARNING
+  // panel reuses .doc-section markup and must NOT pollute the docs index).
+  function docsBuildIndex() {
+    var container = document.querySelector('.docs-container');
+    if (!container) return [];
+    var sections = container.querySelectorAll('.doc-section');
+    var idx = [];
+    sections.forEach(function(sec) {
+      var titleEl = sec.querySelector('.doc-section__title');
+      idx.push({
+        id: sec.id || '',
+        title: titleEl ? titleEl.textContent.trim() : '',
+        text: (sec.textContent || '').trim(),
+      });
+    });
+    return idx;
+  }
+
+  // Pure: rank sections by query relevance. Title hits rank far above body
+  // hits; earlier positions beat later ones. Returns up to `limit` entries
+  // as {id, title, snippet} where snippet is a text window around the hit.
+  function docsSearchSuggestions(index, q, limit) {
+    limit = limit || 6;
+    q = String(q || '').trim().toLowerCase();
+    if (!q || !index.length) return [];
+    var scored = [];
+    index.forEach(function(sec) {
+      var titleLow = (sec.title || '').toLowerCase();
+      var textLow = (sec.text || '').toLowerCase();
+      var titleIdx = titleLow.indexOf(q);
+      var textIdx = textLow.indexOf(q);
+      if (titleIdx === -1 && textIdx === -1) return;
+      var score = titleIdx !== -1 ? 100 - titleIdx : 40 - Math.min(textIdx, 40);
+      scored.push({ sec: sec, score: score, titleIdx: titleIdx, textIdx: textIdx });
+    });
+    scored.sort(function(a, b) { return b.score - a.score; });
+    return scored.slice(0, limit).map(function(item) {
+      var pos = item.titleIdx !== -1 ? Math.max(0, item.titleIdx) : Math.max(0, item.textIdx);
+      return {
+        id: item.sec.id,
+        title: item.sec.title,
+        snippet: docsSnippet(item.sec.text, q, pos),
+      };
+    });
+  }
+
+  // Pure: a text window of ±radius chars around `pos`, collapsing whitespace.
+  function docsSnippet(text, q, pos, radius) {
+    radius = radius || 60;
+    var t = String(text || '').replace(/\s+/g, ' ');
+    q = String(q || '');
+    var start = Math.max(0, pos - radius);
+    var end = Math.min(t.length, pos + q.length + radius);
+    var snippet = t.slice(start, end);
+    if (start > 0) snippet = '\u2026' + snippet;
+    if (end < t.length) snippet = snippet + '\u2026';
+    return snippet;
+  }
+
+  // Pure: escape text and wrap every case-insensitive occurrence of `q` in
+  // <mark> for visual highlight inside the suggestion item.
+  function docsHighlight(text, q) {
+    var t = String(text || '');
+    var needle = String(q || '').trim();
+    if (!needle) return escapeHtml(t);
+    var lower = t.toLowerCase();
+    var nl = needle.toLowerCase();
+    var out = '';
+    var i = 0;
+    while (i < t.length) {
+      var hit = lower.indexOf(nl, i);
+      if (hit === -1) { out += escapeHtml(t.slice(i)); break; }
+      out += escapeHtml(t.slice(i, hit));
+      out += '<mark>' + escapeHtml(t.slice(hit, hit + needle.length)) + '</mark>';
+      i = hit + needle.length;
+    }
+    return out;
+  }
+
+  function _docsCloseSuggestions() {
+    var box = document.getElementById('docs-search-suggestions');
+    var input = document.getElementById('docs-search-input');
+    if (box) { box.innerHTML = ''; box.classList.remove('open'); }
+    if (input) input.setAttribute('aria-expanded', 'false');
+    _docsSuggestions = [];
+    _docsActive = -1;
+  }
+
+  function _docsGoTo(id) {
+    var el = document.getElementById(id);
+    if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    var links = document.querySelectorAll('.docs-index__link');
+    links.forEach(function(link) {
+      link.classList.toggle('docs-index__link--active', link.getAttribute('data-section') === id);
+    });
+    _docsCloseSuggestions();
+  }
+
+  // Render the autocomplete dropdown for the current query. Empty query or
+  // no matches produce an honest empty state instead of stale suggestions.
+  function _docsRenderSuggestions(q) {
+    var box = document.getElementById('docs-search-suggestions');
+    var input = document.getElementById('docs-search-input');
+    if (!box || !input) return;
+    if (!q) { _docsCloseSuggestions(); return; }
+    _docsSuggestions = docsSearchSuggestions(_docsIndex, q, 6);
+    if (!_docsSuggestions.length) {
+      box.innerHTML = '<div class="docs-search__empty">no matches for \u201c' + escapeHtml(q) + '\u201d</div>';
+      box.classList.add('open');
+      input.setAttribute('aria-expanded', 'true');
+      return;
+    }
+    box.innerHTML = _docsSuggestions.map(function(s, i) {
+      return '<button type="button" class="docs-search__item' + (i === _docsActive ? ' active' : '') + '" data-docs-id="' + escapeHtml(s.id) + '" role="option" aria-selected="' + (i === _docsActive) + '">' +
+        '<span class="docs-search__item-title">' + docsHighlight(s.title, q) + '</span>' +
+        '<span class="docs-search__item-snippet">' + docsHighlight(s.snippet, q) + '</span>' +
+        '</button>';
+    }).join('');
+    box.classList.add('open');
+    input.setAttribute('aria-expanded', 'true');
+  }
+
   function _initDocsSearch() {
     if (_docsSearchInitialized) return;
     var input = document.getElementById('docs-search-input');
     var clear = document.getElementById('docs-search-clear');
+    var box = document.getElementById('docs-search-suggestions');
     var links = document.querySelectorAll('.docs-index__links .docs-index__link');
     if (!input || !links.length) return;
     _docsSearchInitialized = true;
+    _docsIndex = docsBuildIndex();
 
     input.addEventListener('input', function() {
       var q = this.value.trim().toLowerCase();
+      _docsActive = -1;  // reset the keyboard cursor on a new query
+      _docsRenderSuggestions(q);
       links.forEach(function(link) {
         var section = document.getElementById(link.getAttribute('data-section'));
         if (!section) return;
@@ -6733,7 +7419,50 @@ dom.walletSave?.addEventListener('click', async () => {
           link.style.display = match ? '' : 'none';
         }
       });
-      if (clear) clear.style.display = q ? '' : 'none';
+      // `block` (not '' — an empty string would remove the inline style and
+      // restore the stylesheet's `display:none`, keeping the ✕ button forever
+      // invisible; found by the docs-autocomplete E2E).
+      if (clear) clear.style.display = q ? 'block' : 'none';
+    });
+
+    // Keyboard: ↑/↓ move the cursor, Enter opens the selected section,
+    // Escape closes the dropdown.
+    input.addEventListener('keydown', function(e) {
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+        e.preventDefault();
+        if (!_docsSuggestions.length) return;
+        var step = e.key === 'ArrowDown' ? 1 : -1;
+        _docsActive = Math.max(0, Math.min(_docsSuggestions.length - 1, _docsActive + step));
+        _docsRenderSuggestions(this.value.trim().toLowerCase());
+      } else if (e.key === 'Enter') {
+        if (_docsActive >= 0 && _docsSuggestions[_docsActive]) {
+          e.preventDefault();
+          _docsGoTo(_docsSuggestions[_docsActive].id);
+        }
+      } else if (e.key === 'Escape') {
+        _docsCloseSuggestions();
+      }
+    });
+
+    // mousedown (not click) so the blur handler below never beats it — the
+    // suggestion fires before the input loses focus.
+    if (box) {
+      box.addEventListener('mousedown', function(e) {
+        var item = e.target.closest('.docs-search__item');
+        if (item) { e.preventDefault(); _docsGoTo(item.getAttribute('data-docs-id')); }
+      });
+      // Hover moves the keyboard cursor for Enter-to-open consistency.
+      box.addEventListener('mouseover', function(e) {
+        var item = e.target.closest('.docs-search__item');
+        if (!item) return;
+        _docsActive = Array.prototype.indexOf.call(box.children, item);
+        var items = box.querySelectorAll('.docs-search__item');
+        items.forEach(function(el, i) { el.classList.toggle('active', i === _docsActive); });
+      });
+    }
+
+    input.addEventListener('blur', function() {
+      setTimeout(_docsCloseSuggestions, 120);
     });
 
     clear?.addEventListener('click', function() {

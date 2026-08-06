@@ -7,8 +7,7 @@ metrics/scoring, persistence, highlights, and edge cases.
 Strategy:
   - Mock the low-level tool functions (get_braiins_orderbook, etc.)
     with controlled dicts so no real HTTP calls are made.
-  - For KissMyHash / Parasite, monkeypatch requests.get and the tool
-    function respectively.
+  - For Parasite, monkeypatch the tool function (no real HTTP).
   - Test compute_metrics + score_offer with known inputs and verify
     the math (BTC/day, cost, revenue, EV, risk level).
 """
@@ -30,7 +29,6 @@ from services.hashrate_market import (
     enrich_opportunity_dict,
     fetch_all_offers,
     fetch_braiins_offer,
-    fetch_kissmyhash_offer,
     fetch_market_history,
     fetch_mrr_offer,
     fetch_nicehash_offer,
@@ -331,90 +329,6 @@ class TestFetchNicehashOffer:
 
 
 # ══════════════════════════════════════════════════════════════════════
-#  fetch_kissmyhash_offer
-# ══════════════════════════════════════════════════════════════════════
-
-class TestFetchKissmyhashOffer:
-    def test_success_via_api(self, monkeypatch):
-        """API returns valid price → returns KissMyHash offer."""
-        mock_resp = MagicMock()
-        mock_resp.ok = True
-        mock_resp.json.return_value = {"price_btc_per_ph_day": 0.000700}
-        monkeypatch.setattr("requests.get", MagicMock(return_value=mock_resp))
-        offer = fetch_kissmyhash_offer()
-        assert offer is not None
-        assert offer.provider == "kissmyhash"
-        assert offer.price_per_th_day == pytest.approx(7e-7)
-
-    def test_fallback_to_nicehash_when_api_fails(self, monkeypatch):
-        """requests.get raises → falls back to NiceHash +10% markup."""
-        monkeypatch.setattr("requests.get", MagicMock(side_effect=ConnectionError("timeout")))
-        monkeypatch.setattr(
-            "services.hashrate_market.get_nicehash_orderbook",
-            lambda: {"price_btc_per_ph_day": 0.000500, "best_order_speed_ph": 1.0},
-        )
-        offer = fetch_kissmyhash_offer()
-        assert offer is not None
-        assert offer.provider == "kissmyhash"
-        # NiceHash price = 0.000500 / 1000 = 5e-7, markup * 1.10 = 5.5e-7
-        assert offer.price_per_th_day == pytest.approx(5.5e-7)
-        assert offer.meta["source"] == "derived_from_nicehash"
-        assert offer.meta["markup_pct"] == 10.0
-
-    def test_fallback_to_nicehash_when_api_returns_no_price(self, monkeypatch):
-        """API returns OK but no price → falls back."""
-        mock_resp = MagicMock()
-        mock_resp.ok = True
-        mock_resp.json.return_value = {"status": "no_data"}
-        monkeypatch.setattr("requests.get", MagicMock(return_value=mock_resp))
-        monkeypatch.setattr(
-            "services.hashrate_market.get_nicehash_orderbook",
-            lambda: {"price_btc_per_ph_day": 0.000400, "best_order_speed_ph": 2.0},
-        )
-        offer = fetch_kissmyhash_offer()
-        assert offer is not None
-        assert offer.provider == "kissmyhash"
-        assert offer.price_per_th_day == pytest.approx(4.4e-7)
-
-    def test_nicehash_also_fails(self, monkeypatch):
-        """Both API and NiceHash fallback fail → None."""
-        monkeypatch.setattr("requests.get", MagicMock(side_effect=Exception("API down")))
-        monkeypatch.setattr(
-            "services.hashrate_market.get_nicehash_orderbook",
-            lambda: None,
-        )
-        offer = fetch_kissmyhash_offer()
-        assert offer is None
-
-    def test_api_http_error_fallback(self, monkeypatch):
-        """API returns !ok → falls back."""
-        mock_resp = MagicMock()
-        mock_resp.ok = False
-        monkeypatch.setattr("requests.get", MagicMock(return_value=mock_resp))
-        monkeypatch.setattr(
-            "services.hashrate_market.get_nicehash_orderbook",
-            lambda: {"price_btc_per_ph_day": 0.000300, "best_order_speed_ph": 1.0},
-        )
-        offer = fetch_kissmyhash_offer()
-        assert offer is not None
-        assert offer.price_per_th_day == pytest.approx(3.3e-7)
-
-    def test_api_zero_price_ignored(self, monkeypatch):
-        """API returns zero price → treated as no data → fallback."""
-        mock_resp = MagicMock()
-        mock_resp.ok = True
-        mock_resp.json.return_value = {"price_btc_per_ph_day": 0.0}
-        monkeypatch.setattr("requests.get", MagicMock(return_value=mock_resp))
-        monkeypatch.setattr(
-            "services.hashrate_market.get_nicehash_orderbook",
-            lambda: {"price_btc_per_ph_day": 0.000200, "best_order_speed_ph": 1.0},
-        )
-        offer = fetch_kissmyhash_offer()
-        assert offer is not None  # fallback
-        assert offer.price_per_th_day == pytest.approx(2.2e-7)
-
-
-# ══════════════════════════════════════════════════════════════════════
 #  fetch_parasite_offer
 # ══════════════════════════════════════════════════════════════════════
 
@@ -635,11 +549,6 @@ class TestFetchAllOffers:
             "services.hashrate_market.get_nicehash_orderbook",
             lambda: {"price_btc_per_ph_day": 0.000600, "best_order_speed_ph": 1.0},
         )
-        # KissMyHash — mock requests.get to return valid price
-        mock_resp = MagicMock()
-        mock_resp.ok = True
-        mock_resp.json.return_value = {"price_btc_per_ph_day": 0.000700}
-        monkeypatch.setattr("requests.get", MagicMock(return_value=mock_resp))
         # Parasite
         monkeypatch.setattr(
             "agents.solo_mining_advisor.tools.get_parasite_pool_stats",
@@ -652,8 +561,8 @@ class TestFetchAllOffers:
 
         offers = fetch_all_offers()
         providers = {o.provider for o in offers}
-        assert providers == {"braiins", "mrr", "nicehash", "kissmyhash", "parasite"}
-        assert len(offers) == 5
+        assert providers == {"braiins", "mrr", "nicehash", "parasite"}
+        assert len(offers) == 4
 
     def test_isolates_failures(self, monkeypatch):
         """One provider fails → others still appear."""
@@ -672,8 +581,6 @@ class TestFetchAllOffers:
             "services.hashrate_market.get_nicehash_orderbook",
             lambda: None,
         )
-        # KissMyHash — API fails, NiceHash fallback also fails
-        monkeypatch.setattr("requests.get", MagicMock(side_effect=Exception("timeout")))
         # Parasite fails
         monkeypatch.setattr(
             "agents.solo_mining_advisor.tools.get_parasite_pool_stats",
@@ -970,6 +877,36 @@ class TestBuildHighlights:
             max_items=2,
         )
         assert len(highlights) == 2
+
+    def test_real_quotes_first_estimated_last(self):
+        """Grid order: real marketplace quotes ALWAYS sort before estimated
+        offers, no matter the (inflated) EV score of the derived model — the
+        parasite pool-fee card must never steal the top of the HASH MARKET."""
+        now = int(time.time())
+        prices = {
+            "parasite": {"price": 1e-5, "ts": now, "label": "Parasite", "estimated": True},
+            "braiins": {"price": 5e-2, "ts": now, "label": "Braiins"},
+            "mrr": {"price": 4e-2, "ts": now, "label": "MRR"},
+        }
+        highlights = build_highlights(
+            snapshot={"network": {"hashrate": 6e20}},
+            last_known_prices=prices,
+            max_items=3,
+        )
+        providers = [h["provider"] for h in highlights]
+        # Real quotes fill the first slots (score desc among themselves)...
+        assert providers[0] != "parasite" and providers[1] != "parasite"
+        assert highlights[0]["metrics"]["score"] >= highlights[1]["metrics"]["score"]
+        # ...and the estimated offer is always last.
+        assert providers[-1] == "parasite"
+        # max_items=2: real quotes take BOTH slots; the estimated offer is
+        # dropped entirely instead of displacing a real quote.
+        capped = build_highlights(
+            snapshot={"network": {"hashrate": 6e20}},
+            last_known_prices=prices,
+            max_items=2,
+        )
+        assert {h["provider"] for h in capped} == {"braiins", "mrr"}
 
     def test_zero_max_age_ignores_cache_expiry(self):
         """max_age_seconds=0 → no age filtering."""

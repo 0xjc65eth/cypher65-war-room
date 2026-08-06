@@ -8,7 +8,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
-<link rel="stylesheet" href="/static/style.css?v46">
+<link rel="stylesheet" href="/static/style.css?v50">
 <link rel="icon" href="/static/favicon.ico" sizes="any">
 <link rel="icon" type="image/png" sizes="32x32" href="/static/icon-32x32.png">
 <link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
@@ -63,6 +63,10 @@
     <button class="sidebar__link" data-module="market">
       <span class="icon">⟐</span>
       <span class="label">Hash Market</span>
+    </button>
+    <button class="sidebar__link" data-module="rentals">
+      <span class="icon">⛁</span>
+      <span class="label">Rentals</span>
     </button>
     <button class="sidebar__link" data-module="alerts">
       <span class="icon">⚠</span>
@@ -222,7 +226,7 @@
      KPI CARDS — 4 métricas principais
      ══════════════════════════════════════════════════════════════════════ -->
 <div class="kpi-row" id="kpi-row" data-module="dashboard">
-  <div class="kpi-card">
+  <div class="kpi-card" data-kpi-target="live" title="Ir para Live Mining — telemetria em tempo real">
     <span class="kpi-label">Hashrate <span class="tip-wrap" data-tip="Taxa de processamento do minerador principal"><span class="tip-wrap__icon">?</span></span></span>
     <div class="kpi-value-row">
       <span class="kpi-value" id="kpi-hashrate">—</span>
@@ -230,7 +234,7 @@
     </div>
     <span class="kpi-sub">primary worker</span>
   </div>
-  <div class="kpi-card">
+  <div class="kpi-card" data-kpi-target="probability" title="Ir para Probability — Block Hunt e estatísticas">
     <span class="kpi-label">Best Difficulty <span class="tip-wrap" data-tip="Maior dificuldade de share já encontrada"><span class="tip-wrap__icon">?</span></span></span>
     <div class="kpi-value-row">
       <span class="kpi-value kpi-value--gold" id="kpi-bestdiff">—</span>
@@ -238,7 +242,7 @@
     </div>
     <span class="kpi-sub">all-time</span>
   </div>
-  <div class="kpi-card">
+  <div class="kpi-card" data-kpi-target="live" title="Ir para Live Mining — activity feed de shares">
     <span class="kpi-label">Share Rate <span class="tip-wrap" data-tip="Shares submetidos na última hora"><span class="tip-wrap__icon">?</span></span></span>
     <div class="kpi-value-row">
       <span class="kpi-value" id="kpi-shares">—</span>
@@ -246,7 +250,7 @@
     </div>
     <span class="kpi-sub">last hour</span>
   </div>
-  <div class="kpi-card">
+  <div class="kpi-card" data-kpi-target="probability" title="Ir para Probability — estatísticas de rede e pool">
     <span class="kpi-label">Pool Hashrate <span class="tip-wrap" data-tip="Taxa de processamento total da pool"><span class="tip-wrap__icon">?</span></span></span>
     <div class="kpi-value-row">
       <span class="kpi-value kpi-value--cyan" id="kpi-poolhr">—</span>
@@ -615,6 +619,25 @@
     <div class="bh-card"><div class="bh-card__title">EXPECTED TIME</div><div class="bh-card__value" id="bh-expected-time">—</div><div class="bh-card__sub" id="bh-expected-time-sub">@ current HR</div></div>
     <div class="bh-card"><div class="bh-card__title">CUMULATIVE P</div><div class="bh-card__value" id="bh-cumulative-p">—</div><div class="bh-card__sub" id="bh-cumulative-p-sub">since session</div></div>
   </div>
+  <div class="bh-whatif" id="bh-whatif" title="Simule o impacto de uma mudança de dificuldade na probabilidade">
+    <div class="bh-whatif__header">
+      <span class="bh-whatif__title">⚡ WHAT-IF · DIFFICULTY</span>
+      <span class="badge badge--purple" id="bh-whatif-badge">0%</span>
+      <button class="chip" id="bh-whatif-reset" title="Voltar para a dificuldade atual">⟲ reset</button>
+    </div>
+    <div class="bh-whatif__slider-row">
+      <span class="bh-whatif__min">−50%</span>
+      <input type="range" class="bh-whatif__slider" id="bh-whatif-slider" min="-50" max="100" step="1" value="0" aria-label="Variação simulada da dificuldade da rede">
+      <span class="bh-whatif__max">+100%</span>
+    </div>
+    <div class="bh-whatif__grid">
+      <div class="bh-whatif__cell"><div class="bh-whatif__cell-title">NET DIFF</div><div class="bh-whatif__cell-value" id="bh-whatif-diff">—</div></div>
+      <div class="bh-whatif__cell"><div class="bh-whatif__cell-title">P(BLOCK)/SHARE</div><div class="bh-whatif__cell-value bh-card__value--purple" id="bh-whatif-pblock">—</div></div>
+      <div class="bh-whatif__cell"><div class="bh-whatif__cell-title">EXPECTED TIME</div><div class="bh-whatif__cell-value" id="bh-whatif-etime">—</div></div>
+      <div class="bh-whatif__cell"><div class="bh-whatif__cell-title">CUMULATIVE P</div><div class="bh-whatif__cell-value" id="bh-whatif-cum">—</div></div>
+    </div>
+    <div class="bh-whatif__note">simulação · hash power constante · share rate igual ao atual</div>
+  </div>
 </section>
 
 <!-- ─── HASHMARKET ─── -->
@@ -632,7 +655,6 @@
     <button class="chip" data-mkt-filter="braiins">⊛ Braiins</button>
     <button class="chip" data-mkt-filter="nicehash">◈ NiceHash</button>
     <button class="chip" data-mkt-filter="mrr">⛁ MRR</button>
-    <button class="chip" data-mkt-filter="kissmyhash">♡ KissMyHash</button>
     <button class="chip" data-mkt-filter="parasite">⌂ Parasite</button>
   </div>
   <div class="mkt-grid" id="mkt-grid">
@@ -684,6 +706,45 @@
   <div class="dm-actions">
     <button class="chip" id="dm-goto-offers" title="Ver a melhor oferta do mercado">⚡ BEST OFFER</button>
     <button class="chip chip--affiliate" id="dm-buy-affiliate" title="Comprar hashrate em um clique (link de afiliado)" hidden>⚡ BUY</button>
+  </div>
+</section>
+
+<!-- ─── RENTALS (P2) — performance dos aluguéis do operador (MRR + Braiins) ─── -->
+<section class="panel panel--rentals panel--large" id="rentals-panel" data-module="rentals">
+  <div class="panel__header">
+    <div class="panel__eyebrow">⛁ RENTALS · PERFORMANCE</div>
+    <div class="panel__tools">
+      <span class="badge badge--mute" id="rentals-count-badge">—</span>
+      <button class="chip" id="rentals-refresh" title="Refresh">⟳</button>
+    </div>
+  </div>
+  <div class="rentals-strip" id="rentals-strip">
+    <div class="rentals-strip__card"><div class="rentals-strip__title">MRR RENTER</div><div class="rentals-strip__value" id="rentals-mrr-active">—</div><div class="rentals-strip__sub">active</div></div>
+    <div class="rentals-strip__card"><div class="rentals-strip__title">MRR HISTORY</div><div class="rentals-strip__value" id="rentals-mrr-history">—</div><div class="rentals-strip__sub">completed</div></div>
+    <div class="rentals-strip__card"><div class="rentals-strip__title">MRR OWNER</div><div class="rentals-strip__value" id="rentals-mrr-owner">—</div><div class="rentals-strip__sub">rigs leased</div></div>
+    <div class="rentals-strip__card"><div class="rentals-strip__title">BRAIINS</div><div class="rentals-strip__value" id="rentals-braiins">—</div><div class="rentals-strip__sub">contracts</div></div>
+  </div>
+  <div class="rentals-filters" id="rentals-filters">
+    <button class="chip active" data-rentals-filter="active">Active</button>
+    <button class="chip" data-rentals-filter="history">History</button>
+    <button class="chip" data-rentals-filter="owner">Owner</button>
+    <button class="chip" data-rentals-filter="contracts">Braiins</button>
+  </div>
+  <div class="rentals-list" id="rentals-list">
+    <div class="empty-state" style="grid-column:1/-1;border:none">
+      <div class="empty-state__icon">⛁</div>
+      <div class="empty-state__title">Loading rentals…</div>
+      <div class="empty-state__desc">Fetching operator rental performance (MRR + Braiins)</div>
+    </div>
+  </div>
+  <div class="rentals-detail" id="rentals-detail" hidden>
+    <div class="rentals-detail__head">
+      <span class="rentals-detail__title" id="rentals-detail-title">—</span>
+      <button class="chip" id="rentals-detail-close">✕ close</button>
+    </div>
+    <div class="rentals-detail__grid" id="rentals-detail-grid"></div>
+    <div class="chart-wrap rentals-detail__chart"><canvas id="rentals-detail-chart"></canvas></div>
+    <div class="rentals-detail__log" id="rentals-detail-log"></div>
   </div>
 </section>
 
@@ -813,6 +874,9 @@
         <button type="button" class="btn btn--mini" id="axe-test-conn">🔌 TEST CONNECTIVITY</button>
         <button type="button" class="btn btn--mini axe-wiz__back" data-wiz-back="1">← method</button>
       </div>
+      <!-- Firmware auto-detection preview — live chip showing detected
+           firmware/model/protocol as the operator types an IP (debounced). -->
+      <div class="axe-fw-preview" id="axe-fw-preview" style="display:none"></div>
       <div class="axe-wiz__test" id="axe-test-result" style="margin-top:6px"></div>
       <div class="axe-wiz__manual-name" style="margin-top:6px;display:none" id="axe-manual-name-row">
         <input class="field__input" type="text" id="axe-add-name" placeholder="miner name (optional)" style="width:180px">
@@ -1614,8 +1678,9 @@
 <nav class="docs-index" id="docs-index">
   <div class="docs-index__title">SECTIONS</div>
   <div class="docs-search" id="docs-search">
-    <input type="text" class="docs-search__input" id="docs-search-input" placeholder="filter docs…" autocomplete="off" spellcheck="false">
+    <input type="text" class="docs-search__input" id="docs-search-input" placeholder="search docs…" autocomplete="off" spellcheck="false" role="combobox" aria-expanded="false" aria-controls="docs-search-suggestions" aria-autocomplete="list">
     <span class="docs-search__clear" id="docs-search-clear">✕</span>
+    <div class="docs-search__suggestions" id="docs-search-suggestions" role="listbox" aria-label="Docs suggestions"></div>
   </div>
   <div class="docs-index__links" id="docs-index-links">
     <a href="#docs-overview" class="docs-index__link" data-section="docs-overview">1. Overview</a>
@@ -1701,7 +1766,7 @@
 <!-- 5 ── Hash Market ── -->
 <section class="doc-section" id="docs-market">
   <h2 class="doc-section__title">5 · Hash Market</h2>
-  <p class="doc-section__text">The Hash Market panel aggregates live hashrate pricing from Braiins, NiceHash, MiningRigRentals, KissMyHash, and Parasite Pool. Prices are shown in BTC/TH/day — or sats/TH/day for tiny values (below 0.001 BTC/TH/d) — and hashrate automatically scales to PH/s when appropriate.</p>
+  <p class="doc-section__text">The Hash Market panel aggregates live hashrate pricing from Braiins, NiceHash, MiningRigRentals, and Parasite Pool. Prices are shown in BTC/TH/day — or sats/TH/day for tiny values (below 0.001 BTC/TH/d) — and hashrate automatically scales to PH/s when appropriate.</p>
   <ul class="doc-list">
     <li><strong>Price per TH/d</strong> — how much 1 TH/s earns in 24 hours at current market rate</li>
     <li><strong>Best offer</strong> — the highest paying source right now, highlighted with a badge</li>
@@ -2204,6 +2269,10 @@
             a ação passa pelo <strong>Safety Engine</strong> (que exige confirmação para comandos destrutivos) e é registrada no log de auditoria.
             Use o <em>cooldown</em> para evitar disparos repetidos (ex.: mínimo de 60s entre execuções).
           </div>
+          <div class="ac-exec-strip" id="ac-exec-strip" style="margin:6px 0;padding:6px 8px;border:1px dashed var(--border);border-radius:4px;font-size:10px;line-height:1.5">
+            <span style="color:var(--text-tertiary);letter-spacing:0.06em">ÚLTIMAS EXECUÇÕES</span>
+            <div id="ac-exec-list" style="margin-top:4px"><span class="ac-empty" style="color:var(--text-muted)">no executions yet</span></div>
+          </div>
           <div class="ac-rules-list" id="ac-rules-list">
             <div class="empty">no rules</div>
           </div>
@@ -2289,7 +2358,7 @@
     <span id="next-poll"></span>
   </div>
 
-  <script src="/static/app.js?v50"></script>
+  <script src="/static/app.js?v54"></script>
 </div> <!-- end #app-main -->
 </div> <!-- end #app-layout -->
   <!-- Matrix rain canvas (full-screen background effect) -->

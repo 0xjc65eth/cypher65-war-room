@@ -233,9 +233,13 @@ def _probe_cgminer_version(ip: str, port: int = CGMINER_PORT, timeout: float = T
 def probe_host(ip: str, timeout: float = HTTP_PROBE_TIMEOUT) -> dict:
     """Probe a single host for miner identity.
 
+    Uses ``detect_firmware()`` (core/registry/detector.py) as the primary
+    detection path — this automatically identifies AxeOS, Braiins OS+ and
+    generic cgminer devices in the correct order.
+
     Returns a discovery dict (or None when nothing miner-like responds):
       {
-        'ip', 'type' ('bitaxe'|'cgminer'), 'port',
+        'ip', 'type' ('bitaxe'|'braiins'|'cgminer'), 'port',
         'model', 'hostname', 'firmware', 'version', 'hashrate_hs',
         'mac', 'pool_url', 'pool_user',
       }
@@ -245,58 +249,113 @@ def probe_host(ip: str, timeout: float = HTTP_PROBE_TIMEOUT) -> dict:
         return None
     ip = str(ip).strip()
 
-    # ── Path 1: Bitaxe / AxeOS HTTP API (port 80) ────────────────────────
-    try:
-        from .connector import AxeOSConnector
-        conn = AxeOSConnector(ip, timeout=timeout)
-        info = conn.fetch_info()
-        if not isinstance(info, dict):
-            info = {}
-        hashrate = info.get("hashrate")
+    # ── Unified detection via core/registry/detector ───────────────────
+    from core.registry.detector import detect_firmware
+
+    fw = detect_firmware(ip)
+    if not fw or not fw.get("reachable"):
+        return None
+
+    adapter_type = fw.get("adapter_type", "unknown")
+    firmware = fw.get("firmware", "")
+    version = fw.get("version", "")
+    model = fw.get("model", "")
+
+    # ── Rich info for AxeOS devices (AxeOSConnector gives hostname, hashrate, pool) ──
+    hostname = ""
+    hashrate_hs = 0
+    mac = ""
+    pool_url = ""
+    pool_user = ""
+
+    if adapter_type == "bitaxe":
         try:
-            hashrate_hs = int(hashrate or 0)
-        except (TypeError, ValueError):
-            hashrate_hs = 0
-        model = str(info.get("model") or info.get("board") or "Bitaxe")
-        return {
-            "ip": ip,
-            "type": "bitaxe",
-            "port": BITAXE_PORT,
-            "model": model,
-            "hostname": str(info.get("hostname", "")),
-            "firmware": str(info.get("firmware", "")),
-            "version": str(info.get("version", "")),
-            "hashrate_hs": hashrate_hs,
-            "mac": str(info.get("mac", "")),
-            "pool_url": str(info.get("pool", {}).get("url", "")) if isinstance(info.get("pool"), dict) else str(info.get("poolUrl", "")),
-            "pool_user": str(info.get("poolUser", "")),
-        }
-    except Exception as e:  # noqa: BLE001 — probe must never raise; fall through to cgminer
-        log.debug("[scan] bitaxe probe %s failed: %s", ip, e)
+            from .connector import AxeOSConnector
+            conn = AxeOSConnector(ip, timeout=timeout)
+            info = conn.fetch_info()
+            if isinstance(info, dict):
+                hostname = str(info.get("hostname", ""))
+                mac = str(info.get("mac", ""))
+                try:
+                    hashrate_hs = int(info.get("hashrate") or 0)
+                except (TypeError, ValueError):
+                    hashrate_hs = 0
+                pool = info.get("pool")
+                if isinstance(pool, dict):
+                    pool_url = str(pool.get("url", ""))
+                    pool_user = str(pool.get("user", ""))
+                else:
+                    pool_url = str(info.get("poolUrl", ""))
+                    pool_user = str(info.get("poolUser", ""))
+                if not model:
+                    model = str(info.get("model") or info.get("board") or "Bitaxe")
+        except Exception as e:  # noqa: BLE001
+            log.debug("[scan] AxeOSConnector rich-info failed for %s: %s", ip, e)
 
-    # ── Path 2: cgminer JSON-over-TCP (port 4028) ────────────────────────
-    ver = _probe_cgminer_version(ip)
-    if ver and ver.get("STATUS"):
-        model = ""
-        for entry in (ver.get("VERSION") or []):
-            if isinstance(entry, dict):
-                model = str(entry.get("Description") or entry.get("Type") or entry.get("Miner") or "")
-                break
-        return {
-            "ip": ip,
-            "type": "cgminer",
-            "port": CGMINER_PORT,
-            "model": model or "cgminer",
-            "hostname": "",
-            "firmware": "",
-            "version": str((ver.get("VERSION") or [{}])[0].get("CGMiner") or "") if isinstance(ver.get("VERSION"), list) and ver.get("VERSION") else "",
-            "hashrate_hs": 0,
-            "mac": "",
-            "pool_url": "",
-            "pool_user": "",
-        }
+    elif adapter_type == "braiins":
+        # Braiins OS+ detected via REST API or cgminer socket — the detector
+        # already captured firmware/version/model from the API response.
+        # Rich info (hashrate/hostname) requires an extra cgminer 'summary'
+        # call on port 4028.
+        port = CGMINER_PORT
+        try:
+            ver = _probe_cgminer_version(ip)
+            if ver and ver.get("STATUS"):
+                # Try 'summary' for hashrate
+                summary = None
+                sock = None
+                try:
+                    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    sock.settimeout(TCP_PROBE_TIMEOUT)
+                    sock.connect((ip, CGMINER_PORT))
+                    sock.sendall(b'{"command":"summary"}\n')
+                    data = b""
+                    while True:
+                        chunk = sock.recv(4096)
+                        if not chunk:
+                            break
+                        data += chunk
+                        if any(tok in chunk for tok in _CGMINER_EOL_TOKENS) or len(data) > 65536:
+                            break
+                    summary = _extract_json_lenient(data)
+                except Exception:
+                    pass
+                finally:
+                    if sock:
+                        try:
+                            sock.close()
+                        except OSError:
+                            pass
 
-    return None
+                if summary and summary.get("STATUS"):
+                    summary_data = summary.get("SUMMARY", [{}])
+                    if isinstance(summary_data, list) and summary_data:
+                        sd = summary_data[0]
+                        try:
+                            hashrate_hs = int(float(sd.get("GHS 5s", sd.get("GHS av", 0)) or 0) * 1e9)
+                        except (ValueError, TypeError):
+                            hashrate_hs = 0
+        except Exception as e:
+            log.debug("[scan] braiins rich-info failed for %s: %s", ip, e)
+
+    elif adapter_type == "cgminer":
+        port = CGMINER_PORT
+        if not model:
+            model = fw.get("model") or "cgminer"
+
+    return {
+        "ip": ip,
+        "type": adapter_type,
+        "port": BITAXE_PORT if adapter_type == "bitaxe" else CGMINER_PORT,
+        "model": model or adapter_type,
+        "hostname": hostname,
+        "firmware": firmware,
+        "version": version,
+        "hashrate_hs": hashrate_hs,
+        "mac": mac,
+        "pool_url": pool_url,
+        "pool_user": pool_user,
+    }
 
 
 # ── Single-host connectivity diagnosis ──────────────────────────────────
@@ -305,8 +364,12 @@ def diagnose_host(ip: str, timeout: float = HTTP_PROBE_TIMEOUT) -> dict:
     """Deep connectivity diagnosis for a single host (onboarding wizard).
 
     Runs every probe available for one IP and returns a unified result so the
-    UI can show a step-by-step check (DNS → AxeOS HTTP → cgminer TCP) before
-    the operator commits to registering the device. Never raises.
+    UI can show a step-by-step check (DNS → AxeOS HTTP → Braiins → cgminer TCP)
+    before the operator commits to registering the device. Never raises.
+
+    Detection now uses ``detect_firmware()`` (core/registry/detector.py) as a
+    supplemental path that correctly identifies Braiins OS+ devices (REST
+    :80/:50051 or cgminer socket with "BOSminer" version string).
 
     Returns:
       {
@@ -317,7 +380,10 @@ def diagnose_host(ip: str, timeout: float = HTTP_PROBE_TIMEOUT) -> dict:
         'https_tcp': bool,           # TCP :443 open (modern Braiins/Antminer)
         'http_server': bool,         # TCP :80 open but NOT ESP-Miner (auth page)
         'reachable': bool,           # any protocol detected
-        'protocol': 'bitaxe'|'cgminer'|None,
+        'protocol': 'bitaxe'|'braiins'|'cgminer'|None,
+        'adapter_type': str,         # canonical adapter type (bitaxe/braiins/cgminer)
+        'detected_firmware': str,    # firmware label (e.g. "Braiins OS+")
+        'detected_model': str,       # model from auto-detection
         'device_info': {...} | None, # model/hostname/firmware/hashrate when detected
         'elapsed_ms': int,
         'error_detail': str | None,
@@ -334,6 +400,9 @@ def diagnose_host(ip: str, timeout: float = HTTP_PROBE_TIMEOUT) -> dict:
         "http_server": False,
         "reachable": False,
         "protocol": None,
+        "adapter_type": "",
+        "detected_firmware": "",
+        "detected_model": "",
         "device_info": None,
         "elapsed_ms": 0,
         "error_detail": None,
@@ -401,8 +470,41 @@ def diagnose_host(ip: str, timeout: float = HTTP_PROBE_TIMEOUT) -> dict:
                 "hashrate_hs": 0,
             }
 
+    # ── Supplemental: detect_firmware() for Braiins OS+ ─────────────────
+    # The legacy AxeOS+cgminer probes above may miss Braiins OS+ devices
+    # (REST :80/:50051 + cgminer socket "BOSminer"). Only run the unified
+    # detector when nothing was found yet — it makes its own HTTP requests
+    # (3s timeout each) and adds latency with no benefit when legacy probes
+    # already succeeded.
     if not result["reachable"]:
-        detail = result["error_detail"] or "no miner protocol responded (checked AxeOS :80 and cgminer :4028)"
+        try:
+            from core.registry.detector import detect_firmware
+            fw = detect_firmware(ip)
+            if fw and fw.get("reachable"):
+                adapter = fw.get("adapter_type", "")
+                result["adapter_type"] = adapter
+                result["detected_firmware"] = fw.get("firmware", "")
+                result["detected_model"] = fw.get("model", "")
+                if adapter:
+                    result["reachable"] = True
+                    result["protocol"] = adapter
+                    if not result["device_info"]:
+                        result["device_info"] = {
+                            "model": fw.get("model", adapter),
+                            "hostname": "",
+                            "firmware": fw.get("firmware", ""),
+                            "version": fw.get("version", ""),
+                            "hashrate_hs": 0,
+                        }
+                    # Mark the correct probe flag so the connectivity report
+                    # shows the right row.
+                    if adapter == "braiins":
+                        result["cgminer_tcp"] = True
+        except Exception:
+            pass  # supplemental probe must never break the diagnosis
+
+    if not result["reachable"]:
+        detail = result["error_detail"] or "no miner protocol responded (checked AxeOS :80, Braiins :80/:50051 and cgminer :4028)"
         # D · Protocol-presence probes: even when no miner protocol answered,
         # a TCP :443 or a non-ESP-Miner web server on :80 is strong evidence
         # of a MODERN authenticated miner (Braiins OS+/Antminer login page).

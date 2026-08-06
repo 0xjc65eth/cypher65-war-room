@@ -28,7 +28,7 @@ fails, the UI shows a stale/offline badge with the last real cached value, never
 | **Probability Engine** | P(block)/share, expected block time, cumulative P progression, hash-proximity ladder, quantum-lock health score |
 | **Profitability** | POOL / SOLO / RENTAL / LEASE scenarios with break-even, fiat conversion (USD/BRL/EUR/GBP), variance-aware math |
 | **AXE Fleet Command** | ASIC registry with chip/VR temperature, 1h hashrate, efficiency (J/TH), power (W), latency/ping advice, remote commands |
-| **Hash Market** | Braiins / NiceHash / KissMyHash / Parasite rental offers, BTC + USD per TH/day, provider filters, warm background cache |
+| **Hash Market** | Braiins / NiceHash / MRR / Parasite rental offers, BTC + USD per TH/day, provider filters, warm background cache |
 | **Alerts & Automations** | Rule engine with cooldowns, history, tenant-scoped persistence |
 | **AI Operator** | Natural-language assistant over fleet, probability, market and metrics |
 | **Multi-tenant** | JWT auth with tenant isolation for fleet, alerts and automations |

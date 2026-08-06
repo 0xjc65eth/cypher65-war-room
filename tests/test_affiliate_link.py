@@ -104,9 +104,9 @@ class TestResolveAffiliateLink:
         assert resolve_affiliate_link(self.OFFERS, affiliate_map_from_env()) is None
 
     def test_offers_missing_source_field_fallback(self):
-        offers = [{"source": "kissmyhash", "price_per_th_day": 0.0002, "estimated": False}]
-        out = resolve_affiliate_link(offers, {"kissmyhash": "https://kmh.example/ref"})
-        assert out["provider"] == "kissmyhash"
+        offers = [{"source": "braiins", "price_per_th_day": 0.0002, "estimated": False}]
+        out = resolve_affiliate_link(offers, {"braiins": "https://braiins.example/ref"})
+        assert out["provider"] == "braiins"
 
 
 class TestAttachAffiliate:

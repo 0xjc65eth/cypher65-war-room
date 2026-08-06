@@ -7,7 +7,6 @@ Author: built by Buffy for Julio Cesar
 import os
 import json
 import time
-import random
 import sqlite3
 import threading
 import collections
@@ -34,11 +33,7 @@ from helpers import (
     compute_lender_profitability,
     compute_pool_rental_break_even,
     build_decision_matrix,
-    affiliate_map_from_env,
-    attach_affiliate,
     enrich_account_ranks,
-    build_command_center,
-    AP_PEAK_WINDOW_S, AP_TEMP_HIGH_C,
 )
 
 import services.state as _shared_state
@@ -51,24 +46,25 @@ from agents import solo_mining_advisor as _opp_advisor  # monkeypatch-safe: acce
 from routes.solo_mining_routes import solo_mining_bp
 from routes.device_control import device_control_bp
 from services.probability_engine import register_probability_routes
-from services.probability import calculate_multiple_periods, _seconds_to_human
 from services.hashrate_market import (
     PH_TO_TH,
     fetch_all_offers as _fetch_all_offers,
     score_offer as _score_offer,
-    build_highlights as _build_market_highlights,
     persist_market_history as _persist_market_history,
     fetch_market_history as _fetch_market_history,
     enrich_opportunity_dict as _enrich_opportunity,
+    market_offer_sort_key as _market_offer_sort_key,
 )
+import services.rental_performance as _rental_perf  # RENTALS panel (MRR + Braiins)
 from axe_fleet.routes import axe_fleet_bp, agent_bp, agent_assets_bp, init_routes as _init_axe_routes
 from axe_fleet.registry import DeviceRegistry
 from routes.alerts_routes import alerts_bp, _set_get_db as _alerts_set_get_db
 from routes.settings_routes import settings_bp
+from routes.export_routes import export_bp
+from routes.dashboard_routes import dashboard_bp
 from services.tenant import require_tenant, role_required, SELF_HOST_MAX_WORKERS
 import services.db_backup as _db_backup  # C4: automatic SQLite backup + boot integrity check
 from services.licensing import (
-    pro_required,
     is_pro,
     license_status as _license_status,
     issue_license as _licensing_issue,
@@ -156,6 +152,12 @@ app.register_blueprint(auth_bp)
 
 # ── Register Settings blueprint (FASE 2: wallet history) ───────────────
 app.register_blueprint(settings_bp)
+
+# ── Register Export blueprint (Fase 6: migrated from app.py) ──────────
+app.register_blueprint(export_bp)
+
+# ── Register Dashboard blueprint (Fase 6 · PR2: migrated from app.py) ─
+app.register_blueprint(dashboard_bp)
 
 # ━━ Simple in-memory rate limiter ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 _rate_limit_store = {}  # {ip: [timestamps]}
@@ -1716,6 +1718,17 @@ try:
 except Exception as e:
     log.warning("[alert_automation] failed to initialize engines: %s", e)
 
+# Fase 6: inject the boot-initialized automation engine + LIVE core registry
+# into snapshot_enrichment so /api/snapshot's auto_pilot preview evaluates
+# against the same in-memory telemetry the poll loop uses (a fresh DB reload
+# would lose current_telemetry and rules would never match). Same setter
+# pattern as routes/alerts_routes._set_get_db.
+try:
+    from services.snapshot_enrichment import set_auto_pilot_deps as _set_ap_deps
+    _set_ap_deps(_automation_engine, _core_registry)
+except Exception as e:
+    log.warning("[auto-pilot] dep injection failed: %s", e)
+
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 #  State cache — single source of truth
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -1809,6 +1822,11 @@ DEFAULT_SETTINGS = {
 
     # display
     "show_test_alerts": "0",       # 1 → allow injection of synthetic demo alerts
+
+    # exchange credentials (kept in sync with services/settings.py)
+    "mrr_api_key": "",             # MiningRigRentals API key (Settings → MRR)
+    "mrr_api_secret": "",          # MiningRigRentals API secret (Settings → MRR)
+    "braiins_api_key": "",         # Braiins Hashpower owner token (Settings → Braiins)
 }
 
 _settings_cache = None
@@ -2380,7 +2398,6 @@ def _reset_session_state():
     _shared_state.last_known_prices["braiins"] = None
     _shared_state.last_known_prices["mrr"] = None
     _shared_state.last_known_prices["nicehash"] = None
-    _shared_state.last_known_prices["kissmyhash"] = None
     _shared_state.last_known_prices["parasite"] = None
     # Reset stale-while-revalidate caches so a fresh session never inherits
     # another wallet's "last valid" network/price values.
@@ -4055,189 +4072,10 @@ def docs_agent_guide():
     return render_template("agent_guide.html", guide_html=Markup(html))
 
 
-def build_auto_pilot_context() -> dict:
-    """P1 Auto-Pilot advisory context block (read-only, never executes).
-
-    Feeds the advisory Command Center rules with REAL data:
-      - peak_hashrate_7d: MAX(worker_hashrate) over the last 7 days from
-        proximity_history (the sampler persists it every poll). 0.0 when the
-        history is empty / DB hiccup — the hashrate_drop rule gates on > 0,
-        so a cold boot never fires a false "drop" card.
-      - automation_preview: AutomationEngine.preview_rules() — which enabled
-        automation rules WOULD fire right now, evaluated against the core
-        registry's devices, WITHOUT executing anything. The advisory card
-        shows "rule X would do Y" and lets the operator confirm/disarm.
-      - temp_high_c: the thermal threshold the frontend/rule uses (shared
-        constant so the panel can label the limit honestly).
-
-    Tenant-scoped + fail-closed: preview_rules() runs with the request's
-    tenant_id (default 'default'), so the advisory card can NEVER surface
-    another tenant's automation rule names — and any hiccup yields the
-    empty/zero block instead of breaking the snapshot.
-    """
-    try:
-        # Tenant resolution mirrors the axe_fleet scoping in /api/snapshot.
-        # Never fall back to '' (unscoped = ALL tenants' rules): a resolution
-        # hiccup must not leak another tenant's rule names into this card.
-        tenant_id = "default"
-        try:
-            from services.tenant import get_tenant_id as _resolve_tenant
-            tenant_id = _resolve_tenant() or "default"
-        except Exception:
-            tenant_id = "default"
-
-        peak_7d = 0.0
-        conn = None
-        try:
-            conn = get_db()
-            row = conn.execute(
-                "SELECT MAX(worker_hashrate) FROM proximity_history "
-                "WHERE ts >= ?",
-                (int(time.time()) - AP_PEAK_WINDOW_S,),
-            ).fetchone()
-            if row and row[0]:
-                peak_7d = float(row[0])
-        except Exception:
-            peak_7d = 0.0
-        finally:
-            if conn is not None:
-                try:
-                    conn.close()
-                except Exception:
-                    pass
-
-        automation_preview = []
-        try:
-            if _automation_engine is not None and _core_registry is not None:
-                _core_devices = _core_registry.list_devices()
-                automation_preview = _automation_engine.preview_rules(
-                    _core_devices, tenant_id=tenant_id)
-        except Exception:
-            automation_preview = []
-
-        return {
-            "peak_hashrate_7d": peak_7d,
-            "automation_preview": automation_preview,
-            "temp_high_c": AP_TEMP_HIGH_C,
-        }
-    except Exception:
-        return {"peak_hashrate_7d": 0.0, "automation_preview": [], "temp_high_c": AP_TEMP_HIGH_C}
-
-
-@app.route("/api/snapshot")
-def api_snapshot():
-    """Return the full dashboard snapshot, including a small set of
-    market highlights derived from cached prices (no extra HTTP calls)."""
-    resp = dict(latest_snapshot)
-    # Multi-tenant isolation (fleet-scope audit): latest_snapshot is a single
-    # GLOBAL dict fed by the deployment-wide poll loop (which polls every
-    # tenant's devices), so resp["axe_fleet"] would leak all tenants' miners
-    # to every caller. Scope it to the resolved tenant's registered devices:
-    # open self-host mode resolves to "default" (all devices live there → the
-    # dashboard keeps showing the full fleet, unchanged); multi-tenant
-    # deployments only see their own miners. Never raises on failure — the
-    # snapshot must not break because of a scoping hiccup.
-    try:
-        from services.tenant import get_tenant_id as _resolve_tenant
-        _fleet = resp.get("axe_fleet") or []
-        if _fleet and _axe_registry is not None:
-            _tenant_ids = {
-                _d["id"] for _d in _axe_registry.list_devices(tenant_id=_resolve_tenant())
-            }
-            resp["axe_fleet"] = [
-                _t for _t in _fleet
-                if _t.get("device_id") in _tenant_ids or _t.get("id") in _tenant_ids
-            ]
-    except Exception:
-        # FAIL-CLOSED: a scoping hiccup must never re-expose the global
-        # (cross-tenant) fleet — serve an empty fleet instead.
-        resp["axe_fleet"] = []
-    # Block Hunt panel: inject computed payload so renderBlockHunt(snap)
-    # reads snap.block_hunt directly (no separate fetch needed).
-    resp["block_hunt"] = _compute_block_hunt(latest_snapshot)
-    # Ensure market data is populated by fetching offers (cached internally)
-    # This populates _shared_state.last_known_prices for build_highlights
-    _get_hashrate_market_offers()
-    # Build market highlights from cached prices (no HTTP calls — safe on every poll)
-    highlights = _build_market_highlights(
-        latest_snapshot, _shared_state.last_known_prices, max_age_seconds=120
-    )
-    resp["market_highlights"] = highlights
-    # market_data: structured {offers, best_price, updated_at} expected by frontend renderMarket()
-    cache = _shared_state.market_data_cache
-    if highlights and len(highlights) > 0:
-        # Sort by score descending; best price = lowest price_per_th_day.
-        # ONLY real marketplace quotes may win "best price": estimated offers
-        # (parasite pool-fee model, kissmyhash fallback) are NOT rental prices
-        # — crowning them would claim you can rent hashrate at a pool-fee rate
-        # (measured live: ~1 sat/TH/d vs ~10k-50k real market). They still
-        # render in the cards (flagged ESTIMATED) but never as "best deal".
-        sorted_hl = sorted(highlights, key=lambda x: x.get("metrics", {}).get("score", 0), reverse=True)
-        market_hl = [x for x in sorted_hl if not x.get("estimated")]
-        best_offer = min(market_hl or sorted_hl, key=lambda x: x.get("price_per_th_day", 999))
-        best_price_raw = best_offer.get("price_per_th_day")
-        # Same sats/BTC convention as the frontend _fmtBtcPerTh() — a raw
-        # "{:.6f}" would render 1e-10 as a misleading "0.000000 BTC/TH/d".
-        if best_price_raw and best_price_raw >= 0.001:
-            best_price_str = "{:.6f} BTC/TH/d".format(best_price_raw)
-        elif best_price_raw:
-            best_price_str = "{:.2f} sats/TH/d".format(best_price_raw * 1e8)
-        else:
-            best_price_str = None
-        resp["market_data"] = {
-            "offers": sorted_hl,
-            "best_price": best_price_str,
-            "updated_at": int(time.time()),
-            "provider_count": len(sorted_hl),
-            "health": _hashrate_market_health(),
-        }
-        # P0-3: one-click affiliate link (honest — operator-configured URLs
-        # only; None → the panel falls back to the offers-grid CTA). Attaches
-        # to market_data AND mirrors into the Decision Matrix so the panel is
-        # self-contained (same shape on the cached path below).
-        attach_affiliate(resp, sorted_hl, affiliate_map_from_env())
-        # Update shared cache
-        cache["offers"] = sorted_hl
-        cache["best_price"] = best_price_str
-        cache["updated_at"] = int(time.time())
-        cache["loading"] = False
-        cache["error"] = None
-    else:
-        # Use cache if available (even if slightly stale), fall back to empty
-        if cache["offers"] and cache["offers"] != []:
-            resp["market_data"] = {
-                "offers": cache["offers"],
-                "best_price": cache["best_price"],
-                "updated_at": cache["updated_at"],
-                "provider_count": len(cache["offers"]),
-                "cached": True,
-            }
-            attach_affiliate(resp, cache["offers"], affiliate_map_from_env())
-        else:
-            resp["market_data"] = {
-                "offers": [],
-                "best_price": None,
-                "updated_at": 0,
-                "provider_count": 0,
-                "loading": True,
-                "affiliate": None,
-            }
-    # P1 Auto-Pilot advisory: real-data context block for the advisory rules.
-    #   - peak_hashrate_7d: true MAX worker hashrate over the last 7 days
-    #     (proximity_history is written by the proximity sampler each poll).
-    #   - automation_preview: read-only evaluation of which enabled automation
-    #     rules WOULD fire right now — never executes (preview_rules).
-    # Injected BEFORE build_command_center so the hashrate_drop / temp_high /
-    # automation_ready rules see it (pure aggregation stays pure).
-    resp["auto_pilot"] = build_auto_pilot_context()
-    # P0-3: Command Center — contextual action cards (advisory, read-only).
-    # Computed from `resp` (NOT latest_snapshot) and AFTER attach_affiliate,
-    # so the affiliate_buy rule sees the real market_data.affiliate link the
-    # way the frontend will. Pure aggregation, no network/DB — safe on every
-    # /api/snapshot poll. Frontend renders up to 3 cards; each card navigates
-    # the operator to the right module.
-    resp["command_center"] = build_command_center(resp)
-    return jsonify(resp)
+# Fase 6 · PR2: /api/snapshot now served by dashboard_bp.
+# _compute_block_hunt is shared with the blueprint via
+# services/snapshot_enrichment — the thin delegating wrapper at the END of
+# this file keeps `api_block_hunt` working with the single implementation.
 
 
 @app.route("/api/pool-stats")
@@ -4246,217 +4084,33 @@ def api_pool_stats():
     return jsonify(latest_snapshot.get("pool") or {})
 
 
-@app.route("/api/history")
-def api_history():
-    metric = request.args.get("metric", "worker_hashrate")
-    rng = request.args.get("range", "24h")
-    now = int(time.time())
-    span = {
-        "15m": 900,
-        "1h": 3600,
-        "6h": 6 * 3600,
-        "24h": 86400,
-        "7d": 7 * 86400,
-        "30d": 30 * 86400,
-        "all": 10**10,
-    }.get(rng, 86400)
-    since = now - span
-    allowed = {
-        "worker_hashrate",
-        "pool_hashrate",
-        "pool_work_since_last_block",
-        "account_total_diff",
-        "leaderboard_combined_score",
-        "network_difficulty",
-        "network_hashrate",
-        "btc_usd",
-        "worker_best_diff",
-    }
-    if metric not in allowed:
-        return jsonify({"error": f"invalid metric {metric}"}), 400
-    conn = get_db()
-    c = conn.cursor()
-    c.execute(
-        f"SELECT ts, {metric} FROM snapshots WHERE ts >= ? AND {metric} IS NOT NULL ORDER BY ts ASC",
-        (since,),
-    )
-    rows = [{"ts": r["ts"], "value": r[metric]} for r in c.fetchall()]
-    conn.close()
-    return jsonify({"metric": metric, "rows": rows, "range": rng})
+# Moved to routes/dashboard_routes.py (dashboard_bp) — Fase 6 · PR2
+# /api/halving → dashboard_bp
+# /api/mempool_fees → dashboard_bp
+# /api/profitability → dashboard_bp
+# /api/network_share → dashboard_bp
+# /api/milestones → dashboard_bp
+# /api/workers → dashboard_bp
+# /api/monte_carlo → dashboard_bp
+# /api/proximity → dashboard_bp
+# /api/alerts → routes/alerts_routes.py (alerts_bp — owns this route since
+#   Fase 4 · B2 tenant scoping; the old app.py copy was shadowed dead code).
 
 
-@app.route("/api/alerts")
-def api_alerts():
-    conn = get_db()
-    c = conn.cursor()
-    c.execute("SELECT * FROM alerts ORDER BY ts DESC LIMIT 80")
-    rows = [dict(r) for r in c.fetchall()]
-    conn.close()
-    return jsonify({"alerts": rows})
-
-
-@app.route("/api/diff_events")
-def api_diff_events():
-    only_mine = request.args.get("mine", "0") == "1"
-    limit = int(request.args.get("limit", 30))
-    conn = get_db()
-    c = conn.cursor()
-    if only_mine:
-        c.execute(
-            "SELECT * FROM highest_diff_events WHERE is_mine=1 ORDER BY block_height DESC LIMIT ?",
-            (limit,),
-        )
-    else:
-        c.execute(
-            "SELECT * FROM highest_diff_events ORDER BY block_height DESC LIMIT ?",
-            (limit,),
-        )
-    rows = [dict(r) for r in c.fetchall()]
-    conn.close()
-    return jsonify({"events": rows})
-
-
-@app.route("/api/leaderboard")
-def api_leaderboard():
-    # Served from the poll_once() cache so 100 open UI tabs → 0 upstream calls
-    # (eliminates the trivial-DoS vector and matches the "poll once centrally,
-    # serve many locally" pattern used by the rest of the dashboard).
-    top = latest_snapshot.get("leaderboard_table_top_30") or []
-    enriched = []
-    for entry in top:
-        if isinstance(entry, dict):
-            entry_copy = dict(entry)  # don't mutate the cached list
-            entry_copy["is_me"] = entry_copy.get("address") == BTC_ADDRESS
-            enriched.append(entry_copy)
-    return jsonify({
-        "entries": enriched,
-        "total": latest_snapshot.get("leaderboard_total", len(top)),
-        "stale_after_s": POLL_INTERVAL,  # client knows to refresh at poll cadence
-    })
-
-
-@app.route("/api/share_timeline")
-def api_share_timeline():
-    """Return recent share-timeline events (worker share submissions,
-    best-diff bumps, work deltas). Newest first."""
-    try:
-        limit = max(1, min(int(request.args.get("limit", 80)), 500))
-        event_type = request.args.get("type")
-        conn = get_db()
-        c = conn.cursor()
-        if event_type:
-            c.execute(
-                "SELECT * FROM share_timeline WHERE event_type=? ORDER BY id DESC LIMIT ?",
-                (event_type, limit),
-            )
-        else:
-            c.execute(
-                "SELECT * FROM share_timeline ORDER BY id DESC LIMIT ?",
-                (limit,),
-            )
-        rows = [dict(r) for r in c.fetchall()]
-        conn.close()
-        # parse meta JSON for client convenience
-        for r in rows:
-            try:
-                if r.get("meta"):
-                    r["meta"] = json.loads(r["meta"])
-            except Exception:
-                pass
-        return jsonify({"events": rows, "count": len(rows)})
-    except Exception as e:
-        return jsonify({"error": str(e), "events": []}), 500
-
-
-@app.route("/api/event_stats")
-def api_event_stats():
-    """Return session + rolling-window event statistics derived from the
-    public API (no per-share logs from the pool)."""
-    snap = dict(latest_snapshot.get("event_stats") or {})
-    snap["server_now"] = int(time.time())
-    snap["poll_age_s"] = (
-        snap["server_now"] - (latest_snapshot.get("ts") or 0)
-        if latest_snapshot.get("ts")
-        else None
-    )
-    return jsonify(snap)
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-#  Settings API (GET/POST) — drives cost model, currency, thresholds
+#  Settings API (GET/POST) — lives in routes/settings_routes.py (settings_bp,
+#  registered at import time). It is the single source of truth: same auth
+#  (require_tenant / role_required), plus the PRO webhook gate and the
+#  services/settings.settings_label() descriptions.
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-@app.route("/api/settings", methods=["GET"])
-@require_tenant
-def api_settings_get(tenant_id: str = ""):
-    s = load_settings()
-    out = []
-    for k, v in DEFAULT_SETTINGS.items():
-        out.append({"key": k, "value": s.get(k, v), "default": v, "label": _settings_label(k)})
-    return jsonify({"settings": out, "freshness_ts": int(time.time())})
-
-
-@app.route("/api/settings", methods=["POST"])
-@require_tenant
-@role_required("member")
-def api_settings_post(tenant_id: str = ""):
-    """POST JSON body: {key: value, key: value, ...}
-    Validates known keys, coerces to str, persists to SQLite, refreshes cache."""
-    body = request.get_json(silent=True) or {}
-    if not isinstance(body, dict):
-        return jsonify({"error": "expected JSON object body"}), 400
-    applied = []
-    rejected = []
-    for k, v in body.items():
-        if k not in DEFAULT_SETTINGS:
-            rejected.append({"key": k, "reason": "unknown key"})
-            continue
-        if save_setting(k, v):
-            applied.append(k)
-        else:
-            rejected.append({"key": k, "reason": "db error"})
-    return jsonify({"applied": applied, "rejected": rejected})
-
-
-def _settings_label(k):
-    return {
-        "cost_mode": "Cost model (none|rental|power)",
-        "rental_usd_per_th_day": "Rental rate ($ per TH/s per day) — what YOU charge to lease out hashrate (revenue)",
-        "power_watts": "Estimated rig power (W)",
-        "power_kwh_usd": "Electricity rate ($ per kWh)",
-        "btc_block_reward": "Current BTC block reward",
-        "btc_avg_tx_fee": "Assumed average fee per block (BTC)",
-        "pool_fee_pct": "Pool fee (%)",
-        "orphan_rate_pct": "Assumed orphan/stale rate (%)",
-        "active_currency": "Display currency (USD|BRL|EUR|GBP)",
-        "active_fiat": "Display currency (alias)",
-        "stale_share_minutes": "Stale-share alert threshold (minutes)",
-        "hashrate_drop_pct": "Hashrate drop alert threshold (%)",
-        "webhook_url": "Webhook URL (Discord/Telegram-compatible)",
-        "webhook_min_severity": "Min severity to fire webhook (INFO|WARN|CRIT|GOLD|SUCCESS)",
-        "show_test_alerts": "Allow synthetic demo alerts (0|1)",
-        "mrr_api_key": "MiningRigRentals API key (Settings → MRR credentials)",
-        "mrr_api_secret": "MiningRigRentals API secret (Settings → MRR credentials)",
-    }.get(k, k)
-
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 #  Subset endpoints (Halving / Mempool / Profitability / Network-share)
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-@app.route("/api/halving")
-def api_halving():
-    return jsonify(latest_snapshot.get("halving") or {})
 
 
-@app.route("/api/mempool_fees")
-def api_mempool_fees():
-    return jsonify(latest_snapshot.get("mempool_fees") or {})
-
-
-@app.route("/api/profitability")
-def api_profitability():
-    p = dict(latest_snapshot.get("profitability") or {})
-    p["active_currency"] = load_settings().get("active_currency", "USD")
-    return jsonify(p)
 
 
 @app.route("/api/license-status")
@@ -4540,153 +4194,9 @@ def api_admin_issue_license():
     return jsonify({"ok": True, "license_key": key}), 200
 
 
-@app.route("/api/network_share")
-def api_network_share():
-    return jsonify(latest_snapshot.get("network_share_gauge") or {})
-
-
-@app.route("/api/milestones")
-def api_milestones():
-    return jsonify({"milestones": latest_snapshot.get("milestones") or []})
-
-
-@app.route("/api/workers")
-def api_workers():
-    """Return all workers from the connected wallet's workerData."""
-    return jsonify({"workers": latest_snapshot.get("all_workers") or []})
-
-
-@app.route("/api/monte_carlo")
-@pro_required
-def api_monte_carlo():
-    """Monte Carlo simulation engine.
-    Accepts ?hours=N (default 24) and ?runs=N (default 10000).
-    Simulates block-finding probability over the specified period using
-    the current worker hashrate and network difficulty.
-    Returns: distribution of blocks found across N runs, percentiles,
-    and key probability stats. All clearly labeled as SIMULATED."""
-    hours = request.args.get("hours", 24, type=int)
-    runs = request.args.get("runs", 10000, type=int)
-    # Clamp params
-    hours = max(1, min(hours, 8760))  # 1h .. 1year
-    runs = max(100, min(runs, 100000))
-
-    worker = latest_snapshot.get("worker") or {}
-    net_diff = (latest_snapshot.get("network") or {}).get("difficulty")
-    cur_hr = float(worker.get("hashrate") or 0)
-
-    if not cur_hr or not net_diff:
-        return jsonify({"error": "insufficient data", "status": "SIMULATED"})
-
-    # Expected blocks in period: hashrate / (difficulty * 2^32) * seconds
-    hashes_per_block = float(net_diff) * (2 ** 32)
-    seconds = hours * 3600.0
-    expected_blocks = cur_hr * seconds / hashes_per_block
-
-    # Monte Carlo: Poisson process for block finding
-    distribution = [0] * (min(int(expected_blocks * 5) + 5, 5000))
-    for _ in range(runs):
-        blocks = 0
-        t = 0.0
-        rate = cur_hr / hashes_per_block  # blocks per second
-        while t < seconds:
-            t += random.expovariate(rate)
-            if t < seconds:
-                blocks += 1
-        if blocks >= len(distribution):
-            distribution.extend([0] * (blocks - len(distribution) + 10))
-        distribution[blocks] += 1
-
-    # Compute median and p90
-    cum = 0
-    median_blocks = 0
-    p90_blocks = 0
-    for k, count in enumerate(distribution):
-        cum += count
-        if cum >= runs / 2 and median_blocks == 0 and k > 0:
-            median_blocks = k
-        if cum >= runs * 0.9 and p90_blocks == 0:
-            p90_blocks = k
-        if median_blocks and p90_blocks:
-            break
-    if median_blocks == 0:
-        median_blocks = 0
-    if p90_blocks == 0:
-        p90_blocks = len(distribution) - 1 if distribution else 0
-
-    # Build result
-    dist_pct = []
-    cumulative = 0.0
-    for k, count in enumerate(distribution):
-        if count > 0 or k <= int(expected_blocks) + 2:
-            pct = round(count / runs * 100, 4)
-            cumulative += pct
-            dist_pct.append({
-                "blocks": k,
-                "count": count,
-                "pct": pct,
-                "cumulative_pct": round(cumulative, 4),
-                "bar": "█" * max(1, int(pct * 2)),
-            })
-
-    p_zero = distribution[0] / runs * 100 if len(distribution) > 0 else 100.0
-
-    return jsonify({
-        "status": "SIMULATED",
-        "params": {"hours": hours, "runs": runs},
-        "inputs": {
-            "worker_hashrate_hs": cur_hr,
-            "worker_hashrate_ths": round(cur_hr / 1e12, 2),
-            "network_difficulty": net_diff,
-            "network_difficulty_str": fmt_diff(net_diff),
-        },
-        "results": {
-            "expected_blocks": round(expected_blocks, 6),
-            "expected_blocks_str": f"{expected_blocks:.6f}",
-            "p_zero_blocks_pct": round(p_zero, 4),
-            "p_at_least_one_block_pct": round(100 - p_zero, 4),
-            "median_blocks": median_blocks,
-            "p90_blocks": p90_blocks,
-            "distribution": dist_pct[:20],  # top 20 outcomes
-        },
-        "disclaimer": "MONTE CARLO SIMULATION — results are statistical estimates based on current hashrate and difficulty. Actual mining outcomes are governed by random chance and may differ significantly.",
-    })
-
-
-@app.route("/api/proximity")
-@pro_required
-def api_proximity():
-    """Returns the current proximity meter payload PLUS a 24h history slice
-    for the front-end mini-chart. History is read from the proximity_history
-    DB table (sampled once per minute by poll_once)."""
-    base = dict(latest_snapshot.get("proximity") or {})
-    history_24h = []
-    try:
-        conn = get_db()
-        c = conn.cursor()
-        cutoff = int(time.time()) - 86400
-        c.execute(
-            "SELECT ts, best_diff, all_time_best_diff, network_difficulty, "
-            "worker_hashrate, pct_of_network, hot_streak "
-            "FROM proximity_history WHERE ts >= ? ORDER BY ts ASC",
-            (cutoff,),
-        )
-        for r in c.fetchall():
-            history_24h.append({
-                "ts": r["ts"],
-                "best_diff_raw": r["best_diff"],
-                "all_time_best_diff_raw": r["all_time_best_diff"],
-                "network_difficulty_raw": r["network_difficulty"],
-                "worker_hashrate": r["worker_hashrate"],
-                "pct_of_network": r["pct_of_network"],
-                "hot_streak": bool(r["hot_streak"]),
-            })
-        conn.close()
-    except Exception as e:
-        log.warning("[api/proximity history] error: %s", e)
-    base["history_24h"] = history_24h
-    base["history_count"] = len(history_24h)
-    return jsonify(base)
+# Moved to routes/dashboard_routes.py (dashboard_bp) — Fase 6 · PR2:
+# /api/network_share, /api/milestones, /api/workers, /api/monte_carlo,
+# /api/proximity (same bodies, same pro_required gates, same responses).
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -4728,111 +4238,9 @@ def _get_best_diff_history(device_id: Optional[str] = None, limit: int = 100) ->
     return records
 
 
-def _compute_block_hunt(snap: dict) -> dict:
-    """Compute the Block Hunt payload from a snapshot.
-
-    Returns BOTH:
-      - flat fields consumed by renderBlockHunt() via `snap.block_hunt`
-        (network_difficulty, best_difficulty, p_block_per_share,
-         expected_time_seconds, cumulative_p_block, best_diff_worker)
-      - the grouped fields historically returned by /api/block-hunt
-        (network, user, probability, network_comparison)
-
-    Probabilities use the Poisson model in services/probability.
-    Pure compute — never raises (returns zeros/Nones on missing data).
-    """
-    net = snap.get("network") or {}
-    worker = snap.get("worker") or {}
-
-    user_hr = float(worker.get("hashrate") or 0)
-    net_hr = float(net.get("hashrate") or 0)
-    net_diff = float(net.get("difficulty") or 0)
-    block_height = net.get("height")
-
-    best_diff_str = worker.get("bestDifficulty") or ""
-    best_diff_raw = parse_diff_to_float(best_diff_str) if best_diff_str else 0.0
-
-    # Probabilities for key windows
-    prob_periods = {}
-    expected_time = None
-    expected_time_human = None
-    if user_hr > 0 and net_hr > 0:
-        try:
-            prob_result = calculate_multiple_periods(user_hr, net_hr)
-            prob_periods = prob_result.get("periods", {})
-            expected_time = prob_periods.get("24h", {}).get("expected_time_to_block_seconds")
-            if expected_time is not None:
-                expected_time_human = _seconds_to_human(expected_time)
-        except Exception as e:
-            log.warning("[block-hunt] probability calculation failed: %s", e)
-
-    # Network comparison
-    hashrate_pct = 0.0
-    if user_hr > 0 and net_hr > 0:
-        hashrate_pct = user_hr / net_hr * 100.0
-
-    distance_to_block = None
-    if net_diff and best_diff_raw:
-        distance_to_block = net_diff / best_diff_raw
-
-    # Distance to the user's all-time best difficulty record
-    all_time_best = (snap.get("proximity") or {}).get("all_time_best_diff_raw") or 0.0
-    if all_time_best and best_diff_raw:
-        distance_to_all_time_best = all_time_best / best_diff_raw
-    else:
-        distance_to_all_time_best = None
-
-    # Approximate difficulty ranking from leaderboard if available
-    leaderboard_entry = snap.get("leaderboard_entry") or {}
-    approx_diff_rank = (
-        leaderboard_entry.get("diffRank")
-        or leaderboard_entry.get("rankDifficulty")
-        or leaderboard_entry.get("rank")
-    )
-
-    # Session cumulative probability (from proximity live_calc when available)
-    cumulative_p_block = None
-    try:
-        cumulative_p_block = (
-            (snap.get("proximity") or {}).get("live_calc", {})
-            .get("session_totals", {}).get("cum_p_block")
-        )
-    except Exception:
-        cumulative_p_block = None
-
-    return {
-        # ── flat fields consumed by renderBlockHunt(snap) via snap.block_hunt ──
-        "network_difficulty": net_diff,
-        "best_difficulty": best_diff_raw,
-        "p_block_per_share": (best_diff_raw / net_diff) if net_diff and best_diff_raw else None,
-        "expected_time_seconds": expected_time,
-        "cumulative_p_block": cumulative_p_block,
-        "best_diff_worker": worker.get("name") or WORKER_NAME or "",
-        # ── grouped fields (legacy /api/block-hunt contract) ──
-        "network": {
-            "hashrate": net_hr,
-            "difficulty": net_diff,
-            "block_height": block_height,
-        },
-        "user": {
-            "hashrate": user_hr,
-            "best_difficulty": best_diff_raw,
-            "best_difficulty_str": best_diff_str,
-        },
-        "probability": {
-            "chance_1h": prob_periods.get("1h", {}).get("probability_at_least_one"),
-            "chance_24h": prob_periods.get("24h", {}).get("probability_at_least_one"),
-            "chance_7d": prob_periods.get("7d", {}).get("probability_at_least_one"),
-            "expected_time_to_block_seconds": expected_time,
-            "expected_time_to_block_human": expected_time_human,
-        },
-        "network_comparison": {
-            "hashrate_pct_of_network": round(hashrate_pct, 8),
-            "distance_to_block_factor": distance_to_block,
-            "distance_to_all_time_best_factor": distance_to_all_time_best,
-            "approx_difficulty_rank": approx_diff_rank,
-        },
-    }
+# Fase 6 · PR2: _compute_block_hunt moved to services/snapshot_enrichment.py
+# (single source of truth shared with dashboard_bp). The thin wrapper at the
+# END of this file keeps `api_block_hunt` below working unchanged.
 
 
 @app.route("/api/block-hunt", methods=["GET"])
@@ -4875,54 +4283,6 @@ def api_device_best_diff_history(device_id: str, tenant_id: str = ""):
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 import csv as _csv
 from io import StringIO as _StringIO
-
-
-@app.route("/api/export/<table>.<fmt>")
-@require_tenant
-@role_required("viewer")
-def api_export(table, fmt, tenant_id: str = ""):
-    """Export a table as csv or json. Tables: snapshots, alerts, share_timeline,
-    highest_diff_events."""
-    allowed = {"snapshots", "alerts", "share_timeline", "highest_diff_events"}
-    if table not in allowed:
-        return jsonify({"error": f"unknown table {table}"}), 400
-    rng = request.args.get("range", "24h")
-    span = {
-        "15m": 900,
-        "1h": 3600,
-        "6h": 21600,
-        "24h": 86400,
-        "7d": 604800,
-        "30d": 2592000,
-        "all": 10 ** 10,
-    }.get(rng, 86400)
-    since = int(time.time()) - span
-    conn = get_db()
-    c = conn.cursor()
-    c.execute(f"SELECT * FROM {table} WHERE ts >= ? ORDER BY ts DESC LIMIT 5000", (since,))
-    rows = [dict(r) for r in c.fetchall()]
-    conn.close()
-    if fmt == "csv":
-        buf = _StringIO()
-        if rows:
-            writer = _csv.DictWriter(buf, fieldnames=list(rows[0].keys()))
-            writer.writeheader()
-            for r in rows:
-                writer.writerow(r)
-        out = buf.getvalue()
-        return app.response_class(
-            out,
-            mimetype="text/csv",
-            headers={"Content-Disposition": f"attachment; filename={table}_{rng}.csv"},
-        )
-    elif fmt == "json":
-        return app.response_class(
-            json.dumps({"table": table, "range": rng, "rows": rows}, default=str),
-            mimetype="application/json",
-            headers={"Content-Disposition": f"attachment; filename={table}_{rng}.json"},
-        )
-    else:
-        return jsonify({"error": f"unknown format {fmt}"}), 400
 
 
 @app.route("/api/tax/export")
@@ -5025,46 +4385,6 @@ def api_tax_export(tenant_id: str = ""):
         mimetype="text/csv",
         headers={"Content-Disposition": f"attachment; filename=cypher65_tax_{currency.lower()}.csv"},
     )
-
-
-@app.route("/api/config/backup")
-@require_tenant
-@role_required("viewer")
-def api_config_backup(tenant_id: str = ""):
-    """Download entire config (settings + worker + btc_address) as JSON."""
-    s = load_settings()
-    payload = {
-        "settings": s,
-        "worker_name": WORKER_NAME,
-        "btc_address": BTC_ADDRESS,
-        "exported_ts": int(time.time()),
-        "version": 1,
-    }
-    return app.response_class(
-        json.dumps(payload, indent=2, default=str),
-        mimetype="application/json",
-        headers={"Content-Disposition": "attachment; filename=cypher65_config_backup.json"},
-    )
-
-
-@app.route("/api/config/restore", methods=["POST"])
-@require_tenant
-@role_required("member")
-def api_config_restore(tenant_id: str = ""):
-    """Restore settings from a backup JSON body.
-    Only updates keys that exist in DEFAULT_SETTINGS."""
-    body = request.get_json(silent=True) or {}
-    settings = body.get("settings") or {}
-    if not isinstance(settings, dict):
-        return jsonify({"error": "expected object with 'settings' key"}), 400
-    applied, rejected = [], []
-    for k, v in settings.items():
-        if k not in DEFAULT_SETTINGS:
-            rejected.append(k)
-            continue
-        if save_setting(k, v):
-            applied.append(k)
-    return jsonify({"applied": applied, "rejected": rejected})
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -5817,7 +5137,7 @@ def api_hashrate_market():
     offers = _get_hashrate_market_offers()
     network_hashrate = (latest_snapshot.get("network") or {}).get("hashrate")
     scored = [_score_offer(offer, network_hashrate) for offer in offers]
-    scored.sort(key=lambda o: o["metrics"]["score"], reverse=True)
+    scored.sort(key=_market_offer_sort_key)
 
     return jsonify({
         "success": True,
@@ -5934,6 +5254,17 @@ def api_market_trend():
                 "score": r["score"],
             })
 
+        # Honest display: only CURRENTLY offered providers go into the
+        # buying-comparison chart. A provider without any quote for >48h
+        # (e.g. kissmyhash, removed from the pipeline but with legacy rows
+        # still inside the 7d window) is dropped — its stale line would
+        # otherwise inflate the "N providers" badge and mislead the operator.
+        active_cutoff = int(time.time()) - 48 * 3600
+        by_provider = {
+            p: pts for p, pts in by_provider.items()
+            if any(x["ts"] >= active_cutoff for x in pts)
+        }
+
         return jsonify({
             "success": True,
             "providers": dict(by_provider),
@@ -5942,6 +5273,73 @@ def api_market_trend():
     except Exception as e:
         log.warning("[market/trend] error: %s", e)
         return jsonify({"success": False, "error": "failed to fetch trend"}), 500
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#  RENTALS panel — operator rental performance (MRR rentals + Braiins contracts)
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+@app.route("/api/rentals")
+def api_rentals():
+    """Consolidated rental list for the RENTALS panel.
+
+    - MRR: GET /rental (renter + owner, active + history)
+    - Braiins: GET /contract (caller-owned, requires BRAIINS_API_KEY)
+
+    Fail-closed: missing credentials yield an explicit needs_auth block so
+    the panel never pretends there are zero rentals.
+    """
+    try:
+        mrr_active = _rental_perf.fetch_mrr_rentals(rtype="renter", history=False, limit=50)
+        mrr_history = _rental_perf.fetch_mrr_rentals(rtype="renter", history=True, limit=50)
+        mrr_owner = _rental_perf.fetch_mrr_rentals(rtype="owner", history=True, limit=50)
+        braiins = _rental_perf.fetch_braiins_contracts()
+        return jsonify({
+            "success": True,
+            "updated_at": int(time.time()),
+            "mrr": {
+                "needs_auth": mrr_active.get("needs_auth", False),
+                "active": mrr_active.get("rentals", []),
+                "history": mrr_history.get("rentals", []),
+                "owner": mrr_owner.get("rentals", []),
+                "total_active": mrr_active.get("total") or len(mrr_active.get("rentals", [])),
+                "total_history": mrr_history.get("total") or len(mrr_history.get("rentals", [])),
+                "total_owner": mrr_owner.get("total") or len(mrr_owner.get("rentals", [])),
+                "error": mrr_active.get("error") or mrr_history.get("error"),
+            },
+            "braiins": {
+                "needs_auth": braiins.get("needs_auth", False),
+                "contracts": braiins.get("contracts", []),
+                "error": braiins.get("error"),
+            },
+        })
+    except Exception as e:
+        log.warning("[rentals] list error: %s", e)
+        return jsonify({"success": False, "error": "failed to fetch rentals"}), 500
+
+
+@app.route("/api/rentals/detail")
+def api_rentals_detail():
+    """Detail + graph + log for one rental.
+
+    Query params:
+        provider: mrr (default) | braiins
+        id:       rental/contract id
+    """
+    provider = (request.args.get("provider") or "mrr").lower()
+    rid = (request.args.get("id") or "").strip()
+    if not rid:
+        return jsonify({"success": False, "error": "missing id"}), 400
+    try:
+        if provider == "braiins":
+            speed = _rental_perf.fetch_braiins_contract_speed(rid)
+            return jsonify({"success": True, "provider": "braiins", "detail": {"id": rid}, "graph": speed})
+        detail = _rental_perf.fetch_mrr_rental_detail(rid)
+        return jsonify({"success": True, "provider": "mrr", "detail": detail.get("detail") or {},
+                        "graph": detail.get("graph") or {}, "log": detail.get("log") or {}})
+    except Exception as e:
+        log.warning("[rentals] detail error: %s", e)
+        return jsonify({"success": False, "error": "failed to fetch rental detail"}), 500
 
 
 @app.route("/api/opportunities/compare")
@@ -5971,7 +5369,7 @@ def api_opportunities_compare():
         wanted = {i.strip() for i in ids_filter.split(",") if i.strip()}
         scored = [o for o in scored if o.get("id") in wanted or o["provider"] in wanted]
 
-    scored.sort(key=lambda o: o["metrics"]["score"], reverse=True)
+    scored.sort(key=_market_offer_sort_key)
 
     return jsonify({
         "success": True,
@@ -6460,6 +5858,29 @@ def _broadcast_snapshot(snapshot: dict):
 
 # ── FASE 2: Wallet address history table ──
 # In init_db(), add the wallet_address_history table
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Fase 6 · PR2: /api/snapshot now served by dashboard_bp.
+# build_auto_pilot_context and _compute_block_hunt are shared with the
+# blueprint via services/snapshot_enrichment.py — these thin wrappers keep
+# the app.py call sites (api_block_hunt + external importers) working with
+# the single shared implementation.
+# _get_hashrate_market_offers and _hashrate_market_health stay in app.py
+# (their cache/state is separate from snapshot_enrichment's — the warmup
+# thread fills this cache for app.py routes; snapshot_enrichment fills its
+# own for the blueprint). Merging them is a future cleanup.
+# ═══════════════════════════════════════════════════════════════════════════
+
+# Re-import with aliases for delegation.
+from services.snapshot_enrichment import (  # noqa: E402
+    _compute_block_hunt as _sre_block_hunt,
+)
+
+
+def _compute_block_hunt(snap):
+    """Delegate to shared implementation in snapshot_enrichment."""
+    return _sre_block_hunt(snap)
 
 
 if __name__ == "__main__":

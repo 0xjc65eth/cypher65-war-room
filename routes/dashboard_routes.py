@@ -2,24 +2,18 @@
 CYPHER65 // Dashboard API routes
 =================================
 Flask Blueprint for monitoring and analytics endpoints.
-Extracted from app.py — Phase 2a of P0.4 refactoring.
+Fase 6: migrated from app.py — registered in app.py.
 
-⚠️ DEPRECATED — DO NOT EDIT (docs/EXECUTION_PLAN.md · Fase 2)
-============================================================
-This blueprint is NEVER registered: every route below is already defined
-DIRECTLY in app.py via @app.route(...) and served at runtime. This file is
-kept only as a signature reference for the Fase 6 monolith refactor, where
-these routes migrate OUT of app.py INTO this blueprint.
+Routes served by this blueprint (all under /api):
+  /snapshot, /history, /diff_events, /leaderboard, /share_timeline,
+  /event_stats, /halving, /mempool_fees, /profitability, /network_share,
+  /milestones, /workers, /monte_carlo, /proximity
 
-- Do NOT edit, extend, or import this module until Fase 6 starts.
-- Editing here has ZERO effect on the running app (duplicate code only).
-- Fase 6: remove the @app.route versions, then register this blueprint.
-- Quick dead-code check (avoids self-match — file lives in routes/):
-  `grep -rn "dashboard_routes" app.py services/ axe_fleet/ core/` → must output nothing.
+Alerts (/api/alerts) are owned by routes/alerts_routes.py (alerts_bp).
 """
 import json
-import time
 import random
+import time
 import logging
 
 from flask import Blueprint, jsonify, request
@@ -27,6 +21,8 @@ from flask import Blueprint, jsonify, request
 import config
 import services.state as state
 from services.db import get_db
+from services.licensing import pro_required
+from services.snapshot_enrichment import enrich_snapshot
 from helpers import fmt_diff
 
 log = logging.getLogger("cypher65.dashboard")
@@ -36,7 +32,16 @@ dashboard_bp = Blueprint("dashboard", __name__, url_prefix="/api")
 
 @dashboard_bp.route("/snapshot")
 def api_snapshot():
-    return jsonify(state.latest_snapshot)
+    """Full dashboard snapshot enriched with market highlights, auto-pilot,
+    command center, block-hunt and affiliate links.
+
+    Uses the shared enrich_snapshot() from services/snapshot_enrichment.py —
+    identical payload to the previous app.py version (Fase 6 · PR2). The
+    axe_registry=None path skips tenant-scoping for unauthenticated access;
+    for open self-host mode (default tenant) this preserves the current
+    behaviour.
+    """
+    return jsonify(enrich_snapshot(state.latest_snapshot, axe_registry=None))
 
 
 @dashboard_bp.route("/history")
@@ -75,17 +80,9 @@ def api_history():
     )
     rows = [{"ts": r["ts"], "value": r[metric]} for r in c.fetchall()]
     conn.close()
-    return jsonify({"metric": metric, "history": rows, "range": rng})
-
-
-@dashboard_bp.route("/alerts")
-def api_alerts():
-    conn = get_db()
-    c = conn.cursor()
-    c.execute("SELECT * FROM alerts ORDER BY ts DESC LIMIT 80")
-    rows = [dict(r) for r in c.fetchall()]
-    conn.close()
-    return jsonify({"alerts": rows})
+    # Contract parity with the pre-migration app.py route: the payload key
+    # is "rows" (NOT "history") — preserved so existing clients keep working.
+    return jsonify({"metric": metric, "rows": rows, "range": rng})
 
 
 @dashboard_bp.route("/diff_events")
@@ -116,7 +113,9 @@ def api_leaderboard():
     for entry in top:
         if isinstance(entry, dict):
             entry_copy = dict(entry)
-            entry_copy["is_me"] = entry_copy.get("address") == (state.latest_snapshot.get("address") or config.BTC_ADDRESS)
+            entry_copy["is_me"] = entry_copy.get("address") == (
+                state.latest_snapshot.get("address") or config.BTC_ADDRESS
+            )
             enriched.append(entry_copy)
     return jsonify({
         "entries": enriched,
@@ -203,11 +202,18 @@ def api_workers():
 
 
 @dashboard_bp.route("/monte_carlo")
+@pro_required
 def api_monte_carlo():
-    """Monte Carlo simulation engine for block probability."""
+    """Monte Carlo simulation engine.
+    Accepts ?hours=N (default 24) and ?runs=N (default 10000).
+    Simulates block-finding probability over the specified period using
+    the current worker hashrate and network difficulty.
+    Returns: distribution of blocks found across N runs, percentiles,
+    and key probability stats. All clearly labeled as SIMULATED."""
     hours = request.args.get("hours", 24, type=int)
     runs = request.args.get("runs", 10000, type=int)
-    hours = max(1, min(hours, 8760))
+    # Clamp params
+    hours = max(1, min(hours, 8760))  # 1h .. 1year
     runs = max(100, min(runs, 100000))
 
     worker = state.latest_snapshot.get("worker") or {}
@@ -217,15 +223,17 @@ def api_monte_carlo():
     if not cur_hr or not net_diff:
         return jsonify({"error": "insufficient data", "status": "SIMULATED"})
 
+    # Expected blocks in period: hashrate / (difficulty * 2^32) * seconds
     hashes_per_block = float(net_diff) * (2 ** 32)
     seconds = hours * 3600.0
     expected_blocks = cur_hr * seconds / hashes_per_block
 
+    # Monte Carlo: Poisson process for block finding
     distribution = [0] * (min(int(expected_blocks * 5) + 5, 5000))
     for _ in range(runs):
         blocks = 0
         t = 0.0
-        rate = cur_hr / hashes_per_block
+        rate = cur_hr / hashes_per_block  # blocks per second
         while t < seconds:
             t += random.expovariate(rate)
             if t < seconds:
@@ -234,6 +242,7 @@ def api_monte_carlo():
             distribution.extend([0] * (blocks - len(distribution) + 10))
         distribution[blocks] += 1
 
+    # Compute median and p90
     cum = 0
     median_blocks = 0
     p90_blocks = 0
@@ -250,6 +259,7 @@ def api_monte_carlo():
     if p90_blocks == 0:
         p90_blocks = len(distribution) - 1 if distribution else 0
 
+    # Build result
     dist_pct = []
     cumulative = 0.0
     for k, count in enumerate(distribution):
@@ -261,7 +271,7 @@ def api_monte_carlo():
                 "count": count,
                 "pct": pct,
                 "cumulative_pct": round(cumulative, 4),
-                "bar": "\u2588" * max(1, int(pct * 2)),
+                "bar": "█" * max(1, int(pct * 2)),
             })
 
     p_zero = distribution[0] / runs * 100 if len(distribution) > 0 else 100.0
@@ -282,15 +292,18 @@ def api_monte_carlo():
             "p_at_least_one_block_pct": round(100 - p_zero, 4),
             "median_blocks": median_blocks,
             "p90_blocks": p90_blocks,
-            "distribution": dist_pct[:20],
+            "distribution": dist_pct[:20],  # top 20 outcomes
         },
-        "disclaimer": "MONTE CARLO SIMULATION \u2014 results are statistical estimates based on current hashrate and difficulty. Actual mining outcomes are governed by random chance and may differ significantly.",
+        "disclaimer": "MONTE CARLO SIMULATION — results are statistical estimates based on current hashrate and difficulty. Actual mining outcomes are governed by random chance and may differ significantly.",
     })
 
 
 @dashboard_bp.route("/proximity")
+@pro_required
 def api_proximity():
-    """Returns the current proximity meter payload PLUS a 24h history slice."""
+    """Returns the current proximity meter payload PLUS a 24h history slice
+    for the front-end mini-chart. History is read from the proximity_history
+    DB table (sampled once per minute by poll_once)."""
     base = dict(state.latest_snapshot.get("proximity") or {})
     history_24h = []
     try:

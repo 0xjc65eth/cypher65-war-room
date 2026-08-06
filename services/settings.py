@@ -29,6 +29,7 @@ DEFAULT_SETTINGS = {
     "show_test_alerts": "0",
     "mrr_api_key": "",
     "mrr_api_secret": "",
+    "braiins_api_key": "",
 }
 
 _settings_cache = None
@@ -105,4 +106,7 @@ def settings_label(k):
         "webhook_url": "Webhook URL (Discord/Telegram-compatible)",
         "webhook_min_severity": "Min severity to fire webhook (INFO|WARN|CRIT|GOLD|SUCCESS)",
         "show_test_alerts": "Allow synthetic demo alerts (0|1)",
+        "mrr_api_key": "MiningRigRentals API key (Settings → MRR credentials)",
+        "mrr_api_secret": "MiningRigRentals API secret (Settings → MRR credentials)",
+        "braiins_api_key": "Braiins Hashpower API key — owner token (Settings → Braiins credentials)",
     }.get(k, k)
