@@ -186,11 +186,14 @@ venv/bin/python3 -m pytest tests/ -q --tb=short -k "auth or session or token"
 
 ---
 
-## 🔄 Fase 5 — Telemetria de devices (P2 · diferencial) — EM ANDAMENTO
+## ✅ Fase 5 — Telemetria de devices (P2 · diferencial) — CONCLUÍDA
 
-> **Status (2026-08-06):** BitaxeAdapter completo (todos os campos). CgminerAdapter
+> **Status (2026-08-07):** BitaxeAdapter completo (todos os campos). CgminerAdapter
 > enriquecido com `fan_rpm`, `voltage`, `power`, `pool_status`, `pool` dict.
-> `normalize_telemetry()` preenche `NOT_AVAILABLE`. Pendente: avaliação do `pyasic`.
+> BraiinsAdapter implementado (REST + cgminer socket, temps/fans/tunerstatus).
+> `normalize_telemetry()` preenche `NOT_AVAILABLE`. Adiado: avaliação do `pyasic`
+> (opcional — os 3 adapters cobrem as firmwares alvo). _safe_number extraído
+> para BaseAdapter (sem duplicação).
 
 **Pesquisa web (fonte: docs AxeOS/Braiins OS):**
 - **AxeOS/Bitaxe (REST):** `GET /api/system/info` → power, voltagem ASIC+VR, temperatura ASIC+VR,
@@ -240,7 +243,7 @@ num único passo.
 | Período | Fases | Entregável | Status |
 |---|---|---|---|
 | Semana 1 | F1 (mock) → F2 (dead code) → F3 (cache market) | Dados honestos + módulos estáveis | ✅ |
-| Semana 2 | F4 (auth) → **F5 (telemetria)** → **F6 (refactor)** | Base p/ go-live real | 🔄 |
+| Semana 2 | F4 (auth) → F5 (telemetria) → F6 (refactor) | Base p/ go-live real | ✅ |
 
 **Regra:** nenhuma fase avança sem suíte verde (pytest + JS + E2E).
 
@@ -254,4 +257,4 @@ num único passo.
 - [x] F4: decisão auth documentada — **Opção B em 2 etapas**; B1 implementada (login multi-key `sub=tenant_id` + isolamento axe_fleet ativo, `tests/test_tenant_auth.py`); **B2 implementada** (tabelas `tenants`/`users`, `tenant_id` em alerts/automations/device, `@require_tenant` nas rotas core/alerts/device_control, `tests/test_tenant_b2_isolation.py`)
 - [x] F5: telemetria completa por device com `NOT AVAILABLE` explícito *(implementado: BitaxeAdapter completo; CgminerAdapter com fan_rpm/voltage/power/pool_status; normalize_telemetry() preenche NOT_AVAILABLE)*
 - [x] F6: export + dashboard routes migradas → blueprints *(implementado: export_bp (3 rotas) + dashboard_bp (14 rotas) registrados; rotas removidas de app.py; snapshot_enrichment.py extraído; /api/alerts deduplicado com alerts_bp; 1508 pytest + JS verdes)*
-- [ ] Suítes: pytest + JS + E2E verdes a cada commit
+- [x] Suítes: pytest + JS + E2E verdes a cada commit *(1523 pytest + 1251 JS + 92/101 E2E chromium; 5 falhas E2E são cold-server (sem devices/wallet/API keys))*
