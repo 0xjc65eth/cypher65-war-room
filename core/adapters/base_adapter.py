@@ -34,6 +34,19 @@ class BaseAdapter(ABC):
         """Verifica saúde do dispositivo"""
         pass
 
+    @staticmethod
+    def _safe_number(value, type_cast=float, default=None):
+        """Coerce a raw value (often a string from device APIs) to a number.
+
+        Shared by all adapters. Returns *default* when the value is ``None``
+        or cannot be coerced — callers that need a different sentinel pass
+        it explicitly.
+        """
+        try:
+            return type_cast(value) if value is not None else default
+        except (ValueError, TypeError):
+            return default
+
     def supports(self, capability_name: str) -> bool:
         """Verifica se o device suporta uma capability específica.
 

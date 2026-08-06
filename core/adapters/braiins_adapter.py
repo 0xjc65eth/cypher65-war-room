@@ -86,14 +86,6 @@ class BraiinsAdapter(BaseAdapter):
                 sock.close()
         return None
 
-    @staticmethod
-    def _safe_number(value, type_cast=float, default=None):
-        """Coerce raw value (often a string in cgminer) to a number."""
-        try:
-            return type_cast(value) if value is not None else default
-        except (ValueError, TypeError):
-            return default
-
     # ── REST probe (modern Braiins OS+ API) ───────────────────────────
 
     def _rest_get(self, path: str, port: int = None) -> Optional[dict]:

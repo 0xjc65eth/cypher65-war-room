@@ -22,13 +22,6 @@ class BitaxeAdapter(BaseAdapter):
         super().__init__(device)
         self.api_url = api_url or (f"http://{device.ip}" if device.ip else None)
 
-    @staticmethod
-    def _safe_number(value, type_cast=float, default=0):
-        try:
-            return type_cast(value) if value is not None else default
-        except (ValueError, TypeError):
-            return default
-
     def get_telemetry(self) -> Optional[Dict[str, Any]]:
         """
         Fetch telemetry from the device at /api/system/info.

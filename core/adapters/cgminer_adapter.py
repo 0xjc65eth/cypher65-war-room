@@ -73,19 +73,6 @@ class CgminerAdapter(BaseAdapter):
                 sock.close()
         return None
 
-    @staticmethod
-    def _safe_number(value, type_cast=float, default=None):
-        """Coerce cgminer's raw value (often a string) to a number.
-
-        cgminer returns most numeric fields as strings (e.g. ``"4200"`` RPM,
-        ``"12.5"`` volts). This helper mirrors BitaxeAdapter._safe_number so
-        downstream consumers can safely do math on the result.
-        """
-        try:
-            return type_cast(value) if value is not None else default
-        except (ValueError, TypeError):
-            return default
-
     def get_telemetry(self) -> Optional[Dict[str, Any]]:
         """Fetch telemetry via cgminer 'summary' + 'stats' + 'pools' commands.
 
