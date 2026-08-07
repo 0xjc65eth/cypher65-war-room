@@ -114,26 +114,7 @@ class CgminerAdapter(BaseAdapter):
                             chain.get("power_watts", None))))
 
         # ── Pool status derivation ──────────────────────────────────────
-        # cgminer 'pools' returns an array; first pool with status="Alive"
-        # means the device is connected and hashing.
-        pool_status = None
-        pool_url = ""
-        pool_user = ""
-        if pools and "POOLS" in pools:
-            pool_list = pools["POOLS"]
-            if isinstance(pool_list, list):
-                alive = [p for p in pool_list if str(p.get("Status", "")).lower() == "alive"]
-                if alive:
-                    pool_status = "CONNECTED"
-                    pool_url = str(alive[0].get("URL", ""))
-                    pool_user = str(alive[0].get("User", ""))
-                elif pool_list:
-                    # Has configured pools but none alive
-                    pool_status = "DISCONNECTED"
-                    pool_url = str(pool_list[0].get("URL", ""))
-                    pool_user = str(pool_list[0].get("User", ""))
-                else:
-                    pool_status = "NOT CONFIGURED"
+        pool_status, pool_url, pool_user = self._derive_cgminer_pool_status(pools)
 
         return {
             "source": "cgminer_adapter",

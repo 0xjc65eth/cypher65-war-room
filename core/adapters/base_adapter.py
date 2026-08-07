@@ -101,3 +101,32 @@ class BaseAdapter(ABC):
             if sock:
                 sock.close()
         return None
+
+    @staticmethod
+    def _derive_cgminer_pool_status(pools_response: dict):
+        """Derive (pool_status, pool_url, pool_user) from a cgminer 'pools' response.
+
+        Shared by CgminerAdapter and BraiinsAdapter. Scans the POOLS list
+        for the first "Alive" entry (CONNECTED) or falls back to the first
+        configured pool (DISCONNECTED). Returns (None, "", "") when the
+        response is empty or malformed.
+        """
+        pool_status = None
+        pool_url = ""
+        pool_user = ""
+        if pools_response and "POOLS" in pools_response:
+            pool_list = pools_response["POOLS"]
+            if isinstance(pool_list, list):
+                alive = [p for p in pool_list
+                         if str(p.get("Status", "")).lower() == "alive"]
+                if alive:
+                    pool_status = "CONNECTED"
+                    pool_url = str(alive[0].get("URL", ""))
+                    pool_user = str(alive[0].get("User", ""))
+                elif pool_list:
+                    pool_status = "DISCONNECTED"
+                    pool_url = str(pool_list[0].get("URL", ""))
+                    pool_user = str(pool_list[0].get("User", ""))
+                else:
+                    pool_status = "NOT CONFIGURED"
+        return pool_status, pool_url, pool_user

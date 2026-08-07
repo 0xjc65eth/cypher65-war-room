@@ -254,24 +254,7 @@ class BraiinsAdapter(BaseAdapter):
                               chain.get("power_watts", None))))
 
         # ── Pool status ───────────────────────────────────────────
-        pool_status = None
-        pool_url = ""
-        pool_user = ""
-        if pools_data and "POOLS" in pools_data:
-            pool_list = pools_data["POOLS"]
-            if isinstance(pool_list, list):
-                alive = [p for p in pool_list
-                         if str(p.get("Status", "")).lower() == "alive"]
-                if alive:
-                    pool_status = "CONNECTED"
-                    pool_url = str(alive[0].get("URL", ""))
-                    pool_user = str(alive[0].get("User", ""))
-                elif pool_list:
-                    pool_status = "DISCONNECTED"
-                    pool_url = str(pool_list[0].get("URL", ""))
-                    pool_user = str(pool_list[0].get("User", ""))
-                else:
-                    pool_status = "NOT CONFIGURED"
+        pool_status, pool_url, pool_user = self._derive_cgminer_pool_status(pools_data)
 
         return self._build_telemetry_dict(
             collected_at=collected_at,
