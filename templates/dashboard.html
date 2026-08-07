@@ -643,28 +643,59 @@
 <!-- ─── HASHMARKET ─── -->
 <section class="panel panel--market panel--large" id="market-panel" data-module="market">
   <div class="panel__header">
-    <div class="panel__eyebrow">⟐ HASHMARKET · OPPORTUNITIES</div>
+    <div class="panel__eyebrow">⟐ HASHRATEPULSE ENTERPRISE · SHA-256 MARKET INTELLIGENCE</div>
     <div class="panel__tools">
       <span class="badge badge--btc" id="mkt-best-price-badge">best —</span>
-      <span class="badge badge--mute" id="mkt-count-badge">0 offers</span>
+      <span class="badge badge--mute" id="mkt-count-badge">0 venues</span>
+      <span class="badge" id="mkt-regime-badge" title="Market regime">REGIME —</span>
       <button class="chip" id="mkt-config-btn" title="Configure API keys">⚙</button>
     </div>
   </div>
+
+  <!-- ── Executive Snapshot ── -->
+  <div class="mkt-snapshot" id="mkt-snapshot">
+    <div class="mkt-snapshot__item"><span class="mkt-snapshot__label">Best Execution</span><span class="mkt-snapshot__val mkt-snapshot__val--green" id="mkt-snap-best">—</span></div>
+    <div class="mkt-snapshot__item"><span class="mkt-snapshot__label">Spread vs 2nd</span><span class="mkt-snapshot__val" id="mkt-snap-spread">—</span></div>
+    <div class="mkt-snapshot__item"><span class="mkt-snapshot__label">Visible Liquidity</span><span class="mkt-snapshot__val" id="mkt-snap-liquidity">—</span></div>
+    <div class="mkt-snapshot__item"><span class="mkt-snapshot__label">4h VWAP</span><span class="mkt-snapshot__val" id="mkt-snap-vwap">—</span></div>
+    <div class="mkt-snapshot__item"><span class="mkt-snapshot__label">BTC/USD</span><span class="mkt-snapshot__val" id="mkt-snap-btcusd">—</span></div>
+  </div>
+
+  <!-- ── Ranked Venue Table ── -->
   <div class="mkt-filters" id="mkt-filters">
-    <button class="chip active" data-mkt-filter="all">All</button>
+    <button class="chip active" data-mkt-filter="all">All Venues</button>
     <button class="chip" data-mkt-filter="braiins">⊛ Braiins</button>
     <button class="chip" data-mkt-filter="nicehash">◈ NiceHash</button>
     <button class="chip" data-mkt-filter="mrr">⛁ MRR</button>
     <button class="chip" data-mkt-filter="parasite">⌂ Parasite</button>
   </div>
-  <div class="mkt-grid" id="mkt-grid">
-    <div class="empty-state" style="grid-column:1/-1;border:none">
-      <div class="empty-state__icon">⟐</div>
-      <div class="empty-state__title">No market data</div>
-      <div class="empty-state__desc">Configure API keys in Settings to load offers from Braiins, NiceHash, MRR, and more</div>
-      <div class="empty-state__action"><button class="btn btn--primary btn--mini" onclick="document.getElementById('open-settings').click()">⚙ Configure</button></div>
-    </div>
+
+  <div class="mkt-table-wrap">
+    <table class="mkt-table" id="mkt-table">
+      <thead>
+        <tr>
+          <th>Venue</th>
+          <th>Price (BTC/PH/d)</th>
+          <th>vs Best</th>
+          <th>vs 4h VWAP</th>
+          <th>Available</th>
+          <th>Depth</th>
+          <th>Risk Tier</th>
+          <th>Recommendation</th>
+        </tr>
+      </thead>
+      <tbody id="mkt-table-body">
+        <tr><td colspan="8" class="mkt-table__empty">No market data — configure API keys in Settings to load institutional-grade hashrate intelligence</td></tr>
+      </tbody>
+    </table>
   </div>
+
+  <!-- ── Institutional Notes ── -->
+  <div class="mkt-notes" id="mkt-notes" style="display:none">
+    <div class="mkt-notes__title">◆ INSTITUTIONAL NOTES</div>
+    <div class="mkt-notes__body" id="mkt-notes-body"></div>
+  </div>
+
   <div class="mkt-trend" id="mkt-trend">
     <div class="mkt-trend__header">
       <span class="mkt-trend__title">Price Trend (7d) · BTC/TH/d</span>
@@ -673,7 +704,7 @@
     <div class="chart-wrap"><canvas id="mkt-trend-chart"></canvas></div>
     <div class="mkt-trend__legend" id="mkt-trend-legend"></div>
   </div>
-  <div class="mkt-footnote" id="mkt-footnote">Prices are estimates. Verify on each platform.</div>
+  <div class="mkt-footnote" id="mkt-footnote">HashratePulse Enterprise · Prices normalized in BTC/PH/day · Verify on each venue before execution</div>
 </section>
 
 <!-- ─── DECISION MATRIX (P0-2) — solo vs pool vs lease ─── -->

@@ -5144,3 +5144,133 @@ body.module-mode .tab-pane:not(.active) { display: none; }
   border-color: var(--border-subtle);
   color: var(--text-tertiary);
 }
+
+/* ── HASHRATEPULSE ENTERPRISE · institutional market table ────────── */
+.mkt-snapshot {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 8px;
+  padding: 10px 12px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  margin-bottom: 10px;
+}
+.mkt-snapshot__item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.mkt-snapshot__label {
+  font-size: 8px;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-family: var(--font-sans);
+}
+.mkt-snapshot__val {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.mkt-snapshot__val--green { color: var(--green); }
+
+.mkt-table-wrap {
+  overflow-x: auto;
+  margin: 4px 0 8px;
+}
+.mkt-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 10px;
+  font-family: var(--font-mono);
+}
+.mkt-table thead th {
+  text-align: left;
+  padding: 6px 8px;
+  font-size: 8px;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  border-bottom: 1px solid var(--border-default);
+  font-weight: 600;
+  white-space: nowrap;
+}
+.mkt-table tbody td {
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border-subtle);
+  color: var(--text-secondary);
+  white-space: nowrap;
+  vertical-align: middle;
+}
+.mkt-table tbody tr:hover { background: rgba(0, 184, 212, 0.04); }
+.mkt-table__empty {
+  text-align: center;
+  padding: 20px !important;
+  color: var(--text-tertiary);
+  font-size: 11px;
+  font-family: var(--font-sans);
+}
+.mkt-table__venue {
+  color: var(--text-primary);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.mkt-table__est {
+  font-size: 7px;
+  color: var(--amber);
+  border: 1px solid var(--amber-dim);
+  padding: 0 3px;
+  margin-left: 4px;
+  vertical-align: middle;
+}
+.mkt-table__tier {
+  font-size: 8px;
+  padding: 1px 5px;
+  border-radius: 2px;
+  white-space: nowrap;
+}
+.mkt-table__tier--t1 { background: rgba(0, 200, 83, 0.12); color: var(--green); }
+.mkt-table__tier--t2 { background: rgba(0, 184, 212, 0.10); color: var(--cyan); }
+.mkt-table__tier--t3 { background: rgba(255, 145, 0, 0.10); color: var(--orange); }
+.mkt-table__tier--t4 { background: rgba(255, 23, 68, 0.08); color: var(--red-dim); }
+.mkt-table__spread--tight { color: var(--green); }
+.mkt-table__spread--wide { color: var(--red); }
+.mkt-table__rec--best { color: var(--green); font-weight: 600; }
+.mkt-table__rec--avoid { color: var(--red-dim); }
+
+.mkt-notes {
+  margin: 8px 0;
+  padding: 8px 10px;
+  border: 1px solid var(--border-subtle);
+  border-left: 2px solid var(--cyan);
+  background: rgba(0, 184, 212, 0.04);
+  border-radius: var(--radius-sm);
+}
+.mkt-notes__title {
+  font-size: 9px;
+  color: var(--cyan);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  margin-bottom: 6px;
+  font-weight: 600;
+}
+.mkt-notes__item {
+  font-size: 9px;
+  color: var(--text-tertiary);
+  line-height: 1.6;
+  padding: 2px 0;
+}
+.mkt-notes__item::before {
+  content: '▸ ';
+  color: var(--cyan-dim);
+}
+
+@media (max-width: 900px) {
+  .mkt-snapshot { grid-template-columns: repeat(3, 1fr); }
+}
+@media (max-width: 500px) {
+  .mkt-snapshot { grid-template-columns: repeat(2, 1fr); }
+}

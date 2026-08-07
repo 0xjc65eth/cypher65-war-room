@@ -2751,80 +2751,87 @@ function renderAccount(acct) {
     return bestPos >= 0 ? poolIdx[bestPos] : -1;
   }
 
+  // ── HashratePulse Enterprise · institutional market grid ────────────
   function renderMarketGrid() {
-    const grid = document.getElementById('mkt-grid');
-    if (!grid) return;
+    const tbody = document.getElementById('mkt-table-body');
+    if (!tbody) return;
 
-    const offers = _mktFilter === 'all'
-      ? _mktOffers
-      : _mktOffers.filter(o => (o.provider || '').toLowerCase() === _mktFilter);
+    const inst = _mktInstitutional || {};
+    const venues = (inst.venues || []).filter(v => {
+      if (_mktFilter === 'all') return true;
+      return (v.venue || '').toLowerCase() === _mktFilter;
+    });
 
-    if (!offers.length) {
-      grid.innerHTML = '<div class="mkt-empty">' + (_mktOffers.length
-        ? 'no offers for selected provider — adjust filter'
-        : 'no market data available — configure MRR credentials or wait for data to load') + '</div>';
-      document.getElementById('mkt-best-price-badge') && (document.getElementById('mkt-best-price-badge').textContent = 'best price —');
-      document.getElementById('mkt-count-badge') && (document.getElementById('mkt-count-badge').textContent = _mktOffers.length + ' offers');
+    // Executive Snapshot
+    const snap = inst.snapshot || {};
+    const bestEl = document.getElementById('mkt-snap-best');
+    if (bestEl && snap.best_price_sats_th_day) {
+      bestEl.textContent = snap.best_price_sats_th_day + ' sat/TH/d · ' + (snap.best_venue || '').toUpperCase();
+    }
+    const spreadEl = document.getElementById('mkt-snap-spread');
+    if (spreadEl) spreadEl.textContent = snap.spread_vs_second_pct != null ? snap.spread_vs_second_pct + '%' : '—';
+    const liqEl = document.getElementById('mkt-snap-liquidity');
+    if (liqEl) liqEl.textContent = snap.total_liquidity_eh != null ? snap.total_liquidity_eh + ' EH/s' : '—';
+    const vwapEl = document.getElementById('mkt-snap-vwap');
+    if (vwapEl && snap.vwap_4h_btc_ph_day) vwapEl.textContent = snap.vwap_4h_btc_ph_day.toFixed(6) + ' BTC/PH/d';
+    const btcEl = document.getElementById('mkt-snap-btcusd');
+    if (btcEl && snap.btc_usd) btcEl.textContent = '$' + Number(snap.btc_usd).toLocaleString('en-US');
+
+    // Regime badge
+    const regimeEl = document.getElementById('mkt-regime-badge');
+    if (regimeEl) {
+      regimeEl.textContent = 'REGIME ' + (inst.regime || '—');
+      regimeEl.className = 'badge' + (inst.regime === 'Tight' ? ' badge--green' : inst.regime === 'Wide' ? ' badge--amber' : inst.regime === 'Dislocated' ? '' : '');
+    }
+
+    document.getElementById('mkt-best-price-badge') && (document.getElementById('mkt-best-price-badge').textContent = snap.best_price_sats_th_day ? 'best ' + snap.best_price_sats_th_day + ' sat/TH/d' : 'best —');
+    document.getElementById('mkt-count-badge') && (document.getElementById('mkt-count-badge').textContent = (snap.offer_count || venues.length) + ' venues');
+
+    if (!venues.length) {
+      tbody.innerHTML = '<tr><td colspan="8" class="mkt-table__empty">' + (_mktOffers.length ? 'no venues for selected filter' : 'no market data — configure API keys in Settings') + '</td></tr>';
+      document.getElementById('mkt-notes') && (document.getElementById('mkt-notes').style.display = 'none');
       return;
     }
 
-    const bestIdx = _mktBestIndex(offers);
-    const bestVal = bestIdx >= 0 ? Number(offers[bestIdx].price_per_th_day) : 0;
-    const bestLabel = bestIdx >= 0 ? _fmtBtcPerTh(bestVal) : '—';
+    // Institutional Notes
+    const notes = inst.notes || [];
+    const notesEl = document.getElementById('mkt-notes');
+    const notesBody = document.getElementById('mkt-notes-body');
+    if (notesEl && notesBody) {
+      if (notes.length) {
+        notesEl.style.display = 'block';
+        notesBody.innerHTML = notes.map(n => '<div class="mkt-notes__item">' + escapeHtml(n) + '</div>').join('');
+      } else {
+        notesEl.style.display = 'none';
+      }
+    }
 
-    document.getElementById('mkt-best-price-badge') && (document.getElementById('mkt-best-price-badge').textContent = 'best: ' + bestLabel);
-    document.getElementById('mkt-count-badge') && (document.getElementById('mkt-count-badge').textContent = offers.length + ' offers');
-
-    grid.innerHTML = offers.map((o, idx) => {
-      const src = o.source || o.provider || 'unknown';
-      const srcLabel = _mktSourceLabel(src);
-      const estTag = o.estimated ? '<span class="mkt-card__est">ESTIMATED</span>' : '';
-      const staleCls = (o.meta && o.meta._stale) ? ' mkt-card--stale' : '';
-      // Backend hashrate is TH/s — fmt.hashrate expects H/s.
-      const hrHps = Number(o.hashrate) > 0 ? Number(o.hashrate) * 1e12 : 0;
-      // sats/TH/d (primary) + USD/TH/d (companion, from snapshot BTC price)
-      const priceLabel = _fmtBtcPerTh(o.price_per_th_day);
-      const usdLabel = _mktUsdPerTh(o.price_per_th_day, _mktBtcUsd);
-      // P0-4: one-click affiliate BUY on the offer card that the backend
-      // resolved (provider match — never mislabel another provider's card).
-      // Reuses the same market_data.affiliate payload as the Decision Matrix.
-      const isAffCard = _mktAffiliate && _mktAffiliate.url
-        && (o.provider || '').toLowerCase() === String(_mktAffiliate.provider || '').toLowerCase();
-      const affBtn = isAffCard
-        ? `<button type="button" class="mkt-card__buy chip chip--affiliate"
-             data-aff-url="${escapeHtml(_mktAffiliate.url)}" data-aff-provider="${escapeHtml(_mktAffiliate.provider)}"
-             title="Comprar hashrate em um clique (link de afiliado)">⚡ BUY ${escapeHtml(String(_mktAffiliate.provider).toUpperCase())}</button>`
-        : '';
-      return `
-      <div class="mkt-card${idx === bestIdx ? ' mkt-card--best' : ''}${staleCls}">
-        <div class="mkt-card__head">
-          <span class="mkt-card__provider">${escapeHtml(o.provider || 'Unknown')}</span>
-          <span class="mkt-card__src mkt-card__src--${escapeHtml(src)}">${srcLabel}</span>
-          ${estTag}
-        </div>
-        <div class="mkt-card__price">${priceLabel}${usdLabel ? ' <span class="mkt-card__usd">≈ ' + usdLabel + '</span>' : ''}</div>
-        <div class="mkt-card__detail">
-          <span><span class="mkt-card__label">HR:</span>${hrHps > 0 ? fmt.hashrate(hrHps) : '—'}</span>
-          <span><span class="mkt-card__label">Fee:</span>${o.fee_pct != null ? o.fee_pct + '%' : '—'}</span>
-          <span><span class="mkt-card__label">Duration:</span>${o.duration_days ? o.duration_days + 'd' : '—'}</span>
-        </div>
-        ${affBtn}
-      </div>
-    `;
+    tbody.innerHTML = venues.map(v => {
+      const tierCls = v.risk_tier === 1 ? 'mkt-table__tier--t1' : v.risk_tier === 2 ? 'mkt-table__tier--t2' : v.risk_tier === 3 ? 'mkt-table__tier--t3' : 'mkt-table__tier--t4';
+      const spreadCls = v.spread_vs_best_pct <= 2 ? 'mkt-table__spread--tight' : v.spread_vs_best_pct > 20 ? 'mkt-table__spread--wide' : '';
+      const recCls = v.recommendation.indexOf('Preferred') === 0 ? 'mkt-table__rec--best' : v.recommendation.indexOf('Avoid') === 0 ? 'mkt-table__rec--avoid' : '';
+      return `<tr>
+        <td><span class="mkt-table__venue">${escapeHtml(v.venue)}</span>${v.estimated ? ' <span class="mkt-table__est">EST</span>' : ''}</td>
+        <td class="mono">${v.price_btc_ph_day.toFixed(6)}</td>
+        <td class="mono ${spreadCls}">${v.spread_vs_best_pct >= 0 ? '+' : ''}${v.spread_vs_best_pct}%</td>
+        <td class="mono">${v.spread_vs_vwap_pct >= 0 ? '+' : ''}${v.spread_vs_vwap_pct}%</td>
+        <td class="mono">${v.available_ph} PH/s</td>
+        <td>${v.depth_score}</td>
+        <td><span class="mkt-table__tier ${tierCls}">${v.risk_tier_label}</span></td>
+        <td class="${recCls}">${escapeHtml(v.recommendation)}</td>
+      </tr>`;
     }).join('');
   }
 
   function renderMarket(snap) {
     const mkt = snap.market_data || {};
-    const grid = document.getElementById('mkt-grid');
-    if (!grid) return;
+    const tbody = document.getElementById('mkt-table-body');
+    if (!tbody) return;
     _mktOffers = mkt.offers || [];
     _mktBtcUsd = Number(snap.btc_price && snap.btc_price.usd) || null;
     _mktAffiliate = mkt.affiliate || null;
+    _mktInstitutional = mkt.institutional || null;
     renderMarketGrid();
-    // NOTE: renderDecisionMatrix is NOT called here — the main render path
-    // calls it on every snapshot (panel DOM exists regardless of module
-    // visibility), so calling it again here would be a redundant double render.
   }
 
   // ── P0-2: Decision Matrix — solo vs pool vs lease (capital allocation) ──

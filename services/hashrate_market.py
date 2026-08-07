@@ -470,6 +470,143 @@ def market_offer_sort_key(scored_offer: Dict[str, Any]) -> tuple:
     return (bool(scored_offer.get("estimated", False)), -score)
 
 
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#  Institutional View — HashratePulse Enterprise
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+# Risk tiers per HashratePulse Enterprise framework
+RISK_TIERS = {
+    "braiins": 1,     # Tier 1 — institutional (Braiins OS+, smartpool, regulated)
+    "nicehash": 2,    # Tier 2 — established marketplace, KYC, escrow
+    "mrr": 2,         # Tier 2 — established marketplace, escrow
+    "parasite": 3,    # Tier 3 — pool-based, own hardware required, modeled not live
+    "derived": 4,     # Tier 4 — synthetic/derived, not executable
+    "unknown": 4,
+}
+RISK_TIER_LABELS = {
+    1: "Tier 1 \u00b7 Institutional",
+    2: "Tier 2 \u00b7 Established",
+    3: "Tier 3 \u00b7 Specialized",
+    4: "Tier 4 \u00b7 Experimental",
+}
+
+
+def _risk_tier(provider: str, estimated: bool = False) -> int:
+    """Return the HashratePulse risk tier for a provider."""
+    if estimated:
+        return 4
+    return RISK_TIERS.get(provider.lower(), 4)
+
+
+def compute_institutional_view(
+    offers: List[NormalizedOffer],
+    network_hashrate: Optional[float] = None,
+    btc_usd: Optional[float] = None,
+) -> Dict[str, Any]:
+    """Build the HashratePulse Enterprise institutional view from raw offers.
+
+    Returns the Executive Snapshot + Ranked Venue Table as a single dict
+    that the frontend renders directly.
+    """
+    if not offers:
+        return {"regime": "No Data", "snapshot": None, "venues": [], "notes": []}
+
+    # Score every offer
+    scored = [score_offer(o, network_hashrate) for o in offers]
+    # Sort: estimated last, then best price first
+    scored.sort(key=lambda s: (bool(s.get("estimated", False)), s["price_per_th_day"]))
+
+    best = scored[0]
+    best_price = best["price_per_th_day"]
+
+    # Regime detection
+    if len(scored) >= 3:
+        spread_pct = (scored[-1]["price_per_th_day"] - best_price) / best_price * 100 if best_price > 0 else 0
+        regime = "Tight" if spread_pct < 5 else ("Normal" if spread_pct < 15 else ("Wide" if spread_pct < 40 else "Dislocated"))
+    else:
+        regime = "Normal"
+
+    # Total visible liquidity (PH/s)
+    total_ph = sum(o.hashrate for o in offers) / 1000.0
+
+    # VWAP over past 4h — approximated from current prices
+    prices = [s["price_per_th_day"] for s in scored]
+    vwap = sum(prices) / len(prices) if prices else 0
+
+    snapshot = {
+        "best_price_btc_ph_day": round(best_price * 1000, 6),
+        "best_price_sats_th_day": round(best_price * 1e8, 1),
+        "best_venue": best["provider"],
+        "spread_vs_second_pct": round((scored[1]["price_per_th_day"] - best_price) / best_price * 100, 1) if len(scored) > 1 else 0,
+        "total_liquidity_ph": round(total_ph, 1),
+        "total_liquidity_eh": round(total_ph / 1000, 3),
+        "regime": regime,
+        "vwap_4h_btc_ph_day": round(vwap * 1000, 6),
+        "offer_count": len(scored),
+        "btc_usd": btc_usd,
+    }
+
+    venues = []
+    for s in scored:
+        price_ph = s["price_per_th_day"] * 1000
+        spread_vs_best = round((s["price_per_th_day"] - best_price) / best_price * 100, 1) if best_price > 0 else 0
+        spread_vs_vwap = round((s["price_per_th_day"] - vwap) / vwap * 100, 1) if vwap > 0 else 0
+        tier = _risk_tier(s["provider"], s.get("estimated", False))
+        depth = round(s["hashrate"] / 1000, 1)
+        depth_score = "Deep" if depth > 10 else ("Adequate" if depth > 1 else "Thin")
+
+        if s.get("estimated"):
+            rec = "Avoid \u2014 modeled quote, not executable"
+        elif tier >= 4:
+            rec = "Avoid \u2014 counterparty concerns"
+        elif spread_vs_best > 20:
+            rec = "Liquidity constrained"
+        elif tier == 1 and spread_vs_best <= 2:
+            rec = "Preferred venue \u2014 best execution"
+        elif spread_vs_best <= 5:
+            rec = "Acceptable for tactical allocation"
+        else:
+            rec = "Acceptable risk-adjusted"
+
+        venues.append({
+            "venue": s["provider"],
+            "price_btc_ph_day": round(price_ph, 6),
+            "price_sats_th_day": round(s["price_per_th_day"] * 1e8, 1),
+            "spread_vs_best_pct": spread_vs_best,
+            "spread_vs_vwap_pct": spread_vs_vwap,
+            "available_ph": depth,
+            "depth_score": depth_score,
+            "risk_tier": tier,
+            "risk_tier_label": RISK_TIER_LABELS.get(tier, "Unknown"),
+            "recommendation": rec,
+            "estimated": bool(s.get("estimated", False)),
+            "source": s.get("source", ""),
+            "meta": s.get("meta", {}),
+        })
+
+    notes = []
+    if total_ph < 5:
+        notes.append("Low aggregate liquidity \u2014 size > 5 PH may require splitting across venues.")
+    if regime in ("Wide", "Dislocated"):
+        notes.append(
+            f"Market regime is {regime} \u2014 spreads are elevated. "
+            "Consider waiting for normalization if not time-sensitive."
+        )
+    for v in venues:
+        if v["risk_tier"] >= 3 and not v["estimated"]:
+            notes.append(
+                f"{v['venue']}: Tier {v['risk_tier']} counterparty \u2014 "
+                "verify payout reliability before deploying > 1 PH."
+            )
+
+    return {
+        "regime": regime,
+        "snapshot": snapshot,
+        "venues": venues,
+        "notes": notes,
+    }
+
+
 def build_highlights(
     snapshot: Optional[Dict[str, Any]] = None,
     last_known_prices: Optional[Dict[str, Any]] = None,

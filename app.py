@@ -5137,15 +5137,35 @@ def api_hashrate_market():
     """
     offers = _get_hashrate_market_offers()
     network_hashrate = (latest_snapshot.get("network") or {}).get("hashrate")
+    btc_usd = (latest_snapshot.get("network") or {}).get("btc_usd")
     scored = [_score_offer(offer, network_hashrate) for offer in offers]
     scored.sort(key=_market_offer_sort_key)
+
+    # HashratePulse Enterprise institutional view
+    from services.hashrate_market import compute_institutional_view
+    inst_view = compute_institutional_view(offers, network_hashrate, btc_usd)
 
     return jsonify({
         "success": True,
         "ts": int(time.time()),
         "offers": scored,
         "health": _hashrate_market_health(),
+        "institutional": inst_view,
     })
+
+
+@app.route("/api/hashrate-market/institutional")
+def api_hashrate_market_institutional():
+    """Return the HashratePulse Enterprise institutional view only.
+
+    Lighter payload for clients that only need the ranked venue table,
+    executive snapshot, and risk surface — without the full offer detail.
+    """
+    offers = _get_hashrate_market_offers()
+    network_hashrate = (latest_snapshot.get("network") or {}).get("hashrate")
+    btc_usd = (latest_snapshot.get("network") or {}).get("btc_usd")
+    from services.hashrate_market import compute_institutional_view
+    return jsonify({"success": True, **compute_institutional_view(offers, network_hashrate, btc_usd)})
 
 
 @app.route("/api/hashrate-market/history")
