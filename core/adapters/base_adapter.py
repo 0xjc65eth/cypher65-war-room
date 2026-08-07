@@ -130,3 +130,69 @@ class BaseAdapter(ABC):
                 else:
                     pool_status = "NOT CONFIGURED"
         return pool_status, pool_url, pool_user
+
+    @staticmethod
+    def _derive_rest_pool_status(pool: dict):
+        """Derive pool_status from a REST API pool_stats dict.
+
+        Used by BraiinsAdapter's REST telemetry path. Returns None when
+        the pool dict is empty or has no URL (not configured).
+        """
+        if not pool or not pool.get("url"):
+            return None
+        state = str(pool.get("status") or pool.get("state") or "").lower()
+        if state in ("alive", "connected", "online", "mining"):
+            return "CONNECTED"
+        if state in ("dead", "disconnected", "offline"):
+            return "DISCONNECTED"
+        return None
+
+    @staticmethod
+    def _build_telemetry_dict(
+        source: str,
+        collected_at: int,
+        hashrate: float,
+        chip_temp,
+        vr_temp,
+        temperature,
+        fan_rpm,
+        voltage,
+        power,
+        pool_status,
+        pool_url: str,
+        pool_user: str,
+        accepted_shares: int,
+        rejected_shares: int,
+        stale_shares: int,
+        uptime: int,
+        best_share: str,
+    ) -> dict:
+        """Assemble the canonical telemetry dict.
+
+        Shared by CgminerAdapter and BraiinsAdapter. cgminer-based
+        protocols do NOT expose hashrate windows (1m/10m/1h) — those
+        stay None and are filled by ``normalize_telemetry()``.
+        """
+        return {
+            "source": source,
+            "timestamp": collected_at,
+            "freshness": 0,
+            "hashrate": hashrate,
+            "hashrate_1m": None,
+            "hashrate_10m": None,
+            "hashrate_1h": None,
+            "chip_temp": chip_temp,
+            "vr_temp": vr_temp,
+            "temperature": temperature,
+            "fan_rpm": fan_rpm,
+            "voltage": voltage,
+            "power": power,
+            "accepted_shares": accepted_shares,
+            "rejected_shares": rejected_shares,
+            "stale_shares": stale_shares,
+            "best_difficulty": best_share,
+            "uptime": uptime,
+            "pool_status": pool_status,
+            "pool": {"url": pool_url, "user": pool_user} if pool_url else {},
+            "stub": False,
+        }

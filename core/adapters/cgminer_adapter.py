@@ -116,34 +116,25 @@ class CgminerAdapter(BaseAdapter):
         # ── Pool status derivation ──────────────────────────────────────
         pool_status, pool_url, pool_user = self._derive_cgminer_pool_status(pools)
 
-        return {
-            "source": "cgminer_adapter",
-            "timestamp": collected_at,
-            "freshness": 0,
-            # Core hashrate (cgminer has no 1m/10m/1h windows — normalize fills NOT_AVAILABLE)
-            "hashrate": hr,
-            "hashrate_1m": None,
-            "hashrate_10m": None,
-            "hashrate_1h": None,
-            # Thermal (Fase 5)
-            "chip_temp": temp,
-            "vr_temp": vr_temp,
-            "temperature": temp,
-            # Cooling & power (Fase 5)
-            "fan_rpm": fan_rpm,
-            "voltage": voltage,
-            "power": power,
-            # Shares
-            "accepted_shares": accepted,
-            "rejected_shares": rejected,
-            "stale_shares": stale,
-            "best_difficulty": best_share,
-            "uptime": uptime,
-            # Pool (Fase 5)
-            "pool_status": pool_status,
-            "pool": {"url": pool_url, "user": pool_user} if pool_url else {},
-            "stub": False,
-        }
+        return self._build_telemetry_dict(
+            source="cgminer_adapter",
+            collected_at=collected_at,
+            hashrate=hr,
+            chip_temp=temp,
+            vr_temp=vr_temp,
+            temperature=temp,
+            fan_rpm=fan_rpm,
+            voltage=voltage,
+            power=power,
+            pool_status=pool_status,
+            pool_url=pool_url,
+            pool_user=pool_user,
+            accepted_shares=accepted,
+            rejected_shares=rejected,
+            stale_shares=stale,
+            uptime=uptime,
+            best_share=best_share,
+        )
 
     def execute_command(self, command: str, parameters: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         if command == "restart":

@@ -108,7 +108,8 @@ class BraiinsAdapter(BaseAdapter):
             float, 0) * 1e9 if miner.get("hashrate_avg") else \
             self._safe_number(miner.get("hashrate_ghps"), float, 0) * 1e9
 
-        return self._build_telemetry_dict(
+        return BaseAdapter._build_telemetry_dict(
+            source="braiins_adapter",
             collected_at=collected_at,
             hashrate=hr,
             chip_temp=self._safe_number(miner.get("chip_temp_avg")),
@@ -117,7 +118,7 @@ class BraiinsAdapter(BaseAdapter):
             fan_rpm=None,  # fetched separately from /cooling/state
             voltage=None,
             power=self._safe_number(power.get("power_avg") or power.get("power_w")),
-            pool_status=self._derive_pool_status(pool),
+            pool_status=BaseAdapter._derive_rest_pool_status(pool),
             pool_url=str(pool.get("url") or ""),
             pool_user=str(pool.get("user") or ""),
             accepted_shares=self._safe_number(
@@ -256,7 +257,8 @@ class BraiinsAdapter(BaseAdapter):
         # ── Pool status ───────────────────────────────────────────
         pool_status, pool_url, pool_user = self._derive_cgminer_pool_status(pools_data)
 
-        return self._build_telemetry_dict(
+        return BaseAdapter._build_telemetry_dict(
+            source="braiins_adapter",
             collected_at=collected_at,
             hashrate=hr,
             chip_temp=chip_temp,
@@ -275,52 +277,8 @@ class BraiinsAdapter(BaseAdapter):
             best_share=best_share,
         )
 
-    def _build_telemetry_dict(
-        self, collected_at, hashrate, chip_temp, vr_temp, temperature,
-        fan_rpm, voltage, power, pool_status, pool_url, pool_user,
-        accepted_shares, rejected_shares, stale_shares, uptime, best_share
-    ) -> Dict[str, Any]:
-        """Assemble the canonical telemetry dict.
-
-        cgminer-based protocols (including Braiins) do NOT expose hashrate
-        windows (1m/10m/1h) — those stay None and are filled by
-        ``normalize_telemetry()``.
-        """
-        return {
-            "source": "braiins_adapter",
-            "timestamp": collected_at,
-            "freshness": 0,
-            "hashrate": hashrate,
-            "hashrate_1m": None,
-            "hashrate_10m": None,
-            "hashrate_1h": None,
-            "chip_temp": chip_temp,
-            "vr_temp": vr_temp,
-            "temperature": temperature,
-            "fan_rpm": fan_rpm,
-            "voltage": voltage,
-            "power": power,
-            "accepted_shares": accepted_shares,
-            "rejected_shares": rejected_shares,
-            "stale_shares": stale_shares,
-            "best_difficulty": best_share,
-            "uptime": uptime,
-            "pool_status": pool_status,
-            "pool": {"url": pool_url, "user": pool_user} if pool_url else {},
-            "stub": False,
-        }
-
-    @staticmethod
-    def _derive_pool_status(pool: dict) -> Optional[str]:
-        """Derive pool_status from a REST pool_stats dict."""
-        if not pool or not pool.get("url"):
-            return None
-        state = str(pool.get("status") or pool.get("state") or "").lower()
-        if state in ("alive", "connected", "online", "mining"):
-            return "CONNECTED"
-        if state in ("dead", "disconnected", "offline"):
-            return "DISCONNECTED"
-        return None
+    # _build_telemetry_dict & _derive_pool_status are now @staticmethods
+    # on BaseAdapter — shared with CgminerAdapter.
 
     # ── Commands ───────────────────────────────────────────────────────
 
