@@ -194,6 +194,7 @@
     axeScanStatus: $('#axe-scan-status'),
     axeScanResults: $('#axe-scan-results'),
     axeFleetAdd: $('#axe-fleet-add'),
+    axeFleetScan: $('#axe-fleet-scan'),
     axeTestConn: $('#axe-test-conn'),
     axeTestResult: $('#axe-test-result'),
     axeWizSteps: $('#axe-wiz-steps'),
@@ -4969,6 +4970,83 @@ dom.walletSave?.addEventListener('click', async () => {
     fetchFleetCommandCenter();
   }
 
+  // ── LAN SCANNER (Phase B) — auto-discover miners on the local network ─
+  let _scanning = false;
+  async function scanNetwork() {
+    if (_scanning) return;
+    _scanning = true;
+    const btn = dom.axeFleetScan;
+    if (btn) { btn.textContent = '⏳ SCANNING…'; btn.disabled = true; }
+    try {
+      const r = await authFetch('/api/network/scan', { method: 'POST' });
+      const data = await r.json();
+      if (!data.success) throw new Error(data.error || 'scan failed');
+      const found = data.found || 0;
+      const dur = data.duration_ms || 0;
+      const devs = data.devices || [];
+      if (found === 0) {
+        showToast('info', 'Scan complete — no mining devices found on LAN (' + (data.scanned || 0) + ' IPs probed in ' + dur + 'ms)');
+      } else {
+        showToast('success', found + ' device(s) found (' + dur + 'ms) — check Fleet to add them');
+        // Render results as a simple list below the fleet grid
+        renderScanResults(devs);
+      }
+    } catch (e) {
+      logMessage('SCAN', 'Network scan failed: ' + e.message, 'WARN');
+    } finally {
+      _scanning = false;
+      if (btn) { btn.textContent = '🔍 SCAN NETWORK'; btn.disabled = false; }
+    }
+  }
+
+  function renderScanResults(devices) {
+    let container = document.getElementById('scan-results');
+    if (!container) {
+      container = document.createElement('div');
+      container.id = 'scan-results';
+      container.className = 'scan-results';
+      const grid = dom.axeGrid;
+      if (grid && grid.parentNode) {
+        grid.parentNode.insertBefore(container, grid.nextSibling);
+      }
+    }
+    const items = devices.map(function(d) {
+      var ports = (d.open_ports || []).join(', ');
+      var hint = d.firmware_hint ? ' <span class="scan-results__hint">' + escapeHtml(d.firmware_hint) + '</span>' : '';
+      var host = d.hostname ? ' <span class="scan-results__host">' + escapeHtml(d.hostname) + '</span>' : '';
+      return '<div class="scan-results__item" data-ip="' + escapeHtml(d.ip) + '">' +
+        '<span class="scan-results__ip">' + escapeHtml(d.ip) + '</span>' +
+        '<span class="scan-results__ports">ports: ' + (ports || 'none') + '</span>' +
+        hint + host +
+        '<button class="chip scan-results__add" data-ip="' + escapeHtml(d.ip) + '">+ Add</button>' +
+        '</div>';
+    }).join('');
+    container.innerHTML = '<div class="scan-results__head">🔍 SCAN RESULTS <button class="chip scan-results__dismiss">✕ dismiss</button></div>' + items;
+    container.style.display = 'block';
+    // Wire dismiss + per-device Add buttons
+    container.querySelector('.scan-results__dismiss')?.addEventListener('click', function() {
+      container.style.display = 'none';
+    });
+    container.querySelectorAll('.scan-results__add').forEach(function(btn) {
+      btn.addEventListener('click', function() {
+        var ip = btn.getAttribute('data-ip') || '';
+        if (ip) openAxeAddForm(ip);
+      });
+    });
+  }
+
+  // ── Helper: open the AXE add form pre-filled with an IP ───────────────
+  function openAxeAddForm(ip) {
+    var form = dom.axeAddForm || document.getElementById('axe-add-form');
+    var ipInput = document.getElementById('axe-add-ip');
+    if (form && ipInput) {
+      ipInput.value = ip || '';
+      form.style.display = 'block';
+      // Trigger the same onboarding wizard reset the add button uses
+      if (typeof resetAxeWizard === 'function') resetAxeWizard();
+    }
+  }
+
   // ── FLEET COMMAND CENTER · WORKER INTELLIGENCE ────────────────────────
   // Per-worker live telemetry fed by the AXE FLEET /summary endpoint
   // (shares, reject ratio, temps, power, efficiency, latency, health).
@@ -5731,6 +5809,12 @@ dom.walletSave?.addEventListener('click', async () => {
   }
 
   function initAxeFleetControls() {
+    // ── Scan Network button ──────────────────────────────────────
+    const scanBtn = dom.axeFleetScan || document.getElementById('axe-fleet-scan');
+    if (scanBtn) {
+      scanBtn.addEventListener('click', function() { scanNetwork(); });
+    }
+
     const addBtn = dom.axeFleetAdd || document.getElementById('axe-fleet-add');
     const form = dom.axeAddForm || document.getElementById('axe-add-form');
     const cancelBtn = document.getElementById('axe-add-cancel');

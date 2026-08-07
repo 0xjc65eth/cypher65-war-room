@@ -56,6 +56,7 @@ from services.hashrate_market import (
     market_offer_sort_key as _market_offer_sort_key,
 )
 import services.rental_performance as _rental_perf  # RENTALS panel (MRR + Braiins)
+import services.lan_scanner as _lan_scanner  # Phase B: LAN device auto-discovery
 from axe_fleet.routes import axe_fleet_bp, agent_bp, agent_assets_bp, init_routes as _init_axe_routes
 from axe_fleet.registry import DeviceRegistry
 from routes.alerts_routes import alerts_bp, _set_get_db as _alerts_set_get_db
@@ -5340,6 +5341,22 @@ def api_rentals_detail():
     except Exception as e:
         log.warning("[rentals] detail error: %s", e)
         return jsonify({"success": False, "error": "failed to fetch rental detail"}), 500
+
+
+@app.route("/api/network/scan", methods=["POST"])
+def api_network_scan():
+    """Scan the local network for mining devices.
+
+    Probes ARP cache + subnet for IPs, then checks cgminer (4028),
+    Braiins REST (80), and Bitaxe (8080) ports with 200ms timeouts.
+    Returns discovered devices with firmware hints.
+    """
+    try:
+        result = _lan_scanner.scan_network()
+        return jsonify({"success": True, **result})
+    except Exception as e:
+        log.warning("[lan_scanner] scan failed: %s", e)
+        return jsonify({"success": False, "error": str(e)}), 500
 
 
 @app.route("/api/opportunities/compare")
