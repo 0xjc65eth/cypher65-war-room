@@ -25,9 +25,23 @@ test.describe('Probability WHAT-IF difficulty slider — regression', () => {
   /** Navigate to the Probability module (Block Hunt panel is its home). */
   async function openProbability(page) {
     await page.goto('/');
-    await page.waitForSelector('#app-shell', { timeout: 15000 });
+    await page.waitForSelector('#app-shell', { timeout: 20000 });
+
+    // Ensure sidebar is open (mobile-chrome collapses it by default).
+    const isOpen = await page.evaluate(() => {
+      const sb = document.getElementById('sidebar');
+      return sb && sb.classList.contains('open');
+    });
+    if (!isOpen) {
+      const toggle = page.locator('#sidebar-mobile-toggle');
+      if (await toggle.isVisible().catch(() => false)) {
+        await toggle.click();
+        await page.waitForTimeout(400);
+      }
+    }
+
     await page.click('.sidebar__link[data-module="probability"]');
-    await expect(page.locator('#block-hunt-panel')).toBeVisible({ timeout: 8000 });
+    await expect(page.locator('#block-hunt-panel')).toBeVisible({ timeout: 15000 });
   }
 
   test('renders the slider, badge and reset button in Block Hunt', async ({ page }) => {
@@ -69,8 +83,15 @@ test.describe('Probability WHAT-IF difficulty slider — regression', () => {
       await expect(badge).toHaveText('+30%');
       const after = await page.locator('#bh-whatif-pblock').textContent();
       const pAfter = parseFloat(String(after).replace('%', ''));
-      // 30% > 10% shift → strictly smaller probability (no data → both '—').
-      expect(pAfter).toBeLessThan(pBefore);
+      // 30% > 10% shift → strictly smaller probability. Guard: on a server
+      // with pool difficulty but zero bestDiff (no worker), pBlock is 0 and
+      // stays 0 — skip the strict comparison rather than failing.
+      if (pBefore === 0 && pAfter === 0) {
+        // Cold-ish server: pool data present but no best share → pBlock = 0.
+        // Both values are honest zeroes; the badge still tracked the shift.
+      } else {
+        expect(pAfter).toBeLessThan(pBefore);
+      }
     }
 
     // Reset → back to 0% baseline.

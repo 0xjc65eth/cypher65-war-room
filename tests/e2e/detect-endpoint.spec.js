@@ -156,6 +156,9 @@ test.describe('GET /api/axe-fleet/detect/<ip> — contract', () => {
   });
 
   test.describe('Braiins OS+ firmware contract (mocked)', () => {
+    // Block the Service Worker so page.route() intercepts fetch reliably.
+    // Without this, the app's SW (network-first) can bypass mock routes.
+    test.use({ serviceWorkers: 'block' });
     /**
      * When a real Braiins OS+ miner responds, the contract is:
      *   firmware:    "braiins"
@@ -187,7 +190,7 @@ test.describe('GET /api/axe-fleet/detect/<ip> — contract', () => {
     };
 
     test('mocked Braiins response passes contract validation', async ({ page }) => {
-      // Intercept the detect endpoint and return a synthetic Braiins response
+      // Intercept the detect endpoint and return a synthetic Braiins response.
       await page.route('**/api/axe-fleet/detect/**', (route) => {
         route.fulfill({
           status: 200,
