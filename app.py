@@ -3679,7 +3679,8 @@ def _do_poll():
         else:
             profitability["unavailable_reason"] = "no hashrate or network hashrate"
     except Exception as e:
-        log.warning("[profitability] compute error: %s", e)
+        import traceback as _tb
+        log.warning("[profitability] compute error: %s\n%s", e, _tb.format_exc())
 
     # ━━ Milestones (session-share-count, best_diff ranks, etc.) ━━
     # This block runs BEFORE event_stats is computed (which happens later in

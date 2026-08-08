@@ -23,6 +23,7 @@ from services.hashrate_market import (
     build_highlights as _build_market_highlights,
     persist_market_history as _persist_market_history,
     market_offer_sort_key as _market_offer_sort_key,
+    compute_institutional_view as _compute_institutional_view,
     clear_fetch_cache,
 )
 from helpers import (
@@ -355,6 +356,12 @@ def enrich_snapshot(snapshot: dict, axe_registry=None) -> dict:
         snapshot, _shared_state.last_known_prices, max_age_seconds=120
     )
     resp["market_highlights"] = highlights
+
+    # HashratePulse Enterprise institutional view
+    network_hr = (snapshot.get("network") or {}).get("hashrate")
+    btc_usd = (snapshot.get("network") or {}).get("btc_usd")
+    all_offers = _fetch_all_offers(network_hr)
+    resp["institutional"] = _compute_institutional_view(all_offers, network_hr, btc_usd)
     cache = _shared_state.market_data_cache
     if highlights and len(highlights) > 0:
         sorted_hl = sorted(highlights, key=_market_offer_sort_key)
@@ -373,6 +380,7 @@ def enrich_snapshot(snapshot: dict, axe_registry=None) -> dict:
             "updated_at": int(time.time()),
             "provider_count": len(sorted_hl),
             "health": _hashrate_market_health(),
+            "institutional": resp.get("institutional"),
         }
         attach_affiliate(resp, sorted_hl, affiliate_map_from_env())
         cache["offers"] = sorted_hl
@@ -388,6 +396,7 @@ def enrich_snapshot(snapshot: dict, axe_registry=None) -> dict:
                 "updated_at": cache["updated_at"],
                 "provider_count": len(cache["offers"]),
                 "cached": True,
+                "institutional": resp.get("institutional"),
             }
             attach_affiliate(resp, cache["offers"], affiliate_map_from_env())
         else:
@@ -398,6 +407,7 @@ def enrich_snapshot(snapshot: dict, axe_registry=None) -> dict:
                 "provider_count": 0,
                 "loading": True,
                 "affiliate": None,
+                "institutional": resp.get("institutional"),
             }
 
     # ── Auto-pilot + Command Center ──

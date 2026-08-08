@@ -2687,9 +2687,11 @@ function renderAccount(acct) {
   // falling back to the lowest valid price_per_th_day.
   let _mktFilter = 'all';
   let _mktOffers = [];
+  let _mktGridRetried = false;  // retry guard for Chart.js CDN blocking DOM parse
   let _mktBtcUsd = null;  // BTC/USD from snapshot — for the USD/TH/d line on cards
   let _mktAffiliate = null;  // market_data.affiliate {provider,url,...} — one-click BUY on the offer card
   let _mktTrendLoaded = false;  // lazy: /api/market/trend fetched on first module activation
+  let _mktInstitutional = null;  // HashratePulse institutional view {regime, snapshot, venues, notes}
 
   function _fmtBtcPerTh(v) {
     const n = Number(v);
@@ -2759,7 +2761,18 @@ function renderAccount(acct) {
   // ── HashratePulse Enterprise · institutional market grid ────────────
   function renderMarketGrid() {
     const tbody = document.getElementById('mkt-table-body');
-    if (!tbody) return;
+    if (!tbody) {
+      // DOM not yet parsed (Chart.js CDN blocks <head>). Retry once
+      // after a short delay so the tbody has time to appear.
+      if (!_mktGridRetried) {
+        _mktGridRetried = true;
+        setTimeout(function () {
+          _mktGridRetried = false;
+          renderMarketGrid();
+        }, 100);
+      }
+      return;
+    }
 
     const inst = _mktInstitutional || {};
     const venues = (inst.venues || []).filter(v => {
@@ -2830,8 +2843,6 @@ function renderAccount(acct) {
 
   function renderMarket(snap) {
     const mkt = snap.market_data || {};
-    const tbody = document.getElementById('mkt-table-body');
-    if (!tbody) return;
     _mktOffers = mkt.offers || [];
     _mktBtcUsd = Number(snap.btc_price && snap.btc_price.usd) || null;
     _mktAffiliate = mkt.affiliate || null;

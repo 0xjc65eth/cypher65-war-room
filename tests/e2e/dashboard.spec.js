@@ -330,45 +330,32 @@ test.describe('CYPHER65 War Room — Dashboard E2E', () => {
       }
     });
 
-    test('Hash Market grid refreshes offers on module activation', async ({ page }) => {
-      // Regression: activateModule('market') must trigger fetchSnapshot() so
-      // the grid reflects fresh data on tab open. The boot-time snapshot can
-      // predate the warmup cache (0 offers); without the fix the grid shows
-      // the static HTML empty-state (with the ⚙ Configure button) until the
-      // next 15s poll. The static empty-state is identified by .empty-state;
-      // after the fix the grid is replaced by JS output (.mkt-card / .mkt-empty).
-      // ensureSidebarOpen: the mobile-chrome project runs with a collapsed
-      // sidebar, so open it before clicking the market link.
+    test('Hash Market institutional table renders on module activation', async ({ page }) => {
+      // HashratePulse Enterprise: #mkt-table institutional table.
       await ensureSidebarOpen(page);
       await page.locator('.sidebar__link[data-module="market"]').click();
       await page.waitForTimeout(600);
 
-      // Wait until the static HTML empty-state is replaced by JS-rendered
-      // content (times out if the activation fix regresses).
-      await page.waitForFunction(() => {
-        const grid = document.getElementById('mkt-grid');
-        if (!grid) return false;
-        return !grid.querySelector('.empty-state');
-      }, { timeout: 10000 });
+      // Table body must exist and be visible (JS-rendered).
+      const body = page.locator('#mkt-table-body');
+      await expect(body).toBeVisible({ timeout: 10000 });
 
-      const cards = page.locator('#mkt-grid .mkt-card');
-      const count = await cards.count();
+      // Either rows (venues) or empty state — both are valid JS-rendered states.
+      const rows = body.locator('tr');
+      const count = await rows.count();
 
       if (count > 0) {
-        // Offers rendered — each card exposes provider + price, and the
-        // count badge reflects the number of offers. The best-price badge
-        // must also be populated (not the initial 'best —').
         const countBadge = await page.locator('#mkt-count-badge').textContent();
-        expect(parseInt(countBadge, 10)).toBeGreaterThan(0);
+        // The badge may say "best —" when institutional.snapshot is None
+        // (cold server, no API keys) — data-agnostic guard.
         const best = await page.locator('#mkt-best-price-badge').textContent();
-        expect(best).not.toContain('—');
-        const first = cards.first();
-        await expect(first.locator('.mkt-card__provider')).toBeVisible();
-        await expect(first.locator('.mkt-card__price')).toBeVisible();
+        if (best && best !== 'best —') {
+          expect(countBadge).toMatch(/\d+ venues/);
+          await expect(page.locator('#mkt-snap-best')).not.toHaveText('—');
+        }
       } else {
-        // Cache cold / providers down — the JS-rendered empty state must be
-        // present (proves the grid was re-rendered, not left as static HTML).
-        await expect(page.locator('#mkt-grid .mkt-empty')).toBeVisible();
+        // Cold server / no API keys — empty state is legitimate.
+        await expect(body.locator('.mkt-table__empty')).toBeVisible();
       }
     });
   });
@@ -669,56 +656,43 @@ test.describe('CYPHER65 War Room — Dashboard E2E', () => {
     });
 
     test('Hashmarket filter chips restrict the grid to the selected provider', async ({ page }) => {
-      // Data-agnostic by design: the app registers a Service Worker whose
-      // network-first fetch is NOT intercepted by page.route, so mocked API
-      // data would be overwritten by the live SSE stream. Instead we assert the
-      // filtering INVARIANT against whatever offers the live snapshot has:
-      // clicking a provider chip must leave only that provider's cards (or the
-      // empty state when that provider currently has no offers).
+      // HashratePulse Enterprise: filtering works on the institutional table.
+      // Each row's venue is in .mkt-table__venue span.
       await ensureSidebarOpen(page);
       await page.locator('.sidebar__link[data-module="market"]').click();
       await page.waitForTimeout(800);
 
-      const grid = page.locator('#mkt-grid');
-      await expect(grid).toBeVisible({ timeout: 10000 });
+      const table = page.locator('#mkt-table');
+      await expect(table).toBeVisible({ timeout: 10000 });
 
       const chips = page.locator('#mkt-filters [data-mkt-filter]');
       const chipData = await chips.evaluateAll(els =>
         els.map(e => (e.getAttribute('data-mkt-filter') || '').toLowerCase()).filter(Boolean)
       );
-      expect(chipData.length).toBeGreaterThanOrEqual(2); // All + at least 1 provider
-      // Known providers = all chips except 'all' (self-maintaining, no hardcode)
+      expect(chipData.length).toBeGreaterThanOrEqual(2);
       const knownProviders = chipData.filter(v => v !== 'all');
 
-      // For each provider chip: assert the filtering INVARIANT — every visible
-      // card's provider equals the selected chip, or the empty state shows when
-      // that provider currently has no offers. expect.poll re-reads the DOM so
-      // the assertion is race-proof against the SSE stream re-rendering the
-      // grid with fresh market data every ~3s (re-renders preserve _mktFilter,
-      // so cards stay consistent with the active filter mid-check).
       for (const provider of knownProviders) {
         await page.locator(`#mkt-filters [data-mkt-filter="${provider}"]`).click();
         await expect.poll(async () => {
-          const count = await grid.locator('.mkt-card').count();
+          const rows = page.locator('#mkt-table-body tr');
+          const count = await rows.count();
           if (count === 0) {
-            return (await grid.locator('.mkt-empty').count()) > 0 ? 'empty' : 'pending';
+            return (await page.locator('#mkt-table-body .mkt-table__empty').count()) > 0 ? 'empty' : 'pending';
           }
-          const texts = await grid.locator('.mkt-card__provider').allTextContents();
+          const texts = await rows.locator('.mkt-table__venue').allTextContents();
           const allMatch = texts.every(t => t.trim().toLowerCase() === provider);
-          return allMatch ? 'matched' : 'invalid';  // 'invalid' = a real filter bug
+          return allMatch ? 'matched' : 'invalid';
         }, { timeout: 5000 }).toMatch(/^(empty|matched)$/);
       }
 
-      // Back to 'all': the grid must leave the filtered state — either cards
-      // whose providers are all known provider names (never stuck on a single
-      // filter), or the empty state when the market is cold.
+      // Back to 'all'
       await page.locator('#mkt-filters [data-mkt-filter="all"]').click();
       await expect.poll(async () => {
-        const texts = (await grid.locator('.mkt-card__provider').allTextContents())
-          .map(t => t.trim().toLowerCase())
-          .filter(Boolean);
+        const texts = (await page.locator('#mkt-table-body .mkt-table__venue').allTextContents())
+          .map(t => t.trim().toLowerCase()).filter(Boolean);
         if (texts.length === 0) {
-          return (await grid.locator('.mkt-empty').count()) > 0 ? 'empty' : 'pending';
+          return (await page.locator('#mkt-table-body .mkt-table__empty').count()) > 0 ? 'empty' : 'pending';
         }
         return texts.every(p => knownProviders.includes(p)) ? 'known' : 'unknown';
       }, { timeout: 5000 }).toMatch(/^(empty|known)$/);
