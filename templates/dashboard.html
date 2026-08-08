@@ -8,7 +8,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
-<link rel="stylesheet" href="/static/style.css?v50">
+<link rel="stylesheet" href="/static/style.css?v51">
 <link rel="icon" href="/static/favicon.ico" sizes="any">
 <link rel="icon" type="image/png" sizes="32x32" href="/static/icon-32x32.png">
 <link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
@@ -972,6 +972,13 @@
       <button class="chip" id="axe-detail-close">X</button>
     </div>
     <div id="axe-detail-body" style="font-size:10px;color:var(--text-secondary);margin-top:4px"></div>
+    <div class="axe-detail-chart" id="axe-detail-chart-wrap" style="display:none;margin-top:8px">
+      <div class="axe-detail-chart__header">
+        <span class="axe-detail-chart__title">▸ TELEMETRY HISTORY</span>
+        <span class="badge badge--mute" id="axe-detail-chart-count">—</span>
+      </div>
+      <div class="chart-wrap chart-wrap--sm"><canvas id="axe-detail-chart"></canvas></div>
+    </div>
   </div>
 </section>
 
@@ -2390,7 +2397,7 @@
     <span id="next-poll"></span>
   </div>
 
-  <script src="/static/app.js?v54"></script>
+  <script src="/static/app.js?v55"></script>
 </div> <!-- end #app-main -->
 </div> <!-- end #app-layout -->
   <!-- Matrix rain canvas (full-screen background effect) -->

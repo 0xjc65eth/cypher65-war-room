@@ -482,6 +482,66 @@ def device_health(device_id: str, tenant_id: str = ""):
     })
 
 
+# ── Per-device history endpoint (Phase C) ─────────────────────────────
+
+
+@axe_fleet_bp.route("/devices/<device_id>/history", methods=["GET"])
+@require_tenant
+@_role_required("viewer")
+def device_history(device_id: str, tenant_id: str = ""):
+    """Get device telemetry history for Chart.js consumption.
+
+    Returns a proximity_history-style list of {ts, hashrate, temperature,
+    efficiency_jth, fan_rpm, power_watts} points suitable for a multi-line
+    Chart.js graph in the Device Detail panel.
+
+    Query params:
+      - limit (int, optional): max data points, default 120
+    """
+    if _registry is None:
+        return jsonify({"error": "registry not initialized"}), 500
+    device = _registry.get_device(device_id, tenant_id=tenant_id)
+    if not device:
+        return jsonify({"error": "device not found"}), 404
+
+    limit = request.args.get("limit", 120, type=int)
+
+    # Reuse the existing chart-data series (same axe_telemetry source).
+    series = _registry.get_telemetry_chart_data(device_id, limit=limit,
+                                                 tenant_id=tenant_id)
+
+    # Build a proximity_history-style point list for the Chart.js consumer.
+    history = []
+    n = len(series["ts"])
+    for i in range(n):
+        hr = series["hashrate_hs"][i]
+        # Efficiency: compute on-the-fly so the caller always gets a value
+        # even when the firmware doesn't report it.
+        eff = series["efficiency_jth"][i]
+        if eff is None and hr and series["power_watts"][i]:
+            try:
+                eff = round(series["power_watts"][i] / (hr / 1e12), 2)
+            except (TypeError, ZeroDivisionError):
+                pass
+        history.append({
+            "ts": series["ts"][i],
+            "hashrate": hr,
+            "hashrate_str": _fmt_hr(int(hr)) if hr else "—",
+            "temperature": series["temperature"][i],
+            "efficiency_jth": eff,
+            "fan_rpm": series["fan_rpm"][i],
+            "power_watts": series["power_watts"][i],
+        })
+
+    return jsonify({
+        "device_id": device_id,
+        "device_name": device["name"],
+        "status": device.get("status", "OFFLINE"),
+        "history": history,
+        "count": len(history),
+    })
+
+
 @axe_fleet_bp.route("/devices/<device_id>/refresh", methods=["POST"])
 @require_tenant
 @_role_required("member")

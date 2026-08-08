@@ -492,6 +492,92 @@ class TestDeviceHealth:
 
 
 # ══════════════════════════════════════════════════════════════════════════
+#  GET /api/axe-fleet/devices/{id}/history  (Phase C)
+# ══════════════════════════════════════════════════════════════════════════
+
+class TestDeviceHistory:
+    """Tests for GET /api/axe-fleet/devices/<device_id>/history."""
+
+    DEVICE_ID = "test-device-004"
+    ENDPOINT = f"/api/axe-fleet/devices/{DEVICE_ID}/history"
+
+    def _series(self):
+        return {
+            "ts": [1699999700, 1699999400, 1699999100],
+            "hashrate_hs": [5200000000000, 5100000000000, 5300000000000],
+            "temperature": [62, 60, 63],
+            "fan_rpm": [4200, 4100, 4300],
+            "power_watts": [42, 41, 43],
+            "efficiency_jth": [8.08, 8.04, 8.11],
+            "shares_accepted": [15823, 15723, 15623],
+            "shares_rejected": [47, 45, 44],
+            "hw_error_pct": [0.3, 0.2, 0.4],
+            "voltage_mv": [1200, 1195, 1205],
+            "frequency_mhz": [525, 520, 530],
+        }
+
+    def test_returns_history_for_existing_device(self, client):
+        mock_registry = MagicMock()
+        mock_registry.get_device.return_value = {
+            "id": self.DEVICE_ID, "name": "History Miner",
+            "model": "Bitaxe Max", "ip_address": "192.168.1.103", "status": "ONLINE",
+        }
+        mock_registry.get_telemetry_chart_data.return_value = self._series()
+
+        with patch("axe_fleet.routes._registry", mock_registry):
+            resp = client.get(self.ENDPOINT)
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert len(data["history"]) == 3
+        p = data["history"][0]
+        assert p["hashrate"] == 5200000000000
+        assert p["hashrate_str"] == "5.20 TH/s"
+        assert p["temperature"] == 62
+        assert p["efficiency_jth"] == 8.08
+
+    def test_404_for_unknown_device(self, client):
+        mock_registry = MagicMock()
+        mock_registry.get_device.return_value = None
+        with patch("axe_fleet.routes._registry", mock_registry):
+            resp = client.get(self.ENDPOINT)
+        assert resp.status_code == 404
+
+    def test_respects_limit_param(self, client):
+        mock_registry = MagicMock()
+        mock_registry.get_device.return_value = {"id": self.DEVICE_ID, "name": "T"}
+        mock_registry.get_telemetry_chart_data.return_value = {"ts": [], "hashrate_hs": []}
+        with patch("axe_fleet.routes._registry", mock_registry):
+            resp = client.get(f"{self.ENDPOINT}?limit=60")
+        assert resp.status_code == 200
+        args, kwargs = mock_registry.get_telemetry_chart_data.call_args
+        assert kwargs.get("limit") == 60
+
+    def test_efficiency_fallback_computed(self, client):
+        series = self._series()
+        series["efficiency_jth"] = [None, None, 8.11]
+        mock_registry = MagicMock()
+        mock_registry.get_device.return_value = {"id": self.DEVICE_ID, "name": "T"}
+        mock_registry.get_telemetry_chart_data.return_value = series
+        with patch("axe_fleet.routes._registry", mock_registry):
+            resp = client.get(self.ENDPOINT)
+        data = resp.get_json()
+        assert data["history"][0]["efficiency_jth"] == 8.08
+        assert data["history"][1]["efficiency_jth"] == 8.04
+        assert data["history"][2]["efficiency_jth"] == 8.11
+
+    def test_empty_history_when_no_telemetry(self, client):
+        mock_registry = MagicMock()
+        mock_registry.get_device.return_value = {"id": self.DEVICE_ID, "name": "Empty"}
+        mock_registry.get_telemetry_chart_data.return_value = {"ts": [], "hashrate_hs": []}
+        with patch("axe_fleet.routes._registry", mock_registry):
+            resp = client.get(self.ENDPOINT)
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["history"] == []
+        assert data["count"] == 0
+
+
+# ══════════════════════════════════════════════════════════════════════════
 #  GET /api/axe-fleet/health
 #  P1.1 — fleet_stats schema alignment: online/warning/offline counts,
 #  aggregates (avg health/temp, total power, efficiency, best diff) and

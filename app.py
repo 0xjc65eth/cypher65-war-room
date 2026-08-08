@@ -2931,6 +2931,10 @@ def _do_poll():
                 worker_index = idx
 
     # ── Fallback: if no primary worker matched WORKER_NAME, pick best by hashrate ──
+    # Workers with hashrate 0 still carry useful data (bestDifficulty, lastSubmission,
+    # uptime). When all workers have zero hashrate, pick the first worker instead of
+    # leaving the snapshot blank — otherwise the dashboard shows \"OFFLINE\" even for
+    # wallets with mining history.
     if worker is None and all_workers and user and isinstance(user.get("workerData"), list):
         best_idx = 0
         best_hr = 0
@@ -2940,11 +2944,21 @@ def _do_poll():
                 best_hr = hr
                 best_idx = i
         if best_hr > 0:
-            all_workers[best_idx]["is_primary"] = True
-            worker = user["workerData"][best_idx] if best_idx < len(user["workerData"]) else None
-            worker_index = best_idx
-            log.info("[primary] auto-selected worker %s with HR %s (best of %d)",
-                     all_workers[best_idx]["name"], best_hr, len(all_workers))
+            if best_idx < len(user["workerData"]):
+                all_workers[best_idx]["is_primary"] = True
+                worker = user["workerData"][best_idx]
+                worker_index = best_idx
+                log.info("[primary] auto-selected worker %s with HR %s (best of %d)",
+                         all_workers[best_idx]["name"], best_hr, len(all_workers))
+        elif len(all_workers) > 0 and len(user["workerData"]) > 0:
+            # All workers idle (hr=0) — pick the first so the dashboard still
+            # surfaces bestDifficulty / lastSubmission / uptime. Only when a
+            # workerData entry exists to pair with (worker stays None otherwise).
+            all_workers[0]["is_primary"] = True
+            worker = user["workerData"][0]
+            worker_index = 0
+            log.info("[primary] all workers idle — selected %s as primary (hr=0, %d total)",
+                     all_workers[0]["name"], len(all_workers))
 
     # ── Dedup workers with case-insensitive merging ──
     # Workers with the same normalized name (e.g. CYPHERORDIFUTURE vs cypherordifuture)

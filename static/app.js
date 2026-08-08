@@ -1304,6 +1304,7 @@
     if (!dom.hudBar) return;
     if (!snap.worker) { dom.hudBar.style.display = 'none'; return; }
     dom.hudBar.style.display = 'flex';
+    // Idle worker (hr=0) still renders — bestDiff/lastSubmission/uptime visible
 
     if (dom.hudHashrate) dom.hudHashrate.textContent = fmt.hashrate(w.hashrate);
     if (dom.hudBestdiff) dom.hudBestdiff.textContent = fmt.diff(w.bestDifficulty);
@@ -1326,7 +1327,7 @@
       dom.statusBar?.classList.toggle('is-online', isOnline);
       dom.sbLed.style.background = isOnline ? 'var(--accent-green)' : 'var(--accent-red)';
     }
-    if (dom.sbStatus) dom.sbStatus.textContent = snap.worker ? 'ONLINE' : 'OFFLINE';
+    if (dom.sbStatus) dom.sbStatus.textContent = snap.worker ? (snap.worker.hashrate ? 'ONLINE' : 'IDLE') : 'OFFLINE';
     if (dom.sbWorkers) dom.sbWorkers.textContent = `${workers.length} worker${workers.length === 1 ? '' : 's'}`;
 
     // Mining block
@@ -1486,7 +1487,11 @@
     smoothUpdate(dom.mHashrate, fmt.hashrate(w.hashrate));
     smoothUpdate(dom.mBestDiff, fmt.diff(w.bestDifficulty));
     if (dom.mLastShare) dom.mLastShare.textContent = w.lastSubmission ? fmt.age(w.lastSubmission) : '\u2014';
-    if (dom.mState) dom.mState.textContent = w.hashrate ? 'HASHING' : 'IDLE';
+    if (dom.mState) {
+      dom.mState.textContent = w.hashrate ? 'HASHING' : 'IDLE';
+      dom.mState.classList.toggle('metric__value--idle', !w.hashrate);
+    }
+    if (dom.mStateSub) dom.mStateSub.textContent = w.hashrate ? 'active' : 'connected · no shares';
   }
 
   
@@ -3286,7 +3291,7 @@ function renderAccount(acct) {
     const fleet = snap.axe_fleet || [];
     const prox = snap.proximity || {};
 
-    document.getElementById('ai-ctx-status') && (document.getElementById('ai-ctx-status').textContent = snap.worker ? 'ONLINE' : 'OFFLINE');
+    document.getElementById('ai-ctx-status') && (document.getElementById('ai-ctx-status').textContent = snap.worker ? (snap.worker.hashrate ? 'ONLINE' : 'IDLE') : 'OFFLINE');
     document.getElementById('ai-ctx-hr') && (document.getElementById('ai-ctx-hr').textContent = fmt.hashrate(w.hashrate));
     document.getElementById('ai-ctx-best') && (document.getElementById('ai-ctx-best').textContent = fmt.diff(w.bestDifficulty));
     document.getElementById('ai-ctx-net') && (document.getElementById('ai-ctx-net').textContent = fmt.diff(net.difficulty));
@@ -3402,8 +3407,13 @@ function renderAccount(acct) {
     // boots). Keep the '—' placeholder (same convention as #sb-wallet-addr)
     // so the element always has a real box.
     if (dom.topbarAddress) dom.topbarAddress.textContent = `${fmt.shortAddr(snap.btc_address || window.BTC_ADDRESS || '') || '—'}`;
-    if (dom.statusText) dom.statusText.textContent = snap.worker ? 'ONLINE' : 'OFFLINE';
-    if (dom.statusPill) dom.statusPill.classList.toggle('is-online', !!snap.worker);
+    if (dom.statusText) {
+      dom.statusText.textContent = snap.worker ? (snap.worker.hashrate ? 'ONLINE' : 'IDLE') : 'OFFLINE';
+    }
+    if (dom.statusPill) {
+      dom.statusPill.classList.toggle('is-online', !!(snap.worker && snap.worker.hashrate));
+      dom.statusPill.classList.toggle('is-idle', !!(snap.worker && !snap.worker.hashrate));
+    }
     renderHero(snap);
     renderHostCore(snap);
     renderPool(snap.pool, snap.luck_estimate);
@@ -5484,10 +5494,73 @@ dom.walletSave?.addEventListener('click', async () => {
         dom.axeDetailBody.innerHTML = items.map(it =>
           '<div class="axe-detail__item"><div class="lbl">' + escapeHtml(it.lbl) + '</div><div class="val' + (it.cls ? ' ' + it.cls : '') + '">' + escapeHtml(String(it.val)) + '</div></div>'
         ).join('');
+
+        // Phase C: load telemetry history chart
+        loadDeviceHistoryChart(deviceId);
       })
       .catch(() => {
         dom.axeDetailBody.innerHTML = '<div class="axe-detail__loading">error loading device telemetry</div>';
       });
+  }
+
+  // ── Phase C: Device History Chart ─────────────────────────────────────
+  let _axeDetailChart = null;
+
+  async function loadDeviceHistoryChart(deviceId) {
+    const wrap = document.getElementById('axe-detail-chart-wrap');
+    const canvas = document.getElementById('axe-detail-chart');
+    const countBadge = document.getElementById('axe-detail-chart-count');
+    if (!wrap || !canvas) return;
+
+    // Destroy previous chart instance so Chart.js doesn't complain.
+    if (_axeDetailChart) { _axeDetailChart.destroy(); _axeDetailChart = null; }
+
+    try {
+      const r = await authFetch('/api/axe-fleet/devices/' + encodeURIComponent(deviceId) + '/history?limit=120');
+      if (!r.ok) return;
+      const data = await r.json();
+      const rows = data.history || [];
+      if (rows.length < 2) return;  // need at least 2 points for a line
+
+      wrap.style.display = 'block';
+      if (countBadge) countBadge.textContent = rows.length + ' points';
+
+      var labels = rows.map(function(r) {
+        var d = new Date(r.ts * 1000);
+        return d.getHours().toString().padStart(2, '0') + ':' + d.getMinutes().toString().padStart(2, '0');
+      });
+
+      var hrVals = rows.map(function(r) { return r.hashrate ? r.hashrate / 1e12 : null; });
+      var tempVals = rows.map(function(r) { return r.temperature; });
+      var effVals = rows.map(function(r) { return r.efficiency_jth; });
+
+      _axeDetailChart = new Chart(canvas.getContext('2d'), {
+        type: 'line',
+        data: {
+          labels: labels,
+          datasets: [
+            { label: 'Hashrate TH/s', data: hrVals, borderColor: 'rgb(6,214,240)', backgroundColor: 'rgba(6,214,240,0.06)', tension: 0.3, pointRadius: 0, fill: true, yAxisID: 'y' },
+            { label: 'Temp °C', data: tempVals, borderColor: 'rgb(255,160,0)', backgroundColor: 'rgba(255,160,0,0.04)', tension: 0.3, pointRadius: 0, borderDash: [4, 2], yAxisID: 'y1' },
+            { label: 'Eff J/TH', data: effVals, borderColor: 'rgb(186,133,224)', backgroundColor: 'transparent', tension: 0.3, pointRadius: 0, borderDash: [2, 3], yAxisID: 'y1' },
+          ]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          interaction: { mode: 'index', intersect: false },
+          scales: {
+            x: { ticks: { color: '#5E5952', maxTicksLimit: 10, font: { size: 9 } }, grid: { color: 'rgba(94,89,82,0.12)' } },
+            y: { type: 'linear', position: 'left', title: { display: true, text: 'TH/s', color: 'rgb(6,214,240)' }, ticks: { color: '#5E5952', font: { size: 9 } }, grid: { color: 'rgba(94,89,82,0.10)' } },
+            y1: { type: 'linear', position: 'right', title: { display: true, text: '°C / J/TH', color: 'rgb(255,160,0)' }, ticks: { color: '#5E5952', font: { size: 9 } }, grid: { display: false } }
+          },
+          plugins: {
+            legend: { labels: { color: '#C6C3BF', font: { size: 9 }, usePointStyle: true, padding: 12 } }
+          }
+        }
+      });
+    } catch (e) {
+      // Non-fatal: chart is a nice-to-have, detail panel still works.
+    }
   }
 
   // ── AXE FLEET: LAN discovery (subnet scan) ───────────────────────────
