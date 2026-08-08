@@ -19,10 +19,29 @@ import { test, expect } from '@playwright/test';
 
 test.describe('Docs autocomplete — regression', () => {
 
+  /** Ensure the sidebar is open so sidebar links are clickable (mobile off-canvas).
+   *  On the mobile-chrome project (≤768px) the sidebar is a hidden drawer —
+   *  same helper as dashboard.spec.js. On desktop the toggle is invisible so
+   *  this is a no-op. */
+  async function ensureSidebarOpen(page) {
+    const isOpen = await page.evaluate(() => {
+      const sb = document.getElementById('sidebar');
+      return sb && sb.classList.contains('open');
+    });
+    if (!isOpen) {
+      const toggle = page.locator('#sidebar-mobile-toggle');
+      if (await toggle.isVisible()) {
+        await toggle.click();
+        await page.waitForTimeout(400);
+      }
+    }
+  }
+
   /** Navigate to the Docs module and focus the search input. */
   async function openDocs(page) {
     await page.goto('/');
     await page.waitForSelector('#app-shell', { timeout: 15000 });
+    await ensureSidebarOpen(page);
     await page.click('.sidebar__link[data-module="docs"]');
     await expect(page.locator('#section-docs')).toBeVisible({ timeout: 8000 });
     await page.click('#docs-search-input');
