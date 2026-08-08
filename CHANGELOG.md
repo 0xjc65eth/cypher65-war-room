@@ -6,6 +6,24 @@ e versionamento semântico ([SemVer](https://semver.org/lang/pt-BR/)).
 
 ## [Unreleased]
 
+### Corrigido — RENTALS: histórico real visível + veredito de performance por aluguel (UX do operador)
+- **Bug de descoberta**: o painel RENTALS abria na aba "Active" (0 rentals ativos) e escondia o
+  histórico atrás do chip History — parecia que a conta não tinha nada. Agora o painel **cai
+  direto na primeira aba com dados** (History quando Active está vazio; clique manual sempre vence).
+- **Credenciais nunca mais silenciosas**: cards do strip mostram **🔑** (tooltip) quando a
+  credencial do provider falta e **⚠** com o erro real quando o fetch falha — nunca um 0/—
+  enganoso. O empty state mostra o erro do provider e um CTA **⚙ OPEN SETTINGS** que abre o modal.
+- **Performance por aluguel** (decidir onde alugar de novo): o detail agora traz um veredito —
+  **PERFORMANCE** (% do hashrate anunciado, verde ≥95% / âmbar 80–95% / vermelho <80%),
+  **AVG/ADVERTISED**, **COST** (sats/TH/h efetivo) e **DELIVERED** (TH·h totais entregues).
+- **Settings didáticos**: hints novos em `mrr_api_key`/`mrr_api_secret` (onde criar:
+  miningrigrentals.com → My Account → API Access) e o hint do Braiins agora diz que o owner
+  token pode ser **regenerado se perdido** (era mostrado 1x no registro).
+- **Verificações ao vivo**: MRR testado com as credenciais reais (34 rentals; detail/graph/log
+  OK) e endpoints Braiins `/contract`/`/contract/active` confirmados (401 só sem a key).
+- E2E: 3º teste novo (aba Braiins sem key → CTA → Settings modal) + asserts de auto-aba History
+  e banner de performance (4 células). Bumps CDN-safe `app.js?v55→v56`, `style.css?v51→v52`.
+
 ### Adicionado — Webhook unificado Discord/Telegram para alertas (notifier centralizado)
 - **`send_webhook_notification()`** em `services/push_notifier.py` (novo): auto-detecta o
   canal pelo URL — **Discord** (embed rico com cor por severidade, fields de
