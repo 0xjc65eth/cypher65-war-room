@@ -6,6 +6,9 @@ Covers services/push_notifier.py (34% → target ≥90%):
     success, WebPushException 404/410 (subscription prune), generic failure
   - notify_if_alert_exists: single/multi alert iteration
   - SEVERITY_TITLES / CATEGORY_CONTEXT coverage via notification build
+  - send_webhook_notification: Discord embed, Telegram MarkdownV2,
+    generic fallback, network error, _tg_escape
+  - AlertEngine.dispatch_webhook integration
 
 webpush / WebPushException are imported INSIDE notify_alert, so we inject a
 fake `pywebpush` module into sys.modules to control both.
@@ -17,9 +20,13 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import pytest
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch, MagicMock, ANY
 
-from services.push_notifier import notify_alert, notify_if_alert_exists
+from services.push_notifier import (
+    notify_alert, notify_if_alert_exists,
+    send_webhook_notification, send_webhook_for_alert,
+    severity_meets_threshold,
+)
 
 
 class FakeWebPushException(Exception):
@@ -244,3 +251,277 @@ class TestNotifyIfAlertExists:
         ]
         with patch("services.push_notifier.notify_alert", return_value=False):
             assert notify_if_alert_exists(alerts) is False
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 6. send_webhook_notification — Phase D (Discord + Telegram + generic)
+# ═══════════════════════════════════════════════════════════════════════════
+
+_WEBHOOK_ARGS = dict(
+    severity="CRIT", category="hashrate_drop",
+    message="Garage Bitaxe hashrate=0 == 0",
+    ts=1735689600, worker="parasite-worker", address="bc1qtest1234567890abcdefgh",
+)
+
+
+class TestSendWebhookNotification:
+    def test_empty_url_returns_false(self):
+        assert send_webhook_notification(url="", **_WEBHOOK_ARGS) is False
+
+    def test_discord_url_detected_and_formats_embed(self):
+        """Discord URL → _send_discord_webhook → embed payload."""
+        mock_post = MagicMock()
+        mock_post.return_value.ok = True
+        mock_post.return_value.status_code = 200
+
+        url = "https://discord.com/api/webhooks/123/abc"
+        with patch("services.push_notifier.requests") as mock_r:
+            mock_r.post = mock_post
+            ok = send_webhook_notification(url=url, **_WEBHOOK_ARGS)
+
+        assert ok is True
+        assert mock_post.call_count == 1
+        call_args = mock_post.call_args
+        assert call_args[0][0] == url
+
+        # Check embed structure
+        payload = call_args[1]["json"]
+        embed = payload["embeds"][0]
+        assert "CYPHER65" in embed["title"]
+        assert "CRIT" in embed["title"]
+        assert "hashrate_drop" in embed["description"] or \
+            _WEBHOOK_ARGS["message"] in embed["description"]
+        assert embed["color"] == 0xFF1744  # CRIT red
+
+    def test_discord_embed_includes_worker_and_address(self):
+        mock_post = MagicMock()
+        mock_post.return_value.ok = True
+
+        url = "https://discord.com/api/webhooks/456/xyz"
+        with patch("services.push_notifier.requests") as mock_r:
+            mock_r.post = mock_post
+            send_webhook_notification(url=url, **_WEBHOOK_ARGS)
+
+        payload = mock_post.call_args[1]["json"]
+        embed = payload["embeds"][0]
+        field_names = [f["name"] for f in embed["fields"]]
+        assert "Worker" in field_names
+        assert "Address" in field_names
+
+    def test_telegram_url_detected_and_formats_markdown(self):
+        """Telegram URL → _send_telegram_webhook → MarkdownV2 payload."""
+        mock_post = MagicMock()
+        mock_post.return_value.ok = True
+
+        url = "https://api.telegram.org/botTOKEN/sendMessage?chat_id=123456"
+        with patch("services.push_notifier.requests") as mock_r:
+            mock_r.post = mock_post
+            ok = send_webhook_notification(url=url, **_WEBHOOK_ARGS)
+
+        assert ok is True
+        payload = mock_post.call_args[1]["json"]
+        assert payload["parse_mode"] == "MarkdownV2"
+        assert "CYPHER65" in payload["text"]
+        assert "CRIT" in payload["text"]
+        assert payload["chat_id"] == "123456"
+
+    def test_telegram_no_chat_id_still_sends(self):
+        mock_post = MagicMock()
+        mock_post.return_value.ok = True
+
+        url = "https://api.telegram.org/botTOKEN/sendMessage"
+        with patch("services.push_notifier.requests") as mock_r:
+            mock_r.post = mock_post
+            ok = send_webhook_notification(url=url, **_WEBHOOK_ARGS)
+
+        assert ok is True
+        payload = mock_post.call_args[1]["json"]
+        assert "chat_id" not in payload  # no query param → no chat_id
+        assert payload["parse_mode"] == "MarkdownV2"
+
+    def test_generic_url_sends_legacy_payload(self):
+        """Non-Discord, non-Telegram URL → generic JSON payload."""
+        mock_post = MagicMock()
+        mock_post.return_value.ok = True
+
+        url = "https://hooks.example.com/custom"
+        with patch("services.push_notifier.requests") as mock_r:
+            mock_r.post = mock_post
+            ok = send_webhook_notification(url=url, **_WEBHOOK_ARGS)
+
+        assert ok is True
+        payload = mock_post.call_args[1]["json"]
+        assert payload["event"] == "cypher65_war_room_alert"
+        assert payload["severity"] == "CRIT"
+        assert payload["category"] == "hashrate_drop"
+
+    def test_network_error_returns_false(self):
+        mock_post = MagicMock(side_effect=ConnectionError("refused"))
+        url = "https://discord.com/api/webhooks/xxx"
+        with patch("services.push_notifier.requests") as mock_r:
+            mock_r.post = mock_post
+            ok = send_webhook_notification(url=url, **_WEBHOOK_ARGS)
+
+        assert ok is False
+
+    def test_discord_non_200_returns_false(self):
+        mock_post = MagicMock()
+        mock_post.return_value.ok = False
+        mock_post.return_value.status_code = 429
+
+        url = "https://discord.com/api/webhooks/xxx"
+        with patch("services.push_notifier.requests") as mock_r:
+            mock_r.post = mock_post
+            ok = send_webhook_notification(url=url, **_WEBHOOK_ARGS)
+
+        assert ok is False
+
+    def test_warn_severity_uses_orange_color(self):
+        mock_post = MagicMock()
+        mock_post.return_value.ok = True
+
+        url = "https://discord.com/api/webhooks/123"
+        with patch("services.push_notifier.requests") as mock_r:
+            mock_r.post = mock_post
+            send_webhook_notification(url=url, severity="WARN", category="temp_high",
+                                       message="temp high", ts=1735689600,
+                                       worker="w", address="a")
+
+        payload = mock_post.call_args[1]["json"]
+        assert payload["embeds"][0]["color"] == 0xFFA000  # WARN amber
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 6b. severity_meets_threshold + send_webhook_for_alert — Phase D helpers
+# ═══════════════════════════════════════════════════════════════════════════
+
+class TestSeverityThreshold:
+    def test_ordering(self):
+        assert severity_meets_threshold("CRIT", "WARN") is True
+        assert severity_meets_threshold("WARN", "WARN") is True
+        assert severity_meets_threshold("GOLD", "WARN") is True
+        assert severity_meets_threshold("SUCCESS", "WARN") is True
+        assert severity_meets_threshold("INFO", "WARN") is False
+        assert severity_meets_threshold("WARN", "CRIT") is False
+        assert severity_meets_threshold("CRITICAL", "WARN") is True  # legacy alias
+
+    def test_unknown_severity_ranks_as_info(self):
+        assert severity_meets_threshold("MYSTERY", "INFO") is True
+        assert severity_meets_threshold("MYSTERY", "WARN") is False
+
+    def test_unknown_threshold_defaults_to_warn(self):
+        assert severity_meets_threshold("WARN", "DEBUG") is True
+        assert severity_meets_threshold("INFO", "DEBUG") is False
+
+
+class TestSendWebhookForAlert:
+    def test_empty_url_returns_false(self):
+        assert send_webhook_for_alert(url="", **_WEBHOOK_ARGS) is False
+
+    def test_below_threshold_filtered_without_http(self):
+        """INFO alert + WARN threshold → filtered before any HTTP call."""
+        with patch("services.push_notifier.send_webhook_notification") as mock_send:
+            ok = send_webhook_for_alert(
+                url="https://discord.com/api/webhooks/1/2",
+                severity="INFO", category="info", message="m",
+                min_severity="WARN",
+            )
+        assert ok is False
+        mock_send.assert_not_called()
+
+    def test_above_threshold_delegates_with_min_severity(self):
+        with patch("services.push_notifier.send_webhook_notification", return_value=True) as mock_send:
+            ok = send_webhook_for_alert(
+                url="https://discord.com/api/webhooks/1/2",
+                severity="CRIT", category="hashrate_drop", message="m",
+                ts=123, worker="w", address="a",
+                min_severity="CRIT",
+            )
+        assert ok is True
+        mock_send.assert_called_once_with(
+            url="https://discord.com/api/webhooks/1/2", severity="CRIT",
+            category="hashrate_drop", message="m", ts=123, worker="w",
+            address="a", timeout=5,
+        )
+
+    def test_failure_propagates_false(self):
+        with patch("services.push_notifier.send_webhook_notification", return_value=False) as mock_send:
+            ok = send_webhook_for_alert(url="https://discord.com/x", severity="CRIT",
+                                        category="c", message="m")
+        assert ok is False
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 7. AlertEngine.dispatch_webhook — integration
+# ═══════════════════════════════════════════════════════════════════════════
+
+class TestAlertEngineDispatchWebhook:
+    def test_no_callback_noop(self):
+        """dispatch_webhook with no callback should not raise."""
+        from core.alerts.alert_engine import AlertEngine, Alert
+        engine = AlertEngine(":memory:", webhook_callback=None)
+        alerts = [Alert(ts=0, severity="CRIT", category="x", message="m")]
+        # Should not raise
+        engine.dispatch_webhook(alerts)
+
+    def test_callback_called_for_each_alert(self):
+        from core.alerts.alert_engine import AlertEngine, Alert
+
+        calls = []
+        def cb(a):
+            calls.append(a)
+
+        engine = AlertEngine(":memory:", webhook_callback=cb)
+        alerts = [
+            Alert(ts=100, severity="CRIT", category="hashrate_drop",
+                  message="hashrate 0", device_id="d1"),
+            Alert(ts=101, severity="WARN", category="temp_high",
+                  message="temp 80", device_id="d2"),
+        ]
+        engine.dispatch_webhook(alerts)
+        assert len(calls) == 2
+        assert calls[0].severity == "CRIT"
+        assert calls[1].category == "temp_high"
+
+    def test_callback_exception_does_not_propagate(self):
+        from core.alerts.alert_engine import AlertEngine, Alert
+
+        def cb(a):
+            if a.severity == "CRIT":
+                raise RuntimeError("network error")
+            return True
+
+        engine = AlertEngine(":memory:", webhook_callback=cb)
+        alerts = [
+            Alert(ts=100, severity="CRIT", category="hashrate_drop",
+                  message="boom", device_id="d1"),
+            Alert(ts=101, severity="WARN", category="temp_high",
+                  message="ok", device_id="d2"),
+        ]
+        # Should not raise — exception in first callback caught, second runs
+        engine.dispatch_webhook(alerts)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 8. _tg_escape — Telegram MarkdownV2 special-char escaping
+# ═══════════════════════════════════════════════════════════════════════════
+
+class TestTgEscape:
+    def test_escapes_all_special_chars(self):
+        from services.push_notifier import _tg_escape
+        raw = "Hello _world_ [link](url) ~strike~ `code` >quote"
+        escaped = _tg_escape(raw)
+        # Every special char must be backslash-escaped
+        assert "\\_" in escaped
+        assert "\\[" in escaped
+        assert "\\]" in escaped
+        assert "\\(" in escaped
+        assert "\\)" in escaped
+        assert "\\~" in escaped
+        assert "\\`" in escaped
+        assert "\\>" in escaped
+
+    def test_preserves_normal_text(self):
+        from services.push_notifier import _tg_escape
+        assert _tg_escape("hello world") == "hello world"
+        assert _tg_escape("BTC: 65000") == "BTC: 65000"

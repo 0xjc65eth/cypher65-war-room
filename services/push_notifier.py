@@ -13,7 +13,11 @@ Usage from polling.py:
 import json
 import logging
 import time
+import datetime as _dt
 from typing import Dict, Any, List, Optional
+from urllib.parse import urlparse, parse_qs
+
+import requests
 
 log = logging.getLogger("cypher65.push")
 
@@ -157,3 +161,216 @@ def notify_if_alert_exists(alerts: List[Dict]) -> bool:
         if notify_alert(sev, cat, msg):
             sent_any = True
     return sent_any
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  Webhook Notifier — Discord / Telegram real-time alert push
+# ═══════════════════════════════════════════════════════════════════════════
+
+# Severity → Discord embed colour (decimal).
+_WEBHOOK_SEVERITY_COLOR = {
+    "CRIT": 0xFF1744,
+    "CRITICAL": 0xFF1744,
+    "WARN": 0xFFA000,
+    "GOLD": 0xFFD700,
+    "SUCCESS": 0x00C853,
+    "INFO": 0x5E5952,
+}
+
+# Severity → emoji prefix used in Telegram / fallback messages.
+_WEBHOOK_SEVERITY_EMOJI = {
+    "CRIT": "🚨",
+    "CRITICAL": "🚨",
+    "WARN": "⚠️",
+    "GOLD": "🏆",
+    "SUCCESS": "✅",
+    "INFO": "ℹ️",
+}
+
+
+def send_webhook_notification(
+    url: str,
+    severity: str,
+    category: str,
+    message: str,
+    ts: int = 0,
+    worker: str = "",
+    address: str = "",
+    timeout: int = 5,
+) -> bool:
+    """Send a webhook notification for a mining alert.
+
+    Auto-detects Discord vs Telegram and formats the payload accordingly:
+      - Discord: rich embed with colour, fields, and footer.
+      - Telegram: Markdown-formatted message via ``parse_mode``.
+      - Generic (fallback): plain JSON POST with the legacy payload shape.
+
+    Args:
+        url: Webhook URL (Discord or Telegram).
+        severity, category, message: Alert details from the engine.
+        ts: Unix timestamp of the alert.
+        worker: Worker / pool worker name (optional).
+        address: BTC address (optional).
+        timeout: HTTP timeout in seconds.
+
+    Returns:
+        True if the POST succeeded (2xx), False otherwise.
+        Never raises — all exceptions are caught and logged.
+    """
+    if not url:
+        return False
+
+    is_discord = "discord.com" in url.lower()
+    is_telegram = "api.telegram.org" in url.lower()
+
+    try:
+        if is_discord:
+            return _send_discord_webhook(url, severity, category, message,
+                                         ts, worker, address, timeout)
+        if is_telegram:
+            return _send_telegram_webhook(url, severity, category, message,
+                                          ts, worker, address, timeout)
+        # Generic fallback — same JSON shape the legacy inline block used.
+        payload = {
+            "event": "cypher65_war_room_alert",
+            "severity": severity,
+            "category": category,
+            "message": message,
+            "ts": ts,
+            "worker": worker,
+            "address": address,
+        }
+        resp = requests.post(url, json=payload, timeout=timeout)
+        return resp.ok
+    except Exception as e:
+        log.warning("[webhook] post error: %s", e)
+        return False
+
+
+# Severity ordering for the webhook threshold filter. Single source of truth
+# shared by app.py's AlertEngine callback and services/polling.py — callers
+# must never re-declare their own ranking.
+WEBHOOK_SEVERITY_RANK = {"INFO": 0, "WARN": 1, "CRIT": 2, "CRITICAL": 2, "GOLD": 1, "SUCCESS": 1}
+
+
+def severity_meets_threshold(severity: str, min_severity: str = "WARN") -> bool:
+    """True when ``severity`` is at least as important as ``min_severity``.
+
+    Ordering: INFO < WARN / CRIT / GOLD / SUCCESS. Unknown severities rank
+    as INFO so they are filtered out unless the threshold is INFO.
+    """
+    return (WEBHOOK_SEVERITY_RANK.get(severity, 0)
+            >= WEBHOOK_SEVERITY_RANK.get(min_severity, 1))
+
+
+def send_webhook_for_alert(
+    url: str,
+    severity: str,
+    category: str,
+    message: str,
+    ts: int = 0,
+    worker: str = "",
+    address: str = "",
+    min_severity: str = "WARN",
+    timeout: int = 5,
+) -> bool:
+    """Severity-thresholded dispatch to Discord/Telegram/generic webhook.
+
+    Returns False when the URL is missing, the alert is below ``min_severity``,
+    or the POST fails. Never raises.
+    """
+    if not url or not severity_meets_threshold(severity, min_severity):
+        return False
+    return send_webhook_notification(
+        url=url, severity=severity, category=category, message=message,
+        ts=ts, worker=worker, address=address, timeout=timeout,
+    )
+
+
+def _send_discord_webhook(url, severity, category, message, ts, worker,
+                          address, timeout) -> bool:
+    """Send a Discord webhook with a rich embed."""
+    emoji = _WEBHOOK_SEVERITY_EMOJI.get(severity, "⚡")
+    color = _WEBHOOK_SEVERITY_COLOR.get(severity, 0x5E5952)
+
+    # Human-readable timestamp for the embed footer.
+    ts_str = _dt.datetime.fromtimestamp(ts, tz=_dt.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC") if ts else ""
+
+    embed = {
+        "title": f"{emoji} CYPHER65 — {severity} Alert",
+        "description": message[:2000],
+        "color": color,
+        "fields": [
+            {"name": "Severity", "value": severity, "inline": True},
+            {"name": "Category", "value": category, "inline": True},
+        ],
+        "footer": {"text": ts_str},
+        "timestamp": _dt.datetime.fromtimestamp(ts, tz=_dt.timezone.utc).isoformat() + "Z" if ts else None,
+    }
+
+    # Add worker / address as extra fields when available.
+    if worker:
+        embed["fields"].append({"name": "Worker", "value": worker, "inline": True})
+    if address:
+        addr_short = address[:10] + "…" + address[-6:] if len(address) > 16 else address
+        embed["fields"].append({"name": "Address", "value": addr_short, "inline": True})
+
+    payload = {"embeds": [embed]}
+    resp = requests.post(url, json=payload, timeout=timeout)
+
+    if not resp.ok:
+        # Discord returns a helpful error body — log it once for debugging.
+        log.debug("[webhook] discord %s — %s", resp.status_code,
+                  resp.text[:200] if resp.text else "")
+    return resp.ok
+
+
+def _send_telegram_webhook(url, severity, category, message, ts, worker,
+                           address, timeout) -> bool:
+    """Send a Telegram message via bot webhook.
+
+    Telegram Bot API ``sendMessage``-compatible: the URL ends with
+    ``/bot<token>/sendMessage``. Payload carries ``chat_id`` from the
+    query string and ``parse_mode: "MarkdownV2"`` for formatting.
+    """
+    emoji = _WEBHOOK_SEVERITY_EMOJI.get(severity, "⚡")
+
+    # Try to extract chat_id from query string (common setup pattern).
+    chat_id = ""
+    try:
+        qs = parse_qs(urlparse(url).query)
+        chat_id = (qs.get("chat_id") or [""])[0]
+    except Exception:
+        pass
+
+    # Build a clean Markdown message.
+    lines = [
+        f"{emoji} *CYPHER65 \\- {_tg_escape(severity)} Alert*",  # noqa: W605
+        f"",
+        f"*Category:* `{category}`",
+        f"*Message:* {_tg_escape(message[:500])}",
+    ]
+    if worker:
+        lines.append(f"*Worker:* `{_tg_escape(worker)}`")
+    if address:
+        lines.append(f"*Address:* `{address[:10]}…{address[-6:] if len(address) > 16 else address}`")
+
+    payload = {
+        "text": "\n".join(lines),
+        "parse_mode": "MarkdownV2",
+    }
+    if chat_id:
+        payload["chat_id"] = chat_id
+
+    resp = requests.post(url, json=payload, timeout=timeout)
+    if not resp.ok:
+        log.debug("[webhook] telegram %s — %s", resp.status_code,
+                  resp.text[:200] if resp.text else "")
+    return resp.ok
+
+
+def _tg_escape(text: str) -> str:
+    """Escape Telegram MarkdownV2 special characters."""
+    for ch in "_*[]()~`>#+-=|{}.!":
+        text = text.replace(ch, "\\" + ch)
+    return text

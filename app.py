@@ -1566,18 +1566,44 @@ _safety_engine = SafetyEngine()
 # ── Milestone 9: Alert & Automation engines ──────────────────────────────────
 from core.alerts.alert_engine import AlertEngine
 from core.alerts.automation_engine import AutomationEngine
-from services.push_notifier import notify_alert
+from services.push_notifier import notify_alert, send_webhook_for_alert
 
 
 _alert_engine = None
 _automation_engine = None
 
 
+def _webhook_dispatch(alert):
+    """Webhook callback for AlertEngine — reads settings and dispatches to
+    Discord/Telegram via the shared severity-thresholded notifier.
+
+    Signature matches the AlertEngine.webhook_callback contract:
+        callback(alert: Alert) -> bool
+    """
+    from services.settings import load_settings
+    try:
+        s = load_settings()
+        return send_webhook_for_alert(
+            url=(s.get("webhook_url") or "").strip(),
+            severity=alert.severity,
+            category=alert.category,
+            message=alert.message,
+            ts=alert.ts,
+            worker=WORKER_NAME,
+            address=BTC_ADDRESS,
+            min_severity=s.get("webhook_min_severity", "WARN"),
+        )
+    except Exception as e:
+        log.warning("[webhook] dispatch error: %s", e)
+        return False
+
+
 def _init_alert_engines():
     """Initialize alert/automation engines after all helper functions are defined."""
     global _alert_engine, _automation_engine
     if _alert_engine is None:
-        _alert_engine = AlertEngine(DB_PATH, push_callback=notify_alert)
+        _alert_engine = AlertEngine(DB_PATH, push_callback=notify_alert,
+                                     webhook_callback=_webhook_dispatch)
     if _automation_engine is None:
         _automation_engine = AutomationEngine(
             DB_PATH, _safety_engine,
@@ -3369,32 +3395,6 @@ def _do_poll():
         except Exception as e:
             log.warning("[alert persist] error: %s", e)
 
-    # ━━ Webhook fire (Discord/Telegram compatible JSON payload) ━━
-    # Honor user-configured webhook_url. Severity threshold defaults to WARN.
-    try:
-        s = settings_s
-        url = (s.get("webhook_url") or "").strip()
-        if url:
-            min_sev = s.get("webhook_min_severity", "WARN")
-            sev_rank = {"INFO": 0, "WARN": 1, "CRIT": 2, "GOLD": 1, "SUCCESS": 1}
-            fire_severities = [a for a in alerts if sev_rank.get(a[0], 0) >= sev_rank.get(min_sev, 1)]
-            for sev, cat, msg in fire_severities:
-                try:
-                    payload = {
-                        "event": "cypher65_war_room_alert",
-                        "severity": sev,
-                        "category": cat,
-                        "message": msg,
-                        "ts": ts,
-                        "worker": WORKER_NAME,
-                        "address": BTC_ADDRESS,
-                    }
-                    requests.post(url, json=payload, timeout=4)
-                except Exception as e:
-                    log.warning("[webhook] post error: %s", e)
-    except Exception as e:
-        log.warning("[webhook block] error: %s", e)
-
     # ━━ Compute luck estimate ━━
     luck = {}
     if worker and pool and current_difficulty:
@@ -3876,6 +3876,7 @@ def _do_poll():
         if _alerts_generated:
             _alert_engine.persist(_alerts_generated)
             _alert_engine.dispatch_push(_alerts_generated)
+            _alert_engine.dispatch_webhook(_alerts_generated)
             # Also append recent in-memory alerts to the live snapshot feed
             for _a in _alerts_generated[:10]:
                 memory_critical_alerts.append(_make_memory_alert(

@@ -72,9 +72,11 @@ class AlertEngine:
         AlertRule("pool_disconnect", "pool_online", "==", 0, "CRIT", "pool_disconnect"),
     ]
 
-    def __init__(self, db_path: str, push_callback: Optional[Callable] = None):
+    def __init__(self, db_path: str, push_callback: Optional[Callable] = None,
+                 webhook_callback: Optional[Callable] = None):
         self.db_path = db_path
         self.push_callback = push_callback
+        self.webhook_callback = webhook_callback
         self._last_fired: Dict[str, int] = {}
         self._rules: List[AlertRule] = list(self.DEFAULT_RULES)
 
@@ -272,3 +274,21 @@ class AlertEngine:
                     self.push_callback(a.severity, a.category, a.message)
                 except Exception as e:
                     log.warning("[alert_engine] push dispatch error: %s", e)
+
+    def dispatch_webhook(self, alerts: List[Alert]):
+        """Dispatch webhook notifications (Discord/Telegram) for alerts
+        above the configured severity threshold.
+
+        The webhook_callback is expected to have the signature:
+            callback(alert: Alert) -> bool
+
+        It is provided by the caller (app.py) and encapsulates the
+        webhook URL + severity threshold from user settings.
+        """
+        if not self.webhook_callback:
+            return
+        for a in alerts:
+            try:
+                self.webhook_callback(a)
+            except Exception as e:
+                log.warning("[alert_engine] webhook dispatch error: %s", e)

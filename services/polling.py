@@ -30,8 +30,6 @@ import collections
 import logging
 import concurrent.futures
 
-import requests
-
 import services.state as state
 import services.proximity as proximity
 import services.names as names  # name normalization + sanitization
@@ -940,29 +938,20 @@ def poll_once():
         except Exception as e:
             log.warning("[alert persist] error: %s", e)
 
-    # ━━ Webhook fire (Discord/Telegram compatible JSON payload) ━━
-    # Honor user-configured webhook_url. Severity threshold defaults to WARN.
+    # ━━ Webhook fire (Discord/Telegram) via shared notify helper ━━
+    # Phase D: deduplicated — uses the same severity-thresholded notifier the
+    # AlertEngine calls through its webhook_callback (single source of truth
+    # for the severity ranking, in services.push_notifier).
     try:
+        from services.push_notifier import send_webhook_for_alert as _send_wh
         s = settings_s
         url = (s.get("webhook_url") or "").strip()
         if url:
             min_sev = s.get("webhook_min_severity", "WARN")
-            sev_rank = {"INFO": 0, "WARN": 1, "CRIT": 2, "GOLD": 1, "SUCCESS": 1}
-            fire_severities = [a for a in alerts if sev_rank.get(a[0], 0) >= sev_rank.get(min_sev, 1)]
-            for sev, cat, msg in fire_severities:
-                try:
-                    payload = {
-                        "event": "cypher65_war_room_alert",
-                        "severity": sev,
-                        "category": cat,
-                        "message": msg,
-                        "ts": ts,
-                        "worker": config.WORKER_NAME,
-                        "address": config.BTC_ADDRESS,
-                    }
-                    requests.post(url, json=payload, timeout=4)
-                except Exception as e:
-                    log.warning("[webhook] post error: %s", e)
+            for sev, cat, msg in alerts:
+                _send_wh(url=url, severity=sev, category=cat, message=msg,
+                         ts=ts, worker=config.WORKER_NAME,
+                         address=config.BTC_ADDRESS, min_severity=min_sev)
     except Exception as e:
         log.warning("[webhook block] error: %s", e)
 
