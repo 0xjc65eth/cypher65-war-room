@@ -6,6 +6,62 @@ e versionamento semântico ([SemVer](https://semver.org/lang/pt-BR/)).
 
 ## [Unreleased]
 
+### Adicionado — Webhook unificado Discord/Telegram para alertas (notifier centralizado)
+- **`send_webhook_notification()`** em `services/push_notifier.py` (novo): auto-detecta o
+  canal pelo URL — **Discord** (embed rico com cor por severidade, fields de
+  severity/category/worker/address, footer com timestamp UTC), **Telegram** (mensagem
+  MarkdownV2 com escape de caracteres especiais via `_tg_escape` e `chat_id` lido do
+  query string) e **fallback genérico** (payload JSON legado `cypher65_war_room_alert`).
+  Nunca lança — todo erro vira log + `False`.
+- **Gate de severidade com fonte única**: o rank `INFO < WARN < CRIT` (default WARN)
+  antes vivia duplicado em `app.py` e `services/polling.py`; agora o `AlertEngine` ganhou
+  `webhook_callback` + `dispatch_webhook()` (mesmo contrato do `push_callback`) e o
+  `app.py` injeta `_webhook_dispatch` que lê `webhook_url`/`webhook_min_severity` dos
+  settings. O bloco inline de POST do `polling.py` foi removido — **um único caminho de
+  disparo** (engine + poll loop) sem dedup duplicado.
+- Testes em `tests/test_push_notifier.py`: payloads Discord/Telegram/genérico, escape
+  MarkdownV2, threshold de severidade e integração do `AlertEngine.dispatch_webhook`.
+
+### Adicionado — Workers idle (hr=0) no dashboard + histórico por device com Chart.js (Fleet)
+- **Idle workers**: quando TODOS os workers reportam hashrate 0, o `_do_poll` agora
+  seleciona o primeiro worker como primário em vez de deixar o snapshot em branco — o
+  dashboard mostra **IDLE** (nunca mais OFFLINE falso para wallets com histórico de
+  mineração) e continua surfacing `bestDifficulty`/`lastSubmission`/`uptime`. UI: pill de
+  status `IDLE`, métrica com classe `metric__value--idle` e legenda "connected · no
+  shares", e o contexto do AI Operator segue o mesmo estado.
+- **História do device (Phase C)**: novo `GET /api/axe-fleet/devices/<id>/history`
+  (`limit` opcional, default 120) devolve pontos `{ts, hashrate, temperature,
+  efficiency_jth, fan_rpm, power_watts}` reutilizando a série `get_telemetry_chart_data`;
+  eficiência derivada on-the-fly quando o firmware não reporta. O painel de detalhe do
+  device renderiza **gráfico multi-linha** (HR TH/s no eixo esquerdo, Temp °C + Eff J/TH
+  no direito, tooltip index-mode) com contagem de pontos.
+- Bumps CDN-safe `app.js?v55` / `style.css?v51`. Endpoint testado (auth, tenant, limit)
+  em `tests/test_axe_routes_integration.py`.
+
+### Adicionado — HashratePulse Enterprise: grid institucional de venues no HASH MARKET
+- **`snapshot_enrichment`** agora computa a visão institucional (`regime`, `snapshot`,
+  `venues`, `notes`) a partir de TODAS as offers do market via
+  `compute_institutional_view` e a anexa ao `market_data` — nos caminhos fresh, cached
+  e loading (consistente com os highlights).
+- **UI**: o grid de cards virou **tabela de venues** (`#mkt-table`): venue, regime,
+  spread, tier, notes, badge de best-price, chips de filtro por provider e o CTA
+  afiliado (BUY) da Decision Matrix. Guard de retry quando o DOM ainda não parseou
+  (CDN do Chart.js bloqueando o `<head>`).
+- **Debuggability**: falha no cálculo de profitability agora loga **traceback completo**
+  (antes só a mensagem) — cold-server vira diagnóstico acionável.
+- E2E: `dashboard.spec.js` + `market-affiliate.spec.js` reescritos para asserir a tabela
+  institucional (linhas de venue / empty state agnóstico a dados).
+
+### Corrigido — E2E: sidebar off-canvas inalcançável no viewport mobile (375px)
+- **Bug real nos specs** (falhas pré-existentes): no breakpoint ≤768px a sidebar é um
+  drawer off-canvas (`translateX(-100%)`) que precisa ser aberto via
+  `#sidebar-mobile-toggle` — `docs-autocomplete.spec.js` e `alert-center-tabs.spec.js`
+  clicavam direto em `.sidebar__link` e estouravam timeout. O app estava correto
+  (design responsivo); os **testes** é que não abriam o menu.
+- Fix: helper `ensureSidebarOpen()` (mesmo padrão do `dashboard.spec.js` — no-op em
+  desktop, onde o toggle é invisível) antes de cada navegação.
+- Validação: 6/6 mobile + 6/6 desktop; bloco de 7 specs no mesmo servidor 33/33.
+
 ### Adicionado — Docs: busca com autocomplete (auditoria UX · Módulo_09)
 - **Dropdown de sugestões** no campo de busca do módulo Docs (`#docs-search-suggestions`):
   ao digitar, as 6 seções mais relevantes aparecem com **título + snippet** da região
