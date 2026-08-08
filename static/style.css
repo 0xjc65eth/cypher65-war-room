@@ -5073,6 +5073,16 @@ body.module-mode .tab-pane:not(.active) { display: none; }
 .rentals-detail__row span { color: var(--text-tertiary); }
 .rentals-detail__row strong { color: var(--text-primary); font-family: 'JetBrains Mono',monospace; font-weight: 500; }
 .rentals-detail__chart { height: 160px; margin-bottom: 10px; }
+/* Rentals: per-rental performance verdict (avg% vs advertised, cost, delivered) */
+.rentals-perf { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 8px; margin: 10px 0; }
+.rentals-perf__cell { display: flex; flex-direction: column; gap: 2px; padding: 8px 10px; background: rgba(6,214,240,0.05); border: 1px solid var(--border-subtle, rgba(255,255,255,0.08)); border-radius: 2px; }
+.rentals-perf__label { font-size: 7px; letter-spacing: 1px; color: var(--text-tertiary); font-family: 'JetBrains Mono',monospace; }
+.rentals-perf__cell strong { font-size: 12px; color: var(--text-primary); font-family: 'JetBrains Mono',monospace; font-weight: 600; }
+.rentals-perf__cell.is-good strong { color: #00C853; }
+.rentals-perf__cell.is-warn strong { color: #FFA000; }
+.rentals-perf__cell.is-bad strong { color: #FF1744; }
+/* Rentals: missing-credentials hint on the strip cards (🔑) */
+.rentals-strip__card .rentals-strip__value[title]:not([title=""]) { cursor: help; }
 .rentals-detail__log { display: flex; flex-direction: column; gap: 2px; }
 .rentals-detail__log-item { font-size: 9px; color: var(--text-secondary); font-family: 'JetBrains Mono',monospace; padding: 2px 0; border-bottom: 1px dashed var(--border-subtle, rgba(255,255,255,0.06)); }
 @media (max-width: 700px) {

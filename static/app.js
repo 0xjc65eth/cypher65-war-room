@@ -3092,7 +3092,29 @@ function renderAccount(acct) {
   let _rentalsLoaded = false;   // lazy: /api/rentals fetched on first module activation
   let _rentalsData = null;      // last payload (kept so filters re-render without refetch)
   let _rentalsFilter = 'active';
+  let _rentalsAutoTabbed = false;  // UX: auto-lands on the first tab that has data
   let _rentalsDetailChart = null;
+
+  function _setRentalsFilter(name) {
+    _rentalsFilter = name;
+    const chips = document.querySelectorAll('[data-rentals-filter]');
+    chips.forEach(c => c.classList.toggle('active', c.getAttribute('data-rentals-filter') === name));
+  }
+
+  // Mirror of services/rental_performance._hash_to_th — MRR reports hashrate
+  // as {hash, type} where the raw hash is in the type unit (ph/mh/gh/th).
+  // Unknown units (e.g. raw 'hash') return null: an honest '—' beats a
+  // nonsense astronomical number in the AVG/ADVERTISED cell.
+  function _mrToTh(v, unit) {
+    const n = Number(v);
+    if (!isFinite(n)) return null;
+    const u = String(unit || '').toLowerCase();
+    if (u === 'ph') return n * 1000;
+    if (u === 'th') return n;
+    if (u === 'gh') return n / 1000;
+    if (u === 'mh') return n / 1e6;
+    return null;
+  }
 
   function _rentalStatus(r) {
     if (!r) return '—';
@@ -3143,6 +3165,25 @@ function renderAccount(acct) {
       const r = await fetch('/api/rentals');
       if (!r.ok) return false;
       _rentalsData = await r.json();
+      // UX: on the first load, land on the first tab that actually has data —
+      // an empty 'Active' default used to hide the History tab (e.g. the
+      // operator has 0 active rentals but 34 completed ones). Manual tab
+      // clicks always win afterwards.
+      if (!_rentalsAutoTabbed) {
+        _rentalsAutoTabbed = true;
+        const mrr = _rentalsData.mrr || {};
+        const braiins = _rentalsData.braiins || {};
+        const counts = {
+          active: (mrr.active || []).length,
+          history: (mrr.history || []).length,
+          owner: (mrr.owner || []).length,
+          contracts: (braiins.contracts || []).length,
+        };
+        if (counts.active === 0) {
+          const first = ['history', 'owner', 'contracts'].find(k => counts[k] > 0);
+          if (first) _setRentalsFilter(first);
+        }
+      }
       renderRentals();
       return true;
     } catch (e) { return false; }
@@ -3163,10 +3204,26 @@ function renderAccount(acct) {
     const el = (id) => document.getElementById(id);
     // Strip shows the MRR-reported TOTAL (the list is capped at 25/50 by the
     // API) — honest count of the operator's rentals, not just the fetched page.
-    if (el('rentals-mrr-active')) el('rentals-mrr-active').textContent = mrr.total_active != null ? mrr.total_active : (mrr.active || []).length;
-    if (el('rentals-mrr-history')) el('rentals-mrr-history').textContent = mrr.total_history != null ? mrr.total_history : (mrr.history || []).length;
-    if (el('rentals-mrr-owner')) el('rentals-mrr-owner').textContent = mrr.total_owner != null ? mrr.total_owner : (mrr.owner || []).length;
-    if (el('rentals-braiins')) el('rentals-braiins').textContent = (braiins.contracts || []).length;
+    // Missing provider credentials → 🔑 hint (with tooltip) instead of a
+    // misleading 0/— that looks like an empty account.
+    const _stripVal = (cardId, value, auth, err) => {
+      const card = el(cardId);
+      if (!card) return;
+      if (auth) {
+        card.textContent = '🔑';
+        card.title = 'credentials missing — configure in Settings (⚙)';
+      } else if (err) {
+        card.textContent = '⚠';
+        card.title = String(err);
+      } else {
+        card.textContent = value;
+        card.title = '';
+      }
+    };
+    _stripVal('rentals-mrr-active', mrr.total_active != null ? mrr.total_active : (mrr.active || []).length, mrr.needs_auth, mrr.error);
+    _stripVal('rentals-mrr-history', mrr.total_history != null ? mrr.total_history : (mrr.history || []).length, mrr.needs_auth, mrr.error);
+    _stripVal('rentals-mrr-owner', mrr.total_owner != null ? mrr.total_owner : (mrr.owner || []).length, mrr.needs_auth, mrr.error);
+    _stripVal('rentals-braiins', (braiins.contracts || []).length, braiins.needs_auth, braiins.error);
 
     let items = [];
     if (_rentalsFilter === 'active') items = mrr.active || [];
@@ -3182,12 +3239,17 @@ function renderAccount(acct) {
 
     if (!items.length) {
       const needsAuth = _rentalsFilter === 'contracts' ? braiins.needs_auth : mrr.needs_auth;
+      const errMsg = _rentalsFilter === 'contracts' ? braiins.error : mrr.error;
       listEl.innerHTML = '<div class="empty-state" style="grid-column:1/-1;border:none">' +
         '<div class="empty-state__icon">⛁</div>' +
-        '<div class="empty-state__title">' + (needsAuth ? 'Credentials required' : 'No rentals') + '</div>' +
+        '<div class="empty-state__title">' + (needsAuth ? 'Credentials required' : (errMsg ? 'Provider error' : 'No rentals')) + '</div>' +
         '<div class="empty-state__desc">' + (needsAuth
-          ? (_rentalsFilter === 'contracts' ? 'Set BRAIINS_API_KEY in Settings to list Braiins contracts' : 'Set MRR_API_KEY/MRR_API_SECRET in Settings to list MRR rentals')
-          : 'No ' + _rentalsFilter + ' rentals on this account') + '</div></div>';
+          ? (_rentalsFilter === 'contracts' ? 'Add your Braiins Hashpower owner token to list contracts — where to get it: hashpower.braiins.com → API Tokens.' : 'Add your MiningRigRentals API key + secret to see history & performance — get them at miningrigrentals.com → My Account → API Access.')
+          : (errMsg ? escapeHtml(errMsg) : 'No ' + _rentalsFilter + ' rentals on this account')) + '</div>' +
+        (needsAuth ? '<button type="button" class="btn btn--primary btn--mini" id="rentals-open-settings" style="margin-top:8px">⚙ OPEN SETTINGS</button>' : '') +
+        '</div>';
+      const cta = document.getElementById('rentals-open-settings');
+      if (cta) cta.addEventListener('click', function() { openSettingsModal(); });
       return;
     }
     listEl.innerHTML = items.map(_rentalCardHtml).join('');
@@ -3220,6 +3282,34 @@ function renderAccount(acct) {
         ['End', d.end || '—'],
       ];
       grid.innerHTML = rows.map(x => '<div class="rentals-detail__row"><span>' + escapeHtml(x[0]) + '</span><strong>' + escapeHtml(String(x[1])) + '</strong></div>').join('');
+      // Performance verdict — how THIS rental delivered vs what was paid, so
+      // the operator can compare rigs/providers before renting again.
+      const perfEl = document.getElementById('rentals-detail-perf');
+      if (perfEl) {
+        const adv = hr.advertised, avg = hr.average;
+        const advTh = adv ? _mrToTh(adv.hash, adv.type) : null;
+        const avgTh = avg ? _mrToTh(avg.hash, avg.type) : null;
+        const pct = avg && avg.percent != null ? parseFloat(avg.percent)
+          : (avgTh && advTh ? (avgTh / advTh) * 100 : null);
+        const lenH = d.length != null ? parseFloat(d.length) : 0;
+        const paidSats = d.price && d.price.paid != null ? parseFloat(d.price.paid) * 1e8 : null;
+        const costPerThHour = (paidSats != null && avgTh && lenH) ? paidSats / (avgTh * lenH) : null;
+        const delivered = (avgTh && lenH) ? avgTh * lenH : null;
+        let cls = '', verdict = '—';
+        if (pct != null) {
+          cls = pct >= 95 ? 'is-good' : (pct >= 80 ? 'is-warn' : 'is-bad');
+          verdict = pct.toFixed(1) + '% of advertised';
+        }
+        const cells = [
+          { l: 'PERFORMANCE', v: verdict, c: cls },
+          { l: 'AVG / ADVERTISED', v: avgTh ? fmt.hashrate(avgTh * 1e12) + ' / ' + fmt.hashrate((advTh || 0) * 1e12) : '—', c: '' },
+          { l: 'COST', v: costPerThHour != null ? costPerThHour.toFixed(2) + ' sats/TH/h' : '—', c: '' },
+          { l: 'DELIVERED', v: delivered != null ? delivered.toFixed(0) + ' TH·h' : '—', c: '' },
+        ];
+        perfEl.innerHTML = cells.map(c =>
+          '<div class="rentals-perf__cell' + (c.c ? ' ' + c.c : '') + '"><span class="rentals-perf__label">' + c.l + '</span><strong>' + escapeHtml(String(c.v)) + '</strong></div>'
+        ).join('');
+      }
       // Graph
       const bars = g.chartdata && g.chartdata.bars ? g.chartdata.bars : null;
       if (typeof Chart !== 'undefined') {
@@ -3272,9 +3362,7 @@ function renderAccount(acct) {
     const filters = document.querySelectorAll('[data-rentals-filter]');
     filters.forEach(chip => {
       chip.addEventListener('click', () => {
-        filters.forEach(c => c.classList.remove('active'));
-        chip.classList.add('active');
-        _rentalsFilter = chip.getAttribute('data-rentals-filter') || 'active';
+        _setRentalsFilter(chip.getAttribute('data-rentals-filter') || 'active');
         renderRentals();
       });
     });
@@ -3804,7 +3892,9 @@ function renderAccount(acct) {
   }
 
   const SETTINGS_HINTS = {
-    braiins_api_key: 'Braiins Hashpower owner token (mostrado UMA vez no registro em hashpower.braiins.com) — destrava bids, contratos e saldo no painel RENTALS. Header de auth: `apikey`.',
+    mrr_api_key: 'MiningRigRentals API key — crie em miningrigrentals.com → My Account → API Access (gerada uma vez, junto com o secret). Destrava histórico + performance no painel RENTALS.',
+    mrr_api_secret: 'MiningRigRentals API secret — par da key acima (mostrado uma vez na criação). Guarde com segurança; nunca compartilhe.',
+    braiins_api_key: 'Braiins Hashpower owner token (mostrado UMA vez no registro em hashpower.braiins.com; se perder, regenere em Settings → API Tokens) — destrava bids, contratos e saldo no painel RENTALS. Header de auth: `apikey`.',
     cost_mode: 'none = no cost · rental = pay per TH/s rented · power = rig kWh cost',
     rental_usd_per_th_day: '📤 LEASE: o que VOCÊ cobra ao alugar seu hashrate (receita) · 📦 RENTAL: o que você paga para alugar hashrate. Usado no modo LEASE do Profitability.',
     power_watts: 'Consumo do rig (W) — usado para o custo de energia no modo POWER e no LEASE.',

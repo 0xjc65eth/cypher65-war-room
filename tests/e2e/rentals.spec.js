@@ -38,6 +38,14 @@ test.describe('RENTALS — performance dos aluguéis (P2)', () => {
     }
     expect(total).toBeGreaterThan(0);
 
+    // UX: com 0 rentals ativos e histórico presente, o painel deve cair na
+    // aba History automaticamente (nunca abrir num 'Active' vazio escondendo
+    // os 34 rentals do histórico)
+    const activeVal = await page.locator('#rentals-mrr-active').textContent();
+    if (parseInt((activeVal || '0').trim(), 10) === 0) {
+      await expect(page.locator('[data-rentals-filter="history"]')).toHaveClass(/active/);
+    }
+
     // Strip de resumo: MRR HISTORY deve ter contagem > 0 (a conta tem histórico real)
     const historyVal = await page.locator('#rentals-mrr-history').textContent();
     expect(parseInt((historyVal || '0').trim(), 10)).toBeGreaterThan(0);
@@ -60,10 +68,32 @@ test.describe('RENTALS — performance dos aluguéis (P2)', () => {
     expect(title).toMatch(/MRR rental #\d+/);
     const gridText = await page.locator('#rentals-detail-grid').textContent();
     expect(gridText).not.toBe('');
+    // Banner de performance: 4 células (PERFORMANCE / AVG / COST / DELIVERED)
+    await expect(page.locator('#rentals-detail-perf .rentals-perf__cell')).toHaveCount(4, { timeout: 5000 });
 
     // Fecha o detail
     await page.click('#rentals-detail-close');
     await expect(page.locator('#rentals-detail')).toBeHidden();
+  });
+
+  test('aba Braiins sem chave → CTA abre Settings (fluxo do usuário normal)', async ({ page }) => {
+    await page.goto('/');
+    await page.waitForSelector('#sidebar', { timeout: 25000 });
+    await ensureSidebarOpen(page);
+    await page.click('.sidebar__link[data-module="rentals"]');
+    // Espera o painel carregar (o strip sai de '—' quando o payload chega)
+    await expect(page.locator('#rentals-count-badge')).not.toHaveText('—', { timeout: 15000 });
+    // Só valida quando o servidor NÃO tem a key (caso normal de primeiro uso)
+    const braiinsStrip = await page.locator('#rentals-braiins').textContent();
+    if (!(braiinsStrip || '').includes('🔑')) {
+      test.skip(true, 'BRAIINS_API_KEY already configured on this server');
+      return;
+    }
+    // Aba Braiins → estado "Credentials required" com CTA que abre o Settings
+    await page.click('[data-rentals-filter="contracts"]');
+    await expect(page.locator('#rentals-open-settings')).toBeVisible({ timeout: 5000 });
+    await page.click('#rentals-open-settings');
+    await expect(page.locator('#settings-modal')).toHaveClass(/modal--open/, { timeout: 5000 });
   });
 
   test('modal Settings expõe o campo BRAIINS_API_KEY', async ({ page }) => {
