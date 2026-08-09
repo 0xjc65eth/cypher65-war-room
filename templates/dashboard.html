@@ -760,6 +760,10 @@
     <button class="chip" data-rentals-filter="history">History</button>
     <button class="chip" data-rentals-filter="owner">Owner</button>
     <button class="chip" data-rentals-filter="contracts">Braiins</button>
+    <span class="rentals-filters__spacer"></span>
+    <label class="rentals-hidebad" title="Ocultar rigs com grade F (AVOID) ou na blacklist — os piores performers">
+      <input type="checkbox" id="rentals-hide-bad"> hide bad rigs
+    </label>
   </div>
   <div class="rentals-list" id="rentals-list">
     <div class="empty-state" style="grid-column:1/-1;border:none">
@@ -775,6 +779,7 @@
     </div>
     <div class="rentals-detail__grid" id="rentals-detail-grid"></div>
     <div class="rentals-perf" id="rentals-detail-perf"></div>
+    <div class="rentals-trust" id="rentals-detail-trust" hidden></div>
     <div class="rentals-rig" id="rentals-detail-rig" hidden></div>
     <div class="chart-wrap rentals-detail__chart"><canvas id="rentals-detail-chart"></canvas></div>
     <div class="rentals-detail__log" id="rentals-detail-log"></div>

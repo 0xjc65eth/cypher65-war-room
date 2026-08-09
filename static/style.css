@@ -5054,6 +5054,107 @@ body.module-mode .tab-pane:not(.active) { display: none; }
   white-space: nowrap;
 }
 .rentals-item--ended .rentals-item__status { background: rgba(139,147,167,0.12); color: var(--text-tertiary); }
+/* ── Rig Trust (CFO): grade badges + blacklist states ── */
+.rentals-item--blacklisted { border-left-color: var(--red, #ff1744) !important; opacity: .62; }
+.rentals-item--blacklisted .rentals-item__name::after {
+  content: ' ⛔';
+  color: var(--red, #ff1744);
+  font-size: 9px;
+}
+.rentals-item__trust {
+  display: inline-block;
+  padding: 0 5px;
+  font-size: 8px;
+  font-family: var(--font-mono);
+  letter-spacing: .05em;
+  border: 1px solid var(--border-subtle);
+  margin-left: 5px;
+  text-transform: uppercase;
+  vertical-align: 1px;
+}
+.rentals-item__trust--A { border-color: var(--green); color: var(--green); }
+.rentals-item__trust--B { border-color: var(--green-dim); color: var(--green-dim); }
+.rentals-item__trust--C { border-color: var(--orange); color: var(--orange); }
+.rentals-item__trust--D, .rentals-item__trust--F { border-color: var(--red); color: var(--red); }
+.rentals-filters__spacer { flex: 1; }
+.rentals-hidebad {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  color: var(--text-tertiary);
+  cursor: pointer;
+  user-select: none;
+}
+.rentals-hidebad input { accent-color: var(--red, #ff1744); cursor: pointer; }
+.rentals-hidebad:hover { color: var(--text-secondary); }
+/* Rig Trust panel inside detail */
+.rentals-trust {
+  display: block;
+  margin: 6px 0;
+  padding: 8px;
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-surface);
+}
+.rentals-trust__cells {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 4px;
+}
+.rentals-trust__cell { display: flex; flex-direction: column; gap: 1px; }
+.rentals-trust__label {
+  font-size: 7px;
+  letter-spacing: 1px;
+  color: var(--text-tertiary);
+  font-family: var(--font-mono);
+  text-transform: uppercase;
+}
+.rentals-trust__value { font-size: 12px; font-family: var(--font-mono); color: var(--text-primary); }
+.rentals-trust__value--A { color: var(--green); }
+.rentals-trust__value--B { color: var(--green-dim); }
+.rentals-trust__value--C { color: var(--orange); }
+.rentals-trust__value--D, .rentals-trust__value--F { color: var(--red); }
+.rentals-trust__badge {
+  display: inline-block;
+  font-size: 9px;
+  font-weight: 700;
+  padding: 1px 6px;
+  border: 1px solid;
+  border-radius: 2px;
+  font-family: var(--font-mono);
+}
+.rentals-trust__badge--A { border-color: var(--green); color: var(--green); }
+.rentals-trust__badge--B { border-color: var(--green-dim); color: var(--green-dim); }
+.rentals-trust__badge--C { border-color: var(--orange); color: var(--orange); }
+.rentals-trust__badge--D, .rentals-trust__badge--F { border-color: var(--red); color: var(--red); }
+.rentals-trust__verdict {
+  margin-top: 6px;
+  font-size: 10px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+  border-top: 1px dashed var(--border-subtle);
+  padding-top: 6px;
+}
+.rentals-trust__verdict--good { color: var(--green); }
+.rentals-trust__verdict--warn { color: var(--orange); }
+.rentals-trust__verdict--bad { color: var(--red); }
+.rentals-trust__actions { display: flex; justify-content: flex-end; margin-top: 4px; }
+.rentals-trust__btn {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  padding: 2px 8px;
+  border: 1px solid var(--red);
+  background: transparent;
+  color: var(--red);
+  cursor: pointer;
+  transition: all var(--dur-fast) var(--ease-out);
+  text-transform: uppercase;
+  letter-spacing: .05em;
+}
+.rentals-trust__btn:hover { background: var(--red-bg); }
+.rentals-trust__btn--restore { border-color: var(--green); color: var(--green); }
+.rentals-trust__btn--restore:hover { background: var(--green-bg); }
 .rentals-detail {
   margin-top: 10px;
   border: 1px solid var(--border-subtle, rgba(255,255,255,0.08));

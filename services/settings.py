@@ -5,13 +5,83 @@ User-tunable settings: cost model, currency, alert thresholds.
 Persisted to SQLite via services/db.py.
 """
 
+import os
 import time
 import logging
+import hashlib
+import base64
 from typing import Optional
 
 from services.db import get_db
 
 log = logging.getLogger("cypher65.settings")
+
+# ── Credential-at-rest encryption (defense-in-depth) ─────────────────────────
+# Keys carrying secrets (API tokens) are stored Fernet-encrypted when a
+# stable SECRET_KEY is available, so a leaked DB dump/backup does not expose
+# every user's Braiins/MRR credentials in plaintext. Decryption is
+# transparent: load_settings() returns the plaintext value; save_setting()
+# stores the ciphertext. No SECRET_KEY (open self-host) → values are stored
+# as-is (best-effort, same behavior as before). Legacy plaintext values are
+# read back unchanged.
+_CREDENTIAL_KEYS = {"braiins_api_key", "mrr_api_key", "mrr_api_secret"}
+_ENC_PREFIX = "enc:v1:"
+# Cached Fernet instance + the SECRET_KEY it was derived from — creating a
+# Fernet (SHA256 + b64) on every credential call is wasteful on the hot
+# settings path. Rebuilt lazily when the secret changes (tests rotate it).
+_fernet_cache: tuple = (None, None)  # (secret, Fernet|None)
+
+
+def _fernet():
+    """Return a Fernet instance keyed from SECRET_KEY, or None when the
+    key is absent (open self-host) — in which case values stay plaintext.
+    Cached; rebuilt only when SECRET_KEY changes."""
+    global _fernet_cache
+    secret = (os.environ.get("SECRET_KEY") or "").strip()
+    if _fernet_cache[0] == secret:
+        return _fernet_cache[1]
+    if not secret:
+        _fernet_cache = (secret, None)
+        return None
+    try:
+        from cryptography.fernet import Fernet
+    except Exception:
+        _fernet_cache = (secret, None)
+        return None
+    digest = hashlib.sha256(secret.encode("utf-8")).digest()
+    f = Fernet(base64.urlsafe_b64encode(digest))
+    _fernet_cache = (secret, f)
+    return f
+
+
+def _encrypt_credential(value: str) -> str:
+    """Encrypt a secret for storage. Plaintext passthrough when no key."""
+    if not value:
+        return value
+    f = _fernet()
+    if f is None:
+        return value
+    try:
+        return _ENC_PREFIX + f.encrypt(value.encode("utf-8")).decode("ascii")
+    except Exception:
+        return value
+
+
+def _decrypt_credential(value: str) -> str:
+    """Decrypt a stored secret. Legacy plaintext (no prefix) passes through."""
+    if not value or not value.startswith(_ENC_PREFIX):
+        return value
+    f = _fernet()
+    if f is None:
+        return value
+    try:
+        raw = f.decrypt(value[len(_ENC_PREFIX):].encode("ascii"))
+        return raw.decode("utf-8")
+    except Exception:
+        # Wrong SECRET_KEY or corrupt value — return as-is (never raise, so
+        # an operator key rotation can't brick credential consumers).
+        log.warning("[settings] could not decrypt credential value")
+        return value
 
 DEFAULT_SETTINGS = {
     "cost_mode": "none",
@@ -78,7 +148,15 @@ def load_settings(tenant_id: str = ""):
       - named tenant (multi-user deployment): reads ONLY that tenant's rows
         from `tenant_settings` (per-tenant cache). Never touches global rows,
         so a user can never see or inherit the operator's keys/settings.
+
+    Credential keys are returned DECRYPTED (transparent to consumers).
     """
+    def _finalize(d: dict) -> dict:
+        for k in _CREDENTIAL_KEYS:
+            if k in d and isinstance(d[k], str):
+                d[k] = _decrypt_credential(d[k])
+        return d
+
     if is_default_tenant(tenant_id):
         global _settings_cache
         if _settings_cache is not None:
@@ -95,8 +173,8 @@ def load_settings(tenant_id: str = ""):
             conn.close()
         except Exception as e:
             log.warning("[settings load] error: %s", e)
-        _settings_cache = out
-        return out
+        _settings_cache = _finalize(out)
+        return _settings_cache
 
     # Named tenant — isolated settings.
     cached = _tenant_settings_cache.get(tenant_id)
@@ -114,8 +192,8 @@ def load_settings(tenant_id: str = ""):
         conn.close()
     except Exception as e:
         log.warning("[settings load %s] error: %s", tenant_id, e)
-    _tenant_settings_cache[tenant_id] = out
-    return out
+    _tenant_settings_cache[tenant_id] = _finalize(out)
+    return _tenant_settings_cache[tenant_id]
 
 
 def save_setting(key, value, tenant_id: str = ""):
@@ -125,9 +203,14 @@ def save_setting(key, value, tenant_id: str = ""):
       - default tenant → global `settings` table (legacy behavior).
       - named tenant   → that tenant's `tenant_settings` rows only.
     Internal keys (prefixed with '_') bypass the DEFAULT_SETTINGS whitelist.
+
+    Credential keys are stored ENCRYPTED when SECRET_KEY is set.
     """
     if not key.startswith('_') and key not in DEFAULT_SETTINGS:
         raise KeyError(f"unknown setting key: {key}")
+    stored = str(value)
+    if key in _CREDENTIAL_KEYS:
+        stored = _encrypt_credential(stored)
     if is_default_tenant(tenant_id):
         global _settings_cache
         try:
@@ -136,7 +219,7 @@ def save_setting(key, value, tenant_id: str = ""):
             c.execute(
                 "INSERT INTO settings(key,value,updated_ts) VALUES(?,?,?) "
                 "ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_ts=excluded.updated_ts",
-                (key, str(value), int(time.time())),
+                (key, stored, int(time.time())),
             )
             conn.commit()
             conn.close()
@@ -156,7 +239,7 @@ def save_setting(key, value, tenant_id: str = ""):
         c.execute(
             "INSERT INTO tenant_settings(tenant_id,key,value,updated_ts) VALUES(?,?,?,?) "
             "ON CONFLICT(tenant_id,key) DO UPDATE SET value=excluded.value, updated_ts=excluded.updated_ts",
-            (tenant_id, key, str(value), int(time.time())),
+            (tenant_id, key, stored, int(time.time())),
         )
         conn.commit()
         conn.close()

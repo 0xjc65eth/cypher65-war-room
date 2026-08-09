@@ -17,20 +17,19 @@
 #   for fresh data (fine for telemetry). Prefer `python app.py` on the free
 #   tier.
 #
-# ⚠️ SQLite persistence:
-#   - FREE tier: filesystem is EPHEMERAL — data/war_room.sqlite is wiped on
-#     every redeploy/restart (wallet, telemetry, alerts, settings).
-#   - PAID tier: attach the Persistent Disk below; DB_PATH points at the
-#     mount so the SQLite file survives deploys. Uncomment the disk block
-#     and set DB_PATH to /opt/render/project/src/data/war_room.sqlite
-#     (only ONE instance may mount the disk — don't run a second service).
-#   The app boots with zero state and re-polls real data within seconds, so
-#   an ephemeral DB is acceptable for a personal dashboard.
+# ⚠️ SQLite persistence — $0 remote backup (recommended):
+#   Free-tier filesystem is EPHEMERAL (wiped on redeploy/restart). To keep
+#   user credentials/settings/alerts across deploys at ZERO cost, set:
+#     GITHUB_TOKEN=<personal access token with gist scope>
+#   The app auto-backs up data/war_room.sqlite (base64) to a private GitHub
+#   gist every REMOTE_BACKUP_INTERVAL (default 300s) and restores it on boot
+#   when the DB is missing/empty. See services/remote_backup.py.
+#   (Paid alternative: Persistent Disk + `plan: starter` — see git history.)
 services:
   - type: web
     name: cypher65-war-room
     runtime: python
-    plan: free            # free | starter (starter + disk = persistent SQLite)
+    plan: free            # $0 — persistence via GITHUB_TOKEN remote backup (see above)
     buildCommand: pip install -r requirements.txt
     startCommand: python app.py
     healthCheckPath: /api/healthz
@@ -53,13 +52,15 @@ services:
         generateValue: true
       # Optional: API_KEY / TENANT_API_KEYS to lock the API behind auth.
       # Optional: SENTRY_DSN for error monitoring.
-      # ── SQLite path (paid tier + disk) ──────────────────────────────────
-      # - key: DB_PATH
-      #   value: /opt/render/project/src/data/war_room.sqlite
+      # ── $0 persistence: remote backup to a private GitHub gist ─────────
+      # - key: GITHUB_TOKEN
+      #   value: github_pat_XXX   # needs `gist` scope; enables auto backup+restore
+      # - key: REMOTE_BACKUP_INTERVAL
+      #   value: "300"           # seconds between remote snapshots (default 300)
       # ── Hash market warmup / donation watch tuning (optional) ──────────
       # - key: POLL_INTERVAL
       #   value: "15"
-    # ── Persistent disk (PAID tier only — free tier ignores/errors) ─────
+    # ── Paid alternative: Persistent Disk (starter plan only) ────────────
     # disk:
     #   name: war-room-data
     #   mountPath: /opt/render/project/src/data

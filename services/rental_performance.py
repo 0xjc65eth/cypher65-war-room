@@ -15,6 +15,7 @@ breaks because a provider credential is missing (MRR keys optional; Braiins
 key not configured yet → contracts list returns an explicit note).
 """
 
+import json
 import os
 import time
 import logging
@@ -23,12 +24,184 @@ from typing import Any, Dict, List, Optional
 import requests
 
 from agents.solo_mining_advisor.tools import _mrr_signed_headers, mrr_credentials, braiins_credentials
+from services.db import get_db
+from services.settings import is_default_tenant
 
 log = logging.getLogger("cypher65")
 
 MRR_BASE = "https://www.miningrigrentals.com/api/v2"
 BRAIINS_BASE = "https://hashpower.braiins.com/v1"
 PH_TO_TH = 1000.0
+
+# ── Rig Trust Score + bad-rig exclusion (CFO: decide where to rent again) ──
+# Every rig accumulates a track record of delivery % (avg vs advertised) over
+# past rentals. compute_rig_trust_score() turns that history into a 0-100
+# score + grade A-F so the operator can tell at a glance which rigs are
+# reliable and which under-deliver. Rigs can ALSO be blacklisted manually
+# (persistent per tenant) — the panel then hides/marks them automatically.
+
+# Grade bands on the ROBUST (median-based) score.
+RIG_GRADE_BANDS = [  # (min_score, grade)
+    (95, "A"),
+    (90, "B"),
+    (82, "C"),
+    (70, "D"),
+    (0, "F"),
+]
+
+# Human labels per grade (drives the UI badge + auto-hide decision).
+RIG_GRADE_LABEL = {
+    "A": "RELIABLE",
+    "B": "RELIABLE",
+    "C": "CAUTION",
+    "D": "RISKY",
+    "F": "AVOID",
+}
+
+# Settings key holding the per-tenant rig blacklist (JSON list of rig ids).
+# Internal key (leading '_') bypasses the DEFAULT_SETTINGS whitelist.
+RIG_BLACKLIST_KEY = "_rental_rig_blacklist"
+
+
+def _to_float(v):
+    try:
+        if v is None or v == "":
+            return None
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def compute_rig_trust_score(history: List[Dict]) -> Dict[str, Any]:
+    """Score 0-100 + grade A-F for a rig from its delivery track record.
+
+    ``history`` is the ``fetch_rig_performance_history`` output: past rentals
+    of the SAME rig, each with a ``percent`` (avg vs advertised hashrate).
+
+    Methodology (CFO read — robust statistics, not raw means):
+      - base = MEDIAN of delivery % (a single terrible rental must not tank
+        a rig that otherwise delivers);
+      - penalty for inconsistency (mean absolute deviation) — a rig that
+        swings 60%→110% is riskier than one steady at 96%;
+      - penalty for a terrible worst delivery (<85%);
+      - sample-size confidence cap (1-2 rentals can't earn an A/B).
+
+    Returns {"score", "grade", "label", "median_pct", "worst_pct",
+             "mad_pct", "samples"} — or NO DATA (all null, samples 0) when
+    the rig has no measured deliveries yet.
+    """
+    pcts = []
+    for h in history or []:
+        p = _to_float(h.get("percent"))
+        if p is not None:
+            pcts.append(p)
+    if not pcts:
+        return {"score": None, "grade": None, "label": "NO DATA",
+                "median_pct": None, "worst_pct": None, "mad_pct": None,
+                "samples": 0}
+
+    n = len(pcts)
+    s = sorted(pcts)
+    median = s[n // 2] if n % 2 else (s[n // 2 - 1] + s[n // 2]) / 2.0
+    mad = sum(abs(p - median) for p in pcts) / n
+    worst = min(pcts)
+
+    score = median - mad * 0.5 - max(0.0, 85.0 - worst) * 0.4
+    # Confidence cap: <3 samples → at most C band (89); <5 → at most B (94).
+    if n < 3:
+        score = min(score, 89.0)
+    elif n < 5:
+        score = min(score, 94.0)
+    score = max(0.0, min(100.0, score))
+    grade = next(g for low, g in RIG_GRADE_BANDS if score >= low)
+    return {
+        "score": round(score, 1),
+        "grade": grade,
+        "label": RIG_GRADE_LABEL.get(grade, grade),
+        "median_pct": round(median, 1),
+        "worst_pct": round(worst, 1),
+        "mad_pct": round(mad, 1),
+        "samples": n,
+    }
+
+
+# ── Per-tenant rig blacklist (persistent) ───────────────────────────────────
+# Stored as a JSON array of rig ids under an internal settings key, scoped to
+# the tenant: default → global `settings` table, named tenant → its own
+# `tenant_settings` rows. Never inherits/leaks across tenants.
+
+def _save_rig_blacklist(items: List[str], tenant_id: str = ""):
+    raw = json.dumps([str(x) for x in items])
+    ts = int(time.time())
+    try:
+        conn = get_db()
+        c = conn.cursor()
+        if is_default_tenant(tenant_id):
+            c.execute(
+                "INSERT INTO settings(key,value,updated_ts) VALUES(?,?,?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_ts=excluded.updated_ts",
+                (RIG_BLACKLIST_KEY, raw, ts),
+            )
+        else:
+            c.execute(
+                "INSERT INTO tenant_settings(tenant_id,key,value,updated_ts) VALUES(?,?,?,?) "
+                "ON CONFLICT(tenant_id,key) DO UPDATE SET value=excluded.value, updated_ts=excluded.updated_ts",
+                (tenant_id, RIG_BLACKLIST_KEY, raw, ts),
+            )
+        conn.commit()
+        conn.close()
+        return True
+    except Exception as e:
+        log.warning("[rental_performance] blacklist save failed: %s", e)
+        return False
+
+
+def get_rig_blacklist(tenant_id: str = "") -> List[str]:
+    """Persisted rig ids the tenant blacklisted (never rent again)."""
+    try:
+        conn = get_db()
+        c = conn.cursor()
+        if is_default_tenant(tenant_id):
+            c.execute("SELECT value FROM settings WHERE key=?", (RIG_BLACKLIST_KEY,))
+        else:
+            c.execute("SELECT value FROM tenant_settings WHERE tenant_id=? AND key=?",
+                      (tenant_id, RIG_BLACKLIST_KEY))
+        row = c.fetchone()
+        conn.close()
+        if row and row["value"]:
+            parsed = json.loads(row["value"])
+            if isinstance(parsed, list):
+                return [str(x) for x in parsed]
+        return []
+    except Exception as e:
+        log.warning("[rental_performance] blacklist load failed: %s", e)
+        return []
+
+
+def add_rig_to_blacklist(rig_id, tenant_id: str = "") -> bool:
+    """Blacklist a rig id (persistent per tenant). Returns True if added."""
+    if rig_id is None or str(rig_id) == "":
+        return False
+    rid = str(rig_id)
+    items = get_rig_blacklist(tenant_id=tenant_id)
+    if rid not in items:
+        items.append(rid)
+        return _save_rig_blacklist(items, tenant_id=tenant_id)
+    return True
+
+
+def remove_rig_from_blacklist(rig_id, tenant_id: str = "") -> bool:
+    """Remove a rig from the blacklist (restore). Returns True if removed."""
+    rid = str(rig_id)
+    items = [x for x in get_rig_blacklist(tenant_id=tenant_id) if x != rid]
+    return _save_rig_blacklist(items, tenant_id=tenant_id)
+
+
+def is_rig_blacklisted(rig_id, tenant_id: str = "") -> bool:
+    """Quick check used by the list/detail routes (no full list re-parse)."""
+    if rig_id is None:
+        return False
+    return str(rig_id) in get_rig_blacklist(tenant_id=tenant_id)
 
 
 # ── Credentials: shared resolver in agents/solo_mining_advisor/tools.py ──
@@ -566,6 +739,42 @@ def fetch_rig_performance_history(
         })
     out.sort(key=lambda x: str(x.get("start") or ""), reverse=True)
     return out
+
+
+def analyze_rig(rig_id: Any = None, rig_name: str = "",
+                exclude_rental_id: Any = None, tenant_id: str = "") -> Dict[str, Any]:
+    """One-call rig intelligence for the detail panel.
+
+    Combines the same-rig track record, the computed Trust Score (grade A-F),
+    the manual blacklist state and a spend/consistency summary — so the
+    frontend renders the full "should I rent this rig again?" verdict with a
+    single endpoint instead of re-assembling fragments.
+
+    Returns:
+      {"history": [...], "trust": {...}, "blacklisted": bool,
+       "summary": {rentals, avg_pct, cost_avg_sats_thh, trend_pct}}
+    """
+    history = fetch_rig_performance_history(
+        rig_id, rig_name, exclude_rental_id=exclude_rental_id, tenant_id=tenant_id)
+    trust = compute_rig_trust_score(history)
+    blacklisted = is_rig_blacklisted(rig_id, tenant_id=tenant_id)
+
+    pcts = [h["percent"] for h in history if h.get("percent") is not None]
+    costs = [h["cost_sats_per_thh"] for h in history if h.get("cost_sats_per_thh") is not None]
+    summary = {
+        "rentals": len(history),
+        "avg_pct": round(sum(pcts) / len(pcts), 1) if pcts else None,
+        "cost_avg_sats_thh": round(sum(costs) / len(costs), 2) if costs else None,
+        # Trend: avg of the 3 most recent vs the previous ones (positive =
+        # improving). Rough but honest — never fabricates a slope.
+        "trend_pct": None,
+    }
+    if len(pcts) >= 4:
+        recent = sum(pcts[:3]) / 3.0
+        older = sum(pcts[3:]) / (len(pcts) - 3)
+        summary["trend_pct"] = round(recent - older, 1)
+    return {"history": history, "trust": trust, "blacklisted": blacklisted,
+            "summary": summary}
 
 
 def _num(v: Any) -> Optional[float]:

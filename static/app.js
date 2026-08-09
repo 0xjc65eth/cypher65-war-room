@@ -3140,15 +3140,43 @@ function renderAccount(acct) {
     return (r.price_paid_btc * 1e8).toFixed(0) + ' sats';
   }
 
+  // CFO: rig trust — is this rig blacklisted or a known bad performer?
+  // Returns {blacklisted, grade} so the card can show a ⛔/grade badge.
+  function _rentalRigTrust(r) {
+    if (!r || !r.rig) return { blacklisted: false, grade: null };
+    const bl = (_rentalsData && _rentalsData.rig_blacklist) || [];
+    const rid = r.rig.id != null ? String(r.rig.id) : null;
+    return {
+      blacklisted: !!(rid && bl.indexOf(rid) !== -1),
+      grade: r.rig_trust && r.rig_trust.grade ? r.rig_trust.grade : null,
+    };
+  }
+
+  // CFO: should this rental card be hidden by the "hide bad rigs" toggle?
+  // Hidden when the rig is blacklisted OR scored grade F (AVOID).
+  function _rentalIsBad(r) {
+    const t = _rentalRigTrust(r);
+    return t.blacklisted || t.grade === 'F';
+  }
+
   function _rentalCardHtml(r) {
     const st = _rentalStatus(r);
-    const stCls = r && r.ended ? 'rentals-item--ended' : (st === 'online' ? 'rentals-item--active' : '');
+    const trust = _rentalRigTrust(r);
+    const stCls = [
+      r && r.ended ? 'rentals-item--ended' : (st === 'online' ? 'rentals-item--active' : ''),
+      trust.blacklisted ? 'rentals-item--blacklisted' : '',
+    ].filter(Boolean).join(' ');
     const name = (r && r.rig && r.rig.name) || (r && r.id) || '—';
     const region = (r && r.rig && r.rig.region) || '';
     const span = (r && r.start && r.end) ? (r.start + ' → ' + r.end) : '';
+    // Trust grade badge (A-F) on the name line — a rig that under-delivers
+    // is visible at a glance before opening the detail.
+    const gradeBadge = trust.grade
+      ? '<span class="rentals-item__trust rentals-item__trust--' + escapeHtml(trust.grade) + '" title="rig trust grade ' + escapeHtml(trust.grade) + ' (from track record)">' + escapeHtml(trust.grade) + '</span>'
+      : '';
     return '<div class="rentals-item ' + stCls + '" data-rental-id="' + escapeHtml(String(r && r.id || '')) + '">' +
       '<div class="rentals-item__main">' +
-        '<div class="rentals-item__name">#' + escapeHtml(String(r && r.id || '—')) + ' · ' + escapeHtml(name) + '</div>' +
+        '<div class="rentals-item__name">#' + escapeHtml(String(r && r.id || '—')) + ' · ' + escapeHtml(name) + gradeBadge + '</div>' +
         '<div class="rentals-item__meta">' + escapeHtml(region || '') + (span ? ' · ' + escapeHtml(span) : '') + '</div>' +
       '</div>' +
       '<div class="rentals-item__stats">' +
@@ -3244,6 +3272,17 @@ function renderAccount(acct) {
       price_paid_btc: c.amount_sat != null ? c.amount_sat / 1e8 : null,
       length_hours: null, start: c.started_at || null, end: c.ended_at || null,
     }));
+
+    // CFO: "hide bad rigs" toggle — excludes blacklisted + grade-F rigs so
+    // the operator only sees rigs worth re-renting (count badge reflects it).
+    const hideBad = document.getElementById('rentals-hide-bad');
+    if (hideBad && hideBad.checked) {
+      const before = items.length;
+      items = items.filter(x => !_rentalIsBad(x));
+      if (cnt && before !== items.length) {
+        cnt.textContent = cnt.textContent.replace(/\d+ rentals/, items.length + ' shown');
+      }
+    }
 
     if (!items.length) {
       const needsAuth = _rentalsFilter === 'contracts' ? braiins.needs_auth : mrr.needs_auth;
@@ -3361,6 +3400,77 @@ function renderAccount(acct) {
         perfEl.innerHTML = cells.map(c =>
           '<div class="rentals-perf__cell' + (c.c ? ' ' + c.c : '') + '"' + (c.t ? ' title="' + escapeHtml(c.t) + '"' : '') + '><span class="rentals-perf__label">' + c.l + '</span><strong>' + escapeHtml(String(c.v)) + '</strong></div>'
         ).join('');
+      }
+      // RIG TRUST (CFO) — grade A-F + score + consistency for THIS rig, with
+      // a one-click blacklist button so bad performers are excluded everywhere.
+      const trustEl = document.getElementById('rentals-detail-trust');
+      const rigId = (d.rig && d.rig.id != null) ? String(d.rig.id) : null;
+      if (trustEl) {
+        const ra = data.rig_analysis || {};
+        const trust = ra.trust || {};
+        const bl = !!ra.blacklisted;
+        const grade = trust.grade;
+        if (rigId && (trust.samples > 0 || bl)) {
+          trustEl.hidden = false;
+          const sum = ra.summary || {};
+          const gCls = grade || '';
+          const gradeHtml = grade
+            ? '<span class="rentals-trust__badge rentals-trust__badge--' + escapeHtml(gCls) + '">GRADE ' + escapeHtml(gCls) + ' · ' + escapeHtml(String(trust.label || '')) + '</span>'
+            : '<span class="rentals-trust__badge">NO TRACK RECORD YET</span>';
+          const trend = sum.trend_pct;
+          const trendStr = trend == null ? '—'
+            : (trend >= 0 ? '▲ ' : '▼ ') + Math.abs(trend).toFixed(1) + '%';
+          const cells = [
+            { l: 'RIG TRUST', v: gradeHtml, cls: '' },
+            { l: 'SCORE', v: trust.score != null ? trust.score.toFixed(1) + ' / 100' : '—', cls: gCls },
+            { l: 'MEDIAN DELIVERY', v: trust.median_pct != null ? trust.median_pct.toFixed(1) + '%' : '—', cls: '' },
+            { l: 'WORST DELIVERY', v: trust.worst_pct != null ? trust.worst_pct.toFixed(1) + '%' : '—', cls: '' },
+            { l: 'CONSISTENCY (MAD)', v: trust.mad_pct != null ? '±' + trust.mad_pct.toFixed(1) + '%' : '—', cls: '' },
+            { l: 'SAMPLES', v: trust.samples != null ? trust.samples : '—', cls: '' },
+            { l: 'AVG COST', v: sum.cost_avg_sats_thh != null ? sum.cost_avg_sats_thh.toFixed(1) + ' st/TH·h' : '—', cls: '' },
+            { l: 'TREND (last 3)', v: trendStr, cls: trend == null ? '' : (trend >= 0 ? 'is-good' : 'is-bad') },
+          ];
+          let verdict = '', vCls = '';
+          if (bl) {
+            verdict = '⛔ Este rig está na sua BLACKLIST — não alugue de novo.';
+            vCls = 'rentals-trust__verdict--bad';
+          } else if (grade === 'A' || grade === 'B') {
+            verdict = '✓ Rig confiável — consistente nas entregas. Pode alugar de novo.';
+            vCls = 'rentals-trust__verdict--good';
+          } else if (grade === 'C') {
+            verdict = '⚠ Rig mediano — entregas inconsistentes. Compare com o track record antes de alugar.';
+            vCls = 'rentals-trust__verdict--warn';
+          } else if (grade === 'D' || grade === 'F') {
+            verdict = '⛔ Rig ruim — entrega bem abaixo do anunciado. Considere excluir (blacklist).';
+            vCls = 'rentals-trust__verdict--bad';
+          } else {
+            verdict = 'Sem histórico suficiente deste rig — colete mais amostras antes de confiar.';
+          }
+          const btn = bl
+            ? '<button type="button" class="rentals-trust__btn rentals-trust__btn--restore" id="rentals-trust-toggle">✓ RESTAURAR RIG</button>'
+            : '<button type="button" class="rentals-trust__btn" id="rentals-trust-toggle">⛔ EXCLUIR RIG (BLACKLIST)</button>';
+          trustEl.innerHTML =
+            '<div class="rentals-trust__cells">' + cells.map(c =>
+              '<div class="rentals-trust__cell"><span class="rentals-trust__label">' + c.l + '</span><span class="rentals-trust__value' + (c.cls ? ' rentals-trust__value--' + c.cls : '') + '">' + c.v + '</span></div>'
+            ).join('') + '</div>' +
+            '<div class="rentals-trust__verdict ' + vCls + '">' + verdict + '</div>' +
+            '<div class="rentals-trust__actions">' + btn + '</div>';
+          const toggle = document.getElementById('rentals-trust-toggle');
+          if (toggle) toggle.addEventListener('click', async () => {
+            try {
+              const r = await authFetch('/api/rentals/rig/blacklist', {
+                method: bl ? 'DELETE' : 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ rig_id: rigId }),
+              });
+              if (!r.ok) return;
+              // Re-open the detail so trust/blacklist re-render fresh.
+              openRentalDetail(id, provider);
+            } catch (e) { /* fail-closed */ }
+          });
+        } else {
+          trustEl.hidden = true;
+        }
       }
       // RIG TRACK RECORD — histórico de % por rig (same-rig past rentals) so
       // the operator can judge this rig's consistency before renting again.
@@ -3491,6 +3601,9 @@ function renderAccount(acct) {
         renderRentals();
       });
     });
+    // CFO: "hide bad rigs" re-renders the list live when toggled.
+    const hideBad = document.getElementById('rentals-hide-bad');
+    if (hideBad) hideBad.addEventListener('change', renderRentals);
     const list = document.getElementById('rentals-list');
     if (list) list.addEventListener('click', (e) => {
       const item = e.target.closest ? e.target.closest('.rentals-item') : null;

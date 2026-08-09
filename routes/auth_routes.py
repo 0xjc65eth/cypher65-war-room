@@ -237,6 +237,13 @@ def api_auth_logout():
         payload = verify_token(token, expected_type="access") or verify_token(token, expected_type="refresh")
         tid = payload.get("sub", "default") if payload else "default"
         revoke_token(token)
+        # Drop the token→tenant rate-limit cache entry NOW (not at exp) so a
+        # revoked session stops consuming the tenant's rate budget immediately.
+        try:
+            from app import evict_token_sub_cache
+            evict_token_sub_cache(token)
+        except Exception:
+            pass  # cache eviction is best-effort; revoke already succeeded
         log.info("[auth] token revoked")
         _log_audit(tid, "auth.logout", user_id=payload.get("username") or "",
                    details={"ip": request.remote_addr})

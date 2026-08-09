@@ -94,6 +94,66 @@ implementado. Prefira `python app.py` quando live-push importar.
 `render.yaml` documenta o mesmo: **nunca** rode `gunicorn app:app` sozinho
 sem o processo de workers — o dashboard ficaria vazio para sempre.
 
+## 💾 Persistência no Render — ZERO CUSTO (backup remoto via GitHub gist)
+
+> **Decisão CFO/CRO (2026-08-09):** o projeto roda no **free tier ($0)** e a
+> persistência é feita com **backup remoto automático** em um **gist privado
+> do GitHub** (`services/remote_backup.py`). O free tier do Render apaga o
+> SQLite a cada redeploy/restart — este mecanismo restaura os dados no boot
+> seguinte, então **credenciais, settings, alertas e histórico por-usuário
+> (multi-tenant) sobrevivem a deploys sem pagar nada.**
+
+### Como funciona
+
+- A cada `REMOTE_BACKUP_INTERVAL` (default 600s), o app faz um snapshot
+  crash-safe do SQLite (`sqlite3.Connection.backup`) e envia base64 para um
+  **gist PRIVADO** do GitHub (uma só instância do arquivo, sobrescrita).
+- No boot, se o DB local está vazio (boot efêmero) e o gist tem snapshot,
+  o app **restaura** o arquivo antes de qualquer escrita. Um DB que já tem
+  dados de usuário **nunca é sobrescrito**.
+- É env-gated: **sem `GITHUB_TOKEN`, nada acontece** (comportamento atual).
+
+### Ativação (uma vez, $0)
+
+1. Crie um **Personal Access Token** do GitHub com scope `gist`:
+   GitHub → Settings → Developer settings → Personal access tokens →
+   **Generate new token (classic)** → marque `gist` → copie.
+2. Adicione ao Render (Dashboard → o serviço → Environment):
+   - `GITHUB_TOKEN` = o token (guarde como secret)
+   - `REMOTE_BACKUP_INTERVAL` = `300` (5 min — opcional, default 600)
+3. **Redeploy**. Confira no log: `[remote_backup] snapshot pushed ... -> gist ...`
+4. Teste: conecte uma wallet/salve uma chave → force um redeploy → os dados
+   **voltam** (o log mostra `[remote_backup] restored ... from gist`).
+
+> 🔒 O gist é **privado** (só o seu token lê). A base64 não é criptografia —
+> a proteção real das credenciais em repouso é o **Fernet** em
+> `services/settings.py` (criptografa `braiins_api_key`/`mrr_*` quando
+> `SECRET_KEY` está setada).
+
+### Limites honestos
+
+- **Única instância**: o backup pressupõe 1 serviço web. Com 2+ instâncias
+  o restore poderia pisar em dados frescos — não rode replicação neste modo.
+- **Tamanho**: limite de arquivo do gist (~100MB) — folga enorme para o
+  SQLite real deste app (poucos MB). Se um dia exceder, aí sim migrar para
+  Postgres (Supabase/Neon free tier — Gravity Index recommend).
+
+### ⚠️ Rotação do `SECRET_KEY` e credenciais criptografadas
+
+As credenciais (`braiins_api_key`, `mrr_api_key`, `mrr_api_secret`) são
+armazenadas **criptografadas com Fernet derivado do `SECRET_KEY`**. Isso
+significa:
+
+- **Trocar o `SECRET_KEY` = credenciais legadas ficam ilegíveis.** O app
+  degrada graciosamente (nunca quebra), mas os consumidores passariam a
+  receber o ciphertext como se fosse a chave → auth das pools falha em
+  silêncio. **Após rotacionar o `SECRET_KEY`, peça que cada usuário
+  re-salve suas credenciais** (ou rode um script de re-criptografia).
+- **Sem `SECRET_KEY`** (open self-host), os valores ficam em plaintext
+  (comportamento legado, sem mudança).
+
+---
+
 ## 🛰 Acesso Remoto (Tailscale)
 
 O sidecar (`--profile tailscale`) transforma o servidor em **subnet router**:

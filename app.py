@@ -7,6 +7,7 @@ Author: built by Buffy for Julio Cesar
 import os
 import json
 import time
+import hashlib
 import sqlite3
 import threading
 import collections
@@ -65,6 +66,7 @@ from routes.export_routes import export_bp
 from routes.dashboard_routes import dashboard_bp
 from services.tenant import require_tenant, role_required, SELF_HOST_MAX_WORKERS
 import services.db_backup as _db_backup  # C4: automatic SQLite backup + boot integrity check
+import services.remote_backup as _remote_backup  # $0 persistence: gist backup + boot restore
 from services.licensing import (
     is_pro,
     license_status as _license_status,
@@ -161,19 +163,118 @@ app.register_blueprint(export_bp)
 app.register_blueprint(dashboard_bp)
 
 # ━━ Simple in-memory rate limiter ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-_rate_limit_store = {}  # {ip: [timestamps]}
+# Keyed by TENANT (JWT sub) when authenticated, by IP for anonymous traffic.
+# Behind the Render proxy every user shares the same remote_addr, so an
+# IP-only limiter would merge all 1000+ users into ONE budget bucket and
+# produce 429 in cascade. Authenticated users each get their own bucket;
+# anonymous traffic still falls back to per-IP limiting.
+_rate_limit_store = {}  # {key: [timestamps]} — key = "t:<tenant>" | "ip:<ip>"
 _auth_rate_limit_store = {}  # {ip: [timestamps]} — stricter /api/auth/* budget
+
+# ── Token→tenant cache (hot-path optimization) ────────────────────────────
+# verify_token() is JWT decode + HMAC + blacklist + revocation checks — fine
+# for login, wasteful on every API call. Since the tenant (sub) is immutable
+# for the LIFETIME of a token, cache it keyed by SHA-256 of the token string:
+#   {token_sha256: (sub, exp)}
+# On the hot path (_rate_limit_key) we look up the cache first; only a MISS
+# runs verify_token. Entries expire at the token's own exp (a token past exp
+# is invalid anyway), and the dict is bounded so it cannot grow unbounded
+# with 1000+ users (same discipline as _rate_limit_store GC).
+_TOKEN_SUB_CACHE_MAX = 5000
+_token_sub_cache = {}  # {sha256(token): (sub, exp)}
+
+
+def _token_sub_cache_key(token: str) -> str:
+    """Deterministic, non-reversible key for a token (never store raw JWTs)."""
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def _token_sub_cache_get(token: str) -> str:
+    """Return the cached tenant (sub) for a token, or '' on miss/expired.
+
+    Expired entries are dropped eagerly so the cache only holds live tokens.
+    """
+    key = _token_sub_cache_key(token)
+    entry = _token_sub_cache.get(key)
+    if not entry:
+        return ""
+    sub, exp = entry
+    if exp and exp <= time.time():
+        _token_sub_cache.pop(key, None)
+        return ""
+    return sub
+
+
+def _token_sub_cache_put(token: str, sub: str, exp: int):
+    """Store token→sub, bounding the cache: drop expired entries when over
+    the cap, then evict the oldest live entry until under the limit."""
+    if not sub:
+        return
+    key = _token_sub_cache_key(token)
+    _token_sub_cache[key] = (sub, exp or 0)
+    if len(_token_sub_cache) <= _TOKEN_SUB_CACHE_MAX:
+        return
+    now = time.time()
+    # 1) Drop entries whose token has already expired.
+    stale = [k for k, (s, e) in _token_sub_cache.items() if e and e <= now]
+    for k in stale:
+        _token_sub_cache.pop(k, None)
+    # 2) Still over? Evict oldest-inserted live entries (dict insertion order).
+    while len(_token_sub_cache) > _TOKEN_SUB_CACHE_MAX:
+        _token_sub_cache.pop(next(iter(_token_sub_cache)), None)
+
+
+def evict_token_sub_cache(token: str):
+    """Drop a token's cached tenant mapping immediately (logout/revoke).
+
+    Closes the revocation window documented in _rate_limit_key: an explicit
+    logout removes the entry right away instead of waiting for exp.
+    """
+    if token:
+        _token_sub_cache.pop(_token_sub_cache_key(token), None)
+
+
+def _rate_limit_key() -> str:
+    """Best-effort rate-limit key: tenant_id from a valid JWT when present,
+    else the client IP. Uses the token→tenant cache to avoid running
+    verify_token (JWT decode + HMAC + blacklist + revocation checks) on every
+    request — the hot path only decodes on a cache miss. The sub is immutable
+    for the token's lifetime, and the cache entry dies with the token's exp.
+
+    NOTE (revocation window): this is a RATE-LIMIT key, not an authz gate —
+    routes still call verify_token independently. A token revoked before its
+    exp keeps mapping to its tenant's bucket until exp (bounded: it can only
+    burn that tenant's OWN budget; the authz layers reject the token anyway).
+    The logout/revoke path also evicts the cache entry immediately (see
+    routes/auth_routes.py) to close the window on explicit logout."""
+    auth = request.headers.get("Authorization", "")
+    if auth.startswith("Bearer "):
+        token = auth[7:]
+        # Fast path: cached tenant, no crypto on the hot path.
+        sub = _token_sub_cache_get(token)
+        if not sub:
+            try:
+                from services.auth import verify_token
+                payload = verify_token(token) or {}
+                sub = payload.get("sub")
+                if sub:
+                    _token_sub_cache_put(token, sub, payload.get("exp") or 0)
+            except Exception:
+                pass
+        if sub:
+            return f"t:{sub}"
+    return f"ip:{request.remote_addr or '127.0.0.1'}"
+
 
 @app.before_request
 def rate_limit():
-    """Simple rate limiter: max RATE_LIMIT_PER_MINUTE requests per IP per minute.
-    Skips static files and the /healthz endpoint.
-    Disabled in TESTING mode so test suites can call endpoints freely."""
+    """Rate limiter: max RATE_LIMIT_PER_MINUTE requests per minute per key
+    (tenant when authenticated, IP for anonymous). Skips static files and
+    health endpoints. Disabled in TESTING mode."""
     if app.config.get("TESTING", False):
         return None
     if request.path.startswith('/static') or request.path == '/healthz' or request.path == '/api/healthz' or request.path == '/api/v1/status':
         return None
-    ip = request.remote_addr or '127.0.0.1'
     now = time.time()
     window = 60.0
     # Stricter budget for credential endpoints (brute-force protection).
@@ -181,6 +282,7 @@ def rate_limit():
     # legit user, so a tight per-IP limit blocks password sprays without
     # false positives. Auth requests don't consume the generic budget.
     if request.method == "POST" and request.path.startswith("/api/auth/"):
+        ip = request.remote_addr or '127.0.0.1'
         auth_ips = _auth_rate_limit_store.setdefault(ip, [])
         auth_ips[:] = [t for t in auth_ips if now - t < window]
         if len(auth_ips) >= AUTH_RATE_LIMIT_PER_MINUTE:
@@ -194,23 +296,24 @@ def rate_limit():
             for k in stale:
                 del _auth_rate_limit_store[k]
         return None
-    if ip not in _rate_limit_store:
-        _rate_limit_store[ip] = []
+    key = _rate_limit_key()
+    if key not in _rate_limit_store:
+        _rate_limit_store[key] = []
     # Prune old entries
-    _rate_limit_store[ip] = [t for t in _rate_limit_store[ip] if now - t < window]
-    if len(_rate_limit_store[ip]) >= RATE_LIMIT_PER_MINUTE:
+    _rate_limit_store[key] = [t for t in _rate_limit_store[key] if now - t < window]
+    if len(_rate_limit_store[key]) >= RATE_LIMIT_PER_MINUTE:
             abort(429, description="Rate limit exceeded. Please slow down.")
-    _rate_limit_store[ip].append(now)
-    # GC stale IPs by EXPIRY, never a global wipe: prune entries whose most
+    _rate_limit_store[key].append(now)
+    # GC stale keys by EXPIRY, never a global wipe: prune entries whose most
     # recent request fell outside the window (their budget fully reset). A
-    # wholesale clear() would let every previously-limited IP burst again at
+    # wholesale clear() would let every previously-limited key burst again at
     # once — audit C3.
     if len(_rate_limit_store) > 5000:
         cutoff = now - window
-        stale = [ip for ip, stamps in _rate_limit_store.items()
+        stale = [k for k, stamps in _rate_limit_store.items()
                  if not stamps or stamps[-1] < cutoff]
-        for ip in stale:
-            del _rate_limit_store[ip]
+        for k in stale:
+            del _rate_limit_store[k]
 
 
 @app.after_request
@@ -316,6 +419,33 @@ def get_db():
 # to import the app module at runtime (avoids circular dependency).
 _alerts_set_get_db(get_db)
 app.register_blueprint(alerts_bp)
+
+
+# ── Schema version tracking (#5: versioned migrations) ─────────────────────
+# init_db() below is idempotent (CREATE IF NOT EXISTS + guarded ALTERs), but
+# until now there was no record of WHICH migrations ran. This constant is the
+# current schema revision; _record_schema_version() stamps it into the
+# schema_version table on every boot so operators/tests can verify the DB
+# layout matches the code that wrote it.
+SCHEMA_VERSION = 1
+
+
+def _record_schema_version(conn):
+    """Upsert the current schema version + boot timestamp. Safe on legacy
+    DBs (table is created if missing)."""
+    try:
+        c = conn.cursor()
+        c.execute(
+            "CREATE TABLE IF NOT EXISTS schema_version "
+            "(version INTEGER PRIMARY KEY, applied_ts INTEGER NOT NULL)"
+        )
+        c.execute(
+            "INSERT INTO schema_version(version, applied_ts) VALUES(?,?) "
+            "ON CONFLICT(version) DO UPDATE SET applied_ts=excluded.applied_ts",
+            (SCHEMA_VERSION, int(time.time())),
+        )
+    except Exception as e:
+        log.warning("[migrate] schema_version record failed: %s", e)
 
 
 def init_db():
@@ -774,13 +904,13 @@ def init_db():
         c.execute("CREATE INDEX IF NOT EXISTS idx_alert_rules_tenant ON alert_rules(tenant_id)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_automation_rules_tenant ON automation_rules(tenant_id)")
     except Exception:
-        pass
-
-# ── WAL mode for better concurrent read/write ──
+        pass    # ── WAL mode for better concurrent read/write ──
     c.execute("PRAGMA journal_mode=WAL")
     c.execute("PRAGMA synchronous=NORMAL")
     c.execute("PRAGMA cache_size=-8000")  # 8MB cache
     c.execute("PRAGMA busy_timeout=3000")
+    # Stamp the schema revision so the DB layout is verifiable (audit #5).
+    _record_schema_version(conn)
     conn.commit()
     conn.close()
 
@@ -4027,6 +4157,15 @@ def _start_background_threads():
     Note: deliberately __main__-gated; a WSGI/gunicorn deployment must call
     this explicitly (the project convention is `python app.py`).
     """
+    # $0 persistence (ephemeral free-tier filesystems): restore the remote
+    # gist snapshot onto a fresh boot BEFORE anything writes, so per-user
+    # credentials/settings/alerts survive redeploys. No-op without
+    # GITHUB_TOKEN; never overwrites a DB that already has user rows.
+    try:
+        _remote_backup.remote_restore()
+    except Exception as e:
+        log.warning("[boot] remote restore error: %s", e)
+
     # C4 // boot-time integrity check — detect the recurring index
     # corruption (idx_maintenance_records_ts / idx_audit_logs_tenant_ts)
     # early and point at the newest backup. Warning-only: restoring over a
@@ -4069,6 +4208,14 @@ def _start_background_threads():
     # for a good restore point.
     if boot_db_ok and _db_backup.backup_enabled():
         threading.Thread(target=_auto_backup_loop, daemon=True).start()
+    # $0 persistence: keep pushing periodic remote snapshots (daemon).
+    # No-op without GITHUB_TOKEN.
+    try:
+        if _remote_backup.remote_backup_enabled():
+            threading.Thread(target=_remote_backup.remote_backup_loop,
+                             daemon=True).start()
+    except Exception as e:
+        log.warning("[boot] remote backup init error: %s", e)
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -5358,6 +5505,16 @@ def api_rentals(tenant_id: str = ""):
         mrr_history = _rental_perf.fetch_mrr_rentals(rtype="renter", history=True, limit=50, tenant_id=tenant_id)
         mrr_owner = _rental_perf.fetch_mrr_rentals(rtype="owner", history=True, limit=50, tenant_id=tenant_id)
         braiins = _rental_perf.fetch_braiins_contracts(tenant_id=tenant_id)
+        # CFO: flag blacklisted rigs in the list payload (cheap settings read
+        # — no per-rig history calls on the list). Full trust grades are
+        # computed per-rental in the detail endpoint where history exists.
+        bl = set(_rental_perf.get_rig_blacklist(tenant_id=tenant_id))
+        for bucket in (mrr_active.get("rentals", []),
+                       mrr_history.get("rentals", []),
+                       mrr_owner.get("rentals", [])):
+            for rv in bucket:
+                rid = (rv.get("rig") or {}).get("id")
+                rv["blacklisted"] = rid is not None and str(rid) in bl
         return jsonify({
             "success": True,
             "updated_at": int(time.time()),
@@ -5376,10 +5533,42 @@ def api_rentals(tenant_id: str = ""):
                 "contracts": braiins.get("contracts", []),
                 "error": braiins.get("error"),
             },
+            # CFO: per-tenant rig blacklist — ids of rigs the user excluded
+            # for bad performance, so the panel marks/hides them instantly.
+            "rig_blacklist": _rental_perf.get_rig_blacklist(tenant_id=tenant_id),
         })
     except Exception as e:
         log.warning("[rentals] list error: %s", e)
         return jsonify({"success": False, "error": "failed to fetch rentals"}), 500
+
+
+@app.route("/api/rentals/rig/blacklist", methods=["POST", "DELETE"])
+@require_tenant
+@role_required("member")
+def api_rentals_rig_blacklist(tenant_id: str = ""):
+    """Add/remove a rig from the per-tenant blacklist (bad performers).
+
+    POST body: {rig_id: "376882"} → blacklist the rig (never rent again).
+    DELETE query: ?rig_id=376882 → restore the rig.
+    Returns the updated blacklist state so the frontend re-renders instantly.
+    """
+    body = request.get_json(silent=True) or {}
+    rig_id = (body.get("rig_id") or request.args.get("rig_id") or "").strip()
+    if not rig_id:
+        return jsonify({"success": False, "error": "missing rig_id"}), 400
+    try:
+        if request.method == "DELETE":
+            _rental_perf.remove_rig_from_blacklist(rig_id, tenant_id=tenant_id)
+        else:
+            _rental_perf.add_rig_to_blacklist(rig_id, tenant_id=tenant_id)
+        return jsonify({
+            "success": True,
+            "blacklisted": _rental_perf.is_rig_blacklisted(rig_id, tenant_id=tenant_id),
+            "rig_blacklist": _rental_perf.get_rig_blacklist(tenant_id=tenant_id),
+        })
+    except Exception as e:
+        log.warning("[rentals] blacklist error: %s", e)
+        return jsonify({"success": False, "error": "blacklist update failed"}), 500
 
 
 @app.route("/api/rentals/detail", methods=["GET", "POST"])
@@ -5409,6 +5598,8 @@ def api_rentals_detail(tenant_id: str = ""):
             contract = body.get("contract")
             result = _rental_perf.fetch_braiins_contract_detail(rid, contract=contract,
                                                                  tenant_id=tenant_id)
+            # Braiins contracts have no rig id → trust score is NO DATA; the
+            # panel still gets the blacklist state for a stable label.
             return jsonify({"success": True, "provider": "braiins",
                             "detail": result.get("detail") or {},
                             "graph": result.get("graph") or {},
@@ -5416,22 +5607,30 @@ def api_rentals_detail(tenant_id: str = ""):
                             # Analytics: effective cost vs the cheapest live
                             # market price (sats/TH/h) for the perf banner.
                             "market": _rental_perf.fetch_market_reference(),
-                            "rig_history": []})
+                            "rig_history": [],
+                            "rig_analysis": {
+                                "trust": _rental_perf.compute_rig_trust_score([]),
+                                "blacklisted": False,
+                                "summary": {"rentals": 0, "avg_pct": None,
+                                             "cost_avg_sats_thh": None, "trend_pct": None},
+                                "history": [],
+                            }})
         detail = _rental_perf.fetch_mrr_rental_detail(rid, tenant_id=tenant_id)
         raw = detail.get("detail") or {}
         # Compute the same perf block Braiins carries, from the RAW MRR
         # detail (percent / avg TH / delivered TH·h / cost sats/TH/h).
         perf = _rental_perf.compute_mrr_perf(raw) if raw and not raw.get("error") else {}
-        # Track record of the SAME rig (histórico de % por rig) so the
-        # operator sees how this rig delivered on previous rentals.
+        # CFO: full rig intelligence — same-rig track record, Trust Score
+        # (grade A-F), blacklist state and spend/consistency summary.
         rig = raw.get("rig") or {}
-        rig_history = _rental_perf.fetch_rig_performance_history(
+        rig_analysis = _rental_perf.analyze_rig(
             rig.get("id"), rig.get("name"), exclude_rental_id=rid, tenant_id=tenant_id)
         return jsonify({"success": True, "provider": "mrr", "detail": raw,
                         "graph": detail.get("graph") or {},
                         "log": detail.get("log") or {},
                         "perf": perf,
-                        "rig_history": rig_history,
+                        "rig_history": rig_analysis["history"],
+                        "rig_analysis": rig_analysis,
                         "market": _rental_perf.fetch_market_reference()})
     except Exception as e:
         log.warning("[rentals] detail error: %s", e)

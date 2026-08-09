@@ -17,6 +17,7 @@ Architecture
 import json
 import time
 import math
+import random
 import logging
 import threading
 import concurrent.futures
@@ -38,9 +39,53 @@ log = logging.getLogger("cypher65.user_polling")
 
 # ── Shared global data cache (thread-safe via Lock) ──────────────────────────
 # Pool stats, network data, and BTC price are the same for ALL users.
+# Bounded: per-ADDRESS keys (user_{addr}/acct_{addr}) grow with distinct
+# wallets, so the cache is capped and evicted LRU-style to prevent a slow
+# memory leak at 1000+ user scale. Fixed global keys (pool/network/price)
+# are naturally few; the cap only prunes the long tail of stale addresses.
 _global_cache: dict[str, Any] = {}
+_GLOBAL_CACHE_MAX = 2048  # entries — beyond this, oldest are evicted
 _global_lock = threading.Lock()
 GLOBAL_CACHE_TTL = 15  # seconds — matches POLL_INTERVAL
+
+
+def _update_global(key: str, value: Any):
+    """Cache a value under key, evicting the oldest entry when over cap.
+
+    The shared cache is a plain dict; when it exceeds _GLOBAL_CACHE_MAX the
+    oldest key (insertion order) is dropped. Global fixed keys are few and
+    constantly refreshed, so they always survive; per-address entries churn
+    as workers come and go. Holds the lock for the whole operation (tiny)."""
+    with _global_lock:
+        if len(_global_cache) >= _GLOBAL_CACHE_MAX and key not in _global_cache:
+            try:
+                oldest = next(iter(_global_cache))
+                del _global_cache[oldest]
+            except StopIteration:
+                pass
+        _global_cache[key] = {"data": value, "ts": int(time.time())}
+
+# ── Per-ADDRESS fetch cache (Phase: 1000+ user scale) ──────────────────────
+# Two workers watching the SAME wallet (common: operator + tenant, or two
+# tenants sharing a rig) must not double-hit Parasite /user+account. Cache
+# the per-address fetches briefly (shorter than POLL_INTERVAL so a single
+# worker still sees fresh data every cycle, but a burst of co-polling
+# workers on the same address shares one fetch).
+USER_FETCH_TTL = 10  # seconds — < POLL_INTERVAL(15): per-worker freshness preserved
+
+
+def _cached_user_fetch(key: str, fetcher, *args):
+    """Short-TTL per-address fetch dedup (address → data).
+
+    Reuses the shared global cache so the same wallet polled by N workers in
+    a 10s window results in ONE upstream request instead of N.
+    """
+    cached = _get_global(key, ttl=USER_FETCH_TTL)
+    if cached is not None:
+        return cached
+    data = fetcher(*args)
+    _update_global(key, data)
+    return data
 
 
 def _fire_webhook_async(webhook_kwargs: dict):
@@ -56,11 +101,6 @@ def _fire_webhook_async(webhook_kwargs: dict):
         daemon=True,
         name="cypher65-webhook",
     ).start()
-
-
-def _update_global(key: str, value: Any):
-    with _global_lock:
-        _global_cache[key] = {"data": value, "ts": int(time.time())}
 
 
 def _get_global(key: str, ttl: int = GLOBAL_CACHE_TTL) -> Any:
@@ -240,13 +280,15 @@ def _fetch_global_mempool_fees() -> dict:
 # ── Per-user fetchers ────────────────────────────────────────────────────────
 
 def _fetch_user_data(address: str) -> dict | None:
-    """Fetch worker data for a specific BTC address."""
-    return _fetch_json(f"{PARASITE_API}/user/{address}", timeout=10)
+    """Fetch worker data for a specific BTC address (deduped per address)."""
+    return _cached_user_fetch(f"user_{address}", _fetch_json,
+                              f"{PARASITE_API}/user/{address}", 10)
 
 
 def _fetch_account(address: str) -> dict | None:
-    """Fetch account data for a specific BTC address."""
-    return _fetch_json(f"{PARASITE_API}/account/{address}", timeout=10)
+    """Fetch account data for a specific BTC address (deduped per address)."""
+    return _cached_user_fetch(f"acct_{address}", _fetch_json,
+                              f"{PARASITE_API}/account/{address}", 10)
 
 
 # ── Snapshot builder ─────────────────────────────────────────────────────────
@@ -547,6 +589,33 @@ def evaluate_user_alerts(snapshot: dict, prev_snapshot: dict, settings: dict,
 # ── UserPollingWorker ────────────────────────────────────────────────────────
 
 POLL_INTERVAL = 15  # seconds
+# ── Phase: 1000+ user scale ──
+# Jitter + adaptive backoff. With N workers all sleeping POLL_INTERVAL
+# exactly, they re-poll in lockstep — a thundering herd of N simultaneous
+# Parasite requests every cycle. Jitter desynchronizes them (same mean,
+# spread out); adaptive backoff stretches the interval when the pool is
+# erroring so a provider outage doesn't amplify into a self-inflicted
+# request storm.
+POLL_JITTER_MAX = 8          # seconds added: wait = interval + uniform(0, jitter)
+POLL_MAX_BACKOFF = 120       # seconds cap on the error backoff
+POLL_ERROR_BACKOFF_MULT = 2  # double the interval per consecutive error burst
+
+
+def _poll_wait(consecutive_errors: int) -> float:
+    """Compute the next poll wait: interval + jitter, stretched by backoff.
+
+    consecutive_errors > 0 doubles the interval per burst (capped at
+    POLL_MAX_BACKOFF), so a Parasite outage degrades gracefully instead of
+    hammering the API with retries every 15s.
+    """
+    base = POLL_INTERVAL
+    if consecutive_errors > 0:
+        for _ in range(consecutive_errors):
+            base *= POLL_ERROR_BACKOFF_MULT
+            if base >= POLL_MAX_BACKOFF:
+                base = POLL_MAX_BACKOFF
+                break
+    return base + random.uniform(0, POLL_JITTER_MAX)
 
 
 class UserPollingWorker:
@@ -572,6 +641,9 @@ class UserPollingWorker:
         self._alert_seen: set = set()
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
+        # Consecutive failed polls — drives adaptive backoff so provider
+        # outages never amplify into a request storm at 1000+ user scale.
+        self._consecutive_errors = 0
 
     def start(self):
         """Start the polling thread."""
@@ -685,7 +757,7 @@ class UserPollingWorker:
                         self.session_id[:8], e)
 
     def _run(self):
-        """Main polling loop."""
+        """Main polling loop (jittered, adaptively backed off)."""
         # First poll immediately
         try:
             snapshot = _build_snapshot(self.address, self.worker_name)
@@ -694,18 +766,23 @@ class UserPollingWorker:
             log.info("[worker %s] initial poll complete (%d workers)",
                      self.session_id[:8],
                      len(snapshot.get("all_workers", [])))
+            self._consecutive_errors = 0
         except Exception as e:
+            self._consecutive_errors += 1
             log.error("[worker %s] initial poll error: %s",
                       self.session_id[:8], e)
 
         while not self._stop_event.is_set():
-            self._stop_event.wait(POLL_INTERVAL)
+            wait = _poll_wait(self._consecutive_errors)
+            self._stop_event.wait(wait)
             if self._stop_event.is_set():
                 break
             try:
                 snapshot = _build_snapshot(self.address, self.worker_name)
                 self._dispatch_tenant_alerts(snapshot)
                 self._sm.update_snapshot(self.session_id, snapshot)
+                self._consecutive_errors = 0
             except Exception as e:
+                self._consecutive_errors += 1
                 log.error("[worker %s] poll error: %s",
                           self.session_id[:8], e)
