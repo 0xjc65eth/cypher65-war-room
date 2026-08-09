@@ -7,6 +7,7 @@ Hermetic tests for the 1000+ user scale-hardening changes:
 
 import os
 import sys
+import time
 
 import pytest
 
@@ -211,6 +212,50 @@ class TestPollWait:
         # Oldest evicted first; the most recent entries survive.
         assert "user_bc1q0" not in up._global_cache
         assert "user_bc1q199" in up._global_cache
+
+
+# ── Rate-limit persistence (restart survival) ───────────────────────────────
+
+
+class TestRateLimitPersistence:
+    def test_persist_then_restore_roundtrip(self, monkeypatch):
+        """Buckets snapshot to SQLite and reload on boot — a restart does not
+        re-open the abuse window."""
+        import app as app_module
+        now = int(time.time())
+        app_module._rate_limit_store["t:tenant-x"] = [now - 5, now - 3]
+        app_module._auth_rate_limit_store["203.0.113.9"] = [now - 2]
+
+        app_module._rate_limit_persist()
+
+        # Simulate restart: wipe memory, then restore from SQLite.
+        app_module._rate_limit_store.clear()
+        app_module._auth_rate_limit_store.clear()
+        app_module._rate_limit_restore()
+
+        assert app_module._rate_limit_store.get("t:tenant-x") == [now - 5, now - 3]
+        assert app_module._auth_rate_limit_store.get("203.0.113.9") == [now - 2]
+        # Cleanup so other tests don't inherit the buckets.
+        app_module._rate_limit_store.clear()
+        app_module._auth_rate_limit_store.clear()
+
+    def test_restore_drops_expired_stamps(self, monkeypatch):
+        """Rows whose stamps all fall outside the 60s window are discarded."""
+        import app as app_module
+        old = int(time.time()) - 600
+        app_module._rate_limit_store["t:stale-tenant"] = [old, old + 1]
+        app_module._rate_limit_persist()
+        app_module._rate_limit_store.clear()
+        app_module._rate_limit_restore()
+        assert "t:stale-tenant" not in app_module._rate_limit_store
+        app_module._rate_limit_store.clear()
+
+    def test_persist_empty_stores_is_noop(self, monkeypatch):
+        import app as app_module
+        app_module._rate_limit_store.clear()
+        app_module._auth_rate_limit_store.clear()
+        # Must not raise on empty stores.
+        app_module._rate_limit_persist()
 
 
 # ── 4. Schema version stamping ──────────────────────────────────────────────

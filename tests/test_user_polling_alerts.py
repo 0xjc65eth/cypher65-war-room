@@ -407,8 +407,11 @@ def test_webhook_dispatch_uses_alert_tenant(monkeypatch):
                                tenant_id="tenant-x")
 
     calls = []
+    # _webhook_dispatch now routes through dispatch_webhook_or_queue, which
+    # calls services.webhook_queue.send_webhook_for_alert (top-level import)
+    # — patch there so the real dispatch path is exercised.
     monkeypatch.setattr(
-        _app_module, "send_webhook_for_alert",
+        "services.webhook_queue.send_webhook_for_alert",
         lambda **kw: calls.append(kw) or True)
 
     alert = Alert(ts=int(time.time()), severity="WARN", category="x",

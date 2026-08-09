@@ -142,8 +142,40 @@ operadores/testes verificam a revisão atual do banco.
 ### 4.8 — Observabilidade do pool em `/api/admin/sessions` — ✅ IMPLEMENTADO
 `PollWorkerPool.stats()` + rota admin:
 - **sessions ativas**, **polls/segundo** (janela deslizante 60s), **fila** (ready queue),
-  heap agendado, threads vivas, total polls/erros, uptime;
+  heap agendado, threads vivas, total polls/erros, uptime, **stalled**;
 - thread-safe (snapshot sob lock) e nunca lança mesmo com pool não iniciado.
+
+### 4.9 — Watchdog de pool travado — ✅ IMPLEMENTADO
+- `PollWorkerPool.is_stalled()`: fila/heap pendentes + nenhum poll completado em 90s;
+- thread daemon no boot emite **alerta CRIT** no feed (`pool_stall`) + log — o pior
+  modo de falha (dashboard silenciosamente congelado) deixa de ser invisível.
+
+### 4.10 — Fila de retry persistente para webhooks — ✅ IMPLEMENTADO
+`services/webhook_queue.py`:
+- **`dispatch_webhook_or_queue()`**: tenta o POST agora; em falha transitória,
+  **persiste o alerta em SQLite** (nunca se perde — o dedup `alert_seen` impedia re-fire);
+- retry com backoff `[30s, 2min, 10min, 30min]`, max 4 tentativas, loop daemon no boot;
+- threshold abaixo do mínimo NÃO enfileira (skip legítimo, sem ruído).
+
+### 4.11 — Push notifications reais por tenant (Web Push) — ✅ IMPLEMENTADO
+`services/push_notifier.py` + rotas:
+- **`push_subscriptions`** em SQLite (tenant-scoped) + `save_subscription` /
+  `remove_subscription` / `get_subscriptions_for_tenant` / `notify_tenant_alert`;
+- **endpoints** `/api/push/vapid-key`, `/api/push/subscribe`, `/api/push/unsubscribe`;
+- worker de alertas dispara push **fire-and-forget** (daemon thread — nunca bloqueia
+  o poll sob o `_alert_lock`) para os dispositivos DO tenant;
+- frontend `enablePush()`: registra SW (já existia), pede permissão e subscribe;
+  degrada silenciosamente sem VAPID keys configuradas; tabela com cap (5000).
+
+### 4.12 — Rate limit persistente (sobrevive a restart) — ✅ IMPLEMENTADO
+- buckets continuam **100% em memória no hot path** (zero I/O por request);
+- thread daemon faz **snapshot → SQLite a cada 30s** (`rate_limit_state`) e o boot
+  restaura — um redeploy **não reabre a janela de abuso** de todos os tenants.
+
+### 4.13 — Painel Admin CFO no dashboard — ✅ IMPLEMENTADO
+- módulo **Admin** na sidebar (operador): pool health (sessions, polls/seg, fila,
+  workers, uptime, stalled) + **funil PRO** (drop-off entre estágios + conversion
+  rate) + **LTV/CAC/payback** — dados das rotas `/api/admin/*` já existentes.
 
 ---
 
@@ -153,10 +185,15 @@ operadores/testes verificam a revisão atual do banco.
 |---|---|---|---|---|
 | 1 | **P1 completo — worker pool fixo** (8-16 threads + fila) no lugar de thread-per-session | alto | escala 1000+ sem matar o servidor | ✅ concluído |
 | 2 | **Telemetria de conversão** (quem vira PRO, quem abandona, LTV/CAC) | médio | monetização dirigida por dados | ✅ concluído |
-| 3 | **Push notifications** reais por tenant (subscriptions persistentes) | médio | retenção (alertas no celular) | ⏳ próximo |
-| 4 | **Observabilidade** (pool stats em `/api/admin/sessions` ✅; Sentry/logs estruturados + métricas de negócio em aberto) | baixo | operação segura com 1000+ usuários | 🟡 parcial |
+| 3 | **Push notifications** reais por tenant (Web Push + subscriptions persistentes) | médio | retenção (alertas no celular) | ✅ concluído |
+| 4 | **Observabilidade** (watchdog de pool + painel Admin CFO ✅; Sentry/logs estruturados em aberto) | baixo | operação segura com 1000+ usuários | 🟡 parcial |
 | 5 | **Auto-Pilot** (o Big Bet do roadmap — agentes de decisão sobre o farm) | faseado | diferencial de produto | ⚪ próximo |
 | 6 | **Postgres** (Neon/Supabase free tier) **quando houver tração** | alto | abandono do backup-gist; dados relacionais | ⚪ gated por tração |
+
+**Entregue nesta rodada (operações/retention):** watchdog de pool travado (§4.9),
+fila de retry para webhooks (§4.10), push por tenant (§4.11), rate limit
+persistente (§4.12), painel Admin CFO (§4.13), teste de carga SQLite + e2e
+novo de conversão/admin.
 
 **Regra de ouro CFO/CRO:** nenhuma refatoração de infra paga antes de **prova de tração**
 (primeiros assinantes PRO). O custo de servir 1000 usuários no free tier é ~$0.007/usuário
@@ -177,8 +214,14 @@ com a solução atual — muito abaixo da estimativa original de $0.15/usuário.
 | **Rentals — rig intelligence** | trust score 0-100 + grade A-F, blacklist por tenant, hide-bad rigs, detail profissional | 15 testes + 10 e2e |
 | **Monetização — funil cego** | telemetria de conversão: funil PRO + drop-off + LTV/CAC, anonimizada, `paid` server-side only | 20 testes |
 | **Observabilidade — pool cego** | `PollWorkerPool.stats()` exposto em `/api/admin/sessions` (sessions, polls/seg, fila, threads, uptime) | 4 testes |
+| **Pool travado invisível** | watchdog `is_stalled()` + alerta CRIT `pool_stall` no feed | 2 testes |
+| **Webhook perdido em outage** | fila de retry persistente (`webhook_queue`): backoff 30s→30min, max 4 | 10 testes |
+| **Push nunca funcionou** | subscriptions por tenant em SQLite + endpoints + push fire-and-forget + `enablePush()` | 8 testes + 2 e2e |
+| **Rate limit zera no restart** | snapshot SQLite a cada 30s + restore no boot (hot path intacto) | 3 testes |
+| **Painel CFO inexistente** | módulo Admin no dashboard (pool health + funil + LTV/CAC) | e2e novo |
+| **SQLite sob pool fixo** | teste de carga: 12 writers concorrentes, WAL + busy_timeout, zero locked | 3 testes |
 
-**Validação:** **1684 pytest (0 falhas)** · **1259 testes JS** · **10/10 e2e rentals** ·
+**Validação:** **1712 pytest (0 falhas)** · **1259 testes JS** · **12/12 e2e** (rentals 10 + conversão/admin 2) ·
 `py_compile` / `node --check` / `git diff --check` limpos · review de código em cada rodada.
 
 **Arquivos novos:** `services/remote_backup.py`, `tests/test_remote_backup.py`,
@@ -199,11 +242,14 @@ com a solução atual — muito abaixo da estimativa original de $0.15/usuário.
 - 🟡 **Backup gist depende de `GITHUB_TOKEN`** — sem o token no Render, os dados continuam
   efêmeros (comportamento atual, documentado).
 - 🟡 **Observabilidade do pool é em memória** — contadores/polls-seg zeram num restart;
-  o pool em si é estadeless-safe (sessões re-registram no boot), mas o histórico de métricas
-  de operação ainda não persiste.
+  o watchdog agora cobre o caso crítico (pool travado), mas o histórico de métricas de
+  operação ainda não persiste (Sentry/logs estruturados = próxima frente).
 - 🟡 **Funil de conversão depende de eventos client-side** — `modal_open`/`checkout_start`
   podem ser descartados por bloqueador de tracker; o estágio de dinheiro (`paid`) é
   server-side no webhook, então LTV/CAC não são afetados.
-- 🟡 **SQLite concorrente** — com o pool fixo (8-16 writers) a pressão de escrita subiu;
-  WAL + `busy_timeout` (3s) já ativos em `get_db`, mas vale revalidar sob carga real de
-  1000+ usuários antes de prometer SLAs.
+- 🟡 **SQLite concorrente** — WAL + `busy_timeout` (3s) validados por teste de carga
+  (12 writers concorrentes sem locked); revalidar sob carga real de 1000+ usuários
+  antes de prometer SLAs.
+- 🟡 **Web Push depende de VAPID keys** — sem `VAPID_PRIVATE_KEY`/`VAPID_PUBLIC_KEY` no
+  Render, o push fica desativado (o webhook continua); gerar o par de chaves e setar nas
+  env vars habilita a retenção móvel.

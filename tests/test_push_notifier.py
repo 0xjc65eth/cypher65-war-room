@@ -525,3 +525,125 @@ class TestTgEscape:
         from services.push_notifier import _tg_escape
         assert _tg_escape("hello world") == "hello world"
         assert _tg_escape("BTC: 65000") == "BTC: 65000"
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 9. Persistent per-tenant push subscriptions + notify_tenant_alert
+# ═══════════════════════════════════════════════════════════════════════════
+
+@pytest.fixture(autouse=True)
+def clean_push_table():
+    from services.push_notifier import _ensure_subscriptions_table
+    from services.db import get_db
+    _ensure_subscriptions_table()
+    conn = get_db()
+    conn.execute("DELETE FROM push_subscriptions")
+    conn.commit()
+    conn.close()
+    yield
+    conn = get_db()
+    conn.execute("DELETE FROM push_subscriptions")
+    conn.commit()
+    conn.close()
+
+
+from services.push_notifier import (  # noqa: E402
+    save_subscription, remove_subscription, get_subscriptions_for_tenant,
+    notify_tenant_alert,
+)
+
+
+class TestTenantPushSubscriptions:
+    def test_save_and_get_scoped_to_tenant(self):
+        assert save_subscription("https://push.example/t1",
+                                 {"p256dh": "k1", "auth": "a1"},
+                                 tenant_id="tenant-a") is True
+        assert save_subscription("https://push.example/t2",
+                                 {"p256dh": "k2", "auth": "a2"},
+                                 tenant_id="tenant-b") is True
+        a = get_subscriptions_for_tenant("tenant-a")
+        b = get_subscriptions_for_tenant("tenant-b")
+        assert [s["endpoint"] for s in a] == ["https://push.example/t1"]
+        assert [s["endpoint"] for s in b] == ["https://push.example/t2"]
+        assert a[0]["keys"]["p256dh"] == "k1"
+
+    def test_upsert_same_endpoint_updates_tenant(self):
+        save_subscription("https://push.example/x", {}, tenant_id="t1")
+        # Same endpoint re-registered by a different tenant → ownership moves.
+        save_subscription("https://push.example/x", {"p256dh": "k9"},
+                          tenant_id="t2")
+        assert len(get_subscriptions_for_tenant("t1")) == 0
+        subs = get_subscriptions_for_tenant("t2")
+        assert len(subs) == 1
+        assert subs[0]["keys"]["p256dh"] == "k9"
+
+    def test_remove_subscription(self):
+        save_subscription("https://push.example/del", {}, tenant_id="t1")
+        assert remove_subscription("https://push.example/del") is True
+        assert len(get_subscriptions_for_tenant("t1")) == 0
+
+    def test_save_empty_endpoint_noop(self):
+        assert save_subscription("", {}) is False
+
+    def test_notify_tenant_requires_vapid(self, monkeypatch):
+        """Without VAPID keys → degrades silently (0 devices), no crash."""
+        import services.push_notifier as pn
+        monkeypatch.setattr(pn, "VAPID_PRIVATE_KEY", "")
+        monkeypatch.setattr(pn, "VAPID_PUBLIC_KEY", "")
+        save_subscription("https://push.example/v", {}, tenant_id="t")
+        assert notify_tenant_alert("t", "CRIT", "worker_offline", "down") == 0
+
+    def test_notify_tenant_sends_to_own_devices(self, monkeypatch):
+        """Only the tenant's own devices get notified — tenant isolation."""
+        import services.push_notifier as pn
+        monkeypatch.setattr(pn, "VAPID_PRIVATE_KEY", "priv")
+        monkeypatch.setattr(pn, "VAPID_PUBLIC_KEY", "pub")
+        save_subscription("https://push.example/a", {"p256dh": "k1"},
+                          tenant_id="tenant-a")
+        save_subscription("https://push.example/b", {"p256dh": "k2"},
+                          tenant_id="tenant-b")
+
+        sent_endpoints = []
+        fake = MagicMock()
+
+        def webpush_impl(subscription_info=None, data=None, **kw):
+            sent_endpoints.append(subscription_info["endpoint"])
+
+        fake.side_effect = webpush_impl
+        sys.modules["pywebpush"] = _fake_pywebpush(fake)
+        try:
+            n = notify_tenant_alert("tenant-a", "WARN", "hashrate_drop",
+                                    "dropped")
+        finally:
+            sys.modules.pop("pywebpush", None)
+        assert n == 1
+        assert sent_endpoints == ["https://push.example/a"]
+
+    def test_notify_tenant_prunes_expired(self, monkeypatch):
+        """404/410 subscriptions are removed (prune) so dead devices don't
+        accumulate."""
+        import services.push_notifier as pn
+        monkeypatch.setattr(pn, "VAPID_PRIVATE_KEY", "priv")
+        monkeypatch.setattr(pn, "VAPID_PUBLIC_KEY", "pub")
+        save_subscription("https://push.example/gone", {}, tenant_id="t")
+
+        class FakeResp:
+            status_code = 410
+
+        def boom_impl(subscription_info=None, data=None, **kw):
+            raise FakeWebPushException("gone", response=FakeResp())
+
+        sys.modules["pywebpush"] = _fake_pywebpush(MagicMock(side_effect=boom_impl))
+        try:
+            n = notify_tenant_alert("t", "CRIT", "worker_offline", "down")
+        finally:
+            sys.modules.pop("pywebpush", None)
+        assert n == 0
+        assert len(get_subscriptions_for_tenant("t")) == 0
+
+    def test_notify_tenant_info_severity_skipped(self, monkeypatch):
+        import services.push_notifier as pn
+        monkeypatch.setattr(pn, "VAPID_PRIVATE_KEY", "priv")
+        monkeypatch.setattr(pn, "VAPID_PUBLIC_KEY", "pub")
+        save_subscription("https://push.example/i", {}, tenant_id="t")
+        assert notify_tenant_alert("t", "INFO", "uptime", "crossed") == 0

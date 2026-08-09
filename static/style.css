@@ -3415,6 +3415,28 @@ td { padding: 4px 8px; border-bottom: 1px solid var(--border-subtle); color: var
 .upgrade-modal__activate { white-space: nowrap; font-family: var(--font-mono); }
 .upgrade-modal .modal__status { display: block; margin-top: 8px; min-height: 14px; font-size: 12px; }
 
+/* ── Braiins spot buy modal (real money — typed confirmation) ── */
+.braiins-buy-modal { width: min(520px, 92vw); }
+.braiins-buy__quote { font-family: var(--font-mono, monospace); font-size: 12px; color: var(--accent-green, #06d6f0); background: rgba(6, 214, 240, 0.06); border: 1px solid rgba(6, 214, 240, 0.25); border-radius: 8px; padding: 8px 12px; }
+.braiins-buy__fields { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; }
+.braiins-buy__fields .field__label { text-transform: uppercase; font-size: 10px; letter-spacing: 0.08em; color: var(--text-tertiary, #5E5952); }
+.braiins-buy__calc { font-family: var(--font-mono, monospace); font-size: 12px; color: var(--amber, #f5b942); min-height: 16px; }
+.braiins-buy__ack { display: flex; align-items: flex-start; gap: 8px; font-size: 12px; color: var(--text-secondary, #a8a29e); line-height: 1.45; }
+.braiins-buy__ack input { margin-top: 2px; accent-color: var(--amber, #f5b942); }
+.braiins-buy__ack strong { color: var(--accent-red, #FF1744); }
+.braiins-buy__confirm { display: flex; gap: 8px; }
+.braiins-buy__confirm .field__input { flex: 1; text-transform: uppercase; }
+.braiins-buy__confirm .btn { white-space: nowrap; }
+.braiins-buy-modal .modal__status { display: block; min-height: 16px; font-size: 12px; }
+
+/* ── CFO: portfolio time series (spent x P/L per week/month) ── */
+.rentals-series { margin: 4px 0 10px; padding: 10px 12px; border: 1px solid var(--border-subtle, rgba(255,255,255,0.08)); border-radius: 10px; background: rgba(255,255,255,0.02); }
+.rentals-series__head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; font-size: 11px; letter-spacing: 0.08em; color: var(--text-secondary, #a8a29e); text-transform: uppercase; }
+.rentals-series__meta { color: var(--text-tertiary, #5E5952); text-transform: none; letter-spacing: 0; font-size: 11px; }
+.rentals-series__toggle { display: flex; gap: 4px; }
+.rentals-series__toggle .chip { padding: 2px 8px; font-size: 10px; }
+.rentals-series__chart { position: relative; height: 150px; }
+
 /* ── P0-3: one-click affiliate buy CTA in the Decision Matrix panel ── */
 .chip--affiliate { border-color: var(--amber, #f5b942); color: var(--amber, #f5b942); }
 .chip--affiliate:hover { background: rgba(245, 185, 66, 0.12); }
@@ -5023,6 +5045,29 @@ body.module-mode .tab-pane:not(.active) { display: none; }
 .rentals-strip__title { font-size: 8px; letter-spacing: 1px; color: var(--text-tertiary); font-family: 'JetBrains Mono',monospace; }
 .rentals-strip__value { font-size: 16px; font-weight: 700; color: var(--text-primary); }
 .rentals-strip__sub { font-size: 9px; color: var(--text-secondary); }
+/* Rentals: portfolio analytics band (CFO consolidated spend/cost/delivery) */
+.rentals-portfolio { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 8px; margin: 10px 0 4px; }
+.rentals-portfolio__cell { display: flex; flex-direction: column; gap: 2px; padding: 8px 10px; background: rgba(255,215,0,0.04); border: 1px solid rgba(255,215,0,0.18); border-radius: 2px; }
+.rentals-portfolio__label { font-size: 7px; letter-spacing: 1px; color: var(--text-tertiary); font-family: 'JetBrains Mono',monospace; }
+.rentals-portfolio__cell strong { font-size: 12px; color: var(--text-primary); font-family: 'JetBrains Mono',monospace; font-weight: 600; }
+/* Rentals: CFO recommendation engine ('where to rent again') */
+.rentals-reco { margin: 10px 0 4px; border: 1px solid rgba(255,215,0,0.22); border-radius: 4px; padding: 8px; background: rgba(255,215,0,0.03); }
+.rentals-reco__head { font-size: 8px; letter-spacing: 1px; font-family: 'JetBrains Mono',monospace; color: var(--cyan, #06d6f0); margin-bottom: 6px; display: flex; justify-content: space-between; align-items: center; }
+.rentals-reco__meta { color: var(--text-tertiary); letter-spacing: 0; }
+.rentals-reco__cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 8px; }
+.rentals-reco__card { border: 1px solid var(--border-subtle, rgba(255,255,255,0.10)); border-radius: 4px; padding: 8px; background: rgba(6,214,240,0.04); }
+.rentals-reco__name { font-size: 10px; font-weight: 600; color: var(--text-primary); display: flex; align-items: center; gap: 6px; font-family: 'JetBrains Mono',monospace; margin-bottom: 6px; }
+.rentals-reco__row { display: flex; gap: 8px; align-items: baseline; font-size: 9px; font-family: 'JetBrains Mono',monospace; color: var(--text-tertiary); }
+.rentals-reco__row span { flex: 1; }
+.rentals-reco__row strong { color: var(--text-primary); font-weight: 600; }
+.rentals-reco__row--sub { margin-top: 4px; color: var(--text-secondary); }
+.rentals-reco__trend.is-good { color: var(--green); }
+.rentals-reco__trend.is-bad { color: var(--red); }
+/* Rentals: market timing (30-day cheapest price history) */
+.rentals-timing { margin: 10px 0 4px; border: 1px dashed var(--border-subtle, rgba(255,255,255,0.12)); border-radius: 4px; padding: 8px; }
+.rentals-timing__head { font-size: 8px; letter-spacing: 1px; font-family: 'JetBrains Mono',monospace; color: var(--gold, #ffd700); margin-bottom: 6px; display: flex; justify-content: space-between; align-items: center; }
+.rentals-timing__summary { color: var(--text-tertiary); letter-spacing: 0; }
+.rentals-timing__chart { height: 90px; }
 .rentals-filters { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px; }
 .rentals-list { display: flex; flex-direction: column; gap: 6px; }
 .rentals-item {
@@ -5130,6 +5175,13 @@ body.module-mode .tab-pane:not(.active) { display: none; }
 .rentals-trust__badge--B { border-color: var(--green-dim); color: var(--green-dim); }
 .rentals-trust__badge--C { border-color: var(--orange); color: var(--orange); }
 .rentals-trust__badge--D, .rentals-trust__badge--F { border-color: var(--red); color: var(--red); }
+/* Braiins speed-series stability grades + generic verdict value colors */
+.rentals-trust__badge--STABLE { border-color: var(--green); color: var(--green); }
+.rentals-trust__badge--MODERATE { border-color: var(--orange); color: var(--orange); }
+.rentals-trust__badge--VARIABLE { border-color: var(--red); color: var(--red); }
+.rentals-trust__value--is-good { color: var(--green); }
+.rentals-trust__value--is-warn { color: var(--orange); }
+.rentals-trust__value--is-bad { color: var(--red); }
 .rentals-trust__verdict {
   margin-top: 6px;
   font-size: 10px;

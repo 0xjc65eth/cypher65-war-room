@@ -94,18 +94,87 @@ def _cached_user_fetch(key: str, fetcher, *args):
 
 
 def _fire_webhook_async(webhook_kwargs: dict):
-    """Fire a webhook POST on a daemon thread (fire-and-forget).
+    """Fire a webhook POST on a daemon thread, queueing on failure.
 
     The poll loop must never block on a slow/unreachable webhook endpoint
     (up to 5s POST timeout) — at 1000+ user scale that would stall every
     worker's 15s cycle. Tests patch this helper to run synchronously.
+
+    Delivery guarantee: dispatch_webhook_or_queue tries the POST now and,
+    when Discord/Telegram is unreachable, persists the alert to the retry
+    queue (services/webhook_queue) so a CRIT is never lost to a transient
+    outage. The per-worker alert_seen dedup would otherwise swallow it.
+    """
+    def _run():
+        try:
+            from services.webhook_queue import dispatch_webhook_or_queue
+            dispatch_webhook_or_queue(**webhook_kwargs)
+        except Exception:
+            # Last-resort: never crash the daemon thread.
+            try:
+                _send_webhook_for_alert(**webhook_kwargs)
+            except Exception:
+                pass
+    threading.Thread(
+        target=_run, daemon=True, name="cypher65-webhook",
+    ).start()
+
+
+def _fire_push_async(tenant_id: str, severity: str, category: str, message: str):
+    """Fire a Web Push on a daemon thread (fire-and-forget).
+
+    The push POST to the browser push service is network I/O with NO hard
+    timeout inside pywebpush — running it inline in _dispatch_tenant_alerts
+    (which holds the per-worker _alert_lock) would stall the pool worker and
+    block poll_now() on a slow push service. Same async discipline as the
+    webhook: never block the poll loop on network.
     """
     threading.Thread(
-        target=_send_webhook_for_alert,
-        kwargs=webhook_kwargs,
-        daemon=True,
-        name="cypher65-webhook",
+        target=_notify_tenant_push, args=(tenant_id, severity, category, message),
+        daemon=True, name="cypher65-push",
     ).start()
+
+
+def _notify_tenant_push(tenant_id: str, severity: str, category: str, message: str):
+    """Best-effort tenant push delivery (runs on the push daemon thread)."""
+    try:
+        from services.push_notifier import notify_tenant_alert
+        notify_tenant_alert(tenant_id, severity, category, message)
+    except Exception:
+        pass
+
+
+def dispatch_rental_pl_alerts(tenant_id: str, alerts: list):
+    """Fire webhook + push for rental P/L alerts, tenant-scoped.
+
+    Shared by the /api/rentals panel path AND the periodic sweep — one
+    dispatch, no drift. Reads the TENANT's own settings (never app.py's
+    global load_settings). Fire-and-forget daemon threads; never blocks.
+    """
+    if not alerts:
+        return
+    try:
+        from services.settings import load_settings as _tenant_settings
+        s = _tenant_settings(tenant_id=tenant_id)
+        webhook_url = (s.get("webhook_url") or "").strip()
+        min_sev = s.get("webhook_min_severity", "WARN")
+        _ts = int(time.time())
+        for a in alerts:
+            if webhook_url:
+                _fire_webhook_async({
+                    "url": webhook_url,
+                    "severity": a["severity"],
+                    "category": a["category"],
+                    "message": a["message"],
+                    "ts": _ts,
+                    "worker": "",
+                    "address": "",
+                    "min_severity": min_sev,
+                    "tenant_id": tenant_id,
+                })
+            _fire_push_async(tenant_id, a["severity"], a["category"], a["message"])
+    except Exception as e:
+        log.warning("[rentals] pl alert dispatch error: %s", e)
 
 
 def _get_global(key: str, ttl: int = GLOBAL_CACHE_TTL) -> Any:
@@ -621,6 +690,11 @@ POLL_MAX_BACKOFF = 120       # seconds cap on the error backoff
 POLL_ERROR_BACKOFF_MULT = 2  # double the interval per consecutive error burst
 # Fixed worker pool size — THE P1 Phase-2 fix. Env-overridable per deploy.
 POOL_DEFAULT_SIZE = int(os.environ.get("POLL_WORKER_POOL_SIZE", "8"))
+# ── Pool watchdog ──
+# If workers are alive but NO poll has completed in this window while
+# sessions are pending (ready queue or scheduled heap non-empty), the pool
+# is stalled — surface a CRIT instead of silently freezing telemetry.
+POOL_STALL_SECS = 90.0  # > 2× POLL_INTERVAL+jitter, so a slow-but-healthy pool never trips
 
 
 def _poll_wait(consecutive_errors: int) -> float:
@@ -673,6 +747,8 @@ class PollWorkerPool:
         self._poll_count = 0          # successful polls executed by workers
         self._error_count = 0         # polls that raised
         self._recent_polls = collections.deque(maxlen=2048)  # ts of each poll
+        # Last completed poll timestamp — feeds the stall watchdog.
+        self._last_poll_ts = 0.0
 
     # ── Observability ────────────────────────────────────────────────────
 
@@ -706,7 +782,34 @@ class PollWorkerPool:
             "total_errors": self._error_count,
             "polls_per_sec": round(rate, 3),
             "uptime_secs": round(now - self._started_ts, 1) if self._started_ts else 0,
+            "last_poll_ts": round(self._last_poll_ts, 1) if self._last_poll_ts else 0,
+            "stalled": self.is_stalled(),
         }
+
+    def is_stalled(self, window: float = POOL_STALL_SECS) -> bool:
+        """True when the pool has work to do but nothing completed recently.
+
+        A healthy pool with 0 sessions or nothing scheduled is NOT stalled
+        (nothing to do). A pool with pending sessions (ready queue or heap)
+        and no completed poll in ``window`` seconds is frozen: workers may be
+        dead, a poll may be hung holding the GIL, or the scheduler died.
+        """
+        now = time.time()
+        with self._lock:
+            if not self._started:
+                return False
+            pending = self._ready.qsize() > 0 or len(self._heap) > 0
+            if not pending:
+                return False
+            last = self._last_poll_ts
+        if last and (now - last) <= window:
+            return False
+        # Never started a poll at all: only stall when sessions have been
+        # registered for at least the window (a fresh session's first poll is
+        # scheduled immediately, so it should complete well within window).
+        if not last and (now - self._started_ts) <= window:
+            return False
+        return True
 
     # ── Lifecycle ──────────────────────────────────────────────────────────
 
@@ -824,6 +927,7 @@ class PollWorkerPool:
                 with self._lock:
                     self._poll_count += 1
                     self._recent_polls.append(time.time())
+                    self._last_poll_ts = time.time()
             except Exception as e:
                 worker._consecutive_errors += 1
                 with self._lock:
@@ -850,6 +954,90 @@ POLL_POOL = PollWorkerPool()
 def start_poll_pool():
     """Boot hook: start the shared pool. Idempotent, safe to call twice."""
     POLL_POOL.start()
+
+
+# ── Periodic rental P/L sweep (alert without opening the panel) ────────────
+# The /api/rentals panel fires the P/L alert the moment the server "learns"
+# a rental closed — but only when the user opens the panel. This sweep runs
+# on a daemon thread so tenants with the alert ENABLED get evaluated on a
+# schedule: 1 MRR call (renter history) per tenant per cycle + the persisted
+# dedup guarantees ONE alert per rental ever. Only tenants that configured
+# the alert AND have MRR keys are visited (pl_alert_enabled_tenants), so
+# 1000+ users never burn the MRR rate budget for accounts that opted out.
+
+# Sweep cadence (seconds). Env-gated: RENTAL_SWEEP_INTERVAL=0 disables.
+_RENTAL_SWEEP_INTERVAL = int(os.environ.get("RENTAL_SWEEP_INTERVAL", "900") or 0)
+# Small stagger between tenants so a burst of enabled accounts doesn't hit
+# the provider in a single instant (politeness + rate budget).
+_RENTAL_SWEEP_STAGGER = float(os.environ.get("RENTAL_SWEEP_STAGGER", "1.5") or 1.5)
+_rental_sweep_lock = threading.Lock()
+_rental_sweep_started = False
+
+
+def _rentals_sweep_once() -> int:
+    """One sweep pass: evaluate every enabled tenant, dispatch alerts.
+    Returns the number of tenants visited (for tests + observability)."""
+    try:
+        from services.rental_performance import (
+            pl_alert_enabled_tenants, sweep_rental_pl_alerts,
+        )
+        tenants = pl_alert_enabled_tenants()
+        visited = 0
+        for i, t in enumerate(tenants):
+            try:
+                alerts = sweep_rental_pl_alerts(tenant_id=t)
+                if alerts:
+                    # CRITICAL: the sweep's whole purpose is delivery without
+                    # the panel — dispatch HERE or the dedup slot gets claimed
+                    # by evaluate and the alert is swallowed forever.
+                    dispatch_rental_pl_alerts(t, alerts)
+                    log.info("[rentals-sweep] %s: %d P/L alert(s) dispatched",
+                             t or "default", len(alerts))
+                visited += 1
+            except Exception as e:
+                log.warning("[rentals-sweep] %s: pass error: %s", t or "default", e)
+            # Stagger between tenants (never inside a provider call).
+            if _RENTAL_SWEEP_STAGGER > 0 and i < len(tenants) - 1:
+                time.sleep(_RENTAL_SWEEP_STAGGER)
+        return visited
+    except Exception as e:
+        log.warning("[rentals-sweep] pass failed: %s", e)
+        return 0
+
+
+def _rentals_sweep_loop():
+    """Daemon loop: sweep every interval. First pass delayed by a jitter so
+    the boot burst (pool start + webhook queue + rate-limit persist) doesn't
+    stack another provider hit at t=0."""
+    import random as _random
+    time.sleep(5 + _random.random() * 15)  # 5-20s boot jitter
+    while True:
+        try:
+            _rentals_sweep_once()
+        except Exception as e:
+            log.warning("[rentals-sweep] loop error: %s", e)
+        time.sleep(_RENTAL_SWEEP_INTERVAL)
+
+
+def start_rentals_sweep():
+    """Boot hook: start the periodic rental P/L sweep (idempotent). No-op
+    when RENTAL_SWEEP_INTERVAL=0 (disabled) or already started."""
+    global _rental_sweep_started
+    if _RENTAL_SWEEP_INTERVAL <= 0:
+        return
+    with _rental_sweep_lock:
+        if _rental_sweep_started:
+            return
+        _rental_sweep_started = True
+    try:
+        threading.Thread(
+            target=_rentals_sweep_loop, name="cypher65-rentals-sweep",
+            daemon=True).start()
+        log.info("[rentals-sweep] started (interval=%ds, stagger=%.1fs)",
+                 _RENTAL_SWEEP_INTERVAL, _RENTAL_SWEEP_STAGGER)
+    except Exception as e:
+        log.warning("[rentals-sweep] start error: %s", e)
+        _rental_sweep_started = False
 
 
 class UserPollingWorker:
@@ -986,9 +1174,7 @@ class UserPollingWorker:
                 ts = int(snapshot.get("ts") or time.time())
                 webhook_url = (settings.get("webhook_url") or "").strip()
                 min_sev = settings.get("webhook_min_severity", "WARN")
-                recent = snapshot.setdefault("alerts_recent", [])
-
-                # Persist all alerts in one transaction.
+                recent = snapshot.setdefault("alerts_recent", [])                # Persist all alerts in one transaction.
                 self._persist_alerts(ts, alerts)
                 for sev, cat, msg in alerts:
                     recent.append(make_memory_alert(ts, sev, cat, msg))
@@ -1002,7 +1188,14 @@ class UserPollingWorker:
                             "worker": self.worker_name,
                             "address": self.address,
                             "min_severity": min_sev,
+                            "tenant_id": self.tenant_id,
                         })
+                    # Browser push: deliver to THIS tenant's subscribed devices
+                    # (fire-and-forget on a daemon thread — never block the
+                    # poll worker on push-service network I/O; degrades
+                    # silently without pywebpush or VAPID keys). Scoped per
+                    # tenant so 1000+ users only get their own alerts.
+                    _fire_push_async(self.tenant_id, sev, cat, msg)
                 snapshot["alerts_recent"] = recent[-10:]
             except Exception as e:
                 log.warning("[worker %s] tenant alert dispatch error: %s",

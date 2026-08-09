@@ -68,10 +68,12 @@ test.describe('RENTALS — performance dos aluguéis (P2)', () => {
     expect(title).toMatch(/MRR rental #\d+/);
     const gridText = await page.locator('#rentals-detail-grid').textContent();
     expect(gridText).not.toBe('');
-    // Banner de performance: 5 células (PERFORMANCE / AVG / COST / DELIVERED / VS MARKET)
-    await expect(page.locator('#rentals-detail-perf .rentals-perf__cell')).toHaveCount(5, { timeout: 5000 });
+    // Banner de performance: 7 células (PERFORMANCE / AVG / COST / YIELD(exp) /
+    // DELIVERED / P/L / VS MARKET) — o P/L e o yield podem ser '—' numa box
+    // fria (sem network hashrate), mas as células sempre renderizam.
+    await expect(page.locator('#rentals-detail-perf .rentals-perf__cell')).toHaveCount(7, { timeout: 5000 });
     // A célula VS MARKET existe (valor depende do market live — só checa o label)
-    await expect(page.locator('#rentals-detail-perf .rentals-perf__cell').nth(4)).toContainText('VS MARKET');
+    await expect(page.locator('#rentals-detail-perf .rentals-perf__cell').nth(6)).toContainText('VS MARKET');
 
     // Fecha o detail
     await page.click('#rentals-detail-close');
@@ -163,6 +165,13 @@ test.describe('RENTALS — performance dos aluguéis (P2)', () => {
         },
         graph: { points: [{ ts: 1785007000, speed_ph: 95 }] },
         log: {},
+        // P/L economics: 0.5 BTC (50M sats) paid for 95000 TH·h at an
+        // expected yield of 18.75 sats/TH·h → yield 1.78M → loss −48.2M sats.
+        pl: { expected_yield_sats_per_thh: 18.75, break_even_sats_per_thh: 18.75,
+              yield_sats: 1781250, paid_sats: 50000000, pl_sats: -48218750, pl_pct: -96.4, available: true },
+        // Speed-series stability (Braiins contracts have no rig identity).
+        stability: { cv_pct: 2.1, mean_ph: 100, min_ph: 99, max_ph: 101,
+                     grade: 'STABLE', label: 'STABLE' },
         market: { available: true, price_sats_per_thh: 500, price_btc_per_th_day: 0.00012, provider: 'mrr' },
       })});
     });
@@ -178,16 +187,24 @@ test.describe('RENTALS — performance dos aluguéis (P2)', () => {
     await cards.first().click();
     await expect(page.locator('#rentals-detail')).toBeVisible({ timeout: 5000 });
     await expect(page.locator('#rentals-detail-title')).toHaveText(/Braiins contract #B123/);
-    // Banner de performance com as 5 células preenchidas (incl. VS MARKET)
+    // Banner de performance com as 7 células (incl. YIELD, P/L e VS MARKET)
     const cells = page.locator('#rentals-detail-perf .rentals-perf__cell');
-    await expect(cells).toHaveCount(5, { timeout: 5000 });
+    await expect(cells).toHaveCount(7, { timeout: 5000 });
     const perfText = await page.locator('#rentals-detail-perf').textContent();
     expect(perfText).toMatch(/95\.0%/);
     expect(perfText).toMatch(/sats\/TH\/h/);
     expect(perfText).toMatch(/TH·h/);
+    // P/L: 0.5 BTC paid → −48.2M sats de prejuízo estimado (is-bad)
+    expect(perfText).toMatch(/48218750 sats/);
     // VS MARKET: custo efetivo 526.3 sats/TH/h vs mercado 500 → +5% (is-bad)
     expect(perfText).toMatch(/\+5% vs mkt/);
-    await expect(page.locator('#rentals-detail-perf .rentals-perf__cell').nth(4)).toHaveClass(/is-bad/);
+    await expect(page.locator('#rentals-detail-perf .rentals-perf__cell').nth(6)).toHaveClass(/is-bad/);
+    // Estabilidade Braiins: a série de speed (CV 2.1%) renderiza o badge STABLE
+    // no bloco de confiança (sem rig identity → stability no lugar do NO DATA).
+    await expect(page.locator('#rentals-detail-trust')).toBeVisible({ timeout: 5000 });
+    const trustText = await page.locator('#rentals-detail-trust').textContent();
+    expect(trustText).toMatch(/STABLE/);
+    expect(trustText).toMatch(/CV/);
   });
   });
 });

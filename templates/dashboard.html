@@ -88,6 +88,10 @@
       <span class="icon">♥</span>
       <span class="label">Support</span>
     </button>
+    <button class="sidebar__link" data-module="admin">
+      <span class="icon">📊</span>
+      <span class="label">Admin</span>
+    </button>
   </nav>
 </aside>
 
@@ -748,6 +752,8 @@
     <div class="panel__eyebrow">⛁ RENTALS · PERFORMANCE</div>
     <div class="panel__tools">
       <span class="badge badge--mute" id="rentals-count-badge">—</span>
+      <button class="chip chip--affiliate" id="rentals-buy" title="Comprar hashrate no spot da Braiins (real money)">⚡ COMPRAR</button>
+      <button class="chip" id="rentals-export" title="Export CSV">⭳</button>
       <button class="chip" id="rentals-refresh" title="Refresh">⟳</button>
     </div>
   </div>
@@ -756,6 +762,41 @@
     <div class="rentals-strip__card"><div class="rentals-strip__title">MRR HISTORY</div><div class="rentals-strip__value" id="rentals-mrr-history">—</div><div class="rentals-strip__sub">completed</div></div>
     <div class="rentals-strip__card"><div class="rentals-strip__title">MRR OWNER</div><div class="rentals-strip__value" id="rentals-mrr-owner">—</div><div class="rentals-strip__sub">rigs leased</div></div>
     <div class="rentals-strip__card"><div class="rentals-strip__title">BRAIINS</div><div class="rentals-strip__value" id="rentals-braiins">—</div><div class="rentals-strip__sub">contracts</div></div>
+  </div>
+  <!-- CFO: portfolio analytics — consolidated spend/cost/delivery so the
+       operator sees where the money went BEFORE opening individual rentals. -->
+  <div class="rentals-portfolio" id="rentals-portfolio" hidden>
+    <div class="rentals-portfolio__cell"><span class="rentals-portfolio__label">TOTAL SPENT</span><strong id="rentals-port-total">—</strong></div>
+    <div class="rentals-portfolio__cell"><span class="rentals-portfolio__label">AVG COST</span><strong id="rentals-port-avg-cost">—</strong></div>
+    <div class="rentals-portfolio__cell"><span class="rentals-portfolio__label">AVG DELIVERY</span><strong id="rentals-port-avg-delivery">—</strong></div>
+    <div class="rentals-portfolio__cell"><span class="rentals-portfolio__label">DELIVERED</span><strong id="rentals-port-delivered">—</strong></div>
+    <div class="rentals-portfolio__cell"><span class="rentals-portfolio__label">OWNER INCOME</span><strong id="rentals-port-income">—</strong></div>
+    <div class="rentals-portfolio__cell"><span class="rentals-portfolio__label">SPLIT</span><strong id="rentals-port-split">—</strong></div>
+  </div>
+  <!-- CFO: portfolio time series — spent + estimated P/L per week/month
+       (from the local rental_history; P/L labeled ESTIMATE — current network
+       hashrate). Toggle W/S to change the bucket. -->
+  <div class="rentals-series" id="rentals-series" hidden>
+    <div class="rentals-series__head">
+      <span>PORTFOLIO · GASTO × P/L <span id="rentals-series-meta" class="rentals-series__meta"></span></span>
+      <span class="rentals-series__toggle">
+        <button class="chip active" data-series-bucket="week">SEMANA</button>
+        <button class="chip" data-series-bucket="month">MÊS</button>
+      </span>
+    </div>
+    <div class="rentals-series__chart"><canvas id="rentals-series-chart"></canvas></div>
+  </div>
+  <!-- CFO recommendation engine: 'where to rent again' — rigs with a real
+       track record, ranked by reliability × price vs the live market. -->
+  <div class="rentals-reco" id="rentals-reco" hidden>
+    <div class="rentals-reco__head">RECOMENDADOS PRA RE-ALUGAR <span id="rentals-reco-meta" class="rentals-reco__meta"></span></div>
+    <div class="rentals-reco__cards" id="rentals-reco-cards"></div>
+  </div>
+  <!-- Market timing: cheapest live price vs the 30-day average (from the
+       persisted market history) — 'renting expensive right now?' -->
+  <div class="rentals-timing" id="rentals-timing" hidden>
+    <div class="rentals-timing__head">MARKET TIMING · 30D <span id="rentals-timing-summary" class="rentals-timing__summary"></span></div>
+    <div class="rentals-timing__chart"><canvas id="rentals-timing-chart"></canvas></div>
   </div>
   <div class="rentals-filters" id="rentals-filters">
     <button class="chip active" data-rentals-filter="active">Active</button>
@@ -1161,6 +1202,48 @@
   <ul class="alerts-list" id="alerts-list">
     <li class="alert-empty">nominal — no alerts</li>
   </ul>
+</section>
+
+<!-- ─── ADMIN (CFO/CRO — operador) ─── -->
+<section class="panel panel--admin panel--large" id="admin-panel" data-module="admin">
+  <div class="panel__header">
+    <div class="panel__eyebrow">📊 ADMIN · CFO/CRO — operador</div>
+    <div class="panel__tools">
+      <span class="badge badge--mute" id="admin-gate-badge">access —</span>
+      <button class="chip" id="admin-refresh-btn" title="Refresh">⟳</button>
+    </div>
+  </div>
+
+  <!-- ── Pool health ── -->
+  <div class="kpi-row">
+    <div class="kpi-card"><span class="kpi-card__label">Sessions</span><span class="kpi-card__value" id="admin-sessions">—</span></div>
+    <div class="kpi-card"><span class="kpi-card__label">Polls/sec</span><span class="kpi-card__value" id="admin-polls-per-sec">—</span></div>
+    <div class="kpi-card"><span class="kpi-card__label">Queue</span><span class="kpi-card__value" id="admin-queue">—</span></div>
+    <div class="kpi-card"><span class="kpi-card__label">Workers</span><span class="kpi-card__value" id="admin-workers">—</span></div>
+    <div class="kpi-card"><span class="kpi-card__label">Uptime</span><span class="kpi-card__value" id="admin-uptime">—</span></div>
+  </div>
+  <div class="admin-stall" id="admin-stall" hidden></div>
+
+  <!-- ── PRO funnel (conversion telemetry) ── -->
+  <div class="panel__subtitle">FUNIL PRO (30d) — quem vira assinante, onde o funil perde</div>
+  <div class="kpi-row">
+    <div class="kpi-card"><span class="kpi-card__label">Paywall → Modal</span><span class="kpi-card__value" id="admin-drop-paywall-modal">—</span></div>
+    <div class="kpi-card"><span class="kpi-card__label">Modal → Checkout</span><span class="kpi-card__value" id="admin-drop-modal-checkout">—</span></div>
+    <div class="kpi-card"><span class="kpi-card__label">Checkout → Paid</span><span class="kpi-card__value" id="admin-drop-checkout-paid">—</span></div>
+    <div class="kpi-card"><span class="kpi-card__label">Conversion rate</span><span class="kpi-card__value" id="admin-conv-rate">—</span></div>
+  </div>
+  <div class="kpi-row">
+    <div class="kpi-card"><span class="kpi-card__label">LTV (12mo)</span><span class="kpi-card__value" id="admin-ltv">—</span></div>
+    <div class="kpi-card"><span class="kpi-card__label">CAC</span><span class="kpi-card__value" id="admin-cac">—</span></div>
+    <div class="kpi-card"><span class="kpi-card__label">LTV/CAC</span><span class="kpi-card__value" id="admin-ltv-cac">—</span></div>
+    <div class="kpi-card"><span class="kpi-card__label">Payback (mo)</span><span class="kpi-card__value" id="admin-payback">—</span></div>
+  </div>
+
+  <!-- ── Stage counts ── -->
+  <ul class="alerts-list" id="admin-funnel-list">
+    <li class="alert-empty">aguardando dados…</li>
+  </ul>
+  <div class="admin-error" id="admin-error" hidden></div>
 </section>
 
 <!-- ─── CHARTS ─── -->
@@ -2374,6 +2457,51 @@
   window.POLL_INTERVAL_MS = {{ poll_interval_ms|default(15000) }};
   window.SETTINGS_CACHE = {{ settings_json|safe if settings_json is defined else '{}' }};
 </script>  <!-- Export modal -->
+  <!-- BRAIINS SPOT BUY MODAL (real money — typed confirmation required) -->
+  <div id="braiins-buy-modal" class="modal-overlay">
+    <div class="modal braiins-buy-modal">
+      <div class="modal__header">
+        <span class="modal__title">⚡ COMPRAR HASHRATE · BRAIINS SPOT</span>
+        <button class="modal__close" data-close="braiins-buy-modal">×</button>
+      </div>
+      <div class="modal__body">
+        <div class="braiins-buy__quote" id="braiins-buy-quote">carregando cotação…</div>
+        <div class="braiins-buy__fields">
+          <label class="field">
+            <span class="field__label">HASHRATE (TH/s)</span>
+            <input class="field__input field__input--mono" type="number" id="braiins-buy-th" min="1" step="1" placeholder="ex: 1000 (1 PH/s)">
+          </label>
+          <label class="field">
+            <span class="field__label">BUDGET (sats)</span>
+            <input class="field__input field__input--mono" type="number" id="braiins-buy-amount" min="1000" step="1000" placeholder="ex: 500000">
+          </label>
+          <label class="field">
+            <span class="field__label">STRATUM URL (destino do hashrate)</span>
+            <input class="field__input field__input--mono" type="text" id="braiins-buy-stratum" placeholder="stratum+tcp://host:3333">
+          </label>
+          <label class="field">
+            <span class="field__label">WORKER IDENTITY (opcional — user.worker)</span>
+            <input class="field__input field__input--mono" type="text" id="braiins-buy-identity" placeholder="user.worker">
+          </label>
+          <label class="field">
+            <span class="field__label">MEMO (opcional)</span>
+            <input class="field__input" type="text" id="braiins-buy-memo" placeholder="label da ordem">
+          </label>
+        </div>
+        <div class="braiins-buy__calc" id="braiins-buy-calc">—</div>
+        <label class="braiins-buy__ack">
+          <input type="checkbox" id="braiins-buy-ack">
+          <span>Entendo que isto movimenta <strong>dinheiro real</strong> da minha conta Braiins e que ordens spot podem não ser preenchidas.</span>
+        </label>
+        <div class="braiins-buy__confirm">
+          <input class="field__input field__input--mono" type="text" id="braiins-buy-type" placeholder="digite COMPRAR para confirmar" autocomplete="off" spellcheck="false">
+          <button class="btn btn--primary" id="braiins-buy-submit" disabled>CONFIRMAR COMPRA</button>
+        </div>
+        <span class="modal__status" id="braiins-buy-status"></span>
+      </div>
+    </div>
+  </div>
+
   <div id="export-modal" class="modal-overlay">
     <div class="modal">
       <div class="modal__header">

@@ -43,6 +43,7 @@ from services.proximity import _compute_quantum_lock  # FENIX: composite confide
 from services.session_manager import SessionManager
 from services.user_polling import (
     UserPollingWorker, _build_snapshot, start_poll_pool as _start_poll_pool,
+    start_rentals_sweep as _start_rentals_sweep,
     POLL_POOL as _POLL_POOL,
 )
 from agents.opportunity_engine import scan as _opp_scan, build_response as _opp_build_response
@@ -176,6 +177,105 @@ app.register_blueprint(dashboard_bp)
 # anonymous traffic still falls back to per-IP limiting.
 _rate_limit_store = {}  # {key: [timestamps]} — key = "t:<tenant>" | "ip:<ip>"
 _auth_rate_limit_store = {}  # {ip: [timestamps]} — stricter /api/auth/* budget
+
+# ── Rate-limit persistence (restart-survival, NOT on the hot path) ────────
+# Buckets are in-memory for zero-I/O per request, but a redeploy/restart
+# would wipe them — re-opening the abuse window for every tenant at once
+# (audit risk). A background thread snapshots the stores to SQLite every
+# RATE_LIMIT_PERSIST_INTERVAL seconds; boot restores them. The request path
+# never touches the DB.
+RATE_LIMIT_PERSIST_INTERVAL = 30.0
+
+
+def _rate_limit_ensure_table():
+    try:
+        from services.db import get_db
+        conn = get_db()
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS rate_limit_state (
+                key        TEXT PRIMARY KEY,
+                timestamps TEXT NOT NULL DEFAULT '[]',
+                updated_at INTEGER NOT NULL
+            )
+            """
+        )
+        conn.commit()
+        conn.close()
+    except Exception:
+        pass
+
+
+def _rate_limit_persist():
+    """Snapshot both rate-limit stores to SQLite (best-effort, called from
+    the background loop — never from the request path)."""
+    import json as _json
+    try:
+        _rate_limit_ensure_table()
+        from services.db import get_db
+        conn = get_db()
+        now = int(time.time())
+        combined = {}
+        for k, stamps in list(_rate_limit_store.items()):
+            if stamps:
+                combined[k] = stamps
+        for k, stamps in list(_auth_rate_limit_store.items()):
+            combined[f"auth:{k}"] = stamps
+        conn.executemany(
+            "INSERT INTO rate_limit_state (key, timestamps, updated_at) "
+            "VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET "
+            "timestamps=excluded.timestamps, updated_at=excluded.updated_at",
+            [(k, _json.dumps(stamps), now) for k, stamps in combined.items()],
+        )
+        # Drop rows that disappeared from memory (fully reset buckets).
+        conn.execute(
+            "DELETE FROM rate_limit_state WHERE updated_at < ?", (now - 120,))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        log.warning("[rate-limit] persist error: %s", e)
+
+
+def _rate_limit_restore():
+    """Reload persisted buckets at boot so a restart does not re-open the
+    abuse window. Only rows still inside the window are kept."""
+    import json as _json
+    try:
+        _rate_limit_ensure_table()
+        from services.db import get_db
+        conn = get_db()
+        rows = conn.execute(
+            "SELECT key, timestamps FROM rate_limit_state").fetchall()
+        conn.close()
+        now = time.time()
+        window = 60.0
+        for r in rows:
+            try:
+                stamps = _json.loads(r["timestamps"])
+            except Exception:
+                continue
+            stamps = [t for t in stamps if now - t < window]
+            if not stamps:
+                continue
+            key = r["key"]
+            if key.startswith("auth:"):
+                _auth_rate_limit_store[key[5:]] = stamps
+            else:
+                _rate_limit_store[key] = stamps
+        if rows:
+            log.info("[rate-limit] restored %d bucket(s) from SQLite", len(rows))
+    except Exception as e:
+        log.warning("[rate-limit] restore error: %s", e)
+
+
+def _rate_limit_persist_loop():
+    """Daemon thread: snapshot rate-limit state every interval."""
+    while True:
+        try:
+            _rate_limit_persist()
+        except Exception:
+            pass
+        time.sleep(RATE_LIMIT_PERSIST_INTERVAL)
 
 # ── Token→tenant cache (hot-path optimization) ────────────────────────────
 # verify_token() is JWT decode + HMAC + blacklist + revocation checks — fine
@@ -1745,7 +1845,10 @@ def _webhook_dispatch(alert):
     try:
         tid = getattr(alert, "tenant_id", "") or ""
         s = load_settings(tid)
-        return send_webhook_for_alert(
+        # Retry-queue fallback: on transient provider failure the alert is
+        # persisted to the webhook queue (never lost) instead of dropped.
+        from services.webhook_queue import dispatch_webhook_or_queue
+        return dispatch_webhook_or_queue(
             url=(s.get("webhook_url") or "").strip(),
             severity=alert.severity,
             category=alert.category,
@@ -1754,6 +1857,7 @@ def _webhook_dispatch(alert):
             worker=WORKER_NAME,
             address=BTC_ADDRESS,
             min_severity=s.get("webhook_min_severity", "WARN"),
+            tenant_id=tid,
         )
     except Exception as e:
         log.warning("[webhook] dispatch error: %s", e)
@@ -2729,6 +2833,52 @@ def api_session_status():
         "created_at": session.created_at,
         "last_activity": session.last_activity,
     })
+
+
+@app.route("/api/push/vapid-key", methods=["GET"])
+def api_push_vapid_key():
+    """Expose the VAPID public key to the browser (safe — it is public by
+    design). Returns null when push is not configured (VAPID keys unset), so
+    the frontend simply does not offer push."""
+    from services.push_notifier import VAPID_PUBLIC_KEY as _vk
+    return jsonify({"vapid_public_key": _vk or None})
+
+
+@app.route("/api/push/subscribe", methods=["POST"])
+def api_push_subscribe():
+    """Persist a browser push subscription, scoped to the caller's tenant.
+
+    The tenant comes from the Bearer JWT (sub); anonymous visitors subscribe
+    under the '' tenant (operator's dashboard). Idempotent upsert.
+    """
+    from services.push_notifier import save_subscription
+    body = request.get_json(silent=True) or {}
+    endpoint = (body.get("endpoint") or "").strip()
+    keys = body.get("keys") or {}
+    if not endpoint:
+        return jsonify({"ok": False, "error": "endpoint required"}), 400
+    tenant_id = ""
+    auth = request.headers.get("Authorization", "")
+    if auth.startswith("Bearer "):
+        try:
+            from services.auth import verify_token
+            payload = verify_token(auth[7:]) or {}
+            tenant_id = payload.get("sub") or ""
+        except Exception:
+            pass
+    ok = save_subscription(endpoint, keys, tenant_id=tenant_id)
+    return jsonify({"ok": ok, "tenant": tenant_id[:8] or "default"})
+
+
+@app.route("/api/push/unsubscribe", methods=["POST"])
+def api_push_unsubscribe():
+    """Remove a push subscription (user disabled notifications)."""
+    from services.push_notifier import remove_subscription
+    body = request.get_json(silent=True) or {}
+    endpoint = (body.get("endpoint") or "").strip()
+    if not endpoint:
+        return jsonify({"ok": False, "error": "endpoint required"}), 400
+    return jsonify({"ok": remove_subscription(endpoint)})
 
 
 @app.route("/api/admin/sessions", methods=["GET"])
@@ -4161,15 +4311,51 @@ def _auto_backup_loop():
     _db_backup.backup_loop()
 
 
+_POOL_WATCHDOG_INTERVAL = 30.0  # seconds between stall checks
+_pool_watchdog_last_warn = 0.0  # suppress repeat CRITs (once per stall episode)
+
+
+def _pool_watchdog_loop():
+    """Daemon thread: detect a stalled PollWorkerPool and surface a CRIT.
+
+    A frozen pool (workers alive but no completed poll while sessions are
+    pending) means every user's dashboard silently stops updating — the
+    worst failure mode for a monitoring product. This watchdog reads
+    ``POLL_POOL.stats()`` every 30s (one call — stats() already computes
+    is_stalled internally) and appends a CRIT in-memory alert (visible in
+    the alerts feed) plus a loud log. Suppresses repeats until the pool
+    recovers (is_stalled() clears on the next completed poll).
+    """
+    global _pool_watchdog_last_warn
+    while True:
+        try:
+            stats = _POLL_POOL.stats()
+            if stats.get("stalled") and (time.time() - _pool_watchdog_last_warn) > 300:
+                _pool_watchdog_last_warn = time.time()
+                msg = ("Pool stalled: workers alive but no poll completed in "
+                       f"{int(stats['uptime_secs'])}s uptime "
+                       f"with {stats['queue_pending']} queued. Restart required.")
+                log.error("[watchdog] %s", msg)
+                try:
+                    memory_critical_alerts.append(_make_memory_alert(
+                        int(time.time()), "CRIT", "pool_stall", msg))
+                except Exception:
+                    pass
+        except Exception as e:
+            log.warning("[watchdog] check error: %s", e)
+        time.sleep(_POOL_WATCHDOG_INTERVAL)
+
+
 def _start_background_threads():
     """Start every background worker for the server process.
 
     Consolidates boot: the initial poll + poll_loop thread (previously
     started at module level, which also fired on plain test-suite imports),
     the fixed user-poll worker pool (P1 Phase 2 — 8-16 threads serve all
-    sessions, no thread-per-session), and the 5-min Hash Market warmup
-    thread all start here, called from the __main__ block before app.run().
-    Test-suite imports of app.py no longer spawn ANY network thread.
+    sessions, no thread-per-session), the pool stall watchdog, and the
+    5-min Hash Market warmup thread all start here, called from the
+    __main__ block before app.run(). Test-suite imports of app.py no longer
+    spawn ANY network thread.
 
     C4: also runs a boot-time SQLite integrity check (warning-only) and,
     when enabled (AUTO_BACKUP_INTERVAL != 0), starts the automatic backup
@@ -4184,6 +4370,39 @@ def _start_background_threads():
         _start_poll_pool()
     except Exception as e:
         log.warning("[boot] poll pool start error: %s", e)
+    # Pool stall watchdog: surface a CRIT if the pool freezes (daemon).
+    try:
+        threading.Thread(
+            target=_pool_watchdog_loop, name="cypher65-pool-watchdog",
+            daemon=True).start()
+    except Exception as e:
+        log.warning("[boot] pool watchdog start error: %s", e)
+    # Periodic rental P/L sweep: evaluate tenants with the alert enabled so
+    # a bad rental fires webhook/push WITHOUT the user opening the panel.
+    # Env-gated (RENTAL_SWEEP_INTERVAL=0 disables); idempotent.
+    try:
+        _start_rentals_sweep()
+    except Exception as e:
+        log.warning("[boot] rentals sweep start error: %s", e)
+    # Webhook retry queue: deliver due Discord/Telegram alerts (daemon).
+    try:
+        from services.webhook_queue import webhook_queue_loop as _wq_loop
+        threading.Thread(
+            target=_wq_loop, name="cypher65-webhook-queue", daemon=True).start()
+    except Exception as e:
+        log.warning("[boot] webhook queue start error: %s", e)
+    # Rate-limit persistence: restore buckets from SQLite (a restart must not
+    # re-open the abuse window), then snapshot them every interval.
+    try:
+        _rate_limit_restore()
+    except Exception as e:
+        log.warning("[boot] rate-limit restore error: %s", e)
+    try:
+        threading.Thread(
+            target=_rate_limit_persist_loop, name="cypher65-rate-limit-persist",
+            daemon=True).start()
+    except Exception as e:
+        log.warning("[boot] rate-limit persist loop error: %s", e)
     # $0 persistence (ephemeral free-tier filesystems): restore the remote
     # gist snapshot onto a fresh boot BEFORE anything writes, so per-user
     # credentials/settings/alerts survive redeploys. No-op without
@@ -5592,6 +5811,30 @@ def api_rentals(tenant_id: str = ""):
             for rv in bucket:
                 rid = (rv.get("rig") or {}).get("id")
                 rv["blacklisted"] = rid is not None and str(rid) in bl
+        # CFO: persist this fetch into the local rental_history table so the
+        # same-rig track record builds up WITHOUT extra MRR API calls per
+        # detail click (analyze_rig reads local first). Best-effort — a
+        # storage hiccup must never break the list.
+        try:
+            _rental_perf.ingest_rentals(
+                mrr_active.get("rentals", []), mrr_history.get("rentals", []),
+                mrr_owner.get("rentals", []), braiins.get("contracts", []),
+                tenant_id=tenant_id)
+        except Exception as _ie:
+            log.warning("[rentals] history ingest error: %s", _ie)
+        # CFO auto-alert: closed rental with P/L below the tenant's threshold
+        # → tenant webhook + push. Deduped once per rental (persisted) and
+        # windowed to recent closes. Fire-and-forget daemon threads — never
+        # block the panel response on network I/O. Shared dispatcher with the
+        # periodic sweep (one implementation, no drift).
+        try:
+            from services.user_polling import dispatch_rental_pl_alerts
+            pl_alerts = _rental_perf.evaluate_rental_pl_alerts(
+                mrr_history.get("rentals", []), braiins.get("contracts", []),
+                tenant_id=tenant_id)
+            dispatch_rental_pl_alerts(tenant_id, pl_alerts)
+        except Exception as _pe:
+            log.warning("[rentals] pl alert error: %s", _pe)
         return jsonify({
             "success": True,
             "updated_at": int(time.time()),
@@ -5610,9 +5853,24 @@ def api_rentals(tenant_id: str = ""):
                 "contracts": braiins.get("contracts", []),
                 "error": braiins.get("error"),
             },
-            # CFO: per-tenant rig blacklist — ids of rigs the user excluded
-            # for bad performance, so the panel marks/hides them instantly.
+            # CFO: aggregate portfolio analytics (total spent, weighted avg
+            # cost, avg delivery, provider split) for the panel top strip.
+            "portfolio": _rental_perf.compute_portfolio_summary(
+                mrr_active.get("rentals", []), mrr_history.get("rentals", []),
+                mrr_owner.get("rentals", []), braiins.get("contracts", [])),
+            # CFO: portfolio TIME SERIES — spent + estimated P/L bucketed by
+            # week (default) / month from the LOCAL rental_history table.
+            "portfolio_series": _rental_perf.compute_portfolio_series(
+                tenant_id=tenant_id, bucket="week"),
+            # CFO recommendation engine — 'where to rent again' (local track
+            # record × live market) + 30-day market timing for context.
+            "recommendations": _rental_perf.build_rental_recommendations(
+                tenant_id=tenant_id),
+            "market_trend": _rental_perf.fetch_market_trend(),
+            # CFO: per-tenant rig blacklists — manual + auto-excluded ids so
+            # the panel marks/hides bad performers instantly.
             "rig_blacklist": _rental_perf.get_rig_blacklist(tenant_id=tenant_id),
+            "rig_auto_blacklist": _rental_perf.get_auto_blacklist(tenant_id=tenant_id),
         })
     except Exception as e:
         log.warning("[rentals] list error: %s", e)
@@ -5676,11 +5934,14 @@ def api_rentals_detail(tenant_id: str = ""):
             result = _rental_perf.fetch_braiins_contract_detail(rid, contract=contract,
                                                                  tenant_id=tenant_id)
             # Braiins contracts have no rig id → trust score is NO DATA; the
-            # panel still gets the blacklist state for a stable label.
+            # panel still gets the blacklist state for a stable label. The
+            # speed series yields the STABILITY grade + the P/L economics.
             return jsonify({"success": True, "provider": "braiins",
                             "detail": result.get("detail") or {},
                             "graph": result.get("graph") or {},
                             "log": result.get("log") or {},
+                            "stability": result.get("stability"),
+                            "pl": result.get("pl"),
                             # Analytics: effective cost vs the cheapest live
                             # market price (sats/TH/h) for the perf banner.
                             "market": _rental_perf.fetch_market_reference(),
@@ -5697,6 +5958,11 @@ def api_rentals_detail(tenant_id: str = ""):
         # Compute the same perf block Braiins carries, from the RAW MRR
         # detail (percent / avg TH / delivered TH·h / cost sats/TH/h).
         perf = _rental_perf.compute_mrr_perf(raw) if raw and not raw.get("error") else {}
+        # Economic P/L — expected gross yield (network hashrate) vs paid:
+        # the "did this rental make money?" question, computed server-side.
+        # MRR reports price.paid as a STRING — coerce before the ×1e8 math.
+        _paid = _rental_perf._num((raw.get("price") or {}).get("paid"))
+        pl = _rental_perf.attach_pl(perf, (_paid * 1e8) if _paid is not None else None)
         # CFO: full rig intelligence — same-rig track record, Trust Score
         # (grade A-F), blacklist state and spend/consistency summary.
         rig = raw.get("rig") or {}
@@ -5706,12 +5972,187 @@ def api_rentals_detail(tenant_id: str = ""):
                         "graph": detail.get("graph") or {},
                         "log": detail.get("log") or {},
                         "perf": perf,
+                        "pl": pl,
                         "rig_history": rig_analysis["history"],
                         "rig_analysis": rig_analysis,
                         "market": _rental_perf.fetch_market_reference()})
     except Exception as e:
         log.warning("[rentals] detail error: %s", e)
         return jsonify({"success": False, "error": "failed to fetch rental detail"}), 500
+
+
+@app.route("/api/rentals/export", methods=["GET"])
+@require_tenant
+@role_required("viewer")
+def api_rentals_export(tenant_id: str = ""):
+    """CSV export of the tenant's full rental ledger (portfólio + track record).
+
+    Flattens the same buckets as /api/rentals into rows the CFO can open in
+    Sheets/Excel: provider, id, status, window, length, avg/advertised TH,
+    delivery %, paid sats, effective cost sats/TH·h, blacklist state.
+    """
+    import csv as _csv
+    import io as _io
+    try:
+        mrr_active = _rental_perf.fetch_mrr_rentals(rtype="renter", history=False, limit=200, tenant_id=tenant_id)
+        mrr_history = _rental_perf.fetch_mrr_rentals(rtype="renter", history=True, limit=200, tenant_id=tenant_id)
+        mrr_owner = _rental_perf.fetch_mrr_rentals(rtype="owner", history=True, limit=200, tenant_id=tenant_id)
+        braiins = _rental_perf.fetch_braiins_contracts(tenant_id=tenant_id)
+        bl = set(_rental_perf.get_rig_blacklist(tenant_id=tenant_id))
+        auto = set(_rental_perf.get_auto_blacklist(tenant_id=tenant_id))
+
+        buf = _io.StringIO()
+        w = _csv.writer(buf)
+        w.writerow(["provider", "id", "bucket", "start", "end", "length_hours",
+                    "avg_th", "advertised_th", "delivery_pct", "paid_sats",
+                    "cost_sats_per_thh", "blacklisted"])
+        for bucket_name, bucket in (("active", mrr_active.get("rentals", [])),
+                                    ("history", mrr_history.get("rentals", [])),
+                                    ("owner", mrr_owner.get("rentals", []))):
+            for r in bucket:
+                _rig = r.get("rig") if isinstance(r.get("rig"), dict) else {}
+                rid = _rig.get("id")
+                paid = r.get("price_paid_btc")
+                adv = r.get("hashrate_advertised_th")
+                avg = r.get("hashrate_average_th")
+                lenh = r.get("length_hours")
+                w.writerow(["mrr", r.get("id"), bucket_name, r.get("start"),
+                            r.get("end"), lenh, avg, adv, r.get("hashrate_percent"),
+                            round(paid * 1e8) if paid is not None else "",
+                            round((paid * 1e8) / (avg * lenh), 2)
+                            if (paid is not None and avg and lenh) else "",
+                            "1" if (rid and (str(rid) in bl or str(rid) in auto)) else ""])
+        for c in braiins.get("contracts", []):
+            w.writerow(["braiins", c.get("id"), "contract", c.get("started_at"),
+                        c.get("ended_at"), "", "", c.get("speed_limit_ph"), "",
+                        c.get("amount_sat"), "", ""])
+
+        resp = app.response_class(
+            "\ufeff" + buf.getvalue(),  # BOM → Excel abre UTF-8 direto
+            mimetype="text/csv")
+        resp.headers["Content-Disposition"] = (
+            f"attachment; filename=rentals_{tenant_id or 'operator'}_{int(time.time())}.csv")
+        return resp
+    except Exception as e:
+        log.warning("[rentals] export error: %s", e)
+        return jsonify({"success": False, "error": "export failed"}), 500
+
+
+# ── Braiins spot EXECUTION (real money — explicit confirm only) ────────────
+# Three endpoints power the 'COMPRAR HASHRATE' modal:
+#   GET  /api/rentals/braiins/quote   → cheapest live ask + account balance
+#   GET  /api/rentals/braiins/balance → BTC balances (total/available)
+#   POST /api/rentals/braiins/bid     → place the spot bid (idempotent)
+# Tenant-scoped: the tenant's OWN Braiins key resolves from tenant_settings,
+# never the operator's global key. Server-side clamps + explicit confirmation
+# dialog guard real money on every axis.
+
+
+@app.route("/api/rentals/braiins/quote")
+@require_tenant
+@role_required("viewer")
+def api_braiins_quote(tenant_id: str = ""):
+    """Cheapest live Braiins ask (sats/TH·h + raw PH/day) + the tenant's
+    spendable balance — prefills the buy modal before any money moves."""
+    try:
+        quote = _rental_perf.braiins_quote(tenant_id=tenant_id)
+        return jsonify({"success": True, **quote})
+    except Exception as e:
+        log.warning("[braiins] quote error: %s", e)
+        return jsonify({"success": False, "error": "quote failed"}), 500
+
+
+@app.route("/api/rentals/braiins/balance")
+@require_tenant
+@role_required("viewer")
+def api_braiins_balance(tenant_id: str = ""):
+    """The tenant's Braiins subaccount balances (sats). 401/403 is surfaced
+    so a rejected key is never mistaken for a zero balance."""
+    try:
+        bal = _rental_perf.fetch_braiins_balance(tenant_id=tenant_id)
+        return jsonify({"success": True, **bal})
+    except Exception as e:
+        log.warning("[braiins] balance error: %s", e)
+        return jsonify({"success": False, "error": "balance fetch failed"}), 500
+
+
+@app.route("/api/rentals/braiins/bid", methods=["POST"])
+@require_tenant
+@role_required("member")
+def api_braiins_bid(tenant_id: str = ""):
+    """Place a Braiins spot bid (REAL MONEY — the frontend requires an
+    explicit typed confirmation before calling this).
+
+    Body (units per the live API):
+      speed_limit_th  float  — desired hashrate in TH/s (converted to PH/s)
+      amount_sat      int    — budget cap in sats (0 < amt ≤ 1 BTC)
+      price_sat       int    — price in the account's unit (default sats/PH/day)
+      upstream_url    str    — stratum URL: stratum+tcp://host:port[/worker]
+      upstream_identity str  — optional worker identity (user.worker)
+      memo            str    — optional label
+      cl_order_id     str    — idempotency key (regenerated per modal session)
+
+    Fail-closed: numeric conversion + sanity clamps run BEFORE the POST; a
+    unit bug can never turn a 1 TH bid into a 1000 PH order. Errors carry
+    HTTP 400 (validation) or 502 (provider rejected/failed).
+    """
+    body = request.get_json(silent=True) or {}
+    try:
+        speed_th = float(body.get("speed_limit_th") or 0)
+    except (TypeError, ValueError):
+        return jsonify({"success": False, "error": "speed_limit_th must be a number"}), 400
+    amount_sat = body.get("amount_sat")
+    price_sat = body.get("price_sat")
+    upstream_url = (body.get("upstream_url") or "").strip()
+    upstream_identity = (body.get("upstream_identity") or "").strip()
+    memo = (body.get("memo") or "").strip()
+    cl_order_id = (body.get("cl_order_id") or "").strip()
+
+    # Positive TH required; PH conversion = TH / 1000. The server clamps
+    # (1 TH..1 EH) reject nonsense before the wire.
+    if speed_th <= 0:
+        return jsonify({"success": False, "error": "speed_limit_th must be > 0"}), 400
+    if amount_sat is None or price_sat is None:
+        return jsonify({"success": False, "error": "amount_sat and price_sat are required"}), 400
+
+    result = _rental_perf.create_braiins_bid(
+        speed_limit_ph=speed_th / 1000.0,
+        amount_sat=amount_sat,
+        price_sat=price_sat,
+        upstream_url=upstream_url,
+        upstream_identity=upstream_identity,
+        memo=memo,
+        cl_order_id=cl_order_id,
+        tenant_id=tenant_id,
+    )
+    if result.get("success"):
+        # Record the placed order in the conversion funnel + audit (no PII).
+        try:
+            _conversion.track_event("braiins_bid", tenant_id=tenant_id,
+                                    meta={"cl_order_id": cl_order_id[:40]})
+        except Exception:
+            pass
+        return jsonify({"success": True, "bid": result.get("bid")})
+    status = 401 if result.get("needs_auth") else (400 if "must be" in (result.get("error") or "") else 502)
+    return jsonify({"success": False, "error": result.get("error") or "bid failed"}), status
+
+
+@app.route("/api/rentals/series")
+@require_tenant
+@role_required("viewer")
+def api_rentals_series(tenant_id: str = ""):
+    """Portfolio time series (spent + estimated P/L) per week/month from the
+    LOCAL rental_history — instant, zero provider calls.
+
+    Query params: bucket=week (default) | month.
+    """
+    try:
+        bucket = (request.args.get("bucket") or "week").lower()
+        series = _rental_perf.compute_portfolio_series(tenant_id=tenant_id, bucket=bucket)
+        return jsonify({"success": True, **series})
+    except Exception as e:
+        log.warning("[rentals] series error: %s", e)
+        return jsonify({"success": False, "error": "series failed"}), 500
 
 
 @app.route("/api/network/scan", methods=["POST"])

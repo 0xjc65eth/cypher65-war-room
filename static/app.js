@@ -367,6 +367,8 @@
     if (m) m.classList.add('modal--open');
     trackConversionEvent('modal_open');
   }
+  // Exposed for e2e + support console (the PRO badge already wires onclick).
+  window.openUpgradeModal = openUpgradeModal;
   function closeUpgradeModal() {
     const m = document.getElementById('upgrade-modal');
     if (m) m.classList.remove('modal--open');
@@ -2706,6 +2708,86 @@ function renderAccount(acct) {
   let _mktAffiliate = null;  // market_data.affiliate {provider,url,...} — one-click BUY on the offer card
   let _mktTrendLoaded = false;  // lazy: /api/market/trend fetched on first module activation
   let _mktInstitutional = null;  // HashratePulse institutional view {regime, snapshot, venues, notes}
+  let _adminLoaded = false;  // lazy: fetch once per session (admin-gated)
+
+  // ── Admin (CFO/CRO) — pool health + PRO funnel + LTV/CAC ─────────────
+  function _setAdminText(id, text) {
+    const el = document.getElementById(id);
+    if (el) el.textContent = text;
+  }
+  async function fetchAdminData() {
+    if (_adminLoaded) return;
+    const errEl = document.getElementById('admin-error');
+    const gate = document.getElementById('admin-gate-badge');
+    try {
+      // Pool health — no auth needed for localhost/operator-key admin routes.
+      const [sessionsResp, convResp] = await Promise.all([
+        fetch('/api/admin/sessions', { headers: { 'X-Requested-With': 'fetch' } }),
+        fetch('/api/admin/conversion', { headers: { 'X-Requested-With': 'fetch' } }),
+      ]);
+      if (sessionsResp.status === 403 || convResp.status === 403) {
+        if (gate) gate.textContent = 'restricted';
+        if (errEl) {
+          errEl.hidden = false;
+          errEl.textContent = 'Admin access required — endpoint só responde de localhost ou com a API key do operador (X-API-Key).';
+        }
+        _adminLoaded = true;  // don't re-hammer a 403
+        return;
+      }
+      if (gate) gate.textContent = 'ok';
+      const sessions = sessionsResp.ok ? await sessionsResp.json() : {};
+      const conv = convResp.ok ? await convResp.json() : {};
+      _renderAdmin(sessions, conv);
+    } catch (e) {
+      if (errEl) { errEl.hidden = false; errEl.textContent = 'admin fetch error: ' + e.message; }
+    }
+  }
+  function _renderAdmin(sessions, conv) {
+    const pool = sessions.pool || {};
+    _setAdminText('admin-sessions', pool.sessions_active != null ? pool.sessions_active : '—');
+    _setAdminText('admin-polls-per-sec', pool.polls_per_sec != null ? pool.polls_per_sec : '—');
+    _setAdminText('admin-queue', pool.queue_pending != null ? pool.queue_pending : '—');
+    _setAdminText('admin-workers', pool.workers_alive != null ? (pool.workers_alive + '/' + (pool.pool_size || '?')) : '—');
+    _setAdminText('admin-uptime', pool.uptime_secs ? Math.round(pool.uptime_secs / 60) + 'm' : '—');
+    const stall = document.getElementById('admin-stall');
+    if (stall) {
+      stall.hidden = !pool.stalled;
+      stall.textContent = pool.stalled ? '⚠ POOL STALLED — workers vivos mas sem polls completando. Reiniciar.' : '';
+    }
+    // Funnel drop-off + LTV/CAC
+    const funnel = (conv.funnel || {});
+    const econ = (conv.economics || {});
+    const drops = {};
+    (funnel.drop_off || []).forEach(function(d) { drops[d.from + '->' + d.to] = d.loss_pct; });
+    _setAdminText('admin-drop-paywall-modal', _pct(drops['paywall_view->modal_open']));
+    _setAdminText('admin-drop-modal-checkout', _pct(drops['modal_open->checkout_start']));
+    _setAdminText('admin-drop-checkout-paid', _pct(drops['checkout_start->paid']));
+    _setAdminText('admin-conv-rate', _pct(funnel.conversion_rate_pct));
+    _setAdminText('admin-ltv', econ.ltv_usd != null ? '$' + econ.ltv_usd : '—');
+    _setAdminText('admin-cac', econ.cac_usd != null ? '$' + econ.cac_usd : 'no spend data');
+    _setAdminText('admin-ltv-cac', econ.ltv_cac_ratio != null ? econ.ltv_cac_ratio : '—');
+    _setAdminText('admin-payback', econ.payback_months != null ? econ.payback_months : '—');
+    // Stage counts list
+    const list = document.getElementById('admin-funnel-list');
+    if (list) {
+      const stages = funnel.stages || {};
+      const rows = Object.keys(stages).map(function(k) {
+        return '<li class="alert-item"><span class="alert-item__cat">' + escapeHtml(k) + '</span><span class="alert-item__msg">' + escapeHtml(String(stages[k])) + '</span></li>';
+      });
+      list.innerHTML = rows.length ? rows.join('') : '<li class="alert-empty">sem eventos no período</li>';
+    }
+  }
+  function _pct(v) {
+    if (v === undefined || v === null) return '—';
+    return Number(v).toFixed(1) + '%';
+  }
+  const adminRefreshBtn = document.getElementById('admin-refresh-btn');
+  if (adminRefreshBtn) {
+    adminRefreshBtn.addEventListener('click', function() {
+      _adminLoaded = false;
+      fetchAdminData();
+    });
+  }
 
   function _fmtBtcPerTh(v) {
     const n = Number(v);
@@ -3199,6 +3281,31 @@ function renderAccount(acct) {
     chips.forEach(c => c.classList.toggle('active', c.getAttribute('data-rentals-filter') === name));
   }
 
+  // CFO: portfolio band — consolidated spend/cost/delivery across providers
+  // (server-side compute_portfolio_summary; hidden when there's no data).
+  function _renderRentalsPortfolio() {
+    const wrap = document.getElementById('rentals-portfolio');
+    if (!wrap || !_rentalsData) return;
+    const set = (id, v) => { const e = document.getElementById(id); if (e) e.textContent = v; };
+    const p = _rentalsData.portfolio;
+    // Hide the band entirely on an empty account (all-'—' row is noise).
+    if (!p || !p.spend || !p.spend.count) { wrap.hidden = true; return; }
+    wrap.hidden = false;
+    const spend = p.spend || {};
+    const income = p.income || {};
+    set('rentals-port-total', spend.spent_sats ? Number(spend.spent_sats).toLocaleString('en-US') + ' sats' : '—');
+    set('rentals-port-avg-cost', spend.avg_cost_sats_per_thh != null ? Number(spend.avg_cost_sats_per_thh).toFixed(1) + ' st/TH·h' : '—');
+    set('rentals-port-avg-delivery', spend.avg_delivery_pct != null ? Number(spend.avg_delivery_pct).toFixed(1) + '%' : '—');
+    set('rentals-port-delivered', spend.delivered_thh ? Number(spend.delivered_thh).toLocaleString('en-US') + ' TH·h' : '—');
+    // Owner side: what rigs leased OUT earned (sats from renters).
+    set('rentals-port-income', income.count && income.spent_sats ? Number(income.spent_sats).toLocaleString('en-US') + ' sats' : '—');
+    const split = p.split || {};
+    const parts = [];
+    if (split.mrr) parts.push('MRR ' + split.mrr);
+    if (split.braiins) parts.push('Braiins ' + split.braiins);
+    set('rentals-port-split', parts.join(' · ') || '—');
+  }
+
   // Mirror of services/rental_performance._hash_to_th — MRR reports hashrate
   // as {hash, type} where the raw hash is in the type unit (ph/mh/gh/th).
   // Unknown units (e.g. raw 'hash') return null: an honest '—' beats a
@@ -3237,23 +3344,180 @@ function renderAccount(acct) {
     return (r.price_paid_btc * 1e8).toFixed(0) + ' sats';
   }
 
-  // CFO: rig trust — is this rig blacklisted or a known bad performer?
-  // Returns {blacklisted, grade} so the card can show a ⛔/grade badge.
+  // CFO: rig trust — is this rig blacklisted (manual OR auto-excluded) or a
+  // known bad performer? Returns {blacklisted, auto, grade} for the badges.
   function _rentalRigTrust(r) {
-    if (!r || !r.rig) return { blacklisted: false, grade: null };
+    if (!r || !r.rig) return { blacklisted: false, auto: false, grade: null };
     const bl = (_rentalsData && _rentalsData.rig_blacklist) || [];
+    const auto = (_rentalsData && _rentalsData.rig_auto_blacklist) || [];
     const rid = r.rig.id != null ? String(r.rig.id) : null;
     return {
       blacklisted: !!(rid && bl.indexOf(rid) !== -1),
+      auto: !!(rid && auto.indexOf(rid) !== -1),
       grade: r.rig_trust && r.rig_trust.grade ? r.rig_trust.grade : null,
     };
   }
 
   // CFO: should this rental card be hidden by the "hide bad rigs" toggle?
-  // Hidden when the rig is blacklisted OR scored grade F (AVOID).
+  // Hidden when the rig is blacklisted (manual or auto) OR scored grade F.
   function _rentalIsBad(r) {
     const t = _rentalRigTrust(r);
-    return t.blacklisted || t.grade === 'F';
+    return t.blacklisted || t.auto || t.grade === 'F';
+  }
+
+  // CFO recommendation engine: 'where to rent again' — top rigs by
+  // reliability × price vs market, with an avoid counter.
+  function _renderRentalsReco() {
+    const wrap = document.getElementById('rentals-reco');
+    if (!wrap || !_rentalsData) return;
+    const rec = _rentalsData.recommendations;
+    if (!rec || !rec.top || !rec.top.length) { wrap.hidden = true; return; }
+    wrap.hidden = false;
+    const meta = document.getElementById('rentals-reco-meta');
+    if (meta) {
+      meta.textContent = rec.tracked + ' rigs rastreados' +
+        (rec.avoid_count ? ' · ' + rec.avoid_count + ' evitar' : '');
+    }
+    document.getElementById('rentals-reco-cards').innerHTML = rec.top.map(t => {
+      const vMkt = t.vs_market_pct != null
+        ? (t.vs_market_pct <= 0 ? '✓ ' : '') + (t.vs_market_pct > 0 ? '+' : '') + Number(t.vs_market_pct).toFixed(0) + '% vs mkt'
+        : '';
+      const trend = t.trend_pct != null
+        ? '<span class="rentals-reco__trend ' + (t.trend_pct >= 0 ? 'is-good' : 'is-bad') + '">' +
+          (t.trend_pct >= 0 ? '▲' : '▼') + Math.abs(Number(t.trend_pct)).toFixed(1) + '%</span>' : '';
+      const badge = t.grade
+        ? '<span class="rentals-trust__badge rentals-trust__badge--' + escapeHtml(String(t.grade)) + '">' + escapeHtml(String(t.grade)) + '</span>' : '';
+      const score = t.score != null ? Number(t.score).toFixed(0) : '—';
+      const samples = t.samples != null ? t.samples + ' amostras' : '';
+      return '<div class="rentals-reco__card" title="rig ' + escapeHtml(String(t.rig_id)) + '">' +
+        '<div class="rentals-reco__name">' + escapeHtml(String(t.name || t.rig_id)) + badge + '</div>' +
+        '<div class="rentals-reco__row"><span>SCORE</span><strong>' + score + '</strong>' +
+        '<span>MEDIAN</span><strong>' + (t.median_pct != null ? Number(t.median_pct).toFixed(1) + '%' : '—') + '</strong>' +
+        '<span>COST</span><strong>' + (t.avg_cost_sats_per_thh != null ? Number(t.avg_cost_sats_per_thh).toFixed(0) + ' st' : '—') + '</strong></div>' +
+        '<div class="rentals-reco__row rentals-reco__row--sub"><span>' + escapeHtml(vMkt || '') + '</span><span>' + samples + '</span>' + trend + '</div>' +
+        '</div>';
+    }).join('');
+  }
+
+  // Market timing: cheapest live price vs 30-day average (persisted market
+  // history) — 'renting expensive right now?'. Mini Chart.js line.
+  let _rentalsTimingChart = null;
+  function _renderRentalsMarketTiming() {
+    const wrap = document.getElementById('rentals-timing');
+    if (!wrap || !_rentalsData) return;
+    const trend = _rentalsData.market_trend;
+    if (!trend || !trend.points || trend.points.length < 2) { wrap.hidden = true; return; }
+    wrap.hidden = false;
+    const s = trend.summary || {};
+    const sumEl = document.getElementById('rentals-timing-summary');
+    if (sumEl) {
+      // Honest label: 'hoje' only when the newest recorded point IS today;
+      // a box where polling stopped shows 'último registro dd' instead.
+      const newestDay = trend.points[trend.points.length - 1].day;
+      const isToday = newestDay === new Date().toISOString().slice(0, 10);
+      const when = isToday ? 'hoje' : 'último ' + newestDay;
+      const dir = s.vs_avg_pct == null ? '' : (s.vs_avg_pct >= 0 ? ' · ' + when + ' ' + s.vs_avg_pct.toFixed(0) + '% ACIMA da média 30d (caro)' : ' · ' + when + ' ' + Math.abs(s.vs_avg_pct).toFixed(0) + '% ABAIXO da média 30d (barato)');
+      sumEl.textContent = when + ' ' + Number(s.current_sats_per_thh).toFixed(0) + ' · média 30d ' + Number(s.avg_sats_per_thh).toFixed(0) + ' st/TH·h' + dir;
+    }
+    if (_rentalsTimingChart) { _rentalsTimingChart.destroy(); _rentalsTimingChart = null; }
+    if (typeof Chart === 'undefined') return;
+    const canvas = document.getElementById('rentals-timing-chart');
+    if (!canvas) return;
+    _rentalsTimingChart = new Chart(canvas.getContext('2d'), {
+      type: 'line',
+      data: {
+        labels: trend.points.map(p => p.day.slice(5)),
+        datasets: [{
+          label: 'cheapest sats/TH·h',
+          data: trend.points.map(p => p.sats_per_thh),
+          borderColor: 'rgb(255,215,0)', backgroundColor: 'rgba(255,215,0,0.08)',
+          tension: 0.3, pointRadius: 0, fill: true,
+        }]
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        plugins: { legend: { display: false } },
+        scales: {
+          x: { ticks: { color: '#5E5952', font: { size: 8 }, maxTicksLimit: 8 }, grid: { display: false } },
+          y: { ticks: { color: '#5E5952', font: { size: 8 } }, grid: { color: 'rgba(94,89,82,0.12)' } }
+        }
+      }
+    });
+  }
+
+  // CFO: portfolio time series — spent bars + estimated P/L (period and
+  // cumulative) from the LOCAL rental_history. Bucket toggle week/month
+  // re-fetches server-side data (the API ships the week bucket by default).
+  let _rentalsSeriesChart = null;
+  let _rentalsSeriesBucket = 'week';
+
+  function _renderRentalsSeries() {
+    const wrap = document.getElementById('rentals-series');
+    if (!wrap || !_rentalsData) return;
+    const series = _rentalsData.portfolio_series;
+    if (!series || !series.points || series.points.length < 1) { wrap.hidden = true; return; }
+    wrap.hidden = false;
+    const meta = document.getElementById('rentals-series-meta');
+    if (meta) {
+      const t = series.totals || {};
+      const plTxt = t.pl_sats != null
+        ? (t.pl_sats >= 0 ? '+' : '') + Number(t.pl_sats).toLocaleString('en-US', { maximumFractionDigits: 0 }) + ' sats'
+        : '—';
+      meta.textContent = (series.estimate ? 'P/L estimado · rede atual · ' : '') +
+        (t.rentals != null ? t.rentals + ' aluguéis · ' : '') +
+        (t.spent_sats != null ? Number(t.spent_sats).toLocaleString('en-US') + ' sats gastos · ' : '') +
+        'P/L total ' + plTxt;
+    }
+    if (_rentalsSeriesChart) { _rentalsSeriesChart.destroy(); _rentalsSeriesChart = null; }
+    if (typeof Chart === 'undefined' || series.points.length < 1) return;
+    const canvas = document.getElementById('rentals-series-chart');
+    if (!canvas) return;
+    const labels = series.points.map(p => p.label.replace(/^\d{4}-/, ''));  // strip year → 'W29' | '07'
+    const spent = series.points.map(p => p.spent_sats);
+    const pl = series.points.map(p => p.pl_sats);
+    const cum = series.points.map(p => p.cum_pl_sats);
+    // null P/L (cold box / no computable yield) → gaps, never a flat 0 bar.
+    _rentalsSeriesChart = new Chart(canvas.getContext('2d'), {
+      type: 'bar',
+      data: {
+        labels: labels,
+        datasets: [
+          { type: 'bar', label: 'gasto (sats)', data: spent,
+            backgroundColor: 'rgba(94,89,82,0.55)', borderRadius: 2, yAxisID: 'y' },
+          { type: 'bar', label: 'P/L período (sats)', data: pl,
+            backgroundColor: pl.map(v => v == null ? 'rgba(94,89,82,0.15)' : (v >= 0 ? 'rgba(0,200,83,0.55)' : 'rgba(255,23,68,0.55)')),
+            borderRadius: 2, yAxisID: 'y' },
+          { type: 'line', label: 'P/L acumulado (sats)', data: cum,
+            borderColor: 'rgb(255,215,0)', backgroundColor: 'transparent',
+            tension: 0.3, pointRadius: 2, borderWidth: 2, spanGaps: false, yAxisID: 'y' },
+        ]
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        interaction: { mode: 'index', intersect: false },
+        plugins: { legend: { display: false } },
+        scales: {
+          x: { ticks: { color: '#5E5952', font: { size: 9 }, maxTicksLimit: 12 }, grid: { display: false } },
+          y: { ticks: { color: '#5E5952', font: { size: 9 } }, grid: { color: 'rgba(94,89,82,0.12)' } }
+        }
+      }
+    });
+  }
+
+  async function setRentalsSeriesBucket(bucket) {
+    if (bucket === _rentalsSeriesBucket) return;
+    _rentalsSeriesBucket = bucket;
+    document.querySelectorAll('[data-series-bucket]').forEach(b =>
+      b.classList.toggle('active', b.getAttribute('data-series-bucket') === bucket));
+    try {
+      const r = await authFetch('/api/rentals/series?bucket=' + bucket);
+      if (!r.ok) return;
+      const data = await r.json();
+      if (data && data.points !== undefined) {
+        _rentalsData.portfolio_series = data;
+        _renderRentalsSeries();
+      }
+    } catch (e) { /* fail-closed: keep current bucket */ }
   }
 
   function _rentalCardHtml(r) {
@@ -3357,6 +3621,10 @@ function renderAccount(acct) {
     _stripVal('rentals-mrr-history', mrr.total_history != null ? mrr.total_history : (mrr.history || []).length, mrr.needs_auth, mrr.error);
     _stripVal('rentals-mrr-owner', mrr.total_owner != null ? mrr.total_owner : (mrr.owner || []).length, mrr.needs_auth, mrr.error);
     _stripVal('rentals-braiins', (braiins.contracts || []).length, braiins.needs_auth, braiins.error);
+    _renderRentalsPortfolio();
+    _renderRentalsSeries();
+    _renderRentalsReco();
+    _renderRentalsMarketTiming();
 
     let items = [];
     if (_rentalsFilter === 'active') items = mrr.active || [];
@@ -3487,11 +3755,29 @@ function renderAccount(acct) {
           mktVal = (diff <= 0 ? '−' : '+') + Math.abs(diff).toFixed(0) + '% vs mkt';
           mktTitle = 'market ' + market.price_sats_per_thh.toFixed(2) + ' sats/TH/h (' + (market.provider || '') + ')';
         }
+        // P/L — the economic verdict: expected GROSS yield (network hashrate)
+        // vs what was paid, computed server-side. Negative = this rental paid
+        // more than the hashrate produced at current difficulty.
+        const pl = data.pl || {};
+        let yieldVal = '—', plVal = '—', plCls = '', plTitle = '';
+        if (pl.expected_yield_sats_per_thh != null) {
+          yieldVal = Number(pl.expected_yield_sats_per_thh).toFixed(2) + ' st/TH·h';
+        }
+        if (pl.pl_sats != null) {
+          const sign = pl.pl_sats >= 0 ? '+' : '';
+          plVal = sign + Number(pl.pl_sats).toFixed(0) + ' sats';
+          plCls = pl.pl_sats >= 0 ? 'is-good' : 'is-bad';
+          plTitle = pl.pl_pct != null
+            ? 'yield vs cost: ' + (pl.pl_sats >= 0 ? '+' : '') + Number(pl.pl_pct).toFixed(1) + '% (gross yield, no pool fee)'
+            : 'expected gross yield vs cost';
+        }
         const cells = [
           { l: 'PERFORMANCE', v: verdict, c: cls },
           { l: 'AVG / ADVERTISED', v: avgThFinal ? fmt.hashrate(avgThFinal * 1e12) + ' / ' + fmt.hashrate((advTh || 0) * 1e12) : '—', c: '' },
           { l: 'COST', v: costFinal != null ? costFinal.toFixed(2) + ' sats/TH/h' : '—', c: '' },
+          { l: 'YIELD (exp)', v: yieldVal, c: '', t: 'expected GROSS yield of 1 TH·h at the current network hashrate (before pool fee)' },
           { l: 'DELIVERED', v: deliveredFinal != null ? deliveredFinal.toFixed(0) + ' TH·h' : '—', c: '' },
+          { l: 'P/L', v: plVal, c: plCls, t: plTitle },
           { l: 'VS MARKET', v: mktVal, c: mktCls, t: mktTitle },
         ];
         perfEl.innerHTML = cells.map(c =>
@@ -3505,7 +3791,10 @@ function renderAccount(acct) {
       if (trustEl) {
         const ra = data.rig_analysis || {};
         const trust = ra.trust || {};
+        // Auto-excluded (grade-F streak) counts as blacklisted for the UI —
+        // the verdict distinguishes AUTO from manual so the CFO knows why.
         const bl = !!ra.blacklisted;
+        const autoBl = !!ra.auto_blacklisted;
         const grade = trust.grade;
         if (rigId && (trust.samples > 0 || bl)) {
           trustEl.hidden = false;
@@ -3528,7 +3817,10 @@ function renderAccount(acct) {
             { l: 'TREND (last 3)', v: trendStr, cls: trend == null ? '' : (trend >= 0 ? 'is-good' : 'is-bad') },
           ];
           let verdict = '', vCls = '';
-          if (bl) {
+          if (autoBl) {
+            verdict = '🤖 AUTO-EXCLUÍDO: 2+ amostras com grade F (under-delivery). Restaure para ver de novo — re-exclui enquanto o histórico de entrega não melhora.';
+            vCls = 'rentals-trust__verdict--bad';
+          } else if (bl) {
             verdict = '⛔ Este rig está na sua BLACKLIST — não alugue de novo.';
             vCls = 'rentals-trust__verdict--bad';
           } else if (grade === 'A' || grade === 'B') {
@@ -3566,7 +3858,28 @@ function renderAccount(acct) {
             } catch (e) { /* fail-closed */ }
           });
         } else {
-          trustEl.hidden = true;
+          // Braiins contracts carry no rig identity → no delivery track
+          // record. The speed series yields a STABILITY signal (CV) — show it
+          // instead of a dead 'NO DATA' box.
+          const stab = data.stability || {};
+          if (stab && stab.cv_pct != null) {
+            trustEl.hidden = false;
+            const stCls = stab.grade === 'STABLE' ? 'is-good' : (stab.grade === 'MODERATE' ? 'is-warn' : 'is-bad');
+            const stabCells = [
+              { l: 'STABILITY', v: '<span class="rentals-trust__badge rentals-trust__badge--' + escapeHtml(String(stab.grade)) + '">' + escapeHtml(String(stab.grade)) + '</span>', cls: '' },
+              { l: 'CV (SPEED)', v: Number(stab.cv_pct).toFixed(1) + '%', cls: stCls },
+              { l: 'AVG SPEED', v: stab.mean_ph != null ? Number(stab.mean_ph).toFixed(1) + ' PH/s' : '—', cls: '' },
+              { l: 'MIN–MAX', v: (stab.min_ph != null && stab.max_ph != null) ? Number(stab.min_ph).toFixed(1) + '–' + Number(stab.max_ph).toFixed(1) + ' PH' : '—', cls: '' },
+              { l: 'SAMPLES', v: stab.label === 'NO DATA' ? '—' : 'series points', cls: '' },
+            ];
+            trustEl.innerHTML =
+              '<div class="rentals-trust__cells">' + stabCells.map(c =>
+                '<div class="rentals-trust__cell"><span class="rentals-trust__label">' + c.l + '</span><span class="rentals-trust__value' + (c.cls ? ' rentals-trust__value--' + c.cls : '') + '">' + c.v + '</span></div>'
+              ).join('') + '</div>' +
+              '<div class="rentals-trust__verdict">Contratos Braiins não expõem identidade de rig — a estabilidade vem da série de speed. CV &lt; 5% = previsível; &gt; 15% = arriscado.</div>';
+          } else {
+            trustEl.hidden = true;
+          }
         }
       }
       // RIG TRACK RECORD — histórico de % por rig (same-rig past rentals) so
@@ -3689,6 +4002,22 @@ function renderAccount(acct) {
   function _initRentalsPanel() {
     const refresh = document.getElementById('rentals-refresh');
     if (refresh) refresh.addEventListener('click', () => { _rentalsLoaded = false; loadRentals(); });
+    // CFO: CSV export of the full rental ledger (portfólio + track record).
+    const exportBtn = document.getElementById('rentals-export');
+    if (exportBtn) exportBtn.addEventListener('click', async () => {
+      try {
+        const r = await authFetch('/api/rentals/export');
+        if (!r.ok) return;
+        const blob = await r.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = 'rentals.csv';
+        document.body.appendChild(a);
+        a.click();
+        setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 2000);
+      } catch (e) { /* fail-closed */ }
+    });
     const closeBtn = document.getElementById('rentals-detail-close');
     if (closeBtn) closeBtn.addEventListener('click', () => { const p = document.getElementById('rentals-detail'); if (p) p.hidden = true; });
     const filters = document.querySelectorAll('[data-rentals-filter]');
@@ -3701,6 +4030,11 @@ function renderAccount(acct) {
     // CFO: "hide bad rigs" re-renders the list live when toggled.
     const hideBad = document.getElementById('rentals-hide-bad');
     if (hideBad) hideBad.addEventListener('change', renderRentals);
+    // CFO: portfolio series bucket toggle (week/month) — re-fetches the
+    // server-side aggregation from the local rental_history.
+    document.querySelectorAll('[data-series-bucket]').forEach(b =>
+      b.addEventListener('click', () =>
+        setRentalsSeriesBucket(b.getAttribute('data-series-bucket') || 'week')));
     const list = document.getElementById('rentals-list');
     if (list) list.addEventListener('click', (e) => {
       const item = e.target.closest ? e.target.closest('.rentals-item') : null;
@@ -3709,7 +4043,135 @@ function renderAccount(acct) {
       const provider = _rentalsFilter === 'contracts' ? 'braiins' : 'mrr';
       if (id) openRentalDetail(id, provider);
     });
+    // ⚡ COMPRAR HASHRATE — Braiins spot (real money, typed confirmation).
+    const buyBtn = document.getElementById('rentals-buy');
+    if (buyBtn) buyBtn.addEventListener('click', openBraiinsBuyModal);
   }
+
+  // ── Braiins spot buy modal (real money — explicit confirm only) ───────
+  let _braiinsBuyQuote = null;   // last /quote payload
+  let _braiinsBuyOrderId = '';   // idempotency key, regenerated per modal session
+
+  function _braiinsBuyModal() { return document.getElementById('braiins-buy-modal'); }
+
+  function _braiinsBuySet(id, v) { const e = document.getElementById(id); if (e) e.textContent = v; }
+
+  function openBraiinsBuyModal() {
+    const modal = _braiinsBuyModal();
+    if (!modal) return;
+    // Reset the form + status on every open (never carry a stale bid).
+    ['braiins-buy-th', 'braiins-buy-amount', 'braiins-buy-stratum',
+     'braiins-buy-identity', 'braiins-buy-memo', 'braiins-buy-type'].forEach(id => {
+      const e = document.getElementById(id); if (e) e.value = '';
+    });
+    const ack = document.getElementById('braiins-buy-ack'); if (ack) ack.checked = false;
+    _braiinsBuySet('braiins-buy-calc', '—');
+    _braiinsBuySet('braiins-buy-status', '');
+    const submit = document.getElementById('braiins-buy-submit');
+    if (submit) submit.disabled = true;
+    modal.classList.add('modal--open');
+    _braiinsBuyOrderId = 'c65-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8);
+    _braiinsBuyCalc();
+    // Load the live ask + tenant balance to prefill the quote line.
+    _braiinsBuySet('braiins-buy-quote', 'carregando cotação…');
+    fetch('/api/rentals/braiins/quote')
+      .then(r => r.ok ? r.json() : null)
+      .then(q => {
+        _braiinsBuyQuote = q;
+        if (!q || !q.available) {
+          _braiinsBuySet('braiins-buy-quote', '⚠ ' + ((q && q.error) || 'cotação indisponível'));
+          return;
+        }
+        const bal = q.balance || {};
+        const balTxt = bal.available ? (bal.available_sat != null ? Number(bal.available_sat).toLocaleString('en-US') + ' sats disponíveis' : 'saldo: verifique na conta') : ((bal.error || '') ? 'saldo indisponível (' + bal.error + ')' : '—');
+        _braiinsBuySet('braiins-buy-quote',
+          'ASK MENOR: ' + q.price_sats_per_thh + ' sats/TH·h · ' + q.price_sat_per_ph_day + ' sats/PH·dia · ' + balTxt);
+        _braiinsBuyCalc();
+      })
+      .catch(() => _braiinsBuySet('braiins-buy-quote', '⚠ falha ao carregar cotação'));
+  }
+
+  function _braiinsBuyCalc() {
+    const th = parseFloat(document.getElementById('braiins-buy-th')?.value) || 0;
+    const amount = parseInt(document.getElementById('braiins-buy-amount')?.value, 10) || 0;
+    const q = _braiinsBuyQuote;
+    let out = '—';
+    if (q && q.available && th > 0) {
+      const ph = th / 1000;
+      // At the cheapest ask, how long does the budget last (TH·h / TH = h)?
+      const thh = amount > 0 && q.price_sats_per_thh > 0 ? amount / q.price_sats_per_thh : 0;
+      const hours = thh > 0 && th > 0 ? thh / th : 0;
+      out = th.toLocaleString('en-US') + ' TH/s = ' + ph.toLocaleString('en-US', { maximumFractionDigits: 3 }) + ' PH/s';
+      if (amount > 0 && hours > 0) {
+        out += ' · budget cobre ~' + (hours >= 1 ? Math.round(hours) + 'h' : Math.round(hours * 60) + 'min') + ' de hashrate';
+      }
+    }
+    _braiinsBuySet('braiins-buy-calc', out);
+    // Enable only when: live quote present, hashrate > 0, budget + stratum
+    // present, ack checked, typed COMPRAR. A missing quote (network down /
+    // no ask) BLOCKS the order — never bid blind with real money.
+    const quoteOk = !!(q && q.available);
+    const typed = (document.getElementById('braiins-buy-type')?.value || '').trim().toUpperCase() === 'COMPRAR';
+    const ack = document.getElementById('braiins-buy-ack')?.checked || false;
+    const stratum = (document.getElementById('braiins-buy-stratum')?.value || '').trim();
+    const submit = document.getElementById('braiins-buy-submit');
+    if (submit) submit.disabled = !(quoteOk && th > 0 && amount >= 1000 && stratum && typed && ack);
+  }
+
+  async function submitBraiinsBid() {
+    const submit = document.getElementById('braiins-buy-submit');
+    if (submit) submit.disabled = true;
+    _braiinsBuySet('braiins-buy-status', 'enviando ordem…');
+    try {
+      const th = parseFloat(document.getElementById('braiins-buy-th')?.value) || 0;
+      const amount = parseInt(document.getElementById('braiins-buy-amount')?.value, 10) || 0;
+      const body = {
+        speed_limit_th: th,
+        amount_sat: amount,
+        price_sat: (_braiinsBuyQuote && _braiinsBuyQuote.price_sat_per_ph_day) || 0,
+        upstream_url: (document.getElementById('braiins-buy-stratum')?.value || '').trim(),
+        upstream_identity: (document.getElementById('braiins-buy-identity')?.value || '').trim(),
+        memo: (document.getElementById('braiins-buy-memo')?.value || '').trim(),
+        cl_order_id: _braiinsBuyOrderId,
+      };
+      const r = await authFetch('/api/rentals/braiins/bid', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const data = await r.json().catch(() => ({}));
+      if (r.ok && data.success) {
+        _braiinsBuySet('braiins-buy-status', '✅ ordem enviada — id ' + (data.bid && data.bid.id ? data.bid.id : 'confirmada na Braiins'));
+        // Conversion telemetry is recorded SERVER-SIDE on bid success
+        // (single source of truth — no double counting).
+      } else {
+        _braiinsBuySet('braiins-buy-status', '⚠ ' + (data.error || 'falha ao enviar ordem'));
+        if (submit) submit.disabled = false;
+      }
+    } catch (e) {
+      _braiinsBuySet('braiins-buy-status', '⚠ erro de rede ao enviar ordem');
+      if (submit) submit.disabled = false;
+    }
+  }
+
+  function _initBraiinsBuyModal() {
+    const modal = _braiinsBuyModal();
+    if (!modal) return;
+    modal.addEventListener('click', (e) => {
+      if (e.target.matches('[data-close]')) modal.classList.remove('modal--open');
+      if (e.target === modal) modal.classList.remove('modal--open');
+    });
+    ['braiins-buy-th', 'braiins-buy-amount', 'braiins-buy-stratum', 'braiins-buy-type']
+      .forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.addEventListener('input', _braiinsBuyCalc);
+      });
+    const ack = document.getElementById('braiins-buy-ack');
+    if (ack) ack.addEventListener('change', _braiinsBuyCalc);
+    const submit = document.getElementById('braiins-buy-submit');
+    if (submit) submit.addEventListener('click', submitBraiinsBid);
+  }
+  _initBraiinsBuyModal();
 
   // ── AI Operator render ──
   let _aiInited = false;
@@ -4236,6 +4698,8 @@ function renderAccount(acct) {
     power_kwh_usd: 'Tarifa de eletricidade ($/kWh) — usada junto com power_watts no modo POWER e no LEASE.',
     pool_fee_pct: 'Taxa da pool (%) aplicada à receita de mineração.',
     active_currency: 'Moeda exibida nos valores fiat (USD|BRL|EUR|GBP|JPY|KRW|CNY).',
+    rental_pl_alert_pct: 'ALERTA CFO: dispara webhook + push quando um aluguel FECHA com P/L econômico abaixo deste % (ex: -50). Vazio ou 0 = desativado. Como o P/L vs yield costuma ser muito negativo, use um limiar realista (ex: -90) para só alertar os piores — ou deixe vazio para desligar. (Sem network hashrate, a checagem usa overpay vs preço de mercado.)',
+    rental_pl_alert_window_hours: 'Janela: só alerta aluguéis que FECHARAM nas últimas N horas — evita enxurrada de alertas antigos ao habilitar a primeira vez.',
   };
   function renderSettingsForm() {
     const box = dom.settingsBody;
@@ -4245,7 +4709,7 @@ function renderAccount(acct) {
       box.innerHTML = '<div class="mkt-empty" style="padding:16px;text-align:center">settings unavailable</div>';
       return;
     }
-    const order = ['cost_mode','rental_usd_per_th_day','power_watts','power_kwh_usd','btc_block_reward','btc_avg_tx_fee','pool_fee_pct','orphan_rate_pct','active_currency','active_fiat','stale_share_minutes','hashrate_drop_pct','webhook_url','webhook_min_severity','show_test_alerts','mrr_api_key','mrr_api_secret','braiins_api_key'];
+    const order = ['cost_mode','rental_usd_per_th_day','power_watts','power_kwh_usd','btc_block_reward','btc_avg_tx_fee','pool_fee_pct','orphan_rate_pct','active_currency','active_fiat','stale_share_minutes','hashrate_drop_pct','webhook_url','webhook_min_severity','rental_pl_alert_pct','rental_pl_alert_window_hours','show_test_alerts','mrr_api_key','mrr_api_secret','braiins_api_key'];
     const keys = Object.keys(settings).sort((a,b) => {
       const ia = order.indexOf(a), ib = order.indexOf(b);
       return (ia<0?99:ia) - (ib<0?99:ib);
@@ -7091,12 +7555,57 @@ dom.walletSave?.addEventListener('click', async () => {
           console.log('[boot] unregistered old SW:', reg.scope);
         }
         // Register fresh with cache bust
-        navigator.serviceWorker.register('/sw.js', { scope: '/' }).then(() => {
+        navigator.serviceWorker.register('/sw.js', { scope: '/' }).then(reg => {
           console.log('[boot] new SW registered');
+          // Web Push: subscribe after the SW is ready (never blocks boot).
+          setTimeout(() => enablePush(reg), 1500);
         }).catch(e => {
           console.warn('[boot] SW registration failed:', e);
         });
       });
+      // Web Push bootstrap — registers a per-tenant push subscription with the
+      // server so mining alerts reach this browser even when the tab is closed.
+      // Degrades silently: no VAPID key → no prompt; permission denied → no-op.
+      async function enablePush(reg) {
+        try {
+          if (!('PushManager' in window)) return;
+          if (!reg || typeof reg.pushManager !== 'object') return;
+          // Only offer push when the server has VAPID configured.
+          let vapidKey = null;
+          try {
+            const r = await fetch('/api/push/vapid-key');
+            if (r.ok) vapidKey = (await r.json()).vapid_public_key || null;
+          } catch (e) { /* offline / push unconfigured — skip silently */ }
+          if (!vapidKey) return;
+          const sub = await reg.pushManager.getSubscription();
+          if (sub) return;  // already subscribed
+          let permission = 'default';
+          try { permission = await Notification.requestPermission(); } catch (e) {}
+          if (permission !== 'granted') return;
+          const newSub = await reg.pushManager.subscribe({
+            userVisibleOnly: true,
+            applicationServerKey: urlBase64ToUint8Array(vapidKey),
+          });
+          const raw = newSub.toJSON();
+          await fetch('/api/push/subscribe', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ endpoint: raw.endpoint, keys: raw.keys }),
+          });
+          console.log('[push] subscribed for mining alerts');
+        } catch (e) {
+          console.warn('[push] enable failed (silent):', e && e.message);
+        }
+      }
+      // VAPID applicationServerKey expects a Uint8Array.
+      function urlBase64ToUint8Array(base64String) {
+        const padding = '='.repeat((4 - (base64String.length % 4)) % 4);
+        const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
+        const rawData = atob(base64);
+        const output = new Uint8Array(rawData.length);
+        for (let i = 0; i < rawData.length; ++i) output[i] = rawData.charCodeAt(i);
+        return output;
+      }
       // Listen for updates and reload when a new SW takes over
       navigator.serviceWorker.addEventListener('controllerchange', () => {
         console.log('[boot] new SW activated — reloading');
@@ -7421,6 +7930,7 @@ dom.walletSave?.addEventListener('click', async () => {
     'docs':        { title: 'DOCS / GUIDE',  desc: 'Manual de uso' },
     'learning':    { title: 'LEARNING',      desc: 'Bitcoin Academy — whitepaper, livros e Ordinals' },
     'support':     { title: 'SUPPORT',       desc: 'Doação e apoio' },
+    'admin':       { title: 'ADMIN · CFO',   desc: 'Operador: pool health + funil PRO + LTV/CAC' },
   };
 
   function openSidebar() {
@@ -7538,6 +8048,9 @@ dom.walletSave?.addEventListener('click', async () => {
       // Hash Market: also refresh the snapshot — the boot-time snapshot can be
       // stale (fetched before the warmup cache is hot), so the grid would open
       // with 0 offers until the next 15s poll. Same pattern as the fleet fix.
+      if (name === 'admin' && typeof fetchAdminData === 'function') {
+        fetchAdminData();
+      }
       if (name === 'market' && typeof fetchSnapshot === 'function') {
         fetchSnapshot();
       }

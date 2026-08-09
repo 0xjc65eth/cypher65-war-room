@@ -363,6 +363,63 @@ class TestPoolStats:
             pool.stop()
 
 
+    def test_stats_reports_last_poll_and_stalled(self, monkeypatch):
+        """stats() exposes last_poll_ts + stalled flag; is_stalled() is False
+        on a healthy pool that recently polled."""
+        pool = _up.PollWorkerPool(size=1)
+        monkeypatch.setattr(_up, "_build_snapshot", lambda a, w: _snap())
+        monkeypatch.setattr(_up, "_poll_wait", lambda err: 0.01)
+        pool.start()
+        try:
+            sm = SessionManager()
+            s = sm.create_session("bc1qstall" + "a" * 26, "w1")
+            w = _up.UserPollingWorker(s.session_id, sm, s.btc_address, "w1",
+                                      pool=pool)
+            w.start()
+            for _ in range(100):
+                if pool._last_poll_ts:
+                    break
+                time.sleep(0.05)
+            assert pool._last_poll_ts > 0
+            assert pool.is_stalled(window=90.0) is False  # just polled
+            st = pool.stats()
+            assert st["last_poll_ts"] > 0
+            assert st["stalled"] is False
+            w.stop()
+            sm.stop()
+        finally:
+            pool.stop()
+
+    def test_is_stalled_when_pending_but_no_recent_poll(self):
+        """Sessions registered + no completed poll in the window = stalled.
+        An idle pool (nothing registered) is NOT stalled."""
+        pool = _up.PollWorkerPool(size=2)
+        pool.start()
+        try:
+            # Idle pool: nothing to do → never stalled.
+            assert pool.is_stalled(window=1.0) is False
+            # Pending session, no poll completed yet (worker threads are
+            # blocked/stuck — simulate by registering without letting it run:
+            # _last_poll_ts stays 0, but the session IS in the heap).
+            sm = SessionManager()
+            s = sm.create_session("bc1qfrozen" + "a" * 25, "w1")
+            w = _up.UserPollingWorker(s.session_id, sm, s.btc_address, "w1",
+                                      pool=pool)
+            with pool._lock:
+                pool._sessions[w.session_id] = w
+                import heapq as _h
+                _h.heappush(pool._heap, (time.time(), next(pool._seq),
+                                         w.session_id))
+            # Wait past the window with no poll completing (fake the start
+            # time far in the past so the grace period is exhausted).
+            with pool._lock:
+                pool._started_ts = time.time() - 10.0
+            assert pool.is_stalled(window=1.0) is True
+            sm.stop()
+        finally:
+            pool.stop()
+
+
 def test_admin_sessions_route_includes_pool_stats():
     """/api/admin/sessions carries the pool observability block (started pool
     in the test process reports its real counters)."""

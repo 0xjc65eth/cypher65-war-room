@@ -53,7 +53,8 @@ CATEGORY_CONTEXT = {
 
 def _get_push_subscriptions() -> Dict[str, Any]:
     """
-    Get current push subscriptions from the app module.
+    Get current push subscriptions from the app module (legacy in-memory
+    store — used only by callers that never migrated to the DB table).
     Returns empty dict if app not accessible or no subscriptions.
     """
     try:
@@ -61,6 +62,170 @@ def _get_push_subscriptions() -> Dict[str, Any]:
         return getattr(_app, "_push_subscriptions", {})
     except Exception:
         return {}
+
+
+# ── Persistent per-tenant push subscriptions (Phase: multi-tenant) ───────
+# The old in-memory _push_subscriptions dict was never populated (no
+# subscribe endpoint existed), so Web Push never actually fired. These
+# helpers persist subscriptions in SQLite scoped to a tenant_id, and
+# notify_tenant_alert() delivers to exactly that tenant's devices.
+
+
+def _ensure_subscriptions_table() -> None:
+    try:
+        from services.db import get_db
+        conn = get_db()
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS push_subscriptions (
+                endpoint   TEXT PRIMARY KEY,
+                keys       TEXT NOT NULL DEFAULT '{}',
+                tenant_id  TEXT NOT NULL DEFAULT '',
+                created_at INTEGER NOT NULL DEFAULT 0
+            )
+            """
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_push_sub_tenant "
+                     "ON push_subscriptions(tenant_id)")
+        conn.commit()
+        conn.close()
+    except Exception:
+        pass
+
+
+# Cap on stored subscriptions: the subscribe endpoint is unauthenticated, so
+# bound growth (spam / stale devices) — prune by recency when over the cap.
+_PUSH_SUBS_MAX = 5000
+
+
+def save_subscription(endpoint: str, keys: Dict[str, str], tenant_id: str = "") -> bool:
+    """Upsert a push subscription for a tenant. Best-effort."""
+    if not endpoint:
+        return False
+    try:
+        _ensure_subscriptions_table()
+        from services.db import get_db
+        conn = get_db()
+        conn.execute(
+            "INSERT INTO push_subscriptions (endpoint, keys, tenant_id, created_at) "
+            "VALUES (?, ?, ?, ?) "
+            "ON CONFLICT(endpoint) DO UPDATE SET keys=excluded.keys, "
+            "tenant_id=excluded.tenant_id, created_at=excluded.created_at",
+            (endpoint, json.dumps(keys or {}), tenant_id, int(time.time())),
+        )
+        # Bounded table: prune the oldest rows (by created_at) past the cap
+        # so an unauthenticated subscribe endpoint cannot grow the DB forever.
+        row = conn.execute(
+            "SELECT COUNT(*) AS n FROM push_subscriptions").fetchone()
+        if row and row["n"] > _PUSH_SUBS_MAX:
+            excess = row["n"] - _PUSH_SUBS_MAX
+            conn.execute(
+                "DELETE FROM push_subscriptions WHERE endpoint IN "
+                "(SELECT endpoint FROM push_subscriptions ORDER BY created_at "
+                "ASC LIMIT ?)", (excess,))
+        conn.commit()
+        conn.close()
+        return True
+    except Exception as e:
+        log.warning("[push] save_subscription failed: %s", e)
+        return False
+
+
+def remove_subscription(endpoint: str) -> bool:
+    """Delete a subscription (called on 404/410 prune)."""
+    try:
+        _ensure_subscriptions_table()
+        from services.db import get_db
+        conn = get_db()
+        conn.execute("DELETE FROM push_subscriptions WHERE endpoint = ?", (endpoint,))
+        conn.commit()
+        conn.close()
+        return True
+    except Exception as e:
+        log.warning("[push] remove_subscription failed: %s", e)
+        return False
+
+
+def get_subscriptions_for_tenant(tenant_id: str = "") -> List[Dict[str, Any]]:
+    """All push subscriptions owned by a tenant (or the global '' tenant)."""
+    try:
+        _ensure_subscriptions_table()
+        from services.db import get_db
+        conn = get_db()
+        rows = conn.execute(
+            "SELECT endpoint, keys FROM push_subscriptions WHERE tenant_id = ?",
+            (tenant_id,),
+        ).fetchall()
+        conn.close()
+        out = []
+        for r in rows:
+            try:
+                keys = json.loads(r["keys"])
+            except Exception:
+                keys = {}
+            out.append({"endpoint": r["endpoint"], "keys": keys})
+        return out
+    except Exception as e:
+        log.warning("[push] get_subscriptions_for_tenant failed: %s", e)
+        return []
+
+
+def notify_tenant_alert(tenant_id: str, severity: str, category: str,
+                        message: str, url: str = "/") -> int:
+    """Send a Web Push to ALL devices subscribed under a tenant.
+
+    Returns the number of devices notified. Requires pywebpush installed AND
+    VAPID keys configured — otherwise it degrades silently (no crash).
+    Expired subscriptions (HTTP 404/410) are pruned from the DB.
+    """
+    if severity not in ("CRIT", "CRITICAL", "WARN", "GOLD"):
+        return 0
+    if not VAPID_PRIVATE_KEY or not VAPID_PUBLIC_KEY:
+        return 0
+    subs = get_subscriptions_for_tenant(tenant_id)
+    if not subs:
+        return 0
+    try:
+        from pywebpush import webpush, WebPushException
+    except ImportError:
+        log.warning("[push] pywebpush not installed — skipping tenant push")
+        return 0
+
+    title = SEVERITY_TITLES.get(severity, "⚡ Mining Alert")
+    context = CATEGORY_CONTEXT.get(category, "")
+    body = f"{context}: {message}"[:200] if context else message[:200]
+    payload = {
+        "title": title,
+        "body": body,
+        "tag": f"cypher65-{category}-{int(time.time() / 300)}",
+        "data": {"url": url, "severity": severity, "category": category},
+        "requireInteraction": severity in ("CRIT", "CRITICAL"),
+        "renotify": True,
+        "vibrate": [300, 100, 300] if severity in ("CRIT", "CRITICAL") else [200, 100, 200],
+    }
+
+    sent = 0
+    for sub in subs:
+        try:
+            webpush(
+                subscription_info={
+                    "endpoint": sub["endpoint"],
+                    "keys": sub.get("keys", {}),
+                },
+                data=json.dumps(payload),
+                vapid_private_key=VAPID_PRIVATE_KEY,
+                vapid_claims=VAPID_CLAIMS,
+            )
+            sent += 1
+        except WebPushException as e:
+            if e.response and e.response.status_code in (404, 410):
+                remove_subscription(sub["endpoint"])
+        except Exception:
+            pass
+    if sent > 0:
+        log.info("[push] tenant %s notified on %d device(s) for %s/%s",
+                 tenant_id[:8], sent, severity, category)
+    return sent
 
 
 def notify_alert(severity: str, category: str, message: str,

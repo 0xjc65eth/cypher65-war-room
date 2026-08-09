@@ -19,13 +19,14 @@ import json
 import os
 import time
 import logging
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict, List, Optional
 
 import requests
 
 from agents.solo_mining_advisor.tools import _mrr_signed_headers, mrr_credentials, braiins_credentials
 from services.db import get_db
-from services.settings import is_default_tenant
+from services.settings import is_default_tenant, load_settings
 
 log = logging.getLogger("cypher65")
 
@@ -61,6 +62,12 @@ RIG_GRADE_LABEL = {
 # Settings key holding the per-tenant rig blacklist (JSON list of rig ids).
 # Internal key (leading '_') bypasses the DEFAULT_SETTINGS whitelist.
 RIG_BLACKLIST_KEY = "_rental_rig_blacklist"
+# AUTO blacklist (separate key so a manual restore is never re-flagged by
+# the same under-delivery streak until NEW bad samples accumulate). The TS
+# map records WHEN each rig was last auto-excluded and SURVIVES a restore —
+# that's what lets the re-exclusion gate compare against new samples.
+RIG_AUTO_BLACKLIST_KEY = "_rental_auto_blacklist"
+RIG_AUTO_TS_KEY = "_rental_auto_blacklist_ts"
 
 
 def _to_float(v):
@@ -130,52 +137,14 @@ def compute_rig_trust_score(history: List[Dict]) -> Dict[str, Any]:
 # the tenant: default → global `settings` table, named tenant → its own
 # `tenant_settings` rows. Never inherits/leaks across tenants.
 
-def _save_rig_blacklist(items: List[str], tenant_id: str = ""):
-    raw = json.dumps([str(x) for x in items])
-    ts = int(time.time())
-    try:
-        conn = get_db()
-        c = conn.cursor()
-        if is_default_tenant(tenant_id):
-            c.execute(
-                "INSERT INTO settings(key,value,updated_ts) VALUES(?,?,?) "
-                "ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_ts=excluded.updated_ts",
-                (RIG_BLACKLIST_KEY, raw, ts),
-            )
-        else:
-            c.execute(
-                "INSERT INTO tenant_settings(tenant_id,key,value,updated_ts) VALUES(?,?,?,?) "
-                "ON CONFLICT(tenant_id,key) DO UPDATE SET value=excluded.value, updated_ts=excluded.updated_ts",
-                (tenant_id, RIG_BLACKLIST_KEY, raw, ts),
-            )
-        conn.commit()
-        conn.close()
-        return True
-    except Exception as e:
-        log.warning("[rental_performance] blacklist save failed: %s", e)
-        return False
+def _save_rig_blacklist(items: List[str], tenant_id: str = "") -> bool:
+    """Persist the MANUAL rig blacklist (JSON list) — tenant-aware."""
+    return _save_rig_ids(RIG_BLACKLIST_KEY, items, tenant_id=tenant_id)
 
 
 def get_rig_blacklist(tenant_id: str = "") -> List[str]:
     """Persisted rig ids the tenant blacklisted (never rent again)."""
-    try:
-        conn = get_db()
-        c = conn.cursor()
-        if is_default_tenant(tenant_id):
-            c.execute("SELECT value FROM settings WHERE key=?", (RIG_BLACKLIST_KEY,))
-        else:
-            c.execute("SELECT value FROM tenant_settings WHERE tenant_id=? AND key=?",
-                      (tenant_id, RIG_BLACKLIST_KEY))
-        row = c.fetchone()
-        conn.close()
-        if row and row["value"]:
-            parsed = json.loads(row["value"])
-            if isinstance(parsed, list):
-                return [str(x) for x in parsed]
-        return []
-    except Exception as e:
-        log.warning("[rental_performance] blacklist load failed: %s", e)
-        return []
+    return _load_rig_ids(RIG_BLACKLIST_KEY, tenant_id=tenant_id)
 
 
 def add_rig_to_blacklist(rig_id, tenant_id: str = "") -> bool:
@@ -191,17 +160,150 @@ def add_rig_to_blacklist(rig_id, tenant_id: str = "") -> bool:
 
 
 def remove_rig_from_blacklist(rig_id, tenant_id: str = "") -> bool:
-    """Remove a rig from the blacklist (restore). Returns True if removed."""
+    """Remove a rig from BOTH blacklists (manual restore). Returns True if
+    removed — a restored rig is never re-flagged by the same streak."""
     rid = str(rig_id)
     items = [x for x in get_rig_blacklist(tenant_id=tenant_id) if x != rid]
-    return _save_rig_blacklist(items, tenant_id=tenant_id)
+    ok = _save_rig_blacklist(items, tenant_id=tenant_id)
+    auto = [x for x in get_auto_blacklist(tenant_id=tenant_id) if x != rid]
+    return _save_rig_ids(RIG_AUTO_BLACKLIST_KEY, auto, tenant_id=tenant_id) and ok
 
 
 def is_rig_blacklisted(rig_id, tenant_id: str = "") -> bool:
-    """Quick check used by the list/detail routes (no full list re-parse)."""
+    """Quick check used by the list/detail routes (no full list re-parse).
+    True when the rig is on EITHER the manual or the auto blacklist."""
     if rig_id is None:
         return False
-    return str(rig_id) in get_rig_blacklist(tenant_id=tenant_id)
+    rid = str(rig_id)
+    return rid in get_rig_blacklist(tenant_id=tenant_id) or \
+        rid in get_auto_blacklist(tenant_id=tenant_id)
+
+
+def _ensure_rig_settings_tables() -> None:
+    """Self-heal the settings tables (fresh DBs / tests): the real app always
+    creates them via init_db, but a missing table must never silently drop a
+    blacklist write."""
+    try:
+        conn = get_db()
+        c = conn.cursor()
+        c.execute("CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT, updated_ts INTEGER)")
+        c.execute("CREATE TABLE IF NOT EXISTS tenant_settings (tenant_id TEXT, key TEXT, value TEXT, updated_ts INTEGER, PRIMARY KEY(tenant_id, key))")
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        log.warning("[rental_performance] settings table ensure failed: %s", e)
+
+
+def _save_rig_ids(key: str, items: List[str], tenant_id: str = "") -> bool:
+    """Persist a JSON list of rig ids under an internal settings key (tenant-ware)."""
+    _ensure_rig_settings_tables()
+    raw = json.dumps([str(x) for x in items])
+    ts = int(time.time())
+    try:
+        conn = get_db()
+        c = conn.cursor()
+        if is_default_tenant(tenant_id):
+            c.execute(
+                "INSERT INTO settings(key,value,updated_ts) VALUES(?,?,?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_ts=excluded.updated_ts",
+                (key, raw, ts),
+            )
+        else:
+            c.execute(
+                "INSERT INTO tenant_settings(tenant_id,key,value,updated_ts) VALUES(?,?,?,?) "
+                "ON CONFLICT(tenant_id,key) DO UPDATE SET value=excluded.value, updated_ts=excluded.updated_ts",
+                (tenant_id, key, raw, ts),
+            )
+        conn.commit()
+        conn.close()
+        return True
+    except Exception as e:
+        log.warning("[rental_performance] rig list save failed (%s): %s", key, e)
+        return False
+
+
+def _load_rig_ids(key: str, tenant_id: str = "") -> List[str]:
+    """Load a JSON list of rig ids from an internal settings key (tenant-aware)."""
+    _ensure_rig_settings_tables()
+    try:
+        conn = get_db()
+        c = conn.cursor()
+        if is_default_tenant(tenant_id):
+            c.execute("SELECT value FROM settings WHERE key=?", (key,))
+        else:
+            c.execute("SELECT value FROM tenant_settings WHERE tenant_id=? AND key=?",
+                      (tenant_id, key))
+        row = c.fetchone()
+        conn.close()
+        if row and row["value"]:
+            parsed = json.loads(row["value"])
+            if isinstance(parsed, list):
+                return [str(x) for x in parsed]
+        return []
+    except Exception as e:
+        log.warning("[rental_performance] rig list load failed (%s): %s", key, e)
+        return []
+
+
+def get_auto_blacklist(tenant_id: str = "") -> List[str]:
+    """Plain rig ids auto-excluded for under-delivery — entries are stored as
+    'rig_id:ts' (ts = when the exclusion happened) so a restore can be
+    respected: re-exclusion only fires on NEW bad data after that moment."""
+    raw = _load_rig_ids(RIG_AUTO_BLACKLIST_KEY, tenant_id=tenant_id)
+    return [str(x).split(":")[0] for x in raw if str(x)]
+
+
+def _history_newest_ts(history: List[Dict]) -> Optional[float]:
+    """Newest sample timestamp from a rig-history list (starts are strings:
+    MRR 'YYYY-MM-DD HH:MM:SS UTC', Braiins RFC3339, or unix). None when
+    nothing parses — callers then fall back to the permissive path."""
+    import datetime as _dt
+    newest = None
+    for h in history or []:
+        ts = _parse_start_ts(h.get("start"))
+        if ts is None:
+            continue
+        if newest is None or ts > newest:
+            newest = ts
+    return newest
+
+
+def _auto_blacklist_ts(rig_id, tenant_id: str = "") -> float:
+    """When the rig was last auto-excluded (0.0 = never). Read from a SEPARATE
+    map that SURVIVES a restore — clearing the auto list must not erase the
+    reference point, or the same streak would re-exclude immediately."""
+    rid = str(rig_id)
+    for x in _load_rig_ids(RIG_AUTO_TS_KEY, tenant_id=tenant_id):
+        parts = str(x).split(":")
+        if len(parts) == 2 and parts[0] == rid:
+            try:
+                return float(parts[1])
+            except ValueError:
+                return 0.0
+    return 0.0
+
+
+def is_rig_auto_blacklisted(rig_id, tenant_id: str = "") -> bool:
+    if rig_id is None:
+        return False
+    return str(rig_id) in get_auto_blacklist(tenant_id=tenant_id)
+
+
+def add_rig_to_auto_blacklist(rig_id, tenant_id: str = "") -> bool:
+    """Auto-exclude a rig AND record when it happened in the separate ts map
+    (the restore reference). Never raises."""
+    if rig_id is None or str(rig_id) == "":
+        return False
+    rid = str(rig_id)
+    now = int(time.time())
+    items = [x for x in get_auto_blacklist(tenant_id=tenant_id) if x != rid]
+    items.append(rid)
+    ok_ids = _save_rig_ids(RIG_AUTO_BLACKLIST_KEY, items, tenant_id=tenant_id)
+    ts_items = [x for x in _load_rig_ids(RIG_AUTO_TS_KEY, tenant_id=tenant_id)
+                if str(x).split(":")[0] != rid]
+    ts_items.append(f"{rid}:{now}")
+    ok_ts = _save_rig_ids(RIG_AUTO_TS_KEY, ts_items, tenant_id=tenant_id)
+    return ok_ids and ok_ts
 
 
 # ── Credentials: shared resolver in agents/solo_mining_advisor/tools.py ──
@@ -285,7 +387,12 @@ def fetch_mrr_rental_detail(rental_id: str, tenant_id: str = "") -> Dict[str, An
         return {"success": False, "needs_auth": True}
 
     out: Dict[str, Any] = {"success": False}
-    for sub, key in (("", "detail"), ("/graph", "graph"), ("/log", "log")):
+
+    # Fetch detail + graph + log CONCURRENTLY (independent GETs). Sequential
+    # calls made a detail click take up to ~45s worst case (three 15s
+    # timeouts). Each call is a pure function of (endpoint, creds) — the MRR
+    # signing is thread-safe (no shared mutable state).
+    def _fetch_one(sub: str, key: str) -> None:
         endpoint = f"/rental/{rental_id}{sub}"
         try:
             r = requests.get(
@@ -295,11 +402,15 @@ def fetch_mrr_rental_detail(rental_id: str, tenant_id: str = "") -> Dict[str, An
             )
             if not r.ok:
                 out[key] = {"error": f"HTTP {r.status_code}"}
-                continue
+                return
             data = r.json()
             out[key] = data.get("data") if data.get("success") else {"error": data.get("data")}
         except Exception as e:
             out[key] = {"error": str(e)[:120]}
+
+    with ThreadPoolExecutor(max_workers=3) as ex:
+        list(ex.map(lambda kv: _fetch_one(*kv),
+                    (("", "detail"), ("/graph", "graph"), ("/log", "log"))))
 
     out["success"] = bool(out.get("detail") and not out["detail"].get("error"))
     return out
@@ -602,7 +713,206 @@ def fetch_braiins_contract_detail(contract_id: str, contract: Optional[Dict] = N
             "cost_sats_per_thh": cost_sats_per_thh,
         },
     }
-    return {"success": True, "detail": detail, "graph": {"points": points}}
+    # Braiins contracts carry no rig identity → no delivery track record.
+    # The speed series itself is the signal: CV of the PH/s values turns
+    # "how flat did this contract run?" into a stability grade.
+    stability = compute_speed_stability(points)
+    # Economic P/L — expected gross yield (network hashrate) vs amount paid.
+    pl = attach_pl(detail.get("perf"), amount_sat) if amount_sat is not None else {"available": False}
+    return {"success": True, "detail": detail, "graph": {"points": points},
+            "stability": stability, "pl": pl}
+
+
+# ── Braiins spot EXECUTION: quote, balance, place bid (real money!) ────────
+# The jump from analytics to operation: the operator can buy hashrate on the
+# Braiins spot market directly from the panel. Units follow the live API:
+#   - spot/settings reports the account's price unit (default sats/PH/day)
+#   - POST /spot/bid body: dest_upstream.url (stratum), speed_limit_ph (PH/s),
+#     amount_sat (budget), price_sat (per the reported unit), cl_order_id
+#     (idempotency), memo
+# Server-side SANITY CLAMPS guard real money: a unit bug must never turn a
+# 1 TH bid into a 1000 PH order. Every bid is explicit (confirm dialog) and
+# idempotent (client order id regenerated per modal session).
+
+# Plausible bounds for a SHA-256 spot bid (fail-closed on anything outside):
+BID_MIN_SPEED_PH = 0.001        # 1 TH/s
+BID_MAX_SPEED_PH = 1000.0       # 1 EH/s
+BID_MIN_AMOUNT_SAT = 1000
+BID_MAX_AMOUNT_SAT = 100_000_000  # 1 BTC
+# price_sat per PH/day band: 1e4..1e9 → ~0.4..~41,600 sats/TH·h (real market
+# ~300-1500 sats/TH·h; a unit conversion bug lands far outside this band).
+BID_MIN_PRICE_SAT_PH_DAY = 10_000
+BID_MAX_PRICE_SAT_PH_DAY = 1_000_000_000
+
+
+def braiins_price_unit(tenant_id: str = "") -> str:
+    """The account's spot price unit (default 'sats/PH/day'). Reads
+    spot/settings with the tenant's key; falls back to the default unit."""
+    key = _braiins_key(tenant_id=tenant_id)
+    if not key:
+        return "sats/PH/day"
+    try:
+        r = requests.get(f"{BRAIINS_BASE}/spot/settings", headers={"apikey": key}, timeout=8)
+        if r.ok:
+            return str((r.json().get("price_unit") or "sats/PH/day"))
+    except Exception as e:
+        log.warning("[rental_performance] braiins price unit failed: %s", e)
+    return "sats/PH/day"
+
+
+def fetch_braiins_balance(tenant_id: str = "") -> Dict[str, Any]:
+    """BTC balances for all subaccounts (total/available/blocked, in sats).
+    Requires the tenant's Braiins key; 401/403 is surfaced, never swallowed."""
+    key = _braiins_key(tenant_id=tenant_id)
+    if not key:
+        return {"available": False, "error": "BRAIINS_API_KEY not configured",
+                "needs_auth": True}
+    try:
+        r = requests.get(f"{BRAIINS_BASE}/account/balance",
+                         headers={"apikey": key}, timeout=15)
+        if not r.ok:
+            return {"available": False,
+                    "error": f"HTTP {r.status_code}",
+                    "needs_auth": r.status_code in (401, 403)}
+        data = r.json()
+        # Envelope: either {items: [{balance_type, amount, ...}]} or a dict
+        # with total/available/blocked amounts (sats). Tolerate an items list
+        # nested under data.data (same resilience as _braiins_list_items).
+        if isinstance(data, dict) and data.get("data") and isinstance(data["data"], dict) \
+                and "items" in data["data"] and "items" not in data:
+            data = data["data"]
+        total = available = blocked = None
+        items = data.get("items") if isinstance(data, dict) else None
+        if isinstance(items, list):
+            for it in items:
+                typ = str(it.get("balance_type") or "")
+                amt = _num(it.get("amount"))
+                if amt is None:
+                    continue
+                if "total" in typ.lower():
+                    total = amt
+                elif "blocked" in typ.lower():
+                    blocked = amt
+                elif "available" in typ.lower():
+                    available = amt
+        if isinstance(data, dict):
+            if total is None and data.get("total") is not None:
+                total = _num(data["total"])
+            if available is None and data.get("available") is not None:
+                available = _num(data["available"])
+            if blocked is None and data.get("blocked") is not None:
+                blocked = _num(data["blocked"])
+        if available is None and total is not None:
+            available = total - (blocked or 0)
+        return {"available": True, "total_sat": total, "available_sat": available,
+                "blocked_sat": blocked}
+    except Exception as e:
+        log.warning("[rental_performance] braiins balance failed: %s", e)
+        return {"available": False, "error": str(e)[:120]}
+
+
+def braiins_quote(tenant_id: str = "") -> Dict[str, Any]:
+    """Cheapest live Braiins ASK, in the units the UI uses (sats/TH·h) plus
+    the raw PH/day price for the bid body + available budget. Powers the
+    'comprar agora' modal prefill."""
+    from agents.solo_mining_advisor.tools import get_braiins_orderbook
+    ob = get_braiins_orderbook()
+    if ob.get("error"):
+        return {"available": False, "error": ob["error"]}
+    btc_per_th_day = ob.get("price_btc_per_th_day")
+    if not btc_per_th_day:
+        return {"available": False, "error": "no braiins price"}
+    bal = fetch_braiins_balance(tenant_id=tenant_id)
+    return {
+        "available": True,
+        "price_sats_per_thh": round(btc_per_th_day * 1e8 / 24.0, 2),
+        "price_sat_per_ph_day": round(btc_per_th_day * 1e8 * PH_TO_TH, 0),
+        "best_hr_ph": ob.get("best_order_hr_ph"),
+        "price_unit": ob.get("price_raw_unit") or "sats/PH/day",
+        "balance": bal,
+    }
+
+
+def create_braiins_bid(
+    speed_limit_ph: float,
+    amount_sat: int,
+    price_sat: int,
+    upstream_url: str,
+    upstream_identity: str = "",
+    memo: str = "",
+    cl_order_id: str = "",
+    tenant_id: str = "",
+) -> Dict[str, Any]:
+    """Place a spot bid on Braiins (REAL MONEY). Fail-closed on every axis.
+
+    Returns {"success": True, "bid": {...}} or {"success": False, "error": ...,
+    "needs_auth": bool}. Sanity clamps run BEFORE the POST — a unit bug must
+    never reach the wire.
+    """
+    key = _braiins_key(tenant_id=tenant_id)
+    if not key:
+        return {"success": False, "needs_auth": True,
+                "error": "BRAIINS_API_KEY not configured"}
+    try:
+        speed_limit_ph = float(speed_limit_ph)
+        amount_sat = int(amount_sat)
+        price_sat = int(price_sat)
+    except (TypeError, ValueError):
+        return {"success": False, "error": "invalid numeric inputs"}
+    if not (BID_MIN_SPEED_PH <= speed_limit_ph <= BID_MAX_SPEED_PH):
+        return {"success": False, "error": f"speed_limit must be {BID_MIN_SPEED_PH}-{BID_MAX_SPEED_PH} PH/s"}
+    if not (BID_MIN_AMOUNT_SAT <= amount_sat <= BID_MAX_AMOUNT_SAT):
+        return {"success": False, "error": f"amount must be {BID_MIN_AMOUNT_SAT}-{BID_MAX_AMOUNT_SAT} sats"}
+    if not (BID_MIN_PRICE_SAT_PH_DAY <= price_sat <= BID_MAX_PRICE_SAT_PH_DAY):
+        return {"success": False, "error": f"price_sat out of plausible band ({BID_MIN_PRICE_SAT_PH_DAY}-{BID_MAX_PRICE_SAT_PH_DAY} sats/PH/day)"}
+    url = (upstream_url or "").strip()
+    if not (url.startswith("stratum+tcp://") or url.startswith("stratum+ssl://")
+            or url.startswith("stratum://")):
+        return {"success": False, "error": "upstream_url must be a stratum URL (stratum+tcp://host:port)"}
+
+    # MONEY-SAFETY: the API expects price_sat in the ACCOUNT's configured unit
+    # (spot/settings, default sats/PH/day). The UI quote is always PH/day —
+    # convert to the account's unit before the wire, or FAIL CLOSED when the
+    # unit is unknown (never guess with real money). A unit mismatch would
+    # otherwise place an order 1000× too expensive without tripping the
+    # sanity band above.
+    unit = (braiins_price_unit(tenant_id=tenant_id) or "sats/PH/day").strip().lower()
+    price_for_api = price_sat
+    if "th/day" in unit:
+        price_for_api = round(price_sat / 1000.0)  # PH/day → TH/day
+    elif "ph/day" not in unit and unit not in ("", "sats/ph/day"):
+        return {"success": False,
+                "error": f"unsupported account price unit '{unit}' — not placing order"}
+
+    body: Dict[str, Any] = {
+        "dest_upstream": {"url": url},
+        "speed_limit_ph": speed_limit_ph,
+        "amount_sat": amount_sat,
+        "price_sat": price_for_api,
+    }
+    if upstream_identity and str(upstream_identity).strip():
+        body["dest_upstream"]["identity"] = str(upstream_identity).strip()[:120]
+    if memo and str(memo).strip():
+        body["memo"] = str(memo).strip()[:200]
+    if cl_order_id and str(cl_order_id).strip():
+        body["cl_order_id"] = str(cl_order_id).strip()[:64]
+
+    try:
+        r = requests.post(f"{BRAIINS_BASE}/spot/bid", json=body,
+                          headers={"apikey": key}, timeout=20)
+        if not r.ok:
+            return {"success": False,
+                    "error": f"HTTP {r.status_code}: {r.text[:160]}",
+                    "needs_auth": r.status_code in (401, 403)}
+        data = r.json()
+        # Envelope tolerance: {bid_id, order_id, id} at top level or nested.
+        bid_id = (data.get("bid_id") if isinstance(data, dict) else None) or \
+            (data.get("id") if isinstance(data, dict) else None) or \
+            (data.get("order_id") if isinstance(data, dict) else None)
+        return {"success": True, "bid": {"id": bid_id, "raw": data}}
+    except Exception as e:
+        log.warning("[rental_performance] braiins bid post failed: %s", e)
+        return {"success": False, "error": str(e)[:160]}
 
 
 # ── Analytics: market reference + rig track record ──────────────────────────
@@ -680,6 +990,895 @@ def compute_mrr_perf(detail: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+# ── Economic analytics: expected yield + P/L per rental ─────────────────────
+# The cost figure (sats/TH·h) answers "what did I pay?" — but the question a
+# renter actually asks is "did I make money?". Expected gross yield derives
+# from Bitcoin consensus (block reward ÷ network hashrate):
+#
+#   share_of_network_per_th = 1e12 / net_Hs
+#   btc_per_th_day = share × blocks_per_day × block_reward
+#   sats_per_th_h  = btc_per_th_day × 1e8 / 24
+#
+# Mirrors the app.py profitability block constants (144 blocks/day, 3.125 BTC
+# reward at the current halving epoch). Pool fees are NOT subtracted — the
+# figure is labeled GROSS so it never overstates a verdict.
+
+BTC_BLOCKS_PER_DAY = 144.0
+DEFAULT_BLOCK_REWARD_BTC = 3.125
+
+
+def _network_hashrate_hs() -> float:
+    """Current network hashrate in H/s from the shared polling state.
+    0.0 on a cold box (no poll yet) — callers treat it as 'unknown'."""
+    try:
+        from services.state import latest_snapshot
+        v = (latest_snapshot.get("network") or {}).get("hashrate")
+        return float(v) if v else 0.0
+    except Exception:
+        return 0.0
+
+
+def compute_expected_yield_sats_per_thh(
+    network_hashrate_hs: Optional[float] = None,
+    block_reward_btc: float = DEFAULT_BLOCK_REWARD_BTC,
+) -> Optional[float]:
+    """Gross expected yield of 1 TH/s over 1 hour, in sats (before pool fee).
+
+    ``network_hashrate_hs`` defaults to the shared polling state; returns
+    None when the network hashrate is unknown so the UI shows '—' instead
+    of a fabricated number.
+    """
+    hs = network_hashrate_hs
+    if hs is None:
+        hs = _network_hashrate_hs()
+    try:
+        hs = float(hs)
+    except (TypeError, ValueError):
+        return None
+    if hs <= 0:
+        return None
+    share = 1e12 / hs
+    sats_per_th_day = share * BTC_BLOCKS_PER_DAY * float(block_reward_btc) * 1e8
+    return sats_per_th_day / 24.0
+
+
+def compute_rental_pl(
+    delivered_thh: Optional[float],
+    paid_sats: Optional[float],
+    network_hashrate_hs: Optional[float] = None,
+    block_reward_btc: float = DEFAULT_BLOCK_REWARD_BTC,
+) -> Dict[str, Any]:
+    """Economic P/L of one rental: expected gross yield vs what was paid.
+
+    Returns:
+      {expected_yield_sats_per_thh, break_even_sats_per_thh, yield_sats,
+       paid_sats, pl_sats, pl_pct} — pl fields are None when inputs are
+       missing (honest '—' instead of fake money).
+    """
+    y = compute_expected_yield_sats_per_thh(network_hashrate_hs, block_reward_btc)
+    out: Dict[str, Any] = {
+        "expected_yield_sats_per_thh": y,
+        "break_even_sats_per_thh": y,
+        "yield_sats": None,
+        "paid_sats": paid_sats,
+        "pl_sats": None,
+        "pl_pct": None,
+    }
+    if y is None or delivered_thh is None or paid_sats is None:
+        return out
+    yield_sats = y * delivered_thh
+    pl_sats = yield_sats - paid_sats
+    out.update({
+        "yield_sats": round(yield_sats, 2),
+        "pl_sats": round(pl_sats, 2),
+        "pl_pct": round(pl_sats / paid_sats * 100.0, 1) if paid_sats else None,
+    })
+    return out
+
+
+def attach_pl(perf: Optional[Dict], paid_sats: Optional[float],
+              network_hashrate_hs: Optional[float] = None) -> Dict[str, Any]:
+    """Augment a perf block with P/L analytics (used by BOTH detail routes)."""
+    if not perf or not perf.get("delivered_thh"):
+        return {"available": False}
+    pl = compute_rental_pl(perf.get("delivered_thh"), paid_sats,
+                           network_hashrate_hs=network_hashrate_hs)
+    pl["available"] = pl.get("yield_sats") is not None
+    return pl
+
+
+def compute_speed_stability(points: List[Dict]) -> Dict[str, Any]:
+    """Braiins contract stability from the speed series (CV of PH/s values).
+
+    Contracts expose no rig identity → no delivery track record. The speed
+    series itself is the signal: a contract that holds flat speed is
+    predictable; one swinging 80-150% of limit is not. Returns:
+      {cv_pct, mean_ph, std_ph, min_ph, max_ph, grade, label}
+    or NO DATA (all None) when fewer than 2 points.
+    """
+    vals = [p.get("speed_ph") for p in (points or [])
+            if p.get("speed_ph") is not None]
+    if len(vals) < 2:
+        return {"cv_pct": None, "mean_ph": None, "std_ph": None,
+                "min_ph": None, "max_ph": None, "grade": None,
+                "label": "NO DATA"}
+    mean = sum(vals) / len(vals)
+    var = sum((v - mean) ** 2 for v in vals) / len(vals)
+    std = var ** 0.5
+    cv = (std / mean * 100.0) if mean else None
+    if cv is None:
+        grade, label = None, "NO DATA"
+    elif cv < 5:
+        grade, label = "STABLE", "STABLE"
+    elif cv <= 15:
+        grade, label = "MODERATE", "MODERATE"
+    else:
+        grade, label = "VARIABLE", "VARIABLE"
+    return {"cv_pct": round(cv, 1) if cv is not None else None,
+            "mean_ph": round(mean, 2), "std_ph": round(std, 2),
+            "min_ph": min(vals), "max_ph": max(vals),
+            "grade": grade, "label": label}
+
+
+# ── Auto-alert: rental closed with P/L below threshold ─────────────────────
+# Fired from /api/rentals each time the panel loads (the moment the server
+# learns a rental ended). One alert PER RENTAL EVER (persisted dedup), gated
+# to recent closes (window) so first-enable never backfills a flood of old
+# rentals. Decision is honest — never fabricates a metric:
+#   - threshold empty/0 → disabled
+#   - yield known (network hashrate): economic P/L < threshold
+#   - yield unknown (cold box): effective cost > market × (1 + |threshold|/100)
+#   - neither → skipped
+# Braiins ended contracts are SKIPPED on purpose: the list payload has no
+# delivered TH·h (requires the per-contract speed series) — alerting on
+# advertised speed would be dishonest.
+
+RENTAL_PL_ALERT_SETTING = "rental_pl_alert_pct"          # e.g. "-50" (empty/0 = off)
+RENTAL_PL_WINDOW_SETTING = "rental_pl_alert_window_hours"  # default 48
+RENTAL_PL_ALERT_PRUNE_DAYS = 90
+
+
+def pl_alert_enabled_tenants() -> List[str]:
+    """Tenant ids that should be swept for rental P/L alerts.
+
+    The periodic sweep (UserPollingWorker) must not fetch MRR history for
+    every one of 1000+ tenants every cycle — that would burn the MRR rate
+    budget. Only tenants with BOTH:
+      - the alert configured (rental_pl_alert_pct < 0), AND
+      - MRR credentials present (otherwise fetch_mrr_rentals returns
+        needs_auth immediately — a wasted cycle),
+    are returned. The default/operator tenant is included when its GLOBAL
+    setting is enabled. Never raises: a storage hiccup → empty list (the
+    sweep simply skips this cycle).
+    """
+    out: List[str] = []
+    try:
+        _ensure_rig_settings_tables()  # self-heal: fresh DBs lack the table
+        conn = get_db()
+        c = conn.cursor()
+        c.execute("SELECT DISTINCT tenant_id, value FROM tenant_settings WHERE key=?",
+                  (RENTAL_PL_ALERT_SETTING,))
+        rows = c.fetchall()
+        conn.close()
+        for r in rows:
+            try:
+                thr = float((r["value"] or "").strip())
+            except (TypeError, ValueError):
+                continue
+            if thr < 0 and mrr_credentials(tenant_id=r["tenant_id"])["api_key"]:
+                out.append(r["tenant_id"])
+    except Exception as e:
+        log.warning("[rental_performance] pl-alert tenant scan failed: %s", e)
+        # A named-tenant scan failure must NOT skip the default tenant below
+        # (the operator's own alerts still matter) — fall through, don't return.
+    # Default tenant (operator self-host): global settings table.
+    try:
+        s = load_settings(tenant_id="")
+        thr = (s.get(RENTAL_PL_ALERT_SETTING) or "").strip()
+        if thr and float(thr) < 0 and mrr_credentials(tenant_id="")["api_key"]:
+            out.append("")
+    except Exception:
+        pass
+    # Dedup (default tenant could theoretically appear as '' in the scan).
+    return list(dict.fromkeys(out))
+
+
+def sweep_rental_pl_alerts(tenant_id: str = "") -> List[Dict[str, Any]]:
+    """One P/L-alert sweep pass for a single tenant: fetch MRR renter history
+    (ONE API call — the evaluator only needs closed rentals), evaluate,
+    ingest the buckets into local history, and return the ALERTS.
+
+    Used by the periodic sweep loop, which dispatches the returned alerts
+    through the shared webhook+push path (the /api/rentals panel route keeps
+    its own evaluate+dispatch — no drift). Returns [] when nothing to judge
+    or a provider hiccup (logged, never raised).
+    """
+    try:
+        listing = fetch_mrr_rentals(rtype="renter", history=True, limit=50,
+                                    tenant_id=tenant_id)
+        if not listing.get("success"):
+            if listing.get("needs_auth"):
+                log.debug("[rentals-sweep] %s: no MRR credentials", tenant_id or "default")
+            else:
+                log.warning("[rentals-sweep] %s: MRR fetch failed: %s",
+                            tenant_id or "default", listing.get("error"))
+            return []
+        history = listing.get("rentals", [])
+        # Keep the local track record fresh even when no alert fires (the
+        # portfolio series + rig recommendations depend on it).
+        try:
+            ingest_rentals([], history, [], [], tenant_id=tenant_id)
+        except Exception as _ie:
+            log.warning("[rentals-sweep] %s: ingest error: %s",
+                        tenant_id or "default", _ie)
+        return evaluate_rental_pl_alerts(history, [], tenant_id=tenant_id)
+    except Exception as e:
+        log.warning("[rentals-sweep] %s: sweep error: %s",
+                    tenant_id or "default", e)
+        return []
+
+
+def _ensure_pl_alert_table() -> None:
+    try:
+        conn = get_db()
+        c = conn.cursor()
+        c.execute("""CREATE TABLE IF NOT EXISTS rental_pl_alerts (
+            tenant_id TEXT NOT NULL DEFAULT '',
+            provider TEXT NOT NULL DEFAULT 'mrr',
+            rental_id TEXT NOT NULL,
+            metric REAL,
+            fired_ts INTEGER,
+            PRIMARY KEY (tenant_id, provider, rental_id)
+        )""")
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        log.warning("[rental_performance] pl-alert table ensure failed: %s", e)
+
+
+def _pl_alert_fired(tenant_id: str, provider: str, rental_id: str) -> bool:
+    try:
+        conn = get_db()
+        c = conn.cursor()
+        c.execute("SELECT 1 FROM rental_pl_alerts WHERE tenant_id=? AND provider=? AND rental_id=?",
+                  (tenant_id or "", provider, rental_id))
+        row = c.fetchone()
+        conn.close()
+        return row is not None
+    except Exception:
+        return False
+
+
+def _mark_pl_alert_fired(tenant_id: str, provider: str, rental_id: str,
+                         metric: Optional[float]) -> bool:
+    """ATOMICALLY claim the dedup slot (INSERT OR IGNORE). Returns True only
+    for the caller that INSERTED (rowcount 1) — a concurrent /api/rentals
+    request gets False and must NOT fire (check-then-set would double-fire
+    webhooks on panel refresh + another tab). Fail-open on storage errors:
+    never suppress a bad-rental alert because the dedup write hiccuped."""
+    _ensure_pl_alert_table()
+    try:
+        conn = get_db()
+        c = conn.cursor()
+        c.execute(
+            "INSERT OR IGNORE INTO rental_pl_alerts(tenant_id,provider,rental_id,metric,fired_ts) "
+            "VALUES(?,?,?,?,?)",
+            (tenant_id or "", provider, rental_id, metric, int(time.time())))
+        conn.commit()
+        claimed = c.rowcount == 1
+        conn.close()
+        return claimed
+    except Exception as e:
+        log.warning("[rental_performance] pl-alert mark failed: %s", e)
+        return True  # fail-open: deliver the alert, dedup may re-fire once
+
+
+_pl_prune_ts = 0.0  # module-level gate: prune at most once per hour
+
+
+def _prune_pl_alerts(force: bool = False) -> None:
+    """Drop dedup rows older than the prune horizon. Gated to once/hour — the
+    full-table DELETE must never scan on every panel load at 1000+ tenants."""
+    global _pl_prune_ts
+    now = time.time()
+    if not force and (now - _pl_prune_ts) < 3600.0:
+        return
+    _pl_prune_ts = now
+    try:
+        conn = get_db()
+        c = conn.cursor()
+        c.execute("DELETE FROM rental_pl_alerts WHERE fired_ts < ?",
+                  (int(time.time()) - RENTAL_PL_ALERT_PRUNE_DAYS * 86400,))
+        conn.commit()
+        conn.close()
+    except Exception:
+        pass
+
+
+def _build_pl_alert(provider: str, rental_id: Any, delivery_pct: Optional[float],
+                    cost_sats_per_thh: Optional[float],
+                    pl: Optional[Dict], market: Optional[Dict]) -> Dict[str, Any]:
+    """Alert payload: severity WARN, category rental_pl — concise enough for
+    both webhook embeds and Web Push (≤ ~200 chars)."""
+    parts = [f"Rental #{rental_id} ({provider.upper()}) fechou com prejuízo"]
+    if pl and pl.get("pl_pct") is not None:
+        parts.append(f"P/L {pl['pl_pct']:.0f}% (yield vs custo)")
+    if cost_sats_per_thh is not None:
+        parts.append(f"custo {cost_sats_per_thh:.0f} sats/TH·h")
+    if delivery_pct is not None:
+        parts.append(f"{delivery_pct:.0f}% do anunciado")
+    if market and market.get("price_sats_per_thh") and cost_sats_per_thh:
+        diff = (cost_sats_per_thh / market["price_sats_per_thh"] - 1.0) * 100.0
+        parts.append(f"{diff:+.0f}% vs mercado ({market.get('provider') or 'market'})")
+    return {
+        "severity": "WARN",
+        "category": "rental_pl",
+        "message": " — ".join(parts)[:280],
+        "rental_id": str(rental_id),
+        "provider": provider,
+    }
+
+
+def evaluate_rental_pl_alerts(history: List[Dict], contracts: Optional[List[Dict]] = None,
+                              tenant_id: str = "", now: Optional[int] = None) -> List[Dict[str, Any]]:
+    """Closed MRR rentals with economic P/L below the tenant threshold → alerts.
+
+    Dedup: one alert per rental EVER (persisted per tenant/provider/rental id).
+    Window: only rentals that ended within ``rental_pl_alert_window_hours`` —
+    a rental with an unknown end time is treated as recent (bounded by the
+    history cap + dedup). Braiins contracts are intentionally skipped.
+    """
+    s = load_settings(tenant_id=tenant_id)
+    raw = (s.get(RENTAL_PL_ALERT_SETTING) or "").strip()
+    try:
+        threshold = float(raw)
+    except (TypeError, ValueError):
+        return []
+    if not raw or threshold >= 0:
+        return []  # disabled / non-sensical threshold
+    window_h = 48.0
+    try:
+        window_h = float((s.get(RENTAL_PL_WINDOW_SETTING) or "48") or 48)
+    except (TypeError, ValueError):
+        window_h = 48.0
+    if window_h <= 0:
+        window_h = 48.0
+    now = int(now or time.time())
+
+    _prune_pl_alerts()
+    market: Optional[Dict] = None  # lazily fetched once (cached fetcher)
+
+    def _overpaid(cost: float) -> bool:
+        """Cold-box fallback: effective cost > market × (1 + |threshold|/100)."""
+        nonlocal market
+        if market is None:
+            market = fetch_market_reference()
+        m = market.get("price_sats_per_thh") if market.get("available") else None
+        return bool(m and cost > m * (1.0 + abs(threshold) / 100.0))
+
+    out: List[Dict[str, Any]] = []
+    for r in history or []:
+        if not r.get("ended"):
+            continue
+        rid = r.get("id")
+        if rid is None:
+            continue
+        end_u = _num(r.get("end_unix"))
+        if end_u is not None and (now - end_u) > window_h * 3600.0:
+            continue
+        if _pl_alert_fired(tenant_id, "mrr", str(rid)):
+            continue
+
+        avg_th = _num(r.get("hashrate_average_th"))
+        length_h = _num(r.get("length_hours"))
+        paid = _num(r.get("price_paid_btc"))
+        delivered = (avg_th * length_h) if (avg_th and length_h) else None
+        paid_sats = (paid * 1e8) if paid is not None else None
+        delivery_pct = _num(r.get("hashrate_percent"))
+        cost = (paid_sats / delivered) if (paid_sats is not None and delivered) else None
+
+        pl: Optional[Dict] = None
+        fired = False
+        if delivered and paid_sats is not None:
+            pl = compute_rental_pl(delivered, paid_sats)
+            if pl.get("pl_pct") is not None:
+                fired = pl["pl_pct"] < threshold
+            elif cost is not None:
+                fired = _overpaid(cost)  # yield unknown → overpay vs market
+        elif cost is not None:
+            fired = _overpaid(cost)
+        if not fired:
+            continue  # nothing to judge honestly / not bad enough
+
+        metric = pl["pl_pct"] if (pl and pl.get("pl_pct") is not None) else None
+        # Atomic claim: only the winner of the INSERT fires (race-safe dedup).
+        if not _mark_pl_alert_fired(tenant_id, "mrr", str(rid), metric):
+            continue
+        out.append(_build_pl_alert("mrr", rid, delivery_pct, cost, pl, market))
+    return out
+
+
+# ── Local rental-history persistence ────────────────────────────────────────
+# The same-rig track record used to re-fetch the whole MRR history list on
+# EVERY detail click (slow + rate-limit-prone with 1000+ users). The panel's
+# list fetch now ingests every bucket into a local table, and analyze_rig
+# reads LOCAL FIRST — instant track records that survive provider outages.
+
+HISTORY_LOCAL_FIRST_ENV = "RENTAL_HISTORY_LOCAL_FIRST"
+
+
+def _ensure_history_table() -> None:
+    try:
+        conn = get_db()
+        c = conn.cursor()
+        c.execute("""CREATE TABLE IF NOT EXISTS rental_history (
+            tenant_id TEXT NOT NULL DEFAULT '',
+            provider TEXT NOT NULL DEFAULT 'mrr',
+            rental_id TEXT NOT NULL,
+            rig_id TEXT NOT NULL DEFAULT '',
+            rig_name TEXT NOT NULL DEFAULT '',
+            start TEXT, end TEXT,
+            percent REAL, avg_th REAL, advertised_th REAL,
+            cost_sats_per_thh REAL, length_hours REAL,
+            delivered_thh REAL, paid_sats REAL,
+            created_ts INTEGER,
+            PRIMARY KEY (tenant_id, provider, rental_id)
+        )""")
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        log.warning("[rental_performance] history table ensure failed: %s", e)
+
+
+def _rental_to_history_row(r: Dict[str, Any], provider: str = "mrr") -> Dict[str, Any]:
+    """Normalized rental dict → rental_history row (shared by ingest + fetch)."""
+    rig = r.get("rig") or {}
+    avg_th = r.get("hashrate_average_th")
+    adv_th = r.get("hashrate_advertised_th")
+    pct = r.get("hashrate_percent")
+    if pct is None and avg_th is not None and adv_th:
+        pct = (avg_th / adv_th * 100.0) if adv_th else None
+    paid_sats = None
+    if r.get("price_paid_btc") is not None:
+        paid_sats = r["price_paid_btc"] * 1e8
+    length_h = r.get("length_hours")
+    delivered_thh = (avg_th * length_h) if (avg_th is not None and length_h) else None
+    cost = (paid_sats / delivered_thh) if (paid_sats is not None and delivered_thh) else None
+    return {
+        "provider": provider,
+        "rental_id": str(r.get("id") or ""),
+        "rig_id": str(rig.get("id") or "") if rig.get("id") is not None else "",
+        "rig_name": str(rig.get("name") or ""),
+        "start": r.get("start"),
+        "end": r.get("end"),
+        "percent": round(pct, 2) if pct is not None else None,
+        "avg_th": avg_th,
+        "advertised_th": adv_th,
+        "cost_sats_per_thh": round(cost, 2) if cost is not None else None,
+        "length_hours": length_h,
+        "delivered_thh": delivered_thh,
+        "paid_sats": paid_sats,
+    }
+
+
+def save_rental_history(rows: List[Dict], tenant_id: str = "") -> bool:
+    """Upsert rental rows into the local history (per tenant, per provider)."""
+    if not rows:
+        return False
+    _ensure_history_table()
+    ts = int(time.time())
+    conn = get_db()
+    c = conn.cursor()
+    try:
+        for r in rows:
+            c.execute(
+                """INSERT INTO rental_history
+                   (tenant_id, provider, rental_id, rig_id, rig_name, start, end,
+                    percent, avg_th, advertised_th, cost_sats_per_thh,
+                    length_hours, delivered_thh, paid_sats, created_ts)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                   ON CONFLICT(tenant_id, provider, rental_id) DO UPDATE SET
+                     rig_id=excluded.rig_id, rig_name=excluded.rig_name,
+                     start=excluded.start, end=excluded.end,
+                     percent=excluded.percent, avg_th=excluded.avg_th,
+                     advertised_th=excluded.advertised_th,
+                     cost_sats_per_thh=excluded.cost_sats_per_thh,
+                     length_hours=excluded.length_hours,
+                     delivered_thh=excluded.delivered_thh,
+                     paid_sats=excluded.paid_sats,
+                     created_ts=excluded.created_ts""",
+                (tenant_id or "", r["provider"], r["rental_id"], r["rig_id"],
+                 r["rig_name"], r.get("start"), r.get("end"), r["percent"],
+                 r["avg_th"], r["advertised_th"], r.get("cost_sats_per_thh"),
+                 r.get("length_hours"), r.get("delivered_thh"),
+                 r.get("paid_sats"), ts),
+            )
+        conn.commit()
+        return True
+    except Exception as e:
+        log.warning("[rental_performance] history save failed: %s", e)
+        return False
+    finally:
+        conn.close()
+
+
+def get_local_rig_history(rig_id: Any = None, rig_name: str = "",
+                          exclude_rental_id: Any = None,
+                          tenant_id: str = "") -> List[Dict[str, Any]]:
+    """Same-rig track record from the LOCAL table (instant, no provider call).
+    Shape matches the remote fetcher's output ({id, start, percent, avg_th,
+    advertised_th, cost_sats_per_thh, length_hours})."""
+    if not (rig_id or rig_name):
+        return []
+    try:
+        conn = get_db()
+        c = conn.cursor()
+        q = "SELECT * FROM rental_history WHERE tenant_id=?"
+        args: List[Any] = [tenant_id or ""]
+        wanted_id = str(rig_id) if rig_id is not None else None
+        wanted_name = str(rig_name or "").strip().lower()
+        if wanted_id:
+            q += " AND rig_id=?"
+            args.append(wanted_id)
+        elif wanted_name:
+            q += " AND LOWER(rig_name)=LOWER(?)"
+            args.append(wanted_name)
+        if exclude_rental_id is not None:
+            q += " AND rental_id!=?"
+            args.append(str(exclude_rental_id))
+        q += " ORDER BY COALESCE(start,'') DESC LIMIT 100"
+        c.execute(q, args)
+        rows = c.fetchall()
+        conn.close()
+    except Exception:
+        return []  # table missing / any SQL issue → fall back to remote
+    return [{
+        "id": row["rental_id"], "start": row["start"],
+        "percent": row["percent"], "avg_th": row["avg_th"],
+        "advertised_th": row["advertised_th"],
+        "cost_sats_per_thh": row["cost_sats_per_thh"],
+        "length_hours": row["length_hours"],
+    } for row in rows]
+
+
+def ingest_rentals(active: List[Dict], history: List[Dict], owner: List[Dict],
+                   contracts: List[Dict], tenant_id: str = "") -> bool:
+    """Persist every bucket from the panel list fetch into local history.
+    Called by /api/rentals once per fetch — the same-rig track record then
+    builds up with zero extra provider calls on detail clicks."""
+    rows: List[Dict] = []
+    for bucket in (active, history, owner):
+        for r in bucket:
+            if isinstance(r, dict):
+                rows.append(_rental_to_history_row(r, provider="mrr"))
+    for c in contracts or []:
+        speed_limit_ph = c.get("speed_limit_ph")
+        limit_th = (speed_limit_ph * PH_TO_TH) if speed_limit_ph is not None else None
+        rows.append({
+            "provider": "braiins",
+            "rental_id": str(c.get("id") or ""),
+            "rig_id": "", "rig_name": "Braiins contract",
+            "start": c.get("started_at"), "end": c.get("ended_at"),
+            "percent": None, "avg_th": limit_th, "advertised_th": limit_th,
+            "cost_sats_per_thh": None, "length_hours": None,
+            "delivered_thh": None, "paid_sats": c.get("amount_sat"),
+        })
+    return save_rental_history(rows, tenant_id=tenant_id)
+
+
+def _parse_start_ts(value) -> Optional[float]:
+    """Best-effort unix ts from the varied date strings in rental_history
+    (MRR 'YYYY-MM-DD HH:MM:SS UTC', RFC3339, or raw unix). None when
+    nothing parses. Shared by the rig-history recency gate and the
+    portfolio series bucketer — one parser, no drift."""
+    import datetime as _dt
+    s = str(value or "").strip()
+    if not s:
+        return None
+    for fmt in ("%Y-%m-%d %H:%M:%S UTC", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
+        try:
+            return _dt.datetime.strptime(s, fmt).timestamp()
+        except ValueError:
+            continue
+    try:
+        return float(s)
+    except (TypeError, ValueError):
+        return None
+
+
+def compute_portfolio_series(tenant_id: str = "", bucket: str = "week",
+                             created_ts_fallback: bool = True) -> Dict[str, Any]:
+    """Portfolio time series (spent + estimated P/L) per week/month, straight
+    from the LOCAL rental_history table — no provider calls.
+
+    Methodology (CFO read):
+      - each row = one rental/bid the tenant already fetched (ingested by
+        /api/rentals); spent = paid_sats, delivered = delivered_thh;
+      - P/L per rental uses the SAME economic math as the detail banner
+        (expected gross yield from the CURRENT network hashrate × delivered
+        TH·h − paid) — labeled ESTIMATE so the chart never overstates;
+      - buckets by ISO week (bucket='week') or calendar month (bucket='month')
+        from the row's start date (created_ts fallback for unparseable rows);
+      - cum_pl_sats = running cumulative so the operator sees the trend
+        direction at a glance.
+
+    Returns {"bucket", "estimate": True, "points": [{label, spent_sats,
+    delivered_thh, pl_sats, cum_pl_sats}], "totals": {...}}.
+    """
+    bucket = bucket if bucket in ("week", "month") else "week"
+    try:
+        conn = get_db()
+        c = conn.cursor()
+        c.execute("SELECT * FROM rental_history WHERE tenant_id=?", (tenant_id or "",))
+        rows = c.fetchall()
+        conn.close()
+    except Exception as e:
+        log.warning("[rental_performance] portfolio series failed: %s", e)
+        return {"bucket": bucket, "estimate": True, "points": [], "totals": {}}
+
+    import datetime as _dt
+    agg: Dict[str, Dict[str, Any]] = {}
+    order: List[str] = []
+    for r in rows:
+        ts = _parse_start_ts(r["start"])
+        if ts is None:
+            if not created_ts_fallback or not r["created_ts"]:
+                continue
+            ts = float(r["created_ts"])
+        dt = _dt.datetime.fromtimestamp(ts, tz=_dt.timezone.utc)
+        if bucket == "week":
+            iso = dt.isocalendar()
+            key = f"{iso[0]}-W{iso[1]:02d}"
+        else:
+            key = f"{dt.year:04d}-{dt.month:02d}"
+        if key not in agg:
+            # pl_known tracks whether ANY rental in the bucket had computable
+            # P/L — an all-unknown bucket must render null (never a flat 0
+            # that reads as 'no loss' on a cold box).
+            agg[key] = {"label": key, "spent_sats": 0.0, "delivered_thh": 0.0,
+                        "pl_sats": 0.0, "pl_known": 0, "rentals": 0}
+            order.append(key)
+        paid = _num(r["paid_sats"])
+        if paid is not None:
+            agg[key]["spent_sats"] += paid
+        pl = compute_rental_pl(_num(r["delivered_thh"]), paid)
+        if pl.get("pl_sats") is not None:
+            agg[key]["pl_sats"] += pl["pl_sats"]
+            agg[key]["pl_known"] += 1
+        if _num(r["delivered_thh"]):
+            agg[key]["delivered_thh"] += _num(r["delivered_thh"])
+        agg[key]["rentals"] += 1
+
+    points = []
+    cum = 0.0
+    cum_known = True
+    for key in sorted(order):
+        g = agg[key]
+        if g["pl_known"]:
+            cum += g["pl_sats"]
+        else:
+            cum_known = False  # once unknown, cumulative is unknown too
+        points.append({
+            "label": g["label"],
+            "spent_sats": round(g["spent_sats"]),
+            "delivered_thh": round(g["delivered_thh"], 1) if g["delivered_thh"] else None,
+            # None (not 0.0) when nothing computable — the UI shows '—'.
+            "pl_sats": round(g["pl_sats"], 1) if g["pl_known"] else None,
+            "cum_pl_sats": round(cum, 1) if cum_known else None,
+            "rentals": g["rentals"],
+        })
+    known_totals = [g for g in agg.values() if g["pl_known"]]
+    return {
+        "bucket": bucket,
+        "estimate": True,  # P/L uses the CURRENT network hashrate — honest label
+        "points": points,
+        "totals": {
+            "spent_sats": round(sum(g["spent_sats"] for g in agg.values())),
+            "pl_sats": round(sum(g["pl_sats"] for g in known_totals), 1) if known_totals else None,
+            "rentals": sum(g["rentals"] for g in agg.values()),
+        },
+    }
+
+
+def compute_portfolio_summary(active: List[Dict], history: List[Dict],
+                              owner: List[Dict], contracts: List[Dict]) -> Dict[str, Any]:
+    """Aggregate portfolio analytics for the RENTALS panel top strip.
+
+    Spend side = MRR renter (active + history). Income side = MRR owner
+    (rigs leased out). Every metric is null-safe (honest '—').
+    Returns {"spend": {...}, "income": {...}, "split": {...}, "counts": {...}}
+    """
+    def _agg(buckets: List[List[Dict]]) -> Dict[str, Any]:
+        n = 0
+        spent = 0.0
+        delivered = 0.0
+        weighted_paid = 0.0
+        pcts: List[float] = []
+        for bucket in buckets:
+            for r in bucket:
+                n += 1
+                paid = r.get("price_paid_btc")
+                paid_sats = (float(paid) * 1e8) if paid is not None else None
+                if paid_sats is not None:
+                    spent += paid_sats
+                avg_th = r.get("hashrate_average_th")
+                lenh = r.get("length_hours")
+                d = (float(avg_th) * float(lenh)) if (avg_th is not None and lenh) else None
+                if d:
+                    delivered += d
+                    if paid_sats is not None:
+                        weighted_paid += paid_sats
+                p = r.get("hashrate_percent")
+                if p is not None:
+                    pcts.append(float(p))
+        return {
+            "count": n,
+            "spent_sats": round(spent) if n else 0,
+            "delivered_thh": round(delivered, 1) if delivered else None,
+            # Cost weighted by delivered TH·h (an honest blended rate — a
+            # cheap short rental must not skew the average).
+            "avg_cost_sats_per_thh": round(weighted_paid / delivered, 2) if delivered else None,
+            "avg_delivery_pct": round(sum(pcts) / len(pcts), 1) if pcts else None,
+        }
+
+    return {
+        "spend": _agg([active, history]),
+        "income": _agg([owner]),
+        "split": {"mrr": len(active) + len(history) + len(owner),
+                  "braiins": len(contracts or [])},
+        "counts": {"active": len(active), "history": len(history),
+                   "owner": len(owner), "contracts": len(contracts or [])},
+    }
+
+
+# ── CFO recommendation engine: "where to rent again" ───────────────────────
+# The single decision the operator makes every time: WHICH rig/provider to
+# rent next. Builds on the local track record (reliability = trust score)
+# × the live market (price quality = avg cost vs cheapest today) and returns
+# a ranked shortlist + an avoid list. Honest: needs a track record — a rig
+# with zero samples never appears in "top".
+
+
+def build_rental_recommendations(tenant_id: str = "",
+                                 top_n: int = 3) -> Dict[str, Any]:
+    """Rank MRR rigs worth re-renting from the LOCAL track record.
+
+    Score = 0.6 × reliability (trust.score 0-100, median-based) +
+            0.4 × price quality (avg cost vs live market, capped at 1.5×
+            cheaper = 100). Excludes manual + auto blacklists and grade F.
+
+    Returns {"top": [rig...], "avoid_count": n, "tracked": n,
+             "market": {...}} — empty top when no track record exists yet.
+    """
+    try:
+        conn = get_db()
+        c = conn.cursor()
+        c.execute(
+            "SELECT rig_id, rig_name, percent, cost_sats_per_thh, start "
+            "FROM rental_history WHERE tenant_id=? AND provider='mrr' AND rig_id!=''",
+            (tenant_id or "",))
+        rows = c.fetchall()
+        conn.close()
+    except Exception:
+        return {"top": [], "avoid_count": 0, "tracked": 0,
+                "market": {"available": False}}
+
+    by_rig: Dict[str, Dict[str, Any]] = {}
+    for r in rows:
+        rid = r["rig_id"]
+        b = by_rig.setdefault(rid, {"name": r["rig_name"] or "",
+                                    "samples": [], "costs": [], "starts": []})
+        if r["percent"] is not None:
+            # (start, pct) pairs — SQL has no ORDER BY, so the recent-vs-
+            # older trend MUST sort chronologically (insertion order is NOT
+            # rental order: new rentals append at the end of the table).
+            b["samples"].append((str(r["start"] or ""), r["percent"]))
+        if r["cost_sats_per_thh"] is not None:
+            b["costs"].append(r["cost_sats_per_thh"])
+        if r["start"]:
+            b["starts"].append(str(r["start"]))
+
+    manual = set(get_rig_blacklist(tenant_id=tenant_id))
+    auto = set(get_auto_blacklist(tenant_id=tenant_id))
+    market = fetch_market_reference()
+    mkt = market.get("price_sats_per_thh") if market.get("available") else None
+
+    top: List[Dict[str, Any]] = []
+    avoid_count = 0
+    for rid, b in by_rig.items():
+        # Chronological order for the trend (see the note at collection).
+        samples = sorted(b["samples"], key=lambda x: x[0])
+        pcts = [p for _, p in samples]
+        trust = compute_rig_trust_score(
+            [{"percent": p} for p in pcts])
+        if trust.get("samples", 0) < 1:
+            continue
+        if rid in manual or rid in auto:
+            continue
+        if trust.get("grade") == "F":
+            avoid_count += 1
+            continue
+        avg_cost = (sum(b["costs"]) / len(b["costs"])) if b["costs"] else None
+        price_q = 60.0  # neutral when no cost data
+        vs_mkt = None
+        if avg_cost and mkt:
+            vs_mkt = (avg_cost / mkt - 1.0) * 100.0
+            price_q = min(100.0, max(0.0, 100.0 * mkt / avg_cost))
+        rel = trust.get("score") or 0.0
+        score = round(0.6 * rel + 0.4 * price_q, 1)
+        starts = sorted(b["starts"])
+        trend = None
+        if len(pcts) >= 4:
+            recent = sum(pcts[-3:]) / 3.0          # NEWEST 3
+            older = sum(pcts[:-3]) / (len(pcts) - 3)
+            trend = round(recent - older, 1)
+        top.append({
+            "rig_id": rid,
+            "name": b["name"],
+            "grade": trust.get("grade"),
+            "score": score,
+            "median_pct": trust.get("median_pct"),
+            "worst_pct": trust.get("worst_pct"),
+            "samples": trust.get("samples"),
+            "avg_cost_sats_per_thh": round(avg_cost, 2) if avg_cost else None,
+            "vs_market_pct": round(vs_mkt, 1) if vs_mkt is not None else None,
+            "trend_pct": trend,
+            "last_rental": starts[-1] if starts else None,
+        })
+    top.sort(key=lambda x: x["score"], reverse=True)
+    return {"top": top[:top_n], "avoid_count": avoid_count,
+            "tracked": len(by_rig), "market": market}
+
+
+def fetch_market_trend(days: int = 30) -> Dict[str, Any]:
+    """Daily CHEAPEST SHA-256 market price (sats/TH·h) over the last N days
+    from hashrate_market_history + a summary (avg/current/vs-avg). Empty
+    points when the market snapshot was never persisted (quiet box) — the
+    UI hides the timing card instead of showing a fabricated line."""
+    try:
+        conn = get_db()
+        c = conn.cursor()
+        # The history table grows one row per offer per poll cycle — the
+        # (algorithm, ts) index keeps the 30-day range scan cheap on every
+        # panel load (CREATE IF NOT EXISTS is a no-op after the first run).
+        try:
+            c.execute("CREATE INDEX IF NOT EXISTS idx_mkt_hist_alg_ts "
+                      "ON hashrate_market_history(algorithm, ts)")
+            conn.commit()
+        except Exception:
+            pass
+        c.execute(
+            """SELECT date(ts,'unixepoch') AS day, MIN(price_per_th_day) AS best_btc
+               FROM hashrate_market_history
+               WHERE algorithm='sha256' AND price_per_th_day > 0 AND ts >= ?
+               GROUP BY day ORDER BY day ASC""",
+            (int(time.time()) - days * 86400,))
+        rows = c.fetchall()
+        conn.close()
+    except Exception as e:
+        log.warning("[rental_performance] market trend failed: %s", e)
+        return {"points": [], "summary": None}
+    if not rows:
+        return {"points": [], "summary": None}
+    pts = [{"day": r["day"],
+            "sats_per_thh": round(r["best_btc"] * 1e8 / 24.0, 2)}
+           for r in rows]
+    vals = [p["sats_per_thh"] for p in pts]
+    avg = sum(vals) / len(vals)
+    cur = vals[-1]
+    return {
+        "points": pts,
+        "summary": {
+            "days": len(pts),
+            "avg_sats_per_thh": round(avg, 2),
+            "current_sats_per_thh": cur,
+            "min_sats_per_thh": min(vals),
+            "max_sats_per_thh": max(vals),
+            "vs_avg_pct": round((cur / avg - 1.0) * 100.0, 1) if avg else None,
+        },
+    }
+
+
 def fetch_rig_performance_history(
     rig_id: Any = None,
     rig_name: str = "",
@@ -695,48 +1894,51 @@ def fetch_rig_performance_history(
        length_hours}
     Enables the "histórico de % por rig" view: how THIS rig delivered on
     previous rentals before deciding where to rent again.
+
+    LOCAL-FIRST: the /api/rentals list fetch ingests every bucket into the
+    local rental_history table, so the same-rig record is served from SQLite
+    instantly — the MRR history API is only hit when the local table has no
+    rows for this rig yet (set RENTAL_HISTORY_LOCAL_FIRST=0 to force remote
+    for tests/debugging).
     """
     if not (rig_id or rig_name):
         return []
+    wanted_id = str(rig_id) if rig_id is not None else None
+    wanted_name = str(rig_name or "").strip().lower()
+
+    if os.environ.get(HISTORY_LOCAL_FIRST_ENV, "1") != "0":
+        local = get_local_rig_history(wanted_id, wanted_name,
+                                      exclude_rental_id=exclude_rental_id,
+                                      tenant_id=tenant_id)
+        if local:
+            return local
+
     listing = fetch_mrr_rentals(rtype="renter", history=True, limit=limit,
                                 tenant_id=tenant_id)
     if not listing.get("success"):
         return []
-    wanted_id = str(rig_id) if rig_id is not None else None
-    wanted_name = str(rig_name or "").strip().lower()
-    out: List[Dict[str, Any]] = []
-    for r in listing.get("rentals", []):
-        if exclude_rental_id is not None and str(r.get("id")) == str(exclude_rental_id):
-            continue
-        rig = r.get("rig") or {}
-        rid = str(rig.get("id") or "")
-        rname = str(rig.get("name") or "").strip().lower()
-        if wanted_id and rid and rid == wanted_id:
+    rows = [_rental_to_history_row(r, provider="mrr")
+            for r in listing.get("rentals", []) if isinstance(r, dict)]
+    keep = []
+    for row in rows:
+        if wanted_id and row["rig_id"] and row["rig_id"] == wanted_id:
             pass
-        elif wanted_name and rname and rname == wanted_name:
+        elif wanted_name and row["rig_name"].strip().lower() == wanted_name:
             pass
         else:
             continue
-        avg_th = r.get("hashrate_average_th")
-        adv_th = r.get("hashrate_advertised_th")
-        pct = r.get("hashrate_percent")
-        if pct is None and avg_th is not None and adv_th:
-            pct = (avg_th / adv_th * 100.0) if adv_th else None
-        paid_sats = None
-        if r.get("price_paid_btc") is not None:
-            paid_sats = r["price_paid_btc"] * 1e8
-        length_h = r.get("length_hours")
-        delivered_thh = (avg_th * length_h) if (avg_th is not None and length_h) else None
-        cost = (paid_sats / delivered_thh) if (paid_sats is not None and delivered_thh) else None
-        out.append({
-            "id": r.get("id"),
-            "start": r.get("start"),
-            "percent": round(pct, 2) if pct is not None else None,
-            "avg_th": avg_th,
-            "advertised_th": adv_th,
-            "cost_sats_per_thh": round(cost, 2) if cost is not None else None,
-            "length_hours": length_h,
-        })
+        if exclude_rental_id is not None and row["rental_id"] == str(exclude_rental_id):
+            continue
+        keep.append(row)
+    if keep:
+        save_rental_history(keep, tenant_id=tenant_id)
+    out: List[Dict[str, Any]] = [{
+        "id": row["rental_id"], "start": row["start"],
+        "percent": row["percent"], "avg_th": row["avg_th"],
+        "advertised_th": row["advertised_th"],
+        "cost_sats_per_thh": row["cost_sats_per_thh"],
+        "length_hours": row["length_hours"],
+    } for row in keep]
     out.sort(key=lambda x: str(x.get("start") or ""), reverse=True)
     return out
 
@@ -758,6 +1960,22 @@ def analyze_rig(rig_id: Any = None, rig_name: str = "",
         rig_id, rig_name, exclude_rental_id=exclude_rental_id, tenant_id=tenant_id)
     trust = compute_rig_trust_score(history)
     blacklisted = is_rig_blacklisted(rig_id, tenant_id=tenant_id)
+    auto_blacklisted = is_rig_auto_blacklisted(rig_id, tenant_id=tenant_id)
+
+    # CFO auto-exclusion: a rig that keeps under-delivering (grade F with ≥2
+    # samples) joins the AUTO list so bad performers vanish from the panel
+    # everywhere — without touching the user's manual blacklist, and without
+    # re-flagging a manually restored rig until NEW bad samples accumulate.
+    if (not blacklisted and not auto_blacklisted
+            and trust.get("grade") == "F" and trust.get("samples", 0) >= 2):
+        # Respect a restore: only re-exclude when a NEW bad rental arrived
+        # AFTER the previous auto-exclusion (otherwise the restore button
+        # would be immediately undone by the same streak).
+        last_auto = _auto_blacklist_ts(rig_id, tenant_id=tenant_id)
+        newest = _history_newest_ts(history)
+        if last_auto == 0.0 or (newest is not None and newest > last_auto):
+            add_rig_to_auto_blacklist(rig_id, tenant_id=tenant_id)
+            auto_blacklisted = True
 
     pcts = [h["percent"] for h in history if h.get("percent") is not None]
     costs = [h["cost_sats_per_thh"] for h in history if h.get("cost_sats_per_thh") is not None]
@@ -774,7 +1992,7 @@ def analyze_rig(rig_id: Any = None, rig_name: str = "",
         older = sum(pcts[3:]) / (len(pcts) - 3)
         summary["trend_pct"] = round(recent - older, 1)
     return {"history": history, "trust": trust, "blacklisted": blacklisted,
-            "summary": summary}
+            "auto_blacklisted": auto_blacklisted, "summary": summary}
 
 
 def _num(v: Any) -> Optional[float]:
