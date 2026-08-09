@@ -1506,6 +1506,8 @@ body {
 .badge--green { border-color: var(--green); color: var(--green); }
 .badge--gold   { border-color: var(--amber); color: var(--amber); }
 .badge--amber  { border-color: var(--orange); color: var(--orange); }
+.badge--red   { border-color: var(--red, #ff1744); color: var(--red, #ff1744); }
+.badge--blue  { border-color: var(--cyan, #06d6f0); color: var(--cyan, #06d6f0); }
 .badge--purple { border-color: #a855f7; color: #a855f7; }
 .badge--mute { opacity: 0.7; }
 
@@ -5309,6 +5311,12 @@ body.module-mode .tab-pane:not(.active) { display: none; }
   color: var(--text-primary);
 }
 .mkt-snapshot__val--green { color: var(--green); }
+.mkt-snapshot__val--red { color: var(--red, #ff1744); }
+
+/* CFO: interactive sort headers + arrows */
+.mkt-table thead th[data-mkt-sort] { cursor: pointer; user-select: none; }
+.mkt-table thead th[data-mkt-sort]:hover { color: var(--text-primary); }
+.mkt-sort-arrow { display: inline-block; width: 10px; font-size: 8px; color: var(--cyan, #06d6f0); }
 
 .mkt-table-wrap {
   overflow-x: auto;

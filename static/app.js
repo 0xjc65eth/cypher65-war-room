@@ -351,9 +351,21 @@
     syncUpgradeModal();
   }
   // R1 revenue: upgrade modal — buy via Lemon Squeezy checkout or redeem a key.
+  // CFO: firing the funnel events is best-effort and silent — telemetry must
+  // never delay or break the UI (no await on the happy path).
+  function trackConversionEvent(event, meta) {
+    try {
+      fetch('/api/conversion/track', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ event: event, meta: meta || {} }),
+      }).catch(function () { /* fire-and-forget */ });
+    } catch (e) { /* never break the UI for telemetry */ }
+  }
   function openUpgradeModal() {
     const m = document.getElementById('upgrade-modal');
     if (m) m.classList.add('modal--open');
+    trackConversionEvent('modal_open');
   }
   function closeUpgradeModal() {
     const m = document.getElementById('upgrade-modal');
@@ -375,6 +387,7 @@
   async function buyPro() {
     const btn = document.getElementById('upgrade-buy-btn');
     if (btn) btn.disabled = true;
+    trackConversionEvent('checkout_start', { plan: 'pro' });
     try {
       const r = await fetch('/api/upgrade/checkout', {
         method: 'POST',
@@ -403,6 +416,7 @@
     closeUpgradeModal();
     // Re-run the current snapshot render so gated panels refresh.
     renderCharts();
+    if (_license.pro) trackConversionEvent('key_activated');
     logMessage('PRO', _license.pro ? 'license key accepted — PRO unlocked' : 'license key rejected', _license.pro ? 'SUCCESS' : 'WARN');
     if (input) input.value = '';  // clear the field for the next activation
   }
@@ -2759,6 +2773,37 @@ function renderAccount(acct) {
   }
 
   // ── HashratePulse Enterprise · institutional market grid ────────────
+  // Sort state: { key, dir } — dir -1 desc (best price first), 1 asc.
+  let _mktSort = { key: 'price', dir: 1 };
+
+  // Pure sort comparator (mirrored in tests/test_app_js_core.js):
+  // returns venues sorted by the chosen key with the current direction.
+  function sortMarketVenues(venues, key, dir) {
+    const arr = (venues || []).slice();
+    const val = (v, k) => {
+      if (k === 'venue') return String(v.venue || '').toLowerCase();
+      if (k === 'price') return Number(v.price_btc_ph_day);
+      // Numeric keys: null/undefined → NaN so missing values sort LAST
+      // (Number(null) would be 0 and wrongly sort FIRST — reviewer catch).
+      if (k === 'usd') return v.price_usd_th_day != null ? Number(v.price_usd_th_day) : NaN;
+      if (k === 'tier') return Number(v.risk_tier);
+      return v[k] != null ? Number(v[k]) : NaN;
+    };
+    arr.sort((a, b) => {
+      const va = val(a, key);
+      const vb = val(b, key);
+      if (va === vb) return 0;
+      // Numbers: missing/NaN sort last. Strings: plain compare.
+      if (typeof va === 'number' && typeof vb === 'number') {
+        if (!isFinite(va)) return 1;
+        if (!isFinite(vb)) return -1;
+        return (va - vb) * dir;
+      }
+      return String(va).localeCompare(String(vb)) * dir;
+    });
+    return arr;
+  }
+
   function renderMarketGrid() {
     const tbody = document.getElementById('mkt-table-body');
     if (!tbody) {
@@ -2775,7 +2820,7 @@ function renderAccount(acct) {
     }
 
     const inst = _mktInstitutional || {};
-    const venues = (inst.venues || []).filter(v => {
+    let venues = (inst.venues || []).filter(v => {
       if (_mktFilter === 'all') return true;
       return (v.venue || '').toLowerCase() === _mktFilter;
     });
@@ -2795,21 +2840,49 @@ function renderAccount(acct) {
     const btcEl = document.getElementById('mkt-snap-btcusd');
     if (btcEl && snap.btc_usd) btcEl.textContent = '$' + Number(snap.btc_usd).toLocaleString('en-US');
 
-    // Regime badge
+    // CFO: rent-vs-own benchmark cell in the snapshot strip.
+    const rvo = snap.rent_vs_own;
+    const rvoEl = document.getElementById('mkt-snap-rentvsown');
+    if (rvoEl) {
+      if (rvo && rvo.ratio != null) {
+        rvoEl.textContent = rvo.cheaper_than_own
+          ? 'RENT -' + rvo.discount_pct + '% vs own'
+          : 'RENT +' + rvo.premium_pct + '% vs own';
+        rvoEl.className = 'mkt-snapshot__val' + (rvo.cheaper_than_own ? ' mkt-snapshot__val--green' : ' mkt-snapshot__val--red');
+        rvoEl.title = 'Best rental $' + rvo.rental_usd_th_day + '/TH/d vs owned-hardware mining cost $' + rvo.own_cost_usd_th_day + '/TH/d';
+      } else {
+        rvoEl.textContent = '—';
+        rvoEl.className = 'mkt-snapshot__val';
+        rvoEl.title = '';
+      }
+    }
+
+    // Regime badge — Dislocated now gets a red treatment (audit: it had NO
+    // class, rendering identical to the default badge).
     const regimeEl = document.getElementById('mkt-regime-badge');
     if (regimeEl) {
       regimeEl.textContent = 'REGIME ' + (inst.regime || '—');
-      regimeEl.className = 'badge' + (inst.regime === 'Tight' ? ' badge--green' : inst.regime === 'Wide' ? ' badge--amber' : inst.regime === 'Dislocated' ? '' : '');
+      regimeEl.className = 'badge' + (inst.regime === 'Tight' ? ' badge--green' : inst.regime === 'Normal' ? ' badge--blue' : inst.regime === 'Wide' ? ' badge--amber' : inst.regime === 'Dislocated' ? ' badge--red' : '');
     }
 
     document.getElementById('mkt-best-price-badge') && (document.getElementById('mkt-best-price-badge').textContent = snap.best_price_sats_th_day ? 'best ' + snap.best_price_sats_th_day + ' sat/TH/d' : 'best —');
     document.getElementById('mkt-count-badge') && (document.getElementById('mkt-count-badge').textContent = (snap.offer_count || venues.length) + ' venues');
 
     if (!venues.length) {
-      tbody.innerHTML = '<tr><td colspan="8" class="mkt-table__empty">' + (_mktOffers.length ? 'no venues for selected filter' : 'no market data — configure API keys in Settings') + '</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="9" class="mkt-table__empty">' + (_mktOffers.length ? 'no venues for selected filter' : 'no market data — configure API keys in Settings') + '</td></tr>';
       document.getElementById('mkt-notes') && (document.getElementById('mkt-notes').style.display = 'none');
       return;
     }
+
+    // CFO: USD/TH/d column — convert BTC/PH/d → USD/TH/d (1 PH = 1000 TH).
+    // Kept on the venue object so the sort key 'usd' and the render agree.
+    venues.forEach(v => {
+      const btcUsd = _mktBtcUsd || (snap.btc_usd) || null;
+      v.price_usd_th_day = (v.price_btc_ph_day != null && btcUsd)
+        ? Number(v.price_btc_ph_day) / 1000 * Number(btcUsd)
+        : null;
+    });
+    venues = sortMarketVenues(venues, _mktSort.key, _mktSort.dir);
 
     // Institutional Notes
     const notes = inst.notes || [];
@@ -2824,6 +2897,16 @@ function renderAccount(acct) {
       }
     }
 
+    // Sort arrows in the header reflect the active sort.
+    document.querySelectorAll('#mkt-table thead th[data-mkt-sort]').forEach(th => {
+      const arrow = th.querySelector('.mkt-sort-arrow');
+      if (arrow) {
+        arrow.textContent = th.getAttribute('data-mkt-sort') === _mktSort.key
+          ? (_mktSort.dir === 1 ? '▼' : '▲')
+          : '';
+      }
+    });
+
     tbody.innerHTML = venues.map(v => {
       const tierCls = v.risk_tier === 1 ? 'mkt-table__tier--t1' : v.risk_tier === 2 ? 'mkt-table__tier--t2' : v.risk_tier === 3 ? 'mkt-table__tier--t3' : 'mkt-table__tier--t4';
       const spreadCls = v.spread_vs_best_pct <= 2 ? 'mkt-table__spread--tight' : v.spread_vs_best_pct > 20 ? 'mkt-table__spread--wide' : '';
@@ -2831,6 +2914,7 @@ function renderAccount(acct) {
       return `<tr>
         <td><span class="mkt-table__venue">${escapeHtml(v.venue)}</span>${v.estimated ? ' <span class="mkt-table__est">EST</span>' : ''}</td>
         <td class="mono">${v.price_btc_ph_day.toFixed(6)}</td>
+        <td class="mono">${v.price_usd_th_day != null ? '$' + v.price_usd_th_day.toFixed(4) : '—'}</td>
         <td class="mono ${spreadCls}">${v.spread_vs_best_pct >= 0 ? '+' : ''}${v.spread_vs_best_pct}%</td>
         <td class="mono">${v.spread_vs_vwap_pct >= 0 ? '+' : ''}${v.spread_vs_vwap_pct}%</td>
         <td class="mono">${v.available_ph} PH/s</td>
@@ -3005,6 +3089,19 @@ function renderAccount(acct) {
         });
       });
     }
+    // CFO: interactive column sorting — click toggles asc/desc, re-render
+    // honors the filter + sort combination.
+    document.querySelectorAll('#mkt-table thead th[data-mkt-sort]').forEach(th => {
+      th.addEventListener('click', () => {
+        const key = th.getAttribute('data-mkt-sort');
+        if (_mktSort.key === key) {
+          _mktSort.dir = _mktSort.dir === 1 ? -1 : 1;
+        } else {
+          _mktSort = { key: key, dir: 1 };
+        }
+        renderMarketGrid();
+      });
+    });
     const cfgBtn = document.getElementById('mkt-config-btn');
     if (cfgBtn) cfgBtn.addEventListener('click', () => { if (typeof openSettingsModal === 'function') openSettingsModal(); });
     // P0-4: delegated one-click affiliate BUY — the grid re-renders via

@@ -41,7 +41,10 @@ import services.state as _shared_state
 import services.names as _names  # name sanitization + normalization
 from services.proximity import _compute_quantum_lock  # FENIX: composite confidence score for the Quantum-Lock panel
 from services.session_manager import SessionManager
-from services.user_polling import UserPollingWorker, _build_snapshot
+from services.user_polling import (
+    UserPollingWorker, _build_snapshot, start_poll_pool as _start_poll_pool,
+    POLL_POOL as _POLL_POOL,
+)
 from agents.opportunity_engine import scan as _opp_scan, build_response as _opp_build_response
 from agents import solo_mining_advisor as _opp_advisor  # monkeypatch-safe: accessed dynamically in route
 from routes.solo_mining_routes import solo_mining_bp
@@ -67,10 +70,13 @@ from routes.dashboard_routes import dashboard_bp
 from services.tenant import require_tenant, role_required, SELF_HOST_MAX_WORKERS
 import services.db_backup as _db_backup  # C4: automatic SQLite backup + boot integrity check
 import services.remote_backup as _remote_backup  # $0 persistence: gist backup + boot restore
+import services.conversion as _conversion  # CFO: PRO funnel telemetry + LTV/CAC
 from services.licensing import (
     is_pro,
     license_status as _license_status,
     issue_license as _licensing_issue,
+    licensing_configured as _licensing_configured,
+    current_license_key as _current_license_key,
 )
 from services import payments as _payments  # R1 revenue: Lemon Squeezy adapter (off-by-default)
 
@@ -885,6 +891,13 @@ def init_db():
         )"""
     )
     c.execute("CREATE INDEX IF NOT EXISTS idx_users_tenant ON users(tenant_id)")
+    # ── CFO: PRO conversion telemetry (funnel + LTV/CAC) ──
+    # Rows are funnel events (paywall_view → modal_open → checkout_start →
+    # paid → key_activated); tenant_id/email are SHA-256 hashed (privacy).
+    try:
+        _conversion.ensure_table()
+    except Exception as e:
+        log.warning("[migrate] conversion_events init failed: %s", e)
 
     # ── Fase 4 · B2: add tenant_id to alerts/automations/core tables ──
     for table_name in (
@@ -2720,11 +2733,18 @@ def api_session_status():
 
 @app.route("/api/admin/sessions", methods=["GET"])
 def api_admin_sessions():
-    """List all active sessions (debug/admin)."""
+    """List all active sessions + pool observability (debug/admin).
+
+    The ``pool`` block exposes PollWorkerPool health: active sessions,
+    polls/sec (sliding 60s window), ready-queue depth, scheduled heap,
+    live worker threads, and total poll/error counters — everything an
+    operator needs to spot a thundering-herd or a stuck pool at a glance.
+    """
     sessions = _session_manager.get_all_sessions()
     return jsonify({
         "count": len(sessions),
         "sessions": [s.to_dict() for s in sessions],
+        "pool": _POLL_POOL.stats(),  # never raises, even on an unstarted pool
     })
 
 
@@ -4145,10 +4165,11 @@ def _start_background_threads():
     """Start every background worker for the server process.
 
     Consolidates boot: the initial poll + poll_loop thread (previously
-    started at module level, which also fired on plain test-suite imports)
-    and the 5-min Hash Market warmup thread all start here, called from the
-    __main__ block before app.run(). Test-suite imports of app.py no longer
-    spawn ANY network thread.
+    started at module level, which also fired on plain test-suite imports),
+    the fixed user-poll worker pool (P1 Phase 2 — 8-16 threads serve all
+    sessions, no thread-per-session), and the 5-min Hash Market warmup
+    thread all start here, called from the __main__ block before app.run().
+    Test-suite imports of app.py no longer spawn ANY network thread.
 
     C4: also runs a boot-time SQLite integrity check (warning-only) and,
     when enabled (AUTO_BACKUP_INTERVAL != 0), starts the automatic backup
@@ -4157,6 +4178,12 @@ def _start_background_threads():
     Note: deliberately __main__-gated; a WSGI/gunicorn deployment must call
     this explicitly (the project convention is `python app.py`).
     """
+    # P1 Phase 2: start the FIXED worker pool (all connected sessions share
+    # these threads — 1000+ users cost 8-16 threads, not 1000+). Idempotent.
+    try:
+        _start_poll_pool()
+    except Exception as e:
+        log.warning("[boot] poll pool start error: %s", e)
     # $0 persistence (ephemeral free-tier filesystems): restore the remote
     # gist snapshot onto a fresh boot BEFORE anything writes, so per-user
     # credentials/settings/alerts survive redeploys. No-op without
@@ -4377,6 +4404,56 @@ def api_admin_issue_license():
         months=months,
     )
     return jsonify({"ok": True, "license_key": key}), 200
+
+
+@app.route("/api/conversion/track", methods=["POST"])
+def api_conversion_track():
+    """Record a frontend funnel event (modal_open / checkout_start /
+    key_activated). Privacy-first: only the event + anonymized tenant id are
+    stored — never the raw email or license key.
+
+    Public endpoint (no auth): it only writes a de-identified counter row,
+    and telemetry is best-effort (never fails the request).
+    """
+    body = request.get_json(silent=True) or {}
+    event = (body.get("event") or "").strip()
+    if event not in ("modal_open", "checkout_start", "key_activated",
+                     "paywall_view"):
+        return jsonify({"ok": False, "error": "unknown event"}), 400
+    tenant_id = ""
+    # Best-effort tenant attribution: JWT sub when present, else X-API-Key.
+    auth = request.headers.get("Authorization", "")
+    if auth.startswith("Bearer "):
+        try:
+            from services.auth import verify_token
+            payload = verify_token(auth[7:]) or {}
+            tenant_id = payload.get("sub") or ""
+        except Exception:
+            pass
+    meta = body.get("meta") or {}
+    if not isinstance(meta, dict):
+        meta = {}
+    _conversion.track_event(event, tenant_id=tenant_id, meta=meta)
+    return jsonify({"ok": True})
+
+
+@app.route("/api/admin/conversion", methods=["GET"])
+def api_admin_conversion():
+    """CFO dashboard: PRO funnel report + LTV/CAC estimates.
+
+    Admin-gated exactly like /api/admin/licenses (localhost or operator API
+    key) — never exposed to the public.
+    """
+    remote = request.remote_addr or ""
+    local = remote in ("127.0.0.1", "::1", "localhost")
+    operator_key = os.environ.get("API_KEY") or ""
+    sent = (request.headers.get("X-API-Key") or "").strip()
+    if not local and not (operator_key and hmac.compare_digest(sent, operator_key)):
+        return jsonify({"error": "admin access required"}), 403
+    days = request.args.get("days", 30, type=int)
+    funnel = _conversion.funnel_report(days=days)
+    econ = _conversion.ltv_cac_report(paid_count=funnel.get("paid_count"))
+    return jsonify({"funnel": funnel, "economics": econ, "days": days})
 
 
 # Moved to routes/dashboard_routes.py (dashboard_bp) — Fase 6 · PR2:

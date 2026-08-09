@@ -142,5 +142,13 @@ def handle_webhook(payload: dict) -> Optional[str]:
         source="lemon_squeezy",
         months=months,
     )
+    # CFO: a PAID conversion — the funnel's money stage. Email hashed only.
+    try:
+        from services.conversion import track_event
+        track_event("paid", email=email,
+                    meta={"order": str(data.get("id") or "")[:16],
+                          "plan": plan, "source": "lemon_squeezy"})
+    except Exception:
+        pass
     log.info("webhook fulfilled: order=%s plan=%s email=%s", data.get("id"), plan, email or "-")
     return key

@@ -11,14 +11,15 @@
 ## 1. O QUE O PROJETO É HOJE (Veredicto Geral)
 
 ```
-FORÇAS ESTRUTURAIS:     9/10  (módulos limpos, honest-telemetry, 1600+ testes, ~70% cov, CI rígido)
+FORÇAS ESTRUTURAIS:     9/10  (módulos limpos, honest-telemetry, 1684+ testes, ~70% cov, CI rígido)
 PRODUTO / FEATURES:     8/10  (probability, market, fleet, rentals, multi-tenant — diferencial real)
-ESCALABILIDADE 1000+ U: 4/10  (antes 3/10 — mitigado na rodada de hardening, ver §4)
-MONETIZAÇÃO:            7/10  (Lemon Squeezy + PRO gate prontos, mas sem telemetria de conversão)
-MATURIDADE DE PLATAFORMA: 5/10 (schema versionado + backup remoto $0; ainda sem filas/observabilidade)
+ESCALABILIDADE 1000+ U: 7/10  (antes 3/10 — P1 completo: worker pool fixo + jitter/backoff/cache, ver §4.3/§4.4)
+MONETIZAÇÃO:            8/10  (Lemon Squeezy + PRO gate + telemetria de conversão LTV/CAC, ver §4.7)
+MATURIDADE DE PLATAFORMA: 6/10 (schema versionado + backup remoto $0 + observabilidade do pool em /api/admin/sessions)
 
-SAÚDE GLOBAL: 6.5/10 — ótimo MVP técnico; a arquitetura de servição deixou de ser "de 1 usuário"
-                     depois do hardening $0 (ver §4), mas polling ainda é thread-per-session.
+SAÚDE GLOBAL: 7.0/10 — ótimo MVP técnico; a arquitetura de servição deixou de ser "de 1 usuário"
+                     depois do hardening $0 + P1 completo (ver §4): polling roda num pool fixo de
+                     8-16 threads com fila, e o caminho para 1000+ usuários está destravado.
 ```
 
 **Veredicto executivo (CFO/CRO):** o produto é tecnicamente forte e tem diferencial real
@@ -33,15 +34,15 @@ investimento em infraestrutura paga.
 
 | Área | Evidência |
 |---|---|
-| Arquitetura de polling | `services/user_polling.py` — 1 thread daemon por sessão conectada |
+| Arquitetura de polling | `services/user_polling.py` — P1 completo: pool fixo (8-16 threads) + scheduler com heap + fila; sessões são estado leve (antes: 1 thread daemon por sessão) |
 | Persistência no deploy | `render.yaml` — free tier com filesystem EFÊMERO (`data/war_room.sqlite` apagado a cada redeploy) |
 | Data layer | `sqlite3.connect` espalhado em ~120 pontos (app.py, routes/, services/, core/) |
 | Rate limiting | `app.py` — bucket em memória, originalmente por IP |
 | Segurança de credenciais | `services/settings.py` — chaves Braiins/MRR em texto claro (antes do hardening) |
 | Schema | sem versão/rastreio de migrações (antes do hardening) |
-| Monetização | `services/licensing.py` + Lemon Squeezy checkout prontos; sem funil de conversão |
-| Observabilidade | sem Sentry/Prometheus/Datadog (nada além de logs) |
-| Testes | 1632 pytest + e2e Playwright (chromium + mobile-chrome) |
+| Monetização | `services/licensing.py` + Lemon Squeezy checkout + telemetria de conversão (funil LTV/CAC) — ver §4.7 |
+| Observabilidade | sem Sentry/Prometheus/Datadog, mas o pool agora expõe saúde em `/api/admin/sessions` (sessions, polls/seg, fila) |
+| Testes | 1684 pytest + 1259 testes JS + e2e Playwright (chromium + mobile-chrome) |
 
 ---
 
@@ -96,14 +97,25 @@ usuário agressivo derruba a API para todos (429 em cascata).
 anônimos caem no bucket `ip:<ip>`; `/api/auth/*` tem bucket próprio e mais estrito.
 **Smoke test ao vivo:** tenant A bloqueado em 429 após 10 req/min; anônimos seguem 200.
 
-### 4.3 — P1 (primeira rodada): jitter + backoff + cache por endereço — ✅ IMPLEMENTADO
+### 4.3 — P1 (Fase 1): jitter + backoff + cache por endereço — ✅ IMPLEMENTADO
 `services/user_polling.py`:
 - **jitter** `uniform(0, 8s)` dessincroniza os polls (1000 workers sincronizados = pico de rajada);
 - **backoff adaptativo** (2× por erro, cap 120s) reduz a carga quando a pool devolve erro;
 - **cache por endereço** (10s TTL): 2 usuários na mesma carteira = 1 fetch na pool;
   cache global com **cap 2048 + eviction LRU** (memory leak real encontrado no review e corrigido).
 
-### 4.4 — Segurança: criptografia at-rest das credenciais — ✅ IMPLEMENTADO
+### 4.4 — P1 (Fase 2, completa): worker pool fixo no lugar de thread-per-session — ✅ IMPLEMENTADO
+`services/user_polling.py` — `PollWorkerPool`:
+- **pool fixo** (default 8, env `POLL_WORKER_POOL_SIZE`): N threads daemon + 1 scheduler;
+  **1000+ sessões custam 8-16 threads, não 1000+** (o thread-per-session morreu);
+- scheduler mantém **min-heap de `(next_due, seq, session_id)`** e empurra sessões devidas
+  para uma **ready queue** que os workers consomem; re-agendam com jitter + backoff preservados;
+- `unregister` é O(1) (heap entries stale são puladas lazy); `poll_now()` continua **síncrono**
+  (o connect-wallet responde com dados na hora, sem esperar o pool);
+- API pública do `UserPollingWorker` idêntica (start/stop/poll_now/update_address/is_running)
+  — app.py e testes não quebraram.
+
+### 4.5 — Segurança: criptografia at-rest das credenciais — ✅ IMPLEMENTADO
 `services/settings.py` — **Fernet** derivado de `SECRET_KEY` (SHA256 → base64 urlsafe):
 - credenciais `braiins_api_key` / `mrr_api_key` / `mrr_api_secret` gravadas como `enc:v1:<ciphertext>`;
 - decrypt transparente em `load_settings`; plaintext legado passa intacto (migração suave);
@@ -111,9 +123,27 @@ anônimos caem no bucket `ip:<ip>`; `/api/auth/*` tem bucket próprio e mais est
 
 ⚠️ **Rotação de `SECRET_KEY`:** credenciais legadas ficam ilegíveis → usuários re-salvam.
 
-### 4.5 — Schema versionado — ✅ IMPLEMENTADO
+### 4.6 — Schema versionado — ✅ IMPLEMENTADO
 `app.py` — tabela `schema_version` + `SCHEMA_VERSION = 1` gravado em todo boot;
 operadores/testes verificam a revisão atual do banco.
+
+### 4.7 — Telemetria de conversão (funil PRO + LTV/CAC) — ✅ IMPLEMENTADO
+`services/conversion.py`:
+- funil `paywall_view → modal_open → checkout_start → paid → key_activated`, com
+  **tenant/email anonimizados** (SHA-256 truncado, nunca dados crus);
+- `funnel_report()`: contagem por estágio + **drop-off entre estágios** + conversion rate;
+- `ltv_cac_report()`: LTV = preço×meses×margem (env-overridable) e **CAC = gasto marketing ÷
+  paid_count** (sem gasto configurado → não inventa número);
+- hooks: `paywall_view` no 402 do `pro_required`, `paid` no webhook do Lemon Squeezy,
+  eventos client no frontend (fire-and-forget); `paid` só é gravado server-side (não spoofable
+  pela rota pública); `paywall_view` dedupado por tenant/24h para não inflar o topo do funil;
+- `GET /api/admin/conversion` (admin-gated) expõe o relatório CFO/CRO.
+
+### 4.8 — Observabilidade do pool em `/api/admin/sessions` — ✅ IMPLEMENTADO
+`PollWorkerPool.stats()` + rota admin:
+- **sessions ativas**, **polls/segundo** (janela deslizante 60s), **fila** (ready queue),
+  heap agendado, threads vivas, total polls/erros, uptime;
+- thread-safe (snapshot sob lock) e nunca lança mesmo com pool não iniciado.
 
 ---
 
@@ -121,11 +151,11 @@ operadores/testes verificam a revisão atual do banco.
 
 | # | Frente | Esforço | Impacto | Status |
 |---|---|---|---|---|
-| 1 | **P1 completo — worker pool fixo** (8-16 threads + `queue.Queue` de tarefas) no lugar de thread-per-session | alto | escala 1000+ sem matar o servidor | ⏳ próximo |
-| 2 | **Telemetria de conversão** (quem vira PRO, quem abandona, LTV/CAC) | médio | monetização dirigida por dados | ⏳ |
-| 3 | **Push notifications** reais por tenant (subscriptions persistentes) | médio | retenção (alertas no celular) | ⏳ |
-| 4 | **Observabilidade** (Sentry grátis ou logs estruturados + métricas de negócio) | baixo | operação segura com 1000+ usuários | ⏳ |
-| 5 | **Auto-Pilot** (o Big Bet do roadmap — agentes de decisão sobre o farm) | faseado | diferencial de produto | ⚪ após P1 |
+| 1 | **P1 completo — worker pool fixo** (8-16 threads + fila) no lugar de thread-per-session | alto | escala 1000+ sem matar o servidor | ✅ concluído |
+| 2 | **Telemetria de conversão** (quem vira PRO, quem abandona, LTV/CAC) | médio | monetização dirigida por dados | ✅ concluído |
+| 3 | **Push notifications** reais por tenant (subscriptions persistentes) | médio | retenção (alertas no celular) | ⏳ próximo |
+| 4 | **Observabilidade** (pool stats em `/api/admin/sessions` ✅; Sentry/logs estruturados + métricas de negócio em aberto) | baixo | operação segura com 1000+ usuários | 🟡 parcial |
+| 5 | **Auto-Pilot** (o Big Bet do roadmap — agentes de decisão sobre o farm) | faseado | diferencial de produto | ⚪ próximo |
 | 6 | **Postgres** (Neon/Supabase free tier) **quando houver tração** | alto | abandono do backup-gist; dados relacionais | ⚪ gated por tração |
 
 **Regra de ouro CFO/CRO:** nenhuma refatoração de infra paga antes de **prova de tração**
@@ -139,30 +169,41 @@ com a solução atual — muito abaixo da estimativa original de $0.15/usuário.
 | Problema crítico | Solução $0 | Evidência |
 |---|---|---|
 | **P2 — dados somem a cada deploy** | `services/remote_backup.py`: backup → gist privado a cada 5min + restore no boot quando DB vazio | 12 testes herméticos |
-| **P1 — thundering herd** | jitter 0-8s + backoff adaptativo (cap 120s) + cache por endereço (10s TTL) + cap LRU 2048 | smoke + 4 testes |
-| **P3 — 429 em cascata** | rate limit por tenant (JWT `sub`); anônimos no bucket IP | smoke ao vivo: tenant A = 429, anônimos = 200 |
+| **P1 — thundering herd (Fase 1)** | jitter 0-8s + backoff adaptativo (cap 120s) + cache por endereço (10s TTL) + cap LRU 2048 | smoke + 4 testes |
+| **P1 — thread-per-session (Fase 2)** | `PollWorkerPool`: pool fixo 8-16 threads + scheduler heap + fila; sessões = estado leve; API do worker idêntica | 9 testes + smoke ao vivo |
+| **P3 — 429 em cascata** | rate limit por tenant (JWT `sub`) + cache token→sub (verify_token só em cache miss) + evict no logout | smoke ao vivo: tenant A = 429, anônimos = 200 |
 | **#6 — chaves em texto claro** | Fernet at-rest (`enc:v1:`), decrypt transparente, legado intacto | 3 testes |
 | **#5 — schema sem versão** | tabela `schema_version` + `SCHEMA_VERSION=1` | 1 teste |
 | **Rentals — rig intelligence** | trust score 0-100 + grade A-F, blacklist por tenant, hide-bad rigs, detail profissional | 15 testes + 10 e2e |
+| **Monetização — funil cego** | telemetria de conversão: funil PRO + drop-off + LTV/CAC, anonimizada, `paid` server-side only | 20 testes |
+| **Observabilidade — pool cego** | `PollWorkerPool.stats()` exposto em `/api/admin/sessions` (sessions, polls/seg, fila, threads, uptime) | 4 testes |
 
-**Validação:** **1632 pytest (0 falhas)** · **10/10 e2e rentals** · `py_compile` / `node --check` / `git diff --check` limpos · review de código (2 rodadas).
+**Validação:** **1684 pytest (0 falhas)** · **1259 testes JS** · **10/10 e2e rentals** ·
+`py_compile` / `node --check` / `git diff --check` limpos · review de código em cada rodada.
 
 **Arquivos novos:** `services/remote_backup.py`, `tests/test_remote_backup.py`,
-`tests/test_scale_hardening.py`, `tests/test_rig_trust_blacklist.py`.
+`tests/test_scale_hardening.py`, `tests/test_rig_trust_blacklist.py`,
+`services/conversion.py`, `tests/test_conversion_telemetry.py`,
+`tests/test_poll_worker_pool.py`, `tests/test_institutional_view.py`.
 **Modificados:** `app.py`, `services/rental_performance.py`, `services/settings.py`,
-`services/user_polling.py`, `static/app.js`, `static/style.css`, `templates/dashboard.html`,
+`services/user_polling.py`, `services/hashrate_market.py`, `services/licensing.py`,
+`services/payments.py`, `static/app.js`, `static/style.css`, `templates/dashboard.html`,
 `render.yaml`, `docs/DEPLOYMENT_OPS.md`.
 
 ---
 
 ## 7. RISCOS ABERTOS (ser honesto)
 
-- 🟠 **Thread-per-session ainda existe** — as mitigações (jitter/backoff/cache) reduzem a
-  carga na pool, mas o padrão produtivo (worker pool fixo) é a Fase 2 correta do P1.
 - 🟠 **Rate limit em memória** — perde o estado num restart; buckets por IP/tenant são
   justos o suficiente para o free tier, mas não para abuso distribuído.
 - 🟡 **Backup gist depende de `GITHUB_TOKEN`** — sem o token no Render, os dados continuam
   efêmeros (comportamento atual, documentado).
-- 🟡 **Telemetria de conversão inexistente** — não sabemos quem vira PRO nem onde o funil perde.
-- 🟡 **SQLite concorrente** — com worker pool + mais escrita, WAL e `busy_timeout` devem ser
-  revisados quando a Fase 2 do P1 entrar.
+- 🟡 **Observabilidade do pool é em memória** — contadores/polls-seg zeram num restart;
+  o pool em si é estadeless-safe (sessões re-registram no boot), mas o histórico de métricas
+  de operação ainda não persiste.
+- 🟡 **Funil de conversão depende de eventos client-side** — `modal_open`/`checkout_start`
+  podem ser descartados por bloqueador de tracker; o estágio de dinheiro (`paid`) é
+  server-side no webhook, então LTV/CAC não são afetados.
+- 🟡 **SQLite concorrente** — com o pool fixo (8-16 writers) a pressão de escrita subiu;
+  WAL + `busy_timeout` (3s) já ativos em `get_db`, mas vale revalidar sob carga real de
+  1000+ usuários antes de prometer SLAs.

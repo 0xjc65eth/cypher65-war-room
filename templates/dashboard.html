@@ -659,6 +659,7 @@
     <div class="mkt-snapshot__item"><span class="mkt-snapshot__label">Visible Liquidity</span><span class="mkt-snapshot__val" id="mkt-snap-liquidity">—</span></div>
     <div class="mkt-snapshot__item"><span class="mkt-snapshot__label">4h VWAP</span><span class="mkt-snapshot__val" id="mkt-snap-vwap">—</span></div>
     <div class="mkt-snapshot__item"><span class="mkt-snapshot__label">BTC/USD</span><span class="mkt-snapshot__val" id="mkt-snap-btcusd">—</span></div>
+    <div class="mkt-snapshot__item"><span class="mkt-snapshot__label">Rent vs Own</span><span class="mkt-snapshot__val" id="mkt-snap-rentvsown" title="">—</span></div>
   </div>
 
   <!-- ── Ranked Venue Table ── -->
@@ -674,18 +675,19 @@
     <table class="mkt-table" id="mkt-table">
       <thead>
         <tr>
-          <th>Venue</th>
-          <th>Price (BTC/PH/d)</th>
-          <th>vs Best</th>
-          <th>vs 4h VWAP</th>
-          <th>Available</th>
+          <th data-mkt-sort="venue" title="Sort by venue">Venue <span class="mkt-sort-arrow"></span></th>
+          <th data-mkt-sort="price" title="Sort by price">Price (BTC/PH/d) <span class="mkt-sort-arrow"></span></th>
+          <th data-mkt-sort="usd" title="Sort by USD price">USD/TH/d <span class="mkt-sort-arrow"></span></th>
+          <th data-mkt-sort="spread" title="Sort by spread">vs Best <span class="mkt-sort-arrow"></span></th>
+          <th data-mkt-sort="vwap" title="Sort by vs VWAP">vs 4h VWAP <span class="mkt-sort-arrow"></span></th>
+          <th data-mkt-sort="liquidity" title="Sort by availability">Available <span class="mkt-sort-arrow"></span></th>
           <th>Depth</th>
-          <th>Risk Tier</th>
+          <th data-mkt-sort="tier" title="Sort by risk tier">Risk Tier <span class="mkt-sort-arrow"></span></th>
           <th>Recommendation</th>
         </tr>
       </thead>
       <tbody id="mkt-table-body">
-        <tr><td colspan="8" class="mkt-table__empty">No market data — configure API keys in Settings to load institutional-grade hashrate intelligence</td></tr>
+        <tr><td colspan="9" class="mkt-table__empty">No market data — configure API keys in Settings to load institutional-grade hashrate intelligence</td></tr>
       </tbody>
     </table>
   </div>

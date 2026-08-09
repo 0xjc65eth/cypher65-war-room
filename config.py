@@ -23,6 +23,10 @@ DATA_DIR = Path(__file__).parent / "data"
 DB_PATH = os.environ.get("DB_PATH", "data/war_room.sqlite")
 
 POLL_INTERVAL = int(os.environ.get("POLL_INTERVAL", 15))
+# NOTE: POLL_WORKER_POOL_SIZE is read directly by services/user_polling.py
+# (same pattern as its hardcoded POLL_INTERVAL) — NOT from config, to keep
+# the module self-contained for tests. P1 Phase 2: ALL connected sessions
+# share a fixed pool (default 8 threads, env POLL_WORKER_POOL_SIZE).
 PORT = int(os.environ.get("PORT", 8765))
 RATE_LIMIT_PER_MINUTE = int(os.environ.get("RATE_LIMIT_PER_MINUTE", 300))  # E2E overrides to 1000
 # Stricter per-IP budget for the auth endpoints (login/register/refresh/

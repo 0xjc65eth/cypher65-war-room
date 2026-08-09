@@ -5032,8 +5032,60 @@ const QR_GOLDEN = {"helloM":{"text":"HELLO WORLD","level":"M","rows":["111111101
 })();
 
 // ═══════════════════════════════════════════════════════════════════════════
-//  RESULTS
+//  MARKET SORT (mirrors static/app.js sortMarketVenues — pure)
 // ═══════════════════════════════════════════════════════════════════════════
+
+function sortMarketVenues(venues, key, dir) {
+  const arr = (venues || []).slice();
+  const val = (v, k) => {
+    if (k === 'venue') return String(v.venue || '').toLowerCase();
+    if (k === 'price') return Number(v.price_btc_ph_day);
+    if (k === 'usd') return v.price_usd_th_day != null ? Number(v.price_usd_th_day) : NaN;
+    if (k === 'tier') return Number(v.risk_tier);
+    return v[k] != null ? Number(v[k]) : NaN;
+  };
+  arr.sort((a, b) => {
+    const va = val(a, key);
+    const vb = val(b, key);
+    if (va === vb) return 0;
+    if (typeof va === 'number' && typeof vb === 'number') {
+      if (!isFinite(va)) return 1;
+      if (!isFinite(vb)) return -1;
+      return (va - vb) * dir;
+    }
+    return String(va).localeCompare(String(vb)) * dir;
+  });
+  return arr;
+}
+
+(function marketSortTests() {
+  const venues = [
+    { venue: 'mrr', price_btc_ph_day: 0.000120, risk_tier: 3, price_usd_th_day: 7.2 },
+    { venue: 'braiins', price_btc_ph_day: 0.000100, risk_tier: 1, price_usd_th_day: 6.0 },
+    { venue: 'nicehash', price_btc_ph_day: 0.000110, risk_tier: 2, price_usd_th_day: 6.6 },
+  ];
+  const byPrice = sortMarketVenues(venues, 'price', 1);
+  assertEqual('sort by price asc → braiins first', byPrice[0].venue, 'braiins');
+  assertEqual('sort by price asc → mrr last', byPrice[2].venue, 'mrr');
+  const byTier = sortMarketVenues(venues, 'tier', 1);
+  assertEqual('sort by tier asc → tier1 first', byTier[0].risk_tier, 1);
+  const byVenueDesc = sortMarketVenues(venues, 'venue', -1);
+  assertEqual('sort by venue desc → nicehash first', byVenueDesc[0].venue, 'nicehash');
+  const byUsd = sortMarketVenues(venues, 'usd', 1);
+  assertEqual('sort by usd asc → 6.0 first', byUsd[0].price_usd_th_day, 6.0);
+  // Original array untouched (pure fn).
+  assertEqual('pure: input not mutated', venues[0].venue, 'mrr');
+  // Missing/absent USD sorts last on asc (undefined key AND explicit null).
+  const withGap = venues.concat([{ venue: 'x', price_btc_ph_day: 0.00009, risk_tier: 1 }]);
+  const g = sortMarketVenues(withGap, 'usd', 1);
+  assertEqual('missing usd key sorts last', g[g.length - 1].venue, 'x');
+  // The live render path sets price_usd_th_day = null when BTC/USD missing —
+  // Number(null) would be 0 and sort FIRST; the guard must send it last.
+  const withNull = venues.map(v => ({ ...v, price_usd_th_day: v.price_usd_th_day === 6.6 ? null : v.price_usd_th_day }));
+  const gn = sortMarketVenues(withNull, 'usd', 1);
+  assertEqual('explicit null usd sorts last (not first)', gn[gn.length - 1].venue, 'nicehash');
+})();
+
 // ═══════════════════════════════════════════════════════════════════════════
 //  RESULTS
 // ═══════════════════════════════════════════════════════════════════════════

@@ -15,11 +15,16 @@ Architecture
 """
 
 import json
+import os
 import time
 import math
 import random
+import heapq
+import itertools
 import logging
 import threading
+import queue
+import collections
 import concurrent.futures
 from typing import Any
 
@@ -586,11 +591,26 @@ def evaluate_user_alerts(snapshot: dict, prev_snapshot: dict, settings: dict,
     return alerts
 
 
-# ── UserPollingWorker ────────────────────────────────────────────────────────
+# ── UserPollingWorker (Phase 2 · P1: fixed worker pool) ──────────────────
+# Phase 1 (thread-per-session) dies at 1000+ users: one daemon thread per
+# connected session → hundreds of threads under the GIL, hundreds of
+# simultaneous Parasite requests, OOM on Render free (512MB/1 vCPU).
+#
+# Phase 2 replaces it with a FIXED-size thread pool (default 8, env
+# POLL_WORKER_POOL_SIZE) that executes every session's poll. Sessions are
+# lightweight state objects (no thread of their own); a single scheduler
+# thread keeps a min-heap of (next_due, seq, session_id) and pushes due
+# sessions onto a ready queue the pool workers consume. Workers re-schedule
+# each session with the existing jitter + adaptive backoff, so per-session
+# cadence and error-backoff behavior are preserved exactly.
+#
+# UserPollingWorker keeps its public API (start/stop/poll_now/update_address/
+# is_running) so app.py and the test-suite call sites are unchanged — only
+# the threading model under the hood changed.
 
 POLL_INTERVAL = 15  # seconds
 # ── Phase: 1000+ user scale ──
-# Jitter + adaptive backoff. With N workers all sleeping POLL_INTERVAL
+# Jitter + adaptive backoff. With N sessions all polling POLL_INTERVAL
 # exactly, they re-poll in lockstep — a thundering herd of N simultaneous
 # Parasite requests every cycle. Jitter desynchronizes them (same mean,
 # spread out); adaptive backoff stretches the interval when the pool is
@@ -599,6 +619,8 @@ POLL_INTERVAL = 15  # seconds
 POLL_JITTER_MAX = 8          # seconds added: wait = interval + uniform(0, jitter)
 POLL_MAX_BACKOFF = 120       # seconds cap on the error backoff
 POLL_ERROR_BACKOFF_MULT = 2  # double the interval per consecutive error burst
+# Fixed worker pool size — THE P1 Phase-2 fix. Env-overridable per deploy.
+POOL_DEFAULT_SIZE = int(os.environ.get("POLL_WORKER_POOL_SIZE", "8"))
 
 
 def _poll_wait(consecutive_errors: int) -> float:
@@ -618,15 +640,230 @@ def _poll_wait(consecutive_errors: int) -> float:
     return base + random.uniform(0, POLL_JITTER_MAX)
 
 
-class UserPollingWorker:
-    """Background polling worker for a single user session.
+class PollWorkerPool:
+    """Fixed-size thread pool executing every connected session's polls.
 
-    Runs a daemon thread that calls _build_snapshot() every POLL_INTERVAL
-    seconds and stores the result in the SessionManager.
+    Architecture (P1 Phase 2 — the production pattern):
+      - ONE scheduler thread keeps a min-heap of (next_due, seq, session_id)
+        and pushes sessions whose due time has arrived onto a ready queue.
+      - POOL_SIZE worker threads (daemon) pull sessions from the ready queue,
+        run one poll each, and re-schedule the session with the same
+        jitter + adaptive backoff the old per-session thread used.
+      - Sessions are plain state objects in ``self._sessions`` — NO thread
+        per session, so 1000+ users cost 8-16 threads total, not 1000.
+
+    The pool is process-wide (module singleton below). ``start()`` spawns the
+    threads (called from app boot); ``register()``/``unregister()`` add and
+    remove sessions; ``stop()`` shuts everything down (tests / shutdown).
+    """
+
+    def __init__(self, size: int | None = None):
+        self.size = max(1, size or POOL_DEFAULT_SIZE)
+        self._heap: list = []  # (next_due, seq, session_id)
+        self._seq = itertools.count()
+        self._sessions: dict = {}  # session_id -> UserPollingWorker
+        self._ready: queue.Queue = queue.Queue()
+        self._lock = threading.Lock()
+        self._stop = threading.Event()
+        self._scheduler: threading.Thread | None = None
+        self._workers: list = []
+        self._started = False
+        # ── Observability counters (exposed via stats() → /api/admin/sessions) ──
+        self._started_ts = 0.0
+        self._poll_count = 0          # successful polls executed by workers
+        self._error_count = 0         # polls that raised
+        self._recent_polls = collections.deque(maxlen=2048)  # ts of each poll
+
+    # ── Observability ────────────────────────────────────────────────────
+
+    def stats(self) -> dict:
+        """Pool health snapshot for the /api/admin/sessions endpoint.
+
+        Returns:
+            started, pool_size, workers_alive, sessions_active, scheduled
+            (heap entries pending), queue_pending (ready queue depth),
+            total_polls, total_errors, polls_per_sec (sliding 60s window),
+            uptime_secs. Safe to call before start (zeros, started=False).
+        """
+        now = time.time()
+        with self._lock:
+            active = len(self._sessions)
+            scheduled = len(self._heap)
+            # Snapshot the deque under the lock: workers append concurrently,
+            # and iterating a deque mid-mutation raises RuntimeError. The
+            # workers list is likewise only mutated under this lock.
+            recent = [t for t in self._recent_polls if now - t <= 60.0]
+            alive = sum(1 for t in self._workers if t.is_alive())
+        rate = len(recent) / 60.0
+        return {
+            "started": self._started,
+            "pool_size": self.size,
+            "workers_alive": alive,
+            "sessions_active": active,
+            "scheduled": scheduled,
+            "queue_pending": self._ready.qsize(),
+            "total_polls": self._poll_count,
+            "total_errors": self._error_count,
+            "polls_per_sec": round(rate, 3),
+            "uptime_secs": round(now - self._started_ts, 1) if self._started_ts else 0,
+        }
+
+    # ── Lifecycle ──────────────────────────────────────────────────────────
+
+    def start(self):
+        """Spawn the scheduler + worker threads (idempotent)."""
+        with self._lock:
+            if self._started:
+                return
+            self._started = True
+            self._started_ts = time.time()
+            self._stop.clear()
+            self._scheduler = threading.Thread(
+                target=self._scheduler_loop, name="cypher65-pool-sched", daemon=True)
+            self._scheduler.start()
+            for i in range(self.size):
+                t = threading.Thread(
+                    target=self._worker_loop, name=f"cypher65-poll-{i}", daemon=True)
+                t.start()
+                self._workers.append(t)
+        log.info("[pool] started: %d worker threads + scheduler", self.size)
+
+    def stop(self):
+        """Signal all threads to stop (idempotent, safe on never-started)."""
+        self._stop.set()
+        # Wake the scheduler (it may be waiting on _stop.wait) — unbounded
+        # queue, put_nowait never raises.
+        self._ready.put_nowait(None)
+        log.info("[pool] stop signal sent")
+
+    def register(self, worker):
+        """Start polling a session: add state + schedule an immediate poll."""
+        # Safety: a session registered before the pool threads exist would
+        # silently never be polled. Start the pool defensively (idempotent)
+        # and warn loudly if threads can't spawn — boot calls start_poll_pool
+        # explicitly, but a mis-ordered startup must not dead-drop sessions.
+        if not self._started:
+            log.warning("[pool] register on unstarted pool — starting now")
+            self.start()
+        with self._lock:
+            self._sessions[worker.session_id] = worker
+            heapq.heappush(self._heap, (time.time(), next(self._seq),
+                                        worker.session_id))
+        log.info("[pool] registered session %s", worker.session_id[:8])
+
+    def unregister(self, session_id: str):
+        """Stop polling a session. In-flight polls finish; none re-scheduled.
+
+        Stale heap entries are skipped lazily by _scheduler_loop (it checks
+        membership in self._sessions), so we never need to mutate the heap
+        here — O(1) unregister."""
+        with self._lock:
+            existed = self._sessions.pop(session_id, None) is not None
+        if existed:
+            log.info("[pool] unregistered session %s", session_id[:8])
+
+    def is_running(self, session_id: str) -> bool:
+        with self._lock:
+            return session_id in self._sessions
+
+    def reschedule_immediate(self, session_id: str):
+        """Force the session's next poll ASAP (address change)."""
+        with self._lock:
+            if session_id in self._sessions:
+                heapq.heappush(self._heap, (time.time(), next(self._seq),
+                                            session_id))
+
+    @property
+    def active_count(self) -> int:
+        with self._lock:
+            return len(self._sessions)
+
+    # ── Internals ──────────────────────────────────────────────────────────
+
+    def _scheduler_loop(self):
+        """Push due sessions onto the ready queue; sleep until the next due."""
+        while not self._stop.is_set():
+            due = []
+            with self._lock:
+                now = time.time()
+                while self._heap and self._heap[0][0] <= now:
+                    _, _, sid = heapq.heappop(self._heap)
+                    if sid in self._sessions:
+                        due.append(sid)
+            for sid in due:
+                # Unbounded queue — put_nowait never blocks/raises.
+                self._ready.put_nowait(sid)
+            if self._stop.is_set():
+                break
+            # Sleep until the next due session (or 1s when idle) — never busy.
+            with self._lock:
+                if self._heap:
+                    wait = min(1.0, max(0.0, self._heap[0][0] - time.time()))
+                else:
+                    wait = 1.0
+            self._stop.wait(wait)
+
+    def _worker_loop(self):
+        """Pull a session, poll it once, and re-schedule with jitter/backoff."""
+        while not self._stop.is_set():
+            try:
+                sid = self._ready.get(timeout=0.5)
+            except queue.Empty:
+                continue
+            if sid is None:  # stop sentinel
+                break
+            with self._lock:
+                worker = self._sessions.get(sid)
+            if worker is None:
+                continue
+            try:
+                snapshot = _build_snapshot(worker.address, worker.worker_name)
+                worker._dispatch_tenant_alerts(snapshot)
+                worker._sm.update_snapshot(worker.session_id, snapshot)
+                worker._consecutive_errors = 0
+                with self._lock:
+                    self._poll_count += 1
+                    self._recent_polls.append(time.time())
+            except Exception as e:
+                worker._consecutive_errors += 1
+                with self._lock:
+                    self._error_count += 1
+                log.error("[pool] poll error for %s: %s", sid[:8], e)
+            # Re-schedule (jitter + adaptive backoff) unless unregistered while
+            # the poll was running.
+            with self._lock:
+                if worker.session_id in self._sessions:
+                    heapq.heappush(
+                        self._heap,
+                        (time.time() + _poll_wait(worker._consecutive_errors),
+                         next(self._seq), worker.session_id),
+                    )
+
+
+# ── Process-wide pool singleton ─────────────────────────────────────────────
+# app.py calls POLL_POOL.start() at boot (__main__-gated, same as every
+# other background thread). Tests that construct UserPollingWorker and call
+# poll_now() synchronously never touch the pool, so they stay hermetic.
+POLL_POOL = PollWorkerPool()
+
+
+def start_poll_pool():
+    """Boot hook: start the shared pool. Idempotent, safe to call twice."""
+    POLL_POOL.start()
+
+
+class UserPollingWorker:
+    """Polling facade for ONE user session (P1 Phase 2: pooled execution).
+
+    Public API is identical to the Phase-1 thread-per-session worker
+    (start/stop/poll_now/update_address/is_running) so app.py and tests are
+    unchanged. Internally the session is REGISTERED with the shared
+    PollWorkerPool — a fixed thread pool executes its polls, so 1000+ users
+    share 8-16 threads instead of spawning 1000+.
     """
 
     def __init__(self, session_id: str, session_manager, address: str,
-                 worker_name: str = "", tenant_id: str = ""):
+                 worker_name: str = "", tenant_id: str = "", pool=None):
         self.session_id = session_id
         self._sm = session_manager
         self.address = address
@@ -639,52 +876,59 @@ class UserPollingWorker:
         # (category, identifier) dedup signatures — per-worker, so alerts
         # never re-fire across polls while the condition persists.
         self._alert_seen: set = set()
-        self._stop_event = threading.Event()
-        self._thread: threading.Thread | None = None
+        # Per-worker alert lock: poll_now() (synchronous, connect-wallet
+        # thread) can run CONCURRENTLY with a pool worker polling the same
+        # session. Both mutate _prev_snapshot (read-then-write baseline) and
+        # _alert_seen (dedup) — without a lock the delta baseline is
+        # non-deterministic and alerts can fire twice or be skipped.
+        self._alert_lock = threading.Lock()
         # Consecutive failed polls — drives adaptive backoff so provider
         # outages never amplify into a request storm at 1000+ user scale.
         self._consecutive_errors = 0
+        # Injectable for tests; defaults to the process-wide pool.
+        self._pool = pool if pool is not None else POLL_POOL
 
     def start(self):
-        """Start the polling thread."""
-        if self._thread and self._thread.is_alive():
-            log.warning("[worker %s] already running", self.session_id[:8])
-            return
-        self._stop_event.clear()
-        self._thread = threading.Thread(
-            target=self._run,
-            name=f"poll-{self.session_id[:8]}",
-            daemon=True,
-        )
-        self._thread.start()
-        log.info("[worker %s] started polling for %s",
+        """Register this session with the shared poll pool (immediate first
+        poll scheduled by the pool scheduler)."""
+        self._pool.register(self)
+        log.info("[worker %s] registered for polling %s",
                  self.session_id[:8], self.address[:10])
 
     def stop(self):
-        """Signal the polling thread to stop."""
-        self._stop_event.set()
-        log.info("[worker %s] stop signal sent", self.session_id[:8])
+        """Unregister this session from the pool — no more polls scheduled."""
+        self._pool.unregister(self.session_id)
+        log.info("[worker %s] unregistered", self.session_id[:8])
 
     def poll_now(self) -> dict:
-        """Force an immediate poll and return the snapshot."""
+        """Force an immediate SYNCHRONOUS poll and return the snapshot.
+
+        Used by /api/connect-wallet so the connect response carries data, and
+        by tests. Does not consume a pool worker — runs in the caller's
+        thread (no thread-per-session, ever)."""
         snapshot = _build_snapshot(self.address, self.worker_name)
         self._dispatch_tenant_alerts(snapshot)
         self._sm.update_snapshot(self.session_id, snapshot)
         return snapshot
 
     def update_address(self, address: str, worker_name: str = ""):
-        """Change the address this worker polls."""
+        """Change the address this session polls."""
         self.address = address
         self.worker_name = worker_name
-        # New wallet = fresh delta baseline + dedup state.
-        self._prev_snapshot = {}
-        self._alert_seen.clear()
+        # New wallet = fresh delta baseline + dedup state. Locked so a
+        # concurrent in-flight _dispatch_tenant_alerts cannot read a torn
+        # baseline (half-cleared / half-new) mid-reset.
+        with self._alert_lock:
+            self._prev_snapshot = {}
+            self._alert_seen.clear()
+        # Poll the new wallet as soon as the pool wakes (address changed).
+        self._pool.reschedule_immediate(self.session_id)
         log.info("[worker %s] address updated to %s",
                  self.session_id[:8], address[:10])
 
     @property
     def is_running(self) -> bool:
-        return self._thread is not None and self._thread.is_alive()
+        return self._pool.is_running(self.session_id)
 
     # ── Per-tenant alert + webhook dispatch ──────────────────────────────
 
@@ -721,68 +965,45 @@ class UserPollingWorker:
         """Evaluate wallet alerts with THIS tenant's settings, persist them
         tenant-scoped, surface them in the snapshot's ``alerts_recent`` feed,
         and fire the tenant's webhook (Discord/Telegram) for severities at or
-        above their configured threshold."""
-        prev = self._prev_snapshot
-        self._prev_snapshot = snapshot  # always advance the delta baseline
-        try:
-            settings = _load_settings(self.tenant_id)
-            alerts = evaluate_user_alerts(snapshot, prev, settings,
-                                          self._alert_seen)
-            if not alerts:
-                return
+        above their configured threshold.
 
-            ts = int(snapshot.get("ts") or time.time())
-            webhook_url = (settings.get("webhook_url") or "").strip()
-            min_sev = settings.get("webhook_min_severity", "WARN")
-            recent = snapshot.setdefault("alerts_recent", [])
-
-            # Persist all alerts in one transaction.
-            self._persist_alerts(ts, alerts)
-            for sev, cat, msg in alerts:
-                recent.append(make_memory_alert(ts, sev, cat, msg))
-                if webhook_url:
-                    _fire_webhook_async({
-                        "url": webhook_url,
-                        "severity": sev,
-                        "category": cat,
-                        "message": msg,
-                        "ts": ts,
-                        "worker": self.worker_name,
-                        "address": self.address,
-                        "min_severity": min_sev,
-                    })
-            snapshot["alerts_recent"] = recent[-10:]
-        except Exception as e:
-            log.warning("[worker %s] tenant alert dispatch error: %s",
-                        self.session_id[:8], e)
-
-    def _run(self):
-        """Main polling loop (jittered, adaptively backed off)."""
-        # First poll immediately
-        try:
-            snapshot = _build_snapshot(self.address, self.worker_name)
-            self._dispatch_tenant_alerts(snapshot)
-            self._sm.update_snapshot(self.session_id, snapshot)
-            log.info("[worker %s] initial poll complete (%d workers)",
-                     self.session_id[:8],
-                     len(snapshot.get("all_workers", [])))
-            self._consecutive_errors = 0
-        except Exception as e:
-            self._consecutive_errors += 1
-            log.error("[worker %s] initial poll error: %s",
-                      self.session_id[:8], e)
-
-        while not self._stop_event.is_set():
-            wait = _poll_wait(self._consecutive_errors)
-            self._stop_event.wait(wait)
-            if self._stop_event.is_set():
-                break
+        Thread-safety: the baseline advance (read prev → write prev) and the
+        dedup-set mutation must be ATOMIC. poll_now() runs in the caller's
+        thread (connect-wallet request) while a pool worker may be polling
+        the same session — the per-worker _alert_lock serializes them so the
+        delta baseline is deterministic (no torn prev, no double-fire).
+        """
+        with self._alert_lock:
+            prev = self._prev_snapshot
+            self._prev_snapshot = snapshot  # always advance the delta baseline
             try:
-                snapshot = _build_snapshot(self.address, self.worker_name)
-                self._dispatch_tenant_alerts(snapshot)
-                self._sm.update_snapshot(self.session_id, snapshot)
-                self._consecutive_errors = 0
+                settings = _load_settings(self.tenant_id)
+                alerts = evaluate_user_alerts(snapshot, prev, settings,
+                                              self._alert_seen)
+                if not alerts:
+                    return
+
+                ts = int(snapshot.get("ts") or time.time())
+                webhook_url = (settings.get("webhook_url") or "").strip()
+                min_sev = settings.get("webhook_min_severity", "WARN")
+                recent = snapshot.setdefault("alerts_recent", [])
+
+                # Persist all alerts in one transaction.
+                self._persist_alerts(ts, alerts)
+                for sev, cat, msg in alerts:
+                    recent.append(make_memory_alert(ts, sev, cat, msg))
+                    if webhook_url:
+                        _fire_webhook_async({
+                            "url": webhook_url,
+                            "severity": sev,
+                            "category": cat,
+                            "message": msg,
+                            "ts": ts,
+                            "worker": self.worker_name,
+                            "address": self.address,
+                            "min_severity": min_sev,
+                        })
+                snapshot["alerts_recent"] = recent[-10:]
             except Exception as e:
-                self._consecutive_errors += 1
-                log.error("[worker %s] poll error: %s",
-                          self.session_id[:8], e)
+                log.warning("[worker %s] tenant alert dispatch error: %s",
+                            self.session_id[:8], e)

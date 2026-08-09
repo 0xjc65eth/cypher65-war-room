@@ -9,6 +9,7 @@ be added later without changing consumers.
 """
 
 import json
+import os
 import time
 import logging
 from dataclasses import dataclass, asdict, field
@@ -498,6 +499,35 @@ def _risk_tier(provider: str, estimated: bool = False) -> int:
     return RISK_TIERS.get(provider.lower(), 4)
 
 
+def _estimate_own_mining_cost_usd_per_th_day(
+    efficiency_j_th: float = 30.0,
+    electricity_usd_per_kwh: float = 0.05,
+    hardware_allowance_pct: float = 0.15,
+) -> Optional[float]:
+    """Estimated all-in USD cost to mine 1 TH/day on OWNED hardware.
+
+    CFO benchmark for the rent-vs-own callout in the institutional view.
+    Pure math, no network calls:
+      - 1 TH/s = 1e12 hashes/sec → 1e12 * 86400 hashes/day.
+      - Energy = hashes * J/TH / 1e12 (J) per second → J/day = J/TH * 86400.
+      - kWh = J/day / 3.6e6; USD = kWh * price/kWh.
+      - Hardware allowance: adds a % on top of electricity to cover ASIC
+        amortization/repairs (S19-class ~30 J/TH @ 5c/kWh ≈ 3.6c/TH/day).
+    Env-overridable so operators can plug in their REAL power cost.
+    """
+    try:
+        eff = float(os.environ.get("OWN_MINING_EFFICIENCY_J_TH", efficiency_j_th))
+        price = float(os.environ.get("ELECTRICITY_USD_KWH", electricity_usd_per_kwh))
+        allowance = float(os.environ.get("HARDWARE_ALLOWANCE_PCT", hardware_allowance_pct))
+    except (TypeError, ValueError):
+        eff, price, allowance = efficiency_j_th, electricity_usd_per_kwh, hardware_allowance_pct
+    if eff <= 0 or price <= 0:
+        return None
+    energy_kwh_per_th_day = (eff * 86400) / 3.6e6
+    cost = energy_kwh_per_th_day * price * (1.0 + allowance)
+    return cost if cost > 0 else None
+
+
 def compute_institutional_view(
     offers: List[NormalizedOffer],
     network_hashrate: Optional[float] = None,
@@ -529,9 +559,41 @@ def compute_institutional_view(
     # Total visible liquidity (PH/s)
     total_ph = sum(o.hashrate for o in offers) / 1000.0
 
-    # VWAP over past 4h — approximated from current prices
+    # VWAP — liquidity-WEIGHTED mean price, not a naive average. A venue
+    # quoting a silly price with 100 PH should not skew the exec benchmark
+    # the way a simple mean would (CFO audit: naive mean misleads allocation).
     prices = [s["price_per_th_day"] for s in scored]
-    vwap = sum(prices) / len(prices) if prices else 0
+    sizes_th = [max(float(s.get("hashrate") or 0), 1.0) for s in scored]
+    vwap = (sum(p * w for p, w in zip(prices, sizes_th)) /
+            sum(sizes_th)) if prices else 0.0
+    prices_sorted = sorted(prices)
+    n = len(prices_sorted)
+    median = (prices_sorted[n // 2] if n % 2
+              else (prices_sorted[n // 2 - 1] + prices_sorted[n // 2]) / 2.0)
+    price_min = prices_sorted[0]
+    price_max = prices_sorted[-1]
+
+    # ── Rent vs own benchmark (CFO) ────────────────────────────────────────
+    # The operator's fleet is the alternative: renting hashrate only makes
+    # sense if the cheapest rental is NOT way above the cost of mining the
+    # same TH on owned hardware. Estimated from typical S19/X19 economics
+    # (efficiency 30 J/TH, electricity 5c/kWh → ~0.036 USD/TH/day opex +
+    # a 15% hardware-cost allowance). BTC/USD converts the rental price.
+    rent_vs_own = None
+    if btc_usd:
+        rental_usd_th_day = best_price * btc_usd  # BTC/TH/d × USD/BTC → USD/TH/d
+        own_cost_usd_th_day = _estimate_own_mining_cost_usd_per_th_day()
+        if own_cost_usd_th_day:
+            ratio = rental_usd_th_day / own_cost_usd_th_day
+            rent_vs_own = {
+                "rental_usd_th_day": round(rental_usd_th_day, 4),
+                "own_cost_usd_th_day": round(own_cost_usd_th_day, 4),
+                "ratio": round(ratio, 2),
+                # ratio 1.0 = rental == own cost; <1 rental cheaper, >1 dearer
+                "cheaper_than_own": ratio < 1.0,
+                "premium_pct": round((ratio - 1.0) * 100, 0) if ratio >= 1.0 else 0,
+                "discount_pct": round((1.0 - ratio) * 100, 0) if ratio < 1.0 else 0,
+            }
 
     snapshot = {
         "best_price_btc_ph_day": round(best_price * 1000, 6),
@@ -542,8 +604,12 @@ def compute_institutional_view(
         "total_liquidity_eh": round(total_ph / 1000, 3),
         "regime": regime,
         "vwap_4h_btc_ph_day": round(vwap * 1000, 6),
+        "median_btc_ph_day": round(median * 1000, 6),
+        "price_range_btc_ph_day": [round(price_min * 1000, 6),
+                                    round(price_max * 1000, 6)],
         "offer_count": len(scored),
         "btc_usd": btc_usd,
+        "rent_vs_own": rent_vs_own,
     }
 
     venues = []
@@ -592,6 +658,30 @@ def compute_institutional_view(
             f"Market regime is {regime} \u2014 spreads are elevated. "
             "Consider waiting for normalization if not time-sensitive."
         )
+    # Deepest-venue note: where can you actually SIZE the trade? Executive
+    # buyers care about executable liquidity, not just the best sticker price.
+    real = [v for v in venues if not v.get("estimated")]
+    if real:
+        deepest = max(real, key=lambda v: v.get("available_ph") or 0)
+        if (deepest.get("available_ph") or 0) >= 5:
+            notes.append(
+                f"{deepest['venue']} has the deepest visible liquidity "
+                f"({deepest.get('available_ph')} PH/s) \u2014 preferred for sizes above 5 PH."
+            )
+    # Rent vs own executive callout (CFO): tells the operator whether renting
+    # is cheaper or dearer than mining the same hashrate on owned ASICs.
+    if rent_vs_own:
+        if rent_vs_own["cheaper_than_own"]:
+            notes.append(
+                f"Best rental is {rent_vs_own['discount_pct']:.0f}% CHEAPER than "
+                "mining on owned hardware today \u2014 tactical lease makes sense."
+            )
+        else:
+            notes.append(
+                f"Best rental costs {rent_vs_own['premium_pct']:.0f}% MORE than "
+                "mining on owned hardware \u2014 prefer your own fleet unless "
+                "you need instant scale."
+            )
     for v in venues:
         if v["risk_tier"] >= 3 and not v["estimated"]:
             notes.append(

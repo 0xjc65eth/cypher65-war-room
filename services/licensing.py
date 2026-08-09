@@ -168,6 +168,23 @@ def pro_required(f):
             return f(*args, **kwargs)
         if _key_valid(current_license_key()):
             return f(*args, **kwargs)
+        # CFO: the user just SAW the paywall — that is funnel stage #1.
+        # Best-effort telemetry (never raises, never blocks the 402).
+        try:
+            from services.conversion import track_event
+            tenant = ""
+            auth = request.headers.get("Authorization", "")
+            if auth.startswith("Bearer "):
+                try:
+                    from services.auth import verify_token
+                    payload = verify_token(auth[7:]) or {}
+                    tenant = payload.get("sub") or ""
+                except Exception:
+                    pass
+            track_event("paywall_view", tenant_id=tenant,
+                        meta={"feature": getattr(f, "__name__", "")})
+        except Exception:
+            pass
         return jsonify({
             "error": "PRO feature requires a license key",
             "code": "LICENSE_REQUIRED",
