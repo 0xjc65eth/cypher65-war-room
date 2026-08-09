@@ -77,8 +77,12 @@ def api_export(table, fmt, tenant_id: str = ""):
 @require_tenant
 @role_required("viewer")
 def api_config_backup(tenant_id: str = ""):
-    """Download entire config (settings + worker + btc_address) as JSON."""
-    s = load_settings()
+    """Download entire config (settings + worker + btc_address) as JSON.
+
+    Tenant-scoped: a named tenant downloads THEIR OWN settings — never the
+    operator's global table (which may hold the operator's provider keys).
+    """
+    s = load_settings(tenant_id=tenant_id)
     payload = {
         "settings": s,
         "worker_name": config.WORKER_NAME,
@@ -98,7 +102,11 @@ def api_config_backup(tenant_id: str = ""):
 @role_required("member")
 def api_config_restore(tenant_id: str = ""):
     """Restore settings from a backup JSON body.
-    Only updates keys that exist in DEFAULT_SETTINGS."""
+
+    Tenant-scoped: writes into the CALLER's own tenant_settings rows — a
+    named tenant can NEVER overwrite the operator's global table.
+    Only updates keys that exist in DEFAULT_SETTINGS.
+    """
     body = request.get_json(silent=True) or {}
     settings = body.get("settings") or {}
     if not isinstance(settings, dict):
@@ -108,6 +116,6 @@ def api_config_restore(tenant_id: str = ""):
         if k not in DEFAULT_SETTINGS:
             rejected.append(k)
             continue
-        if save_setting(k, v):
+        if save_setting(k, v, tenant_id=tenant_id):
             applied.append(k)
     return jsonify({"applied": applied, "rejected": rejected})

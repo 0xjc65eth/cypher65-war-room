@@ -32,12 +32,18 @@ PH_TO_TH = 1000.0
 
 
 # ── Credentials: shared resolver in agents/solo_mining_advisor/tools.py ──
-_mrr_creds = mrr_credentials
+# Tenant-aware: named tenants resolve ONLY their own credentials (never env /
+# global settings) so 1000+ users each see their own MRR/Braiins data.
+
+def _mrr_creds(tenant_id: str = "") -> dict:
+    return mrr_credentials(tenant_id=tenant_id)
 
 
-def _braiins_key() -> str:
-    """Braiins API key: env first, Settings modal fallback (shared resolver)."""
-    return braiins_credentials().get("api_key") or ""
+def _braiins_key(tenant_id: str = "") -> str:
+    """Braiins API key for a tenant (default = operator env→Settings).
+    Stripped — the `apikey` header is verbatim and a pasted token with a
+    trailing newline/space silently 401s."""
+    return (braiins_credentials(tenant_id=tenant_id).get("api_key") or "").strip()
 
 
 # ── MRR: rentals ─────────────────────────────────────────────────────────────
@@ -46,14 +52,15 @@ def fetch_mrr_rentals(
     rtype: str = "renter",
     history: bool = False,
     limit: int = 25,
+    tenant_id: str = "",
 ) -> Dict[str, Any]:
-    """List MRR rentals for the operator (default: renter, active only).
+    """List MRR rentals for a tenant (default: renter, active only).
 
     Returns a normalized list plus auth status so the panel can render an
     honest empty/error state:
       {"success": True, "needs_auth": False, "rentals": [...], "total": n}
     """
-    creds = _mrr_creds()
+    creds = _mrr_creds(tenant_id=tenant_id)
     if not (creds["api_key"] and creds["api_secret"]):
         return {"success": False, "needs_auth": True, "rentals": [], "total": 0}
 
@@ -98,9 +105,9 @@ def fetch_mrr_rentals(
         return {"success": False, "needs_auth": False, "error": str(e)[:120], "rentals": [], "total": 0}
 
 
-def fetch_mrr_rental_detail(rental_id: str) -> Dict[str, Any]:
+def fetch_mrr_rental_detail(rental_id: str, tenant_id: str = "") -> Dict[str, Any]:
     """Full detail + graph + log for one MRR rental."""
-    creds = _mrr_creds()
+    creds = _mrr_creds(tenant_id=tenant_id)
     if not (creds["api_key"] and creds["api_secret"]):
         return {"success": False, "needs_auth": True}
 
@@ -247,15 +254,16 @@ def _normalize_braiins_contract(c: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def fetch_braiins_contracts() -> Dict[str, Any]:
-    """List caller-owned Braiins contracts/bids (active + history).
+def fetch_braiins_contracts(tenant_id: str = "") -> Dict[str, Any]:
+    """List caller-owned Braiins contracts/bids (active + history) for a tenant.
 
-    Requires BRAIINS_API_KEY (owner token, shown once at registration).
-    Probes the legacy /contract endpoints and the current /spot/bid family,
-    and NEVER reports an empty account when the truth is a rejected key:
-    an explicit error is returned instead.
+    Requires BRAIINS_API_KEY (owner token, shown once at registration) — for
+    a named tenant, ITS OWN key (isolated per tenant_settings). Probes the
+    legacy /contract endpoints and the current /spot/bid family, and NEVER
+    reports an empty account when the truth is a rejected key: an explicit
+    error is returned instead.
     """
-    key = _braiins_key()
+    key = _braiins_key(tenant_id=tenant_id)
     if not key:
         return {"success": False, "needs_auth": True,
                 "error": "BRAIINS_API_KEY not configured", "contracts": []}
@@ -303,13 +311,13 @@ def fetch_braiins_contracts() -> Dict[str, Any]:
     return {"success": True, "needs_auth": False, "contracts": []}
 
 
-def fetch_braiins_contract_speed(contract_id: str) -> Dict[str, Any]:
+def fetch_braiins_contract_speed(contract_id: str, tenant_id: str = "") -> Dict[str, Any]:
     """Braiins contract speed time series → [{ts, speed_ph}].
 
     Probes /contract/{id}/speed then /spot/bid/speed/{id}; parses items /
     points / data envelopes.
     """
-    key = _braiins_key()
+    key = _braiins_key(tenant_id=tenant_id)
     if not key:
         return {"success": False, "needs_auth": True,
                 "error": "BRAIINS_API_KEY not configured"}
@@ -338,7 +346,8 @@ def fetch_braiins_contract_speed(contract_id: str) -> Dict[str, Any]:
     return {"success": False, "error": "Braiins speed endpoint returned no data for " + contract_id}
 
 
-def fetch_braiins_contract_detail(contract_id: str, contract: Optional[Dict] = None) -> Dict[str, Any]:
+def fetch_braiins_contract_detail(contract_id: str, contract: Optional[Dict] = None,
+                                  tenant_id: str = "") -> Dict[str, Any]:
     """Full detail for one Braiins contract, NORMALIZED to the MRR detail
     schema so the RENTALS detail panel renders identically for both
     providers (grid rows, performance banner, chart).
@@ -349,18 +358,18 @@ def fetch_braiins_contract_detail(contract_id: str, contract: Optional[Dict] = N
 
     Returns {"success", "detail": {...mrr-shaped...}, "graph": {"points": [...]}}
     """
-    key = _braiins_key()
+    key = _braiins_key(tenant_id=tenant_id)
     if not key:
         return {"success": False, "needs_auth": True}
 
     if contract is None:
         # Callers without the list payload (e.g. tests) re-probe the list.
-        listing = fetch_braiins_contracts()
+        listing = fetch_braiins_contracts(tenant_id=tenant_id)
         contract = next(
             (c for c in listing.get("contracts", []) if str(c.get("id")) == str(contract_id)),
             None,
         )
-    speed = fetch_braiins_contract_speed(contract_id)
+    speed = fetch_braiins_contract_speed(contract_id, tenant_id=tenant_id)
     points = speed.get("points", [])
 
     speed_limit_ph = contract.get("speed_limit_ph") if contract else None
@@ -503,6 +512,7 @@ def fetch_rig_performance_history(
     rig_name: str = "",
     exclude_rental_id: Any = None,
     limit: int = 100,
+    tenant_id: str = "",
 ) -> List[Dict[str, Any]]:
     """Past MRR rentals of the SAME rig → track record for the detail panel.
 
@@ -515,7 +525,8 @@ def fetch_rig_performance_history(
     """
     if not (rig_id or rig_name):
         return []
-    listing = fetch_mrr_rentals(rtype="renter", history=True, limit=limit)
+    listing = fetch_mrr_rentals(rtype="renter", history=True, limit=limit,
+                                tenant_id=tenant_id)
     if not listing.get("success"):
         return []
     wanted_id = str(rig_id) if rig_id is not None else None

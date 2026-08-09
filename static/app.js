@@ -3164,7 +3164,10 @@ function renderAccount(acct) {
     const listEl = document.getElementById('rentals-list');
     if (!listEl) return false;
     try {
-      const r = await fetch('/api/rentals');
+      // authFetch sends the user's Bearer token so the server resolves the
+      // caller's TENANT — with 1000+ users each one sees only their own
+      // Braiins/MRR credentials and rentals (never the operator's key).
+      const r = await authFetch('/api/rentals');
       if (!r.ok) return false;
       _rentalsData = await r.json();
       // UX: on the first load, land on the first tab that actually has data —
@@ -3282,7 +3285,9 @@ function renderAccount(acct) {
         body = JSON.stringify({ provider: 'braiins', id: id, contract: contract || {} });
         url = '/api/rentals/detail';
       }
-      const r = await fetch(url, {
+      // authFetch (not plain fetch) — tenant-scoped: the server resolves the
+      // caller's tenant from the Bearer token to fetch THEIR contracts.
+      const r = await authFetch(url, {
         method: body ? 'POST' : 'GET',
         headers: body ? { 'Content-Type': 'application/json' } : undefined,
         body: body,
@@ -4050,6 +4055,21 @@ function renderAccount(acct) {
       html += `<label style="display:flex;flex-direction:column;gap:2px;font-size:11px"><span>${label}</span><input type="text" name="${k}" value="${escapeHtml(String(val ?? ''))}" class="field__input">${hint}</label>`;
     }
     });
+    // Credential sanity helpers for the RENTALS providers. Env-var override
+    // warning: on a deployed instance (Render) BRAIINS_API_KEY set in the
+    // environment silently wins over this field — tell the operator, or they
+    // edit the field, nothing changes, and the panel keeps saying "rejected".
+    if ((SETTINGS_CACHE.env || {}).braiins_api_key && settings['braiins_api_key']) {
+      html += '<div style="margin-top:2px;border:1px solid var(--accent-orange, #ffa000);border-radius:4px;padding:6px 8px;font-size:10px;line-height:1.4;color:var(--text-muted)">⚠ O servidor tem <code>BRAIINS_API_KEY</code> definida como env var — ela <b>SOBRESCREVE</b> o valor abaixo. Remova a env var (Render → Environment) para usar a chave do Settings.</div>';
+    }
+    // "Test connection" for Braiins: probes the live API and reports the same
+    // verdict the RENTALS panel derives (ok / rejected / missing).
+    if (settings['braiins_api_key']) {
+      html += '<div style="display:flex;align-items:center;gap:6px;margin-top:2px;flex-wrap:wrap">' +
+        '<button type="button" class="btn btn--primary btn--mini" id="braiins-test">🔑 TESTAR CHAVE BRAIINS</button>' +
+        '<span id="braiins-test-status" style="font-size:10px;color:var(--text-muted)"></span>' +
+        '</div>';
+    }
     // Webhook preview + test send (UX audit Quick Win): the operator sees
     // the exact JSON payload fired per alert, and can validate the channel
     // without waiting for a real event. Only rendered when a URL is actually
@@ -4098,9 +4118,46 @@ function renderAccount(acct) {
         }
       });
     }
+    const braiinsTestBtn = document.getElementById('braiins-test');
+    if (braiinsTestBtn) {
+      braiinsTestBtn.addEventListener('click', async function() {
+        const st = document.getElementById('braiins-test-status');
+        if (st) { st.textContent = 'testando… (pode levar ~10s)'; st.style.color = 'var(--text-muted)'; }
+        try {
+          // The probe can hit up to 4 Braiins endpoints — never let the button
+          // hang indefinitely (AbortController 20s hard cap).
+          const ctrl = new AbortController();
+          const _timer = setTimeout(() => ctrl.abort(), 20000);
+          const r = await authFetch('/api/settings/test-braiins', { method: 'POST', signal: ctrl.signal });
+          clearTimeout(_timer);
+          const d = await r.json();
+          if (!st) return;
+          if (r.ok && d.success) {
+            st.textContent = '✓ chave aceita — ' + d.contracts + ' contrato(s)/bid(s) encontrados' + (d.env_override ? ' (via env var)' : '');
+            st.style.color = 'var(--green)';
+          } else if (!d.configured) {
+            st.textContent = '✗ nenhuma chave configurada — cole o owner token acima' + (d.env_override ? ' (env var presente, mas inválida)' : '');
+            st.style.color = 'var(--accent-red)';
+          } else {
+            st.textContent = '✗ ' + (d.error || 'falhou') + (d.env_override ? ' — a env var BRAIINS_API_KEY SOBRESCREVE este campo' : '');
+            st.style.color = 'var(--accent-red)';
+          }
+        } catch (e) {
+          if (st) { st.textContent = '✗ network error: ' + e.message; st.style.color = 'var(--accent-red)'; }
+        }
+      });
+    }
   }
   async function loadSettings() {
-    try {      const r = await authFetch('/api/settings'); SETTINGS_CACHE.data = (await r.json()).settings.reduce((acc, s) => { acc[s.key] = s; return acc; }, {}); renderSettingsForm(); } catch (e) {}
+    try {
+      const r = await authFetch('/api/settings');
+      const _j = await r.json();
+      SETTINGS_CACHE.data = (_j.settings || []).reduce((acc, s) => { acc[s.key] = s; return acc; }, {});
+      // env_overrides: which credentials are set as env vars on the SERVER —
+      // they silently beat the field below (Render deploy gotcha).
+      SETTINGS_CACHE.env = _j.env_overrides || {};
+      renderSettingsForm();
+    } catch (e) {}
   }
   function openSettingsModal() {
     dom.settingsModal?.classList.add('modal--open');
@@ -4514,7 +4571,11 @@ dom.walletSave?.addEventListener('click', async () => {
     if (!form) return;
     const data = {};
     form.querySelectorAll('input, select, textarea').forEach(el => {
-      if (el.name) data[el.name] = el.type === 'checkbox' ? (el.checked ? '1' : '0') : el.value;
+      if (!el.name) return;
+      // Secrets/URLs must be trimmed: an owner token pasted with a trailing
+      // newline makes the `apikey` header invalid → 401 "key rejected".
+      const _trim = ['braiins_api_key', 'mrr_api_key', 'mrr_api_secret', 'webhook_url'].includes(el.name);
+      data[el.name] = el.type === 'checkbox' ? (el.checked ? '1' : '0') : (_trim ? el.value.trim() : el.value);
     });
     try {
       const r = await authFetch('/api/settings', {
@@ -4533,7 +4594,16 @@ dom.walletSave?.addEventListener('click', async () => {
         status.className = savedOk ? 'badge badge--green' : 'badge badge--red';
         setTimeout(() => { if (status) status.textContent = ''; }, 2000);
       }
-      if (savedOk) setTimeout(() => closeSettingsModal(), 800);
+      if (savedOk) {
+        // Credentials changed → invalidate the lazy RENTALS cache and refetch
+        // NOW (the tab may already be activated, so the activation hook alone
+        // would never re-run and the panel would keep showing 🔑/⚠).
+        _rentalsLoaded = false;
+        _rentalsData = null;
+        loadRentals();
+        if (typeof fetchSnapshot === 'function') fetchSnapshot();
+        setTimeout(() => closeSettingsModal(), 800);
+      }
     } catch (e) {
       const status = document.getElementById('settings-status');
       if (status) { status.textContent = 'NETWORK ERROR'; status.className = 'badge badge--red'; }

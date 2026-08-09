@@ -427,7 +427,7 @@ def test_detail_route_mrr_enriched(rclient, monkeypatch):
     raw = _mrr_rental()
     monkeypatch.setattr(
         _app_module._rental_perf, "fetch_mrr_rental_detail",
-        lambda rid: {"success": True, "detail": raw, "graph": {"chartdata": {"bars": "[1,2]"}}, "log": {"rental_log": []}})
+        lambda rid, tenant_id="": {"success": True, "detail": raw, "graph": {"chartdata": {"bars": "[1,2]"}}, "log": {"rental_log": []}})
     monkeypatch.setattr(
         _app_module._rental_perf, "fetch_rig_performance_history",
         lambda *a, **k: [{"id": "2", "start": "2026-07-01", "percent": 94.0}])
@@ -451,8 +451,8 @@ def test_detail_route_braiins_market(rclient, monkeypatch):
     """POST /api/rentals/detail (braiins) carries market + empty rig_history."""
     monkeypatch.setattr(
         _app_module._rental_perf, "fetch_braiins_contract_detail",
-        lambda cid, contract=None: {"success": True, "detail": {"id": cid, "perf": {"percent": 95.0}},
-                                    "graph": {"points": []}})
+        lambda cid, contract=None, tenant_id="": {"success": True, "detail": {"id": cid, "perf": {"percent": 95.0}},
+                                                    "graph": {"points": []}})
     monkeypatch.setattr(
         _app_module._rental_perf, "fetch_market_reference",
         lambda: {"available": True, "price_sats_per_thh": 480.0, "provider": "braiins"})
@@ -470,6 +470,89 @@ def test_num_helper():
     assert rp._num("") is None
     assert rp._num("3.85") == 3.85
     assert rp._num("nope") is None
+
+
+def test_braiins_key_strips_whitespace(monkeypatch):
+    """A pasted token with trailing newline/space must be stripped before it
+    becomes the `apikey` header (verbatim) — otherwise Braiins 401s and the
+    panel reports "key rejected" for a valid key."""
+    import services.settings as _settings_mod
+    monkeypatch.delenv("BRAIINS_API_KEY", raising=False)
+    monkeypatch.setattr(_settings_mod, "load_settings",
+                        lambda: {"braiins_api_key": "owner-token\n  "})
+    from agents.solo_mining_advisor.tools import braiins_credentials
+    assert braiins_credentials()["api_key"] == "owner-token"
+    assert rp._braiins_key() == "owner-token"
+
+
+def test_braiins_credentials_strips_env(monkeypatch):
+    """Env-var credentials are stripped too (Render env values can carry
+    trailing whitespace from the dashboard UI)."""
+    monkeypatch.setenv("BRAIINS_API_KEY", "env-token \t")
+    from agents.solo_mining_advisor.tools import braiins_credentials
+    assert braiins_credentials()["api_key"] == "env-token"
+
+
+# ── Settings route: env_overrides + test-braiins verdict ────────────────────
+
+import agents.solo_mining_advisor.tools as _tools
+
+
+def test_settings_get_exposes_env_overrides(rclient, monkeypatch):
+    """GET /api/settings reports which credentials are env-overridden so the UI
+    can warn that the Settings field won't take effect on the server."""
+    monkeypatch.setenv("BRAIINS_API_KEY", "env-key")
+    monkeypatch.delenv("MRR_API_KEY", raising=False)
+    monkeypatch.delenv("MRR_API_SECRET", raising=False)
+    resp = rclient.get("/api/settings")
+    assert resp.status_code == 200
+    overrides = resp.get_json()["env_overrides"]
+    assert overrides["braiins_api_key"] is True
+    assert overrides["mrr_api_key"] is False
+    assert overrides["mrr_api_secret"] is False
+
+
+def test_settings_test_braiins_not_configured(rclient, monkeypatch):
+    """No key anywhere → clear 'not configured' verdict (not a 401)."""
+    monkeypatch.setattr(_tools, "braiins_credentials",
+                        lambda tenant_id="": {"api_key": ""})
+    monkeypatch.delenv("BRAIINS_API_KEY", raising=False)
+    resp = rclient.post("/api/settings/test-braiins")
+    data = resp.get_json()
+    assert data["success"] is False
+    assert data["configured"] is False
+    assert "not configured" in data["error"]
+
+
+def test_settings_test_braiins_rejected(rclient, monkeypatch):
+    """Configured key that the API refuses → verdict 'rejected' with reason."""
+    monkeypatch.setattr(_tools, "braiins_credentials",
+                        lambda tenant_id="": {"api_key": "owner-token"})
+    monkeypatch.setattr(
+        rp, "fetch_braiins_contracts",
+        lambda tenant_id="": {"success": False, "needs_auth": True, "contracts": [],
+                              "error": "Braiins API rejected the key (HTTP 401/403)"})
+    resp = rclient.post("/api/settings/test-braiins")
+    data = resp.get_json()
+    assert data["success"] is False
+    assert data["configured"] is True
+    assert data["verdict"] == "rejected"
+    assert "401" in data["error"]
+
+
+def test_settings_test_braiins_ok(rclient, monkeypatch):
+    """Valid key → verdict 'ok' with the contract count."""
+    monkeypatch.setattr(_tools, "braiins_credentials",
+                        lambda tenant_id="": {"api_key": "owner-token"})
+    monkeypatch.setattr(
+        rp, "fetch_braiins_contracts",
+        lambda tenant_id="": {"success": True, "needs_auth": False,
+                              "contracts": [{"id": "B1"}, {"id": "B2"}]})
+    resp = rclient.post("/api/settings/test-braiins")
+    data = resp.get_json()
+    assert data["success"] is True
+    assert data["verdict"] == "ok"
+    assert data["contracts"] == 2
 
 
 def test_hash_to_th_units():

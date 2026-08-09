@@ -4,12 +4,13 @@ CYPHER65 // Settings API routes
 Flask Blueprint for /api/settings endpoints.
 Extracted from app.py — Phase 2a of P0.4 refactoring.
 """
+import os
 import time
 
 from flask import Blueprint, jsonify, request
 
 from config import BTC_ADDRESS, WORKER_NAME
-from services.settings import DEFAULT_SETTINGS, load_settings, save_setting, settings_label
+from services.settings import DEFAULT_SETTINGS, is_default_tenant, load_settings, save_setting, settings_label
 from services.tenant import require_tenant, role_required
 from services.licensing import is_pro
 
@@ -19,11 +20,26 @@ settings_bp = Blueprint("settings", __name__, url_prefix="/api")
 @settings_bp.route("/settings", methods=["GET"])
 @require_tenant
 def api_settings_get(tenant_id: str = ""):
-    s = load_settings()
+    s = load_settings(tenant_id=tenant_id)
     out = []
     for k, v in DEFAULT_SETTINGS.items():
         out.append({"key": k, "value": s.get(k, v), "default": v, "label": settings_label(k)})
-    return jsonify({"settings": out, "freshness_ts": int(time.time())})
+    # Which credential settings are currently OVERRIDDEN by an env var.
+    # On a deployed instance (Render) BRAIINS_API_KEY/MRR_API_KEY set in the
+    # environment silently win over the Settings modal — surfacing it here
+    # lets the UI warn the operator that editing the field won't take effect
+    # until the env var is removed. Booleans only — never the values.
+    # IMPORTANT: only the operator's default tenant is affected by env vars;
+    # named tenants NEVER inherit env credentials (they use their own rows),
+    # so env_overrides is all-False for them.
+    env_overrides = {
+        "braiins_api_key": is_default_tenant(tenant_id) and bool((os.environ.get("BRAIINS_API_KEY") or "").strip()),
+        "mrr_api_key": is_default_tenant(tenant_id) and bool((os.environ.get("MRR_API_KEY") or "").strip()),
+        "mrr_api_secret": is_default_tenant(tenant_id) and bool((os.environ.get("MRR_API_SECRET") or "").strip()),
+    }
+    return jsonify({"settings": out, "freshness_ts": int(time.time()),
+                    "env_overrides": env_overrides,
+                    "tenant_id": tenant_id or "default"})
 
 
 @settings_bp.route("/settings", methods=["POST"])
@@ -47,11 +63,55 @@ def api_settings_post(tenant_id: str = ""):
         if not k.startswith('_') and k not in DEFAULT_SETTINGS:
             rejected.append({"key": k, "reason": "unknown key"})
             continue
-        if save_setting(k, v):
+        if save_setting(k, v, tenant_id=tenant_id):
             applied.append(k)
         else:
             rejected.append({"key": k, "reason": "db error"})
     return jsonify({"applied": applied, "rejected": rejected})
+
+
+@settings_bp.route("/settings/test-braiins", methods=["POST"])
+@require_tenant
+@role_required("member")
+def api_settings_test_braiins(tenant_id: str = ""):
+    """Validate the configured Braiins Hashpower key against the live API.
+
+    Same probe the RENTALS panel runs (fetch_braiins_contracts), with an
+    explicit verdict so the operator can diagnose "chave não reconhecida"
+    right inside the Settings modal:
+      - configured: False           → no key stored anywhere
+      - verdict "ok"                → key accepted (n contracts/bids found)
+      - verdict "rejected" (401/403) → key present but the API refused it
+      - env_override: True          → an env var beats the field below
+    """
+    from agents.solo_mining_advisor.tools import braiins_credentials
+    from services import rental_performance as _rp
+    # Tenant-scoped: the test probes the CALLER's own key. Env-var override
+    # only applies to the operator's default tenant (named tenants never
+    # inherit env credentials).
+    env_key = is_default_tenant(tenant_id) and bool((os.environ.get("BRAIINS_API_KEY") or "").strip())
+    key = (braiins_credentials(tenant_id=tenant_id).get("api_key") or "").strip()
+    if not key:
+        return jsonify({"success": False, "configured": False,
+                        "env_override": env_key,
+                        "error": "BRAIINS_API_KEY not configured — add the owner token below"})
+    try:
+        result = _rp.fetch_braiins_contracts(tenant_id=tenant_id)
+        if result.get("needs_auth"):
+            return jsonify({"success": False, "configured": True,
+                            "env_override": env_key, "verdict": "rejected",
+                            "error": result.get("error") or "Braiins API rejected the key (HTTP 401/403)"})
+        if not result.get("success"):
+            return jsonify({"success": False, "configured": True,
+                            "env_override": env_key, "verdict": "error",
+                            "error": result.get("error") or "Braiins API returned no data"})
+        return jsonify({"success": True, "configured": True,
+                        "env_override": env_key, "verdict": "ok",
+                        "contracts": len(result.get("contracts", []))})
+    except Exception as e:
+        return jsonify({"success": False, "configured": True,
+                        "env_override": env_key, "verdict": "error",
+                        "error": str(e)[:160]}), 502
 
 
 @settings_bp.route("/settings/test-webhook", methods=["POST"])

@@ -34,11 +34,14 @@ PARASITE_API = "https://parasite.space/api"
 # 1 PH = 1000 TH — canonical unit conversion for per-PH/day → per-TH/day
 PH_TO_TH = 1000.0
 
-# Default worker address (configurable)
-DEFAULT_WORKER = os.environ.get(
-    "BTC_ADDRESS",
-    "bc1qpc3832jcu6m8qpqjvz5lkuydwjzv8v5vq5t5rs",
-)
+# Default worker address (configurable via BTC_ADDRESS env var).
+# Resolved LAZILY at call time: reading os.environ at import time was fragile
+# because app.py imports this module BEFORE config.py's load_dotenv() runs —
+# so a .env file with an (empty) BTC_ADDRESS= line silently wiped the
+# fallback depending on import order. An empty/unset env now always falls
+# back to the historical default, deterministically.
+def _default_worker() -> str:
+    return os.environ.get("BTC_ADDRESS") or "bc1qpc3832jcu6m8qpqjvz5lkuydwjzv8v5vq5t5rs"
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -218,38 +221,65 @@ def get_braiins_orderbook():
 #  TOOL 4: get_mrr_listings()
 # ═══════════════════════════════════════════════════════════════════════════
 
-def mrr_credentials() -> dict:
-    """Resolve MRR API credentials: env vars first, Settings modal fallback.
+def mrr_credentials(tenant_id: str = "") -> dict:
+    """Resolve MRR API credentials for a tenant.
 
     Shared by every MRR consumer (market quotes, rentals, balance) so the
-    credential resolution lives in one place.
+    credential resolution lives in one place. Values are STRIPPED — a token
+    pasted with a trailing newline/space would corrupt the HMAC signature
+    / auth headers and surface as a phantom 401 ("key not recognized").
+
+    Tenant-aware (multi-user deployments):
+      - default / '' (operator self-host): env vars first, then the global
+        Settings table — legacy behavior, operator-controlled.
+      - named tenant: ONLY that tenant's own settings rows. Env vars and the
+        global table are NEVER consulted — otherwise every user would inherit
+        the operator's credentials (the exact leak 1000+ users must avoid).
     """
-    api_key = os.environ.get("MRR_API_KEY") or ""
-    api_secret = os.environ.get("MRR_API_SECRET") or ""
+    from services.settings import is_default_tenant, load_settings
+    if not is_default_tenant(tenant_id):
+        _s = load_settings(tenant_id)
+        return {"api_key": (_s.get("mrr_api_key") or "").strip(),
+                "api_secret": (_s.get("mrr_api_secret") or "").strip()}
+    api_key = (os.environ.get("MRR_API_KEY") or "").strip()
+    api_secret = (os.environ.get("MRR_API_SECRET") or "").strip()
     if not (api_key and api_secret):
         try:
-            from services.settings import load_settings
             _s = load_settings()
-            api_key = api_key or (_s.get("mrr_api_key") or "")
-            api_secret = api_secret or (_s.get("mrr_api_secret") or "")
+            api_key = api_key or (_s.get("mrr_api_key") or "").strip()
+            api_secret = api_secret or (_s.get("mrr_api_secret") or "").strip()
         except Exception:
             pass
     return {"api_key": api_key, "api_secret": api_secret}
 
 
-def braiins_credentials() -> dict:
-    """Resolve the Braiins Hashpower API key: env first, Settings modal fallback.
+def braiins_credentials(tenant_id: str = "") -> dict:
+    """Resolve the Braiins Hashpower API key for a tenant.
 
     The owner token unlocks bids/contracts/balance; read-only token covers
     market data. Shared by every Braiins consumer (orderbook settings probe,
-    rentals contracts/speed, future bid management).
+    rentals contracts/speed, future bid management). The value is STRIPPED:
+    the `apikey` header is verbatim, so a token pasted with a trailing
+    newline/space returns 401 and the panel reads "key rejected" — the most
+    common "key not recognized" failure.
+
+    Tenant-aware (multi-user deployments):
+      - default / '' (operator self-host): env var first, then the global
+        Settings table — legacy behavior (Render BRAIINS_API_KEY keeps
+        working for the operator's own instance).
+      - named tenant: ONLY that tenant's own settings row. Env vars and the
+        global table are NEVER consulted — the operator's key must not leak
+        to the 1000+ users.
     """
-    api_key = os.environ.get("BRAIINS_API_KEY") or ""
+    from services.settings import is_default_tenant, load_settings
+    if not is_default_tenant(tenant_id):
+        _s = load_settings(tenant_id)
+        return {"api_key": (_s.get("braiins_api_key") or "").strip()}
+    api_key = (os.environ.get("BRAIINS_API_KEY") or "").strip()
     if not api_key:
         try:
-            from services.settings import load_settings
             _s = load_settings()
-            api_key = api_key or (_s.get("braiins_api_key") or "")
+            api_key = api_key or (_s.get("braiins_api_key") or "").strip()
         except Exception:
             pass
     return {"api_key": api_key}
@@ -504,12 +534,13 @@ def get_nicehash_orderbook(algorithm="SHA256", location=None):
 def get_parasite_pool_stats(worker_id=None):
     """Fetch stats from parasite.space pool.
     Args:
-        worker_id: BTC address (optional, defaults to DEFAULT_WORKER)
+        worker_id: BTC address (optional, defaults to BTC_ADDRESS or the
+        built-in fallback — see _default_worker)
     Returns:
         {"pool_hashrate": float, "pool_workers": int, "worker_best_diff": str, ...}
         {"error": str} on failure
     """
-    worker = worker_id or DEFAULT_WORKER
+    worker = worker_id or _default_worker()
 
     stats = {}
     pool_ok = False

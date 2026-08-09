@@ -30,6 +30,9 @@ from helpers import (
     human_int, human_secs_long, isfinite_v, make_memory_alert,
 )
 import services.names as _names
+from services.settings import load_settings as _load_settings
+from services.db import get_db as _get_db
+from services.push_notifier import send_webhook_for_alert as _send_webhook_for_alert
 
 log = logging.getLogger("cypher65.user_polling")
 
@@ -38,6 +41,21 @@ log = logging.getLogger("cypher65.user_polling")
 _global_cache: dict[str, Any] = {}
 _global_lock = threading.Lock()
 GLOBAL_CACHE_TTL = 15  # seconds — matches POLL_INTERVAL
+
+
+def _fire_webhook_async(webhook_kwargs: dict):
+    """Fire a webhook POST on a daemon thread (fire-and-forget).
+
+    The poll loop must never block on a slow/unreachable webhook endpoint
+    (up to 5s POST timeout) — at 1000+ user scale that would stall every
+    worker's 15s cycle. Tests patch this helper to run synchronously.
+    """
+    threading.Thread(
+        target=_send_webhook_for_alert,
+        kwargs=webhook_kwargs,
+        daemon=True,
+        name="cypher65-webhook",
+    ).start()
 
 
 def _update_global(key: str, value: Any):
@@ -444,6 +462,88 @@ def _build_snapshot(address: str, worker_name: str) -> dict:
     return snapshot
 
 
+# ── Per-tenant wallet alert evaluation ────────────────────────────────────────
+
+def evaluate_user_alerts(snapshot: dict, prev_snapshot: dict, settings: dict,
+                         alert_seen: set) -> list:
+    """Generate per-wallet alerts for one polled snapshot.
+
+    Mirrors the operator's ``_do_poll`` wallet-anomaly detection but
+    parameterized by the tenant's OWN thresholds (stale_share_minutes,
+    hashrate_drop_pct). Returns a list of ``(severity, category, message)``
+    tuples. ``alert_seen`` is a set of ``(category, identifier)`` signatures
+    mutated in place for dedup — the same pattern ``_do_poll`` uses, so an
+    event never fires twice per worker.
+
+    Pool-wide events (new block, pool high diff) are intentionally NOT
+    evaluated here: they are global facts shared by every tenant, so
+    generating them per-user would spam every webhook. The operator's own
+    ``_do_poll`` already covers them once.
+    """
+    alerts: list = []
+    ts = int(snapshot.get("ts") or time.time())
+    worker = snapshot.get("worker")
+    prev_worker = (prev_snapshot or {}).get("worker") or {}
+
+    stale_min = coerce_int(settings.get("stale_share_minutes"), 5)
+    hr_drop_pct = coerce_float(settings.get("hashrate_drop_pct"), 50.0)
+
+    if worker:
+        # ── Stale submission ──
+        ls = worker.get("lastSubmission")
+        if ls and (ts - int(ls)) > stale_min * 60:
+            sev = "WARN" if (ts - int(ls)) <= stale_min * 120 else "CRIT"
+            sig = ("stale_submission", str(ls))
+            if sig not in alert_seen:
+                alerts.append((sev, "stale_submission",
+                    f"Worker last submit {int((ts - int(ls)) / 60)}min ago "
+                    f"(threshold {stale_min}m)"))
+                alert_seen.add(sig)
+
+        # ── Hashrate drop vs previous poll ──
+        prev_hr = float(prev_worker.get("hashrate") or 0)
+        cur_hr = float(worker.get("hashrate") or 0)
+        if prev_hr > 0 and cur_hr < (1 - hr_drop_pct / 100.0) * prev_hr:
+            sig = ("hashrate_drop", f"{prev_hr:.0f}->{cur_hr:.0f}")
+            if sig not in alert_seen:
+                alerts.append(("WARN", "hashrate_drop",
+                    f"Worker hashrate dropped from {fmt_hashrate(prev_hr)} "
+                    f"to {fmt_hashrate(cur_hr)} (-{hr_drop_pct:.0f}%)"))
+                alert_seen.add(sig)
+
+        # ── Uptime day-boundary milestone (fire once per day) ──
+        if isinstance(worker.get("uptime"), int):
+            up = worker["uptime"]
+            if up > 0 and up % 86400 < 90:
+                day_num = up // 86400
+                sig = ("uptime_milestone", str(day_num))
+                if sig not in alert_seen:
+                    alerts.append(("INFO", "uptime",
+                        f"Worker uptime crossed {fmt_uptime(up)}"))
+                    alert_seen.add(sig)
+
+        # Worker present → clear the offline sig so it can re-fire next time.
+        alert_seen.discard(("worker_offline", "1"))
+    else:
+        # ── Online → offline transition (fire once per transition) ──
+        sig = ("worker_offline", "1")
+        was_present = bool(prev_snapshot and prev_snapshot.get("worker"))
+        if sig not in alert_seen and was_present:
+            alerts.append(("CRIT", "worker_offline",
+                           "Worker not found in workerData"))
+            alert_seen.add(sig)
+
+    # GC old signatures (keep last 500) — same policy as _do_poll. Trim
+    # in place (callers hold the same set object) so a persistent condition's
+    # signature survives unless it is genuinely old.
+    if len(alert_seen) > 1000:
+        kept = list(alert_seen)[-500:]
+        alert_seen.clear()
+        alert_seen.update(kept)
+
+    return alerts
+
+
 # ── UserPollingWorker ────────────────────────────────────────────────────────
 
 POLL_INTERVAL = 15  # seconds
@@ -457,11 +557,19 @@ class UserPollingWorker:
     """
 
     def __init__(self, session_id: str, session_manager, address: str,
-                 worker_name: str = ""):
+                 worker_name: str = "", tenant_id: str = ""):
         self.session_id = session_id
         self._sm = session_manager
         self.address = address
         self.worker_name = worker_name
+        # Fase 2: per-tenant alerts. Each session's worker evaluates wallet
+        # anomalies against the USER'S OWN settings and fires THEIR webhook.
+        self.tenant_id = tenant_id or "default"
+        # Delta baseline for hashrate-drop / online→offline detection.
+        self._prev_snapshot: dict = {}
+        # (category, identifier) dedup signatures — per-worker, so alerts
+        # never re-fire across polls while the condition persists.
+        self._alert_seen: set = set()
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
 
@@ -488,6 +596,7 @@ class UserPollingWorker:
     def poll_now(self) -> dict:
         """Force an immediate poll and return the snapshot."""
         snapshot = _build_snapshot(self.address, self.worker_name)
+        self._dispatch_tenant_alerts(snapshot)
         self._sm.update_snapshot(self.session_id, snapshot)
         return snapshot
 
@@ -495,6 +604,9 @@ class UserPollingWorker:
         """Change the address this worker polls."""
         self.address = address
         self.worker_name = worker_name
+        # New wallet = fresh delta baseline + dedup state.
+        self._prev_snapshot = {}
+        self._alert_seen.clear()
         log.info("[worker %s] address updated to %s",
                  self.session_id[:8], address[:10])
 
@@ -502,11 +614,82 @@ class UserPollingWorker:
     def is_running(self) -> bool:
         return self._thread is not None and self._thread.is_alive()
 
+    # ── Per-tenant alert + webhook dispatch ──────────────────────────────
+
+    def _persist_alerts(self, ts: int, alerts: list):
+        """Insert all alerts of one poll (plus history mirrors) scoped to this
+        tenant in a SINGLE connection/transaction. The /api/alerts and
+        /api/alerts/history routes filter by tenant_id, so each user only
+        ever sees their own alerts."""
+        if not alerts:
+            return
+        try:
+            conn = _get_db()
+            c = conn.cursor()
+            for sev, cat, msg in alerts:
+                c.execute(
+                    "INSERT INTO alerts (ts, severity, category, message, "
+                    "device_id, alert_type, is_acknowledged, active, meta, tenant_id) "
+                    "VALUES (?, ?, ?, ?, '', 'snapshot', 0, 1, '{}', ?)",
+                    (ts, sev, cat, msg, self.tenant_id),
+                )
+                c.execute(
+                    "INSERT INTO alert_history (ts, alert_type, device_id, "
+                    "severity, action_taken, tenant_id) "
+                    "VALUES (?, 'snapshot', '', ?, ?, ?)",
+                    (ts, sev, msg, self.tenant_id),
+                )
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            log.warning("[worker %s] alert persist error: %s",
+                        self.session_id[:8], e)
+
+    def _dispatch_tenant_alerts(self, snapshot: dict):
+        """Evaluate wallet alerts with THIS tenant's settings, persist them
+        tenant-scoped, surface them in the snapshot's ``alerts_recent`` feed,
+        and fire the tenant's webhook (Discord/Telegram) for severities at or
+        above their configured threshold."""
+        prev = self._prev_snapshot
+        self._prev_snapshot = snapshot  # always advance the delta baseline
+        try:
+            settings = _load_settings(self.tenant_id)
+            alerts = evaluate_user_alerts(snapshot, prev, settings,
+                                          self._alert_seen)
+            if not alerts:
+                return
+
+            ts = int(snapshot.get("ts") or time.time())
+            webhook_url = (settings.get("webhook_url") or "").strip()
+            min_sev = settings.get("webhook_min_severity", "WARN")
+            recent = snapshot.setdefault("alerts_recent", [])
+
+            # Persist all alerts in one transaction.
+            self._persist_alerts(ts, alerts)
+            for sev, cat, msg in alerts:
+                recent.append(make_memory_alert(ts, sev, cat, msg))
+                if webhook_url:
+                    _fire_webhook_async({
+                        "url": webhook_url,
+                        "severity": sev,
+                        "category": cat,
+                        "message": msg,
+                        "ts": ts,
+                        "worker": self.worker_name,
+                        "address": self.address,
+                        "min_severity": min_sev,
+                    })
+            snapshot["alerts_recent"] = recent[-10:]
+        except Exception as e:
+            log.warning("[worker %s] tenant alert dispatch error: %s",
+                        self.session_id[:8], e)
+
     def _run(self):
         """Main polling loop."""
         # First poll immediately
         try:
             snapshot = _build_snapshot(self.address, self.worker_name)
+            self._dispatch_tenant_alerts(snapshot)
             self._sm.update_snapshot(self.session_id, snapshot)
             log.info("[worker %s] initial poll complete (%d workers)",
                      self.session_id[:8],
@@ -521,6 +704,7 @@ class UserPollingWorker:
                 break
             try:
                 snapshot = _build_snapshot(self.address, self.worker_name)
+                self._dispatch_tenant_alerts(snapshot)
                 self._sm.update_snapshot(self.session_id, snapshot)
             except Exception as e:
                 log.error("[worker %s] poll error: %s",
