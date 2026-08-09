@@ -1120,6 +1120,641 @@ def compute_speed_stability(points: List[Dict]) -> Dict[str, Any]:
             "grade": grade, "label": label}
 
 
+# ── Click-first analytics: rig track record, provider rankings, heatmap, ──
+#    expiring rentals, backtest (all drill-down targets for the panel).
+
+
+def rig_track_record(rig_id: Any = None, rig_name: str = "",
+                     tenant_id: str = "") -> Dict[str, Any]:
+    """Full rig intelligence for a recommendation-card click — same shape as
+    the detail route's rig_analysis, so the panel can open the rig verdict
+    (trust grade, track record, blacklist) straight from a RECO card."""
+    return analyze_rig(rig_id, rig_name, tenant_id=tenant_id)
+
+
+def compute_provider_rankings(active: List[Dict], history: List[Dict],
+                              owner: List[Dict], contracts: List[Dict]) -> List[Dict[str, Any]]:
+    """Per-provider performance comparison (delivery / cost / P/L) so the
+    operator answers 'where does the market deliver best?' at a glance.
+
+    Only providers with data are included (honest — no fabricated rows).
+    Returns [{provider, label, rentals, avg_delivery_pct, avg_cost_sats_per_thh,
+    avg_pl_pct, spend_sats}] sorted by avg delivery desc.
+    """
+    def _bucket_rows(buckets: List[List[Dict]]) -> List[Dict]:
+        return [r for b in buckets for r in b if isinstance(r, dict)]
+
+    mrr_rows = _bucket_rows([active, history, owner])
+    out: List[Dict[str, Any]] = []
+
+    for provider, label, rows in (("mrr", "MRR", mrr_rows),):
+        if not rows:
+            continue
+        pcts, costs, pl_pcts, spend = [], [], [], 0.0
+        for r in rows:
+            p = _num(r.get("hashrate_percent"))
+            if p is not None:
+                pcts.append(p)
+            paid = _num(r.get("price_paid_btc"))
+            if paid is not None:
+                spend += paid * 1e8
+            avg_th = _num(r.get("hashrate_average_th"))
+            lenh = _num(r.get("length_hours"))
+            delivered = (avg_th * lenh) if (avg_th and lenh) else None
+            pl = compute_rental_pl(delivered, (paid * 1e8) if paid is not None else None)
+            if pl.get("pl_pct") is not None:
+                pl_pcts.append(pl["pl_pct"])
+            if delivered and paid is not None:
+                costs.append((paid * 1e8) / delivered)
+        out.append({
+            "provider": provider,
+            "label": label,
+            "rentals": len(rows),
+            "avg_delivery_pct": round(sum(pcts) / len(pcts), 1) if pcts else None,
+            "avg_cost_sats_per_thh": round(sum(costs) / len(costs), 2) if costs else None,
+            "avg_pl_pct": round(sum(pl_pcts) / len(pl_pcts), 1) if pl_pcts else None,
+            "spend_sats": round(spend),
+        })
+    # Braiins contracts: no delivery % in the list payload (only the speed
+    # series has it) — cost is derivable when amount_sat exists.
+    b_rents = [c for c in (contracts or []) if isinstance(c, dict)]
+    if b_rents:
+        amts = [c.get("amount_sat") for c in b_rents if c.get("amount_sat") is not None]
+        out.append({
+            "provider": "braiins",
+            "label": "Braiins",
+            "rentals": len(b_rents),
+            "avg_delivery_pct": None,  # requires per-contract speed series
+            "avg_cost_sats_per_thh": None,
+            "avg_pl_pct": None,
+            "spend_sats": round(sum(amts)) if amts else 0,
+        })
+    out.sort(key=lambda x: (x["avg_delivery_pct"] is not None, x["avg_delivery_pct"] or 0),
+             reverse=True)
+    return out
+
+
+def compute_rig_heatmap(history: List[Dict], owner: List[Dict],
+                        tenant_id: str = "") -> List[Dict[str, Any]]:
+    """Heatmap cells rig-name × (avg delivery %, avg cost, samples) so the
+    operator sees 'which rig MODELS deliver well at what price' in a grid.
+    Uses the LOCAL track record (instant) plus the owner bucket for income
+    rigs. Cells need ≥2 samples to avoid one-off noise."""
+    from collections import defaultdict
+    agg = defaultdict(lambda: {"pcts": [], "costs": [], "spend": 0.0})
+    try:
+        conn = get_db()
+        c = conn.cursor()
+        c.execute("SELECT rig_name, percent, cost_sats_per_thh, paid_sats "
+                  "FROM rental_history WHERE tenant_id=? AND rig_name != ''",
+                  (tenant_id or "",))
+        for row in c.fetchall():
+            name = str(row["rig_name"] or "").strip()
+            if not name:
+                continue
+            g = agg[name]
+            if row["percent"] is not None:
+                g["pcts"].append(_num(row["percent"]))
+            if row["cost_sats_per_thh"] is not None:
+                g["costs"].append(_num(row["cost_sats_per_thh"]))
+            if row["paid_sats"] is not None:
+                g["spend"] += _num(row["paid_sats"])
+        conn.close()
+    except Exception as e:
+        log.warning("[rental_performance] heatmap failed: %s", e)
+    cells = []
+    for name, g in agg.items():
+        if len(g["pcts"]) + len(g["costs"]) < 2:
+            continue
+        cells.append({
+            "rig": name[:32],
+            "samples": len(g["pcts"]) or len(g["costs"]),
+            "avg_delivery_pct": round(sum(g["pcts"]) / len(g["pcts"]), 1) if g["pcts"] else None,
+            "avg_cost_sats_per_thh": round(sum(g["costs"]) / len(g["costs"]), 2) if g["costs"] else None,
+            "spend_sats": round(g["spend"]),
+        })
+    cells.sort(key=lambda x: -(x["avg_delivery_pct"] or 0))
+    return cells
+
+
+def compute_expiring_rentals(active: List[Dict], hours: float = 72.0) -> List[Dict[str, Any]]:
+    """Active rentals whose end is within ``hours`` — a clickable calendar of
+    what's about to finish (drill-down to the rental detail)."""
+    now = time.time()
+    out = []
+    for r in active or []:
+        end_u = _num(r.get("end_unix"))
+        if end_u is None or end_u <= now:
+            continue
+        if end_u - now <= hours * 3600.0:
+            out.append({**r, "ends_in_hours": round((end_u - now) / 3600.0, 1)})
+    out.sort(key=lambda x: x["ends_in_hours"])
+    return out
+
+
+def compute_backtest(th: float, hours: float,
+                    market: Optional[Dict] = None) -> Dict[str, Any]:
+    """'What if I rented X TH for Y hours?' — cost at the cheapest live market
+    price vs expected gross yield. Honest: yield needs network hashrate;
+    without it only the cost side is returned (no fabricated P/L)."""
+    mkt = market or fetch_market_reference()
+    price = mkt.get("price_sats_per_thh") if mkt.get("available") else None
+    cost_sats = (price * th * hours) if price else None
+    yield_per_thh = compute_expected_yield_sats_per_thh()
+    yield_sats = (yield_per_thh * th * hours) if yield_per_thh is not None else None
+    pl_sats = (yield_sats - cost_sats) if (yield_sats is not None and cost_sats is not None) else None
+    return {
+        "available": True,
+        "th": th, "hours": hours,
+        "thh": round(th * hours, 1),
+        "market_sats_per_thh": price,
+        "cost_sats": round(cost_sats) if cost_sats is not None else None,
+        "expected_yield_sats": round(yield_sats) if yield_sats is not None else None,
+        "pl_sats": round(pl_sats) if pl_sats is not None else None,
+        "yield_known": yield_per_thh is not None,
+    }
+
+
+# ── Worst-rig leaderboard + portfolio concentration (CFO risk view) ────────
+# The counterpart to the recommendation engine: instead of 'where to rent
+# again', answer 'which rigs burned me before'. Ranked from the LOCAL
+# rental_history (tenant-scoped, instant) with industry-grade signals:
+#   - EWMA delivery % — recent rentals weigh more (a rig that was fine six
+#     months ago but under-delivers now must surface TODAY);
+#   - failure rate    — share of rentals delivered below 90%;
+#   - volatility      — stddev of delivery % (unstable = riskier);
+#   - worst delivery  — the single worst rental;
+#   - economic P/L    — expected gross yield vs paid per TH·h (honest '—'
+#     when the network hashrate is unknown — never fabricated money);
+#   - danger score 0-100 (higher = worse) blending the four signals.
+# Honest gating: a rig needs ≥2 measured deliveries to be ranked at all —
+# one bad rental is noise, not a verdict. Blacklist flags ride along so the
+# panel can show WHY a rig is already excluded.
+
+WORST_RIG_MIN_SAMPLES = 2
+WORST_RIG_EWMA_ALPHA = 0.5   # 50% weight on the newest rental at each step
+
+
+def compute_worst_rigs(tenant_id: str = "", limit: int = 8) -> Dict[str, Any]:
+    """Rank the tenant's WORST rigs by historical delivery quality.
+
+    Reads ONLY the local rental_history table (no provider calls — instant,
+    and the same data the panel already shows). Every rig with ≥2 measured
+    deliveries gets an EWMA-weighted delivery %, failure rate, volatility
+    (stddev), worst delivery, trend, risk-adjusted P/L and a composite
+    danger score.
+
+    Returns {"worst": [...], "count": n, "min_samples": 2} sorted by danger
+    desc, capped at ``limit``. Never raises — storage hiccup → empty list.
+    """
+    from collections import defaultdict
+    try:
+        conn = get_db()
+        c = conn.cursor()
+        c.execute(
+            "SELECT rig_id, rig_name, percent, start, paid_sats, delivered_thh, created_ts "
+            "FROM rental_history WHERE tenant_id=? AND rig_id != ''",
+            (tenant_id or "",))
+        rows = c.fetchall()
+        conn.close()
+    except Exception as e:
+        log.warning("[rental_performance] worst rigs failed: %s", e)
+        return {"worst": [], "count": 0,
+                "min_samples": WORST_RIG_MIN_SAMPLES}
+
+    # Per-rig: chronological (sort-key, pct) series + spend exposure. Sort
+    # keys come from the shared _parse_start_ts so MRR 'YYYY-MM-DD …' AND
+    # RFC3339 starts both order correctly (a lexicographic sort would not);
+    # a row whose start never parses falls back to created_ts (same fallback
+    # as compute_portfolio_series) so EWMA never reorders it to 'oldest'.
+    by_rig: Dict[str, Dict[str, Any]] = defaultdict(
+        lambda: {"name": "", "series": [], "spend_sats": 0.0, "pl_per_thh": []})
+    for r in rows:
+        rid = r["rig_id"]
+        b = by_rig[rid]
+        if not b["name"]:
+            b["name"] = r["rig_name"] or ""
+        p = _to_float(r["percent"])
+        if p is not None:
+            ts = _parse_start_ts(r["start"])
+            if ts is None and r["created_ts"]:
+                ts = float(r["created_ts"])
+            b["series"].append((ts or 0.0, p))
+        if r["paid_sats"] is not None:
+            b["spend_sats"] += _num(r["paid_sats"])
+        dthh = _to_float(r["delivered_thh"])
+        if dthh and r["paid_sats"] is not None:
+            pl = compute_rental_pl(dthh, _num(r["paid_sats"]))
+            if pl.get("pl_sats") is not None:
+                b["pl_per_thh"].append(pl["pl_sats"] / dthh)
+
+    manual = set(get_rig_blacklist(tenant_id=tenant_id))
+    auto = set(get_auto_blacklist(tenant_id=tenant_id))
+
+    worst: List[Dict[str, Any]] = []
+    for rid, b in by_rig.items():
+        series = sorted(b["series"], key=lambda x: x[0])
+        pcts = [p for _, p in series]
+        if len(pcts) < WORST_RIG_MIN_SAMPLES:
+            continue
+        # EWMA delivery — recent rentals dominate (alpha on the newest).
+        ewma = pcts[0]
+        for p in pcts[1:]:
+            ewma = WORST_RIG_EWMA_ALPHA * p + (1 - WORST_RIG_EWMA_ALPHA) * ewma
+        mean = sum(pcts) / len(pcts)
+        worst_pct = min(pcts)
+        stddev = (sum((p - mean) ** 2 for p in pcts) / len(pcts)) ** 0.5
+        fail_rate = sum(1 for p in pcts if p < 90.0) / len(pcts)
+        # Trend: newest 3 vs the previous ones (positive = improving).
+        trend = None
+        if len(pcts) >= 4:
+            recent = sum(pcts[-3:]) / 3.0
+            older = sum(pcts[:-3]) / (len(pcts) - 3)
+            trend = round(recent - older, 1)
+        # Danger score 0-100 (higher = worse): EWMA deficit 40% · volatility
+        # 15% · failure rate 25% · worst delivery 20%.
+        deficit = max(0.0, 100.0 - ewma)
+        vol_term = min(30.0, stddev) / 30.0 * 100.0
+        fail_term = fail_rate * 100.0
+        worst_term = min(1.0, max(0.0, 85.0 - worst_pct) / 85.0) * 100.0
+        danger = 0.40 * deficit + 0.15 * vol_term + 0.25 * fail_term + 0.20 * worst_term
+        # Confidence cap: exactly 2 samples → at most 65 (a two-rental rig
+        # must not top the leaderboard on a single bad streak).
+        if len(pcts) < 3:
+            danger = min(danger, 65.0)
+        rid_str = str(rid)
+        pl_avg = (sum(b["pl_per_thh"]) / len(b["pl_per_thh"])) if b["pl_per_thh"] else None
+        # Same trust-grade engine as the rig track record modal, so the
+        # leaderboard and the detail story never disagree (one scoring
+        # system — the median-based grade A-F rides along on the danger row).
+        trust = compute_rig_trust_score([{"percent": p} for p in pcts])
+        worst.append({
+            "rig_id": rid_str,
+            "name": b["name"],
+            "grade": trust.get("grade"),
+            "samples": len(pcts),
+            "ewma_delivery_pct": round(ewma, 1),
+            "avg_delivery_pct": round(mean, 1),
+            "worst_pct": round(worst_pct, 1),
+            "volatility_pct": round(stddev, 1),
+            "fail_rate_pct": round(fail_rate * 100.0, 1),
+            "trend_pct": trend,
+            "pl_sats_per_thh": round(pl_avg, 2) if pl_avg is not None else None,
+            "spend_sats": round(b["spend_sats"]),
+            "danger_score": round(danger, 1),
+            "blacklisted": rid_str in manual,
+            "auto_blacklisted": rid_str in auto,
+        })
+    worst.sort(key=lambda x: x["danger_score"], reverse=True)
+    return {"worst": worst[:limit], "count": len(worst),
+            "min_samples": WORST_RIG_MIN_SAMPLES}
+
+
+def compute_concentration_risk(active: List[Dict], history: List[Dict],
+                               owner: List[Dict],
+                               contracts: List[Dict]) -> Dict[str, Any]:
+    """Provider + rig concentration of the tenant's rental spend.
+
+    Portfolio-level risk (CFO): if 90% of everything rented comes from ONE
+    provider or ONE rig, a single failure (bad actor, grid outage) hits the
+    whole book. Returns:
+      {"available": True, "total_spend_sats": n,
+       "providers": [{provider, label, spend_sats, share_pct}],
+       "hhi": 0-10000 (Herfindahl over providers), "top_provider": {...},
+       "top_rig": {rig_id, rig_name, spend_sats, share_pct}}
+    — or {"available": False} when no spend is measurable (honest '—').
+    """
+    from collections import defaultdict
+    prov_spend: Dict[str, float] = defaultdict(float)
+    rig_spend: Dict[str, Dict[str, Any]] = defaultdict(lambda: {"name": "", "spend": 0.0})
+
+    def _acc(rows: Optional[List[Dict]]) -> None:
+        for r in rows or []:
+            if not isinstance(r, dict):
+                continue
+            paid = _num(r.get("price_paid_btc"))
+            sats = (paid * 1e8) if paid is not None else None
+            if sats is None or sats <= 0:
+                continue
+            prov_spend["mrr"] += sats
+            rig = r.get("rig") or {}
+            rid = rig.get("id")
+            if rid is not None:
+                g = rig_spend[str(rid)]
+                if not g["name"]:
+                    g["name"] = rig.get("name") or ""
+                g["spend"] += sats
+
+    _acc(active)
+    _acc(history)
+    _acc(owner)
+    for c in contracts or []:
+        if isinstance(c, dict) and c.get("amount_sat"):
+            prov_spend["braiins"] += _num(c["amount_sat"]) or 0.0
+
+    total = sum(prov_spend.values())
+    if total <= 0:
+        return {"available": False}
+    providers = [
+        {"provider": p, "label": "MRR" if p == "mrr" else "Braiins",
+         "spend_sats": round(s), "share_pct": round(s / total * 100.0, 1)}
+        for p, s in prov_spend.items()
+    ]
+    providers.sort(key=lambda x: x["share_pct"], reverse=True)
+    # Herfindahl-Hirschman over provider shares (10000 = fully concentrated).
+    hhi = round(sum((s / total * 100.0) ** 2 for s in prov_spend.values()), 1)
+    top_rig = None
+    if rig_spend:
+        rid, g = max(rig_spend.items(), key=lambda kv: kv[1]["spend"])
+        top_rig = {"rig_id": rid, "rig_name": g["name"],
+                   "spend_sats": round(g["spend"]),
+                   "share_pct": round(g["spend"] / total * 100.0, 1)}
+    return {"available": True, "total_spend_sats": round(total),
+            "providers": providers, "hhi": hhi,
+            "top_provider": providers[0], "top_rig": top_rig}
+
+
+# ── Difficulty-adjustment forecast (market timing, from local snapshots) ───
+# When is the next 2016-block retarget, and how much will difficulty move?
+# Renting right before a big difficulty SPIKE is like paying yesterday's
+# price for tomorrow's fewer blocks. The forecast derives the CURRENT block
+# cadence from the LOCAL snapshots table (height deltas over time — the same
+# source the halving countdown uses) — zero extra network calls, honest '—'
+# when there isn't enough history to measure.
+
+DIFF_TARGET_SECONDS = 2016 * 600.0   # 2016 blocks × 10 min
+DIFF_MAX_CHANGE_PCT = 350.0          # protocol cap on a single retarget
+
+
+def compute_difficulty_forecast() -> Dict[str, Any]:
+    """Projected next difficulty adjustment from local block-cadence data.
+
+    Methodology (CFO read):
+      - current difficulty + height from the shared polling snapshot;
+      - rolling average block time from the LAST 100 local snapshots
+        (height delta ÷ time delta per interval, MEDIAN across intervals to
+        shrug off an outlier poll);
+      - blocks_remaining = 2016 − (height mod 2016);
+      - projected change = (target_seconds / (avg_block_time × 2016) − 1)
+        → faster blocks than 10 min mean difficulty goes UP.
+
+    Returns {"available": True, "avg_block_time_s", "blocks_remaining",
+    "hours_to_adjustment", "projected_change_pct", "direction" (up/down/flat),
+    "verdict"} or {"available": False} when height/difficulty/block cadence
+    is unknown (cold box) — never fabricates a projection.
+    """
+    try:
+        from services.state import latest_snapshot
+        net = latest_snapshot.get("network") or {}
+        difficulty = _to_float(net.get("difficulty"))
+        height = net.get("height")
+    except Exception:
+        difficulty, height = None, None
+    if difficulty is None or height is None:
+        return {"available": False}
+    try:
+        height = int(height)
+    except (TypeError, ValueError):
+        return {"available": False}
+
+    # Rolling block cadence from local snapshots (height deltas).
+    try:
+        conn = get_db()
+        c = conn.cursor()
+        c.execute(
+            "SELECT ts, network_height FROM snapshots "
+            "WHERE network_height IS NOT NULL ORDER BY ts DESC LIMIT 100")
+        rows = c.fetchall()
+        conn.close()
+    except Exception:
+        rows = []
+    # The query is DESC (newest first) — reverse so the interval loop walks
+    # oldest → newest and height/ts deltas come out POSITIVE.
+    rows = list(reversed(rows))
+    intervals: List[float] = []
+    for i in range(1, len(rows)):
+        older, newer = rows[i - 1], rows[i]
+        try:
+            dh = int(newer["network_height"]) - int(older["network_height"])
+            dt = float(newer["ts"]) - float(older["ts"])
+        except (TypeError, ValueError, KeyError):
+            continue
+        if dh > 0 and dt > 0:
+            intervals.append(dt / dh)
+    if not intervals:
+        return {"available": False}
+    intervals.sort()
+    n = len(intervals)
+    avg_block_s = intervals[n // 2] if n % 2 else (intervals[n // 2 - 1] + intervals[n // 2]) / 2.0
+    avg_block_s = max(300.0, min(3600.0, avg_block_s))
+
+    blocks_remaining = 2016 - (height % 2016)
+    hours_to_adj = blocks_remaining * avg_block_s / 3600.0
+    # Projected retarget: new_diff = old_diff × (target_time / actual_epoch_time)
+    # → change % = (target / (avg_block_s × 2016) − 1) × 100.
+    change_pct = (DIFF_TARGET_SECONDS / (avg_block_s * 2016.0) - 1.0) * 100.0
+    change_pct = max(-DIFF_MAX_CHANGE_PCT, min(DIFF_MAX_CHANGE_PCT, change_pct))
+    direction = "up" if change_pct > 2.0 else ("down" if change_pct < -2.0 else "flat")
+    if direction == "up":
+        verdict = (f"difficulty projetada +{change_pct:.0f}% no próximo ajuste "
+                   f"(~{hours_to_adj:.0f}h) — blocos mais rápidos que 10min; "
+                   f"aluguéis longos que cruzam o ajuste pagam mais caro por menos")
+    elif direction == "down":
+        verdict = (f"difficulty projetada {change_pct:.0f}% no próximo ajuste "
+                   f"(~{hours_to_adj:.0f}h) — janela barata: alugar agora rende mais "
+                   f"TH·h por sats")
+    else:
+        verdict = (f"difficulty estável no próximo ajuste (~{hours_to_adj:.0f}h) — "
+                   f"cadência de blocos alinhada ao alvo de 10min")
+    return {
+        "available": True,
+        "difficulty": difficulty,
+        "height": height,
+        "avg_block_time_s": round(avg_block_s, 1),
+        "blocks_remaining": blocks_remaining,
+        "hours_to_adjustment": round(hours_to_adj, 1),
+        "projected_change_pct": round(change_pct, 1),
+        "direction": direction,
+        "verdict": verdict,
+    }
+
+
+# ── Risk alerts: worst-rig leaderboard + concentration thresholds ──────────
+# Second alert family after rental P/L: when a rig ENTERS the worst-rig top-N
+# (danger score past the tenant threshold) or the portfolio concentration
+# crosses a provider-share threshold, the tenant gets a webhook + push.
+# Same discipline as the P/L alerts: persisted dedup (one alert per rig /
+# per concentration event), tenant-scoped, settings-gated, atomic claim.
+
+RENTAL_RISK_ALERTS_SETTING = "rental_risk_alerts"          # "1" enables
+RENTAL_RISK_DANGER_SETTING = "rental_risk_danger"          # min danger score (default 50)
+RENTAL_RISK_TOP_N_SETTING = "rental_risk_top_n"            # top-N to watch (default 5)
+RENTAL_RISK_CONC_PCT_SETTING = "rental_risk_conc_pct"      # top-provider share % (default 55)
+
+
+def _ensure_risk_alert_table() -> None:
+    try:
+        conn = get_db()
+        c = conn.cursor()
+        c.execute("""CREATE TABLE IF NOT EXISTS rental_risk_alerts (
+            tenant_id TEXT NOT NULL DEFAULT '',
+            alert_key TEXT NOT NULL,
+            alert_value TEXT NOT NULL,
+            metric REAL,
+            fired_ts INTEGER,
+            PRIMARY KEY (tenant_id, alert_key, alert_value)
+        )""")
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        log.warning("[rental_performance] risk-alert table ensure failed: %s", e)
+
+
+def _mark_risk_alert_fired(tenant_id: str, alert_key: str, alert_value: str,
+                           metric: Optional[float]) -> bool:
+    """ATOMICALLY claim the dedup slot (INSERT OR IGNORE) — the concurrent
+    /api/rentals request loses the race and does NOT double-fire."""
+    _ensure_risk_alert_table()
+    try:
+        conn = get_db()
+        c = conn.cursor()
+        c.execute(
+            "INSERT OR IGNORE INTO rental_risk_alerts(tenant_id,alert_key,alert_value,metric,fired_ts) "
+            "VALUES(?,?,?,?,?)",
+            (tenant_id or "", alert_key, alert_value, metric, int(time.time())))
+        conn.commit()
+        claimed = c.rowcount == 1
+        conn.close()
+        return claimed
+    except Exception:
+        # Fail-open: a dedup write hiccup must never suppress a risk alert.
+        return True
+
+
+def _risk_alert_settings(tenant_id: str = "") -> Dict[str, Any]:
+    """Enabled + thresholds from the tenant's settings (honest defaults)."""
+    s = load_settings(tenant_id=tenant_id)
+    enabled = str((s.get(RENTAL_RISK_ALERTS_SETTING) or "").strip() or "").lower() in ("1", "true", "on", "sim")
+    try:
+        danger = float((s.get(RENTAL_RISK_DANGER_SETTING) or "50") or 50)
+    except (TypeError, ValueError):
+        danger = 50.0
+    try:
+        top_n = int((s.get(RENTAL_RISK_TOP_N_SETTING) or "5") or 5)
+    except (TypeError, ValueError):
+        top_n = 5
+    try:
+        conc_pct = float((s.get(RENTAL_RISK_CONC_PCT_SETTING) or "55") or 55)
+    except (TypeError, ValueError):
+        conc_pct = 55.0
+    return {"enabled": enabled, "danger": max(0.0, min(100.0, danger)),
+            "top_n": max(1, min(20, top_n)), "conc_pct": max(10.0, min(100.0, conc_pct))}
+
+
+def evaluate_risk_alerts(tenant_id: str = "",
+                         concentration: Optional[Dict] = None,
+                         worst_rigs: Optional[Dict] = None) -> List[Dict[str, Any]]:
+    """Worst-rig top-N + concentration threshold → per-tenant risk alerts.
+
+    Dedup: one alert per rig (alert_key='worst_rig', value=rig_id) and one
+    per concentration crossing (alert_key='concentration', value=provider).
+    Worst-rig ranking is LOCAL (no provider calls); both analytics can be
+    passed in pre-computed (the panel already built them for the payload —
+    zero recompute), or computed here when omitted (sweep). Concentration
+    is skipped when None (sweep keeps zero-cost discipline).
+
+    Returns alert dicts [{severity, category, message, ...}] — the caller
+    dispatches them through the shared tenant webhook+push.
+    """
+    cfg = _risk_alert_settings(tenant_id=tenant_id)
+    if not cfg["enabled"]:
+        return []
+    out: List[Dict[str, Any]] = []
+
+    # Worst-rig top-N: any rig in the top-N with danger ≥ threshold fires.
+    try:
+        if worst_rigs is None:
+            worst_rigs = compute_worst_rigs(tenant_id=tenant_id, limit=cfg["top_n"])
+        for w in worst_rigs.get("worst", []):
+            danger = _num(w.get("danger_score"))
+            if danger is None or danger < cfg["danger"]:
+                continue
+            if not _mark_risk_alert_fired(tenant_id, "worst_rig", str(w["rig_id"]), danger):
+                continue
+            out.append(_build_risk_alert(
+                f"Rig {w.get('name') or w['rig_id']} (#{w['rig_id']}) entrou no top-{cfg['top_n']} dos PIORES rigs — "
+                f"danger {danger:.0f}/100 · entrega EWMA {_fmt(w.get('ewma_delivery_pct'))}% · "
+                f"fail rate {_fmt(w.get('fail_rate_pct'))}%",
+                severity="CRIT" if danger >= 70 else "WARN",
+                category="rental_risk_rig",
+                value=str(w["rig_id"]), metric=danger))
+    except Exception as e:
+        log.warning("[rental_performance] risk worst-rig eval failed: %s", e)
+
+    # Concentration: top-provider share crossing the threshold fires once.
+    if concentration and concentration.get("available"):
+        top = concentration.get("top_provider") or {}
+        share = _num(top.get("share_pct"))
+        if share is not None and share >= cfg["conc_pct"]:
+            prov = str(top.get("provider") or "unknown")
+            if _mark_risk_alert_fired(tenant_id, "concentration", prov, share):
+                out.append(_build_risk_alert(
+                    f"Concentração de portfólio: {share:.0f}% do gasto ({top.get('label') or prov}) — "
+                    f"acima do limite de {cfg['conc_pct']:.0f}% (HHI {_num(concentration.get('hhi')):.0f}). "
+                    f"Um único provider/rig em falha derruba o livro inteiro.",
+                    severity="WARN", category="rental_risk_concentration",
+                    value=prov, metric=share))
+    return out
+
+
+def _fmt(v: Optional[float]) -> str:
+    return f"{v:.1f}" if v is not None else "—"
+
+
+def _build_risk_alert(message: str, severity: str, category: str,
+                      value: str, metric: Optional[float]) -> Dict[str, Any]:
+    return {"severity": severity, "category": category,
+            "message": message[:280], "value": value, "metric": metric}
+
+
+def risk_alert_enabled_tenants() -> List[str]:
+    """Tenant ids with risk alerts enabled (for the periodic sweep). The
+    worst-rig half of the sweep is LOCAL (zero provider cost), so unlike the
+    P/L sweep there is no credential gate — only the opt-in matters."""
+    out: List[str] = []
+    try:
+        _ensure_rig_settings_tables()
+        conn = get_db()
+        c = conn.cursor()
+        c.execute("SELECT DISTINCT tenant_id, value FROM tenant_settings WHERE key=?",
+                  (RENTAL_RISK_ALERTS_SETTING,))
+        rows = c.fetchall()
+        conn.close()
+        for r in rows:
+            if str((r["value"] or "")).strip().lower() in ("1", "true", "on", "sim"):
+                out.append(r["tenant_id"])
+    except Exception:
+        pass
+    try:
+        s = load_settings(tenant_id="")
+        if str((s.get(RENTAL_RISK_ALERTS_SETTING) or "")).strip().lower() in ("1", "true", "on", "sim"):
+            out.append("")
+    except Exception:
+        pass
+    return list(dict.fromkeys(out))
+
+
+def sweep_risk_alerts(tenant_id: str = "") -> List[Dict[str, Any]]:
+    """One risk-alert sweep pass for a tenant: evaluate worst-rig top-N (local,
+    zero provider calls) + dispatch-ready alerts. Concentration is skipped
+    here (needs the buckets) — it fires on the panel load instead."""
+    try:
+        return evaluate_risk_alerts(tenant_id=tenant_id, concentration=None)
+    except Exception as e:
+        log.warning("[rental_performance] risk sweep %s: %s", tenant_id or "default", e)
+        return []
+
+
 # ── Auto-alert: rental closed with P/L below threshold ─────────────────────
 # Fired from /api/rentals each time the panel loads (the moment the server
 # learns a rental ended). One alert PER RENTAL EVER (persisted dedup), gated
@@ -1586,6 +2221,62 @@ def _parse_start_ts(value) -> Optional[float]:
         return None
 
 
+def _series_bucket_key(dt, bucket: str) -> str:
+    """Bucket label shared by the portfolio series and its drill-down: ISO
+    week ("2026-W30") or calendar month ("2026-07")."""
+    if bucket == "week":
+        iso = dt.isocalendar()
+        return f"{iso[0]}-W{iso[1]:02d}"
+    return f"{dt.year:04d}-{dt.month:02d}"
+
+
+def series_bucket_rentals(tenant_id: str = "", bucket: str = "week",
+                          label: str = "") -> List[Dict[str, Any]]:
+    """Drill-down for the portfolio chart: every LOCAL rental_history row that
+    falls in the given bucket label (e.g. "2026-W30" or "2026-07").
+
+    Zero provider calls — pure local table read, so clicking a bar in the
+    chart is instant. Returns rows with provider/rental_id/rig/spend/delivery
+    so the frontend can list 'which rentals made up that bar' and deep-link
+    to the provider or the rental detail.
+    """
+    bucket = bucket if bucket in ("week", "month") else "week"
+    import datetime as _dt
+    out: List[Dict[str, Any]] = []
+    try:
+        conn = get_db()
+        c = conn.cursor()
+        c.execute("SELECT * FROM rental_history WHERE tenant_id=?", (tenant_id or "",))
+        rows = c.fetchall()
+        conn.close()
+    except Exception as e:
+        log.warning("[rental_performance] series drill-down failed: %s", e)
+        return out
+    for r in rows:
+        ts = _parse_start_ts(r["start"])
+        if ts is None:
+            if not r["created_ts"]:
+                continue
+            ts = float(r["created_ts"])
+        dt = _dt.datetime.fromtimestamp(ts, tz=_dt.timezone.utc)
+        if _series_bucket_key(dt, bucket) != label:
+            continue
+        paid = _num(r["paid_sats"])
+        pl = compute_rental_pl(_num(r["delivered_thh"]), paid)
+        out.append({
+            "provider": r["provider"],
+            "rental_id": r["rental_id"],
+            "rig_id": r["rig_id"],
+            "rig_name": r["rig_name"],
+            "start": r["start"],
+            "spent_sats": round(paid) if paid is not None else None,
+            "delivered_thh": round(_num(r["delivered_thh"]), 1) if _num(r["delivered_thh"]) else None,
+            "pl_sats": round(pl.get("pl_sats"), 1) if pl.get("pl_sats") is not None else None,
+        })
+    out.sort(key=lambda x: x["start"] or "")
+    return out
+
+
 def compute_portfolio_series(tenant_id: str = "", bucket: str = "week",
                              created_ts_fallback: bool = True) -> Dict[str, Any]:
     """Portfolio time series (spent + estimated P/L) per week/month, straight
@@ -1603,7 +2294,8 @@ def compute_portfolio_series(tenant_id: str = "", bucket: str = "week",
         direction at a glance.
 
     Returns {"bucket", "estimate": True, "points": [{label, spent_sats,
-    delivered_thh, pl_sats, cum_pl_sats}], "totals": {...}}.
+    delivered_thh, pl_sats, cum_pl_sats, rentals, rental_ids}],
+    "totals": {...}} — rental_ids powers the chart drill-down.
     """
     bucket = bucket if bucket in ("week", "month") else "week"
     try:
@@ -1626,17 +2318,14 @@ def compute_portfolio_series(tenant_id: str = "", bucket: str = "week",
                 continue
             ts = float(r["created_ts"])
         dt = _dt.datetime.fromtimestamp(ts, tz=_dt.timezone.utc)
-        if bucket == "week":
-            iso = dt.isocalendar()
-            key = f"{iso[0]}-W{iso[1]:02d}"
-        else:
-            key = f"{dt.year:04d}-{dt.month:02d}"
+        key = _series_bucket_key(dt, bucket)
         if key not in agg:
             # pl_known tracks whether ANY rental in the bucket had computable
             # P/L — an all-unknown bucket must render null (never a flat 0
             # that reads as 'no loss' on a cold box).
             agg[key] = {"label": key, "spent_sats": 0.0, "delivered_thh": 0.0,
-                        "pl_sats": 0.0, "pl_known": 0, "rentals": 0}
+                        "pl_sats": 0.0, "pl_known": 0, "rentals": 0,
+                        "rental_ids": []}
             order.append(key)
         paid = _num(r["paid_sats"])
         if paid is not None:
@@ -1648,6 +2337,7 @@ def compute_portfolio_series(tenant_id: str = "", bucket: str = "week",
         if _num(r["delivered_thh"]):
             agg[key]["delivered_thh"] += _num(r["delivered_thh"])
         agg[key]["rentals"] += 1
+        agg[key]["rental_ids"].append(str(r["rental_id"]))
 
     points = []
     cum = 0.0
@@ -1666,6 +2356,9 @@ def compute_portfolio_series(tenant_id: str = "", bucket: str = "week",
             "pl_sats": round(g["pl_sats"], 1) if g["pl_known"] else None,
             "cum_pl_sats": round(cum, 1) if cum_known else None,
             "rentals": g["rentals"],
+            # Click-first drill-down: the ids of every rental in the bucket so
+            # the chart can open the exact list behind a bar/week.
+            "rental_ids": g["rental_ids"][:300],
         })
     known_totals = [g for g in agg.values() if g["pl_known"]]
     return {

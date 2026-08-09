@@ -3279,6 +3279,9 @@ function renderAccount(acct) {
     _rentalsFilter = name;
     const chips = document.querySelectorAll('[data-rentals-filter]');
     chips.forEach(c => c.classList.toggle('active', c.getAttribute('data-rentals-filter') === name));
+    // Strip cards mirror the filter state (click-first affordance).
+    document.querySelectorAll('.rentals-strip__card').forEach(c =>
+      c.classList.toggle('active-strip', c.getAttribute('data-rentals-filter') === name));
   }
 
   // CFO: portfolio band — consolidated spend/cost/delivery across providers
@@ -3389,7 +3392,7 @@ function renderAccount(acct) {
         ? '<span class="rentals-trust__badge rentals-trust__badge--' + escapeHtml(String(t.grade)) + '">' + escapeHtml(String(t.grade)) + '</span>' : '';
       const score = t.score != null ? Number(t.score).toFixed(0) : '—';
       const samples = t.samples != null ? t.samples + ' amostras' : '';
-      return '<div class="rentals-reco__card" title="rig ' + escapeHtml(String(t.rig_id)) + '">' +
+      return '<div class="rentals-reco__card rentals-reco__card--clickable" data-rig-id="' + escapeHtml(String(t.rig_id != null ? t.rig_id : '')) + '" data-rig-name="' + escapeHtml(String(t.name || '')) + '" title="clique p/ ver o track record do rig ' + escapeHtml(String(t.rig_id)) + '">' +
         '<div class="rentals-reco__name">' + escapeHtml(String(t.name || t.rig_id)) + badge + '</div>' +
         '<div class="rentals-reco__row"><span>SCORE</span><strong>' + score + '</strong>' +
         '<span>MEDIAN</span><strong>' + (t.median_pct != null ? Number(t.median_pct).toFixed(1) + '%' : '—') + '</strong>' +
@@ -3405,6 +3408,12 @@ function renderAccount(acct) {
   function _renderRentalsMarketTiming() {
     const wrap = document.getElementById('rentals-timing');
     if (!wrap || !_rentalsData) return;
+    // Click-first: the whole timing block links to the Hash Market module so
+    // the operator can compare the real live prices behind the summary.
+    if (!wrap.getAttribute('data-timing-click')) {
+      wrap.setAttribute('data-timing-click', '1');
+      wrap.addEventListener('click', () => { activateModule('market'); });
+    }
     const trend = _rentalsData.market_trend;
     if (!trend || !trend.points || trend.points.length < 2) { wrap.hidden = true; return; }
     wrap.hidden = false;
@@ -3443,6 +3452,42 @@ function renderAccount(acct) {
         }
       }
     });
+  }
+
+  // CFO: difficulty-adjustment forecast — next retarget from the LOCAL block
+  // cadence (snapshots table), 'difficulty +X% em ~N h' verdict for timing
+  // rental durations around the adjustment. Rendered inside MARKET TIMING.
+  function _renderRentalsForecast() {
+    const el = document.getElementById('rentals-timing-forecast');
+    if (!el || !_rentalsData) return;
+    const f = _rentalsData.difficulty_forecast;
+    if (!f || !f.available) { el.hidden = true; return; }
+    el.hidden = false;
+    const cls = f.direction === 'up' ? 'is-up' : (f.direction === 'down' ? 'is-down' : 'is-flat');
+    const arrow = f.direction === 'up' ? '▲' : (f.direction === 'down' ? '▼' : '◆');
+    const chg = (f.projected_change_pct >= 0 ? '+' : '') + Number(f.projected_change_pct).toFixed(0) + '%';
+    el.className = 'rentals-timing__forecast ' + cls;
+    el.innerHTML = '<span class="rentals-timing__fc-icon">' + arrow + '</span>' +
+      '<span class="rentals-timing__fc-body"><b>PRÓXIMO AJUSTE DE DIFF</b> · ' +
+      escapeHtml(chg) + ' em ~' + Number(f.hours_to_adjustment).toFixed(0) + 'h ' +
+      '(blocos a cada ' + Number(f.avg_block_time_s).toFixed(0) + 's)' +
+      '<div class="rentals-timing__fc-verdict">' + escapeHtml(String(f.verdict || '')) + '</div></span>';
+  }
+
+  // Risk alerts fired on this panel load (worst-rig top-N + concentration) —
+  // transient banner with severity coloring; dismissible.
+  function _renderRentalsRiskBanner() {
+    const wrap = document.getElementById('rentals-riskbanner');
+    if (!wrap || !_rentalsData) return;
+    const alerts = _rentalsData.risk_alerts_fired || [];
+    if (!alerts.length) { wrap.hidden = true; wrap.innerHTML = ''; return; }
+    wrap.hidden = false;
+    wrap.innerHTML = alerts.map(a => {
+      const sev = (a.severity || 'WARN') === 'CRIT' ? 'is-crit' : 'is-warn';
+      const icon = (a.severity || 'WARN') === 'CRIT' ? '🚨' : '⚠️';
+      return '<div class="rentals-riskbanner__item ' + sev + '">' + icon + ' ' +
+        escapeHtml(String(a.message || '')) + '</div>';
+    }).join('');
   }
 
   // CFO: portfolio time series — spent bars + estimated P/L (period and
@@ -3496,12 +3541,64 @@ function renderAccount(acct) {
         responsive: true, maintainAspectRatio: false,
         interaction: { mode: 'index', intersect: false },
         plugins: { legend: { display: false } },
+        // Click-first: a bar = the exact list of rentals behind that week /
+        // month (drill-down via /api/rentals/series/rentals, local table).
+        onClick: (evt, elements) => {
+          if (!elements || !elements.length) return;
+          const idx = elements[0].index;
+          const pt = series.points[idx];
+          if (pt) openRentalsBucketDrill(pt.label, series.bucket || _rentalsSeriesBucket);
+        },
         scales: {
           x: { ticks: { color: '#5E5952', font: { size: 9 }, maxTicksLimit: 12 }, grid: { display: false } },
           y: { ticks: { color: '#5E5952', font: { size: 9 } }, grid: { color: 'rgba(94,89,82,0.12)' } }
         }
       }
     });
+  }
+
+  // ── Series drill-down modal: rentals that make up a bar/week ───────────
+  let _rentalsDrillBucket = 'week';
+
+  async function openRentalsBucketDrill(label, bucket) {
+    const modal = document.getElementById('rentals-drill-modal');
+    if (!modal) return;
+    _rentalsDrillBucket = bucket || _rentalsDrillBucket;
+    modal.classList.add('active');
+    const title = document.getElementById('rentals-drill-title');
+    if (title) title.textContent = label + ' · rentals deste período';
+    const body = document.getElementById('rentals-drill-body');
+    if (body) body.innerHTML = '<div class="rentals-detail__loading">carregando…</div>';
+    try {
+      const r = await authFetch('/api/rentals/series/rentals?bucket=' + encodeURIComponent(_rentalsDrillBucket) + '&label=' + encodeURIComponent(label));
+      if (!r.ok) {
+        if (body) body.innerHTML = '<div class="rentals-detail__loading">sem dados deste período</div>';
+        return;
+      }
+      const d = await r.json();
+      const rows = d.rentals || [];
+      if (!rows.length) {
+        if (body) body.innerHTML = '<div class="rentals-detail__loading">nenhum aluguel neste período</div>';
+        return;
+      }
+      const list = rows.map(x => {
+        const plTxt = x.pl_sats != null
+          ? (x.pl_sats >= 0 ? '+' : '') + Number(x.pl_sats).toLocaleString('en-US') + ' sats'
+          : '—';
+        const spentTxt = x.spent_sats != null ? Number(x.spent_sats).toLocaleString('en-US') + ' sats' : '—';
+        const ext = x.rental_id && x.provider !== 'braiins'
+          ? '<a class="rentals-item__ext" href="' + escapeHtml(_mrrRentalUrl(x.rental_id)) + '" target="_blank" rel="noopener" title="abrir no MRR">↗</a>'
+          : '';
+        return '<div class="rentals-drill__row" data-rental-id="' + escapeHtml(String(x.rental_id || '')) + '" data-provider="' + escapeHtml(x.provider || 'mrr') + '">' +
+          '<span class="rentals-drill__name">#' + escapeHtml(String(x.rental_id || '—')) + ' · ' + escapeHtml(String(x.rig_name || '')) + ext + '</span>' +
+          '<span class="rentals-drill__spent">' + escapeHtml(spentTxt) + '</span>' +
+          '<strong class="' + (x.pl_sats != null && x.pl_sats < 0 ? 'is-bad' : 'is-good') + '">' + escapeHtml(plTxt) + '</strong>' +
+          '</div>';
+      }).join('');
+      if (body) body.innerHTML = '<div class="rentals-drill__count">' + rows.length + ' aluguéis</div>' + list;
+    } catch (e) {
+      if (body) body.innerHTML = '<div class="rentals-detail__loading">erro ao carregar</div>';
+    }
   }
 
   async function setRentalsSeriesBucket(bucket) {
@@ -3520,6 +3617,296 @@ function renderAccount(acct) {
     } catch (e) { /* fail-closed: keep current bucket */ }
   }
 
+  // ── Click-first analytics renderers (rankings / heatmap / expiring) ──
+  // Every cell is a drill-down target: provider ranking → filter tab,
+  // rig heatmap cell → rig track record, expiring row → rental detail.
+
+  function _renderRentalsRankings() {
+    const wrap = document.getElementById('rentals-rank');
+    if (!wrap || !_rentalsData) return;
+    const rows = _rentalsData.provider_rankings || [];
+    if (!rows.length) { wrap.hidden = true; return; }
+    wrap.hidden = false;
+    const grid = document.getElementById('rentals-rank-grid');
+    if (!grid) return;
+    grid.innerHTML = rows.map(r => {
+      const dlv = r.avg_delivery_pct != null ? Number(r.avg_delivery_pct).toFixed(1) + '%' : '—';
+      const pl = r.avg_pl_pct != null
+        ? (r.avg_pl_pct >= 0 ? '+' : '') + Number(r.avg_pl_pct).toFixed(1) + '%' : '—';
+      const cost = r.avg_cost_sats_per_thh != null
+        ? Number(r.avg_cost_sats_per_thh).toFixed(1) + ' st/TH·h' : '—';
+      const tab = r.provider === 'braiins' ? 'contracts' : 'history';
+      return '<div class="rentals-rank__cell" data-rentals-filter="' + escapeHtml(tab) + '" title="clique p/ ver os ' + escapeHtml(String(r.label)) + '">' +
+        '<div class="rentals-rank__name">' + escapeHtml(String(r.label)) + ' <span class="rentals-rank__n">' + r.rentals + '</span></div>' +
+        '<div class="rentals-rank__row"><span>DELIVERY</span><strong>' + escapeHtml(dlv) + '</strong></div>' +
+        '<div class="rentals-rank__row"><span>P/L</span><strong class="' + (r.avg_pl_pct != null && r.avg_pl_pct < 0 ? 'is-bad' : 'is-good') + '">' + escapeHtml(pl) + '</strong></div>' +
+        '<div class="rentals-rank__row"><span>COST</span><strong>' + escapeHtml(cost) + '</strong></div>' +
+        '</div>';
+    }).join('');
+  }
+
+  function _renderRentalsHeatmap() {
+    const wrap = document.getElementById('rentals-heatmap');
+    if (!wrap || !_rentalsData) return;
+    const cells = _rentalsData.rig_heatmap || [];
+    if (!cells.length) { wrap.hidden = true; return; }
+    wrap.hidden = false;
+    const grid = document.getElementById('rentals-heatmap-grid');
+    if (!grid) return;
+    grid.innerHTML = cells.map(c => {
+      // Color scale: green ≥95% delivery, amber 90-95%, red <90%.
+      const pct = c.avg_delivery_pct;
+      const cls = pct == null ? 'is-unknown' : (pct >= 95 ? 'is-good' : (pct >= 90 ? 'is-mid' : 'is-bad'));
+      const cost = c.avg_cost_sats_per_thh != null
+        ? Number(c.avg_cost_sats_per_thh).toFixed(0) + ' st/TH·h' : '—';
+      return '<div class="rentals-heatmap__cell ' + cls + '" data-rig-name="' + escapeHtml(c.rig) + '" title="' + escapeHtml(c.rig) + ' · ' + c.samples + ' amostras · clique p/ ver o track record">' +
+        '<div class="rentals-heatmap__name">' + escapeHtml(c.rig) + '</div>' +
+        '<div class="rentals-heatmap__row"><span>DELIVERY</span><strong>' + (pct != null ? pct.toFixed(1) + '%' : '—') + '</strong></div>' +
+        '<div class="rentals-heatmap__row"><span>COST</span><strong>' + escapeHtml(cost) + '</strong></div>' +
+        '<div class="rentals-heatmap__sub">' + c.samples + ' amostras</div>' +
+        '</div>';
+    }).join('');
+  }
+
+  function _renderRentalsExpiring() {
+    const wrap = document.getElementById('rentals-expiring');
+    if (!wrap || !_rentalsData) return;
+    const rows = _rentalsData.expiring || [];
+    if (!rows.length) { wrap.hidden = true; return; }
+    wrap.hidden = false;
+    const meta = document.getElementById('rentals-expiring-meta');
+    if (meta) meta.textContent = rows.length + ' rentals terminando';
+    const list = document.getElementById('rentals-expiring-list');
+    if (!list) return;
+    list.innerHTML = rows.map(r => {
+      const rid = r && r.id != null ? r.id : '';
+      const name = (r && r.rig && r.rig.name) || '—';
+      const left = r.ends_in_hours != null
+        ? (r.ends_in_hours < 1 ? Math.round(r.ends_in_hours * 60) + 'min' : Number(r.ends_in_hours).toFixed(1) + 'h')
+        : '—';
+      return '<button class="rentals-expiring__row" data-rental-id="' + escapeHtml(String(rid)) + '" title="abrir rental #' + escapeHtml(String(rid)) + '">' +
+        '<span class="rentals-expiring__name">#' + escapeHtml(String(rid)) + ' · ' + escapeHtml(name) + '</span>' +
+        '<span class="rentals-expiring__time">' + escapeHtml(left) + '</span>' +
+        '</button>';
+    }).join('');
+  }
+
+  // ── Worst-rig leaderboard (CFO risk view) ──────────────────────────────
+  // The counterpart to RECOMENDADOS: rigs that BURNED the operator — ranked
+  // by EWMA delivery (recent rentals weigh more), failure rate, volatility
+  // and a composite danger score. Rows click through to the rig track record.
+  function _renderRentalsWorst() {
+    const wrap = document.getElementById('rentals-worst');
+    if (!wrap || !_rentalsData) return;
+    const d = _rentalsData.worst_rigs || {};
+    const rows = d.worst || [];
+    if (!rows.length) { wrap.hidden = true; return; }
+    wrap.hidden = false;
+    const meta = document.getElementById('rentals-worst-meta');
+    if (meta) {
+      // Honest label: the local ledger mixes renter spend with owner income
+      // (same convention as the heatmap) — said out loud, not hidden.
+      meta.textContent = d.count + ' rigs com ≥' + (d.min_samples || 2) + ' amostras · EWMA · fail rate · volatilidade · gasto/renda (local ledger)';
+    }
+    const list = document.getElementById('rentals-worst-list');
+    if (!list) return;
+    list.innerHTML = rows.map((r, i) => {
+      // Color coding on the EWMA delivery: green ≥95%, amber 90-95%, red <90%.
+      const ewma = r.ewma_delivery_pct;
+      const dlvCls = ewma == null ? 'is-unknown' : (ewma >= 95 ? 'is-good' : (ewma >= 90 ? 'is-mid' : 'is-bad'));
+      const danger = Number(r.danger_score || 0);
+      const dangerCls = danger >= 70 ? 'is-critical' : (danger >= 45 ? 'is-warn' : 'is-mild');
+      const pl = r.pl_sats_per_thh != null
+        ? (r.pl_sats_per_thh >= 0 ? '+' : '') + Number(r.pl_sats_per_thh).toFixed(1) + ' st/TH·h'
+        : '—';
+      const trend = r.trend_pct != null
+        ? '<span class="rentals-reco__trend ' + (r.trend_pct >= 0 ? 'is-good' : 'is-bad') + '">' +
+          (r.trend_pct >= 0 ? '▲' : '▼') + Math.abs(Number(r.trend_pct)).toFixed(1) + '%</span>' : '';
+      const blBadge = r.blacklisted
+        ? '<span class="rentals-worst__badge rentals-worst__badge--bl" title="blacklist manual">BL</span>' : '';
+      const autoBadge = r.auto_blacklisted
+        ? '<span class="rentals-worst__badge rentals-worst__badge--auto" title="auto-excluído (grade F)">AUTO</span>' : '';
+      // Same trust grade as the rig track record modal — one consistent story
+      // between the leaderboard and the detail (never two scoring systems).
+      const gradeBadge = r.grade
+        ? '<span class="rentals-trust__badge rentals-trust__badge--' + escapeHtml(String(r.grade)) + '" title="trust grade (modal do rig)">' + escapeHtml(String(r.grade)) + '</span>' : '';
+      return '<button class="rentals-worst__row" data-rig-id="' + escapeHtml(String(r.rig_id != null ? r.rig_id : '')) + '" data-rig-name="' + escapeHtml(String(r.name || '')) + '" title="clique p/ ver o track record do rig ' + escapeHtml(String(r.rig_id)) + '">' +
+        '<span class="rentals-worst__rank">#' + (i + 1) + '</span>' +
+        '<span class="rentals-worst__name">' + escapeHtml(String(r.name || r.rig_id)) + gradeBadge + blBadge + autoBadge + '</span>' +
+        '<span class="rentals-worst__cell"><i>EWMA</i><b class="' + dlvCls + '">' + (ewma != null ? Number(ewma).toFixed(1) + '%' : '—') + '</b></span>' +
+        '<span class="rentals-worst__cell"><i>Pior</i><b>' + (r.worst_pct != null ? Number(r.worst_pct).toFixed(0) + '%' : '—') + '</b></span>' +
+        '<span class="rentals-worst__cell"><i>Fail</i><b>' + (r.fail_rate_pct != null ? Number(r.fail_rate_pct).toFixed(0) + '%' : '—') + '</b></span>' +
+        '<span class="rentals-worst__cell"><i>Vol</i><b>' + (r.volatility_pct != null ? Number(r.volatility_pct).toFixed(1) + 'σ' : '—') + '</b></span>' +
+        '<span class="rentals-worst__cell"><i>P/L TH·h</i><b class="' + (r.pl_sats_per_thh != null && r.pl_sats_per_thh < 0 ? 'is-bad' : 'is-good') + '">' + escapeHtml(pl) + '</b></span>' +
+        '<span class="rentals-worst__cell"><i>P/L ' + r.samples + 'x</i>' + trend + '</span>' +
+        '<span class="rentals-worst__danger ' + dangerCls + '">' + Number(danger).toFixed(0) + '</span>' +
+        '</button>';
+    }).join('');
+  }
+
+  // ── Concentration risk (portfolio-level) ────────────────────────────────
+  // If most spend sits with ONE provider or ONE rig, a single failure hits
+  // the whole book. Shows share bars + the top rig + an honest HHI readout.
+  function _renderRentalsConcentration() {
+    const wrap = document.getElementById('rentals-conc');
+    if (!wrap || !_rentalsData) return;
+    const c = _rentalsData.concentration;
+    if (!c || !c.available) { wrap.hidden = true; return; }
+    wrap.hidden = false;
+    const meta = document.getElementById('rentals-conc-meta');
+    const hhi = Number(c.hhi || 0);
+    const hhiTxt = hhi >= 5000 ? 'alta concentração' : (hhi >= 2500 ? 'concentração moderada' : 'diversificado');
+    if (meta) meta.textContent = 'HHI ' + hhi.toFixed(0) + ' · ' + hhiTxt;
+    const bars = document.getElementById('rentals-conc-bars');
+    if (!bars) return;
+    const provBars = (c.providers || []).map(p =>
+      '<div class="rentals-conc__bar"><span class="rentals-conc__bar-label">' + escapeHtml(String(p.label)) + '</span>' +
+      '<span class="rentals-conc__bar-track"><i style="width:' + Number(p.share_pct).toFixed(1) + '%"></i></span>' +
+      '<span class="rentals-conc__bar-val">' + Number(p.share_pct).toFixed(0) + '% · ' +
+      Number(p.spend_sats).toLocaleString('en-US') + ' sats</span></div>').join('');
+    const rigTxt = c.top_rig
+      ? '<span class="rentals-conc__rig">Top rig: <b>' + escapeHtml(String(c.top_rig.rig_name || c.top_rig.rig_id)) + '</b> — ' +
+        Number(c.top_rig.share_pct).toFixed(0) + '% do gasto (' + Number(c.top_rig.spend_sats).toLocaleString('en-US') + ' sats)</span>'
+      : '';
+    bars.innerHTML = '<div class="rentals-conc__bars-row">' + provBars + '</div>' + rigTxt;
+  }
+
+  // ── Rig track record modal (recommendation card / heatmap cell click) ──
+  // Reuses /api/rentals/rig (same analyze_rig shape as the detail route) so
+  // a RECO card click shows the full verdict: trust grade, track record,
+  // blacklist state — without opening a specific rental.
+
+  async function openRigTrackRecord(rigId, rigName) {
+    const modal = document.getElementById('rentals-rig-modal');
+    if (!modal) return;
+    const body = document.getElementById('rentals-rig-modal-body');
+    if (body) body.innerHTML = '<div class="rentals-detail__loading">carregando track record…</div>';
+    modal.classList.add('active');
+    const title = document.getElementById('rentals-rig-modal-title');
+    if (title) title.textContent = 'RIG · ' + (rigName || rigId || '');
+    try {
+      const q = new URLSearchParams();
+      if (rigId) q.set('rig_id', String(rigId));
+      if (rigName) q.set('rig_name', rigName);
+      const r = await authFetch('/api/rentals/rig?' + q.toString());
+      if (!r.ok) {
+        if (body) body.innerHTML = '<div class="rentals-detail__loading">erro ao carregar rig</div>';
+        return;
+      }
+      const data = await r.json();
+      const trust = data.trust || {};
+      const summary = data.summary || {};
+      const hist = data.history || [];
+      const grade = trust.grade || '—';
+      const gradeCls = /^[A-F]$/.test(String(grade)) ? String(grade) : '';
+      const badge = '<span class="rentals-trust__badge rentals-trust__badge--' + escapeHtml(gradeCls || 'none') + '">' + escapeHtml(String(grade)) + '</span>';
+      const black = data.blacklisted ? '<span class="rentals-trust__flag is-bad">BLACKLISTED</span>' : '';
+      const auto = data.auto_blacklisted ? '<span class="rentals-trust__flag is-mid">AUTO-EXCLUÍDO</span>' : '';
+      const score = trust.score != null ? Number(trust.score).toFixed(0) : '—';
+      const samples = summary.rentals != null ? summary.rentals + ' amostras' : '—';
+      const avg = summary.avg_pct != null ? Number(summary.avg_pct).toFixed(1) + '%' : '—';
+      const trend = summary.trend_pct != null
+        ? (summary.trend_pct >= 0 ? '▲' : '▼') + Math.abs(Number(summary.trend_pct)).toFixed(1) + '%' : '—';
+      const cost = summary.cost_avg_sats_thh != null
+        ? Number(summary.cost_avg_sats_thh).toFixed(0) + ' st/TH·h' : '—';
+      const histRows = hist.slice(0, 12).map(h => {
+        const pct = h.percent != null ? Number(h.percent).toFixed(1) + '%' : '—';
+        const paid = h.paid_sats != null ? Number(h.paid_sats).toLocaleString('en-US') + ' sats' : '—';
+        const date = h.start || '';
+        return '<div class="rentals-rig__hist-row"><span>' + escapeHtml(String(date)) + '</span>' +
+          '<strong class="' + (h.percent != null && h.percent < 95 ? 'is-bad' : 'is-good') + '">' + escapeHtml(pct) + '</strong>' +
+          '<span>' + escapeHtml(paid) + '</span></div>';
+      }).join('');
+      if (body) body.innerHTML =
+        '<div class="rentals-rig__hero">' + badge + black + auto +
+          ' <span class="rentals-rig__score">SCORE ' + score + '</span></div>' +
+        '<div class="rentals-rig__stats">' +
+          '<div class="rentals-rig__stat"><span>DELIVERY MÉDIO</span><strong>' + escapeHtml(avg) + '</strong></div>' +
+          '<div class="rentals-rig__stat"><span>COST MÉDIO</span><strong>' + escapeHtml(cost) + '</strong></div>' +
+          '<div class="rentals-rig__stat"><span>TREND</span><strong>' + escapeHtml(trend) + '</strong></div>' +
+          '<div class="rentals-rig__stat"><span>AMOSTRAS</span><strong>' + escapeHtml(samples) + '</strong></div>' +
+        '</div>' +
+        '<div class="rentals-rig__hist">' + (histRows || '<div class="rentals-rig__none">sem track record local</div>') + '</div>' +
+        (data.blacklisted
+          ? '<button class="btn btn--mini" id="rentals-rig-unblacklist" data-rig-id="' + escapeHtml(String(rigId || '')) + '">♻ restaurar rig (remover da blacklist)</button>'
+          : '<button class="btn btn--mini btn--danger" id="rentals-rig-blacklist" data-rig-id="' + escapeHtml(String(rigId || '')) + '">✕ nunca alugar este rig</button>');
+      const blBtn = document.getElementById('rentals-rig-blacklist');
+      const unBtn = document.getElementById('rentals-rig-unblacklist');
+      const handler = (btn, method) => {
+        if (!btn) return;
+        btn.addEventListener('click', async () => {
+          const id = btn.getAttribute('data-rig-id');
+          try {
+            const opts = { method: method };
+            if (method === 'POST') opts.headers = { 'Content-Type': 'application/json' };
+            const r = await authFetch('/api/rentals/rig/blacklist' + (method === 'DELETE' ? '?rig_id=' + encodeURIComponent(id) : ''), opts);
+            if (!r.ok) return;
+            openRigTrackRecord(rigId, rigName);  // re-render fresh state
+          } catch (e) { /* fail-closed */ }
+        });
+      };
+      handler(blBtn, 'POST');
+      handler(unBtn, 'DELETE');
+    } catch (e) {
+      if (body) body.innerHTML = '<div class="rentals-detail__loading">erro ao carregar rig</div>';
+    }
+  }
+
+  // ── Backtest modal: 'what if I rented X TH for Y hours?' ────────────────
+
+  async function runBacktest() {
+    const status = document.getElementById('backtest-status');
+    if (status) status.textContent = 'calculando…';
+    const th = parseFloat(document.getElementById('backtest-th').value || '0');
+    const hours = parseFloat(document.getElementById('backtest-hours').value || '0');
+    if (!(th > 0) || !(hours > 0)) {
+      if (status) status.textContent = 'informe TH/s e horas válidos';
+      return;
+    }
+    try {
+      const r = await authFetch('/api/rentals/backtest?th=' + th + '&hours=' + hours);
+      if (!r.ok) {
+        if (status) status.textContent = 'backtest indisponível';
+        return;
+      }
+      const d = await r.json();
+      const out = document.getElementById('backtest-result');
+      if (!out) return;
+      const cost = d.cost_sats != null ? Number(d.cost_sats).toLocaleString('en-US') + ' sats' : '—';
+      const yieldTxt = d.expected_yield_sats != null ? Number(d.expected_yield_sats).toLocaleString('en-US') + ' sats' : '—';
+      const pl = d.pl_sats != null
+        ? '<strong class="' + (d.pl_sats >= 0 ? 'is-good' : 'is-bad') + '">' + (d.pl_sats >= 0 ? '+' : '') + Number(d.pl_sats).toLocaleString('en-US') + ' sats</strong>' : '—';
+      const mkt = d.market_sats_per_thh != null ? Number(d.market_sats_per_thh).toFixed(2) + ' st/TH·h' : '—';
+      out.innerHTML =
+        '<div class="backtest-row"><span>TH·h</span><strong>' + (d.thh != null ? Number(d.thh).toLocaleString('en-US') : '—') + '</strong></div>' +
+        '<div class="backtest-row"><span>CUSTO (preço de mercado ' + escapeHtml(mkt) + ')</span><strong>' + cost + '</strong></div>' +
+        '<div class="backtest-row"><span>YIELD BRUTO ESPERADO</span><strong>' + yieldTxt + '</strong></div>' +
+        '<div class="backtest-row"><span>P/L</span>' + pl + '</div>' +
+        (d.yield_known ? '' : '<div class="backtest-note">yield desconhecido (sem hashrate de rede) — só o custo é mostrado</div>');
+      if (status) status.textContent = '';
+    } catch (e) {
+      if (status) status.textContent = 'erro no backtest';
+    }
+  }
+
+  function openBacktestModal() {
+    const modal = document.getElementById('rentals-backtest-modal');
+    if (!modal) return;
+    const out = document.getElementById('backtest-result');
+    if (out) out.innerHTML = '—';
+    const status = document.getElementById('backtest-status');
+    if (status) status.textContent = '';
+    modal.classList.add('active');
+  }
+
+  // ── External deep-links (click-first: ↗ opens the provider site) ───────
+  // MRR rental: https://www.miningrigrentals.com/rental/{id}
+  // MRR rig:    https://www.miningrigrentals.com/rigs/{id}
+  // Braiins:    https://hashpower.braiins.com/ (SPA — no per-order URL)
+
+  function _mrrRentalUrl(id) { return 'https://www.miningrigrentals.com/rental/' + encodeURIComponent(String(id)); }
+  function _mrrRigUrl(id) { return 'https://www.miningrigrentals.com/rigs/' + encodeURIComponent(String(id)); }
+
   function _rentalCardHtml(r) {
     const st = _rentalStatus(r);
     const trust = _rentalRigTrust(r);
@@ -3535,10 +3922,25 @@ function renderAccount(acct) {
     const gradeBadge = trust.grade
       ? '<span class="rentals-item__trust rentals-item__trust--' + escapeHtml(trust.grade) + '" title="rig trust grade ' + escapeHtml(trust.grade) + ' (from track record)">' + escapeHtml(trust.grade) + '</span>'
       : '';
-    return '<div class="rentals-item ' + stCls + '" data-rental-id="' + escapeHtml(String(r && r.id || '')) + '">' +
+    // Click-first: ↗ opens THIS rental on the provider site (real detail,
+    // not just our local estimate) — MRR rental URL or Braiins dashboard.
+    const rid = r && r.id != null ? String(r.id) : '';
+    const rigId = (r && r.rig && r.rig.id != null) ? String(r.rig.id) : '';
+    const extUrl = rid ? (r.provider === 'braiins'
+      ? 'https://hashpower.braiins.com/'
+      : _mrrRentalUrl(rid)) : '';
+    const extLink = extUrl
+      ? '<a class="rentals-item__ext" href="' + escapeHtml(extUrl) + '" target="_blank" rel="noopener" title="abrir no site do provider" onclick="event.stopPropagation()">↗</a>'
+      : '';
+    // Rig id is a real MRR profile page — a deep-link to who actually owns
+    // the rig, so the operator can check the rig before re-renting.
+    const rigLink = rigId && r.provider !== 'braiins'
+      ? '<a class="rentals-item__riglink" href="' + escapeHtml(_mrrRigUrl(rigId)) + '" target="_blank" rel="noopener" onclick="event.stopPropagation()">rig #' + escapeHtml(rigId) + ' ↗</a>'
+      : '';
+    return '<div class="rentals-item ' + stCls + '" data-rental-id="' + escapeHtml(rid) + '">' +
       '<div class="rentals-item__main">' +
-        '<div class="rentals-item__name">#' + escapeHtml(String(r && r.id || '—')) + ' · ' + escapeHtml(name) + gradeBadge + '</div>' +
-        '<div class="rentals-item__meta">' + escapeHtml(region || '') + (span ? ' · ' + escapeHtml(span) : '') + '</div>' +
+        '<div class="rentals-item__name">#' + escapeHtml(rid || '—') + ' · ' + escapeHtml(name) + gradeBadge + extLink + '</div>' +
+        '<div class="rentals-item__meta">' + escapeHtml(region || '') + (span ? ' · ' + escapeHtml(span) : '') + (rigLink ? ' · ' + rigLink : '') + '</div>' +
       '</div>' +
       '<div class="rentals-item__stats">' +
         '<div class="rentals-item__stat"><span class="rentals-item__stat-label">HASHRATE</span><span class="rentals-item__stat-value">' + _rentalHashrateStr(r) + '</span></div>' +
@@ -3625,13 +4027,20 @@ function renderAccount(acct) {
     _renderRentalsSeries();
     _renderRentalsReco();
     _renderRentalsMarketTiming();
+    _renderRentalsRankings();
+    _renderRentalsHeatmap();
+    _renderRentalsExpiring();
+    _renderRentalsWorst();
+    _renderRentalsConcentration();
+    _renderRentalsForecast();
+    _renderRentalsRiskBanner();
 
     let items = [];
     if (_rentalsFilter === 'active') items = mrr.active || [];
     else if (_rentalsFilter === 'history') items = mrr.history || [];
     else if (_rentalsFilter === 'owner') items = mrr.owner || [];
     else if (_rentalsFilter === 'contracts') items = (braiins.contracts || []).map(c => ({
-      id: c.id, ended: false,
+      id: c.id, ended: false, provider: 'braiins',
       rig: { name: 'Braiins contract', status: c.status, region: '' },
       hashrate_advertised_th: c.speed_limit_ph ? c.speed_limit_ph * 1000 : null,
       price_paid_btc: c.amount_sat != null ? c.amount_sat / 1e8 : null,
@@ -4027,6 +4436,10 @@ function renderAccount(acct) {
         renderRentals();
       });
     });
+    // Click-first: strip cards switch the list tab (same data-rentals-filter
+    // attribute as the chips — one handler set covers both).
+    // (already covered by the querySelectorAll above — strip cards carry the
+    // same attribute; nothing extra needed.)
     // CFO: "hide bad rigs" re-renders the list live when toggled.
     const hideBad = document.getElementById('rentals-hide-bad');
     if (hideBad) hideBad.addEventListener('change', renderRentals);
@@ -4043,6 +4456,73 @@ function renderAccount(acct) {
       const provider = _rentalsFilter === 'contracts' ? 'braiins' : 'mrr';
       if (id) openRentalDetail(id, provider);
     });
+    // Click-first: recommendation cards + heatmap cells → rig track record.
+    const reco = document.getElementById('rentals-reco-cards');
+    if (reco) reco.addEventListener('click', (e) => {
+      const card = e.target.closest ? e.target.closest('.rentals-reco__card') : null;
+      if (!card) return;
+      openRigTrackRecord(card.getAttribute('data-rig-id'), card.getAttribute('data-rig-name'));
+    });
+    const heatmap = document.getElementById('rentals-heatmap-grid');
+    if (heatmap) heatmap.addEventListener('click', (e) => {
+      const cell = e.target.closest ? e.target.closest('.rentals-heatmap__cell') : null;
+      if (!cell) return;
+      openRigTrackRecord('', cell.getAttribute('data-rig-name'));
+    });
+    // Worst-rig leaderboard rows (dynamic innerHTML — delegated listener)
+    // → rig track record modal, same as the reco cards.
+    const worst = document.getElementById('rentals-worst-list');
+    if (worst) worst.addEventListener('click', (e) => {
+      const row = e.target.closest ? e.target.closest('.rentals-worst__row') : null;
+      if (!row) return;
+      openRigTrackRecord(row.getAttribute('data-rig-id'), row.getAttribute('data-rig-name'));
+    });
+    // Rank cells are rendered AFTER _initRentalsPanel (dynamic innerHTML) so
+    // they need a delegated listener — the static [data-rentals-filter] bind
+    // above only covers chips + strip cards that exist at boot.
+    const rankGrid = document.getElementById('rentals-rank-grid');
+    if (rankGrid) rankGrid.addEventListener('click', (e) => {
+      const cell = e.target.closest ? e.target.closest('.rentals-rank__cell') : null;
+      if (!cell) return;
+      const tab = cell.getAttribute('data-rentals-filter');
+      if (tab) {
+        _setRentalsFilter(tab);
+        renderRentals();
+      }
+    });
+    // Expiring rows + drill-down rows → rental detail (same provider logic).
+    const expiring = document.getElementById('rentals-expiring-list');
+    if (expiring) expiring.addEventListener('click', (e) => {
+      const row = e.target.closest ? e.target.closest('.rentals-expiring__row') : null;
+      if (!row) return;
+      const id = row.getAttribute('data-rental-id');
+      if (id) openRentalDetail(id, 'mrr');
+    });
+    const drill = document.getElementById('rentals-drill-body');
+    if (drill) drill.addEventListener('click', (e) => {
+      const row = e.target.closest ? e.target.closest('.rentals-drill__row') : null;
+      if (!row) return;
+      const id = row.getAttribute('data-rental-id');
+      const provider = row.getAttribute('data-provider') || 'mrr';
+      if (id) openRentalDetail(id, provider);
+    });
+    // Backtest modal.
+    const backtestBtn = document.getElementById('rentals-backtest');
+    if (backtestBtn) backtestBtn.addEventListener('click', openBacktestModal);
+    const backtestRun = document.getElementById('backtest-run');
+    if (backtestRun) backtestRun.addEventListener('click', runBacktest);
+    // Deep-link: #rentals?detail=<id>&provider=mrr opens the panel + detail.
+    const applyRentalsHash = () => {
+      const m = /^#rentals(?:\?(.*))?$/.exec(window.location.hash || '');
+      if (!m) return;
+      activateModule('rentals');
+      const q = new URLSearchParams(m[1] || '');
+      const did = q.get('detail');
+      const prov = q.get('provider') || 'mrr';
+      if (did) setTimeout(() => openRentalDetail(did, prov), 600);
+    };
+    applyRentalsHash();
+    window.addEventListener('hashchange', applyRentalsHash);
     // ⚡ COMPRAR HASHRATE — Braiins spot (real money, typed confirmation).
     const buyBtn = document.getElementById('rentals-buy');
     if (buyBtn) buyBtn.addEventListener('click', openBraiinsBuyModal);

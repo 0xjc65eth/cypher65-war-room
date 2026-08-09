@@ -154,27 +154,47 @@ def dispatch_rental_pl_alerts(tenant_id: str, alerts: list):
     if not alerts:
         return
     try:
-        from services.settings import load_settings as _tenant_settings
-        s = _tenant_settings(tenant_id=tenant_id)
-        webhook_url = (s.get("webhook_url") or "").strip()
-        min_sev = s.get("webhook_min_severity", "WARN")
-        _ts = int(time.time())
-        for a in alerts:
-            if webhook_url:
-                _fire_webhook_async({
-                    "url": webhook_url,
-                    "severity": a["severity"],
-                    "category": a["category"],
-                    "message": a["message"],
-                    "ts": _ts,
-                    "worker": "",
-                    "address": "",
-                    "min_severity": min_sev,
-                    "tenant_id": tenant_id,
-                })
-            _fire_push_async(tenant_id, a["severity"], a["category"], a["message"])
+        _dispatch_tenant_alert_family(tenant_id, alerts)
     except Exception as e:
         log.warning("[rentals] pl alert dispatch error: %s", e)
+
+
+def dispatch_tenant_risk_alerts(tenant_id: str, alerts: list):
+    """Fire webhook + push for RENTAL RISK alerts (worst-rig top-N +
+    concentration), tenant-scoped — same discipline as dispatch_rental_pl_alerts:
+    one implementation shared by the panel path and the periodic sweep, reads
+    the TENANT's own settings, fire-and-forget daemon threads.
+    """
+    if not alerts:
+        return
+    try:
+        _dispatch_tenant_alert_family(tenant_id, alerts)
+    except Exception as e:
+        log.warning("[rentals] risk alert dispatch error: %s", e)
+
+
+def _dispatch_tenant_alert_family(tenant_id: str, alerts: list):
+    """Shared webhook+push loop for both tenant alert families (P/L + risk) —
+    one implementation, no drift between the two dispatchers."""
+    from services.settings import load_settings as _tenant_settings
+    s = _tenant_settings(tenant_id=tenant_id)
+    webhook_url = (s.get("webhook_url") or "").strip()
+    min_sev = s.get("webhook_min_severity", "WARN")
+    _ts = int(time.time())
+    for a in alerts:
+        if webhook_url:
+            _fire_webhook_async({
+                "url": webhook_url,
+                "severity": a["severity"],
+                "category": a["category"],
+                "message": a["message"],
+                "ts": _ts,
+                "worker": "",
+                "address": "",
+                "min_severity": min_sev,
+                "tenant_id": tenant_id,
+            })
+        _fire_push_async(tenant_id, a["severity"], a["category"], a["message"])
 
 
 def _get_global(key: str, ttl: int = GLOBAL_CACHE_TTL) -> Any:
@@ -979,20 +999,42 @@ def _rentals_sweep_once() -> int:
     Returns the number of tenants visited (for tests + observability)."""
     try:
         from services.rental_performance import (
-            pl_alert_enabled_tenants, sweep_rental_pl_alerts,
+            pl_alert_enabled_tenants, risk_alert_enabled_tenants,
+            sweep_rental_pl_alerts, sweep_risk_alerts,
         )
-        tenants = pl_alert_enabled_tenants()
+        # Each family gates its own sweep to ITS enabled set — a risk-only
+        # tenant must NEVER trigger sweep_rental_pl_alerts (that function
+        # fetches MRR history unconditionally and would burn the provider
+        # rate budget for accounts that only opted into risk alerts). The
+        # union is only for the visit order / stagger cadence.
+        pl_list = pl_alert_enabled_tenants()
+        risk_list = risk_alert_enabled_tenants()
+        pl_set = set(pl_list)
+        risk_set = set(risk_list)
+        # Union preserving P/L order first (deterministic visits for tests),
+        # dict.fromkeys dedups a tenant in both lists to one visit.
+        tenants = list(dict.fromkeys(list(pl_list) + list(risk_list)))
         visited = 0
         for i, t in enumerate(tenants):
             try:
-                alerts = sweep_rental_pl_alerts(tenant_id=t)
-                if alerts:
-                    # CRITICAL: the sweep's whole purpose is delivery without
-                    # the panel — dispatch HERE or the dedup slot gets claimed
-                    # by evaluate and the alert is swallowed forever.
-                    dispatch_rental_pl_alerts(t, alerts)
-                    log.info("[rentals-sweep] %s: %d P/L alert(s) dispatched",
-                             t or "default", len(alerts))
+                if t in pl_set:
+                    alerts = sweep_rental_pl_alerts(tenant_id=t)
+                    if alerts:
+                        # CRITICAL: the sweep's whole purpose is delivery
+                        # without the panel — dispatch HERE or the dedup slot
+                        # gets claimed by evaluate and the alert is swallowed
+                        # forever.
+                        dispatch_rental_pl_alerts(t, alerts)
+                        log.info("[rentals-sweep] %s: %d P/L alert(s) dispatched",
+                                 t or "default", len(alerts))
+                if t in risk_set:
+                    # Risk alerts (worst-rig top-N) — LOCAL evaluation, zero
+                    # provider cost; only tenants that opted in are visited.
+                    risk = sweep_risk_alerts(tenant_id=t)
+                    if risk:
+                        dispatch_tenant_risk_alerts(t, risk)
+                        log.info("[rentals-sweep] %s: %d risk alert(s) dispatched",
+                                 t or "default", len(risk))
                 visited += 1
             except Exception as e:
                 log.warning("[rentals-sweep] %s: pass error: %s", t or "default", e)

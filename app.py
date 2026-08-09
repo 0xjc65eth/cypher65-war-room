@@ -5827,12 +5827,26 @@ def api_rentals(tenant_id: str = ""):
         # windowed to recent closes. Fire-and-forget daemon threads — never
         # block the panel response on network I/O. Shared dispatcher with the
         # periodic sweep (one implementation, no drift).
+        conc: dict = {"available": False}
+        worst_rigs: dict = {"worst": [], "count": 0}
+        risk_alerts: list = []
         try:
-            from services.user_polling import dispatch_rental_pl_alerts
+            from services.user_polling import dispatch_rental_pl_alerts, dispatch_tenant_risk_alerts
             pl_alerts = _rental_perf.evaluate_rental_pl_alerts(
                 mrr_history.get("rentals", []), braiins.get("contracts", []),
                 tenant_id=tenant_id)
             dispatch_rental_pl_alerts(tenant_id, pl_alerts)
+            # Risk alerts (worst-rig top-N + concentration): the panel already
+            # computes both below for the payload — pass them in so the
+            # evaluator never recomputes; dispatch once per rig/event
+            # (persisted dedup).
+            conc = _rental_perf.compute_concentration_risk(
+                mrr_active.get("rentals", []), mrr_history.get("rentals", []),
+                mrr_owner.get("rentals", []), braiins.get("contracts", []))
+            worst_rigs = _rental_perf.compute_worst_rigs(tenant_id=tenant_id)
+            risk_alerts = _rental_perf.evaluate_risk_alerts(
+                tenant_id=tenant_id, concentration=conc, worst_rigs=worst_rigs)
+            dispatch_tenant_risk_alerts(tenant_id, risk_alerts)
         except Exception as _pe:
             log.warning("[rentals] pl alert error: %s", _pe)
         return jsonify({
@@ -5871,6 +5885,31 @@ def api_rentals(tenant_id: str = ""):
             # the panel marks/hides bad performers instantly.
             "rig_blacklist": _rental_perf.get_rig_blacklist(tenant_id=tenant_id),
             "rig_auto_blacklist": _rental_perf.get_auto_blacklist(tenant_id=tenant_id),
+            # Click-first analytics (drill-down targets):
+            #   provider_rankings — MRR vs Braiins delivery/cost/P·L comparison
+            #   rig_heatmap      — cost × delivery grid by rig NAME (≥2 samples)
+            #   expiring         — active rentals ending within 72h (calendar)
+            "provider_rankings": _rental_perf.compute_provider_rankings(
+                mrr_active.get("rentals", []), mrr_history.get("rentals", []),
+                mrr_owner.get("rentals", []), braiins.get("contracts", [])),
+            "rig_heatmap": _rental_perf.compute_rig_heatmap(
+                mrr_history.get("rentals", []), mrr_owner.get("rentals", []),
+                tenant_id=tenant_id),
+            "expiring": _rental_perf.compute_expiring_rentals(
+                mrr_active.get("rentals", []), hours=72.0),
+            # CFO: worst-rig leaderboard (EWMA delivery + failure rate +
+            # volatility + danger score) and portfolio concentration risk
+            # (provider/rig spend share + Herfindahl) — the 'who burned me'
+            # and 'am I over-exposed?' risk view. Reuses the SAME dicts the
+            # alert evaluator already built (one compute per load).
+            "worst_rigs": worst_rigs,
+            "concentration": conc,
+            # CFO: difficulty-adjustment forecast (next retarget from local
+            # block cadence) — 'difficulty +X% em ~N dias, evite cruzar'.
+            "difficulty_forecast": _rental_perf.compute_difficulty_forecast(),
+            # Risk alerts fired on THIS load (worst-rig top-N + concentration)
+            # so the panel can surface them as a banner immediately.
+            "risk_alerts_fired": risk_alerts,
         })
     except Exception as e:
         log.warning("[rentals] list error: %s", e)
@@ -6137,6 +6176,53 @@ def api_braiins_bid(tenant_id: str = ""):
     return jsonify({"success": False, "error": result.get("error") or "bid failed"}), status
 
 
+@app.route("/api/rentals/rig")
+@require_tenant
+@role_required("viewer")
+def api_rentals_rig(tenant_id: str = ""):
+    """Rig intelligence for a recommendation-card click (same shape as the
+    detail route's rig_analysis): trust grade, track record, blacklist.
+
+    Query params: rig_id (or rig_name).
+    """
+    rig_id = (request.args.get("rig_id") or "").strip()
+    rig_name = (request.args.get("rig_name") or "").strip()
+    if not (rig_id or rig_name):
+        return jsonify({"success": False, "error": "missing rig_id"}), 400
+    try:
+        analysis = _rental_perf.rig_track_record(rig_id or None, rig_name,
+                                                  tenant_id=tenant_id)
+        return jsonify({"success": True, "rig_id": rig_id,
+                        "rig_name": rig_name, **analysis})
+    except Exception as e:
+        log.warning("[rentals] rig error: %s", e)
+        return jsonify({"success": False, "error": "rig analysis failed"}), 500
+
+
+@app.route("/api/rentals/backtest")
+@require_tenant
+@role_required("viewer")
+def api_rentals_backtest(tenant_id: str = ""):
+    """'What if I rented X TH for Y hours?' — cost at the cheapest live market
+    price vs expected gross yield (current network hashrate).
+
+    Query params: th (float, >0), hours (float, >0).
+    """
+    try:
+        th = float(request.args.get("th") or 0)
+        hours = float(request.args.get("hours") or 0)
+    except (TypeError, ValueError):
+        return jsonify({"success": False, "error": "th/hours must be numbers"}), 400
+    if th <= 0 or hours <= 0 or hours > 24 * 30:
+        return jsonify({"success": False, "error": "th > 0 and 0 < hours <= 720"}), 400
+    try:
+        bt = _rental_perf.compute_backtest(th, hours)
+        return jsonify({"success": True, **bt})
+    except Exception as e:
+        log.warning("[rentals] backtest error: %s", e)
+        return jsonify({"success": False, "error": "backtest failed"}), 500
+
+
 @app.route("/api/rentals/series")
 @require_tenant
 @role_required("viewer")
@@ -6149,10 +6235,34 @@ def api_rentals_series(tenant_id: str = ""):
     try:
         bucket = (request.args.get("bucket") or "week").lower()
         series = _rental_perf.compute_portfolio_series(tenant_id=tenant_id, bucket=bucket)
+
         return jsonify({"success": True, **series})
     except Exception as e:
         log.warning("[rentals] series error: %s", e)
         return jsonify({"success": False, "error": "series failed"}), 500
+
+
+@app.route("/api/rentals/series/rentals")
+@require_tenant
+@role_required("viewer")
+def api_rentals_series_rentals(tenant_id: str = ""):
+    """Drill-down behind a portfolio chart bar: every LOCAL rental_history row
+    in the clicked bucket (e.g. label=2026-W30) — zero provider calls.
+
+    Query params: bucket=week|month, label=<bucket label from the chart>.
+    """
+    bucket = (request.args.get("bucket") or "week").lower()
+    label = (request.args.get("label") or "").strip()
+    if not label:
+        return jsonify({"success": False, "error": "missing label"}), 400
+    try:
+        rows = _rental_perf.series_bucket_rentals(
+            tenant_id=tenant_id, bucket=bucket, label=label)
+        return jsonify({"success": True, "bucket": bucket, "label": label,
+                        "rentals": rows})
+    except Exception as e:
+        log.warning("[rentals] series drill-down error: %s", e)
+        return jsonify({"success": False, "error": "drill-down failed"}), 500
 
 
 @app.route("/api/network/scan", methods=["POST"])

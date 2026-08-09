@@ -753,15 +753,18 @@
     <div class="panel__tools">
       <span class="badge badge--mute" id="rentals-count-badge">—</span>
       <button class="chip chip--affiliate" id="rentals-buy" title="Comprar hashrate no spot da Braiins (real money)">⚡ COMPRAR</button>
+      <button class="chip" id="rentals-backtest" title="Backtest: e se eu alugasse X TH por Y horas?">🔬</button>
       <button class="chip" id="rentals-export" title="Export CSV">⭳</button>
       <button class="chip" id="rentals-refresh" title="Refresh">⟳</button>
     </div>
   </div>
   <div class="rentals-strip" id="rentals-strip">
-    <div class="rentals-strip__card"><div class="rentals-strip__title">MRR RENTER</div><div class="rentals-strip__value" id="rentals-mrr-active">—</div><div class="rentals-strip__sub">active</div></div>
-    <div class="rentals-strip__card"><div class="rentals-strip__title">MRR HISTORY</div><div class="rentals-strip__value" id="rentals-mrr-history">—</div><div class="rentals-strip__sub">completed</div></div>
-    <div class="rentals-strip__card"><div class="rentals-strip__title">MRR OWNER</div><div class="rentals-strip__value" id="rentals-mrr-owner">—</div><div class="rentals-strip__sub">rigs leased</div></div>
-    <div class="rentals-strip__card"><div class="rentals-strip__title">BRAIINS</div><div class="rentals-strip__value" id="rentals-braiins">—</div><div class="rentals-strip__sub">contracts</div></div>
+    <!-- Click-first: each strip card switches the list tab below (active /
+         history / owner / contracts) — no longer decorative. -->
+    <div class="rentals-strip__card" data-rentals-filter="active" title="ver rentals ativos"><div class="rentals-strip__title">MRR RENTER</div><div class="rentals-strip__value" id="rentals-mrr-active">—</div><div class="rentals-strip__sub">active · clique p/ ver</div></div>
+    <div class="rentals-strip__card" data-rentals-filter="history" title="ver histórico"><div class="rentals-strip__title">MRR HISTORY</div><div class="rentals-strip__value" id="rentals-mrr-history">—</div><div class="rentals-strip__sub">completed · clique p/ ver</div></div>
+    <div class="rentals-strip__card" data-rentals-filter="owner" title="ver rigs alugados"><div class="rentals-strip__title">MRR OWNER</div><div class="rentals-strip__value" id="rentals-mrr-owner">—</div><div class="rentals-strip__sub">rigs leased · clique p/ ver</div></div>
+    <div class="rentals-strip__card" data-rentals-filter="contracts" title="ver contratos Braiins"><div class="rentals-strip__title">BRAIINS</div><div class="rentals-strip__value" id="rentals-braiins">—</div><div class="rentals-strip__sub">contracts · clique p/ ver</div></div>
   </div>
   <!-- CFO: portfolio analytics — consolidated spend/cost/delivery so the
        operator sees where the money went BEFORE opening individual rentals. -->
@@ -786,6 +789,31 @@
     </div>
     <div class="rentals-series__chart"><canvas id="rentals-series-chart"></canvas></div>
   </div>
+  <!-- Click-first: expiring rentals (calendar) + provider ranking + rig
+       heatmap — every cell is a drill-down target. -->
+  <div class="rentals-expiring" id="rentals-expiring" hidden>
+    <div class="rentals-expiring__head">TERMINANDO EM 72H <span id="rentals-expiring-meta" class="rentals-expiring__meta"></span></div>
+    <div class="rentals-expiring__list" id="rentals-expiring-list"></div>
+  </div>
+  <div class="rentals-rank" id="rentals-rank" hidden>
+    <div class="rentals-rank__head">RANKING DE PROVIDERS</div>
+    <div class="rentals-rank__grid" id="rentals-rank-grid"></div>
+  </div>
+  <div class="rentals-heatmap" id="rentals-heatmap" hidden>
+    <div class="rentals-heatmap__head">HEATMAP CUSTO × DELIVERY <span class="rentals-heatmap__hint">clique numa célula p/ ver o rig</span></div>
+    <div class="rentals-heatmap__grid" id="rentals-heatmap-grid"></div>
+  </div>
+  <!-- CFO: worst-rig leaderboard — the rigs that burned you (EWMA delivery,
+       fail rate, volatility, danger score). Click a row → track record. -->
+  <div class="rentals-worst" id="rentals-worst" hidden>
+    <div class="rentals-worst__head">PIORES RIGS <span id="rentals-worst-meta" class="rentals-worst__meta"></span></div>
+    <div class="rentals-worst__list" id="rentals-worst-list"></div>
+  </div>
+  <!-- CFO: concentration risk — provider/rig spend share + Herfindahl. -->
+  <div class="rentals-conc" id="rentals-conc" hidden>
+    <div class="rentals-conc__head">CONCENTRAÇÃO <span id="rentals-conc-meta" class="rentals-conc__meta"></span></div>
+    <div class="rentals-conc__bars" id="rentals-conc-bars"></div>
+  </div>
   <!-- CFO recommendation engine: 'where to rent again' — rigs with a real
        track record, ranked by reliability × price vs the live market. -->
   <div class="rentals-reco" id="rentals-reco" hidden>
@@ -796,8 +824,12 @@
        persisted market history) — 'renting expensive right now?' -->
   <div class="rentals-timing" id="rentals-timing" hidden>
     <div class="rentals-timing__head">MARKET TIMING · 30D <span id="rentals-timing-summary" class="rentals-timing__summary"></span></div>
+    <div class="rentals-timing__forecast" id="rentals-timing-forecast" hidden></div>
     <div class="rentals-timing__chart"><canvas id="rentals-timing-chart"></canvas></div>
   </div>
+  <!-- Risk alerts fired on this load (worst-rig top-N + concentration) —
+       banner with severity so the operator sees it without digging. -->
+  <div class="rentals-riskbanner" id="rentals-riskbanner" hidden></div>
   <div class="rentals-filters" id="rentals-filters">
     <button class="chip active" data-rentals-filter="active">Active</button>
     <button class="chip" data-rentals-filter="history">History</button>
@@ -2498,6 +2530,51 @@
           <button class="btn btn--primary" id="braiins-buy-submit" disabled>CONFIRMAR COMPRA</button>
         </div>
         <span class="modal__status" id="braiins-buy-status"></span>
+      </div>
+    </div>
+  </div>
+
+  <!-- BACKTEST MODAL ('what if I rented X TH for Y hours?') -->
+  <div id="rentals-rig-modal" class="modal-overlay">
+    <div class="modal rentals-rig-modal">
+      <div class="modal__header">
+        <span class="modal__title" id="rentals-rig-modal-title">RIG TRACK RECORD</span>
+        <button class="modal__close" data-close="rentals-rig-modal">×</button>
+      </div>
+      <div class="modal__body" id="rentals-rig-modal-body"></div>
+    </div>
+  </div>
+
+  <div id="rentals-drill-modal" class="modal-overlay">
+    <div class="modal rentals-drill-modal">
+      <div class="modal__header">
+        <span class="modal__title" id="rentals-drill-title">DRILL-DOWN</span>
+        <button class="modal__close" data-close="rentals-drill-modal">×</button>
+      </div>
+      <div class="modal__body" id="rentals-drill-body"></div>
+    </div>
+  </div>
+
+  <div id="rentals-backtest-modal" class="modal-overlay">
+    <div class="modal rentals-backtest-modal">
+      <div class="modal__header">
+        <span class="modal__title">🔬 BACKTEST · E SE EU ALUGASSE…</span>
+        <button class="modal__close" data-close="rentals-backtest-modal">×</button>
+      </div>
+      <div class="modal__body">
+        <div class="braiins-buy__fields">
+          <label class="field">
+            <span class="field__label">HASHRATE (TH/s)</span>
+            <input class="field__input field__input--mono" type="number" id="backtest-th" min="1" step="1" placeholder="ex: 500">
+          </label>
+          <label class="field">
+            <span class="field__label">DURAÇÃO (horas)</span>
+            <input class="field__input field__input--mono" type="number" id="backtest-hours" min="1" max="720" step="1" placeholder="ex: 24">
+          </label>
+        </div>
+        <div class="braiins-buy__calc" id="backtest-result">—</div>
+        <button class="btn btn--primary" id="backtest-run">CALCULAR</button>
+        <span class="modal__status" id="backtest-status"></span>
       </div>
     </div>
   </div>

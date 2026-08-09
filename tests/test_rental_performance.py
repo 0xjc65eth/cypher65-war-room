@@ -1487,3 +1487,483 @@ def test_series_route_returns_bucket(rclient, monkeypatch):
     assert data["bucket"] == "month"
     assert data["points"][0]["spent_sats"] == 1000
     assert data["totals"]["rentals"] == 1
+
+
+# ── Click-first analytics (rankings / heatmap / expiring / drill-down) ─────
+
+
+def test_provider_rankings_averages_and_order():
+    """compute_provider_rankings aggregates delivery/cost/P·L per provider and
+    sorts by avg delivery desc; providers without data are never fabricated."""
+    # The ranking consumes the NORMALIZED list shape (flat fields that
+    # fetch_mrr_rentals produces), not the raw API envelope.
+    h1 = {"id": "1", "hashrate_percent": 99.0, "price_paid_btc": 0.00001,
+          "hashrate_average_th": 100.0, "length_hours": 1.0}
+    h2 = {"id": "2", "hashrate_percent": 95.0, "price_paid_btc": 0.00002,
+          "hashrate_average_th": 100.0, "length_hours": 2.0}
+    contracts = [{"id": "c1", "amount_sat": 15000}]
+    rows = rp.compute_provider_rankings([h1], [h2], [], contracts)
+    assert len(rows) == 2
+    mrr = next(r for r in rows if r["provider"] == "mrr")
+    braiins = next(r for r in rows if r["provider"] == "braiins")
+    assert mrr["avg_delivery_pct"] == 97.0  # (99+95)/2
+    assert mrr["rentals"] == 2
+    assert braiins["spend_sats"] == 15000
+    # No fabricated rows when a provider has no data.
+    rows2 = rp.compute_provider_rankings([], [], [], [])
+    assert rows2 == []
+
+
+def test_rig_heatmap_requires_two_samples_and_scopes_tenant(tmp_path, monkeypatch):
+    """compute_rig_heatmap builds rig-name cells but skips rigs with <2
+    samples (one-off noise) and never leaks another tenant's rows."""
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "heatmap.sqlite"))
+    rows = [
+        _reco_hist_row("1", "rigA", "Rig A", 96, 500, "2026-07-20"),
+        _reco_hist_row("2", "rigA", "Rig A", 98, 510, "2026-07-21"),
+        _reco_hist_row("3", "rigB", "Rig B", 80, 700, "2026-07-20"),  # 1 sample only
+    ]
+    assert rp.save_rental_history(rows, tenant_id="t1") is True
+    assert rp.save_rental_history([_reco_hist_row("9", "rigC", "Rig C", 100, 400, "2026-07-22")],
+                                  tenant_id="t2") is True
+    # Rig B with cost=None carries only a delivery sample (1) — the cell
+    # threshold is "≥2 measured samples" (delivery + cost counts), so a
+    # single measurement is noise and must be excluded.
+    rows[2]["cost_sats_per_thh"] = None
+    assert rp.save_rental_history(rows, tenant_id="t1") is True
+    cells = rp.compute_rig_heatmap([], [], tenant_id="t1")
+    names = [c["rig"] for c in cells]
+    assert "Rig A" in names
+    assert "Rig B" not in names  # <2 samples
+    assert "Rig C" not in names  # t2's rig
+    a = next(c for c in cells if c["rig"] == "Rig A")
+    assert a["avg_delivery_pct"] == 97.0
+    assert a["samples"] == 2
+
+
+def test_expiring_rentals_filters_window_and_sorts():
+    """compute_expiring_rentals keeps only active rentals ending within the
+    window, sorted by time left (soonest first)."""
+    now = time.time()
+    soon = _mrr_rental(id="1")
+    soon["end_unix"] = str(int(now + 3600))       # 1h left
+    later = _mrr_rental(id="2")
+    later["end_unix"] = str(int(now + 48 * 3600))  # 48h left
+    far = _mrr_rental(id="3")
+    far["end_unix"] = str(int(now + 200 * 3600))   # outside window
+    past = _mrr_rental(id="4")
+    past["end_unix"] = str(int(now - 3600))        # already ended
+    out = rp.compute_expiring_rentals([far, soon, later, past], hours=72.0)
+    assert [r["id"] for r in out] == ["1", "2"]
+    assert out[0]["ends_in_hours"] == 1.0
+
+
+def test_compute_backtest_honest_without_market(monkeypatch):
+    """compute_backtest computes cost + expected yield + P/L from the live
+    market; when yield is unknown only the cost side is returned (no
+    fabricated P/L)."""
+    mkt = {"available": True, "price_sats_per_thh": 12.5}
+    monkeypatch.setattr(rp, "compute_expected_yield_sats_per_thh", lambda: 15.0)
+    bt = rp.compute_backtest(500, 24, market=mkt)
+    assert bt["thh"] == 12000
+    assert bt["cost_sats"] == 12.5 * 12000
+    assert bt["expected_yield_sats"] == 15.0 * 12000
+    assert bt["pl_sats"] == (15.0 - 12.5) * 12000
+    assert bt["yield_known"] is True
+    monkeypatch.setattr(rp, "compute_expected_yield_sats_per_thh", lambda: None)
+    bt2 = rp.compute_backtest(500, 24, market=mkt)
+    assert bt2["expected_yield_sats"] is None
+    assert bt2["pl_sats"] is None  # never fabricate P/L
+    assert bt2["yield_known"] is False
+    # No market at all → cost side also unknown.
+    bt3 = rp.compute_backtest(500, 24, market={"available": False})
+    assert bt3["cost_sats"] is None
+
+
+def test_series_carries_rental_ids_and_drill_down_returns_rows(tmp_path, monkeypatch):
+    """The portfolio series ships rental_ids per bucket so the chart can
+    drill down; series_bucket_rentals returns the exact local rows behind a
+    label, tenant-scoped."""
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "drill.sqlite"))
+    monkeypatch.setattr(rp, "compute_rental_pl",
+                        lambda delivered, paid, **k: {"pl_sats": -100.0})
+    rows = [
+        _series_row("1", "2026-07-20 10:00:00 UTC", 5000),
+        _series_row("2", "2026-07-21 10:00:00 UTC", 3000),
+        _series_row("3", "2026-07-28 10:00:00 UTC", 8000),
+    ]
+    assert rp.save_rental_history(rows, tenant_id="t1") is True
+    assert rp.save_rental_history([_series_row("9", "2026-07-28 10:00:00 UTC", 9000)],
+                                  tenant_id="t2") is True
+    s = rp.compute_portfolio_series(tenant_id="t1", bucket="week")
+    w30 = next(p for p in s["points"] if p["label"] == "2026-W30")
+    assert sorted(w30["rental_ids"]) == ["1", "2"]
+    w31 = next(p for p in s["points"] if p["label"] == "2026-W31")
+    assert w31["rental_ids"] == ["3"]
+    rows30 = rp.series_bucket_rentals(tenant_id="t1", bucket="week", label="2026-W30")
+    assert [r["rental_id"] for r in rows30] == ["1", "2"]
+    assert all(r["provider"] == "mrr" and r["rig_name"] for r in rows30)
+    # t2's row never leaks into t1's drill-down; unknown label → empty.
+    rows_nope = rp.series_bucket_rentals(tenant_id="t1", bucket="week", label="2099-W01")
+    assert rows_nope == []
+    assert rp.series_bucket_rentals(tenant_id="t1", bucket="week", label="2026-W31")[0]["rental_id"] == "3"
+
+
+def test_drill_route_requires_label_and_scopes(rclient, monkeypatch):
+    """GET /api/rentals/series/rentals validates label and delegates to the
+    tenant-scoped drill-down function."""
+    resp = rclient.get("/api/rentals/series/rentals")
+    assert resp.status_code == 400
+    monkeypatch.setattr(
+        _app_module._rental_perf, "series_bucket_rentals",
+        lambda tenant_id="", bucket="week", label="": [{"provider": "mrr", "rental_id": "1"}])
+    resp2 = rclient.get("/api/rentals/series/rentals?bucket=week&label=2026-W30")
+    assert resp2.status_code == 200
+    data = resp2.get_json()
+    assert data["label"] == "2026-W30"
+    assert data["rentals"][0]["rental_id"] == "1"
+
+
+def test_rig_route_returns_track_record(rclient, monkeypatch):
+    """GET /api/rentals/rig returns the analyze_rig shape (trust grade,
+    summary, blacklist) for a reco-card click."""
+    monkeypatch.setattr(
+        _app_module._rental_perf, "rig_track_record",
+        lambda rig_id=None, rig_name="", tenant_id="": {
+            "history": [], "trust": {"grade": "A", "score": 95},
+            "blacklisted": False, "auto_blacklisted": False,
+            "summary": {"rentals": 0, "avg_pct": None, "cost_avg_sats_thh": None,
+                        "trend_pct": None}})
+    resp = rclient.get("/api/rentals/rig?rig_id=376882")
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data["success"] is True
+    assert data["trust"]["grade"] == "A"
+    resp2 = rclient.get("/api/rentals/rig")
+    assert resp2.status_code == 400
+
+
+def test_backtest_route_validation_and_result(rclient, monkeypatch):
+    """GET /api/rentals/backtest validates inputs and returns the honest
+    cost/yield/P·L summary."""
+    monkeypatch.setattr(
+        _app_module._rental_perf, "compute_backtest",
+        lambda th, hours, market=None: {"thh": 12000, "cost_sats": 150000,
+                                        "expected_yield_sats": 180000,
+                                        "pl_sats": 30000, "yield_known": True,
+                                        "market_sats_per_thh": 12.5, "available": True})
+    assert rclient.get("/api/rentals/backtest?th=0&hours=24").status_code == 400
+    assert rclient.get("/api/rentals/backtest?th=500&hours=9999").status_code == 400
+    resp = rclient.get("/api/rentals/backtest?th=500&hours=24")
+    assert resp.status_code == 200
+    assert resp.get_json()["pl_sats"] == 30000
+
+
+# ── Worst-rig leaderboard + concentration risk (CFO risk view) ──────────────
+
+def _worst_row(rid, rig_name, start, percent, paid_sats=1000, delivered_thh=10.0, tenant="t1"):
+    return {"provider": "mrr", "rental_id": f"r-{rid}-{start}", "rig_id": str(rid),
+            "rig_name": rig_name, "start": start, "end": None,
+            "percent": percent, "avg_th": 100.0, "advertised_th": 100.0,
+            "cost_sats_per_thh": None, "length_hours": 1.0,
+            "delivered_thh": delivered_thh, "paid_sats": paid_sats}
+
+
+def test_worst_rigs_ewma_ordering_and_min_samples(tmp_path, monkeypatch):
+    """compute_worst_rigs ranks the worst rigs first, EWMA weights recent
+    rentals, and a rig with a single sample is never ranked (noise)."""
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "worst.sqlite"))
+    # Rig A: was great (99%) then collapsed to 40% recently → must top.
+    # Rig B: consistently mediocre (80, 82, 79).
+    # Rig C: one terrible rental only → filtered by the ≥2 samples gate.
+    rows = [
+        _worst_row("A", "Rig A", "2026-06-01 10:00:00 UTC", 99.0),
+        _worst_row("A", "Rig A", "2026-06-02 10:00:00 UTC", 98.0),
+        _worst_row("A", "Rig A", "2026-06-03 10:00:00 UTC", 40.0),
+        _worst_row("B", "Rig B", "2026-06-01 10:00:00 UTC", 80.0),
+        _worst_row("B", "Rig B", "2026-06-02 10:00:00 UTC", 82.0),
+        _worst_row("B", "Rig B", "2026-06-03 10:00:00 UTC", 79.0),
+        _worst_row("C", "Rig C", "2026-06-01 10:00:00 UTC", 30.0),
+    ]
+    assert rp.save_rental_history(rows, tenant_id="t1") is True
+
+    d = rp.compute_worst_rigs(tenant_id="t1")
+    assert d["min_samples"] == 2
+    assert d["count"] == 2  # rig C excluded (1 sample)
+    ids = [w["rig_id"] for w in d["worst"]]
+    assert ids[0] == "A"  # collapsed recently → worst
+    assert ids[1] == "B"
+    a = d["worst"][0]
+    # EWMA(99, 98, 40) with α=0.5: 0.5*40 + 0.5*(0.5*98+0.5*99) = 20 + 49.25 = 69.25
+    assert abs(a["ewma_delivery_pct"] - 69.25) < 0.1
+    assert a["worst_pct"] == 40.0
+    assert a["fail_rate_pct"] == 33.3  # 1 of 3 below 90%
+    # The trust grade rides along (same engine as the rig modal): rig A's
+    # median of [40,98,99] = 98 → B/C band — the DANGER score tells the
+    # 'recent collapse' story while the grade reflects the overall record.
+    assert d["worst"][0]["grade"] in ("A", "B", "C", "D", "F")
+    # EWMA far below the plain average (79) — the recent collapse dominates.
+    assert a["ewma_delivery_pct"] < a["avg_delivery_pct"]
+    assert a["danger_score"] > d["worst"][1]["danger_score"]
+    # A rig that collapsed to 40% must land at least in the WARN band (≥45).
+    assert a["danger_score"] >= 45.0
+
+
+def test_worst_rigs_tenant_isolation_and_blacklist(tmp_path, monkeypatch):
+    """worst-rig ranking is tenant-scoped and flags manual/auto blacklists."""
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "worst_t.sqlite"))
+    # Each tenant saves ITS OWN rows only (save_rental_history stamps the
+    # passed tenant_id onto every row — a shared list would leak both rigs
+    # into both tenants and defeat the isolation check).
+    assert rp.save_rental_history(
+        [_worst_row("X", "Rig X", "2026-06-01 10:00:00 UTC", 55.0),
+         _worst_row("X", "Rig X", "2026-06-02 10:00:00 UTC", 58.0)],
+        tenant_id="t1") is True
+    assert rp.save_rental_history(
+        [_worst_row("Y", "Rig Y", "2026-06-01 10:00:00 UTC", 99.0),
+         _worst_row("Y", "Rig Y", "2026-06-02 10:00:00 UTC", 97.0)],
+        tenant_id="t2") is True
+    # t1's view must not include t2's good rig Y.
+    d1 = rp.compute_worst_rigs(tenant_id="t1")
+    assert [w["rig_id"] for w in d1["worst"]] == ["X"]
+
+    # Blacklist flag: rig X is a bad performer → manual blacklist it.
+    assert rp.add_rig_to_blacklist("X", tenant_id="t1") is True
+    d1b = rp.compute_worst_rigs(tenant_id="t1")
+    assert d1b["worst"][0]["blacklisted"] is True
+    assert d1b["worst"][0]["auto_blacklisted"] is False
+    # t2 (with its own history) still sees its rig unblacklisted.
+    d2 = rp.compute_worst_rigs(tenant_id="t2")
+    assert [w["rig_id"] for w in d2["worst"]] == ["Y"]
+    assert d2["worst"][0]["blacklisted"] is False
+
+
+def test_worst_rigs_empty_and_never_raises(tmp_path, monkeypatch):
+    """Empty/local-table-missing DB → clean empty result, never an exception."""
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "worst_e.sqlite"))
+    d = rp.compute_worst_rigs(tenant_id="t1")
+    assert d["worst"] == [] and d["count"] == 0
+
+
+def test_concentration_risk_provider_split_hhi_and_top_rig():
+    """compute_concentration_risk derives provider/rig spend shares + HHI."""
+    active = [
+        {"price_paid_btc": 0.0001, "rig": {"id": "1", "name": "Rig 1"}},   # 10k sats
+        {"price_paid_btc": 0.0003, "rig": {"id": "2", "name": "Rig 2"}},   # 30k sats
+    ]
+    contracts = [{"amount_sat": 60000}]  # Braiins: 60k sats
+    c = rp.compute_concentration_risk(active, [], [], contracts)
+    assert c["available"] is True
+    assert c["total_spend_sats"] == 100000
+    provs = {p["provider"]: p for p in c["providers"]}
+    assert provs["mrr"]["spend_sats"] == 40000 and provs["mrr"]["share_pct"] == 40.0
+    assert provs["braiins"]["spend_sats"] == 60000 and provs["braiins"]["share_pct"] == 60.0
+    # HHI = 40² + 60² = 5200 → 'alta concentração' band.
+    assert c["hhi"] == 5200.0
+    assert c["top_provider"]["provider"] == "braiins"
+    assert c["top_rig"]["rig_id"] == "2"
+    assert c["top_rig"]["share_pct"] == 30.0
+
+
+def test_concentration_risk_honest_empty():
+    """No measurable spend → available False (honest '—', never a fake 0)."""
+    c = rp.compute_concentration_risk([], [], [], [])
+    assert c["available"] is False
+    # A zero-paid rental is not spend either.
+    c2 = rp.compute_concentration_risk(
+        [{"price_paid_btc": 0.0, "rig": {"id": "1"}}], [], [], [])
+    assert c2["available"] is False
+
+
+def test_list_route_carries_worst_and_concentration(rclient, monkeypatch):
+    """The /api/rentals payload ships worst_rigs + concentration (risk view)."""
+    monkeypatch.setattr(_app_module._rental_perf, "compute_worst_rigs",
+                        lambda tenant_id="": {"worst": [{"rig_id": "1",
+                                                          "danger_score": 80.0}],
+                                              "count": 1, "min_samples": 2})
+    monkeypatch.setattr(_app_module._rental_perf, "compute_concentration_risk",
+                        lambda *a, **k: {"available": True, "hhi": 5200.0})
+    resp = rclient.get("/api/rentals")
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data["worst_rigs"]["worst"][0]["rig_id"] == "1"
+    assert data["concentration"]["hhi"] == 5200.0
+
+
+# ── Difficulty forecast + risk alerts (market timing + risk view) ───────────
+
+def _risk_settings():
+    return {"rental_risk_alerts": "1", "rental_risk_danger": "40",
+            "rental_risk_top_n": "5", "rental_risk_conc_pct": "55"}
+
+
+def _seed_snapshots(heights):
+    """Create the snapshots table and insert (ts, height) rows the forecast
+    reads for the block-cadence measurement."""
+    from services.db import get_db
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("CREATE TABLE IF NOT EXISTS snapshots (ts INTEGER, network_height INTEGER)")
+    for i, h in enumerate(heights):
+        c.execute("INSERT OR REPLACE INTO snapshots(ts,network_height) VALUES(?,?)",
+                  (1_800_000_000 + i * 500, h))  # 500s between polls, +1 height
+    conn.commit()
+    conn.close()
+
+
+def test_difficulty_forecast_projects_from_block_cadence(tmp_path, monkeypatch):
+    """Faster-than-10min blocks (500s cadence) → difficulty projected UP;
+    slower blocks → DOWN. Both derived from the LOCAL snapshots table."""
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "fc.sqlite"))
+    # +1 height every 500s → avg block time 500s (faster than 600 target).
+    _seed_snapshots([890000 + i for i in range(20)])
+    import services.state as _state
+    monkeypatch.setattr(_state, "latest_snapshot",
+                        {"network": {"difficulty": 90e12, "height": 890050,
+                                     "hashrate": 1e20}})
+    f = rp.compute_difficulty_forecast()
+    assert f["available"] is True
+    assert 450 <= f["avg_block_time_s"] <= 560
+    assert f["direction"] == "up"
+    assert f["projected_change_pct"] > 5.0
+    assert 0 < f["blocks_remaining"] <= 2016
+    assert f["hours_to_adjustment"] > 0
+    assert "difficulty" in f["verdict"].lower()
+
+
+def test_difficulty_forecast_down_when_blocks_slower(tmp_path, monkeypatch):
+    """Slower-than-10min blocks (700s cadence) → difficulty projected DOWN."""
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "fc2.sqlite"))
+    from services.db import get_db
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("CREATE TABLE IF NOT EXISTS snapshots (ts INTEGER, network_height INTEGER)")
+    for i in range(20):
+        c.execute("INSERT OR REPLACE INTO snapshots(ts,network_height) VALUES(?,?)",
+                  (1_800_000_000 + i * 700, 900000 + i))
+    conn.commit()
+    conn.close()
+    import services.state as _state
+    monkeypatch.setattr(_state, "latest_snapshot",
+                        {"network": {"difficulty": 90e12, "height": 900050,
+                                     "hashrate": 1e20}})
+    f = rp.compute_difficulty_forecast()
+    assert f["available"] is True
+    assert f["direction"] == "down"
+    assert f["projected_change_pct"] < -5.0
+
+
+def test_difficulty_forecast_unavailable_cold_box(tmp_path, monkeypatch):
+    """Cold box (no height/difficulty or no snapshots) → available False —
+    never a fabricated projection."""
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "fc3.sqlite"))
+    import services.state as _state
+    monkeypatch.setattr(_state, "latest_snapshot",
+                        {"network": {"difficulty": None, "height": None}})
+    f = rp.compute_difficulty_forecast()
+    assert f["available"] is False
+
+
+def test_risk_alerts_worst_rig_fires_once_with_dedup(tmp_path, monkeypatch):
+    """A rig in the top-N with danger ≥ threshold fires ONE alert per rig;
+    the same rig never alerts again (persisted dedup)."""
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "risk.sqlite"))
+    monkeypatch.setattr(rp, "load_settings", lambda tenant_id="": _risk_settings())
+    rows = [
+        _worst_row("A", "Rig A", "2026-06-01 10:00:00 UTC", 55.0),
+        _worst_row("A", "Rig A", "2026-06-02 10:00:00 UTC", 58.0),
+        _worst_row("A", "Rig A", "2026-06-03 10:00:00 UTC", 52.0),
+        _worst_row("B", "Rig B", "2026-06-01 10:00:00 UTC", 99.0),
+        _worst_row("B", "Rig B", "2026-06-02 10:00:00 UTC", 97.0),
+        _worst_row("B", "Rig B", "2026-06-03 10:00:00 UTC", 96.0),
+    ]
+    assert rp.save_rental_history(rows, tenant_id="t1") is True
+
+    a = rp.evaluate_risk_alerts(tenant_id="t1")
+    assert len(a) == 1  # only rig A crosses the danger threshold
+    assert a[0]["category"] == "rental_risk_rig"
+    assert "PIORES" in a[0]["message"] or "piores" in a[0]["message"]
+    assert a[0]["severity"] in ("CRIT", "WARN")
+
+    # Dedup: same rig never alerts again.
+    assert rp.evaluate_risk_alerts(tenant_id="t1") == []
+
+
+def test_risk_alerts_disabled_when_setting_off(tmp_path, monkeypatch):
+    """No setting (or '0') → no alerts, even with bad rigs present."""
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "risk2.sqlite"))
+    monkeypatch.setattr(rp, "load_settings",
+                        lambda tenant_id="": {"rental_risk_alerts": "0"})
+    rows = [_worst_row("A", "Rig A", "2026-06-01 10:00:00 UTC", 40.0),
+            _worst_row("A", "Rig A", "2026-06-02 10:00:00 UTC", 45.0),
+            _worst_row("A", "Rig A", "2026-06-03 10:00:00 UTC", 42.0)]
+    assert rp.save_rental_history(rows, tenant_id="t1") is True
+    assert rp.evaluate_risk_alerts(tenant_id="t1") == []
+
+
+def test_risk_alerts_concentration_crossing_fires_once(tmp_path, monkeypatch):
+    """Top-provider share ≥ threshold fires a concentration alert once per
+    provider crossing (deduped)."""
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "risk3.sqlite"))
+    monkeypatch.setattr(rp, "load_settings", lambda tenant_id="": _risk_settings())
+    conc = {"available": True, "hhi": 7800.0,
+            "top_provider": {"provider": "mrr", "label": "MRR",
+                              "share_pct": 88.0}}
+    a = rp.evaluate_risk_alerts(tenant_id="t1", concentration=conc)
+    assert len(a) == 1
+    assert a[0]["category"] == "rental_risk_concentration"
+    assert "88%" in a[0]["message"]
+    assert rp.evaluate_risk_alerts(tenant_id="t1", concentration=conc) == []
+
+
+def test_risk_alerts_tenant_isolation(tmp_path, monkeypatch):
+    """Tenant t1's worst rig does NOT fire an alert for t2 (no data)."""
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "risk4.sqlite"))
+    monkeypatch.setattr(rp, "load_settings", lambda tenant_id="": _risk_settings())
+    rows = [_worst_row("A", "Rig A", "2026-06-01 10:00:00 UTC", 55.0),
+            _worst_row("A", "Rig A", "2026-06-02 10:00:00 UTC", 58.0),
+            _worst_row("A", "Rig A", "2026-06-03 10:00:00 UTC", 52.0)]
+    assert rp.save_rental_history(rows, tenant_id="t1") is True
+    assert len(rp.evaluate_risk_alerts(tenant_id="t1")) == 1
+    # t2 has its own empty history → no alert, and t1's dedup is untouched.
+    assert rp.evaluate_risk_alerts(tenant_id="t2") == []
+
+
+def test_risk_alert_enabled_tenants_scan(tmp_path, monkeypatch):
+    """risk_alert_enabled_tenants returns opted-in tenants (no credential
+    gate — the worst-rig half is local)."""
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "risk5.sqlite"))
+    from services.db import get_db
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("CREATE TABLE IF NOT EXISTS tenant_settings (tenant_id TEXT, key TEXT, value TEXT, updated_ts INTEGER, PRIMARY KEY(tenant_id,key))")
+    c.execute("INSERT OR REPLACE INTO tenant_settings VALUES ('t-on', 'rental_risk_alerts', '1', 0)")
+    c.execute("INSERT OR REPLACE INTO tenant_settings VALUES ('t-off', 'rental_risk_alerts', '0', 0)")
+    conn.commit()
+    conn.close()
+    tenants = rp.risk_alert_enabled_tenants()
+    assert "t-on" in tenants
+    assert "t-off" not in tenants
+
+
+def test_risk_alerts_never_raises_on_missing_db(tmp_path, monkeypatch):
+    """A fresh DB without the risk table → clean empty result, never throws."""
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "risk6.sqlite"))
+    monkeypatch.setattr(rp, "load_settings", lambda tenant_id="": _risk_settings())
+    assert rp.evaluate_risk_alerts(tenant_id="t1") == []
+
+
+def test_list_route_carries_forecast_and_risk_alerts(rclient, monkeypatch):
+    """The /api/rentals payload ships difficulty_forecast + risk_alerts_fired."""
+    monkeypatch.setattr(_app_module._rental_perf, "compute_difficulty_forecast",
+                        lambda: {"available": True, "direction": "up",
+                                 "projected_change_pct": 12.0})
+    monkeypatch.setattr(_app_module._rental_perf, "evaluate_risk_alerts",
+                        lambda tenant_id="", concentration=None, worst_rigs=None:
+                        [{"severity": "WARN", "category": "rental_risk_rig",
+                          "message": "Rig #1 entrou no top-5 dos PIORES"}])
+    resp = rclient.get("/api/rentals")
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data["difficulty_forecast"]["projected_change_pct"] == 12.0
+    assert data["risk_alerts_fired"][0]["category"] == "rental_risk_rig"
