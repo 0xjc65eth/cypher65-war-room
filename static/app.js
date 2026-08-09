@@ -3706,7 +3706,7 @@ function renderAccount(acct) {
     if (meta) {
       // Honest label: the local ledger mixes renter spend with owner income
       // (same convention as the heatmap) — said out loud, not hidden.
-      meta.textContent = d.count + ' rigs com ≥' + (d.min_samples || 2) + ' amostras · EWMA · fail rate · volatilidade · gasto/renda (local ledger)';
+      meta.textContent = d.count + ' rigs com ≥' + (d.min_samples || 2) + ' amostras · EWMA · fail rate · volatilidade · gasto renter (local ledger)';
     }
     const list = document.getElementById('rentals-worst-list');
     if (!list) return;
@@ -4040,7 +4040,11 @@ function renderAccount(acct) {
     else if (_rentalsFilter === 'history') items = mrr.history || [];
     else if (_rentalsFilter === 'owner') items = mrr.owner || [];
     else if (_rentalsFilter === 'contracts') items = (braiins.contracts || []).map(c => ({
-      id: c.id, ended: false, provider: 'braiins',
+      // Ended contracts must render dimmed like MRR history rows (previously
+      // hardcoded false — every Braiins row looked 'active').
+      id: c.id,
+      ended: !!(c.ended_at) || /finish|complete|ended|done|cancel|expire/i.test(String(c.status || '')),
+      provider: 'braiins',
       rig: { name: 'Braiins contract', status: c.status, region: '' },
       hashrate_advertised_th: c.speed_limit_ph ? c.speed_limit_ph * 1000 : null,
       price_paid_btc: c.amount_sat != null ? c.amount_sat / 1e8 : null,

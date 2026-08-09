@@ -1967,3 +1967,95 @@ def test_list_route_carries_forecast_and_risk_alerts(rclient, monkeypatch):
     data = resp.get_json()
     assert data["difficulty_forecast"]["projected_change_pct"] == 12.0
     assert data["risk_alerts_fired"][0]["category"] == "rental_risk_rig"
+
+
+def test_risk_alerts_top_n_slices_precomputed_list(tmp_path, monkeypatch):
+    """evaluate_risk_alerts honors the tenant's top_n even when handed a
+    precomputed (wider) worst-rigs list from the panel — a rig ranked beyond
+    top_n must never fire, regardless of its danger score."""
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "risk_topn.sqlite"))
+    monkeypatch.setattr(rp, "_risk_alert_settings",
+                        lambda tenant_id="": {"enabled": True, "danger": 0.0,
+                                              "top_n": 2, "conc_pct": 99.0})
+    worst = {"worst": [
+        {"rig_id": "r1", "name": "R1", "danger_score": 80.0},
+        {"rig_id": "r2", "name": "R2", "danger_score": 70.0},
+        {"rig_id": "r3", "name": "R3", "danger_score": 60.0},  # ranked #3
+    ], "count": 3}
+    alerts = rp.evaluate_risk_alerts(tenant_id="t1", concentration=None,
+                                     worst_rigs=worst)
+    assert len(alerts) == 2
+    assert {a["value"] for a in alerts} == {"r1", "r2"}
+
+
+def test_portfolio_series_excludes_owner_income(tmp_path, monkeypatch):
+    """compute_portfolio_series 'spent' counts RENTER spend only — owner
+    rentals (rigs leased out = money RECEIVED) are excluded, never added."""
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "series_owner.sqlite"))
+    renter = _series_row("1", "2026-07-20 10:00:00 UTC", 5000)
+    owner_row = _series_row("2", "2026-07-21 10:00:00 UTC", 9000)
+    owner_row["bucket"] = "owner"
+    assert rp.save_rental_history([renter, owner_row], tenant_id="t-own") is True
+    series = rp.compute_portfolio_series(tenant_id="t-own", bucket="week")
+    assert series["totals"]["spent_sats"] == 5000  # 9000 owner income NOT counted
+    assert series["totals"]["rentals"] == 1
+
+
+def test_worst_rigs_and_heatmap_ignore_owner_rows(tmp_path, monkeypatch):
+    """The renter risk analytics (worst-rigs leaderboard + rig heatmap) must
+    ignore OWNER rentals — the operator's own rig under-delivering to renters
+    is income-side, not 'who burned me when I rented'."""
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "worst_owner.sqlite"))
+    bad1 = _reco_hist_row("r1", "rigA", "Rig A", 60, 100, "2026-07-20")
+    bad2 = _reco_hist_row("r2", "rigA", "Rig A", 55, 100, "2026-07-21")
+    owner_bad = _reco_hist_row("o1", "rigB", "Rig B", 30, 100, "2026-07-22")
+    owner_bad["bucket"] = "owner"
+    assert rp.save_rental_history([bad1, bad2, owner_bad], tenant_id="t-wo") is True
+    worst = rp.compute_worst_rigs(tenant_id="t-wo")
+    rig_ids = {w["rig_id"] for w in worst["worst"]}
+    assert "rigA" in rig_ids
+    assert "rigB" not in rig_ids  # owner-only rig never on the leaderboard
+    heat = rp.compute_rig_heatmap([], [], tenant_id="t-wo")
+    assert "Rig A" in {c["rig"] for c in heat}
+    assert "Rig B" not in {c["rig"] for c in heat}
+
+
+def test_save_rental_history_conflict_self_heals_bucket(tmp_path, monkeypatch):
+    """Re-ingesting a rental corrects a legacy mislabeled bucket — the ON
+    CONFLICT update must carry bucket=excluded.bucket so rows migrated with
+    the 'renter' default self-heal to 'owner' on the next panel load."""
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "bucket_heal.sqlite"))
+    row = _series_row("1", "2026-07-20 10:00:00 UTC", 5000)
+    row["bucket"] = "renter"  # legacy default applied by the ALTER migration
+    assert rp.save_rental_history([row], tenant_id="t-heal") is True
+    row["bucket"] = "owner"   # new ingest now marks owner rentals correctly
+    assert rp.save_rental_history([row], tenant_id="t-heal") is True
+    series = rp.compute_portfolio_series(tenant_id="t-heal", bucket="week")
+    assert series["totals"]["spent_sats"] == 0  # healed to 'owner' → excluded
+    assert series["totals"]["rentals"] == 0
+
+
+def test_market_trend_ignores_subfloor_glitch_rows(tmp_path, monkeypatch):
+    """fetch_market_trend must exclude legacy sub-floor rows (1e-8 parasite
+    glitch ≈ 0 sats/TH·h) — otherwise 'cheapest market' reads 0 and the
+    MARKET TIMING card misleads the operator."""
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "trend_floor.sqlite"))
+    from services.db import get_db
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("""CREATE TABLE IF NOT EXISTS hashrate_market_history (
+        ts INTEGER, provider TEXT, hashrate REAL,
+        price_per_th_day REAL, duration_days REAL, fee_pct REAL,
+        algorithm TEXT, score REAL, raw_data TEXT)""")
+    now = int(__import__("time").time())
+    c.execute("INSERT INTO hashrate_market_history(ts,provider,hashrate,price_per_th_day,duration_days,fee_pct,algorithm,score,raw_data) "
+              "VALUES(?,?,?,?,?,?,?,?,?)", (now, "parasite", 1000.0, 1e-8, 1.0, 0.0, "sha256", 0.0, "{}"))
+    c.execute("INSERT INTO hashrate_market_history(ts,provider,hashrate,price_per_th_day,duration_days,fee_pct,algorithm,score,raw_data) "
+              "VALUES(?,?,?,?,?,?,?,?,?)", (now - 3600, "braiins", 1000.0, 5e-5, 1.0, 0.0, "sha256", 0.0, "{}"))
+    conn.commit()
+    conn.close()
+    trend = rp.fetch_market_trend(days=7)
+    assert trend["points"], "expected real-price points to survive"
+    for p in trend["points"]:
+        assert p["sats_per_thh"] > 1.0  # ~0.04 sats glitch must never appear
+    assert trend["summary"]["current_sats_per_thh"] > 1.0

@@ -342,6 +342,9 @@ class TestFetchParasiteOffer:
         )
 
     def test_success_returns_offer(self, monkeypatch):
+        """The fee-only pool estimate is mathematically sub-floor (~1e-8 BTC/
+        TH·day = ~0.04 sats/TH·h — ~1000× below real rental prices), so the
+        estimator now REJECTS it instead of polluting 'cheapest market'."""
         self._mock_parasite({
             "pool_hashrate": 6e20 * 0.01,  # 1% of network (~6 EH/s)
             "pool_workers": 1500,
@@ -350,14 +353,7 @@ class TestFetchParasiteOffer:
             "pool_status": "active",
         }, monkeypatch)
         offer = fetch_parasite_offer()
-        assert offer is not None
-        assert offer.provider == "parasite"
-        assert offer.algorithm == "sha256"
-        assert offer.fee_pct == 1.0
-        assert 1e-8 <= offer.price_per_th_day < 1e-4  # realistic range (can be exactly 1e-8)
-        assert offer.meta["pool_workers"] == 1500
-        assert offer.meta["pool_users"] == 750
-        assert offer.meta["label"] == "Parasite Pool (own hardware required)"
+        assert offer is None  # fee-only model can never reach a plausible price
 
     def test_error_data_returns_none(self, monkeypatch):
         self._mock_parasite({"error": "API not available"}, monkeypatch)
@@ -387,16 +383,16 @@ class TestFetchParasiteOffer:
         assert offer is None
 
     def test_meta_disclaimer_set(self, monkeypatch):
+        """Same sub-floor rejection as test_success_returns_offer — the
+        disclaimer path is unreachable while the fee-only price stays below
+        the plausible floor."""
         self._mock_parasite({
             "pool_hashrate": 6e20 * 0.005,
             "pool_workers": 100,
             "pool_users": 50,
             "pool_status": "active",
         }, monkeypatch)
-        offer = fetch_parasite_offer()
-        assert offer is not None
-        assert "disclaimer" in offer.meta
-        assert "rental marketplace" in offer.meta["disclaimer"]
+        assert fetch_parasite_offer() is None
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -561,8 +557,10 @@ class TestFetchAllOffers:
 
         offers = fetch_all_offers()
         providers = {o.provider for o in offers}
-        assert providers == {"braiins", "mrr", "nicehash", "parasite"}
-        assert len(offers) == 4
+        # Parasite's fee-only estimate is sub-floor (~1e-8) → rejected, so the
+        # aggregation carries only real marketplace quotes.
+        assert providers == {"braiins", "mrr", "nicehash"}
+        assert len(offers) == 3
 
     def test_isolates_failures(self, monkeypatch):
         """One provider fails → others still appear."""
@@ -952,7 +950,9 @@ class TestPersistence:
         yield c
         c.close()
 
-    def _offer(self, provider="braiins", price=5e-10):
+    def _offer(self, provider="braiins", price=5e-5):
+        # 5e-5 BTC/TH/day ≈ 208 sats/TH·h — a realistic SHA-256 quote above
+        # the MIN_PLAUSIBLE_PRICE_BTC_TH_DAY floor.
         return NormalizedOffer(
             provider=provider, hashrate=1000.0,
             price_per_th_day=price, duration_days=1.0,
@@ -976,9 +976,9 @@ class TestPersistence:
 
     def test_persist_multiple_offers(self, conn):
         offers = [
-            self._offer("braiins", 5e-10),
-            self._offer("mrr", 3e-10),
-            self._offer("nicehash", 4e-10),
+            self._offer("braiins", 6e-5),
+            self._offer("mrr", 4e-5),
+            self._offer("nicehash", 5e-5),
         ]
         persist_market_history(conn, offers)
         c = conn.cursor()
@@ -995,7 +995,7 @@ class TestPersistence:
 
     def test_fetch_market_history_returns_recent_first(self, conn):
         persist_market_history(conn, [
-            self._offer("mrr", 3e-10),
+            self._offer("mrr", 5e-5),
         ])
         # Manually add an older row with a different TS
         c = conn.cursor()
@@ -1004,7 +1004,7 @@ class TestPersistence:
             "INSERT INTO hashrate_market_history "
             "(ts, provider, hashrate, price_per_th_day, duration_days, fee_pct, algorithm, score, raw_data) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (old_ts, "braiins", 1000.0, 5e-10, 1.0, 0.0, "sha256", 10.0, "{}"),
+            (old_ts, "braiins", 1000.0, 5e-5, 1.0, 0.0, "sha256", 10.0, "{}"),
         )
         conn.commit()
 
@@ -1014,7 +1014,7 @@ class TestPersistence:
         assert rows[0]["provider"] != "braiins" or rows[0]["ts"] > rows[1]["ts"]
 
     def test_fetch_respects_limit(self, conn):
-        offers = [self._offer(f"p{i}", 1e-9) for i in range(5)]
+        offers = [self._offer(f"p{i}", 5e-5) for i in range(5)]
         persist_market_history(conn, offers)
         rows = fetch_market_history(conn, limit=3)
         assert len(rows) == 3
@@ -1025,3 +1025,29 @@ class TestPersistence:
         expected = {"ts", "provider", "hashrate", "price_per_th_day",
                     "duration_days", "fee_pct", "algorithm", "score", "raw_data"}
         assert set(row.keys()) == expected
+
+    def test_persist_skips_subfloor_offers(self, conn):
+        """Offers below the plausible floor (the old 1e-8 parasite glitch) are
+        never persisted — they would zero out 'cheapest market' analytics."""
+        persist_market_history(conn, [self._offer("parasite", 1e-8)])
+        c = conn.cursor()
+        c.execute("SELECT COUNT(*) as cnt FROM hashrate_market_history")
+        assert c.fetchone()["cnt"] == 0
+
+    def test_purge_removes_legacy_glitch_rows(self, conn):
+        """The one-time purge deletes pre-existing sub-floor rows from the
+        table so every consumer (market charts, rentals timing) sees real
+        prices only."""
+        c = conn.cursor()
+        c.execute(
+            "INSERT INTO hashrate_market_history "
+            "(ts, provider, hashrate, price_per_th_day, duration_days, fee_pct, algorithm, score, raw_data) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (1, "parasite", 1000.0, 1e-8, 1.0, 0.0, "sha256", 0.0, "{}"),
+        )
+        conn.commit()
+        import services.hashrate_market as _m
+        _m._purged_glitch_history = False  # reset the one-time gate for this test
+        persist_market_history(conn, [self._offer()])  # triggers the purge
+        c.execute("SELECT COUNT(*) as cnt FROM hashrate_market_history WHERE price_per_th_day < 1e-7")
+        assert c.fetchone()["cnt"] == 0

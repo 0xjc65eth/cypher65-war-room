@@ -391,7 +391,9 @@ class TestFetchParasiteOffer:
     """Tests for fetch_parasite_offer() — pool fee-based mining as rental."""
 
     def test_success_with_pool_data(self):
-        """When pool data is available, return NormalizedOffer based on fee structure."""
+        """Pool data available, but the fee-only price model is mathematically
+        sub-floor (~0.04 sats/TH·h — ~1000× below real rentals), so the
+        estimate is REJECTED rather than polluting 'cheapest market'."""
         with patch("agents.solo_mining_advisor.tools.get_parasite_pool_stats") as mock_pool:
             mock_pool.return_value = {
                 "pool_hashrate": "161.6",  # PH/s
@@ -399,10 +401,7 @@ class TestFetchParasiteOffer:
                 "pool_fee_pct": 0.0,
                 "pool_name": "parasite.space",
             }
-            result = fetch_parasite_offer()
-            assert result is not None
-            assert result.provider == "parasite"
-            assert result.duration_days == 1.0
+            assert fetch_parasite_offer() is None
 
     def test_no_pool_data_returns_none(self):
         """When pool stats fetch fails, return None."""

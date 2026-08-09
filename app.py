@@ -53,6 +53,7 @@ from routes.device_control import device_control_bp
 from services.probability_engine import register_probability_routes
 from services.hashrate_market import (
     PH_TO_TH,
+    MIN_PLAUSIBLE_PRICE_BTC_TH_DAY as _MIN_PLAUSIBLE_PRICE,
     fetch_all_offers as _fetch_all_offers,
     score_offer as _score_offer,
     persist_market_history as _persist_market_history,
@@ -3820,8 +3821,9 @@ def _do_poll():
             _offers = (_HASHRATE_MARKET_CACHE.get("offers") or [])
             _real = [o for o in _offers
                      if not getattr(o, "estimated", False)
-                     and (getattr(o, "price_per_th_day", 0) or 0) > 0]
-            _pool = _real or [o for o in _offers if (getattr(o, "price_per_th_day", 0) or 0) > 0]
+                     and (getattr(o, "price_per_th_day", 0) or 0) >= _MIN_PLAUSIBLE_PRICE]
+            _pool = _real or [o for o in _offers
+                              if (getattr(o, "price_per_th_day", 0) or 0) >= _MIN_PLAUSIBLE_PRICE]
             if _pool:
                 lender_market_rate_btc = min(o.price_per_th_day for o in _pool)
         except Exception:
@@ -5695,9 +5697,9 @@ def api_market_history():
         c.execute(
             """SELECT ts, provider, hashrate, price_per_th_day, score
                FROM hashrate_market_history
-               WHERE ts >= ?
+               WHERE ts >= ? AND (algorithm != 'sha256' OR price_per_th_day >= ?)
                ORDER BY ts ASC""",
-            (cutoff,),
+            (cutoff, _MIN_PLAUSIBLE_PRICE),
         )
         rows = c.fetchall()
         conn.close()
@@ -5737,9 +5739,9 @@ def api_market_trend():
         c.execute(
             """SELECT ts, provider, price_per_th_day, score
                FROM hashrate_market_history
-               WHERE ts >= ?
+               WHERE ts >= ? AND (algorithm != 'sha256' OR price_per_th_day >= ?)
                ORDER BY ts ASC""",
-            (cutoff,),
+            (cutoff, _MIN_PLAUSIBLE_PRICE),
         )
         rows = c.fetchall()
         conn.close()

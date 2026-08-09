@@ -920,7 +920,10 @@ def create_braiins_bid(
 # Shared live market fetcher (cheapest SHA-256 rental price). Imported at
 # module level so tests can monkeypatch it; hashrate_market never imports
 # this module, so there is no cycle.
-from services.hashrate_market import fetch_all_offers as _fetch_market_offers  # noqa: E402
+from services.hashrate_market import (  # noqa: E402
+    fetch_all_offers as _fetch_market_offers,
+    MIN_PLAUSIBLE_PRICE_BTC_TH_DAY as _MIN_PLAUSIBLE_PRICE,
+)
 
 
 def fetch_market_reference() -> Dict[str, Any]:
@@ -935,12 +938,13 @@ def fetch_market_reference() -> Dict[str, Any]:
     """
     try:
         offers = _fetch_market_offers()
-        # Positive prices only — a 0/negative quote is a provider glitch and
-        # must never feed the sats/TH/h comparison.
+        # Plausible prices only — a sub-floor quote (estimation glitch ≈ 0
+        # sats/TH·h) must never feed the sats/TH/h comparison, or 'vs market'
+        # reads as 'everything is 100% overpriced'.
         live = [o for o in offers if not getattr(o, "estimated", False)
-                and (getattr(o, "price_per_th_day", 0) or 0) > 0]
+                and (getattr(o, "price_per_th_day", 0) or 0) >= _MIN_PLAUSIBLE_PRICE]
         if not live:
-            live = [o for o in offers if (getattr(o, "price_per_th_day", 0) or 0) > 0]
+            live = [o for o in offers if (getattr(o, "price_per_th_day", 0) or 0) >= _MIN_PLAUSIBLE_PRICE]
         if not live:
             return {"available": False}
         best = min(live, key=lambda o: o.price_per_th_day)
@@ -1144,7 +1148,10 @@ def compute_provider_rankings(active: List[Dict], history: List[Dict],
     def _bucket_rows(buckets: List[List[Dict]]) -> List[Dict]:
         return [r for b in buckets for r in b if isinstance(r, dict)]
 
-    mrr_rows = _bucket_rows([active, history, owner])
+    # Renter buckets only: the ranking answers 'where does the MARKET deliver
+    # best?' — owner rows measure the operator's OWN rigs leased out (income
+    # side), which must never distort delivery/cost/P·L of rented hashpower.
+    mrr_rows = _bucket_rows([active, history])
     out: List[Dict[str, Any]] = []
 
     for provider, label, rows in (("mrr", "MRR", mrr_rows),):
@@ -1206,7 +1213,7 @@ def compute_rig_heatmap(history: List[Dict], owner: List[Dict],
         conn = get_db()
         c = conn.cursor()
         c.execute("SELECT rig_name, percent, cost_sats_per_thh, paid_sats "
-                  "FROM rental_history WHERE tenant_id=? AND rig_name != ''",
+                  "FROM rental_history WHERE tenant_id=? AND rig_name != '' AND bucket='renter'",
                   (tenant_id or "",))
         for row in c.fetchall():
             name = str(row["rig_name"] or "").strip()
@@ -1313,7 +1320,7 @@ def compute_worst_rigs(tenant_id: str = "", limit: int = 8) -> Dict[str, Any]:
         c = conn.cursor()
         c.execute(
             "SELECT rig_id, rig_name, percent, start, paid_sats, delivered_thh, created_ts "
-            "FROM rental_history WHERE tenant_id=? AND rig_id != ''",
+            "FROM rental_history WHERE tenant_id=? AND rig_id != '' AND bucket='renter'",
             (tenant_id or "",))
         rows = c.fetchall()
         conn.close()
@@ -1675,7 +1682,9 @@ def evaluate_risk_alerts(tenant_id: str = "",
     try:
         if worst_rigs is None:
             worst_rigs = compute_worst_rigs(tenant_id=tenant_id, limit=cfg["top_n"])
-        for w in worst_rigs.get("worst", []):
+        # Honor the tenant's top-N even when a precomputed (wider) list was
+        # passed in from the panel — a rig ranked beyond top_n must not fire.
+        for w in worst_rigs.get("worst", [])[:cfg["top_n"]]:
             danger = _num(w.get("danger_score"))
             if danger is None or danger < cfg["danger"]:
                 continue
@@ -2049,6 +2058,7 @@ def _ensure_history_table() -> None:
         c.execute("""CREATE TABLE IF NOT EXISTS rental_history (
             tenant_id TEXT NOT NULL DEFAULT '',
             provider TEXT NOT NULL DEFAULT 'mrr',
+            bucket TEXT NOT NULL DEFAULT 'renter',
             rental_id TEXT NOT NULL,
             rig_id TEXT NOT NULL DEFAULT '',
             rig_name TEXT NOT NULL DEFAULT '',
@@ -2059,14 +2069,28 @@ def _ensure_history_table() -> None:
             created_ts INTEGER,
             PRIMARY KEY (tenant_id, provider, rental_id)
         )""")
+        # Migration: tables created before the owner/renter split lack the
+        # bucket column — legacy rows default to 'renter' (behavior preserved;
+        # new ingests mark owner rentals correctly).
+        try:
+            cols = {row[1] for row in c.execute("PRAGMA table_info(rental_history)").fetchall()}
+            if "bucket" not in cols:
+                c.execute("ALTER TABLE rental_history ADD COLUMN bucket TEXT NOT NULL DEFAULT 'renter'")
+        except Exception:
+            pass
         conn.commit()
         conn.close()
     except Exception as e:
         log.warning("[rental_performance] history table ensure failed: %s", e)
 
 
-def _rental_to_history_row(r: Dict[str, Any], provider: str = "mrr") -> Dict[str, Any]:
-    """Normalized rental dict → rental_history row (shared by ingest + fetch)."""
+def _rental_to_history_row(r: Dict[str, Any], provider: str = "mrr",
+                           bucket: str = "renter") -> Dict[str, Any]:
+    """Normalized rental dict → rental_history row (shared by ingest + fetch).
+
+    ``bucket`` separates RENTER spend (rentals the operator paid for) from
+    OWNER income (rigs leased OUT) — analytics that answer 'how much did I
+    spend?' must never count money received."""
     rig = r.get("rig") or {}
     avg_th = r.get("hashrate_average_th")
     adv_th = r.get("hashrate_advertised_th")
@@ -2081,6 +2105,7 @@ def _rental_to_history_row(r: Dict[str, Any], provider: str = "mrr") -> Dict[str
     cost = (paid_sats / delivered_thh) if (paid_sats is not None and delivered_thh) else None
     return {
         "provider": provider,
+        "bucket": bucket,
         "rental_id": str(r.get("id") or ""),
         "rig_id": str(rig.get("id") or "") if rig.get("id") is not None else "",
         "rig_name": str(rig.get("name") or ""),
@@ -2108,11 +2133,13 @@ def save_rental_history(rows: List[Dict], tenant_id: str = "") -> bool:
         for r in rows:
             c.execute(
                 """INSERT INTO rental_history
-                   (tenant_id, provider, rental_id, rig_id, rig_name, start, end,
-                    percent, avg_th, advertised_th, cost_sats_per_thh,
-                    length_hours, delivered_thh, paid_sats, created_ts)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                   (tenant_id, provider, bucket, rental_id, rig_id, rig_name,
+                    start, end, percent, avg_th, advertised_th,
+                    cost_sats_per_thh, length_hours, delivered_thh,
+                    paid_sats, created_ts)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                    ON CONFLICT(tenant_id, provider, rental_id) DO UPDATE SET
+                     bucket=excluded.bucket,  -- self-heals legacy owner rows mislabeled 'renter'
                      rig_id=excluded.rig_id, rig_name=excluded.rig_name,
                      start=excluded.start, end=excluded.end,
                      percent=excluded.percent, avg_th=excluded.avg_th,
@@ -2122,11 +2149,11 @@ def save_rental_history(rows: List[Dict], tenant_id: str = "") -> bool:
                      delivered_thh=excluded.delivered_thh,
                      paid_sats=excluded.paid_sats,
                      created_ts=excluded.created_ts""",
-                (tenant_id or "", r["provider"], r["rental_id"], r["rig_id"],
-                 r["rig_name"], r.get("start"), r.get("end"), r["percent"],
-                 r["avg_th"], r["advertised_th"], r.get("cost_sats_per_thh"),
-                 r.get("length_hours"), r.get("delivered_thh"),
-                 r.get("paid_sats"), ts),
+                (tenant_id or "", r["provider"], r.get("bucket", "renter"),
+                 r["rental_id"], r["rig_id"], r["rig_name"], r.get("start"),
+                 r.get("end"), r["percent"], r["avg_th"], r["advertised_th"],
+                 r.get("cost_sats_per_thh"), r.get("length_hours"),
+                 r.get("delivered_thh"), r.get("paid_sats"), ts),
             )
         conn.commit()
         return True
@@ -2150,6 +2177,10 @@ def get_local_rig_history(rig_id: Any = None, rig_name: str = "",
         c = conn.cursor()
         q = "SELECT * FROM rental_history WHERE tenant_id=?"
         args: List[Any] = [tenant_id or ""]
+        # Renter-only: the track record answers 'should I rent this rig again?'
+        # — owner rows (my own rig leased out) are income-side and must not
+        # pollute it. Matches the remote fallback (rtype='renter').
+        q += " AND bucket='renter'"
         wanted_id = str(rig_id) if rig_id is not None else None
         wanted_name = str(rig_name or "").strip().lower()
         if wanted_id:
@@ -2182,10 +2213,14 @@ def ingest_rentals(active: List[Dict], history: List[Dict], owner: List[Dict],
     Called by /api/rentals once per fetch — the same-rig track record then
     builds up with zero extra provider calls on detail clicks."""
     rows: List[Dict] = []
-    for bucket in (active, history, owner):
-        for r in bucket:
+    # Owner rentals are the operator's rigs leased OUT — money RECEIVED. They
+    # must never be counted as spend by the renter analytics (portfolio
+    # series, worst-rigs, heatmap), so the bucket column separates them.
+    for _bname, _bucket in (("renter", active), ("renter", history),
+                            ("owner", owner)):
+        for r in _bucket:
             if isinstance(r, dict):
-                rows.append(_rental_to_history_row(r, provider="mrr"))
+                rows.append(_rental_to_history_row(r, provider="mrr", bucket=_bname))
     for c in contracts or []:
         speed_limit_ph = c.get("speed_limit_ph")
         limit_th = (speed_limit_ph * PH_TO_TH) if speed_limit_ph is not None else None
@@ -2212,7 +2247,9 @@ def _parse_start_ts(value) -> Optional[float]:
         return None
     for fmt in ("%Y-%m-%d %H:%M:%S UTC", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
         try:
-            return _dt.datetime.strptime(s, fmt).timestamp()
+            # MRR/RFC3339 strings are UTC — parse as UTC-aware so weekly
+            # bucketing never shifts by the server's local offset.
+            return _dt.datetime.strptime(s, fmt).replace(tzinfo=_dt.timezone.utc).timestamp()
         except ValueError:
             continue
     try:
@@ -2246,7 +2283,7 @@ def series_bucket_rentals(tenant_id: str = "", bucket: str = "week",
     try:
         conn = get_db()
         c = conn.cursor()
-        c.execute("SELECT * FROM rental_history WHERE tenant_id=?", (tenant_id or "",))
+        c.execute("SELECT * FROM rental_history WHERE tenant_id=? AND bucket='renter'", (tenant_id or "",))
         rows = c.fetchall()
         conn.close()
     except Exception as e:
@@ -2301,7 +2338,7 @@ def compute_portfolio_series(tenant_id: str = "", bucket: str = "week",
     try:
         conn = get_db()
         c = conn.cursor()
-        c.execute("SELECT * FROM rental_history WHERE tenant_id=?", (tenant_id or "",))
+        c.execute("SELECT * FROM rental_history WHERE tenant_id=? AND bucket='renter'", (tenant_id or "",))
         rows = c.fetchall()
         conn.close()
     except Exception as e:
@@ -2448,7 +2485,8 @@ def build_rental_recommendations(tenant_id: str = "",
         c = conn.cursor()
         c.execute(
             "SELECT rig_id, rig_name, percent, cost_sats_per_thh, start "
-            "FROM rental_history WHERE tenant_id=? AND provider='mrr' AND rig_id!=''",
+            "FROM rental_history WHERE tenant_id=? AND provider='mrr' AND rig_id!='' "
+            "AND bucket='renter'",
             (tenant_id or "",))
         rows = c.fetchall()
         conn.close()
@@ -2543,9 +2581,9 @@ def fetch_market_trend(days: int = 30) -> Dict[str, Any]:
         c.execute(
             """SELECT date(ts,'unixepoch') AS day, MIN(price_per_th_day) AS best_btc
                FROM hashrate_market_history
-               WHERE algorithm='sha256' AND price_per_th_day > 0 AND ts >= ?
+               WHERE algorithm='sha256' AND price_per_th_day >= ? AND ts >= ?
                GROUP BY day ORDER BY day ASC""",
-            (int(time.time()) - days * 86400,))
+            (_MIN_PLAUSIBLE_PRICE, int(time.time()) - days * 86400))
         rows = c.fetchall()
         conn.close()
     except Exception as e:

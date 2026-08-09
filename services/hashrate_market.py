@@ -25,6 +25,11 @@ BLOCKS_PER_DAY = 144
 DEFAULT_NETWORK_HASHRATE = 6e20  # ~600 EH/s fallback
 DEFAULT_RENTAL_HASHRATE_TH = 1000.0  # 1 PH — used when provider does not expose size
 PH_TO_TH = 1000.0  # 1 PH = 1000 TH — per-PH/day → per-TH/day conversion
+# Plausible floor for a SHA-256 rental quote (~0.42 sats/TH·h). Anything
+# below is an estimation glitch (e.g. giant-pool fee math underflowing to
+# ~1e-9 BTC/TH·day) — never emit, persist or show it, or 'cheapest market'
+# analytics collapse to 0 sats/TH·h.
+MIN_PLAUSIBLE_PRICE_BTC_TH_DAY = 1e-7
 
 
 @dataclass
@@ -146,11 +151,17 @@ def fetch_nicehash_offer() -> Optional[NormalizedOffer]:
 
 
 def fetch_parasite_offer(network_hashrate: Optional[float] = None) -> Optional[NormalizedOffer]:
-    """Fetch a 'refinery' rental offer from Parasite Space pool.
-    Parasite is a mining pool (not a marketplace), but we model their
-    pool-fee-based mining as a 'rental' where cost = pool fee + opportunity cost.
-    The price is estimated from the pool's share of network and fee structure."""
-    from agents.solo_mining_advisor.tools import get_parasite_pool_stats
+    """Parasite 'refinery' estimate — RETIRED (always None).
+
+    The fee-only model is mathematically sub-floor: price collapses to
+    4.5e12 / net_hr (the pool_hr term cancels), i.e. ~7.5e-9 BTC/TH·day
+    ≈ 0.04 sats/TH·h — ~1000× below real rental prices. Every such quote
+    would be rejected by MIN_PLAUSIBLE_PRICE_BTC_TH_DAY anyway, so calling
+    the pool API every market poll only wastes a request on a guaranteed
+    discard. Short-circuit here; the aggregator skips None."""
+    return None
+    # fmt: off
+    from agents.solo_mining_advisor.tools import get_parasite_pool_stats  # noqa: F401
     try:
         stats = get_parasite_pool_stats()
         if not stats or stats.get("error") or stats.get("pool_status") == "empty":
@@ -171,12 +182,17 @@ def fetch_parasite_offer(network_hashrate: Optional[float] = None) -> Optional[N
 
         # Price = pool fee (1%) of daily revenue per TH/day
         fee_pct = 1.0
-        price_per_th_day = (daily_pool_revenue_btc * (fee_pct / 100.0)) / (pool_hr_hs / 1e12) if pool_hr_hs > 0 else 1e-8
+        price_per_th_day = (daily_pool_revenue_btc * (fee_pct / 100.0)) / (pool_hr_hs / 1e12) if pool_hr_hs > 0 else 0.0
+        # A sub-floor quote is a glitch of the estimation, not real hashpower —
+        # never emit it (it would be persisted as 'cheapest' and zero out the
+        # market-timing analytics in the rentals panel).
+        if price_per_th_day < MIN_PLAUSIBLE_PRICE_BTC_TH_DAY:
+            return None
 
         return NormalizedOffer(
             provider="parasite",
             hashrate=pool_hr_hs / 1e12 if pool_hr_hs > 0 else DEFAULT_RENTAL_HASHRATE_TH,
-            price_per_th_day=max(price_per_th_day, 1e-8),
+            price_per_th_day=price_per_th_day,
             duration_days=1.0,
             fee_pct=fee_pct,
             algorithm="sha256",
@@ -387,6 +403,28 @@ def _empty_metrics() -> Dict[str, Any]:
 #  Persistence
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+_purged_glitch_history = False  # one-time legacy cleanup per process
+
+
+def _purge_glitch_history(conn: Any) -> None:
+    """One-time cleanup of legacy sub-floor (glitch) rows written by the old
+    parasite estimator (1e-8 BTC/TH·day). Deleting them makes every consumer
+    (rentals market timing, Market module charts) show REAL prices only."""
+    global _purged_glitch_history
+    if _purged_glitch_history:
+        return
+    _purged_glitch_history = True
+    try:
+        c = conn.cursor()
+        c.execute(
+            "DELETE FROM hashrate_market_history "
+            "WHERE algorithm='sha256' AND price_per_th_day > 0 AND price_per_th_day < ?",
+            (MIN_PLAUSIBLE_PRICE_BTC_TH_DAY,))
+        conn.commit()
+    except Exception:
+        pass
+
+
 def persist_market_history(
     conn: Any,
     offers: List[NormalizedOffer],
@@ -396,11 +434,17 @@ def persist_market_history(
     ``conn`` is an open sqlite3 connection with row_factory set.
     """
     if not offers:
+        _purge_glitch_history(conn)
         return
 
     c = conn.cursor()
     ts = int(time.time())
+    _purge_glitch_history(conn)
     for offer in offers:
+        # sha256-only floor: scrypt and other algorithms have legitimately
+        # cheaper per-TH prices and must never be filtered.
+        if offer.algorithm == "sha256" and offer.price_per_th_day < MIN_PLAUSIBLE_PRICE_BTC_TH_DAY:
+            continue  # glitch floor — never pollute the history table
         metrics = compute_metrics(offer)
         c.execute(
             """INSERT INTO hashrate_market_history
@@ -429,9 +473,10 @@ def fetch_market_history(conn: Any, limit: int = 100) -> List[Dict[str, Any]]:
         """SELECT ts, provider, hashrate, price_per_th_day, duration_days,
                   fee_pct, algorithm, score, raw_data
            FROM hashrate_market_history
+           WHERE (algorithm != 'sha256' OR price_per_th_day >= ?)
            ORDER BY ts DESC, provider ASC
            LIMIT ?""",
-        (limit,),
+        (MIN_PLAUSIBLE_PRICE_BTC_TH_DAY, limit),
     )
     rows = []
     for r in c.fetchall():
