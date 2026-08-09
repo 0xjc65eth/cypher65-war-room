@@ -3094,6 +3094,7 @@ function renderAccount(acct) {
   let _rentalsFilter = 'active';
   let _rentalsAutoTabbed = false;  // UX: auto-lands on the first tab that has data
   let _rentalsDetailChart = null;
+  let _rentalsRigChart = null;     // mini bar chart of same-rig % history
 
   function _setRentalsFilter(name) {
     _rentalsFilter = name;
@@ -3106,6 +3107,7 @@ function renderAccount(acct) {
   // Unknown units (e.g. raw 'hash') return null: an honest '—' beats a
   // nonsense astronomical number in the AVG/ADVERTISED cell.
   function _mrToTh(v, unit) {
+    if (v === null || v === undefined || v === '') return null;
     const n = Number(v);
     if (!isFinite(n)) return null;
     const u = String(unit || '').toLowerCase();
@@ -3209,7 +3211,10 @@ function renderAccount(acct) {
     const _stripVal = (cardId, value, auth, err) => {
       const card = el(cardId);
       if (!card) return;
-      if (auth) {
+      // A configured-but-rejected key (401/403) is an ERROR, not a missing
+      // credential — show ⚠ with the reason so the user fixes the token.
+      const rejected = /rejected|401|403|unauthor|forbidden/i.test(String(err || ''));
+      if (auth && !rejected) {
         card.textContent = '🔑';
         card.title = 'credentials missing — configure in Settings (⚙)';
       } else if (err) {
@@ -3240,13 +3245,20 @@ function renderAccount(acct) {
     if (!items.length) {
       const needsAuth = _rentalsFilter === 'contracts' ? braiins.needs_auth : mrr.needs_auth;
       const errMsg = _rentalsFilter === 'contracts' ? braiins.error : mrr.error;
+      // "Key rejected" (401/403 with a CONFIGURED key) is NOT the same as
+      // "credentials missing" — surface the real reason so the user knows
+      // to fix the token, not just add one.
+      const rejected = /rejected|401|403|unauthor|forbidden/i.test(String(errMsg || ''));
+      const title = rejected ? 'API key rejected' : (needsAuth ? 'Credentials required' : (errMsg ? 'Provider error' : 'No rentals'));
       listEl.innerHTML = '<div class="empty-state" style="grid-column:1/-1;border:none">' +
-        '<div class="empty-state__icon">⛁</div>' +
-        '<div class="empty-state__title">' + (needsAuth ? 'Credentials required' : (errMsg ? 'Provider error' : 'No rentals')) + '</div>' +
-        '<div class="empty-state__desc">' + (needsAuth
-          ? (_rentalsFilter === 'contracts' ? 'Add your Braiins Hashpower owner token to list contracts — where to get it: hashpower.braiins.com → API Tokens.' : 'Add your MiningRigRentals API key + secret to see history & performance — get them at miningrigrentals.com → My Account → API Access.')
-          : (errMsg ? escapeHtml(errMsg) : 'No ' + _rentalsFilter + ' rentals on this account')) + '</div>' +
-        (needsAuth ? '<button type="button" class="btn btn--primary btn--mini" id="rentals-open-settings" style="margin-top:8px">⚙ OPEN SETTINGS</button>' : '') +
+        '<div class="empty-state__icon">' + (rejected ? '🔑' : '⛁') + '</div>' +
+        '<div class="empty-state__title">' + title + '</div>' +
+        '<div class="empty-state__desc">' + (rejected
+          ? 'A chave está configurada, mas a API a rejeitou: ' + escapeHtml(String(errMsg)) + '. Gere um novo owner token em hashpower.braiins.com e atualize no Settings (⚙).'
+          : (needsAuth
+            ? (_rentalsFilter === 'contracts' ? 'Add your Braiins Hashpower owner token to list contracts — where to get it: hashpower.braiins.com → API Tokens.' : 'Add your MiningRigRentals API key + secret to see history & performance — get them at miningrigrentals.com → My Account → API Access.')
+            : (errMsg ? escapeHtml(errMsg) : 'No ' + _rentalsFilter + ' rentals on this account'))) + '</div>' +
+        (needsAuth || rejected ? '<button type="button" class="btn btn--primary btn--mini" id="rentals-open-settings" style="margin-top:8px">⚙ OPEN SETTINGS</button>' : '') +
         '</div>';
       const cta = document.getElementById('rentals-open-settings');
       if (cta) cta.addEventListener('click', function() { openSettingsModal(); });
@@ -3259,12 +3271,29 @@ function renderAccount(acct) {
     const panel = document.getElementById('rentals-detail');
     if (!panel) return;
     try {
-      const r = await fetch('/api/rentals/detail?provider=' + encodeURIComponent(provider) + '&id=' + encodeURIComponent(id));
+      // Braiins: the contract's static fields are already in the list payload
+      // — send them so the backend skips re-probing the list (detail needs
+      // only the speed series; faster on mobile and fewer API calls).
+      let body = null;
+      let url = '/api/rentals/detail?provider=' + encodeURIComponent(provider) + '&id=' + encodeURIComponent(id);
+      if (provider === 'braiins') {
+        const braiins = (_rentalsData && _rentalsData.braiins) || {};
+        const contract = (braiins.contracts || []).find(c => String(c.id) === String(id));
+        body = JSON.stringify({ provider: 'braiins', id: id, contract: contract || {} });
+        url = '/api/rentals/detail';
+      }
+      const r = await fetch(url, {
+        method: body ? 'POST' : 'GET',
+        headers: body ? { 'Content-Type': 'application/json' } : undefined,
+        body: body,
+      });
       if (!r.ok) return;
       const data = await r.json();
       const d = data.detail || {};
       const g = data.graph || {};
       const lg = data.log || {};
+      const market = data.market || {};         // cheapest live price (sats/TH/h)
+      const rigHistory = data.rig_history || []; // same-rig past rentals
       const title = document.getElementById('rentals-detail-title');
       if (title) title.textContent = (provider === 'braiins' ? 'Braiins contract #' : 'MRR rental #') + id;
       const grid = document.getElementById('rentals-detail-grid');
@@ -3295,20 +3324,104 @@ function renderAccount(acct) {
         const paidSats = d.price && d.price.paid != null ? parseFloat(d.price.paid) * 1e8 : null;
         const costPerThHour = (paidSats != null && avgTh && lenH) ? paidSats / (avgTh * lenH) : null;
         const delivered = (avgTh && lenH) ? avgTh * lenH : null;
+        // Backend pre-computes analytics for BOTH providers (Braiins from the
+        // speed series, MRR from the raw detail) — prefer those so the banner
+        // renders even when the series is empty or sparse.
+        const perf = data.perf || d.perf || {};
+        const avgThFinal = perf.avg_th != null ? perf.avg_th : avgTh;
+        const pctFinal = perf.percent != null ? perf.percent : pct;
+        const costFinal = perf.cost_sats_per_thh != null ? perf.cost_sats_per_thh : costPerThHour;
+        const deliveredFinal = perf.delivered_thh != null ? perf.delivered_thh : delivered;
         let cls = '', verdict = '—';
-        if (pct != null) {
-          cls = pct >= 95 ? 'is-good' : (pct >= 80 ? 'is-warn' : 'is-bad');
-          verdict = pct.toFixed(1) + '% of advertised';
+        if (pctFinal != null) {
+          cls = pctFinal >= 95 ? 'is-good' : (pctFinal >= 80 ? 'is-warn' : 'is-bad');
+          verdict = pctFinal.toFixed(1) + '% of advertised';
+        }
+        // VS MARKET — effective cost vs the cheapest live rental price today
+        // (negative % = this rental was cheaper than renting again now).
+        let mktVal = '—', mktCls = '', mktTitle = '';
+        if (market.available && market.price_sats_per_thh != null && costFinal != null) {
+          const diff = ((costFinal - market.price_sats_per_thh) / market.price_sats_per_thh) * 100;
+          mktCls = diff <= 0 ? 'is-good' : 'is-bad';
+          mktVal = (diff <= 0 ? '−' : '+') + Math.abs(diff).toFixed(0) + '% vs mkt';
+          mktTitle = 'market ' + market.price_sats_per_thh.toFixed(2) + ' sats/TH/h (' + (market.provider || '') + ')';
         }
         const cells = [
           { l: 'PERFORMANCE', v: verdict, c: cls },
-          { l: 'AVG / ADVERTISED', v: avgTh ? fmt.hashrate(avgTh * 1e12) + ' / ' + fmt.hashrate((advTh || 0) * 1e12) : '—', c: '' },
-          { l: 'COST', v: costPerThHour != null ? costPerThHour.toFixed(2) + ' sats/TH/h' : '—', c: '' },
-          { l: 'DELIVERED', v: delivered != null ? delivered.toFixed(0) + ' TH·h' : '—', c: '' },
+          { l: 'AVG / ADVERTISED', v: avgThFinal ? fmt.hashrate(avgThFinal * 1e12) + ' / ' + fmt.hashrate((advTh || 0) * 1e12) : '—', c: '' },
+          { l: 'COST', v: costFinal != null ? costFinal.toFixed(2) + ' sats/TH/h' : '—', c: '' },
+          { l: 'DELIVERED', v: deliveredFinal != null ? deliveredFinal.toFixed(0) + ' TH·h' : '—', c: '' },
+          { l: 'VS MARKET', v: mktVal, c: mktCls, t: mktTitle },
         ];
         perfEl.innerHTML = cells.map(c =>
-          '<div class="rentals-perf__cell' + (c.c ? ' ' + c.c : '') + '"><span class="rentals-perf__label">' + c.l + '</span><strong>' + escapeHtml(String(c.v)) + '</strong></div>'
+          '<div class="rentals-perf__cell' + (c.c ? ' ' + c.c : '') + '"' + (c.t ? ' title="' + escapeHtml(c.t) + '"' : '') + '><span class="rentals-perf__label">' + c.l + '</span><strong>' + escapeHtml(String(c.v)) + '</strong></div>'
         ).join('');
+      }
+      // RIG TRACK RECORD — histórico de % por rig (same-rig past rentals) so
+      // the operator can judge this rig's consistency before renting again.
+      const rigEl = document.getElementById('rentals-detail-rig');
+      if (rigEl) {
+        if (!rigHistory.length) {
+          if (_rentalsRigChart) { _rentalsRigChart.destroy(); _rentalsRigChart = null; }
+          rigEl.hidden = true;
+        } else {
+          rigEl.hidden = false;
+          // Entries WITH a measured percent only — labels and bars must come
+          // from the SAME filtered list so null-percent rentals never shift
+          // a bar off its label.
+          const chartRows = rigHistory.filter(h => h.percent != null).slice(0, 8);
+          const pcts = chartRows.map(h => h.percent);
+          const avg = pcts.length ? pcts.reduce((a, b) => a + b, 0) / pcts.length : null;
+          const best = pcts.length ? Math.max.apply(null, pcts) : null;
+          const worst = pcts.length ? Math.min.apply(null, pcts) : null;
+          const rigName = (d.rig && d.rig.name) || '';
+          const rows = rigHistory.slice(0, 8).map(h => {
+            const p = h.percent;
+            const pCls = p == null ? '' : (p >= 95 ? 'is-good' : (p >= 80 ? 'is-warn' : 'is-bad'));
+            const pStr = p != null ? p.toFixed(1) + '%' : '—';
+            const costStr = h.cost_sats_per_thh != null ? Number(h.cost_sats_per_thh).toFixed(0) + ' st' : '—';
+            return '<div class="rentals-rig__row"><span class="rentals-rig__id">#' + escapeHtml(String(h.id)) + '</span>' +
+              '<span class="rentals-rig__date">' + escapeHtml(String(h.start || '—')) + '</span>' +
+              '<span class="rentals-rig__cost">' + escapeHtml(costStr) + '</span>' +
+              '<span class="rentals-rig__pct ' + pCls + '">' + escapeHtml(pStr) + '</span></div>';
+          }).join('');
+          rigEl.innerHTML =
+            '<div class="rentals-rig__head">RIG TRACK RECORD' +
+            (rigName ? ' · ' + escapeHtml(rigName) : '') +
+            ' <span class="rentals-rig__sum">' + rigHistory.length + ' prior · avg ' +
+            (avg != null ? avg.toFixed(1) + '%' : '—') +
+            (best != null ? ' · best ' + best.toFixed(1) + '%' : '') +
+            (worst != null ? ' · worst ' + worst.toFixed(1) + '%' : '') + '</span></div>' +
+            (pcts.length >= 2 ? '<div class="rentals-rig__chart"><canvas id="rentals-rig-chart"></canvas></div>' : '') +
+            '<div class="rentals-rig__rows">' + rows + '</div>';
+          // Mini bar chart of % per prior rental (green/amber/red by band).
+          if (pcts.length >= 2 && typeof Chart !== 'undefined') {
+            const c2 = document.getElementById('rentals-rig-chart');
+            if (c2) {
+              if (_rentalsRigChart) { _rentalsRigChart.destroy(); _rentalsRigChart = null; }
+              _rentalsRigChart = new Chart(c2.getContext('2d'), {
+                type: 'bar',
+                data: {
+                  labels: chartRows.map(h => '#' + h.id),
+                  datasets: [{
+                    label: '% of advertised',
+                    data: pcts,
+                    backgroundColor: pcts.map(p => p >= 95 ? 'rgba(0,200,83,0.55)' : (p >= 80 ? 'rgba(255,160,0,0.55)' : 'rgba(255,23,68,0.55)')),
+                    borderWidth: 0,
+                  }]
+                },
+                options: {
+                  responsive: true, maintainAspectRatio: false,
+                  plugins: { legend: { display: false } },
+                  scales: {
+                    y: { min: 0, max: 110, ticks: { color: '#5E5952', font: { size: 8 }, callback: function (v) { return v + '%'; } }, grid: { color: 'rgba(94,89,82,0.12)' } },
+                    x: { ticks: { color: '#5E5952', font: { size: 8 } }, grid: { display: false } }
+                  }
+                }
+              });
+            }
+          }
+        }
       }
       // Graph
       const bars = g.chartdata && g.chartdata.bars ? g.chartdata.bars : null;
@@ -3329,7 +3442,14 @@ function renderAccount(acct) {
             // Braiins contract speed comes in PH/s — normalize to TH/s so the
             // dataset matches the MRR bars (both plotted as hashrate TH/s).
             g.points.slice(0, 120).forEach(p => {
-              labels.push(p.ts ? new Date(p.ts * 1000).toLocaleTimeString() : '');
+              // Accept seconds OR millisecond unix timestamps.
+              let t = Number(p.ts);
+              if (isFinite(t) && t > 0) {
+                if (t < 1e12) t = t * 1000;  // seconds → ms
+                labels.push(new Date(t).toLocaleTimeString());
+              } else {
+                labels.push('');
+              }
               values.push(p.speed_ph != null ? p.speed_ph * 1000 : 0);
             });
           }

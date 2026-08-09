@@ -5081,6 +5081,21 @@ body.module-mode .tab-pane:not(.active) { display: none; }
 .rentals-perf__cell.is-good strong { color: #00C853; }
 .rentals-perf__cell.is-warn strong { color: #FFA000; }
 .rentals-perf__cell.is-bad strong { color: #FF1744; }
+/* Rentals: rig track record (histórico de % por rig) */
+.rentals-rig { margin: 10px 0; border: 1px dashed var(--border-subtle, rgba(255,255,255,0.10)); border-radius: 4px; padding: 8px; }
+.rentals-rig__head { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; font-size: 8px; letter-spacing: 1px; font-family: 'JetBrains Mono',monospace; color: var(--cyan, #06d6f0); margin-bottom: 6px; }
+.rentals-rig__sum { color: var(--text-tertiary); letter-spacing: 0; font-size: 8px; }
+.rentals-rig__chart { height: 90px; margin-bottom: 6px; }
+.rentals-rig__rows { display: flex; flex-direction: column; }
+.rentals-rig__row { display: flex; align-items: center; gap: 8px; font-size: 9px; font-family: 'JetBrains Mono',monospace; padding: 3px 0; border-bottom: 1px dashed var(--border-subtle, rgba(255,255,255,0.06)); }
+.rentals-rig__row:last-child { border-bottom: none; }
+.rentals-rig__id { color: var(--text-primary); min-width: 52px; }
+.rentals-rig__date { color: var(--text-tertiary); flex: 1; }
+.rentals-rig__cost { color: var(--text-secondary); }
+.rentals-rig__pct { font-weight: 600; min-width: 48px; text-align: right; }
+.rentals-rig__pct.is-good { color: #00C853; }
+.rentals-rig__pct.is-warn { color: #FFA000; }
+.rentals-rig__pct.is-bad { color: #FF1744; }
 /* Rentals: missing-credentials hint on the strip cards (🔑) */
 .rentals-strip__card .rentals-strip__value[title]:not([title=""]) { cursor: help; }
 .rentals-detail__log { display: flex; flex-direction: column; gap: 2px; }

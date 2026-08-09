@@ -5355,25 +5355,51 @@ def api_rentals():
         return jsonify({"success": False, "error": "failed to fetch rentals"}), 500
 
 
-@app.route("/api/rentals/detail")
+@app.route("/api/rentals/detail", methods=["GET", "POST"])
 def api_rentals_detail():
     """Detail + graph + log for one rental.
 
-    Query params:
+    Query params (GET):
         provider: mrr (default) | braiins
         id:       rental/contract id
+
+    JSON body (POST, braiins):
+        {provider, id, contract: {...}} — the contract's static fields from
+        the list payload, so the detail skips re-probing the list endpoints.
     """
-    provider = (request.args.get("provider") or "mrr").lower()
-    rid = (request.args.get("id") or "").strip()
+    body = request.get_json(silent=True) or {}
+    provider = (body.get("provider") or request.args.get("provider") or "mrr").lower()
+    rid = (body.get("id") or request.args.get("id") or "").strip()
     if not rid:
         return jsonify({"success": False, "error": "missing id"}), 400
     try:
         if provider == "braiins":
-            speed = _rental_perf.fetch_braiins_contract_speed(rid)
-            return jsonify({"success": True, "provider": "braiins", "detail": {"id": rid}, "graph": speed})
+            contract = body.get("contract")
+            result = _rental_perf.fetch_braiins_contract_detail(rid, contract=contract)
+            return jsonify({"success": True, "provider": "braiins",
+                            "detail": result.get("detail") or {},
+                            "graph": result.get("graph") or {},
+                            "log": result.get("log") or {},
+                            # Analytics: effective cost vs the cheapest live
+                            # market price (sats/TH/h) for the perf banner.
+                            "market": _rental_perf.fetch_market_reference(),
+                            "rig_history": []})
         detail = _rental_perf.fetch_mrr_rental_detail(rid)
-        return jsonify({"success": True, "provider": "mrr", "detail": detail.get("detail") or {},
-                        "graph": detail.get("graph") or {}, "log": detail.get("log") or {}})
+        raw = detail.get("detail") or {}
+        # Compute the same perf block Braiins carries, from the RAW MRR
+        # detail (percent / avg TH / delivered TH·h / cost sats/TH/h).
+        perf = _rental_perf.compute_mrr_perf(raw) if raw and not raw.get("error") else {}
+        # Track record of the SAME rig (histórico de % por rig) so the
+        # operator sees how this rig delivered on previous rentals.
+        rig = raw.get("rig") or {}
+        rig_history = _rental_perf.fetch_rig_performance_history(
+            rig.get("id"), rig.get("name"), exclude_rental_id=rid)
+        return jsonify({"success": True, "provider": "mrr", "detail": raw,
+                        "graph": detail.get("graph") or {},
+                        "log": detail.get("log") or {},
+                        "perf": perf,
+                        "rig_history": rig_history,
+                        "market": _rental_perf.fetch_market_reference()})
     except Exception as e:
         log.warning("[rentals] detail error: %s", e)
         return jsonify({"success": False, "error": "failed to fetch rental detail"}), 500

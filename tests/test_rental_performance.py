@@ -170,10 +170,106 @@ def test_braiins_contracts_with_key(monkeypatch):
     monkeypatch.setattr(rp.requests, "get", fake_get)
     out = rp.fetch_braiins_contracts()
     assert out["success"] is True
+    # The same contract id comes back from every endpoint probe — the
+    # dedup must collapse it to a single entry.
+    assert len(out["contracts"]) == 1
     assert out["contracts"][0]["id"] == "c-1"
     assert out["contracts"][0]["status"] == "RUNNING"
     # Braiins auth uses the `apikey` header.
     assert seen["headers"]["apikey"] == "owner-token"
+
+
+def test_braiins_contracts_rejected_key_reports_error(monkeypatch):
+    """A CONFIGURED key rejected by the API (401/403) must NOT be reported
+    as an empty account — the panel needs to tell the user the key is bad.
+    This was the silent-failure bug: `if not r.ok: continue` swallowed the
+    auth rejection and returned success=True with zero contracts."""
+    monkeypatch.setenv("BRAIINS_API_KEY", "owner-token")
+
+    def fake_get(url, headers=None, timeout=None):
+        return FakeResponse(ok=False, status_code=401)
+
+    monkeypatch.setattr(rp.requests, "get", fake_get)
+    out = rp.fetch_braiins_contracts()
+    assert out["success"] is False
+    assert out["needs_auth"] is True
+    assert "rejected" in out.get("error", "").lower()
+    assert out["contracts"] == []
+
+
+def test_braiins_contracts_spot_bid_fallback(monkeypatch):
+    """Legacy /contract endpoints may 404 while the current spot API
+    (/spot/bid/current, /spot/bid) still returns the caller's orders — the
+    probe must fall back and parse the spot envelope + bid_status names."""
+    monkeypatch.setenv("BRAIINS_API_KEY", "owner-token")
+    bid = {"bid_id": "B123", "bid_status": "SPOT_BID_STATUS_ACTIVE",
+           "speed_limit_ph": 100.0, "amount_sat": 20000000, "price_sat": 90000000,
+           "created_ts": "2026-07-01T00:00:00Z"}
+
+    def fake_get(url, headers=None, timeout=None):
+        if "/contract" in url:
+            return FakeResponse(ok=False, status_code=404)
+        return FakeResponse(payload={"items": [bid]})
+
+    monkeypatch.setattr(rp.requests, "get", fake_get)
+    out = rp.fetch_braiins_contracts()
+    assert out["success"] is True
+    assert len(out["contracts"]) == 1
+    c = out["contracts"][0]
+    assert c["id"] == "B123"
+    assert "ACTIVE" in c["status"]  # SPOT_BID_STATUS_ACTIVE → ACTIVE
+    assert c["speed_limit_ph"] == 100.0
+    assert c["amount_sat"] == 20000000
+
+
+def test_braiins_contract_speed_spot_fallback(monkeypatch):
+    monkeypatch.setenv("BRAIINS_API_KEY", "owner-token")
+
+    def fake_get(url, headers=None, timeout=None):
+        if "/contract/" in url and "/speed" in url:
+            return FakeResponse(ok=False, status_code=404)
+        return FakeResponse(payload={"items": [
+            {"timestamp": 1785007000, "speed_ph": 100.0},
+            {"timestamp": 1785007300, "speed_ph": 110.0},
+        ]})
+
+    monkeypatch.setattr(rp.requests, "get", fake_get)
+    out = rp.fetch_braiins_contract_speed("B123")
+    assert out["success"] is True
+    assert len(out["points"]) == 2
+    assert out["points"][0]["speed_ph"] == 100.0
+
+
+def test_braiins_contract_detail_normalizes_with_metrics(monkeypatch):
+    """Braiins detail is normalized to the MRR schema and carries pre-computed
+    analytics (percent, avg TH, delivered TH.h, cost sats/TH/h) so the
+    frontend perf banner renders for Braiins contracts too."""
+    monkeypatch.setenv("BRAIINS_API_KEY", "owner-token")
+    contract = {"id": "c-1", "status": "RUNNING", "speed_limit_ph": 100.0,
+                "amount_sat": 50000000, "price_sat": 50013000}
+
+    def fake_get(url, headers=None, timeout=None):
+        if "speed" in url:
+            return FakeResponse(payload={"items": [
+                {"timestamp": 1000, "speed_ph": 100.0},
+                {"timestamp": 4600, "speed_ph": 100.0},
+            ]})
+        return FakeResponse(payload={"items": [contract]})
+
+    monkeypatch.setattr(rp.requests, "get", fake_get)
+    out = rp.fetch_braiins_contract_detail("c-1")
+    assert out["success"] is True
+    d = out["detail"]
+    assert d["id"] == "c-1"
+    assert d["hashrate"]["advertised"]["type"] == "ph"
+    assert d["hashrate"]["average"]["percent"] == 100.0
+    # 100 PH/s avg x 1 hour = 100 TH.h
+    assert d["perf"]["avg_th"] == 100000.0
+    assert d["perf"]["delivered_thh"] == 100000.0
+    # 0.5 BTC = 50_000_000 sats / 100_000 TH.h = 500 sats/TH/h
+    assert abs(d["perf"]["cost_sats_per_thh"] - 500.0) < 1e-6
+    assert d["price"]["paid"] == 0.5
+    assert out["graph"]["points"]
 
 
 def test_braiins_contract_speed_needs_auth(monkeypatch):
@@ -181,6 +277,192 @@ def test_braiins_contract_speed_needs_auth(monkeypatch):
     out = rp.fetch_braiins_contract_speed("c-1")
     assert out["success"] is False
     assert out["needs_auth"] is True
+
+
+def test_braiins_contract_detail_accepts_passed_contract(monkeypatch):
+    """When the caller already has the contract dict (frontend list payload),
+    the detail must NOT re-probe the list endpoints — only the speed series
+    is fetched. Guards the per-click HTTP cost."""
+    monkeypatch.setenv("BRAIINS_API_KEY", "owner-token")
+    contract = {"id": "B1", "status": "ACTIVE", "speed_limit_ph": 50.0,
+                "amount_sat": 10000000, "price_sat": 30000000}
+    urls = []
+
+    def fake_get(url, headers=None, timeout=None):
+        urls.append(url)
+        return FakeResponse(payload={"items": [
+            {"timestamp": 0, "speed_ph": 50.0},
+            {"timestamp": 3600, "speed_ph": 50.0},
+        ]})
+
+    monkeypatch.setattr(rp.requests, "get", fake_get)
+    out = rp.fetch_braiins_contract_detail("B1", contract=contract)
+    assert out["success"] is True
+    # Only the speed endpoints were hit (list probe endpoints must NOT appear).
+    assert len(urls) == 1
+    assert "/speed" in urls[0]
+    assert "/contract/active" not in urls
+    assert out["detail"]["perf"]["avg_th"] == 50000.0
+
+
+# ── Analytics: market reference + MRR perf + rig track record ──────────────
+
+
+def _mkt_offer(provider, btc_per_th_day, estimated=False):
+    from services.hashrate_market import NormalizedOffer
+    return NormalizedOffer(
+        provider=provider,
+        hashrate=100.0,
+        price_per_th_day=btc_per_th_day,
+        duration_days=1.0,
+        fee_pct=0.0,
+        algorithm="sha256",
+        source=provider,
+        estimated=estimated,
+    )
+
+
+def test_market_reference_picks_cheapest_live(monkeypatch):
+    """fetch_market_reference picks the cheapest NON-estimated live quote and
+    converts BTC/TH/day → sats/TH/h (price * 1e8 / 24h)."""
+    offers = [
+        _mkt_offer("braiins", 0.000150),
+        _mkt_offer("mrr", 0.000120),      # cheapest live → wins
+        _mkt_offer("nicehash", 0.000010, estimated=True),  # estimated → ignored
+    ]
+    monkeypatch.setattr(rp, "_fetch_market_offers", lambda: offers)
+    out = rp.fetch_market_reference()
+    assert out["available"] is True
+    assert out["provider"] == "mrr"
+    # 0.00012 BTC/TH/day → sats/TH/h: 0.00012 * 1e8 / 24 = 500
+    assert abs(out["price_sats_per_thh"] - 500.0) < 1e-6
+
+
+def test_market_reference_unavailable_when_no_offers(monkeypatch):
+    monkeypatch.setattr(rp, "_fetch_market_offers", lambda: [])
+    out = rp.fetch_market_reference()
+    assert out["available"] is False
+
+
+def test_market_reference_never_raises(monkeypatch):
+    def boom():
+        raise RuntimeError("provider down")
+    monkeypatch.setattr(rp, "_fetch_market_offers", boom)
+    assert rp.fetch_market_reference() == {"available": False}
+
+
+def test_compute_mrr_perf_from_raw_detail():
+    """compute_mrr_perf derives the same perf block Braiins carries from a
+    RAW MRR detail payload (percent, avg TH, delivered TH·h, cost)."""
+    raw = _mrr_rental()  # 0.165 PH adv / 159.32 TH avg · paid 0.00001404 BTC · 3.85h
+    perf = rp.compute_mrr_perf(raw)
+    assert perf["percent"] == 96.56
+    assert perf["limit_th"] == 165.0
+    assert abs(perf["avg_th"] - 159.32150061561) < 1e-9
+    # 159.3215 TH x 3.85 h = 613.39 TH·h
+    assert abs(perf["delivered_thh"] - (159.32150061561 * 3.85)) < 1e-6
+    # 0.00001404 BTC = 1404 sats / 613.39 TH·h = 2.29 sats/TH/h
+    expected_cost = 1404.0 / (159.32150061561 * 3.85)
+    assert abs(perf["cost_sats_per_thh"] - expected_cost) < 1e-6
+
+
+def test_compute_mrr_perf_missing_fields():
+    perf = rp.compute_mrr_perf({"id": "x"})
+    assert perf["percent"] is None
+    assert perf["avg_th"] is None
+    assert perf["cost_sats_per_thh"] is None
+
+
+def test_rig_performance_history_matches_by_rig(monkeypatch):
+    """fetch_rig_performance_history returns only rentals of the SAME rig
+    (by rig id, name fallback), excludes the current rental, and sorts
+    newest first."""
+    # The listing returns NORMALIZED rentals (fetch_mrr_rentals output) —
+    # normalize the raw fixtures the same way the real fetcher does.
+    raw = [
+        _mrr_rental(id="1", rig={"id": "376882", "name": "A02 165TH"}),          # same rig id
+        _mrr_rental(id="2", rig={"id": "376882", "name": "A02 165TH"}),          # same rig id
+        _mrr_rental(id="3", rig={"id": "999", "name": "Other rig"}),            # different rig
+        _mrr_rental(id="4", rig={"id": None, "name": "a02 165th"}),              # name-only match
+    ]
+    # Set distinct starts so the newest-first sort is observable.
+    raw[0]["start"] = "2026-07-20 10:00:00 UTC"
+    raw[1]["start"] = "2026-07-25 10:00:00 UTC"
+    raw[3]["start"] = "2026-07-15 10:00:00 UTC"
+    rentals = [rp._normalize_rental(r) for r in raw]
+
+    def fake_listing(**kw):
+        return {"success": True, "needs_auth": False, "rentals": rentals, "total": len(rentals)}
+
+    monkeypatch.setattr(rp, "fetch_mrr_rentals", fake_listing)
+    # The real caller (detail route) passes BOTH id and name from the rig.
+    out = rp.fetch_rig_performance_history(rig_id="376882", rig_name="A02 165TH",
+                                           exclude_rental_id="1")
+    ids = [r["id"] for r in out]
+    # #1 excluded (current), #2 same id, #4 name match; #3 different rig out.
+    assert ids == ["2", "4"]
+    assert out[0]["percent"] == 96.56
+
+
+def test_rig_performance_history_requires_rig():
+    assert rp.fetch_rig_performance_history() == []
+    assert rp.fetch_rig_performance_history(rig_id=None, rig_name="") == []
+
+
+# ── Route wiring: /api/rentals/detail enriches both providers ──────────────
+
+import app as _app_module
+
+
+@pytest.fixture
+def rclient():
+    _app_module.app.config["TESTING"] = True
+    with _app_module.app.test_client() as c:
+        yield c
+
+
+def test_detail_route_mrr_enriched(rclient, monkeypatch):
+    """GET /api/rentals/detail?provider=mrr returns perf + rig_history + market
+    computed from the RAW MRR detail (server-side analytics)."""
+    raw = _mrr_rental()
+    monkeypatch.setattr(
+        _app_module._rental_perf, "fetch_mrr_rental_detail",
+        lambda rid: {"success": True, "detail": raw, "graph": {"chartdata": {"bars": "[1,2]"}}, "log": {"rental_log": []}})
+    monkeypatch.setattr(
+        _app_module._rental_perf, "fetch_rig_performance_history",
+        lambda *a, **k: [{"id": "2", "start": "2026-07-01", "percent": 94.0}])
+    monkeypatch.setattr(
+        _app_module._rental_perf, "fetch_market_reference",
+        lambda: {"available": True, "price_sats_per_thh": 500.0, "provider": "mrr"})
+
+    resp = rclient.get("/api/rentals/detail?provider=mrr&id=5657736")
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data["provider"] == "mrr"
+    assert data["detail"]["id"] == "5657736"
+    # Perf derived from raw MRR detail (96.56% / 165 TH adv).
+    assert data["perf"]["percent"] == 96.56
+    assert data["perf"]["limit_th"] == 165.0
+    assert data["rig_history"][0]["percent"] == 94.0
+    assert data["market"]["price_sats_per_thh"] == 500.0
+
+
+def test_detail_route_braiins_market(rclient, monkeypatch):
+    """POST /api/rentals/detail (braiins) carries market + empty rig_history."""
+    monkeypatch.setattr(
+        _app_module._rental_perf, "fetch_braiins_contract_detail",
+        lambda cid, contract=None: {"success": True, "detail": {"id": cid, "perf": {"percent": 95.0}},
+                                    "graph": {"points": []}})
+    monkeypatch.setattr(
+        _app_module._rental_perf, "fetch_market_reference",
+        lambda: {"available": True, "price_sats_per_thh": 480.0, "provider": "braiins"})
+
+    resp = rclient.post("/api/rentals/detail", json={"provider": "braiins", "id": "B1", "contract": {"id": "B1"}})
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data["detail"]["perf"]["percent"] == 95.0
+    assert data["market"]["provider"] == "braiins"
+    assert data["rig_history"] == []
 
 
 def test_num_helper():
