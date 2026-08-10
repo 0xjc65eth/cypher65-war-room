@@ -115,6 +115,104 @@ test.describe('RENTALS — performance dos aluguéis (P2)', () => {
   test.describe('fluxo Braiins com mock (SW bloqueado p/ intercept confiável)', () => {
   test.use({ serviceWorkers: 'block' });
 
+  test('banner arbitragem: COMPRAR AGORA pré-preenche o modal Braiins com o preço atual', async ({ page }) => {
+    // Intercepta /api/rentals com market_signals (dry-run) → o banner de
+    // arbitragem deve aparecer com o botão ⚡ COMPRAR AGORA, que abre o modal
+    // Braiins com TH + budget derivados do preço de mercado do sinal.
+    await page.route('**/api/rentals', (route) => {
+      route.fulfill({ contentType: 'application/json', body: JSON.stringify({
+        success: true, updated_at: Date.now(),
+        mrr: { needs_auth: false, active: [], history: [{ id: 'h1' }], owner: [], total_active: 0, total_history: 1, total_owner: 0, error: null },
+        braiins: { needs_auth: true, contracts: [], error: null },
+        market_signals: {
+          overpay: [{ severity: 'WARN', rental_id: 'r9', overpay_pct: 150, message: 'Rental #r9 pagou 150% acima do mercado' }],
+          arbitrage: [{ severity: 'GOLD', discount_pct: 73.3, ref_basis: 'last',
+                        market_price_sats_per_thh: 40, avg_cost_sats_per_thh: 150,
+                        effective_cost_sats_per_thh: 150, last_cost_sats_per_thh: 150,
+                        suggested_th: 2500,
+                        message: 'ARBITRAGEM: mercado a 40 sats/TH·h — 73% abaixo do seu custo médio' }],
+        },
+      })});
+    });
+    // Quote com saldo DISPONÍVEL de 500.000 sats — budget do prefill (2.4M)
+    // excede → submit fica bloqueado (guarda de saldo) e o aviso aparece.
+    await page.route('**/api/rentals/braiins/quote', (route) =>
+      route.fulfill({ contentType: 'application/json', body: JSON.stringify({
+        success: true, available: true,
+        price_sats_per_thh: 40, price_sat_per_ph_day: 960000, price_unit: 'sats/PH/day',
+        balance: { available: true, available_sat: 500000, total_sat: 500000, blocked_sat: 0 },
+      }) }));
+    await page.goto('/');
+    await page.waitForSelector('#sidebar', { timeout: 25000 });
+    await ensureSidebarOpen(page);
+    await page.click('.sidebar__link[data-module="rentals"]');
+    await expect(page.locator('#rentals-count-badge')).not.toHaveText('—', { timeout: 15000 });
+
+    // Banner com os dois sinais: compras caras + janela de arbitragem.
+    const signals = page.locator('#rentals-signals');
+    await expect(signals).toBeVisible({ timeout: 5000 });
+    await expect(signals.locator('.rentals-signals__item.is-overpay')).toContainText(/1 compra\(s\) cara\(s\) detectada\(s\)/);
+    await expect(signals.locator('.rentals-signals__item.is-arb')).toContainText(/JANELA DE ARBITRAGEM ABERTA/);
+
+    // Clica COMPRAR AGORA → modal Braiins abre com TH=2500 (TH típico do
+    // usuário, do sinal) e budget = 40×2500×24.
+    await signals.locator('.rentals-signals__buy').click();
+    await expect(page.locator('#braiins-buy-modal')).toHaveClass(/modal--open/, { timeout: 5000 });
+    await expect(page.locator('#braiins-buy-th')).toHaveValue('2500', { timeout: 5000 });
+    const amount = await page.locator('#braiins-buy-amount').inputValue();
+    expect(parseInt(amount, 10)).toBe(2400000);  // 40 sats/TH·h × 2500 TH × 24h
+    // Saldo disponível exibido na linha dedicada…
+    await expect(page.locator('#braiins-buy-balance')).toContainText(/SALDO DISPONÍVEL: 500,000 sats/, { timeout: 5000 });
+    // …e o budget (2.4M) > saldo (500k) → submit BLOQUEADO + aviso no calc.
+    await expect(page.locator('#braiins-buy-calc')).toContainText(/EXCEDE o saldo/, { timeout: 5000 });
+    await expect(page.locator('#braiins-buy-submit')).toBeDisabled();
+    // Guarda de estado: baixar o budget para < saldo limpa o aviso + o
+    // estilo is-exceeded (nunca fica vermelho travado) e desbloqueia.
+    await page.fill('#braiins-buy-amount', '300000');
+    await expect(page.locator('#braiins-buy-calc')).not.toContainText(/EXCEDE/);
+    await expect(page.locator('#braiins-buy-balance')).not.toHaveClass(/is-exceeded/);
+  });
+
+  test('saldo Braiins suficiente → submit desbloqueia após confirmação', async ({ page }) => {
+    await page.route('**/api/rentals', (route) => {
+      route.fulfill({ contentType: 'application/json', body: JSON.stringify({
+        success: true, updated_at: Date.now(),
+        mrr: { needs_auth: false, active: [], history: [{ id: 'h1' }], owner: [], total_active: 0, total_history: 1, total_owner: 0, error: null },
+        braiins: { needs_auth: true, contracts: [], error: null },
+        market_signals: {
+          overpay: [],
+          arbitrage: [{ severity: 'GOLD', discount_pct: 73.3, ref_basis: 'last',
+                        market_price_sats_per_thh: 40, avg_cost_sats_per_thh: 150,
+                        effective_cost_sats_per_thh: 150, last_cost_sats_per_thh: 150,
+                        suggested_th: 2500,
+                        message: 'ARBITRAGEM: mercado a 40 sats/TH·h — 73% abaixo do seu custo médio' }],
+        },
+      })});
+    });
+    // Saldo generoso (10M sats) → budget 2.4M NÃO excede.
+    await page.route('**/api/rentals/braiins/quote', (route) =>
+      route.fulfill({ contentType: 'application/json', body: JSON.stringify({
+        success: true, available: true,
+        price_sats_per_thh: 40, price_sat_per_ph_day: 960000, price_unit: 'sats/PH/day',
+        balance: { available: true, available_sat: 10000000, total_sat: 10000000, blocked_sat: 0 },
+      }) }));
+    await page.goto('/');
+    await page.waitForSelector('#sidebar', { timeout: 25000 });
+    await ensureSidebarOpen(page);
+    await page.click('.sidebar__link[data-module="rentals"]');
+    await expect(page.locator('#rentals-count-badge')).not.toHaveText('—', { timeout: 15000 });
+    await page.locator('#rentals-signals .rentals-signals__buy').click();
+    await expect(page.locator('#braiins-buy-modal')).toHaveClass(/modal--open/, { timeout: 5000 });
+    await expect(page.locator('#braiins-buy-balance')).toContainText(/SALDO DISPONÍVEL: 10,000,000 sats/, { timeout: 5000 });
+    // Sem excesso → aviso ausente; ainda assim o submit exige stratum + ack + COMPRAR.
+    await expect(page.locator('#braiins-buy-calc')).not.toContainText(/EXCEDE/);
+    await expect(page.locator('#braiins-buy-submit')).toBeDisabled();
+    await page.fill('#braiins-buy-stratum', 'stratum+tcp://pool.example:3333');
+    await page.check('#braiins-buy-ack');
+    await page.fill('#braiins-buy-type', 'COMPRAR');
+    await expect(page.locator('#braiins-buy-submit')).toBeEnabled({ timeout: 5000 });
+  });
+
   test('chave Braiins configurada mas REJEITADA (401) → mostra erro, não "No rentals"', async ({ page }) => {
     // Intercepta /api/rentals com um payload onde a chave EXISTE mas a API a
     // rejeita — o painel deve mostrar "API key rejected" com o motivo real em

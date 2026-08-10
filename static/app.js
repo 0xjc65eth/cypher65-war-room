@@ -3494,6 +3494,68 @@ function renderAccount(acct) {
     }).join('');
   }
 
+  // CFO: market-signal banner — 'compras caras detectadas' (overpay) + 'janela
+  // de arbitragem aberta'. Data comes DRY-RUN from /api/rentals.market_signals
+  // (the webhook dedup is never consumed by the banner). Overpay item jumps to
+  // the history tab; arbitrage item opens the Braiins buy flow.
+  function _renderRentalsSignals() {
+    const wrap = document.getElementById('rentals-signals');
+    if (!wrap || !_rentalsData) return;
+    const sig = _rentalsData.market_signals || {};
+    const overpay = sig.overpay || [];
+    const arb = sig.arbitrage || [];
+    if (!overpay.length && !arb.length) { wrap.hidden = true; wrap.innerHTML = ''; return; }
+    wrap.hidden = false;
+    const items = [];
+    if (overpay.length) {
+      const crit = overpay.some(a => (a.severity || '') === 'CRIT');
+      const total = overpay.length;
+      const worst = overpay.reduce((m, a) => Math.max(m, Number(a.overpay_pct) || 0), 0);
+      items.push('<div class="rentals-signals__item is-overpay' + (crit ? ' is-crit' : '') + '" data-signal="overpay" title="ver histórico — compras caras">' +
+        '<span class="rentals-signals__icon">' + (crit ? '🚨' : '⚠️') + '</span>' +
+        '<span class="rentals-signals__msg"><strong>' + total + ' compra(s) cara(s) detectada(s)</strong> — até ' + Math.round(worst) + '% acima do mercado na compra' +
+        (overpay.length <= 3 ? ' · ' + overpay.map(a => '#' + escapeHtml(String(a.rental_id || '?')) + ' +' + Math.round(Number(a.overpay_pct) || 0) + '%').join(' · ') : '') + '</span>' +
+        '<span class="rentals-signals__cta">VER HISTÓRICO →</span></div>');
+    }
+    if (arb.length) {
+      const a = arb[0];
+      // 'comprar agora' prefills the Braiins spot modal with the CURRENT
+      // market price from the signal (dry-run, never the stale bid price).
+      const mkt = Number(a.market_price_sats_per_thh) || 0;
+      // Prefill TH = the tenant's TYPICAL order size (median of past rentals,
+      // from the signal) — falls back to 1000 TH ≈ 1 PH/s on the frontend.
+      const sugTh = Number(a.suggested_th) > 0 ? Number(a.suggested_th) : 0;
+      const buyCta = mkt > 0
+        ? '<button type="button" class="rentals-signals__buy" data-signal="arb-buy" data-price="' + mkt + '" data-th="' + sugTh + '" title="abrir compra Braiins com o preço atual pré-preenchido">⚡ COMPRAR AGORA</button>'
+        : '<span class="rentals-signals__cta">COMPRAR →</span>';
+      items.push('<div class="rentals-signals__item is-arb" data-signal="arb" title="abrir compra Braiins — janela aberta">' +
+        '<span class="rentals-signals__icon">🏆</span>' +
+        '<span class="rentals-signals__msg"><strong>JANELA DE ARBITRAGEM ABERTA</strong> — ' +
+        escapeHtml(String(a.message || '')) + '</span>' + buyCta + '</div>');
+    }
+    wrap.innerHTML = items.join('');
+    wrap.querySelectorAll('[data-signal]').forEach(function (el) {
+      el.addEventListener('click', function (e) {
+        e.stopPropagation();
+        const kind = el.getAttribute('data-signal');
+        if (kind === 'overpay') {
+          _setRentalsFilter('history');
+          document.getElementById('rentals-list')?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        } else if (kind === 'arb-buy') {
+          // Prefill the modal with the signal's market price + the tenant's
+          // TYPICAL order size (TH), so the user only confirms (budget
+          // derived from both).
+          openBraiinsBuyModal({
+            price_sats_per_thh: parseFloat(el.getAttribute('data-price')) || 0,
+            th: parseFloat(el.getAttribute('data-th')) || 0,
+          });
+        } else {
+          openBraiinsBuyModal();
+        }
+      });
+    });
+  }
+
   // CFO: portfolio time series — spent bars + estimated P/L (period and
   // cumulative) from the LOCAL rental_history. Bucket toggle week/month
   // re-fetches server-side data (the API ships the week bucket by default).
@@ -4038,6 +4100,7 @@ function renderAccount(acct) {
     _renderRentalsConcentration();
     _renderRentalsForecast();
     _renderRentalsRiskBanner();
+    _renderRentalsSignals();
 
     let items = [];
     if (_rentalsFilter === 'active') items = mrr.active || [];
@@ -4539,12 +4602,13 @@ function renderAccount(acct) {
   // ── Braiins spot buy modal (real money — explicit confirm only) ───────
   let _braiinsBuyQuote = null;   // last /quote payload
   let _braiinsBuyOrderId = '';   // idempotency key, regenerated per modal session
+  let _braiinsBuyBalance = null; // {available_sat,...} or null (unknown/failed)
 
   function _braiinsBuyModal() { return document.getElementById('braiins-buy-modal'); }
 
   function _braiinsBuySet(id, v) { const e = document.getElementById(id); if (e) e.textContent = v; }
 
-  function openBraiinsBuyModal() {
+  function openBraiinsBuyModal(prefill) {
     const modal = _braiinsBuyModal();
     if (!modal) return;
     // Reset the form + status on every open (never carry a stale bid).
@@ -4555,28 +4619,88 @@ function renderAccount(acct) {
     const ack = document.getElementById('braiins-buy-ack'); if (ack) ack.checked = false;
     _braiinsBuySet('braiins-buy-calc', '—');
     _braiinsBuySet('braiins-buy-status', '');
+    // Reset balance display + guard (the quote below re-fills them). Classes
+    // are reset too — a previous is-exceeded/is-unknown must not flash red
+    // through the 'carregando…' state.
+    _braiinsBuyBalance = null;
+    _braiinsBuySet('braiins-buy-balance', 'saldo: carregando…');
+    _syncBraiinsBalanceClass('loading');
     const submit = document.getElementById('braiins-buy-submit');
     if (submit) submit.disabled = true;
     modal.classList.add('modal--open');
     _braiinsBuyOrderId = 'c65-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8);
+    // 'comprar agora' prefill: derive TH + budget from the arbitrage signal's
+    // CURRENT market price (e.g. 1000 TH/s ≈ 1 PH/s × ~24h at that price), so
+    // the user only adds their stratum + typed confirmation. The live quote
+    // below still wins for the actual bid price.
+    const _prefillPrice = (prefill && prefill.price_sats_per_thh > 0)
+      ? prefill.price_sats_per_thh : 0;
+    if (_prefillPrice > 0) {
+      // TH prefill: explicit override > tenant's typical order size
+      // (suggested_th from the arbitrage signal) > 1000 TH default.
+      const th = prefill.th || prefill.suggested_th || 1000;
+      const amount = Math.max(1000, Math.round(_prefillPrice * th * 24 / 1000) * 1000);
+      const thEl = document.getElementById('braiins-buy-th'); if (thEl) thEl.value = th;
+      const amtEl = document.getElementById('braiins-buy-amount'); if (amtEl) amtEl.value = amount;
+    }
     _braiinsBuyCalc();
-    // Load the live ask + tenant balance to prefill the quote line.
-    _braiinsBuySet('braiins-buy-quote', 'carregando cotação…');
+    // Load the live ask + tenant balance to prefill the quote line. When the
+    // prefill came from an arbitrage signal, show THAT price explicitly so the
+    // 'preço atual pré-preenchido' is visible even if the live quote fails
+    // (the live ask overwrites this line on success).
+    _braiinsBuySet('braiins-buy-quote', _prefillPrice > 0
+      ? '⚡ pré-preenchido do sinal: ' + _prefillPrice + ' sats/TH·h · carregando cotação live…'
+      : 'carregando cotação…');
     fetch('/api/rentals/braiins/quote')
       .then(r => r.ok ? r.json() : null)
       .then(q => {
         _braiinsBuyQuote = q;
         if (!q || !q.available) {
           _braiinsBuySet('braiins-buy-quote', '⚠ ' + ((q && q.error) || 'cotação indisponível'));
+          // Balance stays unknown — surface the is-unknown state (this branch
+          // previously returned before _renderBraiinsBuyBalance, leaving the
+          // line stuck on 'carregando…' forever).
+          _renderBraiinsBuyBalance();
           return;
         }
         const bal = q.balance || {};
         const balTxt = bal.available ? (bal.available_sat != null ? Number(bal.available_sat).toLocaleString('en-US') + ' sats disponíveis' : 'saldo: verifique na conta') : ((bal.error || '') ? 'saldo indisponível (' + bal.error + ')' : '—');
         _braiinsBuySet('braiins-buy-quote',
           'ASK MENOR: ' + q.price_sats_per_thh + ' sats/TH·h · ' + q.price_sat_per_ph_day + ' sats/PH·dia · ' + balTxt);
+        // Balance guard: keep the raw number so _braiinsBuyCalc can BLOCK the
+        // submit when the budget exceeds the available sats.
+        _braiinsBuyBalance = bal.available && bal.available_sat != null
+          ? bal : null;
+        _renderBraiinsBuyBalance();
         _braiinsBuyCalc();
       })
       .catch(() => _braiinsBuySet('braiins-buy-quote', '⚠ falha ao carregar cotação'));
+  }
+
+  function _syncBraiinsBalanceClass(state) {
+    // Single source of truth for the balance-line state classes — called
+    // from every path (open / quote ok / quote fail / calc) so the visual
+    // state can never drift from the actual guard.
+    //   state: 'loading' | 'known' | 'exceeded' | 'unknown'
+    const el = document.getElementById('braiins-buy-balance');
+    if (!el) return;
+    el.classList.remove('is-known', 'is-exceeded', 'is-unknown');
+    if (state === 'known') el.classList.add('is-known');
+    else if (state === 'exceeded') el.classList.add('is-exceeded');
+    else if (state === 'unknown') el.classList.add('is-unknown');
+  }
+
+  function _renderBraiinsBuyBalance() {
+    const bal = _braiinsBuyBalance;
+    if (bal) {
+      const sat = Number(bal.available_sat) || 0;
+      _braiinsBuySet('braiins-buy-balance', 'SALDO DISPONÍVEL: ' + sat.toLocaleString('en-US') + ' sats');
+      _syncBraiinsBalanceClass('known');
+      _braiinsBuyCalc();  // re-evaluate the guard when balance arrives
+    } else {
+      _braiinsBuySet('braiins-buy-balance', 'saldo: indisponível — verifique sua chave Braiins no Settings');
+      _syncBraiinsBalanceClass('unknown');
+    }
   }
 
   function _braiinsBuyCalc() {
@@ -4594,16 +4718,29 @@ function renderAccount(acct) {
         out += ' · budget cobre ~' + (hours >= 1 ? Math.round(hours) + 'h' : Math.round(hours * 60) + 'min') + ' de hashrate';
       }
     }
+    // Balance guard: budget > available sats → warn + keep submit BLOCKED.
+    const bal = _braiinsBuyBalance;
+    const balSat = bal ? (Number(bal.available_sat) || 0) : null;
+    const exceeded = balSat != null && amount > balSat;
+    if (exceeded) {
+      out += ' · ⚠ budget EXCEDE o saldo em ' + (amount - balSat).toLocaleString('en-US') + ' sats';
+      // Sync BOTH ways: when the user lowers the budget back under the
+      // balance the class must clear, not linger red forever.
+      _syncBraiinsBalanceClass('exceeded');
+    } else if (balSat != null) {
+      _syncBraiinsBalanceClass('known');
+    }
     _braiinsBuySet('braiins-buy-calc', out);
     // Enable only when: live quote present, hashrate > 0, budget + stratum
-    // present, ack checked, typed COMPRAR. A missing quote (network down /
-    // no ask) BLOCKS the order — never bid blind with real money.
+    // present, budget ≤ available balance, ack checked, typed COMPRAR. A
+    // missing quote (network down / no ask) BLOCKS the order — never bid
+    // blind with real money.
     const quoteOk = !!(q && q.available);
     const typed = (document.getElementById('braiins-buy-type')?.value || '').trim().toUpperCase() === 'COMPRAR';
     const ack = document.getElementById('braiins-buy-ack')?.checked || false;
     const stratum = (document.getElementById('braiins-buy-stratum')?.value || '').trim();
     const submit = document.getElementById('braiins-buy-submit');
-    if (submit) submit.disabled = !(quoteOk && th > 0 && amount >= 1000 && stratum && typed && ack);
+    if (submit) submit.disabled = !(quoteOk && th > 0 && amount >= 1000 && !exceeded && stratum && typed && ack);
   }
 
   async function submitBraiinsBid() {
@@ -5197,7 +5334,7 @@ function renderAccount(acct) {
     rental_pl_alert_pct: 'ALERTA CFO: dispara webhook + push quando um aluguel FECHA com P/L econômico abaixo deste % (ex: -50). Vazio ou 0 = desativado. Como o P/L vs yield costuma ser muito negativo, use um limiar realista (ex: -90) para só alertar os piores — ou deixe vazio para desligar. (Sem network hashrate, a checagem usa overpay vs preço de mercado.)',
     rental_pl_alert_window_hours: 'Janela: só alerta aluguéis que FECHARAM nas últimas N horas — evita enxurrada de alertas antigos ao habilitar a primeira vez.',
     rental_market_overpay_pct: 'ALERTA OVERPAY: dispara webhook + push quando o preço PAGO de um aluguel ficar este % ACIMA do mercado NA HORA DA COMPRA (preço acordado vs mercado histórico na data do start). Ex: 100 = alerta se pagou 2× o mercado. Vazio ou 0 = desativado. Dispara também para aluguéis ativos comprados nas últimas N horas.',
-    rental_market_arb_pct: 'ALERTA ARBITRAGEM: dispara webhook + push quando o mercado AGORA estiver este % ABAIXO do seu CUSTO MÉDIO histórico (baseline: seus próprios aluguéis — abra o painel RENTALS uma vez para popular). Ex: 30 = alerta quando o mercado estiver ≥30% mais barato que o seu custo médio — janela de compra. Vazio ou 0 = desativado. 100% local, custo zero de provider.',
+    rental_market_arb_pct: 'ALERTA ARBITRAGEM: dispara webhook + push quando o mercado AGORA estiver este % ABAIXO dos seus custos históricos (seus próprios aluguéis — abra o painel RENTALS uma vez para popular). Compara com 3 referências: CUSTO MÉDIO anunciado, CUSTO EFETIVO com entrega real (paid ÷ TH·h entregues — sobe quando a entrega é <100%) e o ÚLTIMO aluguel; a referência MAIS ALTA dispara o sinal. Ex: 30 = alerta quando o mercado estiver ≥30% mais barato que sua referência mais cara — janela de compra. Vazio ou 0 = desativado. 100% local, custo zero de provider.',
     rental_market_arb_cooldown_hours: 'Cooldown da arbitragem: repete o alerta de oportunidade no máximo 1× a cada N horas (padrão 24). Mercado barato persistente avisa diariamente, sem spam.',
   };
   function renderSettingsForm() {

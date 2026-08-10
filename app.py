@@ -5835,6 +5835,11 @@ def api_rentals(tenant_id: str = ""):
         conc: dict = {"available": False}
         worst_rigs: dict = {"worst": [], "count": 0}
         risk_alerts: list = []
+        # Always bound BEFORE the alert try — if anything in that block raises
+        # (e.g. a provider hiccup in evaluate_rental_pl_alerts), the jsonify
+        # below must still reference a defined value (never a NameError that
+        # would 500 the whole panel).
+        _market_signals: dict = {"overpay": [], "arbitrage": []}
         try:
             from services.user_polling import (
                 dispatch_rental_pl_alerts, dispatch_tenant_risk_alerts,
@@ -5857,6 +5862,22 @@ def api_rentals(tenant_id: str = ""):
             arb_alerts = _rental_perf.evaluate_market_arb_alerts(
                 tenant_id=tenant_id)
             dispatch_rental_arb_alerts(tenant_id, arb_alerts)
+            # Panel banner signals: DRY-RUN evaluation so the visual summary
+            # stays visible even after the webhook fired (dry_run never
+            # consults/claims the dedup slots — the dispatch above is the
+            # only dedup consumer). Overpay = 'compras caras detectadas',
+            # arbitrage = 'janela de arbitragem aberta'. A separate dry-run
+            # pass is REQUIRED here: the dispatch above consumes the dedup
+            # slots, so its result would be empty on the next load — the
+            # banner must stay visible while the signal persists.
+            _market_signals = {
+                "overpay": _rental_perf.evaluate_market_overpay_alerts(
+                    mrr_history.get("rentals", []), braiins.get("contracts", []),
+                    tenant_id=tenant_id, extra=mrr_active.get("rentals", []),
+                    dry_run=True),
+                "arbitrage": _rental_perf.evaluate_market_arb_alerts(
+                    tenant_id=tenant_id, dry_run=True),
+            }
             # Risk alerts (worst-rig top-N + concentration): the panel already
             # computes both below for the payload — pass them in so the
             # evaluator never recomputes; dispatch once per rig/event
@@ -5931,6 +5952,11 @@ def api_rentals(tenant_id: str = ""):
             # Risk alerts fired on THIS load (worst-rig top-N + concentration)
             # so the panel can surface them as a banner immediately.
             "risk_alerts_fired": risk_alerts,
+            # Market signals for the banner (dry-run — never consumes dedup):
+            #   overpay    → [{severity, rental_id, overpay_pct, message}] or []
+            #   arbitrage  → [{severity, discount_pct, message, ref_basis,
+            #                  avg/effective/last_cost}] or []
+            "market_signals": _market_signals,
         })
     except Exception as e:
         log.warning("[rentals] list error: %s", e)

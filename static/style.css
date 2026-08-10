@@ -3418,6 +3418,10 @@ td { padding: 4px 8px; border-bottom: 1px solid var(--border-subtle); color: var
 /* ── Braiins spot buy modal (real money — typed confirmation) ── */
 .braiins-buy-modal { width: min(520px, 92vw); }
 .braiins-buy__quote { font-family: var(--font-mono, monospace); font-size: 12px; color: var(--accent-green, #06d6f0); background: rgba(6, 214, 240, 0.06); border: 1px solid rgba(6, 214, 240, 0.25); border-radius: 8px; padding: 8px 12px; }
+.braiins-buy__balance { font-family: var(--font-mono, monospace); font-size: 11px; margin-top: 6px; padding: 6px 12px; border-radius: 8px; transition: background .15s ease, border-color .15s ease, color .15s ease; }
+.braiins-buy__balance.is-known { color: var(--accent-green, #06d6f0); background: rgba(6,214,240,0.05); border: 1px solid rgba(6,214,240,0.25); }
+.braiins-buy__balance.is-exceeded { color: var(--accent-red, #FF1744); background: rgba(255,23,68,0.10); border: 1px solid rgba(255,23,68,0.55); }
+.braiins-buy__balance.is-unknown { color: var(--text-tertiary, #5E5952); background: rgba(255,255,255,0.02); border: 1px dashed rgba(255,255,255,0.15); }
 .braiins-buy__fields { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; }
 .braiins-buy__fields .field__label { text-transform: uppercase; font-size: 10px; letter-spacing: 0.08em; color: var(--text-tertiary, #5E5952); }
 .braiins-buy__calc { font-family: var(--font-mono, monospace); font-size: 12px; color: var(--amber, #f5b942); min-height: 16px; }
@@ -5049,6 +5053,29 @@ body.module-mode .tab-pane:not(.active) { display: none; }
 .rentals-strip__title { font-size: 8px; letter-spacing: 1px; color: var(--text-tertiary); font-family: 'JetBrains Mono',monospace; }
 .rentals-strip__value { font-size: 16px; font-weight: 700; color: var(--text-primary); }
 .rentals-strip__sub { font-size: 9px; color: var(--text-secondary); }
+/* Rentals: market-signal banner (overpay detectado / janela de arbitragem) */
+.rentals-signals { display: flex; flex-direction: column; gap: 6px; margin: 2px 0 8px; }
+.rentals-signals__item {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 10px; border-radius: 6px; cursor: pointer;
+  font-family: 'JetBrains Mono',monospace; font-size: 10px;
+  transition: transform .15s ease, box-shadow .15s ease;
+}
+.rentals-signals__item:hover { transform: translateY(-1px); box-shadow: 0 2px 10px rgba(0,0,0,0.25); }
+.rentals-signals__item.is-overpay { background: rgba(255,23,68,0.08); border: 1px solid rgba(255,23,68,0.45); color: #ff8a9a; }
+.rentals-signals__item.is-arb { background: rgba(255,215,0,0.07); border: 1px solid rgba(255,215,0,0.45); color: var(--gold, #ffd700); }
+.rentals-signals__item.is-crit { background: rgba(255,23,68,0.14); border: 1px solid rgba(255,23,68,0.65); }
+.rentals-signals__icon { font-size: 14px; }
+.rentals-signals__msg { flex: 1; line-height: 1.4; }
+.rentals-signals__cta { font-size: 8px; letter-spacing: 1px; color: var(--text-tertiary); white-space: nowrap; }
+.rentals-signals__buy {
+  background: rgba(255,215,0,0.12); border: 1px solid rgba(255,215,0,0.55);
+  color: var(--gold, #ffd700); font-family: 'JetBrains Mono',monospace; font-size: 9px;
+  letter-spacing: 0.5px; padding: 6px 10px; border-radius: 4px; cursor: pointer;
+  white-space: nowrap; transition: background .15s ease, transform .15s ease, box-shadow .15s ease;
+}
+.rentals-signals__buy:hover { background: rgba(255,215,0,0.25); transform: translateY(-1px); box-shadow: 0 2px 8px rgba(255,215,0,0.2); }
+.rentals-signals__buy:active { transform: translateY(0); }
 /* Rentals: portfolio analytics band (CFO consolidated spend/cost/delivery) */
 .rentals-portfolio { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 8px; margin: 10px 0 4px; }
 .rentals-portfolio__cell { display: flex; flex-direction: column; gap: 2px; padding: 8px 10px; background: rgba(255,215,0,0.04); border: 1px solid rgba(255,215,0,0.18); border-radius: 2px; }

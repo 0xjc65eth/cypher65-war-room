@@ -2153,26 +2153,73 @@ def _historical_market_sats_per_thh(ts: Optional[float]) -> Optional[float]:
     return val
 
 
-def _tenant_avg_cost_sats_per_thh(tenant_id: str = "") -> Optional[float]:
-    """Weighted-average unit cost (sats/TH·h) the tenant actually PAID across
-    their historical rentals (renter bucket). Baseline for the arbitrage
-    alert: a market price far below this = a real buying window for THIS user.
-    None when there's no usable track record (honest skip)."""
+def _tenant_cost_baselines(tenant_id: str = "") -> Dict[str, Optional[float]]:
+    """Three unit-cost references (sats/TH·h) from the tenant's OWN rental
+    history (renter bucket) — each None when it can't be computed honestly:
+
+      - 'average':   weighted mean of the ADVERTISED cost
+                     (SUM paid_sats ÷ SUM advertised_th×hours).
+      - 'effective': weighted mean of the DELIVERED cost
+                     (SUM paid_sats ÷ SUM delivered_thh) — the REAL cost per
+                     TH·h actually received; rises when delivery < 100%.
+      - 'last':      the most recent rental's advertised cost — captures the
+                     current regime (what the user paid LAST time).
+
+    Used as the arbitrage baseline: a market price far below any of these is
+    a real buying window for THIS user."""
+    out: Dict[str, Optional[float]] = {"average": None, "effective": None, "last": None}
     try:
         conn = get_db()
         c = conn.cursor()
+        # Average: advertised-basis, all paid rentals.
         c.execute(
             "SELECT SUM(paid_sats), SUM(advertised_th * length_hours) "
             "FROM rental_history WHERE tenant_id=? AND bucket='renter' "
             "AND paid_sats > 0 AND advertised_th > 0 AND length_hours > 0",
             (tenant_id or "",))
         row = c.fetchone()
+        if row:
+            paid = float(row[0] or 0)
+            adv_thh = float(row[1] or 0)
+            if paid > 0 and adv_thh > 0:
+                out["average"] = paid / adv_thh
+        # Effective: delivered-basis, ONLY rentals that actually have delivery
+        # data (both sides of the ratio) — otherwise spotty delivery records
+        # would silently inflate the 'effective' cost.
+        c.execute(
+            "SELECT SUM(paid_sats), SUM(delivered_thh) FROM rental_history "
+            "WHERE tenant_id=? AND bucket='renter' AND paid_sats > 0 "
+            "AND delivered_thh > 0",
+            (tenant_id or "",))
+        row = c.fetchone()
+        if row:
+            paid = float(row[0] or 0)
+            deliv_thh = float(row[1] or 0)
+            if paid > 0 and deliv_thh > 0:
+                out["effective"] = paid / deliv_thh
+        # Last: the most recent rental. start is TEXT in TWO formats (MRR
+        # 'YYYY-MM-DD HH:MM:SS UTC' vs Braiins RFC3339 '…T…Z'), so lexical
+        # ORDER BY is unreliable — resolve with _parse_start_ts in Python
+        # (created_ts as tiebreaker when start is missing/opaque).
+        c.execute(
+            "SELECT paid_sats, advertised_th, length_hours, start, created_ts "
+            "FROM rental_history WHERE tenant_id=? AND bucket='renter' "
+            "AND paid_sats > 0 AND advertised_th > 0 AND length_hours > 0",
+            (tenant_id or "",))
+        rows = c.fetchall()
         conn.close()
-        if row and row[0] and row[1]:
-            return float(row[0]) / float(row[1])
+        if rows:
+            def _sort_key(r):
+                ts = _parse_start_ts(r[3])
+                if ts is None:
+                    ts = r[4] or 0  # created_ts (int) fallback
+                return ts
+            best = max(rows, key=_sort_key)
+            if best[1] and best[2]:
+                out["last"] = float(best[0]) / (float(best[1]) * float(best[2]))
     except Exception as e:
-        log.warning("[rental_performance] avg cost lookup failed: %s", e)
-    return None
+        log.warning("[rental_performance] cost baseline lookup failed: %s", e)
+    return out
 
 
 def _recent_market_sats_per_thh(now: Optional[int] = None,
@@ -2293,7 +2340,8 @@ def _build_overpay_alert(provider: str, rental_id: Any, cost_sats_per_thh: float
 def evaluate_market_overpay_alerts(history: List[Dict],
                                    contracts: Optional[List[Dict]] = None,
                                    tenant_id: str = "", now: Optional[int] = None,
-                                   extra: Optional[List[Dict]] = None) -> List[Dict[str, Any]]:
+                                   extra: Optional[List[Dict]] = None,
+                                   dry_run: bool = False) -> List[Dict[str, Any]]:
     """Rentals whose AGREED price per TH·h is ≥ X% above the market at the
     purchase time → per-tenant alerts (webhook + push via the shared
     dispatcher).
@@ -2308,7 +2356,11 @@ def evaluate_market_overpay_alerts(history: List[Dict],
     start (±3 days), live quote only as fallback. Dedup: once per rental EVER
     (persisted, provider tag 'mrr_overpay' — independent of the P/L slot).
     Braiins contracts are skipped (the list payload lacks the advertised
-    TH·h needed for the agreed price)."""
+    TH·h needed for the agreed price).
+
+    ``dry_run``: compute the signal WITHOUT consulting or claiming the dedup
+    slots — used by the panel banner so it stays visible even after the
+    webhook already fired (the dispatch path is the ONLY dedup consumer)."""
     s = load_settings(tenant_id=tenant_id)
     raw = (s.get(RENTAL_MARKET_OVERPAY_SETTING) or "").strip()
     try:
@@ -2352,7 +2404,7 @@ def evaluate_market_overpay_alerts(history: List[Dict],
             # Active rental: only when BOUGHT within the window (fresh signal).
             if start_u is None or (now - start_u) > window_h * 3600.0:
                 continue
-        if _pl_alert_fired(tenant_id, "mrr_overpay", str(rid)):
+        if not dry_run and _pl_alert_fired(tenant_id, "mrr_overpay", str(rid)):
             continue
 
         paid = _num(r.get("price_paid_btc"))
@@ -2380,8 +2432,9 @@ def evaluate_market_overpay_alerts(history: List[Dict],
         if overpay_pct < threshold:
             continue
         # Atomic claim: only the winner of the INSERT fires (race-safe dedup).
-        if not _mark_pl_alert_fired(tenant_id, "mrr_overpay", str(rid),
-                                    round(overpay_pct, 1)):
+        # dry_run skips the claim so the banner never consumes a slot.
+        if not dry_run and not _mark_pl_alert_fired(tenant_id, "mrr_overpay", str(rid),
+                                                    round(overpay_pct, 1)):
             continue
         out.append(_build_overpay_alert("mrr", rid, cost_sats_per_thh,
                                         market_price, overpay_pct))
@@ -2390,14 +2443,32 @@ def evaluate_market_overpay_alerts(history: List[Dict],
 
 # ── Arbitrage-opportunity alerts (market vs the tenant's own avg cost) ─────
 
-def _build_arb_alert(avg_cost: float, market_price: float,
-                     discount_pct: float) -> Dict[str, Any]:
+_ARB_REF_LABEL = {"average": "custo médio", "effective": "custo efetivo (entrega real)",
+                   "last": "último aluguel"}
+
+
+def _build_arb_alert(bases: Dict[str, Optional[float]], ref_key: str,
+                     market_price: float, discount_pct: float,
+                     suggested_th: Optional[float] = None) -> Dict[str, Any]:
     """Opportunity payload: category market_arb — GOLD when the discount is
-    extreme (≥50%), WARN otherwise. Concise for webhook + push."""
+    extreme (≥50%), WARN otherwise. Reports ALL three baselines (média,
+    efetivo, último) + which one drove the signal, so the user sees the
+    context behind the window. ``suggested_th`` = the tenant's typical order
+    size (median TH/s) for prefilling the buy modal."""
     severity = "GOLD" if discount_pct >= 50.0 else "WARN"
+    ref_cost = bases.get(ref_key) or 0.0
+    label = _ARB_REF_LABEL.get(ref_key, ref_key)
+    parts = []
+    if bases.get("average"):
+        parts.append(f"média {bases['average']:.0f}")
+    if bases.get("effective"):
+        parts.append(f"efetivo {bases['effective']:.0f}")
+    if bases.get("last"):
+        parts.append(f"último {bases['last']:.0f}")
+    ctx = f" ({' · '.join(parts)})" if parts else ""
     message = (
         f"ARBITRAGEM: mercado a {market_price:.0f} sats/TH·h — {discount_pct:.0f}% "
-        f"abaixo do seu custo médio ({avg_cost:.0f} sats/TH·h). Janela de compra!"
+        f"abaixo do seu {label} ({ref_cost:.0f} sats/TH·h){ctx}. Janela de compra!"
     )[:280]
     return {
         "severity": severity,
@@ -2405,28 +2476,70 @@ def _build_arb_alert(avg_cost: float, market_price: float,
         "message": message,
         "rental_id": "",
         "provider": "mrr",
-        "avg_cost_sats_per_thh": round(avg_cost, 1),
+        "avg_cost_sats_per_thh": round(bases.get("average") or 0, 1),
+        "effective_cost_sats_per_thh": round(bases.get("effective") or 0, 1),
+        "last_cost_sats_per_thh": round(bases.get("last") or 0, 1),
+        "ref_basis": ref_key,
         "market_price_sats_per_thh": round(market_price, 1),
         "discount_pct": round(discount_pct, 1),
+        "suggested_th": round(suggested_th or 0, 1),
     }
 
 
-def evaluate_market_arb_alerts(tenant_id: str = "",
-                               now: Optional[int] = None) -> List[Dict[str, Any]]:
-    """Arbitrage opportunity: when the CURRENT market price (cheapest quote)
-    is ≥ X% BELOW the tenant's own historical average cost per TH·h → fire a
-    per-tenant webhook/push ('compre agora' window).
+def _tenant_typical_th(tenant_id: str = "") -> Optional[float]:
+    """Median advertised TH/s across the tenant's past rentals (renter
+    bucket) — a robust 'typical order size' for prefilling the Braiins spot
+    buy modal (median resists outliers better than the mean). None when no
+    usable history (frontend falls back to 1000 TH ≈ 1 PH/s)."""
+    try:
+        conn = get_db()
+        c = conn.cursor()
+        c.execute(
+            "SELECT advertised_th FROM rental_history "
+            "WHERE tenant_id=? AND bucket='renter' AND advertised_th > 0",
+            (tenant_id or "",))
+        vals = sorted(float(r[0]) for r in c.fetchall())
+        conn.close()
+        if not vals:
+            return None
+        n = len(vals)
+        mid = n // 2
+        med = vals[mid] if n % 2 == 1 else (vals[mid - 1] + vals[mid]) / 2.0
+        # Round to a clean step (nearest 100 TH, min 100) so the buy-modal
+        # prefill feels deliberate (e.g. 2533.7 → 2500) instead of awkward.
+        return max(100.0, round(med / 100.0) * 100.0)
+    except Exception as e:
+        log.warning("[rental_performance] typical TH lookup failed: %s", e)
+    return None
 
-    Local-first and provider-free: the baseline is the tenant's OWN
-    rental_history (bucket 'renter'), and the market price comes from the
-    local hashrate_market_history table (last 12h; ±3d fallback; live quote
-    as last resort). So this family needs NO MRR credentials — gating is
-    purely the threshold setting.
+
+def evaluate_market_arb_alerts(tenant_id: str = "",
+                               now: Optional[int] = None,
+                               dry_run: bool = False) -> List[Dict[str, Any]]:
+    """Arbitrage opportunity: when the CURRENT market price (cheapest quote)
+    is ≥ X% BELOW the tenant's own cost references → fire a per-tenant
+    webhook/push ('compre agora' window).
+
+    Three baselines from the tenant's rental_history (renter bucket): the
+    advertised AVERAGE, the DELIVERED/effective cost (paid ÷ TH·h actually
+    received — delivery < 100% raises it), and the LAST rental's cost. The
+    reference used is the HIGHEST of the available baselines: if the market
+    is ≥ X% below even the user's most expensive reference, it's a genuine
+    window — and the message reports all three so the user sees the context.
+
+    Local-first and provider-free: baselines come from the tenant's OWN
+    rental_history and the market price from the local hashrate_market_history
+    table (last 12h; ±3d fallback). So this family needs NO MRR credentials —
+    gating is purely the threshold setting.
 
     Dedup: ONE alert per cooldown window (rental_market_arb_cooldown_hours,
     default 24h) — a persistently cheap market repeats the signal daily
     instead of spamming every sweep. Persisted in the shared rental_pl_alerts
     table with provider tag 'mrr_arb' and a bucket key as rental_id.
+
+    ``dry_run``: compute the window WITHOUT claiming the cooldown dedup slot —
+    used by the panel banner so the open window stays visible even after the
+    webhook already fired (the dispatch path is the ONLY dedup consumer).
     """
     s = load_settings(tenant_id=tenant_id)
     raw = (s.get(RENTAL_MARKET_ARB_SETTING) or "").strip()
@@ -2450,24 +2563,35 @@ def evaluate_market_arb_alerts(tenant_id: str = "",
     now = int(now or time.time())
 
     _prune_pl_alerts()
-    # Baseline: the tenant's own historical average cost (never a fabricated
-    # number — no history = honest skip).
-    avg_cost = _tenant_avg_cost_sats_per_thh(tenant_id)
-    if not avg_cost or avg_cost <= 0:
+    # Baselines: never a fabricated number — no history = honest skip.
+    bases = _tenant_cost_baselines(tenant_id)
+    usable = {k: v for k, v in bases.items() if v and v > 0}
+    if not usable:
         return []
     market_price = _recent_market_sats_per_thh(now)
     if not market_price or market_price <= 0:
         return []  # no market reference at all → honest skip
-    discount_pct = (1.0 - market_price / avg_cost) * 100.0
+    # Reference = the HIGHEST baseline (most conservative signal): if the
+    # market is ≥ X% below even the user's most expensive cost, it's a real
+    # buying window. Ties break by an explicit priority (the more truthful
+    # reference wins): effective (delivered reality) > last (recent regime)
+    # > average.
+    ref_key = max(
+        usable,
+        key=lambda k: (usable[k], {"effective": 2, "last": 1, "average": 0}[k]))
+    ref_cost = usable[ref_key]
+    discount_pct = (1.0 - market_price / ref_cost) * 100.0
     if discount_pct < threshold:
         return []  # market not cheap enough vs MY costs
     # Dedup: one alert per cooldown bucket (atomic claim, race-safe).
+    # dry_run skips the claim so the banner never consumes the slot.
     bucket = int(now // (cooldown_h * 3600.0))
     dedup_id = f"arb-{bucket}"
-    if not _mark_pl_alert_fired(tenant_id, "mrr_arb", dedup_id,
-                                round(discount_pct, 1)):
+    if not dry_run and not _mark_pl_alert_fired(tenant_id, "mrr_arb", dedup_id,
+                                                round(discount_pct, 1)):
         return []
-    return [_build_arb_alert(avg_cost, market_price, discount_pct)]
+    return [_build_arb_alert(bases, ref_key, market_price, discount_pct,
+                             _tenant_typical_th(tenant_id))]
 
 
 # ── Local rental-history persistence ────────────────────────────────────────

@@ -766,6 +766,11 @@
     <div class="rentals-strip__card" data-rentals-filter="owner" title="ver rigs alugados"><div class="rentals-strip__title">MRR OWNER</div><div class="rentals-strip__value" id="rentals-mrr-owner">—</div><div class="rentals-strip__sub">rigs leased · clique p/ ver</div></div>
     <div class="rentals-strip__card" data-rentals-filter="contracts" title="ver contratos Braiins"><div class="rentals-strip__title">BRAIINS</div><div class="rentals-strip__value" id="rentals-braiins">—</div><div class="rentals-strip__sub">contracts · clique p/ ver</div></div>
   </div>
+  <!-- Market signals: 'compras caras detectadas' (overpay) + 'janela de
+       arbitragem aberta' — dry-run evaluation (never consumes the webhook
+       dedup). Overpay banner jumps to the history tab; arbitrage banner
+       opens the Braiins buy flow. -->
+  <div class="rentals-signals" id="rentals-signals" hidden></div>
   <!-- CFO: portfolio analytics — consolidated spend/cost/delivery so the
        operator sees where the money went BEFORE opening individual rentals. -->
   <div class="rentals-portfolio" id="rentals-portfolio" hidden>
@@ -2498,6 +2503,9 @@
       </div>
       <div class="modal__body">
         <div class="braiins-buy__quote" id="braiins-buy-quote">carregando cotação…</div>
+        <!-- Braiins available balance — shown live; the submit is BLOCKED
+             while the budget exceeds the available balance. -->
+        <div class="braiins-buy__balance" id="braiins-buy-balance">saldo: carregando…</div>
         <div class="braiins-buy__fields">
           <label class="field">
             <span class="field__label">HASHRATE (TH/s)</span>

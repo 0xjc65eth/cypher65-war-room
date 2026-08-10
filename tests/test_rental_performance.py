@@ -2262,19 +2262,22 @@ def _arb_settings(threshold="30", cooldown="24"):
             "rental_market_arb_cooldown_hours": cooldown}
 
 
-def _seed_avg_cost(tmp_path, paid_sats, thh=1000.0, tenant_id="t1"):
+def _seed_avg_cost(tmp_path, paid_sats, thh=1000.0, tenant_id="t1",
+                   delivered_thh=None, rid="arb-hist-1", start=None):
     """Seed rental_history (renter bucket) so the tenant's weighted average
-    cost = paid_sats / thh sats/TH·h."""
+    cost = paid_sats / thh sats/TH·h. ``delivered_thh`` (when given) feeds the
+    EFFECTIVE cost baseline; ``start`` orders the 'last rental' baseline."""
     from services.db import get_db
     rp._ensure_history_table()
     conn = get_db()
     c = conn.cursor()
     c.execute(
         "INSERT INTO rental_history(tenant_id,provider,bucket,rental_id,"
-        "advertised_th,length_hours,paid_sats,created_ts) "
-        "VALUES(?,?,?,?,?,?,?,?)",
-        (tenant_id, "mrr", "renter", "arb-hist-1",
-         100.0, thh / 100.0, paid_sats, int(time.time())))
+        "advertised_th,length_hours,delivered_thh,paid_sats,created_ts,start) "
+        "VALUES(?,?,?,?,?,?,?,?,?,?)",
+        (tenant_id, "mrr", "renter", rid,
+         100.0, thh / 100.0, delivered_thh, paid_sats,
+         int(time.time()), start or f"2026-08-01 {rid}:00:00 UTC"))
     conn.commit()
     conn.close()
 
@@ -2287,7 +2290,7 @@ def test_market_arb_alert_fires_and_dedup_cooldown(tmp_path, monkeypatch):
     monkeypatch.setattr(rp, "load_settings",
                         lambda tenant_id="": _arb_settings("30", "24"))
     monkeypatch.setattr(rp, "_recent_market_sats_per_thh", lambda now=0, window_h=12.0: 40.0)
-    _seed_avg_cost(tmp_path, paid_sats=100_000, thh=1000.0)  # avg cost 100
+    _seed_avg_cost(tmp_path, paid_sats=100_000, thh=1000.0)  # avg/last cost 100
     now = int(time.time())
 
     # avg 100 vs market 40 → 60% below ≥ 30 → fires (GOLD ≥50%).
@@ -2298,11 +2301,138 @@ def test_market_arb_alert_fires_and_dedup_cooldown(tmp_path, monkeypatch):
     assert "ARBITRAGEM" in a[0]["message"]
     assert "60% abaixo" in a[0]["message"]
     assert a[0]["discount_pct"] == 60.0
+    # The payload reports all three baselines + which drove the signal.
+    assert a[0]["avg_cost_sats_per_thh"] == 100.0
+    assert a[0]["ref_basis"] in ("average", "last")
 
     # Same cooldown bucket → deduped.
     assert rp.evaluate_market_arb_alerts(tenant_id="t1", now=now + 3600) == []
     # Next bucket (24h later) → fires again.
     assert len(rp.evaluate_market_arb_alerts(tenant_id="t1", now=now + 25 * 3600)) == 1
+
+
+def test_market_signals_dry_run_never_consumes_dedup(tmp_path, monkeypatch):
+    """dry_run (panel banner) computes the signal WITHOUT claiming the dedup
+    slots — a signal already fired via dispatch must STAY visible in the
+    banner, and a dry-run banner must never suppress a later real dispatch."""
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "arb-dry.sqlite"))
+    monkeypatch.setattr(rp, "load_settings",
+                        lambda tenant_id="": _arb_settings("30", "24"))
+    monkeypatch.setattr(rp, "_recent_market_sats_per_thh", lambda now=0, window_h=12.0: 40.0)
+    _seed_avg_cost(tmp_path, paid_sats=100_000, thh=1000.0)  # avg/last 100
+    now = int(time.time())
+
+    # Banner (dry_run) shows the window WITHOUT claiming the cooldown slot.
+    assert len(rp.evaluate_market_arb_alerts(tenant_id="t1", now=now,
+                                             dry_run=True)) == 1
+    assert len(rp.evaluate_market_arb_alerts(tenant_id="t1", now=now,
+                                             dry_run=True)) == 1
+    # A real dispatch right after still fires (slot was never consumed).
+    assert len(rp.evaluate_market_arb_alerts(tenant_id="t1", now=now)) == 1
+    # After the real dispatch claimed the bucket, dry_run STILL shows it.
+    assert len(rp.evaluate_market_arb_alerts(tenant_id="t1", now=now,
+                                             dry_run=True)) == 1
+    # …but a second real dispatch is deduped.
+    assert rp.evaluate_market_arb_alerts(tenant_id="t1", now=now) == []
+
+
+def test_market_overpay_dry_run_never_consumes_dedup(tmp_path, monkeypatch):
+    """Same contract for the overpay family: dry_run repeats without claiming
+    per-rental slots, and never suppresses a later real dispatch."""
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "ovp-dry.sqlite"))
+    monkeypatch.setattr(rp, "load_settings",
+                        lambda tenant_id="": _overpay_settings("100"))
+    monkeypatch.setattr(rp, "_historical_market_sats_per_thh", lambda ts: 40.0)
+    now = int(time.time())
+    hist = [_overpay_rental("r1", end_u=now - 1000, now=now)]  # cost 100 vs 40 → 150%
+
+    # Banner shows it repeatedly (dry_run), then a real dispatch fires once.
+    assert len(rp.evaluate_market_overpay_alerts(hist, [], tenant_id="t1",
+                                                 now=now, dry_run=True)) == 1
+    assert len(rp.evaluate_market_overpay_alerts(hist, [], tenant_id="t1",
+                                                 now=now, dry_run=True)) == 1
+    assert len(rp.evaluate_market_overpay_alerts(hist, [], tenant_id="t1",
+                                                 now=now)) == 1
+    # Real dispatch claimed the slot; dry_run banner STAYS visible.
+    assert len(rp.evaluate_market_overpay_alerts(hist, [], tenant_id="t1",
+                                                 now=now, dry_run=True)) == 1
+    assert rp.evaluate_market_overpay_alerts(hist, [], tenant_id="t1",
+                                             now=now) == []
+
+
+def test_market_arb_last_rental_baseline_dominates(tmp_path, monkeypatch):
+    """The LAST rental's cost is a baseline: a market price that is NOT cheap
+    vs the average can still be a real window vs what the user paid most
+    recently (the highest baseline drives the signal)."""
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "arb-last.sqlite"))
+    monkeypatch.setattr(rp, "load_settings",
+                        lambda tenant_id="": _arb_settings("30", "24"))
+    monkeypatch.setattr(rp, "_recent_market_sats_per_thh", lambda now=0, window_h=12.0: 160.0)
+    # avg = (100k + 300k) / 2000 TH·h = 200; last rental paid 300k → 300.
+    _seed_avg_cost(tmp_path, paid_sats=100_000, thh=1000.0, rid="old",
+                   start="2026-07-01 00:00:00 UTC")
+    _seed_avg_cost(tmp_path, paid_sats=300_000, thh=1000.0, rid="recent",
+                   start="2026-08-01 00:00:00 UTC")
+    now = int(time.time())
+
+    a = rp.evaluate_market_arb_alerts(tenant_id="t1", now=now)
+    assert len(a) == 1
+    # avg 200 → market 160 is only 20% below (silent); last 300 → 47% (fires).
+    assert a[0]["ref_basis"] == "last"
+    assert a[0]["last_cost_sats_per_thh"] == 300.0
+    assert a[0]["discount_pct"] == round((1 - 160 / 300) * 100, 1)
+    assert "último aluguel" in a[0]["message"]
+    assert "média 200" in a[0]["message"]
+
+
+def test_market_arb_effective_cost_with_delivery(tmp_path, monkeypatch):
+    """The EFFECTIVE baseline (paid ÷ actually-delivered TH·h) is the real
+    cost when delivery < 100%: a market price ABOVE the advertised average can
+    still be a buying window vs what the user effectively paid."""
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "arb-eff.sqlite"))
+    monkeypatch.setattr(rp, "load_settings",
+                        lambda tenant_id="": _arb_settings("30", "24"))
+    monkeypatch.setattr(rp, "_recent_market_sats_per_thh", lambda now=0, window_h=12.0: 140.0)
+    # Advertised avg = 100k/1000 TH·h = 100; delivered only 500 TH·h (50%)
+    # → effective = 100k/500 = 200. Market 140: 40% below avg (silent), 30%
+    # below effective (fires) — the delivery loss is the deciding reference.
+    _seed_avg_cost(tmp_path, paid_sats=100_000, thh=1000.0, delivered_thh=500.0)
+    now = int(time.time())
+
+    a = rp.evaluate_market_arb_alerts(tenant_id="t1", now=now)
+    assert len(a) == 1
+    assert a[0]["ref_basis"] == "effective"
+    assert a[0]["effective_cost_sats_per_thh"] == 200.0
+    assert a[0]["discount_pct"] == 30.0
+    assert "custo efetivo" in a[0]["message"]
+    assert "média 100" in a[0]["message"]
+
+
+def test_market_arb_last_baseline_with_mixed_start_formats(tmp_path, monkeypatch):
+    """'last' must resolve the real most-recent rental even when start mixes
+    formats (MRR 'YYYY-MM-DD HH:MM:SS UTC' vs Braiins RFC3339 '…T…Z') — a
+    lexical ORDER BY would sort ALL space-form rows before T-form rows and
+    pick the wrong one."""
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "arb-mix.sqlite"))
+    monkeypatch.setattr(rp, "load_settings",
+                        lambda tenant_id="": _arb_settings("30", "24"))
+    monkeypatch.setattr(rp, "_recent_market_sats_per_thh", lambda now=0, window_h=12.0: 160.0)
+    # Space-form (MRR) is LATER in wall time…
+    _seed_avg_cost(tmp_path, paid_sats=300_000, thh=1000.0, rid="mrr-later",
+                   start="2026-08-05 00:00:00 UTC")
+    # …but T-form (Braiins) comes EARLIER in time — yet lexicographically
+    # '2026-08-01T…' sorts AFTER '2026-08-05 ' (space < 'T'). The parser must
+    # pick the MRR row as 'last'.
+    _seed_avg_cost(tmp_path, paid_sats=100_000, thh=1000.0, rid="braiins-earlier",
+                   start="2026-08-01T10:00:00Z")
+    now = int(time.time())
+
+    bases = rp._tenant_cost_baselines(tenant_id="t1")
+    assert bases["last"] == 300.0  # the MRR row (later wall time) — not 100
+    a = rp.evaluate_market_arb_alerts(tenant_id="t1", now=now)
+    assert len(a) == 1
+    assert a[0]["ref_basis"] == "last"
+    assert a[0]["last_cost_sats_per_thh"] == 300.0
 
 
 def test_market_arb_threshold_not_met_or_disabled(tmp_path, monkeypatch):
@@ -2334,6 +2464,73 @@ def test_market_arb_skips_without_history_or_market(tmp_path, monkeypatch):
     _seed_avg_cost(tmp_path, paid_sats=100_000, thh=1000.0)
     monkeypatch.setattr(rp, "_recent_market_sats_per_thh", lambda now=0, window_h=12.0: None)
     assert rp.evaluate_market_arb_alerts(tenant_id="t1", now=now) == []
+
+
+def test_tenant_typical_th_median_and_fallback(tmp_path, monkeypatch):
+    """_tenant_typical_th = MEDIAN advertised TH of the tenant's rentals
+    (robust to outliers) for prefilling the Braiins buy modal; None with no
+    usable history so the frontend falls back to 1000 TH."""
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "th.sqlite"))
+    rp._ensure_history_table()
+    from services.db import get_db
+    conn = get_db()
+    c = conn.cursor()
+    # Odd count → middle value: [100, 100, 1000, 5000, 10000] → 1000.
+    for i, th in enumerate((100, 100, 1000, 5000, 10000)):
+        c.execute(
+            "INSERT INTO rental_history(tenant_id,provider,bucket,rental_id,"
+            "advertised_th,length_hours,paid_sats,created_ts) "
+            "VALUES(?,?,?,?,?,?,?,?)",
+            ("t1", "mrr", "renter", f"th-{i}", th, 10.0, 100_000, int(time.time())))
+    conn.commit()
+    conn.close()
+    assert rp._tenant_typical_th(tenant_id="t1") == 1000.0
+    # Even count → mean of the two middle: [100, 1000] → 550, rounded to 600.
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "th2.sqlite"))
+    rp._ensure_history_table()
+    conn = get_db()
+    c = conn.cursor()
+    for i, th in enumerate((100, 1000)):
+        c.execute(
+            "INSERT INTO rental_history(tenant_id,provider,bucket,rental_id,"
+            "advertised_th,length_hours,paid_sats,created_ts) "
+            "VALUES(?,?,?,?,?,?,?,?)",
+            ("t2", "mrr", "renter", f"th-{i}", th, 10.0, 100_000, int(time.time())))
+    conn.commit()
+    conn.close()
+    assert rp._tenant_typical_th(tenant_id="t2") == 600.0
+    # No history → None (frontend falls back to 1000).
+    assert rp._tenant_typical_th(tenant_id="nobody") is None
+
+
+def test_market_arb_signal_carries_suggested_th(tmp_path, monkeypatch):
+    """The arbitrage alert payload carries suggested_th (tenant's typical
+    order size) so the buy-modal prefill uses it instead of a fixed 1000."""
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "arb-th.sqlite"))
+    monkeypatch.setattr(rp, "load_settings",
+                        lambda tenant_id="": _arb_settings("30", "24"))
+    monkeypatch.setattr(rp, "_recent_market_sats_per_thh", lambda now=0, window_h=12.0: 40.0)
+    _seed_avg_cost(tmp_path, paid_sats=100_000, thh=1000.0, rid="old",
+                   start="2026-07-01 00:00:00 UTC")
+    _seed_avg_cost(tmp_path, paid_sats=100_000, thh=1000.0, rid="recent",
+                   start="2026-08-01 00:00:00 UTC")
+    # One BIG outlier that still PAYS its hashrate (3M sats for 5000 TH×10h =
+    # 60 sats/TH·h) so the baseline stays above the market 40 → fires, and
+    # suggested_th = median of [100,100,5000] = 100 (robust vs the outlier).
+    from services.db import get_db
+    conn = get_db()
+    c = conn.cursor()
+    c.execute(
+        "INSERT INTO rental_history(tenant_id,provider,bucket,rental_id,"
+        "advertised_th,length_hours,paid_sats,created_ts) "
+        "VALUES(?,?,?,?,?,?,?,?)",
+        ("t1", "mrr", "renter", "big", 5000.0, 10.0, 3_000_000, int(time.time())))
+    conn.commit()
+    conn.close()
+    a = rp.evaluate_market_arb_alerts(tenant_id="t1", now=int(time.time()),
+                                      dry_run=True)
+    assert len(a) == 1
+    assert a[0]["suggested_th"] == 100.0  # median of [100,100,5000] → 100
 
 
 def test_market_arb_enabled_tenants_no_mrr_key_needed(tmp_path, monkeypatch):

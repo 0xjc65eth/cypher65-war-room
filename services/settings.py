@@ -294,7 +294,7 @@ def settings_label(k):
         "rental_pl_alert_pct": "Rental P/L alert — fire webhook/push when a closed rental's economic P/L is BELOW this % (e.g. -50; empty/0 disables)",
         "rental_pl_alert_window_hours": "Only alert rentals that ENDED within this many hours (avoids backfill flood on first enable)",
         "rental_market_overpay_pct": "Rental overpay alert — fire webhook/push when the price PAID for a rental is this % ABOVE the market at purchase time (e.g. 100; empty/0 disables)",
-        "rental_market_arb_pct": "Arbitrage alert — fire webhook/push when the CURRENT market price is this % BELOW the tenant's own average cost per TH·h (e.g. 30; empty/0 disables). Local-first: baseline comes from the tenant's past rentals (open the RENTALS panel once to populate it) + local market table (no provider calls)",
+        "rental_market_arb_pct": "Arbitrage alert — fire webhook/push when the CURRENT market price is this % BELOW the tenant's own cost references per TH·h (e.g. 30; empty/0 disables). Compares vs the ADVERTISED average, the DELIVERED/effective cost (real delivery) and the LAST rental; the highest baseline drives the signal. Local-first: baselines come from the tenant's past rentals (open the RENTALS panel once to populate them) + local market table (no provider calls)",
         "rental_market_arb_cooldown_hours": "Arbitrage dedup: repeat the alert at most once per this many hours (default 24)",
         "mrr_api_key": "MiningRigRentals API key (Settings → MRR credentials)",
         "mrr_api_secret": "MiningRigRentals API secret (Settings → MRR credentials)",
