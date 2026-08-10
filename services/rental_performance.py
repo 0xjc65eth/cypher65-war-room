@@ -717,8 +717,14 @@ def fetch_braiins_contract_detail(contract_id: str, contract: Optional[Dict] = N
     # The speed series itself is the signal: CV of the PH/s values turns
     # "how flat did this contract run?" into a stability grade.
     stability = compute_speed_stability(points)
-    # Economic P/L — expected gross yield (network hashrate) vs amount paid.
-    pl = attach_pl(detail.get("perf"), amount_sat) if amount_sat is not None else {"available": False}
+    # Economic P/L — expected gross yield (network hashrate OBSERVED at the
+    # contract's time — snapshot lookup, current fallback) vs amount paid.
+    pl = attach_pl(
+        detail.get("perf"), amount_sat,
+        network_hashrate_hs=_resolve_network_hashrate_for_rental(
+            detail.get("start"), detail.get("end")))
+    if amount_sat is None:
+        pl = {"available": False}
     return {"success": True, "detail": detail, "graph": {"points": points},
             "stability": stability, "pl": pl}
 
@@ -1168,7 +1174,12 @@ def compute_provider_rankings(active: List[Dict], history: List[Dict],
             avg_th = _num(r.get("hashrate_average_th"))
             lenh = _num(r.get("length_hours"))
             delivered = (avg_th * lenh) if (avg_th and lenh) else None
-            pl = compute_rental_pl(delivered, (paid * 1e8) if paid is not None else None)
+            # Historical-P/L fix: rank providers on hashrate observed at each
+            # rental's time (snapshot lookup, current as last resort).
+            pl = compute_rental_pl(
+                delivered, (paid * 1e8) if paid is not None else None,
+                network_hashrate_hs=_resolve_network_hashrate_for_rental(
+                    r.get("start"), r.get("end")))
             if pl.get("pl_pct") is not None:
                 pl_pcts.append(pl["pl_pct"])
             if delivered and paid is not None:
@@ -1351,7 +1362,10 @@ def compute_worst_rigs(tenant_id: str = "", limit: int = 8) -> Dict[str, Any]:
             b["spend_sats"] += _num(r["paid_sats"])
         dthh = _to_float(r["delivered_thh"])
         if dthh and r["paid_sats"] is not None:
-            pl = compute_rental_pl(dthh, _num(r["paid_sats"]))
+            # Historical-P/L fix: per-rig economics priced at the hashrate
+            # observed at each rental's time, not today's.
+            pl = compute_rental_pl(dthh, _num(r["paid_sats"]),
+                                   network_hashrate_hs=_rental_network_hashrate(r))
             if pl.get("pl_sats") is not None:
                 b["pl_per_thh"].append(pl["pl_sats"] / dthh)
 
@@ -1827,16 +1841,12 @@ def pl_alert_enabled_tenants() -> List[str]:
     return list(dict.fromkeys(out))
 
 
-def sweep_rental_pl_alerts(tenant_id: str = "") -> List[Dict[str, Any]]:
-    """One P/L-alert sweep pass for a single tenant: fetch MRR renter history
-    (ONE API call — the evaluator only needs closed rentals), evaluate,
-    ingest the buckets into local history, and return the ALERTS.
-
-    Used by the periodic sweep loop, which dispatches the returned alerts
-    through the shared webhook+push path (the /api/rentals panel route keeps
-    its own evaluate+dispatch — no drift). Returns [] when nothing to judge
-    or a provider hiccup (logged, never raised).
-    """
+def _sweep_fetch_history(tenant_id: str = "") -> List[Dict]:
+    """Shared by the P/L and market-overpay sweeps: ONE MRR renter history
+    fetch + local ingest (the portfolio series + rig track record depend on
+    the ingest). Returns [] on a provider hiccup (logged) — the caller then
+    simply has nothing to evaluate. One fetch per enabled tenant per cycle,
+    never per alert family."""
     try:
         listing = fetch_mrr_rentals(rtype="renter", history=True, limit=50,
                                     tenant_id=tenant_id)
@@ -1848,18 +1858,32 @@ def sweep_rental_pl_alerts(tenant_id: str = "") -> List[Dict[str, Any]]:
                             tenant_id or "default", listing.get("error"))
             return []
         history = listing.get("rentals", [])
-        # Keep the local track record fresh even when no alert fires (the
-        # portfolio series + rig recommendations depend on it).
         try:
             ingest_rentals([], history, [], [], tenant_id=tenant_id)
         except Exception as _ie:
             log.warning("[rentals-sweep] %s: ingest error: %s",
                         tenant_id or "default", _ie)
-        return evaluate_rental_pl_alerts(history, [], tenant_id=tenant_id)
+        return history
     except Exception as e:
         log.warning("[rentals-sweep] %s: sweep error: %s",
                     tenant_id or "default", e)
         return []
+
+
+def sweep_rental_pl_alerts(tenant_id: str = "") -> List[Dict[str, Any]]:
+    """One P/L-alert sweep pass for a single tenant: fetch MRR renter history
+    (ONE API call), evaluate, ingest, and return the ALERTS. Returns [] when
+    nothing to judge or a provider hiccup (logged, never raised)."""
+    return evaluate_rental_pl_alerts(_sweep_fetch_history(tenant_id), [],
+                                     tenant_id=tenant_id)
+
+
+def sweep_rental_market_alerts(tenant_id: str = "") -> List[Dict[str, Any]]:
+    """One market-overpay sweep pass for a single tenant (same discipline as
+    sweep_rental_pl_alerts): ONE MRR history fetch, evaluate overpay vs the
+    market at purchase time, ingest, and return the ALERTS."""
+    return evaluate_market_overpay_alerts(_sweep_fetch_history(tenant_id), [],
+                                          tenant_id=tenant_id)
 
 
 def _ensure_pl_alert_table() -> None:
@@ -2024,7 +2048,12 @@ def evaluate_rental_pl_alerts(history: List[Dict], contracts: Optional[List[Dict
         pl: Optional[Dict] = None
         fired = False
         if delivered and paid_sats is not None:
-            pl = compute_rental_pl(delivered, paid_sats)
+            # Historical-P/L fix: judge against the hashrate observed at the
+            # rental's time (snapshot lookup, current as last resort).
+            pl = compute_rental_pl(
+                delivered, paid_sats,
+                network_hashrate_hs=_resolve_network_hashrate_for_rental(
+                    r.get("start"), r.get("end")))
             if pl.get("pl_pct") is not None:
                 fired = pl["pl_pct"] < threshold
             elif cost is not None:
@@ -2040,6 +2069,405 @@ def evaluate_rental_pl_alerts(history: List[Dict], contracts: Optional[List[Dict
             continue
         out.append(_build_pl_alert("mrr", rid, delivery_pct, cost, pl, market))
     return out
+
+
+# ── Auto-alert: price paid X% ABOVE market at purchase time ────────────────
+# The P/L family judges "did the rental make money?" (yield vs paid). This
+# family judges the COUNTER price: "did I overpay for the hashpower I bought?".
+# The comparison is the AGREED price per TH·h (paid ÷ advertised TH × hours) —
+# computable at purchase time with no delivery dependency — against the
+# cheapest market price OBSERVED at that moment (hashrate_market_history
+# nearest snapshot; live quote only as last resort). Fires once per rental
+# (persisted dedup, same table, provider tag 'mrr_overpay' so the P/L slot
+# stays independent).
+
+RENTAL_MARKET_OVERPAY_SETTING = "rental_market_overpay_pct"  # e.g. "100" (empty/0 = off)
+
+# ── Arbitrage-opportunity alert (market vs the tenant's OWN avg cost) ──────
+# When the CURRENT market price is ≥ X% BELOW what the tenant historically
+# PAID per TH·h, the market is offering a genuine buying window for THEM —
+# fire a per-tenant webhook/push. Local-first: the baseline comes from the
+# tenant's own rental_history and the market price from the local
+# hashrate_market_history table — ZERO provider cost, so no MRR credentials
+# are required (gating is purely the threshold setting).
+RENTAL_MARKET_ARB_SETTING = "rental_market_arb_pct"  # e.g. "30" (empty/0 = off)
+RENTAL_MARKET_ARB_COOLDOWN_SETTING = "rental_market_arb_cooldown_hours"  # default 24
+_ARB_MARKET_WINDOW_H = 12.0  # "agora" = cheapest quote in the last 12h
+
+# Nearest-market window around the purchase timestamp (±3 days). The market
+# history persists every market poll, so a snapshot within days is far more
+# accurate than today's quote for a purchase a week ago.
+_MARKET_PRICE_WINDOW_S = 3 * 86400
+_market_price_cache: Dict[int, Optional[float]] = {}
+_market_index_ensured = False
+
+
+def _ensure_market_history_index() -> None:
+    """Idempotent index on hashrate_market_history(ts) — normally created by
+    init_db, but self-heal here so the nearest-price lookup never full-scans
+    a fresh DB (tests / cold box)."""
+    global _market_index_ensured
+    if _market_index_ensured:
+        return
+    try:
+        conn = get_db()
+        c = conn.cursor()
+        c.execute("CREATE INDEX IF NOT EXISTS idx_hashrate_market_history_ts ON hashrate_market_history(ts)")
+        conn.commit()
+        conn.close()
+        _market_index_ensured = True
+    except Exception:
+        pass
+
+
+def _historical_market_sats_per_thh(ts: Optional[float]) -> Optional[float]:
+    """Cheapest PLAUSIBLE market price (sats/TH·h) observed near ``ts`` — the
+    MIN across venues in hashrate_market_history within ±3 days, same
+    semantics as fetch_market_reference() (cheapest quote). Cached per UTC
+    day; only positive values are cached (a day gaining coverage later is
+    re-resolved). Returns None when nothing covers that window."""
+    if not ts:
+        return None
+    import datetime as _dt
+    day = int(_dt.datetime.fromtimestamp(ts, tz=_dt.timezone.utc).strftime("%Y%m%d"))
+    if day in _market_price_cache:
+        return _market_price_cache[day]
+    _ensure_market_history_index()
+    val: Optional[float] = None
+    try:
+        conn = get_db()
+        c = conn.cursor()
+        c.execute(
+            "SELECT MIN(price_per_th_day) FROM hashrate_market_history "
+            "WHERE ts BETWEEN ? AND ? AND algorithm='sha256' AND price_per_th_day >= ?",
+            (int(ts) - _MARKET_PRICE_WINDOW_S, int(ts) + _MARKET_PRICE_WINDOW_S,
+             _MIN_PLAUSIBLE_PRICE))
+        row = c.fetchone()
+        conn.close()
+        if row and row[0]:
+            val = float(row[0]) * 1e8 / 24.0  # BTC/TH/day → sats/TH·h
+    except Exception as e:
+        log.warning("[rental_performance] historical market price lookup failed: %s", e)
+    if val and val > 0:
+        _market_price_cache[day] = val
+    return val
+
+
+def _tenant_avg_cost_sats_per_thh(tenant_id: str = "") -> Optional[float]:
+    """Weighted-average unit cost (sats/TH·h) the tenant actually PAID across
+    their historical rentals (renter bucket). Baseline for the arbitrage
+    alert: a market price far below this = a real buying window for THIS user.
+    None when there's no usable track record (honest skip)."""
+    try:
+        conn = get_db()
+        c = conn.cursor()
+        c.execute(
+            "SELECT SUM(paid_sats), SUM(advertised_th * length_hours) "
+            "FROM rental_history WHERE tenant_id=? AND bucket='renter' "
+            "AND paid_sats > 0 AND advertised_th > 0 AND length_hours > 0",
+            (tenant_id or "",))
+        row = c.fetchone()
+        conn.close()
+        if row and row[0] and row[1]:
+            return float(row[0]) / float(row[1])
+    except Exception as e:
+        log.warning("[rental_performance] avg cost lookup failed: %s", e)
+    return None
+
+
+def _recent_market_sats_per_thh(now: Optional[int] = None,
+                                window_h: float = _ARB_MARKET_WINDOW_H) -> Optional[float]:
+    """Cheapest plausible market price (sats/TH·h) in the last ``window_h``
+    hours — the freshest window for an 'oportunidade AGORA' signal. Falls
+    back to the ±3-day historical (cached per day). LOCAL-ONLY by design:
+    this family is zero provider cost, so there is deliberately NO live
+    quote fallback here."""
+    now = int(now or time.time())
+    try:
+        _ensure_market_history_index()
+        conn = get_db()
+        c = conn.cursor()
+        c.execute(
+            "SELECT MIN(price_per_th_day) FROM hashrate_market_history "
+            "WHERE ts >= ? AND algorithm='sha256' AND price_per_th_day >= ?",
+            (int(now) - int(window_h * 3600), _MIN_PLAUSIBLE_PRICE))
+        row = c.fetchone()
+        conn.close()
+        if row and row[0]:
+            return float(row[0]) * 1e8 / 24.0  # BTC/TH/day → sats/TH·h
+    except Exception as e:
+        log.warning("[rental_performance] recent market price lookup failed: %s", e)
+    return _historical_market_sats_per_thh(now)
+
+
+def market_arb_enabled_tenants() -> List[str]:
+    """Tenant ids that should be swept for market-arbitrage alerts.
+
+    LOCAL evaluation (baseline from the tenant's own rental_history + the
+    local market table) → zero provider cost, so NO MRR credentials are
+    required: gating is purely the threshold setting. Default/operator tenant
+    included when its GLOBAL setting is enabled."""
+    out: List[str] = []
+    try:
+        _ensure_rig_settings_tables()
+        conn = get_db()
+        c = conn.cursor()
+        c.execute("SELECT DISTINCT tenant_id, value FROM tenant_settings WHERE key=?",
+                  (RENTAL_MARKET_ARB_SETTING,))
+        rows = c.fetchall()
+        conn.close()
+        for r in rows:
+            try:
+                thr = float((r["value"] or "").strip())
+            except (TypeError, ValueError):
+                continue
+            if thr > 0:
+                out.append(r["tenant_id"])
+    except Exception as e:
+        log.warning("[rental_performance] arb-alert tenant scan failed: %s", e)
+    try:
+        s = load_settings(tenant_id="")
+        thr = (s.get(RENTAL_MARKET_ARB_SETTING) or "").strip()
+        if thr and float(thr) > 0:
+            out.append("")
+    except Exception:
+        pass
+    return list(dict.fromkeys(out))
+
+
+def market_overpay_enabled_tenants() -> List[str]:
+    """Tenant ids that should be swept for market-overpay alerts.
+
+    Same gating as pl_alert_enabled_tenants: only tenants with the threshold
+    CONFIGURED (rental_market_overpay_pct > 0) AND MRR credentials get a
+    sweep visit — never burns the MRR rate budget on 1000+ idle tenants.
+    Default/operator tenant included when its GLOBAL setting is enabled."""
+    out: List[str] = []
+    try:
+        _ensure_rig_settings_tables()
+        conn = get_db()
+        c = conn.cursor()
+        c.execute("SELECT DISTINCT tenant_id, value FROM tenant_settings WHERE key=?",
+                  (RENTAL_MARKET_OVERPAY_SETTING,))
+        rows = c.fetchall()
+        conn.close()
+        for r in rows:
+            try:
+                thr = float((r["value"] or "").strip())
+            except (TypeError, ValueError):
+                continue
+            if thr > 0 and mrr_credentials(tenant_id=r["tenant_id"])["api_key"]:
+                out.append(r["tenant_id"])
+    except Exception as e:
+        log.warning("[rental_performance] overpay-alert tenant scan failed: %s", e)
+    try:
+        s = load_settings(tenant_id="")
+        thr = (s.get(RENTAL_MARKET_OVERPAY_SETTING) or "").strip()
+        if thr and float(thr) > 0 and mrr_credentials(tenant_id="")["api_key"]:
+            out.append("")
+    except Exception:
+        pass
+    return list(dict.fromkeys(out))
+
+
+def _build_overpay_alert(provider: str, rental_id: Any, cost_sats_per_thh: float,
+                         market_price: float, overpay_pct: float) -> Dict[str, Any]:
+    """Alert payload: category rental_overpay — concise for webhook + push.
+    CRIT when paying ≥3× the market (≥200% over), WARN otherwise."""
+    severity = "CRIT" if overpay_pct >= 200.0 else "WARN"
+    message = (
+        f"Rental #{rental_id} ({provider.upper()}) pagou {overpay_pct:.0f}% acima "
+        f"do mercado na compra — custo {cost_sats_per_thh:.0f} sats/TH·h vs "
+        f"mercado {market_price:.0f} sats/TH·h"
+    )[:280]
+    return {
+        "severity": severity,
+        "category": "rental_overpay",
+        "message": message,
+        "rental_id": str(rental_id),
+        "provider": provider,
+        "overpay_pct": round(overpay_pct, 1),
+    }
+
+
+def evaluate_market_overpay_alerts(history: List[Dict],
+                                   contracts: Optional[List[Dict]] = None,
+                                   tenant_id: str = "", now: Optional[int] = None,
+                                   extra: Optional[List[Dict]] = None) -> List[Dict[str, Any]]:
+    """Rentals whose AGREED price per TH·h is ≥ X% above the market at the
+    purchase time → per-tenant alerts (webhook + push via the shared
+    dispatcher).
+
+    ``history`` = ended rentals (windowed by end); ``extra`` = ACTIVE rentals
+    (windowed by START — the 'na hora da compra' freshness: a rental bought
+    an hour ago alerts now, not when it ends weeks later). The agreed price
+    (paid ÷ advertised TH × hours) is delivery-independent, so active and
+    ended rentals are judged identically.
+
+    Market reference: nearest hashrate_market_history snapshot to the rental
+    start (±3 days), live quote only as fallback. Dedup: once per rental EVER
+    (persisted, provider tag 'mrr_overpay' — independent of the P/L slot).
+    Braiins contracts are skipped (the list payload lacks the advertised
+    TH·h needed for the agreed price)."""
+    s = load_settings(tenant_id=tenant_id)
+    raw = (s.get(RENTAL_MARKET_OVERPAY_SETTING) or "").strip()
+    try:
+        threshold = float(raw)
+    except (TypeError, ValueError):
+        return []
+    if not raw or threshold <= 0:
+        return []  # disabled / non-sensical threshold
+    window_h = 48.0
+    try:
+        window_h = float((s.get(RENTAL_PL_WINDOW_SETTING) or "48") or 48)
+    except (TypeError, ValueError):
+        window_h = 48.0
+    if window_h <= 0:
+        window_h = 48.0
+    now = int(now or time.time())
+
+    _prune_pl_alerts()
+    live_market: Optional[Dict] = None  # lazily fetched once (cached fetcher)
+
+    def _live_price() -> Optional[float]:
+        nonlocal live_market
+        if live_market is None:
+            live_market = fetch_market_reference()
+        return live_market.get("price_sats_per_thh") if live_market.get("available") else None
+
+    out: List[Dict[str, Any]] = []
+    rows = list(history or []) + list(extra or [])
+    seen: set = set()
+    for r in rows:
+        rid = r.get("id")
+        if rid is None or str(rid) in seen:
+            continue
+        seen.add(str(rid))
+        end_u = _num(r.get("end_unix"))
+        start_u = _num(r.get("start_unix"))
+        if r.get("ended"):
+            if end_u is not None and (now - end_u) > window_h * 3600.0:
+                continue
+        else:
+            # Active rental: only when BOUGHT within the window (fresh signal).
+            if start_u is None or (now - start_u) > window_h * 3600.0:
+                continue
+        if _pl_alert_fired(tenant_id, "mrr_overpay", str(rid)):
+            continue
+
+        paid = _num(r.get("price_paid_btc"))
+        adv_th = _num(r.get("hashrate_advertised_th"))
+        length_h = _num(r.get("length_hours"))
+        if paid is None or not adv_th or not length_h or length_h <= 0:
+            continue  # can't derive the agreed price — never guess
+        paid_sats = paid * 1e8
+        agreed_thh = adv_th * length_h
+        if agreed_thh <= 0:
+            continue
+        cost_sats_per_thh = paid_sats / agreed_thh
+        # Market at purchase: nearest historical snapshot (cached per day),
+        # live quote ONLY as last resort — lazy so a covered day never hits
+        # the network per rental.
+        _ts = _parse_start_ts(r.get("start"))
+        if _ts is None:
+            _ts = _parse_start_ts(r.get("end"))
+        market_price = _historical_market_sats_per_thh(_ts)
+        if market_price is None:
+            market_price = _live_price()
+        if not market_price:
+            continue  # no market reference at all → honest skip
+        overpay_pct = (cost_sats_per_thh / market_price - 1.0) * 100.0
+        if overpay_pct < threshold:
+            continue
+        # Atomic claim: only the winner of the INSERT fires (race-safe dedup).
+        if not _mark_pl_alert_fired(tenant_id, "mrr_overpay", str(rid),
+                                    round(overpay_pct, 1)):
+            continue
+        out.append(_build_overpay_alert("mrr", rid, cost_sats_per_thh,
+                                        market_price, overpay_pct))
+    return out
+
+
+# ── Arbitrage-opportunity alerts (market vs the tenant's own avg cost) ─────
+
+def _build_arb_alert(avg_cost: float, market_price: float,
+                     discount_pct: float) -> Dict[str, Any]:
+    """Opportunity payload: category market_arb — GOLD when the discount is
+    extreme (≥50%), WARN otherwise. Concise for webhook + push."""
+    severity = "GOLD" if discount_pct >= 50.0 else "WARN"
+    message = (
+        f"ARBITRAGEM: mercado a {market_price:.0f} sats/TH·h — {discount_pct:.0f}% "
+        f"abaixo do seu custo médio ({avg_cost:.0f} sats/TH·h). Janela de compra!"
+    )[:280]
+    return {
+        "severity": severity,
+        "category": "market_arb",
+        "message": message,
+        "rental_id": "",
+        "provider": "mrr",
+        "avg_cost_sats_per_thh": round(avg_cost, 1),
+        "market_price_sats_per_thh": round(market_price, 1),
+        "discount_pct": round(discount_pct, 1),
+    }
+
+
+def evaluate_market_arb_alerts(tenant_id: str = "",
+                               now: Optional[int] = None) -> List[Dict[str, Any]]:
+    """Arbitrage opportunity: when the CURRENT market price (cheapest quote)
+    is ≥ X% BELOW the tenant's own historical average cost per TH·h → fire a
+    per-tenant webhook/push ('compre agora' window).
+
+    Local-first and provider-free: the baseline is the tenant's OWN
+    rental_history (bucket 'renter'), and the market price comes from the
+    local hashrate_market_history table (last 12h; ±3d fallback; live quote
+    as last resort). So this family needs NO MRR credentials — gating is
+    purely the threshold setting.
+
+    Dedup: ONE alert per cooldown window (rental_market_arb_cooldown_hours,
+    default 24h) — a persistently cheap market repeats the signal daily
+    instead of spamming every sweep. Persisted in the shared rental_pl_alerts
+    table with provider tag 'mrr_arb' and a bucket key as rental_id.
+    """
+    s = load_settings(tenant_id=tenant_id)
+    raw = (s.get(RENTAL_MARKET_ARB_SETTING) or "").strip()
+    try:
+        threshold = float(raw)
+    except (TypeError, ValueError):
+        return []
+    if not raw or threshold <= 0:
+        return []  # disabled / non-sensical threshold
+    cooldown_h = 24.0
+    try:
+        cooldown_h = float((s.get(RENTAL_MARKET_ARB_COOLDOWN_SETTING) or "24") or 24)
+    except (TypeError, ValueError):
+        cooldown_h = 24.0
+    if cooldown_h <= 0:
+        cooldown_h = 24.0
+    # Clamp to the dedup-table prune horizon so a very long cooldown never
+    # outlives its own dedup row (prune would delete the bucket mid-window
+    # and re-fire the alert).
+    cooldown_h = min(cooldown_h, RENTAL_PL_ALERT_PRUNE_DAYS * 24.0)
+    now = int(now or time.time())
+
+    _prune_pl_alerts()
+    # Baseline: the tenant's own historical average cost (never a fabricated
+    # number — no history = honest skip).
+    avg_cost = _tenant_avg_cost_sats_per_thh(tenant_id)
+    if not avg_cost or avg_cost <= 0:
+        return []
+    market_price = _recent_market_sats_per_thh(now)
+    if not market_price or market_price <= 0:
+        return []  # no market reference at all → honest skip
+    discount_pct = (1.0 - market_price / avg_cost) * 100.0
+    if discount_pct < threshold:
+        return []  # market not cheap enough vs MY costs
+    # Dedup: one alert per cooldown bucket (atomic claim, race-safe).
+    bucket = int(now // (cooldown_h * 3600.0))
+    dedup_id = f"arb-{bucket}"
+    if not _mark_pl_alert_fired(tenant_id, "mrr_arb", dedup_id,
+                                round(discount_pct, 1)):
+        return []
+    return [_build_arb_alert(avg_cost, market_price, discount_pct)]
 
 
 # ── Local rental-history persistence ────────────────────────────────────────
@@ -2066,6 +2494,7 @@ def _ensure_history_table() -> None:
             percent REAL, avg_th REAL, advertised_th REAL,
             cost_sats_per_thh REAL, length_hours REAL,
             delivered_thh REAL, paid_sats REAL,
+            network_hashrate_hs REAL,
             created_ts INTEGER,
             PRIMARY KEY (tenant_id, provider, rental_id)
         )""")
@@ -2076,6 +2505,12 @@ def _ensure_history_table() -> None:
             cols = {row[1] for row in c.execute("PRAGMA table_info(rental_history)").fetchall()}
             if "bucket" not in cols:
                 c.execute("ALTER TABLE rental_history ADD COLUMN bucket TEXT NOT NULL DEFAULT 'renter'")
+            # Migration: tables created before the historical-P/L fix lack
+            # network_hashrate_hs — legacy rows keep NULL and self-heal on
+            # the next ingest (ON CONFLICT updates it), and every consumer
+            # falls back to the snapshots table / current hashrate meanwhile.
+            if "network_hashrate_hs" not in cols:
+                c.execute("ALTER TABLE rental_history ADD COLUMN network_hashrate_hs REAL")
         except Exception:
             pass
         conn.commit()
@@ -2103,6 +2538,10 @@ def _rental_to_history_row(r: Dict[str, Any], provider: str = "mrr",
     length_h = r.get("length_hours")
     delivered_thh = (avg_th * length_h) if (avg_th is not None and length_h) else None
     cost = (paid_sats / delivered_thh) if (paid_sats is not None and delivered_thh) else None
+    # Historical-P/L fix: persist the network hashrate OBSERVED at the rental's
+    # time (nearest snapshot, fallback current) so past rentals are priced
+    # against the network they actually mined in — not today's hashrate.
+    _nhr = _resolve_network_hashrate_for_rental(r.get("start"), r.get("end"))
     return {
         "provider": provider,
         "bucket": bucket,
@@ -2118,6 +2557,7 @@ def _rental_to_history_row(r: Dict[str, Any], provider: str = "mrr",
         "length_hours": length_h,
         "delivered_thh": delivered_thh,
         "paid_sats": paid_sats,
+        "network_hashrate_hs": _nhr if (_nhr and _nhr > 0) else None,
     }
 
 
@@ -2136,8 +2576,8 @@ def save_rental_history(rows: List[Dict], tenant_id: str = "") -> bool:
                    (tenant_id, provider, bucket, rental_id, rig_id, rig_name,
                     start, end, percent, avg_th, advertised_th,
                     cost_sats_per_thh, length_hours, delivered_thh,
-                    paid_sats, created_ts)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    paid_sats, network_hashrate_hs, created_ts)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                    ON CONFLICT(tenant_id, provider, rental_id) DO UPDATE SET
                      bucket=excluded.bucket,  -- self-heals legacy owner rows mislabeled 'renter'
                      rig_id=excluded.rig_id, rig_name=excluded.rig_name,
@@ -2148,12 +2588,14 @@ def save_rental_history(rows: List[Dict], tenant_id: str = "") -> bool:
                      length_hours=excluded.length_hours,
                      delivered_thh=excluded.delivered_thh,
                      paid_sats=excluded.paid_sats,
+                     network_hashrate_hs=excluded.network_hashrate_hs,
                      created_ts=excluded.created_ts""",
                 (tenant_id or "", r["provider"], r.get("bucket", "renter"),
                  r["rental_id"], r["rig_id"], r["rig_name"], r.get("start"),
                  r.get("end"), r["percent"], r["avg_th"], r["advertised_th"],
                  r.get("cost_sats_per_thh"), r.get("length_hours"),
-                 r.get("delivered_thh"), r.get("paid_sats"), ts),
+                 r.get("delivered_thh"), r.get("paid_sats"),
+                 r.get("network_hashrate_hs"), ts),
             )
         conn.commit()
         return True
@@ -2245,7 +2687,11 @@ def _parse_start_ts(value) -> Optional[float]:
     s = str(value or "").strip()
     if not s:
         return None
-    for fmt in ("%Y-%m-%d %H:%M:%S UTC", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
+    # RFC3339 ('T' separator, optional Z/fractional seconds — Braiins) plus
+    # the space-separated MRR formats. All treated as UTC.
+    for fmt in ("%Y-%m-%d %H:%M:%S UTC", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d",
+                "%Y-%m-%dT%H:%M:%SZ", "%Y-%m-%dT%H:%M:%S.%fZ",
+                "%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M:%S.%f"):
         try:
             # MRR/RFC3339 strings are UTC — parse as UTC-aware so weekly
             # bucketing never shifts by the server's local offset.
@@ -2256,6 +2702,114 @@ def _parse_start_ts(value) -> Optional[float]:
         return float(s)
     except (TypeError, ValueError):
         return None
+
+
+# ── Historical network hashrate (exact past P/L) ───────────────────────────
+# The portfolio P/L used the CURRENT network hashrate for past rentals,
+# which distorts historical economics (the network grows each epoch). The
+# snapshots table records the OBSERVED network hashrate per poll — the
+# nearest snapshot to each rental's start is the exact historical figure.
+# Rows persist it at ingest (network_hashrate_hs); legacy rows self-heal on
+# the next ingest; live-fetch consumers resolve on demand with a per-day
+# cache so the panel never pays one query per rental.
+
+# Nearest-snapshot search window around the rental start (±3 days). Network
+# hashrate moves on the ~2-week difficulty epoch scale, so a snapshot within
+# days is far more accurate than today's value.
+_SNAPSHOT_HR_WINDOW_S = 3 * 86400
+_snapshot_hr_cache: Dict[int, Optional[float]] = {}
+_snapshot_index_ensured = False
+
+
+def _ensure_snapshot_index() -> None:
+    """Idempotent index on snapshots(ts) — the nearest-hashrate lookup does a
+    range scan per distinct day; on a long-polled table (100k+ rows) that is
+    a full scan without it. Once per process, guarded."""
+    global _snapshot_index_ensured
+    if _snapshot_index_ensured:
+        return
+    try:
+        conn = get_db()
+        c = conn.cursor()
+        c.execute("CREATE INDEX IF NOT EXISTS idx_snapshots_ts ON snapshots(ts)")
+        conn.commit()
+        conn.close()
+        _snapshot_index_ensured = True
+    except Exception:
+        pass
+
+
+def _resolve_network_hashrate_for_ts(ts: Optional[float]) -> Optional[float]:
+    """Observed network hashrate (H/s) nearest to ``ts`` from the snapshots
+    table, within ±3 days. None when no snapshot covers that window (callers
+    then fall back to the current hashrate). Cached per UTC day — only
+    POSITIVE results are cached, so a day that gains snapshot coverage later
+    (e.g. after a remote-backup restore) is re-resolved, never pinned to the
+    old fallback."""
+    if not ts:
+        return None
+    import datetime as _dt
+    day = int(_dt.datetime.fromtimestamp(ts, tz=_dt.timezone.utc).strftime("%Y%m%d"))
+    if day in _snapshot_hr_cache:
+        return _snapshot_hr_cache[day]
+    _ensure_snapshot_index()
+    val: Optional[float] = None
+    try:
+        conn = get_db()
+        c = conn.cursor()
+        c.execute(
+            "SELECT network_hashrate FROM snapshots "
+            "WHERE ts BETWEEN ? AND ? AND network_hashrate > 0 "
+            "ORDER BY ABS(ts - ?) LIMIT 1",
+            (int(ts) - _SNAPSHOT_HR_WINDOW_S, int(ts) + _SNAPSHOT_HR_WINDOW_S, int(ts)),
+        )
+        row = c.fetchone()
+        conn.close()
+        if row and row[0]:
+            val = float(row[0])
+    except Exception as e:
+        log.warning("[rental_performance] snapshot hashrate lookup failed: %s", e)
+    if val and val > 0:
+        _snapshot_hr_cache[day] = val
+    return val
+
+
+def _resolve_network_hashrate_for_rental(start_value, end_value=None,
+                                         current_fallback: bool = True) -> Optional[float]:
+    """Network hashrate for a rental's period: nearest snapshot to its START
+    (fallback to END when the start is missing), else the current hashrate.
+    Returns None only when nothing is available at all."""
+    ts = _parse_start_ts(start_value)
+    if ts is None:
+        ts = _parse_start_ts(end_value)
+    hs = _resolve_network_hashrate_for_ts(ts)
+    if hs is not None and hs > 0:
+        return hs
+    if current_fallback:
+        return _network_hashrate_hs()
+    return None
+
+
+def _row_get(row, key: str, default=None):
+    """Read a column from a dict OR a sqlite3.Row (both support row[key];
+    only dicts have .get). Consumers pass either shape interchangeably."""
+    try:
+        if hasattr(row, "keys"):
+            return row[key]
+        return getattr(row, key, default)
+    except (KeyError, IndexError, TypeError):
+        return default
+
+
+def _rental_network_hashrate(row) -> Optional[float]:
+    """Best network hashrate for a local rental_history row: the persisted
+    ingest-time value, else the nearest snapshot, else the current hashrate.
+    Returns None only when nothing is known (yield then shows '—')."""
+    v = _to_float(_row_get(row, "network_hashrate_hs"))
+    if v and v > 0:
+        return v
+    return _resolve_network_hashrate_for_rental(
+        _row_get(row, "start"), _row_get(row, "end"))
 
 
 def _series_bucket_key(dt, bucket: str) -> str:
@@ -2299,7 +2853,11 @@ def series_bucket_rentals(tenant_id: str = "", bucket: str = "week",
         if _series_bucket_key(dt, bucket) != label:
             continue
         paid = _num(r["paid_sats"])
-        pl = compute_rental_pl(_num(r["delivered_thh"]), paid)
+        # Historical-P/L fix: price this past rental against the network
+        # hashrate OBSERVED at its time (persisted at ingest, snapshot fallback).
+        pl = compute_rental_pl(_num(r["delivered_thh"]), paid,
+                               network_hashrate_hs=_rental_network_hashrate(r))
+        nhr = _to_float(_row_get(r, "network_hashrate_hs"))
         out.append({
             "provider": r["provider"],
             "rental_id": r["rental_id"],
@@ -2308,6 +2866,7 @@ def series_bucket_rentals(tenant_id: str = "", bucket: str = "week",
             "start": r["start"],
             "spent_sats": round(paid) if paid is not None else None,
             "delivered_thh": round(_num(r["delivered_thh"]), 1) if _num(r["delivered_thh"]) else None,
+            "network_hashrate_hs": round(nhr) if (nhr and nhr > 0) else None,
             "pl_sats": round(pl.get("pl_sats"), 1) if pl.get("pl_sats") is not None else None,
         })
     out.sort(key=lambda x: x["start"] or "")
@@ -2323,8 +2882,12 @@ def compute_portfolio_series(tenant_id: str = "", bucket: str = "week",
       - each row = one rental/bid the tenant already fetched (ingested by
         /api/rentals); spent = paid_sats, delivered = delivered_thh;
       - P/L per rental uses the SAME economic math as the detail banner
-        (expected gross yield from the CURRENT network hashrate × delivered
-        TH·h − paid) — labeled ESTIMATE so the chart never overstates;
+        (expected gross yield × delivered TH·h − paid) — now priced against
+        the network hashrate OBSERVED at the rental's time (persisted at
+        ingest; nearest-snapshot fallback; current hashrate only as last
+        resort), so PAST weeks no longer move when today's network grows.
+        Still labeled ESTIMATE (gross, pre-pool-fee, reward at the halving
+        epoch) so the chart never overstates;
       - buckets by ISO week (bucket='week') or calendar month (bucket='month')
         from the row's start date (created_ts fallback for unparseable rows);
       - cum_pl_sats = running cumulative so the operator sees the trend
@@ -2367,7 +2930,10 @@ def compute_portfolio_series(tenant_id: str = "", bucket: str = "week",
         paid = _num(r["paid_sats"])
         if paid is not None:
             agg[key]["spent_sats"] += paid
-        pl = compute_rental_pl(_num(r["delivered_thh"]), paid)
+        # Historical-P/L fix: price each past rental against the network
+        # hashrate observed at its time (persisted/snapshot/current fallback).
+        pl = compute_rental_pl(_num(r["delivered_thh"]), paid,
+                               network_hashrate_hs=_rental_network_hashrate(r))
         if pl.get("pl_sats") is not None:
             agg[key]["pl_sats"] += pl["pl_sats"]
             agg[key]["pl_known"] += 1

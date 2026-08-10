@@ -173,6 +173,34 @@ def dispatch_tenant_risk_alerts(tenant_id: str, alerts: list):
         log.warning("[rentals] risk alert dispatch error: %s", e)
 
 
+def dispatch_rental_market_alerts(tenant_id: str, alerts: list):
+    """Fire webhook + push for RENTAL MARKET-OVERPAY alerts (price paid X% above
+    the market at purchase time), tenant-scoped — same discipline as the P/L
+    and risk families: one shared implementation, reads the TENANT's own
+    settings, fire-and-forget daemon threads.
+    """
+    if not alerts:
+        return
+    try:
+        _dispatch_tenant_alert_family(tenant_id, alerts)
+    except Exception as e:
+        log.warning("[rentals] market alert dispatch error: %s", e)
+
+
+def dispatch_rental_arb_alerts(tenant_id: str, alerts: list):
+    """Fire webhook + push for ARBITRAGE-OPPORTUNITY alerts (market price now
+    ≥ X% below the tenant's own average cost), tenant-scoped — same discipline
+    as the other rental families: one shared implementation, reads the
+    TENANT's own settings, fire-and-forget daemon threads.
+    """
+    if not alerts:
+        return
+    try:
+        _dispatch_tenant_alert_family(tenant_id, alerts)
+    except Exception as e:
+        log.warning("[rentals] arb alert dispatch error: %s", e)
+
+
 def _dispatch_tenant_alert_family(tenant_id: str, alerts: list):
     """Shared webhook+push loop for both tenant alert families (P/L + risk) —
     one implementation, no drift between the two dispatchers."""
@@ -1000,7 +1028,10 @@ def _rentals_sweep_once() -> int:
     try:
         from services.rental_performance import (
             pl_alert_enabled_tenants, risk_alert_enabled_tenants,
-            sweep_rental_pl_alerts, sweep_risk_alerts,
+            market_overpay_enabled_tenants, market_arb_enabled_tenants,
+            _sweep_fetch_history, evaluate_rental_pl_alerts,
+            evaluate_market_overpay_alerts, evaluate_market_arb_alerts,
+            sweep_risk_alerts,
         )
         # Each family gates its own sweep to ITS enabled set — a risk-only
         # tenant must NEVER trigger sweep_rental_pl_alerts (that function
@@ -1009,16 +1040,27 @@ def _rentals_sweep_once() -> int:
         # union is only for the visit order / stagger cadence.
         pl_list = pl_alert_enabled_tenants()
         risk_list = risk_alert_enabled_tenants()
+        market_list = market_overpay_enabled_tenants()
+        arb_list = market_arb_enabled_tenants()
         pl_set = set(pl_list)
         risk_set = set(risk_list)
+        market_set = set(market_list)
+        arb_set = set(arb_list)
         # Union preserving P/L order first (deterministic visits for tests),
         # dict.fromkeys dedups a tenant in both lists to one visit.
-        tenants = list(dict.fromkeys(list(pl_list) + list(risk_list)))
+        tenants = list(dict.fromkeys(list(pl_list) + list(market_list) + list(arb_list) + list(risk_list)))
         visited = 0
         for i, t in enumerate(tenants):
             try:
+                # ONE shared MRR history fetch for the families that need it
+                # (P/L + market-overpay) — a dual-enabled tenant pays ONE API
+                # call per cycle, never one per alert family (rate budget).
+                shared_hist = None
+                if t in pl_set or t in market_set:
+                    shared_hist = _sweep_fetch_history(tenant_id=t)
                 if t in pl_set:
-                    alerts = sweep_rental_pl_alerts(tenant_id=t)
+                    alerts = evaluate_rental_pl_alerts(shared_hist or [], [],
+                                                       tenant_id=t)
                     if alerts:
                         # CRITICAL: the sweep's whole purpose is delivery
                         # without the panel — dispatch HERE or the dedup slot
@@ -1027,6 +1069,22 @@ def _rentals_sweep_once() -> int:
                         dispatch_rental_pl_alerts(t, alerts)
                         log.info("[rentals-sweep] %s: %d P/L alert(s) dispatched",
                                  t or "default", len(alerts))
+                if t in market_set:
+                    # Market-overpay family: price paid vs market at purchase.
+                    market = evaluate_market_overpay_alerts(
+                        shared_hist or [], [], tenant_id=t)
+                    if market:
+                        dispatch_rental_market_alerts(t, market)
+                        log.info("[rentals-sweep] %s: %d overpay alert(s) dispatched",
+                                 t or "default", len(market))
+                if t in arb_set:
+                    # Arbitrage-opportunity alerts — LOCAL evaluation (tenant's
+                    # own avg cost + local market table), zero provider cost.
+                    arb = evaluate_market_arb_alerts(tenant_id=t)
+                    if arb:
+                        dispatch_rental_arb_alerts(t, arb)
+                        log.info("[rentals-sweep] %s: %d arb alert(s) dispatched",
+                                 t or "default", len(arb))
                 if t in risk_set:
                     # Risk alerts (worst-rig top-N) — LOCAL evaluation, zero
                     # provider cost; only tenants that opted in are visited.

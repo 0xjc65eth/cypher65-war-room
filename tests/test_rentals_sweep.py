@@ -213,9 +213,16 @@ def test_sweep_once_visits_and_dispatches_alerts(monkeypatch):
 
     monkeypatch.setattr(
         rp, "pl_alert_enabled_tenants", lambda: ["t-a", "t-b"])
+    monkeypatch.setattr(rp, "market_overpay_enabled_tenants", lambda: [])
+    monkeypatch.setattr(rp, "market_arb_enabled_tenants", lambda: [])
+    monkeypatch.setattr(rp, "risk_alert_enabled_tenants", lambda: [])
+    # ONE shared MRR fetch per enabled tenant (rate budget), then BOTH
+    # families' evaluators consume that history — never one fetch per
+    # alert family.
+    monkeypatch.setattr(rp, "_sweep_fetch_history", lambda tenant_id="": [])
     monkeypatch.setattr(
-        rp, "sweep_rental_pl_alerts",
-        lambda tenant_id="": (visited.append(tenant_id) or ([alert] if tenant_id == "t-b" else [])))
+        rp, "evaluate_rental_pl_alerts",
+        lambda hist, contracts, tenant_id="": (visited.append(tenant_id) or ([alert] if tenant_id == "t-b" else [])))
     monkeypatch.setattr(
         _up, "dispatch_rental_pl_alerts",
         lambda t, alerts: dispatched.append((t, alerts)))
@@ -236,7 +243,12 @@ def test_sweep_once_is_staggered(monkeypatch):
     monkeypatch.setattr(_up.time, "sleep", lambda s: sleeps.append(s))
     monkeypatch.setattr(
         rp, "pl_alert_enabled_tenants", lambda: ["a", "b", "c"])
-    monkeypatch.setattr(rp, "sweep_rental_pl_alerts", lambda tenant_id="": [])
+    monkeypatch.setattr(rp, "market_overpay_enabled_tenants", lambda: [])
+    monkeypatch.setattr(rp, "market_arb_enabled_tenants", lambda: [])
+    monkeypatch.setattr(rp, "risk_alert_enabled_tenants", lambda: [])
+    monkeypatch.setattr(rp, "_sweep_fetch_history", lambda tenant_id="": [])
+    monkeypatch.setattr(rp, "evaluate_rental_pl_alerts",
+                        lambda hist, contracts, tenant_id="": [])
 
     _up._rentals_sweep_once()
     assert len(sleeps) == 2  # 3 tenants → 2 gaps
@@ -258,3 +270,151 @@ def test_sweep_start_honors_disabled_env(monkeypatch):
     monkeypatch.setattr(_up.threading.Thread, "start", lambda self: started.append(1))
     _up.start_rentals_sweep()
     assert started == []
+
+
+# ── market-overpay family (price paid vs market at purchase) ───────────────
+
+def test_market_overpay_enabled_tenants_requires_positive_threshold_and_mrr_key(tmp_path, monkeypatch):
+    """Only tenants with rental_market_overpay_pct > 0 AND MRR credentials are
+    returned (the sweep must not burn provider calls for opted-out accounts)."""
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "sweep7.sqlite"))
+    from services.db import get_db
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("CREATE TABLE IF NOT EXISTS tenant_settings (tenant_id TEXT, key TEXT, value TEXT, updated_ts INTEGER, PRIMARY KEY(tenant_id,key))")
+    c.execute("INSERT OR REPLACE INTO tenant_settings VALUES ('t-good', 'rental_market_overpay_pct', '100', 0)")
+    c.execute("INSERT OR REPLACE INTO tenant_settings VALUES ('t-good', 'mrr_api_key', 'k1', 0)")
+    c.execute("INSERT OR REPLACE INTO tenant_settings VALUES ('t-no-key', 'rental_market_overpay_pct', '100', 0)")
+    c.execute("INSERT OR REPLACE INTO tenant_settings VALUES ('t-neg', 'rental_market_overpay_pct', '-50', 0)")
+    c.execute("INSERT OR REPLACE INTO tenant_settings VALUES ('t-neg', 'mrr_api_key', 'k2', 0)")
+    c.execute("INSERT OR REPLACE INTO tenant_settings VALUES ('t-empty', 'rental_market_overpay_pct', '', 0)")
+    c.execute("INSERT OR REPLACE INTO tenant_settings VALUES ('t-empty', 'mrr_api_key', 'k3', 0)")
+    conn.commit()
+    conn.close()
+    tenants = rp.market_overpay_enabled_tenants()
+    assert "t-good" in tenants
+    assert "t-no-key" not in tenants
+    assert "t-neg" not in tenants
+    assert "t-empty" not in tenants
+
+
+def test_sweep_rental_market_alerts_fetches_evaluates_and_returns(tmp_path, monkeypatch):
+    """sweep_rental_market_alerts: 1 MRR call → evaluate + ingest → alerts."""
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "sweep8.sqlite"))
+    calls = {"fetch": 0}
+    listing = _FakeListing(rentals=[_mr_history_row()])
+    alert = {"severity": "WARN", "category": "rental_overpay",
+             "message": "Rental #1 pagou 150% acima do mercado",
+             "rental_id": "1", "provider": "mrr"}
+    monkeypatch.setattr(
+        rp, "fetch_mrr_rentals",
+        lambda rtype="renter", history=False, limit=25, tenant_id="": (
+            calls.__setitem__("fetch", calls["fetch"] + 1) or listing))
+    monkeypatch.setattr(rp, "ingest_rentals", lambda *a, **k: True)
+    monkeypatch.setattr(
+        rp, "evaluate_market_overpay_alerts",
+        lambda history, contracts=None, tenant_id="", now=None, extra=None: [alert])
+    assert rp.sweep_rental_market_alerts(tenant_id="t1") == [alert]
+    assert calls["fetch"] == 1
+
+
+def test_dispatch_rental_market_alerts_fires_webhook_and_push(monkeypatch):
+    fired = {"webhook": [], "push": []}
+    monkeypatch.setattr(_up, "_fire_webhook_async",
+                        lambda kw: fired["webhook"].append(kw))
+    monkeypatch.setattr(_up, "_fire_push_async",
+                        lambda t, s, c, m: fired["push"].append((t, s, c, m)))
+    import services.settings as _settings_mod
+    monkeypatch.setattr(
+        _settings_mod, "load_settings",
+        lambda tenant_id="": {"webhook_url": "https://discord.com/api/webhooks/x",
+                              "webhook_min_severity": "WARN"})
+
+    _up.dispatch_rental_market_alerts("t1", [{
+        "severity": "CRIT", "category": "rental_overpay",
+        "message": "Rental #9 pagou 300% acima do mercado",
+        "rental_id": "9", "provider": "mrr"}])
+    assert len(fired["webhook"]) == 1
+    assert fired["webhook"][0]["tenant_id"] == "t1"
+    assert fired["webhook"][0]["category"] == "rental_overpay"
+    assert fired["push"][0] == ("t1", "CRIT", "rental_overpay",
+                                 "Rental #9 pagou 300% acima do mercado")
+
+
+def test_sweep_once_visits_and_dispatches_market_alerts(monkeypatch):
+    """The market family is gated to ITS enabled set and dispatched by the
+    sweep loop (never swallowed after the dedup slot is claimed)."""
+    monkeypatch.setattr(_up, "_RENTAL_SWEEP_STAGGER", 0.0)
+    dispatched = []
+    fetches = []
+    alert = {"severity": "WARN", "category": "rental_overpay",
+             "message": "Overpay!", "rental_id": "9", "provider": "mrr"}
+    monkeypatch.setattr(rp, "pl_alert_enabled_tenants", lambda: [])
+    monkeypatch.setattr(rp, "risk_alert_enabled_tenants", lambda: [])
+    monkeypatch.setattr(rp, "market_arb_enabled_tenants", lambda: [])
+    monkeypatch.setattr(rp, "market_overpay_enabled_tenants", lambda: ["t-m"])
+    monkeypatch.setattr(rp, "_sweep_fetch_history",
+                        lambda tenant_id="": (fetches.append(tenant_id) or []))
+    monkeypatch.setattr(rp, "evaluate_market_overpay_alerts",
+                        lambda hist, contracts, tenant_id="": [alert])
+    monkeypatch.setattr(_up, "dispatch_rental_market_alerts",
+                        lambda t, alerts: dispatched.append((t, alerts)))
+    n = _up._rentals_sweep_once()
+    assert n == 1
+    assert fetches == ["t-m"]  # exactly one shared MRR fetch
+    assert dispatched == [("t-m", [alert])]
+
+
+def test_sweep_once_dual_enabled_shares_one_fetch(monkeypatch):
+    """A tenant with BOTH P/L and market-overpay enabled pays ONE MRR fetch
+    per cycle (the shared _sweep_fetch_history contract) — never one per
+    alert family (provider rate budget)."""
+    monkeypatch.setattr(_up, "_RENTAL_SWEEP_STAGGER", 0.0)
+    fetches = []
+    pl_dispatched = []
+    mkt_dispatched = []
+    monkeypatch.setattr(rp, "pl_alert_enabled_tenants", lambda: ["t-dual"])
+    monkeypatch.setattr(rp, "market_overpay_enabled_tenants", lambda: ["t-dual"])
+    monkeypatch.setattr(rp, "market_arb_enabled_tenants", lambda: [])
+    monkeypatch.setattr(rp, "risk_alert_enabled_tenants", lambda: [])
+    monkeypatch.setattr(
+        rp, "_sweep_fetch_history",
+        lambda tenant_id="": (fetches.append(tenant_id) or [{"rental_id": "1"}]))
+    monkeypatch.setattr(rp, "evaluate_rental_pl_alerts",
+                        lambda hist, contracts, tenant_id="": [{"severity": "WARN"}])
+    monkeypatch.setattr(rp, "evaluate_market_overpay_alerts",
+                        lambda hist, contracts, tenant_id="": [{"severity": "WARN"}])
+    monkeypatch.setattr(_up, "dispatch_rental_pl_alerts",
+                        lambda t, a: pl_dispatched.append((t, a)))
+    monkeypatch.setattr(_up, "dispatch_rental_market_alerts",
+                        lambda t, a: mkt_dispatched.append((t, a)))
+    n = _up._rentals_sweep_once()
+    assert n == 1
+    assert fetches == ["t-dual"]  # ONE fetch feeding BOTH families
+    assert len(pl_dispatched) == 1
+    assert len(mkt_dispatched) == 1
+
+
+def test_sweep_once_visits_and_dispatches_arb_alerts(monkeypatch):
+    """Arbitrage family: gated to ITS enabled set, evaluated LOCALLY (no
+    _sweep_fetch_history call — zero provider cost), and dispatched by the
+    sweep loop (never swallowed after the dedup slot is claimed)."""
+    monkeypatch.setattr(_up, "_RENTAL_SWEEP_STAGGER", 0.0)
+    dispatched = []
+    fetched = []
+    alert = {"severity": "GOLD", "category": "market_arb",
+             "message": "ARBITRAGEM!", "rental_id": "", "provider": "mrr"}
+    monkeypatch.setattr(rp, "pl_alert_enabled_tenants", lambda: [])
+    monkeypatch.setattr(rp, "market_overpay_enabled_tenants", lambda: [])
+    monkeypatch.setattr(rp, "market_arb_enabled_tenants", lambda: ["t-arb"])
+    monkeypatch.setattr(rp, "risk_alert_enabled_tenants", lambda: [])
+    monkeypatch.setattr(rp, "_sweep_fetch_history",
+                        lambda tenant_id="": (fetched.append(tenant_id) or []))
+    monkeypatch.setattr(rp, "evaluate_market_arb_alerts",
+                        lambda tenant_id="", now=None: [alert])
+    monkeypatch.setattr(_up, "dispatch_rental_arb_alerts",
+                        lambda t, a: dispatched.append((t, a)))
+    n = _up._rentals_sweep_once()
+    assert n == 1
+    assert fetched == []  # LOCAL family — must NOT hit the provider
+    assert dispatched == [("t-arb", [alert])]

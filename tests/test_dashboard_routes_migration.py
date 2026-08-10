@@ -163,3 +163,42 @@ class TestMigratedDashboardRoutes:
         out = enrich_snapshot(dict(snap))
         assert out is not snap
         assert snap == {"ts": 1, "worker": {"hashrate": 1e12}}
+
+    def test_institutional_btc_usd_wired_from_btc_price(self, monkeypatch):
+        """Real-user audit: institutional view must read btc_usd from the
+        top-level btc_price block (network.btc_usd never existed), so the
+        Market tab BTC/USD + Rent-vs-Own cells stop showing "—" forever."""
+        from services.hashrate_market import NormalizedOffer
+
+        def _offers():
+            return [
+                NormalizedOffer(provider="braiins", hashrate=1000,
+                                price_per_th_day=3e-7, duration_days=1.0,
+                                fee_pct=0.0, algorithm="sha256",
+                                source="braiins", estimated=False),
+                NormalizedOffer(provider="mrr", hashrate=100000,
+                                price_per_th_day=4e-7, duration_days=1.0,
+                                fee_pct=0.0, algorithm="sha256",
+                                source="mrr", estimated=False),
+            ]
+
+        monkeypatch.setattr("services.snapshot_enrichment._fetch_all_offers",
+                            lambda network_hashrate=None: _offers(), raising=False)
+
+        # btc_price.usd is the canonical source → institutional.snapshot.btc_usd
+        snap = {"ts": 1, "network": {"hashrate": 6e20},
+                "btc_price": {"usd": 60000.0, "brl": 320000.0}}
+        out = enrich_snapshot(dict(snap))
+        inst = out.get("institutional") or {}
+        assert inst.get("snapshot", {}).get("btc_usd") == 60000.0
+        assert inst.get("snapshot", {}).get("rent_vs_own") is not None
+
+        # Legacy fallback: network.btc_usd still honoured when btc_price absent.
+        snap2 = {"ts": 1, "network": {"hashrate": 6e20, "btc_usd": 55000.0}}
+        out2 = enrich_snapshot(dict(snap2))
+        assert (out2.get("institutional") or {}).get("snapshot", {}).get("btc_usd") == 55000.0
+
+        # Neither present → None (renderer shows "—", never crashes).
+        snap3 = {"ts": 1, "network": {"hashrate": 6e20}}
+        out3 = enrich_snapshot(dict(snap3))
+        assert (out3.get("institutional") or {}).get("snapshot", {}).get("btc_usd") is None

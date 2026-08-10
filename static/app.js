@@ -2920,7 +2920,11 @@ function renderAccount(acct) {
     const vwapEl = document.getElementById('mkt-snap-vwap');
     if (vwapEl && snap.vwap_4h_btc_ph_day) vwapEl.textContent = snap.vwap_4h_btc_ph_day.toFixed(6) + ' BTC/PH/d';
     const btcEl = document.getElementById('mkt-snap-btcusd');
-    if (btcEl && snap.btc_usd) btcEl.textContent = '$' + Number(snap.btc_usd).toLocaleString('en-US');
+    // Real-user audit: institutional.btc_usd can lag behind the top-level
+    // btc_price — fall back to _mktBtcUsd (same source the USD/TH/d column
+    // uses) so the Executive Snapshot never shows a stale "—".
+    const btcUsdCell = snap.btc_usd || _mktBtcUsd;
+    if (btcEl && btcUsdCell) btcEl.textContent = '$' + Number(btcUsdCell).toLocaleString('en-US');
 
     // CFO: rent-vs-own benchmark cell in the snapshot strip.
     const rvo = snap.rent_vs_own;
@@ -4675,6 +4679,14 @@ function renderAccount(acct) {
     document.getElementById('ai-ctx-hr') && (document.getElementById('ai-ctx-hr').textContent = fmt.hashrate(w.hashrate));
     document.getElementById('ai-ctx-best') && (document.getElementById('ai-ctx-best').textContent = fmt.diff(w.bestDifficulty));
     document.getElementById('ai-ctx-net') && (document.getElementById('ai-ctx-net').textContent = fmt.diff(net.difficulty));
+    // Real-user audit: Net HR / Height / Price were never populated — the
+    // CONTEXT sidebar showed "—" for three of nine rows forever. Same
+    // sources the status bar uses (network.hashrate, network.height,
+    // btc_price.usd).
+    document.getElementById('ai-ctx-nethr') && (document.getElementById('ai-ctx-nethr').textContent = fmt.hashrate(net.hashrate));
+    document.getElementById('ai-ctx-net-height') && (document.getElementById('ai-ctx-net-height').textContent = net.height ? '#' + net.height : '—');
+    const btcUsdCtx = (snap.btc_price && snap.btc_price.usd) || (net.btc_usd) || null;
+    document.getElementById('ai-ctx-price') && (document.getElementById('ai-ctx-price').textContent = btcUsdCtx ? '$' + Number(btcUsdCtx).toLocaleString() : '—');
     document.getElementById('ai-ctx-fleet') && (document.getElementById('ai-ctx-fleet').textContent = fleet.length + ' devices');
     document.getElementById('ai-ctx-pblock') && (document.getElementById('ai-ctx-pblock').textContent = prox.chance_per_share_pct ? (Number(prox.chance_per_share_pct) * 100).toFixed(6) + '%' : '—');
   }
@@ -5184,6 +5196,9 @@ function renderAccount(acct) {
     active_currency: 'Moeda exibida nos valores fiat (USD|BRL|EUR|GBP|JPY|KRW|CNY).',
     rental_pl_alert_pct: 'ALERTA CFO: dispara webhook + push quando um aluguel FECHA com P/L econômico abaixo deste % (ex: -50). Vazio ou 0 = desativado. Como o P/L vs yield costuma ser muito negativo, use um limiar realista (ex: -90) para só alertar os piores — ou deixe vazio para desligar. (Sem network hashrate, a checagem usa overpay vs preço de mercado.)',
     rental_pl_alert_window_hours: 'Janela: só alerta aluguéis que FECHARAM nas últimas N horas — evita enxurrada de alertas antigos ao habilitar a primeira vez.',
+    rental_market_overpay_pct: 'ALERTA OVERPAY: dispara webhook + push quando o preço PAGO de um aluguel ficar este % ACIMA do mercado NA HORA DA COMPRA (preço acordado vs mercado histórico na data do start). Ex: 100 = alerta se pagou 2× o mercado. Vazio ou 0 = desativado. Dispara também para aluguéis ativos comprados nas últimas N horas.',
+    rental_market_arb_pct: 'ALERTA ARBITRAGEM: dispara webhook + push quando o mercado AGORA estiver este % ABAIXO do seu CUSTO MÉDIO histórico (baseline: seus próprios aluguéis — abra o painel RENTALS uma vez para popular). Ex: 30 = alerta quando o mercado estiver ≥30% mais barato que o seu custo médio — janela de compra. Vazio ou 0 = desativado. 100% local, custo zero de provider.',
+    rental_market_arb_cooldown_hours: 'Cooldown da arbitragem: repete o alerta de oportunidade no máximo 1× a cada N horas (padrão 24). Mercado barato persistente avisa diariamente, sem spam.',
   };
   function renderSettingsForm() {
     const box = dom.settingsBody;
@@ -5193,7 +5208,7 @@ function renderAccount(acct) {
       box.innerHTML = '<div class="mkt-empty" style="padding:16px;text-align:center">settings unavailable</div>';
       return;
     }
-    const order = ['cost_mode','rental_usd_per_th_day','power_watts','power_kwh_usd','btc_block_reward','btc_avg_tx_fee','pool_fee_pct','orphan_rate_pct','active_currency','active_fiat','stale_share_minutes','hashrate_drop_pct','webhook_url','webhook_min_severity','rental_pl_alert_pct','rental_pl_alert_window_hours','show_test_alerts','mrr_api_key','mrr_api_secret','braiins_api_key'];
+    const order = ['cost_mode','rental_usd_per_th_day','power_watts','power_kwh_usd','btc_block_reward','btc_avg_tx_fee','pool_fee_pct','orphan_rate_pct','active_currency','active_fiat','stale_share_minutes','hashrate_drop_pct','webhook_url','webhook_min_severity','rental_pl_alert_pct','rental_pl_alert_window_hours','rental_market_overpay_pct','rental_market_arb_pct','rental_market_arb_cooldown_hours','show_test_alerts','mrr_api_key','mrr_api_secret','braiins_api_key'];
     const keys = Object.keys(settings).sort((a,b) => {
       const ia = order.indexOf(a), ib = order.indexOf(b);
       return (ia<0?99:ia) - (ib<0?99:ib);

@@ -2059,3 +2059,306 @@ def test_market_trend_ignores_subfloor_glitch_rows(tmp_path, monkeypatch):
     for p in trend["points"]:
         assert p["sats_per_thh"] > 1.0  # ~0.04 sats glitch must never appear
     assert trend["summary"]["current_sats_per_thh"] > 1.0
+
+
+# ── Historical network hashrate (exact past P/L) ───────────────────────────
+
+def test_parse_start_ts_handles_rfc3339():
+    """Braiins RFC3339 starts (T separator, Z, fractional seconds) parse to
+    the same UTC instant as the space-separated MRR format."""
+    t1 = rp._parse_start_ts("2026-07-20T10:00:00Z")
+    t2 = rp._parse_start_ts("2026-07-20 10:00:00 UTC")
+    assert t1 is not None and t1 == t2
+    t3 = rp._parse_start_ts("2026-07-20T10:00:00.500Z")
+    assert t3 is not None and abs(t3 - t1 - 0.5) < 1e-6
+    assert rp._parse_start_ts("garbage") is None
+
+
+def test_resolve_network_hashrate_from_snapshots(tmp_path, monkeypatch):
+    """The nearest snapshot to a rental's start supplies the EXACT historical
+    network hashrate (within ±3 days); end fallback works when start is missing."""
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "nhr.sqlite"))
+    rp._snapshot_hr_cache.clear()
+    import datetime as _dt
+    from services.db import get_db
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("CREATE TABLE IF NOT EXISTS snapshots (ts INTEGER NOT NULL, network_hashrate REAL)")
+    base = int(_dt.datetime(2026, 7, 20, 10, 0, 0, tzinfo=_dt.timezone.utc).timestamp())
+    c.execute("INSERT INTO snapshots(ts, network_hashrate) VALUES(?,?)", (base, 6e20))
+    c.execute("INSERT INTO snapshots(ts, network_hashrate) VALUES(?,?)", (base - 86400, 5.5e20))
+    conn.commit()
+    conn.close()
+
+    # Nearest snapshot to the rental start (10:00:00 UTC) → 6e20 wins over
+    # the one 24h earlier (closer timestamp).
+    hs = rp._resolve_network_hashrate_for_ts(base)
+    assert hs == 6e20
+    assert rp._resolve_network_hashrate_for_rental("2026-07-20T10:00:00Z") == 6e20
+    # Missing start → end fallback.
+    assert rp._resolve_network_hashrate_for_rental(None, "2026-07-20 10:00:00 UTC") == 6e20
+    # Far outside the ±3d window → current fallback (mock the live value).
+    monkeypatch.setattr(rp, "_network_hashrate_hs", lambda: 9e20)
+    assert rp._resolve_network_hashrate_for_rental("2030-01-01 00:00:00 UTC") == 9e20
+
+
+def test_portfolio_series_uses_persisted_historical_hashrate(tmp_path, monkeypatch):
+    """The series must price past rentals against the network hashrate OBSERVED
+    at their time (persisted network_hashrate_hs), NOT today's value — so
+    historical P/L stops moving when the network grows."""
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "series_nhr.sqlite"))
+    rp._snapshot_hr_cache.clear()
+    row = _series_row("1", "2026-07-20 10:00:00 UTC", 400)  # 100 TH·h, paid 400 sats
+    row["network_hashrate_hs"] = 6e20  # yield 3.125 sats/TH·h → 312.5 sats → P/L −87.5
+    assert rp.save_rental_history([row], tenant_id="t1") is True
+    # Today's network is DOUBLE that — if the series used it, P/L would be −243.75.
+    monkeypatch.setattr(rp, "_network_hashrate_hs", lambda: 1.2e21)
+    s = rp.compute_portfolio_series(tenant_id="t1", bucket="week")
+    assert s["points"][0]["pl_sats"] == -87.5
+    # Drill-down rows expose the persisted hashrate for transparency.
+    rows = rp.series_bucket_rentals(tenant_id="t1", bucket="week", label="2026-W30")
+    assert rows and rows[0]["network_hashrate_hs"] == int(6e20)
+
+
+def test_network_hashrate_roundtrip_and_self_heal(tmp_path, monkeypatch):
+    """network_hashrate_hs survives save→read, and the ON CONFLICT self-heals
+    a legacy row (NULL) on the next ingest of the same rental."""
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "nhr_rt.sqlite"))
+    rp._snapshot_hr_cache.clear()
+    # Legacy ingest: row WITHOUT the field (pre-fix DB) → stored as NULL.
+    legacy = _series_row("1", "2026-07-20 10:00:00 UTC", 400)
+    legacy.pop("network_hashrate_hs", None)
+    assert rp.save_rental_history([legacy], tenant_id="t1") is True
+    from services.db import get_db
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT network_hashrate_hs FROM rental_history WHERE tenant_id='t1' AND rental_id='1'")
+    assert c.fetchone()[0] is None
+    conn.close()
+    # Re-ingest WITH the historical hashrate → ON CONFLICT updates it.
+    fixed = _series_row("1", "2026-07-20 10:00:00 UTC", 400)
+    fixed["network_hashrate_hs"] = 6e20
+    assert rp.save_rental_history([fixed], tenant_id="t1") is True
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT network_hashrate_hs FROM rental_history WHERE tenant_id='t1' AND rental_id='1'")
+    assert c.fetchone()[0] == 6e20
+    conn.close()
+
+
+# ── Auto-alert: price paid X% above the market at purchase time ────────────
+
+def _overpay_settings(threshold="100", window="48"):
+    return {"rental_market_overpay_pct": threshold,
+            "rental_pl_alert_window_hours": window}
+
+
+def _overpay_rental(rid, ended=True, paid_btc=0.001, adv_th=100.0, lenh=10.0,
+                    start_u=None, end_u=None, now=None):
+    """Normalized MRR rental. Default: paid 0.001 BTC (100k sats) ÷ (100 TH ×
+    10 h = 1000 TH·h) → agreed cost 100 sats/TH·h."""
+    now = now or int(time.time())
+    return {
+        "id": rid, "ended": ended,
+        "start": "2026-07-20 10:00:00 UTC", "end": "2026-07-20 20:00:00 UTC",
+        "start_unix": start_u or (now - 3600), "end_unix": end_u or (now - 1000),
+        "price_paid_btc": paid_btc,
+        "hashrate_advertised_th": adv_th, "hashrate_average_th": adv_th,
+        "hashrate_percent": 100.0, "length_hours": lenh,
+    }
+
+
+def test_market_overpay_alert_fires_and_dedups(tmp_path, monkeypatch):
+    """A rental whose AGREED price is ≥ X% above the market at purchase fires
+    ONE alert; the same rental never alerts again (persisted dedup)."""
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "ovp.sqlite"))
+    monkeypatch.setattr(rp, "load_settings",
+                        lambda tenant_id="": _overpay_settings("100"))
+    monkeypatch.setattr(rp, "_historical_market_sats_per_thh", lambda ts: 40.0)
+    now = int(time.time())
+    # cost 100 sats/TH·h vs market 40 → overpay 150% ≥ 100 → fires (WARN).
+    hist = [_overpay_rental("r1", end_u=now - 1000, now=now)]
+    # cost 200 sats/TH·h (paid 2×) vs market 40 → overpay 400% ≥ 200 → CRIT.
+    hist.append(_overpay_rental("r2", paid_btc=0.002, end_u=now - 900, now=now))
+
+    a = rp.evaluate_market_overpay_alerts(hist, [], tenant_id="t1", now=now)
+    by_id = {x["rental_id"]: x for x in a}
+    assert set(by_id) == {"r1", "r2"}
+    assert by_id["r1"]["severity"] == "WARN"
+    assert by_id["r1"]["category"] == "rental_overpay"
+    assert "pagou 150% acima" in by_id["r1"]["message"]
+    assert "100 sats/TH" in by_id["r1"]["message"]
+    assert "40 sats/TH" in by_id["r1"]["message"]
+    assert by_id["r2"]["severity"] == "CRIT"  # ≥200% overpay
+
+    # Second evaluation: deduped (one alert per rental EVER).
+    assert rp.evaluate_market_overpay_alerts(hist, [], tenant_id="t1", now=now) == []
+
+
+def test_market_overpay_threshold_not_met_or_disabled(tmp_path, monkeypatch):
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "ovp2.sqlite"))
+    now = int(time.time())
+    hist = [_overpay_rental("r1", end_u=now - 1000, now=now)]
+    # cost 100 vs market 60 → overpay 66.7% < 100 → silent.
+    monkeypatch.setattr(rp, "load_settings",
+                        lambda tenant_id="": _overpay_settings("100"))
+    monkeypatch.setattr(rp, "_historical_market_sats_per_thh", lambda ts: 60.0)
+    assert rp.evaluate_market_overpay_alerts(hist, [], tenant_id="t1", now=now) == []
+    # disabled (empty) / non-positive → off.
+    monkeypatch.setattr(rp, "load_settings",
+                        lambda tenant_id="": _overpay_settings(""))
+    assert rp.evaluate_market_overpay_alerts(hist, [], tenant_id="t1", now=now) == []
+    monkeypatch.setattr(rp, "load_settings",
+                        lambda tenant_id="": _overpay_settings("0"))
+    assert rp.evaluate_market_overpay_alerts(hist, [], tenant_id="t1", now=now) == []
+
+
+def test_market_overpay_active_rental_extra_and_window(tmp_path, monkeypatch):
+    """ACTIVE rentals bought recently ('na hora da compra') fire via extra;
+    old active rentals stay silent (window)."""
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "ovp3.sqlite"))
+    monkeypatch.setattr(rp, "load_settings",
+                        lambda tenant_id="": _overpay_settings("100"))
+    monkeypatch.setattr(rp, "_historical_market_sats_per_thh", lambda ts: 40.0)
+    now = int(time.time())
+    fresh = _overpay_rental("a1", ended=False, start_u=now - 1200, now=now)
+    old = _overpay_rental("a2", ended=False, start_u=now - 200 * 3600, now=now)
+    alerts = rp.evaluate_market_overpay_alerts([], [], tenant_id="t1", now=now,
+                                               extra=[fresh, old])
+    assert [x["rental_id"] for x in alerts] == ["a1"]
+    assert rp.evaluate_market_overpay_alerts([], [], tenant_id="t1", now=now,
+                                             extra=[old]) == []
+
+
+def test_market_overpay_prefers_historical_and_live_is_last_resort(tmp_path, monkeypatch):
+    """The market reference is the historical price at purchase — the live
+    fetcher must NOT run when history covers; live only when history misses."""
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "ovp4.sqlite"))
+    monkeypatch.setattr(rp, "load_settings",
+                        lambda tenant_id="": _overpay_settings("100"))
+    now = int(time.time())
+
+    # History covers → the live fetcher would raise if called.
+    def _boom():
+        raise AssertionError("live market must not run when history covers")
+    monkeypatch.setattr(rp, "fetch_market_reference", _boom)
+    monkeypatch.setattr(rp, "_historical_market_sats_per_thh", lambda ts: 40.0)
+    hist = [_overpay_rental("r1", end_u=now - 1000, now=now)]
+    assert len(rp.evaluate_market_overpay_alerts(hist, [], tenant_id="t1", now=now)) == 1
+
+    # History misses → live fallback: cost 100 vs live 50 → 100% ≥ 100 → fires.
+    monkeypatch.setattr(rp, "_historical_market_sats_per_thh", lambda ts: None)
+    monkeypatch.setattr(rp, "fetch_market_reference",
+                        lambda: {"available": True, "price_sats_per_thh": 50.0})
+    hist2 = [_overpay_rental("r2", end_u=now - 1000, now=now)]
+    a = rp.evaluate_market_overpay_alerts(hist2, [], tenant_id="t1", now=now)
+    assert len(a) == 1 and "pagou 100% acima" in a[0]["message"]
+
+
+# ── Arbitrage-opportunity alerts (market vs the tenant's own avg cost) ─────
+
+def _arb_settings(threshold="30", cooldown="24"):
+    return {"rental_market_arb_pct": threshold,
+            "rental_market_arb_cooldown_hours": cooldown}
+
+
+def _seed_avg_cost(tmp_path, paid_sats, thh=1000.0, tenant_id="t1"):
+    """Seed rental_history (renter bucket) so the tenant's weighted average
+    cost = paid_sats / thh sats/TH·h."""
+    from services.db import get_db
+    rp._ensure_history_table()
+    conn = get_db()
+    c = conn.cursor()
+    c.execute(
+        "INSERT INTO rental_history(tenant_id,provider,bucket,rental_id,"
+        "advertised_th,length_hours,paid_sats,created_ts) "
+        "VALUES(?,?,?,?,?,?,?,?)",
+        (tenant_id, "mrr", "renter", "arb-hist-1",
+         100.0, thh / 100.0, paid_sats, int(time.time())))
+    conn.commit()
+    conn.close()
+
+
+def test_market_arb_alert_fires_and_dedup_cooldown(tmp_path, monkeypatch):
+    """Market ≥X% below the tenant's OWN avg cost fires; the SAME cooldown
+    bucket dedups; a later bucket can fire again (persistent cheap market
+    repeats daily, never spam)."""
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "arb.sqlite"))
+    monkeypatch.setattr(rp, "load_settings",
+                        lambda tenant_id="": _arb_settings("30", "24"))
+    monkeypatch.setattr(rp, "_recent_market_sats_per_thh", lambda now=0, window_h=12.0: 40.0)
+    _seed_avg_cost(tmp_path, paid_sats=100_000, thh=1000.0)  # avg cost 100
+    now = int(time.time())
+
+    # avg 100 vs market 40 → 60% below ≥ 30 → fires (GOLD ≥50%).
+    a = rp.evaluate_market_arb_alerts(tenant_id="t1", now=now)
+    assert len(a) == 1
+    assert a[0]["category"] == "market_arb"
+    assert a[0]["severity"] == "GOLD"
+    assert "ARBITRAGEM" in a[0]["message"]
+    assert "60% abaixo" in a[0]["message"]
+    assert a[0]["discount_pct"] == 60.0
+
+    # Same cooldown bucket → deduped.
+    assert rp.evaluate_market_arb_alerts(tenant_id="t1", now=now + 3600) == []
+    # Next bucket (24h later) → fires again.
+    assert len(rp.evaluate_market_arb_alerts(tenant_id="t1", now=now + 25 * 3600)) == 1
+
+
+def test_market_arb_threshold_not_met_or_disabled(tmp_path, monkeypatch):
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "arb2.sqlite"))
+    monkeypatch.setattr(rp, "_recent_market_sats_per_thh", lambda now=0, window_h=12.0: 80.0)
+    _seed_avg_cost(tmp_path, paid_sats=100_000, thh=1000.0)  # avg 100
+    now = int(time.time())
+    # avg 100 vs market 80 → 20% below < 30 → silent.
+    monkeypatch.setattr(rp, "load_settings",
+                        lambda tenant_id="": _arb_settings("30"))
+    assert rp.evaluate_market_arb_alerts(tenant_id="t1", now=now) == []
+    # Disabled (empty / 0 / garbage).
+    for bad in ("", "0", "abc"):
+        monkeypatch.setattr(rp, "load_settings",
+                            lambda tenant_id="", _bad=bad: _arb_settings(_bad))
+        assert rp.evaluate_market_arb_alerts(tenant_id="t1", now=now) == []
+
+
+def test_market_arb_skips_without_history_or_market(tmp_path, monkeypatch):
+    """No track record (empty rental_history) or no market reference → honest
+    skip — never fabricates a baseline."""
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "arb3.sqlite"))
+    monkeypatch.setattr(rp, "load_settings",
+                        lambda tenant_id="": _arb_settings("30"))
+    now = int(time.time())
+    # No history at all → skip.
+    assert rp.evaluate_market_arb_alerts(tenant_id="t1", now=now) == []
+    # History but no market reference → skip.
+    _seed_avg_cost(tmp_path, paid_sats=100_000, thh=1000.0)
+    monkeypatch.setattr(rp, "_recent_market_sats_per_thh", lambda now=0, window_h=12.0: None)
+    assert rp.evaluate_market_arb_alerts(tenant_id="t1", now=now) == []
+
+
+def test_market_arb_enabled_tenants_no_mrr_key_needed(tmp_path, monkeypatch):
+    """Arbitrage gating is PURELY the threshold setting — unlike the other
+    market families it needs NO MRR credentials (local eval, zero provider
+    cost). Same tenant with BOTH settings: empty key → arb includes it,
+    overpay excludes it (the key is the deciding factor for overpay)."""
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "arb4.sqlite"))
+    rp._ensure_rig_settings_tables()
+    from services.db import get_db
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("INSERT OR REPLACE INTO tenant_settings VALUES ('t-arb', 'rental_market_arb_pct', '40', 0)")
+    c.execute("INSERT OR REPLACE INTO tenant_settings VALUES ('t-arb', 'rental_market_overpay_pct', '100', 0)")
+    c.execute("INSERT OR REPLACE INTO tenant_settings VALUES ('t-off', 'rental_market_arb_pct', '0', 0)")
+    conn.commit()
+    conn.close()
+    # With an EMPTY MRR key, arbitrage still lists the tenant…
+    def _no_key(tenant_id=""):
+        return {"api_key": ""}
+    monkeypatch.setattr(rp, "mrr_credentials", _no_key)
+    out = rp.market_arb_enabled_tenants()
+    assert "t-arb" in out
+    assert "t-off" not in out
+    # …while the overpay family (same tenant, same DB) excludes it BECAUSE
+    # of the missing key — proving arb is the credential-free family.
+    ovp = rp.market_overpay_enabled_tenants()
+    assert "t-arb" not in ovp

@@ -5619,7 +5619,9 @@ def api_hashrate_market():
     """
     offers = _get_hashrate_market_offers()
     network_hashrate = (latest_snapshot.get("network") or {}).get("hashrate")
-    btc_usd = (latest_snapshot.get("network") or {}).get("btc_usd")
+    # Real-user audit: btc_usd lives in btc_price.usd (network never had it),
+    # which kept BTC/USD + Rent-vs-Own at "—" in the institutional view.
+    btc_usd = (latest_snapshot.get("btc_price") or {}).get("usd") or (latest_snapshot.get("network") or {}).get("btc_usd")
     scored = [_score_offer(offer, network_hashrate) for offer in offers]
     scored.sort(key=_market_offer_sort_key)
 
@@ -5645,7 +5647,8 @@ def api_hashrate_market_institutional():
     """
     offers = _get_hashrate_market_offers()
     network_hashrate = (latest_snapshot.get("network") or {}).get("hashrate")
-    btc_usd = (latest_snapshot.get("network") or {}).get("btc_usd")
+    # Real-user audit: same btc_price.usd fix as /api/hashrate-market.
+    btc_usd = (latest_snapshot.get("btc_price") or {}).get("usd") or (latest_snapshot.get("network") or {}).get("btc_usd")
     from services.hashrate_market import compute_institutional_view
     return jsonify({"success": True, **compute_institutional_view(offers, network_hashrate, btc_usd)})
 
@@ -5833,11 +5836,27 @@ def api_rentals(tenant_id: str = ""):
         worst_rigs: dict = {"worst": [], "count": 0}
         risk_alerts: list = []
         try:
-            from services.user_polling import dispatch_rental_pl_alerts, dispatch_tenant_risk_alerts
+            from services.user_polling import (
+                dispatch_rental_pl_alerts, dispatch_tenant_risk_alerts,
+                dispatch_rental_market_alerts, dispatch_rental_arb_alerts,
+            )
             pl_alerts = _rental_perf.evaluate_rental_pl_alerts(
                 mrr_history.get("rentals", []), braiins.get("contracts", []),
                 tenant_id=tenant_id)
             dispatch_rental_pl_alerts(tenant_id, pl_alerts)
+            # Market-overpay family: price paid vs the market AT PURCHASE —
+            # judged on ACTIVE rentals too (bought recently) so the alert
+            # fires "na hora da compra", not only when the rental ends.
+            market_alerts = _rental_perf.evaluate_market_overpay_alerts(
+                mrr_history.get("rentals", []), braiins.get("contracts", []),
+                tenant_id=tenant_id, extra=mrr_active.get("rentals", []))
+            dispatch_rental_market_alerts(tenant_id, market_alerts)
+            # Arbitrage-opportunity family: market NOW ≥ X% below the tenant's
+            # OWN average cost → 'compre agora' window. Local-first (zero
+            # provider cost), dedup once per cooldown window.
+            arb_alerts = _rental_perf.evaluate_market_arb_alerts(
+                tenant_id=tenant_id)
+            dispatch_rental_arb_alerts(tenant_id, arb_alerts)
             # Risk alerts (worst-rig top-N + concentration): the panel already
             # computes both below for the payload — pass them in so the
             # evaluator never recomputes; dispatch once per rig/event
@@ -6003,7 +6022,12 @@ def api_rentals_detail(tenant_id: str = ""):
         # the "did this rental make money?" question, computed server-side.
         # MRR reports price.paid as a STRING — coerce before the ×1e8 math.
         _paid = _rental_perf._num((raw.get("price") or {}).get("paid"))
-        pl = _rental_perf.attach_pl(perf, (_paid * 1e8) if _paid is not None else None)
+        # Historical-P/L fix: price the rental against the network hashrate
+        # OBSERVED at its time (nearest snapshot, current as last resort).
+        pl = _rental_perf.attach_pl(
+            perf, (_paid * 1e8) if _paid is not None else None,
+            network_hashrate_hs=_rental_perf._resolve_network_hashrate_for_rental(
+                raw.get("start"), raw.get("end")))
         # CFO: full rig intelligence — same-rig track record, Trust Score
         # (grade A-F), blacklist state and spend/consistency summary.
         rig = raw.get("rig") or {}

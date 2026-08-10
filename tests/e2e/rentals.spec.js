@@ -43,7 +43,7 @@ test.describe('RENTALS — performance dos aluguéis (P2)', () => {
     // os 34 rentals do histórico)
     const activeVal = await page.locator('#rentals-mrr-active').textContent();
     if (parseInt((activeVal || '0').trim(), 10) === 0) {
-      await expect(page.locator('[data-rentals-filter="history"]')).toHaveClass(/active/);
+      await expect(page.locator('.rentals-strip__card[data-rentals-filter="history"]')).toHaveClass(/active/);
     }
 
     // Strip de resumo: MRR HISTORY deve ter contagem > 0 (a conta tem histórico real)
@@ -51,7 +51,7 @@ test.describe('RENTALS — performance dos aluguéis (P2)', () => {
     expect(parseInt((historyVal || '0').trim(), 10)).toBeGreaterThan(0);
 
     // Filtro History → cards de rentals renderizam
-    await page.click('[data-rentals-filter="history"]');
+    await page.click('button[data-rentals-filter="history"]');
     const cards = page.locator('#rentals-list .rentals-item');
     await expect(cards.first()).toBeVisible({ timeout: 10000 });
     const cardCount = await cards.count();
@@ -94,7 +94,7 @@ test.describe('RENTALS — performance dos aluguéis (P2)', () => {
       return;
     }
     // Aba Braiins → estado "Credentials required" com CTA que abre o Settings
-    await page.click('[data-rentals-filter="contracts"]');
+    await page.click('button[data-rentals-filter="contracts"]');
     await expect(page.locator('#rentals-open-settings')).toBeVisible({ timeout: 5000 });
     await page.click('#rentals-open-settings');
     await expect(page.locator('#settings-modal')).toHaveClass(/modal--open/, { timeout: 5000 });
@@ -132,7 +132,7 @@ test.describe('RENTALS — performance dos aluguéis (P2)', () => {
     await page.click('.sidebar__link[data-module="rentals"]');
     await expect(page.locator('#rentals-count-badge')).not.toHaveText('—', { timeout: 15000 });
     // Aba Braiins → empty state com título "API key rejected" (não "No rentals")
-    await page.click('[data-rentals-filter="contracts"]');
+    await page.click('button[data-rentals-filter="contracts"]');
     await expect(page.locator('#rentals-list .empty-state__title')).toHaveText(/API key rejected/, { timeout: 5000 });
     // Strip Braiins mostra ⚠ (erro) em vez de 🔑 (credencial ausente)
     await expect(page.locator('#rentals-braiins')).toHaveText('⚠', { timeout: 5000 });
@@ -181,7 +181,7 @@ test.describe('RENTALS — performance dos aluguéis (P2)', () => {
     await page.click('.sidebar__link[data-module="rentals"]');
     await expect(page.locator('#rentals-count-badge')).not.toHaveText('—', { timeout: 15000 });
     // Auto-tab: 0 ativos + 1 contract → cai direto na aba Braiins
-    await page.click('[data-rentals-filter="contracts"]');
+    await page.click('button[data-rentals-filter="contracts"]');
     const cards = page.locator('#rentals-list .rentals-item');
     await expect(cards.first()).toBeVisible({ timeout: 5000 });
     await cards.first().click();

@@ -358,8 +358,12 @@ def enrich_snapshot(snapshot: dict, axe_registry=None) -> dict:
     resp["market_highlights"] = highlights
 
     # HashratePulse Enterprise institutional view
+    # Real-user audit: btc_usd lives in the top-level btc_price block — the
+    # network block never carried it, so the institutional snapshot showed
+    # "—" for BTC/USD and Rent-vs-Own forever. Read btc_price.usd first,
+    # keep the legacy network.btc_usd fallback for old payloads.
     network_hr = (snapshot.get("network") or {}).get("hashrate")
-    btc_usd = (snapshot.get("network") or {}).get("btc_usd")
+    btc_usd = (snapshot.get("btc_price") or {}).get("usd") or (snapshot.get("network") or {}).get("btc_usd")
     all_offers = _fetch_all_offers(network_hr)
     resp["institutional"] = _compute_institutional_view(all_offers, network_hr, btc_usd)
     cache = _shared_state.market_data_cache
