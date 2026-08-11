@@ -744,6 +744,65 @@ class TestBraiinsDetector:
         assert result["adapter_type"] == "unknown"
         assert result["reachable"] is False
 
+    def test_detect_axeos_declares_full_command_family(self, monkeypatch):
+        """P0 Bitaxe parity: an AxeOS device must expose pause/resume/
+        set_frequency/update_pool so the fleet grid renders real buttons
+        (not dead ones). The detector is the single source of these caps."""
+        from core.registry.detector import detect_firmware
+
+        def fake_get(url, timeout):
+            if "/api/system/info" not in url:
+                raise requests.ConnectionError("wrong probe")
+            mock = Mock()
+            mock.status_code = 200
+            mock.json.return_value = {
+                "version": "3.2.0",
+                "model": "Bitaxe Gamma",
+                "hashrate": 4100000000000,
+                "frequency": 550,
+            }
+            return mock
+
+        monkeypatch.setattr("core.registry.detector.requests.get", fake_get)
+
+        result = detect_firmware("10.0.0.7")
+        assert result["firmware"] == "axeos"
+        assert result["adapter_type"] == "bitaxe"
+        caps = result["capabilities"]
+        # P0 command family — every value must be truthy so
+        # _caps_supported_commands() renders the buttons.
+        for cmd in ("telemetry", "restart", "identify", "pause",
+                    "resume", "set_frequency", "update_pool",
+                    "frequencyControl"):
+            assert caps.get(cmd) is True, f"{cmd} must be True, got {caps.get(cmd)}"
+
+    def test_detect_cgminer_has_no_identify_or_pause(self, monkeypatch):
+        """Generic cgminer must stay honest: no identify/pause (its API has
+        no such commands) — prevents dead buttons on non-Bitaxe devices."""
+        from core.registry.detector import detect_firmware
+
+        monkeypatch.setattr("core.registry.detector.requests.get",
+                            lambda url, timeout: (_ for _ in ()).throw(requests.ConnectionError("offline")))
+
+        class FakeSock:
+            def __init__(self, *a, **k): pass
+            def settimeout(self, t): pass
+            def connect(self, addr): pass
+            def send(self, data): pass
+            def recv(self, n):
+                return b'{"STATUS":[{"STATUS":"S"}],"VERSION":[{"Version":"4.12.0","Type":"Antminer S19"}]}\x00'
+            def close(self): pass
+
+        monkeypatch.setattr("core.registry.detector.socket.socket",
+                            lambda *a, **k: FakeSock())
+
+        result = detect_firmware("10.0.0.8")
+        assert result["firmware"] == "cgminer"
+        caps = result["capabilities"]
+        assert caps.get("identify") is False or "identify" not in caps
+        assert caps.get("pause") is False or "pause" not in caps
+        assert caps.get("set_frequency") is False
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 #  Adapter factory (__init__.py)

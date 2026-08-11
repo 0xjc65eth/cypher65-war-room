@@ -56,12 +56,19 @@ def detect_firmware(ip_address: str) -> dict:
                 "model": str(data.get("model", "")),
                 "reachable": True,
             })
-            # Detect capabilities from hashrate presence
+            # Detect capabilities from hashrate presence. ESP-Miner exposes
+            # the full command family (restart/blink/pause/resume/overclock/
+            # updatePool) on every firmware — declare them here so the fleet
+            # grid actually renders the buttons (P0 Bitaxe parity).
             if data.get("hashrate") is not None:
                 result["capabilities"] = {
                     "telemetry": True,
                     "restart": True,
                     "identify": True,
+                    "pause": True,
+                    "resume": True,
+                    "set_frequency": True,
+                    "update_pool": True,
                 }
             if data.get("frequency") is not None:
                 result["capabilities"]["frequencyControl"] = True

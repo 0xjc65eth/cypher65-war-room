@@ -424,8 +424,13 @@ import app as _app_module
 @pytest.fixture
 def rclient():
     _app_module.app.config["TESTING"] = True
+    # The /api/rentals TTL cache is module-global — reset it per test so
+    # sibling tests measure fresh provider fetches (never a stale cached
+    # payload from a previous test's mocked providers).
+    _app_module._RENTALS_CACHE.clear()
     with _app_module.app.test_client() as c:
         yield c
+        _app_module._RENTALS_CACHE.clear()
 
 
 def test_detail_route_mrr_enriched(rclient, monkeypatch):
@@ -721,6 +726,35 @@ def test_list_route_includes_portfolio_and_ingest(rclient, monkeypatch):
     assert ingested.get("args") and len(ingested["args"]) == 4
 
 
+def test_list_route_serves_ttl_cache_without_refetch(rclient, monkeypatch):
+    """The per-tenant 20s cache (hot-path fix, p95 1.1s → 5ms) means a second
+    load within TTL must NOT re-hit the providers."""
+    _app_module._RENTALS_CACHE.clear()
+    calls = {"n": 0}
+
+    def _fake_mrr(rtype="renter", history=False, limit=50, tenant_id=""):
+        calls["n"] += 1
+        return {"success": True, "needs_auth": False, "rentals": [], "total": 0}
+
+    monkeypatch.setattr(_app_module._rental_perf, "fetch_mrr_rentals", _fake_mrr)
+    monkeypatch.setattr(
+        _app_module._rental_perf, "fetch_braiins_contracts",
+        lambda tenant_id="": {"success": True, "needs_auth": False, "contracts": []})
+    monkeypatch.setattr(
+        _app_module._rental_perf, "get_rig_blacklist", lambda tenant_id="": [])
+
+    r1 = rclient.get("/api/rentals")
+    assert r1.status_code == 200
+    first_calls = calls["n"]
+    assert first_calls == 3  # active + history + owner
+
+    r2 = rclient.get("/api/rentals")
+    assert r2.status_code == 200
+    assert r2.get_json().get("cached") is True
+    assert calls["n"] == first_calls  # cache hit → providers NOT re-hit
+    _app_module._RENTALS_CACHE.clear()
+
+
 def test_detail_route_mrr_has_pl(rclient, monkeypatch):
     """GET /api/rentals/detail (mrr) attaches the P/L block computed from the
     perf analytics + the paid amount (server-side economics)."""
@@ -909,9 +943,17 @@ def test_build_rental_recommendations_empty_without_track_record(tmp_path, monke
     assert rec["top"] == [] and rec["tracked"] == 0
 
 
+def _reset_trend_cache():
+    """Clear the module-level market-trend cache so sibling tests measure a
+    fresh DB (the cache is in-memory and shared across tests)."""
+    rp._TREND_CACHE["ts"] = 0
+    rp._TREND_CACHE["payload"] = None
+
+
 def test_market_trend_aggregates_daily_cheapest(tmp_path, monkeypatch):
     """fetch_market_trend returns one point per day (the CHEAPEST offer) with
     the sats/TH·h conversion + a summary vs the 30d average."""
+    _reset_trend_cache()
     monkeypatch.setenv("DB_PATH", str(tmp_path / "trend.sqlite"))
     conn = rp.get_db()
     c = conn.cursor()
@@ -936,6 +978,40 @@ def test_market_trend_aggregates_daily_cheapest(tmp_path, monkeypatch):
     s = trend["summary"]
     assert s["days"] == 3 and s["avg_sats_per_thh"] == 500.0
     assert s["current_sats_per_thh"] == 500.0 and s["vs_avg_pct"] == 0.0
+
+
+def test_market_trend_served_from_cache(tmp_path, monkeypatch):
+    """The 30-day GROUP BY scan (the /api/rentals hot path, measured ~1.1s
+    p95) runs once per TTL window: a second call within TTL reuses the cached
+    payload instead of re-scanning hashrate_market_history."""
+    _reset_trend_cache()
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "trend_cache.sqlite"))
+    conn = rp.get_db()
+    c = conn.cursor()
+    c.execute("""CREATE TABLE IF NOT EXISTS hashrate_market_history (
+        ts INTEGER, provider TEXT, hashrate REAL, price_per_th_day REAL,
+        duration_days REAL, fee_pct REAL, algorithm TEXT, score REAL, raw_data TEXT)""")
+    now = int(time.time())
+    c.execute("INSERT INTO hashrate_market_history VALUES (?,?,?,?,?,?,?,?,?)",
+              (now, "braiins", 100.0, 0.000120, 1.0, 0.0, "sha256", 1.0, "{}"))
+    conn.commit()
+    conn.close()
+
+    first = rp.fetch_market_trend(days=30)
+    assert first["summary"]["days"] == 1
+    # Wipe the DB — a cache hit must still return the SAME payload (proving
+    # the second call never hit the database).
+    conn = rp.get_db()
+    conn.execute("DELETE FROM hashrate_market_history")
+    conn.commit()
+    conn.close()
+    second = rp.fetch_market_trend(days=30)
+    assert second["summary"]["days"] == 1
+    assert second["points"] == first["points"]
+    # Past the TTL window the DB is re-scanned (now empty → honest empty).
+    rp._TREND_CACHE["ts"] = 0
+    third = rp.fetch_market_trend(days=30)
+    assert third == {"points": [], "summary": None}
 
 
 def test_auto_blacklist_flow(tmp_path, monkeypatch):
@@ -1104,7 +1180,9 @@ def test_list_route_fires_pl_alerts(rclient, monkeypatch):
                               "webhook_min_severity": "WARN"})
     fired["webhook"].clear()
     fired["push"].clear()
-    resp = rclient.get("/api/rentals")
+    # ?refresh=1 bypasses the TTL cache so the dispatchers run again
+    # (a plain second GET within 20s would be served from cache).
+    resp = rclient.get("/api/rentals?refresh=1")
     assert resp.status_code == 200
     assert len(fired["webhook"]) == 1
     assert fired["webhook"][0]["url"] == "https://discord.com/api/webhooks/x"
@@ -2039,6 +2117,7 @@ def test_market_trend_ignores_subfloor_glitch_rows(tmp_path, monkeypatch):
     """fetch_market_trend must exclude legacy sub-floor rows (1e-8 parasite
     glitch ≈ 0 sats/TH·h) — otherwise 'cheapest market' reads 0 and the
     MARKET TIMING card misleads the operator."""
+    _reset_trend_cache()
     monkeypatch.setenv("DB_PATH", str(tmp_path / "trend_floor.sqlite"))
     from services.db import get_db
     conn = get_db()

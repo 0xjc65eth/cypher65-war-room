@@ -30,10 +30,28 @@ export_bp = Blueprint("export", __name__, url_prefix="/api")
 @role_required("viewer")
 def api_export(table, fmt, tenant_id: str = ""):
     """Export a table as csv or json. Tables: snapshots, alerts, share_timeline,
-    highest_diff_events."""
+    highest_diff_events.
+
+    Tenant isolation (Fase 4 · B2):
+      - ``alerts`` carries ``tenant_id`` → rows are filtered to the caller's
+        tenant (a named tenant NEVER sees another tenant's alerts).
+      - ``snapshots`` / ``share_timeline`` / ``highest_diff_events`` are
+        OPERATOR-only tables (per-tenant polling keeps state in-memory via
+        SessionManager, never in these SQLite tables). A named tenant asking
+        for them is rejected fail-closed (403) — the operator's telemetry is
+        never exportable by another account.
+    """
     allowed = {"snapshots", "alerts", "share_timeline", "highest_diff_events"}
     if table not in allowed:
         return jsonify({"error": f"unknown table {table}"}), 400
+    tid = tenant_id or "default"
+    # Operator-only tables: only the deployment owner's default tenant may
+    # export them. Named tenants get a fail-closed 403 instead of a dump.
+    if table != "alerts" and tid != "default":
+        return jsonify({
+            "error": "forbidden",
+            "detail": "this table is operator-scoped and not available to your tenant",
+        }), 403
     rng = request.args.get("range", "24h")
     span = {
         "15m": 900,
@@ -47,7 +65,17 @@ def api_export(table, fmt, tenant_id: str = ""):
     since = int(time.time()) - span
     conn = get_db()
     c = conn.cursor()
-    c.execute(f"SELECT * FROM {table} WHERE ts >= ? ORDER BY ts DESC LIMIT 5000", (since,))
+    if table == "alerts":
+        c.execute(
+            f"SELECT * FROM {table} WHERE ts >= ? AND tenant_id = ? "
+            "ORDER BY ts DESC LIMIT 5000",
+            (since, tid),
+        )
+    else:
+        c.execute(
+            f"SELECT * FROM {table} WHERE ts >= ? ORDER BY ts DESC LIMIT 5000",
+            (since,),
+        )
     rows = [dict(r) for r in c.fetchall()]
     conn.close()
     if fmt == "csv":

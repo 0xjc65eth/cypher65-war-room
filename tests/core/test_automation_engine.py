@@ -234,3 +234,195 @@ class TestPreviewRules:
         preview = engine.preview_rules([dev], tenant_id="default")
         assert len(preview) == 1
         assert preview[0]["action_command"] == "restart"
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  P1 Auto-Pilot — arming (fail-closed) + per-tenant action rate limiting
+# ═══════════════════════════════════════════════════════════════════════════
+
+class TestAutoPilotArming:
+    """P1 — rules never EXECUTE until the tenant arms the pilot."""
+
+    def test_unarmed_evaluate_returns_disarmed_marker(self, tmp_path):
+        engine = _mk_preview_engine(
+            tmp_path, _mk_preview_rule(1, "cool-down", "temperature", ">", 80))
+        executed = []
+        engine.execute_command_callback = lambda *a, **k: executed.append(a)
+        dev = _preview_device(telemetry={"temperature": 95})
+        result = engine.evaluate_rules([dev], tenant_id="default")
+        assert result == [{"status": "disarmed", "tenant_id": "default"}]
+        assert executed == []  # fail-closed: nothing fired
+
+    def test_unarmed_never_executes_even_on_match(self, tmp_path):
+        engine = _mk_preview_engine(
+            tmp_path, _mk_preview_rule(1, "cool-down", "temperature", ">", 80))
+        audited = []
+        engine.audit_callback = lambda **k: audited.append(k)
+        dev = _preview_device(telemetry={"temperature": 95})
+        engine.evaluate_rules([dev], tenant_id="default")
+        assert audited == []  # no audit, no execution, nothing recorded
+
+    def test_armed_executes_through_safety(self, tmp_path, monkeypatch):
+        """When armed, a matching rule executes via the callback."""
+        engine = _mk_preview_engine(
+            tmp_path, _mk_preview_rule(1, "cool-down", "temperature", ">", 80))
+        # Arm the pilot for the default tenant (settings are env-DB based;
+        # stub load_settings/save_setting for the test).
+        monkeypatch.setattr(
+            "core.alerts.automation_engine."
+            "AutomationEngine.is_armed",
+            lambda self, tid="": True,
+        )
+        executed = []
+        engine.execute_command_callback = lambda *a, **k: (
+            executed.append(a), {"success": True})[1]
+        dev = _preview_device(telemetry={"temperature": 95})
+        result = engine.evaluate_rules([dev], tenant_id="default")
+        assert len(result) == 1
+        assert result[0]["status"] == "executed"
+        assert len(executed) == 1
+
+    def test_armed_state_is_per_tenant(self, tmp_path, monkeypatch):
+        """Tenant A armed must NOT enable tenant B's rules."""
+        engine = _mk_preview_engine(
+            tmp_path,
+            _mk_preview_rule(1, "acme-rule", "temperature", ">", 80, tenant="acme"),
+            _mk_preview_rule(2, "brave-rule", "temperature", ">", 80, tenant="brave"),
+        )
+        armed_for = {"acme"}
+        monkeypatch.setattr(
+            "core.alerts.automation_engine."
+            "AutomationEngine.is_armed",
+            lambda self, tid="": tid in armed_for,
+        )
+        executed = []
+        engine.execute_command_callback = lambda *a, **k: (
+            executed.append(a), {"success": True})[1]
+        dev = _preview_device(telemetry={"temperature": 95})
+        # Tenant B is NOT armed → disarmed marker, nothing fires.
+        result_b = engine.evaluate_rules([dev], tenant_id="brave")
+        assert result_b == [{"status": "disarmed", "tenant_id": "brave"}]
+        assert executed == []
+
+
+class TestAutoPilotRateLimit:
+    """P1 — per-tenant action budget stops rule spam."""
+
+    def _armed_engine(self, tmp_path, monkeypatch, cap=2, window=900):
+        monkeypatch.setattr(
+            "core.alerts.automation_engine."
+            "AutomationEngine.AUTOMATION_MAX_ACTIONS_PER_WINDOW", cap)
+        monkeypatch.setattr(
+            "core.alerts.automation_engine."
+            "AutomationEngine.AUTOMATION_ACTION_WINDOW_S", window)
+        monkeypatch.setattr(
+            "core.alerts.automation_engine."
+            "AutomationEngine.is_armed",
+            lambda self, tid="": True,
+        )
+        # min_interval=0 so the rule cooldown never masks the budget check:
+        # we're testing the WINDOW budget, not the per-rule cooldown.
+        return _mk_preview_engine(
+            tmp_path, _mk_preview_rule(1, "cool-down", "temperature", ">", 80,
+                                       min_interval=0))
+
+    def test_budget_exhausted_returns_rate_limited(self, tmp_path, monkeypatch):
+        engine = self._armed_engine(tmp_path, monkeypatch, cap=1)
+        executed = []
+        audited = []
+        engine.execute_command_callback = lambda *a, **k: (
+            executed.append(a), {"success": True})[1]
+        engine.audit_callback = lambda **k: audited.append(k)
+        dev = _preview_device(telemetry={"temperature": 95})
+
+        first = engine.evaluate_rules([dev], tenant_id="default")
+        assert first[0]["status"] == "executed"
+        # Second match in the same window → rate-limited, not executed.
+        second = engine.evaluate_rules([dev], tenant_id="default")
+        assert second[0]["status"] == "rate_limited"
+        assert len(executed) == 1
+        assert any(
+            a.get("status") == "RATE_LIMITED" for a in audited
+        )
+
+    def test_budget_is_per_tenant(self, tmp_path, monkeypatch):
+        """Tenant A exhausting its budget must not starve tenant B."""
+        monkeypatch.setattr(
+            "core.alerts.automation_engine."
+            "AutomationEngine.AUTOMATION_MAX_ACTIONS_PER_WINDOW", 1)
+        monkeypatch.setattr(
+            "core.alerts.automation_engine."
+            "AutomationEngine.AUTOMATION_ACTION_WINDOW_S", 900)
+        monkeypatch.setattr(
+            "core.alerts.automation_engine."
+            "AutomationEngine.is_armed",
+            lambda self, tid="": True,
+        )
+        engine = _mk_preview_engine(
+            tmp_path,
+            _mk_preview_rule(1, "acme-rule", "temperature", ">", 80,
+                             min_interval=0, tenant="acme"),
+            _mk_preview_rule(2, "brave-rule", "temperature", ">", 80,
+                             min_interval=0, tenant="brave"),
+        )
+        executed = []
+        engine.execute_command_callback = lambda *a, **k: (
+            executed.append(a), {"success": True})[1]
+        dev = _preview_device(telemetry={"temperature": 95})
+        engine.evaluate_rules([dev], tenant_id="acme")   # consumes acme budget
+        engine.evaluate_rules([dev], tenant_id="acme")   # rate-limited
+        result_b = engine.evaluate_rules([dev], tenant_id="brave")  # own budget
+        assert result_b[0]["status"] == "executed"
+
+    def test_old_executions_expire_from_window(self, tmp_path, monkeypatch):
+        """Timestamps outside the rolling window free the budget again."""
+        engine = self._armed_engine(tmp_path, monkeypatch, cap=1, window=60)
+        executed = []
+        engine.execute_command_callback = lambda *a, **k: (
+            executed.append(a), {"success": True})[1]
+        dev = _preview_device(telemetry={"temperature": 95})
+        engine.evaluate_rules([dev], tenant_id="default")
+        # Fake the history as 10 minutes old (beyond the 60s window).
+        now = int(__import__("time").time())
+        engine._action_history["default"] = [now - 600]
+        result = engine.evaluate_rules([dev], tenant_id="default")
+        assert result[0]["status"] == "executed"
+
+    def test_rate_limited_records_cooldown_no_audit_spam(self, tmp_path, monkeypatch):
+        """A rule beyond its budget must not re-audit RATE_LIMITED every poll
+        cycle: the cooldown is recorded (same discipline as conflict-cancelled
+        rules), so re-evaluation within min_interval_seconds skips entirely.
+
+        Uses a real min_interval (60s) + an ALREADY-exhausted budget (via
+        _action_history prefilled) so the first eval hits the RATE_LIMITED
+        path directly, and the second eval inside the cooldown is skipped."""
+        monkeypatch.setattr(
+            "core.alerts.automation_engine."
+            "AutomationEngine.AUTOMATION_MAX_ACTIONS_PER_WINDOW", 1)
+        monkeypatch.setattr(
+            "core.alerts.automation_engine."
+            "AutomationEngine.AUTOMATION_ACTION_WINDOW_S", 900)
+        monkeypatch.setattr(
+            "core.alerts.automation_engine."
+            "AutomationEngine.is_armed",
+            lambda self, tid="": True,
+        )
+        engine = _mk_preview_engine(
+            tmp_path, _mk_preview_rule(1, "cool-down", "temperature", ">", 80,
+                                       min_interval=60))
+        audited = []
+        engine.audit_callback = lambda **k: audited.append(k)
+        # Budget already spent this window → first eval goes straight to the
+        # RATE_LIMITED path (cooldown was NOT yet recorded for this rule).
+        engine._action_history["default"] = [int(__import__("time").time())]
+        dev = _preview_device(telemetry={"temperature": 95})
+        engine.evaluate_rules([dev], tenant_id="default")
+        rate_limited = [a for a in audited
+                        if a.get("status") == "RATE_LIMITED"]
+        assert len(rate_limited) == 1
+        # A second eval inside min_interval (60s) is fully skipped by cooldown
+        # — no second RATE_LIMITED audit, no spam.
+        engine.evaluate_rules([dev], tenant_id="default")
+        rate_limited = [a for a in audited
+                        if a.get("status") == "RATE_LIMITED"]
+        assert len(rate_limited) == 1

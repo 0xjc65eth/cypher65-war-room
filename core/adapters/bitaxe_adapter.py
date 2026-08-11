@@ -200,6 +200,8 @@ class BitaxeAdapter(BaseAdapter):
         if not self.api_url:
             return {"success": False, "error": "Device has no API URL configured"}
 
+        parameters = parameters or {}
+
         if command == "restart":
             return self._post_command("restart", command)
         elif command == "identify":
@@ -214,21 +216,88 @@ class BitaxeAdapter(BaseAdapter):
                     "note": "identify endpoint not available on this firmware",
                 }
             return result
+        elif command == "pause":
+            # ESP-Miner: POST /api/system/miningPause (empty body)
+            return self._post_command("miningPause", command)
+        elif command == "resume":
+            # ESP-Miner: POST /api/system/miningResume (empty body)
+            return self._post_command("miningResume", command)
+        elif command == "set_frequency":
+            # ESP-Miner: POST /api/system/overclock with JSON body.
+            # Allowed fields: frequency (MHz), voltage (mV), coreVoltage (mV),
+            # powerLimit (W), autotune (bool). Only known keys are forwarded
+            # (never echo arbitrary caller keys to the device).
+            body = {}
+            freq = self._safe_number(parameters.get("frequency"), float, None)
+            if freq is not None:
+                # Sanity clamps: 100–2000 MHz (Honest Telemetry — refuse
+                # absurd values instead of bricking the ASIC).
+                body["frequency"] = int(max(100.0, min(2000.0, freq)))
+            volt = self._safe_number(
+                parameters.get("voltage", parameters.get("coreVoltage")),
+                float,
+                None,
+            )
+            if volt is not None:
+                # Sanity clamps: 1000–1600 mV.
+                body["coreVoltage"] = int(max(1000.0, min(1600.0, volt)))
+            power = self._safe_number(parameters.get("powerLimit"), float, None)
+            if power is not None:
+                body["powerLimit"] = int(max(1.0, min(300.0, power)))
+            autotune = parameters.get("autotune")
+            if isinstance(autotune, bool):
+                body["autotune"] = autotune
+            if not body:
+                return {
+                    "success": False,
+                    "command": command,
+                    "device_id": self.device.id,
+                    "error": "set_frequency requires at least one of: frequency, voltage/coreVoltage, powerLimit, autotune",
+                }
+            return self._post_command("overclock", command, body=body)
+        elif command == "update_pool":
+            # ESP-Miner: POST /api/system/updatePool {stratumURL, stratumPort, stratumUser}
+            body = {}
+            url = str(parameters.get("stratumURL") or "").strip()
+            port = self._safe_number(parameters.get("stratumPort"), int, None)
+            user = str(parameters.get("stratumUser") or "").strip()
+            if url:
+                body["stratumURL"] = url
+            if port is not None:
+                body["stratumPort"] = int(max(1, min(65535, port)))
+            if user:
+                body["stratumUser"] = user
+            if not body:
+                return {
+                    "success": False,
+                    "command": command,
+                    "device_id": self.device.id,
+                    "error": "update_pool requires at least one of: stratumURL, stratumPort, stratumUser",
+                }
+            return self._post_command("updatePool", command, body=body)
 
-        # Real execution is not implemented yet; this is a deliberate stub.
+        # Unknown but "supported" command — honest failure, not a silent stub.
         return {
             "success": False,
-            "stub": True,
+            "stub": False,
             "command": command,
             "device_id": self.device.id,
-            "note": "execute_command is not yet implemented for this command on BitaxeAdapter",
+            "error": f"command '{command}' has no implementation on BitaxeAdapter",
         }
 
-    def _post_command(self, endpoint: str, command_name: str) -> Dict[str, Any]:
-        """POST to a Bitaxe /api/system/{endpoint} endpoint."""
+    def _post_command(self, endpoint: str, command_name: str,
+                      body: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """POST to a Bitaxe /api/system/{endpoint} endpoint.
+
+        ``body`` (optional dict) is sent as JSON when present — used by
+        overclock / updatePool / setPassword which require a payload.
+        """
         try:
             url = f"{self.api_url}/api/system/{endpoint}"
-            response = requests.post(url, timeout=5)
+            if body:
+                response = requests.post(url, json=body, timeout=5)
+            else:
+                response = requests.post(url, timeout=5)
             status_code = response.status_code
             response.raise_for_status()
             return {
@@ -237,6 +306,7 @@ class BitaxeAdapter(BaseAdapter):
                 "command": command_name,
                 "device_id": self.device.id,
                 "status_code": status_code,
+                "parameters": body or None,
             }
         except requests.RequestException as exc:
             return {
@@ -252,8 +322,11 @@ class BitaxeAdapter(BaseAdapter):
             Capability(name="telemetry", supported=True),
             Capability(name="restart", supported=True, requires_confirmation=True, risk_level=RiskLevel.MEDIUM),
             Capability(name="identify", supported=True),
+            Capability(name="pause", supported=True, requires_confirmation=True, risk_level=RiskLevel.MEDIUM),
+            Capability(name="resume", supported=True, requires_confirmation=True, risk_level=RiskLevel.MEDIUM),
+            Capability(name="set_frequency", supported=True, requires_confirmation=True, risk_level=RiskLevel.HIGH),
+            Capability(name="update_pool", supported=True, requires_confirmation=True, risk_level=RiskLevel.HIGH),
             Capability(name="logs", supported=True),
-            Capability(name="set_frequency", supported=False, requires_confirmation=True, risk_level=RiskLevel.HIGH),
         ]
 
     def health_check(self) -> Dict[str, Any]:

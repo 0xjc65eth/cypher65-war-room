@@ -6439,13 +6439,15 @@ dom.walletSave?.addEventListener('click', async () => {
       const adviceHtml = r.advice.length ? '<div class="fcc-card__advice">' + r.advice.map(a => '<span class="fcc-card__advice-chip">' + esc(a) + '</span>').join('') + '</div>' : '';
       const restartBtn = r.caps.indexOf('restart') >= 0 ? '<button class="axe-cmd-btn axe-cmd-btn--restart" data-device-id="' + esc(r.id) + '" data-cmd="restart">↻ Restart</button>' : '';
       const identifyBtn = r.caps.indexOf('identify') >= 0 ? '<button class="axe-cmd-btn axe-cmd-btn--identify" data-device-id="' + esc(r.id) + '" data-cmd="identify">◈ Identify</button>' : '';
+      const pauseBtn = r.caps.indexOf('pause') >= 0 ? '<button class="axe-cmd-btn axe-cmd-btn--pause" data-device-id="' + esc(r.id) + '" data-cmd="pause">⎔ Pause</button>' : '';
+      const resumeBtn = r.caps.indexOf('resume') >= 0 ? '<button class="axe-cmd-btn axe-cmd-btn--resume" data-device-id="' + esc(r.id) + '" data-cmd="resume">▶ Resume</button>' : '';
       return '<div class="fcc-card ' + stCls + '" data-device-id="' + esc(r.id) + '">' +
         '<div class="fcc-card__head">' + healthSvg +
           '<div class="fcc-card__id">' +
             '<div class="fcc-card__name">' + esc(r.name) + stDot + '</div>' +
             '<div class="fcc-card__model">' + esc(r.manufacturer || '') + (r.model ? ' · ' + esc(r.model) : '') + (r.agentManaged ? ' · <span class="fcc-card__agent">AGENT</span>' : '') + '</div>' +
           '</div>' +
-          (restartBtn || identifyBtn ? '<div class="fcc-card__cmds">' + restartBtn + identifyBtn + '</div>' : '<div class="fcc-card__cmds"><span class="axe-card__ro-badge">READ-ONLY</span></div>') +
+          (restartBtn || identifyBtn || pauseBtn || resumeBtn ? '<div class="fcc-card__cmds">' + restartBtn + identifyBtn + pauseBtn + resumeBtn + '</div>' : '<div class="fcc-card__cmds"><span class="axe-card__ro-badge">READ-ONLY</span></div>') +
         '</div>' +
         '<div class="fcc-card__hr"><span class="fcc-card__hr-val">' + esc(r.hrStr) + '</span>' + _ccSvgSparkline(_ccHrHist[r.id], '#00b8d4') + '</div>' +
         '<div class="fcc-card__stats">' +
@@ -6926,10 +6928,12 @@ dom.walletSave?.addEventListener('click', async () => {
     // (tenant-scoped) e devices agent-managed só podem ser controlados
     // através da fila do AGENTE LOCAL. A rota core /api/devices/<id>/command
     // consulta o core registry — para estes devices ela responde 404 e o
-    // miner NUNCA reinicia (teatro). Roteamos restart/identify para os
-    // endpoints /api/axe-fleet/devices/<id>/{restart|identify}, que
-    // enfileiram no agente e exigem o Bearer do tenant (authFetch).
-    const isAgentRouted = command === 'restart' || command === 'identify';
+    // miner NUNCA reinicia (teatro). Roteamos restart/identify/pause/resume
+    // para os endpoints /api/axe-fleet/devices/<id>/{restart|identify|
+    // pause|resume}, que enfileiram no agente (agent-managed) ou executam
+    // direto no AxeOS HTTP API, e exigem o Bearer do tenant (authFetch).
+    const isAgentRouted = command === 'restart' || command === 'identify' ||
+      command === 'pause' || command === 'resume';
     const url = isAgentRouted
       ? '/api/axe-fleet/devices/' + encodeURIComponent(deviceId) + '/' + command
       : '/api/devices/' + encodeURIComponent(deviceId) + '/command';
@@ -7049,6 +7053,7 @@ dom.walletSave?.addEventListener('click', async () => {
         (supportedCmds.indexOf('restart') >= 0 ? '<button class="axe-cmd-btn axe-cmd-btn--restart" data-device-id="' + escapeHtml(d.id) + '" data-cmd="restart">↻ Restart</button>' : '') +
         (supportedCmds.indexOf('identify') >= 0 ? '<button class="axe-cmd-btn axe-cmd-btn--identify" data-device-id="' + escapeHtml(d.id) + '" data-cmd="identify">◈ Identify</button>' : '') +
         (supportedCmds.indexOf('pause') >= 0 ? '<button class="axe-cmd-btn axe-cmd-btn--pause" data-device-id="' + escapeHtml(d.id) + '" data-cmd="pause">⎔ Pause</button>' : '') +
+        (supportedCmds.indexOf('resume') >= 0 ? '<button class="axe-cmd-btn axe-cmd-btn--resume" data-device-id="' + escapeHtml(d.id) + '" data-cmd="resume">▶ Resume</button>' : '') +
       '</div>' : '<div class="axe-card__cmds axe-card__cmds--ro"><span class="axe-card__ro-badge">READ-ONLY</span></div>') +
     '</div>';
   }

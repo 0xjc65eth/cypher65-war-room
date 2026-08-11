@@ -107,6 +107,7 @@ DEFAULT_SETTINGS = {
     "mrr_api_key": "",
     "mrr_api_secret": "",
     "braiins_api_key": "",
+    "auto_pilot_armed": "0",
 }
 
 # Global (operator / self-host) settings cache — the `settings` table.

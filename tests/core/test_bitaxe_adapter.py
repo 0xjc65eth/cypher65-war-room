@@ -14,13 +14,17 @@ class TestBitaxeAdapter:
         adapter = BitaxeAdapter(device)
         capabilities = adapter.get_capabilities()
 
-        assert len(capabilities) == 5
+        assert len(capabilities) == 8
         names = {c.name for c in capabilities}
         assert "telemetry" in names
         assert "restart" in names
         assert "identify" in names
         assert "logs" in names
+        assert "pause" in names
+        assert "resume" in names
         assert "set_frequency" in names
+        assert "update_pool" in names
+        assert next(c for c in capabilities if c.name == "set_frequency").supported is True
 
     def test_get_capabilities_telemetry_supported(self):
         device = Device(name="Bitaxe", model="Bitaxe Max", ip="192.168.1.100")
@@ -198,14 +202,142 @@ class TestBitaxeAdapter:
         assert result["command"] == "identify"
         mock_post.assert_called_once_with("http://192.168.1.100/api/system/blink", timeout=5)
 
-    def test_execute_command_unsupported_returns_stub(self):
+    def test_execute_command_unsupported_command(self):
         device = self._device_with_capabilities()
         adapter = BitaxeAdapter(device)
 
-        result = adapter.execute_command("set_frequency")
+        result = adapter.execute_command("firmware_flash")
 
         assert result["success"] is False
         assert "not supported" in result["error"].lower()
+
+    def test_execute_command_pause_makes_request(self):
+        device = self._device_with_capabilities()
+        adapter = BitaxeAdapter(device)
+
+        with patch("core.adapters.bitaxe_adapter.requests.post") as mock_post:
+            mock_response = Mock()
+            mock_response.status_code = 200
+            mock_response.raise_for_status = Mock()
+            mock_post.return_value = mock_response
+
+            result = adapter.execute_command("pause")
+
+        assert result["success"] is True
+        assert result["command"] == "pause"
+        mock_post.assert_called_once_with("http://192.168.1.100/api/system/miningPause", timeout=5)
+
+    def test_execute_command_resume_makes_request(self):
+        device = self._device_with_capabilities()
+        adapter = BitaxeAdapter(device)
+
+        with patch("core.adapters.bitaxe_adapter.requests.post") as mock_post:
+            mock_response = Mock()
+            mock_response.status_code = 200
+            mock_response.raise_for_status = Mock()
+            mock_post.return_value = mock_response
+
+            result = adapter.execute_command("resume")
+
+        assert result["success"] is True
+        assert result["command"] == "resume"
+        mock_post.assert_called_once_with("http://192.168.1.100/api/system/miningResume", timeout=5)
+
+    def test_execute_command_set_frequency_posts_overclock(self):
+        device = self._device_with_capabilities()
+        adapter = BitaxeAdapter(device)
+
+        with patch("core.adapters.bitaxe_adapter.requests.post") as mock_post:
+            mock_response = Mock()
+            mock_response.status_code = 200
+            mock_response.raise_for_status = Mock()
+            mock_post.return_value = mock_response
+
+            result = adapter.execute_command("set_frequency",
+                                             {"frequency": 550, "coreVoltage": 1200})
+
+        assert result["success"] is True
+        assert result["command"] == "set_frequency"
+        mock_post.assert_called_once_with(
+            "http://192.168.1.100/api/system/overclock",
+            json={"frequency": 550, "coreVoltage": 1200},
+            timeout=5,
+        )
+
+    def test_execute_command_set_frequency_clamps_out_of_range(self):
+        """Sanity clamps: absurd frequency/voltage never reach the ASIC."""
+        device = self._device_with_capabilities()
+        adapter = BitaxeAdapter(device)
+
+        with patch("core.adapters.bitaxe_adapter.requests.post") as mock_post:
+            mock_response = Mock()
+            mock_response.status_code = 200
+            mock_response.raise_for_status = Mock()
+            mock_post.return_value = mock_response
+
+            result = adapter.execute_command(
+                "set_frequency",
+                {"frequency": 99999, "coreVoltage": 9999, "powerLimit": 9999},
+            )
+
+        assert result["success"] is True
+        _, kwargs = mock_post.call_args
+        assert kwargs["json"]["frequency"] == 2000   # clamped high
+        assert kwargs["json"]["coreVoltage"] == 1600  # clamped high
+        assert kwargs["json"]["powerLimit"] == 300    # clamped high
+
+    def test_execute_command_set_frequency_requires_payload(self):
+        device = self._device_with_capabilities()
+        adapter = BitaxeAdapter(device)
+
+        with patch("core.adapters.bitaxe_adapter.requests.post") as mock_post:
+            result = adapter.execute_command("set_frequency", {})
+
+        assert result["success"] is False
+        mock_post.assert_not_called()
+
+    def test_execute_command_unknown_keys_not_forwarded(self):
+        """Only known overclock keys reach the device — no echo of arbitrary input."""
+        device = self._device_with_capabilities()
+        adapter = BitaxeAdapter(device)
+
+        with patch("core.adapters.bitaxe_adapter.requests.post") as mock_post:
+            mock_response = Mock()
+            mock_response.status_code = 200
+            mock_response.raise_for_status = Mock()
+            mock_post.return_value = mock_response
+
+            result = adapter.execute_command(
+                "set_frequency",
+                {"frequency": 550, "evil": "injected"},
+            )
+
+        assert result["success"] is True
+        _, kwargs = mock_post.call_args
+        assert "evil" not in kwargs["json"]
+        assert kwargs["json"] == {"frequency": 550}
+
+    def test_execute_command_update_pool_posts_payload(self):
+        device = self._device_with_capabilities()
+        adapter = BitaxeAdapter(device)
+
+        with patch("core.adapters.bitaxe_adapter.requests.post") as mock_post:
+            mock_response = Mock()
+            mock_response.status_code = 200
+            mock_response.raise_for_status = Mock()
+            mock_post.return_value = mock_response
+
+            result = adapter.execute_command(
+                "update_pool",
+                {"stratumURL": "stratum+tcp://pool.example.com", "stratumPort": 3333, "stratumUser": "user.worker"},
+            )
+
+        assert result["success"] is True
+        mock_post.assert_called_once_with(
+            "http://192.168.1.100/api/system/updatePool",
+            json={"stratumURL": "stratum+tcp://pool.example.com", "stratumPort": 3333, "stratumUser": "user.worker"},
+            timeout=5,
+        )
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

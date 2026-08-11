@@ -9,7 +9,7 @@ solo/pool/rental/lease profitability, hashrate market intelligence, alerts & aut
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](requirements.txt)
-[![Tests](https://img.shields.io/badge/tests-800%2B%20pytest%20%2B%20JS%20core%20%2B%20E2E-brightgreen.svg)](tests/)
+[![Tests](https://img.shields.io/badge/tests-1800%2B%20pytest%20%2B%201259%20JS%20core%20%2B%20E2E-brightgreen.svg)](tests/)
 
 </div>
 
@@ -29,11 +29,13 @@ fails, the UI shows a stale/offline badge with the last real cached value, never
 | **Profitability** | POOL / SOLO / RENTAL / LEASE scenarios with break-even, fiat conversion (USD/BRL/EUR/GBP), variance-aware math |
 | **AXE Fleet Command** | ASIC registry with chip/VR temperature, 1h hashrate, efficiency (J/TH), power (W), latency/ping advice, remote commands |
 | **Hash Market** | Braiins / NiceHash / MRR / Parasite rental offers, BTC + USD per TH/day, provider filters, warm background cache |
-| **Alerts & Automations** | Rule engine with cooldowns, history, tenant-scoped persistence |
-| **AI Operator** | Natural-language assistant over fleet, probability, market and metrics |
-| **Multi-tenant** | JWT auth with tenant isolation for fleet, alerts and automations |
+| **Rentals Hub** | MRR + Braiins rentals, per-rental P/L (historical network HR), cost vs market, worst-rig leaderboard, concentration risk, arbitrage window + overpay alerts, ⚡ one-click Braiins spot buy with balance guard, portfolio time series |
+| **Auto-Pilot** | Automation rules with fail-closed arming, per-tenant action budget (rate limit), deadlock prevention, SafetyEngine-validated execution |
+| **Alerts & Automations** | Rule engine with cooldowns, history, tenant-scoped persistence; Discord/Telegram webhooks |
+| **AI Operator** | Natural-language assistant over fleet, probability, market and metrics (DeepSeek/OpenAI, SSE streaming) |
+| **Multi-tenant** | JWT auth with tenant isolation for fleet, alerts, rentals, settings and exports (1000+ users) |
 | **Learning & Support** | Bitcoin whitepaper, free book library, cypherpunk support panel (BTC / Lightning / hashrate donations) |
-| **Mobile companion** | React Native app in [`mobile/`](mobile/) for on-the-go monitoring |
+| **Mobile companion** | React Native app in [`mobile/`](mobile/) — Command, Fleet, Block, Market, **Rentals**, AI |
 
 ## 🏗 Architecture
 
@@ -45,7 +47,7 @@ fails, the UI shows a stale/offline badge with the last real cached value, never
 ├─ routes/                API blueprints (dashboard, alerts, settings, device control, solo mining, export)
 ├─ static/ + templates/   Dashboard UI (templates/dashboard.html, static/app.js, static/style.css)
 ├─ mobile/                React Native companion app
-├─ tests/                 800+ pytest, JS core tests, Playwright E2E suite
+├─ tests/                 1800+ pytest, JS core tests, Playwright E2E suite
 └─ docs/                  Architecture, data model, audits, design system, mobile strategy
 ```
 

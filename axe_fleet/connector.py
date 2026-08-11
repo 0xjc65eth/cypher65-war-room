@@ -342,6 +342,18 @@ class AxeOSConnector:
         """POST /api/system/identify — flash LED/screen for identification."""
         return self._post("/api/system/identify")
 
+    def pause(self) -> dict:
+        """POST /api/system/miningPause — pause hashing on the device.
+
+        ESP-Miner API: the ASIC stays powered but stops hashing, so the
+        device stays reachable for Resume. Only call when the 'pause'
+        capability is advertised."""
+        return self._post("/api/system/miningPause")
+
+    def resume(self) -> dict:
+        """POST /api/system/miningResume — resume hashing on a paused device."""
+        return self._post("/api/system/miningResume")
+
     def update_settings(self, settings: dict) -> dict:
         """PATCH /api/system — update device configuration.
         Common settings:

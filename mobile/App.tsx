@@ -10,6 +10,7 @@ import { FleetScreen } from './src/screens/Fleet/FleetScreen';
 import { DeviceDetailScreen } from './src/screens/Fleet/DeviceDetailScreen';
 import { BlockHuntScreen } from './src/screens/Block/BlockHuntScreen';
 import { MarketScreen } from './src/screens/Market/MarketScreen';
+import { RentalsScreen } from './src/screens/Rentals/RentalsScreen';
 import { AiOperatorScreen } from './src/screens/AI/AiOperatorScreen';
 import { LoginScreen } from './src/screens/Auth/LoginScreen';
 import { SettingsScreen } from './src/screens/Settings/SettingsScreen';
@@ -35,6 +36,7 @@ const TabIcon: Record<string, string> = {
   Fleet: '⛏',
   Block: '▣',
   Market: '$',
+  Rentals: '⟁',
   AI: '✦',
 };
 
@@ -69,6 +71,7 @@ const AppContent = () => {
       <Tab.Screen name="Fleet" component={FleetStack} />
       <Tab.Screen name="Block" component={BlockHuntScreen} />
       <Tab.Screen name="Market" component={MarketScreen} />
+      <Tab.Screen name="Rentals" component={RentalsScreen} />
       <Tab.Screen name="AI" component={AiOperatorScreen} />
       <Tab.Screen name="Settings" component={SettingsScreen} />
     </Tab.Navigator>

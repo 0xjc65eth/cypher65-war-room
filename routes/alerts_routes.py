@@ -9,7 +9,7 @@ from typing import Any, Dict
 
 from flask import Blueprint, jsonify, request
 
-from services.tenant import require_tenant, log_audit as _log_audit
+from services.tenant import require_tenant, role_required, log_audit as _log_audit
 
 alerts_bp = Blueprint("alerts", __name__, url_prefix="/api")
 
@@ -282,3 +282,60 @@ def api_automation_executions(tenant_id: str = ""):
         except Exception:
             r["result"] = {}
     return jsonify({"executions": rows})
+
+
+@alerts_bp.route("/automation/status", methods=["GET"])
+@require_tenant
+@role_required("viewer")
+def api_automation_status(tenant_id: str = ""):
+    """Auto-Pilot armed state + action budget for the caller's tenant.
+
+    Returns:
+      {"armed": bool, "max_actions_per_window": n,
+       "action_window_seconds": s, "actions_in_window": n}
+    """
+    from core.alerts.automation_engine import AutomationEngine
+    tid = tenant_id or "default"
+    try:
+        engine = AutomationEngine("", None)  # settings-only reads, no DB use
+        armed = engine.is_armed(tid)
+        budget = engine.AUTOMATION_MAX_ACTIONS_PER_WINDOW
+        window = engine.AUTOMATION_ACTION_WINDOW_S
+        with engine._budget_lock:
+            now = int(time.time())
+            hist = [t for t in engine._action_history.get(tid, [])
+                    if (now - t) < window]
+            used = len(hist)
+        return jsonify({
+            "armed": armed,
+            "max_actions_per_window": budget,
+            "action_window_seconds": window,
+            "actions_in_window": used,
+        })
+    except Exception as e:
+        return jsonify({"armed": False, "error": str(e)}), 500
+
+
+@alerts_bp.route("/automation/arm", methods=["POST"])
+@require_tenant
+@role_required("admin")
+def api_automation_arm(tenant_id: str = ""):
+    """Arm/disarm the Auto-Pilot for the caller's tenant.
+
+    Body: {"armed": true|false}. Arming is the explicit confirmation gate
+    (fail-closed): rules never execute until the tenant arms the pilot;
+    disarming immediately stops autonomous actions.
+    """
+    from core.alerts.automation_engine import AutomationEngine
+    tid = tenant_id or "default"
+    data = request.get_json(silent=True) or {}
+    armed = bool(data.get("armed"))
+    try:
+        engine = AutomationEngine("", None)
+        ok = engine.set_armed(tid, armed)
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+    if not ok:
+        return jsonify({"success": False, "error": "could not persist armed state"}), 500
+    _log_audit(tid, "automation.arm", details={"armed": armed})
+    return jsonify({"success": True, "armed": armed})

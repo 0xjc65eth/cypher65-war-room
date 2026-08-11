@@ -271,6 +271,7 @@ def build_auto_pilot_context() -> dict:
                     pass
 
         automation_preview = []
+        armed = False
         try:
             if _auto_pilot_engine is not None:
                 # Preferred: the boot-initialized engine + LIVE core registry
@@ -281,6 +282,12 @@ def build_auto_pilot_context() -> dict:
                     _auto_pilot_registry.list_devices()
                     if _auto_pilot_registry is not None else []
                 )
+                # is_armed is optional on the injected engine (test fakes /
+                # older engines) — treat absence as False, never crash the
+                # preview block over an advisory flag.
+                _is_armed = getattr(_auto_pilot_engine, "is_armed", None)
+                if callable(_is_armed):
+                    armed = bool(_is_armed(tenant_id))
                 preview = _auto_pilot_engine.preview_rules(_ap_devices, tenant_id=tenant_id)
             else:
                 # Fallback (tests/standalone): fresh engine + DB-loaded
@@ -294,6 +301,7 @@ def build_auto_pilot_context() -> dict:
                 _ap_reg.load_from_db()
                 _ap_devices = _ap_reg.list_devices()
                 _ap_eng = AutomationEngine(_ap_db_path, SafetyEngine())
+                armed = bool(_ap_eng.is_armed(tenant_id))
                 preview = _ap_eng.preview_rules(_ap_devices, tenant_id=tenant_id)
             if isinstance(preview, list):
                 automation_preview = preview[:3]
@@ -303,11 +311,13 @@ def build_auto_pilot_context() -> dict:
         return {
             "peak_hashrate_7d": peak_7d,
             "automation_preview": automation_preview,
+            "armed": armed,
             "temp_high_c": AP_TEMP_HIGH_C,
         }
     except Exception as e:
         log.warning("[auto-pilot] context failed: %s", e)
-        return {"peak_hashrate_7d": 0.0, "automation_preview": [], "temp_high_c": AP_TEMP_HIGH_C}
+        return {"peak_hashrate_7d": 0.0, "automation_preview": [],
+                "armed": False, "temp_high_c": AP_TEMP_HIGH_C}
 
 
 # ── Main enrichment ─────────────────────────────────────────────────────

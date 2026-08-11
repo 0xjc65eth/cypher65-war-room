@@ -7,8 +7,10 @@ where conditions are evaluated against device telemetry and actions are
 device commands that must pass through the SafetyEngine.
 """
 import json
+import os
 import time
 import logging
+import threading
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
@@ -38,7 +40,25 @@ class AutomationEngine:
     """
     Loads automation rules from the database, evaluates them against the
     current fleet state, and executes actions via the SafetyEngine.
+
+    Auto-Pilot discipline (P1): execution is FAIL-CLOSED and rate-limited.
+      - ``auto_pilot_armed`` per tenant (settings, default off): rules only
+        EXECUTE when the tenant has explicitly armed the Auto-Pilot. When
+        unarmed, evaluation degrades to a read-only preview (nothing fires).
+      - Per-tenant action budget: at most ``max_actions_per_window`` action
+        executions per ``action_window_seconds``. Once the budget is spent,
+        further matches are reported as ``rate_limited`` and audited — a
+        broken rule can never spam the fleet.
+      - ``min_interval_seconds`` per rule still applies (cooldown), and
+        SafetyEngine validates every action before it runs.
     """
+
+    # Per-tenant action budget (Auto-Pilot rate limiting). Configurable via
+    # env for power users; the defaults are deliberately conservative.
+    AUTOMATION_MAX_ACTIONS_PER_WINDOW = int(
+        os.environ.get("AUTOMATION_MAX_ACTIONS_PER_WINDOW", "10"))
+    AUTOMATION_ACTION_WINDOW_S = int(
+        os.environ.get("AUTOMATION_ACTION_WINDOW_S", "900"))
 
     def __init__(self, db_path: str, safety_engine: SafetyEngine,
                  execute_command_callback=None, audit_callback=None):
@@ -47,6 +67,9 @@ class AutomationEngine:
         self.execute_command_callback = execute_command_callback
         self.audit_callback = audit_callback
         self._last_fired: Dict[str, int] = {}
+        # tenant_id -> deque of execution timestamps (rolling action budget)
+        self._action_history: Dict[str, list] = {}
+        self._budget_lock = threading.Lock()
 
     def load_rules(self, tenant_id: str = "") -> List[AutomationRule]:
         try:
@@ -131,16 +154,75 @@ class AutomationEngine:
                 })
         return preview
 
-    def evaluate_rules(self, devices: List[Device]) -> List[Dict[str, Any]]:
-        """Evaluate all active rules against the provided devices.
+    def is_armed(self, tenant_id: str = "") -> bool:
+        """Auto-Pilot armed state for a tenant (fail-closed: default OFF).
 
-        Deadlock prevention: triggered rules are collected per device first;
-        when two rules would execute CONFLICTING actions on the same device
-        in the same cycle, the higher-priority rule wins and the loser is
-        audited as CANCELLED (conflict). Ties cancel both and log.
+        Read from the tenant's settings (``auto_pilot_armed`` = "1"). A
+        missing setting or a settings error degrades to False — the pilot
+        never executes until the operator explicitly arms it.
         """
-        rules = self.load_rules()
+        try:
+            from services.settings import load_settings as _load
+            s = _load(tenant_id=tenant_id or "default")
+            return str(s.get("auto_pilot_armed") or "").strip() == "1"
+        except Exception:
+            return False
+
+    def set_armed(self, tenant_id: str = "", armed: bool = False) -> bool:
+        """Arm/disarm the Auto-Pilot for a tenant (persisted in settings).
+
+        Returns True on success. Fail-closed: any error leaves the pilot
+        disarmed.
+        """
+        try:
+            from services.settings import save_setting as _save
+            return bool(_save("auto_pilot_armed", "1" if armed else "0",
+                              tenant_id=tenant_id or "default"))
+        except Exception:
+            return False
+
+    def _consume_action_budget(self, tenant_id: str, now: int) -> bool:
+        """True when the tenant still has action budget for this window.
+
+        Rolling window: prune timestamps older than the window, then check
+        the count against the cap. The check+append happens under a lock so
+        concurrent polls can't overspend the budget.
+        """
+        tid = tenant_id or "default"
+        window = self.AUTOMATION_ACTION_WINDOW_S
+        cap = self.AUTOMATION_MAX_ACTIONS_PER_WINDOW
+        with self._budget_lock:
+            hist = [t for t in self._action_history.get(tid, []) if (now - t) < window]
+            if len(hist) >= cap:
+                self._action_history[tid] = hist
+                return False
+            hist.append(now)
+            self._action_history[tid] = hist
+            return True
+
+    def evaluate_rules(self, devices: List[Device],
+                       tenant_id: str = "") -> List[Dict[str, Any]]:
+        """Evaluate the tenant's active rules against the provided devices.
+
+        Auto-Pilot discipline:
+          - Rules are loaded scoped to ``tenant_id`` — a named tenant's rules
+            NEVER run against another tenant's fleet (previous behavior
+            loaded every tenant's rules into the operator's evaluation).
+          - When the tenant is NOT armed, nothing executes: the result list
+            carries a single ``{"status": "disarmed"}`` marker so callers
+            (and the Command Center) can surface the pilot state honestly.
+          - Triggered rules that exceed the per-tenant action budget are
+            audited as ``RATE_LIMITED`` and returned with that status.
+          - Deadlock prevention: conflicting actions on the same device in
+            the same cycle resolve by priority (higher wins; ties cancel
+            both) exactly as before.
+        """
+        rules = self.load_rules(tenant_id=tenant_id)
         now = int(time.time())
+        armed = self.is_armed(tenant_id)
+        if not armed:
+            return [{"status": "disarmed", "tenant_id": tenant_id or "default"}]
+
         triggered: List[tuple] = []  # (rule, device)
         for rule in rules:
             device = next((d for d in devices if d.id == rule.target_device_id), None)
@@ -153,7 +235,26 @@ class AutomationEngine:
 
         survivors = self._resolve_conflicts(triggered, now)
         results = []
+        tid = tenant_id or "default"
         for rule, device in survivors:
+            if not self._consume_action_budget(tid, now):
+                # Record the cooldown exactly like conflict-cancelled rules:
+                # a persistently-matching rule beyond its budget must re-audit
+                # at most once per min_interval_seconds instead of spamming
+                # RATE_LIMITED every poll cycle (15s).
+                self._last_fired[f"{rule.id}:{device.id}"] = now
+                self._audit(rule, device, status="RATE_LIMITED",
+                            reason=f"tenant action budget exceeded "
+                                   f"({self.AUTOMATION_MAX_ACTIONS_PER_WINDOW} / "
+                                   f"{self.AUTOMATION_ACTION_WINDOW_S}s)")
+                results.append({
+                    "rule_id": rule.id,
+                    "rule_name": rule.name,
+                    "device_id": device.id,
+                    "status": "rate_limited",
+                    "reason": "tenant action budget exceeded",
+                })
+                continue
             results.append(self._execute(rule, device, now))
         return results
 

@@ -1,27 +1,19 @@
 # AI Operator — Next Phase
 
-## Current Status (Jul 2026)
+## Current Status (Aug 2026)
 
-The AI Operator panel in the CYPHER65 dashboard uses **keyword matching** with
-9 hardcoded responses. It is NOT a real LLM-based assistant.
+✅ **Implemented since Jul 2026** — `services/ai_operator.py` is a REAL LLM
+assistant: DeepSeek (default) or OpenAI via `AI_PROVIDER`, SSE streaming at
+`POST /api/ai/query`, snapshot-grounded system prompt, hashrate/difficulty
+formatting helpers. No more keyword matching.
 
-## What needs to change
+## What's next (evolution, not creation)
 
-Create a new backend endpoint:
+Enhance the existing LLM assistant:
 
-```
-POST /api/ai/query
-```
+### Approach (built on the existing LLM endpoint)
 
-Input: `{ "query": "...", "context": { ... } }`
-Output: `{ "response": "...", "sources": [...] }`
-
-### Approach
-
-1. **Route the query** to a real LLM (OpenAI, Claude, DeepSeek, or local model)
-   with the current snapshot data + device telemetry as system context.
-
-2. **Tool usage**: The AI should be able to call backend functions:
+1. **Tool usage**: The AI should be able to call backend functions:
    - `get_snapshot()` — current pool/worker/network data
    - `get_device_telemetry(device_id)` — miner telemetry
    - `get_fleet_health()` — fleet summary

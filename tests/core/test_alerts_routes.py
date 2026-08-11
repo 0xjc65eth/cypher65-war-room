@@ -119,3 +119,43 @@ def test_update_automation_rule_validates_condition_value(client):
     resp = client.put(f"/api/automation-rules/{rule_id}", json={"condition_value": "not-a-number"})
     assert resp.status_code == 400
     assert "numeric" in resp.get_json()["error"]
+
+
+# ═══════════════════════════════════════════════════════════════════════
+#  P1 Auto-Pilot — arm/status routes (fail-closed arming + budget view)
+# ═══════════════════════════════════════════════════════════════════════
+
+def test_automation_status_defaults_to_disarmed(client):
+    """Fail-closed: without explicit arming, status reports armed=False."""
+    _clean_tables()
+    resp = client.get("/api/automation/status")
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data["armed"] is False
+    assert data["max_actions_per_window"] > 0
+
+
+def test_automation_arm_roundtrip(client):
+    """POST /api/automation/arm persists the state; status reflects it."""
+    _clean_tables()
+    resp = client.post("/api/automation/arm", json={"armed": True})
+    assert resp.status_code == 200
+    assert resp.get_json()["armed"] is True
+
+    resp = client.get("/api/automation/status")
+    assert resp.get_json()["armed"] is True
+
+    # Disarm again — clean state for sibling tests.
+    client.post("/api/automation/arm", json={"armed": False})
+    resp = client.get("/api/automation/status")
+    assert resp.get_json()["armed"] is False
+
+
+def test_automation_arm_rejects_missing_body(client):
+    """No body → defaults to disarm (never accidentally arms)."""
+    _clean_tables()
+    resp = client.post("/api/automation/arm", json={})
+    assert resp.status_code == 200
+    assert resp.get_json()["armed"] is False
+    resp = client.get("/api/automation/status")
+    assert resp.get_json()["armed"] is False

@@ -393,19 +393,28 @@ def _exec_command(cmd, known=None):
     """
     dev_ip = cmd.get("ip_address") or cmd.get("device_ip") or cmd.get("device_id")
     name = cmd.get("command")
-    if name in ("restart", "identify"):
+    if name in ("restart", "identify", "pause", "resume"):
         # Resolve device type from the agent's own discovery map when known
         # (the server does not persist type; the agent probed it directly).
         dev = (known or {}).get(dev_ip, {})
         dev_type = str(dev.get("type") or "").lower()
         if dev_type == "cgminer":
             if name != "restart":
-                return False, "identify not supported via cgminer API"
+                return False, f"{name} not supported via cgminer API"
             parsed = _cgminer_cmd(dev_ip, "restart")
             if parsed and parsed.get("STATUS"):
                 return True, "cgminer restart accepted"
             return False, "cgminer restart failed/unreachable"
-        status, _ = _http_json("POST", f"http://{dev_ip}:{AXEOS_PORT}/api/system/{name}",
+        # bitaxe/AxeOS: the ESP-Miner API exposes pause/resume as
+        # /api/system/miningPause + /api/system/miningResume (empty body),
+        # restart/identify as /api/system/{restart|identify}.
+        endpoint = {
+            "restart": "restart",
+            "identify": "identify",
+            "pause": "miningPause",
+            "resume": "miningResume",
+        }[name]
+        status, _ = _http_json("POST", f"http://{dev_ip}:{AXEOS_PORT}/api/system/{endpoint}",
                                payload=None, headers={}, timeout=5)
         return status == 200, f"HTTP {status}"
     return False, f"unknown command: {name}"

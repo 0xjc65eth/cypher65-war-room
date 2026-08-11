@@ -2053,6 +2053,10 @@ body {
 .fcc-t__temp.thot { color: var(--orange); }
 .fcc-t__temp.tcrit { color: var(--red); }
 .axe-cmd-btn--mini { padding: 1px 6px; font-size: 10px; }
+.axe-cmd-btn--pause { color: var(--amber, #ffa000); border-color: rgba(255, 160, 0, 0.35); }
+.axe-cmd-btn--pause:hover { background: rgba(255, 160, 0, 0.12); }
+.axe-cmd-btn--resume { color: var(--accent-green, #06d6f0); border-color: rgba(6, 214, 240, 0.35); }
+.axe-cmd-btn--resume:hover { background: rgba(6, 214, 240, 0.12); }
 
 /* Thermal map */
 .fcc-thermal { margin-top: 6px; }

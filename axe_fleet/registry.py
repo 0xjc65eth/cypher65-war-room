@@ -29,9 +29,10 @@ def _caps_for_type(info: dict) -> dict:
     whose type is only learned on a LATER register still gets honest caps
     (cgminer must never advertise an identify button it cannot execute).
 
-    - bitaxe/AxeOS: restart+identify over HTTP :80, configure for AxeOS.
-    - cgminer-family: restart over JSON-over-TCP :4028, NO identify (the
-      cgminer API has no such command).
+    - bitaxe/AxeOS: restart+identify+pause+resume over HTTP :80 (ESP-Miner
+      /api/system/miningPause|miningResume), configure for AxeOS.
+    - cgminer-family: restart over JSON-over-TCP :4028, NO identify/pause/
+      resume (the cgminer API has no such commands).
     - type unknown (telemetry-only re-upsert): conservative — restart yes,
       identify only if the firmware looks like AxeOS."""
     dev_type = str(info.get("type") or "").lower()
@@ -41,6 +42,8 @@ def _caps_for_type(info: dict) -> dict:
         "telemetry": True,
         "restart": True,
         "identify": not is_cgminer,
+        "pause": is_axeos and not is_cgminer,
+        "resume": is_axeos and not is_cgminer,
         "configure": is_axeos,
     }
 

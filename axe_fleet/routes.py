@@ -640,6 +640,30 @@ def identify_device(device_id: str):
     return _execute_device_command(device_id, "identify")
 
 
+@axe_fleet_bp.route("/devices/<device_id>/pause", methods=["POST"])
+@_require_local_or_session
+@_role_required("member")
+def pause_device(device_id: str):
+    """Pause hashing on a device (ESP-Miner miningPause).
+
+    Agent-managed devices route through the LOCAL agent command queue (the
+    cloud can't reach the home LAN); direct devices hit the AxeOS HTTP API.
+    """
+    if _registry is None:
+        return jsonify({"error": "registry not initialized"}), 500
+    return _execute_device_command(device_id, "pause")
+
+
+@axe_fleet_bp.route("/devices/<device_id>/resume", methods=["POST"])
+@_require_local_or_session
+@_role_required("member")
+def resume_device(device_id: str):
+    """Resume hashing on a paused device (ESP-Miner miningResume)."""
+    if _registry is None:
+        return jsonify({"error": "registry not initialized"}), 500
+    return _execute_device_command(device_id, "resume")
+
+
 @axe_fleet_bp.route("/devices/<device_id>/config", methods=["POST"])
 @_require_local_or_session
 @_role_required("member")
@@ -1898,6 +1922,12 @@ def _execute_device_command(device_id: str, command: str):
             result = conn.restart()
         elif command == "identify":
             result = conn.identify()
+        elif command == "pause":
+            # ESP-Miner: POST /api/system/miningPause (empty body).
+            result = conn.pause()
+        elif command == "resume":
+            # ESP-Miner: POST /api/system/miningResume (empty body).
+            result = conn.resume()
         else:
             return jsonify({"error": f"unknown command: {command}"}), 400
         return jsonify({"success": True, "result": result})

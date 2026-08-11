@@ -4223,7 +4223,10 @@ def _do_poll():
 
         # Automation rules: any triggered action must pass SafetyEngine.
         # Results are already audited by the engine's audit callback.
-        _automation_engine.evaluate_rules(_core_devices)
+        # Auto-Pilot discipline (P1): evaluate tenant-scoped (the operator's
+        # own rules), fail-closed (unarmed = preview only) and rate-limited
+        # (per-tenant action budget enforced inside the engine).
+        _automation_engine.evaluate_rules(_core_devices, tenant_id="default")
     except Exception as e:
         log.warning("[alert_automation] error: %s", e)
 
@@ -4779,12 +4782,23 @@ def api_tax_export(tenant_id: str = ""):
     snapshots for the requested currency, plus a daily BTC price ledger so any
     other received coins can be valued at receipt time. No invented figures.
 
+    Tenant isolation (Fase 4 · B2): the underlying tables (highest_diff_events
+    + snapshots) are OPERATOR-only — named tenants never write to them, so a
+    named tenant asking for a tax report is rejected fail-closed (403) exactly
+    like /api/export on the same tables.
+
     Query params:
       - currency (default JPY): JPY | KRW | CNY | USD | BRL | EUR | GBP
       - year (optional int): restrict to that calendar year (UTC)
 
     Returns a CSV attachment: event rows + daily price ledger.
     """
+    tid = tenant_id or "default"
+    if tid != "default":
+        return jsonify({
+            "error": "forbidden",
+            "detail": "tax export reads operator-scoped tables and is not available to your tenant",
+        }), 403
     currency = (request.args.get("currency") or "JPY").upper()
     col = {
         "JPY": "btc_jpy", "KRW": "btc_krw", "CNY": "btc_cny",
@@ -5785,22 +5799,37 @@ def api_market_trend():
 #  RENTALS panel — operator rental performance (MRR rentals + Braiins contracts)
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+# Provider data (MRR/Braiins) changes over minutes, not per request — yet
+# /api/rentals makes 4+ synchronous network calls (each with 15s timeouts)
+# on EVERY panel load, which put the route at ~1.1s p95 (measured by
+# scripts/bench_api.py). A short per-tenant TTL cache keeps the panel fast
+# while staying honest: the sweep + the panel refresh still re-fetch when
+# the tenant opens the tab (TTL is only ~20s, and the web UI polls every
+# 15s anyway, so a fresh enough answer is always served).
+_RENTALS_CACHE: Dict[str, Dict[str, Any]] = {}  # tenant_id -> {ts, payload}
+_RENTALS_CACHE_TTL_S = 20
+
+
 @app.route("/api/rentals")
 @require_tenant
 @role_required("viewer")
 def api_rentals(tenant_id: str = ""):
     """Consolidated rental list for the RENTALS panel (tenant-scoped).
 
-    - MRR: GET /rental (renter + owner, active + history)
-    - Braiins: GET /contract (caller-owned, requires BRAIINS_API_KEY)
-
-    Tenant-aware: with 1000+ users each tenant carries ITS OWN Braiins/MRR
-    credentials (tenant_settings) — a user only ever sees their own
-    contracts and rental history, never the operator's global key.
-
-    Fail-closed: missing credentials yield an explicit needs_auth block so
-    the panel never pretends there are zero rentals.
+    Fast path: per-tenant 20s in-memory cache serves repeated panel loads
+    without re-hitting MRR/Braiins (4+ network calls). The cache is keyed
+    by tenant — 1000+ users never share or pollute each other's entries.
     """
+    tid = tenant_id or "default"
+    _now = int(time.time())
+    # ?refresh=1 bypasses the TTL cache (pull-to-refresh / explicit reload) —
+    # always re-fetches the providers and re-fires the alert dispatchers.
+    if request.args.get("refresh") != "1":
+        _cached = _RENTALS_CACHE.get(tid)
+        if _cached and (_now - _cached["ts"]) < _RENTALS_CACHE_TTL_S:
+            _cached["payload"]["cached"] = True
+            return jsonify(_cached["payload"])
+
     try:
         mrr_active = _rental_perf.fetch_mrr_rentals(rtype="renter", history=False, limit=50, tenant_id=tenant_id)
         mrr_history = _rental_perf.fetch_mrr_rentals(rtype="renter", history=True, limit=50, tenant_id=tenant_id)
@@ -5891,7 +5920,7 @@ def api_rentals(tenant_id: str = ""):
             dispatch_tenant_risk_alerts(tenant_id, risk_alerts)
         except Exception as _pe:
             log.warning("[rentals] pl alert error: %s", _pe)
-        return jsonify({
+        payload = {
             "success": True,
             "updated_at": int(time.time()),
             "mrr": {
@@ -5957,7 +5986,17 @@ def api_rentals(tenant_id: str = ""):
             #   arbitrage  → [{severity, discount_pct, message, ref_basis,
             #                  avg/effective/last_cost}] or []
             "market_signals": _market_signals,
-        })
+        }
+        # Store the consolidated payload for the fast path (20s TTL).
+        _RENTALS_CACHE[tid] = {"ts": _now, "payload": payload}
+        # Bound the cache: drop stale entries past TTL (bounded growth with
+        # 1000+ tenants — same discipline as the rate-limit store).
+        if len(_RENTALS_CACHE) > 2048:
+            cutoff = _now - _RENTALS_CACHE_TTL_S
+            for _k in [k for k, v in _RENTALS_CACHE.items()
+                       if v["ts"] < cutoff]:
+                _RENTALS_CACHE.pop(_k, None)
+        return jsonify(payload)
     except Exception as e:
         log.warning("[rentals] list error: %s", e)
         return jsonify({"success": False, "error": "failed to fetch rentals"}), 500

@@ -2841,13 +2841,15 @@ assertEqual('cmdBtns 3 cmds -> 3 buttons', multiCmds.match(/data-cmd=/g).length,
 
 // ── Command routing (auditoria UI fix) ──
 // Mirror of the axe-grid button handler decision in static/app.js: axe-fleet
-// cards live in the AXE registry, so restart/identify must go through the
-// agent-aware /api/axe-fleet/devices/<id>/{restart|identify} endpoints (which
-// enqueue for the LOCAL agent) instead of the core /api/devices/<id>/command
-// route — that one queries the CORE registry and 404s on axe devices, so the
-// miner would never restart (theater).
+// cards live in the AXE registry, so restart/identify/pause/resume must go
+// through the agent-aware /api/axe-fleet/devices/<id>/{restart|identify|
+// pause|resume} endpoints (which enqueue for the LOCAL agent or hit the
+// AxeOS HTTP API) instead of the core /api/devices/<id>/command route — that
+// one queries the CORE registry and 404s on axe devices, so the miner would
+// never be controlled (theater).
 function routeAxeCmd(deviceId, command) {
-  var isAgentRouted = command === 'restart' || command === 'identify';
+  var isAgentRouted = command === 'restart' || command === 'identify' ||
+    command === 'pause' || command === 'resume';
   return {
     url: isAgentRouted
       ? '/api/axe-fleet/devices/' + encodeURIComponent(deviceId) + '/' + command
@@ -2863,11 +2865,13 @@ assertEqual('routeAxeCmd restart uses authFetch', routeAxeCmd('abc123', 'restart
 assertEqual('routeAxeCmd restart body empty', routeAxeCmd('abc123', 'restart').body, '{}');
 assertEqual('routeAxeCmd identify -> axe-fleet', routeAxeCmd('abc123', 'identify').url,
   '/api/axe-fleet/devices/abc123/identify');
-assertEqual('routeAxeCmd pause -> core fallback', routeAxeCmd('abc123', 'pause').url,
-  '/api/devices/abc123/command');
-assertEqual('routeAxeCmd pause no authFetch', routeAxeCmd('abc123', 'pause').useAuthFetch, false);
-assertEqual('routeAxeCmd resume body has command', routeAxeCmd('abc123', 'resume').body,
-  '{"command":"resume"}');
+assertEqual('routeAxeCmd pause -> axe-fleet', routeAxeCmd('abc123', 'pause').url,
+  '/api/axe-fleet/devices/abc123/pause');
+assertEqual('routeAxeCmd pause uses authFetch', routeAxeCmd('abc123', 'pause').useAuthFetch, true);
+assertEqual('routeAxeCmd resume -> axe-fleet', routeAxeCmd('abc123', 'resume').url,
+  '/api/axe-fleet/devices/abc123/resume');
+assertEqual('routeAxeCmd resume uses authFetch', routeAxeCmd('abc123', 'resume').useAuthFetch, true);
+assertEqual('routeAxeCmd pause body empty', routeAxeCmd('abc123', 'pause').body, '{}');
 
 // ── Device status classification ──
 function classifyDevStatus(d) {

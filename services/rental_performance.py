@@ -3251,17 +3251,31 @@ def build_rental_recommendations(tenant_id: str = "",
             "tracked": len(by_rig), "market": market}
 
 
+# 30-day market-trend cache: the query scans hashrate_market_history (which
+# grows one row per offer per poll cycle) on EVERY panel load — the #1 hot
+# path in /api/rentals (measured p95 ~1.1s). Market prices change over hours,
+# not per request: a 300s TTL makes the panel fast while staying honest
+# (data is never stale by more than the fetch cadence of the history table).
+_TREND_CACHE: Dict[str, Any] = {"ts": 0, "payload": None}
+_TREND_TTL_S = int(os.environ.get("MARKET_TREND_TTL", "300"))
+
+
 def fetch_market_trend(days: int = 30) -> Dict[str, Any]:
     """Daily CHEAPEST SHA-256 market price (sats/TH·h) over the last N days
     from hashrate_market_history + a summary (avg/current/vs-avg). Empty
     points when the market snapshot was never persisted (quiet box) — the
-    UI hides the timing card instead of showing a fabricated line."""
+    UI hides the timing card instead of showing a fabricated line.
+
+    Cached in-memory (TTL = MARKET_TREND_TTL, default 300s) so the expensive
+    30-day GROUP BY scan does not run on every panel load.
+    """
+    now = int(time.time())
+    cache = _TREND_CACHE
+    if cache["payload"] is not None and (now - cache["ts"]) < _TREND_TTL_S:
+        return cache["payload"]
     try:
         conn = get_db()
         c = conn.cursor()
-        # The history table grows one row per offer per poll cycle — the
-        # (algorithm, ts) index keeps the 30-day range scan cheap on every
-        # panel load (CREATE IF NOT EXISTS is a no-op after the first run).
         try:
             c.execute("CREATE INDEX IF NOT EXISTS idx_mkt_hist_alg_ts "
                       "ON hashrate_market_history(algorithm, ts)")
@@ -3273,7 +3287,7 @@ def fetch_market_trend(days: int = 30) -> Dict[str, Any]:
                FROM hashrate_market_history
                WHERE algorithm='sha256' AND price_per_th_day >= ? AND ts >= ?
                GROUP BY day ORDER BY day ASC""",
-            (_MIN_PLAUSIBLE_PRICE, int(time.time()) - days * 86400))
+            (_MIN_PLAUSIBLE_PRICE, now - days * 86400))
         rows = c.fetchall()
         conn.close()
     except Exception as e:
@@ -3287,7 +3301,7 @@ def fetch_market_trend(days: int = 30) -> Dict[str, Any]:
     vals = [p["sats_per_thh"] for p in pts]
     avg = sum(vals) / len(vals)
     cur = vals[-1]
-    return {
+    payload = {
         "points": pts,
         "summary": {
             "days": len(pts),
@@ -3298,6 +3312,9 @@ def fetch_market_trend(days: int = 30) -> Dict[str, Any]:
             "vs_avg_pct": round((cur / avg - 1.0) * 100.0, 1) if avg else None,
         },
     }
+    cache["ts"] = now
+    cache["payload"] = payload
+    return payload
 
 
 def fetch_rig_performance_history(
