@@ -872,6 +872,10 @@
     <div class="panel__eyebrow">◆ AI OPERATOR · INTELLIGENCE</div>
     <div class="panel__tools">
       <span class="badge badge--green" id="ai-status-badge">ACTIVE</span>
+      <button class="chip ap-arm-chip" id="ap-armed-btn" title="Auto-Pilot: quando ARMADO, as regras de automação executam ações sozinhas dentro do orçamento. Requer confirmação por digitação.">
+        <span class="ap-dot" id="ap-armed-dot"></span>AUTO-PILOT&nbsp;<span id="ap-armed-label">OFF</span>
+      </button>
+      <span class="badge badge--mute" id="ap-budget-badge" title="Ações do Auto-Pilot executadas na janela atual / limite">—</span>
       <button class="chip" id="open-alert-center" title="Alert Center">⚠ RULES</button>
       <button class="chip" id="ai-clear">clear</button>
     </div>
@@ -903,6 +907,28 @@
     </div>
   </div>
 </section>
+
+<!-- ── Auto-Pilot arm confirmation (typed — enables autonomous actions) ── -->
+<div id="ap-arm-modal" class="modal-overlay">
+  <div class="modal ap-arm-modal">
+    <div class="modal__header">
+      <span class="modal__title">🛡 ARMAR AUTO-PILOT</span>
+      <button class="modal__close" data-close="ap-arm-modal">×</button>
+    </div>
+    <div class="modal__body">
+      <p class="ap-arm-modal__desc">Ao armar, as <strong>regras de automação passam a executar ações sozinhas</strong> (restart, power-cycle, comandos de dispositivo) sempre que as condições baterem — respeitando o orçamento de ações por janela. Desarmar a qualquer momento para parar imediatamente.</p>
+      <div class="ap-arm-modal__status" id="ap-arm-modal-status"></div>
+      <label class="ap-arm-modal__confirm">
+        <span class="field__label">DIGITE <strong>ARMAR</strong> PARA CONFIRMAR</span>
+        <input class="field__input field__input--mono" type="text" id="ap-arm-type" placeholder="digite ARMAR" autocomplete="off" spellcheck="false">
+      </label>
+      <div class="ap-arm-modal__actions">
+        <button class="btn" data-close="ap-arm-modal">CANCELAR</button>
+        <button class="btn btn--primary" id="ap-arm-confirm" disabled>ARMAR AUTO-PILOT</button>
+      </div>
+    </div>
+  </div>
+</div>
 
 <!-- ─── AXE FLEET ─── -->
 <section class="panel panel--axe-fleet panel--large" id="axe-fleet-panel" data-module="fleet">

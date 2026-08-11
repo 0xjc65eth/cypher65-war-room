@@ -4826,6 +4826,133 @@ function renderAccount(acct) {
     document.getElementById('ai-ctx-price') && (document.getElementById('ai-ctx-price').textContent = btcUsdCtx ? '$' + Number(btcUsdCtx).toLocaleString() : '—');
     document.getElementById('ai-ctx-fleet') && (document.getElementById('ai-ctx-fleet').textContent = fleet.length + ' devices');
     document.getElementById('ai-ctx-pblock') && (document.getElementById('ai-ctx-pblock').textContent = prox.chance_per_share_pct ? (Number(prox.chance_per_share_pct) * 100).toFixed(6) + '%' : '—');
+
+    // ── Auto-Pilot armed state (server truth from snapshot) → toggle UI ──
+    const ap = snap.auto_pilot || {};
+    _apSetUi(!!ap.armed);
+    _initAutoPilotToggle();
+  }
+
+  // ── Auto-Pilot arm/disarm toggle (automations module) ─────────────
+  // Backend: POST /api/automation/arm {armed} (fail-closed per tenant) +
+  // GET /api/automation/status (armed + action budget). Arming enables
+  // autonomous rule actions, so it requires typed confirmation.
+  let _apArmed = false;
+  let _apToggleInit = false;
+
+  function _apSetUi(armed) {
+    _apArmed = !!armed;
+    const btn = document.getElementById('ap-armed-btn');
+    const label = document.getElementById('ap-armed-label');
+    const dot = document.getElementById('ap-armed-dot');
+    if (label) label.textContent = armed ? 'ARM' : 'OFF';
+    if (btn) {
+      btn.classList.toggle('is-armed', armed);
+      btn.title = armed
+        ? 'Auto-Pilot ARMADO — as regras executam ações sozinhas. Clique para desarmar.'
+        : 'Auto-Pilot desarmado — as regras não executam. Clique para armar (requer confirmação por digitação).';
+    }
+    if (dot) {
+      dot.style.background = armed ? 'var(--green)' : 'var(--orange)';
+      dot.style.boxShadow = armed ? '0 0 8px rgba(0,200,83,0.8)' : '0 0 6px rgba(255,160,0,0.6)';
+    }
+  }
+
+  async function _apRefreshStatus() {
+    try {
+      const r = await authFetch('/api/automation/status');
+      if (!r.ok) return;
+      const d = await r.json().catch(() => ({}));
+      _apSetUi(!!d.armed);
+      const badge = document.getElementById('ap-budget-badge');
+      if (badge && typeof d.max_actions_per_window === 'number') {
+        const used = d.actions_in_window || 0;
+        const mins = Math.round((d.action_window_seconds || 3600) / 60);
+        badge.textContent = used + '/' + d.max_actions_per_window + ' ações';
+        badge.title = 'Auto-Pilot: ' + used + ' ação(ões) na janela de ' + mins + 'min (limite ' + d.max_actions_per_window + ')';
+        badge.classList.toggle('badge--amber', used > 0);
+        badge.classList.toggle('badge--mute', used === 0);
+      }
+    } catch (e) { /* status is advisory — never break the panel */ }
+  }
+
+  async function _apSetArmed(armed) {
+    const btn = document.getElementById('ap-armed-btn');
+    if (btn) btn.disabled = true;
+    try {
+      const r = await authFetch('/api/automation/arm', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ armed: armed }),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok || !d.success) {
+        showToast('error', '⚠ Auto-Pilot: ' + (d.error || ('HTTP ' + r.status)));
+        _apRefreshStatus();
+        return false;
+      }
+      _apSetUi(!!d.armed);
+      showToast('success', armed ? '🛡 Auto-Pilot ARMADO — regras executam sozinhas' : 'Auto-Pilot desarmado');
+      _apRefreshStatus();
+      return true;
+    } catch (e) {
+      showToast('error', '⚠ falha de rede ao alterar o Auto-Pilot');
+      return false;
+    } finally {
+      if (btn) btn.disabled = false;
+    }
+  }
+
+  function _initAutoPilotToggle() {
+    if (_apToggleInit) return;
+    _apToggleInit = true;
+
+    const btn = document.getElementById('ap-armed-btn');
+    if (btn) {
+      btn.addEventListener('click', () => {
+        if (_apArmed) { _apSetArmed(false); return; }  // disarm is safe — direct
+        const m = document.getElementById('ap-arm-modal');
+        const input = document.getElementById('ap-arm-type');
+        const confirm = document.getElementById('ap-arm-confirm');
+        const status = document.getElementById('ap-arm-modal-status');
+        if (m && input && confirm) {
+          input.value = '';
+          confirm.disabled = true;
+          if (status) status.textContent = '';
+          m.classList.add('modal--open');
+          setTimeout(() => input.focus(), 50);
+        }
+      });
+    }
+
+    const m = document.getElementById('ap-arm-modal');
+    if (m) {
+      m.addEventListener('click', (e) => {
+        if (e.target.matches('[data-close]') || e.target === m) m.classList.remove('modal--open');
+      });
+    }
+
+    const input = document.getElementById('ap-arm-type');
+    const confirm = document.getElementById('ap-arm-confirm');
+    if (input && confirm) {
+      input.addEventListener('input', () => {
+        confirm.disabled = input.value.trim().toUpperCase() !== 'ARMAR';
+      });
+      input.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' && !confirm.disabled) confirm.click();
+      });
+      confirm.addEventListener('click', async () => {
+        confirm.disabled = true;
+        const ok = await _apSetArmed(true);
+        const modal = document.getElementById('ap-arm-modal');
+        if (modal) modal.classList.remove('modal--open');
+        if (!ok) {
+          input.value = '';
+        }
+      });
+    }
+
+    _apRefreshStatus();
   }
 
   function _initAiChat() {

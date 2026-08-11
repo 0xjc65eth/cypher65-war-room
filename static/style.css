@@ -1511,6 +1511,46 @@ body {
 .badge--purple { border-color: #a855f7; color: #a855f7; }
 .badge--mute { opacity: 0.7; }
 
+/* ── Auto-Pilot arm toggle (AI OPERATOR · automations) ── */
+.ap-arm-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  transition: border-color 0.2s ease, color 0.2s ease;
+}
+.ap-arm-chip:hover { transform: translateY(-1px); }
+.ap-arm-chip.is-armed { border-color: var(--green); color: var(--green); }
+.ap-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--orange);
+  box-shadow: 0 0 6px rgba(255, 160, 0, 0.6);
+  transition: background 0.2s ease, box-shadow 0.2s ease;
+}
+.ap-arm-chip.is-armed .ap-dot {
+  background: var(--green);
+  box-shadow: 0 0 8px rgba(0, 200, 83, 0.8);
+}
+.ap-arm-chip[disabled] { opacity: 0.5; cursor: wait; }
+
+.ap-arm-modal { width: min(460px, 92vw); }
+.ap-arm-modal__desc {
+  font-size: 12px;
+  line-height: 1.65;
+  color: var(--text-dim, #9a968c);
+  margin: 0 0 10px;
+}
+.ap-arm-modal__status {
+  font-size: 11px;
+  min-height: 14px;
+  margin-bottom: 10px;
+  color: var(--red, #ff1744);
+}
+.ap-arm-modal__confirm { display: block; margin-bottom: 12px; }
+.ap-arm-modal__confirm .field__label { display: block; margin-bottom: 4px; font-size: 10px; }
+.ap-arm-modal__actions { display: flex; justify-content: flex-end; gap: 8px; }
+
 /* ── P0-2 Decision Matrix ─────────────────────────────────────────── */
 .dm-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; margin-bottom: 6px; }
 .dm-card { padding: 8px; border: 1px solid var(--border-subtle); background: var(--bg-surface); }
