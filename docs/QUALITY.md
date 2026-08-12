@@ -90,6 +90,23 @@ O CI gera `coverage.xml` e envia pro Codecov (repo público = free tier).
 `fail_ci_if_error: false` — sem token, o upload falha silencioso (não bloqueia
 merge). Badge no README reflete a cobertura pública.
 
+#### Token (CODECOV_TOKEN) — 1x por repo
+
+Sem o token o CLI falha com `Token required - not valid tokenless upload`
+(log: `Token length: 0`) e o badge fica sem dados. Para ativar:
+
+1. app.codecov.io → Sign in with GitHub (conta dona do repo) → autorize o
+   GitHub App p/ `cypher65-war-room`.
+2. Abra o repo → **Settings** → **General** → **Repository Upload Token** → copie.
+3. `gh secret set CODECOV_TOKEN` (no diretório do repo) — o step do CI já
+   referencia `token: ${{ secrets.CODECOV_TOKEN }}`.
+4. Rode o CI de novo e confira no log: `Upload queued for processing complete`
+   SEM a linha `Token required`. O badge `codecov.io/gh/<owner>/<repo>/branch/master/graph/badge.svg`
+   passa a mostrar a % real após o 1º upload.
+
+> **Render NÃO precisa do token** — o Render roda a app e nunca envia cobertura;
+> o upload acontece só no GitHub Actions. Não commitar o segredo no render.yaml.
+
 ```bash
 make test                        # pytest completo
 node tests/test_app_js_core.js   # JS core
