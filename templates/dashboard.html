@@ -8,6 +8,48 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+{% if sentry_dsn %}
+<!-- Frontend Sentry (env-gated): carrega o SDK do browser só quando o
+     operador configurou SENTRY_DSN. Sem DSN este bloco nem renderiza —
+     zero requests externos, zero overhead, e2e intacto. Captura erros de
+     runtime do frontend (além dos logs JSON do backend). -->
+<script src="https://browser.sentry-cdn.com/8.30.0/bundle.min.js" crossorigin="anonymous"></script>
+<script>
+  /* Inicializa o mais cedo possível: o onLoad captura erros que ocorram
+     durante o parse do app.js (boot race). Fail-safe: se o CDN falhar,
+     window.Sentry fica undefined e nada quebra. */
+  window.__SENTRY_DSN__ = {{ sentry_dsn|tojson }};
+  if (window.Sentry) {
+    Sentry.onLoad(function () {
+      Sentry.init({
+        dsn: window.__SENTRY_DSN__,
+        environment: '{{ sentry_environment|default("self-hosted") }}',
+        release: 'cypher65-war-room',
+        tracesSampleRate: {{ sentry_traces_sample_rate|default(0.1) }},
+        // Anonymize: nunca enviar endereço de carteira / worker (telemetria
+        // honesta — erros sim, dados financeiros não).
+        beforeSend: function (event) {
+          delete event.extra;
+          return event;
+        },
+        // Privacidade: breadcrumbs de fetch/XHR capturam a URL por padrão —
+        // remover query strings (ex: /api/...?...tenant=...) antes de enviar.
+        beforeBreadcrumb: function (breadcrumb) {
+          if (breadcrumb.data && breadcrumb.data.url) {
+            breadcrumb.data.url = String(breadcrumb.data.url).split('?')[0];
+          }
+          return breadcrumb;
+        },
+        ignoreErrors: [
+          // ResizeObserver loop / favicon 404s — ruído conhecido de dashboards.
+          'ResizeObserver',
+          'Non-Error promise rejection captured',
+        ],
+      });
+    });
+  }
+</script>
+{% endif %}
 <link rel="stylesheet" href="/static/style.css?v53">
 <link rel="icon" href="/static/favicon.ico" sizes="any">
 <link rel="icon" type="image/png" sizes="32x32" href="/static/icon-32x32.png">
