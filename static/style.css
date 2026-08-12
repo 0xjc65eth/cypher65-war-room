@@ -93,6 +93,13 @@
   --dur-fast:     150ms;
   --dur-base:     250ms;
 
+  /* Motion tokens (design-motion-principles · Emil + Jakub) */
+  --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-ios:      cubic-bezier(0.32, 0.72, 0, 1);
+  --dur-enter:     200ms;
+  --dur-leave:     120ms;
+  --dur-progress:  400ms;
+
   /* Sidebar */
   --sidebar-width: 220px;
   --sidebar-collapsed-width: 56px;
@@ -1909,7 +1916,7 @@ body {
 .progress-block { padding: 6px; border: 1px solid var(--border-subtle); margin-top: 4px; }
 .progress-block__label { display: flex; justify-content: space-between; font-size: 9px; color: var(--text-tertiary); }
 .progress-track { height: 4px; background: var(--bg-deep); margin: 4px 0; position: relative; }
-.progress-fill { height: 100%; background: var(--green-dim); width: 0%; transition: width 0.5s ease; }
+.progress-fill { height: 100%; background: var(--green-dim); width: 0%; transition: width var(--dur-progress) var(--ease-out-expo); }
 .progress-track__milestone { position: absolute; top: -2px; width: 2px; height: 8px; background: var(--text-tertiary); }
 .progress-block__sub { font-size: 9px; color: var(--text-tertiary); }
 
@@ -4039,10 +4046,60 @@ td { padding: 4px 8px; border-bottom: 1px solid var(--border-subtle); color: var
 /* ── Animations applied ──────────────────────────────────────────────── */
 .value-flash { animation: value-flash 0.6s ease-out; }
 
-/* ── Skeleton loading ────────────────────────────────────────────────── */
-.skel-overlay { position: absolute; inset: 0; background: var(--bg-surface); display: flex; flex-direction: column; gap: 6px; padding: 16px; z-index: 10; pointer-events: none; /* skeletons are decorative — must never block clicks */ }
-.skel { height: 12px; background: var(--bg-hover); border-radius: 0; animation: pulse-green 1.5s infinite; }
-.skel.w-60 { width: 60%; } .skel.w-80 { width: 80%; } .skel.w-40 { width: 40%; }
+/* ── Skeleton loading (design-motion-principles) ────────────────────── */
+/* Shimmer via transform-only sweep on ::after (never animates layout). */
+.skel-overlay { position: absolute; inset: 0; background: var(--bg-surface); display: flex; flex-direction: column; gap: 8px; padding: 16px; z-index: 10; pointer-events: none; /* skeletons are decorative — must never block clicks */ }
+/* Anchors for absolute .skel-overlay (panels may lack position) */
+#kpi-row, .panel { position: relative; }
+.skel { position: relative; overflow: hidden; height: 12px; background: var(--bg-hover); border-radius: 3px; }
+.skel::after { content: ''; position: absolute; inset: 0; background: linear-gradient(90deg, transparent, rgba(255,255,255,0.08), transparent); transform: translateX(-100%); animation: skel-shimmer 1.4s infinite; }
+@keyframes skel-shimmer { 100% { transform: translateX(100%); } }
+.skel--line { height: 10px; }
+.skel--row { height: 20px; }
+.skel--kpi { height: 42px; width: 100%; }
+.skel--chart { height: 120px; width: 100%; }
+.skel--circle { width: 22px; height: 22px; border-radius: 50%; flex-shrink: 0; }
+.skel.w-40 { width: 40%; } .skel.w-50 { width: 50%; } .skel.w-60 { width: 60%; } .skel.w-80 { width: 80%; } .skel.w-90 { width: 90%; }
+
+/* ── Module enter/leave (transform + opacity + filter only) ──────────── */
+.module-in {
+  animation: module-in var(--dur-enter) var(--ease-out-expo) both;
+  animation-delay: calc(var(--i, 0) * 24ms);
+}
+@keyframes module-in {
+  from { opacity: 0; transform: translateY(8px); filter: blur(3px); }
+  to   { opacity: 1; transform: translateY(0);   filter: blur(0); }
+}
+.module-leave {
+  animation: module-leave var(--dur-leave) var(--ease-out-expo) both;
+}
+@keyframes module-leave {
+  from { opacity: 1; transform: translateY(0); }
+  to   { opacity: 0; transform: translateY(-4px); }
+}
+
+/* ── Modal enter/exit (Jakub enter recipe · iOS curve; exit subtler) ── */
+.modal--open .modal, .modal--open .modal-box {
+  animation: modal-in var(--dur-enter) var(--ease-ios) both;
+}
+@keyframes modal-in {
+  from { opacity: 0; transform: translateY(10px) scale(0.98); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+.modal--closing { animation: modal-out var(--dur-leave) var(--ease-out-expo) both; }
+@keyframes modal-out {
+  from { opacity: 1; transform: scale(1); }
+  to   { opacity: 0; transform: scale(0.98) translateY(4px); }
+}
+
+/* ── Button loading state ───────────────────────────────────────────── */
+.btn.is-loading { position: relative; pointer-events: none; opacity: 0.75; }
+.btn.is-loading::before {
+  content: ''; width: 10px; height: 10px; margin-right: 6px;
+  border: 2px solid currentColor; border-top-color: transparent; border-radius: 50%;
+  animation: btn-spin 0.7s linear infinite;
+}
+@keyframes btn-spin { to { transform: rotate(360deg); } }
 
 /* ── is-stale indicator for pool ──────────────────────────────────────── */
 #pool-overview.is-stale { opacity: 0.75; border-color: var(--orange); }
@@ -4474,7 +4531,10 @@ td { padding: 4px 8px; border-bottom: 1px solid var(--border-subtle); color: var
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
   }
+  /* Keep skeletons visible (functional state) but static — no shimmer */
+  .skel::after { animation: none !important; transform: none; opacity: 0.4; }
 }
 
 /* ══════════════════════════════════════════════════════════════════════
