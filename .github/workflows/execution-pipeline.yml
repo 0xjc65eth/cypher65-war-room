@@ -24,6 +24,11 @@ jobs:
   # lands. Flip `continue-on-error` to false once that cleanup is merged.
   validate:
     runs-on: ubuntu-latest
+    # SECRET_KEY de TESTE (fixa, nunca usada em prod): services.auth.create_token()
+    # recusa emitir JWT sem SECRET_KEY — o gate precisa dela para os testes de
+    # auth/export isolation (mesmo fix aplicado em ci.yml).
+    env:
+      SECRET_KEY: "ci-test-secret-key-0123456789abcdef"
     steps:
       - uses: actions/checkout@v4
       - name: Set up Python
