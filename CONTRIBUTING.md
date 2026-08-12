@@ -3,6 +3,21 @@
 Obrigado por querer contribuir! Este guia mantém o projeto consistente e a
 suíte (1.000+ testes) verde.
 
+## ⚠️ FLUXO OBRIGATÓRIO (leia primeiro)
+
+> **Todo trabalho entra por Issue e é entregue via PR — nunca push direto para `master`.**
+> Deploy = merge do PR em `master` (automático).
+
+O padrão completo (nomenclatura de branch, template de PR, `Closes #NNN`,
+checklist do agente, comandos `gh`) está em **`docs/AGENT_WORKFLOW.md`** —
+qualquer agente de qualquer modelo DEVE segui-lo antes de codar.
+
+Resumo em 4 passos:
+1. Crie/use a **Issue** (`gh issue create`, labels `bug|enhancement|feature` + `priority: P1-P3`).
+2. **Branch** `tipo/NNN-slug` a partir de `master`.
+3. **PR** mencionando a Issue (`Closes #NNN` / `Fixes #NNN` / `Refs #NNN`) na descrição.
+4. CI verde → **merge** → deploy automático no Render.
+
 ## Setup
 
 ```bash
