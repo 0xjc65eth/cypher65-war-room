@@ -243,6 +243,26 @@ docker compose up -d
 
 ---
 
+## 🔭 Observabilidade (custo $0 — Issue #30)
+
+| Recurso | Como ativar | Notas |
+|---|---|---|
+| **Sentry** (erros + traces) | env: `SENTRY_DSN=...`, opcional `SENTRY_TRACES_SAMPLE_RATE=0.1` | já integrado em `app.py`; 5k errors/mês free |
+| **Logs JSON** | env: `LOG_JSON=1` | `services/observability.py` — um JSON por linha, `jq`-able |
+| **Boot health** | sempre | linha estruturada `[boot] ready` com port/worker/db |
+| Admin CFO + pool stats | sempre | `/api/admin/sessions` (sessions, polls/s, fila, threads) |
+
+Matriz de decisão: Datadog/NewRelic são paid → **não adotados** (regra de ouro
+CFO/CRO $0). OpenTelemetry é o caminho futuro (exporter OTLP → Sentry) quando
+houver tração (gated por tração, ver `docs/AUDITORIA_ESTRATEGICA.md`).
+
+Exemplo:
+```bash
+LOG_JSON=1 SENTRY_DSN=https://xxx@sentry.io/123 python app.py
+```
+
+---
+
 ## 🛡 Segurança
 
 - `.env` **nunca** é commitado (gitignored); segredos ficam só no servidor.

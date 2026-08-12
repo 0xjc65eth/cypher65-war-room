@@ -93,15 +93,14 @@ from core.diagnostics.diagnostics_engine import DiagnosticsEngine, DiagnosticSev
 # Telemetry snapshots older than this are no longer considered "recent".
 TELEMETRY_FRESHNESS_THRESHOLD = 300
 
-# ── Structured logging ───────────────────────────────────────────────────────
+# ── Structured logging (Issue #30 · observability) ──────────────────────────
 # ISO-ts + module.tag + level. diagnostic prefix in messages preserved so
 # log files remain greppable for [fetch] / [persist] / [purge] / [poll_loop].
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)sZ %(levelname)s [%(module)s.%(funcName)s] %(message)s",
-    datefmt="%Y-%m-%dT%H:%M:%S",
-)
-log = logging.getLogger("cypher65")
+# LOG_JSON=1 switches to JSON structured logs via services/observability.
+from services.observability import setup_logging as _setup_logging, \
+    build_logger as _build_logger
+_setup_logging()
+log = _build_logger("cypher65")
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 #  CONFIG
@@ -6938,6 +6937,12 @@ if __name__ == "__main__":
    ⇢  poll every: %ds — DB at %s
     """ % (PORT, BTC_ADDRESS[:14] + "…", WORKER_NAME, POLL_INTERVAL, DB_PATH)
     print(art)
+    # ── Observability: boot health (structured, JSON in LOG_JSON=1 mode) ──
+    try:
+        from services.observability import boot_health as _bh
+        _bh({"port": PORT, "worker": WORKER_NAME, "db": DB_PATH})
+    except Exception:
+        pass  # never block boot on telemetry
     # ── Start all background workers (initial poll + poll loop + 5-min
     #    Hash Market warmup) from one place — see _start_background_threads. ──
     _start_background_threads()

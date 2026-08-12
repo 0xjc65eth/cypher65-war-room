@@ -17,3 +17,10 @@ repos:
       - id: debug-statements
       - id: check-added-large-files
         args: ["--maxkb=512"]
+  # Commit messages — Conventional Commits (Issue #29 · quality).
+  # npx resolved via the repo root package.json devDependencies.
+  - repo: https://github.com/conventional-changelog/commitlint
+    rev: v19.5.0
+    hooks:
+      - id: commitlint
+        additional_dependencies: ["@commitlint/config-conventional@19.5.0"]
