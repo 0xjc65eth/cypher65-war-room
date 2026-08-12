@@ -1039,13 +1039,22 @@ _ensure_users_schema()
 # ── Optional monitoring: Sentry (env-gated) ────────────────────────────────
 # Enabled only when SENTRY_DSN is set. Never a hard dependency: if sentry-sdk
 # isn't installed the app boots normally (honest telemetry — no fake errors).
+# The traces sample rate + env string are parsed ONCE here (guarded) and reused
+# by both the backend init and the index route (frontend SDK) — a misconfigured
+# env var must never 500 the dashboard.
 _SENTRY_DSN = os.environ.get("SENTRY_DSN", "").strip()
+_SENTRY_TRACES_SAMPLE_RATE = 0.1
 if _SENTRY_DSN:
+    try:
+        _SENTRY_TRACES_SAMPLE_RATE = float(
+            os.environ.get("SENTRY_TRACES_SAMPLE_RATE", "0.1"))
+    except (TypeError, ValueError):
+        log.warning("[monitor] SENTRY_TRACES_SAMPLE_RATE inválido — usando 0.1")
     try:
         import sentry_sdk
         sentry_sdk.init(
             dsn=_SENTRY_DSN,
-            traces_sample_rate=float(os.environ.get("SENTRY_TRACES_SAMPLE_RATE", "0.1")),
+            traces_sample_rate=_SENTRY_TRACES_SAMPLE_RATE,
             release="cypher65-war-room",
         )
         log.info("[monitor] Sentry enabled (DSN configured)")
@@ -4474,6 +4483,12 @@ def _start_background_threads():
 @app.route("/")
 def index():
     from config import is_cloud_deploy
+    _cloud = is_cloud_deploy()
+    # Frontend Sentry (env-gated): só injeta o DSN no template quando o
+    # operador configurou SENTRY_DSN — sem DSN o bloco JS não renderiza e o
+    # browser nunca carrega o SDK (zero requests, zero overhead, e2e intacto).
+    # A sample rate vem do parse já validado no boot (_SENTRY_TRACES_SAMPLE_RATE)
+    # — nunca re-parseia env var por request (evita 500 em config errada).
     return render_template(
         "dashboard.html",
         worker=WORKER_NAME,
@@ -4482,7 +4497,10 @@ def index():
         # SaaS fleet topology: the JS needs to know the dashboard is cloud-
         # hosted (Render) so the wizard leads users to the LOCAL AGENT instead
         # of scan/IP-add, which are physically impossible from the cloud.
-        is_cloud=is_cloud_deploy(),
+        is_cloud=_cloud,
+        sentry_dsn=_SENTRY_DSN,
+        sentry_traces_sample_rate=_SENTRY_TRACES_SAMPLE_RATE,
+        sentry_environment="cloud" if _cloud else "self-hosted",
     )
 
 
