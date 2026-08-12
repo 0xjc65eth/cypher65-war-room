@@ -41,6 +41,11 @@ dir). Novos testes devem seguir o mesmo padrão.
 
 ## Padrões do projeto
 
+- **Workflow obrigatório**: toda mudança entra por Issue e é entregue via PR
+  (`docs/AGENT_WORKFLOW.md`). O mesmo doc define as regras de **qualidade de
+  interface** (motion/skeleton/lazy/loading — skill design-motion-principles)
+  e **qualidade técnica** (observabilidade Sentry/logs JSON, lint
+  Biome/Knip/commitlint, mutation testing, Codecov) que todo PR deve respeitar.
 - **Honest telemetry**: o app bota com zero estado e só mostra dados reais.
   Nunca insira mocks/seed de devices em produção.
 - **Env-gating**: features sensíveis são off-by-default via env var
