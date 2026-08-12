@@ -1363,7 +1363,7 @@
     const t = _modalCloseTimers.get(modal);
     if (t) { clearTimeout(t); _modalCloseTimers.delete(modal); }
     modal.classList.remove('modal--closing');
-    openModalAnimated(modal);
+    modal.classList.add('modal--open');
   }
 
   // ══════════════════════════════════════════════════════════════════════
