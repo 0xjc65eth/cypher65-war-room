@@ -183,7 +183,13 @@ jobs:
           source .venv/bin/activate
           pip install --upgrade pip
           pip install -r requirements.txt
-          sudo npx playwright install --with-deps chromium
+
+      # Browsers SEM sudo: cache fica no HOME do runner (/home/runner/.cache/ms-playwright).
+      # Com sudo o HOME vira /root e o runtime não acha o binário → launch fail.
+      - name: Install Playwright browsers
+        run: |
+          npx playwright install chromium
+          sudo npx playwright install-deps chromium
 
       - name: Boot app + run e2e specs
         run: |
