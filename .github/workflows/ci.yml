@@ -92,8 +92,11 @@ jobs:
           path: /tmp/coverage_html
           retention-days: 30
 
-      # Codecov (Issue #28) — repo público = free tier. fail_ci_if_error:false
-      # garante que a falta de token NUNCA bloqueie o merge (degradação graciosa).
+      # Codecov (Issue #28) — repo público = free tier. O upload exige o
+      # CODECOV_TOKEN (repo secret): sem ele o CLI falha com
+      # 'Token required - not valid tokenless upload' (log: Token length: 0).
+      # fail_ci_if_error:false garante que um CI sem secret nunca bloqueie o
+      # merge — o upload simplesmente fica pendente até o token existir.
       - name: Upload coverage to Codecov
         if: always()
         uses: codecov/codecov-action@v5
@@ -101,6 +104,7 @@ jobs:
           files: /tmp/coverage.xml
           fail_ci_if_error: false
           verbose: false
+          token: ${{ secrets.CODECOV_TOKEN }}
         continue-on-error: true
 
       - name: Notify on failure
