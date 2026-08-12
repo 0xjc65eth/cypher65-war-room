@@ -31,6 +31,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
+    # SECRET_KEY de TESTE (fixa, nunca usada em prod): services.auth.create_token()
+    # recusa emitir JWT sem SECRET_KEY, e testes de auth/export isolation dependem
+    # disso no CI (localmente roda-se com a mesma env var). Chave de teste apenas.
+    env:
+      SECRET_KEY: "ci-test-secret-key-0123456789abcdef"
+
     defaults:
       run:
         working-directory: ./
