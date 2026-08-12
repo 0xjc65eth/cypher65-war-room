@@ -364,14 +364,13 @@
   }
   function openUpgradeModal() {
     const m = document.getElementById('upgrade-modal');
-    if (m) m.classList.add('modal--open');
+    openModalAnimated(m);
     trackConversionEvent('modal_open');
   }
   // Exposed for e2e + support console (the PRO badge already wires onclick).
   window.openUpgradeModal = openUpgradeModal;
   function closeUpgradeModal() {
-    const m = document.getElementById('upgrade-modal');
-    if (m) m.classList.remove('modal--open');
+    closeModalAnimated(document.getElementById('upgrade-modal'));
   }
   // Show the Buy button only when the server has a payment provider configured,
   // and drive its price copy from the server payload (single source of truth).
@@ -560,7 +559,7 @@
     if (toggle && modal) {
       toggle.addEventListener('click', function() {
         authUpdateUi();
-        modal.classList.add('modal--open');
+        openModalAnimated(modal);
       });
     }
     const loginBtn = dom.authLoginBtn;
@@ -578,7 +577,7 @@
         }
         if (res.ok) {
           setTimeout(function() {
-            if (modal) modal.classList.remove('modal--open');
+            closeModalAnimated(modal);
             fetchAxeFleet();
           }, 400);
         }
@@ -587,7 +586,7 @@
     if (dom.authLogoutBtn) {
       dom.authLogoutBtn.addEventListener('click', async function() {
         await authLogout();
-        if (modal) modal.classList.remove('modal--open');
+        closeModalAnimated(modal);
         fetchAxeFleet();
       });
     }
@@ -1287,23 +1286,84 @@
     const rafOuter = requestAnimationFrame(step);
   }
 
-  // ── Skeleton loading ──
+  // ── Skeleton loading (design-motion-principles) ──
   let _skeletonsHidden = false;
-  function showSkeletons() {
-    document.querySelectorAll('.panel').forEach(p => {
-      if (p.querySelector('.skel-overlay')) return;
-      const ov = document.createElement('div'); ov.className = 'skel-overlay';
-      for (let i = 0; i < 3; i++) {
-        const skel = document.createElement('div'); skel.className = 'skel';
-        skel.style.width = `${['w-60','w-80','w-40'][i]}` === 'w-60' ? '60%' : ['w-80','w-40'][i-1] === 'w-80' ? '80%' : '40%';
-        ov.appendChild(skel);
-      }
-      p.appendChild(ov);
+  // Shape set per container kind — header line + rows (chart/KPI variants).
+  function _skelShapes(kind) {
+    if (kind === 'kpi') return ['skel--kpi','skel--kpi','skel--kpi','skel--kpi'];
+    if (kind === 'chart') return ['skel--chart','skel--line w-60','skel--line w-40'];
+    if (kind === 'table') return ['skel--row','skel--row','skel--row','skel--row w-80','skel--row w-60'];
+    return ['skel--line w-40','skel--line w-90','skel--line w-70','skel--line w-50'];
+  }
+  function _skelKind(p) {
+    const id = (p && p.id) || '';
+    if (p && p.classList.contains('kpi-row')) return 'kpi';
+    if (id.indexOf('chart') !== -1 || id.indexOf('trend') !== -1) return 'chart';
+    if (id.indexOf('table') !== -1 || (p && p.classList.contains('rentals-list'))) return 'table';
+    return '';
+  }
+  // Build a skeleton overlay INSIDE a container (used both at boot and for
+  // lazy module loads). Decorative only — pointer-events:none, aria-hidden.
+  function _skelBuild(container, kind) {
+    if (container.querySelector('.skel-overlay')) return;
+    const ov = document.createElement('div');
+    ov.className = 'skel-overlay';
+    ov.setAttribute('aria-hidden', 'true');
+    _skelShapes(_skelKind(container) || kind).forEach(function (cls) {
+      const s = document.createElement('div'); s.className = 'skel ' + cls;
+      ov.appendChild(s);
     });
+    container.appendChild(ov);
+  }
+  function skelShow(container, kind) { if (container) _skelBuild(container, kind); }
+  function skelHide(container) {
+    if (!container) return;
+    const ov = container.querySelector('.skel-overlay');
+    if (ov) { ov.remove(); }
+  }
+  function showSkeletons() {
+    document.querySelectorAll('.panel').forEach(p => _skelBuild(p, ''));
+    // KPI row is the most prominent loading surface — give it KPI-shaped
+    // blocks too (review fix: the kpi branch was previously dead code).
+    document.querySelectorAll('#kpi-row').forEach(k => _skelBuild(k, 'kpi'));
   }
   function hideSkeletons() {
     document.querySelectorAll('.skel-overlay').forEach(o => o.remove());
     _skeletonsHidden = true;
+  }
+
+  // ── Button loading state ──
+  function setBtnLoading(btn, on) {
+    if (!btn) return;
+    btn.classList.toggle('is-loading', on);
+    btn.disabled = on;
+  }
+
+  // ── Modal exit (Jakub: exit subtler than enter) ──
+  // Add .modal--closing, wait for the 120ms fade, then drop .modal--open.
+  // Pending close timers are tracked per-modal so a rapid reopen cancels the
+  // exit (review fix: close → reopen within 140ms must not force-close).
+  const _modalCloseTimers = new Map();
+  function closeModalAnimated(modal) {
+    if (!modal || !modal.classList.contains('modal--open')) return;
+    if (_modalCloseTimers.has(modal)) return;
+    const reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    modal.classList.add('modal--closing');
+    const timer = setTimeout(function () {
+      _modalCloseTimers.delete(modal);
+      modal.classList.remove('modal--closing');
+      modal.classList.remove('modal--open');
+    }, reduce ? 0 : 140);
+    _modalCloseTimers.set(modal, timer);
+  }
+  // Open helper: cancels any pending close + clears the exit class so a modal
+  // reopened mid-exit animates in (not out). Pure add otherwise.
+  function openModalAnimated(modal) {
+    if (!modal) return;
+    const t = _modalCloseTimers.get(modal);
+    if (t) { clearTimeout(t); _modalCloseTimers.delete(modal); }
+    modal.classList.remove('modal--closing');
+    openModalAnimated(modal);
   }
 
   // ══════════════════════════════════════════════════════════════════════
@@ -4627,7 +4687,7 @@ function renderAccount(acct) {
     _syncBraiinsBalanceClass('loading');
     const submit = document.getElementById('braiins-buy-submit');
     if (submit) submit.disabled = true;
-    modal.classList.add('modal--open');
+    openModalAnimated(modal);
     _braiinsBuyOrderId = 'c65-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8);
     // 'comprar agora' prefill: derive TH + budget from the arbitrage signal's
     // CURRENT market price (e.g. 1000 TH/s ≈ 1 PH/s × ~24h at that price), so
@@ -4745,7 +4805,7 @@ function renderAccount(acct) {
 
   async function submitBraiinsBid() {
     const submit = document.getElementById('braiins-buy-submit');
-    if (submit) submit.disabled = true;
+    setBtnLoading(submit, true);
     _braiinsBuySet('braiins-buy-status', 'enviando ordem…');
     try {
       const th = parseFloat(document.getElementById('braiins-buy-th')?.value) || 0;
@@ -4766,16 +4826,17 @@ function renderAccount(acct) {
       });
       const data = await r.json().catch(() => ({}));
       if (r.ok && data.success) {
+        setBtnLoading(submit, false);
         _braiinsBuySet('braiins-buy-status', '✅ ordem enviada — id ' + (data.bid && data.bid.id ? data.bid.id : 'confirmada na Braiins'));
         // Conversion telemetry is recorded SERVER-SIDE on bid success
         // (single source of truth — no double counting).
       } else {
         _braiinsBuySet('braiins-buy-status', '⚠ ' + (data.error || 'falha ao enviar ordem'));
-        if (submit) submit.disabled = false;
+        setBtnLoading(submit, false);
       }
     } catch (e) {
       _braiinsBuySet('braiins-buy-status', '⚠ erro de rede ao enviar ordem');
-      if (submit) submit.disabled = false;
+      setBtnLoading(submit, false);
     }
   }
 
@@ -4783,8 +4844,7 @@ function renderAccount(acct) {
     const modal = _braiinsBuyModal();
     if (!modal) return;
     modal.addEventListener('click', (e) => {
-      if (e.target.matches('[data-close]')) modal.classList.remove('modal--open');
-      if (e.target === modal) modal.classList.remove('modal--open');
+      if (e.target.matches('[data-close]') || e.target === modal) closeModalAnimated(modal);
     });
     ['braiins-buy-th', 'braiins-buy-amount', 'braiins-buy-stratum', 'braiins-buy-type']
       .forEach(id => {
@@ -4878,7 +4938,7 @@ function renderAccount(acct) {
 
   async function _apSetArmed(armed) {
     const btn = document.getElementById('ap-armed-btn');
-    if (btn) btn.disabled = true;
+    setBtnLoading(btn, true);
     try {
       const r = await authFetch('/api/automation/arm', {
         method: 'POST',
@@ -4899,7 +4959,7 @@ function renderAccount(acct) {
       showToast('error', '⚠ falha de rede ao alterar o Auto-Pilot');
       return false;
     } finally {
-      if (btn) btn.disabled = false;
+      setBtnLoading(btn, false);
     }
   }
 
@@ -4919,7 +4979,7 @@ function renderAccount(acct) {
           input.value = '';
           confirm.disabled = true;
           if (status) status.textContent = '';
-          m.classList.add('modal--open');
+          openModalAnimated(m);
           setTimeout(() => input.focus(), 50);
         }
       });
@@ -4928,7 +4988,7 @@ function renderAccount(acct) {
     const m = document.getElementById('ap-arm-modal');
     if (m) {
       m.addEventListener('click', (e) => {
-        if (e.target.matches('[data-close]') || e.target === m) m.classList.remove('modal--open');
+        if (e.target.matches('[data-close]') || e.target === m) closeModalAnimated(m);
       });
     }
 
@@ -5597,10 +5657,10 @@ function renderAccount(acct) {
     } catch (e) {}
   }
   function openSettingsModal() {
-    dom.settingsModal?.classList.add('modal--open');
+    openModalAnimated(dom.settingsModal);
     if (dom.settingsBody && !dom.settingsBody.innerHTML.trim()) renderSettingsForm();
   }
-  function closeSettingsModal() { dom.settingsModal?.classList.remove('modal--open'); }
+  function closeSettingsModal() { closeModalAnimated(dom.settingsModal); }
   dom.settingsModal?.addEventListener('click', (e) => { if (e.target.matches('[data-close]')) closeSettingsModal(); });
   dom.openSettings?.addEventListener('click', openSettingsModal);
 
@@ -5726,7 +5786,7 @@ function renderAccount(acct) {
     if (onExpand || e.target.closest('#support-bar-methods')) {
       if (onExpand) {
         var panel = document.getElementById('support-panel');
-        if (panel) panel.classList.add('modal--open');
+        if (panel) openModalAnimated(panel);
       }
       setTimeout(_populateLNAddress, 200);
       // Re-render on open so a failed boot fetch self-heals when the panel
@@ -5851,7 +5911,7 @@ function renderAccount(acct) {
 
   // ── Wallet modal ──
   function openWalletModal() {
-    dom.walletModal?.classList.add('modal--open');
+    openModalAnimated(dom.walletModal);
     // Fill current address info (NOT CONNECTED state when no wallet yet)
     var walletConnected = !!window.BTC_ADDRESS;
     if (dom.walletCurrentAddr) {
@@ -5877,7 +5937,7 @@ function renderAccount(acct) {
     fetchWalletHistory();
   }
   function closeWalletModal() {
-    dom.walletModal?.classList.remove('modal--open');
+    closeModalAnimated(dom.walletModal);
     if (dom.walletStatus) dom.walletStatus.textContent = '';
   }
   // Onboarding CTA: show when NO wallet is connected, hide once one is
@@ -6048,8 +6108,8 @@ dom.walletSave?.addEventListener('click', async () => {
   });
 
   // ── Export ──
-  function openExportModal() { dom.exportModal?.classList.add('modal--open'); }
-  function closeExportModal() { dom.exportModal?.classList.remove('modal--open'); }
+  function openExportModal() { openModalAnimated(dom.exportModal); }
+  function closeExportModal() { closeModalAnimated(dom.exportModal); }
   dom.exportModal?.addEventListener('click', (e) => { if (e.target.matches('[data-close]')) closeExportModal(); });
   dom.openExports?.addEventListener('click', openExportModal);
 
@@ -8632,11 +8692,11 @@ dom.walletSave?.addEventListener('click', async () => {
       dom.acTabs = acTabsHost.querySelectorAll('.ac-tab');
     }
     dom.openAlertCenter.addEventListener('click', () => {
-      dom.alertCenterModal.classList.add('modal--open');
+      openModalAnimated(dom.alertCenterModal);
       acShowTab('active');
     });
     dom.alertCenterModal?.querySelectorAll('[data-close]').forEach(el => {
-      el.addEventListener('click', () => dom.alertCenterModal.classList.remove('modal--open'));
+      el.addEventListener('click', () => closeModalAnimated(dom.alertCenterModal));
     });
     dom.acTabs.forEach(t => t.addEventListener('click', () => acShowTab(t.dataset.tab)));
     dom.acFilters.forEach(f => f.addEventListener('click', () => {
@@ -8752,8 +8812,36 @@ dom.walletSave?.addEventListener('click', async () => {
     if (owned) return owned.slice();
     return (paneHasVisible || []).filter(p => p.visible).map(p => p.id);
   }
+  // Module navigation with exit/enter motion (design-motion-principles).
+  // Exit (120ms) plays BEFORE the switch so display:none doesn't kill it;
+  // the switch is deferred by the same amount and token-guarded so rapid
+  // sidebar clicks cancel the pending transition (Emil: interruptible).
+  let _moduleNavToken = 0;
   function activateModule(name) {
     document.body.classList.add('module-mode');
+    const reduceMotion = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    const token = ++_moduleNavToken;
+    if (!reduceMotion) {
+      let leavingCount = 0;
+      document.querySelectorAll('[data-module].panel, [data-module].kpi-row').forEach(function(el) {
+        if (el.classList.contains('sidebar__link')) return;
+        const mods = (el.getAttribute('data-module') || '').split(/\s+/);
+        if (mods.indexOf(name) === -1 && !el.classList.contains('module-hidden')) {
+          el.classList.add('module-leave');
+          leavingCount++;
+        }
+      });
+      if (leavingCount > 0) {
+        setTimeout(function() {
+          if (token !== _moduleNavToken) return;  // superseded by a newer click
+          _doActivateModule(name, reduceMotion);
+        }, 120);
+        return;
+      }
+    }
+    _doActivateModule(name, reduceMotion);
+  }
+  function _doActivateModule(name, reduceMotion) {
     // Mostra/esconde cada painel com data-module — MAS nunca os links da
     // sidebar (eles também têm data-module; escondê-los quebraria a navegação)
     document.querySelectorAll('[data-module]').forEach(function(el) {
@@ -8762,6 +8850,7 @@ dom.walletSave?.addEventListener('click', async () => {
       const mods = (el.getAttribute('data-module') || '').split(/\s+/);
       const show = mods.indexOf(name) !== -1;
       el.classList.toggle('module-hidden', !show);
+      if (show) el.classList.remove('module-leave');
     });
     // Tab panes: apenas as abas que o módulo possui (ou, fora do mapa,
     // as que contêm painel visível) ficam ativas — nunca várias ao mesmo
@@ -8797,6 +8886,18 @@ dom.walletSave?.addEventListener('click', async () => {
     // E cria/atualiza charts dos canvases que acabaram de ficar visíveis
     // (renderCharts pula canvases ocultos, então é seguro chamá-lo aqui)
     requestAnimationFrame(function() {
+      // Motion: staggered enter for the panels that just became visible
+      // (opacity + translateY + blur, 200ms, 24ms stagger — Emil <300ms).
+      if (!reduceMotion) {
+        let idx = 0;
+        document.querySelectorAll('[data-module].panel:not(.module-hidden), [data-module].kpi-row:not(.module-hidden)').forEach(function(el) {
+          el.classList.remove('module-in');
+          void el.offsetWidth; // restart animation on rapid re-triggers
+          el.style.setProperty('--i', String(idx++));
+          el.classList.add('module-in');
+          setTimeout(function() { el.classList.remove('module-in'); }, 500);
+        });
+      }
       Object.keys(charts).forEach(function(id) {
         const ch = charts[id];
         if (ch && typeof ch.resize === 'function') ch.resize();
@@ -8806,12 +8907,20 @@ dom.walletSave?.addEventListener('click', async () => {
       // On failure the flag is reset so the next activation retries.
       if (name === 'market' && !_mktTrendLoaded) {
         _mktTrendLoaded = true;
-        loadMarketTrend().then(ok => { if (!ok) _mktTrendLoaded = false; });
+        skelShow(document.getElementById('market-panel'), 'chart');
+        loadMarketTrend().then(ok => {
+          skelHide(document.getElementById('market-panel'));
+          if (!ok) _mktTrendLoaded = false;
+        });
       }
       // Rentals: lazy-load the operator rental list on first module activation.
       if (name === 'rentals' && !_rentalsLoaded) {
         _rentalsLoaded = true;
-        loadRentals().then(ok => { if (!ok) _rentalsLoaded = false; });
+        skelShow(document.getElementById('rentals-panel'), 'table');
+        loadRentals().then(ok => {
+          skelHide(document.getElementById('rentals-panel'));
+          if (!ok) _rentalsLoaded = false;
+        });
       }
       // Hash Market: also refresh the snapshot — the boot-time snapshot can be
       // stale (fetched before the warmup cache is hot), so the grid would open
@@ -8831,8 +8940,10 @@ dom.walletSave?.addEventListener('click', async () => {
       // Antes o fetchAxeFleet() só rodava no poll/SSE, então a aba abria
       // com o empty-state estático mesmo com devices registrados.
       if (name === 'fleet' && typeof fetchAxeFleet === 'function') {
+        skelShow(document.getElementById('axe-fleet-panel'), 'table');
+        const _fleetP = Promise.resolve(fetchAxeFleet());
         if (typeof fetchRemoteOnboarding === 'function') fetchRemoteOnboarding();
-        fetchAxeFleet();
+        _fleetP.then(() => skelHide(document.getElementById('axe-fleet-panel')));
       }
       // Support: abre o modal completo (manifesto + endereços) em vez de só
       // rolar até a barra compacta — o texto autoral e os endereços grandes
@@ -8840,7 +8951,7 @@ dom.walletSave?.addEventListener('click', async () => {
       if (name === 'support') {
         const panel = document.getElementById('support-panel');
         if (panel) {
-          panel.classList.add('modal--open');
+          openModalAnimated(panel);
           renderSupportMethods();  // also fills the LN recipient row
         }
       }
