@@ -20,6 +20,9 @@ e2e-report/
 
 # Runtime artifacts
 .coverage
+# Mutation testing (mutmut) artifacts — local-only
+.mutmut-cache
+*.py.bak
 data/*.db
 # Production SQLite backups / corrupt snapshots must never reach the repo
 data/*.bak*

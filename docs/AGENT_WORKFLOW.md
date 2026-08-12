@@ -91,6 +91,75 @@ git diff --check
 bash run-e2e.sh --file=SEU_SPEC.spec.js                          # e2e afetado
 ```
 
+---
+
+## 3. Qualidade de Interface (obrigatória em toda mudança de UI)
+
+Qualquer alteração em `static/app.js`, `static/style.css` ou `templates/`
+DEVE seguir os princípios de motion do repo
+(`github.com/kylezantos/design-principles` — skill local em
+`.agents/skills/design-motion-principles`; no dashboard, peso **Emil**
+<300ms + **Jakub** polish sutil, `transform`/`opacity`/`filter` only).
+
+Checklist de UX:
+- [ ] **Skeleton loading** — containers que carregam dados (market/rentals/
+      fleet e o boot) mostram shimmer em vez de vazio/"carregamento bruto".
+- [ ] **Lazy loading** — módulos pesados (market trend, rentals, fleet)
+      carregam na 1ª ativação, com skeleton enquanto o fetch roda.
+- [ ] **Animações suaves** — entrada/saída de módulos (stagger), abertura/
+      fechamento de modais, estado de carregamento em botões (spinner),
+      progresso em barras.
+- [ ] **Feedback visual** — todo elemento interativo tem hover/active/pressed
+      e estado de loading/erro/empty explícito.
+- [ ] **Acessibilidade** — `prefers-reduced-motion` desativa animações;
+      foco visível; contraste adequado.
+
+Regra prática: **só animar `transform`/`opacity`/`filter`** (nunca layout) e
+manter entrada <300ms (peso Emil). Interfaces estáticas ou com sensação de
+"carregamento bruto" são reprovadas no review.
+
+---
+
+## 4. Qualidade Técnica, Observabilidade e Testes
+
+Referência completa: `docs/QUALITY.md` (matriz de ferramentas, custo $0).
+Aplicar o que for aplicável à mudança:
+
+- **Observabilidade**: backend `SENTRY_DSN` (env-gated) + logs JSON
+  (`LOG_JSON=1`, `services/observability.py`); frontend Sentry automático
+  quando o operador configura o DSN. Datadog/NewRelic/OTel documentados como
+  não-adotados (regra de ouro CFO: custo $0).
+- **Lint/qualidade**: Biome (mobile + advisory no app.js), Knip (dead code),
+  commitlint (Conventional Commits), mutmut/Stryker (mutation testing sob
+  demanda). Pre-commit: `flake8` + `black` + `commitlint`.
+- **Testes**: unit/integration pytest (gate `--cov-fail-under=65`), JS core
+  (`node tests/test_app_js_core.js`), e2e Playwright (job `e2e` no CI),
+  cobertura no Codecov (badge dinâmico no README).
+- **Mutation testing** (quando pedido): `mutmut run --use-coverage
+  --disable-mutation-types string` — rodar em background (tmux) e validar
+  cada mutante sobrevivente com `mutmut apply <id>` + teste que o mata;
+  **restaurar o arquivo** com `git checkout -- <arquivo>` ao terminar
+  (mutmut deixa mutantes aplicados no disco) e limpar `.mutmut-cache`/
+  `*.py.bak` (já no `.gitignore`).
+
+---
+
+## 5. Regras gerais de execução
+
+- **Commits pequenos e atômicos**, mensagens descritivas (Conventional Commits).
+- **Código limpo e manutenível**: reusar helpers existentes, seguir as
+  convenções do arquivo vizinho, sem gambiarras.
+- **Validar antes do PR**: lint + testes + `git diff --check`; cobertura e
+  observabilidade quando aplicável.
+- **Documentar decisões importantes** na Issue ou na descrição do PR
+  (por que/alternativas/impacto).
+- **Incremental e transparente**: mudanças pequenas, PRs revisáveis, nunca
+  entregar solução incompleta ou improvisada.
+
+---
+
+## 6. Checklist do agente (executar em toda tarefa)
+
 ### 2.6 — Deploy
 - Merge do PR em `master` → workflows disparam → Render redeploya automaticamente.
 - Para **hotfix crítico em produção** sem passar por PR completo: exceção explícita,
@@ -100,20 +169,7 @@ bash run-e2e.sh --file=SEU_SPEC.spec.js                          # e2e afetado
 
 ---
 
-## 3. Checklist do agente (executar em toda tarefa)
-
-- [ ] 1. Issue existe? Se não, criar com critérios de aceite + labels.
-- [ ] 2. Branch criada a partir de `master` com nome `tipo/NNN-slug`.
-- [ ] 3. Implementação + testes (herméticos — nunca tocar `data/war_room.sqlite`).
-- [ ] 4. Validação local (pytest afetado + JS core + e2e + diff --check).
-- [ ] 5. Push da branch + `gh pr create` com `Closes/Fixes #NNN` na descrição.
-- [ ] 6. Acompanhar CI até verde; corrigir se necessário.
-- [ ] 7. Merge (com aprovação) → deploy automático.
-- [ ] 8. Mover a Issue para `done` / fechar no merge (automático com `Closes`).
-
----
-
-## 4. Comandos rápidos (gh CLI)
+## 7. Comandos rápidos (gh CLI)
 
 ```bash
 # criar issue
@@ -133,7 +189,7 @@ gh pr merge 123 --squash --delete-branch
 
 ---
 
-## 5. Referências
+## 8. Referências
 - Roadmap: `docs/AUDITORIA_ESTRATEGICA.md` (§5) · `docs/IMPROVEMENT_ROADMAP.md` (§8)
 - Deploy/ops: `docs/DEPLOYMENT_OPS.md` · `render.yaml`
 - Padrões de código e testes: `CONTRIBUTING.md`
