@@ -4713,6 +4713,31 @@ def api_admin_conversion():
     return jsonify({"funnel": funnel, "economics": econ, "days": days})
 
 
+@app.route("/api/admin/rentals/accepted-recos", methods=["GET"])
+def api_admin_rentals_accepted_recos():
+    """Global audit trail of accepted recommendations (ALL tenants).
+
+    Admin-gated exactly like /api/admin/conversion (localhost or operator API
+    key) — never exposed to the public. Aggregates every tenant's
+    accepted-recommendation ledger (default + named) with the delivery
+    outcome afterwards, so the platform operator sees the fleet of 'rigs
+    blacklisted after the pilot flagged them' decisions at a glance.
+    Query params: ?days=30 (window; default 0 = all time, unlike
+    /api/admin/conversion's 30-day default) and ?limit=500 (max decisions;
+    ``count`` remains the true total).
+    """
+    remote = request.remote_addr or ""
+    local = remote in ("127.0.0.1", "::1", "localhost")
+    operator_key = os.environ.get("API_KEY") or ""
+    sent = (request.headers.get("X-API-Key") or "").strip()
+    if not local and not (operator_key and hmac.compare_digest(sent, operator_key)):
+        return jsonify({"error": "admin access required"}), 403
+    days = request.args.get("days", 0, type=int)
+    limit = request.args.get("limit", 200, type=int)
+    limit = max(1, min(limit, 1000))
+    return jsonify(_rental_perf.compute_admin_accepted_recos(days=days, limit=limit))
+
+
 # Moved to routes/dashboard_routes.py (dashboard_bp) — Fase 6 · PR2:
 # /api/network_share, /api/milestones, /api/workers, /api/monte_carlo,
 # /api/proximity (same bodies, same pro_required gates, same responses).
