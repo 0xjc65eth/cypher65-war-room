@@ -139,6 +139,26 @@ Guards estáticos **blocking** no job `gate` do CI (Issue #58):
   '</td>')`). Qualquer leitura de campo de registro externo (`a.category`,
   `m.tier`, `e.block_height`, `entry.worker`, `x.msg`, ...) sem `escapeHtml(...)`
   é FLAGGED — é o que transforma uma string de API/banco em vetor de XSS.
+- **GUARD 2 (sinks estendidos, Issue #66)**: além do `innerHTML` inline, o guard
+  varre também:
+  - **`insertAdjacentHTML('pos', HTML)`** — o 2º argumento é um sink de HTML
+    (mesmo allowlist). Se o argumento for um **identificador nu**
+    (`insertAdjacentHTML('beforeend', rows)`), o guard segue a declaração
+    `const rows = …` mais próxima (delimitada pela função) e varre o HTML que
+    ela constrói — o feed de timeline do dashboard tinha `ev.id`/`ev.severity`/
+    `ev.event_type` crus exatamente assim e era invisível para o guard antigo.
+  - **`innerHTML`/`outerHTML` com RHS identificador-nu** (`el.innerHTML = rows`)
+    — o mesmo follow de declaração fecha o blind spot de HTML pré-construído.
+  - **builders locais** (`function _xHtml(...) { return … }`) — o corpo é
+    varrido (interpolações `${…}` + concat em cada `return`/`const x = …`).
+  - **`textContent` com markup HTML** — sink de TEXTO é seguro por natureza
+    (dados crus viram texto), mas atribuir TAGS (`'<b>' + x.name`) é
+    anti-padrão (nunca renderiza e sinaliza confusão text/HTML) → FLAG. Dados
+    crus (`el.textContent = x.name`) e literais de comparação
+    (`'REPORTED < OBSERVED'`, sem forma de tag) continuam limpos.
+  - No chain-detector, a ponte `ident || …) ` antes de um `.map(`/`.join(` é
+    reconhecida como fonte de transformação (ex: `(c.providers || []).map(…)`
+    não gera falso positivo).
 
 Allowlist de expressões seguras (não precisam de escape): `escapeHtml(...)`,
 formatters que só emitem números/unidades (`fmt.age`/`fmt.hashrate`/
@@ -165,8 +185,12 @@ concatenação `'+'` (Issue #64): `x.msg` cru → FAIL, mapa/join escapado +
 ternário de literais → PASS, padrão carteira `(e.worker || '')` + `slice` →
 FAIL, `fmt.age` dentro de operando → PASS (sem FP), `fmt.diff` dentro de
 operando → FAIL, `m.color`/`m.icon` crus em `style=` → FAIL (config externa
-é vetor de CSS injection). Protege o próprio guard contra enfraquecimento
-futuro.
+é vetor de CSS injection). E os sinks estendidos (Issue #66):
+`insertAdjacentHTML` inline cru → FAIL, `insertAdjacentHTML('…', rows)` com
+`rows` construído cru → FAIL, mesmo padrão escapado → PASS, `innerHTML = rows`
+escapado → PASS, `textContent` com `<b>` → FAIL, `textContent` com dado cru →
+PASS, literal `'REPORTED < OBSERVED'` → PASS, builder local cru → FAIL.
+Protege o próprio guard contra enfraquecimento futuro.
 
 ### Auditoria visual (Playwright) — `scripts/audit_ui.cjs`
 

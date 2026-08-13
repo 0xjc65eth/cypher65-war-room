@@ -24,6 +24,22 @@
  *         (x.msg, entry.worker, entry.address.slice(0,10), ...) without
  *         escapeHtml(...) is FLAGGED — that is what turns a stored/API
  *         string into an XSS vector.
+ *     (c) Other HTML sinks — insertAdjacentHTML('pos', HTML) (2nd arg) and
+ *         innerHTML/outerHTML whose RHS is a bare identifier or a local
+ *         builder call. For bare identifiers the guard follows the nearest
+ *         preceding const/let/var declaration (bounded by the enclosing
+ *         function) and scans the HTML it builds — closing the blind spot
+ *         where `rows` is built in a template literal and injected via
+ *         insertAdjacentHTML or `el.innerHTML = rows`. Local builder
+ *         functions (function nameHtml(...) {...}) have their bodies
+ *         scanned too (no builder-following inside builder bodies).
+ *     (d) textContent — a text-only sink (XSS-safe by construction), but
+ *         assigning HTML MARKUP to it is an anti-pattern (tags render as
+ *         literal text and signal text/HTML confusion that tends to get
+ *         copy-pasted into innerHTML later). The guard flags RHS string
+ *         literals containing real HTML tags (<b>, </div>…), while plain
+ *         data (el.textContent = x.name) and comparison literals
+ *         ('REPORTED < OBSERVED') stay clean.
  *
  *     Safe constructs accepted WITHOUT escapeHtml in concat operands:
  *       - escapeHtml(...) calls (removed before the check)
@@ -51,6 +67,17 @@
  *     ? Number(...).toFixed(1) + '%' : '—';) at the cost of that hole — the
  *     guidance is: keep every field interpolation inside the `return`
  *     expression (escaped) and never build HTML fragments in setup consts.
+ *
+ *     Declaration-following tradeoffs (heuristic, by design):
+ *       - Arrow-callback scopes (list.forEach(x => { const rows = … })) are
+ *         NOT boundaries for the backward search — a sibling-callback
+ *         declaration may be followed (surface for false positives) and an
+ *         enclosing-scope declaration is missed when the sink sits inside a
+ *         nested NAMED function (surface for false negatives). Named
+ *         `function NAME(` lines are the boundary.
+ *       - `outerHTML` inline concat/TL is only scanned for bare-id/call RHS
+ *         (no current usage — the legacy passes cover innerHTML inline).
+ *       - `var`-hoisted declarations AFTER the sink are not seen.
  *
  * Usage:
  *   node scripts/check-dom-regression.js
@@ -424,6 +451,26 @@ function isTransformSource(text, m) {
       }
       continue;
     }
+    // Fallback bridge: `ident || <expr>)` feeding a method chain — e.g.
+    // (c.providers || []).map(p => …). The `||` guards an empty source;
+    // the transform still applies to the read, so this is a data SOURCE.
+    if (c === '|' && text[i + 1] === '|') {
+      let d = 0, k = i + 2, q = null;
+      while (k < text.length) {
+        const cc = text[k];
+        if (q === "'" || q === '"') {
+          if (cc === q && text[k - 1] !== '\\') q = null;
+          k++;
+          continue;
+        }
+        if (cc === "'" || cc === '"') { q = cc; k++; continue; }
+        if (cc === '(' || cc === '[') d++;
+        else if (cc === ')' || cc === ']') { if (d === 0) break; d--; }
+        k++;
+      }
+      i = k + 1; // skip past the closing ')'
+      continue;
+    }
     break;
   }
   return names.some(n => TRANSFORM_METHODS.has(n));
@@ -784,6 +831,436 @@ function checkInnerHtmlEscaping() {
   return true;
 }
 
+// ── Extended sinks: insertAdjacentHTML + bare-id innerHTML + textContent ─
+
+// Local functions / globals that never return HTML (escaping helpers,
+// DOM/format globals, etc.) — never follow them as HTML builders.
+const SAFE_CALL_NAMES = new Set([
+  'escapeHtml', 'acFormatTime', 'acExecStatusClass', 'docsHighlight',
+  'severityClass',
+  'document', 'window', 'JSON', 'Object', 'Array', 'String', 'Number',
+  'Math', 'Date', 'Boolean', 'Symbol', 'RegExp', 'Promise', 'fetch',
+  'encodeURIComponent', 'decodeURIComponent', 'parseInt', 'parseFloat',
+  'isNaN', 'isFinite', 'localStorage', 'sessionStorage', 'setTimeout',
+  'setInterval', 'clearTimeout', 'set',
+]);
+
+function isKnownSafeCall(name) {
+  return SAFE_CALL_NAMES.has(name) || /^fmt\./.test(name);
+}
+
+// Extracts the SECOND argument (the HTML string) of an insertAdjacentHTML
+// call: skip the position string, capture up to the call's closing paren.
+// Joined text has comments already stripped. String/template-aware.
+function insertAdjacentHtmlArg(joined) {
+  const m = joined.match(/insertAdjacentHTML\s*\(/);
+  if (!m) return null;
+  let depth = 0, q = null, argStart = -1, j = m.index + m[0].length;
+  while (j < joined.length) {
+    const c = joined[j];
+    if (q === "'" || q === '"') {
+      if (c === q && joined[j - 1] !== '\\') q = null;
+      j++;
+      continue;
+    }
+    if (q === '`') {
+      if (c === '$' && joined[j + 1] === '{') {
+        let bd = 1, k = j + 2;
+        while (k < joined.length && bd > 0) {
+          if (joined[k] === '{') bd++;
+          else if (joined[k] === '}') bd--;
+          k++;
+        }
+        j = k;
+        continue;
+      }
+      if (c === '`') q = null;
+      j++;
+      continue;
+    }
+    if (c === "'" || c === '"' || c === '`') { q = c; j++; continue; }
+    if (c === '(' || c === '[') { depth++; j++; continue; }
+    if (c === ')' || c === ']') {
+      if (depth === 0 && argStart !== -1) return joined.slice(argStart, j).trim();
+      depth = Math.max(0, depth - 1);
+      j++;
+      continue;
+    }
+    if (c === ',' && depth === 0) { argStart = j + 1; j++; continue; }
+    j++;
+  }
+  return null;
+}
+
+// Follows a bare identifier to its nearest preceding declaration
+// (const/let/var NAME = …). The backward search is bounded by the nearest
+// preceding `function NAME(` line so a declaration in a SIBLING function is
+// never picked up — variable names (rows, line, list…) are reused across
+// the file. Returns { rhs, line } or null.
+function findDeclaredRhs(name, ctx, effLine) {
+  // Built from char codes so NO backslash lives in this source line — the
+  // pattern is (?:const|let|var) + \s + name + \s* = (string-built regexes
+  // with literal backslashes get mangled by some editors' escaping layers).
+  const BS = String.fromCharCode(92);
+  const re = new RegExp('(?:const|let|var)' + BS + 's+' + name + BS + 's*=');
+  const startIdx = Math.max(0, effLine - 1);
+  let boundary = -1;
+  for (let i = startIdx; i >= 0 && startIdx - i < 500; i--) {
+    if (i < startIdx && /^\s*function\s+[a-zA-Z_$]/.test(ctx.lines[i])) { boundary = i; break; }
+  }
+  for (let i = startIdx; i > boundary; i--) {
+    const ln = ctx.lines[i];
+    if (/^\s*\/\//.test(ln) || /^\s*\*/.test(ln)) continue; // comment lines
+    if (!re.test(ln)) continue;
+    const { joined } = joinInnerHtmlBlock(ctx.lines, i);
+    const eq = joined.indexOf('=');
+    if (eq === -1) continue;
+    const rhs = joined.slice(eq + 1).replace(/;\s*$/, '').trim();
+    if (!rhs) continue;
+    return { rhs, line: i + 1 };
+  }
+  return null;
+}
+
+// Finds `function NAME(...) { … }` anywhere in the file (hoisting) and
+// returns the joined body text plus its first line. Brace-aware and
+// string/template-aware.
+function findBuilderBody(name, ctx) {
+  // Same fromCharCode trick as findDeclaredRhs: pattern is
+  // 'function' + \s + name + \s* + \( (no raw backslashes in source).
+  const BS = String.fromCharCode(92);
+  const re = new RegExp('function' + BS + 's+' + name + BS + 's*' + BS + '(');
+  for (let i = 0; i < ctx.lines.length; i++) {
+    if (!re.test(ctx.lines[i])) continue;
+    let j = i, braceIdx = ctx.lines[i].indexOf('{');
+    while (braceIdx === -1 && j + 1 < ctx.lines.length) braceIdx = ctx.lines[++j].indexOf('{');
+    if (braceIdx === -1) continue;
+    let depth = 0, k = braceIdx, q = null, lineIdx = j;
+    while (lineIdx < ctx.lines.length) {
+      const s = ctx.lines[lineIdx];
+      while (k < s.length) {
+        const c = s[k];
+        if (q === "'" || q === '"') {
+          if (c === q && s[k - 1] !== '\\') q = null;
+          k++;
+          continue;
+        }
+        if (q === '`') {
+          if (c === '$' && s[k + 1] === '{') {
+            let bd = 1, kk = k + 2;
+            while (kk < s.length && bd > 0) {
+              if (s[kk] === '{') bd++;
+              else if (s[kk] === '}') bd--;
+              kk++;
+            }
+            k = kk;
+            continue;
+          }
+          if (c === '`') q = null;
+          k++;
+          continue;
+        }
+        if (c === "'" || c === '"' || c === '`') { q = c; k++; continue; }
+        if (c === '{') { depth++; k++; continue; }
+        if (c === '}') {
+          depth--;
+          if (depth === 0) return { body: ctx.lines.slice(j, lineIdx + 1).join('\n'), line: i + 1 };
+          k++;
+          continue;
+        }
+        k++;
+      }
+      k = 0;
+      lineIdx++;
+    }
+  }
+  return null;
+}
+
+// Splits a small JS body into top-level statements on ';' at depth 0.
+function splitStatements(body) {
+  const out = [];
+  let depth = 0, cur = '', i = 0, q = null;
+  while (i < body.length) {
+    const c = body[i];
+    if (q === "'" || q === '"') {
+      cur += c;
+      if (c === q && body[i - 1] !== '\\') q = null;
+      i++;
+      continue;
+    }
+    if (q === '`') {
+      if (c === '$' && body[i + 1] === '{') {
+        let bd = 1, k = i + 2;
+        while (k < body.length && bd > 0) {
+          if (body[k] === '{') bd++;
+          else if (body[k] === '}') bd--;
+          k++;
+        }
+        cur += body.slice(i, k);
+        i = k;
+        continue;
+      }
+      cur += c;
+      if (c === '`') q = null;
+      i++;
+      continue;
+    }
+    if (c === "'" || c === '"' || c === '`') { q = c; cur += c; i++; continue; }
+    if (c === '(' || c === '[' || c === '{') { depth++; cur += c; i++; continue; }
+    if (c === ')' || c === ']' || c === '}') { depth = Math.max(0, depth - 1); cur += c; i++; continue; }
+    if (c === ';' && depth === 0) { out.push(cur); cur = ''; i++; continue; }
+    cur += c;
+    i++;
+  }
+  if (cur.trim()) out.push(cur);
+  return out;
+}
+
+// RHS of `const x = <rhs>;` / `return <rhs>;` statements — or null.
+function statementRhs(stmt) {
+  const t = stmt.trim();
+  const ret = t.match(/^return\b\s*/);
+  if (ret) return t.slice(ret[0].length).replace(/;\s*$/, '').trim();
+  const decl = t.match(/^(?:const|let|var)\s+[a-zA-Z_$][\w$]*\s*=/);
+  if (decl) return t.slice(decl[0].length).replace(/;\s*$/, '').trim();
+  return null;
+}
+
+// Returns the first real HTML tag found inside the STRING LITERALS of an
+// RHS, or null. Only literal text counts — comparisons like `a < b` or
+// 'REPORTED < OBSERVED' (no tag shape) never match.
+function findHtmlTagsInLiterals(rhs) {
+  let i = 0, q = null, lit = '';
+  const RE_TAG = /<\/?[a-zA-Z][a-zA-Z0-9-]*(\s+[^>]*)?\/?>/;
+  const check = () => (RE_TAG.test(lit) ? (RE_TAG.exec(lit) || [''])[0] : null);
+  while (i < rhs.length) {
+    const c = rhs[i];
+    if (q === "'" || q === '"') {
+      if (c === q && rhs[i - 1] !== '\\') {
+        q = null;
+        const hit = check();
+        if (hit) return hit; // tag found inside this closed literal
+      } else lit += c;
+      i++;
+      continue;
+    }
+    if (q === '`') {
+      if (c === '$' && rhs[i + 1] === '{') {
+        let bd = 1, k = i + 2;
+        while (k < rhs.length && bd > 0) {
+          if (rhs[k] === '{') bd++;
+          else if (rhs[k] === '}') bd--;
+          k++;
+        }
+        lit += ' '; // interpolation content is not literal text
+        i = k;
+        continue;
+      }
+      if (c === '`') {
+        q = null;
+        const hit = check();
+        if (hit) return hit;
+      } else lit += c;
+      i++;
+      continue;
+    }
+    if (c === "'" || c === '"' || c === '`') { q = c; i++; continue; }
+    if (c === ';' || c === '\n') lit = ''; // statement boundary
+    i++;
+  }
+  return check();
+}
+
+// Deduplicated flag push (same line+expr+field across sink passes).
+const _flagKeys = new Set();
+function pushFlag(flags, f) {
+  const key = f.line + ':' + f.expr + ':' + f.field;
+  if (_flagKeys.has(key)) return;
+  _flagKeys.add(key);
+  flags.push(f);
+}
+
+// Scans a BUILDER FUNCTION BODY (multi-statement): template-literal
+// interpolations anywhere + '+' concat inside each const/return statement's
+// RHS. Builders are scanned without further builder-following (depth cap).
+function scanHtmlBuilderBody(body, flags, ctx, effLine) {
+  let ok = true;
+  const local = new RegExp(RE_TL.source, 'g');
+  let m;
+  while ((m = local.exec(body)) !== null) {
+    if (!isSafeValue(m[1])) {
+      pushFlag(flags, { line: effLine, expr: m[1].slice(0, 80), field: m[1].slice(0, 40), sink: 'template-literal' });
+      ok = false;
+    }
+  }
+  for (const stmt of splitStatements(body)) {
+    const rhs = statementRhs(stmt);
+    if (!rhs || !hasConcatOperator(rhs)) continue;
+    for (const op of splitConcatOperands(rhs)) {
+      const opT = op.trim();
+      if (!opT) continue;
+      const bad = firstUnsafeInValue(truncateAtReturn(stripTemplateLiterals(opT)));
+      if (bad) {
+        pushFlag(flags, { line: effLine, expr: opT.slice(0, 80), field: bad, sink: 'concat' });
+        ok = false;
+      }
+    }
+  }
+  return ok;
+}
+
+// Scans one HTML-string expression for unescaped external data, resolving
+// bare identifiers to their declarations and local builder calls to their
+// bodies (single hop, capped by ctx.visited). Returns true when safe.
+// `effLine` is the source line to report findings on.
+function scanHtmlExpr(expr, flags, ctx, effLine) {
+  const t = expr.trim();
+  if (!t) return true;
+  let ok = true;
+
+  // 1. Bare identifier → follow its declaration.
+  if (/^[a-zA-Z_$][\w$]*$/.test(t)) {
+    if (ctx.visited.has(t)) return true;
+    ctx.visited.add(t);
+    const decl = findDeclaredRhs(t, ctx, effLine);
+    if (decl) return scanHtmlExpr(decl.rhs, flags, ctx, decl.line);
+    return true; // unresolved bare id = pre-escaped fragment (documented)
+  }
+
+  // 2. Local builder call → scan the function body.
+  const callM = t.match(/^([a-zA-Z_$][\w$]*)\s*\(/);
+  if (callM && !isKnownSafeCall(callM[1]) && !ctx.visited.has(callM[1])) {
+    ctx.visited.add(callM[1]);
+    const fn = findBuilderBody(callM[1], ctx);
+    if (fn) return scanHtmlBuilderBody(fn.body, flags, ctx, fn.line);
+  }
+
+  // 3. Inline scan: template-literal interpolations.
+  const local = new RegExp(RE_TL.source, 'g');
+  let m;
+  while ((m = local.exec(t)) !== null) {
+    if (!isSafeValue(m[1])) {
+      pushFlag(flags, { line: effLine, expr: m[1].slice(0, 80), field: m[1].slice(0, 40), sink: 'template-literal' });
+      ok = false;
+    }
+  }
+
+  // 4. Inline scan: '+' concat operands (following bare-id / builder ops).
+  if (hasConcatOperator(t)) {
+    for (const op of splitConcatOperands(t)) {
+      const opT = op.trim();
+      if (!opT) continue;
+      if (/^[a-zA-Z_$][\w$]*$/.test(opT)) {
+        if (!ctx.visited.has(opT)) {
+          ctx.visited.add(opT);
+          const decl = findDeclaredRhs(opT, ctx, effLine);
+          if (decl) { ok = scanHtmlExpr(decl.rhs, flags, ctx, decl.line) && ok; continue; }
+        }
+        continue; // bare id in concat — already visited / unresolved
+      }
+      const opCall = opT.match(/^([a-zA-Z_$][\w$]*)\s*\(/);
+      if (opCall && !isKnownSafeCall(opCall[1]) && !ctx.visited.has(opCall[1])) {
+        ctx.visited.add(opCall[1]);
+        const fn = findBuilderBody(opCall[1], ctx);
+        if (fn) { ok = scanHtmlBuilderBody(fn.body, flags, ctx, fn.line) && ok; continue; }
+      }
+      const bad = firstUnsafeInValue(truncateAtReturn(stripTemplateLiterals(opT)));
+      if (bad) {
+        pushFlag(flags, { line: effLine, expr: opT.slice(0, 80), field: bad, sink: 'concat' });
+        ok = false;
+      }
+    }
+  }
+  return ok;
+}
+
+function checkHtmlSinkExtension() {
+  const text = fs.readFileSync(APP_JS, 'utf-8');
+  const lines = text.split('\n');
+  const ctx = { lines, visited: new Set() };
+  const flags = [];
+  let adjCount = 0, bareCount = 0, tcCount = 0;
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+
+    // ── insertAdjacentHTML('pos', HTML) ──
+    if (/insertAdjacentHTML\s*\(/.test(line)) {
+      const { joined, end } = joinInnerHtmlBlock(lines, i);
+      const arg = insertAdjacentHtmlArg(stripComments(joined));
+      if (arg) {
+        adjCount++;
+        scanHtmlExpr(arg, flags, ctx, i + 1);
+      }
+      i = end;
+      continue;
+    }
+
+    // ── innerHTML / outerHTML with a bare-id or local-call RHS, or
+    //    bare-id operands inside a concat chain (the `rows` blind spot) ──
+    const kwM = line.match(/(?:innerHTML|outerHTML)\s*(\+=|=)/);
+    if (kwM) {
+      const kw = kwM[0].indexOf('outerHTML') !== -1 ? 'outerHTML' : 'innerHTML';
+      const { joined, end } = joinInnerHtmlBlock(lines, i);
+      const after = stripComments(joined.slice(joined.indexOf(kw)));
+      const BS = String.fromCharCode(92);
+      const rhs = after
+        .replace(new RegExp('^' + kw + BS + 's*(\\+=|=)' + BS + 's*'), '')
+        .replace(/;[\s]*$/, '').trim(); // drop trailing ';' so bare-id RHS still matches
+      const t = rhs;
+      if (/^[a-zA-Z_$][\w$]*$/.test(t) || /^[a-zA-Z_$][\w$]*\s*\(/.test(t)) {
+        bareCount++;
+        scanHtmlExpr(rhs, flags, ctx, i + 1);
+      } else if (hasConcatOperator(rhs)) {
+        for (const op of splitConcatOperands(rhs)) {
+          const opT = op.trim();
+          if (/^[a-zA-Z_$][\w$]*$/.test(opT) && !ctx.visited.has(opT)) {
+            ctx.visited.add(opT);
+            const decl = findDeclaredRhs(opT, ctx, i + 1);
+            if (decl) {
+              bareCount++;
+              scanHtmlExpr(decl.rhs, flags, ctx, decl.line);
+            }
+          }
+        }
+      }
+      i = end;
+      continue;
+    }
+
+    // ── textContent: HTML markup anti-pattern ──
+    if (/textContent\s*(\+=|=)/.test(line)) {
+      const { joined, end } = joinInnerHtmlBlock(lines, i);
+      const after = stripComments(joined.slice(joined.indexOf('textContent')));
+      const rhs = after.replace(/^textContent\s*(\+=|=)\s*/, '');
+      const tag = findHtmlTagsInLiterals(rhs);
+      if (tag) {
+        tcCount++;
+        pushFlag(flags, { line: i + 1, expr: rhs.trim().slice(0, 80), field: tag, sink: 'textContent-markup' });
+      }
+      i = end;
+      continue;
+    }
+  }
+
+  if (flags.length) {
+    console.log('  ❌ GUARD 2 — unescaped data in other DOM sinks (insertAdjacentHTML / bare-id innerHTML / textContent):');
+    for (const f of flags) {
+      const label = f.sink === 'textContent-markup' ? 'textContent' : (f.sink === 'template-literal' ? '\${…}' : 'concat');
+      console.log(`     app.js:${f.line}  ${label}  ${f.expr}`);
+      if (f.sink === 'textContent-markup') {
+        console.log(`       → '${f.field}' is HTML markup in textContent — textContent never renders HTML; drop the markup or use innerHTML/insertAdjacentHTML with escapeHtml(...)`);
+      } else {
+        console.log(`       → '${f.field}' is external data — wrap in escapeHtml(...)`);
+      }
+    }
+    return false;
+  }
+  console.log('  ✅ GUARD 2 — sinks ok: ' + adjCount + ' insertAdjacentHTML + ' + bareCount + ' bare-id/call innerHTML + ' + tcCount + ' textContent markup scan(s).');
+  return true;
+}
+
 // ── Main ───────────────────────────────────────────────────────────────
 function main() {
   console.log('\n  ' + '='.repeat(58));
@@ -792,8 +1269,9 @@ function main() {
   const ok1 = checkDuplicateIds();
   const ok2 = checkInnerHtmlEscaping();
   const ok3 = checkConcatEscaping();
+  const ok4 = checkHtmlSinkExtension();
   console.log('  ' + '='.repeat(58));
-  if (ok1 && ok2 && ok3) {
+  if (ok1 && ok2 && ok3 && ok4) {
     console.log('  ✅ PASS — all DOM regression guards green\n');
     process.exit(0);
   }

@@ -95,18 +95,25 @@ git diff --check
 bash run-e2e.sh --file=SEU_SPEC.spec.js                          # e2e afetado
 ```
 
-> **Ao tocar em `templates/*.html` ou em `.innerHTML` no `static/app.js`**: o
+> **Ao tocar em `templates/*.html` ou em `.innerHTML`/`.outerHTML`/
+> `insertAdjacentHTML`/`textContent` no `static/app.js`**: o
 > `scripts/check-dom-regression.cjs` (gate do CI) vai bloquear o merge se
 > (1) um `id=""` duplicar outro no template, ou (2) uma interpolação — em
 > template literal `${...}` OU em concatenação com `'+'` (ex:
 > `'<td>' + x.msg + '</td>'`) — ler campo de registro externo (`e.msg`,
 > `a.category`, `m.tier`, `entry.worker`) sem `escapeHtml(...)`. Dados externos
 > SEMPRE passam por `escapeHtml` antes de virar HTML; nunca construa HTML de
-> strings de API/banco sem escapar. Detalhe do scanner de concatenação:
-> formatters do allowlist (`fmt.age`/`fmt.hashrate`/`acFormatTime`/…) são
-> removidos do operando antes da caça a campos (o argumento nunca é
-> interpolado), mas `fmt.diff`/`fmt.shortAddr` ecoam string crua e continuam
-> exigindo `escapeHtml` mesmo dentro de concatenação.
+> strings de API/banco sem escapar. O guard também segue **identificadores
+> nus** até a declaração que os constrói (`el.innerHTML = rows` /
+> `insertAdjacentHTML('beforeend', rows)` — o HTML pré-construído é varrido)
+> e **builders locais** (`function _xHtml(...)`) até o corpo. E `textContent`
+> com markup HTML (`'<b>' + x.name`) é anti-padrão → bloqueará o merge;
+> use `textContent` só para texto puro (dados crus são seguros ali) e HTML
+> vai em `innerHTML`/`insertAdjacentHTML` com `escapeHtml`. Detalhe do scanner
+> de concatenação: formatters do allowlist (`fmt.age`/`fmt.hashrate`/
+> `acFormatTime`/…) são removidos do operando antes da caça a campos (o
+> argumento nunca é interpolado), mas `fmt.diff`/`fmt.shortAddr` ecoam string
+> crua e continuam exigindo `escapeHtml` mesmo dentro de concatenação.
 
 ---
 
