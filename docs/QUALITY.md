@@ -84,6 +84,7 @@ cd mobile && npx stryker run
 | E2E (browser) | **Playwright** | specs chromium + mobile-chrome | ✅ job `e2e` |
 | Cobertura pública | **Codecov** (free p/ repo público) | upload do coverage.xml | ✅ non-blocking |
 | Guards DOM (XSS/ids) | `scripts/check-dom-regression.cjs` | ids duplicados + innerHTML sem escape | ✅ blocking |
+| Guards XSS mobile (RN) | `scripts/check-mobile-xss.cjs` | WebView html/injectedJavaScript + eval + openURL `javascript:` | ✅ blocking |
 
 ### Codecov — ✅ ATIVO (Issue #38 → PR #42)
 
@@ -125,6 +126,7 @@ node tests/test_app_js_core.js   # JS core
 bash run-e2e.sh --file=dashboard.spec.js   # Playwright
 node scripts/audit_ui.cjs --all  # auditoria visual (console/overflow/truncamento)
 node scripts/check-dom-regression.cjs  # guards DOM (ids duplicados + XSS innerHTML)
+node scripts/check-mobile-xss.cjs      # guards XSS mobile (React Native — WebView/eval/openURL)
 ```
 
 ### Guards DOM de regressão — `scripts/check-dom-regression.cjs`
@@ -191,6 +193,40 @@ operando → FAIL, `m.color`/`m.icon` crus em `style=` → FAIL (config externa
 escapado → PASS, `textContent` com `<b>` → FAIL, `textContent` com dado cru →
 PASS, literal `'REPORTED < OBSERVED'` → PASS, builder local cru → FAIL.
 Protege o próprio guard contra enfraquecimento futuro.
+
+### Guards XSS mobile — `scripts/check-mobile-xss.cjs` (Issue #70)
+
+Guard estático **blocking** no job `gate` do CI, mesma filosofia do guard
+web aplicada aos vetores React Native do `mobile/`:
+
+- **WebView `source={{ html: … }}` / `source={{ html }}` / `injectedJavaScript`**: o
+  valor é analisado — literal puro → PASS; builder whitelisted
+  (`escapeHtml`/`buildSafeHtml`/`sanitizeHtml`/`htmlEscape`/`stripHtml`/
+  `buildHtmlSafely`) → PASS; interpolação `${…}` de dado externo → FAIL;
+  `source={{ html }}` shorthand e RHS identificador-nu são **seguidos até a
+  declaração** (`const rawHtml = …`) e o builder é varrido. Multi-linha
+  (`source={{` + `html:` na linha seguinte) suportado (join de até 10 linhas).
+- **`dangerouslySetInnerHTML` / `react-native-render-html`** (`renderHTML(`,
+  `<RenderHTML`, import): uso = review gate → FAIL.
+- **`eval(` / `new Function(`**: banidos (também rejeitados pelas lojas) → FAIL.
+- **`Linking.openURL(...)`**: literal `javascript:` no argumento → FAIL
+  (vetor XSS real); URL interpolada (`\`${…}\``) ou concatenada com dado
+  externo → FAIL (gate de scheme). `source={{ uri: 'javascript:…' }}` → FAIL.
+
+Deliberadamente mais estrito que o guard web (é uma **rede de prevenção** — o
+`mobile/` tem 0 achados hoje): interpolações em valores WebView só passam via
+builder whitelisted ou literal, nada mais.
+
+**Self-test** (`node tests/test_mobile_xss_guards.js`, também no CI): 25 casos
+rodando o guard REAL contra fixtures descartáveis (override
+`GUARD_MOBILE_ROOT`): baseline → PASS, TL cru → FAIL, concat cru → FAIL,
+literal → PASS, builder → PASS, bare-id cru/safe → FAIL/PASS, multi-linha cru
+→ FAIL, `injectedJavaScript` cru/literal → FAIL/PASS, `dangerouslySetInnerHTML`
+→ FAIL, `renderHTML` → FAIL, `eval`/`new Function` → FAIL, `openURL`
+`javascript:`/literal/interp → FAIL/PASS/FAIL, uri `javascript:` → FAIL,
+comentário citando sink (inline incluso) → PASS, shorthand safe/cru →
+PASS/FAIL, interp escapada → PASS, concat openURL começando com literal →
+FAIL, `+` dentro de literal URL (query) → PASS.
 
 ### Auditoria visual (Playwright) — `scripts/audit_ui.cjs`
 

@@ -91,6 +91,8 @@ node tests/test_app_js_core.js                                   # suíte JS esp
 node --check static/app.js
 node scripts/check-dom-regression.cjs   # guards DOM: ids duplicados + XSS innerHTML
 node tests/test_dom_guards.js           # self-test do próprio guard (casos adversários)
+node scripts/check-mobile-xss.cjs       # guards XSS mobile (React Native)
+node tests/test_mobile_xss_guards.js    # self-test do guard mobile (22 casos)
 git diff --check
 bash run-e2e.sh --file=SEU_SPEC.spec.js                          # e2e afetado
 ```
@@ -110,6 +112,18 @@ bash run-e2e.sh --file=SEU_SPEC.spec.js                          # e2e afetado
 > com markup HTML (`'<b>' + x.name`) é anti-padrão → bloqueará o merge;
 > use `textContent` só para texto puro (dados crus são seguros ali) e HTML
 > vai em `innerHTML`/`insertAdjacentHTML` com `escapeHtml`. Detalhe do scanner
+>
+> **Ao tocar em `mobile/src` / `mobile/App.tsx`** (React Native): o
+> `scripts/check-mobile-xss.cjs` (gate do CI) vai bloquear o merge se um vetor
+> RN for introduzido — WebView `source={{ html: … }}`/`source={{ html }}`/
+> `injectedJavaScript` com interpolação `${…}` de dado externo SEM builder
+> whitelisted (`escapeHtml`/`buildSafeHtml`/`sanitizeHtml`/…),
+> `dangerouslySetInnerHTML`/`react-native-render-html`/`eval(`/`new Function(`
+> (uso = review gate), ou `Linking.openURL('javascript:…')`/URL interpolada.
+> Literais puros e builders whitelisted passam; o guard segue identificadores
+> nus até a declaração que os constrói e cobre blocos multi-linha. Regra: dado
+> externo em valor WebView SEMPRE passa por builder — nunca monte HTML/JS de
+> strings de API/banco. Detalhe do scanner
 > de concatenação: formatters do allowlist (`fmt.age`/`fmt.hashrate`/
 > `acFormatTime`/…) são removidos do operando antes da caça a campos (o
 > argumento nunca é interpolado), mas `fmt.diff`/`fmt.shortAddr` ecoam string
