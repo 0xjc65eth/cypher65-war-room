@@ -53,6 +53,13 @@ jobs:
       - name: Run JS core tests (app.js helpers)
         run: node --test tests/test_app_js_core.js
 
+      # DOM regression guards (Issue #58) — bloqueiam merge quando:
+      #   GUARD 1: templates/*.html têm id="" duplicado (quebra querySelector)
+      #   GUARD 2: innerHTML interpola campo de registro externo sem
+      #            escapeHtml (vetor de XSS — severity/category/msg/etc.)
+      - name: DOM regression guards (dup ids + innerHTML escaping)
+        run: node scripts/check-dom-regression.cjs
+
       - name: Setup Python
         uses: actions/setup-python@v5
         with:

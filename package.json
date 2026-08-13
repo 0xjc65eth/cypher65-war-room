@@ -12,6 +12,7 @@
     "gen:qr-golden": "node scripts/gen_qr_golden.cjs",
     "audit:ui": "node scripts/audit_ui.cjs",
     "audit:ui:all": "node scripts/audit_ui.cjs --all",
+    "check:dom": "node scripts/check-dom-regression.cjs",
     "lint:commit": "commitlint --from HEAD~1"
   },
   "devDependencies": {

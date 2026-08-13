@@ -83,6 +83,7 @@ cd mobile && npx stryker run
 | JS core (mirror do app.js) | node --test | 1261 testes | ✅ blocking |
 | E2E (browser) | **Playwright** | specs chromium + mobile-chrome | ✅ job `e2e` |
 | Cobertura pública | **Codecov** (free p/ repo público) | upload do coverage.xml | ✅ non-blocking |
+| Guards DOM (XSS/ids) | `scripts/check-dom-regression.cjs` | ids duplicados + innerHTML sem escape | ✅ blocking |
 
 ### Codecov — ✅ ATIVO (Issue #38 → PR #42)
 
@@ -123,7 +124,25 @@ make test                        # pytest completo
 node tests/test_app_js_core.js   # JS core
 bash run-e2e.sh --file=dashboard.spec.js   # Playwright
 node scripts/audit_ui.cjs --all  # auditoria visual (console/overflow/truncamento)
+node scripts/check-dom-regression.cjs  # guards DOM (ids duplicados + XSS innerHTML)
 ```
+
+### Guards DOM de regressão — `scripts/check-dom-regression.cjs`
+
+Guards estáticos **blocking** no job `gate` do CI (Issue #58):
+
+- **GUARD 1 — `id=""` duplicado em `templates/*.html`**: dois elementos com o
+  mesmo id quebram `querySelector`/`getElementById` (o primeiro vence).
+- **GUARD 2 — innerHTML com dados externos sem `escapeHtml`**: toda interpolação
+  `${...}` em template literal de `.innerHTML` precisa de `escapeHtml(...)` ou
+  ser comprovadamente segura. Leituras de campos de registro externos
+  (`a.category`, `m.tier`, `e.block_height`, ...) são FLAGGED — é o que
+  transforma uma string de API/banco em vetor de XSS.
+
+Allowlist de expressões seguras (não precisam de escape): `escapeHtml(...)`,
+formatters `fmt.*`/`acFormatTime(...)`, mapa local de classes `severityClass[...]`,
+literais numéricos/strings, ternários de literais, e identificadores "pelados"
+que carregam fragmentos pré-escapados (`rows`, `parts`).
 
 ### Auditoria visual (Playwright) — `scripts/audit_ui.cjs`
 
