@@ -446,69 +446,204 @@ def get_accepted_recos(tenant_id: str = "") -> List[Dict]:
     return entries
 
 
-def compute_accepted_recos_summary(tenant_id: str = "") -> Dict[str, Any]:
-    """Accepted recommendations + the DELIVERY OUTCOME afterwards.
+def _accepted_outcome(e: Dict[str, Any], tenant_id: str = "") -> Dict[str, Any]:
+    """Delivery AFTER an accepted decision + verdict for one ledger entry.
 
-    For every ledger entry (rig the pilot flagged and the operator
-    blacklisted, or the auto-exclusion fired), computes the median delivery
-    % of that rig's rentals AFTER the acceptance (from local history) and a
-    verdict:
+    Shared by the per-tenant panel summary and the global admin audit trail
+    (one implementation, no drift). ``e`` carries the acceptance snapshot
+    (delivery_pct = the pilot's case at acceptance); the median delivery %
+    of the rig's rentals with ``start >= ts`` (same tenant) is the outcome:
       - avoided   → no new rentals after the decision (expected good result)
       - improved  → median after ≥ before + 5pp
       - worse     → median after ≤ before - 5pp
       - same      → within ±5pp
       - no_before → acceptance had no before reference
+    Never raises.
+    """
+    rid = e.get("rig_id")
+    after_pcts: List[float] = []
+    after_costs: List[float] = []
+    accept_ts = e.get("ts") or 0
+    if rid:
+        try:
+            conn = get_db()
+            c = conn.cursor()
+            c.execute(
+                "SELECT start, percent, cost_sats_per_thh FROM rental_history "
+                "WHERE tenant_id=? AND rig_id=? AND bucket='renter' "
+                "AND provider='mrr'",  # symmetric with _rig_local_delivery
+                (tenant_id or "", str(rid)))
+            for row in c.fetchall():
+                ts = _parse_start_ts(row["start"])
+                if ts is not None and ts >= accept_ts:
+                    if row["percent"] is not None:
+                        after_pcts.append(_num(row["percent"]))
+                    if row["cost_sats_per_thh"] is not None:
+                        after_costs.append(_num(row["cost_sats_per_thh"]))
+            conn.close()
+        except Exception as ex:
+            log.warning("[rental_performance] accepted outcome failed: %s", ex)
+    before = e.get("delivery_pct")
+    after = (round(sum(after_pcts) / len(after_pcts), 1) if after_pcts
+             else None)
+    if after is None:
+        # No new rentals after the decision: 'avoided' when the pilot had
+        # a case (before stats), honest 'no data' when there was never a
+        # track record to begin with.
+        verdict = "no_before" if before is None else "avoided"
+    elif before is None:
+        verdict = "no_before"
+    else:
+        d = after - before
+        verdict = "improved" if d >= 5 else ("worse" if d <= -5 else "same")
+    return {
+        **e,
+        "delivery_after_pct": after,
+        "cost_after_sats_per_thh": (
+            round(sum(after_costs) / len(after_costs), 2) if after_costs else None),
+        "verdict": verdict,
+    }
+
+
+def compute_accepted_recos_summary(tenant_id: str = "") -> Dict[str, Any]:
+    """Accepted recommendations + the DELIVERY OUTCOME afterwards.
+
+    Per-tenant view (the RENTALS panel block): for every ledger entry of the
+    tenant, attaches the outcome via _accepted_outcome.
 
     Returns {"count", "accepted": [...]} — accepted sorted newest first.
     """
     entries = get_accepted_recos(tenant_id=tenant_id)
-    out: List[Dict[str, Any]] = []
-    for e in entries:
-        rid = e.get("rig_id")
-        after_pcts: List[float] = []
-        after_costs: List[float] = []
-        accept_ts = e.get("ts") or 0
-        if rid:
-            try:
-                conn = get_db()
-                c = conn.cursor()
-                c.execute(
-                    "SELECT start, percent, cost_sats_per_thh FROM rental_history "
-                    "WHERE tenant_id=? AND rig_id=? AND bucket='renter' "
-                    "AND provider='mrr'",  # symmetric with _rig_local_delivery
-                    (tenant_id or "", str(rid)))
-                for row in c.fetchall():
-                    ts = _parse_start_ts(row["start"])
-                    if ts is not None and ts >= accept_ts:
-                        if row["percent"] is not None:
-                            after_pcts.append(_num(row["percent"]))
-                        if row["cost_sats_per_thh"] is not None:
-                            after_costs.append(_num(row["cost_sats_per_thh"]))
-                conn.close()
-            except Exception as ex:
-                log.warning("[rental_performance] accepted outcome failed: %s", ex)
-        before = e.get("delivery_pct")
-        after = (round(sum(after_pcts) / len(after_pcts), 1) if after_pcts
-                 else None)
-        if after is None:
-            # No new rentals after the decision: 'avoided' when the pilot had
-            # a case (before stats), honest 'no data' when there was never a
-            # track record to begin with.
-            verdict = "no_before" if before is None else "avoided"
-        elif before is None:
-            verdict = "no_before"
-        else:
-            d = after - before
-            verdict = "improved" if d >= 5 else ("worse" if d <= -5 else "same")
-        out.append({
-            **e,
-            "delivery_after_pct": after,
-            "cost_after_sats_per_thh": (
-                round(sum(after_costs) / len(after_costs), 2) if after_costs else None),
-            "verdict": verdict,
-        })
+    out = [_accepted_outcome(e, tenant_id=tenant_id) for e in entries]
     out.sort(key=lambda x: x.get("ts") or 0, reverse=True)
     return {"count": len(out), "accepted": out}
+
+
+# ── Admin audit trail (global operator — ALL tenants) ──────────────────────
+# The panel view is tenant-scoped by design; the platform operator needs the
+# FLEET of decisions. The admin path reads EVERY tenant's ledger — from the
+# global `settings` table (default tenant) AND `tenant_settings` (every named
+# tenant) — tags each entry with its tenant and aggregates. Never called by
+# a tenant-scoped request (only from the /api/admin route, which is gated).
+
+
+def _load_all_accepted_recos() -> List[Dict[str, Any]]:
+    """Every accepted-recommendation ledger entry across ALL tenants, tagged
+    with ``tenant_id`` ('default' for the global settings table)."""
+    _ensure_rig_settings_tables()
+    out: List[Dict[str, Any]] = []
+    conn = None
+    try:
+        conn = get_db()
+        c = conn.cursor()
+        # Default tenant (global settings table).
+        c.execute("SELECT value FROM settings WHERE key=?", (RIG_ACCEPTED_KEY,))
+        row = c.fetchone()
+        if row and row["value"]:
+            try:
+                parsed = json.loads(row["value"])
+            except (TypeError, ValueError):
+                parsed = None
+            if isinstance(parsed, list):
+                for x in parsed:
+                    if isinstance(x, dict):
+                        out.append({**x, "tenant_id": "default"})
+        # Named tenants (tenant_settings table).
+        c.execute("SELECT tenant_id, value FROM tenant_settings WHERE key=?",
+                  (RIG_ACCEPTED_KEY,))
+        for trow in c.fetchall():
+            try:
+                parsed = json.loads(trow["value"])
+            except (TypeError, ValueError):
+                continue
+            if isinstance(parsed, list):
+                for x in parsed:
+                    if isinstance(x, dict):
+                        out.append({**x, "tenant_id": str(trow["tenant_id"])})
+    except Exception as e:
+        log.warning("[rental_performance] admin recos load failed: %s", e)
+    finally:
+        # Always release the connection — even on a mid-query raise.
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+    return out
+
+
+def compute_admin_accepted_recos(days: int = 0,
+                                 limit: int = 200) -> Dict[str, Any]:
+    """Global audit trail of accepted recommendations (ALL tenants).
+
+    Aggregates every tenant's accepted-recommendation ledger + the delivery
+    outcome afterwards so the platform operator sees the fleet of decisions
+    at a glance. ``limit`` caps the OUTPUT list only — ``count`` is always
+    the true total (deliberate full-audit pass; the ledger dedups per rig, so
+    the work is bounded by blacklisted rigs across tenants). Returns
+    {"count", "by_source", "by_verdict", "by_tenant",
+    "pilot_flagged", "avg_delivery_before", "avg_delivery_after", "days",
+    "decisions"} — never raises (empty DB → zeroed aggregates).
+    """
+    entries = _load_all_accepted_recos()
+    now = int(time.time())
+    if days and days > 0:
+        cutoff = now - days * 86400
+        # ts=0 (missing timestamp) reads as epoch and drops under a days
+        # window — acceptable: an entry without a date has no place in a
+        # windowed audit.
+        entries = [e for e in entries if (e.get("ts") or 0) >= cutoff]
+
+    decisions: List[Dict[str, Any]] = []
+    for e in entries:
+        tid = e.get("tenant_id") or "default"
+        # Storage normalizes the default tenant to '' in rental_history;
+        # 'default' is only the admin DISPLAY label.
+        store_tid = "" if tid in ("", "default") else tid
+        outcome = _accepted_outcome(e, tenant_id=store_tid)
+        outcome["tenant_id"] = tid
+        decisions.append(outcome)
+    decisions.sort(key=lambda x: x.get("ts") or 0, reverse=True)
+
+    by_source: Dict[str, int] = {}
+    by_verdict: Dict[str, int] = {}
+    by_tenant: Dict[str, Dict[str, Any]] = {}
+    pilot_flagged = 0
+    before_vals: List[float] = []
+    after_vals: List[float] = []
+    for d in decisions:
+        src = d.get("source") or "unknown"
+        by_source[src] = by_source.get(src, 0) + 1
+        v = d.get("verdict") or "unknown"
+        by_verdict[v] = by_verdict.get(v, 0) + 1
+        t = d.get("tenant_id") or "default"
+        tb = by_tenant.setdefault(t, {"count": 0, "by_source": {}, "by_verdict": {}})
+        tb["count"] += 1
+        tb["by_source"][src] = tb["by_source"].get(src, 0) + 1
+        tb["by_verdict"][v] = tb["by_verdict"].get(v, 0) + 1
+        if d.get("pilot_flagged"):
+            pilot_flagged += 1
+        if d.get("delivery_pct") is not None:
+            before_vals.append(d["delivery_pct"])
+        if d.get("delivery_after_pct") is not None:
+            after_vals.append(d["delivery_after_pct"])
+    tenant_rows = [
+        {"tenant_id": tid, "count": tb["count"],
+         "by_source": tb["by_source"], "by_verdict": tb["by_verdict"]}
+        for tid, tb in sorted(by_tenant.items(), key=lambda kv: -kv[1]["count"])]
+    return {
+        "count": len(decisions),
+        "by_source": by_source,
+        "by_verdict": by_verdict,
+        "by_tenant": tenant_rows,
+        "pilot_flagged": pilot_flagged,
+        "avg_delivery_before": (round(sum(before_vals) / len(before_vals), 1)
+                                 if before_vals else None),
+        "avg_delivery_after": (round(sum(after_vals) / len(after_vals), 1)
+                                if after_vals else None),
+        "days": days or None,
+        "decisions": decisions[:limit],
+    }
 
 
 # ── Credentials: shared resolver in agents/solo_mining_advisor/tools.py ──
