@@ -4477,11 +4477,18 @@ def _start_background_threads():
     if boot_db_ok and _db_backup.backup_enabled():
         threading.Thread(target=_auto_backup_loop, daemon=True).start()
     # $0 persistence: keep pushing periodic remote snapshots (daemon).
-    # No-op without GITHUB_TOKEN.
+    # No-op without GITHUB_TOKEN. Explicit boot log so the operator can
+    # confirm activation straight from the deploy logs (Issue #14).
     try:
         if _remote_backup.remote_backup_enabled():
+            log.info("[boot] $0 remote backup ENABLED — gist snapshots every "
+                     "%ss (services/remote_backup.py)", _remote_backup._interval())
             threading.Thread(target=_remote_backup.remote_backup_loop,
                              daemon=True).start()
+        else:
+            log.info("[boot] $0 remote backup DISABLED — set GITHUB_TOKEN "
+                     "(gist scope) in the Render dashboard to persist data "
+                     "across redeploys (docs/DEPLOYMENT_OPS.md)")
     except Exception as e:
         log.warning("[boot] remote backup init error: %s", e)
 

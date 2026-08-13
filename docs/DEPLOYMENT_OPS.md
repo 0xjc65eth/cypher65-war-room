@@ -115,15 +115,32 @@ sem o processo de workers — o dashboard ficaria vazio para sempre.
 
 ### Ativação (uma vez, $0)
 
+> **Issue #14 (feito):** o blueprint (`render.yaml`) já provisiona as duas
+> vars — `GITHUB_TOKEN` com `sync: false` (a chave é criada no deploy, o
+> **valor nunca vai para o git** — só no dashboard) e
+> `REMOTE_BACKUP_INTERVAL=300`. Depois de mergear o PR, o operador só
+> precisa colar o PAT real no painel.
+
 1. Crie um **Personal Access Token** do GitHub com scope `gist`:
    GitHub → Settings → Developer settings → Personal access tokens →
    **Generate new token (classic)** → marque `gist` → copie.
-2. Adicione ao Render (Dashboard → o serviço → Environment):
-   - `GITHUB_TOKEN` = o token (guarde como secret)
-   - `REMOTE_BACKUP_INTERVAL` = `300` (5 min — opcional, default 600)
-3. **Redeploy**. Confira no log: `[remote_backup] snapshot pushed ... -> gist ...`
-4. Teste: conecte uma wallet/salve uma chave → force um redeploy → os dados
-   **voltam** (o log mostra `[remote_backup] restored ... from gist`).
+   (PAT fine-grained também funciona se tiver permissão de escrita em gists;
+   o classic com scope `gist` é o caminho mais simples e suficiente.)
+2. Render → Dashboard → o serviço → **Environment** → edite a var
+   `GITHUB_TOKEN` (criada pelo blueprint com `sync: false`) e cole o token
+   como secret. `REMOTE_BACKUP_INTERVAL` já vem com `300`.
+3. **Redeploy** (ou Restart). Confira no log:
+   `[remote_backup] snapshot pushed ... -> gist ...`
+4. **Valide no shell do Render** (Render → o serviço → Shell):
+   ```bash
+   python scripts/verify_remote_backup.py             # probe read-only
+   python scripts/verify_remote_backup.py --roundtrip # + teste de upload
+   ```
+   Saída esperada: `✔ verified — the gist is receiving backups...` (exit 0).
+   O `--roundtrip` grava em um arquivo de verificação **separado**
+   (`war_room.verify.sqlite.b64`) — nunca toca no snapshot real.
+5. Teste o restore: conecte uma wallet/salve uma chave → force um redeploy →
+   os dados **voltam** (o log mostra `[remote_backup] restored ... from gist`).
 
 > 🔒 O gist é **privado** (só o seu token lê). A base64 não é criptografia —
 > a proteção real das credenciais em repouso é o **Fernet** em
