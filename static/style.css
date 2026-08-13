@@ -5319,6 +5319,7 @@ body.module-mode .tab-pane:not(.active) { display: none; }
 .rentals-accepted__verdict.is-good { color: var(--green, #00c853); }
 .rentals-accepted__verdict.is-bad { color: var(--red, #ff1744); }
 .rentals-accepted__verdict.is-mid { color: var(--text-tertiary); }
+.rentals-accepted__verdict.is-warn { color: var(--amber, #ffa000); }
 /* Rentals: provider ranking grid (click → list tab) */
 .rentals-rank { margin: 10px 0 4px; border: 1px solid var(--border-subtle, rgba(255,255,255,0.10)); border-radius: 4px; padding: 8px; background: rgba(255,255,255,0.015); }
 .rentals-rank__head { font-size: 8px; letter-spacing: 1px; font-family: 'JetBrains Mono',monospace; color: var(--purple, #ba85e0); margin-bottom: 6px; }
