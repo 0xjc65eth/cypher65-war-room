@@ -3483,6 +3483,55 @@ function renderAccount(acct) {
     }).join('');
   }
 
+  // CFO: accepted recommendations — rigs que o piloto sugeriu blacklistar e
+  // o operador ACEITOU (manual = blacklist, auto = exclusão automática).
+  // Mostra o caso do piloto no momento (entrega antes) e o RESULTADO da
+  // entrega DEPOIS da decisão: evitado / melhorou / piorou / estável.
+  function _renderRentalsAccepted() {
+    const wrap = document.getElementById('rentals-accepted');
+    if (!wrap || !_rentalsData) return;
+    const recos = (_rentalsData.accepted_recos || {}).accepted || [];
+    if (!recos.length) { wrap.hidden = true; wrap.innerHTML = ''; return; }
+    wrap.hidden = false;
+    const meta = document.getElementById('rentals-accepted-meta');
+    if (meta) {
+      const total = (_rentalsData.accepted_recos || {}).count || recos.length;
+      const avoided = recos.filter(r => r.verdict === 'avoided').length;
+      meta.textContent = total + ' aceita' + (total === 1 ? '' : 's') + (avoided ? ' · ' + avoided + ' evitada' + (avoided === 1 ? '' : 's') : '');
+    }
+    const list = document.getElementById('rentals-accepted-list');
+    list.innerHTML = recos.map(r => {
+      const src = r.source === 'auto'
+        ? '<span class="rentals-accepted__src is-auto" title="exclusão automática (sub-entrega)">AUTO</span>'
+        : '<span class="rentals-accepted__src is-manual" title="blacklist manual — você aceitou a sugestão do piloto">MANUAL</span>';
+      // Honest framing: a manual blacklist of a rig the pilot NEVER flagged
+      // (grade ≠ F) renders 'não sugerido' instead of implying it was a
+      // pilot recommendation.
+      const ns = r.pilot_flagged === false
+        ? '<span class="rentals-accepted__src is-ns" title="blacklist manual de um rig que o piloto não havia sinalizado">NÃO SUGERIDO</span>' : '';
+      const grade = r.grade
+        ? '<span class="rentals-trust__badge rentals-trust__badge--' + escapeHtml(String(r.grade)) + '">' + escapeHtml(String(r.grade)) + '</span>' : '';
+      const verdictMap = {
+        avoided: ['EVITADO', 'is-good', 'sem novos aluguéis após a decisão'],
+        improved: ['MELHOROU', 'is-good', 'entrega subiu após a decisão'],
+        worse: ['PIOROU', 'is-bad', 'entrega caiu após a decisão'],
+        same: ['ESTÁVEL', 'is-mid', 'entrega sem mudança relevante'],
+        no_before: ['SEM DADOS', 'is-mid', 'sem referência de entrega anterior'],
+      };
+      const v = verdictMap[r.verdict] || ['—', 'is-mid', ''];
+      const before = r.delivery_pct != null ? Number(r.delivery_pct).toFixed(1) + '%' : '—';
+      const after = r.delivery_after_pct != null ? Number(r.delivery_after_pct).toFixed(1) + '%' : '—';
+      const when = r.ts ? new Date(Number(r.ts) * 1000).toLocaleDateString('pt-BR') : '—';
+      return '<div class="rentals-accepted__card" data-rig-id="' + escapeHtml(String(r.rig_id != null ? r.rig_id : '')) + '" data-rig-name="' + escapeHtml(String(r.name || '')) + '" title="clique p/ ver o track record do rig ' + escapeHtml(String(r.rig_id)) + '">' +
+        '<div class="rentals-accepted__name">' + escapeHtml(String(r.name || r.rig_id)) + grade + src + ns + '</div>' +
+        '<div class="rentals-accepted__row"><span>ACEITO</span><strong>' + escapeHtml(when) + '</strong>' +
+        '<span>ENTREGA</span><strong>' + before + ' → ' + after + '</strong></div>' +
+        '<div class="rentals-accepted__row rentals-accepted__row--sub">' +
+        '<span class="rentals-accepted__verdict ' + v[1] + '" title="' + escapeHtml(String(v[2] || '')) + '">' + escapeHtml(String(v[0] || '')) + '</span>' +
+        (r.samples != null ? '<span>' + escapeHtml(String(r.samples)) + ' amostras</span>' : '') + '</div></div>';
+    }).join('');
+  }
+
   // Market timing: cheapest live price vs 30-day average (persisted market
   // history) — 'renting expensive right now?'. Mini Chart.js line.
   let _rentalsTimingChart = null;
@@ -4169,6 +4218,7 @@ function renderAccount(acct) {
     _renderRentalsPortfolio();
     _renderRentalsSeries();
     _renderRentalsReco();
+    _renderRentalsAccepted();
     _renderRentalsMarketTiming();
     _renderRentalsRankings();
     _renderRentalsHeatmap();
@@ -4613,6 +4663,14 @@ function renderAccount(acct) {
     const reco = document.getElementById('rentals-reco-cards');
     if (reco) reco.addEventListener('click', (e) => {
       const card = e.target.closest ? e.target.closest('.rentals-reco__card') : null;
+      if (!card) return;
+      openRigTrackRecord(card.getAttribute('data-rig-id'), card.getAttribute('data-rig-name'));
+    });
+    // Accepted-recommendation cards (dynamic innerHTML — delegated listener)
+    // → rig track record modal, same flow as the reco cards.
+    const accepted = document.getElementById('rentals-accepted-list');
+    if (accepted) accepted.addEventListener('click', (e) => {
+      const card = e.target.closest ? e.target.closest('.rentals-accepted__card') : null;
       if (!card) return;
       openRigTrackRecord(card.getAttribute('data-rig-id'), card.getAttribute('data-rig-name'));
     });

@@ -867,6 +867,13 @@
     <div class="rentals-reco__head">RECOMENDADOS PRA RE-ALUGAR <span id="rentals-reco-meta" class="rentals-reco__meta"></span></div>
     <div class="rentals-reco__cards" id="rentals-reco-cards"></div>
   </div>
+  <!-- CFO: accepted recommendations — rigs que o piloto sugeriu blacklistar
+       e o operador ACEITOU (manual ou exclusão automática), com o resultado
+       da entrega DEPOIS da decisão. Clique no card → track record do rig. -->
+  <div class="rentals-accepted" id="rentals-accepted" hidden>
+    <div class="rentals-accepted__head">RECOMENDAÇÕES ACEITAS <span id="rentals-accepted-meta" class="rentals-accepted__meta"></span></div>
+    <div class="rentals-accepted__list" id="rentals-accepted-list"></div>
+  </div>
   <!-- Market timing: cheapest live price vs the 30-day average (from the
        persisted market history) — 'renting expensive right now?' -->
   <div class="rentals-timing" id="rentals-timing" hidden>

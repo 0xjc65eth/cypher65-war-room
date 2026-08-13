@@ -5989,6 +5989,11 @@ def api_rentals(tenant_id: str = ""):
             # the panel marks/hides bad performers instantly.
             "rig_blacklist": _rental_perf.get_rig_blacklist(tenant_id=tenant_id),
             "rig_auto_blacklist": _rental_perf.get_auto_blacklist(tenant_id=tenant_id),
+            # CFO: accepted recommendations — rigs the operator blacklisted
+            # after the pilot flagged them + the delivery OUTCOME afterwards
+            # (avoided / improved / worse / same). Tenant-scoped ledger.
+            "accepted_recos": _rental_perf.compute_accepted_recos_summary(
+                tenant_id=tenant_id),
             # Click-first analytics (drill-down targets):
             #   provider_rankings — MRR vs Braiins delivery/cost/P·L comparison
             #   rig_heatmap      — cost × delivery grid by rig NAME (≥2 samples)

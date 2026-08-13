@@ -68,6 +68,10 @@ RIG_BLACKLIST_KEY = "_rental_rig_blacklist"
 # that's what lets the re-exclusion gate compare against new samples.
 RIG_AUTO_BLACKLIST_KEY = "_rental_auto_blacklist"
 RIG_AUTO_TS_KEY = "_rental_auto_blacklist_ts"
+# ACCEPTED-recommendation ledger: when the operator (or the auto-exclusion)
+# acts on the pilot's avoid suggestion, we snapshot the rig's delivery stats
+# and WHEN — so the panel can show 'what was accepted' and the outcome after.
+RIG_ACCEPTED_KEY = "_rental_accepted_recos"
 
 
 def _to_float(v):
@@ -148,14 +152,22 @@ def get_rig_blacklist(tenant_id: str = "") -> List[str]:
 
 
 def add_rig_to_blacklist(rig_id, tenant_id: str = "") -> bool:
-    """Blacklist a rig id (persistent per tenant). Returns True if added."""
+    """Blacklist a rig id (persistent per tenant). Returns True if added.
+
+    This is the 'ACCEPT' action: the operator acted on the pilot's avoid
+    suggestion, so the accepted-recommendation ledger records the rig with
+    its delivery snapshot (the panel shows the outcome afterwards).
+    """
     if rig_id is None or str(rig_id) == "":
         return False
     rid = str(rig_id)
     items = get_rig_blacklist(tenant_id=tenant_id)
     if rid not in items:
         items.append(rid)
-        return _save_rig_blacklist(items, tenant_id=tenant_id)
+        ok = _save_rig_blacklist(items, tenant_id=tenant_id)
+        if ok:
+            _record_accepted_reco(rid, "manual", tenant_id=tenant_id)
+        return ok
     return True
 
 
@@ -303,7 +315,200 @@ def add_rig_to_auto_blacklist(rig_id, tenant_id: str = "") -> bool:
                 if str(x).split(":")[0] != rid]
     ts_items.append(f"{rid}:{now}")
     ok_ts = _save_rig_ids(RIG_AUTO_TS_KEY, ts_items, tenant_id=tenant_id)
+    if ok_ids and ok_ts:
+        _record_accepted_reco(rid, "auto", tenant_id=tenant_id)
     return ok_ids and ok_ts
+
+
+# ── Accepted recommendations (ledger + outcome) ────────────────────────────
+# The pilot flags rigs to avoid (grade F). When the operator ACTS — manual
+# blacklist or the auto-exclusion fires — that's an accepted recommendation:
+# we persist a per-tenant ledger with the rig's delivery snapshot at that
+# moment (the pilot's case) so the panel can later show the OUTCOME (any
+# delivery data for the same rig AFTER the decision). The ledger stores
+# dicts, so it uses its own save/load (the rig-id lists stringify).
+
+
+def _save_accepted_recos(entries: List[Dict], tenant_id: str = "") -> bool:
+    """Persist the accepted-recommendation ledger (JSON list of dicts)."""
+    _ensure_rig_settings_tables()
+    raw = json.dumps(entries)
+    ts = int(time.time())
+    try:
+        conn = get_db()
+        c = conn.cursor()
+        if is_default_tenant(tenant_id):
+            c.execute(
+                "INSERT INTO settings(key,value,updated_ts) VALUES(?,?,?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_ts=excluded.updated_ts",
+                (RIG_ACCEPTED_KEY, raw, ts),
+            )
+        else:
+            c.execute(
+                "INSERT INTO tenant_settings(tenant_id,key,value,updated_ts) VALUES(?,?,?,?) "
+                "ON CONFLICT(tenant_id,key) DO UPDATE SET value=excluded.value, updated_ts=excluded.updated_ts",
+                (tenant_id, RIG_ACCEPTED_KEY, raw, ts),
+            )
+        conn.commit()
+        conn.close()
+        return True
+    except Exception as e:
+        log.warning("[rental_performance] accepted recos save failed: %s", e)
+        return False
+
+
+def _load_accepted_recos(tenant_id: str = "") -> List[Dict]:
+    """Load the accepted-recommendation ledger (list of dicts, empty on miss)."""
+    _ensure_rig_settings_tables()
+    try:
+        conn = get_db()
+        c = conn.cursor()
+        if is_default_tenant(tenant_id):
+            c.execute("SELECT value FROM settings WHERE key=?", (RIG_ACCEPTED_KEY,))
+        else:
+            c.execute("SELECT value FROM tenant_settings WHERE tenant_id=? AND key=?",
+                      (tenant_id, RIG_ACCEPTED_KEY))
+        row = c.fetchone()
+        conn.close()
+        if row and row["value"]:
+            parsed = json.loads(row["value"])
+            if isinstance(parsed, list):
+                return [x for x in parsed if isinstance(x, dict)]
+        return []
+    except Exception as e:
+        log.warning("[rental_performance] accepted recos load failed: %s", e)
+        return []
+
+
+def _rig_local_delivery(rig_id: Any, tenant_id: str = "") -> Dict[str, Any]:
+    """Best name + (start_ts, percent) pairs + costs from the LOCAL track
+    record for a rig (bucket='renter', provider='mrr'). Never raises."""
+    pairs: List[Any] = []
+    costs: List[float] = []
+    name = ""
+    try:
+        conn = get_db()
+        c = conn.cursor()
+        c.execute(
+            "SELECT rig_name, start, percent, cost_sats_per_thh "
+            "FROM rental_history WHERE tenant_id=? AND rig_id=? "
+            "AND bucket='renter' AND provider='mrr'",
+            (tenant_id or "", str(rig_id)))
+        for row in c.fetchall():
+            if not name and row["rig_name"]:
+                name = str(row["rig_name"])
+            ts = _parse_start_ts(row["start"])
+            if row["percent"] is not None:
+                pairs.append((ts, _num(row["percent"])))
+            if row["cost_sats_per_thh"] is not None:
+                costs.append(_num(row["cost_sats_per_thh"]))
+        conn.close()
+    except Exception as e:
+        log.warning("[rental_performance] rig local delivery failed: %s", e)
+    return {"name": name, "pairs": pairs, "costs": costs}
+
+
+def _record_accepted_reco(rig_id: Any, source: str, tenant_id: str = "") -> bool:
+    """Persist an ACCEPTED recommendation: the rig was excluded (manual
+    blacklist or auto) — snapshot the pilot's case (delivery stats) at that
+    moment so the panel can show the outcome afterwards. Dedup: keeps the
+    NEWEST entry per rig. Never raises."""
+    if rig_id is None or str(rig_id).strip() == "":
+        return False
+    rid = str(rig_id)
+    local = _rig_local_delivery(rid, tenant_id=tenant_id)
+    trust = compute_rig_trust_score(
+        [{"percent": p} for _, p in local["pairs"]])
+    entry: Dict[str, Any] = {
+        "rig_id": rid,
+        "name": local["name"] or "",
+        "ts": int(time.time()),
+        "source": source,
+        "delivery_pct": trust.get("median_pct"),
+        "samples": trust.get("samples", 0),
+        "grade": trust.get("grade"),
+        # Honest framing: the pilot's avoid signal is grade F (the same set
+        # build_rental_recommendations counts as avoid_count). A MANUAL
+        # blacklist of a rig the pilot never flagged still lands here — the
+        # UI shows 'não sugerido' instead of implying the pilot recommended it.
+        "pilot_flagged": trust.get("grade") == "F",
+    }
+    entries = [x for x in _load_accepted_recos(tenant_id=tenant_id)
+               if str(x.get("rig_id") or "") != rid]
+    entries.append(entry)
+    return _save_accepted_recos(entries, tenant_id=tenant_id)
+
+
+def get_accepted_recos(tenant_id: str = "") -> List[Dict]:
+    """Accepted-recommendation ledger, newest first (for the panel summary)."""
+    entries = _load_accepted_recos(tenant_id=tenant_id)
+    entries.sort(key=lambda x: x.get("ts") or 0, reverse=True)
+    return entries
+
+
+def compute_accepted_recos_summary(tenant_id: str = "") -> Dict[str, Any]:
+    """Accepted recommendations + the DELIVERY OUTCOME afterwards.
+
+    For every ledger entry (rig the pilot flagged and the operator
+    blacklisted, or the auto-exclusion fired), computes the median delivery
+    % of that rig's rentals AFTER the acceptance (from local history) and a
+    verdict:
+      - avoided   → no new rentals after the decision (expected good result)
+      - improved  → median after ≥ before + 5pp
+      - worse     → median after ≤ before - 5pp
+      - same      → within ±5pp
+      - no_before → acceptance had no before reference
+
+    Returns {"count", "accepted": [...]} — accepted sorted newest first.
+    """
+    entries = get_accepted_recos(tenant_id=tenant_id)
+    out: List[Dict[str, Any]] = []
+    for e in entries:
+        rid = e.get("rig_id")
+        after_pcts: List[float] = []
+        after_costs: List[float] = []
+        accept_ts = e.get("ts") or 0
+        if rid:
+            try:
+                conn = get_db()
+                c = conn.cursor()
+                c.execute(
+                    "SELECT start, percent, cost_sats_per_thh FROM rental_history "
+                    "WHERE tenant_id=? AND rig_id=? AND bucket='renter' "
+                    "AND provider='mrr'",  # symmetric with _rig_local_delivery
+                    (tenant_id or "", str(rid)))
+                for row in c.fetchall():
+                    ts = _parse_start_ts(row["start"])
+                    if ts is not None and ts >= accept_ts:
+                        if row["percent"] is not None:
+                            after_pcts.append(_num(row["percent"]))
+                        if row["cost_sats_per_thh"] is not None:
+                            after_costs.append(_num(row["cost_sats_per_thh"]))
+                conn.close()
+            except Exception as ex:
+                log.warning("[rental_performance] accepted outcome failed: %s", ex)
+        before = e.get("delivery_pct")
+        after = (round(sum(after_pcts) / len(after_pcts), 1) if after_pcts
+                 else None)
+        if after is None:
+            # No new rentals after the decision: 'avoided' when the pilot had
+            # a case (before stats), honest 'no data' when there was never a
+            # track record to begin with.
+            verdict = "no_before" if before is None else "avoided"
+        elif before is None:
+            verdict = "no_before"
+        else:
+            d = after - before
+            verdict = "improved" if d >= 5 else ("worse" if d <= -5 else "same")
+        out.append({
+            **e,
+            "delivery_after_pct": after,
+            "cost_after_sats_per_thh": (
+                round(sum(after_costs) / len(after_costs), 2) if after_costs else None),
+            "verdict": verdict,
+        })
+    out.sort(key=lambda x: x.get("ts") or 0, reverse=True)
+    return {"count": len(out), "accepted": out}
 
 
 # ── Credentials: shared resolver in agents/solo_mining_advisor/tools.py ──
