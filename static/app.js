@@ -3512,6 +3512,7 @@ function renderAccount(acct) {
       const grade = r.grade
         ? '<span class="rentals-trust__badge rentals-trust__badge--' + escapeHtml(String(r.grade)) + '">' + escapeHtml(String(r.grade)) + '</span>' : '';
       const verdictMap = {
+        revoked: ['REVOGADA', 'is-warn', 'decisão revogada — rig restaurado da blacklist'],
         avoided: ['EVITADO', 'is-good', 'sem novos aluguéis após a decisão'],
         improved: ['MELHOROU', 'is-good', 'entrega subiu após a decisão'],
         worse: ['PIOROU', 'is-bad', 'entrega caiu após a decisão'],

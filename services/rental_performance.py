@@ -173,12 +173,19 @@ def add_rig_to_blacklist(rig_id, tenant_id: str = "") -> bool:
 
 def remove_rig_from_blacklist(rig_id, tenant_id: str = "") -> bool:
     """Remove a rig from BOTH blacklists (manual restore). Returns True if
-    removed — a restored rig is never re-flagged by the same streak."""
+    removed — a restored rig is never re-flagged by the same streak.
+
+    The accepted-recommendation ledger entry for the rig is marked
+    ``restored`` (+ when) so the panel/admin show the decision was REVOKED
+    instead of only the delivery outcome afterwards."""
     rid = str(rig_id)
     items = [x for x in get_rig_blacklist(tenant_id=tenant_id) if x != rid]
     ok = _save_rig_blacklist(items, tenant_id=tenant_id)
     auto = [x for x in get_auto_blacklist(tenant_id=tenant_id) if x != rid]
-    return _save_rig_ids(RIG_AUTO_BLACKLIST_KEY, auto, tenant_id=tenant_id) and ok
+    ok2 = _save_rig_ids(RIG_AUTO_BLACKLIST_KEY, auto, tenant_id=tenant_id)
+    if ok and ok2:
+        _mark_accepted_reco_restored(rid, tenant_id=tenant_id)
+    return ok and ok2
 
 
 def is_rig_blacklisted(rig_id, tenant_id: str = "") -> bool:
@@ -408,6 +415,28 @@ def _rig_local_delivery(rig_id: Any, tenant_id: str = "") -> Dict[str, Any]:
     return {"name": name, "pairs": pairs, "costs": costs}
 
 
+def _mark_accepted_reco_restored(rig_id: Any, tenant_id: str = "") -> bool:
+    """Mark the ledger entry of a restored rig as REVOKED (restored + when).
+
+    The verdict then reads 'revoked' (the decision was reversed), NOT the
+    delivery outcome after it. Idempotent: only the newest entry per rig is
+    touched; an entry with no record (never accepted) is a no-op. Never
+    raises."""
+    rid = str(rig_id)
+    try:
+        entries = _load_accepted_recos(tenant_id=tenant_id)
+        touched = False
+        for e in entries:
+            if str(e.get("rig_id") or "") == rid:
+                e["restored"] = True
+                e["restored_ts"] = int(time.time())
+                touched = True
+        return _save_accepted_recos(entries, tenant_id=tenant_id) if touched else False
+    except Exception as e:
+        log.warning("[rental_performance] accepted reco restore mark failed: %s", e)
+        return False
+
+
 def _record_accepted_reco(rig_id: Any, source: str, tenant_id: str = "") -> bool:
     """Persist an ACCEPTED recommendation: the rig was excluded (manual
     blacklist or auto) — snapshot the pilot's case (delivery stats) at that
@@ -458,7 +487,10 @@ def _accepted_outcome(e: Dict[str, Any], tenant_id: str = "") -> Dict[str, Any]:
       - worse     → median after ≤ before - 5pp
       - same      → within ±5pp
       - no_before → acceptance had no before reference
-    Never raises.
+
+    A REVOKED decision (``restored`` set by remove_rig_from_blacklist) gets
+    verdict ``revoked`` — the honest state is "the decision was reversed",
+    not the delivery outcome afterwards. Never raises.
     """
     rid = e.get("rig_id")
     after_pcts: List[float] = []
@@ -486,7 +518,11 @@ def _accepted_outcome(e: Dict[str, Any], tenant_id: str = "") -> Dict[str, Any]:
     before = e.get("delivery_pct")
     after = (round(sum(after_pcts) / len(after_pcts), 1) if after_pcts
              else None)
-    if after is None:
+    if e.get("restored"):
+        # The decision was REVOKED (rig restored) — the verdict reflects the
+        # reversal, regardless of what the delivery did afterwards.
+        verdict = "revoked"
+    elif after is None:
         # No new rentals after the decision: 'avoided' when the pilot had
         # a case (before stats), honest 'no data' when there was never a
         # track record to begin with.
