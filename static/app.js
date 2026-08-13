@@ -4913,6 +4913,7 @@ function renderAccount(acct) {
     const ap = snap.auto_pilot || {};
     _apSetUi(!!ap.armed);
     _initAutoPilotToggle();
+    _initAutoPilotAdvisory();
   }
 
   // ── Auto-Pilot arm/disarm toggle (automations module) ─────────────
@@ -5035,6 +5036,177 @@ function renderAccount(acct) {
     }
 
     _apRefreshStatus();
+  }
+
+  // ── Issue #20 · Auto-Pilot ADVISORY — recomendações por device ──────
+  // Backend: GET /api/auto-pilot/recommendations (recs + armed),
+  // POST /api/auto-pilot/recommendations/<id>/respond {decision} (audited),
+  // GET /api/auto-pilot/recommendations/audit (trail). Fase 2 do Big Bet:
+  // o piloto consolida por dispositivo o que merece atenção e sugere a
+  // ação em um clique (restart / pause / blacklist / comprar).
+  let _apRecs = [];
+  let _apAudit = [];
+  let _apRecsInit = false;
+
+  function _apRecCardHtml(rec) {
+    if (!rec || typeof rec !== 'object') return '';
+    const esc = escapeHtml;
+    const sev = String(rec.severity || 'info').toLowerCase();
+    const action = (rec.action && typeof rec.action === 'object') ? rec.action : {};
+    const actionType = String(action.type || 'navigate');
+    const actionLabel = String(action.label || (actionType === 'buy' ? 'COMPRAR AGORA' : 'APLICAR'));
+    // Confirm text varies by action; buy opens the Braiins flow pre-filled.
+    // deviceName is escaped ONCE here (raw value), and data-confirm escapes
+    // it a second time for the HTML attribute — no double-escaping (&amp;amp;).
+    const rawDevice = rec.device_name || rec.device_id || 'device';
+    const confirmMsg = actionType === 'blacklist'
+      ? 'Adicionar o rig à blacklist (nunca alugar de novo)?'
+      : actionType === 'buy'
+        ? 'Abrir o fluxo de compra Braiins com o preço atual?'
+        : 'Executar \'' + actionLabel + '\' em ' + rawDevice + '?';
+    return (
+      '<div class="ap-rec ap-rec--' + esc(sev) + '" data-rec-id="' + esc(rec.id || '') + '">' +
+      '<div class="ap-rec__head">' +
+      '<span class="ap-rec__sev">' + esc(sev) + '</span>' +
+      '<span class="ap-rec__dev">' + esc(rawDevice) + '</span>' +
+      '<span class="ap-rec__type">' + esc(rec.issue_type || '') + '</span>' +
+      '</div>' +
+      '<div class="ap-rec__msg">' + esc(rec.message || '') + '</div>' +
+      '<div class="ap-rec__actions">' +
+      '<button type="button" class="btn btn--primary btn--mini ap-rec-apply" data-confirm="' + esc(confirmMsg) + '">' + esc(actionLabel) + '</button>' +
+      '<button type="button" class="btn btn--mini ap-rec-ignore" title="Ignorar e registrar no audit trail">IGNORAR</button>' +
+      '</div>' +
+      '</div>'
+    );
+  }
+
+  function _apAuditRowHtml(row) {
+    const esc = escapeHtml;
+    const decision = String(row.decision || '').toLowerCase();
+    const when = row.ts ? fmt.age(row.ts) : '—';
+    const body = (row.device_name || row.device_id || 'device') + ' · ' +
+      esc(row.issue_type || '') + ' → ' + esc(row.action_type || '?');
+    return (
+      '<div class="ap-audit__row">' +
+      '<span class="ap-audit__decision is-' + esc(decision === 'accept' ? 'accept' : 'ignore') + '">' +
+      esc(decision === 'accept' ? 'ACEITO' : 'IGNORADO') + '</span>' +
+      '<span class="ap-audit__body" title="' + esc(row.note || body) + '">' + body + '</span>' +
+      '<span class="ap-audit__when">' + esc(when) + '</span>' +
+      '</div>'
+    );
+  }
+
+  function _apRenderRecs() {
+    const list = document.getElementById('ap-recs-list');
+    const badge = document.getElementById('ap-recs-badge');
+    if (!list) return;
+    if (badge) {
+      badge.textContent = String(_apRecs.length);
+      badge.classList.toggle('badge--purple', _apRecs.length > 0);
+      badge.classList.toggle('badge--mute', _apRecs.length === 0);
+      badge.title = _apRecs.length + ' recomendação(ões) ativa(s)';
+    }
+    if (!_apRecs.length) {
+      list.innerHTML =
+        '<div class="empty-state" style="grid-column:1/-1;border:none;padding:12px">' +
+        '<div class="empty-state__icon">⌘</div>' +
+        '<div class="empty-state__title">Sem recomendações no momento</div>' +
+        '<div class="empty-state__desc">O Auto-Pilot (advisory) consolida por dispositivo o que merece atenção — OFFLINE, temperatura alta, hashrate abaixo do pico, rig com track record ruim ou janela de arbitragem — com a ação sugerida em um clique.</div>' +
+        '</div>';
+    } else {
+      list.innerHTML = _apRecs.map(_apRecCardHtml).join('');
+    }
+  }
+
+  function _apRenderAudit() {
+    const wrap = document.getElementById('ap-audit-wrap');
+    const list = document.getElementById('ap-audit-list');
+    const count = document.getElementById('ap-audit-count');
+    if (!wrap || !list) return;
+    if (!_apAudit.length) {
+      wrap.style.display = 'none';
+      return;
+    }
+    wrap.style.display = '';
+    if (count) count.textContent = String(_apAudit.length);
+    list.innerHTML = _apAudit.slice(0, 12).map(_apAuditRowHtml).join('');
+  }
+
+  async function _apLoadRecs() {
+    try {
+      const r = await authFetch('/api/auto-pilot/recommendations');
+      if (r.ok) {
+        const d = await r.json().catch(() => ({}));
+        _apRecs = Array.isArray(d.recommendations) ? d.recommendations : [];
+        if (typeof d.armed === 'boolean') _apSetUi(d.armed);
+      }
+    } catch (e) { /* advisory — never break the module */ }
+    try {
+      const r2 = await authFetch('/api/auto-pilot/recommendations/audit?limit=50');
+      if (r2.ok) {
+        const d2 = await r2.json().catch(() => ({}));
+        _apAudit = Array.isArray(d2.audit) ? d2.audit : [];
+      }
+    } catch (e) { /* best-effort */ }
+    _apRenderRecs();
+    _apRenderAudit();
+  }
+
+  async function _apRespond(recId, decision, confirmMsg) {
+    if (decision === 'accept' && confirmMsg && !window.confirm(confirmMsg)) return;
+    try {
+      const r = await authFetch('/api/auto-pilot/recommendations/' + encodeURIComponent(recId) + '/respond', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ decision: decision }),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok || !d.success) {
+        showToast('error', '⚠ Auto-Pilot: ' + (d.error || ('HTTP ' + r.status)));
+        return;
+      }
+      if (decision === 'accept' && d.action_result && d.action_result.ok === false) {
+        showToast('error', '⚠ ' + (d.action_result.error || 'ação falhou'));
+      } else if (decision === 'accept') {
+        showToast('success', d.action_type === 'buy' ? '🛒 abrindo compra…' : '✓ ação executada: ' + (d.action_type || 'ok'));
+      } else {
+        showToast('success', 'recomendação ignorada (auditado)');
+      }
+      // Buy flow: open the Braiins spot modal pre-filled with the current
+      // price (real-money step stays behind the typed confirmation).
+      if (d.open_buy_flow) {
+        const buyBtn = document.getElementById('rentals-buy');
+        activateModule('rentals');
+        setTimeout(() => { if (buyBtn) buyBtn.click(); }, 250);
+      }
+      _apLoadRecs();
+    } catch (e) {
+      showToast('error', '⚠ Auto-Pilot: ' + (e.message || 'falha de rede'));
+    }
+  }
+
+  function _initAutoPilotAdvisory() {
+    if (_apRecsInit) return;
+    _apRecsInit = true;
+    const panel = document.getElementById('ap-advisory-panel');
+    const refresh = document.getElementById('ap-recs-refresh');
+    if (refresh) refresh.addEventListener('click', _apLoadRecs);
+    if (panel) {
+      panel.addEventListener('click', (e) => {
+        const apply = e.target.closest ? e.target.closest('.ap-rec-apply') : null;
+        const ignore = e.target.closest ? e.target.closest('.ap-rec-ignore') : null;
+        const card = e.target.closest ? e.target.closest('.ap-rec') : null;
+        if (!card) return;
+        const recId = card.getAttribute('data-rec-id');
+        if (!recId) return;
+        if (apply) {
+          _apRespond(recId, 'accept', apply.getAttribute('data-confirm') || '');
+        } else if (ignore) {
+          _apRespond(recId, 'ignore');
+        }
+      });
+    }
+    _apLoadRecs();
   }
 
   function _initAiChat() {
