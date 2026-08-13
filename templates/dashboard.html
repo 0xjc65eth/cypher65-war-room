@@ -950,6 +950,31 @@
   </div>
 </section>
 
+<!-- ── Auto-Pilot ADVISORY (Issue #20 · Fase 2) — recomendações por device ── -->
+<section class="panel panel--ap-advisory panel--large" id="ap-advisory-panel" data-module="automations">
+  <div class="panel__header">
+    <div class="panel__eyebrow">⌘ AUTO-PILOT · ADVISORY MODE</div>
+    <div class="panel__tools">
+      <span class="badge badge--purple" id="ap-recs-badge" title="Recomendações ativas — o piloto sugere, você decide">0</span>
+      <button class="chip" id="ap-recs-refresh" title="Refresh recomendações">⟳</button>
+    </div>
+  </div>
+  <div class="ap-recs" id="ap-recs-list">
+    <div class="empty-state" style="grid-column:1/-1;border:none;padding:12px">
+      <div class="empty-state__icon">⌘</div>
+      <div class="empty-state__title">Sem recomendações no momento</div>
+      <div class="empty-state__desc">O Auto-Pilot (advisory) consolida por dispositivo o que merece atenção — OFFLINE, temperatura alta, hashrate abaixo do pico, rig com track record ruim ou janela de arbitragem — com a ação sugerida em um clique.</div>
+    </div>
+  </div>
+  <div class="ap-audit" id="ap-audit-wrap" style="display:none">
+    <div class="ap-audit__header">
+      <span>AUDIT TRAIL · DECISÕES</span>
+      <span class="badge badge--mute" id="ap-audit-count">0</span>
+    </div>
+    <div class="ap-audit__list" id="ap-audit-list"></div>
+  </div>
+</section>
+
 <!-- ── Auto-Pilot arm confirmation (typed — enables autonomous actions) ── -->
 <div id="ap-arm-modal" class="modal-overlay">
   <div class="modal ap-arm-modal">

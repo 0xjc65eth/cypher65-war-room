@@ -339,3 +339,169 @@ def api_automation_arm(tenant_id: str = ""):
         return jsonify({"success": False, "error": "could not persist armed state"}), 500
     _log_audit(tid, "automation.arm", details={"armed": armed})
     return jsonify({"success": True, "armed": armed})
+
+
+# ═══════════════════════════════════════════════════════════════════════
+#  Issue #20 · Auto-Pilot advisory mode — Fase 2 do Big Bet
+#  Recomendações consolidadas por dispositivo com ação acionável + audit
+#  trail (aceitas/ignoradas). Fail-closed e tenant-scoped.
+# ═══════════════════════════════════════════════════════════════════════
+
+@alerts_bp.route("/auto-pilot/recommendations", methods=["GET"])
+@require_tenant
+@role_required("viewer")
+def api_auto_pilot_recommendations(tenant_id: str = ""):
+    """Issue #20 — advisory recommendations for the caller's tenant.
+
+    Returns:
+      {
+        "recommendations": [...],   # build_advisory_recommendations output
+        "count": n,
+        "armed": bool,              # Auto-Pilot armed state (context)
+      }
+
+    Each recommendation carries ``action.type`` + ``action.label`` so the
+    UI can render a one-click button (restart / pause / blacklist / buy).
+    """
+    from services.auto_pilot import build_recommendations_for_tenant
+    from core.alerts.automation_engine import AutomationEngine
+    tid = tenant_id or "default"
+    try:
+        recs = build_recommendations_for_tenant(tid)
+        armed = AutomationEngine("", None).is_armed(tid)
+        return jsonify({"recommendations": recs, "count": len(recs), "armed": armed})
+    except Exception as e:
+        return jsonify({"recommendations": [], "count": 0, "armed": False,
+                        "error": str(e)}), 500
+
+
+@alerts_bp.route("/auto-pilot/recommendations/<rec_id>/respond", methods=["POST"])
+@require_tenant
+@role_required("admin")
+def api_auto_pilot_respond(rec_id: str, tenant_id: str = ""):
+    """Issue #20 — accept/ignore an advisory recommendation (audited).
+
+    Body: {"decision": "accept"|"ignore", "note": "..." (optional)}
+
+    Accepting executes the recommendation's action when executable from the
+    cloud:
+      - restart / pause  → runs the fleet device command (agent-managed
+        devices route through the local-agent queue, same as the panel).
+      - blacklist        → adds the rig to the tenant's rental blacklist.
+      - buy              → returns ``open_buy_flow: true`` so the frontend
+        opens the Braiins spot flow pre-filled (real-money step stays in
+        the UI with its own typed confirmation).
+      - navigate         → informational only; nothing to execute.
+
+    Every decision (accepted OR ignored) is recorded in the tenant's audit
+    trail (auto_pilot_rec_audit) — the operator can always review what the
+    pilot suggested and what they did about it.
+    """
+    from services.auto_pilot import (
+        build_recommendations_for_tenant,
+        record_rec_decision,
+    )
+    tid = tenant_id or "default"
+    data = request.get_json(silent=True) or {}
+    decision = str(data.get("decision") or "").strip().lower()
+    note = str(data.get("note") or "")
+    if decision not in ("accept", "ignore"):
+        return jsonify({"success": False, "error": "decision must be 'accept' or 'ignore'"}), 400
+
+    # Rebuild current recommendations and match by stable id. A rec that no
+    # longer exists (condition cleared) can still be audited as ignored
+    # with a note — accept requires the rec to still be present.
+    try:
+        recs = build_recommendations_for_tenant(tid)
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+    rec = next((r for r in recs if r.get("id") == rec_id), None)
+
+    if decision == "accept" and rec is None:
+        return jsonify({
+            "success": False,
+            "error": "recomendação não está mais ativa (condição já resolvida)",
+        }), 409
+
+    action_type = (rec or {}).get("action", {}).get("type", "") if rec else ""
+    action_result = None
+    open_buy_flow = False
+
+    if decision == "accept" and rec:
+        if action_type in ("restart", "pause"):
+            did = str(rec.get("device_id") or "")
+            if did:
+                # Reuse the fleet command executor (same agent-queue path the
+                # Fleet panel uses) via a lazy import to avoid a circular
+                # import at module load. NOTE: like the Fleet panel, this path
+                # does NOT re-run SafetyEngine — the operator explicitly
+                # confirmed the action in the UI (intentional; the automation
+                # engine keeps its own safety-gated execution path).
+                try:
+                    from axe_fleet.routes import _execute_device_command
+                    resp = _execute_device_command(did, action_type)
+                    # _execute_device_command returns (jsonify(...), status)
+                    # tuples on its error paths — unpack both shapes and honor
+                    # the tuple's status (the jsonify body alone reports 200).
+                    resp_status = None
+                    if isinstance(resp, tuple) and len(resp) == 2:
+                        resp, resp_status = resp
+                    payload = resp.get_json() if hasattr(resp, "get_json") else {}
+                    status = resp_status if resp_status is not None else resp.status_code
+                    if status == 200:
+                        action_result = {"ok": True, **payload}
+                    else:
+                        action_result = {"ok": False, "error": payload.get("error") or f"HTTP {status}"}
+                except Exception as e:
+                    action_result = {"ok": False, "error": str(e)}
+        elif action_type == "blacklist":
+            rid = str(rec.get("device_id") or "")
+            if rid:
+                try:
+                    from services.rental_performance import add_rig_to_blacklist
+                    ok = add_rig_to_blacklist(rid, tenant_id=tid)
+                    action_result = {"ok": ok}
+                except Exception as e:
+                    action_result = {"ok": False, "error": str(e)}
+        elif action_type == "buy":
+            # Real-money purchase stays in the UI (typed confirmation). The
+            # backend records the accept and signals the frontend to open
+            # the Braiins spot flow pre-filled.
+            open_buy_flow = True
+            action_result = {"ok": True, "open_buy_flow": True}
+
+    recorded = record_rec_decision(
+        tid, rec or {"id": rec_id}, decision, note=note, action_result=action_result,
+    )
+    _log_audit(tid, "auto_pilot.respond", target=str(rec_id),
+               details={"decision": decision, "action_type": action_type,
+                        "note": note[:200]})
+    return jsonify({
+        "success": True,
+        "recorded": recorded,
+        "decision": decision,
+        "action_type": action_type,
+        "action_result": action_result,
+        "open_buy_flow": open_buy_flow,
+    })
+
+
+@alerts_bp.route("/auto-pilot/recommendations/audit", methods=["GET"])
+@require_tenant
+@role_required("viewer")
+def api_auto_pilot_audit(tenant_id: str = ""):
+    """Issue #20 — audit trail of accepted/ignored recommendations."""
+    from services.auto_pilot import get_rec_audit
+    tid = tenant_id or "default"
+    try:
+        # request.args.get(type=int) returns None on malformed input — clamp
+        # like api_automation_executions does (never int(None) → 500).
+        limit = request.args.get("limit", 50)
+        limit = max(1, min(int(limit or 50), 200))
+    except (TypeError, ValueError):
+        limit = 50
+    try:
+        audit = get_rec_audit(tid, limit=limit)
+        return jsonify({"audit": audit, "count": len(audit)})
+    except Exception as e:
+        return jsonify({"audit": [], "count": 0, "error": str(e)}), 500
