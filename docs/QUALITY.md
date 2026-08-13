@@ -84,25 +84,36 @@ cd mobile && npx stryker run
 | E2E (browser) | **Playwright** | specs chromium + mobile-chrome | ✅ job `e2e` |
 | Cobertura pública | **Codecov** (free p/ repo público) | upload do coverage.xml | ✅ non-blocking |
 
-### Codecov
+### Codecov — ✅ ATIVO (Issue #38 → PR #42)
 
 O CI gera `coverage.xml` e envia pro Codecov (repo público = free tier).
-`fail_ci_if_error: false` — sem token, o upload falha silencioso (não bloqueia
+`fail_ci_if_error: false` — sem token o upload falha silencioso (não bloqueia
 merge). Badge no README reflete a cobertura pública.
 
-#### Token (CODECOV_TOKEN) — 1x por repo
+**Status real (confirmado em 3 vias):**
 
-Sem o token o CLI falha com `Token required - not valid tokenless upload`
-(log: `Token length: 0`) e o badge fica sem dados. Para ativar:
+| Sinal | Antes | Depois |
+|---|---|---|
+| Upload v4 probe | 404 `Repository not found` | 400 validação → token reconhecido |
+| CI log | `Upload queued ... failed: Repository not found` | `Upload queued for processing complete` ✅ |
+| API Codecov | `active: False` | `active: True` |
+| Badge README | `unknown` | **73%** (gate 65% batido) |
+| Check do PR | — | **`codecov/patch`** em todo PR |
 
-1. app.codecov.io → Sign in with GitHub (conta dona do repo) → autorize o
-   GitHub App p/ `cypher65-war-room`.
-2. Abra o repo → **Settings** → **General** → **Repository Upload Token** → copie.
-3. `gh secret set CODECOV_TOKEN` (no diretório do repo) — o step do CI já
+O que resolveu:
+
+1. **Token correto** no secret `CODECOV_TOKEN` (via `gh secret set`, 36 chars).
+2. **`slug: 0xjc65eth/cypher65-war-room`** no `codecov-action@v5` (`.github/workflows/ci.yml`)
+   — o action nunca erra a detecção do repo.
+
+#### Regenerar o token (só se o upload voltar a falhar)
+
+1. app.codecov.io → Sign in with GitHub (conta dona do repo) → repo
+   `cypher65-war-room` → **Settings** → **General** → **Repository Upload Token** → copie.
+2. `gh secret set CODECOV_TOKEN` (no diretório do repo) — o step do CI já
    referencia `token: ${{ secrets.CODECOV_TOKEN }}`.
-4. Rode o CI de novo e confira no log: `Upload queued for processing complete`
-   SEM a linha `Token required`. O badge `codecov.io/gh/<owner>/<repo>/branch/master/graph/badge.svg`
-   passa a mostrar a % real após o 1º upload.
+3. Re-disparar: `gh workflow run ci.yml --ref master` e conferir no log
+   `Upload queued for processing complete` SEM `Repository not found`.
 
 > **Render NÃO precisa do token** — o Render roda a app e nunca envia cobertura;
 > o upload acontece só no GitHub Actions. Não commitar o segredo no render.yaml.
