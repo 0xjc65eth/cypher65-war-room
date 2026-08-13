@@ -2051,7 +2051,7 @@ function renderAccount(acct) {
     const rows = newOnes.map(ev => {
       const d = new Date((ev.ts || 0) * 1000);
       const ts = String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0')+':'+String(d.getSeconds()).padStart(2,'0');
-      return `<div class="timeline-row tf-${(ev.severity||'INFO').toLowerCase()}" data-id="${ev.id}"><span class="tf-time">${ts}</span><span class="tf-type">${ev.event_type||'EVENT'}</span><span class="tf-msg">${escapeHtml(ev.message||'')}</span></div>`;
+      return `<div class="timeline-row tf-${escapeHtml((ev.severity||'INFO').toLowerCase())}" data-id="${escapeHtml(String(ev.id))}"><span class="tf-time">${ts}</span><span class="tf-type">${escapeHtml(ev.event_type||'EVENT')}</span><span class="tf-msg">${escapeHtml(ev.message||'')}</span></div>`;
     }).join('');
     if (timelineTotalRendered === 0) dom.timelineFeed.innerHTML = '';
     dom.timelineFeed.insertAdjacentHTML('beforeend', rows);
@@ -7568,7 +7568,7 @@ dom.walletSave?.addEventListener('click', async () => {
       const cls = row.ok ? 'axe-wiz-check--ok' : 'axe-wiz-check--fail';
       const icon = row.ok ? '✓' : '✗';
       const detail = row.detail ? `<span style="color:var(--text-tertiary);margin-left:6px">${escapeHtml(row.detail)}</span>` : '';
-      return `<div class="axe-wiz-check ${cls}"><span>${icon}</span><span class="axe-wiz-check__label">${row.label}</span><span class="axe-wiz-check__val">${escapeHtml(row.val)}</span>${detail}</div>`;
+      return `<div class="axe-wiz-check ${cls}"><span>${icon}</span><span class="axe-wiz-check__label">${escapeHtml(row.label)}</span><span class="axe-wiz-check__val">${escapeHtml(row.val)}</span>${detail}</div>`;
     }).join('');
     const verdict = reachable
       ? `<div class="axe-wiz-check axe-wiz-check--ok" style="margin-top:4px"><span>✓</span><span class="axe-wiz-check__label">READY</span><span class="axe-wiz-check__val">${escapeHtml(String(proto || '').toUpperCase())} miner detected</span></div>`

@@ -28,6 +28,22 @@
  *      truncateAtReturn tradeoff — fields stay inside `return`)
  *  14. CONCAT: 'https://…' URL in a literal → exit 0 (PASS, string-aware
  *      stripComments — // inside a string is not a comment)
+ *  15. INSERT: insertAdjacentHTML inline unescaped template literal → exit 1
+ *      (the second argument is scanned like an innerHTML RHS)
+ *  16. INSERT: bare-id argument built from a template literal with RAW
+ *      fields (timeline pattern) → exit 1 (declaration-following)
+ *  17. INSERT: bare-id argument built with escapeHtml → exit 0 (PASS)
+ *  18. INNER: `el.innerHTML = rows` where rows is a pre-escaped template
+ *      literal → exit 0 (PASS — bare-id declaration-following)
+ *  19. TEXTCONTENT: '<b>' + x.name markup → exit 1 (HTML in textContent
+ *      never renders — anti-pattern)
+ *  20. TEXTCONTENT: plain data (el.textContent = x.name) → exit 0 (PASS)
+ *  21. TEXTCONTENT: 'REPORTED < OBSERVED' literal (no tag shape) → exit 0
+ *  22. INSERT: local HTML-builder function with raw field → exit 1
+ *      (function body following)
+ *  23. BRIDGE: (c.providers || []).map(p => … escapeHtml(p.label)) fed via
+ *      innerHTML bare-id → exit 0 (the `||` fallback is a data SOURCE, no FP)
+ *  24. BRIDGE: same shape but a raw member (p.label) → exit 1
  *
  * Run: node tests/test_dom_guards.js     (also wired into CI gate)
  */
@@ -362,6 +378,176 @@ function cleanup(tmpDir) {
     const r = runGuard(tmp);
     assertEqual('concat URL literal (https://) → exit 0', r.status, 0);
     if (r.status !== 0) failures.push(`  ❌ concat-url-literal stdout:\n${r.stdout}`);
+  } finally {
+    cleanup(tmp);
+  }
+})();
+
+// ── Test 15: INSERT — insertAdjacentHTML inline unescaped TL → exit 1 ──
+// The 2nd arg is an HTML sink: unescaped record fields must be flagged just
+// like innerHTML.
+(function testInsertAdjacentHtmlInlineFails() {
+  const body = "el.insertAdjacentHTML('beforeend', `<div class=\"t\">${x.raw}</div>`);";
+  const tmp = makeFixture(CLEAN_HTML, appJsWithConcatBody(body));
+  try {
+    const r = runGuard(tmp);
+    assertEqual('insertAdjacentHTML inline raw TL → exit 1', r.status, 1);
+    if (!/GUARD 2/.test(r.stdout)) {
+      failures.push(`  ❌ insert-inline case did not flag GUARD 2:\n${r.stdout}`);
+    }
+  } finally {
+    cleanup(tmp);
+  }
+})();
+
+// ── Test 16: INSERT — bare-id arg built with RAW fields → exit 1 ────────
+// The exact timeline pattern: `const rows = list.map(ev => `…${ev.id}…`)`
+// injected via insertAdjacentHTML('beforeend', rows). The guard must follow
+// the declaration and flag the raw interpolations.
+(function testInsertAdjacentHtmlBareIdFails() {
+  const body =
+    "const rows = list.map(ev => `<div class=\"tf-${ev.severity}\" data-id=\"${ev.id}\">${ev.event_type}</div>`).join('');\n" +
+    "el.insertAdjacentHTML('beforeend', rows);";
+  const tmp = makeFixture(CLEAN_HTML, appJsWithConcatBody(body));
+  try {
+    const r = runGuard(tmp);
+    assertEqual('insertAdjacentHTML bare-id raw TL → exit 1', r.status, 1);
+    if (!/GUARD 2/.test(r.stdout)) {
+      failures.push(`  ❌ insert-bareid case did not flag GUARD 2:\n${r.stdout}`);
+    }
+  } finally {
+    cleanup(tmp);
+  }
+})();
+
+// ── Test 17: INSERT — bare-id arg built with escapeHtml → exit 0 ────────
+// Same pattern, but every record field is escaped → must PASS (no FP).
+(function testInsertAdjacentHtmlEscapedPasses() {
+  const body =
+    "const rows = list.map(ev => `<div class=\"tf-${escapeHtml(ev.severity)}\">${escapeHtml(ev.id)}</div>`).join('');\n" +
+    "el.insertAdjacentHTML('beforeend', rows);";
+  const tmp = makeFixture(CLEAN_HTML, appJsWithConcatBody(body));
+  try {
+    const r = runGuard(tmp);
+    assertEqual('insertAdjacentHTML bare-id escaped → exit 0', r.status, 0);
+    if (r.status !== 0) failures.push(`  ❌ insert-escaped stdout:\n${r.stdout}`);
+  } finally {
+    cleanup(tmp);
+  }
+})();
+
+// ── Test 18: INNER — innerHTML = bare-id built escaped → exit 0 ────────
+// The `el.innerHTML = rows` blind spot: the guard must follow `rows` to its
+// escaped template literal and PASS.
+(function testInnerHtmlBareIdEscapedPasses() {
+  const body =
+    "const rows = list.map(m => `<div>${escapeHtml(m.tier)}</div>`).join('');\n" +
+    "el.innerHTML = rows;";
+  const tmp = makeFixture(CLEAN_HTML, appJsWithConcatBody(body));
+  try {
+    const r = runGuard(tmp);
+    assertEqual('innerHTML = bare-id escaped → exit 0', r.status, 0);
+    if (r.status !== 0) failures.push(`  ❌ inner-bareid-escaped stdout:\n${r.stdout}`);
+  } finally {
+    cleanup(tmp);
+  }
+})();
+
+// ── Test 19: TEXTCONTENT — '<b>' + x.name markup → exit 1 ───────────────
+// HTML markup in textContent never renders — flag the anti-pattern.
+(function testTextContentMarkupFails() {
+  const body = "el.textContent = '<b>' + x.name + '</b>';";
+  const tmp = makeFixture(CLEAN_HTML, appJsWithConcatBody(body));
+  try {
+    const r = runGuard(tmp);
+    assertEqual('textContent with <b> markup → exit 1', r.status, 1);
+    if (!/GUARD 2/.test(r.stdout)) {
+      failures.push(`  ❌ textContent-markup case did not flag GUARD 2:\n${r.stdout}`);
+    }
+  } finally {
+    cleanup(tmp);
+  }
+})();
+
+// ── Test 20: TEXTCONTENT — plain external data → exit 0 ─────────────────
+// textContent with a raw field read is the CORRECT safe pattern (no XSS,
+// no markup) — must not be flagged.
+(function testTextContentPlainDataPasses() {
+  const body = "el.textContent = x.name;";
+  const tmp = makeFixture(CLEAN_HTML, appJsWithConcatBody(body));
+  try {
+    const r = runGuard(tmp);
+    assertEqual('textContent plain data → exit 0', r.status, 0);
+    if (r.status !== 0) failures.push(`  ❌ textContent-plain stdout:\n${r.stdout}`);
+  } finally {
+    cleanup(tmp);
+  }
+})();
+
+// ── Test 21: TEXTCONTENT — '<' comparison literal → exit 0 ──────────────
+// 'REPORTED < OBSERVED' contains '<' but no tag shape — must stay clean.
+(function testTextContentLtLiteralPasses() {
+  const body = "el.textContent = 'REPORTED < OBSERVED';";
+  const tmp = makeFixture(CLEAN_HTML, appJsWithConcatBody(body));
+  try {
+    const r = runGuard(tmp);
+    assertEqual('textContent < literal (no tag) → exit 0', r.status, 0);
+    if (r.status !== 0) failures.push(`  ❌ textContent-lt stdout:\n${r.stdout}`);
+  } finally {
+    cleanup(tmp);
+  }
+})();
+
+// ── Test 22: INSERT — local HTML-builder function with raw field → exit 1
+// insertAdjacentHTML('beforeend', _rowHtml(x)) — the guard follows the
+// builder body and flags raw interpolations inside its template literal.
+(function testInsertAdjacentHtmlBuilderFails() {
+  const body =
+    "function _rowHtml(m) { return `<td>${m.raw}</td>`; }\n" +
+    "el.insertAdjacentHTML('beforeend', _rowHtml(x));";
+  const tmp = makeFixture(CLEAN_HTML, appJsWithConcatBody(body));
+  try {
+    const r = runGuard(tmp);
+    assertEqual('insertAdjacentHTML raw builder → exit 1', r.status, 1);
+    if (!/GUARD 2/.test(r.stdout)) {
+      failures.push(`  ❌ insert-builder case did not flag GUARD 2:\n${r.stdout}`);
+    }
+  } finally {
+    cleanup(tmp);
+  }
+})();
+
+// ── Test 23: BRIDGE — (c.providers || []).map(… escaped …) → exit 0 ─────
+// Regression for the rentals-concentration false positive: the `|| []`
+// fallback between the field read and .map(…) must be recognized as a data
+// SOURCE (transform), not a raw interpolation.
+(function testTransformOrBridgeEscapedPasses() {
+  const body =
+    "const rows = (c.providers || []).map(p => '<div>' + escapeHtml(p.label) + '</div>').join('');\n" +
+    "el.innerHTML = rows;";
+  const tmp = makeFixture(CLEAN_HTML, appJsWithConcatBody(body));
+  try {
+    const r = runGuard(tmp);
+    assertEqual('|| bridge + escaped members → exit 0', r.status, 0);
+    if (r.status !== 0) failures.push(`  ❌ bridge-escaped stdout:\n${r.stdout}`);
+  } finally {
+    cleanup(tmp);
+  }
+})();
+
+// ── Test 24: BRIDGE — same shape but raw member → exit 1 ────────────────
+// The bridge must NOT mask a raw member read inside the callback.
+(function testTransformOrBridgeRawMemberFails() {
+  const body =
+    "const rows = (c.providers || []).map(p => '<div>' + p.label + '</div>').join('');\n" +
+    "el.innerHTML = rows;";
+  const tmp = makeFixture(CLEAN_HTML, appJsWithConcatBody(body));
+  try {
+    const r = runGuard(tmp);
+    assertEqual('|| bridge + raw member → exit 1', r.status, 1);
+    if (!/GUARD 2/.test(r.stdout)) {
+      failures.push(`  ❌ bridge-raw case did not flag GUARD 2:\n${r.stdout}`);
+    }
   } finally {
     cleanup(tmp);
   }
