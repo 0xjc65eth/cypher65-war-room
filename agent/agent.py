@@ -323,6 +323,8 @@ def _poll_telemetry(dev):
             "pool_user": str(info.get("poolUser") or ""),
             "wifi_rssi": _num(info.get("wifiRSSI")),
             "model": str(info.get("model") or "Bitaxe"),
+            # Issue #13: strict `is True` — a stringy "false" must never pause.
+            "mining_paused": info.get("miningPaused") is True,
         }
         if hr and power and power > 0:
             tel["efficiency_jth"] = round(power / (hr / 1e12), 2)

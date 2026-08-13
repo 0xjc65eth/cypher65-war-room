@@ -87,6 +87,7 @@ TELEMETRY_SCHEMA = {
     "pool_url": "",
     "pool_user": "",
     "stratum_status": "",
+    "mining_paused": False,  # ESP-Miner miningPaused — explicit operator intent
 }
 
 
@@ -108,6 +109,23 @@ def new_telemetry(device_id: str) -> dict:
     t["device_id"] = device_id
     t["ts"] = 0
     return t
+
+
+def derive_device_status(telemetry: dict = None, hashrate: int = None) -> str:
+    """Derive a device status from telemetry.
+
+    PAUSED wins over hashrate (Issue #13): miningPaused is explicit operator
+    intent — a paused device must render PAUSED, never IDLE/ONLINE, even if
+    the firmware still reports a stale hashrate. Otherwise ONLINE when hashing
+    (>0 H/s), IDLE when reachable but idle.
+    """
+    t = telemetry or {}
+    # Strict `is True`: a stringy "false" from a quirky agent/firmware must
+    # never pause a device (`bool("false")` is True in Python).
+    if t.get("mining_paused") is True:
+        return STATUS_PAUSED
+    hr = hashrate if hashrate is not None else int(t.get("hashrate_hs") or 0)
+    return STATUS_ONLINE if hr > 0 else "IDLE"
 
 
 def infer_capabilities(system_info: dict) -> dict:
