@@ -11,11 +11,14 @@
  *   GUARD 2 — innerHTML with unescaped external data
  *     Every `${...}` interpolation inside an .innerHTML template literal
  *     must either be wrapped in escapeHtml(...) or be a provably safe
- *     expression (whitelisted formatter, local CSS map, numeric/string
- *     literal, bare pre-escaped fragment, counter). Property accesses on
- *     record fields (e.block_height, a.category, m.tier, ...) are treated
- *     as external data and FLAGGED when not escaped — this is what turns
- *     a stored/API string into an XSS vector.
+ *     expression (whitelisted number-only formatter like fmt.age,
+ *     acFormatTime, local CSS map, numeric/string literal, bare
+ *     pre-escaped fragment, counter). Note: fmt.diff/fmt.shortAddr echo
+ *     raw input strings, so they are deliberately NOT whitelisted — they
+ *     must always stay behind escapeHtml(...). Property accesses on record
+ *     fields (e.block_height, a.category, m.tier, ...) are treated as
+ *     external data and FLAGGED when not escaped — this is what turns a
+ *     stored/API string into an XSS vector.
  *
  * Usage:
  *   node scripts/check-dom-regression.js
@@ -70,7 +73,12 @@ function checkDuplicateIds() {
 const RE_TL = /\$\{([^}]*)\}/g;
 
 // Expressions that are provably safe to interpolate into innerHTML:
-//   - fmt.*(...)          → whitelisted formatters (numbers/durations)
+//   - fmt.<SAFE>(...)    → whitelisted formatters that emit numbers/units
+//                          ONLY (age, hashrate, uptime, secsToHuman, pct,
+//                          usd, expectedBlock). fmt.diff() echoes raw input
+//                          strings and fmt.shortAddr()/chunkAddr() return
+//                          raw substrings — those MUST stay behind
+//                          escapeHtml(...), so they are NOT whitelisted.
 //   - acFormatTime(...)   → whitelisted local formatter
 //   - severityClass[...]  → local CSS-class map (values are hardcoded)
 //   - bare identifiers    → pre-escaped HTML fragments (rows, parts) or
@@ -78,7 +86,7 @@ const RE_TL = /\$\{([^}]*)\}/g;
 //   - numeric/string literals and simple arithmetic (i+1)
 // Anything that READS A RECORD FIELD (e.block_height, a.category, m.tier)
 // without escapeHtml() is flagged as external data.
-const SAFE_FORMATTERS = /^(fmt\.|acFormatTime\(|severityClass\[)/;
+const SAFE_FORMATTERS = /^(fmt\.(age|hashrate|uptime|secsToHuman|pct|usd|expectedBlock)\(|acFormatTime\(|severityClass\[)/;
 const RE_PROP_ACCESS = /[a-zA-Z_$][\w$]*\.[a-zA-Z_$]|\[[\s]*['"][^'"]+['"]\]/;
 
 function isSafeInterpolation(expr) {

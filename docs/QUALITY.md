@@ -140,9 +140,15 @@ Guards estáticos **blocking** no job `gate` do CI (Issue #58):
   transforma uma string de API/banco em vetor de XSS.
 
 Allowlist de expressões seguras (não precisam de escape): `escapeHtml(...)`,
-formatters `fmt.*`/`acFormatTime(...)`, mapa local de classes `severityClass[...]`,
-literais numéricos/strings, ternários de literais, e identificadores "pelados"
-que carregam fragmentos pré-escapados (`rows`, `parts`).
+formatters que só emitem números/unidades (`fmt.age`/`fmt.hashrate`/
+`fmt.uptime`/`fmt.secsToHuman`/`fmt.pct`/`fmt.usd`/`fmt.expectedBlock` e
+`acFormatTime(...)`), mapa local de classes `severityClass[...]`, literais
+numéricos/strings, ternários de literais, e identificadores "pelados" que
+carregam fragmentos pré-escapados (`rows`, `parts`).
+
+> ⚠️ `fmt.diff()` e `fmt.shortAddr()`/`chunkAddr()` **NÃO** estão no allowlist:
+> eles ecoam a string de entrada crua (vetor da Issue #48) — qualquer uso em
+> `innerHTML` exige `escapeHtml(...)` explícito.
 
 ### Auditoria visual (Playwright) — `scripts/audit_ui.cjs`
 
