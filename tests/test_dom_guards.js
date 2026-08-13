@@ -44,6 +44,10 @@
  *  23. BRIDGE: (c.providers || []).map(p => … escapeHtml(p.label)) fed via
  *      innerHTML bare-id → exit 0 (the `||` fallback is a data SOURCE, no FP)
  *  24. BRIDGE: same shape but a raw member (p.label) → exit 1
+ *  25. REPORT: `--report` on clean fixtures → exit 0 AND stdout has the
+ *      GUARD_REPORT {...} JSON line (Issue #68 — CI trend report)
+ *  26. REPORT: `--report` on an XSS fixture → exit 1 AND ok:false (counts
+ *      are reported even when the merge gate blocks)
  *
  * Run: node tests/test_dom_guards.js     (also wired into CI gate)
  */
@@ -128,8 +132,9 @@ function appJsWithConcatBody(body) {
 }
 
 // Run the real guard against a fixture dir; returns { status, stdout }.
-function runGuard(tmpDir) {
-  const res = spawnSync(process.execPath, [GUARD], {
+function runGuard(tmpDir, extraArgs) {
+  const args = [GUARD].concat(extraArgs || []);
+  const res = spawnSync(process.execPath, args, {
     cwd: ROOT,
     env: Object.assign({}, process.env, {
       GUARD_TEMPLATES_DIR: path.join(tmpDir, 'templates'),
@@ -547,6 +552,37 @@ function cleanup(tmpDir) {
     assertEqual('|| bridge + raw member → exit 1', r.status, 1);
     if (!/GUARD 2/.test(r.stdout)) {
       failures.push(`  ❌ bridge-raw case did not flag GUARD 2:\n${r.stdout}`);
+    }
+  } finally {
+    cleanup(tmp);
+  }
+})();
+
+// ── Test 25: REPORT — --report clean → exit 0 + GUARD_REPORT JSON ──────
+// The CI trend report (Issue #68): --report must keep the exit code and
+// emit the grep-able GUARD_REPORT {...} line with the metric counts.
+(function testReportModePasses() {
+  const tmp = makeFixture(CLEAN_HTML, CLEAN_APP_JS);
+  try {
+    const r = runGuard(tmp, ['--report']);
+    assertEqual('--report clean fixtures → exit 0', r.status, 0);
+    if (!/GUARD_REPORT \{"tl":\d+/.test(r.stdout)) {
+      failures.push(`  ❌ --report did not print GUARD_REPORT JSON:\n${r.stdout}`);
+    }
+  } finally {
+    cleanup(tmp);
+  }
+})();
+
+// ── Test 26: REPORT — --report XSS fixture → exit 1 + ok:false ─────────
+// Counts must be reported even when the merge gate blocks.
+(function testReportModeFails() {
+  const tmp = makeFixture(CLEAN_HTML, appJsWithInterp("m.raw_tier"));
+  try {
+    const r = runGuard(tmp, ['--report']);
+    assertEqual('--report XSS fixture → exit 1', r.status, 1);
+    if (!/"ok":false/.test(r.stdout)) {
+      failures.push(`  ❌ --report did not flag ok:false:\n${r.stdout}`);
     }
   } finally {
     cleanup(tmp);
