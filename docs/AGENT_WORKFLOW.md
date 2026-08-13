@@ -92,7 +92,11 @@ node --check static/app.js
 node scripts/check-dom-regression.cjs   # guards DOM: ids duplicados + XSS innerHTML
 node tests/test_dom_guards.js           # self-test do próprio guard (casos adversários)
 node scripts/check-mobile-xss.cjs       # guards XSS mobile (React Native)
-node tests/test_mobile_xss_guards.js    # self-test do guard mobile (22 casos)
+node tests/test_mobile_xss_guards.js    # self-test do guard mobile (25 casos)
+npm run check:frontend                  # PIPELINE COMBINADO (Issue #62): guards DOM
+                                        # + XSS mobile + JS core + audit visual
+                                        # (boota o Flask e derruba sozinho) —
+                                        # mesmo check do job frontend-audit do CI
 git diff --check
 bash run-e2e.sh --file=SEU_SPEC.spec.js                          # e2e afetado
 ```
