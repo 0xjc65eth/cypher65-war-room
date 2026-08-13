@@ -6180,12 +6180,16 @@ def api_rentals_detail(tenant_id: str = ""):
 def api_rentals_export(tenant_id: str = ""):
     """CSV export of the tenant's full rental ledger (portfólio + track record).
 
-    Flattens the same buckets as /api/rentals into rows the CFO can open in
-    Sheets/Excel: provider, id, status, window, length, avg/advertised TH,
-    delivery %, paid sats, effective cost sats/TH·h, blacklist state.
+    ?mode=simple (default): provider, id, status, window, length, avg/advertised
+    TH, delivery %, paid sats, effective cost sats/TH·h, blacklist state.
+    ?mode=analysis: Controle de Rendimento — performance vs the configurable
+    minimum delivery, refund DUE, spread vs market at purchase, real loss,
+    reliability/risk scores and auto_action (ok/monitor/request_refund/
+    blacklist). Same provider fetches, extra calculation layer.
     """
     import csv as _csv
     import io as _io
+    mode = (request.args.get("mode") or "simple").strip().lower()
     try:
         mrr_active = _rental_perf.fetch_mrr_rentals(rtype="renter", history=False, limit=200, tenant_id=tenant_id)
         mrr_history = _rental_perf.fetch_mrr_rentals(rtype="renter", history=True, limit=200, tenant_id=tenant_id)
@@ -6194,6 +6198,28 @@ def api_rentals_export(tenant_id: str = ""):
         bl = set(_rental_perf.get_rig_blacklist(tenant_id=tenant_id))
         auto = set(_rental_perf.get_auto_blacklist(tenant_id=tenant_id))
 
+        if mode == "analysis":
+            # Yield-control CSV: same buckets, full calculation layer. The
+            # minimum acceptable delivery is configurable per tenant (setting
+            # rentals_min_delivery_pct, default 90). Tenant-aware resolver:
+            # the app.py load_settings() is the legacy global-only helper.
+            from services.settings import load_settings as _tenant_load_settings
+            try:
+                min_del = float(_rental_perf._num(
+                    _tenant_load_settings(tenant_id).get("rentals_min_delivery_pct")) or 90.0)
+            except (TypeError, ValueError):
+                min_del = 90.0
+            rows = _rental_perf.build_rentals_analysis_rows(
+                mrr_active.get("rentals", []), mrr_history.get("rentals", []),
+                braiins.get("contracts", []), tenant_id=tenant_id,
+                min_delivery_pct=min_del)
+            out_csv = "\ufeff" + _rental_perf.rentals_analysis_csv(rows)
+            fname = f"rentals_analysis_{tenant_id or 'operator'}_{int(time.time())}.csv"
+            resp = app.response_class(out_csv, mimetype="text/csv")
+            resp.headers["Content-Disposition"] = f"attachment; filename={fname}"
+            return resp
+
+        # Legacy simple ledger (default mode).
         buf = _io.StringIO()
         w = _csv.writer(buf)
         w.writerow(["provider", "id", "bucket", "start", "end", "length_hours",

@@ -4615,21 +4615,27 @@ function renderAccount(acct) {
       skelRefresh(document.getElementById('rentals-panel'), 'table', loadRentals());
     });
     // CFO: CSV export of the full rental ledger (portfólio + track record).
-    const exportBtn = document.getElementById('rentals-export');
-    if (exportBtn) exportBtn.addEventListener('click', async () => {
+    // Shared downloader — mode 'simple' (default) or 'analysis' (Controle de
+    // Rendimento: refund due, spread, real loss, sellers to blacklist).
+    async function _downloadRentalsExport(mode, filename) {
       try {
-        const r = await authFetch('/api/rentals/export');
+        const q = mode === 'analysis' ? '?mode=analysis' : '';
+        const r = await authFetch('/api/rentals/export' + q);
         if (!r.ok) return;
         const blob = await r.blob();
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url;
-        a.download = 'rentals.csv';
+        a.download = filename;
         document.body.appendChild(a);
         a.click();
         setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 2000);
       } catch (e) { /* fail-closed */ }
-    });
+    }
+    const exportBtn = document.getElementById('rentals-export');
+    if (exportBtn) exportBtn.addEventListener('click', () => _downloadRentalsExport('simple', 'rentals.csv'));
+    const exportAnalysisBtn = document.getElementById('rentals-export-analysis');
+    if (exportAnalysisBtn) exportAnalysisBtn.addEventListener('click', () => _downloadRentalsExport('analysis', 'rentals_analysis.csv'));
     const closeBtn = document.getElementById('rentals-detail-close');
     if (closeBtn) closeBtn.addEventListener('click', () => { const p = document.getElementById('rentals-detail'); if (p) p.hidden = true; });
     const filters = document.querySelectorAll('[data-rentals-filter]');
@@ -5773,6 +5779,7 @@ function renderAccount(acct) {
     rental_pl_alert_pct: 'ALERTA CFO: dispara webhook + push quando um aluguel FECHA com P/L econômico abaixo deste % (ex: -50). Vazio ou 0 = desativado. Como o P/L vs yield costuma ser muito negativo, use um limiar realista (ex: -90) para só alertar os piores — ou deixe vazio para desligar. (Sem network hashrate, a checagem usa overpay vs preço de mercado.)',
     rental_pl_alert_window_hours: 'Janela: só alerta aluguéis que FECHARAM nas últimas N horas — evita enxurrada de alertas antigos ao habilitar a primeira vez.',
     rental_market_overpay_pct: 'ALERTA OVERPAY: dispara webhook + push quando o preço PAGO de um aluguel ficar este % ACIMA do mercado NA HORA DA COMPRA (preço acordado vs mercado histórico na data do start). Ex: 100 = alerta se pagou 2× o mercado. Vazio ou 0 = desativado. Dispara também para aluguéis ativos comprados nas últimas N horas.',
+    rentals_min_delivery_pct: 'ANÁLISE DE RENDIMENTO (CSV): entrega mínima aceitável por aluguel (default 90). Abaixo dela o aluguel é marcado cancelled_performance no CSV e o reembolso devido é calculado (regra MRR: <80% = total; 80%..mín = proporcional).',
     rental_market_arb_pct: 'ALERTA ARBITRAGEM: dispara webhook + push quando o mercado AGORA estiver este % ABAIXO dos seus custos históricos (seus próprios aluguéis — abra o painel RENTALS uma vez para popular). Compara com 3 referências: CUSTO MÉDIO anunciado, CUSTO EFETIVO com entrega real (paid ÷ TH·h entregues — sobe quando a entrega é <100%) e o ÚLTIMO aluguel; a referência MAIS ALTA dispara o sinal. Ex: 30 = alerta quando o mercado estiver ≥30% mais barato que sua referência mais cara — janela de compra. Vazio ou 0 = desativado. 100% local, custo zero de provider.',
     rental_market_arb_cooldown_hours: 'Cooldown da arbitragem: repete o alerta de oportunidade no máximo 1× a cada N horas (padrão 24). Mercado barato persistente avisa diariamente, sem spam.',
   };
@@ -5784,7 +5791,7 @@ function renderAccount(acct) {
       box.innerHTML = '<div class="mkt-empty" style="padding:16px;text-align:center">settings unavailable</div>';
       return;
     }
-    const order = ['cost_mode','rental_usd_per_th_day','power_watts','power_kwh_usd','btc_block_reward','btc_avg_tx_fee','pool_fee_pct','orphan_rate_pct','active_currency','active_fiat','stale_share_minutes','hashrate_drop_pct','webhook_url','webhook_min_severity','rental_pl_alert_pct','rental_pl_alert_window_hours','rental_market_overpay_pct','rental_market_arb_pct','rental_market_arb_cooldown_hours','show_test_alerts','mrr_api_key','mrr_api_secret','braiins_api_key'];
+    const order = ['cost_mode','rental_usd_per_th_day','power_watts','power_kwh_usd','btc_block_reward','btc_avg_tx_fee','pool_fee_pct','orphan_rate_pct','active_currency','active_fiat','stale_share_minutes','hashrate_drop_pct','webhook_url','webhook_min_severity','rental_pl_alert_pct','rental_pl_alert_window_hours','rental_market_overpay_pct','rental_market_arb_pct','rental_market_arb_cooldown_hours','rentals_min_delivery_pct','show_test_alerts','mrr_api_key','mrr_api_secret','braiins_api_key'];
     const keys = Object.keys(settings).sort((a,b) => {
       const ia = order.indexOf(a), ib = order.indexOf(b);
       return (ia<0?99:ia) - (ib<0?99:ib);
