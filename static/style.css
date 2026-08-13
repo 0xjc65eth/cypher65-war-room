@@ -3760,6 +3760,8 @@ td { padding: 4px 8px; border-bottom: 1px solid var(--border-subtle); color: var
   white-space: nowrap;
   direction: rtl;
   text-align: left;
+  display: inline-block;  /* Issue #49: max-width/ellipsis ignored on inline spans */
+  vertical-align: middle;
 }
 .support-method-copy {
   font-size: 12px;

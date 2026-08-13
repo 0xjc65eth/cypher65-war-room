@@ -9,7 +9,7 @@ solo/pool/rental/lease profitability, hashrate market intelligence, alerts & aut
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](requirements.txt)
-[![Tests](https://img.shields.io/badge/tests-1866%20pytest%20%2B%201261%20JS%20core%20%2B%20E2E-brightgreen.svg)](tests/)
+[![Tests](https://img.shields.io/badge/tests-1878%20pytest%20%2B%201261%20JS%20core%20%2B%20E2E-brightgreen.svg)](tests/)
 [![Codecov](https://codecov.io/gh/0xjc65eth/cypher65-war-room/branch/master/graph/badge.svg)](https://app.codecov.io/gh/0xjc65eth/cypher65-war-room)
 
 </div>
@@ -108,7 +108,7 @@ npm install
 npm run test:e2e
 ```
 
-The CI workflow (`.github/workflows/ci.yml`) gates merges on all suites plus a **45% coverage floor**.
+The CI workflow (`.github/workflows/ci.yml`) gates merges on all suites plus a **65% coverage floor** (matching `codecov.yml` and the local `--cov-fail-under=65`).
 
 ## 📚 Documentation
 
