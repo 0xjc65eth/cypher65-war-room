@@ -31,6 +31,8 @@ Antes de codar, garanta que existe uma Issue aberta. Tipos (labels):
 | Melhoria | `enhancement` | `Observabilidade persistente: logs estruturados` |
 | Nova função | `feature` | `Auto-Pilot advisory mode` |
 | Operação/infra | `ops` | `OPS: ativar backup gist no Render` |
+| Inconsistência | `inconsistency` | `docs divergem do código — README 45% vs gate real 65%` |
+| Interface/UX | `ui-ux` | `endereços de suporte estouram o container (overflow 402px)` |
 
 Sempre acompanhe da label de prioridade: `priority: P1` (urgente), `priority: P2`
 (roadmap 90 dias), `priority: P3` (gated por tração / contínuo).
