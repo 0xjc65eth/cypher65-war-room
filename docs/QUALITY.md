@@ -150,6 +150,13 @@ carregam fragmentos pré-escapados (`rows`, `parts`).
 > eles ecoam a string de entrada crua (vetor da Issue #48) — qualquer uso em
 > `innerHTML` exige `escapeHtml(...)` explícito.
 
+**Self-test do guard** (`node tests/test_dom_guards.js`, também no CI):
+roda o guard REAL como subprocesso contra fixtures descartáveis em temp dir
+(override `GUARD_TEMPLATES_DIR`/`GUARD_APP_JS`) e asserta os exit codes:
+baseline → PASS, XSS injetado → FAIL, id duplicado → FAIL, `fmt.diff` sem
+escape → FAIL, dados escapados + `fmt.age` + contador → PASS. Protege o
+próprio guard contra enfraquecimento futuro.
+
 ### Auditoria visual (Playwright) — `scripts/audit_ui.cjs`
 
 Auditoria reutilizável do dashboard (usada na rodada 2026-08): console errors,

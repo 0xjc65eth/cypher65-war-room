@@ -90,6 +90,7 @@ SECRET_KEY=test-secret-0123456789 python -m pytest tests/ -q   # suíte afetada 
 node tests/test_app_js_core.js                                   # suíte JS espelhada
 node --check static/app.js
 node scripts/check-dom-regression.cjs   # guards DOM: ids duplicados + XSS innerHTML
+node tests/test_dom_guards.js           # self-test do próprio guard (casos adversários)
 git diff --check
 bash run-e2e.sh --file=SEU_SPEC.spec.js                          # e2e afetado
 ```

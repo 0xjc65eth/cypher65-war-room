@@ -23,6 +23,10 @@
  * Usage:
  *   node scripts/check-dom-regression.js
  *
+ * Env overrides (used by the committed self-test):
+ *   GUARD_TEMPLATES_DIR  — templates dir to scan (default: ./templates)
+ *   GUARD_APP_JS         — app.js to scan (default: ./static/app.js)
+ *
  * Exit codes:
  *   0 — all guards pass
  *   1 — at least one regression found
@@ -34,8 +38,11 @@ const fs = require('fs');
 const path = require('path');
 
 const ROOT = path.resolve(__dirname, '..');
-const TEMPLATES_GLOB = path.join(ROOT, 'templates');
-const APP_JS = path.join(ROOT, 'static', 'app.js');
+
+// Paths are overridable via env for self-tests (tests/test_dom_guards.js
+// points the guard at disposable fixture files in a temp dir).
+const TEMPLATES_GLOB = process.env.GUARD_TEMPLATES_DIR || path.join(ROOT, 'templates');
+const APP_JS = process.env.GUARD_APP_JS || path.join(ROOT, 'static', 'app.js');
 
 // ── Guard 1: duplicate ids across every template ───────────────────────
 function checkDuplicateIds() {
