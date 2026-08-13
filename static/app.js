@@ -1299,6 +1299,7 @@
     const id = (p && p.id) || '';
     if (p && p.classList.contains('kpi-row')) return 'kpi';
     if (id.indexOf('chart') !== -1 || id.indexOf('trend') !== -1) return 'chart';
+    if (id.indexOf('market') !== -1) return 'table';  // offers grid dominates the panel
     if (id.indexOf('table') !== -1 || (p && p.classList.contains('rentals-list'))) return 'table';
     return '';
   }
@@ -1320,6 +1321,17 @@
     if (!container) return;
     const ov = container.querySelector('.skel-overlay');
     if (ov) { ov.remove(); }
+  }
+  // Skeleton around an async load: show → await → hide. Reused by manual
+  // refresh buttons and module re-activation when the panel is empty, so the
+  // shimmer is identical to the boot skeleton (transform-only, Emil <300ms).
+  function skelRefresh(container, kind, p) {
+    if (!container) return Promise.resolve(p);
+    skelShow(container, kind);
+    return Promise.resolve(p).then(
+      function (v) { skelHide(container); return v; },
+      function (e) { skelHide(container); throw e; }
+    );
   }
   function showSkeletons() {
     document.querySelectorAll('.panel').forEach(p => _skelBuild(p, ''));
@@ -4546,7 +4558,12 @@ function renderAccount(acct) {
 
   function _initRentalsPanel() {
     const refresh = document.getElementById('rentals-refresh');
-    if (refresh) refresh.addEventListener('click', () => { _rentalsLoaded = false; loadRentals(); });
+    if (refresh) refresh.addEventListener('click', () => {
+      _rentalsLoaded = false;
+      // Same shimmer as the first-activation skeleton — the table refreshes
+      // under an overlay instead of flashing the stale rows.
+      skelRefresh(document.getElementById('rentals-panel'), 'table', loadRentals());
+    });
     // CFO: CSV export of the full rental ledger (portfólio + track record).
     const exportBtn = document.getElementById('rentals-export');
     if (exportBtn) exportBtn.addEventListener('click', async () => {
@@ -8934,7 +8951,12 @@ dom.walletSave?.addEventListener('click', async () => {
         fetchAdminData();
       }
       if (name === 'market' && typeof fetchSnapshot === 'function') {
-        fetchSnapshot();
+        // Re-activation with an EMPTY grid (e.g. offers never landed): show
+        // the same table skeleton until the fresh snapshot renders offers.
+        const mktPanel = document.getElementById('market-panel');
+        const gridEmpty = !_mktOffers || _mktOffers.length === 0;
+        if (mktPanel && gridEmpty) skelShow(mktPanel, 'table');
+        Promise.resolve(fetchSnapshot()).then(() => { skelHide(mktPanel); });
       }
       // Live Mining / Terminal: foca o input para digitação imediata
       if (name === 'live') {
@@ -8945,10 +8967,18 @@ dom.walletSave?.addEventListener('click', async () => {
       // Antes o fetchAxeFleet() só rodava no poll/SSE, então a aba abria
       // com o empty-state estático mesmo com devices registrados.
       if (name === 'fleet' && typeof fetchAxeFleet === 'function') {
-        skelShow(document.getElementById('axe-fleet-panel'), 'table');
+        const fleetPanel = document.getElementById('axe-fleet-panel');
+        // Only skeleton when the grid is empty (first activation or a
+        // previous fetch failed) — with devices already rendered a refresh
+        // keeps them visible and skips the overlay (no flash).
+        // #axe-grid starts with a static empty-state in the template, so
+        // count only real device cards — with cards rendered the refresh
+        // keeps them visible (no overlay flash).
+        const fleetEmpty = !dom.axeGrid || !dom.axeGrid.querySelector('.axe-card, .device-card, [data-device-id]');
+        if (fleetPanel && fleetEmpty) skelShow(fleetPanel, 'table');
         const _fleetP = Promise.resolve(fetchAxeFleet());
         if (typeof fetchRemoteOnboarding === 'function') fetchRemoteOnboarding();
-        _fleetP.then(() => skelHide(document.getElementById('axe-fleet-panel')));
+        _fleetP.then(() => { skelHide(fleetPanel); });
       }
       // Support: abre o modal completo (manifesto + endereços) em vez de só
       // rolar até a barra compacta — o texto autoral e os endereços grandes
