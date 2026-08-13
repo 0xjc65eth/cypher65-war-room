@@ -160,6 +160,56 @@ def test_trust_score_clamped_floor_zero():
     assert r["grade"] == "F"
 
 
+# ── Round-2 survivors (Issue #43): exact-score asserts kill the constant
+#    mutations in the formula (0.5 / 85.0 / 0.4) and the n<3 cap. The old
+#    tests only asserted grade BANDS, so changing a constant kept the grade
+#    and the mutant lived. ──
+
+def test_trust_score_exact_formula():
+    """Pin the full score formula with a known input set:
+    [96, 96.5, 97, 97.5, 98] → median 97, mad 0.6, worst 96, no worst
+    penalty (96 ≥ 85) → score = 97 - 0.3 - 0 = 96.7. Kills mutations of
+    every constant in the formula (0.5 → 0.9 gives 96.46; 0.4 → 0 gives
+    97.0; 85.0 → 80 adds penalty → 95.9)."""
+    history = [{"percent": 96.0}, {"percent": 96.5}, {"percent": 97.0},
+               {"percent": 97.5}, {"percent": 98.0}]
+    r = rp.compute_rig_trust_score(history)
+    assert r["samples"] == 5
+    assert r["median_pct"] == 97.0
+    assert r["mad_pct"] == 0.6
+    assert r["score"] == 96.7
+    assert r["grade"] == "A"
+
+
+def test_trust_confidence_cap_n3_exact_94():
+    """n=3 with a raw score of 95.67 must cap to EXACTLY 94.0 (n<5 band),
+    not to 89 (which is what a mutated `n < 3 → n <= 3` would apply) and
+    not to 95.67 (no cap). This pins the n<5 cap value, killing both the
+    `elif n < 5` survivor and the `if n < 3` boundary mutation."""
+    history = [{"percent": 95.0}, {"percent": 96.0}, {"percent": 97.0}]
+    r = rp.compute_rig_trust_score(history)
+    assert r["samples"] == 3
+    assert r["score"] == 94.0
+    assert r["grade"] == "B"
+    assert r["label"] == "RELIABLE"
+
+
+def test_trust_worst_penalty_exact():
+    """Pin the worst-penalty constants with a sub-85 worst (so the penalty
+    actually fires). [80, 90, 90, 90, 90] → median 90, mad 2, worst 80 →
+    score = 90 - 1 - max(0, 85-80)*0.4 = 87.0. Kills the 85.0 → 86.0
+    survivor (would give 86.6) and the 0.4 → 1.4 survivor (would give 82)."""
+    history = [{"percent": 80.0}, {"percent": 90.0}, {"percent": 90.0},
+               {"percent": 90.0}, {"percent": 90.0}]
+    r = rp.compute_rig_trust_score(history)
+    assert r["samples"] == 5
+    assert r["median_pct"] == 90.0
+    assert r["mad_pct"] == 2.0
+    assert r["worst_pct"] == 80.0
+    assert r["score"] == 87.0
+    assert r["grade"] == "C"
+
+
 # ── Blacklist CRUD (default tenant) ───────────────────────────────────────
 
 @pytest.fixture
