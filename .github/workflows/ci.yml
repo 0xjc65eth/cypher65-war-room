@@ -105,6 +105,7 @@ jobs:
           fail_ci_if_error: false
           verbose: false
           token: ${{ secrets.CODECOV_TOKEN }}
+          slug: 0xjc65eth/cypher65-war-room
         continue-on-error: true
 
       - name: Notify on failure
