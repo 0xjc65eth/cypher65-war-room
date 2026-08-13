@@ -137,6 +137,9 @@ Aplicar o que for aplicável à mudança:
 - **Testes**: unit/integration pytest (gate `--cov-fail-under=65`), JS core
   (`node tests/test_app_js_core.js`), e2e Playwright (job `e2e` no CI),
   cobertura no Codecov (badge dinâmico no README).
+- **Auditoria visual** (mudanças de UI): `node scripts/audit_ui.cjs --all`
+  (console errors, overflow, truncamento, skeletons presos) — exit code
+  CI-friendly, flags `--mobile`/`--strict`.
 - **Mutation testing** (quando pedido): `mutmut run --use-coverage
   --disable-mutation-types string` — rodar em background (tmux) e validar
   cada mutante sobrevivente com `mutmut apply <id>` + teste que o mata;

@@ -122,7 +122,17 @@ O que resolveu:
 make test                        # pytest completo
 node tests/test_app_js_core.js   # JS core
 bash run-e2e.sh --file=dashboard.spec.js   # Playwright
+node scripts/audit_ui.cjs --all  # auditoria visual (console/overflow/truncamento)
 ```
+
+### Auditoria visual (Playwright) — `scripts/audit_ui.cjs`
+
+Auditoria reutilizável do dashboard (usada na rodada 2026-08): console errors,
+page errors, overflow horizontal, elementos truncados, skeletons presos e
+presença de skeleton nos módulos tardios. Exit codes CI-friendly
+(0 pass / 1 issues / 2 fatal) e flags `--mobile`, `--all`, `--strict`.
+Requer servidor local no ar (padrão `http://127.0.0.1:8765`, override
+`AUDIT_URL`).
 
 ---
 
