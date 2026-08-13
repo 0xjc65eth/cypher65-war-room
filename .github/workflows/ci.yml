@@ -90,6 +90,24 @@ jobs:
       - name: DOM guards self-test
         run: node tests/test_dom_guards.js
 
+      # Mobile XSS guards (Issue #70) — mesma filosofia do guard web, para o
+      # app React Native (mobile/). Bloqueia merge quando um vetor RN é
+      # introduzido:
+      #   - WebView source={{ html: … }} / source={{ html }} / injectedJavaScript
+      #     — valores com interpolação ${…} de dado externo SEM builder
+      #     whitelisted (escapeHtml/buildSafeHtml/sanitizeHtml/…)
+      #   - dangerouslySetInnerHTML / react-native-render-html (review gate)
+      #   - eval( / new Function( — banned
+      #   - Linking.openURL('javascript:…') / uri javascript: / URL interpolada
+      # Hoje o mobile/ tem 0 achados — rede de prevenção contra regressões.
+      - name: Mobile XSS guards (RN sinks)
+        run: node scripts/check-mobile-xss.cjs
+
+      # Self-test do próprio guard mobile (Issue #70): fixtures adversárias
+      # (TL cru → FAIL, builder → PASS, eval → FAIL, literal → PASS, …).
+      - name: Mobile XSS guard self-test
+        run: node tests/test_mobile_xss_guards.js
+
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
