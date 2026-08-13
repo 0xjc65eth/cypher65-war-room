@@ -646,6 +646,271 @@ def compute_admin_accepted_recos(days: int = 0,
     }
 
 
+# ── Rentals ANALYSIS export (Controle de Rendimento) ───────────────────────
+# The simple CSV lists the ledger; the ANALYSIS export is a capital-protection
+# tool. Per rental it computes: performance vs a CONFIGURABLE minimum
+# acceptable delivery (default 90%), the refund the operator is ENTITLED to
+# (MRR policy: <80% delivery = full refund; 80%..min = proportional), the
+# spread paid vs the market AT PURCHASE (persisted hashrate_market_history
+# near the start ±3d, live quote fallback), the real loss and an automatic
+# action suggestion (ok / monitor / request_refund / blacklist).
+#
+# Honesty rules:
+#   - MRR does NOT expose received refunds → refund_sats stays empty and the
+#     pending figure = the DUE amount (notes explain).
+#   - dates parsing to 1970-01-01 are INVALID — flagged in notes and never
+#     used for market/pl lookups.
+#   - Braiins contracts carry no delivery % / seller → partial row + note.
+
+# Full-refund threshold (MRR under-delivery policy).
+REFUND_FULL_BELOW_PCT = 80.0
+# Reliability below this → the analysis suggests blacklisting the seller.
+BLACKLIST_RELIABILITY_BELOW = 70.0
+# A date parsing within the first days of 1970 is invalid/incomplete data.
+_EPOCH_INVALID_S = 10 * 86400
+
+RENTAL_ANALYSIS_COLUMNS = [
+    "id", "provider", "status", "start", "end", "length_hours", "blacklisted",
+    "advertised_th", "avg_th", "delivery_pct", "min_acceptable_delivery",
+    "performance_ok", "cancelled_by_performance",
+    "paid_sats", "refund_sats", "expected_refund_sats", "refund_pending_sats",
+    "cost_sats_per_thh", "market_sats_per_thh", "spread_sats", "spread_pct",
+    "effective_cost_sats", "loss_sats", "loss_after_refund_sats", "roi_pct",
+    "seller_reliability_score", "risk_score", "efficiency_score",
+    "should_blacklist", "auto_action", "notes",
+]
+
+
+def _is_epoch_date(value) -> bool:
+    """True when ``value`` parses to a date inside the first days of 1970
+    (invalid/incomplete data — never used for lookups). Also flags a
+    PRESENT-but-unparseable value (garbage/empty strings silently skipping
+    lookups is dishonest — the row is marked and the panel reads the note)."""
+    if value is None or str(value).strip() == "":
+        return False
+    ts = _parse_start_ts(value)
+    if ts is None:
+        return True  # present but unparseable → invalid/incomplete
+    return ts < _EPOCH_INVALID_S
+
+
+def _market_price_for_ts(ts: Optional[float]) -> Optional[float]:
+    """Cheapest PLAUSIBLE market price (sats/TH·h) at ``ts``: historical
+    (persisted hashrate_market_history near the date) with the live quote as
+    last resort — mirrors the overpay-alert lookup. None when neither covers."""
+    p = _historical_market_sats_per_thh(ts)
+    if p:
+        return p
+    try:
+        ref = fetch_market_reference()
+        return ref.get("price_sats_per_thh") if ref.get("available") else None
+    except Exception:
+        return None
+
+
+def _mrr_analysis_row(r: Dict[str, Any], tenant_id: str,
+                      min_delivery_pct: float,
+                      blacklisted_ids: set, auto_ids: set) -> Dict[str, Any]:
+    """One ANALYSIS row for an MRR rental (renter bucket). Never raises."""
+    _rig = r.get("rig") if isinstance(r.get("rig"), dict) else {}
+    rid = _rig.get("id")
+    rid_str = str(rid) if rid is not None else ""
+    paid = _num(r.get("price_paid_btc"))
+    paid_sats = round(paid * 1e8) if paid is not None else None
+    adv_th = _num(r.get("hashrate_advertised_th"))
+    avg_th = _num(r.get("hashrate_average_th"))
+    delivery = _num(r.get("hashrate_percent"))
+    lenh = _num(r.get("length_hours"))
+    start = r.get("start")
+    end = r.get("end")
+    ended = bool(r.get("ended"))
+    advertised_thh = (adv_th * lenh) if (adv_th and lenh) else None
+    delivered_thh = (avg_th * lenh) if (avg_th and lenh) else None
+
+    start_invalid = _is_epoch_date(start)
+    end_invalid = _is_epoch_date(end)
+    # Lookup window: valid start wins, else valid end, else None.
+    _ts = None if start_invalid else _parse_start_ts(start)
+    if _ts is None and not end_invalid:
+        _ts = _parse_start_ts(end)
+    market = _market_price_for_ts(_ts) if _ts else None
+
+    # Performance vs the configurable minimum.
+    perf_ok = delivery is not None and delivery >= min_delivery_pct
+    cancelled_by_perf = delivery is not None and delivery < min_delivery_pct
+    status = "cancelled_performance" if cancelled_by_perf else (
+        "active" if not ended else "completed")
+
+    # Refund entitlement (MRR under-delivery policy).
+    expected_refund = 0
+    if delivery is not None and delivery < REFUND_FULL_BELOW_PCT:
+        expected_refund = paid_sats if paid_sats is not None else 0
+    elif delivery is not None and delivery < min_delivery_pct:
+        expected_refund = round(paid_sats * (1.0 - delivery / 100.0), 2) \
+            if paid_sats is not None else 0
+    # refund_sats (received) is NOT exposed by MRR → empty cell, pending = due.
+    refund_sats = None
+    refund_pending = expected_refund if expected_refund else None
+
+    # Unit costs + spread + loss.
+    cost_sats_per_thh = (paid_sats / advertised_thh) \
+        if (paid_sats is not None and advertised_thh) else None
+    fair_value = (market * advertised_thh) if (market and advertised_thh) else None
+    spread_sats = (paid_sats - fair_value) \
+        if (paid_sats is not None and fair_value) else None
+    spread_pct = round(spread_sats / fair_value * 100.0, 1) \
+        if (spread_sats is not None and fair_value) else None
+    effective_cost = (paid_sats / delivered_thh) \
+        if (paid_sats is not None and delivered_thh) else None
+    delivered_value = (market * delivered_thh) \
+        if (market and delivered_thh) else None
+    loss_sats = (paid_sats - (refund_sats or 0) - delivered_value) \
+        if (paid_sats is not None and delivered_value) else None
+    # Real (net) loss: what actually leaves the pocket after the refund the
+    # operator is ENTITLED to. MRR never exposes received refunds, so the
+    # DUE refund is the best honest estimate — pre-refund loss (loss_sats)
+    # overstates capital damage for exactly the rentals this CSV flags.
+    loss_after_refund = (loss_sats - expected_refund) \
+        if (loss_sats is not None and expected_refund) else loss_sats
+
+    # Economic ROI (network-yield P/L) — only when the yield is computable.
+    roi = None
+    if delivered_thh and paid_sats is not None:
+        pl = compute_rental_pl(
+            delivered_thh, paid_sats,
+            network_hashrate_hs=_resolve_network_hashrate_for_rental(start, end))
+        roi = pl.get("pl_pct")
+
+    # Seller intelligence from the local track record.
+    reliability = None
+    if rid_str:
+        local = _rig_local_delivery(rid_str, tenant_id=tenant_id)
+        trust = compute_rig_trust_score(
+            [{"percent": p} for _, p in local["pairs"]])
+        reliability = trust.get("score")
+    risk = round(100.0 - reliability, 1) if reliability is not None else None
+    already_bl = rid_str in blacklisted_ids or rid_str in auto_ids
+    should_bl = reliability is not None and reliability < BLACKLIST_RELIABILITY_BELOW
+
+    # Auto action: blacklist > request_refund > monitor > ok.
+    if should_bl and not already_bl:
+        action = "blacklist"
+    elif expected_refund:
+        action = "request_refund"
+    elif delivery is None or start_invalid or end_invalid:
+        action = "monitor"
+    else:
+        action = "ok"
+
+    notes = []
+    if cancelled_by_perf:
+        notes.append(f"entrega {delivery:.0f}% < mín {min_delivery_pct:.0f}% → reembolso devido {expected_refund} sats")
+    if start_invalid or end_invalid:
+        notes.append("data inválida (1970-01-01) — desconsiderada nos cálculos")
+    if expected_refund and loss_sats is not None:
+        notes.append("loss_after_refund já desconta o reembolso DEVIDO")
+    if market is None:
+        notes.append("sem preço de mercado na data")
+    if already_bl:
+        notes.append("rig já na blacklist")
+    if expected_refund and refund_sats is None:
+        notes.append("reembolso recebido não rastreado pela API — valor é o DEVIDO")
+
+    return {
+        "id": r.get("id"), "provider": "mrr", "status": status,
+        "start": start, "end": end, "length_hours": lenh,
+        "blacklisted": "1" if already_bl else "",
+        "advertised_th": adv_th, "avg_th": avg_th, "delivery_pct": delivery,
+        "min_acceptable_delivery": min_delivery_pct,
+        "performance_ok": "1" if perf_ok else "",
+        "cancelled_by_performance": "1" if cancelled_by_perf else "",
+        "paid_sats": paid_sats, "refund_sats": refund_sats,
+        "expected_refund_sats": round(expected_refund, 2) if expected_refund else 0,
+        "refund_pending_sats": refund_pending,
+        "cost_sats_per_thh": round(cost_sats_per_thh, 2) if cost_sats_per_thh else None,
+        "market_sats_per_thh": round(market, 2) if market else None,
+        "spread_sats": round(spread_sats, 2) if spread_sats is not None else None,
+        "spread_pct": spread_pct,
+        "effective_cost_sats": round(effective_cost, 2) if effective_cost else None,
+        "loss_sats": round(loss_sats, 2) if loss_sats is not None else None,
+        "loss_after_refund_sats": round(loss_after_refund, 2)
+        if loss_after_refund is not None else None,
+        "roi_pct": roi,
+        "seller_reliability_score": reliability,
+        "risk_score": risk,
+        "efficiency_score": delivery,
+        "should_blacklist": "1" if should_bl else "",
+        "auto_action": action,
+        "notes": "; ".join(notes),
+    }
+
+
+def build_rentals_analysis_rows(active: List[Dict], history: List[Dict],
+                                contracts: List[Dict], tenant_id: str = "",
+                                min_delivery_pct: float = 90.0) -> List[Dict[str, Any]]:
+    """ANALYSIS rows for the yield-control CSV (renter MRR + Braiins).
+
+    Owner rows are income (no delivery/refund semantics) → excluded. Every
+    row is fail-closed (never raises on a partial payload).
+    """
+    try:
+        min_delivery_pct = float(min_delivery_pct)
+        if not (1.0 <= min_delivery_pct <= 100.0):
+            min_delivery_pct = 90.0
+    except (TypeError, ValueError):
+        min_delivery_pct = 90.0
+    bl = set(get_rig_blacklist(tenant_id=tenant_id))
+    auto = set(get_auto_blacklist(tenant_id=tenant_id))
+    rows: List[Dict[str, Any]] = []
+    for bucket in (active or [], history or []):
+        for r in bucket:
+            if not isinstance(r, dict):
+                continue
+            try:
+                rows.append(_mrr_analysis_row(r, tenant_id, min_delivery_pct, bl, auto))
+            except Exception as e:
+                log.warning("[rental_performance] analysis row failed: %s", e)
+    for c in (contracts or []):
+        if not isinstance(c, dict):
+            continue
+        amt = _num(c.get("amount_sat"))
+        spd = _num(c.get("speed_limit_ph"))
+        status = str(c.get("status") or "").replace("SPOT_BID_STATUS_", "") or (
+            "active" if not c.get("ended_at") else "completed")
+        rows.append({
+            "id": c.get("id"), "provider": "braiins", "status": status,
+            "start": c.get("started_at"), "end": c.get("ended_at"),
+            "length_hours": None, "blacklisted": "",
+            "advertised_th": (spd * PH_TO_TH) if spd else None, "avg_th": None,
+            "delivery_pct": None, "min_acceptable_delivery": min_delivery_pct,
+            "performance_ok": "", "cancelled_by_performance": "",
+            "paid_sats": amt, "refund_sats": None,
+            "expected_refund_sats": 0, "refund_pending_sats": None,
+            "cost_sats_per_thh": None, "market_sats_per_thh": None,
+            "spread_sats": None, "spread_pct": None,
+            "effective_cost_sats": None, "loss_sats": None,
+            "loss_after_refund_sats": None, "roi_pct": None,
+            "seller_reliability_score": None, "risk_score": None,
+            "efficiency_score": None, "should_blacklist": "",
+            "auto_action": "monitor",
+            "notes": "contrato Braiins — sem entrega medida nem seller no export; abra o detail para a série de speed",
+        })
+    return rows
+
+
+def rentals_analysis_csv(rows: List[Dict[str, Any]]) -> str:
+    """Render ANALYSIS rows as CSV with the full column set (header + values,
+    empty cells for None). The caller prepends the UTF-8 BOM."""
+    import csv as _csv
+    import io as _io
+    buf = _io.StringIO()
+    w = _csv.writer(buf)
+    w.writerow(RENTAL_ANALYSIS_COLUMNS)
+    for r in rows:
+        w.writerow([r.get(col, "") for col in RENTAL_ANALYSIS_COLUMNS])
+    return buf.getvalue()
+
+
 # ── Credentials: shared resolver in agents/solo_mining_advisor/tools.py ──
 # Tenant-aware: named tenants resolve ONLY their own credentials (never env /
 # global settings) so 1000+ users each see their own MRR/Braiins data.
