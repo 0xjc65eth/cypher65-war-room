@@ -103,6 +103,45 @@ def _device_cap(d: dict, cap: str) -> bool:
     return False
 
 
+def axe_fleet_to_device(d: dict):
+    """Bridge an axe-fleet device dict into a core Device (Fase 3 dry-run).
+
+    The AutomationEngine operates on ``core.models.device.Device`` objects
+    whose ``current_telemetry`` uses the core metric names (hashrate, power,
+    accepted_shares, ...). Axe telemetry carries hashrate_hs, power_watts,
+    shares_* — this maps the aliases so rule conditions evaluate correctly.
+    """
+    from core.models.device import Device, DeviceStatus
+    tel = d.get("telemetry") if isinstance(d.get("telemetry"), dict) else {}
+    sample = dict(tel)
+    sample.setdefault("hashrate", tel.get("hashrate_hs"))
+    sample.setdefault("power", tel.get("power_watts"))
+    sample.setdefault("fan_speed", tel.get("fan_speed"))
+    sample.setdefault("voltage", tel.get("voltage_mv"))
+    sample.setdefault("frequency", tel.get("frequency_mhz"))
+    sample.setdefault("accepted_shares", tel.get("shares_accepted"))
+    sample.setdefault("rejected_shares", tel.get("shares_rejected"))
+    sample.setdefault("stale_shares", tel.get("shares_stale"))
+
+    _STATUS_MAP = {
+        "ONLINE": DeviceStatus.ONLINE,
+        "HASHING": DeviceStatus.ONLINE,
+        "WARNING": DeviceStatus.WARNING,
+        "IDLE": DeviceStatus.ONLINE,      # reachable, not hashing
+        "PAUSED": DeviceStatus.WARNING,   # reachable (never "offline")
+        "ERROR": DeviceStatus.CRITICAL,
+        "OFFLINE": DeviceStatus.OFFLINE,
+    }
+    dev = Device(
+        id=str(d.get("id") or ""),
+        name=str(d.get("name") or d.get("id") or ""),
+        status=_STATUS_MAP.get(
+            str(d.get("status") or "").upper(), DeviceStatus.OFFLINE),
+    )
+    dev.current_telemetry = sample
+    return dev
+
+
 def build_advisory_recommendations(
     fleet: Optional[List[dict]] = None,
     peak_7d: float = 0.0,

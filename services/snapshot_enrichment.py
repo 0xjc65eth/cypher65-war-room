@@ -62,6 +62,17 @@ def set_auto_pilot_deps(engine, registry):
     _auto_pilot_registry = registry
 
 
+def get_auto_pilot_engine():
+    """Return the boot-initialized AutomationEngine (or None).
+
+    Issue #76: the dry-run routes use the LIVE engine so the simulated
+    budget reflects the real per-tenant window consumption (a fresh engine
+    per request would always report a full budget). Read-only consumer — the
+    dry-run never mutates the shared engine's state.
+    """
+    return _auto_pilot_engine
+
+
 # ── Hashrate market fetch cache ──────────────────────────────────────────
 # Moved from app.py so both app.py and dashboard_bp share the same cache.
 _HASHRATE_MARKET_CACHE: Dict[str, Any] = {"ts": 0, "offers": None}
