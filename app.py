@@ -1748,12 +1748,21 @@ def _cache_axe_telemetry(device_id: str, telemetry, status: str = "") -> None:
         prev = _shared_state.axe_telemetry_cache.get(device_id)
         if isinstance(prev, dict) and prev.get("hashrate_hs") is not None:
             merged = dict(prev)
+            # A {} heartbeat is a freshness flag: the device answered with no
+            # data → IDLE. Real PAUSED/ONLINE states arrive via telemetry that
+            # carries hashrate_hs and/or mining_paused (not this branch).
             merged["status"] = status or "IDLE"
             merged["ts"] = telemetry.get("ts") or prev.get("ts") or int(time.time())
             _shared_state.axe_telemetry_cache[device_id] = merged
             return
     hr = entry.get("hashrate_hs") or 0
-    entry["status"] = status or ("ONLINE" if hr > 0 else "IDLE")
+    if status:
+        entry["status"] = status
+    elif entry.get("mining_paused"):
+        # Issue #13: explicit operator intent wins over a stale hashrate.
+        entry["status"] = "PAUSED"
+    else:
+        entry["status"] = "ONLINE" if hr > 0 else "IDLE"
     entry.setdefault("hashrate", entry.get("hashrate_hs"))
     _shared_state.axe_telemetry_cache[device_id] = entry
 

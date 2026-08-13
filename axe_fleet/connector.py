@@ -324,6 +324,12 @@ class AxeOSConnector:
         t["free_heap"] = int(info.get("freeHeap") or 0)
         t["wifi_rssi"] = info.get("wifiRSSI")
 
+        # Pause state — explicit operator intent (Issue #13): a paused device
+        # reports miningPaused=true and must render PAUSED, not IDLE/ONLINE.
+        # Strict `is True`: `bool("false")` is True in Python — a stringy
+        # firmware/agent value must never falsely pause a device.
+        t["mining_paused"] = info.get("miningPaused") is True
+
         # Pool
         t["pool_url"] = str(info.get("pool") or info.get("stratumURL") or "")
         t["pool_user"] = str(info.get("poolUser") or info.get("poolUsername") or "")

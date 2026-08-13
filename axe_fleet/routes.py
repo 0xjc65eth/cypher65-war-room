@@ -40,7 +40,7 @@ from services.tenant import (
 from core.models.device import device_status_is_online
 
 from .connector import AxeOSConnector, AxeOSConnectorError
-from .models import infer_capabilities
+from .models import infer_capabilities, STATUS_PAUSED, derive_device_status
 from .registry import DeviceRegistry
 
 log = logging.getLogger("cypher65.axe.routes")
@@ -89,6 +89,21 @@ def _latest_telemetry(tel_raw) -> dict:
     if tel_raw and isinstance(tel_raw[0], dict) and _is_trusted_payload(tel_raw[0].get("payload")):
         return tel_raw[0]["payload"]
     return {}
+
+
+def _mark_cache_status(device_id: str, status: str) -> None:
+    """Flip the snapshot-cache entry status so the Fleet card reflects a
+    command immediately (Issue #13 — no wait for the next poll). Best-effort:
+    the poll loop remains the source of truth and confirms on the next cycle."""
+    try:
+        import services.state as _shared_state
+        entry = _shared_state.axe_telemetry_cache.get(device_id)
+        if isinstance(entry, dict):
+            entry = dict(entry)
+            entry["status"] = status
+            _shared_state.axe_telemetry_cache[device_id] = entry
+    except Exception:
+        pass
 
 
 # Per-IP latency probe cache (FLEET audit). Probing every reachable device
@@ -1910,6 +1925,14 @@ def _execute_device_command(device_id: str, command: str):
             device_id, command, tenant_id=_get_tenant_id())
         if not queued:
             return jsonify({"error": "could not enqueue agent command"}), 500
+        if command == "pause":
+            # Issue #13: reflect the operator's intent immediately even when
+            # the command runs on the home LAN — the agent's next telemetry
+            # push (carrying mining_paused) confirms and self-heals any gap.
+            tid = _get_tenant_id()
+            _registry.update_device(device_id, {"status": STATUS_PAUSED},
+                                    tenant_id=tid)
+            _mark_cache_status(device_id, STATUS_PAUSED)
         _log_audit(_get_tenant_id(), "fleet.agent_command_queued",
                    target=device_id, details={"command": command, "cmd_id": queued.get("id")})
         return jsonify({"success": True, "queued": True,
@@ -1918,6 +1941,7 @@ def _execute_device_command(device_id: str, command: str):
 
     try:
         conn = AxeOSConnector(device["ip_address"])
+        tid = _get_tenant_id()
         if command == "restart":
             result = conn.restart()
         elif command == "identify":
@@ -1925,9 +1949,26 @@ def _execute_device_command(device_id: str, command: str):
         elif command == "pause":
             # ESP-Miner: POST /api/system/miningPause (empty body).
             result = conn.pause()
+            # Issue #13: reflect PAUSED immediately — never wait for the next
+            # poll. The DB row + snapshot cache flip together so the Fleet
+            # card shows the truth the moment the command succeeds.
+            _registry.update_device(device_id, {"status": STATUS_PAUSED},
+                                    tenant_id=tid)
+            _mark_cache_status(device_id, STATUS_PAUSED)
         elif command == "resume":
             # ESP-Miner: POST /api/system/miningResume (empty body).
             result = conn.resume()
+            # Re-poll right away: the device decides ONLINE/IDLE by its real
+            # hashrate (a paused device only leaves PAUSED when it hashes).
+            try:
+                tel = conn.extract_telemetry()
+            except AxeOSConnectorError:
+                tel = {}
+            if tel:
+                new_st = derive_device_status(tel)
+                _registry.update_device(device_id, {"status": new_st},
+                                        tenant_id=tid)
+                _mark_cache_status(device_id, new_st)
         else:
             return jsonify({"error": f"unknown command: {command}"}), 400
         return jsonify({"success": True, "result": result})
@@ -2327,7 +2368,7 @@ def agent_telemetry(agent_tenant_id: str = ""):
             }), 410
     _registry.save_agent_telemetry(device["id"], tel, tenant_id=agent_tenant_id)
     return jsonify({"success": True, "device_id": device["id"],
-                    "status": "ONLINE" if int(tel.get("hashrate_hs") or 0) > 0 else "IDLE"})
+                    "status": derive_device_status(tel)})
 
 
 @agent_bp.route("/commands/pull", methods=["POST"])

@@ -15,7 +15,10 @@ import logging
 import time
 import uuid
 
-from .models import new_device, infer_capabilities, STATUS_ONLINE, STATUS_OFFLINE
+from .models import (
+    new_device, infer_capabilities, STATUS_ONLINE, STATUS_OFFLINE,
+    derive_device_status,
+)
 from .connector import AxeOSConnector, AxeOSConnectorError
 
 log = logging.getLogger("cypher65.axe.registry")
@@ -459,10 +462,9 @@ class DeviceRegistry:
         payload["ts"] = payload.get("ts") or now
         payload["device_id"] = device_id
         self.save_telemetry(device_id, payload, tenant_id=tenant_id)
-        hr = int(payload.get("hashrate_hs") or 0)
         self.update_device(device_id, {
             "last_seen": now,
-            "status": STATUS_ONLINE if hr > 0 else "IDLE",
+            "status": derive_device_status(payload),
             "agent_managed": 1,
         }, tenant_id=tenant_id)
 
@@ -592,8 +594,7 @@ class DeviceRegistry:
             now = int(time.time())
             self.update_device(device_id, {
                 "last_seen": now,
-                "status": STATUS_ONLINE if telemetry.get("hashrate_hs", 0) > 0
-                          else "IDLE",
+                "status": derive_device_status(telemetry),
             }, tenant_id=tenant_id)
 
             self.save_telemetry(device_id, telemetry, tenant_id=tenant_id)
