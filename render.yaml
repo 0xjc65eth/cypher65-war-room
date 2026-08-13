@@ -22,8 +22,13 @@
 #   user credentials/settings/alerts across deploys at ZERO cost, set:
 #     GITHUB_TOKEN=<personal access token with gist scope>
 #   The app auto-backs up data/war_room.sqlite (base64) to a private GitHub
-#   gist every REMOTE_BACKUP_INTERVAL (default 300s) and restores it on boot
-#   when the DB is missing/empty. See services/remote_backup.py.
+#   gist every REMOTE_BACKUP_INTERVAL (code default 600s; this blueprint sets
+#   300s) and restores it on boot when the DB is missing/empty. See
+#   services/remote_backup.py.
+#   The env vars are provisioned below (GITHUB_TOKEN is `sync: false` — the
+#   real PAT goes in the Render dashboard, never in git). Full step-by-step:
+#   docs/DEPLOYMENT_OPS.md → "Persistência no Render". Validate the live
+#   setup with: python scripts/verify_remote_backup.py --roundtrip
 #   (Paid alternative: Persistent Disk + `plan: starter` — see git history.)
 services:
   - type: web
@@ -53,10 +58,14 @@ services:
       # Optional: API_KEY / TENANT_API_KEYS to lock the API behind auth.
       # Optional: SENTRY_DSN for error monitoring.
       # ── $0 persistence: remote backup to a private GitHub gist ─────────
-      # - key: GITHUB_TOKEN
-      #   value: github_pat_XXX   # needs `gist` scope; enables auto backup+restore
-      # - key: REMOTE_BACKUP_INTERVAL
-      #   value: "300"           # seconds between remote snapshots (default 300)
+      # `sync: false` provisions the key but NOT its value — set the real PAT
+      # (scope `gist`) in the Render dashboard so the secret never hits git.
+      # The app snapshots data/war_room.sqlite → private gist every interval
+      # and restores on boot when the DB is empty (services/remote_backup.py).
+      - key: GITHUB_TOKEN
+        sync: false
+      - key: REMOTE_BACKUP_INTERVAL
+        value: "300"           # seconds between remote snapshots (default 300)
       # ── Hash market warmup / donation watch tuning (optional) ──────────
       # - key: POLL_INTERVAL
       #   value: "15"
