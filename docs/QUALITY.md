@@ -85,6 +85,7 @@ cd mobile && npx stryker run
 | Cobertura pública | **Codecov** (free p/ repo público) | upload do coverage.xml | ✅ non-blocking |
 | Guards DOM (XSS/ids) | `scripts/check-dom-regression.cjs` | ids duplicados + innerHTML sem escape | ✅ blocking |
 | Guards XSS mobile (RN) | `scripts/check-mobile-xss.cjs` | WebView html/injectedJavaScript + eval + openURL `javascript:` | ✅ blocking |
+| Frontend (combinado) | `scripts/check_frontend.sh` (Issue #62) | guards DOM + XSS mobile + JS core + **audit visual** (console/overflow/truncamento) | ✅ blocking job `frontend-audit` |
 
 ### Codecov — ✅ ATIVO (Issue #38 → PR #42)
 
@@ -227,6 +228,26 @@ literal → PASS, builder → PASS, bare-id cru/safe → FAIL/PASS, multi-linha 
 comentário citando sink (inline incluso) → PASS, shorthand safe/cru →
 PASS/FAIL, interp escapada → PASS, concat openURL começando com literal →
 FAIL, `+` dentro de literal URL (query) → PASS.
+
+### Pipeline combinado de frontend — `scripts/check_frontend.sh` (Issue #62)
+
+Um único comando roda **todos** os checks de frontend em sequência
+(blocking), para dev local e como check do job `frontend-audit` no PR
+(boota o Flask em 8765 com rate-limit alto, roda os guards + JS core + audit
+visual, e derruba o servidor — `AUDIT_URL` pula o boot):
+
+```bash
+npm run check:frontend          # ou: bash scripts/check_frontend.sh
+```
+
+1. `check:dom` — guard estático DOM (ids duplicados + XSS) + report
+2. `test:dom-guards` — self-test do guard DOM
+3. JS core — `node --check static/app.js` + `tests/test_app_js_core.js`
+4. `check-mobile-xss` + self-test — guard XSS mobile (React Native)
+5. `audit_ui --all` — auditoria visual desktop + mobile (console errors,
+   overflow, truncamento, skeletons presos)
+
+Qualquer falha → exit ≠ 0 → merge bloqueado (job `frontend-audit` no CI).
 
 ### Auditoria visual (Playwright) — `scripts/audit_ui.cjs`
 

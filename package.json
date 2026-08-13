@@ -14,6 +14,7 @@
     "audit:ui:all": "node scripts/audit_ui.cjs --all",
     "check:dom": "node scripts/check-dom-regression.cjs",
     "test:dom-guards": "node tests/test_dom_guards.js",
+    "check:frontend": "bash scripts/check_frontend.sh",
     "lint:commit": "commitlint --from HEAD~1"
   },
   "devDependencies": {

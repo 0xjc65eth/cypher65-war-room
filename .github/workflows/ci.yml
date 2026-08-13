@@ -207,6 +207,55 @@ jobs:
         continue-on-error: true
         run: npx knip --reporter=compact || true
 
+  # Combined frontend pipeline (Issue #62) — runs EVERYTHING frontend in
+  # one command as a blocking PR check: DOM guards + self-test, JS core,
+  # mobile XSS guards + self-test, and the visual audit (audit_ui --all:
+  # console errors, overflow, truncamento, skeletons presos). The static
+  # checks overlap the gate job on purpose — this is the single entry point
+  # (scripts/check_frontend.sh) that a PR touching UI must pass end-to-end.
+  frontend-audit:
+    name: "frontend: audit visual + guards"
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    env:
+      SECRET_KEY: "ci-test-secret-key-0123456789abcdef"
+      RATE_LIMIT_PER_MINUTE: "10000"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install dependencies
+        run: |
+          npm install
+          python -m venv .venv
+          source .venv/bin/activate
+          pip install --upgrade pip
+          pip install -r requirements.txt
+
+      # Browsers SEM sudo para o binário (cache no HOME do runner), deps de
+      # sistema com sudo — mesmo fix do job e2e.
+      - name: Install Playwright browsers
+        run: |
+          npx playwright install chromium
+          sudo npx playwright install-deps chromium
+
+      - name: Run combined frontend pipeline
+        run: |
+          source .venv/bin/activate
+          bash scripts/check_frontend.sh
+
   # E2E Playwright (Issue #28) — boots the real app and runs the browser
   # suite on chromium. Kept in its own job so the fast gate isn't slowed.
   e2e:
