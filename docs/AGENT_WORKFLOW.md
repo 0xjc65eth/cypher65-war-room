@@ -89,9 +89,17 @@ Não mergear PR com workflow vermelho. O CI roda em `push` e `pull_request`
 SECRET_KEY=test-secret-0123456789 python -m pytest tests/ -q   # suíte afetada primeiro
 node tests/test_app_js_core.js                                   # suíte JS espelhada
 node --check static/app.js
+node scripts/check-dom-regression.cjs   # guards DOM: ids duplicados + XSS innerHTML
 git diff --check
 bash run-e2e.sh --file=SEU_SPEC.spec.js                          # e2e afetado
 ```
+
+> **Ao tocar em `templates/*.html` ou em template literals de `.innerHTML` no
+> `static/app.js`**: o `scripts/check-dom-regression.cjs` (gate do CI) vai
+> bloquear o merge se (1) um `id=""` duplicar outro no template, ou (2) uma
+> interpolação ler campo de registro externo (`e.msg`, `a.category`, `m.tier`)
+> sem `escapeHtml(...)`. Dados externos SEMPRE passam por `escapeHtml` antes de
+> virar HTML; nunca construa HTML de strings de API/banco sem escapar.
 
 ---
 

@@ -1806,7 +1806,7 @@ function renderAccount(acct) {
     }
     if (dom.alertsCountBadge) dom.alertsCountBadge.textContent = `${alerts.length} active`;
     dom.alertsList.innerHTML = alerts.slice(0, 10).map(a => `
-      <li class="alert-item SEVERITY-${a.severity || 'INFO'}">
+      <li class="alert-item SEVERITY-${escapeHtml(a.severity || 'INFO')}">
         <span class="alert-icon">!</span><span class="alert-msg">${escapeHtml(a.message || '')}</span><span class="alert-time">${fmt.age(a.ts)}</span>
       </li>`).join('');
   }
@@ -1814,7 +1814,7 @@ function renderAccount(acct) {
   function renderEvents(events) {
     if (!dom.eventsTbody) return;
     if (!events || !events.length) { dom.eventsTbody.innerHTML = '<tr><td colspan="5" class="empty">awaiting data\u2026</td></tr>'; return; }
-    dom.eventsTbody.innerHTML = events.map(e => `<tr><td>#${e.block_height || e.block || '\u2014'}</td><td>${escapeHtml(fmt.shortAddr(e.address || ''))}</td><td>${escapeHtml(fmt.diff(e.difficulty))}</td><td>${escapeHtml(fmt.age(e.block_timestamp || e.ts))}</td><td>${e.claimed ? 'YES' : 'NO'}</td></tr>`).join('');
+    dom.eventsTbody.innerHTML = events.map(e => `<tr><td>#${escapeHtml(e.block_height || e.block || '\u2014')}</td><td>${escapeHtml(fmt.shortAddr(e.address || ''))}</td><td>${escapeHtml(fmt.diff(e.difficulty))}</td><td>${escapeHtml(fmt.age(e.block_timestamp || e.ts))}</td><td>${e.claimed ? 'YES' : 'NO'}</td></tr>`).join('');
   }
 
   function renderLeaderboard(lb) {
@@ -2648,7 +2648,7 @@ function renderAccount(acct) {
   function renderMilestones(list) {
     if (!dom.badgesStrip) return;
     if (!list || !list.length) { dom.badgesStrip.innerHTML = '<div class="empty">awaiting data</div>'; return; }
-    dom.badgesStrip.innerHTML = list.map(m => `<div class="badge-card"><div class="badge-card__tier">${m.tier}</div><div class="badge-card__label">${escapeHtml(m.label)}</div></div>`).join('');
+    dom.badgesStrip.innerHTML = list.map(m => `<div class="badge-card"><div class="badge-card__tier">${escapeHtml(m.tier)}</div><div class="badge-card__label">${escapeHtml(m.label)}</div></div>`).join('');
   }
 
   // ── WHAT-IF difficulty simulator (UX audit · Módulo_05) ──────────────
@@ -8554,15 +8554,15 @@ dom.walletSave?.addEventListener('click', async () => {
       return;
     }
     dom.acActiveList.innerHTML = list.map(a => `
-      <div class="ac-item ac-item--${(a.severity || 'INFO').toLowerCase()}">
+      <div class="ac-item ac-item--${escapeHtml((a.severity || 'INFO').toLowerCase())}">
         <div class="ac-item__meta">
-          <span class="ac-item__sev ${severityClass[a.severity] || ''}">${severityLabel[a.severity] || a.severity}</span>
-          <span class="ac-item__cat">${a.category}</span>
+          <span class="ac-item__sev ${severityClass[a.severity] || ''}">${escapeHtml(severityLabel[a.severity] || a.severity)}</span>
+          <span class="ac-item__cat">${escapeHtml(a.category)}</span>
           <span class="ac-item__ts">${acFormatTime(a.ts)}</span>
         </div>
-        <div class="ac-item__msg">${a.message}</div>
+        <div class="ac-item__msg">${escapeHtml(a.message)}</div>
         <div class="ac-item__actions">
-          <button class="btn btn--mini ac-ack" data-id="${a.id}">Acknowledge</button>
+          <button class="btn btn--mini ac-ack" data-id="${escapeHtml(a.id)}">Acknowledge</button>
         </div>
       </div>
     `).join('');
@@ -8589,11 +8589,11 @@ dom.walletSave?.addEventListener('click', async () => {
     dom.acHistoryList.innerHTML = acState.history.map(h => `
       <div class="ac-item ac-item--history">
         <div class="ac-item__meta">
-          <span class="ac-item__sev ${severityClass[h.severity] || ''}">${severityLabel[h.severity] || h.severity}</span>
-          <span class="ac-item__cat">${h.alert_type}</span>
+          <span class="ac-item__sev ${severityClass[h.severity] || ''}">${escapeHtml(severityLabel[h.severity] || h.severity)}</span>
+          <span class="ac-item__cat">${escapeHtml(h.alert_type)}</span>
           <span class="ac-item__ts">${acFormatTime(h.ts)}</span>
         </div>
-        <div class="ac-item__msg">${h.action_taken || h.message}</div>
+        <div class="ac-item__msg">${escapeHtml(h.action_taken || h.message)}</div>
       </div>
     `).join('');
   }
