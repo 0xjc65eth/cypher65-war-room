@@ -14,6 +14,20 @@
  *   4. fmt.diff (echoes raw string)      → exit 1 (FAIL + flag)
  *      WITHOUT escapeHtml — the Issue #48 vector
  *   5. Escaped data                      → exit 0 (PASS)
+ *   6. Fixtures present                  → guard runs (no exit 2)
+ *   7. CONCAT: x.msg without escapeHtml  → exit 1 (FAIL + flag)
+ *      rows.map(x => '<td>' + x.msg + '</td>') — the '+' chain vector
+ *   8. CONCAT: escaped + ternary + map/join → exit 0 (PASS, no FP)
+ *   9. CONCAT: (e.worker || '') + slice  → exit 1 (FAIL + flag)
+ *  10. CONCAT: fmt.age arg inside operand → exit 0 (PASS, no FP)
+ *      ticker pattern: (e.ts ? fmt.age(e.ts) : '--:--:--')
+ *  11. CONCAT: fmt.diff inside operand   → exit 1 (FAIL + flag)
+ *  12. CONCAT: (m.color || fb) raw in style= → exit 1 (FAIL + flag)
+ *      support-config is external data — CSS injection vector
+ *  13. CONCAT: setup consts BEFORE return → exit 0 (PASS, documented
+ *      truncateAtReturn tradeoff — fields stay inside `return`)
+ *  14. CONCAT: 'https://…' URL in a literal → exit 0 (PASS, string-aware
+ *      stripComments — // inside a string is not a comment)
  *
  * Run: node tests/test_dom_guards.js     (also wired into CI gate)
  */
@@ -67,7 +81,7 @@ const CLEAN_APP_JS = `(() => {
 
 // Build a fixture app.js with a specific interpolation injected.
 // Uses a TEMPLATE LITERAL inside .innerHTML — the exact pattern the guard
-// scans (string concatenation with '+' is a separate, future guard).
+// scans for the ${...} path.
 // NOTE: the @@INTERP@@ placeholder is replaced AFTER the outer template
 // literal is built, so the generated file really contains `${interp}`
 // (escaping ${ inside a nested template literal is a trap — \${ emits
@@ -81,6 +95,19 @@ function appJsWithInterp(interp) {
   'use strict';
   function escapeHtml(s) { return String(s).replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c])); }
   ${body}
+})();`;
+}
+
+// Fixture app.js that injects a BODY with string concatenation ('+') inside
+// .innerHTML — the pattern the CONCAT scanner targets.
+function appJsWithConcatBody(body) {
+  return `(() => {
+  'use strict';
+  function escapeHtml(s) { return String(s).replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c])); }
+  function render() {
+    const el = document.getElementById('x');
+    ${body}
+  }
 })();`;
 }
 
@@ -197,6 +224,144 @@ function cleanup(tmpDir) {
   try {
     const r = runGuard(tmp);
     assertEqual('fixtures present → guard runs (no exit 2)', r.status !== 2, true);
+  } finally {
+    cleanup(tmp);
+  }
+})();
+
+// ── Test 7: CONCAT — x.msg without escapeHtml → exit 1 (Issue #64) ─────
+(function testConcatUnescapedFieldFails() {
+  const body = "el.innerHTML = rows.map(x => '<td>' + x.msg + '</td>').join('');";
+  const tmp = makeFixture(CLEAN_HTML, appJsWithConcatBody(body));
+  try {
+    const r = runGuard(tmp);
+    assertEqual('concat x.msg without escape → exit 1', r.status, 1);
+    if (!/GUARD 2/.test(r.stdout)) {
+      failures.push(`  ❌ concat-XSS case did not flag GUARD 2:\n${r.stdout}`);
+    }
+  } finally {
+    cleanup(tmp);
+  }
+})();
+
+// ── Test 8: CONCAT — escaped + ternary + map/join → exit 0 (no FP) ──────
+(function testConcatEscapedTernaryPasses() {
+  // Mirrors the remote-checklist / trust-cell patterns: ternary conditions
+  // read record fields (safe), arms are literals, member fields escaped.
+  const body = `el.innerHTML = rows.map(x => ` +
+    `'<li class="' + (x.done ? 'completed' : 'pending') + '" data-step="' + escapeHtml(String(x.id)) + '">' + ` +
+    `'<span class="rci-icon">' + (x.done ? '●' : '○') + '</span>' + ` +
+    `'<span class="rci-text">' + escapeHtml(x.label || x.id) + '</span>' + ` +
+    `'</li>').join('');`;
+  const tmp = makeFixture(CLEAN_HTML, appJsWithConcatBody(body));
+  try {
+    const r = runGuard(tmp);
+    assertEqual('concat escaped + ternary + map/join → exit 0', r.status, 0);
+    if (r.status !== 0) failures.push(`  ❌ concat-safe stdout:\n${r.stdout}`);
+  } finally {
+    cleanup(tmp);
+  }
+})();
+
+// ── Test 9: CONCAT — (e.worker || '') + address.slice → exit 1 ──────────
+(function testConcatWalletHistoryFails() {
+  const body =
+    "el.innerHTML = '<span class=\"mono\">' + e.address.slice(0, 10) + '</span> ' + (e.worker || '') + '!';";
+  const tmp = makeFixture(CLEAN_HTML, appJsWithConcatBody(body));
+  try {
+    const r = runGuard(tmp);
+    assertEqual('concat wallet-history pattern → exit 1', r.status, 1);
+    if (!/GUARD 2/.test(r.stdout)) {
+      failures.push(`  ❌ concat-wallet case did not flag GUARD 2:\n${r.stdout}`);
+    }
+  } finally {
+    cleanup(tmp);
+  }
+})();
+
+// ── Test 10: CONCAT — safe formatter INSIDE a concat operand → exit 0 ───
+// Regression for the live-calculator ticker (e.ts ? fmt.age(e.ts) : …):
+// fmt.age emits numbers/units only, so its ARGS are never interpolated —
+// the strip step must remove whitelisted formatter calls from operands or
+// the argument read becomes a false positive.
+(function testConcatSafeFormatterPasses() {
+  const body = "el.innerHTML = '<span class=\"t\">' + (e.ts ? fmt.age(e.ts) : '--:--:--') + '</span>' + '<span>' + escapeHtml(e.share_diff_str) + '</span>';";
+  const tmp = makeFixture(CLEAN_HTML, appJsWithConcatBody(body));
+  try {
+    const r = runGuard(tmp);
+    assertEqual('concat fmt.age arg + escaped field → exit 0', r.status, 0);
+    if (r.status !== 0) failures.push(`  ❌ concat-formatter-safe stdout:\n${r.stdout}`);
+  } finally {
+    cleanup(tmp);
+  }
+})();
+
+// ── Test 11: CONCAT — fmt.diff inside a concat operand → exit 1 ─────────
+// fmt.diff echoes a raw input string (Issue #48 vector) — the strip must
+// NOT touch it inside '+' chains either.
+(function testConcatFmtDiffFails() {
+  const body = "el.innerHTML = '<b>' + fmt.diff(e.raw_difficulty) + '</b>';";
+  const tmp = makeFixture(CLEAN_HTML, appJsWithConcatBody(body));
+  try {
+    const r = runGuard(tmp);
+    assertEqual('concat fmt.diff without escape → exit 1', r.status, 1);
+    if (!/GUARD 2/.test(r.stdout)) {
+      failures.push(`  ❌ concat-fmtdiff case did not flag GUARD 2:\n${r.stdout}`);
+    }
+  } finally {
+    cleanup(tmp);
+  }
+})();
+
+// ── Test 12: CONCAT — (m.color || fallback) raw in style= → exit 1 ──────
+// Support config is external (operator-authored) data; m.color lands in a
+// style="color:…" attribute — CSS injection vector, must be escaped.
+(function testConcatStyleAttrFails() {
+  const body = "el.innerHTML = '<span style=\"color:' + (m.color || '#00ff41') + '\">' + (m.icon || '\u20bf') + ' ' + escapeHtml(m.label) + '</span>';";
+  const tmp = makeFixture(CLEAN_HTML, appJsWithConcatBody(body));
+  try {
+    const r = runGuard(tmp);
+    assertEqual('concat m.color/m.icon raw → exit 1', r.status, 1);
+    if (!/GUARD 2/.test(r.stdout)) {
+      failures.push(`  ❌ concat-style-attr case did not flag GUARD 2:\n${r.stdout}`);
+    }
+  } finally {
+    cleanup(tmp);
+  }
+})();
+
+// ── Test 13: CONCAT — map callback with pre-return setup consts → exit 0 ─
+// Documents the truncateAtReturn tradeoff: setup consts BEFORE `return`
+// (numeric coercion + ternary conditions) are not scanned — this is what
+// keeps the guard free of false positives on the worst-rigs/provider-
+// rankings blocks. Guidance: keep field interpolations inside `return`.
+(function testConcatSetupConstsPass() {
+  const body =
+    `el.innerHTML = rows.map(r => {\n` +
+    `  const dlv = r.avg_delivery_pct != null ? Number(r.avg_delivery_pct).toFixed(1) + '%' : '—';\n` +
+    `  const pl = r.avg_pl_pct >= 0 ? '+' : '';\n` +
+    `  return '<div class=\"cell\">' + escapeHtml(String(r.label)) + '</div>' + escapeHtml(dlv) + escapeHtml(pl);\n` +
+    `}).join('');`;
+  const tmp = makeFixture(CLEAN_HTML, appJsWithConcatBody(body));
+  try {
+    const r = runGuard(tmp);
+    assertEqual('concat setup-consts before return → exit 0', r.status, 0);
+    if (r.status !== 0) failures.push(`  ❌ concat-setup-consts stdout:\n${r.stdout}`);
+  } finally {
+    cleanup(tmp);
+  }
+})();
+
+// ── Test 14: CONCAT — 'https://…' URL inside a literal → exit 0 (no FP) ──
+// stripComments is string-aware: the `//` inside the URL must NOT be treated
+// as a comment (which would delete the closing quote and corrupt the scan).
+(function testConcatUrlLiteralPasses() {
+  const body = `el.innerHTML = '<a href="https://example.com">' + escapeHtml(x.label) + '</a>' + '<span>https://api.example.io/x?y=1</span>';`;
+  const tmp = makeFixture(CLEAN_HTML, appJsWithConcatBody(body));
+  try {
+    const r = runGuard(tmp);
+    assertEqual('concat URL literal (https://) → exit 0', r.status, 0);
+    if (r.status !== 0) failures.push(`  ❌ concat-url-literal stdout:\n${r.stdout}`);
   } finally {
     cleanup(tmp);
   }

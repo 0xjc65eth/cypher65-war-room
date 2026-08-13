@@ -2359,9 +2359,9 @@ function renderAccount(acct) {
         dom.lcTickerList.innerHTML = ticker.map(function(e) {
           return '<div class="lc-ticker-row">' +
             '<span class="lc-ticker-time">' + (e.ts ? fmt.age(e.ts) : '--:--:--') + '</span>' +
-            '<span class="lc-ticker-diff">' + (e.share_diff_str || dash) + '</span>' +
-            '<span class="lc-ticker-gap">\u0394' + (e.gap || '\u2014') + 's</span>' +
-            '<span class="lc-ticker-hr">' + (e.instantaneous_hr_str || dash) + '</span>' +
+            '<span class="lc-ticker-diff">' + escapeHtml(e.share_diff_str || dash) + '</span>' +
+            '<span class="lc-ticker-gap">\u0394' + escapeHtml(e.gap || '\u2014') + 's</span>' +
+            '<span class="lc-ticker-hr">' + escapeHtml(e.instantaneous_hr_str || dash) + '</span>' +
             '</div>';
         }).join('');
       }
@@ -3078,11 +3078,11 @@ function renderAccount(acct) {
         <td><span class="mkt-table__venue">${escapeHtml(v.venue)}</span>${v.estimated ? ' <span class="mkt-table__est">EST</span>' : ''}</td>
         <td class="mono">${v.price_btc_ph_day.toFixed(6)}</td>
         <td class="mono">${v.price_usd_th_day != null ? '$' + v.price_usd_th_day.toFixed(4) : '—'}</td>
-        <td class="mono ${spreadCls}">${v.spread_vs_best_pct >= 0 ? '+' : ''}${v.spread_vs_best_pct}%</td>
-        <td class="mono">${v.spread_vs_vwap_pct >= 0 ? '+' : ''}${v.spread_vs_vwap_pct}%</td>
-        <td class="mono">${v.available_ph} PH/s</td>
-        <td>${v.depth_score}</td>
-        <td><span class="mkt-table__tier ${tierCls}">${v.risk_tier_label}</span></td>
+        <td class="mono ${spreadCls}">${v.spread_vs_best_pct >= 0 ? '+' : ''}${escapeHtml(v.spread_vs_best_pct)}%</td>
+        <td class="mono">${v.spread_vs_vwap_pct >= 0 ? '+' : ''}${escapeHtml(v.spread_vs_vwap_pct)}%</td>
+        <td class="mono">${escapeHtml(v.available_ph)} PH/s</td>
+        <td>${escapeHtml(v.depth_score)}</td>
+        <td><span class="mkt-table__tier ${tierCls}">${escapeHtml(v.risk_tier_label)}</span></td>
         <td class="${recCls}">${escapeHtml(v.recommendation)}</td>
       </tr>`;
     }).join('');
@@ -3780,7 +3780,7 @@ function renderAccount(acct) {
         ? Number(r.avg_cost_sats_per_thh).toFixed(1) + ' st/TH·h' : '—';
       const tab = r.provider === 'braiins' ? 'contracts' : 'history';
       return '<div class="rentals-rank__cell" data-rentals-filter="' + escapeHtml(tab) + '" title="clique p/ ver os ' + escapeHtml(String(r.label)) + '">' +
-        '<div class="rentals-rank__name">' + escapeHtml(String(r.label)) + ' <span class="rentals-rank__n">' + r.rentals + '</span></div>' +
+        '<div class="rentals-rank__name">' + escapeHtml(String(r.label)) + ' <span class="rentals-rank__n">' + escapeHtml(String(r.rentals)) + '</span></div>' +
         '<div class="rentals-rank__row"><span>DELIVERY</span><strong>' + escapeHtml(dlv) + '</strong></div>' +
         '<div class="rentals-rank__row"><span>P/L</span><strong class="' + (r.avg_pl_pct != null && r.avg_pl_pct < 0 ? 'is-bad' : 'is-good') + '">' + escapeHtml(pl) + '</strong></div>' +
         '<div class="rentals-rank__row"><span>COST</span><strong>' + escapeHtml(cost) + '</strong></div>' +
@@ -3802,11 +3802,11 @@ function renderAccount(acct) {
       const cls = pct == null ? 'is-unknown' : (pct >= 95 ? 'is-good' : (pct >= 90 ? 'is-mid' : 'is-bad'));
       const cost = c.avg_cost_sats_per_thh != null
         ? Number(c.avg_cost_sats_per_thh).toFixed(0) + ' st/TH·h' : '—';
-      return '<div class="rentals-heatmap__cell ' + cls + '" data-rig-name="' + escapeHtml(c.rig) + '" title="' + escapeHtml(c.rig) + ' · ' + c.samples + ' amostras · clique p/ ver o track record">' +
+      return '<div class="rentals-heatmap__cell ' + cls + '" data-rig-name="' + escapeHtml(c.rig) + '" title="' + escapeHtml(c.rig) + ' · ' + escapeHtml(String(c.samples)) + ' amostras · clique p/ ver o track record">' +
         '<div class="rentals-heatmap__name">' + escapeHtml(c.rig) + '</div>' +
         '<div class="rentals-heatmap__row"><span>DELIVERY</span><strong>' + (pct != null ? pct.toFixed(1) + '%' : '—') + '</strong></div>' +
         '<div class="rentals-heatmap__row"><span>COST</span><strong>' + escapeHtml(cost) + '</strong></div>' +
-        '<div class="rentals-heatmap__sub">' + c.samples + ' amostras</div>' +
+        '<div class="rentals-heatmap__sub">' + escapeHtml(String(c.samples)) + ' amostras</div>' +
         '</div>';
     }).join('');
   }
@@ -3881,7 +3881,7 @@ function renderAccount(acct) {
         '<span class="rentals-worst__cell"><i>Fail</i><b>' + (r.fail_rate_pct != null ? Number(r.fail_rate_pct).toFixed(0) + '%' : '—') + '</b></span>' +
         '<span class="rentals-worst__cell"><i>Vol</i><b>' + (r.volatility_pct != null ? Number(r.volatility_pct).toFixed(1) + 'σ' : '—') + '</b></span>' +
         '<span class="rentals-worst__cell"><i>P/L TH·h</i><b class="' + (r.pl_sats_per_thh != null && r.pl_sats_per_thh < 0 ? 'is-bad' : 'is-good') + '">' + escapeHtml(pl) + '</b></span>' +
-        '<span class="rentals-worst__cell"><i>P/L ' + r.samples + 'x</i>' + trend + '</span>' +
+        '<span class="rentals-worst__cell"><i>P/L ' + escapeHtml(String(r.samples)) + 'x</i>' + trend + '</span>' +
         '<span class="rentals-worst__danger ' + dangerCls + '">' + Number(danger).toFixed(0) + '</span>' +
         '</button>';
     }).join('');
@@ -4338,7 +4338,7 @@ function renderAccount(acct) {
           { l: 'VS MARKET', v: mktVal, c: mktCls, t: mktTitle },
         ];
         perfEl.innerHTML = cells.map(c =>
-          '<div class="rentals-perf__cell' + (c.c ? ' ' + c.c : '') + '"' + (c.t ? ' title="' + escapeHtml(c.t) + '"' : '') + '><span class="rentals-perf__label">' + c.l + '</span><strong>' + escapeHtml(String(c.v)) + '</strong></div>'
+          '<div class="rentals-perf__cell' + (c.c ? ' ' + escapeHtml(c.c) : '') + '"' + (c.t ? ' title="' + escapeHtml(c.t) + '"' : '') + '><span class="rentals-perf__label">' + escapeHtml(c.l) + '</span><strong>' + escapeHtml(String(c.v)) + '</strong></div>'
         ).join('');
       }
       // RIG TRUST (CFO) — grade A-F + score + consistency for THIS rig, with
@@ -4397,7 +4397,7 @@ function renderAccount(acct) {
             : '<button type="button" class="rentals-trust__btn" id="rentals-trust-toggle">⛔ EXCLUIR RIG (BLACKLIST)</button>';
           trustEl.innerHTML =
             '<div class="rentals-trust__cells">' + cells.map(c =>
-              '<div class="rentals-trust__cell"><span class="rentals-trust__label">' + c.l + '</span><span class="rentals-trust__value' + (c.cls ? ' rentals-trust__value--' + c.cls : '') + '">' + c.v + '</span></div>'
+              '<div class="rentals-trust__cell"><span class="rentals-trust__label">' + escapeHtml(c.l) + '</span><span class="rentals-trust__value' + (c.cls ? ' rentals-trust__value--' + escapeHtml(c.cls) : '') + '">' + escapeHtml(c.v) + '</span></div>'
             ).join('') + '</div>' +
             '<div class="rentals-trust__verdict ' + vCls + '">' + verdict + '</div>' +
             '<div class="rentals-trust__actions">' + btn + '</div>';
@@ -4431,7 +4431,7 @@ function renderAccount(acct) {
             ];
             trustEl.innerHTML =
               '<div class="rentals-trust__cells">' + stabCells.map(c =>
-                '<div class="rentals-trust__cell"><span class="rentals-trust__label">' + c.l + '</span><span class="rentals-trust__value' + (c.cls ? ' rentals-trust__value--' + c.cls : '') + '">' + c.v + '</span></div>'
+                '<div class="rentals-trust__cell"><span class="rentals-trust__label">' + escapeHtml(c.l) + '</span><span class="rentals-trust__value' + (c.cls ? ' rentals-trust__value--' + escapeHtml(c.cls) : '') + '">' + escapeHtml(c.v) + '</span></div>'
               ).join('') + '</div>' +
               '<div class="rentals-trust__verdict">Contratos Braiins não expõem identidade de rig — a estabilidade vem da série de speed. CV &lt; 5% = previsível; &gt; 15% = arriscado.</div>';
           } else {
@@ -5726,7 +5726,7 @@ function renderAccount(acct) {
       if (bar) {
         bar.innerHTML = methods.map(function(m) {
           return '<span class="support-method support-bar__method" title="' + escapeHtml(m.label) + '">' +
-            '<span class="support-method-tag" style="color:' + (m.color || '#00ff41') + '">' + (m.icon || '₿') + ' ' + escapeHtml(m.label) + '</span>' +
+            '<span class="support-method-tag" style="color:' + escapeHtml(m.color || '#00ff41') + '">' + escapeHtml(m.icon || '₿') + ' ' + escapeHtml(m.label) + '</span>' +
             '<span class="support-method-addr" title="' + escapeHtml(m.label) + ': ' + escapeHtml(m.address) + '" data-copy="' + escapeHtml(m.address) + '">' + escapeHtml(m.address) + '</span>' +
             '<button class="support-method-copy" data-copy-btn aria-label="Copy ' + escapeHtml(m.label) + ' address">⧉</button>' +
             '</span>';
@@ -5738,7 +5738,7 @@ function renderAccount(acct) {
       if (grid) {
         grid.innerHTML = methods.map(function(m) {
           return '<div class="support-modal__card">' +
-            '<div class="support-modal__card-icon" style="color:' + (m.color || '#00ff41') + '">' + (m.icon || '₿') + '</div>' +
+            '<div class="support-modal__card-icon" style="color:' + escapeHtml(m.color || '#00ff41') + '">' + escapeHtml(m.icon || '₿') + '</div>' +
             '<div class="support-modal__card-label">' + escapeHtml(m.label) + '</div>' +
             (m.note ? '<div class="support-modal__card-note">' + escapeHtml(m.note) + '</div>' : '') +
             '<div class="support-modal__card-addr" data-copy="' + escapeHtml(m.address) + '">' + escapeHtml(m.address) + '</div>' +
@@ -5777,10 +5777,10 @@ function renderAccount(acct) {
       stats.textContent = total + ' doação' + (total === 1 ? '' : 'ões') + ' · ' + (totalSat >= 1e8 ? (totalSat / 1e8).toFixed(8).replace(/\.?0+$/, '') + ' BTC' : totalSat.toLocaleString('en-US') + ' sats') + ' recebidos';
       list.innerHTML = don.slice(0, 6).map(function(row) {
         var methodIcon = { lightning: '⚡', btc: '₿', hashpower: '⛏' }[row.method] || '♥';
-        var amt = row.amount_sat != null ? (row.amount_sat >= 1e8 ? (row.amount_sat / 1e8).toFixed(8).replace(/\.?0+$/, '') + ' BTC' : row.amount_sat.toLocaleString('en-US') + ' sats') : '—';
+        var amt = row.amount_sat != null ? escapeHtml(row.amount_sat >= 1e8 ? (row.amount_sat / 1e8).toFixed(8).replace(/\.?0+$/, '') + ' BTC' : row.amount_sat.toLocaleString('en-US') + ' sats') : '—';
         var t = new Date((row.ts || 0) * 1000);
         var ts = t.toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
-        var proof = row.txid ? row.txid.slice(0, 10) + '…' : (row.preimage ? 'preimage ' + row.preimage.slice(0, 10) + '…' : '');
+        var proof = row.txid ? escapeHtml(row.txid.slice(0, 10)) + '…' : (row.preimage ? 'preimage ' + escapeHtml(row.preimage.slice(0, 10)) + '…' : '');
         // verified = onchain (mempool watcher) or manual (operator-confirmed);
         // webln = client-reported, not verified on-chain
         var badge = row.source !== 'webln'
@@ -5789,7 +5789,7 @@ function renderAccount(acct) {
         return '<div class="donation-row">' +
           '<span class="donation-row__icon">' + methodIcon + '</span>' +
           '<span class="donation-row__amt">' + amt + '</span>' +
-          '<span class="donation-row__proof mono">' + (proof ? proof : (row.note || '')) + '</span>' +
+          '<span class="donation-row__proof mono">' + (proof ? proof : escapeHtml(row.note || '')) + '</span>' +
           badge +
           '<span class="donation-row__ts">' + ts + '</span>' +
           '</div>';
@@ -5991,7 +5991,7 @@ function renderAccount(acct) {
           data.history.forEach(function(entry) {
             var li = document.createElement('button');
             li.className = 'wallet-history__item';
-            li.innerHTML = '<span class="mono">' + entry.address.slice(0, 10) + '...</span> <span class="mute">' + (entry.worker || '') + '</span>';
+            li.innerHTML = '<span class="mono">' + escapeHtml(entry.address.slice(0, 10)) + '...</span> <span class="mute">' + escapeHtml(entry.worker || '') + '</span>';
             li.onclick = function() {
               var input = document.getElementById('wallet-address-input');
               if (input) input.value = entry.address;
@@ -7307,7 +7307,7 @@ dom.walletSave?.addEventListener('click', async () => {
         ];
 
         dom.axeDetailBody.innerHTML = items.map(it =>
-          '<div class="axe-detail__item"><div class="lbl">' + escapeHtml(it.lbl) + '</div><div class="val' + (it.cls ? ' ' + it.cls : '') + '">' + escapeHtml(String(it.val)) + '</div></div>'
+          '<div class="axe-detail__item"><div class="lbl">' + escapeHtml(it.lbl) + '</div><div class="val' + (it.cls ? ' ' + escapeHtml(it.cls) : '') + '">' + escapeHtml(String(it.val)) + '</div></div>'
         ).join('');
 
         // Phase C: load telemetry history chart
@@ -8645,7 +8645,7 @@ dom.walletSave?.addEventListener('click', async () => {
           <span class="ac-item__cat">${escapeHtml(r.name)}</span>
         </div>
         <div class="ac-item__msg">WHEN ${escapeHtml(r.condition_metric)} ${escapeHtml(r.condition_operator)} ${escapeHtml(r.condition_value)} THEN ${escapeHtml(r.action_command)}</div>
-        <div class="ac-item__actions">${runLine}<button class="btn btn--danger btn--mini ac-rule-del" data-id="${r.id}">Delete</button></div>
+        <div class="ac-item__actions">${runLine}<button class="btn btn--danger btn--mini ac-rule-del" data-id="${escapeHtml(r.id)}">Delete</button></div>
       </div>
     `;
     }).join('');
@@ -9266,7 +9266,7 @@ dom.walletSave?.addEventListener('click', async () => {
       var lbBody = document.getElementById('lb-tbody');
       if (lbBody && leaderboard && leaderboard.length) {
         lbBody.innerHTML = leaderboard.slice(0, 10).map(function(row, i) {
-          return '<tr><td>' + (i + 1) + '</td><td>' + (row.address ? row.address.substring(0, 10) + '...' : '--') + '</td><td>' + (row.diff_rank || '--') + '</td><td>' + (row.loyalty_rank || '--') + '</td><td>' + (row.combined_score || '--') + '</td><td>' + (row.total_blocks || 0) + '</td></tr>';
+          return '<tr><td>' + (i + 1) + '</td><td>' + (row.address ? escapeHtml(row.address.substring(0, 10)) + '...' : '--') + '</td><td>' + escapeHtml(row.diff_rank || '--') + '</td><td>' + escapeHtml(row.loyalty_rank || '--') + '</td><td>' + escapeHtml(row.combined_score || '--') + '</td><td>' + escapeHtml(row.total_blocks || 0) + '</td></tr>';
         }).join('');
       }
     }

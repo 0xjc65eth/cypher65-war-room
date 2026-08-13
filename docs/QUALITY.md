@@ -133,29 +133,40 @@ Guards estáticos **blocking** no job `gate` do CI (Issue #58):
 
 - **GUARD 1 — `id=""` duplicado em `templates/*.html`**: dois elementos com o
   mesmo id quebram `querySelector`/`getElementById` (o primeiro vence).
-- **GUARD 2 — innerHTML com dados externos sem `escapeHtml`**: toda interpolação
-  `${...}` em template literal de `.innerHTML` precisa de `escapeHtml(...)` ou
-  ser comprovadamente segura. Leituras de campos de registro externos
-  (`a.category`, `m.tier`, `e.block_height`, ...) são FLAGGED — é o que
-  transforma uma string de API/banco em vetor de XSS.
+- **GUARD 2 — innerHTML com dados externos sem `escapeHtml`**: varre as DUAS
+  sintaxes de injeção de string — interpolações `${...}` em template literals
+  E concatenação com `'+'` fora deles (ex: `rows.map(x => '<td>' + x.msg +
+  '</td>')`). Qualquer leitura de campo de registro externo (`a.category`,
+  `m.tier`, `e.block_height`, `entry.worker`, `x.msg`, ...) sem `escapeHtml(...)`
+  é FLAGGED — é o que transforma uma string de API/banco em vetor de XSS.
 
 Allowlist de expressões seguras (não precisam de escape): `escapeHtml(...)`,
 formatters que só emitem números/unidades (`fmt.age`/`fmt.hashrate`/
 `fmt.uptime`/`fmt.secsToHuman`/`fmt.pct`/`fmt.usd`/`fmt.expectedBlock` e
 `acFormatTime(...)`), mapa local de classes `severityClass[...]`, literais
 numéricos/strings, ternários de literais, e identificadores "pelados" que
-carregam fragmentos pré-escapados (`rows`, `parts`).
+carregam fragmentos pré-escapados (`rows`, `parts`). No scanner de
+concatenação `'+'`, as chamadas de formatters do allowlist são REMOVIDAS do
+operando antes da caça a campos (`fmt.age(x.ts)` → o argumento nunca é
+interpolado — o formatter emite número/unidade), o que elimina falsos
+positivos tipo `(e.ts ? fmt.age(e.ts) : '--:--:--')` no ticker.
 
 > ⚠️ `fmt.diff()` e `fmt.shortAddr()`/`chunkAddr()` **NÃO** estão no allowlist:
 > eles ecoam a string de entrada crua (vetor da Issue #48) — qualquer uso em
-> `innerHTML` exige `escapeHtml(...)` explícito.
+> `innerHTML` exige `escapeHtml(...)` explícito (inclusive dentro de operando
+> de concatenação).
 
 **Self-test do guard** (`node tests/test_dom_guards.js`, também no CI):
 roda o guard REAL como subprocesso contra fixtures descartáveis em temp dir
 (override `GUARD_TEMPLATES_DIR`/`GUARD_APP_JS`) e asserta os exit codes:
 baseline → PASS, XSS injetado → FAIL, id duplicado → FAIL, `fmt.diff` sem
-escape → FAIL, dados escapados + `fmt.age` + contador → PASS. Protege o
-próprio guard contra enfraquecimento futuro.
+escape → FAIL, dados escapados + `fmt.age` + contador → PASS, e os casos de
+concatenação `'+'` (Issue #64): `x.msg` cru → FAIL, mapa/join escapado +
+ternário de literais → PASS, padrão carteira `(e.worker || '')` + `slice` →
+FAIL, `fmt.age` dentro de operando → PASS (sem FP), `fmt.diff` dentro de
+operando → FAIL, `m.color`/`m.icon` crus em `style=` → FAIL (config externa
+é vetor de CSS injection). Protege o próprio guard contra enfraquecimento
+futuro.
 
 ### Auditoria visual (Playwright) — `scripts/audit_ui.cjs`
 

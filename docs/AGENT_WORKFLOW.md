@@ -95,12 +95,18 @@ git diff --check
 bash run-e2e.sh --file=SEU_SPEC.spec.js                          # e2e afetado
 ```
 
-> **Ao tocar em `templates/*.html` ou em template literals de `.innerHTML` no
-> `static/app.js`**: o `scripts/check-dom-regression.cjs` (gate do CI) vai
-> bloquear o merge se (1) um `id=""` duplicar outro no template, ou (2) uma
-> interpolação ler campo de registro externo (`e.msg`, `a.category`, `m.tier`)
-> sem `escapeHtml(...)`. Dados externos SEMPRE passam por `escapeHtml` antes de
-> virar HTML; nunca construa HTML de strings de API/banco sem escapar.
+> **Ao tocar em `templates/*.html` ou em `.innerHTML` no `static/app.js`**: o
+> `scripts/check-dom-regression.cjs` (gate do CI) vai bloquear o merge se
+> (1) um `id=""` duplicar outro no template, ou (2) uma interpolação — em
+> template literal `${...}` OU em concatenação com `'+'` (ex:
+> `'<td>' + x.msg + '</td>'`) — ler campo de registro externo (`e.msg`,
+> `a.category`, `m.tier`, `entry.worker`) sem `escapeHtml(...)`. Dados externos
+> SEMPRE passam por `escapeHtml` antes de virar HTML; nunca construa HTML de
+> strings de API/banco sem escapar. Detalhe do scanner de concatenação:
+> formatters do allowlist (`fmt.age`/`fmt.hashrate`/`acFormatTime`/…) são
+> removidos do operando antes da caça a campos (o argumento nunca é
+> interpolado), mas `fmt.diff`/`fmt.shortAddr` ecoam string crua e continuam
+> exigindo `escapeHtml` mesmo dentro de concatenação.
 
 ---
 
