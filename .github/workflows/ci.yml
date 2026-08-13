@@ -60,6 +60,13 @@ jobs:
       - name: DOM regression guards (dup ids + innerHTML escaping)
         run: node scripts/check-dom-regression.cjs
 
+      # Self-test of the guard itself (Issue #60): runs the REAL guard as a
+      # subprocess against disposable fixtures (XSS injetado → FAIL, id
+      # duplicado → FAIL, fmt.diff sem escape → FAIL, baseline → PASS) para
+      # que enfraquecer o guard nunca passe despercebido.
+      - name: DOM guards self-test
+        run: node tests/test_dom_guards.js
+
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
