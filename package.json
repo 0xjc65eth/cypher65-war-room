@@ -10,6 +10,8 @@
     "test:e2e:debug": "npx playwright test --debug",
     "test:e2e:report": "npx playwright show-report e2e-report",
     "gen:qr-golden": "node scripts/gen_qr_golden.cjs",
+    "audit:ui": "node scripts/audit_ui.cjs",
+    "audit:ui:all": "node scripts/audit_ui.cjs --all",
     "lint:commit": "commitlint --from HEAD~1"
   },
   "devDependencies": {
