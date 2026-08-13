@@ -80,7 +80,15 @@
  *       - `var`-hoisted declarations AFTER the sink are not seen.
  *
  * Usage:
- *   node scripts/check-dom-regression.js
+ *   node scripts/check-dom-regression.js [--report]
+ *
+ *   --report  prints a 📊 DOM Guard Report (counts of TL interpolations,
+ *             concat blocks, insertAdjacentHTML, bare-id/call innerHTML and
+ *             textContent-markup scans) as a table + a grep-able JSON line
+ *             `GUARD_REPORT {...}` for trend aggregation, plus a GitHub
+ *             Actions ::notice:: annotation and a markdown block appended to
+ *             GITHUB_STEP_SUMMARY when running in CI. Exit codes are
+ *             UNCHANGED — the report never alters the merge gate.
  *
  * Env overrides (used by the committed self-test):
  *   GUARD_TEMPLATES_DIR  — templates dir to scan (default: ./templates)
@@ -790,10 +798,10 @@ function checkConcatEscaping() {
       console.log(`     app.js:${f.line}  + ${f.expr}`);
       console.log(`       → '${f.field}' is external data — wrap in escapeHtml(...)`);
     }
-    return false;
+    return { ok: false, concat: concatCount }; // counts on FAIL too — the report needs them
   }
   console.log('  ✅ GUARD 2 — all ' + concatCount + ' innerHTML concat block(s) escaped or literal-safe.');
-  return true;
+  return { ok: true, concat: concatCount };
 }
 
 function checkInnerHtmlEscaping() {
@@ -825,10 +833,10 @@ function checkInnerHtmlEscaping() {
       console.log(`     app.js:${f.line}  \${${f.expr}}`);
       console.log('       → wrap in escapeHtml(...) or make it a literal');
     }
-    return false;
+    return { ok: false, tl: tlCount }; // counts on FAIL too — the report needs them
   }
   console.log('  ✅ GUARD 2 — all ' + tlCount + ' innerHTML template-literal interpolations escaped or literal-safe.');
-  return true;
+  return { ok: true, tl: tlCount };
 }
 
 // ── Extended sinks: insertAdjacentHTML + bare-id innerHTML + textContent ─
@@ -1255,23 +1263,79 @@ function checkHtmlSinkExtension() {
         console.log(`       → '${f.field}' is external data — wrap in escapeHtml(...)`);
       }
     }
-    return false;
+    return { ok: false, adj: adjCount, bare: bareCount, tc: tcCount }; // counts on FAIL too
   }
   console.log('  ✅ GUARD 2 — sinks ok: ' + adjCount + ' insertAdjacentHTML + ' + bareCount + ' bare-id/call innerHTML + ' + tcCount + ' textContent markup scan(s).');
-  return true;
+  return { ok: true, adj: adjCount, bare: bareCount, tc: tcCount };
+}
+
+// ── Report (--report) ──────────────────────────────────────────────────
+// Per-run surface metrics — the CI gate uses them to track how much DOM
+// sink surface each PR introduces (proxy for XSS risk). Printed as a table,
+// a grep-able JSON line, a GitHub ::notice:: annotation and (in CI) a
+// markdown block appended to GITHUB_STEP_SUMMARY.
+function printGuardReport(c, allOk) {
+  const total = c.tl + c.concat + c.adj + c.bare + c.tc;
+  console.log('\n  ' + '='.repeat(58));
+  console.log('  📊 DOM Guard Report — sinks varridos neste PR');
+  console.log('  ' + '='.repeat(58));
+  const row = (label, v) => '    ' + String(v).padStart(4) + '  ' + label;
+  console.log(row('interpolações em template literals (innerHTML)', c.tl));
+  console.log(row('blocos de concatenação \'+\' (innerHTML)', c.concat));
+  console.log(row('insertAdjacentHTML (2º arg varrido)', c.adj));
+  console.log(row('innerHTML/outerHTML RHS identificador-nu/call', c.bare));
+  console.log(row('textContent com markup HTML (anti-padrão)', c.tc));
+  console.log(row('TOTAL sinks/blocos varridos', total));
+  console.log('    ' + (allOk ? '✅ status: PASS' : '❌ status: FAIL'));
+  console.log('  ' + '='.repeat(58));
+  const json = JSON.stringify({
+    tl: c.tl, concat: c.concat, insert_adjacent_html: c.adj,
+    bare_id_inner_html: c.bare, text_content_markup: c.tc, total, ok: allOk,
+  });
+  console.log('GUARD_REPORT ' + json);
+  if (process.env.GITHUB_ACTIONS === 'true') {
+    console.log('::notice title=DOM Guard Report::' +
+      'tl=' + c.tl + ' concat=' + c.concat + ' insertAdjacentHTML=' + c.adj +
+      ' bareIdInnerHTML=' + c.bare + ' textContentMarkup=' + c.tc +
+      ' total=' + total + ' ' + (allOk ? 'PASS' : 'FAIL'));
+    const summaryFile = process.env.GITHUB_STEP_SUMMARY;
+    if (summaryFile) {
+      try {
+        const md =
+          '## 📊 DOM Guard Report\n\n' +
+          '| Métrica | Valor |\n' +
+          '|---|---:|\n' +
+          `| Interpolações em template literals (innerHTML) | ${c.tl} |\n` +
+          `| Blocos de concatenação \`+\` (innerHTML) | ${c.concat} |\n` +
+          `| insertAdjacentHTML (2º arg varrido) | ${c.adj} |\n` +
+          `| innerHTML/outerHTML RHS identificador-nu/call | ${c.bare} |\n` +
+          `| textContent markup (anti-padrão) | ${c.tc} |\n` +
+          `| **Total varrido** | **${total}** |\n` +
+          `| Status | ${allOk ? '✅ PASS' : '❌ FAIL'} |\n`;
+        fs.appendFileSync(summaryFile, md);
+      } catch (e) { /* best effort — summary is non-critical */ }
+    }
+  }
 }
 
 // ── Main ───────────────────────────────────────────────────────────────
 function main() {
+  const reportMode = process.argv.includes('--report');
   console.log('\n  ' + '='.repeat(58));
   console.log('  CYPHER65 — DOM Regression Guards');
   console.log('  ' + '='.repeat(58));
   const ok1 = checkDuplicateIds();
-  const ok2 = checkInnerHtmlEscaping();
-  const ok3 = checkConcatEscaping();
-  const ok4 = checkHtmlSinkExtension();
+  const r2 = checkInnerHtmlEscaping();
+  const r3 = checkConcatEscaping();
+  const r4 = checkHtmlSinkExtension();
+  const allOk = ok1 && r2.ok && r3.ok && r4.ok;
+  if (reportMode) {
+    printGuardReport({
+      tl: r2.tl, concat: r3.concat, adj: r4.adj, bare: r4.bare, tc: r4.tc,
+    }, allOk);
+  }
   console.log('  ' + '='.repeat(58));
-  if (ok1 && ok2 && ok3 && ok4) {
+  if (allOk) {
     console.log('  ✅ PASS — all DOM regression guards green\n');
     process.exit(0);
   }

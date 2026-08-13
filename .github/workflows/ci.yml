@@ -57,8 +57,31 @@ jobs:
       #   GUARD 1: templates/*.html têm id="" duplicado (quebra querySelector)
       #   GUARD 2: innerHTML interpola campo de registro externo sem
       #            escapeHtml (vetor de XSS — severity/category/msg/etc.)
-      - name: DOM regression guards (dup ids + innerHTML escaping)
-        run: node scripts/check-dom-regression.cjs
+      #   --report (Issue #68): além de bloquear, imprime o 📊 DOM Guard
+      #            Report (counts TL/concat/insertAdjacentHTML/bare-id/
+      #            textContent por PR) — annotation no checks UI + step
+      #            summary, base para monitorar tendência de superfície XSS.
+      #            A linha GUARD_REPORT {...} é persistida como artifact
+      #            (dom-guard-report) para a linha do tempo por PR.
+      # set +e + `exit $EXIT`: preserva o exit code do guard (bloqueio) mesmo
+      # quando o artifact precisa ser gravado antes de falhar o step.
+      - name: DOM regression guards (dup ids + innerHTML escaping) + report
+        run: |
+          set +e
+          node scripts/check-dom-regression.cjs --report | tee /tmp/guard-report.log
+          EXIT=$?
+          grep 'GUARD_REPORT' /tmp/guard-report.log | sed 's/^GUARD_REPORT //' > /tmp/guard-report.json || true
+          echo "guard exit: $EXIT · artifact: $(cat /tmp/guard-report.json 2>/dev/null)"
+          exit $EXIT
+
+      - name: Upload DOM guard report (trend)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dom-guard-report
+          path: /tmp/guard-report.json
+          if-no-files-found: ignore
+          retention-days: 30
 
       # Self-test of the guard itself (Issue #60): runs the REAL guard as a
       # subprocess against disposable fixtures (XSS injetado → FAIL, id
