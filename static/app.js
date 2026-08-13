@@ -1802,13 +1802,13 @@ function renderAccount(acct) {
   function renderEvents(events) {
     if (!dom.eventsTbody) return;
     if (!events || !events.length) { dom.eventsTbody.innerHTML = '<tr><td colspan="5" class="empty">awaiting data\u2026</td></tr>'; return; }
-    dom.eventsTbody.innerHTML = events.map(e => `<tr><td>#${e.block_height || e.block || '\u2014'}</td><td>${fmt.shortAddr(e.address || '')}</td><td>${fmt.diff(e.difficulty)}</td><td>${fmt.age(e.block_timestamp || e.ts)}</td><td>${e.claimed ? 'YES' : 'NO'}</td></tr>`).join('');
+    dom.eventsTbody.innerHTML = events.map(e => `<tr><td>#${e.block_height || e.block || '\u2014'}</td><td>${escapeHtml(fmt.shortAddr(e.address || ''))}</td><td>${escapeHtml(fmt.diff(e.difficulty))}</td><td>${escapeHtml(fmt.age(e.block_timestamp || e.ts))}</td><td>${e.claimed ? 'YES' : 'NO'}</td></tr>`).join('');
   }
 
   function renderLeaderboard(lb) {
     if (!dom.lbTbody) return;
     if (!lb || !lb.length) { dom.lbTbody.innerHTML = '<tr><td colspan="6" class="empty">awaiting data\u2026</td></tr>'; return; }
-    dom.lbTbody.innerHTML = lb.map((r, i) => `<tr><td>${i+1}</td><td>${fmt.shortAddr(r.address)}</td><td>${r.diff_rank || r.diffRank || '\u2014'}</td><td>${r.loyalty_rank || r.loyalty || '\u2014'}</td><td>${r.combined_score || r.score || '\u2014'}</td><td>${r.total_blocks || r.blocks || 0}</td></tr>`).join('');
+    dom.lbTbody.innerHTML = lb.map((r, i) => `<tr><td>${i+1}</td><td>${escapeHtml(fmt.shortAddr(r.address))}</td><td>${escapeHtml(r.diff_rank || r.diffRank || '\u2014')}</td><td>${escapeHtml(r.loyalty_rank || r.loyalty || '\u2014')}</td><td>${escapeHtml(r.combined_score || r.score || '\u2014')}</td><td>${escapeHtml(r.total_blocks || r.blocks || 0)}</td></tr>`).join('');
   }
 
   // ── Charts — renderChart fetches data and updates Chart.js instances ──
@@ -2622,8 +2622,13 @@ function renderAccount(acct) {
     setAll('solo-net-diff', prox.network_difficulty_str || dash);
     setAll('solo-worker-hr', prox.worker_hashrate_ths ? fmt.hashrate(prox.worker_hashrate_ths * 1e12) : dash);
     setAll('solo-p-block', prox.chance_per_share_label || dash);
+    // Issue #50 (audit): the solo CARDS panel uses dedicated ids (renamed
+    // from the duplicated #solo-expected-time/#solo-blocks-year in the
+    // profit strip) so getElementById never hits the wrong node.
     setAll('solo-expected-time', prox.expected_time_human || dash);
     setAll('solo-blocks-year', prox.blocks_per_year != null ? prox.blocks_per_year.toFixed(2) : dash);
+    setAll('solo-cards-expected-time', prox.expected_time_human || dash);
+    setAll('solo-cards-blocks-year', prox.blocks_per_year != null ? prox.blocks_per_year.toFixed(2) : dash);
     setAll('solo-best-diff', prox.all_time_best_diff_str || dash);
     setAll('solo-status-badge', prox.insufficient_data ? '—' : (prox.best_diff_raw ? 'READY' : '—'));
   }
@@ -5705,7 +5710,7 @@ function renderAccount(acct) {
         bar.innerHTML = methods.map(function(m) {
           return '<span class="support-method support-bar__method" title="' + escapeHtml(m.label) + '">' +
             '<span class="support-method-tag" style="color:' + (m.color || '#00ff41') + '">' + (m.icon || '₿') + ' ' + escapeHtml(m.label) + '</span>' +
-            '<span class="support-method-addr" data-copy="' + escapeHtml(m.address) + '">' + escapeHtml(m.address) + '</span>' +
+            '<span class="support-method-addr" title="' + escapeHtml(m.label) + ': ' + escapeHtml(m.address) + '" data-copy="' + escapeHtml(m.address) + '">' + escapeHtml(m.address) + '</span>' +
             '<button class="support-method-copy" data-copy-btn aria-label="Copy ' + escapeHtml(m.label) + ' address">⧉</button>' +
             '</span>';
         }).join('');
@@ -9195,8 +9200,10 @@ dom.walletSave?.addEventListener('click', async () => {
       }
     },
     updateCommandCenter: function(worker, fleet, pool, profit) {
-      var hrStr = worker ? this.formatHashrate(worker.hashrate) : '0 H/s';
-      this.setText('hero-worker', hrStr);
+      // Issue #51 (audit): do NOT setText on #hero-worker — that id is the
+      // WHOLE panel section, so el.textContent wipes every child metric
+      // (m-hashrate, m-state, hc-*, hero grid). The hero values are owned by
+      // renderHero()/renderHostCore() (called by the original render).
       // p-hashrate, p-workers handled by renderPool() — do not duplicate
       this.setText('p-high-diff', pool ? String(pool.highestDifficulty || '--') : '--');
       this.setText('hc-network', pool ? String(pool.hashrate || '--') : '--');

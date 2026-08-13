@@ -858,4 +858,27 @@ test.describe('CYPHER65 War Room — Dashboard E2E', () => {
       await expect(termBody).toContainText('help');
     });
   });
+
+  test('HOST CORE hero keeps its metric nodes after first render (Issue #51)', async ({ page }) => {
+    await page.goto('/');
+    await waitForDashboard(page);
+    // Regression: DashboardCore.setText('hero-worker', …) used to target the
+    // <section> itself, wiping every child metric (m-hashrate/m-state/hc-*).
+    // After the fix, the metric nodes must still exist inside the section.
+    await expect(page.locator('#hero-worker #m-hashrate')).toBeAttached();
+    await expect(page.locator('#hero-worker #m-state')).toBeAttached();
+    await expect(page.locator('#hero-worker #hc-colony-hr')).toBeAttached();
+    await expect(page.locator('#hero-worker #hc-best-diff')).toBeAttached();
+    await expect(page.locator('#hero-worker .hero-grid')).toBeAttached();
+  });
+
+  test('support addresses do not overflow their container (Issue #49)', async ({ page }) => {
+    await page.goto('/');
+    await waitForDashboard(page);
+    const overflow = await page.evaluate(() => {
+      const doc = document.documentElement;
+      return { sw: doc.scrollWidth, cw: doc.clientWidth };
+    });
+    expect(overflow.sw).toBeLessThanOrEqual(overflow.cw + 2);
+  });
 });
