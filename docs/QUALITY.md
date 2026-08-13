@@ -157,6 +157,20 @@ baseline → PASS, XSS injetado → FAIL, id duplicado → FAIL, `fmt.diff` sem
 escape → FAIL, dados escapados + `fmt.age` + contador → PASS. Protege o
 próprio guard contra enfraquecimento futuro.
 
+### Pipeline de frontend combinado — `scripts/check_frontend.sh` (Issue #62)
+
+Um comando roda os 4 checks de frontend em sequência (boota o Flask se
+`AUDIT_URL` não estiver definida): `npm run check:frontend`.
+
+1. `check:dom` — guard estático (ids duplicados + XSS innerHTML)
+2. `test:dom-guards` — self-test do próprio guard
+3. JS core — `node --check static/app.js` + `tests/test_app_js_core.js`
+4. `audit_ui --all` — auditoria visual desktop + mobile
+
+No CI é o job **`frontend-audit`** (`frontend: audit visual + guards DOM`),
+blocking no PR — qualquer overflow/truncamento/console error/regressão de
+escape bloqueia o merge.
+
 ### Auditoria visual (Playwright) — `scripts/audit_ui.cjs`
 
 Auditoria reutilizável do dashboard (usada na rodada 2026-08): console errors,

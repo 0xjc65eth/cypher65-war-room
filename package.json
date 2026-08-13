@@ -12,6 +12,7 @@
     "gen:qr-golden": "node scripts/gen_qr_golden.cjs",
     "audit:ui": "node scripts/audit_ui.cjs",
     "audit:ui:all": "node scripts/audit_ui.cjs --all",
+    "check:frontend": "bash scripts/check_frontend.sh",
     "check:dom": "node scripts/check-dom-regression.cjs",
     "test:dom-guards": "node tests/test_dom_guards.js",
     "lint:commit": "commitlint --from HEAD~1"

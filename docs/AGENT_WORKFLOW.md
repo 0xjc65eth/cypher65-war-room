@@ -91,6 +91,7 @@ node tests/test_app_js_core.js                                   # suíte JS esp
 node --check static/app.js
 node scripts/check-dom-regression.cjs   # guards DOM: ids duplicados + XSS innerHTML
 node tests/test_dom_guards.js           # self-test do próprio guard (casos adversários)
+bash scripts/check_frontend.sh          # pipeline frontend completo (guards + JS core + audit visual)
 git diff --check
 bash run-e2e.sh --file=SEU_SPEC.spec.js                          # e2e afetado
 ```
@@ -148,7 +149,9 @@ Aplicar o que for aplicável à mudança:
   cobertura no Codecov (badge dinâmico no README).
 - **Auditoria visual** (mudanças de UI): `node scripts/audit_ui.cjs --all`
   (console errors, overflow, truncamento, skeletons presos) — exit code
-  CI-friendly, flags `--mobile`/`--strict`.
+  CI-friendly, flags `--mobile`/`--strict`. Para rodar tudo de uma vez
+  (guards DOM + self-test + JS core + audit): `bash scripts/check_frontend.sh`
+  (job `frontend-audit` no CI, blocking no PR).
 - **Mutation testing** (quando pedido): `mutmut run --use-coverage
   --disable-mutation-types string` — rodar em background (tmux) e validar
   cada mutante sobrevivente com `mutmut apply <id>` + teste que o mata;

@@ -232,3 +232,52 @@ jobs:
           path: e2e-report
           if-no-files-found: ignore
           retention-days: 14
+
+  # Frontend quality pipeline (Issue #62) — check combinado de frontend:
+  # guards DOM estáticos + self-test do guard + JS core + auditoria visual
+  # (console/overflow/truncamento/skeletons) em desktop e mobile. Boota o
+  # próprio servidor via scripts/check_frontend.sh. Blocking no PR.
+  frontend-audit:
+    name: "frontend: audit visual + guards DOM"
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    defaults:
+      run:
+        working-directory: ./
+
+    env:
+      SECRET_KEY: "ci-test-secret-key-0123456789abcdef"
+      RATE_LIMIT_PER_MINUTE: "10000"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install dependencies
+        run: |
+          npm install
+          python -m venv .venv
+          source .venv/bin/activate
+          pip install --upgrade pip
+          pip install -r requirements.txt
+
+      # Browsers SEM sudo: cache fica no HOME do runner — com sudo o HOME
+      # vira /root e o Playwright não acha o binário (mesmo fix do job e2e).
+      - name: Install Playwright browsers
+        run: |
+          npx playwright install chromium
+          sudo npx playwright install-deps chromium
+
+      - name: Run frontend pipeline (guards + JS core + audit visual)
+        run: bash scripts/check_frontend.sh
