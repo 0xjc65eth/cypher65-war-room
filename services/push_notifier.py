@@ -182,6 +182,14 @@ def notify_tenant_alert(tenant_id: str, severity: str, category: str,
         return 0
     if not VAPID_PRIVATE_KEY or not VAPID_PUBLIC_KEY:
         return 0
+    # Canonical default tenant: /api/push/subscribe stores the operator's
+    # dashboard subscription under '' (the legacy/operator tenant), while
+    # every require_tenant route normalizes anonymous sessions to 'default'.
+    # Without this mapping, worker/sweep pushes to the operator would look up
+    # tenant_id='default' and MISS the subscription — silent no-delivery.
+    log_tenant = tenant_id or "default"
+    if tenant_id == "default":
+        tenant_id = ""
     subs = get_subscriptions_for_tenant(tenant_id)
     if not subs:
         return 0
@@ -224,7 +232,7 @@ def notify_tenant_alert(tenant_id: str, severity: str, category: str,
             pass
     if sent > 0:
         log.info("[push] tenant %s notified on %d device(s) for %s/%s",
-                 tenant_id[:8], sent, severity, category)
+                 log_tenant[:8], sent, severity, category)
     return sent
 
 

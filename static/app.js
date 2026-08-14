@@ -6173,6 +6173,20 @@ function renderAccount(acct) {
         '<span id="wh-test-status" style="font-size:10px;color:var(--text-muted)"></span>' +
         '</div></div>';
     }
+    // "Test alert" for the AUTO-EXCLUSION family (Issue #104): fires the SAME
+    // message the sweep dispatches on a real exclusion, through the SAME
+    // builders (send_webhook_for_alert + notify_tenant_alert), synchronously —
+    // webhook + push verdict in one click. Always visible so the operator can
+    // validate the tenant config BEFORE enabling rental_auto_exclude_alert.
+    if (settings['rental_auto_exclude_alert']) {
+      html += '<div style="margin-top:6px;border:1px dashed var(--border);border-radius:4px;padding:8px">' +
+        '<div style="font-size:10px;color:var(--text-tertiary);letter-spacing:0.06em">ALERTA AUTO-EXCLUSÃO — teste do canal (webhook + push)</div>' +
+        '<div style="font-size:10px;color:var(--text-muted);line-height:1.4;margin:4px 0 6px">Envia uma mensagem de exemplo do tipo que o piloto dispara quando o sweep exclui um rig por sub-entrega. Nenhuma exclusão real é feita.</div>' +
+        '<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">' +
+        '<button type="button" class="btn btn--primary btn--mini" id="ae-send-test">🧪 TESTAR ALERTA</button>' +
+        '<span id="ae-test-status" style="font-size:10px;color:var(--text-muted)"></span>' +
+        '</div></div>';
+    }
     html += '</div>';
     box.innerHTML = html;
     // Live-update the preview as the operator edits webhook fields, and wire
@@ -6229,6 +6243,41 @@ function renderAccount(acct) {
             st.style.color = 'var(--accent-red)';
           } else {
             st.textContent = '✗ ' + (d.error || 'falhou') + (d.env_override ? ' — a env var BRAIINS_API_KEY SOBRESCREVE este campo' : '');
+            st.style.color = 'var(--accent-red)';
+          }
+        } catch (e) {
+          if (st) { st.textContent = '✗ network error: ' + e.message; st.style.color = 'var(--accent-red)'; }
+        }
+      });
+    }
+    const aeTestBtn = document.getElementById('ae-send-test');
+    if (aeTestBtn) {
+      aeTestBtn.addEventListener('click', async function() {
+        const st = document.getElementById('ae-test-status');
+        if (st) { st.textContent = 'enviando…'; st.style.color = 'var(--text-muted)'; }
+        try {
+          const r = await authFetch('/api/settings/test-auto-exclude-alert', { method: 'POST' });
+          const d = await r.json();
+          if (!st) return;
+          if (!r.ok) {
+            st.textContent = '✗ ' + (d.error || ('HTTP ' + r.status));
+            st.style.color = 'var(--accent-red)';
+            return;
+          }
+          if (d.success) {
+            const bits = [];
+            if (d.webhook_ok) bits.push('webhook ✓');
+            if (d.push_targets > 0) bits.push('push → ' + d.push_targets + ' dispositivo(s)');
+            // Green success must NOT mask a dead webhook — that's the config
+            // failure this button exists to catch (e.g. broken URL + push ok).
+            const whWarn = (d.webhook_configured && !d.webhook_ok) ? ('⚠ webhook: ' + (d.webhook_reason || 'falhou')) : '';
+            st.textContent = '✓ ' + bits.join(' · ') + (whWarn ? ' · ' + whWarn : '');
+            st.style.color = whWarn ? 'var(--accent-orange)' : 'var(--green)';
+          } else {
+            const why = d.webhook_configured
+              ? 'webhook: ' + (d.webhook_reason || 'falhou') + (d.push_targets === 0 ? ' · push sem dispositivos' : '')
+              : 'nenhum canal entregou';
+            st.textContent = '✗ ' + why + (d.guidance ? ' — ' + d.guidance : '');
             st.style.color = 'var(--accent-red)';
           }
         } catch (e) {
