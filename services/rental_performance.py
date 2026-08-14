@@ -1102,6 +1102,11 @@ _EPOCH_INVALID_S = 10 * 86400
 
 RENTAL_ANALYSIS_COLUMNS = [
     "id", "provider", "status", "start", "end", "length_hours", "blacklisted",
+    # Pilot audit (Issue #119): o que o Auto-Pilot decidiu sobre o rig —
+    # auto_excluded = está NA auto-blacklist agora; as demais colunas vêm do
+    # ledger (histórico): causa, régua vigente, quando, e se foi REVOGADA.
+    "auto_excluded", "auto_exclude_cause", "auto_exclude_rule",
+    "auto_exclude_ts", "auto_exclude_restored",
     "advertised_th", "avg_th", "delivery_pct", "min_acceptable_delivery",
     "performance_ok", "cancelled_by_performance",
     "paid_sats", "refund_sats", "expected_refund_sats", "refund_pending_sats",
@@ -1139,9 +1144,56 @@ def _market_price_for_ts(ts: Optional[float]) -> Optional[float]:
         return None
 
 
+def _auto_exclusion_map(tenant_id: str = "") -> Dict[str, Dict[str, Any]]:
+    """rig_id → auto-exclusion ledger entry {grade, delivery_pct, samples,
+    grade_floor, min_samples, cause, ts, restored} (newest per rig).
+
+    Same ledger + rule the panel's AUTO-EXCLUSÕES section reads, so the CSV
+    audit matches the UI byte-for-byte. Never raises."""
+    try:
+        th = _auto_exclude_thresholds(tenant_id=tenant_id)
+        out: Dict[str, Dict[str, Any]] = {}
+        for e in get_accepted_recos(tenant_id=tenant_id):
+            if (e.get("source") or "") != "auto":
+                continue
+            rid = e.get("rig_id")
+            if rid is None:
+                continue
+            rid_s = str(rid)
+            entry = {
+                "grade": e.get("grade"),
+                "delivery_pct": e.get("delivery_pct"),
+                "samples": e.get("samples", 0),
+                "grade_floor": th["grade"],
+                "min_samples": th["min_samples"],
+                "cause": _auto_exclusion_cause(e, th),
+                "ts": e.get("ts") or 0,
+                "restored": bool(e.get("restored")),
+            }
+            prev = out.get(rid_s)
+            if prev is None or entry["ts"] >= (prev["ts"] or 0):
+                out[rid_s] = entry
+        return out
+    except Exception as e:
+        log.warning("[rental_performance] auto-exclusion map failed: %s", e)
+        return {}
+
+
+def _fmt_ts_date(ts: Any) -> str:
+    """Unix ts → YYYY-MM-DD (UTC); empty on invalid/absent."""
+    try:
+        ts = int(ts)
+        if ts <= 0:
+            return ""
+        return time.strftime("%Y-%m-%d", time.gmtime(ts))
+    except (TypeError, ValueError, OverflowError):
+        return ""
+
+
 def _mrr_analysis_row(r: Dict[str, Any], tenant_id: str,
                       min_delivery_pct: float,
-                      blacklisted_ids: set, auto_ids: set) -> Dict[str, Any]:
+                      blacklisted_ids: set, auto_ids: set,
+                      autoex: Optional[Dict[str, Dict[str, Any]]] = None) -> Dict[str, Any]:
     """One ANALYSIS row for an MRR rental (renter bucket). Never raises."""
     _rig = r.get("rig") if isinstance(r.get("rig"), dict) else {}
     rid = _rig.get("id")
@@ -1222,6 +1274,13 @@ def _mrr_analysis_row(r: Dict[str, Any], tenant_id: str,
     risk = round(100.0 - reliability, 1) if reliability is not None else None
     already_bl = rid_str in blacklisted_ids or rid_str in auto_ids
     should_bl = reliability is not None and reliability < BLACKLIST_RELIABILITY_BELOW
+    # Pilot audit: the rig's auto-exclusion ledger entry (histórico — inclui
+    # decisões REVOGADAS) + se está na auto-blacklist AGORA.
+    auto_entry = (autoex or {}).get(rid_str) or {}
+    auto_rule = ""
+    if auto_entry:
+        auto_rule = "floor " + str(auto_entry.get("grade_floor") or "F") + \
+            " · mín " + str(auto_entry.get("min_samples") or 2)
 
     # Auto action: blacklist > request_refund > monitor > ok.
     if should_bl and not already_bl:
@@ -1244,6 +1303,9 @@ def _mrr_analysis_row(r: Dict[str, Any], tenant_id: str,
         notes.append("sem preço de mercado na data")
     if already_bl:
         notes.append("rig já na blacklist")
+    if auto_entry:
+        notes.append("auto-exclusão do piloto: " + (auto_entry.get("cause") or "sem causa") +
+                     (" (REVOGADA)" if auto_entry.get("restored") else ""))
     if expected_refund and refund_sats is None:
         notes.append("reembolso recebido não rastreado pela API — valor é o DEVIDO")
 
@@ -1251,6 +1313,11 @@ def _mrr_analysis_row(r: Dict[str, Any], tenant_id: str,
         "id": r.get("id"), "provider": "mrr", "status": status,
         "start": start, "end": end, "length_hours": lenh,
         "blacklisted": "1" if already_bl else "",
+        "auto_excluded": "1" if rid_str in auto_ids else "",
+        "auto_exclude_cause": auto_entry.get("cause") or "",
+        "auto_exclude_rule": auto_rule,
+        "auto_exclude_ts": _fmt_ts_date(auto_entry.get("ts")) if auto_entry else "",
+        "auto_exclude_restored": "1" if auto_entry.get("restored") else "",
         "advertised_th": adv_th, "avg_th": avg_th, "delivery_pct": delivery,
         "min_acceptable_delivery": min_delivery_pct,
         "performance_ok": "1" if perf_ok else "",
@@ -1292,13 +1359,17 @@ def build_rentals_analysis_rows(active: List[Dict], history: List[Dict],
         min_delivery_pct = 90.0
     bl = set(get_rig_blacklist(tenant_id=tenant_id))
     auto = set(get_auto_blacklist(tenant_id=tenant_id))
+    # Pilot audit lookup: rig → auto-exclusion ledger entry (causa + régua +
+    # revogada) — same ledger the panel section reads (Issue #119).
+    autoex = _auto_exclusion_map(tenant_id=tenant_id)
     rows: List[Dict[str, Any]] = []
     for bucket in (active or [], history or []):
         for r in bucket:
             if not isinstance(r, dict):
                 continue
             try:
-                rows.append(_mrr_analysis_row(r, tenant_id, min_delivery_pct, bl, auto))
+                rows.append(_mrr_analysis_row(
+                    r, tenant_id, min_delivery_pct, bl, auto, autoex))
             except Exception as e:
                 log.warning("[rental_performance] analysis row failed: %s", e)
     for c in (contracts or []):
@@ -1312,6 +1383,9 @@ def build_rentals_analysis_rows(active: List[Dict], history: List[Dict],
             "id": c.get("id"), "provider": "braiins", "status": status,
             "start": c.get("started_at"), "end": c.get("ended_at"),
             "length_hours": None, "blacklisted": "",
+            "auto_excluded": "", "auto_exclude_cause": "",
+            "auto_exclude_rule": "", "auto_exclude_ts": "",
+            "auto_exclude_restored": "",
             "advertised_th": (spd * PH_TO_TH) if spd else None, "avg_th": None,
             "delivery_pct": None, "min_acceptable_delivery": min_delivery_pct,
             "performance_ok": "", "cancelled_by_performance": "",
