@@ -6212,7 +6212,11 @@ def api_rentals_detail(tenant_id: str = ""):
         # webhook/push alert through the SAME dispatcher the sweep uses, with
         # the same rig_id:ts dedup claim — the sweep's next pass computes the
         # same exclusion ts and never double-fires. Fire-and-forget (daemon
-        # threads); never blocks the route.
+        # threads); never blocks the route. auto_exclude_rule carries the
+        # tenant's vigente rule so the UI badge shows the real floor/mín.
+        n_alert = 0
+        autoex_rule = {}
+        autoex_entry = {}
         if rig_analysis.get("auto_excluded_now") and rig_id:
             try:
                 from services.user_polling import dispatch_auto_exclude_alerts
@@ -6220,6 +6224,17 @@ def api_rentals_detail(tenant_id: str = ""):
                 if n_alert:
                     log.info("[rentals] panel auto-exclude alert: %d dispatched",
                              n_alert)
+                th = _rental_perf._auto_exclude_thresholds(tenant_id=tenant_id)
+                autoex_rule = {"grade_floor": th.get("grade"),
+                               "min_samples": th.get("min_samples")}
+                # The exact ledger entry the AUTO-EXCLUSÕES section will show —
+                # reuse auto_exclusion_history() so the pre-added card is
+                # byte-identical to a refresh (same snapshot, rule, cause).
+                _hist = _rental_perf.auto_exclusion_history(tenant_id=tenant_id)
+                for _e in _hist.get("exclusions", []):
+                    if str(_e.get("rig_id")) == str(rig_id):
+                        autoex_entry = _e
+                        break
             except Exception as e:
                 log.warning("[rentals] panel auto-exclude alert error: %s", e)
         return jsonify({"success": True, "provider": "mrr", "detail": raw,
@@ -6229,6 +6244,10 @@ def api_rentals_detail(tenant_id: str = ""):
                         "pl": pl,
                         "rig_history": rig_analysis["history"],
                         "rig_analysis": rig_analysis,
+                        "auto_excluded_now": bool(rig_analysis.get("auto_excluded_now")),
+                        "auto_exclude_alert_dispatched": n_alert,
+                        "auto_exclude_rule": autoex_rule,
+                        "auto_exclude_entry": autoex_entry,
                         "market": _rental_perf.fetch_market_reference()})
     except Exception as e:
         log.warning("[rentals] detail error: %s", e)

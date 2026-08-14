@@ -324,7 +324,8 @@ def rclient():
         _app_module._RENTALS_CACHE.clear()
 
 
-def _mock_detail_route(monkeypatch, auto_excluded_now=False):
+def _mock_detail_route(monkeypatch, auto_excluded_now=False,
+                        exclusions=None, thresholds=None):
     """Mock the MRR detail route's provider/analytics fns + analyze_rig."""
     dispatched = []
     monkeypatch.setattr(
@@ -342,18 +343,48 @@ def _mock_detail_route(monkeypatch, auto_excluded_now=False):
         lambda *a, **k: {"history": [], "auto_excluded_now": auto_excluded_now})
     monkeypatch.setattr(_app_module._rental_perf, "fetch_market_reference", lambda: {})
     monkeypatch.setattr(
+        _app_module._rental_perf, "_auto_exclude_thresholds",
+        lambda tenant_id="": (thresholds if thresholds is not None
+                               else {"grade": "F", "min_samples": 2}))
+    monkeypatch.setattr(
+        _app_module._rental_perf, "auto_exclusion_history",
+        lambda tenant_id="": {"count": len(exclusions or []),
+                               "exclusions": exclusions or []})
+    monkeypatch.setattr(
         _up, "dispatch_auto_exclude_alerts",
         lambda t, r: (dispatched.append((t, list(r))) or 1))
     return dispatched
 
 
-def test_detail_route_dispatches_alert_on_auto_excluded_now(rclient, monkeypatch):
-    """GET /api/rentals/detail → analyze_rig excluded → the SAME sweep
-    dispatcher fires (opt-in gating + dedup live inside it)."""
-    dispatched = _mock_detail_route(monkeypatch, auto_excluded_now=True)
+def test_detail_route_returns_auto_exclude_badge_fields(rclient, monkeypatch):
+    """When THIS call performs the exclusion, the response carries the
+    badge payload: auto_excluded_now, alert dispatch count, the vigente
+    rule AND the exact ledger entry the AUTO-EXCLUSÕES section renders
+    (parity so the pre-added card matches a refresh byte-for-byte)."""
+    entry = {"rig_id": "R1", "name": "Rig R1", "ts": 1000, "grade": "F",
+             "delivery_pct": 57.5, "samples": 2, "min_samples": 2,
+             "grade_floor": "F", "cause": "sub-entrega (grade F)"}
+    _mock_detail_route(monkeypatch, auto_excluded_now=True, exclusions=[entry])
     resp = rclient.get("/api/rentals/detail?provider=mrr&id=5657736")
     assert resp.status_code == 200
-    assert dispatched == [("default", ["R1"])]
+    body = resp.get_json()
+    assert body["auto_excluded_now"] is True
+    assert body["auto_exclude_alert_dispatched"] == 1
+    assert body["auto_exclude_rule"] == {"grade_floor": "F", "min_samples": 2}
+    assert body["auto_exclude_entry"] == entry
+
+
+def test_detail_route_badge_fields_empty_when_no_new_exclusion(rclient, monkeypatch):
+    """Plain detail open (no exclusion performed) → falsy badge payload,
+    so the frontend banner never shows on a normal lookup."""
+    _mock_detail_route(monkeypatch, auto_excluded_now=False)
+    resp = rclient.get("/api/rentals/detail?provider=mrr&id=5657736")
+    assert resp.status_code == 200
+    body = resp.get_json()
+    assert body["auto_excluded_now"] is False
+    assert body["auto_exclude_alert_dispatched"] == 0
+    assert body["auto_exclude_rule"] == {}
+    assert body["auto_exclude_entry"] == {}
 
 
 def test_detail_route_skips_dispatch_when_no_new_exclusion(rclient, monkeypatch):

@@ -920,6 +920,10 @@
       <span class="rentals-detail__title" id="rentals-detail-title">—</span>
       <button class="chip" id="rentals-detail-close">✕ close</button>
     </div>
+    <!-- Auto-exclusion banner (Issue #110): visible ONLY on the detail call
+         that performed the exclusion — immediate feedback + alert dispatch
+         status, without waiting for the next panel refresh. -->
+    <div class="rentals-detail__autoex" id="rentals-detail-autoex" hidden></div>
     <div class="rentals-detail__grid" id="rentals-detail-grid"></div>
     <div class="rentals-perf" id="rentals-detail-perf"></div>
     <div class="rentals-trust" id="rentals-detail-trust" hidden></div>
