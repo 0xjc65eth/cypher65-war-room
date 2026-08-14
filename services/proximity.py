@@ -11,6 +11,7 @@ AUDIT 2026-07-23:
   - missing_inputs validation for every required field
   - share_calc_history deque increased from 20 → 120 entries
 """
+
 import json
 import math
 import logging
@@ -19,8 +20,12 @@ import time
 import services.state as state
 
 from helpers import (
-    parse_diff_to_float, fmt_diff, fmt_hashrate,
-    human_int, human_secs_long, isfinite_v,
+    parse_diff_to_float,
+    fmt_diff,
+    fmt_hashrate,
+    human_int,
+    human_secs_long,
+    isfinite_v,
 )
 
 log = logging.getLogger("cypher65")
@@ -28,14 +33,14 @@ log = logging.getLogger("cypher65")
 # ── Proximity constants ──────────────────────────────────────────────────
 PROXIMITY_MILESTONES_PCT = [0.01, 0.1, 1.0, 5.0, 10.0, 25.0, 50.0, 100.0]
 PROXIMITY_HOT_STREAK_THRESHOLD_PCT = 10.0  # >10% growth in rolling avg → hot streak
-PROXIMITY_SAMPLE_THROTTLE_S = 60            # 1 sample/min → manageable DB size
-_last_proximity_sample_ts = 0               # module-level throttle
+PROXIMITY_SAMPLE_THROTTLE_S = 60  # 1 sample/min → manageable DB size
+_last_proximity_sample_ts = 0  # module-level throttle
 
 # Quantum-lock thresholds
-QUANTUM_LOCK_MIN_SHARES = 5          # minimum shares for any confidence
-QUANTUM_LOCK_MIN_BEST_DIFF_T = 1.0   # minimum best diff in T for weak lock
-QUANTUM_LOCK_STRONG_PCT = 1.0        # >1% of network → strong lock
-QUANTUM_LOCK_MODERATE_PCT = 0.1      # >0.1% → moderate lock
+QUANTUM_LOCK_MIN_SHARES = 5  # minimum shares for any confidence
+QUANTUM_LOCK_MIN_BEST_DIFF_T = 1.0  # minimum best diff in T for weak lock
+QUANTUM_LOCK_STRONG_PCT = 1.0  # >1% of network → strong lock
+QUANTUM_LOCK_MODERATE_PCT = 0.1  # >0.1% → moderate lock
 
 _human_int = human_int
 _human_secs_long = human_secs_long
@@ -137,7 +142,9 @@ def _nearest_history_before(ts_target):
     return None
 
 
-def _sample_proximity(ts, best_diff_raw, current_difficulty, worker_hashrate, hot_streak):
+def _sample_proximity(
+    ts, best_diff_raw, current_difficulty, worker_hashrate, hot_streak
+):
     """Insert a proximity_history row, throttled to once per
     PROXIMITY_SAMPLE_THROTTLE_S seconds."""
     global _last_proximity_sample_ts
@@ -216,7 +223,9 @@ def _compute_rolling_avg_share_diffs(sch, ts_now, window_seconds=3600):
     def _avg(entries):
         if not entries:
             return None
-        vals = [e.get("share_diff_raw") or 0 for e in entries if e.get("share_diff_raw")]
+        vals = [
+            e.get("share_diff_raw") or 0 for e in entries if e.get("share_diff_raw")
+        ]
         if not vals:
             return None
         return sum(vals) / len(vals)
@@ -251,7 +260,9 @@ def _compute_rolling_avg_share_diffs(sch, ts_now, window_seconds=3600):
 # ── Quantum-lock assessment ──────────────────────────────────────────────
 
 
-def _compute_quantum_lock(pct_cur, best_diff_raw, net_diff, sch, session_shares, trend_pct, worker_hps):
+def _compute_quantum_lock(
+    pct_cur, best_diff_raw, net_diff, sch, session_shares, trend_pct, worker_hps
+):
     """Assess mining operation "lock" — a composite confidence score.
     Components:
       1. share_density:  how many shares observed (proxy for work done)
@@ -385,11 +396,17 @@ def compute_proximity(worker, current_difficulty, net_hashrate, ts):
     # Collect missing inputs for validation
     missing_inputs = []
 
-    log.debug("[proximity] compute_proximity entry — worker=%s, net_diff=%s, ts=%s",
-              worker.get("name") if worker else None, current_difficulty, ts)
+    log.debug(
+        "[proximity] compute_proximity entry — worker=%s, net_diff=%s, ts=%s",
+        worker.get("name") if worker else None,
+        current_difficulty,
+        ts,
+    )
 
     try:
-        best_diff_raw = parse_diff_to_float(worker.get("bestDifficulty")) if worker else None
+        best_diff_raw = (
+            parse_diff_to_float(worker.get("bestDifficulty")) if worker else None
+        )
         if not best_diff_raw:
             missing_inputs.append("worker.bestDifficulty")
 
@@ -398,7 +415,10 @@ def compute_proximity(worker, current_difficulty, net_hashrate, ts):
             missing_inputs.append("network.difficulty")
         elif net_diff <= 0:
             # Safety: network difficulty must be positive
-            log.warning("[proximity] network difficulty is <= 0 (%.4e) — treating as missing", net_diff)
+            log.warning(
+                "[proximity] network difficulty is <= 0 (%.4e) — treating as missing",
+                net_diff,
+            )
             missing_inputs.append("network.difficulty.invalid")
             net_diff = None
 
@@ -407,7 +427,9 @@ def compute_proximity(worker, current_difficulty, net_hashrate, ts):
             missing_inputs.append("worker.hashrate")
 
         if missing_inputs:
-            log.info("[proximity] insufficient data — missing: %s", ", ".join(missing_inputs))
+            log.info(
+                "[proximity] insufficient data — missing: %s", ", ".join(missing_inputs)
+            )
             return {
                 **out,
                 "insufficient_data": True,
@@ -429,7 +451,7 @@ def compute_proximity(worker, current_difficulty, net_hashrate, ts):
         expected_secs = None
         blocks_per_year = None
         if worker_hps > 0:
-            hashes_per_block = net_diff * (2 ** 32)
+            hashes_per_block = net_diff * (2**32)
             expected_secs = hashes_per_block / worker_hps
             seconds_per_year = 365.25 * 86400
             blocks_per_year = seconds_per_year / expected_secs
@@ -448,7 +470,8 @@ def compute_proximity(worker, current_difficulty, net_hashrate, ts):
             nearest_1h = _nearest_history_before(ts - 3600)
             trend_1h_pct = (
                 (best_diff_raw - nearest_1h[0]) / nearest_1h[0] * 100.0
-                if nearest_1h and nearest_1h[0] else 0.0
+                if nearest_1h and nearest_1h[0]
+                else 0.0
             )
             if trend_1h_pct >= PROXIMITY_HOT_STREAK_THRESHOLD_PCT:
                 trend_label = "rising"
@@ -470,13 +493,21 @@ def compute_proximity(worker, current_difficulty, net_hashrate, ts):
         # ── CHANCE per share: use avg_share_diff_raw when available ──
         avg_share_diff_raw = None
         if sch:
-            avg_share_diff_raw = sum((e.get("share_diff_raw") or 0) for e in sch) / len(sch)
+            avg_share_diff_raw = sum((e.get("share_diff_raw") or 0) for e in sch) / len(
+                sch
+            )
 
-        chance_per_share_raw = avg_share_diff_raw if avg_share_diff_raw and avg_share_diff_raw > 0 else best_diff_raw
+        chance_per_share_raw = (
+            avg_share_diff_raw
+            if avg_share_diff_raw and avg_share_diff_raw > 0
+            else best_diff_raw
+        )
         if chance_per_share_raw and net_diff:
             chance_per_share_in = int(round(net_diff / chance_per_share_raw))
             chance_per_share_label = f"1 in {chance_per_share_in:,}"
-            chance_source = "avg" if avg_share_diff_raw and avg_share_diff_raw > 0 else "best"
+            chance_source = (
+                "avg" if avg_share_diff_raw and avg_share_diff_raw > 0 else "best"
+            )
         else:
             chance_per_share_label = "—"
             chance_source = "none"
@@ -484,57 +515,74 @@ def compute_proximity(worker, current_difficulty, net_hashrate, ts):
         # ── Quantum-lock assessment ──────────────────────────────────
         session_shares = state.timeline_state.get("session_share_count", 0) or 0
         quantum_lock = _compute_quantum_lock(
-            pct_cur, best_diff_raw, net_diff,
-            sch, session_shares, trend_1h_pct, worker_hps,
+            pct_cur,
+            best_diff_raw,
+            net_diff,
+            sch,
+            session_shares,
+            trend_1h_pct,
+            worker_hps,
         )
 
-        out.update({
-            "best_diff_str": fmt_diff(best_diff_raw),
-            "best_diff_raw": best_diff_raw,
-            "all_time_best_diff_str": fmt_diff(all_time_raw),
-            "all_time_best_diff_raw": all_time_raw,
-            "network_difficulty_str": fmt_diff(net_diff),
-            "network_difficulty_raw": net_diff,
-            "worker_hashrate_ths": worker_hps / 1e12 if worker_hps else 0.0,
-            "pct_of_network_cur": pct_cur,
-            "pct_of_network_all_time": pct_all,
-            "distance_factor": distance,
-            "distance_label": (
-                "~" + _human_int(distance) + "× smaller than a block"
-                if distance >= 1000
-                else f"{distance:.2f}× smaller than a block"
-            ),
-            "expected_time_secs": expected_secs,
-            "expected_time_seconds": expected_secs,  # alias for frontend consistency
-            "expected_time_human": _human_secs_long(expected_secs) if expected_secs else "—",
-            "blocks_per_year": blocks_per_year,
-            "chance_per_share_label": chance_per_share_label,
-            "chance_per_share_pct": (chance_per_share_raw / net_diff) if (chance_per_share_raw and net_diff) else 0.0,  # alias as decimal for frontend
-            "chance_per_share_raw": chance_per_share_raw,
-            "chance_per_share_source": chance_source,
-            "trend_1h_pct": trend_1h_pct,
-            "trend_label": trend_label,
-            "trend_rolling": rolling,  # expose raw rolling data for frontend
-            "hot_streak": hot_streak,
-            "milestone_cur_pct": pct_cur,
-            "next_milestone_pct": next_ms,
-            "next_milestone_label": f"{next_ms:g}% of network difficulty",
-            "milestones_achieved": [
-                m for m in PROXIMITY_MILESTONES_PCT if m <= pct_all
-            ],
-            "quantum_lock": quantum_lock,
-        })
+        out.update(
+            {
+                "best_diff_str": fmt_diff(best_diff_raw),
+                "best_diff_raw": best_diff_raw,
+                "all_time_best_diff_str": fmt_diff(all_time_raw),
+                "all_time_best_diff_raw": all_time_raw,
+                "network_difficulty_str": fmt_diff(net_diff),
+                "network_difficulty_raw": net_diff,
+                "worker_hashrate_ths": worker_hps / 1e12 if worker_hps else 0.0,
+                "pct_of_network_cur": pct_cur,
+                "pct_of_network_all_time": pct_all,
+                "distance_factor": distance,
+                "distance_label": (
+                    "~" + _human_int(distance) + "× smaller than a block"
+                    if distance >= 1000
+                    else f"{distance:.2f}× smaller than a block"
+                ),
+                "expected_time_secs": expected_secs,
+                "expected_time_seconds": expected_secs,  # alias for frontend consistency
+                "expected_time_human": (
+                    _human_secs_long(expected_secs) if expected_secs else "—"
+                ),
+                "blocks_per_year": blocks_per_year,
+                "chance_per_share_label": chance_per_share_label,
+                "chance_per_share_pct": (
+                    (chance_per_share_raw / net_diff)
+                    if (chance_per_share_raw and net_diff)
+                    else 0.0
+                ),  # alias as decimal for frontend
+                "chance_per_share_raw": chance_per_share_raw,
+                "chance_per_share_source": chance_source,
+                "trend_1h_pct": trend_1h_pct,
+                "trend_label": trend_label,
+                "trend_rolling": rolling,  # expose raw rolling data for frontend
+                "hot_streak": hot_streak,
+                "milestone_cur_pct": pct_cur,
+                "next_milestone_pct": next_ms,
+                "next_milestone_label": f"{next_ms:g}% of network difficulty",
+                "milestones_achieved": [
+                    m for m in PROXIMITY_MILESTONES_PCT if m <= pct_all
+                ],
+                "quantum_lock": quantum_lock,
+            }
+        )
 
         # LIVE HASH CALCULATOR payload: latest per-share calc + cumulative stats + charts
         try:
             latest = dict(sch[-1]) if sch else None
-            ticker = [dict(e) for e in sch[-12:]]  # last 12 for ticker + sparkline charts
+            ticker = [
+                dict(e) for e in sch[-12:]
+            ]  # last 12 for ticker + sparkline charts
             share_diff_avg = avg_share_diff_raw or 0.0
             totals = {
                 "shares_so_far": session_shares,
                 "shares_in_ticker": len(sch),
                 "avg_share_diff_raw": share_diff_avg,
-                "avg_share_diff_str": fmt_diff(share_diff_avg) if share_diff_avg else "—",
+                "avg_share_diff_str": (
+                    fmt_diff(share_diff_avg) if share_diff_avg else "—"
+                ),
             }
             if share_diff_avg and net_diff:
                 p_per_share = share_diff_avg / net_diff
@@ -551,18 +599,18 @@ def compute_proximity(worker, current_difficulty, net_hashrate, ts):
                     cum_p = 1 - (1 - p_per_share) ** session_shares
                     totals["cum_p_block"] = cum_p
                     totals["cum_p_block_pct_str"] = (
-                        f"{cum_p * 100:.4e}%"
-                        if cum_p < 0.01
-                        else f"{cum_p * 100:.4f}%"
+                        f"{cum_p * 100:.4e}%" if cum_p < 0.01 else f"{cum_p * 100:.4f}%"
                     )
                     expected_blocks = session_shares * p_per_share
                     totals["expected_blocks"] = expected_blocks
                     totals["expected_blocks_str"] = f"{expected_blocks:.4e}"
                 # Expected time per share at this avg diff / hashrate
                 if worker_hps > 0:
-                    expected_time_per_share = (share_diff_avg * (2 ** 32)) / worker_hps
+                    expected_time_per_share = (share_diff_avg * (2**32)) / worker_hps
                     totals["expected_time_per_share_s"] = expected_time_per_share
-                    totals["expected_time_per_share_str"] = _human_secs_long(expected_time_per_share)
+                    totals["expected_time_per_share_str"] = _human_secs_long(
+                        expected_time_per_share
+                    )
 
             # ── Charts data: cumulative P(block) progression ──
             # Uses EACH share's actual p_block_this_share (not a constant average)
@@ -573,11 +621,13 @@ def compute_proximity(worker, current_difficulty, net_hashrate, ts):
                 for idx, e in enumerate(sch):
                     p_this = e.get("p_block_this_share") or 0
                     cum_so_far = 1 - (1 - cum_so_far) * (1 - p_this)
-                    charts_data["cumulative_timeline"].append({
-                        "share_idx": (session_shares - len(sch) + idx + 1),
-                        "cum_p_block": cum_so_far,
-                        "p_this_share": p_this,
-                    })
+                    charts_data["cumulative_timeline"].append(
+                        {
+                            "share_idx": (session_shares - len(sch) + idx + 1),
+                            "cum_p_block": cum_so_far,
+                            "p_this_share": p_this,
+                        }
+                    )
 
                 # ── Consistency check ──
                 # Verify three cross-field relationships:
@@ -589,57 +639,90 @@ def compute_proximity(worker, current_difficulty, net_hashrate, ts):
                 # Check 1: cum_p vs expected_blocks Poisson approximation
                 if expected_blocks is not None and expected_blocks > 0:
                     poisson_approx = 1 - math.exp(-expected_blocks)
-                    deviation = abs(cum_so_far - poisson_approx) / max(cum_so_far, 1e-30) * 100
+                    deviation = (
+                        abs(cum_so_far - poisson_approx) / max(cum_so_far, 1e-30) * 100
+                    )
                     if deviation > 5:
-                        cc["checks"].append({
-                            "check": "cum_p_vs_poisson",
-                            "status": "WARN",
-                            "detail": f"cum_p ({cum_so_far:.6e}) vs Poisson ({poisson_approx:.6e}) dev {deviation:.1f}%",
-                        })
+                        cc["checks"].append(
+                            {
+                                "check": "cum_p_vs_poisson",
+                                "status": "WARN",
+                                "detail": f"cum_p ({cum_so_far:.6e}) vs Poisson ({poisson_approx:.6e}) dev {deviation:.1f}%",
+                            }
+                        )
                     else:
-                        cc["checks"].append({
-                            "check": "cum_p_vs_poisson",
-                            "status": "PASS",
-                            "detail": f"cum_p={cum_so_far:.6e} ≈ 1-e^(-λ)={poisson_approx:.6e} (dev {deviation:.2f}%)",
-                        })
+                        cc["checks"].append(
+                            {
+                                "check": "cum_p_vs_poisson",
+                                "status": "PASS",
+                                "detail": f"cum_p={cum_so_far:.6e} ≈ 1-e^(-λ)={poisson_approx:.6e} (dev {deviation:.2f}%)",
+                            }
+                        )
 
                 # Check 2: avg inst HR vs worker hashrate
-                inst_hrs = [e.get("instantaneous_hr_hps") or 0 for e in sch if e.get("instantaneous_hr_hps")]
+                inst_hrs = [
+                    e.get("instantaneous_hr_hps") or 0
+                    for e in sch
+                    if e.get("instantaneous_hr_hps")
+                ]
                 if inst_hrs and worker_hps > 0:
                     avg_inst_hr = sum(inst_hrs) / len(inst_hrs)
-                    hr_deviation = abs(avg_inst_hr - worker_hps) / max(worker_hps, 1) * 100
+                    hr_deviation = (
+                        abs(avg_inst_hr - worker_hps) / max(worker_hps, 1) * 100
+                    )
                     if hr_deviation > 50:
-                        cc["checks"].append({
-                            "check": "avg_inst_hr_vs_worker_hr",
-                            "status": "WARN",
-                            "detail": f"avg inst HR ({fmt_hashrate(avg_inst_hr)}) vs worker HR ({fmt_hashrate(worker_hps)}) dev {hr_deviation:.0f}%",
-                        })
+                        cc["checks"].append(
+                            {
+                                "check": "avg_inst_hr_vs_worker_hr",
+                                "status": "WARN",
+                                "detail": f"avg inst HR ({fmt_hashrate(avg_inst_hr)}) vs worker HR ({fmt_hashrate(worker_hps)}) dev {hr_deviation:.0f}%",
+                            }
+                        )
                     else:
-                        cc["checks"].append({
-                            "check": "avg_inst_hr_vs_worker_hr",
-                            "status": "PASS",
-                            "detail": f"avg inst HR {fmt_hashrate(avg_inst_hr)} ≈ worker HR {fmt_hashrate(worker_hps)}",
-                        })
+                        cc["checks"].append(
+                            {
+                                "check": "avg_inst_hr_vs_worker_hr",
+                                "status": "PASS",
+                                "detail": f"avg inst HR {fmt_hashrate(avg_inst_hr)} ≈ worker HR {fmt_hashrate(worker_hps)}",
+                            }
+                        )
 
                 # Check 3: implied hashrate from share diff × gap vs worker hashrate
                 gaps = [e.get("gap") for e in sch if e.get("gap") and e.get("gap") > 0]
-                raw_diffs = [e.get("share_diff_raw") for e in sch if e.get("share_diff_raw") and e.get("share_diff_raw") > 0]
-                if gaps and raw_diffs and len(gaps) == len(raw_diffs) and worker_hps > 0:
-                    implied_hrs = [(raw_diffs[i] * (2 ** 32)) / gaps[i] for i in range(len(gaps))]
+                raw_diffs = [
+                    e.get("share_diff_raw")
+                    for e in sch
+                    if e.get("share_diff_raw") and e.get("share_diff_raw") > 0
+                ]
+                if (
+                    gaps
+                    and raw_diffs
+                    and len(gaps) == len(raw_diffs)
+                    and worker_hps > 0
+                ):
+                    implied_hrs = [
+                        (raw_diffs[i] * (2**32)) / gaps[i] for i in range(len(gaps))
+                    ]
                     avg_implied_hr = sum(implied_hrs) / len(implied_hrs)
-                    impl_dev = abs(avg_implied_hr - worker_hps) / max(worker_hps, 1) * 100
+                    impl_dev = (
+                        abs(avg_implied_hr - worker_hps) / max(worker_hps, 1) * 100
+                    )
                     if impl_dev > 50:
-                        cc["checks"].append({
-                            "check": "implied_hr_vs_worker_hr",
-                            "status": "WARN",
-                            "detail": f"implied from diff×gap ({fmt_hashrate(avg_implied_hr)}) vs worker ({fmt_hashrate(worker_hps)}) dev {impl_dev:.0f}%",
-                        })
+                        cc["checks"].append(
+                            {
+                                "check": "implied_hr_vs_worker_hr",
+                                "status": "WARN",
+                                "detail": f"implied from diff×gap ({fmt_hashrate(avg_implied_hr)}) vs worker ({fmt_hashrate(worker_hps)}) dev {impl_dev:.0f}%",
+                            }
+                        )
                     else:
-                        cc["checks"].append({
-                            "check": "implied_hr_vs_worker_hr",
-                            "status": "PASS",
-                            "detail": f"implied HR {fmt_hashrate(avg_implied_hr)} ≈ worker HR {fmt_hashrate(worker_hps)}",
-                        })
+                        cc["checks"].append(
+                            {
+                                "check": "implied_hr_vs_worker_hr",
+                                "status": "PASS",
+                                "detail": f"implied HR {fmt_hashrate(avg_implied_hr)} ≈ worker HR {fmt_hashrate(worker_hps)}",
+                            }
+                        )
 
                 if all(c["status"] == "PASS" for c in cc["checks"]):
                     cc["status"] = "CONSISTENT"

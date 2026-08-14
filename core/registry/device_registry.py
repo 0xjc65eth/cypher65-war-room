@@ -26,7 +26,8 @@ class DeviceRegistry:
     def _init_db(self):
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
-        cursor.execute("""
+        cursor.execute(
+            """
             CREATE TABLE IF NOT EXISTS devices (
                 id TEXT PRIMARY KEY,
                 name TEXT,
@@ -42,15 +43,20 @@ class DeviceRegistry:
                 updated_at TEXT,
                 tenant_id TEXT DEFAULT 'default'
             )
-        """)
+        """
+        )
         # ── Fase 4 · B2: migrate legacy DBs (pre-tenant_id) ──
         # CREATE TABLE IF NOT EXISTS does NOT alter existing tables, so a DB
         # created before B2 lacks the tenant_id column. Add it if missing;
         # SQLite fills existing rows with the DEFAULT ('default').
         try:
-            cols = [r[1] for r in cursor.execute("PRAGMA table_info(devices)").fetchall()]
+            cols = [
+                r[1] for r in cursor.execute("PRAGMA table_info(devices)").fetchall()
+            ]
             if "tenant_id" not in cols:
-                cursor.execute("ALTER TABLE devices ADD COLUMN tenant_id TEXT DEFAULT 'default'")
+                cursor.execute(
+                    "ALTER TABLE devices ADD COLUMN tenant_id TEXT DEFAULT 'default'"
+                )
         except sqlite3.Error:
             pass
         conn.commit()
@@ -71,7 +77,9 @@ class DeviceRegistry:
             return None
         return device
 
-    def list_devices(self, status: Optional[DeviceStatus] = None, tenant_id: str = "") -> List[Device]:
+    def list_devices(
+        self, status: Optional[DeviceStatus] = None, tenant_id: str = ""
+    ) -> List[Device]:
         """List devices, optionally filtered by status and tenant."""
         if tenant_id:
             devices = [d for d in self.devices.values() if d.tenant_id == tenant_id]
@@ -98,7 +106,10 @@ class DeviceRegistry:
             del self.devices[device_id]
         conn = sqlite3.connect(self.db_path)
         if tenant_id:
-            conn.execute("DELETE FROM devices WHERE id = ? AND tenant_id = ?", (device_id, tenant_id))
+            conn.execute(
+                "DELETE FROM devices WHERE id = ? AND tenant_id = ?",
+                (device_id, tenant_id),
+            )
         else:
             conn.execute("DELETE FROM devices WHERE id = ?", (device_id,))
         conn.commit()
@@ -108,25 +119,28 @@ class DeviceRegistry:
     def _save_to_db(self, device: Device):
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
-        cursor.execute("""
+        cursor.execute(
+            """
             INSERT OR REPLACE INTO devices
             (id, name, model, firmware, ip, hostname, mac, status, last_seen, metadata, created_at, updated_at, tenant_id)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (
-            device.id,
-            device.name,
-            device.model,
-            device.firmware,
-            device.ip,
-            device.hostname,
-            device.mac,
-            device.status.value,
-            device.last_seen.isoformat() if device.last_seen else None,
-            json.dumps(device.metadata) if device.metadata else "{}",
-            device.created_at.isoformat(),
-            device.updated_at.isoformat(),
-            device.tenant_id or "default"
-        ))
+        """,
+            (
+                device.id,
+                device.name,
+                device.model,
+                device.firmware,
+                device.ip,
+                device.hostname,
+                device.mac,
+                device.status.value,
+                device.last_seen.isoformat() if device.last_seen else None,
+                json.dumps(device.metadata) if device.metadata else "{}",
+                device.created_at.isoformat(),
+                device.updated_at.isoformat(),
+                device.tenant_id or "default",
+            ),
+        )
         conn.commit()
         conn.close()
 
@@ -177,6 +191,7 @@ class DeviceRegistry:
         try:
             # Lazy import to avoid circular dependencies.
             from core.adapters import get_adapter
+
             adapter = get_adapter(device)
             device.capabilities = adapter.get_capabilities()
         except Exception:

@@ -108,10 +108,14 @@ class JsonFormatter(logging.Formatter):
             return json.dumps(payload, ensure_ascii=False, default=str)
         except (TypeError, ValueError):
             # Never break logging on unserializable payloads.
-            return json.dumps({
-                "ts": payload["ts"], "level": "ERROR",
-                "module": record.name, "message": "log serialization failed",
-            })
+            return json.dumps(
+                {
+                    "ts": payload["ts"],
+                    "level": "ERROR",
+                    "module": record.name,
+                    "message": "log serialization failed",
+                }
+            )
 
 
 def setup_logging() -> bool:
@@ -130,10 +134,12 @@ def setup_logging() -> bool:
     if json_mode:
         handler.setFormatter(JsonFormatter())
     else:
-        handler.setFormatter(logging.Formatter(
-            "%(asctime)sZ %(levelname)s [%(module)s.%(funcName)s] %(message)s",
-            datefmt="%Y-%m-%dT%H:%M:%S",
-        ))
+        handler.setFormatter(
+            logging.Formatter(
+                "%(asctime)sZ %(levelname)s [%(module)s.%(funcName)s] %(message)s",
+                datefmt="%Y-%m-%dT%H:%M:%S",
+            )
+        )
     root.setLevel(logging.INFO)
     return json_mode
 

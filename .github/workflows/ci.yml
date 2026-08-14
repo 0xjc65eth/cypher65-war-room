@@ -145,12 +145,11 @@ jobs:
       #                   via .flake8 (mesma config local e CI). Hoje: 0.
       #                   O backlog de estilo (E501 etc.) NÃO é gate — ver
       #                   `make lint` (advisory) e o roadmap no QUALITY.md.
-      #   black  —check — ADVISORY até o commit de cleanup dedicado
-      #                   (Issue #133): o repositório tem ~11.5k linhas fora
-      #                   do padrão; reformatar junto com este changeset
-      #                   enterraria os fixes reais. O step reporta o
-      #                   backlog sem nunca bloquear o merge.
-      - name: Static security gates (bandit + flake8 + black advisory)
+      #   black  —check — BLOQUEIA desde o cleanup dedicado (Issue #133):
+      #                   os 62 arquivos do escopo foram reformatados no
+      #                   commit de formatação; qualquer diff fora do padrão
+      #                   agora falha o merge (formatação = gate real).
+      - name: Static security gates (bandit + flake8 + black)
         run: |
           source .venv/bin/activate
           # O bandit pode imprimir warnings "nosec encountered, but no failed
@@ -159,9 +158,7 @@ jobs:
           python -m bandit -r services core axe_fleet routes agents \
             app.py helpers.py solo_mining.py -ll -q
           python -m flake8 app.py helpers.py solo_mining.py services core axe_fleet routes agents
-          # Advisory por design: o pipeline nunca falha por causa do black
-          # (Issue #133 destrava o gate após o cleanup dedicado).
-          python -m black --check app.py helpers.py solo_mining.py services core axe_fleet routes agents | tail -1 || true
+          python -m black --check app.py helpers.py solo_mining.py services core axe_fleet routes agents
 
       - name: Run Python tests with coverage
         run: |

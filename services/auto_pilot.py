@@ -53,6 +53,7 @@ AP_AUDIT_TABLE = "auto_pilot_rec_audit"
 #  Pure builder — data in, recommendations out (never raises)
 # ─────────────────────────────────────────────────────────────────────────
 
+
 def _num(v):
     try:
         f = float(v)
@@ -112,6 +113,7 @@ def axe_fleet_to_device(d: dict):
     shares_* — this maps the aliases so rule conditions evaluate correctly.
     """
     from core.models.device import Device, DeviceStatus
+
     tel = d.get("telemetry") if isinstance(d.get("telemetry"), dict) else {}
     sample = dict(tel)
     sample.setdefault("hashrate", tel.get("hashrate_hs"))
@@ -127,8 +129,8 @@ def axe_fleet_to_device(d: dict):
         "ONLINE": DeviceStatus.ONLINE,
         "HASHING": DeviceStatus.ONLINE,
         "WARNING": DeviceStatus.WARNING,
-        "IDLE": DeviceStatus.ONLINE,      # reachable, not hashing
-        "PAUSED": DeviceStatus.WARNING,   # reachable (never "offline")
+        "IDLE": DeviceStatus.ONLINE,  # reachable, not hashing
+        "PAUSED": DeviceStatus.WARNING,  # reachable (never "offline")
         "ERROR": DeviceStatus.CRITICAL,
         "OFFLINE": DeviceStatus.OFFLINE,
     }
@@ -136,7 +138,8 @@ def axe_fleet_to_device(d: dict):
         id=str(d.get("id") or ""),
         name=str(d.get("name") or d.get("id") or ""),
         status=_STATUS_MAP.get(
-            str(d.get("status") or "").upper(), DeviceStatus.OFFLINE),
+            str(d.get("status") or "").upper(), DeviceStatus.OFFLINE
+        ),
     )
     dev.current_telemetry = sample
     return dev
@@ -191,63 +194,69 @@ def build_advisory_recommendations(
 
         # ── 1. offline → restart (crit) ──
         if status == "OFFLINE":
-            recs.append({
-                "id": f"ap-offline-{did}",
-                "device_id": did,
-                "device_name": name,
-                "issue_type": "offline",
-                "severity": "crit",
-                "message": (
-                    f"{name} está OFFLINE — sem hashrate reportado. "
-                    "Reiniciar costuma recuperar o miner em segundos."
-                ),
-                "action": {
-                    "type": "restart" if can_restart else "navigate",
-                    "label": "REINICIAR" if can_restart else "VER FLEET",
-                },
-            })
+            recs.append(
+                {
+                    "id": f"ap-offline-{did}",
+                    "device_id": did,
+                    "device_name": name,
+                    "issue_type": "offline",
+                    "severity": "crit",
+                    "message": (
+                        f"{name} está OFFLINE — sem hashrate reportado. "
+                        "Reiniciar costuma recuperar o miner em segundos."
+                    ),
+                    "action": {
+                        "type": "restart" if can_restart else "navigate",
+                        "label": "REINICIAR" if can_restart else "VER FLEET",
+                    },
+                }
+            )
             continue  # offline devices: one recommendation is enough
 
         # ── 2. temp_high → pause (warn) ──
         if temp is not None and temp >= AP_TEMP_HIGH_C:
-            recs.append({
-                "id": f"ap-temp_high-{did}",
-                "device_id": did,
-                "device_name": name,
-                "issue_type": "temp_high",
-                "severity": "warn",
-                "message": (
-                    f"{name} a {temp:.0f}°C (limite {AP_TEMP_HIGH_C:.0f}°C) — "
-                    "risco térmico. Pause e melhore o airflow."
-                ),
-                "action": {
-                    "type": "pause" if can_pause else "navigate",
-                    "label": "PAUSAR" if can_pause else "VER FLEET",
-                },
-            })
+            recs.append(
+                {
+                    "id": f"ap-temp_high-{did}",
+                    "device_id": did,
+                    "device_name": name,
+                    "issue_type": "temp_high",
+                    "severity": "warn",
+                    "message": (
+                        f"{name} a {temp:.0f}°C (limite {AP_TEMP_HIGH_C:.0f}°C) — "
+                        "risco térmico. Pause e melhore o airflow."
+                    ),
+                    "action": {
+                        "type": "pause" if can_pause else "navigate",
+                        "label": "PAUSAR" if can_pause else "VER FLEET",
+                    },
+                }
+            )
 
         # ── 3. hashrate_drop → restart (gold) ──
         peak = _num(peak_7d)
         if peak and hr and hr > 0 and hr < peak * AP_HASHRATE_DROP_RATIO:
             drop_pct = (1 - hr / peak) * 100
-            recs.append({
-                "id": f"ap-hashrate_drop-{did}",
-                "device_id": did,
-                "device_name": name,
-                "issue_type": "hashrate_drop",
-                "severity": "gold",
-                "message": (
-                    f"{name} com hashrate {drop_pct:.0f}% abaixo do pico de 7d "
-                    "— restart ou verificação de rede local."
-                ),
-                "action": {
-                    "type": "restart" if can_restart else "navigate",
-                    "label": "REINICIAR" if can_restart else "VER FLEET",
-                },
-            })
+            recs.append(
+                {
+                    "id": f"ap-hashrate_drop-{did}",
+                    "device_id": did,
+                    "device_name": name,
+                    "issue_type": "hashrate_drop",
+                    "severity": "gold",
+                    "message": (
+                        f"{name} com hashrate {drop_pct:.0f}% abaixo do pico de 7d "
+                        "— restart ou verificação de rede local."
+                    ),
+                    "action": {
+                        "type": "restart" if can_restart else "navigate",
+                        "label": "REINICIAR" if can_restart else "VER FLEET",
+                    },
+                }
+            )
 
     # ── 4. rig_poor → blacklist (warn) ──
-    for r in (worst_rigs or []):
+    for r in worst_rigs or []:
         if not isinstance(r, dict):
             continue
         rid = str(r.get("rig_id") or "").strip()
@@ -257,34 +266,38 @@ def build_advisory_recommendations(
         if danger is None or danger < AP_RIG_POOR_DANGER_MIN:
             continue
         rname = str(r.get("name") or rid)
-        recs.append({
-            "id": f"ap-rig_poor-{rid}",
-            "device_id": rid,
-            "device_name": rname,
-            "issue_type": "rig_poor",
-            "severity": "warn",
-            "message": (
-                f"Rig {rname} com danger {danger:.0f}/100 e entrega média "
-                f"{r.get('ewma_delivery_pct', '?')}% — adicione à blacklist "
-                "para não alugar de novo."
-            ),
-            "action": {"type": "blacklist", "label": "BLACKLIST RIG"},
-        })
+        recs.append(
+            {
+                "id": f"ap-rig_poor-{rid}",
+                "device_id": rid,
+                "device_name": rname,
+                "issue_type": "rig_poor",
+                "severity": "warn",
+                "message": (
+                    f"Rig {rname} com danger {danger:.0f}/100 e entrega média "
+                    f"{r.get('ewma_delivery_pct', '?')}% — adicione à blacklist "
+                    "para não alugar de novo."
+                ),
+                "action": {"type": "blacklist", "label": "BLACKLIST RIG"},
+            }
+        )
 
     # ── 5. buy window → comprar (gold) ──
     if arb_window:
-        recs.append({
-            "id": "ap-buy-window",
-            "device_id": "",
-            "device_name": "Hash Market",
-            "issue_type": "buy",
-            "severity": "gold",
-            "message": (
-                "Janela de arbitragem aberta — mercado abaixo do seu custo "
-                "médio. Comprar hashrate agora captura a diferença."
-            ),
-            "action": {"type": "buy", "label": "COMPRAR AGORA"},
-        })
+        recs.append(
+            {
+                "id": "ap-buy-window",
+                "device_id": "",
+                "device_name": "Hash Market",
+                "issue_type": "buy",
+                "severity": "gold",
+                "message": (
+                    "Janela de arbitragem aberta — mercado abaixo do seu custo "
+                    "médio. Comprar hashrate agora captura a diferença."
+                ),
+                "action": {"type": "buy", "label": "COMPRAR AGORA"},
+            }
+        )
 
     # Rank by severity (crit > gold > warn), stable by rule order.
     recs.sort(key=lambda r: _AP_SEVERITY_ORDER.get(r.get("severity", "info"), 99))
@@ -295,10 +308,12 @@ def build_advisory_recommendations(
 #  Real-data collection (tenant-scoped, fail-closed)
 # ─────────────────────────────────────────────────────────────────────────
 
+
 def _collect_fleet(tenant_id: str = "") -> List[dict]:
     """Live fleet devices with telemetry from the axe registry."""
     try:
         from axe_fleet.routes import _registry
+
         if _registry is None:
             return []
         return _registry.list_devices(tenant_id=tenant_id, with_telemetry=True) or []
@@ -311,6 +326,7 @@ def _collect_peak_7d(tenant_id: str = "") -> float:
     """Max worker hashrate observed over the last 7 days (proximity_history)."""
     try:
         from services.db import get_db
+
         conn = get_db()
         row = conn.execute(
             "SELECT MAX(worker_hashrate) FROM proximity_history WHERE ts >= ?",
@@ -327,7 +343,10 @@ def _collect_peak_7d(tenant_id: str = "") -> float:
 def _collect_worst_rigs(tenant_id: str = "", limit: int = 6) -> List[dict]:
     try:
         from services.rental_performance import compute_worst_rigs
-        return (compute_worst_rigs(tenant_id=tenant_id, limit=limit) or {}).get("worst", [])
+
+        return (compute_worst_rigs(tenant_id=tenant_id, limit=limit) or {}).get(
+            "worst", []
+        )
     except Exception as e:
         log.warning("[auto_pilot] worst rigs failed: %s", e)
         return []
@@ -336,6 +355,7 @@ def _collect_worst_rigs(tenant_id: str = "", limit: int = 6) -> List[dict]:
 def _collect_arb_window(tenant_id: str = "") -> list:
     try:
         from services.rental_performance import evaluate_market_arb_alerts
+
         return evaluate_market_arb_alerts(tenant_id=tenant_id, dry_run=True) or []
     except Exception as e:
         log.warning("[auto_pilot] arb window failed: %s", e)
@@ -345,6 +365,7 @@ def _collect_arb_window(tenant_id: str = "") -> list:
 def _collect_blacklisted(tenant_id: str = "") -> List[str]:
     try:
         from services.rental_performance import get_rig_blacklist
+
         return get_rig_blacklist(tenant_id=tenant_id) or []
     except Exception as e:
         log.warning("[auto_pilot] blacklist read failed: %s", e)
@@ -369,8 +390,10 @@ def build_recommendations_for_tenant(tenant_id: str = "") -> List[Dict[str, Any]
 #  Audit trail — accepted / ignored recommendations (per tenant)
 # ─────────────────────────────────────────────────────────────────────────
 
+
 def _ensure_audit_table(conn) -> None:
-    conn.execute(f"""CREATE TABLE IF NOT EXISTS {AP_AUDIT_TABLE} (
+    conn.execute(
+        f"""CREATE TABLE IF NOT EXISTS {AP_AUDIT_TABLE} (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         ts INTEGER NOT NULL,
         tenant_id TEXT NOT NULL DEFAULT '',
@@ -383,7 +406,8 @@ def _ensure_audit_table(conn) -> None:
         note TEXT NOT NULL DEFAULT '',
         result TEXT NOT NULL DEFAULT '',
         created_ts INTEGER
-    )""")
+    )"""
+    )
     conn.commit()
 
 
@@ -401,6 +425,7 @@ def record_rec_decision(
     """
     try:
         from services.db import get_db
+
         conn = get_db()
         _ensure_audit_table(conn)
         now = int(time.time())
@@ -437,6 +462,7 @@ def get_rec_audit(tenant_id: str = "", limit: int = 50) -> List[Dict[str, Any]]:
     """Recent accepted/ignored recommendations for the tenant (ts desc)."""
     try:
         from services.db import get_db
+
         conn = get_db()
         _ensure_audit_table(conn)
         # AP_AUDIT_TABLE is an internal module constant — no user input.

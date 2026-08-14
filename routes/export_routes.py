@@ -9,6 +9,7 @@ underlying data is not tenant-filtered yet (Fase 4 · B2 pending for the
 snapshots/alerts/share_timeline tables). The gates prevent anonymous access
 while the data-layer isolation is completed.
 """
+
 import json
 import time
 import csv as _csv
@@ -48,10 +49,15 @@ def api_export(table, fmt, tenant_id: str = ""):
     # Operator-only tables: only the deployment owner's default tenant may
     # export them. Named tenants get a fail-closed 403 instead of a dump.
     if table != "alerts" and tid != "default":
-        return jsonify({
-            "error": "forbidden",
-            "detail": "this table is operator-scoped and not available to your tenant",
-        }), 403
+        return (
+            jsonify(
+                {
+                    "error": "forbidden",
+                    "detail": "this table is operator-scoped and not available to your tenant",
+                }
+            ),
+            403,
+        )
     rng = request.args.get("range", "24h")
     span = {
         "15m": 900,
@@ -60,7 +66,7 @@ def api_export(table, fmt, tenant_id: str = ""):
         "24h": 86400,
         "7d": 604800,
         "30d": 2592000,
-        "all": 10 ** 10,
+        "all": 10**10,
     }.get(rng, 86400)
     since = int(time.time()) - span
     conn = get_db()
@@ -123,7 +129,9 @@ def api_config_backup(tenant_id: str = ""):
     return Response(
         json.dumps(payload, indent=2, default=str),
         mimetype="application/json",
-        headers={"Content-Disposition": "attachment; filename=cypher65_config_backup.json"},
+        headers={
+            "Content-Disposition": "attachment; filename=cypher65_config_backup.json"
+        },
     )
 
 

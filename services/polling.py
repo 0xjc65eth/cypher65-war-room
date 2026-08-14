@@ -22,6 +22,7 @@ here expecting it to affect production — the source of truth is
 `app.py` + `helpers.py` (`compute_solo_probabilities`,
 `compute_lender_profitability`, `compute_pool_rental_break_even`).
 """
+
 import json
 import math
 import time
@@ -35,9 +36,19 @@ import services.proximity as proximity
 import services.names as names  # name normalization + sanitization
 
 from helpers import (
-    parse_diff_to_float, fmt_diff, fmt_hashrate, fmt_uptime, fmt_age,
-    safe_int, safe_num_from_str, coerce_float, coerce_int,
-    human_int, human_secs_long, isfinite_v, make_memory_alert,
+    parse_diff_to_float,
+    fmt_diff,
+    fmt_hashrate,
+    fmt_uptime,
+    fmt_age,
+    safe_int,
+    safe_num_from_str,
+    coerce_float,
+    coerce_int,
+    human_int,
+    human_secs_long,
+    isfinite_v,
+    make_memory_alert,
     derive_worker_hashrate,
 )
 
@@ -50,6 +61,7 @@ config = None
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 #  Risk score helpers (module-level for testability)
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
 
 def _cv_to_score(cv: float) -> int:
     """Normalise a coefficient of variation (CV) to a risk score 1–10.
@@ -154,6 +166,7 @@ def init(cfg):
     global config
     config = cfg
 
+
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 #  Polling worker
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -168,7 +181,7 @@ def poll_once():
     has_wallet = bool(config.BTC_ADDRESS and config.BTC_ADDRESS.strip())
     if not has_wallet:
         # Only log once every 30 polls (~7.5 min) to avoid log spam
-        if not hasattr(poll_once, '_no_wallet_log_count'):
+        if not hasattr(poll_once, "_no_wallet_log_count"):
             poll_once._no_wallet_log_count = 0
         poll_once._no_wallet_log_count += 1
         if poll_once._no_wallet_log_count % 30 == 1:
@@ -180,20 +193,30 @@ def poll_once():
     # ━━ Fetch (parallel) ━━
     # Wallet-specific endpoints are skipped when no address is configured.
     fetch_specs = [
-        ("pool",        f"{config.PARASITE_API}/pool-stats",                                          10),
-        ("net_height",  f"{config.MEMPOOL_API}/blocks/tip/height",                                     6),
-        ("mempool_fee", f"{config.MEMPOOL_API}/v1/fees/recommended",                                   6),
-        ("btc",         "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd,brl,eur,gbp", 6),
+        ("pool", f"{config.PARASITE_API}/pool-stats", 10),
+        ("net_height", f"{config.MEMPOOL_API}/blocks/tip/height", 6),
+        ("mempool_fee", f"{config.MEMPOOL_API}/v1/fees/recommended", 6),
+        (
+            "btc",
+            "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd,brl,eur,gbp",
+            6,
+        ),
     ]
 
     # Only add wallet-specific fetches if we have an address
     if has_wallet:
-        fetch_specs.extend([
-            ("user",        f"{config.PARASITE_API}/user/{config.BTC_ADDRESS}",                                  10),
-            ("account",     f"{config.PARASITE_API}/account/{config.BTC_ADDRESS}",                               10),
-            ("leaderboard", f"{config.PARASITE_API}/leaderboard?limit=30",                                         10),
-            ("highest",     f"{config.PARASITE_API}/highest-diff?type=user-diffs&address={config.BTC_ADDRESS}&limit=30",       10),
-        ])
+        fetch_specs.extend(
+            [
+                ("user", f"{config.PARASITE_API}/user/{config.BTC_ADDRESS}", 10),
+                ("account", f"{config.PARASITE_API}/account/{config.BTC_ADDRESS}", 10),
+                ("leaderboard", f"{config.PARASITE_API}/leaderboard?limit=30", 10),
+                (
+                    "highest",
+                    f"{config.PARASITE_API}/highest-diff?type=user-diffs&address={config.BTC_ADDRESS}&limit=30",
+                    10,
+                ),
+            ]
+        )
 
     # blockchain.info /q/* endpoints return PLAIN TEXT (not JSON), so they
     # live in a separate text-fetch fan-out below. mempool.space /v1/difficulty
@@ -201,11 +224,10 @@ def poll_once():
     # most reliable public source for current_difficulty + network hashrate as
     # of late 2024 / 2025 / 2026.
     bc_specs = [
-        ("bc_diff",     "https://blockchain.info/q/getdifficulty", 8),
-        ("bc_hashrate", "https://blockchain.info/q/hashrate",      8),
+        ("bc_diff", "https://blockchain.info/q/getdifficulty", 8),
+        ("bc_hashrate", "https://blockchain.info/q/hashrate", 8),
     ]
     bc_results = {key: None for key, _, _ in bc_specs}
-
 
     results = {key: None for key, _, _ in fetch_specs}
     with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
@@ -263,16 +285,23 @@ def poll_once():
     # (either 404 or empty user object), warn once then suppress for 60 polls
     # (~15 min) to prevent log flooding. The warning re-fires after the cooldown.
     if has_wallet and user is None:
-        if not hasattr(poll_once, '_wallet_404_count'):
+        if not hasattr(poll_once, "_wallet_404_count"):
             poll_once._wallet_404_count = 0
         poll_once._wallet_404_count += 1
         if poll_once._wallet_404_count == 1 or poll_once._wallet_404_count % 60 == 0:
-            addr_short = config.BTC_ADDRESS[:10] + "…" + config.BTC_ADDRESS[-6:] if len(config.BTC_ADDRESS) > 16 else config.BTC_ADDRESS
-            log.warning("[poll] Wallet %s not found on pool (poll #%d). Suppressing further warnings for ~15 min.",
-                       addr_short, poll_once._wallet_404_count)
+            addr_short = (
+                config.BTC_ADDRESS[:10] + "…" + config.BTC_ADDRESS[-6:]
+                if len(config.BTC_ADDRESS) > 16
+                else config.BTC_ADDRESS
+            )
+            log.warning(
+                "[poll] Wallet %s not found on pool (poll #%d). Suppressing further warnings for ~15 min.",
+                addr_short,
+                poll_once._wallet_404_count,
+            )
     elif has_wallet and user is not None:
         # Reset counter when wallet data returns successfully
-        if hasattr(poll_once, '_wallet_404_count'):
+        if hasattr(poll_once, "_wallet_404_count"):
             poll_once._wallet_404_count = 0
 
     # Network (mempool.space) — /v1/difficulty is preferred; fall back to
@@ -291,19 +320,24 @@ def poll_once():
         net_hashrate = float(bc_hashrate_val) * 1e9
     else:
         net_hashrate = None
-    network_height = network_height_data if isinstance(network_height_data, int) else None
+    network_height = (
+        network_height_data if isinstance(network_height_data, int) else None
+    )
     # Difficulty: use blockchain.info /q/getdifficulty as primary source
     current_difficulty = float(bc_diff_val) if bc_diff_val is not None else None
     # Safety: if difficulty is zero/negative after all fallbacks, use default (126.23T)
     # and emit a warning so operators know the API returned bad data.
     DEFAULT_DIFFICULTY = 126231507121868.0  # ~126.23T — typical late-2025 value
     if current_difficulty is not None and current_difficulty <= 0:
-        log.warning("[poll] network difficulty is %.4e (invalid) — falling back to default %.4e",
-                    current_difficulty, DEFAULT_DIFFICULTY)
+        log.warning(
+            "[poll] network difficulty is %.4e (invalid) — falling back to default %.4e",
+            current_difficulty,
+            DEFAULT_DIFFICULTY,
+        )
         current_difficulty = DEFAULT_DIFFICULTY
     # Fallback: derive net_hashrate from difficulty + target block time
     if current_difficulty is not None and (net_hashrate is None or net_hashrate == 0):
-        net_hashrate = current_difficulty * (2 ** 32) / 600
+        net_hashrate = current_difficulty * (2**32) / 600
 
     # BTC price (CoinGecko) — com cache de 5 min para evitar 429 rate limit
     _now = int(time.time())
@@ -313,14 +347,33 @@ def poll_once():
         state.btc_price_cache["data"] = btc_quote
         state.btc_price_cache["ts"] = _now
     # Se falhou (429 etc), usa cache se ainda válido (< 5 min)
-    elif _now - state.btc_price_cache["ts"] < state.BTC_PRICE_CACHE_TTL and state.btc_price_cache["data"]:
+    elif (
+        _now - state.btc_price_cache["ts"] < state.BTC_PRICE_CACHE_TTL
+        and state.btc_price_cache["data"]
+    ):
         btc_quote = state.btc_price_cache["data"]
     else:
         btc_quote = None
-    btc_usd = (btc_quote or {}).get("bitcoin", {}).get("usd") if isinstance(btc_quote, dict) else None
-    btc_brl = (btc_quote or {}).get("bitcoin", {}).get("brl") if isinstance(btc_quote, dict) else None
-    btc_eur = (btc_quote or {}).get("bitcoin", {}).get("eur") if isinstance(btc_quote, dict) else None
-    btc_gbp = (btc_quote or {}).get("bitcoin", {}).get("gbp") if isinstance(btc_quote, dict) else None
+    btc_usd = (
+        (btc_quote or {}).get("bitcoin", {}).get("usd")
+        if isinstance(btc_quote, dict)
+        else None
+    )
+    btc_brl = (
+        (btc_quote or {}).get("bitcoin", {}).get("brl")
+        if isinstance(btc_quote, dict)
+        else None
+    )
+    btc_eur = (
+        (btc_quote or {}).get("bitcoin", {}).get("eur")
+        if isinstance(btc_quote, dict)
+        else None
+    )
+    btc_gbp = (
+        (btc_quote or {}).get("bitcoin", {}).get("gbp")
+        if isinstance(btc_quote, dict)
+        else None
+    )
 
     # Mempool fees (sat/vB) — for "what fee should I include if I want fast"
     mf_raw = results["mempool_fee"]
@@ -336,9 +389,13 @@ def poll_once():
     # ━━ Halving countdown ──
     # Blockchain-based: halvings every 210,000 blocks. Uses rolling avg block
     # time from the last 144 blocks (∼24h) when available, falls back to 600s.
-    halving = {"height": network_height, "blocks_remaining": None,
-               "estimated_seconds_remaining": None, "next_reward_btc": None,
-               "epoch_label": ""}
+    halving = {
+        "height": network_height,
+        "blocks_remaining": None,
+        "estimated_seconds_remaining": None,
+        "next_reward_btc": None,
+        "epoch_label": "",
+    }
     # Compute rolling average block time from recent snapshots
     rolling_avg_block_time_s = 600.0
     if isinstance(network_height, int):
@@ -361,7 +418,9 @@ def poll_once():
                     if blocks_per_sec > 0:
                         rolling_avg_block_time_s = 1.0 / blocks_per_sec
                     # Clamp to realistic range (300s-3600s)
-                    rolling_avg_block_time_s = max(300.0, min(3600.0, rolling_avg_block_time_s))
+                    rolling_avg_block_time_s = max(
+                        300.0, min(3600.0, rolling_avg_block_time_s)
+                    )
         except Exception:
             pass
 
@@ -369,7 +428,7 @@ def poll_once():
         blocks_left = max(0, next_halving_h - network_height)
         secs_left = blocks_left * rolling_avg_block_time_s
         epoch_idx = (next_halving_h // 210000) - 1
-        cur_reward = 50.0 * (0.5 ** epoch_idx) if epoch_idx >= 0 else 50.0
+        cur_reward = 50.0 * (0.5**epoch_idx) if epoch_idx >= 0 else 50.0
         next_reward = cur_reward * 0.5
         halving = {
             "next_height": next_halving_h,
@@ -398,7 +457,11 @@ def poll_once():
             # Estimate rejection rate from share submission deltas
             # If pool saw fewer best-diff bumps than shares submitted, some shares may be rejected/stale
             wr_best = w.get("bestDifficulty", "")
-            wr_best_val = parse_diff_to_float(wr_best) if isinstance(wr_best, str) else float(wr_best or 0)
+            wr_best_val = (
+                parse_diff_to_float(wr_best)
+                if isinstance(wr_best, str)
+                else float(wr_best or 0)
+            )
             wr_uptime = w.get("uptime", 0) or 0
             wr_last_sub = w.get("lastSubmission")
             wr_now = int(time.time())
@@ -418,7 +481,9 @@ def poll_once():
             # Rejection rate estimate: if few bumps vs session shares, some % are stale/rejected
             rejection_pct = None
             if session_shares > 10 and session_bumps >= 0:
-                rejection_pct = round((1 - session_bumps / max(session_shares, 1)) * 100, 1)
+                rejection_pct = round(
+                    (1 - session_bumps / max(session_shares, 1)) * 100, 1
+                )
             # Average hashrate from share history (if available)
             avg_hr = float(w.get("hashrate") or 0)
             hist = state.timeline_state.get("share_submit_history", [])
@@ -437,10 +502,12 @@ def poll_once():
                 "bestDifficultyVal": wr_best_val,
                 "lastSubmission": wr_last_sub,
                 "uptime": wr_uptime,
-            "is_primary": False,  # Set dynamically below after scoring all workers
+                "is_primary": False,  # Set dynamically below after scoring all workers
                 # Deep metrics
                 "rejectionRatePct": rejection_pct,
-                "rejectionRateLabel": f"{rejection_pct}%" if rejection_pct is not None else "—",
+                "rejectionRateLabel": (
+                    f"{rejection_pct}%" if rejection_pct is not None else "—"
+                ),
                 "temperature": "NOT AVAILABLE",
                 "temperatureLabel": "NOT AVAILABLE",
                 "powerWatts": "NOT AVAILABLE",
@@ -454,7 +521,11 @@ def poll_once():
                 "sharesPerHour": round(sph, 1),
                 "avgHashrateHps": avg_hr,
                 "avgHashrateLabel": fmt_hashrate(avg_hr) if avg_hr else "—",
-                "state": "HASHING" if w.get("hashrate") else ("ONLINE" if wr_last_sub else "IDLE"),
+                "state": (
+                    "HASHING"
+                    if w.get("hashrate")
+                    else ("ONLINE" if wr_last_sub else "IDLE")
+                ),
             }
             all_workers.append(entry)
 
@@ -464,7 +535,9 @@ def poll_once():
     seen = {}
     deduped = []
     for entry in all_workers:
-        key = names.dedup_key(entry.get("name", "")) or names.dedup_key(entry.get("id", ""))
+        key = names.dedup_key(entry.get("name", "")) or names.dedup_key(
+            entry.get("id", "")
+        )
         if not key:
             deduped.append(entry)
             continue
@@ -480,11 +553,19 @@ def poll_once():
                 # Replace the existing entry with the incoming one
                 deduped[deduped.index(existing)] = entry
                 seen[key] = entry
-                log.info("[dedup] Merged worker '%s' into '%s' (hashrate %.0f > %.0f)",
-                         entry.get("name", "?"), existing.get("name", "?"), incoming_hr, existing_hr)
+                log.info(
+                    "[dedup] Merged worker '%s' into '%s' (hashrate %.0f > %.0f)",
+                    entry.get("name", "?"),
+                    existing.get("name", "?"),
+                    incoming_hr,
+                    existing_hr,
+                )
     if len(deduped) < len(all_workers):
-        log.info("[dedup] Reduced %d workers → %d by normalized name merging",
-                 len(all_workers), len(deduped))
+        log.info(
+            "[dedup] Reduced %d workers → %d by normalized name merging",
+            len(all_workers),
+            len(deduped),
+        )
         all_workers = deduped
 
     # ── Dynamic primary worker selection ──
@@ -499,10 +580,16 @@ def poll_once():
         # Fallback: match by WORKER_NAME (static, for empty wallets)
         for idx, entry in enumerate(all_workers):
             normalized_worker_name = names.normalize(config.WORKER_NAME)
-            if (names.normalize(entry.get("name", "")) == normalized_worker_name
-                    or names.normalize(entry.get("id", "")) == normalized_worker_name):
+            if (
+                names.normalize(entry.get("name", "")) == normalized_worker_name
+                or names.normalize(entry.get("id", "")) == normalized_worker_name
+            ):
                 entry["is_primary"] = True
-                worker = user["workerData"][idx] if idx < len(user.get("workerData", [])) else None
+                worker = (
+                    user["workerData"][idx]
+                    if idx < len(user.get("workerData", []))
+                    else None
+                )
                 worker_index = idx
                 break
 
@@ -520,13 +607,20 @@ def poll_once():
     # and use the first available worker as the primary. This prevents the
     # frontend from showing blank panels when the scoring/match fails.
     if worker is None and all_workers:
-        log.warning("[poll] Worker is None but all_workers has %d entries — falling back to first worker: %s",
-                    len(all_workers), all_workers[0].get("name", "?"))
+        log.warning(
+            "[poll] Worker is None but all_workers has %d entries — falling back to first worker: %s",
+            len(all_workers),
+            all_workers[0].get("name", "?"),
+        )
         # Use the first worker as primary fallback
         all_workers[0]["is_primary"] = True
         idx = 0
         # Try to get the raw worker data from the API response
-        if user and isinstance(user.get("workerData"), list) and idx < len(user["workerData"]):
+        if (
+            user
+            and isinstance(user.get("workerData"), list)
+            and idx < len(user["workerData"])
+        ):
             worker = user["workerData"][idx]
         else:
             # Fall back to the enriched all_workers entry as a dict
@@ -538,7 +632,11 @@ def poll_once():
     # Count workers with hashrate > 0 as the real active count.
     if isinstance(user, dict):
         wd = user.get("workerData") or []
-        active_count = sum(1 for w in wd if isinstance(w, dict) and coerce_float(w.get("hashrate"), 0) > 0)
+        active_count = sum(
+            1
+            for w in wd
+            if isinstance(w, dict) and coerce_float(w.get("hashrate"), 0) > 0
+        )
         user["workers"] = active_count
 
     # ━━ Leaderboard lookup ━━
@@ -554,9 +652,11 @@ def poll_once():
         for entry in leaderboard:
             if addr_short in str(entry.get("address", "")).lower():
                 leaderboard_entry = entry
-                break        # ━━ Account unpack ━━
+                break  # ━━ Account unpack ━━
     account = account_data.get("account") if isinstance(account_data, dict) else None
-    lightning = account_data.get("lightning") if isinstance(account_data, dict) else None
+    lightning = (
+        account_data.get("lightning") if isinstance(account_data, dict) else None
+    )
     meta = account.get("metadata", {}) if isinstance(account, dict) else {}
 
     # Merge leaderboard data into account so frontend doesn't need two objects
@@ -564,10 +664,15 @@ def poll_once():
         account["diffRank"] = leaderboard_entry.get("diff_rank")
         account["loyaltyRank"] = leaderboard_entry.get("loyalty_rank")
         account["combinedScore"] = leaderboard_entry.get("combined_score")
-        account["blocksFound"] = meta.get("block_count") or leaderboard_entry.get("blocks_found")
+        account["blocksFound"] = meta.get("block_count") or leaderboard_entry.get(
+            "blocks_found"
+        )
         account["highestBlock"] = meta.get("highest_blockheight")
         # Ensure key aliases exist for frontend
-        if account.get("total_diff") is not None and account.get("totalDifficulty") is None:
+        if (
+            account.get("total_diff") is not None
+            and account.get("totalDifficulty") is None
+        ):
             account["totalDifficulty"] = account["total_diff"]
 
     ts = int(time.time())
@@ -589,7 +694,9 @@ def poll_once():
             except Exception:
                 ls_int = 0
             state.timeline_state["last_submit_ts"] = ls_int or 0
-            state.timeline_state["last_best_diff_str"] = worker.get("bestDifficulty") or ""
+            state.timeline_state["last_best_diff_str"] = (
+                worker.get("bestDifficulty") or ""
+            )
             # seed the rolling share-rate history so sph is meaningful from poll 2
             if ls_int:
                 state.timeline_state["share_submit_history"].append(ls_int)
@@ -604,7 +711,11 @@ def poll_once():
             except Exception:
                 ls_int = 0
             if ls_int and ls_int != state.timeline_state["last_submit_ts"]:
-                gap = (ls_int - state.timeline_state["last_submit_ts"]) if state.timeline_state["last_submit_ts"] else 0
+                gap = (
+                    (ls_int - state.timeline_state["last_submit_ts"])
+                    if state.timeline_state["last_submit_ts"]
+                    else 0
+                )
                 state.timeline_state["last_submit_ts"] = ls_int
                 state.timeline_state["share_submit_history"].append(ls_int)
                 state.timeline_state["session_share_count"] += 1
@@ -639,18 +750,22 @@ def poll_once():
                     elif isinstance(d, str) and d:
                         share_diff_raw = parse_diff_to_float(d)
                     if not share_diff_raw and worker.get("bestDifficulty"):
-                        share_diff_raw = parse_diff_to_float(worker.get("bestDifficulty")) / 2.0
+                        share_diff_raw = (
+                            parse_diff_to_float(worker.get("bestDifficulty")) / 2.0
+                        )
                 except Exception:
                     share_diff_raw = 0.0
                 if share_diff_raw and current_difficulty and gap and gap > 0:
-                    hashes_attempted = share_diff_raw * (2 ** 32)
+                    hashes_attempted = share_diff_raw * (2**32)
                     p_block_this = share_diff_raw / float(current_difficulty)
                     inst_hr_hps = hashes_attempted / float(gap)
                     # Determine source: CALCULATED when worker.difficulty is available,
                     # ESTIMATED when falling back to bestDifficulty/2
                     _share_source = "CALCULATED"
                     d = worker.get("difficulty")
-                    if not (isinstance(d, (int, float)) and d > 0) and not (isinstance(d, str) and d):
+                    if not (isinstance(d, (int, float)) and d > 0) and not (
+                        isinstance(d, str) and d
+                    ):
                         _share_source = "ESTIMATED"
                     share_calc = {
                         "ts": ts,
@@ -670,19 +785,25 @@ def poll_once():
                         "instantaneous_hr_str": fmt_hashrate(inst_hr_hps),
                         "best_diff_at_time": (
                             parse_diff_to_float(worker.get("bestDifficulty"))
-                            if worker and worker.get("bestDifficulty") else 0.0
+                            if worker and worker.get("bestDifficulty")
+                            else 0.0
                         ),
                         "best_diff_at_time_str": (
                             worker.get("bestDifficulty") if worker else ""
                         ),
                         "network_diff_at_time": current_difficulty,
                         "network_diff_at_time_str": fmt_diff(current_difficulty),
-                        "session_share_count_at_time": state.timeline_state["session_share_count"],
+                        "session_share_count_at_time": state.timeline_state[
+                            "session_share_count"
+                        ],
                     }
                     state.timeline_state["share_calc_history"].append(share_calc)
 
             best_diff_str = worker.get("bestDifficulty") or ""
-            if best_diff_str and best_diff_str != state.timeline_state["last_best_diff_str"]:
+            if (
+                best_diff_str
+                and best_diff_str != state.timeline_state["last_best_diff_str"]
+            ):
                 # IMPORTANT: capture old strings/values BEFORE mutating state,
                 # so meta payload reports the true "from→to" transition.
                 old_str = state.timeline_state["last_best_diff_str"]
@@ -699,7 +820,13 @@ def poll_once():
                         "BEST_DIFF_BUMP",
                         "GOLD",
                         f"{(config.WORKER_NAME or 'worker').upper()} best difficulty raised to {best_diff_str} ({pct_txt})",
-                        json.dumps({"from": old_str or "0", "to": best_diff_str, "pct": round(pct, 2)}),
+                        json.dumps(
+                            {
+                                "from": old_str or "0",
+                                "to": best_diff_str,
+                                "pct": round(pct, 2),
+                            }
+                        ),
                     )
                 )
 
@@ -732,7 +859,11 @@ def poll_once():
     if worker:
         _reported_hr = float(worker.get("hashrate") or 0)
         if _reported_hr <= 0:
-            _prev_ts = state.latest_snapshot.get("ts") if isinstance(state.latest_snapshot, dict) else 0
+            _prev_ts = (
+                state.latest_snapshot.get("ts")
+                if isinstance(state.latest_snapshot, dict)
+                else 0
+            )
             _elapsed_s = (ts - _prev_ts) if _prev_ts else float(config.POLL_INTERVAL)
             _derived_hr, _hr_source = derive_worker_hashrate(
                 share_calc_history=state.timeline_state.get("share_calc_history") or [],
@@ -751,8 +882,12 @@ def poll_once():
                         _entry["hashrate"] = _derived_hr
                         _entry["hashrate_source"] = _hr_source
                         break
-                log.info("[poll] worker %s hashrate derived from %s: %s H/s (pool reported 0)",
-                         worker.get("name") or "?", _hr_source, fmt_hashrate(_derived_hr))
+                log.info(
+                    "[poll] worker %s hashrate derived from %s: %s H/s (pool reported 0)",
+                    worker.get("name") or "?",
+                    _hr_source,
+                    fmt_hashrate(_derived_hr),
+                )
 
     # ━━ Persist snapshot ━━
     try:
@@ -785,7 +920,11 @@ def poll_once():
                 account.get("total_diff") if isinstance(account, dict) else None,
                 meta.get("block_count") if isinstance(meta, dict) else None,
                 meta.get("highest_blockheight") if isinstance(meta, dict) else None,
-                (leaderboard.index(leaderboard_entry) + 1) if leaderboard_entry else None,
+                (
+                    (leaderboard.index(leaderboard_entry) + 1)
+                    if leaderboard_entry
+                    else None
+                ),
                 leaderboard_entry.get("diff_rank") if leaderboard_entry else None,
                 leaderboard_entry.get("loyalty_rank") if leaderboard_entry else None,
                 leaderboard_entry.get("combined_score") if leaderboard_entry else None,
@@ -801,7 +940,9 @@ def poll_once():
         if isinstance(highest, list):
             for ev in highest[:30]:
                 bh = ev.get("block_height")
-                c.execute("SELECT 1 FROM highest_diff_events WHERE block_height=?", (bh,))
+                c.execute(
+                    "SELECT 1 FROM highest_diff_events WHERE block_height=?", (bh,)
+                )
                 if not c.fetchone():
                     top_addr = ev.get("top_diff_address") or ev.get("address") or ""
                     is_mine = config.BTC_ADDRESS in top_addr
@@ -833,11 +974,15 @@ def poll_once():
         conn.commit()
         # ── Persist succeeded → clear failure state, surface SUCCESS alert ──
         if state.persist_consec_failures > 0:
-            state.memory_critical_alerts.append(config.make_memory_alert(
-                ts, "SUCCESS", "disk_write_recovered",
-                f"SQLite writes recovered after {state.persist_consec_failures} consecutive "
-                f"poll failures; history persistence restored."
-            ))
+            state.memory_critical_alerts.append(
+                config.make_memory_alert(
+                    ts,
+                    "SUCCESS",
+                    "disk_write_recovered",
+                    f"SQLite writes recovered after {state.persist_consec_failures} consecutive "
+                    f"poll failures; history persistence restored.",
+                )
+            )
             state.persist_consec_failures = 0
     except Exception as e:
         log.error("[persist] error: %s", e)
@@ -845,12 +990,16 @@ def poll_once():
         # Escalate at ladder steps so we don't flood the alerts panel.
         if state.persist_consec_failures in state.PERSIST_FAILURE_LADDER:
             degraded_s = state.persist_consec_failures * config.POLL_INTERVAL
-            state.memory_critical_alerts.append(config.make_memory_alert(
-                ts, "CRIT", "disk_write_failure",
-                f"SQLite write failing — {state.persist_consec_failures} consecutive poll "
-                f"failures (~{degraded_s}s degraded). Live UI continues; "
-                f"history persistence OFF until disk recovers."
-            ))
+            state.memory_critical_alerts.append(
+                config.make_memory_alert(
+                    ts,
+                    "CRIT",
+                    "disk_write_failure",
+                    f"SQLite write failing — {state.persist_consec_failures} consecutive poll "
+                    f"failures (~{degraded_s}s degraded). Live UI continues; "
+                    f"history persistence OFF until disk recovers.",
+                )
+            )
     finally:
         try:
             conn.close()
@@ -867,8 +1016,10 @@ def poll_once():
     # Track event signatures across polls so the same "pool new high diff 87.1T"
     # never fires twice. Signature = (category, identifier) where identifier is
     # the unique value (block_hash, highest_diff_str, etc.)
-    if not hasattr(poll_once, '_alert_seen'):
-        poll_once._alert_seen = set()  # set of (category, identifier) seen across restarts
+    if not hasattr(poll_once, "_alert_seen"):
+        poll_once._alert_seen = (
+            set()
+        )  # set of (category, identifier) seen across restarts
     alert_seen = poll_once._alert_seen
 
     if worker:
@@ -877,21 +1028,37 @@ def poll_once():
             sev = "WARN" if (ts - int(ls)) <= stale_min * 120 else "CRIT"
             sig = ("stale_submission", str(ls))
             if sig not in alert_seen:
-                alerts.append((sev, "stale_submission",
-                    f"{(config.WORKER_NAME or 'worker').upper()} last submit {int((ts - int(ls)) / 60)}min ago (threshold {stale_min}m)"))
+                alerts.append(
+                    (
+                        sev,
+                        "stale_submission",
+                        f"{(config.WORKER_NAME or 'worker').upper()} last submit {int((ts - int(ls)) / 60)}min ago (threshold {stale_min}m)",
+                    )
+                )
                 alert_seen.add(sig)
         prev_hr = float(prev_worker.get("hashrate") or 0)
         cur_hr = float(worker.get("hashrate") or 0)
         if prev_hr > 0 and cur_hr < (1 - hr_drop_pct / 100.0) * prev_hr:
             sig = ("hashrate_drop", f"{prev_hr:.0f}->{cur_hr:.0f}")
             if sig not in alert_seen:
-                alerts.append(("WARN", "hashrate_drop",
-                    f"{(config.WORKER_NAME or 'worker').upper()} hashrate dropped from {fmt_hashrate(prev_hr)} to {fmt_hashrate(cur_hr)} (-{hr_drop_pct:.0f}%)"))
+                alerts.append(
+                    (
+                        "WARN",
+                        "hashrate_drop",
+                        f"{(config.WORKER_NAME or 'worker').upper()} hashrate dropped from {fmt_hashrate(prev_hr)} to {fmt_hashrate(cur_hr)} (-{hr_drop_pct:.0f}%)",
+                    )
+                )
                 alert_seen.add(sig)
     else:
         sig = ("worker_offline", "1")
         if sig not in alert_seen:
-            alerts.append(("CRIT", "worker_offline", f"{(config.WORKER_NAME or 'worker').upper()} not found in workerData"))
+            alerts.append(
+                (
+                    "CRIT",
+                    "worker_offline",
+                    f"{(config.WORKER_NAME or 'worker').upper()} not found in workerData",
+                )
+            )
             alert_seen.add(sig)
 
     if pool:
@@ -899,15 +1066,18 @@ def poll_once():
         if cur_high and cur_high != str(prev_pool.get("highestDifficulty") or ""):
             sig = ("new_high_diff", cur_high)
             if sig not in alert_seen:
-                alerts.append(("GOLD", "new_high_diff", f"Pool new highest diff: {cur_high}"))
+                alerts.append(
+                    ("GOLD", "new_high_diff", f"Pool new highest diff: {cur_high}")
+                )
                 alert_seen.add(sig)
         cur_block_hash = str(pool.get("lastBlockHash") or "")
         prev_block_hash = str(prev_pool.get("lastBlockHash") or "")
         if cur_block_hash and cur_block_hash != prev_block_hash:
             sig = ("new_block", cur_block_hash)
             if sig not in alert_seen:
-                alerts.append(("GOLD", "new_block",
-                    f"Pool found block: {cur_block_hash[:16]}…"))
+                alerts.append(
+                    ("GOLD", "new_block", f"Pool found block: {cur_block_hash[:16]}…")
+                )
                 alert_seen.add(sig)
 
     # dedication / continuity - only fire once per uptime milestone
@@ -917,7 +1087,13 @@ def poll_once():
             day_num = up // 86400
             sig = ("uptime_milestone", str(day_num))
             if sig not in alert_seen:
-                alerts.append(("INFO", "uptime", f"{(config.WORKER_NAME or 'worker').upper()} uptime crossed {fmt_uptime(up)}"))
+                alerts.append(
+                    (
+                        "INFO",
+                        "uptime",
+                        f"{(config.WORKER_NAME or 'worker').upper()} uptime crossed {fmt_uptime(up)}",
+                    )
+                )
                 alert_seen.add(sig)
 
     # GC old signatures (keep last 1000)
@@ -944,14 +1120,22 @@ def poll_once():
     # for the severity ranking, in services.push_notifier).
     try:
         from services.push_notifier import send_webhook_for_alert as _send_wh
+
         s = settings_s
         url = (s.get("webhook_url") or "").strip()
         if url:
             min_sev = s.get("webhook_min_severity", "WARN")
             for sev, cat, msg in alerts:
-                _send_wh(url=url, severity=sev, category=cat, message=msg,
-                         ts=ts, worker=config.WORKER_NAME,
-                         address=config.BTC_ADDRESS, min_severity=min_sev)
+                _send_wh(
+                    url=url,
+                    severity=sev,
+                    category=cat,
+                    message=msg,
+                    ts=ts,
+                    worker=config.WORKER_NAME,
+                    address=config.BTC_ADDRESS,
+                    min_severity=min_sev,
+                )
     except Exception as e:
         log.warning("[webhook block] error: %s", e)
 
@@ -967,14 +1151,18 @@ def poll_once():
             pool_best = parse_diff_to_float(pool.get("highestDifficulty"))
             # ckpool shares are ~1M by default, but for Plebs pool may be 16k or variable.
             # We use work-since-last-block / pool hashrate to estimate "expected shares" portion
-            wslb = pool.get("workSinceLastBlock") or 0  # total integrated diff since last block
+            wslb = (
+                pool.get("workSinceLastBlock") or 0
+            )  # total integrated diff since last block
             # "luck" → actual best_diff vs expected per this worker.
             # the simplest honest metric: work_since_last_block / pool_hashrate (seconds of work)
             # and our workers's hashrate / pool hashrate → fair share of WSLB.
             cur_hr = float(worker.get("hashrate") or 0)
             pool_hr = float(pool.get("hashrate") or 0)
             fair_share_wslb = (cur_hr / pool_hr) * wslb if pool_hr else 0
-            expected_share_diff = current_difficulty / 65536  # rough: 1 share ≈ diff / 64k
+            expected_share_diff = (
+                current_difficulty / 65536
+            )  # rough: 1 share ≈ diff / 64k
             luck = {
                 "fair_share_diff_since_last_block": fair_share_wslb,
                 "pool_work_since_last_block": wslb,
@@ -989,7 +1177,9 @@ def poll_once():
                     pool_luck_pct = (expected_wslb / wslb * 100.0) if wslb else 0.0
                     luck["pool_luck_pct"] = round(pool_luck_pct, 2)
                 if wslb and current_difficulty:
-                    luck["round_progress_pct"] = round(min(100, (wslb / current_difficulty) * 100), 2)
+                    luck["round_progress_pct"] = round(
+                        min(100, (wslb / current_difficulty) * 100), 2
+                    )
             except Exception:
                 pass
         except Exception:
@@ -1038,21 +1228,31 @@ def poll_once():
             # ── Pool mining (PPS/FPPS approximated) ──
             # Expected blocks = your_share × total_blocks
             # Net after pool fee & orphan
-            gross_btc_per_day = share_of_network * blocks_per_day * total_reward_per_block
-            pool_net_btc_per_day = gross_btc_per_day * (1 - pool_fee_pct / 100.0) * (1 - orphan_pct / 100.0)
+            gross_btc_per_day = (
+                share_of_network * blocks_per_day * total_reward_per_block
+            )
+            pool_net_btc_per_day = (
+                gross_btc_per_day
+                * (1 - pool_fee_pct / 100.0)
+                * (1 - orphan_pct / 100.0)
+            )
 
             # ── Solo mining ──
             # Same formula but no pool fee. Expected blocks PER YEAR = your_share × 144 × 365
             # Solo variance is extreme: P(at least one block in N days) = 1 - e^(-λ)
             # where λ = share_of_network × blocks_per_day (Poisson, each block is independent)
-            solo_net_btc_per_day = gross_btc_per_day * (1 - orphan_pct / 100.0)  # no pool fee
+            solo_net_btc_per_day = gross_btc_per_day * (
+                1 - orphan_pct / 100.0
+            )  # no pool fee
             # CORRECTED: P(≥1 block in a day) uses Poisson(λ) where λ = share_of_network × 144
             blocks_per_day_float = 144.0
             λ_daily = share_of_network * blocks_per_day_float
             solo_p_day = 1 - math.exp(-λ_daily) if λ_daily > 0 else 0.0
             solo_p_year = 1 - math.exp(-λ_daily * 365) if λ_daily > 0 else 0.0
             solo_p_5year = 1 - math.exp(-λ_daily * 365 * 5) if λ_daily > 0 else 0.0
-            solo_expected_blocks_per_year = λ_daily * 365  # correct: expected value of Poisson
+            solo_expected_blocks_per_year = (
+                λ_daily * 365
+            )  # correct: expected value of Poisson
             solo_expected_time_to_block_days = 1.0 / λ_daily if λ_daily > 0 else None
 
             # ── Rental cost ──
@@ -1060,7 +1260,9 @@ def poll_once():
             rental_cost_per_day = 0.0
             power_cost_per_day = 0.0
             if cost_mode == "rental":
-                rental_cost_per_day = ths * coerce_float(s.get("rental_usd_per_th_day"), 0.0)
+                rental_cost_per_day = ths * coerce_float(
+                    s.get("rental_usd_per_th_day"), 0.0
+                )
             elif cost_mode == "power":
                 watts = coerce_float(s.get("power_watts"), 0.0)
                 kwh_rate_usd = coerce_float(s.get("power_kwh_usd"), 0.0)
@@ -1077,7 +1279,12 @@ def poll_once():
 
             # ── Risk-adjusted comparison across all 3 modes ──
             pool_net_usd_daily = pool_net_btc_per_day * (btc_usd or 0) if btc_usd else 0
-            solo_net_usd_daily = (solo_net_btc_per_day - (cost_per_day / (btc_usd or 1))) * (btc_usd or 0) if btc_usd else 0
+            solo_net_usd_daily = (
+                (solo_net_btc_per_day - (cost_per_day / (btc_usd or 1)))
+                * (btc_usd or 0)
+                if btc_usd
+                else 0
+            )
             rental_net_usd_daily = pool_net_usd_daily - cost_per_day
 
             # ── Quantitative risk scores (module-level helpers) ──
@@ -1110,7 +1317,11 @@ def poll_once():
                 },
                 "rental": {
                     "label": "RENTAL",
-                    "net_btc_daily": round(pool_net_btc_per_day - (cost_per_day / (btc_usd or 1)), 8) if btc_usd else None,
+                    "net_btc_daily": (
+                        round(pool_net_btc_per_day - (cost_per_day / (btc_usd or 1)), 8)
+                        if btc_usd
+                        else None
+                    ),
                     "net_usd_daily": round(rental_net_usd_daily, 2),
                     "risk_score": rental_risk_score,
                     "cv": round(rental_cv, 4),
@@ -1120,56 +1331,97 @@ def poll_once():
             }
 
             # Pool mining output
-            profitability.update({
-                "share_of_network_pct": round(share_of_network * 100, 8),
-                "gross_btc_per_day": round(gross_btc_per_day, 8),
-                # Pool mode (default, what the user is using)
-                "mode": cost_mode if cost_mode != "none" else "pool",
-                "net_btc_per_day_pool": round(pool_net_btc_per_day, 8),
-                "fiat_per_day_pool": _fiat_convert(pool_net_btc_per_day),
-                "fiat_per_week_pool": _fiat_convert(pool_net_btc_per_day * 7),
-                "fiat_per_month_pool": _fiat_convert(pool_net_btc_per_day * 30),
-                "pool_net_usd_per_day": round((pool_net_btc_per_day * (btc_usd or 0)) - cost_per_day, 4),
-                "pool_net_usd_per_month": round(((pool_net_btc_per_day * (btc_usd or 0)) - cost_per_day) * 30, 2),
-                # Solo mode
-                "net_btc_per_day_solo": round(solo_net_btc_per_day, 8),
-                "fiat_per_day_solo": _fiat_convert(solo_net_btc_per_day),
-                "solo_p_day_pct": round(solo_p_day * 100, 6),
-                "solo_p_year_pct": round(solo_p_year * 100, 4),
-                "solo_p_5year_pct": round(solo_p_5year * 100, 2),
-                "solo_expected_blocks_per_year": round(solo_expected_blocks_per_year, 4),
-                "solo_expected_time_to_block_days": round(solo_expected_time_to_block_days, 2) if solo_expected_time_to_block_days else None,
-                # Rental mode (cost subtracted)
-                "net_btc_per_day_rental": round(pool_net_btc_per_day - (cost_per_day / (btc_usd or 1)), 8) if btc_usd else None,
-                "fiat_per_day_rental": _fiat_convert(max(0, pool_net_btc_per_day - (cost_per_day / (btc_usd or 1)))) if btc_usd else None,
-                "rental_net_btc_per_day": round(pool_net_btc_per_day, 8),  # gross pool BTC
-                "rental_net_usd_per_day": round((pool_net_btc_per_day * (btc_usd or 0)) - cost_per_day, 4),
-                "rental_net_usd_per_month": round(((pool_net_btc_per_day * (btc_usd or 0)) - cost_per_day) * 30, 2),
-                # Cost info
-                "cost_per_day_usd": round(cost_per_day, 4),
-                "cost_label": (
-                    f"${rental_cost_per_day:.2f}/d rental ({ths:.2f} TH/s × ${coerce_float(s.get('rental_usd_per_th_day'),0.0):.4f})"
-                    if cost_mode == "rental" else
-                    f"${power_cost_per_day:.2f}/d power ({coerce_float(s.get('power_watts'),0.0):.0f}W × 24h × ${coerce_float(s.get('power_kwh_usd'),0.10):.4f}/kWh)"
-                    if cost_mode == "power" else"."
-                ),
-                # Break-even: rental rate at which pool_net = rental_cost
-                "break_even_rental_usd_per_th_day": round(
-                    (pool_net_btc_per_day * (btc_usd or 0)) / max(ths, 1e-12), 4
-                ) if cost_mode == "rental" and btc_usd and ths > 0 else None,
-                # Effective BTC/TH/s/day (marginal)
-                "effective_btc_per_th_per_day": round(
-                    (1.0 / 1e12 / net_hr) * blocks_per_day * total_reward_per_block
-                    * (1 - pool_fee_pct / 100.0) * (1 - orphan_pct / 100.0),
-                    10,
-                ),
-                # Pool fee info
-                "pool_fee_info": f"Pool fee: {pool_fee_pct}% · Orphan rate: {orphan_pct}% · Reward: {reward}+{fee} BTC/block",
-                # Risk comparison across modes
-                "risk_comparison": comparison,
-                # Disclaimer
-                "disclaimer": "Estimates based on current hashrate, network difficulty, and BTC price. Actual results vary significantly due to variance, pool luck, and difficulty changes.",
-            })
+            profitability.update(
+                {
+                    "share_of_network_pct": round(share_of_network * 100, 8),
+                    "gross_btc_per_day": round(gross_btc_per_day, 8),
+                    # Pool mode (default, what the user is using)
+                    "mode": cost_mode if cost_mode != "none" else "pool",
+                    "net_btc_per_day_pool": round(pool_net_btc_per_day, 8),
+                    "fiat_per_day_pool": _fiat_convert(pool_net_btc_per_day),
+                    "fiat_per_week_pool": _fiat_convert(pool_net_btc_per_day * 7),
+                    "fiat_per_month_pool": _fiat_convert(pool_net_btc_per_day * 30),
+                    "pool_net_usd_per_day": round(
+                        (pool_net_btc_per_day * (btc_usd or 0)) - cost_per_day, 4
+                    ),
+                    "pool_net_usd_per_month": round(
+                        ((pool_net_btc_per_day * (btc_usd or 0)) - cost_per_day) * 30, 2
+                    ),
+                    # Solo mode
+                    "net_btc_per_day_solo": round(solo_net_btc_per_day, 8),
+                    "fiat_per_day_solo": _fiat_convert(solo_net_btc_per_day),
+                    "solo_p_day_pct": round(solo_p_day * 100, 6),
+                    "solo_p_year_pct": round(solo_p_year * 100, 4),
+                    "solo_p_5year_pct": round(solo_p_5year * 100, 2),
+                    "solo_expected_blocks_per_year": round(
+                        solo_expected_blocks_per_year, 4
+                    ),
+                    "solo_expected_time_to_block_days": (
+                        round(solo_expected_time_to_block_days, 2)
+                        if solo_expected_time_to_block_days
+                        else None
+                    ),
+                    # Rental mode (cost subtracted)
+                    "net_btc_per_day_rental": (
+                        round(pool_net_btc_per_day - (cost_per_day / (btc_usd or 1)), 8)
+                        if btc_usd
+                        else None
+                    ),
+                    "fiat_per_day_rental": (
+                        _fiat_convert(
+                            max(
+                                0,
+                                pool_net_btc_per_day - (cost_per_day / (btc_usd or 1)),
+                            )
+                        )
+                        if btc_usd
+                        else None
+                    ),
+                    "rental_net_btc_per_day": round(
+                        pool_net_btc_per_day, 8
+                    ),  # gross pool BTC
+                    "rental_net_usd_per_day": round(
+                        (pool_net_btc_per_day * (btc_usd or 0)) - cost_per_day, 4
+                    ),
+                    "rental_net_usd_per_month": round(
+                        ((pool_net_btc_per_day * (btc_usd or 0)) - cost_per_day) * 30, 2
+                    ),
+                    # Cost info
+                    "cost_per_day_usd": round(cost_per_day, 4),
+                    "cost_label": (
+                        f"${rental_cost_per_day:.2f}/d rental ({ths:.2f} TH/s × ${coerce_float(s.get('rental_usd_per_th_day'),0.0):.4f})"
+                        if cost_mode == "rental"
+                        else (
+                            f"${power_cost_per_day:.2f}/d power ({coerce_float(s.get('power_watts'),0.0):.0f}W × 24h × ${coerce_float(s.get('power_kwh_usd'),0.10):.4f}/kWh)"
+                            if cost_mode == "power"
+                            else "."
+                        )
+                    ),
+                    # Break-even: rental rate at which pool_net = rental_cost
+                    "break_even_rental_usd_per_th_day": (
+                        round(
+                            (pool_net_btc_per_day * (btc_usd or 0)) / max(ths, 1e-12), 4
+                        )
+                        if cost_mode == "rental" and btc_usd and ths > 0
+                        else None
+                    ),
+                    # Effective BTC/TH/s/day (marginal)
+                    "effective_btc_per_th_per_day": round(
+                        (1.0 / 1e12 / net_hr)
+                        * blocks_per_day
+                        * total_reward_per_block
+                        * (1 - pool_fee_pct / 100.0)
+                        * (1 - orphan_pct / 100.0),
+                        10,
+                    ),
+                    # Pool fee info
+                    "pool_fee_info": f"Pool fee: {pool_fee_pct}% · Orphan rate: {orphan_pct}% · Reward: {reward}+{fee} BTC/block",
+                    # Risk comparison across modes
+                    "risk_comparison": comparison,
+                    # Disclaimer
+                    "disclaimer": "Estimates based on current hashrate, network difficulty, and BTC price. Actual results vary significantly due to variance, pool luck, and difficulty changes.",
+                }
+            )
         else:
             profitability["unavailable_reason"] = "no hashrate or network hashrate"
     except Exception as e:
@@ -1182,75 +1434,222 @@ def poll_once():
     milestones = []
     try:
         sc = state.timeline_state["session_share_count"]
-        best_diff_raw = parse_diff_to_float(worker.get("bestDifficulty","")) if worker else 0.0
+        best_diff_raw = (
+            parse_diff_to_float(worker.get("bestDifficulty", "")) if worker else 0.0
+        )
         uptime_s = safe_int(worker.get("uptime", 0)) if worker else 0
 
         # ── Account-level milestones (from pool API) ──
         block_count = meta.get("block_count") if isinstance(meta, dict) else None
-        total_diff_raw = account.get("total_diff") or account.get("totalDifficulty") if isinstance(account, dict) else None
-        total_diff_val = parse_diff_to_float(str(total_diff_raw)) if total_diff_raw else 0.0
-        lb_rank = (leaderboard.index(leaderboard_entry) + 1) if leaderboard_entry else None
+        total_diff_raw = (
+            account.get("total_diff") or account.get("totalDifficulty")
+            if isinstance(account, dict)
+            else None
+        )
+        total_diff_val = (
+            parse_diff_to_float(str(total_diff_raw)) if total_diff_raw else 0.0
+        )
+        lb_rank = (
+            (leaderboard.index(leaderboard_entry) + 1) if leaderboard_entry else None
+        )
 
         # Blocks found (highest tier — pool-verified)
         if block_count and int(block_count) >= 1:
-            milestones.append({"tier": "GOLD", "label": f"{int(block_count)} block{'s' if int(block_count) > 1 else ''} mined", "value": f"blocks_found:{block_count}"})
+            milestones.append(
+                {
+                    "tier": "GOLD",
+                    "label": f"{int(block_count)} block{'s' if int(block_count) > 1 else ''} mined",
+                    "value": f"blocks_found:{block_count}",
+                }
+            )
         if block_count and int(block_count) >= 2:
-            milestones.append({"tier": "GOLD", "label": f"{int(block_count)} blocks confirmed on-chain", "value": f"blocks_found:{block_count}"})
+            milestones.append(
+                {
+                    "tier": "GOLD",
+                    "label": f"{int(block_count)} blocks confirmed on-chain",
+                    "value": f"blocks_found:{block_count}",
+                }
+            )
 
         # Total difficulty contributed (lifetime from pool API)
         if total_diff_val >= 1e12:  # ≥ 1T
             diff_fmt = fmt_diff(total_diff_val)
-            milestones.append({"tier": "BRONZE", "label": f"total work: {diff_fmt}", "value": f"total_diff:{total_diff_val:.2e}"})
+            milestones.append(
+                {
+                    "tier": "BRONZE",
+                    "label": f"total work: {diff_fmt}",
+                    "value": f"total_diff:{total_diff_val:.2e}",
+                }
+            )
         if total_diff_val >= 1e15:  # ≥ 1P
-            milestones.append({"tier": "SILVER", "label": f"total work: {fmt_diff(total_diff_val)}", "value": f"total_diff:{total_diff_val:.2e}"})
+            milestones.append(
+                {
+                    "tier": "SILVER",
+                    "label": f"total work: {fmt_diff(total_diff_val)}",
+                    "value": f"total_diff:{total_diff_val:.2e}",
+                }
+            )
 
         # Leaderboard ranking
         if lb_rank and lb_rank <= 3:
-            milestones.append({"tier": "GOLD", "label": f"top {lb_rank} on leaderboard", "value": f"lb_rank:{lb_rank}"})
+            milestones.append(
+                {
+                    "tier": "GOLD",
+                    "label": f"top {lb_rank} on leaderboard",
+                    "value": f"lb_rank:{lb_rank}",
+                }
+            )
         elif lb_rank and lb_rank <= 10:
-            milestones.append({"tier": "SILVER", "label": f"top {lb_rank} on leaderboard", "value": f"lb_rank:{lb_rank}"})
+            milestones.append(
+                {
+                    "tier": "SILVER",
+                    "label": f"top {lb_rank} on leaderboard",
+                    "value": f"lb_rank:{lb_rank}",
+                }
+            )
         elif lb_rank and lb_rank <= 25:
-            milestones.append({"tier": "BRONZE", "label": f"top {lb_rank} on leaderboard", "value": f"lb_rank:{lb_rank}"})
+            milestones.append(
+                {
+                    "tier": "BRONZE",
+                    "label": f"top {lb_rank} on leaderboard",
+                    "value": f"lb_rank:{lb_rank}",
+                }
+            )
 
         # ── Session milestones ──
         if sc >= 10:
-            milestones.append({"tier": "BRONZE", "label": f"{sc} shares this session", "value": f"session_shares:{sc}"})
+            milestones.append(
+                {
+                    "tier": "BRONZE",
+                    "label": f"{sc} shares this session",
+                    "value": f"session_shares:{sc}",
+                }
+            )
         if sc >= 100:
-            milestones.append({"tier": "BRONZE", "label": f"{sc} shares this session", "value": f"session_shares:{sc}"})
+            milestones.append(
+                {
+                    "tier": "BRONZE",
+                    "label": f"{sc} shares this session",
+                    "value": f"session_shares:{sc}",
+                }
+            )
         if sc >= 1000:
-            milestones.append({"tier": "SILVER", "label": f"{sc:,} shares this session", "value": f"session_shares:{sc}"})
+            milestones.append(
+                {
+                    "tier": "SILVER",
+                    "label": f"{sc:,} shares this session",
+                    "value": f"session_shares:{sc}",
+                }
+            )
         if sc >= 10000:
-            milestones.append({"tier": "GOLD", "label": f"{sc:,} shares this session", "value": f"session_shares:{sc}"})
+            milestones.append(
+                {
+                    "tier": "GOLD",
+                    "label": f"{sc:,} shares this session",
+                    "value": f"session_shares:{sc}",
+                }
+            )
 
         # ── Best difficulty milestones (pool-verified) ──
-        if best_diff_raw >= 1e6:   # ≥ 1M
-            milestones.append({"tier": "BRONZE", "label": f"best diff: {fmt_diff(best_diff_raw)}", "value": f"best_diff:{best_diff_raw:.2e}"})
-        if best_diff_raw >= 1e9:   # ≥ 1G
-            milestones.append({"tier": "BRONZE", "label": f"best diff: {fmt_diff(best_diff_raw)}", "value": f"best_diff:{best_diff_raw:.2e}"})
+        if best_diff_raw >= 1e6:  # ≥ 1M
+            milestones.append(
+                {
+                    "tier": "BRONZE",
+                    "label": f"best diff: {fmt_diff(best_diff_raw)}",
+                    "value": f"best_diff:{best_diff_raw:.2e}",
+                }
+            )
+        if best_diff_raw >= 1e9:  # ≥ 1G
+            milestones.append(
+                {
+                    "tier": "BRONZE",
+                    "label": f"best diff: {fmt_diff(best_diff_raw)}",
+                    "value": f"best_diff:{best_diff_raw:.2e}",
+                }
+            )
         if best_diff_raw >= 1e12:  # ≥ 1T
-            milestones.append({"tier": "SILVER", "label": f"best diff: {fmt_diff(best_diff_raw)}", "value": f"best_diff:{best_diff_raw:.2e}"})
+            milestones.append(
+                {
+                    "tier": "SILVER",
+                    "label": f"best diff: {fmt_diff(best_diff_raw)}",
+                    "value": f"best_diff:{best_diff_raw:.2e}",
+                }
+            )
         if best_diff_raw >= 1e14:  # ≥ 100T
-            milestones.append({"tier": "SILVER", "label": f"best diff: {fmt_diff(best_diff_raw)}", "value": f"best_diff:{best_diff_raw:.2e}"})
+            milestones.append(
+                {
+                    "tier": "SILVER",
+                    "label": f"best diff: {fmt_diff(best_diff_raw)}",
+                    "value": f"best_diff:{best_diff_raw:.2e}",
+                }
+            )
         if best_diff_raw >= 1e15:  # ≥ 1P
-            milestones.append({"tier": "GOLD", "label": f"best diff: {fmt_diff(best_diff_raw)}", "value": f"best_diff:{best_diff_raw:.2e}"})
+            milestones.append(
+                {
+                    "tier": "GOLD",
+                    "label": f"best diff: {fmt_diff(best_diff_raw)}",
+                    "value": f"best_diff:{best_diff_raw:.2e}",
+                }
+            )
 
         # ── Uptime milestones (continuous miner operation) ──
-        if uptime_s >= 3600:       # ≥ 1 hour
-            milestones.append({"tier": "BRONZE", "label": "1 hour uptime", "value": f"uptime:{uptime_s}"})
-        if uptime_s >= 86400:      # ≥ 1 day
-            milestones.append({"tier": "BRONZE", "label": "1 day uptime", "value": f"uptime:{uptime_s}"})
-        if uptime_s >= 7*86400:    # ≥ 7 days
-            milestones.append({"tier": "SILVER", "label": "7 days uptime", "value": f"uptime:{uptime_s}"})
-        if uptime_s >= 30*86400:   # ≥ 30 days
-            milestones.append({"tier": "GOLD", "label": "30 days uptime", "value": f"uptime:{uptime_s}"})
+        if uptime_s >= 3600:  # ≥ 1 hour
+            milestones.append(
+                {
+                    "tier": "BRONZE",
+                    "label": "1 hour uptime",
+                    "value": f"uptime:{uptime_s}",
+                }
+            )
+        if uptime_s >= 86400:  # ≥ 1 day
+            milestones.append(
+                {
+                    "tier": "BRONZE",
+                    "label": "1 day uptime",
+                    "value": f"uptime:{uptime_s}",
+                }
+            )
+        if uptime_s >= 7 * 86400:  # ≥ 7 days
+            milestones.append(
+                {
+                    "tier": "SILVER",
+                    "label": "7 days uptime",
+                    "value": f"uptime:{uptime_s}",
+                }
+            )
+        if uptime_s >= 30 * 86400:  # ≥ 30 days
+            milestones.append(
+                {
+                    "tier": "GOLD",
+                    "label": "30 days uptime",
+                    "value": f"uptime:{uptime_s}",
+                }
+            )
 
         # ── High-diff events (user had highest diff on a block) ──
         if isinstance(highest, list):
-            mine_count = sum(1 for ev in highest if config.BTC_ADDRESS in (ev.get("top_diff_address") or ev.get("address") or ""))
+            mine_count = sum(
+                1
+                for ev in highest
+                if config.BTC_ADDRESS
+                in (ev.get("top_diff_address") or ev.get("address") or "")
+            )
             if mine_count >= 1:
-                milestones.append({"tier": "SILVER", "label": f"{mine_count} high-diff event{'s' if mine_count > 1 else ''}", "value": f"high_diff_events:{mine_count}"})
+                milestones.append(
+                    {
+                        "tier": "SILVER",
+                        "label": f"{mine_count} high-diff event{'s' if mine_count > 1 else ''}",
+                        "value": f"high_diff_events:{mine_count}",
+                    }
+                )
             if mine_count >= 10:
-                milestones.append({"tier": "GOLD", "label": f"{mine_count} high-diff events", "value": f"high_diff_events:{mine_count}"})
+                milestones.append(
+                    {
+                        "tier": "GOLD",
+                        "label": f"{mine_count} high-diff events",
+                        "value": f"high_diff_events:{mine_count}",
+                    }
+                )
 
     except Exception:
         pass
@@ -1290,8 +1689,15 @@ def poll_once():
         }
 
     # ━━ Worker-share-of-network gauge (server-side compute; client renders) ━━
-    network_share_gauge = {"worker_pct": None, "pool_pct": None, "label": "", "pool_hr": None,
-                          "net_hr": None, "worker_share_of_pool_pct": None, "has_data": False}
+    network_share_gauge = {
+        "worker_pct": None,
+        "pool_pct": None,
+        "label": "",
+        "pool_hr": None,
+        "net_hr": None,
+        "worker_share_of_pool_pct": None,
+        "has_data": False,
+    }
     try:
         if worker and net_hr and cur_hr:
             w_pct = round(cur_hr / net_hr * 100, 6)
@@ -1305,7 +1711,11 @@ def poll_once():
                 "pool_hr": round(p_hr, 2),
                 "net_hr": round(net_hr, 2),
                 "has_data": True,
-                "label": f"worker = {w_pct:.6f}% of network \u00b7 pool = {p_pct or 0:.4f}% of network" if p_pct else f"worker = {w_pct:.6f}% of network",
+                "label": (
+                    f"worker = {w_pct:.6f}% of network \u00b7 pool = {p_pct or 0:.4f}% of network"
+                    if p_pct
+                    else f"worker = {w_pct:.6f}% of network"
+                ),
             }
     except Exception:
         pass
@@ -1330,7 +1740,9 @@ def poll_once():
         recent_alerts = in_mem + recent_alerts
         # Cap so renderers don't get flooded; SUCCESS alerts auto-clear on next good persist.
         if len(state.memory_critical_alerts) > 24:
-            state.memory_critical_alerts = state.memory_critical_alerts[-24:]  # GC oldest
+            state.memory_critical_alerts = state.memory_critical_alerts[
+                -24:
+            ]  # GC oldest
 
     # ━━ Hot-streak inject (post-DB-read so it lands at top of alerts_recent)
     # Persist directly to alerts DB AND prepend to recent_alerts so the panel
@@ -1344,16 +1756,22 @@ def poll_once():
             c = conn.cursor()
             c.execute(
                 "INSERT INTO alerts (ts, severity, category, message) VALUES (?,?,?,?)",
-                (hot_streak_alert["ts"], hot_streak_alert["severity"],
-                 hot_streak_alert["category"], hot_streak_alert["message"]),
+                (
+                    hot_streak_alert["ts"],
+                    hot_streak_alert["severity"],
+                    hot_streak_alert["category"],
+                    hot_streak_alert["message"],
+                ),
             )
             conn.commit()
             conn.close()
         except Exception as e:
             log.warning("[hot_streak alert persist] error: %s", e)
         mem_hs = config.make_memory_alert(
-            hot_streak_alert["ts"], hot_streak_alert["severity"],
-            hot_streak_alert["category"], hot_streak_alert["message"],
+            hot_streak_alert["ts"],
+            hot_streak_alert["severity"],
+            hot_streak_alert["category"],
+            hot_streak_alert["message"],
         )
         # Prepend so it appears at the top of the panel. DO NOT also push to
         # state.memory_critical_alerts — the existing in_mem prepend block + DB
@@ -1366,9 +1784,7 @@ def poll_once():
     try:
         conn = config.get_db()
         c = conn.cursor()
-        c.execute(
-            "SELECT * FROM share_timeline ORDER BY id DESC LIMIT 80"
-        )
+        c.execute("SELECT * FROM share_timeline ORDER BY id DESC LIMIT 80")
         timeline_recent = [dict(r) for r in c.fetchall()]
         conn.close()
     except Exception:
@@ -1389,7 +1805,11 @@ def poll_once():
         "session_best_diff_bumps": session_best_bumps,
         "rolling_shares_per_hour": round(sph, 2),
         "last_submit_ts": state.timeline_state["last_submit_ts"],
-        "last_share_age_s": (now - state.timeline_state["last_submit_ts"]) if state.timeline_state["last_submit_ts"] else None,
+        "last_share_age_s": (
+            (now - state.timeline_state["last_submit_ts"])
+            if state.timeline_state["last_submit_ts"]
+            else None
+        ),
     }
     try:
         conn = config.get_db()
@@ -1442,7 +1862,7 @@ def poll_once():
         # Expected blocks: time until expected block found given pool hashrate
         pool_hr = float(pool.get("hashrate") or 0)
         if pool_hr > 0:
-            secs_per_block = (float(current_difficulty) * (2 ** 32)) / pool_hr
+            secs_per_block = (float(current_difficulty) * (2**32)) / pool_hr
             pool_enriched["expectedSecondsPerBlock"] = secs_per_block
 
     state.latest_snapshot = {
@@ -1475,9 +1895,11 @@ def poll_once():
         "timeline_recent": timeline_recent[:60],
         "event_stats": event_stats,
         "timeline_last_n": timeline_events[-30:],  # brand-new this poll; for live log
-    "leaderboard_table_top_30": leaderboard[:30] if isinstance(leaderboard, list) else [],
-    "all_workers": all_workers,
-}
+        "leaderboard_table_top_30": (
+            leaderboard[:30] if isinstance(leaderboard, list) else []
+        ),
+        "all_workers": all_workers,
+    }
 
 
 def purge_old():

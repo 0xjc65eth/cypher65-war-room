@@ -14,8 +14,8 @@ from datetime import datetime
 # CONSTANTS
 # ═══════════════════════════════════════════════════════════════════════════
 
-HASHES_PER_DIFF = 2 ** 32  # hashes expected per difficulty-1 share
-SECONDS_PER_BLOCK = 600     # Bitcoin target block time
+HASHES_PER_DIFF = 2**32  # hashes expected per difficulty-1 share
+SECONDS_PER_BLOCK = 600  # Bitcoin target block time
 PARASITE_API = "https://parasite.space/api"
 MEMPOOL_API = "https://mempool.space/api"
 COINGECKO_API = "https://api.coingecko.com/api/v3/simple/price"
@@ -24,6 +24,7 @@ COINGECKO_API = "https://api.coingecko.com/api/v3/simple/price"
 # ═══════════════════════════════════════════════════════════════════════════
 # DATA FETCHERS — never hardcode real-time values
 # ═══════════════════════════════════════════════════════════════════════════
+
 
 def get_network_difficulty():
     """Fetch current Bitcoin network difficulty from mempool.space."""
@@ -75,7 +76,11 @@ def get_parasite_best_diff(worker_id=None):
     """Fetch best difficulty from parasite.space.
     If worker_id is provided, fetches worker-specific stats.
     Otherwise returns pool-level stats."""
-    url = f"{PARASITE_API}/user/{worker_id}" if worker_id else f"{PARASITE_API}/pool-stats"
+    url = (
+        f"{PARASITE_API}/user/{worker_id}"
+        if worker_id
+        else f"{PARASITE_API}/pool-stats"
+    )
     try:
         r = requests.get(url, timeout=8)
         if r.ok:
@@ -93,6 +98,7 @@ def get_parasite_best_diff(worker_id=None):
 # ═══════════════════════════════════════════════════════════════════════════
 # CORE CALCULATIONS — section 3.2 formulas
 # ═══════════════════════════════════════════════════════════════════════════
+
 
 def calc_block_probability(hashrate_hs, difficulty, duration_seconds):
     """
@@ -145,7 +151,9 @@ def calc_prob_best_diff_exceeds(hashrate_hs, duration_seconds, threshold_diff):
     total_hashes = hashrate_hs * duration_seconds
     n_shares = total_hashes / HASHES_PER_DIFF  # approximate share count
     avg_share_diff = 1.0  # per-hash expected
-    prob_one_exceeds = math.exp(-threshold_diff / avg_share_diff) if threshold_diff > 0 else 1
+    prob_one_exceeds = (
+        math.exp(-threshold_diff / avg_share_diff) if threshold_diff > 0 else 1
+    )
     prob_at_least_one = 1 - (1 - prob_one_exceeds) ** max(1, n_shares)
     return {
         "n_shares_approx": n_shares,
@@ -157,6 +165,7 @@ def calc_prob_best_diff_exceeds(hashrate_hs, duration_seconds, threshold_diff):
 # ═══════════════════════════════════════════════════════════════════════════
 # RENTAL COMPARISON — section 4 logic
 # ═══════════════════════════════════════════════════════════════════════════
+
 
 def normalize_cost(price, unit):
     """
@@ -185,13 +194,17 @@ def normalize_cost(price, unit):
         return None
 
 
-def compare_rentals(budget_btc, difficulty, duration_hours,
-                    braiins_price_btc_per_ph_day=None,
-                    mrr_price_btc_per_ph_day=None,
-                    objective="EV",
-                    auto_fetch=True,
-                    mrr_api_key=None,
-                    mrr_api_secret=None):
+def compare_rentals(
+    budget_btc,
+    difficulty,
+    duration_hours,
+    braiins_price_btc_per_ph_day=None,
+    mrr_price_btc_per_ph_day=None,
+    objective="EV",
+    auto_fetch=True,
+    mrr_api_key=None,
+    mrr_api_secret=None,
+):
     """
     Compare Braiins vs MRR for solo mining.
     If prices not provided and auto_fetch=True, fetches real-time prices from APIs.
@@ -204,7 +217,11 @@ def compare_rentals(budget_btc, difficulty, duration_hours,
 
     # Normalize manually-provided prices, or auto-fetch from APIs
     if braiins_price_btc_per_ph_day is not None and braiins_price_btc_per_ph_day > 0:
-        b_price = normalize_cost(braiins_price_btc_per_ph_day, "btc/ph/day") if isinstance(braiins_price_btc_per_ph_day, str) else braiins_price_btc_per_ph_day
+        b_price = (
+            normalize_cost(braiins_price_btc_per_ph_day, "btc/ph/day")
+            if isinstance(braiins_price_btc_per_ph_day, str)
+            else braiins_price_btc_per_ph_day
+        )
         b_source = "manual"
     elif auto_fetch:
         braiins_data = get_braiins_orderbook()
@@ -214,13 +231,19 @@ def compare_rentals(budget_btc, difficulty, duration_hours,
         else:
             b_price = None
             b_source = "unavailable"
-            api_errors.append(f"Braiins: {braiins_data.get('error', 'no orderbook data') if braiins_data else 'API unreachable'}")
+            api_errors.append(
+                f"Braiins: {braiins_data.get('error', 'no orderbook data') if braiins_data else 'API unreachable'}"
+            )
     else:
         b_price = None
         b_source = None
 
     if mrr_price_btc_per_ph_day is not None and mrr_price_btc_per_ph_day > 0:
-        m_price = normalize_cost(mrr_price_btc_per_ph_day, "btc/ph/day") if isinstance(mrr_price_btc_per_ph_day, str) else mrr_price_btc_per_ph_day
+        m_price = (
+            normalize_cost(mrr_price_btc_per_ph_day, "btc/ph/day")
+            if isinstance(mrr_price_btc_per_ph_day, str)
+            else mrr_price_btc_per_ph_day
+        )
         m_source = "manual"
     elif auto_fetch:
         mrr_data = get_mrr_listings(api_key=mrr_api_key, api_secret=mrr_api_secret)
@@ -234,7 +257,9 @@ def compare_rentals(budget_btc, difficulty, duration_hours,
         else:
             m_price = None
             m_source = "unavailable"
-            api_errors.append(f"MRR: {mrr_data.get('error', 'no listings') if mrr_data else 'API unreachable'}")
+            api_errors.append(
+                f"MRR: {mrr_data.get('error', 'no listings') if mrr_data else 'API unreachable'}"
+            )
     else:
         m_price = None
         m_source = None
@@ -262,23 +287,27 @@ def compare_rentals(budget_btc, difficulty, duration_hours,
         # EV = P(block) * (1 BTC finder bonus + proportional share of remaining reward)
         # Conservative estimate: finder bonus is the main value driver for solo miners
         finder_bonus = 1.0  # parasite.space guarantees 1 BTC to block finder
-        proportional_share = prob["p_at_least_1_block"] * block_reward * 0.01  # ~1% of block reward as pool share
+        proportional_share = (
+            prob["p_at_least_1_block"] * block_reward * 0.01
+        )  # ~1% of block reward as pool share
         ev_bruto = prob["p_at_least_1_block"] * finder_bonus + proportional_share
         ev_liquido = ev_bruto - budget_btc
 
         price_source = b_source if name.startswith("Braiins") else m_source
-        options.append({
-            "platform": name,
-            "price_btc_per_ph_day": price_btc_ph_day,
-            "price_source": price_source,
-            "cost_total_btc": cost_per_ph,
-            "hashpower_ph": hashpower_ph,
-            "hashrate_hs": hashrate_hs,
-            "p_block_pct": prob["p_at_least_1_block_pct"],
-            "expected_time_days": exp_time["days"],
-            "expected_time_years": exp_time["years"],
-            "ev_btc": ev_liquido,
-        })
+        options.append(
+            {
+                "platform": name,
+                "price_btc_per_ph_day": price_btc_ph_day,
+                "price_source": price_source,
+                "cost_total_btc": cost_per_ph,
+                "hashpower_ph": hashpower_ph,
+                "hashrate_hs": hashrate_hs,
+                "p_block_pct": prob["p_at_least_1_block_pct"],
+                "expected_time_days": exp_time["days"],
+                "expected_time_years": exp_time["years"],
+                "ev_btc": ev_liquido,
+            }
+        )
 
     # Include api_errors and source info in each option
     for opt in options:
@@ -295,32 +324,35 @@ def compare_rentals(budget_btc, difficulty, duration_hours,
         options.sort(key=lambda x: x["hashpower_ph"], reverse=True)
     else:  # EV (default)
         options.sort(key=lambda x: x["ev_btc"], reverse=True)
-    
+
     # Attach api_errors to the result for caller visibility
     # Always return a list for consistent handling by callers.
     # If no options were generated but there are API errors, return an
     # error-entry option so format_compare_output can display them.
     if not options and api_errors:
-        options.append({
-            "platform": "API ERROR",
-            "price_btc_per_ph_day": 0,
-            "price_source": "error",
-            "cost_total_btc": 0,
-            "hashpower_ph": 0,
-            "hashrate_hs": 0,
-            "p_block_pct": 0,
-            "expected_time_days": 0,
-            "expected_time_years": 0,
-            "ev_btc": 0,
-            "api_errors": api_errors,
-            "api_status": "error",
-        })
+        options.append(
+            {
+                "platform": "API ERROR",
+                "price_btc_per_ph_day": 0,
+                "price_source": "error",
+                "cost_total_btc": 0,
+                "hashpower_ph": 0,
+                "hashrate_hs": 0,
+                "p_block_pct": 0,
+                "expected_time_days": 0,
+                "expected_time_years": 0,
+                "ev_btc": 0,
+                "api_errors": api_errors,
+                "api_status": "error",
+            }
+        )
     return options
 
 
 # ═══════════════════════════════════════════════════════════════════════════
 # TERMINAL OUTPUT FORMATTER
 # ═══════════════════════════════════════════════════════════════════════════
+
 
 def format_calc_output(hashrate, difficulty, duration_hours, user=None):
     """Format a full solo mining calculation as terminal output.
@@ -334,11 +366,15 @@ def format_calc_output(hashrate, difficulty, duration_hours, user=None):
     best_diff = calc_best_diff_expected(hashrate_hs, duration_seconds)
 
     lines = []
-    lines.append(f"{who}@cypher:~/solo-mining$ calc --hashrate {hashrate} --duration {duration_hours}h")
+    lines.append(
+        f"{who}@cypher:~/solo-mining$ calc --hashrate {hashrate} --duration {duration_hours}h"
+    )
     lines.append("")
     lines.append("[OK] Parameters received")
     lines.append(f"  hashrate........... {hashrate}")
-    lines.append(f"  duration............ {duration_hours}h ({duration_hours/24:.2f} days)")
+    lines.append(
+        f"  duration............ {duration_hours}h ({duration_hours/24:.2f} days)"
+    )
     lines.append(f"  difficulty.......... {difficulty:,.0f}")
     lines.append("")
     lines.append("─── Block Discovery ───")
@@ -362,36 +398,53 @@ def format_calc_output(hashrate, difficulty, duration_hours, user=None):
     return "\n".join(lines)
 
 
-def format_compare_output(budget_btc, difficulty, duration_hours,
-                          braiins_price=None, mrr_price=None,
-                          auto_fetch=True, mrr_api_key=None, mrr_api_secret=None,
-                          user=None):
+def format_compare_output(
+    budget_btc,
+    difficulty,
+    duration_hours,
+    braiins_price=None,
+    mrr_price=None,
+    auto_fetch=True,
+    mrr_api_key=None,
+    mrr_api_secret=None,
+    user=None,
+):
     """Format rental comparison as terminal table.
     user: prompt identity (e.g. the connected wallet short-form).
     Defaults to a neutral 'miner' — never a hardcoded person."""
     import os
+
     if mrr_api_key is None:
         mrr_api_key = os.environ.get("MRR_API_KEY")
     if mrr_api_secret is None:
         mrr_api_secret = os.environ.get("MRR_API_SECRET")
     who = _safe_term_user(user)
     results = compare_rentals(
-        budget_btc, difficulty, duration_hours,
-        braiins_price, mrr_price,
+        budget_btc,
+        difficulty,
+        duration_hours,
+        braiins_price,
+        mrr_price,
         auto_fetch=auto_fetch,
         mrr_api_key=mrr_api_key,
         mrr_api_secret=mrr_api_secret,
     )
 
     lines = []
-    lines.append(f"{who}@cypher:~/solo-mining$ compare --budget {budget_btc}BTC --duration {duration_hours}h")
+    lines.append(
+        f"{who}@cypher:~/solo-mining$ compare --budget {budget_btc}BTC --duration {duration_hours}h"
+    )
     lines.append("")
-    lines.append(f"[OK] Budget: {budget_btc} BTC | Duration: {duration_hours}h | Difficulty: {difficulty:,.0f}")
+    lines.append(
+        f"[OK] Budget: {budget_btc} BTC | Duration: {duration_hours}h | Difficulty: {difficulty:,.0f}"
+    )
     lines.append("")
 
     if not results:
         lines.append("[ERROR] No rental options available.")
-        lines.append("        Provide prices via --braiins/--mrr flags, or ensure network connectivity.")
+        lines.append(
+            "        Provide prices via --braiins/--mrr flags, or ensure network connectivity."
+        )
         return "\n".join(lines)
 
     # If the only option is an API error entry, display errors
@@ -400,11 +453,17 @@ def format_compare_output(budget_btc, difficulty, duration_hours,
         for err in results[0].get("api_errors", []):
             lines.append(f"        {err}")
         lines.append("")
-        lines.append("[WARN] Provide prices manually: --braiins <price> --mrr <price> (BTC/PH/day)")
+        lines.append(
+            "[WARN] Provide prices manually: --braiins <price> --mrr <price> (BTC/PH/day)"
+        )
         return "\n".join(lines)
 
-    lines.append("  Platform              Price/PH/d    Hashpower   P(block)   Expected Time      EV(BTC)")
-    lines.append("  ─────────────────────  ────────────  ──────────  ─────────  ────────────────   ───────")
+    lines.append(
+        "  Platform              Price/PH/d    Hashpower   P(block)   Expected Time      EV(BTC)"
+    )
+    lines.append(
+        "  ─────────────────────  ────────────  ──────────  ─────────  ────────────────   ───────"
+    )
     for r in results:
         lines.append(
             f"  {r['platform']:<22s}  {r['price_btc_per_ph_day']:>10.6f}   {r['hashpower_ph']:>8.2f}PH  "
@@ -416,7 +475,9 @@ def format_compare_output(budget_btc, difficulty, duration_hours,
     if results[0]["ev_btc"] < 0:
         lines.append("[WARN] All options have negative EV. Solo mining is a lottery.")
     else:
-        lines.append(f"[OK] Best option: {results[0]['platform']} (EV={results[0]['ev_btc']:+.6f} BTC)")
+        lines.append(
+            f"[OK] Best option: {results[0]['platform']} (EV={results[0]['ev_btc']:+.6f} BTC)"
+        )
     lines.append("")
 
     return "\n".join(lines)
@@ -519,9 +580,7 @@ def get_mrr_listings(algo="sha256", api_key=None, api_secret=None):
     # HMAC-SHA1 signature
     sign_string = api_key + nonce + endpoint
     sign = hmac.new(
-        api_secret.encode("utf-8"),
-        sign_string.encode("utf-8"),
-        hashlib.sha1
+        api_secret.encode("utf-8"), sign_string.encode("utf-8"), hashlib.sha1
     ).hexdigest()
 
     headers = {
@@ -575,7 +634,9 @@ def get_mrr_listings(algo="sha256", api_key=None, api_secret=None):
             elif "gh" in unit.lower():
                 btc_per_th_day = (amount if currency == "BTC" else amount / 1e8) * 1000
             elif "ph" in unit.lower():
-                btc_per_th_day = (amount if currency == "BTC" else amount / 1e8) / 1_000_000
+                btc_per_th_day = (
+                    amount if currency == "BTC" else amount / 1e8
+                ) / 1_000_000
             else:
                 btc_per_th_day = amount if currency == "BTC" else amount / 1e8
 
@@ -628,11 +689,17 @@ def _parse_hashrate(hr_str):
     hr_str = str(hr_str).strip().upper().replace(" ", "")
     # Strip /S suffix first
     hr_str = hr_str.removesuffix("/S")
-    multipliers = {"EH": 1e18, "PH": 1e15, "TH": 1e12, "GH": 1e9,
-                   "MH": 1e6, "KH": 1e3, "H": 1}
+    multipliers = {
+        "EH": 1e18,
+        "PH": 1e15,
+        "TH": 1e12,
+        "GH": 1e9,
+        "MH": 1e6,
+        "KH": 1e3,
+        "H": 1,
+    }
     for unit, mult in multipliers.items():
         if hr_str.endswith(unit):
-            num = hr_str[:-len(unit)]
+            num = hr_str[: -len(unit)]
             return float(num) * mult
     return float(hr_str)
-

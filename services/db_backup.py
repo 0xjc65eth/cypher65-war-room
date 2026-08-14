@@ -86,7 +86,9 @@ def backup_now(db_path=None, dest_dir=None, keep=None):
         src.close()
 
     prune_backups(dest_dir, keep=keep)
-    log.info("[backup] snapshot -> %s (%.0f KB)", dest, Path(dest).stat().st_size / 1024)
+    log.info(
+        "[backup] snapshot -> %s (%.0f KB)", dest, Path(dest).stat().st_size / 1024
+    )
     return dest
 
 

@@ -17,6 +17,7 @@ Braiins OS+ and provides a superset of the standard cgminer fields.
 
 Reference: https://academy.braiins.com/braiins-os/papi-bosminer
 """
+
 import json
 import logging
 import time
@@ -44,8 +45,12 @@ class BraiinsAdapter(BaseAdapter):
     Braiins-specific commands and optionally from the REST API.
     """
 
-    def __init__(self, device: Device, host: Optional[str] = None,
-                 socket_port: int = CGMINER_PORT):
+    def __init__(
+        self,
+        device: Device,
+        host: Optional[str] = None,
+        socket_port: int = CGMINER_PORT,
+    ):
         super().__init__(device)
         self.host = host or device.ip
         self.socket_port = socket_port
@@ -72,8 +77,7 @@ class BraiinsAdapter(BaseAdapter):
             r = requests.get(url, timeout=HTTP_TIMEOUT)
             if r.status_code == 200:
                 return r.json()
-        except (requests.ConnectionError, requests.Timeout,
-                json.JSONDecodeError):
+        except (requests.ConnectionError, requests.Timeout, json.JSONDecodeError):
             pass
         return None
 
@@ -104,10 +108,14 @@ class BraiinsAdapter(BaseAdapter):
         pool = data.get("pool_stats") or {}
         power = data.get("power_stats") or {}
 
-        hr = self._safe_number(
-            miner.get("hashrate_avg") or miner.get("hashrate_ghps"),
-            float, 0) * 1e9 if miner.get("hashrate_avg") else \
-            self._safe_number(miner.get("hashrate_ghps"), float, 0) * 1e9
+        hr = (
+            self._safe_number(
+                miner.get("hashrate_avg") or miner.get("hashrate_ghps"), float, 0
+            )
+            * 1e9
+            if miner.get("hashrate_avg")
+            else self._safe_number(miner.get("hashrate_ghps"), float, 0) * 1e9
+        )
 
         return BaseAdapter._build_telemetry_dict(
             source="braiins_adapter",
@@ -123,12 +131,17 @@ class BraiinsAdapter(BaseAdapter):
             pool_url=str(pool.get("url") or ""),
             pool_user=str(pool.get("user") or ""),
             accepted_shares=self._safe_number(
-                miner.get("accepted_shares") or pool.get("accepted"), int, 0),
+                miner.get("accepted_shares") or pool.get("accepted"), int, 0
+            ),
             rejected_shares=self._safe_number(
-                miner.get("rejected_shares") or pool.get("rejected"), int, 0),
+                miner.get("rejected_shares") or pool.get("rejected"), int, 0
+            ),
             stale_shares=self._safe_number(
-                miner.get("stale_shares") or pool.get("stale"), int, 0),
-            uptime=self._safe_number(miner.get("uptime_s") or miner.get("uptime"), int, 0),
+                miner.get("stale_shares") or pool.get("stale"), int, 0
+            ),
+            uptime=self._safe_number(
+                miner.get("uptime_s") or miner.get("uptime"), int, 0
+            ),
             best_share=str(miner.get("best_share") or ""),
         )
 
@@ -145,8 +158,7 @@ class BraiinsAdapter(BaseAdapter):
         if isinstance(summary_data, list):
             summary_data = summary_data[0] if summary_data else {}
 
-        hr = float(summary_data.get("GHS 5s",
-                   summary_data.get("GHS av", 0)) or 0) * 1e9
+        hr = float(summary_data.get("GHS 5s", summary_data.get("GHS av", 0)) or 0) * 1e9
         accepted = int(summary_data.get("Accepted", 0))
         rejected = int(summary_data.get("Rejected", 0))
         stale = int(summary_data.get("Stale", 0))
@@ -178,15 +190,19 @@ class BraiinsAdapter(BaseAdapter):
             temps_list = temps_data["TEMPS"]
             if isinstance(temps_list, list) and temps_list:
                 # Collect max chip temp across all boards
-                chip_temps = [self._safe_number(t.get("temp"))
-                              for t in temps_list
-                              if self._safe_number(t.get("temp")) is not None]
+                chip_temps = [
+                    self._safe_number(t.get("temp"))
+                    for t in temps_list
+                    if self._safe_number(t.get("temp")) is not None
+                ]
                 if chip_temps:
                     chip_temp = max(chip_temps)
                 # Board/PCB temp
-                pcb_temps = [self._safe_number(t.get("temp_pcb"))
-                             for t in temps_list
-                             if self._safe_number(t.get("temp_pcb")) is not None]
+                pcb_temps = [
+                    self._safe_number(t.get("temp_pcb"))
+                    for t in temps_list
+                    if self._safe_number(t.get("temp_pcb")) is not None
+                ]
                 if pcb_temps:
                     board_temp = max(pcb_temps)
 
@@ -196,13 +212,13 @@ class BraiinsAdapter(BaseAdapter):
             if isinstance(stats_list, list) and len(stats_list) > 1:
                 chain = stats_list[1]
                 chip_temp = self._safe_number(
-                    chain.get("temp2_0", chain.get("temp", None)))
+                    chain.get("temp2_0", chain.get("temp", None))
+                )
                 vr_temp = self._safe_number(
-                    chain.get("temp2_1", chain.get("temp2_2",
-                              chain.get("temp3", None))))
+                    chain.get("temp2_1", chain.get("temp2_2", chain.get("temp3", None)))
+                )
                 if board_temp is None:
-                    board_temp = self._safe_number(
-                        chain.get("temp", None))
+                    board_temp = self._safe_number(chain.get("temp", None))
 
         # ── Extract fan RPM ───────────────────────────────────────
         fan_rpm = None
@@ -210,9 +226,11 @@ class BraiinsAdapter(BaseAdapter):
         if fans_data and "FANS" in fans_data:
             fans_list = fans_data["FANS"]
             if isinstance(fans_list, list) and fans_list:
-                fan_rpms = [self._safe_number(f.get("RPM"))
-                            for f in fans_list
-                            if self._safe_number(f.get("RPM")) is not None]
+                fan_rpms = [
+                    self._safe_number(f.get("RPM"))
+                    for f in fans_list
+                    if self._safe_number(f.get("RPM")) is not None
+                ]
                 if fan_rpms:
                     # Average RPM across all fans
                     fan_rpm = sum(fan_rpms) / len(fan_rpms)
@@ -224,8 +242,10 @@ class BraiinsAdapter(BaseAdapter):
                 fan_count = int(chain.get("fan_num", 0))
                 if fan_count > 0:
                     fan_rpm = self._safe_number(
-                        chain.get("fan1", chain.get("fan_rpm",
-                                  chain.get("fan_speed", None))))
+                        chain.get(
+                            "fan1", chain.get("fan_rpm", chain.get("fan_speed", None))
+                        )
+                    )
 
         # ── Extract voltage ───────────────────────────────────────
         voltage = None
@@ -234,7 +254,8 @@ class BraiinsAdapter(BaseAdapter):
             if isinstance(stats_list, list) and len(stats_list) > 1:
                 chain = stats_list[1]
                 voltage = self._safe_number(
-                    chain.get("voltage", chain.get("chain_voltage", None)))
+                    chain.get("voltage", chain.get("chain_voltage", None))
+                )
 
         # ── Extract power (prefer tunerstatus) ────────────────────
         power = None
@@ -244,16 +265,22 @@ class BraiinsAdapter(BaseAdapter):
             if isinstance(tuner, list) and tuner:
                 t = tuner[0]
                 power = self._safe_number(
-                    t.get("power", t.get("Power", t.get("power_w",
-                          t.get("PowerLimit", None)))))
+                    t.get(
+                        "power",
+                        t.get("Power", t.get("power_w", t.get("PowerLimit", None))),
+                    )
+                )
 
         if power is None and stats_data and "STATS" in stats_data:
             stats_list = stats_data["STATS"]
             if isinstance(stats_list, list) and len(stats_list) > 1:
                 chain = stats_list[1]
                 power = self._safe_number(
-                    chain.get("power", chain.get("chain_power",
-                              chain.get("power_watts", None))))
+                    chain.get(
+                        "power",
+                        chain.get("chain_power", chain.get("power_watts", None)),
+                    )
+                )
 
         # ── Pool status ───────────────────────────────────────────
         pool_status, pool_url, pool_user = self._derive_cgminer_pool_status(pools_data)
@@ -283,44 +310,71 @@ class BraiinsAdapter(BaseAdapter):
 
     # ── Commands ───────────────────────────────────────────────────────
 
-    def execute_command(self, command: str,
-                        parameters: Optional[Dict[str, Any]] = None
-                        ) -> Dict[str, Any]:
+    def execute_command(
+        self, command: str, parameters: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
         if not self.supports(command):
-            return {"success": False,
-                    "error": "Command not supported by this device"}
+            return {"success": False, "error": "Command not supported by this device"}
 
         if command == "restart":
             result = self._send_command("restart")
-            return {"success": bool(result), "stub": False,
-                    "command": command, "device_id": self.device.id}
+            return {
+                "success": bool(result),
+                "stub": False,
+                "command": command,
+                "device_id": self.device.id,
+            }
 
         if command == "identify":
             # Braiins OS+ supports LED blink via cgminer's 'led' command
             result = self._send_command("led")
             if result:
-                return {"success": True, "stub": False,
-                        "command": command, "device_id": self.device.id}
-            return {"success": False, "stub": True,
-                    "command": command, "device_id": self.device.id,
-                    "note": "LED blink not supported by this firmware"}
+                return {
+                    "success": True,
+                    "stub": False,
+                    "command": command,
+                    "device_id": self.device.id,
+                }
+            return {
+                "success": False,
+                "stub": True,
+                "command": command,
+                "device_id": self.device.id,
+                "note": "LED blink not supported by this firmware",
+            }
 
-        return {"success": False, "stub": True,
-                "command": command, "device_id": self.device.id,
-                "note": f"{command} not yet implemented for Braiins OS+"}
+        return {
+            "success": False,
+            "stub": True,
+            "command": command,
+            "device_id": self.device.id,
+            "note": f"{command} not yet implemented for Braiins OS+",
+        }
 
     # ── Capabilities ───────────────────────────────────────────────────
 
     def get_capabilities(self) -> List[Capability]:
         return [
             Capability(name="telemetry", supported=True),
-            Capability(name="restart", supported=True,
-                       requires_confirmation=True, risk_level=RiskLevel.MEDIUM),
+            Capability(
+                name="restart",
+                supported=True,
+                requires_confirmation=True,
+                risk_level=RiskLevel.MEDIUM,
+            ),
             Capability(name="identify", supported=True),
-            Capability(name="tuner_control", supported=False,
-                       requires_confirmation=True, risk_level=RiskLevel.HIGH),
-            Capability(name="set_frequency", supported=False,
-                       requires_confirmation=True, risk_level=RiskLevel.HIGH),
+            Capability(
+                name="tuner_control",
+                supported=False,
+                requires_confirmation=True,
+                risk_level=RiskLevel.HIGH,
+            ),
+            Capability(
+                name="set_frequency",
+                supported=False,
+                requires_confirmation=True,
+                risk_level=RiskLevel.HIGH,
+            ),
         ]
 
     # ── Health check ───────────────────────────────────────────────────
@@ -333,17 +387,25 @@ class BraiinsAdapter(BaseAdapter):
         # Try REST first
         rest = self._rest_get("/api/v1/miner/stats")
         if rest:
-            return {"status": "reachable", "reachable": True,
-                    "api": "rest", "port": REST_PORT}
+            return {
+                "status": "reachable",
+                "reachable": True,
+                "api": "rest",
+                "port": REST_PORT,
+            }
 
         # Try cgminer socket
         version = self._send_command("version")
         if version:
             vdata = version.get("VERSION", [{}])
             v = vdata[0] if isinstance(vdata, list) and vdata else {}
-            return {"status": "reachable", "reachable": True,
-                    "api": "cgminer_socket", "port": self.socket_port,
-                    "version": str(v.get("Version", "")),
-                    "type": str(v.get("Type", ""))}
+            return {
+                "status": "reachable",
+                "reachable": True,
+                "api": "cgminer_socket",
+                "port": self.socket_port,
+                "version": str(v.get("Version", "")),
+                "type": str(v.get("Type", "")),
+            }
 
         return {"status": "unreachable", "reachable": False}

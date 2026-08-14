@@ -31,9 +31,19 @@ from typing import Any
 import requests
 
 from helpers import (
-    parse_diff_to_float, fmt_diff, fmt_hashrate, fmt_uptime, fmt_age,
-    safe_int, safe_num_from_str, coerce_float, coerce_int,
-    human_int, human_secs_long, isfinite_v, make_memory_alert,
+    parse_diff_to_float,
+    fmt_diff,
+    fmt_hashrate,
+    fmt_uptime,
+    fmt_age,
+    safe_int,
+    safe_num_from_str,
+    coerce_float,
+    coerce_int,
+    human_int,
+    human_secs_long,
+    isfinite_v,
+    make_memory_alert,
 )
 import services.names as _names
 from services.settings import load_settings as _load_settings
@@ -70,6 +80,7 @@ def _update_global(key: str, value: Any):
                 pass
         _global_cache[key] = {"data": value, "ts": int(time.time())}
 
+
 # ── Per-ADDRESS fetch cache (Phase: 1000+ user scale) ──────────────────────
 # Two workers watching the SAME wallet (common: operator + tenant, or two
 # tenants sharing a rig) must not double-hit Parasite /user+account. Cache
@@ -105,9 +116,11 @@ def _fire_webhook_async(webhook_kwargs: dict):
     queue (services/webhook_queue) so a CRIT is never lost to a transient
     outage. The per-worker alert_seen dedup would otherwise swallow it.
     """
+
     def _run():
         try:
             from services.webhook_queue import dispatch_webhook_or_queue
+
             dispatch_webhook_or_queue(**webhook_kwargs)
         except Exception:
             # Last-resort: never crash the daemon thread.
@@ -115,8 +128,11 @@ def _fire_webhook_async(webhook_kwargs: dict):
                 _send_webhook_for_alert(**webhook_kwargs)
             except Exception:
                 pass
+
     threading.Thread(
-        target=_run, daemon=True, name="cypher65-webhook",
+        target=_run,
+        daemon=True,
+        name="cypher65-webhook",
     ).start()
 
 
@@ -130,8 +146,10 @@ def _fire_push_async(tenant_id: str, severity: str, category: str, message: str)
     webhook: never block the poll loop on network.
     """
     threading.Thread(
-        target=_notify_tenant_push, args=(tenant_id, severity, category, message),
-        daemon=True, name="cypher65-push",
+        target=_notify_tenant_push,
+        args=(tenant_id, severity, category, message),
+        daemon=True,
+        name="cypher65-push",
     ).start()
 
 
@@ -139,6 +157,7 @@ def _notify_tenant_push(tenant_id: str, severity: str, category: str, message: s
     """Best-effort tenant push delivery (runs on the push daemon thread)."""
     try:
         from services.push_notifier import notify_tenant_alert
+
         notify_tenant_alert(tenant_id, severity, category, message)
     except Exception:
         pass
@@ -248,8 +267,9 @@ def _bump_auto_exclude_alert_counter(path: str, n: int) -> None:
         _AUTO_EXCLUDE_ALERTS_BY_PATH[path] += n
 
 
-def dispatch_auto_exclude_alerts(tenant_id: str, rig_ids: list,
-                                 path: str = "sweep") -> int:
+def dispatch_auto_exclude_alerts(
+    tenant_id: str, rig_ids: list, path: str = "sweep"
+) -> int:
     """Fire webhook + push for rigs the sweep JUST auto-excluded (opt-in via
     rental_auto_exclude_alert). Returns the number of alerts dispatched.
 
@@ -266,6 +286,7 @@ def dispatch_auto_exclude_alerts(tenant_id: str, rig_ids: list,
     if not rig_ids:
         return 0
     from services import rental_performance as _rp
+
     # Canonical claim tenant: the panel detail route passes 'default'
     # (require_tenant fallback) while the sweep passes '' for the same
     # tenant — the dedup claim MUST land on one row or the two paths could
@@ -287,8 +308,9 @@ def dispatch_auto_exclude_alerts(tenant_id: str, rig_ids: list,
                 ev_ts = int(time.time())
             # Atomic once-per-event claim (ts in the key → re-exclusion after
             # a restore is a NEW event and re-alerts).
-            if not _rp._mark_pl_alert_fired(claim_tid, "auto_exclude",
-                                            f"{rid}:{ev_ts}", float(ev_ts)):
+            if not _rp._mark_pl_alert_fired(
+                claim_tid, "auto_exclude", f"{rid}:{ev_ts}", float(ev_ts)
+            ):
                 continue
             _dispatch_tenant_alert_family(tenant_id, [alert])
             sent += 1
@@ -303,23 +325,26 @@ def _dispatch_tenant_alert_family(tenant_id: str, alerts: list):
     """Shared webhook+push loop for both tenant alert families (P/L + risk) —
     one implementation, no drift between the two dispatchers."""
     from services.settings import load_settings as _tenant_settings
+
     s = _tenant_settings(tenant_id=tenant_id)
     webhook_url = (s.get("webhook_url") or "").strip()
     min_sev = s.get("webhook_min_severity", "WARN")
     _ts = int(time.time())
     for a in alerts:
         if webhook_url:
-            _fire_webhook_async({
-                "url": webhook_url,
-                "severity": a["severity"],
-                "category": a["category"],
-                "message": a["message"],
-                "ts": _ts,
-                "worker": "",
-                "address": "",
-                "min_severity": min_sev,
-                "tenant_id": tenant_id,
-            })
+            _fire_webhook_async(
+                {
+                    "url": webhook_url,
+                    "severity": a["severity"],
+                    "category": a["category"],
+                    "message": a["message"],
+                    "ts": _ts,
+                    "worker": "",
+                    "address": "",
+                    "min_severity": min_sev,
+                    "tenant_id": tenant_id,
+                }
+            )
         _fire_push_async(tenant_id, a["severity"], a["category"], a["message"])
 
 
@@ -345,8 +370,9 @@ def _fetch_json(url: str, timeout: int = 10) -> Any:
     last_err = None
     for attempt in range(FETCH_MAX_RETRIES + 1):
         try:
-            r = requests.get(url, timeout=timeout,
-                             headers={"User-Agent": "cypher65-war-room/1.0"})
+            r = requests.get(
+                url, timeout=timeout, headers={"User-Agent": "cypher65-war-room/1.0"}
+            )
             r.raise_for_status()
             return r.json()
         except Exception as e:
@@ -362,8 +388,9 @@ def _fetch_text(url: str, timeout: int = 8) -> str | None:
     last_err = None
     for attempt in range(FETCH_MAX_RETRIES + 1):
         try:
-            r = requests.get(url, timeout=timeout,
-                             headers={"User-Agent": "cypher65-war-room/1.0"})
+            r = requests.get(
+                url, timeout=timeout, headers={"User-Agent": "cypher65-war-room/1.0"}
+            )
             r.raise_for_status()
             return r.text.strip()
         except Exception as e:
@@ -375,6 +402,7 @@ def _fetch_text(url: str, timeout: int = 8) -> str | None:
 
 
 # ── Shared global fetchers (called once, cached) ────────────────────────────
+
 
 def _fetch_global_pool() -> dict:
     """Pool stats — cached globally."""
@@ -391,8 +419,7 @@ def _fetch_global_leaderboard(limit: int = 100) -> list:
     cached = _get_global("leaderboard")
     if cached is not None:
         return cached
-    data = _fetch_json(f"{PARASITE_API}/leaderboard?limit={limit}",
-                       timeout=10) or []
+    data = _fetch_json(f"{PARASITE_API}/leaderboard?limit={limit}", timeout=10) or []
     _update_global("leaderboard", data)
     return data
 
@@ -403,10 +430,13 @@ def _fetch_global_highest_diffs(address: str, limit: int = 20) -> list:
     cached = _get_global(f"hd_{address}", ttl=60)
     if cached is not None:
         return cached
-    data = _fetch_json(
-        f"{PARASITE_API}/highest-diff?type=user-diffs&address={address}&limit={limit}",
-        timeout=10
-    ) or []
+    data = (
+        _fetch_json(
+            f"{PARASITE_API}/highest-diff?type=user-diffs&address={address}&limit={limit}",
+            timeout=10,
+        )
+        or []
+    )
     _update_global(f"hd_{address}", data)
     return data
 
@@ -422,14 +452,10 @@ def _fetch_global_network() -> tuple:
     # Fetch in parallel
     results = {}
     with concurrent.futures.ThreadPoolExecutor(max_workers=4) as ex:
-        fut_height = ex.submit(_fetch_json,
-                               f"{MEMPOOL_API}/blocks/tip/height", 6)
-        fut_diff = ex.submit(_fetch_text,
-                             "https://blockchain.info/q/getdifficulty", 8)
-        fut_hr = ex.submit(_fetch_text,
-                           "https://blockchain.info/q/hashrate", 8)
-        fut_fees = ex.submit(_fetch_json,
-                             f"{MEMPOOL_API}/v1/fees/recommended", 6)
+        fut_height = ex.submit(_fetch_json, f"{MEMPOOL_API}/blocks/tip/height", 6)
+        fut_diff = ex.submit(_fetch_text, "https://blockchain.info/q/getdifficulty", 8)
+        fut_hr = ex.submit(_fetch_text, "https://blockchain.info/q/hashrate", 8)
+        fut_fees = ex.submit(_fetch_json, f"{MEMPOOL_API}/v1/fees/recommended", 6)
 
         results["height"] = fut_height.result()
         results["diff"] = fut_diff.result()
@@ -439,14 +465,18 @@ def _fetch_global_network() -> tuple:
         fees_raw = fut_fees.result()
         fees = {}
         if isinstance(fees_raw, dict):
-            for k in ("fastestFee", "halfHourFee", "hourFee",
-                      "minimumFee", "economyFee"):
+            for k in (
+                "fastestFee",
+                "halfHourFee",
+                "hourFee",
+                "minimumFee",
+                "economyFee",
+            ):
                 v = fees_raw.get(k)
                 if isinstance(v, (int, float)):
                     fees[k] = v
         if not fees:
-            fees = {"fastestFee": None, "halfHourFee": None,
-                    "hourFee": None}
+            fees = {"fastestFee": None, "halfHourFee": None, "hourFee": None}
         _update_global("mempool_fees", fees)
 
     height = results["height"] if isinstance(results["height"], int) else None
@@ -456,7 +486,7 @@ def _fetch_global_network() -> tuple:
     hashrate = float(hr_val) * 1e9 if hr_val else None
 
     if difficulty and (hashrate is None or hashrate == 0):
-        hashrate = difficulty * (2 ** 32) / 600
+        hashrate = difficulty * (2**32) / 600
 
     _update_global("net_height", height)
     _update_global("net_diff", difficulty)
@@ -469,14 +499,13 @@ def _fetch_global_btc_price() -> dict:
     """BTC price — cached for 5 min (CoinGecko rate limit)."""
     global btc_price_cache
     now = int(time.time())
-    if now - btc_price_cache["ts"] < BTC_PRICE_CACHE_TTL \
-       and btc_price_cache["data"]:
+    if now - btc_price_cache["ts"] < BTC_PRICE_CACHE_TTL and btc_price_cache["data"]:
         return btc_price_cache["data"]
 
     quote = _fetch_json(
         "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&"
         "vs_currencies=usd,brl,eur,gbp,jpy,krw,cny",
-        timeout=6
+        timeout=6,
     )
     if isinstance(quote, dict) and quote.get("bitcoin"):
         btc_price_cache["data"] = quote
@@ -499,19 +528,23 @@ def _fetch_global_mempool_fees() -> dict:
 
 # ── Per-user fetchers ────────────────────────────────────────────────────────
 
+
 def _fetch_user_data(address: str) -> dict | None:
     """Fetch worker data for a specific BTC address (deduped per address)."""
-    return _cached_user_fetch(f"user_{address}", _fetch_json,
-                              f"{PARASITE_API}/user/{address}", 10)
+    return _cached_user_fetch(
+        f"user_{address}", _fetch_json, f"{PARASITE_API}/user/{address}", 10
+    )
 
 
 def _fetch_account(address: str) -> dict | None:
     """Fetch account data for a specific BTC address (deduped per address)."""
-    return _cached_user_fetch(f"acct_{address}", _fetch_json,
-                              f"{PARASITE_API}/account/{address}", 10)
+    return _cached_user_fetch(
+        f"acct_{address}", _fetch_json, f"{PARASITE_API}/account/{address}", 10
+    )
 
 
 # ── Snapshot builder ─────────────────────────────────────────────────────────
+
 
 def _build_snapshot(address: str, worker_name: str) -> dict:
     """Build a complete snapshot dict for one BTC address.
@@ -536,9 +569,22 @@ def _build_snapshot(address: str, worker_name: str) -> dict:
         "leaderboard_entry": None,
         "leaderboard_total": 0,
         "highest_diffs": [],
-        "network": {"height": None, "difficulty": None, "hashrate": None, "stale": False},
-        "btc_price": {"usd": None, "brl": None, "eur": None, "gbp": None,
-                      "jpy": None, "krw": None, "cny": None, "stale": False},
+        "network": {
+            "height": None,
+            "difficulty": None,
+            "hashrate": None,
+            "stale": False,
+        },
+        "btc_price": {
+            "usd": None,
+            "brl": None,
+            "eur": None,
+            "gbp": None,
+            "jpy": None,
+            "krw": None,
+            "cny": None,
+            "stale": False,
+        },
         "luck_estimate": {},
         "halving": {},
         "mempool_fees": {},
@@ -594,28 +640,35 @@ def _build_snapshot(address: str, worker_name: str) -> dict:
 
         # ── BTC price ──
         btc_price_data = {
-            "usd": btc_usd, "brl": btc_brl,
-            "eur": btc_eur, "gbp": btc_gbp,
-            "jpy": btc_jpy, "krw": btc_krw, "cny": btc_cny,
+            "usd": btc_usd,
+            "brl": btc_brl,
+            "eur": btc_eur,
+            "gbp": btc_gbp,
+            "jpy": btc_jpy,
+            "krw": btc_krw,
+            "cny": btc_cny,
             "stale": False,
         }
 
         # ── Account ──
         account = (account_data or {}).get("account")
-        lightning = (account_data or {}).get("lightning") \
-            if isinstance(account_data, dict) else None
+        lightning = (
+            (account_data or {}).get("lightning")
+            if isinstance(account_data, dict)
+            else None
+        )
         meta = (account or {}).get("metadata", {})
 
         # ── Leaderboard ──
         lb_entry = None
-        for entry in (leaderboard or []):
+        for entry in leaderboard or []:
             if entry.get("address") == address:
                 lb_entry = entry
                 break
         # Fallback: substring match
         if not lb_entry:
             addr_short = address[-8:].lower()
-            for entry in (leaderboard or []):
+            for entry in leaderboard or []:
                 if addr_short in str(entry.get("address", "")).lower():
                     lb_entry = entry
                     break
@@ -639,12 +692,9 @@ def _build_snapshot(address: str, worker_name: str) -> dict:
                     "lastSubmission": w.get("lastSubmission"),
                     "uptime": w.get("uptime"),
                     "is_primary": (
-                        _names.normalize(raw_name)
-                        == _names.normalize(worker_name)
-                    ) or (
-                        _names.normalize(raw_id)
-                        == _names.normalize(worker_name)
-                    ),
+                        _names.normalize(raw_name) == _names.normalize(worker_name)
+                    )
+                    or (_names.normalize(raw_id) == _names.normalize(worker_name)),
                 }
                 all_workers.append(entry)
                 if entry["is_primary"]:
@@ -664,27 +714,34 @@ def _build_snapshot(address: str, worker_name: str) -> dict:
                 if key in seen:
                     existing_idx = seen[key]
                     existing = deduped[existing_idx]
-                    if (entry.get("hashrate") or 0) \
-                       > (existing.get("hashrate") or 0):
+                    if (entry.get("hashrate") or 0) > (existing.get("hashrate") or 0):
                         deduped[existing_idx] = entry
                 else:
                     seen[key] = len(deduped)
                     deduped.append(entry)
             all_workers = deduped
             if _orig_count != len(all_workers):
-                log.info("[dedup] %s: %d→%d workers", address[:8],
-                         _orig_count, len(all_workers))
+                log.info(
+                    "[dedup] %s: %d→%d workers",
+                    address[:8],
+                    _orig_count,
+                    len(all_workers),
+                )
 
         # ── Halving countdown ──
-        halving = {"height": height, "blocks_remaining": None,
-                   "estimated_seconds_remaining": None,
-                   "next_reward_btc": None, "epoch_label": ""}
+        halving = {
+            "height": height,
+            "blocks_remaining": None,
+            "estimated_seconds_remaining": None,
+            "next_reward_btc": None,
+            "epoch_label": "",
+        }
         if isinstance(height, int):
             next_h = ((height // 210000) + 1) * 210000
             blocks_left = max(0, next_h - height)
             secs_left = blocks_left * 600
             epoch_idx = (next_h // 210000) - 1
-            cur_reward = 50.0 * (0.5 ** epoch_idx) if epoch_idx >= 0 else 50.0
+            cur_reward = 50.0 * (0.5**epoch_idx) if epoch_idx >= 0 else 50.0
             next_reward = cur_reward * 0.5
             halving = {
                 "next_height": next_h,
@@ -698,25 +755,27 @@ def _build_snapshot(address: str, worker_name: str) -> dict:
             }
 
         # ── Assemble snapshot ──
-        snapshot.update({
-            "ts": ts,
-            "btc_address": address,
-            "worker": worker,
-            "worker_index": worker_index,
-            "user_aggregate": user,
-            "pool": pool if pool else None,
-            "account": account,
-            "account_meta": meta,
-            "lightning": lightning,
-            "leaderboard_entry": lb_entry,
-            "leaderboard_total": len(leaderboard or []),
-            "highest_diffs": (highest or [])[:20],
-            "network": network,
-            "btc_price": btc_price_data,
-            "mempool_fees": mempool_fees,
-            "halving": halving,
-            "all_workers": all_workers,
-        })
+        snapshot.update(
+            {
+                "ts": ts,
+                "btc_address": address,
+                "worker": worker,
+                "worker_index": worker_index,
+                "user_aggregate": user,
+                "pool": pool if pool else None,
+                "account": account,
+                "account_meta": meta,
+                "lightning": lightning,
+                "leaderboard_entry": lb_entry,
+                "leaderboard_total": len(leaderboard or []),
+                "highest_diffs": (highest or [])[:20],
+                "network": network,
+                "btc_price": btc_price_data,
+                "mempool_fees": mempool_fees,
+                "halving": halving,
+                "all_workers": all_workers,
+            }
+        )
 
     except Exception as e:
         log.error("[poll] error for %s: %s", address[:8], e)
@@ -726,8 +785,10 @@ def _build_snapshot(address: str, worker_name: str) -> dict:
 
 # ── Per-tenant wallet alert evaluation ────────────────────────────────────────
 
-def evaluate_user_alerts(snapshot: dict, prev_snapshot: dict, settings: dict,
-                         alert_seen: set) -> list:
+
+def evaluate_user_alerts(
+    snapshot: dict, prev_snapshot: dict, settings: dict, alert_seen: set
+) -> list:
     """Generate per-wallet alerts for one polled snapshot.
 
     Mirrors the operator's ``_do_poll`` wallet-anomaly detection but
@@ -757,9 +818,14 @@ def evaluate_user_alerts(snapshot: dict, prev_snapshot: dict, settings: dict,
             sev = "WARN" if (ts - int(ls)) <= stale_min * 120 else "CRIT"
             sig = ("stale_submission", str(ls))
             if sig not in alert_seen:
-                alerts.append((sev, "stale_submission",
-                    f"Worker last submit {int((ts - int(ls)) / 60)}min ago "
-                    f"(threshold {stale_min}m)"))
+                alerts.append(
+                    (
+                        sev,
+                        "stale_submission",
+                        f"Worker last submit {int((ts - int(ls)) / 60)}min ago "
+                        f"(threshold {stale_min}m)",
+                    )
+                )
                 alert_seen.add(sig)
 
         # ── Hashrate drop vs previous poll ──
@@ -768,9 +834,14 @@ def evaluate_user_alerts(snapshot: dict, prev_snapshot: dict, settings: dict,
         if prev_hr > 0 and cur_hr < (1 - hr_drop_pct / 100.0) * prev_hr:
             sig = ("hashrate_drop", f"{prev_hr:.0f}->{cur_hr:.0f}")
             if sig not in alert_seen:
-                alerts.append(("WARN", "hashrate_drop",
-                    f"Worker hashrate dropped from {fmt_hashrate(prev_hr)} "
-                    f"to {fmt_hashrate(cur_hr)} (-{hr_drop_pct:.0f}%)"))
+                alerts.append(
+                    (
+                        "WARN",
+                        "hashrate_drop",
+                        f"Worker hashrate dropped from {fmt_hashrate(prev_hr)} "
+                        f"to {fmt_hashrate(cur_hr)} (-{hr_drop_pct:.0f}%)",
+                    )
+                )
                 alert_seen.add(sig)
 
         # ── Uptime day-boundary milestone (fire once per day) ──
@@ -780,8 +851,9 @@ def evaluate_user_alerts(snapshot: dict, prev_snapshot: dict, settings: dict,
                 day_num = up // 86400
                 sig = ("uptime_milestone", str(day_num))
                 if sig not in alert_seen:
-                    alerts.append(("INFO", "uptime",
-                        f"Worker uptime crossed {fmt_uptime(up)}"))
+                    alerts.append(
+                        ("INFO", "uptime", f"Worker uptime crossed {fmt_uptime(up)}")
+                    )
                     alert_seen.add(sig)
 
         # Worker present → clear the offline sig so it can re-fire next time.
@@ -791,8 +863,7 @@ def evaluate_user_alerts(snapshot: dict, prev_snapshot: dict, settings: dict,
         sig = ("worker_offline", "1")
         was_present = bool(prev_snapshot and prev_snapshot.get("worker"))
         if sig not in alert_seen and was_present:
-            alerts.append(("CRIT", "worker_offline",
-                           "Worker not found in workerData"))
+            alerts.append(("CRIT", "worker_offline", "Worker not found in workerData"))
             alert_seen.add(sig)
 
     # GC old signatures (keep last 500) — same policy as _do_poll. Trim
@@ -831,8 +902,8 @@ POLL_INTERVAL = 15  # seconds
 # spread out); adaptive backoff stretches the interval when the pool is
 # erroring so a provider outage doesn't amplify into a self-inflicted
 # request storm.
-POLL_JITTER_MAX = 8          # seconds added: wait = interval + uniform(0, jitter)
-POLL_MAX_BACKOFF = 120       # seconds cap on the error backoff
+POLL_JITTER_MAX = 8  # seconds added: wait = interval + uniform(0, jitter)
+POLL_MAX_BACKOFF = 120  # seconds cap on the error backoff
 POLL_ERROR_BACKOFF_MULT = 2  # double the interval per consecutive error burst
 # Fixed worker pool size — THE P1 Phase-2 fix. Env-overridable per deploy.
 POOL_DEFAULT_SIZE = int(os.environ.get("POLL_WORKER_POOL_SIZE", "8"))
@@ -840,7 +911,9 @@ POOL_DEFAULT_SIZE = int(os.environ.get("POLL_WORKER_POOL_SIZE", "8"))
 # If workers are alive but NO poll has completed in this window while
 # sessions are pending (ready queue or scheduled heap non-empty), the pool
 # is stalled — surface a CRIT instead of silently freezing telemetry.
-POOL_STALL_SECS = 90.0  # > 2× POLL_INTERVAL+jitter, so a slow-but-healthy pool never trips
+POOL_STALL_SECS = (
+    90.0  # > 2× POLL_INTERVAL+jitter, so a slow-but-healthy pool never trips
+)
 
 
 def _poll_wait(consecutive_errors: int) -> float:
@@ -890,8 +963,8 @@ class PollWorkerPool:
         self._started = False
         # ── Observability counters (exposed via stats() → /api/admin/sessions) ──
         self._started_ts = 0.0
-        self._poll_count = 0          # successful polls executed by workers
-        self._error_count = 0         # polls that raised
+        self._poll_count = 0  # successful polls executed by workers
+        self._error_count = 0  # polls that raised
         self._recent_polls = collections.deque(maxlen=2048)  # ts of each poll
         # Last completed poll timestamp — feeds the stall watchdog.
         self._last_poll_ts = 0.0
@@ -968,11 +1041,13 @@ class PollWorkerPool:
             self._started_ts = time.time()
             self._stop.clear()
             self._scheduler = threading.Thread(
-                target=self._scheduler_loop, name="cypher65-pool-sched", daemon=True)
+                target=self._scheduler_loop, name="cypher65-pool-sched", daemon=True
+            )
             self._scheduler.start()
             for i in range(self.size):
                 t = threading.Thread(
-                    target=self._worker_loop, name=f"cypher65-poll-{i}", daemon=True)
+                    target=self._worker_loop, name=f"cypher65-poll-{i}", daemon=True
+                )
                 t.start()
                 self._workers.append(t)
         log.info("[pool] started: %d worker threads + scheduler", self.size)
@@ -996,8 +1071,9 @@ class PollWorkerPool:
             self.start()
         with self._lock:
             self._sessions[worker.session_id] = worker
-            heapq.heappush(self._heap, (time.time(), next(self._seq),
-                                        worker.session_id))
+            heapq.heappush(
+                self._heap, (time.time(), next(self._seq), worker.session_id)
+            )
         log.info("[pool] registered session %s", worker.session_id[:8])
 
     def unregister(self, session_id: str):
@@ -1019,8 +1095,7 @@ class PollWorkerPool:
         """Force the session's next poll ASAP (address change)."""
         with self._lock:
             if session_id in self._sessions:
-                heapq.heappush(self._heap, (time.time(), next(self._seq),
-                                            session_id))
+                heapq.heappush(self._heap, (time.time(), next(self._seq), session_id))
 
     @property
     def active_count(self) -> int:
@@ -1085,8 +1160,11 @@ class PollWorkerPool:
                 if worker.session_id in self._sessions:
                     heapq.heappush(
                         self._heap,
-                        (time.time() + _poll_wait(worker._consecutive_errors),
-                         next(self._seq), worker.session_id),
+                        (
+                            time.time() + _poll_wait(worker._consecutive_errors),
+                            next(self._seq),
+                            worker.session_id,
+                        ),
                     )
 
 
@@ -1127,19 +1205,28 @@ def _rentals_sweep_once() -> int:
     # log line so a tenant's auto-exclude/alert decisions trace end-to-end.
     # observability is stdlib-only and already imported at boot — no guard.
     from services.observability import (
-        new_request_id as _nrid, set_request_id as _srid,
+        new_request_id as _nrid,
+        set_request_id as _srid,
     )
+
     _srid(_nrid("sweep"))
     try:
         from services.rental_performance import (
-            pl_alert_enabled_tenants, risk_alert_enabled_tenants,
-            market_overpay_enabled_tenants, market_arb_enabled_tenants,
-            reco_worse_enabled_tenants, _sweep_fetch_history,
-            auto_blacklist_candidate_tenants, evaluate_auto_blacklist,
+            pl_alert_enabled_tenants,
+            risk_alert_enabled_tenants,
+            market_overpay_enabled_tenants,
+            market_arb_enabled_tenants,
+            reco_worse_enabled_tenants,
+            _sweep_fetch_history,
+            auto_blacklist_candidate_tenants,
+            evaluate_auto_blacklist,
             evaluate_rental_pl_alerts,
-            evaluate_market_overpay_alerts, evaluate_market_arb_alerts,
-            evaluate_reco_worse_alerts, sweep_risk_alerts,
+            evaluate_market_overpay_alerts,
+            evaluate_market_arb_alerts,
+            evaluate_reco_worse_alerts,
+            sweep_risk_alerts,
         )
+
         # Each family gates its own sweep to ITS enabled set — a risk-only
         # tenant must NEVER trigger sweep_rental_pl_alerts (that function
         # fetches MRR history unconditionally and would burn the provider
@@ -1162,7 +1249,16 @@ def _rentals_sweep_once() -> int:
         # auto-blacklist family is last: it is DEFAULT protection (not an
         # opt-in alert), and it only needs the LOCAL track record — no MRR
         # fetch, so it never costs the provider rate budget.
-        tenants = list(dict.fromkeys(list(pl_list) + list(market_list) + list(arb_list) + list(reco_list) + list(risk_list) + list(auto_list)))
+        tenants = list(
+            dict.fromkeys(
+                list(pl_list)
+                + list(market_list)
+                + list(arb_list)
+                + list(reco_list)
+                + list(risk_list)
+                + list(auto_list)
+            )
+        )
         visited = 0
         for i, t in enumerate(tenants):
             try:
@@ -1173,48 +1269,65 @@ def _rentals_sweep_once() -> int:
                 if t in pl_set or t in market_set:
                     shared_hist = _sweep_fetch_history(tenant_id=t)
                 if t in pl_set:
-                    alerts = evaluate_rental_pl_alerts(shared_hist or [], [],
-                                                       tenant_id=t)
+                    alerts = evaluate_rental_pl_alerts(
+                        shared_hist or [], [], tenant_id=t
+                    )
                     if alerts:
                         # CRITICAL: the sweep's whole purpose is delivery
                         # without the panel — dispatch HERE or the dedup slot
                         # gets claimed by evaluate and the alert is swallowed
                         # forever.
                         dispatch_rental_pl_alerts(t, alerts)
-                        log.info("[rentals-sweep] %s: %d P/L alert(s) dispatched",
-                                 t or "default", len(alerts))
+                        log.info(
+                            "[rentals-sweep] %s: %d P/L alert(s) dispatched",
+                            t or "default",
+                            len(alerts),
+                        )
                 if t in market_set:
                     # Market-overpay family: price paid vs market at purchase.
                     market = evaluate_market_overpay_alerts(
-                        shared_hist or [], [], tenant_id=t)
+                        shared_hist or [], [], tenant_id=t
+                    )
                     if market:
                         dispatch_rental_market_alerts(t, market)
-                        log.info("[rentals-sweep] %s: %d overpay alert(s) dispatched",
-                                 t or "default", len(market))
+                        log.info(
+                            "[rentals-sweep] %s: %d overpay alert(s) dispatched",
+                            t or "default",
+                            len(market),
+                        )
                 if t in arb_set:
                     # Arbitrage-opportunity alerts — LOCAL evaluation (tenant's
                     # own avg cost + local market table), zero provider cost.
                     arb = evaluate_market_arb_alerts(tenant_id=t)
                     if arb:
                         dispatch_rental_arb_alerts(t, arb)
-                        log.info("[rentals-sweep] %s: %d arb alert(s) dispatched",
-                                 t or "default", len(arb))
+                        log.info(
+                            "[rentals-sweep] %s: %d arb alert(s) dispatched",
+                            t or "default",
+                            len(arb),
+                        )
                 if t in reco_set:
                     # Accepted-recommendation 'worse' alerts — LOCAL evaluation
                     # (ledger + local history, zero provider cost).
                     worse = evaluate_reco_worse_alerts(tenant_id=t)
                     if worse:
                         dispatch_reco_worse_alerts(t, worse)
-                        log.info("[rentals-sweep] %s: %d reco-worse alert(s) dispatched",
-                                 t or "default", len(worse))
+                        log.info(
+                            "[rentals-sweep] %s: %d reco-worse alert(s) dispatched",
+                            t or "default",
+                            len(worse),
+                        )
                 if t in risk_set:
                     # Risk alerts (worst-rig top-N) — LOCAL evaluation, zero
                     # provider cost; only tenants that opted in are visited.
                     risk = sweep_risk_alerts(tenant_id=t)
                     if risk:
                         dispatch_tenant_risk_alerts(t, risk)
-                        log.info("[rentals-sweep] %s: %d risk alert(s) dispatched",
-                                 t or "default", len(risk))
+                        log.info(
+                            "[rentals-sweep] %s: %d risk alert(s) dispatched",
+                            t or "default",
+                            len(risk),
+                        )
                 if t in auto_set:
                     # CFO auto-exclusion — DEFAULT protection (same rule as
                     # the panel detail), so it runs for every tenant with a
@@ -1229,11 +1342,18 @@ def _rentals_sweep_once() -> int:
                         # ts). O alerta é gated na setting do tenant; a
                         # exclusão em si continua sendo proteção default.
                         n_alert = dispatch_auto_exclude_alerts(t, excluded)
-                        log.info("[rentals-sweep] %s: %d rig(s) auto-excluído(s) %s",
-                                 t or "default", len(excluded), excluded[:5])
+                        log.info(
+                            "[rentals-sweep] %s: %d rig(s) auto-excluído(s) %s",
+                            t or "default",
+                            len(excluded),
+                            excluded[:5],
+                        )
                         if n_alert:
-                            log.info("[rentals-sweep] %s: %d auto-exclude alert(s) dispatched",
-                                     t or "default", n_alert)
+                            log.info(
+                                "[rentals-sweep] %s: %d auto-exclude alert(s) dispatched",
+                                t or "default",
+                                n_alert,
+                            )
                 visited += 1
             except Exception as e:
                 log.warning("[rentals-sweep] %s: pass error: %s", t or "default", e)
@@ -1251,6 +1371,7 @@ def _rentals_sweep_loop():
     the boot burst (pool start + webhook queue + rate-limit persist) doesn't
     stack another provider hit at t=0."""
     import random as _random
+
     time.sleep(5 + _random.random() * 15)  # 5-20s boot jitter
     while True:
         try:
@@ -1272,10 +1393,13 @@ def start_rentals_sweep():
         _rental_sweep_started = True
     try:
         threading.Thread(
-            target=_rentals_sweep_loop, name="cypher65-rentals-sweep",
-            daemon=True).start()
-        log.info("[rentals-sweep] started (interval=%ds, stagger=%.1fs)",
-                 _RENTAL_SWEEP_INTERVAL, _RENTAL_SWEEP_STAGGER)
+            target=_rentals_sweep_loop, name="cypher65-rentals-sweep", daemon=True
+        ).start()
+        log.info(
+            "[rentals-sweep] started (interval=%ds, stagger=%.1fs)",
+            _RENTAL_SWEEP_INTERVAL,
+            _RENTAL_SWEEP_STAGGER,
+        )
     except Exception as e:
         log.warning("[rentals-sweep] start error: %s", e)
         _rental_sweep_started = False
@@ -1291,8 +1415,15 @@ class UserPollingWorker:
     share 8-16 threads instead of spawning 1000+.
     """
 
-    def __init__(self, session_id: str, session_manager, address: str,
-                 worker_name: str = "", tenant_id: str = "", pool=None):
+    def __init__(
+        self,
+        session_id: str,
+        session_manager,
+        address: str,
+        worker_name: str = "",
+        tenant_id: str = "",
+        pool=None,
+    ):
         self.session_id = session_id
         self._sm = session_manager
         self.address = address
@@ -1321,8 +1452,11 @@ class UserPollingWorker:
         """Register this session with the shared poll pool (immediate first
         poll scheduled by the pool scheduler)."""
         self._pool.register(self)
-        log.info("[worker %s] registered for polling %s",
-                 self.session_id[:8], self.address[:10])
+        log.info(
+            "[worker %s] registered for polling %s",
+            self.session_id[:8],
+            self.address[:10],
+        )
 
     def stop(self):
         """Unregister this session from the pool — no more polls scheduled."""
@@ -1352,8 +1486,7 @@ class UserPollingWorker:
             self._alert_seen.clear()
         # Poll the new wallet as soon as the pool wakes (address changed).
         self._pool.reschedule_immediate(self.session_id)
-        log.info("[worker %s] address updated to %s",
-                 self.session_id[:8], address[:10])
+        log.info("[worker %s] address updated to %s", self.session_id[:8], address[:10])
 
     @property
     def is_running(self) -> bool:
@@ -1387,8 +1520,7 @@ class UserPollingWorker:
             conn.commit()
             conn.close()
         except Exception as e:
-            log.warning("[worker %s] alert persist error: %s",
-                        self.session_id[:8], e)
+            log.warning("[worker %s] alert persist error: %s", self.session_id[:8], e)
 
     def _dispatch_tenant_alerts(self, snapshot: dict):
         """Evaluate wallet alerts with THIS tenant's settings, persist them
@@ -1407,30 +1539,35 @@ class UserPollingWorker:
             self._prev_snapshot = snapshot  # always advance the delta baseline
             try:
                 settings = _load_settings(self.tenant_id)
-                alerts = evaluate_user_alerts(snapshot, prev, settings,
-                                              self._alert_seen)
+                alerts = evaluate_user_alerts(
+                    snapshot, prev, settings, self._alert_seen
+                )
                 if not alerts:
                     return
 
                 ts = int(snapshot.get("ts") or time.time())
                 webhook_url = (settings.get("webhook_url") or "").strip()
                 min_sev = settings.get("webhook_min_severity", "WARN")
-                recent = snapshot.setdefault("alerts_recent", [])                # Persist all alerts in one transaction.
+                recent = snapshot.setdefault(
+                    "alerts_recent", []
+                )  # Persist all alerts in one transaction.
                 self._persist_alerts(ts, alerts)
                 for sev, cat, msg in alerts:
                     recent.append(make_memory_alert(ts, sev, cat, msg))
                     if webhook_url:
-                        _fire_webhook_async({
-                            "url": webhook_url,
-                            "severity": sev,
-                            "category": cat,
-                            "message": msg,
-                            "ts": ts,
-                            "worker": self.worker_name,
-                            "address": self.address,
-                            "min_severity": min_sev,
-                            "tenant_id": self.tenant_id,
-                        })
+                        _fire_webhook_async(
+                            {
+                                "url": webhook_url,
+                                "severity": sev,
+                                "category": cat,
+                                "message": msg,
+                                "ts": ts,
+                                "worker": self.worker_name,
+                                "address": self.address,
+                                "min_severity": min_sev,
+                                "tenant_id": self.tenant_id,
+                            }
+                        )
                     # Browser push: deliver to THIS tenant's subscribed devices
                     # (fire-and-forget on a daemon thread — never block the
                     # poll worker on push-service network I/O; degrades
@@ -1439,5 +1576,8 @@ class UserPollingWorker:
                     _fire_push_async(self.tenant_id, sev, cat, msg)
                 snapshot["alerts_recent"] = recent[-10:]
             except Exception as e:
-                log.warning("[worker %s] tenant alert dispatch error: %s",
-                            self.session_id[:8], e)
+                log.warning(
+                    "[worker %s] tenant alert dispatch error: %s",
+                    self.session_id[:8],
+                    e,
+                )

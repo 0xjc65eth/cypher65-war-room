@@ -32,8 +32,8 @@ log = logging.getLogger("cypher65.auth")
 #   app.config["JWT_ACCESS_TOKEN_TTL"]
 #   app.config["JWT_REFRESH_TOKEN_TTL"]
 
-DEFAULT_ACCESS_TTL = 3600          # 1 hour
-DEFAULT_REFRESH_TTL = 86400 * 7    # 7 days
+DEFAULT_ACCESS_TTL = 3600  # 1 hour
+DEFAULT_REFRESH_TTL = 86400 * 7  # 7 days
 DEFAULT_ISSUER = "cypher65"
 DEFAULT_AUDIENCE = "cypher65"
 
@@ -141,7 +141,9 @@ def _revocation_persisted(token: str) -> bool:
 def _get_secret() -> str:
     """Return the JWT secret key from app config or env."""
     if current_app:
-        return current_app.config.get("JWT_SECRET_KEY") or os.environ.get("SECRET_KEY", "")
+        return current_app.config.get("JWT_SECRET_KEY") or os.environ.get(
+            "SECRET_KEY", ""
+        )
     return os.environ.get("SECRET_KEY", "")
 
 
@@ -163,14 +165,18 @@ def _decode(token: str, secret: str) -> Optional[dict]:
     tampered token → None (never raises).
     """
     try:
-        return _jwt.decode(token, secret, algorithms=["HS256"],
-                           audience=DEFAULT_AUDIENCE)
+        return _jwt.decode(
+            token, secret, algorithms=["HS256"], audience=DEFAULT_AUDIENCE
+        )
     except _jwt.InvalidTokenError:
         return None
 
 
-def create_token(subject: str = "user", ttl: Optional[int] = None,
-                 extra_claims: Optional[dict] = None) -> str:
+def create_token(
+    subject: str = "user",
+    ttl: Optional[int] = None,
+    extra_claims: Optional[dict] = None,
+) -> str:
     """Create a JWT access token.
 
     Args:
@@ -186,18 +192,23 @@ def create_token(subject: str = "user", ttl: Optional[int] = None,
         # Audit C2: never mint tokens with a missing/volatile secret — they
         # would be silently unverifiable (every login issues a token, every
         # verify fails, auth appears broken with no error). Fail loud instead.
-        log.error("[auth] SECRET_KEY is not configured — refusing to issue JWTs. "
-                  "Set SECRET_KEY in the environment (or app.config JWT_SECRET_KEY).")
+        log.error(
+            "[auth] SECRET_KEY is not configured — refusing to issue JWTs. "
+            "Set SECRET_KEY in the environment (or app.config JWT_SECRET_KEY)."
+        )
         raise RuntimeError("SECRET_KEY is not configured; refusing to issue JWTs")
 
-    ttl = ttl or (current_app.config.get("JWT_ACCESS_TOKEN_TTL", DEFAULT_ACCESS_TTL)
-                  if current_app else DEFAULT_ACCESS_TTL)
+    ttl = ttl or (
+        current_app.config.get("JWT_ACCESS_TOKEN_TTL", DEFAULT_ACCESS_TTL)
+        if current_app
+        else DEFAULT_ACCESS_TTL
+    )
     now = int(time.time())
 
     payload = {
         "sub": subject,
         "iat": now,
-        "nbf": now - 5,          # 5s skew tolerance
+        "nbf": now - 5,  # 5s skew tolerance
         "exp": now + ttl,
         "iss": DEFAULT_ISSUER,
         "aud": DEFAULT_AUDIENCE,
@@ -209,8 +220,9 @@ def create_token(subject: str = "user", ttl: Optional[int] = None,
     return _encode(payload, secret)
 
 
-def create_refresh_token(subject: str = "user",
-                         extra_claims: Optional[dict] = None) -> Tuple[str, int]:
+def create_refresh_token(
+    subject: str = "user", extra_claims: Optional[dict] = None
+) -> Tuple[str, int]:
     """Create a JWT refresh token with longer TTL.
 
     Args:
@@ -224,20 +236,25 @@ def create_refresh_token(subject: str = "user",
     Returns:
         (token_string, expires_at_timestamp)
     """
-    ttl = (current_app.config.get("JWT_REFRESH_TOKEN_TTL", DEFAULT_REFRESH_TTL)
-           if current_app else DEFAULT_REFRESH_TTL)
+    ttl = (
+        current_app.config.get("JWT_REFRESH_TOKEN_TTL", DEFAULT_REFRESH_TTL)
+        if current_app
+        else DEFAULT_REFRESH_TTL
+    )
     now = int(time.time())
     secret = _get_secret()
     if not secret:
         # Audit C2: same fail-loud policy as create_token — a refresh token
         # signed with a missing secret would be silently unverifiable.
-        log.error("[auth] SECRET_KEY is not configured — refusing to issue refresh tokens.")
+        log.error(
+            "[auth] SECRET_KEY is not configured — refusing to issue refresh tokens."
+        )
         raise RuntimeError("SECRET_KEY is not configured; refusing to issue JWTs")
 
     payload = {
         "sub": subject,
         "iat": now,
-        "nbf": now - 5,          # 5s skew tolerance
+        "nbf": now - 5,  # 5s skew tolerance
         "exp": now + ttl,
         "iss": DEFAULT_ISSUER,
         "aud": DEFAULT_AUDIENCE,
@@ -323,13 +340,21 @@ def require_auth(f):
 
     On success, the decoded payload is available as `g.auth_payload`.
     """
+
     @wraps(f)
     def decorated(*args, **kwargs):
         auth_header = request.headers.get("Authorization", "")
 
         if not auth_header.startswith("Bearer "):
-            return jsonify({"error": "missing or invalid Authorization header",
-                            "hint": "Authorization: Bearer <token>"}), 401
+            return (
+                jsonify(
+                    {
+                        "error": "missing or invalid Authorization header",
+                        "hint": "Authorization: Bearer <token>",
+                    }
+                ),
+                401,
+            )
 
         token = auth_header[7:]  # Strip "Bearer "
         payload = verify_token(token, expected_type="access")
@@ -348,6 +373,7 @@ def optional_auth(f):
 
     The decoded payload (or None) is available as `g.auth_payload`.
     """
+
     @wraps(f)
     def decorated(*args, **kwargs):
         g.auth_payload = None
@@ -386,10 +412,16 @@ def resolve_tenant_for_api_key(api_key: str) -> Optional[str]:
             mapping = json.loads(raw)
             if isinstance(mapping, dict):
                 for tid, key in mapping.items():
-                    if isinstance(key, str) and key and _hmac.compare_digest(api_key, key):
+                    if (
+                        isinstance(key, str)
+                        and key
+                        and _hmac.compare_digest(api_key, key)
+                    ):
                         return str(tid)
         except (ValueError, TypeError):
-            log.warning("[auth] TENANT_API_KEYS is not valid JSON — falling back to API_KEY")
+            log.warning(
+                "[auth] TENANT_API_KEYS is not valid JSON — falling back to API_KEY"
+            )
 
     expected_key = os.environ.get("API_KEY")
     if expected_key and _hmac.compare_digest(api_key, expected_key):
