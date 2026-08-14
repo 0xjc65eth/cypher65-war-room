@@ -52,7 +52,7 @@ test.describe('ADMIN — audit trail de recomendações aceitas (Issue #96)', ()
     await page.route('**/api/admin/sessions**', (route) =>
       route.fulfill({ json: { pool: { sessions_active: 3, polls_per_sec: 1.2,
         queue_pending: 0, workers_alive: 4, pool_size: 8, uptime_secs: 300,
-        stalled: false } } }));
+        stalled: false, auto_exclude_alerts: { sweep: 2, panel: 1, total: 3 } } } }));
     await page.route('**/api/admin/conversion**', (route) =>
       route.fulfill({ json: { funnel: {}, economics: {} } }));
     await page.route('**/api/admin/rentals/accepted-recos**', (route) => {
@@ -147,7 +147,7 @@ test.describe('ADMIN — audit trail de recomendações aceitas (Issue #96)', ()
     });
     // Admin endpoints — audit carries the GLOBAL auto-exclusion history.
     await page.route('**/api/admin/sessions**', (route) =>
-      route.fulfill({ json: { pool: {} } }));
+      route.fulfill({ json: { pool: { auto_exclude_alerts: { sweep: 2, panel: 1, total: 3 } } } }));
     await page.route('**/api/admin/conversion**', (route) =>
       route.fulfill({ json: { funnel: {}, economics: {} } }));
     await page.route('**/api/admin/rentals/accepted-recos**', (route) =>
@@ -195,11 +195,14 @@ test.describe('ADMIN — audit trail de recomendações aceitas (Issue #96)', ()
     await expect(adminEx).toContainText('régua: floor D, mín 3');
     await expect(adminEx).toContainText('default');
     await expect(adminEx).toContainText('Rig B Auto');
+    // KPI card: alertas de auto-exclusão por caminho (Issue #112) —
+    // total 3 · sweep 2 / painel 1.
+    await expect(page.locator('#admin-autoex-alerts')).toHaveText('3 · s2/p1');
   });
 
   test('concentração de auto-exclusões renderiza barras por tenant/régua + rigs reincidentes (Issue #106)', async ({ page }) => {
     await page.route('**/api/admin/sessions**', (route) =>
-      route.fulfill({ json: { pool: {} } }));
+      route.fulfill({ json: { pool: { auto_exclude_alerts: { sweep: 0, panel: 0, total: 0 } } } }));
     await page.route('**/api/admin/conversion**', (route) =>
       route.fulfill({ json: { funnel: {}, economics: {} } }));
     await page.route('**/api/admin/rentals/accepted-recos**', (route) =>
@@ -260,7 +263,7 @@ test.describe('ADMIN — audit trail de recomendações aceitas (Issue #96)', ()
     // Only the audit endpoint is forbidden — the panel must fall back to the
     // existing "restricted" state and never render the audit section.
     await page.route('**/api/admin/sessions**', (route) =>
-      route.fulfill({ json: { pool: {} } }));
+      route.fulfill({ json: { pool: { auto_exclude_alerts: { sweep: 0, panel: 0, total: 0 } } } }));
     await page.route('**/api/admin/conversion**', (route) =>
       route.fulfill({ json: { funnel: {}, economics: {} } }));
     await page.route('**/api/admin/rentals/accepted-recos**', (route) =>

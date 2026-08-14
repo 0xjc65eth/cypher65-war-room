@@ -2882,6 +2882,12 @@ function renderAccount(acct) {
     _setAdminText('admin-queue', pool.queue_pending != null ? pool.queue_pending : '—');
     _setAdminText('admin-workers', pool.workers_alive != null ? (pool.workers_alive + '/' + (pool.pool_size || '?')) : '—');
     _setAdminText('admin-uptime', pool.uptime_secs ? Math.round(pool.uptime_secs / 60) + 'm' : '—');
+    // Auto-exclude alerts by path (Issue #112) — total · s<sweep>/p<painel>.
+    const axCounters = pool.auto_exclude_alerts || {};
+    _setAdminText('admin-autoex-alerts',
+      (axCounters.total != null ? axCounters.total : '—') +
+      ' · s' + (axCounters.sweep != null ? axCounters.sweep : 0) +
+      '/p' + (axCounters.panel != null ? axCounters.panel : 0));
     const stall = document.getElementById('admin-stall');
     if (stall) {
       stall.hidden = !pool.stalled;
