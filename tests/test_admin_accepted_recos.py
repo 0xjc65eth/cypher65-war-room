@@ -195,3 +195,99 @@ def test_route_200_with_operator_key(rclient, db, clock, monkeypatch):
     data = resp.get_json()
     assert data["count"] == 1
     assert data["days"] == 30
+
+
+# ── CSV export (?format=csv) ───────────────────────────────────────────────
+
+import csv as _csv
+import io as _io
+
+
+def test_admin_accepted_recos_csv_columns_and_rows(db, clock):
+    """The CSV generator serializes ONE row per decision with the full audit
+    schema, None → empty cell, and neutralizes formula-injection cells."""
+    data = {
+        "count": 2,
+        "decisions": [
+            {"tenant_id": "tenant-a", "ts": NOW, "rig_id": "rig-1",
+             "name": "=SUM(A1)", "source": "manual", "grade": "F",
+             "pilot_flagged": True, "delivery_pct": 62.0, "samples": 3,
+             "delivery_after_pct": None, "cost_after_sats_per_thh": None,
+             "restored": False, "restored_ts": 0, "verdict": "avoided"},
+            {"tenant_id": "default", "ts": NOW - 86400, "rig_id": "rig-2",
+             "name": "Rig Dois", "source": "auto", "grade": "D",
+             "pilot_flagged": False, "delivery_pct": 80.0, "samples": 4,
+             "delivery_after_pct": 95.2, "cost_after_sats_per_thh": 3100.0,
+             "restored": True, "restored_ts": NOW, "verdict": "revoked"},
+        ],
+    }
+    out = rp.admin_accepted_recos_csv(data)
+    rows = list(_csv.reader(_io.StringIO(out)))
+    assert rows[0] == rp.ADMIN_ACCEPTED_CSV_COLUMNS
+    assert len(rows) == 3  # header + 2 decisions
+    r1 = dict(zip(rows[0], rows[1]))
+    # Formula-injection guard: leading '=' neutralized to a quoted string.
+    assert r1["name"] == "'=SUM(A1)"
+    assert r1["tenant_id"] == "tenant-a"
+    assert r1["verdict"] == "avoided"
+    assert r1["pilot_flagged"] == "1"
+    # None → empty cell; ts rendered as UTC, 0/None → empty.
+    assert r1["delivery_after_pct"] == ""
+    assert r1["cost_after_sats_per_thh"] == ""
+    assert r1["accepted_ts"].endswith("UTC")
+    assert r1["restored_ts"] == ""
+    r2 = dict(zip(rows[0], rows[2]))
+    assert r2["restored"] == "1"
+    assert r2["verdict"] == "revoked"
+    assert r2["tenant_id"] == "default"
+
+
+def test_admin_accepted_recos_csv_empty_payload(db):
+    out = rp.admin_accepted_recos_csv({"count": 0, "decisions": []})
+    rows = list(_csv.reader(_io.StringIO(out)))
+    assert rows == [rp.ADMIN_ACCEPTED_CSV_COLUMNS]
+
+
+def test_route_csv_export(rclient, db, clock):
+    """?format=csv → text/csv attachment with BOM + full audit rows."""
+    _seed([_hr("a1", "rig-a", _dt_str(NOW - 86400), 74.0)])
+    rp.add_rig_to_blacklist("rig-a")
+    _seed([_hr("b1", "rig-b", _dt_str(NOW - 86400), 60.0)], tenant_id="tenant-a")
+    rp.add_rig_to_blacklist("rig-b", tenant_id="tenant-a")
+
+    resp = rclient.get("/api/admin/rentals/accepted-recos?format=csv")
+    assert resp.status_code == 200
+    assert resp.mimetype == "text/csv"
+    assert "attachment" in (resp.headers.get("Content-Disposition") or "")
+    assert resp.headers["Content-Disposition"].startswith("attachment; filename=accepted_recos_audit_")
+    body = resp.get_data(as_text=True)
+    assert body.startswith("\ufeff")  # BOM → Excel abre UTF-8
+    rows = list(_csv.reader(_io.StringIO(body.lstrip("\ufeff"))))
+    assert rows[0] == rp.ADMIN_ACCEPTED_CSV_COLUMNS
+    assert len(rows) == 3  # header + 2 decisions (default + named tenant)
+    # Both tenants appear; verdicts computed by the shared outcome.
+    tenants = {dict(zip(rows[0], r))["tenant_id"] for r in rows[1:]}
+    assert tenants == {"default", "tenant-a"}
+
+
+def test_route_csv_403_without_gate(rclient, db, clock):
+    """The CSV branch keeps the SAME admin gate — never public."""
+    resp = rclient.get("/api/admin/rentals/accepted-recos?format=csv",
+                       environ_base={"REMOTE_ADDR": "8.8.8.8"})
+    assert resp.status_code == 403
+
+
+def test_route_csv_defaults_to_full_limit(rclient, db, clock, monkeypatch):
+    """The CSV export defaults to the FULL cap (1000), not the JSON
+    pagination default (200) — a truncated file must never be mistaken for
+    the complete audit trail. A smaller explicit ?limit still wins."""
+    calls = []
+    monkeypatch.setattr(
+        _app_module._rental_perf, "compute_admin_accepted_recos",
+        lambda days=0, limit=200: (calls.append(limit) or {"count": 0, "decisions": []}))
+    resp = rclient.get("/api/admin/rentals/accepted-recos?format=csv")
+    assert resp.status_code == 200
+    assert calls == [1000]  # full cap by default
+    resp2 = rclient.get("/api/admin/rentals/accepted-recos?format=csv&limit=50")
+    assert resp2.status_code == 200
+    assert calls == [1000, 50]  # explicit limit wins

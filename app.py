@@ -4724,7 +4724,9 @@ def api_admin_rentals_accepted_recos():
     blacklisted after the pilot flagged them' decisions at a glance.
     Query params: ?days=30 (window; default 0 = all time, unlike
     /api/admin/conversion's 30-day default) and ?limit=500 (max decisions;
-    ``count`` remains the true total).
+    ``count`` remains the true total). ?format=csv returns the full audit
+    trail as a spreadsheet (BOM UTF-8, attachment) — same payload, same
+    gate.
     """
     remote = request.remote_addr or ""
     local = remote in ("127.0.0.1", "::1", "localhost")
@@ -4733,6 +4735,19 @@ def api_admin_rentals_accepted_recos():
     if not local and not (operator_key and hmac.compare_digest(sent, operator_key)):
         return jsonify({"error": "admin access required"}), 403
     days = request.args.get("days", 0, type=int)
+    if request.args.get("format", "").lower() == "csv":
+        # Spreadsheet export = the FULL audit trail: default to the cap
+        # (1000) instead of the JSON pagination default (200) — a truncated
+        # file must never be mistaken for the complete audit. A caller can
+        # still pass a smaller ?limit to narrow the export.
+        limit = request.args.get("limit", 1000, type=int)
+        limit = max(1, min(limit, 1000))
+        payload = _rental_perf.compute_admin_accepted_recos(days=days, limit=limit)
+        out_csv = "\ufeff" + _rental_perf.admin_accepted_recos_csv(payload)
+        fname = f"accepted_recos_audit_{int(time.time())}.csv"
+        resp = app.response_class(out_csv, mimetype="text/csv")
+        resp.headers["Content-Disposition"] = f"attachment; filename={fname}"
+        return resp
     limit = request.args.get("limit", 200, type=int)
     limit = max(1, min(limit, 1000))
     return jsonify(_rental_perf.compute_admin_accepted_recos(days=days, limit=limit))
