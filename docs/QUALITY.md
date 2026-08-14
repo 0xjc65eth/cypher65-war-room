@@ -87,13 +87,44 @@ cd mobile && npx stryker run
 
 | Camada | Ferramenta | Cobertura | Gate CI |
 |---|---|---|---|
-| Unit/integration (Python) | pytest | 1878 testes, `--cov-fail-under=65` | ✅ blocking |
+| Unit/integration (Python) | pytest | 2157 testes, `--cov-fail-under=75` | ✅ blocking |
 | JS core (mirror do app.js) | node --test | 1261 testes | ✅ blocking |
 | E2E (browser) | **Playwright** | specs chromium + mobile-chrome | ✅ job `e2e` |
 | Cobertura pública | **Codecov** (free p/ repo público) | upload do coverage.xml | ✅ non-blocking |
 | Guards DOM (XSS/ids) | `scripts/check-dom-regression.cjs` | ids duplicados + innerHTML sem escape | ✅ blocking |
 | Guards XSS mobile (RN) | `scripts/check-mobile-xss.cjs` | WebView html/injectedJavaScript + eval + openURL `javascript:` | ✅ blocking |
 | Frontend (combinado) | `scripts/check_frontend.sh` (Issue #62) | guards DOM + XSS mobile + JS core + **audit visual** (console/overflow/truncamento) | ✅ blocking job `frontend-audit` |
+
+### Mapa de cobertura por módulo (Issue #123) — TOTAL 76%
+
+Medição `pytest --cov` com o comando exato do CI (arquivo de dados isolado;
+`coverage report -m` local reproduz). Financeiros/controle ≥80% primeiro
+(regra de ouro do gate: dinheiro e devices nunca regridem em silêncio):
+
+| Módulo | Cobertura | Notas |
+|---|---|---|
+| `core/safety/safety_engine.py` | **100%** | cooldown, rates, overrides (Issue #123) |
+| `services/payments.py` | **96%** | checkout env paths; restam 4 stmts do webhook |
+| `services/rental_performance.py` | **89%** | preço de mercado real em SQL, auto-exclusão, forecast |
+| `services/licensing.py` | **89%** | — |
+| `services/auto_pilot.py` | **84%** | collectors fail-closed (Issue #123) |
+| `services/user_polling.py` | **71%** | sweep paths — próximo alvo |
+| `app.py` | **55%** | 1414 stmts — o maior buraco (poll/rotas) |
+
+**Roadmap do gate (incremental, sem bloquear deploys no meio):**
+
+```
+2026-08-01  53%  → gate 45   (baseline)
+2026-08-03  66%  → gate 65   (+108 testes)
+2026-08-14  76%  → gate 75   (financeiros ≥80% — Issue #123)  ← estamos aqui
+próxima      ~80% → gate 80   (app.py + user_polling primeiro)
+```
+
+Margem deliberada de ~1pp (76% real vs gate 75) — absorve variação de
+ambiente sem deixar o gate frouxo. Para o próximo degrau: `app.py` (55%,
+1414 stmts) e `services/user_polling.py` (71%) são os dois maiores buracos;
+rotear as rotas do `_do_poll` para helpers testáveis é o caminho de menor
+esforço por stmt coberto.
 
 ### Codecov — ✅ ATIVO (Issue #38 → PR #42)
 
