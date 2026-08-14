@@ -28,6 +28,7 @@ Usage:
     print(funnel_report())
     print(ltv_cac_report())
 """
+
 import hashlib
 import logging
 import os
@@ -40,8 +41,13 @@ from services.db import get_db
 log = logging.getLogger("cypher65.conversion")
 
 # Funnel order (used to compute drop-off between consecutive stages).
-FUNNEL_STAGES = ("paywall_view", "modal_open", "checkout_start", "paid",
-                 "key_activated")
+FUNNEL_STAGES = (
+    "paywall_view",
+    "modal_open",
+    "checkout_start",
+    "paid",
+    "key_activated",
+)
 
 # LTV defaults (CFO) — env-overridable so the operator can plug real numbers.
 DEFAULT_PRICE_USD_MONTH = 9
@@ -61,6 +67,7 @@ def _anonymize(value: str) -> str:
 
 # ── Table bootstrap (idempotent) ────────────────────────────────────────────
 
+
 def ensure_table() -> None:
     """Create conversion_events if missing (self-healing for fresh DBs)."""
     try:
@@ -77,7 +84,9 @@ def ensure_table() -> None:
             )
             """
         )
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_conv_event_ts ON conversion_events(event, ts)")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_conv_event_ts ON conversion_events(event, ts)"
+        )
         conn.commit()
         conn.close()
     except sqlite3.Error as e:
@@ -86,8 +95,13 @@ def ensure_table() -> None:
 
 # ── Event tracking (never raises — telemetry must not break requests) ──────
 
-def track_event(event: str, tenant_id: str = "", meta: Optional[Dict[str, Any]] = None,
-                email: str = "") -> bool:
+
+def track_event(
+    event: str,
+    tenant_id: str = "",
+    meta: Optional[Dict[str, Any]] = None,
+    email: str = "",
+) -> bool:
     """Record one funnel event. Best-effort; failures are logged, not raised.
 
     Args:
@@ -104,6 +118,7 @@ def track_event(event: str, tenant_id: str = "", meta: Optional[Dict[str, Any]] 
     if not event:
         return False
     import json
+
     try:
         ensure_table()
         conn = get_db()
@@ -149,6 +164,7 @@ def track_event(event: str, tenant_id: str = "", meta: Optional[Dict[str, Any]] 
 
 # ── Funnel report ───────────────────────────────────────────────────────────
 
+
 def funnel_report(days: int = 30) -> Dict[str, Any]:
     """Aggregate funnel counts + drop-off for the last ``days``.
 
@@ -193,15 +209,17 @@ def funnel_report(days: int = 30) -> Dict[str, Any]:
         cur_n = stages[keys[i]]
         loss = prev_n - cur_n
         loss_pct = round(loss / prev_n * 100, 1) if prev_n else 0.0
-        drop_off.append({
-            "from": keys[i - 1],
-            "to": keys[i],
-            "prev": prev_n,
-            "next": cur_n,
-            "loss_abs": loss,
-            "loss_pct": loss_pct,
-            "conversion_pct": round(cur_n / prev_n * 100, 1) if prev_n else 0.0,
-        })
+        drop_off.append(
+            {
+                "from": keys[i - 1],
+                "to": keys[i],
+                "prev": prev_n,
+                "next": cur_n,
+                "loss_abs": loss,
+                "loss_pct": loss_pct,
+                "conversion_pct": round(cur_n / prev_n * 100, 1) if prev_n else 0.0,
+            }
+        )
 
     paywall = stages.get("paywall_view", 0)
     activated = stages.get("key_activated", 0)
@@ -219,8 +237,10 @@ def funnel_report(days: int = 30) -> Dict[str, Any]:
 
 # ── LTV / CAC estimates ─────────────────────────────────────────────────────
 
-def ltv_cac_report(paid_count: Optional[int] = None,
-                   marketing_spend_usd: Optional[float] = None) -> Dict[str, Any]:
+
+def ltv_cac_report(
+    paid_count: Optional[int] = None, marketing_spend_usd: Optional[float] = None
+) -> Dict[str, Any]:
     """Estimate LTV and CAC from env-tunable unit economics.
 
     LTV = price_usd_month × license_months × margin_pct
@@ -238,7 +258,11 @@ def ltv_cac_report(paid_count: Optional[int] = None,
         months = float(os.environ.get("PRO_LICENSE_MONTHS", DEFAULT_LICENSE_MONTHS))
         margin = float(os.environ.get("PRO_MARGIN_PCT", DEFAULT_MARGIN_PCT))
     except (TypeError, ValueError):
-        price, months, margin = DEFAULT_PRICE_USD_MONTH, DEFAULT_LICENSE_MONTHS, DEFAULT_MARGIN_PCT
+        price, months, margin = (
+            DEFAULT_PRICE_USD_MONTH,
+            DEFAULT_LICENSE_MONTHS,
+            DEFAULT_MARGIN_PCT,
+        )
 
     ltv = price * months * margin
 
@@ -262,7 +286,9 @@ def ltv_cac_report(paid_count: Optional[int] = None,
         raw = (os.environ.get("MARKETING_SPEND_USD") or "").strip()
         spend = float(raw) if raw else None
 
-    cac = round(spend / paid_count, 2) if (spend is not None and paid_count > 0) else None
+    cac = (
+        round(spend / paid_count, 2) if (spend is not None and paid_count > 0) else None
+    )
     return {
         "ltv_usd": round(ltv, 2),
         "assumptions": {

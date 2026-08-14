@@ -3,6 +3,7 @@ CYPHER65 — Probability Engine Integration
 ========================================
 Endpoints and UI helpers for the Block Probability Engine.
 """
+
 import logging
 from flask import jsonify, request, current_app
 from services.probability import (
@@ -20,6 +21,7 @@ def _get_snapshot_hashrate() -> dict:
     """Try to read the current user hashrate and network hashrate from
     the shared state (latest_snapshot). Returns defaults if unavailable."""
     import services.state as _state
+
     snap = getattr(_state, "latest_snapshot", None) or {}
     worker = snap.get("worker") or {}
     net = snap.get("network") or {}
@@ -54,13 +56,22 @@ def register_probability_routes(app):
         try:
             snap = _get_snapshot_hashrate()
             user_hr = float(request.args.get("hashrate", snap["user_hashrate"]))
-            network_hr = float(request.args.get("network_hashrate", snap["network_hashrate"]))
+            network_hr = float(
+                request.args.get("network_hashrate", snap["network_hashrate"])
+            )
             duration = int(request.args.get("duration", 86400))
 
             if user_hr <= 0:
-                return jsonify({"error": "hashrate parameter is required and must be > 0"}), 400
+                return (
+                    jsonify(
+                        {"error": "hashrate parameter is required and must be > 0"}
+                    ),
+                    400,
+                )
 
-            result = calculate_block_probability(user_hr, network_hr, duration, snap["network_difficulty"])
+            result = calculate_block_probability(
+                user_hr, network_hr, duration, snap["network_difficulty"]
+            )
             result["input"] = {
                 "user_hashrate": user_hr,
                 "network_hashrate": network_hr,
@@ -89,13 +100,20 @@ def register_probability_routes(app):
         try:
             snap = _get_snapshot_hashrate()
             user_hr = float(request.args.get("hashrate", snap["user_hashrate"]))
-            network_hr = float(request.args.get("network_hashrate", snap["network_hashrate"]))
+            network_hr = float(
+                request.args.get("network_hashrate", snap["network_hashrate"])
+            )
 
             if user_hr <= 0:
-                return jsonify({
-                    "error": "hashrate required. Use ?hashrate=X or connect a wallet.",
-                    "hint": "Connect a BTC wallet to auto-detect hashrate, or pass ?hashrate=12345678901234",
-                }), 400
+                return (
+                    jsonify(
+                        {
+                            "error": "hashrate required. Use ?hashrate=X or connect a wallet.",
+                            "hint": "Connect a BTC wallet to auto-detect hashrate, or pass ?hashrate=12345678901234",
+                        }
+                    ),
+                    400,
+                )
 
             # Three scenarios
             scenarios = {
@@ -115,7 +133,9 @@ def register_probability_routes(app):
             }
 
             for scenario_name, hr in scenarios.items():
-                periods = calculate_multiple_periods(hr, network_hr, snap["network_difficulty"])
+                periods = calculate_multiple_periods(
+                    hr, network_hr, snap["network_difficulty"]
+                )
                 result["scenarios"][scenario_name] = {
                     "hashrate": hr,
                     "hashrate_str": _fmt_hashrate_short(hr),

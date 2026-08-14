@@ -27,6 +27,7 @@ Env vars:
   LEMON_SQUEEZY_STORE_ID       — numeric store id (checkout creation)
   LEMON_SQUEEZY_VARIANT_ID     — numeric variant/price id of the PRO product
 """
+
 import hashlib
 import hmac
 import logging
@@ -252,17 +253,25 @@ def handle_webhook(payload: dict) -> Optional[str]:
             if existing_key:
                 # Replay of a completed order — return the key we already
                 # issued. Never a second license, never a second "paid".
-                log.info("webhook replay: order=%s already fulfilled — returning existing key", order_id)
+                log.info(
+                    "webhook replay: order=%s already fulfilled — returning existing key",
+                    order_id,
+                )
                 return existing_key
             # Another delivery of the same order is still in flight. Acknowledge
             # without issuing; LS will retry and then find the completed key.
-            log.info("webhook in-flight: order=%s already being fulfilled — no-op", order_id)
+            log.info(
+                "webhook in-flight: order=%s already being fulfilled — no-op", order_id
+            )
             return None
     else:
         # PII-safe (Issue #116): NEVER dump the raw payload — order_created
         # carries data.attributes.user_email. Log only safe identifiers.
-        log.warning("webhook without order id — processing without dedup: event=%s data_id=%s",
-                    meta.get("event_name"), data.get("id"))
+        log.warning(
+            "webhook without order id — processing without dedup: event=%s data_id=%s",
+            meta.get("event_name"),
+            data.get("id"),
+        )
 
     email = (attrs.get("user_email") or "").strip()
     first_item = attrs.get("first_order_item") or {}
@@ -295,13 +304,25 @@ def handle_webhook(payload: dict) -> Optional[str]:
     # the order (replays return early above).
     try:
         from services.conversion import track_event
-        track_event("paid", email=email,
-                    meta={"order": str(data.get("id") or "")[:16],
-                          "plan": plan, "source": "lemon_squeezy"})
+
+        track_event(
+            "paid",
+            email=email,
+            meta={
+                "order": str(data.get("id") or "")[:16],
+                "plan": plan,
+                "source": "lemon_squeezy",
+            },
+        )
     except Exception:
         pass
     # PII-safe fulfillment log (Issue #116): masked email + hash for
     # correlation with the funnel's email_hash — never the raw address.
-    log.info("webhook fulfilled: order=%s plan=%s email=%s email_sha=%s",
-             data.get("id"), plan, mask_email(email), email_sha(email))
+    log.info(
+        "webhook fulfilled: order=%s plan=%s email=%s email_sha=%s",
+        data.get("id"),
+        plan,
+        mask_email(email),
+        email_sha(email),
+    )
     return key

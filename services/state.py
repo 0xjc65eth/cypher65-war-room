@@ -4,6 +4,7 @@ CYPHER65 // Shared mutable state
 Single source of truth for polling, routes, and proximity.
 Extracted from app.py to break circular import chains.
 """
+
 import collections
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -36,13 +37,15 @@ latest_snapshot = {
 # so we can flag REAL events (share submit, best-diff bump, work deltas)
 # without exposing per-share logs (which the pool simply doesn't publish).
 timeline_state = {
-    "_primed": False,              # becomes True after the first priming poll
-    "last_submit_ts": 0,           # unix ts of last known worker.lastSubmission
-    "last_best_diff_str": "",      # str form of last known worker.bestDifficulty
-    "all_time_best_diff_raw": 0.0, # never decreases across proxy reconnects (persisted in settings)
+    "_primed": False,  # becomes True after the first priming poll
+    "last_submit_ts": 0,  # unix ts of last known worker.lastSubmission
+    "last_best_diff_str": "",  # str form of last known worker.bestDifficulty
+    "all_time_best_diff_raw": 0.0,  # never decreases across proxy reconnects (persisted in settings)
     "share_submit_history": collections.deque(maxlen=64),  # recent submit ts list
-    "share_calc_history": collections.deque(maxlen=120),   # per-share live-calc entries (latest at right)
-    "session_share_count": 0,      # total SHARES observed since process start
+    "share_calc_history": collections.deque(
+        maxlen=120
+    ),  # per-share live-calc entries (latest at right)
+    "session_share_count": 0,  # total SHARES observed since process start
     "session_best_diff_bumps": 0,  # total BEST_DIFF bumps since process start
 }
 
@@ -51,7 +54,7 @@ PERSIST_FAILURE_ALERT_AT = 2
 PERSIST_FAILURE_LADDER = (2, 5, 10, 25, 60, 120)
 persist_consec_failures = 0
 memory_critical_alerts = []  # injected into alerts_recent via make_memory_alert helper
-_next_memory_alert_id = 0    # monotonic counter so JS renderAlerts sees stable ids
+_next_memory_alert_id = 0  # monotonic counter so JS renderAlerts sees stable ids
 
 # ── Mock opportunity injection (for visual testing)
 test_opportunities = None  # set by POST /api/opportunities/mock; bypasses real scan

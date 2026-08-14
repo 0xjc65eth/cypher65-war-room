@@ -41,6 +41,7 @@ Usage:
     def api_monte_carlo():
         ...
 """
+
 import hmac
 import logging
 
@@ -78,6 +79,7 @@ _UTC = timezone.utc
 
 
 # ── Configuration ─────────────────────────────────────────────────────
+
 
 def _configured_keys() -> List[str]:
     """Read PRO_LICENSE_KEYS from the env at CALL time (test-friendly).
@@ -164,6 +166,7 @@ def pro_required(f):
     is untouched. When active and the caller has no valid key, returns
     402 with a structured upgrade payload.
     """
+
     @wraps(f)
     def wrapper(*args, **kwargs):
         if not licensing_configured():
@@ -174,29 +177,40 @@ def pro_required(f):
         # Best-effort telemetry (never raises, never blocks the 402).
         try:
             from services.conversion import track_event
+
             tenant = ""
             auth = request.headers.get("Authorization", "")
             if auth.startswith("Bearer "):
                 try:
                     from services.auth import verify_token
+
                     payload = verify_token(auth[7:]) or {}
                     tenant = payload.get("sub") or ""
                 except Exception:
                     pass
-            track_event("paywall_view", tenant_id=tenant,
-                        meta={"feature": getattr(f, "__name__", "")})
+            track_event(
+                "paywall_view",
+                tenant_id=tenant,
+                meta={"feature": getattr(f, "__name__", "")},
+            )
         except Exception:
             pass
-        return jsonify({
-            "error": "PRO feature requires a license key",
-            "code": "LICENSE_REQUIRED",
-            "required_tier": "pro",
-            "features": PRO_FEATURES,
-            "upgrade": {
-                "plan": "PRO",
-                "price_usd_month": 9,
-            },
-        }), 402
+        return (
+            jsonify(
+                {
+                    "error": "PRO feature requires a license key",
+                    "code": "LICENSE_REQUIRED",
+                    "required_tier": "pro",
+                    "features": PRO_FEATURES,
+                    "upgrade": {
+                        "plan": "PRO",
+                        "price_usd_month": 9,
+                    },
+                }
+            ),
+            402,
+        )
+
     return wrapper
 
 
@@ -208,7 +222,7 @@ def license_status() -> dict:
     payments = "lemon_squeezy" if os.environ.get("LEMON_SQUEEZY_API_KEY") else None
     if not licensing_configured():
         return {
-            "mode": "open",          # gate inactive — everything free
+            "mode": "open",  # gate inactive — everything free
             "tier": "pro",
             "pro": True,
             "features": {f: "unlocked" for f in PRO_FEATURES},
@@ -228,11 +242,11 @@ def license_status() -> dict:
 
 # ── Dynamic key lifecycle (R1 revenue) ────────────────────────────────
 
+
 def generate_license_key() -> str:
     """Generate a copy-safe PRO license key: C65-XXXX-XXXX-XXXX-XXXX."""
     groups = [
-        "".join(secrets.choice(_KEY_ALPHABET) for _ in range(4))
-        for _ in range(4)
+        "".join(secrets.choice(_KEY_ALPHABET) for _ in range(4)) for _ in range(4)
     ]
     return f"{_KEY_PREFIX}-{'-'.join(groups)}"
 
@@ -287,8 +301,13 @@ def issue_license(
     finally:
         conn.close()
     # PII-safe log (Issue #116): masked email only — never the raw address.
-    log.info("license issued: plan=%s source=%s email=%s months=%s",
-             plan, source, mask_email(email), months)
+    log.info(
+        "license issued: plan=%s source=%s email=%s months=%s",
+        plan,
+        source,
+        mask_email(email),
+        months,
+    )
     return key
 
 

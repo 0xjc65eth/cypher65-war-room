@@ -40,9 +40,11 @@ class BitaxeAdapter(BaseAdapter):
 
             # Core metrics with multiple field-name fallbacks for compatibility
             hashrate = self._safe_number(
-                data.get("hashRate")
-                if data.get("hashRate") is not None
-                else data.get("hashrate"),
+                (
+                    data.get("hashRate")
+                    if data.get("hashRate") is not None
+                    else data.get("hashrate")
+                ),
                 float,
                 0,
             )
@@ -53,14 +55,20 @@ class BitaxeAdapter(BaseAdapter):
             hashrate_1m = self._safe_number(data.get("hashRate1m"), float, None)
             hashrate_10m = self._safe_number(data.get("hashRate10m"), float, None)
             hashrate_1h = self._safe_number(
-                data.get("hashRate1hr") if data.get("hashRate1hr") is not None else data.get("hashRate1h"),
+                (
+                    data.get("hashRate1hr")
+                    if data.get("hashRate1hr") is not None
+                    else data.get("hashRate1h")
+                ),
                 float,
                 None,
             )
             temperature = self._safe_number(
-                data.get("temp")
-                if data.get("temp") is not None
-                else data.get("temperature"),
+                (
+                    data.get("temp")
+                    if data.get("temp") is not None
+                    else data.get("temperature")
+                ),
                 float,
                 0,
             )
@@ -68,29 +76,41 @@ class BitaxeAdapter(BaseAdapter):
             vr_temp = self._safe_number(data.get("vrTemp"), float, 0)
             # Fase 5 · chip_temp = temperatura do ASIC (temp principal)
             chip_temp = self._safe_number(
-                data.get("tempChip") if data.get("tempChip") is not None else temperature,
+                (
+                    data.get("tempChip")
+                    if data.get("tempChip") is not None
+                    else temperature
+                ),
                 float,
                 None,
             )
             voltage = self._safe_number(
-                data.get("voltage")
-                if data.get("voltage") is not None
-                else data.get("coreVoltage"),
+                (
+                    data.get("voltage")
+                    if data.get("voltage") is not None
+                    else data.get("coreVoltage")
+                ),
                 float,
                 0,
             )
-            core_voltage_actual = self._safe_number(data.get("coreVoltageActual"), float, 0)
+            core_voltage_actual = self._safe_number(
+                data.get("coreVoltageActual"), float, 0
+            )
             frequency = self._safe_number(
-                data.get("frequency")
-                if data.get("frequency") is not None
-                else data.get("actualFrequency"),
+                (
+                    data.get("frequency")
+                    if data.get("frequency") is not None
+                    else data.get("actualFrequency")
+                ),
                 float,
                 0,
             )
             fan_speed = self._safe_number(
-                data.get("fanspeed")
-                if data.get("fanspeed") is not None
-                else data.get("fanSpeed"),
+                (
+                    data.get("fanspeed")
+                    if data.get("fanspeed") is not None
+                    else data.get("fanSpeed")
+                ),
                 float,
                 0,
             )
@@ -99,9 +119,11 @@ class BitaxeAdapter(BaseAdapter):
             power = self._safe_number(data.get("power"), float, 0)
             max_power = self._safe_number(data.get("maxPower"), float, 0)
             uptime = self._safe_number(
-                data.get("uptimeSeconds")
-                if data.get("uptimeSeconds") is not None
-                else data.get("uptime"),
+                (
+                    data.get("uptimeSeconds")
+                    if data.get("uptimeSeconds") is not None
+                    else data.get("uptime")
+                ),
                 int,
                 0,
             )
@@ -113,7 +135,9 @@ class BitaxeAdapter(BaseAdapter):
             best_session_diff_val = data.get("bestSessionDiff")
             if best_session_diff_val is None:
                 best_session_diff_val = data.get("bestSessionDifficulty")
-            best_session_diff = str(best_session_diff_val) if best_session_diff_val is not None else ""
+            best_session_diff = (
+                str(best_session_diff_val) if best_session_diff_val is not None else ""
+            )
 
             # Shares
             accepted_shares = self._safe_number(data.get("sharesAccepted"), int, 0)
@@ -193,7 +217,9 @@ class BitaxeAdapter(BaseAdapter):
             log.warning("[bitaxe telemetry] parse error for %s: %s", self.api_url, exc)
             return None
 
-    def execute_command(self, command: str, parameters: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    def execute_command(
+        self, command: str, parameters: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
         if not self.supports(command):
             return {"success": False, "error": "Command not supported by this device"}
 
@@ -285,8 +311,9 @@ class BitaxeAdapter(BaseAdapter):
             "error": f"command '{command}' has no implementation on BitaxeAdapter",
         }
 
-    def _post_command(self, endpoint: str, command_name: str,
-                      body: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    def _post_command(
+        self, endpoint: str, command_name: str, body: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
         """POST to a Bitaxe /api/system/{endpoint} endpoint.
 
         ``body`` (optional dict) is sent as JSON when present — used by
@@ -314,18 +341,45 @@ class BitaxeAdapter(BaseAdapter):
                 "command": command_name,
                 "device_id": self.device.id,
                 "error": str(exc),
-                "status_code": getattr(getattr(exc, "response", None), "status_code", None),
+                "status_code": getattr(
+                    getattr(exc, "response", None), "status_code", None
+                ),
             }
 
     def get_capabilities(self) -> List[Capability]:
         return [
             Capability(name="telemetry", supported=True),
-            Capability(name="restart", supported=True, requires_confirmation=True, risk_level=RiskLevel.MEDIUM),
+            Capability(
+                name="restart",
+                supported=True,
+                requires_confirmation=True,
+                risk_level=RiskLevel.MEDIUM,
+            ),
             Capability(name="identify", supported=True),
-            Capability(name="pause", supported=True, requires_confirmation=True, risk_level=RiskLevel.MEDIUM),
-            Capability(name="resume", supported=True, requires_confirmation=True, risk_level=RiskLevel.MEDIUM),
-            Capability(name="set_frequency", supported=True, requires_confirmation=True, risk_level=RiskLevel.HIGH),
-            Capability(name="update_pool", supported=True, requires_confirmation=True, risk_level=RiskLevel.HIGH),
+            Capability(
+                name="pause",
+                supported=True,
+                requires_confirmation=True,
+                risk_level=RiskLevel.MEDIUM,
+            ),
+            Capability(
+                name="resume",
+                supported=True,
+                requires_confirmation=True,
+                risk_level=RiskLevel.MEDIUM,
+            ),
+            Capability(
+                name="set_frequency",
+                supported=True,
+                requires_confirmation=True,
+                risk_level=RiskLevel.HIGH,
+            ),
+            Capability(
+                name="update_pool",
+                supported=True,
+                requires_confirmation=True,
+                risk_level=RiskLevel.HIGH,
+            ),
             Capability(name="logs", supported=True),
         ]
 

@@ -39,17 +39,20 @@ INFLUX_ORG = os.environ.get("INFLUXDB_ORG", "cypher65")
 INFLUX_BUCKET = os.environ.get("INFLUXDB_BUCKET", "fleet_metrics")
 
 _INFLUX_CIRCUIT_MAX_FAILS = 3
-_INFLUX_CIRCUIT_WINDOW = 60      # seconds
-_INFLUX_CIRCUIT_COOLDOWN = 300   # seconds (5 min)
-_CACHE_TTL = 300                 # seconds (5 min warm cache)
+_INFLUX_CIRCUIT_WINDOW = 60  # seconds
+_INFLUX_CIRCUIT_COOLDOWN = 300  # seconds (5 min)
+_CACHE_TTL = 300  # seconds (5 min warm cache)
 
 
 class CircuitBreaker:
     """Trips after N failures inside a window; reopens after a cooldown."""
 
-    def __init__(self, max_fails: int = _INFLUX_CIRCUIT_MAX_FAILS,
-                 window: float = _INFLUX_CIRCUIT_WINDOW,
-                 cooldown: float = _INFLUX_CIRCUIT_COOLDOWN):
+    def __init__(
+        self,
+        max_fails: int = _INFLUX_CIRCUIT_MAX_FAILS,
+        window: float = _INFLUX_CIRCUIT_WINDOW,
+        cooldown: float = _INFLUX_CIRCUIT_COOLDOWN,
+    ):
         self.max_fails = max_fails
         self.window = window
         self.cooldown = cooldown
@@ -74,9 +77,13 @@ class CircuitBreaker:
             self._fail_ts.append(now)
             if len(self._fail_ts) >= self.max_fails:
                 self._open_until = now + self.cooldown
-                log.warning("[data_layer] InfluxDB circuit OPEN for %.0fs "
-                            "(%d failures in %.0fs) — mirror disabled",
-                            self.cooldown, len(self._fail_ts), self.window)
+                log.warning(
+                    "[data_layer] InfluxDB circuit OPEN for %.0fs "
+                    "(%d failures in %.0fs) — mirror disabled",
+                    self.cooldown,
+                    len(self._fail_ts),
+                    self.window,
+                )
                 self._fail_ts = []
 
 
@@ -101,9 +108,12 @@ class DataManager:
             os.makedirs(os.path.dirname(self.db_path) or ".", exist_ok=True)
             self._init_schema()
         except Exception as e:
-            log.error("[data_layer] storage init failed for %s: %s — "
-                      "writes will report False (honest failure)",
-                      self.db_path, e)
+            log.error(
+                "[data_layer] storage init failed for %s: %s — "
+                "writes will report False (honest failure)",
+                self.db_path,
+                e,
+            )
         if INFLUX_ENABLED:
             self._ensure_influx()
 
@@ -129,8 +139,9 @@ class DataManager:
             finally:
                 conn.close()
 
-    def write_metric(self, device_id: str, metric: str, value: Any,
-                     ts: Optional[int] = None) -> bool:
+    def write_metric(
+        self, device_id: str, metric: str, value: Any, ts: Optional[int] = None
+    ) -> bool:
         """Persist one sample. Returns True when SQLite accepted it.
 
         The InfluxDB mirror is best-effort and never blocks the caller.
@@ -149,7 +160,8 @@ class DataManager:
                 try:
                     conn.execute(
                         "INSERT INTO metric_samples (device_id, metric, value, ts) "
-                        "VALUES (?, ?, ?, ?)", (device_id, metric, fv, ts)
+                        "VALUES (?, ?, ?, ?)",
+                        (device_id, metric, fv, ts),
                     )
                     conn.commit()
                 finally:
@@ -174,14 +186,18 @@ class DataManager:
     _query_cache: Dict[str, Any] = {}
     _query_cache_ts: Dict[str, float] = {}
 
-    def query_recent(self, device_id: str, metric: str,
-                     minutes: int = 15) -> List[Dict[str, Any]]:
+    def query_recent(
+        self, device_id: str, metric: str, minutes: int = 15
+    ) -> List[Dict[str, Any]]:
         """Return samples for a device+metric over the last N minutes,
         oldest first. Cached for 5 minutes (warm cache)."""
         cache_key = f"{device_id}:{metric}:{minutes}"
         now = time.time()
         cached = self._query_cache.get(cache_key)
-        if cached is not None and now - self._query_cache_ts.get(cache_key, 0) < _CACHE_TTL:
+        if (
+            cached is not None
+            and now - self._query_cache_ts.get(cache_key, 0) < _CACHE_TTL
+        ):
             return cached
 
         since = int(now) - minutes * 60
@@ -193,7 +209,8 @@ class DataManager:
                 cur = conn.execute(
                     "SELECT ts, value FROM metric_samples "
                     "WHERE device_id=? AND metric=? AND ts>=? "
-                    "ORDER BY ts ASC", (device_id, metric, since)
+                    "ORDER BY ts ASC",
+                    (device_id, metric, since),
                 )
                 rows = [{"time": r["ts"], "value": r["value"]} for r in cur.fetchall()]
             finally:
@@ -203,8 +220,9 @@ class DataManager:
         self._query_cache_ts[cache_key] = time.time()
         return rows
 
-    def query_historical(self, device_id: str, metric: str,
-                         hours: int = 24) -> List[Dict[str, Any]]:
+    def query_historical(
+        self, device_id: str, metric: str, hours: int = 24
+    ) -> List[Dict[str, Any]]:
         """Long-history query — delegates to the same SQLite table."""
         return self.query_recent(device_id, metric, minutes=hours * 60)
 
@@ -220,24 +238,25 @@ class DataManager:
             self._influx = InfluxDBClient(
                 url=INFLUX_URL, token=INFLUX_TOKEN, org=INFLUX_ORG
             )
-            self._influx_write_api = self._influx.write_api(
-                write_options=SYNCHRONOUS
-            )
+            self._influx_write_api = self._influx.write_api(write_options=SYNCHRONOUS)
             self._influx_sync = SYNCHRONOUS
             log.info("[data_layer] InfluxDB mirror enabled at %s", INFLUX_URL)
         except ImportError:
-            log.warning("[data_layer] influxdb_client not installed — "
-                        "InfluxDB mirror disabled (SQLite remains active)")
+            log.warning(
+                "[data_layer] influxdb_client not installed — "
+                "InfluxDB mirror disabled (SQLite remains active)"
+            )
             self._influx = None
 
-    def _write_influx(self, device_id: str, metric: str, value: Any,
-                      ts: int) -> None:
+    def _write_influx(self, device_id: str, metric: str, value: Any, ts: int) -> None:
         from influxdb_client import Point
 
-        point = Point("miner_stats") \
-            .tag("device_id", device_id) \
-            .field(metric, float(value)) \
+        point = (
+            Point("miner_stats")
+            .tag("device_id", device_id)
+            .field(metric, float(value))
             .time(ts, write_precision="s")
+        )
         self._influx_write_api.write(bucket=INFLUX_BUCKET, record=point)
 
 
@@ -258,9 +277,13 @@ def write_metric(device_id: str, metric: str, value: Any) -> bool:
     return get_manager().write_metric(device_id, metric, value)
 
 
-def query_recent(device_id: str, metric: str, minutes: int = 15) -> List[Dict[str, Any]]:
+def query_recent(
+    device_id: str, metric: str, minutes: int = 15
+) -> List[Dict[str, Any]]:
     return get_manager().query_recent(device_id, metric, minutes)
 
 
-def query_historical(device_id: str, metric: str, hours: int = 24) -> List[Dict[str, Any]]:
+def query_historical(
+    device_id: str, metric: str, hours: int = 24
+) -> List[Dict[str, Any]]:
     return get_manager().query_historical(device_id, metric, hours)

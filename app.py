@@ -4,6 +4,7 @@ CYPHER65 // PARASITE POOL WAR ROOM
 A real-time monitoring dashboard for the cypher65 worker on Parasite Pool.
 Author: built by Buffy for Julio Cesar
 """
+
 import os
 import json
 import time
@@ -27,33 +28,60 @@ from markupsafe import Markup
 import solo_mining
 
 from helpers import (
-    parse_diff_to_float, fmt_diff, fmt_hashrate, fmt_uptime, fmt_age,
-    safe_num_from_str, coerce_float, coerce_int,
-    human_int, human_secs_long, isfinite_v, make_memory_alert,
+    parse_diff_to_float,
+    fmt_diff,
+    fmt_hashrate,
+    fmt_uptime,
+    fmt_age,
+    safe_num_from_str,
+    coerce_float,
+    coerce_int,
+    human_int,
+    human_secs_long,
+    isfinite_v,
+    make_memory_alert,
     derive_worker_hashrate,
     enrich_account_ranks,
 )
 
 import services.state as _shared_state
+
 # Worker sanitization/dedup helpers now live in services.poll_compute
 # (Issue #135) — services.names is consumed there.
 from services.poll_compute import (
-    build_all_workers, select_primary_worker, dedup_workers,
-    derive_network_values, parse_mempool_fees, merge_btc_quotes,
-    compute_halving_countdown, compute_share_calc, compute_luck_estimate,
+    build_all_workers,
+    select_primary_worker,
+    dedup_workers,
+    derive_network_values,
+    parse_mempool_fees,
+    merge_btc_quotes,
+    compute_halving_countdown,
+    compute_share_calc,
+    compute_luck_estimate,
     fiat_convert,
-    compute_profitability, build_milestones, compute_event_stats,
+    compute_profitability,
+    build_milestones,
+    compute_event_stats,
 )
-from services.proximity import _compute_quantum_lock  # FENIX: composite confidence score for the Quantum-Lock panel
+from services.proximity import (
+    _compute_quantum_lock,
+)  # FENIX: composite confidence score for the Quantum-Lock panel
 from services.session_manager import SessionManager
 from services.user_polling import (
-    UserPollingWorker, _build_snapshot, start_poll_pool as _start_poll_pool,
+    UserPollingWorker,
+    _build_snapshot,
+    start_poll_pool as _start_poll_pool,
     start_rentals_sweep as _start_rentals_sweep,
     POLL_POOL as _POLL_POOL,
     auto_exclude_alert_counters as _auto_exclude_alert_counters,
 )
-from agents.opportunity_engine import scan as _opp_scan, build_response as _opp_build_response
-from agents import solo_mining_advisor as _opp_advisor  # monkeypatch-safe: accessed dynamically in route
+from agents.opportunity_engine import (
+    scan as _opp_scan,
+    build_response as _opp_build_response,
+)
+from agents import (
+    solo_mining_advisor as _opp_advisor,
+)  # monkeypatch-safe: accessed dynamically in route
 from routes.solo_mining_routes import solo_mining_bp
 from routes.device_control import device_control_bp
 from services.probability_engine import register_probability_routes
@@ -69,7 +97,12 @@ from services.hashrate_market import (
 )
 import services.rental_performance as _rental_perf  # RENTALS panel (MRR + Braiins)
 import services.lan_scanner as _lan_scanner  # Phase B: LAN device auto-discovery
-from axe_fleet.routes import axe_fleet_bp, agent_bp, agent_assets_bp, init_routes as _init_axe_routes
+from axe_fleet.routes import (
+    axe_fleet_bp,
+    agent_bp,
+    agent_assets_bp,
+    init_routes as _init_axe_routes,
+)
 from axe_fleet.registry import DeviceRegistry
 from routes.alerts_routes import alerts_bp, _set_get_db as _alerts_set_get_db
 from routes.settings_routes import settings_bp
@@ -86,12 +119,18 @@ from services.licensing import (
     licensing_configured as _licensing_configured,
     current_license_key as _current_license_key,
 )
-from services import payments as _payments  # R1 revenue: Lemon Squeezy adapter (off-by-default)
+from services import (
+    payments as _payments,
+)  # R1 revenue: Lemon Squeezy adapter (off-by-default)
 
 # ── Core CYPHER65 device registry ───────────────────────────────────────────
 from core.registry.device_registry import DeviceRegistry as CoreDeviceRegistry
 from core.adapters import get_adapter
-from core.models.device import Device as CoreDevice, DeviceStatus as CoreDeviceStatus, normalize_telemetry
+from core.models.device import (
+    Device as CoreDevice,
+    DeviceStatus as CoreDeviceStatus,
+    normalize_telemetry,
+)
 from core.safety.safety_engine import SafetyEngine
 from core.diagnostics.diagnostics_engine import DiagnosticsEngine, DiagnosticSeverity
 
@@ -103,11 +142,14 @@ TELEMETRY_FRESHNESS_THRESHOLD = 300
 # ISO-ts + module.tag + level. diagnostic prefix in messages preserved so
 # log files remain greppable for [fetch] / [persist] / [purge] / [poll_loop].
 # LOG_JSON=1 switches to JSON structured logs via services/observability.
-from services.observability import setup_logging as _setup_logging, \
-    build_logger as _build_logger, \
-    new_request_id as _new_request_id, \
-    set_request_id as _set_request_id, \
-    get_request_id as _get_request_id
+from services.observability import (
+    setup_logging as _setup_logging,
+    build_logger as _build_logger,
+    new_request_id as _new_request_id,
+    set_request_id as _set_request_id,
+    get_request_id as _get_request_id,
+)
+
 _setup_logging()
 log = _build_logger("cypher65")
 
@@ -123,20 +165,30 @@ log = _build_logger("cypher65")
 # at module level — tests that set os.environ["DB_PATH"] before `import app`
 # still redirect every query to a scratch DB). No more "keep in sync" drift.
 from config import (
-    BTC_ADDRESS, WORKER_NAME, PARASITE_API, MEMPOOL_API, DATA_DIR, DB_PATH,
-    POLL_INTERVAL, PORT, RATE_LIMIT_PER_MINUTE, AUTH_RATE_LIMIT_PER_MINUTE,
-    API_KEY, TENANT_API_KEYS,
+    BTC_ADDRESS,
+    WORKER_NAME,
+    PARASITE_API,
+    MEMPOOL_API,
+    DATA_DIR,
+    DB_PATH,
+    POLL_INTERVAL,
+    PORT,
+    RATE_LIMIT_PER_MINUTE,
+    AUTH_RATE_LIMIT_PER_MINUTE,
+    API_KEY,
+    TENANT_API_KEYS,
 )
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", os.urandom(32).hex())
-app.config['TEMPLATES_AUTO_RELOAD'] = True
+app.config["TEMPLATES_AUTO_RELOAD"] = True
 
 
 # CFO quick-win: gzip/brotli compression of JSON/HTML responses. Transparent
 # to routes (flask-compress wraps the response) — smaller snapshot/history
 # payloads on mobile/Tailscale links. Skipped automatically for tiny payloads.
 from flask_compress import Compress
+
 Compress(app)
 
 # ── Audit C2: refuse to run with auth configured but no SECRET_KEY ──────
@@ -147,17 +199,20 @@ Compress(app)
 # surfaces at runtime: username/password register/login call create_token,
 # which raises a clear RuntimeError (500) instead of minting unverifiable
 # tokens.
-if (os.environ.get("API_KEY") or os.environ.get("TENANT_API_KEYS")) \
-        and not os.environ.get("SECRET_KEY"):
-    log.error("[boot] SECRET_KEY is not set but auth (API_KEY/TENANT_API_KEYS) is configured — "
-              "JWT issuance/verification will fail. Set SECRET_KEY in the environment.")
+if (
+    os.environ.get("API_KEY") or os.environ.get("TENANT_API_KEYS")
+) and not os.environ.get("SECRET_KEY"):
+    log.error(
+        "[boot] SECRET_KEY is not set but auth (API_KEY/TENANT_API_KEYS) is configured — "
+        "JWT issuance/verification will fail. Set SECRET_KEY in the environment."
+    )
 
 # ── Register blueprints ─────────────────────────────────────────────────────
-app.register_blueprint(solo_mining_bp, url_prefix='/api/solo-mining')
+app.register_blueprint(solo_mining_bp, url_prefix="/api/solo-mining")
 register_probability_routes(app)
 
 # ── Register Axe Fleet blueprint ────────────────────────────────────────────
-app.register_blueprint(axe_fleet_bp, url_prefix='/api/axe-fleet')
+app.register_blueprint(axe_fleet_bp, url_prefix="/api/axe-fleet")
 # ── Register Agent API blueprint (SaaS: local agent → cloud dashboard) ───
 app.register_blueprint(agent_bp)
 app.register_blueprint(agent_assets_bp)
@@ -167,6 +222,7 @@ app.register_blueprint(device_control_bp)
 
 # ── Register Auth blueprint (MILESTONE 11: Security Hardening) ──────────────
 from routes.auth_routes import auth_bp
+
 app.register_blueprint(auth_bp)
 
 # ── Register Settings blueprint (FASE 2: wallet history) ───────────────
@@ -204,6 +260,7 @@ _PUSH_SUBSCRIBE_PER_MINUTE = 10
 def _rate_limit_ensure_table():
     try:
         from services.db import get_db
+
         conn = get_db()
         conn.execute(
             """
@@ -224,9 +281,11 @@ def _rate_limit_persist():
     """Snapshot both rate-limit stores to SQLite (best-effort, called from
     the background loop — never from the request path)."""
     import json as _json
+
     try:
         _rate_limit_ensure_table()
         from services.db import get_db
+
         conn = get_db()
         now = int(time.time())
         combined = {}
@@ -242,8 +301,7 @@ def _rate_limit_persist():
             [(k, _json.dumps(stamps), now) for k, stamps in combined.items()],
         )
         # Drop rows that disappeared from memory (fully reset buckets).
-        conn.execute(
-            "DELETE FROM rate_limit_state WHERE updated_at < ?", (now - 120,))
+        conn.execute("DELETE FROM rate_limit_state WHERE updated_at < ?", (now - 120,))
         conn.commit()
         conn.close()
     except Exception as e:
@@ -254,12 +312,13 @@ def _rate_limit_restore():
     """Reload persisted buckets at boot so a restart does not re-open the
     abuse window. Only rows still inside the window are kept."""
     import json as _json
+
     try:
         _rate_limit_ensure_table()
         from services.db import get_db
+
         conn = get_db()
-        rows = conn.execute(
-            "SELECT key, timestamps FROM rate_limit_state").fetchall()
+        rows = conn.execute("SELECT key, timestamps FROM rate_limit_state").fetchall()
         conn.close()
         now = time.time()
         window = 60.0
@@ -290,6 +349,7 @@ def _rate_limit_persist_loop():
         except Exception:
             pass
         time.sleep(RATE_LIMIT_PERSIST_INTERVAL)
+
 
 # ── Token→tenant cache (hot-path optimization) ────────────────────────────
 # verify_token() is JWT decode + HMAC + blacklist + revocation checks — fine
@@ -375,6 +435,7 @@ def _rate_limit_key() -> str:
         if not sub:
             try:
                 from services.auth import verify_token
+
                 payload = verify_token(token) or {}
                 sub = payload.get("sub")
                 if sub:
@@ -431,7 +492,12 @@ def rate_limit():
     health endpoints. Disabled in TESTING mode."""
     if app.config.get("TESTING", False):
         return None
-    if request.path.startswith('/static') or request.path == '/healthz' or request.path == '/api/healthz' or request.path == '/api/v1/status':
+    if (
+        request.path.startswith("/static")
+        or request.path == "/healthz"
+        or request.path == "/api/healthz"
+        or request.path == "/api/v1/status"
+    ):
         return None
     now = time.time()
     window = 60.0
@@ -440,17 +506,22 @@ def rate_limit():
     # legit user, so a tight per-IP limit blocks password sprays without
     # false positives. Auth requests don't consume the generic budget.
     if request.method == "POST" and request.path.startswith("/api/auth/"):
-        ip = request.remote_addr or '127.0.0.1'
+        ip = request.remote_addr or "127.0.0.1"
         auth_ips = _auth_rate_limit_store.setdefault(ip, [])
         auth_ips[:] = [t for t in auth_ips if now - t < window]
         if len(auth_ips) >= AUTH_RATE_LIMIT_PER_MINUTE:
-            abort(429, description="Too many authentication attempts. Please slow down.")
+            abort(
+                429, description="Too many authentication attempts. Please slow down."
+            )
         auth_ips.append(now)
         # GC stale auth-limit IPs by EXPIRY (same pattern as the generic store)
         if len(_auth_rate_limit_store) > 1000:
             cutoff = now - window
-            stale = [k for k, stamps in _auth_rate_limit_store.items()
-                     if not stamps or stamps[-1] < cutoff]
+            stale = [
+                k
+                for k, stamps in _auth_rate_limit_store.items()
+                if not stamps or stamps[-1] < cutoff
+            ]
             for k in stale:
                 del _auth_rate_limit_store[k]
         return None
@@ -460,7 +531,7 @@ def rate_limit():
     # Prune old entries
     _rate_limit_store[key] = [t for t in _rate_limit_store[key] if now - t < window]
     if len(_rate_limit_store[key]) >= RATE_LIMIT_PER_MINUTE:
-            abort(429, description="Rate limit exceeded. Please slow down.")
+        abort(429, description="Rate limit exceeded. Please slow down.")
     _rate_limit_store[key].append(now)
     # GC stale keys by EXPIRY, never a global wipe: prune entries whose most
     # recent request fell outside the window (their budget fully reset). A
@@ -468,8 +539,11 @@ def rate_limit():
     # once — audit C3.
     if len(_rate_limit_store) > 5000:
         cutoff = now - window
-        stale = [k for k, stamps in _rate_limit_store.items()
-                 if not stamps or stamps[-1] < cutoff]
+        stale = [
+            k
+            for k, stamps in _rate_limit_store.items()
+            if not stamps or stamps[-1] < cutoff
+        ]
         for k in stale:
             del _rate_limit_store[k]
 
@@ -486,11 +560,19 @@ def add_cors_headers(response):
     origins = os.environ.get("CORS_ORIGINS", "").strip()
     if origins:
         origin = request.headers.get("Origin", "")
-        allowed = origins == "*" or (origin and origin in [o.strip() for o in origins.split(",")])
+        allowed = origins == "*" or (
+            origin and origin in [o.strip() for o in origins.split(",")]
+        )
         if allowed:
-            response.headers["Access-Control-Allow-Origin"] = "*" if origins == "*" else origin
-            response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
-            response.headers["Access-Control-Allow-Headers"] = "Authorization, Content-Type, X-API-Key"
+            response.headers["Access-Control-Allow-Origin"] = (
+                "*" if origins == "*" else origin
+            )
+            response.headers["Access-Control-Allow-Methods"] = (
+                "GET, POST, PUT, DELETE, OPTIONS"
+            )
+            response.headers["Access-Control-Allow-Headers"] = (
+                "Authorization, Content-Type, X-API-Key"
+            )
             response.headers["Access-Control-Max-Age"] = "86400"
     return response
 
@@ -534,19 +616,19 @@ def add_cache_headers(response):
     - API responses: no-cache
     - SW.js: no-cache (never cache the SW itself!)"""
     path = request.path
-    if path == '/static/sw.js' or path.endswith('/sw.js'):
+    if path == "/static/sw.js" or path.endswith("/sw.js"):
         # Service Worker MUST NOT be cached by the browser
-        response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
-        response.headers['Pragma'] = 'no-cache'
-        response.headers['Expires'] = '0'
-    elif path.startswith('/static/'):
+        response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
+    elif path.startswith("/static/"):
         # Static assets: short cache (5 min) so updates propagate
-        response.headers['Cache-Control'] = 'public, max-age=300'
+        response.headers["Cache-Control"] = "public, max-age=300"
     else:
         # HTML pages and API responses: always fresh
-        response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
-        response.headers['Pragma'] = 'no-cache'
-        response.headers['Expires'] = '0'
+        response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
     return response
 
 
@@ -728,7 +810,9 @@ def init_db():
             PRIMARY KEY (tenant_id, key)
         )"""
     )
-    c.execute("CREATE INDEX IF NOT EXISTS idx_tenant_settings_tenant ON tenant_settings(tenant_id)")
+    c.execute(
+        "CREATE INDEX IF NOT EXISTS idx_tenant_settings_tenant ON tenant_settings(tenant_id)"
+    )
     c.execute(
         """CREATE TABLE IF NOT EXISTS proximity_history (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -753,18 +837,12 @@ def init_db():
     # path so tests that redirect DB_PATH never touch the real database.
     conn = get_db()
     c = conn.cursor()
-    c.execute(
-        "CREATE INDEX IF NOT EXISTS idx_snapshots_ts ON snapshots(ts)"
-    )
-    c.execute(
-        "CREATE INDEX IF NOT EXISTS idx_alerts_ts ON alerts(ts)"
-    )
+    c.execute("CREATE INDEX IF NOT EXISTS idx_snapshots_ts ON snapshots(ts)")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_alerts_ts ON alerts(ts)")
     c.execute(
         "CREATE INDEX IF NOT EXISTS idx_high_diff_height ON highest_diff_events(block_height)"
     )
-    c.execute(
-        "CREATE INDEX IF NOT EXISTS idx_share_timeline_ts ON share_timeline(ts)"
-    )
+    c.execute("CREATE INDEX IF NOT EXISTS idx_share_timeline_ts ON share_timeline(ts)")
     c.execute(
         "CREATE INDEX IF NOT EXISTS idx_share_timeline_type ON share_timeline(event_type)"
     )
@@ -772,7 +850,9 @@ def init_db():
         "CREATE INDEX IF NOT EXISTS idx_proximity_history_ts ON proximity_history(ts)"
     )
     # ── Data audit (2026-08-02): missing time-series ts indexes ──
-    c.execute("CREATE INDEX IF NOT EXISTS idx_highest_diff_events_ts ON highest_diff_events(ts)")
+    c.execute(
+        "CREATE INDEX IF NOT EXISTS idx_highest_diff_events_ts ON highest_diff_events(ts)"
+    )
     # NOTE: idx_maintenance_records_ts is created AFTER the maintenance_records
     # table below (a fresh DB would otherwise fail with "no such table").
     # One snapshot row per poll second — enforce uniqueness so the forced
@@ -782,7 +862,9 @@ def init_db():
     try:
         c.execute("CREATE UNIQUE INDEX IF NOT EXISTS uq_snapshots_ts ON snapshots(ts)")
     except sqlite3.Error as e:
-        log.warning("[init_db] could not create unique snapshots(ts) index (duplicates?): %s", e)
+        log.warning(
+            "[init_db] could not create unique snapshots(ts) index (duplicates?): %s", e
+        )
 
     # ── Axe Fleet tables ──
     c.execute(
@@ -824,7 +906,9 @@ def init_db():
             performed_by TEXT DEFAULT ''
         )"""
     )
-    c.execute("CREATE INDEX IF NOT EXISTS idx_maintenance_records_ts ON maintenance_records(ts)")
+    c.execute(
+        "CREATE INDEX IF NOT EXISTS idx_maintenance_records_ts ON maintenance_records(ts)"
+    )
     # ── Best difficulty history table (Milestone 6) ──
     c.execute(
         """CREATE TABLE IF NOT EXISTS best_diff_history (
@@ -836,8 +920,12 @@ def init_db():
             pool TEXT DEFAULT ''
         )"""
     )
-    c.execute("CREATE INDEX IF NOT EXISTS idx_best_diff_history_ts ON best_diff_history(ts)")
-    c.execute("CREATE INDEX IF NOT EXISTS idx_best_diff_history_device ON best_diff_history(device_id)")
+    c.execute(
+        "CREATE INDEX IF NOT EXISTS idx_best_diff_history_ts ON best_diff_history(ts)"
+    )
+    c.execute(
+        "CREATE INDEX IF NOT EXISTS idx_best_diff_history_device ON best_diff_history(device_id)"
+    )
     # ── Hashrate market history table (Milestone 7) ──
     c.execute(
         """CREATE TABLE IF NOT EXISTS hashrate_market_history (
@@ -853,8 +941,12 @@ def init_db():
             raw_data TEXT
         )"""
     )
-    c.execute("CREATE INDEX IF NOT EXISTS idx_hashrate_market_history_ts ON hashrate_market_history(ts)")
-    c.execute("CREATE INDEX IF NOT EXISTS idx_hashrate_market_history_provider ON hashrate_market_history(provider)")
+    c.execute(
+        "CREATE INDEX IF NOT EXISTS idx_hashrate_market_history_ts ON hashrate_market_history(ts)"
+    )
+    c.execute(
+        "CREATE INDEX IF NOT EXISTS idx_hashrate_market_history_provider ON hashrate_market_history(provider)"
+    )
     # ── Milestone 9: Alert Rules (configurable thresholds) ──
     c.execute(
         """CREATE TABLE IF NOT EXISTS alert_rules (
@@ -871,7 +963,9 @@ def init_db():
             cooldown_seconds INTEGER DEFAULT 300
         )"""
     )
-    c.execute("CREATE INDEX IF NOT EXISTS idx_alert_rules_enabled ON alert_rules(enabled)")
+    c.execute(
+        "CREATE INDEX IF NOT EXISTS idx_alert_rules_enabled ON alert_rules(enabled)"
+    )
     # ── Milestone 9: Automation Rules ──
     c.execute(
         """CREATE TABLE IF NOT EXISTS automation_rules (
@@ -892,10 +986,14 @@ def init_db():
     auto_cols = {row[1] for row in c.fetchall()}
     if "min_interval_seconds" not in auto_cols:
         try:
-            c.execute("ALTER TABLE automation_rules ADD COLUMN min_interval_seconds INTEGER DEFAULT 60")
+            c.execute(
+                "ALTER TABLE automation_rules ADD COLUMN min_interval_seconds INTEGER DEFAULT 60"
+            )
         except Exception as e:
             log.warning("[init_db] could not add column min_interval_seconds: %s", e)
-    c.execute("CREATE INDEX IF NOT EXISTS idx_automation_rules_enabled ON automation_rules(is_enabled)")
+    c.execute(
+        "CREATE INDEX IF NOT EXISTS idx_automation_rules_enabled ON automation_rules(is_enabled)"
+    )
     # ── Milestone 9: Alert History / Audit ──
     c.execute(
         """CREATE TABLE IF NOT EXISTS alert_history (
@@ -908,7 +1006,9 @@ def init_db():
         )"""
     )
     c.execute("CREATE INDEX IF NOT EXISTS idx_alert_history_ts ON alert_history(ts)")
-    c.execute("CREATE INDEX IF NOT EXISTS idx_alert_history_device ON alert_history(device_id)")
+    c.execute(
+        "CREATE INDEX IF NOT EXISTS idx_alert_history_device ON alert_history(device_id)"
+    )
     # ── Milestone 9: Automation Execution Log ──
     c.execute(
         """CREATE TABLE IF NOT EXISTS automation_execution_log (
@@ -923,10 +1023,16 @@ def init_db():
             result TEXT DEFAULT '{}'
         )"""
     )
-    c.execute("CREATE INDEX IF NOT EXISTS idx_automation_execution_log_ts ON automation_execution_log(ts)")
-    c.execute("CREATE INDEX IF NOT EXISTS idx_automation_execution_log_rule ON automation_execution_log(rule_id)")
-    c.execute("CREATE INDEX IF NOT EXISTS idx_automation_execution_log_device ON automation_execution_log(device_id)")
-        # ── FASE 2: Wallet address history (past wallets) ──
+    c.execute(
+        "CREATE INDEX IF NOT EXISTS idx_automation_execution_log_ts ON automation_execution_log(ts)"
+    )
+    c.execute(
+        "CREATE INDEX IF NOT EXISTS idx_automation_execution_log_rule ON automation_execution_log(rule_id)"
+    )
+    c.execute(
+        "CREATE INDEX IF NOT EXISTS idx_automation_execution_log_device ON automation_execution_log(device_id)"
+    )
+    # ── FASE 2: Wallet address history (past wallets) ──
     c.execute(
         """CREATE TABLE IF NOT EXISTS wallet_address_history (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -936,8 +1042,12 @@ def init_db():
             label TEXT DEFAULT ''
         )"""
     )
-    c.execute("CREATE INDEX IF NOT EXISTS idx_wallet_history_addr ON wallet_address_history(address)")
-    c.execute("CREATE INDEX IF NOT EXISTS idx_wallet_history_ts ON wallet_address_history(connected_at)")
+    c.execute(
+        "CREATE INDEX IF NOT EXISTS idx_wallet_history_addr ON wallet_address_history(address)"
+    )
+    c.execute(
+        "CREATE INDEX IF NOT EXISTS idx_wallet_history_ts ON wallet_address_history(connected_at)"
+    )
     # ── Donation tracking (FASE 7: "como saber quem doou") ──
     # Records confirmed donations (auto via WebLN preimage, on-chain via the
     # mempool.space watcher, or manual logging). txid/preimage are dedup keys.
@@ -955,7 +1065,9 @@ def init_db():
     )
     c.execute("CREATE INDEX IF NOT EXISTS idx_donations_ts ON donations(ts)")
     c.execute("CREATE INDEX IF NOT EXISTS idx_donations_txid ON donations(txid)")
-    c.execute("CREATE INDEX IF NOT EXISTS idx_donations_preimage ON donations(preimage)")
+    c.execute(
+        "CREATE INDEX IF NOT EXISTS idx_donations_preimage ON donations(preimage)"
+    )
 
     # ── Multi-tenant migration: add tenant_id to axe_fleet tables ──
     for table_name in ("axe_devices", "axe_telemetry"):
@@ -963,13 +1075,19 @@ def init_db():
             c.execute(f"PRAGMA table_info({table_name})")
             cols = {row[1] for row in c.fetchall()}
             if "tenant_id" not in cols:
-                c.execute(f"ALTER TABLE {table_name} ADD COLUMN tenant_id TEXT DEFAULT 'default'")
+                c.execute(
+                    f"ALTER TABLE {table_name} ADD COLUMN tenant_id TEXT DEFAULT 'default'"
+                )
                 log.info("[migrate] added tenant_id to %s", table_name)
         except Exception as e:
             log.warning("[migrate] could not add tenant_id to %s: %s", table_name, e)
     try:
-        c.execute("CREATE INDEX IF NOT EXISTS idx_axe_devices_tenant ON axe_devices(tenant_id)")
-        c.execute("CREATE INDEX IF NOT EXISTS idx_axe_telemetry_tenant ON axe_telemetry(tenant_id)")
+        c.execute(
+            "CREATE INDEX IF NOT EXISTS idx_axe_devices_tenant ON axe_devices(tenant_id)"
+        )
+        c.execute(
+            "CREATE INDEX IF NOT EXISTS idx_axe_telemetry_tenant ON axe_telemetry(tenant_id)"
+        )
     except Exception:
         pass
 
@@ -990,8 +1108,10 @@ def init_db():
     try:
         c.execute("PRAGMA table_info(tenants)")
         tenant_cols = {row[1] for row in c.fetchall()}
-        for col, col_def in (("plan", "TEXT NOT NULL DEFAULT 'free'"),
-                             ("max_workers", "INTEGER NOT NULL DEFAULT 5")):
+        for col, col_def in (
+            ("plan", "TEXT NOT NULL DEFAULT 'free'"),
+            ("max_workers", "INTEGER NOT NULL DEFAULT 5"),
+        ):
             if col not in tenant_cols:
                 c.execute(f"ALTER TABLE tenants ADD COLUMN {col} {col_def}")
                 log.info("[migrate] added %s to tenants", col)
@@ -1031,7 +1151,9 @@ def init_db():
             details TEXT NOT NULL DEFAULT '{}'
         )"""
     )
-    c.execute("CREATE INDEX IF NOT EXISTS idx_audit_logs_tenant_ts ON audit_logs(tenant_id, ts)")
+    c.execute(
+        "CREATE INDEX IF NOT EXISTS idx_audit_logs_tenant_ts ON audit_logs(tenant_id, ts)"
+    )
     c.execute(
         """CREATE TABLE IF NOT EXISTS users (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1053,23 +1175,32 @@ def init_db():
 
     # ── Fase 4 · B2: add tenant_id to alerts/automations/core tables ──
     for table_name in (
-        "alerts", "alert_history", "alert_rules",
-        "automation_rules", "automation_execution_log",
+        "alerts",
+        "alert_history",
+        "alert_rules",
+        "automation_rules",
+        "automation_execution_log",
     ):
         try:
             c.execute(f"PRAGMA table_info({table_name})")
             cols = {row[1] for row in c.fetchall()}
             if "tenant_id" not in cols:
-                c.execute(f"ALTER TABLE {table_name} ADD COLUMN tenant_id TEXT DEFAULT 'default'")
+                c.execute(
+                    f"ALTER TABLE {table_name} ADD COLUMN tenant_id TEXT DEFAULT 'default'"
+                )
                 log.info("[migrate] added tenant_id to %s", table_name)
         except Exception as e:
             log.warning("[migrate] could not add tenant_id to %s: %s", table_name, e)
     try:
         c.execute("CREATE INDEX IF NOT EXISTS idx_alerts_tenant ON alerts(tenant_id)")
-        c.execute("CREATE INDEX IF NOT EXISTS idx_alert_rules_tenant ON alert_rules(tenant_id)")
-        c.execute("CREATE INDEX IF NOT EXISTS idx_automation_rules_tenant ON automation_rules(tenant_id)")
+        c.execute(
+            "CREATE INDEX IF NOT EXISTS idx_alert_rules_tenant ON alert_rules(tenant_id)"
+        )
+        c.execute(
+            "CREATE INDEX IF NOT EXISTS idx_automation_rules_tenant ON automation_rules(tenant_id)"
+        )
     except Exception:
-        pass    # ── WAL mode for better concurrent read/write ──
+        pass  # ── WAL mode for better concurrent read/write ──
     c.execute("PRAGMA journal_mode=WAL")
     c.execute("PRAGMA synchronous=NORMAL")
     c.execute("PRAGMA cache_size=-8000")  # 8MB cache
@@ -1086,6 +1217,7 @@ init_db()
 # Safe on every boot — ALTER only runs when the column is missing. Runs after
 # init_db() so the users table already exists.
 from services.tenant import ensure_users_schema as _ensure_users_schema
+
 _ensure_users_schema()
 
 # ── Optional monitoring: Sentry (env-gated) ────────────────────────────────
@@ -1099,11 +1231,13 @@ _SENTRY_TRACES_SAMPLE_RATE = 0.1
 if _SENTRY_DSN:
     try:
         _SENTRY_TRACES_SAMPLE_RATE = float(
-            os.environ.get("SENTRY_TRACES_SAMPLE_RATE", "0.1"))
+            os.environ.get("SENTRY_TRACES_SAMPLE_RATE", "0.1")
+        )
     except (TypeError, ValueError):
         log.warning("[monitor] SENTRY_TRACES_SAMPLE_RATE inválido — usando 0.1")
     try:
         import sentry_sdk
+
         sentry_sdk.init(
             dsn=_SENTRY_DSN,
             traces_sample_rate=_SENTRY_TRACES_SAMPLE_RATE,
@@ -1136,7 +1270,11 @@ def _purge_seed_marked_devices(registry):
     try:
         for d in registry.list_devices():
             name = d.get("name", "")
-            if d.get("group_id") in _SEED_GROUP_MARKERS or name.startswith("Test-") or name.startswith("test-"):
+            if (
+                d.get("group_id") in _SEED_GROUP_MARKERS
+                or name.startswith("Test-")
+                or name.startswith("test-")
+            ):
                 dev_id = d.get("id")
                 # hard=True: demo/test rows must be PHYSICALLY gone — they
                 # are never user devices, so no tombstone needed (tombstones
@@ -1149,12 +1287,16 @@ def _purge_seed_marked_devices(registry):
         try:
             conn = registry._get_db()
             c = conn.cursor()
-            c.execute("DELETE FROM axe_telemetry WHERE device_id NOT IN (SELECT id FROM axe_devices)")
+            c.execute(
+                "DELETE FROM axe_telemetry WHERE device_id NOT IN (SELECT id FROM axe_devices)"
+            )
             orphaned = c.rowcount
             conn.commit()
             conn.close()
             if orphaned:
-                log.info("[axe] purged %d orphaned telemetry rows (no device)", orphaned)
+                log.info(
+                    "[axe] purged %d orphaned telemetry rows (no device)", orphaned
+                )
         except Exception as e:
             log.warning("[axe] telemetry orphan purge failed: %s", e)
         if removed:
@@ -1175,8 +1317,11 @@ def _auto_seed_axe_fleet(registry):
     dev/demo seeding.
     """
     if os.environ.get("DEBUG_MOCK") != "1":
-        return _purge_seed_marked_devices(registry)  # Honest Telemetry: cleanup leftovers
+        return _purge_seed_marked_devices(
+            registry
+        )  # Honest Telemetry: cleanup leftovers
     import uuid, time
+
     try:
         devices = registry.list_devices()
         if devices and len(devices) > 0:
@@ -1190,64 +1335,105 @@ def _auto_seed_axe_fleet(registry):
                 "name": "Garage Bitaxe",
                 "ip": "192.168.1.100",
                 "model": "Bitaxe ULP",
-                "firmware": "AxeOS", "version": "2.6.0",
-                "hostname": "bitaxe-garage", "status": "ONLINE",
+                "firmware": "AxeOS",
+                "version": "2.6.0",
+                "hostname": "bitaxe-garage",
+                "status": "ONLINE",
                 "hashrate_hs": 5200000000000,
-                "temperature": 62, "fan_speed": 80, "fan_rpm": 4200,
-                "power_watts": 42, "voltage_mv": 1200, "frequency_mhz": 525,
-                "best_diff": "42.8T", "uptime_seconds": 259200,
+                "temperature": 62,
+                "fan_speed": 80,
+                "fan_rpm": 4200,
+                "power_watts": 42,
+                "voltage_mv": 1200,
+                "frequency_mhz": 525,
+                "best_diff": "42.8T",
+                "uptime_seconds": 259200,
                 "efficiency_jth": 8.08,
-                "shares_accepted": 15823, "shares_rejected": 47,
-                "hw_error_pct": 0.3, "wifi_rssi": -65, "free_heap": 128000,
+                "shares_accepted": 15823,
+                "shares_rejected": 47,
+                "hw_error_pct": 0.3,
+                "wifi_rssi": -65,
+                "free_heap": 128000,
             },
             {
                 "name": "Office NerdAxe",
                 "ip": "192.168.1.101",
                 "model": "NerdAxe v2",
-                "firmware": "AxeOS", "version": "2.5.1",
-                "hostname": "nerdaxe-office", "status": "ONLINE",
+                "firmware": "AxeOS",
+                "version": "2.5.1",
+                "hostname": "nerdaxe-office",
+                "status": "ONLINE",
                 "hashrate_hs": 2100000000000,
-                "temperature": 58, "fan_speed": 65, "fan_rpm": 3800,
-                "power_watts": 18, "voltage_mv": 1100, "frequency_mhz": 450,
-                "best_diff": "12.5T", "uptime_seconds": 604800,
+                "temperature": 58,
+                "fan_speed": 65,
+                "fan_rpm": 3800,
+                "power_watts": 18,
+                "voltage_mv": 1100,
+                "frequency_mhz": 450,
+                "best_diff": "12.5T",
+                "uptime_seconds": 604800,
                 "efficiency_jth": 8.57,
-                "shares_accepted": 45231, "shares_rejected": 89,
-                "hw_error_pct": 0.2, "wifi_rssi": -72, "free_heap": 95000,
+                "shares_accepted": 45231,
+                "shares_rejected": 89,
+                "hw_error_pct": 0.2,
+                "wifi_rssi": -72,
+                "free_heap": 95000,
             },
             {
                 "name": "Lab Bitaxe (hot)",
                 "ip": "192.168.1.102",
                 "model": "Bitaxe Max",
-                "firmware": "AxeOS", "version": "2.6.0",
-                "hostname": "bitaxe-lab", "status": "WARNING",
+                "firmware": "AxeOS",
+                "version": "2.6.0",
+                "hostname": "bitaxe-lab",
+                "status": "WARNING",
                 "hashrate_hs": 3800000000000,
-                "temperature": 82, "fan_speed": 100, "fan_rpm": 5200,
-                "power_watts": 38, "voltage_mv": 1250, "frequency_mhz": 500,
-                "best_diff": "28.3T", "uptime_seconds": 43200,
+                "temperature": 82,
+                "fan_speed": 100,
+                "fan_rpm": 5200,
+                "power_watts": 38,
+                "voltage_mv": 1250,
+                "frequency_mhz": 500,
+                "best_diff": "28.3T",
+                "uptime_seconds": 43200,
                 "efficiency_jth": 10.0,
-                "shares_accepted": 5872, "shares_rejected": 215,
-                "hw_error_pct": 3.5, "wifi_rssi": -85, "free_heap": 72000,
+                "shares_accepted": 5872,
+                "shares_rejected": 215,
+                "hw_error_pct": 3.5,
+                "wifi_rssi": -85,
+                "free_heap": 72000,
             },
             {
                 "name": "Basement S19",
                 "ip": "192.168.1.200",
                 "model": "Antminer S19 Pro",
-                "firmware": "Braiins OS+", "version": "22.0",
-                "hostname": "s19-basement", "status": "OFFLINE",
+                "firmware": "Braiins OS+",
+                "version": "22.0",
+                "hostname": "s19-basement",
+                "status": "OFFLINE",
                 "hashrate_hs": 0,
-                "temperature": None, "fan_speed": 0, "fan_rpm": 0,
-                "power_watts": 0, "voltage_mv": None, "frequency_mhz": 0,
-                "best_diff": "", "uptime_seconds": 0,
+                "temperature": None,
+                "fan_speed": 0,
+                "fan_rpm": 0,
+                "power_watts": 0,
+                "voltage_mv": None,
+                "frequency_mhz": 0,
+                "best_diff": "",
+                "uptime_seconds": 0,
                 "efficiency_jth": None,
-                "shares_accepted": 0, "shares_rejected": 0,
-                "hw_error_pct": 0.0, "wifi_rssi": None, "free_heap": 0,
+                "shares_accepted": 0,
+                "shares_rejected": 0,
+                "hw_error_pct": 0.0,
+                "wifi_rssi": None,
+                "free_heap": 0,
             },
         ]
 
         for m in mock_devices:
             device_id = uuid.uuid4().hex[:12]
             caps = {
-                "telemetry": True, "statistics": True,
+                "telemetry": True,
+                "statistics": True,
                 "restart": m["status"] in ("ONLINE", "WARNING"),
                 "identify": m["status"] in ("ONLINE", "WARNING"),
                 "pause": m["firmware"] == "AxeOS",
@@ -1261,7 +1447,11 @@ def _auto_seed_axe_fleet(registry):
                 "id": device_id,
                 "name": m["name"],
                 "model": m["model"],
-                "manufacturer": "Bitaxe" if "Bitaxe" in m["model"] or "NerdAxe" in m["model"] else "Bitmain",
+                "manufacturer": (
+                    "Bitaxe"
+                    if "Bitaxe" in m["model"] or "NerdAxe" in m["model"]
+                    else "Bitmain"
+                ),
                 "firmware": m["firmware"],
                 "firmware_version": m["version"],
                 "api_version": "2.0.0",
@@ -1285,16 +1475,38 @@ def _auto_seed_axe_fleet(registry):
                     "ts": ts,
                     "device_id": device_id,
                     "hashrate_hs": int(hr_variation) if m["hashrate_hs"] > 0 else 0,
-                    "temperature": m["temperature"] + temp_variation if m["temperature"] is not None else None,
+                    "temperature": (
+                        m["temperature"] + temp_variation
+                        if m["temperature"] is not None
+                        else None
+                    ),
                     # Fase 5: chip/ASIC/VR temps + hashrate windows so the fleet
                     # cards show real values instead of NOT AVAILABLE.
-                    "chip_temp": m["temperature"] + temp_variation + 8 if m["temperature"] is not None else None,
-                    "vr_temp": m["temperature"] + temp_variation + 5 if m["temperature"] is not None else None,
-                    "temp_asic": m["temperature"] + temp_variation + 8 if m["temperature"] is not None else None,
-                    "temp_vreg": m["temperature"] + temp_variation + 5 if m["temperature"] is not None else None,
+                    "chip_temp": (
+                        m["temperature"] + temp_variation + 8
+                        if m["temperature"] is not None
+                        else None
+                    ),
+                    "vr_temp": (
+                        m["temperature"] + temp_variation + 5
+                        if m["temperature"] is not None
+                        else None
+                    ),
+                    "temp_asic": (
+                        m["temperature"] + temp_variation + 8
+                        if m["temperature"] is not None
+                        else None
+                    ),
+                    "temp_vreg": (
+                        m["temperature"] + temp_variation + 5
+                        if m["temperature"] is not None
+                        else None
+                    ),
                     "hashrate_1m": int(hr_variation) if m["hashrate_hs"] > 0 else None,
                     "hashrate_10m": int(hr_variation) if m["hashrate_hs"] > 0 else None,
-                    "hashrate_1h": int(m["hashrate_hs"]) if m["hashrate_hs"] > 0 else None,
+                    "hashrate_1h": (
+                        int(m["hashrate_hs"]) if m["hashrate_hs"] > 0 else None
+                    ),
                     "fan_speed": m["fan_speed"],
                     "fan_rpm": m["fan_rpm"],
                     "power_watts": m["power_watts"],
@@ -1308,7 +1520,9 @@ def _auto_seed_axe_fleet(registry):
                     "hw_error_pct": m["hw_error_pct"],
                     "wifi_rssi": m["wifi_rssi"],
                     "free_heap": m["free_heap"],
-                    "stratum_status": "connected" if m["hashrate_hs"] > 0 else "disconnected",
+                    "stratum_status": (
+                        "connected" if m["hashrate_hs"] > 0 else "disconnected"
+                    ),
                 }
                 registry.save_telemetry(device_id, tel)
 
@@ -1333,11 +1547,17 @@ def _purge_core_seed_marked_devices(registry):
                 try:
                     registry.remove_device(d.id)
                     removed += 1
-                    log.info("[core] purged demo-seeded device %s (%s)", d.id, getattr(d, "name", ""))
+                    log.info(
+                        "[core] purged demo-seeded device %s (%s)",
+                        d.id,
+                        getattr(d, "name", ""),
+                    )
                 except Exception:
                     pass
         if removed:
-            log.info("[core] purged %d demo-seeded core devices (DEBUG_MOCK off)", removed)
+            log.info(
+                "[core] purged %d demo-seeded core devices (DEBUG_MOCK off)", removed
+            )
     except Exception as e:
         log.warning("[core] seed purge failed: %s", e)
     return removed
@@ -1385,7 +1605,11 @@ def _purge_test_devices(axe_registry, core_registry):
         for d in axe_registry.list_devices():
             nm = (d.get("name") or "").strip()
             ip = (d.get("ip_address") or "").strip()
-            if nm.startswith(("Test-", "test-")) or nm in ("x", "ss") or (nm == ip and ip):
+            if (
+                nm.startswith(("Test-", "test-"))
+                or nm in ("x", "ss")
+                or (nm == ip and ip)
+            ):
                 try:
                     # hard=True: test artifacts are never user devices — no
                     # tombstone needed (would accumulate forever).
@@ -1435,22 +1659,27 @@ def _auto_seed_core_devices(registry):
     so the alert engine only ever sees real devices.
     """
     if os.environ.get("DEBUG_MOCK") != "1":
-        return _purge_core_seed_marked_devices(registry)  # Honest Telemetry: cleanup leftovers
+        return _purge_core_seed_marked_devices(
+            registry
+        )  # Honest Telemetry: cleanup leftovers
     import uuid
+
     try:
         existing = registry.list_devices()
         # Check if existing devices have real telemetry; if not, clear stale data
         needs_replacement = False
         for d in existing:
-            tel = getattr(d, 'current_telemetry', None) or {}
-            if not tel.get('temperature'):
+            tel = getattr(d, "current_telemetry", None) or {}
+            if not tel.get("temperature"):
                 needs_replacement = True
                 break
         if existing and len(existing) > 0 and not needs_replacement:
             return 0  # already has fresh devices, skip
         if needs_replacement:
             log = logging.getLogger("cypher65.app")
-            log.info("[core] replacing %d stale test devices with fresh ones", len(existing))
+            log.info(
+                "[core] replacing %d stale test devices with fresh ones", len(existing)
+            )
             # Clear stale test devices from DB
             try:
                 conn = sqlite3.connect(registry.db_path)
@@ -1467,10 +1696,46 @@ def _auto_seed_core_devices(registry):
         now = int(time.time())
 
         mock = [
-            {"name":"Garage Bitaxe","model":"Bitaxe ULP","firmware":"AxeOS","ip":"192.168.1.100","hostname":"bitaxe-garage","status":"ONLINE","hashrate":5200000000000,"temp":62},
-            {"name":"Office NerdAxe","model":"NerdAxe v2","firmware":"AxeOS","ip":"192.168.1.101","hostname":"nerdaxe-office","status":"ONLINE","hashrate":2100000000000,"temp":58},
-            {"name":"Lab Bitaxe (hot)","model":"Bitaxe Max","firmware":"AxeOS","ip":"192.168.1.102","hostname":"bitaxe-lab","status":"WARNING","hashrate":3800000000000,"temp":82},
-            {"name":"Basement S19","model":"Antminer S19 Pro","firmware":"Braiins OS+","ip":"192.168.1.200","hostname":"s19-basement","status":"OFFLINE","hashrate":0,"temp":None},
+            {
+                "name": "Garage Bitaxe",
+                "model": "Bitaxe ULP",
+                "firmware": "AxeOS",
+                "ip": "192.168.1.100",
+                "hostname": "bitaxe-garage",
+                "status": "ONLINE",
+                "hashrate": 5200000000000,
+                "temp": 62,
+            },
+            {
+                "name": "Office NerdAxe",
+                "model": "NerdAxe v2",
+                "firmware": "AxeOS",
+                "ip": "192.168.1.101",
+                "hostname": "nerdaxe-office",
+                "status": "ONLINE",
+                "hashrate": 2100000000000,
+                "temp": 58,
+            },
+            {
+                "name": "Lab Bitaxe (hot)",
+                "model": "Bitaxe Max",
+                "firmware": "AxeOS",
+                "ip": "192.168.1.102",
+                "hostname": "bitaxe-lab",
+                "status": "WARNING",
+                "hashrate": 3800000000000,
+                "temp": 82,
+            },
+            {
+                "name": "Basement S19",
+                "model": "Antminer S19 Pro",
+                "firmware": "Braiins OS+",
+                "ip": "192.168.1.200",
+                "hostname": "s19-basement",
+                "status": "OFFLINE",
+                "hashrate": 0,
+                "temp": None,
+            },
         ]
 
         for m in mock:
@@ -1483,7 +1748,9 @@ def _auto_seed_core_devices(registry):
                 ip=m["ip"],
                 hostname=m["hostname"],
                 status=status,
-                last_seen=datetime.now(timezone.utc) if m["status"] != "OFFLINE" else None,
+                last_seen=(
+                    datetime.now(timezone.utc) if m["status"] != "OFFLINE" else None
+                ),
                 current_telemetry={
                     "temperature": m["temp"],
                     "hashrate_hs": m["hashrate"],
@@ -1493,7 +1760,14 @@ def _auto_seed_core_devices(registry):
                     "pool_online": 1 if m["hashrate"] > 0 else 0,
                 },
                 capabilities=[],
-                metadata={"seed_marker": "auto-seed", "health_score": 100.0 if m["temp"] and m["temp"] < 65 else (50.0 if m["status"] == "WARNING" else 0.0)},
+                metadata={
+                    "seed_marker": "auto-seed",
+                    "health_score": (
+                        100.0
+                        if m["temp"] and m["temp"] < 65
+                        else (50.0 if m["status"] == "WARNING" else 0.0)
+                    ),
+                },
             )
             registry.add_device(device)
         log.info("[core] auto-seeded %d core devices", len(mock))
@@ -1502,6 +1776,7 @@ def _auto_seed_core_devices(registry):
         log = logging.getLogger("cypher65.app")
         log.warning("[core] auto-seed failed: %s", e)
         import traceback
+
         log.warning("[core] auto-seed traceback: %s", traceback.format_exc())
         return 0
 
@@ -1519,21 +1794,28 @@ _SUPPORT_CONFIG = {
             "label": "Bitcoin",
             "icon": "₿",
             "color": "#f7931a",
-            "address": os.environ.get("SUPPORT_BTC", "35gjAoadgQxrNc1Kx6QiSLx7wCCXRnRFkM"),
+            "address": os.environ.get(
+                "SUPPORT_BTC", "35gjAoadgQxrNc1Kx6QiSLx7wCCXRnRFkM"
+            ),
         },
         {
             "id": "lightning",
             "label": "Lightning",
             "icon": "⚡",
             "color": "#f5b942",
-            "address": os.environ.get("SUPPORT_LN", "spark1pgss98nvpcsssdfekenznqqmmaea6nxltz65e0srj7nh7hfkaufpu53nslvtpc"),
+            "address": os.environ.get(
+                "SUPPORT_LN",
+                "spark1pgss98nvpcsssdfekenznqqmmaea6nxltz65e0srj7nh7hfkaufpu53nslvtpc",
+            ),
         },
         {
             "id": "hashpower",
             "label": "Hashpower",
             "icon": "⛏",
             "color": "#06d6f0",
-            "address": os.environ.get("SUPPORT_HASHPOWER", "bc1qvfct7p8ggsxlfy3257pytcqnsvjv77qzpy9pnv"),
+            "address": os.environ.get(
+                "SUPPORT_HASHPOWER", "bc1qvfct7p8ggsxlfy3257pytcqnsvjv77qzpy9pnv"
+            ),
             "note": "Braiins / any pool",
         },
     ],
@@ -1561,15 +1843,18 @@ def api_tenant_status(tenant_id: str = ""):
     the FREE-plan defaults (max 5 workers) are reported — never fabricated.
     """
     from services.tenant import get_tenant_plan, count_tenant_workers
+
     plan = get_tenant_plan(tenant_id)
     used = count_tenant_workers(tenant_id)
-    return jsonify({
-        "tenant_id": tenant_id or "default",
-        "plan": plan["plan"],
-        "max_workers": plan["max_workers"],
-        "used_workers": used,
-        "remaining_workers": max(0, plan["max_workers"] - used),
-    })
+    return jsonify(
+        {
+            "tenant_id": tenant_id or "default",
+            "plan": plan["plan"],
+            "max_workers": plan["max_workers"],
+            "used_workers": used,
+            "remaining_workers": max(0, plan["max_workers"] - used),
+        }
+    )
 
 
 # ── Donation tracking ──────────────────────────────────────────────────────
@@ -1578,7 +1863,9 @@ def api_tenant_status(tenant_id: str = ""):
 _donation_watch_lock = threading.Lock()
 
 
-def _record_donation(method="lightning", amount_sat=None, txid="", preimage="", note="", source="webln"):
+def _record_donation(
+    method="lightning", amount_sat=None, txid="", preimage="", note="", source="webln"
+):
     """Persist a confirmed donation and raise a GOLD alert + push notification.
 
     Dedupes by txid/preimage so a re-poll or double-submit never double-counts.
@@ -1608,7 +1895,15 @@ def _record_donation(method="lightning", amount_sat=None, txid="", preimage="", 
             ts = int(time.time())
             c.execute(
                 "INSERT INTO donations (ts, method, amount_sat, txid, preimage, note, source) VALUES (?,?,?,?,?,?,?)",
-                (ts, method, amount_sat, txid or "", preimage or "", note or "", source or "webln"),
+                (
+                    ts,
+                    method,
+                    amount_sat,
+                    txid or "",
+                    preimage or "",
+                    note or "",
+                    source or "webln",
+                ),
             )
             row_id = c.lastrowid
             conn.commit()
@@ -1617,16 +1912,32 @@ def _record_donation(method="lightning", amount_sat=None, txid="", preimage="", 
             log.warning("[donation] persist failed: %s", e)
             return None
     # In-memory GOLD alert so the Alerts panel lights up immediately
-    label = {"lightning": "⚡ Lightning", "btc": "₿ Bitcoin", "hashpower": "⛏ Hashpower"}.get(method, method)
+    label = {
+        "lightning": "⚡ Lightning",
+        "btc": "₿ Bitcoin",
+        "hashpower": "⛏ Hashpower",
+    }.get(method, method)
     amt = f" · {amount_sat:,} sats" if amount_sat else ""
-    memory_critical_alerts.append(_make_memory_alert(ts, "GOLD", "donation", f"♥ Donation received via {label}{amt}"))
+    memory_critical_alerts.append(
+        _make_memory_alert(
+            ts, "GOLD", "donation", f"♥ Donation received via {label}{amt}"
+        )
+    )
     try:
         notify_alert("GOLD", "donation", f"Donation received via {label}{amt}")
     except Exception as e:
         log.warning("[donation] push failed: %s", e)
     log.info("[donation] recorded %s (%s) amount=%s", method, source, amount_sat)
-    return {"id": row_id, "ts": ts, "method": method, "amount_sat": amount_sat,
-            "txid": txid, "preimage": preimage, "note": note, "source": source}
+    return {
+        "id": row_id,
+        "ts": ts,
+        "method": method,
+        "amount_sat": amount_sat,
+        "txid": txid,
+        "preimage": preimage,
+        "note": note,
+        "source": source,
+    }
 
 
 @app.route("/api/donations", methods=["POST"])
@@ -1665,7 +1976,15 @@ def api_donations_record(tenant_id: str = ""):
         source=(data.get("source") or "webln").strip()[:16],
     )
     if not row:
-        return jsonify({"success": False, "error": "duplicate or missing proof (txid/preimage required)"}), 409
+        return (
+            jsonify(
+                {
+                    "success": False,
+                    "error": "duplicate or missing proof (txid/preimage required)",
+                }
+            ),
+            409,
+        )
     return jsonify({"success": True, "donation": row}), 201
 
 
@@ -1686,10 +2005,14 @@ def api_donations_list(tenant_id: str = ""):
         c = conn.cursor()
         c.execute("SELECT * FROM donations ORDER BY ts DESC LIMIT ?", (limit,))
         rows = [dict(r) for r in c.fetchall()]
-        c.execute("SELECT COUNT(*) AS total, COALESCE(SUM(amount_sat),0) AS total_sat FROM donations")
+        c.execute(
+            "SELECT COUNT(*) AS total, COALESCE(SUM(amount_sat),0) AS total_sat FROM donations"
+        )
         agg = c.fetchone()
         conn.close()
-        return jsonify({"donations": rows, "total": agg["total"], "total_sat": agg["total_sat"]})
+        return jsonify(
+            {"donations": rows, "total": agg["total"], "total_sat": agg["total_sat"]}
+        )
     except Exception as e:
         log.warning("[donation] list failed: %s", e)
         return jsonify({"donations": [], "total": 0, "total_sat": 0})
@@ -1699,7 +2022,9 @@ def api_donations_list(tenant_id: str = ""):
 # Polls mempool.space for incoming txs to the configured BTC donation
 # addresses (SUPPORT_BTC + SUPPORT_HASHPOWER) and auto-records them, so the
 # operator is alerted in real time instead of only seeing the list manually.
-_DONATION_WATCH_INTERVAL = int(os.environ.get("DONATION_WATCH_INTERVAL", 120))  # seconds
+_DONATION_WATCH_INTERVAL = int(
+    os.environ.get("DONATION_WATCH_INTERVAL", 120)
+)  # seconds
 # Ignore dust-spam (a known attack on public donation addresses). Any incoming
 # tx below this threshold is NOT recorded as a donation — prevents an attacker
 # from flooding the Alerts panel + push with hundreds of fake 'donations'.
@@ -1747,7 +2072,12 @@ def _donation_watcher_loop():
                         continue
                     # Dust-spam guard: tiny spam txs never become 'donations'
                     if got < _DONATION_MIN_SATS:
-                        log.info("[donation watch] skipped dust tx %s (%.0f sats < %d)", txid[:12], got, _DONATION_MIN_SATS)
+                        log.info(
+                            "[donation watch] skipped dust tx %s (%.0f sats < %d)",
+                            txid[:12],
+                            got,
+                            _DONATION_MIN_SATS,
+                        )
                         continue
                     # method: 'btc' for the SUPPORT_BTC address, else 'hashpower'
                     method = "btc"
@@ -1755,8 +2085,13 @@ def _donation_watcher_loop():
                         if m.get("address") == addr and m.get("id") == "hashpower":
                             method = "hashpower"
                             break
-                    _record_donation(method=method, amount_sat=got, txid=txid,
-                                     note=f"on-chain to {addr[:10]}…", source="onchain")
+                    _record_donation(
+                        method=method,
+                        amount_sat=got,
+                        txid=txid,
+                        note=f"on-chain to {addr[:10]}…",
+                        source="onchain",
+                    )
             except Exception as e:
                 log.warning("[donation watch] %s: %s", addr[:10], e)
         time.sleep(_DONATION_WATCH_INTERVAL)
@@ -1779,6 +2114,7 @@ _init_axe_routes(_axe_registry)
 # single choke point: save_telemetry() is the ONLY writer of axe_telemetry,
 # so wrapping it here makes EVERY push (agent, server poll, manual) feed the
 # cache — it can no longer diverge from the database.
+
 
 def _cache_axe_telemetry(device_id: str, telemetry, status: str = "") -> None:
     """Write a normalized entry into the snapshot cache. Carries exactly
@@ -1832,8 +2168,7 @@ def _seed_axe_telemetry_cache(registry) -> None:
         latest = registry._latest_telemetry_by_device()
         for dev in registry.list_devices():
             tel = latest.get(dev["id"]) or {}
-            _cache_axe_telemetry(dev["id"], tel,
-                                 status=dev.get("status") or "")
+            _cache_axe_telemetry(dev["id"], tel, status=dev.get("status") or "")
     except Exception as e:
         log.warning("[axe] telemetry cache seed failed: %s", e)
 
@@ -1912,12 +2247,14 @@ def _webhook_dispatch(alert):
     settings — the legacy behavior.
     """
     from services.settings import load_settings
+
     try:
         tid = getattr(alert, "tenant_id", "") or ""
         s = load_settings(tid)
         # Retry-queue fallback: on transient provider failure the alert is
         # persisted to the webhook queue (never lost) instead of dropped.
         from services.webhook_queue import dispatch_webhook_or_queue
+
         return dispatch_webhook_or_queue(
             url=(s.get("webhook_url") or "").strip(),
             severity=alert.severity,
@@ -1938,17 +2275,32 @@ def _init_alert_engines():
     """Initialize alert/automation engines after all helper functions are defined."""
     global _alert_engine, _automation_engine
     if _alert_engine is None:
-        _alert_engine = AlertEngine(DB_PATH, push_callback=notify_alert,
-                                     webhook_callback=_webhook_dispatch)
+        _alert_engine = AlertEngine(
+            DB_PATH, push_callback=notify_alert, webhook_callback=_webhook_dispatch
+        )
     if _automation_engine is None:
         _automation_engine = AutomationEngine(
-            DB_PATH, _safety_engine,
+            DB_PATH,
+            _safety_engine,
             execute_command_callback=_execute_command_for_automation,
             audit_callback=_audit_automation_result,
         )
 
 
-def _audit_automation_result(*, ts=None, alert_type="automation", device_id="", severity="INFO", action_taken="", rule_id=None, rule_name="", action_command="", status="", reason="", result=""):
+def _audit_automation_result(
+    *,
+    ts=None,
+    alert_type="automation",
+    device_id="",
+    severity="INFO",
+    action_taken="",
+    rule_id=None,
+    rule_name="",
+    action_command="",
+    status="",
+    reason="",
+    result="",
+):
     """Persist automation rule execution outcome to the dedicated execution log.
 
     Accepts keyword arguments so it can be used as AutomationEngine.audit_callback.
@@ -1988,7 +2340,9 @@ def _audit_automation_result(*, ts=None, alert_type="automation", device_id="", 
         log.warning("[automation audit] error: %s", e)
 
 
-def _execute_command_for_automation(device_id: str, command: str, parameters: Dict[str, Any]) -> Dict[str, Any]:
+def _execute_command_for_automation(
+    device_id: str, command: str, parameters: Dict[str, Any]
+) -> Dict[str, Any]:
     """Adapter used by AutomationEngine to run a device command through the
     same path as the REST endpoint (lookup, supports, safety, execute)."""
     device = _core_registry.get_device(device_id)
@@ -2010,6 +2364,7 @@ def _execute_command_for_automation(device_id: str, command: str, parameters: Di
         _core_registry.update_device(device.id, status="OFFLINE")
     return result
 
+
 # ── Command history lock ─────────────────────────────────────────────────────
 # Guard the in-memory command history against concurrent request mutation.
 _command_history_lock = threading.Lock()
@@ -2017,8 +2372,8 @@ _command_history_lock = threading.Lock()
 # ── Hashrate market in-memory cache (Milestone 7) ─────────────────────────────
 # Avoids hitting live provider APIs on every request. TTL in seconds.
 _HASHRATE_MARKET_CACHE = {"ts": 0, "offers": None}
-_HASHRATE_MARKET_CACHE_TTL = 60          # successful fetches
-_HASHRATE_MARKET_EMPTY_CACHE_TTL = 15      # empty fetches (avoid hammering APIs)
+_HASHRATE_MARKET_CACHE_TTL = 60  # successful fetches
+_HASHRATE_MARKET_EMPTY_CACHE_TTL = 15  # empty fetches (avoid hammering APIs)
 # Serializes the TTL-check-then-fetch so the 5-min warmup thread and a
 # concurrent /api/hashrate-market request can't both pass the TTL check and
 # double-fetch (duplicate provider load + duplicate history rows).
@@ -2026,10 +2381,17 @@ _HASHRATE_MARKET_FETCH_LOCK = threading.Lock()
 # Background warm-up: refresh the cache every 5 min so the LEASE (lender)
 # profitability block always has a real market rate, even when no client
 # ever opens the Hash Market panel (see _hashrate_market_warmup_loop).
-_HASHRATE_MARKET_WARMUP_INTERVAL_S = int(os.environ.get("HASHRATE_MARKET_WARMUP_INTERVAL", 300))
+_HASHRATE_MARKET_WARMUP_INTERVAL_S = int(
+    os.environ.get("HASHRATE_MARKET_WARMUP_INTERVAL", 300)
+)
 
 
-def _record_command(device_id: str, command: str, parameters: Optional[Dict[str, Any]], result: Dict[str, Any]):
+def _record_command(
+    device_id: str,
+    command: str,
+    parameters: Optional[Dict[str, Any]],
+    result: Dict[str, Any],
+):
     """Append a command execution record to the in-memory history.
 
     Each entry exposes a top-level "success" boolean plus the original
@@ -2053,6 +2415,7 @@ def _record_command(device_id: str, command: str, parameters: Optional[Dict[str,
     #    which command on which device. Best-effort: never raises.
     try:
         from services.tenant import log_audit, get_tenant_id
+
         log_audit(
             get_tenant_id(),
             "device.command",
@@ -2088,6 +2451,7 @@ except Exception as e:
 # pattern as routes/alerts_routes._set_get_db.
 try:
     from services.snapshot_enrichment import set_auto_pilot_deps as _set_ap_deps
+
     _set_ap_deps(_automation_engine, _core_registry)
 except Exception as e:
     log.warning("[auto-pilot] dep injection failed: %s", e)
@@ -2115,8 +2479,16 @@ latest_snapshot = {
         "hashrate": None,
         "stale": False,
     },
-    "btc_price": {"usd": None, "brl": None, "eur": None, "gbp": None,
-                  "jpy": None, "krw": None, "cny": None, "stale": False},
+    "btc_price": {
+        "usd": None,
+        "brl": None,
+        "eur": None,
+        "gbp": None,
+        "jpy": None,
+        "krw": None,
+        "cny": None,
+        "stale": False,
+    },
     "luck_estimate": {},
     "alerts_recent": [],
     "timeline_recent": [],
@@ -2147,7 +2519,7 @@ _next_memory_alert_id = 0  # monotonic counter so JS renderAlerts sees stable id
 BTC_PRICE_CACHE_TTL = 600  # 10 minutos (CoinGecko free tier: 10-50 req/min)
 btc_price_cache = {"ts": 0, "data": None}  # último timestamp e dados cacheados
 _btc_consec_failures = 0  # contagem de falhas consecutivas para fallback
-_btc_last_fetch_ts = 0     # throttle: último instante em que tentamos fetch
+_btc_last_fetch_ts = 0  # throttle: último instante em que tentamos fetch
 # ── Stale-while-revalidate (Honest Telemetry) ───────────────────────────────
 # Últimos valores REAIS conhecidos — nunca inventados. Quando uma fonte externa
 # falha, o snapshot serve estes valores marcados como stale (selo "dados em
@@ -2160,39 +2532,34 @@ _last_valid_network = {"difficulty": None, "hashrate": None}
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 DEFAULT_SETTINGS = {
     # cost model — choose rental OR power (kWh) OR none
-    "cost_mode": "none",          # 'none' | 'rental' | 'power'
+    "cost_mode": "none",  # 'none' | 'rental' | 'power'
     "rental_usd_per_th_day": "0.00",  # cost per TH/s per day (USD)
-    "power_watts": "3000",         # estimated rig power when cost_mode='power'
-    "power_kwh_usd": "0.10",       # electricity rate (USD per kWh)
-
+    "power_watts": "3000",  # estimated rig power when cost_mode='power'
+    "power_kwh_usd": "0.10",  # electricity rate (USD per kWh)
     # profitability assumptions
-    "btc_block_reward": "3.125",   # current post-halving reward (BTC, tx fees excluded as conservative)
-    "btc_avg_tx_fee": "0.05",      # conservative avg fee per block (BTC)
-    "pool_fee_pct": "1.5",         # pool fee in % (parasite defaults ~1%)
-    "orphan_rate_pct": "0.5",      # rejected/orphan rate assumption
-
+    "btc_block_reward": "3.125",  # current post-halving reward (BTC, tx fees excluded as conservative)
+    "btc_avg_tx_fee": "0.05",  # conservative avg fee per block (BTC)
+    "pool_fee_pct": "1.5",  # pool fee in % (parasite defaults ~1%)
+    "orphan_rate_pct": "0.5",  # rejected/orphan rate assumption
     # selection
-    "active_currency": "USD",      # USD | BRL | EUR | GBP
-    "active_fiat": "USD",          # alias kept for backwards-compat
-
+    "active_currency": "USD",  # USD | BRL | EUR | GBP
+    "active_fiat": "USD",  # alias kept for backwards-compat
     # alert thresholds
-    "stale_share_minutes": "5",    # older than this → CRIT stale_share alert
-    "hashrate_drop_pct": "50",     # hashrate drop vs prev poll triggers WARN
-
+    "stale_share_minutes": "5",  # older than this → CRIT stale_share alert
+    "hashrate_drop_pct": "50",  # hashrate drop vs prev poll triggers WARN
     # webhooks (Power-User)
-    "webhook_url": "",             # POST JSON payload on CRIT/GOLD/NEW_BLOCK
-    "webhook_min_severity": "WARN",# INFO|WARN|CRIT|GOLD|SUCCESS
-
+    "webhook_url": "",  # POST JSON payload on CRIT/GOLD/NEW_BLOCK
+    "webhook_min_severity": "WARN",  # INFO|WARN|CRIT|GOLD|SUCCESS
     # display
-    "show_test_alerts": "0",       # 1 → allow injection of synthetic demo alerts
-
+    "show_test_alerts": "0",  # 1 → allow injection of synthetic demo alerts
     # exchange credentials (kept in sync with services/settings.py)
-    "mrr_api_key": "",             # MiningRigRentals API key (Settings → MRR)
-    "mrr_api_secret": "",          # MiningRigRentals API secret (Settings → MRR)
-    "braiins_api_key": "",         # Braiins Hashpower owner token (Settings → Braiins)
+    "mrr_api_key": "",  # MiningRigRentals API key (Settings → MRR)
+    "mrr_api_secret": "",  # MiningRigRentals API secret (Settings → MRR)
+    "braiins_api_key": "",  # Braiins Hashpower owner token (Settings → Braiins)
 }
 
 _settings_cache = None
+
 
 # ── Persisted wallet address ──
 # When user changes address via /api/set-address, we save it here and
@@ -2225,6 +2592,7 @@ def _load_persisted_address() -> bool:
             except Exception:
                 pass
     return restored
+
 
 _load_persisted_address()
 
@@ -2302,6 +2670,7 @@ def save_setting(key, value):
 FETCH_MAX_RETRIES = 2
 FETCH_BACKOFF_BASE = 1.5  # seconds: 0, 1.5, 3.0
 
+
 def fetch_json(url, timeout=10):
     last_err = None
     for attempt in range(FETCH_MAX_RETRIES + 1):
@@ -2343,7 +2712,9 @@ def fetch_text(url, timeout=8):
                 delay = FETCH_BACKOFF_BASE * attempt
                 if delay > 0:
                     time.sleep(delay)
-    log.warning(f"[fetch_text] error %s (retries={FETCH_MAX_RETRIES}): %s", url, last_err)
+    log.warning(
+        f"[fetch_text] error %s (retries={FETCH_MAX_RETRIES}): %s", url, last_err
+    )
     return None
 
 
@@ -2354,8 +2725,8 @@ _make_memory_alert = make_memory_alert
 # bestDifficulty vs network difficulty, probability math, trend, hot-streak.
 PROXIMITY_MILESTONES_PCT = [0.01, 0.1, 1.0, 5.0, 10.0, 25.0, 50.0, 100.0]
 PROXIMITY_HOT_STREAK_THRESHOLD_PCT = 10.0  # >10% growth in 1h → hot streak
-PROXIMITY_SAMPLE_THROTTLE_S = 60            # 1 sample/min → manageable DB size
-_last_proximity_sample_ts = 0               # python int (seconds), module-level
+PROXIMITY_SAMPLE_THROTTLE_S = 60  # 1 sample/min → manageable DB size
+_last_proximity_sample_ts = 0  # python int (seconds), module-level
 
 
 def _restore_all_time_best_diff():
@@ -2395,7 +2766,13 @@ def _persist_all_time_best_diff(value):
         log.warning("[persist_all_time_best_diff] error: %s", e)
 
 
-def _persist_best_diff_history(ts: int, best_diff_raw: float, best_diff_str: str, device_id: str = "", pool: str = ""):
+def _persist_best_diff_history(
+    ts: int,
+    best_diff_raw: float,
+    best_diff_str: str,
+    device_id: str = "",
+    pool: str = "",
+):
     """Persist a new best-difficulty record to the SQLite history table."""
     try:
         conn = get_db()
@@ -2443,7 +2820,9 @@ def _nearest_history_before(ts_target):
     return None
 
 
-def _sample_proximity(ts, best_diff_raw, current_difficulty, worker_hashrate, hot_streak):
+def _sample_proximity(
+    ts, best_diff_raw, current_difficulty, worker_hashrate, hot_streak
+):
     """Insert a proximity_history row, throttled to once per
     PROXIMITY_SAMPLE_THROTTLE_S seconds."""
     global _last_proximity_sample_ts
@@ -2484,7 +2863,9 @@ def _compute_proximity(worker, current_difficulty, net_hashrate, ts):
     Pure compute: never raises (returns {} on insufficient data)."""
     out = {"ts": ts}
     try:
-        best_diff_raw = parse_diff_to_float(worker.get("bestDifficulty")) if worker else 0.0
+        best_diff_raw = (
+            parse_diff_to_float(worker.get("bestDifficulty")) if worker else 0.0
+        )
         if not best_diff_raw:
             return {**out, "insufficient_data": True}
         net_diff = float(current_difficulty) if current_difficulty else 0.0
@@ -2502,7 +2883,7 @@ def _compute_proximity(worker, current_difficulty, net_hashrate, ts):
         expected_secs = None
         blocks_per_year = None
         if worker_hps > 0:
-            hashes_per_block = net_diff * (2 ** 32)
+            hashes_per_block = net_diff * (2**32)
             expected_secs = hashes_per_block / worker_hps
             seconds_per_year = 365.25 * 86400
             blocks_per_year = seconds_per_year / expected_secs
@@ -2513,15 +2894,18 @@ def _compute_proximity(worker, current_difficulty, net_hashrate, ts):
         nearest_24h = _nearest_history_before(ts - 86400)
         trend_1h_pct = (
             (best_diff_raw - nearest_1h[0]) / nearest_1h[0] * 100.0
-            if nearest_1h and nearest_1h[0] else 0.0
+            if nearest_1h and nearest_1h[0]
+            else 0.0
         )
         trend_6h_pct = (
             (best_diff_raw - nearest_6h[0]) / nearest_6h[0] * 100.0
-            if nearest_6h and nearest_6h[0] else 0.0
+            if nearest_6h and nearest_6h[0]
+            else 0.0
         )
         trend_24h_pct = (
             (best_diff_raw - nearest_24h[0]) / nearest_24h[0] * 100.0
-            if nearest_24h and nearest_24h[0] else 0.0
+            if nearest_24h and nearest_24h[0]
+            else 0.0
         )
         if trend_1h_pct >= PROXIMITY_HOT_STREAK_THRESHOLD_PCT:
             trend_label = "rising"
@@ -2539,43 +2923,50 @@ def _compute_proximity(worker, current_difficulty, net_hashrate, ts):
         if next_ms is None:
             next_ms = PROXIMITY_MILESTONES_PCT[-1]  # 100% (i.e. block found!)
 
-        out.update({
-            "best_diff_str": fmt_diff(best_diff_raw),
-            "best_diff_raw": best_diff_raw,
-            "all_time_best_diff_str": fmt_diff(all_time_raw),
-            "all_time_best_diff_raw": all_time_raw,
-            "network_difficulty_str": fmt_diff(net_diff),
-            "network_difficulty_raw": net_diff,
-            "worker_hashrate_ths": worker_hps / 1e12 if worker_hps else 0.0,
-            "pct_of_network_cur": pct_cur,
-            "pct_of_network_all_time": pct_all,
-            "distance_factor": distance,
-            "distance_label": (
-                "~" + _human_int(distance) + "× smaller than a block"
-                if distance >= 1000
-                else f"{distance:.2f}× smaller than a block"
-            ),
-            "expected_time_secs": expected_secs,
-            "expected_time_seconds": expected_secs,  # alias for frontend consistency
-            "expected_time_human": _human_secs_long(expected_secs) if expected_secs else "—",
-            "blocks_per_year": blocks_per_year,
-            "chance_per_share_label": (
-                f"1 in {int(round(net_diff / best_diff_raw)):,}"
-                if best_diff_raw else "—"
-            ),
-            "chance_per_share_pct": (best_diff_raw / net_diff) if best_diff_raw and net_diff else 0.0,  # decimal for frontend
-            "trend_1h_pct": trend_1h_pct,
-            "trend_6h_pct": trend_6h_pct,
-            "trend_24h_pct": trend_24h_pct,
-            "trend_label": trend_label,
-            "hot_streak": bool(trend_1h_pct >= PROXIMITY_HOT_STREAK_THRESHOLD_PCT),
-            "milestone_cur_pct": pct_cur,
-            "next_milestone_pct": next_ms,
-            "next_milestone_label": f"{next_ms:g}% of network difficulty",
-            "milestones_achieved": [
-                m for m in PROXIMITY_MILESTONES_PCT if m <= pct_all
-            ],
-        })
+        out.update(
+            {
+                "best_diff_str": fmt_diff(best_diff_raw),
+                "best_diff_raw": best_diff_raw,
+                "all_time_best_diff_str": fmt_diff(all_time_raw),
+                "all_time_best_diff_raw": all_time_raw,
+                "network_difficulty_str": fmt_diff(net_diff),
+                "network_difficulty_raw": net_diff,
+                "worker_hashrate_ths": worker_hps / 1e12 if worker_hps else 0.0,
+                "pct_of_network_cur": pct_cur,
+                "pct_of_network_all_time": pct_all,
+                "distance_factor": distance,
+                "distance_label": (
+                    "~" + _human_int(distance) + "× smaller than a block"
+                    if distance >= 1000
+                    else f"{distance:.2f}× smaller than a block"
+                ),
+                "expected_time_secs": expected_secs,
+                "expected_time_seconds": expected_secs,  # alias for frontend consistency
+                "expected_time_human": (
+                    _human_secs_long(expected_secs) if expected_secs else "—"
+                ),
+                "blocks_per_year": blocks_per_year,
+                "chance_per_share_label": (
+                    f"1 in {int(round(net_diff / best_diff_raw)):,}"
+                    if best_diff_raw
+                    else "—"
+                ),
+                "chance_per_share_pct": (
+                    (best_diff_raw / net_diff) if best_diff_raw and net_diff else 0.0
+                ),  # decimal for frontend
+                "trend_1h_pct": trend_1h_pct,
+                "trend_6h_pct": trend_6h_pct,
+                "trend_24h_pct": trend_24h_pct,
+                "trend_label": trend_label,
+                "hot_streak": bool(trend_1h_pct >= PROXIMITY_HOT_STREAK_THRESHOLD_PCT),
+                "milestone_cur_pct": pct_cur,
+                "next_milestone_pct": next_ms,
+                "next_milestone_label": f"{next_ms:g}% of network difficulty",
+                "milestones_achieved": [
+                    m for m in PROXIMITY_MILESTONES_PCT if m <= pct_all
+                ],
+            }
+        )
 
         # LIVE HASH CALCULATOR payload: latest per-share calc + cumulative
         # stats derived from share_calc_history. The full per-share math runs
@@ -2588,12 +2979,16 @@ def _compute_proximity(worker, current_difficulty, net_hashrate, ts):
             session_shares = timeline_state.get("session_share_count", 0) or 0
             share_diff_avg = 0.0
             if sch:
-                share_diff_avg = sum((e.get("share_diff_raw") or 0) for e in sch) / len(sch)
+                share_diff_avg = sum((e.get("share_diff_raw") or 0) for e in sch) / len(
+                    sch
+                )
             totals = {
                 "shares_so_far": session_shares,
                 "shares_in_ticker": len(sch),
                 "avg_share_diff_raw": share_diff_avg,
-                "avg_share_diff_str": fmt_diff(share_diff_avg) if share_diff_avg else "—",
+                "avg_share_diff_str": (
+                    fmt_diff(share_diff_avg) if share_diff_avg else "—"
+                ),
             }
             if share_diff_avg and net_diff:
                 p_per_share = share_diff_avg / net_diff
@@ -2610,18 +3005,18 @@ def _compute_proximity(worker, current_difficulty, net_hashrate, ts):
                     cum_p = 1 - (1 - p_per_share) ** session_shares
                     totals["cum_p_block"] = cum_p
                     totals["cum_p_block_pct_str"] = (
-                        f"{cum_p * 100:.4e}%"
-                        if cum_p < 0.01
-                        else f"{cum_p * 100:.4f}%"
+                        f"{cum_p * 100:.4e}%" if cum_p < 0.01 else f"{cum_p * 100:.4f}%"
                     )
                     expected_blocks = session_shares * p_per_share
                     totals["expected_blocks"] = expected_blocks
                     totals["expected_blocks_str"] = f"{expected_blocks:.4e}"
                 # Expected time per share at this avg diff / hashrate
                 if worker_hps > 0:
-                    expected_time_per_share = (share_diff_avg * (2 ** 32)) / worker_hps
+                    expected_time_per_share = (share_diff_avg * (2**32)) / worker_hps
                     totals["expected_time_per_share_s"] = expected_time_per_share
-                    totals["expected_time_per_share_str"] = _human_secs_long(expected_time_per_share)
+                    totals["expected_time_per_share_str"] = _human_secs_long(
+                        expected_time_per_share
+                    )
             out["live_calc"] = {
                 "latest": latest,
                 "ticker": ticker,
@@ -2638,8 +3033,13 @@ def _compute_proximity(worker, current_difficulty, net_hashrate, ts):
             _sch = list(timeline_state.get("share_calc_history") or [])
             _session_shares = timeline_state.get("session_share_count", 0) or 0
             out["quantum_lock"] = _compute_quantum_lock(
-                pct_cur, best_diff_raw, net_diff,
-                _sch, _session_shares, trend_1h_pct, worker_hps,
+                pct_cur,
+                best_diff_raw,
+                net_diff,
+                _sch,
+                _session_shares,
+                trend_1h_pct,
+                worker_hps,
             )
         except Exception as e:
             log.warning("[compute_proximity quantum_lock] error: %s", e)
@@ -2649,8 +3049,14 @@ def _compute_proximity(worker, current_difficulty, net_hashrate, ts):
         # rate badge. Mirrors the E1 derive approach (never raises).
         try:
             _cutoff_ts = int(time.time()) - 600
-            _recent = [e for e in (timeline_state.get("share_calc_history") or []) if (e.get("ts") or 0) >= _cutoff_ts]
-            out["share_rate_hourly"] = round(len(_recent) * 6.0, 2)  # 600s window x6 = per-hour
+            _recent = [
+                e
+                for e in (timeline_state.get("share_calc_history") or [])
+                if (e.get("ts") or 0) >= _cutoff_ts
+            ]
+            out["share_rate_hourly"] = round(
+                len(_recent) * 6.0, 2
+            )  # 600s window x6 = per-hour
         except Exception:
             out["share_rate_hourly"] = 0.0
 
@@ -2707,26 +3113,35 @@ def _reset_session_state():
 
     # Reset latest_snapshot to defaults (in-place, preserves alias to _shared_state)
     latest_snapshot.clear()
-    latest_snapshot.update({
-        "ts": 0,
-        "btc_address": BTC_ADDRESS,
-        "worker": None,
-        "user_aggregate": None,
-        "pool": None,
-        "account": None,
-        "lightning": None,
-        "leaderboard_entry": None,
-        "leaderboard_total": 0,
-        "highest_diffs": [],
-        "network": {"height": None, "difficulty": None, "hashrate": None},
-        "btc_price": {"usd": None, "brl": None, "eur": None, "gbp": None,
-                      "jpy": None, "krw": None, "cny": None},
-        "luck_estimate": {},
-        "alerts_recent": [],
-        "timeline_recent": [],
-        "event_stats": {},
-        "leaderboard_table_top_30": [],
-    })
+    latest_snapshot.update(
+        {
+            "ts": 0,
+            "btc_address": BTC_ADDRESS,
+            "worker": None,
+            "user_aggregate": None,
+            "pool": None,
+            "account": None,
+            "lightning": None,
+            "leaderboard_entry": None,
+            "leaderboard_total": 0,
+            "highest_diffs": [],
+            "network": {"height": None, "difficulty": None, "hashrate": None},
+            "btc_price": {
+                "usd": None,
+                "brl": None,
+                "eur": None,
+                "gbp": None,
+                "jpy": None,
+                "krw": None,
+                "cny": None,
+            },
+            "luck_estimate": {},
+            "alerts_recent": [],
+            "timeline_recent": [],
+            "event_stats": {},
+            "leaderboard_table_top_30": [],
+        }
+    )
 
     # Clear critical alerts
     memory_critical_alerts.clear()
@@ -2743,9 +3158,9 @@ def _reset_session_state():
     timeline_state["session_best_diff_bumps"] = 0
 
     # Clear alert dedup cache
-    if hasattr(_do_poll, '_alert_seen'):
+    if hasattr(_do_poll, "_alert_seen"):
         _do_poll._alert_seen.clear()
-    if hasattr(_do_poll, '_worker_was_present'):
+    if hasattr(_do_poll, "_worker_was_present"):
         _do_poll._worker_was_present = False
 
     # Reset proximity sample throttle
@@ -2778,6 +3193,7 @@ def _reset_session_state():
 # ═══════════════════════════════════════════════════════════════════════════
 #  MULTI-USER SESSION ROUTES
 # ═══════════════════════════════════════════════════════════════════════════
+
 
 @app.route("/api/connect-wallet", methods=["POST"])
 @require_tenant
@@ -2812,8 +3228,9 @@ def api_connect_wallet(tenant_id: str = ""):
 
     # Start polling worker for this session — tenant-scoped, so alerts and
     # webhooks generated by this worker use the USER'S own settings/keys.
-    worker = UserPollingWorker(sid, _session_manager, address, worker_name,
-                               tenant_id=tenant_id)
+    worker = UserPollingWorker(
+        sid, _session_manager, address, worker_name, tenant_id=tenant_id
+    )
     _session_workers[sid] = worker
     worker.start()
 
@@ -2822,12 +3239,14 @@ def api_connect_wallet(tenant_id: str = ""):
 
     log.info("[connect] session %s wallet=%s", sid[:8], address[:10])
 
-    return jsonify({
-        "success": True,
-        "session_id": sid,
-        "snapshot": snapshot,
-        "has_wallet": True,
-    })
+    return jsonify(
+        {
+            "success": True,
+            "session_id": sid,
+            "snapshot": snapshot,
+            "has_wallet": True,
+        }
+    )
 
 
 @app.route("/api/session-snapshot", methods=["GET"])
@@ -2837,16 +3256,17 @@ def api_session_snapshot():
     """
     global _session_manager
 
-    sid = request.args.get("session_id") or \
-          request.headers.get("X-Session-Id") or ""
+    sid = request.args.get("session_id") or request.headers.get("X-Session-Id") or ""
 
     if not sid:
         return jsonify({"error": "session_id required", "has_wallet": False}), 400
 
     session = _session_manager.get_session(sid)
     if not session:
-        return jsonify({"error": "session not found or expired",
-                        "has_wallet": False}), 404
+        return (
+            jsonify({"error": "session not found or expired", "has_wallet": False}),
+            404,
+        )
 
     # If session has no wallet yet, return empty state
     if not session.has_wallet:
@@ -2854,12 +3274,14 @@ def api_session_snapshot():
 
     snapshot = _session_manager.get_snapshot(sid) or {}
 
-    return jsonify({
-        "has_wallet": True,
-        "session_id": sid,
-        "btc_address": session.btc_address,
-        "snapshot": snapshot,
-    })
+    return jsonify(
+        {
+            "has_wallet": True,
+            "session_id": sid,
+            "btc_address": session.btc_address,
+            "snapshot": snapshot,
+        }
+    )
 
 
 @app.route("/api/disconnect", methods=["POST"])
@@ -2868,8 +3290,7 @@ def api_disconnect():
     global _session_manager, _session_workers
 
     data = request.get_json(silent=True) or {}
-    sid = data.get("session_id") or \
-          request.headers.get("X-Session-Id") or ""
+    sid = data.get("session_id") or request.headers.get("X-Session-Id") or ""
 
     if not sid:
         return jsonify({"success": False, "error": "session_id required"}), 400
@@ -2889,21 +3310,22 @@ def api_disconnect():
 @app.route("/api/session-status", methods=["GET"])
 def api_session_status():
     """Check if a session is valid."""
-    sid = request.args.get("session_id") or \
-          request.headers.get("X-Session-Id") or ""
+    sid = request.args.get("session_id") or request.headers.get("X-Session-Id") or ""
     if not sid:
         return jsonify({"valid": False})
     session = _session_manager.get_session(sid)
     if not session:
         return jsonify({"valid": False})
-    return jsonify({
-        "valid": True,
-        "session_id": sid,
-        "has_wallet": session.has_wallet,
-        "btc_address": session.btc_address,
-        "created_at": session.created_at,
-        "last_activity": session.last_activity,
-    })
+    return jsonify(
+        {
+            "valid": True,
+            "session_id": sid,
+            "has_wallet": session.has_wallet,
+            "btc_address": session.btc_address,
+            "created_at": session.created_at,
+            "last_activity": session.last_activity,
+        }
+    )
 
 
 @app.route("/api/push/vapid-key", methods=["GET"])
@@ -2912,6 +3334,7 @@ def api_push_vapid_key():
     design). Returns null when push is not configured (VAPID keys unset), so
     the frontend simply does not offer push."""
     from services.push_notifier import VAPID_PUBLIC_KEY as _vk
+
     return jsonify({"vapid_public_key": _vk or None})
 
 
@@ -2928,6 +3351,7 @@ def api_push_subscribe():
     the store.
     """
     from services.push_notifier import save_subscription
+
     body = request.get_json(silent=True) or {}
     endpoint = (body.get("endpoint") or "").strip()
     keys = body.get("keys") or {}
@@ -2940,6 +3364,7 @@ def api_push_subscribe():
     if auth.startswith("Bearer "):
         try:
             from services.auth import verify_token
+
             payload = verify_token(auth[7:]) or {}
         except Exception:
             payload = None
@@ -2978,6 +3403,7 @@ def api_push_subscribe():
 def api_push_unsubscribe():
     """Remove a push subscription (user disabled notifications)."""
     from services.push_notifier import remove_subscription
+
     body = request.get_json(silent=True) or {}
     endpoint = (body.get("endpoint") or "").strip()
     if not endpoint:
@@ -3001,11 +3427,13 @@ def api_admin_sessions():
     # pilot dispatched per path (sweep do pool vs detail do painel) — same
     # in-memory lifecycle as the pool counters.
     pool["auto_exclude_alerts"] = _auto_exclude_alert_counters()
-    return jsonify({
-        "count": len(sessions),
-        "sessions": [s.to_dict() for s in sessions],
-        "pool": pool,
-    })
+    return jsonify(
+        {
+            "count": len(sessions),
+            "sessions": [s.to_dict() for s in sessions],
+            "pool": pool,
+        }
+    )
 
 
 # parse_diff_to_float, fmt_diff, fmt_hashrate, fmt_uptime, fmt_age
@@ -3031,6 +3459,8 @@ def _coerce_uptime(v):
         return int(float(v))
     except (TypeError, ValueError):
         return None
+
+
 _poll_start_ts = 0.0  # when the current poll began (watchdog); 0 = idle
 _POLL_HANG_TIMEOUT = 60.0  # seconds — a poll must never hold the lock this long
 
@@ -3056,12 +3486,18 @@ def poll_once():
     # the old lock object, which is now orphaned — it will release a lock
     # nobody references).
     if _poll_start_ts and (now - _poll_start_ts) > _POLL_HANG_TIMEOUT:
-        log.error("[poll] poll hung for %.0fs — replacing lock so snapshots resume",
-                  now - _poll_start_ts)
-        memory_critical_alerts.append(_make_memory_alert(
-            int(now), "CRIT", "poll_hang",
-            f"Polling stalled {now - _poll_start_ts:.0f}s — replaced lock to resume telemetry.",
-        ))
+        log.error(
+            "[poll] poll hung for %.0fs — replacing lock so snapshots resume",
+            now - _poll_start_ts,
+        )
+        memory_critical_alerts.append(
+            _make_memory_alert(
+                int(now),
+                "CRIT",
+                "poll_hang",
+                f"Polling stalled {now - _poll_start_ts:.0f}s — replaced lock to resume telemetry.",
+            )
+        )
         _poll_lock = threading.Lock()
         _poll_start_ts = 0.0
 
@@ -3069,8 +3505,10 @@ def poll_once():
         # Only warn once a poll has been running suspiciously long; normal
         # overlap (poll still finishing while the next tick fires) stays debug.
         if _poll_start_ts and (now - _poll_start_ts) > _POLL_HANG_TIMEOUT * 0.5:
-            log.warning("[poll] skipped — previous poll running %.0fs (slow/hung?)",
-                        now - _poll_start_ts)
+            log.warning(
+                "[poll] skipped — previous poll running %.0fs (slow/hung?)",
+                now - _poll_start_ts,
+            )
         else:
             log.debug("[poll] skipped — another poll is already running")
         return
@@ -3126,15 +3564,19 @@ def _do_poll():
     # max(latency) instead of sum(latency), removing 15s drift under slow
     # networks. Per-future exception handling isolates single-endpoint failures.
     fetch_specs = [
-        ("user",        f"{PARASITE_API}/user/{BTC_ADDRESS}",                                  10),
-        ("pool",        f"{PARASITE_API}/pool-stats",                                          10),
-        ("account",     f"{PARASITE_API}/account/{BTC_ADDRESS}",                               10),
-        ("leaderboard", f"{PARASITE_API}/leaderboard?limit=100",                                        10),
-        ("highest",     f"{PARASITE_API}/highest-diff?type=user-diffs&address={BTC_ADDRESS}&limit=30",       10),
-        ("net_height",  f"{MEMPOOL_API}/blocks/tip/height",                                     6),
+        ("user", f"{PARASITE_API}/user/{BTC_ADDRESS}", 10),
+        ("pool", f"{PARASITE_API}/pool-stats", 10),
+        ("account", f"{PARASITE_API}/account/{BTC_ADDRESS}", 10),
+        ("leaderboard", f"{PARASITE_API}/leaderboard?limit=100", 10),
+        (
+            "highest",
+            f"{PARASITE_API}/highest-diff?type=user-diffs&address={BTC_ADDRESS}&limit=30",
+            10,
+        ),
+        ("net_height", f"{MEMPOOL_API}/blocks/tip/height", 6),
         # net_diff removed from main fetch — mempool.space /v1/difficulty deprecated Oct 2024.
         # blockchain.info /q/getdifficulty handles this via bc_specs below.
-        ("mempool_fee", f"{MEMPOOL_API}/v1/fees/recommended",                                   6),
+        ("mempool_fee", f"{MEMPOOL_API}/v1/fees/recommended", 6),
     ]
     # BTC price: só adiciona ao fan-out se passou >= 60s desde a última tentativa
     global _btc_consec_failures, _btc_last_fetch_ts
@@ -3143,10 +3585,28 @@ def _do_poll():
         # Multi-source BTC price: Binance (fast, no key, 1200 req/min) +
         # CoinGecko (comprehensive, multi-currency). Binance only gives USD;
         # CoinGecko covers BRL/EUR/GBP/JPY/KRW/CNY. Both fetch in parallel.
-        fetch_specs.append(("btc", "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd,brl,eur,gbp,jpy,krw,cny", 6))
-        fetch_specs.append(("btc_binance", "https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT", 4))
+        fetch_specs.append(
+            (
+                "btc",
+                "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd,brl,eur,gbp,jpy,krw,cny",
+                6,
+            )
+        )
+        fetch_specs.append(
+            (
+                "btc_binance",
+                "https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT",
+                4,
+            )
+        )
         # Binance BRL pair for direct BRL conversion
-        fetch_specs.append(("btc_binance_brl", "https://api.binance.com/api/v3/ticker/price?symbol=BTCBRL", 4))
+        fetch_specs.append(
+            (
+                "btc_binance_brl",
+                "https://api.binance.com/api/v3/ticker/price?symbol=BTCBRL",
+                4,
+            )
+        )
     else:
         # Cache recente — pula fetch, usa o cache existente
         fetch_specs.append(("btc", None, 0))
@@ -3157,18 +3617,18 @@ def _do_poll():
     # most reliable public source for current_difficulty + network hashrate as
     # of late 2024 / 2025 / 2026.
     bc_specs = [
-        ("bc_diff",     "https://blockchain.info/q/getdifficulty", 8),
-        ("bc_hashrate", "https://blockchain.info/q/hashrate",      8),
+        ("bc_diff", "https://blockchain.info/q/getdifficulty", 8),
+        ("bc_hashrate", "https://blockchain.info/q/hashrate", 8),
     ]
     bc_results = {key: None for key, _, _ in bc_specs}
-
 
     results = {key: None for key, _, _ in fetch_specs}
     with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
         future_to_key = {
             executor.submit(fetch_json, url, timeout): key
             for key, url, timeout in fetch_specs
-            if url is not None  # skip throttled entries (e.g. BTC price when cache is fresh)
+            if url
+            is not None  # skip throttled entries (e.g. BTC price when cache is fresh)
         }
         # No outer timeout: each fetch_json belongs to a request with its own
         # per-endpoint timeout (≤10s). Worst-case poll wall = max(latencies),
@@ -3215,10 +3675,14 @@ def _do_poll():
     # /v1/difficulty was deprecated Oct 2024 and always returns 404).
     bc_diff_val = safe_num_from_str(bc_results.get("bc_diff"))
     bc_hashrate_val = safe_num_from_str(bc_results.get("bc_hashrate"))
-    network_height = network_height_data if isinstance(network_height_data, int) else None
+    network_height = (
+        network_height_data if isinstance(network_height_data, int) else None
+    )
     # Pure derivation (GH/s→H/s + difficulty→hashrate fallback) — extracted
     # to services.poll_compute (Issue #135).
-    current_difficulty, net_hashrate = derive_network_values(bc_diff_val, bc_hashrate_val)
+    current_difficulty, net_hashrate = derive_network_values(
+        bc_diff_val, bc_hashrate_val
+    )
     # Stale-while-revalidate da rede: se a fonte falhou, serve o último valor
     # REAL conhecido marcado como stale (nunca inventa difficulty/hashrate).
     network_stale = False
@@ -3251,7 +3715,10 @@ def _do_poll():
             _btc_consec_failures += 1
     else:
         # Throttle ativo — usa cache mesmo que um pouco velho
-        if _now - btc_price_cache["ts"] < BTC_PRICE_CACHE_TTL and btc_price_cache["data"]:
+        if (
+            _now - btc_price_cache["ts"] < BTC_PRICE_CACHE_TTL
+            and btc_price_cache["data"]
+        ):
             btc_quote = btc_price_cache["data"]
         else:
             btc_quote = None
@@ -3264,7 +3731,10 @@ def _do_poll():
     if not (isinstance(btc_quote, dict) and btc_quote.get("bitcoin")):
         _cached = btc_price_cache.get("data")
         if isinstance(_cached, dict) and _cached.get("bitcoin"):
-            log.warning("[btc] %d consecutive failures — serving last real cached price (stale)", _btc_consec_failures)
+            log.warning(
+                "[btc] %d consecutive failures — serving last real cached price (stale)",
+                _btc_consec_failures,
+            )
             btc_quote = _cached
             btc_price_stale = True
         else:
@@ -3273,7 +3743,9 @@ def _do_poll():
     # Merge Binance (fast, USD-only) with CoinGecko (multi-currency)
     # Merge CoinGecko (multi-currency) with Binance real-time USD/BRL —
     # pure, extracted to services.poll_compute (Issue #135).
-    _btc_merged = merge_btc_quotes(btc_quote, results.get("btc_binance"), results.get("btc_binance_brl"))
+    _btc_merged = merge_btc_quotes(
+        btc_quote, results.get("btc_binance"), results.get("btc_binance_brl")
+    )
     btc_usd = _btc_merged["usd"]
     btc_brl = _btc_merged["brl"]
     btc_eur = _btc_merged["eur"]
@@ -3316,7 +3788,11 @@ def _do_poll():
     all_workers = dedup_workers(all_workers)
     # Original behavior: the summary line only fired when workers existed.
     if _orig_worker_count:
-        log.info("[dedup] %d workers after dedup (was %d)", len(all_workers), _orig_worker_count)
+        log.info(
+            "[dedup] %d workers after dedup (was %d)",
+            len(all_workers),
+            _orig_worker_count,
+        )
 
     # ── Leaderboard lookup ──
     leaderboard_entry = None
@@ -3335,7 +3811,9 @@ def _do_poll():
 
     # ━━ Account unpack ━━
     account = account_data.get("account") if isinstance(account_data, dict) else None
-    lightning = account_data.get("lightning") if isinstance(account_data, dict) else None
+    lightning = (
+        account_data.get("lightning") if isinstance(account_data, dict) else None
+    )
     meta = account.get("metadata", {}) if isinstance(account, dict) else {}
 
     # P0-5 audit: the pool account API often omits diff/loyalty/combined
@@ -3385,7 +3863,11 @@ def _do_poll():
             except Exception:
                 ls_int = 0
             if ls_int and ls_int != timeline_state["last_submit_ts"]:
-                gap = (ls_int - timeline_state["last_submit_ts"]) if timeline_state["last_submit_ts"] else 0
+                gap = (
+                    (ls_int - timeline_state["last_submit_ts"])
+                    if timeline_state["last_submit_ts"]
+                    else 0
+                )
                 timeline_state["last_submit_ts"] = ls_int
                 timeline_state["share_submit_history"].append(ls_int)
                 timeline_state["session_share_count"] += 1
@@ -3420,14 +3902,20 @@ def _do_poll():
                     elif isinstance(d, str) and d:
                         share_diff_raw = parse_diff_to_float(d)
                     if not share_diff_raw and worker.get("bestDifficulty"):
-                        share_diff_raw = parse_diff_to_float(worker.get("bestDifficulty")) / 2.0
+                        share_diff_raw = (
+                            parse_diff_to_float(worker.get("bestDifficulty")) / 2.0
+                        )
                 except Exception:
                     share_diff_raw = 0.0
                 if share_diff_raw and current_difficulty and gap and gap > 0:
                     # Pure math — extracted to services.poll_compute (Issue #135).
                     share_calc = compute_share_calc(
-                        ts, gap, share_diff_raw, current_difficulty,
-                        worker.get("bestDifficulty"), timeline_state["session_share_count"],
+                        ts,
+                        gap,
+                        share_diff_raw,
+                        current_difficulty,
+                        worker.get("bestDifficulty"),
+                        timeline_state["session_share_count"],
                     )
                     timeline_state["share_calc_history"].append(share_calc)
 
@@ -3449,7 +3937,13 @@ def _do_poll():
                         "BEST_DIFF_BUMP",
                         "GOLD",
                         f"cypher65 best difficulty raised to {best_diff_str} ({pct_txt})",
-                        json.dumps({"from": old_str or "0", "to": best_diff_str, "pct": round(pct, 2)}),
+                        json.dumps(
+                            {
+                                "from": old_str or "0",
+                                "to": best_diff_str,
+                                "pct": round(pct, 2),
+                            }
+                        ),
                     )
                 )
                 # Persist milestone best-difficulty entry for the history endpoint.
@@ -3490,7 +3984,9 @@ def _do_poll():
     if worker:
         _reported_hr = float(worker.get("hashrate") or 0)
         if _reported_hr <= 0:
-            _prev_ts = latest_snapshot.get("ts") if isinstance(latest_snapshot, dict) else 0
+            _prev_ts = (
+                latest_snapshot.get("ts") if isinstance(latest_snapshot, dict) else 0
+            )
             _elapsed_s = (ts - _prev_ts) if _prev_ts else float(POLL_INTERVAL)
             _derived_hr, _hr_source = derive_worker_hashrate(
                 share_calc_history=timeline_state.get("share_calc_history") or [],
@@ -3509,8 +4005,12 @@ def _do_poll():
                         _entry["hashrate"] = _derived_hr
                         _entry["hashrate_source"] = _hr_source
                         break
-                log.info("[poll] worker %s hashrate derived from %s: %s H/s (pool reported 0)",
-                         worker.get("name") or "?", _hr_source, fmt_hashrate(_derived_hr))
+                log.info(
+                    "[poll] worker %s hashrate derived from %s: %s H/s (pool reported 0)",
+                    worker.get("name") or "?",
+                    _hr_source,
+                    fmt_hashrate(_derived_hr),
+                )
 
     # ━━ Persist snapshot ━━
     try:
@@ -3541,13 +4041,21 @@ def _do_poll():
                 # lastBlockTime field (the old lastBlockHeight key no longer
                 # exists — it was 100% NULL). Fall back to lastBlockTime so
                 # pool_last_block_height finally gets real data.
-                (pool.get("lastBlockHeight") or pool.get("lastBlockTime")) if pool else None,
+                (
+                    (pool.get("lastBlockHeight") or pool.get("lastBlockTime"))
+                    if pool
+                    else None
+                ),
                 pool.get("lastBlockTime") if pool else None,
                 pool.get("workSinceLastBlock") if pool else None,
                 account.get("total_diff") if isinstance(account, dict) else None,
                 meta.get("block_count") if isinstance(meta, dict) else None,
                 meta.get("highest_blockheight") if isinstance(meta, dict) else None,
-                (leaderboard.index(leaderboard_entry) + 1) if leaderboard_entry else None,
+                (
+                    (leaderboard.index(leaderboard_entry) + 1)
+                    if leaderboard_entry
+                    else None
+                ),
                 leaderboard_entry.get("diff_rank") if leaderboard_entry else None,
                 leaderboard_entry.get("loyalty_rank") if leaderboard_entry else None,
                 leaderboard_entry.get("combined_score") if leaderboard_entry else None,
@@ -3566,7 +4074,9 @@ def _do_poll():
         if isinstance(highest, list):
             for ev in highest[:30]:
                 bh = ev.get("block_height")
-                c.execute("SELECT 1 FROM highest_diff_events WHERE block_height=?", (bh,))
+                c.execute(
+                    "SELECT 1 FROM highest_diff_events WHERE block_height=?", (bh,)
+                )
                 if not c.fetchone():
                     top_addr = ev.get("top_diff_address") or ev.get("address") or ""
                     is_mine = BTC_ADDRESS in top_addr
@@ -3598,11 +4108,15 @@ def _do_poll():
         conn.commit()
         # ── Persist succeeded → clear failure state, surface SUCCESS alert ──
         if persist_consec_failures > 0:
-            memory_critical_alerts.append(_make_memory_alert(
-                ts, "SUCCESS", "disk_write_recovered",
-                f"SQLite writes recovered after {persist_consec_failures} consecutive "
-                f"poll failures; history persistence restored."
-            ))
+            memory_critical_alerts.append(
+                _make_memory_alert(
+                    ts,
+                    "SUCCESS",
+                    "disk_write_recovered",
+                    f"SQLite writes recovered after {persist_consec_failures} consecutive "
+                    f"poll failures; history persistence restored.",
+                )
+            )
             persist_consec_failures = 0
     except Exception as e:
         log.error("[persist] error: %s", e)
@@ -3610,12 +4124,16 @@ def _do_poll():
         # Escalate at ladder steps so we don't flood the alerts panel.
         if persist_consec_failures in PERSIST_FAILURE_LADDER:
             degraded_s = persist_consec_failures * POLL_INTERVAL
-            memory_critical_alerts.append(_make_memory_alert(
-                ts, "CRIT", "disk_write_failure",
-                f"SQLite write failing — {persist_consec_failures} consecutive poll "
-                f"failures (~{degraded_s}s degraded). Live UI continues; "
-                f"history persistence OFF until disk recovers."
-            ))
+            memory_critical_alerts.append(
+                _make_memory_alert(
+                    ts,
+                    "CRIT",
+                    "disk_write_failure",
+                    f"SQLite write failing — {persist_consec_failures} consecutive poll "
+                    f"failures (~{degraded_s}s degraded). Live UI continues; "
+                    f"history persistence OFF until disk recovers.",
+                )
+            )
     finally:
         try:
             conn.close()
@@ -3632,8 +4150,10 @@ def _do_poll():
     # Track event signatures across polls so the same "pool new high diff 87.1T"
     # never fires twice. Signature = (category, identifier) where identifier is
     # the unique value (block_hash, highest_diff_str, etc.)
-    if not hasattr(poll_once, '_alert_seen'):
-        _do_poll._alert_seen = set()  # set of (category, identifier) seen across restarts
+    if not hasattr(poll_once, "_alert_seen"):
+        _do_poll._alert_seen = (
+            set()
+        )  # set of (category, identifier) seen across restarts
     alert_seen = _do_poll._alert_seen
 
     if worker:
@@ -3642,24 +4162,36 @@ def _do_poll():
             sev = "WARN" if (ts - int(ls)) <= stale_min * 120 else "CRIT"
             sig = ("stale_submission", str(ls))
             if sig not in alert_seen:
-                alerts.append((sev, "stale_submission",
-                    f"cypher65 last submit {int((ts - int(ls)) / 60)}min ago (threshold {stale_min}m)"))
+                alerts.append(
+                    (
+                        sev,
+                        "stale_submission",
+                        f"cypher65 last submit {int((ts - int(ls)) / 60)}min ago (threshold {stale_min}m)",
+                    )
+                )
                 alert_seen.add(sig)
         prev_hr = float(prev_worker.get("hashrate") or 0)
         cur_hr = float(worker.get("hashrate") or 0)
         if prev_hr > 0 and cur_hr < (1 - hr_drop_pct / 100.0) * prev_hr:
             sig = ("hashrate_drop", f"{prev_hr:.0f}->{cur_hr:.0f}")
             if sig not in alert_seen:
-                alerts.append(("WARN", "hashrate_drop",
-                    f"cypher65 hashrate dropped from {fmt_hashrate(prev_hr)} to {fmt_hashrate(cur_hr)} (-{hr_drop_pct:.0f}%)"))
+                alerts.append(
+                    (
+                        "WARN",
+                        "hashrate_drop",
+                        f"cypher65 hashrate dropped from {fmt_hashrate(prev_hr)} to {fmt_hashrate(cur_hr)} (-{hr_drop_pct:.0f}%)",
+                    )
+                )
                 alert_seen.add(sig)
     else:
         # Track online→offline transition — only fire once per transition.
         # Use identifier based on the last known state so we can re-fire
         # if the worker comes back and goes offline again.
         sig = ("worker_offline", "1")
-        if sig not in alert_seen and getattr(poll_once, '_worker_was_present', False):
-            alerts.append(("CRIT", "worker_offline", "cypher65 not found in workerData"))
+        if sig not in alert_seen and getattr(poll_once, "_worker_was_present", False):
+            alerts.append(
+                ("CRIT", "worker_offline", "cypher65 not found in workerData")
+            )
             alert_seen.add(sig)
     # Track worker presence for transition detection
     if worker:
@@ -3668,22 +4200,25 @@ def _do_poll():
         if ("worker_offline", "1") in alert_seen:
             alert_seen.discard(("worker_offline", "1"))
     else:
-        _do_poll._worker_was_present = getattr(_do_poll, '_worker_was_present', False)
+        _do_poll._worker_was_present = getattr(_do_poll, "_worker_was_present", False)
 
     if pool:
         cur_high = str(pool.get("highestDifficulty") or "")
         if cur_high and cur_high != str(prev_pool.get("highestDifficulty") or ""):
             sig = ("new_high_diff", cur_high)
             if sig not in alert_seen:
-                alerts.append(("GOLD", "new_high_diff", f"Pool new highest diff: {cur_high}"))
+                alerts.append(
+                    ("GOLD", "new_high_diff", f"Pool new highest diff: {cur_high}")
+                )
                 alert_seen.add(sig)
         cur_block_hash = str(pool.get("lastBlockHash") or "")
         prev_block_hash = str(prev_pool.get("lastBlockHash") or "")
         if cur_block_hash and cur_block_hash != prev_block_hash:
             sig = ("new_block", cur_block_hash)
             if sig not in alert_seen:
-                alerts.append(("GOLD", "new_block",
-                    f"Pool found block: {cur_block_hash[:16]}…"))
+                alerts.append(
+                    ("GOLD", "new_block", f"Pool found block: {cur_block_hash[:16]}…")
+                )
                 alert_seen.add(sig)
 
     # dedication / continuity - only fire once per uptime milestone
@@ -3693,7 +4228,9 @@ def _do_poll():
             day_num = up // 86400
             sig = ("uptime_milestone", str(day_num))
             if sig not in alert_seen:
-                alerts.append(("INFO", "uptime", f"cypher65 uptime crossed {fmt_uptime(up)}"))
+                alerts.append(
+                    ("INFO", "uptime", f"cypher65 uptime crossed {fmt_uptime(up)}")
+                )
                 alert_seen.add(sig)
 
     # GC old signatures (keep last 1000)
@@ -3731,8 +4268,15 @@ def _do_poll():
     profitability, cur_hr, net_hr = compute_profitability(
         worker,
         net_hashrate,
-        {"USD": btc_usd, "BRL": btc_brl, "EUR": btc_eur, "GBP": btc_gbp,
-         "JPY": btc_jpy, "KRW": btc_krw, "CNY": btc_cny},
+        {
+            "USD": btc_usd,
+            "BRL": btc_brl,
+            "EUR": btc_eur,
+            "GBP": btc_gbp,
+            "JPY": btc_jpy,
+            "KRW": btc_krw,
+            "CNY": btc_cny,
+        },
         _HASHRATE_MARKET_CACHE,
         _MIN_PLAUSIBLE_PRICE,
         btc_price_cache,
@@ -3786,11 +4330,15 @@ def _do_poll():
     try:
         if worker and net_hr and cur_hr:
             network_share_gauge["worker_pct"] = round(cur_hr / net_hr * 100, 6)
-            network_share_gauge["pool_pct"] = round(
-                float(pool.get("hashrate") or 0) / net_hr * 100, 4
-            ) if pool else 0.0
+            network_share_gauge["pool_pct"] = (
+                round(float(pool.get("hashrate") or 0) / net_hr * 100, 4)
+                if pool
+                else 0.0
+            )
             # log10 scale label for readability
-            network_share_gauge["label"] = f"cypher65 = {network_share_gauge['worker_pct']:.6f}% of network"
+            network_share_gauge["label"] = (
+                f"cypher65 = {network_share_gauge['worker_pct']:.6f}% of network"
+            )
     except Exception:
         pass
 
@@ -3799,7 +4347,10 @@ def _do_poll():
     try:
         conn = get_db()
         c = conn.cursor()
-        c.execute("SELECT * FROM alerts WHERE ts > ? ORDER BY ts DESC LIMIT 12", (int(time.time()) - 604800,))
+        c.execute(
+            "SELECT * FROM alerts WHERE ts > ? ORDER BY ts DESC LIMIT 12",
+            (int(time.time()) - 604800,),
+        )
         recent_alerts = [dict(r) for r in c.fetchall()]
         conn.close()
     except Exception:
@@ -3828,16 +4379,22 @@ def _do_poll():
             c = conn.cursor()
             c.execute(
                 "INSERT INTO alerts (ts, severity, category, message) VALUES (?,?,?,?)",
-                (hot_streak_alert["ts"], hot_streak_alert["severity"],
-                 hot_streak_alert["category"], hot_streak_alert["message"]),
+                (
+                    hot_streak_alert["ts"],
+                    hot_streak_alert["severity"],
+                    hot_streak_alert["category"],
+                    hot_streak_alert["message"],
+                ),
             )
             conn.commit()
             conn.close()
         except Exception as e:
             log.warning("[hot_streak alert persist] error: %s", e)
         mem_hs = _make_memory_alert(
-            hot_streak_alert["ts"], hot_streak_alert["severity"],
-            hot_streak_alert["category"], hot_streak_alert["message"],
+            hot_streak_alert["ts"],
+            hot_streak_alert["severity"],
+            hot_streak_alert["category"],
+            hot_streak_alert["message"],
         )
         # Prepend so it appears at the top of the panel. DO NOT also push to
         # memory_critical_alerts — the existing in_mem prepend block + DB
@@ -3850,9 +4407,7 @@ def _do_poll():
     try:
         conn = get_db()
         c = conn.cursor()
-        c.execute(
-            "SELECT * FROM share_timeline ORDER BY id DESC LIMIT 80"
-        )
+        c.execute("SELECT * FROM share_timeline ORDER BY id DESC LIMIT 80")
         timeline_recent = [dict(r) for r in c.fetchall()]
         conn.close()
     except Exception:
@@ -3860,7 +4415,8 @@ def _do_poll():
 
     # ━━ Event stats (session + rolling windows) ━━
     event_stats, hour_ago, day_ago = compute_event_stats(
-        timeline_state, int(time.time()))
+        timeline_state, int(time.time())
+    )
     try:
         conn = get_db()
         c = conn.cursor()
@@ -3919,9 +4475,9 @@ def _do_poll():
             _alert_engine.dispatch_webhook(_alerts_generated)
             # Also append recent in-memory alerts to the live snapshot feed
             for _a in _alerts_generated[:10]:
-                memory_critical_alerts.append(_make_memory_alert(
-                    _a.ts, _a.severity, _a.category, _a.message
-                ))
+                memory_critical_alerts.append(
+                    _make_memory_alert(_a.ts, _a.severity, _a.category, _a.message)
+                )
 
         # Automation rules: any triggered action must pass SafetyEngine.
         # Results are already audited by the engine's audit callback.
@@ -3951,8 +4507,18 @@ def _do_poll():
             "hashrate": net_hashrate,
             "stale": network_stale,
         },
-        "btc_price": {"usd": btc_usd, "brl": btc_brl, "eur": btc_eur, "gbp": btc_gbp,
-                      "jpy": btc_jpy, "krw": btc_krw, "cny": btc_cny, "stale": btc_price_stale, "_source": "binance+coingecko", "_age_s": max(0, int(time.time()) - btc_price_cache.get("ts", 0))},
+        "btc_price": {
+            "usd": btc_usd,
+            "brl": btc_brl,
+            "eur": btc_eur,
+            "gbp": btc_gbp,
+            "jpy": btc_jpy,
+            "krw": btc_krw,
+            "cny": btc_cny,
+            "stale": btc_price_stale,
+            "_source": "binance+coingecko",
+            "_age_s": max(0, int(time.time()) - btc_price_cache.get("ts", 0)),
+        },
         "luck_estimate": luck,
         "halving": halving,
         "mempool_fees": mempool_fees,
@@ -3964,9 +4530,12 @@ def _do_poll():
         "timeline_recent": timeline_recent[:60],
         "event_stats": event_stats,
         "timeline_last_n": timeline_events[-30:],  # brand-new this poll; for live log
-    "leaderboard_table_top_30": leaderboard[:30] if isinstance(leaderboard, list) else [],    "all_workers": all_workers,
-    "axe_fleet": list(_shared_state.axe_telemetry_cache.values()),
-}    # ── Sync shared state after each poll ──
+        "leaderboard_table_top_30": (
+            leaderboard[:30] if isinstance(leaderboard, list) else []
+        ),
+        "all_workers": all_workers,
+        "axe_fleet": list(_shared_state.axe_telemetry_cache.values()),
+    }  # ── Sync shared state after each poll ──
     _shared_state.latest_snapshot = latest_snapshot
 
 
@@ -4039,13 +4608,16 @@ def _pool_watchdog_loop():
             stats = _POLL_POOL.stats()
             if stats.get("stalled") and (time.time() - _pool_watchdog_last_warn) > 300:
                 _pool_watchdog_last_warn = time.time()
-                msg = ("Pool stalled: workers alive but no poll completed in "
-                       f"{int(stats['uptime_secs'])}s uptime "
-                       f"with {stats['queue_pending']} queued. Restart required.")
+                msg = (
+                    "Pool stalled: workers alive but no poll completed in "
+                    f"{int(stats['uptime_secs'])}s uptime "
+                    f"with {stats['queue_pending']} queued. Restart required."
+                )
                 log.error("[watchdog] %s", msg)
                 try:
-                    memory_critical_alerts.append(_make_memory_alert(
-                        int(time.time()), "CRIT", "pool_stall", msg))
+                    memory_critical_alerts.append(
+                        _make_memory_alert(int(time.time()), "CRIT", "pool_stall", msg)
+                    )
                 except Exception:
                     pass
         except Exception as e:
@@ -4080,8 +4652,8 @@ def _start_background_threads():
     # Pool stall watchdog: surface a CRIT if the pool freezes (daemon).
     try:
         threading.Thread(
-            target=_pool_watchdog_loop, name="cypher65-pool-watchdog",
-            daemon=True).start()
+            target=_pool_watchdog_loop, name="cypher65-pool-watchdog", daemon=True
+        ).start()
     except Exception as e:
         log.warning("[boot] pool watchdog start error: %s", e)
     # Periodic rental P/L sweep: evaluate tenants with the alert enabled so
@@ -4094,8 +4666,10 @@ def _start_background_threads():
     # Webhook retry queue: deliver due Discord/Telegram alerts (daemon).
     try:
         from services.webhook_queue import webhook_queue_loop as _wq_loop
+
         threading.Thread(
-            target=_wq_loop, name="cypher65-webhook-queue", daemon=True).start()
+            target=_wq_loop, name="cypher65-webhook-queue", daemon=True
+        ).start()
     except Exception as e:
         log.warning("[boot] webhook queue start error: %s", e)
     # Rate-limit persistence: restore buckets from SQLite (a restart must not
@@ -4106,8 +4680,10 @@ def _start_background_threads():
         log.warning("[boot] rate-limit restore error: %s", e)
     try:
         threading.Thread(
-            target=_rate_limit_persist_loop, name="cypher65-rate-limit-persist",
-            daemon=True).start()
+            target=_rate_limit_persist_loop,
+            name="cypher65-rate-limit-persist",
+            daemon=True,
+        ).start()
     except Exception as e:
         log.warning("[boot] rate-limit persist loop error: %s", e)
     # $0 persistence (ephemeral free-tier filesystems): restore the remote
@@ -4131,7 +4707,8 @@ def _start_background_threads():
             log.critical(
                 "[boot] SQLite integrity_check FAILED on %s — DB is corrupt. "
                 "Newest backup: %s. Stop the container, restore, restart.",
-                DB_PATH, latest or "NONE (no backups yet)",
+                DB_PATH,
+                latest or "NONE (no backups yet)",
             )
     except Exception as e:
         boot_db_ok = False
@@ -4166,14 +4743,20 @@ def _start_background_threads():
     # confirm activation straight from the deploy logs (Issue #14).
     try:
         if _remote_backup.remote_backup_enabled():
-            log.info("[boot] $0 remote backup ENABLED — gist snapshots every "
-                     "%ss (services/remote_backup.py)", _remote_backup._interval())
-            threading.Thread(target=_remote_backup.remote_backup_loop,
-                             daemon=True).start()
+            log.info(
+                "[boot] $0 remote backup ENABLED — gist snapshots every "
+                "%ss (services/remote_backup.py)",
+                _remote_backup._interval(),
+            )
+            threading.Thread(
+                target=_remote_backup.remote_backup_loop, daemon=True
+            ).start()
         else:
-            log.info("[boot] $0 remote backup DISABLED — set GITHUB_TOKEN "
-                     "(gist scope) in the Render dashboard to persist data "
-                     "across redeploys (docs/DEPLOYMENT_OPS.md)")
+            log.info(
+                "[boot] $0 remote backup DISABLED — set GITHUB_TOKEN "
+                "(gist scope) in the Render dashboard to persist data "
+                "across redeploys (docs/DEPLOYMENT_OPS.md)"
+            )
     except Exception as e:
         log.warning("[boot] remote backup init error: %s", e)
 
@@ -4184,6 +4767,7 @@ def _start_background_threads():
 @app.route("/")
 def index():
     from config import is_cloud_deploy
+
     _cloud = is_cloud_deploy()
     # Frontend Sentry (env-gated): só injeta o DSN no template quando o
     # operador configurou SENTRY_DSN — sem DSN o bloco JS não renderiza e o
@@ -4254,8 +4838,6 @@ def api_pool_stats():
 #   Fase 4 · B2 tenant scoping; the old app.py copy was shadowed dead code).
 
 
-
-
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 #  Settings API (GET/POST) — lives in routes/settings_routes.py (settings_bp,
 #  registered at import time). It is the single source of truth: same auth
@@ -4266,8 +4848,6 @@ def api_pool_stats():
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 #  Subset endpoints (Halving / Mempool / Profitability / Network-share)
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-
 
 
 @app.route("/api/license-status")
@@ -4286,20 +4866,30 @@ def api_upgrade_checkout():
     Off-by-default — returns 503 until the operator sets LEMON_SQUEEZY_*.
     """
     if not _payments.payments_configured():
-        return jsonify({
-            "error": "Payments are not configured on this server",
-            "code": "PAYMENTS_NOT_CONFIGURED",
-            "upgrade": {"plan": "PRO", "price_usd_month": 9},
-        }), 503
+        return (
+            jsonify(
+                {
+                    "error": "Payments are not configured on this server",
+                    "code": "PAYMENTS_NOT_CONFIGURED",
+                    "upgrade": {"plan": "PRO", "price_usd_month": 9},
+                }
+            ),
+            503,
+        )
     body = request.get_json(silent=True) or {}
     plan = (body.get("plan") or "pro").strip()
     email = (body.get("email") or "").strip()
     url = _payments.create_checkout(plan=plan, email=email)
     if not url:
-        return jsonify({
-            "error": "Could not create a checkout — check LEMON_SQUEEZY_* env vars",
-            "code": "CHECKOUT_FAILED",
-        }), 502
+        return (
+            jsonify(
+                {
+                    "error": "Could not create a checkout — check LEMON_SQUEEZY_* env vars",
+                    "code": "CHECKOUT_FAILED",
+                }
+            ),
+            502,
+        )
     return jsonify({"checkout_url": url, "plan": plan})
 
 
@@ -4362,8 +4952,7 @@ def api_conversion_track():
     """
     body = request.get_json(silent=True) or {}
     event = (body.get("event") or "").strip()
-    if event not in ("modal_open", "checkout_start", "key_activated",
-                     "paywall_view"):
+    if event not in ("modal_open", "checkout_start", "key_activated", "paywall_view"):
         return jsonify({"ok": False, "error": "unknown event"}), 400
     tenant_id = ""
     # Best-effort tenant attribution: JWT sub when present, else X-API-Key.
@@ -4371,6 +4960,7 @@ def api_conversion_track():
     if auth.startswith("Bearer "):
         try:
             from services.auth import verify_token
+
             payload = verify_token(auth[7:]) or {}
             tenant_id = payload.get("sub") or ""
         except Exception:
@@ -4445,7 +5035,8 @@ def api_admin_rentals_accepted_recos():
     payload["worse_concentration"] = _rental_perf.detect_tenant_worse_concentration(
         days=days,
         min_worse=request.args.get("worse_min", 2, type=int),
-        worse_ratio=request.args.get("worse_ratio", 0.5, type=float))
+        worse_ratio=request.args.get("worse_ratio", 0.5, type=float),
+    )
     # Auto-exclusion history (global, WHEN + CAUSE): every rig the pilot
     # auto-excluded across ALL tenants with the snapshot + rule that fired.
     hist = _rental_perf.admin_auto_exclusion_history(days=days)
@@ -4454,7 +5045,8 @@ def api_admin_rentals_accepted_recos():
     # tenant + by régua (floor/mín) + systemic rigs — aggregated from the
     # SAME history pass above (zero drift, ONE audit pass, not two).
     payload["auto_exclusion_aggregates"] = _rental_perf._aggregate_exclusions(
-        hist.get("exclusions") or [])
+        hist.get("exclusions") or []
+    )
     payload["auto_exclusion_aggregates"]["days"] = days if days else None
     return jsonify(payload)
 
@@ -4467,7 +5059,9 @@ def api_admin_rentals_accepted_recos():
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 #  Block Hunt + Best Difficulty (Milestone 6)
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-def _get_best_diff_history(device_id: Optional[str] = None, limit: int = 100) -> List[Dict[str, Any]]:
+def _get_best_diff_history(
+    device_id: Optional[str] = None, limit: int = 100
+) -> List[Dict[str, Any]]:
     """Return best-difficulty history records, newest first.
 
     If device_id is provided, filter to that device. Otherwise all records.
@@ -4490,13 +5084,15 @@ def _get_best_diff_history(device_id: Optional[str] = None, limit: int = 100) ->
                 (limit,),
             )
         for r in c.fetchall():
-            records.append({
-                "timestamp": r["ts"],
-                "device_id": r["device_id"],
-                "best_diff": r["best_diff"],
-                "best_diff_str": r["best_diff_str"],
-                "pool": r["pool"],
-            })
+            records.append(
+                {
+                    "timestamp": r["ts"],
+                    "device_id": r["device_id"],
+                    "best_diff": r["best_diff"],
+                    "best_diff_str": r["best_diff_str"],
+                    "pool": r["pool"],
+                }
+            )
         conn.close()
     except Exception as e:
         log.warning("[get_best_diff_history] error: %s", e)
@@ -4525,10 +5121,12 @@ def api_block_hunt():
 def api_best_diff_history():
     """Return the global best-difficulty history."""
     limit = request.args.get("limit", 100, type=int)
-    return jsonify({
-        "success": True,
-        "records": _get_best_diff_history(device_id=None, limit=limit),
-    })
+    return jsonify(
+        {
+            "success": True,
+            "records": _get_best_diff_history(device_id=None, limit=limit),
+        }
+    )
 
 
 @app.route("/api/devices/<device_id>/best-diff-history", methods=["GET"])
@@ -4536,11 +5134,13 @@ def api_best_diff_history():
 def api_device_best_diff_history(device_id: str, tenant_id: str = ""):
     """Return the best-difficulty history for a specific device."""
     limit = request.args.get("limit", 100, type=int)
-    return jsonify({
-        "success": True,
-        "device_id": device_id,
-        "records": _get_best_diff_history(device_id=device_id, limit=limit),
-    })
+    return jsonify(
+        {
+            "success": True,
+            "device_id": device_id,
+            "records": _get_best_diff_history(device_id=device_id, limit=limit),
+        }
+    )
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -4574,19 +5174,29 @@ def api_tax_export(tenant_id: str = ""):
     """
     tid = tenant_id or "default"
     if tid != "default":
-        return jsonify({
-            "error": "forbidden",
-            "detail": "tax export reads operator-scoped tables and is not available to your tenant",
-        }), 403
+        return (
+            jsonify(
+                {
+                    "error": "forbidden",
+                    "detail": "tax export reads operator-scoped tables and is not available to your tenant",
+                }
+            ),
+            403,
+        )
     currency = (request.args.get("currency") or "JPY").upper()
     col = {
-        "JPY": "btc_jpy", "KRW": "btc_krw", "CNY": "btc_cny",
-        "USD": "btc_usd", "BRL": "btc_brl", "EUR": "btc_eur", "GBP": "btc_gbp",
+        "JPY": "btc_jpy",
+        "KRW": "btc_krw",
+        "CNY": "btc_cny",
+        "USD": "btc_usd",
+        "BRL": "btc_brl",
+        "EUR": "btc_eur",
+        "GBP": "btc_gbp",
     }.get(currency)
     if col is None:
         return jsonify({"error": f"unsupported currency {currency}"}), 400
     year = request.args.get("year", type=int)
-    since = int(time.time()) - 10 ** 10
+    since = int(time.time()) - 10**10
     if year:
         since = int(datetime(year, 1, 1, tzinfo=timezone.utc).timestamp())
 
@@ -4621,11 +5231,30 @@ def api_tax_export(tenant_id: str = ""):
 
     buf = _StringIO()
     writer = _csv.writer(buf)
-    writer.writerow(["# CYPHER65 tax export", f"currency={currency}",
-                     f"generated_utc={datetime.now(timezone.utc).isoformat(timespec='seconds')}"])
-    writer.writerow(["# Mined-block income events (is_mine=1) — value at block time using recorded price"])
-    writer.writerow(["type", "ts", "date_utc", "block_height", "difficulty",
-                     f"btc_price_{currency}", "reward_btc", f"value_{currency}"])
+    writer.writerow(
+        [
+            "# CYPHER65 tax export",
+            f"currency={currency}",
+            f"generated_utc={datetime.now(timezone.utc).isoformat(timespec='seconds')}",
+        ]
+    )
+    writer.writerow(
+        [
+            "# Mined-block income events (is_mine=1) — value at block time using recorded price"
+        ]
+    )
+    writer.writerow(
+        [
+            "type",
+            "ts",
+            "date_utc",
+            "block_height",
+            "difficulty",
+            f"btc_price_{currency}",
+            "reward_btc",
+            f"value_{currency}",
+        ]
+    )
     for b in blocks:
         # Value the block at the last recorded price at/after block discovery.
         price = None
@@ -4644,30 +5273,74 @@ def api_tax_export(tenant_id: str = ""):
             price = None
         bts = b.get("ts") or 0
         value = round(block_reward * price, 2) if price is not None else ""
-        writer.writerow(["block_hit", bts,
-                         datetime.fromtimestamp(bts, tz=timezone.utc).isoformat(timespec="seconds") if bts else "",
-                         b.get("block_height"), b.get("difficulty"),
-                         price, block_reward, value])
-    writer.writerow(["# Daily BTC price ledger — value any other received coin at receipt time"])
-    writer.writerow(["type", "ts", "date_utc", "block_height", "difficulty",
-                     f"btc_price_{currency}", "reward_btc", f"value_{currency}"])
+        writer.writerow(
+            [
+                "block_hit",
+                bts,
+                (
+                    datetime.fromtimestamp(bts, tz=timezone.utc).isoformat(
+                        timespec="seconds"
+                    )
+                    if bts
+                    else ""
+                ),
+                b.get("block_height"),
+                b.get("difficulty"),
+                price,
+                block_reward,
+                value,
+            ]
+        )
+    writer.writerow(
+        ["# Daily BTC price ledger — value any other received coin at receipt time"]
+    )
+    writer.writerow(
+        [
+            "type",
+            "ts",
+            "date_utc",
+            "block_height",
+            "difficulty",
+            f"btc_price_{currency}",
+            "reward_btc",
+            f"value_{currency}",
+        ]
+    )
     for r in ledger:
         ts = r.get("ts") or 0
-        writer.writerow(["price_ledger", ts,
-                         datetime.fromtimestamp(ts, tz=timezone.utc).isoformat(timespec="seconds") if ts else "",
-                         "", "", r.get("price"), "", ""])
+        writer.writerow(
+            [
+                "price_ledger",
+                ts,
+                (
+                    datetime.fromtimestamp(ts, tz=timezone.utc).isoformat(
+                        timespec="seconds"
+                    )
+                    if ts
+                    else ""
+                ),
+                "",
+                "",
+                r.get("price"),
+                "",
+                "",
+            ]
+        )
 
     out = buf.getvalue()
     return app.response_class(
         out,
         mimetype="text/csv",
-        headers={"Content-Disposition": f"attachment; filename=cypher65_tax_{currency.lower()}.csv"},
+        headers={
+            "Content-Disposition": f"attachment; filename=cypher65_tax_{currency.lower()}.csv"
+        },
     )
 
 
 # ═══════════════════════════════════════════════════════════════════════════
 # CORE DEVICE API
 # ═══════════════════════════════════════════════════════════════════════════
+
 
 # ── Device serialization helpers ─────────────────────────────────────────────
 def _enrich_telemetry(telemetry: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
@@ -4716,17 +5389,21 @@ def _record_status_change(device: CoreDevice, old_status: str, new_status: str):
         return
     metadata = device.metadata or {}
     history = metadata.setdefault("status_history", [])
-    history.append({
-        "ts": int(time.time()),
-        "old_status": old_status,
-        "new_status": new_status,
-    })
+    history.append(
+        {
+            "ts": int(time.time()),
+            "old_status": old_status,
+            "new_status": new_status,
+        }
+    )
     # Keep last 100 status changes to avoid unbounded growth.
     metadata["status_history"] = history[-100:]
     device.metadata = metadata
 
 
-def _serialize_device(device: CoreDevice, include_telemetry: bool = True) -> Dict[str, Any]:
+def _serialize_device(
+    device: CoreDevice, include_telemetry: bool = True
+) -> Dict[str, Any]:
     """Serialize a core Device, optionally enriching current_telemetry.
 
     The device dict always contains last_seen, ip and status.  When
@@ -4757,11 +5434,13 @@ def api_list_devices(tenant_id: str = ""):
     """
     devices = _core_registry.list_devices(tenant_id=tenant_id)
     summary = _core_registry.count_by_status()
-    return jsonify({
-        "devices": [_serialize_device(d) for d in devices],
-        "summary": summary,
-        "total": len(devices),
-    })
+    return jsonify(
+        {
+            "devices": [_serialize_device(d) for d in devices],
+            "summary": summary,
+            "total": len(devices),
+        }
+    )
 
 
 @app.route("/api/devices/<device_id>", methods=["GET"])
@@ -4771,10 +5450,12 @@ def api_get_device(device_id: str, tenant_id: str = ""):
     device = _core_registry.get_device(device_id, tenant_id=tenant_id)
     if not device:
         return jsonify({"error": "device not found", "success": False}), 404
-    return jsonify({
-        "success": True,
-        "device": _serialize_device(device, include_telemetry=True),
-    })
+    return jsonify(
+        {
+            "success": True,
+            "device": _serialize_device(device, include_telemetry=True),
+        }
+    )
 
 
 @app.route("/api/devices/<device_id>/refresh", methods=["POST"])
@@ -4817,7 +5498,10 @@ def api_refresh_device(device_id: str, tenant_id: str = ""):
         device.last_seen = datetime.now(timezone.utc)
 
     # Track reconnects when the device comes back online from offline.
-    if previous_status == CoreDeviceStatus.OFFLINE and device.status == CoreDeviceStatus.ONLINE:
+    if (
+        previous_status == CoreDeviceStatus.OFFLINE
+        and device.status == CoreDeviceStatus.ONLINE
+    ):
         metadata = device.metadata or {}
         metadata["reconnect_count"] = metadata.get("reconnect_count", 0) + 1
         device.metadata = metadata
@@ -4830,11 +5514,13 @@ def api_refresh_device(device_id: str, tenant_id: str = ""):
 
     _core_registry.update_device(device)
 
-    return jsonify({
-        "success": True,
-        "device": _serialize_device(device, include_telemetry=True),
-        "telemetry": _enrich_telemetry(device.current_telemetry),
-    })
+    return jsonify(
+        {
+            "success": True,
+            "device": _serialize_device(device, include_telemetry=True),
+            "telemetry": _enrich_telemetry(device.current_telemetry),
+        }
+    )
 
 
 @app.route("/api/fleet/summary", methods=["GET"])
@@ -4858,12 +5544,14 @@ def api_fleet_summary(tenant_id: str = ""):
             devices_with_recent_telemetry += 1
             total_hashrate += float(tel.get("hashrate") or 0.0)
 
-    return jsonify({
-        "total": len(devices),
-        "status_counts": summary,
-        "devices_with_recent_telemetry": devices_with_recent_telemetry,
-        "total_hashrate": total_hashrate,
-    })
+    return jsonify(
+        {
+            "total": len(devices),
+            "status_counts": summary,
+            "devices_with_recent_telemetry": devices_with_recent_telemetry,
+            "total_hashrate": total_hashrate,
+        }
+    )
 
 
 @app.route("/api/devices/<device_id>/command", methods=["POST"])
@@ -4901,7 +5589,10 @@ def api_device_command(device_id: str, tenant_id: str = ""):
         return jsonify({"error": str(e), "success": False}), 501
 
     if not adapter.supports(command):
-        return jsonify({"error": f"command '{command}' not supported", "success": False}), 400
+        return (
+            jsonify({"error": f"command '{command}' not supported", "success": False}),
+            400,
+        )
 
     previous_status = device.status
 
@@ -4915,12 +5606,17 @@ def api_device_command(device_id: str, tenant_id: str = ""):
             "requires_confirmation": safety_result.requires_confirmation,
         }
         _record_command(device_id, command, parameters, record)
-        return jsonify({
-            "success": False,
-            "error": safety_result.reason,
-            "risk_level": safety_result.risk_level.value,
-            "requires_confirmation": safety_result.requires_confirmation,
-        }), 403
+        return (
+            jsonify(
+                {
+                    "success": False,
+                    "error": safety_result.reason,
+                    "risk_level": safety_result.risk_level.value,
+                    "requires_confirmation": safety_result.requires_confirmation,
+                }
+            ),
+            403,
+        )
 
     result = adapter.execute_command(command, parameters)
     _record_command(device_id, command, parameters, result)
@@ -4934,12 +5630,14 @@ def api_device_command(device_id: str, tenant_id: str = ""):
         _record_status_change(device, previous_status.value, device.status.value)
         _core_registry.update_device(device)
 
-    return jsonify({
-        "success": bool(result.get("success")),
-        "device_id": device_id,
-        "command": command,
-        "result": result,
-    })
+    return jsonify(
+        {
+            "success": bool(result.get("success")),
+            "device_id": device_id,
+            "command": command,
+            "result": result,
+        }
+    )
 
 
 @app.route("/api/devices/<device_id>/commands", methods=["GET"])
@@ -4954,11 +5652,13 @@ def api_device_command_history(device_id: str, tenant_id: str = ""):
         return jsonify({"error": "device not found", "success": False}), 404
 
     history = _command_history.get(device_id, [])
-    return jsonify({
-        "success": True,
-        "device_id": device_id,
-        "commands": history[::-1],  # newest first
-    })
+    return jsonify(
+        {
+            "success": True,
+            "device_id": device_id,
+            "commands": history[::-1],  # newest first
+        }
+    )
 
 
 @app.route("/api/devices/<device_id>/diagnostics", methods=["GET"])
@@ -4975,14 +5675,18 @@ def api_device_diagnostics(device_id: str, tenant_id: str = ""):
 
     engine = DiagnosticsEngine()
     diagnostics = engine.analyze(device)
-    return jsonify({
-        "success": True,
-        "device_id": device_id,
-        "diagnostics": [d.to_dict() for d in diagnostics],
-    })
+    return jsonify(
+        {
+            "success": True,
+            "device_id": device_id,
+            "diagnostics": [d.to_dict() for d in diagnostics],
+        }
+    )
 
 
-def _add_maintenance_record(device_id: str, record_type: str, notes: str, performed_by: str) -> dict:
+def _add_maintenance_record(
+    device_id: str, record_type: str, notes: str, performed_by: str
+) -> dict:
     """Persist a maintenance record to the SQLite database."""
     ts = int(time.time())
     conn = get_db()
@@ -5056,18 +5760,25 @@ def api_device_maintenance(device_id: str, tenant_id: str = ""):
             return jsonify({"error": "type is required", "success": False}), 400
 
         record = _add_maintenance_record(device_id, record_type, notes, performed_by)
-        return jsonify({
-            "success": True,
-            "record": record,
-        }), 201
+        return (
+            jsonify(
+                {
+                    "success": True,
+                    "record": record,
+                }
+            ),
+            201,
+        )
 
     # GET
     records = _get_maintenance_records(device_id)
-    return jsonify({
-        "success": True,
-        "device_id": device_id,
-        "records": records,
-    })
+    return jsonify(
+        {
+            "success": True,
+            "device_id": device_id,
+            "records": records,
+        }
+    )
 
 
 @app.route("/api/devices/<device_id>/timeline", methods=["GET"])
@@ -5087,54 +5798,64 @@ def api_device_timeline(device_id: str, tenant_id: str = ""):
 
     # Commands
     for entry in _command_history.get(device_id, [])[::-1][:50]:
-        events.append({
-            "timestamp": entry["timestamp"],
-            "type": "command",
-            "source": "command_history",
-            "title": f"Command executed: {entry['command']}",
-            "details": entry,
-        })
+        events.append(
+            {
+                "timestamp": entry["timestamp"],
+                "type": "command",
+                "source": "command_history",
+                "title": f"Command executed: {entry['command']}",
+                "details": entry,
+            }
+        )
 
     # Maintenance records
     for rec in _get_maintenance_records(device_id, limit=50):
-        events.append({
-            "timestamp": rec["timestamp"],
-            "type": "maintenance",
-            "source": "maintenance_records",
-            "title": f"Maintenance: {rec['type']}",
-            "details": rec,
-        })
+        events.append(
+            {
+                "timestamp": rec["timestamp"],
+                "type": "maintenance",
+                "source": "maintenance_records",
+                "title": f"Maintenance: {rec['type']}",
+                "details": rec,
+            }
+        )
 
     # Status changes
     for change in (device.metadata or {}).get("status_history", [])[::-1][:50]:
-        events.append({
-            "timestamp": change["ts"],
-            "type": "status_change",
-            "source": "status_history",
-            "title": f"Status changed {change['old_status']} → {change['new_status']}",
-            "details": change,
-        })
+        events.append(
+            {
+                "timestamp": change["ts"],
+                "type": "status_change",
+                "source": "status_history",
+                "title": f"Status changed {change['old_status']} → {change['new_status']}",
+                "details": change,
+            }
+        )
 
     # Current diagnostics
     engine = DiagnosticsEngine()
     for diag in engine.analyze(device):
-        events.append({
-            "timestamp": diag.timestamp,
-            "type": "diagnostic",
-            "source": "diagnostics",
-            "title": diag.message,
-            "severity": diag.severity.value,
-            "details": diag.to_dict(),
-        })
+        events.append(
+            {
+                "timestamp": diag.timestamp,
+                "type": "diagnostic",
+                "source": "diagnostics",
+                "title": diag.message,
+                "severity": diag.severity.value,
+                "details": diag.to_dict(),
+            }
+        )
 
     events.sort(key=lambda e: e["timestamp"], reverse=True)
     events = events[:50]
 
-    return jsonify({
-        "success": True,
-        "device_id": device_id,
-        "events": events,
-    })
+    return jsonify(
+        {
+            "success": True,
+            "device_id": device_id,
+            "events": events,
+        }
+    )
 
 
 # Serve the service worker from root so it can control the entire app scope
@@ -5183,12 +5904,16 @@ def api_v1_status():
             "last_poll_ts": latest_snapshot.get("ts"),
             "integrations": {
                 "blockchain_api": {
-                    "status": _status(net.get("difficulty") is not None, bool(net.get("stale"))),
+                    "status": _status(
+                        net.get("difficulty") is not None, bool(net.get("stale"))
+                    ),
                     "difficulty": net.get("difficulty"),
                     "hashrate": net.get("hashrate"),
                 },
                 "exchange_api": {
-                    "status": _status(btc.get("usd") is not None, bool(btc.get("stale"))),
+                    "status": _status(
+                        btc.get("usd") is not None, bool(btc.get("stale"))
+                    ),
                     "btc_usd": btc.get("usd"),
                     "btc_brl": btc.get("brl"),
                 },
@@ -5210,16 +5935,19 @@ def api_tailscale(tenant_id: str = ""):
     Returns tailscale_installed/connected/ip/hostname/magic_dns_name etc."""
     try:
         from services.tailscale_adapter import get_local_status
+
         return jsonify(get_local_status())
     except Exception as e:
         log.warning("[tailscale] endpoint error: %s", e)
-        return jsonify({"tailscale_installed": False, "connected": False, "error": str(e)})
-
+        return jsonify(
+            {"tailscale_installed": False, "connected": False, "error": str(e)}
+        )
 
 
 # ═══════════════════════════════════════════════════════════════════════════
 #  OPPORTUNITY ENGINE API
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
 
 @app.route("/api/opportunities")
 def api_opportunities():
@@ -5251,7 +5979,9 @@ def api_opportunities():
     # Enrich each opportunity with cost/revenue/EV/score/risk metrics and sort by score.
     network_hashrate = (snapshot.get("network") or {}).get("hashrate")
     enriched = [
-        _enrich_opportunity(dict(opp), snapshot=snapshot, network_hashrate=network_hashrate)
+        _enrich_opportunity(
+            dict(opp), snapshot=snapshot, network_hashrate=network_hashrate
+        )
         for opp in opportunities
     ]
     enriched.sort(
@@ -5265,6 +5995,7 @@ def api_opportunities():
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 #  Hashrate market + Opportunity comparison (Milestone 7)
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
 
 def _get_hashrate_market_offers() -> list:
     """Fetch live hashrate offers, caching them for a short TTL.
@@ -5281,7 +6012,11 @@ def _get_hashrate_market_offers() -> list:
     """
     now = int(time.time())
     cache = _HASHRATE_MARKET_CACHE
-    ttl = _HASHRATE_MARKET_CACHE_TTL if cache["offers"] else _HASHRATE_MARKET_EMPTY_CACHE_TTL
+    ttl = (
+        _HASHRATE_MARKET_CACHE_TTL
+        if cache["offers"]
+        else _HASHRATE_MARKET_EMPTY_CACHE_TTL
+    )
     if (now - cache["ts"] < ttl) and cache["offers"] is not None:
         _sync_market_prices_to_state(cache["offers"])
         return cache["offers"]
@@ -5289,7 +6024,11 @@ def _get_hashrate_market_offers() -> list:
     with _HASHRATE_MARKET_FETCH_LOCK:
         # Re-check under the lock: another thread may have just refreshed it.
         now = int(time.time())
-        ttl = _HASHRATE_MARKET_CACHE_TTL if cache["offers"] else _HASHRATE_MARKET_EMPTY_CACHE_TTL
+        ttl = (
+            _HASHRATE_MARKET_CACHE_TTL
+            if cache["offers"]
+            else _HASHRATE_MARKET_EMPTY_CACHE_TTL
+        )
         if (now - cache["ts"] < ttl) and cache["offers"] is not None:
             _sync_market_prices_to_state(cache["offers"])
             return cache["offers"]
@@ -5416,21 +6155,26 @@ def api_hashrate_market():
     network_hashrate = (latest_snapshot.get("network") or {}).get("hashrate")
     # Real-user audit: btc_usd lives in btc_price.usd (network never had it),
     # which kept BTC/USD + Rent-vs-Own at "—" in the institutional view.
-    btc_usd = (latest_snapshot.get("btc_price") or {}).get("usd") or (latest_snapshot.get("network") or {}).get("btc_usd")
+    btc_usd = (latest_snapshot.get("btc_price") or {}).get("usd") or (
+        latest_snapshot.get("network") or {}
+    ).get("btc_usd")
     scored = [_score_offer(offer, network_hashrate) for offer in offers]
     scored.sort(key=_market_offer_sort_key)
 
     # HashratePulse Enterprise institutional view
     from services.hashrate_market import compute_institutional_view
+
     inst_view = compute_institutional_view(offers, network_hashrate, btc_usd)
 
-    return jsonify({
-        "success": True,
-        "ts": int(time.time()),
-        "offers": scored,
-        "health": _hashrate_market_health(),
-        "institutional": inst_view,
-    })
+    return jsonify(
+        {
+            "success": True,
+            "ts": int(time.time()),
+            "offers": scored,
+            "health": _hashrate_market_health(),
+            "institutional": inst_view,
+        }
+    )
 
 
 @app.route("/api/hashrate-market/institutional")
@@ -5443,9 +6187,17 @@ def api_hashrate_market_institutional():
     offers = _get_hashrate_market_offers()
     network_hashrate = (latest_snapshot.get("network") or {}).get("hashrate")
     # Real-user audit: same btc_price.usd fix as /api/hashrate-market.
-    btc_usd = (latest_snapshot.get("btc_price") or {}).get("usd") or (latest_snapshot.get("network") or {}).get("btc_usd")
+    btc_usd = (latest_snapshot.get("btc_price") or {}).get("usd") or (
+        latest_snapshot.get("network") or {}
+    ).get("btc_usd")
     from services.hashrate_market import compute_institutional_view
-    return jsonify({"success": True, **compute_institutional_view(offers, network_hashrate, btc_usd)})
+
+    return jsonify(
+        {
+            "success": True,
+            **compute_institutional_view(offers, network_hashrate, btc_usd),
+        }
+    )
 
 
 @app.route("/api/hashrate-market/history")
@@ -5505,21 +6257,25 @@ def api_market_history():
         records = []
         for r in rows:
             ppth = r["price_per_th_day"]
-            records.append({
-                "ts": r["ts"],
-                "provider": r["provider"],
-                "hashrate": r["hashrate"],
-                "price_btc_per_th_day": ppth,
-                "price_btc_per_ph_day": (ppth * 1000) if ppth is not None else None,
-                "score": r["score"],
-            })
+            records.append(
+                {
+                    "ts": r["ts"],
+                    "provider": r["provider"],
+                    "hashrate": r["hashrate"],
+                    "price_btc_per_th_day": ppth,
+                    "price_btc_per_ph_day": (ppth * 1000) if ppth is not None else None,
+                    "score": r["score"],
+                }
+            )
 
-        return jsonify({
-            "success": True,
-            "records": records,
-            "count": len(records),
-            "updated_at": int(time.time()),
-        })
+        return jsonify(
+            {
+                "success": True,
+                "records": records,
+                "count": len(records),
+                "updated_at": int(time.time()),
+            }
+        )
     except Exception as e:
         log.warning("[market/history] error: %s", e)
         return jsonify({"success": False, "error": "failed to fetch history"}), 500
@@ -5545,15 +6301,18 @@ def api_market_trend():
         conn.close()
 
         from collections import defaultdict
+
         by_provider = defaultdict(list)
         for r in rows:
             ppth = r["price_per_th_day"]
-            by_provider[r["provider"]].append({
-                "ts": r["ts"],
-                "price_btc_per_th_day": ppth,
-                "price_btc_per_ph_day": (ppth * 1000) if ppth is not None else None,
-                "score": r["score"],
-            })
+            by_provider[r["provider"]].append(
+                {
+                    "ts": r["ts"],
+                    "price_btc_per_th_day": ppth,
+                    "price_btc_per_ph_day": (ppth * 1000) if ppth is not None else None,
+                    "score": r["score"],
+                }
+            )
 
         # Honest display: only CURRENTLY offered providers go into the
         # buying-comparison chart. A provider without any quote for >48h
@@ -5562,15 +6321,18 @@ def api_market_trend():
         # otherwise inflate the "N providers" badge and mislead the operator.
         active_cutoff = int(time.time()) - 48 * 3600
         by_provider = {
-            p: pts for p, pts in by_provider.items()
+            p: pts
+            for p, pts in by_provider.items()
             if any(x["ts"] >= active_cutoff for x in pts)
         }
 
-        return jsonify({
-            "success": True,
-            "providers": dict(by_provider),
-            "updated_at": int(time.time()),
-        })
+        return jsonify(
+            {
+                "success": True,
+                "providers": dict(by_provider),
+                "updated_at": int(time.time()),
+            }
+        )
     except Exception as e:
         log.warning("[market/trend] error: %s", e)
         return jsonify({"success": False, "error": "failed to fetch trend"}), 500
@@ -5612,17 +6374,25 @@ def api_rentals(tenant_id: str = ""):
             return jsonify(_cached["payload"])
 
     try:
-        mrr_active = _rental_perf.fetch_mrr_rentals(rtype="renter", history=False, limit=50, tenant_id=tenant_id)
-        mrr_history = _rental_perf.fetch_mrr_rentals(rtype="renter", history=True, limit=50, tenant_id=tenant_id)
-        mrr_owner = _rental_perf.fetch_mrr_rentals(rtype="owner", history=True, limit=50, tenant_id=tenant_id)
+        mrr_active = _rental_perf.fetch_mrr_rentals(
+            rtype="renter", history=False, limit=50, tenant_id=tenant_id
+        )
+        mrr_history = _rental_perf.fetch_mrr_rentals(
+            rtype="renter", history=True, limit=50, tenant_id=tenant_id
+        )
+        mrr_owner = _rental_perf.fetch_mrr_rentals(
+            rtype="owner", history=True, limit=50, tenant_id=tenant_id
+        )
         braiins = _rental_perf.fetch_braiins_contracts(tenant_id=tenant_id)
         # CFO: flag blacklisted rigs in the list payload (cheap settings read
         # — no per-rig history calls on the list). Full trust grades are
         # computed per-rental in the detail endpoint where history exists.
         bl = set(_rental_perf.get_rig_blacklist(tenant_id=tenant_id))
-        for bucket in (mrr_active.get("rentals", []),
-                       mrr_history.get("rentals", []),
-                       mrr_owner.get("rentals", [])):
+        for bucket in (
+            mrr_active.get("rentals", []),
+            mrr_history.get("rentals", []),
+            mrr_owner.get("rentals", []),
+        ):
             for rv in bucket:
                 rid = (rv.get("rig") or {}).get("id")
                 rv["blacklisted"] = rid is not None and str(rid) in bl
@@ -5632,9 +6402,12 @@ def api_rentals(tenant_id: str = ""):
         # storage hiccup must never break the list.
         try:
             _rental_perf.ingest_rentals(
-                mrr_active.get("rentals", []), mrr_history.get("rentals", []),
-                mrr_owner.get("rentals", []), braiins.get("contracts", []),
-                tenant_id=tenant_id)
+                mrr_active.get("rentals", []),
+                mrr_history.get("rentals", []),
+                mrr_owner.get("rentals", []),
+                braiins.get("contracts", []),
+                tenant_id=tenant_id,
+            )
         except Exception as _ie:
             log.warning("[rentals] history ingest error: %s", _ie)
         # CFO auto-alert: closed rental with P/L below the tenant's threshold
@@ -5652,32 +6425,38 @@ def api_rentals(tenant_id: str = ""):
         _market_signals: dict = {"overpay": [], "arbitrage": []}
         try:
             from services.user_polling import (
-                dispatch_rental_pl_alerts, dispatch_tenant_risk_alerts,
-                dispatch_rental_market_alerts, dispatch_rental_arb_alerts,
+                dispatch_rental_pl_alerts,
+                dispatch_tenant_risk_alerts,
+                dispatch_rental_market_alerts,
+                dispatch_rental_arb_alerts,
                 dispatch_reco_worse_alerts,
             )
+
             pl_alerts = _rental_perf.evaluate_rental_pl_alerts(
-                mrr_history.get("rentals", []), braiins.get("contracts", []),
-                tenant_id=tenant_id)
+                mrr_history.get("rentals", []),
+                braiins.get("contracts", []),
+                tenant_id=tenant_id,
+            )
             dispatch_rental_pl_alerts(tenant_id, pl_alerts)
             # Market-overpay family: price paid vs the market AT PURCHASE —
             # judged on ACTIVE rentals too (bought recently) so the alert
             # fires "na hora da compra", not only when the rental ends.
             market_alerts = _rental_perf.evaluate_market_overpay_alerts(
-                mrr_history.get("rentals", []), braiins.get("contracts", []),
-                tenant_id=tenant_id, extra=mrr_active.get("rentals", []))
+                mrr_history.get("rentals", []),
+                braiins.get("contracts", []),
+                tenant_id=tenant_id,
+                extra=mrr_active.get("rentals", []),
+            )
             dispatch_rental_market_alerts(tenant_id, market_alerts)
             # Arbitrage-opportunity family: market NOW ≥ X% below the tenant's
             # OWN average cost → 'compre agora' window. Local-first (zero
             # provider cost), dedup once per cooldown window.
-            arb_alerts = _rental_perf.evaluate_market_arb_alerts(
-                tenant_id=tenant_id)
+            arb_alerts = _rental_perf.evaluate_market_arb_alerts(tenant_id=tenant_id)
             dispatch_rental_arb_alerts(tenant_id, arb_alerts)
             # Accepted-recommendation 'worse' family: an accepted blacklist
             # whose rig kept under-delivering afterwards → proactive alert.
             # Local-first (ledger + local history), dedup once per rig.
-            reco_worse = _rental_perf.evaluate_reco_worse_alerts(
-                tenant_id=tenant_id)
+            reco_worse = _rental_perf.evaluate_reco_worse_alerts(tenant_id=tenant_id)
             dispatch_reco_worse_alerts(tenant_id, reco_worse)
             # Panel banner signals: DRY-RUN evaluation so the visual summary
             # stays visible even after the webhook fired (dry_run never
@@ -5689,22 +6468,30 @@ def api_rentals(tenant_id: str = ""):
             # banner must stay visible while the signal persists.
             _market_signals = {
                 "overpay": _rental_perf.evaluate_market_overpay_alerts(
-                    mrr_history.get("rentals", []), braiins.get("contracts", []),
-                    tenant_id=tenant_id, extra=mrr_active.get("rentals", []),
-                    dry_run=True),
+                    mrr_history.get("rentals", []),
+                    braiins.get("contracts", []),
+                    tenant_id=tenant_id,
+                    extra=mrr_active.get("rentals", []),
+                    dry_run=True,
+                ),
                 "arbitrage": _rental_perf.evaluate_market_arb_alerts(
-                    tenant_id=tenant_id, dry_run=True),
+                    tenant_id=tenant_id, dry_run=True
+                ),
             }
             # Risk alerts (worst-rig top-N + concentration): the panel already
             # computes both below for the payload — pass them in so the
             # evaluator never recomputes; dispatch once per rig/event
             # (persisted dedup).
             conc = _rental_perf.compute_concentration_risk(
-                mrr_active.get("rentals", []), mrr_history.get("rentals", []),
-                mrr_owner.get("rentals", []), braiins.get("contracts", []))
+                mrr_active.get("rentals", []),
+                mrr_history.get("rentals", []),
+                mrr_owner.get("rentals", []),
+                braiins.get("contracts", []),
+            )
             worst_rigs = _rental_perf.compute_worst_rigs(tenant_id=tenant_id)
             risk_alerts = _rental_perf.evaluate_risk_alerts(
-                tenant_id=tenant_id, concentration=conc, worst_rigs=worst_rigs)
+                tenant_id=tenant_id, concentration=conc, worst_rigs=worst_rigs
+            )
             dispatch_tenant_risk_alerts(tenant_id, risk_alerts)
         except Exception as _pe:
             log.warning("[rentals] pl alert error: %s", _pe)
@@ -5716,9 +6503,12 @@ def api_rentals(tenant_id: str = ""):
                 "active": mrr_active.get("rentals", []),
                 "history": mrr_history.get("rentals", []),
                 "owner": mrr_owner.get("rentals", []),
-                "total_active": mrr_active.get("total") or len(mrr_active.get("rentals", [])),
-                "total_history": mrr_history.get("total") or len(mrr_history.get("rentals", [])),
-                "total_owner": mrr_owner.get("total") or len(mrr_owner.get("rentals", [])),
+                "total_active": mrr_active.get("total")
+                or len(mrr_active.get("rentals", [])),
+                "total_history": mrr_history.get("total")
+                or len(mrr_history.get("rentals", [])),
+                "total_owner": mrr_owner.get("total")
+                or len(mrr_owner.get("rentals", [])),
                 "error": mrr_active.get("error") or mrr_history.get("error"),
             },
             "braiins": {
@@ -5729,16 +6519,21 @@ def api_rentals(tenant_id: str = ""):
             # CFO: aggregate portfolio analytics (total spent, weighted avg
             # cost, avg delivery, provider split) for the panel top strip.
             "portfolio": _rental_perf.compute_portfolio_summary(
-                mrr_active.get("rentals", []), mrr_history.get("rentals", []),
-                mrr_owner.get("rentals", []), braiins.get("contracts", [])),
+                mrr_active.get("rentals", []),
+                mrr_history.get("rentals", []),
+                mrr_owner.get("rentals", []),
+                braiins.get("contracts", []),
+            ),
             # CFO: portfolio TIME SERIES — spent + estimated P/L bucketed by
             # week (default) / month from the LOCAL rental_history table.
             "portfolio_series": _rental_perf.compute_portfolio_series(
-                tenant_id=tenant_id, bucket="week"),
+                tenant_id=tenant_id, bucket="week"
+            ),
             # CFO recommendation engine — 'where to rent again' (local track
             # record × live market) + 30-day market timing for context.
             "recommendations": _rental_perf.build_rental_recommendations(
-                tenant_id=tenant_id),
+                tenant_id=tenant_id
+            ),
             "market_trend": _rental_perf.fetch_market_trend(),
             # CFO: per-tenant rig blacklists — manual + auto-excluded ids so
             # the panel marks/hides bad performers instantly.
@@ -5748,24 +6543,30 @@ def api_rentals(tenant_id: str = ""):
             # after the pilot flagged them + the delivery OUTCOME afterwards
             # (avoided / improved / worse / same). Tenant-scoped ledger.
             "accepted_recos": _rental_perf.compute_accepted_recos_summary(
-                tenant_id=tenant_id),
+                tenant_id=tenant_id
+            ),
             # Auto-exclusion history (WHEN + CAUSE): every rig the PILOT
             # auto-excluded (source='auto') with the delivery snapshot at
             # exclusion time + the rule vigente (grade floor + min samples).
-            "auto_exclusions": _rental_perf.auto_exclusion_history(
-                tenant_id=tenant_id),
+            "auto_exclusions": _rental_perf.auto_exclusion_history(tenant_id=tenant_id),
             # Click-first analytics (drill-down targets):
             #   provider_rankings — MRR vs Braiins delivery/cost/P·L comparison
             #   rig_heatmap      — cost × delivery grid by rig NAME (≥2 samples)
             #   expiring         — active rentals ending within 72h (calendar)
             "provider_rankings": _rental_perf.compute_provider_rankings(
-                mrr_active.get("rentals", []), mrr_history.get("rentals", []),
-                mrr_owner.get("rentals", []), braiins.get("contracts", [])),
+                mrr_active.get("rentals", []),
+                mrr_history.get("rentals", []),
+                mrr_owner.get("rentals", []),
+                braiins.get("contracts", []),
+            ),
             "rig_heatmap": _rental_perf.compute_rig_heatmap(
-                mrr_history.get("rentals", []), mrr_owner.get("rentals", []),
-                tenant_id=tenant_id),
+                mrr_history.get("rentals", []),
+                mrr_owner.get("rentals", []),
+                tenant_id=tenant_id,
+            ),
             "expiring": _rental_perf.compute_expiring_rentals(
-                mrr_active.get("rentals", []), hours=72.0),
+                mrr_active.get("rentals", []), hours=72.0
+            ),
             # CFO: worst-rig leaderboard (EWMA delivery + failure rate +
             # volatility + danger score) and portfolio concentration risk
             # (provider/rig spend share + Herfindahl) — the 'who burned me'
@@ -5791,8 +6592,7 @@ def api_rentals(tenant_id: str = ""):
         # 1000+ tenants — same discipline as the rate-limit store).
         if len(_RENTALS_CACHE) > 2048:
             cutoff = _now - _RENTALS_CACHE_TTL_S
-            for _k in [k for k, v in _RENTALS_CACHE.items()
-                       if v["ts"] < cutoff]:
+            for _k in [k for k, v in _RENTALS_CACHE.items() if v["ts"] < cutoff]:
                 _RENTALS_CACHE.pop(_k, None)
         return jsonify(payload)
     except Exception as e:
@@ -5819,11 +6619,15 @@ def api_rentals_rig_blacklist(tenant_id: str = ""):
             _rental_perf.remove_rig_from_blacklist(rig_id, tenant_id=tenant_id)
         else:
             _rental_perf.add_rig_to_blacklist(rig_id, tenant_id=tenant_id)
-        return jsonify({
-            "success": True,
-            "blacklisted": _rental_perf.is_rig_blacklisted(rig_id, tenant_id=tenant_id),
-            "rig_blacklist": _rental_perf.get_rig_blacklist(tenant_id=tenant_id),
-        })
+        return jsonify(
+            {
+                "success": True,
+                "blacklisted": _rental_perf.is_rig_blacklisted(
+                    rig_id, tenant_id=tenant_id
+                ),
+                "rig_blacklist": _rental_perf.get_rig_blacklist(tenant_id=tenant_id),
+            }
+        )
     except Exception as e:
         log.warning("[rentals] blacklist error: %s", e)
         return jsonify({"success": False, "error": "blacklist update failed"}), 500
@@ -5854,33 +6658,45 @@ def api_rentals_detail(tenant_id: str = ""):
     try:
         if provider == "braiins":
             contract = body.get("contract")
-            result = _rental_perf.fetch_braiins_contract_detail(rid, contract=contract,
-                                                                 tenant_id=tenant_id)
+            result = _rental_perf.fetch_braiins_contract_detail(
+                rid, contract=contract, tenant_id=tenant_id
+            )
             # Braiins contracts have no rig id → trust score is NO DATA; the
             # panel still gets the blacklist state for a stable label. The
             # speed series yields the STABILITY grade + the P/L economics.
-            return jsonify({"success": True, "provider": "braiins",
-                            "detail": result.get("detail") or {},
-                            "graph": result.get("graph") or {},
-                            "log": result.get("log") or {},
-                            "stability": result.get("stability"),
-                            "pl": result.get("pl"),
-                            # Analytics: effective cost vs the cheapest live
-                            # market price (sats/TH/h) for the perf banner.
-                            "market": _rental_perf.fetch_market_reference(),
-                            "rig_history": [],
-                            "rig_analysis": {
-                                "trust": _rental_perf.compute_rig_trust_score([]),
-                                "blacklisted": False,
-                                "summary": {"rentals": 0, "avg_pct": None,
-                                             "cost_avg_sats_thh": None, "trend_pct": None},
-                                "history": [],
-                            }})
+            return jsonify(
+                {
+                    "success": True,
+                    "provider": "braiins",
+                    "detail": result.get("detail") or {},
+                    "graph": result.get("graph") or {},
+                    "log": result.get("log") or {},
+                    "stability": result.get("stability"),
+                    "pl": result.get("pl"),
+                    # Analytics: effective cost vs the cheapest live
+                    # market price (sats/TH/h) for the perf banner.
+                    "market": _rental_perf.fetch_market_reference(),
+                    "rig_history": [],
+                    "rig_analysis": {
+                        "trust": _rental_perf.compute_rig_trust_score([]),
+                        "blacklisted": False,
+                        "summary": {
+                            "rentals": 0,
+                            "avg_pct": None,
+                            "cost_avg_sats_thh": None,
+                            "trend_pct": None,
+                        },
+                        "history": [],
+                    },
+                }
+            )
         detail = _rental_perf.fetch_mrr_rental_detail(rid, tenant_id=tenant_id)
         raw = detail.get("detail") or {}
         # Compute the same perf block Braiins carries, from the RAW MRR
         # detail (percent / avg TH / delivered TH·h / cost sats/TH/h).
-        perf = _rental_perf.compute_mrr_perf(raw) if raw and not raw.get("error") else {}
+        perf = (
+            _rental_perf.compute_mrr_perf(raw) if raw and not raw.get("error") else {}
+        )
         # Economic P/L — expected gross yield (network hashrate) vs paid:
         # the "did this rental make money?" question, computed server-side.
         # MRR reports price.paid as a STRING — coerce before the ×1e8 math.
@@ -5888,15 +6704,19 @@ def api_rentals_detail(tenant_id: str = ""):
         # Historical-P/L fix: price the rental against the network hashrate
         # OBSERVED at its time (nearest snapshot, current as last resort).
         pl = _rental_perf.attach_pl(
-            perf, (_paid * 1e8) if _paid is not None else None,
+            perf,
+            (_paid * 1e8) if _paid is not None else None,
             network_hashrate_hs=_rental_perf._resolve_network_hashrate_for_rental(
-                raw.get("start"), raw.get("end")))
+                raw.get("start"), raw.get("end")
+            ),
+        )
         # CFO: full rig intelligence — same-rig track record, Trust Score
         # (grade A-F), blacklist state and spend/consistency summary.
         rig = raw.get("rig") or {}
         rig_id = rig.get("id")
         rig_analysis = _rental_perf.analyze_rig(
-            rig_id, rig.get("name"), exclude_rental_id=rid, tenant_id=tenant_id)
+            rig_id, rig.get("name"), exclude_rental_id=rid, tenant_id=tenant_id
+        )
         # CFO alert parity with the sweep (Issue #102 → #108): an
         # auto-exclusion made HERE (panel detail) fires the same opt-in
         # webhook/push alert through the SAME dispatcher the sweep uses, with
@@ -5910,14 +6730,19 @@ def api_rentals_detail(tenant_id: str = ""):
         if rig_analysis.get("auto_excluded_now") and rig_id:
             try:
                 from services.user_polling import dispatch_auto_exclude_alerts
-                n_alert = dispatch_auto_exclude_alerts(tenant_id, [rig_id],
-                                                       path="panel")
+
+                n_alert = dispatch_auto_exclude_alerts(
+                    tenant_id, [rig_id], path="panel"
+                )
                 if n_alert:
-                    log.info("[rentals] panel auto-exclude alert: %d dispatched",
-                             n_alert)
+                    log.info(
+                        "[rentals] panel auto-exclude alert: %d dispatched", n_alert
+                    )
                 th = _rental_perf._auto_exclude_thresholds(tenant_id=tenant_id)
-                autoex_rule = {"grade_floor": th.get("grade"),
-                               "min_samples": th.get("min_samples")}
+                autoex_rule = {
+                    "grade_floor": th.get("grade"),
+                    "min_samples": th.get("min_samples"),
+                }
                 # The exact ledger entry the AUTO-EXCLUSÕES section will show —
                 # reuse auto_exclusion_history() so the pre-added card is
                 # byte-identical to a refresh (same snapshot, rule, cause).
@@ -5928,21 +6753,30 @@ def api_rentals_detail(tenant_id: str = ""):
                         break
             except Exception as e:
                 log.warning("[rentals] panel auto-exclude alert error: %s", e)
-        return jsonify({"success": True, "provider": "mrr", "detail": raw,
-                        "graph": detail.get("graph") or {},
-                        "log": detail.get("log") or {},
-                        "perf": perf,
-                        "pl": pl,
-                        "rig_history": rig_analysis["history"],
-                        "rig_analysis": rig_analysis,
-                        "auto_excluded_now": bool(rig_analysis.get("auto_excluded_now")),
-                        "auto_exclude_alert_dispatched": n_alert,
-                        "auto_exclude_rule": autoex_rule,
-                        "auto_exclude_entry": autoex_entry,
-                        "market": _rental_perf.fetch_market_reference()})
+        return jsonify(
+            {
+                "success": True,
+                "provider": "mrr",
+                "detail": raw,
+                "graph": detail.get("graph") or {},
+                "log": detail.get("log") or {},
+                "perf": perf,
+                "pl": pl,
+                "rig_history": rig_analysis["history"],
+                "rig_analysis": rig_analysis,
+                "auto_excluded_now": bool(rig_analysis.get("auto_excluded_now")),
+                "auto_exclude_alert_dispatched": n_alert,
+                "auto_exclude_rule": autoex_rule,
+                "auto_exclude_entry": autoex_entry,
+                "market": _rental_perf.fetch_market_reference(),
+            }
+        )
     except Exception as e:
         log.warning("[rentals] detail error: %s", e)
-        return jsonify({"success": False, "error": "failed to fetch rental detail"}), 500
+        return (
+            jsonify({"success": False, "error": "failed to fetch rental detail"}),
+            500,
+        )
 
 
 @app.route("/api/rentals/export", methods=["GET"])
@@ -5960,11 +6794,18 @@ def api_rentals_export(tenant_id: str = ""):
     """
     import csv as _csv
     import io as _io
+
     mode = (request.args.get("mode") or "simple").strip().lower()
     try:
-        mrr_active = _rental_perf.fetch_mrr_rentals(rtype="renter", history=False, limit=200, tenant_id=tenant_id)
-        mrr_history = _rental_perf.fetch_mrr_rentals(rtype="renter", history=True, limit=200, tenant_id=tenant_id)
-        mrr_owner = _rental_perf.fetch_mrr_rentals(rtype="owner", history=True, limit=200, tenant_id=tenant_id)
+        mrr_active = _rental_perf.fetch_mrr_rentals(
+            rtype="renter", history=False, limit=200, tenant_id=tenant_id
+        )
+        mrr_history = _rental_perf.fetch_mrr_rentals(
+            rtype="renter", history=True, limit=200, tenant_id=tenant_id
+        )
+        mrr_owner = _rental_perf.fetch_mrr_rentals(
+            rtype="owner", history=True, limit=200, tenant_id=tenant_id
+        )
         braiins = _rental_perf.fetch_braiins_contracts(tenant_id=tenant_id)
         bl = set(_rental_perf.get_rig_blacklist(tenant_id=tenant_id))
         auto = set(_rental_perf.get_auto_blacklist(tenant_id=tenant_id))
@@ -5975,15 +6816,23 @@ def api_rentals_export(tenant_id: str = ""):
             # rentals_min_delivery_pct, default 90). Tenant-aware resolver:
             # the app.py load_settings() is the legacy global-only helper.
             from services.settings import load_settings as _tenant_load_settings
+
             try:
-                min_del = float(_rental_perf._num(
-                    _tenant_load_settings(tenant_id).get("rentals_min_delivery_pct")) or 90.0)
+                min_del = float(
+                    _rental_perf._num(
+                        _tenant_load_settings(tenant_id).get("rentals_min_delivery_pct")
+                    )
+                    or 90.0
+                )
             except (TypeError, ValueError):
                 min_del = 90.0
             rows = _rental_perf.build_rentals_analysis_rows(
-                mrr_active.get("rentals", []), mrr_history.get("rentals", []),
-                braiins.get("contracts", []), tenant_id=tenant_id,
-                min_delivery_pct=min_del)
+                mrr_active.get("rentals", []),
+                mrr_history.get("rentals", []),
+                braiins.get("contracts", []),
+                tenant_id=tenant_id,
+                min_delivery_pct=min_del,
+            )
             out_csv = "\ufeff" + _rental_perf.rentals_analysis_csv(rows)
             fname = f"rentals_analysis_{tenant_id or 'operator'}_{int(time.time())}.csv"
             resp = app.response_class(out_csv, mimetype="text/csv")
@@ -5993,12 +6842,27 @@ def api_rentals_export(tenant_id: str = ""):
         # Legacy simple ledger (default mode).
         buf = _io.StringIO()
         w = _csv.writer(buf)
-        w.writerow(["provider", "id", "bucket", "start", "end", "length_hours",
-                    "avg_th", "advertised_th", "delivery_pct", "paid_sats",
-                    "cost_sats_per_thh", "blacklisted"])
-        for bucket_name, bucket in (("active", mrr_active.get("rentals", [])),
-                                    ("history", mrr_history.get("rentals", [])),
-                                    ("owner", mrr_owner.get("rentals", []))):
+        w.writerow(
+            [
+                "provider",
+                "id",
+                "bucket",
+                "start",
+                "end",
+                "length_hours",
+                "avg_th",
+                "advertised_th",
+                "delivery_pct",
+                "paid_sats",
+                "cost_sats_per_thh",
+                "blacklisted",
+            ]
+        )
+        for bucket_name, bucket in (
+            ("active", mrr_active.get("rentals", [])),
+            ("history", mrr_history.get("rentals", [])),
+            ("owner", mrr_owner.get("rentals", [])),
+        ):
             for r in bucket:
                 _rig = r.get("rig") if isinstance(r.get("rig"), dict) else {}
                 rid = _rig.get("id")
@@ -6006,22 +6870,51 @@ def api_rentals_export(tenant_id: str = ""):
                 adv = r.get("hashrate_advertised_th")
                 avg = r.get("hashrate_average_th")
                 lenh = r.get("length_hours")
-                w.writerow(["mrr", r.get("id"), bucket_name, r.get("start"),
-                            r.get("end"), lenh, avg, adv, r.get("hashrate_percent"),
-                            round(paid * 1e8) if paid is not None else "",
+                w.writerow(
+                    [
+                        "mrr",
+                        r.get("id"),
+                        bucket_name,
+                        r.get("start"),
+                        r.get("end"),
+                        lenh,
+                        avg,
+                        adv,
+                        r.get("hashrate_percent"),
+                        round(paid * 1e8) if paid is not None else "",
+                        (
                             round((paid * 1e8) / (avg * lenh), 2)
-                            if (paid is not None and avg and lenh) else "",
-                            "1" if (rid and (str(rid) in bl or str(rid) in auto)) else ""])
+                            if (paid is not None and avg and lenh)
+                            else ""
+                        ),
+                        "1" if (rid and (str(rid) in bl or str(rid) in auto)) else "",
+                    ]
+                )
         for c in braiins.get("contracts", []):
-            w.writerow(["braiins", c.get("id"), "contract", c.get("started_at"),
-                        c.get("ended_at"), "", "", c.get("speed_limit_ph"), "",
-                        c.get("amount_sat"), "", ""])
+            w.writerow(
+                [
+                    "braiins",
+                    c.get("id"),
+                    "contract",
+                    c.get("started_at"),
+                    c.get("ended_at"),
+                    "",
+                    "",
+                    c.get("speed_limit_ph"),
+                    "",
+                    c.get("amount_sat"),
+                    "",
+                    "",
+                ]
+            )
 
         resp = app.response_class(
             "\ufeff" + buf.getvalue(),  # BOM → Excel abre UTF-8 direto
-            mimetype="text/csv")
+            mimetype="text/csv",
+        )
         resp.headers["Content-Disposition"] = (
-            f"attachment; filename=rentals_{tenant_id or 'operator'}_{int(time.time())}.csv")
+            f"attachment; filename=rentals_{tenant_id or 'operator'}_{int(time.time())}.csv"
+        )
         return resp
     except Exception as e:
         log.warning("[rentals] export error: %s", e)
@@ -6090,7 +6983,10 @@ def api_braiins_bid(tenant_id: str = ""):
     try:
         speed_th = float(body.get("speed_limit_th") or 0)
     except (TypeError, ValueError):
-        return jsonify({"success": False, "error": "speed_limit_th must be a number"}), 400
+        return (
+            jsonify({"success": False, "error": "speed_limit_th must be a number"}),
+            400,
+        )
     amount_sat = body.get("amount_sat")
     price_sat = body.get("price_sat")
     upstream_url = (body.get("upstream_url") or "").strip()
@@ -6103,7 +6999,12 @@ def api_braiins_bid(tenant_id: str = ""):
     if speed_th <= 0:
         return jsonify({"success": False, "error": "speed_limit_th must be > 0"}), 400
     if amount_sat is None or price_sat is None:
-        return jsonify({"success": False, "error": "amount_sat and price_sat are required"}), 400
+        return (
+            jsonify(
+                {"success": False, "error": "amount_sat and price_sat are required"}
+            ),
+            400,
+        )
 
     result = _rental_perf.create_braiins_bid(
         speed_limit_ph=speed_th / 1000.0,
@@ -6118,13 +7019,23 @@ def api_braiins_bid(tenant_id: str = ""):
     if result.get("success"):
         # Record the placed order in the conversion funnel + audit (no PII).
         try:
-            _conversion.track_event("braiins_bid", tenant_id=tenant_id,
-                                    meta={"cl_order_id": cl_order_id[:40]})
+            _conversion.track_event(
+                "braiins_bid",
+                tenant_id=tenant_id,
+                meta={"cl_order_id": cl_order_id[:40]},
+            )
         except Exception:
             pass
         return jsonify({"success": True, "bid": result.get("bid")})
-    status = 401 if result.get("needs_auth") else (400 if "must be" in (result.get("error") or "") else 502)
-    return jsonify({"success": False, "error": result.get("error") or "bid failed"}), status
+    status = (
+        401
+        if result.get("needs_auth")
+        else (400 if "must be" in (result.get("error") or "") else 502)
+    )
+    return (
+        jsonify({"success": False, "error": result.get("error") or "bid failed"}),
+        status,
+    )
 
 
 @app.route("/api/rentals/rig")
@@ -6141,10 +7052,12 @@ def api_rentals_rig(tenant_id: str = ""):
     if not (rig_id or rig_name):
         return jsonify({"success": False, "error": "missing rig_id"}), 400
     try:
-        analysis = _rental_perf.rig_track_record(rig_id or None, rig_name,
-                                                  tenant_id=tenant_id)
-        return jsonify({"success": True, "rig_id": rig_id,
-                        "rig_name": rig_name, **analysis})
+        analysis = _rental_perf.rig_track_record(
+            rig_id or None, rig_name, tenant_id=tenant_id
+        )
+        return jsonify(
+            {"success": True, "rig_id": rig_id, "rig_name": rig_name, **analysis}
+        )
     except Exception as e:
         log.warning("[rentals] rig error: %s", e)
         return jsonify({"success": False, "error": "rig analysis failed"}), 500
@@ -6185,7 +7098,9 @@ def api_rentals_series(tenant_id: str = ""):
     """
     try:
         bucket = (request.args.get("bucket") or "week").lower()
-        series = _rental_perf.compute_portfolio_series(tenant_id=tenant_id, bucket=bucket)
+        series = _rental_perf.compute_portfolio_series(
+            tenant_id=tenant_id, bucket=bucket
+        )
 
         return jsonify({"success": True, **series})
     except Exception as e:
@@ -6208,9 +7123,11 @@ def api_rentals_series_rentals(tenant_id: str = ""):
         return jsonify({"success": False, "error": "missing label"}), 400
     try:
         rows = _rental_perf.series_bucket_rentals(
-            tenant_id=tenant_id, bucket=bucket, label=label)
-        return jsonify({"success": True, "bucket": bucket, "label": label,
-                        "rentals": rows})
+            tenant_id=tenant_id, bucket=bucket, label=label
+        )
+        return jsonify(
+            {"success": True, "bucket": bucket, "label": label, "rentals": rows}
+        )
     except Exception as e:
         log.warning("[rentals] series drill-down error: %s", e)
         return jsonify({"success": False, "error": "drill-down failed"}), 500
@@ -6261,40 +7178,64 @@ def api_opportunities_compare():
 
     scored.sort(key=_market_offer_sort_key)
 
-    return jsonify({
-        "success": True,
-        "ts": int(time.time()),
-        "offers": scored,
-    })
+    return jsonify(
+        {
+            "success": True,
+            "ts": int(time.time()),
+            "offers": scored,
+        }
+    )
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 #  Wallet management — change address via UI
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-@app.route('/api/chart-data')
+
+@app.route("/api/chart-data")
 def api_chart_data():
     """Return historical chart data for the 4 charts.
     Params: chart (hashrate|pool|bestdiff|net), range (1h|6h|24h|7d|all).
     Reads from proximity_history table (sampled every ~60s)."""
-    chart = request.args.get('chart', 'hashrate')
-    rng = request.args.get('range', '1h')
+    chart = request.args.get("chart", "hashrate")
+    rng = request.args.get("range", "1h")
     # R1 (PRO tier): 30d/all history is a PRO feature. Off-by-default — the
     # gate only fires when the operator sets PRO_LICENSE_KEYS and the caller
     # has no valid key; otherwise is_pro() is True in open mode.
-    if rng in ('30d', 'all') and not is_pro():
-        return jsonify({
-            "error": "30d history is a PRO feature — requires a license key",
-            "code": "LICENSE_REQUIRED",
-            "required_tier": "pro",
-            "upgrade": {"plan": "PRO", "price_usd_month": 9},
-        }), 402
+    if rng in ("30d", "all") and not is_pro():
+        return (
+            jsonify(
+                {
+                    "error": "30d history is a PRO feature — requires a license key",
+                    "code": "LICENSE_REQUIRED",
+                    "required_tier": "pro",
+                    "upgrade": {"plan": "PRO", "price_usd_month": 9},
+                }
+            ),
+            402,
+        )
     # Fase 2.1: full range set — 15m (hashrate toolbar) and 30d (net toolbar)
     # previously fell back to 1h, silently showing the wrong window.
-    window_seconds = {'15m': 900, '1h': 3600, '6h': 21600, '24h': 86400, '7d': 604800, '30d': 2592000, 'all': 2592000}
+    window_seconds = {
+        "15m": 900,
+        "1h": 3600,
+        "6h": 21600,
+        "24h": 86400,
+        "7d": 604800,
+        "30d": 2592000,
+        "all": 2592000,
+    }
     window = window_seconds.get(rng, 3600)
     cutoff = int(time.time()) - window
-    max_points = {'15m': 60, '1h': 120, '6h': 360, '24h': 500, '7d': 1000, '30d': 1500, 'all': 2000}
+    max_points = {
+        "15m": 60,
+        "1h": 120,
+        "6h": 360,
+        "24h": 500,
+        "7d": 1000,
+        "30d": 1500,
+        "all": 2000,
+    }
     limit = max_points.get(rng, 500)
 
     labels = []
@@ -6302,9 +7243,9 @@ def api_chart_data():
 
     # ── Live-session charts (no DB): cumulative P progression + share
     # difficulty histogram — fed from in-memory share_calc_history ──
-    if chart in ('cum_p', 'share_dist'):
+    if chart in ("cum_p", "share_dist"):
         sch = list(timeline_state.get("share_calc_history") or [])
-        if chart == 'cum_p':
+        if chart == "cum_p":
             # Cumulative P(block) = 1-(1-p)^n compounded over the session
             cum = 0.0
             for e in sch:
@@ -6315,7 +7256,11 @@ def api_chart_data():
                 values.append(round(cum * 100, 6))
         else:
             # Histogram of share difficulty across the session
-            diffs = [float(e.get("share_diff_raw") or 0) for e in sch if e.get("share_diff_raw")]
+            diffs = [
+                float(e.get("share_diff_raw") or 0)
+                for e in sch
+                if e.get("share_diff_raw")
+            ]
             target_diff = None
             target_bucket = None
             if diffs:
@@ -6350,48 +7295,58 @@ def api_chart_data():
             if not labels:
                 labels = []
                 values = []
-        return jsonify({
-            'labels': labels,
-            # Fase 2.2: expose the real share count so the panel badge
-            # ("0 shares" was hardcoded in the HTML) can reflect reality.
-            'count': len(diffs) if chart == 'share_dist' else None,
-            # P0-1: network target difficulty + its histogram bucket (for the
-            # purple reference line overlay). Null when unavailable.
-            'target_diff': target_diff if chart == 'share_dist' else None,
-            'target_bucket': target_bucket if chart == 'share_dist' else None,
-            'datasets': [{
-                'label': 'Cumulative P(Block) %' if chart == 'cum_p' else 'Shares',
-                'data': values,
-                'fill': True,
-                'borderColor': '#a855f7' if chart == 'cum_p' else '#10b981',
-                'backgroundColor': 'rgba(168,85,247,0.1)' if chart == 'cum_p' else 'rgba(16,185,129,0.1)',
-                'tension': 0.3,
-            }],
-        })
+        return jsonify(
+            {
+                "labels": labels,
+                # Fase 2.2: expose the real share count so the panel badge
+                # ("0 shares" was hardcoded in the HTML) can reflect reality.
+                "count": len(diffs) if chart == "share_dist" else None,
+                # P0-1: network target difficulty + its histogram bucket (for the
+                # purple reference line overlay). Null when unavailable.
+                "target_diff": target_diff if chart == "share_dist" else None,
+                "target_bucket": target_bucket if chart == "share_dist" else None,
+                "datasets": [
+                    {
+                        "label": (
+                            "Cumulative P(Block) %" if chart == "cum_p" else "Shares"
+                        ),
+                        "data": values,
+                        "fill": True,
+                        "borderColor": "#a855f7" if chart == "cum_p" else "#10b981",
+                        "backgroundColor": (
+                            "rgba(168,85,247,0.1)"
+                            if chart == "cum_p"
+                            else "rgba(16,185,129,0.1)"
+                        ),
+                        "tension": 0.3,
+                    }
+                ],
+            }
+        )
 
     try:
         conn = get_db()
         c = conn.cursor()
-        if chart == 'hashrate':
+        if chart == "hashrate":
             c.execute(
                 "SELECT ts, worker_hashrate FROM proximity_history "
                 "WHERE ts > ? AND worker_hashrate > 0 ORDER BY ts ASC LIMIT ?",
                 (cutoff, limit),
             )
-        elif chart == 'bestdiff':
+        elif chart == "bestdiff":
             c.execute(
                 "SELECT ts, best_diff FROM proximity_history "
                 "WHERE ts > ? AND best_diff > 0 ORDER BY ts ASC LIMIT ?",
                 (cutoff, limit),
             )
-        elif chart == 'pool':
+        elif chart == "pool":
             # Pool hashrate not in proximity_history; use snapshots table
             c.execute(
                 "SELECT ts, pool_hashrate FROM snapshots "
                 "WHERE ts > ? AND pool_hashrate > 0 ORDER BY ts ASC LIMIT ?",
                 (cutoff, limit),
             )
-        elif chart == 'net':
+        elif chart == "net":
             c.execute(
                 "SELECT ts, network_difficulty FROM proximity_history "
                 "WHERE ts > ? AND network_difficulty > 0 ORDER BY ts ASC LIMIT ?",
@@ -6400,7 +7355,7 @@ def api_chart_data():
         rows = c.fetchall()
         conn.close()
         for row in rows:
-            labels.append(int(row['ts']) * 1000)  # JS expects ms timestamps
+            labels.append(int(row["ts"]) * 1000)  # JS expects ms timestamps
             values.append(float(row[1]))  # second column is the value
     except Exception as e:
         logging.getLogger("cypher65").warning("[chart-data] error: %s", e)
@@ -6414,6 +7369,7 @@ def api_chart_data():
     shares = None
     try:
         import bisect
+
         conn = get_db()
         c = conn.cursor()
         c.execute(
@@ -6423,12 +7379,14 @@ def api_chart_data():
             (cutoff,),
         )
         for r in c.fetchall():
-            events.append({
-                "ts": int(r["ts"]),
-                "event_type": r["event_type"],
-                "severity": r["severity"] or "INFO",
-                "message": r["message"] or "",
-            })
+            events.append(
+                {
+                    "ts": int(r["ts"]),
+                    "event_type": r["event_type"],
+                    "severity": r["severity"] or "INFO",
+                    "message": r["message"] or "",
+                }
+            )
         # Shares-per-bucket overlay aligned to the label timestamps (ms).
         # Only the hashrate chart renders the bar overlay.
         if chart == "hashrate" and labels:
@@ -6454,42 +7412,60 @@ def api_chart_data():
         # must be `(snap.get(k) or {})` — the `, {}` default only applies to
         # ABSENT keys, not keys present with a None value.
         snap = latest_snapshot or {}
-        worker = snap.get('worker') or {}
+        worker = snap.get("worker") or {}
         labels = [int(time.time()) * 1000]
-        if chart == 'cum_p':
+        if chart == "cum_p":
             lc = (snap.get("proximity") or {}).get("live_calc") or {}
-            values = [float((lc.get("session_totals") or {}).get("cum_p_block") or 0) * 100]
-        elif chart == 'share_dist':
+            values = [
+                float((lc.get("session_totals") or {}).get("cum_p_block") or 0) * 100
+            ]
+        elif chart == "share_dist":
             labels = []
             values = []
-        elif chart == 'hashrate':
-            values = [float(worker.get('hashrate') or 0)]
-        elif chart == 'bestdiff':
-            bd = worker.get('bestDifficulty') or 0
+        elif chart == "hashrate":
+            values = [float(worker.get("hashrate") or 0)]
+        elif chart == "bestdiff":
+            bd = worker.get("bestDifficulty") or 0
             try:
                 values = [float(bd)]
             except (ValueError, TypeError):
                 values = [0]
-        elif chart == 'pool':
-            values = [float((snap.get('pool') or {}).get('hashrate') or 0)]
-        elif chart == 'net':
-            net = snap.get('network') or {}
-            values = [float(net.get('difficulty') or 0)]
+        elif chart == "pool":
+            values = [float((snap.get("pool") or {}).get("hashrate") or 0)]
+        elif chart == "net":
+            net = snap.get("network") or {}
+            values = [float(net.get("difficulty") or 0)]
 
-    return jsonify({
-        'labels': labels,
-        'datasets': [{
-            'label': 'Worker Hashrate' if chart == 'hashrate' else 'Best Difficulty' if chart == 'bestdiff' else 'Pool Hashrate' if chart == 'pool' else 'Network Difficulty',
-            'data': values,
-            'fill': True,
-            'borderColor': '#06d6f0',
-            'backgroundColor': 'rgba(6,214,240,0.1)',
-            'tension': 0.3,
-        }],
-        # Fase 2.1: event annotations (ts in seconds) + share-volume overlay
-        'events': events,
-        'shares': shares,
-    })
+    return jsonify(
+        {
+            "labels": labels,
+            "datasets": [
+                {
+                    "label": (
+                        "Worker Hashrate"
+                        if chart == "hashrate"
+                        else (
+                            "Best Difficulty"
+                            if chart == "bestdiff"
+                            else (
+                                "Pool Hashrate"
+                                if chart == "pool"
+                                else "Network Difficulty"
+                            )
+                        )
+                    ),
+                    "data": values,
+                    "fill": True,
+                    "borderColor": "#06d6f0",
+                    "backgroundColor": "rgba(6,214,240,0.1)",
+                    "tension": 0.3,
+                }
+            ],
+            # Fase 2.1: event annotations (ts in seconds) + share-volume overlay
+            "events": events,
+            "shares": shares,
+        }
+    )
 
 
 # ── FULL & FREE community wallets (exact addresses) ─────────────────────
@@ -6498,11 +7474,13 @@ def api_chart_data():
 # validation in /api/set-address because a DOGE/LTC address does not start
 # with bc1/1/3 — but ONLY these exact addresses; every other address is
 # validated strictly. Stored lowercase (lookup is case-insensitive).
-_FULL_ACCESS_WALLETS = frozenset({
-    "bc1q029y2atdtvth4puv2mm5w49m32n278jtz2sxqn",
-    "dhr7a2ihqou5w5r5cpvsuvcnw4jg32qlwx",   # DOGE
-    "1473pql42jvtwxaaxcvsocrf6ytb8teted",   # LTC
-})
+_FULL_ACCESS_WALLETS = frozenset(
+    {
+        "bc1q029y2atdtvth4puv2mm5w49m32n278jtz2sxqn",
+        "dhr7a2ihqou5w5r5cpvsuvcnw4jg32qlwx",  # DOGE
+        "1473pql42jvtwxaaxcvsocrf6ytb8teted",  # LTC
+    }
+)
 
 
 @app.route("/api/set-address", methods=["POST"])
@@ -6536,7 +7514,11 @@ def api_set_address(tenant_id: str = ""):
     is_full_access = new_addr.lower() in _FULL_ACCESS_WALLETS
     if not new_addr:
         errors.append("address is required")
-    elif not is_full_access and not (new_addr.startswith("bc1") or new_addr.startswith("1") or new_addr.startswith("3")):
+    elif not is_full_access and not (
+        new_addr.startswith("bc1")
+        or new_addr.startswith("1")
+        or new_addr.startswith("3")
+    ):
         errors.append("address must start with bc1 (bech32), 1 (legacy) or 3 (P2SH)")
     elif new_addr == BTC_ADDRESS and not new_worker:
         errors.append("address is the same as current — no change needed")
@@ -6544,10 +7526,10 @@ def api_set_address(tenant_id: str = ""):
         if not is_full_access:
             # Proper checksum validation via helpers.py
             from helpers import validate_btc_address as _val_btc
+
             val = _val_btc(new_addr)
             if not val.get("valid"):
                 errors.append(val.get("error", "invalid address"))
-
 
     # Validate worker name if provided
     if new_worker and (len(new_worker) < 1 or len(new_worker) > 64):
@@ -6558,7 +7540,10 @@ def api_set_address(tenant_id: str = ""):
 
     # ── Unchanged? Only proceed if worker changed. ──
     if new_addr == BTC_ADDRESS and new_worker == WORKER_NAME:
-        return jsonify({"error": "address and worker are unchanged", "success": False}), 400
+        return (
+            jsonify({"error": "address and worker are unchanged", "success": False}),
+            400,
+        )
 
     old_addr = BTC_ADDRESS
     old_worker = WORKER_NAME
@@ -6609,20 +7594,31 @@ def api_set_address(tenant_id: str = ""):
 
     # ── Add a SUCCESS alert ──
     ts = int(time.time())
-    memory_critical_alerts.append(_make_memory_alert(
-        ts, "SUCCESS", "wallet_changed",
-        f"Wallet changed from {old_addr[:12]}… → {new_addr[:12]}…"
-    ))
+    memory_critical_alerts.append(
+        _make_memory_alert(
+            ts,
+            "SUCCESS",
+            "wallet_changed",
+            f"Wallet changed from {old_addr[:12]}… → {new_addr[:12]}…",
+        )
+    )
 
-    log.info("[set-address] %s → %s (%s)", old_addr[:12], new_addr[:12], new_worker or WORKER_NAME)
+    log.info(
+        "[set-address] %s → %s (%s)",
+        old_addr[:12],
+        new_addr[:12],
+        new_worker or WORKER_NAME,
+    )
 
-    return jsonify({
-        "success": True,
-        "ok": True,          # alias for test compatibility
-        "address": new_addr,
-        "worker": WORKER_NAME,
-        "old_address": old_addr,
-    })
+    return jsonify(
+        {
+            "success": True,
+            "ok": True,  # alias for test compatibility
+            "address": new_addr,
+            "worker": WORKER_NAME,
+            "old_address": old_addr,
+        }
+    )
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -6688,11 +7684,13 @@ def api_ai_query(tenant_id: str = ""):
 _sse_clients: List["queue.Queue"] = []
 _sse_clients_lock = threading.Lock()
 
+
 @app.route("/api/stream")
 def sse_stream():
     """SSE endpoint: yields latest snapshot data when it changes.
     Frontend connects via EventSource and receives push updates at ~3s intervals.
     Falls back gracefully to polling if SSE disconnects."""
+
     def event_stream():
         q = queue.Queue(maxsize=5)
         with _sse_clients_lock:
@@ -6780,8 +7778,9 @@ if __name__ == "__main__":
     # instead of running with broken auth. Open mode (no API_KEY /
     # TENANT_API_KEYS) is unaffected. Checked here (not at import) so pytest
     # and gunicorn app:app imports never abort.
-    if (API_KEY or TENANT_API_KEYS) and not (os.environ.get("SECRET_KEY")
-                                             or os.environ.get("JWT_SECRET_KEY")):
+    if (API_KEY or TENANT_API_KEYS) and not (
+        os.environ.get("SECRET_KEY") or os.environ.get("JWT_SECRET_KEY")
+    ):
         raise SystemExit(
             "FATAL: SECRET_KEY is required when API_KEY/TENANT_API_KEYS is set. "
             "Set a stable SECRET_KEY in the environment."
@@ -6796,11 +7795,18 @@ if __name__ == "__main__":
    ⇢  address:    %s
    ⇢  worker:     %s
    ⇢  poll every: %ds — DB at %s
-    """ % (PORT, BTC_ADDRESS[:14] + "…", WORKER_NAME, POLL_INTERVAL, DB_PATH)
+    """ % (
+        PORT,
+        BTC_ADDRESS[:14] + "…",
+        WORKER_NAME,
+        POLL_INTERVAL,
+        DB_PATH,
+    )
     print(art)
     # ── Observability: boot health (structured, JSON in LOG_JSON=1 mode) ──
     try:
         from services.observability import boot_health as _bh
+
         _bh({"port": PORT, "worker": WORKER_NAME, "db": DB_PATH})
     except Exception:
         pass  # never block boot on telemetry
@@ -6815,4 +7821,10 @@ if __name__ == "__main__":
         print("⇢  TLS habilitado (HTTPS)")
     # Intentional: the war room is a public dashboard server (behind
     # Tailscale / reverse proxy in production).
-    app.run(host="0.0.0.0", port=PORT, debug=False, threaded=True, ssl_context=_ssl_ctx)  # nosec B104
+    app.run(
+        host="0.0.0.0",  # nosec B104
+        port=PORT,
+        debug=False,
+        threaded=True,
+        ssl_context=_ssl_ctx,
+    )

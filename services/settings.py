@@ -75,13 +75,14 @@ def _decrypt_credential(value: str) -> str:
     if f is None:
         return value
     try:
-        raw = f.decrypt(value[len(_ENC_PREFIX):].encode("ascii"))
+        raw = f.decrypt(value[len(_ENC_PREFIX) :].encode("ascii"))
         return raw.decode("utf-8")
     except Exception:
         # Wrong SECRET_KEY or corrupt value — return as-is (never raise, so
         # an operator key rotation can't brick credential consumers).
         log.warning("[settings] could not decrypt credential value")
         return value
+
 
 DEFAULT_SETTINGS = {
     "cost_mode": "none",
@@ -162,6 +163,7 @@ def load_settings(tenant_id: str = ""):
 
     Credential keys are returned DECRYPTED (transparent to consumers).
     """
+
     def _finalize(d: dict) -> dict:
         for k in _CREDENTIAL_KEYS:
             if k in d and isinstance(d[k], str):
@@ -196,7 +198,9 @@ def load_settings(tenant_id: str = ""):
         _ensure_tenant_settings_table()
         conn = get_db()
         c = conn.cursor()
-        c.execute("SELECT key, value FROM tenant_settings WHERE tenant_id=?", (tenant_id,))
+        c.execute(
+            "SELECT key, value FROM tenant_settings WHERE tenant_id=?", (tenant_id,)
+        )
         for row in c.fetchall():
             if row["value"] is not None:
                 out[row["key"]] = row["value"]
@@ -217,7 +221,7 @@ def save_setting(key, value, tenant_id: str = ""):
 
     Credential keys are stored ENCRYPTED when SECRET_KEY is set.
     """
-    if not key.startswith('_') and key not in DEFAULT_SETTINGS:
+    if not key.startswith("_") and key not in DEFAULT_SETTINGS:
         raise KeyError(f"unknown setting key: {key}")
     stored = str(value)
     if key in _CREDENTIAL_KEYS:

@@ -3,6 +3,7 @@ CYPHER65 // PARASITE POOL WAR ROOM — helpers
 ============================================
 Shared formatting, parsing, and utility functions extracted from app.py.
 """
+
 import math
 import time
 import logging
@@ -51,6 +52,7 @@ def email_sha(email: str) -> str:
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 #  Parsing
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
 
 def parse_diff_to_float(s):
     """Convert '1.23 T' → 1.23e12. Returns 0 if unparseable."""
@@ -125,6 +127,7 @@ def coerce_int(v, default=0):
 #  Formatting
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+
 def fmt_diff(v):
     """Pretty print a large number into readable difficulty units."""
     if not v:
@@ -149,7 +152,9 @@ def fmt_hashrate(h):
     return f"{h:.2f} ZH/s"
 
 
-def derive_worker_hashrate(share_calc_history=None, prev_pool=None, pool=None, elapsed_s=0.0):
+def derive_worker_hashrate(
+    share_calc_history=None, prev_pool=None, pool=None, elapsed_s=0.0
+):
     """Derive worker hashrate (H/s) when the pool reports 0 or missing.
 
     FENIX E1 (P1) fallback. Sources, in priority:
@@ -167,7 +172,8 @@ def derive_worker_hashrate(share_calc_history=None, prev_pool=None, pool=None, e
         sch = list(share_calc_history or [])
         inst = [
             float(e.get("instantaneous_hr_hps") or 0)
-            for e in sch if e.get("instantaneous_hr_hps")
+            for e in sch
+            if e.get("instantaneous_hr_hps")
         ]
         inst = [v for v in inst if v > 0]
         if inst:
@@ -181,7 +187,7 @@ def derive_worker_hashrate(share_calc_history=None, prev_pool=None, pool=None, e
             cur = float(pool.get("workSinceLastBlock") or 0)
             prev = float(prev_pool.get("workSinceLastBlock") or 0)
             if cur > prev:
-                hps = (cur - prev) * (2 ** 32) / float(elapsed_s)
+                hps = (cur - prev) * (2**32) / float(elapsed_s)
                 if hps > 0:
                     return hps, "work_delta"
     except Exception:
@@ -279,11 +285,11 @@ _BASE58_ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
 
 def _bech32_polymod(values):
     """Compute Bech32 checksum using GF(32) generator."""
-    GEN = [0x3b6a57b2, 0x26508e6d, 0x1ea119fa, 0x3d4233dd, 0x2a1462b3]
+    GEN = [0x3B6A57B2, 0x26508E6D, 0x1EA119FA, 0x3D4233DD, 0x2A1462B3]
     chk = 1
     for v in values:
         top = chk >> 25
-        chk = ((chk & 0x1ffffff) << 5) ^ v
+        chk = ((chk & 0x1FFFFFF) << 5) ^ v
         for i in range(5):
             if (top >> i) & 1:
                 chk ^= GEN[i]
@@ -307,11 +313,11 @@ def _decode_bech32(addr):
     """
     addr = addr.lower()
     # Find the last '1' separator
-    pos = addr.rfind('1')
+    pos = addr.rfind("1")
     if pos < 1 or pos + 7 > len(addr):
         return None
     hrp = addr[:pos]
-    data = addr[pos + 1:]
+    data = addr[pos + 1 :]
     if len(data) < 6:
         return None
     # Check all characters are valid bech32
@@ -344,22 +350,23 @@ def _base58check_decode(addr):
     if n is None:
         return None
     # Convert to bytes (big-endian, minimum size)
-    b = n.to_bytes((n.bit_length() + 7) // 8, 'big')
+    b = n.to_bytes((n.bit_length() + 7) // 8, "big")
     # Add leading zero bytes from Base58 encoding
     leading_zeros = 0
     for c in addr:
-        if c == '1':
+        if c == "1":
             leading_zeros += 1
         else:
             break
     if leading_zeros > 0:
-        b = b'\x00' * leading_zeros + b
+        b = b"\x00" * leading_zeros + b
     if len(b) < 5:  # version(1) + payload + checksum(4)
         return None
     payload = b[:-4]
     checksum = b[-4:]
     # Verify checksum: first 4 bytes of double-SHA256 of payload
     import hashlib
+
     h = hashlib.sha256(hashlib.sha256(payload).digest()).digest()[:4]
     if h != checksum:
         return None
@@ -368,37 +375,41 @@ def _base58check_decode(addr):
 
 def validate_btc_address(addr: str) -> dict:
     """Validate a Bitcoin address. Returns dict with 'valid' bool and optional 'error' message.
-    Supports Bech32 (bc1..., BIP-173), P2PKH (1..., Base58Check), P2SH (3..., Base58Check)."""
+    Supports Bech32 (bc1..., BIP-173), P2PKH (1..., Base58Check), P2SH (3..., Base58Check).
+    """
     if not addr or not isinstance(addr, str):
         return {"valid": False, "error": "Address is required"}
     addr = addr.strip()
     if len(addr) < 26 or len(addr) > 90:
         return {"valid": False, "error": f"Invalid address length ({len(addr)} chars)"}
 
-    if addr.startswith('bc1'):
+    if addr.startswith("bc1"):
         # Bech32 (SegWit / Taproot)
         result = _decode_bech32(addr)
         if result is None:
             return {"valid": False, "error": "Invalid Bech32 checksum or format"}
         hrp, data = result
-        if hrp != 'bc':
-            return {"valid": False, "error": "Invalid human-readable part (expected 'bc')"}
+        if hrp != "bc":
+            return {
+                "valid": False,
+                "error": "Invalid human-readable part (expected 'bc')",
+            }
         if len(data) < 2 or len(data) > 40:
             return {"valid": False, "error": "Invalid data length for Bech32 address"}
         return {"valid": True}
 
-    elif addr.startswith('1') or addr.startswith('3'):
+    elif addr.startswith("1") or addr.startswith("3"):
         # P2PKH (1...) or P2SH (3...) — Base58Check
         result = _base58check_decode(addr)
         if result is None:
             return {"valid": False, "error": "Invalid Base58Check checksum or format"}
         version, _ = result
-        expected_version = 0x00 if addr.startswith('1') else 0x05
+        expected_version = 0x00 if addr.startswith("1") else 0x05
         if version != expected_version:
             return {"valid": False, "error": "Invalid version byte for address type"}
         return {"valid": True}
 
-    elif addr.startswith('2'):
+    elif addr.startswith("2"):
         # P2WPKH-in-P2SH (starts with '2'? Rare but some use it)
         result = _base58check_decode(addr)
         if result is not None:
@@ -406,7 +417,10 @@ def validate_btc_address(addr: str) -> dict:
         return {"valid": False, "error": "Invalid address format"}
 
     else:
-        return {"valid": False, "error": "Address must start with 'bc1' (SegWit), '1' (Legacy), or '3' (P2SH)"}
+        return {
+            "valid": False,
+            "error": "Address must start with 'bc1' (SegWit), '1' (Legacy), or '3' (P2SH)",
+        }
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -414,7 +428,9 @@ def validate_btc_address(addr: str) -> dict:
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 
-def compute_solo_probabilities(share_of_network: float, blocks_per_day: float = 144.0) -> dict:
+def compute_solo_probabilities(
+    share_of_network: float, blocks_per_day: float = 144.0
+) -> dict:
     """Solo-mining probability math — single source of truth for app.py._do_poll().
 
     `share_of_network` is the per-BLOCK chance (worker hashrate ÷ network
@@ -436,7 +452,7 @@ def compute_solo_probabilities(share_of_network: float, blocks_per_day: float = 
             "solo_expected_blocks_per_year": 0.0,
             "solo_expected_time_to_block_days": None,
         }
-    solo_p_day = 1 - (1 - share_of_network) ** blocks_per_day          # P(≥1 block today)
+    solo_p_day = 1 - (1 - share_of_network) ** blocks_per_day  # P(≥1 block today)
     solo_p_year = 1 - (1 - share_of_network) ** (blocks_per_day * 365)
     solo_p_5year = 1 - (1 - share_of_network) ** (blocks_per_day * 365 * 5)
     solo_expected_blocks_per_year = share_of_network * blocks_per_day * 365
@@ -448,7 +464,6 @@ def compute_solo_probabilities(share_of_network: float, blocks_per_day: float = 
         "solo_expected_blocks_per_year": solo_expected_blocks_per_year,
         "solo_expected_time_to_block_days": solo_expected_time_to_block_days,
     }
-
 
 
 def compute_lender_profitability(
@@ -506,16 +521,18 @@ def compute_lender_profitability(
 
         revenue_btc = ths * rate
         power_btc = power_usd / price if price > 0 and power_usd > 0 else 0.0
-        net_btc = revenue_btc - power_btc                     # lease net
-        mine_btc = mining_btc - power_btc                     # mine net (same power)
+        net_btc = revenue_btc - power_btc  # lease net
+        mine_btc = mining_btc - power_btc  # mine net (same power)
         net_usd = net_btc * price if price > 0 else None
         mine_usd = mine_btc * price if price > 0 else None
 
-        out.update({
-            "lender_net_btc_per_day": round(net_btc, 10),
-            "lender_revenue_btc_per_day": round(revenue_btc, 10),
-            "lender_power_cost_usd_per_day": round(power_usd, 4),
-        })
+        out.update(
+            {
+                "lender_net_btc_per_day": round(net_btc, 10),
+                "lender_revenue_btc_per_day": round(revenue_btc, 10),
+                "lender_power_cost_usd_per_day": round(power_usd, 4),
+            }
+        )
         if net_usd is not None and mine_usd is not None:
             out["lender_net_usd_per_day"] = round(net_usd, 4)
             out["lender_mine_net_usd_per_day"] = round(mine_usd, 4)
@@ -627,6 +644,7 @@ def build_decision_matrix(
     figures, so the higher wins; solo is probabilistic (expected time) and is
     only crowned when neither pool nor lease has a usable number.
     """
+
     def _num(v):
         try:
             f = float(v)
@@ -672,7 +690,10 @@ def build_decision_matrix(
     elif best == "lease":
         recommendation = "Renting out hashrate (lease) nets more than pool mining."
     elif best == "solo":
-        recommendation = "Only probabilistic data available — expected %.0f days to a block." % exp_days
+        recommendation = (
+            "Only probabilistic data available — expected %.0f days to a block."
+            % exp_days
+        )
     else:
         recommendation = "Not enough data to compare strategies yet."
 
@@ -735,12 +756,14 @@ def resolve_affiliate_link(offers, affiliate_map=None) -> dict | None:
             price = float(o.get("price_per_th_day"))
         except (TypeError, ValueError):
             continue
-        eligible.append({
-            "provider": prov,
-            "url": url,
-            "price_per_th_day": price,
-            "estimated": bool(o.get("estimated")),
-        })
+        eligible.append(
+            {
+                "provider": prov,
+                "url": url,
+                "price_per_th_day": price,
+                "estimated": bool(o.get("estimated")),
+            }
+        )
     if not eligible:
         return None
     real = [e for e in eligible if not e["estimated"]]
@@ -773,6 +796,7 @@ def attach_affiliate(snapshot: dict, offers, affiliate_map=None) -> None:
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 #  P0-5 // Wallet account rank enrichment (leaderboard authoritative)
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
 
 def enrich_account_ranks(account, leaderboard_entry):
     """P0-5 // Fill diff/loyalty/combined ranks on the account from the pool
@@ -820,9 +844,9 @@ _CC_SEVERITY_ORDER = {"crit": 0, "gold": 1, "warn": 2, "info": 3}
 CC_MAX_ACTIONS = 3
 
 # P1 Auto-Pilot advisory thresholds — REAL data gating (never fabricates).
-AP_HASHRATE_DROP_RATIO = 0.70      # fire when current < 70% of 7d peak
-AP_TEMP_HIGH_C = 75.0              # fire when a fleet device runs ≥ 75°C
-AP_PEAK_WINDOW_S = 7 * 86400       # 7-day window for the hashrate peak
+AP_HASHRATE_DROP_RATIO = 0.70  # fire when current < 70% of 7d peak
+AP_TEMP_HIGH_C = 75.0  # fire when a fleet device runs ≥ 75°C
+AP_PEAK_WINDOW_S = 7 * 86400  # 7-day window for the hashrate peak
 
 
 def build_command_center(snapshot: Optional[dict] = None) -> list:
@@ -871,6 +895,7 @@ def build_command_center(snapshot: Optional[dict] = None) -> list:
     Cards are ranked by severity (crit > gold > warn > info), then emitted in
     rule order, capped at CC_MAX_ACTIONS.
     """
+
     def _num(v):
         try:
             f = float(v)
@@ -892,118 +917,134 @@ def build_command_center(snapshot: Optional[dict] = None) -> list:
     worker = snap.get("worker")
     _has_polled = bool(_num(snap.get("ts")))
     if not worker and _has_polled:
-        _add({
-            "id": "worker_offline",
-            "severity": "crit",
-            "title": "Worker offline",
-            "message": "Nenhum worker ativo na pool — verifique a conexão do minerador.",
-            "action": "VER FLEET",
-            "target": "fleet",
-            "panel": "axe-fleet-panel",
-            "url": None,
-        })
+        _add(
+            {
+                "id": "worker_offline",
+                "severity": "crit",
+                "title": "Worker offline",
+                "message": "Nenhum worker ativo na pool — verifique a conexão do minerador.",
+                "action": "VER FLEET",
+                "target": "fleet",
+                "panel": "axe-fleet-panel",
+                "url": None,
+            }
+        )
 
     # ── 2. Fleet device attention (warn) ──
     fleet = snap.get("axe_fleet") or []
     if isinstance(fleet, list):
         problem_devices = [
-            d for d in fleet
-            if isinstance(d, dict) and (d.get("status") or "").upper() in ("OFFLINE", "WARNING")
+            d
+            for d in fleet
+            if isinstance(d, dict)
+            and (d.get("status") or "").upper() in ("OFFLINE", "WARNING")
         ]
         if problem_devices:
-            _add({
-                "id": "fleet_attention",
-                "severity": "warn",
-                "title": f"{len(problem_devices)} minerador(es) precisam de atenção",
-                "message": "Há device(s) OFFLINE ou WARNING na frota — inspecione antes de prosseguir.",
-                "action": "VER FLEET",
-                "target": "fleet",
-                "panel": "axe-fleet-panel",
-                "url": None,
-            })
+            _add(
+                {
+                    "id": "fleet_attention",
+                    "severity": "warn",
+                    "title": f"{len(problem_devices)} minerador(es) precisam de atenção",
+                    "message": "Há device(s) OFFLINE ou WARNING na frota — inspecione antes de prosseguir.",
+                    "action": "VER FLEET",
+                    "target": "fleet",
+                    "panel": "axe-fleet-panel",
+                    "url": None,
+                }
+            )
 
     # ── 3. Proximity hot streak (gold) ──
     prox = snap.get("proximity") or {}
     if isinstance(prox, dict) and prox.get("hot_streak"):
         trend = _num(prox.get("trend_1h_pct"))
-        _add({
-            "id": "proximity_streak",
-            "severity": "gold",
-            "title": "HOT STREAK na proximidade",
-            "message": (
-                f"Best-diff subiu {trend:.1f}% em 1h — a proximidade de bloco está acelerando."
-                if trend is not None
-                else "Best-diff subindo — a proximidade de bloco está acelerando."
-            ),
-            "action": "VER PROBABILITY",
-            "target": "probability",
-            "panel": "proximity-panel",
-            "url": None,
-        })
-    elif isinstance(prox, dict):
-        # ── 4. Proximity milestone reached (info) ──
-        pct = _num(prox.get("milestone_cur_pct"))
-        if pct is not None and pct >= 1.0:
-            _add({
-                "id": "proximity_milestone",
-                "severity": "info",
-                "title": "Proximidade de bloco relevante",
-                "message": f"Você está a {pct:.2f}% da dificuldade da rede — cada share tem valor real.",
+        _add(
+            {
+                "id": "proximity_streak",
+                "severity": "gold",
+                "title": "HOT STREAK na proximidade",
+                "message": (
+                    f"Best-diff subiu {trend:.1f}% em 1h — a proximidade de bloco está acelerando."
+                    if trend is not None
+                    else "Best-diff subindo — a proximidade de bloco está acelerando."
+                ),
                 "action": "VER PROBABILITY",
                 "target": "probability",
                 "panel": "proximity-panel",
                 "url": None,
-            })
+            }
+        )
+    elif isinstance(prox, dict):
+        # ── 4. Proximity milestone reached (info) ──
+        pct = _num(prox.get("milestone_cur_pct"))
+        if pct is not None and pct >= 1.0:
+            _add(
+                {
+                    "id": "proximity_milestone",
+                    "severity": "info",
+                    "title": "Proximidade de bloco relevante",
+                    "message": f"Você está a {pct:.2f}% da dificuldade da rede — cada share tem valor real.",
+                    "action": "VER PROBABILITY",
+                    "target": "probability",
+                    "panel": "proximity-panel",
+                    "url": None,
+                }
+            )
 
     # ── 5. Capital allocation — lease wins (info) ──
     dm = (snap.get("profitability") or {}).get("decision_matrix") or {}
     if isinstance(dm, dict) and dm.get("best_option") == "lease":
-        _add({
-            "id": "capital_lease",
-            "severity": "info",
-            "title": "Lease rende mais que pool",
-            "message": "A Decision Matrix aponta o aluguel de hashrate como a melhor alocação de capital.",
-            "action": "VER MARKET",
-            "target": "market",
-            "panel": "decision-matrix-panel",
-            "url": None,
-        })
+        _add(
+            {
+                "id": "capital_lease",
+                "severity": "info",
+                "title": "Lease rende mais que pool",
+                "message": "A Decision Matrix aponta o aluguel de hashrate como a melhor alocação de capital.",
+                "action": "VER MARKET",
+                "target": "market",
+                "panel": "decision-matrix-panel",
+                "url": None,
+            }
+        )
 
     # ── 6. Negative operation (warn) ──
     profit = snap.get("profitability") or {}
     pool_net = _num(profit.get("pool_net_usd_per_day"))
     if pool_net is not None and pool_net < 0:
-        _add({
-            "id": "negative_operation",
-            "severity": "warn",
-            "title": "Operação no vermelho",
-            "message": (
-                f"Custo diário supera a receita do pool (net ${abs(pool_net):.2f}/dia) — "
-                "revise energia, pool ou alugue hashrate."
-            ),
-            "action": "VER MARKET",
-            "target": "market",
-            "panel": "decision-matrix-panel",
-            "url": None,
-        })
+        _add(
+            {
+                "id": "negative_operation",
+                "severity": "warn",
+                "title": "Operação no vermelho",
+                "message": (
+                    f"Custo diário supera a receita do pool (net ${abs(pool_net):.2f}/dia) — "
+                    "revise energia, pool ou alugue hashrate."
+                ),
+                "action": "VER MARKET",
+                "target": "market",
+                "panel": "decision-matrix-panel",
+                "url": None,
+            }
+        )
 
     # ── 7. Affiliate buy CTA (info) ──
     md = snap.get("market_data") or {}
     aff = (md.get("affiliate") or {}) if isinstance(md, dict) else {}
     if isinstance(aff, dict) and aff.get("url"):
-        _add({
-            "id": "affiliate_buy",
-            "severity": "info",
-            "title": "Comprar hashrate em 1 clique",
-            "message": (
-                f"Melhor oferta afiliada: {str(aff.get('provider') or 'hashrate').upper()} "
-                "— link direto para o marketplace."
-            ),
-            "action": "COMPRAR HASHRATE",
-            "target": "market",
-            "panel": "market-panel",
-            "url": aff.get("url"),
-        })
+        _add(
+            {
+                "id": "affiliate_buy",
+                "severity": "info",
+                "title": "Comprar hashrate em 1 clique",
+                "message": (
+                    f"Melhor oferta afiliada: {str(aff.get('provider') or 'hashrate').upper()} "
+                    "— link direto para o marketplace."
+                ),
+                "action": "COMPRAR HASHRATE",
+                "target": "market",
+                "panel": "market-panel",
+                "url": aff.get("url"),
+            }
+        )
 
     # ── 8. P1 Auto-Pilot: hashrate below its real 7-day peak (gold) ──
     # Fed by snap["auto_pilot"]["peak_hashrate_7d"] — the true MAX worker
@@ -1016,40 +1057,48 @@ def build_command_center(snapshot: Optional[dict] = None) -> list:
     cur_hr = _num(worker.get("hashrate") if isinstance(worker, dict) else None)
     if peak_7d and cur_hr and cur_hr > 0 and cur_hr < peak_7d * AP_HASHRATE_DROP_RATIO:
         drop_pct = (1 - cur_hr / peak_7d) * 100
-        _add({
-            "id": "hashrate_drop",
-            "severity": "gold",
-            "title": "HASHRATE DROP — abaixo do pico de 7d",
-            "message": (
-                f"Hashrate atual é {drop_pct:.0f}% menor que o pico da semana "
-                "(reset do device ou rede local podem recuperá-lo)."
-            ),
-            "action": "VER FLEET",
-            "target": "fleet",
-            "panel": "axe-fleet-panel",
-            "url": None,
-        })
-
-    # ── 9. P1 Auto-Pilot: fleet device running hot (warn) ──
-    if isinstance(fleet, list):
-        hot_devices = [
-            d for d in fleet
-            if isinstance(d, dict) and _num(d.get("temperature")) is not None
-            and _num(d.get("temperature")) >= AP_TEMP_HIGH_C
-        ]
-        if hot_devices:
-            hot = hot_devices[0]
-            hot_name = str(hot.get("name") or hot.get("device_id") or hot.get("id") or "device")
-            _add({
-                "id": "temp_high",
-                "severity": "warn",
-                "title": f"{hot_name} a {_num(hot.get('temperature')):.0f}°C",
-                "message": "Temperatura acima do limite térmico — reduza overclock, melhore o airflow ou pausa o device antes de dano.",
+        _add(
+            {
+                "id": "hashrate_drop",
+                "severity": "gold",
+                "title": "HASHRATE DROP — abaixo do pico de 7d",
+                "message": (
+                    f"Hashrate atual é {drop_pct:.0f}% menor que o pico da semana "
+                    "(reset do device ou rede local podem recuperá-lo)."
+                ),
                 "action": "VER FLEET",
                 "target": "fleet",
                 "panel": "axe-fleet-panel",
                 "url": None,
-            })
+            }
+        )
+
+    # ── 9. P1 Auto-Pilot: fleet device running hot (warn) ──
+    if isinstance(fleet, list):
+        hot_devices = [
+            d
+            for d in fleet
+            if isinstance(d, dict)
+            and _num(d.get("temperature")) is not None
+            and _num(d.get("temperature")) >= AP_TEMP_HIGH_C
+        ]
+        if hot_devices:
+            hot = hot_devices[0]
+            hot_name = str(
+                hot.get("name") or hot.get("device_id") or hot.get("id") or "device"
+            )
+            _add(
+                {
+                    "id": "temp_high",
+                    "severity": "warn",
+                    "title": f"{hot_name} a {_num(hot.get('temperature')):.0f}°C",
+                    "message": "Temperatura acima do limite térmico — reduza overclock, melhore o airflow ou pausa o device antes de dano.",
+                    "action": "VER FLEET",
+                    "target": "fleet",
+                    "panel": "axe-fleet-panel",
+                    "url": None,
+                }
+            )
 
     # ── 10. P1 Auto-Pilot: automation rule ready to fire (info) ──
     # The Big Bet merge with Automations — read-only advisory preview of what
@@ -1062,19 +1111,22 @@ def build_command_center(snapshot: Optional[dict] = None) -> list:
         rule_name = str(first.get("rule_name") or "regra")
         dev_id = str(first.get("device_id") or "")
         action = str(first.get("action_command") or "ação")
-        _add({
-            "id": "automation_ready",
-            "severity": "info",
-            "title": "Auto-Pilot: automação pronta",
-            "message": (
-                f"Regra «{rule_name}» dispararia agora: {action}"
-                + (f" em {dev_id}" if dev_id else "") + "."
-            ),
-            "action": "VER AUTOMATIONS",
-            "target": "automations",
-            "panel": "ai-operator-panel",
-            "url": None,
-        })
+        _add(
+            {
+                "id": "automation_ready",
+                "severity": "info",
+                "title": "Auto-Pilot: automação pronta",
+                "message": (
+                    f"Regra «{rule_name}» dispararia agora: {action}"
+                    + (f" em {dev_id}" if dev_id else "")
+                    + "."
+                ),
+                "action": "VER AUTOMATIONS",
+                "target": "automations",
+                "panel": "ai-operator-panel",
+                "url": None,
+            }
+        )
 
     # Rank by severity (crit > gold > warn > info), stable by rule order.
     cards.sort(key=lambda c: _CC_SEVERITY_ORDER.get(c.get("severity", "info"), 99))

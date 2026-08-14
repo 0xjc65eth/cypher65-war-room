@@ -51,7 +51,7 @@ SENTRY_DSN=... python app.py      # Sentry ativo (traces 0.1 default)
 | **arch-contract** (TS layers) | — | ⚪ N/A nesta stack | — |
 | **bandit** (segurança estática Python) | Python | ✅ gate (Issue #125) — 0 MEDIUM/HIGH | ✅ blocking |
 | **flake8** (bug-codes) | Python | ✅ gate via `.flake8` (F821/F541/E9) | ✅ blocking |
-| **black** | Python | ✅ presente, backlog 11.5k linhas | ⚪ advisory → Issue #133 |
+| **black** | Python | ✅ formatação commitada (Issue #133, 62 arquivos) | ✅ blocking |
 
 ### Static security gates (Issue #125) — bandit + flake8 + black
 
@@ -60,9 +60,10 @@ abaixo (escopo: `app.py helpers.py solo_mining.py services core axe_fleet
 routes agents`):
 
 ```bash
-make lint-sec     # bandit -ll + flake8 (.flake8) — blocking
+make lint-sec     # bandit -ll + flake8 (.flake8) + black — blocking
 # bandit -r services core axe_fleet routes agents app.py helpers.py solo_mining.py -ll -q
 # flake8 app.py helpers.py solo_mining.py services core axe_fleet routes agents
+# black --check app.py helpers.py solo_mining.py services core axe_fleet routes agents
 ```
 
 - **bandit `-ll`** — falha em QUALQUER achado MEDIUM/HIGH. Status: **0 achados**
@@ -74,8 +75,9 @@ make lint-sec     # bandit -ll + flake8 (.flake8) — blocking
   `F541` (f-string sem placeholder) e `E9` (sintaxe). Pegou bug real:
   `json.JSONDecodeError` sem `import json` no `braiins_adapter.py`. O backlog
   de estilo (E501 etc.) NÃO é gate — ver `make lint`.
-- **black** — ADVISORY: reporta o backlog (~11.5k linhas, 49 arquivos) sem
-  bloquear. O gate vira blocking após o cleanup dedicado (Issue #133).
+- **black** — BLOCKING desde o cleanup dedicado (Issue #133): os 62 arquivos
+  do escopo foram reformatados no commit de formatação; qualquer diff fora
+  do padrão agora falha o merge. Rode `black <arquivo>` antes de commitar.
 
 ### Instalação / uso
 
