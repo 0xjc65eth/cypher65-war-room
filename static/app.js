@@ -5783,6 +5783,7 @@ function renderAccount(acct) {
     rentals_min_delivery_pct: 'ANÁLISE DE RENDIMENTO (CSV): entrega mínima aceitável por aluguel (default 90). Abaixo dela o aluguel é marcado cancelled_performance no CSV e o reembolso devido é calculado (regra MRR: <80% = total; 80%..mín = proporcional).',
     rental_market_arb_pct: 'ALERTA ARBITRAGEM: dispara webhook + push quando o mercado AGORA estiver este % ABAIXO dos seus custos históricos (seus próprios aluguéis — abra o painel RENTALS uma vez para popular). Compara com 3 referências: CUSTO MÉDIO anunciado, CUSTO EFETIVO com entrega real (paid ÷ TH·h entregues — sobe quando a entrega é <100%) e o ÚLTIMO aluguel; a referência MAIS ALTA dispara o sinal. Ex: 30 = alerta quando o mercado estiver ≥30% mais barato que sua referência mais cara — janela de compra. Vazio ou 0 = desativado. 100% local, custo zero de provider.',
     rental_market_arb_cooldown_hours: 'Cooldown da arbitragem: repete o alerta de oportunidade no máximo 1× a cada N horas (padrão 24). Mercado barato persistente avisa diariamente, sem spam.',
+    rental_reco_worse_alert: 'ALERTA RECOMENDAÇÃO ACEITA PIOROU: dispara webhook + push quando um rig que você blacklistou (recomendação aceita) termina com veredito PIOROU — ele voltou a entregar mal DEPOIS da exclusão, o blacklist não resolveu. 0/1, default 0 (off). Decisões revogadas nunca disparam.',
   };
   function renderSettingsForm() {
     const box = dom.settingsBody;
@@ -5792,7 +5793,7 @@ function renderAccount(acct) {
       box.innerHTML = '<div class="mkt-empty" style="padding:16px;text-align:center">settings unavailable</div>';
       return;
     }
-    const order = ['cost_mode','rental_usd_per_th_day','power_watts','power_kwh_usd','btc_block_reward','btc_avg_tx_fee','pool_fee_pct','orphan_rate_pct','active_currency','active_fiat','stale_share_minutes','hashrate_drop_pct','webhook_url','webhook_min_severity','rental_pl_alert_pct','rental_pl_alert_window_hours','rental_market_overpay_pct','rental_market_arb_pct','rental_market_arb_cooldown_hours','rentals_min_delivery_pct','show_test_alerts','mrr_api_key','mrr_api_secret','braiins_api_key'];
+    const order = ['cost_mode','rental_usd_per_th_day','power_watts','power_kwh_usd','btc_block_reward','btc_avg_tx_fee','pool_fee_pct','orphan_rate_pct','active_currency','active_fiat','stale_share_minutes','hashrate_drop_pct','webhook_url','webhook_min_severity','rental_pl_alert_pct','rental_pl_alert_window_hours','rental_market_overpay_pct','rental_market_arb_pct','rental_market_arb_cooldown_hours','rental_reco_worse_alert','rentals_min_delivery_pct','show_test_alerts','mrr_api_key','mrr_api_secret','braiins_api_key'];
     const keys = Object.keys(settings).sort((a,b) => {
       const ia = order.indexOf(a), ib = order.indexOf(b);
       return (ia<0?99:ia) - (ib<0?99:ib);

@@ -5931,6 +5931,7 @@ def api_rentals(tenant_id: str = ""):
             from services.user_polling import (
                 dispatch_rental_pl_alerts, dispatch_tenant_risk_alerts,
                 dispatch_rental_market_alerts, dispatch_rental_arb_alerts,
+                dispatch_reco_worse_alerts,
             )
             pl_alerts = _rental_perf.evaluate_rental_pl_alerts(
                 mrr_history.get("rentals", []), braiins.get("contracts", []),
@@ -5949,6 +5950,12 @@ def api_rentals(tenant_id: str = ""):
             arb_alerts = _rental_perf.evaluate_market_arb_alerts(
                 tenant_id=tenant_id)
             dispatch_rental_arb_alerts(tenant_id, arb_alerts)
+            # Accepted-recommendation 'worse' family: an accepted blacklist
+            # whose rig kept under-delivering afterwards → proactive alert.
+            # Local-first (ledger + local history), dedup once per rig.
+            reco_worse = _rental_perf.evaluate_reco_worse_alerts(
+                tenant_id=tenant_id)
+            dispatch_reco_worse_alerts(tenant_id, reco_worse)
             # Panel banner signals: DRY-RUN evaluation so the visual summary
             # stays visible even after the webhook fired (dry_run never
             # consults/claims the dedup slots — the dispatch above is the
