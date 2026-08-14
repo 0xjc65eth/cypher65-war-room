@@ -19,11 +19,13 @@ os testes. Default é texto; JSON só quando LOG_JSON=1. O formatter é 100%
 stdlib (json + traceback), zero dependência nova.
 """
 
+import contextvars
 import json
 import logging
 import os
 import time
 import traceback
+import uuid
 
 log = logging.getLogger("cypher65")
 
@@ -33,6 +35,38 @@ _EXTRA = {
     "service": "cypher65-war-room",
     "worker": os.environ.get("WORKER_NAME", "") or "",
 }
+
+# ── Request / worker-pass correlation id (Issue #124) ───────────────────
+# A ContextVar so EVERY log line emitted while handling one HTTP request or
+# one worker pass carries the SAME request_id — letting an operator trace a
+# failure end-to-end (webhook → DB → alert) across multi-tenant + retry
+# noise. Default is "" so background/boot logs simply omit the field.
+request_id_var = contextvars.ContextVar("request_id", default="")
+
+
+def new_request_id(prefix: str = "req") -> str:
+    """Mint a short, collision-resistant correlation id: ``<prefix>-<12 hex>``.
+
+    Prefixes keep the source greppable: ``req-*`` (HTTP), ``poll-*`` (poll
+    pass), ``sweep-*`` (rentals sweep). 12 hex chars ≈ 48 bits — plenty for
+    per-process correlation without log bloat.
+    """
+    return f"{prefix}-{uuid.uuid4().hex[:12]}"
+
+
+def set_request_id(rid: str) -> None:
+    """Bind a correlation id to the current context (request or worker pass)."""
+    request_id_var.set(rid or "")
+
+
+def get_request_id() -> str:
+    """Active correlation id for this context ("" when none)."""
+    return request_id_var.get()
+
+
+def clear_request_id() -> None:
+    """Unbind the correlation id (e.g. after a request finished)."""
+    request_id_var.set("")
 
 
 class JsonFormatter(logging.Formatter):
@@ -53,6 +87,11 @@ class JsonFormatter(logging.Formatter):
             "message": record.getMessage(),
         }
         payload.update(_EXTRA)
+        # Correlation id: present ONLY when a request/worker-pass context is
+        # active (per-record ContextVar read — never a global cache).
+        rid = request_id_var.get()
+        if rid:
+            payload["request_id"] = rid
         # Real LogRecords carry exc_info as a (type, value, tb) tuple; a bare
         # ``True`` (or anything non-iterable) must never crash the formatter.
         exc = getattr(record, "exc_info", None)

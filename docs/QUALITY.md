@@ -23,9 +23,17 @@
   exporter OTLP apontando pro Sentry quando houver tração (Issue #22 gated).
 - **Logs JSON** — `LOG_JSON=1` → um JSON por linha (`jq`-able), compatível com
   qualquer aggregator futuro (Loki, CloudWatch, Datadog agent).
+- **Correlação por `request_id`** (Issue #124) — todo request HTTP e toda
+  passada de worker (poll/sweep) emite um id curto (`req-*`, `poll-*`,
+  `sweep-*`) no campo `request_id` de cada linha JSON, permitindo rastrear um
+  erro de ponta a ponta (webhook → DB → alerta) mesmo com multi-tenancy e
+  retries. O id é ecoado no header de resposta `X-Request-ID` para
+  correlação client-side. Exemplo de filtro:
 
 ```bash
 LOG_JSON=1 python app.py          # logs JSON estruturados
+# correlacionar uma requisição específica:
+LOG_JSON=1 python app.py 2>&1 | jq -c 'select(.request_id == "req-ab12cd34ef56")'
 SENTRY_DSN=... python app.py      # Sentry ativo (traces 0.1 default)
 ```
 
