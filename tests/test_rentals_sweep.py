@@ -433,3 +433,139 @@ def test_sweep_once_visits_and_dispatches_arb_alerts(monkeypatch):
     assert n == 1
     assert fetched == []  # LOCAL family — must NOT hit the provider
     assert dispatched == [("t-arb", [alert])]
+
+
+# ── reco-worse / risk / auto-blacklist families (Issue #135 coverage) ───────
+
+def test_sweep_once_visits_and_dispatches_reco_worse_alerts(monkeypatch):
+    """Accepted-recommendation 'worse' family: LOCAL evaluation (zero
+    provider cost) and dispatched by the sweep loop."""
+    monkeypatch.setattr(_up, "_RENTAL_SWEEP_STAGGER", 0.0)
+    dispatched = []
+    fetched = []
+    alert = {"severity": "CRIT", "category": "reco_worse",
+             "message": "Rig voltou a entregar mal", "rig_id": "r9"}
+    monkeypatch.setattr(rp, "pl_alert_enabled_tenants", lambda: [])
+    monkeypatch.setattr(rp, "market_overpay_enabled_tenants", lambda: [])
+    monkeypatch.setattr(rp, "market_arb_enabled_tenants", lambda: [])
+    monkeypatch.setattr(rp, "reco_worse_enabled_tenants", lambda: ["t-reco"])
+    monkeypatch.setattr(rp, "auto_blacklist_candidate_tenants", lambda: [])
+    monkeypatch.setattr(rp, "evaluate_auto_blacklist", lambda tenant_id="": [])
+    monkeypatch.setattr(rp, "risk_alert_enabled_tenants", lambda: [])
+    monkeypatch.setattr(rp, "_sweep_fetch_history",
+                        lambda tenant_id="": (fetched.append(tenant_id) or []))
+    monkeypatch.setattr(rp, "evaluate_reco_worse_alerts",
+                        lambda tenant_id="", now=None: [alert])
+    monkeypatch.setattr(_up, "dispatch_reco_worse_alerts",
+                        lambda t, a: dispatched.append((t, a)))
+    n = _up._rentals_sweep_once()
+    assert n == 1
+    assert fetched == []  # LOCAL family — no provider call
+    assert dispatched == [("t-reco", [alert])]
+
+
+def test_sweep_once_visits_and_dispatches_risk_alerts(monkeypatch):
+    """Risk (worst-rig top-N) family: gated to its enabled set, LOCAL
+    evaluation, dispatched by the sweep."""
+    monkeypatch.setattr(_up, "_RENTAL_SWEEP_STAGGER", 0.0)
+    dispatched = []
+    alert = {"severity": "WARN", "category": "rental_risk",
+             "message": "worst rigs", "rig_id": "r1"}
+    monkeypatch.setattr(rp, "pl_alert_enabled_tenants", lambda: [])
+    monkeypatch.setattr(rp, "market_overpay_enabled_tenants", lambda: [])
+    monkeypatch.setattr(rp, "market_arb_enabled_tenants", lambda: [])
+    monkeypatch.setattr(rp, "reco_worse_enabled_tenants", lambda: [])
+    monkeypatch.setattr(rp, "auto_blacklist_candidate_tenants", lambda: [])
+    monkeypatch.setattr(rp, "evaluate_auto_blacklist", lambda tenant_id="": [])
+    monkeypatch.setattr(rp, "risk_alert_enabled_tenants", lambda: ["t-risk"])
+    monkeypatch.setattr(rp, "_sweep_fetch_history", lambda tenant_id="": [])
+    monkeypatch.setattr(rp, "sweep_risk_alerts",
+                        lambda tenant_id="", now=None: [alert])
+    monkeypatch.setattr(_up, "dispatch_tenant_risk_alerts",
+                        lambda t, a: dispatched.append((t, a)))
+    n = _up._rentals_sweep_once()
+    assert n == 1
+    assert dispatched == [("t-risk", [alert])]
+
+
+def test_sweep_once_auto_blacklist_dispatches_exclude_alerts(monkeypatch):
+    """CFO auto-exclusion family: DEFAULT protection (runs for any tenant
+    with a local track record), rigs dispatched via
+    dispatch_auto_exclude_alerts when the alert is opted-in."""
+    monkeypatch.setattr(_up, "_RENTAL_SWEEP_STAGGER", 0.0)
+    dispatched = []
+    monkeypatch.setattr(rp, "pl_alert_enabled_tenants", lambda: [])
+    monkeypatch.setattr(rp, "market_overpay_enabled_tenants", lambda: [])
+    monkeypatch.setattr(rp, "market_arb_enabled_tenants", lambda: [])
+    monkeypatch.setattr(rp, "reco_worse_enabled_tenants", lambda: [])
+    monkeypatch.setattr(rp, "risk_alert_enabled_tenants", lambda: [])
+    monkeypatch.setattr(rp, "auto_blacklist_candidate_tenants",
+                        lambda: ["t-auto"])
+    monkeypatch.setattr(rp, "evaluate_auto_blacklist",
+                        lambda tenant_id="": [{"rig_id": "r-auto", "name": "RigX"}])
+    monkeypatch.setattr(_up, "dispatch_auto_exclude_alerts",
+                        lambda t, rigs: (dispatched.append((t, rigs)) or 2))
+    n = _up._rentals_sweep_once()
+    assert n == 1
+    assert len(dispatched) == 1
+    assert dispatched[0][0] == "t-auto"
+
+
+def test_sweep_once_tenant_exception_is_isolated(monkeypatch):
+    """One tenant raising inside the loop must NOT stop the pass — the next
+    tenant is still visited and counted."""
+    monkeypatch.setattr(_up, "_RENTAL_SWEEP_STAGGER", 0.0)
+    visited = []
+    monkeypatch.setattr(rp, "pl_alert_enabled_tenants", lambda: ["t-bad", "t-ok"])
+    monkeypatch.setattr(rp, "market_overpay_enabled_tenants", lambda: [])
+    monkeypatch.setattr(rp, "market_arb_enabled_tenants", lambda: [])
+    monkeypatch.setattr(rp, "reco_worse_enabled_tenants", lambda: [])
+    monkeypatch.setattr(rp, "auto_blacklist_candidate_tenants", lambda: [])
+    monkeypatch.setattr(rp, "evaluate_auto_blacklist", lambda tenant_id="": [])
+    monkeypatch.setattr(rp, "risk_alert_enabled_tenants", lambda: [])
+    monkeypatch.setattr(rp, "_sweep_fetch_history", lambda tenant_id="": [])
+
+    def _explode(hist, contracts, tenant_id=""):
+        visited.append(tenant_id)
+        if tenant_id == "t-bad":
+            raise RuntimeError("provider exploded")
+        return []
+
+    monkeypatch.setattr(rp, "evaluate_rental_pl_alerts", _explode)
+    n = _up._rentals_sweep_once()
+    # visited += 1 sits at the END of the loop try — the exploding tenant is
+    # not counted, but the pass CONTINUED to t-ok (exception isolated).
+    assert n == 1
+    assert visited == ["t-bad", "t-ok"]
+
+
+def test_sweep_once_top_level_exception_returns_zero(monkeypatch):
+    """A failure in the family-import/gating phase returns 0 (never raises)."""
+    monkeypatch.setattr(
+        rp, "pl_alert_enabled_tenants",
+        lambda: (_ for _ in ()).throw(RuntimeError("db gone")))
+    assert _up._rentals_sweep_once() == 0
+
+
+def test_sweep_loop_jitter_then_runs_and_breaks(monkeypatch):
+    """_rentals_sweep_loop: boot jitter (5 + random*15s) first, then one pass
+    per interval. We break the infinite loop by raising from time.sleep."""
+    sleeps = []
+    calls = {"pass": 0}
+    monkeypatch.setattr(
+        _up.time, "sleep",
+        lambda s: sleeps.append(s) if len(sleeps) < 2 else (_ for _ in ()).throw(KeyboardInterrupt()))
+    monkeypatch.setattr(_up, "_rentals_sweep_once",
+                        lambda: calls.__setitem__("pass", calls["pass"] + 1))
+    monkeypatch.setattr(_up, "_RENTAL_SWEEP_INTERVAL", 30)
+    import random as _random
+    monkeypatch.setattr(_random, "random", lambda: 0.5)
+    try:
+        _up._rentals_sweep_loop()
+    except KeyboardInterrupt:
+        pass
+    # Sequence: jitter-sleep → pass → interval-sleep → pass → sleep raises
+    assert len(sleeps) == 2  # boot jitter + interval sleep
+    assert sleeps[0] == 5 + 0.5 * 15
+    assert sleeps[1] == 30
+    assert calls["pass"] == 2  # one pass per loop iteration before break

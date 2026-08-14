@@ -14,10 +14,13 @@
 #              push_notifier, cgminer_adapter, proximity) · gate sobe p/ 65%
 #   2026-08-14  TOTAL 76% · financeiros ≥80% (payments 96%, rentals 89%,
 #              licensing 89%, safety 100%) · gate --cov-fail-under=75
-#   ROADMAP → 80% (próxima release): app.py 55% + user_polling 71% são os
-#   maiores buracos (mapa completo em docs/QUALITY.md).
-# O --cov-fail-under=75 é o gate real: abaixo de 75% o merge é bloqueado.
-# A margem (76% → 75%) absorve variação entre ambientes (CI vs local) sem
+#   2026-08-14  TOTAL 77% · poll_compute 100% (helpers extraídos do
+#              _do_poll, Issue #135), app 57%, user_polling 73% · gate
+#              --cov-fail-under=76
+#   ROADMAP → 80% (próxima release): app.py 57% + user_polling 73% ainda
+#   são os maiores buracos (mapa completo em docs/QUALITY.md).
+# O --cov-fail-under é o gate real: abaixo dele o merge é bloqueado.
+# A margem (~1pp) absorve variação entre ambientes (CI vs local) sem
 # deixar o gate frouxo.
 
 name: "CI · Gate"
@@ -163,7 +166,7 @@ jobs:
             --cov=app --cov=helpers --cov=axe_fleet --cov=services --cov=core \
             --cov-report=term-missing --cov-report=html:/tmp/coverage_html \
             --cov-report=xml:/tmp/coverage.xml \
-            --cov-fail-under=75
+            --cov-fail-under=76
 
       - name: Upload pytest results
         if: always()
