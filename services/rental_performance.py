@@ -555,6 +555,99 @@ def compute_accepted_recos_summary(tenant_id: str = "") -> Dict[str, Any]:
     return {"count": len(out), "accepted": out}
 
 
+# ── Auto-exclusion history (WHEN + CAUSE) ─────────────────────────────────
+# The accepted ledger snapshots the pilot's case at exclusion (grade,
+# delivery %, samples). The auto-exclusion history joins that snapshot with
+# the tenant's rule vigente (grade floor + min samples) so the operator sees
+# BOTH when the pilot excluded a rig AND why (the rule that fired).
+
+
+def _auto_exclusion_cause(entry: Dict[str, Any], thresholds: Dict[str, Any]) -> str:
+    """Human-readable CAUSE for one auto-exclusion ledger entry: the rig's
+    delivery snapshot at exclusion + the rule that fired. Never raises."""
+    try:
+        bits = []
+        grade = entry.get("grade")
+        if grade:
+            bits.append(f"grade {grade}")
+        d = entry.get("delivery_pct")
+        if d is not None:
+            try:
+                bits.append(f"entrega {float(d):.1f}%")
+            except (TypeError, ValueError):
+                pass
+        samples = entry.get("samples")
+        if samples is not None:
+            try:
+                n = int(samples)
+                bits.append(f"{n} amostra{'s' if n != 1 else ''}")
+            except (TypeError, ValueError):
+                pass
+        rule = f"régua: floor {thresholds.get('grade', 'F')}, mín {thresholds.get('min_samples', 2)}"
+        cause = " · ".join(bits) if bits else "sub-entrega"
+        return f"{cause} — {rule}"
+    except Exception:
+        return "sub-entrega"
+
+
+def auto_exclusion_history(tenant_id: str = "") -> Dict[str, Any]:
+    """Auto-exclusions WITH when + cause (per tenant).
+
+    Reads the accepted ledger entries with source='auto' (the snapshot at
+    exclusion time — grade, delivery %, samples) and attaches the rule
+    vigente (grade floor + min samples). Returns
+    {"count", "exclusions": [{rig_id, name, ts, grade, delivery_pct, samples,
+    min_samples, grade_floor, cause}]} sorted newest first. Never raises
+    (empty → zeroed)."""
+    th = _auto_exclude_thresholds(tenant_id=tenant_id)
+    entries = [e for e in get_accepted_recos(tenant_id=tenant_id)
+               if (e.get("source") or "") == "auto"]
+    exclusions: List[Dict[str, Any]] = []
+    for e in entries:
+        exclusions.append({
+            "rig_id": e.get("rig_id"),
+            "name": e.get("name") or e.get("rig_id"),
+            "ts": e.get("ts") or 0,
+            "grade": e.get("grade"),
+            "delivery_pct": e.get("delivery_pct"),
+            "samples": e.get("samples", 0),
+            "min_samples": th["min_samples"],
+            "grade_floor": th["grade"],
+            "cause": _auto_exclusion_cause(e, th),
+        })
+    exclusions.sort(key=lambda x: x.get("ts") or 0, reverse=True)
+    return {"count": len(exclusions), "exclusions": exclusions}
+
+
+def admin_auto_exclusion_history(days: int = 0) -> Dict[str, Any]:
+    """GLOBAL auto-exclusion history (ALL tenants, when + cause) for the
+    /api/admin audit trail. Uses the shared _admin_audit_decisions pass so
+    tenant tagging + the days window match the rest of the audit exactly
+    (one implementation, no drift). Returns {"count", "exclusions":
+    [{tenant_id, rig_id, name, ts, grade, delivery_pct, samples, cause}]}
+    sorted newest first. Never raises."""
+    exclusions: List[Dict[str, Any]] = []
+    for d in _admin_audit_decisions(days=days):
+        if (d.get("source") or "") != "auto":
+            continue
+        store_tid = "" if d.get("tenant_id") in ("", "default") else d.get("tenant_id")
+        th = _auto_exclude_thresholds(tenant_id=store_tid)
+        exclusions.append({
+            "tenant_id": d.get("tenant_id") or "default",
+            "rig_id": d.get("rig_id"),
+            "name": d.get("name") or d.get("rig_id"),
+            "ts": d.get("ts") or 0,
+            "grade": d.get("grade"),
+            "delivery_pct": d.get("delivery_pct"),
+            "samples": d.get("samples", 0),
+            "min_samples": th["min_samples"],
+            "grade_floor": th["grade"],
+            "cause": _auto_exclusion_cause(d, th),
+        })
+    exclusions.sort(key=lambda x: x.get("ts") or 0, reverse=True)
+    return {"count": len(exclusions), "exclusions": exclusions}
+
+
 # ── Admin audit trail (global operator — ALL tenants) ──────────────────────
 # The panel view is tenant-scoped by design; the platform operator needs the
 # FLEET of decisions. The admin path reads EVERY tenant's ledger — from the
