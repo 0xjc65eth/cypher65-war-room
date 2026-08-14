@@ -81,6 +81,10 @@ def _get_token(access_id: str, access_secret: str, region: str = "us") -> Option
         ).hexdigest(),
         "t": str(t),
         "sign_method": "HMAC-SHA256",
+        # Issue #150 — NÃO aplicar nonce monotônico aqui: a Tuya valida a
+        # recência do `t` (janela de tolerância), não a unicidade; o nonce
+        # vazio é o esperado e não entra na string assinada (_tuya_sign só
+        # inclui headers `tuya-*`).
         "nonce": "",
         "stringToSign": "",
     }
@@ -136,6 +140,8 @@ def _tuya_request(
         "access_token": token,
         "t": str(t),
         "sign_method": "HMAC-SHA256",
+        # Issue #150 — mesmo veredito do token: nonce vazio é o esperado da
+        # Tuya (valida recência do `t`); monotonicidade NÃO se aplica aqui.
         "nonce": "",
     }
 

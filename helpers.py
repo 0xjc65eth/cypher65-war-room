@@ -10,10 +10,41 @@ import logging
 import json
 import os
 import hashlib
+import threading
 from collections import deque
 from typing import Optional
 
 log = logging.getLogger("cypher65")
+
+# ── Monotonic nonce (Issue #150) — nonce ms estritamente crescente ─────────
+# APIs HMAC que rejeitam nonce duplicado (ex.: MiningRigRentals) exigem que
+# cada request use um nonce MAIOR que o último. Fonte única de verdade:
+# solo_mining.py, agents/solo_mining_advisor/tools.py e scripts/probe_mrr_api.py
+# roteiam todos por este gerador (fix do "Bad Nonce" #148, estendido p/ #150).
+_nonce_lock = threading.Lock()
+_nonce_last_ms = 0
+
+
+def next_monotonic_nonce_ms() -> str:
+    """Next strictly-increasing millisecond nonce (thread-safe).
+
+    Two calls in the same millisecond (or a clock that stalls or goes
+    backwards) would otherwise emit the SAME nonce — which MRR rejects
+    with ``Not Authenticated - Invalid Key - Bad Nonce``. The counter
+    bumps to ``last + 1`` in those cases so values are always unique
+    and increasing within the process.
+
+    Note: per-process counter — the app runs single-process (``python
+    app.py``), which is enough for MRR's per-key monotonic requirement.
+    """
+    global _nonce_last_ms
+    with _nonce_lock:
+        n = int(time.time() * 1000)
+        if n <= _nonce_last_ms:
+            n = _nonce_last_ms + 1  # colisão/clock parado/voltando → bump
+        _nonce_last_ms = n
+        return str(n)
+
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 #  PII redaction (Issue #116) — buyer/operator emails in logs
