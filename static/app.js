@@ -2792,17 +2792,70 @@ function renderAccount(acct) {
     const el = document.getElementById(id);
     if (el) el.textContent = text;
   }
+
+  // ── Admin audit trail — pure builders (mirrored in JS core tests) ─────
+  // ISO week key in UTC (Monday-start, deterministic — no TZ drift).
+  // ts <= 0 (missing/epoch) → '' so entries without a real date never
+  // bucket into a fake '1970-W01' week (symmetric with the backend's
+  // "ts=0 has no place in a windowed audit" rule).
+  function adminAuditIsoWeekKey(ts) {
+    const n = Number(ts);
+    if (!isFinite(n) || n <= 0) return '';
+    const d = new Date(n * 1000);
+    if (isNaN(d.getTime())) return '';
+    const day = (d.getUTCDay() + 6) % 7;         // Mon=0 … Sun=6
+    const thursday = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() + 3 - day));
+    const firstThu = new Date(Date.UTC(thursday.getUTCFullYear(), 0, 4));
+    const week = 1 + Math.round((thursday - firstThu) / (7 * 86400 * 1000));
+    return thursday.getUTCFullYear() + '-W' + String(week).padStart(2, '0');
+  }
+  // decisions → weekly buckets {labels: ['2026-W31', …], counts: [n, …]}
+  function buildAdminAuditWeekly(decisions) {
+    const buckets = {};
+    (decisions || []).forEach(function (d) {
+      const k = adminAuditIsoWeekKey(d && d.ts);
+      if (!k) return;
+      buckets[k] = (buckets[k] || 0) + 1;
+    });
+    const labels = Object.keys(buckets).sort();
+    return { labels: labels, counts: labels.map(function (k) { return buckets[k]; }) };
+  }
+  // decisions → filtered by tenant + verdict ('all'/'' = no filter).
+  function filterAdminAuditDecisions(decisions, tenant, verdict) {
+    return (decisions || []).filter(function (d) {
+      if (tenant && (d.tenant_id || 'default') !== tenant) return false;
+      if (verdict && (d.verdict || 'unknown') !== verdict) return false;
+      return true;
+    });
+  }
+  // Verdict → CSS badge class + label (visual severity ladder).
+  function adminAuditVerdictMeta(verdict) {
+    const map = {
+      improved: { cls: 'admin-audit__verdict--improved', label: 'IMPROVED' },
+      worse: { cls: 'admin-audit__verdict--worse', label: 'WORSE' },
+      same: { cls: 'admin-audit__verdict--same', label: 'SAME' },
+      avoided: { cls: 'admin-audit__verdict--avoided', label: 'AVOIDED' },
+      revoked: { cls: 'admin-audit__verdict--revoked', label: 'REVOKED' },
+      no_before: { cls: 'admin-audit__verdict--mute', label: 'NO BEFORE' },
+    };
+    return map[verdict] || { cls: 'admin-audit__verdict--mute', label: String(verdict || 'unknown').toUpperCase() };
+  }
+
+  let _adminAuditDecisions = [];      // last payload (for client-side filters)
+  let _adminAuditChart = null;        // Chart.js instance (destroy before recreate)
+
   async function fetchAdminData() {
     if (_adminLoaded) return;
     const errEl = document.getElementById('admin-error');
     const gate = document.getElementById('admin-gate-badge');
     try {
       // Pool health — no auth needed for localhost/operator-key admin routes.
-      const [sessionsResp, convResp] = await Promise.all([
+      const [sessionsResp, convResp, auditResp] = await Promise.all([
         fetch('/api/admin/sessions', { headers: { 'X-Requested-With': 'fetch' } }),
         fetch('/api/admin/conversion', { headers: { 'X-Requested-With': 'fetch' } }),
+        fetch('/api/admin/rentals/accepted-recos?limit=1000', { headers: { 'X-Requested-With': 'fetch' } }),
       ]);
-      if (sessionsResp.status === 403 || convResp.status === 403) {
+      if (sessionsResp.status === 403 || convResp.status === 403 || auditResp.status === 403) {
         if (gate) gate.textContent = 'restricted';
         if (errEl) {
           errEl.hidden = false;
@@ -2814,12 +2867,14 @@ function renderAccount(acct) {
       if (gate) gate.textContent = 'ok';
       const sessions = sessionsResp.ok ? await sessionsResp.json() : {};
       const conv = convResp.ok ? await convResp.json() : {};
-      _renderAdmin(sessions, conv);
+      const audit = auditResp.ok ? await auditResp.json() : {};
+      _renderAdmin(sessions, conv, audit);
     } catch (e) {
       if (errEl) { errEl.hidden = false; errEl.textContent = 'admin fetch error: ' + e.message; }
     }
   }
-  function _renderAdmin(sessions, conv) {
+  function _renderAdmin(sessions, conv, audit) {
+    _renderAdminAudit(audit);
     const pool = sessions.pool || {};
     _setAdminText('admin-sessions', pool.sessions_active != null ? pool.sessions_active : '—');
     _setAdminText('admin-polls-per-sec', pool.polls_per_sec != null ? pool.polls_per_sec : '—');
@@ -2858,6 +2913,153 @@ function renderAccount(acct) {
     if (v === undefined || v === null) return '—';
     return Number(v).toFixed(1) + '%';
   }
+
+  // ── Admin audit trail — table + filters + weekly mini-chart ───────────
+  function _fmtAdminTs(ts) {
+    if (!ts) return '—';
+    const d = new Date(Number(ts) * 1000);
+    if (isNaN(d.getTime())) return '—';
+    return d.toISOString().replace('T', ' ').slice(0, 16) + ' UTC';
+  }
+  function _fmtDeliveryPct(v) {
+    if (v === undefined || v === null || v === '') return '—';
+    return Number(v).toFixed(1) + '%';
+  }
+  function _renderAdminAudit(audit) {
+    const wrap = document.getElementById('admin-audit');
+    const tbody = document.getElementById('admin-audit-tbody');
+    if (!wrap || !tbody) return;
+    const decisions = (audit && audit.decisions) || [];
+    _adminAuditDecisions = decisions;
+    wrap.hidden = false;
+    // Tenant filter options (distinct, sorted, 'default' first).
+    const tenantSel = document.getElementById('admin-audit-tenant');
+    if (tenantSel) {
+      const tenants = Array.from(new Set(decisions.map(function (d) { return d.tenant_id || 'default'; })));
+      tenants.sort(function (a, b) { return a === 'default' ? -1 : (b === 'default' ? 1 : a.localeCompare(b)); });
+      const prev = tenantSel.value;
+      tenantSel.innerHTML = '<option value="">all</option>' + tenants.map(function (t) {
+        return '<option value="' + escapeHtml(t) + '">' + escapeHtml(t) + '</option>';
+      }).join('');
+      if (prev && tenants.indexOf(prev) !== -1) tenantSel.value = prev;
+    }
+    // Verdict filter options (distinct, ladder order).
+    const verdictSel = document.getElementById('admin-audit-verdict');
+    if (verdictSel) {
+      const order = ['worse', 'improved', 'same', 'avoided', 'revoked', 'no_before'];
+      const seen = {};
+      decisions.forEach(function (d) { seen[d.verdict || 'unknown'] = true; });
+      const verdicts = order.filter(function (v) { return seen[v]; })
+        .concat(Object.keys(seen).filter(function (v) { return order.indexOf(v) === -1; }).sort());
+      const prev = verdictSel.value;
+      verdictSel.innerHTML = '<option value="">all</option>' + verdicts.map(function (v) {
+        return '<option value="' + escapeHtml(v) + '">' + escapeHtml(v) + '</option>';
+      }).join('');
+      if (prev && verdicts.indexOf(prev) !== -1) verdictSel.value = prev;
+    }
+    _renderAdminAuditTable();
+    _renderAdminAuditChart(buildAdminAuditWeekly(decisions));
+  }
+  function _currentAuditFilters() {
+    const tenantSel = document.getElementById('admin-audit-tenant');
+    const verdictSel = document.getElementById('admin-audit-verdict');
+    return {
+      tenant: tenantSel ? tenantSel.value : '',
+      verdict: verdictSel ? verdictSel.value : '',
+    };
+  }
+  function _renderAdminAuditTable() {
+    const tbody = document.getElementById('admin-audit-tbody');
+    const empty = document.getElementById('admin-audit-empty');
+    if (!tbody) return;
+    const f = _currentAuditFilters();
+    const rows = filterAdminAuditDecisions(_adminAuditDecisions, f.tenant, f.verdict);
+    if (empty) empty.hidden = rows.length > 0;
+    tbody.innerHTML = rows.map(function (d) {
+      const vmeta = adminAuditVerdictMeta(d.verdict);
+      const grade = d.grade ? '<span class="badge badge--' + (d.grade === 'F' ? 'red' : d.grade === 'A' ? 'green' : 'mute') + '">' + escapeHtml(String(d.grade)) + '</span>' : '—';
+      const flagged = d.pilot_flagged ? ' <span class="admin-audit__flag" title="pilot flagged">▲</span>' : '';
+      return '<tr>' +
+        '<td class="mono">' + escapeHtml(_fmtAdminTs(d.ts)) + '</td>' +
+        '<td>' + escapeHtml(String(d.tenant_id || 'default')) + '</td>' +
+        '<td title="' + escapeHtml(String(d.rig_id || '')) + '">' + escapeHtml(String(d.name || d.rig_id || '—')) + flagged + '</td>' +
+        '<td>' + escapeHtml(String(d.source || 'unknown')) + '</td>' +
+        '<td>' + grade + '</td>' +
+        '<td>' + escapeHtml(_fmtDeliveryPct(d.delivery_pct)) + '</td>' +
+        '<td>' + escapeHtml(_fmtDeliveryPct(d.delivery_after_pct)) + '</td>' +
+        '<td><span class="admin-audit__verdict ' + escapeHtml(vmeta.cls) + '">' + escapeHtml(vmeta.label) + '</span></td>' +
+        '</tr>';
+    }).join('');
+  }
+  function _renderAdminAuditChart(weekly) {
+    const canvas = document.getElementById('admin-audit-chart');
+    if (!canvas || typeof Chart === 'undefined') return;
+    if (_adminAuditChart) { _adminAuditChart.destroy(); _adminAuditChart = null; }
+    const labels = weekly.labels || [];
+    if (!labels.length) return;
+    _adminAuditChart = new Chart(canvas.getContext('2d'), {
+      type: 'bar',
+      data: {
+        labels: labels,
+        datasets: [{
+          label: 'Aceitas/semana',
+          data: weekly.counts,
+          backgroundColor: 'rgba(6,214,240,0.35)',
+          borderColor: 'rgb(6,214,240)',
+          borderWidth: 1,
+          borderRadius: 3,
+        }],
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: { legend: { display: false } },
+        scales: {
+          x: { ticks: { color: '#5E5952', font: { size: 9 }, maxRotation: 0 }, grid: { display: false } },
+          y: { beginAtZero: true, ticks: { color: '#5E5952', font: { size: 9 }, precision: 0 }, grid: { color: 'rgba(94,89,82,0.10)' } },
+        },
+      },
+    });
+  }
+
+  // Delegated: filter selects re-render the table (client-side, no refetch).
+  const _auditFilterHost = document.getElementById('admin-panel');
+  if (_auditFilterHost) {
+    _auditFilterHost.addEventListener('change', function (e) {
+      if (e.target && e.target.id === 'admin-audit-tenant') _renderAdminAuditTable();
+      if (e.target && e.target.id === 'admin-audit-verdict') _renderAdminAuditTable();
+    });
+  }
+  // CSV export — same admin-gated route, blob download (keeps X-API-Key header path).
+  const auditCsvBtn = document.getElementById('admin-audit-csv');
+  if (auditCsvBtn) {
+    auditCsvBtn.addEventListener('click', async function () {
+      const errEl = document.getElementById('admin-error');
+      const fail = function (msg) {
+        if (errEl) { errEl.hidden = false; errEl.textContent = msg; }
+      };
+      try {
+        const r = await fetch('/api/admin/rentals/accepted-recos?format=csv', { headers: { 'X-Requested-With': 'fetch' } });
+        if (!r.ok) {
+          fail('CSV export blocked (HTTP ' + r.status + ') — a rota exige localhost ou X-API-Key do operador.');
+          return;
+        }
+        const blob = await r.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = 'accepted_recos_audit_' + Math.floor(Date.now() / 1000) + '.csv';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+        if (errEl) errEl.hidden = true;  // success clears any prior error
+      } catch (err) {
+        fail('CSV export error: ' + err.message);
+      }
+    });
+  }
+
   const adminRefreshBtn = document.getElementById('admin-refresh-btn');
   if (adminRefreshBtn) {
     adminRefreshBtn.addEventListener('click', function() {

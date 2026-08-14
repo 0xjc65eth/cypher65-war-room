@@ -1386,6 +1386,46 @@
   <ul class="alerts-list" id="admin-funnel-list">
     <li class="alert-empty">aguardando dados…</li>
   </ul>
+
+  <!-- ── Audit de recomendações aceitas (global — todos os tenants) ──
+       Consome /api/admin/rentals/accepted-recos (mesmo gate localhost/
+       X-API-Key do painel admin). Tabela de decisões + filtros por
+       tenant/veredito + mini-chart de aceitas por semana (ISO, UTC). -->
+  <div class="panel__subtitle">AUDIT DE RECOMENDAÇÕES ACEITAS — decisões do piloto (todos os tenants)</div>
+  <div class="admin-audit" id="admin-audit" hidden>
+    <div class="admin-audit__toolbar">
+      <label class="admin-audit__filter">
+        <span class="admin-audit__filter-label">tenant</span>
+        <select id="admin-audit-tenant"><option value="">all</option></select>
+      </label>
+      <label class="admin-audit__filter">
+        <span class="admin-audit__filter-label">veredito</span>
+        <select id="admin-audit-verdict"><option value="">all</option></select>
+      </label>
+      <button class="chip" id="admin-audit-csv" title="Exportar o audit completo (CSV)">⭳ CSV</button>
+    </div>
+    <div class="admin-audit__chart-wrap">
+      <canvas id="admin-audit-chart"></canvas>
+    </div>
+    <div class="admin-audit__table-wrap">
+      <table class="mkt-table admin-audit__table">
+        <thead>
+          <tr>
+            <th>Aceita em</th>
+            <th>Tenant</th>
+            <th>Rig</th>
+            <th>Origem</th>
+            <th>Grade</th>
+            <th>Delivery antes</th>
+            <th>Delivery depois</th>
+            <th>Veredito</th>
+          </tr>
+        </thead>
+        <tbody id="admin-audit-tbody"></tbody>
+      </table>
+      <div class="admin-audit__empty" id="admin-audit-empty" hidden>sem decisões para o filtro selecionado</div>
+    </div>
+  </div>
   <div class="admin-error" id="admin-error" hidden></div>
 </section>
 
