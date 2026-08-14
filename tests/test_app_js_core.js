@@ -5091,6 +5091,110 @@ function sortMarketVenues(venues, key, dir) {
 })();
 
 // ═══════════════════════════════════════════════════════════════════════════
+//  SUITE 33: admin audit trail builders (Issue #96 — admin panel)
+//  Pure mirrors of static/app.js: ISO-week bucketing (UTC, deterministic),
+//  client-side tenant/verdict filter, and verdict badge metadata.
+// ═══════════════════════════════════════════════════════════════════════════
+(function() {
+  function adminAuditIsoWeekKey(ts) {
+    const n = Number(ts);
+    if (!isFinite(n) || n <= 0) return '';
+    const d = new Date(n * 1000);
+    if (isNaN(d.getTime())) return '';
+    const day = (d.getUTCDay() + 6) % 7;         // Mon=0 … Sun=6
+    const thursday = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() + 3 - day));
+    const firstThu = new Date(Date.UTC(thursday.getUTCFullYear(), 0, 4));
+    const week = 1 + Math.round((thursday - firstThu) / (7 * 86400 * 1000));
+    return thursday.getUTCFullYear() + '-W' + String(week).padStart(2, '0');
+  }
+  function buildAdminAuditWeekly(decisions) {
+    const buckets = {};
+    (decisions || []).forEach(function (d) {
+      const k = adminAuditIsoWeekKey(d && d.ts);
+      if (!k) return;
+      buckets[k] = (buckets[k] || 0) + 1;
+    });
+    const labels = Object.keys(buckets).sort();
+    return { labels: labels, counts: labels.map(function (k) { return buckets[k]; }) };
+  }
+  function filterAdminAuditDecisions(decisions, tenant, verdict) {
+    return (decisions || []).filter(function (d) {
+      if (tenant && (d.tenant_id || 'default') !== tenant) return false;
+      if (verdict && (d.verdict || 'unknown') !== verdict) return false;
+      return true;
+    });
+  }
+  function adminAuditVerdictMeta(verdict) {
+    const map = {
+      improved: { cls: 'admin-audit__verdict--improved', label: 'IMPROVED' },
+      worse: { cls: 'admin-audit__verdict--worse', label: 'WORSE' },
+      same: { cls: 'admin-audit__verdict--same', label: 'SAME' },
+      avoided: { cls: 'admin-audit__verdict--avoided', label: 'AVOIDED' },
+      revoked: { cls: 'admin-audit__verdict--revoked', label: 'REVOKED' },
+      no_before: { cls: 'admin-audit__verdict--mute', label: 'NO BEFORE' },
+    };
+    return map[verdict] || { cls: 'admin-audit__verdict--mute', label: String(verdict || 'unknown').toUpperCase() };
+  }
+
+  // ISO week key — fixed epoch timestamps (UTC Mondays).
+  // 2026-07-20 is a Monday → W30; 2026-07-26 is a Sunday → still W30.
+  assertEqual('ISO week key Mon 2026-07-20', adminAuditIsoWeekKey(1784505600), '2026-W30');
+  assertEqual('ISO week key Sun 2026-07-26', adminAuditIsoWeekKey(1785024000), '2026-W30');
+  assertEqual('ISO week key Mon 2026-07-27', adminAuditIsoWeekKey(1785110400), '2026-W31');
+  assertEqual('ISO week key invalid ts → empty', adminAuditIsoWeekKey(0), '');
+  assertEqual('ISO week key garbage → empty', adminAuditIsoWeekKey('nope'), '');
+
+  // Weekly bucketing — sorted labels, correct counts, null ts skipped.
+  const weekly = buildAdminAuditWeekly([
+    { ts: 1784505600 },          // W30
+    { ts: 1785110400 },          // W31
+    { ts: 1785110400 + 86400 },  // W31
+    { ts: 0 },                   // skipped
+    { ts: null },                // skipped
+    { ts: 'garbage' },           // skipped
+  ]);
+  assertEqual('weekly labels sorted', weekly.labels, ['2026-W30', '2026-W31']);
+  assertEqual('weekly counts', weekly.counts, [1, 2]);
+  assertEqual('weekly empty input', buildAdminAuditWeekly([]), { labels: [], counts: [] });
+  assertEqual('weekly undefined input', buildAdminAuditWeekly(undefined), { labels: [], counts: [] });
+
+  // Filter — tenant + verdict, missing fields defaulted, no filter = all.
+  const decisions = [
+    { tenant_id: 'tenant-a', verdict: 'worse', ts: 1 },
+    { tenant_id: 'tenant-a', verdict: 'improved', ts: 2 },
+    { verdict: 'worse', ts: 3 },                          // → default tenant
+    { tenant_id: 'tenant-b', verdict: 'no_before', ts: 4 },
+  ];
+  assertEqual('filter tenant-a only',
+    filterAdminAuditDecisions(decisions, 'tenant-a', '').length, 2);
+  assertEqual('filter default tenant',
+    filterAdminAuditDecisions(decisions, 'default', '').length, 1);
+  assertEqual('filter verdict worse',
+    filterAdminAuditDecisions(decisions, '', 'worse').length, 2);
+  assertEqual('filter tenant+verdict combo',
+    filterAdminAuditDecisions(decisions, 'tenant-b', 'no_before').length, 1);
+  assertEqual('filter combo no match',
+    filterAdminAuditDecisions(decisions, 'tenant-a', 'revoked').length, 0);
+  assertEqual('filter no filters → all',
+    filterAdminAuditDecisions(decisions, '', '').length, 4);
+  assertEqual('filter undefined input',
+    filterAdminAuditDecisions(undefined, '', '').length, 0);
+  assertEqual('filter unknown verdict kept when no filter',
+    filterAdminAuditDecisions([{ verdict: 'mystery', ts: 5 }], '', '').length, 1);
+
+  // Verdict badge metadata — ladder + unknown fallback.
+  assertEqual('verdict worse meta', adminAuditVerdictMeta('worse'),
+    { cls: 'admin-audit__verdict--worse', label: 'WORSE' });
+  assertEqual('verdict improved meta', adminAuditVerdictMeta('improved').label, 'IMPROVED');
+  assertEqual('verdict revoked meta', adminAuditVerdictMeta('revoked').cls,
+    'admin-audit__verdict--revoked');
+  assertEqual('verdict unknown fallback label', adminAuditVerdictMeta('mystery').label, 'MYSTERY');
+  assertEqual('verdict undefined fallback label', adminAuditVerdictMeta(undefined).label, 'UNKNOWN');
+  assertEqual('verdict unknown fallback class', adminAuditVerdictMeta('mystery').cls,
+    'admin-audit__verdict--mute');
+})();
+
+// ═══════════════════════════════════════════════════════════════════════════
 //  RESULTS
 // ═══════════════════════════════════════════════════════════════════════════
 
