@@ -5444,6 +5444,7 @@ function renderAccount(acct) {
     _apSetUi(!!ap.armed);
     _initAutoPilotToggle();
     _initAutoPilotAdvisory();
+    _initAutoPilotDryRun();
   }
 
   // ── Auto-Pilot arm/disarm toggle (automations module) ─────────────
@@ -5737,6 +5738,119 @@ function renderAccount(acct) {
       });
     }
     _apLoadRecs();
+  }
+
+  // ── Issue #76 · Auto-Pilot DRY-RUN (execução simulada) ─────────────
+  let _apDrInit = false;
+
+  function _apDrNowCardHtml(a) {
+    const esc = escapeHtml;
+    const blocked = a.safety_verdict === 'blocked';
+    const cancelled = a.conflict === 'cancelled_by_conflict';
+    const rated = a.budget === 'rate_limited';
+    const cls = cancelled ? 'ap-dr-card--cancel' : (blocked ? 'ap-dr-card--blocked' : (rated ? 'ap-dr-card--rate' : ''));
+    const actual = a.actual_value != null ? String(a.actual_value) : '—';
+    let chips = cancelled
+      ? '<span class="ap-dr-chip ap-dr-chip--mute">cancelada · conflito</span>'
+      : (blocked
+        ? '<span class="ap-dr-chip ap-dr-chip--bad">safety: BLOQUEADO</span>'
+        : '<span class="ap-dr-chip ap-dr-chip--ok">safety: APROVADO</span>');
+    if (blocked && a.safety_reason) {
+      chips += '<span class="ap-dr-chip ap-dr-chip--bad" title="' + esc(a.safety_reason) + '">motivo</span>';
+    }
+    if (rated) {
+      chips += '<span class="ap-dr-chip ap-dr-chip--warn">budget: rate-limited</span>';
+    } else if (!cancelled) {
+      chips += '<span class="ap-dr-chip ap-dr-chip--mute">executaria</span>';
+    }
+    return (
+      '<div class="ap-dr-card ' + cls + '">' +
+      '<div class="ap-dr-card__head"><span class="ap-dr-card__rule">' + esc(a.rule_name || ('regra #' + String(a.rule_id))) + '</span>' +
+      '<span class="ap-dr-card__dev">' + esc(a.device_name || a.device_id || '') + '</span></div>' +
+      '<div class="ap-dr-card__cond">' + esc(String(a.condition_metric || '')) + ' ' + esc(String(a.condition_operator || '')) + ' ' + esc(String(a.condition_value != null ? a.condition_value : '')) + ' · atual: ' + esc(actual) + ' → ' + esc(String(a.action_command || '?')) + '</div>' +
+      '<div class="ap-dr-card__outcome">' + esc(a.predicted_outcome || '') + '</div>' +
+      '<div class="ap-dr-card__chips">' + chips + '</div>' +
+      '</div>'
+    );
+  }
+
+  function _apDrReplayRowHtml(r) {
+    const esc = escapeHtml;
+    const when = r.first_ts ? fmt.age(r.first_ts) : '';
+    return (
+      '<div class="ap-dr-replay__row">' +
+      '<span class="ap-dr-replay__rule">' + esc(r.rule_name || ('regra #' + String(r.rule_id))) + ' · ' + esc(r.device_name || r.device_id || '') + '</span>' +
+      '<span class="ap-dr-replay__action">' + esc(r.action_command || '') + '</span>' +
+      '<span class="ap-dr-replay__fires" title="rate-limited: ' + esc(String(r.rate_limited || 0)) + '">' + esc(String(r.fires || 0)) + '×</span>' +
+      '<span class="ap-dr-replay__when">' + esc(when) + '</span>' +
+      '</div>'
+    );
+  }
+
+  function _apDrErrHtml(msg) {
+    return '<div class="ap-dr-banner" style="border-color:var(--accent-red,#ff4d4d);color:var(--accent-red,#ff4d4d)">' +
+      '⚠ ' + escapeHtml(msg) + '</div>';
+  }
+
+  async function _apDrLoad() {
+    try {
+      const r = await authFetch('/api/automation/dry-run');
+      if (r.ok) {
+        const d = await r.json().catch(() => ({}));
+        const list = document.getElementById('ap-dr-now-list');
+        const count = document.getElementById('ap-dr-now-count');
+        const actions = Array.isArray(d.actions) ? d.actions : [];
+        if (count) count.textContent = actions.length ? String(actions.length) : '0';
+        if (list) {
+          if (!actions.length) {
+            list.innerHTML =
+              '<div class="empty-state" style="grid-column:1/-1;border:none;padding:12px">' +
+              '<div class="empty-state__icon">◈</div>' +
+              '<div class="empty-state__title">Nenhuma regra dispararia agora</div>' +
+              '<div class="empty-state__desc">Com a telemetria atual e as regras ativas, o piloto não teria nenhuma ação a tomar.</div>' +
+              '</div>';
+          } else {
+            list.innerHTML = actions.map(_apDrNowCardHtml).join('');
+          }
+        }
+      } else {
+        // Honest feedback: a failed simulation is NOT "nothing fires".
+        // escapeHtml at the source (status is numeric — double-escape is
+        // harmless) to satisfy the DOM regression guard's data-flow scan.
+        const list = document.getElementById('ap-dr-now-list');
+        if (list) list.innerHTML = _apDrErrHtml('simulação indisponível (' + escapeHtml(r.status) + ')');
+      }
+    } catch (e) { /* dry-run — never break the module */ }
+    try {
+      const r2 = await authFetch('/api/automation/dry-run/replay?hours=24&limit=288');
+      if (r2.ok) {
+        const d2 = await r2.json().catch(() => ({}));
+        const list2 = document.getElementById('ap-dr-replay-list');
+        const count2 = document.getElementById('ap-dr-replay-count');
+        const rows = Array.isArray(d2.per_rule) ? d2.per_rule : [];
+        if (count2) count2.textContent = d2.total_fires != null ? String(d2.total_fires) + ' disparos' : '—';
+        if (list2) {
+          if (!rows.length) {
+            list2.innerHTML =
+              '<div class="empty-state" style="grid-column:1/-1;border:none;padding:12px">' +
+              '<div class="empty-state__icon">↻</div>' +
+              '<div class="empty-state__title">Nenhuma regra teria disparado nas últimas 24h</div>' +
+              '<div class="empty-state__desc">Simulação sobre o histórico de telemetria — cooldown, conflitos e budget aplicados.</div>' +
+              '</div>';
+          } else {
+            list2.innerHTML = rows.map(_apDrReplayRowHtml).join('');
+          }
+        }
+      }
+    } catch (e) { /* best-effort */ }
+  }
+
+  function _initAutoPilotDryRun() {
+    if (_apDrInit) return;
+    _apDrInit = true;
+    const refresh = document.getElementById('ap-dr-refresh');
+    if (refresh) refresh.addEventListener('click', _apDrLoad);
+    _apDrLoad();
   }
 
   function _initAiChat() {

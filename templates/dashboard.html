@@ -1000,6 +1000,38 @@
   </div>
 </section>
 
+<!-- ── Auto-Pilot DRY-RUN (Issue #76 · Fase 3) — simulação do piloto armado ── -->
+<section class="panel panel--ap-dryrun panel--large" id="ap-dryrun-panel" data-module="automations">
+  <div class="panel__header">
+    <div class="panel__eyebrow">◈ AUTO-PILOT · DRY-RUN</div>
+    <div class="panel__tools">
+      <span class="badge badge--purple" id="ap-dr-badge" title="Simulação — nenhuma ação real é executada">SIMULAÇÃO</span>
+      <button class="chip" id="ap-dr-refresh" title="Rodar simulação (agora + replay 24h)">⟳ SIMULAR</button>
+    </div>
+  </div>
+  <div class="ap-dr-banner">🧪 <strong>Execução simulada</strong> — mostra o que o piloto FARIA com as regras armadas (resultado previsto + veredito de segurança) <strong>sem executar nada</strong>.</div>
+  <div class="ap-dr-block">
+    <div class="ap-dr-block__title">AGORA — O QUE O PILOTO FARIA <span class="badge badge--mute" id="ap-dr-now-count">—</span></div>
+    <div class="ap-recs ap-dr-now" id="ap-dr-now-list">
+      <div class="empty-state" style="grid-column:1/-1;border:none;padding:12px">
+        <div class="empty-state__icon">◈</div>
+        <div class="empty-state__title">Nenhuma regra dispararia agora</div>
+        <div class="empty-state__desc">Com a telemetria atual e as regras ativas, o piloto não teria nenhuma ação a tomar.</div>
+      </div>
+    </div>
+  </div>
+  <div class="ap-dr-block">
+    <div class="ap-dr-block__title">REPLAY 24H — TERIA DISPARADO <span class="badge badge--mute" id="ap-dr-replay-count">—</span></div>
+    <div class="ap-dr-replay" id="ap-dr-replay-list">
+      <div class="empty-state" style="grid-column:1/-1;border:none;padding:12px">
+        <div class="empty-state__icon">↻</div>
+        <div class="empty-state__title">Sem histórico ainda</div>
+        <div class="empty-state__desc">O replay usa o histórico de telemetria persistido dos devices para simular as últimas 24h.</div>
+      </div>
+    </div>
+  </div>
+</section>
+
 <!-- ── Auto-Pilot arm confirmation (typed — enables autonomous actions) ── -->
 <div id="ap-arm-modal" class="modal-overlay">
   <div class="modal ap-arm-modal">
