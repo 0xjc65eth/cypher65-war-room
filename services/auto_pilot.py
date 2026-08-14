@@ -405,8 +405,9 @@ def record_rec_decision(
         _ensure_audit_table(conn)
         now = int(time.time())
         result_json = json.dumps(action_result)[:500] if action_result else ""
+        # AP_AUDIT_TABLE is an internal module constant — no user input.
         conn.execute(
-            f"INSERT INTO {AP_AUDIT_TABLE} "
+            f"INSERT INTO {AP_AUDIT_TABLE} "  # nosec B608
             "(ts, tenant_id, rec_id, device_id, device_name, issue_type, "
             " action_type, decision, note, result, created_ts) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -438,9 +439,10 @@ def get_rec_audit(tenant_id: str = "", limit: int = 50) -> List[Dict[str, Any]]:
         from services.db import get_db
         conn = get_db()
         _ensure_audit_table(conn)
+        # AP_AUDIT_TABLE is an internal module constant — no user input.
         rows = conn.execute(
             f"SELECT * FROM {AP_AUDIT_TABLE} WHERE tenant_id=? "
-            "ORDER BY ts DESC, id DESC LIMIT ?",
+            "ORDER BY ts DESC, id DESC LIMIT ?",  # nosec B608
             (tenant_id or "default", max(1, min(int(limit), 200))),
         ).fetchall()
         conn.close()

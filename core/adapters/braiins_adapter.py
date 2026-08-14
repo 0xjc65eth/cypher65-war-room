@@ -17,6 +17,7 @@ Braiins OS+ and provides a superset of the standard cgminer fields.
 
 Reference: https://academy.braiins.com/braiins-os/papi-bosminer
 """
+import json
 import logging
 import time
 from typing import Any, Dict, List, Optional

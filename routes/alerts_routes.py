@@ -83,8 +83,10 @@ def api_acknowledge_alert(tenant_id: str = ""):
     c = conn.cursor()
     placeholders = ",".join(["?"] * len(alert_ids))
     tid = tenant_id or "default"
+    # bandit B608 false positive: placeholders is generated ?-markers only
+    # (count of a validated id list) — no user input reaches the SQL text.
     c.execute(
-        f"UPDATE alerts SET is_acknowledged=1, active=0 WHERE id IN ({placeholders}) AND tenant_id=?",
+        f"UPDATE alerts SET is_acknowledged=1, active=0 WHERE id IN ({placeholders}) AND tenant_id=?",  # nosec B608
         tuple(alert_ids) + (tid,),
     )
     conn.commit()
@@ -239,7 +241,9 @@ def api_automation_rule(rule_id: int, tenant_id: str = ""):
 
     values.append(rule_id)
     values.append(tid)
-    c.execute(f"UPDATE automation_rules SET {','.join(fields)} WHERE id=? AND tenant_id=?", tuple(values))
+    # bandit B608 false positive: field comes from the fixed whitelist tuple
+    # above (never from raw request keys) — values are bound as ?-parameters.
+    c.execute(f"UPDATE automation_rules SET {','.join(fields)} WHERE id=? AND tenant_id=?", tuple(values))  # nosec B608
     conn.commit()
     conn.close()
     _log_audit(tid, "automation.rule.update", target=str(rule_id), details={"fields": fields})

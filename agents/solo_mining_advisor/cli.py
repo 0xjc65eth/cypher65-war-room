@@ -23,6 +23,7 @@ Commands:
 """
 
 import os
+import subprocess
 import math
 import io
 import json
@@ -248,49 +249,51 @@ def cmd_help():
     print()
     print(f"{C.AMBER}{C.BOLD}COMMANDS:{C.RST}")
     print(f"  {C.GREEN}status{C.RST} {C.MUTED}[--json]{C.RST}")
-    print(f"       Show full mining dashboard: difficulty, BTC price, worker stats, 24h probability")
+    print("       Show full mining dashboard: difficulty, BTC price, worker stats, 24h probability")
     print()
     print(f"  {C.GREEN}network{C.RST} {C.MUTED}[--json]{C.RST}")
-    print(f"       Show live Bitcoin network difficulty + BTC price")
+    print("       Show live Bitcoin network difficulty + BTC price")
     print()
     print(f"  {C.GREEN}calc --hashrate <value> --duration <h>{C.RST} {C.MUTED}[--difficulty <d>] [--json]{C.RST}")
-    print(f"       Calculate solo mining probability (auto-fetches live difficulty)")
-    print(f"       Examples: calc --hashrate 225TH --duration 24h")
-    print(f"                 calc --hashrate 1.5PH --duration 168h --difficulty 127T")
+    print("       Calculate solo mining probability (auto-fetches live difficulty)")
+    print("       Examples: calc --hashrate 225TH --duration 24h")
+    print("                 calc --hashrate 1.5PH --duration 168h --difficulty 127T")
     print()
     print(f"  {C.GREEN}compare --budget <btc> --duration <h>{C.RST} {C.MUTED}[--braiins <p>] [--mrr <p>] [--json]{C.RST}")
-    print(f"       Compare Braiins vs MRR rental options (auto-fetches live prices)")
-    print(f"       Example: compare --budget 0.01 --duration 24h")
+    print("       Compare Braiins vs MRR rental options (auto-fetches live prices)")
+    print("       Example: compare --budget 0.01 --duration 24h")
     print()
     print(f"  {C.GREEN}ask <free-text query>{C.RST}")
-    print(f"       Natural language mining query")
-    print(f"       Example: ask what is the current network difficulty?")
+    print("       Natural language mining query")
+    print("       Example: ask what is the current network difficulty?")
     print()
     print(f"  {C.GREEN}chat / conversa / conversar / talk{C.RST}")
-    print(f"       Enter continuous conversation mode — every line is a")
-    print(f"       natural language mining query. Type 'sair' to return.")
-    print(f"       No 'ask' prefix needed: just type 'qual a chance com 500th?'")
+    print("       Enter continuous conversation mode — every line is a")
+    print("       natural language mining query. Type 'sair' to return.")
+    print("       No 'ask' prefix needed: just type 'qual a chance com 500th?'")
     print()
     print(f"  {C.GREEN}Piping & JSON:{C.RST}")
     print(f"       Append {C.GREEN}> filename{C.RST} to save output to a file")
     print(f"       Append {C.GREEN}--json{C.RST} to get machine-parseable JSON output")
-    print(f"       Examples: network > /tmp/stats.txt")
-    print(f"                 calc --hashrate 225TH --duration 24h --json")
+    print("       Examples: network > /tmp/stats.txt")
+    print("                 calc --hashrate 225TH --duration 24h --json")
     print()
     print(f"  {C.GREEN}clear{C.RST}")
-    print(f"       Clear the screen")
+    print("       Clear the screen")
     print()
     print(f"  {C.GREEN}help{C.RST}")
-    print(f"       Show this help text")
+    print("       Show this help text")
     print()
     print(f"  {C.GREEN}exit / quit{C.RST}")
-    print(f"       Exit the terminal")
+    print("       Exit the terminal")
     print()
 
 
 def cmd_clear():
     """Clear the terminal screen."""
-    os.system("clear" if os.name == "posix" else "cls")
+    # bandit B605: os.system always implies a shell — use list-form
+    # subprocess instead (fixed literal command, no interpolation).
+    subprocess.run(["clear"] if os.name == "posix" else ["cls"])
 
 
 def cmd_status(json_mode=False):
