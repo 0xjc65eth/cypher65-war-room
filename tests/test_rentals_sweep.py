@@ -216,6 +216,8 @@ def test_sweep_once_visits_and_dispatches_alerts(monkeypatch):
     monkeypatch.setattr(rp, "market_overpay_enabled_tenants", lambda: [])
     monkeypatch.setattr(rp, "market_arb_enabled_tenants", lambda: [])
     monkeypatch.setattr(rp, "reco_worse_enabled_tenants", lambda: [])
+    monkeypatch.setattr(rp, "auto_blacklist_candidate_tenants", lambda: [])
+    monkeypatch.setattr(rp, "evaluate_auto_blacklist", lambda tenant_id="": [])
     monkeypatch.setattr(rp, "risk_alert_enabled_tenants", lambda: [])
     # ONE shared MRR fetch per enabled tenant (rate budget), then BOTH
     # families' evaluators consume that history — never one fetch per
@@ -247,6 +249,8 @@ def test_sweep_once_is_staggered(monkeypatch):
     monkeypatch.setattr(rp, "market_overpay_enabled_tenants", lambda: [])
     monkeypatch.setattr(rp, "market_arb_enabled_tenants", lambda: [])
     monkeypatch.setattr(rp, "reco_worse_enabled_tenants", lambda: [])
+    monkeypatch.setattr(rp, "auto_blacklist_candidate_tenants", lambda: [])
+    monkeypatch.setattr(rp, "evaluate_auto_blacklist", lambda tenant_id="": [])
     monkeypatch.setattr(rp, "risk_alert_enabled_tenants", lambda: [])
     monkeypatch.setattr(rp, "_sweep_fetch_history", lambda tenant_id="": [])
     monkeypatch.setattr(rp, "evaluate_rental_pl_alerts",
@@ -355,6 +359,8 @@ def test_sweep_once_visits_and_dispatches_market_alerts(monkeypatch):
     monkeypatch.setattr(rp, "risk_alert_enabled_tenants", lambda: [])
     monkeypatch.setattr(rp, "market_arb_enabled_tenants", lambda: [])
     monkeypatch.setattr(rp, "reco_worse_enabled_tenants", lambda: [])
+    monkeypatch.setattr(rp, "auto_blacklist_candidate_tenants", lambda: [])
+    monkeypatch.setattr(rp, "evaluate_auto_blacklist", lambda tenant_id="": [])
     monkeypatch.setattr(rp, "market_overpay_enabled_tenants", lambda: ["t-m"])
     monkeypatch.setattr(rp, "_sweep_fetch_history",
                         lambda tenant_id="": (fetches.append(tenant_id) or []))
@@ -380,6 +386,8 @@ def test_sweep_once_dual_enabled_shares_one_fetch(monkeypatch):
     monkeypatch.setattr(rp, "market_overpay_enabled_tenants", lambda: ["t-dual"])
     monkeypatch.setattr(rp, "market_arb_enabled_tenants", lambda: [])
     monkeypatch.setattr(rp, "reco_worse_enabled_tenants", lambda: [])
+    monkeypatch.setattr(rp, "auto_blacklist_candidate_tenants", lambda: [])
+    monkeypatch.setattr(rp, "evaluate_auto_blacklist", lambda tenant_id="": [])
     monkeypatch.setattr(rp, "risk_alert_enabled_tenants", lambda: [])
     monkeypatch.setattr(
         rp, "_sweep_fetch_history",
@@ -412,6 +420,8 @@ def test_sweep_once_visits_and_dispatches_arb_alerts(monkeypatch):
     monkeypatch.setattr(rp, "market_overpay_enabled_tenants", lambda: [])
     monkeypatch.setattr(rp, "market_arb_enabled_tenants", lambda: ["t-arb"])
     monkeypatch.setattr(rp, "reco_worse_enabled_tenants", lambda: [])
+    monkeypatch.setattr(rp, "auto_blacklist_candidate_tenants", lambda: [])
+    monkeypatch.setattr(rp, "evaluate_auto_blacklist", lambda tenant_id="": [])
     monkeypatch.setattr(rp, "risk_alert_enabled_tenants", lambda: [])
     monkeypatch.setattr(rp, "_sweep_fetch_history",
                         lambda tenant_id="": (fetched.append(tenant_id) or []))

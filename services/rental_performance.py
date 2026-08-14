@@ -4149,6 +4149,81 @@ def fetch_rig_performance_history(
     return out
 
 
+def _should_auto_exclude(rig_id: Any, history: List[Dict],
+                         tenant_id: str = "") -> bool:
+    """SHARED auto-exclusion decision (detail path + periodic sweep).
+
+    A rig keeps under-delivering → grade F with ≥2 samples → it joins the
+    AUTO blacklist so bad performers vanish from the panel everywhere —
+    without touching the user's manual blacklist. A RESTORED rig is only
+    re-excluded when a NEW bad rental arrived AFTER the previous
+    auto-exclusion (otherwise the restore button is immediately undone by
+    the same streak). Never raises.
+    """
+    try:
+        if is_rig_blacklisted(rig_id, tenant_id=tenant_id) or \
+                is_rig_auto_blacklisted(rig_id, tenant_id=tenant_id):
+            return False
+        trust = compute_rig_trust_score(history)
+        if trust.get("grade") != "F" or trust.get("samples", 0) < 2:
+            return False
+        last_auto = _auto_blacklist_ts(rig_id, tenant_id=tenant_id)
+        newest = _history_newest_ts(history)
+        return last_auto == 0.0 or (newest is not None and newest > last_auto)
+    except Exception as e:
+        log.warning("[rental_performance] auto-exclude check failed: %s", e)
+        return False
+
+
+def auto_blacklist_candidate_tenants() -> List[str]:
+    """Tenant ids with a LOCAL renter track record (auto-exclusion sweep
+    candidates). The auto-exclusion is a DEFAULT protection (same rule the
+    panel detail applies) — not an opt-in alert — so the sweep visits every
+    tenant that has local history to judge, with ZERO provider cost.
+    Never raises: a storage hiccup → empty list (the sweep skips the cycle)."""
+    out: List[str] = []
+    try:
+        conn = get_db()
+        c = conn.cursor()
+        c.execute(
+            "SELECT DISTINCT tenant_id FROM rental_history "
+            "WHERE bucket='renter' AND provider='mrr' AND rig_id!='' "
+            "AND percent IS NOT NULL")
+        for row in c.fetchall():
+            out.append(row["tenant_id"] or "")
+        conn.close()
+    except Exception as e:
+        log.warning("[rental_performance] auto-blacklist candidates failed: %s", e)
+    return list(dict.fromkeys(out))
+
+
+def evaluate_auto_blacklist(tenant_id: str = "") -> List[str]:
+    """One auto-exclusion sweep pass for a tenant: scan its LOCAL rig track
+    record and auto-exclude every rig that passes the shared rule
+    (_should_auto_exclude). Returns the rigs excluded THIS pass (for the
+    sweep log + tests). Zero provider calls — purely local history."""
+    excluded: List[str] = []
+    try:
+        conn = get_db()
+        c = conn.cursor()
+        c.execute(
+            "SELECT DISTINCT rig_id FROM rental_history "
+            "WHERE tenant_id=? AND bucket='renter' AND provider='mrr' "
+            "AND rig_id!='' AND percent IS NOT NULL",
+            (tenant_id or "",))
+        rig_ids = [str(row["rig_id"]) for row in c.fetchall()]
+        conn.close()
+        for rid in rig_ids:
+            history = fetch_rig_performance_history(rid, tenant_id=tenant_id)
+            if _should_auto_exclude(rid, history, tenant_id=tenant_id):
+                if add_rig_to_auto_blacklist(rid, tenant_id=tenant_id):
+                    excluded.append(rid)
+    except Exception as e:
+        log.warning("[rental_performance] auto-blacklist sweep %s: %s",
+                    tenant_id or "default", e)
+    return excluded
+
+
 def analyze_rig(rig_id: Any = None, rig_name: str = "",
                 exclude_rental_id: Any = None, tenant_id: str = "") -> Dict[str, Any]:
     """One-call rig intelligence for the detail panel.
@@ -4168,20 +4243,14 @@ def analyze_rig(rig_id: Any = None, rig_name: str = "",
     blacklisted = is_rig_blacklisted(rig_id, tenant_id=tenant_id)
     auto_blacklisted = is_rig_auto_blacklisted(rig_id, tenant_id=tenant_id)
 
-    # CFO auto-exclusion: a rig that keeps under-delivering (grade F with ≥2
-    # samples) joins the AUTO list so bad performers vanish from the panel
-    # everywhere — without touching the user's manual blacklist, and without
-    # re-flagging a manually restored rig until NEW bad samples accumulate.
-    if (not blacklisted and not auto_blacklisted
-            and trust.get("grade") == "F" and trust.get("samples", 0) >= 2):
-        # Respect a restore: only re-exclude when a NEW bad rental arrived
-        # AFTER the previous auto-exclusion (otherwise the restore button
-        # would be immediately undone by the same streak).
-        last_auto = _auto_blacklist_ts(rig_id, tenant_id=tenant_id)
-        newest = _history_newest_ts(history)
-        if last_auto == 0.0 or (newest is not None and newest > last_auto):
-            add_rig_to_auto_blacklist(rig_id, tenant_id=tenant_id)
-            auto_blacklisted = True
+    # CFO auto-exclusion — SHARED decision with the periodic sweep (one rule,
+    # no drift): a rig that keeps under-delivering (grade F with ≥2 samples)
+    # joins the AUTO list so bad performers vanish from the panel everywhere
+    # — without touching the user's manual blacklist, and without re-flagging
+    # a manually restored rig until NEW bad samples accumulate.
+    if _should_auto_exclude(rig_id, history, tenant_id=tenant_id):
+        add_rig_to_auto_blacklist(rig_id, tenant_id=tenant_id)
+        auto_blacklisted = True
 
     pcts = [h["percent"] for h in history if h.get("percent") is not None]
     costs = [h["cost_sats_per_thh"] for h in history if h.get("cost_sats_per_thh") is not None]

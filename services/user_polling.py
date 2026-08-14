@@ -1044,6 +1044,7 @@ def _rentals_sweep_once() -> int:
             pl_alert_enabled_tenants, risk_alert_enabled_tenants,
             market_overpay_enabled_tenants, market_arb_enabled_tenants,
             reco_worse_enabled_tenants, _sweep_fetch_history,
+            auto_blacklist_candidate_tenants, evaluate_auto_blacklist,
             evaluate_rental_pl_alerts,
             evaluate_market_overpay_alerts, evaluate_market_arb_alerts,
             evaluate_reco_worse_alerts, sweep_risk_alerts,
@@ -1058,14 +1059,19 @@ def _rentals_sweep_once() -> int:
         market_list = market_overpay_enabled_tenants()
         arb_list = market_arb_enabled_tenants()
         reco_list = reco_worse_enabled_tenants()
+        auto_list = auto_blacklist_candidate_tenants()
         pl_set = set(pl_list)
         risk_set = set(risk_list)
         market_set = set(market_list)
         arb_set = set(arb_list)
         reco_set = set(reco_list)
+        auto_set = set(auto_list)
         # Union preserving P/L order first (deterministic visits for tests),
-        # dict.fromkeys dedups a tenant in both lists to one visit.
-        tenants = list(dict.fromkeys(list(pl_list) + list(market_list) + list(arb_list) + list(reco_list) + list(risk_list)))
+        # dict.fromkeys dedups a tenant in both lists to one visit. The
+        # auto-blacklist family is last: it is DEFAULT protection (not an
+        # opt-in alert), and it only needs the LOCAL track record — no MRR
+        # fetch, so it never costs the provider rate budget.
+        tenants = list(dict.fromkeys(list(pl_list) + list(market_list) + list(arb_list) + list(reco_list) + list(risk_list) + list(auto_list)))
         visited = 0
         for i, t in enumerate(tenants):
             try:
@@ -1118,6 +1124,16 @@ def _rentals_sweep_once() -> int:
                         dispatch_tenant_risk_alerts(t, risk)
                         log.info("[rentals-sweep] %s: %d risk alert(s) dispatched",
                                  t or "default", len(risk))
+                if t in auto_set:
+                    # CFO auto-exclusion — DEFAULT protection (same rule as
+                    # the panel detail), so it runs for every tenant with a
+                    # LOCAL track record, with ZERO provider cost. The rigs
+                    # that keep under-delivering join the auto blacklist
+                    # WITHOUT the operator opening the panel.
+                    excluded = evaluate_auto_blacklist(tenant_id=t)
+                    if excluded:
+                        log.info("[rentals-sweep] %s: %d rig(s) auto-excluído(s) %s",
+                                 t or "default", len(excluded), excluded[:5])
                 visited += 1
             except Exception as e:
                 log.warning("[rentals-sweep] %s: pass error: %s", t or "default", e)
