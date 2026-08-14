@@ -188,6 +188,8 @@ def test_sweep_once_dispatches_reco_worse(monkeypatch):
     monkeypatch.setattr(rp, "market_arb_enabled_tenants", lambda: [])
     monkeypatch.setattr(rp, "risk_alert_enabled_tenants", lambda: [])
     monkeypatch.setattr(rp, "reco_worse_enabled_tenants", lambda: ["t-a"])
+    monkeypatch.setattr(rp, "auto_blacklist_candidate_tenants", lambda: [])
+    monkeypatch.setattr(rp, "evaluate_auto_blacklist", lambda tenant_id="": [])
     monkeypatch.setattr(
         rp, "evaluate_reco_worse_alerts",
         lambda tenant_id="": (visited.append(tenant_id) or [alert]))
