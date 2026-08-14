@@ -4150,7 +4150,11 @@ def _do_poll():
     # Track event signatures across polls so the same "pool new high diff 87.1T"
     # never fires twice. Signature = (category, identifier) where identifier is
     # the unique value (block_hash, highest_diff_str, etc.)
-    if not hasattr(poll_once, "_alert_seen"):
+    # NOTE (bug #141): os atributos de dedup vivem em `_do_poll` — o guard
+    # antigo lia `poll_once` (a função wrapper com lock), então o set era
+    # recriado em CADA poll e a dedup nunca funcionava; o alerta
+    # worker_offline também nunca disparava (leitura no objeto errado).
+    if not hasattr(_do_poll, "_alert_seen"):
         _do_poll._alert_seen = (
             set()
         )  # set of (category, identifier) seen across restarts
@@ -4188,7 +4192,7 @@ def _do_poll():
         # Use identifier based on the last known state so we can re-fire
         # if the worker comes back and goes offline again.
         sig = ("worker_offline", "1")
-        if sig not in alert_seen and getattr(poll_once, "_worker_was_present", False):
+        if sig not in alert_seen and getattr(_do_poll, "_worker_was_present", False):
             alerts.append(
                 ("CRIT", "worker_offline", "cypher65 not found in workerData")
             )
