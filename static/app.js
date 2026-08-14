@@ -2850,12 +2850,13 @@ function renderAccount(acct) {
     const gate = document.getElementById('admin-gate-badge');
     try {
       // Pool health — no auth needed for localhost/operator-key admin routes.
-      const [sessionsResp, convResp, auditResp] = await Promise.all([
+      const [sessionsResp, convResp, auditResp, metricsResp] = await Promise.all([
         fetch('/api/admin/sessions', { headers: { 'X-Requested-With': 'fetch' } }),
         fetch('/api/admin/conversion', { headers: { 'X-Requested-With': 'fetch' } }),
         fetch('/api/admin/rentals/accepted-recos?limit=1000', { headers: { 'X-Requested-With': 'fetch' } }),
+        fetch('/api/admin/pool-metrics?hours=24', { headers: { 'X-Requested-With': 'fetch' } }),
       ]);
-      if (sessionsResp.status === 403 || convResp.status === 403 || auditResp.status === 403) {
+      if (sessionsResp.status === 403 || convResp.status === 403 || auditResp.status === 403 || metricsResp.status === 403) {
         if (gate) gate.textContent = 'restricted';
         if (errEl) {
           errEl.hidden = false;
@@ -2868,12 +2869,14 @@ function renderAccount(acct) {
       const sessions = sessionsResp.ok ? await sessionsResp.json() : {};
       const conv = convResp.ok ? await convResp.json() : {};
       const audit = auditResp.ok ? await auditResp.json() : {};
-      _renderAdmin(sessions, conv, audit);
+      const metrics = metricsResp.ok ? await metricsResp.json() : {};
+      _renderAdmin(sessions, conv, audit, metrics);
     } catch (e) {
       if (errEl) { errEl.hidden = false; errEl.textContent = 'admin fetch error: ' + e.message; }
     }
   }
-  function _renderAdmin(sessions, conv, audit) {
+  function _renderAdmin(sessions, conv, audit, metrics) {
+    _renderAdminMetrics(metrics || {});
     _renderAdminAudit(audit);
     _renderAdminAutoExclusions(audit);
     const pool = sessions.pool || {};
@@ -2919,6 +2922,62 @@ function renderAccount(acct) {
   function _pct(v) {
     if (v === undefined || v === null) return '—';
     return Number(v).toFixed(1) + '%';
+  }
+
+  // ── Pool metric trends (Issue #17) — persistent 60s sampler history ────
+  let _adminMetricsChart = null;  // Chart.js instance (destroy before recreate)
+
+  function _renderAdminMetrics(metrics) {
+    const wrap = document.getElementById('admin-metrics');
+    const canvas = document.getElementById('admin-metrics-chart');
+    const empty = document.getElementById('admin-metrics-empty');
+    if (!wrap || !canvas || typeof Chart === 'undefined') return;
+    const points = (metrics && metrics.points) || [];
+    if (!points.length) {
+      wrap.hidden = false;
+      if (empty) empty.hidden = false;
+      if (_adminMetricsChart) { _adminMetricsChart.destroy(); _adminMetricsChart = null; }
+      return;
+    }
+    if (_adminMetricsChart) { _adminMetricsChart.destroy(); _adminMetricsChart = null; }
+    if (empty) empty.hidden = true;
+
+    var labels = points.map(function (p) {
+      var d = new Date(Number(p.ts) * 1000);
+      if (isNaN(d.getTime())) return '—';
+      return d.getHours().toString().padStart(2, '0') + ':' + d.getMinutes().toString().padStart(2, '0');
+    });
+    var sessions = points.map(function (p) { return p.sessions_active; });
+    var pps = points.map(function (p) {
+      return (p.polls_per_sec != null && p.polls_per_sec > 0) ? p.polls_per_sec : null;
+    });
+    var queue = points.map(function (p) {
+      return (p.queue_pending != null && p.queue_pending > 0) ? p.queue_pending : null;
+    });
+
+    wrap.hidden = false;
+    _adminMetricsChart = new Chart(canvas.getContext('2d'), {
+      type: 'line',
+      data: {
+        labels: labels,
+        datasets: [
+          { label: 'Sessions ativas', data: sessions, borderColor: 'rgb(6,214,240)', backgroundColor: 'rgba(6,214,240,0.06)', tension: 0.3, pointRadius: 0, fill: true, yAxisID: 'y' },
+          { label: 'Polls/seg', data: pps, borderColor: 'rgb(186,133,224)', backgroundColor: 'transparent', tension: 0.3, pointRadius: 0, borderDash: [4, 2], yAxisID: 'y1' },
+          { label: 'Queue pendente', data: queue, borderColor: 'rgb(255,160,0)', backgroundColor: 'transparent', tension: 0.3, pointRadius: 0, borderDash: [2, 3], yAxisID: 'y1' },
+        ],
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        interaction: { mode: 'index', intersect: false },
+        plugins: { legend: { labels: { color: '#5E5952', font: { size: 9 }, boxWidth: 12 } } },
+        scales: {
+          x: { ticks: { color: '#5E5952', font: { size: 9 }, maxTicksLimit: 12, maxRotation: 0 }, grid: { color: 'rgba(94,89,82,0.10)' } },
+          y: { type: 'linear', position: 'left', title: { display: true, text: 'sessions', color: 'rgb(6,214,240)' }, ticks: { color: '#5E5952', font: { size: 9 }, precision: 0 }, grid: { color: 'rgba(94,89,82,0.08)' } },
+          y1: { type: 'linear', position: 'right', title: { display: true, text: 'pps / queue', color: 'rgb(186,133,224)' }, ticks: { color: '#5E5952', font: { size: 9 } }, grid: { display: false } },
+        },
+      },
+    });
   }
 
   // ── Admin audit trail — table + filters + weekly mini-chart ───────────
