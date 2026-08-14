@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Probe MRR API v2 endpoints with the configured credentials (read from .env)."""
-import os, time, hmac, hashlib, json, sys
+import os, hmac, hashlib, json, sys
 
 BASE = "https://www.miningrigrentals.com/api/v2"
+
 
 def load_env(path):
     env = {}
@@ -17,6 +18,7 @@ def load_env(path):
         pass
     return env
 
+
 _root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 env = load_env(os.path.join(_root, ".env"))
 KEY = env.get("MRR_API_KEY", "")
@@ -24,11 +26,20 @@ SEC = env.get("MRR_API_SECRET", "")
 
 import requests
 
+sys.path.insert(0, _root)
+from helpers import next_monotonic_nonce_ms  # noqa: E402 — precisa do _root
+
+
 def call(ep, method="GET", params=None, body=None):
-    nonce = str(int(time.time() * 1000))
+    # Issue #150 — nonce monotônico compartilhado (nunca time.time()*1000 cru).
+    nonce = next_monotonic_nonce_ms()
     sign = hmac.new(SEC.encode(), (KEY + nonce + ep).encode(), hashlib.sha1).hexdigest()
-    headers = {"x-api-key": KEY, "x-api-nonce": nonce, "x-api-sign": sign,
-               "Content-Type": "application/json"}
+    headers = {
+        "x-api-key": KEY,
+        "x-api-nonce": nonce,
+        "x-api-sign": sign,
+        "Content-Type": "application/json",
+    }
     try:
         if method == "GET":
             r = requests.get(BASE + ep, headers=headers, params=params, timeout=15)
@@ -40,19 +51,25 @@ def call(ep, method="GET", params=None, body=None):
     except Exception as e:
         return {"error": str(e)[:150]}
 
+
 def summarize(data):
     """Compact JSON summary (keys + types, first values)."""
     if isinstance(data, dict):
         out = {}
         for k, v in list(data.items())[:12]:
             if isinstance(v, (dict, list)):
-                out[k] = f"{type(v).__name__}[{len(v)}]" if not isinstance(v, list) else f"list[{len(v)}]"
+                out[k] = (
+                    f"{type(v).__name__}[{len(v)}]"
+                    if not isinstance(v, list)
+                    else f"list[{len(v)}]"
+                )
             else:
                 out[k] = str(v)[:60]
         return out
     if isinstance(data, list):
         return f"list[{len(data)}] first={summarize(data[0]) if data else None}"
     return str(data)[:80]
+
 
 if __name__ == "__main__":
     print("KEY ok:", bool(KEY), "SEC ok:", bool(SEC))

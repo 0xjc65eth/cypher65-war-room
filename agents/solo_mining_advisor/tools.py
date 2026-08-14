@@ -14,34 +14,27 @@ Tools:
 """
 
 import os
-import time
-import threading
 import hmac
 import hashlib
 import logging
 
 import requests
 
+
 # ── MRR nonce — estritamente crescente (fix do "Bad Nonce") ────────────────
 # O MRR exige que o nonce de cada request seja MAIOR que o último usado para
 # a mesma chave. O padrão antigo (time.time()*1000) gerava o MESMO nonce em
 # duas chamadas no mesmo milissegundo — e o fetch de detail do RENTALS dispara
 # 3 GETs concorrentes (detail/graph/log), então a colisão era garantida sob
-# carga → "Not Authenticated - Invalid Key - Bad Nonce". O lock + contador
-# abaixo garante monotonicidade global (thread-safe + clock voltando atrás).
-_mrr_nonce_lock = threading.Lock()
-_mrr_last_nonce = 0
-
-
+# carga → "Not Authenticated - Invalid Key - Bad Nonce". O gerador compartilhado
+# (Issue #150) vive em helpers.next_monotonic_nonce_ms — usado também por
+# solo_mining.py e scripts/probe_mrr_api.py, para que TODOS os clientes HMAC
+# do MRR sejam monotônicos (uma única fonte de verdade, thread-safe).
 def _mrr_next_nonce() -> str:
     """Next strictly-increasing nonce for the MRR API (thread-safe)."""
-    global _mrr_last_nonce
-    with _mrr_nonce_lock:
-        n = int(time.time() * 1000)
-        if n <= _mrr_last_nonce:
-            n = _mrr_last_nonce + 1  # colisão/clock parado/voltando → bump
-        _mrr_last_nonce = n
-        return str(n)
+    from helpers import next_monotonic_nonce_ms
+
+    return next_monotonic_nonce_ms()
 
 
 log = logging.getLogger("cypher65.agent")

@@ -560,7 +560,6 @@ def get_mrr_listings(algo="sha256", api_key=None, api_secret=None):
     import os
     import hmac
     import hashlib
-    import time
 
     api_key = api_key or os.environ.get("MRR_API_KEY")
     api_secret = api_secret or os.environ.get("MRR_API_SECRET")
@@ -575,7 +574,11 @@ def get_mrr_listings(algo="sha256", api_key=None, api_secret=None):
 
     MRR_BASE = "https://www.miningrigrentals.com/api/v2"
     endpoint = f"/rig?type={algo}&order=price"
-    nonce = str(int(time.time() * 1000))
+    # Issue #150 — nonce monotônico compartilhado (fix do "Bad Nonce" #148):
+    # duas chamadas no mesmo ms geravam o MESMO nonce e o MRR rejeita.
+    from helpers import next_monotonic_nonce_ms
+
+    nonce = next_monotonic_nonce_ms()
 
     # HMAC-SHA1 signature
     sign_string = api_key + nonce + endpoint

@@ -450,15 +450,16 @@ class TestMrrNonce:
 
     @pytest.fixture(autouse=True)
     def _reset_nonce_state(self):
-        """Hermeticidade: o contador de nonce é um singleton do processo.
-        Sem o reset, os testes dependem da ordem de execução (o teste do
-        relógio congelado só passava porque testes anteriores elevavam o
-        contador — falhava rodado isolado)."""
-        import agents.solo_mining_advisor.tools as tools_mod
+        """Hermeticidade: o contador de nonce é um singleton do processo
+        (vive em helpers.next_monotonic_nonce_ms — Issue #150). Sem o reset,
+        os testes dependem da ordem de execução (o teste do relógio congelado
+        só passava porque testes anteriores elevavam o contador — falhava
+        rodado isolado)."""
+        import helpers as _helpers
 
-        tools_mod._mrr_last_nonce = 0
+        _helpers._nonce_last_ms = 0
         yield
-        tools_mod._mrr_last_nonce = 0
+        _helpers._nonce_last_ms = 0
 
     def _headers_nonce(self, key="k", secret="s", ep="/rental"):
         return _mrr_signed_headers(key, secret, ep)["x-api-nonce"]
@@ -488,13 +489,17 @@ class TestMrrNonce:
         assert len(set(results)) == 50  # zero colisões de nonce
 
     def test_clock_backwards_still_increasing(self, monkeypatch):
-        """Relógio parado/voltando não pode gerar nonce menor que o último."""
-        import agents.solo_mining_advisor.tools as tools_mod
+        """Relógio parado/voltando não pode gerar nonce menor que o último.
+
+        O nonce agora vive em helpers.next_monotonic_nonce_ms (Issue #150),
+        então o relógio é congelado por lá — não mais via tools_mod.time.
+        """
+        import helpers as _helpers
 
         def _frozen_clock():
             return 1_700_000_000.0  # fixo — toda chamada no mesmo ms
 
-        monkeypatch.setattr(tools_mod.time, "time", _frozen_clock)
+        monkeypatch.setattr(_helpers.time, "time", _frozen_clock)
         nonces = [int(self._headers_nonce()) for _ in range(3)]
         assert all(b > a for a, b in zip(nonces, nonces[1:]))
 
