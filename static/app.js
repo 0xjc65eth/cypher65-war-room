@@ -2875,6 +2875,7 @@ function renderAccount(acct) {
   }
   function _renderAdmin(sessions, conv, audit) {
     _renderAdminAudit(audit);
+    _renderAdminAutoExclusions(audit);
     const pool = sessions.pool || {};
     _setAdminText('admin-sessions', pool.sessions_active != null ? pool.sessions_active : '—');
     _setAdminText('admin-polls-per-sec', pool.polls_per_sec != null ? pool.polls_per_sec : '—');
@@ -2960,6 +2961,35 @@ function renderAccount(acct) {
     _renderAdminAuditTable();
     _renderAdminAuditChart(buildAdminAuditWeekly(decisions));
   }
+  // Auto-exclusion history (global, WHEN + CAUSE): compact items — the pilot's
+  // auto-exclusions across ALL tenants with the delivery snapshot + the rule
+  // that fired. Fed by the same accepted-recos admin route (auto_exclusions).
+  function _renderAdminAutoExclusions(audit) {
+    const wrap = document.getElementById('admin-autoex');
+    const list = document.getElementById('admin-autoex-list');
+    if (!wrap || !list) return;
+    const ex = ((audit || {}).auto_exclusions || {}).exclusions || [];
+    if (!ex.length) { wrap.hidden = true; return; }
+    wrap.hidden = false;
+    const meta = document.getElementById('admin-autoex-meta');
+    if (meta) meta.textContent = ex.length + ' auto-exclus' + (ex.length === 1 ? 'ão' : 'ões') + ' (global)';
+    list.innerHTML = ex.map(function (x) {
+      const grade = x.grade
+        ? '<span class="admin-autoex__grade admin-autoex__grade--' + escapeHtml(String(x.grade)) + '">' + escapeHtml(String(x.grade)) + '</span>' : '';
+      const when = x.ts ? new Date(Number(x.ts) * 1000).toLocaleDateString('pt-BR') : '—';
+      const tenant = x.tenant_id && x.tenant_id !== 'default'
+        ? escapeHtml(String(x.tenant_id))
+        : '<span class="admin-autoex__tenant">default</span>';
+      const delivery = x.delivery_pct != null ? escapeHtml(Number(x.delivery_pct).toFixed(1) + '%') : '—';
+      const samples = x.samples != null ? escapeHtml(String(x.samples)) + ' amostras' : '—';
+      return '<div class="admin-autoex__item">' +
+        '<div class="admin-autoex__name">' + escapeHtml(String(x.name || x.rig_id)) + grade + '</div>' +
+        '<div class="admin-autoex__sub">' + tenant + ' · ' + escapeHtml(when) + ' · entrega ' + delivery + ' · ' + samples + '</div>' +
+        '<div class="admin-autoex__cause" title="causa da exclusão">' + escapeHtml(String(x.cause || 'sub-entrega')) + '</div>' +
+        '</div>';
+    }).join('');
+  }
+
   function _currentAuditFilters() {
     const tenantSel = document.getElementById('admin-audit-tenant');
     const verdictSel = document.getElementById('admin-audit-verdict');
@@ -3758,6 +3788,39 @@ function renderAccount(acct) {
     }).join('');
   }
 
+  // Auto-exclusion history (WHEN + CAUSE): rigs the pilot auto-excluded,
+  // with the delivery snapshot at exclusion + the rule that fired. Same
+  // card pattern as accepted-recos (click → rig track record).
+  function _renderRentalsAutoExclusions() {
+    const wrap = document.getElementById('rentals-autoex');
+    if (!wrap || !_rentalsData) return;
+    const list = document.getElementById('rentals-autoex-list');
+    const meta = document.getElementById('rentals-autoex-meta');
+    const ex = (_rentalsData.auto_exclusions || {}).exclusions || [];
+    if (!list) return;
+    if (!ex.length) { wrap.hidden = true; return; }
+    wrap.hidden = false;
+    if (meta) meta.textContent = ex.length + ' rig' + (ex.length === 1 ? '' : 's') + ' auto-excluído' + (ex.length === 1 ? '' : 's');
+    list.innerHTML = ex.map(function (x) {
+      const grade = x.grade
+        ? '<span class="rentals-trust__badge rentals-trust__badge--' + escapeHtml(String(x.grade)) + '">' + escapeHtml(String(x.grade)) + '</span>' : '';
+      const when = x.ts ? new Date(Number(x.ts) * 1000).toLocaleDateString('pt-BR') : '—';
+      const delivery = x.delivery_pct != null ? Number(x.delivery_pct).toFixed(1) + '%' : '—';
+      const samples = x.samples != null ? escapeHtml(String(x.samples)) + ' amostras' : '—';
+      const rule = (x.grade_floor || 'F') + ' · mín ' + (x.min_samples != null ? escapeHtml(String(x.min_samples)) : '2');
+      return '<div class="rentals-autoex__card" data-rig-id="' + escapeHtml(String(x.rig_id != null ? x.rig_id : '')) + '" data-rig-name="' + escapeHtml(String(x.name || '')) + '" title="clique p/ ver o track record do rig ' + escapeHtml(String(x.rig_id)) + '">' +
+        '<div class="rentals-autoex__name">' + escapeHtml(String(x.name || x.rig_id)) + grade + '</div>' +
+        '<div class="rentals-autoex__row"><span>QUANDO</span><strong>' + escapeHtml(when) + '</strong>' +
+        '<span>ENTREGA</span><strong>' + escapeHtml(delivery) + '</strong></div>' +
+        '<div class="rentals-autoex__row rentals-autoex__row--sub">' +
+        '<span title="amostras na exclusão">' + samples + '</span>' +
+        '<span class="rentals-autoex__rule" title="régua vigente — floor de grade + mín de amostras">régua ' + escapeHtml(rule) + '</span>' +
+        '</div>' +
+        '<div class="rentals-autoex__cause" title="causa da exclusão">' + escapeHtml(String(x.cause || 'sub-entrega')) + '</div>' +
+        '</div>';
+    }).join('');
+  }
+
   // Market timing: cheapest live price vs 30-day average (persisted market
   // history) — 'renting expensive right now?'. Mini Chart.js line.
   let _rentalsTimingChart = null;
@@ -4445,6 +4508,7 @@ function renderAccount(acct) {
     _renderRentalsSeries();
     _renderRentalsReco();
     _renderRentalsAccepted();
+    _renderRentalsAutoExclusions();
     _renderRentalsMarketTiming();
     _renderRentalsRankings();
     _renderRentalsHeatmap();
@@ -4934,6 +4998,14 @@ function renderAccount(acct) {
     const accepted = document.getElementById('rentals-accepted-list');
     if (accepted) accepted.addEventListener('click', (e) => {
       const card = e.target.closest ? e.target.closest('.rentals-accepted__card') : null;
+      if (!card) return;
+      openRigTrackRecord(card.getAttribute('data-rig-id'), card.getAttribute('data-rig-name'));
+    });
+    // Auto-exclusion history cards (dynamic innerHTML — delegated listener)
+    // → rig track record modal, same flow as the accepted cards.
+    const autoex = document.getElementById('rentals-autoex-list');
+    if (autoex) autoex.addEventListener('click', (e) => {
+      const card = e.target.closest ? e.target.closest('.rentals-autoex__card') : null;
       if (!card) return;
       openRigTrackRecord(card.getAttribute('data-rig-id'), card.getAttribute('data-rig-name'));
     });

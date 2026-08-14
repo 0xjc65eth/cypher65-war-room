@@ -880,6 +880,14 @@
     <div class="rentals-accepted__head">RECOMENDAÇÕES ACEITAS <span id="rentals-accepted-meta" class="rentals-accepted__meta"></span></div>
     <div class="rentals-accepted__list" id="rentals-accepted-list"></div>
   </div>
+  <!-- Auto-exclusion history (WHEN + CAUSE): cada rig que o piloto
+       auto-excluiu — quando (data) e por quê (grade, entrega, amostras e a
+       régua vigente: floor de grade + mín de amostras). Clique no card →
+       track record do rig. -->
+  <div class="rentals-autoex" id="rentals-autoex" hidden>
+    <div class="rentals-autoex__head">AUTO-EXCLUSÕES DO PILOTO <span id="rentals-autoex-meta" class="rentals-autoex__meta"></span></div>
+    <div class="rentals-autoex__list" id="rentals-autoex-list"></div>
+  </div>
   <!-- Market timing: cheapest live price vs the 30-day average (from the
        persisted market history) — 'renting expensive right now?' -->
   <div class="rentals-timing" id="rentals-timing" hidden>
@@ -1424,6 +1432,13 @@
         <tbody id="admin-audit-tbody"></tbody>
       </table>
       <div class="admin-audit__empty" id="admin-audit-empty" hidden>sem decisões para o filtro selecionado</div>
+    </div>
+    <!-- Auto-exclusions (global, WHEN + CAUSE) — compact list under the
+         audit table so the operator sees every rig the pilot auto-excluded
+         with why, across ALL tenants. -->
+    <div class="admin-autoex" id="admin-autoex" hidden>
+      <div class="admin-autoex__head">AUTO-EXCLUSÕES DO PILOTO (global) <span id="admin-autoex-meta" class="admin-autoex__meta"></span></div>
+      <div class="admin-autoex__list" id="admin-autoex-list"></div>
     </div>
   </div>
   <div class="admin-error" id="admin-error" hidden></div>

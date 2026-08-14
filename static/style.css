@@ -5329,6 +5329,35 @@ body.module-mode .tab-pane:not(.active) { display: none; }
 .rentals-accepted__verdict.is-bad { color: var(--red, #ff1744); }
 .rentals-accepted__verdict.is-mid { color: var(--text-tertiary); }
 .rentals-accepted__verdict.is-warn { color: var(--amber, #ffa000); }
+/* Auto-exclusion history (WHEN + CAUSE) — pilot's exclusions with snapshot */
+.rentals-autoex__head { font-size: 8px; letter-spacing: 1px; font-family: 'JetBrains Mono',monospace; color: var(--purple, #ba85e0); margin-bottom: 6px; display: flex; justify-content: space-between; align-items: center; }
+.rentals-autoex__meta { color: var(--text-tertiary); letter-spacing: 0; }
+.rentals-autoex__list { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 8px; }
+.rentals-autoex__card { border: 1px solid var(--border-subtle, rgba(255,255,255,0.10)); border-radius: 4px; padding: 8px; background: rgba(186,133,224,0.05); cursor: pointer; transition: border-color .15s ease, transform .15s ease, background .15s ease; }
+.rentals-autoex__card:hover { border-color: var(--purple, #ba85e0); background: rgba(186,133,224,0.09); transform: translateY(-1px); }
+.rentals-autoex__name { font-size: 10px; font-weight: 600; color: var(--text-primary); display: flex; align-items: center; gap: 6px; font-family: 'JetBrains Mono',monospace; margin-bottom: 6px; }
+.rentals-autoex__row { display: flex; gap: 8px; align-items: baseline; font-size: 9px; font-family: 'JetBrains Mono',monospace; color: var(--text-tertiary); }
+.rentals-autoex__row span { flex: 1; }
+.rentals-autoex__row strong { color: var(--text-primary); font-weight: 600; }
+.rentals-autoex__row--sub { margin-top: 4px; color: var(--text-secondary); }
+.rentals-autoex__rule { color: var(--purple, #ba85e0); font-size: 8px; }
+.rentals-autoex__cause { margin-top: 6px; font-size: 9px; color: var(--text-secondary); font-family: 'JetBrains Mono',monospace; border-top: 1px dashed var(--border-subtle, rgba(255,255,255,0.08)); padding-top: 5px; }
+
+/* Admin audit — auto-exclusion history (global, ALL tenants) */
+.admin-autoex { margin-top: 14px; }
+.admin-autoex__head { font-size: 8px; letter-spacing: 1px; font-family: 'JetBrains Mono',monospace; color: var(--purple, #ba85e0); margin-bottom: 6px; display: flex; justify-content: space-between; align-items: center; }
+.admin-autoex__meta { color: var(--text-tertiary); letter-spacing: 0; }
+.admin-autoex__list { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 6px; }
+.admin-autoex__item { border: 1px solid var(--border-subtle, rgba(255,255,255,0.10)); border-radius: 4px; padding: 6px 8px; background: rgba(186,133,224,0.04); }
+.admin-autoex__name { font-size: 10px; font-weight: 600; color: var(--text-primary); display: flex; align-items: center; gap: 6px; font-family: 'JetBrains Mono',monospace; }
+.admin-autoex__grade { font-size: 8px; font-family: 'JetBrains Mono',monospace; padding: 1px 5px; border-radius: 999px; border: 1px solid var(--border-subtle, rgba(255,255,255,0.15)); }
+.admin-autoex__grade--F { color: var(--red, #ff1744); border-color: rgba(255,23,68,0.45); }
+.admin-autoex__grade--D { color: var(--amber, #ffa000); border-color: rgba(255,160,0,0.45); }
+.admin-autoex__grade--C { color: var(--gold, #ffd700); border-color: rgba(255,215,0,0.45); }
+.admin-autoex__grade--A, .admin-autoex__grade--B { color: var(--green, #00c853); border-color: rgba(0,200,83,0.45); }
+.admin-autoex__tenant { color: var(--cyan, #06d6f0); font-size: 8px; font-family: 'JetBrains Mono',monospace; }
+.admin-autoex__sub { margin-top: 3px; font-size: 8px; font-family: 'JetBrains Mono',monospace; color: var(--text-tertiary); }
+.admin-autoex__cause { margin-top: 4px; font-size: 8px; color: var(--text-secondary); font-family: 'JetBrains Mono',monospace; }
 /* Rentals: provider ranking grid (click → list tab) */
 .rentals-rank { margin: 10px 0 4px; border: 1px solid var(--border-subtle, rgba(255,255,255,0.10)); border-radius: 4px; padding: 8px; background: rgba(255,255,255,0.015); }
 .rentals-rank__head { font-size: 8px; letter-spacing: 1px; font-family: 'JetBrains Mono',monospace; color: var(--purple, #ba85e0); margin-bottom: 6px; }

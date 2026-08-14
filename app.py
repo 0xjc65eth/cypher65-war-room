@@ -4758,6 +4758,9 @@ def api_admin_rentals_accepted_recos():
         days=days,
         min_worse=request.args.get("worse_min", 2, type=int),
         worse_ratio=request.args.get("worse_ratio", 0.5, type=float))
+    # Auto-exclusion history (global, WHEN + CAUSE): every rig the pilot
+    # auto-excluded across ALL tenants with the snapshot + rule that fired.
+    payload["auto_exclusions"] = _rental_perf.admin_auto_exclusion_history(days=days)
     return jsonify(payload)
 
 
@@ -6048,6 +6051,11 @@ def api_rentals(tenant_id: str = ""):
             # after the pilot flagged them + the delivery OUTCOME afterwards
             # (avoided / improved / worse / same). Tenant-scoped ledger.
             "accepted_recos": _rental_perf.compute_accepted_recos_summary(
+                tenant_id=tenant_id),
+            # Auto-exclusion history (WHEN + CAUSE): every rig the PILOT
+            # auto-excluded (source='auto') with the delivery snapshot at
+            # exclusion time + the rule vigente (grade floor + min samples).
+            "auto_exclusions": _rental_perf.auto_exclusion_history(
                 tenant_id=tenant_id),
             # Click-first analytics (drill-down targets):
             #   provider_rankings — MRR vs Braiins delivery/cost/P·L comparison

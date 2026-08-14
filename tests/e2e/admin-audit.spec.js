@@ -114,6 +114,89 @@ test.describe('ADMIN — audit trail de recomendações aceitas (Issue #96)', ()
     await expect(page.locator('#admin-audit-csv')).toBeVisible();
   });
 
+  test('auto-exclusões renderizam no RENTALS (tenant) e no admin (global, Issue #100)', async ({ page }) => {
+    // RENTALS payload with the tenant-scoped auto-exclusion history.
+    await page.route('**/api/rentals**', (route) => {
+      const url = route.request().url();
+      if (url.includes('accepted-recos') || url.includes('/rig/')) {
+        route.continue();
+        return;
+      }
+      route.fulfill({ json: {
+        success: true,
+        mrr: { needs_auth: false, active: [], history: [], owner: [],
+               total_active: 0, total_history: 0, total_owner: 0, error: null },
+        braiins: { needs_auth: false, contracts: [], error: null },
+        portfolio: { spend: {}, income: {}, split: {}, counts: {} },
+        portfolio_series: { bucket: 'week', estimate: true, points: [], totals: {} },
+        recommendations: { top: [], avoid: [], avoid_count: 0, tracked: 0,
+                            market: { available: false } },
+        market_trend: { points: [], summary: null },
+        rig_blacklist: [],
+        rig_auto_blacklist: ['rig-b'],
+        accepted_recos: { count: 0, accepted: [] },
+        auto_exclusions: {
+          count: 1,
+          exclusions: [{
+            rig_id: 'rig-b', name: 'Rig B Auto', ts: 1785110400, grade: 'F',
+            delivery_pct: 55.0, samples: 1, min_samples: 2, grade_floor: 'F',
+            cause: 'grade F · entrega 55.0% · 1 amostras — régua: floor F, mín 2',
+          }],
+        },
+      } });
+    });
+    // Admin endpoints — audit carries the GLOBAL auto-exclusion history.
+    await page.route('**/api/admin/sessions**', (route) =>
+      route.fulfill({ json: { pool: {} } }));
+    await page.route('**/api/admin/conversion**', (route) =>
+      route.fulfill({ json: { funnel: {}, economics: {} } }));
+    await page.route('**/api/admin/rentals/accepted-recos**', (route) =>
+      route.fulfill({ json: {
+        ...AUDIT,
+        auto_exclusions: {
+          count: 2,
+          exclusions: [
+            { tenant_id: 'tenant-a', rig_id: '2001', name: 'Rig F2 Bad',
+              ts: 1785110400, grade: 'F', delivery_pct: 48.0, samples: 2,
+              cause: 'grade F · entrega 48.0% · 2 amostras — régua: floor D, mín 3' },
+            { tenant_id: 'default', rig_id: 'rig-b', name: 'Rig B Auto',
+              ts: 1785110400 - 86400, grade: 'D', delivery_pct: 70.0,
+              samples: 1, cause: 'grade D · entrega 70.0% · 1 amostras' },
+          ],
+        },
+      } }));
+
+    await page.goto('/', { waitUntil: 'domcontentloaded' });
+    await page.waitForSelector('#app-shell', { timeout: 15000 });
+    await page.waitForSelector('#open-wallet', { timeout: 10000 });
+    await page.waitForFunction(() => {
+      return document.querySelectorAll('.skel-overlay').length === 0;
+    }, { timeout: 10000 }).catch(() => {});
+    await page.waitForTimeout(500);
+
+    // RENTALS panel — tenant-scoped auto-exclusion cards.
+    await page.click('.sidebar__link[data-module="rentals"]');
+    const rentalsEx = page.locator('#rentals-autoex');
+    await expect(rentalsEx).toBeVisible({ timeout: 10000 });
+    await expect(rentalsEx).toContainText('AUTO-EXCLUSÕES DO PILOTO');
+    await expect(rentalsEx).toContainText('Rig B Auto');
+    await expect(rentalsEx).toContainText('régua F · mín 2');
+    await expect(rentalsEx).toContainText('entrega 55.0%');
+    await expect(rentalsEx).toContainText('régua: floor F, mín 2');
+
+    // Admin panel — global auto-exclusion block with tenant tags.
+    await page.click('.sidebar__link[data-module="admin"]');
+    const adminEx = page.locator('#admin-autoex');
+    await expect(adminEx).toBeVisible({ timeout: 10000 });
+    await expect(adminEx).toContainText('AUTO-EXCLUSÕES DO PILOTO (global)');
+    await expect(adminEx).toContainText('2 auto-exclusões (global)');
+    await expect(adminEx).toContainText('tenant-a');
+    await expect(adminEx).toContainText('Rig F2 Bad');
+    await expect(adminEx).toContainText('régua: floor D, mín 3');
+    await expect(adminEx).toContainText('default');
+    await expect(adminEx).toContainText('Rig B Auto');
+  });
+
   test('403 do audit esconde a seção e mostra o erro do gate', async ({ page }) => {
     // Only the audit endpoint is forbidden — the panel must fall back to the
     // existing "restricted" state and never render the audit section.
