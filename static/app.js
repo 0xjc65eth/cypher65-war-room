@@ -4678,6 +4678,12 @@ function renderAccount(acct) {
         const nAlert = Number(data.auto_exclude_alert_dispatched) || 0;
         const ruleStr = 'floor ' + escapeHtml(String(rule.grade_floor || 'F')) +
           ' · mín ' + escapeHtml(String(rule.min_samples != null ? rule.min_samples : 2));
+        // The exact ledger row the AUTO-EXCLUSÕES section shows — also feeds
+        // the undo button's rig id (Issue #117).
+        const entry = data.auto_exclude_entry;
+        const bannerRigId = entry && entry.rig_id != null ? String(entry.rig_id)
+          : (data.detail && data.detail.rig && data.detail.rig.id != null
+             ? String(data.detail.rig.id) : '');
         autoExBanner.hidden = false;
         autoExBanner.innerHTML =
           '<span class="rentals-detail__autoex-icon">🤖</span>' +
@@ -4685,12 +4691,14 @@ function renderAccount(acct) {
           '<strong>AUTO-EXCLUSÃO DISPARADA</strong>' +
           '<div class="rentals-detail__autoex-sub">régua vigente: ' + ruleStr +
           (nAlert ? ' · alerta webhook/push enviado' : ' · sem canal de alerta configurado (Settings → alertas)') +
-          '</div></div>';
+          '</div></div>' +
+          (bannerRigId
+            ? '<button type="button" class="rentals-detail__autoex-btn" id="rentals-detail-autoex-undo" title="desfazer a auto-exclusão e restaurar o rig">↩ DESFAZER</button>'
+            : '');
         showToast('success', 'Rig auto-excluído por sub-entrega' + (nAlert ? ' — alerta enviado' : ''));
         // Pre-add the card to the AUTO-EXCLUSÕES section (same local) —
         // dedup by rig_id so a stale entry from an earlier fetch never
         // duplicates. The entry is the exact ledger row the section shows.
-        const entry = data.auto_exclude_entry;
         if (entry && entry.rig_id != null && _rentalsData) {
           const ax = (_rentalsData.auto_exclusions = _rentalsData.auto_exclusions || {});
           ax.exclusions = ax.exclusions || [];
@@ -4700,6 +4708,28 @@ function renderAccount(acct) {
           ax.exclusions.unshift(entry);
           ax.count = ax.exclusions.length;
           _renderRentalsAutoExclusions();
+        }
+        // Undo (Issue #117): restaura o rig com confirmação — o backend
+        // remove das DUAS blacklists e marca o veredito REVOGADA no ledger
+        // (remove_rig_from_blacklist); o detail re-abre sem o banner e o
+        // trust re-renderiza sem o estado auto-excluído. Re-exclusão
+        // automática volta se o histórico de entrega continuar ruim.
+        const undoBtn = document.getElementById('rentals-detail-autoex-undo');
+        if (undoBtn && bannerRigId) {
+          undoBtn.addEventListener('click', async () => {
+            if (!window.confirm('Restaurar o rig ' + bannerRigId + '? A auto-exclusão será revogada — se a entrega continuar ruim, o piloto re-exclui automaticamente.')) return;
+            try {
+              const r = await authFetch('/api/rentals/rig/blacklist', {
+                method: 'DELETE',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ rig_id: bannerRigId }),
+              });
+              if (!r.ok) return;
+              showToast('success', 'Rig ' + bannerRigId + ' restaurado — auto-exclusão revogada');
+              // Re-open so trust/blacklist re-render fresh (banner resets).
+              openRentalDetail(id, provider);
+            } catch (e) { /* fail-closed */ }
+          });
         }
       }
       const d = data.detail || {};

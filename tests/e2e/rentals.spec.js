@@ -324,7 +324,13 @@ test.describe('RENTALS — performance dos aluguéis (P2)', () => {
         braiins: { needs_auth: false, contracts: [], error: null },
       })});
     });
+    // Stateful detail mock: the FIRST open performs the auto-exclusion; a
+    // re-open after undo must NOT re-fire (auto_excluded_now false, rig
+    // não está mais auto-excluído) — fidelidade ao fluxo real do #117.
+    let detailCalls = 0;
     await page.route('**/api/rentals/detail*', (route) => {
+      detailCalls += 1;
+      const excluded = detailCalls === 1;
       route.fulfill({ contentType: 'application/json', body: JSON.stringify({
         success: true, provider: 'mrr',
         detail: {
@@ -337,21 +343,27 @@ test.describe('RENTALS — performance dos aluguéis (P2)', () => {
         graph: {}, log: {},
         rig_analysis: {
           trust: { grade: 'F', samples: 2, median_pct: 57.5, worst_pct: 57.5, score: 12 },
-          blacklisted: false, auto_blacklisted: true, summary: {},
+          blacklisted: false, auto_blacklisted: excluded, summary: {},
           history: [],
         },
         rig_history: [],
         perf: { percent: 57.5, avg_th: 57.5, delivered_thh: 1380, cost_sats_per_thh: 300 },
         market: {},
-        auto_excluded_now: true,
-        auto_exclude_alert_dispatched: 1,
+        auto_excluded_now: excluded,
+        auto_exclude_alert_dispatched: excluded ? 1 : 0,
         auto_exclude_rule: { grade_floor: 'F', min_samples: 2 },
-        auto_exclude_entry: {
+        auto_exclude_entry: excluded ? {
           rig_id: 'R1', name: 'Rig R1', ts: 1786694400, grade: 'F',
           delivery_pct: 57.5, samples: 2, min_samples: 2, grade_floor: 'F',
           cause: 'sub-entrega (grade F)',
-        },
+        } : {},
       })});
+    });
+    // DELETE counter — prova o gate de confirmação (nada sem confirm).
+    let deleteCalls = 0;
+    await page.route('**/api/rentals/rig/blacklist**', (route) => {
+      deleteCalls += 1;
+      route.fulfill({ contentType: 'application/json', body: JSON.stringify({ ok: true }) });
     });
     await page.goto('/');
     await page.waitForSelector('#sidebar', { timeout: 25000 });
@@ -373,6 +385,23 @@ test.describe('RENTALS — performance dos aluguéis (P2)', () => {
     await expect(page.locator('#rentals-autoex-list')).toContainText('Rig R1');
     await expect(page.locator('#rentals-autoex-list')).toContainText('57.5%');
     await expect(page.locator('#rentals-autoex-list')).toContainText('régua F · mín 2');
+    // Confirmation gate (Issue #117): single dialog handler with a mutable
+    // action — DISMISS → nada acontece (DELETE não dispara, banner continua
+    // visível); ACCEPT → restaura.
+    let dialogAction = 'dismiss';
+    page.on('dialog', d => { if (dialogAction === 'accept') d.accept(); else d.dismiss(); });
+    await page.click('#rentals-detail-autoex-undo');
+    await page.waitForTimeout(400);
+    expect(deleteCalls).toBe(0);
+    await expect(page.locator('#rentals-detail-autoex')).toBeVisible();
+    // ACCEPT → restaura o rig, o banner some (reset no re-open) e o trust
+    // re-renderiza sem o estado AUTO-EXCLUÍDO.
+    dialogAction = 'accept';
+    await page.click('#rentals-detail-autoex-undo');
+    await expect(page.locator('#toast-container')).toContainText('restaurado', { timeout: 5000 });
+    await expect(page.locator('#rentals-detail-autoex')).toBeHidden({ timeout: 5000 });
+    await expect(page.locator('#rentals-detail-trust')).not.toContainText('AUTO-EXCLUÍDO');
+    expect(deleteCalls).toBe(1);
   });
   });
 });

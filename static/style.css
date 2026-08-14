@@ -5345,10 +5345,15 @@ body.module-mode .tab-pane:not(.active) { display: none; }
 /* Auto-exclusion banner inside the rental detail (Issue #110) — shown only
    on the detail call that PERFORMED the exclusion. */
 .rentals-detail__autoex { display: flex; align-items: center; gap: 10px; margin: 10px 0 12px; padding: 9px 12px; border-radius: 4px; border: 1px solid rgba(255,23,68,0.45); background: rgba(255,23,68,0.07); animation: fadeIn 0.25s ease; }
+.rentals-detail__autoex[hidden] { display: none; }  /* display:flex acima vence o atributo hidden — reset real (Issue #117) */
 .rentals-detail__autoex-icon { font-size: 16px; }
 .rentals-detail__autoex-body { font-family: 'JetBrains Mono',monospace; }
 .rentals-detail__autoex-body strong { font-size: 10px; letter-spacing: 0.5px; color: var(--red, #ff1744); }
 .rentals-detail__autoex-sub { margin-top: 3px; font-size: 9px; color: var(--text-secondary); }
+/* Undo button inside the auto-exclusion banner (Issue #117). */
+.rentals-detail__autoex-btn { margin-left: auto; flex-shrink: 0; font-family: 'JetBrains Mono',monospace; font-size: 9px; letter-spacing: 0.5px; padding: 4px 10px; border-radius: 3px; border: 1px solid rgba(255,23,68,0.5); color: var(--red, #ff1744); background: transparent; cursor: pointer; transition: background .15s ease, border-color .15s ease, transform .15s ease; }
+.rentals-detail__autoex-btn:hover { background: rgba(255,23,68,0.12); border-color: var(--red, #ff1744); }
+.rentals-detail__autoex-btn:active { transform: translateY(1px); }
 
 /* Admin audit — auto-exclusion history (global, ALL tenants) */
 .admin-autoex { margin-top: 14px; }
