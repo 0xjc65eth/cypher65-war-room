@@ -39,7 +39,14 @@ from helpers import (
 )
 
 import services.state as _shared_state
-import services.names as _names  # name sanitization + normalization
+# Worker sanitization/dedup helpers now live in services.poll_compute
+# (Issue #135) — services.names is consumed there.
+from services.poll_compute import (
+    build_all_workers, select_primary_worker, dedup_workers,
+    derive_network_values, parse_mempool_fees, merge_btc_quotes,
+    compute_halving_countdown, compute_share_calc, compute_luck_estimate,
+    fiat_convert,
+)
 from services.proximity import _compute_quantum_lock  # FENIX: composite confidence score for the Quantum-Lock panel
 from services.session_manager import SessionManager
 from services.user_polling import (
@@ -3211,18 +3218,10 @@ def _do_poll():
     # /v1/difficulty was deprecated Oct 2024 and always returns 404).
     bc_diff_val = safe_num_from_str(bc_results.get("bc_diff"))
     bc_hashrate_val = safe_num_from_str(bc_results.get("bc_hashrate"))
-    if bc_hashrate_val is not None:
-        # blockchain.info /q/hashrate returned TH/s historically, but as of
-        # 2025-2026 it returns GH/s. Multiply by 1e9 to get H/s.
-        net_hashrate = float(bc_hashrate_val) * 1e9
-    else:
-        net_hashrate = None
     network_height = network_height_data if isinstance(network_height_data, int) else None
-    # Difficulty: use blockchain.info /q/getdifficulty as primary source
-    current_difficulty = float(bc_diff_val) if bc_diff_val is not None else None
-    # Fallback: derive net_hashrate from difficulty + target block time
-    if current_difficulty is not None and (net_hashrate is None or net_hashrate == 0):
-        net_hashrate = current_difficulty * (2 ** 32) / 600
+    # Pure derivation (GH/s→H/s + difficulty→hashrate fallback) — extracted
+    # to services.poll_compute (Issue #135).
+    current_difficulty, net_hashrate = derive_network_values(bc_diff_val, bc_hashrate_val)
     # Stale-while-revalidate da rede: se a fonte falhou, serve o último valor
     # REAL conhecido marcado como stale (nunca inventa difficulty/hashrate).
     network_stale = False
@@ -3275,149 +3274,51 @@ def _do_poll():
             btc_quote = None
 
     # Merge Binance (fast, USD-only) with CoinGecko (multi-currency)
-    binance_raw = results.get("btc_binance")
-    binance_brl_raw = results.get("btc_binance_brl")
-    binance_usd = None
-    binance_brl = None
-    if isinstance(binance_raw, dict) and binance_raw.get("price"):
-        try: binance_usd = float(binance_raw["price"])
-        except (ValueError, TypeError): pass
-    if isinstance(binance_brl_raw, dict) and binance_brl_raw.get("price"):
-        try: binance_brl = float(binance_brl_raw["price"])
-        except (ValueError, TypeError): pass
-
-    btc_usd = (btc_quote or {}).get("bitcoin", {}).get("usd") if isinstance(btc_quote, dict) else None
-    btc_brl = (btc_quote or {}).get("bitcoin", {}).get("brl") if isinstance(btc_quote, dict) else None
-    # Prefer Binance real-time USD/BRL when available (faster, lower latency)
-    if binance_usd is not None and binance_usd > 0:
-        btc_usd = binance_usd
-    if binance_brl is not None and binance_brl > 0:
-        btc_brl = binance_brl
-    btc_eur = (btc_quote or {}).get("bitcoin", {}).get("eur") if isinstance(btc_quote, dict) else None
-    btc_gbp = (btc_quote or {}).get("bitcoin", {}).get("gbp") if isinstance(btc_quote, dict) else None
-    btc_jpy = (btc_quote or {}).get("bitcoin", {}).get("jpy") if isinstance(btc_quote, dict) else None
-    btc_krw = (btc_quote or {}).get("bitcoin", {}).get("krw") if isinstance(btc_quote, dict) else None
-    btc_cny = (btc_quote or {}).get("bitcoin", {}).get("cny") if isinstance(btc_quote, dict) else None
+    # Merge CoinGecko (multi-currency) with Binance real-time USD/BRL —
+    # pure, extracted to services.poll_compute (Issue #135).
+    _btc_merged = merge_btc_quotes(btc_quote, results.get("btc_binance"), results.get("btc_binance_brl"))
+    btc_usd = _btc_merged["usd"]
+    btc_brl = _btc_merged["brl"]
+    btc_eur = _btc_merged["eur"]
+    btc_gbp = _btc_merged["gbp"]
+    btc_jpy = _btc_merged["jpy"]
+    btc_krw = _btc_merged["krw"]
+    btc_cny = _btc_merged["cny"]
 
     # Mempool fees (sat/vB) — for "what fee should I include if I want fast"
-    mf_raw = results["mempool_fee"]
-    mempool_fees = {}
-    if isinstance(mf_raw, dict):
-        for k in ("fastestFee", "halfHourFee", "hourFee", "minimumFee", "economyFee"):
-            v = mf_raw.get(k)
-            if isinstance(v, (int, float)):
-                mempool_fees[k] = v
-    if not mempool_fees:
-        mempool_fees = {"fastestFee": None, "halfHourFee": None, "hourFee": None}
+    # Pure parsing — extracted to services.poll_compute (Issue #135).
+    mempool_fees = parse_mempool_fees(results["mempool_fee"])
 
     # ━━ Halving countdown (post-2024 halving: blocks 0..210000, 210000..420000, ...
     # next halving at block 1050000 (year ~2028). Past-halvings are 210k multiples.
     # Use latest block height to compute distance to the next halving epoch.
-    halving = {"height": network_height, "blocks_remaining": None,
-               "estimated_seconds_remaining": None, "next_reward_btc": None,
-               "epoch_label": ""}
-    if isinstance(network_height, int):
-        next_halving_h = ((network_height // 210000) + 1) * 210000
-        blocks_left = max(0, next_halving_h - network_height)
-        # assume 600s/block average → seconds remaining
-        secs_left = blocks_left * 600
-        # The reward halves from current 3.125 → 1.5625 (always halves by half).
-        epoch_idx = (next_halving_h // 210000) - 1
-        cur_reward = 50.0 * (0.5 ** epoch_idx) if epoch_idx >= 0 else 50.0
-        next_reward = cur_reward * 0.5
-        halving = {
-            "next_height": next_halving_h,
-            "current_height": network_height,
-            "blocks_remaining": blocks_left,
-            "estimated_seconds_remaining": secs_left,
-            "estimated_days_remaining": secs_left / 86400.0,
-            "current_reward_btc": cur_reward,
-            "next_reward_btc": next_reward,
-            "epoch_label": f"#{epoch_idx + 1}/33",
-        }
+    # Pure halving math — extracted to services.poll_compute (Issue #135).
+    halving = compute_halving_countdown(network_height)
 
     # ━━ Also capture ALL workers from workerData for the All Workers panel ━━
-    all_workers = []
-    worker = None
-    worker_index = None
-    if user and isinstance(user.get("workerData"), list):
-        for idx, w in enumerate(user["workerData"]):
-            raw_name = str(w.get("name", ""))
-            raw_id = str(w.get("id", ""))
-            clean_name = _names.sanitize(raw_name)
-            clean_id = _names.sanitize(raw_id)
-            entry = {
-                "id": clean_id,
-                "name": clean_name,
-                "hashrate": w.get("hashrate"),
-                "bestDifficulty": w.get("bestDifficulty", ""),
-                "lastSubmission": w.get("lastSubmission"),
-                "uptime": w.get("uptime"),
-                "is_primary": _names.normalize(raw_name) == _names.normalize(WORKER_NAME)
-                              or _names.normalize(raw_id) == _names.normalize(WORKER_NAME),
-            }
-            all_workers.append(entry)
-            if entry["is_primary"]:
-                worker = w
-                worker_index = idx
+    # All-Workers list + primary detection — extracted to
+    # services.poll_compute (Issue #135).
+    all_workers, worker, worker_index = build_all_workers(user, WORKER_NAME)
 
     # ── Fallback: if no primary worker matched WORKER_NAME, pick best by hashrate ──
     # Workers with hashrate 0 still carry useful data (bestDifficulty, lastSubmission,
     # uptime). When all workers have zero hashrate, pick the first worker instead of
     # leaving the snapshot blank — otherwise the dashboard shows \"OFFLINE\" even for
     # wallets with mining history.
-    if worker is None and all_workers and user and isinstance(user.get("workerData"), list):
-        best_idx = 0
-        best_hr = 0
-        for i, entry in enumerate(all_workers):
-            hr = float(entry.get("hashrate") or 0)
-            if hr > best_hr:
-                best_hr = hr
-                best_idx = i
-        if best_hr > 0:
-            if best_idx < len(user["workerData"]):
-                all_workers[best_idx]["is_primary"] = True
-                worker = user["workerData"][best_idx]
-                worker_index = best_idx
-                log.info("[primary] auto-selected worker %s with HR %s (best of %d)",
-                         all_workers[best_idx]["name"], best_hr, len(all_workers))
-        elif len(all_workers) > 0 and len(user["workerData"]) > 0:
-            # All workers idle (hr=0) — pick the first so the dashboard still
-            # surfaces bestDifficulty / lastSubmission / uptime. Only when a
-            # workerData entry exists to pair with (worker stays None otherwise).
-            all_workers[0]["is_primary"] = True
-            worker = user["workerData"][0]
-            worker_index = 0
-            log.info("[primary] all workers idle — selected %s as primary (hr=0, %d total)",
-                     all_workers[0]["name"], len(all_workers))
+    if worker is None:
+        # Fallback selection (best by hashrate, or first when all idle) —
+        # extracted to services.poll_compute (Issue #135).
+        all_workers, worker, worker_index = select_primary_worker(user, all_workers)
 
     # ── Dedup workers with case-insensitive merging ──
     # Workers with the same normalized name (e.g. CYPHERORDIFUTURE vs cypherordifuture)
     # are merged — keep the entry with the highest hashrate (active beats dead).
+    # Case-insensitive dedup (highest hashrate wins) — extracted to
+    # services.poll_compute (Issue #135).
     _orig_worker_count = len(all_workers)
-    if all_workers:
-        seen = {}  # normalized_key -> index in deduped list
-        deduped = []
-        for entry in all_workers:
-            key = _names.dedup_key(entry.get("name", "") or "")
-            if not key:
-                # Empty name means no dedup possible; keep verbatim
-                deduped.append(entry)
-                continue
-            if key in seen:
-                existing_idx = seen[key]
-                existing = deduped[existing_idx]
-                incoming_hr = entry.get("hashrate") or 0
-                existing_hr = existing.get("hashrate") or 0
-                if incoming_hr > existing_hr:
-                    deduped[existing_idx] = entry
-                    log.debug("[dedup] merged %s → %s (HR %s > %s)",
-                              existing.get("name"), entry.get("name"),
-                              incoming_hr, existing_hr)
-            else:
-                seen[key] = len(deduped)
-                deduped.append(entry)
-        all_workers = deduped
+    all_workers = dedup_workers(all_workers)
+    # Original behavior: the summary line only fired when workers existed.
+    if _orig_worker_count:
         log.info("[dedup] %d workers after dedup (was %d)", len(all_workers), _orig_worker_count)
 
     # ── Leaderboard lookup ──
@@ -3526,35 +3427,11 @@ def _do_poll():
                 except Exception:
                     share_diff_raw = 0.0
                 if share_diff_raw and current_difficulty and gap and gap > 0:
-                    hashes_attempted = share_diff_raw * (2 ** 32)
-                    p_block_this = share_diff_raw / float(current_difficulty)
-                    inst_hr_hps = hashes_attempted / float(gap)
-                    share_calc = {
-                        "ts": ts,
-                        "gap": gap,
-                        "share_diff_raw": share_diff_raw,
-                        "share_diff_str": fmt_diff(share_diff_raw),
-                        "hashes_attempted": hashes_attempted,
-                        "hashes_attempted_str": f"{hashes_attempted:.3e}",
-                        "p_block_this_share": p_block_this,
-                        "p_block_this_share_pct_str": (
-                            f"{p_block_this * 100:.4e}%"
-                            if p_block_this < 0.01
-                            else f"{p_block_this * 100:.4f}%"
-                        ),
-                        "instantaneous_hr_hps": inst_hr_hps,
-                        "instantaneous_hr_str": fmt_hashrate(inst_hr_hps),
-                        "best_diff_at_time": (
-                            parse_diff_to_float(worker.get("bestDifficulty"))
-                            if worker and worker.get("bestDifficulty") else 0.0
-                        ),
-                        "best_diff_at_time_str": (
-                            worker.get("bestDifficulty") if worker else ""
-                        ),
-                        "network_diff_at_time": current_difficulty,
-                        "network_diff_at_time_str": fmt_diff(current_difficulty),
-                        "session_share_count_at_time": timeline_state["session_share_count"],
-                    }
+                    # Pure math — extracted to services.poll_compute (Issue #135).
+                    share_calc = compute_share_calc(
+                        ts, gap, share_diff_raw, current_difficulty,
+                        worker.get("bestDifficulty"), timeline_state["session_share_count"],
+                    )
                     timeline_state["share_calc_history"].append(share_calc)
 
             best_diff_str = worker.get("bestDifficulty") or ""
@@ -3840,45 +3717,8 @@ def _do_poll():
         except Exception as e:
             log.warning("[alert persist] error: %s", e)
 
-    # ━━ Compute luck estimate ━━
-    luck = {}
-    if worker and pool and current_difficulty:
-        try:
-            # Each share difficulty roughly = network_diff / (pool_hashrate * target_seconds)
-            # We use parasite's highest diff as pool's "best work this round"
-            # and we estimate pool avg share diff = current_difficulty * 2^32 / (pool_hashrate_hs * 600) ≈ ...
-            # Simpler: best_difficulty / expected_share_diff → luck ratio
-            worker_best = parse_diff_to_float(worker.get("bestDifficulty"))
-            pool_best = parse_diff_to_float(pool.get("highestDifficulty"))
-            # ckpool shares are ~1M by default, but for Plebs pool may be 16k or variable.
-            # We use work-since-last-block / pool hashrate to estimate "expected shares" portion
-            wslb = pool.get("workSinceLastBlock") or 0  # total integrated diff since last block
-            # "luck" → actual best_diff vs expected per this worker.
-            # the simplest honest metric: work_since_last_block / pool_hashrate (seconds of work)
-            # and our workers's hashrate / pool hashrate → fair share of WSLB.
-            cur_hr = float(worker.get("hashrate") or 0)
-            pool_hr = float(pool.get("hashrate") or 0)
-            fair_share_wslb = (cur_hr / pool_hr) * wslb if pool_hr else 0
-            expected_share_diff = current_difficulty / 65536  # rough: 1 share ≈ diff / 64k
-            luck = {
-                "fair_share_diff_since_last_block": fair_share_wslb,
-                "pool_work_since_last_block": wslb,
-                "expected_share_diff_estimate": expected_share_diff,
-                "worker_share_of_pool_pct": (cur_hr / pool_hr * 100) if pool_hr else 0,
-            }
-            # pool-luck % — work-on-block progress vs expected by share contribution
-            # expected: wslb should equal network_diff when fair share arrives
-            try:
-                if wslb and current_difficulty and cur_hr and pool_hr:
-                    expected_wslb = (cur_hr / pool_hr) * current_difficulty
-                    pool_luck_pct = (expected_wslb / wslb * 100.0) if wslb else 0.0
-                    luck["pool_luck_pct"] = round(pool_luck_pct, 2)
-                if wslb and current_difficulty:
-                    luck["round_progress_pct"] = round(min(100, (wslb / current_difficulty) * 100), 2)
-            except Exception:
-                pass
-        except Exception:
-            pass
+    # ━━ Compute luck estimate (pure — services.poll_compute, Issue #135) ━━
+    luck = compute_luck_estimate(worker, pool, current_difficulty)
 
     # ━━ Profitability (real-time, settings-driven, 3 modes) ━━
     #
@@ -4011,10 +3851,8 @@ def _do_poll():
             cost_per_day = _be["cost_per_day"]
 
             def _fiat_convert(btc_val):
-                return {
-                    cur: (round(btc_val * px, 4) if px else None)
-                    for cur, px in btc_prices.items()
-                }
+                # Pure — services.poll_compute (Issue #135).
+                return fiat_convert(btc_val, btc_prices)
 
             # ── Lender (Scenario D): rent OUT your own hashrate vs mining ──
             # Revenue = ths × market rental rate (BTC/TH/day); the locador keeps
