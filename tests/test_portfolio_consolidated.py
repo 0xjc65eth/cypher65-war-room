@@ -303,3 +303,189 @@ class TestRentalsRouteGlobalPortfolio:
         assert gp["rentals"]["count_30d"] == 4
         assert gp["combined"]["pl_30d_sats"] == 45000 * 30 + 4000
         assert gp["own"]["source"] == "worker"
+
+
+# ═════════════════════════════════════════════════════════════════════════
+#  compute_exposure_allocation — Issue #21-B (alocação por classe de ativo)
+# ═════════════════════════════════════════════════════════════════════════
+
+
+class TestExposureAllocation:
+    def test_available_false_when_no_legs(self):
+        e = rp.compute_exposure_allocation()
+        assert e == {"available": False}
+        assert (
+            rp.compute_exposure_allocation(own_hashrate_th=0, mrr_hashrate_th=None)[
+                "available"
+            ]
+            is False
+        )
+
+    def test_shares_sum_100_and_sorted_desc(self):
+        e = rp.compute_exposure_allocation(
+            own_hashrate_th=100, mrr_hashrate_th=250, braiins_hashrate_th=250
+        )
+        assert e["available"] is True
+        assert e["total_hashrate_th"] == 600
+        shares = [c["share_pct"] for c in e["classes"]]
+        # Soma com tolerância p/ arredondamento individual (16.7+41.7+41.7=100.1).
+        assert sum(shares) == pytest.approx(100.0, abs=0.3)
+        assert shares == sorted(shares, reverse=True)
+        # Labels honestos + classe própria presente.
+        labels = [c["label"] for c in e["classes"]]
+        assert "PRÓPRIO" in labels and "MRR" in labels and "Braiins" in labels
+        assert e["top_class"]["class"] == e["classes"][0]["class"]
+
+    def test_hhi_extended_includes_own(self):
+        # 3 classes iguais → HHI = 3 × (33.33)² ≈ 3333.3 (concentração moderada).
+        e = rp.compute_exposure_allocation(
+            own_hashrate_th=100, mrr_hashrate_th=100, braiins_hashrate_th=100
+        )
+        assert e["hhi"] == pytest.approx(3333.3, abs=0.5)
+        assert e["hhi_verdict"] == "concentração moderada"
+
+    def test_hhi_single_class_is_10000(self):
+        e = rp.compute_exposure_allocation(own_hashrate_th=42)
+        assert e["hhi"] == 10000.0
+        assert e["hhi_verdict"] == "alta concentração"
+        assert e["classes"][0]["label"] == "PRÓPRIO"
+
+    def test_hhi_threshold_boundaries(self):
+        # 3 classes → HHI mínimo 3333 (moderada); concentração → ≥5000 (alta).
+        mod = rp.compute_exposure_allocation(
+            own_hashrate_th=40, mrr_hashrate_th=30, braiins_hashrate_th=30
+        )
+        assert mod["hhi"] == pytest.approx(3400.0, abs=0.5)  # 40² + 30² + 30²
+        assert mod["hhi_verdict"] == "concentração moderada"
+        high = rp.compute_exposure_allocation(
+            own_hashrate_th=80, mrr_hashrate_th=10, braiins_hashrate_th=10
+        )
+        assert high["hhi"] == pytest.approx(6600.0, abs=0.5)  # 80² + 10² + 10²
+        assert high["hhi_verdict"] == "alta concentração"
+
+    def test_ignores_zero_negative_garbage_legs(self):
+        e = rp.compute_exposure_allocation(
+            own_hashrate_th=-5, mrr_hashrate_th="abc", braiins_hashrate_th=10
+        )
+        assert e["available"] is True
+        assert e["total_hashrate_th"] == 10
+        assert len(e["classes"]) == 1
+
+
+class TestRentalsRouteExposure:
+    @pytest.fixture
+    def rclient(self):
+        import app as app_module
+
+        app_module.app.config["TESTING"] = True
+        app_module._RENTALS_CACHE.clear()
+        with app_module.app.test_client() as c:
+            yield c
+            app_module._RENTALS_CACHE.clear()
+
+    def test_route_carries_exposure_with_own_and_legs(self, rclient, monkeypatch):
+        import app as app_module
+
+        monkeypatch.setattr(
+            app_module._rental_perf,
+            "fetch_mrr_rentals",
+            lambda rtype="renter", history=False, limit=50, tenant_id="": {
+                "success": True,
+                "needs_auth": False,
+                "rentals": [
+                    {
+                        "id": "r1",
+                        "advertised_th": 200.0,
+                        "rig": {"id": 1, "name": "R1"},
+                    },
+                    {"id": "r2", "advertised_th": 50.0, "rig": {"id": 2, "name": "R2"}},
+                ],
+                "total": 2,
+            },
+        )
+        monkeypatch.setattr(
+            app_module._rental_perf,
+            "fetch_braiins_contracts",
+            lambda tenant_id="": {
+                "success": True,
+                "needs_auth": False,
+                # Forma REAL da lista: speed_limit_ph (PH/s) no topo.
+                "contracts": [{"id": "c1", "speed_limit_ph": 0.25}],
+            },
+        )
+        monkeypatch.setattr(
+            app_module._rental_perf, "get_rig_blacklist", lambda tenant_id="": []
+        )
+        monkeypatch.setattr(
+            app_module._rental_perf, "ingest_rentals", lambda *a, **k: True
+        )
+        monkeypatch.setattr(
+            app_module._rental_perf,
+            "compute_portfolio_series",
+            lambda tenant_id="", bucket="week": {
+                "bucket": "week",
+                "estimate": True,
+                "points": [],
+                "totals": {},
+            },
+        )
+
+        import axe_fleet.routes as _axe_routes
+
+        class _EmptyRegistry:
+            def list_devices(self, tenant_id="", with_telemetry=False):
+                return []
+
+        monkeypatch.setattr(_axe_routes, "_registry", _EmptyRegistry())
+        # Own 100 TH/s (worker) → total 600 TH/s: Braiins 41.7% · MRR 41.7% · PRÓPRIO 16.7%.
+        monkeypatch.setattr(
+            app_module,
+            "latest_snapshot",
+            {"worker": {"hashrate": 100e12}, "network": {"hashrate": NET}},
+        )
+
+        resp = rclient.get("/api/rentals")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        ex = data.get("exposure") or {}
+        assert ex.get("available") is True
+        assert ex["total_hashrate_th"] == pytest.approx(600.0)
+        classes = {c["class"]: c for c in ex["classes"]}
+        assert set(classes) == {"own", "mrr", "braiins"}
+        assert classes["own"]["share_pct"] == pytest.approx(16.7, abs=0.1)
+        assert classes["mrr"]["share_pct"] == pytest.approx(41.7, abs=0.1)
+        assert classes["braiins"]["share_pct"] == pytest.approx(41.7, abs=0.1)
+        assert ex["hhi"] == pytest.approx(3750.0, abs=2.0)  # 41.7² + 41.7² + 16.7²
+        assert ex["hhi_verdict"] == "concentração moderada"
+
+
+class TestExposureLegs:
+    """app._exposure_legs_th — formas real de lista (MRR advertised_th +
+    Braiins speed_limit_ph) e fallback de detail (perf.limit_th)."""
+
+    def test_legs_from_list_shape(self):
+        import app as app_module
+
+        mrr, braiins = app_module._exposure_legs_th(
+            [{"advertised_th": 200.0}, {"advertised_th": 50.0}],
+            [{"speed_limit_ph": 0.25}],
+        )
+        assert mrr == pytest.approx(250.0)
+        assert braiins == pytest.approx(250.0)  # 0.25 PH × 1000
+
+    def test_legs_detail_shape_fallback(self):
+        import app as app_module
+
+        mrr, braiins = app_module._exposure_legs_th([], [{"perf": {"limit_th": 120.0}}])
+        assert mrr == 0.0
+        assert braiins == pytest.approx(120.0)
+
+    def test_legs_ignore_garbage_and_zero(self):
+        import app as app_module
+
+        mrr, braiins = app_module._exposure_legs_th(
+            [{"advertised_th": "abc"}, {"advertised_th": 0}],
+            [{"speed_limit_ph": None}, {"perf": {}}, "not-a-dict"],
+        )
+        assert mrr == 0.0
+        assert braiins == 0.0
