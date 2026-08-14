@@ -6506,6 +6506,46 @@ def _own_hashrate_for_portfolio(tenant_id: str = "") -> dict:
     }
 
 
+def _exposure_legs_th(mrr_rentals, braiins_contracts) -> tuple:
+    """Legs de hashrate (TH/s) para a alocação de exposição (Issue #21-B).
+
+    MRR = soma do advertised_th dos rentals ativos (já em TH/s, normalizado
+    pelo adapter com a regra PH→TH). Braiins = speed limit dos contratos —
+    a forma de LISTA carrega ``speed_limit_ph`` (PH/s) no topo; a forma de
+    DETAIL carrega ``perf.limit_th`` (TH/s). Fallback entre as duas para
+    nunca zerar silenciosamente o leg (achado do review). Legs honestos:
+    só entram valores > 0.
+    """
+    mrr_th = 0.0
+    for r in mrr_rentals or []:
+        if not isinstance(r, dict):
+            continue
+        try:
+            adv = float(r.get("advertised_th") or 0)
+        except (TypeError, ValueError):
+            adv = 0.0
+        if adv > 0:
+            mrr_th += adv
+    braiins_th = 0.0
+    for c in braiins_contracts or []:
+        if not isinstance(c, dict):
+            continue
+        lim = 0.0
+        try:
+            lim = float((c.get("perf") or {}).get("limit_th") or 0)
+        except (TypeError, ValueError):
+            lim = 0.0
+        if not lim:
+            try:
+                ph = float(c.get("speed_limit_ph") or 0)
+            except (TypeError, ValueError):
+                ph = 0.0
+            lim = ph * 1000.0 if ph > 0 else 0.0
+        if lim > 0:
+            braiins_th += lim
+    return mrr_th, braiins_th
+
+
 @app.route("/api/rentals")
 @require_tenant
 @role_required("viewer")
@@ -6543,6 +6583,11 @@ def api_rentals(tenant_id: str = ""):
         _own_hr = _own_hashrate_for_portfolio(tenant_id)
         _portfolio_series = _rental_perf.compute_portfolio_series(
             tenant_id=tenant_id, bucket="week"
+        )
+        # Portfolio 21-B: legs de hashrate (TH/s) para a alocação de exposição
+        # (MRR advertised_th dos ativos + Braiins perf.limit_th dos contratos).
+        _mrr_leg_th, _braiins_leg_th = _exposure_legs_th(
+            mrr_active.get("rentals", []), braiins.get("contracts", [])
         )
         _rentals_pl_30d: Optional[float] = None
         _rentals_cnt_30d = 0
@@ -6713,6 +6758,15 @@ def api_rentals(tenant_id: str = ""):
                 ),
                 rentals_count=_portfolio_series.get("totals", {}).get("rentals"),
                 own_detail=_own_hr,
+            ),
+            # Portfolio 21-B: alocação de exposição por classe de ativo —
+            # PRÓPRIO vs MRR vs BRAIINS (share do hashrate total gerenciado,
+            # HHI estendido incluindo o próprio). Legs: own (dedup honesto),
+            # MRR advertised_th ativos, Braiins perf.limit_th contratos.
+            "exposure": _rental_perf.compute_exposure_allocation(
+                own_hashrate_th=((_own_hr.get("hashrate_hs") or 0) / 1e12) or None,
+                mrr_hashrate_th=_mrr_leg_th or None,
+                braiins_hashrate_th=_braiins_leg_th or None,
             ),
             # CFO recommendation engine — 'where to rent again' (local track
             # record × live market) + 30-day market timing for context.

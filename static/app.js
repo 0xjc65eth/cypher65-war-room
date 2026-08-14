@@ -4394,6 +4394,33 @@ function renderAccount(acct) {
     }).join('');
   }
 
+  // ── Exposure allocation (Issue #21-B) ───────────────────────────────────
+  // PRÓPRIO vs MRR vs BRAIINS — share do hashrate total gerenciado, com o
+  // Herfindahl estendido incluindo o próprio como classe de ativo. Mesmo
+  // idioma visual da concentração (barras de share + HHI honesto).
+  function _renderRentalsExposure() {
+    const wrap = document.getElementById('rentals-exposure');
+    if (!wrap || !_rentalsData) return;
+    const e = _rentalsData.exposure;
+    if (!e || !e.available) { wrap.hidden = true; return; }
+    wrap.hidden = false;
+    const meta = document.getElementById('rentals-exposure-meta');
+    const hhi = Number(e.hhi || 0);
+    // Base HASHRATE (TH/s) — distinto do HHI de CONCENTRAÇÃO (base gasto em
+    // sats): rótulo explícito para o CFO não comparar bases diferentes.
+    if (meta) meta.textContent = 'HHI ' + hhi.toFixed(0) + ' · ' + (e.hhi_verdict || '') + ' (hashrate)';
+    const bars = document.getElementById('rentals-exposure-bars');
+    if (bars) {
+      bars.innerHTML = (e.classes || []).map(c =>
+        '<div class="rentals-conc__bar"><span class="rentals-conc__bar-label">' + escapeHtml(String(c.label)) + '</span>' +
+        '<span class="rentals-conc__bar-track"><i style="width:' + Number(c.share_pct).toFixed(1) + '%"></i></span>' +
+        '<span class="rentals-conc__bar-val">' + Number(c.share_pct).toFixed(0) + '% · ' +
+        Number(c.hashrate_th).toLocaleString('en-US') + ' TH/s</span></div>').join('');
+    }
+    const total = document.getElementById('rentals-exposure-total');
+    if (total) total.textContent = 'Hashrate gerenciado: ' + Number(e.total_hashrate_th).toLocaleString('en-US') + ' TH/s';
+  }
+
   // ── Concentration risk (portfolio-level) ────────────────────────────────
   // If most spend sits with ONE provider or ONE rig, a single failure hits
   // the whole book. Shows share bars + the top rig + an honest HHI readout.
@@ -4685,6 +4712,7 @@ function renderAccount(acct) {
     _renderRentalsExpiring();
     _renderRentalsWorst();
     _renderRentalsConcentration();
+    _renderRentalsExposure();
     _renderRentalsForecast();
     _renderRentalsRiskBanner();
     _renderRentalsSignals();

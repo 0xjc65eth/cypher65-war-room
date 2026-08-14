@@ -875,6 +875,14 @@
     <div class="rentals-conc__head">CONCENTRAÇÃO <span id="rentals-conc-meta" class="rentals-conc__meta"></span></div>
     <div class="rentals-conc__bars" id="rentals-conc-bars"></div>
   </div>
+  <!-- CFO: exposure allocation (Issue #21-B) — PRÓPRIO vs MRR vs Braiins,
+       share do hashrate total gerenciado + Herfindahl estendido incluindo
+       o próprio como classe de ativo. Reusa o CSS das barras de concentração. -->
+  <div class="rentals-exposure" id="rentals-exposure" hidden>
+    <div class="rentals-conc__head">ALOCAÇÃO DE EXPOSIÇÃO <span id="rentals-exposure-meta" class="rentals-conc__meta"></span></div>
+    <div class="rentals-conc__bars" id="rentals-exposure-bars"></div>
+    <div class="rentals-exposure__total" id="rentals-exposure-total"></div>
+  </div>
   <!-- CFO recommendation engine: 'where to rent again' — rigs with a real
        track record, ranked by reliability × price vs the live market. -->
   <div class="rentals-reco" id="rentals-reco" hidden>

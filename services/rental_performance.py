@@ -5122,6 +5122,61 @@ def compute_own_mining_ev(
     return base
 
 
+def compute_exposure_allocation(
+    own_hashrate_th: Optional[float] = None,
+    mrr_hashrate_th: Optional[float] = None,
+    braiins_hashrate_th: Optional[float] = None,
+) -> Dict[str, Any]:
+    """Alocação de exposição por classe de ativo (Issue #21-B).
+
+    PRÓPRIO (self-mining) vs MRR vs BRAIINS — share do hashrate total
+    gerenciado (TH/s). O Herfindahl-Hirschman (HHI) aqui é ESTENDIDO para
+    incluir o próprio como ativo: é o mesmo índice do concentration_risk
+    (0-10000; ≥2500 concentração moderada, ≥5000 alta), mas sobre as 3
+    classes de exposição — se 90% do hashrate gerenciado é de uma classe
+    só, um apagão/mercado daquela classe atinge o portfólio inteiro.
+
+    Honesto: ``available: False`` quando NENHUMA classe tem hashrate
+    mensurável (frio) — a UI renderiza '—', nunca um falso 'diversificado'.
+    Todas as entradas em TH/s (o app converte os legs: own hs/1e12,
+    rentals advertised_th, contratos perf.limit_th).
+    """
+    legs = {
+        "own": _num(own_hashrate_th),
+        "mrr": _num(mrr_hashrate_th),
+        "braiins": _num(braiins_hashrate_th),
+    }
+    legs = {k: v for k, v in legs.items() if v and v > 0}
+    if not legs:
+        return {"available": False}
+    total = sum(legs.values())
+    classes = [
+        {
+            "class": k,
+            "label": "PRÓPRIO" if k == "own" else ("MRR" if k == "mrr" else "Braiins"),
+            "hashrate_th": round(v, 2),
+            "share_pct": round(v / total * 100.0, 1),
+        }
+        for k, v in legs.items()
+    ]
+    classes.sort(key=lambda x: x["share_pct"], reverse=True)
+    hhi = round(sum((v / total * 100.0) ** 2 for v in legs.values()), 1)
+    top = classes[0]
+    verdict = (
+        "alta concentração"
+        if hhi >= 5000
+        else ("concentração moderada" if hhi >= 2500 else "diversificado")
+    )
+    return {
+        "available": True,
+        "total_hashrate_th": round(total, 2),
+        "classes": classes,
+        "hhi": hhi,
+        "hhi_verdict": verdict,
+        "top_class": top,
+    }
+
+
 def compute_global_portfolio(
     own_hashrate_hs: Optional[float] = None,
     network_hashrate_hs: Optional[float] = None,

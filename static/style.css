@@ -5541,6 +5541,7 @@ body.module-mode .tab-pane:not(.active) { display: none; }
 .rentals-conc__bar-val { white-space: nowrap; }
 .rentals-conc__rig { font-family: 'JetBrains Mono',monospace; font-size: 9px; color: var(--text-tertiary); }
 .rentals-conc__rig b { color: var(--amber, #ffa000); }
+.rentals-exposure__total { margin-top: 6px; font-family: 'JetBrains Mono',monospace; font-size: 9px; color: var(--text-tertiary); }
 @media (max-width: 700px) {
   .rentals-worst__row { grid-template-columns: 20px 1fr auto; }
   .rentals-worst__cell { display: none; }
