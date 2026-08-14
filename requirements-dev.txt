@@ -13,7 +13,7 @@ coverage==7.15.0
 # ── Lint / format (ADVISORY — the repo is not lint-clean yet; see the
 #    Makefile `lint` target. Do not gate CI on these until a dedicated
 #    cleanup commit lands.) ────────────────────────────────────────────────
-black==25.1.0
+black==26.5.1
 flake8==7.1.1
 
 # ── Quality / security scanning (local use; CI integration pending) ──────
