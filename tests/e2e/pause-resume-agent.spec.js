@@ -1,23 +1,29 @@
 /**
- * CYPHER65 War Room — E2E: FLEET RESTART VIA LOCAL AGENT (round-trip)
- * ==================================================================
- * Verifica o fluxo REAL de um comando Restart num device agent-managed:
+ * CYPHER65 War Room — E2E: FLEET PAUSE/RESUME VIA LOCAL AGENT (round-trip)
+ * ========================================================================
+ * Verifica o fluxo REAL de um comando Pause/Resume num device agent-managed
+ * AxeOS (Issue #16 — o harness de browser antes só provava restart):
  *
- *   UI (botão ↻ Restart no card do FLEET COMMAND CENTER)
- *     → POST /api/axe-fleet/devices/<id>/restart  (enfileira no agente)
- *     → toast de sucesso "'restart' enviado para o agente local executar"
- *     → AGENTE LOCAL puxa o comando e EXECUTA no miner (log "executing restart")
+ *   UI (botão ⎔ Pause / ▶ Resume no card do FLEET COMMAND CENTER)
+ *     → POST /api/axe-fleet/devices/<id>/pause|resume  (enfileira no agente)
+ *     → toast de sucesso "'pause' enviado para o agente local executar"
+ *     → AGENTE LOCAL puxa o comando e EXECUTA no miner (log "executing pause")
  *
- * Por que este spec não usa o run-e2e.sh: o fluxo do comando só existe de
- * verdade com o AGENTE real rodando. O runner padrão sobe só o servidor
- * (sem mocks nem agente) — o botão responderia 404/teatro. Este spec exige
- * o harness scripts/e2e_browser_session.py, que sobe servidor + 2 miners
- * mock + agente e grava o state file com URL, sessão e caminho do log do
- * agente. Sem harness, o teste dá SKIP (não quebra o CI).
+ * A prova de execução REAL vem do log do agente: ele loga
+ * "executing pause → <device_id> (<ip>)" imediatamente antes de abrir o
+ * socket/HTTP no miner da LAN. O harness (scripts/e2e_agent_local.py) é quem
+ * prova, com contadores no mock, que o miningPause/miningResume chegou de
+ * verdade ao device — este spec prova a ponta UI → agente.
+ *
+ * Por que este spec não usa o run-e2e.sh: igual ao restart-agent.spec.js, o
+ * fluxo do comando só existe com o AGENTE real rodando. Este spec exige o
+ * harness scripts/e2e_browser_session.py (servidor + 2 miners mock + agente
+ * + state file com URL/sessão/log do agente). Sem harness, o teste dá SKIP
+ * (não quebra o CI).
  *
  * Pré-requisitos / como rodar:
  *   1. python scripts/e2e_browser_session.py      # fica vivo; state em /tmp
- *   2. npx playwright test tests/e2e/restart-agent.spec.js
+ *   2. npx playwright test tests/e2e/pause-resume-agent.spec.js
  *
  * Para encerrar o harness:  touch /tmp/cypher65_browser_session.stop
  */
@@ -30,7 +36,7 @@ const STATE_FILE =
   process.env.CYPHER65_BROWSER_SESSION || '/tmp/cypher65_browser_session.json';
 
 // ══════════════════════════════════════════════════════════════════════
-//  Helpers (mesmas convenções de dashboard.spec.js / live-mining.spec.js)
+//  Helpers (mesmas convenções de restart-agent.spec.js / dashboard.spec.js)
 // ══════════════════════════════════════════════════════════════════════
 
 /** Wait for the page to fully load and complete at least one poll cycle */
@@ -80,29 +86,29 @@ async function ensureSidebarOpen(page) {
 }
 
 /**
- * Count how many times the AGENT has executed a restart, by reading its log
- * file (path comes from the harness state file). The agent logs
- * "executing restart → <device_id> (<ip>)" right before running the command
+ * Count how many times the AGENT has executed a given command, by reading its
+ * log file (path comes from the harness state file). The agent logs
+ * "executing <command> → <device_id> (<ip>)" right before running the command
  * on the mock miner — a REAL execution proof, not just a queued row.
  */
-function countAgentExecutions(agentLogPath) {
+function countAgentExecutions(agentLogPath, command) {
   try {
     const text = fs.readFileSync(agentLogPath, 'utf8');
-    return (text.match(/executing restart/g) || []).length;
+    return (text.match(new RegExp(`executing ${command}`, 'g')) || []).length;
   } catch {
     return 0; // log ainda não existe (harness bootando)
   }
 }
 
 /** Poll the agent log until executions >= target (proves the round-trip). */
-async function waitForAgentExecutions(agentLogPath, target, timeoutMs) {
+async function waitForAgentExecutions(agentLogPath, command, target, timeoutMs) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    if (countAgentExecutions(agentLogPath) >= target) return;
+    if (countAgentExecutions(agentLogPath, command) >= target) return;
     await new Promise(r => setTimeout(r, 500));
   }
   throw new Error(
-    `agent nunca executou o restart (esperava ≥${target} execução(ões) em ${agentLogPath})`
+    `agent nunca executou '${command}' (esperava ≥${target} execução(ões) em ${agentLogPath})`
   );
 }
 
@@ -129,9 +135,9 @@ function readHarnessState() {
 //  Tests
 // ══════════════════════════════════════════════════════════════════════
 
-test.describe('FLEET COMMAND CENTER — Restart via agent', () => {
+test.describe('FLEET COMMAND CENTER — Pause/Resume via agent', () => {
 
-  test('botão Restart do card → toast de sucesso → agente executa de verdade', async ({ page }) => {
+  test('Pause → toast → agente executa de verdade → Resume → agente executa', async ({ page }) => {
     test.setTimeout(120000);
 
     // Skip sem o harness: quem roda o CI (run-e2e.sh, servidor só) não deve
@@ -160,9 +166,6 @@ test.describe('FLEET COMMAND CENTER — Restart via agent', () => {
     const capture = setupErrorCapture(page);
 
     // ── Sessão do tenant: injeta exatamente o que o harness autenticou ──
-    //    Espera o #app-shell existir antes do evaluate — a primeira goto
-    //    cai em `/` que faz redirect para o dashboard e destruiria o
-    //    contexto de execução a meio do page.evaluate (race clássico).
     await page.goto(baseUrl, { waitUntil: 'domcontentloaded' });
     await page.waitForSelector('#app-shell', { timeout: 15000 });
     await page.evaluate(s => {
@@ -176,31 +179,47 @@ test.describe('FLEET COMMAND CENTER — Restart via agent', () => {
     await page.locator('.sidebar__link[data-module="live"]').click();
     await page.waitForTimeout(600);
 
-    // ── Primeiro card de worker (os 2 devices do harness são agent-managed) ──
-    const card = page.locator('#lm-workers-grid .fcc-card').first();
+    // ── O device AxeOS (Gamma 900) é o único com pause/resume — o cgminer
+    //    honestamente não anuncia essas capabilities. O filtro `has` pega o
+    //    card que tem o botão de pause (mesmo padrão do restart spec). ──
+    const card = page.locator('#lm-workers-grid .fcc-card', {
+      has: page.locator('.axe-cmd-btn--pause'),
+    }).first();
     await expect(card).toBeVisible({ timeout: 30000 });
-    const restartBtn = card.locator('.axe-cmd-btn--restart');
-    await expect(restartBtn).toBeVisible({ timeout: 15000 });
+    const pauseBtn = card.locator('.axe-cmd-btn--pause');
+    const resumeBtn = card.locator('.axe-cmd-btn--resume');
+    await expect(pauseBtn).toBeVisible({ timeout: 15000 });
+    await expect(resumeBtn).toBeVisible({ timeout: 5000 });
 
     // ── Baseline de execuções no agente (prova de round-trip) ──
-    const before = countAgentExecutions(agentLogPath);
+    const beforePause = countAgentExecutions(agentLogPath, 'pause');
+    const beforeResume = countAgentExecutions(agentLogPath, 'resume');
 
-    // ── Clique no Restart: aceita o confirm do navegador ──
+    // ── Pause: aceita o confirm do navegador ──
     page.once('dialog', d => d.accept());
-    await restartBtn.click();
+    await pauseBtn.click();
 
     // ── Toast de sucesso com a mensagem do servidor (some após ~3.3s) ──
-    //    Filtra pelo texto ÚNICO do comando: o locator loose por substring
-    //    ('enviado para o agente local executar') pode casar toasts empilhados
-    //    e quebrar com strict-mode quando outro spec roda no mesmo harness.
-    const toast = page.getByText(
-      "'restart' enviado para o agente local executar");
-    await expect(toast).toBeVisible({ timeout: 8000 });
-    await expect(toast).toContainText('restart');
+    //    Filtra pelo comando: o toast do pause e o do resume podem coexistir
+    //    no DOM (o do pause ainda está saindo) — sem o filtro o locator é
+    //    ambíguo (strict-mode violation).
+    const toastPause = page.getByText(
+      "'pause' enviado para o agente local executar");
+    await expect(toastPause).toBeVisible({ timeout: 8000 });
+    await expect(toastPause).toContainText('pause');
 
     // ── O AGENTE REAL puxou o comando e executou no miner (anti-teatro) ──
-    //    O harness polla a fila a cada 2s — folga generosa para o log.
-    await waitForAgentExecutions(agentLogPath, before + 1, 20000);
+    await waitForAgentExecutions(agentLogPath, 'pause', beforePause + 1, 20000);
+
+    // ── Resume: ação segura, sem confirm — dispara direto ──
+    await resumeBtn.click();
+
+    const toastResume = page.getByText(
+      "'resume' enviado para o agente local executar");
+    await expect(toastResume).toBeVisible({ timeout: 8000 });
+    await expect(toastResume).toContainText('resume');
+
+    await waitForAgentExecutions(agentLogPath, 'resume', beforeResume + 1, 20000);
 
     // ── Sem erros de console no painel ──
     const critical = capture.getCritical();
