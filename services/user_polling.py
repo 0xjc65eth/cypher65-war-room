@@ -201,6 +201,20 @@ def dispatch_rental_arb_alerts(tenant_id: str, alerts: list):
         log.warning("[rentals] arb alert dispatch error: %s", e)
 
 
+def dispatch_reco_worse_alerts(tenant_id: str, alerts: list):
+    """Fire webhook + push for accepted-recommendation 'worse' alerts (the rig
+    kept under-delivering after the blacklist), tenant-scoped — same discipline
+    as the other rental families: one shared implementation, reads the
+    TENANT's own settings, fire-and-forget daemon threads.
+    """
+    if not alerts:
+        return
+    try:
+        _dispatch_tenant_alert_family(tenant_id, alerts)
+    except Exception as e:
+        log.warning("[rentals] reco-worse alert dispatch error: %s", e)
+
+
 def _dispatch_tenant_alert_family(tenant_id: str, alerts: list):
     """Shared webhook+push loop for both tenant alert families (P/L + risk) —
     one implementation, no drift between the two dispatchers."""
@@ -1029,9 +1043,10 @@ def _rentals_sweep_once() -> int:
         from services.rental_performance import (
             pl_alert_enabled_tenants, risk_alert_enabled_tenants,
             market_overpay_enabled_tenants, market_arb_enabled_tenants,
-            _sweep_fetch_history, evaluate_rental_pl_alerts,
+            reco_worse_enabled_tenants, _sweep_fetch_history,
+            evaluate_rental_pl_alerts,
             evaluate_market_overpay_alerts, evaluate_market_arb_alerts,
-            sweep_risk_alerts,
+            evaluate_reco_worse_alerts, sweep_risk_alerts,
         )
         # Each family gates its own sweep to ITS enabled set — a risk-only
         # tenant must NEVER trigger sweep_rental_pl_alerts (that function
@@ -1042,13 +1057,15 @@ def _rentals_sweep_once() -> int:
         risk_list = risk_alert_enabled_tenants()
         market_list = market_overpay_enabled_tenants()
         arb_list = market_arb_enabled_tenants()
+        reco_list = reco_worse_enabled_tenants()
         pl_set = set(pl_list)
         risk_set = set(risk_list)
         market_set = set(market_list)
         arb_set = set(arb_list)
+        reco_set = set(reco_list)
         # Union preserving P/L order first (deterministic visits for tests),
         # dict.fromkeys dedups a tenant in both lists to one visit.
-        tenants = list(dict.fromkeys(list(pl_list) + list(market_list) + list(arb_list) + list(risk_list)))
+        tenants = list(dict.fromkeys(list(pl_list) + list(market_list) + list(arb_list) + list(reco_list) + list(risk_list)))
         visited = 0
         for i, t in enumerate(tenants):
             try:
@@ -1085,6 +1102,14 @@ def _rentals_sweep_once() -> int:
                         dispatch_rental_arb_alerts(t, arb)
                         log.info("[rentals-sweep] %s: %d arb alert(s) dispatched",
                                  t or "default", len(arb))
+                if t in reco_set:
+                    # Accepted-recommendation 'worse' alerts — LOCAL evaluation
+                    # (ledger + local history, zero provider cost).
+                    worse = evaluate_reco_worse_alerts(tenant_id=t)
+                    if worse:
+                        dispatch_reco_worse_alerts(t, worse)
+                        log.info("[rentals-sweep] %s: %d reco-worse alert(s) dispatched",
+                                 t or "default", len(worse))
                 if t in risk_set:
                     # Risk alerts (worst-rig top-N) — LOCAL evaluation, zero
                     # provider cost; only tenants that opted in are visited.

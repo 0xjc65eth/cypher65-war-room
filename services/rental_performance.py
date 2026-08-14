@@ -3235,6 +3235,111 @@ def evaluate_market_arb_alerts(tenant_id: str = "",
                              _tenant_typical_th(tenant_id))]
 
 
+# ── Auto-alert: accepted recommendation ended with verdict 'worse' ──────────
+# The operator accepted a pilot recommendation (blacklisted a bad rig). When
+# the delivery outcome afterwards comes back WORSE (the rig kept under-
+# delivering after the exclusion), the blacklist didn't fix the problem —
+# that deserves a proactive webhook/push, not only a panel badge.
+#
+# Local-first and provider-free: the ledger (tenant settings) + local
+# rental_history — zero provider cost, so NO MRR credentials required;
+# gating is purely the enable setting. Revoked entries (restored rigs) are
+# NEVER flagged — a revoked decision is not 'worse', it was reversed.
+RENTAL_RECO_WORSE_SETTING = "rental_reco_worse_alert"  # "1"/"0" (default off)
+
+
+def reco_worse_enabled_tenants() -> List[str]:
+    """Tenant ids that should be swept for accepted-recommendation 'worse'
+    alerts.
+
+    LOCAL evaluation (ledger + local history — zero provider cost), so no
+    MRR credentials gate the sweep: the setting alone decides. Default/
+    operator tenant included when its GLOBAL setting is enabled."""
+    out: List[str] = []
+    try:
+        _ensure_rig_settings_tables()
+        conn = get_db()
+        c = conn.cursor()
+        c.execute("SELECT DISTINCT tenant_id, value FROM tenant_settings WHERE key=?",
+                  (RENTAL_RECO_WORSE_SETTING,))
+        rows = c.fetchall()
+        conn.close()
+        for r in rows:
+            if (r["value"] or "").strip() == "1":
+                out.append(r["tenant_id"])
+    except Exception as e:
+        log.warning("[rental_performance] reco-worse tenant scan failed: %s", e)
+    try:
+        s = load_settings(tenant_id="")
+        if (s.get(RENTAL_RECO_WORSE_SETTING) or "").strip() == "1":
+            out.append("")
+    except Exception:
+        pass
+    return list(dict.fromkeys(out))
+
+
+def _build_reco_worse_alert(e: Dict[str, Any]) -> Dict[str, Any]:
+    """Alert payload for an accepted recommendation that ended WORSE.
+    Severity WARN, category rental_reco_worse — concise for both webhook
+    embeds and Web Push."""
+    name = e.get("name") or e.get("rig_id") or ""
+    parts = [f"Recomendação aceita PIOROU: rig {name}"]
+    before = e.get("delivery_pct")
+    after = e.get("delivery_after_pct")
+    if before is not None and after is not None:
+        parts.append(f"entrega {before:.0f}% → {after:.0f}% após o blacklist")
+    elif after is not None:
+        parts.append(f"entrega {after:.0f}% após o blacklist")
+    if e.get("samples") is not None:
+        parts.append(f"{e['samples']} amostras")
+    src = "auto" if e.get("source") == "auto" else "manual"
+    parts.append(f"origem: {src}")
+    return {
+        "severity": "WARN",
+        "category": "rental_reco_worse",
+        "message": " — ".join(parts)[:280],
+        "rig_id": str(e.get("rig_id") or ""),
+    }
+
+
+def evaluate_reco_worse_alerts(tenant_id: str = "",
+                              now: Optional[int] = None) -> List[Dict[str, Any]]:
+    """Accepted recommendations whose outcome is WORSE → alerts.
+
+    Reads the tenant's accepted-recommendation ledger (local, provider-free)
+    and keeps only entries with verdict 'worse' AND not restored (revoked
+    decisions are reversed, not worse). Dedup: ONE alert per rig EVER
+    (persisted in the shared rental_pl_alerts table with provider tag
+    'reco_worse' and the rig id as rental_id — same race-safe atomic claim
+    as the P/L family).
+
+    Gating: the setting rental_reco_worse_alert must be "1". Never raises.
+    """
+    s = load_settings(tenant_id=tenant_id)
+    if (s.get(RENTAL_RECO_WORSE_SETTING) or "").strip() != "1":
+        return []  # disabled
+    now = int(now or time.time())
+    _prune_pl_alerts()
+    summary = compute_accepted_recos_summary(tenant_id=tenant_id)
+    out: List[Dict[str, Any]] = []
+    for e in summary.get("accepted", []):
+        if e.get("verdict") != "worse":
+            continue
+        if e.get("restored"):
+            continue  # revoked decision ≠ worse
+        rid = str(e.get("rig_id") or "")
+        if not rid:
+            continue
+        if not e.get("delivery_after_pct") or not e.get("delivery_pct"):
+            continue  # no before/after reference → cannot honestly call it worse
+        # Atomic claim: only the winner fires (race-safe, panel + sweep).
+        metric = round(float(e["delivery_after_pct"]), 1)
+        if not _mark_pl_alert_fired(tenant_id, "reco_worse", rid, metric):
+            continue
+        out.append(_build_reco_worse_alert(e))
+    return out
+
+
 # ── Local rental-history persistence ────────────────────────────────────────
 # The same-rig track record used to re-fetch the whole MRR history list on
 # EVERY detail click (slow + rate-limit-prone with 1000+ users). The panel's
