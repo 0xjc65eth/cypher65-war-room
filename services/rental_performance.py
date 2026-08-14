@@ -5076,6 +5076,98 @@ def compute_portfolio_summary(
     }
 
 
+# ── Portfolio 21-A: consolidated P/L — own mining EV + rentals P/L ──────────
+# The portfolio panels (summary + series) cover RENTALS only. This family
+# brings the "próprio" (self-mining) into the same view so the operator sees
+# the TOTAL net P/L: expected-value revenue from owned hashrate (same share-
+# of-network EV math as the hash market) combined with the rentals P/L.
+
+
+def compute_own_mining_ev(
+    hashrate_hs: Optional[float],
+    network_hashrate_hs: Optional[float],
+    days: int = 30,
+) -> Dict[str, Any]:
+    """Expected-value revenue from SELF-MINING hashrate (Issue #21-A).
+
+    Reuses the PINNED yield formula (compute_expected_yield_sats_per_thh,
+    18.75 sats/TH·h @ 100 EH/s) — one source of truth for the share-of-
+    network EV math, so a rented TH and an owned TH are priced identically.
+    Honest label: ESTIMATE (gross, pre-pool-fee; EV, not realized revenue).
+    Null-safe: missing hashrate or unknown network → None fields + the UI
+    renders '—', never a fake number.
+    """
+    try:
+        hr = float(hashrate_hs or 0)
+    except (TypeError, ValueError):
+        hr = 0.0
+    base = {
+        "hashrate_hs": round(hr) if hr > 0 else None,
+        "hashrate_th": round(hr / 1e12, 2) if hr > 0 else None,
+        "daily_revenue_sats": None,
+        "month_revenue_sats": None,
+        "estimate": False,
+        "days": days,
+    }
+    if hr <= 0:
+        return base
+    # yield = sats/TH·h (None quando a rede é desconhecida → honesto '—').
+    yield_thh = compute_expected_yield_sats_per_thh(network_hashrate_hs)
+    if yield_thh is None:
+        return base
+    daily_sats = yield_thh * (hr / 1e12) * 24.0
+    base["daily_revenue_sats"] = round(daily_sats)
+    base["month_revenue_sats"] = round(daily_sats * days)
+    base["estimate"] = True
+    return base
+
+
+def compute_global_portfolio(
+    own_hashrate_hs: Optional[float] = None,
+    network_hashrate_hs: Optional[float] = None,
+    rentals_pl_30d_sats: Optional[float] = None,
+    rentals_30d_count: int = 0,
+    rentals_pl_all_sats: Optional[float] = None,
+    rentals_spent_sats: Optional[float] = None,
+    rentals_count: int = 0,
+    own_detail: Optional[Dict[str, Any]] = None,
+    days: int = 30,
+) -> Dict[str, Any]:
+    """Consolidated portfolio P/L: PRÓPRIO (self-mining EV) + RENTALS P/L.
+
+    ``combined.pl_30d_sats`` = own EV (30d) + rentals P/L (last ~4 weeks) —
+    the single honest "net" number for the period, labeled ESTIMATE. When
+    either leg is unknown, combined is None (never a fake 0 that reads as
+    'no loss'). ``own_detail`` (from the app's hashrate dedup) is merged into
+    ``own`` so the UI can show WHICH source backed the hashrate (fleet vs
+    pool worker) — Issue #21-A dedup rule.
+    """
+    own = compute_own_mining_ev(own_hashrate_hs, network_hashrate_hs, days=days)
+    if own_detail:
+        own.update({k: v for k, v in own_detail.items() if k not in own})
+    rentals = {
+        "pl_30d_sats": (
+            round(rentals_pl_30d_sats, 1) if rentals_pl_30d_sats is not None else None
+        ),
+        "count_30d": int(rentals_30d_count or 0),
+        "pl_all_sats": (
+            round(rentals_pl_all_sats, 1) if rentals_pl_all_sats is not None else None
+        ),
+        "spent_sats": round(rentals_spent_sats) if rentals_spent_sats else None,
+        "count": int(rentals_count or 0),
+        "estimate": True,  # rentals P/L é EV (mesma metodologia da série)
+    }
+    combined = None
+    if own.get("month_revenue_sats") is not None and rentals["pl_30d_sats"] is not None:
+        combined = {
+            "pl_30d_sats": own["month_revenue_sats"] + rentals["pl_30d_sats"],
+            "own_ev_30d_sats": own["month_revenue_sats"],
+            "rentals_pl_30d_sats": rentals["pl_30d_sats"],
+            "estimate": True,
+        }
+    return {"own": own, "rentals": rentals, "combined": combined, "days": days}
+
+
 # ── CFO recommendation engine: "where to rent again" ───────────────────────
 # The single decision the operator makes every time: WHICH rig/provider to
 # rent next. Builds on the local track record (reliability = trust score)

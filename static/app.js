@@ -4098,6 +4098,48 @@ function renderAccount(acct) {
     });
   }
 
+  // CFO: consolidated portfolio P/L (Issue #21-A) — PRÓPRIO self-mining EV
+  // + RENTALS P/L + NET 30d. Hidden until any leg has data.
+  function _renderPortfolioConsolidated() {
+    const wrap = document.getElementById('portfolio-consolidated');
+    if (!wrap) return;
+    const gp = (_rentalsData && _rentalsData.global_portfolio) || {};
+    const own = gp.own || {};
+    const rent = gp.rentals || {};
+    const comb = gp.combined || {};
+    const hasOwn = own.hashrate_hs > 0;
+    const hasRent = rent.pl_30d_sats != null || rent.pl_all_sats != null;
+    if (!hasOwn && !hasRent) { wrap.hidden = true; return; }
+    wrap.hidden = false;
+    const set = function (id, v) {
+      const el = document.getElementById(id);
+      if (el) el.textContent = v;
+    };
+    const fmtSats = function (v, sign) {
+      if (v === null || v === undefined) return '—';
+      const n = Number(v);
+      if (sign && n > 0) return '+' + n.toLocaleString('en-US') + ' sats';
+      return n.toLocaleString('en-US') + ' sats';
+    };
+    set('portfolio-own-daily',
+      own.daily_revenue_sats != null ? fmtSats(own.daily_revenue_sats) + '/dia' : '—');
+    set('portfolio-own-month',
+      own.month_revenue_sats != null ? fmtSats(own.month_revenue_sats) : '—');
+    set('portfolio-rentals-30d', fmtSats(rent.pl_30d_sats, true));
+    set('portfolio-rentals-all', fmtSats(rent.pl_all_sats, true));
+    set('portfolio-net-30d',
+      comb.pl_30d_sats != null ? fmtSats(comb.pl_30d_sats, true) : '—');
+    const meta = document.getElementById('portfolio-consolidated-meta');
+    if (meta) {
+      const src = own.source === 'fleet' ? 'frota física'
+        : own.source === 'worker' ? 'worker do pool' : '—';
+      const hr = own.hashrate_th != null ? own.hashrate_th + ' TH/s' : 'sem hashrate';
+      meta.textContent = own.hashrate_hs > 0
+        ? ('ESTIMATE · ' + hr + ' (' + src + ')' + (own.estimate ? ' · EV' : ''))
+        : 'ESTIMATE · sem hashrate próprio registrado';
+    }
+  }
+
   // CFO: portfolio time series — spent bars + estimated P/L (period and
   // cumulative) from the LOCAL rental_history. Bucket toggle week/month
   // re-fetches server-side data (the API ships the week bucket by default).
@@ -4632,6 +4674,7 @@ function renderAccount(acct) {
     _stripVal('rentals-mrr-owner', mrr.total_owner != null ? mrr.total_owner : (mrr.owner || []).length, mrr.needs_auth, mrr.error);
     _stripVal('rentals-braiins', (braiins.contracts || []).length, braiins.needs_auth, braiins.error);
     _renderRentalsPortfolio();
+    _renderPortfolioConsolidated();
     _renderRentalsSeries();
     _renderRentalsReco();
     _renderRentalsAccepted();
