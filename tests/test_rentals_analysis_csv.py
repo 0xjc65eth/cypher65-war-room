@@ -379,3 +379,44 @@ def _seed_history(db, pairs):
             "network_hashrate_hs": None,
         })
     assert rp.save_rental_history(rows) is True
+
+
+# ── Pilot audit columns (Issue #119): auto-exclusion no CSV ───────────────
+
+def test_analysis_csv_includes_auto_exclusion(db):
+    """Rig auto-excluído → colunas do piloto preenchidas: auto_excluded=1,
+    causa (grade + entrega), régua vigente, data — e sem REVOGADA."""
+    _seed_history(db, [("rig-a", 57.5), ("rig-a", 55.0)])
+    assert rp.add_rig_to_auto_blacklist("rig-a") is True
+    r = _build([_rental()])[0]
+    assert r["auto_excluded"] == "1"
+    assert "grade F" in r["auto_exclude_cause"]
+    assert "entrega" in r["auto_exclude_cause"]
+    assert r["auto_exclude_rule"] == "floor F · mín 2"
+    assert r["auto_exclude_ts"] != ""
+    assert r["auto_exclude_restored"] == ""
+    assert "auto-exclusão do piloto" in r["notes"]
+
+
+def test_analysis_csv_marks_restored(db):
+    """Restore do rig → auto_excluded some, auto_exclude_restored=1 e o
+    note carrega (REVOGADA) — o veredito reflete a decisão revogada."""
+    _seed_history(db, [("rig-a", 57.5), ("rig-a", 55.0)])
+    assert rp.add_rig_to_auto_blacklist("rig-a") is True
+    assert rp.remove_rig_from_blacklist("rig-a") is True
+    r = _build([_rental()])[0]
+    assert r["auto_excluded"] == ""
+    assert r["auto_exclude_restored"] == "1"
+    assert r["auto_exclude_cause"] != ""
+    assert r["auto_exclude_rule"] == "floor F · mín 2"
+    assert "REVOGADA" in r["notes"]
+
+
+def test_analysis_csv_header_includes_pilot_columns(db):
+    """O header do CSV carrega as 5 colunas do piloto para o operador
+    auditar exclusões em planilha."""
+    rows = _build([_rental()])
+    header = rp.rentals_analysis_csv(rows).splitlines()[0]
+    for col in ("auto_excluded", "auto_exclude_cause", "auto_exclude_rule",
+                "auto_exclude_ts", "auto_exclude_restored"):
+        assert col in header
