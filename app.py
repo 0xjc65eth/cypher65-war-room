@@ -6204,8 +6204,24 @@ def api_rentals_detail(tenant_id: str = ""):
         # CFO: full rig intelligence — same-rig track record, Trust Score
         # (grade A-F), blacklist state and spend/consistency summary.
         rig = raw.get("rig") or {}
+        rig_id = rig.get("id")
         rig_analysis = _rental_perf.analyze_rig(
-            rig.get("id"), rig.get("name"), exclude_rental_id=rid, tenant_id=tenant_id)
+            rig_id, rig.get("name"), exclude_rental_id=rid, tenant_id=tenant_id)
+        # CFO alert parity with the sweep (Issue #102 → #108): an
+        # auto-exclusion made HERE (panel detail) fires the same opt-in
+        # webhook/push alert through the SAME dispatcher the sweep uses, with
+        # the same rig_id:ts dedup claim — the sweep's next pass computes the
+        # same exclusion ts and never double-fires. Fire-and-forget (daemon
+        # threads); never blocks the route.
+        if rig_analysis.get("auto_excluded_now") and rig_id:
+            try:
+                from services.user_polling import dispatch_auto_exclude_alerts
+                n_alert = dispatch_auto_exclude_alerts(tenant_id, [rig_id])
+                if n_alert:
+                    log.info("[rentals] panel auto-exclude alert: %d dispatched",
+                             n_alert)
+            except Exception as e:
+                log.warning("[rentals] panel auto-exclude alert error: %s", e)
         return jsonify({"success": True, "provider": "mrr", "detail": raw,
                         "graph": detail.get("graph") or {},
                         "log": detail.get("log") or {},

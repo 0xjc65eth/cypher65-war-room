@@ -223,3 +223,142 @@ def test_sweep_dispatches_auto_exclude_alert(db, clock, monkeypatch):
     assert "auto-excluído por sub-entrega" in fired["push"][0][3]
     assert len(fired["webhook"]) == 1
     assert fired["webhook"][0]["tenant_id"] == tid
+
+
+# ── Panel path (analyze_rig → /api/rentals/detail) — Issue #108 ────────────
+
+def _seed_bad_rig(rig_id="rig-b", tenant_id=""):
+    """Two under-delivering samples → grade F, auto-excludable (default rule)."""
+    _seed([_hr("r1", rig_id, _dt_str(NOW - 2 * 86400), 60.0),
+           _hr("r2", rig_id, _dt_str(NOW - 86400), 55.0)], tenant_id=tenant_id)
+
+
+def test_analyze_rig_marks_auto_excluded_now_first_call_only(db, clock):
+    """The detail panel performs the SHARED auto-exclusion and reports
+    auto_excluded_now=True ONLY on the call that excluded it — re-opening
+    the detail of an already-excluded rig never re-triggers."""
+    _seed_bad_rig()
+    first = rp.analyze_rig("rig-b")
+    assert first["auto_blacklisted"] is True
+    assert first["auto_excluded_now"] is True
+    assert rp.get_auto_blacklist() == ["rig-b"]
+
+    second = rp.analyze_rig("rig-b")
+    assert second["auto_blacklisted"] is True
+    assert second["auto_excluded_now"] is False
+
+
+def test_analyze_rig_does_not_flag_good_rig(db, clock):
+    """No exclusion → auto_excluded_now False (never fabricates an event)."""
+    _seed([_hr("r1", "rig-good", _dt_str(NOW - 86400), 96.0)])
+    res = rp.analyze_rig("rig-good")
+    assert res["auto_blacklisted"] is False
+    assert res["auto_excluded_now"] is False
+
+
+def test_panel_and_sweep_dispatch_share_event_claim(db, clock, monkeypatch):
+    """The SAME event excluded via the panel ('default' tenant from
+    require_tenant) must dedup against the sweep's canonical '' claim — one
+    alert total, whichever path fires first."""
+    fired = _capture_fires(monkeypatch)
+    save_setting("rental_auto_exclude_alert", "1")
+    save_setting("webhook_url", "https://discord.com/api/webhooks/x")
+    _seed_bad_rig()
+    # Panel path: the exclusion happens in analyze_rig, then the detail
+    # route dispatches with tenant_id='default'.
+    assert rp.analyze_rig("rig-b")["auto_excluded_now"] is True
+    assert _up.dispatch_auto_exclude_alerts("default", ["rig-b"]) == 1
+    assert len(fired["push"]) == 1
+    # Sweep path later: same rig already excluded → evaluate returns [] and
+    # even a direct dispatch with '' (canonical) claims the SAME row.
+    assert rp.evaluate_auto_blacklist() == []
+    assert _up.dispatch_auto_exclude_alerts("", ["rig-b"]) == 0
+    assert len(fired["push"]) == 1
+
+
+def test_panel_and_sweep_dedup_inverse_order(db, clock, monkeypatch):
+    """Order does not matter: sweep claims first (''), panel ('default')
+    afterwards still dedups to ONE alert."""
+    fired = _capture_fires(monkeypatch)
+    save_setting("rental_auto_exclude_alert", "1")
+    _seed_bad_rig()
+    rp.add_rig_to_auto_blacklist("rig-b")
+    assert _up.dispatch_auto_exclude_alerts("", ["rig-b"]) == 1
+    assert _up.dispatch_auto_exclude_alerts("default", ["rig-b"]) == 0
+    assert len(fired["push"]) == 1
+
+
+def test_panel_path_realert_after_restore(db, clock, monkeypatch):
+    """Full PANEL flow: analyze_rig excludes → restore → NEW bad sample →
+    analyze_rig re-excludes → the NEW event re-alerts (the canonical claim
+    is keyed by the new ts, so restore+re-exclusion via the panel fires
+    again — never blocked by the first event's claim)."""
+    fired = _capture_fires(monkeypatch)
+    save_setting("rental_auto_exclude_alert", "1")
+    _seed_bad_rig()
+    # Event 1: excluded via the panel path.
+    assert rp.analyze_rig("rig-b")["auto_excluded_now"] is True
+    assert _up.dispatch_auto_exclude_alerts("default", ["rig-b"]) == 1
+    assert len(fired["push"]) == 1
+    # Operator restores the rig.
+    assert rp.remove_rig_from_blacklist("rig-b") is True
+    # NEW bad sample AFTER the restore → re-excludable (new ts → new event).
+    clock["now"] = NOW + 5 * 86400
+    _seed([_hr("r3", "rig-b", _dt_str(NOW + 4 * 86400), 50.0)])
+    assert rp.analyze_rig("rig-b")["auto_excluded_now"] is True
+    assert _up.dispatch_auto_exclude_alerts("default", ["rig-b"]) == 1
+    assert len(fired["push"]) == 2
+
+
+# ── Route wiring: /api/rentals/detail dispatches on auto_excluded_now ─────
+
+import app as _app_module  # noqa: E402
+
+
+@pytest.fixture
+def rclient():
+    _app_module.app.config["TESTING"] = True
+    _app_module._RENTALS_CACHE.clear()
+    with _app_module.app.test_client() as c:
+        yield c
+        _app_module._RENTALS_CACHE.clear()
+
+
+def _mock_detail_route(monkeypatch, auto_excluded_now=False):
+    """Mock the MRR detail route's provider/analytics fns + analyze_rig."""
+    dispatched = []
+    monkeypatch.setattr(
+        _app_module._rental_perf, "fetch_mrr_rental_detail",
+        lambda rid, tenant_id="": {
+            "success": True,
+            "detail": {"rig": {"id": "R1", "name": "Rig R1"}},
+            "graph": {}, "log": {}})
+    monkeypatch.setattr(_app_module._rental_perf, "compute_mrr_perf", lambda raw: {})
+    monkeypatch.setattr(_app_module._rental_perf, "attach_pl", lambda *a, **k: {})
+    monkeypatch.setattr(_app_module._rental_perf,
+                        "_resolve_network_hashrate_for_rental", lambda *a, **k: None)
+    monkeypatch.setattr(
+        _app_module._rental_perf, "analyze_rig",
+        lambda *a, **k: {"history": [], "auto_excluded_now": auto_excluded_now})
+    monkeypatch.setattr(_app_module._rental_perf, "fetch_market_reference", lambda: {})
+    monkeypatch.setattr(
+        _up, "dispatch_auto_exclude_alerts",
+        lambda t, r: (dispatched.append((t, list(r))) or 1))
+    return dispatched
+
+
+def test_detail_route_dispatches_alert_on_auto_excluded_now(rclient, monkeypatch):
+    """GET /api/rentals/detail → analyze_rig excluded → the SAME sweep
+    dispatcher fires (opt-in gating + dedup live inside it)."""
+    dispatched = _mock_detail_route(monkeypatch, auto_excluded_now=True)
+    resp = rclient.get("/api/rentals/detail?provider=mrr&id=5657736")
+    assert resp.status_code == 200
+    assert dispatched == [("default", ["R1"])]
+
+
+def test_detail_route_skips_dispatch_when_no_new_exclusion(rclient, monkeypatch):
+    """Rig already excluded (or no exclusion) → no alert dispatched."""
+    dispatched = _mock_detail_route(monkeypatch, auto_excluded_now=False)
+    resp = rclient.get("/api/rentals/detail?provider=mrr&id=5657736")
+    assert resp.status_code == 200
+    assert dispatched == []
