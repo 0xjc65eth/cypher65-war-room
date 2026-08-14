@@ -17,8 +17,12 @@
 #   2026-08-14  TOTAL 77% · poll_compute 100% (helpers extraídos do
 #              _do_poll, Issue #135), app 57%, user_polling 73% · gate
 #              --cov-fail-under=76
-#   ROADMAP → 80% (próxima release): app.py 57% + user_polling 73% ainda
-#   são os maiores buracos (mapa completo em docs/QUALITY.md).
+#   2026-08-14  TOTAL 79% · Issue #137: profitability/milestones/event-stats
+#              extraídos do _do_poll (poll_compute 100%, app 58%), fetchers
+#              globais + _build_snapshot cobertos (user_polling 94%) · gate
+#              --cov-fail-under=78
+#   ROADMAP → 80%: restante do app.py (profitability/milestones/event-stats
+#   agora extraídos; ainda: fetch/persist/purge + rotas) é o maior buraco.
 # O --cov-fail-under é o gate real: abaixo dele o merge é bloqueado.
 # A margem (~1pp) absorve variação entre ambientes (CI vs local) sem
 # deixar o gate frouxo.
@@ -166,7 +170,7 @@ jobs:
             --cov=app --cov=helpers --cov=axe_fleet --cov=services --cov=core \
             --cov-report=term-missing --cov-report=html:/tmp/coverage_html \
             --cov-report=xml:/tmp/coverage.xml \
-            --cov-fail-under=76
+            --cov-fail-under=78
 
       - name: Upload pytest results
         if: always()

@@ -12,7 +12,11 @@ stdlib — importing this module has zero side effects (no DB, no network).
 """
 import logging
 
-from helpers import parse_diff_to_float, fmt_diff, fmt_hashrate
+from helpers import (
+    parse_diff_to_float, fmt_diff, fmt_hashrate, safe_int, coerce_float,
+    compute_solo_probabilities, compute_pool_rental_break_even,
+    compute_lender_profitability, build_decision_matrix,
+)
 import services.names as _names
 
 log = logging.getLogger("cypher65.poll_compute")
@@ -323,3 +327,304 @@ def fiat_convert(btc_val, btc_prices):
         cur: (round(btc_val * px, 4) if px else None)
         for cur, px in btc_prices.items()
     }
+
+
+def compute_profitability(worker, net_hashrate, btc_prices, market_cache,
+                          min_plausible_price, btc_price_cache, settings):
+    """Profitability payload (3 modes: pool / solo / rental + lender).
+
+    Verbatim extraction of the ``_do_poll`` profitability block (Issue
+    #137). ``settings`` is the already-loaded settings dict (the caller
+    owns the load, so the function stays pure); ``btc_prices`` maps the
+    currency codes to their USD/BRL/EUR/GBP/JPY/KRW/CNY values;
+    ``market_cache`` is the warm hashrate-market offer cache;
+    ``min_plausible_price`` guards against unit-conversion garbage from
+    the market feed; ``btc_price_cache`` supplies the stale-while-
+    revalidate fallback for the USD lender rate.
+
+    Returns ``(profitability, cur_hr, net_hr)`` — cur_hr/net_hr are
+    hoisted before the try block so downstream readers (the network-share
+    gauge) always see well-defined values even when this compute fails.
+    """
+    profitability = {}
+    # Hoist cur_hr / net_hr BEFORE the try block so downstream readers
+    # (network_share_gauge block) always see well-defined values even if the
+    # profitability compute itself fails.
+    cur_hr = float(worker.get("hashrate")) if worker and worker.get("hashrate") else 0.0
+    net_hr = float(net_hashrate) if net_hashrate else 0.0
+    btc_usd = btc_prices.get("USD")
+    btc_brl = btc_prices.get("BRL")
+    btc_eur = btc_prices.get("EUR")
+    btc_gbp = btc_prices.get("GBP")
+    btc_jpy = btc_prices.get("JPY")
+    btc_krw = btc_prices.get("KRW")
+    btc_cny = btc_prices.get("CNY")
+    try:
+        s = settings
+        reward = coerce_float(s.get("btc_block_reward"), 3.125)
+        fee = coerce_float(s.get("btc_avg_tx_fee"), 0.05)
+        pool_fee_pct = coerce_float(s.get("pool_fee_pct"), 1.5)
+        orphan_pct = coerce_float(s.get("orphan_rate_pct"), 0.5)
+        cost_mode = s.get("cost_mode", "none")
+
+        profitability["cost_mode"] = cost_mode
+        profitability["cost_model_configured"] = cost_mode != "none"
+        profitability["cost_per_kwh"] = coerce_float(s.get('power_kwh_usd'), 0.10)
+        profitability["cost_label"] = (
+            f"${coerce_float(s.get('rental_usd_per_th_day'),0.0):.2f}/d rental"
+            if cost_mode == "rental" else
+            f"${coerce_float(s.get('power_kwh_usd'),0.10):.4f}/kWh power ({coerce_float(s.get('power_watts'),0.0):.0f}W)"
+            if cost_mode == "power" else "no cost model"
+        )
+        profitability["active_currency_val"] = s.get("active_currency", "USD")
+        profitability["pool_fee_pct"] = pool_fee_pct
+        profitability["orphan_pct"] = orphan_pct
+
+        # ── Lender market rate (Scenario D) — emitted WITHOUT a worker ──
+        # The rental market price only needs the warm hashrate-market cache
+        # (plus btc_usd for the USD conversion) — NOT the user's hashrate.
+        # Computed outside the cur_hr gate so the LEASE panel always shows the
+        # real market rate even on a worker-less / cold-address server.
+        lender_market_rate_btc = None
+        try:
+            _offers = (market_cache.get("offers") or [])
+            _real = [o for o in _offers
+                     if not getattr(o, "estimated", False)
+                     and (getattr(o, "price_per_th_day", 0) or 0) >= min_plausible_price]
+            _pool = _real or [o for o in _offers
+                              if (getattr(o, "price_per_th_day", 0) or 0) >= min_plausible_price]
+            if _pool:
+                lender_market_rate_btc = min(o.price_per_th_day for o in _pool)
+        except Exception:
+            lender_market_rate_btc = None
+        # P0-5 audit (hashmarket honesty guard): a SHA-256 rental rate is
+        # physically bounded — real market asks run ~10-50k sats/TH/d
+        # (1e-4..5e-4 BTC). A "best price" landing outside 1e-8..1e-2 is a
+        # unit-conversion bug (sats vs BTC, TH vs PH), and feeding it into
+        # lender_net_usd_per_day produced absurd lease P&L (measured live:
+        # $55,411/d for an 87 TH rig — 100× reality). Clamp + log instead of
+        # surfacing fake money.
+        if lender_market_rate_btc is not None:
+            _r = float(lender_market_rate_btc)
+            if _r < 1e-8 or _r > 1e-2:
+                log.warning("[profitability] implausible lender market rate %.6g BTC/TH/d — ignoring (unit bug?)", _r)
+                lender_market_rate_btc = None
+        if not lender_market_rate_btc and btc_usd:
+            cfg_rate_usd = coerce_float(s.get("rental_usd_per_th_day"), 0.0)
+            if cfg_rate_usd > 0:
+                lender_market_rate_btc = cfg_rate_usd / btc_usd
+        profitability["lender_market_rate_btc_per_th_day"] = (
+            round(lender_market_rate_btc, 12) if lender_market_rate_btc else None
+        )
+        # The USD market rate needs a BTC price. The live fetch may be briefly
+        # unavailable (provider 429, throttle) — fall back to the cached quote
+        # or the same hardcoded fallback the price fetch itself uses, so the
+        # LEASE panel shows the real market rate instead of '—' on a cold box.
+        _btc_conv = btc_usd
+        if not _btc_conv:
+            _cached_quote = (btc_price_cache.get("data") or {}).get("bitcoin") or {}
+            _btc_conv = _cached_quote.get("usd")  # stale-while-revalidate: último real, nunca mock
+        profitability["lender_market_rate_usd_per_th_day"] = (
+            round(lender_market_rate_btc * _btc_conv, 4)
+            if lender_market_rate_btc else None
+        )
+
+        if cur_hr > 0 and net_hr > 0:
+            share_of_network = cur_hr / net_hr
+            blocks_per_day = 144.0
+            total_reward_per_block = reward + fee
+
+            # ── Pool mining (PPS/FPPS approximated) ──
+            # Expected blocks = your_share × total_blocks
+            # Net after pool fee & orphan
+            gross_btc_per_day = share_of_network * blocks_per_day * total_reward_per_block
+            pool_net_btc_per_day = gross_btc_per_day * (1 - pool_fee_pct / 100.0) * (1 - orphan_pct / 100.0)
+
+            # ── Solo mining ──
+            # Same formula but no pool fee. Expected blocks PER YEAR = your_share × 144 × 365
+            # Solo variance is extreme: share_of_network is the per-BLOCK chance, and
+            # with ~144 blocks/day, P(≥1 block in N days) = 1 - (1 - share)^(144·N).
+            # Math extracted to helpers.compute_solo_probabilities (pure, unit-tested).
+            solo_net_btc_per_day = gross_btc_per_day * (1 - orphan_pct / 100.0)  # no pool fee
+            _solo = compute_solo_probabilities(share_of_network, blocks_per_day)
+            solo_p_day = _solo["solo_p_day"]
+            solo_p_year = _solo["solo_p_year"]
+            solo_p_5year = _solo["solo_p_5year"]
+            solo_expected_blocks_per_year = _solo["solo_expected_blocks_per_year"]
+            solo_expected_time_to_block_days = _solo["solo_expected_time_to_block_days"]
+
+            # ── Rental/power cost + break-even (pure, unit-tested) ──
+            # Math extracted to helpers.compute_pool_rental_break_even so the
+            # profitability formulas have a single source of truth.
+            ths = cur_hr / 1e12
+            _be = compute_pool_rental_break_even(
+                ths=ths,
+                pool_net_btc_per_day=pool_net_btc_per_day,
+                btc_usd=btc_usd or 0,
+                cost_mode=cost_mode,
+                rental_usd_per_th_day=coerce_float(s.get("rental_usd_per_th_day"), 0.0),
+                power_watts=coerce_float(s.get("power_watts"), 0.0),
+                power_kwh_usd=coerce_float(s.get("power_kwh_usd"), 0.0),
+            )
+            # cost_per_day is the only cost value the payload uses
+            # (rental_cost_per_day/power_cost_per_day were dead locals in the
+            # original monolith too — dropped during extraction).
+            cost_per_day = _be["cost_per_day"]
+
+            def _fiat_convert(btc_val):
+                return fiat_convert(btc_val, btc_prices)
+
+            # ── Lender (Scenario D): rent OUT your own hashrate vs mining ──
+            # Revenue = ths × market rental rate (BTC/TH/day); the locador keeps
+            # paying electricity. lender_market_rate_btc is computed above,
+            # outside the cur_hr gate (market price does not need a worker).
+            # Math extracted to helpers.compute_lender_profitability (pure).
+            lender_watts = coerce_float(s.get("power_watts"), 0.0)
+            lender_kwh_usd = coerce_float(s.get("power_kwh_usd"), 0.10)
+            lender_power_cost = (lender_watts / 1000.0) * 24.0 * lender_kwh_usd if lender_watts > 0 else 0.0
+            _lender = compute_lender_profitability(
+                ths=ths,
+                market_btc_per_th_day=lender_market_rate_btc or 0,
+                power_cost_usd_per_day=lender_power_cost,
+                pool_net_btc_per_day=pool_net_btc_per_day,
+                btc_usd=btc_usd or 0,
+            )
+            _lender_net_btc = _lender.get("lender_net_btc_per_day")
+            profitability.update({
+                "lender_net_btc_per_day": _lender["lender_net_btc_per_day"],
+                "lender_net_usd_per_day": _lender["lender_net_usd_per_day"],
+                "lender_revenue_btc_per_day": _lender["lender_revenue_btc_per_day"],
+                "lender_power_cost_usd_per_day": _lender["lender_power_cost_usd_per_day"],
+                "lender_mine_net_usd_per_day": _lender["lender_mine_net_usd_per_day"],
+                "lender_vs_mining_usd_per_day": _lender["lender_vs_mining_usd_per_day"],
+                "lender_recommendation": _lender["lender_recommendation"],
+                "lender_breakeven_btc_per_th_day": _lender["lender_breakeven_btc_per_th_day"],
+                "lender_breakeven_usd_per_th_day": _lender["lender_breakeven_usd_per_th_day"],
+                "lender_fiat_per_day": (
+                    _fiat_convert(_lender_net_btc) if _lender_net_btc is not None else {}
+                ),
+                "lender_fiat_per_month": (
+                    _fiat_convert(_lender_net_btc * 30) if _lender_net_btc is not None else {}
+                ),
+            })
+
+            # Pool mining output
+            profitability.update({
+                "share_of_network_pct": round(share_of_network * 100, 8),
+                "gross_btc_per_day": round(gross_btc_per_day, 8),
+                # Pool mode (default, what the user is using)
+                "mode": cost_mode if cost_mode != "none" else "pool",
+                "net_btc_per_day_pool": round(pool_net_btc_per_day, 8),
+                "fiat_per_day_pool": _fiat_convert(pool_net_btc_per_day),
+                "fiat_per_week_pool": _fiat_convert(pool_net_btc_per_day * 7),
+                "fiat_per_month_pool": _fiat_convert(pool_net_btc_per_day * 30),
+                "pool_net_usd_per_day": round((pool_net_btc_per_day * btc_usd) - cost_per_day, 4) if btc_usd else None,
+                "pool_net_usd_per_month": round(((pool_net_btc_per_day * btc_usd) - cost_per_day) * 30, 2) if btc_usd else None,
+                # Solo mode
+                "net_btc_per_day_solo": round(solo_net_btc_per_day, 8),
+                "fiat_per_day_solo": _fiat_convert(solo_net_btc_per_day),
+                "fiat_per_month_solo": _fiat_convert(solo_net_btc_per_day * 30),
+                "solo_p_day_pct": round(solo_p_day * 100, 8),
+                "solo_p_year_pct": round(solo_p_year * 100, 4),
+                "solo_p_5year_pct": round(solo_p_5year * 100, 2),
+                "solo_expected_blocks_per_year": round(solo_expected_blocks_per_year, 4),
+                "solo_expected_time_to_block_days": round(solo_expected_time_to_block_days, 1) if solo_expected_time_to_block_days else None,
+                # Rental mode (cost subtracted)
+                "net_btc_per_day_rental": round(pool_net_btc_per_day - (cost_per_day / (btc_usd or 1)), 8) if btc_usd else None,
+                "fiat_per_day_rental": _fiat_convert(max(0, pool_net_btc_per_day - (cost_per_day / (btc_usd or 1)))) if btc_usd else None,
+                "fiat_per_month_rental": _fiat_convert(max(0, pool_net_btc_per_day - (cost_per_day / (btc_usd or 1))) * 30) if btc_usd else None,
+                "rental_net_btc_per_day": round(pool_net_btc_per_day, 8),  # gross pool BTC
+                "rental_net_usd_per_day": round((pool_net_btc_per_day * (btc_usd or 0)) - cost_per_day, 4),
+                "rental_net_usd_per_month": round(((pool_net_btc_per_day * (btc_usd or 0)) - cost_per_day) * 30, 2),
+                # Cost info (cost_model_configured, cost_per_kwh, cost_label
+                # already set above; cost_per_day_usd is dynamic)
+                "cost_per_day_usd": round(cost_per_day, 4),
+                # Break-even: rental rate at which pool_net = rental_cost
+                # (computed by helpers.compute_pool_rental_break_even)
+                "break_even_rental_usd_per_th_day": _be["break_even_rental_usd_per_th_day"],
+                # General break-even cost per TH/day (always computed)
+                "breakeven_cost_per_th_day": _be["breakeven_cost_per_th_day"],
+                # Effective BTC/TH/s/day (marginal)
+                "effective_btc_per_th_per_day": round(
+                    (1.0 / 1e12 / net_hr) * blocks_per_day * total_reward_per_block
+                    * (1 - pool_fee_pct / 100.0) * (1 - orphan_pct / 100.0),
+                    10,
+                ),
+                # Pool fee info
+                "pool_fee_info": f"Pool fee: {pool_fee_pct}% · Orphan rate: {orphan_pct}% · Reward: {reward}+{fee} BTC/block",
+                # Disclaimer
+                "disclaimer": "Estimates based on current hashrate, network difficulty, and BTC price. Actual results vary significantly due to variance, pool luck, and difficulty changes.",
+            })
+            # P0-2: unified solo vs pool vs lease Decision Matrix (pure agg).
+            # Aggregates the per-mode numbers already computed above into one
+            # capital-allocation comparison for the market module panel.
+            profitability["decision_matrix"] = build_decision_matrix(
+                pool_net_usd_per_day=profitability.get("pool_net_usd_per_day"),
+                solo_expected_time_days=profitability.get("solo_expected_time_to_block_days"),
+                solo_p_year_pct=profitability.get("solo_p_year_pct"),
+                lender_net_usd_per_day=profitability.get("lender_net_usd_per_day"),
+                lender_recommendation=profitability.get("lender_recommendation"),
+                breakeven_cost_per_th_day=profitability.get("breakeven_cost_per_th_day"),
+            )
+        else:
+            profitability["unavailable_reason"] = "no hashrate or network hashrate"
+    except Exception as e:
+        import traceback as _tb
+        log.warning("[profitability] compute error: %s\n%s", e, _tb.format_exc())
+    return profitability, cur_hr, net_hr
+
+
+def build_milestones(worker, timeline_state):
+    """Session milestones (share counts + best-diff + uptime tiers).
+
+    Verbatim extraction of the ``_do_poll`` milestones block (Issue #137).
+    The milestones are re-derived from session counters each poll — no DB
+    table needed. Returns a list of {"tier", "label", "value"} dicts.
+    """
+    milestones = []
+    try:
+        sc = timeline_state["session_share_count"]
+        milestones_def = [
+            (sc >= 100,  "BRONZE",  f"{sc} shares this session"),
+            (sc >= 1000, "SILVER",  f"{sc:,} shares this session"),
+            (sc >= 10000, "GOLD",    f"{sc:,} shares this session"),
+            (worker and parse_diff_to_float(worker.get("bestDifficulty","")) >= 1e9, "BRONZE", "best diff ≥ 1 G"),
+            (worker and parse_diff_to_float(worker.get("bestDifficulty","")) >= 1e12, "SILVER", "best diff ≥ 1 T"),
+            (worker and parse_diff_to_float(worker.get("bestDifficulty","")) >= 1e15, "GOLD",   "best diff ≥ 1 P"),
+            (worker and safe_int(worker.get("uptime", 0)) >= 86400,   "BRONZE", "uptime ≥ 1 day"),
+            (worker and safe_int(worker.get("uptime", 0)) >= 7*86400, "SILVER", "uptime ≥ 7 days"),
+            (worker and safe_int(worker.get("uptime", 0)) >= 30*86400,"GOLD",   "uptime ≥ 30 days"),
+        ]
+        for ok, tier, label in milestones_def:
+            if ok:
+                milestones.append({"tier": tier, "label": label, "value": label})
+    except Exception:
+        pass
+    return milestones
+
+
+def compute_event_stats(timeline_state, now):
+    """Session + rolling event stats (pure base shape).
+
+    Verbatim extraction of the ``_do_poll`` event-stats head (Issue #137).
+    Returns ``(event_stats, hour_ago, day_ago)`` — the DB-backed counts
+    (shares_last_hour/day, best_diffs_last_day) are computed by the caller
+    and merged via ``event_stats.update`` to keep this function network/DB
+    free and unit-testable.
+    """
+    hour_ago = now - 3600
+    day_ago = now - 86400
+    session_share_count = timeline_state["session_share_count"]
+    session_best_bumps = timeline_state["session_best_diff_bumps"]
+    sph = 0.0
+    hist = timeline_state["share_submit_history"]
+    if len(hist) >= 2 and (hist[-1] - hist[0]) > 0:
+        sph = (len(hist) - 1) * (3600.0 / (hist[-1] - hist[0]))
+    event_stats = {
+        "session_share_count": session_share_count,
+        "session_best_diff_bumps": session_best_bumps,
+        "rolling_shares_per_hour": round(sph, 2),
+        "last_submit_ts": timeline_state["last_submit_ts"],
+        "last_share_age_s": (now - timeline_state["last_submit_ts"]) if timeline_state["last_submit_ts"] else None,
+    }
+    return event_stats, hour_ago, day_ago
