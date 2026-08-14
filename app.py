@@ -45,6 +45,7 @@ from services.user_polling import (
     UserPollingWorker, _build_snapshot, start_poll_pool as _start_poll_pool,
     start_rentals_sweep as _start_rentals_sweep,
     POLL_POOL as _POLL_POOL,
+    auto_exclude_alert_counters as _auto_exclude_alert_counters,
 )
 from agents.opportunity_engine import scan as _opp_scan, build_response as _opp_build_response
 from agents import solo_mining_advisor as _opp_advisor  # monkeypatch-safe: accessed dynamically in route
@@ -2905,14 +2906,20 @@ def api_admin_sessions():
 
     The ``pool`` block exposes PollWorkerPool health: active sessions,
     polls/sec (sliding 60s window), ready-queue depth, scheduled heap,
-    live worker threads, and total poll/error counters — everything an
-    operator needs to spot a thundering-herd or a stuck pool at a glance.
+    live worker threads, total poll/error counters, and auto_exclude_alerts
+    (auto-exclusion alerts dispatched by path: sweep vs panel) — everything
+    an operator needs to spot a thundering-herd or a stuck pool at a glance.
     """
     sessions = _session_manager.get_all_sessions()
+    pool = _POLL_POOL.stats()  # never raises, even on an unstarted pool
+    # Auto-exclude alert observability (Issue #112): how many alertas the
+    # pilot dispatched per path (sweep do pool vs detail do painel) — same
+    # in-memory lifecycle as the pool counters.
+    pool["auto_exclude_alerts"] = _auto_exclude_alert_counters()
     return jsonify({
         "count": len(sessions),
         "sessions": [s.to_dict() for s in sessions],
-        "pool": _POLL_POOL.stats(),  # never raises, even on an unstarted pool
+        "pool": pool,
     })
 
 
@@ -6220,7 +6227,8 @@ def api_rentals_detail(tenant_id: str = ""):
         if rig_analysis.get("auto_excluded_now") and rig_id:
             try:
                 from services.user_polling import dispatch_auto_exclude_alerts
-                n_alert = dispatch_auto_exclude_alerts(tenant_id, [rig_id])
+                n_alert = dispatch_auto_exclude_alerts(tenant_id, [rig_id],
+                                                       path="panel")
                 if n_alert:
                     log.info("[rentals] panel auto-exclude alert: %d dispatched",
                              n_alert)

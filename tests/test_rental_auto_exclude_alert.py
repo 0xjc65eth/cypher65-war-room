@@ -198,6 +198,52 @@ def test_restore_then_re_exclude_re_alerts(db, clock, monkeypatch):
     assert len(fired["push"]) == 2
 
 
+def test_auto_exclude_alert_counters_by_path(db, clock, monkeypatch):
+    """dispatch bumps per-path counters — sweep (default) vs panel — and
+    auto_exclude_alert_counters() returns {sweep, panel, total}. The dedup
+    claim is shared across paths (same event called from panel after sweep
+    does NOT double-count)."""
+    fired = _capture_fires(monkeypatch)
+    save_setting("rental_auto_exclude_alert", "1")
+    _seed([_hr("r1", "rig-b", _dt_str(NOW - 2 * 86400), 60.0),
+           _hr("r2", "rig-b", _dt_str(NOW - 86400), 55.0)])
+    rp.add_rig_to_auto_blacklist("rig-b")
+    # Hermetic start: module counters are process-wide.
+    _up._AUTO_EXCLUDE_ALERTS_BY_PATH.clear()
+    _up._AUTO_EXCLUDE_ALERTS_BY_PATH.update({"sweep": 0, "panel": 0})
+
+    # Sweep path (default) fires once; panel path on the SAME event → dedup.
+    assert _up.dispatch_auto_exclude_alerts("", ["rig-b"]) == 1
+    assert _up.dispatch_auto_exclude_alerts("", ["rig-b"], path="panel") == 0
+    assert _up.auto_exclude_alert_counters() == {"sweep": 1, "panel": 0,
+                                                 "total": 1}
+
+    # Restore + re-exclude → NEW event, dispatched via the PANEL path.
+    assert rp.remove_rig_from_blacklist("rig-b") is True
+    clock["now"] = NOW + 86400
+    _seed([_hr("r3", "rig-b", _dt_str(NOW + 86400), 50.0)])
+    assert rp.evaluate_auto_blacklist() == ["rig-b"]
+    assert _up.dispatch_auto_exclude_alerts("", ["rig-b"], path="panel") == 1
+    assert _up.auto_exclude_alert_counters() == {"sweep": 1, "panel": 1,
+                                                 "total": 2}
+
+
+def test_auto_exclude_alert_counters_ignore_noop(db, clock, monkeypatch):
+    """No alerts dispatched (setting off / dedup) → counters untouched;
+    snapshot is always well-formed with a total."""
+    _capture_fires(monkeypatch)
+    _up._AUTO_EXCLUDE_ALERTS_BY_PATH.clear()
+    _up._AUTO_EXCLUDE_ALERTS_BY_PATH.update({"sweep": 0, "panel": 0})
+    _seed([_hr("r1", "rig-b", _dt_str(NOW - 2 * 86400), 60.0),
+           _hr("r2", "rig-b", _dt_str(NOW - 86400), 55.0)])
+    rp.add_rig_to_auto_blacklist("rig-b")
+    # Opt-in off → 0 dispatched, 0 bumped.
+    assert _up.dispatch_auto_exclude_alerts("", ["rig-b"]) == 0
+    assert _up.dispatch_auto_exclude_alerts("", [], path="panel") == 0
+    assert _up.auto_exclude_alert_counters() == {"sweep": 0, "panel": 0,
+                                                 "total": 0}
+
+
 # ── _rentals_sweep_once (real end-to-end) ─────────────────────────────────
 
 def test_sweep_dispatches_auto_exclude_alert(db, clock, monkeypatch):
@@ -352,7 +398,7 @@ def _mock_detail_route(monkeypatch, auto_excluded_now=False,
                                "exclusions": exclusions or []})
     monkeypatch.setattr(
         _up, "dispatch_auto_exclude_alerts",
-        lambda t, r: (dispatched.append((t, list(r))) or 1))
+        lambda t, r, path="sweep": (dispatched.append((t, list(r), path)) or 1))
     return dispatched
 
 

@@ -215,9 +215,47 @@ def dispatch_reco_worse_alerts(tenant_id: str, alerts: list):
         log.warning("[rentals] reco-worse alert dispatch error: %s", e)
 
 
-def dispatch_auto_exclude_alerts(tenant_id: str, rig_ids: list) -> int:
+# ── Auto-exclude alert observability (Issue #112) ──────────────────────
+# Counters of auto-exclude alerts dispatched BY PATH (sweep vs panel) —
+# in-memory like the pool counters (reset on restart; persistent history is
+# tracked in Issue #17). Exposed via /api/admin/sessions → pool block.
+_AUTO_EXCLUDE_ALERT_LOCK = threading.Lock()
+_AUTO_EXCLUDE_ALERTS_BY_PATH = {"sweep": 0, "panel": 0}
+
+
+def auto_exclude_alert_counters() -> dict:
+    """Snapshot of auto-exclude alerts dispatched by path (never raises).
+
+    Returns {"sweep", "panel", "total"} — total is the live sum, so it
+    always matches the parts even if a caller ever bumps an unknown path.
+    """
+    with _AUTO_EXCLUDE_ALERT_LOCK:
+        c = dict(_AUTO_EXCLUDE_ALERTS_BY_PATH)
+    c["total"] = c.get("sweep", 0) + c.get("panel", 0)
+    return c
+
+
+def _bump_auto_exclude_alert_counter(path: str, n: int) -> None:
+    """Increment the per-path counter by n (n <= 0 is a no-op).
+
+    Paths are whitelisted: only the two real call sites exist (sweep/panel),
+    and a typo'd path must never create a counter that is invisible in the
+    live total (total = sweep + panel).
+    """
+    if path not in ("sweep", "panel") or n <= 0:
+        return
+    with _AUTO_EXCLUDE_ALERT_LOCK:
+        _AUTO_EXCLUDE_ALERTS_BY_PATH[path] += n
+
+
+def dispatch_auto_exclude_alerts(tenant_id: str, rig_ids: list,
+                                 path: str = "sweep") -> int:
     """Fire webhook + push for rigs the sweep JUST auto-excluded (opt-in via
     rental_auto_exclude_alert). Returns the number of alerts dispatched.
+
+    ``path`` labels the caller for observability ("sweep" pool scheduler vs
+    "panel" detail route) — it feeds the per-path counters exposed in
+    /api/admin/sessions → pool.auto_exclude_alerts (Issue #112).
 
     The exclusion is DEFAULT protection; only the ALERT is gated by the
     tenant setting (build_auto_exclude_alert returns None when off). The dedup
@@ -256,6 +294,8 @@ def dispatch_auto_exclude_alerts(tenant_id: str, rig_ids: list) -> int:
             sent += 1
         except Exception as e:
             log.warning("[rentals] auto-exclude alert dispatch error: %s", e)
+    if sent:
+        _bump_auto_exclude_alert_counter(path, sent)
     return sent
 
 
