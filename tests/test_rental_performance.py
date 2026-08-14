@@ -941,6 +941,58 @@ def test_build_rental_recommendations_empty_without_track_record(tmp_path, monke
     monkeypatch.setenv("DB_PATH", str(tmp_path / "reco2.sqlite"))
     rec = rp.build_rental_recommendations(tenant_id="t-none")
     assert rec["top"] == [] and rec["tracked"] == 0
+    assert rec["avoid"] == [] and rec["avoid_count"] == 0
+
+
+def test_build_rental_recommendations_avoid_detailed_list(tmp_path, monkeypatch):
+    """The avoid list carries the PILOT'S FULL CASE per grade-F rig — same
+    card schema as top (name, median/worst, cost, trend, last rental),
+    sorted worst-first (lowest median delivery), and excludes rigs already
+    blacklisted (nothing left to accept)."""
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "reco-avoid.sqlite"))
+    rows = [
+        # Two grade-F rigs with DIFFERENT severity (rigF2 is worse).
+        _reco_hist_row("0", "rigF1", "Rig F1", 64, 690, "2026-07-20 10:00:00"),
+        _reco_hist_row("1", "rigF1", "Rig F1", 60, 700, "2026-07-21 10:00:00"),
+        _reco_hist_row("2", "rigF1", "Rig F1", 58, 710, "2026-07-22 10:00:00"),
+        _reco_hist_row("3", "rigF2", "Rig F2", 55, 800, "2026-07-20 10:00:00"),
+        _reco_hist_row("4", "rigF2", "Rig F2", 50, 810, "2026-07-21 10:00:00"),
+        _reco_hist_row("5", "rigF2", "Rig F2", 48, 820, "2026-07-22 10:00:00"),
+        # Already blacklisted F rig → must NOT appear (operator already acted).
+        _reco_hist_row("6", "rigF3", "Rig F3", 40, 900, "2026-07-20 10:00:00"),
+        _reco_hist_row("7", "rigF3", "Rig F3", 42, 910, "2026-07-21 10:00:00"),
+        _reco_hist_row("8", "rigF3", "Rig F3", 45, 920, "2026-07-22 10:00:00"),
+        # A good rig (grade A) must land in top, never in avoid.
+        _reco_hist_row("10", "rigA", "Rig A", 97, 510, "2026-07-19 10:00:00"),
+        _reco_hist_row("11", "rigA", "Rig A", 98, 515, "2026-07-20 10:00:00"),
+        _reco_hist_row("12", "rigA", "Rig A", 96, 512, "2026-07-21 10:00:00"),
+        _reco_hist_row("13", "rigA", "Rig A", 97, 508, "2026-07-22 10:00:00"),
+    ]
+    assert rp.save_rental_history(rows, tenant_id="t-avoid") is True
+    monkeypatch.setattr(rp, "get_rig_blacklist", lambda tenant_id="": ["rigF3"])
+    monkeypatch.setattr(rp, "_fetch_market_offers", lambda: [])
+
+    rec = rp.build_rental_recommendations(tenant_id="t-avoid")
+    avoid = rec["avoid"]
+    assert rec["avoid_count"] == 2
+    assert len(avoid) == 2
+    # Worst first: rigF2 (median ~50) before rigF1 (median ~60).
+    assert [a["rig_id"] for a in avoid] == ["rigF2", "rigF1"]
+    # Full card schema — the operator can decide without opening the modal.
+    for a in avoid:
+        assert a["grade"] == "F"
+        assert a["name"]
+        assert a["median_pct"] is not None
+        assert a["worst_pct"] is not None
+        assert a["samples"] >= 3
+        assert a["avg_cost_sats_per_thh"] is not None
+        assert a["last_rental"]
+        assert "score" in a
+    # Blacklisted rigF3 excluded; the good rigA never lands in avoid.
+    assert all(a["rig_id"] != "rigF3" for a in avoid)
+    assert all(a["rig_id"] != "rigA" for a in avoid)
+    # And the blacklisted rig is not double-counted in top either.
+    assert all(t["rig_id"] != "rigF3" for t in rec["top"])
 
 
 def _reset_trend_cache():

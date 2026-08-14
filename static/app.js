@@ -3455,14 +3455,17 @@ function renderAccount(acct) {
     const wrap = document.getElementById('rentals-reco');
     if (!wrap || !_rentalsData) return;
     const rec = _rentalsData.recommendations;
-    if (!rec || !rec.top || !rec.top.length) { wrap.hidden = true; return; }
+    const hasTop = !!(rec && rec.top && rec.top.length);
+    const hasAvoid = !!(rec && rec.avoid && rec.avoid.length);
+    if (!hasTop && !hasAvoid) { wrap.hidden = true; return; }
     wrap.hidden = false;
     const meta = document.getElementById('rentals-reco-meta');
     if (meta) {
       meta.textContent = rec.tracked + ' rigs rastreados' +
         (rec.avoid_count ? ' · ' + rec.avoid_count + ' evitar' : '');
     }
-    document.getElementById('rentals-reco-cards').innerHTML = rec.top.map(t => {
+    const topEl = document.getElementById('rentals-reco-cards');
+    if (topEl) topEl.innerHTML = (rec.top || []).map(t => {
       const vMkt = t.vs_market_pct != null
         ? (t.vs_market_pct <= 0 ? '✓ ' : '') + (t.vs_market_pct > 0 ? '+' : '') + Number(t.vs_market_pct).toFixed(0) + '% vs mkt'
         : '';
@@ -3479,6 +3482,26 @@ function renderAccount(acct) {
         '<span>MEDIAN</span><strong>' + (t.median_pct != null ? Number(t.median_pct).toFixed(1) + '%' : '—') + '</strong>' +
         '<span>COST</span><strong>' + (t.avg_cost_sats_per_thh != null ? Number(t.avg_cost_sats_per_thh).toFixed(0) + ' st' : '—') + '</strong></div>' +
         '<div class="rentals-reco__row rentals-reco__row--sub"><span>' + escapeHtml(vMkt || '') + '</span><span>' + samples + '</span>' + trend + '</div>' +
+        '</div>';
+    }).join('');
+    // Pilot's avoid case — grade-F rigs with a ONE-CLICK accept (blacklist).
+    const avoidHead = document.getElementById('rentals-avoid-head');
+    if (avoidHead) avoidHead.hidden = !hasAvoid;
+    const avoidEl = document.getElementById('rentals-avoid-cards');
+    if (avoidEl) avoidEl.innerHTML = (rec.avoid || []).map(t => {
+      const trend = t.trend_pct != null
+        ? '<span class="rentals-reco__trend ' + (t.trend_pct >= 0 ? 'is-good' : 'is-bad') + '">' +
+          (t.trend_pct >= 0 ? '▲' : '▼') + Math.abs(Number(t.trend_pct)).toFixed(1) + '%</span>' : '';
+      const badge = t.grade
+        ? '<span class="rentals-trust__badge rentals-trust__badge--' + escapeHtml(String(t.grade)) + '">' + escapeHtml(String(t.grade)) + '</span>' : '';
+      const samples = t.samples != null ? t.samples + ' amostras' : '';
+      return '<div class="rentals-reco__card rentals-reco__card--avoid" data-rig-id="' + escapeHtml(String(t.rig_id != null ? t.rig_id : '')) + '" data-rig-name="' + escapeHtml(String(t.name || '')) + '" title="clique p/ ver o track record do rig ' + escapeHtml(String(t.rig_id)) + '">' +
+        '<div class="rentals-reco__name">' + escapeHtml(String(t.name || t.rig_id)) + badge + '</div>' +
+        '<div class="rentals-reco__row"><span>MEDIAN</span><strong>' + (t.median_pct != null ? Number(t.median_pct).toFixed(1) + '%' : '—') + '</strong>' +
+        '<span>WORST</span><strong>' + (t.worst_pct != null ? Number(t.worst_pct).toFixed(1) + '%' : '—') + '</strong>' +
+        '<span>COST</span><strong>' + (t.avg_cost_sats_per_thh != null ? Number(t.avg_cost_sats_per_thh).toFixed(0) + ' st' : '—') + '</strong></div>' +
+        '<div class="rentals-reco__row rentals-reco__row--sub"><span>' + samples + '</span>' + trend + '</div>' +
+        '<button type="button" class="btn btn--mini btn--danger rentals-reco__blacklist" data-rig-id="' + escapeHtml(String(t.rig_id != null ? t.rig_id : '')) + '" title="aceitar a sugestão do piloto: nunca alugar este rig de novo">⛔ BLACKLISTAR</button>' +
         '</div>';
     }).join('');
   }
@@ -4672,6 +4695,37 @@ function renderAccount(acct) {
       const card = e.target.closest ? e.target.closest('.rentals-reco__card') : null;
       if (!card) return;
       openRigTrackRecord(card.getAttribute('data-rig-id'), card.getAttribute('data-rig-name'));
+    });
+    // Pilot's AVOID cards: the BLACKLISTAR button accepts the suggestion in
+    // one click (POST blacklist → re-render: the card disappears and the
+    // accepted ledger gains the entry). Card body still opens the track
+    // record. Delegated — the cards are dynamic innerHTML.
+    const avoidCards = document.getElementById('rentals-avoid-cards');
+    if (avoidCards) avoidCards.addEventListener('click', async (e) => {
+      const bl = e.target.closest ? e.target.closest('.rentals-reco__blacklist') : null;
+      if (bl) {
+        e.stopPropagation();
+        const rid = bl.getAttribute('data-rig-id');
+        if (!rid) return;
+        bl.disabled = true;
+        bl.textContent = '…';
+        try {
+          const r = await authFetch('/api/rentals/rig/blacklist', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ rig_id: rid }),
+          });
+          if (r.ok) loadRentals();  // avoid shrinks, accepted grows
+          else { bl.disabled = false; bl.textContent = '⛔ BLACKLISTAR'; }
+        } catch (err) {
+          // Fail-closed, but never leave the button stuck on '…'.
+          bl.disabled = false;
+          bl.textContent = '⛔ BLACKLISTAR';
+        }
+        return;
+      }
+      const card = e.target.closest ? e.target.closest('.rentals-reco__card--avoid') : null;
+      if (card) openRigTrackRecord(card.getAttribute('data-rig-id'), card.getAttribute('data-rig-name'));
     });
     // Accepted-recommendation cards (dynamic innerHTML — delegated listener)
     // → rig track record modal, same flow as the reco cards.

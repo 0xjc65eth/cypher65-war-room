@@ -221,3 +221,71 @@ def test_list_route_carries_accepted_recos(rclient, monkeypatch):
     assert set(recos.keys()) == {"count", "accepted"}
     assert isinstance(recos["accepted"], list)
     _app_module._RENTALS_CACHE.clear()
+
+
+def test_list_route_carries_detailed_avoid(rclient, monkeypatch):
+    """GET /api/rentals exposes the pilot's detailed avoid list — grade-F rigs
+    with the full card schema (the operator accepts the suggestion in one
+    click from the panel)."""
+    _app_module._RENTALS_CACHE.clear()
+    monkeypatch.setattr(
+        _app_module._rental_perf, "fetch_mrr_rentals",
+        lambda rtype="renter", history=False, limit=50, tenant_id="": {
+            "success": True, "needs_auth": False, "rentals": [], "total": 0})
+    monkeypatch.setattr(
+        _app_module._rental_perf, "fetch_braiins_contracts",
+        lambda tenant_id="": {"success": True, "needs_auth": False,
+                              "contracts": []})
+    monkeypatch.setattr(
+        _app_module._rental_perf, "get_rig_blacklist",
+        lambda tenant_id="": [])
+    monkeypatch.setattr(
+        _app_module._rental_perf, "get_auto_blacklist",
+        lambda tenant_id="": [])
+    # Seed a grade-F rig into the local track record (tenant-scoped) so the
+    # recommendation engine has a real avoid case to expose.
+    rp.save_rental_history([
+        {"provider": "mrr", "bucket": "renter", "rental_id": "ra1",
+         "rig_id": "avoid-rig-1",
+         "rig_name": "Avoider S19", "start": "2026-07-20 10:00:00",
+         "end": None, "percent": 62, "avg_th": 100.0, "advertised_th": 100.0,
+         "cost_sats_per_thh": 700.0, "length_hours": 1.0,
+         "delivered_thh": 100.0, "paid_sats": 70000},
+        {"provider": "mrr", "bucket": "renter", "rental_id": "ra2",
+         "rig_id": "avoid-rig-1",
+         "rig_name": "Avoider S19", "start": "2026-07-21 10:00:00",
+         "end": None, "percent": 58, "avg_th": 100.0, "advertised_th": 100.0,
+         "cost_sats_per_thh": 710.0, "length_hours": 1.0,
+         "delivered_thh": 100.0, "paid_sats": 71000},
+        {"provider": "mrr", "bucket": "renter", "rental_id": "ra3",
+         "rig_id": "avoid-rig-1",
+         "rig_name": "Avoider S19", "start": "2026-07-22 10:00:00",
+         "end": None, "percent": 56, "avg_th": 100.0, "advertised_th": 100.0,
+         "cost_sats_per_thh": 720.0, "length_hours": 1.0,
+         "delivered_thh": 100.0, "paid_sats": 72000},
+    ], tenant_id="default")
+    try:
+        resp = rclient.get("/api/rentals")
+        assert resp.status_code == 200
+        rec = resp.get_json().get("recommendations") or {}
+        assert "avoid" in rec
+        assert rec["avoid_count"] == len(rec["avoid"])
+        ids = [a.get("rig_id") for a in rec["avoid"]]
+        assert "avoid-rig-1" in ids
+        card = next(a for a in rec["avoid"] if a["rig_id"] == "avoid-rig-1")
+        assert card["grade"] == "F"
+        assert card["median_pct"] is not None
+        assert card["worst_pct"] is not None
+        assert card["avg_cost_sats_per_thh"] is not None
+        assert card["last_rental"]
+    finally:
+        # Clean up the seeded rows — the route test shares the app DB.
+        try:
+            conn = _app_module._rental_perf.get_db()
+            c = conn.cursor()
+            c.execute("DELETE FROM rental_history WHERE rig_id=?", ("avoid-rig-1",))
+            conn.commit()
+            conn.close()
+        except Exception:
+            pass
+        _app_module._RENTALS_CACHE.clear()

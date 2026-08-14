@@ -5298,6 +5298,15 @@ body.module-mode .tab-pane:not(.active) { display: none; }
 /* Click-first: reco cards are buttons (open the rig track record modal). */
 .rentals-reco__card--clickable { cursor: pointer; transition: border-color .15s ease, transform .15s ease, background .15s ease; }
 .rentals-reco__card--clickable:hover { border-color: var(--gold, #ffd700); background: rgba(255,215,0,0.06); transform: translateY(-1px); }
+/* Pilot's AVOID cards (grade F) — red framing + one-click blacklist button.
+   Same card grid/schema as the top recs, but the operator can ACT on the
+   suggestion straight from the card (accept = blacklist → ledger entry). */
+.rentals-avoid__head { font-size: 8px; letter-spacing: 1px; font-family: 'JetBrains Mono',monospace; color: var(--red, #ff1744); margin: 10px 0 6px; display: flex; justify-content: space-between; align-items: center; }
+.rentals-avoid__head .rentals-reco__meta { color: var(--text-tertiary); letter-spacing: 0; }
+.rentals-reco__card--avoid { border-color: rgba(255,23,68,0.45); background: rgba(255,23,68,0.05); cursor: pointer; transition: border-color .15s ease, transform .15s ease, background .15s ease; }
+.rentals-reco__card--avoid:hover { border-color: var(--red, #ff1744); background: rgba(255,23,68,0.10); transform: translateY(-1px); }
+.rentals-reco__blacklist { margin-top: 6px; width: 100%; }
+.rentals-reco__blacklist:disabled { opacity: .55; cursor: wait; }
 /* Rentals: accepted recommendations (rigs blacklisted after the pilot
    flagged them) + the delivery outcome afterwards. */
 .rentals-accepted { margin: 10px 0 4px; border: 1px solid rgba(255,215,0,0.22); border-radius: 4px; padding: 8px; background: rgba(255,215,0,0.03); }
