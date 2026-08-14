@@ -5358,6 +5358,15 @@ body.module-mode .tab-pane:not(.active) { display: none; }
 .admin-autoex__tenant { color: var(--cyan, #06d6f0); font-size: 8px; font-family: 'JetBrains Mono',monospace; }
 .admin-autoex__sub { margin-top: 3px; font-size: 8px; font-family: 'JetBrains Mono',monospace; color: var(--text-tertiary); }
 .admin-autoex__cause { margin-top: 4px; font-size: 8px; color: var(--text-secondary); font-family: 'JetBrains Mono',monospace; }
+.admin-autoex__agg { margin-top: 10px; display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.admin-autoex__agg-col { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.admin-autoex__agg-head { font-size: 8px; letter-spacing: 1px; font-family: 'JetBrains Mono',monospace; color: var(--text-tertiary); }
+.admin-autoex__agg-list { display: flex; flex-direction: column; gap: 3px; }
+.admin-autoex__agg-row { position: relative; overflow: hidden; border: 1px solid var(--border-subtle, rgba(255,255,255,0.10)); border-radius: 4px; padding: 5px 7px; background: rgba(186,133,224,0.03); }
+.admin-autoex__agg-bar { position: absolute; inset: 0; width: 0; z-index: 0; background: linear-gradient(90deg, rgba(255,23,68,0.16), rgba(186,133,224,0.14)); }
+.admin-autoex__agg-bar--rule { background: linear-gradient(90deg, rgba(255,160,0,0.15), rgba(6,214,240,0.12)); }
+.admin-autoex__agg-info { position: relative; z-index: 1; display: flex; flex-direction: column; gap: 1px; }
+.admin-autoex__agg-col--full { grid-column: 1 / -1; }
 /* Rentals: provider ranking grid (click → list tab) */
 .rentals-rank { margin: 10px 0 4px; border: 1px solid var(--border-subtle, rgba(255,255,255,0.10)); border-radius: 4px; padding: 8px; background: rgba(255,255,255,0.015); }
 .rentals-rank__head { font-size: 8px; letter-spacing: 1px; font-family: 'JetBrains Mono',monospace; color: var(--purple, #ba85e0); margin-bottom: 6px; }

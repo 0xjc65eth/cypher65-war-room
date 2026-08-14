@@ -4760,7 +4760,14 @@ def api_admin_rentals_accepted_recos():
         worse_ratio=request.args.get("worse_ratio", 0.5, type=float))
     # Auto-exclusion history (global, WHEN + CAUSE): every rig the pilot
     # auto-excluded across ALL tenants with the snapshot + rule that fired.
-    payload["auto_exclusions"] = _rental_perf.admin_auto_exclusion_history(days=days)
+    hist = _rental_perf.admin_auto_exclusion_history(days=days)
+    payload["auto_exclusions"] = hist
+    # Auto-exclusion CONCENTRATION (padrão global do piloto): grouping by
+    # tenant + by régua (floor/mín) + systemic rigs — aggregated from the
+    # SAME history pass above (zero drift, ONE audit pass, not two).
+    payload["auto_exclusion_aggregates"] = _rental_perf._aggregate_exclusions(
+        hist.get("exclusions") or [])
+    payload["auto_exclusion_aggregates"]["days"] = days if days else None
     return jsonify(payload)
 
 

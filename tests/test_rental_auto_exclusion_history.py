@@ -185,6 +185,99 @@ def test_admin_auto_exclusion_history_days_window(db, clock):
     assert rp.admin_auto_exclusion_history(days=30)["count"] == 0
 
 
+# ── admin_auto_exclusion_aggregates (padrão global do piloto) ─────────────
+
+def test_admin_auto_exclusion_aggregates_by_tenant(db, clock):
+    """by_tenant groups the global exclusions: who triggers the pilot most,
+    sorted by count desc, with pct/rigs/top_grade/delivery avg."""
+    _seed([_hr("a1", "rig-a", _dt_str(NOW - 3 * 86400), 60.0)])
+    _auto_exclude("rig-a")
+    _seed([_hr("b1", "rig-b", _dt_str(NOW - 2 * 86400), 55.0),
+           _hr("b2", "rig-c", _dt_str(NOW - 86400), 50.0)], tenant_id="tenant-a")
+    _auto_exclude("rig-b", tenant_id="tenant-a")
+    _auto_exclude("rig-c", tenant_id="tenant-a")
+
+    agg = rp.admin_auto_exclusion_aggregates()
+    assert agg["count"] == 3
+    assert agg["days"] is None
+    tenants = agg["by_tenant"]
+    assert [t["tenant_id"] for t in tenants] == ["tenant-a", "default"]
+    ta = tenants[0]
+    assert ta["count"] == 2
+    assert round(ta["pct"], 1) == 66.7
+    assert ta["rigs"] == 2
+    assert round(ta["delivery_avg_pct"], 1) == 52.5
+    de = tenants[1]
+    assert de["tenant_id"] == "default"
+    assert de["count"] == 1
+    assert round(de["pct"], 1) == 33.3
+    assert de["rigs"] == 1
+
+
+def test_admin_auto_exclusion_aggregates_by_rule(db, clock):
+    """by_rule groups by the vigente régua (floor/min): how aggressive each
+    tenant's rule is, with tenant count + avg delivery."""
+    from services.settings import save_setting
+    save_setting("rental_auto_blacklist_grade", "D", tenant_id="t-rule")
+    save_setting("rental_auto_blacklist_min_samples", "3", tenant_id="t-rule")
+    _seed([_hr("r1", "rig-d", _dt_str(NOW - 86400), 70.0)], tenant_id="t-rule")
+    _auto_exclude("rig-d", tenant_id="t-rule")
+    _seed([_hr("a1", "rig-a", _dt_str(NOW - 86400), 60.0)])
+    _auto_exclude("rig-a")
+
+    rules = rp.admin_auto_exclusion_aggregates()["by_rule"]
+    by = {(r["grade_floor"], r["min_samples"]): r for r in rules}
+    assert set(by) == {("D", 3), ("F", 2)}
+    assert by[("D", 3)]["count"] == 1
+    assert by[("D", 3)]["tenants"] == 1
+    assert by[("D", 3)]["delivery_avg_pct"] == 70.0
+    assert by[("F", 2)]["count"] == 1
+    assert by[("F", 2)]["tenants"] == 1
+    # Aggressiveness is visible: D/3 fired for a 70% rig (would NOT fire
+    # under the default F/2 rule) — the régua snapshot is per-tenant.
+    assert by[("D", 3)]["pct"] == by[("F", 2)]["pct"] == 50.0
+
+
+def test_admin_auto_exclusion_aggregates_top_rigs_multi_tenant(db, clock):
+    """top_rigs surfaces SYSTEMIC-problem rigs: the SAME rig auto-excluded in
+    2+ tenants (single-tenant exclusions are noise and stay out)."""
+    _seed([_hr("a1", "rig-x", _dt_str(NOW - 3 * 86400), 60.0)])
+    _auto_exclude("rig-x")
+    _seed([_hr("b1", "rig-x", _dt_str(NOW - 2 * 86400), 55.0)], tenant_id="tenant-a")
+    _auto_exclude("rig-x", tenant_id="tenant-a")
+    _seed([_hr("c1", "rig-solo", _dt_str(NOW - 86400), 50.0)], tenant_id="tenant-b")
+    _auto_exclude("rig-solo", tenant_id="tenant-b")
+
+    top = rp.admin_auto_exclusion_aggregates()["top_rigs"]
+    assert len(top) == 1
+    assert top[0]["rig_id"] == "rig-x"
+    assert top[0]["tenant_count"] == 2
+    assert top[0]["total_count"] == 2
+    assert sorted(top[0]["tenants"]) == ["default", "tenant-a"]
+    assert top[0]["last_ts"] > 0
+
+
+def test_admin_auto_exclusion_aggregates_days_window(db, clock):
+    """The days window is shared with the history (same pass → zero drift)."""
+    _seed([_hr("a1", "rig-a", _dt_str(NOW - 86400), 60.0)])
+    _auto_exclude("rig-a")
+    assert rp.admin_auto_exclusion_aggregates(days=30)["count"] == 1
+    clock["now"] = NOW + 40 * 86400
+    agg = rp.admin_auto_exclusion_aggregates(days=30)
+    assert agg["count"] == 0
+    assert agg["by_tenant"] == []
+    assert agg["by_rule"] == []
+    assert agg["top_rigs"] == []
+    assert agg["days"] == 30
+
+
+def test_admin_auto_exclusion_aggregates_empty(db, clock):
+    """Empty ledger → zeroed shape, never raises."""
+    agg = rp.admin_auto_exclusion_aggregates()
+    assert agg == {"count": 0, "by_tenant": [], "by_rule": [],
+                   "top_rigs": [], "days": None}
+
+
 # ── Routes ────────────────────────────────────────────────────────────────
 
 import app as _app_module  # noqa: E402
@@ -237,3 +330,22 @@ def test_admin_route_carries_auto_exclusions(rclient, db, clock):
     assert h["count"] == 1
     assert h["exclusions"][0]["tenant_id"] == "default"
     assert "cause" in h["exclusions"][0]
+
+
+def test_admin_route_carries_auto_exclusion_aggregates(rclient, db, clock):
+    """Localhost admin call returns the global concentration report — the
+    same shared pass, so by_tenant reflects the seeded exclusions."""
+    _seed([_hr("a1", "rig-a", _dt_str(NOW - 86400), 60.0)])
+    _auto_exclude("rig-a")
+    _seed([_hr("b1", "rig-b", _dt_str(NOW - 86400), 55.0)], tenant_id="tenant-a")
+    _auto_exclude("rig-b", tenant_id="tenant-a")
+    resp = rclient.get("/api/admin/rentals/accepted-recos")
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert "auto_exclusion_aggregates" in data
+    agg = data["auto_exclusion_aggregates"]
+    assert agg["count"] == 2
+    assert {t["tenant_id"] for t in agg["by_tenant"]} == {"default", "tenant-a"}
+    assert agg["by_tenant"][0]["count"] == 1
+    assert agg["by_rule"]  # at least the default F/2 bucket
+    assert agg["top_rigs"] == []  # one rig per tenant → no systemic pattern

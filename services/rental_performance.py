@@ -648,6 +648,145 @@ def admin_auto_exclusion_history(days: int = 0) -> Dict[str, Any]:
     return {"count": len(exclusions), "exclusions": exclusions}
 
 
+def admin_auto_exclusion_aggregates(days: int = 0) -> Dict[str, Any]:
+    """GLOBAL auto-exclusion CONCENTRATION report for /api/admin.
+
+    Groups the SAME exclusion set as admin_auto_exclusion_history (shared
+    pass → zero drift: same days window, same tenant tagging, same rule
+    snapshot) into the pattern the platform operator needs to see the
+    pilot's global behavior at a glance:
+
+      - by_tenant: who triggers the pilot most — exclusion count per tenant
+        (%% of total, distinct rigs, most-frequent grade, avg delivery).
+      - by_rule: how aggressive each tenant's régua is — grouping per
+        (grade_floor, min_samples) with tenant count + avg delivery.
+      - top_rigs: systemic-problem rigs — the SAME rig auto-excluded in 2+
+        tenants (the ledger dedups per tenant+rig, so recurrence across
+        tenants is a provider-side pattern), top 5 by tenant_count.
+
+    Never raises (empty ledger → zeroed lists).
+    """
+    hist = admin_auto_exclusion_history(days=days)
+    out = _aggregate_exclusions(hist.get("exclusions") or [])
+    out["days"] = days if days else None
+    return out
+
+
+def _aggregate_exclusions(exclusions: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Aggregate an auto-exclusion list into the concentration report
+    (by_tenant / by_rule / top_rigs).
+
+    Kept separate so the admin route can aggregate the SAME history pass it
+    already computed (zero drift + ONE audit pass, not two). Never raises.
+    """
+    total = len(exclusions)
+
+    def _f(v):
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            return None
+
+    def _i(v, default: int = 0) -> int:
+        try:
+            return int(v)
+        except (TypeError, ValueError):
+            return default
+
+    def _avg(vals):
+        return round(sum(vals) / len(vals), 1) if vals else None
+
+    by_tenant: Dict[str, Dict[str, Any]] = {}
+    by_rule: Dict[tuple, Dict[str, Any]] = {}
+    rigs: Dict[str, Dict[str, Any]] = {}  # key: rig_id (cross-tenant)
+    for e in exclusions:
+        tid = e.get("tenant_id") or "default"
+        rid = str(e.get("rig_id") or "")
+        t = by_tenant.setdefault(tid, {
+            "count": 0, "rigs": set(), "grades": {}, "deliveries": [],
+        })
+        t["count"] += 1
+        t["rigs"].add(rid)
+        g = e.get("grade")
+        if g:
+            t["grades"][str(g)] = t["grades"].get(str(g), 0) + 1
+        dv = _f(e.get("delivery_pct"))
+        if dv is not None:
+            t["deliveries"].append(dv)
+
+        rule = (e.get("grade_floor") or "?", _i(e.get("min_samples"), 0))
+        r = by_rule.setdefault(rule, {
+            "count": 0, "tenants": set(), "deliveries": [],
+        })
+        r["count"] += 1
+        r["tenants"].add(tid)
+        if dv is not None:
+            r["deliveries"].append(dv)
+
+        if not rid:
+            continue
+        # top_rigs = systemic-problem rigs: the SAME rig auto-excluded in
+        # MULTIPLE tenants (the ledger dedups per tenant+rig — NEWEST entry
+        # wins — so recurrence across tenants is a provider-side pattern,
+        # which a within-tenant "repeat offender" could never show).
+        rr = rigs.setdefault(rid, {
+            "rig_id": rid,
+            "name": e.get("name") or e.get("rig_id") or rid,
+            "tenants": [], "total_count": 0, "last_ts": 0,
+        })
+        if tid not in rr["tenants"]:
+            rr["tenants"].append(tid)
+        rr["total_count"] += 1
+        rr["last_ts"] = max(rr["last_ts"], _i(e.get("ts"), 0))
+
+    tenants_out = []
+    for tid, t in by_tenant.items():
+        # Tiebreak: most-frequent grade first, then the highest letter
+        # (A–F sort lexicographically — 'F' > 'D' > 'C'...).
+        top_grade = (max(t["grades"].items(),
+                         key=lambda kv: (kv[1], kv[0]))[0]
+                     if t["grades"] else None)
+        tenants_out.append({
+            "tenant_id": tid,
+            "count": t["count"],
+            "pct": round(100.0 * t["count"] / total, 1) if total else 0.0,
+            "rigs": len(t["rigs"]),
+            "top_grade": top_grade,
+            "delivery_avg_pct": _avg(t["deliveries"]),
+        })
+    tenants_out.sort(key=lambda x: (x["count"], x["rigs"]), reverse=True)
+
+    rules_out = []
+    for (floor, mins), r in by_rule.items():
+        rules_out.append({
+            "grade_floor": floor,
+            "min_samples": mins,
+            "count": r["count"],
+            "pct": round(100.0 * r["count"] / total, 1) if total else 0.0,
+            "tenants": len(r["tenants"]),
+            "delivery_avg_pct": _avg(r["deliveries"]),
+        })
+    rules_out.sort(key=lambda x: x["count"], reverse=True)
+
+    top_rigs = [
+        {"rig_id": r["rig_id"], "name": r["name"],
+         "tenant_count": len(r["tenants"]), "tenants": r["tenants"],
+         "total_count": r["total_count"], "last_ts": r["last_ts"]}
+        for r in sorted(
+            rigs.values(),
+            key=lambda r: (len(r["tenants"]), r["total_count"], r["last_ts"]),
+            reverse=True)
+        if len(r["tenants"]) >= 2  # genuine recurrence, not single-tenant noise
+    ][:5]
+
+    return {
+        "count": total,
+        "by_tenant": tenants_out,
+        "by_rule": rules_out,
+        "top_rigs": top_rigs,
+    }
+
+
 # ── Admin audit trail (global operator — ALL tenants) ──────────────────────
 # The panel view is tenant-scoped by design; the platform operator needs the
 # FLEET of decisions. The admin path reads EVERY tenant's ledger — from the
