@@ -197,6 +197,65 @@ test.describe('ADMIN — audit trail de recomendações aceitas (Issue #96)', ()
     await expect(adminEx).toContainText('Rig B Auto');
   });
 
+  test('concentração de auto-exclusões renderiza barras por tenant/régua + rigs reincidentes (Issue #106)', async ({ page }) => {
+    await page.route('**/api/admin/sessions**', (route) =>
+      route.fulfill({ json: { pool: {} } }));
+    await page.route('**/api/admin/conversion**', (route) =>
+      route.fulfill({ json: { funnel: {}, economics: {} } }));
+    await page.route('**/api/admin/rentals/accepted-recos**', (route) =>
+      route.fulfill({ json: {
+        ...AUDIT,
+        auto_exclusions: {
+          count: 4,
+          exclusions: [
+            { tenant_id: 'tenant-a', rig_id: 'rig-x', name: 'Rig X', ts: 1785110400, grade: 'F', delivery_pct: 48.0, samples: 2, min_samples: 2, grade_floor: 'F', cause: 'grade F' },
+            { tenant_id: 'default', rig_id: 'rig-x', name: 'Rig X', ts: 1785110400 - 86400, grade: 'F', delivery_pct: 45.0, samples: 2, min_samples: 2, grade_floor: 'F', cause: 'grade F' },
+            { tenant_id: 'tenant-a', rig_id: 'rig-b', name: 'Rig B', ts: 1785110400 - 2 * 86400, grade: 'F', delivery_pct: 55.0, samples: 2, min_samples: 2, grade_floor: 'F', cause: 'grade F' },
+            { tenant_id: 'default', rig_id: 'rig-d', name: 'Rig D', ts: 1785110400 - 3 * 86400, grade: 'D', delivery_pct: 70.0, samples: 3, min_samples: 3, grade_floor: 'D', cause: 'grade D' },
+          ],
+        },
+        auto_exclusion_aggregates: {
+          count: 4,
+          by_tenant: [
+            { tenant_id: 'tenant-a', count: 2, pct: 50.0, rigs: 2, top_grade: 'F', delivery_avg_pct: 51.5 },
+            { tenant_id: 'default', count: 2, pct: 50.0, rigs: 2, top_grade: 'F', delivery_avg_pct: 57.5 },
+          ],
+          by_rule: [
+            { grade_floor: 'F', min_samples: 2, count: 3, pct: 75.0, tenants: 2, delivery_avg_pct: 49.3 },
+            { grade_floor: 'D', min_samples: 3, count: 1, pct: 25.0, tenants: 1, delivery_avg_pct: 70.0 },
+          ],
+          top_rigs: [
+            { rig_id: 'rig-x', name: 'Rig X', tenant_count: 2, tenants: ['default', 'tenant-a'], total_count: 2, last_ts: 1785110400 },
+          ],
+          days: null,
+        },
+      } }));
+
+    await page.goto('/', { waitUntil: 'domcontentloaded' });
+    await page.waitForSelector('#app-shell', { timeout: 15000 });
+    await page.waitForSelector('#open-wallet', { timeout: 10000 });
+    await page.waitForFunction(() => {
+      return document.querySelectorAll('.skel-overlay').length === 0;
+    }, { timeout: 10000 }).catch(() => {});
+    await page.waitForTimeout(500);
+
+    await page.click('.sidebar__link[data-module="admin"]');
+    const agg = page.locator('#admin-autoex-agg');
+    await expect(agg).toBeVisible({ timeout: 10000 });
+    await expect(agg).toContainText('CONCENTRAÇÃO POR TENANT');
+    await expect(agg).toContainText('tenant-a');
+    await expect(agg).toContainText('2x');
+    await expect(agg).toContainText('CONCENTRAÇÃO POR RÉGUA');
+    await expect(agg).toContainText('floor F · mín 2');
+    await expect(agg).toContainText('floor D · mín 3');
+    // Systemic-problem rig: same rig auto-excluded in 2 tenants.
+    const topCol = page.locator('#admin-autoex-toprigs-col');
+    await expect(topCol).toBeVisible();
+    await expect(topCol).toContainText('RIGS REINCIDENTES');
+    await expect(topCol).toContainText('Rig X');
+    await expect(topCol).toContainText('2 tenants · 2x');
+  });
+
   test('403 do audit esconde a seção e mostra o erro do gate', async ({ page }) => {
     // Only the audit endpoint is forbidden — the panel must fall back to the
     // existing "restricted" state and never render the audit section.

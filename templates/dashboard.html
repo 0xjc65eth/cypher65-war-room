@@ -1439,6 +1439,20 @@
     <div class="admin-autoex" id="admin-autoex" hidden>
       <div class="admin-autoex__head">AUTO-EXCLUSÕES DO PILOTO (global) <span id="admin-autoex-meta" class="admin-autoex__meta"></span></div>
       <div class="admin-autoex__list" id="admin-autoex-list"></div>
+      <div class="admin-autoex__agg" id="admin-autoex-agg" hidden>
+        <div class="admin-autoex__agg-col">
+          <div class="admin-autoex__agg-head">CONCENTRAÇÃO POR TENANT</div>
+          <div class="admin-autoex__agg-list" id="admin-autoex-by-tenant"></div>
+        </div>
+        <div class="admin-autoex__agg-col">
+          <div class="admin-autoex__agg-head">CONCENTRAÇÃO POR RÉGUA</div>
+          <div class="admin-autoex__agg-list" id="admin-autoex-by-rule"></div>
+        </div>
+        <div class="admin-autoex__agg-col admin-autoex__agg-col--full" id="admin-autoex-toprigs-col" hidden>
+          <div class="admin-autoex__agg-head">RIGS REINCIDENTES (excluídos em 2+ tenants)</div>
+          <div class="admin-autoex__agg-list" id="admin-autoex-toprigs"></div>
+        </div>
+      </div>
     </div>
   </div>
   <div class="admin-error" id="admin-error" hidden></div>

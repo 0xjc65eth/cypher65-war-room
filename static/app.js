@@ -2988,6 +2988,68 @@ function renderAccount(acct) {
         '<div class="admin-autoex__cause" title="causa da exclusão">' + escapeHtml(String(x.cause || 'sub-entrega')) + '</div>' +
         '</div>';
     }).join('');
+    _renderAdminAutoExclusionAggs(audit);
+  }
+
+  // Auto-exclusion CONCENTRATION (padrão global do piloto, Issue #106):
+  // grouped by tenant (who triggers the pilot most) and by régua (how
+  // aggressive each tenant's floor/min is), from the SAME shared pass as the
+  // history list (auto_exclusion_aggregates in the accepted-recos payload).
+  function _renderAdminAutoExclusionAggs(audit) {
+    const aggWrap = document.getElementById('admin-autoex-agg');
+    const byTenant = document.getElementById('admin-autoex-by-tenant');
+    const byRule = document.getElementById('admin-autoex-by-rule');
+    if (!aggWrap || !byTenant || !byRule) return;
+    const agg = ((audit || {}).auto_exclusion_aggregates) || {};
+    const tenants = agg.by_tenant || [];
+    const rules = agg.by_rule || [];
+    if (!tenants.length && !rules.length) { aggWrap.hidden = true; return; }
+    aggWrap.hidden = false;
+    byTenant.innerHTML = tenants.map(function (t) {
+      const tid = t.tenant_id === 'default'
+        ? '<span class="admin-autoex__tenant">default</span>'
+        : escapeHtml(String(t.tenant_id));
+      const grade = t.top_grade
+        ? '<span class="admin-autoex__grade admin-autoex__grade--' + escapeHtml(String(t.top_grade)) + '">' + escapeHtml(String(t.top_grade)) + '</span>' : '';
+      const delivery = t.delivery_avg_pct != null ? escapeHtml(Number(t.delivery_avg_pct).toFixed(1) + '%') : '—';
+      return '<div class="admin-autoex__agg-row">' +
+        '<div class="admin-autoex__agg-bar" style="width:' + Math.max(4, Math.min(100, Number(t.pct) || 0)) + '%"></div>' +
+        '<div class="admin-autoex__agg-info">' +
+        '<div class="admin-autoex__name">' + tid + grade + ' · ' + escapeHtml(String(t.count)) + 'x</div>' +
+        '<div class="admin-autoex__sub">' + escapeHtml(String(t.rigs)) + ' rig(s) · entrega média ' + delivery + '</div>' +
+        '</div></div>';
+    }).join('');
+    byRule.innerHTML = rules.map(function (r) {
+      const floor = '<span class="admin-autoex__grade admin-autoex__grade--' + escapeHtml(String(r.grade_floor)) + '">' + escapeHtml(String(r.grade_floor)) + '</span>';
+      const delivery = r.delivery_avg_pct != null ? escapeHtml(Number(r.delivery_avg_pct).toFixed(1) + '%') : '—';
+      return '<div class="admin-autoex__agg-row">' +
+        '<div class="admin-autoex__agg-bar admin-autoex__agg-bar--rule" style="width:' + Math.max(4, Math.min(100, Number(r.pct) || 0)) + '%"></div>' +
+        '<div class="admin-autoex__agg-info">' +
+        '<div class="admin-autoex__name">floor ' + floor + ' · mín ' + escapeHtml(String(r.min_samples)) + ' · ' + escapeHtml(String(r.count)) + 'x</div>' +
+        '<div class="admin-autoex__sub">' + escapeHtml(String(r.tenants)) + ' tenant(s) · entrega média ' + delivery + '</div>' +
+        '</div></div>';
+    }).join('');
+    // Systemic-problem rigs: the SAME rig auto-excluded in 2+ tenants.
+    const topCol = document.getElementById('admin-autoex-toprigs-col');
+    const topRigs = document.getElementById('admin-autoex-toprigs');
+    if (topCol && topRigs) {
+      const trs = agg.top_rigs || [];
+      if (!trs.length) { topCol.hidden = true; return; }
+      topCol.hidden = false;
+      topRigs.innerHTML = trs.map(function (r) {
+        const tids = r.tenants.map(function (x) {
+          return x === 'default'
+            ? '<span class="admin-autoex__tenant">default</span>'
+            : escapeHtml(String(x));
+        }).join(' · ');
+        const when = r.last_ts ? escapeHtml(new Date(Number(r.last_ts) * 1000).toLocaleDateString('pt-BR')) : '—';
+        return '<div class="admin-autoex__agg-row">' +
+          '<div class="admin-autoex__agg-info">' +
+          '<div class="admin-autoex__name">' + escapeHtml(String(r.name || r.rig_id)) + ' · ' + escapeHtml(String(r.tenant_count)) + ' tenants · ' + escapeHtml(String(r.total_count)) + 'x</div>' +
+          '<div class="admin-autoex__sub">' + tids + ' · último ' + when + '</div>' +
+          '</div></div>';
+      }).join('');
+    }
   }
 
   function _currentAuditFilters() {
