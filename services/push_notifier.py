@@ -21,12 +21,17 @@ import requests
 
 log = logging.getLogger("cypher65.push")
 
-# ── VAPID configuration ──────────────────────────────────────────────
+# ── VAPID configuration (Issue #15) ───────────────────────────────────
+# Web Push is OFF until the operator sets VAPID_PUBLIC_KEY + VAPID_PRIVATE_KEY
+# (deploy blueprint: render.yaml). The push service needs a contact subject to
+# reach the operator about key expiry / policy — VAPID_SUBJECT env-gates it,
+# falling back to the repo-local placeholder only as a last resort.
 import os
 
 VAPID_PRIVATE_KEY = os.environ.get("VAPID_PRIVATE_KEY", "")
 VAPID_PUBLIC_KEY = os.environ.get("VAPID_PUBLIC_KEY", "")
-VAPID_CLAIMS = {"sub": "mailto:admin@cypher65.local"}
+VAPID_SUBJECT = os.environ.get("VAPID_SUBJECT", "mailto:admin@cypher65.local")
+VAPID_CLAIMS = {"sub": VAPID_SUBJECT}
 
 # ── Event severity → notification title mapping ──────────────────────
 SEVERITY_TITLES = {

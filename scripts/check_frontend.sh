@@ -92,7 +92,9 @@ step() {
 step node scripts/check-dom-regression.cjs --report
 step node tests/test_dom_guards.js
 step node --check static/app.js
+step node --check static/sw.js
 step node --test tests/test_app_js_core.js
+step node tests/test_sw_push.cjs
 step node scripts/check-mobile-xss.cjs
 step node tests/test_mobile_xss_guards.js
 step node scripts/audit_ui.cjs --all
