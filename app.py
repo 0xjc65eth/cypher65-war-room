@@ -667,7 +667,7 @@ app.register_blueprint(alerts_bp)
 # current schema revision; _record_schema_version() stamps it into the
 # schema_version table on every boot so operators/tests can verify the DB
 # layout matches the code that wrote it.
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2  # Issue #17: + pool_metrics table (60s health sampler)
 
 
 def _record_schema_version(conn):
@@ -947,6 +947,14 @@ def init_db():
     c.execute(
         "CREATE INDEX IF NOT EXISTS idx_hashrate_market_history_provider ON hashrate_market_history(provider)"
     )
+    # ── Issue #17: persistent pool metrics (60s sampler → trend lines) ──
+    from services.pool_metrics import (
+        POOL_METRICS_INDEX as _PM_INDEX,
+        POOL_METRICS_SCHEMA as _PM_SCHEMA,
+    )
+
+    c.execute(_PM_SCHEMA)
+    c.execute(_PM_INDEX)
     # ── Milestone 9: Alert Rules (configurable thresholds) ──
     c.execute(
         """CREATE TABLE IF NOT EXISTS alert_rules (
@@ -3436,6 +3444,42 @@ def api_admin_sessions():
     )
 
 
+@app.route("/api/admin/pool-metrics", methods=["GET"])
+def api_admin_pool_metrics():
+    """Pool-health trend history from the persistent 60s sampler (Issue #17).
+
+    Admin-gated exactly like /api/admin/conversion (localhost or the operator
+    X-API-Key) — never exposed to the public. Returns the pool_metrics rows
+    (sessions_active, polls_per_sec, queue_pending, total_polls, …) over the
+    last ``hours`` (default 24) so the Admin CFO renders trend lines that
+    survive restarts (unlike the in-memory /api/admin/sessions counters).
+    """
+    remote = request.remote_addr or ""
+    local = remote in ("127.0.0.1", "::1", "localhost")
+    operator_key = os.environ.get("API_KEY") or ""
+    sent = (request.headers.get("X-API-Key") or "").strip()
+    if not local and not (operator_key and hmac.compare_digest(sent, operator_key)):
+        return jsonify({"error": "admin access required"}), 403
+
+    hours = request.args.get("hours", 24, type=int)
+    if hours < 1 or hours > 7 * 24:
+        hours = 24
+    limit = request.args.get("limit", 0, type=int)
+    if limit < 0 or limit > 2000:
+        limit = 0
+    if limit == 0:
+        # Default cap keeps the JSON/Chart.js light: 24h@60s = 1440 points.
+        limit = 1500
+    from services.pool_metrics import fetch_history as _fetch_pm
+
+    conn = get_db()
+    try:
+        points = _fetch_pm(conn, hours=hours, limit=limit)
+    finally:
+        conn.close()
+    return jsonify({"hours": hours, "count": len(points), "points": points})
+
+
 # parse_diff_to_float, fmt_diff, fmt_hashrate, fmt_uptime, fmt_age
 # are imported from helpers.py
 
@@ -4559,6 +4603,19 @@ def purge_old():
         conn.close()
     except Exception as e:
         log.warning("[purge] error: %s", e)
+    # Pool metrics have their own (shorter) retention — 7 days is enough for
+    # the 24h/7d trend lines and keeps the file from growing unbounded
+    # (Issue #17).
+    try:
+        from services.pool_metrics import purge_pool_metrics as _purge_pm
+
+        _conn = get_db()
+        try:
+            _purge_pm(_conn)
+        finally:
+            _conn.close()
+    except Exception as e:
+        log.warning("[purge] pool_metrics error: %s", e)
 
 
 def poll_loop():
@@ -4593,6 +4650,31 @@ def _auto_backup_loop():
 
 _POOL_WATCHDOG_INTERVAL = 30.0  # seconds between stall checks
 _pool_watchdog_last_warn = 0.0  # suppress repeat CRITs (once per stall episode)
+
+
+def _pool_metrics_loop():
+    """Daemon thread: persist a pool-health snapshot every 60s (Issue #17).
+
+    Wires the pure services/pool_metrics.sampler_loop to the live sources:
+    PollWorkerPool.stats() (sessions/polls/sec/queue/workers), the webhook
+    retry-queue depth and the auto-exclude alert counters. Survives restarts
+    because rows land in SQLite — the Admin CFO trend lines are the whole
+    point (in-memory counters zero on every reboot).
+    """
+    from services.pool_metrics import (
+        POOL_METRICS_INTERVAL as _PM_INTERVAL,
+        sampler_loop as _pm_sampler_loop,
+    )
+    from services.webhook_queue import queue_depth as _pm_queue_depth
+
+    def _snapshot() -> dict:
+        stats = _POLL_POOL.stats()
+        stats["webhook_queue"] = _pm_queue_depth()
+        ax = _auto_exclude_alert_counters() or {}
+        stats["auto_exclude_total"] = ax.get("total", 0) if isinstance(ax, dict) else 0
+        return stats
+
+    _pm_sampler_loop(_snapshot, get_db, interval=_PM_INTERVAL, jitter=2.0)
 
 
 def _pool_watchdog_loop():
@@ -4660,6 +4742,14 @@ def _start_background_threads():
         ).start()
     except Exception as e:
         log.warning("[boot] pool watchdog start error: %s", e)
+    # Issue #17: persistent pool metrics — snapshot health every 60s so the
+    # Admin CFO sees 24h TRENDS instead of the in-memory "now" (daemon).
+    try:
+        threading.Thread(
+            target=_pool_metrics_loop, name="cypher65-pool-metrics", daemon=True
+        ).start()
+    except Exception as e:
+        log.warning("[boot] pool metrics sampler start error: %s", e)
     # Periodic rental P/L sweep: evaluate tenants with the alert enabled so
     # a bad rental fires webhook/push WITHOUT the user opening the panel.
     # Env-gated (RENTAL_SWEEP_INTERVAL=0 disables); idempotent.

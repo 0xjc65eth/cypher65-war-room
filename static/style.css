@@ -6065,6 +6065,23 @@ body.module-mode .tab-pane:not(.active) { display: none; }
   background: var(--bg-surface);
   padding: 6px;
 }
+.admin-metrics__chart-wrap {
+  position: relative;
+  height: 150px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--bg-surface);
+  padding: 6px;
+}
+.admin-metrics__empty {
+  padding: 14px 8px;
+  color: var(--text-mute);
+  font-size: 12px;
+  font-style: italic;
+  border: 1px dashed var(--border-subtle);
+  border-radius: var(--radius-sm);
+  text-align: center;
+}
 .admin-audit__table-wrap {
   max-height: 340px;
   overflow-y: auto;

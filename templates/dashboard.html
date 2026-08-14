@@ -1412,6 +1412,20 @@
   </div>
   <div class="admin-stall" id="admin-stall" hidden></div>
 
+  <!-- ── Pool metric trends (Issue #17) — sampler SQLite a cada 60s ──
+       Consome /api/admin/pool-metrics (mesmo gate localhost/X-API-Key).
+       Histórico persistente: sobrevive a restarts — ao contrário dos
+       contadores em memória do /api/admin/sessions. -->
+  <div class="panel__subtitle">TENDÊNCIAS DO POOL (24h) — histórico persistente · amostra a cada 60s</div>
+  <div class="admin-metrics" id="admin-metrics" hidden>
+    <div class="admin-metrics__chart-wrap">
+      <canvas id="admin-metrics-chart"></canvas>
+    </div>
+    <div class="admin-metrics__empty" id="admin-metrics-empty" hidden>
+      sem histórico ainda — o sampler grava a cada 60s (primeiros pontos em ~1 min)
+    </div>
+  </div>
+
   <!-- ── PRO funnel (conversion telemetry) ── -->
   <div class="panel__subtitle">FUNIL PRO (30d) — quem vira assinante, onde o funil perde</div>
   <div class="kpi-row">
