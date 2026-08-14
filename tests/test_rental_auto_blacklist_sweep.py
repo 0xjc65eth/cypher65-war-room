@@ -37,6 +37,17 @@ def _freeze_time(monkeypatch):
     monkeypatch.setattr(rp.time, "time", lambda: NOW)
 
 
+@pytest.fixture(autouse=True)
+def _fresh_settings_cache():
+    """The per-tenant settings cache is module-level and survives across
+    test files in the same pytest process — clear it before AND after every
+    test so tenant ids never read stale settings from another file."""
+    from services import settings as _settings_mod
+    _settings_mod.invalidate_cache()
+    yield
+    _settings_mod.invalidate_cache()
+
+
 def _dt_str(ts):
     """Unix ts → MRR-style start string (UTC)."""
     return _dt.datetime.fromtimestamp(ts, tz=_dt.timezone.utc).strftime(
@@ -169,3 +180,85 @@ def test_sweep_once_visits_auto_blacklist_family(monkeypatch):
     n = _up._rentals_sweep_once()
     assert n == 2
     assert visited == ["t-a", "t-b"]
+
+
+# ── Issue #98: per-tenant configurable rule (min samples + grade floor) ──
+
+def test_auto_exclude_thresholds_defaults(db):
+    """No settings → legacy defaults (2 samples, grade F floor)."""
+    th = rp._auto_exclude_thresholds(tenant_id="t1")
+    assert th == {"min_samples": 2, "grade_rank": 1, "grade": "F"}
+
+
+def test_auto_exclude_thresholds_custom(db, monkeypatch):
+    """Per-tenant settings override the floor (grade D = rank 2)."""
+    from services.settings import save_setting
+    save_setting("rental_auto_blacklist_grade", "D", tenant_id="t-d")
+    save_setting("rental_auto_blacklist_min_samples", "3", tenant_id="t-d")
+    th = rp._auto_exclude_thresholds(tenant_id="t-d")
+    assert th == {"min_samples": 3, "grade_rank": 2, "grade": "D"}
+    # Another tenant keeps the default (isolation).
+    assert rp._auto_exclude_thresholds(tenant_id="t-other")["grade_rank"] == 1
+
+
+def test_auto_exclude_thresholds_invalid_fallback(db):
+    """Invalid/empty values fall back silently to defaults (never raises)."""
+    from services.settings import save_setting
+    save_setting("rental_auto_blacklist_min_samples", "abc", tenant_id="t-x")
+    save_setting("rental_auto_blacklist_min_samples", "0", tenant_id="t-x")
+    save_setting("rental_auto_blacklist_grade", "X", tenant_id="t-x")
+    save_setting("rental_auto_blacklist_grade", "", tenant_id="t-x")
+    th = rp._auto_exclude_thresholds(tenant_id="t-x")
+    assert th == {"min_samples": 2, "grade_rank": 1, "grade": "F"}
+
+
+def test_should_auto_exclude_uses_grade_floor(db):
+    """Grade floor D excludes D AND F rigs; floor F only F (legacy)."""
+    from services.settings import save_setting
+    # D-grade rig (delivery ~75-80 → trust D) with 2 samples: excluded only
+    # when the tenant's floor is D or worse. Unique tenant ids per test — the
+    # per-tenant settings cache persists across tests in the same process.
+    d_rig = [
+        {"percent": 78.0, "start": "2026-07-20 10:00:00"},
+        {"percent": 75.0, "start": "2026-07-21 10:00:00"},
+    ]
+    assert rp._should_auto_exclude("rig-d", d_rig, tenant_id="t-gf-plain") is False
+    save_setting("rental_auto_blacklist_grade", "D", tenant_id="t-gf-d")
+    assert rp._should_auto_exclude("rig-d", d_rig, tenant_id="t-gf-d") is True
+    # Floor F (default) still excludes an F rig for another tenant.
+    f_rig = [
+        {"percent": 55.0, "start": "2026-07-20 10:00:00"},
+        {"percent": 52.0, "start": "2026-07-21 10:00:00"},
+    ]
+    assert rp._should_auto_exclude("rig-f", f_rig, tenant_id="t-gf-d") is True
+
+
+def test_should_auto_exclude_uses_min_samples(db):
+    """A stricter min_samples (3) withholds exclusion at 2 samples."""
+    from services.settings import save_setting
+    save_setting("rental_auto_blacklist_min_samples", "3", tenant_id="t-strict")
+    bad2 = [
+        {"percent": 55.0, "start": "2026-07-20 10:00:00"},
+        {"percent": 52.0, "start": "2026-07-21 10:00:00"},
+    ]
+    assert rp._should_auto_exclude("rig-s", bad2, tenant_id="t-strict") is False
+    bad3 = bad2 + [{"percent": 50.0, "start": "2026-07-22 10:00:00"}]
+    assert rp._should_auto_exclude("rig-s", bad3, tenant_id="t-strict") is True
+
+
+def test_evaluate_auto_blacklist_respects_tenant_rule(db):
+    """The sweep pass applies the tenant's configured rule end-to-end."""
+    from services.settings import save_setting
+    # t-aggressive: floor D + min 2 → a D rig gets auto-excluded by the sweep.
+    save_setting("rental_auto_blacklist_grade", "D", tenant_id="t-agg")
+    rp.save_rental_history([
+        _row("1", "rig-d", "2026-07-20 10:00:00", 78.0),
+        _row("2", "rig-d", "2026-07-21 10:00:00", 75.0),
+    ], tenant_id="t-agg")
+    assert rp.evaluate_auto_blacklist(tenant_id="t-agg") == ["rig-d"]
+    # t-plain (default F floor): same rig NOT excluded.
+    rp.save_rental_history([
+        _row("3", "rig-d", "2026-07-20 10:00:00", 78.0),
+        _row("4", "rig-d", "2026-07-21 10:00:00", 75.0),
+    ], tenant_id="t-plain")
+    assert rp.evaluate_auto_blacklist(tenant_id="t-plain") == []
