@@ -15,11 +15,34 @@ Tools:
 
 import os
 import time
+import threading
 import hmac
 import hashlib
 import logging
 
 import requests
+
+# ── MRR nonce — estritamente crescente (fix do "Bad Nonce") ────────────────
+# O MRR exige que o nonce de cada request seja MAIOR que o último usado para
+# a mesma chave. O padrão antigo (time.time()*1000) gerava o MESMO nonce em
+# duas chamadas no mesmo milissegundo — e o fetch de detail do RENTALS dispara
+# 3 GETs concorrentes (detail/graph/log), então a colisão era garantida sob
+# carga → "Not Authenticated - Invalid Key - Bad Nonce". O lock + contador
+# abaixo garante monotonicidade global (thread-safe + clock voltando atrás).
+_mrr_nonce_lock = threading.Lock()
+_mrr_last_nonce = 0
+
+
+def _mrr_next_nonce() -> str:
+    """Next strictly-increasing nonce for the MRR API (thread-safe)."""
+    global _mrr_last_nonce
+    with _mrr_nonce_lock:
+        n = int(time.time() * 1000)
+        if n <= _mrr_last_nonce:
+            n = _mrr_last_nonce + 1  # colisão/clock parado/voltando → bump
+        _mrr_last_nonce = n
+        return str(n)
+
 
 log = logging.getLogger("cypher65.agent")
 
@@ -304,7 +327,7 @@ def _mrr_signed_headers(api_key: str, api_secret: str, endpoint: str) -> dict:
     calls (market quotes, rentals, balance) so the auth scheme lives in
     one place.
     """
-    nonce = str(int(time.time() * 1000))
+    nonce = _mrr_next_nonce()
     sign = hmac.new(
         api_secret.encode("utf-8"),
         (api_key + nonce + endpoint).encode("utf-8"),
