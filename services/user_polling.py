@@ -1123,6 +1123,13 @@ _rental_sweep_started = False
 def _rentals_sweep_once() -> int:
     """One sweep pass: evaluate every enabled tenant, dispatch alerts.
     Returns the number of tenants visited (for tests + observability)."""
+    # Correlation id for THIS sweep pass (Issue #124): `sweep-<id>` rides every
+    # log line so a tenant's auto-exclude/alert decisions trace end-to-end.
+    # observability is stdlib-only and already imported at boot — no guard.
+    from services.observability import (
+        new_request_id as _nrid, set_request_id as _srid,
+    )
+    _srid(_nrid("sweep"))
     try:
         from services.rental_performance import (
             pl_alert_enabled_tenants, risk_alert_enabled_tenants,

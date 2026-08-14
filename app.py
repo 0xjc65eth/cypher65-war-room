@@ -13,6 +13,7 @@ import threading
 import collections
 import logging
 import hmac
+import re
 from typing import Any, Dict, List, Optional
 from datetime import datetime, timezone
 
@@ -99,7 +100,10 @@ TELEMETRY_FRESHNESS_THRESHOLD = 300
 # log files remain greppable for [fetch] / [persist] / [purge] / [poll_loop].
 # LOG_JSON=1 switches to JSON structured logs via services/observability.
 from services.observability import setup_logging as _setup_logging, \
-    build_logger as _build_logger
+    build_logger as _build_logger, \
+    new_request_id as _new_request_id, \
+    set_request_id as _set_request_id, \
+    get_request_id as _get_request_id
 _setup_logging()
 log = _build_logger("cypher65")
 
@@ -376,6 +380,44 @@ def _rate_limit_key() -> str:
         if sub:
             return f"t:{sub}"
     return f"ip:{request.remote_addr or '127.0.0.1'}"
+
+
+@app.before_request
+def attach_request_id():
+    """Correlation id for this request (Issue #124).
+
+    Honors a client-supplied ``X-Request-ID`` (sanitized to safe chars,
+    capped at 64) so a retrying client/JS can trace its own id end-to-end;
+    otherwise mints a fresh ``req-<12 hex>``. The id rides the ContextVar
+    into every log line emitted during the request and is echoed back in the
+    response header for client-side correlation.
+    """
+    incoming = (request.headers.get("X-Request-ID") or "").strip()
+    rid = _SAFE_RID_RE.sub("", incoming)[:64]
+    _set_request_id(rid or _new_request_id())
+    return None
+
+
+# Compiled once (Python caches regexes anyway — this documents the intent).
+_SAFE_RID_RE = re.compile(r"[^A-Za-z0-9_-]")
+
+
+@app.after_request
+def add_request_id_header(response):
+    """Echo the active request_id so clients can correlate (Issue #124)."""
+    response.headers["X-Request-ID"] = _get_request_id() or ""
+    return response
+
+
+@app.teardown_request
+def clear_request_id_ctx(exc):
+    """Unbind the request_id after the response is sent (Issue #124).
+
+    Runs AFTER after_request (which echoes the header), so clearing here is
+    safe — it prevents a pooled werkzeug thread from leaking a stale req-* id
+    into non-request logs between requests.
+    """
+    _set_request_id("")
 
 
 @app.before_request
@@ -3064,6 +3106,10 @@ def _do_poll():
     global latest_snapshot
     global persist_consec_failures
     global memory_critical_alerts
+    # Correlation id for THIS poll pass (Issue #124): every log line emitted
+    # while polling carries `poll-<id>` so an operator can trace one pass
+    # end-to-end (fetch → persist → alerts) in the JSON logs.
+    _set_request_id(_new_request_id("poll"))
     # _next_memory_alert_id is mutated only inside _make_memory_alert (which
     # declares its own `global`); no need to redeclare here.
 

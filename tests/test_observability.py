@@ -66,6 +66,54 @@ def test_json_formatter_never_crashes_on_unserializable_ctx():
     assert isinstance(out, str)
 
 
+# ── Request-id correlation (Issue #124) ────────────────────────────────
+
+def test_json_formatter_emits_request_id_when_set():
+    """The formatter must include request_id when the ContextVar is active."""
+    observability.set_request_id("req-abc123def456")
+    try:
+        out = observability.JsonFormatter().format(_mkrecord("in request"))
+    finally:
+        observability.clear_request_id()
+    data = json.loads(out)
+    assert data["request_id"] == "req-abc123def456"
+
+
+def test_json_formatter_omits_request_id_when_absent():
+    """Background/boot logs (no active request) must NOT carry the field."""
+    observability.clear_request_id()
+    out = observability.JsonFormatter().format(_mkrecord("boot line"))
+    data = json.loads(out)
+    assert "request_id" not in data
+
+
+def test_new_request_id_prefix_and_shape():
+    rid = observability.new_request_id("poll")
+    assert rid.startswith("poll-")
+    assert len(rid) == len("poll-") + 12
+    # Default prefix is req-, and consecutive ids never collide.
+    assert observability.new_request_id().startswith("req-")
+    assert observability.new_request_id() != observability.new_request_id()
+
+
+def test_request_id_ctxvar_isolated_between_contexts():
+    """A request_id set in one context must not leak into another (threads)."""
+    import threading
+    observability.clear_request_id()
+    seen = {}
+
+    def worker():
+        observability.set_request_id("req-worker-1")
+        seen["in_worker"] = observability.get_request_id()
+
+    t = threading.Thread(target=worker)
+    t.start()
+    t.join()
+    # Main context still clean — ContextVars don't cross threads.
+    assert seen["in_worker"] == "req-worker-1"
+    assert observability.get_request_id() == ""
+
+
 def test_setup_logging_default_is_text(monkeypatch):
     monkeypatch.delenv("LOG_JSON", raising=False)
     active = observability.setup_logging()
