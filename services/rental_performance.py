@@ -682,6 +682,85 @@ def compute_admin_accepted_recos(days: int = 0,
     }
 
 
+# ── Admin audit CSV export (planilha do operador) ───────────────────────────
+# Same payload as the JSON endpoint (one implementation, no drift): the
+# operator exports the fleet of accepted decisions + delivery verdicts as a
+# spreadsheet. CSV-specific concerns live HERE:
+#   - text cells with a leading =/+/−/@ are neutralized (formula-injection
+#     guard — the sheet opens and shows text, never executes);
+#   - None → empty cell;
+#   - the caller prefixes the UTF-8 BOM so Excel detects the encoding.
+
+ADMIN_ACCEPTED_CSV_COLUMNS = [
+    "tenant_id", "accepted_ts", "rig_id", "name", "source", "grade",
+    "pilot_flagged", "delivery_pct", "samples", "delivery_after_pct",
+    "cost_after_sats_per_thh", "restored", "restored_ts", "verdict",
+]
+
+
+def _csv_neutralize(value) -> Any:
+    """Neutralize spreadsheet formula-injection on text cells (a leading
+    = + - @ is a formula risk when a sheet auto-evaluates). Numbers/None
+    pass through untouched."""
+    if value is None or isinstance(value, (int, float)):
+        return value
+    s = str(value)
+    if s[:1] in ("=", "+", "-", "@", "\t", "\r"):
+        return "'" + s
+    return s
+
+
+def admin_accepted_recos_csv(data: Dict[str, Any]) -> str:
+    """Render the admin accepted-recos audit payload as CSV (header + one row
+    per decision). Consumes the SAME payload compute_admin_accepted_recos
+    returns, so the spreadsheet never drifts from the JSON view. The caller
+    prepends the UTF-8 BOM. Never raises (empty payload → header only)."""
+    import csv as _csv
+    import io as _io
+    buf = _io.StringIO()
+    w = _csv.writer(buf)
+    w.writerow(ADMIN_ACCEPTED_CSV_COLUMNS)
+    for d in (data.get("decisions") or []):
+        # Flags: '0' (known false) vs '' (legacy row predating the field).
+        flagged = "1" if d.get("pilot_flagged") else (
+            "0" if "pilot_flagged" in d else "")
+        restored = "1" if d.get("restored") else (
+            "0" if "restored" in d else "")
+        w.writerow([
+            _csv_neutralize(d.get("tenant_id") or "default"),
+            _fmt_unix_ts(d.get("ts")),
+            _csv_neutralize(d.get("rig_id")),
+            _csv_neutralize(d.get("name")),
+            d.get("source") or "unknown",
+            d.get("grade"),
+            flagged,
+            d.get("delivery_pct"),
+            d.get("samples"),
+            d.get("delivery_after_pct"),
+            d.get("cost_after_sats_per_thh"),
+            restored,
+            _fmt_unix_ts(d.get("restored_ts")),
+            d.get("verdict") or "unknown",
+        ])
+    return buf.getvalue()
+
+
+def _fmt_unix_ts(ts) -> Any:
+    """Unix ts → ISO-ish UTC string for spreadsheets (None/0 → empty)."""
+    import datetime as _dt
+    try:
+        ts = int(ts)
+    except (TypeError, ValueError):
+        return ""
+    if ts <= 0:
+        return ""
+    try:
+        return _dt.datetime.fromtimestamp(ts, tz=_dt.timezone.utc).strftime(
+            "%Y-%m-%d %H:%M:%S UTC")
+    except (OverflowError, OSError, ValueError):
+        return ""
+
+
 # ── Rentals ANALYSIS export (Controle de Rendimento) ───────────────────────
 # The simple CSV lists the ledger; the ANALYSIS export is a capital-protection
 # tool. Per rental it computes: performance vs a CONFIGURABLE minimum
