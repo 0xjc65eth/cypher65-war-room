@@ -8,9 +8,14 @@ suíte (1.000+ testes) verde.
 > **Todo trabalho entra por Issue e é entregue via PR — nunca push direto para `master`.**
 > Deploy = merge do PR em `master` (automático).
 
-O padrão completo (nomenclatura de branch, template de PR, `Closes #NNN`,
-checklist do agente, comandos `gh`) está em **`docs/AGENT_WORKFLOW.md`** —
-qualquer agente de qualquer modelo DEVE segui-lo antes de codar.
+A fonte de verdade é **`PROJECT_WORKFLOW.md`** (raiz — lido por qualquer agente
+de qualquer modelo; apontador curto em **`AGENTS.md`**). O detalhamento com
+comandos `gh` está em **`docs/AGENT_WORKFLOW.md`**.
+
+Antes de todo merge, rode o skill **`enterprise-code-review`**
+(`.agents/skills/enterprise-code-review` — security + bugs + UI/UX + motion +
+observability + quality + tests por equipe). Para auditorias profundas, use o
+prompt de **`AUDIT_PROMPT.md`** (raiz).
 
 Resumo em 4 passos:
 1. Crie/use a **Issue** (`gh issue create`, labels `bug|enhancement|feature` + `priority: P1-P3`).
@@ -42,10 +47,11 @@ dir). Novos testes devem seguir o mesmo padrão.
 ## Padrões do projeto
 
 - **Workflow obrigatório**: toda mudança entra por Issue e é entregue via PR
-  (`docs/AGENT_WORKFLOW.md`). O mesmo doc define as regras de **qualidade de
-  interface** (motion/skeleton/lazy/loading — skill design-motion-principles)
-  e **qualidade técnica** (observabilidade Sentry/logs JSON, lint
-  Biome/Knip/commitlint, mutation testing, Codecov) que todo PR deve respeitar.
+  (`PROJECT_WORKFLOW.md` + `docs/AGENT_WORKFLOW.md`). Os docs definem as
+  regras de **qualidade de interface** (motion/skeleton/lazy/loading — skill
+  `design-motion-principles`) e **qualidade técnica** (observabilidade
+  Sentry/logs JSON, lint Biome/Knip/commitlint, mutation testing, Codecov) e
+  o **code review pré-merge** (skill `enterprise-code-review`).
 - **Honest telemetry**: o app bota com zero estado e só mostra dados reais.
   Nunca insira mocks/seed de devices em produção.
 - **Env-gating**: features sensíveis são off-by-default via env var
