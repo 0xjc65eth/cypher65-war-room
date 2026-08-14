@@ -4,12 +4,15 @@ CYPHER65 // Settings API routes
 Flask Blueprint for /api/settings endpoints.
 Extracted from app.py — Phase 2a of P0.4 refactoring.
 """
+import logging
 import os
 import time
 
 from flask import Blueprint, jsonify, request
 
 from config import BTC_ADDRESS, WORKER_NAME
+
+log = logging.getLogger("cypher65.settings")
 from services.settings import DEFAULT_SETTINGS, is_default_tenant, load_settings, save_setting, settings_label
 from services.tenant import require_tenant, role_required
 from services.licensing import is_pro
@@ -145,6 +148,100 @@ def api_settings_test_webhook(tenant_id: str = ""):
         return jsonify({"success": True, "status_code": r.status_code})
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 502
+
+
+@settings_bp.route("/settings/test-auto-exclude-alert", methods=["POST"])
+@require_tenant
+@role_required("member")
+def api_settings_test_auto_exclude_alert(tenant_id: str = ""):
+    """Send a SAMPLE auto-exclusion alert (webhook + push) to validate the
+    tenant's notification configuration.
+
+    Unlike test-webhook (generic payload, webhook only), this fires the SAME
+    message shape the periodic sweep dispatches on a real auto-exclusion
+    (Issue #102) through the SAME builders the async dispatch path uses
+    (send_webhook_for_alert + notify_tenant_alert), synchronously, so the
+    operator gets a real verdict: ``webhook_ok`` + ``push_targets``.
+
+    Response (always 200 unless PRO-gated):
+      - message: the sample payload that was (or would be) sent
+      - webhook_configured / webhook_ok / webhook_reason / webhook_min_severity
+      - push_targets: number of devices the push reached (0 = none)
+      - success: True when at least one channel delivered
+      - guidance: actionable hint when nothing is configured
+
+    PRO gate: unlike test-webhook (403 for every non-PRO caller), this only
+    gates the WEBHOOK channel (403 when a URL is configured and the license
+    gate is closed) — Web Push is not a PRO feature, so a push-only tenant
+    can still validate its channel without a key.
+    Never raises.
+    """
+    s = load_settings(tenant_id=tenant_id)
+    url = (s.get("webhook_url") or "").strip()
+    min_sev = s.get("webhook_min_severity", "WARN")
+    # Same PRO gate as webhook_url itself + test-webhook: only relevant when
+    # PRO_LICENSE_KEYS is set (open mode → is_pro() is always True).
+    if url and not is_pro():
+        return jsonify({"error": "PRO feature — requires a license key"}), 403
+
+    severity = "WARN"
+    category = "rental_auto_exclude"
+    ts = int(time.time())
+    message = (
+        "rig rig-teste auto-excluído por sub-entrega — grade F · entrega "
+        "57.5% · 2 amostras — régua: floor F, mín 2 · "
+        "[TESTE — nenhuma exclusão real foi feita]"
+    )
+
+    webhook_ok = False
+    webhook_reason = "not configured"
+    if url:
+        from services.push_notifier import (
+            send_webhook_for_alert, severity_meets_threshold,
+        )
+        try:
+            webhook_ok = send_webhook_for_alert(
+                url=url, severity=severity, category=category,
+                message=message, ts=ts, min_severity=min_sev,
+            )
+        except Exception:
+            webhook_ok = False
+        if webhook_ok:
+            webhook_reason = "ok"
+        elif not severity_meets_threshold(severity, min_sev):
+            webhook_reason = f"below threshold (WARN < {min_sev})"
+        else:
+            webhook_reason = "POST failed — check the URL"
+
+    # notify_tenant_alert never raises (per-subscription try/except, VAPID +
+    # pywebpush guards) — belt-and-suspenders wrapper for the endpoint.
+    push_targets = 0
+    from services.push_notifier import notify_tenant_alert
+    try:
+        push_targets = notify_tenant_alert(tenant_id, severity, category, message)
+    except Exception as e:
+        push_targets = 0
+        log.warning("[settings] test push error: %s", e)
+
+    success = bool(webhook_ok or push_targets > 0)
+    guidance = ""
+    if not url and push_targets <= 0:
+        guidance = (
+            "nenhum canal configurado — configure webhook_url e/ou assine "
+            "Web Push (VAPID) neste navegador para receber o alerta real"
+        )
+    return jsonify({
+        "success": success,
+        "message": message,
+        "severity": severity,
+        "category": category,
+        "webhook_configured": bool(url),
+        "webhook_ok": webhook_ok,
+        "webhook_reason": webhook_reason,
+        "webhook_min_severity": min_sev,
+        "push_targets": push_targets,
+        "guidance": guidance,
+    })
 
 
 # ── FASE 2: Wallet history endpoint ──
