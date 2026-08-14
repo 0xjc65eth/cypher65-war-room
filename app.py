@@ -187,6 +187,11 @@ _auth_rate_limit_store = {}  # {ip: [timestamps]} — stricter /api/auth/* budge
 # never touches the DB.
 RATE_LIMIT_PERSIST_INTERVAL = 30.0
 
+# Anonymous push-subscribe budget (per IP per minute, Issue #115). Far
+# tighter than the generic RATE_LIMIT_PER_MINUTE: subscribing is a rare
+# user action, so a low cap blocks DB-bloat floods without false positives.
+_PUSH_SUBSCRIBE_PER_MINUTE = 10
+
 
 def _rate_limit_ensure_table():
     try:
@@ -2867,8 +2872,13 @@ def api_push_vapid_key():
 def api_push_subscribe():
     """Persist a browser push subscription, scoped to the caller's tenant.
 
-    The tenant comes from the Bearer JWT (sub); anonymous visitors subscribe
-    under the '' tenant (operator's dashboard). Idempotent upsert.
+    Security (Issue #115): a non-empty tenant comes ONLY from a valid Bearer
+    JWT — the ``sub`` claim is authoritative, never the request body. An
+    anonymous visitor may ONLY subscribe under the operator's '' tenant, and
+    only with a well-formed https:// endpoint, rate-limited per IP. This
+    closes the vector where an anonymous visitor could write a subscription
+    under another tenant (receiving that tenant's sensitive alerts) or flood
+    the store.
     """
     from services.push_notifier import save_subscription
     body = request.get_json(silent=True) or {}
@@ -2876,15 +2886,43 @@ def api_push_subscribe():
     keys = body.get("keys") or {}
     if not endpoint:
         return jsonify({"ok": False, "error": "endpoint required"}), 400
+
+    # ── Tenant resolution — JWT sub is the ONLY authority ──────────────
     tenant_id = ""
     auth = request.headers.get("Authorization", "")
     if auth.startswith("Bearer "):
         try:
             from services.auth import verify_token
             payload = verify_token(auth[7:]) or {}
-            tenant_id = payload.get("sub") or ""
         except Exception:
-            pass
+            payload = None
+        if not payload:
+            # Invalid/forged token: refuse loudly. Falling back to '' would
+            # let an attacker with a dead token write into the operator's
+            # tenant (the exact vector Issue #115 closes).
+            return jsonify({"ok": False, "error": "invalid token"}), 401
+        tenant_id = payload.get("sub") or ""
+
+    # ── Endpoint validation — https:// only (push endpoints are real URLs) ──
+    # Blocks malformed/abusive endpoints (http://, javascript:, data:, …).
+    if not endpoint.startswith("https://"):
+        return jsonify({"ok": False, "error": "endpoint must be https://"}), 400
+    if len(endpoint) > 2048:
+        return jsonify({"ok": False, "error": "endpoint too long"}), 400
+
+    if not tenant_id:
+        # Anonymous path: strict per-IP budget so the store cannot be flooded
+        # with fake subscriptions (DB bloat). Bounded in _rate_limit_persist.
+        ip = request.remote_addr or "127.0.0.1"
+        now = time.time()
+        window = 60.0
+        key = f"push:ip:{ip}"
+        stamps = _rate_limit_store.setdefault(key, [])
+        stamps[:] = [t for t in stamps if now - t < window]
+        if len(stamps) >= _PUSH_SUBSCRIBE_PER_MINUTE:
+            return jsonify({"ok": False, "error": "rate limited"}), 429
+        stamps.append(now)
+
     ok = save_subscription(endpoint, keys, tenant_id=tenant_id)
     return jsonify({"ok": ok, "tenant": tenant_id[:8] or "default"})
 

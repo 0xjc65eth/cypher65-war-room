@@ -9193,11 +9193,25 @@ dom.walletSave?.addEventListener('click', async () => {
             applicationServerKey: urlBase64ToUint8Array(vapidKey),
           });
           const raw = newSub.toJSON();
-          await fetch('/api/push/subscribe', {
+          // Issue #115: attach the Bearer token when present so the
+          // subscription is stored under the CALLER's tenant (JWT sub is the
+          // only authority for a non-empty tenant); anonymous visitors still
+          // subscribe under the operator tenant with an https:// endpoint.
+          const pushHeaders = { 'Content-Type': 'application/json' };
+          const tok = (typeof authGetToken === 'function') ? authGetToken() : '';
+          if (tok) pushHeaders['Authorization'] = 'Bearer ' + tok;
+          const subRes = await fetch('/api/push/subscribe', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: pushHeaders,
             body: JSON.stringify({ endpoint: raw.endpoint, keys: raw.keys }),
           });
+          if (!subRes.ok) {
+            // 401 = token revoked/invalid, 429 = per-IP budget hit, … —
+            // surface it instead of pretending push is armed. Never retry
+            // WITHOUT the token (that would defeat the Issue #115 boundary).
+            console.warn('[push] subscribe rejected (' + subRes.status + ') — push not armed');
+            return;
+          }
           console.log('[push] subscribed for mining alerts');
         } catch (e) {
           console.warn('[push] enable failed (silent):', e && e.message);
