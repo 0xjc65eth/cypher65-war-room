@@ -19,7 +19,7 @@ flake8==7.1.1
 # ── Quality / security scanning (local use; CI integration pending) ──────
 bandit==1.9.4  # 1.8.2 crasha no AST do Python 3.14 ('Constant' object has no attribute 's') — Issue #125
 mypy==1.14.1
-pre-commit==4.0.1
+pre-commit==4.6.2
 
 # ── Mutation testing (Issue #29 · quality) — equivalente Python do Stryker.
 #    Uso: SECRET_KEY=... mutmut run --paths-to-mutate core/ services/
