@@ -342,6 +342,107 @@ def api_automation_arm(tenant_id: str = ""):
 
 
 # ═══════════════════════════════════════════════════════════════════════
+#  Issue #76 · Auto-Pilot Fase 3 — dry-run visual (execução simulada)
+#  Simula o que o piloto FARIA com as regras armadas — resultados previstos
+#  + veredito do SafetyEngine — SEM executar/auditar/mutar nada.
+# ═══════════════════════════════════════════════════════════════════════
+
+@alerts_bp.route("/automation/dry-run", methods=["GET"])
+@require_tenant
+@role_required("viewer")
+def api_automation_dry_run(tenant_id: str = ""):
+    """Issue #76 — simulated execution: what the armed pilot WOULD do now.
+
+    Runs the full evaluate_rules pipeline (conditions + cooldown + conflicts
+    + tenant budget) over the CURRENT fleet telemetry, but executes/audits/
+    mutates NOTHING (no cooldown or budget consumed). Consults the
+    SafetyEngine read-only to predict each action's verdict. Runs regardless
+    of the armed state — rehearse before arming.
+    """
+    tid = tenant_id or "default"
+    try:
+        from config import DB_PATH as _ap_db_path
+        from core.alerts.automation_engine import AutomationEngine
+        from core.safety.safety_engine import SafetyEngine
+        from services.auto_pilot import axe_fleet_to_device
+        from services.snapshot_enrichment import get_auto_pilot_engine as _get_ap_engine
+        from axe_fleet.routes import _registry
+        # Prefer the boot engine: its _action_history carries the REAL
+        # per-tenant budget consumption, so the simulated budget is truthful.
+        engine = _get_ap_engine() or AutomationEngine(_ap_db_path, SafetyEngine())
+        fleet = []
+        if _registry is not None:
+            fleet = _registry.list_devices(tenant_id=tid, with_telemetry=True) or []
+        devices = [axe_fleet_to_device(d) for d in fleet if d.get("id")]
+        return jsonify(engine.dry_run_rules(devices, tenant_id=tid))
+    except Exception as e:
+        return jsonify({"simulated": True, "error": str(e), "actions": []}), 500
+
+
+@alerts_bp.route("/automation/dry-run/replay", methods=["GET"])
+@require_tenant
+@role_required("viewer")
+def api_automation_dry_run_replay(tenant_id: str = ""):
+    """Issue #76 — 24h replay: how many times each rule WOULD have fired.
+
+    Pure simulation over the REAL persisted telemetry history (axe registry):
+    per-cycle cooldown + conflict resolution + per-tenant budget applied
+    exactly like a live cycle. Nothing executes.
+
+    Query params: hours (default 24, max 24), limit (samples per device).
+    """
+    tid = tenant_id or "default"
+    hours = request.args.get("hours", 24, type=int) or 24
+    hours = min(max(hours, 1), 24)
+    limit = request.args.get("limit", 288, type=int) or 288
+    try:
+        from config import DB_PATH as _ap_db_path
+        from core.alerts.automation_engine import AutomationEngine
+        from core.safety.safety_engine import SafetyEngine
+        from services.snapshot_enrichment import get_auto_pilot_engine as _get_ap_engine
+        from axe_fleet.routes import _registry
+        engine = _get_ap_engine() or AutomationEngine(_ap_db_path, SafetyEngine())
+        rules = engine.load_rules(tenant_id=tid)
+        history: dict = {}
+        if _registry is not None:
+            for dev in _registry.list_devices(tenant_id=tid) or []:
+                dev_id = dev.get("id")
+                if not dev_id:
+                    continue
+                rows = _registry.get_recent_telemetry(dev_id, limit=limit,
+                                                      tenant_id=tid) or []
+                samples = []
+                for r in rows:
+                    if not isinstance(r, dict):
+                        continue
+                    p = r.get("payload")
+                    if not isinstance(p, dict):
+                        continue
+                    sample = dict(p)
+                    sample["ts"] = int(p.get("ts") or r.get("ts") or 0)
+                    if not sample["ts"]:
+                        continue
+                    sample.setdefault("hashrate", p.get("hashrate_hs"))
+                    sample.setdefault("power", p.get("power_watts"))
+                    sample.setdefault("fan_speed", p.get("fan_speed"))
+                    sample.setdefault("voltage", p.get("voltage_mv"))
+                    sample.setdefault("frequency", p.get("frequency_mhz"))
+                    sample.setdefault("accepted_shares", p.get("shares_accepted"))
+                    sample.setdefault("rejected_shares", p.get("shares_rejected"))
+                    sample.setdefault("stale_shares", p.get("shares_stale"))
+                    samples.append(sample)
+                if samples:
+                    history[dev_id] = samples
+        window_s = hours * 3600
+        result = engine.simulate_replay_window(rules, history,
+                                               window_seconds=window_s)
+        result["armed"] = engine.is_armed(tid)
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({"simulated": True, "error": str(e), "per_rule": []}), 500
+
+
+# ═══════════════════════════════════════════════════════════════════════
 #  Issue #20 · Auto-Pilot advisory mode — Fase 2 do Big Bet
 #  Recomendações consolidadas por dispositivo com ação acionável + audit
 #  trail (aceitas/ignoradas). Fail-closed e tenant-scoped.

@@ -14,7 +14,7 @@ import threading
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
-from core.models.device import Device, device_status_is_online
+from core.models.device import Device, DeviceStatus, device_status_is_online
 from core.safety.safety_engine import SafetyEngine, SafetyResult
 
 log = logging.getLogger("cypher65.automation")
@@ -118,6 +118,26 @@ class AutomationEngine:
         "stop": "start",
     }
 
+    # Fase 3 dry-run (Issue #76): predicted outcome per action command. The
+    # simulation shows WHAT the pilot would do and WHAT to expect, so the
+    # operator can rehearse before arming.
+    ACTION_PREDICTED_OUTCOMES: Dict[str, str] = {
+        "restart": "ASIC reinicia — hashrate volta ao normal em ~60-120s "
+                   "(janela curta de offline durante o reboot)",
+        "pause": "Hashing para — ASIC esfria rapidamente (device continua "
+                 "acessível na rede)",
+        "resume": "Retoma hashing — hashrate sobe de volta ao nível normal",
+        "underclock": "Frequência/voltagem caem — temperatura e consumo "
+                      "reduzem (hashrate menor)",
+        "overclock": "Frequência/voltagem sobem — hashrate aumenta "
+                     "(temperatura e consumo sobem junto)",
+        "poweroff": "Device desliga — requer acionamento manual para voltar",
+        "start": "Device liga/inicia o hashing",
+        "stop": "Device para de hashear",
+        "identify": "Identificação visual (LED) acionada — sem impacto no "
+                     "hashing",
+    }
+
     def preview_rules(self, devices: List[Device],
                       tenant_id: str = "") -> List[Dict[str, Any]]:
         """P1 Auto-Pilot advisory: which enabled rules WOULD fire right now.
@@ -200,6 +220,24 @@ class AutomationEngine:
             self._action_history[tid] = hist
             return True
 
+    def _budget_remaining(self, tenant_id: str,
+                          now: Optional[int] = None) -> int:
+        """Read-only budget probe (Fase 3 dry-run).
+
+        Returns how many action slots would remain in the current window
+        WITHOUT consuming anything — the simulation must not spend budget.
+        Mirrors the live engine's sequential consumption: the first N
+        survivors consume the remaining slots, the overflow is rate-limited.
+        """
+        tid = tenant_id or "default"
+        now = int(time.time()) if now is None else now
+        window = self.AUTOMATION_ACTION_WINDOW_S
+        cap = self.AUTOMATION_MAX_ACTIONS_PER_WINDOW
+        with self._budget_lock:
+            hist = [t for t in self._action_history.get(tid, [])
+                    if (now - t) < window]
+            return max(0, cap - len(hist))
+
     def evaluate_rules(self, devices: List[Device],
                        tenant_id: str = "") -> List[Dict[str, Any]]:
         """Evaluate the tenant's active rules against the provided devices.
@@ -258,8 +296,230 @@ class AutomationEngine:
             results.append(self._execute(rule, device, now))
         return results
 
+    def dry_run_rules(self, devices: List[Device],
+                      tenant_id: str = "") -> Dict[str, Any]:
+        """Fase 3 (Issue #76): simulated execution — what the armed pilot
+        WOULD do right now.
+
+        Runs the exact ``evaluate_rules`` pipeline (conditions + cooldown +
+        conflict resolution + tenant budget) against the CURRENT telemetry,
+        but with ZERO side effects:
+          - never calls execute_command_callback (nothing executes)
+          - never audits (no fake EXECUTED rows in the audit trail)
+          - never mutates ``_last_fired`` / ``_action_history`` — the
+            simulation consumes no cooldown and no budget, so rehearsing
+            never delays a real fire
+        It also runs REGARDLESS of the armed state (that is the point:
+        rehearse before arming) and consults the SafetyEngine read-only to
+        predict whether each action would be approved.
+        """
+        rules = self.load_rules(tenant_id=tenant_id)
+        now = int(time.time())
+        tid = tenant_id or "default"
+
+        triggered: List[tuple] = []
+        for rule in rules:
+            device = next((d for d in devices if d.id == rule.target_device_id), None)
+            if device is None:
+                continue
+            if not self._can_fire(rule, device.id, now):
+                continue
+            if self._evaluate_condition(device, rule):
+                triggered.append((rule, device))
+
+        survivors = self._resolve_conflicts(triggered, now, dry=True)
+        survivor_ids = {(r.id, d.id) for r, d in survivors}
+        cancelled = [(r, d) for r, d in triggered
+                     if (r.id, d.id) not in survivor_ids]
+        # Sequential budget simulation (mirrors live consumption): the first
+        # N survivors consume the remaining slots, the overflow is marked
+        # rate_limited — exactly what the armed pilot would do.
+        budget_left = self._budget_remaining(tid, now)
+
+        actions: List[Dict[str, Any]] = []
+        for rule, device in survivors:
+            safety = self._simulate_safety(device, rule)
+            if budget_left > 0:
+                budget_left -= 1
+                budget_status = "would_consume"
+            else:
+                budget_status = "rate_limited"
+            actions.append({
+                "rule_id": rule.id,
+                "rule_name": rule.name,
+                "device_id": device.id,
+                "device_name": getattr(device, "name", "") or device.id,
+                "condition_metric": rule.condition_metric,
+                "condition_operator": rule.condition_operator,
+                "condition_value": rule.condition_value,
+                "actual_value": self._get_metric(device, rule.condition_metric),
+                "action_command": rule.action_command,
+                "action_parameters": dict(rule.action_parameters or {}),
+                "predicted_outcome": self.ACTION_PREDICTED_OUTCOMES.get(
+                    rule.action_command,
+                    "Ação executada pelo firmware do device (efeito depende "
+                    "do modelo)."),
+                "safety_verdict": safety["verdict"],
+                "safety_reason": safety["reason"],
+                "budget": budget_status,
+                "conflict": None,
+            })
+        for rule, device in cancelled:
+            actions.append({
+                "rule_id": rule.id,
+                "rule_name": rule.name,
+                "device_id": device.id,
+                "device_name": getattr(device, "name", "") or device.id,
+                "condition_metric": rule.condition_metric,
+                "condition_operator": rule.condition_operator,
+                "condition_value": rule.condition_value,
+                "actual_value": self._get_metric(device, rule.condition_metric),
+                "action_command": rule.action_command,
+                "action_parameters": dict(rule.action_parameters or {}),
+                "predicted_outcome": "Cancelada: ação conflita com outra regra "
+                                     "do mesmo device no mesmo ciclo.",
+                "safety_verdict": "n/a",
+                "safety_reason": "",
+                "budget": "n/a",
+                "conflict": "cancelled_by_conflict",
+            })
+        return {
+            "simulated": True,
+            "armed": self.is_armed(tid),
+            "count": len(actions),
+            # Only actions that WOULD actually run count — a survivor past
+            # the budget slot is rate_limited, not executed.
+            "would_execute": sum(1 for a in actions
+                                  if a["budget"] == "would_consume"),
+            "budget_remaining": budget_left > 0,
+            "budget_slots_left": budget_left,
+            "max_actions_per_window": self.AUTOMATION_MAX_ACTIONS_PER_WINDOW,
+            "action_window_seconds": self.AUTOMATION_ACTION_WINDOW_S,
+            "actions": actions,
+        }
+
+    def _simulate_safety(self, device: Device,
+                         rule: AutomationRule) -> Dict[str, str]:
+        """Predict the SafetyEngine verdict (read-only, never recorded)."""
+        if self.safety_engine is None:
+            return {"verdict": "unknown", "reason": "no safety engine"}
+        try:
+            res = self.safety_engine.validate_command(
+                device, rule.action_command, rule.action_parameters)
+            if res.allowed:
+                return {"verdict": "approved", "reason": ""}
+            return {"verdict": "blocked",
+                    "reason": res.reason or "SafetyEngine bloqueou (simulado)"}
+        except Exception as e:
+            return {"verdict": "unknown", "reason": str(e)[:120]}
+
+    def simulate_replay_window(self, rules: List[AutomationRule],
+                               history: Dict[str, list],
+                               now: Optional[int] = None,
+                               max_actions_per_window: Optional[int] = None,
+                               window_seconds: Optional[int] = None) -> Dict[str, Any]:
+        """Fase 3 (Issue #76): simulate the ARMED pilot over telemetry history.
+
+        PURE — no I/O, no audit, no state mutation, nothing executes. Walks
+        each device's samples chronologically and counts how many times each
+        rule WOULD have fired in the window, applying the same pipeline as a
+        live cycle: per-rule cooldown (min_interval_seconds), same-cycle
+        conflict resolution and the per-tenant action budget.
+
+        Args:
+            rules: list of AutomationRule.
+            history: dict device_id -> list of {ts, **telemetry} payloads in
+                the automation metric namespace (temperature, hashrate, ...).
+            now / max_actions_per_window / window_seconds: simulation knobs.
+
+        Returns:
+            {window_hours, samples, total_fires, total_rate_limited,
+             per_rule: [{rule_id, rule_name, device_id, device_name,
+                         action_command, fires, rate_limited, first_ts, last_ts}]}
+        """
+        cap = (self.AUTOMATION_MAX_ACTIONS_PER_WINDOW
+               if max_actions_per_window is None else max_actions_per_window)
+        window = (self.AUTOMATION_ACTION_WINDOW_S
+                  if window_seconds is None else window_seconds)
+        now = int(time.time()) if now is None else now
+        window_start = now - window
+
+        last_fire: Dict[tuple, int] = {}
+        budget_spent = 0
+        per_rule: Dict[int, dict] = {}
+        samples_total = 0
+
+        for device_id, samples in (history or {}).items():
+            ordered = sorted(
+                (s for s in samples
+                 if isinstance(s, dict) and s.get("ts") is not None),
+                key=lambda s: s["ts"])
+            ordered = [s for s in ordered if window_start <= s["ts"] <= now]
+            samples_total += len(ordered)
+            i = 0
+            while i < len(ordered):
+                ts = ordered[i]["ts"]
+                dev = Device(id=device_id,
+                             name=str(ordered[i].get("device_name") or device_id),
+                             status=DeviceStatus.ONLINE)
+                dev.current_telemetry = ordered[i]
+                triggered: List[tuple] = []
+                for rule in rules:
+                    if rule.target_device_id != device_id:
+                        continue
+                    key = (rule.id, device_id)
+                    # None sentinel: a ts of 0 is a legitimate timestamp and
+                    # must never count as "fired at epoch 0".
+                    prev = last_fire.get(key)
+                    if prev is not None and (ts - prev) < rule.min_interval_seconds:
+                        continue
+                    if self._evaluate_condition(dev, rule):
+                        triggered.append((rule, dev))
+                for rule, _ in self._resolve_conflicts(triggered, ts, dry=True):
+                    key = (rule.id, device_id)
+                    last_fire[key] = ts
+                    agg = per_rule.get(rule.id)
+                    if agg is None:
+                        agg = {
+                            "rule_id": rule.id,
+                            "rule_name": rule.name,
+                            "device_id": device_id,
+                            "device_name": str(ordered[i].get("device_name")
+                                                or device_id),
+                            "action_command": rule.action_command,
+                            "fires": 0,
+                            "rate_limited": 0,
+                            "first_ts": ts,
+                            "last_ts": ts,
+                        }
+                        per_rule[rule.id] = agg
+                    if budget_spent >= cap:
+                        agg["rate_limited"] += 1
+                    else:
+                        budget_spent += 1
+                        agg["fires"] += 1
+                        # Timestamps only advance on REAL fires — a rule that
+                        # only got rate_limited must not show a "when" it fired.
+                        agg["first_ts"] = (min(agg["first_ts"], ts)
+                                            if agg.get("first_ts") else ts)
+                        agg["last_ts"] = max(agg["last_ts"], ts)
+                # Advance past every sample sharing this ts (one cycle).
+                while i < len(ordered) and ordered[i]["ts"] == ts:
+                    i += 1
+
+        per_rule_list = sorted(per_rule.values(),
+                               key=lambda a: (-a["fires"], a["rule_id"]))
+        return {
+            "window_hours": round(window / 3600, 2),
+            "samples": samples_total,
+            "total_fires": sum(a["fires"] for a in per_rule_list),
+            "total_rate_limited": sum(a["rate_limited"] for a in per_rule_list),
+            "per_rule": per_rule_list,
+        }
+
     def _resolve_conflicts(self, triggered: List[tuple],
-                           now: Optional[int] = None) -> List[tuple]:
+                           now: Optional[int] = None,
+                           dry: bool = False) -> List[tuple]:
         """Drop conflicting rules on the same device, keeping higher priority.
 
         Non-conflicting rules always survive. Conflicting pairs are resolved
@@ -272,6 +532,9 @@ class AutomationEngine:
         Cancelled rules ALSO record their cooldown (like execution does), so a
         persistent conflict re-audits at most once per min_interval_seconds
         instead of spamming the log every poll cycle.
+
+        ``dry=True`` (Fase 3 dry-run / replay): never audits conflicts and
+        never records cooldown — the simulation must not mutate pilot state.
         """
         now = int(time.time()) if now is None else now
         if len(triggered) <= 1:
@@ -298,19 +561,22 @@ class AutomationEngine:
                     # that would let insertion order decide a conflict.
                     if rule_i.priority > rule_j.priority:
                         cancelled.add(j)
-                        self._audit_conflict(rule_j, dev_j, blocked_by=rule_i.name)
+                        if not dry:
+                            self._audit_conflict(rule_j, dev_j, blocked_by=rule_i.name)
                     elif rule_j.priority > rule_i.priority:
                         cancelled.add(i)
-                        self._audit_conflict(rule_i, dev_i, blocked_by=rule_j.name)
+                        if not dry:
+                            self._audit_conflict(rule_i, dev_i, blocked_by=rule_j.name)
                     else:  # tie → cancel both, never let them fight
                         cancelled.add(i)
                         cancelled.add(j)
-                        self._audit_conflict(rule_i, dev_i,
-                                             blocked_by=rule_j.name + " (tie)")
-                        self._audit_conflict(rule_j, dev_j,
-                                             blocked_by=rule_i.name + " (tie)")
+                        if not dry:
+                            self._audit_conflict(rule_i, dev_i,
+                                                 blocked_by=rule_j.name + " (tie)")
+                            self._audit_conflict(rule_j, dev_j,
+                                                 blocked_by=rule_i.name + " (tie)")
             for idx, (rule, dev) in enumerate(pairs):
-                if idx in cancelled:
+                if idx in cancelled and not dry:
                     # Rate-limit re-audits for persistent conflicts.
                     self._last_fired[f"{rule.id}:{dev.id}"] = now
             survivors.extend(p for idx, p in enumerate(pairs) if idx not in cancelled)
