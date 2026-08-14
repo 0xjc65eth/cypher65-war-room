@@ -22,6 +22,7 @@ DB_PATH to a scratch DB before `import app` (same as test_licensing.py).
 import hashlib
 import hmac
 import json
+import logging
 import os
 import re
 import sqlite3
@@ -391,3 +392,48 @@ def test_license_status_open_mode_no_payments(client):
     assert r.status_code == 200
     assert r.get_json()["payments"] is None
     assert r.get_json()["mode"] == "open"
+
+
+# ── PII redaction (Issue #116) ────────────────────────────────────────
+
+def test_webhook_log_masks_email(caplog, monkeypatch):
+    """The fulfillment log must never contain the raw buyer email."""
+    _ls_env(monkeypatch)
+    raw = "privacy.test@example.com"
+    with caplog.at_level(logging.INFO, logger="cypher65.payments"):
+        key = payments.handle_webhook(_order_payload(email=raw, order_id="8001"))
+    assert key and _KEY_RE.match(key)
+    assert raw not in caplog.text  # full email NEVER reaches the log
+    assert "pri…@example.com" in caplog.text  # masked form present
+    assert "email_sha=" in caplog.text  # correlation hash present
+
+
+def test_webhook_no_order_id_logs_without_payload(caplog, monkeypatch):
+    """A malformed order_created without an order id must not dump the raw
+    payload (it carries user_email) into the log — safe fields only."""
+    _ls_env(monkeypatch)
+    raw_email = "leaky.payload@example.com"
+    payload = {
+        "meta": {"event_name": "order_created"},
+        "data": {"attributes": {"user_email": raw_email}},
+    }
+    with caplog.at_level(logging.WARNING, logger="cypher65.payments"):
+        payments.handle_webhook(payload)
+    assert raw_email not in caplog.text  # payload never dumped
+    assert "processing without dedup: event=order_created data_id=" in caplog.text
+
+
+def test_mask_email_edge_cases():
+    m = payments.mask_email  # re-exported from helpers (single source of truth)
+    assert m("alice@x.io") == "ali…@x.io"
+    assert m("a@x.io") == "a@x.io"  # short local part: nothing to hide
+    assert m("no-at-sign") == "no-…"  # 3-char prefix, no domain to keep
+    assert m("") == "-"
+    assert m(None) == "-"
+
+
+def test_email_sha_matches_funnel_anonymize():
+    """Webhook log hash correlates 1:1 with the funnel's email_hash."""
+    from services.conversion import _anonymize
+    for email in ("Buyer@Example.com", "x@y.io", ""):
+        assert payments.email_sha(email) == _anonymize(email)

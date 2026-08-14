@@ -8,10 +8,45 @@ import time
 import logging
 import json
 import os
+import hashlib
 from collections import deque
 from typing import Optional
 
 log = logging.getLogger("cypher65")
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#  PII redaction (Issue #116) — buyer/operator emails in logs
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+def mask_email(email: str) -> str:
+    """Mask an email for logs: ``loc***@domain`` — never the full local part.
+
+    Keeps the domain + local-prefix for fast operator triage. Short local
+    parts (<=3 chars) expose nothing worth hiding and stay untouched.
+    """
+    email = (email or "").strip()
+    if not email:
+        return "-"
+    if "@" not in email:
+        return email[:3] + ("…" if len(email) > 3 else "")
+    local, _, domain = email.partition("@")
+    shown = local[:3]
+    if len(local) > 3:
+        shown += "…"
+    return f"{shown}@{domain}"
+
+
+def email_sha(email: str) -> str:
+    """Deterministic non-reversible email hash — same scheme as
+    conversion._anonymize (sha256 of lowercased email, first 24 hex chars)
+    so log correlation matches the funnel's ``email_hash`` 1:1.
+    """
+    email = (email or "").strip().lower()
+    if not email:
+        return ""
+    return hashlib.sha256(email.encode("utf-8")).hexdigest()[:24]
+
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 #  Parsing

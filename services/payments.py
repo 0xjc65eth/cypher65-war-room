@@ -36,6 +36,7 @@ from typing import Optional, Tuple
 
 import requests
 
+from helpers import email_sha, mask_email
 from services import licensing
 from services.db import get_db
 
@@ -208,6 +209,13 @@ def _release_claim(order_id: str) -> None:
         conn.close()
 
 
+# ── PII redaction (Issue #116) ────────────────────────────────────────
+# Buyer emails must NEVER reach the log sink in plain text. mask_email keeps
+# the domain + local-prefix for fast triage; email_sha matches the funnel's
+# email_hash so webhook logs correlate 1:1. Shared with licensing.py via
+# helpers (single source of truth).
+
+
 def handle_webhook(payload: dict) -> Optional[str]:
     """Fulfill an order_created webhook → issue a PRO license key.
 
@@ -251,7 +259,10 @@ def handle_webhook(payload: dict) -> Optional[str]:
             log.info("webhook in-flight: order=%s already being fulfilled — no-op", order_id)
             return None
     else:
-        log.warning("webhook without order id — processing without dedup: %.120s", payload)
+        # PII-safe (Issue #116): NEVER dump the raw payload — order_created
+        # carries data.attributes.user_email. Log only safe identifiers.
+        log.warning("webhook without order id — processing without dedup: event=%s data_id=%s",
+                    meta.get("event_name"), data.get("id"))
 
     email = (attrs.get("user_email") or "").strip()
     first_item = attrs.get("first_order_item") or {}
@@ -289,5 +300,8 @@ def handle_webhook(payload: dict) -> Optional[str]:
                           "plan": plan, "source": "lemon_squeezy"})
     except Exception:
         pass
-    log.info("webhook fulfilled: order=%s plan=%s email=%s", data.get("id"), plan, email or "-")
+    # PII-safe fulfillment log (Issue #116): masked email + hash for
+    # correlation with the funnel's email_hash — never the raw address.
+    log.info("webhook fulfilled: order=%s plan=%s email=%s email_sha=%s",
+             data.get("id"), plan, mask_email(email), email_sha(email))
     return key
