@@ -205,6 +205,59 @@ O sidecar (`--profile tailscale`) transforma o servidor em **subnet router**:
 | `INFLUXDB_URL` / `TOKEN` / `ORG` / `BUCKET` | vazios | **Opção**: mirror de métricas |
 | `CERT_FILE` / `KEY_FILE` | — | TLS opcional no app |
 | `TAILSCALE_AUTH_KEY` / `LOCAL_SUBNET` | — | Usados pelo compose/install |
+| `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` | — | **Web Push** (ver seção abaixo) |
+| `VAPID_SUBJECT` | `mailto:admin@cypher65.local` | Contato do push service (mailto:) |
+
+---
+
+## 📲 Web Push (VAPID) — Issue #15
+
+Web Push de alertas (ex: auto-exclusão, worker offline) entrega para o browser
+mesmo com a aba fechada. Fica **OFF** até o par VAPID ser configurado — sem ele
+o frontend nem oferece subscrição e `notify_tenant_alert` degrada silencioso.
+
+### 1. Gerar o par de chaves (uma vez)
+
+```bash
+pip install pywebpush
+python -c "from py_vapid import Vapid; import base64; \
+from cryptography.hazmat.primitives import serialization as S; \
+v=Vapid(); v.generate_keys(); \
+print(base64.urlsafe_b64encode(v.public_key.public_bytes(S.Encoding.X962, \
+S.PublicFormat.UncompressedPoint)).rstrip(b'=').decode()); \
+print(base64.urlsafe_b64encode(v.private_key.private_numbers() \
+.private_value.to_bytes(32,'big')).rstrip(b'=').decode())"
+# linha 1 = VAPID_PUBLIC_KEY · linha 2 = VAPID_PRIVATE_KEY
+```
+
+### 2. Setar no Render (dashboard → Environment)
+
+| Variável | Valor | sync |
+|---|---|---|
+| `VAPID_PUBLIC_KEY` | pública (base64url) | `false` (fora do git) |
+| `VAPID_PRIVATE_KEY` | **secreta** (base64url) | `false` |
+| `VAPID_SUBJECT` | `mailto:voce@dominio.com` (opcional) | `false` |
+
+As chaves **nunca** entram no git — o `render.yaml` as provisiona com
+`sync: false` e o valor real vai só no Render dashboard.
+
+### 3. Validar entrega real
+
+1. Abra o dashboard no domínio **https** (Web Push exige contexto seguro).
+2. O frontend registra o service worker e pede permissão automaticamente
+   (apenas quando a rota `/api/push/vapid-key` retorna a chave).
+3. Settings → alertas → **🧪 TESTAR ALERTA** — responde `push_targets >= 1`
+   quando a entrega real chegou (mesmo payload que o sweep envia).
+4. Se `push_targets: 0`, confira: https no navegador, permissão concedida,
+   chaves batendo (a privada deve corresponder à pública) e `pywebpush`
+   instalado (`requirements.txt` já o inclui).
+
+### Arquitetura
+
+`services/push_notifier.py` (VAPID + `pywebpush`) → `/api/push/subscribe`
+(autenticado por JWT — Issue #115) → tabela `push_subscriptions` por tenant →
+`notify_tenant_alert()` (sweep/auto-exclusão) → `static/sw.js` listener `push`
+→ notificação OS com clique foca o dashboard.
 
 ---
 

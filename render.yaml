@@ -57,6 +57,26 @@ services:
         generateValue: true
       # Optional: API_KEY / TENANT_API_KEYS to lock the API behind auth.
       # Optional: SENTRY_DSN for error monitoring.
+      # ── Web Push (VAPID) — Issue #15 ────────────────────────────────────
+      # Push de alertas no browser só liga com um par de chaves VAPID.
+      # Gere uma vez localmente e cole os valores REAIS no Render dashboard
+      # (sync: false mantém as chaves FORA do git — nunca commitá-las):
+      #   python -c "from py_vapid import Vapid; import base64;\
+      #   from cryptography.hazmat.primitives import serialization as S;\
+      #   v=Vapid(); v.generate_keys();\
+      #   print(base64.urlsafe_b64encode(v.public_key.public_bytes(S.Encoding.X962,\
+      #   S.PublicFormat.UncompressedPoint)).rstrip(b'=').decode());\
+      #   print(base64.urlsafe_b64encode(v.private_key.private_numbers()\
+      #   .private_value.to_bytes(32,'big')).rstrip(b'=').decode())"
+      # VAPID_SUBJECT (mailto:) é opcional — quem o push service pode
+      # contatar sobre expiração/política. Passo a passo completo:
+      # docs/DEPLOYMENT_OPS.md → "Web Push (VAPID)".
+      - key: VAPID_PUBLIC_KEY
+        sync: false
+      - key: VAPID_PRIVATE_KEY
+        sync: false
+      - key: VAPID_SUBJECT
+        sync: false
       # ── $0 persistence: remote backup to a private GitHub gist ─────────
       # `sync: false` provisions the key but NOT its value — set the real PAT
       # (scope `gist`) in the Render dashboard so the secret never hits git.

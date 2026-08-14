@@ -647,3 +647,30 @@ class TestTenantPushSubscriptions:
         monkeypatch.setattr(pn, "VAPID_PUBLIC_KEY", "pub")
         save_subscription("https://push.example/i", {}, tenant_id="t")
         assert notify_tenant_alert("t", "INFO", "uptime", "crossed") == 0
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 6. VAPID configuration (Issue #15) — env-gated keys + subject
+# ═══════════════════════════════════════════════════════════════════════════
+
+class TestVapidConfig:
+    def test_claims_subject_env_gated(self, monkeypatch):
+        """VAPID_SUBJECT env must control VAPID_CLAIMS['sub'] (never hardcoded)."""
+        import importlib
+        import services.push_notifier as pn
+
+        monkeypatch.setenv("VAPID_SUBJECT", "mailto:ops@cypher65.dev")
+        reloaded = importlib.reload(pn)
+        assert reloaded.VAPID_CLAIMS["sub"] == "mailto:ops@cypher65.dev"
+
+        monkeypatch.delenv("VAPID_SUBJECT", raising=False)
+        reloaded = importlib.reload(pn)
+        assert reloaded.VAPID_CLAIMS["sub"] == "mailto:admin@cypher65.local"
+
+        # Restore the module to its env-less default so later tests are clean.
+        importlib.reload(pn)
+
+    def test_claims_always_has_sub(self):
+        import services.push_notifier as pn
+        assert pn.VAPID_CLAIMS.get("sub")
+        assert pn.VAPID_CLAIMS["sub"] == pn.VAPID_SUBJECT
