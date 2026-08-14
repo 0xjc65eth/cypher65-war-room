@@ -304,5 +304,75 @@ test.describe('RENTALS — performance dos aluguéis (P2)', () => {
     expect(trustText).toMatch(/STABLE/);
     expect(trustText).toMatch(/CV/);
   });
+
+  test('auto-exclusão pelo detail mostra banner + toast + card na seção AUTO-EXCLUSÕES (Issue #110)', async ({ page }) => {
+    // MRR detail que REALIZA a auto-exclusão: a resposta carrega o badge
+    // payload (auto_excluded_now + entry do ledger) e o painel deve mostrar
+    // o banner, o toast e pré-adicionar o card na seção AUTO-EXCLUSÕES sem
+    // refresh — feedback visual imediato no mesmo local.
+    await page.route('**/api/rentals', (route) => {
+      route.fulfill({ contentType: 'application/json', body: JSON.stringify({
+        success: true, updated_at: Date.now(),
+        mrr: { needs_auth: false, active: [], owner: [], total_active: 0, total_history: 1, total_owner: 0, error: null,
+               history: [{
+                 id: 5657736, status: 'ended',
+                 start: '2026-07-01 10:00', end: '2026-07-02 10:00', length_hours: 24,
+                 hashrate_average_th: 57.5, hashrate_advertised_th: 100, hashrate_percent: 57.5,
+                 price_paid_btc: 0.0001,
+                 rig: { id: 'R1', name: 'Rig R1', region: 'US' },
+               }] },
+        braiins: { needs_auth: false, contracts: [], error: null },
+      })});
+    });
+    await page.route('**/api/rentals/detail*', (route) => {
+      route.fulfill({ contentType: 'application/json', body: JSON.stringify({
+        success: true, provider: 'mrr',
+        detail: {
+          id: 5657736, owner: '—', renter: '—',
+          hashrate: { advertised: { hash: 100, type: 'th', nice: '100 TH/s' },
+                      average: { hash: 57.5, type: 'th', percent: 57.5 } },
+          price: { paid: 0.0001 }, length: 24,
+          rig: { id: 'R1', name: 'Rig R1', region: 'US' },
+        },
+        graph: {}, log: {},
+        rig_analysis: {
+          trust: { grade: 'F', samples: 2, median_pct: 57.5, worst_pct: 57.5, score: 12 },
+          blacklisted: false, auto_blacklisted: true, summary: {},
+          history: [],
+        },
+        rig_history: [],
+        perf: { percent: 57.5, avg_th: 57.5, delivered_thh: 1380, cost_sats_per_thh: 300 },
+        market: {},
+        auto_excluded_now: true,
+        auto_exclude_alert_dispatched: 1,
+        auto_exclude_rule: { grade_floor: 'F', min_samples: 2 },
+        auto_exclude_entry: {
+          rig_id: 'R1', name: 'Rig R1', ts: 1786694400, grade: 'F',
+          delivery_pct: 57.5, samples: 2, min_samples: 2, grade_floor: 'F',
+          cause: 'sub-entrega (grade F)',
+        },
+      })});
+    });
+    await page.goto('/');
+    await page.waitForSelector('#sidebar', { timeout: 25000 });
+    await ensureSidebarOpen(page);
+    await page.click('.sidebar__link[data-module="rentals"]');
+    // 1 history + 0 active → cai na aba History com o card clicável
+    const cards = page.locator('#rentals-list .rentals-item');
+    await expect(cards.first()).toBeVisible({ timeout: 10000 });
+    await cards.first().click();
+    await expect(page.locator('#rentals-detail')).toBeVisible({ timeout: 5000 });
+    // Banner + toast (Issue #110)
+    await expect(page.locator('#rentals-detail-autoex')).toBeVisible({ timeout: 5000 });
+    await expect(page.locator('#rentals-detail-autoex')).toContainText('AUTO-EXCLUSÃO DISPARADA');
+    await expect(page.locator('#rentals-detail-autoex')).toContainText('alerta webhook/push enviado');
+    await expect(page.locator('#toast-container')).toContainText('auto-excluído', { timeout: 5000 });
+    // Card pré-adicionado na seção AUTO-EXCLUSÕES (sem refresh), com a
+    // entrega 57.5% e a régua floor F · mín 2
+    await expect(page.locator('#rentals-autoex')).toBeVisible({ timeout: 5000 });
+    await expect(page.locator('#rentals-autoex-list')).toContainText('Rig R1');
+    await expect(page.locator('#rentals-autoex-list')).toContainText('57.5%');
+    await expect(page.locator('#rentals-autoex-list')).toContainText('régua F · mín 2');
+  });
   });
 });

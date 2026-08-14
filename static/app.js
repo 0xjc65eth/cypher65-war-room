@@ -4636,6 +4636,11 @@ function renderAccount(acct) {
   async function openRentalDetail(id, provider) {
     const panel = document.getElementById('rentals-detail');
     if (!panel) return;
+    // Reset the auto-exclusion banner immediately — a stale
+    // 'AUTO-EXCLUSÃO DISPARADA' from a previous detail must never linger
+    // while the next detail's fetch is in flight (Issue #110).
+    const autoExBanner = document.getElementById('rentals-detail-autoex');
+    if (autoExBanner) autoExBanner.hidden = true;
     try {
       // Braiins: the contract's static fields are already in the list payload
       // — send them so the backend skips re-probing the list (detail needs
@@ -4657,6 +4662,40 @@ function renderAccount(acct) {
       });
       if (!r.ok) return;
       const data = await r.json();
+      // Auto-exclusion feedback (Issue #110): ONLY the detail call that
+      // PERFORMED the exclusion shows the banner + toast and pre-adds the
+      // card to the AUTO-EXCLUSÕES section — reopening an already-excluded
+      // rig never re-fires (auto_excluded_now is false then). The banner
+      // was already hidden at the top of this function.
+      if (autoExBanner && data.auto_excluded_now) {
+        const rule = data.auto_exclude_rule || {};
+        const nAlert = Number(data.auto_exclude_alert_dispatched) || 0;
+        const ruleStr = 'floor ' + escapeHtml(String(rule.grade_floor || 'F')) +
+          ' · mín ' + escapeHtml(String(rule.min_samples != null ? rule.min_samples : 2));
+        autoExBanner.hidden = false;
+        autoExBanner.innerHTML =
+          '<span class="rentals-detail__autoex-icon">🤖</span>' +
+          '<div class="rentals-detail__autoex-body">' +
+          '<strong>AUTO-EXCLUSÃO DISPARADA</strong>' +
+          '<div class="rentals-detail__autoex-sub">régua vigente: ' + ruleStr +
+          (nAlert ? ' · alerta webhook/push enviado' : ' · sem canal de alerta configurado (Settings → alertas)') +
+          '</div></div>';
+        showToast('success', 'Rig auto-excluído por sub-entrega' + (nAlert ? ' — alerta enviado' : ''));
+        // Pre-add the card to the AUTO-EXCLUSÕES section (same local) —
+        // dedup by rig_id so a stale entry from an earlier fetch never
+        // duplicates. The entry is the exact ledger row the section shows.
+        const entry = data.auto_exclude_entry;
+        if (entry && entry.rig_id != null && _rentalsData) {
+          const ax = (_rentalsData.auto_exclusions = _rentalsData.auto_exclusions || {});
+          ax.exclusions = ax.exclusions || [];
+          ax.exclusions = ax.exclusions.filter(function (x) {
+            return String(x.rig_id) !== String(entry.rig_id);
+          });
+          ax.exclusions.unshift(entry);
+          ax.count = ax.exclusions.length;
+          _renderRentalsAutoExclusions();
+        }
+      }
       const d = data.detail || {};
       const g = data.graph || {};
       const lg = data.log || {};
