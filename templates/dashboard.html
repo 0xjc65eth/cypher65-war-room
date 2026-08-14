@@ -867,6 +867,11 @@
   <div class="rentals-reco" id="rentals-reco" hidden>
     <div class="rentals-reco__head">RECOMENDADOS PRA RE-ALUGAR <span id="rentals-reco-meta" class="rentals-reco__meta"></span></div>
     <div class="rentals-reco__cards" id="rentals-reco-cards"></div>
+    <!-- Pilot's avoid case — grade-F rigs the operator can accept in ONE
+         click (BLACKLISTAR → the accepted ledger records the decision with
+         pilot_flagged=true). Card body opens the rig track record. -->
+    <div class="rentals-avoid__head" id="rentals-avoid-head" hidden>EVITAR — GRADE F (SUGESTÃO DO PILOTO) <span class="rentals-reco__meta">1 clique p/ aceitar</span></div>
+    <div class="rentals-reco__cards" id="rentals-avoid-cards"></div>
   </div>
   <!-- CFO: accepted recommendations — rigs que o piloto sugeriu blacklistar
        e o operador ACEITOU (manual ou exclusão automática), com o resultado

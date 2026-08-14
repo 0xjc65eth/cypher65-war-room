@@ -3911,10 +3911,16 @@ def build_rental_recommendations(tenant_id: str = "",
 
     Score = 0.6 × reliability (trust.score 0-100, median-based) +
             0.4 × price quality (avg cost vs live market, capped at 1.5×
-            cheaper = 100). Excludes manual + auto blacklists and grade F.
+            cheaper = 100). Excludes manual + auto blacklists.
 
-    Returns {"top": [rig...], "avoid_count": n, "tracked": n,
-             "market": {...}} — empty top when no track record exists yet.
+    Returns {"top": [rig...], "avoid": [rig...], "avoid_count": n,
+             "tracked": n, "market": {...}} — empty top/avoid when no
+    track record exists yet.
+
+    ``avoid`` is the pilot's full case: every grade-F rig with the SAME
+    fields as ``top`` (median/worst delivery, cost, trend, last rental),
+    sorted worst-first (lowest median delivery). The operator accepts the
+    suggestion in ONE click (blacklist) straight from the card.
     """
     try:
         conn = get_db()
@@ -3927,7 +3933,7 @@ def build_rental_recommendations(tenant_id: str = "",
         rows = c.fetchall()
         conn.close()
     except Exception:
-        return {"top": [], "avoid_count": 0, "tracked": 0,
+        return {"top": [], "avoid": [], "avoid_count": 0, "tracked": 0,
                 "market": {"available": False}}
 
     by_rig: Dict[str, Dict[str, Any]] = {}
@@ -3950,8 +3956,26 @@ def build_rental_recommendations(tenant_id: str = "",
     market = fetch_market_reference()
     mkt = market.get("price_sats_per_thh") if market.get("available") else None
 
+    def _rig_card(rid: str, b: Dict[str, Any], trust: Dict[str, Any],
+                  avg_cost: Optional[float], vs_mkt: Optional[float],
+                  trend: Optional[float]) -> Dict[str, Any]:
+        """Shared card shape for top + avoid entries (one schema, no drift)."""
+        starts = sorted(b["starts"])
+        return {
+            "rig_id": rid,
+            "name": b["name"],
+            "grade": trust.get("grade"),
+            "median_pct": trust.get("median_pct"),
+            "worst_pct": trust.get("worst_pct"),
+            "samples": trust.get("samples"),
+            "avg_cost_sats_per_thh": round(avg_cost, 2) if avg_cost else None,
+            "vs_market_pct": round(vs_mkt, 1) if vs_mkt is not None else None,
+            "trend_pct": trend,
+            "last_rental": starts[-1] if starts else None,
+        }
+
     top: List[Dict[str, Any]] = []
-    avoid_count = 0
+    avoid: List[Dict[str, Any]] = []
     for rid, b in by_rig.items():
         # Chronological order for the trend (see the note at collection).
         samples = sorted(b["samples"], key=lambda x: x[0])
@@ -3961,9 +3985,6 @@ def build_rental_recommendations(tenant_id: str = "",
         if trust.get("samples", 0) < 1:
             continue
         if rid in manual or rid in auto:
-            continue
-        if trust.get("grade") == "F":
-            avoid_count += 1
             continue
         avg_cost = (sum(b["costs"]) / len(b["costs"])) if b["costs"] else None
         price_q = 60.0  # neutral when no cost data
@@ -3979,21 +4000,22 @@ def build_rental_recommendations(tenant_id: str = "",
             recent = sum(pcts[-3:]) / 3.0          # NEWEST 3
             older = sum(pcts[:-3]) / (len(pcts) - 3)
             trend = round(recent - older, 1)
-        top.append({
-            "rig_id": rid,
-            "name": b["name"],
-            "grade": trust.get("grade"),
-            "score": score,
-            "median_pct": trust.get("median_pct"),
-            "worst_pct": trust.get("worst_pct"),
-            "samples": trust.get("samples"),
-            "avg_cost_sats_per_thh": round(avg_cost, 2) if avg_cost else None,
-            "vs_market_pct": round(vs_mkt, 1) if vs_mkt is not None else None,
-            "trend_pct": trend,
-            "last_rental": starts[-1] if starts else None,
-        })
+        card = _rig_card(rid, b, trust, avg_cost, vs_mkt, trend)
+        if trust.get("grade") == "F":
+            # Pilot's avoid case — detailed card (the operator can accept it
+            # in one click from the panel). Keep the score too: the same
+            # 0.6×rel + 0.4×price formula ranks how BAD the rig is.
+            card["score"] = score
+            avoid.append(card)
+            continue
+        card["score"] = score
+        top.append(card)
     top.sort(key=lambda x: x["score"], reverse=True)
-    return {"top": top[:top_n], "avoid_count": avoid_count,
+    # Worst first: the lowest median delivery is the loudest avoid signal.
+    # (median_pct is always set here — F-grade entries passed the samples>=1 gate.)
+    avoid.sort(key=lambda x: x["median_pct"] or 0.0)
+    return {"top": top[:top_n], "avoid": avoid,
+            "avoid_count": len(avoid),
             "tracked": len(by_rig), "market": market}
 
 
