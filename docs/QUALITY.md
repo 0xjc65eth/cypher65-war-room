@@ -113,7 +113,7 @@ cd mobile && npx stryker run
 
 | Camada | Ferramenta | Cobertura | Gate CI |
 |---|---|---|---|
-| Unit/integration (Python) | pytest | 2192 testes, `--cov-fail-under=76` | ✅ blocking |
+| Unit/integration (Python) | pytest | 2255 testes, `--cov-fail-under=78` | ✅ blocking |
 | JS core (mirror do app.js) | node --test | 1261 testes | ✅ blocking |
 | E2E (browser) | **Playwright** | specs chromium + mobile-chrome | ✅ job `e2e` |
 | Cobertura pública | **Codecov** (free p/ repo público) | upload do coverage.xml | ✅ non-blocking |
@@ -121,7 +121,7 @@ cd mobile && npx stryker run
 | Guards XSS mobile (RN) | `scripts/check-mobile-xss.cjs` | WebView html/injectedJavaScript + eval + openURL `javascript:` | ✅ blocking |
 | Frontend (combinado) | `scripts/check_frontend.sh` (Issue #62) | guards DOM + XSS mobile + JS core + **audit visual** (console/overflow/truncamento) | ✅ blocking job `frontend-audit` |
 
-### Mapa de cobertura por módulo (Issue #123) — TOTAL 77%
+### Mapa de cobertura por módulo (Issue #123) — TOTAL 79%
 
 Medição `pytest --cov` com o comando exato do CI (arquivo de dados isolado;
 `coverage report -m` local reproduz). Financeiros/controle ≥80% primeiro
@@ -130,13 +130,13 @@ Medição `pytest --cov` com o comando exato do CI (arquivo de dados isolado;
 | Módulo | Cobertura | Notas |
 |---|---|---|
 | `core/safety/safety_engine.py` | **100%** | cooldown, rates, overrides (Issue #123) |
-| `services/poll_compute.py` | **100%** | helpers puros extraídos do `_do_poll` (Issue #135) |
+| `services/poll_compute.py` | **100%** | helpers puros do `_do_poll` — agora inclui profitability (3 modos) + milestones + event-stats (Issue #137) |
 | `services/payments.py` | **96%** | checkout env paths; restam 4 stmts do webhook |
+| `services/user_polling.py` | **94%** | fetchers globais + `_build_snapshot` (workers/dedup/halving) cobertos (Issue #137) |
 | `services/rental_performance.py` | **89%** | preço de mercado real em SQL, auto-exclusão, forecast |
 | `services/licensing.py` | **89%** | — |
 | `services/auto_pilot.py` | **84%** | collectors fail-closed (Issue #123) |
-| `services/user_polling.py` | **73%** | sweep paths: famílias reco/risk/auto + exceções (Issue #135) |
-| `app.py` | **57%** | 3009 stmts — o maior buraco (resto do poll/rotas) |
+| `app.py` | **58%** | 2920 stmts — maior buraco (fetch/persist/purge + rotas) |
 
 **Roadmap do gate (incremental, sem bloquear deploys no meio):**
 
@@ -144,17 +144,18 @@ Medição `pytest --cov` com o comando exato do CI (arquivo de dados isolado;
 2026-08-01  53%  → gate 45   (baseline)
 2026-08-03  66%  → gate 65   (+108 testes)
 2026-08-14  76%  → gate 75   (financeiros ≥80% — Issue #123)
-2026-08-14  77%  → gate 76   (poll_compute 100% + sweep paths — Issue #135)  ← estamos aqui
+2026-08-14  77%  → gate 76   (poll_compute 100% + sweep paths — Issue #135)
+2026-08-14  79%  → gate 78   (profitability/milestones/event-stats extraídos
+                              + fetchers globais e _build_snapshot — Issue #137)  ← estamos aqui
 próxima      ~80% → gate 80   (app.py + user_polling primeiro)
 ```
 
-Margem deliberada de ~1pp (77% real vs gate 76) — absorve variação de
-ambiente sem deixar o gate frouxo. Para o próximo degrau: `app.py` (57%,
-3009 stmts — resto do `_do_poll`: profitability/milestones/event-stats) e
-`services/user_polling.py` (73% — fetchers globais `_fetch_global_*`) são os
-dois maiores buracos; extrair os próximos blocos de computação pura para
-helpers testáveis (mesmo padrão do Issue #135) é o caminho de menor esforço
-por stmt coberto.
+Margem deliberada de ~1pp (79% real vs gate 78) — absorve variação de
+ambiente sem deixar o gate frouxo. Para o próximo degrau: `app.py` (58%,
+2920 stmts — fetch/persist/purge + rotas) é o maior buraco restante; o
+`_do_poll` já teve os blocos de computação pura extraídos (pool_compute
+100%), então os próximos alvos são os blocos de I/O com injeção de mock e as
+rotas de dashboard (mesmo padrão: extrair lógica pura → testar).
 
 ### Codecov — ✅ ATIVO (Issue #38 → PR #42)
 

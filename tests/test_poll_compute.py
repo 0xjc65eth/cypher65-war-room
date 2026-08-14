@@ -15,6 +15,7 @@ from services.poll_compute import (  # noqa: E402
     derive_network_values, parse_mempool_fees, merge_btc_quotes,
     compute_halving_countdown, build_all_workers, select_primary_worker,
     dedup_workers, compute_share_calc, compute_luck_estimate, fiat_convert,
+    compute_profitability, build_milestones, compute_event_stats,
 )
 
 
@@ -308,4 +309,270 @@ def test_fiat_convert_rounds_to_4_and_skips_none():
 
 def test_fiat_convert_zero_value():
     assert fiat_convert(0.0, {"USD": 100000}) == {"USD": 0.0}
+
+
+# ── compute_profitability ───────────────────────────────────────────────────
+
+def _prices(usd=100000, brl=550000):
+    return {"USD": usd, "BRL": brl, "EUR": 92000, "GBP": 79000,
+            "JPY": 15000000, "KRW": 140000000, "CNY": 720000}
+
+
+def test_profitability_no_worker_sets_unavailable_reason():
+    p, ch, nh = compute_profitability(None, None, _prices(), {}, 1e-8,
+                                      {"ts": 0, "data": None}, {})
+    assert ch == 0.0 and nh == 0.0
+    assert p["unavailable_reason"] == "no hashrate or network hashrate"
+    # Lender market rate is still emitted without a worker (Scenario D).
+    assert p["lender_market_rate_btc_per_th_day"] is None
+
+
+def test_profitability_pool_mode_math():
+    worker = {"hashrate": 100e12}
+    p, ch, nh = compute_profitability(
+        worker, 5000e15, _prices(usd=100000),
+        {}, 1e-8, {"ts": 0, "data": None},
+        {"cost_mode": "none", "btc_block_reward": 3.125,
+         "btc_avg_tx_fee": 0.05, "pool_fee_pct": 1.5,
+         "orphan_rate_pct": 0.5, "power_kwh_usd": 0.10,
+         "power_watts": 0, "rental_usd_per_th_day": 0,
+         "active_currency": "USD"},
+    )
+    assert ch == 100e12 and nh == 5000e15
+    assert p["cost_model_configured"] is False
+    assert p["mode"] == "pool"
+    share = 100e12 / 5000e15
+    gross = share * 144.0 * 3.175
+    net_pool = gross * (1 - 0.015) * (1 - 0.005)
+    assert p["gross_btc_per_day"] == pytest.approx(round(gross, 8))
+    assert p["net_btc_per_day_pool"] == pytest.approx(round(net_pool, 8))
+    assert p["pool_fee_info"] == "Pool fee: 1.5% · Orphan rate: 0.5% · Reward: 3.125+0.05 BTC/block"
+    assert p["solo_expected_time_to_block_days"] is not None
+    assert p["decision_matrix"]  # P0-2 unified matrix present
+    assert "lender_market_rate_btc_per_th_day" in p
+
+
+def test_profitability_rental_mode_costs_subtracted():
+    worker = {"hashrate": 100e12}
+    p, _, _ = compute_profitability(
+        worker, 5000e15, _prices(usd=100000),
+        {}, 1e-8, {"ts": 0, "data": None},
+        {"cost_mode": "rental", "rental_usd_per_th_day": 1.0,
+         "power_kwh_usd": 0.10, "power_watts": 0,
+         "btc_block_reward": 3.125, "btc_avg_tx_fee": 0.05,
+         "pool_fee_pct": 1.5, "orphan_rate_pct": 0.5,
+         "active_currency": "USD"},
+    )
+    assert p["cost_mode"] == "rental"
+    assert p["cost_model_configured"] is True
+    assert p["cost_per_day_usd"] == pytest.approx(100.0, abs=0.001)  # 100 TH × $1
+    # USD conversion needs a BTC price — present.
+    assert p["pool_net_usd_per_day"] is not None
+    assert p["rental_net_usd_per_day"] is not None
+    assert "no hashrate" not in p
+
+
+def test_profitability_power_mode_cost_label():
+    worker = {"hashrate": 100e12}
+    p, _, _ = compute_profitability(
+        worker, 5000e15, _prices(), {}, 1e-8, {"ts": 0, "data": None},
+        {"cost_mode": "power", "power_watts": 500, "power_kwh_usd": 0.12,
+         "rental_usd_per_th_day": 0, "btc_block_reward": 3.125,
+         "btc_avg_tx_fee": 0.05, "pool_fee_pct": 1.5,
+         "orphan_rate_pct": 0.5, "active_currency": "USD"},
+    )
+    assert p["cost_mode"] == "power"
+    assert "500W" in p["cost_label"]
+    # Power cost = 0.5 kW × 24h × $0.12
+    assert p["cost_per_day_usd"] == pytest.approx(0.5 * 24 * 0.12, abs=0.001)
+
+
+def test_profitability_implausible_market_rate_ignored():
+    """P0-5 guard: a market rate outside 1e-8..1e-2 (unit-conversion bug)
+    must NOT leak into lender economics."""
+    class _Offer:
+        price_per_th_day = 5.0  # absurd — 5 BTC/TH/d
+    p, _, _ = compute_profitability(
+        {"hashrate": 100e12}, 5000e15, _prices(usd=100000),
+        {"offers": [_Offer()]}, 1e-8, {"ts": 0, "data": None},
+        {"cost_mode": "none", "btc_block_reward": 3.125,
+         "btc_avg_tx_fee": 0.05, "pool_fee_pct": 1.5,
+         "orphan_rate_pct": 0.5, "power_kwh_usd": 0.10,
+         "power_watts": 0, "rental_usd_per_th_day": 0,
+         "active_currency": "USD"},
+    )
+    assert p["lender_market_rate_btc_per_th_day"] is None  # clamped
+    assert p["lender_market_rate_usd_per_th_day"] is None
+
+
+def test_profitability_plausible_market_rate_used():
+    class _Offer:
+        price_per_th_day = 2e-4  # ~20k sats/TH/d — physically plausible
+    p, _, _ = compute_profitability(
+        {"hashrate": 100e12}, 5000e15, _prices(usd=100000),
+        {"offers": [_Offer()]}, 1e-8, {"ts": 0, "data": None},
+        {"cost_mode": "none", "btc_block_reward": 3.125,
+         "btc_avg_tx_fee": 0.05, "pool_fee_pct": 1.5,
+         "orphan_rate_pct": 0.5, "power_kwh_usd": 0.10,
+         "power_watts": 0, "rental_usd_per_th_day": 0,
+         "active_currency": "USD"},
+    )
+    assert p["lender_market_rate_btc_per_th_day"] == pytest.approx(2e-4, rel=1e-9)
+    assert p["lender_market_rate_usd_per_th_day"] == pytest.approx(20.0, rel=1e-6)
+
+
+def test_profitability_market_cache_exception_swallowed():
+    """An offer whose price property raises (malformed upstream object)
+    trips the inner try — lender rate degrades to None, no crash."""
+    class _BadOffer:
+        @property
+        def price_per_th_day(self):
+            raise ValueError("boom")
+    p, _, _ = compute_profitability(
+        {"hashrate": 100e12}, 5000e15, _prices(usd=100000),
+        {"offers": [_BadOffer()]}, 1e-8, {"ts": 0, "data": None},
+        {"cost_mode": "none", "btc_block_reward": 3.125,
+         "btc_avg_tx_fee": 0.05, "pool_fee_pct": 1.5,
+         "orphan_rate_pct": 0.5, "power_kwh_usd": 0.10,
+         "power_watts": 0, "rental_usd_per_th_day": 0,
+         "active_currency": "USD"},
+    )
+    assert p["lender_market_rate_btc_per_th_day"] is None
+    assert "no hashrate" not in p  # worker part still computed
+
+
+def test_profitability_market_rate_from_settings_when_no_cache():
+    """No warm market cache + no btc_usd price → the settings-configured
+    rental rate cannot be converted; rate stays None but no crash."""
+    p, _, _ = compute_profitability(
+        {"hashrate": 100e12}, 5000e15, _prices(usd=None),
+        {}, 1e-8, {"ts": 0, "data": None},
+        {"cost_mode": "rental", "rental_usd_per_th_day": 1.0,
+         "power_kwh_usd": 0.10, "power_watts": 0,
+         "btc_block_reward": 3.125, "btc_avg_tx_fee": 0.05,
+         "pool_fee_pct": 1.5, "orphan_rate_pct": 0.5,
+         "active_currency": "USD"},
+    )
+    assert p["lender_market_rate_btc_per_th_day"] is None
+    # Stale-while-revalidate: cold price cache + no btc_usd → no USD rate.
+    assert p["lender_market_rate_usd_per_th_day"] is None
+
+
+def test_profitability_stale_price_cache_fallback():
+    """btc_usd missing but btc_price_cache has a stale real quote — the USD
+    lender rate falls back to it (never mock/None on a cold box).
+
+    With a plausible market offer (no live BTC price), the stale cached
+    quote supplies the conversion: rate_usd = rate_btc × stale_usd."""
+    class _Offer:
+        price_per_th_day = 2e-4  # plausible — survives the P0-5 clamp
+    p, _, _ = compute_profitability(
+        {"hashrate": 100e12}, 5000e15, _prices(usd=None),
+        {"offers": [_Offer()]}, 1e-8,
+        {"ts": 100, "data": {"bitcoin": {"usd": 90000}}},
+        {"cost_mode": "none", "btc_block_reward": 3.125,
+         "btc_avg_tx_fee": 0.05, "pool_fee_pct": 1.5,
+         "orphan_rate_pct": 0.5, "power_kwh_usd": 0.10,
+         "power_watts": 0, "rental_usd_per_th_day": 0.0,
+         "active_currency": "USD"},
+    )
+    assert p["lender_market_rate_btc_per_th_day"] == pytest.approx(2e-4, rel=1e-9)
+    # stale-while-revalidate: USD conversion came from the cached quote
+    assert p["lender_market_rate_usd_per_th_day"] == pytest.approx(18.0, rel=1e-6)
+
+
+def test_profitability_worker_zero_hashrate_hoists_cur_hr():
+    """cur_hr is hoisted before the try — a worker with hashrate 0 yields
+    cur_hr 0.0 and the unavailable branch, not a crash."""
+    p, ch, nh = compute_profitability(
+        {"hashrate": 0}, 5000e15, _prices(), {}, 1e-8,
+        {"ts": 0, "data": None}, {},
+    )
+    assert ch == 0.0
+    assert p["unavailable_reason"] == "no hashrate or network hashrate"
+
+
+def test_profitability_compute_error_swallowed():
+    """A bad settings (e.g. None) raises inside the try — the function
+    degrades to the base dict + hoisted cur_hr instead of propagating."""
+    p, ch, nh = compute_profitability(
+        {"hashrate": 123}, 5000e15, _prices(), {}, 1e-8,
+        {"ts": 0, "data": None}, None,  # settings=None → AttributeError
+    )
+    assert ch == 123.0  # hoisted BEFORE the try — survives the failure
+    assert p == {}
+
+
+# ── build_milestones ────────────────────────────────────────────────────────
+
+def test_milestones_share_tiers():
+    ms = build_milestones(None, {"session_share_count": 500})
+    tiers = [m["tier"] for m in ms]
+    assert "BRONZE" in tiers  # sc >= 100
+    assert "SILVER" not in tiers  # 500 < 1000
+    assert all(m["label"] for m in ms)
+
+
+def test_milestones_gold_share_count():
+    ms = build_milestones(None, {"session_share_count": 12000})
+    tiers = [m["tier"] for m in ms]
+    assert tiers == ["BRONZE", "SILVER", "GOLD"]
+
+
+def test_milestones_worker_best_diff_and_uptime():
+    worker = {"bestDifficulty": "2T", "uptime": 90000}
+    ms = build_milestones(worker, {"session_share_count": 0})
+    tiers = [m["tier"] for m in ms]
+    assert "SILVER" in tiers  # best diff ≥ 1T
+    assert "BRONZE" in tiers  # uptime ≥ 1 day (90000s)
+    assert "GOLD" not in tiers  # no 30-day uptime, no ≥1P diff
+
+
+def test_milestones_worker_none_and_empty_state():
+    ms = build_milestones(None, {"session_share_count": 0})
+    assert ms == []
+    ms2 = build_milestones({}, {"session_share_count": 0})
+    assert ms2 == []
+
+
+def test_milestones_exception_swallowed_returns_empty():
+    assert build_milestones(None, {}) == []  # missing key → except → []
+
+
+# ── compute_event_stats ─────────────────────────────────────────────────────
+
+def test_event_stats_full():
+    tl = {"session_share_count": 5, "session_best_diff_bumps": 2,
+          "share_submit_history": [100, 200, 300], "last_submit_ts": 280}
+    es, hour_ago, day_ago = compute_event_stats(tl, now=1000)
+    assert es["session_share_count"] == 5
+    assert es["session_best_diff_bumps"] == 2
+    # 2 gaps over 200s → 2 * (3600/200) = 36 shares/hour
+    assert es["rolling_shares_per_hour"] == 36.0
+    assert es["last_submit_ts"] == 280
+    assert es["last_share_age_s"] == 720
+    assert hour_ago == 1000 - 3600
+    assert day_ago == 1000 - 86400
+
+
+def test_event_stats_no_history_sph_zero():
+    tl = {"session_share_count": 1, "session_best_diff_bumps": 0,
+          "share_submit_history": [], "last_submit_ts": None}
+    es, hour_ago, day_ago = compute_event_stats(tl, now=500)
+    assert es["rolling_shares_per_hour"] == 0.0
+    assert es["last_share_age_s"] is None
+
+
+def test_event_stats_single_point_no_sph():
+    tl = {"session_share_count": 3, "session_best_diff_bumps": 1,
+          "share_submit_history": [100], "last_submit_ts": 100}
+    es, _, _ = compute_event_stats(tl, now=1000)
+    assert es["rolling_shares_per_hour"] == 0.0  # len < 2 → no rate
+
+
+def test_event_stats_same_timestamps_no_division_by_zero():
+    tl = {"session_share_count": 3, "session_best_diff_bumps": 0,
+          "share_submit_history": [100, 100], "last_submit_ts": 100}
+    es, _, _ = compute_event_stats(tl, now=1000)
+    assert es["rolling_shares_per_hour"] == 0.0  # span == 0 → guard
 
