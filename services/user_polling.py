@@ -228,6 +228,12 @@ def dispatch_auto_exclude_alerts(tenant_id: str, rig_ids: list) -> int:
     if not rig_ids:
         return 0
     from services import rental_performance as _rp
+    # Canonical claim tenant: the panel detail route passes 'default'
+    # (require_tenant fallback) while the sweep passes '' for the same
+    # tenant — the dedup claim MUST land on one row or the two paths could
+    # double-fire the same event (Issue #108). Settings/push below keep the
+    # caller's tenant (both forms already resolve the same config).
+    claim_tid = "" if tenant_id in ("", "default") else tenant_id
     sent = 0
     for rid in rig_ids:
         try:
@@ -243,7 +249,7 @@ def dispatch_auto_exclude_alerts(tenant_id: str, rig_ids: list) -> int:
                 ev_ts = int(time.time())
             # Atomic once-per-event claim (ts in the key → re-exclusion after
             # a restore is a NEW event and re-alerts).
-            if not _rp._mark_pl_alert_fired(tenant_id, "auto_exclude",
+            if not _rp._mark_pl_alert_fired(claim_tid, "auto_exclude",
                                             f"{rid}:{ev_ts}", float(ev_ts)):
                 continue
             _dispatch_tenant_alert_family(tenant_id, [alert])

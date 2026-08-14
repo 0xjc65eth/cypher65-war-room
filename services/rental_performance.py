@@ -4716,7 +4716,8 @@ def analyze_rig(rig_id: Any = None, rig_name: str = "",
 
     Returns:
       {"history": [...], "trust": {...}, "blacklisted": bool,
-       "summary": {rentals, avg_pct, cost_avg_sats_thh, trend_pct}}
+       "auto_excluded_now": bool, "summary": {rentals, avg_pct,
+       cost_avg_sats_thh, trend_pct}}
     """
     history = fetch_rig_performance_history(
         rig_id, rig_name, exclude_rental_id=exclude_rental_id, tenant_id=tenant_id)
@@ -4729,8 +4730,12 @@ def analyze_rig(rig_id: Any = None, rig_name: str = "",
     # joins the AUTO list so bad performers vanish from the panel everywhere
     # — without touching the user's manual blacklist, and without re-flagging
     # a manually restored rig until NEW bad samples accumulate.
+    # auto_excluded_now = True ONLY when this call performed the exclusion —
+    # the caller (detail route) fires the opt-in alert exactly once per EVENT
+    # (same rig_id:ts dedup claim the sweep uses — Issue #102/#108).
+    auto_excluded_now = False
     if _should_auto_exclude(rig_id, history, tenant_id=tenant_id):
-        add_rig_to_auto_blacklist(rig_id, tenant_id=tenant_id)
+        auto_excluded_now = bool(add_rig_to_auto_blacklist(rig_id, tenant_id=tenant_id))
         auto_blacklisted = True
 
     pcts = [h["percent"] for h in history if h.get("percent") is not None]
@@ -4748,7 +4753,8 @@ def analyze_rig(rig_id: Any = None, rig_name: str = "",
         older = sum(pcts[3:]) / (len(pcts) - 3)
         summary["trend_pct"] = round(recent - older, 1)
     return {"history": history, "trust": trust, "blacklisted": blacklisted,
-            "auto_blacklisted": auto_blacklisted, "summary": summary}
+            "auto_blacklisted": auto_blacklisted,
+            "auto_excluded_now": auto_excluded_now, "summary": summary}
 
 
 def _num(v: Any) -> Optional[float]:
