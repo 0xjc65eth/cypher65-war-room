@@ -20,9 +20,12 @@
 #   2026-08-14  TOTAL 79% · Issue #137: profitability/milestones/event-stats
 #              extraídos do _do_poll (poll_compute 100%, app 58%), fetchers
 #              globais + _build_snapshot cobertos (user_polling 94%) · gate
-#              --cov-fail-under=78
-#   ROADMAP → 80%: restante do app.py (profitability/milestones/event-stats
-#   agora extraídos; ainda: fetch/persist/purge + rotas) é o maior buraco.
+#              --cov-fail-under=80
+#   2026-08-14  TOTAL 82% · Issue #141: blocos fetch/persist/purge do
+#              _do_poll cobertos por injeção de mock + rotas de dashboard
+#              (app.py 58% → 74%) · gate --cov-fail-under=80 ← meta 80% atingida
+#   ROADMAP → 80%+ já cumprido; próximos degraus: app.py 74% → 80%+
+#   (rotas restantes + CLI/agente) com margem ~1pp.
 # O --cov-fail-under é o gate real: abaixo dele o merge é bloqueado.
 # A margem (~1pp) absorve variação entre ambientes (CI vs local) sem
 # deixar o gate frouxo.
@@ -167,7 +170,7 @@ jobs:
             --cov=app --cov=helpers --cov=axe_fleet --cov=services --cov=core \
             --cov-report=term-missing --cov-report=html:/tmp/coverage_html \
             --cov-report=xml:/tmp/coverage.xml \
-            --cov-fail-under=78
+            --cov-fail-under=80
 
       - name: Upload pytest results
         if: always()
