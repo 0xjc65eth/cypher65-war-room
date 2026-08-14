@@ -24,6 +24,7 @@ import hmac
 import json
 import os
 import re
+import sqlite3
 import sys
 
 import pytest
@@ -153,11 +154,11 @@ def test_open_mode_when_nothing_set():
 
 # ── Webhook signature + fulfillment ──────────────────────────────────
 
-def _order_payload(email="buyer@example.com", variant_id=10):
+def _order_payload(email="buyer@example.com", variant_id=10, order_id="12345"):
     return {
         "meta": {"event_name": "order_created"},
         "data": {
-            "id": "12345",
+            "id": order_id,
             "attributes": {
                 "user_email": email,
                 "first_order_item": {"variant_id": variant_id},
@@ -189,9 +190,108 @@ def test_webhook_unknown_event_noop(monkeypatch):
     assert payments.handle_webhook(payload) is None
 
 
+# ── Idempotency (Issue #114) ──────────────────────────────────────────
+
+def test_webhook_replay_returns_same_key(monkeypatch):
+    """Same order delivered twice → ONE key, and the replay returns it."""
+    _ls_env(monkeypatch)
+    payload = _order_payload(email="buyer@example.com", order_id="7001")
+    first = payments.handle_webhook(payload)
+    assert first and _KEY_RE.match(first)
+    replay = payments.handle_webhook(payload)
+    assert replay == first  # never a second license
+    assert licensing._key_valid(first) is True
+
+
+def test_webhook_replay_issues_only_one_license(monkeypatch):
+    """The license ledger grows by exactly ONE key after a replay."""
+    _ls_env(monkeypatch)
+    from services.db import get_db
+    def _count():
+        c = get_db()
+        try:
+            return c.execute(
+                "SELECT COUNT(*) AS n FROM pro_licenses WHERE source='lemon_squeezy'"
+            ).fetchone()["n"]
+        finally:
+            c.close()
+    baseline = _count()
+    payload = _order_payload(order_id="7002")
+    payments.handle_webhook(payload)
+    payments.handle_webhook(payload)
+    payments.handle_webhook(payload)
+    assert _count() == baseline + 1
+
+
+def test_webhook_replay_route_returns_same_key(client, monkeypatch):
+    """The HTTP route also dedupes: POST twice → same key both times."""
+    _ls_env(monkeypatch)
+    raw = json.dumps(_order_payload(email="buyer@example.com", order_id="7003")).encode()
+    sig = _sign(raw)
+    r1 = client.post(
+        "/api/payments/webhook", data=raw, content_type="application/json",
+        headers={"X-Signature": sig},
+    )
+    assert r1.status_code == 200
+    key1 = r1.get_json()["license_key"]
+    r2 = client.post(
+        "/api/payments/webhook", data=raw, content_type="application/json",
+        headers={"X-Signature": sig},
+    )
+    assert r2.status_code == 200
+    assert r2.get_json()["license_key"] == key1
+
+
+def test_webhook_different_orders_issue_different_keys(monkeypatch):
+    """Distinct orders still each get their own key."""
+    _ls_env(monkeypatch)
+    k1 = payments.handle_webhook(_order_payload(order_id="7004"))
+    k2 = payments.handle_webhook(_order_payload(email="other@example.com", order_id="7005"))
+    assert k1 and k2
+    assert k1 != k2
+
+
+def test_webhook_replay_no_duplicate_track_event(monkeypatch):
+    """The funnel 'paid' event fires exactly once per order."""
+    _ls_env(monkeypatch)
+    calls = []
+    import services.conversion as conversion_mod
+    monkeypatch.setattr(conversion_mod, "track_event",
+                        lambda *a, **kw: calls.append(kw))
+    payload = _order_payload(order_id="7006")
+    payments.handle_webhook(payload)
+    payments.handle_webhook(payload)  # replay
+    assert len(calls) == 1
+
+
+def test_webhook_releases_claim_on_license_failure(monkeypatch):
+    """If issue_license raises, the claim is released so a retry fulfills."""
+    _ls_env(monkeypatch)
+    payload = _order_payload(order_id="7008")
+    calls = {"n": 0}
+    real = licensing.issue_license
+
+    def _flaky(**kw):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise sqlite3.OperationalError("db locked (simulated)")
+        return real(**kw)
+
+    monkeypatch.setattr(licensing, "issue_license", _flaky)
+    with pytest.raises(sqlite3.OperationalError):
+        payments.handle_webhook(payload)  # first attempt fails
+    key = payments.handle_webhook(payload)  # retry re-claims and succeeds
+    assert key and _KEY_RE.match(key)
+    assert licensing._key_valid(key) is True
+    # A third delivery is a replay of a COMPLETED order → same key.
+    assert payments.handle_webhook(payload) == key
+
+
 def test_webhook_route_end_to_end(client, monkeypatch):
     _ls_env(monkeypatch)
-    raw = json.dumps(_order_payload(email="buyer@example.com")).encode()
+    # Unique order id so this test exercises a FRESH fulfillment (not a replay
+    # of the order id shared with test_webhook_fulfills_order).
+    raw = json.dumps(_order_payload(email="buyer@example.com", order_id="7007")).encode()
     r = client.post(
         "/api/payments/webhook",
         data=raw,
