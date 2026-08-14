@@ -6447,6 +6447,65 @@ _RENTALS_CACHE: Dict[str, Dict[str, Any]] = {}  # tenant_id -> {ts, payload}
 _RENTALS_CACHE_TTL_S = 20
 
 
+def _own_hashrate_for_portfolio(tenant_id: str = "") -> dict:
+    """Self-mining hashrate for the consolidated portfolio (Issue #21-A).
+
+    Dedup rule: the physical fleet (axe_fleet telemetry) and the pool worker
+    may represent the SAME hashing power — never sum. Prefer the fleet total
+    when online devices exist (physical reality), else fall back to the pool
+    worker's reported hashrate; when both are present, take the conservative
+    max(). The payload exposes the source + each leg so the operator sees
+    exactly which number backed the EV.
+    """
+    fleet_total = 0.0
+    fleet_n = 0
+    try:
+        from axe_fleet.routes import _registry as _axe_mod_registry
+
+        if _axe_mod_registry is not None:
+            for _d in _axe_mod_registry.list_devices(
+                tenant_id=tenant_id, with_telemetry=True
+            ):
+                _hr = _d.get("hashrate_hs")
+                if _hr and float(_hr) > 0:
+                    fleet_total += float(_hr)
+                    fleet_n += 1
+    except Exception as e:
+        log.warning("[portfolio] fleet hashrate error: %s", e)
+    # Worker leg só para o tenant default/vazio (self-hosted): o
+    # latest_snapshot é GLOBAL (poll do operador) — atribuí-lo a qualquer
+    # tenant multi-tenant vazaria o hashrate de um tenant para o outro.
+    worker_hr = 0.0
+    if not tenant_id or tenant_id == "default":
+        try:
+            worker_hr = float(
+                (latest_snapshot.get("worker") or {}).get("hashrate") or 0
+            )
+        except (TypeError, ValueError):
+            worker_hr = 0.0
+    if fleet_n:
+        if fleet_total >= worker_hr:
+            source = "fleet"
+        elif worker_hr > 0:
+            source = "max"  # frota existe, mas o worker reporta mais
+        else:
+            source = "fleet"
+        own = max(fleet_total, worker_hr)
+    elif worker_hr > 0:
+        source = "worker"
+        own = worker_hr
+    else:
+        source = "none"
+        own = 0.0
+    return {
+        "hashrate_hs": round(own) if own else 0,
+        "source": source,
+        "fleet_total_hs": round(fleet_total) if fleet_total else None,
+        "fleet_n": fleet_n,
+        "worker_hs": round(worker_hr) if worker_hr else None,
+    }
+
+
 @app.route("/api/rentals")
 @require_tenant
 @role_required("viewer")
@@ -6478,6 +6537,22 @@ def api_rentals(tenant_id: str = ""):
             rtype="owner", history=True, limit=50, tenant_id=tenant_id
         )
         braiins = _rental_perf.fetch_braiins_contracts(tenant_id=tenant_id)
+        # Portfolio 21-A: own hashrate (fleet física vs worker do pool — dedup
+        # honesto: NUNCA soma, usa max + expõe a fonte) e rentals 30d P/L
+        # (soma das últimas ~4 semanas da série local, mesma metodologia EV).
+        _own_hr = _own_hashrate_for_portfolio(tenant_id)
+        _portfolio_series = _rental_perf.compute_portfolio_series(
+            tenant_id=tenant_id, bucket="week"
+        )
+        _rentals_pl_30d: Optional[float] = None
+        _rentals_cnt_30d = 0
+        _pl_30d_parts: List[float] = []
+        for _pt in (_portfolio_series.get("points") or [])[-4:]:
+            if _pt.get("pl_sats") is not None:
+                _pl_30d_parts.append(_pt["pl_sats"])
+                _rentals_cnt_30d += _pt.get("rentals") or 0
+        if _pl_30d_parts:
+            _rentals_pl_30d = sum(_pl_30d_parts)
         # CFO: flag blacklisted rigs in the list payload (cheap settings read
         # — no per-rig history calls on the list). Full trust grades are
         # computed per-rental in the detail endpoint where history exists.
@@ -6620,8 +6695,24 @@ def api_rentals(tenant_id: str = ""):
             ),
             # CFO: portfolio TIME SERIES — spent + estimated P/L bucketed by
             # week (default) / month from the LOCAL rental_history table.
-            "portfolio_series": _rental_perf.compute_portfolio_series(
-                tenant_id=tenant_id, bucket="week"
+            "portfolio_series": _portfolio_series,
+            # Portfolio 21-A: consolidated P/L — PRÓPRIO (self-mining EV) +
+            # RENTALS P/L. Own hashrate uses the dedup rule (fleet física vs
+            # worker do pool NUNCA somam); rentals 30d P/L = soma das últimas
+            # ~4 semanas da série local (mesma metodologia EV da série).
+            "global_portfolio": _rental_perf.compute_global_portfolio(
+                own_hashrate_hs=_own_hr["hashrate_hs"] or None,
+                network_hashrate_hs=(latest_snapshot.get("network") or {}).get(
+                    "hashrate"
+                ),
+                rentals_pl_30d_sats=_rentals_pl_30d,
+                rentals_30d_count=_rentals_cnt_30d,
+                rentals_pl_all_sats=_portfolio_series.get("totals", {}).get("pl_sats"),
+                rentals_spent_sats=_portfolio_series.get("totals", {}).get(
+                    "spent_sats"
+                ),
+                rentals_count=_portfolio_series.get("totals", {}).get("rentals"),
+                own_detail=_own_hr,
             ),
             # CFO recommendation engine — 'where to rent again' (local track
             # record × live market) + 30-day market timing for context.

@@ -824,6 +824,19 @@
     <div class="rentals-portfolio__cell"><span class="rentals-portfolio__label">OWNER INCOME</span><strong id="rentals-port-income">—</strong></div>
     <div class="rentals-portfolio__cell"><span class="rentals-portfolio__label">SPLIT</span><strong id="rentals-port-split">—</strong></div>
   </div>
+  <!-- CFO: consolidated portfolio P/L (Issue #21-A) — PRÓPRIO (self-mining
+       EV, share da rede × block reward) + RENTALS P/L (30d da série local e
+       acumulado) + NET 30d. EV = ESTIMATE (nunca receita realizada). -->
+  <div class="portfolio-consolidated" id="portfolio-consolidated" hidden>
+    <div class="portfolio-consolidated__head">P/L CONSOLIDADO <span class="rentals-series__meta" id="portfolio-consolidated-meta"></span></div>
+    <div class="rentals-portfolio">
+      <div class="rentals-portfolio__cell" title="EV de receita diária do hashrate próprio (share da rede × block reward)"><span class="rentals-portfolio__label">PRÓPRIO EV/dia</span><strong id="portfolio-own-daily">—</strong></div>
+      <div class="rentals-portfolio__cell" title="EV de receita do hashrate próprio em ~30 dias (últimas ~4 semanas)"><span class="rentals-portfolio__label">PRÓPRIO EV ~30d</span><strong id="portfolio-own-month">—</strong></div>
+      <div class="rentals-portfolio__cell" title="P/L dos rentals nas últimas ~4 semanas (mesma metodologia EV da série)"><span class="rentals-portfolio__label">RENTALS P/L ~30d</span><strong id="portfolio-rentals-30d">—</strong></div>
+      <div class="rentals-portfolio__cell" title="P/L acumulado de TODOS os rentals"><span class="rentals-portfolio__label">RENTALS P/L total</span><strong id="portfolio-rentals-all">—</strong></div>
+      <div class="rentals-portfolio__cell" title="NET ~30d = EV próprio (~30d) + P/L rentals (~30d) — ESTIMATE"><span class="rentals-portfolio__label">NET ~30d</span><strong id="portfolio-net-30d">—</strong></div>
+    </div>
+  </div>
   <!-- CFO: portfolio time series — spent + estimated P/L per week/month
        (from the local rental_history; P/L labeled ESTIMATE — current network
        hashrate). Toggle W/S to change the bucket. -->
