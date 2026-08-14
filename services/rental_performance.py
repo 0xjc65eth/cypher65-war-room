@@ -3558,6 +3558,44 @@ def _build_reco_worse_alert(e: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+# ── Auto-exclusion alert (sweep fires webhook/push when the pilot bars a rig) ──
+# The auto-exclusion itself is DEFAULT protection (runs for every tenant with
+# a local track record, no opt-in). The ALERT is opt-in like the other rental
+# families: when the periodic sweep excludes a rig, the tenant that enabled
+# this setting gets webhook + push with the SAME readable cause the panel
+# shows (Issue #100) — zero drift between the history and the alert.
+AUTO_EXCLUDE_ALERT_SETTING = "rental_auto_exclude_alert"  # "1"/"0" (default off)
+
+
+def build_auto_exclude_alert(rig_id: Any, tenant_id: str = "") -> Optional[Dict[str, Any]]:
+    """One alert dict for a rig the sweep JUST auto-excluded.
+
+    Opt-in (rental_auto_exclude_alert == '1'); the message reuses the
+    auto-exclusion history cause: "rig <name> auto-excluído por sub-entrega —
+    <cause>". Returns None when the tenant is not opted in or the rig has no
+    ledger entry (or on any storage hiccup). Never raises."""
+    try:
+        s = load_settings(tenant_id=tenant_id)
+        if (s.get(AUTO_EXCLUDE_ALERT_SETTING) or "").strip() != "1":
+            return None
+        rid = str(rig_id)
+        for e in auto_exclusion_history(tenant_id=tenant_id)["exclusions"]:
+            if e.get("rig_id") == rid:
+                name = e.get("name") or e.get("rig_id") or rid
+                cause = e.get("cause") or "sub-entrega"
+                return {
+                    "severity": "WARN",
+                    "category": "rental_auto_exclude",
+                    "message": (
+                        f"rig {name} auto-excluído por sub-entrega — {cause}"[:280]
+                    ),
+                    "ts": e.get("ts") or 0,
+                }
+    except Exception as e:
+        log.warning("[rental_performance] auto-exclude alert build failed: %s", e)
+    return None
+
+
 def evaluate_reco_worse_alerts(tenant_id: str = "",
                               now: Optional[int] = None) -> List[Dict[str, Any]]:
     """Accepted recommendations whose outcome is WORSE → alerts.

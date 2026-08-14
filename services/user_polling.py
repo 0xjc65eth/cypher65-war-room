@@ -215,6 +215,44 @@ def dispatch_reco_worse_alerts(tenant_id: str, alerts: list):
         log.warning("[rentals] reco-worse alert dispatch error: %s", e)
 
 
+def dispatch_auto_exclude_alerts(tenant_id: str, rig_ids: list) -> int:
+    """Fire webhook + push for rigs the sweep JUST auto-excluded (opt-in via
+    rental_auto_exclude_alert). Returns the number of alerts dispatched.
+
+    The exclusion is DEFAULT protection; only the ALERT is gated by the
+    tenant setting (build_auto_exclude_alert returns None when off). The dedup
+    claim is keyed by the exclusion ts (rig_id:ts) so a RESTORED rig that
+    gets re-excluded later fires a NEW alert, while the same event never
+    double-fires. Fire-and-forget daemon threads; never raises.
+    """
+    if not rig_ids:
+        return 0
+    from services import rental_performance as _rp
+    sent = 0
+    for rid in rig_ids:
+        try:
+            alert = _rp.build_auto_exclude_alert(rid, tenant_id=tenant_id)
+            if not alert:
+                continue
+            ev_ts = int(alert.get("ts") or 0)
+            # Ledger entries always stamp ts, but a 0/missing ts must not
+            # collapse the claim to 'rig:0' (permanent block after restore) —
+            # fall back to the dispatch time so a later re-exclusion still
+            # re-alerts.
+            if ev_ts <= 0:
+                ev_ts = int(time.time())
+            # Atomic once-per-event claim (ts in the key → re-exclusion after
+            # a restore is a NEW event and re-alerts).
+            if not _rp._mark_pl_alert_fired(tenant_id, "auto_exclude",
+                                            f"{rid}:{ev_ts}", float(ev_ts)):
+                continue
+            _dispatch_tenant_alert_family(tenant_id, [alert])
+            sent += 1
+        except Exception as e:
+            log.warning("[rentals] auto-exclude alert dispatch error: %s", e)
+    return sent
+
+
 def _dispatch_tenant_alert_family(tenant_id: str, alerts: list):
     """Shared webhook+push loop for both tenant alert families (P/L + risk) —
     one implementation, no drift between the two dispatchers."""
@@ -1132,8 +1170,17 @@ def _rentals_sweep_once() -> int:
                     # WITHOUT the operator opening the panel.
                     excluded = evaluate_auto_blacklist(tenant_id=t)
                     if excluded:
+                        # Opt-in alert: 'rig X auto-excluído por sub-entrega'
+                        # (webhook + push, dedup por evento de exclusão — um
+                        # rig restaurado e re-excluído re-alerta com o novo
+                        # ts). O alerta é gated na setting do tenant; a
+                        # exclusão em si continua sendo proteção default.
+                        n_alert = dispatch_auto_exclude_alerts(t, excluded)
                         log.info("[rentals-sweep] %s: %d rig(s) auto-excluído(s) %s",
                                  t or "default", len(excluded), excluded[:5])
+                        if n_alert:
+                            log.info("[rentals-sweep] %s: %d auto-exclude alert(s) dispatched",
+                                     t or "default", n_alert)
                 visited += 1
             except Exception as e:
                 log.warning("[rentals-sweep] %s: pass error: %s", t or "default", e)
