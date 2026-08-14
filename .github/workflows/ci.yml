@@ -125,6 +125,36 @@ jobs:
           source .venv/bin/activate
           pip install --upgrade pip
           pip install -r requirements.txt pytest pytest-cov
+          # Static-analysis gate tools (Issue #125) — versions pinned to
+          # requirements-dev.txt so CI matches local dev. bandit 1.9.4:
+          # 1.8.2 crasha no AST do Python 3.14.
+          pip install bandit==1.9.4 flake8==7.1.1 black==25.1.0
+
+      # Static security gates (Issue #125). BLOQUEIAM o merge quando:
+      #   bandit  -ll   — qualquer achado MEDIUM/HIGH (B6xx SQL/shell,
+      #                    B3xx crypto, B5xx subprocess, …). Hoje: 0.
+      #   flake8        — só códigos de bug real (F821 nome indefinido,
+      #                   F541 f-string sem placeholder, E9 erro de sintaxe),
+      #                   via .flake8 (mesma config local e CI). Hoje: 0.
+      #                   O backlog de estilo (E501 etc.) NÃO é gate — ver
+      #                   `make lint` (advisory) e o roadmap no QUALITY.md.
+      #   black  —check — ADVISORY até o commit de cleanup dedicado
+      #                   (Issue #133): o repositório tem ~11.5k linhas fora
+      #                   do padrão; reformatar junto com este changeset
+      #                   enterraria os fixes reais. O step reporta o
+      #                   backlog sem nunca bloquear o merge.
+      - name: Static security gates (bandit + flake8 + black advisory)
+        run: |
+          source .venv/bin/activate
+          # O bandit pode imprimir warnings "nosec encountered, but no failed
+          # test" no stderr para nosec de whitelist — benignos (fail-open:
+          # um nosec órfão nunca esconde achado real).
+          python -m bandit -r services core axe_fleet routes agents \
+            app.py helpers.py solo_mining.py -ll -q
+          python -m flake8 app.py helpers.py solo_mining.py services core axe_fleet routes agents
+          # Advisory por design: o pipeline nunca falha por causa do black
+          # (Issue #133 destrava o gate após o cleanup dedicado).
+          python -m black --check app.py helpers.py solo_mining.py services core axe_fleet routes agents | tail -1 || true
 
       - name: Run Python tests with coverage
         run: |

@@ -53,7 +53,9 @@ class AxeOSConnector:
         url = f"{self.base_url}{path}"
         t0 = time.time()
         try:
-            r = requests.get(url, timeout=timeout or self.timeout)
+            # timeout always resolves to a positive int (self.timeout default,
+            # AXEOS_HTTP_TIMEOUT as final fallback) — never None.
+            r = requests.get(url, timeout=timeout or self.timeout or AXEOS_HTTP_TIMEOUT)  # nosec B113
             elapsed = time.time() - t0
             log.info("[%s] GET %s → %s (%.2fs)", self.ip, path, r.status_code, elapsed)
             r.raise_for_status()
@@ -96,7 +98,8 @@ class AxeOSConnector:
         url = f"{self.base_url}{path}"
         t0 = time.time()
         try:
-            r = requests.post(url, json=data, timeout=timeout or self.timeout)
+            # timeout always resolves to a positive int — never None.
+            r = requests.post(url, json=data, timeout=timeout or self.timeout or AXEOS_HTTP_TIMEOUT)  # nosec B113
             elapsed = time.time() - t0
             log.info("[%s] POST %s → %s (%.2fs)", self.ip, path, r.status_code, elapsed)
             r.raise_for_status()
@@ -132,7 +135,8 @@ class AxeOSConnector:
         url = f"{self.base_url}{path}"
         t0 = time.time()
         try:
-            r = requests.patch(url, json=data, timeout=timeout or self.timeout)
+            # timeout always resolves to a positive int — never None.
+            r = requests.patch(url, json=data, timeout=timeout or self.timeout or AXEOS_HTTP_TIMEOUT)  # nosec B113
             elapsed = time.time() - t0
             log.info("[%s] PATCH %s → %s (%.2fs)", self.ip, path, r.status_code, elapsed)
             r.raise_for_status()

@@ -524,7 +524,7 @@ def _send_telegram_webhook(url, severity, category, message, ts, worker,
     # Build a clean Markdown message.
     lines = [
         f"{emoji} *CYPHER65 \\- {_tg_escape(severity)} Alert*",  # noqa: W605
-        f"",
+        "",
         f"*Category:* `{category}`",
         f"*Message:* {_tg_escape(message[:500])}",
     ]

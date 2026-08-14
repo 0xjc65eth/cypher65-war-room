@@ -270,8 +270,9 @@ class DeviceRegistry:
             ids = [r["id"] for r in c.fetchall()]
             if ids:
                 placeholders = ",".join("?" * len(ids))
-                c.execute(f"DELETE FROM axe_telemetry WHERE device_id IN ({placeholders})", ids)
-                c.execute(f"DELETE FROM axe_devices WHERE id IN ({placeholders})", ids)
+                # placeholders are generated ?-markers only — no user input.
+                c.execute(f"DELETE FROM axe_telemetry WHERE device_id IN ({placeholders})", ids)  # nosec B608
+                c.execute(f"DELETE FROM axe_devices WHERE id IN ({placeholders})", ids)  # nosec B608
                 removed = len(ids)
                 conn.commit()
                 if removed:
@@ -317,9 +318,10 @@ class DeviceRegistry:
         conn = self._get_db()
         c = conn.cursor()
         if tenant_id:
-            c.execute(f"SELECT * FROM axe_devices WHERE tenant_id=? AND {self._tombstone_query()} ORDER BY name", (tenant_id,))
+            # _tombstone_query() is an internal fixed expression — no user input.
+            c.execute(f"SELECT * FROM axe_devices WHERE tenant_id=? AND {self._tombstone_query()} ORDER BY name", (tenant_id,))  # nosec B608
         else:
-            c.execute(f"SELECT * FROM axe_devices WHERE {self._tombstone_query()} ORDER BY name")
+            c.execute(f"SELECT * FROM axe_devices WHERE {self._tombstone_query()} ORDER BY name")  # nosec B608
         rows = c.fetchall()
         conn.close()
         devices = [self._row_to_device(r) for r in rows]
@@ -367,9 +369,10 @@ class DeviceRegistry:
         conn = self._get_db()
         c = conn.cursor()
         if tenant_id:
-            c.execute(f"SELECT * FROM axe_devices WHERE id=? AND tenant_id=? AND {self._tombstone_query()}", (device_id, tenant_id))
+            # internal fixed _tombstone_query() expression — no user input.
+            c.execute(f"SELECT * FROM axe_devices WHERE id=? AND tenant_id=? AND {self._tombstone_query()}", (device_id, tenant_id))  # nosec B608
         else:
-            c.execute(f"SELECT * FROM axe_devices WHERE id=? AND {self._tombstone_query()}", (device_id,))
+            c.execute(f"SELECT * FROM axe_devices WHERE id=? AND {self._tombstone_query()}", (device_id,))  # nosec B608
         r = c.fetchone()
         conn.close()
         return self._row_to_device(r) if r else {}
@@ -380,9 +383,10 @@ class DeviceRegistry:
         conn = self._get_db()
         c = conn.cursor()
         if tenant_id:
-            c.execute(f"SELECT * FROM axe_devices WHERE ip_address=? AND tenant_id=? AND {self._tombstone_query()}", (ip_address, tenant_id))
+            # internal fixed _tombstone_query() expression — no user input.
+            c.execute(f"SELECT * FROM axe_devices WHERE ip_address=? AND tenant_id=? AND {self._tombstone_query()}", (ip_address, tenant_id))  # nosec B608
         else:
-            c.execute(f"SELECT * FROM axe_devices WHERE ip_address=? AND {self._tombstone_query()}", (ip_address,))
+            c.execute(f"SELECT * FROM axe_devices WHERE ip_address=? AND {self._tombstone_query()}", (ip_address,))  # nosec B608
         r = c.fetchone()
         conn.close()
         return self._row_to_device(r) if r else {}
@@ -488,7 +492,8 @@ class DeviceRegistry:
             set_parts.append("capabilities=?")
             vals.append(json.dumps(updates["capabilities"]))
 
-        sql = f"UPDATE axe_devices SET {', '.join(set_parts)}, updated_at=? WHERE id=?"
+        # set_parts is built from the fixed allowlist of update fields.
+        sql = f"UPDATE axe_devices SET {', '.join(set_parts)}, updated_at=? WHERE id=?"  # nosec B608
         vals.append(int(time.time()))
         vals.append(device_id)
         if tenant_id:

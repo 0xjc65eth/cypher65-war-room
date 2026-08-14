@@ -74,8 +74,10 @@ def api_history():
         return jsonify({"error": f"invalid metric {metric}"}), 400
     conn = get_db()
     c = conn.cursor()
+    # bandit B608 false positive: metric validated against the allowed set
+    # above (line ~73) before reaching the SQL text.
     c.execute(
-        f"SELECT ts, {metric} FROM snapshots WHERE ts >= ? AND {metric} IS NOT NULL ORDER BY ts ASC",
+        f"SELECT ts, {metric} FROM snapshots WHERE ts >= ? AND {metric} IS NOT NULL ORDER BY ts ASC",  # nosec B608
         (since,),
     )
     rows = [{"ts": r["ts"], "value": r[metric]} for r in c.fetchall()]

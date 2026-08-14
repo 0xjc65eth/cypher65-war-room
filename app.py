@@ -2683,7 +2683,8 @@ def _clear_wallet_scoped_history():
         try:
             conn = get_db()
             c = conn.cursor()
-            c.execute(f"DELETE FROM {t}")
+            # t iterates a fixed local tuple — no user input in the SQL.
+            c.execute(f"DELETE FROM {t}")  # nosec B608
             conn.commit()
             conn.close()
         except Exception as e:
@@ -4629,7 +4630,10 @@ def docs_agent_guide():
     except OSError:
         abort(404)
     html = _md.markdown(raw, extensions=["tables", "fenced_code", "nl2br"])
-    return render_template("agent_guide.html", guide_html=Markup(html))
+    # bandit B704 false positive: raw is read from a STATIC repo file
+    # (docs/AGENT_SETUP_GUIDE.md), never user-supplied — Markup is the
+    # standard pattern to pass rendered markdown into the template.
+    return render_template("agent_guide.html", guide_html=Markup(html))  # nosec B704
 
 
 # Fase 6 · PR2: /api/snapshot now served by dashboard_bp.
@@ -5011,8 +5015,9 @@ def api_tax_export(tenant_id: str = ""):
     # ── Daily BTC price ledger (last snapshot per UTC day) ──
     # Correlated subquery so `price` is the value at MAX(ts) of each day —
     # a bare GROUP BY would return an arbitrary (first) row's price.
+    # col comes from a fixed currency→column whitelist map — no user input.
     c.execute(
-        f"SELECT MAX(s.ts) AS ts, "
+        f"SELECT MAX(s.ts) AS ts, "  # nosec B608
         f"(SELECT s2.{col} FROM snapshots s2 WHERE s2.ts/86400 = s.ts/86400 "
         f" ORDER BY s2.ts DESC LIMIT 1) AS price "
         "FROM snapshots s WHERE s.ts >= ? GROUP BY s.ts/86400 ORDER BY s.ts ASC",
@@ -5034,8 +5039,9 @@ def api_tax_export(tenant_id: str = ""):
         try:
             conn2 = get_db()
             c2 = conn2.cursor()
+            # col from the fixed currency whitelist map — no user input.
             c2.execute(
-                f"SELECT {col} AS price FROM snapshots WHERE ts <= ? ORDER BY ts DESC LIMIT 1",
+                f"SELECT {col} AS price FROM snapshots WHERE ts <= ? ORDER BY ts DESC LIMIT 1",  # nosec B608
                 (b.get("block_timestamp") or b.get("ts") or 0,),
             )
             row = c2.fetchone()
@@ -7214,4 +7220,6 @@ if __name__ == "__main__":
     if os.environ.get("CERT_FILE") and os.environ.get("KEY_FILE"):
         _ssl_ctx = (os.environ["CERT_FILE"], os.environ["KEY_FILE"])
         print("⇢  TLS habilitado (HTTPS)")
-    app.run(host="0.0.0.0", port=PORT, debug=False, threaded=True, ssl_context=_ssl_ctx)
+    # Intentional: the war room is a public dashboard server (behind
+    # Tailscale / reverse proxy in production).
+    app.run(host="0.0.0.0", port=PORT, debug=False, threaded=True, ssl_context=_ssl_ctx)  # nosec B104

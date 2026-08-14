@@ -65,15 +65,17 @@ def api_export(table, fmt, tenant_id: str = ""):
     since = int(time.time()) - span
     conn = get_db()
     c = conn.cursor()
+    # bandit B608 false positive: table validated against the allowed set at
+    # the top of this handler — never a raw request value in the SQL text.
     if table == "alerts":
         c.execute(
-            f"SELECT * FROM {table} WHERE ts >= ? AND tenant_id = ? "
+            f"SELECT * FROM {table} WHERE ts >= ? AND tenant_id = ? "  # nosec B608
             "ORDER BY ts DESC LIMIT 5000",
             (since, tid),
         )
     else:
         c.execute(
-            f"SELECT * FROM {table} WHERE ts >= ? ORDER BY ts DESC LIMIT 5000",
+            f"SELECT * FROM {table} WHERE ts >= ? ORDER BY ts DESC LIMIT 5000",  # nosec B608
             (since,),
         )
     rows = [dict(r) for r in c.fetchall()]
