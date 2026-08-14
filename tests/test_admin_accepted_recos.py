@@ -291,3 +291,121 @@ def test_route_csv_defaults_to_full_limit(rclient, db, clock, monkeypatch):
     resp2 = rclient.get("/api/admin/rentals/accepted-recos?format=csv&limit=50")
     assert resp2.status_code == 200
     assert calls == [1000, 50]  # explicit limit wins
+
+
+# ── Tenant worse-concentration report ───────────────────────────────────────
+
+
+def test_worse_concentration_flags_recidivist_tenant(db, clock):
+    """A tenant where a large share of accepted decisions end 'worse' is
+    flagged (min_worse + worse_ratio both hold); a healthy tenant is not."""
+    # tenant-a: 3 of 5 accepted decisions come back worse → flagged.
+    for i in range(3):
+        _seed([_hr(f"wa{i}", f"rig-wa{i}", _dt_str(NOW - 3 * 86400), 55.0)],
+              tenant_id="tenant-a")
+        rp.add_rig_to_blacklist(f"rig-wa{i}", tenant_id="tenant-a")
+        _seed([_hr(f"wa{i}b", f"rig-wa{i}", _dt_str(NOW + 3600), 48.0)],
+              tenant_id="tenant-a")
+    for i in range(2):
+        _seed([_hr(f"ok{i}", f"rig-ok{i}", _dt_str(NOW - 3 * 86400), 60.0)],
+              tenant_id="tenant-a")
+        rp.add_rig_to_blacklist(f"rig-ok{i}", tenant_id="tenant-a")
+        _seed([_hr(f"ok{i}b", f"rig-ok{i}", _dt_str(NOW + 3600), 96.0)],
+              tenant_id="tenant-a")
+    # tenant-b: 1 of 5 worse → below the ratio bar, never flagged.
+    for i in range(5):
+        _seed([_hr(f"tb{i}", f"rig-tb{i}", _dt_str(NOW - 3 * 86400), 60.0)],
+              tenant_id="tenant-b")
+        rp.add_rig_to_blacklist(f"rig-tb{i}", tenant_id="tenant-b")
+        _seed([_hr(f"tb{i}b", f"rig-tb{i}", _dt_str(NOW + 3600),
+                   80.0 if i == 0 else 95.0)], tenant_id="tenant-b")
+
+    rep = rp.detect_tenant_worse_concentration()
+    assert rep["count"] == 1
+    flag = rep["tenants"][0]
+    assert flag["tenant_id"] == "tenant-a"
+    assert flag["total"] == 5
+    assert flag["worse"] == 3
+    assert flag["ratio_pct"] == 60.0
+    # 3 worse + ratio >= 60 → CRIT.
+    assert flag["severity"] == "CRIT"
+    assert rep["min_worse"] == 2
+    assert rep["worse_ratio"] == 0.5
+
+
+def test_worse_concentration_thresholds_and_window(db, clock):
+    """Custom thresholds and the days window shape the report."""
+    for i in range(3):
+        _seed([_hr(f"x{i}", f"rig-x{i}", _dt_str(NOW - 3 * 86400), 55.0)],
+              tenant_id="t-x")
+        rp.add_rig_to_blacklist(f"rig-x{i}", tenant_id="t-x")
+        _seed([_hr(f"x{i}b", f"rig-x{i}", _dt_str(NOW + 3600), 50.0)],
+              tenant_id="t-x")
+    # One improved decision in the same tenant → ratio 3/4 = 75%.
+    _seed([_hr("g0", "rig-g0", _dt_str(NOW - 3 * 86400), 55.0)],
+          tenant_id="t-x")
+    rp.add_rig_to_blacklist("rig-g0", tenant_id="t-x")
+    _seed([_hr("g0b", "rig-g0", _dt_str(NOW + 3600), 96.0)],
+          tenant_id="t-x")
+    # min_worse=4 > 3 worse → nothing flagged.
+    assert rp.detect_tenant_worse_concentration(min_worse=4)["count"] == 0
+    # worse_ratio=0.9 → 75% < 90% → nothing flagged.
+    assert rp.detect_tenant_worse_concentration(worse_ratio=0.9)["count"] == 0
+    # days window that EXCLUDES the acceptance samples → nothing flagged.
+    assert rp.detect_tenant_worse_concentration(days=0) is not None
+    clock["now"] = NOW + 10 * 86400
+    assert rp.detect_tenant_worse_concentration(days=5)["count"] == 0
+
+
+def test_worse_concentration_ignores_revoked_and_empty(db, clock):
+    """Revoked decisions (restored rigs) never count as recidivism; empty DB
+    → zeroed report.
+
+    Discriminating case: 2 worse + 1 revoked in one tenant with min_worse=3
+    — a buggy detector that counted revoked as worse would see 3 and flag;
+    the correct one sees 2 < 3 and stays silent."""
+    for i in range(2):
+        _seed([_hr(f"w{i}", f"rig-w{i}", _dt_str(NOW - 3 * 86400), 55.0)],
+              tenant_id="t-z")
+        rp.add_rig_to_blacklist(f"rig-w{i}", tenant_id="t-z")
+        _seed([_hr(f"w{i}b", f"rig-w{i}", _dt_str(NOW + 3600), 48.0)],
+              tenant_id="t-z")
+    _seed([_hr("r2", "rig-r2", _dt_str(NOW - 3 * 86400), 55.0)],
+          tenant_id="t-z")
+    rp.add_rig_to_blacklist("rig-r2", tenant_id="t-z")
+    rp.remove_rig_from_blacklist("rig-r2", tenant_id="t-z")  # → revoked
+
+    # min_worse=3: 2 worse + revoked (never worse) → NOT flagged
+    # (a buggy detector counting revoked as worse would see 3 and flag).
+    assert rp.detect_tenant_worse_concentration(min_worse=3)["count"] == 0
+
+    # Default thresholds: 2 worse / 3 total = 66.7% → WARN, NOT CRIT —
+    # the revoked decision never inflates worse to 3.
+    rep = rp.detect_tenant_worse_concentration()
+    assert rep["count"] == 1
+    assert rep["tenants"][0]["tenant_id"] == "t-z"
+    assert rep["tenants"][0]["worse"] == 2
+    assert rep["tenants"][0]["severity"] == "WARN"
+
+    assert rp.detect_tenant_worse_concentration()["count"] == 1
+    empty = rp.detect_tenant_worse_concentration()
+    assert empty == {"count": 1, "tenants": rep["tenants"], "min_worse": 2,
+                     "worse_ratio": 0.5, "days": None}
+
+
+def test_route_carries_worse_concentration(rclient, db, clock):
+    """The admin route JSON carries the worse-concentration report."""
+    for i in range(3):
+        _seed([_hr(f"c{i}", f"rig-c{i}", _dt_str(NOW - 3 * 86400), 55.0)])
+        rp.add_rig_to_blacklist(f"rig-c{i}")
+        _seed([_hr(f"c{i}b", f"rig-c{i}", _dt_str(NOW + 3600), 48.0)])
+    resp = rclient.get("/api/admin/rentals/accepted-recos?worse_min=2&worse_ratio=0.5")
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert "worse_concentration" in data
+    rep = data["worse_concentration"]
+    assert rep["count"] == 1
+    assert rep["tenants"][0]["tenant_id"] == "default"
+    assert rep["tenants"][0]["worse"] == 3
+    assert rep["min_worse"] == 2
+    assert rep["worse_ratio"] == 0.5

@@ -608,21 +608,20 @@ def _load_all_accepted_recos() -> List[Dict[str, Any]]:
     return out
 
 
-def compute_admin_accepted_recos(days: int = 0,
-                                 limit: int = 200) -> Dict[str, Any]:
-    """Global audit trail of accepted recommendations (ALL tenants).
-
-    Aggregates every tenant's accepted-recommendation ledger + the delivery
-    outcome afterwards so the platform operator sees the fleet of decisions
-    at a glance. ``limit`` caps the OUTPUT list only — ``count`` is always
-    the true total (deliberate full-audit pass; the ledger dedups per rig, so
-    the work is bounded by blacklisted rigs across tenants). Returns
-    {"count", "by_source", "by_verdict", "by_tenant",
-    "pilot_flagged", "avg_delivery_before", "avg_delivery_after", "days",
-    "decisions"} — never raises (empty DB → zeroed aggregates).
+def _admin_audit_decisions(days: int = 0) -> List[Dict[str, Any]]:
+    """Every accepted-recommendation decision across ALL tenants, with the
+    delivery outcome attached (shared by the audit payload and the
+    worse-concentration detector — ONE audit pass, zero drift). Each dict is
+    the _accepted_outcome entry tagged with its tenant_id ('default' for the
+    global settings table). Sorted newest first. Never raises (empty DB →
+    empty list).
     """
     entries = _load_all_accepted_recos()
     now = int(time.time())
+    try:
+        days = int(days) if days else 0
+    except (TypeError, ValueError):
+        days = 0
     if days and days > 0:
         cutoff = now - days * 86400
         # ts=0 (missing timestamp) reads as epoch and drops under a days
@@ -640,6 +639,23 @@ def compute_admin_accepted_recos(days: int = 0,
         outcome["tenant_id"] = tid
         decisions.append(outcome)
     decisions.sort(key=lambda x: x.get("ts") or 0, reverse=True)
+    return decisions
+
+
+def compute_admin_accepted_recos(days: int = 0,
+                                 limit: int = 200) -> Dict[str, Any]:
+    """Global audit trail of accepted recommendations (ALL tenants).
+
+    Aggregates every tenant's accepted-recommendation ledger + the delivery
+    outcome afterwards so the platform operator sees the fleet of decisions
+    at a glance. ``limit`` caps the OUTPUT list only — ``count`` is always
+    the true total (deliberate full-audit pass; the ledger dedups per rig, so
+    the work is bounded by blacklisted rigs across tenants). Returns
+    {"count", "by_source", "by_verdict", "by_tenant",
+    "pilot_flagged", "avg_delivery_before", "avg_delivery_after", "days",
+    "decisions"} — never raises (empty DB → zeroed aggregates).
+    """
+    decisions = _admin_audit_decisions(days=days)
 
     by_source: Dict[str, int] = {}
     by_verdict: Dict[str, int] = {}
@@ -680,6 +696,74 @@ def compute_admin_accepted_recos(days: int = 0,
         "days": days or None,
         "decisions": decisions[:limit],
     }
+
+
+# ── Tenant worse-concentration flag (padrão global de reincidência) ─────────
+# An accepted recommendation that comes back 'worse' means the operator
+# blacklisted a rig (after the pilot flagged it) and the rig went BACK to
+# under-delivering on a later rental. One-off worse is noise; a tenant where
+# a LARGE SHARE of accepted decisions end worse is a systemic pattern — bad
+# sellers in that tenant's pool, weak acceptance criteria, or a delivery
+# problem — and the platform operator should see it. Shared audit pass
+# (_admin_audit_decisions) so the report never drifts from the JSON view.
+
+
+def detect_tenant_worse_concentration(days: int = 0,
+                                      min_worse: int = 2,
+                                      worse_ratio: float = 0.5) -> Dict[str, Any]:
+    """Flag tenants with a concentrated 'worse' verdict pattern.
+
+    A tenant is flagged when BOTH hold over the window:
+      - worse_count >= min_worse (absolute recidivism — noise floor);
+      - worse_count / total_decisions >= worse_ratio (the majority-ish share
+        of their accepted decisions came back worse).
+
+    ``revoked`` decisions (restored rigs) never count as worse — a revoked
+    decision is a reversal, not a recidivism. Returns
+    {"count", "tenants": [{tenant_id, total, worse, ratio_pct, severity,
+    by_verdict}], "min_worse", "worse_ratio", "days"} — sorted by worse
+    count desc, never raises (empty DB → zeroed). severity: CRIT when
+    worse >= 3 AND ratio_pct >= 60, else WARN.
+    """
+    decisions = _admin_audit_decisions(days=days)
+    per_tenant: Dict[str, Dict[str, Any]] = {}
+    for d in decisions:
+        t = d.get("tenant_id") or "default"
+        tb = per_tenant.setdefault(t, {"count": 0, "worse": 0,
+                                      "by_verdict": {}})
+        tb["count"] += 1
+        v = d.get("verdict") or "unknown"
+        tb["by_verdict"][v] = tb["by_verdict"].get(v, 0) + 1
+        if v == "worse":
+            tb["worse"] += 1
+
+    try:
+        min_worse = max(1, int(min_worse))
+        worse_ratio = max(0.0, min(1.0, float(worse_ratio)))
+    except (TypeError, ValueError):
+        min_worse = 2
+        worse_ratio = 0.5
+
+    flagged: List[Dict[str, Any]] = []
+    for t, tb in per_tenant.items():
+        if tb["worse"] < min_worse or tb["count"] <= 0:
+            continue
+        ratio_pct = round(100.0 * tb["worse"] / tb["count"], 1)
+        if ratio_pct < worse_ratio * 100.0:
+            continue
+        severity = "CRIT" if (tb["worse"] >= 3 and ratio_pct >= 60.0) else "WARN"
+        flagged.append({
+            "tenant_id": t,
+            "total": tb["count"],
+            "worse": tb["worse"],
+            "ratio_pct": ratio_pct,
+            "severity": severity,
+            "by_verdict": tb["by_verdict"],
+        })
+    flagged.sort(key=lambda x: -x["worse"])
+    return {"count": len(flagged), "tenants": flagged,
+            "min_worse": min_worse, "worse_ratio": worse_ratio,
+            "days": days or None}
 
 
 # ── Admin audit CSV export (planilha do operador) ───────────────────────────

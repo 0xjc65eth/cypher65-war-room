@@ -4750,7 +4750,15 @@ def api_admin_rentals_accepted_recos():
         return resp
     limit = request.args.get("limit", 200, type=int)
     limit = max(1, min(limit, 1000))
-    return jsonify(_rental_perf.compute_admin_accepted_recos(days=days, limit=limit))
+    payload = _rental_perf.compute_admin_accepted_recos(days=days, limit=limit)
+    # Tenant worse-concentration report (padrão global de reincidência): the
+    # platform operator sees WHICH tenants have a concentrated 'worse'
+    # verdict pattern. Thresholds tunable via query (defaults 2/0.5).
+    payload["worse_concentration"] = _rental_perf.detect_tenant_worse_concentration(
+        days=days,
+        min_worse=request.args.get("worse_min", 2, type=int),
+        worse_ratio=request.args.get("worse_ratio", 0.5, type=float))
+    return jsonify(payload)
 
 
 # Moved to routes/dashboard_routes.py (dashboard_bp) — Fase 6 · PR2:
