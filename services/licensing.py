@@ -43,6 +43,8 @@ Usage:
 """
 import hmac
 import logging
+
+from helpers import mask_email
 import os
 import secrets
 import sqlite3
@@ -284,7 +286,9 @@ def issue_license(
         conn.commit()
     finally:
         conn.close()
-    log.info("license issued: plan=%s source=%s email=%s months=%s", plan, source, email or "-", months)
+    # PII-safe log (Issue #116): masked email only — never the raw address.
+    log.info("license issued: plan=%s source=%s email=%s months=%s",
+             plan, source, mask_email(email), months)
     return key
 
 
