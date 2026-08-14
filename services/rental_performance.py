@@ -4312,23 +4312,71 @@ def fetch_rig_performance_history(
     return out
 
 
+# Grade severity ladder for the auto-exclusion rule (A best → F worst).
+# The tenant's configured grade is a FLOOR: a rig is excluded when its own
+# grade is worse OR equal (rank <= floor rank). Default 'F' = only F rigs
+# (the legacy behavior).
+_AUTO_EXCLUDE_GRADE_RANK = {"A": 5, "B": 4, "C": 3, "D": 2, "F": 1}
+
+# Settings keys driving the per-tenant auto-exclusion rule.
+AUTO_EXCLUDE_MIN_SAMPLES_KEY = "rental_auto_blacklist_min_samples"
+AUTO_EXCLUDE_GRADE_KEY = "rental_auto_blacklist_grade"
+
+# Legacy hardcoded defaults (used when the settings are unset/invalid).
+_AUTO_EXCLUDE_DEFAULT_MIN_SAMPLES = 2
+_AUTO_EXCLUDE_DEFAULT_GRADE = "F"
+
+
+def _auto_exclude_thresholds(tenant_id: str = "") -> Dict[str, Any]:
+    """Per-tenant auto-exclusion thresholds from settings, with fail-closed
+    defaults. Invalid/empty values fall back silently (never raises).
+
+    Returns {"min_samples": int, "grade_rank": int, "grade": str} where
+    grade_rank is the ladder rank of the configured floor grade (F=1 … A=5).
+    """
+    min_samples = _AUTO_EXCLUDE_DEFAULT_MIN_SAMPLES
+    grade = _AUTO_EXCLUDE_DEFAULT_GRADE
+    try:
+        s = load_settings(tenant_id=tenant_id)
+        raw_min = (s.get(AUTO_EXCLUDE_MIN_SAMPLES_KEY) or "").strip()
+        if raw_min:
+            parsed = int(float(raw_min))
+            if parsed >= 1:
+                min_samples = parsed
+        raw_grade = (s.get(AUTO_EXCLUDE_GRADE_KEY) or "").strip().upper()
+        if raw_grade in _AUTO_EXCLUDE_GRADE_RANK:
+            grade = raw_grade
+    except Exception as e:
+        log.warning("[rental_performance] auto-exclude thresholds: %s", e)
+    return {"min_samples": min_samples,
+            "grade_rank": _AUTO_EXCLUDE_GRADE_RANK.get(grade, 1),
+            "grade": grade}
+
+
 def _should_auto_exclude(rig_id: Any, history: List[Dict],
                          tenant_id: str = "") -> bool:
     """SHARED auto-exclusion decision (detail path + periodic sweep).
 
-    A rig keeps under-delivering → grade F with ≥2 samples → it joins the
-    AUTO blacklist so bad performers vanish from the panel everywhere —
-    without touching the user's manual blacklist. A RESTORED rig is only
-    re-excluded when a NEW bad rental arrived AFTER the previous
-    auto-exclusion (otherwise the restore button is immediately undone by
-    the same streak). Never raises.
+    A rig keeps under-delivering → grade at/below the tenant's configured
+    floor with enough samples → it joins the AUTO blacklist so bad
+    performers vanish from the panel everywhere — without touching the
+    user's manual blacklist. Per-tenant thresholds come from settings
+    (rental_auto_blacklist_grade / rental_auto_blacklist_min_samples;
+    defaults F + 2 = legacy behavior). A RESTORED rig is only re-excluded
+    when a NEW bad rental arrived AFTER the previous auto-exclusion
+    (otherwise the restore button is immediately undone by the same
+    streak). Never raises.
     """
     try:
         if is_rig_blacklisted(rig_id, tenant_id=tenant_id) or \
                 is_rig_auto_blacklisted(rig_id, tenant_id=tenant_id):
             return False
         trust = compute_rig_trust_score(history)
-        if trust.get("grade") != "F" or trust.get("samples", 0) < 2:
+        th = _auto_exclude_thresholds(tenant_id=tenant_id)
+        rig_rank = _AUTO_EXCLUDE_GRADE_RANK.get(trust.get("grade"), 0)
+        if rig_rank == 0 or rig_rank > th["grade_rank"]:
+            return False
+        if trust.get("samples", 0) < th["min_samples"]:
             return False
         last_auto = _auto_blacklist_ts(rig_id, tenant_id=tenant_id)
         newest = _history_newest_ts(history)
