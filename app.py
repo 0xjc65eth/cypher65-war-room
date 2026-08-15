@@ -5084,9 +5084,23 @@ def api_admin_conversion():
     if not local and not (operator_key and hmac.compare_digest(sent, operator_key)):
         return jsonify({"error": "admin access required"}), 403
     days = request.args.get("days", 30, type=int)
+    weeks = request.args.get("weeks", 8, type=int)
+    if weeks < 1 or weeks > 52:
+        weeks = 8
+    weekly = _conversion.funnel_weekly_report(weeks=weeks)
+    # Issue #156 (18-B): ?format=csv exports the weekly trend as a
+    # spreadsheet (BOM UTF-8, attachment) — same payload, same gate.
+    if request.args.get("format", "").lower() == "csv":
+        out_csv = "\ufeff" + _conversion.funnel_weekly_csv(weekly)
+        fname = f"funnel_weekly_{int(time.time())}.csv"
+        resp = app.response_class(out_csv, mimetype="text/csv")
+        resp.headers["Content-Disposition"] = f"attachment; filename={fname}"
+        return resp
     funnel = _conversion.funnel_report(days=days)
     econ = _conversion.ltv_cac_report(paid_count=funnel.get("paid_count"))
-    return jsonify({"funnel": funnel, "economics": econ, "days": days})
+    return jsonify(
+        {"funnel": funnel, "economics": econ, "days": days, "weekly": weekly}
+    )
 
 
 @app.route("/api/admin/rentals/accepted-recos", methods=["GET"])

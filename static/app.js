@@ -2837,6 +2837,17 @@ function renderAccount(acct) {
     const labels = Object.keys(buckets).sort();
     return { labels: labels, counts: labels.map(function (k) { return buckets[k]; }) };
   }
+  // weekly funnel buckets (Issue #156) → trend series for the admin chart.
+  function buildFunnelTrend(weekly) {
+    const labels = [], paywall = [], convRate = [];
+    (weekly || []).forEach(function (b) {
+      labels.push(b.week || '');
+      const s = b.stages || {};
+      paywall.push(Number(s.paywall_view) || 0);
+      convRate.push(b.conversion_rate_pct != null ? Number(b.conversion_rate_pct) : 0);
+    });
+    return { labels: labels, paywall: paywall, convRate: convRate };
+  }
   // decisions → filtered by tenant + verdict ('all'/'' = no filter).
   function filterAdminAuditDecisions(decisions, tenant, verdict) {
     return (decisions || []).filter(function (d) {
@@ -2869,7 +2880,7 @@ function renderAccount(acct) {
       // Pool health — no auth needed for localhost/operator-key admin routes.
       const [sessionsResp, convResp, auditResp, metricsResp] = await Promise.all([
         fetch('/api/admin/sessions', { headers: { 'X-Requested-With': 'fetch' } }),
-        fetch('/api/admin/conversion', { headers: { 'X-Requested-With': 'fetch' } }),
+        fetch('/api/admin/conversion?weeks=8', { headers: { 'X-Requested-With': 'fetch' } }),
         fetch('/api/admin/rentals/accepted-recos?limit=1000', { headers: { 'X-Requested-With': 'fetch' } }),
         fetch('/api/admin/pool-metrics?hours=24', { headers: { 'X-Requested-With': 'fetch' } }),
       ]);
@@ -2940,7 +2951,55 @@ function renderAccount(acct) {
       });
       list.innerHTML = rows.length ? rows.join('') : '<li class="alert-empty">sem eventos no período</li>';
     }
+    // Weekly trend (Issue #156 — 18-B): paywall_view × conversion rate.
+    _renderAdminFunnelTrend(conv.weekly || []);
   }
+
+  // ── Funnel weekly trend chart (Issue #156 — 18-B) ──────────────────────
+  let _adminFunnelTrendChart = null;
+
+  function _renderAdminFunnelTrend(weekly) {
+    const wrap = document.getElementById('admin-funnel-trend-wrap');
+    const canvas = document.getElementById('admin-funnel-trend-chart');
+    const empty = document.getElementById('admin-funnel-trend-empty');
+    const meta = document.getElementById('admin-funnel-trend-meta');
+    if (!wrap || !canvas) return;
+    const trend = buildFunnelTrend(weekly);
+    if (_adminFunnelTrendChart) { _adminFunnelTrendChart.destroy(); _adminFunnelTrendChart = null; }
+    if (!trend.labels.length) {
+      wrap.hidden = true;
+      if (empty) empty.hidden = false;
+      if (meta) meta.textContent = '';
+      return;
+    }
+    wrap.hidden = false;
+    if (empty) empty.hidden = true;
+    if (meta) {
+      meta.textContent = trend.labels.length + ' semanas · ' + trend.labels[0] + ' → ' + trend.labels[trend.labels.length - 1];
+    }
+    if (typeof Chart === 'undefined') return;
+    _adminFunnelTrendChart = new Chart(canvas.getContext('2d'), {
+      type: 'line',
+      data: {
+        labels: trend.labels,
+        datasets: [
+          { label: 'paywall_view', data: trend.paywall, borderColor: 'rgb(6,214,240)', backgroundColor: 'rgba(6,214,240,0.06)', tension: 0.3, pointRadius: 2, fill: true, yAxisID: 'y' },
+          { label: 'conversion %', data: trend.convRate, borderColor: 'rgb(0,200,83)', backgroundColor: 'transparent', tension: 0.3, pointRadius: 2, borderDash: [4, 2], yAxisID: 'y1' },
+        ],
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        interaction: { mode: 'index', intersect: false },
+        scales: {
+          x: { ticks: { color: '#5E5952', font: { size: 9 }, maxRotation: 0 }, grid: { display: false } },
+          y: { beginAtZero: true, position: 'left', title: { display: true, text: 'paywall', color: 'rgb(6,214,240)', font: { size: 8 } }, ticks: { color: '#5E5952', font: { size: 9 }, precision: 0 }, grid: { color: 'rgba(94,89,82,0.10)' } },
+          y1: { beginAtZero: true, position: 'right', title: { display: true, text: 'conv %', color: 'rgb(0,200,83)', font: { size: 8 } }, ticks: { color: '#5E5952', font: { size: 9 } }, grid: { display: false } },
+        },
+      },
+    });
+  }
+
   function _pct(v) {
     if (v === undefined || v === null) return '—';
     return Number(v).toFixed(1) + '%';
@@ -3235,6 +3294,37 @@ function renderAccount(acct) {
         if (errEl) errEl.hidden = true;  // success clears any prior error
       } catch (err) {
         fail('CSV export error: ' + err.message);
+      }
+    });
+  }
+
+  // Funnel weekly CSV export — same admin-gated route, blob download
+  // (keeps the X-API-Key header path for remote operators).
+  const funnelCsvBtn = document.getElementById('admin-funnel-csv');
+  if (funnelCsvBtn) {
+    funnelCsvBtn.addEventListener('click', async function () {
+      const errEl = document.getElementById('admin-error');
+      const fail = function (msg) {
+        if (errEl) { errEl.hidden = false; errEl.textContent = msg; }
+      };
+      try {
+        const r = await fetch('/api/admin/conversion?format=csv&weeks=8', { headers: { 'X-Requested-With': 'fetch' } });
+        if (!r.ok) {
+          fail('CSV semanal bloqueado (HTTP ' + r.status + ') — a rota exige localhost ou X-API-Key do operador.');
+          return;
+        }
+        const blob = await r.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = 'funnel_weekly_' + Math.floor(Date.now() / 1000) + '.csv';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+        if (errEl) errEl.hidden = true;
+      } catch (err) {
+        fail('CSV semanal error: ' + err.message);
       }
     });
   }

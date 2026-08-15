@@ -5158,6 +5158,29 @@ function sortMarketVenues(venues, key, dir) {
   assertEqual('weekly empty input', buildAdminAuditWeekly([]), { labels: [], counts: [] });
   assertEqual('weekly undefined input', buildAdminAuditWeekly(undefined), { labels: [], counts: [] });
 
+  // Funnel weekly trend (Issue #156 — 18-B) — series builder mirror.
+  function buildFunnelTrend(weekly) {
+    const labels = [], paywall = [], convRate = [];
+    (weekly || []).forEach(function (b) {
+      labels.push(b.week || '');
+      const s = b.stages || {};
+      paywall.push(Number(s.paywall_view) || 0);
+      convRate.push(b.conversion_rate_pct != null ? Number(b.conversion_rate_pct) : 0);
+    });
+    return { labels: labels, paywall: paywall, convRate: convRate };
+  }
+  assertEqual('funnel trend empty input', buildFunnelTrend([]), { labels: [], paywall: [], convRate: [] });
+  assertEqual('funnel trend undefined input', buildFunnelTrend(undefined), { labels: [], paywall: [], convRate: [] });
+  assertEqual('funnel trend series', buildFunnelTrend([
+    { week: '2026-W31', stages: { paywall_view: 10 }, conversion_rate_pct: 20.0 },
+    { week: '2026-W32', stages: { paywall_view: 15, modal_open: 6 }, conversion_rate_pct: 33.33 },
+    { week: null, stages: {} },
+  ]), {
+    labels: ['2026-W31', '2026-W32', ''],
+    paywall: [10, 15, 0],
+    convRate: [20, 33.33, 0],
+  });
+
   // Filter — tenant + verdict, missing fields defaulted, no filter = all.
   const decisions = [
     { tenant_id: 'tenant-a', verdict: 'worse', ts: 1 },

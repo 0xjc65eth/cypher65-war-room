@@ -1467,6 +1467,17 @@
     <div class="kpi-card"><span class="kpi-card__label">Conv. por usuário</span><span class="kpi-card__value" id="admin-funnel-session-conv">—</span></div>
   </div>
 
+  <!-- ── Weekly trend (Issue #156 — 18-B) ── -->
+  <div class="panel__subtitle">TENDÊNCIA SEMANAL (ISO) — paywall_view × conversion rate</div>
+  <div class="admin-audit__toolbar">
+    <span class="admin-audit__meta" id="admin-funnel-trend-meta"></span>
+    <button class="chip" id="admin-funnel-csv" title="Exportar a tendência semanal (CSV)">⭳ CSV semanal</button>
+  </div>
+  <div class="admin-audit__chart-wrap" id="admin-funnel-trend-wrap" hidden>
+    <canvas id="admin-funnel-trend-chart"></canvas>
+  </div>
+  <div class="admin-audit__empty" id="admin-funnel-trend-empty" hidden>sem dados semanais no período</div>
+
   <!-- ── Stage counts ── -->
   <ul class="alerts-list" id="admin-funnel-list">
     <li class="alert-empty">aguardando dados…</li>
