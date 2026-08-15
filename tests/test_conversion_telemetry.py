@@ -890,11 +890,47 @@ def test_funnel_weekly_csv(clean_events):
     assert row[5] == "1"  # key_activated
     assert row[6] == "100.0"  # conversion_rate_pct
     assert row[7] == "0"  # sessions_count
-    # Empty buckets → just the header.
+    # Empty buckets → just the header (no feature columns when none exist).
     assert conv.funnel_weekly_csv([]) == (
         "week,paywall_view,modal_open,checkout_start,paid,key_activated,"
         "conversion_rate_pct,sessions_count\r\n"
     )
+
+
+def test_funnel_weekly_csv_feature_columns(clean_events):
+    from datetime import datetime, timezone
+
+    # Week 1: monte_carlo (2) + auto_pilot (1); Week 2: only monte_carlo (1).
+    t1 = int(datetime(2026, 7, 27, 12, 0, tzinfo=timezone.utc).timestamp())
+    t2 = int(datetime(2026, 8, 3, 12, 0, tzinfo=timezone.utc).timestamp())
+    _insert_at(t1, "paywall_view", {"feature": "monte_carlo"})
+    _insert_at(t1, "paywall_view", {"feature": "monte_carlo"})
+    _insert_at(t1, "paywall_view", {"feature": "auto_pilot"})
+    _insert_at(t2, "paywall_view", {"feature": "monte_carlo"})
+
+    weekly = conv.funnel_weekly_report(weeks=8)
+    assert len(weekly) == 2
+    # Per-week breakdown exposed on the JSON buckets too (Issue #165).
+    bf1 = {f["feature"]: f["count"] for f in weekly[0]["paywall_by_feature"]}
+    assert bf1 == {"monte_carlo": 2, "auto_pilot": 1}
+    bf2 = {f["feature"]: f["count"] for f in weekly[1]["paywall_by_feature"]}
+    assert bf2 == {"monte_carlo": 1}
+
+    out = conv.funnel_weekly_csv(weekly)
+    # csv.writer emits CRLF — normalize so trailing \r never pollutes cells.
+    lines = [ln.rstrip("\r") for ln in out.split("\n") if ln]
+    header = lines[0].split(",")
+    # Feature columns appended AFTER the standard 8, sorted.
+    assert header[8] == "feature:auto_pilot"
+    assert header[9] == "feature:monte_carlo"
+    r1 = lines[1].split(",")
+    assert r1[0] == _iso_key(t1)
+    assert r1[header.index("feature:monte_carlo")] == "2"
+    assert r1[header.index("feature:auto_pilot")] == "1"
+    r2 = lines[2].split(",")
+    assert r2[0] == _iso_key(t2)
+    assert r2[header.index("feature:monte_carlo")] == "1"
+    assert r2[header.index("feature:auto_pilot")] == "0"  # absent this week
 
 
 def test_admin_conversion_weekly_payload(isolated_client, monkeypatch, clean_events):
@@ -935,6 +971,34 @@ def test_admin_conversion_csv_export(isolated_client, monkeypatch, clean_events)
     body = resp.get_data(as_text=True)
     assert body.startswith("\ufeffweek,paywall_view")  # BOM + header
     assert _iso_key(t) in body
+
+
+def test_admin_conversion_csv_feature_columns(
+    isolated_client, monkeypatch, clean_events
+):
+    from datetime import datetime, timezone
+
+    monkeypatch.setenv("API_KEY", "operator-key-123")
+    t = int(datetime(2026, 8, 3, 12, 0, tzinfo=timezone.utc).timestamp())
+    _insert_at(t, "paywall_view", {"feature": "monte_carlo"})
+    _insert_at(t, "paywall_view", {"feature": "auto_pilot"})
+
+    resp = isolated_client.get(
+        "/api/admin/conversion?format=csv",
+        headers={"X-API-Key": "operator-key-123"},
+    )
+    assert resp.status_code == 200
+    body = resp.get_data(as_text=True)
+    assert body.startswith("\ufeffweek,paywall_view,modal_open")
+    assert "feature:monte_carlo" in body
+    assert "feature:auto_pilot" in body
+    # csv.writer emits CRLF — strip each line so trailing \r never pollutes
+    # the last column / the header lookup.
+    lines = [ln.rstrip("\r") for ln in body.split("\n") if ln]
+    header = lines[0].lstrip("\ufeff").split(",")
+    row = lines[1].split(",")
+    assert row[header.index("feature:monte_carlo")] == "1"
+    assert row[header.index("feature:auto_pilot")] == "1"
 
 
 def test_admin_conversion_csv_requires_admin(isolated_client):

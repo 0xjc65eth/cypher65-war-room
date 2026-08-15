@@ -412,12 +412,15 @@ def funnel_weekly_report(weeks: int = 8) -> List[Dict[str, Any]]:
           "stages": {paywall_view: N, ...},
           "drop_off": [{from, to, prev, next, loss_abs, loss_pct,
                         conversion_pct}, ...],
-          "conversion_rate_pct": 2.3, "sessions_count": 5}, ...]
+          "conversion_rate_pct": 2.3, "sessions_count": 5,
+          "paywall_by_feature": [{feature, count}, ...]}, ...]
 
     ``week`` is the ISO-8601 week key (Monday-start) in UTC; stages/drop-off
     mirror the aggregate ``funnel_report`` math per week; ``sessions_count``
     is the number of distinct funnel_ids (Issue #155 attribution) seen that
-    week (0 when no session tokens are present).
+    week (0 when no session tokens are present). ``paywall_by_feature``
+    mirrors the funnel_report breakdown per week (Issue #165): which gated
+    endpoint blocked users THAT week (meta.feature, 'unknown' fallback).
     """
     if weeks < 1:
         weeks = 1
@@ -449,6 +452,7 @@ def funnel_weekly_report(weeks: int = 8) -> List[Dict[str, Any]]:
             buckets[key] = {
                 "counts": {},
                 "sessions": set(),
+                "features": {},
                 "week_start_ts": int(
                     (dt - timedelta(days=dt.weekday()))
                     .replace(hour=0, minute=0, second=0, microsecond=0)
@@ -467,6 +471,14 @@ def funnel_weekly_report(weeks: int = 8) -> List[Dict[str, Any]]:
         fid = str(m.get("funnel_id") or "")[:64]
         if fid:
             b["sessions"].add(fid)
+        # Feature breakdown per week (Issue #165): paywall_view rows carry
+        # meta.feature — count per feature so the CSV can show WHICH gated
+        # endpoint blocked users each week (same shape as funnel_report).
+        if r["event"] == "paywall_view":
+            fname = str(m.get("feature") or "")[:64]
+            b["features"][fname or "unknown"] = (
+                b["features"].get(fname or "unknown", 0) + 1
+            )
 
     out: List[Dict[str, Any]] = []
     for key in sorted(buckets):
@@ -492,6 +504,10 @@ def funnel_weekly_report(weeks: int = 8) -> List[Dict[str, Any]]:
             )
         paywall = counts.get("paywall_view", 0)
         activated = counts.get("key_activated", 0)
+        features = [
+            {"feature": k, "count": v}
+            for k, v in sorted(b["features"].items(), key=lambda kv: -kv[1])
+        ][:10]
         out.append(
             {
                 "week": key,
@@ -502,6 +518,7 @@ def funnel_weekly_report(weeks: int = 8) -> List[Dict[str, Any]]:
                     round(activated / paywall * 100, 2) if paywall else 0.0
                 ),
                 "sessions_count": len(b["sessions"]),
+                "paywall_by_feature": features,
             }
         )
     return out
@@ -511,9 +528,21 @@ def funnel_weekly_csv(buckets: List[Dict[str, Any]]) -> str:
     """Serialize weekly funnel buckets to CSV for spreadsheet export.
 
     One row per ISO week with the stage counts + conversion rate + sessions
-    count — the most readable shape for Excel/Sheets. The caller prepends
+    count — the most readable shape for Excel/Sheets. When any week carries
+    a ``paywall_by_feature`` breakdown (Issue #165), one column per feature
+    is appended AFTER the standard columns (``feature:<name>``, union of
+    features seen across the report, sorted for a stable layout; 0 when the
+    feature had no paywalls that week). No features → the header is exactly
+    the legacy one, so older consumers are unaffected. The caller prepends
     the UTF-8 BOM (matches the accepted-recos export convention).
     """
+    feature_cols = sorted(
+        {
+            str(f.get("feature") or "unknown")
+            for b in buckets
+            for f in (b.get("paywall_by_feature") or [])
+        }
+    )
     buf = StringIO()
     w = csv.writer(buf)
     w.writerow(
@@ -527,9 +556,14 @@ def funnel_weekly_csv(buckets: List[Dict[str, Any]]) -> str:
             "conversion_rate_pct",
             "sessions_count",
         ]
+        + [f"feature:{f}" for f in feature_cols]
     )
     for b in buckets:
         s = b.get("stages") or {}
+        by_feature = {
+            str(f.get("feature") or "unknown"): int(f.get("count") or 0)
+            for f in (b.get("paywall_by_feature") or [])
+        }
         w.writerow(
             [
                 b.get("week", ""),
@@ -541,6 +575,7 @@ def funnel_weekly_csv(buckets: List[Dict[str, Any]]) -> str:
                 b.get("conversion_rate_pct", 0),
                 b.get("sessions_count", 0),
             ]
+            + [by_feature.get(f, 0) for f in feature_cols]
         )
     return buf.getvalue()
 
