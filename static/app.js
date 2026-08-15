@@ -2837,6 +2837,20 @@ function renderAccount(acct) {
     const labels = Object.keys(buckets).sort();
     return { labels: labels, counts: labels.map(function (k) { return buckets[k]; }) };
   }
+  // feature_alert (Issue #163) → safe banner payload {feature, count,
+  // sharePct, minPct, active}; no HTML, numbers guarded against NaN.
+  function buildFeatureAlert(featureAlert) {
+    if (!featureAlert || featureAlert.share_pct == null) {
+      return { active: false, feature: '', count: 0, sharePct: 0, minPct: 50 };
+    }
+    return {
+      active: true,
+      feature: String(featureAlert.feature || 'unknown'),
+      count: Number(featureAlert.count) || 0,
+      sharePct: Number(featureAlert.share_pct) || 0,
+      minPct: Number(featureAlert.min_pct) || 50,
+    };
+  }
   // paywall_by_feature (Issue #158) → top-N display rows {feature, count,
   // pct} sorted desc; safe strings, no HTML.
   function buildFeatureBreakdown(paywallByFeature) {
@@ -2994,8 +3008,22 @@ function renderAccount(acct) {
     }
     // Feature breakdown (Issue #158 — 18-D): where the free tier blocks.
     _renderAdminFeatures(funnel);
+    // Feature over-concentration (Issue #163): the #1 friction point.
+    _renderAdminFeatureAlert(conv.feature_alert || null);
     // Weekly trend (Issue #156 — 18-B): paywall_view × conversion rate.
     _renderAdminFunnelTrend(conv.weekly || []);
+  }
+
+  // ── Feature over-concentration banner (Issue #163) ────────────────────
+  function _renderAdminFeatureAlert(featureAlert) {
+    const el = document.getElementById('admin-feature-alert');
+    if (!el) return;
+    const a = buildFeatureAlert(featureAlert);
+    if (!a.active) { el.hidden = true; el.textContent = ''; return; }
+    el.hidden = false;
+    el.textContent = '⚠ FEATURE TRAVA DEMAIS — ' + a.feature + ' = ' +
+      a.sharePct + '% dos paywalls (threshold ' + a.minPct + '%). ' +
+      'Investigar UX/onboarding desta feature.';
   }
 
   // ── Feature breakdown (Issue #158 — 18-D) ─────────────────────────────

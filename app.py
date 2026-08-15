@@ -5098,8 +5098,23 @@ def api_admin_conversion():
         return resp
     funnel = _conversion.funnel_report(days=days)
     econ = _conversion.ltv_cac_report(paid_count=funnel.get("paid_count"))
+    # Issue #163: alert when one feature concentrates too much of the
+    # paywalls (?feature_pct= threshold, default 50%) — the #1 friction
+    # point jumps out instead of hiding in the breakdown list.
+    feature_pct = request.args.get("feature_pct", 50, type=float)
+    if feature_pct < 1 or feature_pct > 100:
+        feature_pct = 50
+    feature_alert = _conversion.detect_feature_overconcentration(
+        funnel.get("paywall_by_feature") or [], min_pct=feature_pct
+    )
     return jsonify(
-        {"funnel": funnel, "economics": econ, "days": days, "weekly": weekly}
+        {
+            "funnel": funnel,
+            "economics": econ,
+            "days": days,
+            "weekly": weekly,
+            "feature_alert": feature_alert,
+        }
     )
 
 
