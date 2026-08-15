@@ -6786,6 +6786,12 @@ def api_rentals(tenant_id: str = ""):
                 "total_owner": mrr_owner.get("total")
                 or len(mrr_owner.get("rentals", [])),
                 "error": mrr_active.get("error") or mrr_history.get("error"),
+                # Issue #152 (c): a configured-but-rejected key (Bad Nonce /
+                # Not Authenticated) is a CREDENTIAL problem, not a generic
+                # provider error — the panel shows the 'regenerate key' fix.
+                "auth_rejected": mrr_active.get("auth_rejected")
+                or mrr_history.get("auth_rejected")
+                or mrr_owner.get("auth_rejected"),
             },
             "braiins": {
                 "needs_auth": braiins.get("needs_auth", False),

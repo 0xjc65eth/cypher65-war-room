@@ -106,6 +106,47 @@ def test_mrr_rentals_permission_error(mrr_creds, monkeypatch):
     out = rp.fetch_mrr_rentals()
     assert out["success"] is False
     assert "No Permission" in out.get("error", "")
+    # Permission denial is NOT a credential problem (Issue #152).
+    assert out.get("auth_rejected") is False
+
+
+def test_is_mrr_auth_rejection_classifier():
+    """Issue #152 (c): the MRR credential-rejection classifier matches the
+    classic Bad Nonce signature (and variants), never generic/other errors."""
+    assert rp._is_mrr_auth_rejection("Not Authenticated - Invalid Key - Bad Nonce.")
+    assert rp._is_mrr_auth_rejection("Invalid Key")
+    assert rp._is_mrr_auth_rejection("bad nonce")
+    assert rp._is_mrr_auth_rejection("Unauthorized: forbidden")
+    assert not rp._is_mrr_auth_rejection("No Permission - account/1285")
+    assert not rp._is_mrr_auth_rejection("HTTP 503")
+    assert not rp._is_mrr_auth_rejection("")
+    assert not rp._is_mrr_auth_rejection(None)
+
+
+def test_mrr_rentals_bad_nonce_flags_auth_rejected(mrr_creds, monkeypatch):
+    """A CONFIGURED key rejected by the MRR API ('Invalid Key - Bad Nonce')
+    surfaces as auth_rejected=True so the panel explains 'regenerate the key'
+    instead of a generic provider error — and needs_auth stays False (the
+    credential EXISTS, it's just stale)."""
+    payload = {"success": False, "data": "Not Authenticated - Invalid Key - Bad Nonce."}
+    monkeypatch.setattr(rp.requests, "get", lambda *a, **k: FakeResponse(payload=payload))
+    out = rp.fetch_mrr_rentals()
+    assert out["success"] is False
+    assert out["needs_auth"] is False
+    assert out["auth_rejected"] is True
+    assert "Bad Nonce" in out.get("error", "")
+
+
+def test_mrr_rentals_http_401_flags_auth_rejected(mrr_creds, monkeypatch):
+    """An HTTP 401/403 with a configured key is also a credential rejection
+    (Issue #152) — the panel must not show a generic HTTP error."""
+    monkeypatch.setattr(
+        rp.requests, "get", lambda *a, **k: FakeResponse(ok=False, status_code=401)
+    )
+    out = rp.fetch_mrr_rentals()
+    assert out["success"] is False
+    assert out["needs_auth"] is False
+    assert out["auth_rejected"] is True
 
 
 def test_mrr_rental_detail_graph_log(mrr_creds, monkeypatch):
