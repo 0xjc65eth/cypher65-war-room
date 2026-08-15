@@ -5158,6 +5158,28 @@ function sortMarketVenues(venues, key, dir) {
   assertEqual('weekly empty input', buildAdminAuditWeekly([]), { labels: [], counts: [] });
   assertEqual('weekly undefined input', buildAdminAuditWeekly(undefined), { labels: [], counts: [] });
 
+  // Feature breakdown (Issue #158 — 18-D) — top-N builder mirror.
+  function buildFeatureBreakdown(paywallByFeature) {
+    const rows = (paywallByFeature || []).map(function (f) {
+      return { feature: f.feature || 'unknown', count: Number(f.count) || 0 };
+    }).sort(function (a, b) { return b.count - a.count; });
+    const total = rows.reduce(function (s, r) { return s + r.count; }, 0) || 1;
+    return rows.map(function (r) {
+      return { feature: r.feature, count: r.count, pct: Math.round(r.count / total * 100) };
+    });
+  }
+  assertEqual('feature breakdown empty', buildFeatureBreakdown([]), []);
+  assertEqual('feature breakdown undefined', buildFeatureBreakdown(undefined), []);
+  assertEqual('feature breakdown sorted + pct', buildFeatureBreakdown([
+    { feature: 'auto_pilot', count: 2 },
+    { feature: 'monte_carlo', count: 5 },
+    { feature: null },
+  ]), [
+    { feature: 'monte_carlo', count: 5, pct: 71 },
+    { feature: 'auto_pilot', count: 2, pct: 29 },
+    { feature: 'unknown', count: 0, pct: 0 },
+  ]);
+
   // Cohort LTV rows (Issue #157 — 18-C) — safe-number builder mirror.
   function _cohortNum(v) {
     const n = Number(v);

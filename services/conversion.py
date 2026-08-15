@@ -114,10 +114,13 @@ def track_event(
         meta: extra JSON-safe context (feature, plan, etc.).
         email: raw email is NEVER stored — only its hash (privacy).
 
-    ``paywall_view`` is deduplicated per tenant per 24h: a user hitting N
-    gated endpoints in one session would otherwise inflate the top of the
-    funnel (each 402 fires the event). Anonymous callers (tenant_id="")
-    are not deduplicated — we cannot tell them apart, so every 402 counts.
+    ``paywall_view`` is deduplicated per (tenant, feature) per 24h (Issue
+    #158): a user hitting the SAME gated endpoint twice in a day counts once
+    (no inflation of the funnel top), but each DIFFERENT gated feature they
+    hit counts — so ``paywall_by_feature`` shows which endpoint actually
+    blocks users, instead of hiding every feature behind one per-tenant
+    bucket. Anonymous callers (tenant_id="") are not deduplicated — we
+    cannot tell them apart, so every 402 counts.
     """
     if not event:
         return False
@@ -129,16 +132,24 @@ def track_event(
         ts = int(time.time())
         tenant_key = _anonymize(tenant_id)
 
-        # Funnel top dedup: one paywall_view per tenant per 24h.
+        # Funnel top dedup: one paywall_view per (tenant, feature) per 24h.
         if event == "paywall_view" and tenant_key:
-            dup = conn.execute(
-                "SELECT 1 FROM conversion_events "
-                "WHERE event='paywall_view' AND tenant_id=? AND ts >= ? LIMIT 1",
+            feature = str((meta or {}).get("feature") or "")[:64]
+            recent = conn.execute(
+                "SELECT meta FROM conversion_events "
+                "WHERE event='paywall_view' AND tenant_id=? AND ts >= ?",
                 (tenant_key, ts - 86400),
-            ).fetchone()
-            if dup:
-                conn.close()
-                return False
+            ).fetchall()
+            for r in recent:
+                try:
+                    m = json.loads(r["meta"] or "{}") or {}
+                    if not isinstance(m, dict):
+                        m = {}
+                except (ValueError, TypeError):
+                    m = {}
+                if str(m.get("feature") or "")[:64] == feature:
+                    conn.close()
+                    return False
 
         row = {
             "ts": ts,
@@ -231,6 +242,30 @@ def funnel_report(days: int = 30) -> Dict[str, Any]:
             }
         )
 
+    # ── Feature breakdown (Issue #158 — 18-D): which gated endpoint blocks
+    # the most users? paywall_view rows carry meta.feature (endpoint name,
+    # set by the pro_required decorator) — aggregate per feature so the CFO
+    # sees WHERE users get stuck, not just how many. Events recorded before
+    # this change have no feature → bucketed as 'unknown'.
+    paywall_features: Dict[str, int] = {}
+    for r in rows_all:
+        if r["event"] != "paywall_view":
+            continue
+        try:
+            m = json.loads(r["meta"] or "{}") or {}
+            if not isinstance(m, dict):
+                m = {}
+        except (ValueError, TypeError):
+            m = {}
+        fname = str(m.get("feature") or "")[:64]
+        paywall_features[fname or "unknown"] = (
+            paywall_features.get(fname or "unknown", 0) + 1
+        )
+    paywall_by_feature = [
+        {"feature": k, "count": v}
+        for k, v in sorted(paywall_features.items(), key=lambda kv: -kv[1])
+    ][:10]
+
     # ── Session view (Issue #155): events carrying meta.funnel_id form a
     # per-user path across stages. The aggregate counts above mix users and
     # sessions; here we count DISTINCT funnels per stage so drop-off answers
@@ -305,6 +340,8 @@ def funnel_report(days: int = 30) -> Dict[str, Any]:
         "paid_count": stages.get("paid", 0),
         "activated_count": activated,
         "conversion_rate_pct": round(activated / paywall * 100, 2) if paywall else 0.0,
+        # Feature breakdown (Issue #158 — 18-D).
+        "paywall_by_feature": paywall_by_feature,
         # Session view (Issue #155) — per-user funnel attribution.
         "sessions_count": len(funnels_seen),
         "session_stages": session_counts,
