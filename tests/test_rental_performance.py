@@ -169,6 +169,49 @@ def test_mrr_rental_detail_graph_log(mrr_creds, monkeypatch):
     assert out["detail"]["id"] == "5657736"
     assert "1785007140000" in out["graph"]["chartdata"]["bars"]
     assert out["log"]["rental_log"][0]["msg"].startswith("Rental #")
+    # Success path never fabricates a rejection (Issue #174).
+    assert out.get("auth_rejected") is False
+
+
+def test_mrr_rental_detail_bad_nonce_flags_auth_rejected(mrr_creds, monkeypatch):
+    """A CONFIGURED key rejected on the DETAIL endpoints also surfaces as
+    auth_rejected (Issue #174) — the detail click explains the same fix the
+    list already shows, carrying the REAL error body (not just 'HTTP 401')."""
+    payload = {"success": False, "data": "Not Authenticated - Invalid Key - Bad Nonce."}
+    monkeypatch.setattr(
+        rp.requests, "get",
+        lambda *a, **k: FakeResponse(ok=False, status_code=401, payload=payload),
+    )
+    out = rp.fetch_mrr_rental_detail("5657736")
+    assert out["success"] is False
+    assert out["auth_rejected"] is True
+    assert "Bad Nonce" in out["detail"]["error"]
+
+
+def test_mrr_rental_detail_http_error_not_rejected(mrr_creds, monkeypatch):
+    """A 5xx (provider down) is NOT a credential problem — never flag it."""
+    monkeypatch.setattr(
+        rp.requests, "get",
+        lambda *a, **k: FakeResponse(ok=False, status_code=503),
+    )
+    out = rp.fetch_mrr_rental_detail("5657736")
+    assert out["success"] is False
+    assert out["auth_rejected"] is False
+    assert "503" in out["detail"]["error"]
+
+
+def test_mrr_rental_detail_permission_error_not_rejected(mrr_creds, monkeypatch):
+    """Permission denial is NOT a credential problem (same as the list fetch,
+    Issue #152/#174) — the classifier must not match 'No Permission'."""
+    payload = {"success": False, "data": "No Permission - account/1285"}
+    monkeypatch.setattr(
+        rp.requests, "get",
+        lambda *a, **k: FakeResponse(payload=payload),
+    )
+    out = rp.fetch_mrr_rental_detail("5657736")
+    assert out["success"] is False
+    assert out["auth_rejected"] is False
+    assert "No Permission" in out["detail"]["error"]
 
 
 def test_braiins_contracts_needs_auth(monkeypatch):
@@ -498,6 +541,32 @@ def test_detail_route_mrr_enriched(rclient, monkeypatch):
     assert data["perf"]["limit_th"] == 165.0
     assert data["rig_history"][0]["percent"] == 94.0
     assert data["market"]["price_sats_per_thh"] == 500.0
+
+
+def test_detail_route_mrr_propagates_auth_rejected(rclient, monkeypatch):
+    """A rejected MRR key on the detail call surfaces auth_rejected so the
+    modal explains 'regenerate the key' (Issue #174)."""
+    monkeypatch.setattr(
+        _app_module._rental_perf, "fetch_mrr_rental_detail",
+        lambda rid, tenant_id="": {
+            "success": False,
+            "auth_rejected": True,
+            "detail": {"error": "Not Authenticated - Invalid Key - Bad Nonce."},
+            "graph": {},
+            "log": {},
+        },
+    )
+    monkeypatch.setattr(
+        _app_module._rental_perf, "fetch_market_reference",
+        lambda: {"available": False},
+    )
+
+    resp = rclient.get("/api/rentals/detail?provider=mrr&id=5657736")
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data["provider"] == "mrr"
+    assert data["auth_rejected"] is True
+    assert "Bad Nonce" in data["detail"]["error"]
 
 
 def test_detail_route_braiins_market(rclient, monkeypatch):

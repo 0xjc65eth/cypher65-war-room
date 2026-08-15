@@ -1734,6 +1734,9 @@ def fetch_mrr_rental_detail(rental_id: str, tenant_id: str = "") -> Dict[str, An
         return {"success": False, "needs_auth": True}
 
     out: Dict[str, Any] = {"success": False}
+    # Per-endpoint credential-rejection verdict (Issue #174) — aggregated
+    # after the pool since threads run concurrently.
+    _rejections: Dict[str, bool] = {}
 
     # Fetch detail + graph + log CONCURRENTLY (independent GETs). Sequential
     # calls made a detail click take up to ~45s worst case (three 15s
@@ -1750,13 +1753,39 @@ def fetch_mrr_rental_detail(rental_id: str, tenant_id: str = "") -> Dict[str, An
                 timeout=15,
             )
             if not r.ok:
-                out[key] = {"error": f"HTTP {r.status_code}"}
+                # Carry the MRR error BODY, not just the status — the
+                # 'Not Authenticated - Invalid Key - Bad Nonce.' signature
+                # lives in the payload's `data` field and drives the
+                # auth_rejected flag (Issue #174).
+                _msg = f"HTTP {r.status_code}"
+                try:
+                    _j = r.json()
+                    if isinstance(_j, dict):
+                        _msg = _j.get("data") or _j.get("error") or _msg
+                except Exception:
+                    _t = (r.text or "").strip()
+                    if _t:
+                        _msg = f"HTTP {r.status_code} — {_t[:120]}"
+                _rejections[key] = _is_mrr_auth_rejection(_msg) or r.status_code in (
+                    401,
+                    403,
+                )
+                out[key] = {"error": _msg}
                 return
             data = r.json()
-            out[key] = (
-                data.get("data") if data.get("success") else {"error": data.get("data")}
-            )
+            if data.get("success"):
+                _rejections[key] = False
+                out[key] = data.get("data")
+            else:
+                _d = data.get("data")
+                if isinstance(_d, dict):
+                    _err = str(_d.get("message") or _d.get("permission") or _d)
+                else:
+                    _err = str(_d or data.get("message") or "MRR error")
+                _rejections[key] = _is_mrr_auth_rejection(_err)
+                out[key] = {"error": _err}
         except Exception as e:
+            _rejections[key] = False
             out[key] = {"error": str(e)[:120]}
 
     with ThreadPoolExecutor(max_workers=3) as ex:
@@ -1767,6 +1796,10 @@ def fetch_mrr_rental_detail(rental_id: str, tenant_id: str = "") -> Dict[str, An
             )
         )
 
+    # Issue #174: same classifier the list uses — a CONFIGURED key rejected
+    # on any detail endpoint (Bad Nonce / Invalid Key / 401/403) is a
+    # credential problem: the detail click explains 'regenerate the key'.
+    out["auth_rejected"] = any(_rejections.values())
     out["success"] = bool(out.get("detail") and not out["detail"].get("error"))
     return out
 
