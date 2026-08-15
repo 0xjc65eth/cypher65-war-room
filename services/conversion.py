@@ -535,9 +535,13 @@ def funnel_weekly_csv(buckets: List[Dict[str, Any]]) -> str:
     feature had no paywalls that week). Each count column is followed by a
     ``feature_pct:<name>`` share column (Issue #168) — count / that week's
     paywall_view × 100, 1 decimal — so the CFO sorts by IMPACT straight in
-    the spreadsheet. No features → the header is exactly the legacy one, so
-    older consumers are unaffected. The caller prepends the UTF-8 BOM
-    (matches the accepted-recos export convention).
+    the spreadsheet. After the shares, ``feature_delta:<name>`` (Issue #171)
+    carries the TREND: pct of this week MINUS the previous week in the
+    report (percentage points, 1 decimal; an absent feature counts as 0.0),
+    empty on the first row where no baseline exists. No features → the
+    header is exactly the legacy one, so older consumers are unaffected.
+    The caller prepends the UTF-8 BOM (matches the accepted-recos export
+    convention).
     """
     feature_cols = sorted(
         {
@@ -561,7 +565,9 @@ def funnel_weekly_csv(buckets: List[Dict[str, Any]]) -> str:
         ]
         + [f"feature:{f}" for f in feature_cols]
         + [f"feature_pct:{f}" for f in feature_cols]
+        + [f"feature_delta:{f}" for f in feature_cols]
     )
+    prev_pct = None
     for b in buckets:
         s = b.get("stages") or {}
         paywalls = int(s.get("paywall_view", 0) or 0)
@@ -575,6 +581,15 @@ def funnel_weekly_csv(buckets: List[Dict[str, Any]]) -> str:
             f: (round(c / paywalls * 100.0, 1) if paywalls else 0.0)
             for f, c in by_feature.items()
         }
+        # Trend (Issue #171): pct vs the previous week in the report. First
+        # row → empty (no baseline — a 0 would fake 'flat' when we simply
+        # don't know). Missing feature on either side counts as 0.0.
+        delta_feature = {}
+        if prev_pct is not None:
+            delta_feature = {
+                f: round(pct_feature.get(f, 0.0) - prev_pct.get(f, 0.0), 1)
+                for f in feature_cols
+            }
         w.writerow(
             [
                 b.get("week", ""),
@@ -588,7 +603,9 @@ def funnel_weekly_csv(buckets: List[Dict[str, Any]]) -> str:
             ]
             + [by_feature.get(f, 0) for f in feature_cols]
             + [pct_feature.get(f, 0.0) for f in feature_cols]
+            + [delta_feature.get(f, "") for f in feature_cols]
         )
+        prev_pct = pct_feature
     return buf.getvalue()
 
 
