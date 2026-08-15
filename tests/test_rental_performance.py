@@ -1602,11 +1602,99 @@ def test_portfolio_series_partial_known_yield(tmp_path, monkeypatch):
     assert s["points"][1]["cum_pl_sats"] is None  # total through W31 is unknown
 
 
+# ── Issue #146 (21-C): self-mining EV merged into the series ──────────────
+
+
+def _ts_utc(y, m, d, hh=12):
+    import datetime as _dt
+
+    return _dt.datetime(y, m, d, hh, tzinfo=_dt.timezone.utc).timestamp()
+
+
+def test_portfolio_series_own_ev_included_full_week(tmp_path, monkeypatch):
+    """Issue #146 (21-C): own_ev_daily_sats merges the self-mining EV per
+    bucket — a fully-past ISO week carries 7 days of EV, the consolidated
+    total = rentals P/L + own EV, and the ESTIMATE labels are honest."""
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "series_ev.sqlite"))
+    monkeypatch.setattr(rp, "compute_rental_pl",
+                        lambda delivered, paid, **k: {"pl_sats": -200.0})
+    assert rp.save_rental_history([_series_row("1", "2026-07-20 10:00:00 UTC", 5000)],
+                                  tenant_id="t1") is True
+    s = rp.compute_portfolio_series(tenant_id="t1", bucket="week",
+                                    own_ev_daily_sats=100,
+                                    now_ts=_ts_utc(2026, 8, 1))
+    p = s["points"][0]
+    assert p["label"] == "2026-W30"
+    assert p["own_ev_sats"] == 700          # 7 days × 100 sats/day
+    assert p["pl_sats"] == -200.0
+    assert p["total_pl_sats"] == 500.0      # -200 rentals + 700 own EV
+    assert p["cum_total_sats"] == 500.0
+    assert s["own_ev_estimate"] is True
+    assert s["own_ev_daily_sats"] == 100
+    assert s["totals"]["own_ev_sats"] == 700
+    assert s["totals"]["total_pl_sats"] == 500.0
+    assert s["estimate"] is True
+
+
+def test_portfolio_series_own_ev_month_full_days(tmp_path, monkeypatch):
+    """Own EV in a calendar-month bucket = daily EV × the month's days
+    (February 2026 → 28 days)."""
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "series_ev2.sqlite"))
+    monkeypatch.setattr(rp, "compute_rental_pl",
+                        lambda delivered, paid, **k: {"pl_sats": -50.0})
+    assert rp.save_rental_history([_series_row("1", "2026-02-10 10:00:00 UTC", 3000)],
+                                  tenant_id="t1") is True
+    s = rp.compute_portfolio_series(tenant_id="t1", bucket="month",
+                                    own_ev_daily_sats=100,
+                                    now_ts=_ts_utc(2026, 3, 1))
+    p = s["points"][0]
+    assert p["label"] == "2026-02"
+    assert p["own_ev_sats"] == 2800         # 28 days × 100
+    assert p["total_pl_sats"] == 2750.0     # -50 + 2800
+
+
+def test_portfolio_series_own_ev_current_partial_week_capped(tmp_path, monkeypatch):
+    """The CURRENT partial bucket is capped at the days elapsed so far
+    (mid-week → 3 days), never a fabricated full week."""
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "series_ev3.sqlite"))
+    monkeypatch.setattr(rp, "compute_rental_pl",
+                        lambda delivered, paid, **k: {"pl_sats": 0.0})
+    # 2026-07-20 is a Monday (W30); 'now' = Wednesday 2026-07-22.
+    assert rp.save_rental_history([_series_row("1", "2026-07-21 10:00:00 UTC", 2000)],
+                                  tenant_id="t1") is True
+    s = rp.compute_portfolio_series(tenant_id="t1", bucket="week",
+                                    own_ev_daily_sats=100,
+                                    now_ts=_ts_utc(2026, 7, 22))
+    assert s["points"][0]["own_ev_sats"] == 300  # Mon + Tue + Wed = 3 days
+
+
+def test_portfolio_series_own_ev_absent_is_backward_compatible(tmp_path, monkeypatch):
+    """Without own_ev_daily_sats the payload keeps the legacy shape: EV
+    fields exist but are None (honest '—'), totals never fabricate EV."""
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "series_ev4.sqlite"))
+    monkeypatch.setattr(rp, "compute_rental_pl",
+                        lambda delivered, paid, **k: {"pl_sats": -100.0})
+    assert rp.save_rental_history([_series_row("1", "2026-07-20 10:00:00 UTC", 5000)],
+                                  tenant_id="t1") is True
+    s = rp.compute_portfolio_series(tenant_id="t1", bucket="week")
+    p = s["points"][0]
+    assert p["own_ev_sats"] is None
+    assert p["total_pl_sats"] is None
+    assert p["cum_total_sats"] is None
+    assert s["own_ev_estimate"] is False
+    assert s["own_ev_daily_sats"] is None
+    assert s["totals"]["own_ev_sats"] is None
+    assert s["totals"]["total_pl_sats"] is None
+    # Legacy fields untouched.
+    assert p["pl_sats"] == -100.0
+    assert p["cum_pl_sats"] == -100.0
+
+
 def test_series_route_returns_bucket(rclient, monkeypatch):
     """GET /api/rentals/series?bucket=month returns the server aggregation."""
     monkeypatch.setattr(
         _app_module._rental_perf, "compute_portfolio_series",
-        lambda tenant_id="", bucket="week": {
+        lambda tenant_id="", bucket="week", **k: {
             "bucket": bucket, "estimate": True,
             "points": [{"label": "2026-07", "spent_sats": 1000, "pl_sats": -50.0,
                         "cum_pl_sats": -50.0, "delivered_thh": 100.0, "rentals": 1}],

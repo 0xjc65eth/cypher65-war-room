@@ -5204,6 +5204,49 @@ function sortMarketVenues(venues, key, dir) {
     { feature: 'unknown', count: 0, pct: 0 },
   ]);
 
+  // Portfolio series datasets (Issue #146 — 21-C) — pure builder mirror.
+  function buildPortfolioSeriesDatasets(points) {
+    const rows = points || [];
+    // null/undefined must stay null (Chart.js gap) — Number(null) is 0 and
+    // would fabricate a flat 'no loss' bar on a cold box (honest telemetry).
+    const num = function (v) {
+      if (v === null || v === undefined) return null;
+      const n = Number(v);
+      return Number.isFinite(n) ? n : null;
+    };
+    const hasOwnEv = rows.some(function (p) { return num(p.own_ev_sats) != null; });
+    return {
+      labels: rows.map(function (p) { return String(p.label || '').replace(/^\d{4}-/, ''); }),
+      spent: rows.map(function (p) { return num(p.spent_sats); }),
+      pl: rows.map(function (p) { return num(p.pl_sats); }),
+      cum: rows.map(function (p) { return num(p.cum_pl_sats); }),
+      ownEv: rows.map(function (p) { return hasOwnEv ? num(p.own_ev_sats) : null; }),
+      totalCum: rows.map(function (p) { return hasOwnEv ? num(p.cum_total_sats) : null; }),
+      hasOwnEv: hasOwnEv
+    };
+  }
+  assertEqual('series datasets empty', buildPortfolioSeriesDatasets([]), {
+    labels: [], spent: [], pl: [], cum: [], ownEv: [], totalCum: [], hasOwnEv: false });
+  assertEqual('series datasets backward compat (no own EV)', buildPortfolioSeriesDatasets([
+    { label: '2026-W30', spent_sats: 5000, pl_sats: -200, cum_pl_sats: -200 },
+  ]), {
+    labels: ['W30'], spent: [5000], pl: [-200], cum: [-200], ownEv: [null], totalCum: [null], hasOwnEv: false });
+  assertEqual('series datasets own EV included', buildPortfolioSeriesDatasets([
+    { label: '2026-W30', spent_sats: 5000, pl_sats: -200, cum_pl_sats: -200, own_ev_sats: 700, cum_total_sats: 500 },
+    { label: '2026-W31', spent_sats: 3000, pl_sats: -100, cum_pl_sats: -300, own_ev_sats: 700, cum_total_sats: 1100 },
+  ]), {
+    labels: ['W30', 'W31'], spent: [5000, 3000], pl: [-200, -100], cum: [-200, -300],
+    ownEv: [700, 700], totalCum: [500, 1100], hasOwnEv: true });
+  assertEqual('series datasets garbage numbers', buildPortfolioSeriesDatasets([
+    { label: null, spent_sats: 'nope', own_ev_sats: 'x' },
+  ]), {
+    labels: [''], spent: [null], pl: [null], cum: [null], ownEv: [null], totalCum: [null], hasOwnEv: false });
+  // Honest gaps: null P/L (cold box) stays null — never a fabricated 0 bar.
+  assertEqual('series datasets null pl stays gap', buildPortfolioSeriesDatasets([
+    { label: '2026-W30', pl_sats: null, cum_pl_sats: null, own_ev_sats: 700, cum_total_sats: null },
+  ]), {
+    labels: ['W30'], spent: [null], pl: [null], cum: [null], ownEv: [700], totalCum: [null], hasOwnEv: true });
+
   // Cohort LTV rows (Issue #157 — 18-C) — safe-number builder mirror.
   function _cohortNum(v) {
     const n = Number(v);

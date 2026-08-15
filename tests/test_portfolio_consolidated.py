@@ -214,6 +214,71 @@ class TestOwnHashrateDedup:
 
 
 # ═════════════════════════════════════════════════════════════════════════
+#  Issue #146 (21-C): self-mining EV daily → série do portfólio
+# ═════════════════════════════════════════════════════════════════════════
+
+
+class TestOwnEvDailyInSeries:
+    @pytest.fixture
+    def rclient(self):
+        import app as app_module
+
+        app_module.app.config["TESTING"] = True
+        app_module._RENTALS_CACHE.clear()
+        with app_module.app.test_client() as c:
+            yield c
+            app_module._RENTALS_CACHE.clear()
+
+    def test_own_ev_daily_sats_for_returns_none_without_hashrate(self, monkeypatch):
+        import app as app_module
+
+        monkeypatch.setattr(
+            app_module,
+            "_own_hashrate_for_portfolio",
+            lambda tenant_id="": {"hashrate_hs": 0, "source": "none"},
+        )
+        assert app_module._own_ev_daily_sats_for("default") is None
+
+    def test_series_route_carries_own_ev_daily(self, rclient, monkeypatch):
+        """GET /api/rentals/series passes the self-mining EV/day (computed
+        from the own hashrate × pinned yield) into the series aggregation,
+        and the payload exposes it for the ESTIMATE label."""
+        import app as app_module
+
+        # Own hashrate fixo + rede fixa → EV daily determinístico (> 0).
+        monkeypatch.setattr(
+            app_module,
+            "_own_hashrate_for_portfolio",
+            lambda tenant_id="": {"hashrate_hs": 100e12, "source": "fleet"},
+        )
+        monkeypatch.setitem(app_module.latest_snapshot, "network", {"hashrate": 100e18})
+        captured = {}
+
+        def fake_series(tenant_id="", bucket="week", **k):
+            captured.update(k)
+            return {
+                "bucket": bucket,
+                "estimate": True,
+                "own_ev_estimate": k.get("own_ev_daily_sats") is not None,
+                "own_ev_daily_sats": k.get("own_ev_daily_sats"),
+                "points": [],
+                "totals": {},
+            }
+
+        monkeypatch.setattr(
+            app_module._rental_perf, "compute_portfolio_series", fake_series
+        )
+        resp = rclient.get("/api/rentals/series?bucket=week")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        # 100 TH/s @ 100 EH/s → 18.75 sats/TH·h × 100 TH × 24h = 45000/day.
+        assert captured.get("own_ev_daily_sats") is not None
+        assert captured["own_ev_daily_sats"] > 0
+        assert data["own_ev_daily_sats"] == captured["own_ev_daily_sats"]
+        assert data["own_ev_estimate"] is True
+
+
+# ═════════════════════════════════════════════════════════════════════════
 #  /api/rentals — bloco global_portfolio
 # ═════════════════════════════════════════════════════════════════════════
 
@@ -270,7 +335,7 @@ class TestRentalsRouteGlobalPortfolio:
         monkeypatch.setattr(
             app_module._rental_perf,
             "compute_portfolio_series",
-            lambda tenant_id="", bucket="week": {
+            lambda tenant_id="", bucket="week", **k: {
                 "bucket": "week",
                 "estimate": True,
                 "points": [
@@ -422,7 +487,7 @@ class TestRentalsRouteExposure:
         monkeypatch.setattr(
             app_module._rental_perf,
             "compute_portfolio_series",
-            lambda tenant_id="", bucket="week": {
+            lambda tenant_id="", bucket="week", **k: {
                 "bucket": "week",
                 "estimate": True,
                 "points": [],
