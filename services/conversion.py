@@ -29,12 +29,15 @@ Usage:
     print(ltv_cac_report())
 """
 
+import csv
 import hashlib
 import json
 import logging
 import os
 import sqlite3
 import time
+from datetime import datetime, timedelta, timezone
+from io import StringIO
 from typing import Any, Dict, List, Optional
 
 from services.db import get_db
@@ -310,6 +313,153 @@ def funnel_report(days: int = 30) -> Dict[str, Any]:
             round(len(money) / len(base) * 100, 2) if base else 0.0
         ),
     }
+
+
+# ── Weekly trend (Issue #156 — 18-B) ───────────────────────────────────────
+
+
+def funnel_weekly_report(weeks: int = 8) -> List[Dict[str, Any]]:
+    """Weekly funnel buckets (ISO weeks, UTC) for trend analysis.
+
+    Returns a list of buckets (oldest → newest) covering the last ``weeks``
+    ISO weeks that contain events — so the CFO can see whether conversion
+    is improving week-over-week:
+
+        [{"week": "2026-W31", "week_start_ts": 1785110400,
+          "stages": {paywall_view: N, ...},
+          "drop_off": [{from, to, prev, next, loss_abs, loss_pct,
+                        conversion_pct}, ...],
+          "conversion_rate_pct": 2.3, "sessions_count": 5}, ...]
+
+    ``week`` is the ISO-8601 week key (Monday-start) in UTC; stages/drop-off
+    mirror the aggregate ``funnel_report`` math per week; ``sessions_count``
+    is the number of distinct funnel_ids (Issue #155 attribution) seen that
+    week (0 when no session tokens are present).
+    """
+    if weeks < 1:
+        weeks = 1
+    if weeks > 52:
+        weeks = 52
+    try:
+        ensure_table()
+        conn = get_db()
+        cutoff = int(time.time()) - weeks * 7 * 86400
+        rows = conn.execute(
+            "SELECT event, ts, meta FROM conversion_events "
+            "WHERE ts >= ? ORDER BY ts ASC",
+            (cutoff,),
+        ).fetchall()
+        conn.close()
+    except sqlite3.Error as e:
+        log.warning("[conversion] funnel_weekly_report failed: %s", e)
+        return []
+
+    buckets: Dict[str, Dict[str, Any]] = {}
+    for r in rows:
+        try:
+            dt = datetime.fromtimestamp(r["ts"], tz=timezone.utc)
+        except (ValueError, OSError, OverflowError):
+            continue
+        iso = dt.isocalendar()
+        key = f"{iso[0]}-W{iso[1]:02d}"
+        if key not in buckets:
+            buckets[key] = {
+                "counts": {},
+                "sessions": set(),
+                "week_start_ts": int(
+                    (dt - timedelta(days=dt.weekday()))
+                    .replace(hour=0, minute=0, second=0, microsecond=0)
+                    .timestamp()
+                ),
+            }
+        b = buckets[key]
+        b["counts"][r["event"]] = b["counts"].get(r["event"], 0) + 1
+        # Session attribution (funnel_id) for the per-week sessions count.
+        try:
+            m = json.loads(r["meta"] or "{}") or {}
+            if not isinstance(m, dict):
+                m = {}
+        except (ValueError, TypeError):
+            m = {}
+        fid = str(m.get("funnel_id") or "")[:64]
+        if fid:
+            b["sessions"].add(fid)
+
+    out: List[Dict[str, Any]] = []
+    for key in sorted(buckets):
+        b = buckets[key]
+        counts = {s: b["counts"].get(s, 0) for s in FUNNEL_STAGES if s in b["counts"]}
+        # Drop-off between consecutive stages with data (mirrors funnel_report).
+        keys = [s for s in FUNNEL_STAGES if s in counts]
+        drop_off = []
+        for i in range(1, len(keys)):
+            prev_n = counts[keys[i - 1]]
+            cur_n = counts[keys[i]]
+            loss = prev_n - cur_n
+            drop_off.append(
+                {
+                    "from": keys[i - 1],
+                    "to": keys[i],
+                    "prev": prev_n,
+                    "next": cur_n,
+                    "loss_abs": loss,
+                    "loss_pct": round(loss / prev_n * 100, 1) if prev_n else 0.0,
+                    "conversion_pct": round(cur_n / prev_n * 100, 1) if prev_n else 0.0,
+                }
+            )
+        paywall = counts.get("paywall_view", 0)
+        activated = counts.get("key_activated", 0)
+        out.append(
+            {
+                "week": key,
+                "week_start_ts": b["week_start_ts"],
+                "stages": counts,
+                "drop_off": drop_off,
+                "conversion_rate_pct": (
+                    round(activated / paywall * 100, 2) if paywall else 0.0
+                ),
+                "sessions_count": len(b["sessions"]),
+            }
+        )
+    return out
+
+
+def funnel_weekly_csv(buckets: List[Dict[str, Any]]) -> str:
+    """Serialize weekly funnel buckets to CSV for spreadsheet export.
+
+    One row per ISO week with the stage counts + conversion rate + sessions
+    count — the most readable shape for Excel/Sheets. The caller prepends
+    the UTF-8 BOM (matches the accepted-recos export convention).
+    """
+    buf = StringIO()
+    w = csv.writer(buf)
+    w.writerow(
+        [
+            "week",
+            "paywall_view",
+            "modal_open",
+            "checkout_start",
+            "paid",
+            "key_activated",
+            "conversion_rate_pct",
+            "sessions_count",
+        ]
+    )
+    for b in buckets:
+        s = b.get("stages") or {}
+        w.writerow(
+            [
+                b.get("week", ""),
+                s.get("paywall_view", 0),
+                s.get("modal_open", 0),
+                s.get("checkout_start", 0),
+                s.get("paid", 0),
+                s.get("key_activated", 0),
+                b.get("conversion_rate_pct", 0),
+                b.get("sessions_count", 0),
+            ]
+        )
+    return buf.getvalue()
 
 
 # ── LTV / CAC estimates ─────────────────────────────────────────────────────

@@ -470,3 +470,162 @@ def test_webhook_paid_no_custom_data_no_crash(monkeypatch):
     conn.close()
     assert row is not None
     assert "funnel_id" not in json.loads(row["meta"])
+
+
+# ── Weekly trend buckets + CSV export (Issue #156 — 18-B) ──────────────────
+
+
+def _insert_at(ts, event, meta=None):
+    """Insert a conversion event at an explicit ts (bypasses time.time)."""
+    from services.db import get_db
+    import json as _json
+
+    conn = get_db()
+    conn.execute(
+        "INSERT INTO conversion_events (ts, event, tenant_id, meta, created_at) "
+        "VALUES (?, ?, '', ?, ?)",
+        (ts, event, _json.dumps(meta or {}), ts),
+    )
+    conn.commit()
+    conn.close()
+
+
+def _iso_key(ts):
+    from datetime import datetime, timezone
+
+    iso = datetime.fromtimestamp(ts, tz=timezone.utc).isocalendar()
+    return f"{iso[0]}-W{iso[1]:02d}"
+
+
+def test_funnel_weekly_buckets(clean_events):
+    from datetime import datetime, timezone
+
+    # Two distinct ISO weeks (2026-07-27 W31 and 2026-08-03 W32).
+    t_old = int(datetime(2026, 7, 27, 12, 0, tzinfo=timezone.utc).timestamp())
+    t_new = int(datetime(2026, 8, 3, 12, 0, tzinfo=timezone.utc).timestamp())
+    _insert_at(t_old, "paywall_view")
+    _insert_at(t_old, "modal_open")
+    _insert_at(t_old, "checkout_start")
+    _insert_at(t_old, "paid")
+    _insert_at(t_old, "key_activated")
+    _insert_at(t_new, "paywall_view")
+    _insert_at(t_new, "paywall_view")  # two paywalls next week, zero conversions
+
+    weekly = conv.funnel_weekly_report(weeks=8)
+    keys = [b["week"] for b in weekly]
+    assert keys == sorted(keys)
+    assert keys[0] == _iso_key(t_old)
+    assert keys[1] == _iso_key(t_new)
+
+    old = weekly[0]
+    assert old["stages"]["paywall_view"] == 1
+    assert old["stages"]["key_activated"] == 1
+    assert old["conversion_rate_pct"] == 100.0
+    assert old["drop_off"][0]["from"] == "paywall_view"
+    assert old["drop_off"][0]["to"] == "modal_open"
+
+    new = weekly[1]
+    assert new["stages"]["paywall_view"] == 2
+    assert new["conversion_rate_pct"] == 0.0
+    # week_start_ts is the Monday 00:00 UTC of the bucket.
+    assert new["week_start_ts"] == int(
+        datetime(2026, 8, 3, 0, 0, tzinfo=timezone.utc).timestamp()
+    )
+
+
+def test_funnel_weekly_sessions_count(clean_events):
+    from datetime import datetime, timezone
+
+    t = int(datetime(2026, 8, 3, 12, 0, tzinfo=timezone.utc).timestamp())
+    _insert_at(t, "paywall_view", {"funnel_id": "f_1"})
+    _insert_at(t, "modal_open", {"funnel_id": "f_1"})
+    _insert_at(t, "checkout_start", {"funnel_id": "f_1"})
+    _insert_at(t, "paid", {"funnel_id": "f_1"})
+    _insert_at(t, "paywall_view", {"funnel_id": "f_2"})
+    _insert_at(t, "modal_open")  # no funnel_id → not attributed
+
+    weekly = conv.funnel_weekly_report(weeks=8)
+    assert len(weekly) == 1
+    assert weekly[0]["sessions_count"] == 2
+    assert weekly[0]["stages"]["paywall_view"] == 2
+    assert weekly[0]["stages"]["modal_open"] == 2
+
+
+def test_funnel_weekly_empty_and_weeks_clamp(clean_events):
+    assert conv.funnel_weekly_report(weeks=8) == []
+    # weeks=0 / 999 clamp to the valid range without crashing.
+    assert conv.funnel_weekly_report(weeks=0) == []
+    assert conv.funnel_weekly_report(weeks=999) == []
+
+
+def test_funnel_weekly_csv(clean_events):
+    from datetime import datetime, timezone
+
+    t = int(datetime(2026, 8, 3, 12, 0, tzinfo=timezone.utc).timestamp())
+    _insert_at(t, "paywall_view")
+    _insert_at(t, "key_activated")
+
+    weekly = conv.funnel_weekly_report(weeks=8)
+    out = conv.funnel_weekly_csv(weekly)
+    lines = out.strip().split("\n")
+    assert lines[0].startswith("week,paywall_view,modal_open")
+    assert "conversion_rate_pct" in lines[0]
+    row = lines[1].split(",")
+    assert row[0] == _iso_key(t)
+    assert row[1] == "1"  # paywall_view
+    assert row[5] == "1"  # key_activated
+    assert row[6] == "100.0"  # conversion_rate_pct
+    assert row[7] == "0"  # sessions_count
+    # Empty buckets → just the header.
+    assert conv.funnel_weekly_csv([]) == (
+        "week,paywall_view,modal_open,checkout_start,paid,key_activated,"
+        "conversion_rate_pct,sessions_count\r\n"
+    )
+
+
+def test_admin_conversion_weekly_payload(isolated_client, monkeypatch, clean_events):
+    from datetime import datetime, timezone
+
+    monkeypatch.setenv("API_KEY", "operator-key-123")
+    t = int(datetime(2026, 8, 3, 12, 0, tzinfo=timezone.utc).timestamp())
+    _insert_at(t, "paywall_view")
+    _insert_at(t, "key_activated")
+
+    resp = isolated_client.get(
+        "/api/admin/conversion?weeks=4",
+        headers={"X-API-Key": "operator-key-123"},
+    )
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert "weekly" in data
+    assert len(data["weekly"]) == 1
+    assert data["weekly"][0]["week"] == _iso_key(t)
+
+
+def test_admin_conversion_csv_export(isolated_client, monkeypatch, clean_events):
+    from datetime import datetime, timezone
+
+    monkeypatch.setenv("API_KEY", "operator-key-123")
+    t = int(datetime(2026, 8, 3, 12, 0, tzinfo=timezone.utc).timestamp())
+    _insert_at(t, "paywall_view")
+    _insert_at(t, "modal_open")
+
+    resp = isolated_client.get(
+        "/api/admin/conversion?format=csv",
+        headers={"X-API-Key": "operator-key-123"},
+    )
+    assert resp.status_code == 200
+    assert resp.mimetype == "text/csv"
+    assert "attachment" in (resp.headers.get("Content-Disposition") or "")
+    assert "funnel_weekly_" in resp.headers["Content-Disposition"]
+    body = resp.get_data(as_text=True)
+    assert body.startswith("\ufeffweek,paywall_view")  # BOM + header
+    assert _iso_key(t) in body
+
+
+def test_admin_conversion_csv_requires_admin(isolated_client):
+    resp = isolated_client.get(
+        "/api/admin/conversion?format=csv",
+        environ_base={"REMOTE_ADDR": "203.0.113.5"},
+    )
+    assert resp.status_code == 403
