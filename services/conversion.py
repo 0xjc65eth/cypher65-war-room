@@ -30,6 +30,7 @@ Usage:
 """
 
 import hashlib
+import json
 import logging
 import os
 import sqlite3
@@ -189,6 +190,12 @@ def funnel_report(days: int = 30) -> Dict[str, Any]:
             "FROM conversion_events WHERE ts >= ? GROUP BY event",
             (cutoff,),
         ).fetchall()
+        # Raw (event, meta) rows drive the session view below — the events
+        # table is small (funnel telemetry only), so this is cheap.
+        rows_all = conn.execute(
+            "SELECT event, meta FROM conversion_events WHERE ts >= ?",
+            (cutoff,),
+        ).fetchall()
         conn.close()
     except sqlite3.Error as e:
         log.warning("[conversion] funnel_report failed: %s", e)
@@ -221,6 +228,69 @@ def funnel_report(days: int = 30) -> Dict[str, Any]:
             }
         )
 
+    # ── Session view (Issue #155): events carrying meta.funnel_id form a
+    # per-user path across stages. The aggregate counts above mix users and
+    # sessions; here we count DISTINCT funnels per stage so drop-off answers
+    # "how many users who reached X also reached Y" — the real per-user
+    # funnel, and the base for cohort LTV in #157. Backward compatible:
+    # events recorded before this change carry no funnel_id and simply
+    # don't contribute to the session view (zeros/empty below).
+    session_stages: Dict[str, set] = {}  # event -> set of funnel_ids
+    funnels_seen: set = set()
+    for r in rows_all:
+        try:
+            m = json.loads(r["meta"] or "{}") or {}
+            if not isinstance(m, dict):
+                m = {}
+        except (ValueError, TypeError):
+            m = {}
+        fid = str((m or {}).get("funnel_id") or "")[:64]
+        if not fid:
+            continue
+        funnels_seen.add(fid)
+        session_stages.setdefault(r["event"], set()).add(fid)
+
+    session_counts = {
+        s: len(session_stages.get(s, set()))
+        for s in FUNNEL_STAGES
+        if s in session_stages
+    }
+    session_drop_off = []
+    keys_s = [s for s in FUNNEL_STAGES if s in session_counts]
+    for i in range(1, len(keys_s)):
+        prev_n = session_counts[keys_s[i - 1]]
+        cur_n = session_counts[keys_s[i]]
+        loss = prev_n - cur_n
+        session_drop_off.append(
+            {
+                "from": keys_s[i - 1],
+                "to": keys_s[i],
+                "prev": prev_n,
+                "next": cur_n,
+                "loss_abs": loss,
+                "loss_pct": round(loss / prev_n * 100, 1) if prev_n else 0.0,
+                "conversion_pct": round(cur_n / prev_n * 100, 1) if prev_n else 0.0,
+            }
+        )
+    # Per-user conversion: funnels that reached a money stage ÷ funnels that
+    # saw the paywall (fallback: any funnel event when no paywall row carries
+    # an id — e.g. checkout-first data before paywall dedup kicks in).
+    money = session_stages.get("paid", set()) | session_stages.get(
+        "key_activated", set()
+    )
+    # Base = first funnel stage that actually carries session ids
+    # (paywall_view is fired server-side without a funnel_id, so
+    # modal_open is usually the first attributed stage) — else any
+    # funnel id seen in the window.
+    base = session_stages.get("paywall_view", set())
+    if not base:
+        for _s in FUNNEL_STAGES:
+            if _s in session_counts:
+                base = session_stages[_s]
+                break
+    if not base:
+        base = funnels_seen
+
     paywall = stages.get("paywall_view", 0)
     activated = stages.get("key_activated", 0)
     visitors = max(tenants.values()) if tenants else 0
@@ -232,6 +302,13 @@ def funnel_report(days: int = 30) -> Dict[str, Any]:
         "paid_count": stages.get("paid", 0),
         "activated_count": activated,
         "conversion_rate_pct": round(activated / paywall * 100, 2) if paywall else 0.0,
+        # Session view (Issue #155) — per-user funnel attribution.
+        "sessions_count": len(funnels_seen),
+        "session_stages": session_counts,
+        "session_drop_off": session_drop_off,
+        "session_conversion_rate_pct": (
+            round(len(money) / len(base) * 100, 2) if base else 0.0
+        ),
     }
 
 

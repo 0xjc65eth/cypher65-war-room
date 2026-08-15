@@ -4973,7 +4973,11 @@ def api_upgrade_checkout():
     body = request.get_json(silent=True) or {}
     plan = (body.get("plan") or "pro").strip()
     email = (body.get("email") or "").strip()
-    url = _payments.create_checkout(plan=plan, email=email)
+    # Issue #155: anonymous browser session id — echoed into the LS checkout
+    # so the webhook can attribute `paid` to the same funnel (never stored
+    # raw on this server; PII-free random token).
+    funnel_id = (body.get("funnel_id") or "").strip()[:64]
+    url = _payments.create_checkout(plan=plan, email=email, funnel_id=funnel_id)
     if not url:
         return (
             jsonify(

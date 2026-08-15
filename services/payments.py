@@ -64,23 +64,33 @@ def _variant_months(variant_id: str):
     return "pro", 12
 
 
-def create_checkout(plan: str = "pro", email: str = "") -> Optional[str]:
+def create_checkout(
+    plan: str = "pro", email: str = "", funnel_id: str = ""
+) -> Optional[str]:
     """Create a Lemon Squeezy hosted checkout; return its URL or None.
 
     Network/API errors never raise — the route turns None into a clean 503.
+
+    ``funnel_id`` (Issue #155): the browser's anonymous session id is carried
+    inside ``checkout_data.custom`` so Lemon Squeezy echoes it back in the
+    webhook's ``meta.custom_data`` — the ``paid`` funnel event can then be
+    attributed to the same funnel that saw the paywall / started checkout.
     """
     api_key = os.environ.get("LEMON_SQUEEZY_API_KEY") or ""
     store_id = os.environ.get("LEMON_SQUEEZY_STORE_ID") or ""
     variant_id = os.environ.get("LEMON_SQUEEZY_VARIANT_ID") or ""
     if not (api_key and store_id and variant_id):
         return None
+    custom = {"plan": plan}
+    if funnel_id:
+        custom["funnel_id"] = str(funnel_id)[:64]
     payload = {
         "data": {
             "type": "checkouts",
             "attributes": {
                 "checkout_data": {
                     "email": email or None,
-                    "custom": {"plan": plan},
+                    "custom": custom,
                 },
                 "product_options": {
                     "enabled_variants": [int(variant_id)],
@@ -302,18 +312,26 @@ def handle_webhook(payload: dict) -> Optional[str]:
     # CFO: a PAID conversion — the funnel's money stage. Email hashed only.
     # Deduped implicitly: this block only runs for the delivery that CLAIMED
     # the order (replays return early above).
+    # Issue #155: funnel_id attribution — LS echoes checkout_data.custom in
+    # meta.custom_data, so the paid event lands in the same browser funnel
+    # that saw the paywall and started the checkout.
     try:
         from services.conversion import track_event
 
-        track_event(
-            "paid",
-            email=email,
-            meta={
-                "order": str(data.get("id") or "")[:16],
-                "plan": plan,
-                "source": "lemon_squeezy",
-            },
-        )
+        custom_data = meta.get("custom_data") or {}
+        if not isinstance(custom_data, dict):
+            custom_data = {}
+        funnel_id = str(custom_data.get("funnel_id") or "")[:64]
+        _paid_meta = {
+            "order": str(data.get("id") or "")[:16],
+            "plan": plan,
+            "source": "lemon_squeezy",
+        }
+        if funnel_id:
+            # Only attribute when a browser session id actually came back —
+            # old checkouts keep the paid event clean (no empty field).
+            _paid_meta["funnel_id"] = funnel_id
+        track_event("paid", email=email, meta=_paid_meta)
     except Exception:
         pass
     # PII-safe fulfillment log (Issue #116): masked email + hash for
