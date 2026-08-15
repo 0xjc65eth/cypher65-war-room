@@ -449,6 +449,99 @@ def test_ltv_cac_uses_real_cohort(clean_sub_events, monkeypatch):
     assert len(r["cohorts"]) == 1
 
 
+# ── Feature over-concentration alert (Issue #163) ─────────────────────────
+
+
+def test_detect_feature_overconcentration_flags_top(clean_events):
+    conv.track_event("paywall_view", tenant_id="t1", meta={"feature": "monte_carlo"})
+    conv.track_event("paywall_view", tenant_id="t2", meta={"feature": "monte_carlo"})
+    conv.track_event("paywall_view", tenant_id="t3", meta={"feature": "auto_pilot"})
+    r = conv.funnel_report()
+    alert = conv.detect_feature_overconcentration(r["paywall_by_feature"], min_pct=50.0)
+    assert alert is not None
+    assert alert["feature"] == "monte_carlo"
+    assert alert["count"] == 2
+    assert alert["share_pct"] == 66.7  # 2/3
+    assert alert["min_pct"] == 50.0
+
+
+def test_detect_feature_overconcentration_no_flag(clean_events):
+    # 3 features evenly split → none crosses 50%.
+    for i, feat in enumerate(("a", "b", "c")):
+        conv.track_event("paywall_view", tenant_id=f"t{i}", meta={"feature": feat})
+    r = conv.funnel_report()
+    assert (
+        conv.detect_feature_overconcentration(r["paywall_by_feature"], min_pct=50.0)
+        is None
+    )
+    # Threshold tuned down to 34 → 'a' (33.3%) still not enough; at 33 it flags.
+    assert (
+        conv.detect_feature_overconcentration(r["paywall_by_feature"], min_pct=34.0)
+        is None
+    )
+    alert = conv.detect_feature_overconcentration(r["paywall_by_feature"], min_pct=33.0)
+    assert alert is not None and alert["share_pct"] == 33.3
+
+
+def test_detect_feature_overconcentration_exact_threshold(clean_events):
+    # share == min_pct exactly (50/50 split at 50%) MUST trigger (>=).
+    alert = conv.detect_feature_overconcentration(
+        [{"feature": "a", "count": 5}, {"feature": "b", "count": 5}], min_pct=50.0
+    )
+    assert alert is not None
+    assert alert["feature"] == "a" and alert["share_pct"] == 50.0
+    # min_pct=None / garbage falls back to the 50% default — no crash.
+    r = conv.detect_feature_overconcentration(
+        [{"feature": "a", "count": 2}, {"feature": "b", "count": 1}], min_pct=None
+    )
+    assert r is not None and r["min_pct"] == 50.0  # 66.7% >= default 50
+    assert (
+        conv.detect_feature_overconcentration(
+            [{"feature": "a", "count": 2}, {"feature": "b", "count": 1}],
+            min_pct="oops",
+        )
+        is not None
+    )
+
+
+def test_detect_feature_overconcentration_empty_and_garbage():
+    assert conv.detect_feature_overconcentration([], min_pct=50.0) is None
+    assert (
+        conv.detect_feature_overconcentration(
+            [{"feature": "x", "count": 0}], min_pct=1.0
+        )
+        is None
+    )
+    # Unknown bucket counts as a real feature (legacy rows can legitimately flag).
+    r = conv.detect_feature_overconcentration(
+        [{"feature": "unknown", "count": 9}, {"feature": "a", "count": 1}], min_pct=50.0
+    )
+    assert r is not None and r["feature"] == "unknown" and r["share_pct"] == 90.0
+
+
+def test_admin_conversion_feature_alert_payload(
+    isolated_client, monkeypatch, clean_events
+):
+    monkeypatch.setenv("API_KEY", "operator-key-123")
+    conv.track_event("paywall_view", tenant_id="t1", meta={"feature": "monte_carlo"})
+    conv.track_event("paywall_view", tenant_id="t2", meta={"feature": "monte_carlo"})
+    conv.track_event("paywall_view", tenant_id="t3", meta={"feature": "auto_pilot"})
+    resp = isolated_client.get(
+        "/api/admin/conversion?feature_pct=50",
+        headers={"X-API-Key": "operator-key-123"},
+    )
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data["feature_alert"] is not None
+    assert data["feature_alert"]["feature"] == "monte_carlo"
+    # Threshold clamped: feature_pct=999 → 50 (no crash).
+    resp2 = isolated_client.get(
+        "/api/admin/conversion?feature_pct=999",
+        headers={"X-API-Key": "operator-key-123"},
+    )
+    assert resp2.status_code == 200
+
+
 # ── Routes ─────────────────────────────────────────────────────────────────
 
 

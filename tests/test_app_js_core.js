@@ -5158,6 +5158,30 @@ function sortMarketVenues(venues, key, dir) {
   assertEqual('weekly empty input', buildAdminAuditWeekly([]), { labels: [], counts: [] });
   assertEqual('weekly undefined input', buildAdminAuditWeekly(undefined), { labels: [], counts: [] });
 
+  // Feature over-concentration alert (Issue #163) — banner builder mirror.
+  function buildFeatureAlert(featureAlert) {
+    if (!featureAlert || featureAlert.share_pct == null) {
+      return { active: false, feature: '', count: 0, sharePct: 0, minPct: 50 };
+    }
+    return {
+      active: true,
+      feature: String(featureAlert.feature || 'unknown'),
+      count: Number(featureAlert.count) || 0,
+      sharePct: Number(featureAlert.share_pct) || 0,
+      minPct: Number(featureAlert.min_pct) || 50,
+    };
+  }
+  assertEqual('feature alert null → inactive', buildFeatureAlert(null),
+    { active: false, feature: '', count: 0, sharePct: 0, minPct: 50 });
+  assertEqual('feature alert missing share → inactive', buildFeatureAlert({ feature: 'x' }),
+    { active: false, feature: '', count: 0, sharePct: 0, minPct: 50 });
+  assertEqual('feature alert active', buildFeatureAlert(
+    { feature: 'monte_carlo', count: 2, share_pct: 66.7, min_pct: 50 }),
+    { active: true, feature: 'monte_carlo', count: 2, sharePct: 66.7, minPct: 50 });
+  assertEqual('feature alert garbage numbers', buildFeatureAlert(
+    { feature: null, count: 'x', share_pct: 'nope', min_pct: null }),
+    { active: true, feature: 'unknown', count: 0, sharePct: 0, minPct: 50 });
+
   // Feature breakdown (Issue #158 — 18-D) — top-N builder mirror.
   function buildFeatureBreakdown(paywallByFeature) {
     const rows = (paywallByFeature || []).map(function (f) {

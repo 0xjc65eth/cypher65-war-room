@@ -352,6 +352,52 @@ def funnel_report(days: int = 30) -> Dict[str, Any]:
     }
 
 
+# ── Feature over-concentration alert (Issue #163) ──────────────────────────
+
+
+def detect_feature_overconcentration(
+    paywall_by_feature: List[Dict[str, Any]], min_pct: float = 50.0
+) -> Optional[Dict[str, Any]]:
+    """Alert when a single feature concentrates too much of the paywalls.
+
+    Product signal (Issue #163): when ONE gated endpoint accounts for X% of
+    all 402s, that feature is the #1 friction point — the CFO should know
+    without reading the whole breakdown. Pure function over the already-
+    computed ``paywall_by_feature`` list (Issue #158); returns None when no
+    feature crosses the threshold.
+
+    Args:
+        paywall_by_feature: [{feature, count}, ...] sorted desc (or empty).
+        min_pct: share threshold (default 50). ``unknown`` counts as a real
+            feature bucket — a legacy-heavy dataset can legitimately flag it.
+
+    Returns:
+        {"feature", "count", "share_pct", "min_pct"} or None.
+    """
+    # Defensive: the caller (route) always clamps, but a direct call with
+    # None/"" or a non-numeric threshold must not crash the alert logic.
+    try:
+        min_pct = float(min_pct or 50.0)
+    except (TypeError, ValueError):
+        min_pct = 50.0
+    if not paywall_by_feature:
+        return None
+    total = sum(int(f.get("count") or 0) for f in paywall_by_feature)
+    if total <= 0:
+        return None
+    top = max(paywall_by_feature, key=lambda f: int(f.get("count") or 0))
+    count = int(top.get("count") or 0)
+    share = round(count / total * 100, 1) if total else 0.0
+    if share < min_pct:
+        return None
+    return {
+        "feature": str(top.get("feature") or "unknown")[:64],
+        "count": count,
+        "share_pct": share,
+        "min_pct": round(float(min_pct), 1),
+    }
+
+
 # ── Weekly trend (Issue #156 — 18-B) ───────────────────────────────────────
 
 
