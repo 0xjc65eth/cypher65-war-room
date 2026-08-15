@@ -1078,6 +1078,22 @@ body {
   border-color: var(--green-dim);
   box-shadow: 0 0 20px rgba(0, 230, 118, 0.10);
 }
+.kpi-card__tag {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 6px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  font-family: var(--font-mono, 'JetBrains Mono', monospace);
+  font-size: 8px;
+  letter-spacing: 0.4px;
+  color: var(--text-secondary);
+  vertical-align: 2px;
+}
+.kpi-card__tag--real {
+  border-color: var(--green-dim);
+  color: var(--green);
+}
 .kpi-label {
   font-size: 10px;
   text-transform: uppercase;

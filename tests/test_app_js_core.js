@@ -5158,6 +5158,36 @@ function sortMarketVenues(venues, key, dir) {
   assertEqual('weekly empty input', buildAdminAuditWeekly([]), { labels: [], counts: [] });
   assertEqual('weekly undefined input', buildAdminAuditWeekly(undefined), { labels: [], counts: [] });
 
+  // Cohort LTV rows (Issue #157 — 18-C) — safe-number builder mirror.
+  function _cohortNum(v) {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : 0;
+  }
+  function buildCohortRows(cohorts) {
+    return (cohorts || []).map(function (c) {
+      return {
+        month: c.cohort_month || '',
+        subs: _cohortNum(c.subscriptions),
+        renewals: _cohortNum(c.renewals),
+        revenue: _cohortNum(c.revenue_usd),
+        ltv: _cohortNum(c.ltv_usd),
+        m1: _cohortNum(c.retention_m1_pct),
+        m3: _cohortNum(c.retention_m3_pct),
+        m6: _cohortNum(c.retention_m6_pct),
+        m12: _cohortNum(c.retention_m12_pct),
+      };
+    });
+  }
+  assertEqual('cohort rows empty', buildCohortRows([]), []);
+  assertEqual('cohort rows undefined', buildCohortRows(undefined), []);
+  assertEqual('cohort rows safe numbers', buildCohortRows([
+    { cohort_month: '2026-08', subscriptions: 2, renewals: 2, revenue_usd: 40, ltv_usd: 20, retention_m1_pct: 100, retention_m3_pct: 0 },
+    { cohort_month: null, subscriptions: null, renewals: 'x', revenue_usd: null, retention_m12_pct: 'nope' },
+  ]), [
+    { month: '2026-08', subs: 2, renewals: 2, revenue: 40, ltv: 20, m1: 100, m3: 0, m6: 0, m12: 0 },
+    { month: '', subs: 0, renewals: 0, revenue: 0, ltv: 0, m1: 0, m3: 0, m6: 0, m12: 0 },
+  ]);
+
   // Funnel weekly trend (Issue #156 — 18-B) — series builder mirror.
   function buildFunnelTrend(weekly) {
     const labels = [], paywall = [], convRate = [];

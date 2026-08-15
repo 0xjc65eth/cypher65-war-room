@@ -184,7 +184,7 @@ def test_funnel_empty(clean_events):
 # ── LTV / CAC ──────────────────────────────────────────────────────────────
 
 
-def test_ltv_defaults(monkeypatch):
+def test_ltv_defaults(monkeypatch, clean_sub_events):
     monkeypatch.delenv("PRO_PRICE_USD_MONTH", raising=False)
     monkeypatch.delenv("PRO_LICENSE_MONTHS", raising=False)
     monkeypatch.delenv("PRO_MARGIN_PCT", raising=False)
@@ -195,7 +195,7 @@ def test_ltv_defaults(monkeypatch):
     assert r["ltv_cac_ratio"] is None
 
 
-def test_ltv_env_overrides(monkeypatch):
+def test_ltv_env_overrides(monkeypatch, clean_sub_events):
     monkeypatch.setenv("PRO_PRICE_USD_MONTH", "20")
     monkeypatch.setenv("PRO_LICENSE_MONTHS", "6")
     monkeypatch.setenv("PRO_MARGIN_PCT", "0.9")
@@ -226,6 +226,164 @@ def test_cac_paid_count_from_db(clean_events):
     conv.track_event("paid")
     r = conv.ltv_cac_report()
     assert r["paid_count"] == 1
+
+
+# ── Subscription lifecycle + cohort LTV (Issue #157 — 18-C) ───────────────
+
+
+@pytest.fixture()
+def clean_sub_events():
+    """Wipe subscription_events per test (like clean_events for the funnel)."""
+    from services.db import get_db
+
+    conv.ensure_subscription_table()
+    conn = get_db()
+    conn.execute("DELETE FROM subscription_events")
+    conn.commit()
+    conn.close()
+    yield
+    conn = get_db()
+    conn.execute("DELETE FROM subscription_events")
+    conn.commit()
+    conn.close()
+
+
+def test_record_subscription_created_once(clean_sub_events):
+    assert (
+        conv.record_subscription_event(
+            "sub_1", "subscription_created", 1000, created_at="2026-08-03T12:00:00Z"
+        )
+        is True
+    )
+    # Replay (LS redelivery) → deduped, no double row.
+    assert (
+        conv.record_subscription_event(
+            "sub_1", "subscription_created", 1001, created_at="2026-08-03T12:00:00Z"
+        )
+        is False
+    )
+    from services.db import get_db
+
+    conn = get_db()
+    n = conn.execute(
+        "SELECT COUNT(*) AS n FROM subscription_events WHERE subscription_id='sub_1'"
+    ).fetchone()["n"]
+    conn.close()
+    assert n == 1
+
+
+def test_record_renewal_dedup_per_period(clean_sub_events):
+    conv.record_subscription_event(
+        "sub_1", "subscription_created", 1000, created_at="2026-08-03T12:00:00Z"
+    )
+    # First renewal (period 1 ends → renews_at moved forward).
+    assert (
+        conv.record_subscription_event("sub_1", "renewal", 2000, renews_at="2026-09-03")
+        is True
+    )
+    # Same period re-delivered / unrelated update → no double count.
+    assert (
+        conv.record_subscription_event("sub_1", "renewal", 2001, renews_at="2026-09-03")
+        is False
+    )
+    # Second renewal (new period) counts.
+    assert (
+        conv.record_subscription_event("sub_1", "renewal", 3000, renews_at="2026-10-03")
+        is True
+    )
+    from services.db import get_db
+
+    conn = get_db()
+    n = conn.execute(
+        "SELECT COUNT(*) AS n FROM subscription_events "
+        "WHERE subscription_id='sub_1' AND event='renewal'"
+    ).fetchone()["n"]
+    conn.close()
+    assert n == 2
+
+
+def test_record_renewal_without_period_ignored(clean_sub_events):
+    # Paused/cancelled update carries no renews_at → not a renewal.
+    assert (
+        conv.record_subscription_event("sub_1", "renewal", 2000, renews_at="") is False
+    )
+
+
+def test_cohort_ltv_report(clean_sub_events, monkeypatch):
+    monkeypatch.setenv("PRO_PRICE_USD_MONTH", "10")
+    monkeypatch.setenv("PRO_MARGIN_PCT", "1.0")
+    # Cohort 2026-08: 2 subs, 1 renewal each (retention m1 = 100%).
+    conv.record_subscription_event(
+        "s1", "subscription_created", 1000, created_at="2026-08-01T12:00:00Z"
+    )
+    conv.record_subscription_event("s1", "renewal", 2000, renews_at="2026-09-01")
+    conv.record_subscription_event(
+        "s2", "subscription_created", 1001, created_at="2026-08-15T12:00:00Z"
+    )
+    conv.record_subscription_event("s2", "renewal", 2001, renews_at="2026-09-15")
+    # Cohort 2026-09: 1 sub, 3 renewals.
+    conv.record_subscription_event(
+        "s3", "subscription_created", 3000, created_at="2026-09-10T12:00:00Z"
+    )
+    conv.record_subscription_event("s3", "renewal", 4000, renews_at="2026-10-10")
+    conv.record_subscription_event("s3", "renewal", 5000, renews_at="2026-11-10")
+    conv.record_subscription_event("s3", "renewal", 6000, renews_at="2026-12-10")
+
+    r = conv.cohort_ltv_report()
+    assert r["has_renewal_data"] is True
+    assert [c["cohort_month"] for c in r["cohorts"]] == ["2026-08", "2026-09"]
+    c1 = r["cohorts"][0]
+    assert c1["subscriptions"] == 2
+    assert c1["renewals"] == 2
+    # Revenue = 10 × (2 subs + 2 renewals) × 1.0 = 40; LTV = 20.
+    assert c1["revenue_usd"] == 40.0
+    assert c1["ltv_usd"] == 20.0
+    assert c1["retention_m1_pct"] == 100.0
+    assert c1["retention_m3_pct"] == 0.0
+    c2 = r["cohorts"][1]
+    assert c2["subscriptions"] == 1
+    assert c2["renewals"] == 3
+    assert c2["revenue_usd"] == 40.0  # 10 × 4 × 1.0
+    assert c2["ltv_usd"] == 40.0
+    assert c2["retention_m1_pct"] == 100.0
+    assert c2["retention_m3_pct"] == 100.0
+    # Overall real LTV = (40 + 40) / 3 subs ≈ 26.67.
+    assert r["ltv_real_usd"] == round(80.0 / 3, 2)
+
+
+def test_cohort_ltv_empty(clean_sub_events):
+    r = conv.cohort_ltv_report()
+    assert r["has_renewal_data"] is False
+    assert r["cohorts"] == []
+    assert r["ltv_real_usd"] is None
+
+
+def test_ltv_cac_fallback_estimate_without_renewals(clean_sub_events, monkeypatch):
+    monkeypatch.delenv("PRO_PRICE_USD_MONTH", raising=False)
+    monkeypatch.delenv("PRO_LICENSE_MONTHS", raising=False)
+    monkeypatch.delenv("PRO_MARGIN_PCT", raising=False)
+    # No subscription data → falls back to the price×months estimate.
+    r = conv.ltv_cac_report(paid_count=0)
+    assert r["ltv_source"] == "estimate"
+    assert r["has_renewal_data"] is False
+    assert r["ltv_usd"] == 101.52  # 9 × 12 × 0.94
+    assert r["ltv_estimate_usd"] == 101.52
+    assert r["cohorts"] == []
+
+
+def test_ltv_cac_uses_real_cohort(clean_sub_events, monkeypatch):
+    monkeypatch.setenv("PRO_PRICE_USD_MONTH", "10")
+    monkeypatch.setenv("PRO_MARGIN_PCT", "1.0")
+    conv.record_subscription_event(
+        "s1", "subscription_created", 1000, created_at="2026-08-01T12:00:00Z"
+    )
+    conv.record_subscription_event("s1", "renewal", 2000, renews_at="2026-09-01")
+    r = conv.ltv_cac_report(paid_count=1)
+    assert r["ltv_source"] == "cohort_real"
+    assert r["has_renewal_data"] is True
+    assert r["ltv_usd"] == 20.0  # 10 × (1 sub + 1 renewal) × 1.0 / 1
+    assert r["ltv_estimate_usd"] == 120.0  # 10 × 12 × 1.0 kept for reference
+    assert len(r["cohorts"]) == 1
 
 
 # ── Routes ─────────────────────────────────────────────────────────────────

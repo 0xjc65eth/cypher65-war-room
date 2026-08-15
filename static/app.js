@@ -2837,6 +2837,27 @@ function renderAccount(acct) {
     const labels = Object.keys(buckets).sort();
     return { labels: labels, counts: labels.map(function (k) { return buckets[k]; }) };
   }
+  // cohort buckets (Issue #157) → rows for the LTV-real table: safe numbers,
+  // no HTML, ready for innerHTML via escapeHtml on the render side.
+  function _cohortNum(v) {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : 0;
+  }
+  function buildCohortRows(cohorts) {
+    return (cohorts || []).map(function (c) {
+      return {
+        month: c.cohort_month || '',
+        subs: _cohortNum(c.subscriptions),
+        renewals: _cohortNum(c.renewals),
+        revenue: _cohortNum(c.revenue_usd),
+        ltv: _cohortNum(c.ltv_usd),
+        m1: _cohortNum(c.retention_m1_pct),
+        m3: _cohortNum(c.retention_m3_pct),
+        m6: _cohortNum(c.retention_m6_pct),
+        m12: _cohortNum(c.retention_m12_pct),
+      };
+    });
+  }
   // weekly funnel buckets (Issue #156) → trend series for the admin chart.
   function buildFunnelTrend(weekly) {
     const labels = [], paywall = [], convRate = [];
@@ -2936,10 +2957,19 @@ function renderAccount(acct) {
     // Issue #155: per-user funnel attribution (events carrying a funnel_id).
     _setAdminText('admin-funnel-sessions', funnel.sessions_count != null ? funnel.sessions_count : '—');
     _setAdminText('admin-funnel-session-conv', funnel.session_conversion_rate_pct != null ? _pct(funnel.session_conversion_rate_pct) : '—');
+    // Issue #157 (18-C): real cohort LTV (renewals) vs the price×months
+    // estimate — the tag tells the CFO which number they're looking at.
+    const isReal = econ.ltv_source === 'cohort_real';
+    const ltvTag = document.getElementById('admin-ltv-source');
+    if (ltvTag) {
+      ltvTag.textContent = isReal ? 'real' : 'est';
+      ltvTag.classList.toggle('kpi-card__tag--real', isReal);
+    }
     _setAdminText('admin-ltv', econ.ltv_usd != null ? '$' + econ.ltv_usd : '—');
     _setAdminText('admin-cac', econ.cac_usd != null ? '$' + econ.cac_usd : 'no spend data');
     _setAdminText('admin-ltv-cac', econ.ltv_cac_ratio != null ? econ.ltv_cac_ratio : '—');
     _setAdminText('admin-payback', econ.payback_months != null ? econ.payback_months : '—');
+    _renderAdminCohorts(econ);
     // Stage counts list — plus per-stage session counts when available.
     const list = document.getElementById('admin-funnel-list');
     if (list) {
@@ -2998,6 +3028,38 @@ function renderAccount(acct) {
         },
       },
     });
+  }
+
+  // ── LTV real por coorte (Issue #157 — 18-C) ───────────────────────────
+  function _renderAdminCohorts(econ) {
+    const wrap = document.getElementById('admin-cohort-wrap');
+    const tbody = document.getElementById('admin-cohort-tbody');
+    const empty = document.getElementById('admin-cohort-empty');
+    const src = document.getElementById('admin-cohort-source');
+    if (!wrap || !tbody) return;
+    const rows = buildCohortRows((econ && econ.cohorts) || []);
+    const isReal = econ && econ.ltv_source === 'cohort_real';
+    if (src) src.textContent = isReal ? 'cohort real' : 'estimativa';
+    if (!rows.length) {
+      wrap.hidden = true;
+      if (empty) empty.hidden = false;
+      return;
+    }
+    wrap.hidden = false;
+    if (empty) empty.hidden = true;
+    tbody.innerHTML = rows.map(function (r) {
+      return '<tr>' +
+        '<td>' + escapeHtml(r.month) + '</td>' +
+        '<td>' + escapeHtml(String(r.subs)) + '</td>' +
+        '<td>' + escapeHtml(String(r.renewals)) + '</td>' +
+        '<td>$' + escapeHtml(String(r.revenue.toFixed(2))) + '</td>' +
+        '<td>$' + escapeHtml(String(r.ltv.toFixed(2))) + '</td>' +
+        '<td>' + escapeHtml(String(r.m1.toFixed(1))) + '%</td>' +
+        '<td>' + escapeHtml(String(r.m3.toFixed(1))) + '%</td>' +
+        '<td>' + escapeHtml(String(r.m6.toFixed(1))) + '%</td>' +
+        '<td>' + escapeHtml(String(r.m12.toFixed(1))) + '%</td>' +
+        '</tr>';
+    }).join('');
   }
 
   function _pct(v) {
