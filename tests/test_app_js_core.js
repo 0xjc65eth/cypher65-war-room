@@ -5036,6 +5036,32 @@ const QR_GOLDEN = {"helloM":{"text":"HELLO WORLD","level":"M","rows":["111111101
 })();
 
 // ═══════════════════════════════════════════════════════════════════════════
+//  SUITE 35: docsFeedbackPct / docsFeedbackSectionLabel (Issue #19 —
+//  Learning FAQ loop). Pure mirrors of static/app.js: % helpful rounded to
+//  1 decimal (null when no votes — never fabricate), section id → label.
+// ═══════════════════════════════════════════════════════════════════════════
+(function() {
+  function docsFeedbackPct(helpful, total) {
+    if (!total) return null;
+    return Math.round(helpful / total * 1000) / 10;
+  }
+  function docsFeedbackSectionLabel(sectionId) {
+    const m = String(sectionId || '').match(/^docs[-_](.+)$/);
+    return m ? m[1].replace(/[-_]/g, ' ') : String(sectionId || '—');
+  }
+
+  assertEqual('pct 2/3 rounded 1dp', docsFeedbackPct(2, 3), 66.7);
+  assertEqual('pct 3/3', docsFeedbackPct(3, 3), 100);
+  assertEqual('pct 0/4 honest zero', docsFeedbackPct(0, 4), 0);
+  assertEqual('pct no votes = null (never fabricate)', docsFeedbackPct(5, 0), null);
+  assertEqual('label docs-faq', docsFeedbackSectionLabel('docs-faq'), 'faq');
+  assertEqual('label docs-multi-user dashes', docsFeedbackSectionLabel('docs-multi-user'), 'multi user');
+  assertEqual('label docs_fleet underscore', docsFeedbackSectionLabel('docs_fleet'), 'fleet');
+  assertEqual('label non-docs passthrough', docsFeedbackSectionLabel('overview'), 'overview');
+  assertEqual('label empty → dash', docsFeedbackSectionLabel(''), '—');
+})();
+
+// ═══════════════════════════════════════════════════════════════════════════
 //  MARKET SORT (mirrors static/app.js sortMarketVenues — pure)
 // ═══════════════════════════════════════════════════════════════════════════
 

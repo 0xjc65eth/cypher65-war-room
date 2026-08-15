@@ -2946,13 +2946,14 @@ function renderAccount(acct) {
     const gate = document.getElementById('admin-gate-badge');
     try {
       // Pool health — no auth needed for localhost/operator-key admin routes.
-      const [sessionsResp, convResp, auditResp, metricsResp] = await Promise.all([
+      const [sessionsResp, convResp, auditResp, metricsResp, docsResp] = await Promise.all([
         fetch('/api/admin/sessions', { headers: { 'X-Requested-With': 'fetch' } }),
         fetch('/api/admin/conversion?weeks=8', { headers: { 'X-Requested-With': 'fetch' } }),
         fetch('/api/admin/rentals/accepted-recos?limit=1000', { headers: { 'X-Requested-With': 'fetch' } }),
         fetch('/api/admin/pool-metrics?hours=24', { headers: { 'X-Requested-With': 'fetch' } }),
+        fetch('/api/admin/docs-feedback', { headers: { 'X-Requested-With': 'fetch' } }),
       ]);
-      if (sessionsResp.status === 403 || convResp.status === 403 || auditResp.status === 403 || metricsResp.status === 403) {
+      if (sessionsResp.status === 403 || convResp.status === 403 || auditResp.status === 403 || metricsResp.status === 403 || docsResp.status === 403) {
         if (gate) gate.textContent = 'restricted';
         if (errEl) {
           errEl.hidden = false;
@@ -2966,15 +2967,17 @@ function renderAccount(acct) {
       const conv = convResp.ok ? await convResp.json() : {};
       const audit = auditResp.ok ? await auditResp.json() : {};
       const metrics = metricsResp.ok ? await metricsResp.json() : {};
-      _renderAdmin(sessions, conv, audit, metrics);
+      const docsFb = docsResp.ok ? await docsResp.json() : {};
+      _renderAdmin(sessions, conv, audit, metrics, docsFb);
     } catch (e) {
       if (errEl) { errEl.hidden = false; errEl.textContent = 'admin fetch error: ' + e.message; }
     }
   }
-  function _renderAdmin(sessions, conv, audit, metrics) {
+  function _renderAdmin(sessions, conv, audit, metrics, docsFb) {
     _renderAdminMetrics(metrics || {});
     _renderAdminAudit(audit);
     _renderAdminAutoExclusions(audit);
+    _renderAdminDocsFeedback(docsFb || {});
     const pool = sessions.pool || {};
     _setAdminText('admin-sessions', pool.sessions_active != null ? pool.sessions_active : '—');
     _setAdminText('admin-polls-per-sec', pool.polls_per_sec != null ? pool.polls_per_sec : '—');
@@ -3034,6 +3037,41 @@ function renderAccount(acct) {
     _renderAdminFeatureAlert(conv.feature_alert || null);
     // Weekly trend (Issue #156 — 18-B): paywall_view × conversion rate.
     _renderAdminFunnelTrend(conv.weekly || []);
+  }
+
+  // ── Learning FAQ loop (Issue #19) — docs feedback summary ─────────────
+  function _renderAdminDocsFeedback(fb) {
+    const wrap = document.getElementById('admin-docs-feedback');
+    const table = document.getElementById('admin-docs-feedback-table');
+    const recurringEl = document.getElementById('admin-docs-recurring');
+    const metaEl = document.getElementById('admin-docs-feedback-meta');
+    if (!table && !recurringEl && !metaEl) return;
+    const rows = fb.sections || [];
+    const questions = fb.recurring_questions || [];
+    if (metaEl) {
+      metaEl.textContent = fb.total_votes
+        ? (fb.total_votes + ' votos · ' + (fb.overall_helpful_pct != null ? fb.overall_helpful_pct + '% útil' : '—'))
+        : 'sem votos ainda — widget no fim de cada seção do DOCS / GUIDE';
+    }
+    const tbody = table && table.querySelector('tbody');
+    if (tbody) {
+      tbody.innerHTML = rows.length ? rows.map(function(s) {
+        const pct = s.helpful_pct != null ? docsFeedbackPct(s.helpful, s.total) + '%' : '—';
+        return '<tr>' +
+          '<td>' + escapeHtml(docsFeedbackSectionLabel(s.section_id)) + '</td>' +
+          '<td>' + escapeHtml(String(s.total)) + '</td>' +
+          '<td>' + escapeHtml(String(s.helpful)) + '</td>' +
+          '<td>' + escapeHtml(String(s.not_helpful)) + '</td>' +
+          '<td>' + escapeHtml(String(pct)) + '</td>' +
+          '</tr>';
+      }).join('') : '<tr><td colspan="5" class="alert-empty">sem votos ainda</td></tr>';
+    }
+    if (recurringEl) {
+      recurringEl.innerHTML = questions.length ? questions.map(function(q) {
+        return '<li class="alert-item"><span class="alert-item__cat">' + escapeHtml(docsFeedbackSectionLabel(q.section_id)) + '</span><span class="alert-item__msg">' + escapeHtml(q.comment) + ' <em class="admin-docs-feedback__tenant">— ' + escapeHtml(q.tenant) + '</em></span></li>';
+      }).join('') : '<li class="alert-empty">nenhuma pergunta recorrente ainda — as perguntas do widget (👎) aparecem aqui para virar FAQ</li>';
+    }
+    if (wrap) wrap.hidden = false;
   }
 
   // ── Feature over-concentration banner (Issue #163) ────────────────────
@@ -10761,6 +10799,119 @@ dom.walletSave?.addEventListener('click', async () => {
     return out;
   }
 
+  // ── Learning FAQ loop (Issue #19) — 'was this helpful?' widget ───────
+  // Pure helpers below (docsFeedbackPct/docsFeedbackSectionLabel) are
+  // mirrored in tests/test_app_js_core.js (SUITE 35).
+  function docsFeedbackPct(helpful, total) {
+    if (!total) return null;  // honest — no votes, no fabricated %
+    return Math.round(helpful / total * 1000) / 10;
+  }
+  function docsFeedbackSectionLabel(sectionId) {
+    const m = String(sectionId || '').match(/^docs[-_](.+)$/);
+    return m ? m[1].replace(/[-_]/g, ' ') : String(sectionId || '—');
+  }
+
+  var _docsFeedbackState = {};      // section_id -> {helpful, voted}
+  var _docsFeedbackInitialized = false;
+
+  function _initDocsFeedback() {
+    if (_docsFeedbackInitialized) return;
+    const container = document.querySelector('.docs-container');
+    if (!container) return;
+    const sections = container.querySelectorAll('.doc-section');
+    if (!sections.length) return;
+    _docsFeedbackInitialized = true;
+
+    sections.forEach(function(sec) {
+      const id = sec.id;
+      if (!id || sec.querySelector('.doc-feedback')) return;
+      const widget = document.createElement('div');
+      widget.className = 'doc-feedback';
+      widget.setAttribute('data-section', id);
+      widget.innerHTML =
+        '<span class="doc-feedback__ask">Was this section helpful?</span>' +
+        '<button type="button" class="doc-feedback__btn doc-feedback__btn--yes" data-helpful="1" title="Yes — it helped">👍 Yes</button>' +
+        '<button type="button" class="doc-feedback__btn doc-feedback__btn--no" data-helpful="0" title="No — could be better">👎 No</button>' +
+        '<span class="doc-feedback__state" aria-live="polite"></span>' +
+        '<div class="doc-feedback__comment" hidden>' +
+        '  <textarea class="doc-feedback__textarea" rows="2" maxlength="500" placeholder="What were you looking for? (feeds the FAQ loop)"></textarea>' +
+        '  <button type="button" class="doc-feedback__send">Send</button>' +
+        '</div>';
+      sec.appendChild(widget);
+      _bindDocFeedbackWidget(widget, id);
+    });
+
+    // Restore the current tenant's votes so thumbs stay across module switches.
+    authFetch('/api/docs/feedback').then(function(r) {
+      if (!r.ok) return;
+      return r.json();
+    }).then(function(data) {
+      (data && data.votes || []).forEach(function(v) {
+        if (!v || !v.section_id) return;
+        // The GET was issued before any POST — skip sections the user already
+        // voted on locally so a stale restore never reverts a fresh vote.
+        if (_docsFeedbackState[v.section_id]) return;
+        _docsFeedbackState[v.section_id] = { helpful: !!v.helpful, voted: true };
+        const w = container.querySelector('.doc-feedback[data-section="' + v.section_id + '"]');
+        if (w) _docsFeedbackSetState(w, v.section_id, !!v.helpful, '');
+      });
+    }).catch(function() { /* offline — votes stay local */ });
+  }
+
+  function _bindDocFeedbackWidget(widget, sectionId) {
+    const yesBtn = widget.querySelector('.doc-feedback__btn--yes');
+    const noBtn = widget.querySelector('.doc-feedback__btn--no');
+    const commentWrap = widget.querySelector('.doc-feedback__comment');
+    const textarea = widget.querySelector('.doc-feedback__textarea');
+    const sendBtn = widget.querySelector('.doc-feedback__send');
+
+    yesBtn.addEventListener('click', function() {
+      if (_docsFeedbackState[sectionId] && _docsFeedbackState[sectionId].voted) return;
+      commentWrap.hidden = true;
+      _docsFeedbackVote(sectionId, true, widget, '');
+    });
+    noBtn.addEventListener('click', function() {
+      if (_docsFeedbackState[sectionId] && _docsFeedbackState[sectionId].voted) return;
+      commentWrap.hidden = false;
+      textarea.focus();
+    });
+    sendBtn.addEventListener('click', function() {
+      if (_docsFeedbackState[sectionId] && _docsFeedbackState[sectionId].voted) return;
+      const comment = textarea.value.trim();
+      _docsFeedbackVote(sectionId, false, widget, comment);
+    });
+  }
+
+  function _docsFeedbackVote(sectionId, helpful, widget, comment) {
+    const stateEl = widget.querySelector('.doc-feedback__state');
+    authFetch('/api/docs/feedback', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ section_id: sectionId, helpful: helpful, comment: comment })
+    }).then(function(r) {
+      if (!r.ok) { stateEl.textContent = 'could not save — try again'; return; }
+      _docsFeedbackState[sectionId] = { helpful: helpful, voted: true };
+      _docsFeedbackSetState(widget, sectionId, helpful, comment);
+    }).catch(function() {
+      stateEl.textContent = 'offline — not saved';
+    });
+  }
+
+  function _docsFeedbackSetState(widget, sectionId, helpful, comment) {
+    const yesBtn = widget.querySelector('.doc-feedback__btn--yes');
+    const noBtn = widget.querySelector('.doc-feedback__btn--no');
+    const stateEl = widget.querySelector('.doc-feedback__state');
+    const commentWrap = widget.querySelector('.doc-feedback__comment');
+    yesBtn.classList.toggle('is-active', !!helpful);
+    noBtn.classList.toggle('is-active', !helpful);
+    yesBtn.disabled = true;
+    noBtn.disabled = true;
+    stateEl.textContent = helpful
+      ? 'Thanks — glad it helped ✓'
+      : (comment ? 'Thanks — we\'ll improve this section' : 'Thanks — feedback recorded');
+    commentWrap.hidden = true;
+  }
+
   function _docsCloseSuggestions() {
     var box = document.getElementById('docs-search-suggestions');
     var input = document.getElementById('docs-search-input');
@@ -10889,6 +11040,7 @@ dom.walletSave?.addEventListener('click', async () => {
     var _initDocs = function() {
       _initDocsObserver();
       _initDocsSearch();
+      _initDocsFeedback();
     };
     if (window.requestIdleCallback) {
       requestIdleCallback(_initDocs, { timeout: 2000 });

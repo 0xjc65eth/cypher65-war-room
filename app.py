@@ -112,6 +112,7 @@ from services.tenant import require_tenant, role_required, SELF_HOST_MAX_WORKERS
 import services.db_backup as _db_backup  # C4: automatic SQLite backup + boot integrity check
 import services.remote_backup as _remote_backup  # $0 persistence: gist backup + boot restore
 import services.conversion as _conversion  # CFO: PRO funnel telemetry + LTV/CAC
+import services.doc_feedback as _doc_feedback  # #19: Learning FAQ loop — doc "was this helpful?"
 from services.licensing import (
     is_pro,
     license_status as _license_status,
@@ -1173,6 +1174,12 @@ def init_db():
         )"""
     )
     c.execute("CREATE INDEX IF NOT EXISTS idx_users_tenant ON users(tenant_id)")
+    # ── Learning FAQ loop (Issue #19): doc feedback per section, deduped ──
+    try:
+        _doc_feedback.ensure_table()
+    except Exception as e:
+        log.warning("[migrate] doc_feedback init failed: %s", e)
+
     # ── CFO: PRO conversion telemetry (funnel + LTV/CAC) ──
     # Rows are funnel events (paywall_view → modal_open → checkout_start →
     # paid → key_activated); tenant_id/email are SHA-256 hashed (privacy).
@@ -1840,6 +1847,55 @@ def api_support_config():
     without requiring a code rebuild.
     """
     return jsonify(_SUPPORT_CONFIG)
+
+
+# ── Learning FAQ loop (Issue #19) — doc feedback ──────────────────────────
+# One vote per (tenant, section); re-votes overwrite. The Admin summary feeds
+# the documented loop: recurring questions → new FAQ entry (CONTRIBUTING.md).
+
+
+@app.route("/api/docs/feedback", methods=["POST"])
+@require_tenant
+def api_doc_feedback_post(tenant_id: str = ""):
+    """Record a 'was this helpful?' vote for a documentation section."""
+    body = request.get_json(silent=True) or {}
+    section_id = (body.get("section_id") or "").strip()
+    helpful = body.get("helpful")
+    comment = (body.get("comment") or "").strip()
+    if not isinstance(helpful, bool):
+        return jsonify({"error": "helpful must be a boolean"}), 400
+    if not _doc_feedback.is_valid_section(section_id):
+        return jsonify({"error": "invalid section_id"}), 400
+    ok = _doc_feedback.record_doc_feedback(
+        section_id, helpful, comment, tenant_id=tenant_id or "default"
+    )
+    if not ok:
+        return jsonify({"error": "could not record feedback"}), 500
+    return jsonify({"ok": True, "section_id": section_id, "helpful": helpful}), 201
+
+
+@app.route("/api/docs/feedback", methods=["GET"])
+@require_tenant
+def api_doc_feedback_get(tenant_id: str = ""):
+    """Return the current tenant's votes (restore thumbs state)."""
+    return jsonify({"votes": _doc_feedback.my_doc_feedback(tenant_id or "default")})
+
+
+@app.route("/api/admin/docs-feedback", methods=["GET"])
+def api_admin_docs_feedback():
+    """Admin-gated summary of doc feedback (Learning FAQ loop).
+
+    Same gate as /api/admin/conversion (localhost or operator X-API-Key).
+    Returns per-section helpful %, totals, and the recurring questions list
+    (comments typed on thumbs-down votes) — the input to the FAQ loop.
+    """
+    remote = request.remote_addr or ""
+    local = remote in ("127.0.0.1", "::1", "localhost")
+    operator_key = os.environ.get("API_KEY") or ""
+    sent = (request.headers.get("X-API-Key") or "").strip()
+    if not local and not (operator_key and hmac.compare_digest(sent, operator_key)):
+        return jsonify({"error": "admin access required"}), 403
+    return jsonify(_doc_feedback.doc_feedback_summary())
 
 
 @app.route("/api/tenant/status")
