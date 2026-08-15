@@ -170,6 +170,25 @@ def _order_payload(email="buyer@example.com", variant_id=10, order_id="12345"):
     }
 
 
+@pytest.fixture()
+def clean_sub_db():
+    """Wipe subscription_events so webhook subscription tests stay hermetic."""
+    from services.db import get_db
+
+    from services import conversion as _conv
+
+    _conv.ensure_subscription_table()
+    conn = get_db()
+    conn.execute("DELETE FROM subscription_events")
+    conn.commit()
+    conn.close()
+    yield
+    conn = get_db()
+    conn.execute("DELETE FROM subscription_events")
+    conn.commit()
+    conn.close()
+
+
 def test_webhook_signature_verify(monkeypatch):
     _ls_env(monkeypatch)  # webhook secret must be set for verification
     raw = json.dumps(_order_payload()).encode()
@@ -185,6 +204,100 @@ def test_webhook_fulfills_order(monkeypatch):
     key = payments.handle_webhook(payload)
     assert key and _KEY_RE.match(key)
     assert licensing._key_valid(key) is True  # the gate honors the issued key
+
+
+def _sub_payload(
+    event_name,
+    sub_id="sub_1",
+    renews_at="2026-09-03T12:00:00Z",
+    created_at="2026-08-03T12:00:00Z",
+):
+    return {
+        "meta": {"event_name": event_name},
+        "data": {
+            "id": sub_id,
+            "attributes": {"renews_at": renews_at, "created_at": created_at},
+        },
+    }
+
+
+def test_webhook_subscription_created_records_lifecycle(monkeypatch, clean_sub_db):
+    # subscription_created is acknowledged (no key issued) but recorded for
+    # the real cohort LTV ledger (Issue #157).
+    calls = []
+
+    def _fake(event_name, payload):
+        calls.append((event_name, payload["data"]["id"]))
+
+    monkeypatch.setattr(payments, "_record_subscription_lifecycle", _fake)
+    key = payments.handle_webhook(_sub_payload("subscription_created"))
+    assert key is None  # acknowledged, never fulfills a license
+    assert calls == [("subscription_created", "sub_1")]
+
+
+def test_webhook_subscription_updated_records_renewal(monkeypatch, clean_sub_db):
+    # subscription_updated with a (new) renews_at = a renewal for cohort LTV.
+    calls = []
+
+    def _fake(event_name, payload):
+        calls.append(
+            (
+                event_name,
+                payload["data"]["id"],
+                payload["data"]["attributes"]["renews_at"],
+            )
+        )
+
+    monkeypatch.setattr(payments, "_record_subscription_lifecycle", _fake)
+    key = payments.handle_webhook(_sub_payload("subscription_updated"))
+    assert key is None
+    assert calls == [("subscription_updated", "sub_1", "2026-09-03T12:00:00Z")]
+
+
+def test_webhook_subscription_lifecycle_real_records_rows(clean_sub_db, monkeypatch):
+    # The REAL _record_subscription_lifecycle (not mocked): subscription_created
+    # records the cohort; subscription_updated with a NEW renews_at records a
+    # renewal; same renews_at (blip) is deduped; empty renews_at is skipped.
+    from services.db import get_db
+
+    from services import conversion as _conv
+
+    _conv.ensure_subscription_table()
+    # created → 1 row (cohort).
+    payments.handle_webhook(_sub_payload("subscription_created"))
+    # updated with the SAME period → not a renewal (echo of created period).
+    payments.handle_webhook(_sub_payload("subscription_updated"))
+    # updated with a NEW period → a renewal.
+    payments.handle_webhook(
+        _sub_payload("subscription_updated", renews_at="2026-10-03T12:00:00Z")
+    )
+    # updated with NO renews_at (pause/cancel) → skipped entirely.
+    payments.handle_webhook(_sub_payload("subscription_updated", renews_at=""))
+
+    conn = get_db()
+    rows = conn.execute(
+        "SELECT event, renews_at FROM subscription_events WHERE subscription_id='sub_1' "
+        "ORDER BY id ASC"
+    ).fetchall()
+    conn.close()
+    assert [(r["event"], r["renews_at"]) for r in rows] == [
+        ("subscription_created", "2026-09-03T12:00:00Z"),
+        ("renewal", "2026-10-03T12:00:00Z"),
+    ]
+
+
+def test_webhook_subscription_lifecycle_no_sub_id_noop(clean_sub_db):
+    from services.db import get_db
+
+    from services import conversion as _conv
+
+    _conv.ensure_subscription_table()
+    payload = {"meta": {"event_name": "subscription_created"}, "data": {"id": ""}}
+    payments.handle_webhook(payload)
+    conn = get_db()
+    n = conn.execute("SELECT COUNT(*) AS n FROM subscription_events").fetchone()["n"]
+    conn.close()
+    assert n == 0
 
 
 def test_webhook_unknown_event_noop(monkeypatch):

@@ -462,6 +462,226 @@ def funnel_weekly_csv(buckets: List[Dict[str, Any]]) -> str:
     return buf.getvalue()
 
 
+# ── Subscription lifecycle (Issue #157 — 18-C: real cohort LTV) ───────────
+# Lemon Squeezy fires subscription_created / subscription_updated on the
+# subscription object. We record ONLY the opaque subscription id + timestamps
+# (NO PII — never the email), so the CFO can compute real LTV per cohort
+# (price × months actually paid, including renewals) instead of the pure
+# price×months estimate.
+
+
+def ensure_subscription_table() -> None:
+    """Create subscription_events if missing (self-healing, like the rest)."""
+    try:
+        conn = get_db()
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS subscription_events (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                subscription_id TEXT NOT NULL,
+                event           TEXT NOT NULL,
+                ts              INTEGER NOT NULL,
+                renews_at       TEXT NOT NULL DEFAULT '',
+                created_at      TEXT NOT NULL DEFAULT '',
+                created_at_ts   INTEGER NOT NULL DEFAULT 0,
+                UNIQUE(subscription_id, event, renews_at)
+            )
+            """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_sub_evt_sub "
+            "ON subscription_events(subscription_id)"
+        )
+        conn.commit()
+        conn.close()
+    except sqlite3.Error as e:
+        log.warning("[conversion] subscription table bootstrap failed: %s", e)
+
+
+def _iso_to_ts(iso: str) -> int:
+    """Parse an LS ISO-8601 timestamp to unix; 0 when unparseable."""
+    if not iso:
+        return 0
+    try:
+        dt = datetime.fromisoformat(str(iso).replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return int(dt.timestamp())
+    except (ValueError, TypeError):
+        return 0
+
+
+def _month_key(ts: int) -> str:
+    """UTC YYYY-MM bucket for a unix ts ('' when invalid)."""
+    try:
+        return datetime.fromtimestamp(int(ts), tz=timezone.utc).strftime("%Y-%m")
+    except (ValueError, OSError, OverflowError, TypeError):
+        return ""
+
+
+def record_subscription_event(
+    subscription_id: str,
+    event: str,
+    ts: int,
+    renews_at: str = "",
+    created_at: str = "",
+    created_at_ts: int = 0,
+) -> bool:
+    """Record one subscription lifecycle event (best-effort, idempotent).
+
+    ``event`` is 'subscription_created' or 'renewal'. A renewal only counts
+    when ``renews_at`` is a NEW billing period for that subscription — the
+    initial subscription_updated (echoing the created period) and card/
+    status blips never inflate the renewal count. No PII is stored.
+    """
+    if not subscription_id:
+        return False
+    try:
+        ensure_subscription_table()
+        if not created_at_ts and created_at:
+            created_at_ts = _iso_to_ts(created_at)
+        conn = get_db()
+        if event == "renewal":
+            if not renews_at:
+                conn.close()
+                return False
+            # Blocks the echo of the CREATED period: subscription_created also
+            # stores renews_at, so a subscription_updated carrying the same
+            # renews_at is NOT a renewal (card/status blip) — it must not
+            # count. The UNIQUE row alone can't catch this (event differs),
+            # hence the explicit check across any event for this subscription.
+            dup = conn.execute(
+                "SELECT 1 FROM subscription_events "
+                "WHERE subscription_id = ? AND renews_at = ? LIMIT 1",
+                (subscription_id, renews_at),
+            ).fetchone()
+            if dup:
+                conn.close()
+                return False
+        # INSERT OR IGNORE absorbs the race window (two concurrent deliveries
+        # with the same period): the UNIQUE row ignores the loser instead of
+        # raising IntegrityError, and rowcount==1 tells us who inserted — no
+        # connection leak on the lost race.
+        cur = conn.execute(
+            "INSERT OR IGNORE INTO subscription_events "
+            "(subscription_id, event, ts, renews_at, created_at, created_at_ts) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (subscription_id, event, int(ts), renews_at, created_at, created_at_ts),
+        )
+        conn.commit()
+        inserted = cur.rowcount == 1
+        conn.close()
+        return inserted
+    except (sqlite3.Error, TypeError, ValueError):
+        log.warning("[conversion] record_subscription_event failed", exc_info=True)
+        return False
+
+
+def cohort_ltv_report(
+    price_usd_month: Optional[float] = None, margin_pct: Optional[float] = None
+) -> Dict[str, Any]:
+    """Real LTV by purchase cohort from subscription_events (no PII).
+
+    Each subscription joins the cohort of its creation month; every renewal
+    adds one more paid month. Per cohort we report subscriptions, renewals,
+    accumulated revenue (price × (subs + renewals) × margin), LTV per sub,
+    retention at months 1/3/6/12 (share of subs with ≥N renewals) and how
+    old the cohort is (young cohorts can't show m12 yet — the CFO must read
+    retention with cohort_age_days in mind).
+
+    Returns: {"has_renewal_data": bool, "ltv_real_usd": float|None,
+              "cohorts": [{cohort_month, subscriptions, renewals,
+                           revenue_usd, ltv_usd, retention_m1_pct, ...,
+                           cohort_age_days}, ...]}
+    """
+    try:
+        price = float(
+            price_usd_month
+            if price_usd_month is not None
+            else os.environ.get("PRO_PRICE_USD_MONTH", DEFAULT_PRICE_USD_MONTH)
+        )
+        margin = float(
+            margin_pct
+            if margin_pct is not None
+            else os.environ.get("PRO_MARGIN_PCT", DEFAULT_MARGIN_PCT)
+        )
+    except (TypeError, ValueError):
+        price, margin = DEFAULT_PRICE_USD_MONTH, DEFAULT_MARGIN_PCT
+
+    try:
+        ensure_subscription_table()
+        conn = get_db()
+        rows = conn.execute(
+            "SELECT subscription_id, event, renews_at, created_at_ts, ts "
+            "FROM subscription_events ORDER BY created_at_ts ASC, ts ASC"
+        ).fetchall()
+        conn.close()
+    except sqlite3.Error as e:
+        log.warning("[conversion] cohort_ltv_report failed: %s", e)
+        return {"has_renewal_data": False, "ltv_real_usd": None, "cohorts": []}
+
+    subs: Dict[str, Dict[str, Any]] = {}
+    # Two passes (order-independent): a renewal row may carry created_at_ts=0
+    # (recorded without created_at) and would sort BEFORE its cohort row if
+    # we bucket in one loop — renewals must never be lost to row order.
+    for r in rows:
+        if r["event"] == "subscription_created":
+            m = _month_key(r["created_at_ts"] or r["ts"])
+            d = subs.setdefault(r["subscription_id"], {"month": m, "renewals": 0})
+            d["month"] = m or d["month"]
+    for r in rows:
+        if r["event"] == "renewal" and r["subscription_id"] in subs:
+            subs[r["subscription_id"]]["renewals"] += 1
+
+    cohorts: Dict[str, Dict[str, Any]] = {}
+    for sid, d in subs.items():
+        c = cohorts.setdefault(
+            d["month"], {"subscriptions": 0, "renewals": 0, "renewal_dist": []}
+        )
+        c["subscriptions"] += 1
+        c["renewals"] += d["renewals"]
+        c["renewal_dist"].append(d["renewals"])
+
+    now_ts = int(time.time())
+    total_subs = 0
+    total_rev = 0.0
+    any_renewal = False
+    out: List[Dict[str, Any]] = []
+    for month in sorted(cohorts):
+        c = cohorts[month]
+        n = c["subscriptions"]
+        rev = round(price * (n + c["renewals"]) * margin, 2)
+        total_subs += n
+        total_rev += rev
+        any_renewal = any_renewal or c["renewals"] > 0
+
+        def _retained(nth: int) -> float:
+            if not n:
+                return 0.0
+            return round(sum(1 for x in c["renewal_dist"] if x >= nth) / n * 100, 1)
+
+        out.append(
+            {
+                "cohort_month": month,
+                "subscriptions": n,
+                "renewals": c["renewals"],
+                "revenue_usd": rev,
+                "ltv_usd": round(rev / n, 2) if n else 0.0,
+                "retention_m1_pct": _retained(1),
+                "retention_m3_pct": _retained(3),
+                "retention_m6_pct": _retained(6),
+                "retention_m12_pct": _retained(12),
+                "cohort_age_days": max(0, now_ts - _iso_to_ts(month + "-01")) // 86400,
+            }
+        )
+
+    return {
+        "has_renewal_data": any_renewal,
+        "ltv_real_usd": round(total_rev / total_subs, 2) if total_subs else None,
+        "cohorts": out,
+    }
+
+
 # ── LTV / CAC estimates ─────────────────────────────────────────────────────
 
 
@@ -491,7 +711,18 @@ def ltv_cac_report(
             DEFAULT_MARGIN_PCT,
         )
 
-    ltv = price * months * margin
+    ltv_estimate = price * months * margin
+
+    # Issue #157 (18-C): when real renewal data exists, the cohort LTV
+    # replaces the estimate (price × months actually paid incl. renewals).
+    # Fallback keeps the report usable before the first renewal arrives.
+    _cohort = cohort_ltv_report(price_usd_month=price, margin_pct=margin)
+    if _cohort.get("has_renewal_data") and _cohort.get("ltv_real_usd"):
+        ltv = _cohort["ltv_real_usd"]
+        ltv_source = "cohort_real"
+    else:
+        ltv = ltv_estimate
+        ltv_source = "estimate"
 
     if paid_count is None:
         try:
@@ -518,6 +749,10 @@ def ltv_cac_report(
     )
     return {
         "ltv_usd": round(ltv, 2),
+        "ltv_source": ltv_source,
+        "ltv_estimate_usd": round(ltv_estimate, 2),
+        "has_renewal_data": _cohort.get("has_renewal_data", False),
+        "cohorts": _cohort.get("cohorts", []),
         "assumptions": {
             "price_usd_month": price,
             "license_months": months,

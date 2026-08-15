@@ -1456,11 +1456,26 @@
     <div class="kpi-card"><span class="kpi-card__label">Conversion rate</span><span class="kpi-card__value" id="admin-conv-rate">—</span></div>
   </div>
   <div class="kpi-row">
-    <div class="kpi-card"><span class="kpi-card__label">LTV (12mo)</span><span class="kpi-card__value" id="admin-ltv">—</span></div>
+    <div class="kpi-card"><span class="kpi-card__label">LTV (12mo)</span><span class="kpi-card__value" id="admin-ltv">—</span><span class="kpi-card__tag" id="admin-ltv-source"></span></div>
     <div class="kpi-card"><span class="kpi-card__label">CAC</span><span class="kpi-card__value" id="admin-cac">—</span></div>
     <div class="kpi-card"><span class="kpi-card__label">LTV/CAC</span><span class="kpi-card__value" id="admin-ltv-cac">—</span></div>
     <div class="kpi-card"><span class="kpi-card__label">Payback (mo)</span><span class="kpi-card__value" id="admin-payback">—</span></div>
   </div>
+
+  <!-- ── LTV real por coorte (Issue #157 — 18-C) ── -->
+  <div class="panel__subtitle">LTV REAL POR COORTE — renewals do Lemon Squeezy (fonte: <span id="admin-cohort-source">estimativa</span>)</div>
+  <div class="admin-audit__table-wrap" id="admin-cohort-wrap" hidden>
+    <table class="mkt-table admin-audit__table">
+      <thead>
+        <tr>
+          <th>Coorte</th><th>Subs</th><th>Renewals</th><th>Receita</th><th>LTV</th>
+          <th>Ret M1</th><th>Ret M3</th><th>Ret M6</th><th>Ret M12</th>
+        </tr>
+      </thead>
+      <tbody id="admin-cohort-tbody"></tbody>
+    </table>
+  </div>
+  <div class="admin-audit__empty" id="admin-cohort-empty" hidden>sem dados de renewals ainda — usando estimativa</div>
 
   <div class="kpi-row">
     <div class="kpi-card"><span class="kpi-card__label">Sessões funil</span><span class="kpi-card__value" id="admin-funnel-sessions">—</span></div>

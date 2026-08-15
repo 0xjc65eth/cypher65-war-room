@@ -220,6 +220,52 @@ def _release_claim(order_id: str) -> None:
         conn.close()
 
 
+# ── Subscription lifecycle (Issue #157 — 18-C) ────────────────────────
+# LS fires subscription_created (the cohort's first purchase) and
+# subscription_updated (fires on any change — card, status, or a RENEWAL,
+# which moves renews_at forward). We record the opaque subscription id +
+# timestamps only (NO PII) so conversion.cohort_ltv_report() can compute
+# real LTV per cohort with actual renewals.
+
+
+def _record_subscription_lifecycle(event_name: str, payload: dict) -> None:
+    """Record subscription lifecycle events for real cohort LTV (Issue #157).
+
+    subscription_created → the cohort's first purchase. subscription_updated
+    is recorded as a renewal when renews_at is present; the recorder dedups
+    per (subscription_id, renews_at), so unrelated updates (card change,
+    status blip) never double-count a period. Best-effort — never raises.
+    """
+    try:
+        from services.conversion import record_subscription_event
+
+        data = payload.get("data") or {}
+        attrs = data.get("attributes") or {}
+        sub_id = str(data.get("id") or "").strip()
+        if not sub_id:
+            return
+        renews_at = str(attrs.get("renews_at") or "").strip()
+        created_at = str(attrs.get("created_at") or "").strip()
+        event = (
+            "subscription_created"
+            if event_name == "subscription_created"
+            else "renewal"
+        )
+        if event == "renewal" and not renews_at:
+            # Paused/cancelled updates carry no next billing period — not a
+            # renewal (the current period was already recorded).
+            return
+        record_subscription_event(
+            subscription_id=sub_id,
+            event=event,
+            ts=int(time.time()),
+            renews_at=renews_at,
+            created_at=created_at,
+        )
+    except Exception:
+        log.warning("[webhook] subscription lifecycle record failed", exc_info=True)
+
+
 # ── PII redaction (Issue #116) ────────────────────────────────────────
 # Buyer emails must NEVER reach the log sink in plain text. mask_email keeps
 # the domain + local-prefix for fast triage; email_sha matches the funnel's
@@ -251,7 +297,13 @@ def handle_webhook(payload: dict) -> Optional[str]:
     issued key is honored immediately by X-License-Key.
     """
     meta = payload.get("meta") or {}
-    if meta.get("event_name") != "order_created":
+    event_name = meta.get("event_name") or ""
+    # Issue #157 (18-C): subscription lifecycle → real cohort LTV. These are
+    # acknowledged (200) but never issue a license — only order_created does.
+    if event_name in ("subscription_created", "subscription_updated"):
+        _record_subscription_lifecycle(event_name, payload)
+        return None
+    if event_name != "order_created":
         return None
     data = payload.get("data") or {}
     attrs = data.get("attributes") or {}
