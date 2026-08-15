@@ -4378,6 +4378,31 @@ function renderAccount(acct) {
   let _rentalsSeriesChart = null;
   let _rentalsSeriesBucket = 'week';
 
+  // Issue #146 (21-C): pure series-datasets builder (mirrored in the JS core
+  // tests) — safe Number guards (NaN → null so the chart shows honest gaps),
+  // own-EV + consolidated-total series included only when the backend sent
+  // them (backward compatible with the pre-21-C payload).
+  function buildPortfolioSeriesDatasets(points) {
+    const rows = points || [];
+    // null/undefined must stay null (Chart.js gap) — Number(null) is 0 and
+    // would fabricate a flat 'no loss' bar on a cold box (honest telemetry).
+    const num = function (v) {
+      if (v === null || v === undefined) return null;
+      const n = Number(v);
+      return Number.isFinite(n) ? n : null;
+    };
+    const hasOwnEv = rows.some(function (p) { return num(p.own_ev_sats) != null; });
+    return {
+      labels: rows.map(function (p) { return String(p.label || '').replace(/^\d{4}-/, ''); }),
+      spent: rows.map(function (p) { return num(p.spent_sats); }),
+      pl: rows.map(function (p) { return num(p.pl_sats); }),
+      cum: rows.map(function (p) { return num(p.cum_pl_sats); }),
+      ownEv: rows.map(function (p) { return hasOwnEv ? num(p.own_ev_sats) : null; }),
+      totalCum: rows.map(function (p) { return hasOwnEv ? num(p.cum_total_sats) : null; }),
+      hasOwnEv: hasOwnEv
+    };
+  }
+
   function _renderRentalsSeries() {
     const wrap = document.getElementById('rentals-series');
     if (!wrap || !_rentalsData) return;
@@ -4390,35 +4415,53 @@ function renderAccount(acct) {
       const plTxt = t.pl_sats != null
         ? (t.pl_sats >= 0 ? '+' : '') + Number(t.pl_sats).toLocaleString('en-US', { maximumFractionDigits: 0 }) + ' sats'
         : '—';
-      meta.textContent = (series.estimate ? 'P/L estimado · rede atual · ' : '') +
+      let m = (series.estimate ? 'P/L estimado · rede atual · ' : '') +
         (t.rentals != null ? t.rentals + ' aluguéis · ' : '') +
         (t.spent_sats != null ? Number(t.spent_sats).toLocaleString('en-US') + ' sats gastos · ' : '') +
         'P/L total ' + plTxt;
+      // Issue #146: when the self-mining EV entered the account, surface the
+      // consolidated total + the honest ESTIMATE note (EV, not realized).
+      if (t.own_ev_sats != null) {
+        const ownTxt = (t.own_ev_sats >= 0 ? '+' : '') +
+          Number(t.own_ev_sats).toLocaleString('en-US', { maximumFractionDigits: 0 }) + ' sats';
+        m += ' · PRÓPRIO EV ' + ownTxt + ' (ESTIMATE)';
+        if (t.total_pl_sats != null) {
+          const totTxt = (t.total_pl_sats >= 0 ? '+' : '') +
+            Number(t.total_pl_sats).toLocaleString('en-US', { maximumFractionDigits: 0 }) + ' sats';
+          m += ' · TOTAL ' + totTxt;
+        }
+      }
+      meta.textContent = m;
     }
     if (_rentalsSeriesChart) { _rentalsSeriesChart.destroy(); _rentalsSeriesChart = null; }
     if (typeof Chart === 'undefined' || series.points.length < 1) return;
     const canvas = document.getElementById('rentals-series-chart');
     if (!canvas) return;
-    const labels = series.points.map(p => p.label.replace(/^\d{4}-/, ''));  // strip year → 'W29' | '07'
-    const spent = series.points.map(p => p.spent_sats);
-    const pl = series.points.map(p => p.pl_sats);
-    const cum = series.points.map(p => p.cum_pl_sats);
+    const d = buildPortfolioSeriesDatasets(series.points);
+    const datasets = [
+      { type: 'bar', label: 'gasto (sats)', data: d.spent,
+        backgroundColor: 'rgba(94,89,82,0.55)', borderRadius: 2, yAxisID: 'y' },
+      { type: 'bar', label: 'P/L período (sats)', data: d.pl,
+        backgroundColor: d.pl.map(v => v == null ? 'rgba(94,89,82,0.15)' : (v >= 0 ? 'rgba(0,200,83,0.55)' : 'rgba(255,23,68,0.55)')),
+        borderRadius: 2, yAxisID: 'y' },
+      { type: 'line', label: 'P/L acumulado (sats)', data: d.cum,
+        borderColor: 'rgb(255,215,0)', backgroundColor: 'transparent',
+        tension: 0.3, pointRadius: 2, borderWidth: 2, spanGaps: false, yAxisID: 'y' },
+    ];
+    if (d.hasOwnEv) {
+      // Issue #146 (21-C): self-mining EV per bucket (constant daily
+      // estimate × days) + the CONSOLIDATED cumulative (rentals P/L + own EV).
+      datasets.push({ type: 'bar', label: 'PRÓPRIO EV (sats)', data: d.ownEv,
+        backgroundColor: 'rgba(6,214,240,0.35)', borderColor: 'rgb(6,214,240)',
+        borderWidth: 1, borderRadius: 2, yAxisID: 'y' });
+      datasets.push({ type: 'line', label: 'TOTAL acumulado (sats)', data: d.totalCum,
+        borderColor: 'rgb(6,214,240)', backgroundColor: 'transparent',
+        tension: 0.3, pointRadius: 2, borderWidth: 2, borderDash: [5, 3], spanGaps: false, yAxisID: 'y' });
+    }
     // null P/L (cold box / no computable yield) → gaps, never a flat 0 bar.
     _rentalsSeriesChart = new Chart(canvas.getContext('2d'), {
       type: 'bar',
-      data: {
-        labels: labels,
-        datasets: [
-          { type: 'bar', label: 'gasto (sats)', data: spent,
-            backgroundColor: 'rgba(94,89,82,0.55)', borderRadius: 2, yAxisID: 'y' },
-          { type: 'bar', label: 'P/L período (sats)', data: pl,
-            backgroundColor: pl.map(v => v == null ? 'rgba(94,89,82,0.15)' : (v >= 0 ? 'rgba(0,200,83,0.55)' : 'rgba(255,23,68,0.55)')),
-            borderRadius: 2, yAxisID: 'y' },
-          { type: 'line', label: 'P/L acumulado (sats)', data: cum,
-            borderColor: 'rgb(255,215,0)', backgroundColor: 'transparent',
-            tension: 0.3, pointRadius: 2, borderWidth: 2, spanGaps: false, yAxisID: 'y' },
-        ]
-      },
+      data: { labels: d.labels, datasets: datasets },
       options: {
         responsive: true, maintainAspectRatio: false,
         interaction: { mode: 'index', intersect: false },

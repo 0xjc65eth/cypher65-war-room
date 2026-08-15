@@ -4816,6 +4816,45 @@ def _series_bucket_key(dt, bucket: str) -> str:
     return f"{dt.year:04d}-{dt.month:02d}"
 
 
+def _bucket_elapsed_days(
+    label: str, bucket: str, now_ts: Optional[float] = None
+) -> int:
+    """Days inside a series bucket, capped at the present for the CURRENT
+    partial bucket (Issue #146 — self-mining EV attribution).
+
+    A past week = 7 days, a past month = its calendar days; the current
+    bucket counts only the days elapsed so far (today included); a future
+    bucket (clock skew / imported rows) = 0 → no EV is attributed, never a
+    fabricated number. Unparseable labels degrade to 0 (the caller then
+    renders None, never 0 sats of EV).
+    """
+    import calendar as _cal
+    import datetime as _dt
+
+    try:
+        now = _dt.datetime.fromtimestamp(
+            now_ts if now_ts is not None else _dt.time(), tz=_dt.timezone.utc
+        )
+        if bucket == "week":
+            iso_y, iso_w = (int(x) for x in label.split("-W"))
+            # Monday of the ISO week (week 1 = the week containing Jan 4th).
+            jan4 = _dt.datetime(iso_y, 1, 4, tzinfo=_dt.timezone.utc)
+            bucket_start = (
+                jan4
+                - _dt.timedelta(days=jan4.isocalendar()[2] - 1)
+                + _dt.timedelta(weeks=iso_w - 1)
+            )
+            full = 7
+        else:
+            y, m = (int(x) for x in label.split("-"))
+            full = _cal.monthrange(y, m)[1]
+            bucket_start = _dt.datetime(y, m, 1, tzinfo=_dt.timezone.utc)
+        elapsed = (now - bucket_start).days + 1  # today counts as one day
+        return max(0, min(full, elapsed))
+    except Exception:
+        return 0
+
+
 def series_bucket_rentals(
     tenant_id: str = "", bucket: str = "week", label: str = ""
 ) -> List[Dict[str, Any]]:
@@ -4887,7 +4926,11 @@ def series_bucket_rentals(
 
 
 def compute_portfolio_series(
-    tenant_id: str = "", bucket: str = "week", created_ts_fallback: bool = True
+    tenant_id: str = "",
+    bucket: str = "week",
+    created_ts_fallback: bool = True,
+    own_ev_daily_sats: Optional[float] = None,
+    now_ts: Optional[float] = None,
 ) -> Dict[str, Any]:
     """Portfolio time series (spent + estimated P/L) per week/month, straight
     from the LOCAL rental_history table — no provider calls.
@@ -4905,11 +4948,24 @@ def compute_portfolio_series(
       - buckets by ISO week (bucket='week') or calendar month (bucket='month')
         from the row's start date (created_ts fallback for unparseable rows);
       - cum_pl_sats = running cumulative so the operator sees the trend
-        direction at a glance.
+        direction at a glance;
+      - OWN MINING EV (Issue #146, 21-C): when ``own_ev_daily_sats`` is
+        passed (self-mining EV/day from compute_own_mining_ev, current
+        hashrate × pinned yield), each bucket also carries ``own_ev_sats``
+        (daily EV × days in the bucket — capped at the present for the
+        current partial bucket, 0 for future buckets), ``total_pl_sats``
+        (rentals P/L + own EV, None unless BOTH are known) and
+        ``cum_total_sats`` (running cumulative of the total — unknown from
+        the first bucket whose total is unknown). The EV is a CONSTANT
+        per-day estimate (labeled ESTIMATE); buckets only exist where
+        rentals were ingested, so a silent week with no rentals still shows
+        no point (unchanged behaviour).
 
-    Returns {"bucket", "estimate": True, "points": [{label, spent_sats,
-    delivered_thh, pl_sats, cum_pl_sats, rentals, rental_ids}],
-    "totals": {...}} — rental_ids powers the chart drill-down.
+    Returns {"bucket", "estimate": True, "own_ev_estimate": bool,
+    "own_ev_daily_sats": float|None, "points": [{label, spent_sats,
+    delivered_thh, pl_sats, cum_pl_sats, own_ev_sats, total_pl_sats,
+    cum_total_sats, rentals, rental_ids}], "totals": {...}} — rental_ids
+    powers the chart drill-down.
     """
     bucket = bucket if bucket in ("week", "month") else "week"
     try:
@@ -4969,15 +5025,37 @@ def compute_portfolio_series(
         agg[key]["rentals"] += 1
         agg[key]["rental_ids"].append(str(r["rental_id"]))
 
+    # Own mining EV per bucket (Issue #146 / 21-C): constant daily estimate
+    # × days in the bucket. None when no hashrate/EV was provided.
+    own_ev_daily = _num(own_ev_daily_sats)
+    if own_ev_daily is not None and own_ev_daily <= 0:
+        own_ev_daily = None
+
     points = []
     cum = 0.0
     cum_known = True
+    cum_total = 0.0
+    cum_total_known = True
     for key in sorted(order):
         g = agg[key]
         if g["pl_known"]:
             cum += g["pl_sats"]
         else:
             cum_known = False  # once unknown, cumulative is unknown too
+        # EV: days in the bucket (partial current bucket capped; 0 for a
+        # future bucket → None, never a fabricated 0-sats EV).
+        own_ev = None
+        if own_ev_daily is not None:
+            _days = _bucket_elapsed_days(key, bucket, now_ts)
+            if _days > 0:
+                own_ev = round(own_ev_daily * _days)
+        total_pl = None
+        if own_ev is not None and g["pl_known"]:
+            total_pl = round(g["pl_sats"] + own_ev, 1)
+        if total_pl is not None:
+            cum_total += total_pl
+        else:
+            cum_total_known = False
         points.append(
             {
                 "label": g["label"],
@@ -4988,6 +5066,10 @@ def compute_portfolio_series(
                 # None (not 0.0) when nothing computable — the UI shows '—'.
                 "pl_sats": round(g["pl_sats"], 1) if g["pl_known"] else None,
                 "cum_pl_sats": round(cum, 1) if cum_known else None,
+                # Self-mining EV (Issue #146) + consolidated totals.
+                "own_ev_sats": own_ev,
+                "total_pl_sats": total_pl,
+                "cum_total_sats": (round(cum_total, 1) if cum_total_known else None),
                 "rentals": g["rentals"],
                 # Click-first drill-down: the ids of every rental in the bucket so
                 # the chart can open the exact list behind a bar/week.
@@ -4995,17 +5077,31 @@ def compute_portfolio_series(
             }
         )
     known_totals = [g for g in agg.values() if g["pl_known"]]
+    own_known = own_ev_daily is not None and bool(points)
+    own_ev_total = (
+        round(sum(p["own_ev_sats"] for p in points if p["own_ev_sats"] is not None))
+        if own_known
+        else None
+    )
+    totals_pl = (
+        round(sum(g["pl_sats"] for g in known_totals), 1) if known_totals else None
+    )
+    totals_total = None
+    if own_ev_total is not None and totals_pl is not None:
+        totals_total = round(totals_pl + own_ev_total, 1)
     return {
         "bucket": bucket,
         "estimate": True,  # P/L uses the CURRENT network hashrate — honest label
+        # Issue #146: the own-mining EV entered the account (constant daily
+        # estimate) — the UI appends the ESTIMATE note when this is true.
+        "own_ev_estimate": own_known,
+        "own_ev_daily_sats": round(own_ev_daily) if own_ev_daily is not None else None,
         "points": points,
         "totals": {
             "spent_sats": round(sum(g["spent_sats"] for g in agg.values())),
-            "pl_sats": (
-                round(sum(g["pl_sats"] for g in known_totals), 1)
-                if known_totals
-                else None
-            ),
+            "pl_sats": totals_pl,
+            "own_ev_sats": own_ev_total,
+            "total_pl_sats": totals_total,
             "rentals": sum(g["rentals"] for g in agg.values()),
         },
     }

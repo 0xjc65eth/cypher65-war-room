@@ -6539,6 +6539,29 @@ def _own_hashrate_for_portfolio(tenant_id: str = "") -> dict:
     }
 
 
+def _own_ev_daily_sats_for(tenant_id: str = "") -> Optional[float]:
+    """Self-mining EV per day (sats) for the portfolio series (Issue #146).
+
+    Reuses the consolidated panel math (compute_own_mining_ev, days=1): own
+    hashrate (dedup fleet/worker) × pinned yield. Returns None when there is
+    no measurable own hashrate or the network hashrate is unknown — the
+    series then renders no EV (honest '—', never a fabricated number).
+    """
+    try:
+        _hr = _own_hashrate_for_portfolio(tenant_id)
+        if not _hr.get("hashrate_hs"):
+            return None
+        _ev = _rental_perf.compute_own_mining_ev(
+            _hr["hashrate_hs"],
+            (latest_snapshot.get("network") or {}).get("hashrate"),
+            days=1,
+        )
+        return _ev.get("daily_revenue_sats")
+    except Exception as e:
+        log.warning("[portfolio] own EV daily error: %s", e)
+        return None
+
+
 def _exposure_legs_th(mrr_rentals, braiins_contracts) -> tuple:
     """Legs de hashrate (TH/s) para a alocação de exposição (Issue #21-B).
 
@@ -6614,8 +6637,14 @@ def api_rentals(tenant_id: str = ""):
         # honesto: NUNCA soma, usa max + expõe a fonte) e rentals 30d P/L
         # (soma das últimas ~4 semanas da série local, mesma metodologia EV).
         _own_hr = _own_hashrate_for_portfolio(tenant_id)
+        # Issue #146 (21-C): the series now merges the SELF-MINING EV per
+        # bucket — same daily estimate the consolidated panel uses
+        # (compute_own_mining_ev), constant across the series and labeled
+        # ESTIMATE on the chart.
         _portfolio_series = _rental_perf.compute_portfolio_series(
-            tenant_id=tenant_id, bucket="week"
+            tenant_id=tenant_id,
+            bucket="week",
+            own_ev_daily_sats=_own_ev_daily_sats_for(tenant_id),
         )
         # Portfolio 21-B: legs de hashrate (TH/s) para a alocação de exposição
         # (MRR advertised_th dos ativos + Braiins perf.limit_th dos contratos).
@@ -7371,7 +7400,9 @@ def api_rentals_series(tenant_id: str = ""):
     try:
         bucket = (request.args.get("bucket") or "week").lower()
         series = _rental_perf.compute_portfolio_series(
-            tenant_id=tenant_id, bucket=bucket
+            tenant_id=tenant_id,
+            bucket=bucket,
+            own_ev_daily_sats=_own_ev_daily_sats_for(tenant_id),
         )
 
         return jsonify({"success": True, **series})
