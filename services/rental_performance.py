@@ -1622,6 +1622,28 @@ def _braiins_key(tenant_id: str = "") -> str:
 # ── MRR: rentals ─────────────────────────────────────────────────────────────
 
 
+def _is_mrr_auth_rejection(msg: str) -> bool:
+    """True when an MRR error means the CREDENTIAL is invalid/outdated
+    (Issue #152): 'Not Authenticated - Invalid Key - Bad Nonce.' is the
+    classic signature — a key/secret that no longer matches the account (or
+    a stuck nonce tracker on the key). It is NOT a concurrency bug (nonces
+    are monotonic since #150) and NOT a missing-credential state. The panel
+    uses this flag to explain 'regenerate the key' instead of showing a
+    generic provider error.
+    """
+    m = (msg or "").lower()
+    return any(
+        k in m
+        for k in (
+            "not authenticated",
+            "invalid key",
+            "bad nonce",
+            "unauthor",
+            "forbidden",
+        )
+    )
+
+
 def fetch_mrr_rentals(
     rtype: str = "renter",
     history: bool = False,
@@ -1657,19 +1679,27 @@ def fetch_mrr_rentals(
             timeout=15,
         )
         if not r.ok:
+            _err = f"HTTP {r.status_code}"
             return {
                 "success": False,
                 "needs_auth": False,
-                "error": f"HTTP {r.status_code}",
+                # Issue #152 (c): a 401/403 with a CONFIGURED key is a
+                # credential problem — the panel must explain 'regenerate'
+                # instead of a generic HTTP error.
+                "auth_rejected": _is_mrr_auth_rejection(_err)
+                or r.status_code in (401, 403),
+                "error": _err,
                 "rentals": [],
                 "total": 0,
             }
         data = r.json()
         if not data.get("success"):
+            _err = str(data.get("data") or data.get("message") or "MRR error")
             return {
                 "success": False,
                 "needs_auth": False,
-                "error": str(data.get("data") or data.get("message") or "MRR error"),
+                "auth_rejected": _is_mrr_auth_rejection(_err),
+                "error": _err,
                 "rentals": [],
                 "total": 0,
             }

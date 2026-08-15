@@ -5247,6 +5247,33 @@ function sortMarketVenues(venues, key, dir) {
   ]), {
     labels: ['W30'], spent: [null], pl: [null], cum: [null], ownEv: [700], totalCum: [null], hasOwnEv: true });
 
+  // Rentals provider auth state (Issue #152) — pure helpers mirror.
+  function rentalsAuthRejected(errMsg, authRejected) {
+    if (authRejected) return true;
+    return /rejected|401|403|unauthor|forbidden|bad nonce|not authenticated|invalid key/i.test(String(errMsg || ''));
+  }
+  function _esc(s) { return String(s).replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c])); }
+  function rentalsAuthGuide(provider, errMsg) {
+    const safe = _esc(String(errMsg || ''));
+    if (provider === 'contracts') {
+      return 'A chave Braiins está configurada, mas a API a rejeitou: ' + safe +
+        '. Gere um novo owner token em hashpower.braiins.com e atualize no Settings (⚙).';
+    }
+    return 'A chave MRR está configurada, mas a API a rejeitou: ' + safe +
+      '. Causa provável: credencial inválida/desatualizada (ou tracker de nonce da chave preso) ' +
+      '— NÃO é bug de concorrência. Regenerar a API key + secret em miningrigrentals.com ' +
+      '→ My Account → API Access e atualizar no Settings (⚙).';
+  }
+  assertEqual('rentals auth rejected explicit flag', rentalsAuthRejected('weird', true), true);
+  assertEqual('rentals auth rejected bad nonce', rentalsAuthRejected('Not Authenticated - Invalid Key - Bad Nonce.', false), true);
+  assertEqual('rentals auth rejected 401', rentalsAuthRejected('HTTP 401', false), true);
+  assertEqual('rentals auth rejected generic', rentalsAuthRejected('HTTP 503', false), false);
+  assertEqual('rentals auth rejected permission', rentalsAuthRejected('No Permission - account/1285', false), false);
+  assertEqual('rentals auth guide mrr', rentalsAuthGuide('mrr', 'Not Authenticated - Invalid Key - Bad Nonce.').indexOf('miningrigrentals.com') !== -1, true);
+  assertEqual('rentals auth guide mrr not concurrency', rentalsAuthGuide('mrr', 'x').indexOf('NÃO é bug de concorrência') !== -1, true);
+  assertEqual('rentals auth guide braiins', rentalsAuthGuide('contracts', '401').indexOf('hashpower.braiins.com') !== -1, true);
+  assertEqual('rentals auth guide escapes html', rentalsAuthGuide('mrr', '<b>').indexOf('&lt;b&gt;') !== -1, true);
+
   // Cohort LTV rows (Issue #157 — 18-C) — safe-number builder mirror.
   function _cohortNum(v) {
     const n = Number(v);

@@ -341,6 +341,38 @@ LOG_JSON=1 SENTRY_DSN=https://xxx@sentry.io/123 python app.py
 - Código roda como usuário não-root (`USER cypher` no Dockerfile).
 - Sem chaves de wallet/seed no servidor — apenas endereços públicos.
 
+## 🧯 Troubleshooting — MRR: `Not Authenticated - Invalid Key - Bad Nonce.`
+
+**Sintoma:** o painel RENTALS mostra `Provider error: Not Authenticated -
+Invalid Key - Bad Nonce.` (ou `API key rejected` com o mesmo motivo) para um
+tenant com chave configurada no Settings.
+
+**Causa raiz:** a **credencial MRR é inválida/desatualizada** (key/secret que
+não batem mais com a conta) **ou o tracker de nonce da chave ficou preso** no
+servidor do MRR (último nonce registrado acima do tempo atual, envenenado por
+algum cliente com data futura). **NÃO é bug de concorrência** — os nonces já
+são monotônicos desde a Issue #150 (fix #148/#150), idênticos ao cliente
+oficial.
+
+**Diagnóstico (por usuário, sem tocar no `.env`):**
+
+```bash
+python scripts/probe_mrr_api.py --check --key SUA_KEY --secret SEU_SECRET
+# VALID  → credencial ok (o erro era transitório — tente de novo)
+# INVALID → regenerar a chave (abaixo)
+```
+
+**Solução:** regenerar a **API key + secret** na conta MRR
+(`miningrigrentals.com → My Account → API Access` — a chave nova nasce com
+tracker de nonce zerado) e atualizar:
+
+- **Tenants multi-usuário** → Settings → MRR credentials (cada usuário usa a
+  PRÓPRIA chave — nunca a do operador);
+- **Self-host** → `.env` (`MRR_API_KEY`/`MRR_API_SECRET`) + restart.
+
+O painel agora classifica esse erro como **credencial rejeitada** e mostra
+essa orientação diretamente no card/empty state (Issue #152).
+
 ---
 
 MIT © 2026 [0xjc65eth](https://github.com/0xjc65eth)

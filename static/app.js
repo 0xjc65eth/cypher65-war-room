@@ -279,6 +279,28 @@
 // ── escape HTML ───────────────────────────────────────────────────────
   function escapeHtml(s) { return String(s).replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c])); }
 
+  // ── Rentals provider auth state (Issue #152) ────────────────────────
+  // A CONFIGURED-but-rejected key (401/403, or MRR's classic 'Not
+  // Authenticated - Invalid Key - Bad Nonce.') is a CREDENTIAL problem, not
+  // a missing-credential state and not a concurrency bug. These pure
+  // helpers classify the rejection and build the FIX guidance per provider;
+  // mirrored in tests/test_app_js_core.js.
+  function rentalsAuthRejected(errMsg, authRejected) {
+    if (authRejected) return true;
+    return /rejected|401|403|unauthor|forbidden|bad nonce|not authenticated|invalid key/i.test(String(errMsg || ''));
+  }
+  function rentalsAuthGuide(provider, errMsg) {
+    const safe = escapeHtml(String(errMsg || ''));
+    if (provider === 'contracts') {
+      return 'A chave Braiins está configurada, mas a API a rejeitou: ' + safe +
+        '. Gere um novo owner token em hashpower.braiins.com e atualize no Settings (⚙).';
+    }
+    return 'A chave MRR está configurada, mas a API a rejeitou: ' + safe +
+      '. Causa provável: credencial inválida/desatualizada (ou tracker de nonce da chave preso) ' +
+      '— NÃO é bug de concorrência. Regenerar a API key + secret em miningrigrentals.com ' +
+      '→ My Account → API Access e atualizar no Settings (⚙).';
+  }
+
   // ── Tenant Auth (Fase 4 · B1-frontend) ─────────────────────────────
   // Stores the JWT session in localStorage and attaches
   // `Authorization: Bearer <token>` to every /api/axe-fleet/* request so
@@ -4954,15 +4976,19 @@ function renderAccount(acct) {
     // API) — honest count of the operator's rentals, not just the fetched page.
     // Missing provider credentials → 🔑 hint (with tooltip) instead of a
     // misleading 0/— that looks like an empty account.
-    const _stripVal = (cardId, value, auth, err) => {
+    const _stripVal = (cardId, value, auth, err, authRejected, provider) => {
       const card = el(cardId);
       if (!card) return;
-      // A configured-but-rejected key (401/403) is an ERROR, not a missing
-      // credential — show ⚠ with the reason so the user fixes the token.
-      const rejected = /rejected|401|403|unauthor|forbidden/i.test(String(err || ''));
+      // A configured-but-rejected key (401/403 / Bad Nonce) is an ERROR, not
+      // a missing credential — show ⚠ with the FIX so the user knows to
+      // regenerate the key, not just add one (Issue #152).
+      const rejected = rentalsAuthRejected(err, authRejected);
       if (auth && !rejected) {
         card.textContent = '🔑';
         card.title = 'credentials missing — configure in Settings (⚙)';
+      } else if (rejected) {
+        card.textContent = '⚠';
+        card.title = rentalsAuthGuide(provider, err);
       } else if (err) {
         card.textContent = '⚠';
         card.title = String(err);
@@ -4971,10 +4997,10 @@ function renderAccount(acct) {
         card.title = '';
       }
     };
-    _stripVal('rentals-mrr-active', mrr.total_active != null ? mrr.total_active : (mrr.active || []).length, mrr.needs_auth, mrr.error);
-    _stripVal('rentals-mrr-history', mrr.total_history != null ? mrr.total_history : (mrr.history || []).length, mrr.needs_auth, mrr.error);
-    _stripVal('rentals-mrr-owner', mrr.total_owner != null ? mrr.total_owner : (mrr.owner || []).length, mrr.needs_auth, mrr.error);
-    _stripVal('rentals-braiins', (braiins.contracts || []).length, braiins.needs_auth, braiins.error);
+    _stripVal('rentals-mrr-active', mrr.total_active != null ? mrr.total_active : (mrr.active || []).length, mrr.needs_auth, mrr.error, mrr.auth_rejected, 'mrr');
+    _stripVal('rentals-mrr-history', mrr.total_history != null ? mrr.total_history : (mrr.history || []).length, mrr.needs_auth, mrr.error, mrr.auth_rejected, 'mrr');
+    _stripVal('rentals-mrr-owner', mrr.total_owner != null ? mrr.total_owner : (mrr.owner || []).length, mrr.needs_auth, mrr.error, mrr.auth_rejected, 'mrr');
+    _stripVal('rentals-braiins', (braiins.contracts || []).length, braiins.needs_auth, braiins.error, braiins.auth_rejected, 'contracts');
     _renderRentalsPortfolio();
     _renderPortfolioConsolidated();
     _renderRentalsSeries();
@@ -5020,20 +5046,22 @@ function renderAccount(acct) {
     }
 
     if (!items.length) {
-      const needsAuth = _rentalsFilter === 'contracts' ? braiins.needs_auth : mrr.needs_auth;
-      const errMsg = _rentalsFilter === 'contracts' ? braiins.error : mrr.error;
-      // "Key rejected" (401/403 with a CONFIGURED key) is NOT the same as
-      // "credentials missing" — surface the real reason so the user knows
-      // to fix the token, not just add one.
-      const rejected = /rejected|401|403|unauthor|forbidden/i.test(String(errMsg || ''));
+      const isContracts = _rentalsFilter === 'contracts';
+      const needsAuth = isContracts ? braiins.needs_auth : mrr.needs_auth;
+      const errMsg = isContracts ? braiins.error : mrr.error;
+      const authRejected = isContracts ? braiins.auth_rejected : mrr.auth_rejected;
+      // "Key rejected" (401/403 / Bad Nonce with a CONFIGURED key) is NOT the
+      // same as "credentials missing" — surface the real reason + the FIX so
+      // the user regenerates the key, not just adds one (Issue #152).
+      const rejected = rentalsAuthRejected(errMsg, authRejected);
       const title = rejected ? 'API key rejected' : (needsAuth ? 'Credentials required' : (errMsg ? 'Provider error' : 'No rentals'));
       listEl.innerHTML = '<div class="empty-state" style="grid-column:1/-1;border:none">' +
         '<div class="empty-state__icon">' + (rejected ? '🔑' : '⛁') + '</div>' +
         '<div class="empty-state__title">' + title + '</div>' +
         '<div class="empty-state__desc">' + (rejected
-          ? 'A chave está configurada, mas a API a rejeitou: ' + escapeHtml(String(errMsg)) + '. Gere um novo owner token em hashpower.braiins.com e atualize no Settings (⚙).'
+          ? rentalsAuthGuide(_rentalsFilter, errMsg)
           : (needsAuth
-            ? (_rentalsFilter === 'contracts' ? 'Add your Braiins Hashpower owner token to list contracts — where to get it: hashpower.braiins.com → API Tokens.' : 'Add your MiningRigRentals API key + secret to see history & performance — get them at miningrigrentals.com → My Account → API Access.')
+            ? (isContracts ? 'Add your Braiins Hashpower owner token to list contracts — where to get it: hashpower.braiins.com → API Tokens.' : 'Add your MiningRigRentals API key + secret to see history & performance — get them at miningrigrentals.com → My Account → API Access.')
             : (errMsg ? escapeHtml(errMsg) : 'No ' + _rentalsFilter + ' rentals on this account'))) + '</div>' +
         (needsAuth || rejected ? '<button type="button" class="btn btn--primary btn--mini" id="rentals-open-settings" style="margin-top:8px">⚙ OPEN SETTINGS</button>' : '') +
         '</div>';
