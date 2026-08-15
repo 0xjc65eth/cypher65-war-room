@@ -2837,6 +2837,17 @@ function renderAccount(acct) {
     const labels = Object.keys(buckets).sort();
     return { labels: labels, counts: labels.map(function (k) { return buckets[k]; }) };
   }
+  // paywall_by_feature (Issue #158) → top-N display rows {feature, count,
+  // pct} sorted desc; safe strings, no HTML.
+  function buildFeatureBreakdown(paywallByFeature) {
+    const rows = (paywallByFeature || []).map(function (f) {
+      return { feature: f.feature || 'unknown', count: Number(f.count) || 0 };
+    }).sort(function (a, b) { return b.count - a.count; });
+    const total = rows.reduce(function (s, r) { return s + r.count; }, 0) || 1;
+    return rows.map(function (r) {
+      return { feature: r.feature, count: r.count, pct: Math.round(r.count / total * 100) };
+    });
+  }
   // cohort buckets (Issue #157) → rows for the LTV-real table: safe numbers,
   // no HTML, ready for innerHTML via escapeHtml on the render side.
   function _cohortNum(v) {
@@ -2981,8 +2992,27 @@ function renderAccount(acct) {
       });
       list.innerHTML = rows.length ? rows.join('') : '<li class="alert-empty">sem eventos no período</li>';
     }
+    // Feature breakdown (Issue #158 — 18-D): where the free tier blocks.
+    _renderAdminFeatures(funnel);
     // Weekly trend (Issue #156 — 18-B): paywall_view × conversion rate.
     _renderAdminFunnelTrend(conv.weekly || []);
+  }
+
+  // ── Feature breakdown (Issue #158 — 18-D) ─────────────────────────────
+  function _renderAdminFeatures(funnel) {
+    const listEl = document.getElementById('admin-feature-list');
+    if (!listEl) return;
+    const rows = buildFeatureBreakdown((funnel && funnel.paywall_by_feature) || []);
+    if (!rows.length) {
+      listEl.innerHTML = '<li class="alert-empty">sem paywalls no período</li>';
+      return;
+    }
+    listEl.innerHTML = rows.map(function (r) {
+      return '<li class="alert-item">' +
+        '<span class="alert-item__cat">' + escapeHtml(r.feature) + '</span>' +
+        '<span class="alert-item__msg">' + escapeHtml(String(r.count)) + ' · ' + escapeHtml(String(r.pct)) + '%</span>' +
+        '</li>';
+    }).join('');
   }
 
   // ── Funnel weekly trend chart (Issue #156 — 18-B) ──────────────────────

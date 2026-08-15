@@ -136,14 +136,77 @@ def test_funnel_visitors_distinct_tenants(clean_events):
 
 
 def test_paywall_view_dedup_per_tenant(clean_events):
-    # One user hitting 5 gated endpoints in a session = 1 paywall event,
-    # so the funnel top is not inflated. Different tenants still count.
+    # Calls WITHOUT meta all share feature='' → deduped per (tenant, ''),
+    # which keeps the legacy per-tenant behavior for feature-less rows:
+    # the funnel top is not inflated by repeated hits of the same endpoint.
+    # (With meta.feature set, each DISTINCT feature counts — see
+    # test_paywall_view_dedup_per_feature.) Different tenants still count.
     assert conv.track_event("paywall_view", tenant_id="t1") is True  # 1st records
     for _ in range(4):
         assert conv.track_event("paywall_view", tenant_id="t1") is False  # dups
     assert conv.track_event("paywall_view", tenant_id="t2") is True
     r = conv.funnel_report()
     assert r["stages"]["paywall_view"] == 2  # t1 + t2, not 11
+
+
+def test_paywall_view_dedup_per_feature(clean_events):
+    # Issue #158: dedup is per (tenant, feature) — hitting the SAME gated
+    # endpoint twice in a day counts once, but each DIFFERENT feature counts
+    # (so the breakdown shows which endpoint blocks users).
+    assert (
+        conv.track_event(
+            "paywall_view", tenant_id="t1", meta={"feature": "monte_carlo"}
+        )
+        is True
+    )
+    assert (
+        conv.track_event(
+            "paywall_view", tenant_id="t1", meta={"feature": "monte_carlo"}
+        )
+        is False
+    )  # dup
+    assert (
+        conv.track_event("paywall_view", tenant_id="t1", meta={"feature": "auto_pilot"})
+        is True
+    )  # new feature
+    assert (
+        conv.track_event("paywall_view", tenant_id="t1", meta={"feature": "auto_pilot"})
+        is False
+    )  # dup
+    assert (
+        conv.track_event(
+            "paywall_view", tenant_id="t2", meta={"feature": "monte_carlo"}
+        )
+        is True
+    )  # new tenant
+    r = conv.funnel_report()
+    assert r["stages"]["paywall_view"] == 3  # t1: 2 features + t2: 1
+    # Breakdown: monte_carlo = 2 (t1 + t2), auto_pilot = 1.
+    by_feature = {f["feature"]: f["count"] for f in r["paywall_by_feature"]}
+    assert by_feature.get("monte_carlo") == 2
+    assert by_feature.get("auto_pilot") == 1
+
+
+def test_paywall_by_feature_unknown_fallback(clean_events):
+    # paywall_view without meta.feature (legacy / anonymous) buckets to 'unknown'.
+    assert conv.track_event("paywall_view", tenant_id="t1") is True
+    assert (
+        conv.track_event(
+            "paywall_view", tenant_id="t1", meta={"feature": "monte_carlo"}
+        )
+        is True
+    )
+    r = conv.funnel_report()
+    by_feature = {f["feature"]: f["count"] for f in r["paywall_by_feature"]}
+    assert by_feature.get("unknown") == 1
+    assert by_feature.get("monte_carlo") == 1
+    # Top-10 cap: many features → still ≤10 entries.
+    for i in range(15):
+        conv.track_event(
+            "paywall_view", tenant_id=f"t{i}", meta={"feature": f"feat_{i}"}
+        )
+    r2 = conv.funnel_report()
+    assert len(r2["paywall_by_feature"]) <= 10
 
 
 def test_paywall_view_no_dedup_anonymous(clean_events):
