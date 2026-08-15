@@ -25,6 +25,7 @@ import services.conversion as conv  # noqa: E402
 def isolated_client():
     """Flask test client against the conftest-owned SCRATCH DB."""
     import app as _app_module
+
     _app_module.app.config["TESTING"] = True
     return _app_module.app.test_client()
 
@@ -33,6 +34,7 @@ def isolated_client():
 def clean_events(monkeypatch):
     """Redirect to a scratch DB and wipe the events table per test."""
     from services.db import get_db
+
     conv.ensure_table()
     conn = get_db()
     conn.execute("DELETE FROM conversion_events")
@@ -47,9 +49,11 @@ def clean_events(monkeypatch):
 
 # ── track_event ────────────────────────────────────────────────────────────
 
+
 def test_track_event_persists(clean_events):
     assert conv.track_event("modal_open", tenant_id="acme") is True
     from services.db import get_db
+
     conn = get_db()
     row = conn.execute("SELECT * FROM conversion_events").fetchone()
     conn.close()
@@ -63,10 +67,12 @@ def test_track_event_persists(clean_events):
 def test_track_event_hashes_email(clean_events):
     conv.track_event("paid", email="buyer@example.com")
     from services.db import get_db
+
     conn = get_db()
     row = conn.execute("SELECT meta FROM conversion_events").fetchone()
     conn.close()
     import json
+
     meta = json.loads(row["meta"])
     assert "email_hash" in meta
     assert meta["email_hash"] != "buyer@example.com"
@@ -76,6 +82,7 @@ def test_track_event_hashes_email(clean_events):
 def test_track_event_empty_is_noop(clean_events):
     assert conv.track_event("") is False
     from services.db import get_db
+
     conn = get_db()
     n = conn.execute("SELECT COUNT(*) AS n FROM conversion_events").fetchone()["n"]
     conn.close()
@@ -89,6 +96,7 @@ def test_anonymize_deterministic_and_different():
 
 
 # ── funnel_report ──────────────────────────────────────────────────────────
+
 
 def test_funnel_counts_and_dropoff(clean_events):
     # 10 saw the paywall, 4 opened the modal, 2 started checkout, 1 paid, 1 activated.
@@ -130,7 +138,7 @@ def test_funnel_visitors_distinct_tenants(clean_events):
 def test_paywall_view_dedup_per_tenant(clean_events):
     # One user hitting 5 gated endpoints in a session = 1 paywall event,
     # so the funnel top is not inflated. Different tenants still count.
-    assert conv.track_event("paywall_view", tenant_id="t1") is True   # 1st records
+    assert conv.track_event("paywall_view", tenant_id="t1") is True  # 1st records
     for _ in range(4):
         assert conv.track_event("paywall_view", tenant_id="t1") is False  # dups
     assert conv.track_event("paywall_view", tenant_id="t2") is True
@@ -158,6 +166,7 @@ def test_meta_capped(clean_events):
     big = {"blob": "x" * 5000}
     assert conv.track_event("modal_open", tenant_id="t1", meta=big) is True
     from services.db import get_db
+
     conn = get_db()
     row = conn.execute("SELECT meta FROM conversion_events").fetchone()
     conn.close()
@@ -173,6 +182,7 @@ def test_funnel_empty(clean_events):
 
 
 # ── LTV / CAC ──────────────────────────────────────────────────────────────
+
 
 def test_ltv_defaults(monkeypatch):
     monkeypatch.delenv("PRO_PRICE_USD_MONTH", raising=False)
@@ -220,9 +230,11 @@ def test_cac_paid_count_from_db(clean_events):
 
 # ── Routes ─────────────────────────────────────────────────────────────────
 
+
 def test_track_route_known_event(isolated_client):
-    resp = isolated_client.post("/api/conversion/track",
-                                json={"event": "modal_open", "meta": {"plan": "pro"}})
+    resp = isolated_client.post(
+        "/api/conversion/track", json={"event": "modal_open", "meta": {"plan": "pro"}}
+    )
     assert resp.status_code == 200
     assert resp.get_json()["ok"] is True
 
@@ -244,10 +256,217 @@ def test_admin_conversion_requires_admin(isolated_client):
 
 def test_admin_conversion_with_operator_key(isolated_client, monkeypatch):
     monkeypatch.setenv("API_KEY", "operator-key-123")
-    resp = isolated_client.get("/api/admin/conversion",
-                               headers={"X-API-Key": "operator-key-123"})
+    resp = isolated_client.get(
+        "/api/admin/conversion", headers={"X-API-Key": "operator-key-123"}
+    )
     assert resp.status_code == 200
     data = resp.get_json()
     assert "funnel" in data and "economics" in data
     assert "stages" in data["funnel"]
     assert "ltv_usd" in data["economics"]
+
+
+# ── Session attribution (Issue #155 — funnel_id ponta-a-ponta) ─────────────
+
+
+def _seed_session_events():
+    """Seed a realistic per-user funnel path with funnel_ids.
+
+    f_1 sees paywall, opens modal, starts checkout and pays.
+    f_2 sees paywall, opens modal, starts checkout, bails (no paid).
+    f_3 sees paywall, opens modal, bails.
+    """
+    conv.track_event("paywall_view", meta={"funnel_id": "f_1"})
+    conv.track_event("modal_open", meta={"funnel_id": "f_1"})
+    conv.track_event("checkout_start", meta={"funnel_id": "f_1", "plan": "pro"})
+    conv.track_event("paid", meta={"funnel_id": "f_1", "plan": "pro"})
+    conv.track_event("paywall_view", meta={"funnel_id": "f_2"})
+    conv.track_event("modal_open", meta={"funnel_id": "f_2"})
+    conv.track_event("checkout_start", meta={"funnel_id": "f_2", "plan": "pro"})
+    conv.track_event("paywall_view", meta={"funnel_id": "f_3"})
+    conv.track_event("modal_open", meta={"funnel_id": "f_3"})
+
+
+def test_track_event_persists_funnel_id(clean_events):
+    conv.track_event("checkout_start", meta={"funnel_id": "f_abc123", "plan": "pro"})
+    import json
+    from services.db import get_db
+
+    conn = get_db()
+    row = conn.execute("SELECT meta FROM conversion_events").fetchone()
+    conn.close()
+    meta = json.loads(row["meta"])
+    assert meta.get("funnel_id") == "f_abc123"
+
+
+def test_funnel_report_session_view(clean_events):
+    _seed_session_events()
+    rep = conv.funnel_report()
+    assert rep["sessions_count"] == 3
+    assert rep["session_stages"]["modal_open"] == 3
+    assert rep["session_stages"]["checkout_start"] == 2
+    assert rep["session_stages"]["paid"] == 1
+    # Per-user drop-off: modal 3 → checkout 2 (1 loss), checkout 2 → paid 1.
+    so = {d["to"]: d for d in rep["session_drop_off"]}
+    assert so["checkout_start"]["prev"] == 3
+    assert so["checkout_start"]["next"] == 2
+    assert so["checkout_start"]["loss_abs"] == 1
+    assert so["checkout_start"]["conversion_pct"] == pytest.approx(66.7, abs=0.2)
+    assert so["paid"]["prev"] == 2
+    assert so["paid"]["next"] == 1
+    # money ÷ base = 1 ÷ 3
+    assert rep["session_conversion_rate_pct"] == pytest.approx(33.3, abs=0.2)
+    # Aggregate (per-event count) still present and larger — no regression.
+    assert rep["stages"]["modal_open"] == 3
+    assert rep["stages"]["checkout_start"] == 2
+
+
+def test_funnel_report_session_view_no_ids_backward_compat(clean_events):
+    """Events recorded before #155 carry no funnel_id → session view zeros,
+    aggregate funnel untouched."""
+    conv.track_event("modal_open")
+    conv.track_event("paid")
+    rep = conv.funnel_report()
+    assert rep["sessions_count"] == 0
+    assert rep["session_stages"] == {}
+    assert rep["session_drop_off"] == []
+    assert rep["session_conversion_rate_pct"] == 0.0
+    assert rep["stages"]["modal_open"] == 1
+    assert rep["stages"]["paid"] == 1
+
+
+def test_funnel_report_session_view_paywall_without_ids(clean_events):
+    """paywall_view is fired server-side without a funnel_id — the session
+    base must fall back to the first attributed stage (modal_open here), not
+    zero."""
+    conv.track_event("paywall_view")  # server-side, no funnel_id
+    conv.track_event("modal_open", meta={"funnel_id": "f_1"})
+    conv.track_event("checkout_start", meta={"funnel_id": "f_1"})
+    conv.track_event("paid", meta={"funnel_id": "f_1"})
+    rep = conv.funnel_report()
+    assert rep["sessions_count"] == 1
+    assert rep["session_stages"]["modal_open"] == 1
+    assert rep["session_conversion_rate_pct"] == 100.0
+
+
+def test_checkout_route_passes_funnel_id(isolated_client, monkeypatch):
+    """/api/upgrade/checkout forwards the browser funnel_id into the LS
+    checkout custom data."""
+    captured = {}
+
+    def _fake(plan="pro", email="", funnel_id=""):
+        captured["plan"] = plan
+        captured["funnel_id"] = funnel_id
+        return "https://checkout.example/x"
+
+    monkeypatch.setenv("LEMON_SQUEEZY_API_KEY", "ls-test-key")
+    monkeypatch.setenv("LEMON_SQUEEZY_STORE_ID", "1")
+    monkeypatch.setenv("LEMON_SQUEEZY_VARIANT_ID", "10")
+    import app as _app_module
+
+    monkeypatch.setattr(_app_module._payments, "create_checkout", _fake)
+    resp = isolated_client.post(
+        "/api/upgrade/checkout",
+        json={"plan": "pro", "funnel_id": "f_route_test"},
+    )
+    assert resp.status_code == 200
+    assert captured["funnel_id"] == "f_route_test"
+
+
+def test_create_checkout_carries_funnel_id(monkeypatch):
+    """The LS payload carries funnel_id inside checkout_data.custom — the
+    webhook will echo it back in meta.custom_data."""
+    import services.payments as payments
+
+    monkeypatch.setenv("LEMON_SQUEEZY_API_KEY", "ls-test-key")
+    monkeypatch.setenv("LEMON_SQUEEZY_STORE_ID", "1")
+    monkeypatch.setenv("LEMON_SQUEEZY_VARIANT_ID", "10")
+    sent = {}
+
+    class _FakeResp:
+        ok = True
+        status_code = 201
+        text = '{"data": {"attributes": {"url": "https://checkout.example/x"}}}'
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"data": {"attributes": {"url": "https://checkout.example/x"}}}
+
+    def _post(url, json=None, timeout=15, **kwargs):
+        sent["url"] = url
+        sent["json"] = json
+        return _FakeResp()
+
+    monkeypatch.setattr(payments.requests, "post", _post)
+    url = payments.create_checkout(plan="pro", funnel_id="f_payload_test")
+    assert url == "https://checkout.example/x"
+    custom = sent["json"]["data"]["attributes"]["checkout_data"]["custom"]
+    assert custom["plan"] == "pro"
+    assert custom["funnel_id"] == "f_payload_test"
+
+
+def test_webhook_paid_attributes_funnel_id(monkeypatch):
+    """order_created webhook with meta.custom_data.funnel_id lands the paid
+    event in the same browser funnel."""
+    import services.payments as payments
+
+    monkeypatch.setenv("LEMON_SQUEEZY_API_KEY", "ls-test-key")
+    monkeypatch.setenv("LEMON_SQUEEZY_STORE_ID", "1")
+    monkeypatch.setenv("LEMON_SQUEEZY_VARIANT_ID", "10")
+    payload = {
+        "meta": {
+            "event_name": "order_created",
+            "custom_data": {"funnel_id": "f_webhook_test"},
+        },
+        "data": {
+            "id": "9001",
+            "attributes": {
+                "user_email": "buyer@example.com",
+                "first_order_item": {"variant_id": 10},
+            },
+        },
+    }
+    assert payments.handle_webhook(payload)
+    import json
+    from services.db import get_db
+
+    conn = get_db()
+    row = conn.execute(
+        "SELECT meta FROM conversion_events WHERE event='paid' ORDER BY ts DESC LIMIT 1"
+    ).fetchone()
+    conn.close()
+    assert row is not None
+    assert json.loads(row["meta"]).get("funnel_id") == "f_webhook_test"
+
+
+def test_webhook_paid_no_custom_data_no_crash(monkeypatch):
+    """Webhooks from old checkouts carry no custom_data — the paid event is
+    still recorded, just without attribution."""
+    import services.payments as payments
+
+    monkeypatch.setenv("LEMON_SQUEEZY_API_KEY", "ls-test-key")
+    monkeypatch.setenv("LEMON_SQUEEZY_STORE_ID", "1")
+    monkeypatch.setenv("LEMON_SQUEEZY_VARIANT_ID", "10")
+    payload = {
+        "meta": {"event_name": "order_created"},
+        "data": {
+            "id": "9002",
+            "attributes": {
+                "user_email": "buyer@example.com",
+                "first_order_item": {"variant_id": 10},
+            },
+        },
+    }
+    assert payments.handle_webhook(payload)
+    import json
+    from services.db import get_db
+
+    conn = get_db()
+    row = conn.execute(
+        "SELECT meta FROM conversion_events WHERE event='paid' ORDER BY ts DESC LIMIT 1"
+    ).fetchone()
+    conn.close()
+    assert row is not None
+    assert "funnel_id" not in json.loads(row["meta"])

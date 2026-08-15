@@ -5195,6 +5195,54 @@ function sortMarketVenues(venues, key, dir) {
 })();
 
 // ═══════════════════════════════════════════════════════════════════════════
+//  Funnel session id (Issue #155) — funnelId() + meta injection
+// ═══════════════════════════════════════════════════════════════════════════
+(function () {
+  // Stub localStorage for the funnelId mirror (Node has none).
+  if (typeof globalThis.localStorage === 'undefined') {
+    const store = {};
+    globalThis.localStorage = {
+      getItem: (k) => (k in store ? store[k] : null),
+      setItem: (k, v) => { store[k] = String(v); },
+      removeItem: (k) => { delete store[k]; },
+    };
+  }
+
+  // Mirror of static/app.js funnelId() — PII-free token, persisted once.
+  function funnelId() {
+    try {
+      let id = localStorage.getItem('c65_funnel_id');
+      if (!id) {
+        id = 'f_' + Math.random().toString(36).slice(2) + Date.now().toString(36);
+        localStorage.setItem('c65_funnel_id', id);
+      }
+      return id;
+    } catch (e) { return ''; }
+  }
+
+  // Mirror of trackConversionEvent meta injection (kept pure for testing).
+  function injectFunnelMeta(meta) {
+    const m = meta || {};
+    if (!m.funnel_id) m.funnel_id = funnelId();
+    return m;
+  }
+
+  localStorage.removeItem('c65_funnel_id');
+  const id1 = funnelId();
+  assertTruthy('funnelId generates a token', id1.length >= 8);
+  assertEqual('funnelId prefix f_', id1.slice(0, 2), 'f_');
+  assertEqual('funnelId stable across calls', funnelId(), id1);
+  const meta = injectFunnelMeta({ plan: 'pro' });
+  assertEqual('trackConversionEvent injects funnel_id', meta.funnel_id, id1);
+  assertEqual('trackConversionEvent keeps plan', meta.plan, 'pro');
+  const meta2 = injectFunnelMeta({ funnel_id: 'f_given', plan: 'pro' });
+  assertEqual('explicit funnel_id not overridden', meta2.funnel_id, 'f_given');
+  localStorage.removeItem('c65_funnel_id');
+  const id2 = funnelId();
+  assertTruthy('funnelId regenerates after wipe', id2.length >= 8 && id2 !== id1);
+})();
+
+// ═══════════════════════════════════════════════════════════════════════════
 //  RESULTS
 // ═══════════════════════════════════════════════════════════════════════════
 

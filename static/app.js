@@ -353,12 +353,29 @@
   // R1 revenue: upgrade modal — buy via Lemon Squeezy checkout or redeem a key.
   // CFO: firing the funnel events is best-effort and silent — telemetry must
   // never delay or break the UI (no await on the happy path).
+  function funnelId() {
+    // Issue #155: anonymous browser session id for funnel attribution.
+    // PII-free random token generated once and kept in localStorage — it lets
+    // paywall/modal/checkout/paid form a per-user path server-side without
+    // storing any personal data (never sent as email, only echoed into the
+    // Lemon Squeezy checkout `custom` field and back via the webhook).
+    try {
+      let id = localStorage.getItem('c65_funnel_id');
+      if (!id) {
+        id = 'f_' + Math.random().toString(36).slice(2) + Date.now().toString(36);
+        localStorage.setItem('c65_funnel_id', id);
+      }
+      return id;
+    } catch (e) { return ''; }
+  }
   function trackConversionEvent(event, meta) {
     try {
+      const m = meta || {};
+      if (!m.funnel_id) m.funnel_id = funnelId();
       fetch('/api/conversion/track', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ event: event, meta: meta || {} }),
+        body: JSON.stringify({ event: event, meta: m }),
       }).catch(function () { /* fire-and-forget */ });
     } catch (e) { /* never break the UI for telemetry */ }
   }
@@ -393,7 +410,7 @@
       const r = await fetch('/api/upgrade/checkout', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ plan: 'pro' }),
+        body: JSON.stringify({ plan: 'pro', funnel_id: funnelId() }),
       });
       let data = {};
       try { data = await r.json(); } catch (e) {}
@@ -2905,16 +2922,21 @@ function renderAccount(acct) {
     _setAdminText('admin-drop-modal-checkout', _pct(drops['modal_open->checkout_start']));
     _setAdminText('admin-drop-checkout-paid', _pct(drops['checkout_start->paid']));
     _setAdminText('admin-conv-rate', _pct(funnel.conversion_rate_pct));
+    // Issue #155: per-user funnel attribution (events carrying a funnel_id).
+    _setAdminText('admin-funnel-sessions', funnel.sessions_count != null ? funnel.sessions_count : '—');
+    _setAdminText('admin-funnel-session-conv', funnel.session_conversion_rate_pct != null ? _pct(funnel.session_conversion_rate_pct) : '—');
     _setAdminText('admin-ltv', econ.ltv_usd != null ? '$' + econ.ltv_usd : '—');
     _setAdminText('admin-cac', econ.cac_usd != null ? '$' + econ.cac_usd : 'no spend data');
     _setAdminText('admin-ltv-cac', econ.ltv_cac_ratio != null ? econ.ltv_cac_ratio : '—');
     _setAdminText('admin-payback', econ.payback_months != null ? econ.payback_months : '—');
-    // Stage counts list
+    // Stage counts list — plus per-stage session counts when available.
     const list = document.getElementById('admin-funnel-list');
     if (list) {
       const stages = funnel.stages || {};
+      const sStages = funnel.session_stages || {};
       const rows = Object.keys(stages).map(function(k) {
-        return '<li class="alert-item"><span class="alert-item__cat">' + escapeHtml(k) + '</span><span class="alert-item__msg">' + escapeHtml(String(stages[k])) + '</span></li>';
+        const sess = sStages[k] != null ? ' · ' + String(sStages[k]) + ' sessões' : '';
+        return '<li class="alert-item"><span class="alert-item__cat">' + escapeHtml(k) + '</span><span class="alert-item__msg">' + escapeHtml(String(stages[k])) + escapeHtml(sess) + '</span></li>';
       });
       list.innerHTML = rows.length ? rows.join('') : '<li class="alert-empty">sem eventos no período</li>';
     }
