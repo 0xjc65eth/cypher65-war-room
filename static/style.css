@@ -5552,6 +5552,13 @@ body.module-mode .tab-pane:not(.active) { display: none; }
 .rentals-detail__autoex-btn { margin-left: auto; flex-shrink: 0; font-family: 'JetBrains Mono',monospace; font-size: 9px; letter-spacing: 0.5px; padding: 4px 10px; border-radius: 3px; border: 1px solid rgba(255,23,68,0.5); color: var(--red, #ff1744); background: transparent; cursor: pointer; transition: background .15s ease, border-color .15s ease, transform .15s ease; }
 .rentals-detail__autoex-btn:hover { background: rgba(255,23,68,0.12); border-color: var(--red, #ff1744); }
 .rentals-detail__autoex-btn:active { transform: translateY(1px); }
+/* Auth-rejection banner inside the rental detail (Issue #174) — a CONFIGURED
+   but rejected key (Bad Nonce / 401/403) explains the SAME fix the list
+   already shows: regenerate the MRR/Braiins key, not a generic error. */
+.rentals-detail__autoex--auth { border-color: rgba(255,160,0,0.45); background: rgba(255,160,0,0.07); }
+.rentals-detail__autoex--auth .rentals-detail__autoex-body strong { color: var(--amber, #ffa000); }
+.rentals-detail__autoex--auth .rentals-detail__autoex-btn { border-color: rgba(255,160,0,0.5); color: var(--amber, #ffa000); }
+.rentals-detail__autoex--auth .rentals-detail__autoex-btn:hover { background: rgba(255,160,0,0.12); border-color: var(--amber, #ffa000); }
 
 /* Admin audit — auto-exclusion history (global, ALL tenants) */
 .admin-autoex { margin-top: 14px; }

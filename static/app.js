@@ -5118,6 +5118,10 @@ function renderAccount(acct) {
     // while the next detail's fetch is in flight (Issue #110).
     const autoExBanner = document.getElementById('rentals-detail-autoex');
     if (autoExBanner) autoExBanner.hidden = true;
+    // Same reset for the auth-rejection strip (Issue #174) — a stale
+    // 'API KEY REJECTED' from a previous detail must never linger.
+    const authBannerEl = document.getElementById('rentals-detail-auth');
+    if (authBannerEl) { authBannerEl.hidden = true; authBannerEl.innerHTML = ''; }
     try {
       // Braiins: the contract's static fields are already in the list payload
       // — send them so the backend skips re-probing the list (detail needs
@@ -5139,6 +5143,28 @@ function renderAccount(acct) {
       });
       if (!r.ok) return;
       const data = await r.json();
+      // Auth-rejection guide (Issue #174): a CONFIGURED but rejected key
+      // (Bad Nonce / 401/403) on the detail click explains the SAME fix the
+      // list already shows — regenerate the key, not a generic error.
+      const authBanner = document.getElementById('rentals-detail-auth');
+      if (authBanner) {
+        const dErr = (data.detail && data.detail.error) || '';
+        const rejected = rentalsAuthRejected(dErr, data.auth_rejected);
+        if (rejected) {
+          authBanner.hidden = false;
+          authBanner.innerHTML =
+            '<span class="rentals-detail__autoex-icon">🔑</span>' +
+            '<div class="rentals-detail__autoex-body"><strong>API KEY REJECTED</strong>' +
+            '<div class="rentals-detail__autoex-sub">' + rentalsAuthGuide(provider, dErr) +
+            '</div></div>' +
+            '<button type="button" class="rentals-detail__autoex-btn" id="rentals-detail-auth-settings" title="abrir Settings para regenerar a chave">⚙ OPEN SETTINGS</button>';
+          const authCta = document.getElementById('rentals-detail-auth-settings');
+          if (authCta) authCta.addEventListener('click', function() { openSettingsModal(); });
+        } else {
+          authBanner.hidden = true;
+          authBanner.innerHTML = '';
+        }
+      }
       // Auto-exclusion feedback (Issue #110): ONLY the detail call that
       // PERFORMED the exclusion shows the banner + toast and pre-adds the
       // card to the AUTO-EXCLUSÕES section — reopening an already-excluded

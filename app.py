@@ -7123,6 +7123,10 @@ def api_rentals_detail(tenant_id: str = ""):
                 "detail": raw,
                 "graph": detail.get("graph") or {},
                 "log": detail.get("log") or {},
+                # Issue #174: a CONFIGURED key rejected on the detail call
+                # (Bad Nonce / 401/403) → the modal explains 'regenerate the
+                # key' just like the list already does.
+                "auth_rejected": bool(detail.get("auth_rejected")),
                 "perf": perf,
                 "pl": pl,
                 "rig_history": rig_analysis["history"],
