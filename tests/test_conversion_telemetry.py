@@ -921,11 +921,14 @@ def test_funnel_weekly_csv_feature_columns(clean_events):
     lines = [ln.rstrip("\r") for ln in out.split("\n") if ln]
     header = lines[0].split(",")
     # Feature count columns appended AFTER the standard 8, sorted; the
-    # feature_pct share columns come right after the counts (Issue #168).
+    # feature_pct share columns come right after the counts (Issue #168) and
+    # the feature_delta trend columns after the shares (Issue #171).
     assert header[8] == "feature:auto_pilot"
     assert header[9] == "feature:monte_carlo"
     assert header[10] == "feature_pct:auto_pilot"
     assert header[11] == "feature_pct:monte_carlo"
+    assert header[12] == "feature_delta:auto_pilot"
+    assert header[13] == "feature_delta:monte_carlo"
     r1 = lines[1].split(",")
     assert r1[0] == _iso_key(t1)
     assert r1[header.index("feature:monte_carlo")] == "2"
@@ -933,6 +936,9 @@ def test_funnel_weekly_csv_feature_columns(clean_events):
     # Week 1: 3 paywalls total → monte_carlo 2/3 = 66.7%, auto_pilot 33.3%.
     assert r1[header.index("feature_pct:monte_carlo")] == "66.7"
     assert r1[header.index("feature_pct:auto_pilot")] == "33.3"
+    # First row → no baseline → delta EMPTY (never a fake 0).
+    assert r1[header.index("feature_delta:monte_carlo")] == ""
+    assert r1[header.index("feature_delta:auto_pilot")] == ""
     r2 = lines[2].split(",")
     assert r2[0] == _iso_key(t2)
     assert r2[header.index("feature:monte_carlo")] == "1"
@@ -940,6 +946,9 @@ def test_funnel_weekly_csv_feature_columns(clean_events):
     # Week 2: 1 paywall → monte_carlo 100%; absent feature → 0.0.
     assert r2[header.index("feature_pct:monte_carlo")] == "100.0"
     assert r2[header.index("feature_pct:auto_pilot")] == "0.0"
+    # Week 2 trend vs Week 1: +33.3 (100.0-66.7) and -33.3 (0.0-33.3).
+    assert r2[header.index("feature_delta:monte_carlo")] == "33.3"
+    assert r2[header.index("feature_delta:auto_pilot")] == "-33.3"
 
 
 def test_funnel_weekly_csv_feature_pct_zero_paywall_week():
@@ -960,6 +969,36 @@ def test_funnel_weekly_csv_feature_pct_zero_paywall_week():
     assert r2[0] == "2026-W32"
     assert r2[header.index("feature:monte_carlo")] == "0"
     assert r2[header.index("feature_pct:monte_carlo")] == "0.0"
+    # W32 has no paywalls → share 0.0 vs W31's 66.7 → delta -66.7.
+    assert r2[header.index("feature_delta:monte_carlo")] == "-66.7"
+
+
+def test_funnel_weekly_csv_feature_delta_new_feature_appears():
+    """Issue #171: a feature ABSENT last week that appears this week gets its
+    FULL share as delta (previous 0.0) — the trend is honest, never a fake 0."""
+    buckets = [
+        {
+            "week": "2026-W30",
+            "stages": {"paywall_view": 4},
+            "paywall_by_feature": [{"feature": "auto_pilot", "count": 3}],
+        },
+        {
+            "week": "2026-W31",
+            "stages": {"paywall_view": 4},
+            "paywall_by_feature": [
+                {"feature": "auto_pilot", "count": 2},
+                {"feature": "monte_carlo", "count": 2},
+            ],
+        },
+    ]
+    out = conv.funnel_weekly_csv(buckets)
+    lines = [ln.rstrip("\r") for ln in out.split("\n") if ln]
+    header = lines[0].split(",")
+    r2 = lines[2].split(",")
+    # monte_carlo: absent W30 (0.0) → 50.0% in W31 → delta +50.0.
+    assert r2[header.index("feature_delta:monte_carlo")] == "50.0"
+    # auto_pilot: 75.0% → 50.0% → delta -25.0.
+    assert r2[header.index("feature_delta:auto_pilot")] == "-25.0"
 
 
 def test_admin_conversion_weekly_payload(isolated_client, monkeypatch, clean_events):
@@ -1033,6 +1072,11 @@ def test_admin_conversion_csv_feature_columns(
     assert "feature_pct:auto_pilot" in header
     assert row[header.index("feature_pct:monte_carlo")] == "50.0"
     assert row[header.index("feature_pct:auto_pilot")] == "50.0"
+    # Trend columns ride along (Issue #171); single week → no baseline → empty.
+    assert "feature_delta:monte_carlo" in header
+    assert "feature_delta:auto_pilot" in header
+    assert row[header.index("feature_delta:monte_carlo")] == ""
+    assert row[header.index("feature_delta:auto_pilot")] == ""
 
 
 def test_admin_conversion_csv_requires_admin(isolated_client):
