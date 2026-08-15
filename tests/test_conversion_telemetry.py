@@ -920,17 +920,46 @@ def test_funnel_weekly_csv_feature_columns(clean_events):
     # csv.writer emits CRLF — normalize so trailing \r never pollutes cells.
     lines = [ln.rstrip("\r") for ln in out.split("\n") if ln]
     header = lines[0].split(",")
-    # Feature columns appended AFTER the standard 8, sorted.
+    # Feature count columns appended AFTER the standard 8, sorted; the
+    # feature_pct share columns come right after the counts (Issue #168).
     assert header[8] == "feature:auto_pilot"
     assert header[9] == "feature:monte_carlo"
+    assert header[10] == "feature_pct:auto_pilot"
+    assert header[11] == "feature_pct:monte_carlo"
     r1 = lines[1].split(",")
     assert r1[0] == _iso_key(t1)
     assert r1[header.index("feature:monte_carlo")] == "2"
     assert r1[header.index("feature:auto_pilot")] == "1"
+    # Week 1: 3 paywalls total → monte_carlo 2/3 = 66.7%, auto_pilot 33.3%.
+    assert r1[header.index("feature_pct:monte_carlo")] == "66.7"
+    assert r1[header.index("feature_pct:auto_pilot")] == "33.3"
     r2 = lines[2].split(",")
     assert r2[0] == _iso_key(t2)
     assert r2[header.index("feature:monte_carlo")] == "1"
     assert r2[header.index("feature:auto_pilot")] == "0"  # absent this week
+    # Week 2: 1 paywall → monte_carlo 100%; absent feature → 0.0.
+    assert r2[header.index("feature_pct:monte_carlo")] == "100.0"
+    assert r2[header.index("feature_pct:auto_pilot")] == "0.0"
+
+
+def test_funnel_weekly_csv_feature_pct_zero_paywall_week():
+    """Issue #168: a week with NO paywalls (feature union from other weeks)
+    renders 0.0 share — never a ZeroDivisionError or a fabricated number."""
+    buckets = [
+        {
+            "week": "2026-W31",
+            "stages": {"paywall_view": 3},
+            "paywall_by_feature": [{"feature": "monte_carlo", "count": 2}],
+        },
+        {"week": "2026-W32", "stages": {}, "paywall_by_feature": []},
+    ]
+    out = conv.funnel_weekly_csv(buckets)
+    lines = [ln.rstrip("\r") for ln in out.split("\n") if ln]
+    header = lines[0].split(",")
+    r2 = lines[2].split(",")
+    assert r2[0] == "2026-W32"
+    assert r2[header.index("feature:monte_carlo")] == "0"
+    assert r2[header.index("feature_pct:monte_carlo")] == "0.0"
 
 
 def test_admin_conversion_weekly_payload(isolated_client, monkeypatch, clean_events):
@@ -999,6 +1028,11 @@ def test_admin_conversion_csv_feature_columns(
     row = lines[1].split(",")
     assert row[header.index("feature:monte_carlo")] == "1"
     assert row[header.index("feature:auto_pilot")] == "1"
+    # Share % columns ride along on the CSV export (Issue #168): 1/2 = 50.0.
+    assert "feature_pct:monte_carlo" in header
+    assert "feature_pct:auto_pilot" in header
+    assert row[header.index("feature_pct:monte_carlo")] == "50.0"
+    assert row[header.index("feature_pct:auto_pilot")] == "50.0"
 
 
 def test_admin_conversion_csv_requires_admin(isolated_client):

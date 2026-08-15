@@ -532,9 +532,12 @@ def funnel_weekly_csv(buckets: List[Dict[str, Any]]) -> str:
     a ``paywall_by_feature`` breakdown (Issue #165), one column per feature
     is appended AFTER the standard columns (``feature:<name>``, union of
     features seen across the report, sorted for a stable layout; 0 when the
-    feature had no paywalls that week). No features → the header is exactly
-    the legacy one, so older consumers are unaffected. The caller prepends
-    the UTF-8 BOM (matches the accepted-recos export convention).
+    feature had no paywalls that week). Each count column is followed by a
+    ``feature_pct:<name>`` share column (Issue #168) — count / that week's
+    paywall_view × 100, 1 decimal — so the CFO sorts by IMPACT straight in
+    the spreadsheet. No features → the header is exactly the legacy one, so
+    older consumers are unaffected. The caller prepends the UTF-8 BOM
+    (matches the accepted-recos export convention).
     """
     feature_cols = sorted(
         {
@@ -557,12 +560,20 @@ def funnel_weekly_csv(buckets: List[Dict[str, Any]]) -> str:
             "sessions_count",
         ]
         + [f"feature:{f}" for f in feature_cols]
+        + [f"feature_pct:{f}" for f in feature_cols]
     )
     for b in buckets:
         s = b.get("stages") or {}
+        paywalls = int(s.get("paywall_view", 0) or 0)
         by_feature = {
             str(f.get("feature") or "unknown"): int(f.get("count") or 0)
             for f in (b.get("paywall_by_feature") or [])
+        }
+        # Share % of THAT week's paywalls — 0.0 when no paywalls (no feature
+        # could have caused impact) or when the feature is absent.
+        pct_feature = {
+            f: (round(c / paywalls * 100.0, 1) if paywalls else 0.0)
+            for f, c in by_feature.items()
         }
         w.writerow(
             [
@@ -576,6 +587,7 @@ def funnel_weekly_csv(buckets: List[Dict[str, Any]]) -> str:
                 b.get("sessions_count", 0),
             ]
             + [by_feature.get(f, 0) for f in feature_cols]
+            + [pct_feature.get(f, 0.0) for f in feature_cols]
         )
     return buf.getvalue()
 
