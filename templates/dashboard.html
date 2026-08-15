@@ -1507,6 +1507,29 @@
     <li class="alert-empty">aguardando dados…</li>
   </ul>
 
+  <!-- ── Learning FAQ loop (Issue #19) — doc feedback 'isto ajudou?' ──
+       Consome /api/admin/docs-feedback (mesmo gate localhost/X-API-Key).
+       Votos por seção + perguntas recorrentes (comentários do 👎) que
+       alimentam o loop documentado: pergunta recorrente → nova FAQ. -->
+  <div class="panel__subtitle">DOCS FEEDBACK · LEARNING LOOP — 'isto ajudou?' por seção</div>
+  <div class="admin-audit" id="admin-docs-feedback" hidden>
+    <div class="admin-audit__toolbar">
+      <span class="admin-audit__meta" id="admin-docs-feedback-meta">—</span>
+    </div>
+    <div class="admin-audit__table-wrap">
+      <table class="admin-audit__table" id="admin-docs-feedback-table">
+        <thead>
+          <tr><th>Section</th><th>Votes</th><th>👍</th><th>👎</th><th>Helpful %</th></tr>
+        </thead>
+        <tbody><tr><td colspan="5" class="alert-empty">aguardando dados…</td></tr></tbody>
+      </table>
+    </div>
+    <div class="panel__subtitle" style="margin-top:10px">PERGUNTAS RECORRENTES → futura FAQ</div>
+    <ul class="alerts-list" id="admin-docs-recurring">
+      <li class="alert-empty">aguardando dados…</li>
+    </ul>
+  </div>
+
   <!-- ── Audit de recomendações aceitas (global — todos os tenants) ──
        Consome /api/admin/rentals/accepted-recos (mesmo gate localhost/
        X-API-Key do painel admin). Tabela de decisões + filtros por
