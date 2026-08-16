@@ -1,0 +1,59 @@
+# PROBE DE VALIDAÇÃO do guard #211 (PR de teste #222, NÃO MERGEAR)
+# Espelha EXATAMENTE os steps do job dependabot-workflow-guard do ci.yml,
+# mas roda para qualquer author — porque não dá para forjar
+# dependabot[bot] como author via API e o PR com ci.yml alterado fica
+# DIRTY (sem merge ref → sem CI). Arquivo novo = sem conflito = CI roda.
+name: "Guard #211 probe (test PR only)"
+
+on:
+  pull_request:
+    branches: [master]
+
+jobs:
+  guard-probe:
+    name: "guard #211 probe — detect stale workflows + comment"
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    permissions:
+      contents: read
+      pull-requests: write
+
+    steps:
+      - name: Checkout (história completa para merge-base)
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Detectar workflows defasados vs master
+        id: detect
+        run: |
+          set -euo pipefail
+          git fetch origin master --quiet
+          MERGE_BASE="$(git merge-base HEAD origin/master)"
+          STALE_COMMITS="$(git log --oneline "${MERGE_BASE}..origin/master" -- .github/workflows/ | wc -l)"
+          if [ "${STALE_COMMITS}" -gt 0 ]; then
+            echo "stale=true" >> "$GITHUB_OUTPUT"
+            echo "::warning::[guard-probe] workflows defasados — ${STALE_COMMITS} commit(s)"
+            git log --oneline "${MERGE_BASE}..origin/master" -- .github/workflows/
+          else
+            echo "stale=false" >> "$GITHUB_OUTPUT"
+            echo "[guard-probe] workflows em dia."
+          fi
+
+      - name: Comentar @dependabot rebase (dedup)
+        if: steps.detect.outputs.stale == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          MARKER="CI guard (#211)"
+          if gh api "repos/${{ github.repository }}/issues/${PR_NUMBER}/comments" \
+            --jq '.[].body' | grep -qF "${MARKER}"; then
+            echo "Comentário já existe — pulando (dedup)."
+            exit 0
+          fi
+          BODY=$'👀 **CI guard (#211):** sua branch está com `.github/workflows/` **defasado** em relação ao master — o CI que roda aqui pode não refletir o pipeline atual (caso dos PRs #1/#7: 13 dias vermelhos por um fix de workflow que nunca chegou à branch).\n\nRebaseie para validar com o pipeline real:\n\n`@dependabot rebase`'
+          gh pr comment "${PR_NUMBER}" --body "${BODY}"
+          echo "Comentário @dependabot rebase postado."

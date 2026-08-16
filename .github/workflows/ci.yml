@@ -380,7 +380,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     # Só roda em PRs do dependabot contra master (evento push/dispatch: skip).
-    if: github.event_name == 'pull_request' && (github.event.pull_request.author.login == 'dependabot[bot]' || startsWith(github.event.pull_request.head.ref, 'dependabot-guard-test'))
+    if: github.event_name == 'pull_request' && github.event.pull_request.author.login == 'dependabot[bot]'
 
     permissions:
       contents: read
