@@ -244,6 +244,21 @@ Como o app garante isso:
 entra, abre Settings e adiciona a própria chave. O operador (tenant default)
 usa as próprias chaves da mesma forma.
 
+**Fluxo de validação por usuário** (passo a passo completo no guia do usuário,
+`docs/AGENT_SETUP_GUIDE.md` → **Passo 5**):
+
+1. **MRR**: `miningrigrentals.com → My Account → API Access` → gerar/copiar a
+   **API key + secret** do site → `Settings ⚙ → MRR credentials` → **Salvar** →
+   o painel RENTALS mostra as contagens reais (sem 🔑/⚠).
+2. **Braiins**: `hashpower.braiins.com → API Tokens` → copiar o **owner token**
+   → `Settings ⚙ → Braiins credentials` → **Salvar** → **🔑 TESTAR CHAVE
+   BRAIINS** (verdict ok/rejected na hora, sem esperar o painel).
+3. **Estados do painel**: 🔑 = chave não configurada · ⚠ = chave configurada
+   mas **REJEITADA** pela API (regenerar no site do provider) · número = conta
+   real OK.
+4. **Bad Nonce (MRR)**: a chave salva é inválida/desatualizada — **regenerar**
+   (copiar a antiga não resolve). Ver `Troubleshooting — Bad Nonce` abaixo.
+
 ## 📲 Web Push (VAPID) — Issue #15
 
 Web Push de alertas (ex: auto-exclusão, worker offline) entrega para o browser
