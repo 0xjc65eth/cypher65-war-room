@@ -3654,7 +3654,12 @@ def test_market_arb_alert_fires_and_dedup_cooldown(tmp_path, monkeypatch):
         rp, "_recent_market_sats_per_thh", lambda now=0, window_h=12.0: 40.0
     )
     _seed_avg_cost(tmp_path, paid_sats=100_000, thh=1000.0)  # avg/last cost 100
-    now = int(time.time())
+    # Deterministic "now" at 12:30 UTC — a fixed epoch-day remainder keeps
+    # the +1h dedup probe INSIDE the same 24h cooldown bucket no matter when
+    # the suite runs. A real `int(time.time())` between ~23:00–00:00 UTC
+    # makes now+3600 cross the bucket boundary (now//86400 vs +1h) and the
+    # dedup assert flakily breaks (seen 2026-08-17T23:25Z on master too).
+    now = 12 * 3600 + 30 * 60
 
     # avg 100 vs market 40 → 60% below ≥ 30 → fires (GOLD ≥50%).
     a = rp.evaluate_market_arb_alerts(tenant_id="t1", now=now)

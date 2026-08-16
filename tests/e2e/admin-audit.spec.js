@@ -18,6 +18,23 @@ import { test, expect } from '@playwright/test';
 
 test.use({ serviceWorkers: 'block' });
 
+/** Ensure the sidebar is open so sidebar links are clickable (mobile off-canvas).
+ * Same pattern as dashboard.spec.js — without it the mobile-chrome project
+ * times out clicking .sidebar__link (sidebar is translateX(-100%) off-canvas). */
+async function ensureSidebarOpen(page) {
+  const isOpen = await page.evaluate(() => {
+    const sb = document.getElementById('sidebar');
+    return sb && sb.classList.contains('open');
+  });
+  if (!isOpen) {
+    const toggle = page.locator('#sidebar-mobile-toggle');
+    if (await toggle.isVisible()) {
+      await toggle.click();
+      await page.waitForTimeout(400);
+    }
+  }
+}
+
 const DECISIONS = [
   { ts: 1784505600, tenant_id: 'tenant-a', rig_id: '2001', name: 'Rig F2 Bad',
     source: 'auto', grade: 'F', pilot_flagged: true, delivery_pct: 55.0,
@@ -75,6 +92,7 @@ test.describe('ADMIN — audit trail de recomendações aceitas (Issue #96)', ()
     await page.waitForTimeout(500);
 
     // Navigate to the Admin module.
+    await ensureSidebarOpen(page);
     await page.click('.sidebar__link[data-module="admin"]');
     const audit = page.locator('#admin-audit');
     await expect(audit).toBeVisible({ timeout: 10000 });
@@ -175,6 +193,7 @@ test.describe('ADMIN — audit trail de recomendações aceitas (Issue #96)', ()
     await page.waitForTimeout(500);
 
     // RENTALS panel — tenant-scoped auto-exclusion cards.
+    await ensureSidebarOpen(page);
     await page.click('.sidebar__link[data-module="rentals"]');
     const rentalsEx = page.locator('#rentals-autoex');
     await expect(rentalsEx).toBeVisible({ timeout: 10000 });
@@ -185,6 +204,7 @@ test.describe('ADMIN — audit trail de recomendações aceitas (Issue #96)', ()
     await expect(rentalsEx).toContainText('régua: floor F, mín 2');
 
     // Admin panel — global auto-exclusion block with tenant tags.
+    await ensureSidebarOpen(page);
     await page.click('.sidebar__link[data-module="admin"]');
     const adminEx = page.locator('#admin-autoex');
     await expect(adminEx).toBeVisible({ timeout: 10000 });
@@ -242,6 +262,7 @@ test.describe('ADMIN — audit trail de recomendações aceitas (Issue #96)', ()
     }, { timeout: 10000 }).catch(() => {});
     await page.waitForTimeout(500);
 
+    await ensureSidebarOpen(page);
     await page.click('.sidebar__link[data-module="admin"]');
     const agg = page.locator('#admin-autoex-agg');
     await expect(agg).toBeVisible({ timeout: 10000 });
@@ -271,6 +292,7 @@ test.describe('ADMIN — audit trail de recomendações aceitas (Issue #96)', ()
 
     await page.goto('/', { waitUntil: 'domcontentloaded' });
     await page.waitForSelector('#app-shell', { timeout: 15000 });
+    await ensureSidebarOpen(page);
     await page.click('.sidebar__link[data-module="admin"]');
 
     await expect(page.locator('#admin-gate-badge')).toHaveText('restricted', { timeout: 10000 });
