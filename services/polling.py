@@ -44,6 +44,7 @@ from helpers import (
     safe_int,
     safe_num_from_str,
     coerce_float,
+    coerce_ts,
     coerce_int,
     human_int,
     human_secs_long,
@@ -689,11 +690,10 @@ def poll_once():
     # BEST_DIFF_BUMP events. Subsequent polls fire only on real deltas.
     if not state.timeline_state.get("_primed"):
         if worker:
-            try:
-                ls_int = int(worker.get("lastSubmission") or 0)
-            except Exception:
-                ls_int = 0
-            state.timeline_state["last_submit_ts"] = ls_int or 0
+            # Sentinel policy (Issue #203): coerce_ts keeps a missing
+            # lastSubmission as None — never 0 (0 renders as 1970-01-01).
+            ls_int = coerce_ts(worker.get("lastSubmission"))
+            state.timeline_state["last_submit_ts"] = ls_int
             state.timeline_state["last_best_diff_str"] = (
                 worker.get("bestDifficulty") or ""
             )
@@ -705,11 +705,7 @@ def poll_once():
     else:
         fresh_bump_detected = False
         if worker:
-            ls = worker.get("lastSubmission")
-            try:
-                ls_int = int(ls) if ls else 0
-            except Exception:
-                ls_int = 0
+            ls_int = coerce_ts(worker.get("lastSubmission"))
             if ls_int and ls_int != state.timeline_state["last_submit_ts"]:
                 gap = (
                     (ls_int - state.timeline_state["last_submit_ts"])

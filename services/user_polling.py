@@ -39,6 +39,7 @@ from helpers import (
     safe_int,
     safe_num_from_str,
     coerce_float,
+    coerce_ts,
     coerce_int,
     human_int,
     human_secs_long,
@@ -318,12 +319,14 @@ def dispatch_auto_exclude_alerts(
             alert = _rp.build_auto_exclude_alert(rid, tenant_id=tenant_id)
             if not alert:
                 continue
-            ev_ts = int(alert.get("ts") or 0)
+            # Sentinel policy (Issue #203): missing/epoch ts → None, then the
+            # dispatch-time fallback below (never persists epoch-0).
+            ev_ts = coerce_ts(alert.get("ts"))
             # Ledger entries always stamp ts, but a 0/missing ts must not
             # collapse the claim to 'rig:0' (permanent block after restore) —
             # fall back to the dispatch time so a later re-exclusion still
             # re-alerts.
-            if ev_ts <= 0:
+            if not ev_ts:
                 ev_ts = int(time.time())
             # Atomic once-per-event claim (ts in the key → re-exclusion after
             # a restore is a NEW event and re-alerts).

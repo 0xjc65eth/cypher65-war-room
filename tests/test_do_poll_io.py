@@ -530,3 +530,38 @@ class TestDashboardRoutes:
         client = poll_env.app.test_client()
         r = client.get("/api/session-status")
         assert r.status_code in (200, 302)
+
+
+# ═══════════════════════════════════════════════════════════════════════
+#  Sentinel policy (Issue #203)
+# ═══════════════════════════════════════════════════════════════════════
+
+
+class TestDoPollSentinelPolicy:
+    """Missing lastSubmission must stay a None sentinel — never 0/epoch."""
+
+    def test_worker_without_last_submission_primes_none(self, poll_env, monkeypatch):
+        import services.state as state
+
+        appmod = poll_env
+        w = {
+            "name": "miner1",
+            "id": "miner1",
+            "hashrate": 219e12,
+            "bestDifficulty": "127G",
+            # NO lastSubmission key — absent data must stay absent (Issue #203)
+            "uptime": 3600,
+        }
+        install_fetch(appmod, monkeypatch, _base_payloads(worker=w))
+        appmod._do_poll()
+        assert state.timeline_state["last_submit_ts"] is None
+
+    def test_worker_with_last_submission_primes_real_ts(self, poll_env, monkeypatch):
+        import services.state as state
+
+        appmod = poll_env
+        install_fetch(appmod, monkeypatch, _base_payloads())
+        appmod._do_poll()
+        ts = state.timeline_state["last_submit_ts"]
+        assert ts is not None
+        assert ts > 0

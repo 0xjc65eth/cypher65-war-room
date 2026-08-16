@@ -178,6 +178,28 @@ def coerce_int(v, default=0):
         return default
 
 
+def coerce_ts(v) -> Optional[int]:
+    """Sentinel policy (Issue #203): a real unix timestamp or None.
+
+    Missing/invalid values and epoch sentinels (0, '', 'N/A', date strings
+    like '1970-01-01') become None — NEVER 0 — so 'no data' stays 'no data'
+    through the API instead of rendering as 1970-01-01. Note a bare numeric
+    string like "1970" IS a valid positive timestamp (not a sentinel).
+    Centralized like csv_neutralize so every layer speaks the same
+    missing-sentinel language. NaN is rejected too (``not (f > 0)`` is True
+    for NaN, avoiding int(nan) crash).
+    """
+    if v is None or isinstance(v, bool):
+        return None
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    if not (f > 0):
+        return None
+    return int(f)
+
+
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 #  Formatting
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
