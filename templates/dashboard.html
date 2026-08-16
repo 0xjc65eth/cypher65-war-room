@@ -969,6 +969,7 @@
         <span class="ap-dot" id="ap-auto-dot"></span>AUTONOMOUS&nbsp;<span id="ap-auto-label">OFF</span>
       </button>
       <span class="badge badge--mute" id="ap-auto-pro-badge" title="Gate PRO da execução autônoma">PRO —</span>
+      <button class="chip" id="ai-premium-cta" title="AI Operator real (LLM) é PREMIUM" hidden>🤖 AI PREMIUM</button>
       <button class="chip" id="open-alert-center" title="Alert Center">⚠ RULES</button>
       <button class="chip" id="ai-clear">clear</button>
     </div>
@@ -2724,12 +2725,13 @@
 <div class="modal-overlay" id="upgrade-modal">
   <div class="modal upgrade-modal">
     <div class="modal__header">
-      <div class="modal__title">⚡ CYPHER65 PRO</div>
+      <div class="modal__title" id="upgrade-modal-title">⚡ CYPHER65 PRO</div>
       <button class="modal__close" onclick="document.getElementById('upgrade-modal').classList.remove('modal--open')">⛌</button>
     </div>
     <div class="modal__body">
-      <p class="upgrade-modal__copy">Unlock <strong>Monte Carlo</strong>, <strong>proximity meter</strong>, <strong>30d history</strong> &amp; <strong>webhooks</strong>.</p>
+      <p class="upgrade-modal__copy" id="upgrade-modal-copy">Unlock <strong>Monte Carlo</strong>, <strong>proximity meter</strong>, <strong>30d history</strong> &amp; <strong>webhooks</strong>.</p>
       <button class="btn btn--primary upgrade-modal__buy" id="upgrade-buy-btn" hidden>Buy PRO — $9/mo</button>
+      <button class="btn btn--premium upgrade-modal__buy" id="upgrade-premium-buy-btn" hidden>Buy PREMIUM — $29/mo</button>
       <div class="upgrade-modal__divider" id="upgrade-divider" hidden><span>or activate a key</span></div>
       <div class="upgrade-modal__redeem">
         <input class="field__input field__input--mono" type="text" id="upgrade-key-input" placeholder="C65-XXXX-XXXX-XXXX-XXXX" autocomplete="off" spellcheck="false">

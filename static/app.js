@@ -341,7 +341,7 @@
   }
   // PRO licensing state (open/free/pro) — populated by initLicensing() on
   // boot and used to render the topbar badge + upgrade CTA on 402s.
-  let _license = { mode: 'open', tier: 'pro', pro: true };
+  let _license = { mode: 'open', tier: 'pro', pro: true, premium: true, ai_configured: false };
   async function initLicensing() {
     try {
       const r = await fetch('/api/license-status');
@@ -350,18 +350,26 @@
     } catch (e) { return; }
     renderLicenseBadge();
     syncUpgradeModal();
+    syncAiPremiumUi();
+    _initUpgradeBindings();
   }
   function renderLicenseBadge() {
     const badge = dom.topbarProBadge;
     if (!badge) return;
-    if (_license.mode === 'open' || _license.pro) {
-      // Open mode (everything free) or active PRO — show a quiet PRO tag.
+    if (_license.mode === 'open' || _license.premium || _license.pro) {
+      // Open mode (everything free), PREMIUM, or PRO — quiet tier tag.
+      // O selo PREMIUM aparece SÓ em licensed mode + chave premium (open mode
+      // mostra PRO como antes — o operador self-host não vê tier pago).
+      const premiumTag = _license.mode === 'licensed' && _license.premium;
       badge.hidden = false;
-      badge.textContent = _license.pro ? 'PRO' : 'FREE';
-      badge.classList.toggle('is-pro', !!_license.pro);
-      badge.title = _license.pro ? 'PRO license active' : 'Open mode — all features free';
+      badge.textContent = premiumTag ? 'PREMIUM' : (_license.pro ? 'PRO' : 'FREE');
+      badge.classList.toggle('is-pro', !!(_license.premium || _license.pro));
+      badge.title = premiumTag
+        ? 'PREMIUM license active — AI Operator real liberado'
+        : (_license.pro ? 'PRO license active' : 'Open mode — all features free');
       badge.onclick = null;  // clear any leftover upgrade-CTA handler (audit)
       syncUpgradeModal();
+      syncAiPremiumUi();
       return;
     }
     // Licensed mode + free tier → gate is live; badge is the upgrade CTA.
@@ -371,6 +379,21 @@
     badge.title = 'PRO features locked — click to upgrade';
     badge.onclick = openUpgradeModal;
     syncUpgradeModal();
+    syncAiPremiumUi();
+  }
+  // AI Operator premium CTA (panel header) — shown only in licensed mode
+  // WITHOUT a premium key; clicking opens the payload-driven upgrade modal.
+  function syncAiPremiumUi() {
+    const cta = document.getElementById('ai-premium-cta');
+    if (!cta) return;
+    const locked = _license.mode === 'licensed' && !_license.premium;
+    cta.hidden = !locked;
+    if (locked) {
+      cta.textContent = _license.pro ? '🤖 AI PREMIUM' : '🤖 AI = PREMIUM';
+      cta.onclick = openUpgradeModal;
+    } else {
+      cta.onclick = null;
+    }
   }
   // R1 revenue: upgrade modal — buy via Lemon Squeezy checkout or redeem a key.
   // CFO: firing the funnel events is best-effort and silent — telemetry must
@@ -404,7 +427,8 @@
   function openUpgradeModal() {
     const m = document.getElementById('upgrade-modal');
     openModalAnimated(m);
-    trackConversionEvent('modal_open');
+    const up = _license.upgrade || {};
+    trackConversionEvent('modal_open', { plan: (up.plan || 'PRO').toLowerCase() });
   }
   // Exposed for e2e + support console (the PRO badge already wires onclick).
   window.openUpgradeModal = openUpgradeModal;
@@ -415,37 +439,67 @@
   // and drive its price copy from the server payload (single source of truth).
   function syncUpgradeModal() {
     const buy = document.getElementById('upgrade-buy-btn');
+    const pbuy = document.getElementById('upgrade-premium-buy-btn');
     const div = document.getElementById('upgrade-divider');
+    const up = _license.upgrade || {};
+    // Server-driven tier target: upgrade.plan === 'PREMIUM' means the user
+    // is PRO (not premium) → the modal sells the PREMIUM upsell; else PRO.
+    const wantsPremium = up.plan === 'PREMIUM';
     if (buy) {
-      buy.hidden = !_license.payments;
-      const up = _license.upgrade;
-      const price = (up && up.price_usd_month) || 9;
-      buy.textContent = 'Buy PRO — $' + price + '/mo';
+      buy.hidden = !_license.payments || wantsPremium;
+      buy.textContent = 'Buy PRO — $' + ((up && up.price_usd_month) || 9) + '/mo';
+    }
+    if (pbuy) {
+      pbuy.hidden = !_license.payments || !wantsPremium;
+      pbuy.textContent = 'Buy PREMIUM — $' + ((up && up.price_usd_month) || 29) + '/mo';
     }
     if (div) div.hidden = !_license.payments;
+    const title = document.getElementById('upgrade-modal-title');
+    if (title) title.textContent = wantsPremium ? '🤖 CYPHER65 PREMIUM' : '⚡ CYPHER65 PRO';
+    const copy = document.getElementById('upgrade-modal-copy');
+    if (copy) {
+      copy.innerHTML = wantsPremium
+        ? 'Unlock the <strong>real AI Operator</strong> (LLM — fleet, pool, probability &amp; market answers) on top of every PRO feature.'
+        : 'Unlock <strong>Monte Carlo</strong>, <strong>proximity meter</strong>, <strong>30d history</strong> &amp; <strong>webhooks</strong>.';
+    }
   }
-  async function buyPro() {
-    const btn = document.getElementById('upgrade-buy-btn');
+  async function buyUpgrade(plan) {
+    const tier = plan === 'premium' ? 'premium' : 'pro';
+    const btn = document.getElementById(tier === 'premium' ? 'upgrade-premium-buy-btn' : 'upgrade-buy-btn');
     if (btn) btn.disabled = true;
-    trackConversionEvent('checkout_start', { plan: 'pro' });
+    trackConversionEvent('checkout_start', { plan: tier });
     try {
       const r = await fetch('/api/upgrade/checkout', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ plan: 'pro', funnel_id: funnelId() }),
+        body: JSON.stringify({ plan: tier, funnel_id: funnelId() }),
       });
       let data = {};
       try { data = await r.json(); } catch (e) {}
       if (r.ok && data.checkout_url) {
         window.open(data.checkout_url, '_blank', 'noopener');
       } else {
-        logMessage('PRO', (data && data.error) || 'Checkout unavailable', 'WARN');
+        logMessage(tier.toUpperCase(), (data && data.error) || 'Checkout unavailable', 'WARN');
       }
     } catch (e) {
-      logMessage('PRO', 'Checkout unavailable', 'WARN');
+      logMessage(tier.toUpperCase(), 'Checkout unavailable', 'WARN');
     } finally {
       if (btn) btn.disabled = false;
     }
+  }
+  // Legacy name kept for e2e / support console compatibility.
+  async function buyPro() { return buyUpgrade('pro'); }
+  // Wire the modal CTA buttons once (Buy PRO / Buy PREMIUM / activate key).
+  let _upgradeBound = false;
+  function _initUpgradeBindings() {
+    if (_upgradeBound) return;
+    _upgradeBound = true;
+    const buy = document.getElementById('upgrade-buy-btn');
+    const pbuy = document.getElementById('upgrade-premium-buy-btn');
+    const redeem = document.getElementById('upgrade-redeem-btn');
+    if (buy) buy.addEventListener('click', function () { buyUpgrade('pro'); });
+    if (pbuy) pbuy.addEventListener('click', function () { buyUpgrade('premium'); });
+    if (redeem) redeem.addEventListener('click', redeemLicenseKey);
   }
   async function redeemLicenseKey() {
     const input = document.getElementById('upgrade-key-input');
@@ -6638,6 +6692,84 @@ function renderAccount(acct) {
       return resp;
     }
 
+    // PREMIUM (Issue #182): o AI real (LLM via SSE) é o recurso premium.
+    // Entitled quando open mode (tudo grátis) OU tier PREMIUM — e o servidor
+    // tem chave de LLM configurada (ai_configured). Senão, bot local.
+    function aiCanUseReal() {
+      return !!(_license.ai_configured && (_license.mode === 'open' || _license.premium));
+    }
+
+    function showPremiumCta(d) {
+      logMessage('PREMIUM', (d && d.error) || 'AI Operator real é PREMIUM — upgrade necessário', 'WARN');
+      openUpgradeModal();
+    }
+
+    // Streams /api/ai/query (SSE). On success morphs typingDiv into the real
+    // answer; returns true when a real response was shown (text or a handled
+    // provider error). False → caller falls back to the local bot.
+    async function tryRealAi(text, typingDiv) {
+      // Timeout: um LLM pendurado não pode deixar o indicador de typing
+      // para sempre — aborta após 45s e o caller cai no bot local.
+      const ctrl = (typeof AbortController !== 'undefined') ? new AbortController() : null;
+      const timer = ctrl ? setTimeout(function () { try { ctrl.abort(); } catch (e) {} }, 45000) : null;
+      try {
+        const r = await authFetch('/api/ai/query', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ query: text }),
+          signal: ctrl ? ctrl.signal : undefined,
+        });
+        if (!r.ok) {
+          if (r.status === 402) {
+            const d = await r.json().catch(() => ({}));
+            if (d && d.required_tier === 'premium') showPremiumCta(d);
+          }
+          return false;
+        }
+        if (!r.body || !r.body.getReader) return false;
+        const reader = r.body.getReader();
+        const decoder = new TextDecoder();
+        let buf = '';
+        let acc = '';
+        let sawText = false;
+        let sawError = false;
+        const contentEl = document.createElement('div');
+        contentEl.className = 'ai-msg__content';
+        typingDiv.innerHTML = '<div class="ai-msg__header">◆ CYPHER AI</div>';
+        typingDiv.appendChild(contentEl);
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buf += decoder.decode(value, { stream: true });
+          let idx;
+          while ((idx = buf.indexOf('\n\n')) !== -1) {
+            const raw = buf.slice(0, idx).trim();
+            buf = buf.slice(idx + 2);
+            if (!raw.startsWith('data:')) continue;
+            let obj = {};
+            try { obj = JSON.parse(raw.slice(5).trim()); } catch (e) { continue; }
+            if (obj.type === 'text') {
+              sawText = true;
+              acc += obj.content || '';
+              contentEl.textContent = acc;
+              messages.scrollTop = messages.scrollHeight;
+            } else if (obj.type === 'error') {
+              sawError = true;
+              contentEl.textContent = obj.message || 'AI error';
+            } else if (obj.type === 'done') {
+              break;
+            }
+          }
+        }
+        if (!sawText && !sawError) return false;
+        return true;
+      } catch (e) {
+        return false;  // aborted (timeout), rede ou 5xx → fallback pro bot local
+      } finally {
+        if (timer) clearTimeout(timer);
+      }
+    }
+
     async function handleSend() {
       try {
         const text = input.value.trim();
@@ -6654,14 +6786,19 @@ function renderAccount(acct) {
         messages.appendChild(typingDiv);
         messages.scrollTop = messages.scrollHeight;
 
-        // Brief processing delay
-        await new Promise(r => setTimeout(r, 200 + Math.random() * 300));
-
-        typingDiv.remove();
-
-        const response = getResponse(text);
-        const formatted = response.replace(/\*\*(.*?)\*\*/g, '<strong style="color:var(--accent-btc)">$1</strong>');
-        addMessage('assistant', formatted);
+        // Real AI (PREMIUM/open mode) ou bot local — nunca quebra o chat.
+        let usedReal = false;
+        if (aiCanUseReal()) {
+          usedReal = await tryRealAi(text, typingDiv);
+        }
+        if (!usedReal) {
+          // Brief processing delay (bot local)
+          await new Promise(r => setTimeout(r, 200 + Math.random() * 300));
+          typingDiv.remove();
+          const response = getResponse(text);
+          const formatted = response.replace(/\*\*(.*?)\*\*/g, '<strong style="color:var(--accent-btc)">$1</strong>');
+          addMessage('assistant', formatted);
+        }
       } finally {
         send.disabled = false;
       }

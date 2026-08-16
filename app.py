@@ -120,6 +120,7 @@ from services.licensing import (
     issue_license as _licensing_issue,
     licensing_configured as _licensing_configured,
     current_license_key as _current_license_key,
+    premium_required as _premium_required,
 )
 from services import (
     payments as _payments,
@@ -5179,8 +5180,11 @@ def api_admin_issue_license():
             months = int(months)
         except (TypeError, ValueError):
             months = None
+    plan = (body.get("plan") or "pro").strip().lower()
+    if plan not in ("pro", "premium"):
+        return jsonify({"error": "plan must be 'pro' or 'premium'"}), 400
     key = _licensing_issue(
-        plan=(body.get("plan") or "pro").strip(),
+        plan=plan,
         email=(body.get("email") or "").strip(),
         source=(body.get("source") or "admin").strip(),
         months=months,
@@ -8096,9 +8100,14 @@ _ai_rate_store: Dict[str, List[float]] = {}
 @app.route("/api/ai/query", methods=["POST"])
 @require_tenant
 @role_required("member")
+@_premium_required
 def api_ai_query(tenant_id: str = ""):
     """AI Operator chat endpoint. Accepts a JSON body with `query` and
     streams the LLM response as Server-Sent Events (SSE).
+
+    PREMIUM-gated (Issue #182): in licensed mode the real LLM chat requires
+    a premium key — free/pro requests get 402 with the upgrade payload
+    (+ paywall_view telemetry). Open mode = always allowed (self-host).
 
     Request body:
         {"query": "What is my current hashrate?"}
