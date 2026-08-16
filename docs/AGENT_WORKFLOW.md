@@ -234,7 +234,63 @@ gh pr merge 123 --squash --delete-branch
 
 ---
 
-## 8. Referências
+## 8. Dependabots de Actions — merge manual (token sem scope `workflow`)
+
+> **Contexto (incidente 2026-08):** PRs dependabot que bumpam **GitHub Actions**
+> (`actions/*`, `docker/*`, `setup-*`) tocam `.github/workflows/`. O token OAuth
+> do `gh` local tem scopes `gist`, `read:org`, `repo` — **sem o scope
+> `workflow`** (confirmar com `gh auth status`). Merging PRs que alteram
+> workflows **via API** exige esse scope; sem ele o `gh pr merge` falha
+> (403/Resource not accessible). Foi o caso dos PRs **#3**, **#4**, **#6** e
+> **#8** — CI 100% verde, mas impossíveis de mergear via CLI.
+
+### Como identificar
+
+- PR de dependabot cujo diff toca `.github/workflows/*` (título `chore(deps):
+  bump <action>`).
+- `gh pr merge N --squash --delete-branch` retorna erro de permissão mesmo com
+  CI verde e sem conflito.
+
+### Procedimento manual (merge pela UI)
+
+```bash
+# 1. Confirmar CI verde
+gh pr checks N --watch
+
+# 2. Abrir a página do PR no navegador
+gh pr view N --web
+
+# 3. Merge pela UI: botão "Merge pull request" → escolher "Squash and merge"
+#    → confirmar. (O navegador usa a sessão do GitHub, que tem permissão
+#    total; a restrição de scope vale apenas para a API/CLI.)
+
+# 4. Opcional: se preferir CLI, usar um PAT com scope `workflow`
+#    (Settings → Developer settings → Personal access tokens):
+#    gh auth login --with-token < workflow_token
+export GH_TOKEN=<PAT-com-workflow>
+gh pr merge N --squash --delete-branch
+unset GH_TOKEN
+
+# 5. Confirmar o merge
+gh pr view N --json state,mergeCommit --jq '.state + " " + .mergeCommit.oid'
+```
+
+### Casos reais (2026-08-16)
+
+| PR | Bump | Merge | Commit |
+|---|---|---|---|
+| #3 | docker/setup-buildx-action 3→4 | manual (UI) | `a882837` |
+| #4 | actions/checkout 4→7 | manual (UI) | `b43f3e8` |
+| #6 | actions/setup-python 5→7 | manual (UI) | `276358a` |
+| #8 | actions/upload-artifact 4→7 | manual (UI) | `2882602` |
+
+> **Melhoria permanente:** a Issue #211 propõe um guard de CI que detecta
+> dependabots com workflows defasados e força rebase automático, reduzindo o
+> risco de acumular PRs "verdes mas incompletos" — acompanhar lá.
+
+---
+
+## 9. Referências
 - Roadmap: `docs/AUDITORIA_ESTRATEGICA.md` (§5) · `docs/IMPROVEMENT_ROADMAP.md` (§8)
 - Deploy/ops: `docs/DEPLOYMENT_OPS.md` · `render.yaml`
 - Padrões de código e testes: `CONTRIBUTING.md`
