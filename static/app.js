@@ -2891,7 +2891,6 @@ function renderAccount(acct) {
   // falling back to the lowest valid price_per_th_day.
   let _mktFilter = 'all';
   let _mktOffers = [];
-  let _mktGridRetried = false;  // retry guard for Chart.js CDN blocking DOM parse
   let _mktBtcUsd = null;  // BTC/USD from snapshot — for the USD/TH/d line on cards
   let _mktAffiliate = null;  // market_data.affiliate {provider,url,...} — one-click BUY on the offer card
   let _mktTrendLoaded = false;  // lazy: /api/market/trend fetched on first module activation
@@ -3791,18 +3790,9 @@ function renderAccount(acct) {
 
   function renderMarketGrid() {
     const tbody = document.getElementById('mkt-table-body');
-    if (!tbody) {
-      // DOM not yet parsed (Chart.js CDN blocks <head>). Retry once
-      // after a short delay so the tbody has time to appear.
-      if (!_mktGridRetried) {
-        _mktGridRetried = true;
-        setTimeout(function () {
-          _mktGridRetried = false;
-          renderMarketGrid();
-        }, 100);
-      }
-      return;
-    }
+    if (!tbody) return;  // Issue #186: Chart.js é defer agora — o DOM nunca é
+    // bloqueado pelo CDN; se o tbody ainda não existe, o próximo poll
+    // (renderMarket → renderMarketGrid) re-renderiza sozinho.
 
     const inst = _mktInstitutional || {};
     let venues = (inst.venues || []).filter(v => {
@@ -4163,6 +4153,7 @@ function renderAccount(acct) {
           : '<span class="mkt-trend__legend-item" style="color:var(--text-tertiary)">preços são persistidos a cada fetch (warm-up 5min) — volte mais tarde</span>';
       }
       if (!datasets.length) return true;  // valid empty state — nothing to plot
+      if (typeof Chart === 'undefined') return false;  // Issue #186: defer — próximo poll re-tenta
       const ctx = canvas.getContext('2d');
       if (window._mktTrendChart) window._mktTrendChart.destroy();
       window._mktTrendChart = new Chart(ctx, {
@@ -7072,6 +7063,10 @@ function renderAccount(acct) {
   function makeChart(id, label, color) {
     const canvas = document.getElementById(id);
     if (!canvas) return null;
+    // Issue #186: defensivo — app.js roda com defer após o Chart.js, mas se o
+    // CDN falhar (offline/blocked) o boot não pode crashar. Null é tratado
+    // pelos call sites (mesma convenção do canvas ausente).
+    if (typeof Chart === 'undefined') return null;
     const ctx = canvas.getContext('2d');
     const cfg = CHART_METRICS[id];
     // Human-readable Y ticks: hashrate/pool render fmt.hashrate (TH/s), best
@@ -9107,7 +9102,7 @@ dom.walletSave?.addEventListener('click', async () => {
     const wrap = document.getElementById('axe-detail-chart-wrap');
     const canvas = document.getElementById('axe-detail-chart');
     const countBadge = document.getElementById('axe-detail-chart-count');
-    if (!wrap || !canvas) return;
+    if (!wrap || !canvas || typeof Chart === 'undefined') return;  // Issue #186: defer-safe
 
     // Destroy previous chart instance so Chart.js doesn't complain.
     if (_axeDetailChart) { _axeDetailChart.destroy(); _axeDetailChart = null; }
