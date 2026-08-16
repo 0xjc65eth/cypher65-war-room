@@ -386,6 +386,90 @@ def test_braiins_contracts_spot_bid_fallback(monkeypatch):
     assert c["amount_sat"] == 20000000
 
 
+def test_braiins_contracts_spot_bid_real_envelope(monkeypatch):
+    """Issue #193: the LIVE /spot/bid API wraps each item in an envelope
+    {"bid": {...}, "counters_committed": {...}} — the id/status/amount live
+    NESTED under `bid`. The normalizer must unwrap it, or a valid account
+    renders as "no contracts". Payload captured from the real API."""
+    monkeypatch.setenv("BRAIINS_API_KEY", "owner-token")
+    item = {
+        "bid": {
+            "created_by": {
+                "profile_name": "owner",
+                "client_name": "Hashpower_3B2Hahz0",
+            },
+            "last_updated_by": {
+                "profile_name": "owner",
+                "client_name": "Hashpower_3B2Hahz0",
+            },
+            "id": "B86691640443008087",
+            "fee_rate_pct": 0,
+            "last_paused": "",
+            "cl_order_id": "",
+            "memo": "10t de best diff please sir",
+            "subaccount": "Hashpower_3B2Hahz0",
+            "amount_sat": 24587,
+            "is_current": False,
+            "speed_limit_ph": 1,
+            "price_sat": 50300000,
+            "last_updated": "2026-08-11T04:52:08.230Z",
+            "created": "2026-08-10T17:23:38.678Z",
+            "status": "BID_STATUS_FULFILLED",
+        },
+        "counters_committed": {
+            "amount_consumed_sat": 24087,
+            "shares_purchased_m": 9633.278489,
+        },
+    }
+
+    def fake_get(url, headers=None, timeout=None):
+        if "/contract" in url:
+            return FakeResponse(ok=False, status_code=404)
+        return FakeResponse(payload={"items": [item]})
+
+    monkeypatch.setattr(rp.requests, "get", fake_get)
+    out = rp.fetch_braiins_contracts()
+    assert out["success"] is True
+    assert len(out["contracts"]) == 1
+    c = out["contracts"][0]
+    assert c["id"] == "B86691640443008087"
+    assert c["status"] == "FULFILLED"  # BID_STATUS_FULFILLED → FULFILLED
+    assert c["speed_limit_ph"] == 1
+    assert c["amount_sat"] == 24587
+    assert c["price_sat"] == 50300000
+    assert c["started_at"] == "2026-08-10T17:23:38.678Z"  # `created` field
+
+
+def test_braiins_contracts_spot_bid_real_envelope_active(monkeypatch):
+    """Issue #193: an ACTIVE spot bid (the kind the operator wants to see
+    in the panel) also arrives wrapped — the envelope unwrap must apply to
+    every status, not just fulfilled ones."""
+    monkeypatch.setenv("BRAIINS_API_KEY", "owner-token")
+    item = {
+        "bid": {
+            "id": "B12345",
+            "status": "BID_STATUS_ACTIVE",
+            "speed_limit_ph": 100.0,
+            "amount_sat": 15000000,
+            "price_sat": 95000000,
+            "created": "2026-08-15T10:00:00Z",
+        },
+        "counters_committed": {},
+    }
+
+    def fake_get(url, headers=None, timeout=None):
+        if "/contract" in url:
+            return FakeResponse(ok=False, status_code=404)
+        return FakeResponse(payload={"items": [item]})
+
+    monkeypatch.setattr(rp.requests, "get", fake_get)
+    out = rp.fetch_braiins_contracts()
+    assert out["success"] is True
+    assert len(out["contracts"]) == 1
+    assert out["contracts"][0]["id"] == "B12345"
+    assert out["contracts"][0]["status"] == "ACTIVE"
+
+
 def test_braiins_contract_speed_spot_fallback(monkeypatch):
     monkeypatch.setenv("BRAIINS_API_KEY", "owner-token")
 

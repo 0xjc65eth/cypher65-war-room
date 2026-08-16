@@ -1911,13 +1911,40 @@ def _braiins_list_items(data: Any) -> List[Dict]:
 
 def _normalize_braiins_contract(c: Dict[str, Any]) -> Dict[str, Any]:
     """Map a Braiins contract/bid dict to the panel's display schema.
-    Accepts both the legacy (`contract`) and spot (`bid`) field names."""
+    Accepts both the legacy (`contract`) and spot (`bid`) field names.
+
+    The LIVE /spot/bid API wraps each item in an envelope:
+        {"bid": {...}, "counters_committed": {...}}
+    with the id/status/amount nested under ``bid``. Unwrap it first —
+    otherwise ``c.get("id")`` is None and every order is silently
+    dropped, so a valid account renders as "no contracts" (Issue #193)."""
+    if isinstance(c, dict):
+        for wrap_key in ("bid", "contract"):
+            inner = c.get(wrap_key)
+            # Only unwrap the true envelope (top level has no id) — a flat
+            # contract item that happens to carry a `bid` sub-object as data
+            # must keep reading its own level.
+            if isinstance(inner, dict) and not (
+                c.get("id") or c.get("bid_id") or c.get("order_id")
+            ):
+                c = inner
+                break
     cid = c.get("id") or c.get("bid_id") or c.get("order_id")
     status = c.get("status") or c.get("bid_status") or ""
-    # Spot statuses are verbose (SPOT_BID_STATUS_ACTIVE) — collapse to the
-    # legacy-style short status the UI already renders (RUNNING/ACTIVE/…).
-    short_status = str(status).replace("SPOT_BID_STATUS_", "") if status else ""
-    started = c.get("started_at") or c.get("created_at") or c.get("created_ts")
+    # Spot statuses are verbose (SPOT_BID_STATUS_ACTIVE / BID_STATUS_ACTIVE)
+    # — collapse to the legacy-style short status the UI already renders
+    # (RUNNING/ACTIVE/FULFILLED/…).
+    short_status = (
+        str(status).replace("SPOT_BID_STATUS_", "").replace("BID_STATUS_", "")
+        if status
+        else ""
+    )
+    started = (
+        c.get("started_at")
+        or c.get("created_at")
+        or c.get("created_ts")
+        or c.get("created")
+    )
     ended = c.get("ended_at") or c.get("completed_at") or c.get("completed_ts")
     return {
         "id": cid,
