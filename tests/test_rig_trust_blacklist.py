@@ -87,6 +87,129 @@ def test_trust_grade_f_flagged_avoid():
     assert r["score"] < 60
 
 
+# ── Mutation-testing survivors (Issue #43): each test below kills a real
+#    surviving mutant — the previous suite never exercised these branches. ──
+
+def test_to_float_coercion_matrix():
+    """_to_float on the input shapes callers actually pass: numeric string,
+    blank, garbage, None, and int 0 — kills the `v == ""` survivor (#11)."""
+    assert rp._to_float("96.0") == 96.0
+    assert rp._to_float("") is None
+    assert rp._to_float("abc") is None
+    assert rp._to_float(None) is None
+    assert rp._to_float(0) == 0.0
+
+
+def test_trust_median_odd_distinct_values():
+    """Odd sample count where s[n//2] != s[n//3] — kills the n//2→n//3
+    survivor (#17): the old A-band test used [97,98,99,98,98.5] whose
+    median equals the n//3 index by coincidence, so the mutant lived."""
+    history = [{"percent": 90.0}, {"percent": 91.0}, {"percent": 92.0},
+               {"percent": 93.0}, {"percent": 99.0}]
+    r = rp.compute_rig_trust_score(history)
+    assert r["samples"] == 5
+    assert r["median_pct"] == 92.0
+
+
+def test_trust_median_even_averages_centrals():
+    """Even sample count → median is the mean of the two central values;
+    kills the `(s[n//2-1] + s[n//2]) / 2.0` decomposition survivors."""
+    history = [{"percent": 90.0}, {"percent": 95.0},
+               {"percent": 100.0}, {"percent": 105.0}]
+    r = rp.compute_rig_trust_score(history)
+    assert r["samples"] == 4
+    assert r["median_pct"] == 97.5
+
+
+def test_trust_grade_b_label_is_reliable():
+    """A solid B-band rig must carry the RELIABLE label — kills the
+    RIG_GRADE_LABEL['B'] survivor (label was never asserted)."""
+    history = [{"percent": 91.0}, {"percent": 92.0}, {"percent": 93.0},
+               {"percent": 92.0}, {"percent": 91.5}]
+    r = rp.compute_rig_trust_score(history)
+    assert r["grade"] == "B"
+    assert r["label"] == "RELIABLE"
+
+
+def test_trust_grade_f_label_is_avoid():
+    """Grade F must carry the AVOID label (frontend hides these rigs) —
+    kills the RIG_GRADE_LABEL['F'] survivor."""
+    history = [{"percent": 48.0}, {"percent": 52.0}, {"percent": 50.0},
+               {"percent": 55.0}, {"percent": 45.0}]
+    r = rp.compute_rig_trust_score(history)
+    assert r["grade"] == "F"
+    assert r["label"] == "AVOID"
+
+
+def test_trust_confidence_cap_n_lt_5_blocks_a():
+    """3 excellent samples must NOT earn an A (confidence cap n<5 → ≤94).
+    Kills the `elif n < 5` cap survivor."""
+    history = [{"percent": 98.0}, {"percent": 99.0}, {"percent": 100.0}]
+    r = rp.compute_rig_trust_score(history)
+    assert r["samples"] == 3
+    assert r["score"] <= 94.0
+    assert r["grade"] != "A"
+
+
+def test_trust_score_clamped_floor_zero():
+    """A rig whose MAD + worst penalty drive the score negative must clamp
+    to 0.0, not leak a negative number — kills the `max(0.0, …)` survivor."""
+    history = [{"percent": 0.0}, {"percent": 50.0}, {"percent": 100.0}]
+    r = rp.compute_rig_trust_score(history)
+    assert r["score"] == 0.0
+    assert r["grade"] == "F"
+
+
+# ── Round-2 survivors (Issue #43): exact-score asserts kill the constant
+#    mutations in the formula (0.5 / 85.0 / 0.4) and the n<3 cap. The old
+#    tests only asserted grade BANDS, so changing a constant kept the grade
+#    and the mutant lived. ──
+
+def test_trust_score_exact_formula():
+    """Pin the full score formula with a known input set:
+    [96, 96.5, 97, 97.5, 98] → median 97, mad 0.6, worst 96, no worst
+    penalty (96 ≥ 85) → score = 97 - 0.3 - 0 = 96.7. Kills mutations of
+    every constant in the formula (0.5 → 0.9 gives 96.46; 0.4 → 0 gives
+    97.0; 85.0 → 80 adds penalty → 95.9)."""
+    history = [{"percent": 96.0}, {"percent": 96.5}, {"percent": 97.0},
+               {"percent": 97.5}, {"percent": 98.0}]
+    r = rp.compute_rig_trust_score(history)
+    assert r["samples"] == 5
+    assert r["median_pct"] == 97.0
+    assert r["mad_pct"] == 0.6
+    assert r["score"] == 96.7
+    assert r["grade"] == "A"
+
+
+def test_trust_confidence_cap_n3_exact_94():
+    """n=3 with a raw score of 95.67 must cap to EXACTLY 94.0 (n<5 band),
+    not to 89 (which is what a mutated `n < 3 → n <= 3` would apply) and
+    not to 95.67 (no cap). This pins the n<5 cap value, killing both the
+    `elif n < 5` survivor and the `if n < 3` boundary mutation."""
+    history = [{"percent": 95.0}, {"percent": 96.0}, {"percent": 97.0}]
+    r = rp.compute_rig_trust_score(history)
+    assert r["samples"] == 3
+    assert r["score"] == 94.0
+    assert r["grade"] == "B"
+    assert r["label"] == "RELIABLE"
+
+
+def test_trust_worst_penalty_exact():
+    """Pin the worst-penalty constants with a sub-85 worst (so the penalty
+    actually fires). [80, 90, 90, 90, 90] → median 90, mad 2, worst 80 →
+    score = 90 - 1 - max(0, 85-80)*0.4 = 87.0. Kills the 85.0 → 86.0
+    survivor (would give 86.6) and the 0.4 → 1.4 survivor (would give 82)."""
+    history = [{"percent": 80.0}, {"percent": 90.0}, {"percent": 90.0},
+               {"percent": 90.0}, {"percent": 90.0}]
+    r = rp.compute_rig_trust_score(history)
+    assert r["samples"] == 5
+    assert r["median_pct"] == 90.0
+    assert r["mad_pct"] == 2.0
+    assert r["worst_pct"] == 80.0
+    assert r["score"] == 87.0
+    assert r["grade"] == "C"
+
+
 # ── Blacklist CRUD (default tenant) ───────────────────────────────────────
 
 @pytest.fixture

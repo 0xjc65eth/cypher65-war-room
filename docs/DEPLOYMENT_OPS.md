@@ -115,15 +115,32 @@ sem o processo de workers — o dashboard ficaria vazio para sempre.
 
 ### Ativação (uma vez, $0)
 
+> **Issue #14 (feito):** o blueprint (`render.yaml`) já provisiona as duas
+> vars — `GITHUB_TOKEN` com `sync: false` (a chave é criada no deploy, o
+> **valor nunca vai para o git** — só no dashboard) e
+> `REMOTE_BACKUP_INTERVAL=300`. Depois de mergear o PR, o operador só
+> precisa colar o PAT real no painel.
+
 1. Crie um **Personal Access Token** do GitHub com scope `gist`:
    GitHub → Settings → Developer settings → Personal access tokens →
    **Generate new token (classic)** → marque `gist` → copie.
-2. Adicione ao Render (Dashboard → o serviço → Environment):
-   - `GITHUB_TOKEN` = o token (guarde como secret)
-   - `REMOTE_BACKUP_INTERVAL` = `300` (5 min — opcional, default 600)
-3. **Redeploy**. Confira no log: `[remote_backup] snapshot pushed ... -> gist ...`
-4. Teste: conecte uma wallet/salve uma chave → force um redeploy → os dados
-   **voltam** (o log mostra `[remote_backup] restored ... from gist`).
+   (PAT fine-grained também funciona se tiver permissão de escrita em gists;
+   o classic com scope `gist` é o caminho mais simples e suficiente.)
+2. Render → Dashboard → o serviço → **Environment** → edite a var
+   `GITHUB_TOKEN` (criada pelo blueprint com `sync: false`) e cole o token
+   como secret. `REMOTE_BACKUP_INTERVAL` já vem com `300`.
+3. **Redeploy** (ou Restart). Confira no log:
+   `[remote_backup] snapshot pushed ... -> gist ...`
+4. **Valide no shell do Render** (Render → o serviço → Shell):
+   ```bash
+   python scripts/verify_remote_backup.py             # probe read-only
+   python scripts/verify_remote_backup.py --roundtrip # + teste de upload
+   ```
+   Saída esperada: `✔ verified — the gist is receiving backups...` (exit 0).
+   O `--roundtrip` grava em um arquivo de verificação **separado**
+   (`war_room.verify.sqlite.b64`) — nunca toca no snapshot real.
+5. Teste o restore: conecte uma wallet/salve uma chave → force um redeploy →
+   os dados **voltam** (o log mostra `[remote_backup] restored ... from gist`).
 
 > 🔒 O gist é **privado** (só o seu token lê). A base64 não é criptografia —
 > a proteção real das credenciais em repouso é o **Fernet** em
@@ -188,6 +205,108 @@ O sidecar (`--profile tailscale`) transforma o servidor em **subnet router**:
 | `INFLUXDB_URL` / `TOKEN` / `ORG` / `BUCKET` | vazios | **Opção**: mirror de métricas |
 | `CERT_FILE` / `KEY_FILE` | — | TLS opcional no app |
 | `TAILSCALE_AUTH_KEY` / `LOCAL_SUBNET` | — | Usados pelo compose/install |
+| `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` | — | **Web Push** (ver seção abaixo) |
+| `VAPID_SUBJECT` | `mailto:admin@cypher65.local` | Contato do push service (mailto:) |
+
+> ⚠ **NÃO configure `MRR_API_KEY` / `MRR_API_SECRET` / `BRAIINS_API_KEY` no `.env`**
+> em um deploy **multi-tenant** (veja a seção "Credenciais por usuário" abaixo).
+
+---
+
+## 🔑 Credenciais por usuário (MRR/Braiins) — NUNCA chave global
+
+**Regra do produto:** nenhuma chave MRR/Braiins existe como chave global ou
+compartilhada. **Cada usuário configura a própria** no app
+(`Settings ⚙ → MRR credentials` / `Braiins credentials`), e a chave fica
+armazenada **criptografada em repouso** (Fernet derivada de `SECRET_KEY`) na
+linha `tenant_settings` daquele tenant — nunca no código, nunca no `.env`,
+nunca no repositório. (Sem `SECRET_KEY` em open self-host, as chaves são
+armazenadas em texto plano — por isso **sempre** setar `SECRET_KEY` em
+qualquer deploy com usuários.)
+
+Como o app garante isso:
+
+1. **Isolamento hermético por tenant** — os resolvers
+   (`mrr_credentials`/`braiins_credentials`) leem **somente** as linhas do
+   próprio tenant em `tenant_settings`. Env vars e a tabela global **nunca**
+   são consultadas para um tenant nomeado — um usuário sem chave própria
+   recebe vazio (`🔑` no painel), **nunca** a chave do operador.
+2. **Env vars são só do tenant default (self-host)** — `MRR_API_KEY` /
+   `MRR_API_SECRET` / `BRAIINS_API_KEY` afetam **apenas** a própria instância
+   do operador (comportamento legado de self-host). Em deploy multi-tenant o
+   boot **avisa** se elas existirem: remova-as do ambiente.
+3. **Settings UI avisa override** — se uma env var estiver setada, o modal
+   mostra "⚠ env var SOBRESCREVE o valor abaixo" para MRR e Braiins.
+4. **Testes fixam a regra** — `test_named_tenant_without_own_key_never_inherits_env`
+   garante que um tenant sem chave própria nunca herda env/global.
+
+**Em deploy multi-tenant:** não definir nenhuma dessas env vars. Cada usuário
+entra, abre Settings e adiciona a própria chave. O operador (tenant default)
+usa as próprias chaves da mesma forma.
+
+**Fluxo de validação por usuário** (passo a passo completo no guia do usuário,
+`docs/AGENT_SETUP_GUIDE.md` → **Passo 5**):
+
+1. **MRR**: `miningrigrentals.com → My Account → API Access` → gerar/copiar a
+   **API key + secret** do site → `Settings ⚙ → MRR credentials` → **Salvar** →
+   o painel RENTALS mostra as contagens reais (sem 🔑/⚠).
+2. **Braiins**: `hashpower.braiins.com → API Tokens` → copiar o **owner token**
+   → `Settings ⚙ → Braiins credentials` → **Salvar** → **🔑 TESTAR CHAVE
+   BRAIINS** (verdict ok/rejected na hora, sem esperar o painel).
+3. **Estados do painel**: 🔑 = chave não configurada · ⚠ = chave configurada
+   mas **REJEITADA** pela API (regenerar no site do provider) · número = conta
+   real OK.
+4. **Bad Nonce (MRR)**: a chave salva é inválida/desatualizada — **regenerar**
+   (copiar a antiga não resolve). Ver `Troubleshooting — Bad Nonce` abaixo.
+
+## 📲 Web Push (VAPID) — Issue #15
+
+Web Push de alertas (ex: auto-exclusão, worker offline) entrega para o browser
+mesmo com a aba fechada. Fica **OFF** até o par VAPID ser configurado — sem ele
+o frontend nem oferece subscrição e `notify_tenant_alert` degrada silencioso.
+
+### 1. Gerar o par de chaves (uma vez)
+
+```bash
+pip install pywebpush
+python -c "from py_vapid import Vapid; import base64; \
+from cryptography.hazmat.primitives import serialization as S; \
+v=Vapid(); v.generate_keys(); \
+print(base64.urlsafe_b64encode(v.public_key.public_bytes(S.Encoding.X962, \
+S.PublicFormat.UncompressedPoint)).rstrip(b'=').decode()); \
+print(base64.urlsafe_b64encode(v.private_key.private_numbers() \
+.private_value.to_bytes(32,'big')).rstrip(b'=').decode())"
+# linha 1 = VAPID_PUBLIC_KEY · linha 2 = VAPID_PRIVATE_KEY
+```
+
+### 2. Setar no Render (dashboard → Environment)
+
+| Variável | Valor | sync |
+|---|---|---|
+| `VAPID_PUBLIC_KEY` | pública (base64url) | `false` (fora do git) |
+| `VAPID_PRIVATE_KEY` | **secreta** (base64url) | `false` |
+| `VAPID_SUBJECT` | `mailto:voce@dominio.com` (opcional) | `false` |
+
+As chaves **nunca** entram no git — o `render.yaml` as provisiona com
+`sync: false` e o valor real vai só no Render dashboard.
+
+### 3. Validar entrega real
+
+1. Abra o dashboard no domínio **https** (Web Push exige contexto seguro).
+2. O frontend registra o service worker e pede permissão automaticamente
+   (apenas quando a rota `/api/push/vapid-key` retorna a chave).
+3. Settings → alertas → **🧪 TESTAR ALERTA** — responde `push_targets >= 1`
+   quando a entrega real chegou (mesmo payload que o sweep envia).
+4. Se `push_targets: 0`, confira: https no navegador, permissão concedida,
+   chaves batendo (a privada deve corresponder à pública) e `pywebpush`
+   instalado (`requirements.txt` já o inclui).
+
+### Arquitetura
+
+`services/push_notifier.py` (VAPID + `pywebpush`) → `/api/push/subscribe`
+(autenticado por JWT — Issue #115) → tabela `push_subscriptions` por tenant →
+`notify_tenant_alert()` (sweep/auto-exclusão) → `static/sw.js` listener `push`
+→ notificação OS com clique foca o dashboard.
 
 ---
 
@@ -243,6 +362,29 @@ docker compose up -d
 
 ---
 
+## 🔭 Observabilidade (custo $0 — Issue #30)
+
+| Recurso | Como ativar | Notas |
+|---|---|---|
+| **Sentry** (erros + traces) | env: `SENTRY_DSN=...`, opcional `SENTRY_TRACES_SAMPLE_RATE=0.1`, `SENTRY_RELEASE`, `SENTRY_ENVIRONMENT` | `services/sentry_telemetry.py` (Issue #176) — request_id em breadcrumbs/events, release = git SHA, PII-safe; 5k errors/mês free |
+| **Logs JSON** | env: `LOG_JSON=1` | `services/observability.py` — um JSON por linha, `jq`-able |
+| **Boot health** | sempre | linha estruturada `[boot] ready` com port/worker/db |
+| Admin CFO + pool stats | sempre | `/api/admin/sessions` (sessions, polls/s, fila, threads) |
+| **Error rate local** (self-host) | sempre | `services/error_tracker.py` — todo ERROR/CRITICAL do log vira bucket por hora com `request_id`; view no Admin `/api/admin/error-rate` (funciona SEM Sentry) |
+
+Matriz de decisão: Datadog/NewRelic são paid → **não adotados** (regra de ouro
+CFO/CRO $0). OpenTelemetry é o caminho futuro (exporter OTLP → Sentry) quando
+houver tração (gated por tração, ver `docs/AUDITORIA_ESTRATEGICA.md`).
+
+Exemplo:
+```bash
+LOG_JSON=1 SENTRY_DSN=https://xxx@sentry.io/123 python app.py
+# opcional: SENTRY_TRACES_SAMPLE_RATE=0.1 · SENTRY_ENVIRONMENT=cloud ·
+# SENTRY_RELEASE=cypher65-war-room@<sha> (default: git short SHA do deploy)
+```
+
+---
+
 ## 🛡 Segurança
 
 - `.env` **nunca** é commitado (gitignored); segredos ficam só no servidor.
@@ -250,6 +392,38 @@ docker compose up -d
   Serve (TLS) ou proxy reverso.
 - Código roda como usuário não-root (`USER cypher` no Dockerfile).
 - Sem chaves de wallet/seed no servidor — apenas endereços públicos.
+
+## 🧯 Troubleshooting — MRR: `Not Authenticated - Invalid Key - Bad Nonce.`
+
+**Sintoma:** o painel RENTALS mostra `Provider error: Not Authenticated -
+Invalid Key - Bad Nonce.` (ou `API key rejected` com o mesmo motivo) para um
+tenant com chave configurada no Settings.
+
+**Causa raiz:** a **credencial MRR é inválida/desatualizada** (key/secret que
+não batem mais com a conta) **ou o tracker de nonce da chave ficou preso** no
+servidor do MRR (último nonce registrado acima do tempo atual, envenenado por
+algum cliente com data futura). **NÃO é bug de concorrência** — os nonces já
+são monotônicos desde a Issue #150 (fix #148/#150), idênticos ao cliente
+oficial.
+
+**Diagnóstico (por usuário, sem tocar no `.env`):**
+
+```bash
+python scripts/probe_mrr_api.py --check --key SUA_KEY --secret SEU_SECRET
+# VALID  → credencial ok (o erro era transitório — tente de novo)
+# INVALID → regenerar a chave (abaixo)
+```
+
+**Solução:** regenerar a **API key + secret** na conta MRR
+(`miningrigrentals.com → My Account → API Access` — a chave nova nasce com
+tracker de nonce zerado) e atualizar:
+
+- **Tenants multi-usuário** → Settings → MRR credentials (cada usuário usa a
+  PRÓPRIA chave — nunca a do operador);
+- **Self-host** → `.env` (`MRR_API_KEY`/`MRR_API_SECRET`) + restart.
+
+O painel agora classifica esse erro como **credencial rejeitada** e mostra
+essa orientação diretamente no card/empty state (Issue #152).
 
 ---
 

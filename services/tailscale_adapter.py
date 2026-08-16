@@ -16,6 +16,7 @@ This adapter is intentionally lightweight — it wraps the CLI for local
 inspection and exposes the REST API as a secondary source for advanced
 features like "list devices in tailnet".
 """
+
 import json
 import logging
 import requests
@@ -121,7 +122,9 @@ def get_local_status() -> dict:
     return result
 
 
-def check_remote_device(api_key: str = "", tailnet: str = "", device_filter: str = "") -> dict:
+def check_remote_device(
+    api_key: str = "", tailnet: str = "", device_filter: str = ""
+) -> dict:
     """Check Tailscale API v2 for remote device status.
 
     This is optional — requires an OAuth client or API key from
@@ -161,7 +164,11 @@ def check_remote_device(api_key: str = "", tailnet: str = "", device_filter: str
         data = resp.json().get("devices", [])
         filtered = data
         if device_filter:
-            filtered = [d for d in data if device_filter.lower() in d.get("hostname", "").lower()]
+            filtered = [
+                d
+                for d in data
+                if device_filter.lower() in d.get("hostname", "").lower()
+            ]
 
         result["devices"] = [
             {
@@ -169,7 +176,9 @@ def check_remote_device(api_key: str = "", tailnet: str = "", device_filter: str
                 "name": d.get("name", ""),
                 "hostname": d.get("hostname", ""),
                 "addresses": d.get("addresses", []),
-                "ipv4": next((a for a in d.get("addresses", []) if a.startswith("100.")), None),
+                "ipv4": next(
+                    (a for a in d.get("addresses", []) if a.startswith("100.")), None
+                ),
                 "os": d.get("os", ""),
                 "online": d.get("online", False),
                 "last_seen": d.get("lastSeen", ""),

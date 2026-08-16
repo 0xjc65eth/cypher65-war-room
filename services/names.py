@@ -12,7 +12,7 @@ import re
 
 # ── Character filter: keep only safe printable chars ──
 # Removes null bytes, control chars, and other rendering-breaking garbage.
-_SAFE_CHAR_RE = re.compile(r'[^\x20-\x7E\x80-\xFF\xA0-\xFF]')
+_SAFE_CHAR_RE = re.compile(r"[^\x20-\x7E\x80-\xFF\xA0-\xFF]")
 
 
 def sanitize(raw: str) -> str:
@@ -33,7 +33,7 @@ def sanitize(raw: str) -> str:
     # 1. Decode HTML entities (&amp; → &, &lt; → <, etc.)
     decoded = html.unescape(str(raw))
     # 2. Remove control characters / null bytes
-    cleaned = _SAFE_CHAR_RE.sub('', decoded)
+    cleaned = _SAFE_CHAR_RE.sub("", decoded)
     # 3. Strip whitespace
     return cleaned.strip()
 

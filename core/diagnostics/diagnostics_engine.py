@@ -87,7 +87,7 @@ class DiagnosticsEngine:
                         timestamp=now,
                         details={"temperature": temperature, "limit": max_temp},
                     )
-            )
+                )
 
         # --- Hashrate ------------------------------------------------------
         hashrate = telemetry.get("hashrate")
@@ -114,7 +114,7 @@ class DiagnosticsEngine:
                             "drop_pct": drop_pct,
                         },
                     )
-            )
+                )
 
         # --- Reject / Stale rates ------------------------------------------
         accepted = float(telemetry.get("accepted_shares") or 0)

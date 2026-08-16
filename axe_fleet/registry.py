@@ -10,12 +10,19 @@ Usage:
     registry.add_device("192.168.1.100", "Garage Bitaxe")
     devices = registry.list_devices()
 """
+
 import json
 import logging
 import time
 import uuid
 
-from .models import new_device, infer_capabilities, STATUS_ONLINE, STATUS_OFFLINE
+from .models import (
+    new_device,
+    infer_capabilities,
+    STATUS_ONLINE,
+    STATUS_OFFLINE,
+    derive_device_status,
+)
 from .connector import AxeOSConnector, AxeOSConnectorError
 
 log = logging.getLogger("cypher65.axe.registry")
@@ -37,7 +44,9 @@ def _caps_for_type(info: dict) -> dict:
       identify only if the firmware looks like AxeOS."""
     dev_type = str(info.get("type") or "").lower()
     is_cgminer = dev_type == "cgminer"
-    is_axeos = bool(info.get("firmware")) and "axe" in str(info.get("firmware", "")).lower()
+    is_axeos = (
+        bool(info.get("firmware")) and "axe" in str(info.get("firmware", "")).lower()
+    )
     return {
         "telemetry": True,
         "restart": True,
@@ -138,8 +147,12 @@ class DeviceRegistry:
                     log.warning("[migrate] could not add tenant_id to %s: %s", table, e)
         # Index for performance
         try:
-            c.execute("CREATE INDEX IF NOT EXISTS idx_axe_devices_tenant ON axe_devices(tenant_id)")
-            c.execute("CREATE INDEX IF NOT EXISTS idx_axe_telemetry_tenant ON axe_telemetry(tenant_id)")
+            c.execute(
+                "CREATE INDEX IF NOT EXISTS idx_axe_devices_tenant ON axe_devices(tenant_id)"
+            )
+            c.execute(
+                "CREATE INDEX IF NOT EXISTS idx_axe_telemetry_tenant ON axe_telemetry(tenant_id)"
+            )
         except Exception:
             pass
 
@@ -150,7 +163,9 @@ class DeviceRegistry:
         cols = {row[1] for row in c.fetchall()}
         if "agent_managed" not in cols:
             try:
-                c.execute("ALTER TABLE axe_devices ADD COLUMN agent_managed INTEGER DEFAULT 0")
+                c.execute(
+                    "ALTER TABLE axe_devices ADD COLUMN agent_managed INTEGER DEFAULT 0"
+                )
                 log.info("[migrate] added agent_managed to axe_devices")
             except Exception as e:
                 log.warning("[migrate] could not add agent_managed: %s", e)
@@ -167,14 +182,18 @@ class DeviceRegistry:
         cols = {row[1] for row in c.fetchall()}
         if "removed_at" not in cols:
             try:
-                c.execute("ALTER TABLE axe_devices ADD COLUMN removed_at INTEGER DEFAULT 0")
+                c.execute(
+                    "ALTER TABLE axe_devices ADD COLUMN removed_at INTEGER DEFAULT 0"
+                )
                 log.info("[migrate] added removed_at to axe_devices")
             except Exception as e:
                 log.warning("[migrate] could not add removed_at: %s", e)
 
     # ── CRUD ──────────────────────────────────────────────────────────
 
-    def add_device(self, ip_address: str, name: str = "", tenant_id: str = "default") -> dict:
+    def add_device(
+        self, ip_address: str, name: str = "", tenant_id: str = "default"
+    ) -> dict:
         """Register a new device by IP. Attempts to connect and auto-detect.
         Returns the device dict with detected info, or basic info if connection failed.
 
@@ -225,8 +244,9 @@ class DeviceRegistry:
         self._persist_device(device)
         return device
 
-    def remove_device(self, device_id: str, tenant_id: str = "default",
-                      hard: bool = False) -> bool:
+    def remove_device(
+        self, device_id: str, tenant_id: str = "default", hard: bool = False
+    ) -> bool:
         """Remove a device from the registry. Returns True if removed.
         Only removes if the device belongs to the given tenant.
 
@@ -240,8 +260,10 @@ class DeviceRegistry:
         conn = self._get_db()
         c = conn.cursor()
         if hard:
-            c.execute("DELETE FROM axe_devices WHERE id=? AND tenant_id=?",
-                      (device_id, tenant_id))
+            c.execute(
+                "DELETE FROM axe_devices WHERE id=? AND tenant_id=?",
+                (device_id, tenant_id),
+            )
         else:
             c.execute(
                 "UPDATE axe_devices SET removed_at=?, status='OFFLINE' "
@@ -262,13 +284,22 @@ class DeviceRegistry:
         try:
             conn = self._get_db()
             c = conn.cursor()
-            c.execute("SELECT id FROM axe_devices WHERE COALESCE(removed_at,0)>0 AND removed_at<?",
-                      (cutoff,))
+            c.execute(
+                "SELECT id FROM axe_devices WHERE COALESCE(removed_at,0)>0 AND removed_at<?",
+                (cutoff,),
+            )
             ids = [r["id"] for r in c.fetchall()]
             if ids:
                 placeholders = ",".join("?" * len(ids))
-                c.execute(f"DELETE FROM axe_telemetry WHERE device_id IN ({placeholders})", ids)
-                c.execute(f"DELETE FROM axe_devices WHERE id IN ({placeholders})", ids)
+                # placeholders are generated ?-markers only — no user input.
+                c.execute(
+                    f"DELETE FROM axe_telemetry WHERE device_id IN ({placeholders})",  # nosec B608
+                    ids,
+                )
+                c.execute(
+                    f"DELETE FROM axe_devices WHERE id IN ({placeholders})",  # nosec B608
+                    ids,
+                )
                 removed = len(ids)
                 conn.commit()
                 if removed:
@@ -314,9 +345,15 @@ class DeviceRegistry:
         conn = self._get_db()
         c = conn.cursor()
         if tenant_id:
-            c.execute(f"SELECT * FROM axe_devices WHERE tenant_id=? AND {self._tombstone_query()} ORDER BY name", (tenant_id,))
+            # _tombstone_query() is an internal fixed expression — no user input.
+            c.execute(
+                f"SELECT * FROM axe_devices WHERE tenant_id=? AND {self._tombstone_query()} ORDER BY name",  # nosec B608
+                (tenant_id,),
+            )
         else:
-            c.execute(f"SELECT * FROM axe_devices WHERE {self._tombstone_query()} ORDER BY name")
+            c.execute(
+                f"SELECT * FROM axe_devices WHERE {self._tombstone_query()} ORDER BY name"  # nosec B608
+            )
         rows = c.fetchall()
         conn.close()
         devices = [self._row_to_device(r) for r in rows]
@@ -364,9 +401,16 @@ class DeviceRegistry:
         conn = self._get_db()
         c = conn.cursor()
         if tenant_id:
-            c.execute(f"SELECT * FROM axe_devices WHERE id=? AND tenant_id=? AND {self._tombstone_query()}", (device_id, tenant_id))
+            # internal fixed _tombstone_query() expression — no user input.
+            c.execute(
+                f"SELECT * FROM axe_devices WHERE id=? AND tenant_id=? AND {self._tombstone_query()}",  # nosec B608
+                (device_id, tenant_id),
+            )
         else:
-            c.execute(f"SELECT * FROM axe_devices WHERE id=? AND {self._tombstone_query()}", (device_id,))
+            c.execute(
+                f"SELECT * FROM axe_devices WHERE id=? AND {self._tombstone_query()}",  # nosec B608
+                (device_id,),
+            )
         r = c.fetchone()
         conn.close()
         return self._row_to_device(r) if r else {}
@@ -377,15 +421,27 @@ class DeviceRegistry:
         conn = self._get_db()
         c = conn.cursor()
         if tenant_id:
-            c.execute(f"SELECT * FROM axe_devices WHERE ip_address=? AND tenant_id=? AND {self._tombstone_query()}", (ip_address, tenant_id))
+            # internal fixed _tombstone_query() expression — no user input.
+            c.execute(
+                f"SELECT * FROM axe_devices WHERE ip_address=? AND tenant_id=? AND {self._tombstone_query()}",  # nosec B608
+                (ip_address, tenant_id),
+            )
         else:
-            c.execute(f"SELECT * FROM axe_devices WHERE ip_address=? AND {self._tombstone_query()}", (ip_address,))
+            c.execute(
+                f"SELECT * FROM axe_devices WHERE ip_address=? AND {self._tombstone_query()}",  # nosec B608
+                (ip_address,),
+            )
         r = c.fetchone()
         conn.close()
         return self._row_to_device(r) if r else {}
 
-    def upsert_agent_device(self, ip_address: str, name: str = "",
-                            tenant_id: str = "default", info: dict = None) -> dict:
+    def upsert_agent_device(
+        self,
+        ip_address: str,
+        name: str = "",
+        tenant_id: str = "default",
+        info: dict = None,
+    ) -> dict:
         """Register (or refresh) a device reported by the user's LOCAL agent.
 
         SaaS model: the cloud dashboard cannot reach the home LAN, so devices
@@ -403,14 +459,18 @@ class DeviceRegistry:
         # it back. The tombstone is checked BEFORE the upsert so both the
         # register and telemetry paths refuse it.
         if self.get_removed_by_ip(ip_address, tenant_id=tenant_id):
-            log.info("[agent] refusing upsert of removed device %s (tombstoned)", ip_address)
+            log.info(
+                "[agent] refusing upsert of removed device %s (tombstoned)", ip_address
+            )
             return {}
         existing = self.get_device_by_ip(ip_address, tenant_id=tenant_id)
         if existing:
             updates = {
                 "model": str(info.get("model") or existing.get("model", "")),
                 "firmware": str(info.get("firmware") or existing.get("firmware", "")),
-                "firmware_version": str(info.get("version") or existing.get("firmware_version", "")),
+                "firmware_version": str(
+                    info.get("version") or existing.get("firmware_version", "")
+                ),
                 "hostname": str(info.get("hostname") or existing.get("hostname", "")),
                 "agent_managed": 1,
                 "last_seen": now,
@@ -429,7 +489,8 @@ class DeviceRegistry:
         caps = _caps_for_type(info)
         device = {
             "id": device_id,
-            "name": name or str(info.get("hostname") or info.get("model") or ip_address),
+            "name": name
+            or str(info.get("hostname") or info.get("model") or ip_address),
             "model": str(info.get("model") or ""),
             "manufacturer": str(info.get("manufacturer") or ""),
             "firmware": str(info.get("firmware") or ""),
@@ -450,8 +511,9 @@ class DeviceRegistry:
         self._persist_device(device)
         return device
 
-    def save_agent_telemetry(self, device_id: str, telemetry: dict,
-                             tenant_id: str = "default") -> None:
+    def save_agent_telemetry(
+        self, device_id: str, telemetry: dict, tenant_id: str = "default"
+    ) -> None:
         """Persist telemetry pushed by the user's local agent and update the
         device status (ONLINE when hashrate > 0, IDLE otherwise)."""
         now = int(time.time())
@@ -459,20 +521,35 @@ class DeviceRegistry:
         payload["ts"] = payload.get("ts") or now
         payload["device_id"] = device_id
         self.save_telemetry(device_id, payload, tenant_id=tenant_id)
-        hr = int(payload.get("hashrate_hs") or 0)
-        self.update_device(device_id, {
-            "last_seen": now,
-            "status": STATUS_ONLINE if hr > 0 else "IDLE",
-            "agent_managed": 1,
-        }, tenant_id=tenant_id)
+        self.update_device(
+            device_id,
+            {
+                "last_seen": now,
+                "status": derive_device_status(payload),
+                "agent_managed": 1,
+            },
+            tenant_id=tenant_id,
+        )
 
     def update_device(self, device_id: str, updates: dict, tenant_id: str = "") -> bool:
         """Update device fields. Keys in 'updates' overwrite stored values.
         Returns True if device exists and was updated.
         If tenant_id is provided, only updates devices belonging to that tenant."""
-        fields = ["name", "model", "ip_address", "hostname", "group_id", "status",
-                  "last_seen", "agent_managed", "firmware", "firmware_version",
-                  "manufacturer", "mac_address", "api_version"]
+        fields = [
+            "name",
+            "model",
+            "ip_address",
+            "hostname",
+            "group_id",
+            "status",
+            "last_seen",
+            "agent_managed",
+            "firmware",
+            "firmware_version",
+            "manufacturer",
+            "mac_address",
+            "api_version",
+        ]
         set_parts = []
         vals = []
         for k, v in updates.items():
@@ -486,7 +563,8 @@ class DeviceRegistry:
             set_parts.append("capabilities=?")
             vals.append(json.dumps(updates["capabilities"]))
 
-        sql = f"UPDATE axe_devices SET {', '.join(set_parts)}, updated_at=? WHERE id=?"
+        # set_parts is built from the fixed allowlist of update fields.
+        sql = f"UPDATE axe_devices SET {', '.join(set_parts)}, updated_at=? WHERE id=?"  # nosec B608
         vals.append(int(time.time()))
         vals.append(device_id)
         if tenant_id:
@@ -503,18 +581,27 @@ class DeviceRegistry:
 
     # ── Telemetry persistence (tenant-aware) ──────────────────────────
 
-    def save_telemetry(self, device_id: str, telemetry: dict, tenant_id: str = "default"):
+    def save_telemetry(
+        self, device_id: str, telemetry: dict, tenant_id: str = "default"
+    ):
         """Persist a telemetry snapshot for a device owned by the given tenant."""
         conn = self._get_db()
         c = conn.cursor()
         c.execute(
             "INSERT INTO axe_telemetry (ts, device_id, payload, tenant_id) VALUES (?, ?, ?, ?)",
-            (telemetry.get("ts", int(time.time())), device_id, json.dumps(telemetry), tenant_id),
+            (
+                telemetry.get("ts", int(time.time())),
+                device_id,
+                json.dumps(telemetry),
+                tenant_id,
+            ),
         )
         conn.commit()
         conn.close()
 
-    def get_recent_telemetry(self, device_id: str, limit: int = 120, tenant_id: str = "") -> list:
+    def get_recent_telemetry(
+        self, device_id: str, limit: int = 120, tenant_id: str = ""
+    ) -> list:
         """Get recent telemetry entries for a device, scoped to tenant."""
         conn = self._get_db()
         c = conn.cursor()
@@ -540,16 +627,27 @@ class DeviceRegistry:
             result.append(entry)
         return result
 
-    def get_telemetry_chart_data(self, device_id: str, limit: int = 120, tenant_id: str = "") -> dict:
+    def get_telemetry_chart_data(
+        self, device_id: str, limit: int = 120, tenant_id: str = ""
+    ) -> dict:
         """Get chart-ready telemetry series for a device.
         Returns dict with arrays: ts, hashrate_hs, temperature, fan_rpm,
         power_watts, efficiency_jth, shares_accepted, shares_rejected."""
         raw = self.get_recent_telemetry(device_id, limit=limit, tenant_id=tenant_id)
         raw.reverse()  # chronological order
-        series = {"ts": [], "hashrate_hs": [], "temperature": [], "fan_rpm": [],
-                  "power_watts": [], "efficiency_jth": [], "shares_accepted": [],
-                  "shares_rejected": [], "hw_error_pct": [], "voltage_mv": [],
-                  "frequency_mhz": []}
+        series = {
+            "ts": [],
+            "hashrate_hs": [],
+            "temperature": [],
+            "fan_rpm": [],
+            "power_watts": [],
+            "efficiency_jth": [],
+            "shares_accepted": [],
+            "shares_rejected": [],
+            "hw_error_pct": [],
+            "voltage_mv": [],
+            "frequency_mhz": [],
+        }
         for entry in raw:
             p = entry["payload"]
             # Trust only well-formed telemetry (must contain hashrate_hs) —
@@ -590,18 +688,24 @@ class DeviceRegistry:
             telemetry["device_id"] = device_id
 
             now = int(time.time())
-            self.update_device(device_id, {
-                "last_seen": now,
-                "status": STATUS_ONLINE if telemetry.get("hashrate_hs", 0) > 0
-                          else "IDLE",
-            }, tenant_id=tenant_id)
+            self.update_device(
+                device_id,
+                {
+                    "last_seen": now,
+                    "status": derive_device_status(telemetry),
+                },
+                tenant_id=tenant_id,
+            )
 
             self.save_telemetry(device_id, telemetry, tenant_id=tenant_id)
             return telemetry
 
         except AxeOSConnectorError:
-            self.update_device(device_id, {"last_seen": int(time.time()), "status": STATUS_OFFLINE},
-                              tenant_id=tenant_id)
+            self.update_device(
+                device_id,
+                {"last_seen": int(time.time()), "status": STATUS_OFFLINE},
+                tenant_id=tenant_id,
+            )
             # Return a FALSY dict so the background poll loop never caches
             # error stubs into axe_telemetry_cache / the /api/snapshot payload.
             return {}
@@ -645,8 +749,13 @@ class DeviceRegistry:
 
     # ── Agent command queue (SaaS: commands routed through the local agent) ─
 
-    def enqueue_agent_command(self, device_id: str, command: str,
-                              params: dict = None, tenant_id: str = "default") -> dict:
+    def enqueue_agent_command(
+        self,
+        device_id: str,
+        command: str,
+        params: dict = None,
+        tenant_id: str = "default",
+    ) -> dict:
         """Queue a command for a device polled by the user's local agent.
         Returns {"id": ..., "status": "pending"} or {} when the device is
         not agent-managed / unknown. Never raises."""
@@ -659,8 +768,15 @@ class DeviceRegistry:
                 "INSERT INTO axe_agent_commands "
                 "(id, tenant_id, device_id, command, params, status, created_at) "
                 "VALUES (?,?,?,?,?,?,?)",
-                (cmd_id, tenant_id, device_id, command,
-                 json.dumps(params or {}), "pending", now),
+                (
+                    cmd_id,
+                    tenant_id,
+                    device_id,
+                    command,
+                    json.dumps(params or {}),
+                    "pending",
+                    now,
+                ),
             )
             conn.commit()
         except Exception as e:
@@ -672,8 +788,9 @@ class DeviceRegistry:
             return {}
         return {"id": cmd_id, "command": command, "status": "pending"}
 
-    def pending_agent_commands(self, tenant_id: str = "default",
-                               requeue_after: int = 60) -> list:
+    def pending_agent_commands(
+        self, tenant_id: str = "default", requeue_after: int = 60
+    ) -> list:
         """Pending commands for a tenant (for the agent's pull). Commands
         pulled but never acked within `requeue_after` seconds are returned
         again so a crashed agent doesn't lose the command forever."""
@@ -718,8 +835,9 @@ class DeviceRegistry:
         finally:
             conn.close()
 
-    def ack_agent_command(self, command_id: str, tenant_id: str, success: bool,
-                          result: str = "") -> bool:
+    def ack_agent_command(
+        self, command_id: str, tenant_id: str, success: bool, result: str = ""
+    ) -> bool:
         """Ack a command result (agent executed it). Idempotent.
         A duplicate ack (agent network retry) returns True as long as the
         command belongs to the tenant — an already-acked command must not
@@ -730,8 +848,13 @@ class DeviceRegistry:
             c.execute(
                 "UPDATE axe_agent_commands SET status=?, result=?, acked_at=? "
                 "WHERE id=? AND tenant_id=? AND status='pulled'",
-                ("done" if success else "failed", result[:2000],
-                 int(time.time()), command_id, tenant_id),
+                (
+                    "done" if success else "failed",
+                    result[:2000],
+                    int(time.time()),
+                    command_id,
+                    tenant_id,
+                ),
             )
             conn.commit()
             if c.rowcount > 0:

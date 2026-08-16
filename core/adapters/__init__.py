@@ -2,6 +2,7 @@
 core/adapters/__init__.py
 Factory for selecting the right device adapter based on device model/manufacturer.
 """
+
 from core.adapters.base_adapter import BaseAdapter
 from core.models.device import Device
 
@@ -30,13 +31,22 @@ def get_adapter(device: Device) -> BaseAdapter:
         return BitaxeAdapter(device)
 
     # Braiins OS+ → BraiinsAdapter
-    if "braiins" in firmware or "braiins" in model \
-       or "bosminer" in firmware or "bosminer" in model:
+    if (
+        "braiins" in firmware
+        or "braiins" in model
+        or "bosminer" in firmware
+        or "bosminer" in model
+    ):
         return BraiinsAdapter(device)
 
     # cgminer protocol → CgminerAdapter (catch-all for Antminer, Whatsminer, etc.)
-    if "antminer" in model or "whatsminer" in model or "avalon" in model \
-       or "cgminer" in firmware or "bmminer" in firmware:
+    if (
+        "antminer" in model
+        or "whatsminer" in model
+        or "avalon" in model
+        or "cgminer" in firmware
+        or "bmminer" in firmware
+    ):
         return CgminerAdapter(device)
 
     raise NotImplementedError(

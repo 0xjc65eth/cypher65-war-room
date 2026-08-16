@@ -436,5 +436,11 @@ def test_admin_sessions_route_includes_pool_stats():
     # the block must carry the full schema.
     for key in ("started", "pool_size", "workers_alive", "sessions_active",
                 "scheduled", "queue_pending", "total_polls",
-                "total_errors", "polls_per_sec", "uptime_secs"):
+                "total_errors", "polls_per_sec", "uptime_secs",
+                "auto_exclude_alerts"):
         assert key in pool
+    # Auto-exclude alert counters (Issue #112): well-formed with a live
+    # total, even before any dispatch in this test process.
+    ax = pool["auto_exclude_alerts"]
+    assert ax["total"] == ax["sweep"] + ax["panel"]
+    assert ax["sweep"] >= 0 and ax["panel"] >= 0
