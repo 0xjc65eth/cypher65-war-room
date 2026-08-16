@@ -24,6 +24,10 @@ jobs:
         uses: actions/checkout@v7
         with:
           fetch-depth: 0
+          # CRÍTICO: em pull_request o checkout padrão usa o MERGE ref
+          # (master já ancestral) → merge-base vira master → stale sempre
+          # false. Checkout do head.sha real da branch (como o dependabot).
+          ref: ${{ github.event.pull_request.head.sha }}
 
       - name: Detectar workflows defasados vs master
         id: detect
