@@ -701,7 +701,7 @@ app.register_blueprint(alerts_bp)
 # current schema revision; _record_schema_version() stamps it into the
 # schema_version table on every boot so operators/tests can verify the DB
 # layout matches the code that wrote it.
-SCHEMA_VERSION = 3  # Issue #17: + pool_metrics (60s sampler) · Issue #176: + error_metrics (error-rate)
+SCHEMA_VERSION = 4  # Issue #17: + pool_metrics · Issue #176: + error_metrics · Issue #202: + degradation_metrics (WARNING-rate)
 
 
 def _record_schema_version(conn):
@@ -1221,6 +1221,14 @@ def init_db():
     except Exception as e:
         log.warning("[migrate] error_metrics init failed: %s", e)
 
+    # Issue #202: WARNING/degradation bucket — every WARNING record (including
+    # the converted `except: pass` sites) lands here so silent failures become
+    # visible telemetry ($0, self-host friendly, same discipline).
+    try:
+        _error_tracker.ensure_degradation_table(conn)
+    except Exception as e:
+        log.warning("[migrate] degradation_metrics init failed: %s", e)
+
     # ── CFO: PRO conversion telemetry (funnel + LTV/CAC) ──
     # Rows are funnel events (paywall_view → modal_open → checkout_start →
     # paid → key_activated); tenant_id/email are SHA-256 hashed (privacy).
@@ -1304,6 +1312,9 @@ _init_sentry()  # logs "[monitor] Sentry enabled/skipped"; no-op without DSN
 # discipline as the pool_metrics sampler (never on the request hot path, and
 # a DB failure inside emit() is swallowed, never breaking logging).
 _error_tracker.install(get_db)
+# Issue #202: the WARNING half of the $0 sampler — fires on every WARNING log
+# record (the converted `except: pass` sites now WARN instead of dying silent).
+_error_tracker.install_degradation(get_db)
 
 
 # Markers written exclusively by the demo seeders. Devices carrying these
@@ -2851,10 +2862,11 @@ def _restore_all_time_best_diff():
                 v = float(r["value"])
                 if v > 0:
                     timeline_state["all_time_best_diff_raw"] = v
-            except Exception:
-                pass
-    except Exception:
-        pass
+            except Exception as e:
+                log.warning("[proximity] all_time_best_diff value corrupt: %s", e)
+    except Exception as e:
+        # Issue #202: restore failure is degradation — never silent.
+        log.warning("[proximity] all_time_best_diff restore error: %s", e)
 
 
 def _persist_all_time_best_diff(value):
@@ -2922,8 +2934,9 @@ def _nearest_history_before(ts_target):
         conn.close()
         if r:
             return (r["best_diff"], r["network_difficulty"])
-    except Exception:
-        pass
+    except Exception as e:
+        # Issue #202: lookup failure is degradation — never silent.
+        log.warning("[proximity] nearest history lookup failed: %s", e)
     return None
 
 
@@ -3613,6 +3626,38 @@ def api_admin_error_rate():
     data["sentry_enabled"] = _sentry_active()
     data["sentry_release"] = _SENTRY_CFG["release"]
     data["sentry_environment"] = _SENTRY_ENVIRONMENT
+    return jsonify(data)
+
+
+@app.route("/api/admin/degradation-rate")
+def api_admin_degradation_rate():
+    """WARNING/degradation telemetry (Issue #202) — admin-gated like error-rate.
+
+    Same gate (localhost or operator X-API-Key). Returns the
+    degradation_metrics aggregation: total WARNINGs in the window, peak per
+    hour, hourly buckets with per-module breakdown, top modules, and the most
+    recent warnings WITH their request_id — plus the rate-alert flags (``spike``
+    = pico >= 100/h; ``sustained`` = warnings in >= 2 distinct hours) and the
+    since-boot counter. Honest: an empty response means zero warnings.
+    """
+    remote = request.remote_addr or ""
+    local = remote in ("127.0.0.1", "::1", "localhost")
+    operator_key = os.environ.get("API_KEY") or ""
+    sent = (request.headers.get("X-API-Key") or "").strip()
+    if not local and not (operator_key and hmac.compare_digest(sent, operator_key)):
+        return jsonify({"error": "admin access required"}), 403
+
+    hours = request.args.get("hours", 24, type=int)
+    if hours < 1 or hours > 7 * 24:
+        hours = 24
+    limit = request.args.get("limit", 60, type=int)
+    if limit < 1 or limit > 500:
+        limit = 60
+    conn = get_db()
+    try:
+        data = _error_tracker.fetch_degradation_rate(conn, hours=hours, limit=limit)
+    finally:
+        conn.close()
     return jsonify(data)
 
 
@@ -4540,8 +4585,9 @@ def _do_poll():
         )
         recent_alerts = [dict(r) for r in c.fetchall()]
         conn.close()
-    except Exception:
-        pass
+    except Exception as e:
+        # Issue #202: a failed read is degradation — never silent.
+        log.warning("[poll] recent alerts read failed: %s", e)
     # Merge in-memory CRIT/SUCCESS alerts (disk-watchdog). Each in-memory alert
     # already carries a stable id assigned by _make_memory_alert, so
     # JS renderAlerts sees them as same-item across polls and does NOT re-fire
@@ -4597,8 +4643,9 @@ def _do_poll():
         c.execute("SELECT * FROM share_timeline ORDER BY id DESC LIMIT 80")
         timeline_recent = [dict(r) for r in c.fetchall()]
         conn.close()
-    except Exception:
-        pass
+    except Exception as e:
+        # Issue #202: a failed read is degradation — never silent.
+        log.warning("[poll] timeline events read failed: %s", e)
 
     # ━━ Event stats (session + rolling windows) ━━
     event_stats, hour_ago, day_ago = compute_event_stats(
@@ -4633,8 +4680,9 @@ def _do_poll():
                 "db_best_diffs_last_day": best_diffs_last_day,
             }
         )
-    except Exception:
-        pass
+    except Exception as e:
+        # Issue #202: a failed stats read is degradation — never silent.
+        log.warning("[poll] event-stats DB read failed: %s", e)
 
     # ━━ Hot-streak alert (proximity-driven, fresh-bump gated) ━━
     # Already captured above (right after proximity compute). Here we just

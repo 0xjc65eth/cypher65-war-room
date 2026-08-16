@@ -3076,15 +3076,16 @@ function renderAccount(acct) {
     const gate = document.getElementById('admin-gate-badge');
     try {
       // Pool health — no auth needed for localhost/operator-key admin routes.
-      const [sessionsResp, convResp, auditResp, metricsResp, docsResp, errResp] = await Promise.all([
+      const [sessionsResp, convResp, auditResp, metricsResp, docsResp, errResp, degResp] = await Promise.all([
         fetch('/api/admin/sessions', { headers: { 'X-Requested-With': 'fetch' } }),
         fetch('/api/admin/conversion?weeks=8', { headers: { 'X-Requested-With': 'fetch' } }),
         fetch('/api/admin/rentals/accepted-recos?limit=1000', { headers: { 'X-Requested-With': 'fetch' } }),
         fetch('/api/admin/pool-metrics?hours=24', { headers: { 'X-Requested-With': 'fetch' } }),
         fetch('/api/admin/docs-feedback', { headers: { 'X-Requested-With': 'fetch' } }),
         fetch('/api/admin/error-rate?hours=24', { headers: { 'X-Requested-With': 'fetch' } }),
+        fetch('/api/admin/degradation-rate?hours=24', { headers: { 'X-Requested-With': 'fetch' } }),
       ]);
-      if (sessionsResp.status === 403 || convResp.status === 403 || auditResp.status === 403 || metricsResp.status === 403 || docsResp.status === 403 || errResp.status === 403) {
+      if (sessionsResp.status === 403 || convResp.status === 403 || auditResp.status === 403 || metricsResp.status === 403 || docsResp.status === 403 || errResp.status === 403 || degResp.status === 403) {
         if (gate) gate.textContent = 'restricted';
         if (errEl) {
           errEl.hidden = false;
@@ -3100,14 +3101,16 @@ function renderAccount(acct) {
       const metrics = metricsResp.ok ? await metricsResp.json() : {};
       const docsFb = docsResp.ok ? await docsResp.json() : {};
       const errData = errResp.ok ? await errResp.json() : {};
-      _renderAdmin(sessions, conv, audit, metrics, docsFb, errData);
+      const degData = degResp.ok ? await degResp.json() : {};
+      _renderAdmin(sessions, conv, audit, metrics, docsFb, errData, degData);
     } catch (e) {
       if (errEl) { errEl.hidden = false; errEl.textContent = 'admin fetch error: ' + e.message; }
     }
   }
-  function _renderAdmin(sessions, conv, audit, metrics, docsFb, errData) {
+  function _renderAdmin(sessions, conv, audit, metrics, docsFb, errData, degData) {
     _renderAdminMetrics(metrics || {});
     _renderAdminErrorRate(errData || {});
+    _renderAdminDegradation(degData || {});
     _renderAdminAudit(audit);
     _renderAdminAutoExclusions(audit);
     _renderAdminDocsFeedback(docsFb || {});
@@ -3469,6 +3472,40 @@ function renderAccount(acct) {
         '<td title="' + escapeHtml(String(r.message || '')) + '">' + escapeHtml(String((r.message || '—').slice(0, 80))) + '</td>' +
         '<td>' + escapeHtml(String(r.count || 1)) + '</td>' +
         '<td class="admin-err__rid">' + escapeHtml(String(r.last_request_id || '—')) + '</td>' +
+        '<td>' + escapeHtml(_fmtErrorTs(r.last_ts)) + '</td>' +
+        '</tr>';
+    }).join('');
+  }
+
+  // ── Degradation (Issue #202) — WARNING bucket ($0, self-host) ─────────
+  // The converted `except: pass` sites now emit WARNINGs that land in
+  // degradation_metrics. spike = pico >= 100/h; sustained = warnings em >= 2
+  // horas distintas. Os badges são o 'alerta de taxa' sem depender de Sentry.
+  function _renderAdminDegradation(data) {
+    const tableWrap = document.getElementById('admin-deg-table-wrap');
+    const tbody = document.getElementById('admin-deg-table-body');
+    const empty = document.getElementById('admin-deg-empty');
+    if (!tableWrap || !tbody) return;
+    const total = data.total != null ? data.total : 0;
+    const peak = data.peak_per_hour != null ? data.peak_per_hour : 0;
+    _setAdminText('admin-deg-total', total);
+    _setAdminText('admin-deg-peak', peak);
+    const state = document.getElementById('admin-deg-state');
+    if (state) {
+      // Keep the kpi-card__value base class so the badge keeps its sizing.
+      state.className = 'kpi-card__value badge badge--' + (data.sustained ? 'red' : (data.spike ? 'amber' : 'green'));
+      state.textContent = data.sustained ? 'SUSTAINED ⚠' : (data.spike ? 'SPIKE ⚠' : (total > 0 ? 'normal' : 'ok'));
+    }
+    const recent = data.recent || [];
+    if (empty) empty.hidden = (data.buckets || []).length > 0;
+    if (!recent.length) { tableWrap.hidden = true; return; }
+    tableWrap.hidden = false;
+    tbody.innerHTML = recent.map(function (r) {
+      return '<tr>' +
+        '<td>' + escapeHtml(String(r.module || '—')) + '</td>' +
+        '<td title="' + escapeHtml(String(r.message || '')) + '">' + escapeHtml(String((r.message || '—').slice(0, 80))) + '</td>' +
+        '<td>' + escapeHtml(String(r.count || 1)) + '</td>' +
+        '<td>' + escapeHtml(String(r.last_request_id || '—')) + '</td>' +
         '<td>' + escapeHtml(_fmtErrorTs(r.last_ts)) + '</td>' +
         '</tr>';
     }).join('');

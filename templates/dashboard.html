@@ -1519,6 +1519,28 @@
     </table>
   </div>
 
+  <!-- ── Degradation (Issue #202): WARNING bucket — falhas silenciosas ── -->
+  <!-- Consome /api/admin/degradation-rate (mesmo gate). WARNINGs das rotas
+       convertidas (except: pass → log.warning) caem aqui; spike/sustained
+       são o alerta de taxa $0 (sem Sentry). -->
+  <div class="panel__subtitle">DEGRADAÇÃO (24h) — WARNINGs/hora · falhas silenciosas viram telemetria</div>
+  <div class="kpi-row">
+    <div class="kpi-card"><span class="kpi-card__label">Warnings 24h</span><span class="kpi-card__value" id="admin-deg-total">—</span></div>
+    <div class="kpi-card"><span class="kpi-card__label">Pico/hora</span><span class="kpi-card__value" id="admin-deg-peak">—</span></div>
+    <div class="kpi-card" title="spike = pico ≥ 100 WARNINGs/hora · sustained = warnings em ≥ 2 horas distintas (o 'alerta de taxa' $0)"><span class="kpi-card__label">Estado</span><span class="kpi-card__value" id="admin-deg-state">—</span></div>
+  </div>
+  <div class="admin-audit__table-wrap" id="admin-deg-table-wrap" hidden>
+    <table class="admin-audit__table">
+      <thead>
+        <tr><th>módulo</th><th>warning (último no bucket)</th><th>nº</th><th>request_id</th><th>último</th></tr>
+      </thead>
+      <tbody id="admin-deg-table-body"></tbody>
+    </table>
+  </div>
+  <div class="admin-metrics__empty" id="admin-deg-empty" hidden>
+    sem warnings nas últimas 24h — zero é o estado saudável
+  </div>
+
   <!-- ── PRO funnel (conversion telemetry) ── -->
   <div class="panel__subtitle">FUNIL PRO (30d) — quem vira assinante, onde o funil perde</div>
   <div class="kpi-row">
