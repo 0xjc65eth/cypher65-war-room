@@ -5329,11 +5329,19 @@ function sortMarketVenues(venues, key, dir) {
     const p = payload || {};
     const version = Number(p.rentals_payload_version) || 0;
     if (version < 2) return 2;
-    const age = (nowSec || Math.floor(Date.now() / 1000)) - (Number(p.updated_at) || 0);
+    // Sentinel policy (Issue #203): missing/epoch stamp → unknown freshness
+    // (0), never a fabricated 'stale' (age = now - 0 → huge).
+    const upd = Number(p.updated_at);
+    if (!(upd > 0)) return 0;
+    const age = (nowSec || Math.floor(Date.now() / 1000)) - upd;
     return age > 300 ? 1 : 0;
   }
   assertEqual('rentals stale missing stamp (old code)', rentalsPayloadStale({ updated_at: 1000000 }, 1000030), 2);
   assertEqual('rentals stale version 0', rentalsPayloadStale({ rentals_payload_version: 0, updated_at: 1000000 }, 1000030), 2);
+  assertEqual('rentals stale no updated_at', rentalsPayloadStale({ rentals_payload_version: 2 }, 1000030), 0);
+  assertEqual('rentals stale updated_at zero', rentalsPayloadStale({ rentals_payload_version: 2, updated_at: 0 }, 1000030), 0);
+  // A positive (ancient) stamp is still a real stamp → ages → stale (1).
+  assertEqual('rentals stale updated_at ancient', rentalsPayloadStale({ rentals_payload_version: 2, updated_at: 1 }, 1000030), 1);
   assertEqual('rentals fresh', rentalsPayloadStale({ rentals_payload_version: 2, updated_at: 1000000 }, 1000030), 0);
   assertEqual('rentals age-stale only', rentalsPayloadStale({ rentals_payload_version: 2, updated_at: 1000000 }, 1000400), 1);
   assertEqual('rentals auth rejected permission', rentalsAuthRejected('No Permission - account/1285', false), false);

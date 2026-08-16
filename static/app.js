@@ -316,7 +316,12 @@
     const p = payload || {};
     const version = Number(p.rentals_payload_version) || 0;
     if (version < RENTALS_PAYLOAD_VERSION) return 2;
-    const age = (nowSec || Math.floor(Date.now() / 1000)) - (Number(p.updated_at) || 0);
+    // Sentinel policy (Issue #203): a missing/epoch stamp must never fabricate
+    // age (now - 0 → huge → false 'stale'). No stamp → unknown freshness → 0,
+    // so valid data is never hidden by an absent field.
+    const upd = Number(p.updated_at);
+    if (!(upd > 0)) return 0;
+    const age = (nowSec || Math.floor(Date.now() / 1000)) - upd;
     return age > RENTALS_STALE_MAX_AGE_S ? 1 : 0;
   }
 
