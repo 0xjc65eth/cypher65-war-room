@@ -5336,6 +5336,23 @@ function sortMarketVenues(venues, key, dir) {
   assertEqual('rentals stale version 0', rentalsPayloadStale({ rentals_payload_version: 0, updated_at: 1000000 }, 1000030), 2);
   assertEqual('rentals fresh', rentalsPayloadStale({ rentals_payload_version: 2, updated_at: 1000000 }, 1000030), 0);
   assertEqual('rentals age-stale only', rentalsPayloadStale({ rentals_payload_version: 2, updated_at: 1000000 }, 1000400), 1);
+
+  // Rentals count surface (Issue #200) — "X de N" only when truncated; a
+  // full fetch renders the plain count, nulls/NaN never fabricate a surface.
+  function rentalsCountSurface(rendered, total) {
+    const r = Number(rendered);
+    const t = Number(total);
+    if (isFinite(r) && isFinite(t) && t > 0 && r < t) {
+      return { text: r + ' de ' + t, title: 'exibindo ' + r + ' de ' + t + ' rentals (limite de segurança do fetch)' };
+    }
+    return { text: null, title: '' };
+  }
+  assertEqual('rentals surface full fetch', rentalsCountSurface(120, 120).text, null);
+  assertEqual('rentals surface truncated', rentalsCountSurface(1000, 1500).text, '1000 de 1500');
+  assertEqual('rentals surface truncated title', rentalsCountSurface(1000, 1500).title.indexOf('1000 de 1500') !== -1, true);
+  assertEqual('rentals surface null total', rentalsCountSurface(50, null).text, null);
+  assertEqual('rentals surface zero total', rentalsCountSurface(0, 0).text, null);
+  assertEqual('rentals surface nan safe', rentalsCountSurface('x', 5).text, null);
   assertEqual('rentals auth rejected permission', rentalsAuthRejected('No Permission - account/1285', false), false);
   assertEqual('rentals auth guide mrr', rentalsAuthGuide('mrr', 'Not Authenticated - Invalid Key - Bad Nonce.').indexOf('miningrigrentals.com') !== -1, true);
   assertEqual('rentals auth guide mrr not concurrency', rentalsAuthGuide('mrr', 'x').indexOf('NÃO é bug de concorrência') !== -1, true);

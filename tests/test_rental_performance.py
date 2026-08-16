@@ -125,6 +125,177 @@ def test_mrr_rentals_normalizes(mrr_creds, monkeypatch):
     assert "?type=renter&history=true&limit=25" not in calls["url"]
 
 
+# ── Issue #200: pagination loop ────────────────────────────────────────
+
+
+def test_mrr_rentals_paginates_until_total(mrr_creds, monkeypatch):
+    """Issue #200: the loop walks pages until MRR's `total` is covered —
+    rentals beyond the first page are no longer invisible. `page` is sent as
+    a query param (path-only HMAC signing is unaffected)."""
+    calls = {"n": 0, "pages": []}
+    per_page = 50
+    total = 120
+
+    def fake_get(url, headers=None, params=None, timeout=None):
+        calls["n"] += 1
+        page = int((params or {}).get("page", 1))
+        calls["pages"].append(page)
+        start = (page - 1) * per_page
+        records = [
+            _mrr_rental(id=str(5000 + i))
+            for i in range(start, min(start + per_page, total))
+        ]
+        return FakeResponse(
+            payload={"success": True, "data": {"total": total, "rentals": records}}
+        )
+
+    monkeypatch.setattr(rp.requests, "get", fake_get)
+    out = rp.fetch_mrr_rentals(rtype="renter", history=True, limit=50)
+    assert out["success"] is True
+    assert calls["n"] == 3  # 120 total / 50 per page → 3 pages
+    assert calls["pages"] == [1, 2, 3]
+    assert len(out["rentals"]) == 120
+    assert out["total"] == 120
+    assert out["rendered"] == 120
+    assert out["truncated"] is False
+    assert out["pages_fetched"] == 3
+
+
+def test_mrr_rentals_single_page_makes_one_call(mrr_creds, monkeypatch):
+    """A series that fits one page behaves exactly like the old single call."""
+    calls = {"n": 0}
+
+    def fake_get(url, headers=None, params=None, timeout=None):
+        calls["n"] += 1
+        return FakeResponse(
+            payload={
+                "success": True,
+                "data": {
+                    "total": 1,
+                    "rentals": [_mrr_rental(id="5657736")],
+                },
+            }
+        )
+
+    monkeypatch.setattr(rp.requests, "get", fake_get)
+    out = rp.fetch_mrr_rentals()
+    assert out["success"] is True
+    assert calls["n"] == 1
+    assert out["total"] == 1
+    assert out["rendered"] == 1
+    assert out["truncated"] is False
+
+
+def test_mrr_rentals_pagination_dedupes_page_drift(mrr_creds, monkeypatch):
+    """New rentals inserted mid-loop re-shuffle MRR pages; the dedup by id
+    must never double-list, and the loop stops honestly on a no-new page."""
+    # total 6: page 1 → 3 ids; page 2 re-delivers #3 (drift) + adds #4/#5
+    # (5 < 6 → keep looping); page 3 re-delivers only seen ids → no-new stop.
+    page_data = {
+        1: [_mrr_rental(id="1"), _mrr_rental(id="2"), _mrr_rental(id="3")],
+        2: [_mrr_rental(id="3"), _mrr_rental(id="4"), _mrr_rental(id="5")],
+        3: [_mrr_rental(id="4"), _mrr_rental(id="5")],
+    }
+    calls = {"n": 0}
+
+    def fake_get(url, headers=None, params=None, timeout=None):
+        calls["n"] += 1
+        page = int((params or {}).get("page", 1))
+        return FakeResponse(
+            payload={"success": True, "data": {"total": 6, "rentals": page_data[page]}}
+        )
+
+    monkeypatch.setattr(rp.requests, "get", fake_get)
+    out = rp.fetch_mrr_rentals()
+    ids = [r["id"] for r in out["rentals"]]
+    assert ids == ["1", "2", "3", "4", "5"]  # deduped, no double-list
+    assert len(ids) == len(set(ids))
+    assert calls["n"] == 3  # stopped on the no-new-records page (3)
+    assert out["truncated"] is True  # 5 of 6 — honest incomplete surface
+
+
+def test_mrr_rentals_pagination_stops_when_param_ignored(mrr_creds, monkeypatch):
+    """If MRR ever ignores `page` (returns the same page again), the no-new-
+    records guard stops the loop — never an infinite page storm — and the
+    honest `truncated` flag says the count is incomplete."""
+    calls = {"n": 0}
+
+    def fake_get(url, headers=None, params=None, timeout=None):
+        calls["n"] += 1
+        return FakeResponse(
+            payload={
+                "success": True,
+                "data": {
+                    "total": 5,
+                    "rentals": [_mrr_rental(id="1"), _mrr_rental(id="2")],
+                },
+            }
+        )
+
+    monkeypatch.setattr(rp.requests, "get", fake_get)
+    out = rp.fetch_mrr_rentals()
+    assert calls["n"] == 2  # page 1 + one repeated page, then stop
+    assert len(out["rentals"]) == 2
+    assert out["total"] == 5
+    assert out["truncated"] is True  # 2 < 5 — honest incomplete surface
+
+
+def test_mrr_rentals_pagination_safety_cap_truncates(mrr_creds, monkeypatch):
+    """A huge account (> the rate-budget cap) is cut at the safety ceiling
+    with `truncated=True` — the CSV/panel must surface it instead of
+    pretending the full account was fetched."""
+    calls = {"n": 0}
+    total = 5000
+    per_page = rp.MRR_MAX_PAGE_SIZE
+
+    def fake_get(url, headers=None, params=None, timeout=None):
+        calls["n"] += 1
+        page = int((params or {}).get("page", 1))
+        start = (page - 1) * per_page
+        records = [
+            _mrr_rental(id=str(9000 + i))
+            for i in range(start, min(start + per_page, total))
+        ]
+        return FakeResponse(
+            payload={"success": True, "data": {"total": total, "rentals": records}}
+        )
+
+    monkeypatch.setattr(rp.requests, "get", fake_get)
+    out = rp.fetch_mrr_rentals(limit=per_page)
+    assert out["truncated"] is True
+    assert out["rendered"] == rp.MRR_PAGE_SAFETY_MAX_RECORDS
+    assert out["total"] == total
+    assert calls["n"] == rp.MRR_PAGE_SAFETY_MAX_RECORDS // per_page
+
+
+def test_mrr_rentals_malformed_total_degrades(mrr_creds, monkeypatch):
+    """A malformed upstream `total` must never fail the whole fetch — the
+    loop degrades to the page-1 count (bounded, single-page behavior) and
+    still returns the rentals it fetched (review #200)."""
+    calls = {"n": 0}
+
+    def fake_get(url, headers=None, params=None, timeout=None):
+        calls["n"] += 1
+        return FakeResponse(
+            payload={
+                "success": True,
+                "data": {
+                    "total": "garbage-not-a-number",
+                    "rentals": [_mrr_rental(id="1"), _mrr_rental(id="2")],
+                },
+            }
+        )
+
+    monkeypatch.setattr(rp.requests, "get", fake_get)
+    out = rp.fetch_mrr_rentals()
+    assert out["success"] is True
+    assert calls["n"] == 1  # single-page degrade — loop never spins
+    assert len(out["rentals"]) == 2
+    assert out["total"] == 2
+    assert out["rendered"] == 2
+    assert out["truncated"] is False
+
+
 def test_mrr_rentals_http_error(mrr_creds, monkeypatch):
     monkeypatch.setattr(
         rp.requests, "get", lambda *a, **k: FakeResponse(ok=False, status_code=503)
@@ -1556,19 +1727,45 @@ def test_auto_blacklist_not_for_good_rig(tmp_path, monkeypatch):
 def test_list_route_carries_reco_trend_and_export(rclient, monkeypatch):
     """GET /api/rentals includes recommendations + market_trend + auto list,
     and /api/rentals/export returns a CSV ledger."""
+    # Issue #200: >50 historical rentals — the mock simulates the paginated
+    # fetch covering the FULL series (rendered == total).
+    _hist_120 = [rp._normalize_rental(_mrr_rental(id=str(i))) for i in range(1, 121)]
     monkeypatch.setattr(
         _app_module._rental_perf,
         "fetch_mrr_rentals",
-        lambda rtype="renter", history=False, limit=50, tenant_id="": {
-            "success": True,
-            "needs_auth": False,
-            "rentals": (
-                [rp._normalize_rental(_mrr_rental())]
-                if (rtype == "renter" and not history)
-                else []
-            ),
-            "total": 1,
-        },
+        lambda rtype="renter", history=False, limit=50, tenant_id="": (
+            {
+                "success": True,
+                "needs_auth": False,
+                "rentals": [rp._normalize_rental(_mrr_rental())],
+                "total": 1,
+                "rendered": 1,
+                "truncated": False,
+                "pages_fetched": 1,
+            }
+            if (rtype == "renter" and not history)
+            else (
+                {
+                    "success": True,
+                    "needs_auth": False,
+                    "rentals": _hist_120,
+                    "total": 120,
+                    "rendered": 120,
+                    "truncated": False,
+                    "pages_fetched": 3,
+                }
+                if (rtype == "renter" and history)
+                else {
+                    "success": True,
+                    "needs_auth": False,
+                    "rentals": [],
+                    "total": 0,
+                    "rendered": 0,
+                    "truncated": False,
+                    "pages_fetched": 0,
+                }
+            )
+        ),
     )
     monkeypatch.setattr(
         _app_module._rental_perf,
@@ -1625,14 +1822,59 @@ def test_list_route_carries_reco_trend_and_export(rclient, monkeypatch):
     assert data["recommendations"]["top"][0]["rig_id"] == "376882"
     assert data["market_trend"]["summary"]["days"] == 1
     assert data["rig_auto_blacklist"] == ["376882"]
+    # Issue #200: the full >50 historical series surfaces in the payload with
+    # the honest total/rendered/truncated surface ("X de N" no painel).
+    assert len(data["mrr"]["history"]) == 120
+    assert data["mrr"]["total_history"] == 120
+    assert data["mrr"]["rendered_history"] == 120
+    assert data["mrr"]["truncated_history"] is False
+    assert data["mrr"]["rendered_active"] == 1
 
-    # CSV export — same fetchers; body must carry the header row + the rental.
+    # CSV export — same fetchers; the body must carry the FULL series (no
+    # cap) with no truncation signal when everything was fetched.
     resp = rclient.get("/api/rentals/export")
     assert resp.status_code == 200
     assert resp.mimetype == "text/csv"
     body = resp.get_data(as_text=True)
     assert "provider,id,bucket" in body
     assert "mrr,5657736,active" in body
+    assert body.count(",history,") == 120
+    assert "AVISO: export truncado" not in body
+
+
+def test_export_csv_signals_truncation(rclient, monkeypatch):
+    """Issue #200: when the paginated fetch hit the safety cap the CSV says
+    so EXPLICITLY ("apenas X de N") instead of shipping a partial ledger as
+    if it were the whole account."""
+    monkeypatch.setattr(
+        _app_module._rental_perf,
+        "fetch_mrr_rentals",
+        lambda rtype="renter", history=False, limit=50, tenant_id="": {
+            "success": True,
+            "needs_auth": False,
+            "rentals": [],
+            "total": 1500,
+            "rendered": 1000,
+            "truncated": True,
+            "pages_fetched": 5,
+        },
+    )
+    monkeypatch.setattr(
+        _app_module._rental_perf,
+        "fetch_braiins_contracts",
+        lambda tenant_id="": {"success": True, "needs_auth": False, "contracts": []},
+    )
+    monkeypatch.setattr(
+        _app_module._rental_perf, "get_rig_blacklist", lambda tenant_id="": []
+    )
+    monkeypatch.setattr(
+        _app_module._rental_perf, "get_auto_blacklist", lambda tenant_id="": []
+    )
+    resp = rclient.get("/api/rentals/export")
+    assert resp.status_code == 200
+    body = resp.get_data(as_text=True)
+    assert "AVISO: export truncado" in body
+    assert "1000 de 1500" in body
 
 
 def test_pl_alert_skips_braiins_contracts(tmp_path, monkeypatch):

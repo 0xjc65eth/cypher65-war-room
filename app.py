@@ -6977,6 +6977,19 @@ def api_rentals(tenant_id: str = ""):
                 or len(mrr_history.get("rentals", [])),
                 "total_owner": mrr_owner.get("total")
                 or len(mrr_owner.get("rentals", [])),
+                # Issue #200: honest surface — rendered (o que o fetch
+                # paginado conseguiu trazer) vs total (o que o MRR reporta).
+                # truncado = true quando o cap de segurança cortou a série
+                # (frontend mostra "X de N").
+                "rendered_active": mrr_active.get("rendered")
+                or len(mrr_active.get("rentals", [])),
+                "rendered_history": mrr_history.get("rendered")
+                or len(mrr_history.get("rentals", [])),
+                "rendered_owner": mrr_owner.get("rendered")
+                or len(mrr_owner.get("rentals", [])),
+                "truncated_active": mrr_active.get("truncated", False),
+                "truncated_history": mrr_history.get("truncated", False),
+                "truncated_owner": mrr_owner.get("truncated", False),
                 "error": mrr_active.get("error") or mrr_history.get("error"),
                 # Issue #152 (c): a configured-but-rejected key (Bad Nonce /
                 # Not Authenticated) is a CREDENTIAL problem, not a generic
@@ -7318,6 +7331,25 @@ def api_rentals_export(tenant_id: str = ""):
         bl = set(_rental_perf.get_rig_blacklist(tenant_id=tenant_id))
         auto = set(_rental_perf.get_auto_blacklist(tenant_id=tenant_id))
 
+        # Issue #200: explicit truncation signal on the ledger export. The
+        # paginated fetch has a rate-budget safety cap; if it cut the series
+        # the CSV must SAY SO instead of silently shipping a partial ledger.
+        _trunc_note = ""
+        for _bname, _bucket in (
+            ("active", mrr_active),
+            ("history", mrr_history),
+            ("owner", mrr_owner),
+        ):
+            if _bucket.get("truncated"):
+                _trunc_note = (
+                    f"# AVISO: export truncado — bucket {_bname}: apenas "
+                    f"{_bucket.get('rendered') or 0} de "
+                    f"{_bucket.get('total') or 0} rentals MRR (limite de "
+                    f"seguranca "
+                    f"{_rental_perf.MRR_PAGE_SAFETY_MAX_RECORDS} por fetch)."
+                )
+                break
+
         if mode == "analysis":
             # Yield-control CSV: same buckets, full calculation layer. The
             # minimum acceptable delivery is configurable per tenant (setting
@@ -7341,7 +7373,8 @@ def api_rentals_export(tenant_id: str = ""):
                 tenant_id=tenant_id,
                 min_delivery_pct=min_del,
             )
-            out_csv = "\ufeff" + _rental_perf.rentals_analysis_csv(rows)
+            _lead = (_trunc_note + "\n") if _trunc_note else ""
+            out_csv = "\ufeff" + _lead + _rental_perf.rentals_analysis_csv(rows)
             fname = f"rentals_analysis_{tenant_id or 'operator'}_{int(time.time())}.csv"
             resp = app.response_class(out_csv, mimetype="text/csv")
             resp.headers["Content-Disposition"] = f"attachment; filename={fname}"
@@ -7350,6 +7383,8 @@ def api_rentals_export(tenant_id: str = ""):
         # Legacy simple ledger (default mode).
         buf = _io.StringIO()
         w = _csv.writer(buf)
+        if _trunc_note:
+            w.writerow([_trunc_note])
         w.writerow(
             [
                 "provider",

@@ -319,6 +319,21 @@
     const age = (nowSec || Math.floor(Date.now() / 1000)) - (Number(p.updated_at) || 0);
     return age > RENTALS_STALE_MAX_AGE_S ? 1 : 0;
   }
+  // Rentals count surface (Issue #200): "X de N" when the paginated fetch
+  // hit the rate-budget safety cap (truncated) — never show a partial count
+  // as if it were the whole account. Pure helper — mirrored in
+  // tests/test_app_js_core.js. Returns {text, title}; text null = no truncation.
+  function rentalsCountSurface(rendered, total) {
+    const r = Number(rendered);
+    const t = Number(total);
+    if (isFinite(r) && isFinite(t) && t > 0 && r < t) {
+      return {
+        text: r + ' de ' + t,
+        title: 'exibindo ' + r + ' de ' + t + ' rentals (limite de segurança do fetch)',
+      };
+    }
+    return { text: null, title: '' };
+  }
 
   // ── Tenant Auth (Fase 4 · B1-frontend) ─────────────────────────────
   // Stores the JWT session in localStorage and attaches
@@ -5238,11 +5253,12 @@ function renderAccount(acct) {
       cnt.textContent = total + ' rentals';
     }
     const el = (id) => document.getElementById(id);
-    // Strip shows the MRR-reported TOTAL (the list is capped at 25/50 by the
-    // API) — honest count of the operator's rentals, not just the fetched page.
-    // Missing provider credentials → 🔑 hint (with tooltip) instead of a
-    // misleading 0/— that looks like an empty account.
-    const _stripVal = (cardId, value, auth, err, authRejected, provider) => {
+    // Strip shows the MRR-reported TOTAL — the paginated fetch (Issue #200)
+    // now covers every page up to the safety cap, so the count IS the account
+    // (and "X de N" surfaces honestly when the cap cut the series). Missing
+    // provider credentials → 🔑 hint (with tooltip) instead of a misleading
+    // 0/— that looks like an empty account.
+    const _stripVal = (cardId, value, auth, err, authRejected, provider, rendered, total) => {
       const card = el(cardId);
       if (!card) return;
       // A configured-but-rejected key (401/403 / Bad Nonce) is an ERROR, not
@@ -5259,13 +5275,14 @@ function renderAccount(acct) {
         card.textContent = '⚠';
         card.title = String(err);
       } else {
-        card.textContent = value;
-        card.title = '';
+        const surf = rentalsCountSurface(rendered, total);
+        card.textContent = surf.text != null ? surf.text : value;
+        card.title = surf.title || '';
       }
     };
-    _stripVal('rentals-mrr-active', mrr.total_active != null ? mrr.total_active : (mrr.active || []).length, mrr.needs_auth, mrr.error, mrr.auth_rejected, 'mrr');
-    _stripVal('rentals-mrr-history', mrr.total_history != null ? mrr.total_history : (mrr.history || []).length, mrr.needs_auth, mrr.error, mrr.auth_rejected, 'mrr');
-    _stripVal('rentals-mrr-owner', mrr.total_owner != null ? mrr.total_owner : (mrr.owner || []).length, mrr.needs_auth, mrr.error, mrr.auth_rejected, 'mrr');
+    _stripVal('rentals-mrr-active', mrr.total_active != null ? mrr.total_active : (mrr.active || []).length, mrr.needs_auth, mrr.error, mrr.auth_rejected, 'mrr', mrr.rendered_active, mrr.total_active);
+    _stripVal('rentals-mrr-history', mrr.total_history != null ? mrr.total_history : (mrr.history || []).length, mrr.needs_auth, mrr.error, mrr.auth_rejected, 'mrr', mrr.rendered_history, mrr.total_history);
+    _stripVal('rentals-mrr-owner', mrr.total_owner != null ? mrr.total_owner : (mrr.owner || []).length, mrr.needs_auth, mrr.error, mrr.auth_rejected, 'mrr', mrr.rendered_owner, mrr.total_owner);
     _stripVal('rentals-braiins', (braiins.contracts || []).length, braiins.needs_auth, braiins.error, braiins.auth_rejected, 'contracts');
     _renderRentalsPortfolio();
     _renderPortfolioConsolidated();
