@@ -159,6 +159,24 @@ def is_pro() -> bool:
     return _key_valid(current_license_key())
 
 
+def server_pro_active() -> bool:
+    """PRO entitlement for BACKGROUND tasks (no request context).
+
+    Request-scoped ``is_pro()`` reads the X-License-Key header — impossible
+    in the poll/sweep threads (Issue #178: Auto-Pilot Fase 4 runs the
+    autonomous pass inside _do_poll). Rules:
+      - Open mode (no activation env) → True: the operator owns the
+        deployment and is never locked out (same ethos as is_pro()).
+      - Licensed mode → True ONLY when the operator pins a server-side key
+        via AUTO_PILOT_PRO_KEY (a valid static/env key) — the background
+        pilot must never act on an expired/absent license.
+    """
+    if not licensing_configured():
+        return True
+    key = (os.environ.get("AUTO_PILOT_PRO_KEY") or "").strip()
+    return bool(key) and _key_valid(key)
+
+
 def pro_required(f):
     """Flask decorator: require a valid PRO license key on gated routes.
 
