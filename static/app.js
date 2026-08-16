@@ -7307,6 +7307,13 @@ function renderAccount(acct) {
     if ((SETTINGS_CACHE.env || {}).braiins_api_key && settings['braiins_api_key']) {
       html += '<div style="margin-top:2px;border:1px solid var(--accent-orange, #ffa000);border-radius:4px;padding:6px 8px;font-size:10px;line-height:1.4;color:var(--text-muted)">⚠ O servidor tem <code>BRAIINS_API_KEY</code> definida como env var — ela <b>SOBRESCREVE</b> o valor abaixo. Remova a env var (Render → Environment) para usar a chave do Settings.</div>';
     }
+    // Same override warning for the MRR key/secret pair (Issue #189): the
+    // per-user model is Settings-only — env vars are a default-tenant trap
+    // that silently wins over the fields below.
+    const mrrEnv = (SETTINGS_CACHE.env || {}).mrr_api_key || (SETTINGS_CACHE.env || {}).mrr_api_secret;
+    if (mrrEnv && (settings['mrr_api_key'] || settings['mrr_api_secret'])) {
+      html += '<div style="margin-top:2px;border:1px solid var(--accent-orange, #ffa000);border-radius:4px;padding:6px 8px;font-size:10px;line-height:1.4;color:var(--text-muted)">⚠ O servidor tem <code>MRR_API_KEY/MRR_API_SECRET</code> como env var — elas <b>SOBRESCREVEM</b> os valores abaixo. Remova as env vars (Render → Environment) para usar as chaves do Settings.</div>';
+    }
     // "Test connection" for Braiins: probes the live API and reports the same
     // verdict the RENTALS panel derives (ok / rejected / missing).
     if (settings['braiins_api_key']) {
