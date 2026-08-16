@@ -172,3 +172,53 @@ class TestZeroCost:
         assert out["lender_net_usd_per_day"] == pytest.approx(1.0, rel=1e-4)
         # net 1.0 vs mining 0.1 → lease
         assert out["lender_recommendation"] == "lease"
+
+
+# ══════════════════════════════════════════════════════════════════════
+# P0-5 honesty guard — implausible market rates must never surface fake P&L
+# (measured live: a 100× unit bug rendered $55,411/d for an 87 TH rig).
+# app.py clamps lender_market_rate_btc to [1e-8, 1e-2]; these tests lock the
+# guard semantics at the source: an out-of-range rate yields 'insufficient'
+# with None money fields, exactly like a missing rate.
+# ══════════════════════════════════════════════════════════════════════
+
+class TestImplausibleRateGuard:
+    def test_guard_clamped_to_zero_yields_insufficient(self):
+        """When app.py clamps an implausible rate to None, the pure function
+        (treating None/0 as missing) must return 'insufficient' with no fake
+        lease P&L — never an absurd USD figure."""
+        out = compute_lender_profitability(
+            ths=87.0, market_btc_per_th_day=0.0,  # caller clamps -> 0 == missing
+            power_cost_usd_per_day=0.0, pool_net_btc_per_day=0.0001,
+            btc_usd=63125.0,
+        )
+        assert out["lender_recommendation"] == "insufficient"
+        assert out["lender_net_usd_per_day"] is None
+
+    def test_in_band_realistic_rate_still_computes(self):
+        """A real 10k sats/TH/d rate (0.0001) keeps working — guard is not
+        a false positive for the actual market."""
+        out = compute_lender_profitability(
+            ths=87.0, market_btc_per_th_day=0.0001,
+            power_cost_usd_per_day=0.0, pool_net_btc_per_day=0.0001,
+            btc_usd=63125.0,
+        )
+        assert out["lender_net_usd_per_day"] == pytest.approx(87.0 * 0.0001 * 63125, rel=1e-6)
+
+    def test_rejected_rate_semantics_match_none(self):
+        """The app clamps to None; the pure fn must treat None/0 identically
+        to a missing rate (no fake lease P&L from a garbage unit)."""
+        good = compute_lender_profitability(
+            ths=87.0, market_btc_per_th_day=0.0001,
+            power_cost_usd_per_day=0.0, pool_net_btc_per_day=0.0001,
+            btc_usd=63125.0,
+        )
+        clamped = compute_lender_profitability(
+            ths=87.0, market_btc_per_th_day=None,  # app clamps implausible -> None
+            power_cost_usd_per_day=0.0, pool_net_btc_per_day=0.0001,
+            btc_usd=63125.0,
+        )
+        assert good["lender_recommendation"] == "lease"
+        assert clamped["lender_recommendation"] == "insufficient"
+        assert clamped["lender_net_usd_per_day"] is None
+        assert clamped["lender_net_btc_per_day"] is None

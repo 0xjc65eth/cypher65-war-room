@@ -1,8 +1,13 @@
 from abc import ABC, abstractmethod
+import json
+import logging
+import socket
 from typing import Any, Dict, List, Optional
 
 from core.models.device import Device
 from core.models.capability import Capability
+
+log = logging.getLogger(__name__)
 
 
 class BaseAdapter(ABC):
@@ -20,7 +25,9 @@ class BaseAdapter(ABC):
         pass
 
     @abstractmethod
-    def execute_command(self, command: str, parameters: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    def execute_command(
+        self, command: str, parameters: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
         """Executa um comando no dispositivo"""
         pass
 
@@ -34,6 +41,19 @@ class BaseAdapter(ABC):
         """Verifica saúde do dispositivo"""
         pass
 
+    @staticmethod
+    def _safe_number(value, type_cast=float, default=None):
+        """Coerce a raw value (often a string from device APIs) to a number.
+
+        Shared by all adapters. Returns *default* when the value is ``None``
+        or cannot be coerced — callers that need a different sentinel pass
+        it explicitly.
+        """
+        try:
+            return type_cast(value) if value is not None else default
+        except (ValueError, TypeError):
+            return default
+
     def supports(self, capability_name: str) -> bool:
         """Verifica se o device suporta uma capability específica.
 
@@ -44,6 +64,139 @@ class BaseAdapter(ABC):
             return True
         # Fallback: device may have been loaded without capability metadata.
         return any(
-            c.name == capability_name and c.supported
-            for c in self.get_capabilities()
+            c.name == capability_name and c.supported for c in self.get_capabilities()
         )
+
+    def _send_cgminer_command(
+        self, command: str, port: int, timeout: int = 5
+    ) -> Optional[dict]:
+        """Send a JSON command over TCP to a cgminer-compatible API.
+
+        Shared by CgminerAdapter and BraiinsAdapter. Returns parsed JSON
+        or ``None`` on any failure (connection refused, timeout, bad JSON).
+
+        Subclasses wrap this with their own logging.
+        """
+        host = getattr(self, "host", None)
+        if not host:
+            return None
+        sock = None
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(timeout)
+            sock.connect((host, port))
+            payload = json.dumps({"command": command}) + "\n"
+            sock.send(payload.encode())
+            data = b""
+            while True:
+                chunk = sock.recv(4096)
+                if not chunk:
+                    break
+                data += chunk
+                if b"\x00" in chunk:
+                    break
+            text = data.decode(errors="replace").rstrip("\x00").strip()
+            if text:
+                return json.loads(text)
+        except (socket.timeout, ConnectionRefusedError, OSError, json.JSONDecodeError):
+            return None
+        finally:
+            if sock:
+                sock.close()
+        return None
+
+    @staticmethod
+    def _derive_cgminer_pool_status(pools_response: dict):
+        """Derive (pool_status, pool_url, pool_user) from a cgminer 'pools' response.
+
+        Shared by CgminerAdapter and BraiinsAdapter. Scans the POOLS list
+        for the first "Alive" entry (CONNECTED) or falls back to the first
+        configured pool (DISCONNECTED). Returns (None, "", "") when the
+        response is empty or malformed.
+        """
+        pool_status = None
+        pool_url = ""
+        pool_user = ""
+        if pools_response and "POOLS" in pools_response:
+            pool_list = pools_response["POOLS"]
+            if isinstance(pool_list, list):
+                alive = [
+                    p for p in pool_list if str(p.get("Status", "")).lower() == "alive"
+                ]
+                if alive:
+                    pool_status = "CONNECTED"
+                    pool_url = str(alive[0].get("URL", ""))
+                    pool_user = str(alive[0].get("User", ""))
+                elif pool_list:
+                    pool_status = "DISCONNECTED"
+                    pool_url = str(pool_list[0].get("URL", ""))
+                    pool_user = str(pool_list[0].get("User", ""))
+                else:
+                    pool_status = "NOT CONFIGURED"
+        return pool_status, pool_url, pool_user
+
+    @staticmethod
+    def _derive_rest_pool_status(pool: dict):
+        """Derive pool_status from a REST API pool_stats dict.
+
+        Used by BraiinsAdapter's REST telemetry path. Returns None when
+        the pool dict is empty or has no URL (not configured).
+        """
+        if not pool or not pool.get("url"):
+            return None
+        state = str(pool.get("status") or pool.get("state") or "").lower()
+        if state in ("alive", "connected", "online", "mining"):
+            return "CONNECTED"
+        if state in ("dead", "disconnected", "offline"):
+            return "DISCONNECTED"
+        return None
+
+    @staticmethod
+    def _build_telemetry_dict(
+        source: str,
+        collected_at: int,
+        hashrate: float,
+        chip_temp,
+        vr_temp,
+        temperature,
+        fan_rpm,
+        voltage,
+        power,
+        pool_status,
+        pool_url: str,
+        pool_user: str,
+        accepted_shares: int,
+        rejected_shares: int,
+        stale_shares: int,
+        uptime: int,
+        best_share: str,
+    ) -> dict:
+        """Assemble the canonical telemetry dict.
+
+        Shared by CgminerAdapter and BraiinsAdapter. cgminer-based
+        protocols do NOT expose hashrate windows (1m/10m/1h) — those
+        stay None and are filled by ``normalize_telemetry()``.
+        """
+        return {
+            "source": source,
+            "timestamp": collected_at,
+            "freshness": 0,
+            "hashrate": hashrate,
+            "hashrate_1m": None,
+            "hashrate_10m": None,
+            "hashrate_1h": None,
+            "chip_temp": chip_temp,
+            "vr_temp": vr_temp,
+            "temperature": temperature,
+            "fan_rpm": fan_rpm,
+            "voltage": voltage,
+            "power": power,
+            "accepted_shares": accepted_shares,
+            "rejected_shares": rejected_shares,
+            "stale_shares": stale_shares,
+            "best_difficulty": best_share,
+            "uptime": uptime,
+            "pool_status": pool_status,
+            "pool": {"url": pool_url, "user": pool_user} if pool_url else {},
+            "stub": False,
+        }

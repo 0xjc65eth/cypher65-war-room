@@ -3,19 +3,111 @@ CYPHER65 // PARASITE POOL WAR ROOM — helpers
 ============================================
 Shared formatting, parsing, and utility functions extracted from app.py.
 """
+
 import math
 import time
 import logging
 import json
 import os
+import hashlib
+import threading
 from collections import deque
-from typing import Optional
+from typing import Any, Optional
 
 log = logging.getLogger("cypher65")
+
+# ── Monotonic nonce (Issue #150) — nonce ms estritamente crescente ─────────
+# APIs HMAC que rejeitam nonce duplicado (ex.: MiningRigRentals) exigem que
+# cada request use um nonce MAIOR que o último. Fonte única de verdade:
+# solo_mining.py, agents/solo_mining_advisor/tools.py e scripts/probe_mrr_api.py
+# roteiam todos por este gerador (fix do "Bad Nonce" #148, estendido p/ #150).
+_nonce_lock = threading.Lock()
+_nonce_last_ms = 0
+
+
+def next_monotonic_nonce_ms() -> str:
+    """Next strictly-increasing millisecond nonce (thread-safe).
+
+    Two calls in the same millisecond (or a clock that stalls or goes
+    backwards) would otherwise emit the SAME nonce — which MRR rejects
+    with ``Not Authenticated - Invalid Key - Bad Nonce``. The counter
+    bumps to ``last + 1`` in those cases so values are always unique
+    and increasing within the process.
+
+    Note: per-process counter — the app runs single-process (``python
+    app.py``), which is enough for MRR's per-key monotonic requirement.
+    """
+    global _nonce_last_ms
+    with _nonce_lock:
+        n = int(time.time() * 1000)
+        if n <= _nonce_last_ms:
+            n = _nonce_last_ms + 1  # colisão/clock parado/voltando → bump
+        _nonce_last_ms = n
+        return str(n)
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#  PII redaction (Issue #116) — buyer/operator emails in logs
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+def mask_email(email: str) -> str:
+    """Mask an email for logs: ``loc***@domain`` — never the full local part.
+
+    Keeps the domain + local-prefix for fast operator triage. Short local
+    parts (<=3 chars) expose nothing worth hiding and stay untouched.
+    """
+    email = (email or "").strip()
+    if not email:
+        return "-"
+    if "@" not in email:
+        return email[:3] + ("…" if len(email) > 3 else "")
+    local, _, domain = email.partition("@")
+    shown = local[:3]
+    if len(local) > 3:
+        shown += "…"
+    return f"{shown}@{domain}"
+
+
+def email_sha(email: str) -> str:
+    """Deterministic non-reversible email hash — same scheme as
+    conversion._anonymize (sha256 of lowercased email, first 24 hex chars)
+    so log correlation matches the funnel's ``email_hash`` 1:1.
+    """
+    email = (email or "").strip().lower()
+    if not email:
+        return ""
+    return hashlib.sha256(email.encode("utf-8")).hexdigest()[:24]
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#  Spreadsheet formula-injection guard (shared CSV exporter safety)
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+def csv_neutralize(value) -> Any:
+    """Neutralize spreadsheet formula-injection on text cells.
+
+    A leading ``= + - @ \t \r`` is a formula risk when the sheet opens the
+    CSV and auto-evaluates (Excel/Sheets) — ``=HYPERLINK(...)`` / ``=1+1``
+    would EXECUTE. Prefixing such cells with ``'`` makes them inert text.
+    Numbers/None pass through untouched (they are never a formula vector).
+
+    Shared by every CSV export (admin accepted-recos, funnel weekly) so the
+    guard lives in ONE place (Issue #184).
+    """
+    if value is None or isinstance(value, (int, float)):
+        return value
+    s = str(value)
+    if s[:1] in ("=", "+", "-", "@", "\t", "\r"):
+        return "'" + s
+    return s
+
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 #  Parsing
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
 
 def parse_diff_to_float(s):
     """Convert '1.23 T' → 1.23e12. Returns 0 if unparseable."""
@@ -86,9 +178,32 @@ def coerce_int(v, default=0):
         return default
 
 
+def coerce_ts(v) -> Optional[int]:
+    """Sentinel policy (Issue #203): a real unix timestamp or None.
+
+    Missing/invalid values and epoch sentinels (0, '', 'N/A', date strings
+    like '1970-01-01') become None — NEVER 0 — so 'no data' stays 'no data'
+    through the API instead of rendering as 1970-01-01. Note a bare numeric
+    string like "1970" IS a valid positive timestamp (not a sentinel).
+    Centralized like csv_neutralize so every layer speaks the same
+    missing-sentinel language. NaN is rejected too (``not (f > 0)`` is True
+    for NaN, avoiding int(nan) crash).
+    """
+    if v is None or isinstance(v, bool):
+        return None
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    if not (f > 0):
+        return None
+    return int(f)
+
+
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 #  Formatting
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
 
 def fmt_diff(v):
     """Pretty print a large number into readable difficulty units."""
@@ -114,7 +229,9 @@ def fmt_hashrate(h):
     return f"{h:.2f} ZH/s"
 
 
-def derive_worker_hashrate(share_calc_history=None, prev_pool=None, pool=None, elapsed_s=0.0):
+def derive_worker_hashrate(
+    share_calc_history=None, prev_pool=None, pool=None, elapsed_s=0.0
+):
     """Derive worker hashrate (H/s) when the pool reports 0 or missing.
 
     FENIX E1 (P1) fallback. Sources, in priority:
@@ -132,7 +249,8 @@ def derive_worker_hashrate(share_calc_history=None, prev_pool=None, pool=None, e
         sch = list(share_calc_history or [])
         inst = [
             float(e.get("instantaneous_hr_hps") or 0)
-            for e in sch if e.get("instantaneous_hr_hps")
+            for e in sch
+            if e.get("instantaneous_hr_hps")
         ]
         inst = [v for v in inst if v > 0]
         if inst:
@@ -146,7 +264,7 @@ def derive_worker_hashrate(share_calc_history=None, prev_pool=None, pool=None, e
             cur = float(pool.get("workSinceLastBlock") or 0)
             prev = float(prev_pool.get("workSinceLastBlock") or 0)
             if cur > prev:
-                hps = (cur - prev) * (2 ** 32) / float(elapsed_s)
+                hps = (cur - prev) * (2**32) / float(elapsed_s)
                 if hps > 0:
                     return hps, "work_delta"
     except Exception:
@@ -244,11 +362,11 @@ _BASE58_ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
 
 def _bech32_polymod(values):
     """Compute Bech32 checksum using GF(32) generator."""
-    GEN = [0x3b6a57b2, 0x26508e6d, 0x1ea119fa, 0x3d4233dd, 0x2a1462b3]
+    GEN = [0x3B6A57B2, 0x26508E6D, 0x1EA119FA, 0x3D4233DD, 0x2A1462B3]
     chk = 1
     for v in values:
         top = chk >> 25
-        chk = ((chk & 0x1ffffff) << 5) ^ v
+        chk = ((chk & 0x1FFFFFF) << 5) ^ v
         for i in range(5):
             if (top >> i) & 1:
                 chk ^= GEN[i]
@@ -272,11 +390,11 @@ def _decode_bech32(addr):
     """
     addr = addr.lower()
     # Find the last '1' separator
-    pos = addr.rfind('1')
+    pos = addr.rfind("1")
     if pos < 1 or pos + 7 > len(addr):
         return None
     hrp = addr[:pos]
-    data = addr[pos + 1:]
+    data = addr[pos + 1 :]
     if len(data) < 6:
         return None
     # Check all characters are valid bech32
@@ -309,22 +427,23 @@ def _base58check_decode(addr):
     if n is None:
         return None
     # Convert to bytes (big-endian, minimum size)
-    b = n.to_bytes((n.bit_length() + 7) // 8, 'big')
+    b = n.to_bytes((n.bit_length() + 7) // 8, "big")
     # Add leading zero bytes from Base58 encoding
     leading_zeros = 0
     for c in addr:
-        if c == '1':
+        if c == "1":
             leading_zeros += 1
         else:
             break
     if leading_zeros > 0:
-        b = b'\x00' * leading_zeros + b
+        b = b"\x00" * leading_zeros + b
     if len(b) < 5:  # version(1) + payload + checksum(4)
         return None
     payload = b[:-4]
     checksum = b[-4:]
     # Verify checksum: first 4 bytes of double-SHA256 of payload
     import hashlib
+
     h = hashlib.sha256(hashlib.sha256(payload).digest()).digest()[:4]
     if h != checksum:
         return None
@@ -333,37 +452,41 @@ def _base58check_decode(addr):
 
 def validate_btc_address(addr: str) -> dict:
     """Validate a Bitcoin address. Returns dict with 'valid' bool and optional 'error' message.
-    Supports Bech32 (bc1..., BIP-173), P2PKH (1..., Base58Check), P2SH (3..., Base58Check)."""
+    Supports Bech32 (bc1..., BIP-173), P2PKH (1..., Base58Check), P2SH (3..., Base58Check).
+    """
     if not addr or not isinstance(addr, str):
         return {"valid": False, "error": "Address is required"}
     addr = addr.strip()
     if len(addr) < 26 or len(addr) > 90:
         return {"valid": False, "error": f"Invalid address length ({len(addr)} chars)"}
 
-    if addr.startswith('bc1'):
+    if addr.startswith("bc1"):
         # Bech32 (SegWit / Taproot)
         result = _decode_bech32(addr)
         if result is None:
             return {"valid": False, "error": "Invalid Bech32 checksum or format"}
         hrp, data = result
-        if hrp != 'bc':
-            return {"valid": False, "error": "Invalid human-readable part (expected 'bc')"}
+        if hrp != "bc":
+            return {
+                "valid": False,
+                "error": "Invalid human-readable part (expected 'bc')",
+            }
         if len(data) < 2 or len(data) > 40:
             return {"valid": False, "error": "Invalid data length for Bech32 address"}
         return {"valid": True}
 
-    elif addr.startswith('1') or addr.startswith('3'):
+    elif addr.startswith("1") or addr.startswith("3"):
         # P2PKH (1...) or P2SH (3...) — Base58Check
         result = _base58check_decode(addr)
         if result is None:
             return {"valid": False, "error": "Invalid Base58Check checksum or format"}
         version, _ = result
-        expected_version = 0x00 if addr.startswith('1') else 0x05
+        expected_version = 0x00 if addr.startswith("1") else 0x05
         if version != expected_version:
             return {"valid": False, "error": "Invalid version byte for address type"}
         return {"valid": True}
 
-    elif addr.startswith('2'):
+    elif addr.startswith("2"):
         # P2WPKH-in-P2SH (starts with '2'? Rare but some use it)
         result = _base58check_decode(addr)
         if result is not None:
@@ -371,7 +494,10 @@ def validate_btc_address(addr: str) -> dict:
         return {"valid": False, "error": "Invalid address format"}
 
     else:
-        return {"valid": False, "error": "Address must start with 'bc1' (SegWit), '1' (Legacy), or '3' (P2SH)"}
+        return {
+            "valid": False,
+            "error": "Address must start with 'bc1' (SegWit), '1' (Legacy), or '3' (P2SH)",
+        }
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -379,7 +505,9 @@ def validate_btc_address(addr: str) -> dict:
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 
-def compute_solo_probabilities(share_of_network: float, blocks_per_day: float = 144.0) -> dict:
+def compute_solo_probabilities(
+    share_of_network: float, blocks_per_day: float = 144.0
+) -> dict:
     """Solo-mining probability math — single source of truth for app.py._do_poll().
 
     `share_of_network` is the per-BLOCK chance (worker hashrate ÷ network
@@ -401,7 +529,7 @@ def compute_solo_probabilities(share_of_network: float, blocks_per_day: float = 
             "solo_expected_blocks_per_year": 0.0,
             "solo_expected_time_to_block_days": None,
         }
-    solo_p_day = 1 - (1 - share_of_network) ** blocks_per_day          # P(≥1 block today)
+    solo_p_day = 1 - (1 - share_of_network) ** blocks_per_day  # P(≥1 block today)
     solo_p_year = 1 - (1 - share_of_network) ** (blocks_per_day * 365)
     solo_p_5year = 1 - (1 - share_of_network) ** (blocks_per_day * 365 * 5)
     solo_expected_blocks_per_year = share_of_network * blocks_per_day * 365
@@ -413,7 +541,6 @@ def compute_solo_probabilities(share_of_network: float, blocks_per_day: float = 
         "solo_expected_blocks_per_year": solo_expected_blocks_per_year,
         "solo_expected_time_to_block_days": solo_expected_time_to_block_days,
     }
-
 
 
 def compute_lender_profitability(
@@ -471,16 +598,18 @@ def compute_lender_profitability(
 
         revenue_btc = ths * rate
         power_btc = power_usd / price if price > 0 and power_usd > 0 else 0.0
-        net_btc = revenue_btc - power_btc                     # lease net
-        mine_btc = mining_btc - power_btc                     # mine net (same power)
+        net_btc = revenue_btc - power_btc  # lease net
+        mine_btc = mining_btc - power_btc  # mine net (same power)
         net_usd = net_btc * price if price > 0 else None
         mine_usd = mine_btc * price if price > 0 else None
 
-        out.update({
-            "lender_net_btc_per_day": round(net_btc, 10),
-            "lender_revenue_btc_per_day": round(revenue_btc, 10),
-            "lender_power_cost_usd_per_day": round(power_usd, 4),
-        })
+        out.update(
+            {
+                "lender_net_btc_per_day": round(net_btc, 10),
+                "lender_revenue_btc_per_day": round(revenue_btc, 10),
+                "lender_power_cost_usd_per_day": round(power_usd, 4),
+            }
+        )
         if net_usd is not None and mine_usd is not None:
             out["lender_net_usd_per_day"] = round(net_usd, 4)
             out["lender_mine_net_usd_per_day"] = round(mine_usd, 4)
@@ -592,6 +721,7 @@ def build_decision_matrix(
     figures, so the higher wins; solo is probabilistic (expected time) and is
     only crowned when neither pool nor lease has a usable number.
     """
+
     def _num(v):
         try:
             f = float(v)
@@ -637,7 +767,10 @@ def build_decision_matrix(
     elif best == "lease":
         recommendation = "Renting out hashrate (lease) nets more than pool mining."
     elif best == "solo":
-        recommendation = "Only probabilistic data available — expected %.0f days to a block." % exp_days
+        recommendation = (
+            "Only probabilistic data available — expected %.0f days to a block."
+            % exp_days
+        )
     else:
         recommendation = "Not enough data to compare strategies yet."
 
@@ -700,12 +833,14 @@ def resolve_affiliate_link(offers, affiliate_map=None) -> dict | None:
             price = float(o.get("price_per_th_day"))
         except (TypeError, ValueError):
             continue
-        eligible.append({
-            "provider": prov,
-            "url": url,
-            "price_per_th_day": price,
-            "estimated": bool(o.get("estimated")),
-        })
+        eligible.append(
+            {
+                "provider": prov,
+                "url": url,
+                "price_per_th_day": price,
+                "estimated": bool(o.get("estimated")),
+            }
+        )
     if not eligible:
         return None
     real = [e for e in eligible if not e["estimated"]]
@@ -736,12 +871,59 @@ def attach_affiliate(snapshot: dict, offers, affiliate_map=None) -> None:
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#  P0-5 // Wallet account rank enrichment (leaderboard authoritative)
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+def enrich_account_ranks(account, leaderboard_entry):
+    """P0-5 // Fill diff/loyalty/combined ranks on the account from the pool
+    leaderboard when the account API omits them (measured: it always does).
+
+    Mutates a copy and returns it (pure — the caller may pass the live dict
+    and get a new one back). Leaderboard is authoritative: values are copied
+    only when the account lacks its own. block_count is backfilled from
+    leaderboard.total_blocks so the frontend C3 fallback has real data.
+
+    Returns the (possibly enriched) account; None in → None out. Never raises.
+    """
+    if not isinstance(account, dict):
+        return account
+    if not isinstance(leaderboard_entry, dict):
+        return account
+    out = dict(account)
+    meta = dict(out.get("metadata") or {})
+    le = leaderboard_entry
+    if not out.get("diff_rank") and not out.get("diffRank"):
+        dr = le.get("diff_rank") or le.get("diffRank") or le.get("rankDifficulty")
+        if dr is not None:
+            out["diff_rank"] = dr
+    if not out.get("loyalty_rank") and not out.get("loyaltyRank"):
+        lr = le.get("loyalty_rank") or le.get("loyaltyRank")
+        if lr is not None:
+            out["loyalty_rank"] = lr
+    if not out.get("combined_score") and not out.get("combinedScore"):
+        cs = le.get("combined_score") or le.get("combinedScore")
+        if cs is not None:
+            out["combined_score"] = cs
+    if not meta.get("block_count") and le.get("total_blocks") is not None:
+        meta["block_count"] = le["total_blocks"]
+    if meta:
+        out["metadata"] = meta
+    return out
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 #  P0-3 // Command Center — contextual action cards
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 # Severity order used to rank Command Center cards (highest wins).
 _CC_SEVERITY_ORDER = {"crit": 0, "gold": 1, "warn": 2, "info": 3}
 CC_MAX_ACTIONS = 3
+
+# P1 Auto-Pilot advisory thresholds — REAL data gating (never fabricates).
+AP_HASHRATE_DROP_RATIO = 0.70  # fire when current < 70% of 7d peak
+AP_TEMP_HIGH_C = 75.0  # fire when a fleet device runs ≥ 75°C
+AP_PEAK_WINDOW_S = 7 * 86400  # 7-day window for the hashrate peak
 
 
 def build_command_center(snapshot: Optional[dict] = None) -> list:
@@ -779,9 +961,18 @@ def build_command_center(snapshot: Optional[dict] = None) -> list:
       6. negative_operation  (warn) — pool_net_usd_per_day < 0
       7. affiliate_buy       (info) — market_data.affiliate.url configured
 
+    P1 Auto-Pilot advisory rules (phased start of the Big Bet — read-only,
+    fed by the real `auto_pilot` snapshot block injected in app.py):
+      8. hashrate_drop       (gold) — current hashrate < 70% of the real
+         7-day peak (proximity_history MAX, window AP_PEAK_WINDOW_S)
+      9. temp_high           (warn) — fleet device temperature >= AP_TEMP_HIGH_C
+      10. automation_ready   (info) — AutomationEngine.preview_rules()
+          reports a rule that WOULD fire right now (no execution)
+
     Cards are ranked by severity (crit > gold > warn > info), then emitted in
     rule order, capped at CC_MAX_ACTIONS.
     """
+
     def _num(v):
         try:
             f = float(v)
@@ -803,118 +994,216 @@ def build_command_center(snapshot: Optional[dict] = None) -> list:
     worker = snap.get("worker")
     _has_polled = bool(_num(snap.get("ts")))
     if not worker and _has_polled:
-        _add({
-            "id": "worker_offline",
-            "severity": "crit",
-            "title": "Worker offline",
-            "message": "Nenhum worker ativo na pool — verifique a conexão do minerador.",
-            "action": "VER FLEET",
-            "target": "fleet",
-            "panel": "axe-fleet-panel",
-            "url": None,
-        })
+        _add(
+            {
+                "id": "worker_offline",
+                "severity": "crit",
+                "title": "Worker offline",
+                "message": "Nenhum worker ativo na pool — verifique a conexão do minerador.",
+                "action": "VER FLEET",
+                "target": "fleet",
+                "panel": "axe-fleet-panel",
+                "url": None,
+            }
+        )
 
     # ── 2. Fleet device attention (warn) ──
     fleet = snap.get("axe_fleet") or []
     if isinstance(fleet, list):
         problem_devices = [
-            d for d in fleet
-            if isinstance(d, dict) and (d.get("status") or "").upper() in ("OFFLINE", "WARNING")
+            d
+            for d in fleet
+            if isinstance(d, dict)
+            and (d.get("status") or "").upper() in ("OFFLINE", "WARNING")
         ]
         if problem_devices:
-            _add({
-                "id": "fleet_attention",
-                "severity": "warn",
-                "title": f"{len(problem_devices)} minerador(es) precisam de atenção",
-                "message": "Há device(s) OFFLINE ou WARNING na frota — inspecione antes de prosseguir.",
-                "action": "VER FLEET",
-                "target": "fleet",
-                "panel": "axe-fleet-panel",
-                "url": None,
-            })
+            _add(
+                {
+                    "id": "fleet_attention",
+                    "severity": "warn",
+                    "title": f"{len(problem_devices)} minerador(es) precisam de atenção",
+                    "message": "Há device(s) OFFLINE ou WARNING na frota — inspecione antes de prosseguir.",
+                    "action": "VER FLEET",
+                    "target": "fleet",
+                    "panel": "axe-fleet-panel",
+                    "url": None,
+                }
+            )
 
     # ── 3. Proximity hot streak (gold) ──
     prox = snap.get("proximity") or {}
     if isinstance(prox, dict) and prox.get("hot_streak"):
         trend = _num(prox.get("trend_1h_pct"))
-        _add({
-            "id": "proximity_streak",
-            "severity": "gold",
-            "title": "HOT STREAK na proximidade",
-            "message": (
-                f"Best-diff subiu {trend:.1f}% em 1h — a proximidade de bloco está acelerando."
-                if trend is not None
-                else "Best-diff subindo — a proximidade de bloco está acelerando."
-            ),
-            "action": "VER PROBABILITY",
-            "target": "probability",
-            "panel": "proximity-panel",
-            "url": None,
-        })
-    elif isinstance(prox, dict):
-        # ── 4. Proximity milestone reached (info) ──
-        pct = _num(prox.get("milestone_cur_pct"))
-        if pct is not None and pct >= 1.0:
-            _add({
-                "id": "proximity_milestone",
-                "severity": "info",
-                "title": "Proximidade de bloco relevante",
-                "message": f"Você está a {pct:.2f}% da dificuldade da rede — cada share tem valor real.",
+        _add(
+            {
+                "id": "proximity_streak",
+                "severity": "gold",
+                "title": "HOT STREAK na proximidade",
+                "message": (
+                    f"Best-diff subiu {trend:.1f}% em 1h — a proximidade de bloco está acelerando."
+                    if trend is not None
+                    else "Best-diff subindo — a proximidade de bloco está acelerando."
+                ),
                 "action": "VER PROBABILITY",
                 "target": "probability",
                 "panel": "proximity-panel",
                 "url": None,
-            })
+            }
+        )
+    elif isinstance(prox, dict):
+        # ── 4. Proximity milestone reached (info) ──
+        pct = _num(prox.get("milestone_cur_pct"))
+        if pct is not None and pct >= 1.0:
+            _add(
+                {
+                    "id": "proximity_milestone",
+                    "severity": "info",
+                    "title": "Proximidade de bloco relevante",
+                    "message": f"Você está a {pct:.2f}% da dificuldade da rede — cada share tem valor real.",
+                    "action": "VER PROBABILITY",
+                    "target": "probability",
+                    "panel": "proximity-panel",
+                    "url": None,
+                }
+            )
 
     # ── 5. Capital allocation — lease wins (info) ──
     dm = (snap.get("profitability") or {}).get("decision_matrix") or {}
     if isinstance(dm, dict) and dm.get("best_option") == "lease":
-        _add({
-            "id": "capital_lease",
-            "severity": "info",
-            "title": "Lease rende mais que pool",
-            "message": "A Decision Matrix aponta o aluguel de hashrate como a melhor alocação de capital.",
-            "action": "VER MARKET",
-            "target": "market",
-            "panel": "decision-matrix-panel",
-            "url": None,
-        })
+        _add(
+            {
+                "id": "capital_lease",
+                "severity": "info",
+                "title": "Lease rende mais que pool",
+                "message": "A Decision Matrix aponta o aluguel de hashrate como a melhor alocação de capital.",
+                "action": "VER MARKET",
+                "target": "market",
+                "panel": "decision-matrix-panel",
+                "url": None,
+            }
+        )
 
     # ── 6. Negative operation (warn) ──
     profit = snap.get("profitability") or {}
     pool_net = _num(profit.get("pool_net_usd_per_day"))
     if pool_net is not None and pool_net < 0:
-        _add({
-            "id": "negative_operation",
-            "severity": "warn",
-            "title": "Operação no vermelho",
-            "message": (
-                f"Custo diário supera a receita do pool (net ${abs(pool_net):.2f}/dia) — "
-                "revise energia, pool ou alugue hashrate."
-            ),
-            "action": "VER MARKET",
-            "target": "market",
-            "panel": "decision-matrix-panel",
-            "url": None,
-        })
+        _add(
+            {
+                "id": "negative_operation",
+                "severity": "warn",
+                "title": "Operação no vermelho",
+                "message": (
+                    f"Custo diário supera a receita do pool (net ${abs(pool_net):.2f}/dia) — "
+                    "revise energia, pool ou alugue hashrate."
+                ),
+                "action": "VER MARKET",
+                "target": "market",
+                "panel": "decision-matrix-panel",
+                "url": None,
+            }
+        )
 
     # ── 7. Affiliate buy CTA (info) ──
     md = snap.get("market_data") or {}
     aff = (md.get("affiliate") or {}) if isinstance(md, dict) else {}
     if isinstance(aff, dict) and aff.get("url"):
-        _add({
-            "id": "affiliate_buy",
-            "severity": "info",
-            "title": "Comprar hashrate em 1 clique",
-            "message": (
-                f"Melhor oferta afiliada: {str(aff.get('provider') or 'hashrate').upper()} "
-                "— link direto para o marketplace."
-            ),
-            "action": "COMPRAR HASHRATE",
-            "target": "market",
-            "panel": "market-panel",
-            "url": aff.get("url"),
-        })
+        _add(
+            {
+                "id": "affiliate_buy",
+                "severity": "info",
+                "title": "Comprar hashrate em 1 clique",
+                "message": (
+                    f"Melhor oferta afiliada: {str(aff.get('provider') or 'hashrate').upper()} "
+                    "— link direto para o marketplace."
+                ),
+                "action": "COMPRAR HASHRATE",
+                "target": "market",
+                "panel": "market-panel",
+                "url": aff.get("url"),
+            }
+        )
+
+    # ── 8. P1 Auto-Pilot: hashrate below its real 7-day peak (gold) ──
+    # Fed by snap["auto_pilot"]["peak_hashrate_7d"] — the true MAX worker
+    # hashrate observed over the last 7 days (from proximity_history, real
+    # data, injected by app.py). When the current hashrate has dropped below
+    # 70% of that peak, the operator loses real revenue: surface a reset /
+    # inspect card instead of a raw metric.
+    ap = snap.get("auto_pilot") if isinstance(snap.get("auto_pilot"), dict) else {}
+    peak_7d = _num(ap.get("peak_hashrate_7d"))
+    cur_hr = _num(worker.get("hashrate") if isinstance(worker, dict) else None)
+    if peak_7d and cur_hr and cur_hr > 0 and cur_hr < peak_7d * AP_HASHRATE_DROP_RATIO:
+        drop_pct = (1 - cur_hr / peak_7d) * 100
+        _add(
+            {
+                "id": "hashrate_drop",
+                "severity": "gold",
+                "title": "HASHRATE DROP — abaixo do pico de 7d",
+                "message": (
+                    f"Hashrate atual é {drop_pct:.0f}% menor que o pico da semana "
+                    "(reset do device ou rede local podem recuperá-lo)."
+                ),
+                "action": "VER FLEET",
+                "target": "fleet",
+                "panel": "axe-fleet-panel",
+                "url": None,
+            }
+        )
+
+    # ── 9. P1 Auto-Pilot: fleet device running hot (warn) ──
+    if isinstance(fleet, list):
+        hot_devices = [
+            d
+            for d in fleet
+            if isinstance(d, dict)
+            and _num(d.get("temperature")) is not None
+            and _num(d.get("temperature")) >= AP_TEMP_HIGH_C
+        ]
+        if hot_devices:
+            hot = hot_devices[0]
+            hot_name = str(
+                hot.get("name") or hot.get("device_id") or hot.get("id") or "device"
+            )
+            _add(
+                {
+                    "id": "temp_high",
+                    "severity": "warn",
+                    "title": f"{hot_name} a {_num(hot.get('temperature')):.0f}°C",
+                    "message": "Temperatura acima do limite térmico — reduza overclock, melhore o airflow ou pausa o device antes de dano.",
+                    "action": "VER FLEET",
+                    "target": "fleet",
+                    "panel": "axe-fleet-panel",
+                    "url": None,
+                }
+            )
+
+    # ── 10. P1 Auto-Pilot: automation rule ready to fire (info) ──
+    # The Big Bet merge with Automations — read-only advisory preview of what
+    # a rule WOULD do right now (AutomationEngine.preview_rules, no execution
+    # by design). The operator sees the pending trigger and can confirm or
+    # disarm the rule in the Automations module.
+    ap_preview = ap.get("automation_preview") or []
+    if isinstance(ap_preview, list) and ap_preview:
+        first = ap_preview[0] if isinstance(ap_preview[0], dict) else {}
+        rule_name = str(first.get("rule_name") or "regra")
+        dev_id = str(first.get("device_id") or "")
+        action = str(first.get("action_command") or "ação")
+        _add(
+            {
+                "id": "automation_ready",
+                "severity": "info",
+                "title": "Auto-Pilot: automação pronta",
+                "message": (
+                    f"Regra «{rule_name}» dispararia agora: {action}"
+                    + (f" em {dev_id}" if dev_id else "")
+                    + "."
+                ),
+                "action": "VER AUTOMATIONS",
+                "target": "automations",
+                "panel": "ai-operator-panel",
+                "url": None,
+            }
+        )
 
     # Rank by severity (crit > gold > warn > info), stable by rule order.
     cards.sort(key=lambda c: _CC_SEVERITY_ORDER.get(c.get("severity", "info"), 99))

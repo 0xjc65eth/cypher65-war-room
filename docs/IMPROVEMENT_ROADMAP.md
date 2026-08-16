@@ -225,7 +225,13 @@ Learning auto-FAQ loop in the Stage 4 portfolio.
 ## 8. Priority Queue (next)
 
 1. ✅ **P0-3 — Command Center** dashboard widget (Quick Win, M1-2) — **shipped**
-2. **P0-4 — Wallet QR + checksum + health** (Quick Win, M1-2)
+2. ✅ **P0-4 — Wallet QR + checksum + health** (Quick Win, M1-2) — **shipped**
+   - QR code puro JS (v1-10, ECC L/M/Q/H) no modal CONNECT WALLET + endereço
+     com checksum destacado + health strip honesto (6 checks) + check-digits
+     na status bar. Zero dependência externa — o endereço nunca sai do browser.
+   - Cobertura E2E: `tests/e2e/wallet-identity.spec.js` (connect real via UI
+     → QR viewBox + checksum split + COPY + health + status bar; idempotente
+     e com cleanup do DB — roda no `run-e2e.sh` nos 2 projetos).
 3. **P1 — Auto-Pilot advisory mode** (phased start of the Big Bet)
 4. **P1 — Support → Learning FAQ loop** (kills the Hidden Tax)
 

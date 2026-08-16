@@ -9,6 +9,7 @@ import type {
   MarketOffer,
   MarketData,
   PushPreferences,
+  RentalsData,
 } from '../types';
 
 const isDev = __DEV__;
@@ -145,6 +146,12 @@ export const compareOffers = async (providers?: string[]): Promise<{ offers: Mar
     params.providers = providers.join(',');
   }
   const { data } = await api.get('/opportunities/compare', { params });
+  return data;
+};
+
+// ── Rentals (Rentals Hub) ────────────────────────────────────────────────
+export const fetchRentals = async (): Promise<RentalsData> => {
+  const { data } = await api.get('/rentals');
   return data;
 };
 

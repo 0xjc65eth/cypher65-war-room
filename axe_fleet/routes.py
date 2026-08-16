@@ -16,6 +16,7 @@ Endpoints:
   GET    /api/axe-fleet/summary          — fleet-wide summary stats
   GET    /api/axe-fleet/health           — fleet-wide health stats
 """
+
 import json
 import logging
 import os
@@ -26,7 +27,7 @@ import time
 import uuid
 from functools import wraps
 
-from flask import Blueprint, jsonify, request, session
+from flask import Blueprint, jsonify, request, session, send_file
 
 from services.tenant import (
     get_tenant_id as _get_tenant_id,
@@ -40,7 +41,7 @@ from services.tenant import (
 from core.models.device import device_status_is_online
 
 from .connector import AxeOSConnector, AxeOSConnectorError
-from .models import infer_capabilities
+from .models import infer_capabilities, STATUS_PAUSED, derive_device_status
 from .registry import DeviceRegistry
 
 log = logging.getLogger("cypher65.axe.routes")
@@ -69,12 +70,46 @@ def _is_trusted_payload(payload) -> bool:
     return isinstance(payload, dict) and "hashrate_hs" in payload
 
 
+def _caps_supported_commands(caps) -> list:
+    """Flatten a capabilities dict into the supported-command ARRAY shape
+    every consumer expects (fleet_health, fleet_summary, the FLEET COMMAND
+    CENTER's buildCommandCenterRows — all render command buttons off this
+    list). A raw dict fails Array.isArray() in the JS and drops the device
+    into READ-ONLY; a list passes through (older serializers); junk → []
+    (the honest 'no commands' state)."""
+    if isinstance(caps, dict):
+        return [k for k, v in caps.items() if v]
+    if isinstance(caps, list):
+        return [c for c in caps if isinstance(c, str)]
+    return []
+
+
 def _latest_telemetry(tel_raw) -> dict:
     """Return the latest trusted telemetry payload from a
     get_recent_telemetry(limit=1) result, or {} if none/untrusted."""
-    if tel_raw and isinstance(tel_raw[0], dict) and _is_trusted_payload(tel_raw[0].get("payload")):
+    if (
+        tel_raw
+        and isinstance(tel_raw[0], dict)
+        and _is_trusted_payload(tel_raw[0].get("payload"))
+    ):
         return tel_raw[0]["payload"]
     return {}
+
+
+def _mark_cache_status(device_id: str, status: str) -> None:
+    """Flip the snapshot-cache entry status so the Fleet card reflects a
+    command immediately (Issue #13 — no wait for the next poll). Best-effort:
+    the poll loop remains the source of truth and confirms on the next cycle."""
+    try:
+        import services.state as _shared_state
+
+        entry = _shared_state.axe_telemetry_cache.get(device_id)
+        if isinstance(entry, dict):
+            entry = dict(entry)
+            entry["status"] = status
+            _shared_state.axe_telemetry_cache[device_id] = entry
+    except Exception:
+        pass
 
 
 # Per-IP latency probe cache (FLEET audit). Probing every reachable device
@@ -106,14 +141,20 @@ def _cache_latency_ms(ip: str, elapsed: int) -> None:
         with _latency_cache_lock:
             now = time.time()
             # 1) TTL sweep: drop stale entries, keep fresh ones.
-            stale = [k for k, v in _latency_cache.items() if now - v.get("ts", 0) >= _LATENCY_TTL]
+            stale = [
+                k
+                for k, v in _latency_cache.items()
+                if now - v.get("ts", 0) >= _LATENCY_TTL
+            ]
             for k in stale:
                 del _latency_cache[k]
             # 2) Cap fallback: evict the oldest fresh entries (FIFO by ts)
             #    until the new entry fits — never wipe the whole cache.
             over = len(_latency_cache) - _LATENCY_CACHE_MAX + 1
             if over > 0:
-                oldest = sorted(_latency_cache, key=lambda k: _latency_cache[k].get("ts", 0))[:over]
+                oldest = sorted(
+                    _latency_cache, key=lambda k: _latency_cache[k].get("ts", 0)
+                )[:over]
                 for k in oldest:
                     del _latency_cache[k]
             _latency_cache[ip] = {"ms": elapsed, "ts": now}
@@ -210,7 +251,7 @@ def list_devices(tenant_id: str = ""):
     """List all registered AxeOS devices with latest telemetry."""
     if _registry is None:
         return jsonify({"error": "registry not initialized"}), 500
-    devices = _registry.list_devices(tenant_id=tenant_id)
+    devices = _registry.list_devices(tenant_id=tenant_id, with_telemetry=True)
     return jsonify({"devices": devices, "count": len(devices), "tenant_id": tenant_id})
 
 
@@ -232,31 +273,114 @@ def add_device(tenant_id: str = ""):
         return jsonify({"error": "ip_address is required"}), 400
 
     # Check if already registered (tenant-scoped — the same IP may exist in
-    # another tenant's fleet and must not 409 this request).
+    # another tenant's fleet and must not 409 this request). Runs BEFORE the
+    # cloud guard so re-adding an existing device surfaces the 409 + device
+    # (the operator may have registered it before this deployment change).
     existing = _registry.get_device_by_ip(ip, tenant_id=tenant_id)
     if existing:
         return jsonify({"error": "device already registered", "device": existing}), 409
+
+    # ── SaaS topology guard: on a cloud deploy a private LAN IP is
+    #    unreachable by construction — registering it would create a card
+    #    that stays OFFLINE forever (the server poll can't reach it either),
+    #    which users read as "a ferramenta não reconhece o device". Reject
+    #    with the actionable path instead. Public-IP miners stay allowed
+    #    (rare but reachable), and the wizard's diagnose gate still applies
+    #    for non-cloud self-hosters.
+    from config import is_cloud_deploy
+    from .scanner import is_private_ip
+
+    if is_cloud_deploy() and is_private_ip(ip):
+        _log_audit(
+            tenant_id,
+            "fleet.device_add_blocked",
+            target=ip,
+            details={"reason": "cloud_private_ip_unreachable"},
+        )
+        return (
+            jsonify(
+                {
+                    "success": False,
+                    "is_cloud": True,
+                    "error": "private LAN IP unreachable from cloud deploy",
+                    "message": "IP privado (LAN) inalcançável a partir da nuvem. Instale o AGENTE LOCAL (Fleet → CONNECT AGENT): ele roda na sua rede, descobre os miners e conecta para fora — é a única via que funciona no SaaS.",
+                }
+            ),
+            403,
+        )
 
     # ── Fase 4 · B3: plan enforcement — the FREE tier caps workers per
     #    tenant. Honest rejection: the operator sees the limit and usage
     #    instead of a silent success that exceeds the plan.
     if not _can_add_worker(tenant_id):
         plan = _get_tenant_plan(tenant_id)
-        _log_audit(tenant_id, "fleet.device_add_blocked",
-                   target=ip, details={"reason": "plan_worker_limit", "max_workers": plan["max_workers"]})
-        return jsonify({
-            "success": False,
-            "error": "plan worker limit reached",
-            "message": f"O plano {plan['plan']} permite no máximo {plan['max_workers']} workers. Remova um device ou aumente o limite.",
-            "plan": plan["plan"],
-            "max_workers": plan["max_workers"],
-        }), 403
+        _log_audit(
+            tenant_id,
+            "fleet.device_add_blocked",
+            target=ip,
+            details={"reason": "plan_worker_limit", "max_workers": plan["max_workers"]},
+        )
+        return (
+            jsonify(
+                {
+                    "success": False,
+                    "error": "plan worker limit reached",
+                    "message": f"O plano {plan['plan']} permite no máximo {plan['max_workers']} workers. Remova um device ou aumente o limite.",
+                    "plan": plan["plan"],
+                    "max_workers": plan["max_workers"],
+                }
+            ),
+            403,
+        )
+
+    # ── Auto-detect firmware (best-effort, never blocks registration) ──
+    firmware = ""
+    model = ""
+    version = ""
+    status = "OFFLINE"
+    try:
+        from core.registry.detector import detect_firmware
+
+        fw = detect_firmware(ip)
+        if fw and fw.get("reachable"):
+            firmware = fw.get("firmware", "")
+            model = fw.get("model", "")
+            version = fw.get("version", "")
+            status = "ONLINE" if fw.get("adapter_type") else "OFFLINE"
+    except Exception:
+        pass  # probe failure must never prevent registration
 
     try:
         device = _registry.add_device(ip, name or ip, tenant_id=tenant_id)
-        _log_audit(tenant_id, "fleet.device_added",
-                   target=device.get("id", ""),
-                   details={"ip": ip, "name": name or ip})
+        # Enrich with auto-detected metadata when available
+        if firmware or model:
+            try:
+                _registry.update_device(
+                    device["id"],
+                    {
+                        "firmware": firmware,
+                        "model": model or device.get("model", ""),
+                        "firmware_version": version,
+                        "status": status,
+                    },
+                )
+                # Re-fetch so the response carries the enriched fields
+                enriched = _registry.get_device(device["id"], tenant_id=tenant_id)
+                if enriched:
+                    device = enriched
+            except Exception:
+                pass  # enrichment is best-effort; base device is still valid
+
+        _log_audit(
+            tenant_id,
+            "fleet.device_added",
+            target=device.get("id", ""),
+            details={
+                "ip": ip,
+                "name": name or ip,
+                "detected_firmware": firmware or "none",
+            },
+        )
         return jsonify({"success": True, "device": device}), 201
     except Exception as e:
         log.error("[axe] add_device error: %s", e)
@@ -291,11 +415,13 @@ def get_device(device_id: str, tenant_id: str = ""):
     telemetry = _registry.get_recent_telemetry(device_id, limit=60, tenant_id=tenant_id)
     latest = _latest_telemetry(telemetry) or None
 
-    return jsonify({
-        "device": device,
-        "latest_telemetry": latest,
-        "telemetry_count": len(telemetry),
-    })
+    return jsonify(
+        {
+            "device": device,
+            "latest_telemetry": latest,
+            "telemetry_count": len(telemetry),
+        }
+    )
 
 
 # ── Per-device telemetry endpoint ────────────────────────────────────────
@@ -316,20 +442,27 @@ def device_telemetry(device_id: str, tenant_id: str = ""):
         return jsonify({"error": "device not found"}), 404
 
     limit = request.args.get("limit", 120, type=int)
-    telemetry = _registry.get_recent_telemetry(device_id, limit=limit, tenant_id=tenant_id)
+    telemetry = _registry.get_recent_telemetry(
+        device_id, limit=limit, tenant_id=tenant_id
+    )
 
-    return jsonify({
-        "device": {
-            "id": device["id"],
-            "name": device["name"],
-            "model": device["model"],
-            "ip_address": device["ip_address"],
-            "status": device["status"],
-        },
-        "telemetry": [{"ts": e["ts"], "payload": e["payload"]} for e in telemetry
-                      if _is_trusted_payload(e.get("payload"))],
-        "count": len(telemetry),
-    })
+    return jsonify(
+        {
+            "device": {
+                "id": device["id"],
+                "name": device["name"],
+                "model": device["model"],
+                "ip_address": device["ip_address"],
+                "status": device["status"],
+            },
+            "telemetry": [
+                {"ts": e["ts"], "payload": e["payload"]}
+                for e in telemetry
+                if _is_trusted_payload(e.get("payload"))
+            ],
+            "count": len(telemetry),
+        }
+    )
 
 
 # ── Per-device chart data endpoint ───────────────────────────────────────
@@ -350,14 +483,18 @@ def device_chart_data(device_id: str, tenant_id: str = ""):
         return jsonify({"error": "device not found"}), 404
 
     limit = request.args.get("limit", 120, type=int)
-    series = _registry.get_telemetry_chart_data(device_id, limit=limit, tenant_id=tenant_id)
+    series = _registry.get_telemetry_chart_data(
+        device_id, limit=limit, tenant_id=tenant_id
+    )
 
-    return jsonify({
-        "device_id": device_id,
-        "device_name": device["name"],
-        "series": series,
-        "count": len(series["ts"]),
-    })
+    return jsonify(
+        {
+            "device_id": device_id,
+            "device_name": device["name"],
+            "series": series,
+            "count": len(series["ts"]),
+        }
+    )
 
 
 # ── Per-device health score endpoint ─────────────────────────────────────
@@ -401,17 +538,84 @@ def device_health(device_id: str, tenant_id: str = ""):
         if hr == 0:
             issues.append("zero_hashrate")
 
-    return jsonify({
-        "device_id": device_id,
-        "device_name": device["name"],
-        "status": device.get("status", "OFFLINE"),
-        "health_score": health_score,
-        "health_label": _health_label(health_score),
-        "active_issues": issues,
-        "latest_telemetry": tel,
-        "last_seen": device.get("last_seen", 0),
-        "age_seconds": now - device.get("last_seen", now),
-    })
+    return jsonify(
+        {
+            "device_id": device_id,
+            "device_name": device["name"],
+            "status": device.get("status", "OFFLINE"),
+            "health_score": health_score,
+            "health_label": _health_label(health_score),
+            "active_issues": issues,
+            "latest_telemetry": tel,
+            "last_seen": device.get("last_seen", 0),
+            "age_seconds": now - device.get("last_seen", now),
+        }
+    )
+
+
+# ── Per-device history endpoint (Phase C) ─────────────────────────────
+
+
+@axe_fleet_bp.route("/devices/<device_id>/history", methods=["GET"])
+@require_tenant
+@_role_required("viewer")
+def device_history(device_id: str, tenant_id: str = ""):
+    """Get device telemetry history for Chart.js consumption.
+
+    Returns a proximity_history-style list of {ts, hashrate, temperature,
+    efficiency_jth, fan_rpm, power_watts} points suitable for a multi-line
+    Chart.js graph in the Device Detail panel.
+
+    Query params:
+      - limit (int, optional): max data points, default 120
+    """
+    if _registry is None:
+        return jsonify({"error": "registry not initialized"}), 500
+    device = _registry.get_device(device_id, tenant_id=tenant_id)
+    if not device:
+        return jsonify({"error": "device not found"}), 404
+
+    limit = request.args.get("limit", 120, type=int)
+
+    # Reuse the existing chart-data series (same axe_telemetry source).
+    series = _registry.get_telemetry_chart_data(
+        device_id, limit=limit, tenant_id=tenant_id
+    )
+
+    # Build a proximity_history-style point list for the Chart.js consumer.
+    history = []
+    n = len(series["ts"])
+    for i in range(n):
+        hr = series["hashrate_hs"][i]
+        # Efficiency: compute on-the-fly so the caller always gets a value
+        # even when the firmware doesn't report it.
+        eff = series["efficiency_jth"][i]
+        if eff is None and hr and series["power_watts"][i]:
+            try:
+                eff = round(series["power_watts"][i] / (hr / 1e12), 2)
+            except (TypeError, ZeroDivisionError):
+                pass
+        history.append(
+            {
+                "ts": series["ts"][i],
+                "hashrate": hr,
+                "hashrate_str": _fmt_hr(int(hr)) if hr else "—",
+                "temperature": series["temperature"][i],
+                "efficiency_jth": eff,
+                "fan_rpm": series["fan_rpm"][i],
+                "power_watts": series["power_watts"][i],
+            }
+        )
+
+    return jsonify(
+        {
+            "device_id": device_id,
+            "device_name": device["name"],
+            "status": device.get("status", "OFFLINE"),
+            "history": history,
+            "count": len(history),
+        }
+    )
 
 
 @axe_fleet_bp.route("/devices/<device_id>/refresh", methods=["POST"])
@@ -429,14 +633,17 @@ def refresh_device(device_id: str, tenant_id: str = ""):
         conn = AxeOSConnector(device["ip_address"])
         info = conn.fetch_info()
         caps = conn.detect_capabilities()
-        _registry.update_device(device_id, {
-            "model": str(info.get("model", "")),
-            "firmware": str(info.get("firmware", "")),
-            "firmware_version": str(info.get("version", "")),
-            "hostname": str(info.get("hostname", "")),
-            "status": "ONLINE" if info.get("hashrate") else "IDLE",
-            "capabilities": caps,
-        })
+        _registry.update_device(
+            device_id,
+            {
+                "model": str(info.get("model", "")),
+                "firmware": str(info.get("firmware", "")),
+                "firmware_version": str(info.get("version", "")),
+                "hostname": str(info.get("hostname", "")),
+                "status": "ONLINE" if info.get("hashrate") else "IDLE",
+                "capabilities": caps,
+            },
+        )
         return jsonify({"success": True, "capabilities": caps})
     except AxeOSConnectorError as e:
         return jsonify({"error": f"device unreachable: {str(e)}"}), 503
@@ -447,31 +654,35 @@ def refresh_device(device_id: str, tenant_id: str = ""):
 
 def _require_local_or_session(f):
     """Require either localhost access or an active Flask session.
-    
+
     This is a lightweight security layer for device control endpoints.
     In production, replace with full JWT/OAuth authentication.
     """
+
     @wraps(f)
     def wrapper(*args, **kwargs):
         # Allow localhost always (safe for development)
         remote = request.remote_addr or ""
         if remote in ("127.0.0.1", "::1", "localhost"):
             return f(*args, **kwargs)
-        
+
         # Also allow requests from the same machine
         if remote == request.host.split(":")[0]:
             return f(*args, **kwargs)
-        
+
         # Check for active Flask session
         if session and session.get("authenticated"):
             return f(*args, **kwargs)
-        
+
         # Validate credentials — NEVER trust a raw opaque header. A Bearer
         # token must decode/verify as a real JWT; an X-API-Key must resolve
         # to a configured tenant key (multi-tenant isolation preserved).
         from services.auth import verify_token, resolve_tenant_for_api_key
+
         auth = request.headers.get("Authorization", "")
-        if auth.startswith("Bearer ") and verify_token(auth[7:], expected_type="access"):
+        if auth.startswith("Bearer ") and verify_token(
+            auth[7:], expected_type="access"
+        ):
             return f(*args, **kwargs)
         api_key = request.headers.get("X-API-Key", "")
         if api_key and resolve_tenant_for_api_key(api_key) is not None:
@@ -480,12 +691,21 @@ def _require_local_or_session(f):
         # lenient header check so the documented tailnet/session flow keeps
         # working exactly as before — there is no auth to validate against.
         from services.tenant import auth_configured
+
         if not auth_configured():
             if len(auth) > 20 or (api_key and len(api_key) >= 16):
                 return f(*args, **kwargs)
-        
+
         log.warning("[axe] Unauthorized device control attempt from %s", remote)
-        return jsonify({"error": "authentication required — device control restricted to localhost or authenticated session"}), 401
+        return (
+            jsonify(
+                {
+                    "error": "authentication required — device control restricted to localhost or authenticated session"
+                }
+            ),
+            401,
+        )
+
     return wrapper
 
 
@@ -510,6 +730,30 @@ def identify_device(device_id: str):
     if _registry is None:
         return jsonify({"error": "registry not initialized"}), 500
     return _execute_device_command(device_id, "identify")
+
+
+@axe_fleet_bp.route("/devices/<device_id>/pause", methods=["POST"])
+@_require_local_or_session
+@_role_required("member")
+def pause_device(device_id: str):
+    """Pause hashing on a device (ESP-Miner miningPause).
+
+    Agent-managed devices route through the LOCAL agent command queue (the
+    cloud can't reach the home LAN); direct devices hit the AxeOS HTTP API.
+    """
+    if _registry is None:
+        return jsonify({"error": "registry not initialized"}), 500
+    return _execute_device_command(device_id, "pause")
+
+
+@axe_fleet_bp.route("/devices/<device_id>/resume", methods=["POST"])
+@_require_local_or_session
+@_role_required("member")
+def resume_device(device_id: str):
+    """Resume hashing on a paused device (ESP-Miner miningResume)."""
+    if _registry is None:
+        return jsonify({"error": "registry not initialized"}), 500
+    return _execute_device_command(device_id, "resume")
 
 
 @axe_fleet_bp.route("/devices/<device_id>/config", methods=["POST"])
@@ -579,6 +823,7 @@ def fleet_summary(tenant_id: str = ""):
             online += 1
     offline = total - online - warning
     from .models import infer_health_score
+
     now = int(time.time())
     total_hr = 0
     enriched_devices = []
@@ -590,11 +835,20 @@ def fleet_summary(tenant_id: str = ""):
         # Reachability latency (PING) — only probed for reachable statuses so
         # the endpoint never blocks on dead IPs (mirrors fleet_health).
         latency_ms = None
-        if device_status_is_online(status):
+        # agent_managed devices live on the user's LAN — the cloud can NEVER
+        # reach them, so a latency probe would block every /summary call with
+        # a useless 0.75s TCP timeout per device. Skip it (PING renders '—').
+        if device_status_is_online(status) and not int(d.get("agent_managed", 0) or 0):
             latency_ms = _probe_miner_latency_ms(d.get("ip_address", ""))
         advice = _device_advice(status, p, latency_ms)
         # Enrich device with latest telemetry metrics
         enriched = dict(d)
+        # Capabilities as a supported-command ARRAY (shared helper with
+        # fleet_health): the FLEET COMMAND CENTER renders the restart/
+        # identify buttons off this list — a dict here would fail
+        # Array.isArray() in the JS and drop every agent-managed device
+        # into READ-ONLY.
+        enriched["capabilities"] = _caps_supported_commands(d.get("capabilities"))
         enriched["latency_ms"] = latency_ms
         enriched["advice"] = advice
         enriched["_telemetry"] = {
@@ -628,6 +882,11 @@ def fleet_summary(tenant_id: str = ""):
             "stratum_status": p.get("stratum_status", ""),
             "pool_url": p.get("pool_url", ""),
             "pool_user": p.get("pool_user", ""),
+            # Worker-intelligence: current stratum diff target + last-share
+            # timestamp (best-effort — None when the firmware doesn't expose
+            # them; the LIVE MINING panel renders an honest '—').
+            "pool_diff": p.get("pool_diff"),
+            "last_share_ts": p.get("last_share_ts"),
             "ts": p.get("ts", now),
             "age_seconds": now - p.get("ts", now),
         }
@@ -643,15 +902,17 @@ def fleet_summary(tenant_id: str = ""):
             enriched["_health"] = {"score": 50, "label": "unknown", "issues": []}
         enriched_devices.append(enriched)
 
-    return jsonify({
-        "total_devices": total,
-        "online": online,
-        "warning": warning,
-        "offline": offline,
-        "total_hashrate_hs": total_hr,
-        "total_hashrate_str": _fmt_hr(total_hr),
-        "devices": enriched_devices,
-    })
+    return jsonify(
+        {
+            "total_devices": total,
+            "online": online,
+            "warning": warning,
+            "offline": offline,
+            "total_hashrate_hs": total_hr,
+            "total_hashrate_str": _fmt_hr(total_hr),
+            "devices": enriched_devices,
+        }
+    )
 
 
 # ── Test / seed endpoint ──────────────────────────────────────────────
@@ -675,15 +936,25 @@ def seed_test_devices(tenant_id: str = ""):
     after testing.
     """
     if os.environ.get("DEBUG_MOCK") != "1":
-        return jsonify({"error": "test-devices endpoint disabled (set DEBUG_MOCK=1)"}), 403
+        return (
+            jsonify({"error": "test-devices endpoint disabled (set DEBUG_MOCK=1)"}),
+            403,
+        )
     if _registry is None:
         return jsonify({"error": "registry not initialized"}), 500
 
     now = int(time.time())
     devices = _registry.list_devices(tenant_id=tenant_id)
     if len(devices) >= 4:
-        return jsonify({"error": "Fleet already has devices — remove them first or use individual IP add",
-                        "device_count": len(devices)}), 409
+        return (
+            jsonify(
+                {
+                    "error": "Fleet already has devices — remove them first or use individual IP add",
+                    "device_count": len(devices),
+                }
+            ),
+            409,
+        )
 
     mock_devices = [
         {
@@ -793,7 +1064,11 @@ def seed_test_devices(tenant_id: str = ""):
             "id": device_id,
             "name": m["name"],
             "model": m["model"],
-            "manufacturer": "Bitaxe" if "Bitaxe" in m["model"] or "NerdAxe" in m["model"] else "Bitmain",
+            "manufacturer": (
+                "Bitaxe"
+                if "Bitaxe" in m["model"] or "NerdAxe" in m["model"]
+                else "Bitmain"
+            ),
             "firmware": m["firmware"],
             "firmware_version": m["version"],
             "api_version": "2.0.0",
@@ -836,13 +1111,33 @@ def seed_test_devices(tenant_id: str = ""):
                 "ts": ts,
                 "device_id": device_id,
                 "hashrate_hs": int(hr_variation) if m["hashrate_hs"] > 0 else 0,
-                "temperature": m["temperature"] + temp_variation if m["temperature"] is not None else None,
+                "temperature": (
+                    m["temperature"] + temp_variation
+                    if m["temperature"] is not None
+                    else None
+                ),
                 # Fase 5: chip/ASIC/VR temps + hashrate windows (matches the
                 # app.py auto-seed) so SEED TEST cards show real values.
-                "chip_temp": m["temperature"] + temp_variation + 8 if m["temperature"] is not None else None,
-                "vr_temp": m["temperature"] + temp_variation + 5 if m["temperature"] is not None else None,
-                "temp_asic": m["temperature"] + temp_variation + 8 if m["temperature"] is not None else None,
-                "temp_vreg": m["temperature"] + temp_variation + 5 if m["temperature"] is not None else None,
+                "chip_temp": (
+                    m["temperature"] + temp_variation + 8
+                    if m["temperature"] is not None
+                    else None
+                ),
+                "vr_temp": (
+                    m["temperature"] + temp_variation + 5
+                    if m["temperature"] is not None
+                    else None
+                ),
+                "temp_asic": (
+                    m["temperature"] + temp_variation + 8
+                    if m["temperature"] is not None
+                    else None
+                ),
+                "temp_vreg": (
+                    m["temperature"] + temp_variation + 5
+                    if m["temperature"] is not None
+                    else None
+                ),
                 "hashrate_1m": int(hr_variation) if m["hashrate_hs"] > 0 else None,
                 "hashrate_10m": int(hr_variation) if m["hashrate_hs"] > 0 else None,
                 "hashrate_1h": int(m["hashrate_hs"]) if m["hashrate_hs"] > 0 else None,
@@ -859,7 +1154,9 @@ def seed_test_devices(tenant_id: str = ""):
                 "hw_error_pct": m["hw_error_pct"],
                 "wifi_rssi": m["wifi_rssi"],
                 "free_heap": m["free_heap"],
-                "stratum_status": "connected" if m["hashrate_hs"] > 0 else "disconnected",
+                "stratum_status": (
+                    "connected" if m["hashrate_hs"] > 0 else "disconnected"
+                ),
             }
             _registry.save_telemetry(device_id, tel)
 
@@ -890,14 +1187,18 @@ def _gc_scans() -> None:
     if len(_scans) <= _SCANS_MAX:
         return
     # 1) Drop finished scans (oldest first).
-    finished = [sid for sid, s in _scans.items() if s.get("status") in ("done", "error")]
+    finished = [
+        sid for sid, s in _scans.items() if s.get("status") in ("done", "error")
+    ]
     finished.sort(key=lambda sid: _scans[sid].get("created_at", 0))
     for sid in finished[: len(_scans) - _SCANS_MAX]:
         _scans.pop(sid, None)
     # 2) Fallback: still over the cap → drop oldest regardless of status.
     if len(_scans) > _SCANS_MAX:
         overflow = len(_scans) - _SCANS_MAX
-        oldest = sorted(_scans, key=lambda sid: _scans[sid].get("created_at", 0))[:overflow]
+        oldest = sorted(_scans, key=lambda sid: _scans[sid].get("created_at", 0))[
+            :overflow
+        ]
         for sid in oldest:
             _scans.pop(sid, None)
 
@@ -906,14 +1207,21 @@ def _gc_scans() -> None:
 @require_tenant
 @_role_required("viewer")
 def scan_suggest_subnets(tenant_id: str = ""):
-    """Suggest local subnets to scan, derived from this host's interfaces."""
+    """Suggest local subnets to scan, derived from this host's interfaces.
+
+    Also reports `is_cloud` so the UI can switch to the local-agent
+    onboarding: on a cloud deploy, suggest_subnets() returns [] (the host's
+    interfaces are the PaaS VPC, not the user's LAN) and scan/IP-add are
+    impossible."""
+    from config import is_cloud_deploy
     from .scanner import suggest_subnets
+
     try:
         subnets = suggest_subnets()
     except Exception as e:  # noqa: BLE001
         log.warning("[axe] suggest_subnets error: %s", e)
         subnets = []
-    return jsonify({"subnets": subnets})
+    return jsonify({"subnets": subnets, "is_cloud": is_cloud_deploy()})
 
 
 @axe_fleet_bp.route("/scan", methods=["POST"])
@@ -927,10 +1235,30 @@ def start_scan(tenant_id: str = ""):
     """
     from .scanner import scan_subnet
 
+    # ── SaaS topology guard: a cloud host (Render etc.) can NEVER reach the
+    #    user's home LAN, so a subnet scan from here is guaranteed to find
+    #    nothing — it would only burn the server on a 250-host probe fan-out.
+    #    Block it and point the operator at the local agent instead.
+    from config import is_cloud_deploy
+
+    if is_cloud_deploy():
+        return (
+            jsonify(
+                {
+                    "success": False,
+                    "is_cloud": True,
+                    "error": "subnet scan unavailable on cloud deploy",
+                    "message": "Este dashboard roda na nuvem e não alcança a sua LAN. Instale o AGENTE LOCAL (Fleet → CONNECT AGENT) — ele roda na sua rede, descobre os miners e conecta para fora.",
+                }
+            ),
+            400,
+        )
+
     data = request.get_json(silent=True) or {}
     cidr = (data.get("cidr") or "").strip()
     if not cidr:
         from .scanner import suggest_subnets
+
         try:
             suggested = suggest_subnets()
         except Exception:  # noqa: BLE001
@@ -950,8 +1278,15 @@ def start_scan(tenant_id: str = ""):
     with _scans_lock:
         for _sid, _s in _scans.items():
             if _s.get("tenant_id") == tenant_id and _s.get("status") == "running":
-                return jsonify({"error": "scan already running for this tenant",
-                                "scan_id": _sid}), 409
+                return (
+                    jsonify(
+                        {
+                            "error": "scan already running for this tenant",
+                            "scan_id": _sid,
+                        }
+                    ),
+                    409,
+                )
         _scans[scan_id] = {
             "id": scan_id,
             "tenant_id": tenant_id,
@@ -960,6 +1295,10 @@ def start_scan(tenant_id: str = ""):
             "total": 0,
             "scanned": 0,
             "found": [],
+            # Alive-vs-miner layer + private-LAN topology hint (scanner).
+            "alive": 0,
+            "alive_ips": [],
+            "hint": None,
             "error": None,
             "created_at": now,
         }
@@ -978,10 +1317,18 @@ def start_scan(tenant_id: str = ""):
             scan["total"] = result.get("total", scan.get("total", 0))
             scan["scanned"] = result.get("total", 0)
             scan["found"] = result.get("found", [])
+            scan["alive"] = result.get("alive", 0)
+            scan["alive_ips"] = result.get("alive_ips", [])
+            scan["hint"] = result.get("hint")
             scan["error"] = result.get("error")
             scan["status"] = "done" if not result.get("error") else "error"
-            log.info("[axe] scan %s (%s) done: %d/%d found",
-                     scan_id, cidr, len(scan["found"]), scan["total"])
+            log.info(
+                "[axe] scan %s (%s) done: %d/%d found",
+                scan_id,
+                cidr,
+                len(scan["found"]),
+                scan["total"],
+            )
         except Exception as e:  # noqa: BLE001
             scan["error"] = str(e)
             scan["status"] = "error"
@@ -990,7 +1337,12 @@ def start_scan(tenant_id: str = ""):
     t = threading.Thread(target=_run, daemon=True, name=f"axe-scan-{scan_id}")
     t.start()
 
-    return jsonify({"success": True, "scan_id": scan_id, "cidr": cidr, "status": "running"}), 202
+    return (
+        jsonify(
+            {"success": True, "scan_id": scan_id, "cidr": cidr, "status": "running"}
+        ),
+        202,
+    )
 
 
 @axe_fleet_bp.route("/scan/<scan_id>", methods=["GET"])
@@ -1034,18 +1386,67 @@ def diagnose_device(ip_or_host: str):
         # per-protocol flags so the onboarding wizard can render a
         # step-by-step connectivity report (DNS → Bitaxe → cgminer).
         from .scanner import diagnose_host as _diagnose_host
+
         result = _diagnose_host(ip_or_host)
         result["port"] = port
         return jsonify(result)
     except Exception as e:
-        return jsonify({
-            "ip": ip_or_host,
-            "port": port,
-            "error": True,
-            "error_type": "EXCEPTION",
-            "error_detail": str(e),
-            "reachable": False,
-        })
+        return jsonify(
+            {
+                "ip": ip_or_host,
+                "port": port,
+                "error": True,
+                "error_type": "EXCEPTION",
+                "error_detail": str(e),
+                "reachable": False,
+            }
+        )
+
+
+# ── Lightweight firmware detection endpoint ──────────────────────────────
+
+
+@axe_fleet_bp.route("/detect/<path:ip_or_host>", methods=["GET"])
+def detect_firmware_endpoint(ip_or_host: str):
+    """Quick firmware detection via ``detect_firmware()``.
+
+    Lighter than /diagnose — calls only the firmware detector (REST APIs +
+    cgminer fingerprint), no TCP connectivity scan or per-protocol flags.
+    Returns the raw detector result for fast firmware preview.
+
+    This endpoint does NOT require auth (local-only for the wizard).
+    The device does NOT need to be registered.
+
+    Example:
+      GET /api/axe-fleet/detect/192.168.1.200
+
+    Returns:
+      {
+        "firmware": "braiins" | "axeos" | "cgminer" | "unknown",
+        "adapter_type": "braiins" | "bitaxe" | "cgminer" | "unknown",
+        "version": "...",
+        "model": "...",
+        "capabilities": {...},
+        "reachable": bool
+      }
+    """
+    try:
+        from core.registry.detector import detect_firmware
+
+        result = detect_firmware(ip_or_host)
+        return jsonify(result)
+    except Exception as e:
+        return jsonify(
+            {
+                "firmware": "unknown",
+                "adapter_type": "unknown",
+                "version": "",
+                "model": "",
+                "capabilities": {},
+                "reachable": False,
+                "error": str(e),
+            }
+        )
 
 
 # ── Remote Access (Tailscale) ──────────────────────────────────────────
@@ -1059,6 +1460,7 @@ def remote_status(tenant_id: str = ""):
     Checks local tailscale daemon and returns connection info.
     """
     from services.tailscale_adapter import get_local_status
+
     status = get_local_status()
     return jsonify({"remote_access": status})
 
@@ -1130,6 +1532,7 @@ def remote_devices(tenant_id: str = ""):
     if _registry:
         for d in _registry.list_devices(tenant_id=tenant_id):
             from services.tailscale_adapter import diagnose_connection
+
             diag = diagnose_connection(d["ip_address"], timeout=3)
             entry = {
                 "id": d.get("id", ""),
@@ -1162,29 +1565,47 @@ def remote_test_connection(tenant_id: str = ""):
 
     # Test 1: Local tailscale daemon
     ts = get_local_status()
-    tests.append({
-        "name": "Tailscale daemon",
-        "passed": ts["connected"],
-        "detail": f"IP: {ts['ip']}, Hostname: {ts['hostname']}" if ts["connected"] else ts.get("error", "not running"),
-    })
+    tests.append(
+        {
+            "name": "Tailscale daemon",
+            "passed": ts["connected"],
+            "detail": (
+                f"IP: {ts['ip']}, Hostname: {ts['hostname']}"
+                if ts["connected"]
+                else ts.get("error", "not running")
+            ),
+        }
+    )
 
     # Test 2: Host self-reachability
     if ts["ip"]:
         self_test = diagnose_connection(ts["ip"], timeout=5)
-        tests.append({
-            "name": "Local dashboard reachability",
-            "passed": self_test["reachable"],
-            "detail": f"{self_test.get('elapsed_ms', 'N/A')}ms" if self_test["reachable"] else self_test.get("error", "unreachable"),
-        })
+        tests.append(
+            {
+                "name": "Local dashboard reachability",
+                "passed": self_test["reachable"],
+                "detail": (
+                    f"{self_test.get('elapsed_ms', 'N/A')}ms"
+                    if self_test["reachable"]
+                    else self_test.get("error", "unreachable")
+                ),
+            }
+        )
 
     # Test 3: Target IP (optional, e.g. another tailnet device)
     if target_ip:
         target_test = diagnose_connection(target_ip, timeout=5)
-        tests.append({
-            "name": f"Remote target {target_ip}",
-            "passed": target_test["reachable"],
-            "detail": f"{target_test.get('elapsed_ms', 'N/A')}ms" if target_test["reachable"] else target_test.get("error", "unreachable"),
-        })
+        tests.append(
+            {
+                "name": f"Remote target {target_ip}",
+                "passed": target_test["reachable"],
+                "detail": (
+                    f"{target_test.get('elapsed_ms', 'N/A')}ms"
+                    if target_test["reachable"]
+                    else target_test.get("error", "unreachable")
+                ),
+            }
+        )
 
     # Test 4: Registered devices (tenant-scoped)
     if _registry:
@@ -1194,19 +1615,23 @@ def remote_test_connection(tenant_id: str = ""):
             diag = diagnose_connection(d["ip_address"], timeout=3)
             if diag.get("reachable"):
                 reachable_count += 1
-        tests.append({
-            "name": f"Fleet devices ({len(devices)} total)",
-            "passed": reachable_count == len(devices),
-            "detail": f"{reachable_count}/{len(devices)} reachable",
-        })
+        tests.append(
+            {
+                "name": f"Fleet devices ({len(devices)} total)",
+                "passed": reachable_count == len(devices),
+                "detail": f"{reachable_count}/{len(devices)} reachable",
+            }
+        )
 
     all_passed = all(t["passed"] for t in tests)
-    return jsonify({
-        "success": all_passed,
-        "overall": "passed" if all_passed else "failed",
-        "tests": tests,
-        "checked_at": int(time.time()),
-    })
+    return jsonify(
+        {
+            "success": all_passed,
+            "overall": "passed" if all_passed else "failed",
+            "tests": tests,
+            "checked_at": int(time.time()),
+        }
+    )
 
 
 # ── Power Plugs (Tuya Smart Plugs) ────────────────────────────────────────
@@ -1220,23 +1645,27 @@ def _get_tuya_credentials() -> dict:
     try:
         conn = _get_db_internal()
         cur = conn.cursor()
-        for k in ('tuya_access_id', 'tuya_access_secret', 'tuya_region', 'tuya_uid'):
+        for k in ("tuya_access_id", "tuya_access_secret", "tuya_region", "tuya_uid"):
             cur.execute("SELECT value FROM settings WHERE key=?", (k,))
             r = cur.fetchone()
-            if r and r['value']:
-                s[k] = r['value']
+            if r and r["value"]:
+                s[k] = r["value"]
         conn.close()
     except Exception as e:
         log.warning("[tuya] failed to read settings from DB: %s", e)
 
     # Environment variables override DB
     s["access_id"] = os.environ.get("TUYA_ACCESS_ID", "") or s.get("tuya_access_id", "")
-    s["access_secret"] = os.environ.get("TUYA_ACCESS_SECRET", "") or s.get("tuya_access_secret", "")
+    s["access_secret"] = os.environ.get("TUYA_ACCESS_SECRET", "") or s.get(
+        "tuya_access_secret", ""
+    )
     s["region"] = os.environ.get("TUYA_REGION", "") or s.get("tuya_region", "us")
     s["uid"] = os.environ.get("TUYA_UID", "") or s.get("tuya_uid", "")
     return {
-        "access_id": s.get("tuya_access_id", "") or os.environ.get("TUYA_ACCESS_ID", ""),
-        "access_secret": s.get("tuya_access_secret", "") or os.environ.get("TUYA_ACCESS_SECRET", ""),
+        "access_id": s.get("tuya_access_id", "")
+        or os.environ.get("TUYA_ACCESS_ID", ""),
+        "access_secret": s.get("tuya_access_secret", "")
+        or os.environ.get("TUYA_ACCESS_SECRET", ""),
         "region": s.get("tuya_region", "") or os.environ.get("TUYA_REGION", "us"),
         "uid": s.get("tuya_uid", "") or os.environ.get("TUYA_UID", ""),
     }
@@ -1253,20 +1682,24 @@ def list_power_plugs(tenant_id: str = ""):
 
     creds = _get_tuya_credentials()
     if not creds.get("access_id") or not creds.get("access_secret"):
-        return jsonify({
-            "plugs": [],
-            "count": 0,
-            "configured": False,
-            "message": "Tuya credentials not configured. Add TUYA_ACCESS_ID and TUYA_ACCESS_SECRET in Settings.",
-        })
+        return jsonify(
+            {
+                "plugs": [],
+                "count": 0,
+                "configured": False,
+                "message": "Tuya credentials not configured. Add TUYA_ACCESS_ID and TUYA_ACCESS_SECRET in Settings.",
+            }
+        )
 
     adapter = TuyaCloudAdapter()
     devices = adapter.list_devices(**creds)
-    return jsonify({
-        "plugs": devices,
-        "count": len(devices),
-        "configured": True,
-    })
+    return jsonify(
+        {
+            "plugs": devices,
+            "count": len(devices),
+            "configured": True,
+        }
+    )
 
 
 @axe_fleet_bp.route("/power-plugs/save-credentials", methods=["POST"])
@@ -1287,15 +1720,23 @@ def save_tuya_credentials():
     uid = (data.get("uid") or "").strip()
 
     if not access_id or not access_secret:
-        return jsonify({"success": False, "error": "access_id and access_secret are required"}), 400
+        return (
+            jsonify(
+                {"success": False, "error": "access_id and access_secret are required"}
+            ),
+            400,
+        )
 
     from services.tuya_adapter import TuyaCloudAdapter
+
     adapter = TuyaCloudAdapter()
     validation = adapter.validate_credentials(
         access_id=access_id, access_secret=access_secret, region=region
     )
     if not validation.get("valid"):
-        return jsonify({"success": False, "error": validation.get("error", "invalid credentials")})
+        return jsonify(
+            {"success": False, "error": validation.get("error", "invalid credentials")}
+        )
 
     try:
         conn = _get_db_internal()
@@ -1317,7 +1758,9 @@ def save_tuya_credentials():
         conn.commit()
         conn.close()
         log.info("[tuya] credentials saved (region=%s)", region)
-        return jsonify({"success": True, "valid": True, "uid": validation.get("uid", uid)})
+        return jsonify(
+            {"success": True, "valid": True, "uid": validation.get("uid", uid)}
+        )
     except Exception as e:
         log.error("[tuya] failed to save credentials: %s", e)
         return jsonify({"success": False, "error": f"failed to save: {str(e)}"}), 500
@@ -1421,7 +1864,12 @@ def miner_power_cycle(device_id: str):
     if not plug_id:
         return jsonify({"success": False, "error": "plug_id is required"})
     if not confirmed:
-        return jsonify({"success": False, "error": "power-cycle requires confirmation (confirm: true)"})
+        return jsonify(
+            {
+                "success": False,
+                "error": "power-cycle requires confirmation (confirm: true)",
+            }
+        )
 
     if _registry:
         device = _registry.get_device(device_id, tenant_id=_get_tenant_id())
@@ -1449,6 +1897,7 @@ def miner_power_cycle(device_id: str):
 
     def _run():
         from services.tuya_adapter import TuyaCloudAdapter as _TCA
+
         _adapter = _TCA()
         try:
             # Step 1: OFF
@@ -1479,8 +1928,12 @@ def miner_power_cycle(device_id: str):
             log.info("[power-cycle] %s → ON (task %s)", device_id, task_id)
 
             task["status"] = "completed"
-            _audit_power_action(device_id, "power_cycle", True,
-                                f"cycled via plug {plug_id} ({off_seconds}s off)")
+            _audit_power_action(
+                device_id,
+                "power_cycle",
+                True,
+                f"cycled via plug {plug_id} ({off_seconds}s off)",
+            )
         except Exception as e:
             task["status"] = "failed"
             task["error"] = str(e)
@@ -1489,12 +1942,14 @@ def miner_power_cycle(device_id: str):
     t = threading.Thread(target=_run, daemon=True, name=f"pwr-cycle-{task_id}")
     t.start()
 
-    return jsonify({
-        "success": True,
-        "task_id": task_id,
-        "status": "pending",
-        "message": f"Power-cycle started. Poll /api/axe-fleet/power-cycle/status/{task_id}",
-    })
+    return jsonify(
+        {
+            "success": True,
+            "task_id": task_id,
+            "status": "pending",
+            "message": f"Power-cycle started. Poll /api/axe-fleet/power-cycle/status/{task_id}",
+        }
+    )
 
 
 @axe_fleet_bp.route("/power-cycle/status/<task_id>", methods=["GET"])
@@ -1523,9 +1978,13 @@ def _audit_power_action(device_id: str, action: str, success: bool, detail: str 
         c.execute(
             "INSERT INTO alert_history (ts, alert_type, device_id, severity, action_taken) "
             "VALUES (?, ?, ?, ?, ?)",
-            (int(time.time()), "power_action", device_id,
-             "INFO" if success else "WARN",
-             f"[{action}] {'OK' if success else 'FAIL'}: {detail}"),
+            (
+                int(time.time()),
+                "power_action",
+                device_id,
+                "INFO" if success else "WARN",
+                f"[{action}] {'OK' if success else 'FAIL'}: {detail}",
+            ),
         )
         conn.commit()
         conn.close()
@@ -1551,7 +2010,10 @@ def _execute_plug_command(plug_id: str, method: str) -> tuple:
 
     creds = _get_tuya_credentials()
     if not creds.get("access_id") or not creds.get("access_secret"):
-        return jsonify({"success": False, "error": "Tuya credentials not configured"}), 200
+        return (
+            jsonify({"success": False, "error": "Tuya credentials not configured"}),
+            200,
+        )
 
     adapter = TuyaCloudAdapter()
     fn = getattr(adapter, method, None)
@@ -1601,7 +2063,11 @@ def remote_onboarding(tenant_id: str = ""):
             "id": "dashboard_reachable",
             "label": "Dashboard acessível via tailnet",
             "done": False,
-            "instructions": f"Abra http://{ts['ip']}:8765 do celular/notebook para verificar o acesso remoto" if ts["ip"] else "Conecte o Tailscale primeiro",
+            "instructions": (
+                f"Abra http://{ts['ip']}:8765 do celular/notebook para verificar o acesso remoto"
+                if ts["ip"]
+                else "Conecte o Tailscale primeiro"
+            ),
         },
         {
             "id": "tuya_configured",
@@ -1614,6 +2080,7 @@ def remote_onboarding(tenant_id: str = ""):
     # Update step 4 status
     if ts["ip"]:
         from services.tailscale_adapter import diagnose_connection
+
         diag = diagnose_connection(ts["ip"], timeout=3)
         steps[3]["done"] = diag["reachable"]
         if steps[3]["done"]:
@@ -1641,23 +2108,35 @@ def remote_onboarding(tenant_id: str = ""):
         "Frotas grandes podem ter polling mais lento: os probes de latência são cacheados por IP (TTL 30s)",
     ]
 
-    return jsonify({
-        "onboarding_complete": all_done,
-        "progress": f"{sum(1 for s in steps if s['done'])}/{len(steps)}",
-        "steps": steps,
-        "remote_ip": ts.get("ip"),
-        "remote_hostname": ts.get("hostname"),
-        "scope": scope,
-        "limitations": limitations,
-    })
+    return jsonify(
+        {
+            "onboarding_complete": all_done,
+            "progress": f"{sum(1 for s in steps if s['done'])}/{len(steps)}",
+            "steps": steps,
+            "remote_ip": ts.get("ip"),
+            "remote_hostname": ts.get("hostname"),
+            "scope": scope,
+            "limitations": limitations,
+        }
+    )
 
 
 # ── Helpers ─────────────────────────────────────────────────────────────
 
 
-def _execute_device_command(device_id: str, command: str):
-    """Execute a command on a device. Shared by restart/identify endpoints."""
-    device = _registry.get_device(device_id, tenant_id=_get_tenant_id())
+def _execute_device_command(device_id: str, command: str, tenant_id: str = None):
+    """Execute a command on a device. Shared by restart/identify endpoints.
+
+    SaaS agent model: when the device is agent_managed (polled by the user's
+    LOCAL agent), the command cannot be executed from the cloud — it is
+    ENQUEUED so the agent pulls and runs it on the home LAN.
+
+    ``tenant_id`` (Issue #178): explicit tenant for BACKGROUND callers (the
+    Auto-Pilot autonomous pass runs in the poll thread with NO request
+    context — _get_tenant_id() would raise there). Falls back to the request
+    tenant when None."""
+    tid = tenant_id or _get_tenant_id()
+    device = _registry.get_device(device_id, tenant_id=tid)
     if not device:
         return jsonify({"error": "device not found"}), 404
 
@@ -1665,12 +2144,60 @@ def _execute_device_command(device_id: str, command: str):
     if not caps.get(command):
         return jsonify({"error": f"'{command}' not supported by this device"}), 400
 
+    # Agent-managed → route through the command queue (agent executes locally).
+    if int(device.get("agent_managed", 0) or 0):
+        queued = _registry.enqueue_agent_command(device_id, command, tenant_id=tid)
+        if not queued:
+            return jsonify({"error": "could not enqueue agent command"}), 500
+        if command == "pause":
+            # Issue #13: reflect the operator's intent immediately even when
+            # the command runs on the home LAN — the agent's next telemetry
+            # push (carrying mining_paused) confirms and self-heals any gap.
+            _registry.update_device(device_id, {"status": STATUS_PAUSED}, tenant_id=tid)
+            _mark_cache_status(device_id, STATUS_PAUSED)
+        _log_audit(
+            tid,
+            "fleet.agent_command_queued",
+            target=device_id,
+            details={"command": command, "cmd_id": queued.get("id")},
+        )
+        return jsonify(
+            {
+                "success": True,
+                "queued": True,
+                "message": f"'{command}' enviado para o agente local executar",
+                "command_id": queued.get("id"),
+            }
+        )
+
     try:
         conn = AxeOSConnector(device["ip_address"])
+        tid = tenant_id or _get_tenant_id()
         if command == "restart":
             result = conn.restart()
         elif command == "identify":
             result = conn.identify()
+        elif command == "pause":
+            # ESP-Miner: POST /api/system/miningPause (empty body).
+            result = conn.pause()
+            # Issue #13: reflect PAUSED immediately — never wait for the next
+            # poll. The DB row + snapshot cache flip together so the Fleet
+            # card shows the truth the moment the command succeeds.
+            _registry.update_device(device_id, {"status": STATUS_PAUSED}, tenant_id=tid)
+            _mark_cache_status(device_id, STATUS_PAUSED)
+        elif command == "resume":
+            # ESP-Miner: POST /api/system/miningResume (empty body).
+            result = conn.resume()
+            # Re-poll right away: the device decides ONLINE/IDLE by its real
+            # hashrate (a paused device only leaves PAUSED when it hashes).
+            try:
+                tel = conn.extract_telemetry()
+            except AxeOSConnectorError:
+                tel = {}
+            if tel:
+                new_st = derive_device_status(tel)
+                _registry.update_device(device_id, {"status": new_st}, tenant_id=tid)
+                _mark_cache_status(device_id, new_st)
         else:
             return jsonify({"error": f"unknown command: {command}"}), 400
         return jsonify({"success": True, "result": result})
@@ -1744,14 +2271,21 @@ def fleet_health(tenant_id: str = ""):
         # Reachability latency (PING on the card) — only probed for
         # reachable statuses so the endpoint never blocks on dead IPs.
         latency_ms = None
-        if device_status_is_online(status):
+        # Same SaaS guard as fleet_summary: agent_managed IPs are unreachable
+        # from the cloud — probing them only burns 0.75s per device per
+        # /health call. Skip (PING '—'), never mark them down because of it.
+        if device_status_is_online(status) and not int(d.get("agent_managed", 0) or 0):
             latency_ms = _probe_miner_latency_ms(d.get("ip_address", ""))
         advice = _device_advice(status, tel, latency_ms)
 
         hr = int(tel.get("hashrate_hs", 0))
         pw = tel.get("power_watts")
         tmp = tel.get("temperature")
-        bd = parse_diff_to_float(tel.get("best_diff", "")) if tel.get("best_diff") else 0.0
+        bd = (
+            parse_diff_to_float(tel.get("best_diff", ""))
+            if tel.get("best_diff")
+            else 0.0
+        )
 
         total_hashrate_hs += hr
         if pw:
@@ -1765,83 +2299,93 @@ def fleet_health(tenant_id: str = ""):
             best_diff_global = bd
             best_diff_str_global = tel.get("best_diff", "")
 
-        # Capabilities
-        caps = d.get("capabilities", {}) or {}
-        supported_cmds = [k for k, v in caps.items() if v]
+        # Capabilities — flattened to the supported-command array (shared
+        # helper: fleet_summary must never drift from this shape again).
+        supported_cmds = _caps_supported_commands(d.get("capabilities"))
 
-        device_health_list.append({
-            "id": did,
-            "name": d.get("name", ""),
-            "model": d.get("model", ""),
-            "manufacturer": d.get("manufacturer", ""),
-            "firmware": d.get("firmware", ""),
-            "firmware_version": d.get("firmware_version", ""),
-            "ip_address": d.get("ip_address", ""),
-            "hostname": d.get("hostname", ""),
-            "status": status,
-            "health_score": health_score,
-            "capabilities": supported_cmds,
-            "telemetry": {
-                "hashrate_hs": hr,
-                "hashrate_str": _fmt_hr(hr),
-                "temperature": tmp,
-                "power_watts": pw,
-                "frequency_mhz": tel.get("frequency_mhz"),
-                "voltage_mv": tel.get("voltage_mv"),
-                "best_diff": tel.get("best_diff", ""),
-                "uptime_seconds": tel.get("uptime_seconds", 0),
-                "uptime_str": _fmt_uptime(tel.get("uptime_seconds", 0)),
-                "free_heap": tel.get("free_heap"),
-                "wifi_rssi": tel.get("wifi_rssi"),
-                "shares_accepted": tel.get("shares_accepted", 0),
-                "shares_rejected": tel.get("shares_rejected", 0),
-                "shares_stale": tel.get("shares_stale", 0),
-                "hw_error_pct": tel.get("hw_error_pct", 0.0),
-                "efficiency_jth": tel.get("efficiency_jth"),
-                # Fase 5: expose chip/ASIC/VR temps + hashrate windows the
-                # frontend cards render. Without these the cards always show
-                # NOT AVAILABLE even when the firmware reports real values.
-                "chip_temp": tel.get("chip_temp"),
-                "vr_temp": tel.get("vr_temp"),
-                "temp_asic": tel.get("temp_asic"),
-                "temp_vreg": tel.get("temp_vreg"),
-                "hashrate_1m": tel.get("hashrate_1m"),
-                "hashrate_10m": tel.get("hashrate_10m"),
-                "hashrate_1h": tel.get("hashrate_1h"),
-                "fan_speed": tel.get("fan_speed"),
-                "fan_rpm": tel.get("fan_rpm"),
-                "stratum_status": tel.get("stratum_status", ""),
-                "pool_url": tel.get("pool_url", ""),
-                "pool_user": tel.get("pool_user", ""),
-                "ts": tel.get("ts", now),
-                "age_seconds": now - tel.get("ts", now),
-            },
-            "latency_ms": latency_ms,
-            "advice": advice,
-            "last_seen": d.get("last_seen", 0),
-        })
+        device_health_list.append(
+            {
+                "id": did,
+                "name": d.get("name", ""),
+                "model": d.get("model", ""),
+                "manufacturer": d.get("manufacturer", ""),
+                "firmware": d.get("firmware", ""),
+                "firmware_version": d.get("firmware_version", ""),
+                "ip_address": d.get("ip_address", ""),
+                "hostname": d.get("hostname", ""),
+                "status": status,
+                "health_score": health_score,
+                "capabilities": supported_cmds,
+                "telemetry": {
+                    "hashrate_hs": hr,
+                    "hashrate_str": _fmt_hr(hr),
+                    "temperature": tmp,
+                    "power_watts": pw,
+                    "frequency_mhz": tel.get("frequency_mhz"),
+                    "voltage_mv": tel.get("voltage_mv"),
+                    "best_diff": tel.get("best_diff", ""),
+                    "pool_diff": tel.get("pool_diff"),
+                    "last_share_ts": tel.get("last_share_ts"),
+                    "uptime_seconds": tel.get("uptime_seconds", 0),
+                    "uptime_str": _fmt_uptime(tel.get("uptime_seconds", 0)),
+                    "free_heap": tel.get("free_heap"),
+                    "wifi_rssi": tel.get("wifi_rssi"),
+                    "shares_accepted": tel.get("shares_accepted", 0),
+                    "shares_rejected": tel.get("shares_rejected", 0),
+                    "shares_stale": tel.get("shares_stale", 0),
+                    "hw_error_pct": tel.get("hw_error_pct", 0.0),
+                    "efficiency_jth": tel.get("efficiency_jth"),
+                    # Fase 5: expose chip/ASIC/VR temps + hashrate windows the
+                    # frontend cards render. Without these the cards always show
+                    # NOT AVAILABLE even when the firmware reports real values.
+                    "chip_temp": tel.get("chip_temp"),
+                    "vr_temp": tel.get("vr_temp"),
+                    "temp_asic": tel.get("temp_asic"),
+                    "temp_vreg": tel.get("temp_vreg"),
+                    "hashrate_1m": tel.get("hashrate_1m"),
+                    "hashrate_10m": tel.get("hashrate_10m"),
+                    "hashrate_1h": tel.get("hashrate_1h"),
+                    "fan_speed": tel.get("fan_speed"),
+                    "fan_rpm": tel.get("fan_rpm"),
+                    "stratum_status": tel.get("stratum_status", ""),
+                    "pool_url": tel.get("pool_url", ""),
+                    "pool_user": tel.get("pool_user", ""),
+                    "ts": tel.get("ts", now),
+                    "age_seconds": now - tel.get("ts", now),
+                },
+                "latency_ms": latency_ms,
+                "advice": advice,
+                "last_seen": d.get("last_seen", 0),
+            }
+        )
 
     avg_temp = round(temp_sum / temp_count, 1) if temp_count > 0 else None
     avg_health = round(health_sum / health_count, 0) if health_count > 0 else 0
-    efficiency_jth = round(total_power_w / (total_hashrate_hs / 1e12), 2) if total_hashrate_hs > 0 and total_power_w > 0 else None
+    efficiency_jth = (
+        round(total_power_w / (total_hashrate_hs / 1e12), 2)
+        if total_hashrate_hs > 0 and total_power_w > 0
+        else None
+    )
 
-    return jsonify({
-        "fleet_stats": {
-            "total_devices": total,
-            "online": online,
-            "warning": warning,
-            "offline": offline,
-            "total_hashrate_hs": total_hashrate_hs,
-            "total_hashrate_str": _fmt_hr(total_hashrate_hs),
-            "total_power_w": total_power_w,
-            "avg_temperature_c": avg_temp,
-            "avg_health_score": avg_health,
-            "best_diff": best_diff_str_global,
-            "efficiency_jth": efficiency_jth,
-        },
-        "device_health": device_health_list,
-        "groups": groups,
-    })
+    return jsonify(
+        {
+            "fleet_stats": {
+                "total_devices": total,
+                "online": online,
+                "warning": warning,
+                "offline": offline,
+                "total_hashrate_hs": total_hashrate_hs,
+                "total_hashrate_str": _fmt_hr(total_hashrate_hs),
+                "total_power_w": total_power_w,
+                "avg_temperature_c": avg_temp,
+                "avg_health_score": avg_health,
+                "best_diff": best_diff_str_global,
+                "efficiency_jth": efficiency_jth,
+            },
+            "device_health": device_health_list,
+            "groups": groups,
+        }
+    )
 
 
 def _health_label(score: int) -> str:
@@ -1878,9 +2422,12 @@ def _fmt_uptime(seconds: int) -> str:
     h = (seconds % 86400) // 3600
     m = (seconds % 3600) // 60
     parts = []
-    if d: parts.append(f"{d}d")
-    if h: parts.append(f"{h}h")
-    if m: parts.append(f"{m}m")
+    if d:
+        parts.append(f"{d}d")
+    if h:
+        parts.append(f"{h}h")
+    if m:
+        parts.append(f"{m}m")
     return " ".join(parts) if parts else "<1m"
 
 
@@ -1901,3 +2448,306 @@ def parse_diff_to_float(diff_str: str) -> float:
         return num * mult.get(suf, 1)
     except (ValueError, TypeError):
         return 0.0
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# AGENT API — /api/agent/*  (SaaS: local agent → cloud dashboard)
+# ══════════════════════════════════════════════════════════════════════════
+# The user runs a LIGHTWEIGHT agent on their home LAN (Docker). The agent
+# connects OUT to this cloud dashboard (no open ports needed — NAT/CGNAT
+# safe) and:
+#   • registers devices it discovers (scan ARP/subnet local)
+#   • pushes telemetry in batches (every ~30s)
+#   • pulls queued commands (restart/identify) and acks the result
+# Auth: `Authorization: Bearer <agent-token>` — a long-lived JWT minted via
+# POST /api/agent/token by a logged-in user, scoped to their tenant.
+# The agent token is a JWT with the `agent: true` claim; tenant comes from
+# `sub` (same as user tokens).
+
+agent_bp = Blueprint("agent", __name__, url_prefix="/api/agent")
+
+# Long-lived agent token: 1 year. The agent runs unattended on the home LAN;
+# a short-lived token would break polling until the user re-generates it.
+AGENT_TOKEN_TTL = 365 * 86400
+
+
+def _require_agent(f):
+    """Require a valid agent token (JWT with `agent: true` claim).
+    Injects `agent_tenant_id` (the tenant that owns the agent) into kwargs."""
+
+    @wraps(f)
+    def wrapper(*args, **kwargs):
+        from services.auth import verify_token
+
+        auth_header = request.headers.get("Authorization", "")
+        if not auth_header.startswith("Bearer "):
+            return jsonify({"error": "agent token required"}), 401
+        payload = verify_token(auth_header[7:], expected_type="access")
+        if not payload or not payload.get("agent"):
+            return jsonify({"error": "invalid agent token"}), 401
+        kwargs["agent_tenant_id"] = payload.get("sub") or "default"
+        return f(*args, **kwargs)
+
+    return wrapper
+
+
+@agent_bp.route("/token", methods=["POST"])
+@require_tenant
+@_role_required("member")
+def agent_issue_token(tenant_id: str = ""):
+    """Mint a long-lived agent token for the caller's tenant.
+    Requires a logged-in user (member+). Returns the JWT the user pastes
+    into the agent's env (CYPHER65_AGENT_TOKEN)."""
+    from services.auth import create_token
+
+    tid = tenant_id or "default"
+    token = create_token(
+        subject=tid, ttl=AGENT_TOKEN_TTL, extra_claims={"agent": True, "role": "agent"}
+    )
+    _log_audit(tid, "agent.token_issued", details={"ttl_days": 365})
+    return jsonify(
+        {
+            "success": True,
+            "token": token,
+            "tenant_id": tid,
+            "expires_in": AGENT_TOKEN_TTL,
+            "server_url": request.url_root.rstrip("/"),
+            "usage": "CYPHER65_AGENT_TOKEN=<token> em Docker na sua LAN (o agente conecta para fora)",
+        }
+    )
+
+
+@agent_bp.route("/register", methods=["POST"])
+@_require_agent
+def agent_register_devices(agent_tenant_id: str = ""):
+    """Register devices discovered by the agent (upsert by IP+tenant).
+    Body: {"devices": [{"ip": ..., "name": ..., "model": ...,
+           "firmware": ..., "version": ..., "hostname": ...,
+           "type": "bitaxe"|"cgminer", "mac": ...}, ...]}
+    Returns the registered device dicts."""
+    data = request.get_json(silent=True) or {}
+    devices = data.get("devices") or []
+    if not isinstance(devices, list) or not devices:
+        return jsonify({"error": "devices array required"}), 400
+    out = []
+    blocked = []
+    for d in devices:
+        ip = (d.get("ip") or "").strip()
+        if not ip:
+            continue
+        # Plan worker cap: only NEW devices consume a slot (an upsert refresh
+        # of an already-registered device must never be rejected). Mirrors the
+        # manual POST /devices gate — the agent path must not bypass the plan.
+        existing = _registry.get_device_by_ip(ip, tenant_id=agent_tenant_id)
+        if not existing and not _can_add_worker(agent_tenant_id):
+            plan = _get_tenant_plan(agent_tenant_id)
+            blocked.append(
+                {
+                    "ip": ip,
+                    "error": "plan worker limit reached",
+                    "max_workers": plan["max_workers"],
+                    "plan": plan["plan"],
+                }
+            )
+            _log_audit(
+                agent_tenant_id,
+                "agent.register_blocked",
+                target=ip,
+                details={"reason": "plan_worker_limit"},
+            )
+            continue
+        dev = _registry.upsert_agent_device(
+            ip,
+            name=(d.get("name") or "").strip(),
+            tenant_id=agent_tenant_id,
+            info={
+                "model": d.get("model"),
+                "firmware": d.get("firmware"),
+                "version": d.get("version"),
+                "hostname": d.get("hostname"),
+                "mac": d.get("mac"),
+                "manufacturer": d.get("manufacturer"),
+                # type drives capabilities (bitaxe restart/identify via :80;
+                # cgminer restart via :4028, no identify).
+                "type": d.get("type"),
+            },
+        )
+        if not dev:
+            # Tombstone: operator removed this IP — the agent must NOT
+            # resurrect it. Report it as blocked so the agent drops it from
+            # its poll set instead of 403-spamming telemetry forever.
+            blocked.append({"ip": ip, "error": "device removed by operator"})
+            _log_audit(
+                agent_tenant_id,
+                "agent.register_blocked",
+                target=ip,
+                details={"reason": "device_removed"},
+            )
+            continue
+        out.append(dev)
+    _log_audit(
+        agent_tenant_id,
+        "agent.register",
+        details={"count": len(out), "blocked": len(blocked)},
+    )
+    return (
+        jsonify(
+            {
+                "success": True,
+                "registered": out,
+                "count": len(out),
+                "blocked": blocked,
+                "blocked_count": len(blocked),
+            }
+        ),
+        201,
+    )
+
+
+@agent_bp.route("/telemetry", methods=["POST"])
+@_require_agent
+def agent_telemetry(agent_tenant_id: str = ""):
+    """Push telemetry for one device (agent polling result).
+    Body: {"ip": ..., "telemetry": {...}} — telemetry uses the SAME
+    normalized shape as the registry's extract_telemetry (hashrate_hs,
+    temperature, fan_rpm, power_watts, best_diff, shares_*, ...)."""
+    data = request.get_json(silent=True) or {}
+    ip = (data.get("ip") or "").strip()
+    tel = data.get("telemetry")
+    # Require the explicit key: `telemetry: {}` (empty) is legal (a device
+    # that answered nothing), but a MISSING key is a malformed push.
+    if not ip or not isinstance(tel, dict):
+        return jsonify({"error": "ip and telemetry object required"}), 400
+    device = _registry.get_device_by_ip(ip, tenant_id=agent_tenant_id)
+    if not device:
+        # Agent reported a device it registered earlier but the row is gone
+        # (e.g. server DB reset). Re-upsert with the telemetry as identity —
+        # but respect the plan worker cap so the telemetry path can't bypass
+        # the limit that register enforces.
+        if not _can_add_worker(agent_tenant_id):
+            plan = _get_tenant_plan(agent_tenant_id)
+            _log_audit(
+                agent_tenant_id,
+                "agent.telemetry_blocked",
+                target=ip,
+                details={"reason": "plan_worker_limit"},
+            )
+            return (
+                jsonify(
+                    {
+                        "success": False,
+                        "error": "plan worker limit reached",
+                        "message": f"O plano {plan['plan']} permite no máximo {plan['max_workers']} workers. Remova um device ou aumente o limite.",
+                        "plan": plan["plan"],
+                        "max_workers": plan["max_workers"],
+                    }
+                ),
+                403,
+            )
+        device = _registry.upsert_agent_device(
+            ip, tenant_id=agent_tenant_id, info={"model": tel.get("model")}
+        )
+        if not device:
+            # Tombstoned: the operator removed this device. Acknowledge
+            # with 410 so the agent stops pushing it (it can never come
+            # back via the agent path — only an explicit operator add).
+            _log_audit(
+                agent_tenant_id,
+                "agent.telemetry_blocked",
+                target=ip,
+                details={"reason": "device_removed"},
+            )
+            return (
+                jsonify(
+                    {
+                        "success": False,
+                        "error": "device removed by operator",
+                        "removed": True,
+                    }
+                ),
+                410,
+            )
+    _registry.save_agent_telemetry(device["id"], tel, tenant_id=agent_tenant_id)
+    return jsonify(
+        {
+            "success": True,
+            "device_id": device["id"],
+            "status": derive_device_status(tel),
+        }
+    )
+
+
+@agent_bp.route("/commands/pull", methods=["POST"])
+@_require_agent
+def agent_pull_commands(agent_tenant_id: str = ""):
+    """Pull queued commands (restart/identify) for this tenant's devices.
+    Returns [] when nothing is pending."""
+    cmds = _registry.pending_agent_commands(tenant_id=agent_tenant_id)
+    pulled = []
+    for c in cmds:
+        if _registry.mark_command_pulled(c["id"], tenant_id=agent_tenant_id):
+            # Resolve the device's LAN IP server-side. The agent executes
+            # commands on the HOME network — it needs the reachable IP, not
+            # the registry UUID. (The command's device_id alone was useless:
+            # the agent would try to open a TCP/HTTP socket to a UUID string.)
+            dev = _registry.get_device(c["device_id"], tenant_id=agent_tenant_id)
+            pulled.append(
+                {
+                    "id": c["id"],
+                    "device_id": c["device_id"],
+                    "ip_address": (dev or {}).get("ip_address", ""),
+                    "command": c["command"],
+                    "params": c.get("params", {}),
+                }
+            )
+    return jsonify({"success": True, "commands": pulled})
+
+
+@agent_bp.route("/commands/<command_id>/ack", methods=["POST"])
+@_require_agent
+def agent_ack_command(command_id: str, agent_tenant_id: str = ""):
+    """Ack a command result after executing it locally.
+    Body: {"success": bool, "result": str|dict}"""
+    data = request.get_json(silent=True) or {}
+    success = bool(data.get("success"))
+    result = data.get("result") or ""
+    if isinstance(result, (dict, list)):
+        result = json.dumps(result)
+    ok = _registry.ack_agent_command(
+        command_id, agent_tenant_id, success=success, result=str(result)
+    )
+    return (
+        jsonify({"success": ok})
+        if ok
+        else (jsonify({"error": "command not found"}), 404)
+    )
+
+
+# ── Agent assets: the 1-line installer + the stdlib-only agent.py ─────────
+# The user's dashboard shows `curl -sSL <origin>/agent/install.sh | bash`.
+# The installer downloads agent.py from here — both served from the repo's
+# agent/ directory, public (no auth: they are scripts the user must be able
+# to fetch from a machine OUTSIDE the dashboard session).
+
+agent_assets_bp = Blueprint("agent_assets", __name__, url_prefix="/agent")
+
+_AGENT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "agent")
+
+
+@agent_assets_bp.route("/install.sh", methods=["GET"])
+def agent_install_script():
+    """Serve the one-line installer (bash). Public — the whole point is a
+    curl|bash from a machine on the user's LAN."""
+    path = os.path.join(_AGENT_DIR, "install.sh")
+    if not os.path.exists(path):
+        return jsonify({"error": "installer not found"}), 404
+    return send_file(path, mimetype="text/x-shellscript", max_age=300, conditional=True)
+
+
+@agent_assets_bp.route("/agent.py", methods=["GET"])
+def agent_script():
+    """Serve the stdlib-only agent source the installer downloads. Public."""
+    path = os.path.join(_AGENT_DIR, "agent.py")
+    if not os.path.exists(path):
+        return jsonify({"error": "agent script not found"}), 404
+    return send_file(path, mimetype="text/x-python", max_age=300, conditional=True)

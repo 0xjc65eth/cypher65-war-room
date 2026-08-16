@@ -1990,7 +1990,6 @@ var _mktProviderIcons = {
   braiins: '\u229b',
   nicehash: '\u25c8',
   mrr: '\u26c1',
-  kissmyhash: '\u2661',
   parasite: '\u2302',
 };
 
@@ -2001,7 +2000,7 @@ function renderMarketHtml(offers, activeFilter) {
   if (!filtered.length) return '<div class="mkt-empty">No offers for selected provider \u2014 adjust filter</div>';
   return filtered.map(function(o) {
     var icon = _mktProviderIcons[o.provider] || '?';
-    var label = (o.provider === 'braiins' ? 'Braiins' : o.provider === 'nicehash' ? 'NiceHash' : o.provider === 'mrr' ? 'MRR' : o.provider === 'kissmyhash' ? 'KissMyHash' : o.provider === 'parasite' ? 'Parasite' : escapeHtml(o.provider || 'Unknown'));
+    var label = (o.provider === 'braiins' ? 'Braiins' : o.provider === 'nicehash' ? 'NiceHash' : o.provider === 'mrr' ? 'MRR' : o.provider === 'parasite' ? 'Parasite' : escapeHtml(o.provider || 'Unknown'));
     return '<div class="mkt-card">\n' +
       '<div class="mkt-card__provider"><span class="mkt-provider-icon">' + icon + '</span><span class="mkt-provider-name">' + label + '</span></div>\n' +
       '<div class="mkt-card__price">' + (o.price || '\u2014') + '</div>\n' +
@@ -2034,20 +2033,18 @@ assertTruthy('braiins has hashrate', /100\.0/.test(braiinsHtml));
 assertTruthy('braiins has fee 2.5%', /2\.5%/.test(braiinsHtml));
 assertTruthy('braiins has duration', /24h/.test(braiinsHtml));
 
-// All 5 providers
+// All 4 providers
 var allProviders = [
   { provider: 'braiins', price: '0.0005 BTC/TH/d', hashrate: 100e12, fee: 2.5, duration: '24h' },
   { provider: 'nicehash', price: '0.0006 BTC/TH/d', hashrate: 50e12, fee: 3.0, duration: '12h' },
   { provider: 'mrr', price: '0.0004 BTC/TH/d', hashrate: 200e12, fee: 1.5, duration: '48h' },
-  { provider: 'kissmyhash', price: '0.0007 BTC/TH/d', hashrate: 75e12, fee: 2.0, duration: '6h' },
   { provider: 'parasite', price: '0.0003 BTC/TH/d', hashrate: 300e12, fee: 1.0, duration: '72h' },
 ];
 var allHtml = renderMarketHtml(allProviders, 'all');
-assertEqual('all providers has 5 cards', (allHtml.match(/class="mkt-card"/g) || []).length, 5);
+assertEqual('all providers has 4 cards', (allHtml.match(/class="mkt-card"/g) || []).length, 4);
 assertTruthy('all includes ⊛ (braiins)', /\u229b/.test(allHtml));
 assertTruthy('all includes ◈ (nicehash)', /\u25c8/.test(allHtml));
 assertTruthy('all includes ⛁ (mrr)', /\u26c1/.test(allHtml));
-assertTruthy('all includes ♡ (kissmyhash)', /\u2661/.test(allHtml));
 assertTruthy('all includes ⌂ (parasite)', /\u2302/.test(allHtml));
 
 // Filter: braiins only
@@ -2381,7 +2378,7 @@ assertEqual('mismatched provider → no BUY btn', htmlOtherProv.indexOf('mkt-car
 
 // ── _mktBestIndex mirror: highest metrics.score wins; only with NO scores at
 // all does it fall back to lowest valid price (two-pass, first-max on ties).
-// Estimated offers (parasite pool-fee model, kissmyhash fallback) are NEVER
+// Estimated offers (parasite pool-fee model) are NEVER
 // crowned best — they are filtered out first, keeping original indices for
 // mapping back; if ALL offers are estimated, the full list is used as fallback
 // (matches static/app.js _mktBestIndex). ─
@@ -2444,12 +2441,12 @@ var parasiteVsReal = [
 assertEqual('estimated skipped in score pass → mrr (idx 1)', mktBestIndexMirror(parasiteVsReal), 1);
 var allEstimated = [
   { provider: 'parasite', price_per_th_day: 1e-8, estimated: true, metrics: { score: 7 } },
-  { provider: 'kissmyhash', price_per_th_day: 5e-8, estimated: true, metrics: { score: 9 } },
+  { provider: 'derived', price_per_th_day: 5e-8, estimated: true, metrics: { score: 9 } },
 ];
-assertEqual('all estimated → fallback score pass → kissmyhash (idx 1)', mktBestIndexMirror(allEstimated), 1);
+assertEqual('all estimated → fallback score pass → derived (idx 1)', mktBestIndexMirror(allEstimated), 1);
 var allEstimatedNoScores = [
   { provider: 'parasite', price_per_th_day: 1e-8, estimated: true },
-  { provider: 'kissmyhash', price_per_th_day: 5e-8, estimated: true },
+  { provider: 'derived', price_per_th_day: 5e-8, estimated: true },
 ];
 assertEqual('all estimated no scores → lowest price → parasite (idx 0)', mktBestIndexMirror(allEstimatedNoScores), 0);
 var mixedNoScores = [
@@ -2540,7 +2537,7 @@ var staleOfferHtml = renderMarketOfferHtml({ provider: 'MRR', price_btc_per_th_d
 assertTruthy('staleOfferHtml has mkt-card--stale', /mkt-card--stale/.test(staleOfferHtml));
 assertTruthy('staleOfferHtml has stale badge', /stale/.test(staleOfferHtml));
 
-var metaStale = renderMarketOfferHtml({ provider: 'KissMyHash', price_btc_per_th_day: 0.00003, hashrate: 300e12, fee: 2.0, meta: 'stale' }, false);
+var metaStale = renderMarketOfferHtml({ provider: 'Parasite', price_btc_per_th_day: 0.00003, hashrate: 300e12, fee: 2.0, meta: 'stale' }, false);
 assertTruthy('metaStale has stale via meta string', /mkt-card--stale/.test(metaStale));
 
 var htmlEscaped = renderMarketOfferHtml({ provider: '<script>', price_btc_per_th_day: 0.00001, hashrate: 10e12, fee: 1.0 }, false);
@@ -2593,7 +2590,6 @@ var _providerColors = {
   braiins: '#f7931a',
   nicehash: '#00e676',
   mrr: '#40c4ff',
-  kissmyhash: '#ff4081',
   parasite: '#ce93d8',
 };
 
@@ -2605,7 +2601,6 @@ assertEqual('getProviderColor braiins → #f7931a', getProviderColor('braiins'),
 assertEqual('getProviderColor Braiins → #f7931a (case)', getProviderColor('Braiins'), '#f7931a');
 assertEqual('getProviderColor nicehash → #00e676', getProviderColor('nicehash'), '#00e676');
 assertEqual('getProviderColor mrr → #40c4ff', getProviderColor('mrr'), '#40c4ff');
-assertEqual('getProviderColor kissmyhash → #ff4081', getProviderColor('kissmyhash'), '#ff4081');
 assertEqual('getProviderColor parasite → #ce93d8', getProviderColor('parasite'), '#ce93d8');
 assertEqual('getProviderColor unknown → #888888', getProviderColor('unknown'), '#888888');
 assertEqual('getProviderColor null → #888888', getProviderColor(null), '#888888');
@@ -2843,6 +2838,40 @@ assertTruthy('cmdBtns restart has data-cmd=restart', /data-cmd="restart"/.test(r
 var multiCmds = renderCmdBtns(['restart','identify','pause'], 'dev-456');
 // NOTE: count via data-cmd= — /axe-cmd-btn/g matches 2x per button (base class + --modifier)
 assertEqual('cmdBtns 3 cmds -> 3 buttons', multiCmds.match(/data-cmd=/g).length, 3);
+
+// ── Command routing (auditoria UI fix) ──
+// Mirror of the axe-grid button handler decision in static/app.js: axe-fleet
+// cards live in the AXE registry, so restart/identify/pause/resume must go
+// through the agent-aware /api/axe-fleet/devices/<id>/{restart|identify|
+// pause|resume} endpoints (which enqueue for the LOCAL agent or hit the
+// AxeOS HTTP API) instead of the core /api/devices/<id>/command route — that
+// one queries the CORE registry and 404s on axe devices, so the miner would
+// never be controlled (theater).
+function routeAxeCmd(deviceId, command) {
+  var isAgentRouted = command === 'restart' || command === 'identify' ||
+    command === 'pause' || command === 'resume';
+  return {
+    url: isAgentRouted
+      ? '/api/axe-fleet/devices/' + encodeURIComponent(deviceId) + '/' + command
+      : '/api/devices/' + encodeURIComponent(deviceId) + '/command',
+    useAuthFetch: isAgentRouted,
+    body: isAgentRouted ? '{}' : '{"command":"' + command + '"}',
+  };
+}
+
+assertEqual('routeAxeCmd restart -> axe-fleet', routeAxeCmd('abc123', 'restart').url,
+  '/api/axe-fleet/devices/abc123/restart');
+assertEqual('routeAxeCmd restart uses authFetch', routeAxeCmd('abc123', 'restart').useAuthFetch, true);
+assertEqual('routeAxeCmd restart body empty', routeAxeCmd('abc123', 'restart').body, '{}');
+assertEqual('routeAxeCmd identify -> axe-fleet', routeAxeCmd('abc123', 'identify').url,
+  '/api/axe-fleet/devices/abc123/identify');
+assertEqual('routeAxeCmd pause -> axe-fleet', routeAxeCmd('abc123', 'pause').url,
+  '/api/axe-fleet/devices/abc123/pause');
+assertEqual('routeAxeCmd pause uses authFetch', routeAxeCmd('abc123', 'pause').useAuthFetch, true);
+assertEqual('routeAxeCmd resume -> axe-fleet', routeAxeCmd('abc123', 'resume').url,
+  '/api/axe-fleet/devices/abc123/resume');
+assertEqual('routeAxeCmd resume uses authFetch', routeAxeCmd('abc123', 'resume').useAuthFetch, true);
+assertEqual('routeAxeCmd pause body empty', routeAxeCmd('abc123', 'pause').body, '{}');
 
 // ── Device status classification ──
 function classifyDevStatus(d) {
@@ -3574,6 +3603,12 @@ function buildConnectivityReportTest(r) {
   } else {
     rows.push({ label: 'cgminer :4028', ok: false, val: 'no', detail: 'no cgminer protocol on port 4028' });
   }
+  if (r.https_tcp && !r.bitaxe_http && !r.cgminer_tcp) {
+    rows.push({ label: 'HTTPS :443', ok: true, val: 'OPEN', detail: 'porta 443 aberta — firmware moderno (Braiins/Antminer) com API autenticada' });
+  }
+  if (r.http_server && !r.bitaxe_http && !r.cgminer_tcp) {
+    rows.push({ label: 'HTTP :80', ok: true, val: 'server', detail: 'servidor HTTP presente mas NÃO é ESP-Miner — possível página de login de ASIC' });
+  }
   rows.push({ label: 'elapsed', ok: true, val: (r.elapsed_ms != null ? r.elapsed_ms + 'ms' : '—'), detail: '' });
   return rows;
 }
@@ -3623,8 +3658,1884 @@ function buildConnectivityReportTest(r) {
     device_info: { model: 'NerdAxe', firmware: '' },
   });
   assertEqual('hostname bitaxe detail skips empty firmware', host[1].detail, 'NerdAxe');
+
+  // Modern authenticated miner (D): nothing on classic probes, but HTTPS
+  // :443 is open → extra diagnostic row appears (Braiins/Antminer auth).
+  const httpsMiner = buildConnectivityReportTest({
+    dns_resolution: true, bitaxe_http: false, cgminer_tcp: false,
+    https_tcp: true, http_server: false, reachable: false,
+    error_detail: 'no miner protocol responded (checked AxeOS :80 and cgminer :4028)',
+  });
+  assertEqual('https miner has 5 rows', httpsMiner.length, 5);
+  assertEqual('https row val', httpsMiner[3].val, 'OPEN');
+  assertEqual('https row label', httpsMiner[3].label, 'HTTPS :443');
+
+  // ASIC login page (D): TCP :80 open but not ESP-Miner → HTTP server row.
+  const httpServer = buildConnectivityReportTest({
+    dns_resolution: true, bitaxe_http: false, cgminer_tcp: false,
+    https_tcp: false, http_server: true, reachable: false,
+  });
+  assertEqual('http server row val', httpServer[3].val, 'server');
+  assertEqual('http server row label', httpServer[3].label, 'HTTP :80');
+
+  // Suppressed when a real protocol won (never add noise rows on success).
+  const suppressHttps = buildConnectivityReportTest({
+    dns_resolution: true, bitaxe_http: true, cgminer_tcp: true,
+    https_tcp: true, http_server: true, reachable: true, protocol: 'bitaxe',
+  });
+  assertEqual('success suppresses presence rows', suppressHttps.length, 4);
 })();
 
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  SUITE 26b: buildCommandCenterRows() — per-worker live telemetry
+//  Mirrors static/app.js buildCommandCenterRows() — pure, no DOM, no fmt.
+//  Exception hierarchy: WARNING/IDLE/PAUSED → OFFLINE/ERROR/CRITICAL → ONLINE.
+// ═══════════════════════════════════════════════════════════════════════════
+console.log('⛏ SUITE 26b: buildCommandCenterRows() — per-worker live telemetry');
+
+// Mirror of static/app.js _numOrNull() — pure.
+function numOrNullTest(v) {
+  if (v == null || v === '') return null;
+  const n = Number(v);
+  return isFinite(n) ? n : null;
+}
+
+// Mirror of static/app.js buildCommandCenterRows() — pure, no DOM, no fmt.
+function buildCommandCenterRowsTest(devices) {
+  const rows = [];
+  (devices || []).forEach(function (d) {
+    const tel = d._telemetry || {};
+    const health = d._health || {};
+    const accepted = Number(tel.shares_accepted) || 0;
+    const rejected = Number(tel.shares_rejected) || 0;
+    const stale = Number(tel.shares_stale) || 0;
+    const total = accepted + rejected;
+    let rejectPct = null;
+    if (total > 0) rejectPct = Number(tel.hw_error_pct != null ? tel.hw_error_pct : (rejected / total) * 100);
+    let lastShareAgo = null;
+    const lst = tel.last_share_ts;
+    if (lst != null && lst !== '') {
+      let t = Number(lst);
+      if (!isFinite(t) || t > 1e12) t = Date.parse(String(lst)) / 1000;
+      if (isFinite(t) && t > 0) lastShareAgo = Math.max(0, Math.floor(Date.now() / 1000 - t));
+    }
+    rows.push({
+      id: d.id || '', name: d.name || d.ip_address || '?', ip: d.ip_address || '',
+      model: d.model || '', manufacturer: d.manufacturer || '',
+      status: d.status || 'OFFLINE', agentManaged: !!d.agent_managed,
+      hr: Number(tel.hashrate_hs) || 0, hrStr: tel.hashrate_str || '',
+      temp: numOrNullTest(tel.temperature), chipTemp: numOrNullTest(tel.chip_temp), vrTemp: numOrNullTest(tel.vr_temp),
+      fan: tel.fan_rpm != null ? tel.fan_rpm : tel.fan_speed,
+      power: numOrNullTest(tel.power_watts), eff: numOrNullTest(tel.efficiency_jth),
+      sharesA: accepted, sharesR: rejected, sharesS: stale,
+      rejectPct: rejectPct, bestDiff: tel.best_diff, poolDiff: tel.pool_diff,
+      lastShareAgo: lastShareAgo, dataAge: tel.age_seconds,
+      latencyMs: d.latency_ms, stratum: tel.stratum_status || '',
+      healthScore: health.score != null ? health.score : null,
+      advice: Array.isArray(d.advice) ? d.advice : [],
+      caps: Array.isArray(d.capabilities) ? d.capabilities : [],
+    });
+  });
+  const order = { WARNING: 0, IDLE: 0, PAUSED: 0, OFFLINE: 1, ERROR: 1, CRITICAL: 1, ONLINE: 2, HASHING: 2 };
+  rows.sort(function (a, b) {
+    const oa = order[a.status] != null ? order[a.status] : 3;
+    const ob = order[b.status] != null ? order[b.status] : 3;
+    if (oa !== ob) return oa - ob;
+    return String(a.name).localeCompare(String(b.name));
+  });
+  return rows;
+}
+
+(function workerIntelligenceSuite() {
+  const devices = [
+    { id: 'd1', name: 'Garage', ip_address: '192.168.1.100', status: 'ONLINE', latency_ms: 12,
+      _telemetry: { hashrate_hs: 5200000000000, hashrate_str: '5.20 TH/s', shares_accepted: 15823, shares_rejected: 47, shares_stale: 2, hw_error_pct: 0.3, best_diff: '42.8T', pool_diff: '256M', stratum_status: 'connected', age_seconds: 4, power_watts: 120, efficiency_jth: 23.1, temperature: 58, chip_temp: 62, vr_temp: 45 },
+      _health: { score: 92 } },
+    { id: 'd2', name: 'Hot Lab', ip_address: '192.168.1.102', status: 'WARNING', latency_ms: null,
+      _telemetry: { hashrate_hs: 3800000000000, shares_accepted: 5872, shares_rejected: 215, shares_stale: 0, hw_error_pct: 3.5, best_diff: '28.3T', stratum_status: 'connected', age_seconds: 9, temperature: 'NOT AVAILABLE' },
+      _health: { score: 41 }, advice: ['temp acima do ideal'], capabilities: ['restart'] },
+    { id: 'd3', name: 'Basement', ip_address: '192.168.1.200', status: 'OFFLINE', agent_managed: 1,
+      _telemetry: { hashrate_hs: 0 }, _health: { score: 0 } },
+  ];
+  const rows = buildCommandCenterRowsTest(devices);
+  assertEqual('3 workers parsed', rows.length, 3);
+  // Exception hierarchy: problems first, healthy ONLINE last
+  assertEqual('ordering: WARNING first', rows[0].name, 'Hot Lab');
+  assertEqual('ordering: OFFLINE second', rows[1].name, 'Basement');
+  assertEqual('ordering: ONLINE last', rows[2].name, 'Garage');
+  // ONLINE device (rows[2] = Garage) — todos os campos ricos
+  const g = rows[2];
+  assertEqual('reject pct from hw_error_pct', g.rejectPct, 0.3);
+  assertEqual('hr parsed', g.hr, 5200000000000);
+  assertEqual('hrStr passthrough', g.hrStr, '5.20 TH/s');
+  assertEqual('shares a/r/s', g.sharesA + '/' + g.sharesR + '/' + g.sharesS, '15823/47/2');
+  assertEqual('stratum passthrough', g.stratum, 'connected');
+  assertEqual('latency passthrough', g.latencyMs, 12);
+  assertEqual('health score passthrough', g.healthScore, 92);
+  assertEqual('power parsed', g.power, 120);
+  assertEqual('eff parsed', g.eff, 23.1);
+  assertEqual('temp parsed', g.temp, 58);
+  assertEqual('chip temp parsed', g.chipTemp, 62);
+  assertEqual('vr temp parsed', g.vrTemp, 45);
+  // WARNING device (rows[0] = Hot Lab)
+  assertEqual('warning reject pct', rows[0].rejectPct, 3.5);
+  assertEqual('warning hr parsed', rows[0].hr, 3800000000000);
+  assertEqual('agent flag on offline', rows[1].agentManaged, true);
+  assertEqual('offline has no reject pct', rows[1].rejectPct, null);
+  // "NOT AVAILABLE" literal → null (não estoura .toFixed())
+  assertEqual('NOT AVAILABLE temp → null', rows[0].temp, null);
+  assertEqual('advice passthrough', rows[0].advice[0], 'temp acima do ideal');
+  assertEqual('caps passthrough', rows[0].caps.indexOf('restart') !== -1, true);
+
+  // hw_error_pct missing → derive from rejected/(accepted+rejected)
+  const derived = buildCommandCenterRowsTest([{
+    id: 'x', name: 'X', status: 'ONLINE',
+    _telemetry: { hashrate_hs: 100, shares_accepted: 90, shares_rejected: 10 },
+  }]);
+  assertEqual('derived reject pct', derived[0].rejectPct, 10);
+
+  // last_share_ts ISO string parsing (best-effort)
+  const iso = buildCommandCenterRowsTest([{
+    id: 'y', name: 'Y', status: 'ONLINE',
+    _telemetry: { hashrate_hs: 1, last_share_ts: new Date(Date.now() - 60000).toISOString() },
+  }]);
+  assertEqual('last share age parsed from ISO (~60s)', iso[0].lastShareAgo >= 55 && iso[0].lastShareAgo <= 70, true);
+
+  // empty/null input → no rows, no crash
+  assertEqual('empty input yields no rows', buildCommandCenterRowsTest([]).length, 0);
+  assertEqual('null input yields no rows', buildCommandCenterRowsTest(null).length, 0);
+})();
+// ═══════════════════════════════════════════════════════════════════════════
+//  SUITE 26c: Hash Flow Raster — share-quality coloring
+//  Mirrors static/app.js _lmFlowSampleFromDelta / _lmShareDelta / _lmFlowDetail.
+// ═══════════════════════════════════════════════════════════════════════════
+console.log('⛏ SUITE 26c: hash flow raster — share-quality cell coloring');
+
+// Mirror of static/app.js _lmFlowSampleFromDelta() — pure.
+function lmFlowSampleFromDeltaTest(status, delta) {
+  if (delta) {
+    if (delta.r > 0) return 'rej';    // reject beats everything
+    if (delta.s > 0) return 'stale';  // stale beats accepted
+    if (delta.a > 0) return 'ok';     // accepted share
+  }
+  const s = String(status || '').toUpperCase();
+  if (s === 'ONLINE' || s === 'HASHING') return 'idle';
+  if (s === 'WARNING' || s === 'IDLE' || s === 'PAUSED') return 'warn';
+  if (s === 'OFFLINE' || s === 'ERROR' || s === 'CRITICAL') return 'bad';
+  return 'mute';
+}
+// Mirror of static/app.js _lmShareDelta() — pure.
+function lmShareDeltaTest(prev, cur) {
+  if (!prev) return null;
+  return {
+    a: Math.max(0, (cur.a || 0) - (prev.a || 0)),
+    r: Math.max(0, (cur.r || 0) - (prev.r || 0)),
+    s: Math.max(0, (cur.s || 0) - (prev.s || 0)),
+  };
+}
+// Mirror of static/app.js _lmFlowDetail() — pure.
+function lmFlowDetailTest(delta) {
+  if (!delta) return '';
+  const parts = [];
+  if (delta.a > 0) parts.push('+' + delta.a + ' acc');
+  if (delta.r > 0) parts.push('+' + delta.r + ' rej');
+  if (delta.s > 0) parts.push('+' + delta.s + ' stale');
+  return parts.join(' · ');
+}
+
+(function hashFlowRasterSuite() {
+  // Delta-driven colors (the new share-quality behavior)
+  assertEqual('accepted delta → ok', lmFlowSampleFromDeltaTest('ONLINE', { a: 5, r: 0, s: 0 }), 'ok');
+  assertEqual('reject delta → rej', lmFlowSampleFromDeltaTest('ONLINE', { a: 0, r: 1, s: 0 }), 'rej');
+  assertEqual('stale delta → stale', lmFlowSampleFromDeltaTest('ONLINE', { a: 0, r: 0, s: 2 }), 'stale');
+  assertEqual('reject beats accepted', lmFlowSampleFromDeltaTest('ONLINE', { a: 5, r: 1, s: 0 }), 'rej');
+  assertEqual('stale beats accepted', lmFlowSampleFromDeltaTest('ONLINE', { a: 5, r: 0, s: 1 }), 'stale');
+  assertEqual('reject beats stale', lmFlowSampleFromDeltaTest('ONLINE', { a: 0, r: 1, s: 2 }), 'rej');
+
+  // Status fallback when no shares moved (or first poll — no baseline)
+  assertEqual('zero delta + ONLINE → idle', lmFlowSampleFromDeltaTest('ONLINE', { a: 0, r: 0, s: 0 }), 'idle');
+  assertEqual('no baseline + ONLINE → idle', lmFlowSampleFromDeltaTest('ONLINE', null), 'idle');
+  assertEqual('zero delta + WARNING → warn', lmFlowSampleFromDeltaTest('WARNING', { a: 0, r: 0, s: 0 }), 'warn');
+  assertEqual('zero delta + OFFLINE → bad', lmFlowSampleFromDeltaTest('OFFLINE', { a: 0, r: 0, s: 0 }), 'bad');
+  assertEqual('unknown status → mute', lmFlowSampleFromDeltaTest('???', null), 'mute');
+
+  // Counter diffing + reboot-reset clamp
+  assertEqual('no baseline → null delta', lmShareDeltaTest(null, { a: 1, r: 0, s: 0 }), null);
+  const inc = lmShareDeltaTest({ a: 100, r: 10, s: 2 }, { a: 105, r: 12, s: 2 });
+  assertEqual('accepted delta counted', inc.a, 5);
+  assertEqual('rejected delta counted', inc.r, 2);
+  assertEqual('stale delta counted', inc.s, 0);
+  // Reboot: counters drop from 100→90 — must clamp to 0, not go negative.
+  const reset = lmShareDeltaTest({ a: 100, r: 10, s: 2 }, { a: 90, r: 12, s: 2 });
+  assertEqual('reboot clamps accepted to 0', reset.a, 0);
+  assertEqual('reboot still counts rejected', reset.r, 2);
+
+  // Tooltip detail formatting
+  assertEqual('detail formats acc+rej', lmFlowDetailTest({ a: 3, r: 1, s: 0 }), '+3 acc · +1 rej');
+  assertEqual('detail formats all three', lmFlowDetailTest({ a: 1, r: 1, s: 1 }), '+1 acc · +1 rej · +1 stale');
+  assertEqual('zero activity → empty detail', lmFlowDetailTest({ a: 0, r: 0, s: 0 }), '');
+  assertEqual('null delta → empty detail', lmFlowDetailTest(null), '');
+})();
+
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  SUITE 27: P0-5 wallet ranks — acctRankLabels() pure resolver
+//  (COMBINED / DIFF RANK / LOYALTY RANK with C3 fallback labels). Mirrors
+//  static/app.js acctRankLabels().
+// ═══════════════════════════════════════════════════════════════════════════
+console.log('\n👛 SUITE 27: acctRankLabels() — wallet rank fallbacks');
+(function () {
+  function acctRankLabelsTest(acct) {
+    acct = acct || {};
+    const bc = (acct.metadata && acct.metadata.block_count) || acct.blocks_found || 0;
+    const rank = acct.diff_rank || acct.diffRank;
+    let diff;
+    if (rank && rank !== '\u2014' && rank !== '--') diff = String(rank);
+    else if (bc >= 10000) diff = 'TOP 1%';
+    else if (bc >= 1000) diff = 'TOP 10%';
+    else if (bc >= 100) diff = 'TOP 25%';
+    else if (bc > 0) diff = 'ACTIVE';
+    else diff = '\u2014';
+    const loyaltyRaw = acct.loyalty_rank || acct.loyaltyRank;
+    const loyalty = (loyaltyRaw && loyaltyRaw !== '\u2014' && loyaltyRaw !== '--') ? String(loyaltyRaw)
+      : (bc > 0 ? 'ACTIVE' : '\u2014');
+    const combinedRaw = acct.combined_score || acct.combinedScore;
+    let combined;
+    if (combinedRaw != null && combinedRaw !== '' && Number(combinedRaw) > 0) {
+      combined = Number(combinedRaw) >= 1000 ? String(Math.round(Number(combinedRaw))) : Number(combinedRaw).toFixed(2);
+    } else if (diff !== '\u2014' && diff !== 'ACTIVE') {
+      combined = 'D:' + diff;
+    } else {
+      combined = '\u2014';
+    }
+    return { diff: diff, loyalty: loyalty, combined: combined };
+  }
+
+  // Real ranks from backend win
+  const real = acctRankLabelsTest({ diff_rank: '42', loyalty_rank: '7', combined_score: 1234, metadata: {} });
+  assertEqual('real diff rank passes through', real.diff, '42');
+  assertEqual('real loyalty passes through', real.loyalty, '7');
+  assertEqual('real combined >=1000 rounds', real.combined, '1234');
+
+  // C3 fallback from block_count (the audit case: pool omits ranks)
+  const fbTop = acctRankLabelsTest({ metadata: { block_count: 15000 } });
+  assertEqual('fallback block_count 15k -> TOP 1%', fbTop.diff, 'TOP 1%');
+  assertEqual('fallback loyalty active with blocks', fbTop.loyalty, 'ACTIVE');
+  const fbTop10 = acctRankLabelsTest({ metadata: { block_count: 5000 } });
+  assertEqual('fallback block_count 5k -> TOP 10%', fbTop10.diff, 'TOP 10%');
+  const fbActive = acctRankLabelsTest({ metadata: { block_count: 3 } });
+  assertEqual('fallback block_count 3 -> ACTIVE', fbActive.diff, 'ACTIVE');
+  const fbNone = acctRankLabelsTest({ metadata: {} });
+  assertEqual('no data -> em-dash diff', fbNone.diff, '\u2014');
+  assertEqual('no data -> em-dash loyalty', fbNone.loyalty, '\u2014');
+  assertEqual('no data -> em-dash combined', fbNone.combined, '\u2014');
+
+  // Combined derivation: diff rank present but no combined_score -> D:label
+  const derived = acctRankLabelsTest({ diff_rank: 'TOP 10%', metadata: {} });
+  assertEqual('combined derived from diff label', derived.combined, 'D:TOP 10%');
+
+  // alt-case key variants (acct.diffRank / loyaltyRank / combinedScore)
+  const alt = acctRankLabelsTest({ diffRank: '9', loyaltyRank: '3', combinedScore: 12.5 });
+  assertEqual('alt diffRank key works', alt.diff, '9');
+  assertEqual('alt loyaltyRank key works', alt.loyalty, '3');
+  assertEqual('alt combinedScore <1000 -> 2dp', alt.combined, '12.50');
+
+  // '--' sentinel treated as missing (backend normalize) -> fallback
+  const sentinel = acctRankLabelsTest({ diff_rank: '--', loyalty_rank: '--', metadata: { block_count: 200 } });
+  assertEqual('-- sentinel falls back to TOP 25%', sentinel.diff, 'TOP 25%');
+})();
+
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  SUITE 28: P0-6 professional live-mining terminal — pure helpers
+//  (lmEventTypeClass, lmFilterMatches, lmUserScrolled). Mirrors static/app.js.
+// ═══════════════════════════════════════════════════════════════════════════
+console.log('\n🖥 SUITE 28: live-mining terminal helpers (badges, filter, scroll lock)');
+(function () {
+  function lmEventTypeClassTest(type) {
+    const t = String(type || '').toUpperCase();
+    if (t === 'SHARE') return 'tag-share';
+    if (t === 'BEST') return 'tag-best';
+    if (t === 'JOB') return 'tag-job';
+    if (t === 'ERR' || t === 'ERROR') return 'tag-error';
+    return 'tag-info';
+  }
+  function lmFilterMatchesTest(filter, type) {
+    const f = String(filter || 'all').toLowerCase();
+    if (!f || f === 'all') return true;
+    const t = String(type || '').toUpperCase();
+    if (f === 'err') return t === 'ERR' || t === 'ERROR';
+    return t === f.toUpperCase();
+  }
+  function lmUserScrolledTest(scrollTop, scrollHeight, clientHeight) {
+    return scrollHeight - scrollTop - clientHeight > 24;
+  }
+
+  // lmEventTypeClass — color coding per pipeline (SHARE blue, JOB amber, BEST gold, ERR red)
+  assertEqual('SHARE -> tag-share', lmEventTypeClassTest('SHARE'), 'tag-share');
+  assertEqual('share lowercase -> tag-share', lmEventTypeClassTest('share'), 'tag-share');
+  assertEqual('JOB -> tag-job', lmEventTypeClassTest('JOB'), 'tag-job');
+  assertEqual('BEST -> tag-best', lmEventTypeClassTest('BEST'), 'tag-best');
+  assertEqual('ERR -> tag-error', lmEventTypeClassTest('ERR'), 'tag-error');
+  assertEqual('ERROR -> tag-error', lmEventTypeClassTest('ERROR'), 'tag-error');
+  assertEqual('unknown -> tag-info', lmEventTypeClassTest('NONCE'), 'tag-info');
+  assertEqual('empty -> tag-info', lmEventTypeClassTest(''), 'tag-info');
+  assertEqual('null -> tag-info', lmEventTypeClassTest(null), 'tag-info');
+
+  // lmFilterMatches — reactive filtering without reload
+  assertEqual('filter all accepts SHARE', lmFilterMatchesTest('all', 'SHARE'), true);
+  assertEqual('filter all accepts ERR', lmFilterMatchesTest('all', 'ERR'), true);
+  assertEqual('filter SHARE keeps share', lmFilterMatchesTest('SHARE', 'SHARE'), true);
+  assertEqual('filter SHARE drops JOB', lmFilterMatchesTest('SHARE', 'JOB'), false);
+  assertEqual('filter share (lower) keeps SHARE', lmFilterMatchesTest('share', 'SHARE'), true);
+  assertEqual('filter err keeps ERROR', lmFilterMatchesTest('err', 'ERROR'), true);
+  assertEqual('filter err keeps ERR', lmFilterMatchesTest('err', 'ERR'), true);
+  assertEqual('filter err drops JOB', lmFilterMatchesTest('err', 'JOB'), false);
+  assertEqual('filter BEST drops SHARE', lmFilterMatchesTest('BEST', 'SHARE'), false);
+  assertEqual('empty filter = all', lmFilterMatchesTest('', 'JOB'), true);
+  assertEqual('null filter = all', lmFilterMatchesTest(null, 'JOB'), true);
+
+  // lmUserScrolled — the reader must not be yanked back down
+  const total = 1000, view = 200;
+  assertEqual('pinned to bottom -> not user-scrolled', lmUserScrolledTest(total - view, total, view), false);
+  assertEqual('scrolled up 100px -> user-scrolled', lmUserScrolledTest(total - view - 100, total, view), true);
+  assertEqual('scrolled up 24px (threshold) -> user-scrolled', lmUserScrolledTest(total - view - 24, total, view), false);
+  assertEqual('scrolled up 25px -> user-scrolled', lmUserScrolledTest(total - view - 25, total, view), true);
+})();
+
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  SUITE 26d: _ccKpiAgg() — FLEET COMMAND CENTER KPI aggregation
+//  Mirrors static/app.js _ccKpiAgg (totalHr, effPct, avgTemp, totalPowerW,
+//  avgEff, avgLatency — honest nulls quando não há dados live).
+// ═══════════════════════════════════════════════════════════════════════════
+console.log('⛏ SUITE 26d: _ccKpiAgg() — KPI aggregation do FLEET COMMAND CENTER');
+
+// Mirror of static/app.js _numOrNull() — pure.
+function ccNumOrNullTest(v) {
+  if (v == null || v === '') return null;
+  const n = Number(v);
+  return isFinite(n) ? n : null;
+}
+
+// Mirror of static/app.js _ccKpiAgg() — pure.
+function ccKpiAggTest(fleet) {
+  fleet = fleet || [];
+  const live = fleet.filter(d => d && String(d.status || '').toUpperCase() === 'ONLINE');
+  // TOTAL HR = soma de TODOS os devices; shares/temp/power/eff = só ONLINE
+  // (contadores cumulativos de OFFLINE congelariam a EFFICIENCY histórica).
+  let totalHr = 0, acc = 0, rej = 0, stale = 0;
+  let tempSum = 0, tempN = 0, powerSum = 0, powerN = 0, effSum = 0, effN = 0;
+  fleet.forEach(d => {
+    totalHr += Number((d && d._telemetry && d._telemetry.hashrate_hs) || 0);
+  });
+  live.forEach(d => {
+    const t = (d && d._telemetry) || {};
+    acc += Number(t.shares_accepted) || 0;
+    rej += Number(t.shares_rejected) || 0;
+    stale += Number(t.shares_stale) || 0;
+    const temp = ccNumOrNullTest(t.temperature);
+    if (temp != null) { tempSum += temp; tempN++; }
+    const pw = ccNumOrNullTest(t.power_watts);
+    if (pw != null) { powerSum += pw; powerN++; }
+    const eff = ccNumOrNullTest(t.efficiency_jth);
+    if (eff != null) { effSum += eff; effN++; }
+  });
+  const lats = live.map(d => Number(d && d.latency_ms)).filter(v => v > 0 && isFinite(v));
+  const shareTotal = acc + rej;
+  return {
+    totalHr: totalHr,
+    effPct: shareTotal > 0 ? (acc / shareTotal) * 100 : null,
+    avgTemp: tempN ? tempSum / tempN : null,
+    totalPowerW: powerSum || null,
+    avgEff: effN ? effSum / effN : null,
+    avgLatency: lats.length ? Math.round(lats.reduce((a, b) => a + b, 0) / lats.length) : null,
+    acc: acc, rej: rej, stale: stale,
+  };
+}
+
+(function ccKpiSuite() {
+  const EMPTY = JSON.stringify({ totalHr: 0, effPct: null, avgTemp: null, totalPowerW: null, avgEff: null, avgLatency: null, acc: 0, rej: 0, stale: 0 });
+
+  // Honest telemetry: OFFLINE devices never contribute share counters, even
+  // with huge cumulative firmware counters in the DB.
+  const offline = [
+    { status: 'OFFLINE', _telemetry: { shares_accepted: 50000, shares_rejected: 1, temperature: 88, power_watts: 999 }, latency_ms: 5 },
+    { status: 'OFFLINE', _telemetry: { shares_accepted: 90000, shares_rejected: 2, temperature: 91 }, latency_ms: 8 },
+  ];
+  const off = ccKpiAggTest(offline);
+  assertEqual('all-offline fleet -> null effPct', off.effPct, null);
+  assertEqual('all-offline fleet -> null avgLatency', off.avgLatency, null);
+  assertEqual('empty fleet -> nulls', JSON.stringify(ccKpiAggTest([])), EMPTY);
+  assertEqual('null fleet -> nulls', JSON.stringify(ccKpiAggTest(null)), EMPTY);
+
+  // Single ONLINE device: efficiency = accepted / (accepted+rejected)
+  const oneOnline = [
+    { status: 'ONLINE', _telemetry: { hashrate_hs: 100000, shares_accepted: 95, shares_rejected: 5, temperature: 60, power_watts: 500, efficiency_jth: 25 }, latency_ms: 20 },
+    { status: 'OFFLINE', _telemetry: { shares_accepted: 99999, shares_rejected: 0, temperature: 99, power_watts: 900 }, latency_ms: 1 },
+  ];
+  const one = ccKpiAggTest(oneOnline);
+  assertEqual('online-only accepted counted', Math.round(one.effPct), 95);
+  assertEqual('offline counters ignored', one.effPct, 95);
+  assertEqual('online latency averaged', one.avgLatency, 20);
+  assertEqual('total HR summed', one.totalHr, 100000);
+  assertEqual('avg temp only online', one.avgTemp, 60);
+  assertEqual('power only online', one.totalPowerW, 500);
+  assertEqual('eff only online', one.avgEff, 25);
+
+  // ONLINE with no share activity yet (fresh device): null eff, latency still ok
+  const fresh = [{ status: 'ONLINE', _telemetry: { shares_accepted: 0, shares_rejected: 0 }, latency_ms: 42 }];
+  const fr = ccKpiAggTest(fresh);
+  assertEqual('online no shares -> null effPct', fr.effPct, null);
+  assertEqual('online no shares -> latency kept', fr.avgLatency, 42);
+
+  // Multi-online average latency + aggregate efficiency
+  const multi = [
+    { status: 'online', _telemetry: { hashrate_hs: 1, shares_accepted: 90, shares_rejected: 10 }, latency_ms: 10 },
+    { status: 'ONLINE', _telemetry: { hashrate_hs: 2, shares_accepted: 180, shares_rejected: 20 }, latency_ms: 30 },
+  ];
+  const m = ccKpiAggTest(multi);
+  assertEqual('lowercase status accepted', m.effPct, 90);
+  assertEqual('avg latency of live devices', m.avgLatency, 20);
+  assertEqual('stale counters summed', ccKpiAggTest([{ status: 'ONLINE', _telemetry: { shares_accepted: 1, shares_rejected: 0, shares_stale: 7 } }]).stale, 7);
+
+  // Latency NaN/0/negative filtered out
+  const badLat = [
+    { status: 'ONLINE', _telemetry: { shares_accepted: 1, shares_rejected: 0 }, latency_ms: 0 },
+    { status: 'ONLINE', _telemetry: { shares_accepted: 1, shares_rejected: 0 }, latency_ms: -3 },
+    { status: 'ONLINE', _telemetry: { shares_accepted: 1, shares_rejected: 0 }, latency_ms: NaN },
+    { status: 'ONLINE', _telemetry: { shares_accepted: 1, shares_rejected: 0 }, latency_ms: 100 },
+  ];
+  const bl = ccKpiAggTest(badLat);
+  assertEqual('only valid latencies averaged', bl.avgLatency, 100);
+  assertEqual('efficiency from all live', Math.round(bl.effPct), 100);
+
+  // 'NOT AVAILABLE' literal em temp/power → null (não conta nas médias)
+  const na = ccKpiAggTest([{ status: 'ONLINE', _telemetry: { shares_accepted: 1, shares_rejected: 0, temperature: 'NOT AVAILABLE', power_watts: 'NOT AVAILABLE' } }]);
+  assertEqual('NOT AVAILABLE temp -> avgTemp null', na.avgTemp, null);
+  assertEqual('NOT AVAILABLE power -> totalPowerW null', na.totalPowerW, null);
+})();
+
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  SUITE 26e: _ccShareBar / _ccSvgSparkline / _ccTempBand — visual helpers
+//  Mirrors static/app.js — pure, sem DOM.
+// ═══════════════════════════════════════════════════════════════════════════
+console.log('⛏ SUITE 26e: _ccShareBar / _ccSvgSparkline / _ccTempBand');
+(function () {
+  function ccShareBarTest(acc, rej, stale) {
+    const a = Number(acc) || 0, r = Number(rej) || 0, s = Number(stale) || 0;
+    const total = a + r + s;
+    if (!total) return '<div class="cc-sharebar cc-sharebar--empty" title="sem shares registradas">no shares</div>';
+    const wa = (a / total) * 100, ws = (s / total) * 100, wr = (r / total) * 100;
+    return '<div class="cc-sharebar" title="' + a + ' acc · ' + s + ' stale · ' + r + ' rej">' +
+      '<span class="cc-sharebar__seg cc-sharebar__seg--acc" style="width:' + wa.toFixed(1) + '%"></span>' +
+      '<span class="cc-sharebar__seg cc-sharebar__seg--stale" style="width:' + ws.toFixed(1) + '%"></span>' +
+      '<span class="cc-sharebar__seg cc-sharebar__seg--rej" style="width:' + wr.toFixed(1) + '%"></span>' +
+      '</div>';
+  }
+  function ccNumOrNull(v) {
+    if (v == null || v === '') return null;
+    const n = Number(v);
+    return isFinite(n) ? n : null;
+  }
+  function ccTempBandTest(t) {
+    const n = ccNumOrNull(t);
+    if (n == null) return 'mute';
+    if (n <= 60) return 'ok';
+    if (n <= 70) return 'warn';
+    if (n <= 80) return 'hot';
+    return 'crit';
+  }
+  function ccSvgSparklineTest(values, color) {
+    const v = (values || []).map(Number).filter(x => isFinite(x) && x > 0);
+    if (v.length < 2) return '';
+    const w = 96, h = 26, pad = 2;
+    const max = Math.max.apply(null, v), min = Math.min.apply(null, v);
+    const span = (max - min) || 1;
+    const pts = v.map((x, i) => {
+      const px = pad + (i / (v.length - 1)) * (w - 2 * pad);
+      const py = h - pad - ((x - min) / span) * (h - 2 * pad);
+      return px.toFixed(1) + ',' + py.toFixed(1);
+    }).join(' ');
+    const area = pad + ',' + (h - pad) + ' ' + pts + ' ' + (w - pad) + ',' + (h - pad);
+    return '<svg class="cc-spark" viewBox="0 0 ' + w + ' ' + h + '" preserveAspectRatio="none">' +
+      '<polygon points="' + area + '" fill="' + color + '" fill-opacity="0.16"/>' +
+      '<polyline points="' + pts + '" fill="none" stroke="' + color + '" stroke-width="1.4" stroke-linejoin="round" stroke-linecap="round"/>' +
+      '</svg>';
+  }
+
+  // _ccShareBar — segmented quality bar
+  const full = ccShareBarTest(90, 5, 5);
+  assertTruthy('bar has accepted segment', /seg--acc/.test(full));
+  assertTruthy('bar has stale segment', /seg--stale/.test(full));
+  assertTruthy('bar has rejected segment', /seg--rej/.test(full));
+  const widths = full.match(/width:([\d.]+)%/g).map(s => parseFloat(s.slice(6)));
+  assertTruthy('segment widths sum ~100%', Math.abs(widths.reduce((a, b) => a + b, 0) - 100) < 0.5);
+  assertTruthy('title carries counts', /90 acc · 5 stale · 5 rej/.test(full));
+  assertTruthy('no shares -> empty bar', /cc-sharebar--empty/.test(ccShareBarTest(0, 0, 0)));
+  assertTruthy('null -> empty bar', /cc-sharebar--empty/.test(ccShareBarTest(null, null, null)));
+
+  // _ccTempBand — thresholds ≤60/70/80
+  assertEqual('60 -> ok', ccTempBandTest(60), 'ok');
+  assertEqual('61 -> warn', ccTempBandTest(61), 'warn');
+  assertEqual('70 -> warn', ccTempBandTest(70), 'warn');
+  assertEqual('71 -> hot', ccTempBandTest(71), 'hot');
+  assertEqual('80 -> hot', ccTempBandTest(80), 'hot');
+  assertEqual('81 -> crit', ccTempBandTest(81), 'crit');
+  assertEqual('null -> mute', ccTempBandTest(null), 'mute');
+  assertEqual('NOT AVAILABLE -> mute', ccTempBandTest('NOT AVAILABLE'), 'mute');
+  assertEqual('empty string -> mute', ccTempBandTest(''), 'mute');
+
+  // _ccSvgSparkline — inline SVG area line
+  assertTruthy('two samples -> svg', /<svg/.test(ccSvgSparklineTest([1, 2], '#00b8d4')));
+  assertTruthy('polyline present', /<polyline/.test(ccSvgSparklineTest([1, 5, 3], '#00b8d4')));
+  assertTruthy('area polygon present', /<polygon/.test(ccSvgSparklineTest([1, 5, 3], '#00b8d4')));
+  assertEqual('one sample -> empty', ccSvgSparklineTest([5], '#00b8d4'), '');
+  assertEqual('null -> empty', ccSvgSparklineTest(null, '#00b8d4'), '');
+  assertEqual('all zeros -> empty', ccSvgSparklineTest([0, 0, 0], '#00b8d4'), '');
+  // geometry: min no fundo (y≈24), max no topo (y≈2), x dentro do viewBox.
+  // O último points= é o do polyline (o primeiro é o polygon da área, que
+  // inclui os cantos de fechamento).
+  const svg = ccSvgSparklineTest([10, 90], '#00b8d4');
+  const allPts = [...svg.matchAll(/points="([^"]+)"/g)].map(m => m[1]);
+  const linePts = allPts[allPts.length - 1].split(' ').map(p => p.split(','));
+  const xs = linePts.map(p => parseFloat(p[0]));
+  assertTruthy('x coords inside viewBox', xs.every(x => x >= 0 && x <= 96));
+  assertTruthy('min maps to bottom (y≈24)', Math.abs(parseFloat(linePts[0][1]) - 24) < 1.5);
+  assertTruthy('max maps to top (y≈2)', Math.abs(parseFloat(linePts[1][1]) - 2) < 1.5);
+  // flat series: min===max → span=1, linha horizontal ainda desenha
+  assertTruthy('flat series still draws', /<polyline/.test(ccSvgSparklineTest([100, 100, 100], '#00b8d4')));
+})();
+// ═══════════════════════════════════════════════════════════════════════════
+//  SUITE 29: module → tab-pane ownership (moduleActivePanes)
+//  Fix: o módulo LIVE empilhava painéis de 3 abas (scroll infinito +
+//  overflow no mobile). Cada módulo tem abas donas; fora do mapa, mantém
+//  a regra antiga (todas as abas com painel visível).
+// ═══════════════════════════════════════════════════════════════════════════
+console.log('🗂 SUITE 29: moduleActivePanes() — um módulo = abas donas (sem stacking)');
+
+// Mirror of static/app.js moduleActivePanes() — pure, no DOM.
+const _MODULE_OWNED_PANES_TEST = {
+  live: ['tab-charts', 'tab-terminal'],
+};
+function moduleActivePanesTest(name, paneHasVisible) {
+  const owned = _MODULE_OWNED_PANES_TEST[name];
+  if (owned) return owned.slice();
+  return (paneHasVisible || []).filter(p => p.visible).map(p => p.id);
+}
+
+(function modulePaneSuite() {
+  const panes = [
+    { id: 'tab-fleet', visible: true },
+    { id: 'tab-charts', visible: true },
+    { id: 'tab-stats', visible: false },
+    { id: 'tab-terminal', visible: true },
+  ];
+
+  // LIVE: dono de exatamente tab-charts + tab-terminal — nunca empilha tab-fleet
+  const liveActive = moduleActivePanesTest('live', panes);
+  assertEqual('live owns tab-charts', liveActive.indexOf('tab-charts') !== -1, true);
+  assertEqual('live owns tab-terminal', liveActive.indexOf('tab-terminal') !== -1, true);
+  assertEqual('live excludes tab-fleet', liveActive.indexOf('tab-fleet') !== -1, false);
+  assertEqual('live excludes tab-stats', liveActive.indexOf('tab-stats') !== -1, false);
+  assertEqual('live active count = 2', liveActive.length, 2);
+  assertEqual('live result is a copy (imutável)', liveActive !== _MODULE_OWNED_PANES_TEST.live, true);
+
+  // Fora do mapa: regra antiga — ativa TODAS as abas com painel visível
+  const probActive = moduleActivePanesTest('probability', panes);
+  assertEqual('probability ativa abas visíveis', probActive.join(','), 'tab-fleet,tab-charts,tab-terminal');
+  assertEqual('probability exclui aba oculta', probActive.indexOf('tab-stats') !== -1, false);
+
+  // Sem painel visível → nenhuma aba
+  const noneVisible = panes.map(p => ({ id: p.id, visible: false }));
+  assertEqual('sem painéis visíveis → 0 abas', moduleActivePanesTest('docs', noneVisible).length, 0);
+  // Null-safe
+  assertEqual('null input mantém abas donas', moduleActivePanesTest('live', null).join(','), 'tab-charts,tab-terminal');
+})();
+
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  P0-4 · QR CORE MIRROR (extracted verbatim from static/app.js — pure)
+// ═══════════════════════════════════════════════════════════════════════════
+
+const QR_ECC = { L: 1, M: 0, Q: 3, H: 2 }; // values = 2-bit format field
+const QR_MODE_8BIT = 4;
+const QR_PAD0 = 0xEC, QR_PAD1 = 0x11;
+// GF(256) tables (primitive poly x^8+x^4+x^3+x^2+1)
+const QR_EXP = new Array(256), QR_LOG = new Array(256);
+(function buildQrMath() {
+  for (let i = 0; i < 8; i++) QR_EXP[i] = 1 << i;
+  for (let i = 8; i < 256; i++) QR_EXP[i] = QR_EXP[i - 4] ^ QR_EXP[i - 5] ^ QR_EXP[i - 6] ^ QR_EXP[i - 8];
+  for (let i = 0; i < 255; i++) QR_LOG[QR_EXP[i]] = i;
+})();
+function qrGexp(n) { while (n < 0) n += 255; while (n >= 256) n -= 255; return QR_EXP[n]; }
+function qrGlog(n) { if (n < 1) throw new Error('qr glog(' + n + ')'); return QR_LOG[n]; }
+
+// Polynomial over GF(256) with leading-zero trim + shift (Arase semantics)
+function QrPoly(num, shift) {
+  let offset = 0;
+  while (offset < num.length && num[offset] === 0) offset++;
+  this.num = new Array(num.length - offset + shift);
+  for (let i = 0; i < num.length - offset; i++) this.num[i] = num[i + offset];
+}
+QrPoly.prototype.get = function (i) { return this.num[i]; };
+QrPoly.prototype.getLength = function () { return this.num.length; };
+QrPoly.prototype.multiply = function (e) {
+  const num = new Array(this.getLength() + e.getLength() - 1);
+  for (let i = 0; i < this.getLength(); i++) {
+    for (let j = 0; j < e.getLength(); j++) {
+      num[i + j] ^= qrGexp(qrGlog(this.get(i)) + qrGlog(e.get(j)));
+    }
+  }
+  return new QrPoly(num, 0);
+};
+QrPoly.prototype.mod = function (e) {
+  if (this.getLength() - e.getLength() < 0) return this;
+  const ratio = qrGlog(this.get(0)) - qrGlog(e.get(0));
+  const num = new Array(this.getLength());
+  for (let i = 0; i < this.getLength(); i++) num[i] = this.get(i);
+  for (let x = 0; x < e.getLength(); x++) num[x] ^= qrGexp(qrGlog(e.get(x)) + ratio);
+  return new QrPoly(num, 0).mod(e);
+};
+
+// RS block table: rows are [L, M, Q, H] per version (v1-v10)
+const QR_RS_BLOCKS = [
+  [1, 26, 19], [1, 26, 16], [1, 26, 13], [1, 26, 9],
+  [1, 44, 34], [1, 44, 28], [1, 44, 22], [1, 44, 16],
+  [1, 70, 55], [1, 70, 44], [2, 35, 17], [2, 35, 13],
+  [1, 100, 80], [2, 50, 32], [2, 50, 24], [4, 25, 9],
+  [1, 134, 108], [2, 67, 43], [2, 33, 15, 2, 34, 16], [2, 33, 11, 2, 34, 12],
+  [2, 86, 68], [4, 43, 27], [4, 43, 19], [4, 43, 15],
+  [2, 98, 78], [4, 49, 31], [2, 32, 14, 4, 33, 15], [4, 39, 13, 1, 40, 14],
+  [2, 121, 97], [2, 60, 38, 2, 61, 39], [4, 40, 18, 2, 41, 19], [4, 40, 14, 2, 41, 15],
+  [2, 146, 116], [3, 58, 36, 2, 59, 37], [4, 36, 16, 4, 37, 17], [4, 36, 12, 4, 37, 13],
+  [2, 86, 68, 2, 87, 69], [4, 69, 43, 1, 70, 44], [6, 43, 19, 2, 44, 20], [6, 43, 15, 2, 44, 16],
+];
+function qrGetRsBlocks(type, ecl) {
+  const row = QR_RS_BLOCKS[(type - 1) * 4 + ({ 1: 0, 0: 1, 3: 2, 2: 3 })[ecl]];
+  const list = [];
+  for (let i = 0; i < row.length / 3; i++) {
+    const count = row[i * 3], total = row[i * 3 + 1], data = row[i * 3 + 2];
+    for (let j = 0; j < count; j++) list.push({ totalCount: total, dataCount: data });
+  }
+  return list;
+}
+
+const QR_PATTERN_POS = [
+  [], [6, 18], [6, 22], [6, 26], [6, 30], [6, 34], [6, 22, 38], [6, 24, 42], [6, 26, 46], [6, 28, 50],
+];
+const QR_G15 = (1 << 10) | (1 << 8) | (1 << 5) | (1 << 4) | (1 << 2) | (1 << 1) | (1 << 0);
+const QR_G18 = (1 << 12) | (1 << 11) | (1 << 10) | (1 << 9) | (1 << 8) | (1 << 5) | (1 << 2) | (1 << 0);
+const QR_G15_MASK = (1 << 14) | (1 << 12) | (1 << 10) | (1 << 4) | (1 << 1);
+function qrBchDigit(d) { let n = 0; while (d !== 0) { n++; d >>>= 1; } return n; }
+function qrBchTypeInfo(data) {
+  let d = data << 10;
+  while (qrBchDigit(d) - qrBchDigit(QR_G15) >= 0) d ^= QR_G15 << (qrBchDigit(d) - qrBchDigit(QR_G15));
+  return ((data << 10) | d) ^ QR_G15_MASK;
+}
+function qrBchTypeNumber(data) {
+  let d = data << 12;
+  while (qrBchDigit(d) - qrBchDigit(QR_G18) >= 0) d ^= QR_G18 << (qrBchDigit(d) - qrBchDigit(QR_G18));
+  return (data << 12) | d;
+}
+function qrGetMask(mask, i, j) {
+  switch (mask) {
+    case 0: return (i + j) % 2 === 0;
+    case 1: return i % 2 === 0;
+    case 2: return j % 3 === 0;
+    case 3: return (i + j) % 3 === 0;
+    case 4: return (Math.floor(i / 2) + Math.floor(j / 3)) % 2 === 0;
+    case 5: return (i * j) % 2 + (i * j) % 3 === 0;
+    case 6: return ((i * j) % 2 + (i * j) % 3) % 2 === 0;
+    case 7: return ((i * j) % 3 + (i + j) % 2) % 2 === 0;
+    default: throw new Error('bad maskPattern:' + mask);
+  }
+}
+function qrErrorCorrectPoly(len) {
+  let a = new QrPoly([1], 0);
+  for (let i = 0; i < len; i++) a = a.multiply(new QrPoly([1, qrGexp(i)], 0));
+  return a;
+}
+function qrLengthInBits(type) { return type < 10 ? 8 : 16; }
+
+function qrCreateData(type, ecl, text) {
+  const blocks = qrGetRsBlocks(type, ecl);
+  let totalData = 0;
+  blocks.forEach(b => { totalData += b.dataCount; });
+  const bits = [];
+  let bitLen = 0;
+  function put(num, len) {
+    for (let i = 0; i < len; i++) {
+      bits.push(((num >>> (len - i - 1)) & 1) === 1);
+      bitLen++;
+    }
+  }
+  put(QR_MODE_8BIT, 4);
+  put(text.length, qrLengthInBits(type));
+  for (let i = 0; i < text.length; i++) put(text.charCodeAt(i) & 0xff, 8);
+  if (bitLen + 4 <= totalData * 8) put(0, 4);
+  while (bitLen % 8 !== 0) put(0, 1);
+  while (true) {
+    if (bitLen >= totalData * 8) break;
+    put(QR_PAD0, 8);
+    if (bitLen >= totalData * 8) break;
+    put(QR_PAD1, 8);
+  }
+  const buf = [];
+  for (let i = 0; i < bits.length; i += 8) {
+    let byte = 0;
+    for (let j = 0; j < 8; j++) byte = (byte << 1) | (bits[i + j] ? 1 : 0);
+    buf.push(byte);
+  }
+  let offset = 0, maxDc = 0, maxEc = 0;
+  const dcdata = [], ecdata = [];
+  for (let r = 0; r < blocks.length; r++) {
+    const dcCount = blocks[r].dataCount;
+    const ecCount = blocks[r].totalCount - dcCount;
+    maxDc = Math.max(maxDc, dcCount);
+    maxEc = Math.max(maxEc, ecCount);
+    const dc = [];
+    for (let i = 0; i < dcCount; i++) dc.push(buf[i + offset]);
+    offset += dcCount;
+    const rsPoly = qrErrorCorrectPoly(ecCount);
+    const rawPoly = new QrPoly(dc, rsPoly.getLength() - 1);
+    const modPoly = rawPoly.mod(rsPoly);
+    const ec = new Array(rsPoly.getLength() - 1);
+    for (let x = 0; x < ec.length; x++) {
+      const modIndex = x + modPoly.getLength() - ec.length;
+      ec[x] = modIndex >= 0 ? modPoly.get(modIndex) : 0;
+    }
+    dcdata[r] = dc; ecdata[r] = ec;
+  }
+  let total = 0;
+  blocks.forEach(b => { total += b.totalCount; });
+  const data = new Array(total);
+  let index = 0;
+  for (let z = 0; z < maxDc; z++) for (let s = 0; s < blocks.length; s++) if (z < dcdata[s].length) data[index++] = dcdata[s][z];
+  for (let z = 0; z < maxEc; z++) for (let s = 0; s < blocks.length; s++) if (z < ecdata[s].length) data[index++] = ecdata[s][z];
+  return data;
+}
+
+function qrMakeImpl(type, ecl, test, mask, data) {
+  const mc = type * 4 + 17;
+  const mods = [];
+  for (let r = 0; r < mc; r++) { mods[r] = new Array(mc); for (let c = 0; c < mc; c++) mods[r][c] = null; }
+  function probe(row, col) {
+    for (let r = -1; r <= 7; r++) {
+      if (row + r <= -1 || mc <= row + r) continue;
+      for (let c = -1; c <= 7; c++) {
+        if (col + c <= -1 || mc <= col + c) continue;
+        mods[row + r][col + c] =
+          ((0 <= r && r <= 6 && (c === 0 || c === 6)) ||
+           (0 <= c && c <= 6 && (r === 0 || r === 6)) ||
+           (2 <= r && r <= 4 && 2 <= c && c <= 4));
+      }
+    }
+  }
+  probe(0, 0); probe(mc - 7, 0); probe(0, mc - 7);
+  const pos = QR_PATTERN_POS[type - 1];
+  for (let i = 0; i < pos.length; i++) {
+    for (let j = 0; j < pos.length; j++) {
+      const row = pos[i], col = pos[j];
+      if (mods[row][col] !== null) continue;
+      for (let r = -2; r <= 2; r++) {
+        for (let c = -2; c <= 2; c++) {
+          mods[row + r][col + c] = (Math.abs(r) === 2 || Math.abs(c) === 2 || (r === 0 && c === 0));
+        }
+      }
+    }
+  }
+  for (let r = 8; r < mc - 8; r++) if (mods[r][6] === null) mods[r][6] = (r % 2 === 0);
+  for (let c = 8; c < mc - 8; c++) if (mods[6][c] === null) mods[6][c] = (c % 2 === 0);
+  const fbits = qrBchTypeInfo((ecl << 3) | mask);
+  for (let v = 0; v < 15; v++) {
+    const mod = !test && (((fbits >> v) & 1) === 1);
+    if (v < 6) mods[v][8] = mod;
+    else if (v < 8) mods[v + 1][8] = mod;
+    else mods[mc - 15 + v][8] = mod;
+  }
+  for (let h = 0; h < 15; h++) {
+    const mod = !test && (((fbits >> h) & 1) === 1);
+    if (h < 8) mods[8][mc - h - 1] = mod;
+    else if (h < 9) mods[8][15 - h - 1 + 1] = mod;
+    else mods[8][15 - h - 1] = mod;
+  }
+  mods[mc - 8][8] = !test;
+  if (type >= 7) {
+    const vbits = qrBchTypeNumber(type);
+    for (let i = 0; i < 18; i++) {
+      const mod = !test && (((vbits >> i) & 1) === 1);
+      mods[Math.floor(i / 3)][i % 3 + mc - 8 - 3] = mod;
+    }
+    for (let x = 0; x < 18; x++) {
+      const mod = !test && (((vbits >> x) & 1) === 1);
+      mods[x % 3 + mc - 8 - 3][Math.floor(x / 3)] = mod;
+    }
+  }
+  let inc = -1, row = mc - 1, bitIndex = 7, byteIndex = 0;
+  for (let col = mc - 1; col > 0; col -= 2) {
+    if (col === 6) col--;
+    while (true) {
+      for (let c = 0; c < 2; c++) {
+        if (mods[row][col - c] === null) {
+          let dark = false;
+          if (byteIndex < data.length) dark = (((data[byteIndex] >>> bitIndex) & 1) === 1);
+          if (qrGetMask(mask, row, col - c)) dark = !dark;
+          mods[row][col - c] = dark;
+          bitIndex--;
+          if (bitIndex === -1) { byteIndex++; bitIndex = 7; }
+        }
+      }
+      row += inc;
+      if (row < 0 || mc <= row) { row -= inc; inc = -inc; break; }
+    }
+  }
+  return mods;
+}
+
+function qrLostPoint(mods) {
+  const mc = mods.length;
+  let lp = 0;
+  for (let row = 0; row < mc; row++) {
+    for (let col = 0; col < mc; col++) {
+      let sameCount = 0; const dark = mods[row][col];
+      for (let r = -1; r <= 1; r++) {
+        if (row + r < 0 || mc <= row + r) continue;
+        for (let c = -1; c <= 1; c++) {
+          if (col + c < 0 || mc <= col + c) continue;
+          if (r === 0 && c === 0) continue;
+          if (dark === mods[row + r][col + c]) sameCount++;
+        }
+      }
+      if (sameCount > 5) lp += 3 + sameCount - 5;
+    }
+  }
+  for (let row = 0; row < mc - 1; row++) {
+    for (let col = 0; col < mc - 1; col++) {
+      let count = 0;
+      if (mods[row][col]) count++;
+      if (mods[row + 1][col]) count++;
+      if (mods[row][col + 1]) count++;
+      if (mods[row + 1][col + 1]) count++;
+      if (count === 0 || count === 4) lp += 3;
+    }
+  }
+  for (let row = 0; row < mc; row++) {
+    for (let col = 0; col < mc - 6; col++) {
+      if (mods[row][col] && !mods[row][col + 1] && mods[row][col + 2] && mods[row][col + 3] && mods[row][col + 4] && !mods[row][col + 5] && mods[row][col + 6]) lp += 40;
+    }
+  }
+  for (let col = 0; col < mc; col++) {
+    for (let row = 0; row < mc - 6; row++) {
+      if (mods[row][col] && !mods[row + 1][col] && mods[row + 2][col] && mods[row + 3][col] && mods[row + 4][col] && !mods[row + 5][col] && mods[row + 6][col]) lp += 40;
+    }
+  }
+  let darkCount = 0;
+  for (let col = 0; col < mc; col++) for (let row = 0; row < mc; row++) if (mods[row][col]) darkCount++;
+  lp += Math.abs(100 * darkCount / mc / mc - 50) / 5 * 10;
+  return lp;
+}
+
+// Public encode: returns { modules: 2D bool, size, type, ecl, mask }
+function qrEncode(text, ecl) {
+  text = String(text || '');
+  ecl = QR_ECC[ecl] !== undefined ? QR_ECC[ecl] : QR_ECC.M;
+  let type = 1;
+  for (type = 1; type <= 10; type++) {
+    const blocks = qrGetRsBlocks(type, ecl);
+    let totalData = 0;
+    blocks.forEach(b => { totalData += b.dataCount; });
+    const bitLen = 4 + qrLengthInBits(type) + text.length * 8;
+    if (bitLen <= totalData * 8) break;
+  }
+  if (type > 10) throw new Error('QR input too long (' + text.length + ' chars)');
+  const data = qrCreateData(type, ecl, text);
+  let minLp = 0, pattern = 0;
+  for (let i = 0; i < 8; i++) {
+    const m = qrMakeImpl(type, ecl, true, i, data);
+    const lp = qrLostPoint(m);
+    if (i === 0 || minLp > lp) { minLp = lp; pattern = i; }
+  }
+  const modules = qrMakeImpl(type, ecl, false, pattern, data);
+  return { modules, size: type * 4 + 17, type, ecl, mask: pattern };
+}
+
+// Render the module matrix as a crisp inline SVG (quiet zone = 4 modules)
+function qrSvg(modules) {
+  const size = modules.length;
+  const q = 4;
+  const cells = [];
+  for (let r = 0; r < size; r++) {
+    for (let c = 0; c < size; c++) {
+      if (modules[r][c]) cells.push('M' + (c + q) + ' ' + (r + q) + 'h1v1h-1z');
+    }
+  }
+  const dim = size + q * 2;
+  return '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ' + dim + ' ' + dim + '" shape-rendering="crispEdges" role="img" aria-label="QR code">' +
+    '<rect width="' + dim + '" height="' + dim + '" fill="#fff"/>' +
+    (cells.length ? '<path d="' + cells.join('') + '" fill="#111"/>' : '') +
+    '</svg>';
+}
+
+// ── Wallet identity mirror (walletAddressParts / walletHealth) ──────────
+
+function walletAddressParts(addr) {
+  if (!addr) return null;
+  addr = String(addr).trim();
+  if (!addr) return null;
+  const lower = addr.toLowerCase();
+  // Bech32: checksum is exactly the last 6 chars (BIP-173) — highlight them.
+  if (lower.indexOf('bc1') === 0 && addr.length >= 10) {
+    return { type: 'bech32', prefix: 'bc1', body: addr.slice(3, -6), checksum: addr.slice(-6), full: addr };
+  }
+  // Base58 (legacy/P2SH): the trailing chars are the check digits operators
+  // compare against their wallet app — highlight the real trailing substring
+  // (never a byte-derived string that would differ from the displayed address).
+  if ((addr[0] === '1' || addr[0] === '3') && addr.length >= 8) {
+    return { type: 'base58', prefix: addr[0], body: addr.slice(1, -6), checksum: addr.slice(-6), full: addr };
+  }
+  return { type: 'other', prefix: '', body: addr.length > 6 ? addr.slice(0, -6) : '', checksum: addr.slice(-6), full: addr };
+}
+
+// Wallet health from the live snapshot (honest: every check gates on real
+// observed data — never fabricates). Returns {status, score, checks, connected}.
+function walletHealth(snap, now) {
+  snap = snap || {};
+  now = now || Math.floor(Date.now() / 1000);
+  const connected = !!snap.btc_address;
+  const worker = snap.worker || {};
+  const pool = snap.pool || {};
+  const checks = [
+    { key: 'connected', label: 'Address set', ok: connected },
+    { key: 'fresh', label: 'Data fresh', ok: !!snap.ts && (now - snap.ts) < 300 },
+    { key: 'worker', label: 'Worker found', ok: !!snap.worker },
+    { key: 'hashing', label: 'Hashing', ok: Number(worker.hashrate || 0) > 0 },
+    { key: 'share', label: 'Recent share', ok: !!worker.lastSubmission && (now - Number(worker.lastSubmission)) < 7200 },
+    { key: 'pool', label: 'Pool responding', ok: !!snap.pool && !pool._stale },
+  ];
+  const passed = checks.filter(c => c.ok).length;
+  const score = Math.round(passed / checks.length * 100);
+  let status;
+  if (!connected) status = 'NO_WALLET';
+  else if (score >= 80) status = 'HEALTHY';
+  else if (score >= 50) status = 'DEGRADED';
+  else status = 'CRITICAL';
+  return { status, score, checks, connected, passed };
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  P0-4 · GOLDEN FIXTURES (independent reference: Kazuhiko Arase QRCode, MIT)
+//  Generated via scripts/gen_qr_golden.cjs (root devDependency qrcode-terminal@^0.12.0, Kazuhiko Arase QRCode) — v1-6 came from the same vendor at feature ship; v7-10 cover the BCH version-info path — the QR core
+//  above must reproduce these matrices CELL-FOR-CELL.
+// ═══════════════════════════════════════════════════════════════════════════
+
+const QR_GOLDEN = {"helloM":{"text":"HELLO WORLD","level":"M","rows":["111111101000101111111","100000101000101000001","101110100000001011101","101110101010101011101","101110100111001011101","100000100011101000001","111111101010101111111","000000001111100000000","101101110101101001011","011000010111111101100","000001111101010100011","101011011001000101010","100010110110110000101","000000001011001100101","111111101011111110000","100000101110010101111","101110100100101001000","101110101110001001110","101110101100100100100","100000100111011110001","111111101101010100000"]},"helloL":{"text":"HELLO WORLD","level":"L","rows":["111111101011101111111","100000100011001000001","101110101101001011101","101110101100101011101","101110101001001011101","100000100111101000001","111111101010101111111","000000000001100000000","111100101111110011101","010111010011111101100","111100101001010100011","111111010001000101010","111000110100110000101","000000001101001100101","111111100011111110000","100000100000010101111","101110100010101001000","101110101010001001110","101110101110100100100","100000101101011110001","111111101001010100000"]},"num01234567M":{"text":"01234567","level":"M","rows":["111111101011001111111","100000101001101000001","101110101000101011101","101110100110001011101","101110101010101011101","100000100111101000001","111111101010101111111","000000000011100000000","100111111000110010111","111100011100111100110","011100111110010100101","010001000001000001100","001100101010011010011","000000001101100110100","111111101000111110010","100000101111110110101","101110101001101000000","101110101011100101100","101110100100001110011","100000100110011000111","111111101101000011000"]},"cypher65Q":{"text":"CYPHER65","level":"Q","rows":["111111101111001111111","100000101001001000001","101110101101001011101","101110101110101011101","101110101110001011101","100000100001001000001","111111101010101111111","000000001011100000000","011010110000001011111","000011010111000011100","101101111100011011111","110110001100010110001","011111110001101111101","000000001111001011010","111111101111100010111","100000100001001110010","101110101001001010100","101110100011010001110","101110101111011110101","100000101011110000010","111111100001011110111"]},"bech32M":{"text":"bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh","level":"M","rows":["11111110100111001101101111111","10000010111100100100101000001","10111010010101011011001011101","10111010101101100100101011101","10111010001001011111101011101","10000010011111001101001000001","11111110101010101010101111111","00000000101000111101000000000","10110111000100001110001001011","10000101100000101011111110001","00000011000100101010101011110","01110101001111011000000100011","00110110000111100110100001110","00101100111110011111111000011","01011111010000100101101101001","00110001000000100010011001001","10000111010011010000010011000","01100100001010010010110101100","10001010001100111000010011000","00000101110010110101111000101","01001010000100100100111110101","00000000101111000101100010011","11111110111110100101101010010","10000010101001001010100010000","10111010010010001110111110111","10111010110110110110110110001","10111010100010001100010100101","10000010000110010001110101010","11111110110101001011110000010"]},"base58M":{"text":"1BoatSLRHtKNngkdXEeobR76b53LETtpyT","level":"M","rows":["11111110110111110001001111111","10000010101011001010101000001","10111010011110001010001011101","10111010100100110110101011101","10111010010010101110001011101","10000010001111011111001000001","11111110101010101010101111111","00000000110100011101100000000","10110111010001011111001001011","10110101001101110011111110011","11011111000111000000011111110","00001100110010000000100110010","00100110110010111111000011101","10010001100010101111001001101","00110010011101000011111111011","00000000011110110000101001011","01111011100100111000110101100","00100100011110110010100101001","10000011000011110110111011100","00011001000011100110011001110","01110010000101100011111111001","00000000110000001110100011101","11111110101100100110101010100","10000010100011100000100010000","10111010001010011000111111010","10111010100000011100110010101","10111010101001101011100101101","10000010010001011001000011010","11111110111100101111100110110"]},"bech32H":{"text":"bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh","level":"H","rows":["1111111011000100000010010010101111111","1000001011000101111101000101001000001","1011101011100100010100100010001011101","1011101000010000110001101110001011101","1011101001100110010110100110101011101","1000001011000110111101010011001000001","1111111010101010101010101010101111111","0000000011010001101100100000000000000","0011101011110101000100011111011100111","0011000100110001011010111100110101110","0001111011000110100100111101101000111","1010010111011100010010110010111010001","1000101100100100000001101111111111101","1000110100101000111010110000010001000","0111001011101001001111011001101011111","0011110110111100000011010011010100011","0110001011000111001111000100111111100","0001010110101100110000111010110100000","0011101101000000011011000001001010111","1000100011001001111011010001100000000","0001101101101010001011111101101111100","1011100001100001000111001110010101100","1111001011011000010011010001100100011","1011010100100101011000000001001000010","0010011110110011011111000000101010100","1100100010000000001011101000110100010","1010011010111001100010100111000011101","1011110110101000101010101011001010000","1001011000001000011110101111111111110","0000000011111010010010110000100011010","1111111000011000011111000100101010111","1000001001000100101000111001100011001","1011101010101010010101001111111110111","1011101011110100001110000101011011100","1011101011001101100101011000010101101","1000001000000101111100010000101010001","1111111000010111110100110100011000111"]},"longH":{"text":"bc1qaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaam6h","level":"H","rows":["11111110001111100111001011011000111101000010001111111","10000010011100101100110001110110100000000011001000001","10111010011001101010001000110001100001000001001011101","10111010000101001000101101111000111101000110101011101","10111010100001010111011111111110000111110010001011101","10000010010001000111000010001011001111101010001000001","11111110101010101010101010101010101010101010101111111","00000000110100000010011010001010101100101100100000000","00110011111110001000010011111001100000011101111010000","10011000110111111010110011001001110011000111000110011","01110010011101011011100011110001100110000111101101110","11011100010000001111000110111110100011001001001010011","01011010101110111011000011101011011111001111000110110","01110101011111110100011011110110100001101000100000101","01010010000000111110000110001101001001110010011000011","01100100111011001100001101101000100000011010010001000","10001110101100001100011101000101101001110000010000000","10011000110100011000100111000111100100011100011101000","10011011101001110001011100000011111010110001001011000","11110001011101110110111010000001010000101100100111110","11100010011101100001110001001000000000011101111101111","01000000011110100111111100011101011110000111000110010","00101110101010100111101010110000101101100111101101111","10011100101000011011010111101110111011000001001010000","00111111101111100010101011111101000111000110111110101","11111000110100001001001110001111110111110001100010101","01101010100110101110010010101001000101101010101010011","01101000110000100010001110001100101000011100100010000","11001111111001010111111111111000001001110111111111100","00011000011001000101101101001111101100011111011101000","10111110011100110110101100111011011010110010000110100","11010000100110110000011011011010001110101101001101110","10101111110010011100110111011101111100011101101011101","11000001000000011000110011000100101111000110000110011","01001010110110000100110111101101110100000110110001110","00111101011111011000011100110111100011000000100000011","00110110111001011100101001000110111111000110110100110","00001001100110111010110100010010001001110000110100101","01100111011011110111110110000000001001101011011110011","11101000000100011010100011101100011000011011111011000","00001110001111100100000011010001001001110000000100000","01110000001011000100110001111001000100011101011111000","11011110011000010101000101111000010010110000000001000","01100000110011001100010100010010101110110101001011110","00010011101010010001100111111100000100001101111111101","00000000100011101111101110001011111111000111100010011","11111110110100110011111110101110100100000110101011110","10000010010100110001111010001000100010100001100010011","10111010000111011011010111111010100111000110111110110","10111010111001010000110110011100100000110000100110110","10111010111111011000010110000000110000101010111100011","10000010010100010111100111101011111011111010100111010","11111110001011001001100110001000110010010001001100010"]},"v7M":{"text":"abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJKLMNOPQ","level":"M","rows":["111111100101101101110101010011101000101111111","100000100011100010111011111100011001001000001","101110101101110001110000111100000101001011101","101110101010111000111000001001110001101011101","101110101011001001001111110111100111101011101","100000101011101100101000100010101100001000001","111111101010101010101010101010101010101111111","000000001101001111111000110011001110100000000","101111100110100010101111100000010000001111100","011101001111010001100110110011110001110001101","111010110010101010100101011100011110101001110","111100001101000010011000011100000000001010110","110101111010001000101011011001110100110101000","000000010010010011011101010001100001110100111","101010101000100110011001110010101101000111100","100011000110001110100101010011001110110111100","101110101100101001100001100001010000010000010","011001011011001101100111110111110001110101101","010111101001000000110001111101011110101001110","001010001100001110010000011100000000001010101","110111111001111000101111111000010100111111001","001110001001110101011000110001111000100010111","010110101100001011011010110010110101101010000","000110001111110010001000110011001110100011100","101011111110010101011111110001010110111110010","111000000100001000110010110111100001110101101","101010100011101111000001011101011110110100010","001100011100010000000101100100000001000110111","011000110010111010001001000000010000010111000","011100001110001000100001110101111001001000111","110000101010100001101110110010110100110100000","010100010000111000000000110010101110001001111","001011111010001110001001110000110110100010000","101111011111000110010010110001100001110101110","000010101001010101100011011101011110110010010","011110000011101100010111100100000001000000110","100110100111000011011111100001010000111111001","000000001011010101011000110101101001100010111","111111100111101100001010110010110101101011000","100000101101000010111000110010101111100011111","101110101111111100101111101000110010111110000","101110101111001101010010010001111000110111111","101110101010101110110101111101001111101001010","100000100100111011011111100100000001110010100","111111101110001101000111110001010110101101010"]},"v8L":{"text":"abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJ","level":"L","rows":["1111111001110111000100010001111100011000101111111","1000001011001111110011101111010001111111101000001","1011101001100011100111001100000000010001101011101","1011101010011110010101111100011101101101001011101","1011101001000001001001111111011001011100001011101","1000001011011000010100100010001010111110001000001","1111111010101010101010101010101010101010101111111","0000000000100001010001100010101110000100000000000","1111101111111000111011111111000101111000010101010","1010010001110110010100011100011000001100011110001","0011001001101000001101001101010001111100101011011","0010100101101101111110000000000000010101010010000","1001101011001001001001111110000100101010111101101","1010000000001100111111000000111111001100011001000","0011011001001001101010101111001100111111000110111","0111110011001100101110001100101110000100010000010","0100001100001000111011011011010100111100001101001","1100010011011110010100011101011110010100011010001","1010101111111111010000000101010111101101101010011","1101110010111011100110000100000001110101010010011","0010111110100110010001111000010101001110100101101","0110000000110001001000011001111011010100011110000","1100111111000000001011111111001100101110111111011","0100100011011011011011100010111011100100100010000","0110101010001000111011101011001101011011101011001","0000100010101110010100100011111010000101100010001","1111111110110000101111111111110111101100111111111","1010100011011100011011001110010001110011100010011","1000111101000001001000110100001100001001110001100","0100100000010100111101001110011100000101011100000","0111111010111001101100101101001101001111111100011","1110110101100110100011000100111011100100101010011","0110001110010000111011100100011100011111010011001","1101010100111110010101111100011100011100010100010","1111011011001111110011100001110111101101111010101","1010010000000010000011000110010001010011110010001","0010101000111110010000110010011100001101010001100","1011110100001001001101101001011000011101000100000","0100011100011100001000110101001101001111111001111","0111000101001001010011011100111011100010101010000","1110001110110000111010111110000101111001111111000","0000000011001110010100100011011000000100100011110","1111111010000000001101101011110111100101101011001","1000001000011100011011100010010001010011100010010","1011101011001001001000111110000101101011111111111","1011101010010100111101011100111110001000001010000","1011101010000101111111111010101001001110001100100","1000001011110100101101011000111011111010111100001","1111111011010000111010000110010100111100110011011"]},"v9Q":{"text":"abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJKLMNOPQRSTUV","level":"Q","rows":["11111110010110100001001101100110100111010010001111111","10000010111001101101000000001101001010110011001000001","10111010101111100101011011010110101100010001001011101","10111010011001000001100000111000001110000110101011101","10111010010001100101010111111010000011100010001011101","10000010010111100001101110001000010100000110001000001","11111110101010101010101010101010101010101010101111111","00000000001010111110010110001101001100001101100000000","01110110001000011010010111111100010101111101100000110","01001001101001110000111000001110000101010111000001101","11101110101100110001010110011010100000001101100100100","01011101110110111110010000100101101111011000001110011","11110111110000100110001101010101000010010111001110000","10110000001110110100110101010100000100110001110000111","10011111010101100001100011000111111000101100011101111","01100001101111000100011111000100001000110111010001010","10011011101011010110001010011011100000110010111000000","11101001000010111111100000110101111110010100011001000","00110110001011110101101011010110111000000000011111100","01001000100100110101011111010101000101011111100101100","10100011111100110101110001001101011111101000110100100","00000101111000101100101100010011110001111111000000100","00000011010010100111110011101000111010101011011011110","01110101110000100110010000011101100001100100000110001","11011111111111110001010011111101010111000110111110010","01101000111101000010010110001110010111110001100010111","11001010111101000101101010101100101011100000101010001","00101000101101111110010110001111011100100110100011010","10001111111110011111011111111110100101110110111111101","01101000011000011110000100000010011010010000101001010","01000011010111011111101111010110000011110010110101000","10011000000001000100101100010110111111100000011001101","01111111001101101100001100001000000100011011010111101","00010100101011101010000101011011000011001110001110011","00110011001001111000000101001001001010100110110111110","01000001111010110000110000010000111100010101111000011","11000010011001100000000010101000010111000000100001110","00000100000101000110110101011001100111111000110001100","10110110101011000111011100101000010100011110111011111","10010100110010001111001010111111101010111011111010001","01010110010110110111111110011001100001010110110001001","10111101001101011010111010011110111010010101100100110","11011111000011010111001000111111110110100010000001010","01100000010001001100101001110101111010100101011101100","00010011000101000110111011111110000000010011111111011","00000000110010100110001010001101001000011110100010001","11111110011001011101001010101110000111011000101011010","10000010100011101110000110001011010011101010100010010","10111010001000101011100011111101000111000010111110101","10111010110100000010001000111101110111101001100101111","10111010100111000001011111001101100011011010010101011","10000010111110101111100100101101110110001000000111010","11111110011010010000010011110100101101110001100101010"]},"v10H":{"text":"abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789AB","level":"H","rows":["111111100111110001001100101001011111001001100011001111111","100000101111111011110000011011100110000011001101001000001","101110100110100110110000011111010010111101001111001011101","101110100011010100100101110001100000001011110101001011101","101110100001010011000110001111100101000101111101001011101","100000101001111000100010101000111010011010110110001000001","111111101010101010101010101010101010101010101010101111111","000000001011011001111101111000110111011011000110000000000","000011110110111111000100101111110101110101100101001100010","111111000100011100101110100110000001100001110001101101111","111110101110000011101110100100000011000010011010011110110","100011010110011101000010000001111101011110011011010100000","000010100010110010100001110100001000111100011100001101110","001101000010101010010101001100101100001101111101111011000","101010101000111101011110101011000010101011101101111111000","001001010111110111101101101110000101100000011011001110001","011010101010100011001100000011000100111001101000100110011","101000000111110100100111110001100111011011111101101010110","001010101110100000001100110100111101111100110000000001010","101001000011101100110111011000001010010101101100101001001","001010101101110010111110000110001010110101101001010001000","101111011001101000000011100010101000101111101000101011010","011000111110011110110010100000100001000101010000101111110","011001001100100111001111010000111000110011010000011100100","010011100101110001001000110100001100001001101011000100111","100011001110000111111100111110010000101100111101101011101","000111111100111101110011101111111011010110000110111111000","001010001011010101000011011000110110001111100110100010010","001010101111110111010001101010101000110001101110101010011","000010001110110011001010011000111001001011101100100011000","101011111110101000101010111111110100001111100101111110100","001101001110111101010010100010010001001001111110111000001","111111110110111001000101110011011000101100101010111101010","110110011101001100000101100101001000101111110100000100110","010000111111010011110011010011011100111010110001000010110","011000011100001101111010101001000110000101001011111101011","110000100001010001011011010010011010001101001011111001010","111001010000101000000010001010111111011001100001001100001","111011110111110011101110011001010101010101010000100100010","100000011100000110111110001110001110000011010000010100001","101110110101111111000011001111100110001100011010111110101","001011001101000001110000100101000001111111101110000000011","011110100011100100111010111001011010110110000111110111010","100011010000110011101100010110101100011110011010101010011","010110110001111010000000100111100011110101011010111111101","011111000001111000011101100001110011100001100100110101000","101001100010111010011110010100110101000011110101010110000","111110001001010001011110001011111010011000011010111110010","000000110111111111110011011111110111010100001100111110011","000000001110011100100111001000100110100101100101100010110","111111101110100010110110101010111111000100100001101010010","100000101101010001000100111000101010000101001101100011010","101110101101100111101101001111111100010101101100111111000","101110100011101110101011000000000011010011111100101010111","101110100101011000101101000011011100101101010110001010000","100000100001001011001000000100001110010110110001000011000","111111100100101010110000010000101000111110001111000001101"]}};
+
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  P0-4 · QR CORE TESTS — golden matrices must reproduce CELL-FOR-CELL
+//  (independent oracle: Kazuhiko Arase QRCode via qrcode-terminal vendor)
+// ═══════════════════════════════════════════════════════════════════════════
+
+(function qrGoldenSuite() {
+  const names = Object.keys(QR_GOLDEN);
+  assertEqual('golden fixture count', names.length, 12);
+  names.forEach(function (name) {
+    const f = QR_GOLDEN[name];
+    const res = qrEncode(f.text, f.level);
+    assertEqual(name + ' size', res.modules.length, f.rows.length);
+    // Cell-for-cell comparison — every module dark/light must match.
+    let same = res.modules.length === f.rows.length;
+    if (same) {
+      outer:
+      for (let r = 0; r < f.rows.length; r++) {
+        for (let c = 0; c < f.rows.length; c++) {
+          const dark = f.rows[r][c] === '1';
+          if (res.modules[r][c] !== dark) { same = false; break outer; }
+        }
+      }
+    }
+    assertEqual(name + ' matrix cell-for-cell', same, true);
+    // SVG renderer emits a crisp inline SVG with a quiet zone of 4 modules
+    const svg = qrSvg(res.modules);
+    assertTruthy(name + ' svg viewBox', svg.indexOf('viewBox="0 0 ' + (res.size + 8)) !== -1);
+    assertTruthy(name + ' svg path', svg.indexOf('<path') !== -1);
+    assertTruthy(name + ' svg role img', svg.indexOf('role="img"') !== -1);
+  });
+
+  // Byte-mode capacity guard — longer than v10 capacity must throw
+  let threw = false;
+  try { qrEncode('x'.repeat(400), 'M'); } catch (e) { threw = true; }
+  assertEqual('QR rejects payload > v10 byte capacity', threw, true);
+
+  // Determinism: same input twice → identical matrix (no random state)
+  const a = qrEncode('bc1qtest123456', 'M');
+  const b = qrEncode('bc1qtest123456', 'M');
+  assertEqual('QR deterministic', JSON.stringify(a.modules), JSON.stringify(b.modules));
+  assertEqual('QR mask in 0-7', a.mask >= 0 && a.mask <= 7, true);
+  assertEqual('QR size formula = type*4+17', a.size, a.modules.length);
+  assertEqual('QR ecl default M', qrEncode('bc1qtest').ecl, 0);
+})();
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  P0-4 · WALLET IDENTITY TESTS — checksum split + health
+// ═══════════════════════════════════════════════════════════════════════════
+
+(function walletIdentitySuite() {
+  // ── walletAddressParts: bech32 ──
+  const bc = walletAddressParts('bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh');
+  assertEqual('bech32 type', bc.type, 'bech32');
+  assertEqual('bech32 prefix', bc.prefix, 'bc1');
+  assertEqual('bech32 checksum = last 6 chars', bc.checksum, 'hx0wlh');
+  assertEqual('bech32 full preserved', bc.full, 'bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh');
+  assertEqual('bech32 reassembles', bc.prefix + bc.body + bc.checksum, bc.full);
+
+  // ── walletAddressParts: base58 legacy ──
+  const b58 = walletAddressParts('1BoatSLRHtKNngkdXEeobR76b53LETtpyT');
+  assertEqual('base58 type', b58.type, 'base58');
+  assertEqual('base58 prefix', b58.prefix, '1');
+  assertEqual('base58 checksum non-empty', b58.checksum.length >= 3, true);
+  assertEqual('base58 reassembles', b58.prefix + b58.body + b58.checksum, b58.full);
+
+  // ── walletAddressParts: p2sh ──
+  const p2sh = walletAddressParts('3J98t1WpEZ73CNmQviecrnyiWrnqRhWNLy');
+  assertEqual('p2sh type', p2sh.type, 'base58');
+  assertEqual('p2sh prefix', p2sh.prefix, '3');
+  assertEqual('p2sh reassembles', p2sh.prefix + p2sh.body + p2sh.checksum, p2sh.full);
+
+  // ── walletAddressParts: unknown/other ──
+  const oth = walletAddressParts('xyz-1234567890');
+  assertEqual('other type', oth.type, 'other');
+  assertEqual('other checksum slice = last 6', oth.checksum, '567890');
+  assertEqual('null addr → null', walletAddressParts(null), null);
+  assertEqual('empty addr → null', walletAddressParts('   '), null);
+
+  // ── checksum is always a REAL trailing substring (the ticket killer) ──
+  const realCk = '1BoatSLRHtKNngkdXEeobR76b53LETtpyT';
+  const parts2 = walletAddressParts(realCk);
+  assertEqual('base58 checksum is a real suffix', realCk.indexOf(parts2.checksum) !== -1, true);
+  assertEqual('base58 checksum = trailing 6', parts2.checksum, realCk.slice(-6));
+
+  // ── walletHealth: no wallet ──
+  const none = walletHealth({}, 1000000);
+  assertEqual('no wallet status', none.status, 'NO_WALLET');
+  assertEqual('no wallet score', none.score, 0);
+  assertEqual('no wallet connected', none.connected, false);
+  assertEqual('no wallet passed 0', none.passed, 0);
+  assertEqual('no wallet 6 checks', none.checks.length, 6);
+
+  // ── walletHealth: fully healthy ──
+  const now = 1000000;
+  const healthy = walletHealth({
+    btc_address: 'bc1qtest',
+    ts: now - 10,
+    worker: { hashrate: 5e12, lastSubmission: now - 100 },
+    pool: { _stale: false },
+  }, now);
+  assertEqual('healthy status', healthy.status, 'HEALTHY');
+  assertEqual('healthy score', healthy.score, 100);
+  assertEqual('healthy passed', healthy.passed, 6);
+  assertEqual('healthy connected', healthy.connected, true);
+
+  // ── walletHealth: degraded (stale data) ──
+  const degraded = walletHealth({
+    btc_address: 'bc1qtest',
+    ts: now - 400,
+    worker: { hashrate: 5e12, lastSubmission: now - 100 },
+    pool: { _stale: true },
+  }, now);
+  assertEqual('degraded status', degraded.status, 'DEGRADED');
+  assertEqual('degraded passed = 4', degraded.passed, 4);
+
+  // ── walletHealth: critical (no hashrate + stale + no pool) ──
+  const critical = walletHealth({
+    btc_address: 'bc1qtest',
+    ts: now - 400,
+    worker: { hashrate: 0, lastSubmission: now - 8000 },
+    pool: { _stale: true },
+  }, now);
+  assertEqual('critical status', critical.status, 'CRITICAL');
+  assertEqual('critical passed = 2', critical.passed, 2);
+
+  // ── walletHealth: now defaults to Date.now (live path) ──
+  const live = walletHealth({ btc_address: 'bc1qtest', ts: Math.floor(Date.now() / 1000), worker: { hashrate: 1 } });
+  assertEqual('live connected', live.connected, true);
+})();
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  SUITE 31: webhookPreviewPayload (UX audit Quick Win — Settings preview)
+//  Pure mirror of the builder in static/app.js used to render the exact JSON
+//  payload fired per alert, so the operator can validate the channel.
+// ═══════════════════════════════════════════════════════════════════════════
+(function() {
+  function webhookPreviewPayload(severity, message, worker, address) {
+    return {
+      event: 'cypher65_war_room_alert',
+      severity: severity || 'WARN',
+      category: 'alert',
+      message: message || '⚠ [WARN] exemplo de alerta — configuração de webhook do CYPHER65',
+      ts: Math.floor(Date.now() / 1000),
+      worker: worker || 'primary',
+      address: address || '',
+    };
+  }
+
+  const p = webhookPreviewPayload('CRIT', 'worker offline', 'miner-01', 'bc1qtest');
+  assertEqual('wh event', p.event, 'cypher65_war_room_alert');
+  assertEqual('wh severity passed', p.severity, 'CRIT');
+  assertEqual('wh message passed', p.message, 'worker offline');
+  assertEqual('wh worker passed', p.worker, 'miner-01');
+  assertEqual('wh address passed', p.address, 'bc1qtest');
+  assertEqual('wh ts numeric', typeof p.ts, 'number');
+
+  const d = webhookPreviewPayload();
+  assertEqual('wh default severity', d.severity, 'WARN');
+  assertEqual('wh default worker', d.worker, 'primary');
+  assertEqual('wh default message present', typeof d.message, 'string');
+  assertEqual('wh default address empty', d.address, '');
+})();
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  SUITE 32: buildMarketTrendDatasets (UX backlog — Hash Market 7d chart)
+//  Pure mirror of static/app.js: providers → datasets with per-provider null
+//  gaps, union of timestamps, and BTC/TH/d → sats/TH/d (×1e8) conversion.
+// ═══════════════════════════════════════════════════════════════════════════
+(function() {
+  function buildMarketTrendDatasets(providers) {
+    const colors = ['rgb(247,147,26)', 'rgb(6,214,240)', 'rgb(168,85,247)', 'rgb(245,158,11)', 'rgb(16,185,129)'];
+    const allTs = new Set();
+    Object.values(providers || {}).forEach(pts => (pts || []).forEach(p => { if (p && p.ts) allTs.add(p.ts); }));
+    const times = Array.from(allTs).sort((a, b) => a - b);
+    const labels = times.map(t => { const d = new Date(t * 1000); return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0'); });
+    const datasets = Object.keys(providers || {}).map((name, i) => {
+      const byTs = {};
+      ((providers[name]) || []).forEach(p => { if (p && p.ts != null) byTs[p.ts] = p.price_btc_per_th_day; });
+      return {
+        label: name,
+        data: times.map(t => byTs[t] != null ? Number(byTs[t]) * 1e8 : null),
+        borderColor: colors[i % colors.length],
+        backgroundColor: colors[i % colors.length].replace(')', ',0.08)').replace('rgb', 'rgba'),
+        tension: 0.4, pointRadius: 0, fill: false,
+      };
+    });
+    return { times, labels, datasets };
+  }
+
+  // Two providers at three shared timestamps.
+  const provs = {
+    braiins: [
+      { ts: 100, price_btc_per_th_day: 1e-6 },
+      { ts: 200, price_btc_per_th_day: 1.5e-6 },
+    ],
+    mrr: [
+      { ts: 200, price_btc_per_th_day: 2e-6 },
+    ],
+  };
+  const out = buildMarketTrendDatasets(provs);
+  assertEqual('trend times union sorted', JSON.stringify(out.times), JSON.stringify([100, 200]));
+  assertEqual('trend labels length', out.labels.length, 2);
+  assertEqual('trend datasets count', out.datasets.length, 2);
+  assertEqual('trend dataset order', out.datasets[0].label, 'braiins');
+  // braiins: [1e-6, 1.5e-6] → sats ×1e8; mrr: [null, 2e-6] → null gap at ts 100.
+  assertEqual('braiins first point sats', out.datasets[0].data[0], 100);
+  assertEqual('braiins second point sats', out.datasets[0].data[1], 150);
+  assertEqual('mrr gap null', out.datasets[1].data[0], null);
+  assertEqual('mrr point sats', out.datasets[1].data[1], 200);
+  assertEqual('braiins borderColor set', typeof out.datasets[0].borderColor, 'string');
+  assertEqual('braiins fill false', out.datasets[0].fill, false);
+
+  const empty = buildMarketTrendDatasets({});
+  assertEqual('trend empty datasets', empty.datasets.length, 0);
+  assertEqual('trend empty times', empty.times.length, 0);
+  assertEqual('trend empty labels', empty.labels.length, 0);
+})();
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  SUITE 33: simulateDifficultyShift (UX audit Módulo_05 — WHAT-IF slider)
+//  Pure mirror of static/app.js: given the base Block Hunt values + a
+//  difficulty shift %, recompute netDiff (linear), P(block)/share (inverse),
+//  expected time (linear), distance (linear) and cumulative P (re-derived
+//  from the shifted per-share probability and the session's share count).
+// ═══════════════════════════════════════════════════════════════════════════
+(function() {
+  function simulateDifficultyShift(base, pct) {
+    base = base || {};
+    const mult = 1 + (Number(pct) || 0) / 100;
+    const netDiff = base.netDiff > 0 ? base.netDiff * mult : 0;
+    let pBlock = null;
+    if (base.bestDiff > 0 && netDiff > 0) pBlock = base.bestDiff / netDiff;
+    else if (base.pBlock != null && base.netDiff > 0 && netDiff > 0) pBlock = base.pBlock * (base.netDiff / netDiff);
+    const expectedTime = base.expectedTime > 0 ? base.expectedTime * mult : (base.expectedTime || 0);
+    const distance = base.bestDiff > 0 && netDiff > 0 ? netDiff / base.bestDiff : 0;
+    let cumulativeP = base.cumulativeP;
+    if (base.shares > 0 && pBlock != null && pBlock > 0) cumulativeP = 1 - Math.pow(1 - pBlock, base.shares);
+    return { shiftPct: Number(pct) || 0, netDiff, pBlock, expectedTime, distance, cumulativeP };
+  }
+
+  // Base: 110T difficulty, 10G best share → pBlock = 10e9/110e12.
+  const base = {
+    netDiff: 110e12,
+    bestDiff: 10e9,
+    expectedTime: 123456,
+    cumulativeP: 0.05,
+    shares: 1000,
+  };
+  const basePBlock = 10e9 / 110e12;
+
+  // ── +10% shift ──
+  const up = simulateDifficultyShift(base, 10);
+  assertEqual('whatif up shiftPct', up.shiftPct, 10);
+  assertApprox('whatif up netDiff = 110T×1.1', up.netDiff, 121e12, 1);
+  assertApprox('whatif up pBlock = 10G/121T', up.pBlock, 10e9 / 121e12, 1e-18);
+  assertApprox('whatif up expectedTime ×1.1', up.expectedTime, 123456 * 1.1, 1e-6);
+  assertApprox('whatif up distance = 121T/10G', up.distance, 121e12 / 10e9, 1e-6);
+  // Cumulative P re-derived: 1-(1-p)^1000 with the shifted pBlock.
+  assertApprox('whatif up cumP from shifted p', up.cumulativeP, 1 - Math.pow(1 - (10e9 / 121e12), 1000), 1e-12);
+  // Difficulty UP → P(block) DOWN: strictly smaller than base pBlock.
+  assertTruthy('whatif up pBlock < base pBlock', up.pBlock < basePBlock);
+
+  // ── −25% shift ──
+  const down = simulateDifficultyShift(base, -25);
+  assertApprox('whatif down netDiff = 110T×0.75', down.netDiff, 82.5e12, 1);
+  assertApprox('whatif down pBlock = 10G/82.5T', down.pBlock, 10e9 / 82.5e12, 1e-18);
+  assertApprox('whatif down expectedTime ×0.75', down.expectedTime, 123456 * 0.75, 1e-6);
+  assertTruthy('whatif down pBlock > base pBlock', down.pBlock > basePBlock);
+
+  // ── 0% shift → identity ──
+  const same = simulateDifficultyShift(base, 0);
+  assertEqual('whatif zero netDiff unchanged', same.netDiff, base.netDiff);
+  assertEqual('whatif zero pBlock unchanged', same.pBlock, basePBlock);
+  assertEqual('whatif zero expectedTime unchanged', same.expectedTime, base.expectedTime);
+
+  // ── Fallback: pBlock scaling when bestDiff is absent ──
+  const fb = simulateDifficultyShift({ netDiff: 100, pBlock: 0.01 }, 100);
+  assertApprox('whatif fallback pBlock = 0.01×(100/200)', fb.pBlock, 0.005, 1e-12);
+
+  // ── Honest empty state: no base → zeros, no crash ──
+  const empty = simulateDifficultyShift(null, 10);
+  assertEqual('whatif empty netDiff 0', empty.netDiff, 0);
+  assertEqual('whatif empty pBlock null', empty.pBlock, null);
+  assertEqual('whatif empty expectedTime 0', empty.expectedTime, 0);
+  assertEqual('whatif empty cumulativeP undefined', empty.cumulativeP, undefined);
+})();
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  SUITE 34: docsSearchSuggestions / docsSnippet / docsHighlight
+//  (UX audit Módulo_09 — Docs autocomplete). Pure mirrors of static/app.js:
+//  rank sections by title-over-body relevance, build a snippet window around
+//  the hit, and highlight every query occurrence with <mark> (HTML-escaped).
+// ═══════════════════════════════════════════════════════════════════════════
+(function() {
+  function docsSnippet(text, q, pos, radius) {
+    radius = radius || 60;
+    const t = String(text || '').replace(/\s+/g, ' ');
+    q = String(q || '');
+    const start = Math.max(0, pos - radius);
+    const end = Math.min(t.length, pos + q.length + radius);
+    let snippet = t.slice(start, end);
+    if (start > 0) snippet = '\u2026' + snippet;
+    if (end < t.length) snippet = snippet + '\u2026';
+    return snippet;
+  }
+  function docsSearchSuggestions(index, q, limit) {
+    limit = limit || 6;
+    q = String(q || '').trim().toLowerCase();
+    if (!q || !index.length) return [];
+    const scored = [];
+    index.forEach(function(sec) {
+      const titleLow = (sec.title || '').toLowerCase();
+      const textLow = (sec.text || '').toLowerCase();
+      const titleIdx = titleLow.indexOf(q);
+      const textIdx = textLow.indexOf(q);
+      if (titleIdx === -1 && textIdx === -1) return;
+      const score = titleIdx !== -1 ? 100 - titleIdx : 40 - Math.min(textIdx, 40);
+      scored.push({ sec: sec, score: score, titleIdx: titleIdx, textIdx: textIdx });
+    });
+    scored.sort(function(a, b) { return b.score - a.score; });
+    return scored.slice(0, limit).map(function(item) {
+      const pos = item.titleIdx !== -1 ? Math.max(0, item.titleIdx) : Math.max(0, item.textIdx);
+      return {
+        id: item.sec.id,
+        title: item.sec.title,
+        snippet: docsSnippet(item.sec.text, q, pos),
+      };
+    });
+  }
+  function docsHighlight(text, q) {
+    const t = String(text || '');
+    const needle = String(q || '').trim();
+    if (!needle) return escapeHtml(t);
+    const lower = t.toLowerCase();
+    const nl = needle.toLowerCase();
+    let out = '';
+    let i = 0;
+    while (i < t.length) {
+      const hit = lower.indexOf(nl, i);
+      if (hit === -1) { out += escapeHtml(t.slice(i)); break; }
+      out += escapeHtml(t.slice(i, hit));
+      out += '<mark>' + escapeHtml(t.slice(hit, hit + needle.length)) + '</mark>';
+      i = hit + needle.length;
+    }
+    return out;
+  }
+
+  const index = [
+    { id: 'docs-latency', title: '8 · Latency / Ping', text: 'Diagnose high latency to the pool server with the Latency panel.' },
+    { id: 'docs-probability', title: '4 · Probability', text: 'Block finding probability depends on your hashrate and the network difficulty.' },
+    { id: 'docs-market', title: '5 · Hash Market', text: 'Compare rental offers from Braiins, NiceHash, MRR and Parasite.' },
+  ];
+
+  // ── Title hit ranks above body-only hit ──
+  const lat = docsSearchSuggestions(index, 'latency', 6);
+  assertEqual('docs latency results count', lat.length, 1);
+  assertEqual('docs latency id', lat[0].id, 'docs-latency');
+  assertTruthy('docs latency snippet contains window', lat[0].snippet.indexOf('Latency') !== -1);
+
+  // Body-only hit (no title match) still surfaces — lower rank than any
+  // title hit would be, but present.
+  const pool = docsSearchSuggestions(index, 'pool', 6);
+  assertEqual('docs pool results count', pool.length, 1);
+  assertEqual('docs pool id', pool[0].id, 'docs-latency');
+
+  // Title hit ranks above body-only hit for the same query span.
+  const multi = docsSearchSuggestions(index, 'hashrate', 6);
+  assertEqual('docs hashrate results count', multi.length, 1);
+  assertEqual('docs hashrate id', multi[0].id, 'docs-probability');
+
+  // ── limit caps results ──
+  const capped = docsSearchSuggestions(index, 'e', 2);
+  assertEqual('docs cap to 2', capped.length, 2);
+
+  // ── no matches / empty query ──
+  const none = docsSearchSuggestions(index, 'zzz-no-match', 6);
+  assertEqual('docs no matches', none.length, 0);
+  const emptyQuery = docsSearchSuggestions(index, '', 6);
+  assertEqual('docs empty query', emptyQuery.length, 0);
+  const nullQuery = docsSearchSuggestions(index, null, 6);
+  assertEqual('docs null query', nullQuery.length, 0);
+
+  // ── snippet window adds ellipses ──
+  const longText = 'A'.repeat(200) + 'needle' + 'B'.repeat(200);
+  const snip = docsSnippet(longText, 'needle', 200, 60);
+  assertEqual('snippet starts with ellipsis', snip[0], '\u2026');
+  assertTruthy('snippet contains needle', snip.indexOf('needle') !== -1);
+  assertEqual('snippet window length bounded', snip.length, 60 + 6 + 60 + 2);
+  const shortSnip = docsSnippet('tiny text', 'text', 5, 60);
+  assertEqual('snippet short no ellipsis', shortSnip, 'tiny text');
+
+  // ── highlight wraps every case-insensitive occurrence + escapes HTML ──
+  const hl = docsHighlight('Pool & pool latency', 'pool');
+  assertEqual('highlight marks both occurrences', (hl.match(/<mark>/g) || []).length, 2);
+  assertTruthy('highlight escapes ampersand', hl.indexOf('&amp;') !== -1);
+  const hlEmpty = docsHighlight('some text', '');
+  assertEqual('highlight empty query = escaped text', hlEmpty, 'some text');
+  const hlNone = docsHighlight('no match here', 'zzz');
+  assertEqual('highlight no match = escaped text', hlNone, 'no match here');
+})();
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  SUITE 35: docsFeedbackPct / docsFeedbackSectionLabel (Issue #19 —
+//  Learning FAQ loop). Pure mirrors of static/app.js: % helpful rounded to
+//  1 decimal (null when no votes — never fabricate), section id → label.
+// ═══════════════════════════════════════════════════════════════════════════
+(function() {
+  function docsFeedbackPct(helpful, total) {
+    if (!total) return null;
+    return Math.round(helpful / total * 1000) / 10;
+  }
+  function docsFeedbackSectionLabel(sectionId) {
+    const m = String(sectionId || '').match(/^docs[-_](.+)$/);
+    return m ? m[1].replace(/[-_]/g, ' ') : String(sectionId || '—');
+  }
+
+  assertEqual('pct 2/3 rounded 1dp', docsFeedbackPct(2, 3), 66.7);
+  assertEqual('pct 3/3', docsFeedbackPct(3, 3), 100);
+  assertEqual('pct 0/4 honest zero', docsFeedbackPct(0, 4), 0);
+  assertEqual('pct no votes = null (never fabricate)', docsFeedbackPct(5, 0), null);
+  assertEqual('label docs-faq', docsFeedbackSectionLabel('docs-faq'), 'faq');
+  assertEqual('label docs-multi-user dashes', docsFeedbackSectionLabel('docs-multi-user'), 'multi user');
+  assertEqual('label docs_fleet underscore', docsFeedbackSectionLabel('docs_fleet'), 'fleet');
+  assertEqual('label non-docs passthrough', docsFeedbackSectionLabel('overview'), 'overview');
+  assertEqual('label empty → dash', docsFeedbackSectionLabel(''), '—');
+})();
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  SUITE 36: fmtErrorAge (Issue #176 — error-rate view no admin). Espelho
+//  puro do static/app.js _fmtErrorTs: minutos atrás < 60m, horas atrás < 48h,
+//  depois ISO UTC; ts nulo/inválido → dash. `nowArg` injetado p/ determinismo.
+// ═══════════════════════════════════════════════════════════════════════════
+(function() {
+  function fmtErrorAge(ts, nowArg) {
+    if (!ts) return '—';
+    const d = new Date(Number(ts) * 1000);
+    if (isNaN(d.getTime())) return '—';
+    const now = nowArg != null ? nowArg : Date.now();
+    const deltaMin = Math.floor((now - d.getTime()) / 60000);
+    if (deltaMin < 60) return deltaMin + 'm atrás';
+    const deltaH = Math.floor(deltaMin / 60);
+    if (deltaH < 48) return deltaH + 'h atrás';
+    return d.toISOString().replace('T', ' ').slice(0, 16) + ' UTC';
+  }
+
+  const NOW = 1800000000000; // fixed "now" for deterministic assertions
+  assertEqual('null ts → dash', fmtErrorAge(null, NOW), '—');
+  assertEqual('zero ts → dash', fmtErrorAge(0, NOW), '—');
+  assertEqual('12 min atrás', fmtErrorAge((NOW - 12 * 60000) / 1000, NOW), '12m atrás');
+  assertEqual('90 min atrás → horas', fmtErrorAge((NOW - 90 * 60000) / 1000, NOW), '1h atrás');
+  assertEqual('3 dias atrás → ISO UTC', fmtErrorAge((NOW - 3 * 86400000) / 1000, NOW),
+    new Date(NOW - 3 * 86400000).toISOString().replace('T', ' ').slice(0, 16) + ' UTC');
+})();
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  MARKET SORT (mirrors static/app.js sortMarketVenues — pure)
+// ═══════════════════════════════════════════════════════════════════════════
+
+function sortMarketVenues(venues, key, dir) {
+  const arr = (venues || []).slice();
+  const val = (v, k) => {
+    if (k === 'venue') return String(v.venue || '').toLowerCase();
+    if (k === 'price') return Number(v.price_btc_ph_day);
+    if (k === 'usd') return v.price_usd_th_day != null ? Number(v.price_usd_th_day) : NaN;
+    if (k === 'tier') return Number(v.risk_tier);
+    return v[k] != null ? Number(v[k]) : NaN;
+  };
+  arr.sort((a, b) => {
+    const va = val(a, key);
+    const vb = val(b, key);
+    if (va === vb) return 0;
+    if (typeof va === 'number' && typeof vb === 'number') {
+      if (!isFinite(va)) return 1;
+      if (!isFinite(vb)) return -1;
+      return (va - vb) * dir;
+    }
+    return String(va).localeCompare(String(vb)) * dir;
+  });
+  return arr;
+}
+
+(function marketSortTests() {
+  const venues = [
+    { venue: 'mrr', price_btc_ph_day: 0.000120, risk_tier: 3, price_usd_th_day: 7.2 },
+    { venue: 'braiins', price_btc_ph_day: 0.000100, risk_tier: 1, price_usd_th_day: 6.0 },
+    { venue: 'nicehash', price_btc_ph_day: 0.000110, risk_tier: 2, price_usd_th_day: 6.6 },
+  ];
+  const byPrice = sortMarketVenues(venues, 'price', 1);
+  assertEqual('sort by price asc → braiins first', byPrice[0].venue, 'braiins');
+  assertEqual('sort by price asc → mrr last', byPrice[2].venue, 'mrr');
+  const byTier = sortMarketVenues(venues, 'tier', 1);
+  assertEqual('sort by tier asc → tier1 first', byTier[0].risk_tier, 1);
+  const byVenueDesc = sortMarketVenues(venues, 'venue', -1);
+  assertEqual('sort by venue desc → nicehash first', byVenueDesc[0].venue, 'nicehash');
+  const byUsd = sortMarketVenues(venues, 'usd', 1);
+  assertEqual('sort by usd asc → 6.0 first', byUsd[0].price_usd_th_day, 6.0);
+  // Original array untouched (pure fn).
+  assertEqual('pure: input not mutated', venues[0].venue, 'mrr');
+  // Missing/absent USD sorts last on asc (undefined key AND explicit null).
+  const withGap = venues.concat([{ venue: 'x', price_btc_ph_day: 0.00009, risk_tier: 1 }]);
+  const g = sortMarketVenues(withGap, 'usd', 1);
+  assertEqual('missing usd key sorts last', g[g.length - 1].venue, 'x');
+  // The live render path sets price_usd_th_day = null when BTC/USD missing —
+  // Number(null) would be 0 and sort FIRST; the guard must send it last.
+  const withNull = venues.map(v => ({ ...v, price_usd_th_day: v.price_usd_th_day === 6.6 ? null : v.price_usd_th_day }));
+  const gn = sortMarketVenues(withNull, 'usd', 1);
+  assertEqual('explicit null usd sorts last (not first)', gn[gn.length - 1].venue, 'nicehash');
+})();
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  SUITE 33: admin audit trail builders (Issue #96 — admin panel)
+//  Pure mirrors of static/app.js: ISO-week bucketing (UTC, deterministic),
+//  client-side tenant/verdict filter, and verdict badge metadata.
+// ═══════════════════════════════════════════════════════════════════════════
+(function() {
+  function adminAuditIsoWeekKey(ts) {
+    const n = Number(ts);
+    if (!isFinite(n) || n <= 0) return '';
+    const d = new Date(n * 1000);
+    if (isNaN(d.getTime())) return '';
+    const day = (d.getUTCDay() + 6) % 7;         // Mon=0 … Sun=6
+    const thursday = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() + 3 - day));
+    const firstThu = new Date(Date.UTC(thursday.getUTCFullYear(), 0, 4));
+    const week = 1 + Math.round((thursday - firstThu) / (7 * 86400 * 1000));
+    return thursday.getUTCFullYear() + '-W' + String(week).padStart(2, '0');
+  }
+  function buildAdminAuditWeekly(decisions) {
+    const buckets = {};
+    (decisions || []).forEach(function (d) {
+      const k = adminAuditIsoWeekKey(d && d.ts);
+      if (!k) return;
+      buckets[k] = (buckets[k] || 0) + 1;
+    });
+    const labels = Object.keys(buckets).sort();
+    return { labels: labels, counts: labels.map(function (k) { return buckets[k]; }) };
+  }
+  function filterAdminAuditDecisions(decisions, tenant, verdict) {
+    return (decisions || []).filter(function (d) {
+      if (tenant && (d.tenant_id || 'default') !== tenant) return false;
+      if (verdict && (d.verdict || 'unknown') !== verdict) return false;
+      return true;
+    });
+  }
+  function adminAuditVerdictMeta(verdict) {
+    const map = {
+      improved: { cls: 'admin-audit__verdict--improved', label: 'IMPROVED' },
+      worse: { cls: 'admin-audit__verdict--worse', label: 'WORSE' },
+      same: { cls: 'admin-audit__verdict--same', label: 'SAME' },
+      avoided: { cls: 'admin-audit__verdict--avoided', label: 'AVOIDED' },
+      revoked: { cls: 'admin-audit__verdict--revoked', label: 'REVOKED' },
+      no_before: { cls: 'admin-audit__verdict--mute', label: 'NO BEFORE' },
+    };
+    return map[verdict] || { cls: 'admin-audit__verdict--mute', label: String(verdict || 'unknown').toUpperCase() };
+  }
+
+  // ISO week key — fixed epoch timestamps (UTC Mondays).
+  // 2026-07-20 is a Monday → W30; 2026-07-26 is a Sunday → still W30.
+  assertEqual('ISO week key Mon 2026-07-20', adminAuditIsoWeekKey(1784505600), '2026-W30');
+  assertEqual('ISO week key Sun 2026-07-26', adminAuditIsoWeekKey(1785024000), '2026-W30');
+  assertEqual('ISO week key Mon 2026-07-27', adminAuditIsoWeekKey(1785110400), '2026-W31');
+  assertEqual('ISO week key invalid ts → empty', adminAuditIsoWeekKey(0), '');
+  assertEqual('ISO week key garbage → empty', adminAuditIsoWeekKey('nope'), '');
+
+  // Weekly bucketing — sorted labels, correct counts, null ts skipped.
+  const weekly = buildAdminAuditWeekly([
+    { ts: 1784505600 },          // W30
+    { ts: 1785110400 },          // W31
+    { ts: 1785110400 + 86400 },  // W31
+    { ts: 0 },                   // skipped
+    { ts: null },                // skipped
+    { ts: 'garbage' },           // skipped
+  ]);
+  assertEqual('weekly labels sorted', weekly.labels, ['2026-W30', '2026-W31']);
+  assertEqual('weekly counts', weekly.counts, [1, 2]);
+  assertEqual('weekly empty input', buildAdminAuditWeekly([]), { labels: [], counts: [] });
+  assertEqual('weekly undefined input', buildAdminAuditWeekly(undefined), { labels: [], counts: [] });
+
+  // Feature over-concentration alert (Issue #163) — banner builder mirror.
+  function buildFeatureAlert(featureAlert) {
+    if (!featureAlert || featureAlert.share_pct == null) {
+      return { active: false, feature: '', count: 0, sharePct: 0, minPct: 50 };
+    }
+    return {
+      active: true,
+      feature: String(featureAlert.feature || 'unknown'),
+      count: Number(featureAlert.count) || 0,
+      sharePct: Number(featureAlert.share_pct) || 0,
+      minPct: Number(featureAlert.min_pct) || 50,
+    };
+  }
+  assertEqual('feature alert null → inactive', buildFeatureAlert(null),
+    { active: false, feature: '', count: 0, sharePct: 0, minPct: 50 });
+  assertEqual('feature alert missing share → inactive', buildFeatureAlert({ feature: 'x' }),
+    { active: false, feature: '', count: 0, sharePct: 0, minPct: 50 });
+  assertEqual('feature alert active', buildFeatureAlert(
+    { feature: 'monte_carlo', count: 2, share_pct: 66.7, min_pct: 50 }),
+    { active: true, feature: 'monte_carlo', count: 2, sharePct: 66.7, minPct: 50 });
+  assertEqual('feature alert garbage numbers', buildFeatureAlert(
+    { feature: null, count: 'x', share_pct: 'nope', min_pct: null }),
+    { active: true, feature: 'unknown', count: 0, sharePct: 0, minPct: 50 });
+
+  // Feature breakdown (Issue #158 — 18-D) — top-N builder mirror.
+  function buildFeatureBreakdown(paywallByFeature) {
+    const rows = (paywallByFeature || []).map(function (f) {
+      return { feature: f.feature || 'unknown', count: Number(f.count) || 0 };
+    }).sort(function (a, b) { return b.count - a.count; });
+    const total = rows.reduce(function (s, r) { return s + r.count; }, 0) || 1;
+    return rows.map(function (r) {
+      return { feature: r.feature, count: r.count, pct: Math.round(r.count / total * 100) };
+    });
+  }
+  assertEqual('feature breakdown empty', buildFeatureBreakdown([]), []);
+  assertEqual('feature breakdown undefined', buildFeatureBreakdown(undefined), []);
+  assertEqual('feature breakdown sorted + pct', buildFeatureBreakdown([
+    { feature: 'auto_pilot', count: 2 },
+    { feature: 'monte_carlo', count: 5 },
+    { feature: null },
+  ]), [
+    { feature: 'monte_carlo', count: 5, pct: 71 },
+    { feature: 'auto_pilot', count: 2, pct: 29 },
+    { feature: 'unknown', count: 0, pct: 0 },
+  ]);
+
+  // Portfolio series datasets (Issue #146 — 21-C) — pure builder mirror.
+  function buildPortfolioSeriesDatasets(points) {
+    const rows = points || [];
+    // null/undefined must stay null (Chart.js gap) — Number(null) is 0 and
+    // would fabricate a flat 'no loss' bar on a cold box (honest telemetry).
+    const num = function (v) {
+      if (v === null || v === undefined) return null;
+      const n = Number(v);
+      return Number.isFinite(n) ? n : null;
+    };
+    const hasOwnEv = rows.some(function (p) { return num(p.own_ev_sats) != null; });
+    return {
+      labels: rows.map(function (p) { return String(p.label || '').replace(/^\d{4}-/, ''); }),
+      spent: rows.map(function (p) { return num(p.spent_sats); }),
+      pl: rows.map(function (p) { return num(p.pl_sats); }),
+      cum: rows.map(function (p) { return num(p.cum_pl_sats); }),
+      ownEv: rows.map(function (p) { return hasOwnEv ? num(p.own_ev_sats) : null; }),
+      totalCum: rows.map(function (p) { return hasOwnEv ? num(p.cum_total_sats) : null; }),
+      hasOwnEv: hasOwnEv
+    };
+  }
+  assertEqual('series datasets empty', buildPortfolioSeriesDatasets([]), {
+    labels: [], spent: [], pl: [], cum: [], ownEv: [], totalCum: [], hasOwnEv: false });
+  assertEqual('series datasets backward compat (no own EV)', buildPortfolioSeriesDatasets([
+    { label: '2026-W30', spent_sats: 5000, pl_sats: -200, cum_pl_sats: -200 },
+  ]), {
+    labels: ['W30'], spent: [5000], pl: [-200], cum: [-200], ownEv: [null], totalCum: [null], hasOwnEv: false });
+  assertEqual('series datasets own EV included', buildPortfolioSeriesDatasets([
+    { label: '2026-W30', spent_sats: 5000, pl_sats: -200, cum_pl_sats: -200, own_ev_sats: 700, cum_total_sats: 500 },
+    { label: '2026-W31', spent_sats: 3000, pl_sats: -100, cum_pl_sats: -300, own_ev_sats: 700, cum_total_sats: 1100 },
+  ]), {
+    labels: ['W30', 'W31'], spent: [5000, 3000], pl: [-200, -100], cum: [-200, -300],
+    ownEv: [700, 700], totalCum: [500, 1100], hasOwnEv: true });
+  assertEqual('series datasets garbage numbers', buildPortfolioSeriesDatasets([
+    { label: null, spent_sats: 'nope', own_ev_sats: 'x' },
+  ]), {
+    labels: [''], spent: [null], pl: [null], cum: [null], ownEv: [null], totalCum: [null], hasOwnEv: false });
+  // Honest gaps: null P/L (cold box) stays null — never a fabricated 0 bar.
+  assertEqual('series datasets null pl stays gap', buildPortfolioSeriesDatasets([
+    { label: '2026-W30', pl_sats: null, cum_pl_sats: null, own_ev_sats: 700, cum_total_sats: null },
+  ]), {
+    labels: ['W30'], spent: [null], pl: [null], cum: [null], ownEv: [700], totalCum: [null], hasOwnEv: true });
+
+  // Rentals provider auth state (Issue #152) — pure helpers mirror.
+  function rentalsAuthRejected(errMsg, authRejected) {
+    if (authRejected) return true;
+    return /rejected|401|403|unauthor|forbidden|bad nonce|not authenticated|invalid key/i.test(String(errMsg || ''));
+  }
+  function _esc(s) { return String(s).replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c])); }
+  function rentalsAuthGuide(provider, errMsg) {
+    const safe = _esc(String(errMsg || ''));
+    if (provider === 'contracts') {
+      return 'A chave Braiins está configurada, mas a API a rejeitou: ' + safe +
+        '. Gere um novo owner token em hashpower.braiins.com e atualize no Settings (⚙).';
+    }
+    return 'A chave MRR está configurada, mas a API a rejeitou: ' + safe +
+      '. Causa provável: credencial inválida/desatualizada (ou tracker de nonce da chave preso) ' +
+      '— NÃO é bug de concorrência. Regenerar a API key + secret em miningrigrentals.com ' +
+      '→ My Account → API Access e atualizar no Settings (⚙).';
+  }
+  assertEqual('rentals auth rejected explicit flag', rentalsAuthRejected('weird', true), true);
+  assertEqual('rentals auth rejected bad nonce', rentalsAuthRejected('Not Authenticated - Invalid Key - Bad Nonce.', false), true);
+  assertEqual('rentals auth rejected 401', rentalsAuthRejected('HTTP 401', false), true);
+  assertEqual('rentals auth rejected generic', rentalsAuthRejected('HTTP 503', false), false);
+
+  // Rentals payload freshness (Issue #187) — pure helpers mirror.
+  // Level: 0 fresh · 1 age-stale (soft 'dados desatualizados') · 2 old-code
+  // (no version stamp → credential hint, never 'No contracts' empty-state).
+  function rentalsPayloadStale(payload, nowSec) {
+    const p = payload || {};
+    const version = Number(p.rentals_payload_version) || 0;
+    if (version < 2) return 2;
+    // Sentinel policy (Issue #203): missing/epoch stamp → unknown freshness
+    // (0), never a fabricated 'stale' (age = now - 0 → huge).
+    const upd = Number(p.updated_at);
+    if (!(upd > 0)) return 0;
+    const age = (nowSec || Math.floor(Date.now() / 1000)) - upd;
+    return age > 300 ? 1 : 0;
+  }
+  assertEqual('rentals stale missing stamp (old code)', rentalsPayloadStale({ updated_at: 1000000 }, 1000030), 2);
+  assertEqual('rentals stale version 0', rentalsPayloadStale({ rentals_payload_version: 0, updated_at: 1000000 }, 1000030), 2);
+  assertEqual('rentals stale no updated_at', rentalsPayloadStale({ rentals_payload_version: 2 }, 1000030), 0);
+  assertEqual('rentals stale updated_at zero', rentalsPayloadStale({ rentals_payload_version: 2, updated_at: 0 }, 1000030), 0);
+  // A positive (ancient) stamp is still a real stamp → ages → stale (1).
+  assertEqual('rentals stale updated_at ancient', rentalsPayloadStale({ rentals_payload_version: 2, updated_at: 1 }, 1000030), 1);
+  assertEqual('rentals fresh', rentalsPayloadStale({ rentals_payload_version: 2, updated_at: 1000000 }, 1000030), 0);
+  assertEqual('rentals age-stale only', rentalsPayloadStale({ rentals_payload_version: 2, updated_at: 1000000 }, 1000400), 1);
+
+  // Rentals count surface (Issue #200) — "X de N" only when truncated; a
+  // full fetch renders the plain count, nulls/NaN never fabricate a surface.
+  function rentalsCountSurface(rendered, total) {
+    const r = Number(rendered);
+    const t = Number(total);
+    if (isFinite(r) && isFinite(t) && t > 0 && r < t) {
+      return { text: r + ' de ' + t, title: 'exibindo ' + r + ' de ' + t + ' rentals (limite de segurança do fetch)' };
+    }
+    return { text: null, title: '' };
+  }
+  assertEqual('rentals surface full fetch', rentalsCountSurface(120, 120).text, null);
+  assertEqual('rentals surface truncated', rentalsCountSurface(1000, 1500).text, '1000 de 1500');
+  assertEqual('rentals surface truncated title', rentalsCountSurface(1000, 1500).title.indexOf('1000 de 1500') !== -1, true);
+  assertEqual('rentals surface null total', rentalsCountSurface(50, null).text, null);
+  assertEqual('rentals surface zero total', rentalsCountSurface(0, 0).text, null);
+  assertEqual('rentals surface nan safe', rentalsCountSurface('x', 5).text, null);
+  assertEqual('rentals auth rejected permission', rentalsAuthRejected('No Permission - account/1285', false), false);
+  assertEqual('rentals auth guide mrr', rentalsAuthGuide('mrr', 'Not Authenticated - Invalid Key - Bad Nonce.').indexOf('miningrigrentals.com') !== -1, true);
+  assertEqual('rentals auth guide mrr not concurrency', rentalsAuthGuide('mrr', 'x').indexOf('NÃO é bug de concorrência') !== -1, true);
+  assertEqual('rentals auth guide braiins', rentalsAuthGuide('contracts', '401').indexOf('hashpower.braiins.com') !== -1, true);
+  assertEqual('rentals auth guide escapes html', rentalsAuthGuide('mrr', '<b>').indexOf('&lt;b&gt;') !== -1, true);
+
+  // Instance indicator (Issue #198) — pure classifier mirror. The topbar
+  // pill color-codes which instance the dashboard is on (local vs cloud)
+  // so operators never save keys to the wrong URL.
+  function instanceClassify(host) {
+    let h = String(host || '').toLowerCase().replace(/^https?:\/\//, '').split('/')[0];
+    const bracket = h.match(/^\[([^\]]+)\](?::\d+)?$/);
+    if (bracket) h = bracket[1];
+    const hostOnly = h === '::1' ? '::1' : h.replace(/:\d+$/, '');
+    if (!hostOnly) return { kind: 'remote', icon: '⌁' };
+    const isLocal =
+      hostOnly === 'localhost' || hostOnly === '127.0.0.1' || hostOnly === '0.0.0.0' || hostOnly === '::1' ||
+      hostOnly.endsWith('.local') ||
+      /^192\.168\./.test(hostOnly) || /^10\./.test(hostOnly) || /^172\.(1[6-9]|2\d|3[01])\./.test(hostOnly);
+    const isCloud = /\.onrender\.com$/.test(hostOnly) || /\.render\.com$/.test(hostOnly);
+    if (isLocal) return { kind: 'local', icon: '🖥' };
+    if (isCloud) return { kind: 'cloud', icon: '☁' };
+    return { kind: 'remote', icon: '⌁' };
+  }
+  assertEqual('instance localhost', instanceClassify('localhost').kind, 'local');
+  assertEqual('instance loopback with port', instanceClassify('127.0.0.1:8765').kind, 'local');
+  assertEqual('instance private 192.168', instanceClassify('192.168.1.20:8765').kind, 'local');
+  assertEqual('instance private 10.', instanceClassify('10.0.0.5').kind, 'local');
+  assertEqual('instance ipv6 loopback raw', instanceClassify('::1').kind, 'local');
+  assertEqual('instance ipv6 loopback bracket+port', instanceClassify('[::1]:8765').kind, 'local');
+  assertEqual('instance cloud onrender', instanceClassify('cypher65-war-room.onrender.com').kind, 'cloud');
+  assertEqual('instance cloud render sub', instanceClassify('api.cypher65.render.com').kind, 'cloud');
+  assertEqual('instance remote public', instanceClassify('cypher65.example.com').kind, 'remote');
+  assertEqual('instance remote with port', instanceClassify('cypher65.example.com:8443').kind, 'remote');
+  assertEqual('instance remote full url', instanceClassify('https://cypher65.example.com/path').kind, 'remote');
+  assertEqual('instance empty host', instanceClassify('').kind, 'remote');
+  assertEqual('instance icon local', instanceClassify('127.0.0.1').icon, '🖥');
+  assertEqual('instance icon cloud', instanceClassify('x.onrender.com').icon, '☁');
+
+  // Cohort LTV rows (Issue #157 — 18-C) — safe-number builder mirror.
+  function _cohortNum(v) {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : 0;
+  }
+  function buildCohortRows(cohorts) {
+    return (cohorts || []).map(function (c) {
+      return {
+        month: c.cohort_month || '',
+        subs: _cohortNum(c.subscriptions),
+        renewals: _cohortNum(c.renewals),
+        revenue: _cohortNum(c.revenue_usd),
+        ltv: _cohortNum(c.ltv_usd),
+        m1: _cohortNum(c.retention_m1_pct),
+        m3: _cohortNum(c.retention_m3_pct),
+        m6: _cohortNum(c.retention_m6_pct),
+        m12: _cohortNum(c.retention_m12_pct),
+      };
+    });
+  }
+  assertEqual('cohort rows empty', buildCohortRows([]), []);
+  assertEqual('cohort rows undefined', buildCohortRows(undefined), []);
+  assertEqual('cohort rows safe numbers', buildCohortRows([
+    { cohort_month: '2026-08', subscriptions: 2, renewals: 2, revenue_usd: 40, ltv_usd: 20, retention_m1_pct: 100, retention_m3_pct: 0 },
+    { cohort_month: null, subscriptions: null, renewals: 'x', revenue_usd: null, retention_m12_pct: 'nope' },
+  ]), [
+    { month: '2026-08', subs: 2, renewals: 2, revenue: 40, ltv: 20, m1: 100, m3: 0, m6: 0, m12: 0 },
+    { month: '', subs: 0, renewals: 0, revenue: 0, ltv: 0, m1: 0, m3: 0, m6: 0, m12: 0 },
+  ]);
+
+  // Funnel weekly trend (Issue #156 — 18-B) — series builder mirror.
+  function buildFunnelTrend(weekly) {
+    const labels = [], paywall = [], convRate = [];
+    (weekly || []).forEach(function (b) {
+      labels.push(b.week || '');
+      const s = b.stages || {};
+      paywall.push(Number(s.paywall_view) || 0);
+      convRate.push(b.conversion_rate_pct != null ? Number(b.conversion_rate_pct) : 0);
+    });
+    return { labels: labels, paywall: paywall, convRate: convRate };
+  }
+  assertEqual('funnel trend empty input', buildFunnelTrend([]), { labels: [], paywall: [], convRate: [] });
+  assertEqual('funnel trend undefined input', buildFunnelTrend(undefined), { labels: [], paywall: [], convRate: [] });
+  assertEqual('funnel trend series', buildFunnelTrend([
+    { week: '2026-W31', stages: { paywall_view: 10 }, conversion_rate_pct: 20.0 },
+    { week: '2026-W32', stages: { paywall_view: 15, modal_open: 6 }, conversion_rate_pct: 33.33 },
+    { week: null, stages: {} },
+  ]), {
+    labels: ['2026-W31', '2026-W32', ''],
+    paywall: [10, 15, 0],
+    convRate: [20, 33.33, 0],
+  });
+
+  // Filter — tenant + verdict, missing fields defaulted, no filter = all.
+  const decisions = [
+    { tenant_id: 'tenant-a', verdict: 'worse', ts: 1 },
+    { tenant_id: 'tenant-a', verdict: 'improved', ts: 2 },
+    { verdict: 'worse', ts: 3 },                          // → default tenant
+    { tenant_id: 'tenant-b', verdict: 'no_before', ts: 4 },
+  ];
+  assertEqual('filter tenant-a only',
+    filterAdminAuditDecisions(decisions, 'tenant-a', '').length, 2);
+  assertEqual('filter default tenant',
+    filterAdminAuditDecisions(decisions, 'default', '').length, 1);
+  assertEqual('filter verdict worse',
+    filterAdminAuditDecisions(decisions, '', 'worse').length, 2);
+  assertEqual('filter tenant+verdict combo',
+    filterAdminAuditDecisions(decisions, 'tenant-b', 'no_before').length, 1);
+  assertEqual('filter combo no match',
+    filterAdminAuditDecisions(decisions, 'tenant-a', 'revoked').length, 0);
+  assertEqual('filter no filters → all',
+    filterAdminAuditDecisions(decisions, '', '').length, 4);
+  assertEqual('filter undefined input',
+    filterAdminAuditDecisions(undefined, '', '').length, 0);
+  assertEqual('filter unknown verdict kept when no filter',
+    filterAdminAuditDecisions([{ verdict: 'mystery', ts: 5 }], '', '').length, 1);
+
+  // Verdict badge metadata — ladder + unknown fallback.
+  assertEqual('verdict worse meta', adminAuditVerdictMeta('worse'),
+    { cls: 'admin-audit__verdict--worse', label: 'WORSE' });
+  assertEqual('verdict improved meta', adminAuditVerdictMeta('improved').label, 'IMPROVED');
+  assertEqual('verdict revoked meta', adminAuditVerdictMeta('revoked').cls,
+    'admin-audit__verdict--revoked');
+  assertEqual('verdict unknown fallback label', adminAuditVerdictMeta('mystery').label, 'MYSTERY');
+  assertEqual('verdict undefined fallback label', adminAuditVerdictMeta(undefined).label, 'UNKNOWN');
+  assertEqual('verdict unknown fallback class', adminAuditVerdictMeta('mystery').cls,
+    'admin-audit__verdict--mute');
+})();
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  Funnel session id (Issue #155) — funnelId() + meta injection
+// ═══════════════════════════════════════════════════════════════════════════
+(function () {
+  // Stub localStorage for the funnelId mirror (Node has none).
+  if (typeof globalThis.localStorage === 'undefined') {
+    const store = {};
+    globalThis.localStorage = {
+      getItem: (k) => (k in store ? store[k] : null),
+      setItem: (k, v) => { store[k] = String(v); },
+      removeItem: (k) => { delete store[k]; },
+    };
+  }
+
+  // Mirror of static/app.js funnelId() — PII-free token, persisted once.
+  function funnelId() {
+    try {
+      let id = localStorage.getItem('c65_funnel_id');
+      if (!id) {
+        id = 'f_' + Math.random().toString(36).slice(2) + Date.now().toString(36);
+        localStorage.setItem('c65_funnel_id', id);
+      }
+      return id;
+    } catch (e) { return ''; }
+  }
+
+  // Mirror of trackConversionEvent meta injection (kept pure for testing).
+  function injectFunnelMeta(meta) {
+    const m = meta || {};
+    if (!m.funnel_id) m.funnel_id = funnelId();
+    return m;
+  }
+
+  localStorage.removeItem('c65_funnel_id');
+  const id1 = funnelId();
+  assertTruthy('funnelId generates a token', id1.length >= 8);
+  assertEqual('funnelId prefix f_', id1.slice(0, 2), 'f_');
+  assertEqual('funnelId stable across calls', funnelId(), id1);
+  const meta = injectFunnelMeta({ plan: 'pro' });
+  assertEqual('trackConversionEvent injects funnel_id', meta.funnel_id, id1);
+  assertEqual('trackConversionEvent keeps plan', meta.plan, 'pro');
+  const meta2 = injectFunnelMeta({ funnel_id: 'f_given', plan: 'pro' });
+  assertEqual('explicit funnel_id not overridden', meta2.funnel_id, 'f_given');
+  localStorage.removeItem('c65_funnel_id');
+  const id2 = funnelId();
+  assertTruthy('funnelId regenerates after wipe', id2.length >= 8 && id2 !== id1);
+})();
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  RESULTS

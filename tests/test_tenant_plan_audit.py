@@ -91,8 +91,10 @@ def tenant_db(tmp_path, monkeypatch):
             details TEXT NOT NULL DEFAULT '{}'
         )"""
     )
-    # Full axe_devices schema (matches app.py init_db) so the real registry
-    # can operate on it hermetically.
+    # Full axe_devices schema (matches app.py init_db + the registry's
+    # removed_at tombstone migration) so the real registry can operate on it
+    # hermetically. count_tenant_workers filters COALESCE(removed_at,0)=0, so
+    # the column must exist or every count would crash to 0.
     c.execute(
         """CREATE TABLE axe_devices (
             id TEXT PRIMARY KEY,
@@ -111,7 +113,9 @@ def tenant_db(tmp_path, monkeypatch):
             capabilities TEXT DEFAULT '{}',
             added_at INTEGER NOT NULL,
             updated_at INTEGER NOT NULL,
-            tenant_id TEXT DEFAULT 'default'
+            tenant_id TEXT DEFAULT 'default',
+            agent_managed INTEGER DEFAULT 0,
+            removed_at INTEGER DEFAULT 0
         )"""
     )
     conn.commit()

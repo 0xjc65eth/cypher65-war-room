@@ -109,14 +109,34 @@ class TestAppDeviceRoutes:
         device.capabilities = BitaxeAdapter(device).get_capabilities()
         registry.add_device(device)
 
+        # firmware_flash is genuinely unsupported by the Bitaxe adapter.
         response = flask_client.post(
             f"/api/devices/{device.id}/command",
-            json={"command": "set_frequency"},
+            json={"command": "firmware_flash"},
         )
         assert response.status_code == 400
         data = response.get_json()
         assert data["success"] is False
         assert "not supported" in data["error"].lower()
+
+    def test_device_command_set_frequency_now_supported_but_safety_gated(self, client):
+        """P0 Bitaxe: set_frequency is now a REAL command (overclock endpoint).
+        The SafetyEngine still gates it — HIGH risk requires confirmation, so
+        an unconfirmed call is blocked (403) rather than reaching the ASIC."""
+        flask_client, registry = client
+        from core.adapters.bitaxe_adapter import BitaxeAdapter
+        device = Device(name="Test-Command", model="Bitaxe", ip="192.168.1.55")
+        device.capabilities = BitaxeAdapter(device).get_capabilities()
+        registry.add_device(device)
+
+        response = flask_client.post(
+            f"/api/devices/{device.id}/command",
+            json={"command": "set_frequency", "parameters": {"frequency": 550}},
+        )
+        assert response.status_code == 403  # SafetyEngine blocks unconfirmed HIGH
+        data = response.get_json()
+        assert data["success"] is False
+        assert data.get("requires_confirmation") is True
 
     def test_device_command_offline_blocked_by_safety(self, client):
         flask_client, registry = client
@@ -265,3 +285,29 @@ class TestAppDeviceRoutes:
         assert len(status_events) >= 1
         assert status_events[0]["details"]["old_status"] == "online"
         assert status_events[0]["details"]["new_status"] == "offline"
+
+    def test_device_command_pause_supported_on_core_route(self, client):
+        """Regression: pause/resume must remain reachable on the CORE route for
+        core-registry devices (BitaxeAdapter supports them via ESP-Miner).
+
+        The FLEET COMMAND CENTER buttons route pause/resume to the axe-fleet
+        endpoints (axe-registry ids), but the core /api/devices/<id>/command
+        path must not be orphaned — a core device hitting it must get a
+        SAFETY evaluation (not a 400 'not supported')."""
+        flask_client, registry = client
+        from core.adapters.bitaxe_adapter import BitaxeAdapter
+        device = Device(name="Test-Pause-Core", model="Bitaxe", ip="192.168.1.78",
+                        status=DeviceStatus.ONLINE)
+        device.capabilities = BitaxeAdapter(device).get_capabilities()
+        registry.add_device(device)
+
+        response = flask_client.post(
+            f"/api/devices/{device.id}/command",
+            json={"command": "pause"},
+        )
+        # Supported by the adapter: the SafetyEngine may block (403, needs
+        # confirmation / online check) but it must NOT be 'not supported'.
+        assert response.status_code != 400
+        data = response.get_json()
+        assert data["success"] is False or data["success"] is True
+        assert "not supported" not in data.get("error", "").lower()

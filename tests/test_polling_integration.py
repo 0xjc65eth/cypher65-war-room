@@ -104,7 +104,7 @@ def mock_state():
         "session_share_count": 0,
         "session_best_diff_bumps": 0,
     }
-    state.last_known_prices = {"braiins": None, "mrr": None, "nicehash": None, "kissmyhash": None, "parasite": None}
+    state.last_known_prices = {"braiins": None, "mrr": None, "nicehash": None, "parasite": None}
     state.memory_critical_alerts = []
     state.persist_consec_failures = 0
     state.market_data_cache = {"offers": [], "best_price": None, "updated_at": 0, "loading": True, "error": None}

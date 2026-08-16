@@ -492,6 +492,92 @@ class TestDeviceHealth:
 
 
 # ══════════════════════════════════════════════════════════════════════════
+#  GET /api/axe-fleet/devices/{id}/history  (Phase C)
+# ══════════════════════════════════════════════════════════════════════════
+
+class TestDeviceHistory:
+    """Tests for GET /api/axe-fleet/devices/<device_id>/history."""
+
+    DEVICE_ID = "test-device-004"
+    ENDPOINT = f"/api/axe-fleet/devices/{DEVICE_ID}/history"
+
+    def _series(self):
+        return {
+            "ts": [1699999700, 1699999400, 1699999100],
+            "hashrate_hs": [5200000000000, 5100000000000, 5300000000000],
+            "temperature": [62, 60, 63],
+            "fan_rpm": [4200, 4100, 4300],
+            "power_watts": [42, 41, 43],
+            "efficiency_jth": [8.08, 8.04, 8.11],
+            "shares_accepted": [15823, 15723, 15623],
+            "shares_rejected": [47, 45, 44],
+            "hw_error_pct": [0.3, 0.2, 0.4],
+            "voltage_mv": [1200, 1195, 1205],
+            "frequency_mhz": [525, 520, 530],
+        }
+
+    def test_returns_history_for_existing_device(self, client):
+        mock_registry = MagicMock()
+        mock_registry.get_device.return_value = {
+            "id": self.DEVICE_ID, "name": "History Miner",
+            "model": "Bitaxe Max", "ip_address": "192.168.1.103", "status": "ONLINE",
+        }
+        mock_registry.get_telemetry_chart_data.return_value = self._series()
+
+        with patch("axe_fleet.routes._registry", mock_registry):
+            resp = client.get(self.ENDPOINT)
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert len(data["history"]) == 3
+        p = data["history"][0]
+        assert p["hashrate"] == 5200000000000
+        assert p["hashrate_str"] == "5.20 TH/s"
+        assert p["temperature"] == 62
+        assert p["efficiency_jth"] == 8.08
+
+    def test_404_for_unknown_device(self, client):
+        mock_registry = MagicMock()
+        mock_registry.get_device.return_value = None
+        with patch("axe_fleet.routes._registry", mock_registry):
+            resp = client.get(self.ENDPOINT)
+        assert resp.status_code == 404
+
+    def test_respects_limit_param(self, client):
+        mock_registry = MagicMock()
+        mock_registry.get_device.return_value = {"id": self.DEVICE_ID, "name": "T"}
+        mock_registry.get_telemetry_chart_data.return_value = {"ts": [], "hashrate_hs": []}
+        with patch("axe_fleet.routes._registry", mock_registry):
+            resp = client.get(f"{self.ENDPOINT}?limit=60")
+        assert resp.status_code == 200
+        args, kwargs = mock_registry.get_telemetry_chart_data.call_args
+        assert kwargs.get("limit") == 60
+
+    def test_efficiency_fallback_computed(self, client):
+        series = self._series()
+        series["efficiency_jth"] = [None, None, 8.11]
+        mock_registry = MagicMock()
+        mock_registry.get_device.return_value = {"id": self.DEVICE_ID, "name": "T"}
+        mock_registry.get_telemetry_chart_data.return_value = series
+        with patch("axe_fleet.routes._registry", mock_registry):
+            resp = client.get(self.ENDPOINT)
+        data = resp.get_json()
+        assert data["history"][0]["efficiency_jth"] == 8.08
+        assert data["history"][1]["efficiency_jth"] == 8.04
+        assert data["history"][2]["efficiency_jth"] == 8.11
+
+    def test_empty_history_when_no_telemetry(self, client):
+        mock_registry = MagicMock()
+        mock_registry.get_device.return_value = {"id": self.DEVICE_ID, "name": "Empty"}
+        mock_registry.get_telemetry_chart_data.return_value = {"ts": [], "hashrate_hs": []}
+        with patch("axe_fleet.routes._registry", mock_registry):
+            resp = client.get(self.ENDPOINT)
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["history"] == []
+        assert data["count"] == 0
+
+
+# ══════════════════════════════════════════════════════════════════════════
 #  GET /api/axe-fleet/health
 #  P1.1 — fleet_stats schema alignment: online/warning/offline counts,
 #  aggregates (avg health/temp, total power, efficiency, best diff) and
@@ -861,6 +947,35 @@ class TestFleetSummary:
         assert online["_telemetry"]["uptime_str"] == "—"
         assert offline["_telemetry"]["stratum_status"] == ""
 
+    def test_capabilities_serialized_as_supported_command_array(self, client):
+        """Regression: the FLEET COMMAND CENTER renders the restart/identify
+        buttons off `capabilities` as an ARRAY (mirrors fleet_health). A dict
+        here would fail Array.isArray() in buildCommandCenterRows and drop
+        every agent-managed device into READ-ONLY — the Restart button never
+        renders and the whole agent round-trip is unreachable from the UI.
+        dict → ["telemetry", "restart"] (only truthy entries)."""
+        mock_registry = MagicMock()
+        mock_registry.list_devices.return_value = [{
+            **self._device("d1", "ONLINE"),
+            # Stored caps come back as a DICT (registry _row_to_device json-)
+            # loads the SQLite TEXT column) — the summary must flatten it.
+            "capabilities": {"telemetry": True, "restart": True,
+                             "identify": False, "configure": False},
+        }]
+        mock_registry.get_recent_telemetry.return_value = []
+
+        with patch("axe_fleet.routes._registry", mock_registry):
+            resp = client.get(self.ENDPOINT)
+        assert resp.status_code == 200
+        d = resp.get_json()["devices"][0]
+        assert isinstance(d["capabilities"], list)
+        assert "restart" in d["capabilities"]
+        assert "telemetry" in d["capabilities"]
+        # Falsy flags are dropped — never leaked as literal strings.
+        assert "identify" not in d["capabilities"]
+        assert "configure" not in d["capabilities"]
+        # And the raw dict must not be present either.
+        assert not isinstance(d["capabilities"], dict)
 
 # ══════════════════════════════════════════════════════════════════════════
 #  POST /api/axe-fleet/test-devices
@@ -914,6 +1029,93 @@ class TestSeedTestDevices:
             resp = client.post(self.ENDPOINT)
         assert resp.status_code == 403
         assert "disabled" in resp.get_json()["error"]
+
+
+# ══════════════════════════════════════════════════════════════════════════
+#  Cloud-deploy guards (SaaS fleet topology)
+#  A cloud host (Render) can NEVER reach RFC1918 private LAN IPs, so on a
+#  cloud deploy POST /devices must reject private IPs instead of creating a
+#  card that stays OFFLINE forever ("a ferramenta não reconhece o device").
+#  Public-IP miners stay allowed (reachable from anywhere).
+# ══════════════════════════════════════════════════════════════════════════
+
+class TestCloudDeployGuards:
+    """Tests for the cloud-deploy topology guards on device registration."""
+
+    ENDPOINT = "/api/axe-fleet/devices"
+
+    @pytest.fixture(autouse=True)
+    def _patch_detect(self, monkeypatch):
+        """Prevent real network probes from add_device's auto-detect."""
+        monkeypatch.setattr(
+            "core.registry.detector.detect_firmware",
+            lambda ip: {"firmware": "unknown", "adapter_type": "unknown",
+                        "reachable": False}
+        )
+
+    @pytest.fixture
+    def mock_registry(self):
+        r = MagicMock()
+        r.get_device_by_ip.return_value = None
+        r.add_device.return_value = {"id": "d1", "name": "Miner", "status": "OFFLINE"}
+        return r
+
+    def test_private_ip_blocked_on_cloud(self, client, monkeypatch, mock_registry):
+        """Cloud + private LAN IP → 403 with agent CTA, and add_device is
+        NEVER called (no dead OFFLINE card created)."""
+        monkeypatch.setenv("RENDER", "true")
+        try:
+            with patch("axe_fleet.routes._registry", mock_registry):
+                resp = client.post(self.ENDPOINT, json={"ip_address": "192.168.1.100"})
+        finally:
+            monkeypatch.delenv("RENDER", raising=False)
+        assert resp.status_code == 403
+        data = resp.get_json()
+        assert data["is_cloud"] is True
+        assert "AGENTE LOCAL" in data["message"]
+        mock_registry.add_device.assert_not_called()
+
+    def test_public_ip_allowed_on_cloud(self, client, monkeypatch, mock_registry):
+        """Cloud + public IP → still registered (a public miner IS reachable
+        from the cloud). NOTE: use a truly global IP — documentation ranges
+        like 203.0.113.x count as is_private in Python's ipaddress."""
+        monkeypatch.setenv("RENDER", "true")
+        try:
+            with patch("axe_fleet.routes._registry", mock_registry), \
+                    patch("axe_fleet.routes._can_add_worker", return_value=True):
+                resp = client.post(self.ENDPOINT, json={"ip_address": "8.8.8.8", "name": "pub"})
+        finally:
+            monkeypatch.delenv("RENDER", raising=False)
+        assert resp.status_code == 201
+        mock_registry.add_device.assert_called_once_with("8.8.8.8", "pub", tenant_id="default")
+
+    def test_private_ip_allowed_off_cloud(self, client, monkeypatch, mock_registry):
+        """Self-host (not cloud): a private IP can be added — the dashboard
+        may be on the same LAN as the miners (or Tailscale). RENDER is
+        delenv'd so the test is deterministic in any shell."""
+        monkeypatch.delenv("RENDER", raising=False)
+        with patch("axe_fleet.routes._registry", mock_registry), \
+                patch("axe_fleet.routes._can_add_worker", return_value=True):
+            resp = client.post(self.ENDPOINT, json={"ip_address": "192.168.1.100", "name": "lan"})
+        assert resp.status_code == 201
+        mock_registry.add_device.assert_called_once_with("192.168.1.100", "lan", tenant_id="default")
+
+    def test_agent_token_returns_server_url(self, client, monkeypatch):
+        """POST /api/agent/token must return server_url so the frontend can
+        build the agent one-liner from the real origin (behind proxies/CDNs)."""
+        from services.auth import create_token
+        monkeypatch.setenv("SECRET_KEY", "agent-test-secret-123")
+        app.config["JWT_SECRET_KEY"] = "agent-test-secret-123"
+        try:
+            tok = create_token(subject="acme", extra_claims={"role": "admin"})
+            resp = client.post("/api/agent/token", headers={"Authorization": f"Bearer {tok}"})
+        finally:
+            app.config.pop("JWT_SECRET_KEY", None)
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["token"]
+        assert data["server_url"]  # e.g. http://localhost
+        assert data["server_url"].startswith("http")
 
 
 # ══════════════════════════════════════════════════════════════════════════

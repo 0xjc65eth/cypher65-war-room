@@ -6,6 +6,7 @@ import pytest
 from unittest.mock import patch, Mock, MagicMock
 
 from agents.solo_mining_advisor.tools import (
+    _mrr_signed_headers,
     get_network_difficulty,
     get_btc_price,
     get_braiins_orderbook,
@@ -21,6 +22,7 @@ from agents.solo_mining_advisor.tools import (
 # 1. get_network_difficulty — blockchain.info + mempool.space fallback
 # ═══════════════════════════════════════════════════════════════════════════
 
+
 class TestGetNetworkDifficulty:
     """Tests for Bitcoin network difficulty fetching with fallback chain."""
 
@@ -30,7 +32,9 @@ class TestGetNetworkDifficulty:
         mock_resp.ok = True
         mock_resp.text = "112834572822315\n"
 
-        with patch("agents.solo_mining_advisor.tools.requests.get", return_value=mock_resp) as mock_get:
+        with patch(
+            "agents.solo_mining_advisor.tools.requests.get", return_value=mock_resp
+        ) as mock_get:
             result = get_network_difficulty()
 
         assert result["difficulty"] == pytest.approx(112834572822315.0)
@@ -48,8 +52,10 @@ class TestGetNetworkDifficulty:
         mock_good.ok = True
         mock_good.json.return_value = {"difficulty": 112834572822315}
 
-        with patch("agents.solo_mining_advisor.tools.requests.get",
-                   side_effect=[Mock(ok=False, status_code=503), mock_good]):
+        with patch(
+            "agents.solo_mining_advisor.tools.requests.get",
+            side_effect=[Mock(ok=False, status_code=503), mock_good],
+        ):
             result = get_network_difficulty()
 
         assert result["difficulty"] == pytest.approx(112834572822315.0)
@@ -61,8 +67,10 @@ class TestGetNetworkDifficulty:
         mock_good.ok = True
         mock_good.json.return_value = {"difficulty": 112834572822315}
 
-        with patch("agents.solo_mining_advisor.tools.requests.get",
-                   side_effect=[Exception("Connection refused"), mock_good]):
+        with patch(
+            "agents.solo_mining_advisor.tools.requests.get",
+            side_effect=[Exception("Connection refused"), mock_good],
+        ):
             result = get_network_difficulty()
 
         assert result["difficulty"] == pytest.approx(112834572822315.0)
@@ -70,8 +78,10 @@ class TestGetNetworkDifficulty:
 
     def test_both_sources_fail(self):
         """Both blockchain.info and mempool.space fail → returns error."""
-        with patch("agents.solo_mining_advisor.tools.requests.get",
-                   side_effect=[Exception("Refused"), Exception("Timeout")]):
+        with patch(
+            "agents.solo_mining_advisor.tools.requests.get",
+            side_effect=[Exception("Refused"), Exception("Timeout")],
+        ):
             result = get_network_difficulty()
 
         assert "error" in result
@@ -84,8 +94,10 @@ class TestGetNetworkDifficulty:
         mock_no_diff.ok = True
         mock_no_diff.json.return_value = {"other_field": 123}
 
-        with patch("agents.solo_mining_advisor.tools.requests.get",
-                   side_effect=[mock_bad, mock_no_diff]):
+        with patch(
+            "agents.solo_mining_advisor.tools.requests.get",
+            side_effect=[mock_bad, mock_no_diff],
+        ):
             result = get_network_difficulty()
 
         assert "error" in result
@@ -95,6 +107,7 @@ class TestGetNetworkDifficulty:
 # ═══════════════════════════════════════════════════════════════════════════
 # 2. get_btc_price — CoinGecko API
 # ═══════════════════════════════════════════════════════════════════════════
+
 
 class TestGetBtcPrice:
     """Tests for BTC price fetching from CoinGecko."""
@@ -107,10 +120,17 @@ class TestGetBtcPrice:
             "bitcoin": {"usd": 67420, "brl": 345000, "eur": 62100, "gbp": 53200}
         }
 
-        with patch("agents.solo_mining_advisor.tools.requests.get", return_value=mock_resp):
+        with patch(
+            "agents.solo_mining_advisor.tools.requests.get", return_value=mock_resp
+        ):
             result = get_btc_price()
 
-        assert result["prices"] == {"usd": 67420, "brl": 345000, "eur": 62100, "gbp": 53200}
+        assert result["prices"] == {
+            "usd": 67420,
+            "brl": 345000,
+            "eur": 62100,
+            "gbp": 53200,
+        }
         assert result["source"] == "coingecko.com"
 
     def test_success_with_custom_currencies(self):
@@ -119,7 +139,9 @@ class TestGetBtcPrice:
         mock_resp.ok = True
         mock_resp.json.return_value = {"bitcoin": {"usd": 67420, "brl": 345000}}
 
-        with patch("agents.solo_mining_advisor.tools.requests.get", return_value=mock_resp) as mock_get:
+        with patch(
+            "agents.solo_mining_advisor.tools.requests.get", return_value=mock_resp
+        ) as mock_get:
             result = get_btc_price("usd,brl")
 
         assert result["prices"] == {"usd": 67420, "brl": 345000}
@@ -129,8 +151,10 @@ class TestGetBtcPrice:
 
     def test_api_failure(self):
         """CoinGecko is unreachable → returns error."""
-        with patch("agents.solo_mining_advisor.tools.requests.get",
-                   side_effect=Exception("Network error")):
+        with patch(
+            "agents.solo_mining_advisor.tools.requests.get",
+            side_effect=Exception("Network error"),
+        ):
             result = get_btc_price()
 
         assert "error" in result
@@ -142,7 +166,9 @@ class TestGetBtcPrice:
         mock_resp.ok = False
         mock_resp.status_code = 429  # Too Many Requests
 
-        with patch("agents.solo_mining_advisor.tools.requests.get", return_value=mock_resp):
+        with patch(
+            "agents.solo_mining_advisor.tools.requests.get", return_value=mock_resp
+        ):
             result = get_btc_price()
 
         assert "error" in result
@@ -153,7 +179,9 @@ class TestGetBtcPrice:
         mock_resp.ok = True
         mock_resp.json.return_value = {}
 
-        with patch("agents.solo_mining_advisor.tools.requests.get", return_value=mock_resp):
+        with patch(
+            "agents.solo_mining_advisor.tools.requests.get", return_value=mock_resp
+        ):
             result = get_btc_price()
 
         # returns empty prices dict (no error because HTTP succeeded)
@@ -166,7 +194,9 @@ class TestGetBtcPrice:
         mock_resp.ok = True
         mock_resp.json.return_value = {"bitcoin": {"USD": 67420}}
 
-        with patch("agents.solo_mining_advisor.tools.requests.get", return_value=mock_resp):
+        with patch(
+            "agents.solo_mining_advisor.tools.requests.get", return_value=mock_resp
+        ):
             result = get_btc_price("usd")
 
         assert result["prices"] == {"usd": 67420}
@@ -175,6 +205,7 @@ class TestGetBtcPrice:
 # ═══════════════════════════════════════════════════════════════════════════
 # 3. get_braiins_orderbook — Braiins Hashpower market
 # ═══════════════════════════════════════════════════════════════════════════
+
 
 class TestGetBraiinsOrderbook:
     """Tests for Braiins Hashpower orderbook fetching."""
@@ -188,12 +219,18 @@ class TestGetBraiinsOrderbook:
         mock_orderbook = Mock()
         mock_orderbook.ok = True
         mock_orderbook.json.return_value = {
-            "asks": [{"price_sat": "2847"}, {"price_sat": "3200"}, {"price_sat": "2900"}],
+            "asks": [
+                {"price_sat": "2847"},
+                {"price_sat": "3200"},
+                {"price_sat": "2900"},
+            ],
             "bids": [],
         }
 
-        with patch("agents.solo_mining_advisor.tools.requests.get",
-                   side_effect=[mock_settings, mock_orderbook]):
+        with patch(
+            "agents.solo_mining_advisor.tools.requests.get",
+            side_effect=[mock_settings, mock_orderbook],
+        ):
             result = get_braiins_orderbook()
 
         assert result["price_raw"] == 2847.0
@@ -216,8 +253,10 @@ class TestGetBraiinsOrderbook:
             "bids": [],
         }
 
-        with patch("agents.solo_mining_advisor.tools.requests.get",
-                   side_effect=[mock_settings, mock_orderbook]):
+        with patch(
+            "agents.solo_mining_advisor.tools.requests.get",
+            side_effect=[mock_settings, mock_orderbook],
+        ):
             result = get_braiins_orderbook()
 
         assert result["price_btc_per_ph_day"] == pytest.approx(0.00002847)
@@ -237,8 +276,10 @@ class TestGetBraiinsOrderbook:
             ],
         }
 
-        with patch("agents.solo_mining_advisor.tools.requests.get",
-                   side_effect=[mock_settings, mock_orderbook]):
+        with patch(
+            "agents.solo_mining_advisor.tools.requests.get",
+            side_effect=[mock_settings, mock_orderbook],
+        ):
             result = get_braiins_orderbook()
 
         assert result["price_raw"] == 2800.0
@@ -251,8 +292,10 @@ class TestGetBraiinsOrderbook:
         mock_orderbook.ok = True
         mock_orderbook.json.return_value = {"asks": [], "bids": []}
 
-        with patch("agents.solo_mining_advisor.tools.requests.get",
-                   side_effect=[mock_settings, mock_orderbook]):
+        with patch(
+            "agents.solo_mining_advisor.tools.requests.get",
+            side_effect=[mock_settings, mock_orderbook],
+        ):
             result = get_braiins_orderbook()
 
         assert "error" in result
@@ -269,8 +312,10 @@ class TestGetBraiinsOrderbook:
             "bids": [],
         }
 
-        with patch("agents.solo_mining_advisor.tools.requests.get",
-                   side_effect=[mock_settings, mock_orderbook]):
+        with patch(
+            "agents.solo_mining_advisor.tools.requests.get",
+            side_effect=[mock_settings, mock_orderbook],
+        ):
             result = get_braiins_orderbook()
 
         # 5000 sats = 0.00005 BTC
@@ -284,8 +329,10 @@ class TestGetBraiinsOrderbook:
         mock_orderbook.ok = False
         mock_orderbook.status_code = 500
 
-        with patch("agents.solo_mining_advisor.tools.requests.get",
-                   side_effect=[mock_settings, mock_orderbook]):
+        with patch(
+            "agents.solo_mining_advisor.tools.requests.get",
+            side_effect=[mock_settings, mock_orderbook],
+        ):
             result = get_braiins_orderbook()
 
         assert "error" in result
@@ -293,8 +340,10 @@ class TestGetBraiinsOrderbook:
 
     def test_network_error(self):
         """Complete network failure."""
-        with patch("agents.solo_mining_advisor.tools.requests.get",
-                   side_effect=Exception("DNS resolution failed")):
+        with patch(
+            "agents.solo_mining_advisor.tools.requests.get",
+            side_effect=Exception("DNS resolution failed"),
+        ):
             result = get_braiins_orderbook()
 
         assert "error" in result
@@ -311,17 +360,149 @@ class TestGetBraiinsOrderbook:
             "bids": [],
         }
 
-        with patch("agents.solo_mining_advisor.tools.requests.get",
-                   side_effect=[mock_settings, mock_orderbook]):
+        with patch(
+            "agents.solo_mining_advisor.tools.requests.get",
+            side_effect=[mock_settings, mock_orderbook],
+        ):
             result = get_braiins_orderbook()
 
         assert "error" in result
         assert "valid prices" in result["error"].lower()
 
+    def test_settings_probe_sends_apikey_header_when_configured(self, monkeypatch):
+        """With BRAIINS_API_KEY configured (env or Settings), the /spot/settings
+        probe must send the `apikey` header so the caller gets their individual
+        pricing layer (the endpoint 401s without it)."""
+        import services.settings as _settings_mod
+
+        monkeypatch.setenv("BRAIINS_API_KEY", "owner-token")
+        monkeypatch.setattr(_settings_mod, "load_settings", lambda: {})
+
+        mock_settings = Mock()
+        mock_settings.ok = True
+        mock_settings.json.return_value = {"price_unit": "sats/TH/day"}
+        mock_orderbook = Mock()
+        mock_orderbook.ok = True
+        mock_orderbook.json.return_value = {
+            "asks": [{"price_sat": "2847"}],
+            "bids": [],
+        }
+
+        captured = {}
+
+        def _fake_get(url, timeout=None, headers=None):
+            if "/spot/settings" in url:
+                captured["headers"] = headers
+                return mock_settings
+            return mock_orderbook
+
+        with patch(
+            "agents.solo_mining_advisor.tools.requests.get", side_effect=_fake_get
+        ):
+            result = get_braiins_orderbook()
+
+        assert result["price_raw"] == 2847.0
+        assert captured["headers"].get("apikey") == "owner-token"
+
+    def test_settings_probe_no_apikey_without_key(self, monkeypatch):
+        """Without a configured key, the settings probe has no `apikey` header
+        and the fetch still works (degrades to default price unit)."""
+        import services.settings as _settings_mod
+
+        monkeypatch.delenv("BRAIINS_API_KEY", raising=False)
+        monkeypatch.setattr(_settings_mod, "load_settings", lambda: {})
+
+        mock_settings = Mock(ok=False)  # 401 without key → fallback unit
+        mock_orderbook = Mock()
+        mock_orderbook.ok = True
+        mock_orderbook.json.return_value = {
+            "asks": [{"price_sat": "2847"}],
+            "bids": [],
+        }
+
+        captured = {}
+
+        def _fake_get(url, timeout=None, headers=None):
+            if "/spot/settings" in url:
+                captured["headers"] = headers
+                return mock_settings
+            return mock_orderbook
+
+        with patch(
+            "agents.solo_mining_advisor.tools.requests.get", side_effect=_fake_get
+        ):
+            result = get_braiins_orderbook()
+
+        assert result["price_raw"] == 2847.0
+        assert "apikey" not in (captured["headers"] or {})
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # 4. get_mrr_listings — MiningRigRentals with HMAC-SHA1 auth
 # ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestMrrNonce:
+    """MRR exige nonce estritamente crescente por chave. O bug real: o nonce
+    era time.time()*1000 — duas chamadas no mesmo ms geravam o MESMO nonce e
+    o MRR respondia 'Not Authenticated - Invalid Key - Bad Nonce' (ex.: o
+    fetch de detail dispara 3 GETs concorrentes — colisão sob carga)."""
+
+    @pytest.fixture(autouse=True)
+    def _reset_nonce_state(self):
+        """Hermeticidade: o contador de nonce é um singleton do processo
+        (vive em helpers.next_monotonic_nonce_ms — Issue #150). Sem o reset,
+        os testes dependem da ordem de execução (o teste do relógio congelado
+        só passava porque testes anteriores elevavam o contador — falhava
+        rodado isolado)."""
+        import helpers as _helpers
+
+        _helpers._nonce_last_ms = 0
+        yield
+        _helpers._nonce_last_ms = 0
+
+    def _headers_nonce(self, key="k", secret="s", ep="/rental"):
+        return _mrr_signed_headers(key, secret, ep)["x-api-nonce"]
+
+    def test_sequential_nonces_strictly_increasing(self):
+        nonces = [int(self._headers_nonce()) for _ in range(5)]
+        assert all(b > a for a, b in zip(nonces, nonces[1:]))
+
+    def test_concurrent_nonces_all_unique(self):
+        import threading
+
+        results = []
+        lock = threading.Lock()
+
+        def _worker():
+            for _ in range(5):
+                n = int(self._headers_nonce())
+                with lock:
+                    results.append(n)
+
+        threads = [threading.Thread(target=_worker) for _ in range(10)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        assert len(results) == 50
+        assert len(set(results)) == 50  # zero colisões de nonce
+
+    def test_clock_backwards_still_increasing(self, monkeypatch):
+        """Relógio parado/voltando não pode gerar nonce menor que o último.
+
+        O nonce agora vive em helpers.next_monotonic_nonce_ms (Issue #150),
+        então o relógio é congelado por lá — não mais via tools_mod.time.
+        """
+        import helpers as _helpers
+
+        def _frozen_clock():
+            return 1_700_000_000.0  # fixo — toda chamada no mesmo ms
+
+        monkeypatch.setattr(_helpers.time, "time", _frozen_clock)
+        nonces = [int(self._headers_nonce()) for _ in range(3)]
+        assert all(b > a for a, b in zip(nonces, nonces[1:]))
+
 
 class TestGetMrrListings:
     """Tests for MiningRigRentals listing fetching."""
@@ -356,7 +537,9 @@ class TestGetMrrListings:
             },
         }
 
-        with patch("agents.solo_mining_advisor.tools.requests.get", return_value=mock_resp):
+        with patch(
+            "agents.solo_mining_advisor.tools.requests.get", return_value=mock_resp
+        ):
             result = get_mrr_listings(api_key="test_key", api_secret="test_secret")
 
         # (price/hour 0.0000005 * 24 / 100 TH) = 1.2e-7 BTC/TH/day
@@ -384,7 +567,9 @@ class TestGetMrrListings:
             },
         }
 
-        with patch("agents.solo_mining_advisor.tools.requests.get", return_value=mock_resp):
+        with patch(
+            "agents.solo_mining_advisor.tools.requests.get", return_value=mock_resp
+        ):
             result = get_mrr_listings(api_key="k", api_secret="s")
 
         # price/hour 0.0000005 * 24 / 100 TH → 1.2e-7 BTC/TH/day → per-PH ×1000 = 1.2e-4
@@ -409,7 +594,9 @@ class TestGetMrrListings:
             },
         }
 
-        with patch("agents.solo_mining_advisor.tools.requests.get", return_value=mock_resp):
+        with patch(
+            "agents.solo_mining_advisor.tools.requests.get", return_value=mock_resp
+        ):
             result = get_mrr_listings(api_key="k", api_secret="s")
 
         # price/hour 0.0000005 * 24 / 200 TH → 6e-8 BTC/TH/day → per-PH ×1000 = 6e-5
@@ -426,7 +613,9 @@ class TestGetMrrListings:
             "message": "Invalid API key",
         }
 
-        with patch("agents.solo_mining_advisor.tools.requests.get", return_value=mock_resp):
+        with patch(
+            "agents.solo_mining_advisor.tools.requests.get", return_value=mock_resp
+        ):
             result = get_mrr_listings(api_key="bad_key", api_secret="bad_secret")
 
         assert "error" in result
@@ -438,7 +627,9 @@ class TestGetMrrListings:
         mock_resp.ok = True
         mock_resp.json.return_value = {"success": True, "data": []}
 
-        with patch("agents.solo_mining_advisor.tools.requests.get", return_value=mock_resp):
+        with patch(
+            "agents.solo_mining_advisor.tools.requests.get", return_value=mock_resp
+        ):
             result = get_mrr_listings(api_key="k", api_secret="s")
 
         assert "error" in result
@@ -451,11 +642,17 @@ class TestGetMrrListings:
         mock_resp.json.return_value = {
             "success": True,
             "data": [
-                {"name": "Broken Rig", "hash": 0, "price": {"amount": "0", "currency": "BTC"}},
+                {
+                    "name": "Broken Rig",
+                    "hash": 0,
+                    "price": {"amount": "0", "currency": "BTC"},
+                },
             ],
         }
 
-        with patch("agents.solo_mining_advisor.tools.requests.get", return_value=mock_resp):
+        with patch(
+            "agents.solo_mining_advisor.tools.requests.get", return_value=mock_resp
+        ):
             result = get_mrr_listings(api_key="k", api_secret="s")
 
         assert "error" in result
@@ -467,7 +664,9 @@ class TestGetMrrListings:
         mock_resp.ok = False
         mock_resp.status_code = 403
 
-        with patch("agents.solo_mining_advisor.tools.requests.get", return_value=mock_resp):
+        with patch(
+            "agents.solo_mining_advisor.tools.requests.get", return_value=mock_resp
+        ):
             result = get_mrr_listings(api_key="k", api_secret="s")
 
         assert "error" in result
@@ -475,8 +674,10 @@ class TestGetMrrListings:
 
     def test_network_exception(self):
         """Network failure during API call."""
-        with patch("agents.solo_mining_advisor.tools.requests.get",
-                   side_effect=Exception("Connection timeout")):
+        with patch(
+            "agents.solo_mining_advisor.tools.requests.get",
+            side_effect=Exception("Connection timeout"),
+        ):
             result = get_mrr_listings(api_key="k", api_secret="s")
 
         assert "error" in result
@@ -486,6 +687,7 @@ class TestGetMrrListings:
 # ═══════════════════════════════════════════════════════════════════════════
 # 5. get_parasite_pool_stats — parasite.space pool + worker data
 # ═══════════════════════════════════════════════════════════════════════════
+
 
 class TestGetParasitePoolStats:
     """Tests for parasite.space pool stats fetching."""
@@ -517,8 +719,10 @@ class TestGetParasitePoolStats:
             "account": {"total_diff": 1500000000000000},
         }
 
-        with patch("agents.solo_mining_advisor.tools.requests.get",
-                   side_effect=[mock_pool, mock_user]):
+        with patch(
+            "agents.solo_mining_advisor.tools.requests.get",
+            side_effect=[mock_pool, mock_user],
+        ):
             result = get_parasite_pool_stats()
 
         assert result["pool_hashrate"] == 1500000000000000
@@ -539,8 +743,10 @@ class TestGetParasitePoolStats:
 
         mock_user = Mock(ok=False, status_code=500)
 
-        with patch("agents.solo_mining_advisor.tools.requests.get",
-                   side_effect=[mock_pool, mock_user]):
+        with patch(
+            "agents.solo_mining_advisor.tools.requests.get",
+            side_effect=[mock_pool, mock_user],
+        ):
             result = get_parasite_pool_stats()
 
         assert result["pool_status"] == "partial_pool_only"
@@ -555,14 +761,14 @@ class TestGetParasitePoolStats:
         mock_user = Mock()
         mock_user.ok = True
         mock_user.json.return_value = {
-            "workerData": [
-                {"hashrate": 225e12, "bestDifficulty": "25.73 T"}
-            ],
+            "workerData": [{"hashrate": 225e12, "bestDifficulty": "25.73 T"}],
             "account": {},
         }
 
-        with patch("agents.solo_mining_advisor.tools.requests.get",
-                   side_effect=[mock_pool, mock_user]):
+        with patch(
+            "agents.solo_mining_advisor.tools.requests.get",
+            side_effect=[mock_pool, mock_user],
+        ):
             result = get_parasite_pool_stats()
 
         assert result["pool_status"] == "partial_worker_only"
@@ -571,8 +777,10 @@ class TestGetParasitePoolStats:
 
     def test_both_fail(self):
         """Both endpoints fail → error."""
-        with patch("agents.solo_mining_advisor.tools.requests.get",
-                   side_effect=[Exception("Timeout"), Exception("Timeout")]):
+        with patch(
+            "agents.solo_mining_advisor.tools.requests.get",
+            side_effect=[Exception("Timeout"), Exception("Timeout")],
+        ):
             result = get_parasite_pool_stats()
 
         assert "error" in result
@@ -588,8 +796,10 @@ class TestGetParasitePoolStats:
         mock_user.ok = True
         mock_user.json.return_value = {"workerData": [], "account": {}}
 
-        with patch("agents.solo_mining_advisor.tools.requests.get",
-                   side_effect=[mock_pool, mock_user]):
+        with patch(
+            "agents.solo_mining_advisor.tools.requests.get",
+            side_effect=[mock_pool, mock_user],
+        ):
             result = get_parasite_pool_stats()
 
         assert result["pool_status"] == "full"  # both succeeded
@@ -608,8 +818,10 @@ class TestGetParasitePoolStats:
             "account": {},
         }
 
-        with patch("agents.solo_mining_advisor.tools.requests.get",
-                   side_effect=[mock_pool, mock_user]):
+        with patch(
+            "agents.solo_mining_advisor.tools.requests.get",
+            side_effect=[mock_pool, mock_user],
+        ):
             result = get_parasite_pool_stats()
 
         assert result["pool_status"] == "full"
@@ -627,8 +839,10 @@ class TestGetParasitePoolStats:
         mock_user.ok = True
         mock_user.json.return_value = {"workerData": [], "account": {}}
 
-        with patch("agents.solo_mining_advisor.tools.requests.get",
-                   side_effect=[mock_pool, mock_user]) as mock_get:
+        with patch(
+            "agents.solo_mining_advisor.tools.requests.get",
+            side_effect=[mock_pool, mock_user],
+        ) as mock_get:
             result = get_parasite_pool_stats()
 
         # Verify the second call used the default worker address
@@ -639,6 +853,7 @@ class TestGetParasitePoolStats:
 # ═══════════════════════════════════════════════════════════════════════════
 # 6. call_tool — tool dispatcher
 # ═══════════════════════════════════════════════════════════════════════════
+
 
 class TestCallTool:
     """Tests for the call_tool dispatcher."""
@@ -675,8 +890,10 @@ class TestCallTool:
 
     def test_tool_raises_exception(self):
         """Tool raises an exception → call_tool catches and returns error."""
-        with patch("agents.solo_mining_advisor.tools.requests.get",
-                   side_effect=RuntimeError("Unexpected crash")):
+        with patch(
+            "agents.solo_mining_advisor.tools.requests.get",
+            side_effect=RuntimeError("Unexpected crash"),
+        ):
             result = call_tool("get_network_difficulty")
 
         assert "error" in result
@@ -686,6 +903,7 @@ class TestCallTool:
 # ═══════════════════════════════════════════════════════════════════════════
 # 7. Registry integrity
 # ═══════════════════════════════════════════════════════════════════════════
+
 
 class TestRegistryIntegrity:
     """Verify the tool registry and schemas are correctly configured."""

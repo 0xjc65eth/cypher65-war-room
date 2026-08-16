@@ -52,8 +52,10 @@ def run_workers() -> None:
     import app as _app  # noqa: PLC0415 — lazy import keeps module import pure
 
     _app._start_background_threads()
-    log.info("[workers] background workers started (poll, market warmup, "
-             "donation watcher, auto-backup)")
+    log.info(
+        "[workers] background workers started (poll, market warmup, "
+        "donation watcher, auto-backup)"
+    )
 
 
 def main() -> None:

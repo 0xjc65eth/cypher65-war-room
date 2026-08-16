@@ -65,6 +65,499 @@ class TestNormalizeTelemetry:
         assert out["hashrate"] == 5e11
 
 
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#  Fase 5 · Integration: adapter → normalize_telemetry() pipeline
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+class TestTelemetryNormalizationPipeline:
+    """End-to-end: adapter output → normalize_telemetry() → verify
+    every canonical TELEMETRY_KEYS field is either a real value or the
+    explicit NOT_AVAILABLE marker.
+
+    This is the integration contract: the UI must never receive a missing
+    key or None for a canonical field."""
+
+    # ── CgminerAdapter ───────────────────────────────────────────────
+
+    @staticmethod
+    def _cgminer_telemetry(summary_data=None, stats_data=None, pools_data=None, host="10.0.0.1"):
+        """Create a CgminerAdapter with mocked _send_command and return
+        normalize_telemetry(get_telemetry())."""
+        from unittest.mock import patch
+        from core.adapters.cgminer_adapter import CgminerAdapter
+        from core.models.device import Device, normalize_telemetry
+
+        dev = Device(name="test-cgminer", model="Antminer S19", ip=host)
+        adapter = CgminerAdapter(dev)
+
+        def fake_send(cmd):
+            if cmd == "summary":
+                return summary_data
+            if cmd == "stats":
+                return stats_data
+            if cmd == "pools":
+                return pools_data
+            return None
+
+        with patch.object(adapter, "_send_command", side_effect=fake_send):
+            raw = adapter.get_telemetry()
+        return normalize_telemetry(raw)
+
+    def test_cgminer_minimal_summary_only(self):
+        """Cgminer with only 'summary' (no stats, no pools) → all Fase 5
+        thermal/power/pool fields become NOT_AVAILABLE."""
+        t = self._cgminer_telemetry(
+            summary_data={
+                "STATUS": [{"STATUS": "S", "When": 0}],
+                "SUMMARY": [{"GHS 5s": "120.0", "Elapsed": 86400}],
+            },
+        )
+        # cgminer never provides hashrate windows
+        assert t["hashrate_1m"] == NOT_AVAILABLE
+        assert t["hashrate_10m"] == NOT_AVAILABLE
+        assert t["hashrate_1h"] == NOT_AVAILABLE
+        # No stats → thermal/cooling/power NOT_AVAILABLE
+        assert t["chip_temp"] == NOT_AVAILABLE
+        assert t["vr_temp"] == NOT_AVAILABLE
+        assert t["fan_rpm"] == NOT_AVAILABLE
+        assert t["voltage"] == NOT_AVAILABLE
+        assert t["power"] == NOT_AVAILABLE
+        # No pools → pool_status NOT_AVAILABLE
+        assert t["pool_status"] == NOT_AVAILABLE
+        # Core hashrate is preserved
+        assert t["hashrate"] == 120e9
+
+    def test_cgminer_full_telemetry_all_present(self):
+        """Cgminer with summary + stats + pools → all Fase 5 fields filled
+        with real values, no NOT_AVAILABLE."""
+        t = self._cgminer_telemetry(
+            summary_data={
+                "STATUS": [{"STATUS": "S"}],
+                "SUMMARY": [{"GHS 5s": "110.0", "Accepted": 5000, "Rejected": 3,
+                             "Stale": 1, "Elapsed": 604800, "Best Share": "25.7T"}],
+            },
+            stats_data={
+                "STATUS": [{"STATUS": "S"}],
+                "STATS": [
+                    {"STATS": 0},
+                    {"temp2_0": "72.5", "temp2_1": "68.0",
+                     "fan_num": "2", "fan1": "4800",
+                     "voltage": "12.4", "power": "3100"},
+                ],
+            },
+            pools_data={
+                "STATUS": [{"STATUS": "S"}],
+                "POOLS": [
+                    {"POOL": 0, "URL": "stratum+tcp://pool.btc.com:3333",
+                     "User": "user.worker", "Status": "Alive"},
+                ],
+            },
+        )
+        # cgminer hashrate windows always NOT_AVAILABLE (protocol limitation)
+        assert t["hashrate_1m"] == NOT_AVAILABLE
+        assert t["hashrate_10m"] == NOT_AVAILABLE
+        assert t["hashrate_1h"] == NOT_AVAILABLE
+        # Thermal — from stats chain 1
+        assert t["chip_temp"] == 72.5
+        assert t["vr_temp"] == 68.0
+        assert t["temperature"] == 72.5
+        # Cooling & power
+        assert t["fan_rpm"] == 4800
+        assert t["voltage"] == 12.4
+        assert t["power"] == 3100
+        # Pool
+        assert t["pool_status"] == "CONNECTED"
+        # Core hashrate
+        assert t["hashrate"] == 110e9
+
+    def test_cgminer_stats_no_pools(self):
+        """Cgminer with summary + stats but no pools → stats fields present,
+        pool_status → NOT_AVAILABLE."""
+        t = self._cgminer_telemetry(
+            summary_data={
+                "STATUS": [{"STATUS": "S"}],
+                "SUMMARY": [{"GHS 5s": "95.0"}],
+            },
+            stats_data={
+                "STATUS": [{"STATUS": "S"}],
+                "STATS": [
+                    {"STATS": 0},
+                    {"temp2_0": "65.0", "fan_num": "1", "fan1": "4200",
+                     "voltage": "11.8", "power": "2800"},
+                ],
+            },
+        )
+        assert t["chip_temp"] == 65.0
+        assert t["fan_rpm"] == 4200
+        assert t["voltage"] == 11.8
+        assert t["power"] == 2800
+        assert t["pool_status"] == NOT_AVAILABLE
+
+    def test_cgminer_disconnected_pool(self):
+        """Cgminer with pools all Dead → pool_status DISCONNECTED (not NOT_AVAILABLE)."""
+        t = self._cgminer_telemetry(
+            summary_data={
+                "STATUS": [{"STATUS": "S"}],
+                "SUMMARY": [{"GHS 5s": "0"}],
+            },
+            pools_data={
+                "STATUS": [{"STATUS": "S"}],
+                "POOLS": [
+                    {"POOL": 0, "URL": "stratum+tcp://dead.pool:3333",
+                     "User": "user.worker", "Status": "Dead"},
+                ],
+            },
+        )
+        assert t["pool_status"] == "DISCONNECTED"
+
+    def test_cgminer_empty_pools_list(self):
+        """Cgminer with empty POOLS → NOT CONFIGURED → normalize fills NOT_AVAILABLE."""
+        t = self._cgminer_telemetry(
+            summary_data={
+                "STATUS": [{"STATUS": "S"}],
+                "SUMMARY": [{"GHS 5s": "0"}],
+            },
+            pools_data={
+                "STATUS": [{"STATUS": "S"}],
+                "POOLS": [],
+            },
+        )
+        assert t["pool_status"] == "NOT CONFIGURED"
+
+    def test_cgminer_none_values_normalized(self):
+        """Cgminer fields explicitly set to None by adapter become NOT_AVAILABLE."""
+        t = self._cgminer_telemetry(
+            summary_data={
+                "STATUS": [{"STATUS": "S"}],
+                "SUMMARY": [{"GHS 5s": "0", "Elapsed": 0}],
+            },
+        )
+        # All Fase 5 fields not provided by adapter are None → NOT_AVAILABLE
+        assert t["chip_temp"] == NOT_AVAILABLE
+        assert t["vr_temp"] == NOT_AVAILABLE
+        assert t["fan_rpm"] == NOT_AVAILABLE
+        assert t["voltage"] == NOT_AVAILABLE
+        assert t["power"] == NOT_AVAILABLE
+        assert t["pool_status"] == NOT_AVAILABLE
+        assert t["hashrate_1m"] == NOT_AVAILABLE
+        assert t["hashrate_10m"] == NOT_AVAILABLE
+        assert t["hashrate_1h"] == NOT_AVAILABLE
+        # But hashrate itself is 0, not None → 0 is preserved
+        assert t["hashrate"] == 0
+
+    # ── BitaxeAdapter ───────────────────────────────────────────────
+
+    @staticmethod
+    def _bitaxe_telemetry(data: dict):
+        """Create a BitaxeAdapter with mocked HTTP and return
+        normalize_telemetry(get_telemetry())."""
+        from unittest.mock import Mock, patch
+        from core.adapters.bitaxe_adapter import BitaxeAdapter
+        from core.models.device import Device, normalize_telemetry
+
+        dev = Device(name="test-bitaxe", model="Bitaxe Max", ip="192.168.1.100")
+        adapter = BitaxeAdapter(dev)
+
+        mock_response = Mock()
+        mock_response.json.return_value = data
+        mock_response.raise_for_status = Mock()
+
+        with patch("core.adapters.bitaxe_adapter.requests.get", return_value=mock_response):
+            raw = adapter.get_telemetry()
+        return normalize_telemetry(raw)
+
+    def test_bitaxe_minimal_response(self):
+        """Bitaxe with only hashRate + temp → hashrate windows, vr_temp,
+        fan_rpm, pool_status all become NOT_AVAILABLE."""
+        t = self._bitaxe_telemetry({"hashRate": 1.5e12, "temp": 70})
+        # Hashrate windows absent
+        assert t["hashrate_1m"] == NOT_AVAILABLE
+        assert t["hashrate_10m"] == NOT_AVAILABLE
+        assert t["hashrate_1h"] == NOT_AVAILABLE
+        # chip_temp falls back to temp (70), so it IS present
+        assert t["chip_temp"] == 70
+        # vr_temp absent → adapter returns 0 (not None), kept as-is
+        assert t["vr_temp"] == 0
+        # Cooling absent → adapter returns 0, kept as-is
+        assert t["fan_rpm"] == 0
+        # Power/voltage absent → adapter returns 0
+        assert t["voltage"] == 0
+        assert t["power"] == 0
+        # No pool config → adapter returns NOT CONFIGURED, but NOT in TELEMETRY_KEYS
+        # so normalize doesn't touch it; pool_status here is "NOT CONFIGURED"
+        assert t["pool_status"] == "NOT CONFIGURED"
+        # Core hashrate preserved
+        assert t["hashrate"] == 1.5e12
+
+    def test_bitaxe_full_telemetry_no_not_available(self):
+        """Bitaxe with all Fase 5 fields → no NOT_AVAILABLE markers."""
+        t = self._bitaxe_telemetry({
+            "hashRate": 1.5e12,
+            "hashRate1m": 1.48e12,
+            "hashRate10m": 1.45e12,
+            "hashRate1hr": 1.40e12,
+            "temp": 72,
+            "tempChip": 74,
+            "vrTemp": 68,
+            "fanrpm": 4500,
+            "voltage": 1200,
+            "power": 30,
+            "miningPaused": False,
+            "stratumURL": "stratum+tcp://pool.btc.com:3333",
+            "stratumPort": 3333,
+            "stratumUser": "user.worker",
+        })
+        # All windows present
+        assert t["hashrate_1m"] == 1.48e12
+        assert t["hashrate_10m"] == 1.45e12
+        assert t["hashrate_1h"] == 1.40e12
+        # Thermal
+        assert t["chip_temp"] == 74
+        assert t["vr_temp"] == 68
+        # Cooling & power
+        assert t["fan_rpm"] == 4500
+        assert t["voltage"] == 1200
+        assert t["power"] == 30
+        # Pool
+        assert t["pool_status"] == "CONNECTED"
+
+    def test_bitaxe_paused_pool_status_preserved(self):
+        """Bitaxe with miningPaused=True → PAUSED, not overridden by normalize."""
+        t = self._bitaxe_telemetry({
+            "hashRate": 0,
+            "temp": 45,
+            "miningPaused": True,
+            "stratumURL": "stratum+tcp://pool.btc.com:3333",
+        })
+        assert t["pool_status"] == "PAUSED"
+        # Windows absent
+        assert t["hashrate_1m"] == NOT_AVAILABLE
+        assert t["hashrate_10m"] == NOT_AVAILABLE
+        assert t["hashrate_1h"] == NOT_AVAILABLE
+
+    def test_bitaxe_not_configured_becomes_not_available(self):
+        """Bitaxe with NO pool URL → NOT CONFIGURED → normalize fills NOT_AVAILABLE."""
+        t = self._bitaxe_telemetry({
+            "hashRate": 1e12,
+            "temp": 60,
+            "miningPaused": False,
+        })
+        assert t["pool_status"] == "NOT CONFIGURED"
+
+    # ── BraiinsAdapter ─────────────────────────────────────────────
+
+    @staticmethod
+    def _braiins_telemetry(summary=None, temps=None, fans=None, tuner=None,
+                           stats=None, pools=None, host="10.0.0.1"):
+        """Create a BraiinsAdapter with mocked _rest_get (returns None,
+        forcing cgminer socket path) and _send_command, then return
+        normalize_telemetry(get_telemetry())."""
+        from unittest.mock import patch
+        from core.adapters.braiins_adapter import BraiinsAdapter
+        from core.models.device import Device, normalize_telemetry
+
+        dev = Device(name="test-braiins", model="Antminer S19 Pro",
+                     firmware="Braiins OS+", ip=host)
+        adapter = BraiinsAdapter(dev)
+
+        send_map = {}
+        if summary is not None:
+            send_map["summary"] = summary
+        if temps is not None:
+            send_map["temps"] = temps
+        if fans is not None:
+            send_map["fans"] = fans
+        if tuner is not None:
+            send_map["tunerstatus"] = tuner
+        if stats is not None:
+            send_map["stats"] = stats
+        if pools is not None:
+            send_map["pools"] = pools
+
+        def fake_send(cmd, port=None):
+            return send_map.get(cmd)
+
+        with patch.object(adapter, "_rest_get", return_value=None), \
+             patch.object(adapter, "_send_command", side_effect=fake_send):
+            raw = adapter.get_telemetry()
+        return normalize_telemetry(raw)
+
+    def test_braiins_minimal_summary_only(self):
+        """Braiins with only 'summary' → hashrate windows + all thermal/
+        cooling/power fields become NOT_AVAILABLE."""
+        t = self._braiins_telemetry(
+            summary={
+                "STATUS": [{"STATUS": "S"}],
+                "SUMMARY": [{"GHS 5s": "120.0", "Elapsed": 86400}],
+            },
+        )
+        # Braiins cgminer socket (like standard cgminer) never provides
+        # hashrate windows — adapter sets them to None → NOT_AVAILABLE
+        assert t["hashrate_1m"] == NOT_AVAILABLE
+        assert t["hashrate_10m"] == NOT_AVAILABLE
+        assert t["hashrate_1h"] == NOT_AVAILABLE
+        # No temps/fans/tuner/stats → all None → NOT_AVAILABLE
+        assert t["chip_temp"] == NOT_AVAILABLE
+        assert t["vr_temp"] == NOT_AVAILABLE
+        assert t["fan_rpm"] == NOT_AVAILABLE
+        assert t["voltage"] == NOT_AVAILABLE
+        assert t["power"] == NOT_AVAILABLE
+        assert t["pool_status"] == NOT_AVAILABLE
+        # Core hashrate preserved
+        assert t["hashrate"] == 120e9
+
+    def test_braiins_full_telemetry_braiins_extensions(self):
+        """Braiins with temps + fans + tunerstatus → all Fase 5 fields
+        filled with Braiins-specific enriched values; windows remain
+        NOT_AVAILABLE (cgminer protocol limitation)."""
+        t = self._braiins_telemetry(
+            summary={
+                "STATUS": [{"STATUS": "S"}],
+                "SUMMARY": [{"GHS 5s": "110.0", "Accepted": 5000,
+                             "Rejected": 3, "Stale": 1,
+                             "Elapsed": 604800, "Best Share": "25.7T"}],
+            },
+            temps={
+                "STATUS": [{"STATUS": "S"}],
+                "TEMPS": [
+                    {"Board": 0, "Chip": 0, "ID": 0,
+                     "temp": "72.5", "temp_pcb": "58.0"},
+                    {"Board": 0, "Chip": 1, "ID": 1,
+                     "temp": "74.0", "temp_pcb": "59.5"},
+                ],
+            },
+            fans={
+                "STATUS": [{"STATUS": "S"}],
+                "FANS": [
+                    {"FAN": 0, "ID": 0, "RPM": 4800, "Speed": 80},
+                    {"FAN": 1, "ID": 1, "RPM": 4600, "Speed": 78},
+                ],
+            },
+            tuner={
+                "STATUS": [{"STATUS": "S"}],
+                "TUNERSTATUS": [
+                    {"power": "3100", "tuner_state": "TUNED",
+                     "power_limit": "3500"},
+                ],
+            },
+            pools={
+                "STATUS": [{"STATUS": "S"}],
+                "POOLS": [
+                    {"POOL": 0,
+                     "URL": "stratum+tcp://braiins.pool:3333",
+                     "User": "braiins.worker", "Status": "Alive"},
+                ],
+            },
+        )
+        # Windows always NOT_AVAILABLE (cgminer protocol limitation)
+        assert t["hashrate_1m"] == NOT_AVAILABLE
+        assert t["hashrate_10m"] == NOT_AVAILABLE
+        assert t["hashrate_1h"] == NOT_AVAILABLE
+        # Temps from Braiins 'temps' command (max chip, max PCB)
+        assert t["chip_temp"] == 74.0
+        assert t["temperature"] == 59.5
+        # Fans from Braiins 'fans' command (average RPM)
+        assert t["fan_rpm"] == (4800 + 4600) / 2
+        # Power from tunerstatus
+        assert t["power"] == 3100
+        # Pool
+        assert t["pool_status"] == "CONNECTED"
+        assert t["hashrate"] == 110e9
+
+    def test_braiins_stats_fallback_no_braiins_commands(self):
+        """Braiins with summary + stats but no Braiins-specific commands
+        (temps/fans/tuner absent) → falls back to stats chain data."""
+        t = self._braiins_telemetry(
+            summary={
+                "STATUS": [{"STATUS": "S"}],
+                "SUMMARY": [{"GHS 5s": "95.0"}],
+            },
+            stats={
+                "STATUS": [{"STATUS": "S"}],
+                "STATS": [
+                    {"STATS": 0},
+                    {"temp2_0": "65.0", "temp2_1": "60.0",
+                     "fan_num": "1", "fan1": "4200",
+                     "voltage": "11.8", "power": "2800"},
+                ],
+            },
+        )
+        # Stats fallback fills temps, fan, voltage, power
+        assert t["chip_temp"] == 65.0
+        assert t["vr_temp"] == 60.0
+        assert t["fan_rpm"] == 4200
+        assert t["voltage"] == 11.8
+        assert t["power"] == 2800
+        # Hashrate windows stay NOT_AVAILABLE
+        assert t["hashrate_1m"] == NOT_AVAILABLE
+        assert t["hashrate_10m"] == NOT_AVAILABLE
+        assert t["hashrate_1h"] == NOT_AVAILABLE
+
+    def test_braiins_pool_disconnected(self):
+        """Braiins with Dead pool → DISCONNECTED (real status, not NOT_AVAILABLE)."""
+        t = self._braiins_telemetry(
+            summary={
+                "STATUS": [{"STATUS": "S"}],
+                "SUMMARY": [{"GHS 5s": "0"}],
+            },
+            pools={
+                "STATUS": [{"STATUS": "S"}],
+                "POOLS": [
+                    {"POOL": 0,
+                     "URL": "stratum+tcp://dead.pool:3333",
+                     "User": "worker", "Status": "Dead"},
+                ],
+            },
+        )
+        assert t["pool_status"] == "DISCONNECTED"
+
+    def test_braiins_pool_not_configured(self):
+        """Braiins with empty POOLS → NOT CONFIGURED."""
+        t = self._braiins_telemetry(
+            summary={
+                "STATUS": [{"STATUS": "S"}],
+                "SUMMARY": [{"GHS 5s": "0"}],
+            },
+            pools={
+                "STATUS": [{"STATUS": "S"}],
+                "POOLS": [],
+            },
+        )
+        assert t["pool_status"] == "NOT CONFIGURED"
+
+    def test_braiins_canonical_keys_all_present(self):
+        """Every TELEMETRY_KEYS key present after braiins normalization."""
+        from core.models.device import TELEMETRY_KEYS
+        t = self._braiins_telemetry(
+            summary={
+                "STATUS": [{"STATUS": "S"}],
+                "SUMMARY": [{"GHS 5s": "1.0"}],
+            },
+        )
+        for key in TELEMETRY_KEYS:
+            assert key in t, f"Canonical key '{key}' missing from braiins pipeline"
+            assert t[key] is not None, f"Canonical key '{key}' is None from braiins pipeline"
+
+    # ── Pipeline edge cases ──────────────────────────────────────────
+
+    def test_offline_adapter_returns_none(self):
+        """When adapter returns None (offline), normalize_telemetry returns None."""
+        assert normalize_telemetry(None) is None
+
+    def test_all_canonical_keys_present_after_normalization(self):
+        """Every key in TELEMETRY_KEYS must be present after normalization."""
+        from core.models.device import TELEMETRY_KEYS
+        t = self._cgminer_telemetry(
+            summary_data={
+                "STATUS": [{"STATUS": "S"}],
+                "SUMMARY": [{"GHS 5s": "1.0"}],
+            },
+        )
+        for key in TELEMETRY_KEYS:
+            assert key in t, f"Canonical key '{key}' missing after normalize_telemetry"
+            assert t[key] is not None, f"Canonical key '{key}' is None after normalize_telemetry"
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # 1. calc_block_probability
 # ═══════════════════════════════════════════════════════════════════════════

@@ -5,6 +5,12 @@ The server's background workers (initial poll + poll_loop + 5-min Hash
 Market warmup + on-chain donation watcher + C4 auto-backup worker) start
 from ONE helper called only in the __main__ block — never on plain
 ``test-suite imports, so `import app` spawns no network threads.
+
+P1 Phase 2 adds the fixed user-poll worker pool (start_poll_pool) to the
+boot contract. It spawns 1 scheduler + POOL_SIZE worker threads of its own
+(not via app.threading), so the tests here monkeypatch it the same way they
+monkeypatch poll_once: assert the boot CALLS it, without starting 9 real
+threads. The pool itself is covered by tests/test_poll_worker_pool.py.
 """
 import app as _app_module
 
@@ -39,16 +45,22 @@ class TestStartBackgroundThreads:
         FakeThread.started = []
         started = FakeThread.started
         poll_calls = []
+        pool_calls = []
         # C4: pin the backup worker ON so the boot contract is deterministic
         # regardless of a developer/CI exporting AUTO_BACKUP_INTERVAL=0.
         monkeypatch.setenv("AUTO_BACKUP_INTERVAL", "3600")
         monkeypatch.setattr(_app_module.threading, "Thread", FakeThread)
         monkeypatch.setattr(_app_module, "poll_once", lambda: poll_calls.append(1))
+        # P1 Phase 2: the fixed worker pool is started via its own hook
+        # (spawns its own threads, not app.threading) — assert boot calls it.
+        monkeypatch.setattr(_app_module, "_start_poll_pool",
+                            lambda: pool_calls.append(1))
 
         _app_module._start_background_threads()
 
         # Initial kick-off poll ran exactly once, before the threads start.
         assert poll_calls == [1]
+        assert pool_calls == [1]
         targets = [t.target for t in started]
         for name in self.EXPECTED_TARGETS:
             assert getattr(_app_module, name) in targets, f"{name} thread not started"
@@ -83,6 +95,7 @@ class TestStartBackgroundThreads:
         monkeypatch.setenv("AUTO_BACKUP_INTERVAL", "3600")
         monkeypatch.setattr(_app_module.threading, "Thread", FakeThread)
         monkeypatch.setattr(_app_module, "poll_once", broken_poll)
+        monkeypatch.setattr(_app_module, "_start_poll_pool", lambda: None)
 
         # Must not raise; all workers still start.
         _app_module._start_background_threads()
