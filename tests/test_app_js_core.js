@@ -5342,6 +5342,39 @@ function sortMarketVenues(venues, key, dir) {
   assertEqual('rentals auth guide braiins', rentalsAuthGuide('contracts', '401').indexOf('hashpower.braiins.com') !== -1, true);
   assertEqual('rentals auth guide escapes html', rentalsAuthGuide('mrr', '<b>').indexOf('&lt;b&gt;') !== -1, true);
 
+  // Instance indicator (Issue #198) — pure classifier mirror. The topbar
+  // pill color-codes which instance the dashboard is on (local vs cloud)
+  // so operators never save keys to the wrong URL.
+  function instanceClassify(host) {
+    let h = String(host || '').toLowerCase().replace(/^https?:\/\//, '').split('/')[0];
+    const bracket = h.match(/^\[([^\]]+)\](?::\d+)?$/);
+    if (bracket) h = bracket[1];
+    const hostOnly = h === '::1' ? '::1' : h.replace(/:\d+$/, '');
+    if (!hostOnly) return { kind: 'remote', icon: '⌁' };
+    const isLocal =
+      hostOnly === 'localhost' || hostOnly === '127.0.0.1' || hostOnly === '0.0.0.0' || hostOnly === '::1' ||
+      hostOnly.endsWith('.local') ||
+      /^192\.168\./.test(hostOnly) || /^10\./.test(hostOnly) || /^172\.(1[6-9]|2\d|3[01])\./.test(hostOnly);
+    const isCloud = /\.onrender\.com$/.test(hostOnly) || /\.render\.com$/.test(hostOnly);
+    if (isLocal) return { kind: 'local', icon: '🖥' };
+    if (isCloud) return { kind: 'cloud', icon: '☁' };
+    return { kind: 'remote', icon: '⌁' };
+  }
+  assertEqual('instance localhost', instanceClassify('localhost').kind, 'local');
+  assertEqual('instance loopback with port', instanceClassify('127.0.0.1:8765').kind, 'local');
+  assertEqual('instance private 192.168', instanceClassify('192.168.1.20:8765').kind, 'local');
+  assertEqual('instance private 10.', instanceClassify('10.0.0.5').kind, 'local');
+  assertEqual('instance ipv6 loopback raw', instanceClassify('::1').kind, 'local');
+  assertEqual('instance ipv6 loopback bracket+port', instanceClassify('[::1]:8765').kind, 'local');
+  assertEqual('instance cloud onrender', instanceClassify('cypher65-war-room.onrender.com').kind, 'cloud');
+  assertEqual('instance cloud render sub', instanceClassify('api.cypher65.render.com').kind, 'cloud');
+  assertEqual('instance remote public', instanceClassify('cypher65.example.com').kind, 'remote');
+  assertEqual('instance remote with port', instanceClassify('cypher65.example.com:8443').kind, 'remote');
+  assertEqual('instance remote full url', instanceClassify('https://cypher65.example.com/path').kind, 'remote');
+  assertEqual('instance empty host', instanceClassify('').kind, 'remote');
+  assertEqual('instance icon local', instanceClassify('127.0.0.1').icon, '🖥');
+  assertEqual('instance icon cloud', instanceClassify('x.onrender.com').icon, '☁');
+
   // Cohort LTV rows (Issue #157 — 18-C) — safe-number builder mirror.
   function _cohortNum(v) {
     const n = Number(v);

@@ -109,6 +109,7 @@
   const $$ = (s) => document.querySelectorAll(s);
   const dom = {
     topbarAddress: $('#topbar-address'), statusPill: $('#status-pill'), statusText: $('#status-text'),
+    topbarInstance: $('#topbar-instance'),
     clock: $('#clock'), nextPoll: $('#next-poll'), refreshNow: $('#refresh-now'),
     workerRankBadge: $('#worker-rank-badge'), workerUptimeBadge: $('#worker-uptime-badge'),
     mHashrate: $('#m-hashrate'), mHashrateSub: $('#m-hashrate-sub'), mBestDiff: $('#m-bestdiff'), mBestDiffSub: $('#m-bestdiff-sub'),
@@ -706,6 +707,64 @@
         if (e.key === 'Enter') loginBtn.click();
       });
     }
+  }
+
+  // ── Instance indicator (Issue #198) ─────────────────────────────────
+  // Deixa EXPLÍCITO em qual instância/URL o dashboard está. Resolve a
+  // confusão real de salvar chaves MRR/Braiins na instância errada (local
+  // vs cloud): o pill no topbar mostra o host + color-code por tipo, e o
+  // tooltip/clique expõe o origin completo para conferir antes de salvar.
+  // Pure classifier — espelhado em tests/test_app_js_core.js.
+  function instanceClassify(host) {
+    let h = String(host || '').toLowerCase().replace(/^https?:\/\//, '').split('/')[0];
+    // Forma IPv6 com brackets "[::1]:8765" → "::1" (porta separada).
+    const bracket = h.match(/^\[([^\]]+)\](?::\d+)?$/);
+    if (bracket) h = bracket[1];
+    // Strip de porta numérica — NUNCA para o loopback IPv6 cru "::1"
+    // (o regex :\d+$ casaria o "1" final e destruiria o host).
+    const hostOnly = h === '::1' ? '::1' : h.replace(/:\d+$/, '');
+    if (!hostOnly) return { kind: 'remote', icon: '⌁' };
+    const isLocal =
+      hostOnly === 'localhost' || hostOnly === '127.0.0.1' || hostOnly === '0.0.0.0' || hostOnly === '::1' ||
+      hostOnly.endsWith('.local') ||
+      /^192\.168\./.test(hostOnly) || /^10\./.test(hostOnly) || /^172\.(1[6-9]|2\d|3[01])\./.test(hostOnly);
+    const isCloud = /\.onrender\.com$/.test(hostOnly) || /\.render\.com$/.test(hostOnly);
+    if (isLocal) return { kind: 'local', icon: '🖥' };
+    if (isCloud) return { kind: 'cloud', icon: '☁' };
+    return { kind: 'remote', icon: '⌁' };
+  }
+  function initInstanceIndicator() {
+    const el = dom.topbarInstance;
+    if (!el) return;
+    const origin = window.location.origin || '';
+    const host = window.location.host || 'self-hosted';
+    const cls = instanceClassify(host);
+    const labels = { local: 'LOCAL', cloud: 'CLOUD', remote: 'REMOTE' };
+    let display = host;
+    if (display.length > 30) display = display.slice(0, 28) + '…';
+    el.textContent = cls.icon + ' ' + display;
+    el.classList.add('topbar__instance--' + cls.kind);
+    el.title = labels[cls.kind] + ' instance · ' + origin +
+      '\n(settings/chaves salvam nesta origem — clique para copiar o URL)';
+    // A11y: interativo por teclado também (Enter/Space = copiar), como um
+    // button de verdade — não só mouse.
+    el.setAttribute('role', 'button');
+    el.tabIndex = 0;
+    const copyOrigin = function () {
+      try {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(origin).then(function () {
+            showToast('success', 'Instance URL copiado: ' + origin);
+          }).catch(function () { /* clipboard denied */ });
+        } else {
+          showToast('success', origin);
+        }
+      } catch (e) { /* never break the topbar for a copy */ }
+    };
+    el.onclick = copyOrigin;
+    el.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); copyOrigin(); }
+    });
   }
 
   // ── Theme Toggle ─────────────────────────────────────────────────────
@@ -10260,6 +10319,7 @@ dom.walletSave?.addEventListener('click', async () => {
     initAxeFleetControls();
     initAuth();
     initThemeToggle();
+    initInstanceIndicator();
     _liveTermInit();
     await fetchSnapshot();
     setInterval(fetchSnapshot, POLL_MS);
