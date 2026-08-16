@@ -363,3 +363,75 @@ jobs:
           path: e2e-report
           if-no-files-found: ignore
           retention-days: 14
+
+  # ── Dependabot workflow-staleness guard (Issue #211) ───────────────────
+  # O dependabot NÃO rebaseia quando .github/workflows/ muda no master (só
+  # quando o manifest de dependências conflita). Incidente real 2026-08:
+  # PRs #1/#7 ficaram 13 dias com CI vermelho por um fix de workflow
+  # (execution-pipeline.yml) que nunca chegou à branch — o CI deles rodava
+  # um pipeline antigo e bugado, sem nenhum alerta.
+  #
+  # Este job detecta a defasagem e pede o rebase via comentário
+  # `@dependabot rebase` (o rebase roda com o token do próprio dependabot,
+  # que tem scope `workflow` — então ele funciona mesmo quando o token
+  # local do maintainer não tem). O comentário é deduplicado por marcador.
+  dependabot-workflow-guard:
+    name: "dependabot: workflow staleness guard (#211)"
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # Só roda em PRs do dependabot contra master (evento push/dispatch: skip).
+    if: github.event_name == 'pull_request' && github.event.pull_request.author.login == 'dependabot[bot]'
+
+    permissions:
+      contents: read
+      pull-requests: write
+
+    steps:
+      - name: Checkout (história completa para merge-base)
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      # Detecção: commits de master (após o merge-base) que tocam
+      # .github/workflows/ e NÃO estão na branch = workflows defasados.
+      # Se o dependabot já rebaseou, o merge-base sobe e o diff zera.
+      - name: Detectar workflows defasados vs master
+        id: detect
+        run: |
+          set -euo pipefail
+          git fetch origin master --quiet
+          MERGE_BASE="$(git merge-base HEAD origin/master)"
+          STALE_COMMITS="$(git log --oneline "${MERGE_BASE}..origin/master" -- .github/workflows/ | wc -l)"
+          if [ "${STALE_COMMITS}" -gt 0 ]; then
+            echo "stale=true" >> "$GITHUB_OUTPUT"
+            echo "::warning::Workflows defasados — ${STALE_COMMITS} commit(s) em master tocam .github/workflows/ após o merge-base"
+            git log --oneline "${MERGE_BASE}..origin/master" -- .github/workflows/
+          else
+            echo "stale=false" >> "$GITHUB_OUTPUT"
+            echo "Workflows em dia com master."
+          fi
+
+      # Comentário @dependabot rebase — deduplicado por marcador (evita
+      # spammar o PR a cada push enquanto o rebase não acontece).
+      # Comentário @dependabot rebase — deduplicado por marcador (evita
+      # spammar o PR a cada push enquanto o rebase não acontece).
+      # Comentário @dependabot rebase — deduplicado por marcador (evita
+      # spammar o PR a cada push enquanto o rebase não acontece).
+      - name: Comentar @dependabot rebase
+        if: steps.detect.outputs.stale == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          MARKER="CI guard (#211)"
+          if gh api "repos/${{ github.repository }}/issues/${PR_NUMBER}/comments" \
+            --jq '.[].body' | grep -qF "${MARKER}"; then
+            echo "Comentário já existe — pulando (dedup)."
+            exit 0
+          fi
+          BODY=$'👀 **CI guard (#211):** sua branch está com `.github/workflows/` **defasado** em relação ao master — o CI que roda aqui pode não refletir o pipeline atual (caso dos PRs #1/#7: 13 dias vermelhos por um fix de workflow que nunca chegou à branch).\n\nRebaseie para validar com o pipeline real:\n\n`@dependabot rebase`'
+          gh pr comment "${PR_NUMBER}" --body "${BODY}"
+          echo "Comentário @dependabot rebase postado."
+
+
