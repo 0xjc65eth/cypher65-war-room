@@ -300,6 +300,24 @@
       '— NÃO é bug de concorrência. Regenerar a API key + secret em miningrigrentals.com ' +
       '→ My Account → API Access e atualizar no Settings (⚙).';
   }
+  // Rentals payload freshness (Issue #187): a payload built by OLD server
+  // code (no version stamp) cannot PROVE the account is empty — it may
+  // predate the missing-key guard. Returns a LEVEL: 0 fresh · 1 age-stale
+  // (data older than the panel's refresh cadence → soft 'dados
+  // desatualizados' + reload) · 2 old-code (no version stamp → credential
+  // hint, the case that used to render the misleading 'No contracts rentals
+  // on this account'). Only level 2 claims the config may be missing; level 1
+  // never lies about credentials on an idle-but-open tab. Pure helper
+  // mirrored in tests/test_app_js_core.js.
+  const RENTALS_PAYLOAD_VERSION = 2;
+  const RENTALS_STALE_MAX_AGE_S = 300;  // panel re-fetches every 15s — 5min = not trustworthy
+  function rentalsPayloadStale(payload, nowSec) {
+    const p = payload || {};
+    const version = Number(p.rentals_payload_version) || 0;
+    if (version < RENTALS_PAYLOAD_VERSION) return 2;
+    const age = (nowSec || Math.floor(Date.now() / 1000)) - (Number(p.updated_at) || 0);
+    return age > RENTALS_STALE_MAX_AGE_S ? 1 : 0;
+  }
 
   // ── Tenant Auth (Fase 4 · B1-frontend) ─────────────────────────────
   // Stores the JWT session in localStorage and attaches
@@ -5120,14 +5138,17 @@ function renderAccount(acct) {
     '</div>';
   }
 
-  async function loadRentals() {
+  async function loadRentals(force) {
     const listEl = document.getElementById('rentals-list');
     if (!listEl) return false;
     try {
       // authFetch sends the user's Bearer token so the server resolves the
       // caller's TENANT — with 1000+ users each one sees only their own
       // Braiins/MRR credentials and rentals (never the operator's key).
-      const r = await authFetch('/api/rentals');
+      // force=1 (RECARREGAR on a stale empty-state, Issue #187) bypasses the
+      // server TTL cache so credentials just added in Settings show up
+      // without a full page reload.
+      const r = await authFetch('/api/rentals' + (force ? '?refresh=1' : ''));
       if (!r.ok) return false;
       _rentalsData = await r.json();
       // UX: on the first load, land on the first tab that actually has data —
@@ -5249,19 +5270,38 @@ function renderAccount(acct) {
       // same as "credentials missing" — surface the real reason + the FIX so
       // the user regenerates the key, not just adds one (Issue #152).
       const rejected = rentalsAuthRejected(errMsg, authRejected);
-      const title = rejected ? 'API key rejected' : (needsAuth ? 'Credentials required' : (errMsg ? 'Provider error' : 'No rentals'));
+      // Payload staleness (Issue #187): a payload built by old server code
+      // (no version stamp) or too old to trust cannot prove an empty account
+      // — it may predate the missing-key guard. Level 2 (old code) shows the
+      // config hint; level 1 (age only) shows a soft 'dados desatualizados'
+      // + reload. Never the misleading 'No contracts rentals on this
+      // account'.
+      const staleLevel = rentalsPayloadStale(_rentalsData, Math.floor(Date.now() / 1000));
+      const payloadStale = staleLevel > 0;
+      const credHint = staleLevel >= 2;
+      const title = rejected ? 'API key rejected' : (needsAuth ? 'Credentials required' : (errMsg ? 'Provider error' : (credHint ? 'Configuração não verificada' : (staleLevel === 1 ? 'Dados desatualizados' : 'No rentals'))));
+      const staleHint = credHint
+        ? (isContracts
+          ? 'Dados carregados por uma versão antiga do servidor — não dá para confirmar se a conta está vazia. Adicione o owner token Braiins (hashpower.braiins.com → API Tokens) no Settings (⚙), ou recarregue para verificar:'
+          : 'Dados carregados por uma versão antiga do servidor — não dá para confirmar se a conta está vazia. Configure a chave MRR (miningrigrentals.com → My Account → API Access) no Settings (⚙), ou recarregue para verificar:')
+        : 'Os dados estão antigos (mais de 5 min) — recarregue para confirmar o estado real da conta.';
       listEl.innerHTML = '<div class="empty-state" style="grid-column:1/-1;border:none">' +
-        '<div class="empty-state__icon">' + (rejected ? '🔑' : '⛁') + '</div>' +
+        '<div class="empty-state__icon">' + (rejected ? '🔑' : (credHint ? '🔑' : '⛁')) + '</div>' +
         '<div class="empty-state__title">' + title + '</div>' +
         '<div class="empty-state__desc">' + (rejected
           ? rentalsAuthGuide(_rentalsFilter, errMsg)
           : (needsAuth
             ? (isContracts ? 'Add your Braiins Hashpower owner token to list contracts — where to get it: hashpower.braiins.com → API Tokens.' : 'Add your MiningRigRentals API key + secret to see history & performance — get them at miningrigrentals.com → My Account → API Access.')
-            : (errMsg ? escapeHtml(errMsg) : 'No ' + _rentalsFilter + ' rentals on this account'))) + '</div>' +
-        (needsAuth || rejected ? '<button type="button" class="btn btn--primary btn--mini" id="rentals-open-settings" style="margin-top:8px">⚙ OPEN SETTINGS</button>' : '') +
+            : (errMsg ? escapeHtml(errMsg) : (payloadStale ? staleHint : 'No ' + _rentalsFilter + ' rentals on this account')))) + '</div>' +
+        (needsAuth || rejected || credHint ? '<button type="button" class="btn btn--primary btn--mini" id="rentals-open-settings" style="margin-top:8px">⚙ OPEN SETTINGS</button>' : '') +
+        (payloadStale ? '<button type="button" class="btn btn--mini" id="rentals-refresh-btn" style="margin-top:8px">⟳ RECARREGAR</button>' : '') +
         '</div>';
       const cta = document.getElementById('rentals-open-settings');
       if (cta) cta.addEventListener('click', function() { openSettingsModal(); });
+      // RECARREGAR re-fetches with ?refresh=1 — creds just saved in Settings
+      // take effect without a full page reload.
+      const refreshBtn = document.getElementById('rentals-refresh-btn');
+      if (refreshBtn) refreshBtn.addEventListener('click', function() { loadRentals(true); });
       return;
     }
     listEl.innerHTML = items.map(_rentalCardHtml).join('');

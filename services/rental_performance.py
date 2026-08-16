@@ -1943,9 +1943,13 @@ def fetch_braiins_contracts(tenant_id: str = "") -> Dict[str, Any]:
     """
     key = _braiins_key(tenant_id=tenant_id)
     if not key:
+        # Issue #187: explicit credentials_missing flag — the panel shows the
+        # config hint whenever the key is missing, even on replayed/stale
+        # payloads (the version stamp on /api/rentals marks old payloads).
         return {
             "success": False,
             "needs_auth": True,
+            "credentials_missing": True,
             "error": "BRAIINS_API_KEY not configured",
             "contracts": [],
         }
@@ -1983,6 +1987,7 @@ def fetch_braiins_contracts(tenant_id: str = "") -> Dict[str, Any]:
         return {
             "success": False,
             "needs_auth": True,
+            "auth_rejected": True,
             "error": "Braiins API rejected the key (HTTP 401/403) — check the token in Settings",
             "contracts": [],
         }

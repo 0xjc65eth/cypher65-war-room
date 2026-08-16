@@ -3,6 +3,7 @@
 All provider HTTP is mocked; credential paths (env + Settings fallback) are
 exercised so the fail-closed behavior is pinned.
 """
+
 import time
 
 import pytest
@@ -15,7 +16,9 @@ class FakeResponse:
         self.ok = ok
         self.status_code = status_code
         self.text = text
-        self._payload = payload if payload is not None else {"success": True, "data": {}}
+        self._payload = (
+            payload if payload is not None else {"success": True, "data": {}}
+        )
 
     def json(self):
         return self._payload
@@ -26,15 +29,38 @@ def _mrr_rental(**over):
         "id": "5657736",
         "owner": "almansoorii",
         "renter": "cypher",
-        "hashrate": {"advertised": {"hash": "0.165", "type": "ph", "nice": "165.00T"},
-                     "average": {"hash": "0.15932150061561", "type": "ph", "nice": "159.32T", "percent": "96.56"}},
-        "price": {"type": "legacy", "advertised": "0.00000000", "paid": "0.00001404", "currency": "BTC"},
-        "length": "3.85", "extended": "0", "extensions": [],
-        "start": "2026-07-25 19:17:20 UTC", "end": "2026-07-25 23:08:20 UTC",
-        "start_unix": "1785007040", "end_unix": "1785020900", "ended": True,
-        "rig": {"id": "376882", "name": "A02 165TH", "type": "sha256ab",
-                "status": {"status": "available", "rented": False, "online": True},
-                "online": True, "region": "eu-de", "rpi": "100.00"},
+        "hashrate": {
+            "advertised": {"hash": "0.165", "type": "ph", "nice": "165.00T"},
+            "average": {
+                "hash": "0.15932150061561",
+                "type": "ph",
+                "nice": "159.32T",
+                "percent": "96.56",
+            },
+        },
+        "price": {
+            "type": "legacy",
+            "advertised": "0.00000000",
+            "paid": "0.00001404",
+            "currency": "BTC",
+        },
+        "length": "3.85",
+        "extended": "0",
+        "extensions": [],
+        "start": "2026-07-25 19:17:20 UTC",
+        "end": "2026-07-25 23:08:20 UTC",
+        "start_unix": "1785007040",
+        "end_unix": "1785020900",
+        "ended": True,
+        "rig": {
+            "id": "376882",
+            "name": "A02 165TH",
+            "type": "sha256ab",
+            "status": {"status": "available", "rented": False, "online": True},
+            "online": True,
+            "region": "eu-de",
+            "rpi": "100.00",
+        },
     }
     base.update(over)
     return base
@@ -58,10 +84,16 @@ def test_mrr_rentals_needs_auth(monkeypatch):
 
 
 def test_mrr_rentals_normalizes(mrr_creds, monkeypatch):
-    payload = {"success": True, "data": {
-        "total": 34, "returned": 1, "start": 0, "limit": 25,
-        "rentals": [_mrr_rental()],
-    }}
+    payload = {
+        "success": True,
+        "data": {
+            "total": 34,
+            "returned": 1,
+            "start": 0,
+            "limit": 25,
+            "rentals": [_mrr_rental()],
+        },
+    }
     calls = {}
 
     def fake_get(url, headers=None, timeout=None, params=None):
@@ -94,15 +126,22 @@ def test_mrr_rentals_normalizes(mrr_creds, monkeypatch):
 
 
 def test_mrr_rentals_http_error(mrr_creds, monkeypatch):
-    monkeypatch.setattr(rp.requests, "get", lambda *a, **k: FakeResponse(ok=False, status_code=503))
+    monkeypatch.setattr(
+        rp.requests, "get", lambda *a, **k: FakeResponse(ok=False, status_code=503)
+    )
     out = rp.fetch_mrr_rentals()
     assert out["success"] is False
     assert "503" in out.get("error", "")
 
 
 def test_mrr_rentals_permission_error(mrr_creds, monkeypatch):
-    payload = {"success": False, "data": {"permission": "balance", "message": "No Permission - account/1285"}}
-    monkeypatch.setattr(rp.requests, "get", lambda *a, **k: FakeResponse(payload=payload))
+    payload = {
+        "success": False,
+        "data": {"permission": "balance", "message": "No Permission - account/1285"},
+    }
+    monkeypatch.setattr(
+        rp.requests, "get", lambda *a, **k: FakeResponse(payload=payload)
+    )
     out = rp.fetch_mrr_rentals()
     assert out["success"] is False
     assert "No Permission" in out.get("error", "")
@@ -129,7 +168,9 @@ def test_mrr_rentals_bad_nonce_flags_auth_rejected(mrr_creds, monkeypatch):
     instead of a generic provider error — and needs_auth stays False (the
     credential EXISTS, it's just stale)."""
     payload = {"success": False, "data": "Not Authenticated - Invalid Key - Bad Nonce."}
-    monkeypatch.setattr(rp.requests, "get", lambda *a, **k: FakeResponse(payload=payload))
+    monkeypatch.setattr(
+        rp.requests, "get", lambda *a, **k: FakeResponse(payload=payload)
+    )
     out = rp.fetch_mrr_rentals()
     assert out["success"] is False
     assert out["needs_auth"] is False
@@ -151,10 +192,25 @@ def test_mrr_rentals_http_401_flags_auth_rejected(mrr_creds, monkeypatch):
 
 def test_mrr_rental_detail_graph_log(mrr_creds, monkeypatch):
     detail = {"success": True, "data": _mrr_rental()}
-    graph = {"success": True, "data": {"rentalid": "5657736", "chartdata": {
-        "time_start": "2026-07-25 15:17:20", "time_end": "2026-07-25 19:08:20",
-        "bars": "[1785007080000,0],[1785007140000,36865135957333]"}}}
-    log = {"success": True, "data": {"rental_log": [{"id": "43923043", "time": "t", "msg": "Rental #5657736 has finished."}]}}
+    graph = {
+        "success": True,
+        "data": {
+            "rentalid": "5657736",
+            "chartdata": {
+                "time_start": "2026-07-25 15:17:20",
+                "time_end": "2026-07-25 19:08:20",
+                "bars": "[1785007080000,0],[1785007140000,36865135957333]",
+            },
+        },
+    }
+    log = {
+        "success": True,
+        "data": {
+            "rental_log": [
+                {"id": "43923043", "time": "t", "msg": "Rental #5657736 has finished."}
+            ]
+        },
+    }
 
     def fake_get(url, headers=None, timeout=None):
         if "/graph" in url:
@@ -179,7 +235,8 @@ def test_mrr_rental_detail_bad_nonce_flags_auth_rejected(mrr_creds, monkeypatch)
     list already shows, carrying the REAL error body (not just 'HTTP 401')."""
     payload = {"success": False, "data": "Not Authenticated - Invalid Key - Bad Nonce."}
     monkeypatch.setattr(
-        rp.requests, "get",
+        rp.requests,
+        "get",
         lambda *a, **k: FakeResponse(ok=False, status_code=401, payload=payload),
     )
     out = rp.fetch_mrr_rental_detail("5657736")
@@ -191,7 +248,8 @@ def test_mrr_rental_detail_bad_nonce_flags_auth_rejected(mrr_creds, monkeypatch)
 def test_mrr_rental_detail_http_error_not_rejected(mrr_creds, monkeypatch):
     """A 5xx (provider down) is NOT a credential problem — never flag it."""
     monkeypatch.setattr(
-        rp.requests, "get",
+        rp.requests,
+        "get",
         lambda *a, **k: FakeResponse(ok=False, status_code=503),
     )
     out = rp.fetch_mrr_rental_detail("5657736")
@@ -205,7 +263,8 @@ def test_mrr_rental_detail_permission_error_not_rejected(mrr_creds, monkeypatch)
     Issue #152/#174) — the classifier must not match 'No Permission'."""
     payload = {"success": False, "data": "No Permission - account/1285"}
     monkeypatch.setattr(
-        rp.requests, "get",
+        rp.requests,
+        "get",
         lambda *a, **k: FakeResponse(payload=payload),
     )
     out = rp.fetch_mrr_rental_detail("5657736")
@@ -219,6 +278,9 @@ def test_braiins_contracts_needs_auth(monkeypatch):
     out = rp.fetch_braiins_contracts()
     assert out["success"] is False
     assert out["needs_auth"] is True
+    # Issue #187: explicit missing-credential flag so the panel ALWAYS shows
+    # the config hint when the key is absent (even on replayed payloads).
+    assert out.get("credentials_missing") is True
     assert "BRAIINS_API_KEY" in out.get("error", "")
 
 
@@ -226,24 +288,33 @@ def test_braiins_key_falls_back_to_settings(monkeypatch):
     """BRAIINS_API_KEY resolves from the Settings DB when the env var is unset
     (same env → Settings fallback as MRR)."""
     import services.settings as _settings_mod
+
     monkeypatch.delenv("BRAIINS_API_KEY", raising=False)
-    monkeypatch.setattr(_settings_mod, "load_settings",
-                        lambda: {"braiins_api_key": "owner-token-db"})
+    monkeypatch.setattr(
+        _settings_mod, "load_settings", lambda: {"braiins_api_key": "owner-token-db"}
+    )
     assert rp._braiins_key() == "owner-token-db"
 
 
 def test_braiins_key_env_wins_over_settings(monkeypatch):
     import services.settings as _settings_mod
+
     monkeypatch.setenv("BRAIINS_API_KEY", "owner-token-env")
-    monkeypatch.setattr(_settings_mod, "load_settings",
-                        lambda: {"braiins_api_key": "owner-token-db"})
+    monkeypatch.setattr(
+        _settings_mod, "load_settings", lambda: {"braiins_api_key": "owner-token-db"}
+    )
     assert rp._braiins_key() == "owner-token-env"
 
 
 def test_braiins_contracts_with_key(monkeypatch):
     monkeypatch.setenv("BRAIINS_API_KEY", "owner-token")
-    contract = {"id": "c-1", "status": "RUNNING", "speed_limit_ph": 121.7,
-                "amount_sat": 50000000, "price_sat": 50013000}
+    contract = {
+        "id": "c-1",
+        "status": "RUNNING",
+        "speed_limit_ph": 121.7,
+        "amount_sat": 50000000,
+        "price_sat": 50013000,
+    }
     payload = {"items": [contract]}
     seen = {}
 
@@ -278,6 +349,9 @@ def test_braiins_contracts_rejected_key_reports_error(monkeypatch):
     out = rp.fetch_braiins_contracts()
     assert out["success"] is False
     assert out["needs_auth"] is True
+    # Issue #187: parity with MRR — a configured-but-rejected key carries an
+    # explicit auth_rejected flag (not only the error text).
+    assert out.get("auth_rejected") is True
     assert "rejected" in out.get("error", "").lower()
     assert out["contracts"] == []
 
@@ -287,9 +361,14 @@ def test_braiins_contracts_spot_bid_fallback(monkeypatch):
     (/spot/bid/current, /spot/bid) still returns the caller's orders — the
     probe must fall back and parse the spot envelope + bid_status names."""
     monkeypatch.setenv("BRAIINS_API_KEY", "owner-token")
-    bid = {"bid_id": "B123", "bid_status": "SPOT_BID_STATUS_ACTIVE",
-           "speed_limit_ph": 100.0, "amount_sat": 20000000, "price_sat": 90000000,
-           "created_ts": "2026-07-01T00:00:00Z"}
+    bid = {
+        "bid_id": "B123",
+        "bid_status": "SPOT_BID_STATUS_ACTIVE",
+        "speed_limit_ph": 100.0,
+        "amount_sat": 20000000,
+        "price_sat": 90000000,
+        "created_ts": "2026-07-01T00:00:00Z",
+    }
 
     def fake_get(url, headers=None, timeout=None):
         if "/contract" in url:
@@ -313,10 +392,14 @@ def test_braiins_contract_speed_spot_fallback(monkeypatch):
     def fake_get(url, headers=None, timeout=None):
         if "/contract/" in url and "/speed" in url:
             return FakeResponse(ok=False, status_code=404)
-        return FakeResponse(payload={"items": [
-            {"timestamp": 1785007000, "speed_ph": 100.0},
-            {"timestamp": 1785007300, "speed_ph": 110.0},
-        ]})
+        return FakeResponse(
+            payload={
+                "items": [
+                    {"timestamp": 1785007000, "speed_ph": 100.0},
+                    {"timestamp": 1785007300, "speed_ph": 110.0},
+                ]
+            }
+        )
 
     monkeypatch.setattr(rp.requests, "get", fake_get)
     out = rp.fetch_braiins_contract_speed("B123")
@@ -330,15 +413,24 @@ def test_braiins_contract_detail_normalizes_with_metrics(monkeypatch):
     analytics (percent, avg TH, delivered TH.h, cost sats/TH/h) so the
     frontend perf banner renders for Braiins contracts too."""
     monkeypatch.setenv("BRAIINS_API_KEY", "owner-token")
-    contract = {"id": "c-1", "status": "RUNNING", "speed_limit_ph": 100.0,
-                "amount_sat": 50000000, "price_sat": 50013000}
+    contract = {
+        "id": "c-1",
+        "status": "RUNNING",
+        "speed_limit_ph": 100.0,
+        "amount_sat": 50000000,
+        "price_sat": 50013000,
+    }
 
     def fake_get(url, headers=None, timeout=None):
         if "speed" in url:
-            return FakeResponse(payload={"items": [
-                {"timestamp": 1000, "speed_ph": 100.0},
-                {"timestamp": 4600, "speed_ph": 100.0},
-            ]})
+            return FakeResponse(
+                payload={
+                    "items": [
+                        {"timestamp": 1000, "speed_ph": 100.0},
+                        {"timestamp": 4600, "speed_ph": 100.0},
+                    ]
+                }
+            )
         return FakeResponse(payload={"items": [contract]})
 
     monkeypatch.setattr(rp.requests, "get", fake_get)
@@ -369,16 +461,25 @@ def test_braiins_contract_detail_accepts_passed_contract(monkeypatch):
     the detail must NOT re-probe the list endpoints — only the speed series
     is fetched. Guards the per-click HTTP cost."""
     monkeypatch.setenv("BRAIINS_API_KEY", "owner-token")
-    contract = {"id": "B1", "status": "ACTIVE", "speed_limit_ph": 50.0,
-                "amount_sat": 10000000, "price_sat": 30000000}
+    contract = {
+        "id": "B1",
+        "status": "ACTIVE",
+        "speed_limit_ph": 50.0,
+        "amount_sat": 10000000,
+        "price_sat": 30000000,
+    }
     urls = []
 
     def fake_get(url, headers=None, timeout=None):
         urls.append(url)
-        return FakeResponse(payload={"items": [
-            {"timestamp": 0, "speed_ph": 50.0},
-            {"timestamp": 3600, "speed_ph": 50.0},
-        ]})
+        return FakeResponse(
+            payload={
+                "items": [
+                    {"timestamp": 0, "speed_ph": 50.0},
+                    {"timestamp": 3600, "speed_ph": 50.0},
+                ]
+            }
+        )
 
     monkeypatch.setattr(rp.requests, "get", fake_get)
     out = rp.fetch_braiins_contract_detail("B1", contract=contract)
@@ -395,6 +496,7 @@ def test_braiins_contract_detail_accepts_passed_contract(monkeypatch):
 
 def _mkt_offer(provider, btc_per_th_day, estimated=False):
     from services.hashrate_market import NormalizedOffer
+
     return NormalizedOffer(
         provider=provider,
         hashrate=100.0,
@@ -412,7 +514,7 @@ def test_market_reference_picks_cheapest_live(monkeypatch):
     converts BTC/TH/day → sats/TH/h (price * 1e8 / 24h)."""
     offers = [
         _mkt_offer("braiins", 0.000150),
-        _mkt_offer("mrr", 0.000120),      # cheapest live → wins
+        _mkt_offer("mrr", 0.000120),  # cheapest live → wins
         _mkt_offer("nicehash", 0.000010, estimated=True),  # estimated → ignored
     ]
     monkeypatch.setattr(rp, "_fetch_market_offers", lambda: offers)
@@ -432,6 +534,7 @@ def test_market_reference_unavailable_when_no_offers(monkeypatch):
 def test_market_reference_never_raises(monkeypatch):
     def boom():
         raise RuntimeError("provider down")
+
     monkeypatch.setattr(rp, "_fetch_market_offers", boom)
     assert rp.fetch_market_reference() == {"available": False}
 
@@ -471,10 +574,10 @@ def test_rig_performance_history_matches_by_rig(tmp_path, monkeypatch):
     # The listing returns NORMALIZED rentals (fetch_mrr_rentals output) —
     # normalize the raw fixtures the same way the real fetcher does.
     raw = [
-        _mrr_rental(id="1", rig={"id": "376882", "name": "A02 165TH"}),          # same rig id
-        _mrr_rental(id="2", rig={"id": "376882", "name": "A02 165TH"}),          # same rig id
-        _mrr_rental(id="3", rig={"id": "999", "name": "Other rig"}),            # different rig
-        _mrr_rental(id="4", rig={"id": None, "name": "a02 165th"}),              # name-only match
+        _mrr_rental(id="1", rig={"id": "376882", "name": "A02 165TH"}),  # same rig id
+        _mrr_rental(id="2", rig={"id": "376882", "name": "A02 165TH"}),  # same rig id
+        _mrr_rental(id="3", rig={"id": "999", "name": "Other rig"}),  # different rig
+        _mrr_rental(id="4", rig={"id": None, "name": "a02 165th"}),  # name-only match
     ]
     # Set distinct starts so the newest-first sort is observable.
     raw[0]["start"] = "2026-07-20 10:00:00 UTC"
@@ -483,12 +586,18 @@ def test_rig_performance_history_matches_by_rig(tmp_path, monkeypatch):
     rentals = [rp._normalize_rental(r) for r in raw]
 
     def fake_listing(**kw):
-        return {"success": True, "needs_auth": False, "rentals": rentals, "total": len(rentals)}
+        return {
+            "success": True,
+            "needs_auth": False,
+            "rentals": rentals,
+            "total": len(rentals),
+        }
 
     monkeypatch.setattr(rp, "fetch_mrr_rentals", fake_listing)
     # The real caller (detail route) passes BOTH id and name from the rig.
-    out = rp.fetch_rig_performance_history(rig_id="376882", rig_name="A02 165TH",
-                                           exclude_rental_id="1")
+    out = rp.fetch_rig_performance_history(
+        rig_id="376882", rig_name="A02 165TH", exclude_rental_id="1"
+    )
     ids = [r["id"] for r in out]
     # #1 excluded (current), #2 same id, #4 name match; #3 different rig out.
     assert ids == ["2", "4"]
@@ -517,19 +626,67 @@ def rclient():
         _app_module._RENTALS_CACHE.clear()
 
 
+def test_rentals_payload_carries_version_and_braiins_flags(rclient, monkeypatch):
+    """GET /api/rentals stamps rentals_payload_version and passes the braiins
+    credential flags through (needs_auth/credentials_missing/auth_rejected) —
+    the frontend needs them to tell a stale payload from a real empty account
+    (Issue #187)."""
+    monkeypatch.setattr(
+        _app_module._rental_perf,
+        "fetch_mrr_rentals",
+        lambda rtype, history, limit, tenant_id="": {
+            "success": True,
+            "needs_auth": False,
+            "rentals": [],
+            "total": 0,
+        },
+    )
+    monkeypatch.setattr(
+        _app_module._rental_perf,
+        "fetch_braiins_contracts",
+        lambda tenant_id="": {
+            "success": False,
+            "needs_auth": True,
+            "credentials_missing": True,
+            "auth_rejected": False,
+            "contracts": [],
+            "error": "BRAIINS_API_KEY not configured",
+        },
+    )
+
+    resp = rclient.get("/api/rentals")
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data.get("rentals_payload_version") == 2
+    assert data["braiins"]["needs_auth"] is True
+    assert data["braiins"]["credentials_missing"] is True
+    assert data["braiins"]["auth_rejected"] is False
+
+
 def test_detail_route_mrr_enriched(rclient, monkeypatch):
     """GET /api/rentals/detail?provider=mrr returns perf + rig_history + market
     computed from the RAW MRR detail (server-side analytics)."""
     raw = _mrr_rental()
     monkeypatch.setattr(
-        _app_module._rental_perf, "fetch_mrr_rental_detail",
-        lambda rid, tenant_id="": {"success": True, "detail": raw, "graph": {"chartdata": {"bars": "[1,2]"}}, "log": {"rental_log": []}})
+        _app_module._rental_perf,
+        "fetch_mrr_rental_detail",
+        lambda rid, tenant_id="": {
+            "success": True,
+            "detail": raw,
+            "graph": {"chartdata": {"bars": "[1,2]"}},
+            "log": {"rental_log": []},
+        },
+    )
     monkeypatch.setattr(
-        _app_module._rental_perf, "fetch_rig_performance_history",
-        lambda *a, **k: [{"id": "2", "start": "2026-07-01", "percent": 94.0}])
+        _app_module._rental_perf,
+        "fetch_rig_performance_history",
+        lambda *a, **k: [{"id": "2", "start": "2026-07-01", "percent": 94.0}],
+    )
     monkeypatch.setattr(
-        _app_module._rental_perf, "fetch_market_reference",
-        lambda: {"available": True, "price_sats_per_thh": 500.0, "provider": "mrr"})
+        _app_module._rental_perf,
+        "fetch_market_reference",
+        lambda: {"available": True, "price_sats_per_thh": 500.0, "provider": "mrr"},
+    )
 
     resp = rclient.get("/api/rentals/detail?provider=mrr&id=5657736")
     assert resp.status_code == 200
@@ -547,7 +704,8 @@ def test_detail_route_mrr_propagates_auth_rejected(rclient, monkeypatch):
     """A rejected MRR key on the detail call surfaces auth_rejected so the
     modal explains 'regenerate the key' (Issue #174)."""
     monkeypatch.setattr(
-        _app_module._rental_perf, "fetch_mrr_rental_detail",
+        _app_module._rental_perf,
+        "fetch_mrr_rental_detail",
         lambda rid, tenant_id="": {
             "success": False,
             "auth_rejected": True,
@@ -557,7 +715,8 @@ def test_detail_route_mrr_propagates_auth_rejected(rclient, monkeypatch):
         },
     )
     monkeypatch.setattr(
-        _app_module._rental_perf, "fetch_market_reference",
+        _app_module._rental_perf,
+        "fetch_market_reference",
         lambda: {"available": False},
     )
 
@@ -572,14 +731,24 @@ def test_detail_route_mrr_propagates_auth_rejected(rclient, monkeypatch):
 def test_detail_route_braiins_market(rclient, monkeypatch):
     """POST /api/rentals/detail (braiins) carries market + empty rig_history."""
     monkeypatch.setattr(
-        _app_module._rental_perf, "fetch_braiins_contract_detail",
-        lambda cid, contract=None, tenant_id="": {"success": True, "detail": {"id": cid, "perf": {"percent": 95.0}},
-                                                    "graph": {"points": []}})
+        _app_module._rental_perf,
+        "fetch_braiins_contract_detail",
+        lambda cid, contract=None, tenant_id="": {
+            "success": True,
+            "detail": {"id": cid, "perf": {"percent": 95.0}},
+            "graph": {"points": []},
+        },
+    )
     monkeypatch.setattr(
-        _app_module._rental_perf, "fetch_market_reference",
-        lambda: {"available": True, "price_sats_per_thh": 480.0, "provider": "braiins"})
+        _app_module._rental_perf,
+        "fetch_market_reference",
+        lambda: {"available": True, "price_sats_per_thh": 480.0, "provider": "braiins"},
+    )
 
-    resp = rclient.post("/api/rentals/detail", json={"provider": "braiins", "id": "B1", "contract": {"id": "B1"}})
+    resp = rclient.post(
+        "/api/rentals/detail",
+        json={"provider": "braiins", "id": "B1", "contract": {"id": "B1"}},
+    )
     assert resp.status_code == 200
     data = resp.get_json()
     assert data["detail"]["perf"]["percent"] == 95.0
@@ -599,10 +768,13 @@ def test_braiins_key_strips_whitespace(monkeypatch):
     becomes the `apikey` header (verbatim) — otherwise Braiins 401s and the
     panel reports "key rejected" for a valid key."""
     import services.settings as _settings_mod
+
     monkeypatch.delenv("BRAIINS_API_KEY", raising=False)
-    monkeypatch.setattr(_settings_mod, "load_settings",
-                        lambda: {"braiins_api_key": "owner-token\n  "})
+    monkeypatch.setattr(
+        _settings_mod, "load_settings", lambda: {"braiins_api_key": "owner-token\n  "}
+    )
     from agents.solo_mining_advisor.tools import braiins_credentials
+
     assert braiins_credentials()["api_key"] == "owner-token"
     assert rp._braiins_key() == "owner-token"
 
@@ -612,6 +784,7 @@ def test_braiins_credentials_strips_env(monkeypatch):
     trailing whitespace from the dashboard UI)."""
     monkeypatch.setenv("BRAIINS_API_KEY", "env-token \t")
     from agents.solo_mining_advisor.tools import braiins_credentials
+
     assert braiins_credentials()["api_key"] == "env-token"
 
 
@@ -636,8 +809,9 @@ def test_settings_get_exposes_env_overrides(rclient, monkeypatch):
 
 def test_settings_test_braiins_not_configured(rclient, monkeypatch):
     """No key anywhere → clear 'not configured' verdict (not a 401)."""
-    monkeypatch.setattr(_tools, "braiins_credentials",
-                        lambda tenant_id="": {"api_key": ""})
+    monkeypatch.setattr(
+        _tools, "braiins_credentials", lambda tenant_id="": {"api_key": ""}
+    )
     monkeypatch.delenv("BRAIINS_API_KEY", raising=False)
     resp = rclient.post("/api/settings/test-braiins")
     data = resp.get_json()
@@ -648,12 +822,19 @@ def test_settings_test_braiins_not_configured(rclient, monkeypatch):
 
 def test_settings_test_braiins_rejected(rclient, monkeypatch):
     """Configured key that the API refuses → verdict 'rejected' with reason."""
-    monkeypatch.setattr(_tools, "braiins_credentials",
-                        lambda tenant_id="": {"api_key": "owner-token"})
     monkeypatch.setattr(
-        rp, "fetch_braiins_contracts",
-        lambda tenant_id="": {"success": False, "needs_auth": True, "contracts": [],
-                              "error": "Braiins API rejected the key (HTTP 401/403)"})
+        _tools, "braiins_credentials", lambda tenant_id="": {"api_key": "owner-token"}
+    )
+    monkeypatch.setattr(
+        rp,
+        "fetch_braiins_contracts",
+        lambda tenant_id="": {
+            "success": False,
+            "needs_auth": True,
+            "contracts": [],
+            "error": "Braiins API rejected the key (HTTP 401/403)",
+        },
+    )
     resp = rclient.post("/api/settings/test-braiins")
     data = resp.get_json()
     assert data["success"] is False
@@ -664,12 +845,18 @@ def test_settings_test_braiins_rejected(rclient, monkeypatch):
 
 def test_settings_test_braiins_ok(rclient, monkeypatch):
     """Valid key → verdict 'ok' with the contract count."""
-    monkeypatch.setattr(_tools, "braiins_credentials",
-                        lambda tenant_id="": {"api_key": "owner-token"})
     monkeypatch.setattr(
-        rp, "fetch_braiins_contracts",
-        lambda tenant_id="": {"success": True, "needs_auth": False,
-                              "contracts": [{"id": "B1"}, {"id": "B2"}]})
+        _tools, "braiins_credentials", lambda tenant_id="": {"api_key": "owner-token"}
+    )
+    monkeypatch.setattr(
+        rp,
+        "fetch_braiins_contracts",
+        lambda tenant_id="": {
+            "success": True,
+            "needs_auth": False,
+            "contracts": [{"id": "B1"}, {"id": "B2"}],
+        },
+    )
     resp = rclient.post("/api/settings/test-braiins")
     data = resp.get_json()
     assert data["success"] is True
@@ -679,11 +866,11 @@ def test_settings_test_braiins_ok(rclient, monkeypatch):
 
 def test_hash_to_th_units():
     """MRR hash values carry a unit (ph/mh/gh/th) — normalize to TH/s."""
-    assert rp._hash_to_th("0.165", "ph") == 165.0      # 0.165 PH = 165 TH
-    assert rp._hash_to_th("159.32", "th") == 159.32   # already TH
-    assert rp._hash_to_th("500", "gh") == 0.5         # 500 GH = 0.5 TH
-    assert rp._hash_to_th("1", "mh") == 1e-6          # 1 MH = 1e-6 TH
-    assert rp._hash_to_th("7", "") == 7.0             # unknown unit → raw
+    assert rp._hash_to_th("0.165", "ph") == 165.0  # 0.165 PH = 165 TH
+    assert rp._hash_to_th("159.32", "th") == 159.32  # already TH
+    assert rp._hash_to_th("500", "gh") == 0.5  # 500 GH = 0.5 TH
+    assert rp._hash_to_th("1", "mh") == 1e-6  # 1 MH = 1e-6 TH
+    assert rp._hash_to_th("7", "") == 7.0  # unknown unit → raw
     assert rp._hash_to_th(None, "ph") is None
     assert rp._hash_to_th("nope", "ph") is None
 
@@ -733,9 +920,13 @@ def test_compute_rental_pl_missing_inputs():
 
 
 def test_compute_speed_stability_grades():
-    stable = rp.compute_speed_stability([{"speed_ph": 100}, {"speed_ph": 100}, {"speed_ph": 104}])
+    stable = rp.compute_speed_stability(
+        [{"speed_ph": 100}, {"speed_ph": 100}, {"speed_ph": 104}]
+    )
     assert stable["grade"] == "STABLE" and stable["cv_pct"] < 5
-    variable = rp.compute_speed_stability([{"speed_ph": 80}, {"speed_ph": 150}, {"speed_ph": 70}])
+    variable = rp.compute_speed_stability(
+        [{"speed_ph": 80}, {"speed_ph": 150}, {"speed_ph": 70}]
+    )
     assert variable["grade"] == "VARIABLE" and variable["cv_pct"] > 15
     # Fewer than 2 points → NO DATA
     nodata = rp.compute_speed_stability([{"speed_ph": 100}])
@@ -751,7 +942,9 @@ def test_attach_pl_from_perf():
 
 def test_portfolio_summary_aggregates():
     # The route passes NORMALIZED buckets (fetch_mrr_rentals output).
-    active = [rp._normalize_rental(_mrr_rental())]       # paid 0.00001404 BTC · avg 159.32 TH · 3.85h
+    active = [
+        rp._normalize_rental(_mrr_rental())
+    ]  # paid 0.00001404 BTC · avg 159.32 TH · 3.85h
     history = [rp._normalize_rental(_mrr_rental(id="2"))]
     pf = rp.compute_portfolio_summary(active, history, [], [])
     assert pf["counts"]["active"] == 1 and pf["counts"]["history"] == 1
@@ -775,12 +968,15 @@ def test_rental_history_local_roundtrip(tmp_path, monkeypatch):
     assert local[0]["percent"] == 96.56
     # Tenant isolation: another tenant sees nothing.
     assert rp.get_local_rig_history(rig_id="376882", tenant_id="t-other") == []
+
     # Local-first: fetch_rig_performance_history must NOT hit the MRR API.
     def boom(**kw):
         raise AssertionError("must not hit MRR when local history exists")
+
     monkeypatch.setattr(rp, "fetch_mrr_rentals", boom)
-    out = rp.fetch_rig_performance_history(rig_id="376882", rig_name="A02 165TH",
-                                           tenant_id="t-hist")
+    out = rp.fetch_rig_performance_history(
+        rig_id="376882", rig_name="A02 165TH", tenant_id="t-hist"
+    )
     assert [x["id"] for x in out] == ["5657736"]
 
 
@@ -793,17 +989,18 @@ def test_fetch_rig_performance_history_remote_fallback(tmp_path, monkeypatch):
 
     def fake_listing(**kw):
         calls["n"] += 1
-        return {"success": True, "needs_auth": False,
-                "rentals": rentals, "total": 1}
+        return {"success": True, "needs_auth": False, "rentals": rentals, "total": 1}
 
     monkeypatch.setattr(rp, "fetch_mrr_rentals", fake_listing)
     # First call: fetches + persists the matched rental.
-    out = rp.fetch_rig_performance_history(rig_id="376882", rig_name="A02 165TH",
-                                           tenant_id="t-fb")
+    out = rp.fetch_rig_performance_history(
+        rig_id="376882", rig_name="A02 165TH", tenant_id="t-fb"
+    )
     assert len(out) == 1 and out[0]["id"] == "5657736"
     # Second call is served from SQLite — the API is NOT re-hit.
-    out2 = rp.fetch_rig_performance_history(rig_id="376882", rig_name="A02 165TH",
-                                            tenant_id="t-fb")
+    out2 = rp.fetch_rig_performance_history(
+        rig_id="376882", rig_name="A02 165TH", tenant_id="t-fb"
+    )
     assert len(out2) == 1 and out2[0]["id"] == "5657736"
     assert calls["n"] == 1
 
@@ -813,20 +1010,29 @@ def test_list_route_includes_portfolio_and_ingest(rclient, monkeypatch):
     buckets into local history (track record builds with zero extra calls)."""
     rental = _mrr_rental()
     monkeypatch.setattr(
-        _app_module._rental_perf, "fetch_mrr_rentals",
+        _app_module._rental_perf,
+        "fetch_mrr_rentals",
         lambda rtype="renter", history=False, limit=50, tenant_id="": {
-            "success": True, "needs_auth": False,
+            "success": True,
+            "needs_auth": False,
             "rentals": [rental] if (rtype == "renter" and history) else [],
-            "total": 1})
+            "total": 1,
+        },
+    )
     monkeypatch.setattr(
-        _app_module._rental_perf, "fetch_braiins_contracts",
-        lambda tenant_id="": {"success": True, "needs_auth": False, "contracts": []})
+        _app_module._rental_perf,
+        "fetch_braiins_contracts",
+        lambda tenant_id="": {"success": True, "needs_auth": False, "contracts": []},
+    )
     monkeypatch.setattr(
-        _app_module._rental_perf, "get_rig_blacklist", lambda tenant_id="": [])
+        _app_module._rental_perf, "get_rig_blacklist", lambda tenant_id="": []
+    )
     ingested = {}
     monkeypatch.setattr(
-        _app_module._rental_perf, "ingest_rentals",
-        lambda *a, **k: ingested.update({"args": a}) or True)
+        _app_module._rental_perf,
+        "ingest_rentals",
+        lambda *a, **k: ingested.update({"args": a}) or True,
+    )
     resp = rclient.get("/api/rentals")
     assert resp.status_code == 200
     data = resp.get_json()
@@ -848,10 +1054,13 @@ def test_list_route_serves_ttl_cache_without_refetch(rclient, monkeypatch):
 
     monkeypatch.setattr(_app_module._rental_perf, "fetch_mrr_rentals", _fake_mrr)
     monkeypatch.setattr(
-        _app_module._rental_perf, "fetch_braiins_contracts",
-        lambda tenant_id="": {"success": True, "needs_auth": False, "contracts": []})
+        _app_module._rental_perf,
+        "fetch_braiins_contracts",
+        lambda tenant_id="": {"success": True, "needs_auth": False, "contracts": []},
+    )
     monkeypatch.setattr(
-        _app_module._rental_perf, "get_rig_blacklist", lambda tenant_id="": [])
+        _app_module._rental_perf, "get_rig_blacklist", lambda tenant_id="": []
+    )
 
     r1 = rclient.get("/api/rentals")
     assert r1.status_code == 200
@@ -870,16 +1079,21 @@ def test_detail_route_mrr_has_pl(rclient, monkeypatch):
     perf analytics + the paid amount (server-side economics)."""
     raw = _mrr_rental()
     monkeypatch.setattr(
-        _app_module._rental_perf, "fetch_mrr_rental_detail",
-        lambda rid, tenant_id="": {"success": True, "detail": raw,
-                                    "graph": {"chartdata": {"bars": "[1,2]"}},
-                                    "log": {"rental_log": []}})
+        _app_module._rental_perf,
+        "fetch_mrr_rental_detail",
+        lambda rid, tenant_id="": {
+            "success": True,
+            "detail": raw,
+            "graph": {"chartdata": {"bars": "[1,2]"}},
+            "log": {"rental_log": []},
+        },
+    )
     monkeypatch.setattr(
-        _app_module._rental_perf, "fetch_rig_performance_history",
-        lambda *a, **k: [])
+        _app_module._rental_perf, "fetch_rig_performance_history", lambda *a, **k: []
+    )
     monkeypatch.setattr(
-        _app_module._rental_perf, "fetch_market_reference",
-        lambda: {"available": False})
+        _app_module._rental_perf, "fetch_market_reference", lambda: {"available": False}
+    )
     resp = rclient.get("/api/rentals/detail?provider=mrr&id=5657736")
     assert resp.status_code == 200
     data = resp.get_json()
@@ -899,15 +1113,18 @@ def _ended_mrr_rental(rid, end_unix, paid_btc="0.0004", **over):
     r = _mrr_rental(id=rid)
     r["ended"] = True
     r["end_unix"] = str(end_unix)
-    r["price"] = {"type": "legacy", "advertised": "0.00000000",
-                  "paid": paid_btc, "currency": "BTC"}
+    r["price"] = {
+        "type": "legacy",
+        "advertised": "0.00000000",
+        "paid": paid_btc,
+        "currency": "BTC",
+    }
     r.update(over)
     return rp._normalize_rental(r)
 
 
 def _pl_settings(threshold="-50", window="48"):
-    return {"rental_pl_alert_pct": threshold,
-            "rental_pl_alert_window_hours": window}
+    return {"rental_pl_alert_pct": threshold, "rental_pl_alert_window_hours": window}
 
 
 def test_pl_alert_fires_below_threshold_and_dedups(tmp_path, monkeypatch):
@@ -925,7 +1142,11 @@ def test_pl_alert_fires_below_threshold_and_dedups(tmp_path, monkeypatch):
     assert alert["severity"] == "WARN"
     assert alert["category"] == "rental_pl"
     assert "Rental #r1" in alert["message"]
-    assert "P/L -71" in alert["message"] or "P/L −71" in alert["message"] or "P/L -7" in alert["message"]
+    assert (
+        "P/L -71" in alert["message"]
+        or "P/L −71" in alert["message"]
+        or "P/L -7" in alert["message"]
+    )
 
     # Second evaluation: deduped (one alert per rental EVER).
     assert rp.evaluate_rental_pl_alerts(hist, [], tenant_id="t1", now=now) == []
@@ -949,10 +1170,14 @@ def test_pl_alert_disabled_when_threshold_empty_or_positive(tmp_path, monkeypatc
     now = int(time.time())
     hist = [_ended_mrr_rental("r1", now - 1000)]
     # empty threshold → off
-    monkeypatch.setattr(rp, "load_settings", lambda tenant_id="": _pl_settings(threshold=""))
+    monkeypatch.setattr(
+        rp, "load_settings", lambda tenant_id="": _pl_settings(threshold="")
+    )
     assert rp.evaluate_rental_pl_alerts(hist, [], tenant_id="t3", now=now) == []
     # non-negative threshold → off (nonsensical)
-    monkeypatch.setattr(rp, "load_settings", lambda tenant_id="": _pl_settings(threshold="0"))
+    monkeypatch.setattr(
+        rp, "load_settings", lambda tenant_id="": _pl_settings(threshold="0")
+    )
     assert rp.evaluate_rental_pl_alerts(hist, [], tenant_id="t3", now=now) == []
 
 
@@ -973,7 +1198,9 @@ def test_pl_alert_overpay_vs_market_fallback(tmp_path, monkeypatch):
     falls back to OVERPAY vs the live market price (> (1+|threshold|/100)×)."""
     monkeypatch.setenv("DB_PATH", str(tmp_path / "pl5.sqlite"))
     monkeypatch.setattr(rp, "_network_hashrate_hs", lambda: 0.0)  # cold
-    monkeypatch.setattr(rp, "load_settings", lambda tenant_id="": _pl_settings(threshold="-50"))
+    monkeypatch.setattr(
+        rp, "load_settings", lambda tenant_id="": _pl_settings(threshold="-50")
+    )
     offers = [_mkt_offer("braiins", 0.000120)]  # 500 sats/TH·h
     monkeypatch.setattr(rp, "_fetch_market_offers", lambda: offers)
     now = int(time.time())
@@ -1003,12 +1230,21 @@ def test_pl_alert_mark_is_atomic(tmp_path, monkeypatch):
 
 
 def _reco_hist_row(rid, rig_id, rig_name, pct, cost, start):
-    return {"provider": "mrr", "rental_id": rid, "rig_id": rig_id,
-            "rig_name": rig_name, "start": start, "end": None,
-            "percent": pct, "avg_th": 100.0, "advertised_th": 100.0,
-            "cost_sats_per_thh": cost, "length_hours": 1.0,
-            "delivered_thh": 100.0,
-            "paid_sats": (cost * 100.0) if cost is not None else None}
+    return {
+        "provider": "mrr",
+        "rental_id": rid,
+        "rig_id": rig_id,
+        "rig_name": rig_name,
+        "start": start,
+        "end": None,
+        "percent": pct,
+        "avg_th": 100.0,
+        "advertised_th": 100.0,
+        "cost_sats_per_thh": cost,
+        "length_hours": 1.0,
+        "delivered_thh": 100.0,
+        "paid_sats": (cost * 100.0) if cost is not None else None,
+    }
 
 
 def test_build_rental_recommendations_ranks_and_counts_avoid(tmp_path, monkeypatch):
@@ -1119,17 +1355,23 @@ def test_market_trend_aggregates_daily_cheapest(tmp_path, monkeypatch):
     monkeypatch.setenv("DB_PATH", str(tmp_path / "trend.sqlite"))
     conn = rp.get_db()
     c = conn.cursor()
-    c.execute("""CREATE TABLE IF NOT EXISTS hashrate_market_history (
+    c.execute(
+        """CREATE TABLE IF NOT EXISTS hashrate_market_history (
         ts INTEGER, provider TEXT, hashrate REAL, price_per_th_day REAL,
-        duration_days REAL, fee_pct REAL, algorithm TEXT, score REAL, raw_data TEXT)""")
+        duration_days REAL, fee_pct REAL, algorithm TEXT, score REAL, raw_data TEXT)"""
+    )
     base = int(time.time()) - 3 * 86400
     for i in range(3):
         ts = base + i * 86400
         # Two providers per day — the MIN must win (braiins cheaper).
-        c.execute("INSERT INTO hashrate_market_history VALUES (?,?,?,?,?,?,?,?,?)",
-                  (ts, "mrr", 100.0, 0.000240, 1.0, 0.0, "sha256", 1.0, "{}"))
-        c.execute("INSERT INTO hashrate_market_history VALUES (?,?,?,?,?,?,?,?,?)",
-                  (ts, "braiins", 100.0, 0.000120, 1.0, 0.0, "sha256", 1.0, "{}"))
+        c.execute(
+            "INSERT INTO hashrate_market_history VALUES (?,?,?,?,?,?,?,?,?)",
+            (ts, "mrr", 100.0, 0.000240, 1.0, 0.0, "sha256", 1.0, "{}"),
+        )
+        c.execute(
+            "INSERT INTO hashrate_market_history VALUES (?,?,?,?,?,?,?,?,?)",
+            (ts, "braiins", 100.0, 0.000120, 1.0, 0.0, "sha256", 1.0, "{}"),
+        )
     conn.commit()
     conn.close()
 
@@ -1150,12 +1392,16 @@ def test_market_trend_served_from_cache(tmp_path, monkeypatch):
     monkeypatch.setenv("DB_PATH", str(tmp_path / "trend_cache.sqlite"))
     conn = rp.get_db()
     c = conn.cursor()
-    c.execute("""CREATE TABLE IF NOT EXISTS hashrate_market_history (
+    c.execute(
+        """CREATE TABLE IF NOT EXISTS hashrate_market_history (
         ts INTEGER, provider TEXT, hashrate REAL, price_per_th_day REAL,
-        duration_days REAL, fee_pct REAL, algorithm TEXT, score REAL, raw_data TEXT)""")
+        duration_days REAL, fee_pct REAL, algorithm TEXT, score REAL, raw_data TEXT)"""
+    )
     now = int(time.time())
-    c.execute("INSERT INTO hashrate_market_history VALUES (?,?,?,?,?,?,?,?,?)",
-              (now, "braiins", 100.0, 0.000120, 1.0, 0.0, "sha256", 1.0, "{}"))
+    c.execute(
+        "INSERT INTO hashrate_market_history VALUES (?,?,?,?,?,?,?,?,?)",
+        (now, "braiins", 100.0, 0.000120, 1.0, 0.0, "sha256", 1.0, "{}"),
+    )
     conn.commit()
     conn.close()
 
@@ -1182,8 +1428,10 @@ def test_auto_blacklist_flow(tmp_path, monkeypatch):
     respected: the same streak never re-excludes — only NEW bad samples
     after the restore do."""
     monkeypatch.setenv("DB_PATH", str(tmp_path / "auto.sqlite"))
-    bad_hist = [{"id": "1", "start": "2026-07-20 10:00:00", "percent": 60.0},
-                {"id": "2", "start": "2026-07-21 10:00:00", "percent": 55.0}]
+    bad_hist = [
+        {"id": "1", "start": "2026-07-20 10:00:00", "percent": 60.0},
+        {"id": "2", "start": "2026-07-21 10:00:00", "percent": 55.0},
+    ]
     monkeypatch.setattr(rp, "fetch_rig_performance_history", lambda *a, **k: bad_hist)
     out = rp.analyze_rig(rig_id="rigZ", tenant_id="t-auto")
     assert out["auto_blacklisted"] is True
@@ -1209,9 +1457,13 @@ def test_auto_blacklist_flow(tmp_path, monkeypatch):
 def test_auto_blacklist_not_for_good_rig(tmp_path, monkeypatch):
     monkeypatch.setenv("DB_PATH", str(tmp_path / "auto2.sqlite"))
     monkeypatch.setattr(
-        rp, "fetch_rig_performance_history",
-        lambda *a, **k: [{"id": "1", "start": "2026-07-20", "percent": 97.0},
-                         {"id": "2", "start": "2026-07-21", "percent": 96.0}])
+        rp,
+        "fetch_rig_performance_history",
+        lambda *a, **k: [
+            {"id": "1", "start": "2026-07-20", "percent": 97.0},
+            {"id": "2", "start": "2026-07-21", "percent": 96.0},
+        ],
+    )
     out = rp.analyze_rig(rig_id="rigGood", tenant_id="t-auto2")
     assert out["auto_blacklisted"] is False
     assert rp.is_rig_blacklisted("rigGood", tenant_id="t-auto2") is False
@@ -1221,34 +1473,67 @@ def test_list_route_carries_reco_trend_and_export(rclient, monkeypatch):
     """GET /api/rentals includes recommendations + market_trend + auto list,
     and /api/rentals/export returns a CSV ledger."""
     monkeypatch.setattr(
-        _app_module._rental_perf, "fetch_mrr_rentals",
+        _app_module._rental_perf,
+        "fetch_mrr_rentals",
         lambda rtype="renter", history=False, limit=50, tenant_id="": {
-            "success": True, "needs_auth": False,
-            "rentals": [rp._normalize_rental(_mrr_rental())] if (rtype == "renter" and not history) else [],
-            "total": 1})
+            "success": True,
+            "needs_auth": False,
+            "rentals": (
+                [rp._normalize_rental(_mrr_rental())]
+                if (rtype == "renter" and not history)
+                else []
+            ),
+            "total": 1,
+        },
+    )
     monkeypatch.setattr(
-        _app_module._rental_perf, "fetch_braiins_contracts",
-        lambda tenant_id="": {"success": True, "needs_auth": False, "contracts": []})
+        _app_module._rental_perf,
+        "fetch_braiins_contracts",
+        lambda tenant_id="": {"success": True, "needs_auth": False, "contracts": []},
+    )
     monkeypatch.setattr(
-        _app_module._rental_perf, "get_rig_blacklist", lambda tenant_id="": [])
+        _app_module._rental_perf, "get_rig_blacklist", lambda tenant_id="": []
+    )
     monkeypatch.setattr(
-        _app_module._rental_perf, "get_auto_blacklist", lambda tenant_id="": ["376882"])
+        _app_module._rental_perf, "get_auto_blacklist", lambda tenant_id="": ["376882"]
+    )
     monkeypatch.setattr(
-        _app_module._rental_perf, "ingest_rentals", lambda *a, **k: True)
+        _app_module._rental_perf, "ingest_rentals", lambda *a, **k: True
+    )
     monkeypatch.setattr(
-        _app_module._rental_perf, "evaluate_rental_pl_alerts", lambda *a, **k: [])
+        _app_module._rental_perf, "evaluate_rental_pl_alerts", lambda *a, **k: []
+    )
     monkeypatch.setattr(
-        _app_module._rental_perf, "build_rental_recommendations",
-        lambda tenant_id="": {"top": [{"rig_id": "376882", "name": "A02 165TH", "grade": "A",
-                                        "score": 96.0, "samples": 4}],
-                              "avoid_count": 0, "tracked": 1,
-                              "market": {"available": True, "price_sats_per_thh": 500.0}})
+        _app_module._rental_perf,
+        "build_rental_recommendations",
+        lambda tenant_id="": {
+            "top": [
+                {
+                    "rig_id": "376882",
+                    "name": "A02 165TH",
+                    "grade": "A",
+                    "score": 96.0,
+                    "samples": 4,
+                }
+            ],
+            "avoid_count": 0,
+            "tracked": 1,
+            "market": {"available": True, "price_sats_per_thh": 500.0},
+        },
+    )
     monkeypatch.setattr(
-        _app_module._rental_perf, "fetch_market_trend",
-        lambda days=30: {"points": [{"day": "2026-07-22", "sats_per_thh": 500.0}],
-                         "summary": {"days": 1, "avg_sats_per_thh": 500.0,
-                                      "current_sats_per_thh": 500.0,
-                                      "vs_avg_pct": 0.0}})
+        _app_module._rental_perf,
+        "fetch_market_trend",
+        lambda days=30: {
+            "points": [{"day": "2026-07-22", "sats_per_thh": 500.0}],
+            "summary": {
+                "days": 1,
+                "avg_sats_per_thh": 500.0,
+                "current_sats_per_thh": 500.0,
+                "vs_avg_pct": 0.0,
+            },
+        },
+    )
 
     resp = rclient.get("/api/rentals")
     assert resp.status_code == 200
@@ -1273,8 +1558,15 @@ def test_pl_alert_skips_braiins_contracts(tmp_path, monkeypatch):
     monkeypatch.setattr(rp, "_network_hashrate_hs", lambda: 100e18)
     monkeypatch.setattr(rp, "load_settings", lambda tenant_id="": _pl_settings())
     now = int(time.time())
-    contracts = [{"id": "B1", "status": "FINISHED", "ended_at": "2026-08-01T00:00:00Z",
-                  "amount_sat": 50000000, "speed_limit_ph": 100.0}]
+    contracts = [
+        {
+            "id": "B1",
+            "status": "FINISHED",
+            "ended_at": "2026-08-01T00:00:00Z",
+            "amount_sat": 50000000,
+            "speed_limit_ph": 100.0,
+        }
+    ]
     assert rp.evaluate_rental_pl_alerts([], contracts, tenant_id="t6", now=now) == []
 
 
@@ -1282,19 +1574,30 @@ def test_detail_route_braiins_has_stability_and_pl(rclient, monkeypatch):
     """POST /api/rentals/detail (braiins) surfaces the speed-series STABILITY
     grade + the P/L economics."""
     monkeypatch.setattr(
-        _app_module._rental_perf, "fetch_braiins_contract_detail",
+        _app_module._rental_perf,
+        "fetch_braiins_contract_detail",
         lambda cid, contract=None, tenant_id="": {
             "success": True,
             "detail": {"id": cid, "perf": {"percent": 100.0, "delivered_thh": 100.0}},
             "graph": {"points": []},
-            "stability": {"cv_pct": 2.0, "mean_ph": 100.0, "grade": "STABLE",
-                          "min_ph": 99.0, "max_ph": 101.0, "label": "STABLE"},
-            "pl": {"available": False}})
+            "stability": {
+                "cv_pct": 2.0,
+                "mean_ph": 100.0,
+                "grade": "STABLE",
+                "min_ph": 99.0,
+                "max_ph": 101.0,
+                "label": "STABLE",
+            },
+            "pl": {"available": False},
+        },
+    )
     monkeypatch.setattr(
-        _app_module._rental_perf, "fetch_market_reference",
-        lambda: {"available": False})
-    resp = rclient.post("/api/rentals/detail",
-                        json={"provider": "braiins", "id": "B1", "contract": {"id": "B1"}})
+        _app_module._rental_perf, "fetch_market_reference", lambda: {"available": False}
+    )
+    resp = rclient.post(
+        "/api/rentals/detail",
+        json={"provider": "braiins", "id": "B1", "contract": {"id": "B1"}},
+    )
     assert resp.status_code == 200
     data = resp.get_json()
     assert data["stability"]["grade"] == "STABLE"
@@ -1307,26 +1610,48 @@ def test_list_route_fires_pl_alerts(rclient, monkeypatch):
     forget dispatchers are patched (the route imports them from
     services.user_polling at call time)."""
     import services.user_polling as _up
+
     monkeypatch.setattr(
-        _app_module._rental_perf, "fetch_mrr_rentals",
+        _app_module._rental_perf,
+        "fetch_mrr_rentals",
         lambda rtype="renter", history=False, limit=50, tenant_id="": {
-            "success": True, "needs_auth": False, "rentals": [], "total": 0})
+            "success": True,
+            "needs_auth": False,
+            "rentals": [],
+            "total": 0,
+        },
+    )
     monkeypatch.setattr(
-        _app_module._rental_perf, "fetch_braiins_contracts",
-        lambda tenant_id="": {"success": True, "needs_auth": False, "contracts": []})
+        _app_module._rental_perf,
+        "fetch_braiins_contracts",
+        lambda tenant_id="": {"success": True, "needs_auth": False, "contracts": []},
+    )
     monkeypatch.setattr(
-        _app_module._rental_perf, "get_rig_blacklist", lambda tenant_id="": [])
+        _app_module._rental_perf, "get_rig_blacklist", lambda tenant_id="": []
+    )
     monkeypatch.setattr(
-        _app_module._rental_perf, "ingest_rentals", lambda *a, **k: True)
+        _app_module._rental_perf, "ingest_rentals", lambda *a, **k: True
+    )
     monkeypatch.setattr(
-        _app_module._rental_perf, "evaluate_rental_pl_alerts",
-        lambda *a, **k: [{"severity": "WARN", "category": "rental_pl",
-                          "message": "Rental #1 fechou com prejuízo",
-                          "rental_id": "1", "provider": "mrr"}])
+        _app_module._rental_perf,
+        "evaluate_rental_pl_alerts",
+        lambda *a, **k: [
+            {
+                "severity": "WARN",
+                "category": "rental_pl",
+                "message": "Rental #1 fechou com prejuízo",
+                "rental_id": "1",
+                "provider": "mrr",
+            }
+        ],
+    )
     fired = {"webhook": [], "push": []}
-    monkeypatch.setattr(_up, "_fire_webhook_async", lambda kw: fired["webhook"].append(kw))
-    monkeypatch.setattr(_up, "_fire_push_async",
-                        lambda t, s, c, m: fired["push"].append((t, s, c, m)))
+    monkeypatch.setattr(
+        _up, "_fire_webhook_async", lambda kw: fired["webhook"].append(kw)
+    )
+    monkeypatch.setattr(
+        _up, "_fire_push_async", lambda t, s, c, m: fired["push"].append((t, s, c, m))
+    )
     # No webhook configured (conftest default) → only push fires.
     resp = rclient.get("/api/rentals")
     assert resp.status_code == 200
@@ -1336,10 +1661,15 @@ def test_list_route_fires_pl_alerts(rclient, monkeypatch):
 
     # Tenant WITH a webhook URL → webhook fired too (tenant-aware settings).
     import services.settings as _settings_mod
+
     monkeypatch.setattr(
-        _settings_mod, "load_settings",
-        lambda tenant_id="": {"webhook_url": "https://discord.com/api/webhooks/x",
-                              "webhook_min_severity": "WARN"})
+        _settings_mod,
+        "load_settings",
+        lambda tenant_id="": {
+            "webhook_url": "https://discord.com/api/webhooks/x",
+            "webhook_min_severity": "WARN",
+        },
+    )
     fired["webhook"].clear()
     fired["push"].clear()
     # ?refresh=1 bypasses the TTL cache so the dispatchers run again
@@ -1354,11 +1684,13 @@ def test_list_route_fires_pl_alerts(rclient, monkeypatch):
 
 # ── Braiins spot EXECUTION: quote, balance, bid (real money) ─────────────────
 
+
 def _fake_braiins_key(monkeypatch, key="owner-token"):
     """Point the tenant key resolver at a known token. _braiins_key calls the
     binding IMPORTED into rp (not _tools'), so patch that one."""
-    monkeypatch.setattr(rp, "braiins_credentials",
-                        lambda tenant_id="": {"api_key": key})
+    monkeypatch.setattr(
+        rp, "braiins_credentials", lambda tenant_id="": {"api_key": key}
+    )
 
 
 def test_create_braiins_bid_posts_correct_body(monkeypatch):
@@ -1376,10 +1708,15 @@ def test_create_braiins_bid_posts_correct_body(monkeypatch):
 
     monkeypatch.setattr(rp.requests, "post", fake_post)
     out = rp.create_braiins_bid(
-        speed_limit_ph=1.0, amount_sat=500000, price_sat=123456,
+        speed_limit_ph=1.0,
+        amount_sat=500000,
+        price_sat=123456,
         upstream_url="stratum+tcp://pool.example:3333",
-        upstream_identity="user.worker", memo="bat1",
-        cl_order_id="c65-abc123", tenant_id="")
+        upstream_identity="user.worker",
+        memo="bat1",
+        cl_order_id="c65-abc123",
+        tenant_id="",
+    )
     assert out["success"] is True
     assert out["bid"]["id"] == "BID-123"
     assert sent["url"] == "https://hashpower.braiins.com/v1/spot/bid"
@@ -1398,10 +1735,12 @@ def test_create_braiins_bid_401_fail_closed(monkeypatch):
     """Rejected key → needs_auth (never a generic failure)."""
     _fake_braiins_key(monkeypatch)
     monkeypatch.setattr(rp, "braiins_price_unit", lambda tenant_id="": "sats/PH/day")
-    monkeypatch.setattr(rp.requests, "post",
-                        lambda *a, **k: FakeResponse(ok=False, status_code=401))
-    out = rp.create_braiins_bid(1.0, 500000, 123456,
-                                "stratum+tcp://h:3333", tenant_id="")
+    monkeypatch.setattr(
+        rp.requests, "post", lambda *a, **k: FakeResponse(ok=False, status_code=401)
+    )
+    out = rp.create_braiins_bid(
+        1.0, 500000, 123456, "stratum+tcp://h:3333", tenant_id=""
+    )
     assert out["success"] is False
     assert out["needs_auth"] is True
 
@@ -1412,18 +1751,39 @@ def test_create_braiins_bid_clamps_out_of_band(monkeypatch):
     _fake_braiins_key(monkeypatch)
     monkeypatch.setattr(rp, "braiins_price_unit", lambda tenant_id="": "sats/PH/day")
     called = []
-    monkeypatch.setattr(rp.requests, "post",
-                        lambda *a, **k: called.append(1) or FakeResponse())
+    monkeypatch.setattr(
+        rp.requests, "post", lambda *a, **k: called.append(1) or FakeResponse()
+    )
     # speed out of band (0.0005 PH = 0.5 TH < 1 TH floor; 5000 PH = 5 EH cap)
-    assert rp.create_braiins_bid(0.0005, 500000, 123456, "stratum+tcp://h:3333")["success"] is False
-    assert rp.create_braiins_bid(5000.0, 500000, 123456, "stratum+tcp://h:3333")["success"] is False
+    assert (
+        rp.create_braiins_bid(0.0005, 500000, 123456, "stratum+tcp://h:3333")["success"]
+        is False
+    )
+    assert (
+        rp.create_braiins_bid(5000.0, 500000, 123456, "stratum+tcp://h:3333")["success"]
+        is False
+    )
     # amount out of band
-    assert rp.create_braiins_bid(1.0, 100, 123456, "stratum+tcp://h:3333")["success"] is False
-    assert rp.create_braiins_bid(1.0, 200_000_000, 123456, "stratum+tcp://h:3333")["success"] is False
+    assert (
+        rp.create_braiins_bid(1.0, 100, 123456, "stratum+tcp://h:3333")["success"]
+        is False
+    )
+    assert (
+        rp.create_braiins_bid(1.0, 200_000_000, 123456, "stratum+tcp://h:3333")[
+            "success"
+        ]
+        is False
+    )
     # price out of band (a PH/day unit bug lands far outside 1e4..1e9)
-    assert rp.create_braiins_bid(1.0, 500000, 5, "stratum+tcp://h:3333")["success"] is False
+    assert (
+        rp.create_braiins_bid(1.0, 500000, 5, "stratum+tcp://h:3333")["success"]
+        is False
+    )
     # non-stratum upstream rejected
-    assert rp.create_braiins_bid(1.0, 500000, 123456, "https://pool.example")["success"] is False
+    assert (
+        rp.create_braiins_bid(1.0, 500000, 123456, "https://pool.example")["success"]
+        is False
+    )
     assert called == []  # NOTHING reached the API
 
 
@@ -1431,8 +1791,9 @@ def test_create_braiins_bid_missing_key(monkeypatch):
     """No key anywhere → explicit needs_auth, no HTTP at all."""
     _fake_braiins_key(monkeypatch, key="")
     called = []
-    monkeypatch.setattr(rp.requests, "post",
-                        lambda *a, **k: called.append(1) or FakeResponse())
+    monkeypatch.setattr(
+        rp.requests, "post", lambda *a, **k: called.append(1) or FakeResponse()
+    )
     out = rp.create_braiins_bid(1.0, 500000, 123456, "stratum+tcp://h:3333")
     assert out["success"] is False
     assert out["needs_auth"] is True
@@ -1471,12 +1832,18 @@ def test_fetch_braiins_balance_items_envelope(monkeypatch):
     """items envelope (total/available/blocked balance_types) → sats."""
     _fake_braiins_key(monkeypatch)
     monkeypatch.setattr(
-        rp.requests, "get",
-        lambda *a, **k: FakeResponse(payload={"items": [
-            {"balance_type": "total", "amount": "1000000"},
-            {"balance_type": "available", "amount": "800000"},
-            {"balance_type": "blocked", "amount": "200000"},
-        ]}))
+        rp.requests,
+        "get",
+        lambda *a, **k: FakeResponse(
+            payload={
+                "items": [
+                    {"balance_type": "total", "amount": "1000000"},
+                    {"balance_type": "available", "amount": "800000"},
+                    {"balance_type": "blocked", "amount": "200000"},
+                ]
+            }
+        ),
+    )
     out = rp.fetch_braiins_balance()
     assert out["available"] is True
     assert out["total_sat"] == 1000000
@@ -1487,9 +1854,13 @@ def test_fetch_braiins_balance_items_envelope(monkeypatch):
 def test_fetch_braiins_balance_flat_envelope(monkeypatch):
     """Flat dict envelope {total, available, blocked} also parses."""
     _fake_braiins_key(monkeypatch)
-    monkeypatch.setattr(rp.requests, "get",
-                        lambda *a, **k: FakeResponse(
-                            payload={"total": "5000000", "available": "4900000"}))
+    monkeypatch.setattr(
+        rp.requests,
+        "get",
+        lambda *a, **k: FakeResponse(
+            payload={"total": "5000000", "available": "4900000"}
+        ),
+    )
     out = rp.fetch_braiins_balance()
     assert out["total_sat"] == 5000000
     assert out["available_sat"] == 4900000
@@ -1498,8 +1869,9 @@ def test_fetch_braiins_balance_flat_envelope(monkeypatch):
 def test_fetch_braiins_balance_401_surfaces(monkeypatch):
     """401 from a CONFIGURED key → needs_auth error (never a zero balance)."""
     _fake_braiins_key(monkeypatch)
-    monkeypatch.setattr(rp.requests, "get",
-                        lambda *a, **k: FakeResponse(ok=False, status_code=401))
+    monkeypatch.setattr(
+        rp.requests, "get", lambda *a, **k: FakeResponse(ok=False, status_code=401)
+    )
     out = rp.fetch_braiins_balance()
     assert out["available"] is False
     assert out["needs_auth"] is True
@@ -1511,13 +1883,19 @@ def test_braiins_quote_converts_units_and_includes_balance(monkeypatch):
     tenant's balance attached for the buy modal prefill."""
     _fake_braiins_key(monkeypatch)
     monkeypatch.setattr(
-        _tools, "get_braiins_orderbook",
-        lambda: {"price_btc_per_th_day": 0.0001230,
-                 "best_order_hr_ph": 500.0,
-                 "price_raw_unit": "sats/PH/day"})
+        _tools,
+        "get_braiins_orderbook",
+        lambda: {
+            "price_btc_per_th_day": 0.0001230,
+            "best_order_hr_ph": 500.0,
+            "price_raw_unit": "sats/PH/day",
+        },
+    )
     monkeypatch.setattr(
-        rp, "fetch_braiins_balance",
-        lambda tenant_id="": {"available": True, "available_sat": 800000})
+        rp,
+        "fetch_braiins_balance",
+        lambda tenant_id="": {"available": True, "available_sat": 800000},
+    )
     q = rp.braiins_quote()
     assert q["available"] is True
     # 0.0001230 BTC/TH·day × 1e8 / 24 → sats/TH·h
@@ -1533,30 +1911,53 @@ def test_bid_route_th_to_ph_and_validation(rclient, monkeypatch):
     _fake_braiins_key(monkeypatch)
     sent = {}
 
-    def fake_create(speed_limit_ph=None, amount_sat=None, price_sat=None,
-                    upstream_url="", upstream_identity="", memo="",
-                    cl_order_id="", tenant_id=""):
+    def fake_create(
+        speed_limit_ph=None,
+        amount_sat=None,
+        price_sat=None,
+        upstream_url="",
+        upstream_identity="",
+        memo="",
+        cl_order_id="",
+        tenant_id="",
+    ):
         sent.update(locals())
         return {"success": True, "bid": {"id": "BID-ROUTE", "raw": {}}}
 
     monkeypatch.setattr(_app_module._rental_perf, "create_braiins_bid", fake_create)
 
     # Missing amount/price → 400 before any provider call.
-    resp = rclient.post("/api/rentals/braiins/bid",
-                        json={"speed_limit_th": 1000, "upstream_url": "stratum+tcp://h:3333"})
+    resp = rclient.post(
+        "/api/rentals/braiins/bid",
+        json={"speed_limit_th": 1000, "upstream_url": "stratum+tcp://h:3333"},
+    )
     assert resp.status_code == 400
 
     # Zero hashrate → 400.
-    resp = rclient.post("/api/rentals/braiins/bid", json={
-        "speed_limit_th": 0, "amount_sat": 500000, "price_sat": 123456,
-        "upstream_url": "stratum+tcp://h:3333"})
+    resp = rclient.post(
+        "/api/rentals/braiins/bid",
+        json={
+            "speed_limit_th": 0,
+            "amount_sat": 500000,
+            "price_sat": 123456,
+            "upstream_url": "stratum+tcp://h:3333",
+        },
+    )
     assert resp.status_code == 400
 
     # Valid: 1000 TH → 1.0 PH on the wire; cl_order_id passed through.
-    resp = rclient.post("/api/rentals/braiins/bid", json={
-        "speed_limit_th": 1000, "amount_sat": 500000, "price_sat": 123456,
-        "upstream_url": "stratum+tcp://h:3333",
-        "upstream_identity": "u.w", "memo": "bat", "cl_order_id": "c65-x"})
+    resp = rclient.post(
+        "/api/rentals/braiins/bid",
+        json={
+            "speed_limit_th": 1000,
+            "amount_sat": 500000,
+            "price_sat": 123456,
+            "upstream_url": "stratum+tcp://h:3333",
+            "upstream_identity": "u.w",
+            "memo": "bat",
+            "cl_order_id": "c65-x",
+        },
+    )
     assert resp.status_code == 200
     assert resp.get_json()["success"] is True
     assert sent["speed_limit_ph"] == 1.0
@@ -1569,12 +1970,22 @@ def test_bid_route_surfaces_clamp_error(rclient, monkeypatch):
     must never look like a provider failure)."""
     _fake_braiins_key(monkeypatch)
     monkeypatch.setattr(
-        _app_module._rental_perf, "create_braiins_bid",
-        lambda **k: {"success": False,
-                     "error": "speed_limit must be 0.001-1000.0 PH/s"})
-    resp = rclient.post("/api/rentals/braiins/bid", json={
-        "speed_limit_th": 5_000_000, "amount_sat": 500000, "price_sat": 123456,
-        "upstream_url": "stratum+tcp://h:3333"})
+        _app_module._rental_perf,
+        "create_braiins_bid",
+        lambda **k: {
+            "success": False,
+            "error": "speed_limit must be 0.001-1000.0 PH/s",
+        },
+    )
+    resp = rclient.post(
+        "/api/rentals/braiins/bid",
+        json={
+            "speed_limit_th": 5_000_000,
+            "amount_sat": 500000,
+            "price_sat": 123456,
+            "upstream_url": "stratum+tcp://h:3333",
+        },
+    )
     assert resp.status_code == 400
     assert "speed_limit" in resp.get_json()["error"]
 
@@ -1583,11 +1994,15 @@ def test_quote_and_balance_routes(rclient, monkeypatch):
     """GET quote/balance routes surface the tenant data (mocked at module)."""
     _fake_braiins_key(monkeypatch)
     monkeypatch.setattr(
-        _tools, "get_braiins_orderbook",
-        lambda: {"price_btc_per_th_day": 0.0001230, "price_raw_unit": "sats/PH/day"})
+        _tools,
+        "get_braiins_orderbook",
+        lambda: {"price_btc_per_th_day": 0.0001230, "price_raw_unit": "sats/PH/day"},
+    )
     monkeypatch.setattr(
-        rp, "fetch_braiins_balance",
-        lambda tenant_id="": {"available": True, "available_sat": 800000})
+        rp,
+        "fetch_braiins_balance",
+        lambda tenant_id="": {"available": True, "available_sat": 800000},
+    )
     q = rclient.get("/api/rentals/braiins/quote")
     assert q.status_code == 200
     assert q.get_json()["available"] is True
@@ -1600,40 +2015,61 @@ def test_quote_and_balance_routes(rclient, monkeypatch):
 def test_braiins_price_unit_default(monkeypatch):
     """spot/settings unreachable → default sats/PH/day (never crash)."""
     _fake_braiins_key(monkeypatch)
-    monkeypatch.setattr(rp.requests, "get",
-                        lambda *a, **k: FakeResponse(ok=False, status_code=503))
+    monkeypatch.setattr(
+        rp.requests, "get", lambda *a, **k: FakeResponse(ok=False, status_code=503)
+    )
     assert rp.braiins_price_unit() == "sats/PH/day"
     monkeypatch.setattr(
-        rp.requests, "get",
-        lambda *a, **k: FakeResponse(payload={"price_unit": "sats/TH/h"}))
+        rp.requests,
+        "get",
+        lambda *a, **k: FakeResponse(payload={"price_unit": "sats/TH/h"}),
+    )
     assert rp.braiins_price_unit() == "sats/TH/h"
 
 
 # ── Portfolio TIME SERIES: spent + estimated P/L per week/month ─────────────
 
+
 def _series_row(rid, start, paid_sats, delivered_thh=100.0, tenant="t1"):
-    return {"provider": "mrr", "rental_id": rid, "rig_id": "rig1",
-            "rig_name": "Rig 1", "start": start, "end": None,
-            "percent": 96.0, "avg_th": 100.0, "advertised_th": 100.0,
-            "cost_sats_per_thh": None, "length_hours": 1.0,
-            "delivered_thh": delivered_thh, "paid_sats": paid_sats}
+    return {
+        "provider": "mrr",
+        "rental_id": rid,
+        "rig_id": "rig1",
+        "rig_name": "Rig 1",
+        "start": start,
+        "end": None,
+        "percent": 96.0,
+        "avg_th": 100.0,
+        "advertised_th": 100.0,
+        "cost_sats_per_thh": None,
+        "length_hours": 1.0,
+        "delivered_thh": delivered_thh,
+        "paid_sats": paid_sats,
+    }
 
 
 def test_portfolio_series_buckets_week_with_tenant_isolation(tmp_path, monkeypatch):
     """compute_portfolio_series aggregates spent + estimated P/L per ISO week
     from the LOCAL table, scoped to the tenant (never cross-tenant)."""
     monkeypatch.setenv("DB_PATH", str(tmp_path / "series.sqlite"))
-    monkeypatch.setattr(rp, "compute_rental_pl",
-                        lambda delivered, paid, **k: {"pl_sats": -100.0, "pl_pct": -50.0})
+    monkeypatch.setattr(
+        rp,
+        "compute_rental_pl",
+        lambda delivered, paid, **k: {"pl_sats": -100.0, "pl_pct": -50.0},
+    )
     rows = [
-        _series_row("1", "2026-07-20 10:00:00 UTC", 5000),   # W30
-        _series_row("2", "2026-07-21 10:00:00 UTC", 3000),   # W30
-        _series_row("3", "2026-07-28 10:00:00 UTC", 8000),   # W31
-        _series_row("4", "2026-07-29 10:00:00 UTC", 2000),   # W31 (other tenant? no)
+        _series_row("1", "2026-07-20 10:00:00 UTC", 5000),  # W30
+        _series_row("2", "2026-07-21 10:00:00 UTC", 3000),  # W30
+        _series_row("3", "2026-07-28 10:00:00 UTC", 8000),  # W31
+        _series_row("4", "2026-07-29 10:00:00 UTC", 2000),  # W31 (other tenant? no)
     ]
     assert rp.save_rental_history(rows, tenant_id="t1") is True
-    assert rp.save_rental_history([_series_row("9", "2026-07-29 10:00:00 UTC", 999999)],
-                                  tenant_id="t2") is True
+    assert (
+        rp.save_rental_history(
+            [_series_row("9", "2026-07-29 10:00:00 UTC", 999999)], tenant_id="t2"
+        )
+        is True
+    )
 
     s = rp.compute_portfolio_series(tenant_id="t1", bucket="week")
     assert s["bucket"] == "week" and s["estimate"] is True
@@ -1653,8 +2089,9 @@ def test_portfolio_series_month_bucket_and_unparseable_start(tmp_path, monkeypat
     """bucket=month groups by calendar month; rows with unparseable start fall
     back to created_ts so they never vanish from the series."""
     monkeypatch.setenv("DB_PATH", str(tmp_path / "series2.sqlite"))
-    monkeypatch.setattr(rp, "compute_rental_pl",
-                        lambda delivered, paid, **k: {"pl_sats": -50.0})
+    monkeypatch.setattr(
+        rp, "compute_rental_pl", lambda delivered, paid, **k: {"pl_sats": -50.0}
+    )
     rows = [
         _series_row("1", "2026-06-15 10:00:00 UTC", 1000),
         _series_row("2", "2026-07-20 10:00:00 UTC", 2000),
@@ -1681,10 +2118,17 @@ def test_portfolio_series_unknown_yield_is_null_not_zero(tmp_path, monkeypatch):
     would read as 'no loss' and fabricate a verdict."""
     monkeypatch.setenv("DB_PATH", str(tmp_path / "series4.sqlite"))
     # compute_rental_pl without yield → pl_sats None (mimics cold box).
-    monkeypatch.setattr(rp, "compute_rental_pl",
-                        lambda delivered, paid, **k: {"pl_sats": None, "pl_pct": None})
-    assert rp.save_rental_history([_series_row("1", "2026-07-20 10:00:00 UTC", 5000)],
-                                  tenant_id="t1") is True
+    monkeypatch.setattr(
+        rp,
+        "compute_rental_pl",
+        lambda delivered, paid, **k: {"pl_sats": None, "pl_pct": None},
+    )
+    assert (
+        rp.save_rental_history(
+            [_series_row("1", "2026-07-20 10:00:00 UTC", 5000)], tenant_id="t1"
+        )
+        is True
+    )
     s = rp.compute_portfolio_series(tenant_id="t1", bucket="week")
     assert s["points"][0]["pl_sats"] is None
     assert s["points"][0]["cum_pl_sats"] is None
@@ -1698,11 +2142,18 @@ def test_portfolio_series_partial_known_yield(tmp_path, monkeypatch):
     cumulative from that point is genuinely unknown (None) — summing only
     the known pieces would understate the loss and fabricate a verdict."""
     monkeypatch.setenv("DB_PATH", str(tmp_path / "series5.sqlite"))
-    monkeypatch.setattr(rp, "compute_rental_pl",
-                        lambda delivered, paid, **k: {"pl_sats": -100.0} if delivered else {"pl_sats": None})
+    monkeypatch.setattr(
+        rp,
+        "compute_rental_pl",
+        lambda delivered, paid, **k: (
+            {"pl_sats": -100.0} if delivered else {"pl_sats": None}
+        ),
+    )
     rows = [
         _series_row("1", "2026-07-20 10:00:00 UTC", 5000, delivered_thh=100.0),
-        _series_row("2", "2026-07-27 10:00:00 UTC", 3000, delivered_thh=None),  # unknown
+        _series_row(
+            "2", "2026-07-27 10:00:00 UTC", 3000, delivered_thh=None
+        ),  # unknown
     ]
     assert rp.save_rental_history(rows, tenant_id="t1") is True
     s = rp.compute_portfolio_series(tenant_id="t1", bucket="week")
@@ -1726,18 +2177,23 @@ def test_portfolio_series_own_ev_included_full_week(tmp_path, monkeypatch):
     bucket — a fully-past ISO week carries 7 days of EV, the consolidated
     total = rentals P/L + own EV, and the ESTIMATE labels are honest."""
     monkeypatch.setenv("DB_PATH", str(tmp_path / "series_ev.sqlite"))
-    monkeypatch.setattr(rp, "compute_rental_pl",
-                        lambda delivered, paid, **k: {"pl_sats": -200.0})
-    assert rp.save_rental_history([_series_row("1", "2026-07-20 10:00:00 UTC", 5000)],
-                                  tenant_id="t1") is True
-    s = rp.compute_portfolio_series(tenant_id="t1", bucket="week",
-                                    own_ev_daily_sats=100,
-                                    now_ts=_ts_utc(2026, 8, 1))
+    monkeypatch.setattr(
+        rp, "compute_rental_pl", lambda delivered, paid, **k: {"pl_sats": -200.0}
+    )
+    assert (
+        rp.save_rental_history(
+            [_series_row("1", "2026-07-20 10:00:00 UTC", 5000)], tenant_id="t1"
+        )
+        is True
+    )
+    s = rp.compute_portfolio_series(
+        tenant_id="t1", bucket="week", own_ev_daily_sats=100, now_ts=_ts_utc(2026, 8, 1)
+    )
     p = s["points"][0]
     assert p["label"] == "2026-W30"
-    assert p["own_ev_sats"] == 700          # 7 days × 100 sats/day
+    assert p["own_ev_sats"] == 700  # 7 days × 100 sats/day
     assert p["pl_sats"] == -200.0
-    assert p["total_pl_sats"] == 500.0      # -200 rentals + 700 own EV
+    assert p["total_pl_sats"] == 500.0  # -200 rentals + 700 own EV
     assert p["cum_total_sats"] == 500.0
     assert s["own_ev_estimate"] is True
     assert s["own_ev_daily_sats"] == 100
@@ -1750,31 +2206,47 @@ def test_portfolio_series_own_ev_month_full_days(tmp_path, monkeypatch):
     """Own EV in a calendar-month bucket = daily EV × the month's days
     (February 2026 → 28 days)."""
     monkeypatch.setenv("DB_PATH", str(tmp_path / "series_ev2.sqlite"))
-    monkeypatch.setattr(rp, "compute_rental_pl",
-                        lambda delivered, paid, **k: {"pl_sats": -50.0})
-    assert rp.save_rental_history([_series_row("1", "2026-02-10 10:00:00 UTC", 3000)],
-                                  tenant_id="t1") is True
-    s = rp.compute_portfolio_series(tenant_id="t1", bucket="month",
-                                    own_ev_daily_sats=100,
-                                    now_ts=_ts_utc(2026, 3, 1))
+    monkeypatch.setattr(
+        rp, "compute_rental_pl", lambda delivered, paid, **k: {"pl_sats": -50.0}
+    )
+    assert (
+        rp.save_rental_history(
+            [_series_row("1", "2026-02-10 10:00:00 UTC", 3000)], tenant_id="t1"
+        )
+        is True
+    )
+    s = rp.compute_portfolio_series(
+        tenant_id="t1",
+        bucket="month",
+        own_ev_daily_sats=100,
+        now_ts=_ts_utc(2026, 3, 1),
+    )
     p = s["points"][0]
     assert p["label"] == "2026-02"
-    assert p["own_ev_sats"] == 2800         # 28 days × 100
-    assert p["total_pl_sats"] == 2750.0     # -50 + 2800
+    assert p["own_ev_sats"] == 2800  # 28 days × 100
+    assert p["total_pl_sats"] == 2750.0  # -50 + 2800
 
 
 def test_portfolio_series_own_ev_current_partial_week_capped(tmp_path, monkeypatch):
     """The CURRENT partial bucket is capped at the days elapsed so far
     (mid-week → 3 days), never a fabricated full week."""
     monkeypatch.setenv("DB_PATH", str(tmp_path / "series_ev3.sqlite"))
-    monkeypatch.setattr(rp, "compute_rental_pl",
-                        lambda delivered, paid, **k: {"pl_sats": 0.0})
+    monkeypatch.setattr(
+        rp, "compute_rental_pl", lambda delivered, paid, **k: {"pl_sats": 0.0}
+    )
     # 2026-07-20 is a Monday (W30); 'now' = Wednesday 2026-07-22.
-    assert rp.save_rental_history([_series_row("1", "2026-07-21 10:00:00 UTC", 2000)],
-                                  tenant_id="t1") is True
-    s = rp.compute_portfolio_series(tenant_id="t1", bucket="week",
-                                    own_ev_daily_sats=100,
-                                    now_ts=_ts_utc(2026, 7, 22))
+    assert (
+        rp.save_rental_history(
+            [_series_row("1", "2026-07-21 10:00:00 UTC", 2000)], tenant_id="t1"
+        )
+        is True
+    )
+    s = rp.compute_portfolio_series(
+        tenant_id="t1",
+        bucket="week",
+        own_ev_daily_sats=100,
+        now_ts=_ts_utc(2026, 7, 22),
+    )
     assert s["points"][0]["own_ev_sats"] == 300  # Mon + Tue + Wed = 3 days
 
 
@@ -1782,10 +2254,15 @@ def test_portfolio_series_own_ev_absent_is_backward_compatible(tmp_path, monkeyp
     """Without own_ev_daily_sats the payload keeps the legacy shape: EV
     fields exist but are None (honest '—'), totals never fabricate EV."""
     monkeypatch.setenv("DB_PATH", str(tmp_path / "series_ev4.sqlite"))
-    monkeypatch.setattr(rp, "compute_rental_pl",
-                        lambda delivered, paid, **k: {"pl_sats": -100.0})
-    assert rp.save_rental_history([_series_row("1", "2026-07-20 10:00:00 UTC", 5000)],
-                                  tenant_id="t1") is True
+    monkeypatch.setattr(
+        rp, "compute_rental_pl", lambda delivered, paid, **k: {"pl_sats": -100.0}
+    )
+    assert (
+        rp.save_rental_history(
+            [_series_row("1", "2026-07-20 10:00:00 UTC", 5000)], tenant_id="t1"
+        )
+        is True
+    )
     s = rp.compute_portfolio_series(tenant_id="t1", bucket="week")
     p = s["points"][0]
     assert p["own_ev_sats"] is None
@@ -1803,12 +2280,24 @@ def test_portfolio_series_own_ev_absent_is_backward_compatible(tmp_path, monkeyp
 def test_series_route_returns_bucket(rclient, monkeypatch):
     """GET /api/rentals/series?bucket=month returns the server aggregation."""
     monkeypatch.setattr(
-        _app_module._rental_perf, "compute_portfolio_series",
+        _app_module._rental_perf,
+        "compute_portfolio_series",
         lambda tenant_id="", bucket="week", **k: {
-            "bucket": bucket, "estimate": True,
-            "points": [{"label": "2026-07", "spent_sats": 1000, "pl_sats": -50.0,
-                        "cum_pl_sats": -50.0, "delivered_thh": 100.0, "rentals": 1}],
-            "totals": {"spent_sats": 1000, "pl_sats": -50.0, "rentals": 1}})
+            "bucket": bucket,
+            "estimate": True,
+            "points": [
+                {
+                    "label": "2026-07",
+                    "spent_sats": 1000,
+                    "pl_sats": -50.0,
+                    "cum_pl_sats": -50.0,
+                    "delivered_thh": 100.0,
+                    "rentals": 1,
+                }
+            ],
+            "totals": {"spent_sats": 1000, "pl_sats": -50.0, "rentals": 1},
+        },
+    )
     resp = rclient.get("/api/rentals/series?bucket=month")
     assert resp.status_code == 200
     data = resp.get_json()
@@ -1825,10 +2314,20 @@ def test_provider_rankings_averages_and_order():
     sorts by avg delivery desc; providers without data are never fabricated."""
     # The ranking consumes the NORMALIZED list shape (flat fields that
     # fetch_mrr_rentals produces), not the raw API envelope.
-    h1 = {"id": "1", "hashrate_percent": 99.0, "price_paid_btc": 0.00001,
-          "hashrate_average_th": 100.0, "length_hours": 1.0}
-    h2 = {"id": "2", "hashrate_percent": 95.0, "price_paid_btc": 0.00002,
-          "hashrate_average_th": 100.0, "length_hours": 2.0}
+    h1 = {
+        "id": "1",
+        "hashrate_percent": 99.0,
+        "price_paid_btc": 0.00001,
+        "hashrate_average_th": 100.0,
+        "length_hours": 1.0,
+    }
+    h2 = {
+        "id": "2",
+        "hashrate_percent": 95.0,
+        "price_paid_btc": 0.00002,
+        "hashrate_average_th": 100.0,
+        "length_hours": 2.0,
+    }
     contracts = [{"id": "c1", "amount_sat": 15000}]
     rows = rp.compute_provider_rankings([h1], [h2], [], contracts)
     assert len(rows) == 2
@@ -1852,8 +2351,13 @@ def test_rig_heatmap_requires_two_samples_and_scopes_tenant(tmp_path, monkeypatc
         _reco_hist_row("3", "rigB", "Rig B", 80, 700, "2026-07-20"),  # 1 sample only
     ]
     assert rp.save_rental_history(rows, tenant_id="t1") is True
-    assert rp.save_rental_history([_reco_hist_row("9", "rigC", "Rig C", 100, 400, "2026-07-22")],
-                                  tenant_id="t2") is True
+    assert (
+        rp.save_rental_history(
+            [_reco_hist_row("9", "rigC", "Rig C", 100, 400, "2026-07-22")],
+            tenant_id="t2",
+        )
+        is True
+    )
     # Rig B with cost=None carries only a delivery sample (1) — the cell
     # threshold is "≥2 measured samples" (delivery + cost counts), so a
     # single measurement is noise and must be excluded.
@@ -1874,13 +2378,13 @@ def test_expiring_rentals_filters_window_and_sorts():
     window, sorted by time left (soonest first)."""
     now = time.time()
     soon = _mrr_rental(id="1")
-    soon["end_unix"] = str(int(now + 3600))       # 1h left
+    soon["end_unix"] = str(int(now + 3600))  # 1h left
     later = _mrr_rental(id="2")
     later["end_unix"] = str(int(now + 48 * 3600))  # 48h left
     far = _mrr_rental(id="3")
-    far["end_unix"] = str(int(now + 200 * 3600))   # outside window
+    far["end_unix"] = str(int(now + 200 * 3600))  # outside window
     past = _mrr_rental(id="4")
-    past["end_unix"] = str(int(now - 3600))        # already ended
+    past["end_unix"] = str(int(now - 3600))  # already ended
     out = rp.compute_expiring_rentals([far, soon, later, past], hours=72.0)
     assert [r["id"] for r in out] == ["1", "2"]
     assert out[0]["ends_in_hours"] == 1.0
@@ -1913,16 +2417,21 @@ def test_series_carries_rental_ids_and_drill_down_returns_rows(tmp_path, monkeyp
     drill down; series_bucket_rentals returns the exact local rows behind a
     label, tenant-scoped."""
     monkeypatch.setenv("DB_PATH", str(tmp_path / "drill.sqlite"))
-    monkeypatch.setattr(rp, "compute_rental_pl",
-                        lambda delivered, paid, **k: {"pl_sats": -100.0})
+    monkeypatch.setattr(
+        rp, "compute_rental_pl", lambda delivered, paid, **k: {"pl_sats": -100.0}
+    )
     rows = [
         _series_row("1", "2026-07-20 10:00:00 UTC", 5000),
         _series_row("2", "2026-07-21 10:00:00 UTC", 3000),
         _series_row("3", "2026-07-28 10:00:00 UTC", 8000),
     ]
     assert rp.save_rental_history(rows, tenant_id="t1") is True
-    assert rp.save_rental_history([_series_row("9", "2026-07-28 10:00:00 UTC", 9000)],
-                                  tenant_id="t2") is True
+    assert (
+        rp.save_rental_history(
+            [_series_row("9", "2026-07-28 10:00:00 UTC", 9000)], tenant_id="t2"
+        )
+        is True
+    )
     s = rp.compute_portfolio_series(tenant_id="t1", bucket="week")
     w30 = next(p for p in s["points"] if p["label"] == "2026-W30")
     assert sorted(w30["rental_ids"]) == ["1", "2"]
@@ -1932,9 +2441,16 @@ def test_series_carries_rental_ids_and_drill_down_returns_rows(tmp_path, monkeyp
     assert [r["rental_id"] for r in rows30] == ["1", "2"]
     assert all(r["provider"] == "mrr" and r["rig_name"] for r in rows30)
     # t2's row never leaks into t1's drill-down; unknown label → empty.
-    rows_nope = rp.series_bucket_rentals(tenant_id="t1", bucket="week", label="2099-W01")
+    rows_nope = rp.series_bucket_rentals(
+        tenant_id="t1", bucket="week", label="2099-W01"
+    )
     assert rows_nope == []
-    assert rp.series_bucket_rentals(tenant_id="t1", bucket="week", label="2026-W31")[0]["rental_id"] == "3"
+    assert (
+        rp.series_bucket_rentals(tenant_id="t1", bucket="week", label="2026-W31")[0][
+            "rental_id"
+        ]
+        == "3"
+    )
 
 
 def test_drill_route_requires_label_and_scopes(rclient, monkeypatch):
@@ -1943,8 +2459,12 @@ def test_drill_route_requires_label_and_scopes(rclient, monkeypatch):
     resp = rclient.get("/api/rentals/series/rentals")
     assert resp.status_code == 400
     monkeypatch.setattr(
-        _app_module._rental_perf, "series_bucket_rentals",
-        lambda tenant_id="", bucket="week", label="": [{"provider": "mrr", "rental_id": "1"}])
+        _app_module._rental_perf,
+        "series_bucket_rentals",
+        lambda tenant_id="", bucket="week", label="": [
+            {"provider": "mrr", "rental_id": "1"}
+        ],
+    )
     resp2 = rclient.get("/api/rentals/series/rentals?bucket=week&label=2026-W30")
     assert resp2.status_code == 200
     data = resp2.get_json()
@@ -1956,12 +2476,21 @@ def test_rig_route_returns_track_record(rclient, monkeypatch):
     """GET /api/rentals/rig returns the analyze_rig shape (trust grade,
     summary, blacklist) for a reco-card click."""
     monkeypatch.setattr(
-        _app_module._rental_perf, "rig_track_record",
+        _app_module._rental_perf,
+        "rig_track_record",
         lambda rig_id=None, rig_name="", tenant_id="": {
-            "history": [], "trust": {"grade": "A", "score": 95},
-            "blacklisted": False, "auto_blacklisted": False,
-            "summary": {"rentals": 0, "avg_pct": None, "cost_avg_sats_thh": None,
-                        "trend_pct": None}})
+            "history": [],
+            "trust": {"grade": "A", "score": 95},
+            "blacklisted": False,
+            "auto_blacklisted": False,
+            "summary": {
+                "rentals": 0,
+                "avg_pct": None,
+                "cost_avg_sats_thh": None,
+                "trend_pct": None,
+            },
+        },
+    )
     resp = rclient.get("/api/rentals/rig?rig_id=376882")
     assert resp.status_code == 200
     data = resp.get_json()
@@ -1975,11 +2504,18 @@ def test_backtest_route_validation_and_result(rclient, monkeypatch):
     """GET /api/rentals/backtest validates inputs and returns the honest
     cost/yield/P·L summary."""
     monkeypatch.setattr(
-        _app_module._rental_perf, "compute_backtest",
-        lambda th, hours, market=None: {"thh": 12000, "cost_sats": 150000,
-                                        "expected_yield_sats": 180000,
-                                        "pl_sats": 30000, "yield_known": True,
-                                        "market_sats_per_thh": 12.5, "available": True})
+        _app_module._rental_perf,
+        "compute_backtest",
+        lambda th, hours, market=None: {
+            "thh": 12000,
+            "cost_sats": 150000,
+            "expected_yield_sats": 180000,
+            "pl_sats": 30000,
+            "yield_known": True,
+            "market_sats_per_thh": 12.5,
+            "available": True,
+        },
+    )
     assert rclient.get("/api/rentals/backtest?th=0&hours=24").status_code == 400
     assert rclient.get("/api/rentals/backtest?th=500&hours=9999").status_code == 400
     resp = rclient.get("/api/rentals/backtest?th=500&hours=24")
@@ -1989,12 +2525,25 @@ def test_backtest_route_validation_and_result(rclient, monkeypatch):
 
 # ── Worst-rig leaderboard + concentration risk (CFO risk view) ──────────────
 
-def _worst_row(rid, rig_name, start, percent, paid_sats=1000, delivered_thh=10.0, tenant="t1"):
-    return {"provider": "mrr", "rental_id": f"r-{rid}-{start}", "rig_id": str(rid),
-            "rig_name": rig_name, "start": start, "end": None,
-            "percent": percent, "avg_th": 100.0, "advertised_th": 100.0,
-            "cost_sats_per_thh": None, "length_hours": 1.0,
-            "delivered_thh": delivered_thh, "paid_sats": paid_sats}
+
+def _worst_row(
+    rid, rig_name, start, percent, paid_sats=1000, delivered_thh=10.0, tenant="t1"
+):
+    return {
+        "provider": "mrr",
+        "rental_id": f"r-{rid}-{start}",
+        "rig_id": str(rid),
+        "rig_name": rig_name,
+        "start": start,
+        "end": None,
+        "percent": percent,
+        "avg_th": 100.0,
+        "advertised_th": 100.0,
+        "cost_sats_per_thh": None,
+        "length_hours": 1.0,
+        "delivered_thh": delivered_thh,
+        "paid_sats": paid_sats,
+    }
 
 
 def test_worst_rigs_ewma_ordering_and_min_samples(tmp_path, monkeypatch):
@@ -2043,14 +2592,26 @@ def test_worst_rigs_tenant_isolation_and_blacklist(tmp_path, monkeypatch):
     # Each tenant saves ITS OWN rows only (save_rental_history stamps the
     # passed tenant_id onto every row — a shared list would leak both rigs
     # into both tenants and defeat the isolation check).
-    assert rp.save_rental_history(
-        [_worst_row("X", "Rig X", "2026-06-01 10:00:00 UTC", 55.0),
-         _worst_row("X", "Rig X", "2026-06-02 10:00:00 UTC", 58.0)],
-        tenant_id="t1") is True
-    assert rp.save_rental_history(
-        [_worst_row("Y", "Rig Y", "2026-06-01 10:00:00 UTC", 99.0),
-         _worst_row("Y", "Rig Y", "2026-06-02 10:00:00 UTC", 97.0)],
-        tenant_id="t2") is True
+    assert (
+        rp.save_rental_history(
+            [
+                _worst_row("X", "Rig X", "2026-06-01 10:00:00 UTC", 55.0),
+                _worst_row("X", "Rig X", "2026-06-02 10:00:00 UTC", 58.0),
+            ],
+            tenant_id="t1",
+        )
+        is True
+    )
+    assert (
+        rp.save_rental_history(
+            [
+                _worst_row("Y", "Rig Y", "2026-06-01 10:00:00 UTC", 99.0),
+                _worst_row("Y", "Rig Y", "2026-06-02 10:00:00 UTC", 97.0),
+            ],
+            tenant_id="t2",
+        )
+        is True
+    )
     # t1's view must not include t2's good rig Y.
     d1 = rp.compute_worst_rigs(tenant_id="t1")
     assert [w["rig_id"] for w in d1["worst"]] == ["X"]
@@ -2076,8 +2637,8 @@ def test_worst_rigs_empty_and_never_raises(tmp_path, monkeypatch):
 def test_concentration_risk_provider_split_hhi_and_top_rig():
     """compute_concentration_risk derives provider/rig spend shares + HHI."""
     active = [
-        {"price_paid_btc": 0.0001, "rig": {"id": "1", "name": "Rig 1"}},   # 10k sats
-        {"price_paid_btc": 0.0003, "rig": {"id": "2", "name": "Rig 2"}},   # 30k sats
+        {"price_paid_btc": 0.0001, "rig": {"id": "1", "name": "Rig 1"}},  # 10k sats
+        {"price_paid_btc": 0.0003, "rig": {"id": "2", "name": "Rig 2"}},  # 30k sats
     ]
     contracts = [{"amount_sat": 60000}]  # Braiins: 60k sats
     c = rp.compute_concentration_risk(active, [], [], contracts)
@@ -2085,7 +2646,10 @@ def test_concentration_risk_provider_split_hhi_and_top_rig():
     assert c["total_spend_sats"] == 100000
     provs = {p["provider"]: p for p in c["providers"]}
     assert provs["mrr"]["spend_sats"] == 40000 and provs["mrr"]["share_pct"] == 40.0
-    assert provs["braiins"]["spend_sats"] == 60000 and provs["braiins"]["share_pct"] == 60.0
+    assert (
+        provs["braiins"]["spend_sats"] == 60000
+        and provs["braiins"]["share_pct"] == 60.0
+    )
     # HHI = 40² + 60² = 5200 → 'alta concentração' band.
     assert c["hhi"] == 5200.0
     assert c["top_provider"]["provider"] == "braiins"
@@ -2099,18 +2663,27 @@ def test_concentration_risk_honest_empty():
     assert c["available"] is False
     # A zero-paid rental is not spend either.
     c2 = rp.compute_concentration_risk(
-        [{"price_paid_btc": 0.0, "rig": {"id": "1"}}], [], [], [])
+        [{"price_paid_btc": 0.0, "rig": {"id": "1"}}], [], [], []
+    )
     assert c2["available"] is False
 
 
 def test_list_route_carries_worst_and_concentration(rclient, monkeypatch):
     """The /api/rentals payload ships worst_rigs + concentration (risk view)."""
-    monkeypatch.setattr(_app_module._rental_perf, "compute_worst_rigs",
-                        lambda tenant_id="": {"worst": [{"rig_id": "1",
-                                                          "danger_score": 80.0}],
-                                              "count": 1, "min_samples": 2})
-    monkeypatch.setattr(_app_module._rental_perf, "compute_concentration_risk",
-                        lambda *a, **k: {"available": True, "hhi": 5200.0})
+    monkeypatch.setattr(
+        _app_module._rental_perf,
+        "compute_worst_rigs",
+        lambda tenant_id="": {
+            "worst": [{"rig_id": "1", "danger_score": 80.0}],
+            "count": 1,
+            "min_samples": 2,
+        },
+    )
+    monkeypatch.setattr(
+        _app_module._rental_perf,
+        "compute_concentration_risk",
+        lambda *a, **k: {"available": True, "hhi": 5200.0},
+    )
     resp = rclient.get("/api/rentals")
     assert resp.status_code == 200
     data = resp.get_json()
@@ -2120,21 +2693,31 @@ def test_list_route_carries_worst_and_concentration(rclient, monkeypatch):
 
 # ── Difficulty forecast + risk alerts (market timing + risk view) ───────────
 
+
 def _risk_settings():
-    return {"rental_risk_alerts": "1", "rental_risk_danger": "40",
-            "rental_risk_top_n": "5", "rental_risk_conc_pct": "55"}
+    return {
+        "rental_risk_alerts": "1",
+        "rental_risk_danger": "40",
+        "rental_risk_top_n": "5",
+        "rental_risk_conc_pct": "55",
+    }
 
 
 def _seed_snapshots(heights):
     """Create the snapshots table and insert (ts, height) rows the forecast
     reads for the block-cadence measurement."""
     from services.db import get_db
+
     conn = get_db()
     c = conn.cursor()
-    c.execute("CREATE TABLE IF NOT EXISTS snapshots (ts INTEGER, network_height INTEGER)")
+    c.execute(
+        "CREATE TABLE IF NOT EXISTS snapshots (ts INTEGER, network_height INTEGER)"
+    )
     for i, h in enumerate(heights):
-        c.execute("INSERT OR REPLACE INTO snapshots(ts,network_height) VALUES(?,?)",
-                  (1_800_000_000 + i * 500, h))  # 500s between polls, +1 height
+        c.execute(
+            "INSERT OR REPLACE INTO snapshots(ts,network_height) VALUES(?,?)",
+            (1_800_000_000 + i * 500, h),
+        )  # 500s between polls, +1 height
     conn.commit()
     conn.close()
 
@@ -2146,9 +2729,12 @@ def test_difficulty_forecast_projects_from_block_cadence(tmp_path, monkeypatch):
     # +1 height every 500s → avg block time 500s (faster than 600 target).
     _seed_snapshots([890000 + i for i in range(20)])
     import services.state as _state
-    monkeypatch.setattr(_state, "latest_snapshot",
-                        {"network": {"difficulty": 90e12, "height": 890050,
-                                     "hashrate": 1e20}})
+
+    monkeypatch.setattr(
+        _state,
+        "latest_snapshot",
+        {"network": {"difficulty": 90e12, "height": 890050, "hashrate": 1e20}},
+    )
     f = rp.compute_difficulty_forecast()
     assert f["available"] is True
     assert 450 <= f["avg_block_time_s"] <= 560
@@ -2163,18 +2749,26 @@ def test_difficulty_forecast_down_when_blocks_slower(tmp_path, monkeypatch):
     """Slower-than-10min blocks (700s cadence) → difficulty projected DOWN."""
     monkeypatch.setenv("DB_PATH", str(tmp_path / "fc2.sqlite"))
     from services.db import get_db
+
     conn = get_db()
     c = conn.cursor()
-    c.execute("CREATE TABLE IF NOT EXISTS snapshots (ts INTEGER, network_height INTEGER)")
+    c.execute(
+        "CREATE TABLE IF NOT EXISTS snapshots (ts INTEGER, network_height INTEGER)"
+    )
     for i in range(20):
-        c.execute("INSERT OR REPLACE INTO snapshots(ts,network_height) VALUES(?,?)",
-                  (1_800_000_000 + i * 700, 900000 + i))
+        c.execute(
+            "INSERT OR REPLACE INTO snapshots(ts,network_height) VALUES(?,?)",
+            (1_800_000_000 + i * 700, 900000 + i),
+        )
     conn.commit()
     conn.close()
     import services.state as _state
-    monkeypatch.setattr(_state, "latest_snapshot",
-                        {"network": {"difficulty": 90e12, "height": 900050,
-                                     "hashrate": 1e20}})
+
+    monkeypatch.setattr(
+        _state,
+        "latest_snapshot",
+        {"network": {"difficulty": 90e12, "height": 900050, "hashrate": 1e20}},
+    )
     f = rp.compute_difficulty_forecast()
     assert f["available"] is True
     assert f["direction"] == "down"
@@ -2186,8 +2780,10 @@ def test_difficulty_forecast_unavailable_cold_box(tmp_path, monkeypatch):
     never a fabricated projection."""
     monkeypatch.setenv("DB_PATH", str(tmp_path / "fc3.sqlite"))
     import services.state as _state
-    monkeypatch.setattr(_state, "latest_snapshot",
-                        {"network": {"difficulty": None, "height": None}})
+
+    monkeypatch.setattr(
+        _state, "latest_snapshot", {"network": {"difficulty": None, "height": None}}
+    )
     f = rp.compute_difficulty_forecast()
     assert f["available"] is False
 
@@ -2220,11 +2816,14 @@ def test_risk_alerts_worst_rig_fires_once_with_dedup(tmp_path, monkeypatch):
 def test_risk_alerts_disabled_when_setting_off(tmp_path, monkeypatch):
     """No setting (or '0') → no alerts, even with bad rigs present."""
     monkeypatch.setenv("DB_PATH", str(tmp_path / "risk2.sqlite"))
-    monkeypatch.setattr(rp, "load_settings",
-                        lambda tenant_id="": {"rental_risk_alerts": "0"})
-    rows = [_worst_row("A", "Rig A", "2026-06-01 10:00:00 UTC", 40.0),
-            _worst_row("A", "Rig A", "2026-06-02 10:00:00 UTC", 45.0),
-            _worst_row("A", "Rig A", "2026-06-03 10:00:00 UTC", 42.0)]
+    monkeypatch.setattr(
+        rp, "load_settings", lambda tenant_id="": {"rental_risk_alerts": "0"}
+    )
+    rows = [
+        _worst_row("A", "Rig A", "2026-06-01 10:00:00 UTC", 40.0),
+        _worst_row("A", "Rig A", "2026-06-02 10:00:00 UTC", 45.0),
+        _worst_row("A", "Rig A", "2026-06-03 10:00:00 UTC", 42.0),
+    ]
     assert rp.save_rental_history(rows, tenant_id="t1") is True
     assert rp.evaluate_risk_alerts(tenant_id="t1") == []
 
@@ -2234,9 +2833,11 @@ def test_risk_alerts_concentration_crossing_fires_once(tmp_path, monkeypatch):
     provider crossing (deduped)."""
     monkeypatch.setenv("DB_PATH", str(tmp_path / "risk3.sqlite"))
     monkeypatch.setattr(rp, "load_settings", lambda tenant_id="": _risk_settings())
-    conc = {"available": True, "hhi": 7800.0,
-            "top_provider": {"provider": "mrr", "label": "MRR",
-                              "share_pct": 88.0}}
+    conc = {
+        "available": True,
+        "hhi": 7800.0,
+        "top_provider": {"provider": "mrr", "label": "MRR", "share_pct": 88.0},
+    }
     a = rp.evaluate_risk_alerts(tenant_id="t1", concentration=conc)
     assert len(a) == 1
     assert a[0]["category"] == "rental_risk_concentration"
@@ -2248,9 +2849,11 @@ def test_risk_alerts_tenant_isolation(tmp_path, monkeypatch):
     """Tenant t1's worst rig does NOT fire an alert for t2 (no data)."""
     monkeypatch.setenv("DB_PATH", str(tmp_path / "risk4.sqlite"))
     monkeypatch.setattr(rp, "load_settings", lambda tenant_id="": _risk_settings())
-    rows = [_worst_row("A", "Rig A", "2026-06-01 10:00:00 UTC", 55.0),
-            _worst_row("A", "Rig A", "2026-06-02 10:00:00 UTC", 58.0),
-            _worst_row("A", "Rig A", "2026-06-03 10:00:00 UTC", 52.0)]
+    rows = [
+        _worst_row("A", "Rig A", "2026-06-01 10:00:00 UTC", 55.0),
+        _worst_row("A", "Rig A", "2026-06-02 10:00:00 UTC", 58.0),
+        _worst_row("A", "Rig A", "2026-06-03 10:00:00 UTC", 52.0),
+    ]
     assert rp.save_rental_history(rows, tenant_id="t1") is True
     assert len(rp.evaluate_risk_alerts(tenant_id="t1")) == 1
     # t2 has its own empty history → no alert, and t1's dedup is untouched.
@@ -2262,11 +2865,18 @@ def test_risk_alert_enabled_tenants_scan(tmp_path, monkeypatch):
     gate — the worst-rig half is local)."""
     monkeypatch.setenv("DB_PATH", str(tmp_path / "risk5.sqlite"))
     from services.db import get_db
+
     conn = get_db()
     c = conn.cursor()
-    c.execute("CREATE TABLE IF NOT EXISTS tenant_settings (tenant_id TEXT, key TEXT, value TEXT, updated_ts INTEGER, PRIMARY KEY(tenant_id,key))")
-    c.execute("INSERT OR REPLACE INTO tenant_settings VALUES ('t-on', 'rental_risk_alerts', '1', 0)")
-    c.execute("INSERT OR REPLACE INTO tenant_settings VALUES ('t-off', 'rental_risk_alerts', '0', 0)")
+    c.execute(
+        "CREATE TABLE IF NOT EXISTS tenant_settings (tenant_id TEXT, key TEXT, value TEXT, updated_ts INTEGER, PRIMARY KEY(tenant_id,key))"
+    )
+    c.execute(
+        "INSERT OR REPLACE INTO tenant_settings VALUES ('t-on', 'rental_risk_alerts', '1', 0)"
+    )
+    c.execute(
+        "INSERT OR REPLACE INTO tenant_settings VALUES ('t-off', 'rental_risk_alerts', '0', 0)"
+    )
     conn.commit()
     conn.close()
     tenants = rp.risk_alert_enabled_tenants()
@@ -2283,13 +2893,22 @@ def test_risk_alerts_never_raises_on_missing_db(tmp_path, monkeypatch):
 
 def test_list_route_carries_forecast_and_risk_alerts(rclient, monkeypatch):
     """The /api/rentals payload ships difficulty_forecast + risk_alerts_fired."""
-    monkeypatch.setattr(_app_module._rental_perf, "compute_difficulty_forecast",
-                        lambda: {"available": True, "direction": "up",
-                                 "projected_change_pct": 12.0})
-    monkeypatch.setattr(_app_module._rental_perf, "evaluate_risk_alerts",
-                        lambda tenant_id="", concentration=None, worst_rigs=None:
-                        [{"severity": "WARN", "category": "rental_risk_rig",
-                          "message": "Rig #1 entrou no top-5 dos PIORES"}])
+    monkeypatch.setattr(
+        _app_module._rental_perf,
+        "compute_difficulty_forecast",
+        lambda: {"available": True, "direction": "up", "projected_change_pct": 12.0},
+    )
+    monkeypatch.setattr(
+        _app_module._rental_perf,
+        "evaluate_risk_alerts",
+        lambda tenant_id="", concentration=None, worst_rigs=None: [
+            {
+                "severity": "WARN",
+                "category": "rental_risk_rig",
+                "message": "Rig #1 entrou no top-5 dos PIORES",
+            }
+        ],
+    )
     resp = rclient.get("/api/rentals")
     assert resp.status_code == 200
     data = resp.get_json()
@@ -2302,16 +2921,27 @@ def test_risk_alerts_top_n_slices_precomputed_list(tmp_path, monkeypatch):
     precomputed (wider) worst-rigs list from the panel — a rig ranked beyond
     top_n must never fire, regardless of its danger score."""
     monkeypatch.setenv("DB_PATH", str(tmp_path / "risk_topn.sqlite"))
-    monkeypatch.setattr(rp, "_risk_alert_settings",
-                        lambda tenant_id="": {"enabled": True, "danger": 0.0,
-                                              "top_n": 2, "conc_pct": 99.0})
-    worst = {"worst": [
-        {"rig_id": "r1", "name": "R1", "danger_score": 80.0},
-        {"rig_id": "r2", "name": "R2", "danger_score": 70.0},
-        {"rig_id": "r3", "name": "R3", "danger_score": 60.0},  # ranked #3
-    ], "count": 3}
-    alerts = rp.evaluate_risk_alerts(tenant_id="t1", concentration=None,
-                                     worst_rigs=worst)
+    monkeypatch.setattr(
+        rp,
+        "_risk_alert_settings",
+        lambda tenant_id="": {
+            "enabled": True,
+            "danger": 0.0,
+            "top_n": 2,
+            "conc_pct": 99.0,
+        },
+    )
+    worst = {
+        "worst": [
+            {"rig_id": "r1", "name": "R1", "danger_score": 80.0},
+            {"rig_id": "r2", "name": "R2", "danger_score": 70.0},
+            {"rig_id": "r3", "name": "R3", "danger_score": 60.0},  # ranked #3
+        ],
+        "count": 3,
+    }
+    alerts = rp.evaluate_risk_alerts(
+        tenant_id="t1", concentration=None, worst_rigs=worst
+    )
     assert len(alerts) == 2
     assert {a["value"] for a in alerts} == {"r1", "r2"}
 
@@ -2356,7 +2986,7 @@ def test_save_rental_history_conflict_self_heals_bucket(tmp_path, monkeypatch):
     row = _series_row("1", "2026-07-20 10:00:00 UTC", 5000)
     row["bucket"] = "renter"  # legacy default applied by the ALTER migration
     assert rp.save_rental_history([row], tenant_id="t-heal") is True
-    row["bucket"] = "owner"   # new ingest now marks owner rentals correctly
+    row["bucket"] = "owner"  # new ingest now marks owner rentals correctly
     assert rp.save_rental_history([row], tenant_id="t-heal") is True
     series = rp.compute_portfolio_series(tenant_id="t-heal", bucket="week")
     assert series["totals"]["spent_sats"] == 0  # healed to 'owner' → excluded
@@ -2370,17 +3000,26 @@ def test_market_trend_ignores_subfloor_glitch_rows(tmp_path, monkeypatch):
     _reset_trend_cache()
     monkeypatch.setenv("DB_PATH", str(tmp_path / "trend_floor.sqlite"))
     from services.db import get_db
+
     conn = get_db()
     c = conn.cursor()
-    c.execute("""CREATE TABLE IF NOT EXISTS hashrate_market_history (
+    c.execute(
+        """CREATE TABLE IF NOT EXISTS hashrate_market_history (
         ts INTEGER, provider TEXT, hashrate REAL,
         price_per_th_day REAL, duration_days REAL, fee_pct REAL,
-        algorithm TEXT, score REAL, raw_data TEXT)""")
+        algorithm TEXT, score REAL, raw_data TEXT)"""
+    )
     now = int(__import__("time").time())
-    c.execute("INSERT INTO hashrate_market_history(ts,provider,hashrate,price_per_th_day,duration_days,fee_pct,algorithm,score,raw_data) "
-              "VALUES(?,?,?,?,?,?,?,?,?)", (now, "parasite", 1000.0, 1e-8, 1.0, 0.0, "sha256", 0.0, "{}"))
-    c.execute("INSERT INTO hashrate_market_history(ts,provider,hashrate,price_per_th_day,duration_days,fee_pct,algorithm,score,raw_data) "
-              "VALUES(?,?,?,?,?,?,?,?,?)", (now - 3600, "braiins", 1000.0, 5e-5, 1.0, 0.0, "sha256", 0.0, "{}"))
+    c.execute(
+        "INSERT INTO hashrate_market_history(ts,provider,hashrate,price_per_th_day,duration_days,fee_pct,algorithm,score,raw_data) "
+        "VALUES(?,?,?,?,?,?,?,?,?)",
+        (now, "parasite", 1000.0, 1e-8, 1.0, 0.0, "sha256", 0.0, "{}"),
+    )
+    c.execute(
+        "INSERT INTO hashrate_market_history(ts,provider,hashrate,price_per_th_day,duration_days,fee_pct,algorithm,score,raw_data) "
+        "VALUES(?,?,?,?,?,?,?,?,?)",
+        (now - 3600, "braiins", 1000.0, 5e-5, 1.0, 0.0, "sha256", 0.0, "{}"),
+    )
     conn.commit()
     conn.close()
     trend = rp.fetch_market_trend(days=7)
@@ -2391,6 +3030,7 @@ def test_market_trend_ignores_subfloor_glitch_rows(tmp_path, monkeypatch):
 
 
 # ── Historical network hashrate (exact past P/L) ───────────────────────────
+
 
 def test_parse_start_ts_handles_rfc3339():
     """Braiins RFC3339 starts (T separator, Z, fractional seconds) parse to
@@ -2410,12 +3050,18 @@ def test_resolve_network_hashrate_from_snapshots(tmp_path, monkeypatch):
     rp._snapshot_hr_cache.clear()
     import datetime as _dt
     from services.db import get_db
+
     conn = get_db()
     c = conn.cursor()
-    c.execute("CREATE TABLE IF NOT EXISTS snapshots (ts INTEGER NOT NULL, network_hashrate REAL)")
+    c.execute(
+        "CREATE TABLE IF NOT EXISTS snapshots (ts INTEGER NOT NULL, network_hashrate REAL)"
+    )
     base = int(_dt.datetime(2026, 7, 20, 10, 0, 0, tzinfo=_dt.timezone.utc).timestamp())
     c.execute("INSERT INTO snapshots(ts, network_hashrate) VALUES(?,?)", (base, 6e20))
-    c.execute("INSERT INTO snapshots(ts, network_hashrate) VALUES(?,?)", (base - 86400, 5.5e20))
+    c.execute(
+        "INSERT INTO snapshots(ts, network_hashrate) VALUES(?,?)",
+        (base - 86400, 5.5e20),
+    )
     conn.commit()
     conn.close()
 
@@ -2425,7 +3071,9 @@ def test_resolve_network_hashrate_from_snapshots(tmp_path, monkeypatch):
     assert hs == 6e20
     assert rp._resolve_network_hashrate_for_rental("2026-07-20T10:00:00Z") == 6e20
     # Missing start → end fallback.
-    assert rp._resolve_network_hashrate_for_rental(None, "2026-07-20 10:00:00 UTC") == 6e20
+    assert (
+        rp._resolve_network_hashrate_for_rental(None, "2026-07-20 10:00:00 UTC") == 6e20
+    )
     # Far outside the ±3d window → current fallback (mock the live value).
     monkeypatch.setattr(rp, "_network_hashrate_hs", lambda: 9e20)
     assert rp._resolve_network_hashrate_for_rental("2030-01-01 00:00:00 UTC") == 9e20
@@ -2459,9 +3107,12 @@ def test_network_hashrate_roundtrip_and_self_heal(tmp_path, monkeypatch):
     legacy.pop("network_hashrate_hs", None)
     assert rp.save_rental_history([legacy], tenant_id="t1") is True
     from services.db import get_db
+
     conn = get_db()
     c = conn.cursor()
-    c.execute("SELECT network_hashrate_hs FROM rental_history WHERE tenant_id='t1' AND rental_id='1'")
+    c.execute(
+        "SELECT network_hashrate_hs FROM rental_history WHERE tenant_id='t1' AND rental_id='1'"
+    )
     assert c.fetchone()[0] is None
     conn.close()
     # Re-ingest WITH the historical hashrate → ON CONFLICT updates it.
@@ -2470,30 +3121,48 @@ def test_network_hashrate_roundtrip_and_self_heal(tmp_path, monkeypatch):
     assert rp.save_rental_history([fixed], tenant_id="t1") is True
     conn = get_db()
     c = conn.cursor()
-    c.execute("SELECT network_hashrate_hs FROM rental_history WHERE tenant_id='t1' AND rental_id='1'")
+    c.execute(
+        "SELECT network_hashrate_hs FROM rental_history WHERE tenant_id='t1' AND rental_id='1'"
+    )
     assert c.fetchone()[0] == 6e20
     conn.close()
 
 
 # ── Auto-alert: price paid X% above the market at purchase time ────────────
 
+
 def _overpay_settings(threshold="100", window="48"):
-    return {"rental_market_overpay_pct": threshold,
-            "rental_pl_alert_window_hours": window}
+    return {
+        "rental_market_overpay_pct": threshold,
+        "rental_pl_alert_window_hours": window,
+    }
 
 
-def _overpay_rental(rid, ended=True, paid_btc=0.001, adv_th=100.0, lenh=10.0,
-                    start_u=None, end_u=None, now=None):
+def _overpay_rental(
+    rid,
+    ended=True,
+    paid_btc=0.001,
+    adv_th=100.0,
+    lenh=10.0,
+    start_u=None,
+    end_u=None,
+    now=None,
+):
     """Normalized MRR rental. Default: paid 0.001 BTC (100k sats) ÷ (100 TH ×
     10 h = 1000 TH·h) → agreed cost 100 sats/TH·h."""
     now = now or int(time.time())
     return {
-        "id": rid, "ended": ended,
-        "start": "2026-07-20 10:00:00 UTC", "end": "2026-07-20 20:00:00 UTC",
-        "start_unix": start_u or (now - 3600), "end_unix": end_u or (now - 1000),
+        "id": rid,
+        "ended": ended,
+        "start": "2026-07-20 10:00:00 UTC",
+        "end": "2026-07-20 20:00:00 UTC",
+        "start_unix": start_u or (now - 3600),
+        "end_unix": end_u or (now - 1000),
         "price_paid_btc": paid_btc,
-        "hashrate_advertised_th": adv_th, "hashrate_average_th": adv_th,
-        "hashrate_percent": 100.0, "length_hours": lenh,
+        "hashrate_advertised_th": adv_th,
+        "hashrate_average_th": adv_th,
+        "hashrate_percent": 100.0,
+        "length_hours": lenh,
     }
 
 
@@ -2501,8 +3170,9 @@ def test_market_overpay_alert_fires_and_dedups(tmp_path, monkeypatch):
     """A rental whose AGREED price is ≥ X% above the market at purchase fires
     ONE alert; the same rental never alerts again (persisted dedup)."""
     monkeypatch.setenv("DB_PATH", str(tmp_path / "ovp.sqlite"))
-    monkeypatch.setattr(rp, "load_settings",
-                        lambda tenant_id="": _overpay_settings("100"))
+    monkeypatch.setattr(
+        rp, "load_settings", lambda tenant_id="": _overpay_settings("100")
+    )
     monkeypatch.setattr(rp, "_historical_market_sats_per_thh", lambda ts: 40.0)
     now = int(time.time())
     # cost 100 sats/TH·h vs market 40 → overpay 150% ≥ 100 → fires (WARN).
@@ -2529,16 +3199,17 @@ def test_market_overpay_threshold_not_met_or_disabled(tmp_path, monkeypatch):
     now = int(time.time())
     hist = [_overpay_rental("r1", end_u=now - 1000, now=now)]
     # cost 100 vs market 60 → overpay 66.7% < 100 → silent.
-    monkeypatch.setattr(rp, "load_settings",
-                        lambda tenant_id="": _overpay_settings("100"))
+    monkeypatch.setattr(
+        rp, "load_settings", lambda tenant_id="": _overpay_settings("100")
+    )
     monkeypatch.setattr(rp, "_historical_market_sats_per_thh", lambda ts: 60.0)
     assert rp.evaluate_market_overpay_alerts(hist, [], tenant_id="t1", now=now) == []
     # disabled (empty) / non-positive → off.
-    monkeypatch.setattr(rp, "load_settings",
-                        lambda tenant_id="": _overpay_settings(""))
+    monkeypatch.setattr(rp, "load_settings", lambda tenant_id="": _overpay_settings(""))
     assert rp.evaluate_market_overpay_alerts(hist, [], tenant_id="t1", now=now) == []
-    monkeypatch.setattr(rp, "load_settings",
-                        lambda tenant_id="": _overpay_settings("0"))
+    monkeypatch.setattr(
+        rp, "load_settings", lambda tenant_id="": _overpay_settings("0")
+    )
     assert rp.evaluate_market_overpay_alerts(hist, [], tenant_id="t1", now=now) == []
 
 
@@ -2546,39 +3217,52 @@ def test_market_overpay_active_rental_extra_and_window(tmp_path, monkeypatch):
     """ACTIVE rentals bought recently ('na hora da compra') fire via extra;
     old active rentals stay silent (window)."""
     monkeypatch.setenv("DB_PATH", str(tmp_path / "ovp3.sqlite"))
-    monkeypatch.setattr(rp, "load_settings",
-                        lambda tenant_id="": _overpay_settings("100"))
+    monkeypatch.setattr(
+        rp, "load_settings", lambda tenant_id="": _overpay_settings("100")
+    )
     monkeypatch.setattr(rp, "_historical_market_sats_per_thh", lambda ts: 40.0)
     now = int(time.time())
     fresh = _overpay_rental("a1", ended=False, start_u=now - 1200, now=now)
     old = _overpay_rental("a2", ended=False, start_u=now - 200 * 3600, now=now)
-    alerts = rp.evaluate_market_overpay_alerts([], [], tenant_id="t1", now=now,
-                                               extra=[fresh, old])
+    alerts = rp.evaluate_market_overpay_alerts(
+        [], [], tenant_id="t1", now=now, extra=[fresh, old]
+    )
     assert [x["rental_id"] for x in alerts] == ["a1"]
-    assert rp.evaluate_market_overpay_alerts([], [], tenant_id="t1", now=now,
-                                             extra=[old]) == []
+    assert (
+        rp.evaluate_market_overpay_alerts([], [], tenant_id="t1", now=now, extra=[old])
+        == []
+    )
 
 
-def test_market_overpay_prefers_historical_and_live_is_last_resort(tmp_path, monkeypatch):
+def test_market_overpay_prefers_historical_and_live_is_last_resort(
+    tmp_path, monkeypatch
+):
     """The market reference is the historical price at purchase — the live
     fetcher must NOT run when history covers; live only when history misses."""
     monkeypatch.setenv("DB_PATH", str(tmp_path / "ovp4.sqlite"))
-    monkeypatch.setattr(rp, "load_settings",
-                        lambda tenant_id="": _overpay_settings("100"))
+    monkeypatch.setattr(
+        rp, "load_settings", lambda tenant_id="": _overpay_settings("100")
+    )
     now = int(time.time())
 
     # History covers → the live fetcher would raise if called.
     def _boom():
         raise AssertionError("live market must not run when history covers")
+
     monkeypatch.setattr(rp, "fetch_market_reference", _boom)
     monkeypatch.setattr(rp, "_historical_market_sats_per_thh", lambda ts: 40.0)
     hist = [_overpay_rental("r1", end_u=now - 1000, now=now)]
-    assert len(rp.evaluate_market_overpay_alerts(hist, [], tenant_id="t1", now=now)) == 1
+    assert (
+        len(rp.evaluate_market_overpay_alerts(hist, [], tenant_id="t1", now=now)) == 1
+    )
 
     # History misses → live fallback: cost 100 vs live 50 → 100% ≥ 100 → fires.
     monkeypatch.setattr(rp, "_historical_market_sats_per_thh", lambda ts: None)
-    monkeypatch.setattr(rp, "fetch_market_reference",
-                        lambda: {"available": True, "price_sats_per_thh": 50.0})
+    monkeypatch.setattr(
+        rp,
+        "fetch_market_reference",
+        lambda: {"available": True, "price_sats_per_thh": 50.0},
+    )
     hist2 = [_overpay_rental("r2", end_u=now - 1000, now=now)]
     a = rp.evaluate_market_overpay_alerts(hist2, [], tenant_id="t1", now=now)
     assert len(a) == 1 and "pagou 100% acima" in a[0]["message"]
@@ -2586,17 +3270,28 @@ def test_market_overpay_prefers_historical_and_live_is_last_resort(tmp_path, mon
 
 # ── Arbitrage-opportunity alerts (market vs the tenant's own avg cost) ─────
 
+
 def _arb_settings(threshold="30", cooldown="24"):
-    return {"rental_market_arb_pct": threshold,
-            "rental_market_arb_cooldown_hours": cooldown}
+    return {
+        "rental_market_arb_pct": threshold,
+        "rental_market_arb_cooldown_hours": cooldown,
+    }
 
 
-def _seed_avg_cost(tmp_path, paid_sats, thh=1000.0, tenant_id="t1",
-                   delivered_thh=None, rid="arb-hist-1", start=None):
+def _seed_avg_cost(
+    tmp_path,
+    paid_sats,
+    thh=1000.0,
+    tenant_id="t1",
+    delivered_thh=None,
+    rid="arb-hist-1",
+    start=None,
+):
     """Seed rental_history (renter bucket) so the tenant's weighted average
     cost = paid_sats / thh sats/TH·h. ``delivered_thh`` (when given) feeds the
     EFFECTIVE cost baseline; ``start`` orders the 'last rental' baseline."""
     from services.db import get_db
+
     rp._ensure_history_table()
     conn = get_db()
     c = conn.cursor()
@@ -2604,9 +3299,19 @@ def _seed_avg_cost(tmp_path, paid_sats, thh=1000.0, tenant_id="t1",
         "INSERT INTO rental_history(tenant_id,provider,bucket,rental_id,"
         "advertised_th,length_hours,delivered_thh,paid_sats,created_ts,start) "
         "VALUES(?,?,?,?,?,?,?,?,?,?)",
-        (tenant_id, "mrr", "renter", rid,
-         100.0, thh / 100.0, delivered_thh, paid_sats,
-         int(time.time()), start or f"2026-08-01 {rid}:00:00 UTC"))
+        (
+            tenant_id,
+            "mrr",
+            "renter",
+            rid,
+            100.0,
+            thh / 100.0,
+            delivered_thh,
+            paid_sats,
+            int(time.time()),
+            start or f"2026-08-01 {rid}:00:00 UTC",
+        ),
+    )
     conn.commit()
     conn.close()
 
@@ -2616,9 +3321,12 @@ def test_market_arb_alert_fires_and_dedup_cooldown(tmp_path, monkeypatch):
     bucket dedups; a later bucket can fire again (persistent cheap market
     repeats daily, never spam)."""
     monkeypatch.setenv("DB_PATH", str(tmp_path / "arb.sqlite"))
-    monkeypatch.setattr(rp, "load_settings",
-                        lambda tenant_id="": _arb_settings("30", "24"))
-    monkeypatch.setattr(rp, "_recent_market_sats_per_thh", lambda now=0, window_h=12.0: 40.0)
+    monkeypatch.setattr(
+        rp, "load_settings", lambda tenant_id="": _arb_settings("30", "24")
+    )
+    monkeypatch.setattr(
+        rp, "_recent_market_sats_per_thh", lambda now=0, window_h=12.0: 40.0
+    )
     _seed_avg_cost(tmp_path, paid_sats=100_000, thh=1000.0)  # avg/last cost 100
     now = int(time.time())
 
@@ -2645,22 +3353,28 @@ def test_market_signals_dry_run_never_consumes_dedup(tmp_path, monkeypatch):
     slots — a signal already fired via dispatch must STAY visible in the
     banner, and a dry-run banner must never suppress a later real dispatch."""
     monkeypatch.setenv("DB_PATH", str(tmp_path / "arb-dry.sqlite"))
-    monkeypatch.setattr(rp, "load_settings",
-                        lambda tenant_id="": _arb_settings("30", "24"))
-    monkeypatch.setattr(rp, "_recent_market_sats_per_thh", lambda now=0, window_h=12.0: 40.0)
+    monkeypatch.setattr(
+        rp, "load_settings", lambda tenant_id="": _arb_settings("30", "24")
+    )
+    monkeypatch.setattr(
+        rp, "_recent_market_sats_per_thh", lambda now=0, window_h=12.0: 40.0
+    )
     _seed_avg_cost(tmp_path, paid_sats=100_000, thh=1000.0)  # avg/last 100
     now = int(time.time())
 
     # Banner (dry_run) shows the window WITHOUT claiming the cooldown slot.
-    assert len(rp.evaluate_market_arb_alerts(tenant_id="t1", now=now,
-                                             dry_run=True)) == 1
-    assert len(rp.evaluate_market_arb_alerts(tenant_id="t1", now=now,
-                                             dry_run=True)) == 1
+    assert (
+        len(rp.evaluate_market_arb_alerts(tenant_id="t1", now=now, dry_run=True)) == 1
+    )
+    assert (
+        len(rp.evaluate_market_arb_alerts(tenant_id="t1", now=now, dry_run=True)) == 1
+    )
     # A real dispatch right after still fires (slot was never consumed).
     assert len(rp.evaluate_market_arb_alerts(tenant_id="t1", now=now)) == 1
     # After the real dispatch claimed the bucket, dry_run STILL shows it.
-    assert len(rp.evaluate_market_arb_alerts(tenant_id="t1", now=now,
-                                             dry_run=True)) == 1
+    assert (
+        len(rp.evaluate_market_arb_alerts(tenant_id="t1", now=now, dry_run=True)) == 1
+    )
     # …but a second real dispatch is deduped.
     assert rp.evaluate_market_arb_alerts(tenant_id="t1", now=now) == []
 
@@ -2669,24 +3383,43 @@ def test_market_overpay_dry_run_never_consumes_dedup(tmp_path, monkeypatch):
     """Same contract for the overpay family: dry_run repeats without claiming
     per-rental slots, and never suppresses a later real dispatch."""
     monkeypatch.setenv("DB_PATH", str(tmp_path / "ovp-dry.sqlite"))
-    monkeypatch.setattr(rp, "load_settings",
-                        lambda tenant_id="": _overpay_settings("100"))
+    monkeypatch.setattr(
+        rp, "load_settings", lambda tenant_id="": _overpay_settings("100")
+    )
     monkeypatch.setattr(rp, "_historical_market_sats_per_thh", lambda ts: 40.0)
     now = int(time.time())
     hist = [_overpay_rental("r1", end_u=now - 1000, now=now)]  # cost 100 vs 40 → 150%
 
     # Banner shows it repeatedly (dry_run), then a real dispatch fires once.
-    assert len(rp.evaluate_market_overpay_alerts(hist, [], tenant_id="t1",
-                                                 now=now, dry_run=True)) == 1
-    assert len(rp.evaluate_market_overpay_alerts(hist, [], tenant_id="t1",
-                                                 now=now, dry_run=True)) == 1
-    assert len(rp.evaluate_market_overpay_alerts(hist, [], tenant_id="t1",
-                                                 now=now)) == 1
+    assert (
+        len(
+            rp.evaluate_market_overpay_alerts(
+                hist, [], tenant_id="t1", now=now, dry_run=True
+            )
+        )
+        == 1
+    )
+    assert (
+        len(
+            rp.evaluate_market_overpay_alerts(
+                hist, [], tenant_id="t1", now=now, dry_run=True
+            )
+        )
+        == 1
+    )
+    assert (
+        len(rp.evaluate_market_overpay_alerts(hist, [], tenant_id="t1", now=now)) == 1
+    )
     # Real dispatch claimed the slot; dry_run banner STAYS visible.
-    assert len(rp.evaluate_market_overpay_alerts(hist, [], tenant_id="t1",
-                                                 now=now, dry_run=True)) == 1
-    assert rp.evaluate_market_overpay_alerts(hist, [], tenant_id="t1",
-                                             now=now) == []
+    assert (
+        len(
+            rp.evaluate_market_overpay_alerts(
+                hist, [], tenant_id="t1", now=now, dry_run=True
+            )
+        )
+        == 1
+    )
+    assert rp.evaluate_market_overpay_alerts(hist, [], tenant_id="t1", now=now) == []
 
 
 def test_market_arb_last_rental_baseline_dominates(tmp_path, monkeypatch):
@@ -2694,14 +3427,27 @@ def test_market_arb_last_rental_baseline_dominates(tmp_path, monkeypatch):
     vs the average can still be a real window vs what the user paid most
     recently (the highest baseline drives the signal)."""
     monkeypatch.setenv("DB_PATH", str(tmp_path / "arb-last.sqlite"))
-    monkeypatch.setattr(rp, "load_settings",
-                        lambda tenant_id="": _arb_settings("30", "24"))
-    monkeypatch.setattr(rp, "_recent_market_sats_per_thh", lambda now=0, window_h=12.0: 160.0)
+    monkeypatch.setattr(
+        rp, "load_settings", lambda tenant_id="": _arb_settings("30", "24")
+    )
+    monkeypatch.setattr(
+        rp, "_recent_market_sats_per_thh", lambda now=0, window_h=12.0: 160.0
+    )
     # avg = (100k + 300k) / 2000 TH·h = 200; last rental paid 300k → 300.
-    _seed_avg_cost(tmp_path, paid_sats=100_000, thh=1000.0, rid="old",
-                   start="2026-07-01 00:00:00 UTC")
-    _seed_avg_cost(tmp_path, paid_sats=300_000, thh=1000.0, rid="recent",
-                   start="2026-08-01 00:00:00 UTC")
+    _seed_avg_cost(
+        tmp_path,
+        paid_sats=100_000,
+        thh=1000.0,
+        rid="old",
+        start="2026-07-01 00:00:00 UTC",
+    )
+    _seed_avg_cost(
+        tmp_path,
+        paid_sats=300_000,
+        thh=1000.0,
+        rid="recent",
+        start="2026-08-01 00:00:00 UTC",
+    )
     now = int(time.time())
 
     a = rp.evaluate_market_arb_alerts(tenant_id="t1", now=now)
@@ -2719,9 +3465,12 @@ def test_market_arb_effective_cost_with_delivery(tmp_path, monkeypatch):
     cost when delivery < 100%: a market price ABOVE the advertised average can
     still be a buying window vs what the user effectively paid."""
     monkeypatch.setenv("DB_PATH", str(tmp_path / "arb-eff.sqlite"))
-    monkeypatch.setattr(rp, "load_settings",
-                        lambda tenant_id="": _arb_settings("30", "24"))
-    monkeypatch.setattr(rp, "_recent_market_sats_per_thh", lambda now=0, window_h=12.0: 140.0)
+    monkeypatch.setattr(
+        rp, "load_settings", lambda tenant_id="": _arb_settings("30", "24")
+    )
+    monkeypatch.setattr(
+        rp, "_recent_market_sats_per_thh", lambda now=0, window_h=12.0: 140.0
+    )
     # Advertised avg = 100k/1000 TH·h = 100; delivered only 500 TH·h (50%)
     # → effective = 100k/500 = 200. Market 140: 40% below avg (silent), 30%
     # below effective (fires) — the delivery loss is the deciding reference.
@@ -2743,17 +3492,30 @@ def test_market_arb_last_baseline_with_mixed_start_formats(tmp_path, monkeypatch
     lexical ORDER BY would sort ALL space-form rows before T-form rows and
     pick the wrong one."""
     monkeypatch.setenv("DB_PATH", str(tmp_path / "arb-mix.sqlite"))
-    monkeypatch.setattr(rp, "load_settings",
-                        lambda tenant_id="": _arb_settings("30", "24"))
-    monkeypatch.setattr(rp, "_recent_market_sats_per_thh", lambda now=0, window_h=12.0: 160.0)
+    monkeypatch.setattr(
+        rp, "load_settings", lambda tenant_id="": _arb_settings("30", "24")
+    )
+    monkeypatch.setattr(
+        rp, "_recent_market_sats_per_thh", lambda now=0, window_h=12.0: 160.0
+    )
     # Space-form (MRR) is LATER in wall time…
-    _seed_avg_cost(tmp_path, paid_sats=300_000, thh=1000.0, rid="mrr-later",
-                   start="2026-08-05 00:00:00 UTC")
+    _seed_avg_cost(
+        tmp_path,
+        paid_sats=300_000,
+        thh=1000.0,
+        rid="mrr-later",
+        start="2026-08-05 00:00:00 UTC",
+    )
     # …but T-form (Braiins) comes EARLIER in time — yet lexicographically
     # '2026-08-01T…' sorts AFTER '2026-08-05 ' (space < 'T'). The parser must
     # pick the MRR row as 'last'.
-    _seed_avg_cost(tmp_path, paid_sats=100_000, thh=1000.0, rid="braiins-earlier",
-                   start="2026-08-01T10:00:00Z")
+    _seed_avg_cost(
+        tmp_path,
+        paid_sats=100_000,
+        thh=1000.0,
+        rid="braiins-earlier",
+        start="2026-08-01T10:00:00Z",
+    )
     now = int(time.time())
 
     bases = rp._tenant_cost_baselines(tenant_id="t1")
@@ -2766,17 +3528,19 @@ def test_market_arb_last_baseline_with_mixed_start_formats(tmp_path, monkeypatch
 
 def test_market_arb_threshold_not_met_or_disabled(tmp_path, monkeypatch):
     monkeypatch.setenv("DB_PATH", str(tmp_path / "arb2.sqlite"))
-    monkeypatch.setattr(rp, "_recent_market_sats_per_thh", lambda now=0, window_h=12.0: 80.0)
+    monkeypatch.setattr(
+        rp, "_recent_market_sats_per_thh", lambda now=0, window_h=12.0: 80.0
+    )
     _seed_avg_cost(tmp_path, paid_sats=100_000, thh=1000.0)  # avg 100
     now = int(time.time())
     # avg 100 vs market 80 → 20% below < 30 → silent.
-    monkeypatch.setattr(rp, "load_settings",
-                        lambda tenant_id="": _arb_settings("30"))
+    monkeypatch.setattr(rp, "load_settings", lambda tenant_id="": _arb_settings("30"))
     assert rp.evaluate_market_arb_alerts(tenant_id="t1", now=now) == []
     # Disabled (empty / 0 / garbage).
     for bad in ("", "0", "abc"):
-        monkeypatch.setattr(rp, "load_settings",
-                            lambda tenant_id="", _bad=bad: _arb_settings(_bad))
+        monkeypatch.setattr(
+            rp, "load_settings", lambda tenant_id="", _bad=bad: _arb_settings(_bad)
+        )
         assert rp.evaluate_market_arb_alerts(tenant_id="t1", now=now) == []
 
 
@@ -2784,14 +3548,15 @@ def test_market_arb_skips_without_history_or_market(tmp_path, monkeypatch):
     """No track record (empty rental_history) or no market reference → honest
     skip — never fabricates a baseline."""
     monkeypatch.setenv("DB_PATH", str(tmp_path / "arb3.sqlite"))
-    monkeypatch.setattr(rp, "load_settings",
-                        lambda tenant_id="": _arb_settings("30"))
+    monkeypatch.setattr(rp, "load_settings", lambda tenant_id="": _arb_settings("30"))
     now = int(time.time())
     # No history at all → skip.
     assert rp.evaluate_market_arb_alerts(tenant_id="t1", now=now) == []
     # History but no market reference → skip.
     _seed_avg_cost(tmp_path, paid_sats=100_000, thh=1000.0)
-    monkeypatch.setattr(rp, "_recent_market_sats_per_thh", lambda now=0, window_h=12.0: None)
+    monkeypatch.setattr(
+        rp, "_recent_market_sats_per_thh", lambda now=0, window_h=12.0: None
+    )
     assert rp.evaluate_market_arb_alerts(tenant_id="t1", now=now) == []
 
 
@@ -2802,6 +3567,7 @@ def test_tenant_typical_th_median_and_fallback(tmp_path, monkeypatch):
     monkeypatch.setenv("DB_PATH", str(tmp_path / "th.sqlite"))
     rp._ensure_history_table()
     from services.db import get_db
+
     conn = get_db()
     c = conn.cursor()
     # Odd count → middle value: [100, 100, 1000, 5000, 10000] → 1000.
@@ -2810,7 +3576,8 @@ def test_tenant_typical_th_median_and_fallback(tmp_path, monkeypatch):
             "INSERT INTO rental_history(tenant_id,provider,bucket,rental_id,"
             "advertised_th,length_hours,paid_sats,created_ts) "
             "VALUES(?,?,?,?,?,?,?,?)",
-            ("t1", "mrr", "renter", f"th-{i}", th, 10.0, 100_000, int(time.time())))
+            ("t1", "mrr", "renter", f"th-{i}", th, 10.0, 100_000, int(time.time())),
+        )
     conn.commit()
     conn.close()
     assert rp._tenant_typical_th(tenant_id="t1") == 1000.0
@@ -2824,7 +3591,8 @@ def test_tenant_typical_th_median_and_fallback(tmp_path, monkeypatch):
             "INSERT INTO rental_history(tenant_id,provider,bucket,rental_id,"
             "advertised_th,length_hours,paid_sats,created_ts) "
             "VALUES(?,?,?,?,?,?,?,?)",
-            ("t2", "mrr", "renter", f"th-{i}", th, 10.0, 100_000, int(time.time())))
+            ("t2", "mrr", "renter", f"th-{i}", th, 10.0, 100_000, int(time.time())),
+        )
     conn.commit()
     conn.close()
     assert rp._tenant_typical_th(tenant_id="t2") == 600.0
@@ -2836,28 +3604,44 @@ def test_market_arb_signal_carries_suggested_th(tmp_path, monkeypatch):
     """The arbitrage alert payload carries suggested_th (tenant's typical
     order size) so the buy-modal prefill uses it instead of a fixed 1000."""
     monkeypatch.setenv("DB_PATH", str(tmp_path / "arb-th.sqlite"))
-    monkeypatch.setattr(rp, "load_settings",
-                        lambda tenant_id="": _arb_settings("30", "24"))
-    monkeypatch.setattr(rp, "_recent_market_sats_per_thh", lambda now=0, window_h=12.0: 40.0)
-    _seed_avg_cost(tmp_path, paid_sats=100_000, thh=1000.0, rid="old",
-                   start="2026-07-01 00:00:00 UTC")
-    _seed_avg_cost(tmp_path, paid_sats=100_000, thh=1000.0, rid="recent",
-                   start="2026-08-01 00:00:00 UTC")
+    monkeypatch.setattr(
+        rp, "load_settings", lambda tenant_id="": _arb_settings("30", "24")
+    )
+    monkeypatch.setattr(
+        rp, "_recent_market_sats_per_thh", lambda now=0, window_h=12.0: 40.0
+    )
+    _seed_avg_cost(
+        tmp_path,
+        paid_sats=100_000,
+        thh=1000.0,
+        rid="old",
+        start="2026-07-01 00:00:00 UTC",
+    )
+    _seed_avg_cost(
+        tmp_path,
+        paid_sats=100_000,
+        thh=1000.0,
+        rid="recent",
+        start="2026-08-01 00:00:00 UTC",
+    )
     # One BIG outlier that still PAYS its hashrate (3M sats for 5000 TH×10h =
     # 60 sats/TH·h) so the baseline stays above the market 40 → fires, and
     # suggested_th = median of [100,100,5000] = 100 (robust vs the outlier).
     from services.db import get_db
+
     conn = get_db()
     c = conn.cursor()
     c.execute(
         "INSERT INTO rental_history(tenant_id,provider,bucket,rental_id,"
         "advertised_th,length_hours,paid_sats,created_ts) "
         "VALUES(?,?,?,?,?,?,?,?)",
-        ("t1", "mrr", "renter", "big", 5000.0, 10.0, 3_000_000, int(time.time())))
+        ("t1", "mrr", "renter", "big", 5000.0, 10.0, 3_000_000, int(time.time())),
+    )
     conn.commit()
     conn.close()
-    a = rp.evaluate_market_arb_alerts(tenant_id="t1", now=int(time.time()),
-                                      dry_run=True)
+    a = rp.evaluate_market_arb_alerts(
+        tenant_id="t1", now=int(time.time()), dry_run=True
+    )
     assert len(a) == 1
     assert a[0]["suggested_th"] == 100.0  # median of [100,100,5000] → 100
 
@@ -2870,16 +3654,25 @@ def test_market_arb_enabled_tenants_no_mrr_key_needed(tmp_path, monkeypatch):
     monkeypatch.setenv("DB_PATH", str(tmp_path / "arb4.sqlite"))
     rp._ensure_rig_settings_tables()
     from services.db import get_db
+
     conn = get_db()
     c = conn.cursor()
-    c.execute("INSERT OR REPLACE INTO tenant_settings VALUES ('t-arb', 'rental_market_arb_pct', '40', 0)")
-    c.execute("INSERT OR REPLACE INTO tenant_settings VALUES ('t-arb', 'rental_market_overpay_pct', '100', 0)")
-    c.execute("INSERT OR REPLACE INTO tenant_settings VALUES ('t-off', 'rental_market_arb_pct', '0', 0)")
+    c.execute(
+        "INSERT OR REPLACE INTO tenant_settings VALUES ('t-arb', 'rental_market_arb_pct', '40', 0)"
+    )
+    c.execute(
+        "INSERT OR REPLACE INTO tenant_settings VALUES ('t-arb', 'rental_market_overpay_pct', '100', 0)"
+    )
+    c.execute(
+        "INSERT OR REPLACE INTO tenant_settings VALUES ('t-off', 'rental_market_arb_pct', '0', 0)"
+    )
     conn.commit()
     conn.close()
+
     # With an EMPTY MRR key, arbitrage still lists the tenant…
     def _no_key(tenant_id=""):
         return {"api_key": ""}
+
     monkeypatch.setattr(rp, "mrr_credentials", _no_key)
     out = rp.market_arb_enabled_tenants()
     assert "t-arb" in out
