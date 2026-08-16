@@ -3750,6 +3750,11 @@ td { padding: 4px 8px; border-bottom: 1px solid var(--border-subtle); color: var
 .upgrade-modal { max-width: 420px; }
 .upgrade-modal__copy { font-size: var(--fs-sm, 13px); line-height: 1.55; color: var(--text-secondary); margin-bottom: 14px; }
 .upgrade-modal__copy strong { color: var(--amber, #f5b942); }
+/* ── PREMIUM tier (Issue #182) — AI Operator real (LLM) ── */
+.btn--premium { background: linear-gradient(135deg, #7B1FA2, #512DA8); border-color: #7B1FA2; color: #fff; }
+.btn--premium:hover:not(:disabled) { filter: brightness(1.12); }
+#ai-premium-cta { border-color: #7B1FA2; color: #B39DDB; }
+#ai-premium-cta:hover { background: rgba(123, 31, 162, 0.15); color: #CE93D8; }
 .upgrade-modal__buy { width: 100%; margin-bottom: 6px; font-family: var(--font-mono); }
 .upgrade-modal__divider { display: flex; align-items: center; gap: 8px; margin: 10px 0; color: var(--text-tertiary); font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; }
 .upgrade-modal__divider::before,
