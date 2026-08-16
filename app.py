@@ -6631,6 +6631,12 @@ def api_market_trend():
 # 15s anyway, so a fresh enough answer is always served).
 _RENTALS_CACHE: Dict[str, Dict[str, Any]] = {}  # tenant_id -> {ts, payload}
 _RENTALS_CACHE_TTL_S = 20
+# Payload contract version (Issue #187): bumped when the credential/error
+# flags in /api/rentals change meaning. A payload WITHOUT this stamp (or
+# older than the frontend's freshness threshold) is STALE — it may predate
+# the missing-key guard and must never render the misleading 'No contracts
+# rentals on this account' empty-state (the panel shows the config hint).
+RENTALS_PAYLOAD_VERSION = 2
 
 
 def _own_hashrate_for_portfolio(tenant_id: str = "") -> dict:
@@ -6927,6 +6933,10 @@ def api_rentals(tenant_id: str = ""):
         payload = {
             "success": True,
             "updated_at": int(time.time()),
+            # Issue #187: version stamp so the frontend can detect payloads
+            # built by OLD code (no credential flags) and treat them as stale
+            # instead of pretending the account is empty.
+            "rentals_payload_version": RENTALS_PAYLOAD_VERSION,
             "mrr": {
                 "needs_auth": mrr_active.get("needs_auth", False),
                 "active": mrr_active.get("rentals", []),
@@ -6948,8 +6958,13 @@ def api_rentals(tenant_id: str = ""):
             },
             "braiins": {
                 "needs_auth": braiins.get("needs_auth", False),
+                "credentials_missing": braiins.get("credentials_missing", False),
                 "contracts": braiins.get("contracts", []),
                 "error": braiins.get("error"),
+                # Issue #187: parity with MRR — a configured-but-rejected
+                # Braiins key (401/403) is a CREDENTIAL problem, classified
+                # explicitly instead of only via the error text.
+                "auth_rejected": braiins.get("auth_rejected", False),
             },
             # CFO: aggregate portfolio analytics (total spent, weighted avg
             # cost, avg delivery, provider split) for the panel top strip.

@@ -5321,6 +5321,21 @@ function sortMarketVenues(venues, key, dir) {
   assertEqual('rentals auth rejected bad nonce', rentalsAuthRejected('Not Authenticated - Invalid Key - Bad Nonce.', false), true);
   assertEqual('rentals auth rejected 401', rentalsAuthRejected('HTTP 401', false), true);
   assertEqual('rentals auth rejected generic', rentalsAuthRejected('HTTP 503', false), false);
+
+  // Rentals payload freshness (Issue #187) — pure helpers mirror.
+  // Level: 0 fresh · 1 age-stale (soft 'dados desatualizados') · 2 old-code
+  // (no version stamp → credential hint, never 'No contracts' empty-state).
+  function rentalsPayloadStale(payload, nowSec) {
+    const p = payload || {};
+    const version = Number(p.rentals_payload_version) || 0;
+    if (version < 2) return 2;
+    const age = (nowSec || Math.floor(Date.now() / 1000)) - (Number(p.updated_at) || 0);
+    return age > 300 ? 1 : 0;
+  }
+  assertEqual('rentals stale missing stamp (old code)', rentalsPayloadStale({ updated_at: 1000000 }, 1000030), 2);
+  assertEqual('rentals stale version 0', rentalsPayloadStale({ rentals_payload_version: 0, updated_at: 1000000 }, 1000030), 2);
+  assertEqual('rentals fresh', rentalsPayloadStale({ rentals_payload_version: 2, updated_at: 1000000 }, 1000030), 0);
+  assertEqual('rentals age-stale only', rentalsPayloadStale({ rentals_payload_version: 2, updated_at: 1000000 }, 1000400), 1);
   assertEqual('rentals auth rejected permission', rentalsAuthRejected('No Permission - account/1285', false), false);
   assertEqual('rentals auth guide mrr', rentalsAuthGuide('mrr', 'Not Authenticated - Invalid Key - Bad Nonce.').indexOf('miningrigrentals.com') !== -1, true);
   assertEqual('rentals auth guide mrr not concurrency', rentalsAuthGuide('mrr', 'x').indexOf('NÃO é bug de concorrência') !== -1, true);
