@@ -317,10 +317,11 @@ docker compose up -d
 
 | Recurso | Como ativar | Notas |
 |---|---|---|
-| **Sentry** (erros + traces) | env: `SENTRY_DSN=...`, opcional `SENTRY_TRACES_SAMPLE_RATE=0.1` | já integrado em `app.py`; 5k errors/mês free |
+| **Sentry** (erros + traces) | env: `SENTRY_DSN=...`, opcional `SENTRY_TRACES_SAMPLE_RATE=0.1`, `SENTRY_RELEASE`, `SENTRY_ENVIRONMENT` | `services/sentry_telemetry.py` (Issue #176) — request_id em breadcrumbs/events, release = git SHA, PII-safe; 5k errors/mês free |
 | **Logs JSON** | env: `LOG_JSON=1` | `services/observability.py` — um JSON por linha, `jq`-able |
 | **Boot health** | sempre | linha estruturada `[boot] ready` com port/worker/db |
 | Admin CFO + pool stats | sempre | `/api/admin/sessions` (sessions, polls/s, fila, threads) |
+| **Error rate local** (self-host) | sempre | `services/error_tracker.py` — todo ERROR/CRITICAL do log vira bucket por hora com `request_id`; view no Admin `/api/admin/error-rate` (funciona SEM Sentry) |
 
 Matriz de decisão: Datadog/NewRelic são paid → **não adotados** (regra de ouro
 CFO/CRO $0). OpenTelemetry é o caminho futuro (exporter OTLP → Sentry) quando
@@ -329,6 +330,8 @@ houver tração (gated por tração, ver `docs/AUDITORIA_ESTRATEGICA.md`).
 Exemplo:
 ```bash
 LOG_JSON=1 SENTRY_DSN=https://xxx@sentry.io/123 python app.py
+# opcional: SENTRY_TRACES_SAMPLE_RATE=0.1 · SENTRY_ENVIRONMENT=cloud ·
+# SENTRY_RELEASE=cypher65-war-room@<sha> (default: git short SHA do deploy)
 ```
 
 ---

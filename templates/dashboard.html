@@ -1448,6 +1448,34 @@
     </div>
   </div>
 
+  <!-- ── Error rate (Issue #176) — telemetria local $0 + Sentry ──
+       Consome /api/admin/error-rate (mesmo gate localhost/X-API-Key).
+       Buckets por hora com request_id — funciona SEM Sentry (self-host);
+       quando SENTRY_DSN está configurado, os mesmos erros fluem pro Sentry
+       e o badge mostra o release/environment do deploy. -->
+  <div class="panel__subtitle">ERROR RATE (24h) — erros por hora · request_id correlacionado</div>
+  <div class="kpi-row">
+    <div class="kpi-card"><span class="kpi-card__label">Erros 24h</span><span class="kpi-card__value" id="admin-err-total">—</span></div>
+    <div class="kpi-card"><span class="kpi-card__label">Pico/hora</span><span class="kpi-card__value" id="admin-err-peak">—</span></div>
+    <div class="kpi-card" title="Sentry error tracking — release + environment do deploy (vazio quando sem DSN)"><span class="kpi-card__label">Sentry</span><span class="kpi-card__value" id="admin-err-sentry">—</span></div>
+  </div>
+  <div class="admin-metrics" id="admin-error-rate" hidden>
+    <div class="admin-metrics__chart-wrap">
+      <canvas id="admin-error-rate-chart"></canvas>
+    </div>
+    <div class="admin-metrics__empty" id="admin-error-rate-empty" hidden>
+      sem erros nas últimas 24h — zero é o estado saudável
+    </div>
+  </div>
+  <div class="admin-audit__table-wrap" id="admin-error-table-wrap" hidden>
+    <table class="admin-audit__table">
+      <thead>
+        <tr><th>módulo</th><th>erro (último no bucket)</th><th>nº</th><th>request_id</th><th>último</th></tr>
+      </thead>
+      <tbody id="admin-error-table-body"></tbody>
+    </table>
+  </div>
+
   <!-- ── PRO funnel (conversion telemetry) ── -->
   <div class="panel__subtitle">FUNIL PRO (30d) — quem vira assinante, onde o funil perde</div>
   <div class="kpi-row">

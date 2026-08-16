@@ -13,3 +13,7 @@ pywebpush>=1.14
 flask-compress==1.24
 # Renders docs/AGENT_SETUP_GUIDE.md at /docs/agent (guide page inside the app).
 markdown==3.10.3
+# Sentry error tracking is OPTIONAL (Issue #176): services/sentry_telemetry
+# imports it lazily and only inits when SENTRY_DSN is set — without the env
+# var (or without this package) the app boots normally, zero overhead.
+sentry-sdk>=2.14.0

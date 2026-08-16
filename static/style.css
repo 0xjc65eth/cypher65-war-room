@@ -6207,6 +6207,14 @@ body.module-mode .tab-pane:not(.active) { display: none; }
   border-radius: var(--radius-sm);
   text-align: center;
 }
+/* Error-rate table (Issue #176): request_id em fonte mono para copiar/colar
+   na busca dos logs JSON (X-Request-ID correlaciona com o Sentry). */
+.admin-err__rid {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 10px;
+  color: var(--text-mute);
+  word-break: break-all;
+}
 .admin-audit__table-wrap {
   max-height: 340px;
   overflow-y: auto;
