@@ -238,6 +238,56 @@ test.describe('RENTALS — performance dos aluguéis (P2)', () => {
     await expect(page.locator('#rentals-open-settings')).toBeVisible({ timeout: 5000 });
   });
 
+  test('payload stale (versão antiga, sem flags de credencial) → hint de configuração, não "No contracts"', async ({ page }) => {
+    // Payload construído por UMA VERSÃO ANTIGA do servidor: sem
+    // rentals_payload_version e sem needs_auth/error (pré-guard da #152) e
+    // com updated_at velho — o painel NÃO pode fingir conta vazia: mostra o
+    // hint de configuração + RECARREGAR (Issue #187).
+    await page.route('**/api/rentals', (route) => {
+      route.fulfill({ contentType: 'application/json', body: JSON.stringify({
+        success: true, updated_at: Math.floor(Date.now() / 1000) - 3600,
+        mrr: { needs_auth: false, active: [], history: [], owner: [], total_active: 0, total_history: 0, total_owner: 0, error: null },
+        braiins: { needs_auth: false, contracts: [], error: null },
+      })});
+    });
+    await page.goto('/');
+    await page.waitForSelector('#sidebar', { timeout: 25000 });
+    await ensureSidebarOpen(page);
+    await page.click('.sidebar__link[data-module="rentals"]');
+    await expect(page.locator('#rentals-count-badge')).not.toHaveText('—', { timeout: 15000 });
+    // Aba Braiins → empty state com hint de configuração (nunca "No contracts")
+    await page.click('button[data-rentals-filter="contracts"]');
+    await expect(page.locator('#rentals-list .empty-state__title')).toHaveText(/Configuração não verificada/, { timeout: 5000 });
+    await expect(page.locator('#rentals-list .empty-state__desc')).toContainText(/owner token Braiins/);
+    await expect(page.locator('#rentals-list .empty-state__desc')).not.toContainText(/No contracts/);
+    // CTA de recarregar presente (re-fetch ?refresh=1 sem reload da página)
+    await expect(page.locator('#rentals-refresh-btn')).toBeVisible({ timeout: 5000 });
+  });
+
+  test('payload fresco e vazio (versão 2) → mantém "No contracts" (sem falso positivo)', async ({ page }) => {
+    // Payload NOVO (rentals_payload_version: 2, updated_at recente) com a
+    // conta Braiins genuinamente vazia — o empty-state genérico continua
+    // correto; o hint de configuração só aparece para payload stale/antigo
+    // (Issue #187, sem falso positivo em conta real vazia).
+    await page.route('**/api/rentals', (route) => {
+      route.fulfill({ contentType: 'application/json', body: JSON.stringify({
+        success: true, updated_at: Math.floor(Date.now() / 1000), rentals_payload_version: 2,
+        mrr: { needs_auth: false, active: [], history: [], owner: [], total_active: 0, total_history: 0, total_owner: 0, error: null },
+        braiins: { needs_auth: false, contracts: [], error: null },
+      })});
+    });
+    await page.goto('/');
+    await page.waitForSelector('#sidebar', { timeout: 25000 });
+    await ensureSidebarOpen(page);
+    await page.click('.sidebar__link[data-module="rentals"]');
+    await expect(page.locator('#rentals-count-badge')).not.toHaveText('—', { timeout: 15000 });
+    await page.click('button[data-rentals-filter="contracts"]');
+    await expect(page.locator('#rentals-list .empty-state__title')).toHaveText(/No rentals/, { timeout: 5000 });
+    await expect(page.locator('#rentals-list .empty-state__desc')).toContainText(/No contracts rentals on this account/);
+    // Nenhum CTA de configuração/reload nesse caso (payload confiável).
+    await expect(page.locator('#rentals-refresh-btn')).toHaveCount(0);
+  });
+
   test('detail Braiins mostra métricas de performance normalizadas (schema MRR)', async ({ page }) => {
     // Intercepta list + detail para simular um contract Braiins com speed
     // series — o detail deve renderizar o banner de performance (4 células).

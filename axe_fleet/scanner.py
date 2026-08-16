@@ -20,6 +20,7 @@ Safety model: this module only reads device identity (model/hostname/
 firmware/hashrate). It never sends writes, never stores results, and only
 runs while the operator explicitly asks for a scan via the fleet UI.
 """
+
 import ipaddress
 import json
 import logging
@@ -31,9 +32,9 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 log = logging.getLogger("cypher65.axe.scanner")
 
 # ── Timeouts / limits ─────────────────────────────────────────────────────
-HTTP_PROBE_TIMEOUT = 1.2   # seconds per Bitaxe HTTP probe
-TCP_PROBE_TIMEOUT = 0.9    # seconds per cgminer TCP probe
-SCAN_WORKERS = 64          # concurrent probes (parallel /24 in ~4-6s)
+HTTP_PROBE_TIMEOUT = 1.2  # seconds per Bitaxe HTTP probe
+TCP_PROBE_TIMEOUT = 0.9  # seconds per cgminer TCP probe
+SCAN_WORKERS = 64  # concurrent probes (parallel /24 in ~4-6s)
 MAX_HOSTS_PER_SCAN = 1024  # hard cap: a /22 = 1024 hosts is already huge
 
 CGMINER_PORT = 4028
@@ -86,6 +87,7 @@ def _tcp_open(ip: str, port: int, timeout: float = ALIVE_PROBE_TIMEOUT) -> bool:
     except OSError:
         return False
 
+
 # ── Private / non-routable detection ──────────────────────────────────────
 # RFC1918 + CGNAT + loopback + link-local ranges only exist INSIDE the
 # network that owns them. A cloud-hosted dashboard (e.g. Render) can NEVER
@@ -116,6 +118,7 @@ def private_ip_hint() -> str:
     tailnet), so the SaaS text points exclusively to the local agent."""
     try:
         from config import is_cloud_deploy
+
         if is_cloud_deploy():
             return PRIVATE_IP_HINT_CLOUD
     except Exception:  # noqa: BLE001 — hint must never crash a probe
@@ -145,6 +148,7 @@ def is_private_ip(ip: str) -> bool:
 
 
 # ── CIDR / range parsing ─────────────────────────────────────────────────
+
 
 def parse_cidr(cidr: str) -> list:
     """Expand a CIDR / range / single host into a list of IP strings.
@@ -197,7 +201,10 @@ def parse_cidr(cidr: str) -> list:
 
 # ── Individual host probe ────────────────────────────────────────────────
 
-def _probe_cgminer_version(ip: str, port: int = CGMINER_PORT, timeout: float = TCP_PROBE_TIMEOUT):
+
+def _probe_cgminer_version(
+    ip: str, port: int = CGMINER_PORT, timeout: float = TCP_PROBE_TIMEOUT
+):
     """Fingerprint a cgminer-family miner via the JSON-over-TCP `version`
     command. Returns parsed version dict or None. Never raises.
 
@@ -271,6 +278,7 @@ def probe_host(ip: str, timeout: float = HTTP_PROBE_TIMEOUT) -> dict:
     if adapter_type == "bitaxe":
         try:
             from .connector import AxeOSConnector
+
             conn = AxeOSConnector(ip, timeout=timeout)
             info = conn.fetch_info()
             if isinstance(info, dict):
@@ -315,7 +323,10 @@ def probe_host(ip: str, timeout: float = HTTP_PROBE_TIMEOUT) -> dict:
                         if not chunk:
                             break
                         data += chunk
-                        if any(tok in chunk for tok in _CGMINER_EOL_TOKENS) or len(data) > 65536:
+                        if (
+                            any(tok in chunk for tok in _CGMINER_EOL_TOKENS)
+                            or len(data) > 65536
+                        ):
                             break
                     summary = _extract_json_lenient(data)
                 except Exception:
@@ -332,7 +343,9 @@ def probe_host(ip: str, timeout: float = HTTP_PROBE_TIMEOUT) -> dict:
                     if isinstance(summary_data, list) and summary_data:
                         sd = summary_data[0]
                         try:
-                            hashrate_hs = int(float(sd.get("GHS 5s", sd.get("GHS av", 0)) or 0) * 1e9)
+                            hashrate_hs = int(
+                                float(sd.get("GHS 5s", sd.get("GHS av", 0)) or 0) * 1e9
+                            )
                         except (ValueError, TypeError):
                             hashrate_hs = 0
         except Exception as e:
@@ -359,6 +372,7 @@ def probe_host(ip: str, timeout: float = HTTP_PROBE_TIMEOUT) -> dict:
 
 
 # ── Single-host connectivity diagnosis ──────────────────────────────────
+
 
 def diagnose_host(ip: str, timeout: float = HTTP_PROBE_TIMEOUT) -> dict:
     """Deep connectivity diagnosis for a single host (onboarding wizard).
@@ -427,6 +441,7 @@ def diagnose_host(ip: str, timeout: float = HTTP_PROBE_TIMEOUT) -> dict:
     # Path 1 — Bitaxe / AxeOS HTTP
     try:
         from .connector import AxeOSConnector
+
         conn = AxeOSConnector(ip, timeout=timeout)
         info = conn.fetch_info()
         if isinstance(info, dict):
@@ -455,9 +470,14 @@ def diagnose_host(ip: str, timeout: float = HTTP_PROBE_TIMEOUT) -> dict:
             result["reachable"] = True
             result["protocol"] = "cgminer"
             model = ""
-            for entry in (ver.get("VERSION") or []):
+            for entry in ver.get("VERSION") or []:
                 if isinstance(entry, dict):
-                    model = str(entry.get("Description") or entry.get("Type") or entry.get("Miner") or "")
+                    model = str(
+                        entry.get("Description")
+                        or entry.get("Type")
+                        or entry.get("Miner")
+                        or ""
+                    )
                     break
             version = ""
             if isinstance(ver.get("VERSION"), list) and ver.get("VERSION"):
@@ -479,6 +499,7 @@ def diagnose_host(ip: str, timeout: float = HTTP_PROBE_TIMEOUT) -> dict:
     if not result["reachable"]:
         try:
             from core.registry.detector import detect_firmware
+
             fw = detect_firmware(ip)
             if fw and fw.get("reachable"):
                 adapter = fw.get("adapter_type", "")
@@ -504,7 +525,10 @@ def diagnose_host(ip: str, timeout: float = HTTP_PROBE_TIMEOUT) -> dict:
             pass  # supplemental probe must never break the diagnosis
 
     if not result["reachable"]:
-        detail = result["error_detail"] or "no miner protocol responded (checked AxeOS :80, Braiins :80/:50051 and cgminer :4028)"
+        detail = (
+            result["error_detail"]
+            or "no miner protocol responded (checked AxeOS :80, Braiins :80/:50051 and cgminer :4028)"
+        )
         # D · Protocol-presence probes: even when no miner protocol answered,
         # a TCP :443 or a non-ESP-Miner web server on :80 is strong evidence
         # of a MODERN authenticated miner (Braiins OS+/Antminer login page).
@@ -528,6 +552,7 @@ def diagnose_host(ip: str, timeout: float = HTTP_PROBE_TIMEOUT) -> dict:
 
 # ── Concurrent subnet scan ───────────────────────────────────────────────
 
+
 def _cidr_is_private(cidr: str) -> bool:
     """True when the CIDR targets a private (RFC1918/CGNAT/etc.) block — used
     to attach the cloud-vs-LAN topology hint to empty scans. Parses the
@@ -549,8 +574,13 @@ def _cidr_is_private(cidr: str) -> bool:
         return False
 
 
-def scan_subnet(cidr: str, progress_cb=None, max_hosts: int = MAX_HOSTS_PER_SCAN,
-                timeout: float = HTTP_PROBE_TIMEOUT, workers: int = SCAN_WORKERS) -> dict:
+def scan_subnet(
+    cidr: str,
+    progress_cb=None,
+    max_hosts: int = MAX_HOSTS_PER_SCAN,
+    timeout: float = HTTP_PROBE_TIMEOUT,
+    workers: int = SCAN_WORKERS,
+) -> dict:
     """Scan a subnet/range for miners.
 
     Returns:
@@ -569,8 +599,16 @@ def scan_subnet(cidr: str, progress_cb=None, max_hosts: int = MAX_HOSTS_PER_SCAN
     hosts = parse_cidr(cidr)
     t0 = time.time()
     if not hosts:
-        return {"cidr": cidr, "total": 0, "found": [], "alive": 0, "alive_ips": [],
-                "hint": None, "elapsed_ms": 0, "error": "invalid or empty subnet"}
+        return {
+            "cidr": cidr,
+            "total": 0,
+            "found": [],
+            "alive": 0,
+            "alive_ips": [],
+            "hint": None,
+            "elapsed_ms": 0,
+            "error": "invalid or empty subnet",
+        }
     hosts = hosts[:max_hosts]
     found = []
     alive_ips = []
@@ -600,9 +638,16 @@ def scan_subnet(cidr: str, progress_cb=None, max_hosts: int = MAX_HOSTS_PER_SCAN
                     except Exception:
                         pass
     except Exception as e:  # noqa: BLE001 — scan must never crash the caller
-        return {"cidr": cidr, "total": len(hosts), "found": found, "alive": len(alive_ips),
-                "alive_ips": alive_ips, "hint": None,
-                "elapsed_ms": int((time.time() - t0) * 1000), "error": str(e)}
+        return {
+            "cidr": cidr,
+            "total": len(hosts),
+            "found": found,
+            "alive": len(alive_ips),
+            "alive_ips": alive_ips,
+            "hint": None,
+            "elapsed_ms": int((time.time() - t0) * 1000),
+            "error": str(e),
+        }
     # Most-recent-first keeps the freshest discovery on top.
     found.sort(key=lambda d: (d.get("hashrate_hs") or 0), reverse=True)
     # A · topology hint: private CIDR scanned + nothing found at all → the
@@ -610,12 +655,20 @@ def scan_subnet(cidr: str, progress_cb=None, max_hosts: int = MAX_HOSTS_PER_SCAN
     hint = None
     if not found and not alive_ips and _cidr_is_private(cidr):
         hint = private_ip_hint()
-    return {"cidr": cidr, "total": len(hosts), "found": found, "alive": len(alive_ips),
-            "alive_ips": alive_ips, "hint": hint,
-            "elapsed_ms": int((time.time() - t0) * 1000), "error": None}
+    return {
+        "cidr": cidr,
+        "total": len(hosts),
+        "found": found,
+        "alive": len(alive_ips),
+        "alive_ips": alive_ips,
+        "hint": hint,
+        "elapsed_ms": int((time.time() - t0) * 1000),
+        "error": None,
+    }
 
 
 # ── Local subnet suggestion ──────────────────────────────────────────────
+
 
 def _local_ipv4_addresses() -> list:
     """Best-effort list of this host's IPv4 addresses (public + private).
@@ -651,6 +704,7 @@ def suggest_subnets() -> list:
     SaaS answer is the local agent, not a scan."""
     try:
         from config import is_cloud_deploy
+
         if is_cloud_deploy():
             return []
     except Exception:  # noqa: BLE001 — suggestion is best-effort

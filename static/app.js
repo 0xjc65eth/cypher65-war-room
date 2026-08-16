@@ -109,6 +109,7 @@
   const $$ = (s) => document.querySelectorAll(s);
   const dom = {
     topbarAddress: $('#topbar-address'), statusPill: $('#status-pill'), statusText: $('#status-text'),
+    topbarInstance: $('#topbar-instance'),
     clock: $('#clock'), nextPoll: $('#next-poll'), refreshNow: $('#refresh-now'),
     workerRankBadge: $('#worker-rank-badge'), workerUptimeBadge: $('#worker-uptime-badge'),
     mHashrate: $('#m-hashrate'), mHashrateSub: $('#m-hashrate-sub'), mBestDiff: $('#m-bestdiff'), mBestDiffSub: $('#m-bestdiff-sub'),
@@ -279,6 +280,66 @@
 // ── escape HTML ───────────────────────────────────────────────────────
   function escapeHtml(s) { return String(s).replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c])); }
 
+  // ── Rentals provider auth state (Issue #152) ────────────────────────
+  // A CONFIGURED-but-rejected key (401/403, or MRR's classic 'Not
+  // Authenticated - Invalid Key - Bad Nonce.') is a CREDENTIAL problem, not
+  // a missing-credential state and not a concurrency bug. These pure
+  // helpers classify the rejection and build the FIX guidance per provider;
+  // mirrored in tests/test_app_js_core.js.
+  function rentalsAuthRejected(errMsg, authRejected) {
+    if (authRejected) return true;
+    return /rejected|401|403|unauthor|forbidden|bad nonce|not authenticated|invalid key/i.test(String(errMsg || ''));
+  }
+  function rentalsAuthGuide(provider, errMsg) {
+    const safe = escapeHtml(String(errMsg || ''));
+    if (provider === 'contracts') {
+      return 'A chave Braiins está configurada, mas a API a rejeitou: ' + safe +
+        '. Gere um novo owner token em hashpower.braiins.com e atualize no Settings (⚙).';
+    }
+    return 'A chave MRR está configurada, mas a API a rejeitou: ' + safe +
+      '. Causa provável: credencial inválida/desatualizada (ou tracker de nonce da chave preso) ' +
+      '— NÃO é bug de concorrência. Regenerar a API key + secret em miningrigrentals.com ' +
+      '→ My Account → API Access e atualizar no Settings (⚙).';
+  }
+  // Rentals payload freshness (Issue #187): a payload built by OLD server
+  // code (no version stamp) cannot PROVE the account is empty — it may
+  // predate the missing-key guard. Returns a LEVEL: 0 fresh · 1 age-stale
+  // (data older than the panel's refresh cadence → soft 'dados
+  // desatualizados' + reload) · 2 old-code (no version stamp → credential
+  // hint, the case that used to render the misleading 'No contracts rentals
+  // on this account'). Only level 2 claims the config may be missing; level 1
+  // never lies about credentials on an idle-but-open tab. Pure helper
+  // mirrored in tests/test_app_js_core.js.
+  const RENTALS_PAYLOAD_VERSION = 2;
+  const RENTALS_STALE_MAX_AGE_S = 300;  // panel re-fetches every 15s — 5min = not trustworthy
+  function rentalsPayloadStale(payload, nowSec) {
+    const p = payload || {};
+    const version = Number(p.rentals_payload_version) || 0;
+    if (version < RENTALS_PAYLOAD_VERSION) return 2;
+    // Sentinel policy (Issue #203): a missing/epoch stamp must never fabricate
+    // age (now - 0 → huge → false 'stale'). No stamp → unknown freshness → 0,
+    // so valid data is never hidden by an absent field.
+    const upd = Number(p.updated_at);
+    if (!(upd > 0)) return 0;
+    const age = (nowSec || Math.floor(Date.now() / 1000)) - upd;
+    return age > RENTALS_STALE_MAX_AGE_S ? 1 : 0;
+  }
+  // Rentals count surface (Issue #200): "X de N" when the paginated fetch
+  // hit the rate-budget safety cap (truncated) — never show a partial count
+  // as if it were the whole account. Pure helper — mirrored in
+  // tests/test_app_js_core.js. Returns {text, title}; text null = no truncation.
+  function rentalsCountSurface(rendered, total) {
+    const r = Number(rendered);
+    const t = Number(total);
+    if (isFinite(r) && isFinite(t) && t > 0 && r < t) {
+      return {
+        text: r + ' de ' + t,
+        title: 'exibindo ' + r + ' de ' + t + ' rentals (limite de segurança do fetch)',
+      };
+    }
+    return { text: null, title: '' };
+  }
+
   // ── Tenant Auth (Fase 4 · B1-frontend) ─────────────────────────────
   // Stores the JWT session in localStorage and attaches
   // `Authorization: Bearer <token>` to every /api/axe-fleet/* request so
@@ -319,7 +380,7 @@
   }
   // PRO licensing state (open/free/pro) — populated by initLicensing() on
   // boot and used to render the topbar badge + upgrade CTA on 402s.
-  let _license = { mode: 'open', tier: 'pro', pro: true };
+  let _license = { mode: 'open', tier: 'pro', pro: true, premium: true, ai_configured: false };
   async function initLicensing() {
     try {
       const r = await fetch('/api/license-status');
@@ -328,18 +389,26 @@
     } catch (e) { return; }
     renderLicenseBadge();
     syncUpgradeModal();
+    syncAiPremiumUi();
+    _initUpgradeBindings();
   }
   function renderLicenseBadge() {
     const badge = dom.topbarProBadge;
     if (!badge) return;
-    if (_license.mode === 'open' || _license.pro) {
-      // Open mode (everything free) or active PRO — show a quiet PRO tag.
+    if (_license.mode === 'open' || _license.premium || _license.pro) {
+      // Open mode (everything free), PREMIUM, or PRO — quiet tier tag.
+      // O selo PREMIUM aparece SÓ em licensed mode + chave premium (open mode
+      // mostra PRO como antes — o operador self-host não vê tier pago).
+      const premiumTag = _license.mode === 'licensed' && _license.premium;
       badge.hidden = false;
-      badge.textContent = _license.pro ? 'PRO' : 'FREE';
-      badge.classList.toggle('is-pro', !!_license.pro);
-      badge.title = _license.pro ? 'PRO license active' : 'Open mode — all features free';
+      badge.textContent = premiumTag ? 'PREMIUM' : (_license.pro ? 'PRO' : 'FREE');
+      badge.classList.toggle('is-pro', !!(_license.premium || _license.pro));
+      badge.title = premiumTag
+        ? 'PREMIUM license active — AI Operator real liberado'
+        : (_license.pro ? 'PRO license active' : 'Open mode — all features free');
       badge.onclick = null;  // clear any leftover upgrade-CTA handler (audit)
       syncUpgradeModal();
+      syncAiPremiumUi();
       return;
     }
     // Licensed mode + free tier → gate is live; badge is the upgrade CTA.
@@ -349,23 +418,56 @@
     badge.title = 'PRO features locked — click to upgrade';
     badge.onclick = openUpgradeModal;
     syncUpgradeModal();
+    syncAiPremiumUi();
+  }
+  // AI Operator premium CTA (panel header) — shown only in licensed mode
+  // WITHOUT a premium key; clicking opens the payload-driven upgrade modal.
+  function syncAiPremiumUi() {
+    const cta = document.getElementById('ai-premium-cta');
+    if (!cta) return;
+    const locked = _license.mode === 'licensed' && !_license.premium;
+    cta.hidden = !locked;
+    if (locked) {
+      cta.textContent = _license.pro ? '🤖 AI PREMIUM' : '🤖 AI = PREMIUM';
+      cta.onclick = openUpgradeModal;
+    } else {
+      cta.onclick = null;
+    }
   }
   // R1 revenue: upgrade modal — buy via Lemon Squeezy checkout or redeem a key.
   // CFO: firing the funnel events is best-effort and silent — telemetry must
   // never delay or break the UI (no await on the happy path).
+  function funnelId() {
+    // Issue #155: anonymous browser session id for funnel attribution.
+    // PII-free random token generated once and kept in localStorage — it lets
+    // paywall/modal/checkout/paid form a per-user path server-side without
+    // storing any personal data (never sent as email, only echoed into the
+    // Lemon Squeezy checkout `custom` field and back via the webhook).
+    try {
+      let id = localStorage.getItem('c65_funnel_id');
+      if (!id) {
+        id = 'f_' + Math.random().toString(36).slice(2) + Date.now().toString(36);
+        localStorage.setItem('c65_funnel_id', id);
+      }
+      return id;
+    } catch (e) { return ''; }
+  }
   function trackConversionEvent(event, meta) {
     try {
+      const m = meta || {};
+      if (!m.funnel_id) m.funnel_id = funnelId();
       fetch('/api/conversion/track', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ event: event, meta: meta || {} }),
+        body: JSON.stringify({ event: event, meta: m }),
       }).catch(function () { /* fire-and-forget */ });
     } catch (e) { /* never break the UI for telemetry */ }
   }
   function openUpgradeModal() {
     const m = document.getElementById('upgrade-modal');
     openModalAnimated(m);
-    trackConversionEvent('modal_open');
+    const up = _license.upgrade || {};
+    trackConversionEvent('modal_open', { plan: (up.plan || 'PRO').toLowerCase() });
   }
   // Exposed for e2e + support console (the PRO badge already wires onclick).
   window.openUpgradeModal = openUpgradeModal;
@@ -376,37 +478,67 @@
   // and drive its price copy from the server payload (single source of truth).
   function syncUpgradeModal() {
     const buy = document.getElementById('upgrade-buy-btn');
+    const pbuy = document.getElementById('upgrade-premium-buy-btn');
     const div = document.getElementById('upgrade-divider');
+    const up = _license.upgrade || {};
+    // Server-driven tier target: upgrade.plan === 'PREMIUM' means the user
+    // is PRO (not premium) → the modal sells the PREMIUM upsell; else PRO.
+    const wantsPremium = up.plan === 'PREMIUM';
     if (buy) {
-      buy.hidden = !_license.payments;
-      const up = _license.upgrade;
-      const price = (up && up.price_usd_month) || 9;
-      buy.textContent = 'Buy PRO — $' + price + '/mo';
+      buy.hidden = !_license.payments || wantsPremium;
+      buy.textContent = 'Buy PRO — $' + ((up && up.price_usd_month) || 9) + '/mo';
+    }
+    if (pbuy) {
+      pbuy.hidden = !_license.payments || !wantsPremium;
+      pbuy.textContent = 'Buy PREMIUM — $' + ((up && up.price_usd_month) || 29) + '/mo';
     }
     if (div) div.hidden = !_license.payments;
+    const title = document.getElementById('upgrade-modal-title');
+    if (title) title.textContent = wantsPremium ? '🤖 CYPHER65 PREMIUM' : '⚡ CYPHER65 PRO';
+    const copy = document.getElementById('upgrade-modal-copy');
+    if (copy) {
+      copy.innerHTML = wantsPremium
+        ? 'Unlock the <strong>real AI Operator</strong> (LLM — fleet, pool, probability &amp; market answers) on top of every PRO feature.'
+        : 'Unlock <strong>Monte Carlo</strong>, <strong>proximity meter</strong>, <strong>30d history</strong> &amp; <strong>webhooks</strong>.';
+    }
   }
-  async function buyPro() {
-    const btn = document.getElementById('upgrade-buy-btn');
+  async function buyUpgrade(plan) {
+    const tier = plan === 'premium' ? 'premium' : 'pro';
+    const btn = document.getElementById(tier === 'premium' ? 'upgrade-premium-buy-btn' : 'upgrade-buy-btn');
     if (btn) btn.disabled = true;
-    trackConversionEvent('checkout_start', { plan: 'pro' });
+    trackConversionEvent('checkout_start', { plan: tier });
     try {
       const r = await fetch('/api/upgrade/checkout', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ plan: 'pro' }),
+        body: JSON.stringify({ plan: tier, funnel_id: funnelId() }),
       });
       let data = {};
       try { data = await r.json(); } catch (e) {}
       if (r.ok && data.checkout_url) {
         window.open(data.checkout_url, '_blank', 'noopener');
       } else {
-        logMessage('PRO', (data && data.error) || 'Checkout unavailable', 'WARN');
+        logMessage(tier.toUpperCase(), (data && data.error) || 'Checkout unavailable', 'WARN');
       }
     } catch (e) {
-      logMessage('PRO', 'Checkout unavailable', 'WARN');
+      logMessage(tier.toUpperCase(), 'Checkout unavailable', 'WARN');
     } finally {
       if (btn) btn.disabled = false;
     }
+  }
+  // Legacy name kept for e2e / support console compatibility.
+  async function buyPro() { return buyUpgrade('pro'); }
+  // Wire the modal CTA buttons once (Buy PRO / Buy PREMIUM / activate key).
+  let _upgradeBound = false;
+  function _initUpgradeBindings() {
+    if (_upgradeBound) return;
+    _upgradeBound = true;
+    const buy = document.getElementById('upgrade-buy-btn');
+    const pbuy = document.getElementById('upgrade-premium-buy-btn');
+    const redeem = document.getElementById('upgrade-redeem-btn');
+    if (buy) buy.addEventListener('click', function () { buyUpgrade('pro'); });
+    if (pbuy) pbuy.addEventListener('click', function () { buyUpgrade('premium'); });
+    if (redeem) redeem.addEventListener('click', redeemLicenseKey);
   }
   async function redeemLicenseKey() {
     const input = document.getElementById('upgrade-key-input');
@@ -595,6 +727,64 @@
         if (e.key === 'Enter') loginBtn.click();
       });
     }
+  }
+
+  // ── Instance indicator (Issue #198) ─────────────────────────────────
+  // Deixa EXPLÍCITO em qual instância/URL o dashboard está. Resolve a
+  // confusão real de salvar chaves MRR/Braiins na instância errada (local
+  // vs cloud): o pill no topbar mostra o host + color-code por tipo, e o
+  // tooltip/clique expõe o origin completo para conferir antes de salvar.
+  // Pure classifier — espelhado em tests/test_app_js_core.js.
+  function instanceClassify(host) {
+    let h = String(host || '').toLowerCase().replace(/^https?:\/\//, '').split('/')[0];
+    // Forma IPv6 com brackets "[::1]:8765" → "::1" (porta separada).
+    const bracket = h.match(/^\[([^\]]+)\](?::\d+)?$/);
+    if (bracket) h = bracket[1];
+    // Strip de porta numérica — NUNCA para o loopback IPv6 cru "::1"
+    // (o regex :\d+$ casaria o "1" final e destruiria o host).
+    const hostOnly = h === '::1' ? '::1' : h.replace(/:\d+$/, '');
+    if (!hostOnly) return { kind: 'remote', icon: '⌁' };
+    const isLocal =
+      hostOnly === 'localhost' || hostOnly === '127.0.0.1' || hostOnly === '0.0.0.0' || hostOnly === '::1' ||
+      hostOnly.endsWith('.local') ||
+      /^192\.168\./.test(hostOnly) || /^10\./.test(hostOnly) || /^172\.(1[6-9]|2\d|3[01])\./.test(hostOnly);
+    const isCloud = /\.onrender\.com$/.test(hostOnly) || /\.render\.com$/.test(hostOnly);
+    if (isLocal) return { kind: 'local', icon: '🖥' };
+    if (isCloud) return { kind: 'cloud', icon: '☁' };
+    return { kind: 'remote', icon: '⌁' };
+  }
+  function initInstanceIndicator() {
+    const el = dom.topbarInstance;
+    if (!el) return;
+    const origin = window.location.origin || '';
+    const host = window.location.host || 'self-hosted';
+    const cls = instanceClassify(host);
+    const labels = { local: 'LOCAL', cloud: 'CLOUD', remote: 'REMOTE' };
+    let display = host;
+    if (display.length > 30) display = display.slice(0, 28) + '…';
+    el.textContent = cls.icon + ' ' + display;
+    el.classList.add('topbar__instance--' + cls.kind);
+    el.title = labels[cls.kind] + ' instance · ' + origin +
+      '\n(settings/chaves salvam nesta origem — clique para copiar o URL)';
+    // A11y: interativo por teclado também (Enter/Space = copiar), como um
+    // button de verdade — não só mouse.
+    el.setAttribute('role', 'button');
+    el.tabIndex = 0;
+    const copyOrigin = function () {
+      try {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(origin).then(function () {
+            showToast('success', 'Instance URL copiado: ' + origin);
+          }).catch(function () { /* clipboard denied */ });
+        } else {
+          showToast('success', origin);
+        }
+      } catch (e) { /* never break the topbar for a copy */ }
+    };
+    el.onclick = copyOrigin;
+    el.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); copyOrigin(); }
+    });
   }
 
   // ── Theme Toggle ─────────────────────────────────────────────────────
@@ -2780,7 +2970,6 @@ function renderAccount(acct) {
   // falling back to the lowest valid price_per_th_day.
   let _mktFilter = 'all';
   let _mktOffers = [];
-  let _mktGridRetried = false;  // retry guard for Chart.js CDN blocking DOM parse
   let _mktBtcUsd = null;  // BTC/USD from snapshot — for the USD/TH/d line on cards
   let _mktAffiliate = null;  // market_data.affiliate {provider,url,...} — one-click BUY on the offer card
   let _mktTrendLoaded = false;  // lazy: /api/market/trend fetched on first module activation
@@ -2820,6 +3009,63 @@ function renderAccount(acct) {
     const labels = Object.keys(buckets).sort();
     return { labels: labels, counts: labels.map(function (k) { return buckets[k]; }) };
   }
+  // feature_alert (Issue #163) → safe banner payload {feature, count,
+  // sharePct, minPct, active}; no HTML, numbers guarded against NaN.
+  function buildFeatureAlert(featureAlert) {
+    if (!featureAlert || featureAlert.share_pct == null) {
+      return { active: false, feature: '', count: 0, sharePct: 0, minPct: 50 };
+    }
+    return {
+      active: true,
+      feature: String(featureAlert.feature || 'unknown'),
+      count: Number(featureAlert.count) || 0,
+      sharePct: Number(featureAlert.share_pct) || 0,
+      minPct: Number(featureAlert.min_pct) || 50,
+    };
+  }
+  // paywall_by_feature (Issue #158) → top-N display rows {feature, count,
+  // pct} sorted desc; safe strings, no HTML.
+  function buildFeatureBreakdown(paywallByFeature) {
+    const rows = (paywallByFeature || []).map(function (f) {
+      return { feature: f.feature || 'unknown', count: Number(f.count) || 0 };
+    }).sort(function (a, b) { return b.count - a.count; });
+    const total = rows.reduce(function (s, r) { return s + r.count; }, 0) || 1;
+    return rows.map(function (r) {
+      return { feature: r.feature, count: r.count, pct: Math.round(r.count / total * 100) };
+    });
+  }
+  // cohort buckets (Issue #157) → rows for the LTV-real table: safe numbers,
+  // no HTML, ready for innerHTML via escapeHtml on the render side.
+  function _cohortNum(v) {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : 0;
+  }
+  function buildCohortRows(cohorts) {
+    return (cohorts || []).map(function (c) {
+      return {
+        month: c.cohort_month || '',
+        subs: _cohortNum(c.subscriptions),
+        renewals: _cohortNum(c.renewals),
+        revenue: _cohortNum(c.revenue_usd),
+        ltv: _cohortNum(c.ltv_usd),
+        m1: _cohortNum(c.retention_m1_pct),
+        m3: _cohortNum(c.retention_m3_pct),
+        m6: _cohortNum(c.retention_m6_pct),
+        m12: _cohortNum(c.retention_m12_pct),
+      };
+    });
+  }
+  // weekly funnel buckets (Issue #156) → trend series for the admin chart.
+  function buildFunnelTrend(weekly) {
+    const labels = [], paywall = [], convRate = [];
+    (weekly || []).forEach(function (b) {
+      labels.push(b.week || '');
+      const s = b.stages || {};
+      paywall.push(Number(s.paywall_view) || 0);
+      convRate.push(b.conversion_rate_pct != null ? Number(b.conversion_rate_pct) : 0);
+    });
+    return { labels: labels, paywall: paywall, convRate: convRate };
+  }
   // decisions → filtered by tenant + verdict ('all'/'' = no filter).
   function filterAdminAuditDecisions(decisions, tenant, verdict) {
     return (decisions || []).filter(function (d) {
@@ -2850,12 +3096,16 @@ function renderAccount(acct) {
     const gate = document.getElementById('admin-gate-badge');
     try {
       // Pool health — no auth needed for localhost/operator-key admin routes.
-      const [sessionsResp, convResp, auditResp] = await Promise.all([
+      const [sessionsResp, convResp, auditResp, metricsResp, docsResp, errResp, degResp] = await Promise.all([
         fetch('/api/admin/sessions', { headers: { 'X-Requested-With': 'fetch' } }),
-        fetch('/api/admin/conversion', { headers: { 'X-Requested-With': 'fetch' } }),
+        fetch('/api/admin/conversion?weeks=8', { headers: { 'X-Requested-With': 'fetch' } }),
         fetch('/api/admin/rentals/accepted-recos?limit=1000', { headers: { 'X-Requested-With': 'fetch' } }),
+        fetch('/api/admin/pool-metrics?hours=24', { headers: { 'X-Requested-With': 'fetch' } }),
+        fetch('/api/admin/docs-feedback', { headers: { 'X-Requested-With': 'fetch' } }),
+        fetch('/api/admin/error-rate?hours=24', { headers: { 'X-Requested-With': 'fetch' } }),
+        fetch('/api/admin/degradation-rate?hours=24', { headers: { 'X-Requested-With': 'fetch' } }),
       ]);
-      if (sessionsResp.status === 403 || convResp.status === 403 || auditResp.status === 403) {
+      if (sessionsResp.status === 403 || convResp.status === 403 || auditResp.status === 403 || metricsResp.status === 403 || docsResp.status === 403 || errResp.status === 403 || degResp.status === 403) {
         if (gate) gate.textContent = 'restricted';
         if (errEl) {
           errEl.hidden = false;
@@ -2868,14 +3118,22 @@ function renderAccount(acct) {
       const sessions = sessionsResp.ok ? await sessionsResp.json() : {};
       const conv = convResp.ok ? await convResp.json() : {};
       const audit = auditResp.ok ? await auditResp.json() : {};
-      _renderAdmin(sessions, conv, audit);
+      const metrics = metricsResp.ok ? await metricsResp.json() : {};
+      const docsFb = docsResp.ok ? await docsResp.json() : {};
+      const errData = errResp.ok ? await errResp.json() : {};
+      const degData = degResp.ok ? await degResp.json() : {};
+      _renderAdmin(sessions, conv, audit, metrics, docsFb, errData, degData);
     } catch (e) {
       if (errEl) { errEl.hidden = false; errEl.textContent = 'admin fetch error: ' + e.message; }
     }
   }
-  function _renderAdmin(sessions, conv, audit) {
+  function _renderAdmin(sessions, conv, audit, metrics, docsFb, errData, degData) {
+    _renderAdminMetrics(metrics || {});
+    _renderAdminErrorRate(errData || {});
+    _renderAdminDegradation(degData || {});
     _renderAdminAudit(audit);
     _renderAdminAutoExclusions(audit);
+    _renderAdminDocsFeedback(docsFb || {});
     const pool = sessions.pool || {};
     _setAdminText('admin-sessions', pool.sessions_active != null ? pool.sessions_active : '—');
     _setAdminText('admin-polls-per-sec', pool.polls_per_sec != null ? pool.polls_per_sec : '—');
@@ -2902,23 +3160,375 @@ function renderAccount(acct) {
     _setAdminText('admin-drop-modal-checkout', _pct(drops['modal_open->checkout_start']));
     _setAdminText('admin-drop-checkout-paid', _pct(drops['checkout_start->paid']));
     _setAdminText('admin-conv-rate', _pct(funnel.conversion_rate_pct));
+    // Issue #155: per-user funnel attribution (events carrying a funnel_id).
+    _setAdminText('admin-funnel-sessions', funnel.sessions_count != null ? funnel.sessions_count : '—');
+    _setAdminText('admin-funnel-session-conv', funnel.session_conversion_rate_pct != null ? _pct(funnel.session_conversion_rate_pct) : '—');
+    // Issue #157 (18-C): real cohort LTV (renewals) vs the price×months
+    // estimate — the tag tells the CFO which number they're looking at.
+    const isReal = econ.ltv_source === 'cohort_real';
+    const ltvTag = document.getElementById('admin-ltv-source');
+    if (ltvTag) {
+      ltvTag.textContent = isReal ? 'real' : 'est';
+      ltvTag.classList.toggle('kpi-card__tag--real', isReal);
+    }
     _setAdminText('admin-ltv', econ.ltv_usd != null ? '$' + econ.ltv_usd : '—');
     _setAdminText('admin-cac', econ.cac_usd != null ? '$' + econ.cac_usd : 'no spend data');
     _setAdminText('admin-ltv-cac', econ.ltv_cac_ratio != null ? econ.ltv_cac_ratio : '—');
     _setAdminText('admin-payback', econ.payback_months != null ? econ.payback_months : '—');
-    // Stage counts list
+    _renderAdminCohorts(econ);
+    // Stage counts list — plus per-stage session counts when available.
     const list = document.getElementById('admin-funnel-list');
     if (list) {
       const stages = funnel.stages || {};
+      const sStages = funnel.session_stages || {};
       const rows = Object.keys(stages).map(function(k) {
-        return '<li class="alert-item"><span class="alert-item__cat">' + escapeHtml(k) + '</span><span class="alert-item__msg">' + escapeHtml(String(stages[k])) + '</span></li>';
+        const sess = sStages[k] != null ? ' · ' + String(sStages[k]) + ' sessões' : '';
+        return '<li class="alert-item"><span class="alert-item__cat">' + escapeHtml(k) + '</span><span class="alert-item__msg">' + escapeHtml(String(stages[k])) + escapeHtml(sess) + '</span></li>';
       });
       list.innerHTML = rows.length ? rows.join('') : '<li class="alert-empty">sem eventos no período</li>';
     }
+    // Feature breakdown (Issue #158 — 18-D): where the free tier blocks.
+    _renderAdminFeatures(funnel);
+    // Feature over-concentration (Issue #163): the #1 friction point.
+    _renderAdminFeatureAlert(conv.feature_alert || null);
+    // Weekly trend (Issue #156 — 18-B): paywall_view × conversion rate.
+    _renderAdminFunnelTrend(conv.weekly || []);
   }
+
+  // ── Learning FAQ loop (Issue #19) — docs feedback summary ─────────────
+  function _renderAdminDocsFeedback(fb) {
+    const wrap = document.getElementById('admin-docs-feedback');
+    const table = document.getElementById('admin-docs-feedback-table');
+    const recurringEl = document.getElementById('admin-docs-recurring');
+    const metaEl = document.getElementById('admin-docs-feedback-meta');
+    if (!table && !recurringEl && !metaEl) return;
+    const rows = fb.sections || [];
+    const questions = fb.recurring_questions || [];
+    if (metaEl) {
+      metaEl.textContent = fb.total_votes
+        ? (fb.total_votes + ' votos · ' + (fb.overall_helpful_pct != null ? fb.overall_helpful_pct + '% útil' : '—'))
+        : 'sem votos ainda — widget no fim de cada seção do DOCS / GUIDE';
+    }
+    const tbody = table && table.querySelector('tbody');
+    if (tbody) {
+      tbody.innerHTML = rows.length ? rows.map(function(s) {
+        const pct = s.helpful_pct != null ? docsFeedbackPct(s.helpful, s.total) + '%' : '—';
+        return '<tr>' +
+          '<td>' + escapeHtml(docsFeedbackSectionLabel(s.section_id)) + '</td>' +
+          '<td>' + escapeHtml(String(s.total)) + '</td>' +
+          '<td>' + escapeHtml(String(s.helpful)) + '</td>' +
+          '<td>' + escapeHtml(String(s.not_helpful)) + '</td>' +
+          '<td>' + escapeHtml(String(pct)) + '</td>' +
+          '</tr>';
+      }).join('') : '<tr><td colspan="5" class="alert-empty">sem votos ainda</td></tr>';
+    }
+    if (recurringEl) {
+      recurringEl.innerHTML = questions.length ? questions.map(function(q) {
+        return '<li class="alert-item"><span class="alert-item__cat">' + escapeHtml(docsFeedbackSectionLabel(q.section_id)) + '</span><span class="alert-item__msg">' + escapeHtml(q.comment) + ' <em class="admin-docs-feedback__tenant">— ' + escapeHtml(q.tenant) + '</em></span></li>';
+      }).join('') : '<li class="alert-empty">nenhuma pergunta recorrente ainda — as perguntas do widget (👎) aparecem aqui para virar FAQ</li>';
+    }
+    if (wrap) wrap.hidden = false;
+  }
+
+  // ── Feature over-concentration banner (Issue #163) ────────────────────
+  function _renderAdminFeatureAlert(featureAlert) {
+    const el = document.getElementById('admin-feature-alert');
+    if (!el) return;
+    const a = buildFeatureAlert(featureAlert);
+    if (!a.active) { el.hidden = true; el.textContent = ''; return; }
+    el.hidden = false;
+    el.textContent = '⚠ FEATURE TRAVA DEMAIS — ' + a.feature + ' = ' +
+      a.sharePct + '% dos paywalls (threshold ' + a.minPct + '%). ' +
+      'Investigar UX/onboarding desta feature.';
+  }
+
+  // ── Feature breakdown (Issue #158 — 18-D) ─────────────────────────────
+  function _renderAdminFeatures(funnel) {
+    const listEl = document.getElementById('admin-feature-list');
+    if (!listEl) return;
+    const rows = buildFeatureBreakdown((funnel && funnel.paywall_by_feature) || []);
+    if (!rows.length) {
+      listEl.innerHTML = '<li class="alert-empty">sem paywalls no período</li>';
+      return;
+    }
+    listEl.innerHTML = rows.map(function (r) {
+      return '<li class="alert-item">' +
+        '<span class="alert-item__cat">' + escapeHtml(r.feature) + '</span>' +
+        '<span class="alert-item__msg">' + escapeHtml(String(r.count)) + ' · ' + escapeHtml(String(r.pct)) + '%</span>' +
+        '</li>';
+    }).join('');
+  }
+
+  // ── Funnel weekly trend chart (Issue #156 — 18-B) ──────────────────────
+  let _adminFunnelTrendChart = null;
+
+  function _renderAdminFunnelTrend(weekly) {
+    const wrap = document.getElementById('admin-funnel-trend-wrap');
+    const canvas = document.getElementById('admin-funnel-trend-chart');
+    const empty = document.getElementById('admin-funnel-trend-empty');
+    const meta = document.getElementById('admin-funnel-trend-meta');
+    if (!wrap || !canvas) return;
+    const trend = buildFunnelTrend(weekly);
+    if (_adminFunnelTrendChart) { _adminFunnelTrendChart.destroy(); _adminFunnelTrendChart = null; }
+    if (!trend.labels.length) {
+      wrap.hidden = true;
+      if (empty) empty.hidden = false;
+      if (meta) meta.textContent = '';
+      return;
+    }
+    wrap.hidden = false;
+    if (empty) empty.hidden = true;
+    if (meta) {
+      meta.textContent = trend.labels.length + ' semanas · ' + trend.labels[0] + ' → ' + trend.labels[trend.labels.length - 1];
+    }
+    if (typeof Chart === 'undefined') return;
+    _adminFunnelTrendChart = new Chart(canvas.getContext('2d'), {
+      type: 'line',
+      data: {
+        labels: trend.labels,
+        datasets: [
+          { label: 'paywall_view', data: trend.paywall, borderColor: 'rgb(6,214,240)', backgroundColor: 'rgba(6,214,240,0.06)', tension: 0.3, pointRadius: 2, fill: true, yAxisID: 'y' },
+          { label: 'conversion %', data: trend.convRate, borderColor: 'rgb(0,200,83)', backgroundColor: 'transparent', tension: 0.3, pointRadius: 2, borderDash: [4, 2], yAxisID: 'y1' },
+        ],
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        interaction: { mode: 'index', intersect: false },
+        scales: {
+          x: { ticks: { color: '#5E5952', font: { size: 9 }, maxRotation: 0 }, grid: { display: false } },
+          y: { beginAtZero: true, position: 'left', title: { display: true, text: 'paywall', color: 'rgb(6,214,240)', font: { size: 8 } }, ticks: { color: '#5E5952', font: { size: 9 }, precision: 0 }, grid: { color: 'rgba(94,89,82,0.10)' } },
+          y1: { beginAtZero: true, position: 'right', title: { display: true, text: 'conv %', color: 'rgb(0,200,83)', font: { size: 8 } }, ticks: { color: '#5E5952', font: { size: 9 } }, grid: { display: false } },
+        },
+      },
+    });
+  }
+
+  // ── LTV real por coorte (Issue #157 — 18-C) ───────────────────────────
+  function _renderAdminCohorts(econ) {
+    const wrap = document.getElementById('admin-cohort-wrap');
+    const tbody = document.getElementById('admin-cohort-tbody');
+    const empty = document.getElementById('admin-cohort-empty');
+    const src = document.getElementById('admin-cohort-source');
+    if (!wrap || !tbody) return;
+    const rows = buildCohortRows((econ && econ.cohorts) || []);
+    const isReal = econ && econ.ltv_source === 'cohort_real';
+    if (src) src.textContent = isReal ? 'cohort real' : 'estimativa';
+    if (!rows.length) {
+      wrap.hidden = true;
+      if (empty) empty.hidden = false;
+      return;
+    }
+    wrap.hidden = false;
+    if (empty) empty.hidden = true;
+    tbody.innerHTML = rows.map(function (r) {
+      return '<tr>' +
+        '<td>' + escapeHtml(r.month) + '</td>' +
+        '<td>' + escapeHtml(String(r.subs)) + '</td>' +
+        '<td>' + escapeHtml(String(r.renewals)) + '</td>' +
+        '<td>$' + escapeHtml(String(r.revenue.toFixed(2))) + '</td>' +
+        '<td>$' + escapeHtml(String(r.ltv.toFixed(2))) + '</td>' +
+        '<td>' + escapeHtml(String(r.m1.toFixed(1))) + '%</td>' +
+        '<td>' + escapeHtml(String(r.m3.toFixed(1))) + '%</td>' +
+        '<td>' + escapeHtml(String(r.m6.toFixed(1))) + '%</td>' +
+        '<td>' + escapeHtml(String(r.m12.toFixed(1))) + '%</td>' +
+        '</tr>';
+    }).join('');
+  }
+
   function _pct(v) {
     if (v === undefined || v === null) return '—';
     return Number(v).toFixed(1) + '%';
+  }
+
+  // ── Pool metric trends (Issue #17) — persistent 60s sampler history ────
+  let _adminMetricsChart = null;  // Chart.js instance (destroy before recreate)
+
+  function _renderAdminMetrics(metrics) {
+    const wrap = document.getElementById('admin-metrics');
+    const canvas = document.getElementById('admin-metrics-chart');
+    const empty = document.getElementById('admin-metrics-empty');
+    if (!wrap || !canvas || typeof Chart === 'undefined') return;
+    const points = (metrics && metrics.points) || [];
+    if (!points.length) {
+      wrap.hidden = false;
+      if (empty) empty.hidden = false;
+      if (_adminMetricsChart) { _adminMetricsChart.destroy(); _adminMetricsChart = null; }
+      return;
+    }
+    if (_adminMetricsChart) { _adminMetricsChart.destroy(); _adminMetricsChart = null; }
+    if (empty) empty.hidden = true;
+
+    var labels = points.map(function (p) {
+      var d = new Date(Number(p.ts) * 1000);
+      if (isNaN(d.getTime())) return '—';
+      return d.getHours().toString().padStart(2, '0') + ':' + d.getMinutes().toString().padStart(2, '0');
+    });
+    var sessions = points.map(function (p) { return p.sessions_active; });
+    var pps = points.map(function (p) {
+      return (p.polls_per_sec != null && p.polls_per_sec > 0) ? p.polls_per_sec : null;
+    });
+    var queue = points.map(function (p) {
+      return (p.queue_pending != null && p.queue_pending > 0) ? p.queue_pending : null;
+    });
+
+    wrap.hidden = false;
+    _adminMetricsChart = new Chart(canvas.getContext('2d'), {
+      type: 'line',
+      data: {
+        labels: labels,
+        datasets: [
+          { label: 'Sessions ativas', data: sessions, borderColor: 'rgb(6,214,240)', backgroundColor: 'rgba(6,214,240,0.06)', tension: 0.3, pointRadius: 0, fill: true, yAxisID: 'y' },
+          { label: 'Polls/seg', data: pps, borderColor: 'rgb(186,133,224)', backgroundColor: 'transparent', tension: 0.3, pointRadius: 0, borderDash: [4, 2], yAxisID: 'y1' },
+          { label: 'Queue pendente', data: queue, borderColor: 'rgb(255,160,0)', backgroundColor: 'transparent', tension: 0.3, pointRadius: 0, borderDash: [2, 3], yAxisID: 'y1' },
+        ],
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        interaction: { mode: 'index', intersect: false },
+        plugins: { legend: { labels: { color: '#5E5952', font: { size: 9 }, boxWidth: 12 } } },
+        scales: {
+          x: { ticks: { color: '#5E5952', font: { size: 9 }, maxTicksLimit: 12, maxRotation: 0 }, grid: { color: 'rgba(94,89,82,0.10)' } },
+          y: { type: 'linear', position: 'left', title: { display: true, text: 'sessions', color: 'rgb(6,214,240)' }, ticks: { color: '#5E5952', font: { size: 9 }, precision: 0 }, grid: { color: 'rgba(94,89,82,0.08)' } },
+          y1: { type: 'linear', position: 'right', title: { display: true, text: 'pps / queue', color: 'rgb(186,133,224)' }, ticks: { color: '#5E5952', font: { size: 9 } }, grid: { display: false } },
+        },
+      },
+    });
+  }
+
+  // ── Error rate (Issue #176) — local $0 sampler + Sentry badge ─────────
+  let _adminErrorChart = null;
+
+  function _fmtErrorTs(ts, nowArg) {
+    if (!ts) return '—';
+    const d = new Date(Number(ts) * 1000);
+    if (isNaN(d.getTime())) return '—';
+    const now = nowArg != null ? nowArg : Date.now();
+    const deltaMin = Math.floor((now - d.getTime()) / 60000);
+    if (deltaMin < 60) return deltaMin + 'm atrás';
+    const deltaH = Math.floor(deltaMin / 60);
+    if (deltaH < 48) return deltaH + 'h atrás';
+    return d.toISOString().replace('T', ' ').slice(0, 16) + ' UTC';
+  }
+
+  function _renderAdminErrorRate(data) {
+    const wrap = document.getElementById('admin-error-rate');
+    const canvas = document.getElementById('admin-error-rate-chart');
+    const empty = document.getElementById('admin-error-rate-empty');
+    const tableWrap = document.getElementById('admin-error-table-wrap');
+    const tbody = document.getElementById('admin-error-table-body');
+    if (!wrap || !canvas || !tableWrap || !tbody) return;
+
+    const total = data.total != null ? data.total : 0;
+    _setAdminText('admin-err-total', total);
+    _setAdminText('admin-err-peak', data.peak_per_hour != null ? data.peak_per_hour : '—');
+    const sentryInfo = typeof data.sentry_enabled === 'boolean'
+      ? (data.sentry_enabled
+        ? (data.sentry_release || 'on').replace('cypher65-war-room@', '') + ' · ' + (data.sentry_environment || '?') + ' ✓'
+        : 'off (self-host)')
+      : '—';
+    _setAdminText('admin-err-sentry', sentryInfo);
+
+    const buckets = (data.buckets || []);
+    if (_adminErrorChart) { _adminErrorChart.destroy(); _adminErrorChart = null; }
+    if (empty) empty.hidden = buckets.length > 0;
+    if (!buckets.length) {
+      wrap.hidden = false;
+      if (tableWrap) tableWrap.hidden = true;
+      return;
+    }
+
+    var labels = buckets.map(function (b) {
+      var d = new Date(Number(b.ts) * 1000);
+      if (isNaN(d.getTime())) return '—';
+      return d.getHours().toString().padStart(2, '0') + ':00';
+    });
+    var errors = buckets.map(function (b) { return b.errors; });
+    var topMod = (data.top_modules && data.top_modules.length) ? data.top_modules[0].module : '';
+
+    wrap.hidden = false;
+    _adminErrorChart = new Chart(canvas.getContext('2d'), {
+      type: 'bar',
+      data: {
+        labels: labels,
+        datasets: [{
+          label: 'Erros/hora', data: errors, backgroundColor: 'rgba(255,23,68,0.45)',
+          borderColor: 'rgb(255,23,68)', borderWidth: 1, borderRadius: 3, maxBarThickness: 18,
+        }],
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            callbacks: {
+              title: function (items) {
+                const b = buckets[items[0].dataIndex];
+                if (!b || !b.modules) return items[0].label;
+                // Module names são log names — escapados mesmo assim (tooltip
+                // do Chart.js renderiza como HTML; disciplina anti-XSS do repo).
+                return items[0].label + ' — ' + b.modules.map(function (m) {
+                  return escapeHtml(String(m.module || '')) + ' x' + m.count;
+                }).join(', ');
+              },
+            },
+          },
+        },
+        scales: {
+          x: { ticks: { color: '#5E5952', font: { size: 9 }, maxTicksLimit: 12, maxRotation: 0 }, grid: { color: 'rgba(94,89,82,0.06)' } },
+          y: { beginAtZero: true, ticks: { color: '#5E5952', font: { size: 9 }, precision: 0 }, grid: { color: 'rgba(94,89,82,0.08)' }, title: { display: true, text: 'erros' + (topMod ? ' · top: ' + topMod : ''), color: 'rgb(255,23,68)', font: { size: 9 } } },
+        },
+      },
+    });
+
+    // Recent errors table — every cell escaped (DOM guard).
+    const recent = (data.recent || []);
+    tableWrap.hidden = recent.length === 0;
+    tbody.innerHTML = recent.map(function (r) {
+      return '<tr>' +
+        '<td>' + escapeHtml(String(r.module || '—')) + '</td>' +
+        '<td title="' + escapeHtml(String(r.message || '')) + '">' + escapeHtml(String((r.message || '—').slice(0, 80))) + '</td>' +
+        '<td>' + escapeHtml(String(r.count || 1)) + '</td>' +
+        '<td class="admin-err__rid">' + escapeHtml(String(r.last_request_id || '—')) + '</td>' +
+        '<td>' + escapeHtml(_fmtErrorTs(r.last_ts)) + '</td>' +
+        '</tr>';
+    }).join('');
+  }
+
+  // ── Degradation (Issue #202) — WARNING bucket ($0, self-host) ─────────
+  // The converted `except: pass` sites now emit WARNINGs that land in
+  // degradation_metrics. spike = pico >= 100/h; sustained = warnings em >= 2
+  // horas distintas. Os badges são o 'alerta de taxa' sem depender de Sentry.
+  function _renderAdminDegradation(data) {
+    const tableWrap = document.getElementById('admin-deg-table-wrap');
+    const tbody = document.getElementById('admin-deg-table-body');
+    const empty = document.getElementById('admin-deg-empty');
+    if (!tableWrap || !tbody) return;
+    const total = data.total != null ? data.total : 0;
+    const peak = data.peak_per_hour != null ? data.peak_per_hour : 0;
+    _setAdminText('admin-deg-total', total);
+    _setAdminText('admin-deg-peak', peak);
+    const state = document.getElementById('admin-deg-state');
+    if (state) {
+      // Keep the kpi-card__value base class so the badge keeps its sizing.
+      state.className = 'kpi-card__value badge badge--' + (data.sustained ? 'red' : (data.spike ? 'amber' : 'green'));
+      state.textContent = data.sustained ? 'SUSTAINED ⚠' : (data.spike ? 'SPIKE ⚠' : (total > 0 ? 'normal' : 'ok'));
+    }
+    const recent = data.recent || [];
+    if (empty) empty.hidden = (data.buckets || []).length > 0;
+    if (!recent.length) { tableWrap.hidden = true; return; }
+    tableWrap.hidden = false;
+    tbody.innerHTML = recent.map(function (r) {
+      return '<tr>' +
+        '<td>' + escapeHtml(String(r.module || '—')) + '</td>' +
+        '<td title="' + escapeHtml(String(r.message || '')) + '">' + escapeHtml(String((r.message || '—').slice(0, 80))) + '</td>' +
+        '<td>' + escapeHtml(String(r.count || 1)) + '</td>' +
+        '<td>' + escapeHtml(String(r.last_request_id || '—')) + '</td>' +
+        '<td>' + escapeHtml(_fmtErrorTs(r.last_ts)) + '</td>' +
+        '</tr>';
+    }).join('');
   }
 
   // ── Admin audit trail — table + filters + weekly mini-chart ───────────
@@ -3158,6 +3768,37 @@ function renderAccount(acct) {
     });
   }
 
+  // Funnel weekly CSV export — same admin-gated route, blob download
+  // (keeps the X-API-Key header path for remote operators).
+  const funnelCsvBtn = document.getElementById('admin-funnel-csv');
+  if (funnelCsvBtn) {
+    funnelCsvBtn.addEventListener('click', async function () {
+      const errEl = document.getElementById('admin-error');
+      const fail = function (msg) {
+        if (errEl) { errEl.hidden = false; errEl.textContent = msg; }
+      };
+      try {
+        const r = await fetch('/api/admin/conversion?format=csv&weeks=8', { headers: { 'X-Requested-With': 'fetch' } });
+        if (!r.ok) {
+          fail('CSV semanal bloqueado (HTTP ' + r.status + ') — a rota exige localhost ou X-API-Key do operador.');
+          return;
+        }
+        const blob = await r.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = 'funnel_weekly_' + Math.floor(Date.now() / 1000) + '.csv';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+        if (errEl) errEl.hidden = true;
+      } catch (err) {
+        fail('CSV semanal error: ' + err.message);
+      }
+    });
+  }
+
   const adminRefreshBtn = document.getElementById('admin-refresh-btn');
   if (adminRefreshBtn) {
     adminRefreshBtn.addEventListener('click', function() {
@@ -3265,18 +3906,9 @@ function renderAccount(acct) {
 
   function renderMarketGrid() {
     const tbody = document.getElementById('mkt-table-body');
-    if (!tbody) {
-      // DOM not yet parsed (Chart.js CDN blocks <head>). Retry once
-      // after a short delay so the tbody has time to appear.
-      if (!_mktGridRetried) {
-        _mktGridRetried = true;
-        setTimeout(function () {
-          _mktGridRetried = false;
-          renderMarketGrid();
-        }, 100);
-      }
-      return;
-    }
+    if (!tbody) return;  // Issue #186: Chart.js é defer agora — o DOM nunca é
+    // bloqueado pelo CDN; se o tbody ainda não existe, o próximo poll
+    // (renderMarket → renderMarketGrid) re-renderiza sozinho.
 
     const inst = _mktInstitutional || {};
     let venues = (inst.venues || []).filter(v => {
@@ -3637,6 +4269,7 @@ function renderAccount(acct) {
           : '<span class="mkt-trend__legend-item" style="color:var(--text-tertiary)">preços são persistidos a cada fetch (warm-up 5min) — volte mais tarde</span>';
       }
       if (!datasets.length) return true;  // valid empty state — nothing to plot
+      if (typeof Chart === 'undefined') return false;  // Issue #186: defer — próximo poll re-tenta
       const ctx = canvas.getContext('2d');
       if (window._mktTrendChart) window._mktTrendChart.destroy();
       window._mktTrendChart = new Chart(ctx, {
@@ -4039,11 +4672,78 @@ function renderAccount(acct) {
     });
   }
 
+  // CFO: consolidated portfolio P/L (Issue #21-A) — PRÓPRIO self-mining EV
+  // + RENTALS P/L + NET 30d. Hidden until any leg has data.
+  function _renderPortfolioConsolidated() {
+    const wrap = document.getElementById('portfolio-consolidated');
+    if (!wrap) return;
+    const gp = (_rentalsData && _rentalsData.global_portfolio) || {};
+    const own = gp.own || {};
+    const rent = gp.rentals || {};
+    const comb = gp.combined || {};
+    const hasOwn = own.hashrate_hs > 0;
+    const hasRent = rent.pl_30d_sats != null || rent.pl_all_sats != null;
+    if (!hasOwn && !hasRent) { wrap.hidden = true; return; }
+    wrap.hidden = false;
+    const set = function (id, v) {
+      const el = document.getElementById(id);
+      if (el) el.textContent = v;
+    };
+    const fmtSats = function (v, sign) {
+      if (v === null || v === undefined) return '—';
+      const n = Number(v);
+      if (sign && n > 0) return '+' + n.toLocaleString('en-US') + ' sats';
+      return n.toLocaleString('en-US') + ' sats';
+    };
+    set('portfolio-own-daily',
+      own.daily_revenue_sats != null ? fmtSats(own.daily_revenue_sats) + '/dia' : '—');
+    set('portfolio-own-month',
+      own.month_revenue_sats != null ? fmtSats(own.month_revenue_sats) : '—');
+    set('portfolio-rentals-30d', fmtSats(rent.pl_30d_sats, true));
+    set('portfolio-rentals-all', fmtSats(rent.pl_all_sats, true));
+    set('portfolio-net-30d',
+      comb.pl_30d_sats != null ? fmtSats(comb.pl_30d_sats, true) : '—');
+    const meta = document.getElementById('portfolio-consolidated-meta');
+    if (meta) {
+      const src = own.source === 'fleet' ? 'frota física'
+        : own.source === 'worker' ? 'worker do pool' : '—';
+      const hr = own.hashrate_th != null ? own.hashrate_th + ' TH/s' : 'sem hashrate';
+      meta.textContent = own.hashrate_hs > 0
+        ? ('ESTIMATE · ' + hr + ' (' + src + ')' + (own.estimate ? ' · EV' : ''))
+        : 'ESTIMATE · sem hashrate próprio registrado';
+    }
+  }
+
   // CFO: portfolio time series — spent bars + estimated P/L (period and
   // cumulative) from the LOCAL rental_history. Bucket toggle week/month
   // re-fetches server-side data (the API ships the week bucket by default).
   let _rentalsSeriesChart = null;
   let _rentalsSeriesBucket = 'week';
+
+  // Issue #146 (21-C): pure series-datasets builder (mirrored in the JS core
+  // tests) — safe Number guards (NaN → null so the chart shows honest gaps),
+  // own-EV + consolidated-total series included only when the backend sent
+  // them (backward compatible with the pre-21-C payload).
+  function buildPortfolioSeriesDatasets(points) {
+    const rows = points || [];
+    // null/undefined must stay null (Chart.js gap) — Number(null) is 0 and
+    // would fabricate a flat 'no loss' bar on a cold box (honest telemetry).
+    const num = function (v) {
+      if (v === null || v === undefined) return null;
+      const n = Number(v);
+      return Number.isFinite(n) ? n : null;
+    };
+    const hasOwnEv = rows.some(function (p) { return num(p.own_ev_sats) != null; });
+    return {
+      labels: rows.map(function (p) { return String(p.label || '').replace(/^\d{4}-/, ''); }),
+      spent: rows.map(function (p) { return num(p.spent_sats); }),
+      pl: rows.map(function (p) { return num(p.pl_sats); }),
+      cum: rows.map(function (p) { return num(p.cum_pl_sats); }),
+      ownEv: rows.map(function (p) { return hasOwnEv ? num(p.own_ev_sats) : null; }),
+      totalCum: rows.map(function (p) { return hasOwnEv ? num(p.cum_total_sats) : null; }),
+      hasOwnEv: hasOwnEv
+    };
+  }
 
   function _renderRentalsSeries() {
     const wrap = document.getElementById('rentals-series');
@@ -4057,35 +4757,53 @@ function renderAccount(acct) {
       const plTxt = t.pl_sats != null
         ? (t.pl_sats >= 0 ? '+' : '') + Number(t.pl_sats).toLocaleString('en-US', { maximumFractionDigits: 0 }) + ' sats'
         : '—';
-      meta.textContent = (series.estimate ? 'P/L estimado · rede atual · ' : '') +
+      let m = (series.estimate ? 'P/L estimado · rede atual · ' : '') +
         (t.rentals != null ? t.rentals + ' aluguéis · ' : '') +
         (t.spent_sats != null ? Number(t.spent_sats).toLocaleString('en-US') + ' sats gastos · ' : '') +
         'P/L total ' + plTxt;
+      // Issue #146: when the self-mining EV entered the account, surface the
+      // consolidated total + the honest ESTIMATE note (EV, not realized).
+      if (t.own_ev_sats != null) {
+        const ownTxt = (t.own_ev_sats >= 0 ? '+' : '') +
+          Number(t.own_ev_sats).toLocaleString('en-US', { maximumFractionDigits: 0 }) + ' sats';
+        m += ' · PRÓPRIO EV ' + ownTxt + ' (ESTIMATE)';
+        if (t.total_pl_sats != null) {
+          const totTxt = (t.total_pl_sats >= 0 ? '+' : '') +
+            Number(t.total_pl_sats).toLocaleString('en-US', { maximumFractionDigits: 0 }) + ' sats';
+          m += ' · TOTAL ' + totTxt;
+        }
+      }
+      meta.textContent = m;
     }
     if (_rentalsSeriesChart) { _rentalsSeriesChart.destroy(); _rentalsSeriesChart = null; }
     if (typeof Chart === 'undefined' || series.points.length < 1) return;
     const canvas = document.getElementById('rentals-series-chart');
     if (!canvas) return;
-    const labels = series.points.map(p => p.label.replace(/^\d{4}-/, ''));  // strip year → 'W29' | '07'
-    const spent = series.points.map(p => p.spent_sats);
-    const pl = series.points.map(p => p.pl_sats);
-    const cum = series.points.map(p => p.cum_pl_sats);
+    const d = buildPortfolioSeriesDatasets(series.points);
+    const datasets = [
+      { type: 'bar', label: 'gasto (sats)', data: d.spent,
+        backgroundColor: 'rgba(94,89,82,0.55)', borderRadius: 2, yAxisID: 'y' },
+      { type: 'bar', label: 'P/L período (sats)', data: d.pl,
+        backgroundColor: d.pl.map(v => v == null ? 'rgba(94,89,82,0.15)' : (v >= 0 ? 'rgba(0,200,83,0.55)' : 'rgba(255,23,68,0.55)')),
+        borderRadius: 2, yAxisID: 'y' },
+      { type: 'line', label: 'P/L acumulado (sats)', data: d.cum,
+        borderColor: 'rgb(255,215,0)', backgroundColor: 'transparent',
+        tension: 0.3, pointRadius: 2, borderWidth: 2, spanGaps: false, yAxisID: 'y' },
+    ];
+    if (d.hasOwnEv) {
+      // Issue #146 (21-C): self-mining EV per bucket (constant daily
+      // estimate × days) + the CONSOLIDATED cumulative (rentals P/L + own EV).
+      datasets.push({ type: 'bar', label: 'PRÓPRIO EV (sats)', data: d.ownEv,
+        backgroundColor: 'rgba(6,214,240,0.35)', borderColor: 'rgb(6,214,240)',
+        borderWidth: 1, borderRadius: 2, yAxisID: 'y' });
+      datasets.push({ type: 'line', label: 'TOTAL acumulado (sats)', data: d.totalCum,
+        borderColor: 'rgb(6,214,240)', backgroundColor: 'transparent',
+        tension: 0.3, pointRadius: 2, borderWidth: 2, borderDash: [5, 3], spanGaps: false, yAxisID: 'y' });
+    }
     // null P/L (cold box / no computable yield) → gaps, never a flat 0 bar.
     _rentalsSeriesChart = new Chart(canvas.getContext('2d'), {
       type: 'bar',
-      data: {
-        labels: labels,
-        datasets: [
-          { type: 'bar', label: 'gasto (sats)', data: spent,
-            backgroundColor: 'rgba(94,89,82,0.55)', borderRadius: 2, yAxisID: 'y' },
-          { type: 'bar', label: 'P/L período (sats)', data: pl,
-            backgroundColor: pl.map(v => v == null ? 'rgba(94,89,82,0.15)' : (v >= 0 ? 'rgba(0,200,83,0.55)' : 'rgba(255,23,68,0.55)')),
-            borderRadius: 2, yAxisID: 'y' },
-          { type: 'line', label: 'P/L acumulado (sats)', data: cum,
-            borderColor: 'rgb(255,215,0)', backgroundColor: 'transparent',
-            tension: 0.3, pointRadius: 2, borderWidth: 2, spanGaps: false, yAxisID: 'y' },
-        ]
-      },
+      data: { labels: d.labels, datasets: datasets },
       options: {
         responsive: true, maintainAspectRatio: false,
         interaction: { mode: 'index', intersect: false },
@@ -4291,6 +5009,33 @@ function renderAccount(acct) {
         '<span class="rentals-worst__danger ' + dangerCls + '">' + Number(danger).toFixed(0) + '</span>' +
         '</button>';
     }).join('');
+  }
+
+  // ── Exposure allocation (Issue #21-B) ───────────────────────────────────
+  // PRÓPRIO vs MRR vs BRAIINS — share do hashrate total gerenciado, com o
+  // Herfindahl estendido incluindo o próprio como classe de ativo. Mesmo
+  // idioma visual da concentração (barras de share + HHI honesto).
+  function _renderRentalsExposure() {
+    const wrap = document.getElementById('rentals-exposure');
+    if (!wrap || !_rentalsData) return;
+    const e = _rentalsData.exposure;
+    if (!e || !e.available) { wrap.hidden = true; return; }
+    wrap.hidden = false;
+    const meta = document.getElementById('rentals-exposure-meta');
+    const hhi = Number(e.hhi || 0);
+    // Base HASHRATE (TH/s) — distinto do HHI de CONCENTRAÇÃO (base gasto em
+    // sats): rótulo explícito para o CFO não comparar bases diferentes.
+    if (meta) meta.textContent = 'HHI ' + hhi.toFixed(0) + ' · ' + (e.hhi_verdict || '') + ' (hashrate)';
+    const bars = document.getElementById('rentals-exposure-bars');
+    if (bars) {
+      bars.innerHTML = (e.classes || []).map(c =>
+        '<div class="rentals-conc__bar"><span class="rentals-conc__bar-label">' + escapeHtml(String(c.label)) + '</span>' +
+        '<span class="rentals-conc__bar-track"><i style="width:' + Number(c.share_pct).toFixed(1) + '%"></i></span>' +
+        '<span class="rentals-conc__bar-val">' + Number(c.share_pct).toFixed(0) + '% · ' +
+        Number(c.hashrate_th).toLocaleString('en-US') + ' TH/s</span></div>').join('');
+    }
+    const total = document.getElementById('rentals-exposure-total');
+    if (total) total.textContent = 'Hashrate gerenciado: ' + Number(e.total_hashrate_th).toLocaleString('en-US') + ' TH/s';
   }
 
   // ── Concentration risk (portfolio-level) ────────────────────────────────
@@ -4500,14 +5245,17 @@ function renderAccount(acct) {
     '</div>';
   }
 
-  async function loadRentals() {
+  async function loadRentals(force) {
     const listEl = document.getElementById('rentals-list');
     if (!listEl) return false;
     try {
       // authFetch sends the user's Bearer token so the server resolves the
       // caller's TENANT — with 1000+ users each one sees only their own
       // Braiins/MRR credentials and rentals (never the operator's key).
-      const r = await authFetch('/api/rentals');
+      // force=1 (RECARREGAR on a stale empty-state, Issue #187) bypasses the
+      // server TTL cache so credentials just added in Settings show up
+      // without a full page reload.
+      const r = await authFetch('/api/rentals' + (force ? '?refresh=1' : ''));
       if (!r.ok) return false;
       _rentalsData = await r.json();
       // UX: on the first load, land on the first tab that actually has data —
@@ -4547,32 +5295,39 @@ function renderAccount(acct) {
       cnt.textContent = total + ' rentals';
     }
     const el = (id) => document.getElementById(id);
-    // Strip shows the MRR-reported TOTAL (the list is capped at 25/50 by the
-    // API) — honest count of the operator's rentals, not just the fetched page.
-    // Missing provider credentials → 🔑 hint (with tooltip) instead of a
-    // misleading 0/— that looks like an empty account.
-    const _stripVal = (cardId, value, auth, err) => {
+    // Strip shows the MRR-reported TOTAL — the paginated fetch (Issue #200)
+    // now covers every page up to the safety cap, so the count IS the account
+    // (and "X de N" surfaces honestly when the cap cut the series). Missing
+    // provider credentials → 🔑 hint (with tooltip) instead of a misleading
+    // 0/— that looks like an empty account.
+    const _stripVal = (cardId, value, auth, err, authRejected, provider, rendered, total) => {
       const card = el(cardId);
       if (!card) return;
-      // A configured-but-rejected key (401/403) is an ERROR, not a missing
-      // credential — show ⚠ with the reason so the user fixes the token.
-      const rejected = /rejected|401|403|unauthor|forbidden/i.test(String(err || ''));
+      // A configured-but-rejected key (401/403 / Bad Nonce) is an ERROR, not
+      // a missing credential — show ⚠ with the FIX so the user knows to
+      // regenerate the key, not just add one (Issue #152).
+      const rejected = rentalsAuthRejected(err, authRejected);
       if (auth && !rejected) {
         card.textContent = '🔑';
         card.title = 'credentials missing — configure in Settings (⚙)';
+      } else if (rejected) {
+        card.textContent = '⚠';
+        card.title = rentalsAuthGuide(provider, err);
       } else if (err) {
         card.textContent = '⚠';
         card.title = String(err);
       } else {
-        card.textContent = value;
-        card.title = '';
+        const surf = rentalsCountSurface(rendered, total);
+        card.textContent = surf.text != null ? surf.text : value;
+        card.title = surf.title || '';
       }
     };
-    _stripVal('rentals-mrr-active', mrr.total_active != null ? mrr.total_active : (mrr.active || []).length, mrr.needs_auth, mrr.error);
-    _stripVal('rentals-mrr-history', mrr.total_history != null ? mrr.total_history : (mrr.history || []).length, mrr.needs_auth, mrr.error);
-    _stripVal('rentals-mrr-owner', mrr.total_owner != null ? mrr.total_owner : (mrr.owner || []).length, mrr.needs_auth, mrr.error);
-    _stripVal('rentals-braiins', (braiins.contracts || []).length, braiins.needs_auth, braiins.error);
+    _stripVal('rentals-mrr-active', mrr.total_active != null ? mrr.total_active : (mrr.active || []).length, mrr.needs_auth, mrr.error, mrr.auth_rejected, 'mrr', mrr.rendered_active, mrr.total_active);
+    _stripVal('rentals-mrr-history', mrr.total_history != null ? mrr.total_history : (mrr.history || []).length, mrr.needs_auth, mrr.error, mrr.auth_rejected, 'mrr', mrr.rendered_history, mrr.total_history);
+    _stripVal('rentals-mrr-owner', mrr.total_owner != null ? mrr.total_owner : (mrr.owner || []).length, mrr.needs_auth, mrr.error, mrr.auth_rejected, 'mrr', mrr.rendered_owner, mrr.total_owner);
+    _stripVal('rentals-braiins', (braiins.contracts || []).length, braiins.needs_auth, braiins.error, braiins.auth_rejected, 'contracts');
     _renderRentalsPortfolio();
+    _renderPortfolioConsolidated();
     _renderRentalsSeries();
     _renderRentalsReco();
     _renderRentalsAccepted();
@@ -4583,6 +5338,7 @@ function renderAccount(acct) {
     _renderRentalsExpiring();
     _renderRentalsWorst();
     _renderRentalsConcentration();
+    _renderRentalsExposure();
     _renderRentalsForecast();
     _renderRentalsRiskBanner();
     _renderRentalsSignals();
@@ -4615,25 +5371,46 @@ function renderAccount(acct) {
     }
 
     if (!items.length) {
-      const needsAuth = _rentalsFilter === 'contracts' ? braiins.needs_auth : mrr.needs_auth;
-      const errMsg = _rentalsFilter === 'contracts' ? braiins.error : mrr.error;
-      // "Key rejected" (401/403 with a CONFIGURED key) is NOT the same as
-      // "credentials missing" — surface the real reason so the user knows
-      // to fix the token, not just add one.
-      const rejected = /rejected|401|403|unauthor|forbidden/i.test(String(errMsg || ''));
-      const title = rejected ? 'API key rejected' : (needsAuth ? 'Credentials required' : (errMsg ? 'Provider error' : 'No rentals'));
+      const isContracts = _rentalsFilter === 'contracts';
+      const needsAuth = isContracts ? braiins.needs_auth : mrr.needs_auth;
+      const errMsg = isContracts ? braiins.error : mrr.error;
+      const authRejected = isContracts ? braiins.auth_rejected : mrr.auth_rejected;
+      // "Key rejected" (401/403 / Bad Nonce with a CONFIGURED key) is NOT the
+      // same as "credentials missing" — surface the real reason + the FIX so
+      // the user regenerates the key, not just adds one (Issue #152).
+      const rejected = rentalsAuthRejected(errMsg, authRejected);
+      // Payload staleness (Issue #187): a payload built by old server code
+      // (no version stamp) or too old to trust cannot prove an empty account
+      // — it may predate the missing-key guard. Level 2 (old code) shows the
+      // config hint; level 1 (age only) shows a soft 'dados desatualizados'
+      // + reload. Never the misleading 'No contracts rentals on this
+      // account'.
+      const staleLevel = rentalsPayloadStale(_rentalsData, Math.floor(Date.now() / 1000));
+      const payloadStale = staleLevel > 0;
+      const credHint = staleLevel >= 2;
+      const title = rejected ? 'API key rejected' : (needsAuth ? 'Credentials required' : (errMsg ? 'Provider error' : (credHint ? 'Configuração não verificada' : (staleLevel === 1 ? 'Dados desatualizados' : 'No rentals'))));
+      const staleHint = credHint
+        ? (isContracts
+          ? 'Dados carregados por uma versão antiga do servidor — não dá para confirmar se a conta está vazia. Adicione o owner token Braiins (hashpower.braiins.com → API Tokens) no Settings (⚙), ou recarregue para verificar:'
+          : 'Dados carregados por uma versão antiga do servidor — não dá para confirmar se a conta está vazia. Configure a chave MRR (miningrigrentals.com → My Account → API Access) no Settings (⚙), ou recarregue para verificar:')
+        : 'Os dados estão antigos (mais de 5 min) — recarregue para confirmar o estado real da conta.';
       listEl.innerHTML = '<div class="empty-state" style="grid-column:1/-1;border:none">' +
-        '<div class="empty-state__icon">' + (rejected ? '🔑' : '⛁') + '</div>' +
+        '<div class="empty-state__icon">' + (rejected ? '🔑' : (credHint ? '🔑' : '⛁')) + '</div>' +
         '<div class="empty-state__title">' + title + '</div>' +
         '<div class="empty-state__desc">' + (rejected
-          ? 'A chave está configurada, mas a API a rejeitou: ' + escapeHtml(String(errMsg)) + '. Gere um novo owner token em hashpower.braiins.com e atualize no Settings (⚙).'
+          ? rentalsAuthGuide(_rentalsFilter, errMsg)
           : (needsAuth
-            ? (_rentalsFilter === 'contracts' ? 'Add your Braiins Hashpower owner token to list contracts — where to get it: hashpower.braiins.com → API Tokens.' : 'Add your MiningRigRentals API key + secret to see history & performance — get them at miningrigrentals.com → My Account → API Access.')
-            : (errMsg ? escapeHtml(errMsg) : 'No ' + _rentalsFilter + ' rentals on this account'))) + '</div>' +
-        (needsAuth || rejected ? '<button type="button" class="btn btn--primary btn--mini" id="rentals-open-settings" style="margin-top:8px">⚙ OPEN SETTINGS</button>' : '') +
+            ? (isContracts ? 'Add your Braiins Hashpower owner token to list contracts — where to get it: hashpower.braiins.com → API Tokens.' : 'Add your MiningRigRentals API key + secret to see history & performance — get them at miningrigrentals.com → My Account → API Access.')
+            : (errMsg ? escapeHtml(errMsg) : (payloadStale ? staleHint : 'No ' + _rentalsFilter + ' rentals on this account')))) + '</div>' +
+        (needsAuth || rejected || credHint ? '<button type="button" class="btn btn--primary btn--mini" id="rentals-open-settings" style="margin-top:8px">⚙ OPEN SETTINGS</button>' : '') +
+        (payloadStale ? '<button type="button" class="btn btn--mini" id="rentals-refresh-btn" style="margin-top:8px">⟳ RECARREGAR</button>' : '') +
         '</div>';
       const cta = document.getElementById('rentals-open-settings');
       if (cta) cta.addEventListener('click', function() { openSettingsModal(); });
+      // RECARREGAR re-fetches with ?refresh=1 — creds just saved in Settings
+      // take effect without a full page reload.
+      const refreshBtn = document.getElementById('rentals-refresh-btn');
+      if (refreshBtn) refreshBtn.addEventListener('click', function() { loadRentals(true); });
       return;
     }
     listEl.innerHTML = items.map(_rentalCardHtml).join('');
@@ -4647,6 +5424,10 @@ function renderAccount(acct) {
     // while the next detail's fetch is in flight (Issue #110).
     const autoExBanner = document.getElementById('rentals-detail-autoex');
     if (autoExBanner) autoExBanner.hidden = true;
+    // Same reset for the auth-rejection strip (Issue #174) — a stale
+    // 'API KEY REJECTED' from a previous detail must never linger.
+    const authBannerEl = document.getElementById('rentals-detail-auth');
+    if (authBannerEl) { authBannerEl.hidden = true; authBannerEl.innerHTML = ''; }
     try {
       // Braiins: the contract's static fields are already in the list payload
       // — send them so the backend skips re-probing the list (detail needs
@@ -4668,6 +5449,28 @@ function renderAccount(acct) {
       });
       if (!r.ok) return;
       const data = await r.json();
+      // Auth-rejection guide (Issue #174): a CONFIGURED but rejected key
+      // (Bad Nonce / 401/403) on the detail click explains the SAME fix the
+      // list already shows — regenerate the key, not a generic error.
+      const authBanner = document.getElementById('rentals-detail-auth');
+      if (authBanner) {
+        const dErr = (data.detail && data.detail.error) || '';
+        const rejected = rentalsAuthRejected(dErr, data.auth_rejected);
+        if (rejected) {
+          authBanner.hidden = false;
+          authBanner.innerHTML =
+            '<span class="rentals-detail__autoex-icon">🔑</span>' +
+            '<div class="rentals-detail__autoex-body"><strong>API KEY REJECTED</strong>' +
+            '<div class="rentals-detail__autoex-sub">' + rentalsAuthGuide(provider, dErr) +
+            '</div></div>' +
+            '<button type="button" class="rentals-detail__autoex-btn" id="rentals-detail-auth-settings" title="abrir Settings para regenerar a chave">⚙ OPEN SETTINGS</button>';
+          const authCta = document.getElementById('rentals-detail-auth-settings');
+          if (authCta) authCta.addEventListener('click', function() { openSettingsModal(); });
+        } else {
+          authBanner.hidden = true;
+          authBanner.innerHTML = '';
+        }
+      }
       // Auto-exclusion feedback (Issue #110): ONLY the detail call that
       // PERFORMED the exclusion shows the banner + toast and pre-adds the
       // card to the AUTO-EXCLUSÕES section — reopening an already-excluded
@@ -5443,6 +6246,7 @@ function renderAccount(acct) {
     const ap = snap.auto_pilot || {};
     _apSetUi(!!ap.armed);
     _initAutoPilotToggle();
+    _initAutoPilotAutoToggle();
     _initAutoPilotAdvisory();
     _initAutoPilotDryRun();
   }
@@ -5567,6 +6371,133 @@ function renderAccount(acct) {
     }
 
     _apRefreshStatus();
+    _apRefreshAutoStatus();
+  }
+
+  // ── Issue #178 · Auto-Pilot AUTONOMOUS — execução autônoma (PRO gate) ──
+  // Backend: GET /api/auto-pilot/autonomous (pro/armed/autonomous),
+  // POST /api/auto-pilot/autonomous {autonomous} (gate PRO → 402 em modo
+  // licensed sem chave). Fase 4 do Big Bet: quando PRO + armado + ON, o
+  // piloto executa sozinho restart/pause das recomendações físicas.
+  let _apAuto = false;
+  let _apAutoToggleInit = false;
+
+  function _apSetAutoUi(auto) {
+    _apAuto = !!auto;
+    const btn = document.getElementById('ap-auto-btn');
+    const label = document.getElementById('ap-auto-label');
+    const dot = document.getElementById('ap-auto-dot');
+    if (label) label.textContent = auto ? 'ON' : 'OFF';
+    if (btn) {
+      btn.classList.toggle('is-armed', auto);
+      btn.title = auto
+        ? 'EXECUÇÃO AUTÔNOMA ON — o piloto executa restart/pause sozinho (PRO + armado). Clique para desligar.'
+        : 'EXECUÇÃO AUTÔNOMA OFF — as recomendações ficam manuais. Clique para ligar (requer PRO + armado).';
+    }
+    if (dot) {
+      dot.style.background = auto ? 'var(--green)' : 'var(--orange)';
+      dot.style.boxShadow = auto ? '0 0 8px rgba(0,200,83,0.8)' : '0 0 6px rgba(255,160,0,0.6)';
+    }
+  }
+
+  async function _apRefreshAutoStatus() {
+    try {
+      const r = await authFetch('/api/auto-pilot/autonomous');
+      if (!r.ok) return;
+      const d = await r.json().catch(() => ({}));
+      _apSetAutoUi(!!d.autonomous);
+      const badge = document.getElementById('ap-auto-pro-badge');
+      if (badge) {
+        badge.textContent = d.pro ? 'PRO ✓' : 'PRO 🔒';
+        badge.classList.toggle('badge--green', !!d.pro);
+        badge.classList.toggle('badge--amber', !d.pro);
+        badge.title = d.pro
+          ? 'Gate PRO ok — execução autônoma permitida (open mode ou licença válida)'
+          : 'Gate PRO fechado — é preciso licença PRO para ligar a execução autônoma';
+      }
+      if (_apAuto && d.armed === false) {
+        const autoBtn = document.getElementById('ap-auto-btn');
+        if (autoBtn) autoBtn.title = 'Execução autônoma ON mas o Auto-Pilot está DESARMADO — arme o piloto para ativar.';
+      }
+    } catch (e) { /* advisory — never break the panel */ }
+  }
+
+  async function _apSetAuto(enabled) {
+    const btn = document.getElementById('ap-auto-btn');
+    setBtnLoading(btn, true);
+    try {
+      const r = await authFetch('/api/auto-pilot/autonomous', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ autonomous: enabled }),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (r.status === 402) {
+        const price = d.upgrade && d.upgrade.price_usd_month ? ' ($' + d.upgrade.price_usd_month + '/m)' : '';
+        showToast('error', '🔒 EXECUÇÃO AUTÔNOMA é PRO — licença necessária' + price);
+        _apRefreshAutoStatus();
+        return false;
+      }
+      if (!r.ok || !d.success) {
+        showToast('error', '⚠ Auto-Pilot: ' + (d.error || ('HTTP ' + r.status)));
+        _apRefreshAutoStatus();
+        return false;
+      }
+      _apSetAutoUi(!!d.autonomous);
+      showToast('success', enabled ? '🤖 EXECUÇÃO AUTÔNOMA ON — o piloto age sozinho (PRO + armado)' : 'Execução autônoma desligada');
+      _apRefreshAutoStatus();
+      return true;
+    } catch (e) {
+      showToast('error', '⚠ falha de rede ao alterar a execução autônoma');
+      return false;
+    } finally {
+      setBtnLoading(btn, false);
+    }
+  }
+
+  function _initAutoPilotAutoToggle() {
+    if (_apAutoToggleInit) return;
+    _apAutoToggleInit = true;
+
+    const btn = document.getElementById('ap-auto-btn');
+    if (btn) {
+      btn.addEventListener('click', () => {
+        if (_apAuto) { _apSetAuto(false); return; }  // disabling is the kill switch — direct
+        const m = document.getElementById('ap-auto-modal');
+        const input = document.getElementById('ap-auto-type');
+        const confirm = document.getElementById('ap-auto-confirm');
+        if (m && input && confirm) {
+          input.value = '';
+          confirm.disabled = true;
+          openModalAnimated(m);
+          setTimeout(() => input.focus(), 50);
+        } else {
+          _apSetAuto(true);
+        }
+      });
+    }
+
+    const m = document.getElementById('ap-auto-modal');
+    if (m) {
+      m.addEventListener('click', (e) => {
+        if (e.target.matches('[data-close]') || e.target === m) closeModalAnimated(m);
+      });
+    }
+
+    const input = document.getElementById('ap-auto-type');
+    const confirm = document.getElementById('ap-auto-confirm');
+    if (input && confirm) {
+      input.addEventListener('input', () => {
+        confirm.disabled = input.value.trim().toUpperCase() !== 'AUTONOMO';
+      });
+      confirm.addEventListener('click', async () => {
+        confirm.disabled = true;
+        const ok = await _apSetAuto(true);
+        const modal = document.getElementById('ap-auto-modal');
+        if (modal) modal.classList.remove('modal--open');
+        if (!ok) input.value = '';
+      });
+    }
   }
 
   // ── Issue #20 · Auto-Pilot ADVISORY — recomendações por device ──────
@@ -5910,6 +6841,84 @@ function renderAccount(acct) {
       return resp;
     }
 
+    // PREMIUM (Issue #182): o AI real (LLM via SSE) é o recurso premium.
+    // Entitled quando open mode (tudo grátis) OU tier PREMIUM — e o servidor
+    // tem chave de LLM configurada (ai_configured). Senão, bot local.
+    function aiCanUseReal() {
+      return !!(_license.ai_configured && (_license.mode === 'open' || _license.premium));
+    }
+
+    function showPremiumCta(d) {
+      logMessage('PREMIUM', (d && d.error) || 'AI Operator real é PREMIUM — upgrade necessário', 'WARN');
+      openUpgradeModal();
+    }
+
+    // Streams /api/ai/query (SSE). On success morphs typingDiv into the real
+    // answer; returns true when a real response was shown (text or a handled
+    // provider error). False → caller falls back to the local bot.
+    async function tryRealAi(text, typingDiv) {
+      // Timeout: um LLM pendurado não pode deixar o indicador de typing
+      // para sempre — aborta após 45s e o caller cai no bot local.
+      const ctrl = (typeof AbortController !== 'undefined') ? new AbortController() : null;
+      const timer = ctrl ? setTimeout(function () { try { ctrl.abort(); } catch (e) {} }, 45000) : null;
+      try {
+        const r = await authFetch('/api/ai/query', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ query: text }),
+          signal: ctrl ? ctrl.signal : undefined,
+        });
+        if (!r.ok) {
+          if (r.status === 402) {
+            const d = await r.json().catch(() => ({}));
+            if (d && d.required_tier === 'premium') showPremiumCta(d);
+          }
+          return false;
+        }
+        if (!r.body || !r.body.getReader) return false;
+        const reader = r.body.getReader();
+        const decoder = new TextDecoder();
+        let buf = '';
+        let acc = '';
+        let sawText = false;
+        let sawError = false;
+        const contentEl = document.createElement('div');
+        contentEl.className = 'ai-msg__content';
+        typingDiv.innerHTML = '<div class="ai-msg__header">◆ CYPHER AI</div>';
+        typingDiv.appendChild(contentEl);
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buf += decoder.decode(value, { stream: true });
+          let idx;
+          while ((idx = buf.indexOf('\n\n')) !== -1) {
+            const raw = buf.slice(0, idx).trim();
+            buf = buf.slice(idx + 2);
+            if (!raw.startsWith('data:')) continue;
+            let obj = {};
+            try { obj = JSON.parse(raw.slice(5).trim()); } catch (e) { continue; }
+            if (obj.type === 'text') {
+              sawText = true;
+              acc += obj.content || '';
+              contentEl.textContent = acc;
+              messages.scrollTop = messages.scrollHeight;
+            } else if (obj.type === 'error') {
+              sawError = true;
+              contentEl.textContent = obj.message || 'AI error';
+            } else if (obj.type === 'done') {
+              break;
+            }
+          }
+        }
+        if (!sawText && !sawError) return false;
+        return true;
+      } catch (e) {
+        return false;  // aborted (timeout), rede ou 5xx → fallback pro bot local
+      } finally {
+        if (timer) clearTimeout(timer);
+      }
+    }
+
     async function handleSend() {
       try {
         const text = input.value.trim();
@@ -5926,14 +6935,19 @@ function renderAccount(acct) {
         messages.appendChild(typingDiv);
         messages.scrollTop = messages.scrollHeight;
 
-        // Brief processing delay
-        await new Promise(r => setTimeout(r, 200 + Math.random() * 300));
-
-        typingDiv.remove();
-
-        const response = getResponse(text);
-        const formatted = response.replace(/\*\*(.*?)\*\*/g, '<strong style="color:var(--accent-btc)">$1</strong>');
-        addMessage('assistant', formatted);
+        // Real AI (PREMIUM/open mode) ou bot local — nunca quebra o chat.
+        let usedReal = false;
+        if (aiCanUseReal()) {
+          usedReal = await tryRealAi(text, typingDiv);
+        }
+        if (!usedReal) {
+          // Brief processing delay (bot local)
+          await new Promise(r => setTimeout(r, 200 + Math.random() * 300));
+          typingDiv.remove();
+          const response = getResponse(text);
+          const formatted = response.replace(/\*\*(.*?)\*\*/g, '<strong style="color:var(--accent-btc)">$1</strong>');
+          addMessage('assistant', formatted);
+        }
       } finally {
         send.disabled = false;
       }
@@ -6167,6 +7181,10 @@ function renderAccount(acct) {
   function makeChart(id, label, color) {
     const canvas = document.getElementById(id);
     if (!canvas) return null;
+    // Issue #186: defensivo — app.js roda com defer após o Chart.js, mas se o
+    // CDN falhar (offline/blocked) o boot não pode crashar. Null é tratado
+    // pelos call sites (mesma convenção do canvas ausente).
+    if (typeof Chart === 'undefined') return null;
     const ctx = canvas.getContext('2d');
     const cfg = CHART_METRICS[id];
     // Human-readable Y ticks: hashrate/pool render fmt.hashrate (TH/s), best
@@ -6401,6 +7419,13 @@ function renderAccount(acct) {
     // edit the field, nothing changes, and the panel keeps saying "rejected".
     if ((SETTINGS_CACHE.env || {}).braiins_api_key && settings['braiins_api_key']) {
       html += '<div style="margin-top:2px;border:1px solid var(--accent-orange, #ffa000);border-radius:4px;padding:6px 8px;font-size:10px;line-height:1.4;color:var(--text-muted)">⚠ O servidor tem <code>BRAIINS_API_KEY</code> definida como env var — ela <b>SOBRESCREVE</b> o valor abaixo. Remova a env var (Render → Environment) para usar a chave do Settings.</div>';
+    }
+    // Same override warning for the MRR key/secret pair (Issue #189): the
+    // per-user model is Settings-only — env vars are a default-tenant trap
+    // that silently wins over the fields below.
+    const mrrEnv = (SETTINGS_CACHE.env || {}).mrr_api_key || (SETTINGS_CACHE.env || {}).mrr_api_secret;
+    if (mrrEnv && (settings['mrr_api_key'] || settings['mrr_api_secret'])) {
+      html += '<div style="margin-top:2px;border:1px solid var(--accent-orange, #ffa000);border-radius:4px;padding:6px 8px;font-size:10px;line-height:1.4;color:var(--text-muted)">⚠ O servidor tem <code>MRR_API_KEY/MRR_API_SECRET</code> como env var — elas <b>SOBRESCREVEM</b> os valores abaixo. Remova as env vars (Render → Environment) para usar as chaves do Settings.</div>';
     }
     // "Test connection" for Braiins: probes the live API and reports the same
     // verdict the RENTALS panel derives (ok / rejected / missing).
@@ -8195,7 +9220,7 @@ dom.walletSave?.addEventListener('click', async () => {
     const wrap = document.getElementById('axe-detail-chart-wrap');
     const canvas = document.getElementById('axe-detail-chart');
     const countBadge = document.getElementById('axe-detail-chart-count');
-    if (!wrap || !canvas) return;
+    if (!wrap || !canvas || typeof Chart === 'undefined') return;  // Issue #186: defer-safe
 
     // Destroy previous chart instance so Chart.js doesn't complain.
     if (_axeDetailChart) { _axeDetailChart.destroy(); _axeDetailChart = null; }
@@ -9353,6 +10378,7 @@ dom.walletSave?.addEventListener('click', async () => {
     initAxeFleetControls();
     initAuth();
     initThemeToggle();
+    initInstanceIndicator();
     _liveTermInit();
     await fetchSnapshot();
     setInterval(fetchSnapshot, POLL_MS);
@@ -10328,6 +11354,119 @@ dom.walletSave?.addEventListener('click', async () => {
     return out;
   }
 
+  // ── Learning FAQ loop (Issue #19) — 'was this helpful?' widget ───────
+  // Pure helpers below (docsFeedbackPct/docsFeedbackSectionLabel) are
+  // mirrored in tests/test_app_js_core.js (SUITE 35).
+  function docsFeedbackPct(helpful, total) {
+    if (!total) return null;  // honest — no votes, no fabricated %
+    return Math.round(helpful / total * 1000) / 10;
+  }
+  function docsFeedbackSectionLabel(sectionId) {
+    const m = String(sectionId || '').match(/^docs[-_](.+)$/);
+    return m ? m[1].replace(/[-_]/g, ' ') : String(sectionId || '—');
+  }
+
+  var _docsFeedbackState = {};      // section_id -> {helpful, voted}
+  var _docsFeedbackInitialized = false;
+
+  function _initDocsFeedback() {
+    if (_docsFeedbackInitialized) return;
+    const container = document.querySelector('.docs-container');
+    if (!container) return;
+    const sections = container.querySelectorAll('.doc-section');
+    if (!sections.length) return;
+    _docsFeedbackInitialized = true;
+
+    sections.forEach(function(sec) {
+      const id = sec.id;
+      if (!id || sec.querySelector('.doc-feedback')) return;
+      const widget = document.createElement('div');
+      widget.className = 'doc-feedback';
+      widget.setAttribute('data-section', id);
+      widget.innerHTML =
+        '<span class="doc-feedback__ask">Was this section helpful?</span>' +
+        '<button type="button" class="doc-feedback__btn doc-feedback__btn--yes" data-helpful="1" title="Yes — it helped">👍 Yes</button>' +
+        '<button type="button" class="doc-feedback__btn doc-feedback__btn--no" data-helpful="0" title="No — could be better">👎 No</button>' +
+        '<span class="doc-feedback__state" aria-live="polite"></span>' +
+        '<div class="doc-feedback__comment" hidden>' +
+        '  <textarea class="doc-feedback__textarea" rows="2" maxlength="500" placeholder="What were you looking for? (feeds the FAQ loop)"></textarea>' +
+        '  <button type="button" class="doc-feedback__send">Send</button>' +
+        '</div>';
+      sec.appendChild(widget);
+      _bindDocFeedbackWidget(widget, id);
+    });
+
+    // Restore the current tenant's votes so thumbs stay across module switches.
+    authFetch('/api/docs/feedback').then(function(r) {
+      if (!r.ok) return;
+      return r.json();
+    }).then(function(data) {
+      (data && data.votes || []).forEach(function(v) {
+        if (!v || !v.section_id) return;
+        // The GET was issued before any POST — skip sections the user already
+        // voted on locally so a stale restore never reverts a fresh vote.
+        if (_docsFeedbackState[v.section_id]) return;
+        _docsFeedbackState[v.section_id] = { helpful: !!v.helpful, voted: true };
+        const w = container.querySelector('.doc-feedback[data-section="' + v.section_id + '"]');
+        if (w) _docsFeedbackSetState(w, v.section_id, !!v.helpful, '');
+      });
+    }).catch(function() { /* offline — votes stay local */ });
+  }
+
+  function _bindDocFeedbackWidget(widget, sectionId) {
+    const yesBtn = widget.querySelector('.doc-feedback__btn--yes');
+    const noBtn = widget.querySelector('.doc-feedback__btn--no');
+    const commentWrap = widget.querySelector('.doc-feedback__comment');
+    const textarea = widget.querySelector('.doc-feedback__textarea');
+    const sendBtn = widget.querySelector('.doc-feedback__send');
+
+    yesBtn.addEventListener('click', function() {
+      if (_docsFeedbackState[sectionId] && _docsFeedbackState[sectionId].voted) return;
+      commentWrap.hidden = true;
+      _docsFeedbackVote(sectionId, true, widget, '');
+    });
+    noBtn.addEventListener('click', function() {
+      if (_docsFeedbackState[sectionId] && _docsFeedbackState[sectionId].voted) return;
+      commentWrap.hidden = false;
+      textarea.focus();
+    });
+    sendBtn.addEventListener('click', function() {
+      if (_docsFeedbackState[sectionId] && _docsFeedbackState[sectionId].voted) return;
+      const comment = textarea.value.trim();
+      _docsFeedbackVote(sectionId, false, widget, comment);
+    });
+  }
+
+  function _docsFeedbackVote(sectionId, helpful, widget, comment) {
+    const stateEl = widget.querySelector('.doc-feedback__state');
+    authFetch('/api/docs/feedback', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ section_id: sectionId, helpful: helpful, comment: comment })
+    }).then(function(r) {
+      if (!r.ok) { stateEl.textContent = 'could not save — try again'; return; }
+      _docsFeedbackState[sectionId] = { helpful: helpful, voted: true };
+      _docsFeedbackSetState(widget, sectionId, helpful, comment);
+    }).catch(function() {
+      stateEl.textContent = 'offline — not saved';
+    });
+  }
+
+  function _docsFeedbackSetState(widget, sectionId, helpful, comment) {
+    const yesBtn = widget.querySelector('.doc-feedback__btn--yes');
+    const noBtn = widget.querySelector('.doc-feedback__btn--no');
+    const stateEl = widget.querySelector('.doc-feedback__state');
+    const commentWrap = widget.querySelector('.doc-feedback__comment');
+    yesBtn.classList.toggle('is-active', !!helpful);
+    noBtn.classList.toggle('is-active', !helpful);
+    yesBtn.disabled = true;
+    noBtn.disabled = true;
+    stateEl.textContent = helpful
+      ? 'Thanks — glad it helped ✓'
+      : (comment ? 'Thanks — we\'ll improve this section' : 'Thanks — feedback recorded');
+    commentWrap.hidden = true;
+  }
+
   function _docsCloseSuggestions() {
     var box = document.getElementById('docs-search-suggestions');
     var input = document.getElementById('docs-search-input');
@@ -10456,6 +11595,7 @@ dom.walletSave?.addEventListener('click', async () => {
     var _initDocs = function() {
       _initDocsObserver();
       _initDocsSearch();
+      _initDocsFeedback();
     };
     if (window.requestIdleCallback) {
       requestIdleCallback(_initDocs, { timeout: 2000 });

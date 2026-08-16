@@ -78,9 +78,18 @@ AI_TOOLS = [
                 "type": "object",
                 "properties": {
                     "device_id": {"type": "string", "description": "Device ID"},
-                    "action": {"type": "string", "description": "Command to execute (restart, identify, configure)"},
-                    "params": {"type": "object", "description": "Optional parameters for the action"},
-                    "reason": {"type": "string", "description": "Why this action is recommended"},
+                    "action": {
+                        "type": "string",
+                        "description": "Command to execute (restart, identify, configure)",
+                    },
+                    "params": {
+                        "type": "object",
+                        "description": "Optional parameters for the action",
+                    },
+                    "reason": {
+                        "type": "string",
+                        "description": "Why this action is recommended",
+                    },
                 },
                 "required": ["device_id", "action", "reason"],
             },
@@ -92,6 +101,7 @@ AI_TOOLS = [
 # ═══════════════════════════════════════════════════════════════════════════
 #  System prompt builder
 # ═══════════════════════════════════════════════════════════════════════════
+
 
 def build_system_prompt(snapshot: Dict[str, Any]) -> str:
     """Build a context-rich system prompt from the current snapshot."""
@@ -174,21 +184,23 @@ def build_system_prompt(snapshot: Dict[str, Any]) -> str:
         for a in alerts[:5]:
             lines.append(f"  - [{a.get('severity', 'INFO')}] {a.get('message', '')}")
 
-    lines.extend([
-        "",
-        "=== CAPABILITIES ===",
-        "- Answer questions about current mining data",
-        "- Explain mining concepts (difficulty, hashrate, probability, pool luck)",
-        "- Suggest device actions (restart, identify, configure) — user must confirm",
-        "- Compare rental market prices (Braiins, NiceHash, MRR)",
-        "",
-        "=== CONSTRAINTS ===",
-        "- NEVER execute device actions without explicit user confirmation",
-        "- Always respond in the same language as the user's question",
-        "- Be concise — keep responses under 200 words unless asked for detail",
-        "- Use metric: TH/s for hashrate, BTC for prices, sat/vB for fees",
-        "- Mark estimated/probabilistic values clearly",
-    ])
+    lines.extend(
+        [
+            "",
+            "=== CAPABILITIES ===",
+            "- Answer questions about current mining data",
+            "- Explain mining concepts (difficulty, hashrate, probability, pool luck)",
+            "- Suggest device actions (restart, identify, configure) — user must confirm",
+            "- Compare rental market prices (Braiins, NiceHash, MRR)",
+            "",
+            "=== CONSTRAINTS ===",
+            "- NEVER execute device actions without explicit user confirmation",
+            "- Always respond in the same language as the user's question",
+            "- Be concise — keep responses under 200 words unless asked for detail",
+            "- Use metric: TH/s for hashrate, BTC for prices, sat/vB for fees",
+            "- Mark estimated/probabilistic values clearly",
+        ]
+    )
 
     return "\n".join(lines)
 
@@ -196,6 +208,7 @@ def build_system_prompt(snapshot: Dict[str, Any]) -> str:
 # ═══════════════════════════════════════════════════════════════════════════
 #  LLM streaming
 # ═══════════════════════════════════════════════════════════════════════════
+
 
 def _build_messages(query: str, snapshot: Dict[str, Any]) -> List[Dict[str, str]]:
     """Build the messages array for the LLM chat completion request."""
@@ -221,10 +234,15 @@ def stream_response(
     The caller flushes each yield to the HTTP response as a Server-Sent Event.
     """
     if not AI_API_KEY:
-        yield json.dumps({"type": "error", "message": (
-            "AI Operator não configurado. Configure a variável de ambiente "
-            "AI_API_KEY (ou DEEPSEEK_API_KEY / OPENAI_API_KEY) e reinicie o servidor."
-        )})
+        yield json.dumps(
+            {
+                "type": "error",
+                "message": (
+                    "AI Operator não configurado. Configure a variável de ambiente "
+                    "AI_API_KEY (ou DEEPSEEK_API_KEY / OPENAI_API_KEY) e reinicie o servidor."
+                ),
+            }
+        )
         yield json.dumps({"type": "done"})
         return
 
@@ -257,10 +275,12 @@ def stream_response(
                 error_body = response.text[:500]
             except Exception:
                 pass
-            yield json.dumps({
-                "type": "error",
-                "message": f"LLM API error: HTTP {response.status_code} — {error_body}",
-            })
+            yield json.dumps(
+                {
+                    "type": "error",
+                    "message": f"LLM API error: HTTP {response.status_code} — {error_body}",
+                }
+            )
             yield json.dumps({"type": "done"})
             return
 
@@ -325,28 +345,36 @@ def stream_response(
                     if tc["function"]["name"] == "suggest_action":
                         try:
                             args = json.loads(tc["function"]["arguments"])
-                            yield json.dumps({
-                                "type": "action",
-                                "action": {
-                                    "device_id": args.get("device_id", ""),
-                                    "command": args.get("action", ""),
-                                    "params": args.get("params", {}),
-                                    "reason": args.get("reason", ""),
-                                },
-                            })
+                            yield json.dumps(
+                                {
+                                    "type": "action",
+                                    "action": {
+                                        "device_id": args.get("device_id", ""),
+                                        "command": args.get("action", ""),
+                                        "params": args.get("params", {}),
+                                        "reason": args.get("reason", ""),
+                                    },
+                                }
+                            )
                         except (json.JSONDecodeError, KeyError) as e:
-                            log.warning("[ai] failed to parse suggest_action args: %s", e)
+                            log.warning(
+                                "[ai] failed to parse suggest_action args: %s", e
+                            )
 
                 tool_calls_buffer = {}
 
     except requests.exceptions.Timeout:
-        yield json.dumps({"type": "error", "message": "LLM request timed out after 30s"})
+        yield json.dumps(
+            {"type": "error", "message": "LLM request timed out after 30s"}
+        )
     except requests.exceptions.ConnectionError:
-        yield json.dumps({
-            "type": "error",
-            "message": f"Não foi possível conectar ao provedor LLM em {AI_API_BASE_URL}. "
-                       f"Verifique a URL e a conectividade de rede.",
-        })
+        yield json.dumps(
+            {
+                "type": "error",
+                "message": f"Não foi possível conectar ao provedor LLM em {AI_API_BASE_URL}. "
+                f"Verifique a URL e a conectividade de rede.",
+            }
+        )
     except Exception as e:
         log.exception("[ai] stream error")
         yield json.dumps({"type": "error", "message": f"AI error: {str(e)[:200]}"})
@@ -357,6 +385,7 @@ def stream_response(
 # ═══════════════════════════════════════════════════════════════════════════
 #  Helpers (mirror frontend formatters for system prompt readability)
 # ═══════════════════════════════════════════════════════════════════════════
+
 
 def _fmt_hashrate(h) -> str:
     if not h:
@@ -382,6 +411,7 @@ def _fmt_diff(d) -> str:
         return "—"
     if isinstance(d, str):
         from helpers import parse_diff_to_float
+
         v = parse_diff_to_float(d)
         if v == 0:
             return "0"

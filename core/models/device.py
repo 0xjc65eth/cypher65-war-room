@@ -47,13 +47,13 @@ def device_status_is_online(status) -> bool:
 NOT_AVAILABLE = "NOT AVAILABLE"
 
 TELEMETRY_KEYS = (
-    "chip_temp",     # °C temperatura do ASIC/junction
-    "vr_temp",       # °C temperatura do voltage regulator
-    "temperature",   # °C temperatura da placa
-    "hashrate",      # H/s atual
-    "hashrate_1m",   # H/s média 1 minuto
+    "chip_temp",  # °C temperatura do ASIC/junction
+    "vr_temp",  # °C temperatura do voltage regulator
+    "temperature",  # °C temperatura da placa
+    "hashrate",  # H/s atual
+    "hashrate_1m",  # H/s média 1 minuto
     "hashrate_10m",  # H/s média 10 minutos
-    "hashrate_1h",   # H/s média 1 hora
+    "hashrate_1h",  # H/s média 1 hora
     "fan_rpm",
     "voltage",
     "power",
@@ -61,7 +61,9 @@ TELEMETRY_KEYS = (
 )
 
 
-def normalize_telemetry(telemetry: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+def normalize_telemetry(
+    telemetry: Optional[Dict[str, Any]],
+) -> Optional[Dict[str, Any]]:
     """Fill missing canonical telemetry keys with the explicit NOT_AVAILABLE
     marker so consumers (API + UI) never see empty/guessed values.
 

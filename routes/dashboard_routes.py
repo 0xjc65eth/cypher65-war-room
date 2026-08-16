@@ -11,6 +11,7 @@ Routes served by this blueprint (all under /api):
 
 Alerts (/api/alerts) are owned by routes/alerts_routes.py (alerts_bp).
 """
+
 import json
 import random
 import time
@@ -119,11 +120,13 @@ def api_leaderboard():
                 state.latest_snapshot.get("address") or config.BTC_ADDRESS
             )
             enriched.append(entry_copy)
-    return jsonify({
-        "entries": enriched,
-        "total": state.latest_snapshot.get("leaderboard_total", len(top)),
-        "stale_after_s": config.POLL_INTERVAL,
-    })
+    return jsonify(
+        {
+            "entries": enriched,
+            "total": state.latest_snapshot.get("leaderboard_total", len(top)),
+            "stale_after_s": config.POLL_INTERVAL,
+        }
+    )
 
 
 @dashboard_bp.route("/share_timeline")
@@ -150,8 +153,10 @@ def api_share_timeline():
             try:
                 if r.get("meta"):
                     r["meta"] = json.loads(r["meta"])
-            except Exception:
-                pass
+            except Exception as e:
+                # Issue #202: a corrupt meta cell is degradation — never silent
+                # (the event still renders, minus the detail, but is logged).
+                log.warning("[events] meta JSON corrupt (id=%s): %s", r.get("id"), e)
         return jsonify({"events": rows, "count": len(rows)})
     except Exception as e:
         return jsonify({"error": str(e), "events": []}), 500
@@ -182,6 +187,7 @@ def api_mempool_fees():
 @dashboard_bp.route("/profitability")
 def api_profitability():
     from services.settings import load_settings
+
     p = dict(state.latest_snapshot.get("profitability") or {})
     p["active_currency"] = load_settings().get("active_currency", "USD")
     return jsonify(p)
@@ -226,7 +232,7 @@ def api_monte_carlo():
         return jsonify({"error": "insufficient data", "status": "SIMULATED"})
 
     # Expected blocks in period: hashrate / (difficulty * 2^32) * seconds
-    hashes_per_block = float(net_diff) * (2 ** 32)
+    hashes_per_block = float(net_diff) * (2**32)
     seconds = hours * 3600.0
     expected_blocks = cur_hr * seconds / hashes_per_block
 
@@ -268,36 +274,40 @@ def api_monte_carlo():
         if count > 0 or k <= int(expected_blocks) + 2:
             pct = round(count / runs * 100, 4)
             cumulative += pct
-            dist_pct.append({
-                "blocks": k,
-                "count": count,
-                "pct": pct,
-                "cumulative_pct": round(cumulative, 4),
-                "bar": "█" * max(1, int(pct * 2)),
-            })
+            dist_pct.append(
+                {
+                    "blocks": k,
+                    "count": count,
+                    "pct": pct,
+                    "cumulative_pct": round(cumulative, 4),
+                    "bar": "█" * max(1, int(pct * 2)),
+                }
+            )
 
     p_zero = distribution[0] / runs * 100 if len(distribution) > 0 else 100.0
 
-    return jsonify({
-        "status": "SIMULATED",
-        "params": {"hours": hours, "runs": runs},
-        "inputs": {
-            "worker_hashrate_hs": cur_hr,
-            "worker_hashrate_ths": round(cur_hr / 1e12, 2),
-            "network_difficulty": net_diff,
-            "network_difficulty_str": fmt_diff(net_diff),
-        },
-        "results": {
-            "expected_blocks": round(expected_blocks, 6),
-            "expected_blocks_str": f"{expected_blocks:.6f}",
-            "p_zero_blocks_pct": round(p_zero, 4),
-            "p_at_least_one_block_pct": round(100 - p_zero, 4),
-            "median_blocks": median_blocks,
-            "p90_blocks": p90_blocks,
-            "distribution": dist_pct[:20],  # top 20 outcomes
-        },
-        "disclaimer": "MONTE CARLO SIMULATION — results are statistical estimates based on current hashrate and difficulty. Actual mining outcomes are governed by random chance and may differ significantly.",
-    })
+    return jsonify(
+        {
+            "status": "SIMULATED",
+            "params": {"hours": hours, "runs": runs},
+            "inputs": {
+                "worker_hashrate_hs": cur_hr,
+                "worker_hashrate_ths": round(cur_hr / 1e12, 2),
+                "network_difficulty": net_diff,
+                "network_difficulty_str": fmt_diff(net_diff),
+            },
+            "results": {
+                "expected_blocks": round(expected_blocks, 6),
+                "expected_blocks_str": f"{expected_blocks:.6f}",
+                "p_zero_blocks_pct": round(p_zero, 4),
+                "p_at_least_one_block_pct": round(100 - p_zero, 4),
+                "median_blocks": median_blocks,
+                "p90_blocks": p90_blocks,
+                "distribution": dist_pct[:20],  # top 20 outcomes
+            },
+            "disclaimer": "MONTE CARLO SIMULATION — results are statistical estimates based on current hashrate and difficulty. Actual mining outcomes are governed by random chance and may differ significantly.",
+        }
+    )
 
 
 @dashboard_bp.route("/proximity")
@@ -319,15 +329,17 @@ def api_proximity():
             (cutoff,),
         )
         for r in c.fetchall():
-            history_24h.append({
-                "ts": r["ts"],
-                "best_diff_raw": r["best_diff"],
-                "all_time_best_diff_raw": r["all_time_best_diff"],
-                "network_difficulty_raw": r["network_difficulty"],
-                "worker_hashrate": r["worker_hashrate"],
-                "pct_of_network": r["pct_of_network"],
-                "hot_streak": bool(r["hot_streak"]),
-            })
+            history_24h.append(
+                {
+                    "ts": r["ts"],
+                    "best_diff_raw": r["best_diff"],
+                    "all_time_best_diff_raw": r["all_time_best_diff"],
+                    "network_difficulty_raw": r["network_difficulty"],
+                    "worker_hashrate": r["worker_hashrate"],
+                    "pct_of_network": r["pct_of_network"],
+                    "hot_streak": bool(r["hot_streak"]),
+                }
+            )
         conn.close()
     except Exception as e:
         log.warning("[api/proximity history] error: %s", e)

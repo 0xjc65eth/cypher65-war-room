@@ -20,6 +20,7 @@ Usage:
     from services.webhook_queue import dispatch_webhook_or_queue, webhook_queue_loop
     ok = dispatch_webhook_or_queue(url=..., severity="CRIT", ...)
 """
+
 import json
 import logging
 import sqlite3
@@ -27,6 +28,7 @@ import time
 from typing import Any, Dict, Optional
 
 from services.db import get_db
+
 # Top-level imports (monkeypatch-safe): tests patch these module attributes,
 # and dispatch/process call them by reference. Local imports would bypass
 # monkeypatch and make the retry queue untestable.
@@ -70,8 +72,11 @@ def ensure_table() -> None:
         log.warning("[webhook_queue] bootstrap failed: %s", e)
 
 
-def enqueue_webhook(webhook_kwargs: Dict[str, Any], tenant_id: str = "",
-                    delay_secs: Optional[int] = None) -> bool:
+def enqueue_webhook(
+    webhook_kwargs: Dict[str, Any],
+    tenant_id: str = "",
+    delay_secs: Optional[int] = None,
+) -> bool:
     """Persist a failed webhook for later retry.
 
     Args:
@@ -85,6 +90,7 @@ def enqueue_webhook(webhook_kwargs: Dict[str, Any], tenant_id: str = "",
     if not webhook_kwargs or not webhook_kwargs.get("url"):
         return False
     import json as _json
+
     try:
         ensure_table()
         conn = get_db()
@@ -97,8 +103,12 @@ def enqueue_webhook(webhook_kwargs: Dict[str, Any], tenant_id: str = "",
         )
         conn.commit()
         conn.close()
-        log.info("[webhook_queue] queued retry for %s (tenant=%s, retry in %ds)",
-                 (webhook_kwargs.get("category") or "?"), tenant_id[:8] or "-", delay)
+        log.info(
+            "[webhook_queue] queued retry for %s (tenant=%s, retry in %ds)",
+            (webhook_kwargs.get("category") or "?"),
+            tenant_id[:8] or "-",
+            delay,
+        )
         return True
     except Exception as e:  # noqa: BLE001 — queue is best-effort
         log.warning("[webhook_queue] enqueue failed: %s", e)
@@ -130,9 +140,15 @@ def dispatch_webhook_or_queue(
     """
     try:
         ok = send_webhook_for_alert(
-            url=url, severity=severity, category=category, message=message,
-            ts=ts, worker=worker, address=address,
-            min_severity=min_severity, timeout=timeout,
+            url=url,
+            severity=severity,
+            category=category,
+            message=message,
+            ts=ts,
+            worker=worker,
+            address=address,
+            min_severity=min_severity,
+            timeout=timeout,
         )
     except Exception as e:
         log.warning("[webhook_queue] dispatch error: %s", e)
@@ -142,12 +158,20 @@ def dispatch_webhook_or_queue(
         # legitimate skip (send_webhook_for_alert returns False for both, so
         # re-check the threshold to avoid queueing noise).
         if url and severity_meets_threshold(severity, min_severity):
-            enqueue_webhook({
-                "url": url, "severity": severity, "category": category,
-                "message": message, "ts": ts, "worker": worker,
-                "address": address, "min_severity": min_severity,
-                "timeout": timeout,
-            }, tenant_id=tenant_id)
+            enqueue_webhook(
+                {
+                    "url": url,
+                    "severity": severity,
+                    "category": category,
+                    "message": message,
+                    "ts": ts,
+                    "worker": worker,
+                    "address": address,
+                    "min_severity": min_severity,
+                    "timeout": timeout,
+                },
+                tenant_id=tenant_id,
+            )
     return ok
 
 
@@ -193,8 +217,12 @@ def process_due_webhooks(now: Optional[int] = None, max_batch: int = 20) -> int:
             else:
                 nxt = attempts + 1
                 if nxt >= WEBHOOK_MAX_ATTEMPTS:
-                    log.warning("[webhook_queue] dropping webhook %d after "
-                                "%d attempts (provider down too long)", qid, nxt)
+                    log.warning(
+                        "[webhook_queue] dropping webhook %d after "
+                        "%d attempts (provider down too long)",
+                        qid,
+                        nxt,
+                    )
                     conn.execute("DELETE FROM webhook_queue WHERE id = ?", (qid,))
                 else:
                     delay = WEBHOOK_RETRY_BACKOFF[nxt]

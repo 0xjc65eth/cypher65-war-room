@@ -25,7 +25,9 @@ class BaseAdapter(ABC):
         pass
 
     @abstractmethod
-    def execute_command(self, command: str, parameters: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    def execute_command(
+        self, command: str, parameters: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
         """Executa um comando no dispositivo"""
         pass
 
@@ -62,11 +64,12 @@ class BaseAdapter(ABC):
             return True
         # Fallback: device may have been loaded without capability metadata.
         return any(
-            c.name == capability_name and c.supported
-            for c in self.get_capabilities()
+            c.name == capability_name and c.supported for c in self.get_capabilities()
         )
 
-    def _send_cgminer_command(self, command: str, port: int, timeout: int = 5) -> Optional[dict]:
+    def _send_cgminer_command(
+        self, command: str, port: int, timeout: int = 5
+    ) -> Optional[dict]:
         """Send a JSON command over TCP to a cgminer-compatible API.
 
         Shared by CgminerAdapter and BraiinsAdapter. Returns parsed JSON
@@ -74,7 +77,7 @@ class BaseAdapter(ABC):
 
         Subclasses wrap this with their own logging.
         """
-        host = getattr(self, 'host', None)
+        host = getattr(self, "host", None)
         if not host:
             return None
         sock = None
@@ -117,8 +120,9 @@ class BaseAdapter(ABC):
         if pools_response and "POOLS" in pools_response:
             pool_list = pools_response["POOLS"]
             if isinstance(pool_list, list):
-                alive = [p for p in pool_list
-                         if str(p.get("Status", "")).lower() == "alive"]
+                alive = [
+                    p for p in pool_list if str(p.get("Status", "")).lower() == "alive"
+                ]
                 if alive:
                     pool_status = "CONNECTED"
                     pool_url = str(alive[0].get("URL", ""))
