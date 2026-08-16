@@ -31,6 +31,7 @@ from helpers import (
     attach_affiliate,
     affiliate_map_from_env,
     build_command_center,
+    coerce_ts,
     AP_PEAK_WINDOW_S,
     AP_TEMP_HIGH_C,
 )
@@ -60,6 +61,17 @@ def set_auto_pilot_deps(engine, registry):
     global _auto_pilot_engine, _auto_pilot_registry
     _auto_pilot_engine = engine
     _auto_pilot_registry = registry
+
+
+def get_auto_pilot_engine():
+    """Return the boot-initialized AutomationEngine (or None).
+
+    Issue #76: the dry-run routes use the LIVE engine so the simulated
+    budget reflects the real per-tenant window consumption (a fresh engine
+    per request would always report a full budget). Read-only consumer — the
+    dry-run never mutates the shared engine's state.
+    """
+    return _auto_pilot_engine
 
 
 # ── Hashrate market fetch cache ──────────────────────────────────────────
@@ -97,14 +109,22 @@ def _get_hashrate_market_offers(snapshot: dict) -> list:
     """Fetch live hashrate offers, caching them for a short TTL."""
     now = int(time.time())
     cache = _HASHRATE_MARKET_CACHE
-    ttl = _HASHRATE_MARKET_CACHE_TTL if cache["offers"] else _HASHRATE_MARKET_EMPTY_CACHE_TTL
+    ttl = (
+        _HASHRATE_MARKET_CACHE_TTL
+        if cache["offers"]
+        else _HASHRATE_MARKET_EMPTY_CACHE_TTL
+    )
     if (now - cache["ts"] < ttl) and cache["offers"] is not None:
         _sync_market_prices_to_state(cache["offers"])
         return cache["offers"]
 
     with _HASHRATE_MARKET_FETCH_LOCK:
         now = int(time.time())
-        ttl = _HASHRATE_MARKET_CACHE_TTL if cache["offers"] else _HASHRATE_MARKET_EMPTY_CACHE_TTL
+        ttl = (
+            _HASHRATE_MARKET_CACHE_TTL
+            if cache["offers"]
+            else _HASHRATE_MARKET_EMPTY_CACHE_TTL
+        )
         if (now - cache["ts"] < ttl) and cache["offers"] is not None:
             _sync_market_prices_to_state(cache["offers"])
             return cache["offers"]
@@ -114,6 +134,7 @@ def _get_hashrate_market_offers(snapshot: dict) -> list:
         if offers:
             try:
                 from services.db import get_db
+
                 conn = get_db()
                 _persist_market_history(conn, offers)
                 conn.close()
@@ -130,10 +151,15 @@ def _hashrate_market_health() -> dict:
     """Expose warmup/cache health for market_data."""
     cache = _HASHRATE_MARKET_CACHE
     now = int(time.time())
-    ts = cache.get("ts") or 0
+    # Sentinel policy (Issue #203): a never-filled cache reports null
+    # last_fetch_ts, never epoch-0.
+    ts = coerce_ts(cache.get("ts"))
     offers = cache.get("offers")
     count = len(offers) if offers else 0
     ttl = _HASHRATE_MARKET_CACHE_TTL if offers else _HASHRATE_MARKET_EMPTY_CACHE_TTL
+    # NOTE (Issue #203): app.py's copy of this helper reports stale=False on a
+    # never-filled cache; here a cold cache is explicitly stale=True (never
+    # fetched = not fresh). Documented divergence — Issue #206 follow-up.
     return {
         "last_fetch_ts": ts,
         "age_s": now - ts if ts else None,
@@ -143,6 +169,7 @@ def _hashrate_market_health() -> dict:
 
 
 # ── Block Hunt computation ──────────────────────────────────────────────
+
 
 def _compute_block_hunt(snap: dict) -> dict:
     """Compute the Block Hunt payload from a snapshot (pure, no I/O)."""
@@ -164,7 +191,9 @@ def _compute_block_hunt(snap: dict) -> dict:
         try:
             prob_result = calculate_multiple_periods(user_hr, net_hr)
             prob_periods = prob_result.get("periods", {})
-            expected_time = prob_periods.get("24h", {}).get("expected_time_to_block_seconds")
+            expected_time = prob_periods.get("24h", {}).get(
+                "expected_time_to_block_seconds"
+            )
             if expected_time is not None:
                 expected_time_human = _seconds_to_human(expected_time)
         except Exception as e:
@@ -194,8 +223,10 @@ def _compute_block_hunt(snap: dict) -> dict:
     cumulative_p_block = None
     try:
         cumulative_p_block = (
-            (snap.get("proximity") or {}).get("live_calc", {})
-            .get("session_totals", {}).get("cum_p_block")
+            (snap.get("proximity") or {})
+            .get("live_calc", {})
+            .get("session_totals", {})
+            .get("cum_p_block")
         )
     except Exception:
         cumulative_p_block = None
@@ -203,7 +234,9 @@ def _compute_block_hunt(snap: dict) -> dict:
     return {
         "network_difficulty": net_diff,
         "best_difficulty": best_diff_raw,
-        "p_block_per_share": (best_diff_raw / net_diff) if net_diff and best_diff_raw else None,
+        "p_block_per_share": (
+            (best_diff_raw / net_diff) if net_diff and best_diff_raw else None
+        ),
         "expected_time_seconds": expected_time,
         "cumulative_p_block": cumulative_p_block,
         "best_diff_worker": worker.get("name") or WORKER_NAME or "",
@@ -235,6 +268,7 @@ def _compute_block_hunt(snap: dict) -> dict:
 
 # ── Auto-pilot context ──────────────────────────────────────────────────
 
+
 def build_auto_pilot_context() -> dict:
     """P1 Auto-Pilot advisory context block (read-only, never executes).
 
@@ -245,6 +279,7 @@ def build_auto_pilot_context() -> dict:
         tenant_id = "default"
         try:
             from services.tenant import get_tenant_id as _resolve_tenant
+
             tenant_id = _resolve_tenant() or "default"
         except Exception:
             tenant_id = "default"
@@ -253,10 +288,10 @@ def build_auto_pilot_context() -> dict:
         conn = None
         try:
             from services.db import get_db
+
             conn = get_db()
             row = conn.execute(
-                "SELECT MAX(worker_hashrate) FROM proximity_history "
-                "WHERE ts >= ?",
+                "SELECT MAX(worker_hashrate) FROM proximity_history " "WHERE ts >= ?",
                 (int(time.time()) - AP_PEAK_WINDOW_S,),
             ).fetchone()
             if row and row[0]:
@@ -280,7 +315,8 @@ def build_auto_pilot_context() -> dict:
                 # app.py build_auto_pilot_context).
                 _ap_devices = (
                     _auto_pilot_registry.list_devices()
-                    if _auto_pilot_registry is not None else []
+                    if _auto_pilot_registry is not None
+                    else []
                 )
                 # is_armed is optional on the injected engine (test fakes /
                 # older engines) — treat absence as False, never crash the
@@ -288,7 +324,9 @@ def build_auto_pilot_context() -> dict:
                 _is_armed = getattr(_auto_pilot_engine, "is_armed", None)
                 if callable(_is_armed):
                     armed = bool(_is_armed(tenant_id))
-                preview = _auto_pilot_engine.preview_rules(_ap_devices, tenant_id=tenant_id)
+                preview = _auto_pilot_engine.preview_rules(
+                    _ap_devices, tenant_id=tenant_id
+                )
             else:
                 # Fallback (tests/standalone): fresh engine + DB-loaded
                 # devices. Telemetry is in-memory only, so conditions may not
@@ -296,7 +334,10 @@ def build_auto_pilot_context() -> dict:
                 from config import DB_PATH as _ap_db_path
                 from core.safety.safety_engine import SafetyEngine
                 from core.alerts.automation_engine import AutomationEngine
-                from core.registry.device_registry import DeviceRegistry as CoreDeviceRegistry
+                from core.registry.device_registry import (
+                    DeviceRegistry as CoreDeviceRegistry,
+                )
+
                 _ap_reg = CoreDeviceRegistry(_ap_db_path)
                 _ap_reg.load_from_db()
                 _ap_devices = _ap_reg.list_devices()
@@ -316,11 +357,16 @@ def build_auto_pilot_context() -> dict:
         }
     except Exception as e:
         log.warning("[auto-pilot] context failed: %s", e)
-        return {"peak_hashrate_7d": 0.0, "automation_preview": [],
-                "armed": False, "temp_high_c": AP_TEMP_HIGH_C}
+        return {
+            "peak_hashrate_7d": 0.0,
+            "automation_preview": [],
+            "armed": False,
+            "temp_high_c": AP_TEMP_HIGH_C,
+        }
 
 
 # ── Main enrichment ─────────────────────────────────────────────────────
+
 
 def enrich_snapshot(snapshot: dict, axe_registry=None) -> dict:
     """Take a raw snapshot dict and enrich it with market_data, auto_pilot,
@@ -336,6 +382,7 @@ def enrich_snapshot(snapshot: dict, axe_registry=None) -> dict:
     # ── Tenant-scope axe_fleet ──
     try:
         from services.tenant import get_tenant_id as _resolve_tenant
+
         _fleet = resp.get("axe_fleet") or []
         # Auto-discover the axe registry: use the caller-supplied one, or
         # import from axe_fleet.routes (set by init_routes() at boot).
@@ -343,6 +390,7 @@ def enrich_snapshot(snapshot: dict, axe_registry=None) -> dict:
         if _reg is None and _fleet:
             try:
                 from axe_fleet.routes import _registry as _axe_mod_registry
+
                 _reg = _axe_mod_registry
             except Exception:
                 _reg = None
@@ -351,7 +399,8 @@ def enrich_snapshot(snapshot: dict, axe_registry=None) -> dict:
                 _d["id"] for _d in _reg.list_devices(tenant_id=_resolve_tenant())
             }
             resp["axe_fleet"] = [
-                _t for _t in _fleet
+                _t
+                for _t in _fleet
                 if _t.get("device_id") in _tenant_ids or _t.get("id") in _tenant_ids
             ]
     except Exception:
@@ -373,14 +422,18 @@ def enrich_snapshot(snapshot: dict, axe_registry=None) -> dict:
     # "—" for BTC/USD and Rent-vs-Own forever. Read btc_price.usd first,
     # keep the legacy network.btc_usd fallback for old payloads.
     network_hr = (snapshot.get("network") or {}).get("hashrate")
-    btc_usd = (snapshot.get("btc_price") or {}).get("usd") or (snapshot.get("network") or {}).get("btc_usd")
+    btc_usd = (snapshot.get("btc_price") or {}).get("usd") or (
+        snapshot.get("network") or {}
+    ).get("btc_usd")
     all_offers = _fetch_all_offers(network_hr)
     resp["institutional"] = _compute_institutional_view(all_offers, network_hr, btc_usd)
     cache = _shared_state.market_data_cache
     if highlights and len(highlights) > 0:
         sorted_hl = sorted(highlights, key=_market_offer_sort_key)
         market_hl = [x for x in sorted_hl if not x.get("estimated")]
-        best_offer = min(market_hl or sorted_hl, key=lambda x: x.get("price_per_th_day", 999))
+        best_offer = min(
+            market_hl or sorted_hl, key=lambda x: x.get("price_per_th_day", 999)
+        )
         best_price_raw = best_offer.get("price_per_th_day")
         if best_price_raw and best_price_raw >= 0.001:
             best_price_str = "{:.6f} BTC/TH/d".format(best_price_raw)
@@ -417,7 +470,9 @@ def enrich_snapshot(snapshot: dict, axe_registry=None) -> dict:
             resp["market_data"] = {
                 "offers": [],
                 "best_price": None,
-                "updated_at": 0,
+                # Sentinel policy (Issue #203): no fetch ever happened → null,
+                # never 0 (a 0 would render as 1970-01-01 / false staleness).
+                "updated_at": None,
                 "provider_count": 0,
                 "loading": True,
                 "affiliate": None,

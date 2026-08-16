@@ -10,6 +10,7 @@ manufacturer and requires explicit model detection.
 
 Reference: https://en.bitcoin.it/wiki/Cgminer_API
 """
+
 import logging
 import time
 from typing import Any, Dict, List, Optional
@@ -33,7 +34,12 @@ class CgminerAdapter(BaseAdapter):
     without explicit model detection.
     """
 
-    def __init__(self, device: Device, host: Optional[str] = None, port: int = CGMINER_DEFAULT_PORT):
+    def __init__(
+        self,
+        device: Device,
+        host: Optional[str] = None,
+        port: int = CGMINER_DEFAULT_PORT,
+    ):
         super().__init__(device)
         self.host = host or device.ip
         self.port = port
@@ -92,26 +98,31 @@ class CgminerAdapter(BaseAdapter):
             if isinstance(stats_list, list) and len(stats_list) > 1:
                 chain = stats_list[1]
                 # ASIC / junction temp (temp2_0 is usually chip 0, temp = board)
-                temp = self._safe_number(
-                    chain.get("temp2_0", chain.get("temp", None)))
+                temp = self._safe_number(chain.get("temp2_0", chain.get("temp", None)))
                 # VR / board temp (temp2_1/2_2 on multi-PCB, temp3 on newer)
                 vr_temp = self._safe_number(
-                    chain.get("temp2_1", chain.get("temp2_2", chain.get("temp3", None))))
+                    chain.get("temp2_1", chain.get("temp2_2", chain.get("temp3", None)))
+                )
                 # Fan RPM — cgminer reports fan_num + individual fan speeds
                 fan_count = int(chain.get("fan_num", 0))
                 if fan_count > 0:
                     fan_rpm = self._safe_number(
-                        chain.get("fan1", chain.get("fan_rpm", None)))
+                        chain.get("fan1", chain.get("fan_rpm", None))
+                    )
                     if fan_rpm is None:
                         # Some firmwares use fan_speed (RPM, not PWM %)
                         fan_rpm = self._safe_number(chain.get("fan_speed", None))
                 # Voltage — chain-level DC/DC regulator reading
                 voltage = self._safe_number(
-                    chain.get("voltage", chain.get("chain_voltage", None)))
+                    chain.get("voltage", chain.get("chain_voltage", None))
+                )
                 # Power — watts per chain (BOSminer/LuxOS expose this)
                 power = self._safe_number(
-                    chain.get("power", chain.get("chain_power",
-                            chain.get("power_watts", None))))
+                    chain.get(
+                        "power",
+                        chain.get("chain_power", chain.get("power_watts", None)),
+                    )
+                )
 
         # ── Pool status derivation ──────────────────────────────────────
         pool_status, pool_url, pool_user = self._derive_cgminer_pool_status(pools)
@@ -136,17 +147,33 @@ class CgminerAdapter(BaseAdapter):
             best_share=best_share,
         )
 
-    def execute_command(self, command: str, parameters: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    def execute_command(
+        self, command: str, parameters: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
         if command == "restart":
             result = self._send_command("restart")
             return {"success": bool(result), "stub": False}
-        return {"success": False, "stub": True, "note": f"{command} not implemented for cgminer"}
+        return {
+            "success": False,
+            "stub": True,
+            "note": f"{command} not implemented for cgminer",
+        }
 
     def get_capabilities(self) -> List[Capability]:
         return [
             Capability(name="telemetry", supported=True),
-            Capability(name="restart", supported=True, requires_confirmation=True, risk_level=RiskLevel.MEDIUM),
-            Capability(name="set_frequency", supported=False, requires_confirmation=True, risk_level=RiskLevel.HIGH),
+            Capability(
+                name="restart",
+                supported=True,
+                requires_confirmation=True,
+                risk_level=RiskLevel.MEDIUM,
+            ),
+            Capability(
+                name="set_frequency",
+                supported=False,
+                requires_confirmation=True,
+                risk_level=RiskLevel.HIGH,
+            ),
         ]
 
     def health_check(self) -> Dict[str, Any]:

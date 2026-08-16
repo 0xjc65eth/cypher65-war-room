@@ -12,8 +12,22 @@
 #   2026-08-01  TOTAL 53% (baseline)  · gate --cov-fail-under=45
 #   2026-08-03  TOTAL 66% (+108 testes: ai_operator, session_manager,
 #              push_notifier, cgminer_adapter, proximity) · gate sobe p/ 65%
-# O --cov-fail-under=65 é o gate real: abaixo de 65% o merge é bloqueado.
-# A margem (66% → 65%) absorve variação entre ambientes (CI vs local) sem
+#   2026-08-14  TOTAL 76% · financeiros ≥80% (payments 96%, rentals 89%,
+#              licensing 89%, safety 100%) · gate --cov-fail-under=75
+#   2026-08-14  TOTAL 77% · poll_compute 100% (helpers extraídos do
+#              _do_poll, Issue #135), app 57%, user_polling 73% · gate
+#              --cov-fail-under=76
+#   2026-08-14  TOTAL 79% · Issue #137: profitability/milestones/event-stats
+#              extraídos do _do_poll (poll_compute 100%, app 58%), fetchers
+#              globais + _build_snapshot cobertos (user_polling 94%) · gate
+#              --cov-fail-under=80
+#   2026-08-14  TOTAL 82% · Issue #141: blocos fetch/persist/purge do
+#              _do_poll cobertos por injeção de mock + rotas de dashboard
+#              (app.py 58% → 74%) · gate --cov-fail-under=80 ← meta 80% atingida
+#   ROADMAP → 80%+ já cumprido; próximos degraus: app.py 74% → 80%+
+#   (rotas restantes + CLI/agente) com margem ~1pp.
+# O --cov-fail-under é o gate real: abaixo dele o merge é bloqueado.
+# A margem (~1pp) absorve variação entre ambientes (CI vs local) sem
 # deixar o gate frouxo.
 
 name: "CI · Gate"
@@ -53,6 +67,61 @@ jobs:
       - name: Run JS core tests (app.js helpers)
         run: node --test tests/test_app_js_core.js
 
+      # DOM regression guards (Issue #58) — bloqueiam merge quando:
+      #   GUARD 1: templates/*.html têm id="" duplicado (quebra querySelector)
+      #   GUARD 2: innerHTML interpola campo de registro externo sem
+      #            escapeHtml (vetor de XSS — severity/category/msg/etc.)
+      #   --report (Issue #68): além de bloquear, imprime o 📊 DOM Guard
+      #            Report (counts TL/concat/insertAdjacentHTML/bare-id/
+      #            textContent por PR) — annotation no checks UI + step
+      #            summary, base para monitorar tendência de superfície XSS.
+      #            A linha GUARD_REPORT {...} é persistida como artifact
+      #            (dom-guard-report) para a linha do tempo por PR.
+      # set +e + `exit $EXIT`: preserva o exit code do guard (bloqueio) mesmo
+      # quando o artifact precisa ser gravado antes de falhar o step.
+      - name: DOM regression guards (dup ids + innerHTML escaping) + report
+        run: |
+          set +e
+          node scripts/check-dom-regression.cjs --report | tee /tmp/guard-report.log
+          EXIT=$?
+          grep 'GUARD_REPORT' /tmp/guard-report.log | sed 's/^GUARD_REPORT //' > /tmp/guard-report.json || true
+          echo "guard exit: $EXIT · artifact: $(cat /tmp/guard-report.json 2>/dev/null)"
+          exit $EXIT
+
+      - name: Upload DOM guard report (trend)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dom-guard-report
+          path: /tmp/guard-report.json
+          if-no-files-found: ignore
+          retention-days: 30
+
+      # Self-test of the guard itself (Issue #60): runs the REAL guard as a
+      # subprocess against disposable fixtures (XSS injetado → FAIL, id
+      # duplicado → FAIL, fmt.diff sem escape → FAIL, baseline → PASS) para
+      # que enfraquecer o guard nunca passe despercebido.
+      - name: DOM guards self-test
+        run: node tests/test_dom_guards.js
+
+      # Mobile XSS guards (Issue #70) — mesma filosofia do guard web, para o
+      # app React Native (mobile/). Bloqueia merge quando um vetor RN é
+      # introduzido:
+      #   - WebView source={{ html: … }} / source={{ html }} / injectedJavaScript
+      #     — valores com interpolação ${…} de dado externo SEM builder
+      #     whitelisted (escapeHtml/buildSafeHtml/sanitizeHtml/…)
+      #   - dangerouslySetInnerHTML / react-native-render-html (review gate)
+      #   - eval( / new Function( — banned
+      #   - Linking.openURL('javascript:…') / uri javascript: / URL interpolada
+      # Hoje o mobile/ tem 0 achados — rede de prevenção contra regressões.
+      - name: Mobile XSS guards (RN sinks)
+        run: node scripts/check-mobile-xss.cjs
+
+      # Self-test do próprio guard mobile (Issue #70): fixtures adversárias
+      # (TL cru → FAIL, builder → PASS, eval → FAIL, literal → PASS, …).
+      - name: Mobile XSS guard self-test
+        run: node tests/test_mobile_xss_guards.js
+
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
@@ -66,6 +135,33 @@ jobs:
           source .venv/bin/activate
           pip install --upgrade pip
           pip install -r requirements.txt pytest pytest-cov
+          # Static-analysis gate tools (Issue #125) — versions pinned to
+          # requirements-dev.txt so CI matches local dev. bandit 1.9.4:
+          # 1.8.2 crasha no AST do Python 3.14.
+          pip install bandit==1.9.4 flake8==7.1.1 black==25.1.0
+
+      # Static security gates (Issue #125). BLOQUEIAM o merge quando:
+      #   bandit  -ll   — qualquer achado MEDIUM/HIGH (B6xx SQL/shell,
+      #                    B3xx crypto, B5xx subprocess, …). Hoje: 0.
+      #   flake8        — só códigos de bug real (F821 nome indefinido,
+      #                   F541 f-string sem placeholder, E9 erro de sintaxe),
+      #                   via .flake8 (mesma config local e CI). Hoje: 0.
+      #                   O backlog de estilo (E501 etc.) NÃO é gate — ver
+      #                   `make lint` (advisory) e o roadmap no QUALITY.md.
+      #   black  —check — BLOQUEIA desde o cleanup dedicado (Issue #133):
+      #                   os 62 arquivos do escopo foram reformatados no
+      #                   commit de formatação; qualquer diff fora do padrão
+      #                   agora falha o merge (formatação = gate real).
+      - name: Static security gates (bandit + flake8 + black)
+        run: |
+          source .venv/bin/activate
+          # O bandit pode imprimir warnings "nosec encountered, but no failed
+          # test" no stderr para nosec de whitelist — benignos (fail-open:
+          # um nosec órfão nunca esconde achado real).
+          python -m bandit -r services core axe_fleet routes agents \
+            app.py helpers.py solo_mining.py -ll -q
+          python -m flake8 app.py helpers.py solo_mining.py services core axe_fleet routes agents
+          python -m black --check app.py helpers.py solo_mining.py services core axe_fleet routes agents
 
       - name: Run Python tests with coverage
         run: |
@@ -73,7 +169,8 @@ jobs:
           python -m pytest tests/ -q --tb=short --junitxml=/tmp/pytest-results.xml \
             --cov=app --cov=helpers --cov=axe_fleet --cov=services --cov=core \
             --cov-report=term-missing --cov-report=html:/tmp/coverage_html \
-            --cov-fail-under=65
+            --cov-report=xml:/tmp/coverage.xml \
+            --cov-fail-under=80
 
       - name: Upload pytest results
         if: always()
@@ -90,6 +187,22 @@ jobs:
           name: coverage-html
           path: /tmp/coverage_html
           retention-days: 30
+
+      # Codecov (Issue #28) — repo público = free tier. O upload exige o
+      # CODECOV_TOKEN (repo secret): sem ele o CLI falha com
+      # 'Token required - not valid tokenless upload' (log: Token length: 0).
+      # fail_ci_if_error:false garante que um CI sem secret nunca bloqueie o
+      # merge — o upload simplesmente fica pendente até o token existir.
+      - name: Upload coverage to Codecov
+        if: always()
+        uses: codecov/codecov-action@v5
+        with:
+          files: /tmp/coverage.xml
+          fail_ci_if_error: false
+          verbose: false
+          token: ${{ secrets.CODECOV_TOKEN }}
+          slug: 0xjc65eth/cypher65-war-room
+        continue-on-error: true
 
       - name: Notify on failure
         if: failure()
@@ -124,3 +237,129 @@ jobs:
 
       - name: Run jest suite
         run: npm test -- --ci
+
+      # Lint/quality (Issue #29) — advisory: report violations but never
+      # block the merge. The real JS gate stays tests/test_app_js_core.js.
+      - name: Biome lint (advisory)
+        continue-on-error: true
+        run: npx @biomejs/biome lint src App.tsx --reporter=summary || true
+
+      - name: Knip dead-code (advisory)
+        continue-on-error: true
+        run: npx knip --reporter=compact || true
+
+  # Combined frontend pipeline (Issue #62) — runs EVERYTHING frontend in
+  # one command as a blocking PR check: DOM guards + self-test, JS core,
+  # mobile XSS guards + self-test, and the visual audit (audit_ui --all:
+  # console errors, overflow, truncamento, skeletons presos). The static
+  # checks overlap the gate job on purpose — this is the single entry point
+  # (scripts/check_frontend.sh) that a PR touching UI must pass end-to-end.
+  frontend-audit:
+    name: "frontend: audit visual + guards"
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    env:
+      SECRET_KEY: "ci-test-secret-key-0123456789abcdef"
+      RATE_LIMIT_PER_MINUTE: "10000"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install dependencies
+        run: |
+          npm install
+          python -m venv .venv
+          source .venv/bin/activate
+          pip install --upgrade pip
+          pip install -r requirements.txt
+
+      # Browsers SEM sudo para o binário (cache no HOME do runner), deps de
+      # sistema com sudo — mesmo fix do job e2e.
+      - name: Install Playwright browsers
+        run: |
+          npx playwright install chromium
+          sudo npx playwright install-deps chromium
+
+      - name: Run combined frontend pipeline
+        run: |
+          source .venv/bin/activate
+          bash scripts/check_frontend.sh
+
+  # E2E Playwright (Issue #28) — boots the real app and runs the browser
+  # suite on chromium. Kept in its own job so the fast gate isn't slowed.
+  e2e:
+    name: "e2e: playwright chromium"
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    defaults:
+      run:
+        working-directory: ./
+
+    env:
+      SECRET_KEY: "ci-test-secret-key-0123456789abcdef"
+      RATE_LIMIT_PER_MINUTE: "10000"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install dependencies
+        run: |
+          npm install
+          python -m venv .venv
+          source .venv/bin/activate
+          pip install --upgrade pip
+          pip install -r requirements.txt
+
+      # Browsers SEM sudo: cache fica no HOME do runner (/home/runner/.cache/ms-playwright).
+      # Com sudo o HOME vira /root e o runtime não acha o binário → launch fail.
+      - name: Install Playwright browsers
+        run: |
+          npx playwright install chromium
+          sudo npx playwright install-deps chromium
+
+      - name: Boot app + run e2e specs
+        run: |
+          source .venv/bin/activate
+          nohup python app.py &> /tmp/e2e_server.log &
+          echo "PID=$!"
+          for i in $(seq 1 30); do
+            sleep 1
+            STATUS=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8765/api/healthz 2>/dev/null || echo 000)
+            if [ "$STATUS" = "200" ]; then echo "server ready after ${i}s"; break; fi
+          done
+          npx playwright test tests/e2e/dashboard.spec.js tests/e2e/modals.spec.js \
+            tests/e2e/alert-center-tabs.spec.js tests/e2e/rentals.spec.js \
+            --project=chromium
+
+      - name: Upload e2e report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: e2e-report
+          if-no-files-found: ignore
+          retention-days: 14

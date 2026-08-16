@@ -109,6 +109,7 @@
   const $$ = (s) => document.querySelectorAll(s);
   const dom = {
     topbarAddress: $('#topbar-address'), statusPill: $('#status-pill'), statusText: $('#status-text'),
+    topbarInstance: $('#topbar-instance'),
     clock: $('#clock'), nextPoll: $('#next-poll'), refreshNow: $('#refresh-now'),
     workerRankBadge: $('#worker-rank-badge'), workerUptimeBadge: $('#worker-uptime-badge'),
     mHashrate: $('#m-hashrate'), mHashrateSub: $('#m-hashrate-sub'), mBestDiff: $('#m-bestdiff'), mBestDiffSub: $('#m-bestdiff-sub'),
@@ -279,6 +280,66 @@
 // ── escape HTML ───────────────────────────────────────────────────────
   function escapeHtml(s) { return String(s).replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c])); }
 
+  // ── Rentals provider auth state (Issue #152) ────────────────────────
+  // A CONFIGURED-but-rejected key (401/403, or MRR's classic 'Not
+  // Authenticated - Invalid Key - Bad Nonce.') is a CREDENTIAL problem, not
+  // a missing-credential state and not a concurrency bug. These pure
+  // helpers classify the rejection and build the FIX guidance per provider;
+  // mirrored in tests/test_app_js_core.js.
+  function rentalsAuthRejected(errMsg, authRejected) {
+    if (authRejected) return true;
+    return /rejected|401|403|unauthor|forbidden|bad nonce|not authenticated|invalid key/i.test(String(errMsg || ''));
+  }
+  function rentalsAuthGuide(provider, errMsg) {
+    const safe = escapeHtml(String(errMsg || ''));
+    if (provider === 'contracts') {
+      return 'A chave Braiins está configurada, mas a API a rejeitou: ' + safe +
+        '. Gere um novo owner token em hashpower.braiins.com e atualize no Settings (⚙).';
+    }
+    return 'A chave MRR está configurada, mas a API a rejeitou: ' + safe +
+      '. Causa provável: credencial inválida/desatualizada (ou tracker de nonce da chave preso) ' +
+      '— NÃO é bug de concorrência. Regenerar a API key + secret em miningrigrentals.com ' +
+      '→ My Account → API Access e atualizar no Settings (⚙).';
+  }
+  // Rentals payload freshness (Issue #187): a payload built by OLD server
+  // code (no version stamp) cannot PROVE the account is empty — it may
+  // predate the missing-key guard. Returns a LEVEL: 0 fresh · 1 age-stale
+  // (data older than the panel's refresh cadence → soft 'dados
+  // desatualizados' + reload) · 2 old-code (no version stamp → credential
+  // hint, the case that used to render the misleading 'No contracts rentals
+  // on this account'). Only level 2 claims the config may be missing; level 1
+  // never lies about credentials on an idle-but-open tab. Pure helper
+  // mirrored in tests/test_app_js_core.js.
+  const RENTALS_PAYLOAD_VERSION = 2;
+  const RENTALS_STALE_MAX_AGE_S = 300;  // panel re-fetches every 15s — 5min = not trustworthy
+  function rentalsPayloadStale(payload, nowSec) {
+    const p = payload || {};
+    const version = Number(p.rentals_payload_version) || 0;
+    if (version < RENTALS_PAYLOAD_VERSION) return 2;
+    // Sentinel policy (Issue #203): a missing/epoch stamp must never fabricate
+    // age (now - 0 → huge → false 'stale'). No stamp → unknown freshness → 0,
+    // so valid data is never hidden by an absent field.
+    const upd = Number(p.updated_at);
+    if (!(upd > 0)) return 0;
+    const age = (nowSec || Math.floor(Date.now() / 1000)) - upd;
+    return age > RENTALS_STALE_MAX_AGE_S ? 1 : 0;
+  }
+  // Rentals count surface (Issue #200): "X de N" when the paginated fetch
+  // hit the rate-budget safety cap (truncated) — never show a partial count
+  // as if it were the whole account. Pure helper — mirrored in
+  // tests/test_app_js_core.js. Returns {text, title}; text null = no truncation.
+  function rentalsCountSurface(rendered, total) {
+    const r = Number(rendered);
+    const t = Number(total);
+    if (isFinite(r) && isFinite(t) && t > 0 && r < t) {
+      return {
+        text: r + ' de ' + t,
+        title: 'exibindo ' + r + ' de ' + t + ' rentals (limite de segurança do fetch)',
+      };
+    }
+    return { text: null, title: '' };
+  }
+
   // ── Tenant Auth (Fase 4 · B1-frontend) ─────────────────────────────
   // Stores the JWT session in localStorage and attaches
   // `Authorization: Bearer <token>` to every /api/axe-fleet/* request so
@@ -319,7 +380,7 @@
   }
   // PRO licensing state (open/free/pro) — populated by initLicensing() on
   // boot and used to render the topbar badge + upgrade CTA on 402s.
-  let _license = { mode: 'open', tier: 'pro', pro: true };
+  let _license = { mode: 'open', tier: 'pro', pro: true, premium: true, ai_configured: false };
   async function initLicensing() {
     try {
       const r = await fetch('/api/license-status');
@@ -328,18 +389,26 @@
     } catch (e) { return; }
     renderLicenseBadge();
     syncUpgradeModal();
+    syncAiPremiumUi();
+    _initUpgradeBindings();
   }
   function renderLicenseBadge() {
     const badge = dom.topbarProBadge;
     if (!badge) return;
-    if (_license.mode === 'open' || _license.pro) {
-      // Open mode (everything free) or active PRO — show a quiet PRO tag.
+    if (_license.mode === 'open' || _license.premium || _license.pro) {
+      // Open mode (everything free), PREMIUM, or PRO — quiet tier tag.
+      // O selo PREMIUM aparece SÓ em licensed mode + chave premium (open mode
+      // mostra PRO como antes — o operador self-host não vê tier pago).
+      const premiumTag = _license.mode === 'licensed' && _license.premium;
       badge.hidden = false;
-      badge.textContent = _license.pro ? 'PRO' : 'FREE';
-      badge.classList.toggle('is-pro', !!_license.pro);
-      badge.title = _license.pro ? 'PRO license active' : 'Open mode — all features free';
+      badge.textContent = premiumTag ? 'PREMIUM' : (_license.pro ? 'PRO' : 'FREE');
+      badge.classList.toggle('is-pro', !!(_license.premium || _license.pro));
+      badge.title = premiumTag
+        ? 'PREMIUM license active — AI Operator real liberado'
+        : (_license.pro ? 'PRO license active' : 'Open mode — all features free');
       badge.onclick = null;  // clear any leftover upgrade-CTA handler (audit)
       syncUpgradeModal();
+      syncAiPremiumUi();
       return;
     }
     // Licensed mode + free tier → gate is live; badge is the upgrade CTA.
@@ -349,65 +418,127 @@
     badge.title = 'PRO features locked — click to upgrade';
     badge.onclick = openUpgradeModal;
     syncUpgradeModal();
+    syncAiPremiumUi();
+  }
+  // AI Operator premium CTA (panel header) — shown only in licensed mode
+  // WITHOUT a premium key; clicking opens the payload-driven upgrade modal.
+  function syncAiPremiumUi() {
+    const cta = document.getElementById('ai-premium-cta');
+    if (!cta) return;
+    const locked = _license.mode === 'licensed' && !_license.premium;
+    cta.hidden = !locked;
+    if (locked) {
+      cta.textContent = _license.pro ? '🤖 AI PREMIUM' : '🤖 AI = PREMIUM';
+      cta.onclick = openUpgradeModal;
+    } else {
+      cta.onclick = null;
+    }
   }
   // R1 revenue: upgrade modal — buy via Lemon Squeezy checkout or redeem a key.
   // CFO: firing the funnel events is best-effort and silent — telemetry must
   // never delay or break the UI (no await on the happy path).
+  function funnelId() {
+    // Issue #155: anonymous browser session id for funnel attribution.
+    // PII-free random token generated once and kept in localStorage — it lets
+    // paywall/modal/checkout/paid form a per-user path server-side without
+    // storing any personal data (never sent as email, only echoed into the
+    // Lemon Squeezy checkout `custom` field and back via the webhook).
+    try {
+      let id = localStorage.getItem('c65_funnel_id');
+      if (!id) {
+        id = 'f_' + Math.random().toString(36).slice(2) + Date.now().toString(36);
+        localStorage.setItem('c65_funnel_id', id);
+      }
+      return id;
+    } catch (e) { return ''; }
+  }
   function trackConversionEvent(event, meta) {
     try {
+      const m = meta || {};
+      if (!m.funnel_id) m.funnel_id = funnelId();
       fetch('/api/conversion/track', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ event: event, meta: meta || {} }),
+        body: JSON.stringify({ event: event, meta: m }),
       }).catch(function () { /* fire-and-forget */ });
     } catch (e) { /* never break the UI for telemetry */ }
   }
   function openUpgradeModal() {
     const m = document.getElementById('upgrade-modal');
-    if (m) m.classList.add('modal--open');
-    trackConversionEvent('modal_open');
+    openModalAnimated(m);
+    const up = _license.upgrade || {};
+    trackConversionEvent('modal_open', { plan: (up.plan || 'PRO').toLowerCase() });
   }
   // Exposed for e2e + support console (the PRO badge already wires onclick).
   window.openUpgradeModal = openUpgradeModal;
   function closeUpgradeModal() {
-    const m = document.getElementById('upgrade-modal');
-    if (m) m.classList.remove('modal--open');
+    closeModalAnimated(document.getElementById('upgrade-modal'));
   }
   // Show the Buy button only when the server has a payment provider configured,
   // and drive its price copy from the server payload (single source of truth).
   function syncUpgradeModal() {
     const buy = document.getElementById('upgrade-buy-btn');
+    const pbuy = document.getElementById('upgrade-premium-buy-btn');
     const div = document.getElementById('upgrade-divider');
+    const up = _license.upgrade || {};
+    // Server-driven tier target: upgrade.plan === 'PREMIUM' means the user
+    // is PRO (not premium) → the modal sells the PREMIUM upsell; else PRO.
+    const wantsPremium = up.plan === 'PREMIUM';
     if (buy) {
-      buy.hidden = !_license.payments;
-      const up = _license.upgrade;
-      const price = (up && up.price_usd_month) || 9;
-      buy.textContent = 'Buy PRO — $' + price + '/mo';
+      buy.hidden = !_license.payments || wantsPremium;
+      buy.textContent = 'Buy PRO — $' + ((up && up.price_usd_month) || 9) + '/mo';
+    }
+    if (pbuy) {
+      pbuy.hidden = !_license.payments || !wantsPremium;
+      pbuy.textContent = 'Buy PREMIUM — $' + ((up && up.price_usd_month) || 29) + '/mo';
     }
     if (div) div.hidden = !_license.payments;
+    const title = document.getElementById('upgrade-modal-title');
+    if (title) title.textContent = wantsPremium ? '🤖 CYPHER65 PREMIUM' : '⚡ CYPHER65 PRO';
+    const copy = document.getElementById('upgrade-modal-copy');
+    if (copy) {
+      copy.innerHTML = wantsPremium
+        ? 'Unlock the <strong>real AI Operator</strong> (LLM — fleet, pool, probability &amp; market answers) on top of every PRO feature.'
+        : 'Unlock <strong>Monte Carlo</strong>, <strong>proximity meter</strong>, <strong>30d history</strong> &amp; <strong>webhooks</strong>.';
+    }
   }
-  async function buyPro() {
-    const btn = document.getElementById('upgrade-buy-btn');
+  async function buyUpgrade(plan) {
+    const tier = plan === 'premium' ? 'premium' : 'pro';
+    const btn = document.getElementById(tier === 'premium' ? 'upgrade-premium-buy-btn' : 'upgrade-buy-btn');
     if (btn) btn.disabled = true;
-    trackConversionEvent('checkout_start', { plan: 'pro' });
+    trackConversionEvent('checkout_start', { plan: tier });
     try {
       const r = await fetch('/api/upgrade/checkout', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ plan: 'pro' }),
+        body: JSON.stringify({ plan: tier, funnel_id: funnelId() }),
       });
       let data = {};
       try { data = await r.json(); } catch (e) {}
       if (r.ok && data.checkout_url) {
         window.open(data.checkout_url, '_blank', 'noopener');
       } else {
-        logMessage('PRO', (data && data.error) || 'Checkout unavailable', 'WARN');
+        logMessage(tier.toUpperCase(), (data && data.error) || 'Checkout unavailable', 'WARN');
       }
     } catch (e) {
-      logMessage('PRO', 'Checkout unavailable', 'WARN');
+      logMessage(tier.toUpperCase(), 'Checkout unavailable', 'WARN');
     } finally {
       if (btn) btn.disabled = false;
     }
+  }
+  // Legacy name kept for e2e / support console compatibility.
+  async function buyPro() { return buyUpgrade('pro'); }
+  // Wire the modal CTA buttons once (Buy PRO / Buy PREMIUM / activate key).
+  let _upgradeBound = false;
+  function _initUpgradeBindings() {
+    if (_upgradeBound) return;
+    _upgradeBound = true;
+    const buy = document.getElementById('upgrade-buy-btn');
+    const pbuy = document.getElementById('upgrade-premium-buy-btn');
+    const redeem = document.getElementById('upgrade-redeem-btn');
+    if (buy) buy.addEventListener('click', function () { buyUpgrade('pro'); });
+    if (pbuy) pbuy.addEventListener('click', function () { buyUpgrade('premium'); });
+    if (redeem) redeem.addEventListener('click', redeemLicenseKey);
   }
   async function redeemLicenseKey() {
     const input = document.getElementById('upgrade-key-input');
@@ -560,7 +691,7 @@
     if (toggle && modal) {
       toggle.addEventListener('click', function() {
         authUpdateUi();
-        modal.classList.add('modal--open');
+        openModalAnimated(modal);
       });
     }
     const loginBtn = dom.authLoginBtn;
@@ -578,7 +709,7 @@
         }
         if (res.ok) {
           setTimeout(function() {
-            if (modal) modal.classList.remove('modal--open');
+            closeModalAnimated(modal);
             fetchAxeFleet();
           }, 400);
         }
@@ -587,7 +718,7 @@
     if (dom.authLogoutBtn) {
       dom.authLogoutBtn.addEventListener('click', async function() {
         await authLogout();
-        if (modal) modal.classList.remove('modal--open');
+        closeModalAnimated(modal);
         fetchAxeFleet();
       });
     }
@@ -596,6 +727,64 @@
         if (e.key === 'Enter') loginBtn.click();
       });
     }
+  }
+
+  // ── Instance indicator (Issue #198) ─────────────────────────────────
+  // Deixa EXPLÍCITO em qual instância/URL o dashboard está. Resolve a
+  // confusão real de salvar chaves MRR/Braiins na instância errada (local
+  // vs cloud): o pill no topbar mostra o host + color-code por tipo, e o
+  // tooltip/clique expõe o origin completo para conferir antes de salvar.
+  // Pure classifier — espelhado em tests/test_app_js_core.js.
+  function instanceClassify(host) {
+    let h = String(host || '').toLowerCase().replace(/^https?:\/\//, '').split('/')[0];
+    // Forma IPv6 com brackets "[::1]:8765" → "::1" (porta separada).
+    const bracket = h.match(/^\[([^\]]+)\](?::\d+)?$/);
+    if (bracket) h = bracket[1];
+    // Strip de porta numérica — NUNCA para o loopback IPv6 cru "::1"
+    // (o regex :\d+$ casaria o "1" final e destruiria o host).
+    const hostOnly = h === '::1' ? '::1' : h.replace(/:\d+$/, '');
+    if (!hostOnly) return { kind: 'remote', icon: '⌁' };
+    const isLocal =
+      hostOnly === 'localhost' || hostOnly === '127.0.0.1' || hostOnly === '0.0.0.0' || hostOnly === '::1' ||
+      hostOnly.endsWith('.local') ||
+      /^192\.168\./.test(hostOnly) || /^10\./.test(hostOnly) || /^172\.(1[6-9]|2\d|3[01])\./.test(hostOnly);
+    const isCloud = /\.onrender\.com$/.test(hostOnly) || /\.render\.com$/.test(hostOnly);
+    if (isLocal) return { kind: 'local', icon: '🖥' };
+    if (isCloud) return { kind: 'cloud', icon: '☁' };
+    return { kind: 'remote', icon: '⌁' };
+  }
+  function initInstanceIndicator() {
+    const el = dom.topbarInstance;
+    if (!el) return;
+    const origin = window.location.origin || '';
+    const host = window.location.host || 'self-hosted';
+    const cls = instanceClassify(host);
+    const labels = { local: 'LOCAL', cloud: 'CLOUD', remote: 'REMOTE' };
+    let display = host;
+    if (display.length > 30) display = display.slice(0, 28) + '…';
+    el.textContent = cls.icon + ' ' + display;
+    el.classList.add('topbar__instance--' + cls.kind);
+    el.title = labels[cls.kind] + ' instance · ' + origin +
+      '\n(settings/chaves salvam nesta origem — clique para copiar o URL)';
+    // A11y: interativo por teclado também (Enter/Space = copiar), como um
+    // button de verdade — não só mouse.
+    el.setAttribute('role', 'button');
+    el.tabIndex = 0;
+    const copyOrigin = function () {
+      try {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(origin).then(function () {
+            showToast('success', 'Instance URL copiado: ' + origin);
+          }).catch(function () { /* clipboard denied */ });
+        } else {
+          showToast('success', origin);
+        }
+      } catch (e) { /* never break the topbar for a copy */ }
+    };
+    el.onclick = copyOrigin;
+    el.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); copyOrigin(); }
+    });
   }
 
   // ── Theme Toggle ─────────────────────────────────────────────────────
@@ -1287,23 +1476,96 @@
     const rafOuter = requestAnimationFrame(step);
   }
 
-  // ── Skeleton loading ──
+  // ── Skeleton loading (design-motion-principles) ──
   let _skeletonsHidden = false;
-  function showSkeletons() {
-    document.querySelectorAll('.panel').forEach(p => {
-      if (p.querySelector('.skel-overlay')) return;
-      const ov = document.createElement('div'); ov.className = 'skel-overlay';
-      for (let i = 0; i < 3; i++) {
-        const skel = document.createElement('div'); skel.className = 'skel';
-        skel.style.width = `${['w-60','w-80','w-40'][i]}` === 'w-60' ? '60%' : ['w-80','w-40'][i-1] === 'w-80' ? '80%' : '40%';
-        ov.appendChild(skel);
-      }
-      p.appendChild(ov);
+  // Shape set per container kind — header line + rows (chart/KPI variants).
+  function _skelShapes(kind) {
+    if (kind === 'kpi') return ['skel--kpi','skel--kpi','skel--kpi','skel--kpi'];
+    if (kind === 'chart') return ['skel--chart','skel--line w-60','skel--line w-40'];
+    if (kind === 'table') return ['skel--row','skel--row','skel--row','skel--row w-80','skel--row w-60'];
+    return ['skel--line w-40','skel--line w-90','skel--line w-70','skel--line w-50'];
+  }
+  function _skelKind(p) {
+    const id = (p && p.id) || '';
+    if (p && p.classList.contains('kpi-row')) return 'kpi';
+    if (id.indexOf('chart') !== -1 || id.indexOf('trend') !== -1) return 'chart';
+    if (id.indexOf('market') !== -1) return 'table';  // offers grid dominates the panel
+    if (id.indexOf('table') !== -1 || (p && p.classList.contains('rentals-list'))) return 'table';
+    return '';
+  }
+  // Build a skeleton overlay INSIDE a container (used both at boot and for
+  // lazy module loads). Decorative only — pointer-events:none, aria-hidden.
+  function _skelBuild(container, kind) {
+    if (container.querySelector('.skel-overlay')) return;
+    const ov = document.createElement('div');
+    ov.className = 'skel-overlay';
+    ov.setAttribute('aria-hidden', 'true');
+    _skelShapes(_skelKind(container) || kind).forEach(function (cls) {
+      const s = document.createElement('div'); s.className = 'skel ' + cls;
+      ov.appendChild(s);
     });
+    container.appendChild(ov);
+  }
+  function skelShow(container, kind) { if (container) _skelBuild(container, kind); }
+  function skelHide(container) {
+    if (!container) return;
+    const ov = container.querySelector('.skel-overlay');
+    if (ov) { ov.remove(); }
+  }
+  // Skeleton around an async load: show → await → hide. Reused by manual
+  // refresh buttons and module re-activation when the panel is empty, so the
+  // shimmer is identical to the boot skeleton (transform-only, Emil <300ms).
+  function skelRefresh(container, kind, p) {
+    if (!container) return Promise.resolve(p);
+    skelShow(container, kind);
+    return Promise.resolve(p).then(
+      function (v) { skelHide(container); return v; },
+      function (e) { skelHide(container); throw e; }
+    );
+  }
+  function showSkeletons() {
+    document.querySelectorAll('.panel').forEach(p => _skelBuild(p, ''));
+    // KPI row is the most prominent loading surface — give it KPI-shaped
+    // blocks too (review fix: the kpi branch was previously dead code).
+    document.querySelectorAll('#kpi-row').forEach(k => _skelBuild(k, 'kpi'));
   }
   function hideSkeletons() {
     document.querySelectorAll('.skel-overlay').forEach(o => o.remove());
     _skeletonsHidden = true;
+  }
+
+  // ── Button loading state ──
+  function setBtnLoading(btn, on) {
+    if (!btn) return;
+    btn.classList.toggle('is-loading', on);
+    btn.disabled = on;
+  }
+
+  // ── Modal exit (Jakub: exit subtler than enter) ──
+  // Add .modal--closing, wait for the 120ms fade, then drop .modal--open.
+  // Pending close timers are tracked per-modal so a rapid reopen cancels the
+  // exit (review fix: close → reopen within 140ms must not force-close).
+  const _modalCloseTimers = new Map();
+  function closeModalAnimated(modal) {
+    if (!modal || !modal.classList.contains('modal--open')) return;
+    if (_modalCloseTimers.has(modal)) return;
+    const reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    modal.classList.add('modal--closing');
+    const timer = setTimeout(function () {
+      _modalCloseTimers.delete(modal);
+      modal.classList.remove('modal--closing');
+      modal.classList.remove('modal--open');
+    }, reduce ? 0 : 140);
+    _modalCloseTimers.set(modal, timer);
+  }
+  // Open helper: cancels any pending close + clears the exit class so a modal
+  // reopened mid-exit animates in (not out). Pure add otherwise.
+  function openModalAnimated(modal) {
+    if (!modal) return;
+    const t = _modalCloseTimers.get(modal);
+    if (t) { clearTimeout(t); _modalCloseTimers.delete(modal); }
+    modal.classList.remove('modal--closing');
+    modal.classList.add('modal--open');
   }
 
   // ══════════════════════════════════════════════════════════════════════
@@ -1734,7 +1996,7 @@ function renderAccount(acct) {
     }
     if (dom.alertsCountBadge) dom.alertsCountBadge.textContent = `${alerts.length} active`;
     dom.alertsList.innerHTML = alerts.slice(0, 10).map(a => `
-      <li class="alert-item SEVERITY-${a.severity || 'INFO'}">
+      <li class="alert-item SEVERITY-${escapeHtml(a.severity || 'INFO')}">
         <span class="alert-icon">!</span><span class="alert-msg">${escapeHtml(a.message || '')}</span><span class="alert-time">${fmt.age(a.ts)}</span>
       </li>`).join('');
   }
@@ -1742,13 +2004,13 @@ function renderAccount(acct) {
   function renderEvents(events) {
     if (!dom.eventsTbody) return;
     if (!events || !events.length) { dom.eventsTbody.innerHTML = '<tr><td colspan="5" class="empty">awaiting data\u2026</td></tr>'; return; }
-    dom.eventsTbody.innerHTML = events.map(e => `<tr><td>#${e.block_height || e.block || '\u2014'}</td><td>${fmt.shortAddr(e.address || '')}</td><td>${fmt.diff(e.difficulty)}</td><td>${fmt.age(e.block_timestamp || e.ts)}</td><td>${e.claimed ? 'YES' : 'NO'}</td></tr>`).join('');
+    dom.eventsTbody.innerHTML = events.map(e => `<tr><td>#${escapeHtml(e.block_height || e.block || '\u2014')}</td><td>${escapeHtml(fmt.shortAddr(e.address || ''))}</td><td>${escapeHtml(fmt.diff(e.difficulty))}</td><td>${escapeHtml(fmt.age(e.block_timestamp || e.ts))}</td><td>${e.claimed ? 'YES' : 'NO'}</td></tr>`).join('');
   }
 
   function renderLeaderboard(lb) {
     if (!dom.lbTbody) return;
     if (!lb || !lb.length) { dom.lbTbody.innerHTML = '<tr><td colspan="6" class="empty">awaiting data\u2026</td></tr>'; return; }
-    dom.lbTbody.innerHTML = lb.map((r, i) => `<tr><td>${i+1}</td><td>${fmt.shortAddr(r.address)}</td><td>${r.diff_rank || r.diffRank || '\u2014'}</td><td>${r.loyalty_rank || r.loyalty || '\u2014'}</td><td>${r.combined_score || r.score || '\u2014'}</td><td>${r.total_blocks || r.blocks || 0}</td></tr>`).join('');
+    dom.lbTbody.innerHTML = lb.map((r, i) => `<tr><td>${i+1}</td><td>${escapeHtml(fmt.shortAddr(r.address))}</td><td>${escapeHtml(r.diff_rank || r.diffRank || '\u2014')}</td><td>${escapeHtml(r.loyalty_rank || r.loyalty || '\u2014')}</td><td>${escapeHtml(r.combined_score || r.score || '\u2014')}</td><td>${escapeHtml(r.total_blocks || r.blocks || 0)}</td></tr>`).join('');
   }
 
   // ── Charts — renderChart fetches data and updates Chart.js instances ──
@@ -1979,7 +2241,7 @@ function renderAccount(acct) {
     const rows = newOnes.map(ev => {
       const d = new Date((ev.ts || 0) * 1000);
       const ts = String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0')+':'+String(d.getSeconds()).padStart(2,'0');
-      return `<div class="timeline-row tf-${(ev.severity||'INFO').toLowerCase()}" data-id="${ev.id}"><span class="tf-time">${ts}</span><span class="tf-type">${ev.event_type||'EVENT'}</span><span class="tf-msg">${escapeHtml(ev.message||'')}</span></div>`;
+      return `<div class="timeline-row tf-${escapeHtml((ev.severity||'INFO').toLowerCase())}" data-id="${escapeHtml(String(ev.id))}"><span class="tf-time">${ts}</span><span class="tf-type">${escapeHtml(ev.event_type||'EVENT')}</span><span class="tf-msg">${escapeHtml(ev.message||'')}</span></div>`;
     }).join('');
     if (timelineTotalRendered === 0) dom.timelineFeed.innerHTML = '';
     dom.timelineFeed.insertAdjacentHTML('beforeend', rows);
@@ -2287,9 +2549,9 @@ function renderAccount(acct) {
         dom.lcTickerList.innerHTML = ticker.map(function(e) {
           return '<div class="lc-ticker-row">' +
             '<span class="lc-ticker-time">' + (e.ts ? fmt.age(e.ts) : '--:--:--') + '</span>' +
-            '<span class="lc-ticker-diff">' + (e.share_diff_str || dash) + '</span>' +
-            '<span class="lc-ticker-gap">\u0394' + (e.gap || '\u2014') + 's</span>' +
-            '<span class="lc-ticker-hr">' + (e.instantaneous_hr_str || dash) + '</span>' +
+            '<span class="lc-ticker-diff">' + escapeHtml(e.share_diff_str || dash) + '</span>' +
+            '<span class="lc-ticker-gap">\u0394' + escapeHtml(e.gap || '\u2014') + 's</span>' +
+            '<span class="lc-ticker-hr">' + escapeHtml(e.instantaneous_hr_str || dash) + '</span>' +
             '</div>';
         }).join('');
       }
@@ -2562,8 +2824,13 @@ function renderAccount(acct) {
     setAll('solo-net-diff', prox.network_difficulty_str || dash);
     setAll('solo-worker-hr', prox.worker_hashrate_ths ? fmt.hashrate(prox.worker_hashrate_ths * 1e12) : dash);
     setAll('solo-p-block', prox.chance_per_share_label || dash);
+    // Issue #50 (audit): the solo CARDS panel uses dedicated ids (renamed
+    // from the duplicated #solo-expected-time/#solo-blocks-year in the
+    // profit strip) so getElementById never hits the wrong node.
     setAll('solo-expected-time', prox.expected_time_human || dash);
     setAll('solo-blocks-year', prox.blocks_per_year != null ? prox.blocks_per_year.toFixed(2) : dash);
+    setAll('solo-cards-expected-time', prox.expected_time_human || dash);
+    setAll('solo-cards-blocks-year', prox.blocks_per_year != null ? prox.blocks_per_year.toFixed(2) : dash);
     setAll('solo-best-diff', prox.all_time_best_diff_str || dash);
     setAll('solo-status-badge', prox.insufficient_data ? '—' : (prox.best_diff_raw ? 'READY' : '—'));
   }
@@ -2571,7 +2838,7 @@ function renderAccount(acct) {
   function renderMilestones(list) {
     if (!dom.badgesStrip) return;
     if (!list || !list.length) { dom.badgesStrip.innerHTML = '<div class="empty">awaiting data</div>'; return; }
-    dom.badgesStrip.innerHTML = list.map(m => `<div class="badge-card"><div class="badge-card__tier">${m.tier}</div><div class="badge-card__label">${escapeHtml(m.label)}</div></div>`).join('');
+    dom.badgesStrip.innerHTML = list.map(m => `<div class="badge-card"><div class="badge-card__tier">${escapeHtml(m.tier)}</div><div class="badge-card__label">${escapeHtml(m.label)}</div></div>`).join('');
   }
 
   // ── WHAT-IF difficulty simulator (UX audit · Módulo_05) ──────────────
@@ -2703,7 +2970,6 @@ function renderAccount(acct) {
   // falling back to the lowest valid price_per_th_day.
   let _mktFilter = 'all';
   let _mktOffers = [];
-  let _mktGridRetried = false;  // retry guard for Chart.js CDN blocking DOM parse
   let _mktBtcUsd = null;  // BTC/USD from snapshot — for the USD/TH/d line on cards
   let _mktAffiliate = null;  // market_data.affiliate {provider,url,...} — one-click BUY on the offer card
   let _mktTrendLoaded = false;  // lazy: /api/market/trend fetched on first module activation
@@ -2715,17 +2981,131 @@ function renderAccount(acct) {
     const el = document.getElementById(id);
     if (el) el.textContent = text;
   }
+
+  // ── Admin audit trail — pure builders (mirrored in JS core tests) ─────
+  // ISO week key in UTC (Monday-start, deterministic — no TZ drift).
+  // ts <= 0 (missing/epoch) → '' so entries without a real date never
+  // bucket into a fake '1970-W01' week (symmetric with the backend's
+  // "ts=0 has no place in a windowed audit" rule).
+  function adminAuditIsoWeekKey(ts) {
+    const n = Number(ts);
+    if (!isFinite(n) || n <= 0) return '';
+    const d = new Date(n * 1000);
+    if (isNaN(d.getTime())) return '';
+    const day = (d.getUTCDay() + 6) % 7;         // Mon=0 … Sun=6
+    const thursday = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() + 3 - day));
+    const firstThu = new Date(Date.UTC(thursday.getUTCFullYear(), 0, 4));
+    const week = 1 + Math.round((thursday - firstThu) / (7 * 86400 * 1000));
+    return thursday.getUTCFullYear() + '-W' + String(week).padStart(2, '0');
+  }
+  // decisions → weekly buckets {labels: ['2026-W31', …], counts: [n, …]}
+  function buildAdminAuditWeekly(decisions) {
+    const buckets = {};
+    (decisions || []).forEach(function (d) {
+      const k = adminAuditIsoWeekKey(d && d.ts);
+      if (!k) return;
+      buckets[k] = (buckets[k] || 0) + 1;
+    });
+    const labels = Object.keys(buckets).sort();
+    return { labels: labels, counts: labels.map(function (k) { return buckets[k]; }) };
+  }
+  // feature_alert (Issue #163) → safe banner payload {feature, count,
+  // sharePct, minPct, active}; no HTML, numbers guarded against NaN.
+  function buildFeatureAlert(featureAlert) {
+    if (!featureAlert || featureAlert.share_pct == null) {
+      return { active: false, feature: '', count: 0, sharePct: 0, minPct: 50 };
+    }
+    return {
+      active: true,
+      feature: String(featureAlert.feature || 'unknown'),
+      count: Number(featureAlert.count) || 0,
+      sharePct: Number(featureAlert.share_pct) || 0,
+      minPct: Number(featureAlert.min_pct) || 50,
+    };
+  }
+  // paywall_by_feature (Issue #158) → top-N display rows {feature, count,
+  // pct} sorted desc; safe strings, no HTML.
+  function buildFeatureBreakdown(paywallByFeature) {
+    const rows = (paywallByFeature || []).map(function (f) {
+      return { feature: f.feature || 'unknown', count: Number(f.count) || 0 };
+    }).sort(function (a, b) { return b.count - a.count; });
+    const total = rows.reduce(function (s, r) { return s + r.count; }, 0) || 1;
+    return rows.map(function (r) {
+      return { feature: r.feature, count: r.count, pct: Math.round(r.count / total * 100) };
+    });
+  }
+  // cohort buckets (Issue #157) → rows for the LTV-real table: safe numbers,
+  // no HTML, ready for innerHTML via escapeHtml on the render side.
+  function _cohortNum(v) {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : 0;
+  }
+  function buildCohortRows(cohorts) {
+    return (cohorts || []).map(function (c) {
+      return {
+        month: c.cohort_month || '',
+        subs: _cohortNum(c.subscriptions),
+        renewals: _cohortNum(c.renewals),
+        revenue: _cohortNum(c.revenue_usd),
+        ltv: _cohortNum(c.ltv_usd),
+        m1: _cohortNum(c.retention_m1_pct),
+        m3: _cohortNum(c.retention_m3_pct),
+        m6: _cohortNum(c.retention_m6_pct),
+        m12: _cohortNum(c.retention_m12_pct),
+      };
+    });
+  }
+  // weekly funnel buckets (Issue #156) → trend series for the admin chart.
+  function buildFunnelTrend(weekly) {
+    const labels = [], paywall = [], convRate = [];
+    (weekly || []).forEach(function (b) {
+      labels.push(b.week || '');
+      const s = b.stages || {};
+      paywall.push(Number(s.paywall_view) || 0);
+      convRate.push(b.conversion_rate_pct != null ? Number(b.conversion_rate_pct) : 0);
+    });
+    return { labels: labels, paywall: paywall, convRate: convRate };
+  }
+  // decisions → filtered by tenant + verdict ('all'/'' = no filter).
+  function filterAdminAuditDecisions(decisions, tenant, verdict) {
+    return (decisions || []).filter(function (d) {
+      if (tenant && (d.tenant_id || 'default') !== tenant) return false;
+      if (verdict && (d.verdict || 'unknown') !== verdict) return false;
+      return true;
+    });
+  }
+  // Verdict → CSS badge class + label (visual severity ladder).
+  function adminAuditVerdictMeta(verdict) {
+    const map = {
+      improved: { cls: 'admin-audit__verdict--improved', label: 'IMPROVED' },
+      worse: { cls: 'admin-audit__verdict--worse', label: 'WORSE' },
+      same: { cls: 'admin-audit__verdict--same', label: 'SAME' },
+      avoided: { cls: 'admin-audit__verdict--avoided', label: 'AVOIDED' },
+      revoked: { cls: 'admin-audit__verdict--revoked', label: 'REVOKED' },
+      no_before: { cls: 'admin-audit__verdict--mute', label: 'NO BEFORE' },
+    };
+    return map[verdict] || { cls: 'admin-audit__verdict--mute', label: String(verdict || 'unknown').toUpperCase() };
+  }
+
+  let _adminAuditDecisions = [];      // last payload (for client-side filters)
+  let _adminAuditChart = null;        // Chart.js instance (destroy before recreate)
+
   async function fetchAdminData() {
     if (_adminLoaded) return;
     const errEl = document.getElementById('admin-error');
     const gate = document.getElementById('admin-gate-badge');
     try {
       // Pool health — no auth needed for localhost/operator-key admin routes.
-      const [sessionsResp, convResp] = await Promise.all([
+      const [sessionsResp, convResp, auditResp, metricsResp, docsResp, errResp, degResp] = await Promise.all([
         fetch('/api/admin/sessions', { headers: { 'X-Requested-With': 'fetch' } }),
-        fetch('/api/admin/conversion', { headers: { 'X-Requested-With': 'fetch' } }),
+        fetch('/api/admin/conversion?weeks=8', { headers: { 'X-Requested-With': 'fetch' } }),
+        fetch('/api/admin/rentals/accepted-recos?limit=1000', { headers: { 'X-Requested-With': 'fetch' } }),
+        fetch('/api/admin/pool-metrics?hours=24', { headers: { 'X-Requested-With': 'fetch' } }),
+        fetch('/api/admin/docs-feedback', { headers: { 'X-Requested-With': 'fetch' } }),
+        fetch('/api/admin/error-rate?hours=24', { headers: { 'X-Requested-With': 'fetch' } }),
+        fetch('/api/admin/degradation-rate?hours=24', { headers: { 'X-Requested-With': 'fetch' } }),
       ]);
-      if (sessionsResp.status === 403 || convResp.status === 403) {
+      if (sessionsResp.status === 403 || convResp.status === 403 || auditResp.status === 403 || metricsResp.status === 403 || docsResp.status === 403 || errResp.status === 403 || degResp.status === 403) {
         if (gate) gate.textContent = 'restricted';
         if (errEl) {
           errEl.hidden = false;
@@ -2737,18 +3117,35 @@ function renderAccount(acct) {
       if (gate) gate.textContent = 'ok';
       const sessions = sessionsResp.ok ? await sessionsResp.json() : {};
       const conv = convResp.ok ? await convResp.json() : {};
-      _renderAdmin(sessions, conv);
+      const audit = auditResp.ok ? await auditResp.json() : {};
+      const metrics = metricsResp.ok ? await metricsResp.json() : {};
+      const docsFb = docsResp.ok ? await docsResp.json() : {};
+      const errData = errResp.ok ? await errResp.json() : {};
+      const degData = degResp.ok ? await degResp.json() : {};
+      _renderAdmin(sessions, conv, audit, metrics, docsFb, errData, degData);
     } catch (e) {
       if (errEl) { errEl.hidden = false; errEl.textContent = 'admin fetch error: ' + e.message; }
     }
   }
-  function _renderAdmin(sessions, conv) {
+  function _renderAdmin(sessions, conv, audit, metrics, docsFb, errData, degData) {
+    _renderAdminMetrics(metrics || {});
+    _renderAdminErrorRate(errData || {});
+    _renderAdminDegradation(degData || {});
+    _renderAdminAudit(audit);
+    _renderAdminAutoExclusions(audit);
+    _renderAdminDocsFeedback(docsFb || {});
     const pool = sessions.pool || {};
     _setAdminText('admin-sessions', pool.sessions_active != null ? pool.sessions_active : '—');
     _setAdminText('admin-polls-per-sec', pool.polls_per_sec != null ? pool.polls_per_sec : '—');
     _setAdminText('admin-queue', pool.queue_pending != null ? pool.queue_pending : '—');
     _setAdminText('admin-workers', pool.workers_alive != null ? (pool.workers_alive + '/' + (pool.pool_size || '?')) : '—');
     _setAdminText('admin-uptime', pool.uptime_secs ? Math.round(pool.uptime_secs / 60) + 'm' : '—');
+    // Auto-exclude alerts by path (Issue #112) — total · s<sweep>/p<painel>.
+    const axCounters = pool.auto_exclude_alerts || {};
+    _setAdminText('admin-autoex-alerts',
+      (axCounters.total != null ? axCounters.total : '—') +
+      ' · s' + (axCounters.sweep != null ? axCounters.sweep : 0) +
+      '/p' + (axCounters.panel != null ? axCounters.panel : 0));
     const stall = document.getElementById('admin-stall');
     if (stall) {
       stall.hidden = !pool.stalled;
@@ -2763,24 +3160,645 @@ function renderAccount(acct) {
     _setAdminText('admin-drop-modal-checkout', _pct(drops['modal_open->checkout_start']));
     _setAdminText('admin-drop-checkout-paid', _pct(drops['checkout_start->paid']));
     _setAdminText('admin-conv-rate', _pct(funnel.conversion_rate_pct));
+    // Issue #155: per-user funnel attribution (events carrying a funnel_id).
+    _setAdminText('admin-funnel-sessions', funnel.sessions_count != null ? funnel.sessions_count : '—');
+    _setAdminText('admin-funnel-session-conv', funnel.session_conversion_rate_pct != null ? _pct(funnel.session_conversion_rate_pct) : '—');
+    // Issue #157 (18-C): real cohort LTV (renewals) vs the price×months
+    // estimate — the tag tells the CFO which number they're looking at.
+    const isReal = econ.ltv_source === 'cohort_real';
+    const ltvTag = document.getElementById('admin-ltv-source');
+    if (ltvTag) {
+      ltvTag.textContent = isReal ? 'real' : 'est';
+      ltvTag.classList.toggle('kpi-card__tag--real', isReal);
+    }
     _setAdminText('admin-ltv', econ.ltv_usd != null ? '$' + econ.ltv_usd : '—');
     _setAdminText('admin-cac', econ.cac_usd != null ? '$' + econ.cac_usd : 'no spend data');
     _setAdminText('admin-ltv-cac', econ.ltv_cac_ratio != null ? econ.ltv_cac_ratio : '—');
     _setAdminText('admin-payback', econ.payback_months != null ? econ.payback_months : '—');
-    // Stage counts list
+    _renderAdminCohorts(econ);
+    // Stage counts list — plus per-stage session counts when available.
     const list = document.getElementById('admin-funnel-list');
     if (list) {
       const stages = funnel.stages || {};
+      const sStages = funnel.session_stages || {};
       const rows = Object.keys(stages).map(function(k) {
-        return '<li class="alert-item"><span class="alert-item__cat">' + escapeHtml(k) + '</span><span class="alert-item__msg">' + escapeHtml(String(stages[k])) + '</span></li>';
+        const sess = sStages[k] != null ? ' · ' + String(sStages[k]) + ' sessões' : '';
+        return '<li class="alert-item"><span class="alert-item__cat">' + escapeHtml(k) + '</span><span class="alert-item__msg">' + escapeHtml(String(stages[k])) + escapeHtml(sess) + '</span></li>';
       });
       list.innerHTML = rows.length ? rows.join('') : '<li class="alert-empty">sem eventos no período</li>';
     }
+    // Feature breakdown (Issue #158 — 18-D): where the free tier blocks.
+    _renderAdminFeatures(funnel);
+    // Feature over-concentration (Issue #163): the #1 friction point.
+    _renderAdminFeatureAlert(conv.feature_alert || null);
+    // Weekly trend (Issue #156 — 18-B): paywall_view × conversion rate.
+    _renderAdminFunnelTrend(conv.weekly || []);
   }
+
+  // ── Learning FAQ loop (Issue #19) — docs feedback summary ─────────────
+  function _renderAdminDocsFeedback(fb) {
+    const wrap = document.getElementById('admin-docs-feedback');
+    const table = document.getElementById('admin-docs-feedback-table');
+    const recurringEl = document.getElementById('admin-docs-recurring');
+    const metaEl = document.getElementById('admin-docs-feedback-meta');
+    if (!table && !recurringEl && !metaEl) return;
+    const rows = fb.sections || [];
+    const questions = fb.recurring_questions || [];
+    if (metaEl) {
+      metaEl.textContent = fb.total_votes
+        ? (fb.total_votes + ' votos · ' + (fb.overall_helpful_pct != null ? fb.overall_helpful_pct + '% útil' : '—'))
+        : 'sem votos ainda — widget no fim de cada seção do DOCS / GUIDE';
+    }
+    const tbody = table && table.querySelector('tbody');
+    if (tbody) {
+      tbody.innerHTML = rows.length ? rows.map(function(s) {
+        const pct = s.helpful_pct != null ? docsFeedbackPct(s.helpful, s.total) + '%' : '—';
+        return '<tr>' +
+          '<td>' + escapeHtml(docsFeedbackSectionLabel(s.section_id)) + '</td>' +
+          '<td>' + escapeHtml(String(s.total)) + '</td>' +
+          '<td>' + escapeHtml(String(s.helpful)) + '</td>' +
+          '<td>' + escapeHtml(String(s.not_helpful)) + '</td>' +
+          '<td>' + escapeHtml(String(pct)) + '</td>' +
+          '</tr>';
+      }).join('') : '<tr><td colspan="5" class="alert-empty">sem votos ainda</td></tr>';
+    }
+    if (recurringEl) {
+      recurringEl.innerHTML = questions.length ? questions.map(function(q) {
+        return '<li class="alert-item"><span class="alert-item__cat">' + escapeHtml(docsFeedbackSectionLabel(q.section_id)) + '</span><span class="alert-item__msg">' + escapeHtml(q.comment) + ' <em class="admin-docs-feedback__tenant">— ' + escapeHtml(q.tenant) + '</em></span></li>';
+      }).join('') : '<li class="alert-empty">nenhuma pergunta recorrente ainda — as perguntas do widget (👎) aparecem aqui para virar FAQ</li>';
+    }
+    if (wrap) wrap.hidden = false;
+  }
+
+  // ── Feature over-concentration banner (Issue #163) ────────────────────
+  function _renderAdminFeatureAlert(featureAlert) {
+    const el = document.getElementById('admin-feature-alert');
+    if (!el) return;
+    const a = buildFeatureAlert(featureAlert);
+    if (!a.active) { el.hidden = true; el.textContent = ''; return; }
+    el.hidden = false;
+    el.textContent = '⚠ FEATURE TRAVA DEMAIS — ' + a.feature + ' = ' +
+      a.sharePct + '% dos paywalls (threshold ' + a.minPct + '%). ' +
+      'Investigar UX/onboarding desta feature.';
+  }
+
+  // ── Feature breakdown (Issue #158 — 18-D) ─────────────────────────────
+  function _renderAdminFeatures(funnel) {
+    const listEl = document.getElementById('admin-feature-list');
+    if (!listEl) return;
+    const rows = buildFeatureBreakdown((funnel && funnel.paywall_by_feature) || []);
+    if (!rows.length) {
+      listEl.innerHTML = '<li class="alert-empty">sem paywalls no período</li>';
+      return;
+    }
+    listEl.innerHTML = rows.map(function (r) {
+      return '<li class="alert-item">' +
+        '<span class="alert-item__cat">' + escapeHtml(r.feature) + '</span>' +
+        '<span class="alert-item__msg">' + escapeHtml(String(r.count)) + ' · ' + escapeHtml(String(r.pct)) + '%</span>' +
+        '</li>';
+    }).join('');
+  }
+
+  // ── Funnel weekly trend chart (Issue #156 — 18-B) ──────────────────────
+  let _adminFunnelTrendChart = null;
+
+  function _renderAdminFunnelTrend(weekly) {
+    const wrap = document.getElementById('admin-funnel-trend-wrap');
+    const canvas = document.getElementById('admin-funnel-trend-chart');
+    const empty = document.getElementById('admin-funnel-trend-empty');
+    const meta = document.getElementById('admin-funnel-trend-meta');
+    if (!wrap || !canvas) return;
+    const trend = buildFunnelTrend(weekly);
+    if (_adminFunnelTrendChart) { _adminFunnelTrendChart.destroy(); _adminFunnelTrendChart = null; }
+    if (!trend.labels.length) {
+      wrap.hidden = true;
+      if (empty) empty.hidden = false;
+      if (meta) meta.textContent = '';
+      return;
+    }
+    wrap.hidden = false;
+    if (empty) empty.hidden = true;
+    if (meta) {
+      meta.textContent = trend.labels.length + ' semanas · ' + trend.labels[0] + ' → ' + trend.labels[trend.labels.length - 1];
+    }
+    if (typeof Chart === 'undefined') return;
+    _adminFunnelTrendChart = new Chart(canvas.getContext('2d'), {
+      type: 'line',
+      data: {
+        labels: trend.labels,
+        datasets: [
+          { label: 'paywall_view', data: trend.paywall, borderColor: 'rgb(6,214,240)', backgroundColor: 'rgba(6,214,240,0.06)', tension: 0.3, pointRadius: 2, fill: true, yAxisID: 'y' },
+          { label: 'conversion %', data: trend.convRate, borderColor: 'rgb(0,200,83)', backgroundColor: 'transparent', tension: 0.3, pointRadius: 2, borderDash: [4, 2], yAxisID: 'y1' },
+        ],
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        interaction: { mode: 'index', intersect: false },
+        scales: {
+          x: { ticks: { color: '#5E5952', font: { size: 9 }, maxRotation: 0 }, grid: { display: false } },
+          y: { beginAtZero: true, position: 'left', title: { display: true, text: 'paywall', color: 'rgb(6,214,240)', font: { size: 8 } }, ticks: { color: '#5E5952', font: { size: 9 }, precision: 0 }, grid: { color: 'rgba(94,89,82,0.10)' } },
+          y1: { beginAtZero: true, position: 'right', title: { display: true, text: 'conv %', color: 'rgb(0,200,83)', font: { size: 8 } }, ticks: { color: '#5E5952', font: { size: 9 } }, grid: { display: false } },
+        },
+      },
+    });
+  }
+
+  // ── LTV real por coorte (Issue #157 — 18-C) ───────────────────────────
+  function _renderAdminCohorts(econ) {
+    const wrap = document.getElementById('admin-cohort-wrap');
+    const tbody = document.getElementById('admin-cohort-tbody');
+    const empty = document.getElementById('admin-cohort-empty');
+    const src = document.getElementById('admin-cohort-source');
+    if (!wrap || !tbody) return;
+    const rows = buildCohortRows((econ && econ.cohorts) || []);
+    const isReal = econ && econ.ltv_source === 'cohort_real';
+    if (src) src.textContent = isReal ? 'cohort real' : 'estimativa';
+    if (!rows.length) {
+      wrap.hidden = true;
+      if (empty) empty.hidden = false;
+      return;
+    }
+    wrap.hidden = false;
+    if (empty) empty.hidden = true;
+    tbody.innerHTML = rows.map(function (r) {
+      return '<tr>' +
+        '<td>' + escapeHtml(r.month) + '</td>' +
+        '<td>' + escapeHtml(String(r.subs)) + '</td>' +
+        '<td>' + escapeHtml(String(r.renewals)) + '</td>' +
+        '<td>$' + escapeHtml(String(r.revenue.toFixed(2))) + '</td>' +
+        '<td>$' + escapeHtml(String(r.ltv.toFixed(2))) + '</td>' +
+        '<td>' + escapeHtml(String(r.m1.toFixed(1))) + '%</td>' +
+        '<td>' + escapeHtml(String(r.m3.toFixed(1))) + '%</td>' +
+        '<td>' + escapeHtml(String(r.m6.toFixed(1))) + '%</td>' +
+        '<td>' + escapeHtml(String(r.m12.toFixed(1))) + '%</td>' +
+        '</tr>';
+    }).join('');
+  }
+
   function _pct(v) {
     if (v === undefined || v === null) return '—';
     return Number(v).toFixed(1) + '%';
   }
+
+  // ── Pool metric trends (Issue #17) — persistent 60s sampler history ────
+  let _adminMetricsChart = null;  // Chart.js instance (destroy before recreate)
+
+  function _renderAdminMetrics(metrics) {
+    const wrap = document.getElementById('admin-metrics');
+    const canvas = document.getElementById('admin-metrics-chart');
+    const empty = document.getElementById('admin-metrics-empty');
+    if (!wrap || !canvas || typeof Chart === 'undefined') return;
+    const points = (metrics && metrics.points) || [];
+    if (!points.length) {
+      wrap.hidden = false;
+      if (empty) empty.hidden = false;
+      if (_adminMetricsChart) { _adminMetricsChart.destroy(); _adminMetricsChart = null; }
+      return;
+    }
+    if (_adminMetricsChart) { _adminMetricsChart.destroy(); _adminMetricsChart = null; }
+    if (empty) empty.hidden = true;
+
+    var labels = points.map(function (p) {
+      var d = new Date(Number(p.ts) * 1000);
+      if (isNaN(d.getTime())) return '—';
+      return d.getHours().toString().padStart(2, '0') + ':' + d.getMinutes().toString().padStart(2, '0');
+    });
+    var sessions = points.map(function (p) { return p.sessions_active; });
+    var pps = points.map(function (p) {
+      return (p.polls_per_sec != null && p.polls_per_sec > 0) ? p.polls_per_sec : null;
+    });
+    var queue = points.map(function (p) {
+      return (p.queue_pending != null && p.queue_pending > 0) ? p.queue_pending : null;
+    });
+
+    wrap.hidden = false;
+    _adminMetricsChart = new Chart(canvas.getContext('2d'), {
+      type: 'line',
+      data: {
+        labels: labels,
+        datasets: [
+          { label: 'Sessions ativas', data: sessions, borderColor: 'rgb(6,214,240)', backgroundColor: 'rgba(6,214,240,0.06)', tension: 0.3, pointRadius: 0, fill: true, yAxisID: 'y' },
+          { label: 'Polls/seg', data: pps, borderColor: 'rgb(186,133,224)', backgroundColor: 'transparent', tension: 0.3, pointRadius: 0, borderDash: [4, 2], yAxisID: 'y1' },
+          { label: 'Queue pendente', data: queue, borderColor: 'rgb(255,160,0)', backgroundColor: 'transparent', tension: 0.3, pointRadius: 0, borderDash: [2, 3], yAxisID: 'y1' },
+        ],
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        interaction: { mode: 'index', intersect: false },
+        plugins: { legend: { labels: { color: '#5E5952', font: { size: 9 }, boxWidth: 12 } } },
+        scales: {
+          x: { ticks: { color: '#5E5952', font: { size: 9 }, maxTicksLimit: 12, maxRotation: 0 }, grid: { color: 'rgba(94,89,82,0.10)' } },
+          y: { type: 'linear', position: 'left', title: { display: true, text: 'sessions', color: 'rgb(6,214,240)' }, ticks: { color: '#5E5952', font: { size: 9 }, precision: 0 }, grid: { color: 'rgba(94,89,82,0.08)' } },
+          y1: { type: 'linear', position: 'right', title: { display: true, text: 'pps / queue', color: 'rgb(186,133,224)' }, ticks: { color: '#5E5952', font: { size: 9 } }, grid: { display: false } },
+        },
+      },
+    });
+  }
+
+  // ── Error rate (Issue #176) — local $0 sampler + Sentry badge ─────────
+  let _adminErrorChart = null;
+
+  function _fmtErrorTs(ts, nowArg) {
+    if (!ts) return '—';
+    const d = new Date(Number(ts) * 1000);
+    if (isNaN(d.getTime())) return '—';
+    const now = nowArg != null ? nowArg : Date.now();
+    const deltaMin = Math.floor((now - d.getTime()) / 60000);
+    if (deltaMin < 60) return deltaMin + 'm atrás';
+    const deltaH = Math.floor(deltaMin / 60);
+    if (deltaH < 48) return deltaH + 'h atrás';
+    return d.toISOString().replace('T', ' ').slice(0, 16) + ' UTC';
+  }
+
+  function _renderAdminErrorRate(data) {
+    const wrap = document.getElementById('admin-error-rate');
+    const canvas = document.getElementById('admin-error-rate-chart');
+    const empty = document.getElementById('admin-error-rate-empty');
+    const tableWrap = document.getElementById('admin-error-table-wrap');
+    const tbody = document.getElementById('admin-error-table-body');
+    if (!wrap || !canvas || !tableWrap || !tbody) return;
+
+    const total = data.total != null ? data.total : 0;
+    _setAdminText('admin-err-total', total);
+    _setAdminText('admin-err-peak', data.peak_per_hour != null ? data.peak_per_hour : '—');
+    const sentryInfo = typeof data.sentry_enabled === 'boolean'
+      ? (data.sentry_enabled
+        ? (data.sentry_release || 'on').replace('cypher65-war-room@', '') + ' · ' + (data.sentry_environment || '?') + ' ✓'
+        : 'off (self-host)')
+      : '—';
+    _setAdminText('admin-err-sentry', sentryInfo);
+
+    const buckets = (data.buckets || []);
+    if (_adminErrorChart) { _adminErrorChart.destroy(); _adminErrorChart = null; }
+    if (empty) empty.hidden = buckets.length > 0;
+    if (!buckets.length) {
+      wrap.hidden = false;
+      if (tableWrap) tableWrap.hidden = true;
+      return;
+    }
+
+    var labels = buckets.map(function (b) {
+      var d = new Date(Number(b.ts) * 1000);
+      if (isNaN(d.getTime())) return '—';
+      return d.getHours().toString().padStart(2, '0') + ':00';
+    });
+    var errors = buckets.map(function (b) { return b.errors; });
+    var topMod = (data.top_modules && data.top_modules.length) ? data.top_modules[0].module : '';
+
+    wrap.hidden = false;
+    _adminErrorChart = new Chart(canvas.getContext('2d'), {
+      type: 'bar',
+      data: {
+        labels: labels,
+        datasets: [{
+          label: 'Erros/hora', data: errors, backgroundColor: 'rgba(255,23,68,0.45)',
+          borderColor: 'rgb(255,23,68)', borderWidth: 1, borderRadius: 3, maxBarThickness: 18,
+        }],
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            callbacks: {
+              title: function (items) {
+                const b = buckets[items[0].dataIndex];
+                if (!b || !b.modules) return items[0].label;
+                // Module names são log names — escapados mesmo assim (tooltip
+                // do Chart.js renderiza como HTML; disciplina anti-XSS do repo).
+                return items[0].label + ' — ' + b.modules.map(function (m) {
+                  return escapeHtml(String(m.module || '')) + ' x' + m.count;
+                }).join(', ');
+              },
+            },
+          },
+        },
+        scales: {
+          x: { ticks: { color: '#5E5952', font: { size: 9 }, maxTicksLimit: 12, maxRotation: 0 }, grid: { color: 'rgba(94,89,82,0.06)' } },
+          y: { beginAtZero: true, ticks: { color: '#5E5952', font: { size: 9 }, precision: 0 }, grid: { color: 'rgba(94,89,82,0.08)' }, title: { display: true, text: 'erros' + (topMod ? ' · top: ' + topMod : ''), color: 'rgb(255,23,68)', font: { size: 9 } } },
+        },
+      },
+    });
+
+    // Recent errors table — every cell escaped (DOM guard).
+    const recent = (data.recent || []);
+    tableWrap.hidden = recent.length === 0;
+    tbody.innerHTML = recent.map(function (r) {
+      return '<tr>' +
+        '<td>' + escapeHtml(String(r.module || '—')) + '</td>' +
+        '<td title="' + escapeHtml(String(r.message || '')) + '">' + escapeHtml(String((r.message || '—').slice(0, 80))) + '</td>' +
+        '<td>' + escapeHtml(String(r.count || 1)) + '</td>' +
+        '<td class="admin-err__rid">' + escapeHtml(String(r.last_request_id || '—')) + '</td>' +
+        '<td>' + escapeHtml(_fmtErrorTs(r.last_ts)) + '</td>' +
+        '</tr>';
+    }).join('');
+  }
+
+  // ── Degradation (Issue #202) — WARNING bucket ($0, self-host) ─────────
+  // The converted `except: pass` sites now emit WARNINGs that land in
+  // degradation_metrics. spike = pico >= 100/h; sustained = warnings em >= 2
+  // horas distintas. Os badges são o 'alerta de taxa' sem depender de Sentry.
+  function _renderAdminDegradation(data) {
+    const tableWrap = document.getElementById('admin-deg-table-wrap');
+    const tbody = document.getElementById('admin-deg-table-body');
+    const empty = document.getElementById('admin-deg-empty');
+    if (!tableWrap || !tbody) return;
+    const total = data.total != null ? data.total : 0;
+    const peak = data.peak_per_hour != null ? data.peak_per_hour : 0;
+    _setAdminText('admin-deg-total', total);
+    _setAdminText('admin-deg-peak', peak);
+    const state = document.getElementById('admin-deg-state');
+    if (state) {
+      // Keep the kpi-card__value base class so the badge keeps its sizing.
+      state.className = 'kpi-card__value badge badge--' + (data.sustained ? 'red' : (data.spike ? 'amber' : 'green'));
+      state.textContent = data.sustained ? 'SUSTAINED ⚠' : (data.spike ? 'SPIKE ⚠' : (total > 0 ? 'normal' : 'ok'));
+    }
+    const recent = data.recent || [];
+    if (empty) empty.hidden = (data.buckets || []).length > 0;
+    if (!recent.length) { tableWrap.hidden = true; return; }
+    tableWrap.hidden = false;
+    tbody.innerHTML = recent.map(function (r) {
+      return '<tr>' +
+        '<td>' + escapeHtml(String(r.module || '—')) + '</td>' +
+        '<td title="' + escapeHtml(String(r.message || '')) + '">' + escapeHtml(String((r.message || '—').slice(0, 80))) + '</td>' +
+        '<td>' + escapeHtml(String(r.count || 1)) + '</td>' +
+        '<td>' + escapeHtml(String(r.last_request_id || '—')) + '</td>' +
+        '<td>' + escapeHtml(_fmtErrorTs(r.last_ts)) + '</td>' +
+        '</tr>';
+    }).join('');
+  }
+
+  // ── Admin audit trail — table + filters + weekly mini-chart ───────────
+  function _fmtAdminTs(ts) {
+    if (!ts) return '—';
+    const d = new Date(Number(ts) * 1000);
+    if (isNaN(d.getTime())) return '—';
+    return d.toISOString().replace('T', ' ').slice(0, 16) + ' UTC';
+  }
+  function _fmtDeliveryPct(v) {
+    if (v === undefined || v === null || v === '') return '—';
+    return Number(v).toFixed(1) + '%';
+  }
+  function _renderAdminAudit(audit) {
+    const wrap = document.getElementById('admin-audit');
+    const tbody = document.getElementById('admin-audit-tbody');
+    if (!wrap || !tbody) return;
+    const decisions = (audit && audit.decisions) || [];
+    _adminAuditDecisions = decisions;
+    wrap.hidden = false;
+    // Tenant filter options (distinct, sorted, 'default' first).
+    const tenantSel = document.getElementById('admin-audit-tenant');
+    if (tenantSel) {
+      const tenants = Array.from(new Set(decisions.map(function (d) { return d.tenant_id || 'default'; })));
+      tenants.sort(function (a, b) { return a === 'default' ? -1 : (b === 'default' ? 1 : a.localeCompare(b)); });
+      const prev = tenantSel.value;
+      tenantSel.innerHTML = '<option value="">all</option>' + tenants.map(function (t) {
+        return '<option value="' + escapeHtml(t) + '">' + escapeHtml(t) + '</option>';
+      }).join('');
+      if (prev && tenants.indexOf(prev) !== -1) tenantSel.value = prev;
+    }
+    // Verdict filter options (distinct, ladder order).
+    const verdictSel = document.getElementById('admin-audit-verdict');
+    if (verdictSel) {
+      const order = ['worse', 'improved', 'same', 'avoided', 'revoked', 'no_before'];
+      const seen = {};
+      decisions.forEach(function (d) { seen[d.verdict || 'unknown'] = true; });
+      const verdicts = order.filter(function (v) { return seen[v]; })
+        .concat(Object.keys(seen).filter(function (v) { return order.indexOf(v) === -1; }).sort());
+      const prev = verdictSel.value;
+      verdictSel.innerHTML = '<option value="">all</option>' + verdicts.map(function (v) {
+        return '<option value="' + escapeHtml(v) + '">' + escapeHtml(v) + '</option>';
+      }).join('');
+      if (prev && verdicts.indexOf(prev) !== -1) verdictSel.value = prev;
+    }
+    _renderAdminAuditTable();
+    _renderAdminAuditChart(buildAdminAuditWeekly(decisions));
+  }
+  // Auto-exclusion history (global, WHEN + CAUSE): compact items — the pilot's
+  // auto-exclusions across ALL tenants with the delivery snapshot + the rule
+  // that fired. Fed by the same accepted-recos admin route (auto_exclusions).
+  function _renderAdminAutoExclusions(audit) {
+    const wrap = document.getElementById('admin-autoex');
+    const list = document.getElementById('admin-autoex-list');
+    if (!wrap || !list) return;
+    const ex = ((audit || {}).auto_exclusions || {}).exclusions || [];
+    if (!ex.length) { wrap.hidden = true; return; }
+    wrap.hidden = false;
+    const meta = document.getElementById('admin-autoex-meta');
+    if (meta) meta.textContent = ex.length + ' auto-exclus' + (ex.length === 1 ? 'ão' : 'ões') + ' (global)';
+    list.innerHTML = ex.map(function (x) {
+      const grade = x.grade
+        ? '<span class="admin-autoex__grade admin-autoex__grade--' + escapeHtml(String(x.grade)) + '">' + escapeHtml(String(x.grade)) + '</span>' : '';
+      const when = x.ts ? new Date(Number(x.ts) * 1000).toLocaleDateString('pt-BR') : '—';
+      const tenant = x.tenant_id && x.tenant_id !== 'default'
+        ? escapeHtml(String(x.tenant_id))
+        : '<span class="admin-autoex__tenant">default</span>';
+      const delivery = x.delivery_pct != null ? escapeHtml(Number(x.delivery_pct).toFixed(1) + '%') : '—';
+      const samples = x.samples != null ? escapeHtml(String(x.samples)) + ' amostras' : '—';
+      return '<div class="admin-autoex__item">' +
+        '<div class="admin-autoex__name">' + escapeHtml(String(x.name || x.rig_id)) + grade + '</div>' +
+        '<div class="admin-autoex__sub">' + tenant + ' · ' + escapeHtml(when) + ' · entrega ' + delivery + ' · ' + samples + '</div>' +
+        '<div class="admin-autoex__cause" title="causa da exclusão">' + escapeHtml(String(x.cause || 'sub-entrega')) + '</div>' +
+        '</div>';
+    }).join('');
+    _renderAdminAutoExclusionAggs(audit);
+  }
+
+  // Auto-exclusion CONCENTRATION (padrão global do piloto, Issue #106):
+  // grouped by tenant (who triggers the pilot most) and by régua (how
+  // aggressive each tenant's floor/min is), from the SAME shared pass as the
+  // history list (auto_exclusion_aggregates in the accepted-recos payload).
+  function _renderAdminAutoExclusionAggs(audit) {
+    const aggWrap = document.getElementById('admin-autoex-agg');
+    const byTenant = document.getElementById('admin-autoex-by-tenant');
+    const byRule = document.getElementById('admin-autoex-by-rule');
+    if (!aggWrap || !byTenant || !byRule) return;
+    const agg = ((audit || {}).auto_exclusion_aggregates) || {};
+    const tenants = agg.by_tenant || [];
+    const rules = agg.by_rule || [];
+    if (!tenants.length && !rules.length) { aggWrap.hidden = true; return; }
+    aggWrap.hidden = false;
+    byTenant.innerHTML = tenants.map(function (t) {
+      const tid = t.tenant_id === 'default'
+        ? '<span class="admin-autoex__tenant">default</span>'
+        : escapeHtml(String(t.tenant_id));
+      const grade = t.top_grade
+        ? '<span class="admin-autoex__grade admin-autoex__grade--' + escapeHtml(String(t.top_grade)) + '">' + escapeHtml(String(t.top_grade)) + '</span>' : '';
+      const delivery = t.delivery_avg_pct != null ? escapeHtml(Number(t.delivery_avg_pct).toFixed(1) + '%') : '—';
+      return '<div class="admin-autoex__agg-row">' +
+        '<div class="admin-autoex__agg-bar" style="width:' + Math.max(4, Math.min(100, Number(t.pct) || 0)) + '%"></div>' +
+        '<div class="admin-autoex__agg-info">' +
+        '<div class="admin-autoex__name">' + tid + grade + ' · ' + escapeHtml(String(t.count)) + 'x</div>' +
+        '<div class="admin-autoex__sub">' + escapeHtml(String(t.rigs)) + ' rig(s) · entrega média ' + delivery + '</div>' +
+        '</div></div>';
+    }).join('');
+    byRule.innerHTML = rules.map(function (r) {
+      const floor = '<span class="admin-autoex__grade admin-autoex__grade--' + escapeHtml(String(r.grade_floor)) + '">' + escapeHtml(String(r.grade_floor)) + '</span>';
+      const delivery = r.delivery_avg_pct != null ? escapeHtml(Number(r.delivery_avg_pct).toFixed(1) + '%') : '—';
+      return '<div class="admin-autoex__agg-row">' +
+        '<div class="admin-autoex__agg-bar admin-autoex__agg-bar--rule" style="width:' + Math.max(4, Math.min(100, Number(r.pct) || 0)) + '%"></div>' +
+        '<div class="admin-autoex__agg-info">' +
+        '<div class="admin-autoex__name">floor ' + floor + ' · mín ' + escapeHtml(String(r.min_samples)) + ' · ' + escapeHtml(String(r.count)) + 'x</div>' +
+        '<div class="admin-autoex__sub">' + escapeHtml(String(r.tenants)) + ' tenant(s) · entrega média ' + delivery + '</div>' +
+        '</div></div>';
+    }).join('');
+    // Systemic-problem rigs: the SAME rig auto-excluded in 2+ tenants.
+    const topCol = document.getElementById('admin-autoex-toprigs-col');
+    const topRigs = document.getElementById('admin-autoex-toprigs');
+    if (topCol && topRigs) {
+      const trs = agg.top_rigs || [];
+      if (!trs.length) { topCol.hidden = true; return; }
+      topCol.hidden = false;
+      topRigs.innerHTML = trs.map(function (r) {
+        const tids = r.tenants.map(function (x) {
+          return x === 'default'
+            ? '<span class="admin-autoex__tenant">default</span>'
+            : escapeHtml(String(x));
+        }).join(' · ');
+        const when = r.last_ts ? escapeHtml(new Date(Number(r.last_ts) * 1000).toLocaleDateString('pt-BR')) : '—';
+        return '<div class="admin-autoex__agg-row">' +
+          '<div class="admin-autoex__agg-info">' +
+          '<div class="admin-autoex__name">' + escapeHtml(String(r.name || r.rig_id)) + ' · ' + escapeHtml(String(r.tenant_count)) + ' tenants · ' + escapeHtml(String(r.total_count)) + 'x</div>' +
+          '<div class="admin-autoex__sub">' + tids + ' · último ' + when + '</div>' +
+          '</div></div>';
+      }).join('');
+    }
+  }
+
+  function _currentAuditFilters() {
+    const tenantSel = document.getElementById('admin-audit-tenant');
+    const verdictSel = document.getElementById('admin-audit-verdict');
+    return {
+      tenant: tenantSel ? tenantSel.value : '',
+      verdict: verdictSel ? verdictSel.value : '',
+    };
+  }
+  function _renderAdminAuditTable() {
+    const tbody = document.getElementById('admin-audit-tbody');
+    const empty = document.getElementById('admin-audit-empty');
+    if (!tbody) return;
+    const f = _currentAuditFilters();
+    const rows = filterAdminAuditDecisions(_adminAuditDecisions, f.tenant, f.verdict);
+    if (empty) empty.hidden = rows.length > 0;
+    tbody.innerHTML = rows.map(function (d) {
+      const vmeta = adminAuditVerdictMeta(d.verdict);
+      const grade = d.grade ? '<span class="badge badge--' + (d.grade === 'F' ? 'red' : d.grade === 'A' ? 'green' : 'mute') + '">' + escapeHtml(String(d.grade)) + '</span>' : '—';
+      const flagged = d.pilot_flagged ? ' <span class="admin-audit__flag" title="pilot flagged">▲</span>' : '';
+      return '<tr>' +
+        '<td class="mono">' + escapeHtml(_fmtAdminTs(d.ts)) + '</td>' +
+        '<td>' + escapeHtml(String(d.tenant_id || 'default')) + '</td>' +
+        '<td title="' + escapeHtml(String(d.rig_id || '')) + '">' + escapeHtml(String(d.name || d.rig_id || '—')) + flagged + '</td>' +
+        '<td>' + escapeHtml(String(d.source || 'unknown')) + '</td>' +
+        '<td>' + grade + '</td>' +
+        '<td>' + escapeHtml(_fmtDeliveryPct(d.delivery_pct)) + '</td>' +
+        '<td>' + escapeHtml(_fmtDeliveryPct(d.delivery_after_pct)) + '</td>' +
+        '<td><span class="admin-audit__verdict ' + escapeHtml(vmeta.cls) + '">' + escapeHtml(vmeta.label) + '</span></td>' +
+        '</tr>';
+    }).join('');
+  }
+  function _renderAdminAuditChart(weekly) {
+    const canvas = document.getElementById('admin-audit-chart');
+    if (!canvas || typeof Chart === 'undefined') return;
+    if (_adminAuditChart) { _adminAuditChart.destroy(); _adminAuditChart = null; }
+    const labels = weekly.labels || [];
+    if (!labels.length) return;
+    _adminAuditChart = new Chart(canvas.getContext('2d'), {
+      type: 'bar',
+      data: {
+        labels: labels,
+        datasets: [{
+          label: 'Aceitas/semana',
+          data: weekly.counts,
+          backgroundColor: 'rgba(6,214,240,0.35)',
+          borderColor: 'rgb(6,214,240)',
+          borderWidth: 1,
+          borderRadius: 3,
+        }],
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: { legend: { display: false } },
+        scales: {
+          x: { ticks: { color: '#5E5952', font: { size: 9 }, maxRotation: 0 }, grid: { display: false } },
+          y: { beginAtZero: true, ticks: { color: '#5E5952', font: { size: 9 }, precision: 0 }, grid: { color: 'rgba(94,89,82,0.10)' } },
+        },
+      },
+    });
+  }
+
+  // Delegated: filter selects re-render the table (client-side, no refetch).
+  const _auditFilterHost = document.getElementById('admin-panel');
+  if (_auditFilterHost) {
+    _auditFilterHost.addEventListener('change', function (e) {
+      if (e.target && e.target.id === 'admin-audit-tenant') _renderAdminAuditTable();
+      if (e.target && e.target.id === 'admin-audit-verdict') _renderAdminAuditTable();
+    });
+  }
+  // CSV export — same admin-gated route, blob download (keeps X-API-Key header path).
+  const auditCsvBtn = document.getElementById('admin-audit-csv');
+  if (auditCsvBtn) {
+    auditCsvBtn.addEventListener('click', async function () {
+      const errEl = document.getElementById('admin-error');
+      const fail = function (msg) {
+        if (errEl) { errEl.hidden = false; errEl.textContent = msg; }
+      };
+      try {
+        const r = await fetch('/api/admin/rentals/accepted-recos?format=csv', { headers: { 'X-Requested-With': 'fetch' } });
+        if (!r.ok) {
+          fail('CSV export blocked (HTTP ' + r.status + ') — a rota exige localhost ou X-API-Key do operador.');
+          return;
+        }
+        const blob = await r.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = 'accepted_recos_audit_' + Math.floor(Date.now() / 1000) + '.csv';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+        if (errEl) errEl.hidden = true;  // success clears any prior error
+      } catch (err) {
+        fail('CSV export error: ' + err.message);
+      }
+    });
+  }
+
+  // Funnel weekly CSV export — same admin-gated route, blob download
+  // (keeps the X-API-Key header path for remote operators).
+  const funnelCsvBtn = document.getElementById('admin-funnel-csv');
+  if (funnelCsvBtn) {
+    funnelCsvBtn.addEventListener('click', async function () {
+      const errEl = document.getElementById('admin-error');
+      const fail = function (msg) {
+        if (errEl) { errEl.hidden = false; errEl.textContent = msg; }
+      };
+      try {
+        const r = await fetch('/api/admin/conversion?format=csv&weeks=8', { headers: { 'X-Requested-With': 'fetch' } });
+        if (!r.ok) {
+          fail('CSV semanal bloqueado (HTTP ' + r.status + ') — a rota exige localhost ou X-API-Key do operador.');
+          return;
+        }
+        const blob = await r.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = 'funnel_weekly_' + Math.floor(Date.now() / 1000) + '.csv';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+        if (errEl) errEl.hidden = true;
+      } catch (err) {
+        fail('CSV semanal error: ' + err.message);
+      }
+    });
+  }
+
   const adminRefreshBtn = document.getElementById('admin-refresh-btn');
   if (adminRefreshBtn) {
     adminRefreshBtn.addEventListener('click', function() {
@@ -2888,18 +3906,9 @@ function renderAccount(acct) {
 
   function renderMarketGrid() {
     const tbody = document.getElementById('mkt-table-body');
-    if (!tbody) {
-      // DOM not yet parsed (Chart.js CDN blocks <head>). Retry once
-      // after a short delay so the tbody has time to appear.
-      if (!_mktGridRetried) {
-        _mktGridRetried = true;
-        setTimeout(function () {
-          _mktGridRetried = false;
-          renderMarketGrid();
-        }, 100);
-      }
-      return;
-    }
+    if (!tbody) return;  // Issue #186: Chart.js é defer agora — o DOM nunca é
+    // bloqueado pelo CDN; se o tbody ainda não existe, o próximo poll
+    // (renderMarket → renderMarketGrid) re-renderiza sozinho.
 
     const inst = _mktInstitutional || {};
     let venues = (inst.venues || []).filter(v => {
@@ -3001,11 +4010,11 @@ function renderAccount(acct) {
         <td><span class="mkt-table__venue">${escapeHtml(v.venue)}</span>${v.estimated ? ' <span class="mkt-table__est">EST</span>' : ''}</td>
         <td class="mono">${v.price_btc_ph_day.toFixed(6)}</td>
         <td class="mono">${v.price_usd_th_day != null ? '$' + v.price_usd_th_day.toFixed(4) : '—'}</td>
-        <td class="mono ${spreadCls}">${v.spread_vs_best_pct >= 0 ? '+' : ''}${v.spread_vs_best_pct}%</td>
-        <td class="mono">${v.spread_vs_vwap_pct >= 0 ? '+' : ''}${v.spread_vs_vwap_pct}%</td>
-        <td class="mono">${v.available_ph} PH/s</td>
-        <td>${v.depth_score}</td>
-        <td><span class="mkt-table__tier ${tierCls}">${v.risk_tier_label}</span></td>
+        <td class="mono ${spreadCls}">${v.spread_vs_best_pct >= 0 ? '+' : ''}${escapeHtml(v.spread_vs_best_pct)}%</td>
+        <td class="mono">${v.spread_vs_vwap_pct >= 0 ? '+' : ''}${escapeHtml(v.spread_vs_vwap_pct)}%</td>
+        <td class="mono">${escapeHtml(v.available_ph)} PH/s</td>
+        <td>${escapeHtml(v.depth_score)}</td>
+        <td><span class="mkt-table__tier ${tierCls}">${escapeHtml(v.risk_tier_label)}</span></td>
         <td class="${recCls}">${escapeHtml(v.recommendation)}</td>
       </tr>`;
     }).join('');
@@ -3260,6 +4269,7 @@ function renderAccount(acct) {
           : '<span class="mkt-trend__legend-item" style="color:var(--text-tertiary)">preços são persistidos a cada fetch (warm-up 5min) — volte mais tarde</span>';
       }
       if (!datasets.length) return true;  // valid empty state — nothing to plot
+      if (typeof Chart === 'undefined') return false;  // Issue #186: defer — próximo poll re-tenta
       const ctx = canvas.getContext('2d');
       if (window._mktTrendChart) window._mktTrendChart.destroy();
       window._mktTrendChart = new Chart(ctx, {
@@ -3378,14 +4388,17 @@ function renderAccount(acct) {
     const wrap = document.getElementById('rentals-reco');
     if (!wrap || !_rentalsData) return;
     const rec = _rentalsData.recommendations;
-    if (!rec || !rec.top || !rec.top.length) { wrap.hidden = true; return; }
+    const hasTop = !!(rec && rec.top && rec.top.length);
+    const hasAvoid = !!(rec && rec.avoid && rec.avoid.length);
+    if (!hasTop && !hasAvoid) { wrap.hidden = true; return; }
     wrap.hidden = false;
     const meta = document.getElementById('rentals-reco-meta');
     if (meta) {
       meta.textContent = rec.tracked + ' rigs rastreados' +
         (rec.avoid_count ? ' · ' + rec.avoid_count + ' evitar' : '');
     }
-    document.getElementById('rentals-reco-cards').innerHTML = rec.top.map(t => {
+    const topEl = document.getElementById('rentals-reco-cards');
+    if (topEl) topEl.innerHTML = (rec.top || []).map(t => {
       const vMkt = t.vs_market_pct != null
         ? (t.vs_market_pct <= 0 ? '✓ ' : '') + (t.vs_market_pct > 0 ? '+' : '') + Number(t.vs_market_pct).toFixed(0) + '% vs mkt'
         : '';
@@ -3402,6 +4415,109 @@ function renderAccount(acct) {
         '<span>MEDIAN</span><strong>' + (t.median_pct != null ? Number(t.median_pct).toFixed(1) + '%' : '—') + '</strong>' +
         '<span>COST</span><strong>' + (t.avg_cost_sats_per_thh != null ? Number(t.avg_cost_sats_per_thh).toFixed(0) + ' st' : '—') + '</strong></div>' +
         '<div class="rentals-reco__row rentals-reco__row--sub"><span>' + escapeHtml(vMkt || '') + '</span><span>' + samples + '</span>' + trend + '</div>' +
+        '</div>';
+    }).join('');
+    // Pilot's avoid case — grade-F rigs with a ONE-CLICK accept (blacklist).
+    const avoidHead = document.getElementById('rentals-avoid-head');
+    if (avoidHead) avoidHead.hidden = !hasAvoid;
+    const avoidEl = document.getElementById('rentals-avoid-cards');
+    if (avoidEl) avoidEl.innerHTML = (rec.avoid || []).map(t => {
+      const trend = t.trend_pct != null
+        ? '<span class="rentals-reco__trend ' + (t.trend_pct >= 0 ? 'is-good' : 'is-bad') + '">' +
+          (t.trend_pct >= 0 ? '▲' : '▼') + Math.abs(Number(t.trend_pct)).toFixed(1) + '%</span>' : '';
+      const badge = t.grade
+        ? '<span class="rentals-trust__badge rentals-trust__badge--' + escapeHtml(String(t.grade)) + '">' + escapeHtml(String(t.grade)) + '</span>' : '';
+      const samples = t.samples != null ? t.samples + ' amostras' : '';
+      return '<div class="rentals-reco__card rentals-reco__card--avoid" data-rig-id="' + escapeHtml(String(t.rig_id != null ? t.rig_id : '')) + '" data-rig-name="' + escapeHtml(String(t.name || '')) + '" title="clique p/ ver o track record do rig ' + escapeHtml(String(t.rig_id)) + '">' +
+        '<div class="rentals-reco__name">' + escapeHtml(String(t.name || t.rig_id)) + badge + '</div>' +
+        '<div class="rentals-reco__row"><span>MEDIAN</span><strong>' + (t.median_pct != null ? Number(t.median_pct).toFixed(1) + '%' : '—') + '</strong>' +
+        '<span>WORST</span><strong>' + (t.worst_pct != null ? Number(t.worst_pct).toFixed(1) + '%' : '—') + '</strong>' +
+        '<span>COST</span><strong>' + (t.avg_cost_sats_per_thh != null ? Number(t.avg_cost_sats_per_thh).toFixed(0) + ' st' : '—') + '</strong></div>' +
+        '<div class="rentals-reco__row rentals-reco__row--sub"><span>' + samples + '</span>' + trend + '</div>' +
+        '<button type="button" class="btn btn--mini btn--danger rentals-reco__blacklist" data-rig-id="' + escapeHtml(String(t.rig_id != null ? t.rig_id : '')) + '" title="aceitar a sugestão do piloto: nunca alugar este rig de novo">⛔ BLACKLISTAR</button>' +
+        '</div>';
+    }).join('');
+  }
+
+  // CFO: accepted recommendations — rigs que o piloto sugeriu blacklistar e
+  // o operador ACEITOU (manual = blacklist, auto = exclusão automática).
+  // Mostra o caso do piloto no momento (entrega antes) e o RESULTADO da
+  // entrega DEPOIS da decisão: evitado / melhorou / piorou / estável.
+  function _renderRentalsAccepted() {
+    const wrap = document.getElementById('rentals-accepted');
+    if (!wrap || !_rentalsData) return;
+    const recos = (_rentalsData.accepted_recos || {}).accepted || [];
+    if (!recos.length) { wrap.hidden = true; wrap.innerHTML = ''; return; }
+    wrap.hidden = false;
+    const meta = document.getElementById('rentals-accepted-meta');
+    if (meta) {
+      const total = (_rentalsData.accepted_recos || {}).count || recos.length;
+      const avoided = recos.filter(r => r.verdict === 'avoided').length;
+      meta.textContent = total + ' aceita' + (total === 1 ? '' : 's') + (avoided ? ' · ' + avoided + ' evitada' + (avoided === 1 ? '' : 's') : '');
+    }
+    const list = document.getElementById('rentals-accepted-list');
+    list.innerHTML = recos.map(r => {
+      const src = r.source === 'auto'
+        ? '<span class="rentals-accepted__src is-auto" title="exclusão automática (sub-entrega)">AUTO</span>'
+        : '<span class="rentals-accepted__src is-manual" title="blacklist manual — você aceitou a sugestão do piloto">MANUAL</span>';
+      // Honest framing: a manual blacklist of a rig the pilot NEVER flagged
+      // (grade ≠ F) renders 'não sugerido' instead of implying it was a
+      // pilot recommendation.
+      const ns = r.pilot_flagged === false
+        ? '<span class="rentals-accepted__src is-ns" title="blacklist manual de um rig que o piloto não havia sinalizado">NÃO SUGERIDO</span>' : '';
+      const grade = r.grade
+        ? '<span class="rentals-trust__badge rentals-trust__badge--' + escapeHtml(String(r.grade)) + '">' + escapeHtml(String(r.grade)) + '</span>' : '';
+      const verdictMap = {
+        revoked: ['REVOGADA', 'is-warn', 'decisão revogada — rig restaurado da blacklist'],
+        avoided: ['EVITADO', 'is-good', 'sem novos aluguéis após a decisão'],
+        improved: ['MELHOROU', 'is-good', 'entrega subiu após a decisão'],
+        worse: ['PIOROU', 'is-bad', 'entrega caiu após a decisão'],
+        same: ['ESTÁVEL', 'is-mid', 'entrega sem mudança relevante'],
+        no_before: ['SEM DADOS', 'is-mid', 'sem referência de entrega anterior'],
+      };
+      const v = verdictMap[r.verdict] || ['—', 'is-mid', ''];
+      const before = r.delivery_pct != null ? Number(r.delivery_pct).toFixed(1) + '%' : '—';
+      const after = r.delivery_after_pct != null ? Number(r.delivery_after_pct).toFixed(1) + '%' : '—';
+      const when = r.ts ? new Date(Number(r.ts) * 1000).toLocaleDateString('pt-BR') : '—';
+      return '<div class="rentals-accepted__card" data-rig-id="' + escapeHtml(String(r.rig_id != null ? r.rig_id : '')) + '" data-rig-name="' + escapeHtml(String(r.name || '')) + '" title="clique p/ ver o track record do rig ' + escapeHtml(String(r.rig_id)) + '">' +
+        '<div class="rentals-accepted__name">' + escapeHtml(String(r.name || r.rig_id)) + grade + src + ns + '</div>' +
+        '<div class="rentals-accepted__row"><span>ACEITO</span><strong>' + escapeHtml(when) + '</strong>' +
+        '<span>ENTREGA</span><strong>' + before + ' → ' + after + '</strong></div>' +
+        '<div class="rentals-accepted__row rentals-accepted__row--sub">' +
+        '<span class="rentals-accepted__verdict ' + v[1] + '" title="' + escapeHtml(String(v[2] || '')) + '">' + escapeHtml(String(v[0] || '')) + '</span>' +
+        (r.samples != null ? '<span>' + escapeHtml(String(r.samples)) + ' amostras</span>' : '') + '</div></div>';
+    }).join('');
+  }
+
+  // Auto-exclusion history (WHEN + CAUSE): rigs the pilot auto-excluded,
+  // with the delivery snapshot at exclusion + the rule that fired. Same
+  // card pattern as accepted-recos (click → rig track record).
+  function _renderRentalsAutoExclusions() {
+    const wrap = document.getElementById('rentals-autoex');
+    if (!wrap || !_rentalsData) return;
+    const list = document.getElementById('rentals-autoex-list');
+    const meta = document.getElementById('rentals-autoex-meta');
+    const ex = (_rentalsData.auto_exclusions || {}).exclusions || [];
+    if (!list) return;
+    if (!ex.length) { wrap.hidden = true; return; }
+    wrap.hidden = false;
+    if (meta) meta.textContent = ex.length + ' rig' + (ex.length === 1 ? '' : 's') + ' auto-excluído' + (ex.length === 1 ? '' : 's');
+    list.innerHTML = ex.map(function (x) {
+      const grade = x.grade
+        ? '<span class="rentals-trust__badge rentals-trust__badge--' + escapeHtml(String(x.grade)) + '">' + escapeHtml(String(x.grade)) + '</span>' : '';
+      const when = x.ts ? new Date(Number(x.ts) * 1000).toLocaleDateString('pt-BR') : '—';
+      const delivery = x.delivery_pct != null ? Number(x.delivery_pct).toFixed(1) + '%' : '—';
+      const samples = x.samples != null ? escapeHtml(String(x.samples)) + ' amostras' : '—';
+      const rule = (x.grade_floor || 'F') + ' · mín ' + (x.min_samples != null ? escapeHtml(String(x.min_samples)) : '2');
+      return '<div class="rentals-autoex__card" data-rig-id="' + escapeHtml(String(x.rig_id != null ? x.rig_id : '')) + '" data-rig-name="' + escapeHtml(String(x.name || '')) + '" title="clique p/ ver o track record do rig ' + escapeHtml(String(x.rig_id)) + '">' +
+        '<div class="rentals-autoex__name">' + escapeHtml(String(x.name || x.rig_id)) + grade + '</div>' +
+        '<div class="rentals-autoex__row"><span>QUANDO</span><strong>' + escapeHtml(when) + '</strong>' +
+        '<span>ENTREGA</span><strong>' + escapeHtml(delivery) + '</strong></div>' +
+        '<div class="rentals-autoex__row rentals-autoex__row--sub">' +
+        '<span title="amostras na exclusão">' + samples + '</span>' +
+        '<span class="rentals-autoex__rule" title="régua vigente — floor de grade + mín de amostras">régua ' + escapeHtml(rule) + '</span>' +
+        '</div>' +
+        '<div class="rentals-autoex__cause" title="causa da exclusão">' + escapeHtml(String(x.cause || 'sub-entrega')) + '</div>' +
         '</div>';
     }).join('');
   }
@@ -3556,11 +4672,78 @@ function renderAccount(acct) {
     });
   }
 
+  // CFO: consolidated portfolio P/L (Issue #21-A) — PRÓPRIO self-mining EV
+  // + RENTALS P/L + NET 30d. Hidden until any leg has data.
+  function _renderPortfolioConsolidated() {
+    const wrap = document.getElementById('portfolio-consolidated');
+    if (!wrap) return;
+    const gp = (_rentalsData && _rentalsData.global_portfolio) || {};
+    const own = gp.own || {};
+    const rent = gp.rentals || {};
+    const comb = gp.combined || {};
+    const hasOwn = own.hashrate_hs > 0;
+    const hasRent = rent.pl_30d_sats != null || rent.pl_all_sats != null;
+    if (!hasOwn && !hasRent) { wrap.hidden = true; return; }
+    wrap.hidden = false;
+    const set = function (id, v) {
+      const el = document.getElementById(id);
+      if (el) el.textContent = v;
+    };
+    const fmtSats = function (v, sign) {
+      if (v === null || v === undefined) return '—';
+      const n = Number(v);
+      if (sign && n > 0) return '+' + n.toLocaleString('en-US') + ' sats';
+      return n.toLocaleString('en-US') + ' sats';
+    };
+    set('portfolio-own-daily',
+      own.daily_revenue_sats != null ? fmtSats(own.daily_revenue_sats) + '/dia' : '—');
+    set('portfolio-own-month',
+      own.month_revenue_sats != null ? fmtSats(own.month_revenue_sats) : '—');
+    set('portfolio-rentals-30d', fmtSats(rent.pl_30d_sats, true));
+    set('portfolio-rentals-all', fmtSats(rent.pl_all_sats, true));
+    set('portfolio-net-30d',
+      comb.pl_30d_sats != null ? fmtSats(comb.pl_30d_sats, true) : '—');
+    const meta = document.getElementById('portfolio-consolidated-meta');
+    if (meta) {
+      const src = own.source === 'fleet' ? 'frota física'
+        : own.source === 'worker' ? 'worker do pool' : '—';
+      const hr = own.hashrate_th != null ? own.hashrate_th + ' TH/s' : 'sem hashrate';
+      meta.textContent = own.hashrate_hs > 0
+        ? ('ESTIMATE · ' + hr + ' (' + src + ')' + (own.estimate ? ' · EV' : ''))
+        : 'ESTIMATE · sem hashrate próprio registrado';
+    }
+  }
+
   // CFO: portfolio time series — spent bars + estimated P/L (period and
   // cumulative) from the LOCAL rental_history. Bucket toggle week/month
   // re-fetches server-side data (the API ships the week bucket by default).
   let _rentalsSeriesChart = null;
   let _rentalsSeriesBucket = 'week';
+
+  // Issue #146 (21-C): pure series-datasets builder (mirrored in the JS core
+  // tests) — safe Number guards (NaN → null so the chart shows honest gaps),
+  // own-EV + consolidated-total series included only when the backend sent
+  // them (backward compatible with the pre-21-C payload).
+  function buildPortfolioSeriesDatasets(points) {
+    const rows = points || [];
+    // null/undefined must stay null (Chart.js gap) — Number(null) is 0 and
+    // would fabricate a flat 'no loss' bar on a cold box (honest telemetry).
+    const num = function (v) {
+      if (v === null || v === undefined) return null;
+      const n = Number(v);
+      return Number.isFinite(n) ? n : null;
+    };
+    const hasOwnEv = rows.some(function (p) { return num(p.own_ev_sats) != null; });
+    return {
+      labels: rows.map(function (p) { return String(p.label || '').replace(/^\d{4}-/, ''); }),
+      spent: rows.map(function (p) { return num(p.spent_sats); }),
+      pl: rows.map(function (p) { return num(p.pl_sats); }),
+      cum: rows.map(function (p) { return num(p.cum_pl_sats); }),
+      ownEv: rows.map(function (p) { return hasOwnEv ? num(p.own_ev_sats) : null; }),
+      totalCum: rows.map(function (p) { return hasOwnEv ? num(p.cum_total_sats) : null; }),
+      hasOwnEv: hasOwnEv
+    };
+  }
 
   function _renderRentalsSeries() {
     const wrap = document.getElementById('rentals-series');
@@ -3574,35 +4757,53 @@ function renderAccount(acct) {
       const plTxt = t.pl_sats != null
         ? (t.pl_sats >= 0 ? '+' : '') + Number(t.pl_sats).toLocaleString('en-US', { maximumFractionDigits: 0 }) + ' sats'
         : '—';
-      meta.textContent = (series.estimate ? 'P/L estimado · rede atual · ' : '') +
+      let m = (series.estimate ? 'P/L estimado · rede atual · ' : '') +
         (t.rentals != null ? t.rentals + ' aluguéis · ' : '') +
         (t.spent_sats != null ? Number(t.spent_sats).toLocaleString('en-US') + ' sats gastos · ' : '') +
         'P/L total ' + plTxt;
+      // Issue #146: when the self-mining EV entered the account, surface the
+      // consolidated total + the honest ESTIMATE note (EV, not realized).
+      if (t.own_ev_sats != null) {
+        const ownTxt = (t.own_ev_sats >= 0 ? '+' : '') +
+          Number(t.own_ev_sats).toLocaleString('en-US', { maximumFractionDigits: 0 }) + ' sats';
+        m += ' · PRÓPRIO EV ' + ownTxt + ' (ESTIMATE)';
+        if (t.total_pl_sats != null) {
+          const totTxt = (t.total_pl_sats >= 0 ? '+' : '') +
+            Number(t.total_pl_sats).toLocaleString('en-US', { maximumFractionDigits: 0 }) + ' sats';
+          m += ' · TOTAL ' + totTxt;
+        }
+      }
+      meta.textContent = m;
     }
     if (_rentalsSeriesChart) { _rentalsSeriesChart.destroy(); _rentalsSeriesChart = null; }
     if (typeof Chart === 'undefined' || series.points.length < 1) return;
     const canvas = document.getElementById('rentals-series-chart');
     if (!canvas) return;
-    const labels = series.points.map(p => p.label.replace(/^\d{4}-/, ''));  // strip year → 'W29' | '07'
-    const spent = series.points.map(p => p.spent_sats);
-    const pl = series.points.map(p => p.pl_sats);
-    const cum = series.points.map(p => p.cum_pl_sats);
+    const d = buildPortfolioSeriesDatasets(series.points);
+    const datasets = [
+      { type: 'bar', label: 'gasto (sats)', data: d.spent,
+        backgroundColor: 'rgba(94,89,82,0.55)', borderRadius: 2, yAxisID: 'y' },
+      { type: 'bar', label: 'P/L período (sats)', data: d.pl,
+        backgroundColor: d.pl.map(v => v == null ? 'rgba(94,89,82,0.15)' : (v >= 0 ? 'rgba(0,200,83,0.55)' : 'rgba(255,23,68,0.55)')),
+        borderRadius: 2, yAxisID: 'y' },
+      { type: 'line', label: 'P/L acumulado (sats)', data: d.cum,
+        borderColor: 'rgb(255,215,0)', backgroundColor: 'transparent',
+        tension: 0.3, pointRadius: 2, borderWidth: 2, spanGaps: false, yAxisID: 'y' },
+    ];
+    if (d.hasOwnEv) {
+      // Issue #146 (21-C): self-mining EV per bucket (constant daily
+      // estimate × days) + the CONSOLIDATED cumulative (rentals P/L + own EV).
+      datasets.push({ type: 'bar', label: 'PRÓPRIO EV (sats)', data: d.ownEv,
+        backgroundColor: 'rgba(6,214,240,0.35)', borderColor: 'rgb(6,214,240)',
+        borderWidth: 1, borderRadius: 2, yAxisID: 'y' });
+      datasets.push({ type: 'line', label: 'TOTAL acumulado (sats)', data: d.totalCum,
+        borderColor: 'rgb(6,214,240)', backgroundColor: 'transparent',
+        tension: 0.3, pointRadius: 2, borderWidth: 2, borderDash: [5, 3], spanGaps: false, yAxisID: 'y' });
+    }
     // null P/L (cold box / no computable yield) → gaps, never a flat 0 bar.
     _rentalsSeriesChart = new Chart(canvas.getContext('2d'), {
       type: 'bar',
-      data: {
-        labels: labels,
-        datasets: [
-          { type: 'bar', label: 'gasto (sats)', data: spent,
-            backgroundColor: 'rgba(94,89,82,0.55)', borderRadius: 2, yAxisID: 'y' },
-          { type: 'bar', label: 'P/L período (sats)', data: pl,
-            backgroundColor: pl.map(v => v == null ? 'rgba(94,89,82,0.15)' : (v >= 0 ? 'rgba(0,200,83,0.55)' : 'rgba(255,23,68,0.55)')),
-            borderRadius: 2, yAxisID: 'y' },
-          { type: 'line', label: 'P/L acumulado (sats)', data: cum,
-            borderColor: 'rgb(255,215,0)', backgroundColor: 'transparent',
-            tension: 0.3, pointRadius: 2, borderWidth: 2, spanGaps: false, yAxisID: 'y' },
-        ]
-      },
+      data: { labels: d.labels, datasets: datasets },
       options: {
         responsive: true, maintainAspectRatio: false,
         interaction: { mode: 'index', intersect: false },
@@ -3703,7 +4904,7 @@ function renderAccount(acct) {
         ? Number(r.avg_cost_sats_per_thh).toFixed(1) + ' st/TH·h' : '—';
       const tab = r.provider === 'braiins' ? 'contracts' : 'history';
       return '<div class="rentals-rank__cell" data-rentals-filter="' + escapeHtml(tab) + '" title="clique p/ ver os ' + escapeHtml(String(r.label)) + '">' +
-        '<div class="rentals-rank__name">' + escapeHtml(String(r.label)) + ' <span class="rentals-rank__n">' + r.rentals + '</span></div>' +
+        '<div class="rentals-rank__name">' + escapeHtml(String(r.label)) + ' <span class="rentals-rank__n">' + escapeHtml(String(r.rentals)) + '</span></div>' +
         '<div class="rentals-rank__row"><span>DELIVERY</span><strong>' + escapeHtml(dlv) + '</strong></div>' +
         '<div class="rentals-rank__row"><span>P/L</span><strong class="' + (r.avg_pl_pct != null && r.avg_pl_pct < 0 ? 'is-bad' : 'is-good') + '">' + escapeHtml(pl) + '</strong></div>' +
         '<div class="rentals-rank__row"><span>COST</span><strong>' + escapeHtml(cost) + '</strong></div>' +
@@ -3725,11 +4926,11 @@ function renderAccount(acct) {
       const cls = pct == null ? 'is-unknown' : (pct >= 95 ? 'is-good' : (pct >= 90 ? 'is-mid' : 'is-bad'));
       const cost = c.avg_cost_sats_per_thh != null
         ? Number(c.avg_cost_sats_per_thh).toFixed(0) + ' st/TH·h' : '—';
-      return '<div class="rentals-heatmap__cell ' + cls + '" data-rig-name="' + escapeHtml(c.rig) + '" title="' + escapeHtml(c.rig) + ' · ' + c.samples + ' amostras · clique p/ ver o track record">' +
+      return '<div class="rentals-heatmap__cell ' + cls + '" data-rig-name="' + escapeHtml(c.rig) + '" title="' + escapeHtml(c.rig) + ' · ' + escapeHtml(String(c.samples)) + ' amostras · clique p/ ver o track record">' +
         '<div class="rentals-heatmap__name">' + escapeHtml(c.rig) + '</div>' +
         '<div class="rentals-heatmap__row"><span>DELIVERY</span><strong>' + (pct != null ? pct.toFixed(1) + '%' : '—') + '</strong></div>' +
         '<div class="rentals-heatmap__row"><span>COST</span><strong>' + escapeHtml(cost) + '</strong></div>' +
-        '<div class="rentals-heatmap__sub">' + c.samples + ' amostras</div>' +
+        '<div class="rentals-heatmap__sub">' + escapeHtml(String(c.samples)) + ' amostras</div>' +
         '</div>';
     }).join('');
   }
@@ -3804,10 +5005,37 @@ function renderAccount(acct) {
         '<span class="rentals-worst__cell"><i>Fail</i><b>' + (r.fail_rate_pct != null ? Number(r.fail_rate_pct).toFixed(0) + '%' : '—') + '</b></span>' +
         '<span class="rentals-worst__cell"><i>Vol</i><b>' + (r.volatility_pct != null ? Number(r.volatility_pct).toFixed(1) + 'σ' : '—') + '</b></span>' +
         '<span class="rentals-worst__cell"><i>P/L TH·h</i><b class="' + (r.pl_sats_per_thh != null && r.pl_sats_per_thh < 0 ? 'is-bad' : 'is-good') + '">' + escapeHtml(pl) + '</b></span>' +
-        '<span class="rentals-worst__cell"><i>P/L ' + r.samples + 'x</i>' + trend + '</span>' +
+        '<span class="rentals-worst__cell"><i>P/L ' + escapeHtml(String(r.samples)) + 'x</i>' + trend + '</span>' +
         '<span class="rentals-worst__danger ' + dangerCls + '">' + Number(danger).toFixed(0) + '</span>' +
         '</button>';
     }).join('');
+  }
+
+  // ── Exposure allocation (Issue #21-B) ───────────────────────────────────
+  // PRÓPRIO vs MRR vs BRAIINS — share do hashrate total gerenciado, com o
+  // Herfindahl estendido incluindo o próprio como classe de ativo. Mesmo
+  // idioma visual da concentração (barras de share + HHI honesto).
+  function _renderRentalsExposure() {
+    const wrap = document.getElementById('rentals-exposure');
+    if (!wrap || !_rentalsData) return;
+    const e = _rentalsData.exposure;
+    if (!e || !e.available) { wrap.hidden = true; return; }
+    wrap.hidden = false;
+    const meta = document.getElementById('rentals-exposure-meta');
+    const hhi = Number(e.hhi || 0);
+    // Base HASHRATE (TH/s) — distinto do HHI de CONCENTRAÇÃO (base gasto em
+    // sats): rótulo explícito para o CFO não comparar bases diferentes.
+    if (meta) meta.textContent = 'HHI ' + hhi.toFixed(0) + ' · ' + (e.hhi_verdict || '') + ' (hashrate)';
+    const bars = document.getElementById('rentals-exposure-bars');
+    if (bars) {
+      bars.innerHTML = (e.classes || []).map(c =>
+        '<div class="rentals-conc__bar"><span class="rentals-conc__bar-label">' + escapeHtml(String(c.label)) + '</span>' +
+        '<span class="rentals-conc__bar-track"><i style="width:' + Number(c.share_pct).toFixed(1) + '%"></i></span>' +
+        '<span class="rentals-conc__bar-val">' + Number(c.share_pct).toFixed(0) + '% · ' +
+        Number(c.hashrate_th).toLocaleString('en-US') + ' TH/s</span></div>').join('');
+    }
+    const total = document.getElementById('rentals-exposure-total');
+    if (total) total.textContent = 'Hashrate gerenciado: ' + Number(e.total_hashrate_th).toLocaleString('en-US') + ' TH/s';
   }
 
   // ── Concentration risk (portfolio-level) ────────────────────────────────
@@ -4017,14 +5245,17 @@ function renderAccount(acct) {
     '</div>';
   }
 
-  async function loadRentals() {
+  async function loadRentals(force) {
     const listEl = document.getElementById('rentals-list');
     if (!listEl) return false;
     try {
       // authFetch sends the user's Bearer token so the server resolves the
       // caller's TENANT — with 1000+ users each one sees only their own
       // Braiins/MRR credentials and rentals (never the operator's key).
-      const r = await authFetch('/api/rentals');
+      // force=1 (RECARREGAR on a stale empty-state, Issue #187) bypasses the
+      // server TTL cache so credentials just added in Settings show up
+      // without a full page reload.
+      const r = await authFetch('/api/rentals' + (force ? '?refresh=1' : ''));
       if (!r.ok) return false;
       _rentalsData = await r.json();
       // UX: on the first load, land on the first tab that actually has data —
@@ -4064,40 +5295,50 @@ function renderAccount(acct) {
       cnt.textContent = total + ' rentals';
     }
     const el = (id) => document.getElementById(id);
-    // Strip shows the MRR-reported TOTAL (the list is capped at 25/50 by the
-    // API) — honest count of the operator's rentals, not just the fetched page.
-    // Missing provider credentials → 🔑 hint (with tooltip) instead of a
-    // misleading 0/— that looks like an empty account.
-    const _stripVal = (cardId, value, auth, err) => {
+    // Strip shows the MRR-reported TOTAL — the paginated fetch (Issue #200)
+    // now covers every page up to the safety cap, so the count IS the account
+    // (and "X de N" surfaces honestly when the cap cut the series). Missing
+    // provider credentials → 🔑 hint (with tooltip) instead of a misleading
+    // 0/— that looks like an empty account.
+    const _stripVal = (cardId, value, auth, err, authRejected, provider, rendered, total) => {
       const card = el(cardId);
       if (!card) return;
-      // A configured-but-rejected key (401/403) is an ERROR, not a missing
-      // credential — show ⚠ with the reason so the user fixes the token.
-      const rejected = /rejected|401|403|unauthor|forbidden/i.test(String(err || ''));
+      // A configured-but-rejected key (401/403 / Bad Nonce) is an ERROR, not
+      // a missing credential — show ⚠ with the FIX so the user knows to
+      // regenerate the key, not just add one (Issue #152).
+      const rejected = rentalsAuthRejected(err, authRejected);
       if (auth && !rejected) {
         card.textContent = '🔑';
         card.title = 'credentials missing — configure in Settings (⚙)';
+      } else if (rejected) {
+        card.textContent = '⚠';
+        card.title = rentalsAuthGuide(provider, err);
       } else if (err) {
         card.textContent = '⚠';
         card.title = String(err);
       } else {
-        card.textContent = value;
-        card.title = '';
+        const surf = rentalsCountSurface(rendered, total);
+        card.textContent = surf.text != null ? surf.text : value;
+        card.title = surf.title || '';
       }
     };
-    _stripVal('rentals-mrr-active', mrr.total_active != null ? mrr.total_active : (mrr.active || []).length, mrr.needs_auth, mrr.error);
-    _stripVal('rentals-mrr-history', mrr.total_history != null ? mrr.total_history : (mrr.history || []).length, mrr.needs_auth, mrr.error);
-    _stripVal('rentals-mrr-owner', mrr.total_owner != null ? mrr.total_owner : (mrr.owner || []).length, mrr.needs_auth, mrr.error);
-    _stripVal('rentals-braiins', (braiins.contracts || []).length, braiins.needs_auth, braiins.error);
+    _stripVal('rentals-mrr-active', mrr.total_active != null ? mrr.total_active : (mrr.active || []).length, mrr.needs_auth, mrr.error, mrr.auth_rejected, 'mrr', mrr.rendered_active, mrr.total_active);
+    _stripVal('rentals-mrr-history', mrr.total_history != null ? mrr.total_history : (mrr.history || []).length, mrr.needs_auth, mrr.error, mrr.auth_rejected, 'mrr', mrr.rendered_history, mrr.total_history);
+    _stripVal('rentals-mrr-owner', mrr.total_owner != null ? mrr.total_owner : (mrr.owner || []).length, mrr.needs_auth, mrr.error, mrr.auth_rejected, 'mrr', mrr.rendered_owner, mrr.total_owner);
+    _stripVal('rentals-braiins', (braiins.contracts || []).length, braiins.needs_auth, braiins.error, braiins.auth_rejected, 'contracts');
     _renderRentalsPortfolio();
+    _renderPortfolioConsolidated();
     _renderRentalsSeries();
     _renderRentalsReco();
+    _renderRentalsAccepted();
+    _renderRentalsAutoExclusions();
     _renderRentalsMarketTiming();
     _renderRentalsRankings();
     _renderRentalsHeatmap();
     _renderRentalsExpiring();
     _renderRentalsWorst();
     _renderRentalsConcentration();
+    _renderRentalsExposure();
     _renderRentalsForecast();
     _renderRentalsRiskBanner();
     _renderRentalsSignals();
@@ -4130,25 +5371,46 @@ function renderAccount(acct) {
     }
 
     if (!items.length) {
-      const needsAuth = _rentalsFilter === 'contracts' ? braiins.needs_auth : mrr.needs_auth;
-      const errMsg = _rentalsFilter === 'contracts' ? braiins.error : mrr.error;
-      // "Key rejected" (401/403 with a CONFIGURED key) is NOT the same as
-      // "credentials missing" — surface the real reason so the user knows
-      // to fix the token, not just add one.
-      const rejected = /rejected|401|403|unauthor|forbidden/i.test(String(errMsg || ''));
-      const title = rejected ? 'API key rejected' : (needsAuth ? 'Credentials required' : (errMsg ? 'Provider error' : 'No rentals'));
+      const isContracts = _rentalsFilter === 'contracts';
+      const needsAuth = isContracts ? braiins.needs_auth : mrr.needs_auth;
+      const errMsg = isContracts ? braiins.error : mrr.error;
+      const authRejected = isContracts ? braiins.auth_rejected : mrr.auth_rejected;
+      // "Key rejected" (401/403 / Bad Nonce with a CONFIGURED key) is NOT the
+      // same as "credentials missing" — surface the real reason + the FIX so
+      // the user regenerates the key, not just adds one (Issue #152).
+      const rejected = rentalsAuthRejected(errMsg, authRejected);
+      // Payload staleness (Issue #187): a payload built by old server code
+      // (no version stamp) or too old to trust cannot prove an empty account
+      // — it may predate the missing-key guard. Level 2 (old code) shows the
+      // config hint; level 1 (age only) shows a soft 'dados desatualizados'
+      // + reload. Never the misleading 'No contracts rentals on this
+      // account'.
+      const staleLevel = rentalsPayloadStale(_rentalsData, Math.floor(Date.now() / 1000));
+      const payloadStale = staleLevel > 0;
+      const credHint = staleLevel >= 2;
+      const title = rejected ? 'API key rejected' : (needsAuth ? 'Credentials required' : (errMsg ? 'Provider error' : (credHint ? 'Configuração não verificada' : (staleLevel === 1 ? 'Dados desatualizados' : 'No rentals'))));
+      const staleHint = credHint
+        ? (isContracts
+          ? 'Dados carregados por uma versão antiga do servidor — não dá para confirmar se a conta está vazia. Adicione o owner token Braiins (hashpower.braiins.com → API Tokens) no Settings (⚙), ou recarregue para verificar:'
+          : 'Dados carregados por uma versão antiga do servidor — não dá para confirmar se a conta está vazia. Configure a chave MRR (miningrigrentals.com → My Account → API Access) no Settings (⚙), ou recarregue para verificar:')
+        : 'Os dados estão antigos (mais de 5 min) — recarregue para confirmar o estado real da conta.';
       listEl.innerHTML = '<div class="empty-state" style="grid-column:1/-1;border:none">' +
-        '<div class="empty-state__icon">' + (rejected ? '🔑' : '⛁') + '</div>' +
+        '<div class="empty-state__icon">' + (rejected ? '🔑' : (credHint ? '🔑' : '⛁')) + '</div>' +
         '<div class="empty-state__title">' + title + '</div>' +
         '<div class="empty-state__desc">' + (rejected
-          ? 'A chave está configurada, mas a API a rejeitou: ' + escapeHtml(String(errMsg)) + '. Gere um novo owner token em hashpower.braiins.com e atualize no Settings (⚙).'
+          ? rentalsAuthGuide(_rentalsFilter, errMsg)
           : (needsAuth
-            ? (_rentalsFilter === 'contracts' ? 'Add your Braiins Hashpower owner token to list contracts — where to get it: hashpower.braiins.com → API Tokens.' : 'Add your MiningRigRentals API key + secret to see history & performance — get them at miningrigrentals.com → My Account → API Access.')
-            : (errMsg ? escapeHtml(errMsg) : 'No ' + _rentalsFilter + ' rentals on this account'))) + '</div>' +
-        (needsAuth || rejected ? '<button type="button" class="btn btn--primary btn--mini" id="rentals-open-settings" style="margin-top:8px">⚙ OPEN SETTINGS</button>' : '') +
+            ? (isContracts ? 'Add your Braiins Hashpower owner token to list contracts — where to get it: hashpower.braiins.com → API Tokens.' : 'Add your MiningRigRentals API key + secret to see history & performance — get them at miningrigrentals.com → My Account → API Access.')
+            : (errMsg ? escapeHtml(errMsg) : (payloadStale ? staleHint : 'No ' + _rentalsFilter + ' rentals on this account')))) + '</div>' +
+        (needsAuth || rejected || credHint ? '<button type="button" class="btn btn--primary btn--mini" id="rentals-open-settings" style="margin-top:8px">⚙ OPEN SETTINGS</button>' : '') +
+        (payloadStale ? '<button type="button" class="btn btn--mini" id="rentals-refresh-btn" style="margin-top:8px">⟳ RECARREGAR</button>' : '') +
         '</div>';
       const cta = document.getElementById('rentals-open-settings');
       if (cta) cta.addEventListener('click', function() { openSettingsModal(); });
+      // RECARREGAR re-fetches with ?refresh=1 — creds just saved in Settings
+      // take effect without a full page reload.
+      const refreshBtn = document.getElementById('rentals-refresh-btn');
+      if (refreshBtn) refreshBtn.addEventListener('click', function() { loadRentals(true); });
       return;
     }
     listEl.innerHTML = items.map(_rentalCardHtml).join('');
@@ -4157,6 +5419,15 @@ function renderAccount(acct) {
   async function openRentalDetail(id, provider) {
     const panel = document.getElementById('rentals-detail');
     if (!panel) return;
+    // Reset the auto-exclusion banner immediately — a stale
+    // 'AUTO-EXCLUSÃO DISPARADA' from a previous detail must never linger
+    // while the next detail's fetch is in flight (Issue #110).
+    const autoExBanner = document.getElementById('rentals-detail-autoex');
+    if (autoExBanner) autoExBanner.hidden = true;
+    // Same reset for the auth-rejection strip (Issue #174) — a stale
+    // 'API KEY REJECTED' from a previous detail must never linger.
+    const authBannerEl = document.getElementById('rentals-detail-auth');
+    if (authBannerEl) { authBannerEl.hidden = true; authBannerEl.innerHTML = ''; }
     try {
       // Braiins: the contract's static fields are already in the list payload
       // — send them so the backend skips re-probing the list (detail needs
@@ -4178,6 +5449,92 @@ function renderAccount(acct) {
       });
       if (!r.ok) return;
       const data = await r.json();
+      // Auth-rejection guide (Issue #174): a CONFIGURED but rejected key
+      // (Bad Nonce / 401/403) on the detail click explains the SAME fix the
+      // list already shows — regenerate the key, not a generic error.
+      const authBanner = document.getElementById('rentals-detail-auth');
+      if (authBanner) {
+        const dErr = (data.detail && data.detail.error) || '';
+        const rejected = rentalsAuthRejected(dErr, data.auth_rejected);
+        if (rejected) {
+          authBanner.hidden = false;
+          authBanner.innerHTML =
+            '<span class="rentals-detail__autoex-icon">🔑</span>' +
+            '<div class="rentals-detail__autoex-body"><strong>API KEY REJECTED</strong>' +
+            '<div class="rentals-detail__autoex-sub">' + rentalsAuthGuide(provider, dErr) +
+            '</div></div>' +
+            '<button type="button" class="rentals-detail__autoex-btn" id="rentals-detail-auth-settings" title="abrir Settings para regenerar a chave">⚙ OPEN SETTINGS</button>';
+          const authCta = document.getElementById('rentals-detail-auth-settings');
+          if (authCta) authCta.addEventListener('click', function() { openSettingsModal(); });
+        } else {
+          authBanner.hidden = true;
+          authBanner.innerHTML = '';
+        }
+      }
+      // Auto-exclusion feedback (Issue #110): ONLY the detail call that
+      // PERFORMED the exclusion shows the banner + toast and pre-adds the
+      // card to the AUTO-EXCLUSÕES section — reopening an already-excluded
+      // rig never re-fires (auto_excluded_now is false then). The banner
+      // was already hidden at the top of this function.
+      if (autoExBanner && data.auto_excluded_now) {
+        const rule = data.auto_exclude_rule || {};
+        const nAlert = Number(data.auto_exclude_alert_dispatched) || 0;
+        const ruleStr = 'floor ' + escapeHtml(String(rule.grade_floor || 'F')) +
+          ' · mín ' + escapeHtml(String(rule.min_samples != null ? rule.min_samples : 2));
+        // The exact ledger row the AUTO-EXCLUSÕES section shows — also feeds
+        // the undo button's rig id (Issue #117).
+        const entry = data.auto_exclude_entry;
+        const bannerRigId = entry && entry.rig_id != null ? String(entry.rig_id)
+          : (data.detail && data.detail.rig && data.detail.rig.id != null
+             ? String(data.detail.rig.id) : '');
+        autoExBanner.hidden = false;
+        autoExBanner.innerHTML =
+          '<span class="rentals-detail__autoex-icon">🤖</span>' +
+          '<div class="rentals-detail__autoex-body">' +
+          '<strong>AUTO-EXCLUSÃO DISPARADA</strong>' +
+          '<div class="rentals-detail__autoex-sub">régua vigente: ' + ruleStr +
+          (nAlert ? ' · alerta webhook/push enviado' : ' · sem canal de alerta configurado (Settings → alertas)') +
+          '</div></div>' +
+          (bannerRigId
+            ? '<button type="button" class="rentals-detail__autoex-btn" id="rentals-detail-autoex-undo" title="desfazer a auto-exclusão e restaurar o rig">↩ DESFAZER</button>'
+            : '');
+        showToast('success', 'Rig auto-excluído por sub-entrega' + (nAlert ? ' — alerta enviado' : ''));
+        // Pre-add the card to the AUTO-EXCLUSÕES section (same local) —
+        // dedup by rig_id so a stale entry from an earlier fetch never
+        // duplicates. The entry is the exact ledger row the section shows.
+        if (entry && entry.rig_id != null && _rentalsData) {
+          const ax = (_rentalsData.auto_exclusions = _rentalsData.auto_exclusions || {});
+          ax.exclusions = ax.exclusions || [];
+          ax.exclusions = ax.exclusions.filter(function (x) {
+            return String(x.rig_id) !== String(entry.rig_id);
+          });
+          ax.exclusions.unshift(entry);
+          ax.count = ax.exclusions.length;
+          _renderRentalsAutoExclusions();
+        }
+        // Undo (Issue #117): restaura o rig com confirmação — o backend
+        // remove das DUAS blacklists e marca o veredito REVOGADA no ledger
+        // (remove_rig_from_blacklist); o detail re-abre sem o banner e o
+        // trust re-renderiza sem o estado auto-excluído. Re-exclusão
+        // automática volta se o histórico de entrega continuar ruim.
+        const undoBtn = document.getElementById('rentals-detail-autoex-undo');
+        if (undoBtn && bannerRigId) {
+          undoBtn.addEventListener('click', async () => {
+            if (!window.confirm('Restaurar o rig ' + bannerRigId + '? A auto-exclusão será revogada — se a entrega continuar ruim, o piloto re-exclui automaticamente.')) return;
+            try {
+              const r = await authFetch('/api/rentals/rig/blacklist', {
+                method: 'DELETE',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ rig_id: bannerRigId }),
+              });
+              if (!r.ok) return;
+              showToast('success', 'Rig ' + bannerRigId + ' restaurado — auto-exclusão revogada');
+              // Re-open so trust/blacklist re-render fresh (banner resets).
+              openRentalDetail(id, provider);
+            } catch (e) { /* fail-closed */ }
+          });
+        }
+      }
       const d = data.detail || {};
       const g = data.graph || {};
       const lg = data.log || {};
@@ -4261,7 +5618,7 @@ function renderAccount(acct) {
           { l: 'VS MARKET', v: mktVal, c: mktCls, t: mktTitle },
         ];
         perfEl.innerHTML = cells.map(c =>
-          '<div class="rentals-perf__cell' + (c.c ? ' ' + c.c : '') + '"' + (c.t ? ' title="' + escapeHtml(c.t) + '"' : '') + '><span class="rentals-perf__label">' + c.l + '</span><strong>' + escapeHtml(String(c.v)) + '</strong></div>'
+          '<div class="rentals-perf__cell' + (c.c ? ' ' + escapeHtml(c.c) : '') + '"' + (c.t ? ' title="' + escapeHtml(c.t) + '"' : '') + '><span class="rentals-perf__label">' + escapeHtml(c.l) + '</span><strong>' + escapeHtml(String(c.v)) + '</strong></div>'
         ).join('');
       }
       // RIG TRUST (CFO) — grade A-F + score + consistency for THIS rig, with
@@ -4320,7 +5677,7 @@ function renderAccount(acct) {
             : '<button type="button" class="rentals-trust__btn" id="rentals-trust-toggle">⛔ EXCLUIR RIG (BLACKLIST)</button>';
           trustEl.innerHTML =
             '<div class="rentals-trust__cells">' + cells.map(c =>
-              '<div class="rentals-trust__cell"><span class="rentals-trust__label">' + c.l + '</span><span class="rentals-trust__value' + (c.cls ? ' rentals-trust__value--' + c.cls : '') + '">' + c.v + '</span></div>'
+              '<div class="rentals-trust__cell"><span class="rentals-trust__label">' + escapeHtml(c.l) + '</span><span class="rentals-trust__value' + (c.cls ? ' rentals-trust__value--' + escapeHtml(c.cls) : '') + '">' + escapeHtml(c.v) + '</span></div>'
             ).join('') + '</div>' +
             '<div class="rentals-trust__verdict ' + vCls + '">' + verdict + '</div>' +
             '<div class="rentals-trust__actions">' + btn + '</div>';
@@ -4354,7 +5711,7 @@ function renderAccount(acct) {
             ];
             trustEl.innerHTML =
               '<div class="rentals-trust__cells">' + stabCells.map(c =>
-                '<div class="rentals-trust__cell"><span class="rentals-trust__label">' + c.l + '</span><span class="rentals-trust__value' + (c.cls ? ' rentals-trust__value--' + c.cls : '') + '">' + c.v + '</span></div>'
+                '<div class="rentals-trust__cell"><span class="rentals-trust__label">' + escapeHtml(c.l) + '</span><span class="rentals-trust__value' + (c.cls ? ' rentals-trust__value--' + escapeHtml(c.cls) : '') + '">' + escapeHtml(c.v) + '</span></div>'
               ).join('') + '</div>' +
               '<div class="rentals-trust__verdict">Contratos Braiins não expõem identidade de rig — a estabilidade vem da série de speed. CV &lt; 5% = previsível; &gt; 15% = arriscado.</div>';
           } else {
@@ -4481,23 +5838,34 @@ function renderAccount(acct) {
 
   function _initRentalsPanel() {
     const refresh = document.getElementById('rentals-refresh');
-    if (refresh) refresh.addEventListener('click', () => { _rentalsLoaded = false; loadRentals(); });
+    if (refresh) refresh.addEventListener('click', () => {
+      _rentalsLoaded = false;
+      // Same shimmer as the first-activation skeleton — the table refreshes
+      // under an overlay instead of flashing the stale rows.
+      skelRefresh(document.getElementById('rentals-panel'), 'table', loadRentals());
+    });
     // CFO: CSV export of the full rental ledger (portfólio + track record).
-    const exportBtn = document.getElementById('rentals-export');
-    if (exportBtn) exportBtn.addEventListener('click', async () => {
+    // Shared downloader — mode 'simple' (default) or 'analysis' (Controle de
+    // Rendimento: refund due, spread, real loss, sellers to blacklist).
+    async function _downloadRentalsExport(mode, filename) {
       try {
-        const r = await authFetch('/api/rentals/export');
+        const q = mode === 'analysis' ? '?mode=analysis' : '';
+        const r = await authFetch('/api/rentals/export' + q);
         if (!r.ok) return;
         const blob = await r.blob();
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url;
-        a.download = 'rentals.csv';
+        a.download = filename;
         document.body.appendChild(a);
         a.click();
         setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 2000);
       } catch (e) { /* fail-closed */ }
-    });
+    }
+    const exportBtn = document.getElementById('rentals-export');
+    if (exportBtn) exportBtn.addEventListener('click', () => _downloadRentalsExport('simple', 'rentals.csv'));
+    const exportAnalysisBtn = document.getElementById('rentals-export-analysis');
+    if (exportAnalysisBtn) exportAnalysisBtn.addEventListener('click', () => _downloadRentalsExport('analysis', 'rentals_analysis.csv'));
     const closeBtn = document.getElementById('rentals-detail-close');
     if (closeBtn) closeBtn.addEventListener('click', () => { const p = document.getElementById('rentals-detail'); if (p) p.hidden = true; });
     const filters = document.querySelectorAll('[data-rentals-filter]');
@@ -4531,6 +5899,53 @@ function renderAccount(acct) {
     const reco = document.getElementById('rentals-reco-cards');
     if (reco) reco.addEventListener('click', (e) => {
       const card = e.target.closest ? e.target.closest('.rentals-reco__card') : null;
+      if (!card) return;
+      openRigTrackRecord(card.getAttribute('data-rig-id'), card.getAttribute('data-rig-name'));
+    });
+    // Pilot's AVOID cards: the BLACKLISTAR button accepts the suggestion in
+    // one click (POST blacklist → re-render: the card disappears and the
+    // accepted ledger gains the entry). Card body still opens the track
+    // record. Delegated — the cards are dynamic innerHTML.
+    const avoidCards = document.getElementById('rentals-avoid-cards');
+    if (avoidCards) avoidCards.addEventListener('click', async (e) => {
+      const bl = e.target.closest ? e.target.closest('.rentals-reco__blacklist') : null;
+      if (bl) {
+        e.stopPropagation();
+        const rid = bl.getAttribute('data-rig-id');
+        if (!rid) return;
+        bl.disabled = true;
+        bl.textContent = '…';
+        try {
+          const r = await authFetch('/api/rentals/rig/blacklist', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ rig_id: rid }),
+          });
+          if (r.ok) loadRentals();  // avoid shrinks, accepted grows
+          else { bl.disabled = false; bl.textContent = '⛔ BLACKLISTAR'; }
+        } catch (err) {
+          // Fail-closed, but never leave the button stuck on '…'.
+          bl.disabled = false;
+          bl.textContent = '⛔ BLACKLISTAR';
+        }
+        return;
+      }
+      const card = e.target.closest ? e.target.closest('.rentals-reco__card--avoid') : null;
+      if (card) openRigTrackRecord(card.getAttribute('data-rig-id'), card.getAttribute('data-rig-name'));
+    });
+    // Accepted-recommendation cards (dynamic innerHTML — delegated listener)
+    // → rig track record modal, same flow as the reco cards.
+    const accepted = document.getElementById('rentals-accepted-list');
+    if (accepted) accepted.addEventListener('click', (e) => {
+      const card = e.target.closest ? e.target.closest('.rentals-accepted__card') : null;
+      if (!card) return;
+      openRigTrackRecord(card.getAttribute('data-rig-id'), card.getAttribute('data-rig-name'));
+    });
+    // Auto-exclusion history cards (dynamic innerHTML — delegated listener)
+    // → rig track record modal, same flow as the accepted cards.
+    const autoex = document.getElementById('rentals-autoex-list');
+    if (autoex) autoex.addEventListener('click', (e) => {
+      const card = e.target.closest ? e.target.closest('.rentals-autoex__card') : null;
       if (!card) return;
       openRigTrackRecord(card.getAttribute('data-rig-id'), card.getAttribute('data-rig-name'));
     });
@@ -4627,7 +6042,7 @@ function renderAccount(acct) {
     _syncBraiinsBalanceClass('loading');
     const submit = document.getElementById('braiins-buy-submit');
     if (submit) submit.disabled = true;
-    modal.classList.add('modal--open');
+    openModalAnimated(modal);
     _braiinsBuyOrderId = 'c65-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8);
     // 'comprar agora' prefill: derive TH + budget from the arbitrage signal's
     // CURRENT market price (e.g. 1000 TH/s ≈ 1 PH/s × ~24h at that price), so
@@ -4745,7 +6160,7 @@ function renderAccount(acct) {
 
   async function submitBraiinsBid() {
     const submit = document.getElementById('braiins-buy-submit');
-    if (submit) submit.disabled = true;
+    setBtnLoading(submit, true);
     _braiinsBuySet('braiins-buy-status', 'enviando ordem…');
     try {
       const th = parseFloat(document.getElementById('braiins-buy-th')?.value) || 0;
@@ -4766,16 +6181,17 @@ function renderAccount(acct) {
       });
       const data = await r.json().catch(() => ({}));
       if (r.ok && data.success) {
+        setBtnLoading(submit, false);
         _braiinsBuySet('braiins-buy-status', '✅ ordem enviada — id ' + (data.bid && data.bid.id ? data.bid.id : 'confirmada na Braiins'));
         // Conversion telemetry is recorded SERVER-SIDE on bid success
         // (single source of truth — no double counting).
       } else {
         _braiinsBuySet('braiins-buy-status', '⚠ ' + (data.error || 'falha ao enviar ordem'));
-        if (submit) submit.disabled = false;
+        setBtnLoading(submit, false);
       }
     } catch (e) {
       _braiinsBuySet('braiins-buy-status', '⚠ erro de rede ao enviar ordem');
-      if (submit) submit.disabled = false;
+      setBtnLoading(submit, false);
     }
   }
 
@@ -4783,8 +6199,7 @@ function renderAccount(acct) {
     const modal = _braiinsBuyModal();
     if (!modal) return;
     modal.addEventListener('click', (e) => {
-      if (e.target.matches('[data-close]')) modal.classList.remove('modal--open');
-      if (e.target === modal) modal.classList.remove('modal--open');
+      if (e.target.matches('[data-close]') || e.target === modal) closeModalAnimated(modal);
     });
     ['braiins-buy-th', 'braiins-buy-amount', 'braiins-buy-stratum', 'braiins-buy-type']
       .forEach(id => {
@@ -4831,6 +6246,9 @@ function renderAccount(acct) {
     const ap = snap.auto_pilot || {};
     _apSetUi(!!ap.armed);
     _initAutoPilotToggle();
+    _initAutoPilotAutoToggle();
+    _initAutoPilotAdvisory();
+    _initAutoPilotDryRun();
   }
 
   // ── Auto-Pilot arm/disarm toggle (automations module) ─────────────
@@ -4878,7 +6296,7 @@ function renderAccount(acct) {
 
   async function _apSetArmed(armed) {
     const btn = document.getElementById('ap-armed-btn');
-    if (btn) btn.disabled = true;
+    setBtnLoading(btn, true);
     try {
       const r = await authFetch('/api/automation/arm', {
         method: 'POST',
@@ -4899,7 +6317,7 @@ function renderAccount(acct) {
       showToast('error', '⚠ falha de rede ao alterar o Auto-Pilot');
       return false;
     } finally {
-      if (btn) btn.disabled = false;
+      setBtnLoading(btn, false);
     }
   }
 
@@ -4919,7 +6337,7 @@ function renderAccount(acct) {
           input.value = '';
           confirm.disabled = true;
           if (status) status.textContent = '';
-          m.classList.add('modal--open');
+          openModalAnimated(m);
           setTimeout(() => input.focus(), 50);
         }
       });
@@ -4928,7 +6346,7 @@ function renderAccount(acct) {
     const m = document.getElementById('ap-arm-modal');
     if (m) {
       m.addEventListener('click', (e) => {
-        if (e.target.matches('[data-close]') || e.target === m) m.classList.remove('modal--open');
+        if (e.target.matches('[data-close]') || e.target === m) closeModalAnimated(m);
       });
     }
 
@@ -4953,6 +6371,417 @@ function renderAccount(acct) {
     }
 
     _apRefreshStatus();
+    _apRefreshAutoStatus();
+  }
+
+  // ── Issue #178 · Auto-Pilot AUTONOMOUS — execução autônoma (PRO gate) ──
+  // Backend: GET /api/auto-pilot/autonomous (pro/armed/autonomous),
+  // POST /api/auto-pilot/autonomous {autonomous} (gate PRO → 402 em modo
+  // licensed sem chave). Fase 4 do Big Bet: quando PRO + armado + ON, o
+  // piloto executa sozinho restart/pause das recomendações físicas.
+  let _apAuto = false;
+  let _apAutoToggleInit = false;
+
+  function _apSetAutoUi(auto) {
+    _apAuto = !!auto;
+    const btn = document.getElementById('ap-auto-btn');
+    const label = document.getElementById('ap-auto-label');
+    const dot = document.getElementById('ap-auto-dot');
+    if (label) label.textContent = auto ? 'ON' : 'OFF';
+    if (btn) {
+      btn.classList.toggle('is-armed', auto);
+      btn.title = auto
+        ? 'EXECUÇÃO AUTÔNOMA ON — o piloto executa restart/pause sozinho (PRO + armado). Clique para desligar.'
+        : 'EXECUÇÃO AUTÔNOMA OFF — as recomendações ficam manuais. Clique para ligar (requer PRO + armado).';
+    }
+    if (dot) {
+      dot.style.background = auto ? 'var(--green)' : 'var(--orange)';
+      dot.style.boxShadow = auto ? '0 0 8px rgba(0,200,83,0.8)' : '0 0 6px rgba(255,160,0,0.6)';
+    }
+  }
+
+  async function _apRefreshAutoStatus() {
+    try {
+      const r = await authFetch('/api/auto-pilot/autonomous');
+      if (!r.ok) return;
+      const d = await r.json().catch(() => ({}));
+      _apSetAutoUi(!!d.autonomous);
+      const badge = document.getElementById('ap-auto-pro-badge');
+      if (badge) {
+        badge.textContent = d.pro ? 'PRO ✓' : 'PRO 🔒';
+        badge.classList.toggle('badge--green', !!d.pro);
+        badge.classList.toggle('badge--amber', !d.pro);
+        badge.title = d.pro
+          ? 'Gate PRO ok — execução autônoma permitida (open mode ou licença válida)'
+          : 'Gate PRO fechado — é preciso licença PRO para ligar a execução autônoma';
+      }
+      if (_apAuto && d.armed === false) {
+        const autoBtn = document.getElementById('ap-auto-btn');
+        if (autoBtn) autoBtn.title = 'Execução autônoma ON mas o Auto-Pilot está DESARMADO — arme o piloto para ativar.';
+      }
+    } catch (e) { /* advisory — never break the panel */ }
+  }
+
+  async function _apSetAuto(enabled) {
+    const btn = document.getElementById('ap-auto-btn');
+    setBtnLoading(btn, true);
+    try {
+      const r = await authFetch('/api/auto-pilot/autonomous', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ autonomous: enabled }),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (r.status === 402) {
+        const price = d.upgrade && d.upgrade.price_usd_month ? ' ($' + d.upgrade.price_usd_month + '/m)' : '';
+        showToast('error', '🔒 EXECUÇÃO AUTÔNOMA é PRO — licença necessária' + price);
+        _apRefreshAutoStatus();
+        return false;
+      }
+      if (!r.ok || !d.success) {
+        showToast('error', '⚠ Auto-Pilot: ' + (d.error || ('HTTP ' + r.status)));
+        _apRefreshAutoStatus();
+        return false;
+      }
+      _apSetAutoUi(!!d.autonomous);
+      showToast('success', enabled ? '🤖 EXECUÇÃO AUTÔNOMA ON — o piloto age sozinho (PRO + armado)' : 'Execução autônoma desligada');
+      _apRefreshAutoStatus();
+      return true;
+    } catch (e) {
+      showToast('error', '⚠ falha de rede ao alterar a execução autônoma');
+      return false;
+    } finally {
+      setBtnLoading(btn, false);
+    }
+  }
+
+  function _initAutoPilotAutoToggle() {
+    if (_apAutoToggleInit) return;
+    _apAutoToggleInit = true;
+
+    const btn = document.getElementById('ap-auto-btn');
+    if (btn) {
+      btn.addEventListener('click', () => {
+        if (_apAuto) { _apSetAuto(false); return; }  // disabling is the kill switch — direct
+        const m = document.getElementById('ap-auto-modal');
+        const input = document.getElementById('ap-auto-type');
+        const confirm = document.getElementById('ap-auto-confirm');
+        if (m && input && confirm) {
+          input.value = '';
+          confirm.disabled = true;
+          openModalAnimated(m);
+          setTimeout(() => input.focus(), 50);
+        } else {
+          _apSetAuto(true);
+        }
+      });
+    }
+
+    const m = document.getElementById('ap-auto-modal');
+    if (m) {
+      m.addEventListener('click', (e) => {
+        if (e.target.matches('[data-close]') || e.target === m) closeModalAnimated(m);
+      });
+    }
+
+    const input = document.getElementById('ap-auto-type');
+    const confirm = document.getElementById('ap-auto-confirm');
+    if (input && confirm) {
+      input.addEventListener('input', () => {
+        confirm.disabled = input.value.trim().toUpperCase() !== 'AUTONOMO';
+      });
+      confirm.addEventListener('click', async () => {
+        confirm.disabled = true;
+        const ok = await _apSetAuto(true);
+        const modal = document.getElementById('ap-auto-modal');
+        if (modal) modal.classList.remove('modal--open');
+        if (!ok) input.value = '';
+      });
+    }
+  }
+
+  // ── Issue #20 · Auto-Pilot ADVISORY — recomendações por device ──────
+  // Backend: GET /api/auto-pilot/recommendations (recs + armed),
+  // POST /api/auto-pilot/recommendations/<id>/respond {decision} (audited),
+  // GET /api/auto-pilot/recommendations/audit (trail). Fase 2 do Big Bet:
+  // o piloto consolida por dispositivo o que merece atenção e sugere a
+  // ação em um clique (restart / pause / blacklist / comprar).
+  let _apRecs = [];
+  let _apAudit = [];
+  let _apRecsInit = false;
+
+  function _apRecCardHtml(rec) {
+    if (!rec || typeof rec !== 'object') return '';
+    const esc = escapeHtml;
+    const sev = String(rec.severity || 'info').toLowerCase();
+    const action = (rec.action && typeof rec.action === 'object') ? rec.action : {};
+    const actionType = String(action.type || 'navigate');
+    const actionLabel = String(action.label || (actionType === 'buy' ? 'COMPRAR AGORA' : 'APLICAR'));
+    // Confirm text varies by action; buy opens the Braiins flow pre-filled.
+    // deviceName is escaped ONCE here (raw value), and data-confirm escapes
+    // it a second time for the HTML attribute — no double-escaping (&amp;amp;).
+    const rawDevice = rec.device_name || rec.device_id || 'device';
+    const confirmMsg = actionType === 'blacklist'
+      ? 'Adicionar o rig à blacklist (nunca alugar de novo)?'
+      : actionType === 'buy'
+        ? 'Abrir o fluxo de compra Braiins com o preço atual?'
+        : 'Executar \'' + actionLabel + '\' em ' + rawDevice + '?';
+    return (
+      '<div class="ap-rec ap-rec--' + esc(sev) + '" data-rec-id="' + esc(rec.id || '') + '">' +
+      '<div class="ap-rec__head">' +
+      '<span class="ap-rec__sev">' + esc(sev) + '</span>' +
+      '<span class="ap-rec__dev">' + esc(rawDevice) + '</span>' +
+      '<span class="ap-rec__type">' + esc(rec.issue_type || '') + '</span>' +
+      '</div>' +
+      '<div class="ap-rec__msg">' + esc(rec.message || '') + '</div>' +
+      '<div class="ap-rec__actions">' +
+      '<button type="button" class="btn btn--primary btn--mini ap-rec-apply" data-confirm="' + esc(confirmMsg) + '">' + esc(actionLabel) + '</button>' +
+      '<button type="button" class="btn btn--mini ap-rec-ignore" title="Ignorar e registrar no audit trail">IGNORAR</button>' +
+      '</div>' +
+      '</div>'
+    );
+  }
+
+  function _apAuditRowHtml(row) {
+    const esc = escapeHtml;
+    const decision = String(row.decision || '').toLowerCase();
+    const when = row.ts ? fmt.age(row.ts) : '—';
+    const body = (row.device_name || row.device_id || 'device') + ' · ' +
+      esc(row.issue_type || '') + ' → ' + esc(row.action_type || '?');
+    return (
+      '<div class="ap-audit__row">' +
+      '<span class="ap-audit__decision is-' + esc(decision === 'accept' ? 'accept' : 'ignore') + '">' +
+      esc(decision === 'accept' ? 'ACEITO' : 'IGNORADO') + '</span>' +
+      '<span class="ap-audit__body" title="' + esc(row.note || body) + '">' + body + '</span>' +
+      '<span class="ap-audit__when">' + esc(when) + '</span>' +
+      '</div>'
+    );
+  }
+
+  function _apRenderRecs() {
+    const list = document.getElementById('ap-recs-list');
+    const badge = document.getElementById('ap-recs-badge');
+    if (!list) return;
+    if (badge) {
+      badge.textContent = String(_apRecs.length);
+      badge.classList.toggle('badge--purple', _apRecs.length > 0);
+      badge.classList.toggle('badge--mute', _apRecs.length === 0);
+      badge.title = _apRecs.length + ' recomendação(ões) ativa(s)';
+    }
+    if (!_apRecs.length) {
+      list.innerHTML =
+        '<div class="empty-state" style="grid-column:1/-1;border:none;padding:12px">' +
+        '<div class="empty-state__icon">⌘</div>' +
+        '<div class="empty-state__title">Sem recomendações no momento</div>' +
+        '<div class="empty-state__desc">O Auto-Pilot (advisory) consolida por dispositivo o que merece atenção — OFFLINE, temperatura alta, hashrate abaixo do pico, rig com track record ruim ou janela de arbitragem — com a ação sugerida em um clique.</div>' +
+        '</div>';
+    } else {
+      list.innerHTML = _apRecs.map(_apRecCardHtml).join('');
+    }
+  }
+
+  function _apRenderAudit() {
+    const wrap = document.getElementById('ap-audit-wrap');
+    const list = document.getElementById('ap-audit-list');
+    const count = document.getElementById('ap-audit-count');
+    if (!wrap || !list) return;
+    if (!_apAudit.length) {
+      wrap.style.display = 'none';
+      return;
+    }
+    wrap.style.display = '';
+    if (count) count.textContent = String(_apAudit.length);
+    list.innerHTML = _apAudit.slice(0, 12).map(_apAuditRowHtml).join('');
+  }
+
+  async function _apLoadRecs() {
+    try {
+      const r = await authFetch('/api/auto-pilot/recommendations');
+      if (r.ok) {
+        const d = await r.json().catch(() => ({}));
+        _apRecs = Array.isArray(d.recommendations) ? d.recommendations : [];
+        if (typeof d.armed === 'boolean') _apSetUi(d.armed);
+      }
+    } catch (e) { /* advisory — never break the module */ }
+    try {
+      const r2 = await authFetch('/api/auto-pilot/recommendations/audit?limit=50');
+      if (r2.ok) {
+        const d2 = await r2.json().catch(() => ({}));
+        _apAudit = Array.isArray(d2.audit) ? d2.audit : [];
+      }
+    } catch (e) { /* best-effort */ }
+    _apRenderRecs();
+    _apRenderAudit();
+  }
+
+  async function _apRespond(recId, decision, confirmMsg) {
+    if (decision === 'accept' && confirmMsg && !window.confirm(confirmMsg)) return;
+    try {
+      const r = await authFetch('/api/auto-pilot/recommendations/' + encodeURIComponent(recId) + '/respond', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ decision: decision }),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok || !d.success) {
+        showToast('error', '⚠ Auto-Pilot: ' + (d.error || ('HTTP ' + r.status)));
+        return;
+      }
+      if (decision === 'accept' && d.action_result && d.action_result.ok === false) {
+        showToast('error', '⚠ ' + (d.action_result.error || 'ação falhou'));
+      } else if (decision === 'accept') {
+        showToast('success', d.action_type === 'buy' ? '🛒 abrindo compra…' : '✓ ação executada: ' + (d.action_type || 'ok'));
+      } else {
+        showToast('success', 'recomendação ignorada (auditado)');
+      }
+      // Buy flow: open the Braiins spot modal pre-filled with the current
+      // price (real-money step stays behind the typed confirmation).
+      if (d.open_buy_flow) {
+        const buyBtn = document.getElementById('rentals-buy');
+        activateModule('rentals');
+        setTimeout(() => { if (buyBtn) buyBtn.click(); }, 250);
+      }
+      _apLoadRecs();
+    } catch (e) {
+      showToast('error', '⚠ Auto-Pilot: ' + (e.message || 'falha de rede'));
+    }
+  }
+
+  function _initAutoPilotAdvisory() {
+    if (_apRecsInit) return;
+    _apRecsInit = true;
+    const panel = document.getElementById('ap-advisory-panel');
+    const refresh = document.getElementById('ap-recs-refresh');
+    if (refresh) refresh.addEventListener('click', _apLoadRecs);
+    if (panel) {
+      panel.addEventListener('click', (e) => {
+        const apply = e.target.closest ? e.target.closest('.ap-rec-apply') : null;
+        const ignore = e.target.closest ? e.target.closest('.ap-rec-ignore') : null;
+        const card = e.target.closest ? e.target.closest('.ap-rec') : null;
+        if (!card) return;
+        const recId = card.getAttribute('data-rec-id');
+        if (!recId) return;
+        if (apply) {
+          _apRespond(recId, 'accept', apply.getAttribute('data-confirm') || '');
+        } else if (ignore) {
+          _apRespond(recId, 'ignore');
+        }
+      });
+    }
+    _apLoadRecs();
+  }
+
+  // ── Issue #76 · Auto-Pilot DRY-RUN (execução simulada) ─────────────
+  let _apDrInit = false;
+
+  function _apDrNowCardHtml(a) {
+    const esc = escapeHtml;
+    const blocked = a.safety_verdict === 'blocked';
+    const cancelled = a.conflict === 'cancelled_by_conflict';
+    const rated = a.budget === 'rate_limited';
+    const cls = cancelled ? 'ap-dr-card--cancel' : (blocked ? 'ap-dr-card--blocked' : (rated ? 'ap-dr-card--rate' : ''));
+    const actual = a.actual_value != null ? String(a.actual_value) : '—';
+    let chips = cancelled
+      ? '<span class="ap-dr-chip ap-dr-chip--mute">cancelada · conflito</span>'
+      : (blocked
+        ? '<span class="ap-dr-chip ap-dr-chip--bad">safety: BLOQUEADO</span>'
+        : '<span class="ap-dr-chip ap-dr-chip--ok">safety: APROVADO</span>');
+    if (blocked && a.safety_reason) {
+      chips += '<span class="ap-dr-chip ap-dr-chip--bad" title="' + esc(a.safety_reason) + '">motivo</span>';
+    }
+    if (rated) {
+      chips += '<span class="ap-dr-chip ap-dr-chip--warn">budget: rate-limited</span>';
+    } else if (!cancelled) {
+      chips += '<span class="ap-dr-chip ap-dr-chip--mute">executaria</span>';
+    }
+    return (
+      '<div class="ap-dr-card ' + cls + '">' +
+      '<div class="ap-dr-card__head"><span class="ap-dr-card__rule">' + esc(a.rule_name || ('regra #' + String(a.rule_id))) + '</span>' +
+      '<span class="ap-dr-card__dev">' + esc(a.device_name || a.device_id || '') + '</span></div>' +
+      '<div class="ap-dr-card__cond">' + esc(String(a.condition_metric || '')) + ' ' + esc(String(a.condition_operator || '')) + ' ' + esc(String(a.condition_value != null ? a.condition_value : '')) + ' · atual: ' + esc(actual) + ' → ' + esc(String(a.action_command || '?')) + '</div>' +
+      '<div class="ap-dr-card__outcome">' + esc(a.predicted_outcome || '') + '</div>' +
+      '<div class="ap-dr-card__chips">' + chips + '</div>' +
+      '</div>'
+    );
+  }
+
+  function _apDrReplayRowHtml(r) {
+    const esc = escapeHtml;
+    const when = r.first_ts ? fmt.age(r.first_ts) : '';
+    return (
+      '<div class="ap-dr-replay__row">' +
+      '<span class="ap-dr-replay__rule">' + esc(r.rule_name || ('regra #' + String(r.rule_id))) + ' · ' + esc(r.device_name || r.device_id || '') + '</span>' +
+      '<span class="ap-dr-replay__action">' + esc(r.action_command || '') + '</span>' +
+      '<span class="ap-dr-replay__fires" title="rate-limited: ' + esc(String(r.rate_limited || 0)) + '">' + esc(String(r.fires || 0)) + '×</span>' +
+      '<span class="ap-dr-replay__when">' + esc(when) + '</span>' +
+      '</div>'
+    );
+  }
+
+  function _apDrErrHtml(msg) {
+    return '<div class="ap-dr-banner" style="border-color:var(--accent-red,#ff4d4d);color:var(--accent-red,#ff4d4d)">' +
+      '⚠ ' + escapeHtml(msg) + '</div>';
+  }
+
+  async function _apDrLoad() {
+    try {
+      const r = await authFetch('/api/automation/dry-run');
+      if (r.ok) {
+        const d = await r.json().catch(() => ({}));
+        const list = document.getElementById('ap-dr-now-list');
+        const count = document.getElementById('ap-dr-now-count');
+        const actions = Array.isArray(d.actions) ? d.actions : [];
+        if (count) count.textContent = actions.length ? String(actions.length) : '0';
+        if (list) {
+          if (!actions.length) {
+            list.innerHTML =
+              '<div class="empty-state" style="grid-column:1/-1;border:none;padding:12px">' +
+              '<div class="empty-state__icon">◈</div>' +
+              '<div class="empty-state__title">Nenhuma regra dispararia agora</div>' +
+              '<div class="empty-state__desc">Com a telemetria atual e as regras ativas, o piloto não teria nenhuma ação a tomar.</div>' +
+              '</div>';
+          } else {
+            list.innerHTML = actions.map(_apDrNowCardHtml).join('');
+          }
+        }
+      } else {
+        // Honest feedback: a failed simulation is NOT "nothing fires".
+        // escapeHtml at the source (status is numeric — double-escape is
+        // harmless) to satisfy the DOM regression guard's data-flow scan.
+        const list = document.getElementById('ap-dr-now-list');
+        if (list) list.innerHTML = _apDrErrHtml('simulação indisponível (' + escapeHtml(r.status) + ')');
+      }
+    } catch (e) { /* dry-run — never break the module */ }
+    try {
+      const r2 = await authFetch('/api/automation/dry-run/replay?hours=24&limit=288');
+      if (r2.ok) {
+        const d2 = await r2.json().catch(() => ({}));
+        const list2 = document.getElementById('ap-dr-replay-list');
+        const count2 = document.getElementById('ap-dr-replay-count');
+        const rows = Array.isArray(d2.per_rule) ? d2.per_rule : [];
+        if (count2) count2.textContent = d2.total_fires != null ? String(d2.total_fires) + ' disparos' : '—';
+        if (list2) {
+          if (!rows.length) {
+            list2.innerHTML =
+              '<div class="empty-state" style="grid-column:1/-1;border:none;padding:12px">' +
+              '<div class="empty-state__icon">↻</div>' +
+              '<div class="empty-state__title">Nenhuma regra teria disparado nas últimas 24h</div>' +
+              '<div class="empty-state__desc">Simulação sobre o histórico de telemetria — cooldown, conflitos e budget aplicados.</div>' +
+              '</div>';
+          } else {
+            list2.innerHTML = rows.map(_apDrReplayRowHtml).join('');
+          }
+        }
+      }
+    } catch (e) { /* best-effort */ }
+  }
+
+  function _initAutoPilotDryRun() {
+    if (_apDrInit) return;
+    _apDrInit = true;
+    const refresh = document.getElementById('ap-dr-refresh');
+    if (refresh) refresh.addEventListener('click', _apDrLoad);
+    _apDrLoad();
   }
 
   function _initAiChat() {
@@ -5012,6 +6841,84 @@ function renderAccount(acct) {
       return resp;
     }
 
+    // PREMIUM (Issue #182): o AI real (LLM via SSE) é o recurso premium.
+    // Entitled quando open mode (tudo grátis) OU tier PREMIUM — e o servidor
+    // tem chave de LLM configurada (ai_configured). Senão, bot local.
+    function aiCanUseReal() {
+      return !!(_license.ai_configured && (_license.mode === 'open' || _license.premium));
+    }
+
+    function showPremiumCta(d) {
+      logMessage('PREMIUM', (d && d.error) || 'AI Operator real é PREMIUM — upgrade necessário', 'WARN');
+      openUpgradeModal();
+    }
+
+    // Streams /api/ai/query (SSE). On success morphs typingDiv into the real
+    // answer; returns true when a real response was shown (text or a handled
+    // provider error). False → caller falls back to the local bot.
+    async function tryRealAi(text, typingDiv) {
+      // Timeout: um LLM pendurado não pode deixar o indicador de typing
+      // para sempre — aborta após 45s e o caller cai no bot local.
+      const ctrl = (typeof AbortController !== 'undefined') ? new AbortController() : null;
+      const timer = ctrl ? setTimeout(function () { try { ctrl.abort(); } catch (e) {} }, 45000) : null;
+      try {
+        const r = await authFetch('/api/ai/query', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ query: text }),
+          signal: ctrl ? ctrl.signal : undefined,
+        });
+        if (!r.ok) {
+          if (r.status === 402) {
+            const d = await r.json().catch(() => ({}));
+            if (d && d.required_tier === 'premium') showPremiumCta(d);
+          }
+          return false;
+        }
+        if (!r.body || !r.body.getReader) return false;
+        const reader = r.body.getReader();
+        const decoder = new TextDecoder();
+        let buf = '';
+        let acc = '';
+        let sawText = false;
+        let sawError = false;
+        const contentEl = document.createElement('div');
+        contentEl.className = 'ai-msg__content';
+        typingDiv.innerHTML = '<div class="ai-msg__header">◆ CYPHER AI</div>';
+        typingDiv.appendChild(contentEl);
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buf += decoder.decode(value, { stream: true });
+          let idx;
+          while ((idx = buf.indexOf('\n\n')) !== -1) {
+            const raw = buf.slice(0, idx).trim();
+            buf = buf.slice(idx + 2);
+            if (!raw.startsWith('data:')) continue;
+            let obj = {};
+            try { obj = JSON.parse(raw.slice(5).trim()); } catch (e) { continue; }
+            if (obj.type === 'text') {
+              sawText = true;
+              acc += obj.content || '';
+              contentEl.textContent = acc;
+              messages.scrollTop = messages.scrollHeight;
+            } else if (obj.type === 'error') {
+              sawError = true;
+              contentEl.textContent = obj.message || 'AI error';
+            } else if (obj.type === 'done') {
+              break;
+            }
+          }
+        }
+        if (!sawText && !sawError) return false;
+        return true;
+      } catch (e) {
+        return false;  // aborted (timeout), rede ou 5xx → fallback pro bot local
+      } finally {
+        if (timer) clearTimeout(timer);
+      }
+    }
+
     async function handleSend() {
       try {
         const text = input.value.trim();
@@ -5028,14 +6935,19 @@ function renderAccount(acct) {
         messages.appendChild(typingDiv);
         messages.scrollTop = messages.scrollHeight;
 
-        // Brief processing delay
-        await new Promise(r => setTimeout(r, 200 + Math.random() * 300));
-
-        typingDiv.remove();
-
-        const response = getResponse(text);
-        const formatted = response.replace(/\*\*(.*?)\*\*/g, '<strong style="color:var(--accent-btc)">$1</strong>');
-        addMessage('assistant', formatted);
+        // Real AI (PREMIUM/open mode) ou bot local — nunca quebra o chat.
+        let usedReal = false;
+        if (aiCanUseReal()) {
+          usedReal = await tryRealAi(text, typingDiv);
+        }
+        if (!usedReal) {
+          // Brief processing delay (bot local)
+          await new Promise(r => setTimeout(r, 200 + Math.random() * 300));
+          typingDiv.remove();
+          const response = getResponse(text);
+          const formatted = response.replace(/\*\*(.*?)\*\*/g, '<strong style="color:var(--accent-btc)">$1</strong>');
+          addMessage('assistant', formatted);
+        }
       } finally {
         send.disabled = false;
       }
@@ -5269,6 +7181,10 @@ function renderAccount(acct) {
   function makeChart(id, label, color) {
     const canvas = document.getElementById(id);
     if (!canvas) return null;
+    // Issue #186: defensivo — app.js roda com defer após o Chart.js, mas se o
+    // CDN falhar (offline/blocked) o boot não pode crashar. Null é tratado
+    // pelos call sites (mesma convenção do canvas ausente).
+    if (typeof Chart === 'undefined') return null;
     const ctx = canvas.getContext('2d');
     const cfg = CHART_METRICS[id];
     // Human-readable Y ticks: hashrate/pool render fmt.hashrate (TH/s), best
@@ -5429,7 +7345,7 @@ function renderAccount(acct) {
 
   // ── Settings ──
   const SETTINGS_CACHE = { data: null };
-  const SETTINGS_SELECTS = { cost_mode: ['none','rental','power'], active_currency: ['USD','BRL','EUR','GBP','JPY','KRW','CNY'], webhook_min_severity: ['INFO','WARN','CRIT','GOLD','SUCCESS'] };
+  const SETTINGS_SELECTS = { cost_mode: ['none','rental','power'], active_currency: ['USD','BRL','EUR','GBP','JPY','KRW','CNY'], webhook_min_severity: ['INFO','WARN','CRIT','GOLD','SUCCESS'], rental_auto_blacklist_grade: ['A','B','C','D','F'] };
   const SETTINGS_CHECKBOX = { show_test_alerts: true };
   // Didactic hints shown under each settings field so users configure the
   // cost model correctly (Fase: LEASE mode — rental_usd_per_th_day is the
@@ -5461,8 +7377,13 @@ function renderAccount(acct) {
     rental_pl_alert_pct: 'ALERTA CFO: dispara webhook + push quando um aluguel FECHA com P/L econômico abaixo deste % (ex: -50). Vazio ou 0 = desativado. Como o P/L vs yield costuma ser muito negativo, use um limiar realista (ex: -90) para só alertar os piores — ou deixe vazio para desligar. (Sem network hashrate, a checagem usa overpay vs preço de mercado.)',
     rental_pl_alert_window_hours: 'Janela: só alerta aluguéis que FECHARAM nas últimas N horas — evita enxurrada de alertas antigos ao habilitar a primeira vez.',
     rental_market_overpay_pct: 'ALERTA OVERPAY: dispara webhook + push quando o preço PAGO de um aluguel ficar este % ACIMA do mercado NA HORA DA COMPRA (preço acordado vs mercado histórico na data do start). Ex: 100 = alerta se pagou 2× o mercado. Vazio ou 0 = desativado. Dispara também para aluguéis ativos comprados nas últimas N horas.',
+    rentals_min_delivery_pct: 'ANÁLISE DE RENDIMENTO (CSV): entrega mínima aceitável por aluguel (default 90). Abaixo dela o aluguel é marcado cancelled_performance no CSV e o reembolso devido é calculado (regra MRR: <80% = total; 80%..mín = proporcional).',
     rental_market_arb_pct: 'ALERTA ARBITRAGEM: dispara webhook + push quando o mercado AGORA estiver este % ABAIXO dos seus custos históricos (seus próprios aluguéis — abra o painel RENTALS uma vez para popular). Compara com 3 referências: CUSTO MÉDIO anunciado, CUSTO EFETIVO com entrega real (paid ÷ TH·h entregues — sobe quando a entrega é <100%) e o ÚLTIMO aluguel; a referência MAIS ALTA dispara o sinal. Ex: 30 = alerta quando o mercado estiver ≥30% mais barato que sua referência mais cara — janela de compra. Vazio ou 0 = desativado. 100% local, custo zero de provider.',
     rental_market_arb_cooldown_hours: 'Cooldown da arbitragem: repete o alerta de oportunidade no máximo 1× a cada N horas (padrão 24). Mercado barato persistente avisa diariamente, sem spam.',
+    rental_reco_worse_alert: 'ALERTA RECOMENDAÇÃO ACEITA PIOROU: dispara webhook + push quando um rig que você blacklistou (recomendação aceita) termina com veredito PIOROU — ele voltou a entregar mal DEPOIS da exclusão, o blacklist não resolveu. 0/1, default 0 (off). Decisões revogadas nunca disparam.',
+    rental_auto_exclude_alert: 'ALERTA AUTO-EXCLUSÃO: dispara webhook + push quando o sweep automático excluir um rig por sub-entrega (grade ≤ seu floor com amostras suficientes). A mensagem inclui a causa (entrega %, amostras, régua vigente). 0/1, default 0 (off).',
+    rental_auto_blacklist_min_samples: 'AUTO-EXCLUSÃO: mínimo de amostras de entrega antes de excluir automaticamente um rig que entrega mal (default 2). Quanto mais alto, mais conservadora a decisão do piloto — precisa de mais histórico para excluir.',
+    rental_auto_blacklist_grade: 'AUTO-EXCLUSÃO: o rig é auto-excluído quando a grade de entrega é PIOR OU IGUAL a esta letra (default F = só F). Ex: D exclui D e F; C exclui C, D e F. Grades vêm do trust score (median delivery + consistência).',
   };
   function renderSettingsForm() {
     const box = dom.settingsBody;
@@ -5472,7 +7393,7 @@ function renderAccount(acct) {
       box.innerHTML = '<div class="mkt-empty" style="padding:16px;text-align:center">settings unavailable</div>';
       return;
     }
-    const order = ['cost_mode','rental_usd_per_th_day','power_watts','power_kwh_usd','btc_block_reward','btc_avg_tx_fee','pool_fee_pct','orphan_rate_pct','active_currency','active_fiat','stale_share_minutes','hashrate_drop_pct','webhook_url','webhook_min_severity','rental_pl_alert_pct','rental_pl_alert_window_hours','rental_market_overpay_pct','rental_market_arb_pct','rental_market_arb_cooldown_hours','show_test_alerts','mrr_api_key','mrr_api_secret','braiins_api_key'];
+    const order = ['cost_mode','rental_usd_per_th_day','power_watts','power_kwh_usd','btc_block_reward','btc_avg_tx_fee','pool_fee_pct','orphan_rate_pct','active_currency','active_fiat','stale_share_minutes','hashrate_drop_pct','webhook_url','webhook_min_severity','rental_pl_alert_pct','rental_pl_alert_window_hours','rental_market_overpay_pct','rental_market_arb_pct','rental_market_arb_cooldown_hours','rental_reco_worse_alert','rental_auto_exclude_alert','rentals_min_delivery_pct','rental_auto_blacklist_min_samples','rental_auto_blacklist_grade','show_test_alerts','mrr_api_key','mrr_api_secret','braiins_api_key'];
     const keys = Object.keys(settings).sort((a,b) => {
       const ia = order.indexOf(a), ib = order.indexOf(b);
       return (ia<0?99:ia) - (ib<0?99:ib);
@@ -5499,6 +7420,13 @@ function renderAccount(acct) {
     if ((SETTINGS_CACHE.env || {}).braiins_api_key && settings['braiins_api_key']) {
       html += '<div style="margin-top:2px;border:1px solid var(--accent-orange, #ffa000);border-radius:4px;padding:6px 8px;font-size:10px;line-height:1.4;color:var(--text-muted)">⚠ O servidor tem <code>BRAIINS_API_KEY</code> definida como env var — ela <b>SOBRESCREVE</b> o valor abaixo. Remova a env var (Render → Environment) para usar a chave do Settings.</div>';
     }
+    // Same override warning for the MRR key/secret pair (Issue #189): the
+    // per-user model is Settings-only — env vars are a default-tenant trap
+    // that silently wins over the fields below.
+    const mrrEnv = (SETTINGS_CACHE.env || {}).mrr_api_key || (SETTINGS_CACHE.env || {}).mrr_api_secret;
+    if (mrrEnv && (settings['mrr_api_key'] || settings['mrr_api_secret'])) {
+      html += '<div style="margin-top:2px;border:1px solid var(--accent-orange, #ffa000);border-radius:4px;padding:6px 8px;font-size:10px;line-height:1.4;color:var(--text-muted)">⚠ O servidor tem <code>MRR_API_KEY/MRR_API_SECRET</code> como env var — elas <b>SOBRESCREVEM</b> os valores abaixo. Remova as env vars (Render → Environment) para usar as chaves do Settings.</div>';
+    }
     // "Test connection" for Braiins: probes the live API and reports the same
     // verdict the RENTALS panel derives (ok / rejected / missing).
     if (settings['braiins_api_key']) {
@@ -5519,6 +7447,20 @@ function renderAccount(acct) {
         '<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">' +
         '<button type="button" class="btn btn--primary btn--mini" id="wh-send-test">📡 ENVIAR TESTE</button>' +
         '<span id="wh-test-status" style="font-size:10px;color:var(--text-muted)"></span>' +
+        '</div></div>';
+    }
+    // "Test alert" for the AUTO-EXCLUSION family (Issue #104): fires the SAME
+    // message the sweep dispatches on a real exclusion, through the SAME
+    // builders (send_webhook_for_alert + notify_tenant_alert), synchronously —
+    // webhook + push verdict in one click. Always visible so the operator can
+    // validate the tenant config BEFORE enabling rental_auto_exclude_alert.
+    if (settings['rental_auto_exclude_alert']) {
+      html += '<div style="margin-top:6px;border:1px dashed var(--border);border-radius:4px;padding:8px">' +
+        '<div style="font-size:10px;color:var(--text-tertiary);letter-spacing:0.06em">ALERTA AUTO-EXCLUSÃO — teste do canal (webhook + push)</div>' +
+        '<div style="font-size:10px;color:var(--text-muted);line-height:1.4;margin:4px 0 6px">Envia uma mensagem de exemplo do tipo que o piloto dispara quando o sweep exclui um rig por sub-entrega. Nenhuma exclusão real é feita.</div>' +
+        '<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">' +
+        '<button type="button" class="btn btn--primary btn--mini" id="ae-send-test">🧪 TESTAR ALERTA</button>' +
+        '<span id="ae-test-status" style="font-size:10px;color:var(--text-muted)"></span>' +
         '</div></div>';
     }
     html += '</div>';
@@ -5584,6 +7526,41 @@ function renderAccount(acct) {
         }
       });
     }
+    const aeTestBtn = document.getElementById('ae-send-test');
+    if (aeTestBtn) {
+      aeTestBtn.addEventListener('click', async function() {
+        const st = document.getElementById('ae-test-status');
+        if (st) { st.textContent = 'enviando…'; st.style.color = 'var(--text-muted)'; }
+        try {
+          const r = await authFetch('/api/settings/test-auto-exclude-alert', { method: 'POST' });
+          const d = await r.json();
+          if (!st) return;
+          if (!r.ok) {
+            st.textContent = '✗ ' + (d.error || ('HTTP ' + r.status));
+            st.style.color = 'var(--accent-red)';
+            return;
+          }
+          if (d.success) {
+            const bits = [];
+            if (d.webhook_ok) bits.push('webhook ✓');
+            if (d.push_targets > 0) bits.push('push → ' + d.push_targets + ' dispositivo(s)');
+            // Green success must NOT mask a dead webhook — that's the config
+            // failure this button exists to catch (e.g. broken URL + push ok).
+            const whWarn = (d.webhook_configured && !d.webhook_ok) ? ('⚠ webhook: ' + (d.webhook_reason || 'falhou')) : '';
+            st.textContent = '✓ ' + bits.join(' · ') + (whWarn ? ' · ' + whWarn : '');
+            st.style.color = whWarn ? 'var(--accent-orange)' : 'var(--green)';
+          } else {
+            const why = d.webhook_configured
+              ? 'webhook: ' + (d.webhook_reason || 'falhou') + (d.push_targets === 0 ? ' · push sem dispositivos' : '')
+              : 'nenhum canal entregou';
+            st.textContent = '✗ ' + why + (d.guidance ? ' — ' + d.guidance : '');
+            st.style.color = 'var(--accent-red)';
+          }
+        } catch (e) {
+          if (st) { st.textContent = '✗ network error: ' + e.message; st.style.color = 'var(--accent-red)'; }
+        }
+      });
+    }
   }
   async function loadSettings() {
     try {
@@ -5597,10 +7574,10 @@ function renderAccount(acct) {
     } catch (e) {}
   }
   function openSettingsModal() {
-    dom.settingsModal?.classList.add('modal--open');
+    openModalAnimated(dom.settingsModal);
     if (dom.settingsBody && !dom.settingsBody.innerHTML.trim()) renderSettingsForm();
   }
-  function closeSettingsModal() { dom.settingsModal?.classList.remove('modal--open'); }
+  function closeSettingsModal() { closeModalAnimated(dom.settingsModal); }
   dom.settingsModal?.addEventListener('click', (e) => { if (e.target.matches('[data-close]')) closeSettingsModal(); });
   dom.openSettings?.addEventListener('click', openSettingsModal);
 
@@ -5644,8 +7621,8 @@ function renderAccount(acct) {
       if (bar) {
         bar.innerHTML = methods.map(function(m) {
           return '<span class="support-method support-bar__method" title="' + escapeHtml(m.label) + '">' +
-            '<span class="support-method-tag" style="color:' + (m.color || '#00ff41') + '">' + (m.icon || '₿') + ' ' + escapeHtml(m.label) + '</span>' +
-            '<span class="support-method-addr" data-copy="' + escapeHtml(m.address) + '">' + escapeHtml(m.address) + '</span>' +
+            '<span class="support-method-tag" style="color:' + escapeHtml(m.color || '#00ff41') + '">' + escapeHtml(m.icon || '₿') + ' ' + escapeHtml(m.label) + '</span>' +
+            '<span class="support-method-addr" title="' + escapeHtml(m.label) + ': ' + escapeHtml(m.address) + '" data-copy="' + escapeHtml(m.address) + '">' + escapeHtml(m.address) + '</span>' +
             '<button class="support-method-copy" data-copy-btn aria-label="Copy ' + escapeHtml(m.label) + ' address">⧉</button>' +
             '</span>';
         }).join('');
@@ -5656,7 +7633,7 @@ function renderAccount(acct) {
       if (grid) {
         grid.innerHTML = methods.map(function(m) {
           return '<div class="support-modal__card">' +
-            '<div class="support-modal__card-icon" style="color:' + (m.color || '#00ff41') + '">' + (m.icon || '₿') + '</div>' +
+            '<div class="support-modal__card-icon" style="color:' + escapeHtml(m.color || '#00ff41') + '">' + escapeHtml(m.icon || '₿') + '</div>' +
             '<div class="support-modal__card-label">' + escapeHtml(m.label) + '</div>' +
             (m.note ? '<div class="support-modal__card-note">' + escapeHtml(m.note) + '</div>' : '') +
             '<div class="support-modal__card-addr" data-copy="' + escapeHtml(m.address) + '">' + escapeHtml(m.address) + '</div>' +
@@ -5695,10 +7672,10 @@ function renderAccount(acct) {
       stats.textContent = total + ' doação' + (total === 1 ? '' : 'ões') + ' · ' + (totalSat >= 1e8 ? (totalSat / 1e8).toFixed(8).replace(/\.?0+$/, '') + ' BTC' : totalSat.toLocaleString('en-US') + ' sats') + ' recebidos';
       list.innerHTML = don.slice(0, 6).map(function(row) {
         var methodIcon = { lightning: '⚡', btc: '₿', hashpower: '⛏' }[row.method] || '♥';
-        var amt = row.amount_sat != null ? (row.amount_sat >= 1e8 ? (row.amount_sat / 1e8).toFixed(8).replace(/\.?0+$/, '') + ' BTC' : row.amount_sat.toLocaleString('en-US') + ' sats') : '—';
+        var amt = row.amount_sat != null ? escapeHtml(row.amount_sat >= 1e8 ? (row.amount_sat / 1e8).toFixed(8).replace(/\.?0+$/, '') + ' BTC' : row.amount_sat.toLocaleString('en-US') + ' sats') : '—';
         var t = new Date((row.ts || 0) * 1000);
         var ts = t.toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
-        var proof = row.txid ? row.txid.slice(0, 10) + '…' : (row.preimage ? 'preimage ' + row.preimage.slice(0, 10) + '…' : '');
+        var proof = row.txid ? escapeHtml(row.txid.slice(0, 10)) + '…' : (row.preimage ? 'preimage ' + escapeHtml(row.preimage.slice(0, 10)) + '…' : '');
         // verified = onchain (mempool watcher) or manual (operator-confirmed);
         // webln = client-reported, not verified on-chain
         var badge = row.source !== 'webln'
@@ -5707,7 +7684,7 @@ function renderAccount(acct) {
         return '<div class="donation-row">' +
           '<span class="donation-row__icon">' + methodIcon + '</span>' +
           '<span class="donation-row__amt">' + amt + '</span>' +
-          '<span class="donation-row__proof mono">' + (proof ? proof : (row.note || '')) + '</span>' +
+          '<span class="donation-row__proof mono">' + (proof ? proof : escapeHtml(row.note || '')) + '</span>' +
           badge +
           '<span class="donation-row__ts">' + ts + '</span>' +
           '</div>';
@@ -5726,7 +7703,7 @@ function renderAccount(acct) {
     if (onExpand || e.target.closest('#support-bar-methods')) {
       if (onExpand) {
         var panel = document.getElementById('support-panel');
-        if (panel) panel.classList.add('modal--open');
+        if (panel) openModalAnimated(panel);
       }
       setTimeout(_populateLNAddress, 200);
       // Re-render on open so a failed boot fetch self-heals when the panel
@@ -5851,7 +7828,7 @@ function renderAccount(acct) {
 
   // ── Wallet modal ──
   function openWalletModal() {
-    dom.walletModal?.classList.add('modal--open');
+    openModalAnimated(dom.walletModal);
     // Fill current address info (NOT CONNECTED state when no wallet yet)
     var walletConnected = !!window.BTC_ADDRESS;
     if (dom.walletCurrentAddr) {
@@ -5877,7 +7854,7 @@ function renderAccount(acct) {
     fetchWalletHistory();
   }
   function closeWalletModal() {
-    dom.walletModal?.classList.remove('modal--open');
+    closeModalAnimated(dom.walletModal);
     if (dom.walletStatus) dom.walletStatus.textContent = '';
   }
   // Onboarding CTA: show when NO wallet is connected, hide once one is
@@ -5909,7 +7886,7 @@ function renderAccount(acct) {
           data.history.forEach(function(entry) {
             var li = document.createElement('button');
             li.className = 'wallet-history__item';
-            li.innerHTML = '<span class="mono">' + entry.address.slice(0, 10) + '...</span> <span class="mute">' + (entry.worker || '') + '</span>';
+            li.innerHTML = '<span class="mono">' + escapeHtml(entry.address.slice(0, 10)) + '...</span> <span class="mute">' + escapeHtml(entry.worker || '') + '</span>';
             li.onclick = function() {
               var input = document.getElementById('wallet-address-input');
               if (input) input.value = entry.address;
@@ -6048,8 +8025,8 @@ dom.walletSave?.addEventListener('click', async () => {
   });
 
   // ── Export ──
-  function openExportModal() { dom.exportModal?.classList.add('modal--open'); }
-  function closeExportModal() { dom.exportModal?.classList.remove('modal--open'); }
+  function openExportModal() { openModalAnimated(dom.exportModal); }
+  function closeExportModal() { closeModalAnimated(dom.exportModal); }
   dom.exportModal?.addEventListener('click', (e) => { if (e.target.matches('[data-close]')) closeExportModal(); });
   dom.openExports?.addEventListener('click', openExportModal);
 
@@ -7225,7 +9202,7 @@ dom.walletSave?.addEventListener('click', async () => {
         ];
 
         dom.axeDetailBody.innerHTML = items.map(it =>
-          '<div class="axe-detail__item"><div class="lbl">' + escapeHtml(it.lbl) + '</div><div class="val' + (it.cls ? ' ' + it.cls : '') + '">' + escapeHtml(String(it.val)) + '</div></div>'
+          '<div class="axe-detail__item"><div class="lbl">' + escapeHtml(it.lbl) + '</div><div class="val' + (it.cls ? ' ' + escapeHtml(it.cls) : '') + '">' + escapeHtml(String(it.val)) + '</div></div>'
         ).join('');
 
         // Phase C: load telemetry history chart
@@ -7243,7 +9220,7 @@ dom.walletSave?.addEventListener('click', async () => {
     const wrap = document.getElementById('axe-detail-chart-wrap');
     const canvas = document.getElementById('axe-detail-chart');
     const countBadge = document.getElementById('axe-detail-chart-count');
-    if (!wrap || !canvas) return;
+    if (!wrap || !canvas || typeof Chart === 'undefined') return;  // Issue #186: defer-safe
 
     // Destroy previous chart instance so Chart.js doesn't complain.
     if (_axeDetailChart) { _axeDetailChart.destroy(); _axeDetailChart = null; }
@@ -7486,7 +9463,7 @@ dom.walletSave?.addEventListener('click', async () => {
       const cls = row.ok ? 'axe-wiz-check--ok' : 'axe-wiz-check--fail';
       const icon = row.ok ? '✓' : '✗';
       const detail = row.detail ? `<span style="color:var(--text-tertiary);margin-left:6px">${escapeHtml(row.detail)}</span>` : '';
-      return `<div class="axe-wiz-check ${cls}"><span>${icon}</span><span class="axe-wiz-check__label">${row.label}</span><span class="axe-wiz-check__val">${escapeHtml(row.val)}</span>${detail}</div>`;
+      return `<div class="axe-wiz-check ${cls}"><span>${icon}</span><span class="axe-wiz-check__label">${escapeHtml(row.label)}</span><span class="axe-wiz-check__val">${escapeHtml(row.val)}</span>${detail}</div>`;
     }).join('');
     const verdict = reachable
       ? `<div class="axe-wiz-check axe-wiz-check--ok" style="margin-top:4px"><span>✓</span><span class="axe-wiz-check__label">READY</span><span class="axe-wiz-check__val">${escapeHtml(String(proto || '').toUpperCase())} miner detected</span></div>`
@@ -8355,11 +10332,25 @@ dom.walletSave?.addEventListener('click', async () => {
             applicationServerKey: urlBase64ToUint8Array(vapidKey),
           });
           const raw = newSub.toJSON();
-          await fetch('/api/push/subscribe', {
+          // Issue #115: attach the Bearer token when present so the
+          // subscription is stored under the CALLER's tenant (JWT sub is the
+          // only authority for a non-empty tenant); anonymous visitors still
+          // subscribe under the operator tenant with an https:// endpoint.
+          const pushHeaders = { 'Content-Type': 'application/json' };
+          const tok = (typeof authGetToken === 'function') ? authGetToken() : '';
+          if (tok) pushHeaders['Authorization'] = 'Bearer ' + tok;
+          const subRes = await fetch('/api/push/subscribe', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: pushHeaders,
             body: JSON.stringify({ endpoint: raw.endpoint, keys: raw.keys }),
           });
+          if (!subRes.ok) {
+            // 401 = token revoked/invalid, 429 = per-IP budget hit, … —
+            // surface it instead of pretending push is armed. Never retry
+            // WITHOUT the token (that would defeat the Issue #115 boundary).
+            console.warn('[push] subscribe rejected (' + subRes.status + ') — push not armed');
+            return;
+          }
           console.log('[push] subscribed for mining alerts');
         } catch (e) {
           console.warn('[push] enable failed (silent):', e && e.message);
@@ -8387,6 +10378,7 @@ dom.walletSave?.addEventListener('click', async () => {
     initAxeFleetControls();
     initAuth();
     initThemeToggle();
+    initInstanceIndicator();
     _liveTermInit();
     await fetchSnapshot();
     setInterval(fetchSnapshot, POLL_MS);
@@ -8472,15 +10464,15 @@ dom.walletSave?.addEventListener('click', async () => {
       return;
     }
     dom.acActiveList.innerHTML = list.map(a => `
-      <div class="ac-item ac-item--${(a.severity || 'INFO').toLowerCase()}">
+      <div class="ac-item ac-item--${escapeHtml((a.severity || 'INFO').toLowerCase())}">
         <div class="ac-item__meta">
-          <span class="ac-item__sev ${severityClass[a.severity] || ''}">${severityLabel[a.severity] || a.severity}</span>
-          <span class="ac-item__cat">${a.category}</span>
+          <span class="ac-item__sev ${severityClass[a.severity] || ''}">${escapeHtml(severityLabel[a.severity] || a.severity)}</span>
+          <span class="ac-item__cat">${escapeHtml(a.category)}</span>
           <span class="ac-item__ts">${acFormatTime(a.ts)}</span>
         </div>
-        <div class="ac-item__msg">${a.message}</div>
+        <div class="ac-item__msg">${escapeHtml(a.message)}</div>
         <div class="ac-item__actions">
-          <button class="btn btn--mini ac-ack" data-id="${a.id}">Acknowledge</button>
+          <button class="btn btn--mini ac-ack" data-id="${escapeHtml(a.id)}">Acknowledge</button>
         </div>
       </div>
     `).join('');
@@ -8507,11 +10499,11 @@ dom.walletSave?.addEventListener('click', async () => {
     dom.acHistoryList.innerHTML = acState.history.map(h => `
       <div class="ac-item ac-item--history">
         <div class="ac-item__meta">
-          <span class="ac-item__sev ${severityClass[h.severity] || ''}">${severityLabel[h.severity] || h.severity}</span>
-          <span class="ac-item__cat">${h.alert_type}</span>
+          <span class="ac-item__sev ${severityClass[h.severity] || ''}">${escapeHtml(severityLabel[h.severity] || h.severity)}</span>
+          <span class="ac-item__cat">${escapeHtml(h.alert_type)}</span>
           <span class="ac-item__ts">${acFormatTime(h.ts)}</span>
         </div>
-        <div class="ac-item__msg">${h.action_taken || h.message}</div>
+        <div class="ac-item__msg">${escapeHtml(h.action_taken || h.message)}</div>
       </div>
     `).join('');
   }
@@ -8563,7 +10555,7 @@ dom.walletSave?.addEventListener('click', async () => {
           <span class="ac-item__cat">${escapeHtml(r.name)}</span>
         </div>
         <div class="ac-item__msg">WHEN ${escapeHtml(r.condition_metric)} ${escapeHtml(r.condition_operator)} ${escapeHtml(r.condition_value)} THEN ${escapeHtml(r.action_command)}</div>
-        <div class="ac-item__actions">${runLine}<button class="btn btn--danger btn--mini ac-rule-del" data-id="${r.id}">Delete</button></div>
+        <div class="ac-item__actions">${runLine}<button class="btn btn--danger btn--mini ac-rule-del" data-id="${escapeHtml(r.id)}">Delete</button></div>
       </div>
     `;
     }).join('');
@@ -8632,11 +10624,11 @@ dom.walletSave?.addEventListener('click', async () => {
       dom.acTabs = acTabsHost.querySelectorAll('.ac-tab');
     }
     dom.openAlertCenter.addEventListener('click', () => {
-      dom.alertCenterModal.classList.add('modal--open');
+      openModalAnimated(dom.alertCenterModal);
       acShowTab('active');
     });
     dom.alertCenterModal?.querySelectorAll('[data-close]').forEach(el => {
-      el.addEventListener('click', () => dom.alertCenterModal.classList.remove('modal--open'));
+      el.addEventListener('click', () => closeModalAnimated(dom.alertCenterModal));
     });
     dom.acTabs.forEach(t => t.addEventListener('click', () => acShowTab(t.dataset.tab)));
     dom.acFilters.forEach(f => f.addEventListener('click', () => {
@@ -8752,8 +10744,36 @@ dom.walletSave?.addEventListener('click', async () => {
     if (owned) return owned.slice();
     return (paneHasVisible || []).filter(p => p.visible).map(p => p.id);
   }
+  // Module navigation with exit/enter motion (design-motion-principles).
+  // Exit (120ms) plays BEFORE the switch so display:none doesn't kill it;
+  // the switch is deferred by the same amount and token-guarded so rapid
+  // sidebar clicks cancel the pending transition (Emil: interruptible).
+  let _moduleNavToken = 0;
   function activateModule(name) {
     document.body.classList.add('module-mode');
+    const reduceMotion = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    const token = ++_moduleNavToken;
+    if (!reduceMotion) {
+      let leavingCount = 0;
+      document.querySelectorAll('[data-module].panel, [data-module].kpi-row').forEach(function(el) {
+        if (el.classList.contains('sidebar__link')) return;
+        const mods = (el.getAttribute('data-module') || '').split(/\s+/);
+        if (mods.indexOf(name) === -1 && !el.classList.contains('module-hidden')) {
+          el.classList.add('module-leave');
+          leavingCount++;
+        }
+      });
+      if (leavingCount > 0) {
+        setTimeout(function() {
+          if (token !== _moduleNavToken) return;  // superseded by a newer click
+          _doActivateModule(name, reduceMotion);
+        }, 120);
+        return;
+      }
+    }
+    _doActivateModule(name, reduceMotion);
+  }
+  function _doActivateModule(name, reduceMotion) {
     // Mostra/esconde cada painel com data-module — MAS nunca os links da
     // sidebar (eles também têm data-module; escondê-los quebraria a navegação)
     document.querySelectorAll('[data-module]').forEach(function(el) {
@@ -8762,6 +10782,7 @@ dom.walletSave?.addEventListener('click', async () => {
       const mods = (el.getAttribute('data-module') || '').split(/\s+/);
       const show = mods.indexOf(name) !== -1;
       el.classList.toggle('module-hidden', !show);
+      if (show) el.classList.remove('module-leave');
     });
     // Tab panes: apenas as abas que o módulo possui (ou, fora do mapa,
     // as que contêm painel visível) ficam ativas — nunca várias ao mesmo
@@ -8797,6 +10818,18 @@ dom.walletSave?.addEventListener('click', async () => {
     // E cria/atualiza charts dos canvases que acabaram de ficar visíveis
     // (renderCharts pula canvases ocultos, então é seguro chamá-lo aqui)
     requestAnimationFrame(function() {
+      // Motion: staggered enter for the panels that just became visible
+      // (opacity + translateY + blur, 200ms, 24ms stagger — Emil <300ms).
+      if (!reduceMotion) {
+        let idx = 0;
+        document.querySelectorAll('[data-module].panel:not(.module-hidden), [data-module].kpi-row:not(.module-hidden)').forEach(function(el) {
+          el.classList.remove('module-in');
+          void el.offsetWidth; // restart animation on rapid re-triggers
+          el.style.setProperty('--i', String(idx++));
+          el.classList.add('module-in');
+          setTimeout(function() { el.classList.remove('module-in'); }, 500);
+        });
+      }
       Object.keys(charts).forEach(function(id) {
         const ch = charts[id];
         if (ch && typeof ch.resize === 'function') ch.resize();
@@ -8806,12 +10839,20 @@ dom.walletSave?.addEventListener('click', async () => {
       // On failure the flag is reset so the next activation retries.
       if (name === 'market' && !_mktTrendLoaded) {
         _mktTrendLoaded = true;
-        loadMarketTrend().then(ok => { if (!ok) _mktTrendLoaded = false; });
+        skelShow(document.getElementById('market-panel'), 'chart');
+        loadMarketTrend().then(ok => {
+          skelHide(document.getElementById('market-panel'));
+          if (!ok) _mktTrendLoaded = false;
+        });
       }
       // Rentals: lazy-load the operator rental list on first module activation.
       if (name === 'rentals' && !_rentalsLoaded) {
         _rentalsLoaded = true;
-        loadRentals().then(ok => { if (!ok) _rentalsLoaded = false; });
+        skelShow(document.getElementById('rentals-panel'), 'table');
+        loadRentals().then(ok => {
+          skelHide(document.getElementById('rentals-panel'));
+          if (!ok) _rentalsLoaded = false;
+        });
       }
       // Hash Market: also refresh the snapshot — the boot-time snapshot can be
       // stale (fetched before the warmup cache is hot), so the grid would open
@@ -8820,7 +10861,12 @@ dom.walletSave?.addEventListener('click', async () => {
         fetchAdminData();
       }
       if (name === 'market' && typeof fetchSnapshot === 'function') {
-        fetchSnapshot();
+        // Re-activation with an EMPTY grid (e.g. offers never landed): show
+        // the same table skeleton until the fresh snapshot renders offers.
+        const mktPanel = document.getElementById('market-panel');
+        const gridEmpty = !_mktOffers || _mktOffers.length === 0;
+        if (mktPanel && gridEmpty) skelShow(mktPanel, 'table');
+        Promise.resolve(fetchSnapshot()).then(() => { skelHide(mktPanel); });
       }
       // Live Mining / Terminal: foca o input para digitação imediata
       if (name === 'live') {
@@ -8831,8 +10877,18 @@ dom.walletSave?.addEventListener('click', async () => {
       // Antes o fetchAxeFleet() só rodava no poll/SSE, então a aba abria
       // com o empty-state estático mesmo com devices registrados.
       if (name === 'fleet' && typeof fetchAxeFleet === 'function') {
+        const fleetPanel = document.getElementById('axe-fleet-panel');
+        // Only skeleton when the grid is empty (first activation or a
+        // previous fetch failed) — with devices already rendered a refresh
+        // keeps them visible and skips the overlay (no flash).
+        // #axe-grid starts with a static empty-state in the template, so
+        // count only real device cards — with cards rendered the refresh
+        // keeps them visible (no overlay flash).
+        const fleetEmpty = !dom.axeGrid || !dom.axeGrid.querySelector('.axe-card, .device-card, [data-device-id]');
+        if (fleetPanel && fleetEmpty) skelShow(fleetPanel, 'table');
+        const _fleetP = Promise.resolve(fetchAxeFleet());
         if (typeof fetchRemoteOnboarding === 'function') fetchRemoteOnboarding();
-        fetchAxeFleet();
+        _fleetP.then(() => { skelHide(fleetPanel); });
       }
       // Support: abre o modal completo (manifesto + endereços) em vez de só
       // rolar até a barra compacta — o texto autoral e os endereços grandes
@@ -8840,7 +10896,7 @@ dom.walletSave?.addEventListener('click', async () => {
       if (name === 'support') {
         const panel = document.getElementById('support-panel');
         if (panel) {
-          panel.classList.add('modal--open');
+          openModalAnimated(panel);
           renderSupportMethods();  // also fills the LN recipient row
         }
       }
@@ -9084,8 +11140,10 @@ dom.walletSave?.addEventListener('click', async () => {
       }
     },
     updateCommandCenter: function(worker, fleet, pool, profit) {
-      var hrStr = worker ? this.formatHashrate(worker.hashrate) : '0 H/s';
-      this.setText('hero-worker', hrStr);
+      // Issue #51 (audit): do NOT setText on #hero-worker — that id is the
+      // WHOLE panel section, so el.textContent wipes every child metric
+      // (m-hashrate, m-state, hc-*, hero grid). The hero values are owned by
+      // renderHero()/renderHostCore() (called by the original render).
       // p-hashrate, p-workers handled by renderPool() — do not duplicate
       this.setText('p-high-diff', pool ? String(pool.highestDifficulty || '--') : '--');
       this.setText('hc-network', pool ? String(pool.hashrate || '--') : '--');
@@ -9118,7 +11176,7 @@ dom.walletSave?.addEventListener('click', async () => {
       var lbBody = document.getElementById('lb-tbody');
       if (lbBody && leaderboard && leaderboard.length) {
         lbBody.innerHTML = leaderboard.slice(0, 10).map(function(row, i) {
-          return '<tr><td>' + (i + 1) + '</td><td>' + (row.address ? row.address.substring(0, 10) + '...' : '--') + '</td><td>' + (row.diff_rank || '--') + '</td><td>' + (row.loyalty_rank || '--') + '</td><td>' + (row.combined_score || '--') + '</td><td>' + (row.total_blocks || 0) + '</td></tr>';
+          return '<tr><td>' + (i + 1) + '</td><td>' + (row.address ? escapeHtml(row.address.substring(0, 10)) + '...' : '--') + '</td><td>' + escapeHtml(row.diff_rank || '--') + '</td><td>' + escapeHtml(row.loyalty_rank || '--') + '</td><td>' + escapeHtml(row.combined_score || '--') + '</td><td>' + escapeHtml(row.total_blocks || 0) + '</td></tr>';
         }).join('');
       }
     }
@@ -9296,6 +11354,119 @@ dom.walletSave?.addEventListener('click', async () => {
     return out;
   }
 
+  // ── Learning FAQ loop (Issue #19) — 'was this helpful?' widget ───────
+  // Pure helpers below (docsFeedbackPct/docsFeedbackSectionLabel) are
+  // mirrored in tests/test_app_js_core.js (SUITE 35).
+  function docsFeedbackPct(helpful, total) {
+    if (!total) return null;  // honest — no votes, no fabricated %
+    return Math.round(helpful / total * 1000) / 10;
+  }
+  function docsFeedbackSectionLabel(sectionId) {
+    const m = String(sectionId || '').match(/^docs[-_](.+)$/);
+    return m ? m[1].replace(/[-_]/g, ' ') : String(sectionId || '—');
+  }
+
+  var _docsFeedbackState = {};      // section_id -> {helpful, voted}
+  var _docsFeedbackInitialized = false;
+
+  function _initDocsFeedback() {
+    if (_docsFeedbackInitialized) return;
+    const container = document.querySelector('.docs-container');
+    if (!container) return;
+    const sections = container.querySelectorAll('.doc-section');
+    if (!sections.length) return;
+    _docsFeedbackInitialized = true;
+
+    sections.forEach(function(sec) {
+      const id = sec.id;
+      if (!id || sec.querySelector('.doc-feedback')) return;
+      const widget = document.createElement('div');
+      widget.className = 'doc-feedback';
+      widget.setAttribute('data-section', id);
+      widget.innerHTML =
+        '<span class="doc-feedback__ask">Was this section helpful?</span>' +
+        '<button type="button" class="doc-feedback__btn doc-feedback__btn--yes" data-helpful="1" title="Yes — it helped">👍 Yes</button>' +
+        '<button type="button" class="doc-feedback__btn doc-feedback__btn--no" data-helpful="0" title="No — could be better">👎 No</button>' +
+        '<span class="doc-feedback__state" aria-live="polite"></span>' +
+        '<div class="doc-feedback__comment" hidden>' +
+        '  <textarea class="doc-feedback__textarea" rows="2" maxlength="500" placeholder="What were you looking for? (feeds the FAQ loop)"></textarea>' +
+        '  <button type="button" class="doc-feedback__send">Send</button>' +
+        '</div>';
+      sec.appendChild(widget);
+      _bindDocFeedbackWidget(widget, id);
+    });
+
+    // Restore the current tenant's votes so thumbs stay across module switches.
+    authFetch('/api/docs/feedback').then(function(r) {
+      if (!r.ok) return;
+      return r.json();
+    }).then(function(data) {
+      (data && data.votes || []).forEach(function(v) {
+        if (!v || !v.section_id) return;
+        // The GET was issued before any POST — skip sections the user already
+        // voted on locally so a stale restore never reverts a fresh vote.
+        if (_docsFeedbackState[v.section_id]) return;
+        _docsFeedbackState[v.section_id] = { helpful: !!v.helpful, voted: true };
+        const w = container.querySelector('.doc-feedback[data-section="' + v.section_id + '"]');
+        if (w) _docsFeedbackSetState(w, v.section_id, !!v.helpful, '');
+      });
+    }).catch(function() { /* offline — votes stay local */ });
+  }
+
+  function _bindDocFeedbackWidget(widget, sectionId) {
+    const yesBtn = widget.querySelector('.doc-feedback__btn--yes');
+    const noBtn = widget.querySelector('.doc-feedback__btn--no');
+    const commentWrap = widget.querySelector('.doc-feedback__comment');
+    const textarea = widget.querySelector('.doc-feedback__textarea');
+    const sendBtn = widget.querySelector('.doc-feedback__send');
+
+    yesBtn.addEventListener('click', function() {
+      if (_docsFeedbackState[sectionId] && _docsFeedbackState[sectionId].voted) return;
+      commentWrap.hidden = true;
+      _docsFeedbackVote(sectionId, true, widget, '');
+    });
+    noBtn.addEventListener('click', function() {
+      if (_docsFeedbackState[sectionId] && _docsFeedbackState[sectionId].voted) return;
+      commentWrap.hidden = false;
+      textarea.focus();
+    });
+    sendBtn.addEventListener('click', function() {
+      if (_docsFeedbackState[sectionId] && _docsFeedbackState[sectionId].voted) return;
+      const comment = textarea.value.trim();
+      _docsFeedbackVote(sectionId, false, widget, comment);
+    });
+  }
+
+  function _docsFeedbackVote(sectionId, helpful, widget, comment) {
+    const stateEl = widget.querySelector('.doc-feedback__state');
+    authFetch('/api/docs/feedback', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ section_id: sectionId, helpful: helpful, comment: comment })
+    }).then(function(r) {
+      if (!r.ok) { stateEl.textContent = 'could not save — try again'; return; }
+      _docsFeedbackState[sectionId] = { helpful: helpful, voted: true };
+      _docsFeedbackSetState(widget, sectionId, helpful, comment);
+    }).catch(function() {
+      stateEl.textContent = 'offline — not saved';
+    });
+  }
+
+  function _docsFeedbackSetState(widget, sectionId, helpful, comment) {
+    const yesBtn = widget.querySelector('.doc-feedback__btn--yes');
+    const noBtn = widget.querySelector('.doc-feedback__btn--no');
+    const stateEl = widget.querySelector('.doc-feedback__state');
+    const commentWrap = widget.querySelector('.doc-feedback__comment');
+    yesBtn.classList.toggle('is-active', !!helpful);
+    noBtn.classList.toggle('is-active', !helpful);
+    yesBtn.disabled = true;
+    noBtn.disabled = true;
+    stateEl.textContent = helpful
+      ? 'Thanks — glad it helped ✓'
+      : (comment ? 'Thanks — we\'ll improve this section' : 'Thanks — feedback recorded');
+    commentWrap.hidden = true;
+  }
+
   function _docsCloseSuggestions() {
     var box = document.getElementById('docs-search-suggestions');
     var input = document.getElementById('docs-search-input');
@@ -9424,6 +11595,7 @@ dom.walletSave?.addEventListener('click', async () => {
     var _initDocs = function() {
       _initDocsObserver();
       _initDocsSearch();
+      _initDocsFeedback();
     };
     if (window.requestIdleCallback) {
       requestIdleCallback(_initDocs, { timeout: 2000 });

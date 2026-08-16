@@ -5036,6 +5036,59 @@ const QR_GOLDEN = {"helloM":{"text":"HELLO WORLD","level":"M","rows":["111111101
 })();
 
 // ═══════════════════════════════════════════════════════════════════════════
+//  SUITE 35: docsFeedbackPct / docsFeedbackSectionLabel (Issue #19 —
+//  Learning FAQ loop). Pure mirrors of static/app.js: % helpful rounded to
+//  1 decimal (null when no votes — never fabricate), section id → label.
+// ═══════════════════════════════════════════════════════════════════════════
+(function() {
+  function docsFeedbackPct(helpful, total) {
+    if (!total) return null;
+    return Math.round(helpful / total * 1000) / 10;
+  }
+  function docsFeedbackSectionLabel(sectionId) {
+    const m = String(sectionId || '').match(/^docs[-_](.+)$/);
+    return m ? m[1].replace(/[-_]/g, ' ') : String(sectionId || '—');
+  }
+
+  assertEqual('pct 2/3 rounded 1dp', docsFeedbackPct(2, 3), 66.7);
+  assertEqual('pct 3/3', docsFeedbackPct(3, 3), 100);
+  assertEqual('pct 0/4 honest zero', docsFeedbackPct(0, 4), 0);
+  assertEqual('pct no votes = null (never fabricate)', docsFeedbackPct(5, 0), null);
+  assertEqual('label docs-faq', docsFeedbackSectionLabel('docs-faq'), 'faq');
+  assertEqual('label docs-multi-user dashes', docsFeedbackSectionLabel('docs-multi-user'), 'multi user');
+  assertEqual('label docs_fleet underscore', docsFeedbackSectionLabel('docs_fleet'), 'fleet');
+  assertEqual('label non-docs passthrough', docsFeedbackSectionLabel('overview'), 'overview');
+  assertEqual('label empty → dash', docsFeedbackSectionLabel(''), '—');
+})();
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  SUITE 36: fmtErrorAge (Issue #176 — error-rate view no admin). Espelho
+//  puro do static/app.js _fmtErrorTs: minutos atrás < 60m, horas atrás < 48h,
+//  depois ISO UTC; ts nulo/inválido → dash. `nowArg` injetado p/ determinismo.
+// ═══════════════════════════════════════════════════════════════════════════
+(function() {
+  function fmtErrorAge(ts, nowArg) {
+    if (!ts) return '—';
+    const d = new Date(Number(ts) * 1000);
+    if (isNaN(d.getTime())) return '—';
+    const now = nowArg != null ? nowArg : Date.now();
+    const deltaMin = Math.floor((now - d.getTime()) / 60000);
+    if (deltaMin < 60) return deltaMin + 'm atrás';
+    const deltaH = Math.floor(deltaMin / 60);
+    if (deltaH < 48) return deltaH + 'h atrás';
+    return d.toISOString().replace('T', ' ').slice(0, 16) + ' UTC';
+  }
+
+  const NOW = 1800000000000; // fixed "now" for deterministic assertions
+  assertEqual('null ts → dash', fmtErrorAge(null, NOW), '—');
+  assertEqual('zero ts → dash', fmtErrorAge(0, NOW), '—');
+  assertEqual('12 min atrás', fmtErrorAge((NOW - 12 * 60000) / 1000, NOW), '12m atrás');
+  assertEqual('90 min atrás → horas', fmtErrorAge((NOW - 90 * 60000) / 1000, NOW), '1h atrás');
+  assertEqual('3 dias atrás → ISO UTC', fmtErrorAge((NOW - 3 * 86400000) / 1000, NOW),
+    new Date(NOW - 3 * 86400000).toISOString().replace('T', ' ').slice(0, 16) + ' UTC');
+})();
+
+// ═══════════════════════════════════════════════════════════════════════════
 //  MARKET SORT (mirrors static/app.js sortMarketVenues — pure)
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -5088,6 +5141,400 @@ function sortMarketVenues(venues, key, dir) {
   const withNull = venues.map(v => ({ ...v, price_usd_th_day: v.price_usd_th_day === 6.6 ? null : v.price_usd_th_day }));
   const gn = sortMarketVenues(withNull, 'usd', 1);
   assertEqual('explicit null usd sorts last (not first)', gn[gn.length - 1].venue, 'nicehash');
+})();
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  SUITE 33: admin audit trail builders (Issue #96 — admin panel)
+//  Pure mirrors of static/app.js: ISO-week bucketing (UTC, deterministic),
+//  client-side tenant/verdict filter, and verdict badge metadata.
+// ═══════════════════════════════════════════════════════════════════════════
+(function() {
+  function adminAuditIsoWeekKey(ts) {
+    const n = Number(ts);
+    if (!isFinite(n) || n <= 0) return '';
+    const d = new Date(n * 1000);
+    if (isNaN(d.getTime())) return '';
+    const day = (d.getUTCDay() + 6) % 7;         // Mon=0 … Sun=6
+    const thursday = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() + 3 - day));
+    const firstThu = new Date(Date.UTC(thursday.getUTCFullYear(), 0, 4));
+    const week = 1 + Math.round((thursday - firstThu) / (7 * 86400 * 1000));
+    return thursday.getUTCFullYear() + '-W' + String(week).padStart(2, '0');
+  }
+  function buildAdminAuditWeekly(decisions) {
+    const buckets = {};
+    (decisions || []).forEach(function (d) {
+      const k = adminAuditIsoWeekKey(d && d.ts);
+      if (!k) return;
+      buckets[k] = (buckets[k] || 0) + 1;
+    });
+    const labels = Object.keys(buckets).sort();
+    return { labels: labels, counts: labels.map(function (k) { return buckets[k]; }) };
+  }
+  function filterAdminAuditDecisions(decisions, tenant, verdict) {
+    return (decisions || []).filter(function (d) {
+      if (tenant && (d.tenant_id || 'default') !== tenant) return false;
+      if (verdict && (d.verdict || 'unknown') !== verdict) return false;
+      return true;
+    });
+  }
+  function adminAuditVerdictMeta(verdict) {
+    const map = {
+      improved: { cls: 'admin-audit__verdict--improved', label: 'IMPROVED' },
+      worse: { cls: 'admin-audit__verdict--worse', label: 'WORSE' },
+      same: { cls: 'admin-audit__verdict--same', label: 'SAME' },
+      avoided: { cls: 'admin-audit__verdict--avoided', label: 'AVOIDED' },
+      revoked: { cls: 'admin-audit__verdict--revoked', label: 'REVOKED' },
+      no_before: { cls: 'admin-audit__verdict--mute', label: 'NO BEFORE' },
+    };
+    return map[verdict] || { cls: 'admin-audit__verdict--mute', label: String(verdict || 'unknown').toUpperCase() };
+  }
+
+  // ISO week key — fixed epoch timestamps (UTC Mondays).
+  // 2026-07-20 is a Monday → W30; 2026-07-26 is a Sunday → still W30.
+  assertEqual('ISO week key Mon 2026-07-20', adminAuditIsoWeekKey(1784505600), '2026-W30');
+  assertEqual('ISO week key Sun 2026-07-26', adminAuditIsoWeekKey(1785024000), '2026-W30');
+  assertEqual('ISO week key Mon 2026-07-27', adminAuditIsoWeekKey(1785110400), '2026-W31');
+  assertEqual('ISO week key invalid ts → empty', adminAuditIsoWeekKey(0), '');
+  assertEqual('ISO week key garbage → empty', adminAuditIsoWeekKey('nope'), '');
+
+  // Weekly bucketing — sorted labels, correct counts, null ts skipped.
+  const weekly = buildAdminAuditWeekly([
+    { ts: 1784505600 },          // W30
+    { ts: 1785110400 },          // W31
+    { ts: 1785110400 + 86400 },  // W31
+    { ts: 0 },                   // skipped
+    { ts: null },                // skipped
+    { ts: 'garbage' },           // skipped
+  ]);
+  assertEqual('weekly labels sorted', weekly.labels, ['2026-W30', '2026-W31']);
+  assertEqual('weekly counts', weekly.counts, [1, 2]);
+  assertEqual('weekly empty input', buildAdminAuditWeekly([]), { labels: [], counts: [] });
+  assertEqual('weekly undefined input', buildAdminAuditWeekly(undefined), { labels: [], counts: [] });
+
+  // Feature over-concentration alert (Issue #163) — banner builder mirror.
+  function buildFeatureAlert(featureAlert) {
+    if (!featureAlert || featureAlert.share_pct == null) {
+      return { active: false, feature: '', count: 0, sharePct: 0, minPct: 50 };
+    }
+    return {
+      active: true,
+      feature: String(featureAlert.feature || 'unknown'),
+      count: Number(featureAlert.count) || 0,
+      sharePct: Number(featureAlert.share_pct) || 0,
+      minPct: Number(featureAlert.min_pct) || 50,
+    };
+  }
+  assertEqual('feature alert null → inactive', buildFeatureAlert(null),
+    { active: false, feature: '', count: 0, sharePct: 0, minPct: 50 });
+  assertEqual('feature alert missing share → inactive', buildFeatureAlert({ feature: 'x' }),
+    { active: false, feature: '', count: 0, sharePct: 0, minPct: 50 });
+  assertEqual('feature alert active', buildFeatureAlert(
+    { feature: 'monte_carlo', count: 2, share_pct: 66.7, min_pct: 50 }),
+    { active: true, feature: 'monte_carlo', count: 2, sharePct: 66.7, minPct: 50 });
+  assertEqual('feature alert garbage numbers', buildFeatureAlert(
+    { feature: null, count: 'x', share_pct: 'nope', min_pct: null }),
+    { active: true, feature: 'unknown', count: 0, sharePct: 0, minPct: 50 });
+
+  // Feature breakdown (Issue #158 — 18-D) — top-N builder mirror.
+  function buildFeatureBreakdown(paywallByFeature) {
+    const rows = (paywallByFeature || []).map(function (f) {
+      return { feature: f.feature || 'unknown', count: Number(f.count) || 0 };
+    }).sort(function (a, b) { return b.count - a.count; });
+    const total = rows.reduce(function (s, r) { return s + r.count; }, 0) || 1;
+    return rows.map(function (r) {
+      return { feature: r.feature, count: r.count, pct: Math.round(r.count / total * 100) };
+    });
+  }
+  assertEqual('feature breakdown empty', buildFeatureBreakdown([]), []);
+  assertEqual('feature breakdown undefined', buildFeatureBreakdown(undefined), []);
+  assertEqual('feature breakdown sorted + pct', buildFeatureBreakdown([
+    { feature: 'auto_pilot', count: 2 },
+    { feature: 'monte_carlo', count: 5 },
+    { feature: null },
+  ]), [
+    { feature: 'monte_carlo', count: 5, pct: 71 },
+    { feature: 'auto_pilot', count: 2, pct: 29 },
+    { feature: 'unknown', count: 0, pct: 0 },
+  ]);
+
+  // Portfolio series datasets (Issue #146 — 21-C) — pure builder mirror.
+  function buildPortfolioSeriesDatasets(points) {
+    const rows = points || [];
+    // null/undefined must stay null (Chart.js gap) — Number(null) is 0 and
+    // would fabricate a flat 'no loss' bar on a cold box (honest telemetry).
+    const num = function (v) {
+      if (v === null || v === undefined) return null;
+      const n = Number(v);
+      return Number.isFinite(n) ? n : null;
+    };
+    const hasOwnEv = rows.some(function (p) { return num(p.own_ev_sats) != null; });
+    return {
+      labels: rows.map(function (p) { return String(p.label || '').replace(/^\d{4}-/, ''); }),
+      spent: rows.map(function (p) { return num(p.spent_sats); }),
+      pl: rows.map(function (p) { return num(p.pl_sats); }),
+      cum: rows.map(function (p) { return num(p.cum_pl_sats); }),
+      ownEv: rows.map(function (p) { return hasOwnEv ? num(p.own_ev_sats) : null; }),
+      totalCum: rows.map(function (p) { return hasOwnEv ? num(p.cum_total_sats) : null; }),
+      hasOwnEv: hasOwnEv
+    };
+  }
+  assertEqual('series datasets empty', buildPortfolioSeriesDatasets([]), {
+    labels: [], spent: [], pl: [], cum: [], ownEv: [], totalCum: [], hasOwnEv: false });
+  assertEqual('series datasets backward compat (no own EV)', buildPortfolioSeriesDatasets([
+    { label: '2026-W30', spent_sats: 5000, pl_sats: -200, cum_pl_sats: -200 },
+  ]), {
+    labels: ['W30'], spent: [5000], pl: [-200], cum: [-200], ownEv: [null], totalCum: [null], hasOwnEv: false });
+  assertEqual('series datasets own EV included', buildPortfolioSeriesDatasets([
+    { label: '2026-W30', spent_sats: 5000, pl_sats: -200, cum_pl_sats: -200, own_ev_sats: 700, cum_total_sats: 500 },
+    { label: '2026-W31', spent_sats: 3000, pl_sats: -100, cum_pl_sats: -300, own_ev_sats: 700, cum_total_sats: 1100 },
+  ]), {
+    labels: ['W30', 'W31'], spent: [5000, 3000], pl: [-200, -100], cum: [-200, -300],
+    ownEv: [700, 700], totalCum: [500, 1100], hasOwnEv: true });
+  assertEqual('series datasets garbage numbers', buildPortfolioSeriesDatasets([
+    { label: null, spent_sats: 'nope', own_ev_sats: 'x' },
+  ]), {
+    labels: [''], spent: [null], pl: [null], cum: [null], ownEv: [null], totalCum: [null], hasOwnEv: false });
+  // Honest gaps: null P/L (cold box) stays null — never a fabricated 0 bar.
+  assertEqual('series datasets null pl stays gap', buildPortfolioSeriesDatasets([
+    { label: '2026-W30', pl_sats: null, cum_pl_sats: null, own_ev_sats: 700, cum_total_sats: null },
+  ]), {
+    labels: ['W30'], spent: [null], pl: [null], cum: [null], ownEv: [700], totalCum: [null], hasOwnEv: true });
+
+  // Rentals provider auth state (Issue #152) — pure helpers mirror.
+  function rentalsAuthRejected(errMsg, authRejected) {
+    if (authRejected) return true;
+    return /rejected|401|403|unauthor|forbidden|bad nonce|not authenticated|invalid key/i.test(String(errMsg || ''));
+  }
+  function _esc(s) { return String(s).replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c])); }
+  function rentalsAuthGuide(provider, errMsg) {
+    const safe = _esc(String(errMsg || ''));
+    if (provider === 'contracts') {
+      return 'A chave Braiins está configurada, mas a API a rejeitou: ' + safe +
+        '. Gere um novo owner token em hashpower.braiins.com e atualize no Settings (⚙).';
+    }
+    return 'A chave MRR está configurada, mas a API a rejeitou: ' + safe +
+      '. Causa provável: credencial inválida/desatualizada (ou tracker de nonce da chave preso) ' +
+      '— NÃO é bug de concorrência. Regenerar a API key + secret em miningrigrentals.com ' +
+      '→ My Account → API Access e atualizar no Settings (⚙).';
+  }
+  assertEqual('rentals auth rejected explicit flag', rentalsAuthRejected('weird', true), true);
+  assertEqual('rentals auth rejected bad nonce', rentalsAuthRejected('Not Authenticated - Invalid Key - Bad Nonce.', false), true);
+  assertEqual('rentals auth rejected 401', rentalsAuthRejected('HTTP 401', false), true);
+  assertEqual('rentals auth rejected generic', rentalsAuthRejected('HTTP 503', false), false);
+
+  // Rentals payload freshness (Issue #187) — pure helpers mirror.
+  // Level: 0 fresh · 1 age-stale (soft 'dados desatualizados') · 2 old-code
+  // (no version stamp → credential hint, never 'No contracts' empty-state).
+  function rentalsPayloadStale(payload, nowSec) {
+    const p = payload || {};
+    const version = Number(p.rentals_payload_version) || 0;
+    if (version < 2) return 2;
+    // Sentinel policy (Issue #203): missing/epoch stamp → unknown freshness
+    // (0), never a fabricated 'stale' (age = now - 0 → huge).
+    const upd = Number(p.updated_at);
+    if (!(upd > 0)) return 0;
+    const age = (nowSec || Math.floor(Date.now() / 1000)) - upd;
+    return age > 300 ? 1 : 0;
+  }
+  assertEqual('rentals stale missing stamp (old code)', rentalsPayloadStale({ updated_at: 1000000 }, 1000030), 2);
+  assertEqual('rentals stale version 0', rentalsPayloadStale({ rentals_payload_version: 0, updated_at: 1000000 }, 1000030), 2);
+  assertEqual('rentals stale no updated_at', rentalsPayloadStale({ rentals_payload_version: 2 }, 1000030), 0);
+  assertEqual('rentals stale updated_at zero', rentalsPayloadStale({ rentals_payload_version: 2, updated_at: 0 }, 1000030), 0);
+  // A positive (ancient) stamp is still a real stamp → ages → stale (1).
+  assertEqual('rentals stale updated_at ancient', rentalsPayloadStale({ rentals_payload_version: 2, updated_at: 1 }, 1000030), 1);
+  assertEqual('rentals fresh', rentalsPayloadStale({ rentals_payload_version: 2, updated_at: 1000000 }, 1000030), 0);
+  assertEqual('rentals age-stale only', rentalsPayloadStale({ rentals_payload_version: 2, updated_at: 1000000 }, 1000400), 1);
+
+  // Rentals count surface (Issue #200) — "X de N" only when truncated; a
+  // full fetch renders the plain count, nulls/NaN never fabricate a surface.
+  function rentalsCountSurface(rendered, total) {
+    const r = Number(rendered);
+    const t = Number(total);
+    if (isFinite(r) && isFinite(t) && t > 0 && r < t) {
+      return { text: r + ' de ' + t, title: 'exibindo ' + r + ' de ' + t + ' rentals (limite de segurança do fetch)' };
+    }
+    return { text: null, title: '' };
+  }
+  assertEqual('rentals surface full fetch', rentalsCountSurface(120, 120).text, null);
+  assertEqual('rentals surface truncated', rentalsCountSurface(1000, 1500).text, '1000 de 1500');
+  assertEqual('rentals surface truncated title', rentalsCountSurface(1000, 1500).title.indexOf('1000 de 1500') !== -1, true);
+  assertEqual('rentals surface null total', rentalsCountSurface(50, null).text, null);
+  assertEqual('rentals surface zero total', rentalsCountSurface(0, 0).text, null);
+  assertEqual('rentals surface nan safe', rentalsCountSurface('x', 5).text, null);
+  assertEqual('rentals auth rejected permission', rentalsAuthRejected('No Permission - account/1285', false), false);
+  assertEqual('rentals auth guide mrr', rentalsAuthGuide('mrr', 'Not Authenticated - Invalid Key - Bad Nonce.').indexOf('miningrigrentals.com') !== -1, true);
+  assertEqual('rentals auth guide mrr not concurrency', rentalsAuthGuide('mrr', 'x').indexOf('NÃO é bug de concorrência') !== -1, true);
+  assertEqual('rentals auth guide braiins', rentalsAuthGuide('contracts', '401').indexOf('hashpower.braiins.com') !== -1, true);
+  assertEqual('rentals auth guide escapes html', rentalsAuthGuide('mrr', '<b>').indexOf('&lt;b&gt;') !== -1, true);
+
+  // Instance indicator (Issue #198) — pure classifier mirror. The topbar
+  // pill color-codes which instance the dashboard is on (local vs cloud)
+  // so operators never save keys to the wrong URL.
+  function instanceClassify(host) {
+    let h = String(host || '').toLowerCase().replace(/^https?:\/\//, '').split('/')[0];
+    const bracket = h.match(/^\[([^\]]+)\](?::\d+)?$/);
+    if (bracket) h = bracket[1];
+    const hostOnly = h === '::1' ? '::1' : h.replace(/:\d+$/, '');
+    if (!hostOnly) return { kind: 'remote', icon: '⌁' };
+    const isLocal =
+      hostOnly === 'localhost' || hostOnly === '127.0.0.1' || hostOnly === '0.0.0.0' || hostOnly === '::1' ||
+      hostOnly.endsWith('.local') ||
+      /^192\.168\./.test(hostOnly) || /^10\./.test(hostOnly) || /^172\.(1[6-9]|2\d|3[01])\./.test(hostOnly);
+    const isCloud = /\.onrender\.com$/.test(hostOnly) || /\.render\.com$/.test(hostOnly);
+    if (isLocal) return { kind: 'local', icon: '🖥' };
+    if (isCloud) return { kind: 'cloud', icon: '☁' };
+    return { kind: 'remote', icon: '⌁' };
+  }
+  assertEqual('instance localhost', instanceClassify('localhost').kind, 'local');
+  assertEqual('instance loopback with port', instanceClassify('127.0.0.1:8765').kind, 'local');
+  assertEqual('instance private 192.168', instanceClassify('192.168.1.20:8765').kind, 'local');
+  assertEqual('instance private 10.', instanceClassify('10.0.0.5').kind, 'local');
+  assertEqual('instance ipv6 loopback raw', instanceClassify('::1').kind, 'local');
+  assertEqual('instance ipv6 loopback bracket+port', instanceClassify('[::1]:8765').kind, 'local');
+  assertEqual('instance cloud onrender', instanceClassify('cypher65-war-room.onrender.com').kind, 'cloud');
+  assertEqual('instance cloud render sub', instanceClassify('api.cypher65.render.com').kind, 'cloud');
+  assertEqual('instance remote public', instanceClassify('cypher65.example.com').kind, 'remote');
+  assertEqual('instance remote with port', instanceClassify('cypher65.example.com:8443').kind, 'remote');
+  assertEqual('instance remote full url', instanceClassify('https://cypher65.example.com/path').kind, 'remote');
+  assertEqual('instance empty host', instanceClassify('').kind, 'remote');
+  assertEqual('instance icon local', instanceClassify('127.0.0.1').icon, '🖥');
+  assertEqual('instance icon cloud', instanceClassify('x.onrender.com').icon, '☁');
+
+  // Cohort LTV rows (Issue #157 — 18-C) — safe-number builder mirror.
+  function _cohortNum(v) {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : 0;
+  }
+  function buildCohortRows(cohorts) {
+    return (cohorts || []).map(function (c) {
+      return {
+        month: c.cohort_month || '',
+        subs: _cohortNum(c.subscriptions),
+        renewals: _cohortNum(c.renewals),
+        revenue: _cohortNum(c.revenue_usd),
+        ltv: _cohortNum(c.ltv_usd),
+        m1: _cohortNum(c.retention_m1_pct),
+        m3: _cohortNum(c.retention_m3_pct),
+        m6: _cohortNum(c.retention_m6_pct),
+        m12: _cohortNum(c.retention_m12_pct),
+      };
+    });
+  }
+  assertEqual('cohort rows empty', buildCohortRows([]), []);
+  assertEqual('cohort rows undefined', buildCohortRows(undefined), []);
+  assertEqual('cohort rows safe numbers', buildCohortRows([
+    { cohort_month: '2026-08', subscriptions: 2, renewals: 2, revenue_usd: 40, ltv_usd: 20, retention_m1_pct: 100, retention_m3_pct: 0 },
+    { cohort_month: null, subscriptions: null, renewals: 'x', revenue_usd: null, retention_m12_pct: 'nope' },
+  ]), [
+    { month: '2026-08', subs: 2, renewals: 2, revenue: 40, ltv: 20, m1: 100, m3: 0, m6: 0, m12: 0 },
+    { month: '', subs: 0, renewals: 0, revenue: 0, ltv: 0, m1: 0, m3: 0, m6: 0, m12: 0 },
+  ]);
+
+  // Funnel weekly trend (Issue #156 — 18-B) — series builder mirror.
+  function buildFunnelTrend(weekly) {
+    const labels = [], paywall = [], convRate = [];
+    (weekly || []).forEach(function (b) {
+      labels.push(b.week || '');
+      const s = b.stages || {};
+      paywall.push(Number(s.paywall_view) || 0);
+      convRate.push(b.conversion_rate_pct != null ? Number(b.conversion_rate_pct) : 0);
+    });
+    return { labels: labels, paywall: paywall, convRate: convRate };
+  }
+  assertEqual('funnel trend empty input', buildFunnelTrend([]), { labels: [], paywall: [], convRate: [] });
+  assertEqual('funnel trend undefined input', buildFunnelTrend(undefined), { labels: [], paywall: [], convRate: [] });
+  assertEqual('funnel trend series', buildFunnelTrend([
+    { week: '2026-W31', stages: { paywall_view: 10 }, conversion_rate_pct: 20.0 },
+    { week: '2026-W32', stages: { paywall_view: 15, modal_open: 6 }, conversion_rate_pct: 33.33 },
+    { week: null, stages: {} },
+  ]), {
+    labels: ['2026-W31', '2026-W32', ''],
+    paywall: [10, 15, 0],
+    convRate: [20, 33.33, 0],
+  });
+
+  // Filter — tenant + verdict, missing fields defaulted, no filter = all.
+  const decisions = [
+    { tenant_id: 'tenant-a', verdict: 'worse', ts: 1 },
+    { tenant_id: 'tenant-a', verdict: 'improved', ts: 2 },
+    { verdict: 'worse', ts: 3 },                          // → default tenant
+    { tenant_id: 'tenant-b', verdict: 'no_before', ts: 4 },
+  ];
+  assertEqual('filter tenant-a only',
+    filterAdminAuditDecisions(decisions, 'tenant-a', '').length, 2);
+  assertEqual('filter default tenant',
+    filterAdminAuditDecisions(decisions, 'default', '').length, 1);
+  assertEqual('filter verdict worse',
+    filterAdminAuditDecisions(decisions, '', 'worse').length, 2);
+  assertEqual('filter tenant+verdict combo',
+    filterAdminAuditDecisions(decisions, 'tenant-b', 'no_before').length, 1);
+  assertEqual('filter combo no match',
+    filterAdminAuditDecisions(decisions, 'tenant-a', 'revoked').length, 0);
+  assertEqual('filter no filters → all',
+    filterAdminAuditDecisions(decisions, '', '').length, 4);
+  assertEqual('filter undefined input',
+    filterAdminAuditDecisions(undefined, '', '').length, 0);
+  assertEqual('filter unknown verdict kept when no filter',
+    filterAdminAuditDecisions([{ verdict: 'mystery', ts: 5 }], '', '').length, 1);
+
+  // Verdict badge metadata — ladder + unknown fallback.
+  assertEqual('verdict worse meta', adminAuditVerdictMeta('worse'),
+    { cls: 'admin-audit__verdict--worse', label: 'WORSE' });
+  assertEqual('verdict improved meta', adminAuditVerdictMeta('improved').label, 'IMPROVED');
+  assertEqual('verdict revoked meta', adminAuditVerdictMeta('revoked').cls,
+    'admin-audit__verdict--revoked');
+  assertEqual('verdict unknown fallback label', adminAuditVerdictMeta('mystery').label, 'MYSTERY');
+  assertEqual('verdict undefined fallback label', adminAuditVerdictMeta(undefined).label, 'UNKNOWN');
+  assertEqual('verdict unknown fallback class', adminAuditVerdictMeta('mystery').cls,
+    'admin-audit__verdict--mute');
+})();
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  Funnel session id (Issue #155) — funnelId() + meta injection
+// ═══════════════════════════════════════════════════════════════════════════
+(function () {
+  // Stub localStorage for the funnelId mirror (Node has none).
+  if (typeof globalThis.localStorage === 'undefined') {
+    const store = {};
+    globalThis.localStorage = {
+      getItem: (k) => (k in store ? store[k] : null),
+      setItem: (k, v) => { store[k] = String(v); },
+      removeItem: (k) => { delete store[k]; },
+    };
+  }
+
+  // Mirror of static/app.js funnelId() — PII-free token, persisted once.
+  function funnelId() {
+    try {
+      let id = localStorage.getItem('c65_funnel_id');
+      if (!id) {
+        id = 'f_' + Math.random().toString(36).slice(2) + Date.now().toString(36);
+        localStorage.setItem('c65_funnel_id', id);
+      }
+      return id;
+    } catch (e) { return ''; }
+  }
+
+  // Mirror of trackConversionEvent meta injection (kept pure for testing).
+  function injectFunnelMeta(meta) {
+    const m = meta || {};
+    if (!m.funnel_id) m.funnel_id = funnelId();
+    return m;
+  }
+
+  localStorage.removeItem('c65_funnel_id');
+  const id1 = funnelId();
+  assertTruthy('funnelId generates a token', id1.length >= 8);
+  assertEqual('funnelId prefix f_', id1.slice(0, 2), 'f_');
+  assertEqual('funnelId stable across calls', funnelId(), id1);
+  const meta = injectFunnelMeta({ plan: 'pro' });
+  assertEqual('trackConversionEvent injects funnel_id', meta.funnel_id, id1);
+  assertEqual('trackConversionEvent keeps plan', meta.plan, 'pro');
+  const meta2 = injectFunnelMeta({ funnel_id: 'f_given', plan: 'pro' });
+  assertEqual('explicit funnel_id not overridden', meta2.funnel_id, 'f_given');
+  localStorage.removeItem('c65_funnel_id');
+  const id2 = funnelId();
+  assertTruthy('funnelId regenerates after wipe', id2.length >= 8 && id2 !== id1);
 })();
 
 // ═══════════════════════════════════════════════════════════════════════════

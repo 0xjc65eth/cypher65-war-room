@@ -4,6 +4,7 @@ CYPHER65 // Solo-mining API routes
 Flask Blueprint for /api/solo-mining/* endpoints.
 Extracted from app.py.
 """
+
 import json
 import time
 import logging
@@ -56,8 +57,15 @@ def api_solo_mining_calc():
                 difficulty = d
 
     if not difficulty or difficulty <= 0:
-        return jsonify({"error": "could not determine network difficulty",
-                        "hint": "pass ?difficulty=N as query param"}), 400
+        return (
+            jsonify(
+                {
+                    "error": "could not determine network difficulty",
+                    "hint": "pass ?difficulty=N as query param",
+                }
+            ),
+            400,
+        )
 
     hashrate_hs = solo_mining._parse_hashrate(hashrate)
     result = {
@@ -65,10 +73,14 @@ def api_solo_mining_calc():
         "hashrate_hs": hashrate_hs,
         "duration_hours": duration,
         "difficulty": difficulty,
-        "probability": solo_mining.calc_block_probability(hashrate_hs, difficulty, duration * 3600),
+        "probability": solo_mining.calc_block_probability(
+            hashrate_hs, difficulty, duration * 3600
+        ),
         "expected_time": solo_mining.calc_expected_time(hashrate_hs, difficulty),
         "best_diff": solo_mining.calc_best_diff_expected(hashrate_hs, duration * 3600),
-        "terminal_output": solo_mining.format_calc_output(hashrate, difficulty, duration, user=user or None),
+        "terminal_output": solo_mining.format_calc_output(
+            hashrate, difficulty, duration, user=user or None
+        ),
     }
     return jsonify(result)
 
@@ -86,7 +98,9 @@ def api_solo_mining_compare():
     mrr_price = request.args.get("mrr_price", None)
     auto_fetch = request.args.get("auto_fetch", "1") != "0"
     mrr_api_key = request.args.get("mrr_api_key") or os.environ.get("MRR_API_KEY")
-    mrr_api_secret = request.args.get("mrr_api_secret") or os.environ.get("MRR_API_SECRET")
+    mrr_api_secret = request.args.get("mrr_api_secret") or os.environ.get(
+        "MRR_API_SECRET"
+    )
 
     try:
         budget = float(budget)
@@ -105,7 +119,9 @@ def api_solo_mining_compare():
         difficulty = d or 110e12  # last resort fallback
 
     results = solo_mining.compare_rentals(
-        budget, difficulty, duration,
+        budget,
+        difficulty,
+        duration,
         float(braiins_price) if braiins_price else None,
         float(mrr_price) if mrr_price else None,
         auto_fetch=auto_fetch,
@@ -114,7 +130,9 @@ def api_solo_mining_compare():
     )
 
     terminal = solo_mining.format_compare_output(
-        budget, difficulty, duration,
+        budget,
+        difficulty,
+        duration,
         float(braiins_price) if braiins_price else None,
         float(mrr_price) if mrr_price else None,
         auto_fetch=auto_fetch,
@@ -123,13 +141,15 @@ def api_solo_mining_compare():
         user=user or None,
     )
 
-    return jsonify({
-        "budget_btc": budget,
-        "duration_hours": duration,
-        "difficulty": difficulty,
-        "options": results,
-        "terminal_output": terminal,
-    })
+    return jsonify(
+        {
+            "budget_btc": budget,
+            "duration_hours": duration,
+            "difficulty": difficulty,
+            "options": results,
+            "terminal_output": terminal,
+        }
+    )
 
 
 @solo_mining_bp.route("/network")
@@ -140,12 +160,12 @@ def api_solo_mining_network():
     pool_stats = solo_mining.get_parasite_best_diff()
 
     net = state.latest_snapshot.get("network", {})
-    return jsonify({
-        "difficulty": difficulty or float(net.get("difficulty", 0)),
-        "btc_price_usd": btc_price.get("usd", 0),
-        "btc_price_brl": btc_price.get("brl", 0),
-        "pool_hashrate": pool_stats.get("pool_hashrate", 0),
-        "pool_workers": pool_stats.get("pool_workers", 0),
-    })
-
-
+    return jsonify(
+        {
+            "difficulty": difficulty or float(net.get("difficulty", 0)),
+            "btc_price_usd": btc_price.get("usd", 0),
+            "btc_price_brl": btc_price.get("brl", 0),
+            "pool_hashrate": pool_stats.get("pool_hashrate", 0),
+            "pool_workers": pool_stats.get("pool_workers", 0),
+        }
+    )

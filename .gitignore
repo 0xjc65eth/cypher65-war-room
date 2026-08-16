@@ -7,7 +7,7 @@ __pycache__/
 .DS_Store
 *.log
 .env
-.agents/
+.agents/*
 
 # Backup files
 *.backup*
@@ -20,6 +20,9 @@ e2e-report/
 
 # Runtime artifacts
 .coverage
+# Mutation testing (mutmut) artifacts — local-only
+.mutmut-cache
+*.py.bak
 data/*.db
 # Production SQLite backups / corrupt snapshots must never reach the repo
 data/*.bak*
@@ -33,3 +36,14 @@ static/*.bak2
 data/*-wal
 data/*-shm
 .aider*
+
+# Skill tooling artifacts (npx skills) — local-only, not part of the app
+.claude/
+.agents/*
+skills-lock.json
+
+# Skills do projeto são VERSIONADOS (decisão CTO, Issue #121) — viajam com o
+# repo para que qualquer agente de qualquer modelo os carregue em qualquer clone.
+# Mantém-se ignorado apenas o tooling local (.claude/, skills-lock.json acima).
+!.agents/skills/
+!.agents/skills/**

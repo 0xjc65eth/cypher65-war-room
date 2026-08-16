@@ -2,7 +2,7 @@
 # Multi-stage build: deps in one layer, runtime image stays small.
 # The app is a self-contained Flask + SQLite deployment (no external DB
 # required). Optional InfluxDB mirroring is configured at runtime via env.
-FROM python:3.13-slim AS base
+FROM python:3.14-slim AS base
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \

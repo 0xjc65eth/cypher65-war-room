@@ -75,13 +75,14 @@ def _decrypt_credential(value: str) -> str:
     if f is None:
         return value
     try:
-        raw = f.decrypt(value[len(_ENC_PREFIX):].encode("ascii"))
+        raw = f.decrypt(value[len(_ENC_PREFIX) :].encode("ascii"))
         return raw.decode("utf-8")
     except Exception:
         # Wrong SECRET_KEY or corrupt value — return as-is (never raise, so
         # an operator key rotation can't brick credential consumers).
         log.warning("[settings] could not decrypt credential value")
         return value
+
 
 DEFAULT_SETTINGS = {
     "cost_mode": "none",
@@ -104,10 +105,19 @@ DEFAULT_SETTINGS = {
     "rental_market_overpay_pct": "",
     "rental_market_arb_pct": "",
     "rental_market_arb_cooldown_hours": "24",
+    "rental_reco_worse_alert": "0",
+    "rental_auto_exclude_alert": "0",
+    "rentals_min_delivery_pct": "90",
+    "rental_auto_blacklist_min_samples": "2",
+    "rental_auto_blacklist_grade": "F",
     "mrr_api_key": "",
     "mrr_api_secret": "",
     "braiins_api_key": "",
     "auto_pilot_armed": "0",
+    # Fase 4 (Issue #178): execução autônoma das recomendações (gate PRO).
+    "auto_pilot_autonomous": "0",
+    # Alerta por tenant quando o piloto autônomo EXECUTA uma ação (Fase 4).
+    "auto_pilot_action_alert": "0",
 }
 
 # Global (operator / self-host) settings cache — the `settings` table.
@@ -157,6 +167,7 @@ def load_settings(tenant_id: str = ""):
 
     Credential keys are returned DECRYPTED (transparent to consumers).
     """
+
     def _finalize(d: dict) -> dict:
         for k in _CREDENTIAL_KEYS:
             if k in d and isinstance(d[k], str):
@@ -191,7 +202,9 @@ def load_settings(tenant_id: str = ""):
         _ensure_tenant_settings_table()
         conn = get_db()
         c = conn.cursor()
-        c.execute("SELECT key, value FROM tenant_settings WHERE tenant_id=?", (tenant_id,))
+        c.execute(
+            "SELECT key, value FROM tenant_settings WHERE tenant_id=?", (tenant_id,)
+        )
         for row in c.fetchall():
             if row["value"] is not None:
                 out[row["key"]] = row["value"]
@@ -212,7 +225,7 @@ def save_setting(key, value, tenant_id: str = ""):
 
     Credential keys are stored ENCRYPTED when SECRET_KEY is set.
     """
-    if not key.startswith('_') and key not in DEFAULT_SETTINGS:
+    if not key.startswith("_") and key not in DEFAULT_SETTINGS:
         raise KeyError(f"unknown setting key: {key}")
     stored = str(value)
     if key in _CREDENTIAL_KEYS:
@@ -297,6 +310,12 @@ def settings_label(k):
         "rental_market_overpay_pct": "Rental overpay alert — fire webhook/push when the price PAID for a rental is this % ABOVE the market at purchase time (e.g. 100; empty/0 disables)",
         "rental_market_arb_pct": "Arbitrage alert — fire webhook/push when the CURRENT market price is this % BELOW the tenant's own cost references per TH·h (e.g. 30; empty/0 disables). Compares vs the ADVERTISED average, the DELIVERED/effective cost (real delivery) and the LAST rental; the highest baseline drives the signal. Local-first: baselines come from the tenant's past rentals (open the RENTALS panel once to populate them) + local market table (no provider calls)",
         "rental_market_arb_cooldown_hours": "Arbitrage dedup: repeat the alert at most once per this many hours (default 24)",
+        "rental_reco_worse_alert": "Accepted-recommendation alert — fire webhook/push when a rig you blacklisted (accepted recommendation) ends with verdict WORSE (it kept under-delivering after the exclusion); 0/1, default off. Revoked decisions never alert",
+        "rental_auto_exclude_alert": "Auto-exclusion alert — fire webhook/push when the periodic sweep auto-excludes a rig (sub-entrega: grade at/below your floor with enough samples). The message includes the cause (delivery %, samples, rule); 0/1, default off",
+        "auto_pilot_action_alert": "Auto-Pilot action alert — fire webhook/push when the autonomous pilot actually EXECUTES a physical action (restart/pause/underclock) on a device; 0/1, default off. The message names the device and the action",
+        "rentals_min_delivery_pct": "Análise de Rendimento (CSV): delivery % mínimo aceitável por aluguel (default 90). Abaixo dele o aluguel é marcado cancelled_performance e entra o reembolso devido no CSV",
+        "rental_auto_blacklist_min_samples": "Auto-exclusão: amostras mínimas de entrega para excluir automaticamente um rig (default 2). Mais alto = decisão mais conservadora",
+        "rental_auto_blacklist_grade": "Auto-exclusão: grau máximo aceitável — o rig é auto-excluído quando a grade é pior OU igual a esta letra (default F = só F; D = exclui D e F)",
         "mrr_api_key": "MiningRigRentals API key (Settings → MRR credentials)",
         "mrr_api_secret": "MiningRigRentals API secret (Settings → MRR credentials)",
         "braiins_api_key": "Braiins Hashpower API key — owner token (Settings → Braiins credentials)",

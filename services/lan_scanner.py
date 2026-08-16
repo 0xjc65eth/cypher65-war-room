@@ -23,9 +23,9 @@ log = logging.getLogger(__name__)
 
 # ── Port signature → firmware hint mapping ──────────────────────────────
 PORT_SIGNATURES = {
-    4028: "cgminer",       # cgminer/BMMiner (Antminer, Whatsminer, Avalon, Braiins)
-    80:   "braiins_rest",  # Braiins OS+ modern REST API
-    8080: "bitaxe",        # Bitaxe AxeOS web UI
+    4028: "cgminer",  # cgminer/BMMiner (Antminer, Whatsminer, Avalon, Braiins)
+    80: "braiins_rest",  # Braiins OS+ modern REST API
+    8080: "bitaxe",  # Bitaxe AxeOS web UI
 }
 
 # Thread count for parallel scanning — keeps it under 3s for a /24 subnet
@@ -54,7 +54,9 @@ def _arp_table_ips() -> List[str]:
             for word in line.replace("(", " ").replace(")", " ").split():
                 word = word.strip("()")
                 parts = word.split(".")
-                if len(parts) == 4 and all(p.isdigit() and 0 <= int(p) <= 255 for p in parts):
+                if len(parts) == 4 and all(
+                    p.isdigit() and 0 <= int(p) <= 255 for p in parts
+                ):
                     ips.append(word)
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as e:
         log.debug("[lan_scanner] ARP table read failed: %s", e)
@@ -74,7 +76,9 @@ def _local_subnet_ips() -> List[str]:
         parts = local_ip.rsplit(".", 1)
         if len(parts) == 2:
             prefix = parts[0] + "."
-            ips = [prefix + str(i) for i in range(1, 255) if prefix + str(i) != local_ip]
+            ips = [
+                prefix + str(i) for i in range(1, 255) if prefix + str(i) != local_ip
+            ]
     except Exception:
         pass
     return ips
@@ -114,7 +118,9 @@ def scan_network() -> Dict[str, Any]:
         log.info("[lan_scanner] no candidates — ARP empty, subnet scan failed")
         return {"scanned": 0, "found": 0, "duration_ms": 0, "devices": []}
 
-    log.info("[lan_scanner] probing %d IPs × %d ports", len(candidates), len(PORT_SIGNATURES))
+    log.info(
+        "[lan_scanner] probing %d IPs × %d ports", len(candidates), len(PORT_SIGNATURES)
+    )
 
     # ── Phase 2: parallel port probes ───────────────────────────────
     results: Dict[str, Dict] = {}  # ip → {ip, open_ports, hostname}
@@ -144,7 +150,7 @@ def scan_network() -> Dict[str, Any]:
     for dev in results.values():
         ports = dev["open_ports"]
         if 4028 in ports and 80 in ports:
-            dev["firmware_hint"] = "braiins"   # both cgminer + REST = Braiins OS+
+            dev["firmware_hint"] = "braiins"  # both cgminer + REST = Braiins OS+
         elif 4028 in ports:
             dev["firmware_hint"] = "cgminer"
         elif 8080 in ports:
@@ -158,7 +164,9 @@ def scan_network() -> Dict[str, Any]:
     try:
         mdns_out = subprocess.check_output(
             ["dns-sd", "-B", "_http._tcp", "local."],
-            text=True, timeout=3, stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=3,
+            stderr=subprocess.DEVNULL,
         )
         for line in mdns_out.splitlines():
             line = line.strip()
@@ -172,7 +180,9 @@ def scan_network() -> Dict[str, Any]:
                 try:
                     resolve = subprocess.check_output(
                         ["dns-sd", "-q", instance + ".local."],
-                        text=True, timeout=2, stderr=subprocess.DEVNULL,
+                        text=True,
+                        timeout=2,
+                        stderr=subprocess.DEVNULL,
                     )
                     for rline in resolve.splitlines():
                         rline = rline.strip()

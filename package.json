@@ -9,10 +9,18 @@
     "test:e2e:headed": "npx playwright test --headed",
     "test:e2e:debug": "npx playwright test --debug",
     "test:e2e:report": "npx playwright show-report e2e-report",
-    "gen:qr-golden": "node scripts/gen_qr_golden.cjs"
+    "gen:qr-golden": "node scripts/gen_qr_golden.cjs",
+    "audit:ui": "node scripts/audit_ui.cjs",
+    "audit:ui:all": "node scripts/audit_ui.cjs --all",
+    "check:dom": "node scripts/check-dom-regression.cjs",
+    "test:dom-guards": "node tests/test_dom_guards.js",
+    "check:frontend": "bash scripts/check_frontend.sh",
+    "lint:commit": "commitlint --from HEAD~1"
   },
   "devDependencies": {
     "@playwright/test": "^1.52.0",
-    "qrcode-terminal": "^0.12.0"
+    "qrcode-terminal": "^0.12.0",
+    "@commitlint/cli": "^19.3.0",
+    "@commitlint/config-conventional": "^19.2.2"
   }
 }

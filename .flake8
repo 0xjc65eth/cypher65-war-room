@@ -1,0 +1,20 @@
+# flake8 config — static security gate (Issue #125)
+#
+# The CI blocks merges on this exact selection: bug-class violations only.
+# Style rules (E501 line length, W5xx, etc.) are a large pre-existing
+# backlog and are deliberately NOT gated yet — see `make lint` (advisory)
+# and the coverage/quality roadmap in docs/QUALITY.md.
+#
+# Codes gated:
+#   F821  undefined name (NameError at runtime)
+#   F541  f-string without any placeholder (broken message)
+#   E9    syntax errors / bad indentation (E901-E999)
+#
+# CI instala flake8==7.1.1 (requirements-dev.txt) — rodar
+# `pip install -r requirements-dev.txt` local para bater versão.
+#
+# Local usage:  python -m flake8
+[flake8]
+select = F821, F541, E9
+exclude = .venv, node_modules, mobile, static, tests, scripts, .git
+max-line-length = 120

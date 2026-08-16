@@ -56,6 +56,7 @@ _cached_gist_id: str | None = None
 
 # ── Env helpers (read lazily so tests can flip knobs after import) ─────────
 
+
 def _token():
     return (os.environ.get("GITHUB_TOKEN") or "").strip()
 
@@ -90,6 +91,7 @@ def _resolve_db_path(db_path=None) -> str:
 
 # ── Gist discovery / creation ───────────────────────────────────────────────
 
+
 def _find_or_create_gist() -> str | None:
     """Return the gist id holding our backup file, creating it if needed.
 
@@ -114,23 +116,29 @@ def _find_or_create_gist() -> str | None:
                     _cached_gist_id = g["id"]
                     return g["id"]
         # None found — create a private gist with an empty placeholder.
-        r = requests.post(f"{_API}/gists", headers=_headers(), timeout=10,
-                          json={
-                              "description": GIST_DEFAULT_DESCRIPTION,
-                              "public": False,
-                              "files": {GIST_FILENAME: {"content": ""}},
-                          })
+        r = requests.post(
+            f"{_API}/gists",
+            headers=_headers(),
+            timeout=10,
+            json={
+                "description": GIST_DEFAULT_DESCRIPTION,
+                "public": False,
+                "files": {GIST_FILENAME: {"content": ""}},
+            },
+        )
         if r.ok:
             _cached_gist_id = r.json()["id"]
             return _cached_gist_id
-        log.warning("[remote_backup] gist create failed: %s %s",
-                    r.status_code, r.text[:160])
+        log.warning(
+            "[remote_backup] gist create failed: %s %s", r.status_code, r.text[:160]
+        )
     except Exception as e:
         log.warning("[remote_backup] gist lookup/create error: %s", e)
     return None
 
 
 # ── Backup ──────────────────────────────────────────────────────────────────
+
 
 def _snapshot_bytes(db_path: str) -> bytes:
     """Crash-safe SQLite snapshot to a temp file, returned as bytes.
@@ -171,15 +179,22 @@ def remote_backup_now(db_path=None) -> bool:
         gid = _find_or_create_gist()
         if not gid:
             return False
-        r = requests.patch(f"{_API}/gists/{gid}", headers=_headers(),
-                           timeout=20,
-                           json={"files": {GIST_FILENAME: {"content": b64}}})
+        r = requests.patch(
+            f"{_API}/gists/{gid}",
+            headers=_headers(),
+            timeout=20,
+            json={"files": {GIST_FILENAME: {"content": b64}}},
+        )
         if not r.ok:
-            log.warning("[remote_backup] PATCH failed: %s %s",
-                        r.status_code, r.text[:160])
+            log.warning(
+                "[remote_backup] PATCH failed: %s %s", r.status_code, r.text[:160]
+            )
             return False
-        log.info("[remote_backup] snapshot pushed (%.0f KB raw) -> gist %s",
-                 len(raw) / 1024, gid)
+        log.info(
+            "[remote_backup] snapshot pushed (%.0f KB raw) -> gist %s",
+            len(raw) / 1024,
+            gid,
+        )
         return True
     except Exception as e:
         log.warning("[remote_backup] backup error: %s", e)
@@ -187,6 +202,7 @@ def remote_backup_now(db_path=None) -> bool:
 
 
 # ── Restore ────────────────────────────────────────────────────────────────
+
 
 def _db_has_user_data(db_path: str) -> bool:
     """True when the local DB already contains meaningful user rows.
@@ -200,8 +216,12 @@ def _db_has_user_data(db_path: str) -> bool:
     try:
         conn = sqlite3.connect(db_path)
         try:
-            tables = {r[0] for r in conn.execute(
-                "SELECT name FROM sqlite_master WHERE type='table'")}
+            tables = {
+                r[0]
+                for r in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                )
+            }
             checks = [
                 ("settings", "SELECT COUNT(*) FROM settings WHERE value <> ''"),
                 ("users", "SELECT COUNT(*) FROM users"),
@@ -249,8 +269,12 @@ def remote_restore(db_path=None) -> bool:
         os.makedirs(os.path.dirname(os.path.abspath(db_path)), exist_ok=True)
         with open(db_path, "wb") as f:
             f.write(raw)
-        log.info("[remote_backup] restored %.0f KB from gist %s -> %s",
-                 len(raw) / 1024, gid, db_path)
+        log.info(
+            "[remote_backup] restored %.0f KB from gist %s -> %s",
+            len(raw) / 1024,
+            gid,
+            db_path,
+        )
         return True
     except Exception as e:
         log.warning("[remote_backup] restore error: %s", e)
@@ -258,6 +282,7 @@ def remote_restore(db_path=None) -> bool:
 
 
 # ── Worker loop ─────────────────────────────────────────────────────────────
+
 
 def remote_backup_loop(stop_event=None):
     """Periodic remote backup worker (daemon).

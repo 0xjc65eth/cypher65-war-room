@@ -8,6 +8,7 @@ Uses the Tuya IoT Core REST API with Bearer token auth.
 
 Docs: https://developer.tuya.com/en/docs/cloud/
 """
+
 import hashlib
 import hmac
 import json
@@ -39,8 +40,14 @@ _token_cache: dict[str, dict] = {}
 def _tuya_sign(method: str, path: str, headers: dict, body: str, secret: str) -> str:
     """Generate HMAC-SHA256 signature for Tuya API request."""
     # Build string-to-sign: method + \\n + Content-SHA256 + \\n + headers + \\n + path
-    content_hash = hashlib.sha256(body.encode("utf-8")).hexdigest() if body else hashlib.sha256(b"").hexdigest()
-    header_str = "\n".join(f"{k}:{v}" for k, v in sorted(headers.items()) if k.startswith("tuya-"))
+    content_hash = (
+        hashlib.sha256(body.encode("utf-8")).hexdigest()
+        if body
+        else hashlib.sha256(b"").hexdigest()
+    )
+    header_str = "\n".join(
+        f"{k}:{v}" for k, v in sorted(headers.items()) if k.startswith("tuya-")
+    )
     str_to_sign = f"{method}\n{content_hash}\n{header_str}\n{path}"
     return hmac.new(
         secret.encode("utf-8"),
@@ -69,15 +76,23 @@ def _get_token(access_id: str, access_secret: str, region: str = "us") -> Option
 
     headers = {
         "client_id": access_id,
-        "sign": hashlib.sha256(f"{access_id}{access_secret}{t}".encode("utf-8")).hexdigest(),
+        "sign": hashlib.sha256(
+            f"{access_id}{access_secret}{t}".encode("utf-8")
+        ).hexdigest(),
         "t": str(t),
         "sign_method": "HMAC-SHA256",
+        # Issue #150 — NÃO aplicar nonce monotônico aqui: a Tuya valida a
+        # recência do `t` (janela de tolerância), não a unicidade; o nonce
+        # vazio é o esperado e não entra na string assinada (_tuya_sign só
+        # inclui headers `tuya-*`).
         "nonce": "",
         "stringToSign": "",
     }
 
     try:
-        r = requests.get(f"{base_url}{path}", headers=headers, timeout=TUYA_DEFAULT_TIMEOUT)
+        r = requests.get(
+            f"{base_url}{path}", headers=headers, timeout=TUYA_DEFAULT_TIMEOUT
+        )
         data = r.json()
         if data.get("success") and data.get("result"):
             token_data = data["result"]
@@ -98,8 +113,14 @@ def _get_token(access_id: str, access_secret: str, region: str = "us") -> Option
         return None
 
 
-def _tuya_request(method: str, path: str, access_id: str, access_secret: str,
-                  region: str = "us", body: dict = None) -> dict:
+def _tuya_request(
+    method: str,
+    path: str,
+    access_id: str,
+    access_secret: str,
+    region: str = "us",
+    body: dict = None,
+) -> dict:
     """Make an authenticated Tuya API request.
     Handles token acquisition, signing, and error handling.
     Returns the result dict (or error dict).
@@ -119,6 +140,8 @@ def _tuya_request(method: str, path: str, access_id: str, access_secret: str,
         "access_token": token,
         "t": str(t),
         "sign_method": "HMAC-SHA256",
+        # Issue #150 — mesmo veredito do token: nonce vazio é o esperado da
+        # Tuya (valida recência do `t`); monotonicidade NÃO se aplica aqui.
         "nonce": "",
     }
 
@@ -126,8 +149,13 @@ def _tuya_request(method: str, path: str, access_id: str, access_secret: str,
     headers["sign"] = _tuya_sign(method, path, headers, body_str, access_secret)
 
     try:
-        r = requests.request(method, url, headers=headers, json=body if body else None,
-                             timeout=TUYA_DEFAULT_TIMEOUT)
+        r = requests.request(
+            method,
+            url,
+            headers=headers,
+            json=body if body else None,
+            timeout=TUYA_DEFAULT_TIMEOUT,
+        )
         data = r.json()
         if data.get("success"):
             return {"success": True, "result": data.get("result", {})}
@@ -139,7 +167,9 @@ def _tuya_request(method: str, path: str, access_id: str, access_secret: str,
                 global _token_cache
                 cache_key = f"{region}:{access_id}"
                 _token_cache.pop(cache_key, None)
-                return _tuya_request(method, path, access_id, access_secret, region, body)
+                return _tuya_request(
+                    method, path, access_id, access_secret, region, body
+                )
             log.error("[tuya] API error %s: %s (path=%s)", code, msg, path)
             return {"success": False, "error": f"Tuya API error {code}: {msg}"}
     except Exception as e:
@@ -189,17 +219,26 @@ class TuyaCloudAdapter(PowerOutletAdapter):
             # Only include smart plugs (category 'cz' or 'kg' or name hints)
             cat = (d.get("category") or d.get("device_type") or "").lower()
             name = (d.get("name") or "").lower()
-            if "plug" in cat or "cz" in cat or "kg" in cat or "socket" in cat or "switch" in cat or "plug" in name:
-                plugs.append({
-                    "id": d.get("id", ""),
-                    "name": d.get("name", "Unknown Plug"),
-                    "online": d.get("online", False),
-                    "state": self._parse_state(d),
-                    "vendor": "tuya",
-                    "category": cat,
-                    "product_id": d.get("product_id", ""),
-                    "model": d.get("model", ""),
-                })
+            if (
+                "plug" in cat
+                or "cz" in cat
+                or "kg" in cat
+                or "socket" in cat
+                or "switch" in cat
+                or "plug" in name
+            ):
+                plugs.append(
+                    {
+                        "id": d.get("id", ""),
+                        "name": d.get("name", "Unknown Plug"),
+                        "online": d.get("online", False),
+                        "state": self._parse_state(d),
+                        "vendor": "tuya",
+                        "category": cat,
+                        "product_id": d.get("product_id", ""),
+                        "model": d.get("model", ""),
+                    }
+                )
 
         return plugs
 
@@ -218,7 +257,10 @@ class TuyaCloudAdapter(PowerOutletAdapter):
         path = f"/v1.0/devices/{device_id}/status"
         result = _tuya_request("GET", path, access_id, access_secret, region)
         if not result.get("success"):
-            return {"success": False, "error": result.get("error", "status check failed")}
+            return {
+                "success": False,
+                "error": result.get("error", "status check failed"),
+            }
 
         status_list = result.get("result", [])
         if isinstance(status_list, dict):
@@ -226,13 +268,15 @@ class TuyaCloudAdapter(PowerOutletAdapter):
 
         state = False
         power_w = None
-        for s in (status_list or []):
+        for s in status_list or []:
             code = s.get("code", "")
             val = s.get("value")
             if code in ("switch_1", "switch_usb1", "switch"):
                 state = bool(val)
             elif code in ("cur_power", "power"):
-                power_w = float(val) / 10.0 if val else None  # Tuya returns decimilliwatts
+                power_w = (
+                    float(val) / 10.0 if val else None
+                )  # Tuya returns decimilliwatts
             elif code == "cur_current":
                 pass  # mA — not surfaced for now
 
@@ -254,7 +298,10 @@ class TuyaCloudAdapter(PowerOutletAdapter):
         """Toggle: read current state first, then flip it."""
         status = self.get_status(device_id, **kwargs)
         if not status.get("success"):
-            return {"success": False, "error": status.get("error", "cannot read state for toggle")}
+            return {
+                "success": False,
+                "error": status.get("error", "cannot read state for toggle"),
+            }
 
         new_state = not status.get("state", False)
         return self._send_command(device_id, "switch_1", new_state, **kwargs)
@@ -303,9 +350,17 @@ class TuyaCloudAdapter(PowerOutletAdapter):
 
             if result.get("success"):
                 if try_code != code:
-                    log.info("[tuya] device %s used fallback code '%s' instead of '%s'",
-                              device_id[:8], try_code, code)
-                return {"success": True, "new_state": bool(value), "code_used": try_code}
+                    log.info(
+                        "[tuya] device %s used fallback code '%s' instead of '%s'",
+                        device_id[:8],
+                        try_code,
+                        code,
+                    )
+                return {
+                    "success": True,
+                    "new_state": bool(value),
+                    "code_used": try_code,
+                }
             last_error = result.get("error", "command failed")
 
         return {"success": False, "error": last_error}
@@ -317,7 +372,7 @@ class TuyaCloudAdapter(PowerOutletAdapter):
         if isinstance(status_list, dict):
             status_list = status_list.get("status", status_list)
 
-        for s in (status_list or []):
+        for s in status_list or []:
             if isinstance(s, dict):
                 code = s.get("code", "")
                 if code in ("switch_1", "switch_usb1", "switch"):
@@ -327,4 +382,12 @@ class TuyaCloudAdapter(PowerOutletAdapter):
     @staticmethod
     def _error_list(msg: str) -> list:
         log.warning("[tuya] %s", msg)
-        return [{"id": "", "name": f"⚠ {msg}", "online": False, "state": None, "vendor": "tuya"}]
+        return [
+            {
+                "id": "",
+                "name": f"⚠ {msg}",
+                "online": False,
+                "state": None,
+                "vendor": "tuya",
+            }
+        ]

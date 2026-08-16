@@ -16,10 +16,10 @@ from typing import Dict, Any, Optional
 
 
 def calculate_block_probability(
-    user_hashrate: float,           # H/s do usuário/worker
-    network_hashrate: float,        # H/s da rede
-    duration_seconds: int,          # Período em segundos
-    network_difficulty: Optional[float] = None
+    user_hashrate: float,  # H/s do usuário/worker
+    network_hashrate: float,  # H/s da rede
+    duration_seconds: int,  # Período em segundos
+    network_difficulty: Optional[float] = None,
 ) -> Dict[str, Any]:
     """
     Calcula probabilidades de encontrar blocos usando distribuição Poisson.
@@ -55,7 +55,11 @@ def calculate_block_probability(
     expected_blocks = lambda_rate
 
     # Expected time até o próximo bloco (segundos)
-    expected_time_to_block = 600.0 * (network_hashrate / user_hashrate) if user_hashrate > 0 else float("inf")
+    expected_time_to_block = (
+        600.0 * (network_hashrate / user_hashrate)
+        if user_hashrate > 0
+        else float("inf")
+    )
 
     return {
         "probability_at_least_one": round(prob_at_least_one, 6),
@@ -72,7 +76,7 @@ def calculate_block_probability(
 def calculate_multiple_periods(
     user_hashrate: float,
     network_hashrate: float,
-    network_difficulty: Optional[float] = None
+    network_difficulty: Optional[float] = None,
 ) -> Dict[str, Any]:
     """Calcula probabilidades para vários períodos padrão."""
 
