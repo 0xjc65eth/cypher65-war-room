@@ -1001,6 +1001,84 @@ def test_funnel_weekly_csv_feature_delta_new_feature_appears():
     assert r2[header.index("feature_delta:auto_pilot")] == "-25.0"
 
 
+def test_funnel_weekly_csv_formula_injection_neutralized():
+    """Issue #184: feature names are tenant/client-controlled — a name like
+    ``=HYPERLINK(...)`` / ``=1+1`` would EXECUTE in Excel/Sheets. The CSV
+    must prefix dangerous text cells with ``'`` (shared csv_neutralize guard)
+    while numbers/None pass through untouched."""
+    buckets = [
+        {
+            "week": "2026-W31",
+            "stages": {"paywall_view": 2},
+            "paywall_by_feature": [
+                {"feature": "=1+1", "count": 1},
+                {"feature": "safe_name", "count": 1},
+            ],
+        }
+    ]
+    out = conv.funnel_weekly_csv(buckets)
+    rows = _csv_rows(out)
+    header = rows[0]
+    # Header cells neutralized: '=1+1' → "'=1+1" (inert text), safe names pass.
+    assert "feature:'=1+1" in header
+    assert "feature:safe_name" in header
+    assert "feature_pct:'=1+1" in header
+    assert "feature_delta:'=1+1" in header
+    # No raw formula-prefixed cell anywhere in the CSV body.
+    assert not any(
+        cell.startswith(("=", "+", "@")) for cell in header
+    ), "raw formula prefix leaked into a header cell"
+    # Counts are NUMBERS and stay numbers (never prefixed / never quoted weirdly).
+    row = rows[1]
+    assert row[header.index("feature:'=1+1")] == "1"
+    assert row[header.index("feature:safe_name")] == "1"
+    # Share columns: 1/2 = 50.0 both — math unaffected by the guard.
+    assert row[header.index("feature_pct:'=1+1")] == "50.0"
+    assert row[header.index("feature_pct:safe_name")] == "50.0"
+
+
+def _csv_rows(out):
+    """Parse funnel CSV output with csv.reader (handles quoting) — split(',') is
+    wrong when a cell contains a comma (e.g. an evil feature name)."""
+    import csv as _csv
+    import io as _io
+
+    return list(_csv.reader(_io.StringIO(out)))
+
+
+def test_funnel_weekly_csv_other_dangerous_prefixes():
+    """Issue #184: @ and + prefixes are also formula risks (Excel treats
+    cells starting with @ as formula / + as arithmetic) — all neutralized."""
+    buckets = [
+        {
+            "week": "2026-W32",
+            "stages": {"paywall_view": 3},
+            "paywall_by_feature": [
+                {"feature": "@SUM(1,1)", "count": 1},
+                {"feature": "+2+2", "count": 1},
+                {"feature": "-cmd", "count": 1},
+            ],
+        }
+    ]
+    out = conv.funnel_weekly_csv(buckets)
+    header = _csv_rows(out)[0]
+    assert "feature:'@SUM(1,1)" in header
+    assert "feature:'+2+2" in header
+    assert "feature:'-cmd" in header
+    assert not any(
+        cell.startswith(("=", "+", "@", "-")) for cell in header
+    ), "raw formula prefix leaked into a header cell"
+
+
+def test_funnel_weekly_csv_week_cell_neutralized():
+    """Issue #184: the week cell is text — a crafted bucket (server-side only,
+    but defensive) with a formula prefix must not leak raw into the CSV."""
+    buckets = [{"week": '=HYPERLINK("http://evil","x")', "stages": {}}]
+    out = conv.funnel_weekly_csv(buckets)
+    row = _csv_rows(out)[1]
+    assert row[0] == '\'=HYPERLINK("http://evil","x")'
+
+
 def test_admin_conversion_weekly_payload(isolated_client, monkeypatch, clean_events):
     from datetime import datetime, timezone
 

@@ -29,6 +29,7 @@ from agents.solo_mining_advisor.tools import (
     mrr_credentials,
     braiins_credentials,
 )
+from helpers import csv_neutralize as _csv_neutralize
 from services.db import get_db
 from services.settings import is_default_tenant, load_settings
 
@@ -1099,18 +1100,6 @@ ADMIN_ACCEPTED_CSV_COLUMNS = [
     "restored_ts",
     "verdict",
 ]
-
-
-def _csv_neutralize(value) -> Any:
-    """Neutralize spreadsheet formula-injection on text cells (a leading
-    = + - @ is a formula risk when a sheet auto-evaluates). Numbers/None
-    pass through untouched."""
-    if value is None or isinstance(value, (int, float)):
-        return value
-    s = str(value)
-    if s[:1] in ("=", "+", "-", "@", "\t", "\r"):
-        return "'" + s
-    return s
 
 
 def admin_accepted_recos_csv(data: Dict[str, Any]) -> str:

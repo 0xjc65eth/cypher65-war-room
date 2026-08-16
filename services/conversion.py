@@ -40,6 +40,7 @@ from datetime import datetime, timedelta, timezone
 from io import StringIO
 from typing import Any, Dict, List, Optional
 
+from helpers import csv_neutralize
 from services.db import get_db
 
 log = logging.getLogger("cypher65.conversion")
@@ -550,6 +551,11 @@ def funnel_weekly_csv(buckets: List[Dict[str, Any]]) -> str:
             for f in (b.get("paywall_by_feature") or [])
         }
     )
+    # Issue #184: feature names are tenant/client-controlled (the funnel event
+    # accepts meta.feature) — a name like "=HYPERLINK(...)" would EXECUTE in
+    # Excel/Sheets. Neutralize every text cell (headers included) with the
+    # shared csv_neutralize guard; numbers/None pass through untouched.
+    feature_headers = [csv_neutralize(f) for f in feature_cols]
     buf = StringIO()
     w = csv.writer(buf)
     w.writerow(
@@ -563,9 +569,9 @@ def funnel_weekly_csv(buckets: List[Dict[str, Any]]) -> str:
             "conversion_rate_pct",
             "sessions_count",
         ]
-        + [f"feature:{f}" for f in feature_cols]
-        + [f"feature_pct:{f}" for f in feature_cols]
-        + [f"feature_delta:{f}" for f in feature_cols]
+        + [f"feature:{f}" for f in feature_headers]
+        + [f"feature_pct:{f}" for f in feature_headers]
+        + [f"feature_delta:{f}" for f in feature_headers]
     )
     prev_pct = None
     for b in buckets:
@@ -592,7 +598,7 @@ def funnel_weekly_csv(buckets: List[Dict[str, Any]]) -> str:
             }
         w.writerow(
             [
-                b.get("week", ""),
+                csv_neutralize(b.get("week", "")),
                 s.get("paywall_view", 0),
                 s.get("modal_open", 0),
                 s.get("checkout_start", 0),
