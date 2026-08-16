@@ -116,6 +116,8 @@ DEFAULT_SETTINGS = {
     "auto_pilot_armed": "0",
     # Fase 4 (Issue #178): execução autônoma das recomendações (gate PRO).
     "auto_pilot_autonomous": "0",
+    # Alerta por tenant quando o piloto autônomo EXECUTA uma ação (Fase 4).
+    "auto_pilot_action_alert": "0",
 }
 
 # Global (operator / self-host) settings cache — the `settings` table.
@@ -310,6 +312,7 @@ def settings_label(k):
         "rental_market_arb_cooldown_hours": "Arbitrage dedup: repeat the alert at most once per this many hours (default 24)",
         "rental_reco_worse_alert": "Accepted-recommendation alert — fire webhook/push when a rig you blacklisted (accepted recommendation) ends with verdict WORSE (it kept under-delivering after the exclusion); 0/1, default off. Revoked decisions never alert",
         "rental_auto_exclude_alert": "Auto-exclusion alert — fire webhook/push when the periodic sweep auto-excludes a rig (sub-entrega: grade at/below your floor with enough samples). The message includes the cause (delivery %, samples, rule); 0/1, default off",
+        "auto_pilot_action_alert": "Auto-Pilot action alert — fire webhook/push when the autonomous pilot actually EXECUTES a physical action (restart/pause/underclock) on a device; 0/1, default off. The message names the device and the action",
         "rentals_min_delivery_pct": "Análise de Rendimento (CSV): delivery % mínimo aceitável por aluguel (default 90). Abaixo dele o aluguel é marcado cancelled_performance e entra o reembolso devido no CSV",
         "rental_auto_blacklist_min_samples": "Auto-exclusão: amostras mínimas de entrega para excluir automaticamente um rig (default 2). Mais alto = decisão mais conservadora",
         "rental_auto_blacklist_grade": "Auto-exclusão: grau máximo aceitável — o rig é auto-excluído quando a grade é pior OU igual a esta letra (default F = só F; D = exclui D e F)",

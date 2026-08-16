@@ -4664,11 +4664,22 @@ def _do_poll():
                 _ok = (_status if _status is not None else _resp.status_code) == 200
                 return {"ok": _ok, **(_payload if _ok else {})}
 
-            _ap_run(
+            _ap_results = _ap_run(
                 tenant_id="default",
                 engine=_automation_engine,
                 execute_fn=_ap_exec_normalized,
             )
+            # Alerta por tenant quando o piloto autônomo EXECUTA uma ação —
+            # webhook + push (opt-in auto_pilot_action_alert), mesmo
+            # dispatcher compartilhado das famílias de rentals.
+            try:
+                from services.user_polling import (
+                    dispatch_autonomous_action_alerts as _ap_alert,
+                )
+
+                _ap_alert("default", _ap_results)
+            except Exception as _ape:
+                log.warning("[auto-pilot] action alert dispatch error: %s", _ape)
         except Exception as e:
             log.warning("[auto-pilot] autonomous pass error: %s", e)
     except Exception as e:

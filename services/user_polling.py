@@ -234,6 +234,25 @@ def dispatch_reco_worse_alerts(tenant_id: str, alerts: list):
         log.warning("[rentals] reco-worse alert dispatch error: %s", e)
 
 
+def dispatch_autonomous_action_alerts(tenant_id: str, results: list):
+    """Fire webhook + push when the autonomous pilot EXECUTED an action
+    ("restart executado pelo Auto-Pilot"). Tenant-scoped, opt-in
+    (auto_pilot_action_alert == '1'), same shared dispatcher as the rental
+    families (webhook_url/min_severity DO tenant) — fire-and-forget daemon
+    threads. Never raises."""
+    if not results:
+        return
+    try:
+        from services.auto_pilot import build_autonomous_action_alerts
+
+        alerts = build_autonomous_action_alerts(results, tenant_id=tenant_id)
+        if not alerts:
+            return  # opt-in off ou nenhuma execução — nem toca a family
+        _dispatch_tenant_alert_family(tenant_id, alerts)
+    except Exception as e:
+        log.warning("[auto-pilot] action alert dispatch error: %s", e)
+
+
 # ── Auto-exclude alert observability (Issue #112) ──────────────────────
 # Counters of auto-exclude alerts dispatched BY PATH (sweep vs panel) —
 # in-memory like the pool counters (reset on restart; persistent history is
