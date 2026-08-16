@@ -7,46 +7,56 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<!-- Issue #186: defer no Chart.js — CDN nunca mais bloqueia o parse do DOM
+     (o retry hack _mktGridRetried no app.js era sintoma deste bloqueio).
+     Quem usa Chart guarda com `typeof Chart === 'undefined'` e re-renderiza
+     no próximo poll — zero risco de boot race. -->
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js" defer></script>
 {% if sentry_dsn %}
 <!-- Frontend Sentry (env-gated): carrega o SDK do browser só quando o
      operador configurou SENTRY_DSN. Sem DSN este bloco nem renderiza —
      zero requests externos, zero overhead, e2e intacto. Captura erros de
      runtime do frontend (além dos logs JSON do backend). -->
-<script src="https://browser.sentry-cdn.com/8.30.0/bundle.min.js" crossorigin="anonymous"></script>
+<script src="https://browser.sentry-cdn.com/8.30.0/bundle.min.js" crossorigin="anonymous" defer></script>
 <script>
-  /* Inicializa o mais cedo possível: o onLoad captura erros que ocorram
-     durante o parse do app.js (boot race). Fail-safe: se o CDN falhar,
-     window.Sentry fica undefined e nada quebra. */
+  /* Issue #186: com `defer`, o SDK executa DEPOIS deste inline — o init
+     espera o DOMContentLoaded (defer scripts rodam antes dele, então
+     window.Sentry já existe). Boot race preservado: ainda captura erros
+     durante o parse do app.js. Fail-safe: se o CDN falhar, window.Sentry
+     fica undefined e __initSentry é no-op — nada quebra. */
   window.__SENTRY_DSN__ = {{ sentry_dsn|tojson }};
-  if (window.Sentry) {
-    Sentry.onLoad(function () {
-      Sentry.init({
-        dsn: window.__SENTRY_DSN__,
-        environment: '{{ sentry_environment|default("self-hosted") }}',
-        release: 'cypher65-war-room',
-        tracesSampleRate: {{ sentry_traces_sample_rate|default(0.1) }},
-        // Anonymize: nunca enviar endereço de carteira / worker (telemetria
-        // honesta — erros sim, dados financeiros não).
-        beforeSend: function (event) {
-          delete event.extra;
-          return event;
-        },
-        // Privacidade: breadcrumbs de fetch/XHR capturam a URL por padrão —
-        // remover query strings (ex: /api/...?...tenant=...) antes de enviar.
-        beforeBreadcrumb: function (breadcrumb) {
-          if (breadcrumb.data && breadcrumb.data.url) {
-            breadcrumb.data.url = String(breadcrumb.data.url).split('?')[0];
-          }
-          return breadcrumb;
-        },
-        ignoreErrors: [
-          // ResizeObserver loop / favicon 404s — ruído conhecido de dashboards.
-          'ResizeObserver',
-          'Non-Error promise rejection captured',
-        ],
-      });
+  function __initSentry() {
+    if (!window.Sentry) return;  // CDN falhou / SDK ausente — fail-safe
+    Sentry.init({
+      dsn: window.__SENTRY_DSN__,
+      environment: '{{ sentry_environment|default("self-hosted") }}',
+      release: 'cypher65-war-room',
+      tracesSampleRate: {{ sentry_traces_sample_rate|default(0.1) }},
+      // Anonymize: nunca enviar endereço de carteira / worker (telemetria
+      // honesta — erros sim, dados financeiros não).
+      beforeSend: function (event) {
+        delete event.extra;
+        return event;
+      },
+      // Privacidade: breadcrumbs de fetch/XHR capturam a URL por padrão —
+      // remover query strings (ex: /api/...?...tenant=...) antes de enviar.
+      beforeBreadcrumb: function (breadcrumb) {
+        if (breadcrumb.data && breadcrumb.data.url) {
+          breadcrumb.data.url = String(breadcrumb.data.url).split('?')[0];
+        }
+        return breadcrumb;
+      },
+      ignoreErrors: [
+        // ResizeObserver loop / favicon 404s — ruído conhecido de dashboards.
+        'ResizeObserver',
+        'Non-Error promise rejection captured',
+      ],
     });
+  }
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', __initSentry);
+  } else {
+    __initSentry();
   }
 </script>
 {% endif %}
@@ -157,6 +167,12 @@
       <span class="topbar__status" id="tbar-status">INIT</span>
       <span class="topbar__sep">|</span>
       <span class="topbar__clock" id="clock">--:--:--</span>
+      <span class="topbar__sep">|</span>
+      <!-- Instance indicator (Issue #198): deixa EXPLÍCITO em qual
+           instância/URL o dashboard está — resolve a confusão real de
+           salvar chaves na instância errada (local vs cloud). Populado
+           pelo initInstanceIndicator() no boot do app.js. -->
+      <span class="topbar__instance" id="topbar-instance" title="">⌁ …</span>
     </div>
   </div>
   <div class="topbar__right">
@@ -2986,7 +3002,7 @@
     <span id="next-poll"></span>
   </div>
 
-  <script src="/static/app.js?v60"></script>
+  <script src="/static/app.js?v61" defer></script>
 </div> <!-- end #app-main -->
 </div> <!-- end #app-layout -->
   <!-- Matrix rain canvas (full-screen background effect) -->

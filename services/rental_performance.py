@@ -29,6 +29,7 @@ from agents.solo_mining_advisor.tools import (
     mrr_credentials,
     braiins_credentials,
 )
+from helpers import csv_neutralize as _csv_neutralize
 from services.db import get_db
 from services.settings import is_default_tenant, load_settings
 
@@ -1101,18 +1102,6 @@ ADMIN_ACCEPTED_CSV_COLUMNS = [
 ]
 
 
-def _csv_neutralize(value) -> Any:
-    """Neutralize spreadsheet formula-injection on text cells (a leading
-    = + - @ is a formula risk when a sheet auto-evaluates). Numbers/None
-    pass through untouched."""
-    if value is None or isinstance(value, (int, float)):
-        return value
-    s = str(value)
-    if s[:1] in ("=", "+", "-", "@", "\t", "\r"):
-        return "'" + s
-    return s
-
-
 def admin_accepted_recos_csv(data: Dict[str, Any]) -> str:
     """Render the admin accepted-recos audit payload as CSV (header + one row
     per decision). Consumes the SAME payload compute_admin_accepted_recos
@@ -1911,18 +1900,30 @@ def _braiins_list_items(data: Any) -> List[Dict]:
 
 def _normalize_braiins_contract(c: Dict[str, Any]) -> Dict[str, Any]:
     """Map a Braiins contract/bid dict to the panel's display schema.
-    Accepts both the legacy (`contract`) and spot (`bid`) field names."""
-    if isinstance(c.get("bid"), dict):
-        inner = c["bid"]
-        c = {**c, **inner}
-    elif isinstance(c.get("contract"), dict):
-        inner = c["contract"]
-        c = {**c, **inner}
 
+    Accepts both the legacy (`contract`) and spot (`bid`) field names.
+
+    The LIVE /spot/bid API wraps each item in an envelope:
+        {"bid": {...}, "counters_committed": {...}}
+    with the id/status/amount nested under ``bid``. Unwrap it first —
+    otherwise ``c.get("id")`` is None and every order is silently
+    dropped, so a valid account renders as "no contracts" (Issue #193)."""
+    if isinstance(c, dict):
+        for wrap_key in ("bid", "contract"):
+            inner = c.get(wrap_key)
+            # Only unwrap the true envelope (top level has no id) — a flat
+            # contract item that happens to carry a `bid` sub-object as data
+            # must keep reading its own level.
+            if isinstance(inner, dict) and not (
+                c.get("id") or c.get("bid_id") or c.get("order_id")
+            ):
+                c = inner
+                break
     cid = c.get("id") or c.get("bid_id") or c.get("order_id")
     status = c.get("status") or c.get("bid_status") or ""
-    # Spot statuses are verbose (SPOT_BID_STATUS_ACTIVE / BID_STATUS_ACTIVE) — collapse to the
-    # legacy-style short status the UI already renders (RUNNING/ACTIVE/…).
+    # Spot statuses are verbose (SPOT_BID_STATUS_ACTIVE / BID_STATUS_ACTIVE)
+    # — collapse to the legacy-style short status the UI already renders
+    # (RUNNING/ACTIVE/FULFILLED/…).
     short_status = (
         str(status).replace("SPOT_BID_STATUS_", "").replace("BID_STATUS_", "")
         if status
@@ -1934,11 +1935,7 @@ def _normalize_braiins_contract(c: Dict[str, Any]) -> Dict[str, Any]:
         or c.get("created_ts")
         or c.get("created")
     )
-    ended = (
-        c.get("ended_at")
-        or c.get("completed_at")
-        or c.get("completed_ts")
-    )
+    ended = c.get("ended_at") or c.get("completed_at") or c.get("completed_ts")
     return {
         "id": cid,
         "status": short_status or status,

@@ -109,6 +109,7 @@
   const $$ = (s) => document.querySelectorAll(s);
   const dom = {
     topbarAddress: $('#topbar-address'), statusPill: $('#status-pill'), statusText: $('#status-text'),
+    topbarInstance: $('#topbar-instance'),
     clock: $('#clock'), nextPoll: $('#next-poll'), refreshNow: $('#refresh-now'),
     workerRankBadge: $('#worker-rank-badge'), workerUptimeBadge: $('#worker-uptime-badge'),
     mHashrate: $('#m-hashrate'), mHashrateSub: $('#m-hashrate-sub'), mBestDiff: $('#m-bestdiff'), mBestDiffSub: $('#m-bestdiff-sub'),
@@ -706,6 +707,64 @@
         if (e.key === 'Enter') loginBtn.click();
       });
     }
+  }
+
+  // ── Instance indicator (Issue #198) ─────────────────────────────────
+  // Deixa EXPLÍCITO em qual instância/URL o dashboard está. Resolve a
+  // confusão real de salvar chaves MRR/Braiins na instância errada (local
+  // vs cloud): o pill no topbar mostra o host + color-code por tipo, e o
+  // tooltip/clique expõe o origin completo para conferir antes de salvar.
+  // Pure classifier — espelhado em tests/test_app_js_core.js.
+  function instanceClassify(host) {
+    let h = String(host || '').toLowerCase().replace(/^https?:\/\//, '').split('/')[0];
+    // Forma IPv6 com brackets "[::1]:8765" → "::1" (porta separada).
+    const bracket = h.match(/^\[([^\]]+)\](?::\d+)?$/);
+    if (bracket) h = bracket[1];
+    // Strip de porta numérica — NUNCA para o loopback IPv6 cru "::1"
+    // (o regex :\d+$ casaria o "1" final e destruiria o host).
+    const hostOnly = h === '::1' ? '::1' : h.replace(/:\d+$/, '');
+    if (!hostOnly) return { kind: 'remote', icon: '⌁' };
+    const isLocal =
+      hostOnly === 'localhost' || hostOnly === '127.0.0.1' || hostOnly === '0.0.0.0' || hostOnly === '::1' ||
+      hostOnly.endsWith('.local') ||
+      /^192\.168\./.test(hostOnly) || /^10\./.test(hostOnly) || /^172\.(1[6-9]|2\d|3[01])\./.test(hostOnly);
+    const isCloud = /\.onrender\.com$/.test(hostOnly) || /\.render\.com$/.test(hostOnly);
+    if (isLocal) return { kind: 'local', icon: '🖥' };
+    if (isCloud) return { kind: 'cloud', icon: '☁' };
+    return { kind: 'remote', icon: '⌁' };
+  }
+  function initInstanceIndicator() {
+    const el = dom.topbarInstance;
+    if (!el) return;
+    const origin = window.location.origin || '';
+    const host = window.location.host || 'self-hosted';
+    const cls = instanceClassify(host);
+    const labels = { local: 'LOCAL', cloud: 'CLOUD', remote: 'REMOTE' };
+    let display = host;
+    if (display.length > 30) display = display.slice(0, 28) + '…';
+    el.textContent = cls.icon + ' ' + display;
+    el.classList.add('topbar__instance--' + cls.kind);
+    el.title = labels[cls.kind] + ' instance · ' + origin +
+      '\n(settings/chaves salvam nesta origem — clique para copiar o URL)';
+    // A11y: interativo por teclado também (Enter/Space = copiar), como um
+    // button de verdade — não só mouse.
+    el.setAttribute('role', 'button');
+    el.tabIndex = 0;
+    const copyOrigin = function () {
+      try {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(origin).then(function () {
+            showToast('success', 'Instance URL copiado: ' + origin);
+          }).catch(function () { /* clipboard denied */ });
+        } else {
+          showToast('success', origin);
+        }
+      } catch (e) { /* never break the topbar for a copy */ }
+    };
+    el.onclick = copyOrigin;
+    el.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); copyOrigin(); }
+    });
   }
 
   // ── Theme Toggle ─────────────────────────────────────────────────────
@@ -2891,7 +2950,6 @@ function renderAccount(acct) {
   // falling back to the lowest valid price_per_th_day.
   let _mktFilter = 'all';
   let _mktOffers = [];
-  let _mktGridRetried = false;  // retry guard for Chart.js CDN blocking DOM parse
   let _mktBtcUsd = null;  // BTC/USD from snapshot — for the USD/TH/d line on cards
   let _mktAffiliate = null;  // market_data.affiliate {provider,url,...} — one-click BUY on the offer card
   let _mktTrendLoaded = false;  // lazy: /api/market/trend fetched on first module activation
@@ -3791,18 +3849,9 @@ function renderAccount(acct) {
 
   function renderMarketGrid() {
     const tbody = document.getElementById('mkt-table-body');
-    if (!tbody) {
-      // DOM not yet parsed (Chart.js CDN blocks <head>). Retry once
-      // after a short delay so the tbody has time to appear.
-      if (!_mktGridRetried) {
-        _mktGridRetried = true;
-        setTimeout(function () {
-          _mktGridRetried = false;
-          renderMarketGrid();
-        }, 100);
-      }
-      return;
-    }
+    if (!tbody) return;  // Issue #186: Chart.js é defer agora — o DOM nunca é
+    // bloqueado pelo CDN; se o tbody ainda não existe, o próximo poll
+    // (renderMarket → renderMarketGrid) re-renderiza sozinho.
 
     const inst = _mktInstitutional || {};
     let venues = (inst.venues || []).filter(v => {
@@ -4163,6 +4212,7 @@ function renderAccount(acct) {
           : '<span class="mkt-trend__legend-item" style="color:var(--text-tertiary)">preços são persistidos a cada fetch (warm-up 5min) — volte mais tarde</span>';
       }
       if (!datasets.length) return true;  // valid empty state — nothing to plot
+      if (typeof Chart === 'undefined') return false;  // Issue #186: defer — próximo poll re-tenta
       const ctx = canvas.getContext('2d');
       if (window._mktTrendChart) window._mktTrendChart.destroy();
       window._mktTrendChart = new Chart(ctx, {
@@ -7072,6 +7122,10 @@ function renderAccount(acct) {
   function makeChart(id, label, color) {
     const canvas = document.getElementById(id);
     if (!canvas) return null;
+    // Issue #186: defensivo — app.js roda com defer após o Chart.js, mas se o
+    // CDN falhar (offline/blocked) o boot não pode crashar. Null é tratado
+    // pelos call sites (mesma convenção do canvas ausente).
+    if (typeof Chart === 'undefined') return null;
     const ctx = canvas.getContext('2d');
     const cfg = CHART_METRICS[id];
     // Human-readable Y ticks: hashrate/pool render fmt.hashrate (TH/s), best
@@ -9107,7 +9161,7 @@ dom.walletSave?.addEventListener('click', async () => {
     const wrap = document.getElementById('axe-detail-chart-wrap');
     const canvas = document.getElementById('axe-detail-chart');
     const countBadge = document.getElementById('axe-detail-chart-count');
-    if (!wrap || !canvas) return;
+    if (!wrap || !canvas || typeof Chart === 'undefined') return;  // Issue #186: defer-safe
 
     // Destroy previous chart instance so Chart.js doesn't complain.
     if (_axeDetailChart) { _axeDetailChart.destroy(); _axeDetailChart = null; }
@@ -10265,6 +10319,7 @@ dom.walletSave?.addEventListener('click', async () => {
     initAxeFleetControls();
     initAuth();
     initThemeToggle();
+    initInstanceIndicator();
     _liveTermInit();
     await fetchSnapshot();
     setInterval(fetchSnapshot, POLL_MS);

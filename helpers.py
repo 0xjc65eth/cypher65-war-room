@@ -12,7 +12,7 @@ import os
 import hashlib
 import threading
 from collections import deque
-from typing import Optional
+from typing import Any, Optional
 
 log = logging.getLogger("cypher65")
 
@@ -78,6 +78,30 @@ def email_sha(email: str) -> str:
     if not email:
         return ""
     return hashlib.sha256(email.encode("utf-8")).hexdigest()[:24]
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#  Spreadsheet formula-injection guard (shared CSV exporter safety)
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+def csv_neutralize(value) -> Any:
+    """Neutralize spreadsheet formula-injection on text cells.
+
+    A leading ``= + - @ \t \r`` is a formula risk when the sheet opens the
+    CSV and auto-evaluates (Excel/Sheets) — ``=HYPERLINK(...)`` / ``=1+1``
+    would EXECUTE. Prefixing such cells with ``'`` makes them inert text.
+    Numbers/None pass through untouched (they are never a formula vector).
+
+    Shared by every CSV export (admin accepted-recos, funnel weekly) so the
+    guard lives in ONE place (Issue #184).
+    """
+    if value is None or isinstance(value, (int, float)):
+        return value
+    s = str(value)
+    if s[:1] in ("=", "+", "-", "@", "\t", "\r"):
+        return "'" + s
+    return s
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
