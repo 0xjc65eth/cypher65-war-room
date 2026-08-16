@@ -422,8 +422,9 @@ def poll_once():
                     rolling_avg_block_time_s = max(
                         300.0, min(3600.0, rolling_avg_block_time_s)
                     )
-        except Exception:
-            pass
+        except Exception as e:
+            # Issue #202: compute failure is degradation — never silent.
+            log.warning("[poll] block-time rolling avg error: %s", e)
 
         next_halving_h = ((network_height // 210000) + 1) * 210000
         blocks_left = max(0, next_halving_h - network_height)
@@ -1176,10 +1177,11 @@ def poll_once():
                     luck["round_progress_pct"] = round(
                         min(100, (wslb / current_difficulty) * 100), 2
                     )
-            except Exception:
-                pass
-        except Exception:
-            pass
+            except Exception as e:
+                log.warning("[poll] pool-luck compute error: %s", e)
+        except Exception as e:
+            # Issue #202: luck/lookups are degradation — never silent.
+            log.warning("[poll] pool-luck lookup error: %s", e)
 
     # ━━ Profitability (real-time, settings-driven, 3 modes) ━━
     #
@@ -1647,8 +1649,9 @@ def poll_once():
                     }
                 )
 
-    except Exception:
-        pass
+    except Exception as e:
+        # Issue #202: milestone compute failure is degradation — never silent.
+        log.warning("[poll] milestones compute error: %s", e)
 
     # ━━ Proximity meter (best_diff vs network_diff, probability, trend) ━━
     prox = proximity.compute_proximity(worker, current_difficulty, net_hashrate, ts)
@@ -1724,8 +1727,9 @@ def poll_once():
         c.execute("SELECT * FROM alerts ORDER BY ts DESC LIMIT 12")
         recent_alerts = [dict(r) for r in c.fetchall()]
         conn.close()
-    except Exception:
-        pass
+    except Exception as e:
+        # Issue #202: a failed read is degradation — never silent.
+        log.warning("[poll] recent alerts read failed: %s", e)
     # Merge in-memory CRIT/SUCCESS alerts (disk-watchdog). Each in-memory alert
     # already carries a stable id assigned by _make_memory_alert, so
     # JS renderAlerts sees them as same-item across polls and does NOT re-fire
@@ -1783,8 +1787,9 @@ def poll_once():
         c.execute("SELECT * FROM share_timeline ORDER BY id DESC LIMIT 80")
         timeline_recent = [dict(r) for r in c.fetchall()]
         conn.close()
-    except Exception:
-        pass
+    except Exception as e:
+        # Issue #202: a failed read is degradation — never silent.
+        log.warning("[poll] timeline events read failed: %s", e)
 
     # ━━ Event stats (session + rolling windows) ━━
     now = int(time.time())
@@ -1836,8 +1841,9 @@ def poll_once():
                 "db_best_diffs_last_day": best_diffs_last_day,
             }
         )
-    except Exception:
-        pass
+    except Exception as e:
+        # Issue #202: a failed stats read is degradation — never silent.
+        log.warning("[poll] event-stats DB read failed: %s", e)
 
     # ━━ Hot-streak alert (proximity-driven, fresh-bump gated) ━━
     # Already captured above (right after proximity compute). Here we just
