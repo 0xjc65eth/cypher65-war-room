@@ -292,7 +292,50 @@ def test_automation_engine_loads_rules(automation_engine):
     assert rules[0].name == "hot"
 
 
-def test_automation_engine_evaluates_condition(automation_engine):
+def test_automation_engine_evaluates_condition(automation_engine, monkeypatch):
+    conn = sqlite3.connect(automation_engine.db_path)
+    c = conn.cursor()
+    c.execute(
+        "INSERT INTO automation_rules (name, target_device_id, condition_metric, condition_operator, condition_value, action_command) VALUES (?, ?, ?, ?, ?, ?)",
+        ("hot", "test-dev", "temperature", ">", 85.0, "restart"),
+    )
+    conn.commit()
+    conn.close()
+    # P1 Auto-Pilot is FAIL-CLOSED: rules only execute when the pilot is
+    # armed. Arm it (as the operator would via POST /api/automation/arm).
+    monkeypatch.setattr(
+        "core.alerts.automation_engine.AutomationEngine.is_armed",
+        lambda self, tid="": True,
+    )
+    device = _make_device(temperature=90.0)
+    results = automation_engine.evaluate_rules([device])
+    assert len(results) == 1
+    assert results[0]["status"] in ("blocked", "executed")
+
+
+def test_automation_engine_cooldown_prevents_spam(automation_engine, monkeypatch):
+    conn = sqlite3.connect(automation_engine.db_path)
+    c = conn.cursor()
+    c.execute(
+        "INSERT INTO automation_rules (name, target_device_id, condition_metric, condition_operator, condition_value, action_command, min_interval_seconds) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        ("hot", "test-dev", "temperature", ">", 85.0, "restart", 300),
+    )
+    conn.commit()
+    conn.close()
+    monkeypatch.setattr(
+        "core.alerts.automation_engine.AutomationEngine.is_armed",
+        lambda self, tid="": True,
+    )
+    device = _make_device(temperature=90.0)
+    # First evaluation should trigger the rule
+    assert len(automation_engine.evaluate_rules([device])) == 1
+    # Immediate re-evaluation should be suppressed by the 5-minute cooldown
+    assert len(automation_engine.evaluate_rules([device])) == 0
+
+
+def test_automation_engine_unarmed_is_disarmed(automation_engine):
+    """P1 fail-closed: WITHOUT arming, evaluation must NOT execute — it
+    returns the disarmed marker instead of firing rules."""
     conn = sqlite3.connect(automation_engine.db_path)
     c = conn.cursor()
     c.execute(
@@ -303,24 +346,7 @@ def test_automation_engine_evaluates_condition(automation_engine):
     conn.close()
     device = _make_device(temperature=90.0)
     results = automation_engine.evaluate_rules([device])
-    assert len(results) == 1
-    assert results[0]["status"] in ("blocked", "executed")
-
-
-def test_automation_engine_cooldown_prevents_spam(automation_engine):
-    conn = sqlite3.connect(automation_engine.db_path)
-    c = conn.cursor()
-    c.execute(
-        "INSERT INTO automation_rules (name, target_device_id, condition_metric, condition_operator, condition_value, action_command, min_interval_seconds) VALUES (?, ?, ?, ?, ?, ?, ?)",
-        ("hot", "test-dev", "temperature", ">", 85.0, "restart", 300),
-    )
-    conn.commit()
-    conn.close()
-    device = _make_device(temperature=90.0)
-    # First evaluation should trigger the rule
-    assert len(automation_engine.evaluate_rules([device])) == 1
-    # Immediate re-evaluation should be suppressed by the 5-minute cooldown
-    assert len(automation_engine.evaluate_rules([device])) == 0
+    assert results == [{"status": "disarmed", "tenant_id": "default"}]
 
 
 def test_alert_engine_persists_to_history(alert_engine):
@@ -422,7 +448,7 @@ def test_alert_engine_evaluate_uses_custom_rules(db_path):
     assert "85.0" in temp_alerts[0].message
 
 
-def test_automation_engine_logs_execution(automation_engine):
+def test_automation_engine_logs_execution(automation_engine, monkeypatch):
     conn = sqlite3.connect(automation_engine.db_path)
     c = conn.cursor()
     c.execute(
@@ -433,6 +459,10 @@ def test_automation_engine_logs_execution(automation_engine):
     )
     conn.commit()
     conn.close()
+    monkeypatch.setattr(
+        "core.alerts.automation_engine.AutomationEngine.is_armed",
+        lambda self, tid="": True,
+    )
     device = _make_device(temperature=90.0)
     automation_engine.evaluate_rules([device])
     conn = sqlite3.connect(automation_engine.db_path)

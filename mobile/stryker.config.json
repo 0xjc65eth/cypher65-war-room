@@ -1,0 +1,14 @@
+{
+  "$schema": "./node_modules/@stryker-mutator/core/schema/stryker-schema.json",
+  "mutate": [
+    "src/hooks/**/*.{ts,tsx}",
+    "src/services/**/*.{ts,tsx}",
+    "!src/**/*.test.{ts,tsx}"
+  ],
+  "testRunner": "jest",
+  "jest": { "projectType": "custom", "configFile": "jest.config.js" },
+  "reporters": ["clear-text", "html"],
+  "coverageAnalysis": "off",
+  "timeoutMs": 20000,
+  "concurrency": 4
+}

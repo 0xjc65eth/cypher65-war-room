@@ -221,7 +221,8 @@ class TestGetTenantId:
             assert resp.status_code == 200
             data = resp.get_json()
             assert data["tenant_id"] == "acme"
-            mock_registry.list_devices.assert_called_once_with(tenant_id="acme")
+            mock_registry.list_devices.assert_called_once_with(
+                tenant_id="acme", with_telemetry=True)
 
     def test_no_token_falls_back_to_default(self, client, monkeypatch):
         """Without a token, tenant defaults to 'default' (single-user mode)."""
@@ -233,7 +234,8 @@ class TestGetTenantId:
             assert resp.status_code == 200
             data = resp.get_json()
             assert data["tenant_id"] == "default"
-            mock_registry.list_devices.assert_called_once_with(tenant_id="default")
+            mock_registry.list_devices.assert_called_once_with(
+                tenant_id="default", with_telemetry=True)
 
     def test_invalid_token_falls_back_to_default(self, client, monkeypatch):
         mock_registry = MagicMock()

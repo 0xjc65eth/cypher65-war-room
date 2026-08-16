@@ -1,14 +1,13 @@
 /* ════════════════════════════════════════════════════════════════════════
-   CYPHER65 · SERVICE WORKER · v5 — cache busted
+   CYPHER65 · SERVICE WORKER · v6 — cache busted
    ════════════════════════════════════════════════════════════════════════
    - Caches static assets on install for offline resilience
-   - VERSION = 2026-08-01 (bump this when CSS/JS/HTML changes)
-   - Listens for 'show-notification' messages from the client to display
-     OS-level notifications for critical mining alerts
+   - Listens for REAL Web Push events (VAPID, Issue #15) and for
+     'show-notification' messages from the client (legacy in-page alerts)
    - Clicking a notification focuses / opens the dashboard
    ════════════════════════════════════════════════════════════════════════ */
 
-const CACHE_NAME = 'cypher65-v9';  // v6 IIFE fix · v7 timeline cards · v8 LAN scan UI · v9 onboarding wizard
+const CACHE_NAME = 'cypher65-v12';  // v11 P0-6 terminal pro · v12 Web Push (VAPID)
 const ASSETS_TO_CACHE = [
   '/',
   '/static/style.css',
@@ -74,6 +73,50 @@ self.addEventListener('fetch', (event) => {
   );
 });
 
+// ── Push: REAL Web Push from the server (VAPID, Issue #15) ─────────────
+// The backend sends an encrypted JSON payload via pywebpush:
+//   { title, body, tag, data: {url}, requireInteraction, renotify, vibrate }
+// Without this listener the browser silently drops every push — the VAPID
+// subscription would exist but NO notification would ever appear.
+self.addEventListener('push', (event) => {
+  if (!self.Notification || self.Notification.permission !== 'granted') return;
+
+  let data = {};
+  try {
+    data = event.data ? event.data.json() : {};
+  } catch (err) {
+    // Non-JSON payload — still show a generic alert rather than drop it.
+    data = {};
+  }
+
+  // Severity arrives NESTED (payload.data.severity) — also accept the
+  // top-level shape for robustness, and forward severity/category into the
+  // notification data so a future click handler can branch on them.
+  const nested = data.data || {};
+  const sev = (nested.severity || data.severity || 'WARN').toUpperCase();
+  const critical = sev === 'CRIT' || sev === 'CRITICAL';
+  const options = {
+    body: data.body || 'Novo alerta de mineração',
+    tag: data.tag || 'cypher65-' + Math.floor(Date.now() / 300000),
+    icon: '/static/icon-192x192.png',
+    badge: '/static/icon-192x192.png',
+    vibrate: Array.isArray(data.vibrate)
+      ? data.vibrate
+      : (critical ? [300, 100, 300] : [200, 100, 200]),
+    requireInteraction: critical || !!data.requireInteraction,
+    renotify: true,
+    data: {
+      url: nested.url || data.url || '/',
+      severity: sev,
+      category: nested.category || data.category || '',
+    },
+  };
+
+  event.waitUntil(
+    self.registration.showNotification(data.title || 'CYPHER65', options)
+  );
+});
+
 // ── Message: show notification from client ─────────────────────────────
 self.addEventListener('message', (event) => {
   if (!event.data || !event.data.type) return;
@@ -84,8 +127,8 @@ self.addEventListener('message', (event) => {
     const options = {
       body: body || '',
       tag: tag || 'cypher65-alert',
-      icon: '/static/manifest.json',  // browser falls back to page icon
-      badge: '/static/manifest.json',
+      icon: '/static/icon-192x192.png',
+      badge: '/static/icon-192x192.png',
       vibrate: severity === 'CRIT' ? [200, 100, 200] : [100, 50, 100],
       requireInteraction: severity === 'CRIT',
       data: { url: event.data.url || '/' },

@@ -13,7 +13,6 @@ from services.hashrate_market import (
     fetch_braiins_offer,
     fetch_nicehash_offer,
     fetch_mrr_offer,
-    fetch_kissmyhash_offer,
     fetch_parasite_offer,
     fetch_all_offers,
     DEFAULT_RENTAL_HASHRATE_TH,
@@ -388,66 +387,13 @@ class TestFetchMrrOffer:
             assert result is None
 
 
-class TestFetchKissmyhashOffer:
-    """Tests for fetch_kissmyhash_offer() — primary fails → NiceHash+10% fallback."""
-
-    def test_primary_success(self):
-        """When KissMyHash API returns valid data, use it.
-        API returns top-level keys like price_btc_per_ph_day or price."""
-        with patch("services.hashrate_market.fetch_nicehash_offer") as mock_nh_fallback, \
-             patch("services.hashrate_market.requests.get") as mock_get:
-            mock_resp = MagicMock()
-            mock_resp.status_code = 200
-            mock_resp.json.return_value = {
-                "price_btc_per_ph_day": 0.00005,
-            }
-            mock_get.return_value = mock_resp
-
-            result = fetch_kissmyhash_offer()
-
-            assert result is not None
-            assert result.provider == "kissmyhash"
-            assert result.price_per_th_day > 0
-            mock_nh_fallback.assert_not_called()
-
-    def test_primary_fails_fallsback_to_nicehash(self):
-        """When KissMyHash API is unreachable, fall back to NiceHash+10%."""
-        with patch("services.hashrate_market.fetch_nicehash_offer") as mock_nh, \
-             patch("services.hashrate_market.requests.get") as mock_get:
-            mock_get.side_effect = Exception("Connection refused")
-            mock_nh.return_value = NormalizedOffer(
-                provider="nicehash",
-                hashrate=5000.0,
-                price_per_th_day=0.0000005,
-                duration_days=1.0,
-                fee_pct=0.0,
-                algorithm="sha256",
-                meta={"source": "nicehash"},
-            )
-
-            result = fetch_kissmyhash_offer()
-
-            assert result is not None
-            assert result.provider == "kissmyhash"
-            assert result.price_per_th_day == pytest.approx(0.0000005 * 1.10, rel=1e-9)  # 10% markup
-            mock_nh.assert_called_once()
-
-    def test_primary_and_fallback_fail(self):
-        """When both KissMyHash AND NiceHash fail, return None."""
-        with patch("services.hashrate_market.fetch_nicehash_offer") as mock_nh, \
-             patch("services.hashrate_market.requests.get") as mock_get:
-            mock_get.side_effect = Exception("Connection refused")
-            mock_nh.return_value = None
-
-            result = fetch_kissmyhash_offer()
-            assert result is None
-
-
 class TestFetchParasiteOffer:
     """Tests for fetch_parasite_offer() — pool fee-based mining as rental."""
 
     def test_success_with_pool_data(self):
-        """When pool data is available, return NormalizedOffer based on fee structure."""
+        """Pool data available, but the fee-only price model is mathematically
+        sub-floor (~0.04 sats/TH·h — ~1000× below real rentals), so the
+        estimate is REJECTED rather than polluting 'cheapest market'."""
         with patch("agents.solo_mining_advisor.tools.get_parasite_pool_stats") as mock_pool:
             mock_pool.return_value = {
                 "pool_hashrate": "161.6",  # PH/s
@@ -455,10 +401,7 @@ class TestFetchParasiteOffer:
                 "pool_fee_pct": 0.0,
                 "pool_name": "parasite.space",
             }
-            result = fetch_parasite_offer()
-            assert result is not None
-            assert result.provider == "parasite"
-            assert result.duration_days == 1.0
+            assert fetch_parasite_offer() is None
 
     def test_no_pool_data_returns_none(self):
         """When pool stats fetch fails, return None."""
@@ -483,22 +426,19 @@ class TestFetchAllOffers:
         with patch("services.hashrate_market.fetch_braiins_offer") as mock_b, \
              patch("services.hashrate_market.fetch_nicehash_offer") as mock_n, \
              patch("services.hashrate_market.fetch_mrr_offer") as mock_m, \
-             patch("services.hashrate_market.fetch_kissmyhash_offer") as mock_k, \
              patch("services.hashrate_market.fetch_parasite_offer") as mock_p:
 
             mock_b.return_value = NormalizedOffer(provider="braiins", hashrate=10000.0, price_per_th_day=5e-11, duration_days=1.0, fee_pct=0.0, algorithm="sha256", meta={})
             mock_n.return_value = NormalizedOffer(provider="nicehash", hashrate=5000.0, price_per_th_day=5e-10, duration_days=1.0, fee_pct=0.0, algorithm="sha256", meta={})
             mock_m.return_value = NormalizedOffer(provider="mrr", hashrate=1000.0, price_per_th_day=2e-8, duration_days=1.0, fee_pct=0.0, algorithm="sha256", meta={})
-            mock_k.return_value = NormalizedOffer(provider="kissmyhash", hashrate=5000.0, price_per_th_day=5.5e-10, duration_days=1.0, fee_pct=0.0, algorithm="sha256", meta={})
             mock_p.return_value = NormalizedOffer(provider="parasite", hashrate=100000.0, price_per_th_day=1e-11, duration_days=1.0, fee_pct=0.0, algorithm="sha256", meta={})
 
             results = fetch_all_offers()
-            assert len(results) == 5
+            assert len(results) == 4
             providers = [o.provider for o in results]
             assert "braiins" in providers
             assert "nicehash" in providers
             assert "mrr" in providers
-            assert "kissmyhash" in providers
             assert "parasite" in providers
 
     def test_some_providers_fail(self):
@@ -506,13 +446,11 @@ class TestFetchAllOffers:
         with patch("services.hashrate_market.fetch_braiins_offer") as mock_b, \
              patch("services.hashrate_market.fetch_nicehash_offer") as mock_n, \
              patch("services.hashrate_market.fetch_mrr_offer") as mock_m, \
-             patch("services.hashrate_market.fetch_kissmyhash_offer") as mock_k, \
              patch("services.hashrate_market.fetch_parasite_offer") as mock_p:
 
             mock_b.return_value = None  # Braiins fails
             mock_n.return_value = NormalizedOffer(provider="nicehash", hashrate=5000.0, price_per_th_day=5e-10, duration_days=1.0, fee_pct=0.0, algorithm="sha256", meta={})
             mock_m.return_value = None  # MRR fails
-            mock_k.return_value = None  # KissMyHash fails
             mock_p.return_value = NormalizedOffer(provider="parasite", hashrate=100000.0, price_per_th_day=1e-11, duration_days=1.0, fee_pct=0.0, algorithm="sha256", meta={})
 
             results = fetch_all_offers()
@@ -526,28 +464,25 @@ class TestFetchAllOffers:
         with patch("services.hashrate_market.fetch_braiins_offer", return_value=None), \
              patch("services.hashrate_market.fetch_nicehash_offer", return_value=None), \
              patch("services.hashrate_market.fetch_mrr_offer", return_value=None), \
-             patch("services.hashrate_market.fetch_kissmyhash_offer", return_value=None), \
              patch("services.hashrate_market.fetch_parasite_offer", return_value=None):
             results = fetch_all_offers()
             assert results == []
 
     def test_offers_in_deterministic_order(self):
-        """Offers should be returned in the order: Braiins, MRR, NiceHash, KissMyHash, Parasite.
+        """Offers should be returned in the order: Braiins, MRR, NiceHash, Parasite.
         fetch_all_offers does NOT sort by price — it appends in provider loop order."""
         with patch("services.hashrate_market.fetch_braiins_offer") as mock_b, \
              patch("services.hashrate_market.fetch_nicehash_offer") as mock_n, \
              patch("services.hashrate_market.fetch_mrr_offer") as mock_m, \
-             patch("services.hashrate_market.fetch_kissmyhash_offer") as mock_k, \
              patch("services.hashrate_market.fetch_parasite_offer") as mock_p:
 
             mock_b.return_value = NormalizedOffer(provider="braiins", hashrate=10000.0, price_per_th_day=1e-10, duration_days=1.0, fee_pct=0.0, algorithm="sha256", meta={})
             mock_m.return_value = NormalizedOffer(provider="mrr", hashrate=1000.0, price_per_th_day=1e-9, duration_days=1.0, fee_pct=0.0, algorithm="sha256", meta={})
             mock_n.return_value = NormalizedOffer(provider="nicehash", hashrate=5000.0, price_per_th_day=5e-10, duration_days=1.0, fee_pct=0.0, algorithm="sha256", meta={})
-            mock_k.return_value = NormalizedOffer(provider="kissmyhash", hashrate=5000.0, price_per_th_day=5.5e-10, duration_days=1.0, fee_pct=0.0, algorithm="sha256", meta={})
             mock_p.return_value = NormalizedOffer(provider="parasite", hashrate=100000.0, price_per_th_day=5e-11, duration_days=1.0, fee_pct=0.0, algorithm="sha256", meta={})
 
             results = fetch_all_offers()
-            expected_order = ["braiins", "mrr", "nicehash", "kissmyhash", "parasite"]
+            expected_order = ["braiins", "mrr", "nicehash", "parasite"]
             got_order = [o.provider for o in results]
             assert got_order == expected_order, f"Expected {expected_order}, got {got_order}"
 

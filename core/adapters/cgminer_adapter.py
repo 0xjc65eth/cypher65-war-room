@@ -10,9 +10,8 @@ manufacturer and requires explicit model detection.
 
 Reference: https://en.bitcoin.it/wiki/Cgminer_API
 """
-import json
+
 import logging
-import socket
 import time
 from typing import Any, Dict, List, Optional
 
@@ -35,7 +34,12 @@ class CgminerAdapter(BaseAdapter):
     without explicit model detection.
     """
 
-    def __init__(self, device: Device, host: Optional[str] = None, port: int = CGMINER_DEFAULT_PORT):
+    def __init__(
+        self,
+        device: Device,
+        host: Optional[str] = None,
+        port: int = CGMINER_DEFAULT_PORT,
+    ):
         super().__init__(device)
         self.host = host or device.ip
         self.port = port
@@ -43,38 +47,23 @@ class CgminerAdapter(BaseAdapter):
     def _send_command(self, command: str) -> Optional[dict]:
         """Send a JSON command over TCP to the cgminer API.
         Returns parsed JSON response or None on failure."""
-        if not self.host:
-            return None
-        sock = None
-        try:
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.settimeout(CGMINER_TIMEOUT)
-            sock.connect((self.host, self.port))
-            payload = json.dumps({"command": command}) + "\n"
-            sock.send(payload.encode())
-            # Read until null byte (cgminer delimiter)
-            data = b""
-            while True:
-                chunk = sock.recv(4096)
-                if not chunk:
-                    break
-                data += chunk
-                if b"\x00" in chunk:
-                    break
-            # Strip null byte and parse
-            text = data.decode(errors="replace").rstrip("\x00").strip()
-            if text:
-                return json.loads(text)
-        except (socket.timeout, ConnectionRefusedError, OSError, json.JSONDecodeError) as e:
-            log.warning("[cgminer] %s command failed: %s", self.host, e)
-            return None
-        finally:
-            if sock:
-                sock.close()
-        return None
+        result = self._send_cgminer_command(command, self.port, CGMINER_TIMEOUT)
+        if result is None:
+            log.warning("[cgminer] %s command '%s' failed", self.host, command)
+        return result
 
     def get_telemetry(self) -> Optional[Dict[str, Any]]:
-        """Fetch telemetry via cgminer 'summary' + 'stats' commands."""
+        """Fetch telemetry via cgminer 'summary' + 'stats' + 'pools' commands.
+
+        Collects every canonical ``TELEMETRY_KEYS`` field the cgminer protocol
+        can expose. Fields the firmware doesn't report are left as ``None`` —
+        the caller MUST run ``normalize_telemetry()`` (core/models/device.py)
+        to fill them with the explicit ``NOT_AVAILABLE`` marker before
+        rendering in the UI.
+
+        cgminer does NOT expose hashrate windows (1m/10m/1h) — those stay
+        ``None`` and are filled by ``normalize_telemetry()``.
+        """
         summary = self._send_command("summary")
         if not summary or not summary.get("STATUS"):
             return None
@@ -83,7 +72,7 @@ class CgminerAdapter(BaseAdapter):
         stats = self._send_command("stats")
         pools = self._send_command("pools")
 
-        # Parse summary - usually a list with one entry
+        # Parse summary — usually a list with one entry
         summary_data = summary.get("SUMMARY", [{}])
         if isinstance(summary_data, list):
             summary_data = summary_data[0] if summary_data else {}
@@ -95,44 +84,96 @@ class CgminerAdapter(BaseAdapter):
         uptime = int(summary_data.get("Elapsed", 0))
         best_share = str(summary_data.get("Best Share", ""))
 
-        # Temperature from stats (per-chain)
+        # ── Per-chain stats (temperature, fan, voltage, power) ──────────
+        # cgminer 'stats' returns STATS[n] per chain (index 1+). Collect
+        # the first chain's values; multi-chain devices can be extended
+        # later with per-chain telemetry arrays.
         temp = None
         vr_temp = None
+        fan_rpm = None
+        voltage = None
+        power = None
         if stats and "STATS" in stats:
             stats_list = stats["STATS"]
             if isinstance(stats_list, list) and len(stats_list) > 1:
-                temp = stats_list[1].get("temp2_0", stats_list[1].get("temp", None))
-                # Fase 5: VR/board temperature when the chain reports it.
-                vr_temp = stats_list[1].get("temp2_1", stats_list[1].get("temp2_2", None))
+                chain = stats_list[1]
+                # ASIC / junction temp (temp2_0 is usually chip 0, temp = board)
+                temp = self._safe_number(chain.get("temp2_0", chain.get("temp", None)))
+                # VR / board temp (temp2_1/2_2 on multi-PCB, temp3 on newer)
+                vr_temp = self._safe_number(
+                    chain.get("temp2_1", chain.get("temp2_2", chain.get("temp3", None)))
+                )
+                # Fan RPM — cgminer reports fan_num + individual fan speeds
+                fan_count = int(chain.get("fan_num", 0))
+                if fan_count > 0:
+                    fan_rpm = self._safe_number(
+                        chain.get("fan1", chain.get("fan_rpm", None))
+                    )
+                    if fan_rpm is None:
+                        # Some firmwares use fan_speed (RPM, not PWM %)
+                        fan_rpm = self._safe_number(chain.get("fan_speed", None))
+                # Voltage — chain-level DC/DC regulator reading
+                voltage = self._safe_number(
+                    chain.get("voltage", chain.get("chain_voltage", None))
+                )
+                # Power — watts per chain (BOSminer/LuxOS expose this)
+                power = self._safe_number(
+                    chain.get(
+                        "power",
+                        chain.get("chain_power", chain.get("power_watts", None)),
+                    )
+                )
 
-        return {
-            "source": "cgminer_adapter",
-            "timestamp": collected_at,
-            "freshness": 0,
-            "hashrate": hr,
-            # Fase 5: chip_temp = ASIC temp (same as temperature for cgminer)
-            "chip_temp": temp,
-            "vr_temp": vr_temp,
-            "temperature": temp,
-            "accepted_shares": accepted,
-            "rejected_shares": rejected,
-            "stale_shares": stale,
-            "best_difficulty": best_share,
-            "uptime": uptime,
-            "stub": False,
-        }
+        # ── Pool status derivation ──────────────────────────────────────
+        pool_status, pool_url, pool_user = self._derive_cgminer_pool_status(pools)
 
-    def execute_command(self, command: str, parameters: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        return self._build_telemetry_dict(
+            source="cgminer_adapter",
+            collected_at=collected_at,
+            hashrate=hr,
+            chip_temp=temp,
+            vr_temp=vr_temp,
+            temperature=temp,
+            fan_rpm=fan_rpm,
+            voltage=voltage,
+            power=power,
+            pool_status=pool_status,
+            pool_url=pool_url,
+            pool_user=pool_user,
+            accepted_shares=accepted,
+            rejected_shares=rejected,
+            stale_shares=stale,
+            uptime=uptime,
+            best_share=best_share,
+        )
+
+    def execute_command(
+        self, command: str, parameters: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
         if command == "restart":
             result = self._send_command("restart")
             return {"success": bool(result), "stub": False}
-        return {"success": False, "stub": True, "note": f"{command} not implemented for cgminer"}
+        return {
+            "success": False,
+            "stub": True,
+            "note": f"{command} not implemented for cgminer",
+        }
 
     def get_capabilities(self) -> List[Capability]:
         return [
             Capability(name="telemetry", supported=True),
-            Capability(name="restart", supported=True, requires_confirmation=True, risk_level=RiskLevel.MEDIUM),
-            Capability(name="set_frequency", supported=False, requires_confirmation=True, risk_level=RiskLevel.HIGH),
+            Capability(
+                name="restart",
+                supported=True,
+                requires_confirmation=True,
+                risk_level=RiskLevel.MEDIUM,
+            ),
+            Capability(
+                name="set_frequency",
+                supported=False,
+                requires_confirmation=True,
+                risk_level=RiskLevel.HIGH,
+            ),
         ]
 
     def health_check(self) -> Dict[str, Any]:

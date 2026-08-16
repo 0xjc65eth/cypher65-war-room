@@ -14,6 +14,7 @@ Priority for tenant resolution:
 Used by axe_fleet, alerts, automations and core device routes so every module
 isolates with exactly the same logic.
 """
+
 import json
 import logging
 import os
@@ -111,7 +112,12 @@ def count_tenant_workers(tenant_id: str = "") -> int:
     try:
         conn = _db_conn()
         c = conn.cursor()
-        c.execute("SELECT COUNT(*) AS n FROM axe_devices WHERE tenant_id=?", (tid,))
+        # COALESCE(removed_at,0)=0: tombstoned (soft-deleted) devices must NOT
+        # consume a worker slot — a removed miner can't resurrect the cap.
+        c.execute(
+            "SELECT COUNT(*) AS n FROM axe_devices WHERE tenant_id=? AND COALESCE(removed_at,0)=0",
+            (tid,),
+        )
         row = c.fetchone()
         conn.close()
         return int(row["n"] or 0) if row is not None else 0
@@ -133,8 +139,13 @@ def can_add_worker(tenant_id: str = "") -> bool:
 # ── Structured audit log ─────────────────────────────────────────────────
 
 
-def log_audit(tenant_id: str = "", action: str = "", target: str = "",
-              details: Optional[dict] = None, user_id: str = "") -> Optional[int]:
+def log_audit(
+    tenant_id: str = "",
+    action: str = "",
+    target: str = "",
+    details: Optional[dict] = None,
+    user_id: str = "",
+) -> Optional[int]:
     """Persist a structured audit entry to the audit_logs table.
 
     Best-effort by design: audit must never break the request it records,
@@ -225,6 +236,7 @@ def get_tenant_id() -> str:
         auth_header = request.headers.get("Authorization", "")
         if auth_header.startswith("Bearer "):
             from services.auth import verify_token
+
             payload = verify_token(auth_header[7:], expected_type="access")
             if payload and payload.get("sub"):
                 return payload["sub"]
@@ -243,10 +255,12 @@ def get_tenant_id() -> str:
 def require_tenant(f):
     """Flask decorator: extract tenant_id from JWT/session and inject
     as keyword argument `tenant_id` to the route handler."""
+
     @wraps(f)
     def wrapper(*args, **kwargs):
         kwargs["tenant_id"] = get_tenant_id()
         return f(*args, **kwargs)
+
     return wrapper
 
 
@@ -289,6 +303,7 @@ def get_current_role() -> str:
         pass
     try:
         from services.auth import verify_token
+
         auth_header = request.headers.get("Authorization", "")
         if auth_header.startswith("Bearer "):
             payload = verify_token(auth_header[7:], expected_type="access")
@@ -329,6 +344,7 @@ def role_required(min_role: str = "member"):
         def write():
             ...
     """
+
     def decorator(f):
         @wraps(f)
         def wrapper(*args, **kwargs):
@@ -336,19 +352,29 @@ def role_required(min_role: str = "member"):
                 return f(*args, **kwargs)
             role = get_current_role()
             if ROLE_PRIORITY.get(role, 0) < ROLE_PRIORITY.get(min_role, 0):
-                return jsonify({
-                    "error": "permission denied",
-                    "required_role": min_role,
-                    "role": role,
-                }), 403
+                return (
+                    jsonify(
+                        {
+                            "error": "permission denied",
+                            "required_role": min_role,
+                            "role": role,
+                        }
+                    ),
+                    403,
+                )
             return f(*args, **kwargs)
+
         return wrapper
+
     return decorator
 
 
 # ── Users (self-registration) ────────────────────────────────────────────
 
-def provision_tenant_with_admin(username: str, password: str, tenant_name: str = "") -> Dict[str, Any]:
+
+def provision_tenant_with_admin(
+    username: str, password: str, tenant_name: str = ""
+) -> Dict[str, Any]:
     """Create a FRESH tenant (free plan, 5 workers) + its first admin user.
 
     This is the self-registration path: each signup gets an isolated tenant
@@ -360,11 +386,13 @@ def provision_tenant_with_admin(username: str, password: str, tenant_name: str =
     or {"error": reason}.
     """
     import uuid as _uuid
+
     username = (username or "").strip()
     if not username or not password:
         return {"error": "username and password are required"}
     try:
         from werkzeug.security import generate_password_hash
+
         tenant_id = _uuid.uuid4().hex[:16]
         now = int(time.time())
         conn = _db_conn()
@@ -390,7 +418,12 @@ def provision_tenant_with_admin(username: str, password: str, tenant_name: str =
         conn.commit()
         conn.close()
         log.info("[tenant] provisioned tenant=%s admin=%s", tenant_id[:8], username)
-        return {"ok": True, "tenant_id": tenant_id, "username": username, "role": "admin"}
+        return {
+            "ok": True,
+            "tenant_id": tenant_id,
+            "username": username,
+            "role": "admin",
+        }
     except Exception as e:
         log.warning("[tenant] provision_tenant_with_admin(%s) failed: %s", username, e)
         try:
@@ -400,8 +433,9 @@ def provision_tenant_with_admin(username: str, password: str, tenant_name: str =
         return {"error": "could not create account"}
 
 
-def create_user(tenant_id: str, username: str, password: str,
-                role: str = "member") -> Dict[str, Any]:
+def create_user(
+    tenant_id: str, username: str, password: str, role: str = "member"
+) -> Dict[str, Any]:
     """Create a user row with a hashed password.
 
     Returns {"ok": True, "id": n} on success or {"error": reason} on
@@ -413,6 +447,7 @@ def create_user(tenant_id: str, username: str, password: str,
         return {"error": "username and password are required"}
     try:
         from werkzeug.security import generate_password_hash
+
         conn = _db_conn()
         c = conn.cursor()
         # Global username uniqueness: authenticate_user() resolves logins by
@@ -426,7 +461,13 @@ def create_user(tenant_id: str, username: str, password: str,
         c.execute(
             "INSERT INTO users (tenant_id, username, password_hash, role, created_at) "
             "VALUES (?, ?, ?, ?, ?)",
-            (tenant_id, username, generate_password_hash(password), role, int(time.time())),
+            (
+                tenant_id,
+                username,
+                generate_password_hash(password),
+                role,
+                int(time.time()),
+            ),
         )
         row_id = c.lastrowid
         conn.commit()
@@ -441,7 +482,9 @@ def create_user(tenant_id: str, username: str, password: str,
         return {"error": "could not create user"}
 
 
-def authenticate_user(username: str, password: str, tenant_id: str = "") -> Optional[Dict[str, Any]]:
+def authenticate_user(
+    username: str, password: str, tenant_id: str = ""
+) -> Optional[Dict[str, Any]]:
     """Verify username+password against the users table.
 
     Lookup scope:
@@ -457,6 +500,7 @@ def authenticate_user(username: str, password: str, tenant_id: str = "") -> Opti
     """
     try:
         from werkzeug.security import check_password_hash
+
         conn = _db_conn()
         c = conn.cursor()
         if tenant_id and tenant_id != "default":
@@ -502,8 +546,10 @@ def ensure_users_schema() -> None:
         c = conn.cursor()
         c.execute("PRAGMA table_info(users)")
         cols = {row[1] for row in c.fetchall()}
-        for col, col_def in (("role", "TEXT DEFAULT 'member'"),
-                             ("password_hash", "TEXT DEFAULT ''")):
+        for col, col_def in (
+            ("role", "TEXT DEFAULT 'member'"),
+            ("password_hash", "TEXT DEFAULT ''"),
+        ):
             if col in cols:
                 continue
             if not _ALLOWED_COLUMN_NAME.fullmatch(col):

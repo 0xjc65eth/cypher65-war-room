@@ -325,8 +325,8 @@ class TestSnapshotMarketHighlights:
 
 
 class TestSnapshotBestPriceEstimatedExclusion:
-    """Parasite regression: estimated offers (parasite pool-fee model,
-    kissmyhash fallback) must NEVER be crowned 'best price' on /api/snapshot.
+    """Parasite regression: estimated offers (parasite pool-fee model) must
+    NEVER be crowned 'best price' on /api/snapshot.
     Only real marketplace quotes may win — estimated offers still render as
     ESTIMATED cards but never as the 'best deal' highlight. Mirrors the
     frontend _mktBestIndex fix in static/app.js."""
@@ -360,6 +360,9 @@ class TestSnapshotBestPriceEstimatedExclusion:
         assert set(by_provider) == {"parasite", "braiins"}
         assert by_provider["parasite"]["estimated"] is True
         assert by_provider["braiins"]["estimated"] is False
+        # Grid order: the REAL quote renders before the estimated card — the
+        # synthetic ~1 sat/TH/d never leads the grid (real-first sort).
+        assert [o["provider"] for o in offers] == ["braiins", "parasite"]
 
     def test_all_estimated_falls_back_to_lowest_price(self, client, monkeypatch):
         """When every offer is estimated there is no real quote — the documented
@@ -368,7 +371,7 @@ class TestSnapshotBestPriceEstimatedExclusion:
         now = int(time.time())
         self._seed(monkeypatch, {
             "parasite": {"price": 1e-5, "ts": now, "label": "Parasite", "estimated": True},
-            "kissmyhash": {"price": 5e-2, "ts": now, "label": "KissMyHash", "estimated": True},
+            "derived": {"price": 5e-2, "ts": now, "label": "Derived", "estimated": True},
         })
         res = client.get("/api/snapshot")
         assert res.status_code == 200
@@ -389,6 +392,136 @@ class TestSnapshotBestPriceEstimatedExclusion:
         md = res.get_json()["market_data"]
         # MRR (5e-2 → 5000 sats/TH/d) is the cheapest REAL quote → wins.
         assert md["best_price"] == "5000.00 sats/TH/d"
+        # Real-first grid order: both real quotes render before the estimated
+        # parasite card, which never steals the top slot.
+        providers = [o["provider"] for o in md["offers"]]
+        assert providers[-1] == "parasite"
+        assert providers[0] in ("braiins", "mrr")
+        assert providers[1] in ("braiins", "mrr")
+
+
+class TestApiMarketTrendAndHistory:
+    """The 7d price-trend chart endpoints (/api/market/trend per-provider and
+    /api/market/history flat series) — the dashboard Hash Market trend chart
+    and the mobile price history both read from these. Locks the aggregation,
+    the 7d/168h lookback cutoffs and the TH→PH conversion."""
+
+    _PROV = "utrend"  # distinctive provider prefix — never collides with real data
+
+    def _seed(self, conn, ts, provider, price):
+        conn.execute(
+            """INSERT INTO hashrate_market_history
+            (ts, provider, hashrate, price_per_th_day, duration_days, fee_pct,
+             algorithm, score, raw_data)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (ts, provider, 1000.0, price, 1.0, 0.0, "sha256", 1.0, "{}"),
+        )
+        conn.commit()
+
+    def _seed_multi(self):
+        """Seed a deterministic 7d window: two providers at three timestamps."""
+        now = int(time.time())
+        conn = get_db()
+        for off in (0, 3600, 7200):
+            self._seed(conn, now - off, f"{self._PROV}-a", 1e-6)
+            self._seed(conn, now - off, f"{self._PROV}-b", 2e-6)
+        conn.close()
+
+    def _clean(self):
+        conn = get_db()
+        conn.execute(f"DELETE FROM hashrate_market_history WHERE provider LIKE '{self._PROV}%'")
+        conn.commit()
+        conn.close()
+
+    @pytest.fixture(autouse=True)
+    def _cleanup(self):
+        yield
+        self._clean()
+
+    # ── /api/market/trend (per-provider, 7d window) ────────────────────────
+    # NOTE: these endpoints read the session-wide scratch DB, and earlier
+    # tests in this file persist REAL providers (braiins/mrr/…) through
+    # /api/hashrate-market with mocked offers. All asserts are therefore
+    # scoped to the distinctive utrend-* providers (subset semantics) so the
+    # suite stays hermetic regardless of what earlier tests persisted.
+
+    def test_trend_aggregates_by_provider(self, client):
+        self._seed_multi()
+        r = client.get("/api/market/trend")
+        assert r.status_code == 200
+        data = r.get_json()
+        assert data["success"] is True
+        provs = data["providers"]
+        assert f"{self._PROV}-a" in provs and f"{self._PROV}-b" in provs
+        # Each provider keeps all its points, ordered by ts ascending.
+        pts = provs[f"{self._PROV}-a"]
+        assert len(pts) == 3
+        assert pts[0]["ts"] <= pts[1]["ts"] <= pts[2]["ts"]
+        assert pts[0]["price_btc_per_th_day"] == 1e-6
+        assert pts[0]["price_btc_per_ph_day"] == 1e-3  # TH→PH = ×1000
+        assert "score" in pts[0]
+
+    def test_trend_respects_7d_cutoff(self, client):
+        now = int(time.time())
+        conn = get_db()
+        self._seed(conn, now - 3600, f"{self._PROV}-a", 1e-6)          # fresh
+        self._seed(conn, now - 8 * 86400, f"{self._PROV}-a", 9e-6)     # stale
+        conn.close()
+        r = client.get("/api/market/trend")
+        pts = r.get_json()["providers"][f"{self._PROV}-a"]
+        assert [p["price_btc_per_th_day"] for p in pts] == [1e-6]
+
+    def test_trend_never_exposes_foreign_provider(self, client):
+        """Unseeded utrend-* providers must never appear (hermetic check)."""
+        r = client.get("/api/market/trend")
+        provs = r.get_json()["providers"]
+        assert not any(k.startswith(self._PROV) for k in provs)
+
+    def test_trend_drops_provider_inactive_48h(self, client):
+        """A provider inside the 7d window but without a quote for >48h (e.g.
+        the removed kissmyhash) must NOT be served — its stale line would
+        inflate the 'N providers' badge in the dashboard."""
+        now = int(time.time())
+        conn = get_db()
+        self._seed(conn, now - 3600, f"{self._PROV}-a", 1e-6)          # active
+        self._seed(conn, now - 100 * 3600, f"{self._PROV}-b", 9e-6)    # stale 100h
+        conn.close()
+        r = client.get("/api/market/trend")
+        provs = r.get_json()["providers"]
+        assert f"{self._PROV}-a" in provs
+        assert f"{self._PROV}-b" not in provs
+
+    # ── /api/market/history (flat series, hours window) ───────────────────
+
+    def test_history_flat_series_with_ph_conversion(self, client):
+        self._seed_multi()
+        r = client.get("/api/market/history?limit=200&hours=168")
+        assert r.status_code == 200
+        data = r.get_json()
+        assert data["success"] is True
+        mine = [x for x in data["records"] if x["provider"].startswith(self._PROV)]
+        assert len(mine) == 6
+        rec = mine[0]
+        assert rec["price_btc_per_ph_day"] == rec["price_btc_per_th_day"] * 1000
+        assert "ts" in rec and "hashrate" in rec
+
+    def test_history_respects_hours_window(self, client):
+        now = int(time.time())
+        conn = get_db()
+        self._seed(conn, now - 1800, f"{self._PROV}-a", 1e-6)        # inside 1h
+        self._seed(conn, now - 7200, f"{self._PROV}-a", 9e-6)        # outside 1h
+        conn.close()
+        r = client.get("/api/market/history?hours=1")
+        data = r.get_json()
+        mine = [x for x in data["records"] if x["provider"].startswith(self._PROV)]
+        assert len(mine) == 1
+        assert mine[0]["price_btc_per_th_day"] == 1e-6
+
+    def test_history_never_exposes_foreign_provider(self, client):
+        """Unseeded utrend-* providers must never appear (hermetic check)."""
+        r = client.get("/api/market/history")
+        records = r.get_json()["records"]
+        assert not any(x["provider"].startswith(self._PROV) for x in records)
 
 
 class TestHashrateMarketHealth:
@@ -399,7 +532,8 @@ class TestHashrateMarketHealth:
     def test_health_cold_cache(self, monkeypatch):
         monkeypatch.setattr("app._HASHRATE_MARKET_CACHE", {"ts": 0, "offers": None})
         h = _hashrate_market_health()
-        assert h["last_fetch_ts"] == 0
+        # Sentinel policy (Issue #203): never fetched → null, not epoch-0.
+        assert h["last_fetch_ts"] is None
         assert h["offers_count"] == 0
         assert h["age_s"] is None          # never fetched → no age
         assert h["stale"] is False

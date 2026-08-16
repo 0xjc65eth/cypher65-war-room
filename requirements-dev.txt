@@ -17,9 +17,13 @@ black==25.1.0
 flake8==7.1.1
 
 # ── Quality / security scanning (local use; CI integration pending) ──────
-bandit==1.8.2
+bandit==1.9.4  # 1.8.2 crasha no AST do Python 3.14 ('Constant' object has no attribute 's') — Issue #125
 mypy==1.14.1
 pre-commit==4.0.1
+
+# ── Mutation testing (Issue #29 · quality) — equivalente Python do Stryker.
+#    Uso: SECRET_KEY=... mutmut run --paths-to-mutate core/ services/
+mutmut==2.4.1
 
 # ── Property-based testing for the probability/profitability math ────────
 hypothesis==6.123.2

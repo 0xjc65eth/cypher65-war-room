@@ -7,8 +7,60 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
-<link rel="stylesheet" href="/static/style.css?v39">
+<!-- Issue #186: defer no Chart.js — CDN nunca mais bloqueia o parse do DOM
+     (o retry hack _mktGridRetried no app.js era sintoma deste bloqueio).
+     Quem usa Chart guarda com `typeof Chart === 'undefined'` e re-renderiza
+     no próximo poll — zero risco de boot race. -->
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js" defer></script>
+{% if sentry_dsn %}
+<!-- Frontend Sentry (env-gated): carrega o SDK do browser só quando o
+     operador configurou SENTRY_DSN. Sem DSN este bloco nem renderiza —
+     zero requests externos, zero overhead, e2e intacto. Captura erros de
+     runtime do frontend (além dos logs JSON do backend). -->
+<script src="https://browser.sentry-cdn.com/8.30.0/bundle.min.js" crossorigin="anonymous" defer></script>
+<script>
+  /* Issue #186: com `defer`, o SDK executa DEPOIS deste inline — o init
+     espera o DOMContentLoaded (defer scripts rodam antes dele, então
+     window.Sentry já existe). Boot race preservado: ainda captura erros
+     durante o parse do app.js. Fail-safe: se o CDN falhar, window.Sentry
+     fica undefined e __initSentry é no-op — nada quebra. */
+  window.__SENTRY_DSN__ = {{ sentry_dsn|tojson }};
+  function __initSentry() {
+    if (!window.Sentry) return;  // CDN falhou / SDK ausente — fail-safe
+    Sentry.init({
+      dsn: window.__SENTRY_DSN__,
+      environment: '{{ sentry_environment|default("self-hosted") }}',
+      release: 'cypher65-war-room',
+      tracesSampleRate: {{ sentry_traces_sample_rate|default(0.1) }},
+      // Anonymize: nunca enviar endereço de carteira / worker (telemetria
+      // honesta — erros sim, dados financeiros não).
+      beforeSend: function (event) {
+        delete event.extra;
+        return event;
+      },
+      // Privacidade: breadcrumbs de fetch/XHR capturam a URL por padrão —
+      // remover query strings (ex: /api/...?...tenant=...) antes de enviar.
+      beforeBreadcrumb: function (breadcrumb) {
+        if (breadcrumb.data && breadcrumb.data.url) {
+          breadcrumb.data.url = String(breadcrumb.data.url).split('?')[0];
+        }
+        return breadcrumb;
+      },
+      ignoreErrors: [
+        // ResizeObserver loop / favicon 404s — ruído conhecido de dashboards.
+        'ResizeObserver',
+        'Non-Error promise rejection captured',
+      ],
+    });
+  }
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', __initSentry);
+  } else {
+    __initSentry();
+  }
+</script>
+{% endif %}
+<link rel="stylesheet" href="/static/style.css?v53">
 <link rel="icon" href="/static/favicon.ico" sizes="any">
 <link rel="icon" type="image/png" sizes="32x32" href="/static/icon-32x32.png">
 <link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
@@ -64,6 +116,10 @@
       <span class="icon">⟐</span>
       <span class="label">Hash Market</span>
     </button>
+    <button class="sidebar__link" data-module="rentals">
+      <span class="icon">⛁</span>
+      <span class="label">Rentals</span>
+    </button>
     <button class="sidebar__link" data-module="alerts">
       <span class="icon">⚠</span>
       <span class="label">Alerts</span>
@@ -83,6 +139,10 @@
     <button class="sidebar__link" data-module="support">
       <span class="icon">♥</span>
       <span class="label">Support</span>
+    </button>
+    <button class="sidebar__link" data-module="admin">
+      <span class="icon">📊</span>
+      <span class="label">Admin</span>
     </button>
   </nav>
 </aside>
@@ -107,6 +167,12 @@
       <span class="topbar__status" id="tbar-status">INIT</span>
       <span class="topbar__sep">|</span>
       <span class="topbar__clock" id="clock">--:--:--</span>
+      <span class="topbar__sep">|</span>
+      <!-- Instance indicator (Issue #198): deixa EXPLÍCITO em qual
+           instância/URL o dashboard está — resolve a confusão real de
+           salvar chaves na instância errada (local vs cloud). Populado
+           pelo initInstanceIndicator() no boot do app.js. -->
+      <span class="topbar__instance" id="topbar-instance" title="">⌁ …</span>
     </div>
   </div>
   <div class="topbar__right">
@@ -131,6 +197,7 @@
       <button id="open-exports" class="topbar__btn" title="Exports">EXP</button>
       <button id="open-settings" class="topbar__btn" title="Settings">::</button>
       <button id="theme-toggle" class="topbar__btn" title="Toggle theme">☀</button>
+      <button id="ai-panel-toggle" class="topbar__btn" title="AI Assistant">◆</button>
       <button id="sidebar-toggle" class="topbar__btn" title="Toggle Sidebar">☰</button>
       <button id="auth-toggle" class="topbar__btn topbar__btn--auth" title="Tenant Login">🔑 LOGIN</button>
       <button id="open-wallet" class="topbar__btn topbar__btn--wallet" title="Connect Wallet">⚡ CONNECT</button>
@@ -221,7 +288,7 @@
      KPI CARDS — 4 métricas principais
      ══════════════════════════════════════════════════════════════════════ -->
 <div class="kpi-row" id="kpi-row" data-module="dashboard">
-  <div class="kpi-card">
+  <div class="kpi-card" data-kpi-target="live" title="Ir para Live Mining — telemetria em tempo real">
     <span class="kpi-label">Hashrate <span class="tip-wrap" data-tip="Taxa de processamento do minerador principal"><span class="tip-wrap__icon">?</span></span></span>
     <div class="kpi-value-row">
       <span class="kpi-value" id="kpi-hashrate">—</span>
@@ -229,7 +296,7 @@
     </div>
     <span class="kpi-sub">primary worker</span>
   </div>
-  <div class="kpi-card">
+  <div class="kpi-card" data-kpi-target="probability" title="Ir para Probability — Block Hunt e estatísticas">
     <span class="kpi-label">Best Difficulty <span class="tip-wrap" data-tip="Maior dificuldade de share já encontrada"><span class="tip-wrap__icon">?</span></span></span>
     <div class="kpi-value-row">
       <span class="kpi-value kpi-value--gold" id="kpi-bestdiff">—</span>
@@ -237,7 +304,7 @@
     </div>
     <span class="kpi-sub">all-time</span>
   </div>
-  <div class="kpi-card">
+  <div class="kpi-card" data-kpi-target="live" title="Ir para Live Mining — activity feed de shares">
     <span class="kpi-label">Share Rate <span class="tip-wrap" data-tip="Shares submetidos na última hora"><span class="tip-wrap__icon">?</span></span></span>
     <div class="kpi-value-row">
       <span class="kpi-value" id="kpi-shares">—</span>
@@ -245,7 +312,7 @@
     </div>
     <span class="kpi-sub">last hour</span>
   </div>
-  <div class="kpi-card">
+  <div class="kpi-card" data-kpi-target="probability" title="Ir para Probability — estatísticas de rede e pool">
     <span class="kpi-label">Pool Hashrate <span class="tip-wrap" data-tip="Taxa de processamento total da pool"><span class="tip-wrap__icon">?</span></span></span>
     <div class="kpi-value-row">
       <span class="kpi-value kpi-value--cyan" id="kpi-poolhr">—</span>
@@ -395,16 +462,17 @@
 <!-- ── COMMAND CENTER (P0-3) — 3 ações contextuais ── -->
 <section class="panel panel--command-center panel--large" id="command-center-panel" data-module="dashboard">
   <div class="panel__header">
-    <div class="panel__eyebrow">⌘ COMMAND CENTER · O QUE FAZER AGORA?</div>
+    <div class="panel__eyebrow">⌘ AUTO-PILOT · O QUE FAZER AGORA?</div>
     <div class="panel__tools">
+      <span class="badge badge--purple" id="cc-mode-badge" title="Fase 1 do Auto-Pilot: modo ADVISORY (read-only) — as automações ainda não executam sozinhas, apenas sinalizam o que fariam.">ADVISORY</span>
       <span class="badge badge--mute" id="cc-status-badge">—</span>
     </div>
   </div>
   <div class="cc-grid" id="cc-grid">
     <div class="empty-state" style="grid-column:1/-1;border:none;padding:10px">
       <div class="empty-state__icon">⌘</div>
-      <div class="empty-state__title">No contextual actions</div>
-      <div class="empty-state__desc">Action cards appear when the dashboard detects something worth your attention — an offline worker, a proximity streak, or a capital-allocation signal.</div>
+      <div class="empty-state__title">All systems nominal</div>
+      <div class="empty-state__desc">Auto-Pilot (advisory) cards appear when the dashboard detects something worth your attention — an offline worker, a hashrate drop below the 7-day peak, a hot miner, a proximity streak, or an automation rule ready to fire.</div>
     </div>
   </div>
 </section>
@@ -613,34 +681,85 @@
     <div class="bh-card"><div class="bh-card__title">EXPECTED TIME</div><div class="bh-card__value" id="bh-expected-time">—</div><div class="bh-card__sub" id="bh-expected-time-sub">@ current HR</div></div>
     <div class="bh-card"><div class="bh-card__title">CUMULATIVE P</div><div class="bh-card__value" id="bh-cumulative-p">—</div><div class="bh-card__sub" id="bh-cumulative-p-sub">since session</div></div>
   </div>
+  <div class="bh-whatif" id="bh-whatif" title="Simule o impacto de uma mudança de dificuldade na probabilidade">
+    <div class="bh-whatif__header">
+      <span class="bh-whatif__title">⚡ WHAT-IF · DIFFICULTY</span>
+      <span class="badge badge--purple" id="bh-whatif-badge">0%</span>
+      <button class="chip" id="bh-whatif-reset" title="Voltar para a dificuldade atual">⟲ reset</button>
+    </div>
+    <div class="bh-whatif__slider-row">
+      <span class="bh-whatif__min">−50%</span>
+      <input type="range" class="bh-whatif__slider" id="bh-whatif-slider" min="-50" max="100" step="1" value="0" aria-label="Variação simulada da dificuldade da rede">
+      <span class="bh-whatif__max">+100%</span>
+    </div>
+    <div class="bh-whatif__grid">
+      <div class="bh-whatif__cell"><div class="bh-whatif__cell-title">NET DIFF</div><div class="bh-whatif__cell-value" id="bh-whatif-diff">—</div></div>
+      <div class="bh-whatif__cell"><div class="bh-whatif__cell-title">P(BLOCK)/SHARE</div><div class="bh-whatif__cell-value bh-card__value--purple" id="bh-whatif-pblock">—</div></div>
+      <div class="bh-whatif__cell"><div class="bh-whatif__cell-title">EXPECTED TIME</div><div class="bh-whatif__cell-value" id="bh-whatif-etime">—</div></div>
+      <div class="bh-whatif__cell"><div class="bh-whatif__cell-title">CUMULATIVE P</div><div class="bh-whatif__cell-value" id="bh-whatif-cum">—</div></div>
+    </div>
+    <div class="bh-whatif__note">simulação · hash power constante · share rate igual ao atual</div>
+  </div>
 </section>
 
 <!-- ─── HASHMARKET ─── -->
 <section class="panel panel--market panel--large" id="market-panel" data-module="market">
   <div class="panel__header">
-    <div class="panel__eyebrow">⟐ HASHMARKET · OPPORTUNITIES</div>
+    <div class="panel__eyebrow">⟐ HASHRATEPULSE ENTERPRISE · SHA-256 MARKET INTELLIGENCE</div>
     <div class="panel__tools">
       <span class="badge badge--btc" id="mkt-best-price-badge">best —</span>
-      <span class="badge badge--mute" id="mkt-count-badge">0 offers</span>
+      <span class="badge badge--mute" id="mkt-count-badge">0 venues</span>
+      <span class="badge" id="mkt-regime-badge" title="Market regime">REGIME —</span>
       <button class="chip" id="mkt-config-btn" title="Configure API keys">⚙</button>
     </div>
   </div>
+
+  <!-- ── Executive Snapshot ── -->
+  <div class="mkt-snapshot" id="mkt-snapshot">
+    <div class="mkt-snapshot__item"><span class="mkt-snapshot__label">Best Execution</span><span class="mkt-snapshot__val mkt-snapshot__val--green" id="mkt-snap-best">—</span></div>
+    <div class="mkt-snapshot__item"><span class="mkt-snapshot__label">Spread vs 2nd</span><span class="mkt-snapshot__val" id="mkt-snap-spread">—</span></div>
+    <div class="mkt-snapshot__item"><span class="mkt-snapshot__label">Visible Liquidity</span><span class="mkt-snapshot__val" id="mkt-snap-liquidity">—</span></div>
+    <div class="mkt-snapshot__item"><span class="mkt-snapshot__label">4h VWAP</span><span class="mkt-snapshot__val" id="mkt-snap-vwap">—</span></div>
+    <div class="mkt-snapshot__item"><span class="mkt-snapshot__label">BTC/USD</span><span class="mkt-snapshot__val" id="mkt-snap-btcusd">—</span></div>
+    <div class="mkt-snapshot__item"><span class="mkt-snapshot__label">Rent vs Own</span><span class="mkt-snapshot__val" id="mkt-snap-rentvsown" title="">—</span></div>
+  </div>
+
+  <!-- ── Ranked Venue Table ── -->
   <div class="mkt-filters" id="mkt-filters">
-    <button class="chip active" data-mkt-filter="all">All</button>
+    <button class="chip active" data-mkt-filter="all">All Venues</button>
     <button class="chip" data-mkt-filter="braiins">⊛ Braiins</button>
     <button class="chip" data-mkt-filter="nicehash">◈ NiceHash</button>
     <button class="chip" data-mkt-filter="mrr">⛁ MRR</button>
-    <button class="chip" data-mkt-filter="kissmyhash">♡ KissMyHash</button>
     <button class="chip" data-mkt-filter="parasite">⌂ Parasite</button>
   </div>
-  <div class="mkt-grid" id="mkt-grid">
-    <div class="empty-state" style="grid-column:1/-1;border:none">
-      <div class="empty-state__icon">⟐</div>
-      <div class="empty-state__title">No market data</div>
-      <div class="empty-state__desc">Configure API keys in Settings to load offers from Braiins, NiceHash, MRR, and more</div>
-      <div class="empty-state__action"><button class="btn btn--primary btn--mini" onclick="document.getElementById('open-settings').click()">⚙ Configure</button></div>
-    </div>
+
+  <div class="mkt-table-wrap">
+    <table class="mkt-table" id="mkt-table">
+      <thead>
+        <tr>
+          <th data-mkt-sort="venue" title="Sort by venue">Venue <span class="mkt-sort-arrow"></span></th>
+          <th data-mkt-sort="price" title="Sort by price">Price (BTC/PH/d) <span class="mkt-sort-arrow"></span></th>
+          <th data-mkt-sort="usd" title="Sort by USD price">USD/TH/d <span class="mkt-sort-arrow"></span></th>
+          <th data-mkt-sort="spread" title="Sort by spread">vs Best <span class="mkt-sort-arrow"></span></th>
+          <th data-mkt-sort="vwap" title="Sort by vs VWAP">vs 4h VWAP <span class="mkt-sort-arrow"></span></th>
+          <th data-mkt-sort="liquidity" title="Sort by availability">Available <span class="mkt-sort-arrow"></span></th>
+          <th>Depth</th>
+          <th data-mkt-sort="tier" title="Sort by risk tier">Risk Tier <span class="mkt-sort-arrow"></span></th>
+          <th>Recommendation</th>
+        </tr>
+      </thead>
+      <tbody id="mkt-table-body">
+        <tr><td colspan="9" class="mkt-table__empty">No market data — configure API keys in Settings to load institutional-grade hashrate intelligence</td></tr>
+      </tbody>
+    </table>
   </div>
+
+  <!-- ── Institutional Notes ── -->
+  <div class="mkt-notes" id="mkt-notes" style="display:none">
+    <div class="mkt-notes__title">◆ INSTITUTIONAL NOTES</div>
+    <div class="mkt-notes__body" id="mkt-notes-body"></div>
+  </div>
+
   <div class="mkt-trend" id="mkt-trend">
     <div class="mkt-trend__header">
       <span class="mkt-trend__title">Price Trend (7d) · BTC/TH/d</span>
@@ -649,7 +768,7 @@
     <div class="chart-wrap"><canvas id="mkt-trend-chart"></canvas></div>
     <div class="mkt-trend__legend" id="mkt-trend-legend"></div>
   </div>
-  <div class="mkt-footnote" id="mkt-footnote">Prices are estimates. Verify on each platform.</div>
+  <div class="mkt-footnote" id="mkt-footnote">HashratePulse Enterprise · Prices normalized in BTC/PH/day · Verify on each venue before execution</div>
 </section>
 
 <!-- ─── DECISION MATRIX (P0-2) — solo vs pool vs lease ─── -->
@@ -685,12 +804,188 @@
   </div>
 </section>
 
+<!-- ─── RENTALS (P2) — performance dos aluguéis do operador (MRR + Braiins) ─── -->
+<section class="panel panel--rentals panel--large" id="rentals-panel" data-module="rentals">
+  <div class="panel__header">
+    <div class="panel__eyebrow">⛁ RENTALS · PERFORMANCE</div>
+    <div class="panel__tools">
+      <span class="badge badge--mute" id="rentals-count-badge">—</span>
+      <button class="chip chip--affiliate" id="rentals-buy" title="Comprar hashrate no spot da Braiins (real money)">⚡ COMPRAR</button>
+      <button class="chip" id="rentals-backtest" title="Backtest: e se eu alugasse X TH por Y horas?">🔬</button>
+      <button class="chip" id="rentals-export" title="Export CSV (ledger simples)">⭳ CSV</button>
+      <button class="chip chip--affiliate" id="rentals-export-analysis" title="Exportar Análise de Rendimento — reembolso devido, spread, prejuízo real e sellers a blacklistar">📊 ANÁLISE</button>
+      <button class="chip" id="rentals-refresh" title="Refresh">⟳</button>
+    </div>
+  </div>
+  <div class="rentals-strip" id="rentals-strip">
+    <!-- Click-first: each strip card switches the list tab below (active /
+         history / owner / contracts) — no longer decorative. -->
+    <div class="rentals-strip__card" data-rentals-filter="active" title="ver rentals ativos"><div class="rentals-strip__title">MRR RENTER</div><div class="rentals-strip__value" id="rentals-mrr-active">—</div><div class="rentals-strip__sub">active · clique p/ ver</div></div>
+    <div class="rentals-strip__card" data-rentals-filter="history" title="ver histórico"><div class="rentals-strip__title">MRR HISTORY</div><div class="rentals-strip__value" id="rentals-mrr-history">—</div><div class="rentals-strip__sub">completed · clique p/ ver</div></div>
+    <div class="rentals-strip__card" data-rentals-filter="owner" title="ver rigs alugados"><div class="rentals-strip__title">MRR OWNER</div><div class="rentals-strip__value" id="rentals-mrr-owner">—</div><div class="rentals-strip__sub">rigs leased · clique p/ ver</div></div>
+    <div class="rentals-strip__card" data-rentals-filter="contracts" title="ver contratos Braiins"><div class="rentals-strip__title">BRAIINS</div><div class="rentals-strip__value" id="rentals-braiins">—</div><div class="rentals-strip__sub">contracts · clique p/ ver</div></div>
+  </div>
+  <!-- Market signals: 'compras caras detectadas' (overpay) + 'janela de
+       arbitragem aberta' — dry-run evaluation (never consumes the webhook
+       dedup). Overpay banner jumps to the history tab; arbitrage banner
+       opens the Braiins buy flow. -->
+  <div class="rentals-signals" id="rentals-signals" hidden></div>
+  <!-- CFO: portfolio analytics — consolidated spend/cost/delivery so the
+       operator sees where the money went BEFORE opening individual rentals. -->
+  <div class="rentals-portfolio" id="rentals-portfolio" hidden>
+    <div class="rentals-portfolio__cell"><span class="rentals-portfolio__label">TOTAL SPENT</span><strong id="rentals-port-total">—</strong></div>
+    <div class="rentals-portfolio__cell"><span class="rentals-portfolio__label">AVG COST</span><strong id="rentals-port-avg-cost">—</strong></div>
+    <div class="rentals-portfolio__cell"><span class="rentals-portfolio__label">AVG DELIVERY</span><strong id="rentals-port-avg-delivery">—</strong></div>
+    <div class="rentals-portfolio__cell"><span class="rentals-portfolio__label">DELIVERED</span><strong id="rentals-port-delivered">—</strong></div>
+    <div class="rentals-portfolio__cell"><span class="rentals-portfolio__label">OWNER INCOME</span><strong id="rentals-port-income">—</strong></div>
+    <div class="rentals-portfolio__cell"><span class="rentals-portfolio__label">SPLIT</span><strong id="rentals-port-split">—</strong></div>
+  </div>
+  <!-- CFO: consolidated portfolio P/L (Issue #21-A) — PRÓPRIO (self-mining
+       EV, share da rede × block reward) + RENTALS P/L (30d da série local e
+       acumulado) + NET 30d. EV = ESTIMATE (nunca receita realizada). -->
+  <div class="portfolio-consolidated" id="portfolio-consolidated" hidden>
+    <div class="portfolio-consolidated__head">P/L CONSOLIDADO <span class="rentals-series__meta" id="portfolio-consolidated-meta"></span></div>
+    <div class="rentals-portfolio">
+      <div class="rentals-portfolio__cell" title="EV de receita diária do hashrate próprio (share da rede × block reward)"><span class="rentals-portfolio__label">PRÓPRIO EV/dia</span><strong id="portfolio-own-daily">—</strong></div>
+      <div class="rentals-portfolio__cell" title="EV de receita do hashrate próprio em ~30 dias (últimas ~4 semanas)"><span class="rentals-portfolio__label">PRÓPRIO EV ~30d</span><strong id="portfolio-own-month">—</strong></div>
+      <div class="rentals-portfolio__cell" title="P/L dos rentals nas últimas ~4 semanas (mesma metodologia EV da série)"><span class="rentals-portfolio__label">RENTALS P/L ~30d</span><strong id="portfolio-rentals-30d">—</strong></div>
+      <div class="rentals-portfolio__cell" title="P/L acumulado de TODOS os rentals"><span class="rentals-portfolio__label">RENTALS P/L total</span><strong id="portfolio-rentals-all">—</strong></div>
+      <div class="rentals-portfolio__cell" title="NET ~30d = EV próprio (~30d) + P/L rentals (~30d) — ESTIMATE"><span class="rentals-portfolio__label">NET ~30d</span><strong id="portfolio-net-30d">—</strong></div>
+    </div>
+  </div>
+  <!-- CFO: portfolio time series — spent + estimated P/L per week/month
+       (from the local rental_history; P/L labeled ESTIMATE — current network
+       hashrate). Toggle W/S to change the bucket. -->
+  <div class="rentals-series" id="rentals-series" hidden>
+    <div class="rentals-series__head">
+      <span>PORTFOLIO · GASTO × P/L <span id="rentals-series-meta" class="rentals-series__meta"></span></span>
+      <span class="rentals-series__toggle">
+        <button class="chip active" data-series-bucket="week">SEMANA</button>
+        <button class="chip" data-series-bucket="month">MÊS</button>
+      </span>
+    </div>
+    <div class="rentals-series__chart"><canvas id="rentals-series-chart"></canvas></div>
+  </div>
+  <!-- Click-first: expiring rentals (calendar) + provider ranking + rig
+       heatmap — every cell is a drill-down target. -->
+  <div class="rentals-expiring" id="rentals-expiring" hidden>
+    <div class="rentals-expiring__head">TERMINANDO EM 72H <span id="rentals-expiring-meta" class="rentals-expiring__meta"></span></div>
+    <div class="rentals-expiring__list" id="rentals-expiring-list"></div>
+  </div>
+  <div class="rentals-rank" id="rentals-rank" hidden>
+    <div class="rentals-rank__head">RANKING DE PROVIDERS</div>
+    <div class="rentals-rank__grid" id="rentals-rank-grid"></div>
+  </div>
+  <div class="rentals-heatmap" id="rentals-heatmap" hidden>
+    <div class="rentals-heatmap__head">HEATMAP CUSTO × DELIVERY <span class="rentals-heatmap__hint">clique numa célula p/ ver o rig</span></div>
+    <div class="rentals-heatmap__grid" id="rentals-heatmap-grid"></div>
+  </div>
+  <!-- CFO: worst-rig leaderboard — the rigs that burned you (EWMA delivery,
+       fail rate, volatility, danger score). Click a row → track record. -->
+  <div class="rentals-worst" id="rentals-worst" hidden>
+    <div class="rentals-worst__head">PIORES RIGS <span id="rentals-worst-meta" class="rentals-worst__meta"></span></div>
+    <div class="rentals-worst__list" id="rentals-worst-list"></div>
+  </div>
+  <!-- CFO: concentration risk — provider/rig spend share + Herfindahl. -->
+  <div class="rentals-conc" id="rentals-conc" hidden>
+    <div class="rentals-conc__head">CONCENTRAÇÃO <span id="rentals-conc-meta" class="rentals-conc__meta"></span></div>
+    <div class="rentals-conc__bars" id="rentals-conc-bars"></div>
+  </div>
+  <!-- CFO: exposure allocation (Issue #21-B) — PRÓPRIO vs MRR vs Braiins,
+       share do hashrate total gerenciado + Herfindahl estendido incluindo
+       o próprio como classe de ativo. Reusa o CSS das barras de concentração. -->
+  <div class="rentals-exposure" id="rentals-exposure" hidden>
+    <div class="rentals-conc__head">ALOCAÇÃO DE EXPOSIÇÃO <span id="rentals-exposure-meta" class="rentals-conc__meta"></span></div>
+    <div class="rentals-conc__bars" id="rentals-exposure-bars"></div>
+    <div class="rentals-exposure__total" id="rentals-exposure-total"></div>
+  </div>
+  <!-- CFO recommendation engine: 'where to rent again' — rigs with a real
+       track record, ranked by reliability × price vs the live market. -->
+  <div class="rentals-reco" id="rentals-reco" hidden>
+    <div class="rentals-reco__head">RECOMENDADOS PRA RE-ALUGAR <span id="rentals-reco-meta" class="rentals-reco__meta"></span></div>
+    <div class="rentals-reco__cards" id="rentals-reco-cards"></div>
+    <!-- Pilot's avoid case — grade-F rigs the operator can accept in ONE
+         click (BLACKLISTAR → the accepted ledger records the decision with
+         pilot_flagged=true). Card body opens the rig track record. -->
+    <div class="rentals-avoid__head" id="rentals-avoid-head" hidden>EVITAR — GRADE F (SUGESTÃO DO PILOTO) <span class="rentals-reco__meta">1 clique p/ aceitar</span></div>
+    <div class="rentals-reco__cards" id="rentals-avoid-cards"></div>
+  </div>
+  <!-- CFO: accepted recommendations — rigs que o piloto sugeriu blacklistar
+       e o operador ACEITOU (manual ou exclusão automática), com o resultado
+       da entrega DEPOIS da decisão. Clique no card → track record do rig. -->
+  <div class="rentals-accepted" id="rentals-accepted" hidden>
+    <div class="rentals-accepted__head">RECOMENDAÇÕES ACEITAS <span id="rentals-accepted-meta" class="rentals-accepted__meta"></span></div>
+    <div class="rentals-accepted__list" id="rentals-accepted-list"></div>
+  </div>
+  <!-- Auto-exclusion history (WHEN + CAUSE): cada rig que o piloto
+       auto-excluiu — quando (data) e por quê (grade, entrega, amostras e a
+       régua vigente: floor de grade + mín de amostras). Clique no card →
+       track record do rig. -->
+  <div class="rentals-autoex" id="rentals-autoex" hidden>
+    <div class="rentals-autoex__head">AUTO-EXCLUSÕES DO PILOTO <span id="rentals-autoex-meta" class="rentals-autoex__meta"></span></div>
+    <div class="rentals-autoex__list" id="rentals-autoex-list"></div>
+  </div>
+  <!-- Market timing: cheapest live price vs the 30-day average (from the
+       persisted market history) — 'renting expensive right now?' -->
+  <div class="rentals-timing" id="rentals-timing" hidden>
+    <div class="rentals-timing__head">MARKET TIMING · 30D <span id="rentals-timing-summary" class="rentals-timing__summary"></span></div>
+    <div class="rentals-timing__forecast" id="rentals-timing-forecast" hidden></div>
+    <div class="rentals-timing__chart"><canvas id="rentals-timing-chart"></canvas></div>
+  </div>
+  <!-- Risk alerts fired on this load (worst-rig top-N + concentration) —
+       banner with severity so the operator sees it without digging. -->
+  <div class="rentals-riskbanner" id="rentals-riskbanner" hidden></div>
+  <div class="rentals-filters" id="rentals-filters">
+    <button class="chip active" data-rentals-filter="active">Active</button>
+    <button class="chip" data-rentals-filter="history">History</button>
+    <button class="chip" data-rentals-filter="owner">Owner</button>
+    <button class="chip" data-rentals-filter="contracts">Braiins</button>
+    <span class="rentals-filters__spacer"></span>
+    <label class="rentals-hidebad" title="Ocultar rigs com grade F (AVOID) ou na blacklist — os piores performers">
+      <input type="checkbox" id="rentals-hide-bad"> hide bad rigs
+    </label>
+  </div>
+  <div class="rentals-list" id="rentals-list">
+    <div class="empty-state" style="grid-column:1/-1;border:none">
+      <div class="empty-state__icon">⛁</div>
+      <div class="empty-state__title">Loading rentals…</div>
+      <div class="empty-state__desc">Fetching operator rental performance (MRR + Braiins)</div>
+    </div>
+  </div>
+  <div class="rentals-detail" id="rentals-detail" hidden>
+    <div class="rentals-detail__head">
+      <span class="rentals-detail__title" id="rentals-detail-title">—</span>
+      <button class="chip" id="rentals-detail-close">✕ close</button>
+    </div>
+    <!-- Auto-exclusion banner (Issue #110): visible ONLY on the detail call
+         that performed the exclusion — immediate feedback + alert dispatch
+         status, without waiting for the next panel refresh. -->
+    <div class="rentals-detail__autoex" id="rentals-detail-autoex" hidden></div>
+    <div class="rentals-detail__autoex rentals-detail__autoex--auth" id="rentals-detail-auth" hidden></div>
+    <div class="rentals-detail__grid" id="rentals-detail-grid"></div>
+    <div class="rentals-perf" id="rentals-detail-perf"></div>
+    <div class="rentals-trust" id="rentals-detail-trust" hidden></div>
+    <div class="rentals-rig" id="rentals-detail-rig" hidden></div>
+    <div class="chart-wrap rentals-detail__chart"><canvas id="rentals-detail-chart"></canvas></div>
+    <div class="rentals-detail__log" id="rentals-detail-log"></div>
+  </div>
+</section>
+
 <!-- ─── AI OPERATOR ─── -->
 <section class="panel panel--ai-operator panel--large" id="ai-operator-panel" data-module="automations">
   <div class="panel__header">
     <div class="panel__eyebrow">◆ AI OPERATOR · INTELLIGENCE</div>
     <div class="panel__tools">
       <span class="badge badge--green" id="ai-status-badge">ACTIVE</span>
+      <button class="chip ap-arm-chip" id="ap-armed-btn" title="Auto-Pilot: quando ARMADO, as regras de automação executam ações sozinhas dentro do orçamento. Requer confirmação por digitação.">
+        <span class="ap-dot" id="ap-armed-dot"></span>AUTO-PILOT&nbsp;<span id="ap-armed-label">OFF</span>
+      </button>
+      <span class="badge badge--mute" id="ap-budget-badge" title="Ações do Auto-Pilot executadas na janela atual / limite">—</span>
+      <button class="chip ap-arm-chip" id="ap-auto-btn" title="EXECUÇÃO AUTÔNOMA OFF — as recomendações ficam manuais. Clique para ligar (requer PRO + armado).">
+        <span class="ap-dot" id="ap-auto-dot"></span>AUTONOMOUS&nbsp;<span id="ap-auto-label">OFF</span>
+      </button>
+      <span class="badge badge--mute" id="ap-auto-pro-badge" title="Gate PRO da execução autônoma">PRO —</span>
+      <button class="chip" id="ai-premium-cta" title="AI Operator real (LLM) é PREMIUM" hidden>🤖 AI PREMIUM</button>
       <button class="chip" id="open-alert-center" title="Alert Center">⚠ RULES</button>
       <button class="chip" id="ai-clear">clear</button>
     </div>
@@ -723,6 +1018,107 @@
   </div>
 </section>
 
+<!-- ── Auto-Pilot ADVISORY (Issue #20 · Fase 2) — recomendações por device ── -->
+<section class="panel panel--ap-advisory panel--large" id="ap-advisory-panel" data-module="automations">
+  <div class="panel__header">
+    <div class="panel__eyebrow">⌘ AUTO-PILOT · ADVISORY MODE</div>
+    <div class="panel__tools">
+      <span class="badge badge--purple" id="ap-recs-badge" title="Recomendações ativas — o piloto sugere, você decide">0</span>
+      <button class="chip" id="ap-recs-refresh" title="Refresh recomendações">⟳</button>
+    </div>
+  </div>
+  <div class="ap-recs" id="ap-recs-list">
+    <div class="empty-state" style="grid-column:1/-1;border:none;padding:12px">
+      <div class="empty-state__icon">⌘</div>
+      <div class="empty-state__title">Sem recomendações no momento</div>
+      <div class="empty-state__desc">O Auto-Pilot (advisory) consolida por dispositivo o que merece atenção — OFFLINE, temperatura alta, hashrate abaixo do pico, rig com track record ruim ou janela de arbitragem — com a ação sugerida em um clique.</div>
+    </div>
+  </div>
+  <div class="ap-audit" id="ap-audit-wrap" style="display:none">
+    <div class="ap-audit__header">
+      <span>AUDIT TRAIL · DECISÕES</span>
+      <span class="badge badge--mute" id="ap-audit-count">0</span>
+    </div>
+    <div class="ap-audit__list" id="ap-audit-list"></div>
+  </div>
+</section>
+
+<!-- ── Auto-Pilot DRY-RUN (Issue #76 · Fase 3) — simulação do piloto armado ── -->
+<section class="panel panel--ap-dryrun panel--large" id="ap-dryrun-panel" data-module="automations">
+  <div class="panel__header">
+    <div class="panel__eyebrow">◈ AUTO-PILOT · DRY-RUN</div>
+    <div class="panel__tools">
+      <span class="badge badge--purple" id="ap-dr-badge" title="Simulação — nenhuma ação real é executada">SIMULAÇÃO</span>
+      <button class="chip" id="ap-dr-refresh" title="Rodar simulação (agora + replay 24h)">⟳ SIMULAR</button>
+    </div>
+  </div>
+  <div class="ap-dr-banner">🧪 <strong>Execução simulada</strong> — mostra o que o piloto FARIA com as regras armadas (resultado previsto + veredito de segurança) <strong>sem executar nada</strong>.</div>
+  <div class="ap-dr-block">
+    <div class="ap-dr-block__title">AGORA — O QUE O PILOTO FARIA <span class="badge badge--mute" id="ap-dr-now-count">—</span></div>
+    <div class="ap-recs ap-dr-now" id="ap-dr-now-list">
+      <div class="empty-state" style="grid-column:1/-1;border:none;padding:12px">
+        <div class="empty-state__icon">◈</div>
+        <div class="empty-state__title">Nenhuma regra dispararia agora</div>
+        <div class="empty-state__desc">Com a telemetria atual e as regras ativas, o piloto não teria nenhuma ação a tomar.</div>
+      </div>
+    </div>
+  </div>
+  <div class="ap-dr-block">
+    <div class="ap-dr-block__title">REPLAY 24H — TERIA DISPARADO <span class="badge badge--mute" id="ap-dr-replay-count">—</span></div>
+    <div class="ap-dr-replay" id="ap-dr-replay-list">
+      <div class="empty-state" style="grid-column:1/-1;border:none;padding:12px">
+        <div class="empty-state__icon">↻</div>
+        <div class="empty-state__title">Sem histórico ainda</div>
+        <div class="empty-state__desc">O replay usa o histórico de telemetria persistido dos devices para simular as últimas 24h.</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── Auto-Pilot arm confirmation (typed — enables autonomous actions) ── -->
+<div id="ap-arm-modal" class="modal-overlay">
+  <div class="modal ap-arm-modal">
+    <div class="modal__header">
+      <span class="modal__title">🛡 ARMAR AUTO-PILOT</span>
+      <button class="modal__close" data-close="ap-arm-modal">×</button>
+    </div>
+    <div class="modal__body">
+      <p class="ap-arm-modal__desc">Ao armar, as <strong>regras de automação passam a executar ações sozinhas</strong> (restart, power-cycle, comandos de dispositivo) sempre que as condições baterem — respeitando o orçamento de ações por janela. Desarmar a qualquer momento para parar imediatamente.</p>
+      <div class="ap-arm-modal__status" id="ap-arm-modal-status"></div>
+      <label class="ap-arm-modal__confirm">
+        <span class="field__label">DIGITE <strong>ARMAR</strong> PARA CONFIRMAR</span>
+        <input class="field__input field__input--mono" type="text" id="ap-arm-type" placeholder="digite ARMAR" autocomplete="off" spellcheck="false">
+      </label>
+      <div class="ap-arm-modal__actions">
+        <button class="btn" data-close="ap-arm-modal">CANCELAR</button>
+        <button class="btn btn--primary" id="ap-arm-confirm" disabled>ARMAR AUTO-PILOT</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ── Auto-Pilot autonomous confirmation (typed — PRO-gated, Issue #178) ── -->
+<div id="ap-auto-modal" class="modal-overlay">
+  <div class="modal ap-arm-modal">
+    <div class="modal__header">
+      <span class="modal__title">🤖 LIGAR EXECUÇÃO AUTÔNOMA</span>
+      <button class="modal__close" data-close="ap-auto-modal">×</button>
+    </div>
+    <div class="modal__body">
+      <p class="ap-arm-modal__desc">Ao ligar, o piloto (quando <strong>PRO + ARMADO</strong>) passa a <strong>executar sozinho</strong> as ações físicas das recomendações — <strong>restart</strong> de miner offline/com hashrate baixo e <strong>pause</strong> por temperatura — respeitando SafetyEngine, cooldown (restart 15min / pause 10min) e o orçamento de ações. Ações financeiras (blacklist/buy) <strong>continuam manuais</strong>. Desligar a qualquer momento para parar imediatamente.</p>
+      <div class="ap-arm-modal__status" id="ap-auto-modal-status"></div>
+      <label class="ap-arm-modal__confirm">
+        <span class="field__label">DIGITE <strong>AUTONOMO</strong> PARA CONFIRMAR</span>
+        <input class="field__input field__input--mono" type="text" id="ap-auto-type" placeholder="digite AUTONOMO" autocomplete="off" spellcheck="false">
+      </label>
+      <div class="ap-arm-modal__actions">
+        <button class="btn" data-close="ap-auto-modal">CANCELAR</button>
+        <button class="btn btn--primary" id="ap-auto-confirm" disabled>LIGAR EXECUÇÃO AUTÔNOMA</button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <!-- ─── AXE FLEET ─── -->
 <section class="panel panel--axe-fleet panel--large" id="axe-fleet-panel" data-module="fleet">
   <div class="panel__header">
@@ -733,6 +1129,8 @@
       <span class="badge badge--mute" id="axe-fleet-tenant-badge" title="Active tenant">TENANT: default</span>
       <span class="badge badge--green" id="fleet-live-badge" style="display:none;font-size:7px">● LIVE</span>
       <button class="chip" id="axe-fleet-add">+ ADD</button>
+      <button class="chip" id="axe-fleet-scan" title="Scan local network for mining devices">🔍 SCAN NETWORK</button>
+      <button class="chip" id="axe-agent-btn" style="border-color:var(--cyan);color:var(--cyan)">🤖 CONNECT AGENT</button>
       <button class="chip" id="axe-seed-btn" style="border-color:var(--cyan);color:var(--cyan)">🧪 SEED TEST</button>
     </div>
   </div>
@@ -810,6 +1208,9 @@
         <button type="button" class="btn btn--mini" id="axe-test-conn">🔌 TEST CONNECTIVITY</button>
         <button type="button" class="btn btn--mini axe-wiz__back" data-wiz-back="1">← method</button>
       </div>
+      <!-- Firmware auto-detection preview — live chip showing detected
+           firmware/model/protocol as the operator types an IP (debounced). -->
+      <div class="axe-fw-preview" id="axe-fw-preview" style="display:none"></div>
       <div class="axe-wiz__test" id="axe-test-result" style="margin-top:6px"></div>
       <div class="axe-wiz__manual-name" style="margin-top:6px;display:none" id="axe-manual-name-row">
         <input class="field__input" type="text" id="axe-add-name" placeholder="miner name (optional)" style="width:180px">
@@ -826,12 +1227,60 @@
       <span id="axe-add-status" style="font-size:9px;color:var(--text-tertiary);display:block;margin-top:4px"></span>
     </div>
   </div>
+  <!-- ── SaaS AGENT onboarding: token + docker run ──
+       The cloud dashboard can't reach the user's LAN (192.168.x.x is not
+       routable from Render). The local agent connects OUT and pushes
+       telemetry — this panel mints the per-tenant JWT and prints the
+       one-liner the user pastes into Docker on their home network. -->
+  <div class="axe-agent" id="axe-agent-panel" style="display:none">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
+      <div class="axe-wiz__eyebrow" style="font-size:9px;letter-spacing:0.08em;color:var(--cyan)">🤖 LOCAL AGENT · CLOUD-CONTROLLED FLEET</div>
+      <button class="btn" id="axe-agent-close" title="close" style="padding:1px 7px;font-size:10px">✕</button>
+    </div>
+    <div style="font-size:10px;color:var(--text-secondary);line-height:1.5">
+      O dashboard na nuvem não alcança a sua LAN (<code>192.168.x.x</code> não é roteável
+      a partir do Render). Rode o <strong>agente local</strong> (Docker/Pi/PC ligado na
+      mesma rede dos miners) — ele conecta <strong>para fora</strong> e empurra telemetria
+      para este painel. Sem abrir porta, NAT/CGNAT-safe.
+      <a href="/docs/agent" target="_blank" rel="noopener"
+         style="display:inline-block;margin-top:6px;font-size:9px;letter-spacing:0.06em;color:var(--cyan);border:1px solid var(--border-subtle);padding:2px 8px;text-decoration:none">📖 GUIA COMPLETO DO AGENTE</a>
+    </div>
+    <div style="display:flex;gap:4px;align-items:center;margin-top:8px">
+      <button class="btn btn--mini" id="axe-agent-gen" style="border-color:var(--cyan);color:var(--cyan)">🔑 GENERATE AGENT TOKEN</button>
+      <span id="axe-agent-status" style="font-size:9px;color:var(--text-tertiary)"></span>
+    </div>
+    <div id="axe-agent-token-row" style="display:none;margin-top:8px">
+      <div style="font-size:9px;letter-spacing:0.08em;color:var(--text-tertiary);margin-bottom:2px">AGENT TOKEN (secreto — vale 365 dias, escopo do seu tenant)</div>
+      <textarea id="axe-agent-token" readonly rows="2" style="width:100%;font-family:var(--mono,monospace);font-size:10px;background:var(--bg-deep,#050505);color:var(--cyan);border:1px solid var(--border-subtle);padding:4px"></textarea>
+      <div style="display:flex;gap:4px;margin-top:4px">
+        <button class="btn btn--mini" id="axe-agent-copy-token">⧉ COPY TOKEN</button>
+        <button class="btn btn--mini" id="axe-agent-hide-token" style="color:var(--text-tertiary)">hide</button>
+      </div>
+      <div style="font-size:9px;letter-spacing:0.08em;color:var(--text-tertiary);margin:8px 0 2px">▶ PASSO 1 · RODE ESTA ÚNICA LINHA NA MÁQUINA DA SUA REDE (macOS / Linux / Raspberry Pi — sem Docker, sem pip)</div>
+      <pre id="axe-agent-one-liner" style="white-space:pre-wrap;font-size:10px;background:var(--bg-deep,#050505);color:var(--green);border:1px solid var(--border-subtle);padding:6px;margin:0;line-height:1.5"></pre>
+      <button class="btn btn--mini" id="axe-agent-copy-one" style="margin-top:4px">⧉ COPY COMMAND</button>
+      <div style="font-size:9px;color:var(--text-tertiary);margin-top:6px;line-height:1.5">
+        Precisa de <code>python3</code> (já vem instalado). O agente descobre os miners na sua
+        LAN, conecta <strong>para fora</strong> (sem abrir porta) e o fleet aparece aqui em ~1 min.
+      </div>
+      <div style="font-size:9px;letter-spacing:0.08em;color:var(--text-tertiary);margin:8px 0 2px">▶ ALTERNATIVA · Docker (para NAS/PC com Docker instalado)</div>
+      <pre id="axe-agent-docker" style="white-space:pre-wrap;font-size:10px;background:var(--bg-deep,#050505);color:var(--cyan);border:1px solid var(--border-subtle);padding:6px;margin:0"></pre>
+      <button class="btn btn--mini" id="axe-agent-copy-docker" style="margin-top:4px">⧉ COPY COMMAND</button>
+    </div>
+  </div>
   <div id="axe-detail" style="display:none;margin-top:6px;padding:6px;border:1px solid var(--border-subtle)">
     <div style="display:flex;justify-content:space-between">
       <span id="axe-detail-title" style="font-size:11px;color:var(--green)">Device</span>
       <button class="chip" id="axe-detail-close">X</button>
     </div>
     <div id="axe-detail-body" style="font-size:10px;color:var(--text-secondary);margin-top:4px"></div>
+    <div class="axe-detail-chart" id="axe-detail-chart-wrap" style="display:none;margin-top:8px">
+      <div class="axe-detail-chart__header">
+        <span class="axe-detail-chart__title">▸ TELEMETRY HISTORY</span>
+        <span class="badge badge--mute" id="axe-detail-chart-count">—</span>
+      </div>
+      <div class="chart-wrap chart-wrap--sm"><canvas id="axe-detail-chart"></canvas></div>
+    </div>
   </div>
 </section>
 
@@ -1007,30 +1456,235 @@
   </ul>
 </section>
 
-<!-- ─── LIVE LOG ─── -->
-<section class="panel panel--logs panel--large" id="logs-panel" data-module="live">
+<!-- ─── ADMIN (CFO/CRO — operador) ─── -->
+<section class="panel panel--admin panel--large" id="admin-panel" data-module="admin">
   <div class="panel__header">
-    <div class="panel__eyebrow"><span class="terminal-rec-dot"></span> LIVE LOG</div>
+    <div class="panel__eyebrow">📊 ADMIN · CFO/CRO — operador</div>
     <div class="panel__tools">
-      <span class="chart-live" id="log-stats">
-        <span class="chart-live__dot"></span>
-        <span class="chart-live__label">events</span>
-        <span class="chart-live__val" id="log-events-count">0</span>
-      </span>
-      <button class="chip" id="clear-logs">clear</button>
+      <span class="badge badge--mute" id="admin-gate-badge">access —</span>
+      <button class="chip" id="admin-refresh-btn" title="Refresh">⟳</button>
     </div>
   </div>
-  <div class="log-toolbar">
-    <input type="text" class="log-search" id="log-search" placeholder="filter logs..." autocomplete="off" spellcheck="false">
-    <div class="log-filters" id="log-filters">
-      <button class="chip active" data-log-filter="all">All</button>
-      <button class="chip" data-log-filter="success">OK</button>
-      <button class="chip" data-log-filter="info">Info</button>
-      <button class="chip" data-log-filter="warn">Warn</button>
-      <button class="chip" data-log-filter="error">Error</button>
+
+  <!-- ── Pool health ── -->
+  <div class="kpi-row">
+    <div class="kpi-card"><span class="kpi-card__label">Sessions</span><span class="kpi-card__value" id="admin-sessions">—</span></div>
+    <div class="kpi-card"><span class="kpi-card__label">Polls/sec</span><span class="kpi-card__value" id="admin-polls-per-sec">—</span></div>
+    <div class="kpi-card"><span class="kpi-card__label">Queue</span><span class="kpi-card__value" id="admin-queue">—</span></div>
+    <div class="kpi-card"><span class="kpi-card__label">Workers</span><span class="kpi-card__value" id="admin-workers">—</span></div>
+    <div class="kpi-card"><span class="kpi-card__label">Uptime</span><span class="kpi-card__value" id="admin-uptime">—</span></div>
+    <div class="kpi-card" title="alertas de auto-exclusão disparados por caminho — s = sweep do pool · p = painel (detail do rig)"><span class="kpi-card__label">AutoEx alerts</span><span class="kpi-card__value" id="admin-autoex-alerts">—</span></div>
+  </div>
+  <div class="admin-stall" id="admin-stall" hidden></div>
+
+  <!-- ── Pool metric trends (Issue #17) — sampler SQLite a cada 60s ──
+       Consome /api/admin/pool-metrics (mesmo gate localhost/X-API-Key).
+       Histórico persistente: sobrevive a restarts — ao contrário dos
+       contadores em memória do /api/admin/sessions. -->
+  <div class="panel__subtitle">TENDÊNCIAS DO POOL (24h) — histórico persistente · amostra a cada 60s</div>
+  <div class="admin-metrics" id="admin-metrics" hidden>
+    <div class="admin-metrics__chart-wrap">
+      <canvas id="admin-metrics-chart"></canvas>
+    </div>
+    <div class="admin-metrics__empty" id="admin-metrics-empty" hidden>
+      sem histórico ainda — o sampler grava a cada 60s (primeiros pontos em ~1 min)
     </div>
   </div>
-  <div class="terminal" id="terminal"><div class="terminal__line terminal__line--info"><span class="ts">[--:--:--]</span><span class="tag tag-info">SYSTEM</span>war room online</div></div>
+
+  <!-- ── Error rate (Issue #176) — telemetria local $0 + Sentry ──
+       Consome /api/admin/error-rate (mesmo gate localhost/X-API-Key).
+       Buckets por hora com request_id — funciona SEM Sentry (self-host);
+       quando SENTRY_DSN está configurado, os mesmos erros fluem pro Sentry
+       e o badge mostra o release/environment do deploy. -->
+  <div class="panel__subtitle">ERROR RATE (24h) — erros por hora · request_id correlacionado</div>
+  <div class="kpi-row">
+    <div class="kpi-card"><span class="kpi-card__label">Erros 24h</span><span class="kpi-card__value" id="admin-err-total">—</span></div>
+    <div class="kpi-card"><span class="kpi-card__label">Pico/hora</span><span class="kpi-card__value" id="admin-err-peak">—</span></div>
+    <div class="kpi-card" title="Sentry error tracking — release + environment do deploy (vazio quando sem DSN)"><span class="kpi-card__label">Sentry</span><span class="kpi-card__value" id="admin-err-sentry">—</span></div>
+  </div>
+  <div class="admin-metrics" id="admin-error-rate" hidden>
+    <div class="admin-metrics__chart-wrap">
+      <canvas id="admin-error-rate-chart"></canvas>
+    </div>
+    <div class="admin-metrics__empty" id="admin-error-rate-empty" hidden>
+      sem erros nas últimas 24h — zero é o estado saudável
+    </div>
+  </div>
+  <div class="admin-audit__table-wrap" id="admin-error-table-wrap" hidden>
+    <table class="admin-audit__table">
+      <thead>
+        <tr><th>módulo</th><th>erro (último no bucket)</th><th>nº</th><th>request_id</th><th>último</th></tr>
+      </thead>
+      <tbody id="admin-error-table-body"></tbody>
+    </table>
+  </div>
+
+  <!-- ── Degradation (Issue #202): WARNING bucket — falhas silenciosas ── -->
+  <!-- Consome /api/admin/degradation-rate (mesmo gate). WARNINGs das rotas
+       convertidas (except: pass → log.warning) caem aqui; spike/sustained
+       são o alerta de taxa $0 (sem Sentry). -->
+  <div class="panel__subtitle">DEGRADAÇÃO (24h) — WARNINGs/hora · falhas silenciosas viram telemetria</div>
+  <div class="kpi-row">
+    <div class="kpi-card"><span class="kpi-card__label">Warnings 24h</span><span class="kpi-card__value" id="admin-deg-total">—</span></div>
+    <div class="kpi-card"><span class="kpi-card__label">Pico/hora</span><span class="kpi-card__value" id="admin-deg-peak">—</span></div>
+    <div class="kpi-card" title="spike = pico ≥ 100 WARNINGs/hora · sustained = warnings em ≥ 2 horas distintas (o 'alerta de taxa' $0)"><span class="kpi-card__label">Estado</span><span class="kpi-card__value" id="admin-deg-state">—</span></div>
+  </div>
+  <div class="admin-audit__table-wrap" id="admin-deg-table-wrap" hidden>
+    <table class="admin-audit__table">
+      <thead>
+        <tr><th>módulo</th><th>warning (último no bucket)</th><th>nº</th><th>request_id</th><th>último</th></tr>
+      </thead>
+      <tbody id="admin-deg-table-body"></tbody>
+    </table>
+  </div>
+  <div class="admin-metrics__empty" id="admin-deg-empty" hidden>
+    sem warnings nas últimas 24h — zero é o estado saudável
+  </div>
+
+  <!-- ── PRO funnel (conversion telemetry) ── -->
+  <div class="panel__subtitle">FUNIL PRO (30d) — quem vira assinante, onde o funil perde</div>
+  <div class="kpi-row">
+    <div class="kpi-card"><span class="kpi-card__label">Paywall → Modal</span><span class="kpi-card__value" id="admin-drop-paywall-modal">—</span></div>
+    <div class="kpi-card"><span class="kpi-card__label">Modal → Checkout</span><span class="kpi-card__value" id="admin-drop-modal-checkout">—</span></div>
+    <div class="kpi-card"><span class="kpi-card__label">Checkout → Paid</span><span class="kpi-card__value" id="admin-drop-checkout-paid">—</span></div>
+    <div class="kpi-card"><span class="kpi-card__label">Conversion rate</span><span class="kpi-card__value" id="admin-conv-rate">—</span></div>
+  </div>
+  <div class="kpi-row">
+    <div class="kpi-card"><span class="kpi-card__label">LTV (12mo)</span><span class="kpi-card__value" id="admin-ltv">—</span><span class="kpi-card__tag" id="admin-ltv-source"></span></div>
+    <div class="kpi-card"><span class="kpi-card__label">CAC</span><span class="kpi-card__value" id="admin-cac">—</span></div>
+    <div class="kpi-card"><span class="kpi-card__label">LTV/CAC</span><span class="kpi-card__value" id="admin-ltv-cac">—</span></div>
+    <div class="kpi-card"><span class="kpi-card__label">Payback (mo)</span><span class="kpi-card__value" id="admin-payback">—</span></div>
+  </div>
+
+  <!-- ── LTV real por coorte (Issue #157 — 18-C) ── -->
+  <div class="panel__subtitle">LTV REAL POR COORTE — renewals do Lemon Squeezy (fonte: <span id="admin-cohort-source">estimativa</span>)</div>
+  <div class="admin-audit__table-wrap" id="admin-cohort-wrap" hidden>
+    <table class="mkt-table admin-audit__table">
+      <thead>
+        <tr>
+          <th>Coorte</th><th>Subs</th><th>Renewals</th><th>Receita</th><th>LTV</th>
+          <th>Ret M1</th><th>Ret M3</th><th>Ret M6</th><th>Ret M12</th>
+        </tr>
+      </thead>
+      <tbody id="admin-cohort-tbody"></tbody>
+    </table>
+  </div>
+  <div class="admin-audit__empty" id="admin-cohort-empty" hidden>sem dados de renewals ainda — usando estimativa</div>
+
+  <div class="kpi-row">
+    <div class="kpi-card"><span class="kpi-card__label">Sessões funil</span><span class="kpi-card__value" id="admin-funnel-sessions">—</span></div>
+    <div class="kpi-card"><span class="kpi-card__label">Conv. por usuário</span><span class="kpi-card__value" id="admin-funnel-session-conv">—</span></div>
+  </div>
+
+  <!-- ── Weekly trend (Issue #156 — 18-B) ── -->
+  <div class="panel__subtitle">TENDÊNCIA SEMANAL (ISO) — paywall_view × conversion rate</div>
+  <div class="admin-audit__toolbar">
+    <span class="admin-audit__meta" id="admin-funnel-trend-meta"></span>
+    <button class="chip" id="admin-funnel-csv" title="Exportar a tendência semanal (CSV)">⭳ CSV semanal</button>
+  </div>
+  <div class="admin-audit__chart-wrap" id="admin-funnel-trend-wrap" hidden>
+    <canvas id="admin-funnel-trend-chart"></canvas>
+  </div>
+  <div class="admin-audit__empty" id="admin-funnel-trend-empty" hidden>sem dados semanais no período</div>
+
+  <!-- ── Stage counts ── -->
+  <ul class="alerts-list" id="admin-funnel-list">
+    <li class="alert-empty">aguardando dados…</li>
+  </ul>
+
+  <!-- ── Feature over-concentration alert (Issue #163) ── -->
+  <div class="admin-stall" id="admin-feature-alert" hidden></div>
+
+  <!-- ── Feature breakdown (Issue #158 — 18-D) ── -->
+  <div class="panel__subtitle">FEATURES MAIS BLOQUEADAS (paywall, 30d) — onde o free trava</div>
+  <ul class="alerts-list" id="admin-feature-list">
+    <li class="alert-empty">aguardando dados…</li>
+  </ul>
+
+  <!-- ── Learning FAQ loop (Issue #19) — doc feedback 'isto ajudou?' ──
+       Consome /api/admin/docs-feedback (mesmo gate localhost/X-API-Key).
+       Votos por seção + perguntas recorrentes (comentários do 👎) que
+       alimentam o loop documentado: pergunta recorrente → nova FAQ. -->
+  <div class="panel__subtitle">DOCS FEEDBACK · LEARNING LOOP — 'isto ajudou?' por seção</div>
+  <div class="admin-audit" id="admin-docs-feedback" hidden>
+    <div class="admin-audit__toolbar">
+      <span class="admin-audit__meta" id="admin-docs-feedback-meta">—</span>
+    </div>
+    <div class="admin-audit__table-wrap">
+      <table class="admin-audit__table" id="admin-docs-feedback-table">
+        <thead>
+          <tr><th>Section</th><th>Votes</th><th>👍</th><th>👎</th><th>Helpful %</th></tr>
+        </thead>
+        <tbody><tr><td colspan="5" class="alert-empty">aguardando dados…</td></tr></tbody>
+      </table>
+    </div>
+    <div class="panel__subtitle" style="margin-top:10px">PERGUNTAS RECORRENTES → futura FAQ</div>
+    <ul class="alerts-list" id="admin-docs-recurring">
+      <li class="alert-empty">aguardando dados…</li>
+    </ul>
+  </div>
+
+  <!-- ── Audit de recomendações aceitas (global — todos os tenants) ──
+       Consome /api/admin/rentals/accepted-recos (mesmo gate localhost/
+       X-API-Key do painel admin). Tabela de decisões + filtros por
+       tenant/veredito + mini-chart de aceitas por semana (ISO, UTC). -->
+  <div class="panel__subtitle">AUDIT DE RECOMENDAÇÕES ACEITAS — decisões do piloto (todos os tenants)</div>
+  <div class="admin-audit" id="admin-audit" hidden>
+    <div class="admin-audit__toolbar">
+      <label class="admin-audit__filter">
+        <span class="admin-audit__filter-label">tenant</span>
+        <select id="admin-audit-tenant"><option value="">all</option></select>
+      </label>
+      <label class="admin-audit__filter">
+        <span class="admin-audit__filter-label">veredito</span>
+        <select id="admin-audit-verdict"><option value="">all</option></select>
+      </label>
+      <button class="chip" id="admin-audit-csv" title="Exportar o audit completo (CSV)">⭳ CSV</button>
+    </div>
+    <div class="admin-audit__chart-wrap">
+      <canvas id="admin-audit-chart"></canvas>
+    </div>
+    <div class="admin-audit__table-wrap">
+      <table class="mkt-table admin-audit__table">
+        <thead>
+          <tr>
+            <th>Aceita em</th>
+            <th>Tenant</th>
+            <th>Rig</th>
+            <th>Origem</th>
+            <th>Grade</th>
+            <th>Delivery antes</th>
+            <th>Delivery depois</th>
+            <th>Veredito</th>
+          </tr>
+        </thead>
+        <tbody id="admin-audit-tbody"></tbody>
+      </table>
+      <div class="admin-audit__empty" id="admin-audit-empty" hidden>sem decisões para o filtro selecionado</div>
+    </div>
+    <!-- Auto-exclusions (global, WHEN + CAUSE) — compact list under the
+         audit table so the operator sees every rig the pilot auto-excluded
+         with why, across ALL tenants. -->
+    <div class="admin-autoex" id="admin-autoex" hidden>
+      <div class="admin-autoex__head">AUTO-EXCLUSÕES DO PILOTO (global) <span id="admin-autoex-meta" class="admin-autoex__meta"></span></div>
+      <div class="admin-autoex__list" id="admin-autoex-list"></div>
+      <div class="admin-autoex__agg" id="admin-autoex-agg" hidden>
+        <div class="admin-autoex__agg-col">
+          <div class="admin-autoex__agg-head">CONCENTRAÇÃO POR TENANT</div>
+          <div class="admin-autoex__agg-list" id="admin-autoex-by-tenant"></div>
+        </div>
+        <div class="admin-autoex__agg-col">
+          <div class="admin-autoex__agg-head">CONCENTRAÇÃO POR RÉGUA</div>
+          <div class="admin-autoex__agg-list" id="admin-autoex-by-rule"></div>
+        </div>
+        <div class="admin-autoex__agg-col admin-autoex__agg-col--full" id="admin-autoex-toprigs-col" hidden>
+          <div class="admin-autoex__agg-head">RIGS REINCIDENTES (excluídos em 2+ tenants)</div>
+          <div class="admin-autoex__agg-list" id="admin-autoex-toprigs"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="admin-error" id="admin-error" hidden></div>
 </section>
 
 <!-- ─── CHARTS ─── -->
@@ -1279,64 +1933,76 @@
 
 <!-- ─── CYPHER // LIVE MINING ─── -->
 <section class="panel panel--live-mining panel--large" id="live-mining-panel" data-module="live">
-  <div class="lm-cyber-header">
-    <div class="lm-cyber-header__top">
-      <div class="lm-cyber-header__logo">◈</div>
-      <div class="lm-cyber-header__text">
-        <div class="lm-cyber-header__title">CYPHER // LIVE MINING</div>
-        <div class="lm-cyber-header__sub">REAL-TIME HASH SEARCH · WORKER INTELLIGENCE</div>
+  <div class="fcc-header">
+    <div class="fcc-header__top">
+      <div class="fcc-header__logo">◈</div>
+      <div class="fcc-header__text">
+        <div class="fcc-header__title">CYPHER65 // FLEET COMMAND CENTER</div>
+        <div class="fcc-header__sub">REAL-TIME WORKER INTELLIGENCE · EXCEPTION HIERARCHY</div>
       </div>
     </div>
-    <div class="lm-cyber-header__badges">
+    <div class="fcc-header__badges">
       <span class="badge badge--green" id="lm-status-badge">LIVE</span>
       <span class="badge badge--mute" id="lm-workers-badge">0 workers</span>
+      <span class="lm-event-log__conn" id="lm-conn-dot" title="connection status"></span>
     </div>
   </div>
 
-  <div class="lm-summary" id="lm-summary">
-    <div class="lm-summary__item"><span class="lm-summary__label">WALLET</span><span class="lm-summary__val mono" id="lm-summary-wallet">—</span></div>
-    <div class="lm-summary__item"><span class="lm-summary__label">POOL</span><span class="lm-summary__val"><span id="lm-summary-pool">PARASITE</span><span class="lm-summary__dot" id="lm-summary-dot"></span></span></div>
-    <div class="lm-summary__item"><span class="lm-summary__label">WORKERS</span><span class="lm-summary__val" id="lm-summary-workers">0</span></div>
-    <div class="lm-summary__item"><span class="lm-summary__label">TOTAL HR</span><span class="lm-summary__val" id="lm-summary-hr">—</span></div>
-    <div class="lm-summary__item"><span class="lm-summary__label">BEST DIFF</span><span class="lm-summary__val lm-summary__val--gold" id="lm-summary-best">—</span></div>
+  <!-- KPI STRIP — fleet-fed, honest '—' quando a fonte não tem dados -->
+  <div class="fcc-kpis" id="fcc-kpis">
+    <div class="fcc-kpi fcc-kpi--hero" title="Hashrate total do fleet (soma dos devices)"><span class="fcc-kpi__label">TOTAL HR</span><span class="fcc-kpi__val fcc-kpi__val--cyan" id="fcc-summary-hr">—</span><span class="fcc-kpi__spark" id="fcc-summary-hr-spark"></span></div>
+    <div class="fcc-kpi" title="Devices online/hashing"><span class="fcc-kpi__label">ONLINE</span><span class="fcc-kpi__val fcc-kpi__val--good" id="fcc-summary-online">—</span></div>
+    <div class="fcc-kpi" title="Devices em warning (degradados mas alcançáveis)"><span class="fcc-kpi__label">WARNING</span><span class="fcc-kpi__val fcc-kpi__val--warn" id="fcc-summary-warn">—</span></div>
+    <div class="fcc-kpi" title="Devices offline"><span class="fcc-kpi__label">OFFLINE</span><span class="fcc-kpi__val fcc-kpi__val--bad" id="fcc-summary-offline">—</span></div>
+    <div class="fcc-kpi" title="Temperatura média dos devices (telemetria real)"><span class="fcc-kpi__label">AVG TEMP</span><span class="fcc-kpi__val" id="fcc-summary-temp">—</span></div>
+    <div class="fcc-kpi" title="Potência total do fleet"><span class="fcc-kpi__label">POWER</span><span class="fcc-kpi__val" id="fcc-summary-power">—</span></div>
+    <div class="fcc-kpi" title="Eficiência média (J/TH)"><span class="fcc-kpi__label">EFFICIENCY</span><span class="fcc-kpi__val" id="fcc-summary-eff">—</span></div>
+    <div class="fcc-kpi" title="Latência média dos workers (probe real do host; '—' para agent-managed)"><span class="fcc-kpi__label">AVG PING</span><span class="fcc-kpi__val" id="fcc-summary-ping">—</span></div>
+    <div class="fcc-kpi" title="Receita estimada por dia (pool) — honesta: '—' quando não há dados de lucro"><span class="fcc-kpi__label">EST. EARNINGS</span><span class="fcc-kpi__val fcc-kpi__val--gold" id="fcc-summary-earnings">—</span></div>
   </div>
 
-  <div class="hunt-layout" id="hunt-layout">
-    <div class="hunt-stream" id="hunt-stream">
-      <div class="hunt-stream__head">
-        <span class="hunt-stream__title">> CALC STREAM</span>
-        <span class="badge badge--green">LIVE</span>
-      </div>
-      <div class="hunt-stream__feed" id="hunt-stream-feed">
-        <div class="hunt-stream__line"><span class="ts">--:--:--</span><span class="n">nonce</span></div>
-      </div>
-    </div>
+  <!-- EXCEPTION HIERARCHY — workers problemáticos sobem (manage by exception) -->
+  <div class="fcc-exceptions" id="fcc-exceptions" style="display:none"></div>
 
-    <div class="hunt-canvas-wrap" id="hunt-canvas-wrap">
-      <canvas id="hunt-canvas"></canvas>
-      <div class="hunt-canvas__overlay">
-        <div class="hunt-canvas__target-label">◈ TARGET ZONE ◈</div>
-        <div class="hunt-canvas__frontier" id="hunt-frontier-label">SEARCH FRONTIER</div>
-        <div class="hunt-canvas__status" id="hunt-status-label">INITIALIZING</div>
-      </div>
-    </div>
+  <!-- NETWORK STATUS strip — real network/pool telemetry from the snapshot.
+       Honest '—' per cell when a source is unavailable. -->
+  <div class="fcc-network" id="fcc-network">
+    <span class="fcc-network__item" title="Dificuldade atual da rede Bitcoin"><span class="fcc-network__label">NETWORK DIFF</span><span class="fcc-network__val" id="lm-network-diff">—</span></span>
+    <span class="fcc-network__item" title="Hashrate total da rede"><span class="fcc-network__label">NETWORK HR</span><span class="fcc-network__val" id="lm-network-hr">—</span></span>
+    <span class="fcc-network__item" title="Altura atual da blockchain"><span class="fcc-network__label">HEIGHT</span><span class="fcc-network__val" id="lm-network-height">—</span></span>
+    <span class="fcc-network__item" title="Tempo esperado até o próximo bloco da rede"><span class="fcc-network__label">EST. BLOCK</span><span class="fcc-network__val" id="lm-network-block">—</span></span>
+    <span class="fcc-network__item" title="Workers conectados na pool (pool API)"><span class="fcc-network__label">POOL WORKERS</span><span class="fcc-network__val" id="lm-network-pool-workers">—</span></span>
+    <span class="fcc-network__item" title="Último bloco encontrado pela pool"><span class="fcc-network__label">POOL LAST BLOCK</span><span class="fcc-network__val" id="lm-network-last-block">—</span></span>
+  </div>
 
-    <div class="hunt-metrics" id="hunt-metrics">
-      <div class="hunt-metrics__section"><div class="hunt-metrics__label">INSTANT HR</div><canvas id="hunt-sparkline" class="hunt-sparkline"></canvas><div class="hunt-metrics__val" id="hunt-metrics-hr">—</div></div>
-      <div class="hunt-metrics__section"><div class="hunt-metrics__label">CUMULATIVE P</div><canvas id="hunt-gauge" class="hunt-gauge" width="120" height="60"></canvas><div class="hunt-metrics__val hunt-metrics__val--gold" id="hunt-metrics-pblock">0.00%</div></div>
-      <div class="hunt-metrics__section"><div class="hunt-metrics__label">EXP BLOCKS</div><div class="hunt-metrics__val hunt-metrics__val--cyan" id="hunt-metrics-expblocks">0.0000</div><div class="hunt-metrics__sub">per period</div></div>
-      <div class="hunt-metrics__section"><div class="hunt-metrics__label">BEST DIFF</div><div class="hunt-metrics__val hunt-metrics__val--green" id="hunt-metrics-bestdiff">—</div><div class="hunt-metrics__sub">vs target</div></div>
+  <!-- WORKER INTELLIGENCE — per-worker live telemetry (grid / dense table).
+       Fed by the AXE FLEET /summary endpoint. Honest '—' por campo ausente. -->
+  <div class="fcc-workers" id="lm-workers" data-module="live">
+    <div class="fcc-workers__head">
+      <span class="fcc-workers__title">> WORKER INTELLIGENCE · LIVE TELEMETRY</span>
+      <span class="fcc-workers__tools">
+        <button class="chip chip--view is-active" data-cc-view="grid" title="Worker cards">▦ GRID</button>
+        <button class="chip chip--view" data-cc-view="table" title="Dense table">☰ TABLE</button>
+        <span class="badge badge--mute" id="lm-workers-count">0</span>
+      </span>
+    </div>
+    <div class="fcc-workers__grid" id="lm-workers-grid"></div>
+    <div class="lm-flow" id="lm-flow" style="display:none">
+      <div class="lm-flow__head">
+        <span class="lm-flow__title">⌖ SHARE QUALITY FLOW · LAST SAMPLES</span>
+        <span class="lm-flow__legend"><span class="lm-flow__dot lm-flow__dot--ok"></span>share&nbsp;<span class="lm-flow__dot lm-flow__dot--rej"></span>reject&nbsp;<span class="lm-flow__dot lm-flow__dot--stale"></span>stale&nbsp;<span class="lm-flow__dot lm-flow__dot--idle"></span>idle&nbsp;<span class="lm-flow__dot lm-flow__dot--bad"></span>offline</span>
+      </div>
+      <div class="lm-flow__raster" id="lm-flow-raster"></div>
     </div>
   </div>
 
-  <div class="hunt-shares" id="hunt-shares">
-    <div class="hunt-shares__head">
-      <span class="hunt-shares__title">⌖ RECENT SHARES</span>
-      <span class="badge badge--mute" id="hunt-shares-count">0</span>
+  <!-- THERMAL MAP — hasboard temperatures com thresholds visuais -->
+  <div class="fcc-thermal" id="fcc-thermal">
+    <div class="fcc-thermal__head">
+      <span class="fcc-thermal__title">♨ THERMAL MAP · HASBOARD TEMPERATURES</span>
+      <span class="fcc-thermal__legend"><span class="fcc-temp-dot fcc-temp-dot--ok"></span>≤60<span class="fcc-temp-dot fcc-temp-dot--warn"></span>60–70<span class="fcc-temp-dot fcc-temp-dot--hot"></span>70–80<span class="fcc-temp-dot fcc-temp-dot--crit"></span>&gt;80</span>
     </div>
-    <div class="hunt-shares__grid" id="hunt-shares-grid">
-      <div class="hunt-shares__empty">awaiting data</div>
-    </div>
+    <div class="fcc-thermal__grid" id="fcc-thermal-grid"></div>
   </div>
 
   <div class="lm-best-share" id="lm-best-share" style="display:none">
@@ -1354,15 +2020,35 @@
 
   <div class="lm-event-log" id="lm-event-log">
     <div class="lm-event-log__head">
-      <span class="lm-event-log__title">> LIVE MINING EVENTS</span>
-      <button class="chip" id="lm-event-log-clear">clear</button>
+      <span class="lm-event-log__title">> LIVE MINING EVENTS
+        <span class="lm-event-log__conn" title="connection status"></span>
+      </span>
+      <span class="lm-event-log__stats" id="lm-event-log-stats">
+        <span class="lm-event-log__stat">EVENTS <b id="lm-stat-total">0</b></span>
+        <span class="lm-event-log__stat lm-event-log__stat--share">SHARES <b id="lm-stat-shares">0</b></span>
+        <span class="lm-event-log__stat lm-event-log__stat--err">ERR <b id="lm-stat-err">0</b></span>
+      </span>
     </div>
-    <div class="lm-event-log__terminal" id="lm-event-log-terminal">
-      <div class="lm-event-log__line ts-mute">> SYSTEM ONLINE</div>
+    <div class="lm-event-log__toolbar">
+      <button class="chip" id="lm-event-log-pause" title="Pause/Resume the event stream">⏸ pause</button>
+      <div class="lm-event-log__filters" id="lm-event-log-filters">
+        <button class="chip chip--filter is-active" data-lm-filter="all">ALL</button>
+        <button class="chip chip--filter" data-lm-filter="SHARE">SHARE</button>
+        <button class="chip chip--filter" data-lm-filter="BEST">BEST</button>
+        <button class="chip chip--filter" data-lm-filter="JOB">JOB</button>
+        <button class="chip chip--filter" data-lm-filter="ERR">ERR</button>
+      </div>
+      <button class="chip chip--danger" id="lm-event-log-clear">✕ clear</button>
+    </div>
+    <div class="lm-event-log__wrap" id="lm-event-log-wrap">
+      <div class="lm-event-log__terminal" id="lm-event-log-terminal">
+        <div class="lm-event-log__line ts-mute">> SYSTEM ONLINE</div>
+      </div>
+      <button class="lm-event-log__jump" id="lm-event-log-jump" title="Jump to newest events" hidden>↓</button>
     </div>
   </div>
 
-  <div class="lm-footnote">⚡ Visual representation of worker activity based on real API data.</div>
+  <div class="lm-footnote">⚡ Fleet Command Center — telemetria real do AXE FLEET: shares, temperaturas, eficiência, latência. Hierarquia por exceção: workers problemáticos sobem.</div>
 </section>
 
 </div> <!-- end #tab-charts -->
@@ -1383,8 +2069,8 @@
         <div class="solo-card"><div class="solo-card__title">Network Diff</div><div class="solo-card__value" id="solo-net-diff">—</div><div class="solo-card__sub">current</div></div>
         <div class="solo-card"><div class="solo-card__title">Worker HR</div><div class="solo-card__value solo-card__value--green" id="solo-worker-hr">—</div><div class="solo-card__sub">your hashrate</div></div>
         <div class="solo-card"><div class="solo-card__title">P(Block)/Share</div><div class="solo-card__value solo-card__value--purple" id="solo-p-block">—</div><div class="solo-card__sub">per share chance</div></div>
-        <div class="solo-card"><div class="solo-card__title">Expected Time</div><div class="solo-card__value" id="solo-expected-time">—</div><div class="solo-card__sub" id="solo-expected-time-sub">@ current HR</div></div>
-        <div class="solo-card"><div class="solo-card__title">Blocks/Year</div><div class="solo-card__value" id="solo-blocks-year">—</div><div class="solo-card__sub">expected</div></div>
+        <div class="solo-card"><div class="solo-card__title">Expected Time</div><div class="solo-card__value" id="solo-cards-expected-time">—</div><div class="solo-card__sub" id="solo-expected-time-sub">@ current HR</div></div>
+        <div class="solo-card"><div class="solo-card__title">Blocks/Year</div><div class="solo-card__value" id="solo-cards-blocks-year">—</div><div class="solo-card__sub">expected</div></div>
         <div class="solo-card"><div class="solo-card__title">Best Diff</div><div class="solo-card__value solo-card__value--gold" id="solo-best-diff">—</div><div class="solo-card__sub" id="solo-best-diff-sub">all-time</div></div>
       </div>
     </section>
@@ -1413,6 +2099,35 @@
         <input type="text" class="terminal-input" id="terminal-input" placeholder="type command..." autocomplete="off" spellcheck="false">
       </div>
       <div class="terminal-footnote">Type <kbd>help</kbd> for available commands.</div>
+    </section>
+    <!-- LIVE LOG — moved here from #tab-fleet so it stays visible in the LIVE
+         MINING module (owned panes: tab-charts + tab-terminal). It used to be
+         trapped inside #tab-fleet, which the module deactivates, leaving the
+         LIVE LOG unreachable in module-mode. data-module="live" keeps it hidden
+         in every other module. -->
+    <section class="panel panel--logs panel--large" id="logs-panel" data-module="live">
+      <div class="panel__header">
+        <div class="panel__eyebrow"><span class="terminal-rec-dot"></span> LIVE LOG</div>
+        <div class="panel__tools">
+          <span class="chart-live" id="log-stats">
+            <span class="chart-live__dot"></span>
+            <span class="chart-live__label">events</span>
+            <span class="chart-live__val" id="log-events-count">0</span>
+          </span>
+          <button class="chip" id="clear-logs">clear</button>
+        </div>
+      </div>
+      <div class="log-toolbar">
+        <input type="text" class="log-search" id="log-search" placeholder="filter logs..." autocomplete="off" spellcheck="false">
+        <div class="log-filters" id="log-filters">
+          <button class="chip active" data-log-filter="all">All</button>
+          <button class="chip" data-log-filter="success">OK</button>
+          <button class="chip" data-log-filter="info">Info</button>
+          <button class="chip" data-log-filter="warn">Warn</button>
+          <button class="chip" data-log-filter="error">Error</button>
+        </div>
+      </div>
+      <div class="terminal" id="terminal"><div class="terminal__line terminal__line--info"><span class="ts">[--:--:--]</span><span class="tag tag-info">SYSTEM</span>war room online</div></div>
     </section>
     <!-- Solo Mining Advisor terminal (hidden by default, toggled via sidebar Solo Mining tab) -->
     <div id="solo-term" data-module="live" style="display:none">
@@ -1535,8 +2250,9 @@
 <nav class="docs-index" id="docs-index">
   <div class="docs-index__title">SECTIONS</div>
   <div class="docs-search" id="docs-search">
-    <input type="text" class="docs-search__input" id="docs-search-input" placeholder="filter docs…" autocomplete="off" spellcheck="false">
+    <input type="text" class="docs-search__input" id="docs-search-input" placeholder="search docs…" autocomplete="off" spellcheck="false" role="combobox" aria-expanded="false" aria-controls="docs-search-suggestions" aria-autocomplete="list">
     <span class="docs-search__clear" id="docs-search-clear">✕</span>
+    <div class="docs-search__suggestions" id="docs-search-suggestions" role="listbox" aria-label="Docs suggestions"></div>
   </div>
   <div class="docs-index__links" id="docs-index-links">
     <a href="#docs-overview" class="docs-index__link" data-section="docs-overview">1. Overview</a>
@@ -1622,7 +2338,7 @@
 <!-- 5 ── Hash Market ── -->
 <section class="doc-section" id="docs-market">
   <h2 class="doc-section__title">5 · Hash Market</h2>
-  <p class="doc-section__text">The Hash Market panel aggregates live hashrate pricing from Braiins, NiceHash, MiningRigRentals, KissMyHash, and Parasite Pool. Prices are shown in BTC/TH/day — or sats/TH/day for tiny values (below 0.001 BTC/TH/d) — and hashrate automatically scales to PH/s when appropriate.</p>
+  <p class="doc-section__text">The Hash Market panel aggregates live hashrate pricing from Braiins, NiceHash, MiningRigRentals, and Parasite Pool. Prices are shown in BTC/TH/day — or sats/TH/day for tiny values (below 0.001 BTC/TH/d) — and hashrate automatically scales to PH/s when appropriate.</p>
   <ul class="doc-list">
     <li><strong>Price per TH/d</strong> — how much 1 TH/s earns in 24 hours at current market rate</li>
     <li><strong>Best offer</strong> — the highest paying source right now, highlighted with a badge</li>
@@ -2002,6 +2718,16 @@
       <button class="modal__close" onclick="document.getElementById('wallet-modal').classList.remove('modal--open')">⛌</button>
     </div>
     <div class="modal__body">
+      <div class="wallet-id" id="wallet-id" style="display:none">
+        <div class="wallet-id__qr-wrap" id="wallet-id-qr"></div>
+        <div class="wallet-id__info">
+          <div class="wallet-id__title">WALLET IDENTITY · CHECKDIGITS</div>
+          <div class="wallet-id__addr mono" id="wallet-id-addr">—</div>
+          <button class="wallet-id__copy" id="wallet-id-copy" title="Copy full address">⧉ COPY</button>
+          <div class="wallet-id__health" id="wallet-id-health"></div>
+          <ul class="wallet-id__checks" id="wallet-id-checks"></ul>
+        </div>
+      </div>
       <div class="wallet-current">
         <div class="wallet-current__label">CURRENT WALLET</div>
         <div class="wallet-current__addr" id="wallet-current-addr">—</div>
@@ -2037,12 +2763,13 @@
 <div class="modal-overlay" id="upgrade-modal">
   <div class="modal upgrade-modal">
     <div class="modal__header">
-      <div class="modal__title">⚡ CYPHER65 PRO</div>
+      <div class="modal__title" id="upgrade-modal-title">⚡ CYPHER65 PRO</div>
       <button class="modal__close" onclick="document.getElementById('upgrade-modal').classList.remove('modal--open')">⛌</button>
     </div>
     <div class="modal__body">
-      <p class="upgrade-modal__copy">Unlock <strong>Monte Carlo</strong>, <strong>proximity meter</strong>, <strong>30d history</strong> &amp; <strong>webhooks</strong>.</p>
+      <p class="upgrade-modal__copy" id="upgrade-modal-copy">Unlock <strong>Monte Carlo</strong>, <strong>proximity meter</strong>, <strong>30d history</strong> &amp; <strong>webhooks</strong>.</p>
       <button class="btn btn--primary upgrade-modal__buy" id="upgrade-buy-btn" hidden>Buy PRO — $9/mo</button>
+      <button class="btn btn--premium upgrade-modal__buy" id="upgrade-premium-buy-btn" hidden>Buy PREMIUM — $29/mo</button>
       <div class="upgrade-modal__divider" id="upgrade-divider" hidden><span>or activate a key</span></div>
       <div class="upgrade-modal__redeem">
         <input class="field__input field__input--mono" type="text" id="upgrade-key-input" placeholder="C65-XXXX-XXXX-XXXX-XXXX" autocomplete="off" spellcheck="false">
@@ -2115,6 +2842,10 @@
             a ação passa pelo <strong>Safety Engine</strong> (que exige confirmação para comandos destrutivos) e é registrada no log de auditoria.
             Use o <em>cooldown</em> para evitar disparos repetidos (ex.: mínimo de 60s entre execuções).
           </div>
+          <div class="ac-exec-strip" id="ac-exec-strip" style="margin:6px 0;padding:6px 8px;border:1px dashed var(--border);border-radius:4px;font-size:10px;line-height:1.5">
+            <span style="color:var(--text-tertiary);letter-spacing:0.06em">ÚLTIMAS EXECUÇÕES</span>
+            <div id="ac-exec-list" style="margin-top:4px"><span class="ac-empty" style="color:var(--text-muted)">no executions yet</span></div>
+          </div>
           <div class="ac-rules-list" id="ac-rules-list">
             <div class="empty">no rules</div>
           </div>
@@ -2168,6 +2899,99 @@
   window.POLL_INTERVAL_MS = {{ poll_interval_ms|default(15000) }};
   window.SETTINGS_CACHE = {{ settings_json|safe if settings_json is defined else '{}' }};
 </script>  <!-- Export modal -->
+  <!-- BRAIINS SPOT BUY MODAL (real money — typed confirmation required) -->
+  <div id="braiins-buy-modal" class="modal-overlay">
+    <div class="modal braiins-buy-modal">
+      <div class="modal__header">
+        <span class="modal__title">⚡ COMPRAR HASHRATE · BRAIINS SPOT</span>
+        <button class="modal__close" data-close="braiins-buy-modal">×</button>
+      </div>
+      <div class="modal__body">
+        <div class="braiins-buy__quote" id="braiins-buy-quote">carregando cotação…</div>
+        <!-- Braiins available balance — shown live; the submit is BLOCKED
+             while the budget exceeds the available balance. -->
+        <div class="braiins-buy__balance" id="braiins-buy-balance">saldo: carregando…</div>
+        <div class="braiins-buy__fields">
+          <label class="field">
+            <span class="field__label">HASHRATE (TH/s)</span>
+            <input class="field__input field__input--mono" type="number" id="braiins-buy-th" min="1" step="1" placeholder="ex: 1000 (1 PH/s)">
+          </label>
+          <label class="field">
+            <span class="field__label">BUDGET (sats)</span>
+            <input class="field__input field__input--mono" type="number" id="braiins-buy-amount" min="1000" step="1000" placeholder="ex: 500000">
+          </label>
+          <label class="field">
+            <span class="field__label">STRATUM URL (destino do hashrate)</span>
+            <input class="field__input field__input--mono" type="text" id="braiins-buy-stratum" placeholder="stratum+tcp://host:3333">
+          </label>
+          <label class="field">
+            <span class="field__label">WORKER IDENTITY (opcional — user.worker)</span>
+            <input class="field__input field__input--mono" type="text" id="braiins-buy-identity" placeholder="user.worker">
+          </label>
+          <label class="field">
+            <span class="field__label">MEMO (opcional)</span>
+            <input class="field__input" type="text" id="braiins-buy-memo" placeholder="label da ordem">
+          </label>
+        </div>
+        <div class="braiins-buy__calc" id="braiins-buy-calc">—</div>
+        <label class="braiins-buy__ack">
+          <input type="checkbox" id="braiins-buy-ack">
+          <span>Entendo que isto movimenta <strong>dinheiro real</strong> da minha conta Braiins e que ordens spot podem não ser preenchidas.</span>
+        </label>
+        <div class="braiins-buy__confirm">
+          <input class="field__input field__input--mono" type="text" id="braiins-buy-type" placeholder="digite COMPRAR para confirmar" autocomplete="off" spellcheck="false">
+          <button class="btn btn--primary" id="braiins-buy-submit" disabled>CONFIRMAR COMPRA</button>
+        </div>
+        <span class="modal__status" id="braiins-buy-status"></span>
+      </div>
+    </div>
+  </div>
+
+  <!-- BACKTEST MODAL ('what if I rented X TH for Y hours?') -->
+  <div id="rentals-rig-modal" class="modal-overlay">
+    <div class="modal rentals-rig-modal">
+      <div class="modal__header">
+        <span class="modal__title" id="rentals-rig-modal-title">RIG TRACK RECORD</span>
+        <button class="modal__close" data-close="rentals-rig-modal">×</button>
+      </div>
+      <div class="modal__body" id="rentals-rig-modal-body"></div>
+    </div>
+  </div>
+
+  <div id="rentals-drill-modal" class="modal-overlay">
+    <div class="modal rentals-drill-modal">
+      <div class="modal__header">
+        <span class="modal__title" id="rentals-drill-title">DRILL-DOWN</span>
+        <button class="modal__close" data-close="rentals-drill-modal">×</button>
+      </div>
+      <div class="modal__body" id="rentals-drill-body"></div>
+    </div>
+  </div>
+
+  <div id="rentals-backtest-modal" class="modal-overlay">
+    <div class="modal rentals-backtest-modal">
+      <div class="modal__header">
+        <span class="modal__title">🔬 BACKTEST · E SE EU ALUGASSE…</span>
+        <button class="modal__close" data-close="rentals-backtest-modal">×</button>
+      </div>
+      <div class="modal__body">
+        <div class="braiins-buy__fields">
+          <label class="field">
+            <span class="field__label">HASHRATE (TH/s)</span>
+            <input class="field__input field__input--mono" type="number" id="backtest-th" min="1" step="1" placeholder="ex: 500">
+          </label>
+          <label class="field">
+            <span class="field__label">DURAÇÃO (horas)</span>
+            <input class="field__input field__input--mono" type="number" id="backtest-hours" min="1" max="720" step="1" placeholder="ex: 24">
+          </label>
+        </div>
+        <div class="braiins-buy__calc" id="backtest-result">—</div>
+        <button class="btn btn--primary" id="backtest-run">CALCULAR</button>
+        <span class="modal__status" id="backtest-status"></span>
+      </div>
+    </div>
+  </div>
+
   <div id="export-modal" class="modal-overlay">
     <div class="modal">
       <div class="modal__header">
@@ -2200,7 +3024,7 @@
     <span id="next-poll"></span>
   </div>
 
-  <script src="/static/app.js?v43"></script>
+  <script src="/static/app.js?v61" defer></script>
 </div> <!-- end #app-main -->
 </div> <!-- end #app-layout -->
   <!-- Matrix rain canvas (full-screen background effect) -->

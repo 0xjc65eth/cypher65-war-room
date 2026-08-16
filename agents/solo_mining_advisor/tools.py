@@ -14,12 +14,28 @@ Tools:
 """
 
 import os
-import time
 import hmac
 import hashlib
 import logging
 
 import requests
+
+
+# ── MRR nonce — estritamente crescente (fix do "Bad Nonce") ────────────────
+# O MRR exige que o nonce de cada request seja MAIOR que o último usado para
+# a mesma chave. O padrão antigo (time.time()*1000) gerava o MESMO nonce em
+# duas chamadas no mesmo milissegundo — e o fetch de detail do RENTALS dispara
+# 3 GETs concorrentes (detail/graph/log), então a colisão era garantida sob
+# carga → "Not Authenticated - Invalid Key - Bad Nonce". O gerador compartilhado
+# (Issue #150) vive em helpers.next_monotonic_nonce_ms — usado também por
+# solo_mining.py e scripts/probe_mrr_api.py, para que TODOS os clientes HMAC
+# do MRR sejam monotônicos (uma única fonte de verdade, thread-safe).
+def _mrr_next_nonce() -> str:
+    """Next strictly-increasing nonce for the MRR API (thread-safe)."""
+    from helpers import next_monotonic_nonce_ms
+
+    return next_monotonic_nonce_ms()
+
 
 log = logging.getLogger("cypher65.agent")
 
@@ -34,16 +50,21 @@ PARASITE_API = "https://parasite.space/api"
 # 1 PH = 1000 TH — canonical unit conversion for per-PH/day → per-TH/day
 PH_TO_TH = 1000.0
 
-# Default worker address (configurable)
-DEFAULT_WORKER = os.environ.get(
-    "BTC_ADDRESS",
-    "bc1qpc3832jcu6m8qpqjvz5lkuydwjzv8v5vq5t5rs",
-)
+
+# Default worker address (configurable via BTC_ADDRESS env var).
+# Resolved LAZILY at call time: reading os.environ at import time was fragile
+# because app.py imports this module BEFORE config.py's load_dotenv() runs —
+# so a .env file with an (empty) BTC_ADDRESS= line silently wiped the
+# fallback depending on import order. An empty/unset env now always falls
+# back to the historical default, deterministically.
+def _default_worker() -> str:
+    return os.environ.get("BTC_ADDRESS") or "bc1qpc3832jcu6m8qpqjvz5lkuydwjzv8v5vq5t5rs"
 
 
 # ═══════════════════════════════════════════════════════════════════════════
 #  TOOL 1: get_network_difficulty()
 # ═══════════════════════════════════════════════════════════════════════════
+
 
 def get_network_difficulty():
     """Fetch current Bitcoin network difficulty.
@@ -98,6 +119,7 @@ def get_network_difficulty():
 #  TOOL 2: get_btc_price()
 # ═══════════════════════════════════════════════════════════════════════════
 
+
 def get_btc_price(currencies="usd,brl,eur,gbp"):
     """Fetch BTC price from CoinGecko.
     Args:
@@ -132,6 +154,7 @@ def get_btc_price(currencies="usd,brl,eur,gbp"):
 #  TOOL 3: get_braiins_orderbook()
 # ═══════════════════════════════════════════════════════════════════════════
 
+
 def get_braiins_orderbook():
     """Fetch real-time Braiins Hashpower orderbook.
     Returns cheapest available hashrate in BTC/PH/day.
@@ -140,11 +163,17 @@ def get_braiins_orderbook():
         {"error": str} on failure
     """
     try:
-        # Check pricing units
+        # Check pricing units — with a configured API key the probe gets the
+        # caller's individual pricing layer; without it, degrades gracefully
+        # to the default unit (spot/settings now 401s without `apikey`).
+        settings_headers = {"User-Agent": "cypher65-solo-mining-advisor/1.0"}
+        _braiins_key = braiins_credentials()["api_key"]
+        if _braiins_key:
+            settings_headers["apikey"] = _braiins_key
         settings_r = requests.get(
             f"{BRAIINS_API}/spot/settings",
             timeout=8,
-            headers={"User-Agent": "cypher65-solo-mining-advisor/1.0"},
+            headers=settings_headers,
         )
         price_unit = "sats/PH/day"
         if settings_r.ok:
@@ -189,7 +218,9 @@ def get_braiins_orderbook():
         else:
             btc_per_ph_day = price_sat / 100_000_000
             btc_per_th_day = btc_per_ph_day / PH_TO_TH
-        available_hr_ph = float(best.get("hr_matched_ph", 0)) or float(best.get("hr_available_ph", 0))
+        available_hr_ph = float(best.get("hr_matched_ph", 0)) or float(
+            best.get("hr_available_ph", 0)
+        )
 
         return {
             "price_btc_per_ph_day": btc_per_ph_day,
@@ -212,6 +243,97 @@ def get_braiins_orderbook():
 #  TOOL 4: get_mrr_listings()
 # ═══════════════════════════════════════════════════════════════════════════
 
+
+def mrr_credentials(tenant_id: str = "") -> dict:
+    """Resolve MRR API credentials for a tenant.
+
+    Shared by every MRR consumer (market quotes, rentals, balance) so the
+    credential resolution lives in one place. Values are STRIPPED — a token
+    pasted with a trailing newline/space would corrupt the HMAC signature
+    / auth headers and surface as a phantom 401 ("key not recognized").
+
+    Tenant-aware (multi-user deployments):
+      - default / '' (operator self-host): env vars first, then the global
+        Settings table — legacy behavior, operator-controlled.
+      - named tenant: ONLY that tenant's own settings rows. Env vars and the
+        global table are NEVER consulted — otherwise every user would inherit
+        the operator's credentials (the exact leak 1000+ users must avoid).
+    """
+    from services.settings import is_default_tenant, load_settings
+
+    if not is_default_tenant(tenant_id):
+        _s = load_settings(tenant_id)
+        return {
+            "api_key": (_s.get("mrr_api_key") or "").strip(),
+            "api_secret": (_s.get("mrr_api_secret") or "").strip(),
+        }
+    api_key = (os.environ.get("MRR_API_KEY") or "").strip()
+    api_secret = (os.environ.get("MRR_API_SECRET") or "").strip()
+    if not (api_key and api_secret):
+        try:
+            _s = load_settings()
+            api_key = api_key or (_s.get("mrr_api_key") or "").strip()
+            api_secret = api_secret or (_s.get("mrr_api_secret") or "").strip()
+        except Exception:
+            pass
+    return {"api_key": api_key, "api_secret": api_secret}
+
+
+def braiins_credentials(tenant_id: str = "") -> dict:
+    """Resolve the Braiins Hashpower API key for a tenant.
+
+    The owner token unlocks bids/contracts/balance; read-only token covers
+    market data. Shared by every Braiins consumer (orderbook settings probe,
+    rentals contracts/speed, future bid management). The value is STRIPPED:
+    the `apikey` header is verbatim, so a token pasted with a trailing
+    newline/space returns 401 and the panel reads "key rejected" — the most
+    common "key not recognized" failure.
+
+    Tenant-aware (multi-user deployments):
+      - default / '' (operator self-host): env var first, then the global
+        Settings table — legacy behavior (Render BRAIINS_API_KEY keeps
+        working for the operator's own instance).
+      - named tenant: ONLY that tenant's own settings row. Env vars and the
+        global table are NEVER consulted — the operator's key must not leak
+        to the 1000+ users.
+    """
+    from services.settings import is_default_tenant, load_settings
+
+    if not is_default_tenant(tenant_id):
+        _s = load_settings(tenant_id)
+        return {"api_key": (_s.get("braiins_api_key") or "").strip()}
+    api_key = (os.environ.get("BRAIINS_API_KEY") or "").strip()
+    if not api_key:
+        try:
+            _s = load_settings()
+            api_key = api_key or (_s.get("braiins_api_key") or "").strip()
+        except Exception:
+            pass
+    return {"api_key": api_key}
+
+
+def _mrr_signed_headers(api_key: str, api_secret: str, endpoint: str) -> dict:
+    """Build the HMAC-SHA1 auth headers for MRR API v2 requests.
+
+    Signature string = api_key + nonce + endpoint (path WITHOUT the base
+    URL, query params included, no trailing slash). Shared by all MRR
+    calls (market quotes, rentals, balance) so the auth scheme lives in
+    one place.
+    """
+    nonce = _mrr_next_nonce()
+    sign = hmac.new(
+        api_secret.encode("utf-8"),
+        (api_key + nonce + endpoint).encode("utf-8"),
+        hashlib.sha1,
+    ).hexdigest()
+    return {
+        "x-api-key": api_key,
+        "x-api-nonce": nonce,
+        "x-api-sign": sign,
+        "Content-Type": "application/json",
+    }
+
+
 def get_mrr_listings(algo="sha256", api_key=None, api_secret=None):
     """Fetch active MiningRigRentals listings for SHA-256/AsicBoost.
     Requires MRR API credentials (key + secret).
@@ -225,43 +347,20 @@ def get_mrr_listings(algo="sha256", api_key=None, api_secret=None):
         {"needs_auth": True, "error": str} if credentials missing
         {"error": str} on other failures
     """
-    api_key = api_key or os.environ.get("MRR_API_KEY")
-    api_secret = api_secret or os.environ.get("MRR_API_SECRET")
-
     if not api_key or not api_secret:
-        # Fase 5: fall back to user-configured Settings (Settings modal MRR fields)
-        try:
-            from services.settings import load_settings
-            _s = load_settings()
-            api_key = api_key or (_s.get("mrr_api_key") or "")
-            api_secret = api_secret or (_s.get("mrr_api_secret") or "")
-        except Exception:
-            pass
+        _creds = mrr_credentials()
+        api_key = api_key or _creds["api_key"]
+        api_secret = api_secret or _creds["api_secret"]
 
     if not api_key or not api_secret:
         return {
             "needs_auth": True,
             "error": "MRR_API_KEY/MRR_API_SECRET not configured. "
-                     "Set env vars or pass credentials.",
+            "Set env vars or pass credentials.",
         }
 
     endpoint = f"/rig?type={algo}&order=price"
-    nonce = str(int(time.time() * 1000))
-
-    # HMAC-SHA1 signature
-    sign_string = api_key + nonce + endpoint
-    sign = hmac.new(
-        api_secret.encode("utf-8"),
-        sign_string.encode("utf-8"),
-        hashlib.sha1,
-    ).hexdigest()
-
-    headers = {
-        "x-api-key": api_key,
-        "x-api-nonce": nonce,
-        "x-api-sign": sign,
-        "Content-Type": "application/json",
-    }
+    headers = _mrr_signed_headers(api_key, api_secret, endpoint)
 
     try:
         r = requests.get(
@@ -317,7 +416,11 @@ def get_mrr_listings(algo="sha256", api_key=None, api_secret=None):
                 if isinstance(advertised, dict):
                     hashrate_th = float(advertised.get("hash", 0))
                 else:
-                    hashrate_th = float(hashrate_obj.get("hash", 0)) if isinstance(hashrate_obj.get("hash"), (int, float, str)) else 0
+                    hashrate_th = (
+                        float(hashrate_obj.get("hash", 0))
+                        if isinstance(hashrate_obj.get("hash"), (int, float, str))
+                        else 0
+                    )
             else:
                 hashrate_th = float(rig.get("hash", 0))
 
@@ -373,6 +476,7 @@ def get_mrr_listings(algo="sha256", api_key=None, api_secret=None):
 #  TOOL 5: get_nicehash_orderbook()
 # ═══════════════════════════════════════════════════════════════════════════
 
+
 def get_nicehash_orderbook(algorithm="SHA256", location=None):
     """Fetch real-time NiceHash Hashpower orderbook (public, no auth needed).
 
@@ -403,7 +507,9 @@ def get_nicehash_orderbook(algorithm="SHA256", location=None):
         # NiceHash v2 API: orders are nested under stats.{currency}.orders
         # The top-level response has only a 'stats' key with per-currency data.
         stats = data.get("stats", {})
-        btc_stats = stats.get("BTC", stats.get("btc", {})) if isinstance(stats, dict) else {}
+        btc_stats = (
+            stats.get("BTC", stats.get("btc", {})) if isinstance(stats, dict) else {}
+        )
         orders = btc_stats.get("orders", [])
 
         if not orders:
@@ -411,8 +517,7 @@ def get_nicehash_orderbook(algorithm="SHA256", location=None):
 
         # Filter active STANDARD/MARKET sell orders
         active_orders = [
-            o for o in orders
-            if o.get("alive", False) and float(o.get("price", 0)) > 0
+            o for o in orders if o.get("alive", False) and float(o.get("price", 0)) > 0
         ]
         if not active_orders:
             return {"error": "NiceHash has no active sell orders"}
@@ -459,15 +564,17 @@ def get_nicehash_orderbook(algorithm="SHA256", location=None):
 #  TOOL 6: get_parasite_pool_stats()
 # ═══════════════════════════════════════════════════════════════════════════
 
+
 def get_parasite_pool_stats(worker_id=None):
     """Fetch stats from parasite.space pool.
     Args:
-        worker_id: BTC address (optional, defaults to DEFAULT_WORKER)
+        worker_id: BTC address (optional, defaults to BTC_ADDRESS or the
+        built-in fallback — see _default_worker)
     Returns:
         {"pool_hashrate": float, "pool_workers": int, "worker_best_diff": str, ...}
         {"error": str} on failure
     """
-    worker = worker_id or DEFAULT_WORKER
+    worker = worker_id or _default_worker()
 
     stats = {}
     pool_ok = False
@@ -513,7 +620,8 @@ def get_parasite_pool_stats(worker_id=None):
                 stats["worker_status"] = "not_found"
             stats["account_total_diff"] = (
                 data.get("account", {}).get("total_diff")
-                if isinstance(data.get("account"), dict) else None
+                if isinstance(data.get("account"), dict)
+                else None
             )
             worker_ok = True
     except Exception as e:

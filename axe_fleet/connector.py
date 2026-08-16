@@ -9,6 +9,7 @@ Based on ESP-Miner openapi.yaml at:
 
 All requests are unauthenticated (LAN-only safety model).
 """
+
 import json
 import logging
 import time
@@ -20,13 +21,14 @@ from .models import infer_capabilities, DEFAULT_CAPABILITIES
 log = logging.getLogger("cypher65.axe")
 
 # ── Defaults ──────────────────────────────────────────────────────────────
-AXEOS_HTTP_TIMEOUT = 5       # seconds per HTTP request
-AXEOS_WS_TIMEOUT = 10        # seconds for WebSocket connection
-MIN_POLL_INTERVAL = 30       # minimum seconds between polls per device
+AXEOS_HTTP_TIMEOUT = 5  # seconds per HTTP request
+AXEOS_WS_TIMEOUT = 10  # seconds for WebSocket connection
+MIN_POLL_INTERVAL = 30  # minimum seconds between polls per device
 
 
 class AxeOSConnectorError(Exception):
     """Raised on communication failure with an AxeOS device."""
+
     pass
 
 
@@ -40,7 +42,9 @@ class AxeOSConnector:
         conn.restart()
     """
 
-    def __init__(self, ip_address: str, port: int = 80, timeout: int = AXEOS_HTTP_TIMEOUT):
+    def __init__(
+        self, ip_address: str, port: int = 80, timeout: int = AXEOS_HTTP_TIMEOUT
+    ):
         self.ip = ip_address
         self.port = port
         self.timeout = timeout
@@ -53,7 +57,11 @@ class AxeOSConnector:
         url = f"{self.base_url}{path}"
         t0 = time.time()
         try:
-            r = requests.get(url, timeout=timeout or self.timeout)
+            # timeout always resolves to a positive int (self.timeout default,
+            # AXEOS_HTTP_TIMEOUT as final fallback) — never None.
+            r = requests.get(
+                url, timeout=timeout or self.timeout or AXEOS_HTTP_TIMEOUT
+            )  # nosec B113
             elapsed = time.time() - t0
             log.info("[%s] GET %s → %s (%.2fs)", self.ip, path, r.status_code, elapsed)
             r.raise_for_status()
@@ -61,16 +69,27 @@ class AxeOSConnector:
         except requests.exceptions.ConnectionError as e:
             elapsed = time.time() - t0
             err_type = self._classify_connection_error(e)
-            log.error("[%s] GET %s FAILED after %.2fs — %s: %s",
-                      self.ip, path, elapsed, err_type, e)
+            log.error(
+                "[%s] GET %s FAILED after %.2fs — %s: %s",
+                self.ip,
+                path,
+                elapsed,
+                err_type,
+                e,
+            )
             raise AxeOSConnectorError(
                 f"Connection failed to {self.ip} (GET {path}): "
                 f"{err_type} after {elapsed:.1f}s — {e}"
             )
         except requests.exceptions.Timeout as e:
             elapsed = time.time() - t0
-            log.error("[%s] GET %s TIMEOUT after %.2fs (timeout=%ss)",
-                      self.ip, path, elapsed, timeout or self.timeout)
+            log.error(
+                "[%s] GET %s TIMEOUT after %.2fs (timeout=%ss)",
+                self.ip,
+                path,
+                elapsed,
+                timeout or self.timeout,
+            )
             raise AxeOSConnectorError(
                 f"Timeout connecting to {self.ip} (GET {path}): "
                 f"no response after {elapsed:.1f}s (timeout={timeout or self.timeout}s)"
@@ -78,25 +97,33 @@ class AxeOSConnector:
         except requests.exceptions.HTTPError as e:
             elapsed = time.time() - t0
             status = e.response.status_code if e.response is not None else "N/A"
-            log.error("[%s] GET %s HTTP %s after %.2fs — %s",
-                      self.ip, path, status, elapsed, e)
+            log.error(
+                "[%s] GET %s HTTP %s after %.2fs — %s",
+                self.ip,
+                path,
+                status,
+                elapsed,
+                e,
+            )
             raise AxeOSConnectorError(
                 f"HTTP error from {self.ip}{path}: status={status} — {e}"
             )
         except json.JSONDecodeError as e:
             elapsed = time.time() - t0
-            log.error("[%s] GET %s INVALID JSON after %.2fs — %s",
-                      self.ip, path, elapsed, e)
-            raise AxeOSConnectorError(
-                f"Invalid JSON from {self.ip} (GET {path}): {e}"
+            log.error(
+                "[%s] GET %s INVALID JSON after %.2fs — %s", self.ip, path, elapsed, e
             )
+            raise AxeOSConnectorError(f"Invalid JSON from {self.ip} (GET {path}): {e}")
 
     def _post(self, path: str, data: dict = None, timeout: int = None) -> dict:
         """POST request to device."""
         url = f"{self.base_url}{path}"
         t0 = time.time()
         try:
-            r = requests.post(url, json=data, timeout=timeout or self.timeout)
+            # timeout always resolves to a positive int — never None.
+            r = requests.post(
+                url, json=data, timeout=timeout or self.timeout or AXEOS_HTTP_TIMEOUT
+            )  # nosec B113
             elapsed = time.time() - t0
             log.info("[%s] POST %s → %s (%.2fs)", self.ip, path, r.status_code, elapsed)
             r.raise_for_status()
@@ -106,16 +133,27 @@ class AxeOSConnector:
         except requests.exceptions.ConnectionError as e:
             elapsed = time.time() - t0
             err_type = self._classify_connection_error(e)
-            log.error("[%s] POST %s FAILED after %.2fs — %s: %s",
-                      self.ip, path, elapsed, err_type, e)
+            log.error(
+                "[%s] POST %s FAILED after %.2fs — %s: %s",
+                self.ip,
+                path,
+                elapsed,
+                err_type,
+                e,
+            )
             raise AxeOSConnectorError(
                 f"Connection failed to {self.ip} (POST {path}): "
                 f"{err_type} after {elapsed:.1f}s — {e}"
             )
         except requests.exceptions.Timeout as e:
             elapsed = time.time() - t0
-            log.error("[%s] POST %s TIMEOUT after %.2fs (timeout=%ss)",
-                      self.ip, path, elapsed, timeout or self.timeout)
+            log.error(
+                "[%s] POST %s TIMEOUT after %.2fs (timeout=%ss)",
+                self.ip,
+                path,
+                elapsed,
+                timeout or self.timeout,
+            )
             raise AxeOSConnectorError(
                 f"Timeout connecting to {self.ip} (POST {path}): "
                 f"no response after {elapsed:.1f}s"
@@ -123,8 +161,12 @@ class AxeOSConnector:
         except json.JSONDecodeError:
             # Some AxeOS POST endpoints return plain text, not JSON
             elapsed = time.time() - t0
-            log.warning("[%s] POST %s → non-JSON response (%.2fs), treating as success",
-                        self.ip, path, elapsed)
+            log.warning(
+                "[%s] POST %s → non-JSON response (%.2fs), treating as success",
+                self.ip,
+                path,
+                elapsed,
+            )
             return {"success": True}
 
     def _patch(self, path: str, data: dict, timeout: int = None) -> dict:
@@ -132,9 +174,14 @@ class AxeOSConnector:
         url = f"{self.base_url}{path}"
         t0 = time.time()
         try:
-            r = requests.patch(url, json=data, timeout=timeout or self.timeout)
+            # timeout always resolves to a positive int — never None.
+            r = requests.patch(
+                url, json=data, timeout=timeout or self.timeout or AXEOS_HTTP_TIMEOUT
+            )  # nosec B113
             elapsed = time.time() - t0
-            log.info("[%s] PATCH %s → %s (%.2fs)", self.ip, path, r.status_code, elapsed)
+            log.info(
+                "[%s] PATCH %s → %s (%.2fs)", self.ip, path, r.status_code, elapsed
+            )
             r.raise_for_status()
             if r.text and r.text.strip():
                 return r.json()
@@ -142,29 +189,46 @@ class AxeOSConnector:
         except requests.exceptions.ConnectionError as e:
             elapsed = time.time() - t0
             err_type = self._classify_connection_error(e)
-            log.error("[%s] PATCH %s FAILED after %.2fs — %s: %s",
-                      self.ip, path, elapsed, err_type, e)
+            log.error(
+                "[%s] PATCH %s FAILED after %.2fs — %s: %s",
+                self.ip,
+                path,
+                elapsed,
+                err_type,
+                e,
+            )
             raise AxeOSConnectorError(
                 f"Connection failed to {self.ip} (PATCH {path}): "
                 f"{err_type} after {elapsed:.1f}s — {e}"
             )
         except requests.exceptions.Timeout as e:
             elapsed = time.time() - t0
-            log.error("[%s] PATCH %s TIMEOUT after %.2fs (timeout=%ss)",
-                      self.ip, path, elapsed, timeout or self.timeout)
+            log.error(
+                "[%s] PATCH %s TIMEOUT after %.2fs (timeout=%ss)",
+                self.ip,
+                path,
+                elapsed,
+                timeout or self.timeout,
+            )
             raise AxeOSConnectorError(
                 f"Timeout connecting to {self.ip} (PATCH {path}): "
                 f"no response after {elapsed:.1f}s"
             )
 
-    def _classify_connection_error(self, exc: requests.exceptions.ConnectionError) -> str:
+    def _classify_connection_error(
+        self, exc: requests.exceptions.ConnectionError
+    ) -> str:
         """Classify the type of connection error for better diagnostics."""
         msg = str(exc).lower()
         if "no route to host" in msg or "network is unreachable" in msg:
             return "NO_ROUTE"
         if "connection refused" in msg or "actively refused" in msg:
             return "REFUSED"
-        if "dns" in msg or "name resolution" in msg or "name or service not known" in msg:
+        if (
+            "dns" in msg
+            or "name resolution" in msg
+            or "name or service not known" in msg
+        ):
             return "DNS_FAILURE"
         if "connection reset" in msg:
             return "RESET"
@@ -225,8 +289,11 @@ class AxeOSConnector:
             caps_base = infer_capabilities(info)
         except AxeOSConnectorError:
             # If basic info fails, all capabilities are off
-            log.warning("[%s] detect_capabilities: fetch_info failed — "
-                        "all capabilities disabled", self.ip)
+            log.warning(
+                "[%s] detect_capabilities: fetch_info failed — "
+                "all capabilities disabled",
+                self.ip,
+            )
             return {k: False for k in DEFAULT_CAPABILITIES}
 
         # Try ASIC endpoint for frequency/voltage capabilities
@@ -237,8 +304,11 @@ class AxeOSConnector:
             if asic.get("coreVoltage") is not None:
                 caps_base["voltageControl"] = True
         except AxeOSConnectorError:
-            log.info("[%s] detect_capabilities: ASIC endpoint unavailable — "
-                     "frequency/voltage control disabled", self.ip)
+            log.info(
+                "[%s] detect_capabilities: ASIC endpoint unavailable — "
+                "frequency/voltage control disabled",
+                self.ip,
+            )
 
         return caps_base
 
@@ -253,8 +323,12 @@ class AxeOSConnector:
             try:
                 info = self.fetch_info()
             except AxeOSConnectorError as e:
-                log.warning("[%s] extract_telemetry: fetch_info failed — "
-                           "returning empty telemetry: %s", self.ip, e)
+                log.warning(
+                    "[%s] extract_telemetry: fetch_info failed — "
+                    "returning empty telemetry: %s",
+                    self.ip,
+                    e,
+                )
                 return {}
 
         t = new_telemetry("")
@@ -279,7 +353,9 @@ class AxeOSConnector:
 
         # Fase 5: ASIC + VR temperatures
         t["temp_asic"] = info.get("tempChip") or info.get("temp_asic")
-        t["temp_vreg"] = info.get("vrTemp") or info.get("temp2") or info.get("temp_vreg")
+        t["temp_vreg"] = (
+            info.get("vrTemp") or info.get("temp2") or info.get("temp_vreg")
+        )
 
         # Fan
         t["fan_speed"] = info.get("fanSpeed")
@@ -300,6 +376,16 @@ class AxeOSConnector:
 
         # Shares / best diff
         t["best_diff"] = str(info.get("bestDiff") or "")
+        # Worker-intelligence extras (best-effort — many AxeOS builds expose
+        # the current stratum difficulty target; last-share time is rarer).
+        # None → the UI renders an honest '—'.
+        t["pool_diff"] = (
+            info.get("poolDifficulty") or info.get("difficulty") or info.get("poolDiff")
+        )
+        _last_share = info.get("lastShare")
+        if _last_share is None:
+            _last_share = info.get("lastShareTime") or info.get("lastShareTimestamp")
+        t["last_share_ts"] = _last_share
         t["shares_accepted"] = int(info.get("sharesAccepted") or 0)
         t["shares_rejected"] = int(info.get("sharesRejected") or 0)
         accepted = t["shares_accepted"]
@@ -316,10 +402,18 @@ class AxeOSConnector:
         t["free_heap"] = int(info.get("freeHeap") or 0)
         t["wifi_rssi"] = info.get("wifiRSSI")
 
+        # Pause state — explicit operator intent (Issue #13): a paused device
+        # reports miningPaused=true and must render PAUSED, not IDLE/ONLINE.
+        # Strict `is True`: `bool("false")` is True in Python — a stringy
+        # firmware/agent value must never falsely pause a device.
+        t["mining_paused"] = info.get("miningPaused") is True
+
         # Pool
         t["pool_url"] = str(info.get("pool") or info.get("stratumURL") or "")
         t["pool_user"] = str(info.get("poolUser") or info.get("poolUsername") or "")
-        t["stratum_status"] = str(info.get("stratumStatus") or info.get("poolStatus") or "")
+        t["stratum_status"] = str(
+            info.get("stratumStatus") or info.get("poolStatus") or ""
+        )
 
         return t
 
@@ -333,6 +427,18 @@ class AxeOSConnector:
     def identify(self) -> dict:
         """POST /api/system/identify — flash LED/screen for identification."""
         return self._post("/api/system/identify")
+
+    def pause(self) -> dict:
+        """POST /api/system/miningPause — pause hashing on the device.
+
+        ESP-Miner API: the ASIC stays powered but stops hashing, so the
+        device stays reachable for Resume. Only call when the 'pause'
+        capability is advertised."""
+        return self._post("/api/system/miningPause")
+
+    def resume(self) -> dict:
+        """POST /api/system/miningResume — resume hashing on a paused device."""
+        return self._post("/api/system/miningResume")
 
     def update_settings(self, settings: dict) -> dict:
         """PATCH /api/system — update device configuration.
@@ -393,10 +499,7 @@ class AxeOSConnector:
         }
         t0 = time.time()
         try:
-            r = requests.get(
-                f"{self.base_url}/api/system/info",
-                timeout=3
-            )
+            r = requests.get(f"{self.base_url}/api/system/info", timeout=3)
             result["elapsed_ms"] = int((time.time() - t0) * 1000)
             result["http_status"] = r.status_code
             result["http_connect"] = True
@@ -430,6 +533,7 @@ class AxeOSConnector:
 
 
 # ── Convenience ──────────────────────────────────────────────────────────
+
 
 def normalize_ip(ip_or_hostname: str) -> str:
     """Normalize an IP or hostname string. Returns stripped IP."""

@@ -7,8 +7,7 @@ metrics/scoring, persistence, highlights, and edge cases.
 Strategy:
   - Mock the low-level tool functions (get_braiins_orderbook, etc.)
     with controlled dicts so no real HTTP calls are made.
-  - For KissMyHash / Parasite, monkeypatch requests.get and the tool
-    function respectively.
+  - For Parasite, monkeypatch the tool function (no real HTTP).
   - Test compute_metrics + score_offer with known inputs and verify
     the math (BTC/day, cost, revenue, EV, risk level).
 """
@@ -30,7 +29,6 @@ from services.hashrate_market import (
     enrich_opportunity_dict,
     fetch_all_offers,
     fetch_braiins_offer,
-    fetch_kissmyhash_offer,
     fetch_market_history,
     fetch_mrr_offer,
     fetch_nicehash_offer,
@@ -331,90 +329,6 @@ class TestFetchNicehashOffer:
 
 
 # ══════════════════════════════════════════════════════════════════════
-#  fetch_kissmyhash_offer
-# ══════════════════════════════════════════════════════════════════════
-
-class TestFetchKissmyhashOffer:
-    def test_success_via_api(self, monkeypatch):
-        """API returns valid price → returns KissMyHash offer."""
-        mock_resp = MagicMock()
-        mock_resp.ok = True
-        mock_resp.json.return_value = {"price_btc_per_ph_day": 0.000700}
-        monkeypatch.setattr("requests.get", MagicMock(return_value=mock_resp))
-        offer = fetch_kissmyhash_offer()
-        assert offer is not None
-        assert offer.provider == "kissmyhash"
-        assert offer.price_per_th_day == pytest.approx(7e-7)
-
-    def test_fallback_to_nicehash_when_api_fails(self, monkeypatch):
-        """requests.get raises → falls back to NiceHash +10% markup."""
-        monkeypatch.setattr("requests.get", MagicMock(side_effect=ConnectionError("timeout")))
-        monkeypatch.setattr(
-            "services.hashrate_market.get_nicehash_orderbook",
-            lambda: {"price_btc_per_ph_day": 0.000500, "best_order_speed_ph": 1.0},
-        )
-        offer = fetch_kissmyhash_offer()
-        assert offer is not None
-        assert offer.provider == "kissmyhash"
-        # NiceHash price = 0.000500 / 1000 = 5e-7, markup * 1.10 = 5.5e-7
-        assert offer.price_per_th_day == pytest.approx(5.5e-7)
-        assert offer.meta["source"] == "derived_from_nicehash"
-        assert offer.meta["markup_pct"] == 10.0
-
-    def test_fallback_to_nicehash_when_api_returns_no_price(self, monkeypatch):
-        """API returns OK but no price → falls back."""
-        mock_resp = MagicMock()
-        mock_resp.ok = True
-        mock_resp.json.return_value = {"status": "no_data"}
-        monkeypatch.setattr("requests.get", MagicMock(return_value=mock_resp))
-        monkeypatch.setattr(
-            "services.hashrate_market.get_nicehash_orderbook",
-            lambda: {"price_btc_per_ph_day": 0.000400, "best_order_speed_ph": 2.0},
-        )
-        offer = fetch_kissmyhash_offer()
-        assert offer is not None
-        assert offer.provider == "kissmyhash"
-        assert offer.price_per_th_day == pytest.approx(4.4e-7)
-
-    def test_nicehash_also_fails(self, monkeypatch):
-        """Both API and NiceHash fallback fail → None."""
-        monkeypatch.setattr("requests.get", MagicMock(side_effect=Exception("API down")))
-        monkeypatch.setattr(
-            "services.hashrate_market.get_nicehash_orderbook",
-            lambda: None,
-        )
-        offer = fetch_kissmyhash_offer()
-        assert offer is None
-
-    def test_api_http_error_fallback(self, monkeypatch):
-        """API returns !ok → falls back."""
-        mock_resp = MagicMock()
-        mock_resp.ok = False
-        monkeypatch.setattr("requests.get", MagicMock(return_value=mock_resp))
-        monkeypatch.setattr(
-            "services.hashrate_market.get_nicehash_orderbook",
-            lambda: {"price_btc_per_ph_day": 0.000300, "best_order_speed_ph": 1.0},
-        )
-        offer = fetch_kissmyhash_offer()
-        assert offer is not None
-        assert offer.price_per_th_day == pytest.approx(3.3e-7)
-
-    def test_api_zero_price_ignored(self, monkeypatch):
-        """API returns zero price → treated as no data → fallback."""
-        mock_resp = MagicMock()
-        mock_resp.ok = True
-        mock_resp.json.return_value = {"price_btc_per_ph_day": 0.0}
-        monkeypatch.setattr("requests.get", MagicMock(return_value=mock_resp))
-        monkeypatch.setattr(
-            "services.hashrate_market.get_nicehash_orderbook",
-            lambda: {"price_btc_per_ph_day": 0.000200, "best_order_speed_ph": 1.0},
-        )
-        offer = fetch_kissmyhash_offer()
-        assert offer is not None  # fallback
-        assert offer.price_per_th_day == pytest.approx(2.2e-7)
-
-
-# ══════════════════════════════════════════════════════════════════════
 #  fetch_parasite_offer
 # ══════════════════════════════════════════════════════════════════════
 
@@ -428,6 +342,9 @@ class TestFetchParasiteOffer:
         )
 
     def test_success_returns_offer(self, monkeypatch):
+        """The fee-only pool estimate is mathematically sub-floor (~1e-8 BTC/
+        TH·day = ~0.04 sats/TH·h — ~1000× below real rental prices), so the
+        estimator now REJECTS it instead of polluting 'cheapest market'."""
         self._mock_parasite({
             "pool_hashrate": 6e20 * 0.01,  # 1% of network (~6 EH/s)
             "pool_workers": 1500,
@@ -436,14 +353,7 @@ class TestFetchParasiteOffer:
             "pool_status": "active",
         }, monkeypatch)
         offer = fetch_parasite_offer()
-        assert offer is not None
-        assert offer.provider == "parasite"
-        assert offer.algorithm == "sha256"
-        assert offer.fee_pct == 1.0
-        assert 1e-8 <= offer.price_per_th_day < 1e-4  # realistic range (can be exactly 1e-8)
-        assert offer.meta["pool_workers"] == 1500
-        assert offer.meta["pool_users"] == 750
-        assert offer.meta["label"] == "Parasite Pool (own hardware required)"
+        assert offer is None  # fee-only model can never reach a plausible price
 
     def test_error_data_returns_none(self, monkeypatch):
         self._mock_parasite({"error": "API not available"}, monkeypatch)
@@ -473,16 +383,16 @@ class TestFetchParasiteOffer:
         assert offer is None
 
     def test_meta_disclaimer_set(self, monkeypatch):
+        """Same sub-floor rejection as test_success_returns_offer — the
+        disclaimer path is unreachable while the fee-only price stays below
+        the plausible floor."""
         self._mock_parasite({
             "pool_hashrate": 6e20 * 0.005,
             "pool_workers": 100,
             "pool_users": 50,
             "pool_status": "active",
         }, monkeypatch)
-        offer = fetch_parasite_offer()
-        assert offer is not None
-        assert "disclaimer" in offer.meta
-        assert "rental marketplace" in offer.meta["disclaimer"]
+        assert fetch_parasite_offer() is None
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -635,11 +545,6 @@ class TestFetchAllOffers:
             "services.hashrate_market.get_nicehash_orderbook",
             lambda: {"price_btc_per_ph_day": 0.000600, "best_order_speed_ph": 1.0},
         )
-        # KissMyHash — mock requests.get to return valid price
-        mock_resp = MagicMock()
-        mock_resp.ok = True
-        mock_resp.json.return_value = {"price_btc_per_ph_day": 0.000700}
-        monkeypatch.setattr("requests.get", MagicMock(return_value=mock_resp))
         # Parasite
         monkeypatch.setattr(
             "agents.solo_mining_advisor.tools.get_parasite_pool_stats",
@@ -652,8 +557,10 @@ class TestFetchAllOffers:
 
         offers = fetch_all_offers()
         providers = {o.provider for o in offers}
-        assert providers == {"braiins", "mrr", "nicehash", "kissmyhash", "parasite"}
-        assert len(offers) == 5
+        # Parasite's fee-only estimate is sub-floor (~1e-8) → rejected, so the
+        # aggregation carries only real marketplace quotes.
+        assert providers == {"braiins", "mrr", "nicehash"}
+        assert len(offers) == 3
 
     def test_isolates_failures(self, monkeypatch):
         """One provider fails → others still appear."""
@@ -672,8 +579,6 @@ class TestFetchAllOffers:
             "services.hashrate_market.get_nicehash_orderbook",
             lambda: None,
         )
-        # KissMyHash — API fails, NiceHash fallback also fails
-        monkeypatch.setattr("requests.get", MagicMock(side_effect=Exception("timeout")))
         # Parasite fails
         monkeypatch.setattr(
             "agents.solo_mining_advisor.tools.get_parasite_pool_stats",
@@ -971,6 +876,36 @@ class TestBuildHighlights:
         )
         assert len(highlights) == 2
 
+    def test_real_quotes_first_estimated_last(self):
+        """Grid order: real marketplace quotes ALWAYS sort before estimated
+        offers, no matter the (inflated) EV score of the derived model — the
+        parasite pool-fee card must never steal the top of the HASH MARKET."""
+        now = int(time.time())
+        prices = {
+            "parasite": {"price": 1e-5, "ts": now, "label": "Parasite", "estimated": True},
+            "braiins": {"price": 5e-2, "ts": now, "label": "Braiins"},
+            "mrr": {"price": 4e-2, "ts": now, "label": "MRR"},
+        }
+        highlights = build_highlights(
+            snapshot={"network": {"hashrate": 6e20}},
+            last_known_prices=prices,
+            max_items=3,
+        )
+        providers = [h["provider"] for h in highlights]
+        # Real quotes fill the first slots (score desc among themselves)...
+        assert providers[0] != "parasite" and providers[1] != "parasite"
+        assert highlights[0]["metrics"]["score"] >= highlights[1]["metrics"]["score"]
+        # ...and the estimated offer is always last.
+        assert providers[-1] == "parasite"
+        # max_items=2: real quotes take BOTH slots; the estimated offer is
+        # dropped entirely instead of displacing a real quote.
+        capped = build_highlights(
+            snapshot={"network": {"hashrate": 6e20}},
+            last_known_prices=prices,
+            max_items=2,
+        )
+        assert {h["provider"] for h in capped} == {"braiins", "mrr"}
+
     def test_zero_max_age_ignores_cache_expiry(self):
         """max_age_seconds=0 → no age filtering."""
         old_ts = int(time.time()) - 99999
@@ -1015,7 +950,9 @@ class TestPersistence:
         yield c
         c.close()
 
-    def _offer(self, provider="braiins", price=5e-10):
+    def _offer(self, provider="braiins", price=5e-5):
+        # 5e-5 BTC/TH/day ≈ 208 sats/TH·h — a realistic SHA-256 quote above
+        # the MIN_PLAUSIBLE_PRICE_BTC_TH_DAY floor.
         return NormalizedOffer(
             provider=provider, hashrate=1000.0,
             price_per_th_day=price, duration_days=1.0,
@@ -1039,9 +976,9 @@ class TestPersistence:
 
     def test_persist_multiple_offers(self, conn):
         offers = [
-            self._offer("braiins", 5e-10),
-            self._offer("mrr", 3e-10),
-            self._offer("nicehash", 4e-10),
+            self._offer("braiins", 6e-5),
+            self._offer("mrr", 4e-5),
+            self._offer("nicehash", 5e-5),
         ]
         persist_market_history(conn, offers)
         c = conn.cursor()
@@ -1058,7 +995,7 @@ class TestPersistence:
 
     def test_fetch_market_history_returns_recent_first(self, conn):
         persist_market_history(conn, [
-            self._offer("mrr", 3e-10),
+            self._offer("mrr", 5e-5),
         ])
         # Manually add an older row with a different TS
         c = conn.cursor()
@@ -1067,7 +1004,7 @@ class TestPersistence:
             "INSERT INTO hashrate_market_history "
             "(ts, provider, hashrate, price_per_th_day, duration_days, fee_pct, algorithm, score, raw_data) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (old_ts, "braiins", 1000.0, 5e-10, 1.0, 0.0, "sha256", 10.0, "{}"),
+            (old_ts, "braiins", 1000.0, 5e-5, 1.0, 0.0, "sha256", 10.0, "{}"),
         )
         conn.commit()
 
@@ -1077,7 +1014,7 @@ class TestPersistence:
         assert rows[0]["provider"] != "braiins" or rows[0]["ts"] > rows[1]["ts"]
 
     def test_fetch_respects_limit(self, conn):
-        offers = [self._offer(f"p{i}", 1e-9) for i in range(5)]
+        offers = [self._offer(f"p{i}", 5e-5) for i in range(5)]
         persist_market_history(conn, offers)
         rows = fetch_market_history(conn, limit=3)
         assert len(rows) == 3
@@ -1088,3 +1025,29 @@ class TestPersistence:
         expected = {"ts", "provider", "hashrate", "price_per_th_day",
                     "duration_days", "fee_pct", "algorithm", "score", "raw_data"}
         assert set(row.keys()) == expected
+
+    def test_persist_skips_subfloor_offers(self, conn):
+        """Offers below the plausible floor (the old 1e-8 parasite glitch) are
+        never persisted — they would zero out 'cheapest market' analytics."""
+        persist_market_history(conn, [self._offer("parasite", 1e-8)])
+        c = conn.cursor()
+        c.execute("SELECT COUNT(*) as cnt FROM hashrate_market_history")
+        assert c.fetchone()["cnt"] == 0
+
+    def test_purge_removes_legacy_glitch_rows(self, conn):
+        """The one-time purge deletes pre-existing sub-floor rows from the
+        table so every consumer (market charts, rentals timing) sees real
+        prices only."""
+        c = conn.cursor()
+        c.execute(
+            "INSERT INTO hashrate_market_history "
+            "(ts, provider, hashrate, price_per_th_day, duration_days, fee_pct, algorithm, score, raw_data) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (1, "parasite", 1000.0, 1e-8, 1.0, 0.0, "sha256", 0.0, "{}"),
+        )
+        conn.commit()
+        import services.hashrate_market as _m
+        _m._purged_glitch_history = False  # reset the one-time gate for this test
+        persist_market_history(conn, [self._offer()])  # triggers the purge
+        c.execute("SELECT COUNT(*) as cnt FROM hashrate_market_history WHERE price_per_th_day < 1e-7")
+        assert c.fetchone()["cnt"] == 0

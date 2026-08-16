@@ -31,6 +31,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import app as _app_module
 from services.licensing import (
+    PREMIUM_FEATURES,
     PRO_FEATURES,
     _configured_keys,
     is_pro,
@@ -49,6 +50,7 @@ def _scrub_license_env(monkeypatch):
 
 # ── Unit: licensing_configured / is_pro ──────────────────────────────
 
+
 def test_open_mode_not_configured():
     assert licensing_configured() is False
     assert _configured_keys() == []
@@ -65,6 +67,7 @@ def test_is_pro_open_mode():
 
 
 # ── Endpoint behavior ─────────────────────────────────────────────────
+
 
 @pytest.fixture
 def isolated_client():
@@ -100,10 +103,16 @@ def test_license_status_open_mode(isolated_client):
     d = r.get_json()
     assert d["mode"] == "open"
     assert d["pro"] is True
-    assert d["features"] == {f: "unlocked" for f in PRO_FEATURES}
+    assert d["tier"] == "premium"
+    assert d["premium"] is True
+    assert d["features"] == {
+        **{f: "unlocked" for f in PRO_FEATURES},
+        **{f: "unlocked" for f in PREMIUM_FEATURES},
+    }
 
 
 # ── Licensed mode (gate active) ───────────────────────────────────────
+
 
 def _set_keys(monkeypatch, keys="PRO-KEY-123"):
     monkeypatch.setenv("PRO_LICENSE_KEYS", keys)
@@ -120,7 +129,9 @@ def test_monte_carlo_gated_402(isolated_client, monkeypatch):
 
 def test_monte_carlo_gated_header_unlocks(isolated_client, monkeypatch):
     _set_keys(monkeypatch)
-    r = isolated_client.get("/api/monte_carlo?hours=1&runs=100", headers={"X-License-Key": "PRO-KEY-123"})
+    r = isolated_client.get(
+        "/api/monte_carlo?hours=1&runs=100", headers={"X-License-Key": "PRO-KEY-123"}
+    )
     assert r.status_code == 200  # unlocked → handler runs
 
 
@@ -132,7 +143,9 @@ def test_monte_carlo_gated_query_unlocks(isolated_client, monkeypatch):
 
 def test_monte_carlo_gated_wrong_key_402(isolated_client, monkeypatch):
     _set_keys(monkeypatch)
-    r = isolated_client.get("/api/monte_carlo?hours=1&runs=100", headers={"X-License-Key": "NOPE"})
+    r = isolated_client.get(
+        "/api/monte_carlo?hours=1&runs=100", headers={"X-License-Key": "NOPE"}
+    )
     assert r.status_code == 402
 
 
@@ -151,7 +164,10 @@ def test_chart_30d_gated_402(isolated_client, monkeypatch):
 
 def test_chart_30d_gated_unlock(isolated_client, monkeypatch):
     _set_keys(monkeypatch)
-    r = isolated_client.get("/api/chart-data?chart=hashrate&range=30d", headers={"X-License-Key": "PRO-KEY-123"})
+    r = isolated_client.get(
+        "/api/chart-data?chart=hashrate&range=30d",
+        headers={"X-License-Key": "PRO-KEY-123"},
+    )
     assert r.status_code == 200
 
 
@@ -167,30 +183,45 @@ def test_license_status_licensed_free(isolated_client, monkeypatch):
     d = isolated_client.get("/api/license-status").get_json()
     assert d["mode"] == "licensed"
     assert d["pro"] is False
+    assert d["premium"] is False
     assert d["tier"] == "free"
-    assert d["features"] == {f: "locked" for f in PRO_FEATURES}
+    assert d["features"] == {
+        **{f: "locked" for f in PRO_FEATURES},
+        **{f: "locked" for f in PREMIUM_FEATURES},
+    }
     assert d["upgrade"]["plan"] == "PRO"
 
 
 def test_license_status_licensed_pro(isolated_client, monkeypatch):
     _set_keys(monkeypatch)
-    d = isolated_client.get("/api/license-status", headers={"X-License-Key": "PRO-KEY-123"}).get_json()
+    d = isolated_client.get(
+        "/api/license-status", headers={"X-License-Key": "PRO-KEY-123"}
+    ).get_json()
     assert d["mode"] == "licensed"
     assert d["pro"] is True
+    assert d["premium"] is False
     assert d["tier"] == "pro"
-    assert d["features"] == {f: "unlocked" for f in PRO_FEATURES}
-    assert d["upgrade"] is None
+    assert d["features"] == {
+        **{f: "unlocked" for f in PRO_FEATURES},
+        **{f: "locked" for f in PREMIUM_FEATURES},
+    }
+    assert d["upgrade"] == {"plan": "PREMIUM", "price_usd_month": 29}
 
 
 # ── Settings webhook gate ─────────────────────────────────────────────
 
+
 def test_webhook_setting_gated(isolated_client, monkeypatch):
     _set_keys(monkeypatch)
-    r = isolated_client.post("/api/settings", json={"webhook_url": "https://example.com/hook"})
+    r = isolated_client.post(
+        "/api/settings", json={"webhook_url": "https://example.com/hook"}
+    )
     assert r.status_code == 200  # route itself is not gated
     d = r.get_json()
     assert d["applied"] == []
-    assert any(x["key"] == "webhook_url" and "PRO" in x["reason"] for x in d["rejected"])
+    assert any(
+        x["key"] == "webhook_url" and "PRO" in x["reason"] for x in d["rejected"]
+    )
 
 
 def test_non_webhook_setting_not_gated(isolated_client, monkeypatch):
@@ -202,6 +233,7 @@ def test_non_webhook_setting_not_gated(isolated_client, monkeypatch):
 
 
 # ── license_status() pure function ────────────────────────────────────
+
 
 def test_license_status_open_mode_pure():
     assert license_status()["mode"] == "open"

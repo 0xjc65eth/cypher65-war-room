@@ -90,10 +90,11 @@ class TestBlockHuntSnapshotInjection:
         renderBlockHunt reads: network_difficulty, best_difficulty,
         p_block_per_share, expected_time_seconds, cumulative_p_block,
         best_diff_worker."""
-        monkeypatch.setattr("app.latest_snapshot", self._snapshot(), raising=False)
-        # Stub the market plumbing that /api/snapshot also calls.
-        monkeypatch.setattr("app._get_hashrate_market_offers", lambda: [], raising=False)
-        monkeypatch.setattr("app._build_market_highlights", lambda *a, **k: [], raising=False)
+        # Fase 6 · PR2: /api/snapshot now served by dashboard_bp which reads
+        # from services.state, not app — target the canonical state modules.
+        monkeypatch.setattr("services.state.latest_snapshot", self._snapshot(), raising=False)
+        monkeypatch.setattr("services.snapshot_enrichment._get_hashrate_market_offers", lambda s: [], raising=False)
+        monkeypatch.setattr("services.hashrate_market.build_highlights", lambda *a, **k: [], raising=False)
 
         response = client.get("/api/snapshot")
         assert response.status_code == 200
@@ -115,12 +116,12 @@ class TestBlockHuntSnapshotInjection:
     def test_snapshot_block_hunt_empty_when_no_data(self, client, monkeypatch):
         """Empty snapshot should produce zeroed block_hunt (no crash, no NaN)."""
         monkeypatch.setattr(
-            "app.latest_snapshot",
+            "services.state.latest_snapshot",
             {"network": {}, "worker": {}, "proximity": {}},
             raising=False,
         )
-        monkeypatch.setattr("app._get_hashrate_market_offers", lambda: [], raising=False)
-        monkeypatch.setattr("app._build_market_highlights", lambda *a, **k: [], raising=False)
+        monkeypatch.setattr("services.snapshot_enrichment._get_hashrate_market_offers", lambda s: [], raising=False)
+        monkeypatch.setattr("services.hashrate_market.build_highlights", lambda *a, **k: [], raising=False)
 
         response = client.get("/api/snapshot")
         assert response.status_code == 200
@@ -134,9 +135,12 @@ class TestBlockHuntSnapshotInjection:
     def test_snapshot_block_hunt_matches_dedicated_endpoint(self, client, monkeypatch):
         """The injected block_hunt payload should agree with /api/block-hunt
         for the same snapshot (shared computation)."""
+        # /api/snapshot served by dashboard_bp → reads services.state
+        monkeypatch.setattr("services.state.latest_snapshot", self._snapshot(), raising=False)
+        # /api/block-hunt still served by app.py → also needs the snapshot
         monkeypatch.setattr("app.latest_snapshot", self._snapshot(), raising=False)
-        monkeypatch.setattr("app._get_hashrate_market_offers", lambda: [], raising=False)
-        monkeypatch.setattr("app._build_market_highlights", lambda *a, **k: [], raising=False)
+        monkeypatch.setattr("services.snapshot_enrichment._get_hashrate_market_offers", lambda s: [], raising=False)
+        monkeypatch.setattr("services.hashrate_market.build_highlights", lambda *a, **k: [], raising=False)
 
         snap_resp = client.get("/api/snapshot")
         bh_resp = client.get("/api/block-hunt")

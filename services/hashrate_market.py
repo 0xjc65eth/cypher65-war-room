@@ -9,13 +9,17 @@ be added later without changing consumers.
 """
 
 import json
+import os
 import time
 import logging
-import requests
 from dataclasses import dataclass, asdict, field
 from typing import Any, Dict, List, Optional
 
-from agents.solo_mining_advisor.tools import get_braiins_orderbook, get_mrr_listings, get_nicehash_orderbook
+from agents.solo_mining_advisor.tools import (
+    get_braiins_orderbook,
+    get_mrr_listings,
+    get_nicehash_orderbook,
+)
 
 log = logging.getLogger("cypher65")
 
@@ -25,6 +29,11 @@ BLOCKS_PER_DAY = 144
 DEFAULT_NETWORK_HASHRATE = 6e20  # ~600 EH/s fallback
 DEFAULT_RENTAL_HASHRATE_TH = 1000.0  # 1 PH — used when provider does not expose size
 PH_TO_TH = 1000.0  # 1 PH = 1000 TH — per-PH/day → per-TH/day conversion
+# Plausible floor for a SHA-256 rental quote (~0.42 sats/TH·h). Anything
+# below is an estimation glitch (e.g. giant-pool fee math underflowing to
+# ~1e-9 BTC/TH·day) — never emit, persist or show it, or 'cheapest market'
+# analytics collapse to 0 sats/TH·h.
+MIN_PLAUSIBLE_PRICE_BTC_TH_DAY = 1e-7
 
 
 @dataclass
@@ -32,12 +41,12 @@ class NormalizedOffer:
     """Common schema for a hashrate rental offer."""
 
     provider: str
-    hashrate: float          # TH/s
+    hashrate: float  # TH/s
     price_per_th_day: float  # BTC per TH per day
     duration_days: float
     fee_pct: float
     algorithm: str
-    source: str = ""         # origin label: braiins|mrr|nicehash|kissmyhash|parasite|derived
+    source: str = ""  # origin label: braiins|mrr|nicehash|parasite|derived
     estimated: bool = False  # True → price is derived/estimated, not a live quote
     meta: Dict[str, Any] = field(default_factory=dict)
 
@@ -48,6 +57,7 @@ class NormalizedOffer:
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 #  Provider fetchers → NormalizedOffer
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
 
 def fetch_braiins_offer() -> Optional[NormalizedOffer]:
     """Fetch the cheapest Braiins Hashpower ask and normalize it."""
@@ -83,7 +93,12 @@ def fetch_braiins_offer() -> Optional[NormalizedOffer]:
 def fetch_mrr_offer() -> Optional[NormalizedOffer]:
     """Fetch the cheapest MRR listing and normalize it."""
     data = get_mrr_listings()
-    if not data or data.get("error") or data.get("needs_auth") or "price_btc_per_ph_day" not in data:
+    if (
+        not data
+        or data.get("error")
+        or data.get("needs_auth")
+        or "price_btc_per_ph_day" not in data
+    ):
         return None
 
     price_per_ph_day = float(data["price_btc_per_ph_day"])
@@ -126,7 +141,9 @@ def fetch_nicehash_offer() -> Optional[NormalizedOffer]:
 
     # Speed in PH/s -> TH/s
     hashrate_ph = _safe_float(data.get("best_order_speed_ph"), 0)
-    hashrate_th = hashrate_ph * 1000.0 if hashrate_ph > 0 else DEFAULT_RENTAL_HASHRATE_TH
+    hashrate_th = (
+        hashrate_ph * 1000.0 if hashrate_ph > 0 else DEFAULT_RENTAL_HASHRATE_TH
+    )
 
     return NormalizedOffer(
         provider="nicehash",
@@ -145,63 +162,20 @@ def fetch_nicehash_offer() -> Optional[NormalizedOffer]:
     )
 
 
-def fetch_kissmyhash_offer() -> Optional[NormalizedOffer]:
-    """Fetch from KissMyHash API. Falls back to NiceHash +10% markup if KMH API unavailable."""
-    try:
-        r = requests.get(
-            "https://app.kissmyhash.com/api/v1/market",
-            params={"algorithm": "SHA256"},
-            timeout=6,
-            headers={"User-Agent": "cypher65-hashrate-market/1.0"},
-        )
-        if r.ok:
-            data = r.json()
-            price_btc_per_ph = _safe_float(data.get("price_btc_per_ph_day") or data.get("price"), 0)
-            if price_btc_per_ph > 0:
-                return NormalizedOffer(
-                    provider="kissmyhash",
-                    hashrate=DEFAULT_RENTAL_HASHRATE_TH,
-                    price_per_th_day=price_btc_per_ph / PH_TO_TH,
-                    duration_days=1.0,
-                    fee_pct=0.0,
-                    algorithm="sha256",
-                    source="kissmyhash",
-                    meta={"source": "app.kissmyhash.com", "data": data},
-                )
-    except Exception:
-        log.info("[hashrate_market] KissMyHash API unavailable, fallback to NiceHash+10%%")
+def fetch_parasite_offer(
+    network_hashrate: Optional[float] = None,
+) -> Optional[NormalizedOffer]:
+    """Parasite 'refinery' estimate — RETIRED (always None).
 
-    # Fallback: derive from NiceHash with 10% markup
-    try:
-        nh = fetch_nicehash_offer()
-        if nh and nh.price_per_th_day > 0:
-            return NormalizedOffer(
-                provider="kissmyhash",
-                hashrate=nh.hashrate,
-                price_per_th_day=nh.price_per_th_day * 1.10,
-                duration_days=nh.duration_days,
-                fee_pct=nh.fee_pct,
-                algorithm=nh.algorithm,
-                source="derived",
-                estimated=True,
-                meta={
-                    "source": "derived_from_nicehash",
-                    "nicehash_price": nh.price_per_th_day,
-                    "markup_pct": 10.0,
-                },
-            )
-    except Exception:
-        pass
-
+    The fee-only model is mathematically sub-floor: price collapses to
+    4.5e12 / net_hr (the pool_hr term cancels), i.e. ~7.5e-9 BTC/TH·day
+    ≈ 0.04 sats/TH·h — ~1000× below real rental prices. Every such quote
+    would be rejected by MIN_PLAUSIBLE_PRICE_BTC_TH_DAY anyway, so calling
+    the pool API every market poll only wastes a request on a guaranteed
+    discard. Short-circuit here; the aggregator skips None."""
     return None
-
-
-def fetch_parasite_offer(network_hashrate: Optional[float] = None) -> Optional[NormalizedOffer]:
-    """Fetch a 'refinery' rental offer from Parasite Space pool.
-    Parasite is a mining pool (not a marketplace), but we model their
-    pool-fee-based mining as a 'rental' where cost = pool fee + opportunity cost.
-    The price is estimated from the pool's share of network and fee structure."""
-    from agents.solo_mining_advisor.tools import get_parasite_pool_stats
+    # fmt: off
+    from agents.solo_mining_advisor.tools import get_parasite_pool_stats  # noqa: F401
     try:
         stats = get_parasite_pool_stats()
         if not stats or stats.get("error") or stats.get("pool_status") == "empty":
@@ -222,12 +196,17 @@ def fetch_parasite_offer(network_hashrate: Optional[float] = None) -> Optional[N
 
         # Price = pool fee (1%) of daily revenue per TH/day
         fee_pct = 1.0
-        price_per_th_day = (daily_pool_revenue_btc * (fee_pct / 100.0)) / (pool_hr_hs / 1e12) if pool_hr_hs > 0 else 1e-8
+        price_per_th_day = (daily_pool_revenue_btc * (fee_pct / 100.0)) / (pool_hr_hs / 1e12) if pool_hr_hs > 0 else 0.0
+        # A sub-floor quote is a glitch of the estimation, not real hashpower —
+        # never emit it (it would be persisted as 'cheapest' and zero out the
+        # market-timing analytics in the rentals panel).
+        if price_per_th_day < MIN_PLAUSIBLE_PRICE_BTC_TH_DAY:
+            return None
 
         return NormalizedOffer(
             provider="parasite",
             hashrate=pool_hr_hs / 1e12 if pool_hr_hs > 0 else DEFAULT_RENTAL_HASHRATE_TH,
-            price_per_th_day=max(price_per_th_day, 1e-8),
+            price_per_th_day=price_per_th_day,
             duration_days=1.0,
             fee_pct=fee_pct,
             algorithm="sha256",
@@ -257,14 +236,14 @@ def fetch_parasite_offer(network_hashrate: Optional[float] = None) -> Optional[N
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 _FETCH_CACHE: Dict[str, Dict[str, Any]] = {}
-_FETCH_CACHE_TTL = 60          # seconds — successful fetches
-_FETCH_CACHE_EMPTY_TTL = 15    # seconds — empty/errored fetches (retry sooner)
+_FETCH_CACHE_TTL = 60  # seconds — successful fetches
+_FETCH_CACHE_EMPTY_TTL = 15  # seconds — empty/errored fetches (retry sooner)
 # Fase 3 · P1: simple retry/backoff on transient provider failures (429/5xx).
 # The provider tools already surface HTTP errors as error-dicts → fetchers
 # return None, so we retry the whole fetch when it yields nothing, with a
 # short linear backoff. Bounded (1 retry) so we never hammer the APIs.
-_FETCH_RETRIES = 1             # extra attempts after the first
-_FETCH_BACKOFF_BASE = 0.15     # seconds — linear backoff before each retry
+_FETCH_RETRIES = 1  # extra attempts after the first
+_FETCH_BACKOFF_BASE = 0.15  # seconds — linear backoff before each retry
 
 
 def clear_fetch_cache() -> None:
@@ -286,7 +265,11 @@ def _cached_fetch(key: str, fetcher: Any) -> Optional[NormalizedOffer]:
     now = time.time()
     entry = _FETCH_CACHE.get(key)
     if entry is not None:
-        ttl = _FETCH_CACHE_TTL if entry.get("value") is not None else _FETCH_CACHE_EMPTY_TTL
+        ttl = (
+            _FETCH_CACHE_TTL
+            if entry.get("value") is not None
+            else _FETCH_CACHE_EMPTY_TTL
+        )
         if now - entry.get("ts", 0) < ttl:
             return entry["value"]
 
@@ -297,8 +280,13 @@ def _cached_fetch(key: str, fetcher: Any) -> Optional[NormalizedOffer]:
             if value is not None:
                 break
         except Exception as e:  # keep cache consistent on failure
-            log.warning("[hashrate_market] %s fetch failed (attempt %d/%d): %s",
-                        key, attempt + 1, _FETCH_RETRIES + 1, e)
+            log.warning(
+                "[hashrate_market] %s fetch failed (attempt %d/%d): %s",
+                key,
+                attempt + 1,
+                _FETCH_RETRIES + 1,
+                e,
+            )
             value = None
         if attempt < _FETCH_RETRIES:
             time.sleep(_FETCH_BACKOFF_BASE * (attempt + 1))
@@ -321,7 +309,6 @@ def fetch_all_offers(network_hashrate: Optional[float] = None) -> List[Normalize
         ("braiins", fetch_braiins_offer),
         ("mrr", fetch_mrr_offer),
         ("nicehash", fetch_nicehash_offer),
-        ("kissmyhash", fetch_kissmyhash_offer),
         ("parasite", lambda: fetch_parasite_offer(network_hashrate)),
     ]:
         try:
@@ -338,6 +325,7 @@ def fetch_all_offers(network_hashrate: Optional[float] = None) -> List[Normalize
 #  Metrics & scoring
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+
 def compute_metrics(
     offer: NormalizedOffer,
     network_hashrate: Optional[float] = None,
@@ -347,7 +335,11 @@ def compute_metrics(
     Revenue is estimated from the rented hashrate's share of the network
     times the daily block reward. It is a rough expected value only.
     """
-    net_hr = network_hashrate if network_hashrate and network_hashrate > 0 else DEFAULT_NETWORK_HASHRATE
+    net_hr = (
+        network_hashrate
+        if network_hashrate and network_hashrate > 0
+        else DEFAULT_NETWORK_HASHRATE
+    )
 
     hashrate_hps = offer.hashrate * 1e12
     daily_revenue_btc = (hashrate_hps / net_hr) * BLOCKS_PER_DAY * BTC_BLOCK_REWARD
@@ -383,7 +375,9 @@ def compute_metrics(
     }
 
 
-def score_offer(offer: NormalizedOffer, network_hashrate: Optional[float] = None) -> Dict[str, Any]:
+def score_offer(
+    offer: NormalizedOffer, network_hashrate: Optional[float] = None
+) -> Dict[str, Any]:
     """Convenience wrapper: full dict of offer + metrics."""
     return {
         "id": f"{offer.provider}_{offer.price_per_th_day:.6f}",
@@ -439,6 +433,30 @@ def _empty_metrics() -> Dict[str, Any]:
 #  Persistence
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+_purged_glitch_history = False  # one-time legacy cleanup per process
+
+
+def _purge_glitch_history(conn: Any) -> None:
+    """One-time cleanup of legacy sub-floor (glitch) rows written by the old
+    parasite estimator (1e-8 BTC/TH·day). Deleting them makes every consumer
+    (rentals market timing, Market module charts) show REAL prices only."""
+    global _purged_glitch_history
+    if _purged_glitch_history:
+        return
+    _purged_glitch_history = True
+    try:
+        c = conn.cursor()
+        c.execute(
+            "DELETE FROM hashrate_market_history "
+            "WHERE algorithm='sha256' AND price_per_th_day > 0 AND price_per_th_day < ?",
+            (MIN_PLAUSIBLE_PRICE_BTC_TH_DAY,),
+        )
+        conn.commit()
+    except Exception as e:
+        # Issue #202: a failed purge is degradation — never silent.
+        log.warning("[hashrate_market] glitch-history purge failed: %s", e)
+
+
 def persist_market_history(
     conn: Any,
     offers: List[NormalizedOffer],
@@ -448,11 +466,20 @@ def persist_market_history(
     ``conn`` is an open sqlite3 connection with row_factory set.
     """
     if not offers:
+        _purge_glitch_history(conn)
         return
 
     c = conn.cursor()
     ts = int(time.time())
+    _purge_glitch_history(conn)
     for offer in offers:
+        # sha256-only floor: scrypt and other algorithms have legitimately
+        # cheaper per-TH prices and must never be filtered.
+        if (
+            offer.algorithm == "sha256"
+            and offer.price_per_th_day < MIN_PLAUSIBLE_PRICE_BTC_TH_DAY
+        ):
+            continue  # glitch floor — never pollute the history table
         metrics = compute_metrics(offer)
         c.execute(
             """INSERT INTO hashrate_market_history
@@ -481,29 +508,317 @@ def fetch_market_history(conn: Any, limit: int = 100) -> List[Dict[str, Any]]:
         """SELECT ts, provider, hashrate, price_per_th_day, duration_days,
                   fee_pct, algorithm, score, raw_data
            FROM hashrate_market_history
+           WHERE (algorithm != 'sha256' OR price_per_th_day >= ?)
            ORDER BY ts DESC, provider ASC
            LIMIT ?""",
-        (limit,),
+        (MIN_PLAUSIBLE_PRICE_BTC_TH_DAY, limit),
     )
     rows = []
     for r in c.fetchall():
-        rows.append({
-            "ts": r["ts"],
-            "provider": r["provider"],
-            "hashrate": r["hashrate"],
-            "price_per_th_day": r["price_per_th_day"],
-            "duration_days": r["duration_days"],
-            "fee_pct": r["fee_pct"],
-            "algorithm": r["algorithm"],
-            "score": r["score"],
-            "raw_data": r["raw_data"],
-        })
+        rows.append(
+            {
+                "ts": r["ts"],
+                "provider": r["provider"],
+                "hashrate": r["hashrate"],
+                "price_per_th_day": r["price_per_th_day"],
+                "duration_days": r["duration_days"],
+                "fee_pct": r["fee_pct"],
+                "algorithm": r["algorithm"],
+                "score": r["score"],
+                "raw_data": r["raw_data"],
+            }
+        )
     return rows
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 #  Command Center highlights (cheap, no external HTTP)
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+def market_offer_sort_key(scored_offer: Dict[str, Any]) -> tuple:
+    """Real-first sort key for the HASH MARKET grid.
+
+    Live marketplace quotes (``estimated=False``) always sort BEFORE
+    estimated/derived offers — the parasite pool-fee model carries an
+    inflated ROI score that would otherwise crown its ~1 sat/TH/d synthetic
+    card at the top of the grid. Within each group the EV score still
+    orders descending, so the best real deal stays first.
+
+    Returns ``(estimated, -score)``: False < True, so real quotes win the
+    first slots; ``max_items`` still caps the final list, real offers fill
+    the slots first and estimated offers only fill what is left.
+    """
+    metrics = scored_offer.get("metrics") or {}
+    score = float(metrics.get("score") or 0.0)
+    return (bool(scored_offer.get("estimated", False)), -score)
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#  Institutional View — HashratePulse Enterprise
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+# Risk tiers per HashratePulse Enterprise framework
+RISK_TIERS = {
+    "braiins": 1,  # Tier 1 — institutional (Braiins OS+, smartpool, regulated)
+    "nicehash": 2,  # Tier 2 — established marketplace, KYC, escrow
+    "mrr": 2,  # Tier 2 — established marketplace, escrow
+    "parasite": 3,  # Tier 3 — pool-based, own hardware required, modeled not live
+    "derived": 4,  # Tier 4 — synthetic/derived, not executable
+    "unknown": 4,
+}
+RISK_TIER_LABELS = {
+    1: "Tier 1 \u00b7 Institutional",
+    2: "Tier 2 \u00b7 Established",
+    3: "Tier 3 \u00b7 Specialized",
+    4: "Tier 4 \u00b7 Experimental",
+}
+
+
+def _risk_tier(provider: str, estimated: bool = False) -> int:
+    """Return the HashratePulse risk tier for a provider."""
+    if estimated:
+        return 4
+    return RISK_TIERS.get(provider.lower(), 4)
+
+
+def _estimate_own_mining_cost_usd_per_th_day(
+    efficiency_j_th: float = 30.0,
+    electricity_usd_per_kwh: float = 0.05,
+    hardware_allowance_pct: float = 0.15,
+) -> Optional[float]:
+    """Estimated all-in USD cost to mine 1 TH/day on OWNED hardware.
+
+    CFO benchmark for the rent-vs-own callout in the institutional view.
+    Pure math, no network calls:
+      - 1 TH/s = 1e12 hashes/sec → 1e12 * 86400 hashes/day.
+      - Energy = hashes * J/TH / 1e12 (J) per second → J/day = J/TH * 86400.
+      - kWh = J/day / 3.6e6; USD = kWh * price/kWh.
+      - Hardware allowance: adds a % on top of electricity to cover ASIC
+        amortization/repairs (S19-class ~30 J/TH @ 5c/kWh ≈ 3.6c/TH/day).
+    Env-overridable so operators can plug in their REAL power cost.
+    """
+    try:
+        eff = float(os.environ.get("OWN_MINING_EFFICIENCY_J_TH", efficiency_j_th))
+        price = float(os.environ.get("ELECTRICITY_USD_KWH", electricity_usd_per_kwh))
+        allowance = float(
+            os.environ.get("HARDWARE_ALLOWANCE_PCT", hardware_allowance_pct)
+        )
+    except (TypeError, ValueError):
+        eff, price, allowance = (
+            efficiency_j_th,
+            electricity_usd_per_kwh,
+            hardware_allowance_pct,
+        )
+    if eff <= 0 or price <= 0:
+        return None
+    energy_kwh_per_th_day = (eff * 86400) / 3.6e6
+    cost = energy_kwh_per_th_day * price * (1.0 + allowance)
+    return cost if cost > 0 else None
+
+
+def compute_institutional_view(
+    offers: List[NormalizedOffer],
+    network_hashrate: Optional[float] = None,
+    btc_usd: Optional[float] = None,
+) -> Dict[str, Any]:
+    """Build the HashratePulse Enterprise institutional view from raw offers.
+
+    Returns the Executive Snapshot + Ranked Venue Table as a single dict
+    that the frontend renders directly.
+    """
+    if not offers:
+        return {"regime": "No Data", "snapshot": None, "venues": [], "notes": []}
+
+    # Score every offer
+    scored = [score_offer(o, network_hashrate) for o in offers]
+    # Sort: estimated last, then best price first
+    scored.sort(key=lambda s: (bool(s.get("estimated", False)), s["price_per_th_day"]))
+
+    best = scored[0]
+    best_price = best["price_per_th_day"]
+
+    # Regime detection
+    if len(scored) >= 3:
+        spread_pct = (
+            (scored[-1]["price_per_th_day"] - best_price) / best_price * 100
+            if best_price > 0
+            else 0
+        )
+        regime = (
+            "Tight"
+            if spread_pct < 5
+            else (
+                "Normal"
+                if spread_pct < 15
+                else ("Wide" if spread_pct < 40 else "Dislocated")
+            )
+        )
+    else:
+        regime = "Normal"
+
+    # Total visible liquidity (PH/s)
+    total_ph = sum(o.hashrate for o in offers) / 1000.0
+
+    # VWAP — liquidity-WEIGHTED mean price, not a naive average. A venue
+    # quoting a silly price with 100 PH should not skew the exec benchmark
+    # the way a simple mean would (CFO audit: naive mean misleads allocation).
+    prices = [s["price_per_th_day"] for s in scored]
+    sizes_th = [max(float(s.get("hashrate") or 0), 1.0) for s in scored]
+    vwap = (
+        (sum(p * w for p, w in zip(prices, sizes_th)) / sum(sizes_th))
+        if prices
+        else 0.0
+    )
+    prices_sorted = sorted(prices)
+    n = len(prices_sorted)
+    median = (
+        prices_sorted[n // 2]
+        if n % 2
+        else (prices_sorted[n // 2 - 1] + prices_sorted[n // 2]) / 2.0
+    )
+    price_min = prices_sorted[0]
+    price_max = prices_sorted[-1]
+
+    # ── Rent vs own benchmark (CFO) ────────────────────────────────────────
+    # The operator's fleet is the alternative: renting hashrate only makes
+    # sense if the cheapest rental is NOT way above the cost of mining the
+    # same TH on owned hardware. Estimated from typical S19/X19 economics
+    # (efficiency 30 J/TH, electricity 5c/kWh → ~0.036 USD/TH/day opex +
+    # a 15% hardware-cost allowance). BTC/USD converts the rental price.
+    rent_vs_own = None
+    if btc_usd:
+        rental_usd_th_day = best_price * btc_usd  # BTC/TH/d × USD/BTC → USD/TH/d
+        own_cost_usd_th_day = _estimate_own_mining_cost_usd_per_th_day()
+        if own_cost_usd_th_day:
+            ratio = rental_usd_th_day / own_cost_usd_th_day
+            rent_vs_own = {
+                "rental_usd_th_day": round(rental_usd_th_day, 4),
+                "own_cost_usd_th_day": round(own_cost_usd_th_day, 4),
+                "ratio": round(ratio, 2),
+                # ratio 1.0 = rental == own cost; <1 rental cheaper, >1 dearer
+                "cheaper_than_own": ratio < 1.0,
+                "premium_pct": round((ratio - 1.0) * 100, 0) if ratio >= 1.0 else 0,
+                "discount_pct": round((1.0 - ratio) * 100, 0) if ratio < 1.0 else 0,
+            }
+
+    snapshot = {
+        "best_price_btc_ph_day": round(best_price * 1000, 6),
+        "best_price_sats_th_day": round(best_price * 1e8, 1),
+        "best_venue": best["provider"],
+        "spread_vs_second_pct": (
+            round((scored[1]["price_per_th_day"] - best_price) / best_price * 100, 1)
+            if len(scored) > 1
+            else 0
+        ),
+        "total_liquidity_ph": round(total_ph, 1),
+        "total_liquidity_eh": round(total_ph / 1000, 3),
+        "regime": regime,
+        "vwap_4h_btc_ph_day": round(vwap * 1000, 6),
+        "median_btc_ph_day": round(median * 1000, 6),
+        "price_range_btc_ph_day": [
+            round(price_min * 1000, 6),
+            round(price_max * 1000, 6),
+        ],
+        "offer_count": len(scored),
+        "btc_usd": btc_usd,
+        "rent_vs_own": rent_vs_own,
+    }
+
+    venues = []
+    for s in scored:
+        price_ph = s["price_per_th_day"] * 1000
+        spread_vs_best = (
+            round((s["price_per_th_day"] - best_price) / best_price * 100, 1)
+            if best_price > 0
+            else 0
+        )
+        spread_vs_vwap = (
+            round((s["price_per_th_day"] - vwap) / vwap * 100, 1) if vwap > 0 else 0
+        )
+        tier = _risk_tier(s["provider"], s.get("estimated", False))
+        depth = round(s["hashrate"] / 1000, 1)
+        depth_score = "Deep" if depth > 10 else ("Adequate" if depth > 1 else "Thin")
+
+        if s.get("estimated"):
+            rec = "Avoid \u2014 modeled quote, not executable"
+        elif tier >= 4:
+            rec = "Avoid \u2014 counterparty concerns"
+        elif spread_vs_best > 20:
+            rec = "Liquidity constrained"
+        elif tier == 1 and spread_vs_best <= 2:
+            rec = "Preferred venue \u2014 best execution"
+        elif spread_vs_best <= 5:
+            rec = "Acceptable for tactical allocation"
+        else:
+            rec = "Acceptable risk-adjusted"
+
+        venues.append(
+            {
+                "venue": s["provider"],
+                "price_btc_ph_day": round(price_ph, 6),
+                "price_sats_th_day": round(s["price_per_th_day"] * 1e8, 1),
+                "spread_vs_best_pct": spread_vs_best,
+                "spread_vs_vwap_pct": spread_vs_vwap,
+                "available_ph": depth,
+                "depth_score": depth_score,
+                "risk_tier": tier,
+                "risk_tier_label": RISK_TIER_LABELS.get(tier, "Unknown"),
+                "recommendation": rec,
+                "estimated": bool(s.get("estimated", False)),
+                "source": s.get("source", ""),
+                "meta": s.get("meta", {}),
+            }
+        )
+
+    notes = []
+    if total_ph < 5:
+        notes.append(
+            "Low aggregate liquidity \u2014 size > 5 PH may require splitting across venues."
+        )
+    if regime in ("Wide", "Dislocated"):
+        notes.append(
+            f"Market regime is {regime} \u2014 spreads are elevated. "
+            "Consider waiting for normalization if not time-sensitive."
+        )
+    # Deepest-venue note: where can you actually SIZE the trade? Executive
+    # buyers care about executable liquidity, not just the best sticker price.
+    real = [v for v in venues if not v.get("estimated")]
+    if real:
+        deepest = max(real, key=lambda v: v.get("available_ph") or 0)
+        if (deepest.get("available_ph") or 0) >= 5:
+            notes.append(
+                f"{deepest['venue']} has the deepest visible liquidity "
+                f"({deepest.get('available_ph')} PH/s) \u2014 preferred for sizes above 5 PH."
+            )
+    # Rent vs own executive callout (CFO): tells the operator whether renting
+    # is cheaper or dearer than mining the same hashrate on owned ASICs.
+    if rent_vs_own:
+        if rent_vs_own["cheaper_than_own"]:
+            notes.append(
+                f"Best rental is {rent_vs_own['discount_pct']:.0f}% CHEAPER than "
+                "mining on owned hardware today \u2014 tactical lease makes sense."
+            )
+        else:
+            notes.append(
+                f"Best rental costs {rent_vs_own['premium_pct']:.0f}% MORE than "
+                "mining on owned hardware \u2014 prefer your own fleet unless "
+                "you need instant scale."
+            )
+    for v in venues:
+        if v["risk_tier"] >= 3 and not v["estimated"]:
+            notes.append(
+                f"{v['venue']}: Tier {v['risk_tier']} counterparty \u2014 "
+                "verify payout reliability before deploying > 1 PH."
+            )
+
+    return {
+        "regime": regime,
+        "snapshot": snapshot,
+        "venues": venues,
+        "notes": notes,
+    }
+
 
 def build_highlights(
     snapshot: Optional[Dict[str, Any]] = None,
@@ -559,7 +874,7 @@ def build_highlights(
             )
 
     scored = [score_offer(o, network_hashrate) for o in offers]
-    scored.sort(key=lambda x: x["metrics"]["score"], reverse=True)
+    scored.sort(key=market_offer_sort_key)
     return scored[:max_items]
 
 

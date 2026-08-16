@@ -132,6 +132,60 @@ export interface PushPreferences {
   categories: Record<string, boolean>;
 }
 
+// ── Rentals (Rentals Hub parity — /api/rentals) ────────────────────────
+export interface Rental {
+  id: string;
+  provider: 'mrr' | 'braiins';
+  status?: string;
+  started_at?: number;
+  ends_at?: number;
+  hashrate?: number; // TH/s
+  price_per_th?: number; // sats/TH/h (normalized)
+  total_cost_sat?: number;
+  paid_price_sat?: number;
+  blacklisted?: boolean;
+  delivery_pct?: number;
+  pl_pct?: number; // realized P/L on closed rentals
+  rig?: { id?: string; name?: string };
+  contract?: {
+    id?: string;
+    status?: string;
+    price_sat_per_ph_day?: number;
+    speed_ph?: number;
+    duration_hours?: number;
+  };
+}
+
+export interface RentalsData {
+  mrr: {
+    needs_auth: boolean;
+    active: Rental[];
+    history: Rental[];
+    owner: Rental[];
+    total_active: number;
+    total_history: number;
+    total_owner: number;
+    error?: string | null;
+  };
+  braiins: {
+    needs_auth: boolean;
+    contracts: Rental[];
+    error?: string | null;
+  };
+  portfolio?: {
+    total_spent_sat?: number;
+    weighted_avg_cost_sats_per_thh?: number;
+    avg_delivery_pct?: number;
+    total_pl_sat?: number;
+    [key: string]: unknown;
+  };
+  market_signals?: {
+    overpay: Array<{ severity: string; overpay_pct: number; message: string }>;
+    arbitrage: Array<{ severity: string; discount_pct: number; message: string }>;
+  };
+  updated_at?: number;
+}
+
 export type BatteryMode = 'max_battery' | 'balanced' | 'real_time';
 
 export interface AuthState {

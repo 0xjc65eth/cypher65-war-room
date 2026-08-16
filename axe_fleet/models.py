@@ -35,64 +35,66 @@ STATUS_ERROR = "ERROR"
 
 # ── Device schema keys ───────────────────────────────────────────────────
 DEVICE_SCHEMA = {
-    "id": "",                 # unique id (uuid or hash)
-    "name": "",               # user-assigned name (e.g. "Garage Bitaxe")
-    "model": "",              # Bitaxe / NerdAxe / NerdQaxe / NerdQaxe++ / unknown
-    "manufacturer": "",       # inferred from model / system info
-    "firmware": "",           # e.g. "AxeOS"
-    "firmware_version": "",   # e.g. "2.6.0"
-    "api_version": "",        # e.g. "2.0.0"
-    "ip_address": "",         # IPv4 string
-    "hostname": "",           # device hostname
-    "mac_address": "",        # MAC (if available)
-    "last_seen": 0,           # unix ts
+    "id": "",  # unique id (uuid or hash)
+    "name": "",  # user-assigned name (e.g. "Garage Bitaxe")
+    "model": "",  # Bitaxe / NerdAxe / NerdQaxe / NerdQaxe++ / unknown
+    "manufacturer": "",  # inferred from model / system info
+    "firmware": "",  # e.g. "AxeOS"
+    "firmware_version": "",  # e.g. "2.6.0"
+    "api_version": "",  # e.g. "2.0.0"
+    "ip_address": "",  # IPv4 string
+    "hostname": "",  # device hostname
+    "mac_address": "",  # MAC (if available)
+    "last_seen": 0,  # unix ts
     "status": STATUS_OFFLINE,
-    "group_id": "",           # optional group for fleet management
-    "added_at": 0,            # unix ts
-    "updated_at": 0,          # unix ts
+    "group_id": "",  # optional group for fleet management
+    "added_at": 0,  # unix ts
+    "updated_at": 0,  # unix ts
 }
 
 # ── Telemetry schema keys ────────────────────────────────────────────────
 TELEMETRY_SCHEMA = {
-    "ts": 0,                  # unix timestamp of measurement
-    "device_id": "",          # refers to device.id
-    "hashrate_hs": 0,         # H/s
-    "hashrate_str": "",       # formatted (e.g. "1.21 TH/s")
-    "expected_hashrate": 0,   # H/s (from ASIC config)
+    "ts": 0,  # unix timestamp of measurement
+    "device_id": "",  # refers to device.id
+    "hashrate_hs": 0,  # H/s
+    "hashrate_str": "",  # formatted (e.g. "1.21 TH/s")
+    "expected_hashrate": 0,  # H/s (from ASIC config)
     # Fase 5: hashrate windows (H/s) — None/0 when firmware does not expose them
-    "hashrate_1m": None,      # H/s 1-minute average
-    "hashrate_10m": None,     # H/s 10-minute average
-    "hashrate_1h": None,      # H/s 1-hour average
-    "temperature": None,      # °C (board temp)
-    "temp_asic": None,        # °C (ASIC junction temp, if available)
-    "temp_vreg": None,        # °C (voltage regulator temp)
-    "fan_speed": None,        # 0-100 percent
+    "hashrate_1m": None,  # H/s 1-minute average
+    "hashrate_10m": None,  # H/s 10-minute average
+    "hashrate_1h": None,  # H/s 1-hour average
+    "temperature": None,  # °C (board temp)
+    "temp_asic": None,  # °C (ASIC junction temp, if available)
+    "temp_vreg": None,  # °C (voltage regulator temp)
+    "fan_speed": None,  # 0-100 percent
     "fan_rpm": None,
-    "power_watts": None,      # watts
-    "voltage_mv": None,       # core voltage in mV
-    "voltage_actual_mv": None, # actual measured voltage
-    "frequency_mhz": None,    # ASIC frequency in MHz
-    "current_ma": None,       # current in mA
-    "efficiency_jth": None,   # J/TH
-    "best_diff": "",          # best difficulty string
+    "power_watts": None,  # watts
+    "voltage_mv": None,  # core voltage in mV
+    "voltage_actual_mv": None,  # actual measured voltage
+    "frequency_mhz": None,  # ASIC frequency in MHz
+    "current_ma": None,  # current in mA
+    "efficiency_jth": None,  # J/TH
+    "best_diff": "",  # best difficulty string
     "best_diff_raw": 0.0,
     "shares_accepted": 0,
     "shares_rejected": 0,
     "shares_stale": 0,
     "hw_errors": 0,
-    "hw_error_pct": 0.0,      # HW error rate in %
+    "hw_error_pct": 0.0,  # HW error rate in %
     "uptime_seconds": 0,
     "free_heap": 0,
     "wifi_rssi": None,
     "pool_url": "",
     "pool_user": "",
     "stratum_status": "",
+    "mining_paused": False,  # ESP-Miner miningPaused — explicit operator intent
 }
 
 
 def new_device(ip_address: str, name: str = "") -> dict:
     """Create a new device dict with default values."""
     import time
+
     d = dict(DEVICE_SCHEMA)
     d["ip_address"] = ip_address
     d["name"] = name or ip_address
@@ -108,6 +110,23 @@ def new_telemetry(device_id: str) -> dict:
     t["device_id"] = device_id
     t["ts"] = 0
     return t
+
+
+def derive_device_status(telemetry: dict = None, hashrate: int = None) -> str:
+    """Derive a device status from telemetry.
+
+    PAUSED wins over hashrate (Issue #13): miningPaused is explicit operator
+    intent — a paused device must render PAUSED, never IDLE/ONLINE, even if
+    the firmware still reports a stale hashrate. Otherwise ONLINE when hashing
+    (>0 H/s), IDLE when reachable but idle.
+    """
+    t = telemetry or {}
+    # Strict `is True`: a stringy "false" from a quirky agent/firmware must
+    # never pause a device (`bool("false")` is True in Python).
+    if t.get("mining_paused") is True:
+        return STATUS_PAUSED
+    hr = hashrate if hashrate is not None else int(t.get("hashrate_hs") or 0)
+    return STATUS_ONLINE if hr > 0 else "IDLE"
 
 
 def infer_capabilities(system_info: dict) -> dict:
@@ -175,7 +194,7 @@ def infer_health_score(telemetry: dict) -> int:
         hr_score = 20  # hashing but no baseline
     else:
         hr_score = 0
-    score -= (40 - hr_score)
+    score -= 40 - hr_score
 
     # Temperature: 0-25 points
     temp = telemetry.get("temperature")
@@ -190,7 +209,7 @@ def infer_health_score(telemetry: dict) -> int:
             temp_score = 5
         else:
             temp_score = 0
-        score -= (25 - temp_score)
+        score -= 25 - temp_score
 
     # HW error rate: 0-20 points
     hw_pct = telemetry.get("hw_error_pct") or 0
@@ -204,20 +223,20 @@ def infer_health_score(telemetry: dict) -> int:
         hw_score = 5
     else:
         hw_score = 0
-    score -= (20 - hw_score)
+    score -= 20 - hw_score
 
     # Uptime: 0-15 points
     uptime = telemetry.get("uptime_seconds") or 0
-    if uptime >= 86400 * 7:    # 7 days
+    if uptime >= 86400 * 7:  # 7 days
         up_score = 15
-    elif uptime >= 86400:       # 1 day
+    elif uptime >= 86400:  # 1 day
         up_score = 10
-    elif uptime >= 3600:        # 1 hour
+    elif uptime >= 3600:  # 1 hour
         up_score = 5
     elif uptime > 0:
         up_score = 3
     else:
         up_score = 0
-    score -= (15 - up_score)
+    score -= 15 - up_score
 
     return max(0, min(100, score))

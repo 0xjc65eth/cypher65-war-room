@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CYPHER65 · Guia do Agente</title>
+<link rel="stylesheet" href="/static/style.css?v40">
+<style>
+  /* ── Standalone guide page — reuses the dashboard theme vars ────────── */
+  .agent-guide {
+    max-width: 860px;
+    margin: 0 auto;
+    padding: 24px 20px 64px;
+  }
+  .agent-guide__topbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 10px 0 14px;
+    border-bottom: 1px solid var(--border-subtle, #2a2a2e);
+    margin-bottom: 20px;
+  }
+  .agent-guide__brand {
+    font-family: var(--font-mono, 'JetBrains Mono', monospace);
+    font-size: 13px;
+    letter-spacing: 0.18em;
+    color: var(--green, #00C853);
+  }
+  .agent-guide__brand-sub {
+    font-size: 9px;
+    color: var(--text-tertiary, #757575);
+    letter-spacing: 0.08em;
+    margin-left: 8px;
+  }
+  .agent-guide__back {
+    font-family: var(--font-mono, 'JetBrains Mono', monospace);
+    font-size: 10px;
+    color: var(--cyan, #06d6f0);
+    text-decoration: none;
+    border: 1px solid var(--border-subtle, #2a2a2e);
+    padding: 4px 10px;
+    transition: all 0.15s ease;
+  }
+  .agent-guide__back:hover {
+    color: var(--bg-deep, #050505);
+    background: var(--cyan, #06d6f0);
+    border-color: var(--cyan, #06d6f0);
+  }
+  .agent-guide__content {
+    font-family: var(--font-sans, system-ui, sans-serif);
+    font-size: 12px;
+    line-height: 1.7;
+    color: var(--text-primary, #e8e8e8);
+  }
+  .agent-guide__content h1 {
+    font-size: 16px;
+    color: var(--green, #00C853);
+    letter-spacing: 0.04em;
+    margin: 0 0 12px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--border-subtle, #2a2a2e);
+  }
+  .agent-guide__content h2 {
+    font-size: 13px;
+    color: var(--cyan, #06d6f0);
+    margin: 26px 0 10px;
+    letter-spacing: 0.04em;
+  }
+  .agent-guide__content h3 {
+    font-size: 12px;
+    color: var(--green-dim, #00b34a);
+    margin: 18px 0 8px;
+  }
+  .agent-guide__content p {
+    margin: 0 0 12px;
+    max-width: 72ch;
+    color: var(--text-secondary, #cfcfcf);
+  }
+  .agent-guide__content strong { color: var(--text-primary, #e8e8e8); }
+  .agent-guide__content a {
+    color: var(--cyan, #06d6f0);
+    text-decoration: none;
+    border-bottom: 1px dotted var(--cyan, #06d6f0);
+  }
+  .agent-guide__content a:hover { color: var(--green, #00C853); border-color: var(--green, #00C853); }
+  .agent-guide__content blockquote {
+    margin: 0 0 14px;
+    padding: 8px 12px;
+    border-left: 2px solid var(--green, #00C853);
+    background: rgba(0, 200, 83, 0.05);
+    color: var(--text-secondary, #cfcfcf);
+    font-size: 11px;
+  }
+  .agent-guide__content blockquote p { margin: 0; }
+  .agent-guide__content code {
+    font-family: var(--font-mono, 'JetBrains Mono', monospace);
+    font-size: 10.5px;
+    background: var(--bg-deep, #050505);
+    color: var(--green, #00C853);
+    border: 1px solid var(--border-subtle, #2a2a2e);
+    padding: 1px 4px;
+  }
+  .agent-guide__content pre {
+    background: var(--bg-deep, #050505);
+    border: 1px solid var(--border-subtle, #2a2a2e);
+    padding: 10px 12px;
+    overflow-x: auto;
+    margin: 0 0 14px;
+  }
+  .agent-guide__content pre code {
+    background: none;
+    border: none;
+    padding: 0;
+    color: var(--green, #00C853);
+    font-size: 10.5px;
+    line-height: 1.6;
+    white-space: pre;
+  }
+  .agent-guide__content table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 0 0 16px;
+    font-size: 10.5px;
+  }
+  .agent-guide__content th, .agent-guide__content td {
+    border: 1px solid var(--border-subtle, #2a2a2e);
+    padding: 6px 10px;
+    text-align: left;
+    vertical-align: top;
+  }
+  .agent-guide__content th {
+    color: var(--green, #00C853);
+    background: rgba(0, 200, 83, 0.06);
+    letter-spacing: 0.04em;
+    font-family: var(--font-mono, 'JetBrains Mono', monospace);
+    font-size: 9.5px;
+    text-transform: uppercase;
+  }
+  .agent-guide__content td { color: var(--text-secondary, #cfcfcf); }
+  .agent-guide__content ul, .agent-guide__content ol {
+    margin: 0 0 14px;
+    padding-left: 22px;
+    color: var(--text-secondary, #cfcfcf);
+  }
+  .agent-guide__content li { margin-bottom: 4px; }
+  .agent-guide__content hr {
+    border: none;
+    border-top: 1px dashed var(--border-subtle, #2a2a2e);
+    margin: 22px 0;
+  }
+</style>
+</head>
+<body>
+  <div class="agent-guide">
+    <header class="agent-guide__topbar">
+      <div class="agent-guide__brand">
+        CYPHER65<span class="agent-guide__brand-sub">AGENT SETUP GUIDE</span>
+      </div>
+      <a class="agent-guide__back" href="/">← VOLTAR AO DASHBOARD</a>
+    </header>
+    <main class="agent-guide__content">
+      {{ guide_html }}
+    </main>
+  </div>
+</body>
+</html>

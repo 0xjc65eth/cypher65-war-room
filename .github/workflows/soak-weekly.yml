@@ -36,6 +36,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
+    # SECRET_KEY de TESTE (fixa, nunca usada em prod): services.auth.create_token()
+    # recusa emitir JWT sem SECRET_KEY — o soak precisa dela para os testes de
+    # auth/export isolation (mesmo fix aplicado em ci.yml / execution-pipeline).
+    env:
+      SECRET_KEY: "ci-test-secret-key-0123456789abcdef"
+
     defaults:
       run:
         working-directory: ./
