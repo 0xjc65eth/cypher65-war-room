@@ -391,6 +391,12 @@ jobs:
         uses: actions/checkout@v7
         with:
           fetch-depth: 0
+          # CRÍTICO (validado com dependabot simulado, PR #222): em
+          # pull_request o checkout padrão usa o MERGE ref (master já é
+          # ancestral) → merge-base vira master → stale sempre false.
+          # Checkout do head.sha REAL da branch para o merge-base refletir
+          # a defasagem verdadeira.
+          ref: ${{ github.event.pull_request.head.sha }}
 
       # Detecção: commits de master (após o merge-base) que tocam
       # .github/workflows/ e NÃO estão na branch = workflows defasados.
