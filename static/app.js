@@ -7063,6 +7063,10 @@ function renderAccount(acct) {
   function makeChart(id, label, color) {
     const canvas = document.getElementById(id);
     if (!canvas) return null;
+    // Issue #186: defensivo — app.js roda com defer após o Chart.js, mas se o
+    // CDN falhar (offline/blocked) o boot não pode crashar. Null é tratado
+    // pelos call sites (mesma convenção do canvas ausente).
+    if (typeof Chart === 'undefined') return null;
     const ctx = canvas.getContext('2d');
     const cfg = CHART_METRICS[id];
     // Human-readable Y ticks: hashrate/pool render fmt.hashrate (TH/s), best
@@ -9098,7 +9102,7 @@ dom.walletSave?.addEventListener('click', async () => {
     const wrap = document.getElementById('axe-detail-chart-wrap');
     const canvas = document.getElementById('axe-detail-chart');
     const countBadge = document.getElementById('axe-detail-chart-count');
-    if (!wrap || !canvas) return;
+    if (!wrap || !canvas || typeof Chart === 'undefined') return;  // Issue #186: defer-safe
 
     // Destroy previous chart instance so Chart.js doesn't complain.
     if (_axeDetailChart) { _axeDetailChart.destroy(); _axeDetailChart = null; }
