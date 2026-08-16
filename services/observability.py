@@ -7,7 +7,9 @@
 - ``build_logger()``: returns a named logger with the shared format.
 
 Design decisions (matriz de vendors em docs/DEPLOYMENT_OPS.md):
-- Sentry: env-gated (``SENTRY_DSN``) — já integrado em app.py.
+- Sentry: env-gated (``SENTRY_DSN``) — ``services/sentry_telemetry.py``
+  (Issue #176): release tracking (git SHA), environment, request_id em
+  breadcrumbs/events e PII-safe (send_default_pii=False).
 - Datadog/NewRelic: paid tiers → não adotados (regra de ouro CFO/CRO $0).
 - OpenTelemetry: SDK é grátis, mas precisa de collector/backend — documentado
   como caminho futuro (exporter OTLP pode apontar pro Sentry).

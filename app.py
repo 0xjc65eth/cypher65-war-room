@@ -113,6 +113,7 @@ import services.db_backup as _db_backup  # C4: automatic SQLite backup + boot in
 import services.remote_backup as _remote_backup  # $0 persistence: gist backup + boot restore
 import services.conversion as _conversion  # CFO: PRO funnel telemetry + LTV/CAC
 import services.doc_feedback as _doc_feedback  # #19: Learning FAQ loop — doc "was this helpful?"
+import services.error_tracker as _error_tracker  # #176: local error-rate sampler ($0 observability)
 from services.licensing import (
     is_pro,
     license_status as _license_status,
@@ -460,7 +461,9 @@ def attach_request_id():
     """
     incoming = (request.headers.get("X-Request-ID") or "").strip()
     rid = _SAFE_RID_RE.sub("", incoming)[:64]
-    _set_request_id(rid or _new_request_id())
+    rid = rid or _new_request_id()
+    _set_request_id(rid)
+    _set_sentry_request_tag(rid)  # Sentry scope tag (Issue #176) — no-op sem DSN
     return None
 
 
@@ -668,7 +671,7 @@ app.register_blueprint(alerts_bp)
 # current schema revision; _record_schema_version() stamps it into the
 # schema_version table on every boot so operators/tests can verify the DB
 # layout matches the code that wrote it.
-SCHEMA_VERSION = 2  # Issue #17: + pool_metrics table (60s health sampler)
+SCHEMA_VERSION = 3  # Issue #17: + pool_metrics (60s sampler) · Issue #176: + error_metrics (error-rate)
 
 
 def _record_schema_version(conn):
@@ -1180,6 +1183,14 @@ def init_db():
     except Exception as e:
         log.warning("[migrate] doc_feedback init failed: %s", e)
 
+    # ── Observability (Issue #176): local error-rate sampler table ──
+    # Buckets per hour + request_id — the $0 half of error tracking, works
+    # on self-host with NO Sentry DSN (Sentry is wired at boot, not here).
+    try:
+        _error_tracker.ensure_table(conn)
+    except Exception as e:
+        log.warning("[migrate] error_metrics init failed: %s", e)
+
     # ── CFO: PRO conversion telemetry (funnel + LTV/CAC) ──
     # Rows are funnel events (paywall_view → modal_open → checkout_start →
     # paid → key_activated); tenant_id/email are SHA-256 hashed (privacy).
@@ -1235,32 +1246,34 @@ from services.tenant import ensure_users_schema as _ensure_users_schema
 
 _ensure_users_schema()
 
-# ── Optional monitoring: Sentry (env-gated) ────────────────────────────────
-# Enabled only when SENTRY_DSN is set. Never a hard dependency: if sentry-sdk
-# isn't installed the app boots normally (honest telemetry — no fake errors).
-# The traces sample rate + env string are parsed ONCE here (guarded) and reused
-# by both the backend init and the index route (frontend SDK) — a misconfigured
-# env var must never 500 the dashboard.
-_SENTRY_DSN = os.environ.get("SENTRY_DSN", "").strip()
-_SENTRY_TRACES_SAMPLE_RATE = 0.1
-if _SENTRY_DSN:
-    try:
-        _SENTRY_TRACES_SAMPLE_RATE = float(
-            os.environ.get("SENTRY_TRACES_SAMPLE_RATE", "0.1")
-        )
-    except (TypeError, ValueError):
-        log.warning("[monitor] SENTRY_TRACES_SAMPLE_RATE inválido — usando 0.1")
-    try:
-        import sentry_sdk
+# ── Observability: Sentry (env-gated) + local error-rate sampler ──────────
+# services.sentry_telemetry (Issue #176) centralizes the env-gated init:
+# DSN + traces_sample_rate parsed ONCE (guarded), release tracking (git SHA),
+# environment, PII-safe (send_default_pii=False), and request_id correlation
+# (before_send + before_breadcrumb + per-request tag from Issue #124).
+# services.error_tracker is the $0 half — every ERROR/CRITICAL log record is
+# bucketed per hour into SQLite (with request_id) so the Admin panel shows
+# the error rate even on self-host with NO DSN. Both are safe no-ops when
+# unconfigured: a monitoring dependency must never break the boot.
+from services.sentry_telemetry import (
+    init_sentry as _init_sentry,
+    get_sentry_config as _get_sentry_config,
+    set_request_tag as _set_sentry_request_tag,
+    sentry_active as _sentry_active,
+)
 
-        sentry_sdk.init(
-            dsn=_SENTRY_DSN,
-            traces_sample_rate=_SENTRY_TRACES_SAMPLE_RATE,
-            release="cypher65-war-room",
-        )
-        log.info("[monitor] Sentry enabled (DSN configured)")
-    except Exception as e:
-        log.warning("[monitor] Sentry init skipped: %s", e)
+_SENTRY_CFG = _get_sentry_config()
+_SENTRY_DSN = _SENTRY_CFG["dsn"]
+_SENTRY_TRACES_SAMPLE_RATE = _SENTRY_CFG["traces_sample_rate"]
+_SENTRY_ENVIRONMENT = _SENTRY_CFG["environment"]
+_init_sentry()  # logs "[monitor] Sentry enabled/skipped"; no-op without DSN
+
+# Attach the $0 error-rate handler to the ROOT logger (idempotent singleton):
+# every ERROR/CRITICAL record from ANY module lands in error_metrics with the
+# active request_id. get_db opens a short-lived WAL conn per record — same
+# discipline as the pool_metrics sampler (never on the request hot path, and
+# a DB failure inside emit() is swallowed, never breaking logging).
+_error_tracker.install(get_db)
 
 
 # Markers written exclusively by the demo seeders. Devices carrying these
@@ -3536,6 +3549,43 @@ def api_admin_pool_metrics():
     return jsonify({"hours": hours, "count": len(points), "points": points})
 
 
+@app.route("/api/admin/error-rate", methods=["GET"])
+def api_admin_error_rate():
+    """Error-rate telemetry (Issue #176) — admin-gated like pool-metrics.
+
+    Returns the local error_metrics aggregation: total error events in the
+    window, peak per hour, hourly buckets with per-module breakdown, top
+    modules, and the most recent errors WITH their request_id (so an
+    operator can correlate with the JSON logs / Sentry). The ``sentry_enabled``
+    flag drives the admin badge — honest: local telemetry works with or
+    without a DSN.
+    """
+    remote = request.remote_addr or ""
+    local = remote in ("127.0.0.1", "::1", "localhost")
+    operator_key = os.environ.get("API_KEY") or ""
+    sent = (request.headers.get("X-API-Key") or "").strip()
+    if not local and not (operator_key and hmac.compare_digest(sent, operator_key)):
+        return jsonify({"error": "admin access required"}), 403
+
+    hours = request.args.get("hours", 24, type=int)
+    if hours < 1 or hours > 7 * 24:
+        hours = 24
+    limit = request.args.get("limit", 60, type=int)
+    if limit < 1 or limit > 500:
+        limit = 60
+    conn = get_db()
+    try:
+        data = _error_tracker.fetch_error_rate(conn, hours=hours, limit=limit)
+    finally:
+        conn.close()
+    # Honest badge: reflects whether the SDK actually INIT'd (DSN set AND
+    # package importable) — never claims Sentry is on when init was skipped.
+    data["sentry_enabled"] = _sentry_active()
+    data["sentry_release"] = _SENTRY_CFG["release"]
+    data["sentry_environment"] = _SENTRY_ENVIRONMENT
+    return jsonify(data)
+
+
 # parse_diff_to_float, fmt_diff, fmt_hashrate, fmt_uptime, fmt_age
 # are imported from helpers.py
 
@@ -3651,8 +3701,11 @@ def _do_poll():
     global memory_critical_alerts
     # Correlation id for THIS poll pass (Issue #124): every log line emitted
     # while polling carries `poll-<id>` so an operator can trace one pass
-    # end-to-end (fetch → persist → alerts) in the JSON logs.
-    _set_request_id(_new_request_id("poll"))
+    # end-to-end (fetch → persist → alerts) in the JSON logs. The Sentry
+    # scope tag follows the same id (Issue #176).
+    _rid = _new_request_id("poll")
+    _set_request_id(_rid)
+    _set_sentry_request_tag(_rid)
     # _next_memory_alert_id is mutated only inside _make_memory_alert (which
     # declares its own `global`); no need to redeclare here.
 
@@ -4935,7 +4988,7 @@ def index():
         is_cloud=_cloud,
         sentry_dsn=_SENTRY_DSN,
         sentry_traces_sample_rate=_SENTRY_TRACES_SAMPLE_RATE,
-        sentry_environment="cloud" if _cloud else "self-hosted",
+        sentry_environment=_SENTRY_ENVIRONMENT,
     )
 
 

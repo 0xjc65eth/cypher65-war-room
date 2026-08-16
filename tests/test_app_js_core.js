@@ -5062,6 +5062,33 @@ const QR_GOLDEN = {"helloM":{"text":"HELLO WORLD","level":"M","rows":["111111101
 })();
 
 // ═══════════════════════════════════════════════════════════════════════════
+//  SUITE 36: fmtErrorAge (Issue #176 — error-rate view no admin). Espelho
+//  puro do static/app.js _fmtErrorTs: minutos atrás < 60m, horas atrás < 48h,
+//  depois ISO UTC; ts nulo/inválido → dash. `nowArg` injetado p/ determinismo.
+// ═══════════════════════════════════════════════════════════════════════════
+(function() {
+  function fmtErrorAge(ts, nowArg) {
+    if (!ts) return '—';
+    const d = new Date(Number(ts) * 1000);
+    if (isNaN(d.getTime())) return '—';
+    const now = nowArg != null ? nowArg : Date.now();
+    const deltaMin = Math.floor((now - d.getTime()) / 60000);
+    if (deltaMin < 60) return deltaMin + 'm atrás';
+    const deltaH = Math.floor(deltaMin / 60);
+    if (deltaH < 48) return deltaH + 'h atrás';
+    return d.toISOString().replace('T', ' ').slice(0, 16) + ' UTC';
+  }
+
+  const NOW = 1800000000000; // fixed "now" for deterministic assertions
+  assertEqual('null ts → dash', fmtErrorAge(null, NOW), '—');
+  assertEqual('zero ts → dash', fmtErrorAge(0, NOW), '—');
+  assertEqual('12 min atrás', fmtErrorAge((NOW - 12 * 60000) / 1000, NOW), '12m atrás');
+  assertEqual('90 min atrás → horas', fmtErrorAge((NOW - 90 * 60000) / 1000, NOW), '1h atrás');
+  assertEqual('3 dias atrás → ISO UTC', fmtErrorAge((NOW - 3 * 86400000) / 1000, NOW),
+    new Date(NOW - 3 * 86400000).toISOString().replace('T', ' ').slice(0, 16) + ' UTC');
+})();
+
+// ═══════════════════════════════════════════════════════════════════════════
 //  MARKET SORT (mirrors static/app.js sortMarketVenues — pure)
 // ═══════════════════════════════════════════════════════════════════════════
 

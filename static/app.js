@@ -2946,14 +2946,15 @@ function renderAccount(acct) {
     const gate = document.getElementById('admin-gate-badge');
     try {
       // Pool health — no auth needed for localhost/operator-key admin routes.
-      const [sessionsResp, convResp, auditResp, metricsResp, docsResp] = await Promise.all([
+      const [sessionsResp, convResp, auditResp, metricsResp, docsResp, errResp] = await Promise.all([
         fetch('/api/admin/sessions', { headers: { 'X-Requested-With': 'fetch' } }),
         fetch('/api/admin/conversion?weeks=8', { headers: { 'X-Requested-With': 'fetch' } }),
         fetch('/api/admin/rentals/accepted-recos?limit=1000', { headers: { 'X-Requested-With': 'fetch' } }),
         fetch('/api/admin/pool-metrics?hours=24', { headers: { 'X-Requested-With': 'fetch' } }),
         fetch('/api/admin/docs-feedback', { headers: { 'X-Requested-With': 'fetch' } }),
+        fetch('/api/admin/error-rate?hours=24', { headers: { 'X-Requested-With': 'fetch' } }),
       ]);
-      if (sessionsResp.status === 403 || convResp.status === 403 || auditResp.status === 403 || metricsResp.status === 403 || docsResp.status === 403) {
+      if (sessionsResp.status === 403 || convResp.status === 403 || auditResp.status === 403 || metricsResp.status === 403 || docsResp.status === 403 || errResp.status === 403) {
         if (gate) gate.textContent = 'restricted';
         if (errEl) {
           errEl.hidden = false;
@@ -2968,13 +2969,15 @@ function renderAccount(acct) {
       const audit = auditResp.ok ? await auditResp.json() : {};
       const metrics = metricsResp.ok ? await metricsResp.json() : {};
       const docsFb = docsResp.ok ? await docsResp.json() : {};
-      _renderAdmin(sessions, conv, audit, metrics, docsFb);
+      const errData = errResp.ok ? await errResp.json() : {};
+      _renderAdmin(sessions, conv, audit, metrics, docsFb, errData);
     } catch (e) {
       if (errEl) { errEl.hidden = false; errEl.textContent = 'admin fetch error: ' + e.message; }
     }
   }
-  function _renderAdmin(sessions, conv, audit, metrics, docsFb) {
+  function _renderAdmin(sessions, conv, audit, metrics, docsFb, errData) {
     _renderAdminMetrics(metrics || {});
+    _renderAdminErrorRate(errData || {});
     _renderAdminAudit(audit);
     _renderAdminAutoExclusions(audit);
     _renderAdminDocsFeedback(docsFb || {});
@@ -3239,6 +3242,106 @@ function renderAccount(acct) {
         },
       },
     });
+  }
+
+  // ── Error rate (Issue #176) — local $0 sampler + Sentry badge ─────────
+  let _adminErrorChart = null;
+
+  function _fmtErrorTs(ts, nowArg) {
+    if (!ts) return '—';
+    const d = new Date(Number(ts) * 1000);
+    if (isNaN(d.getTime())) return '—';
+    const now = nowArg != null ? nowArg : Date.now();
+    const deltaMin = Math.floor((now - d.getTime()) / 60000);
+    if (deltaMin < 60) return deltaMin + 'm atrás';
+    const deltaH = Math.floor(deltaMin / 60);
+    if (deltaH < 48) return deltaH + 'h atrás';
+    return d.toISOString().replace('T', ' ').slice(0, 16) + ' UTC';
+  }
+
+  function _renderAdminErrorRate(data) {
+    const wrap = document.getElementById('admin-error-rate');
+    const canvas = document.getElementById('admin-error-rate-chart');
+    const empty = document.getElementById('admin-error-rate-empty');
+    const tableWrap = document.getElementById('admin-error-table-wrap');
+    const tbody = document.getElementById('admin-error-table-body');
+    if (!wrap || !canvas || !tableWrap || !tbody) return;
+
+    const total = data.total != null ? data.total : 0;
+    _setAdminText('admin-err-total', total);
+    _setAdminText('admin-err-peak', data.peak_per_hour != null ? data.peak_per_hour : '—');
+    const sentryInfo = typeof data.sentry_enabled === 'boolean'
+      ? (data.sentry_enabled
+        ? (data.sentry_release || 'on').replace('cypher65-war-room@', '') + ' · ' + (data.sentry_environment || '?') + ' ✓'
+        : 'off (self-host)')
+      : '—';
+    _setAdminText('admin-err-sentry', sentryInfo);
+
+    const buckets = (data.buckets || []);
+    if (_adminErrorChart) { _adminErrorChart.destroy(); _adminErrorChart = null; }
+    if (empty) empty.hidden = buckets.length > 0;
+    if (!buckets.length) {
+      wrap.hidden = false;
+      if (tableWrap) tableWrap.hidden = true;
+      return;
+    }
+
+    var labels = buckets.map(function (b) {
+      var d = new Date(Number(b.ts) * 1000);
+      if (isNaN(d.getTime())) return '—';
+      return d.getHours().toString().padStart(2, '0') + ':00';
+    });
+    var errors = buckets.map(function (b) { return b.errors; });
+    var topMod = (data.top_modules && data.top_modules.length) ? data.top_modules[0].module : '';
+
+    wrap.hidden = false;
+    _adminErrorChart = new Chart(canvas.getContext('2d'), {
+      type: 'bar',
+      data: {
+        labels: labels,
+        datasets: [{
+          label: 'Erros/hora', data: errors, backgroundColor: 'rgba(255,23,68,0.45)',
+          borderColor: 'rgb(255,23,68)', borderWidth: 1, borderRadius: 3, maxBarThickness: 18,
+        }],
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            callbacks: {
+              title: function (items) {
+                const b = buckets[items[0].dataIndex];
+                if (!b || !b.modules) return items[0].label;
+                // Module names são log names — escapados mesmo assim (tooltip
+                // do Chart.js renderiza como HTML; disciplina anti-XSS do repo).
+                return items[0].label + ' — ' + b.modules.map(function (m) {
+                  return escapeHtml(String(m.module || '')) + ' x' + m.count;
+                }).join(', ');
+              },
+            },
+          },
+        },
+        scales: {
+          x: { ticks: { color: '#5E5952', font: { size: 9 }, maxTicksLimit: 12, maxRotation: 0 }, grid: { color: 'rgba(94,89,82,0.06)' } },
+          y: { beginAtZero: true, ticks: { color: '#5E5952', font: { size: 9 }, precision: 0 }, grid: { color: 'rgba(94,89,82,0.08)' }, title: { display: true, text: 'erros' + (topMod ? ' · top: ' + topMod : ''), color: 'rgb(255,23,68)', font: { size: 9 } } },
+        },
+      },
+    });
+
+    // Recent errors table — every cell escaped (DOM guard).
+    const recent = (data.recent || []);
+    tableWrap.hidden = recent.length === 0;
+    tbody.innerHTML = recent.map(function (r) {
+      return '<tr>' +
+        '<td>' + escapeHtml(String(r.module || '—')) + '</td>' +
+        '<td title="' + escapeHtml(String(r.message || '')) + '">' + escapeHtml(String((r.message || '—').slice(0, 80))) + '</td>' +
+        '<td>' + escapeHtml(String(r.count || 1)) + '</td>' +
+        '<td class="admin-err__rid">' + escapeHtml(String(r.last_request_id || '—')) + '</td>' +
+        '<td>' + escapeHtml(_fmtErrorTs(r.last_ts)) + '</td>' +
+        '</tr>';
+    }).join('');
   }
 
   // ── Admin audit trail — table + filters + weekly mini-chart ───────────
