@@ -537,6 +537,52 @@ def autonomous_status(tenant_id: str = "") -> Dict[str, Any]:
     }
 
 
+# ── Auto-Pilot action alert (Issue #18x) ───────────────────────────────
+# One webhook/push per action the autonomous pilot REALLY executed — same
+# readable language as the audit note ("autonomous"), opt-in per tenant like
+# every other alert family (default off). Never raises.
+AUTO_PILOT_ACTION_ALERT_SETTING = "auto_pilot_action_alert"
+
+
+def build_autonomous_action_alerts(
+    results: Optional[List[Dict[str, Any]]] = None, tenant_id: str = ""
+) -> List[Dict[str, Any]]:
+    """One alert per autonomous action that actually EXECUTED.
+
+    Opt-in (``auto_pilot_action_alert == '1'``); the message uses the
+    resolved device name from the fleet: "Auto-Pilot: <ação> executado em
+    <device>". Blocked/cooldown/rate_limited/error/skipped NEVER alert —
+    only real execution. Never raises (storage hiccups degrade to none).
+    """
+    try:
+        from services.settings import load_settings
+
+        s = load_settings(tenant_id=tenant_id)
+        if (s.get(AUTO_PILOT_ACTION_ALERT_SETTING) or "").strip() != "1":
+            return []
+        alerts: List[Dict[str, Any]] = []
+        for r in results or []:
+            if not isinstance(r, dict) or (r.get("status") != "executed"):
+                continue
+            atype = str(r.get("action") or "").strip()
+            did = str(r.get("device_id") or "").strip()
+            if not atype or not did:
+                continue  # resultado degenerado nunca alerta
+            name = str(r.get("device_name") or did)
+            alerts.append(
+                {
+                    "severity": "WARN",
+                    "category": "auto_pilot_action",
+                    "message": f"Auto-Pilot: {atype} executado em {name}"[:280],
+                    "ts": r.get("ts") or 0,
+                }
+            )
+        return alerts
+    except Exception as e:
+        log.warning("[auto_pilot] action alert build failed: %s", e)
+        return []
+
+
 def execute_autonomous_actions(
     tenant_id: str = "",
     engine=None,
@@ -708,6 +754,7 @@ def execute_autonomous_actions(
                 {
                     "rec_id": rec.get("id"),
                     "device_id": did,
+                    "device_name": str(dev.get("name") or did),
                     "action": atype,
                     "status": "executed" if outcome.get("ok") else "error",
                     "reason": outcome.get("error", ""),
