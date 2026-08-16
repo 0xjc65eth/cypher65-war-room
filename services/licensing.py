@@ -22,7 +22,14 @@ Design principle — OFF BY DEFAULT:
 
 Feature matrix (docs/BUSINESS_PLAN.md, R1 scope):
   PRO:      Monte Carlo simulation, proximity meter, 30d history, webhooks
+  PREMIUM:  AI Operator real (LLM chat) — $29/mo, upsell PRO → PREMIUM
   (R2+):    API keys, CSV exports, config backup, white-label
+
+Tiers: ``pro`` < ``premium``. A premium key also unlocks every PRO feature
+(_key_valid accepts it); ``is_premium()`` gates the PREMIUM surface. Static
+premium keys live in ``PREMIUM_LICENSE_KEYS`` (mirror of PRO_LICENSE_KEYS);
+dynamic premium keys are DB rows with plan='premium' (Lemon Squeezy premium
+variant or /api/admin/licenses plan=premium).
 
 Dynamic keys (R1 revenue):
   ``issue_license()`` creates a cryptographically-random key of the form
@@ -41,6 +48,7 @@ Usage:
     def api_monte_carlo():
         ...
 """
+
 import hmac
 import logging
 
@@ -67,17 +75,27 @@ PRO_FEATURES = [
     "webhooks",
 ]
 
+# PREMIUM feature ids (tier 2 — AI Operator real LLM). Kept here so the
+# /api/license-status payload and any UI copy stay in sync.
+PREMIUM_FEATURES = ["ai_operator"]
+
 # Dynamic key format: C65-XXXX-XXXX-XXXX-XXXX (16 chars of a safe alphabet).
 _KEY_PREFIX = "C65"
 _KEY_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"  # no I/L/O/0/1 — copy-safe
 
 # Env vars that flip the gate ON (additive; existing deployments untouched).
-_ACTIVATION_ENV = ("PRO_LICENSE_KEYS", "LEMON_SQUEEZY_API_KEY", "PRO_KEYS_DB")
+_ACTIVATION_ENV = (
+    "PRO_LICENSE_KEYS",
+    "PREMIUM_LICENSE_KEYS",
+    "LEMON_SQUEEZY_API_KEY",
+    "PRO_KEYS_DB",
+)
 
 _UTC = timezone.utc
 
 
 # ── Configuration ─────────────────────────────────────────────────────
+
 
 def _configured_keys() -> List[str]:
     """Read PRO_LICENSE_KEYS from the env at CALL time (test-friendly).
@@ -86,6 +104,12 @@ def _configured_keys() -> List[str]:
     monkeypatch the env var without re-importing the module.
     """
     raw = os.environ.get("PRO_LICENSE_KEYS", "") or ""
+    return [k.strip() for k in raw.split(",") if k.strip()]
+
+
+def _configured_premium_keys() -> List[str]:
+    """Read PREMIUM_LICENSE_KEYS from the env at CALL time (test-friendly)."""
+    raw = os.environ.get("PREMIUM_LICENSE_KEYS", "") or ""
     return [k.strip() for k in raw.split(",") if k.strip()]
 
 
@@ -129,13 +153,48 @@ def _db_key_valid(key: str) -> bool:
 
 
 def _key_valid(key: str) -> bool:
-    """Constant-time membership check against static env keys, then DB."""
+    """Constant-time membership check against static env keys, then DB.
+
+    Accepts PRO AND PREMIUM static keys (a premium key also unlocks PRO
+    features), plus any non-revoked DB key.
+    """
     if not key:
         return False
-    for k in _configured_keys():
+    for k in _configured_keys() + _configured_premium_keys():
         if hmac.compare_digest(str(key), str(k)):
             return True
     return _db_key_valid(key)
+
+
+def _key_plan(key: str) -> str:
+    """Resolve the tier of a key: 'premium' | 'pro' | 'free'.
+
+    Static env keys win (PREMIUM_LICENSE_KEYS > PRO_LICENSE_KEYS); DB keys
+    report their stored plan. Empty/unknown → 'free'. Never raises.
+    """
+    if not key:
+        return "free"
+    for k in _configured_premium_keys():
+        if hmac.compare_digest(str(key), str(k)):
+            return "premium"
+    for k in _configured_keys():
+        if hmac.compare_digest(str(key), str(k)):
+            return "pro"
+    try:
+        conn = get_db()
+        try:
+            row = conn.execute(
+                "SELECT plan FROM pro_licenses WHERE key = ? AND revoked_at IS NULL",
+                (key,),
+            ).fetchone()
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return "free"
+    if not row:
+        return "free"
+    plan = str(row["plan"] or "pro").strip().lower()
+    return "premium" if plan == "premium" else "pro"
 
 
 def current_license_key() -> str:
@@ -157,6 +216,36 @@ def is_pro() -> bool:
     return _key_valid(current_license_key())
 
 
+def is_premium() -> bool:
+    """True when the current request is entitled to the PREMIUM tier.
+
+    Open mode → always True (self-hosters never locked out, same ethos as
+    is_pro). Licensed mode → True ONLY for a premium key (static
+    PREMIUM_LICENSE_KEYS or a DB key with plan='premium').
+    """
+    if not licensing_configured():
+        return True
+    return _key_plan(current_license_key()) == "premium"
+
+
+def server_pro_active() -> bool:
+    """PRO entitlement for BACKGROUND tasks (no request context).
+
+    Request-scoped ``is_pro()`` reads the X-License-Key header — impossible
+    in the poll/sweep threads (Issue #178: Auto-Pilot Fase 4 runs the
+    autonomous pass inside _do_poll). Rules:
+      - Open mode (no activation env) → True: the operator owns the
+        deployment and is never locked out (same ethos as is_pro()).
+      - Licensed mode → True ONLY when the operator pins a server-side key
+        via AUTO_PILOT_PRO_KEY (a valid static/env key) — the background
+        pilot must never act on an expired/absent license.
+    """
+    if not licensing_configured():
+        return True
+    key = (os.environ.get("AUTO_PILOT_PRO_KEY") or "").strip()
+    return bool(key) and _key_valid(key)
+
+
 def pro_required(f):
     """Flask decorator: require a valid PRO license key on gated routes.
 
@@ -164,6 +253,7 @@ def pro_required(f):
     is untouched. When active and the caller has no valid key, returns
     402 with a structured upgrade payload.
     """
+
     @wraps(f)
     def wrapper(*args, **kwargs):
         if not licensing_configured():
@@ -172,32 +262,101 @@ def pro_required(f):
             return f(*args, **kwargs)
         # CFO: the user just SAW the paywall — that is funnel stage #1.
         # Best-effort telemetry (never raises, never blocks the 402).
-        try:
-            from services.conversion import track_event
-            tenant = ""
-            auth = request.headers.get("Authorization", "")
-            if auth.startswith("Bearer "):
-                try:
-                    from services.auth import verify_token
-                    payload = verify_token(auth[7:]) or {}
-                    tenant = payload.get("sub") or ""
-                except Exception:
-                    pass
-            track_event("paywall_view", tenant_id=tenant,
-                        meta={"feature": getattr(f, "__name__", "")})
-        except Exception:
-            pass
-        return jsonify({
-            "error": "PRO feature requires a license key",
-            "code": "LICENSE_REQUIRED",
-            "required_tier": "pro",
-            "features": PRO_FEATURES,
-            "upgrade": {
-                "plan": "PRO",
-                "price_usd_month": 9,
-            },
-        }), 402
+        _track_paywall(getattr(f, "__name__", ""), tier="pro")
+        return (
+            jsonify(
+                {
+                    "error": "PRO feature requires a license key",
+                    "code": "LICENSE_REQUIRED",
+                    "required_tier": "pro",
+                    "features": PRO_FEATURES,
+                    "upgrade": {
+                        "plan": "PRO",
+                        "price_usd_month": 9,
+                    },
+                }
+            ),
+            402,
+        )
+
     return wrapper
+
+
+def _track_paywall(feature: str, tier: str = "pro") -> None:
+    """Best-effort funnel telemetry for a 402 paywall (never raises)."""
+
+    try:
+        from services.conversion import track_event
+
+        tenant = ""
+        auth = request.headers.get("Authorization", "")
+        if auth.startswith("Bearer "):
+            try:
+                from services.auth import verify_token
+
+                payload = verify_token(auth[7:]) or {}
+                tenant = payload.get("sub") or ""
+            except Exception:
+                pass
+        track_event(
+            "paywall_view",
+            tenant_id=tenant,
+            meta={"feature": feature, "tier": tier},
+        )
+    except Exception:
+        pass
+
+
+def premium_required(f):
+    """Flask decorator: require the PREMIUM tier on gated routes.
+
+    No-op in open mode (self-hosters keep everything free). In licensed
+    mode: a valid premium key passes; anyone else gets 402 with the tier
+    upgrade payload (free → PRO first, PRO → PREMIUM) + paywall telemetry.
+    """
+
+    @wraps(f)
+    def wrapper(*args, **kwargs):
+        if not licensing_configured():
+            return f(*args, **kwargs)
+        key = current_license_key()
+        if _key_plan(key) == "premium":
+            return f(*args, **kwargs)
+        # The user just SAW the premium paywall — funnel stage #1.
+        _track_paywall(getattr(f, "__name__", ""), tier="premium")
+        current_tier = "pro" if _key_valid(key) else "free"
+        return (
+            jsonify(
+                {
+                    "error": "PREMIUM feature requires a license key",
+                    "code": "LICENSE_REQUIRED",
+                    "required_tier": "premium",
+                    "current_tier": current_tier,
+                    "features": PREMIUM_FEATURES,
+                    "upgrade": {
+                        "plan": "PREMIUM",
+                        "price_usd_month": 29,
+                    },
+                }
+            ),
+            402,
+        )
+
+    return wrapper
+
+
+def _ai_operator_configured() -> bool:
+    """True when the server has an LLM key wired for the AI Operator.
+
+    Read at call time (import-safe, never raises) so /api/license-status can
+    tell the frontend whether the PREMIUM surface is usable on this deploy.
+    """
+    try:
+        from services import ai_operator
+
+        return bool(getattr(ai_operator, "AI_API_KEY", ""))
+    except Exception:
+        return False
 
 
 def license_status() -> dict:
@@ -206,33 +365,47 @@ def license_status() -> dict:
     Drives the topbar PRO badge + frontend lock overlays + upgrade modal.
     """
     payments = "lemon_squeezy" if os.environ.get("LEMON_SQUEEZY_API_KEY") else None
+    ai_configured = _ai_operator_configured()
     if not licensing_configured():
         return {
-            "mode": "open",          # gate inactive — everything free
-            "tier": "pro",
+            "mode": "open",  # gate inactive — everything free
+            "tier": "premium",
             "pro": True,
-            "features": {f: "unlocked" for f in PRO_FEATURES},
+            "premium": True,
+            "features": {f: "unlocked" for f in PRO_FEATURES + PREMIUM_FEATURES},
             "upgrade": None,
             "payments": payments,
+            "ai_configured": ai_configured,
         }
-    pro = _key_valid(current_license_key())
+    key = current_license_key()
+    plan = _key_plan(key)
+    premium = plan == "premium"
+    pro = plan in ("premium", "pro")
+    upgrade = None
+    if not pro:
+        upgrade = {"plan": "PRO", "price_usd_month": 9}
+    elif not premium:
+        upgrade = {"plan": "PREMIUM", "price_usd_month": 29}
     return {
         "mode": "licensed",
-        "tier": "pro" if pro else "free",
+        "tier": plan,  # premium | pro | free
         "pro": pro,
-        "features": {f: ("unlocked" if pro else "locked") for f in PRO_FEATURES},
-        "upgrade": None if pro else {"plan": "PRO", "price_usd_month": 9},
+        "premium": premium,
+        "features": {f: ("unlocked" if pro else "locked") for f in PRO_FEATURES}
+        | {f: ("unlocked" if premium else "locked") for f in PREMIUM_FEATURES},
+        "upgrade": upgrade,
         "payments": payments,
+        "ai_configured": ai_configured,
     }
 
 
 # ── Dynamic key lifecycle (R1 revenue) ────────────────────────────────
 
+
 def generate_license_key() -> str:
     """Generate a copy-safe PRO license key: C65-XXXX-XXXX-XXXX-XXXX."""
     groups = [
-        "".join(secrets.choice(_KEY_ALPHABET) for _ in range(4))
-        for _ in range(4)
+        "".join(secrets.choice(_KEY_ALPHABET) for _ in range(4)) for _ in range(4)
     ]
     return f"{_KEY_PREFIX}-{'-'.join(groups)}"
 
@@ -287,8 +460,13 @@ def issue_license(
     finally:
         conn.close()
     # PII-safe log (Issue #116): masked email only — never the raw address.
-    log.info("license issued: plan=%s source=%s email=%s months=%s",
-             plan, source, mask_email(email), months)
+    log.info(
+        "license issued: plan=%s source=%s email=%s months=%s",
+        plan,
+        source,
+        mask_email(email),
+        months,
+    )
     return key
 
 

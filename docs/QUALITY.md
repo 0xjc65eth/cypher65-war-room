@@ -51,7 +51,7 @@ SENTRY_DSN=... python app.py      # Sentry ativo (traces 0.1 default)
 | **arch-contract** (TS layers) | — | ⚪ N/A nesta stack | — |
 | **bandit** (segurança estática Python) | Python | ✅ gate (Issue #125) — 0 MEDIUM/HIGH | ✅ blocking |
 | **flake8** (bug-codes) | Python | ✅ gate via `.flake8` (F821/F541/E9) | ✅ blocking |
-| **black** | Python | ✅ presente, backlog 11.5k linhas | ⚪ advisory → Issue #133 |
+| **black** | Python | ✅ formatação commitada (Issue #133, 62 arquivos) | ✅ blocking |
 
 ### Static security gates (Issue #125) — bandit + flake8 + black
 
@@ -60,9 +60,10 @@ abaixo (escopo: `app.py helpers.py solo_mining.py services core axe_fleet
 routes agents`):
 
 ```bash
-make lint-sec     # bandit -ll + flake8 (.flake8) — blocking
+make lint-sec     # bandit -ll + flake8 (.flake8) + black — blocking
 # bandit -r services core axe_fleet routes agents app.py helpers.py solo_mining.py -ll -q
 # flake8 app.py helpers.py solo_mining.py services core axe_fleet routes agents
+# black --check app.py helpers.py solo_mining.py services core axe_fleet routes agents
 ```
 
 - **bandit `-ll`** — falha em QUALQUER achado MEDIUM/HIGH. Status: **0 achados**
@@ -74,8 +75,9 @@ make lint-sec     # bandit -ll + flake8 (.flake8) — blocking
   `F541` (f-string sem placeholder) e `E9` (sintaxe). Pegou bug real:
   `json.JSONDecodeError` sem `import json` no `braiins_adapter.py`. O backlog
   de estilo (E501 etc.) NÃO é gate — ver `make lint`.
-- **black** — ADVISORY: reporta o backlog (~11.5k linhas, 49 arquivos) sem
-  bloquear. O gate vira blocking após o cleanup dedicado (Issue #133).
+- **black** — BLOCKING desde o cleanup dedicado (Issue #133): os 62 arquivos
+  do escopo foram reformatados no commit de formatação; qualquer diff fora
+  do padrão agora falha o merge. Rode `black <arquivo>` antes de commitar.
 
 ### Instalação / uso
 
@@ -113,7 +115,7 @@ cd mobile && npx stryker run
 
 | Camada | Ferramenta | Cobertura | Gate CI |
 |---|---|---|---|
-| Unit/integration (Python) | pytest | 2157 testes, `--cov-fail-under=75` | ✅ blocking |
+| Unit/integration (Python) | pytest | 2255 testes, `--cov-fail-under=78` | ✅ blocking |
 | JS core (mirror do app.js) | node --test | 1261 testes | ✅ blocking |
 | E2E (browser) | **Playwright** | specs chromium + mobile-chrome | ✅ job `e2e` |
 | Cobertura pública | **Codecov** (free p/ repo público) | upload do coverage.xml | ✅ non-blocking |
@@ -121,7 +123,7 @@ cd mobile && npx stryker run
 | Guards XSS mobile (RN) | `scripts/check-mobile-xss.cjs` | WebView html/injectedJavaScript + eval + openURL `javascript:` | ✅ blocking |
 | Frontend (combinado) | `scripts/check_frontend.sh` (Issue #62) | guards DOM + XSS mobile + JS core + **audit visual** (console/overflow/truncamento) | ✅ blocking job `frontend-audit` |
 
-### Mapa de cobertura por módulo (Issue #123) — TOTAL 76%
+### Mapa de cobertura por módulo (Issue #123) — TOTAL 82%
 
 Medição `pytest --cov` com o comando exato do CI (arquivo de dados isolado;
 `coverage report -m` local reproduz). Financeiros/controle ≥80% primeiro
@@ -130,27 +132,38 @@ Medição `pytest --cov` com o comando exato do CI (arquivo de dados isolado;
 | Módulo | Cobertura | Notas |
 |---|---|---|
 | `core/safety/safety_engine.py` | **100%** | cooldown, rates, overrides (Issue #123) |
+| `services/poll_compute.py` | **100%** | helpers puros do `_do_poll` — agora inclui profitability (3 modos) + milestones + event-stats (Issue #137) |
 | `services/payments.py` | **96%** | checkout env paths; restam 4 stmts do webhook |
+| `services/user_polling.py` | **94%** | fetchers globais + `_build_snapshot` (workers/dedup/halving) cobertos (Issue #137) |
 | `services/rental_performance.py` | **89%** | preço de mercado real em SQL, auto-exclusão, forecast |
 | `services/licensing.py` | **89%** | — |
 | `services/auto_pilot.py` | **84%** | collectors fail-closed (Issue #123) |
-| `services/user_polling.py` | **71%** | sweep paths — próximo alvo |
-| `app.py` | **55%** | 1414 stmts — o maior buraco (poll/rotas) |
+| `app.py` | **74%** | 2920 stmts — blocos fetch/persist/purge do `_do_poll` + rotas de dashboard cobertos por injeção de mock (Issue #141); restam rotas admin/CLI |
 
 **Roadmap do gate (incremental, sem bloquear deploys no meio):**
 
 ```
 2026-08-01  53%  → gate 45   (baseline)
 2026-08-03  66%  → gate 65   (+108 testes)
-2026-08-14  76%  → gate 75   (financeiros ≥80% — Issue #123)  ← estamos aqui
-próxima      ~80% → gate 80   (app.py + user_polling primeiro)
+2026-08-14  76%  → gate 75   (financeiros ≥80% — Issue #123)
+2026-08-14  77%  → gate 76   (poll_compute 100% + sweep paths — Issue #135)
+2026-08-14  79%  → gate 78   (profitability/milestones/event-stats extraídos
+                              + fetchers globais e _build_snapshot — Issue #137)
+2026-08-14  82%  → gate 80   (blocos fetch/persist/purge do _do_poll por
+                              injeção de mock + rotas de dashboard — Issue
+                              #141; app.py 58% → 74%)  ← estamos aqui ✅ meta 80%
+próxima      ~84% → gate 82   (app.py 74% → 80%+: rotas admin + CLI/agente)
 ```
 
-Margem deliberada de ~1pp (76% real vs gate 75) — absorve variação de
-ambiente sem deixar o gate frouxo. Para o próximo degrau: `app.py` (55%,
-1414 stmts) e `services/user_polling.py` (71%) são os dois maiores buracos;
-rotear as rotas do `_do_poll` para helpers testáveis é o caminho de menor
-esforço por stmt coberto.
+Margem deliberada de ~2pp (82% real vs gate 80) — absorve variação de
+ambiente sem deixar o gate frouxo. O degrau #141 cobriu o maior buraco: o
+`_do_poll` (fetch fan-out com fallbacks, persist de snapshot/high-diff/
+timeline, purge, ladder de falha, rotas de dashboard) via injeção de mock
+nos fetchers upstream + DB real descartável (`tests/test_do_poll_io.py`,
+20 testes). Para medir os clusters de linhas descobertas de qualquer módulo,
+use `python3 scripts/analyze_cov_bands.py <coverage-report.txt>` (bandas de
+200 linhas por arquivo). Próximos alvos: rotas admin/CLI restantes do
+`app.py`.
 
 ### Codecov — ✅ ATIVO (Issue #38 → PR #42)
 

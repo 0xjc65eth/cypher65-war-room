@@ -74,12 +74,11 @@ def _ls_env(monkeypatch):
 
 
 def _sign(raw: bytes) -> str:
-    return hmac.new(
-        b"whsec-test", raw, hashlib.sha256
-    ).hexdigest()
+    return hmac.new(b"whsec-test", raw, hashlib.sha256).hexdigest()
 
 
 # ── Key generation ───────────────────────────────────────────────────
+
 
 def test_generated_key_format_and_safe_alphabet():
     for _ in range(50):
@@ -94,6 +93,7 @@ def test_generated_keys_unique():
 
 
 # ── DB-backed lifecycle ──────────────────────────────────────────────
+
 
 def test_issue_license_then_valid(monkeypatch):
     _activate_db_gate(monkeypatch)
@@ -138,6 +138,7 @@ def test_unknown_key_invalid(monkeypatch):
 
 # ── Gate activation ──────────────────────────────────────────────────
 
+
 def test_ls_api_key_activates_gate(monkeypatch):
     _ls_env(monkeypatch)
     assert licensing.licensing_configured() is True
@@ -155,6 +156,7 @@ def test_open_mode_when_nothing_set():
 
 # ── Webhook signature + fulfillment ──────────────────────────────────
 
+
 def _order_payload(email="buyer@example.com", variant_id=10, order_id="12345"):
     return {
         "meta": {"event_name": "order_created"},
@@ -166,6 +168,25 @@ def _order_payload(email="buyer@example.com", variant_id=10, order_id="12345"):
             },
         },
     }
+
+
+@pytest.fixture()
+def clean_sub_db():
+    """Wipe subscription_events so webhook subscription tests stay hermetic."""
+    from services.db import get_db
+
+    from services import conversion as _conv
+
+    _conv.ensure_subscription_table()
+    conn = get_db()
+    conn.execute("DELETE FROM subscription_events")
+    conn.commit()
+    conn.close()
+    yield
+    conn = get_db()
+    conn.execute("DELETE FROM subscription_events")
+    conn.commit()
+    conn.close()
 
 
 def test_webhook_signature_verify(monkeypatch):
@@ -185,6 +206,100 @@ def test_webhook_fulfills_order(monkeypatch):
     assert licensing._key_valid(key) is True  # the gate honors the issued key
 
 
+def _sub_payload(
+    event_name,
+    sub_id="sub_1",
+    renews_at="2026-09-03T12:00:00Z",
+    created_at="2026-08-03T12:00:00Z",
+):
+    return {
+        "meta": {"event_name": event_name},
+        "data": {
+            "id": sub_id,
+            "attributes": {"renews_at": renews_at, "created_at": created_at},
+        },
+    }
+
+
+def test_webhook_subscription_created_records_lifecycle(monkeypatch, clean_sub_db):
+    # subscription_created is acknowledged (no key issued) but recorded for
+    # the real cohort LTV ledger (Issue #157).
+    calls = []
+
+    def _fake(event_name, payload):
+        calls.append((event_name, payload["data"]["id"]))
+
+    monkeypatch.setattr(payments, "_record_subscription_lifecycle", _fake)
+    key = payments.handle_webhook(_sub_payload("subscription_created"))
+    assert key is None  # acknowledged, never fulfills a license
+    assert calls == [("subscription_created", "sub_1")]
+
+
+def test_webhook_subscription_updated_records_renewal(monkeypatch, clean_sub_db):
+    # subscription_updated with a (new) renews_at = a renewal for cohort LTV.
+    calls = []
+
+    def _fake(event_name, payload):
+        calls.append(
+            (
+                event_name,
+                payload["data"]["id"],
+                payload["data"]["attributes"]["renews_at"],
+            )
+        )
+
+    monkeypatch.setattr(payments, "_record_subscription_lifecycle", _fake)
+    key = payments.handle_webhook(_sub_payload("subscription_updated"))
+    assert key is None
+    assert calls == [("subscription_updated", "sub_1", "2026-09-03T12:00:00Z")]
+
+
+def test_webhook_subscription_lifecycle_real_records_rows(clean_sub_db, monkeypatch):
+    # The REAL _record_subscription_lifecycle (not mocked): subscription_created
+    # records the cohort; subscription_updated with a NEW renews_at records a
+    # renewal; same renews_at (blip) is deduped; empty renews_at is skipped.
+    from services.db import get_db
+
+    from services import conversion as _conv
+
+    _conv.ensure_subscription_table()
+    # created → 1 row (cohort).
+    payments.handle_webhook(_sub_payload("subscription_created"))
+    # updated with the SAME period → not a renewal (echo of created period).
+    payments.handle_webhook(_sub_payload("subscription_updated"))
+    # updated with a NEW period → a renewal.
+    payments.handle_webhook(
+        _sub_payload("subscription_updated", renews_at="2026-10-03T12:00:00Z")
+    )
+    # updated with NO renews_at (pause/cancel) → skipped entirely.
+    payments.handle_webhook(_sub_payload("subscription_updated", renews_at=""))
+
+    conn = get_db()
+    rows = conn.execute(
+        "SELECT event, renews_at FROM subscription_events WHERE subscription_id='sub_1' "
+        "ORDER BY id ASC"
+    ).fetchall()
+    conn.close()
+    assert [(r["event"], r["renews_at"]) for r in rows] == [
+        ("subscription_created", "2026-09-03T12:00:00Z"),
+        ("renewal", "2026-10-03T12:00:00Z"),
+    ]
+
+
+def test_webhook_subscription_lifecycle_no_sub_id_noop(clean_sub_db):
+    from services.db import get_db
+
+    from services import conversion as _conv
+
+    _conv.ensure_subscription_table()
+    payload = {"meta": {"event_name": "subscription_created"}, "data": {"id": ""}}
+    payments.handle_webhook(payload)
+    conn = get_db()
+    n = conn.execute("SELECT COUNT(*) AS n FROM subscription_events").fetchone()["n"]
+    conn.close()
+    assert n == 0
+
+
 def test_webhook_unknown_event_noop(monkeypatch):
     _ls_env(monkeypatch)
     payload = {"meta": {"event_name": "subscription_created"}, "data": {}}
@@ -192,6 +307,7 @@ def test_webhook_unknown_event_noop(monkeypatch):
 
 
 # ── Idempotency (Issue #114) ──────────────────────────────────────────
+
 
 def test_webhook_replay_returns_same_key(monkeypatch):
     """Same order delivered twice → ONE key, and the replay returns it."""
@@ -208,6 +324,7 @@ def test_webhook_replay_issues_only_one_license(monkeypatch):
     """The license ledger grows by exactly ONE key after a replay."""
     _ls_env(monkeypatch)
     from services.db import get_db
+
     def _count():
         c = get_db()
         try:
@@ -216,6 +333,7 @@ def test_webhook_replay_issues_only_one_license(monkeypatch):
             ).fetchone()["n"]
         finally:
             c.close()
+
     baseline = _count()
     payload = _order_payload(order_id="7002")
     payments.handle_webhook(payload)
@@ -227,16 +345,22 @@ def test_webhook_replay_issues_only_one_license(monkeypatch):
 def test_webhook_replay_route_returns_same_key(client, monkeypatch):
     """The HTTP route also dedupes: POST twice → same key both times."""
     _ls_env(monkeypatch)
-    raw = json.dumps(_order_payload(email="buyer@example.com", order_id="7003")).encode()
+    raw = json.dumps(
+        _order_payload(email="buyer@example.com", order_id="7003")
+    ).encode()
     sig = _sign(raw)
     r1 = client.post(
-        "/api/payments/webhook", data=raw, content_type="application/json",
+        "/api/payments/webhook",
+        data=raw,
+        content_type="application/json",
         headers={"X-Signature": sig},
     )
     assert r1.status_code == 200
     key1 = r1.get_json()["license_key"]
     r2 = client.post(
-        "/api/payments/webhook", data=raw, content_type="application/json",
+        "/api/payments/webhook",
+        data=raw,
+        content_type="application/json",
         headers={"X-Signature": sig},
     )
     assert r2.status_code == 200
@@ -247,7 +371,9 @@ def test_webhook_different_orders_issue_different_keys(monkeypatch):
     """Distinct orders still each get their own key."""
     _ls_env(monkeypatch)
     k1 = payments.handle_webhook(_order_payload(order_id="7004"))
-    k2 = payments.handle_webhook(_order_payload(email="other@example.com", order_id="7005"))
+    k2 = payments.handle_webhook(
+        _order_payload(email="other@example.com", order_id="7005")
+    )
     assert k1 and k2
     assert k1 != k2
 
@@ -257,8 +383,10 @@ def test_webhook_replay_no_duplicate_track_event(monkeypatch):
     _ls_env(monkeypatch)
     calls = []
     import services.conversion as conversion_mod
-    monkeypatch.setattr(conversion_mod, "track_event",
-                        lambda *a, **kw: calls.append(kw))
+
+    monkeypatch.setattr(
+        conversion_mod, "track_event", lambda *a, **kw: calls.append(kw)
+    )
     payload = _order_payload(order_id="7006")
     payments.handle_webhook(payload)
     payments.handle_webhook(payload)  # replay
@@ -292,7 +420,9 @@ def test_webhook_route_end_to_end(client, monkeypatch):
     _ls_env(monkeypatch)
     # Unique order id so this test exercises a FRESH fulfillment (not a replay
     # of the order id shared with test_webhook_fulfills_order).
-    raw = json.dumps(_order_payload(email="buyer@example.com", order_id="7007")).encode()
+    raw = json.dumps(
+        _order_payload(email="buyer@example.com", order_id="7007")
+    ).encode()
     r = client.post(
         "/api/payments/webhook",
         data=raw,
@@ -318,11 +448,14 @@ def test_webhook_route_bad_signature(client, monkeypatch):
 
 
 def test_webhook_route_unconfigured(client):
-    r = client.post("/api/payments/webhook", data=b"{}", content_type="application/json")
+    r = client.post(
+        "/api/payments/webhook", data=b"{}", content_type="application/json"
+    )
     assert r.status_code == 400
 
 
 # ── Checkout route ───────────────────────────────────────────────────
+
 
 def test_checkout_route_503_unconfigured(client):
     r = client.post("/api/upgrade/checkout", json={"plan": "pro"})
@@ -333,7 +466,10 @@ def test_checkout_route_503_unconfigured(client):
 def test_checkout_route_returns_url(client, monkeypatch):
     _ls_env(monkeypatch)
     monkeypatch.setattr(
-        payments, "create_checkout", lambda plan="pro", email="": "https://buy.lemonsqueezy.com/x"
+        payments,
+        "create_checkout",
+        # Issue #155: the route now also forwards the browser funnel_id.
+        lambda plan="pro", email="", funnel_id="": "https://buy.lemonsqueezy.com/x",
     )
     r = client.post("/api/upgrade/checkout", json={"plan": "pro"})
     assert r.status_code == 200
@@ -341,6 +477,7 @@ def test_checkout_route_returns_url(client, monkeypatch):
 
 
 # ── Admin route (manual key issuance) ────────────────────────────────
+
 
 def test_admin_route_403_without_key(client):
     # Test client defaults to 127.0.0.1 (local bypass) — simulate a remote peer.
@@ -380,6 +517,7 @@ def test_admin_route_rejects_wrong_api_key(client, monkeypatch):
 
 # ── license-status payload ───────────────────────────────────────────
 
+
 def test_license_status_reports_payments_provider(client, monkeypatch):
     _ls_env(monkeypatch)
     r = client.get("/api/license-status")
@@ -395,6 +533,7 @@ def test_license_status_open_mode_no_payments(client):
 
 
 # ── PII redaction (Issue #116) ────────────────────────────────────────
+
 
 def test_webhook_log_masks_email(caplog, monkeypatch):
     """The fulfillment log must never contain the raw buyer email."""
@@ -435,5 +574,6 @@ def test_mask_email_edge_cases():
 def test_email_sha_matches_funnel_anonymize():
     """Webhook log hash correlates 1:1 with the funnel's email_hash."""
     from services.conversion import _anonymize
+
     for email in ("Buyer@Example.com", "x@y.io", ""):
         assert payments.email_sha(email) == _anonymize(email)

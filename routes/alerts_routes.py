@@ -3,6 +3,7 @@ CYPHER65 // Alerts & Automation Routes
 =====================================
 Exposes REST endpoints for alert management and automation rules.
 """
+
 import json
 import time
 from typing import Any, Dict
@@ -134,7 +135,9 @@ def api_automation_rules(tenant_id: str = ""):
         for r in c.fetchall():
             row = dict(r)
             try:
-                row["action_parameters"] = json.loads(row.get("action_parameters") or "{}")
+                row["action_parameters"] = json.loads(
+                    row.get("action_parameters") or "{}"
+                )
             except Exception:
                 row["action_parameters"] = {}
             rows.append(row)
@@ -142,24 +145,51 @@ def api_automation_rules(tenant_id: str = ""):
         return jsonify({"rules": rows})
 
     data = request.get_json(silent=True) or {}
-    required = ["name", "target_device_id", "condition_metric",
-                "condition_operator", "condition_value", "action_command"]
+    required = [
+        "name",
+        "target_device_id",
+        "condition_metric",
+        "condition_operator",
+        "condition_value",
+        "action_command",
+    ]
     missing = [f for f in required if f not in data]
     if missing:
         return jsonify({"success": False, "error": f"missing fields: {missing}"}), 400
 
     if data["condition_operator"] not in VALID_OPS:
-        return jsonify({"success": False, "error": f"invalid operator: {data['condition_operator']}"}), 400
+        return (
+            jsonify(
+                {
+                    "success": False,
+                    "error": f"invalid operator: {data['condition_operator']}",
+                }
+            ),
+            400,
+        )
     try:
         condition_value = float(data["condition_value"])
     except (TypeError, ValueError):
-        return jsonify({"success": False, "error": "condition_value must be numeric"}), 400
+        return (
+            jsonify({"success": False, "error": "condition_value must be numeric"}),
+            400,
+        )
     try:
         min_interval = int(data.get("min_interval_seconds", 60))
         if min_interval < 0:
-            return jsonify({"success": False, "error": "min_interval_seconds must be >= 0"}), 400
+            return (
+                jsonify(
+                    {"success": False, "error": "min_interval_seconds must be >= 0"}
+                ),
+                400,
+            )
     except (TypeError, ValueError):
-        return jsonify({"success": False, "error": "min_interval_seconds must be an integer"}), 400
+        return (
+            jsonify(
+                {"success": False, "error": "min_interval_seconds must be an integer"}
+            ),
+            400,
+        )
 
     c.execute(
         """INSERT INTO automation_rules
@@ -182,8 +212,12 @@ def api_automation_rules(tenant_id: str = ""):
     conn.commit()
     rule_id = c.lastrowid
     conn.close()
-    _log_audit(tid, "automation.rule.create", target=str(rule_id),
-               details={"name": data["name"], "action_command": data["action_command"]})
+    _log_audit(
+        tid,
+        "automation.rule.create",
+        target=str(rule_id),
+        details={"name": data["name"], "action_command": data["action_command"]},
+    )
     return jsonify({"success": True, "id": rule_id})
 
 
@@ -195,7 +229,9 @@ def api_automation_rule(rule_id: int, tenant_id: str = ""):
     c = conn.cursor()
 
     if request.method == "DELETE":
-        c.execute("DELETE FROM automation_rules WHERE id=? AND tenant_id=?", (rule_id, tid))
+        c.execute(
+            "DELETE FROM automation_rules WHERE id=? AND tenant_id=?", (rule_id, tid)
+        )
         conn.commit()
         conn.close()
         _log_audit(tid, "automation.rule.delete", target=str(rule_id))
@@ -205,24 +241,56 @@ def api_automation_rule(rule_id: int, tenant_id: str = ""):
 
     # Validate operator/value before touching the database.
     if "condition_operator" in data and data["condition_operator"] not in VALID_OPS:
-        return jsonify({"success": False, "error": f"invalid operator: {data['condition_operator']}"}), 400
+        return (
+            jsonify(
+                {
+                    "success": False,
+                    "error": f"invalid operator: {data['condition_operator']}",
+                }
+            ),
+            400,
+        )
     if "condition_value" in data:
         try:
             data["condition_value"] = float(data["condition_value"])
         except (TypeError, ValueError):
-            return jsonify({"success": False, "error": "condition_value must be numeric"}), 400
+            return (
+                jsonify({"success": False, "error": "condition_value must be numeric"}),
+                400,
+            )
     if "min_interval_seconds" in data:
         try:
             if int(data["min_interval_seconds"]) < 0:
-                return jsonify({"success": False, "error": "min_interval_seconds must be >= 0"}), 400
+                return (
+                    jsonify(
+                        {"success": False, "error": "min_interval_seconds must be >= 0"}
+                    ),
+                    400,
+                )
         except (TypeError, ValueError):
-            return jsonify({"success": False, "error": "min_interval_seconds must be an integer"}), 400
+            return (
+                jsonify(
+                    {
+                        "success": False,
+                        "error": "min_interval_seconds must be an integer",
+                    }
+                ),
+                400,
+            )
 
     fields = []
     values = []
-    for field in ["name", "target_device_id", "condition_metric",
-                  "condition_operator", "condition_value", "action_command",
-                  "action_parameters", "is_enabled", "min_interval_seconds"]:
+    for field in [
+        "name",
+        "target_device_id",
+        "condition_metric",
+        "condition_operator",
+        "condition_value",
+        "action_command",
+        "action_parameters",
+        "is_enabled",
+        "min_interval_seconds",
+    ]:
         if field in data:
             if field == "action_parameters":
                 fields.append(f"{field}=?")
@@ -243,10 +311,15 @@ def api_automation_rule(rule_id: int, tenant_id: str = ""):
     values.append(tid)
     # bandit B608 false positive: field comes from the fixed whitelist tuple
     # above (never from raw request keys) — values are bound as ?-parameters.
-    c.execute(f"UPDATE automation_rules SET {','.join(fields)} WHERE id=? AND tenant_id=?", tuple(values))  # nosec B608
+    c.execute(
+        f"UPDATE automation_rules SET {','.join(fields)} WHERE id=? AND tenant_id=?",  # nosec B608
+        tuple(values),
+    )
     conn.commit()
     conn.close()
-    _log_audit(tid, "automation.rule.update", target=str(rule_id), details={"fields": fields})
+    _log_audit(
+        tid, "automation.rule.update", target=str(rule_id), details={"fields": fields}
+    )
     return jsonify({"success": True})
 
 
@@ -299,6 +372,7 @@ def api_automation_status(tenant_id: str = ""):
        "action_window_seconds": s, "actions_in_window": n}
     """
     from core.alerts.automation_engine import AutomationEngine
+
     tid = tenant_id or "default"
     try:
         engine = AutomationEngine("", None)  # settings-only reads, no DB use
@@ -307,15 +381,18 @@ def api_automation_status(tenant_id: str = ""):
         window = engine.AUTOMATION_ACTION_WINDOW_S
         with engine._budget_lock:
             now = int(time.time())
-            hist = [t for t in engine._action_history.get(tid, [])
-                    if (now - t) < window]
+            hist = [
+                t for t in engine._action_history.get(tid, []) if (now - t) < window
+            ]
             used = len(hist)
-        return jsonify({
-            "armed": armed,
-            "max_actions_per_window": budget,
-            "action_window_seconds": window,
-            "actions_in_window": used,
-        })
+        return jsonify(
+            {
+                "armed": armed,
+                "max_actions_per_window": budget,
+                "action_window_seconds": window,
+                "actions_in_window": used,
+            }
+        )
     except Exception as e:
         return jsonify({"armed": False, "error": str(e)}), 500
 
@@ -331,6 +408,7 @@ def api_automation_arm(tenant_id: str = ""):
     disarming immediately stops autonomous actions.
     """
     from core.alerts.automation_engine import AutomationEngine
+
     tid = tenant_id or "default"
     data = request.get_json(silent=True) or {}
     armed = bool(data.get("armed"))
@@ -340,9 +418,73 @@ def api_automation_arm(tenant_id: str = ""):
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
     if not ok:
-        return jsonify({"success": False, "error": "could not persist armed state"}), 500
+        return (
+            jsonify({"success": False, "error": "could not persist armed state"}),
+            500,
+        )
     _log_audit(tid, "automation.arm", details={"armed": armed})
     return jsonify({"success": True, "armed": armed})
+
+
+# ═══════════════════════════════════════════════════════════════════════
+#  Issue #178 · Auto-Pilot Fase 4 — execução autônoma atrás do gate PRO
+#  GET  /api/auto-pilot/autonomous → status (pro/armed/autonomous/cooldowns)
+#  POST /api/auto-pilot/autonomous → toggle {autonomous: bool} (gate PRO)
+# ═══════════════════════════════════════════════════════════════════════
+
+
+@alerts_bp.route("/auto-pilot/autonomous", methods=["GET"])
+@require_tenant
+@role_required("viewer")
+def api_auto_pilot_autonomous_status(tenant_id: str = ""):
+    """Issue #178 — status do modo autônomo (gate PRO + switches)."""
+    from services.auto_pilot import autonomous_status
+
+    tid = tenant_id or "default"
+    try:
+        return jsonify(autonomous_status(tid))
+    except Exception as e:
+        return jsonify({"autonomous": False, "error": str(e)}), 500
+
+
+@alerts_bp.route("/auto-pilot/autonomous", methods=["POST"])
+@require_tenant
+@role_required("admin")
+def api_auto_pilot_autonomous_set(tenant_id: str = ""):
+    """Issue #178 — liga/desliga a execução autônoma (fail-closed).
+
+    LIGAR é gateado por PRO (is_pro() da request): em modo licensed sem
+    chave válida → 402 com payload de upgrade (frente renderiza o CTA PRO).
+    Desligar é sempre permitido (kill switch). A execução em si ainda exige
+    ARMADO + server_pro_active() no pass do poll (dupla checagem).
+    """
+    from services.auto_pilot import set_autonomous_enabled
+    from services.licensing import is_pro
+
+    tid = tenant_id or "default"
+    data = request.get_json(silent=True) or {}
+    enabled = bool(data.get("autonomous"))
+    if enabled and not is_pro():
+        return (
+            jsonify(
+                {
+                    "success": False,
+                    "error": "execução autônoma é um recurso PRO — licença necessária",
+                    "code": "LICENSE_REQUIRED",
+                    "required_tier": "pro",
+                    "upgrade": {"plan": "PRO", "price_usd_month": 9},
+                }
+            ),
+            402,
+        )
+    ok = set_autonomous_enabled(tid, enabled)
+    if not ok:
+        return (
+            jsonify({"success": False, "error": "could not persist autonomous state"}),
+            500,
+        )
+    _log_audit(tid, "auto_pilot.autonomous", details={"autonomous": enabled})
+    return jsonify({"success": True, "autonomous": enabled})
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -350,6 +492,7 @@ def api_automation_arm(tenant_id: str = ""):
 #  Simula o que o piloto FARIA com as regras armadas — resultados previstos
 #  + veredito do SafetyEngine — SEM executar/auditar/mutar nada.
 # ═══════════════════════════════════════════════════════════════════════
+
 
 @alerts_bp.route("/automation/dry-run", methods=["GET"])
 @require_tenant
@@ -371,6 +514,7 @@ def api_automation_dry_run(tenant_id: str = ""):
         from services.auto_pilot import axe_fleet_to_device
         from services.snapshot_enrichment import get_auto_pilot_engine as _get_ap_engine
         from axe_fleet.routes import _registry
+
         # Prefer the boot engine: its _action_history carries the REAL
         # per-tenant budget consumption, so the simulated budget is truthful.
         engine = _get_ap_engine() or AutomationEngine(_ap_db_path, SafetyEngine())
@@ -405,6 +549,7 @@ def api_automation_dry_run_replay(tenant_id: str = ""):
         from core.safety.safety_engine import SafetyEngine
         from services.snapshot_enrichment import get_auto_pilot_engine as _get_ap_engine
         from axe_fleet.routes import _registry
+
         engine = _get_ap_engine() or AutomationEngine(_ap_db_path, SafetyEngine())
         rules = engine.load_rules(tenant_id=tid)
         history: dict = {}
@@ -413,8 +558,10 @@ def api_automation_dry_run_replay(tenant_id: str = ""):
                 dev_id = dev.get("id")
                 if not dev_id:
                     continue
-                rows = _registry.get_recent_telemetry(dev_id, limit=limit,
-                                                      tenant_id=tid) or []
+                rows = (
+                    _registry.get_recent_telemetry(dev_id, limit=limit, tenant_id=tid)
+                    or []
+                )
                 samples = []
                 for r in rows:
                     if not isinstance(r, dict):
@@ -438,8 +585,7 @@ def api_automation_dry_run_replay(tenant_id: str = ""):
                 if samples:
                     history[dev_id] = samples
         window_s = hours * 3600
-        result = engine.simulate_replay_window(rules, history,
-                                               window_seconds=window_s)
+        result = engine.simulate_replay_window(rules, history, window_seconds=window_s)
         result["armed"] = engine.is_armed(tid)
         return jsonify(result)
     except Exception as e:
@@ -451,6 +597,7 @@ def api_automation_dry_run_replay(tenant_id: str = ""):
 #  Recomendações consolidadas por dispositivo com ação acionável + audit
 #  trail (aceitas/ignoradas). Fail-closed e tenant-scoped.
 # ═══════════════════════════════════════════════════════════════════════
+
 
 @alerts_bp.route("/auto-pilot/recommendations", methods=["GET"])
 @require_tenant
@@ -470,14 +617,19 @@ def api_auto_pilot_recommendations(tenant_id: str = ""):
     """
     from services.auto_pilot import build_recommendations_for_tenant
     from core.alerts.automation_engine import AutomationEngine
+
     tid = tenant_id or "default"
     try:
         recs = build_recommendations_for_tenant(tid)
         armed = AutomationEngine("", None).is_armed(tid)
         return jsonify({"recommendations": recs, "count": len(recs), "armed": armed})
     except Exception as e:
-        return jsonify({"recommendations": [], "count": 0, "armed": False,
-                        "error": str(e)}), 500
+        return (
+            jsonify(
+                {"recommendations": [], "count": 0, "armed": False, "error": str(e)}
+            ),
+            500,
+        )
 
 
 @alerts_bp.route("/auto-pilot/recommendations/<rec_id>/respond", methods=["POST"])
@@ -506,12 +658,18 @@ def api_auto_pilot_respond(rec_id: str, tenant_id: str = ""):
         build_recommendations_for_tenant,
         record_rec_decision,
     )
+
     tid = tenant_id or "default"
     data = request.get_json(silent=True) or {}
     decision = str(data.get("decision") or "").strip().lower()
     note = str(data.get("note") or "")
     if decision not in ("accept", "ignore"):
-        return jsonify({"success": False, "error": "decision must be 'accept' or 'ignore'"}), 400
+        return (
+            jsonify(
+                {"success": False, "error": "decision must be 'accept' or 'ignore'"}
+            ),
+            400,
+        )
 
     # Rebuild current recommendations and match by stable id. A rec that no
     # longer exists (condition cleared) can still be audited as ignored
@@ -523,10 +681,15 @@ def api_auto_pilot_respond(rec_id: str, tenant_id: str = ""):
     rec = next((r for r in recs if r.get("id") == rec_id), None)
 
     if decision == "accept" and rec is None:
-        return jsonify({
-            "success": False,
-            "error": "recomendação não está mais ativa (condição já resolvida)",
-        }), 409
+        return (
+            jsonify(
+                {
+                    "success": False,
+                    "error": "recomendação não está mais ativa (condição já resolvida)",
+                }
+            ),
+            409,
+        )
 
     action_type = (rec or {}).get("action", {}).get("type", "") if rec else ""
     action_result = None
@@ -544,6 +707,7 @@ def api_auto_pilot_respond(rec_id: str, tenant_id: str = ""):
                 # engine keeps its own safety-gated execution path).
                 try:
                     from axe_fleet.routes import _execute_device_command
+
                     resp = _execute_device_command(did, action_type)
                     # _execute_device_command returns (jsonify(...), status)
                     # tuples on its error paths — unpack both shapes and honor
@@ -552,11 +716,16 @@ def api_auto_pilot_respond(rec_id: str, tenant_id: str = ""):
                     if isinstance(resp, tuple) and len(resp) == 2:
                         resp, resp_status = resp
                     payload = resp.get_json() if hasattr(resp, "get_json") else {}
-                    status = resp_status if resp_status is not None else resp.status_code
+                    status = (
+                        resp_status if resp_status is not None else resp.status_code
+                    )
                     if status == 200:
                         action_result = {"ok": True, **payload}
                     else:
-                        action_result = {"ok": False, "error": payload.get("error") or f"HTTP {status}"}
+                        action_result = {
+                            "ok": False,
+                            "error": payload.get("error") or f"HTTP {status}",
+                        }
                 except Exception as e:
                     action_result = {"ok": False, "error": str(e)}
         elif action_type == "blacklist":
@@ -564,6 +733,7 @@ def api_auto_pilot_respond(rec_id: str, tenant_id: str = ""):
             if rid:
                 try:
                     from services.rental_performance import add_rig_to_blacklist
+
                     ok = add_rig_to_blacklist(rid, tenant_id=tid)
                     action_result = {"ok": ok}
                 except Exception as e:
@@ -576,19 +746,28 @@ def api_auto_pilot_respond(rec_id: str, tenant_id: str = ""):
             action_result = {"ok": True, "open_buy_flow": True}
 
     recorded = record_rec_decision(
-        tid, rec or {"id": rec_id}, decision, note=note, action_result=action_result,
+        tid,
+        rec or {"id": rec_id},
+        decision,
+        note=note,
+        action_result=action_result,
     )
-    _log_audit(tid, "auto_pilot.respond", target=str(rec_id),
-               details={"decision": decision, "action_type": action_type,
-                        "note": note[:200]})
-    return jsonify({
-        "success": True,
-        "recorded": recorded,
-        "decision": decision,
-        "action_type": action_type,
-        "action_result": action_result,
-        "open_buy_flow": open_buy_flow,
-    })
+    _log_audit(
+        tid,
+        "auto_pilot.respond",
+        target=str(rec_id),
+        details={"decision": decision, "action_type": action_type, "note": note[:200]},
+    )
+    return jsonify(
+        {
+            "success": True,
+            "recorded": recorded,
+            "decision": decision,
+            "action_type": action_type,
+            "action_result": action_result,
+            "open_buy_flow": open_buy_flow,
+        }
+    )
 
 
 @alerts_bp.route("/auto-pilot/recommendations/audit", methods=["GET"])
@@ -597,6 +776,7 @@ def api_auto_pilot_respond(rec_id: str, tenant_id: str = ""):
 def api_auto_pilot_audit(tenant_id: str = ""):
     """Issue #20 — audit trail of accepted/ignored recommendations."""
     from services.auto_pilot import get_rec_audit
+
     tid = tenant_id or "default"
     try:
         # request.args.get(type=int) returns None on malformed input — clamp

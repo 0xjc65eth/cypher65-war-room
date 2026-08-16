@@ -7,7 +7,9 @@
 - ``build_logger()``: returns a named logger with the shared format.
 
 Design decisions (matriz de vendors em docs/DEPLOYMENT_OPS.md):
-- Sentry: env-gated (``SENTRY_DSN``) — já integrado em app.py.
+- Sentry: env-gated (``SENTRY_DSN``) — ``services/sentry_telemetry.py``
+  (Issue #176): release tracking (git SHA), environment, request_id em
+  breadcrumbs/events e PII-safe (send_default_pii=False).
 - Datadog/NewRelic: paid tiers → não adotados (regra de ouro CFO/CRO $0).
 - OpenTelemetry: SDK é grátis, mas precisa de collector/backend — documentado
   como caminho futuro (exporter OTLP pode apontar pro Sentry).
@@ -108,10 +110,14 @@ class JsonFormatter(logging.Formatter):
             return json.dumps(payload, ensure_ascii=False, default=str)
         except (TypeError, ValueError):
             # Never break logging on unserializable payloads.
-            return json.dumps({
-                "ts": payload["ts"], "level": "ERROR",
-                "module": record.name, "message": "log serialization failed",
-            })
+            return json.dumps(
+                {
+                    "ts": payload["ts"],
+                    "level": "ERROR",
+                    "module": record.name,
+                    "message": "log serialization failed",
+                }
+            )
 
 
 def setup_logging() -> bool:
@@ -130,10 +136,12 @@ def setup_logging() -> bool:
     if json_mode:
         handler.setFormatter(JsonFormatter())
     else:
-        handler.setFormatter(logging.Formatter(
-            "%(asctime)sZ %(levelname)s [%(module)s.%(funcName)s] %(message)s",
-            datefmt="%Y-%m-%dT%H:%M:%S",
-        ))
+        handler.setFormatter(
+            logging.Formatter(
+                "%(asctime)sZ %(levelname)s [%(module)s.%(funcName)s] %(message)s",
+                datefmt="%Y-%m-%dT%H:%M:%S",
+            )
+        )
     root.setLevel(logging.INFO)
     return json_mode
 

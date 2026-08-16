@@ -33,13 +33,17 @@ class UserSession:
     """Data container for a single user session."""
 
     __slots__ = (
-        "session_id", "btc_address", "worker_name",
-        "snapshot", "created_at", "last_activity",
-        "pending_address", "pending_worker_name",
+        "session_id",
+        "btc_address",
+        "worker_name",
+        "snapshot",
+        "created_at",
+        "last_activity",
+        "pending_address",
+        "pending_worker_name",
     )
 
-    def __init__(self, session_id: str, btc_address: str = "",
-                 worker_name: str = ""):
+    def __init__(self, session_id: str, btc_address: str = "", worker_name: str = ""):
         self.session_id = session_id
         self.btc_address = btc_address
         self.worker_name = worker_name
@@ -85,15 +89,19 @@ class SessionManager:
 
     # ── Public API ──────────────────────────────────────────────────────────
 
-    def create_session(self, btc_address: str = "",
-                       worker_name: str = "") -> UserSession:
+    def create_session(
+        self, btc_address: str = "", worker_name: str = ""
+    ) -> UserSession:
         """Create a new session and return it."""
         sid = uuid.uuid4().hex
         session = UserSession(sid, btc_address, worker_name)
         with self._lock:
             self._sessions[sid] = session
-        log.info("[session] created %s (addr=%s)", sid[:8],
-                 btc_address[:10] if btc_address else "none")
+        log.info(
+            "[session] created %s (addr=%s)",
+            sid[:8],
+            btc_address[:10] if btc_address else "none",
+        )
         return session
 
     def get_session(self, session_id: str) -> UserSession | None:
@@ -122,8 +130,9 @@ class SessionManager:
                 log.info("[session] destroyed %s", session_id[:8])
             return existed
 
-    def update_wallet(self, session_id: str, btc_address: str,
-                      worker_name: str = "") -> bool:
+    def update_wallet(
+        self, session_id: str, btc_address: str, worker_name: str = ""
+    ) -> bool:
         """Update the wallet address for an existing session."""
         with self._lock:
             session = self._sessions.get(session_id)
@@ -190,8 +199,7 @@ class SessionManager:
 
     def _start_cleanup(self):
         """Start the background cleanup loop."""
-        self._cleanup_timer = threading.Timer(CLEANUP_INTERVAL,
-                                              self._cleanup_task)
+        self._cleanup_timer = threading.Timer(CLEANUP_INTERVAL, self._cleanup_task)
         self._cleanup_timer.daemon = True
         self._cleanup_timer.start()
 
@@ -201,8 +209,11 @@ class SessionManager:
             removed = 0
             now = int(time.time())
             with self._lock:
-                expired = [sid for sid, s in self._sessions.items()
-                           if (now - s.last_activity) > self._ttl]
+                expired = [
+                    sid
+                    for sid, s in self._sessions.items()
+                    if (now - s.last_activity) > self._ttl
+                ]
                 for sid in expired:
                     self._sessions.pop(sid, None)
                     removed += 1

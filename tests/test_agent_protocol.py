@@ -10,6 +10,7 @@ Unit tests against REAL mock servers (ephemeral ports) for the local agent
   (URL/worker) — was summary-only → Antminers showed no temperature
 - AxeOS HTTP discovery returns model/firmware/hostname/mac intact
 """
+
 import json
 import socket
 import threading
@@ -22,35 +23,69 @@ import agent.agent as agent
 
 # ── mock cgminer TCP server (realistic Antminer S19j Pro responses) ────────
 
+
 def _cgminer_reply(cmd):
     if cmd == "version":
         return {
-            "STATUS": [{"STATUS": "S", "Code": 22, "Msg": "CGMiner versions",
-                        "Description": "cgminer 4.11.1"}],
-            "VERSION": [{"CGMiner": "4.11.1", "API": "3.1", "Miner": "X19",
-                         "Type": "Antminer S19j Pro"}],
+            "STATUS": [
+                {
+                    "STATUS": "S",
+                    "Code": 22,
+                    "Msg": "CGMiner versions",
+                    "Description": "cgminer 4.11.1",
+                }
+            ],
+            "VERSION": [
+                {
+                    "CGMiner": "4.11.1",
+                    "API": "3.1",
+                    "Miner": "X19",
+                    "Type": "Antminer S19j Pro",
+                }
+            ],
         }
     if cmd == "summary":
         return {
             "STATUS": [{"STATUS": "S", "Code": 11, "Msg": "Summary"}],
-            "SUMMARY": [{"GHS 5s": 91.2, "GHS av": 89.4, "Accepted": 1450,
-                         "Rejected": 7, "Elapsed": 86500, "Best Share": "9.4T"}],
+            "SUMMARY": [
+                {
+                    "GHS 5s": 91.2,
+                    "GHS av": 89.4,
+                    "Accepted": 1450,
+                    "Rejected": 7,
+                    "Elapsed": 86500,
+                    "Best Share": "9.4T",
+                }
+            ],
         }
     if cmd == "stats":
         return {
             "STATUS": [{"STATUS": "S", "Code": 71, "Msg": "Stats"}],
             "STATS": [
                 {"STATS": 0, "ID": "POOL0"},
-                {"STATS": 1, "ID": "BM1397_0", "temp2_0": 62.5, "temp2_1": 48.2,
-                 "temp3_0": 61.0, "fan1": 4200, "fan2": 4100},
+                {
+                    "STATS": 1,
+                    "ID": "BM1397_0",
+                    "temp2_0": 62.5,
+                    "temp2_1": 48.2,
+                    "temp3_0": 61.0,
+                    "fan1": 4200,
+                    "fan2": 4100,
+                },
             ],
         }
     if cmd == "pools":
         return {
             "STATUS": [{"STATUS": "S", "Code": 54, "Msg": "Pools"}],
-            "POOLS": [{"POOL": 0, "URL": "stratum+tcp://public-pool.io:21496",
-                       "User": "bc1qtest.gamma01", "Status": "Alive",
-                       "Accepted": 1450}],
+            "POOLS": [
+                {
+                    "POOL": 0,
+                    "URL": "stratum+tcp://public-pool.io:21496",
+                    "User": "bc1qtest.gamma01",
+                    "Status": "Alive",
+                    "Accepted": 1450,
+                }
+            ],
         }
     if cmd == "restart":
         # cgminer-family restart is accepted then the device reboots.
@@ -105,18 +140,42 @@ def cgminer_mock():
 # ── mock AxeOS HTTP server (realistic Bitaxe Gamma /api/system/info) ───────
 
 _AXEOS_INFO = {
-    "board": "GAMMA", "model": "Gamma 900", "firmware": "AxeOS 2.13.0",
-    "version": "2.13.0", "hostname": "bitaxe-gamma-01",
-    "mac": "5C:86:4A:11:22:33", "hashrate": 912345678901,
-    "hashRate1m": 900123456789, "hashRate10m": 895000000000,
-    "hashRate1hr": 880000000000, "temp": 53.2, "temp2": 48.1, "vrTemp": 44.0,
-    "power": 15.6, "coreVoltage": 1201, "frequency": 550,
-    "fanspeed": 92, "fanSpeed": 92, "fanrpm": 4600, "fanRPM": 4600,
-    "uptimeSeconds": 86500, "uptime": 86500, "bestDiff": "8.2T",
-    "bestSessionDiff": "6.1T", "sharesAccepted": 1450, "sharesRejected": 7,
-    "sharesStale": 1, "miningPaused": False, "stratumURL": "public-pool.io",
-    "stratumPort": 21496, "stratumUser": "bc1qtest.gamma01", "wifiRSSI": -52,
+    "board": "GAMMA",
+    "model": "Gamma 900",
+    "firmware": "AxeOS 2.13.0",
+    "version": "2.13.0",
+    "hostname": "bitaxe-gamma-01",
+    "mac": "5C:86:4A:11:22:33",
+    "hashrate": 912345678901,
+    "hashRate1m": 900123456789,
+    "hashRate10m": 895000000000,
+    "hashRate1hr": 880000000000,
+    "temp": 53.2,
+    "temp2": 48.1,
+    "vrTemp": 44.0,
+    "power": 15.6,
+    "coreVoltage": 1201,
+    "frequency": 550,
+    "fanspeed": 92,
+    "fanSpeed": 92,
+    "fanrpm": 4600,
+    "fanRPM": 4600,
+    "uptimeSeconds": 86500,
+    "uptime": 86500,
+    "bestDiff": "8.2T",
+    "bestSessionDiff": "6.1T",
+    "sharesAccepted": 1450,
+    "sharesRejected": 7,
+    "sharesStale": 1,
+    "miningPaused": False,
+    "stratumURL": "public-pool.io",
+    "stratumPort": 21496,
+    "stratumUser": "bc1qtest.gamma01",
+    "wifiRSSI": -52,
 }
+
+
+_PAUSED = False  # estado de mining do mock AxeOS (flipado por pause/resume)
 
 
 class _AxeOSHandler(BaseHTTPRequestHandler):
@@ -125,7 +184,14 @@ class _AxeOSHandler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         if self.path == "/api/system/info":
-            body = json.dumps(_AXEOS_INFO).encode()
+            # Reflete o estado de mining real: miner pausado reporta
+            # miningPaused=true e hashrate 0 (mesmo comportamento do mock
+            # do harness scripts/e2e_agent_local.py — Issue #16).
+            info = dict(_AXEOS_INFO)
+            info["miningPaused"] = _PAUSED
+            if _PAUSED:
+                info["hashrate"] = 0
+            body = json.dumps(info).encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(body)))
@@ -133,9 +199,28 @@ class _AxeOSHandler(BaseHTTPRequestHandler):
             self.wfile.write(body)
 
     def do_POST(self):
-        # AxeOS restart/identify over HTTP :80.
-        if self.path.rstrip("/").endswith("/api/system/restart") or \
-                self.path.rstrip("/").endswith("/api/system/identify"):
+        # AxeOS commands over HTTP :80 (restart/identify/pause/resume).
+        global _PAUSED
+        path = self.path.rstrip("/")
+        if path.endswith("/api/system/restart") or path.endswith(
+            "/api/system/identify"
+        ):
+            body = b'{"success": true}'
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        elif path.endswith("/api/system/miningPause"):
+            _PAUSED = True
+            body = b'{"success": true}'
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        elif path.endswith("/api/system/miningResume"):
+            _PAUSED = False
             body = b'{"success": true}'
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
@@ -158,15 +243,18 @@ def axeos_mock():
 
 # ── discovery ─────────────────────────────────────────────────────────────
 
+
 class TestDiscovery:
-    def test_cgminer_host_extracts_firmware_and_version(self, monkeypatch, cgminer_mock):
+    def test_cgminer_host_extracts_firmware_and_version(
+        self, monkeypatch, cgminer_mock
+    ):
         monkeypatch.setattr(agent, "CGMINER_PORT", cgminer_mock)
         found = agent._probe_host("127.0.0.1")
         assert found is not None
         assert found["type"] == "cgminer"
         assert found["model"] == "Antminer S19j Pro"
-        assert found["firmware"] == "4.11.1"   # was "" before the fix
-        assert found["version"] == "3.1"       # was "" before the fix
+        assert found["firmware"] == "4.11.1"  # was "" before the fix
+        assert found["version"] == "3.1"  # was "" before the fix
 
     def test_axeos_host_returns_full_identity(self, monkeypatch, axeos_mock):
         monkeypatch.setattr(agent, "AXEOS_PORT", axeos_mock)
@@ -182,14 +270,18 @@ class TestDiscovery:
 
 # ── telemetry ─────────────────────────────────────────────────────────────
 
+
 class TestTelemetry:
-    def test_cgminer_poll_includes_stats_temps_and_pools(self, monkeypatch, cgminer_mock):
+    def test_cgminer_poll_includes_stats_temps_and_pools(
+        self, monkeypatch, cgminer_mock
+    ):
         monkeypatch.setattr(agent, "CGMINER_PORT", cgminer_mock)
-        tel = agent._poll_telemetry({"ip": "127.0.0.1", "type": "cgminer",
-                                     "model": "Antminer S19j Pro"})
-        assert tel["hashrate_hs"] == 91_200_000_000          # GHS 5s 91.2 × 1e9
-        assert tel["temperature"] == 62.5                    # from stats temp2_0
-        assert tel["fan_rpm"] == 4200                        # from stats fan1
+        tel = agent._poll_telemetry(
+            {"ip": "127.0.0.1", "type": "cgminer", "model": "Antminer S19j Pro"}
+        )
+        assert tel["hashrate_hs"] == 91_200_000_000  # GHS 5s 91.2 × 1e9
+        assert tel["temperature"] == 62.5  # from stats temp2_0
+        assert tel["fan_rpm"] == 4200  # from stats fan1
         assert tel["pool_url"] == "stratum+tcp://public-pool.io:21496"
         assert tel["pool_user"] == "bc1qtest.gamma01"
         assert tel["best_diff"] == "9.4T"
@@ -198,8 +290,9 @@ class TestTelemetry:
 
     def test_axeos_poll_is_full_telemetry(self, monkeypatch, axeos_mock):
         monkeypatch.setattr(agent, "AXEOS_PORT", axeos_mock)
-        tel = agent._poll_telemetry({"ip": "127.0.0.1", "type": "bitaxe",
-                                     "model": "Gamma 900"})
+        tel = agent._poll_telemetry(
+            {"ip": "127.0.0.1", "type": "bitaxe", "model": "Gamma 900"}
+        )
         assert tel["hashrate_hs"] == 912345678901
         assert tel["temperature"] == 53.2
         assert tel["fan_rpm"] == 4600
@@ -207,6 +300,30 @@ class TestTelemetry:
         assert tel["best_diff"] == "8.2T"
         assert tel["shares_accepted"] == 1450
         assert tel["model"] == "Gamma 900"
+
+    def test_axeos_poll_reflects_paused_state(self, monkeypatch, axeos_mock):
+        """AxeOS pausado via comando REAL (miningPause): _poll_telemetry
+        carrega mining_paused=True e hashrate 0 — o payload exato que o
+        servidor usa para derivar PAUSED (Issue #16). Depois o resume real
+        (miningResume) desliga o flag e devolve o hashrate."""
+        monkeypatch.setattr(agent, "AXEOS_PORT", axeos_mock)
+        known = {"127.0.0.1": {"type": "bitaxe"}}
+        dev = {"ip": "127.0.0.1", "type": "bitaxe"}
+        ok, _ = agent._exec_command(
+            {"ip_address": "127.0.0.1", "command": "pause"}, known=known
+        )
+        assert ok is True
+        try:
+            tel = agent._poll_telemetry(dev)
+            assert tel["mining_paused"] is True
+            assert tel["hashrate_hs"] == 0
+        finally:
+            agent._exec_command(
+                {"ip_address": "127.0.0.1", "command": "resume"}, known=known
+            )
+        tel = agent._poll_telemetry(dev)
+        assert tel["mining_paused"] is False
+        assert tel["hashrate_hs"] == 912345678901
 
     def test_unreachable_cgminer_returns_empty_not_crash(self, monkeypatch):
         # No server on this port → poll must return {} (agent pushes {}).
@@ -218,12 +335,14 @@ class TestTelemetry:
 # ── command execution (Fix 1: server sends ip_address, agent opens a REAL
 #    socket on the LAN — AxeOS HTTP :80 vs cgminer JSON-over-TCP :4028) ────
 
+
 class TestExecCommand:
     def test_axeos_restart_http(self, monkeypatch, axeos_mock):
         monkeypatch.setattr(agent, "AXEOS_PORT", axeos_mock)
         ok, result = agent._exec_command(
             {"ip_address": "127.0.0.1", "command": "restart"},
-            known={"127.0.0.1": {"type": "bitaxe"}})
+            known={"127.0.0.1": {"type": "bitaxe"}},
+        )
         assert ok is True
         assert "HTTP 200" in result
 
@@ -231,14 +350,16 @@ class TestExecCommand:
         monkeypatch.setattr(agent, "AXEOS_PORT", axeos_mock)
         ok, _ = agent._exec_command(
             {"ip_address": "127.0.0.1", "command": "identify"},
-            known={"127.0.0.1": {"type": "bitaxe"}})
+            known={"127.0.0.1": {"type": "bitaxe"}},
+        )
         assert ok is True
 
     def test_cgminer_restart_via_tcp_api(self, monkeypatch, cgminer_mock):
         monkeypatch.setattr(agent, "CGMINER_PORT", cgminer_mock)
         ok, result = agent._exec_command(
             {"ip_address": "127.0.0.1", "command": "restart"},
-            known={"127.0.0.1": {"type": "cgminer"}})
+            known={"127.0.0.1": {"type": "cgminer"}},
+        )
         assert ok is True
         assert "accepted" in result
 
@@ -248,7 +369,36 @@ class TestExecCommand:
         monkeypatch.setattr(agent, "CGMINER_PORT", cgminer_mock)
         ok, result = agent._exec_command(
             {"ip_address": "127.0.0.1", "command": "identify"},
-            known={"127.0.0.1": {"type": "cgminer"}})
+            known={"127.0.0.1": {"type": "cgminer"}},
+        )
+        assert ok is False
+        assert "not supported" in result
+
+    def test_axeos_pause_http(self, monkeypatch, axeos_mock):
+        monkeypatch.setattr(agent, "AXEOS_PORT", axeos_mock)
+        ok, result = agent._exec_command(
+            {"ip_address": "127.0.0.1", "command": "pause"},
+            known={"127.0.0.1": {"type": "bitaxe"}},
+        )
+        assert ok is True
+        assert "HTTP 200" in result
+
+    def test_axeos_resume_http(self, monkeypatch, axeos_mock):
+        monkeypatch.setattr(agent, "AXEOS_PORT", axeos_mock)
+        ok, _ = agent._exec_command(
+            {"ip_address": "127.0.0.1", "command": "resume"},
+            known={"127.0.0.1": {"type": "bitaxe"}},
+        )
+        assert ok is True
+
+    def test_cgminer_pause_rejected(self, monkeypatch, cgminer_mock):
+        """cgminer NÃO tem pause/resume — falha honesta (o servidor só anuncia
+        pause/resume para devices AxeOS)."""
+        monkeypatch.setattr(agent, "CGMINER_PORT", cgminer_mock)
+        ok, result = agent._exec_command(
+            {"ip_address": "127.0.0.1", "command": "pause"},
+            known={"127.0.0.1": {"type": "cgminer"}},
+        )
         assert ok is False
         assert "not supported" in result
 
@@ -257,7 +407,8 @@ class TestExecCommand:
         monkeypatch.setattr(agent, "AXEOS_PORT", 1)
         ok, result = agent._exec_command(
             {"ip_address": "127.0.0.1", "command": "restart"},
-            known={"127.0.0.1": {"type": "bitaxe"}})
+            known={"127.0.0.1": {"type": "bitaxe"}},
+        )
         assert ok is False
         assert isinstance(result, str)
 

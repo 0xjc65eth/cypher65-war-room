@@ -190,9 +190,11 @@ test.describe('FLEET COMMAND CENTER — Restart via agent', () => {
     await restartBtn.click();
 
     // ── Toast de sucesso com a mensagem do servidor (some após ~3.3s) ──
-    const toast = page.locator('#toast-container div', {
-      hasText: 'enviado para o agente local executar',
-    });
+    //    Filtra pelo texto ÚNICO do comando: o locator loose por substring
+    //    ('enviado para o agente local executar') pode casar toasts empilhados
+    //    e quebrar com strict-mode quando outro spec roda no mesmo harness.
+    const toast = page.getByText(
+      "'restart' enviado para o agente local executar");
     await expect(toast).toBeVisible({ timeout: 8000 });
     await expect(toast).toContainText('restart');
 

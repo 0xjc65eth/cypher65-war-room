@@ -14,6 +14,7 @@ Supports BOTH registry shapes:
   - core/registry/device_registry.CoreDeviceRegistry  → Device objects
   - axe_fleet/registry.DeviceRegistry                 → dicts
 """
+
 import json
 import logging
 import time
@@ -36,8 +37,11 @@ _safety: Optional[SafetyEngine] = None
 _record_cb: Optional[Callable] = None  # app._record_command — audits every attempt
 
 
-def init_device_control(registry, safety_engine: Optional[SafetyEngine] = None,
-                        record_command: Optional[Callable] = None):
+def init_device_control(
+    registry,
+    safety_engine: Optional[SafetyEngine] = None,
+    record_command: Optional[Callable] = None,
+):
     """Inject DeviceRegistry and SafetyEngine. Called from app.py."""
     global _registry, _safety, _record_cb
     _registry = registry
@@ -49,6 +53,7 @@ device_control_bp = Blueprint("device_control", __name__)
 
 
 # ── Helpers: normalize core Device objects vs axe-fleet dicts ──────────
+
 
 def _is_core_device(device: Any) -> bool:
     """True if the registry returned a core Device object (not a dict)."""
@@ -67,10 +72,7 @@ def _capability_map(device: Device, raw: Any) -> Dict[str, bool]:
     or a registry dict (flags dict OR list of dicts)."""
     if _is_core_device(raw):
         caps = device.capabilities or []
-        return {
-            c.name: bool(c.supported)
-            for c in caps if getattr(c, "name", None)
-        }
+        return {c.name: bool(c.supported) for c in caps if getattr(c, "name", None)}
     caps = raw.get("capabilities") or {}
     if isinstance(caps, dict):
         return {str(k): bool(v) for k, v in caps.items()}
@@ -122,7 +124,9 @@ def _dict_to_device(d: Any) -> Device:
             # hashrate key) — legacy broken stubs are ignored.
             if tel_raw:
                 payload = tel_raw[0].get("payload", {})
-                if isinstance(payload, dict) and ("hashrate_hs" in payload or "hashrate" in payload):
+                if isinstance(payload, dict) and (
+                    "hashrate_hs" in payload or "hashrate" in payload
+                ):
                     device.current_telemetry = payload
         except Exception as e:  # defensive — telemetry is best-effort
             log.debug("[device_control] telemetry attach failed: %s", e)
@@ -175,8 +179,9 @@ COMMAND_META = {
 }
 
 
-def _record_attempt(device_id: str, command: str, parameters: Dict[str, Any],
-                    result: Dict[str, Any]):
+def _record_attempt(
+    device_id: str, command: str, parameters: Dict[str, Any], result: Dict[str, Any]
+):
     """Audit a command attempt (blocked or executed) through app._record_command."""
     if _record_cb is None:
         return
@@ -242,13 +247,18 @@ def execute_device_command(device_id: str, tenant_id: str = ""):
             "reason": f"'{command}' not supported by this device",
         }
         _record_attempt(device_id, command, parameters, record)
-        return jsonify({
-            "success": False,
-            "error": f"'{command}' not supported by this device",
-            "device_id": device_id,
-            "supported_commands": [k for k, v in caps.items() if v],
-            "read_only": True,
-        }), 400
+        return (
+            jsonify(
+                {
+                    "success": False,
+                    "error": f"'{command}' not supported by this device",
+                    "device_id": device_id,
+                    "supported_commands": [k for k, v in caps.items() if v],
+                    "read_only": True,
+                }
+            ),
+            400,
+        )
 
     # 3. Validate through SafetyEngine
     if _safety:
@@ -258,41 +268,64 @@ def execute_device_command(device_id: str, tenant_id: str = ""):
                 "success": False,
                 "allowed": False,
                 "reason": result.reason,
-                "risk_level": result.risk_level.value if result.risk_level else "unknown",
+                "risk_level": (
+                    result.risk_level.value if result.risk_level else "unknown"
+                ),
                 "requires_confirmation": result.requires_confirmation,
             }
             _record_attempt(device_id, command, parameters, record)
-            return jsonify({
-                "success": False,
-                "error": result.reason or "Command blocked by safety engine",
-                "device_id": device_id,
-                "command": command,
-                "violations": result.violations,
-                "requires_confirmation": result.requires_confirmation,
-                "risk_level": result.risk_level.value if result.risk_level else "unknown",
-            }), 403
+            return (
+                jsonify(
+                    {
+                        "success": False,
+                        "error": result.reason or "Command blocked by safety engine",
+                        "device_id": device_id,
+                        "command": command,
+                        "violations": result.violations,
+                        "requires_confirmation": result.requires_confirmation,
+                        "risk_level": (
+                            result.risk_level.value if result.risk_level else "unknown"
+                        ),
+                    }
+                ),
+                403,
+            )
 
     # 4. Build adapter and execute
     adapter = _build_adapter(raw, device)
     if adapter is None:
-        return jsonify({
-            "success": False,
-            "error": "firmware not supported for command execution",
-            "device_id": device_id,
-            "firmware": raw.get("firmware", "") if not _is_core_device(raw) else (raw.firmware or ""),
-            "read_only": True,
-        }), 400
+        return (
+            jsonify(
+                {
+                    "success": False,
+                    "error": "firmware not supported for command execution",
+                    "device_id": device_id,
+                    "firmware": (
+                        raw.get("firmware", "")
+                        if not _is_core_device(raw)
+                        else (raw.firmware or "")
+                    ),
+                    "read_only": True,
+                }
+            ),
+            400,
+        )
 
     try:
         exec_result = adapter.execute_command(command, parameters)
     except Exception as e:
         log.error("[device_control] execute error: %s", e)
-        return jsonify({
-            "success": False,
-            "error": f"execution failed: {str(e)}",
-            "device_id": device_id,
-            "command": command,
-        }), 500
+        return (
+            jsonify(
+                {
+                    "success": False,
+                    "error": f"execution failed: {str(e)}",
+                    "device_id": device_id,
+                    "command": command,
+                }
+            ),
+            500,
+        )
 
     # 5. Record restart cooldown
     if command == "restart" and _safety and exec_result.get("success"):
@@ -302,17 +335,23 @@ def execute_device_command(device_id: str, tenant_id: str = ""):
     _record_attempt(device_id, command, parameters, exec_result)
 
     # 7. Log execution to terminal
-    log.info("[device_control] %s → %s: %s (success=%s)",
-             device_id, command, parameters,
-             exec_result.get("success", False))
+    log.info(
+        "[device_control] %s → %s: %s (success=%s)",
+        device_id,
+        command,
+        parameters,
+        exec_result.get("success", False),
+    )
 
-    return jsonify({
-        "success": exec_result.get("success", False),
-        "device_id": device_id,
-        "command": command,
-        "result": exec_result,
-        "meta": COMMAND_META.get(command),
-    })
+    return jsonify(
+        {
+            "success": exec_result.get("success", False),
+            "device_id": device_id,
+            "command": command,
+            "result": exec_result,
+            "meta": COMMAND_META.get(command),
+        }
+    )
 
 
 @device_control_bp.route("/api/devices/<device_id>/test", methods=["POST"])
@@ -340,11 +379,16 @@ def test_device_command(device_id: str, tenant_id: str = ""):
         return jsonify({"success": False, "error": "command is required"}), 400
 
     if command not in COMMAND_META:
-        return jsonify({
-            "success": False,
-            "error": f"unknown command: {command}",
-            "supported_commands": list(COMMAND_META.keys()),
-        }), 400
+        return (
+            jsonify(
+                {
+                    "success": False,
+                    "error": f"unknown command: {command}",
+                    "supported_commands": list(COMMAND_META.keys()),
+                }
+            ),
+            400,
+        )
 
     log.info("[device_control] SIMULATED %s → %s (test mode)", device_id, command)
 
@@ -375,15 +419,17 @@ def test_device_command(device_id: str, tenant_id: str = ""):
         },
     }
 
-    return jsonify({
-        "success": True,
-        "device_id": device_id,
-        "command": command,
-        "simulated": True,
-        "result": simulated_results.get(command),
-        "meta": COMMAND_META.get(command),
-        "test_mode": True,
-    })
+    return jsonify(
+        {
+            "success": True,
+            "device_id": device_id,
+            "command": command,
+            "simulated": True,
+            "result": simulated_results.get(command),
+            "meta": COMMAND_META.get(command),
+            "test_mode": True,
+        }
+    )
 
 
 @device_control_bp.route("/api/devices/<device_id>/capabilities", methods=["GET"])
@@ -405,18 +451,26 @@ def get_device_capabilities(device_id: str, tenant_id: str = ""):
     # Build enriched command list
     commands = []
     for cmd_key, cmd_meta in COMMAND_META.items():
-        cap_key = {"restart": "restart", "identify": "identify",
-                   "pause": "pause", "resume": "resume"}.get(cmd_key, cmd_key)
+        cap_key = {
+            "restart": "restart",
+            "identify": "identify",
+            "pause": "pause",
+            "resume": "resume",
+        }.get(cmd_key, cmd_key)
         supported = caps.get(cap_key, False)
-        commands.append({
-            "command": cmd_key,
-            "supported": supported,
-            **cmd_meta,
-        })
+        commands.append(
+            {
+                "command": cmd_key,
+                "supported": supported,
+                **cmd_meta,
+            }
+        )
 
-    return jsonify({
-        "device_id": device_id,
-        "raw_capabilities": caps,
-        "commands": commands,
-        "read_only": not any(c["supported"] for c in commands),
-    })
+    return jsonify(
+        {
+            "device_id": device_id,
+            "raw_capabilities": caps,
+            "commands": commands,
+            "read_only": not any(c["supported"] for c in commands),
+        }
+    )
