@@ -10280,7 +10280,15 @@ dom.walletSave?.addEventListener('click', async () => {
       render(snap);
       fetchAxeFleet();
       updateNextPoll();
-    } catch (e) { logMessage('ERROR', e.message, 'WARN'); }
+    } catch (e) {
+      // Sev-1 (UI audit 2026-08): a failed first fetch must NEVER leave the
+      // boot skeletons stuck — the old code only logged, so a fetch failure
+      // (network, rate limit on mobile) froze the whole dashboard in a
+      // skeleton overlay with the status bar stuck at INIT. Hide on EVERY
+      // outcome; the panels then show their honest empty/error state.
+      hideSkeletons();
+      logMessage('ERROR', e.message, 'WARN');
+    }
     finally { _snapshotFetching = false; }
   }
 
@@ -10373,6 +10381,11 @@ dom.walletSave?.addEventListener('click', async () => {
     }
 
     showSkeletons();
+    // Sev-1 watchdog (UI audit 2026-08): the first fetch has NO timeout — if
+    // it hangs (network blackout, proxy stall) the boot skeletons would stay
+    // forever. Force-hide after 20s so the panels degrade to their honest
+    // empty/error state instead of a frozen skeleton screen.
+    setTimeout(function () { hideSkeletons(); }, 20000);
     initFleetCommandCenterControls();
     initAxeFleetControls();
     initAxeFleetControls();

@@ -5,8 +5,11 @@
  *
  * Auditoria visual reutilizável do dashboard: console errors, page errors,
  * overflow horizontal, elementos truncados/estourados, status bar e presença
- * de skeletons nos módulos tardios. Usado na rodada de auditoria 2026-08
- * (docs/AUDITORIA_2026-08.md) e pensado para rodar sob demanda ou no CI.
+ * de skeletons nos módulos tardios. Também injeta falha no primeiro fetch
+ * (/api/snapshot → 500) para provar que os skeletons do boot são escondidos
+ * no caminho de ERRO (Sev-1 da auditoria 2026-08 — nunca skeleton eterno).
+ * Usado na rodada de auditoria 2026-08 (docs/AUDITORIA_2026-08.md), sob
+ * demanda ou no CI (check_frontend.sh).
  *
  * Pré-requisito: servidor Flask rodando (padrão http://127.0.0.1:8765).
  *
@@ -126,6 +129,25 @@ async function auditViewport(browser, vp) {
     document.querySelectorAll('.skel-overlay').length
   );
 
+  // 5b) Sev-1 regression (UI audit 2026-08): a FAILED first fetch must hide
+  // the boot skeletons — never leave them stuck (mobile showed 40 overlays
+  // frozen with the status bar at INIT). Intercept /api/snapshot → 500,
+  // reload, and require ZERO skeleton leftovers after the error path runs.
+  let failSkel = { leftovers: -1 };
+  try {
+    await page.route('**/api/snapshot', (route) =>
+      route.fulfill({ status: 500, contentType: 'application/json', body: '{}' })
+    );
+    await page.reload({ waitUntil: 'domcontentloaded', timeout: 20000 });
+    await page.waitForTimeout(3000); // fetch falha → catch → hideSkeletons()
+    failSkel.leftovers = await page.evaluate(() =>
+      document.querySelectorAll('.skel-overlay').length
+    );
+    await page.unroute('**/api/snapshot');
+    await page.reload({ waitUntil: 'domcontentloaded', timeout: 20000 });
+    await page.waitForTimeout(2000); // restaurar estado real p/ seção 6
+  } catch (e) { /* não fatal — route/unroute pode falhar em viewports exóticos */ }
+
   // 5) Ativação de módulos tardios — skeleton aparece e some (market)
   let marketSkel = { shown: 0, after: 0 };
   try {
@@ -158,12 +180,14 @@ async function auditViewport(browser, vp) {
   console.log('  STATUS BAR:', JSON.stringify(report.status));
   console.log('  SKELETON LEFTOVERS pós-boot:', report.skelLeftovers, report.skelLeftovers > 0 ? ' ← BAD' : '');
   console.log('  MARKET SKELETON: shown=' + marketSkel.shown, 'after=' + marketSkel.after);
+  console.log('  SKELETON APÓS FETCH FALHANDO (500):', failSkel.leftovers, failSkel.leftovers > 0 ? ' ← BAD' : '');
 
   if (overflowBad) fail(`${vp.name}: overflow horizontal (${ov.scrollWidth} > ${ov.clientWidth})`);
   if (truncBad) fail(`${vp.name}: ${report.truncated.length} elemento(s) estourado(s)`);
   if (pageErrBad) fail(`${vp.name}: ${pageErrors.length} page error(s)`);
   if (consoleBad) fail(`${vp.name}: ${consoleErrors.length} console error(s) (strict)`);
   if (report.skelLeftovers > 0) fail(`${vp.name}: skeleton overlay(s) preso(s) após o boot`);
+  if (failSkel.leftovers > 0) fail(`${vp.name}: ${failSkel.leftovers} skeleton(s) preso(s) após FETCH FALHAR (Sev-1 — hideSkeletons no catch)`);
 
   await page.close();
   return report;
