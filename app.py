@@ -36,6 +36,7 @@ from helpers import (
     safe_num_from_str,
     coerce_float,
     coerce_int,
+    coerce_ts,
     human_int,
     human_secs_long,
     isfinite_v,
@@ -120,6 +121,7 @@ from services.licensing import (
     issue_license as _licensing_issue,
     licensing_configured as _licensing_configured,
     current_license_key as _current_license_key,
+    premium_required as _premium_required,
 )
 from services import (
     payments as _payments,
@@ -208,6 +210,35 @@ if (
         "[boot] SECRET_KEY is not set but auth (API_KEY/TENANT_API_KEYS) is configured — "
         "JWT issuance/verification will fail. Set SECRET_KEY in the environment."
     )
+
+# ── Per-user credentials (Issue #189): NO shared provider keys ──────────
+# Multi-tenant deployments (TENANT_API_KEYS) must NOT carry operator
+# MRR/Braiins keys at env/global level — each user configures their OWN in
+# Settings (tenant-scoped rows, encrypted at rest). Named tenants never
+# inherit env keys (enforced + tested); env keys only ever apply to the
+# operator's own default tenant. Their presence in a shared deployment is an
+# operational footgun, so warn loudly at boot.
+
+
+def provider_keys_env_warning(tenant_api_keys, env) -> Optional[str]:
+    """Return the boot warning (or None) when a multi-tenant deployment
+    carries operator provider keys at env level. Pure + testable."""
+    if tenant_api_keys and any(
+        env.get(k) for k in ("MRR_API_KEY", "MRR_API_SECRET", "BRAIINS_API_KEY")
+    ):
+        return (
+            "provider keys (MRR_API_KEY/MRR_API_SECRET/BRAIINS_API_KEY) are set at "
+            "env level in a MULTI-TENANT deployment — they only apply to the operator's "
+            "own default tenant and are NEVER shared with users. Remove them from the "
+            "environment; every user must configure their OWN key in Settings (⚙)."
+        )
+    return None
+
+
+_w = provider_keys_env_warning(TENANT_API_KEYS, os.environ)
+if _w:
+    log.warning("[boot] %s", _w)
+
 
 # ── Register blueprints ─────────────────────────────────────────────────────
 app.register_blueprint(solo_mining_bp, url_prefix="/api/solo-mining")
@@ -671,7 +702,7 @@ app.register_blueprint(alerts_bp)
 # current schema revision; _record_schema_version() stamps it into the
 # schema_version table on every boot so operators/tests can verify the DB
 # layout matches the code that wrote it.
-SCHEMA_VERSION = 3  # Issue #17: + pool_metrics (60s sampler) · Issue #176: + error_metrics (error-rate)
+SCHEMA_VERSION = 4  # Issue #17: + pool_metrics · Issue #176: + error_metrics · Issue #202: + degradation_metrics (WARNING-rate)
 
 
 def _record_schema_version(conn):
@@ -1191,6 +1222,14 @@ def init_db():
     except Exception as e:
         log.warning("[migrate] error_metrics init failed: %s", e)
 
+    # Issue #202: WARNING/degradation bucket — every WARNING record (including
+    # the converted `except: pass` sites) lands here so silent failures become
+    # visible telemetry ($0, self-host friendly, same discipline).
+    try:
+        _error_tracker.ensure_degradation_table(conn)
+    except Exception as e:
+        log.warning("[migrate] degradation_metrics init failed: %s", e)
+
     # ── CFO: PRO conversion telemetry (funnel + LTV/CAC) ──
     # Rows are funnel events (paywall_view → modal_open → checkout_start →
     # paid → key_activated); tenant_id/email are SHA-256 hashed (privacy).
@@ -1274,6 +1313,9 @@ _init_sentry()  # logs "[monitor] Sentry enabled/skipped"; no-op without DSN
 # discipline as the pool_metrics sampler (never on the request hot path, and
 # a DB failure inside emit() is swallowed, never breaking logging).
 _error_tracker.install(get_db)
+# Issue #202: the WARNING half of the $0 sampler — fires on every WARNING log
+# record (the converted `except: pass` sites now WARN instead of dying silent).
+_error_tracker.install_degradation(get_db)
 
 
 # Markers written exclusively by the demo seeders. Devices carrying these
@@ -2821,10 +2863,11 @@ def _restore_all_time_best_diff():
                 v = float(r["value"])
                 if v > 0:
                     timeline_state["all_time_best_diff_raw"] = v
-            except Exception:
-                pass
-    except Exception:
-        pass
+            except Exception as e:
+                log.warning("[proximity] all_time_best_diff value corrupt: %s", e)
+    except Exception as e:
+        # Issue #202: restore failure is degradation — never silent.
+        log.warning("[proximity] all_time_best_diff restore error: %s", e)
 
 
 def _persist_all_time_best_diff(value):
@@ -2892,8 +2935,9 @@ def _nearest_history_before(ts_target):
         conn.close()
         if r:
             return (r["best_diff"], r["network_difficulty"])
-    except Exception:
-        pass
+    except Exception as e:
+        # Issue #202: lookup failure is degradation — never silent.
+        log.warning("[proximity] nearest history lookup failed: %s", e)
     return None
 
 
@@ -3226,7 +3270,7 @@ def _reset_session_state():
 
     # Reset timeline_state with fresh defaults
     timeline_state["_primed"] = False
-    timeline_state["last_submit_ts"] = 0
+    timeline_state["last_submit_ts"] = None  # sentinel policy (Issue #203)
     timeline_state["last_best_diff_str"] = ""
     timeline_state["all_time_best_diff_raw"] = 0.0
     timeline_state["share_submit_history"].clear()
@@ -3583,6 +3627,38 @@ def api_admin_error_rate():
     data["sentry_enabled"] = _sentry_active()
     data["sentry_release"] = _SENTRY_CFG["release"]
     data["sentry_environment"] = _SENTRY_ENVIRONMENT
+    return jsonify(data)
+
+
+@app.route("/api/admin/degradation-rate")
+def api_admin_degradation_rate():
+    """WARNING/degradation telemetry (Issue #202) — admin-gated like error-rate.
+
+    Same gate (localhost or operator X-API-Key). Returns the
+    degradation_metrics aggregation: total WARNINGs in the window, peak per
+    hour, hourly buckets with per-module breakdown, top modules, and the most
+    recent warnings WITH their request_id — plus the rate-alert flags (``spike``
+    = pico >= 100/h; ``sustained`` = warnings in >= 2 distinct hours) and the
+    since-boot counter. Honest: an empty response means zero warnings.
+    """
+    remote = request.remote_addr or ""
+    local = remote in ("127.0.0.1", "::1", "localhost")
+    operator_key = os.environ.get("API_KEY") or ""
+    sent = (request.headers.get("X-API-Key") or "").strip()
+    if not local and not (operator_key and hmac.compare_digest(sent, operator_key)):
+        return jsonify({"error": "admin access required"}), 403
+
+    hours = request.args.get("hours", 24, type=int)
+    if hours < 1 or hours > 7 * 24:
+        hours = 24
+    limit = request.args.get("limit", 60, type=int)
+    if limit < 1 or limit > 500:
+        limit = 60
+    conn = get_db()
+    try:
+        data = _error_tracker.fetch_degradation_rate(conn, hours=hours, limit=limit)
+    finally:
+        conn.close()
     return jsonify(data)
 
 
@@ -3996,11 +4072,10 @@ def _do_poll():
     # BEST_DIFF_BUMP events. Subsequent polls fire only on real deltas.
     if not timeline_state["_primed"]:
         if worker:
-            try:
-                ls_int = int(worker.get("lastSubmission") or 0)
-            except Exception:
-                ls_int = 0
-            timeline_state["last_submit_ts"] = ls_int or 0
+            # Sentinel policy (Issue #203): coerce_ts keeps a missing
+            # lastSubmission as None — never 0 (0 renders as 1970-01-01).
+            ls_int = coerce_ts(worker.get("lastSubmission"))
+            timeline_state["last_submit_ts"] = ls_int
             timeline_state["last_best_diff_str"] = worker.get("bestDifficulty") or ""
             # seed the rolling share-rate history so sph is meaningful from poll 2
             if ls_int:
@@ -4010,11 +4085,7 @@ def _do_poll():
     else:
         fresh_bump_detected = False
         if worker:
-            ls = worker.get("lastSubmission")
-            try:
-                ls_int = int(ls) if ls else 0
-            except Exception:
-                ls_int = 0
+            ls_int = coerce_ts(worker.get("lastSubmission"))
             if ls_int and ls_int != timeline_state["last_submit_ts"]:
                 gap = (
                     (ls_int - timeline_state["last_submit_ts"])
@@ -4510,8 +4581,9 @@ def _do_poll():
         )
         recent_alerts = [dict(r) for r in c.fetchall()]
         conn.close()
-    except Exception:
-        pass
+    except Exception as e:
+        # Issue #202: a failed read is degradation — never silent.
+        log.warning("[poll] recent alerts read failed: %s", e)
     # Merge in-memory CRIT/SUCCESS alerts (disk-watchdog). Each in-memory alert
     # already carries a stable id assigned by _make_memory_alert, so
     # JS renderAlerts sees them as same-item across polls and does NOT re-fire
@@ -4567,8 +4639,9 @@ def _do_poll():
         c.execute("SELECT * FROM share_timeline ORDER BY id DESC LIMIT 80")
         timeline_recent = [dict(r) for r in c.fetchall()]
         conn.close()
-    except Exception:
-        pass
+    except Exception as e:
+        # Issue #202: a failed read is degradation — never silent.
+        log.warning("[poll] timeline events read failed: %s", e)
 
     # ━━ Event stats (session + rolling windows) ━━
     event_stats, hour_ago, day_ago = compute_event_stats(
@@ -4603,8 +4676,9 @@ def _do_poll():
                 "db_best_diffs_last_day": best_diffs_last_day,
             }
         )
-    except Exception:
-        pass
+    except Exception as e:
+        # Issue #202: a failed stats read is degradation — never silent.
+        log.warning("[poll] event-stats DB read failed: %s", e)
 
     # ━━ Hot-streak alert (proximity-driven, fresh-bump gated) ━━
     # Already captured above (right after proximity compute). Here we just
@@ -4642,6 +4716,46 @@ def _do_poll():
         # own rules), fail-closed (unarmed = preview only) and rate-limited
         # (per-tenant action budget enforced inside the engine).
         _automation_engine.evaluate_rules(_core_devices, tenant_id="default")
+
+        # Auto-Pilot Fase 4 (Issue #178): execução autônoma das recomendações
+        # advisory atrás do gate PRO. Quando PRO + armado + auto_pilot_autonomous
+        # ON, o piloto executa SOZINHO as ações físicas (restart/pause) com
+        # safety + cooldown + orçamento compartilhado, auditando cada resultado
+        # (auto_pilot_rec_audit, note="autonomous"). Fail-closed: qualquer gate
+        # fechado = nada executa; o executor nunca levanta.
+        try:
+            from axe_fleet.routes import _execute_device_command as _ap_exec
+            from services.auto_pilot import execute_autonomous_actions as _ap_run
+
+            def _ap_exec_normalized(did, cmd):
+                # Normaliza o executor do fleet (Response ou (Response, status))
+                # para o contrato {ok, ...} que o executor autônomo espera.
+                _resp = _ap_exec(did, cmd, tenant_id="default")
+                _status = None
+                if isinstance(_resp, tuple) and len(_resp) == 2:
+                    _resp, _status = _resp
+                _payload = _resp.get_json() if hasattr(_resp, "get_json") else {}
+                _ok = (_status if _status is not None else _resp.status_code) == 200
+                return {"ok": _ok, **(_payload if _ok else {})}
+
+            _ap_results = _ap_run(
+                tenant_id="default",
+                engine=_automation_engine,
+                execute_fn=_ap_exec_normalized,
+            )
+            # Alerta por tenant quando o piloto autônomo EXECUTA uma ação —
+            # webhook + push (opt-in auto_pilot_action_alert), mesmo
+            # dispatcher compartilhado das famílias de rentals.
+            try:
+                from services.user_polling import (
+                    dispatch_autonomous_action_alerts as _ap_alert,
+                )
+
+                _ap_alert("default", _ap_results)
+            except Exception as _ape:
+                log.warning("[auto-pilot] action alert dispatch error: %s", _ape)
+        except Exception as e:
+            log.warning("[auto-pilot] autonomous pass error: %s", e)
     except Exception as e:
         log.warning("[alert_automation] error: %s", e)
 
@@ -5139,8 +5253,11 @@ def api_admin_issue_license():
             months = int(months)
         except (TypeError, ValueError):
             months = None
+    plan = (body.get("plan") or "pro").strip().lower()
+    if plan not in ("pro", "premium"):
+        return jsonify({"error": "plan must be 'pro' or 'premium'"}), 400
     key = _licensing_issue(
-        plan=(body.get("plan") or "pro").strip(),
+        plan=plan,
         email=(body.get("email") or "").strip(),
         source=(body.get("source") or "admin").strip(),
         months=months,
@@ -6306,11 +6423,16 @@ def _hashrate_market_health() -> dict:
     """
     cache = _HASHRATE_MARKET_CACHE
     now = int(time.time())
-    ts = cache.get("ts") or 0
+    # Sentinel policy (Issue #203): a never-filled cache reports null
+    # last_fetch_ts, never epoch-0.
+    ts = coerce_ts(cache.get("ts"))
     offers = cache.get("offers")
     count = len(offers) if offers else 0
     ttl = _HASHRATE_MARKET_CACHE_TTL if offers else _HASHRATE_MARKET_EMPTY_CACHE_TTL
     age = (now - ts) if ts else None
+    # NOTE (Issue #203): the snapshot_enrichment copy of this helper reports
+    # stale=True on a never-filled cache; here a cold cache is 'never fetched'
+    # (stale=False, age_s=None). Documented divergence — Issue #206 follow-up.
     return {
         "last_fetch_ts": ts,
         "offers_count": count,
@@ -6587,6 +6709,12 @@ def api_market_trend():
 # 15s anyway, so a fresh enough answer is always served).
 _RENTALS_CACHE: Dict[str, Dict[str, Any]] = {}  # tenant_id -> {ts, payload}
 _RENTALS_CACHE_TTL_S = 20
+# Payload contract version (Issue #187): bumped when the credential/error
+# flags in /api/rentals change meaning. A payload WITHOUT this stamp (or
+# older than the frontend's freshness threshold) is STALE — it may predate
+# the missing-key guard and must never render the misleading 'No contracts
+# rentals on this account' empty-state (the panel shows the config hint).
+RENTALS_PAYLOAD_VERSION = 2
 
 
 def _own_hashrate_for_portfolio(tenant_id: str = "") -> dict:
@@ -6883,6 +7011,10 @@ def api_rentals(tenant_id: str = ""):
         payload = {
             "success": True,
             "updated_at": int(time.time()),
+            # Issue #187: version stamp so the frontend can detect payloads
+            # built by OLD code (no credential flags) and treat them as stale
+            # instead of pretending the account is empty.
+            "rentals_payload_version": RENTALS_PAYLOAD_VERSION,
             "mrr": {
                 "needs_auth": mrr_active.get("needs_auth", False),
                 "active": mrr_active.get("rentals", []),
@@ -6894,6 +7026,19 @@ def api_rentals(tenant_id: str = ""):
                 or len(mrr_history.get("rentals", [])),
                 "total_owner": mrr_owner.get("total")
                 or len(mrr_owner.get("rentals", [])),
+                # Issue #200: honest surface — rendered (o que o fetch
+                # paginado conseguiu trazer) vs total (o que o MRR reporta).
+                # truncado = true quando o cap de segurança cortou a série
+                # (frontend mostra "X de N").
+                "rendered_active": mrr_active.get("rendered")
+                or len(mrr_active.get("rentals", [])),
+                "rendered_history": mrr_history.get("rendered")
+                or len(mrr_history.get("rentals", [])),
+                "rendered_owner": mrr_owner.get("rendered")
+                or len(mrr_owner.get("rentals", [])),
+                "truncated_active": mrr_active.get("truncated", False),
+                "truncated_history": mrr_history.get("truncated", False),
+                "truncated_owner": mrr_owner.get("truncated", False),
                 "error": mrr_active.get("error") or mrr_history.get("error"),
                 # Issue #152 (c): a configured-but-rejected key (Bad Nonce /
                 # Not Authenticated) is a CREDENTIAL problem, not a generic
@@ -6904,8 +7049,13 @@ def api_rentals(tenant_id: str = ""):
             },
             "braiins": {
                 "needs_auth": braiins.get("needs_auth", False),
+                "credentials_missing": braiins.get("credentials_missing", False),
                 "contracts": braiins.get("contracts", []),
                 "error": braiins.get("error"),
+                # Issue #187: parity with MRR — a configured-but-rejected
+                # Braiins key (401/403) is a CREDENTIAL problem, classified
+                # explicitly instead of only via the error text.
+                "auth_rejected": braiins.get("auth_rejected", False),
             },
             # CFO: aggregate portfolio analytics (total spent, weighted avg
             # cost, avg delivery, provider split) for the panel top strip.
@@ -7230,6 +7380,25 @@ def api_rentals_export(tenant_id: str = ""):
         bl = set(_rental_perf.get_rig_blacklist(tenant_id=tenant_id))
         auto = set(_rental_perf.get_auto_blacklist(tenant_id=tenant_id))
 
+        # Issue #200: explicit truncation signal on the ledger export. The
+        # paginated fetch has a rate-budget safety cap; if it cut the series
+        # the CSV must SAY SO instead of silently shipping a partial ledger.
+        _trunc_note = ""
+        for _bname, _bucket in (
+            ("active", mrr_active),
+            ("history", mrr_history),
+            ("owner", mrr_owner),
+        ):
+            if _bucket.get("truncated"):
+                _trunc_note = (
+                    f"# AVISO: export truncado — bucket {_bname}: apenas "
+                    f"{_bucket.get('rendered') or 0} de "
+                    f"{_bucket.get('total') or 0} rentals MRR (limite de "
+                    f"seguranca "
+                    f"{_rental_perf.MRR_PAGE_SAFETY_MAX_RECORDS} por fetch)."
+                )
+                break
+
         if mode == "analysis":
             # Yield-control CSV: same buckets, full calculation layer. The
             # minimum acceptable delivery is configurable per tenant (setting
@@ -7253,7 +7422,8 @@ def api_rentals_export(tenant_id: str = ""):
                 tenant_id=tenant_id,
                 min_delivery_pct=min_del,
             )
-            out_csv = "\ufeff" + _rental_perf.rentals_analysis_csv(rows)
+            _lead = (_trunc_note + "\n") if _trunc_note else ""
+            out_csv = "\ufeff" + _lead + _rental_perf.rentals_analysis_csv(rows)
             fname = f"rentals_analysis_{tenant_id or 'operator'}_{int(time.time())}.csv"
             resp = app.response_class(out_csv, mimetype="text/csv")
             resp.headers["Content-Disposition"] = f"attachment; filename={fname}"
@@ -7262,6 +7432,8 @@ def api_rentals_export(tenant_id: str = ""):
         # Legacy simple ledger (default mode).
         buf = _io.StringIO()
         w = _csv.writer(buf)
+        if _trunc_note:
+            w.writerow([_trunc_note])
         w.writerow(
             [
                 "provider",
@@ -8056,9 +8228,14 @@ _ai_rate_store: Dict[str, List[float]] = {}
 @app.route("/api/ai/query", methods=["POST"])
 @require_tenant
 @role_required("member")
+@_premium_required
 def api_ai_query(tenant_id: str = ""):
     """AI Operator chat endpoint. Accepts a JSON body with `query` and
     streams the LLM response as Server-Sent Events (SSE).
+
+    PREMIUM-gated (Issue #182): in licensed mode the real LLM chat requires
+    a premium key — free/pro requests get 402 with the upgrade payload
+    (+ paywall_view telemetry). Open mode = always allowed (self-host).
 
     Request body:
         {"query": "What is my current hashrate?"}

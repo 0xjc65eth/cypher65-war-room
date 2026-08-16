@@ -88,10 +88,11 @@ def _restore_all_time_best_diff():
                 v = float(r["value"])
                 if v > 0:
                     state.timeline_state["all_time_best_diff_raw"] = v
-            except Exception:
-                pass
-    except Exception:
-        pass
+            except Exception as e:
+                log.warning("[proximity] all_time_best_diff value corrupt: %s", e)
+    except Exception as e:
+        # Issue #202: restore failure is degradation — never silent.
+        log.warning("[proximity] all_time_best_diff restore error: %s", e)
 
 
 def _persist_all_time_best_diff(value):
@@ -137,8 +138,9 @@ def _nearest_history_before(ts_target):
         conn.close()
         if r:
             return (r["best_diff"], r["network_difficulty"])
-    except Exception:
-        pass
+    except Exception as e:
+        # Issue #202: lookup failure is degradation — never silent.
+        log.warning("[proximity] nearest history lookup failed: %s", e)
     return None
 
 

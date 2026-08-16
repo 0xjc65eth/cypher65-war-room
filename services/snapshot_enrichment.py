@@ -31,6 +31,7 @@ from helpers import (
     attach_affiliate,
     affiliate_map_from_env,
     build_command_center,
+    coerce_ts,
     AP_PEAK_WINDOW_S,
     AP_TEMP_HIGH_C,
 )
@@ -150,10 +151,15 @@ def _hashrate_market_health() -> dict:
     """Expose warmup/cache health for market_data."""
     cache = _HASHRATE_MARKET_CACHE
     now = int(time.time())
-    ts = cache.get("ts") or 0
+    # Sentinel policy (Issue #203): a never-filled cache reports null
+    # last_fetch_ts, never epoch-0.
+    ts = coerce_ts(cache.get("ts"))
     offers = cache.get("offers")
     count = len(offers) if offers else 0
     ttl = _HASHRATE_MARKET_CACHE_TTL if offers else _HASHRATE_MARKET_EMPTY_CACHE_TTL
+    # NOTE (Issue #203): app.py's copy of this helper reports stale=False on a
+    # never-filled cache; here a cold cache is explicitly stale=True (never
+    # fetched = not fresh). Documented divergence — Issue #206 follow-up.
     return {
         "last_fetch_ts": ts,
         "age_s": now - ts if ts else None,
@@ -464,7 +470,9 @@ def enrich_snapshot(snapshot: dict, axe_registry=None) -> dict:
             resp["market_data"] = {
                 "offers": [],
                 "best_price": None,
-                "updated_at": 0,
+                # Sentinel policy (Issue #203): no fetch ever happened → null,
+                # never 0 (a 0 would render as 1970-01-01 / false staleness).
+                "updated_at": None,
                 "provider_count": 0,
                 "loading": True,
                 "affiliate": None,

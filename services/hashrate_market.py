@@ -452,8 +452,9 @@ def _purge_glitch_history(conn: Any) -> None:
             (MIN_PLAUSIBLE_PRICE_BTC_TH_DAY,),
         )
         conn.commit()
-    except Exception:
-        pass
+    except Exception as e:
+        # Issue #202: a failed purge is degradation — never silent.
+        log.warning("[hashrate_market] glitch-history purge failed: %s", e)
 
 
 def persist_market_history(

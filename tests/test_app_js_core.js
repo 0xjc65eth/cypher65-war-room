@@ -5321,11 +5321,84 @@ function sortMarketVenues(venues, key, dir) {
   assertEqual('rentals auth rejected bad nonce', rentalsAuthRejected('Not Authenticated - Invalid Key - Bad Nonce.', false), true);
   assertEqual('rentals auth rejected 401', rentalsAuthRejected('HTTP 401', false), true);
   assertEqual('rentals auth rejected generic', rentalsAuthRejected('HTTP 503', false), false);
+
+  // Rentals payload freshness (Issue #187) — pure helpers mirror.
+  // Level: 0 fresh · 1 age-stale (soft 'dados desatualizados') · 2 old-code
+  // (no version stamp → credential hint, never 'No contracts' empty-state).
+  function rentalsPayloadStale(payload, nowSec) {
+    const p = payload || {};
+    const version = Number(p.rentals_payload_version) || 0;
+    if (version < 2) return 2;
+    // Sentinel policy (Issue #203): missing/epoch stamp → unknown freshness
+    // (0), never a fabricated 'stale' (age = now - 0 → huge).
+    const upd = Number(p.updated_at);
+    if (!(upd > 0)) return 0;
+    const age = (nowSec || Math.floor(Date.now() / 1000)) - upd;
+    return age > 300 ? 1 : 0;
+  }
+  assertEqual('rentals stale missing stamp (old code)', rentalsPayloadStale({ updated_at: 1000000 }, 1000030), 2);
+  assertEqual('rentals stale version 0', rentalsPayloadStale({ rentals_payload_version: 0, updated_at: 1000000 }, 1000030), 2);
+  assertEqual('rentals stale no updated_at', rentalsPayloadStale({ rentals_payload_version: 2 }, 1000030), 0);
+  assertEqual('rentals stale updated_at zero', rentalsPayloadStale({ rentals_payload_version: 2, updated_at: 0 }, 1000030), 0);
+  // A positive (ancient) stamp is still a real stamp → ages → stale (1).
+  assertEqual('rentals stale updated_at ancient', rentalsPayloadStale({ rentals_payload_version: 2, updated_at: 1 }, 1000030), 1);
+  assertEqual('rentals fresh', rentalsPayloadStale({ rentals_payload_version: 2, updated_at: 1000000 }, 1000030), 0);
+  assertEqual('rentals age-stale only', rentalsPayloadStale({ rentals_payload_version: 2, updated_at: 1000000 }, 1000400), 1);
+
+  // Rentals count surface (Issue #200) — "X de N" only when truncated; a
+  // full fetch renders the plain count, nulls/NaN never fabricate a surface.
+  function rentalsCountSurface(rendered, total) {
+    const r = Number(rendered);
+    const t = Number(total);
+    if (isFinite(r) && isFinite(t) && t > 0 && r < t) {
+      return { text: r + ' de ' + t, title: 'exibindo ' + r + ' de ' + t + ' rentals (limite de segurança do fetch)' };
+    }
+    return { text: null, title: '' };
+  }
+  assertEqual('rentals surface full fetch', rentalsCountSurface(120, 120).text, null);
+  assertEqual('rentals surface truncated', rentalsCountSurface(1000, 1500).text, '1000 de 1500');
+  assertEqual('rentals surface truncated title', rentalsCountSurface(1000, 1500).title.indexOf('1000 de 1500') !== -1, true);
+  assertEqual('rentals surface null total', rentalsCountSurface(50, null).text, null);
+  assertEqual('rentals surface zero total', rentalsCountSurface(0, 0).text, null);
+  assertEqual('rentals surface nan safe', rentalsCountSurface('x', 5).text, null);
   assertEqual('rentals auth rejected permission', rentalsAuthRejected('No Permission - account/1285', false), false);
   assertEqual('rentals auth guide mrr', rentalsAuthGuide('mrr', 'Not Authenticated - Invalid Key - Bad Nonce.').indexOf('miningrigrentals.com') !== -1, true);
   assertEqual('rentals auth guide mrr not concurrency', rentalsAuthGuide('mrr', 'x').indexOf('NÃO é bug de concorrência') !== -1, true);
   assertEqual('rentals auth guide braiins', rentalsAuthGuide('contracts', '401').indexOf('hashpower.braiins.com') !== -1, true);
   assertEqual('rentals auth guide escapes html', rentalsAuthGuide('mrr', '<b>').indexOf('&lt;b&gt;') !== -1, true);
+
+  // Instance indicator (Issue #198) — pure classifier mirror. The topbar
+  // pill color-codes which instance the dashboard is on (local vs cloud)
+  // so operators never save keys to the wrong URL.
+  function instanceClassify(host) {
+    let h = String(host || '').toLowerCase().replace(/^https?:\/\//, '').split('/')[0];
+    const bracket = h.match(/^\[([^\]]+)\](?::\d+)?$/);
+    if (bracket) h = bracket[1];
+    const hostOnly = h === '::1' ? '::1' : h.replace(/:\d+$/, '');
+    if (!hostOnly) return { kind: 'remote', icon: '⌁' };
+    const isLocal =
+      hostOnly === 'localhost' || hostOnly === '127.0.0.1' || hostOnly === '0.0.0.0' || hostOnly === '::1' ||
+      hostOnly.endsWith('.local') ||
+      /^192\.168\./.test(hostOnly) || /^10\./.test(hostOnly) || /^172\.(1[6-9]|2\d|3[01])\./.test(hostOnly);
+    const isCloud = /\.onrender\.com$/.test(hostOnly) || /\.render\.com$/.test(hostOnly);
+    if (isLocal) return { kind: 'local', icon: '🖥' };
+    if (isCloud) return { kind: 'cloud', icon: '☁' };
+    return { kind: 'remote', icon: '⌁' };
+  }
+  assertEqual('instance localhost', instanceClassify('localhost').kind, 'local');
+  assertEqual('instance loopback with port', instanceClassify('127.0.0.1:8765').kind, 'local');
+  assertEqual('instance private 192.168', instanceClassify('192.168.1.20:8765').kind, 'local');
+  assertEqual('instance private 10.', instanceClassify('10.0.0.5').kind, 'local');
+  assertEqual('instance ipv6 loopback raw', instanceClassify('::1').kind, 'local');
+  assertEqual('instance ipv6 loopback bracket+port', instanceClassify('[::1]:8765').kind, 'local');
+  assertEqual('instance cloud onrender', instanceClassify('cypher65-war-room.onrender.com').kind, 'cloud');
+  assertEqual('instance cloud render sub', instanceClassify('api.cypher65.render.com').kind, 'cloud');
+  assertEqual('instance remote public', instanceClassify('cypher65.example.com').kind, 'remote');
+  assertEqual('instance remote with port', instanceClassify('cypher65.example.com:8443').kind, 'remote');
+  assertEqual('instance remote full url', instanceClassify('https://cypher65.example.com/path').kind, 'remote');
+  assertEqual('instance empty host', instanceClassify('').kind, 'remote');
+  assertEqual('instance icon local', instanceClassify('127.0.0.1').icon, '🖥');
+  assertEqual('instance icon cloud', instanceClassify('x.onrender.com').icon, '☁');
 
   // Cohort LTV rows (Issue #157 — 18-C) — safe-number builder mirror.
   function _cohortNum(v) {

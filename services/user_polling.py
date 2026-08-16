@@ -39,6 +39,7 @@ from helpers import (
     safe_int,
     safe_num_from_str,
     coerce_float,
+    coerce_ts,
     coerce_int,
     human_int,
     human_secs_long,
@@ -234,6 +235,25 @@ def dispatch_reco_worse_alerts(tenant_id: str, alerts: list):
         log.warning("[rentals] reco-worse alert dispatch error: %s", e)
 
 
+def dispatch_autonomous_action_alerts(tenant_id: str, results: list):
+    """Fire webhook + push when the autonomous pilot EXECUTED an action
+    ("restart executado pelo Auto-Pilot"). Tenant-scoped, opt-in
+    (auto_pilot_action_alert == '1'), same shared dispatcher as the rental
+    families (webhook_url/min_severity DO tenant) — fire-and-forget daemon
+    threads. Never raises."""
+    if not results:
+        return
+    try:
+        from services.auto_pilot import build_autonomous_action_alerts
+
+        alerts = build_autonomous_action_alerts(results, tenant_id=tenant_id)
+        if not alerts:
+            return  # opt-in off ou nenhuma execução — nem toca a family
+        _dispatch_tenant_alert_family(tenant_id, alerts)
+    except Exception as e:
+        log.warning("[auto-pilot] action alert dispatch error: %s", e)
+
+
 # ── Auto-exclude alert observability (Issue #112) ──────────────────────
 # Counters of auto-exclude alerts dispatched BY PATH (sweep vs panel) —
 # in-memory like the pool counters (reset on restart; persistent history is
@@ -299,12 +319,14 @@ def dispatch_auto_exclude_alerts(
             alert = _rp.build_auto_exclude_alert(rid, tenant_id=tenant_id)
             if not alert:
                 continue
-            ev_ts = int(alert.get("ts") or 0)
+            # Sentinel policy (Issue #203): missing/epoch ts → None, then the
+            # dispatch-time fallback below (never persists epoch-0).
+            ev_ts = coerce_ts(alert.get("ts"))
             # Ledger entries always stamp ts, but a 0/missing ts must not
             # collapse the claim to 'rig:0' (permanent block after restore) —
             # fall back to the dispatch time so a later re-exclusion still
             # re-alerts.
-            if ev_ts <= 0:
+            if not ev_ts:
                 ev_ts = int(time.time())
             # Atomic once-per-event claim (ts in the key → re-exclusion after
             # a restore is a NEW event and re-alerts).

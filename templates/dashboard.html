@@ -7,46 +7,56 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<!-- Issue #186: defer no Chart.js — CDN nunca mais bloqueia o parse do DOM
+     (o retry hack _mktGridRetried no app.js era sintoma deste bloqueio).
+     Quem usa Chart guarda com `typeof Chart === 'undefined'` e re-renderiza
+     no próximo poll — zero risco de boot race. -->
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js" defer></script>
 {% if sentry_dsn %}
 <!-- Frontend Sentry (env-gated): carrega o SDK do browser só quando o
      operador configurou SENTRY_DSN. Sem DSN este bloco nem renderiza —
      zero requests externos, zero overhead, e2e intacto. Captura erros de
      runtime do frontend (além dos logs JSON do backend). -->
-<script src="https://browser.sentry-cdn.com/8.30.0/bundle.min.js" crossorigin="anonymous"></script>
+<script src="https://browser.sentry-cdn.com/8.30.0/bundle.min.js" crossorigin="anonymous" defer></script>
 <script>
-  /* Inicializa o mais cedo possível: o onLoad captura erros que ocorram
-     durante o parse do app.js (boot race). Fail-safe: se o CDN falhar,
-     window.Sentry fica undefined e nada quebra. */
+  /* Issue #186: com `defer`, o SDK executa DEPOIS deste inline — o init
+     espera o DOMContentLoaded (defer scripts rodam antes dele, então
+     window.Sentry já existe). Boot race preservado: ainda captura erros
+     durante o parse do app.js. Fail-safe: se o CDN falhar, window.Sentry
+     fica undefined e __initSentry é no-op — nada quebra. */
   window.__SENTRY_DSN__ = {{ sentry_dsn|tojson }};
-  if (window.Sentry) {
-    Sentry.onLoad(function () {
-      Sentry.init({
-        dsn: window.__SENTRY_DSN__,
-        environment: '{{ sentry_environment|default("self-hosted") }}',
-        release: 'cypher65-war-room',
-        tracesSampleRate: {{ sentry_traces_sample_rate|default(0.1) }},
-        // Anonymize: nunca enviar endereço de carteira / worker (telemetria
-        // honesta — erros sim, dados financeiros não).
-        beforeSend: function (event) {
-          delete event.extra;
-          return event;
-        },
-        // Privacidade: breadcrumbs de fetch/XHR capturam a URL por padrão —
-        // remover query strings (ex: /api/...?...tenant=...) antes de enviar.
-        beforeBreadcrumb: function (breadcrumb) {
-          if (breadcrumb.data && breadcrumb.data.url) {
-            breadcrumb.data.url = String(breadcrumb.data.url).split('?')[0];
-          }
-          return breadcrumb;
-        },
-        ignoreErrors: [
-          // ResizeObserver loop / favicon 404s — ruído conhecido de dashboards.
-          'ResizeObserver',
-          'Non-Error promise rejection captured',
-        ],
-      });
+  function __initSentry() {
+    if (!window.Sentry) return;  // CDN falhou / SDK ausente — fail-safe
+    Sentry.init({
+      dsn: window.__SENTRY_DSN__,
+      environment: '{{ sentry_environment|default("self-hosted") }}',
+      release: 'cypher65-war-room',
+      tracesSampleRate: {{ sentry_traces_sample_rate|default(0.1) }},
+      // Anonymize: nunca enviar endereço de carteira / worker (telemetria
+      // honesta — erros sim, dados financeiros não).
+      beforeSend: function (event) {
+        delete event.extra;
+        return event;
+      },
+      // Privacidade: breadcrumbs de fetch/XHR capturam a URL por padrão —
+      // remover query strings (ex: /api/...?...tenant=...) antes de enviar.
+      beforeBreadcrumb: function (breadcrumb) {
+        if (breadcrumb.data && breadcrumb.data.url) {
+          breadcrumb.data.url = String(breadcrumb.data.url).split('?')[0];
+        }
+        return breadcrumb;
+      },
+      ignoreErrors: [
+        // ResizeObserver loop / favicon 404s — ruído conhecido de dashboards.
+        'ResizeObserver',
+        'Non-Error promise rejection captured',
+      ],
     });
+  }
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', __initSentry);
+  } else {
+    __initSentry();
   }
 </script>
 {% endif %}
@@ -157,6 +167,12 @@
       <span class="topbar__status" id="tbar-status">INIT</span>
       <span class="topbar__sep">|</span>
       <span class="topbar__clock" id="clock">--:--:--</span>
+      <span class="topbar__sep">|</span>
+      <!-- Instance indicator (Issue #198): deixa EXPLÍCITO em qual
+           instância/URL o dashboard está — resolve a confusão real de
+           salvar chaves na instância errada (local vs cloud). Populado
+           pelo initInstanceIndicator() no boot do app.js. -->
+      <span class="topbar__instance" id="topbar-instance" title="">⌁ …</span>
     </div>
   </div>
   <div class="topbar__right">
@@ -965,6 +981,11 @@
         <span class="ap-dot" id="ap-armed-dot"></span>AUTO-PILOT&nbsp;<span id="ap-armed-label">OFF</span>
       </button>
       <span class="badge badge--mute" id="ap-budget-badge" title="Ações do Auto-Pilot executadas na janela atual / limite">—</span>
+      <button class="chip ap-arm-chip" id="ap-auto-btn" title="EXECUÇÃO AUTÔNOMA OFF — as recomendações ficam manuais. Clique para ligar (requer PRO + armado).">
+        <span class="ap-dot" id="ap-auto-dot"></span>AUTONOMOUS&nbsp;<span id="ap-auto-label">OFF</span>
+      </button>
+      <span class="badge badge--mute" id="ap-auto-pro-badge" title="Gate PRO da execução autônoma">PRO —</span>
+      <button class="chip" id="ai-premium-cta" title="AI Operator real (LLM) é PREMIUM" hidden>🤖 AI PREMIUM</button>
       <button class="chip" id="open-alert-center" title="Alert Center">⚠ RULES</button>
       <button class="chip" id="ai-clear">clear</button>
     </div>
@@ -1071,6 +1092,28 @@
       <div class="ap-arm-modal__actions">
         <button class="btn" data-close="ap-arm-modal">CANCELAR</button>
         <button class="btn btn--primary" id="ap-arm-confirm" disabled>ARMAR AUTO-PILOT</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ── Auto-Pilot autonomous confirmation (typed — PRO-gated, Issue #178) ── -->
+<div id="ap-auto-modal" class="modal-overlay">
+  <div class="modal ap-arm-modal">
+    <div class="modal__header">
+      <span class="modal__title">🤖 LIGAR EXECUÇÃO AUTÔNOMA</span>
+      <button class="modal__close" data-close="ap-auto-modal">×</button>
+    </div>
+    <div class="modal__body">
+      <p class="ap-arm-modal__desc">Ao ligar, o piloto (quando <strong>PRO + ARMADO</strong>) passa a <strong>executar sozinho</strong> as ações físicas das recomendações — <strong>restart</strong> de miner offline/com hashrate baixo e <strong>pause</strong> por temperatura — respeitando SafetyEngine, cooldown (restart 15min / pause 10min) e o orçamento de ações. Ações financeiras (blacklist/buy) <strong>continuam manuais</strong>. Desligar a qualquer momento para parar imediatamente.</p>
+      <div class="ap-arm-modal__status" id="ap-auto-modal-status"></div>
+      <label class="ap-arm-modal__confirm">
+        <span class="field__label">DIGITE <strong>AUTONOMO</strong> PARA CONFIRMAR</span>
+        <input class="field__input field__input--mono" type="text" id="ap-auto-type" placeholder="digite AUTONOMO" autocomplete="off" spellcheck="false">
+      </label>
+      <div class="ap-arm-modal__actions">
+        <button class="btn" data-close="ap-auto-modal">CANCELAR</button>
+        <button class="btn btn--primary" id="ap-auto-confirm" disabled>LIGAR EXECUÇÃO AUTÔNOMA</button>
       </div>
     </div>
   </div>
@@ -1474,6 +1517,28 @@
       </thead>
       <tbody id="admin-error-table-body"></tbody>
     </table>
+  </div>
+
+  <!-- ── Degradation (Issue #202): WARNING bucket — falhas silenciosas ── -->
+  <!-- Consome /api/admin/degradation-rate (mesmo gate). WARNINGs das rotas
+       convertidas (except: pass → log.warning) caem aqui; spike/sustained
+       são o alerta de taxa $0 (sem Sentry). -->
+  <div class="panel__subtitle">DEGRADAÇÃO (24h) — WARNINGs/hora · falhas silenciosas viram telemetria</div>
+  <div class="kpi-row">
+    <div class="kpi-card"><span class="kpi-card__label">Warnings 24h</span><span class="kpi-card__value" id="admin-deg-total">—</span></div>
+    <div class="kpi-card"><span class="kpi-card__label">Pico/hora</span><span class="kpi-card__value" id="admin-deg-peak">—</span></div>
+    <div class="kpi-card" title="spike = pico ≥ 100 WARNINGs/hora · sustained = warnings em ≥ 2 horas distintas (o 'alerta de taxa' $0)"><span class="kpi-card__label">Estado</span><span class="kpi-card__value" id="admin-deg-state">—</span></div>
+  </div>
+  <div class="admin-audit__table-wrap" id="admin-deg-table-wrap" hidden>
+    <table class="admin-audit__table">
+      <thead>
+        <tr><th>módulo</th><th>warning (último no bucket)</th><th>nº</th><th>request_id</th><th>último</th></tr>
+      </thead>
+      <tbody id="admin-deg-table-body"></tbody>
+    </table>
+  </div>
+  <div class="admin-metrics__empty" id="admin-deg-empty" hidden>
+    sem warnings nas últimas 24h — zero é o estado saudável
   </div>
 
   <!-- ── PRO funnel (conversion telemetry) ── -->
@@ -2698,12 +2763,13 @@
 <div class="modal-overlay" id="upgrade-modal">
   <div class="modal upgrade-modal">
     <div class="modal__header">
-      <div class="modal__title">⚡ CYPHER65 PRO</div>
+      <div class="modal__title" id="upgrade-modal-title">⚡ CYPHER65 PRO</div>
       <button class="modal__close" onclick="document.getElementById('upgrade-modal').classList.remove('modal--open')">⛌</button>
     </div>
     <div class="modal__body">
-      <p class="upgrade-modal__copy">Unlock <strong>Monte Carlo</strong>, <strong>proximity meter</strong>, <strong>30d history</strong> &amp; <strong>webhooks</strong>.</p>
+      <p class="upgrade-modal__copy" id="upgrade-modal-copy">Unlock <strong>Monte Carlo</strong>, <strong>proximity meter</strong>, <strong>30d history</strong> &amp; <strong>webhooks</strong>.</p>
       <button class="btn btn--primary upgrade-modal__buy" id="upgrade-buy-btn" hidden>Buy PRO — $9/mo</button>
+      <button class="btn btn--premium upgrade-modal__buy" id="upgrade-premium-buy-btn" hidden>Buy PREMIUM — $29/mo</button>
       <div class="upgrade-modal__divider" id="upgrade-divider" hidden><span>or activate a key</span></div>
       <div class="upgrade-modal__redeem">
         <input class="field__input field__input--mono" type="text" id="upgrade-key-input" placeholder="C65-XXXX-XXXX-XXXX-XXXX" autocomplete="off" spellcheck="false">
@@ -2958,7 +3024,7 @@
     <span id="next-poll"></span>
   </div>
 
-  <script src="/static/app.js?v60"></script>
+  <script src="/static/app.js?v61" defer></script>
 </div> <!-- end #app-main -->
 </div> <!-- end #app-layout -->
   <!-- Matrix rain canvas (full-screen background effect) -->

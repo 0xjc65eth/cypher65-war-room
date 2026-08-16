@@ -109,6 +109,7 @@
   const $$ = (s) => document.querySelectorAll(s);
   const dom = {
     topbarAddress: $('#topbar-address'), statusPill: $('#status-pill'), statusText: $('#status-text'),
+    topbarInstance: $('#topbar-instance'),
     clock: $('#clock'), nextPoll: $('#next-poll'), refreshNow: $('#refresh-now'),
     workerRankBadge: $('#worker-rank-badge'), workerUptimeBadge: $('#worker-uptime-badge'),
     mHashrate: $('#m-hashrate'), mHashrateSub: $('#m-hashrate-sub'), mBestDiff: $('#m-bestdiff'), mBestDiffSub: $('#m-bestdiff-sub'),
@@ -300,6 +301,44 @@
       '— NÃO é bug de concorrência. Regenerar a API key + secret em miningrigrentals.com ' +
       '→ My Account → API Access e atualizar no Settings (⚙).';
   }
+  // Rentals payload freshness (Issue #187): a payload built by OLD server
+  // code (no version stamp) cannot PROVE the account is empty — it may
+  // predate the missing-key guard. Returns a LEVEL: 0 fresh · 1 age-stale
+  // (data older than the panel's refresh cadence → soft 'dados
+  // desatualizados' + reload) · 2 old-code (no version stamp → credential
+  // hint, the case that used to render the misleading 'No contracts rentals
+  // on this account'). Only level 2 claims the config may be missing; level 1
+  // never lies about credentials on an idle-but-open tab. Pure helper
+  // mirrored in tests/test_app_js_core.js.
+  const RENTALS_PAYLOAD_VERSION = 2;
+  const RENTALS_STALE_MAX_AGE_S = 300;  // panel re-fetches every 15s — 5min = not trustworthy
+  function rentalsPayloadStale(payload, nowSec) {
+    const p = payload || {};
+    const version = Number(p.rentals_payload_version) || 0;
+    if (version < RENTALS_PAYLOAD_VERSION) return 2;
+    // Sentinel policy (Issue #203): a missing/epoch stamp must never fabricate
+    // age (now - 0 → huge → false 'stale'). No stamp → unknown freshness → 0,
+    // so valid data is never hidden by an absent field.
+    const upd = Number(p.updated_at);
+    if (!(upd > 0)) return 0;
+    const age = (nowSec || Math.floor(Date.now() / 1000)) - upd;
+    return age > RENTALS_STALE_MAX_AGE_S ? 1 : 0;
+  }
+  // Rentals count surface (Issue #200): "X de N" when the paginated fetch
+  // hit the rate-budget safety cap (truncated) — never show a partial count
+  // as if it were the whole account. Pure helper — mirrored in
+  // tests/test_app_js_core.js. Returns {text, title}; text null = no truncation.
+  function rentalsCountSurface(rendered, total) {
+    const r = Number(rendered);
+    const t = Number(total);
+    if (isFinite(r) && isFinite(t) && t > 0 && r < t) {
+      return {
+        text: r + ' de ' + t,
+        title: 'exibindo ' + r + ' de ' + t + ' rentals (limite de segurança do fetch)',
+      };
+    }
+    return { text: null, title: '' };
+  }
 
   // ── Tenant Auth (Fase 4 · B1-frontend) ─────────────────────────────
   // Stores the JWT session in localStorage and attaches
@@ -341,7 +380,7 @@
   }
   // PRO licensing state (open/free/pro) — populated by initLicensing() on
   // boot and used to render the topbar badge + upgrade CTA on 402s.
-  let _license = { mode: 'open', tier: 'pro', pro: true };
+  let _license = { mode: 'open', tier: 'pro', pro: true, premium: true, ai_configured: false };
   async function initLicensing() {
     try {
       const r = await fetch('/api/license-status');
@@ -350,18 +389,26 @@
     } catch (e) { return; }
     renderLicenseBadge();
     syncUpgradeModal();
+    syncAiPremiumUi();
+    _initUpgradeBindings();
   }
   function renderLicenseBadge() {
     const badge = dom.topbarProBadge;
     if (!badge) return;
-    if (_license.mode === 'open' || _license.pro) {
-      // Open mode (everything free) or active PRO — show a quiet PRO tag.
+    if (_license.mode === 'open' || _license.premium || _license.pro) {
+      // Open mode (everything free), PREMIUM, or PRO — quiet tier tag.
+      // O selo PREMIUM aparece SÓ em licensed mode + chave premium (open mode
+      // mostra PRO como antes — o operador self-host não vê tier pago).
+      const premiumTag = _license.mode === 'licensed' && _license.premium;
       badge.hidden = false;
-      badge.textContent = _license.pro ? 'PRO' : 'FREE';
-      badge.classList.toggle('is-pro', !!_license.pro);
-      badge.title = _license.pro ? 'PRO license active' : 'Open mode — all features free';
+      badge.textContent = premiumTag ? 'PREMIUM' : (_license.pro ? 'PRO' : 'FREE');
+      badge.classList.toggle('is-pro', !!(_license.premium || _license.pro));
+      badge.title = premiumTag
+        ? 'PREMIUM license active — AI Operator real liberado'
+        : (_license.pro ? 'PRO license active' : 'Open mode — all features free');
       badge.onclick = null;  // clear any leftover upgrade-CTA handler (audit)
       syncUpgradeModal();
+      syncAiPremiumUi();
       return;
     }
     // Licensed mode + free tier → gate is live; badge is the upgrade CTA.
@@ -371,6 +418,21 @@
     badge.title = 'PRO features locked — click to upgrade';
     badge.onclick = openUpgradeModal;
     syncUpgradeModal();
+    syncAiPremiumUi();
+  }
+  // AI Operator premium CTA (panel header) — shown only in licensed mode
+  // WITHOUT a premium key; clicking opens the payload-driven upgrade modal.
+  function syncAiPremiumUi() {
+    const cta = document.getElementById('ai-premium-cta');
+    if (!cta) return;
+    const locked = _license.mode === 'licensed' && !_license.premium;
+    cta.hidden = !locked;
+    if (locked) {
+      cta.textContent = _license.pro ? '🤖 AI PREMIUM' : '🤖 AI = PREMIUM';
+      cta.onclick = openUpgradeModal;
+    } else {
+      cta.onclick = null;
+    }
   }
   // R1 revenue: upgrade modal — buy via Lemon Squeezy checkout or redeem a key.
   // CFO: firing the funnel events is best-effort and silent — telemetry must
@@ -404,7 +466,8 @@
   function openUpgradeModal() {
     const m = document.getElementById('upgrade-modal');
     openModalAnimated(m);
-    trackConversionEvent('modal_open');
+    const up = _license.upgrade || {};
+    trackConversionEvent('modal_open', { plan: (up.plan || 'PRO').toLowerCase() });
   }
   // Exposed for e2e + support console (the PRO badge already wires onclick).
   window.openUpgradeModal = openUpgradeModal;
@@ -415,37 +478,67 @@
   // and drive its price copy from the server payload (single source of truth).
   function syncUpgradeModal() {
     const buy = document.getElementById('upgrade-buy-btn');
+    const pbuy = document.getElementById('upgrade-premium-buy-btn');
     const div = document.getElementById('upgrade-divider');
+    const up = _license.upgrade || {};
+    // Server-driven tier target: upgrade.plan === 'PREMIUM' means the user
+    // is PRO (not premium) → the modal sells the PREMIUM upsell; else PRO.
+    const wantsPremium = up.plan === 'PREMIUM';
     if (buy) {
-      buy.hidden = !_license.payments;
-      const up = _license.upgrade;
-      const price = (up && up.price_usd_month) || 9;
-      buy.textContent = 'Buy PRO — $' + price + '/mo';
+      buy.hidden = !_license.payments || wantsPremium;
+      buy.textContent = 'Buy PRO — $' + ((up && up.price_usd_month) || 9) + '/mo';
+    }
+    if (pbuy) {
+      pbuy.hidden = !_license.payments || !wantsPremium;
+      pbuy.textContent = 'Buy PREMIUM — $' + ((up && up.price_usd_month) || 29) + '/mo';
     }
     if (div) div.hidden = !_license.payments;
+    const title = document.getElementById('upgrade-modal-title');
+    if (title) title.textContent = wantsPremium ? '🤖 CYPHER65 PREMIUM' : '⚡ CYPHER65 PRO';
+    const copy = document.getElementById('upgrade-modal-copy');
+    if (copy) {
+      copy.innerHTML = wantsPremium
+        ? 'Unlock the <strong>real AI Operator</strong> (LLM — fleet, pool, probability &amp; market answers) on top of every PRO feature.'
+        : 'Unlock <strong>Monte Carlo</strong>, <strong>proximity meter</strong>, <strong>30d history</strong> &amp; <strong>webhooks</strong>.';
+    }
   }
-  async function buyPro() {
-    const btn = document.getElementById('upgrade-buy-btn');
+  async function buyUpgrade(plan) {
+    const tier = plan === 'premium' ? 'premium' : 'pro';
+    const btn = document.getElementById(tier === 'premium' ? 'upgrade-premium-buy-btn' : 'upgrade-buy-btn');
     if (btn) btn.disabled = true;
-    trackConversionEvent('checkout_start', { plan: 'pro' });
+    trackConversionEvent('checkout_start', { plan: tier });
     try {
       const r = await fetch('/api/upgrade/checkout', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ plan: 'pro', funnel_id: funnelId() }),
+        body: JSON.stringify({ plan: tier, funnel_id: funnelId() }),
       });
       let data = {};
       try { data = await r.json(); } catch (e) {}
       if (r.ok && data.checkout_url) {
         window.open(data.checkout_url, '_blank', 'noopener');
       } else {
-        logMessage('PRO', (data && data.error) || 'Checkout unavailable', 'WARN');
+        logMessage(tier.toUpperCase(), (data && data.error) || 'Checkout unavailable', 'WARN');
       }
     } catch (e) {
-      logMessage('PRO', 'Checkout unavailable', 'WARN');
+      logMessage(tier.toUpperCase(), 'Checkout unavailable', 'WARN');
     } finally {
       if (btn) btn.disabled = false;
     }
+  }
+  // Legacy name kept for e2e / support console compatibility.
+  async function buyPro() { return buyUpgrade('pro'); }
+  // Wire the modal CTA buttons once (Buy PRO / Buy PREMIUM / activate key).
+  let _upgradeBound = false;
+  function _initUpgradeBindings() {
+    if (_upgradeBound) return;
+    _upgradeBound = true;
+    const buy = document.getElementById('upgrade-buy-btn');
+    const pbuy = document.getElementById('upgrade-premium-buy-btn');
+    const redeem = document.getElementById('upgrade-redeem-btn');
+    if (buy) buy.addEventListener('click', function () { buyUpgrade('pro'); });
+    if (pbuy) pbuy.addEventListener('click', function () { buyUpgrade('premium'); });
+    if (redeem) redeem.addEventListener('click', redeemLicenseKey);
   }
   async function redeemLicenseKey() {
     const input = document.getElementById('upgrade-key-input');
@@ -634,6 +727,64 @@
         if (e.key === 'Enter') loginBtn.click();
       });
     }
+  }
+
+  // ── Instance indicator (Issue #198) ─────────────────────────────────
+  // Deixa EXPLÍCITO em qual instância/URL o dashboard está. Resolve a
+  // confusão real de salvar chaves MRR/Braiins na instância errada (local
+  // vs cloud): o pill no topbar mostra o host + color-code por tipo, e o
+  // tooltip/clique expõe o origin completo para conferir antes de salvar.
+  // Pure classifier — espelhado em tests/test_app_js_core.js.
+  function instanceClassify(host) {
+    let h = String(host || '').toLowerCase().replace(/^https?:\/\//, '').split('/')[0];
+    // Forma IPv6 com brackets "[::1]:8765" → "::1" (porta separada).
+    const bracket = h.match(/^\[([^\]]+)\](?::\d+)?$/);
+    if (bracket) h = bracket[1];
+    // Strip de porta numérica — NUNCA para o loopback IPv6 cru "::1"
+    // (o regex :\d+$ casaria o "1" final e destruiria o host).
+    const hostOnly = h === '::1' ? '::1' : h.replace(/:\d+$/, '');
+    if (!hostOnly) return { kind: 'remote', icon: '⌁' };
+    const isLocal =
+      hostOnly === 'localhost' || hostOnly === '127.0.0.1' || hostOnly === '0.0.0.0' || hostOnly === '::1' ||
+      hostOnly.endsWith('.local') ||
+      /^192\.168\./.test(hostOnly) || /^10\./.test(hostOnly) || /^172\.(1[6-9]|2\d|3[01])\./.test(hostOnly);
+    const isCloud = /\.onrender\.com$/.test(hostOnly) || /\.render\.com$/.test(hostOnly);
+    if (isLocal) return { kind: 'local', icon: '🖥' };
+    if (isCloud) return { kind: 'cloud', icon: '☁' };
+    return { kind: 'remote', icon: '⌁' };
+  }
+  function initInstanceIndicator() {
+    const el = dom.topbarInstance;
+    if (!el) return;
+    const origin = window.location.origin || '';
+    const host = window.location.host || 'self-hosted';
+    const cls = instanceClassify(host);
+    const labels = { local: 'LOCAL', cloud: 'CLOUD', remote: 'REMOTE' };
+    let display = host;
+    if (display.length > 30) display = display.slice(0, 28) + '…';
+    el.textContent = cls.icon + ' ' + display;
+    el.classList.add('topbar__instance--' + cls.kind);
+    el.title = labels[cls.kind] + ' instance · ' + origin +
+      '\n(settings/chaves salvam nesta origem — clique para copiar o URL)';
+    // A11y: interativo por teclado também (Enter/Space = copiar), como um
+    // button de verdade — não só mouse.
+    el.setAttribute('role', 'button');
+    el.tabIndex = 0;
+    const copyOrigin = function () {
+      try {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(origin).then(function () {
+            showToast('success', 'Instance URL copiado: ' + origin);
+          }).catch(function () { /* clipboard denied */ });
+        } else {
+          showToast('success', origin);
+        }
+      } catch (e) { /* never break the topbar for a copy */ }
+    };
+    el.onclick = copyOrigin;
+    el.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); copyOrigin(); }
+    });
   }
 
   // ── Theme Toggle ─────────────────────────────────────────────────────
@@ -2819,7 +2970,6 @@ function renderAccount(acct) {
   // falling back to the lowest valid price_per_th_day.
   let _mktFilter = 'all';
   let _mktOffers = [];
-  let _mktGridRetried = false;  // retry guard for Chart.js CDN blocking DOM parse
   let _mktBtcUsd = null;  // BTC/USD from snapshot — for the USD/TH/d line on cards
   let _mktAffiliate = null;  // market_data.affiliate {provider,url,...} — one-click BUY on the offer card
   let _mktTrendLoaded = false;  // lazy: /api/market/trend fetched on first module activation
@@ -2946,15 +3096,16 @@ function renderAccount(acct) {
     const gate = document.getElementById('admin-gate-badge');
     try {
       // Pool health — no auth needed for localhost/operator-key admin routes.
-      const [sessionsResp, convResp, auditResp, metricsResp, docsResp, errResp] = await Promise.all([
+      const [sessionsResp, convResp, auditResp, metricsResp, docsResp, errResp, degResp] = await Promise.all([
         fetch('/api/admin/sessions', { headers: { 'X-Requested-With': 'fetch' } }),
         fetch('/api/admin/conversion?weeks=8', { headers: { 'X-Requested-With': 'fetch' } }),
         fetch('/api/admin/rentals/accepted-recos?limit=1000', { headers: { 'X-Requested-With': 'fetch' } }),
         fetch('/api/admin/pool-metrics?hours=24', { headers: { 'X-Requested-With': 'fetch' } }),
         fetch('/api/admin/docs-feedback', { headers: { 'X-Requested-With': 'fetch' } }),
         fetch('/api/admin/error-rate?hours=24', { headers: { 'X-Requested-With': 'fetch' } }),
+        fetch('/api/admin/degradation-rate?hours=24', { headers: { 'X-Requested-With': 'fetch' } }),
       ]);
-      if (sessionsResp.status === 403 || convResp.status === 403 || auditResp.status === 403 || metricsResp.status === 403 || docsResp.status === 403 || errResp.status === 403) {
+      if (sessionsResp.status === 403 || convResp.status === 403 || auditResp.status === 403 || metricsResp.status === 403 || docsResp.status === 403 || errResp.status === 403 || degResp.status === 403) {
         if (gate) gate.textContent = 'restricted';
         if (errEl) {
           errEl.hidden = false;
@@ -2970,14 +3121,16 @@ function renderAccount(acct) {
       const metrics = metricsResp.ok ? await metricsResp.json() : {};
       const docsFb = docsResp.ok ? await docsResp.json() : {};
       const errData = errResp.ok ? await errResp.json() : {};
-      _renderAdmin(sessions, conv, audit, metrics, docsFb, errData);
+      const degData = degResp.ok ? await degResp.json() : {};
+      _renderAdmin(sessions, conv, audit, metrics, docsFb, errData, degData);
     } catch (e) {
       if (errEl) { errEl.hidden = false; errEl.textContent = 'admin fetch error: ' + e.message; }
     }
   }
-  function _renderAdmin(sessions, conv, audit, metrics, docsFb, errData) {
+  function _renderAdmin(sessions, conv, audit, metrics, docsFb, errData, degData) {
     _renderAdminMetrics(metrics || {});
     _renderAdminErrorRate(errData || {});
+    _renderAdminDegradation(degData || {});
     _renderAdminAudit(audit);
     _renderAdminAutoExclusions(audit);
     _renderAdminDocsFeedback(docsFb || {});
@@ -3339,6 +3492,40 @@ function renderAccount(acct) {
         '<td title="' + escapeHtml(String(r.message || '')) + '">' + escapeHtml(String((r.message || '—').slice(0, 80))) + '</td>' +
         '<td>' + escapeHtml(String(r.count || 1)) + '</td>' +
         '<td class="admin-err__rid">' + escapeHtml(String(r.last_request_id || '—')) + '</td>' +
+        '<td>' + escapeHtml(_fmtErrorTs(r.last_ts)) + '</td>' +
+        '</tr>';
+    }).join('');
+  }
+
+  // ── Degradation (Issue #202) — WARNING bucket ($0, self-host) ─────────
+  // The converted `except: pass` sites now emit WARNINGs that land in
+  // degradation_metrics. spike = pico >= 100/h; sustained = warnings em >= 2
+  // horas distintas. Os badges são o 'alerta de taxa' sem depender de Sentry.
+  function _renderAdminDegradation(data) {
+    const tableWrap = document.getElementById('admin-deg-table-wrap');
+    const tbody = document.getElementById('admin-deg-table-body');
+    const empty = document.getElementById('admin-deg-empty');
+    if (!tableWrap || !tbody) return;
+    const total = data.total != null ? data.total : 0;
+    const peak = data.peak_per_hour != null ? data.peak_per_hour : 0;
+    _setAdminText('admin-deg-total', total);
+    _setAdminText('admin-deg-peak', peak);
+    const state = document.getElementById('admin-deg-state');
+    if (state) {
+      // Keep the kpi-card__value base class so the badge keeps its sizing.
+      state.className = 'kpi-card__value badge badge--' + (data.sustained ? 'red' : (data.spike ? 'amber' : 'green'));
+      state.textContent = data.sustained ? 'SUSTAINED ⚠' : (data.spike ? 'SPIKE ⚠' : (total > 0 ? 'normal' : 'ok'));
+    }
+    const recent = data.recent || [];
+    if (empty) empty.hidden = (data.buckets || []).length > 0;
+    if (!recent.length) { tableWrap.hidden = true; return; }
+    tableWrap.hidden = false;
+    tbody.innerHTML = recent.map(function (r) {
+      return '<tr>' +
+        '<td>' + escapeHtml(String(r.module || '—')) + '</td>' +
+        '<td title="' + escapeHtml(String(r.message || '')) + '">' + escapeHtml(String((r.message || '—').slice(0, 80))) + '</td>' +
+        '<td>' + escapeHtml(String(r.count || 1)) + '</td>' +
+        '<td>' + escapeHtml(String(r.last_request_id || '—')) + '</td>' +
         '<td>' + escapeHtml(_fmtErrorTs(r.last_ts)) + '</td>' +
         '</tr>';
     }).join('');
@@ -3719,18 +3906,9 @@ function renderAccount(acct) {
 
   function renderMarketGrid() {
     const tbody = document.getElementById('mkt-table-body');
-    if (!tbody) {
-      // DOM not yet parsed (Chart.js CDN blocks <head>). Retry once
-      // after a short delay so the tbody has time to appear.
-      if (!_mktGridRetried) {
-        _mktGridRetried = true;
-        setTimeout(function () {
-          _mktGridRetried = false;
-          renderMarketGrid();
-        }, 100);
-      }
-      return;
-    }
+    if (!tbody) return;  // Issue #186: Chart.js é defer agora — o DOM nunca é
+    // bloqueado pelo CDN; se o tbody ainda não existe, o próximo poll
+    // (renderMarket → renderMarketGrid) re-renderiza sozinho.
 
     const inst = _mktInstitutional || {};
     let venues = (inst.venues || []).filter(v => {
@@ -4091,6 +4269,7 @@ function renderAccount(acct) {
           : '<span class="mkt-trend__legend-item" style="color:var(--text-tertiary)">preços são persistidos a cada fetch (warm-up 5min) — volte mais tarde</span>';
       }
       if (!datasets.length) return true;  // valid empty state — nothing to plot
+      if (typeof Chart === 'undefined') return false;  // Issue #186: defer — próximo poll re-tenta
       const ctx = canvas.getContext('2d');
       if (window._mktTrendChart) window._mktTrendChart.destroy();
       window._mktTrendChart = new Chart(ctx, {
@@ -5066,14 +5245,17 @@ function renderAccount(acct) {
     '</div>';
   }
 
-  async function loadRentals() {
+  async function loadRentals(force) {
     const listEl = document.getElementById('rentals-list');
     if (!listEl) return false;
     try {
       // authFetch sends the user's Bearer token so the server resolves the
       // caller's TENANT — with 1000+ users each one sees only their own
       // Braiins/MRR credentials and rentals (never the operator's key).
-      const r = await authFetch('/api/rentals');
+      // force=1 (RECARREGAR on a stale empty-state, Issue #187) bypasses the
+      // server TTL cache so credentials just added in Settings show up
+      // without a full page reload.
+      const r = await authFetch('/api/rentals' + (force ? '?refresh=1' : ''));
       if (!r.ok) return false;
       _rentalsData = await r.json();
       // UX: on the first load, land on the first tab that actually has data —
@@ -5113,11 +5295,12 @@ function renderAccount(acct) {
       cnt.textContent = total + ' rentals';
     }
     const el = (id) => document.getElementById(id);
-    // Strip shows the MRR-reported TOTAL (the list is capped at 25/50 by the
-    // API) — honest count of the operator's rentals, not just the fetched page.
-    // Missing provider credentials → 🔑 hint (with tooltip) instead of a
-    // misleading 0/— that looks like an empty account.
-    const _stripVal = (cardId, value, auth, err, authRejected, provider) => {
+    // Strip shows the MRR-reported TOTAL — the paginated fetch (Issue #200)
+    // now covers every page up to the safety cap, so the count IS the account
+    // (and "X de N" surfaces honestly when the cap cut the series). Missing
+    // provider credentials → 🔑 hint (with tooltip) instead of a misleading
+    // 0/— that looks like an empty account.
+    const _stripVal = (cardId, value, auth, err, authRejected, provider, rendered, total) => {
       const card = el(cardId);
       if (!card) return;
       // A configured-but-rejected key (401/403 / Bad Nonce) is an ERROR, not
@@ -5134,13 +5317,14 @@ function renderAccount(acct) {
         card.textContent = '⚠';
         card.title = String(err);
       } else {
-        card.textContent = value;
-        card.title = '';
+        const surf = rentalsCountSurface(rendered, total);
+        card.textContent = surf.text != null ? surf.text : value;
+        card.title = surf.title || '';
       }
     };
-    _stripVal('rentals-mrr-active', mrr.total_active != null ? mrr.total_active : (mrr.active || []).length, mrr.needs_auth, mrr.error, mrr.auth_rejected, 'mrr');
-    _stripVal('rentals-mrr-history', mrr.total_history != null ? mrr.total_history : (mrr.history || []).length, mrr.needs_auth, mrr.error, mrr.auth_rejected, 'mrr');
-    _stripVal('rentals-mrr-owner', mrr.total_owner != null ? mrr.total_owner : (mrr.owner || []).length, mrr.needs_auth, mrr.error, mrr.auth_rejected, 'mrr');
+    _stripVal('rentals-mrr-active', mrr.total_active != null ? mrr.total_active : (mrr.active || []).length, mrr.needs_auth, mrr.error, mrr.auth_rejected, 'mrr', mrr.rendered_active, mrr.total_active);
+    _stripVal('rentals-mrr-history', mrr.total_history != null ? mrr.total_history : (mrr.history || []).length, mrr.needs_auth, mrr.error, mrr.auth_rejected, 'mrr', mrr.rendered_history, mrr.total_history);
+    _stripVal('rentals-mrr-owner', mrr.total_owner != null ? mrr.total_owner : (mrr.owner || []).length, mrr.needs_auth, mrr.error, mrr.auth_rejected, 'mrr', mrr.rendered_owner, mrr.total_owner);
     _stripVal('rentals-braiins', (braiins.contracts || []).length, braiins.needs_auth, braiins.error, braiins.auth_rejected, 'contracts');
     _renderRentalsPortfolio();
     _renderPortfolioConsolidated();
@@ -5195,19 +5379,38 @@ function renderAccount(acct) {
       // same as "credentials missing" — surface the real reason + the FIX so
       // the user regenerates the key, not just adds one (Issue #152).
       const rejected = rentalsAuthRejected(errMsg, authRejected);
-      const title = rejected ? 'API key rejected' : (needsAuth ? 'Credentials required' : (errMsg ? 'Provider error' : 'No rentals'));
+      // Payload staleness (Issue #187): a payload built by old server code
+      // (no version stamp) or too old to trust cannot prove an empty account
+      // — it may predate the missing-key guard. Level 2 (old code) shows the
+      // config hint; level 1 (age only) shows a soft 'dados desatualizados'
+      // + reload. Never the misleading 'No contracts rentals on this
+      // account'.
+      const staleLevel = rentalsPayloadStale(_rentalsData, Math.floor(Date.now() / 1000));
+      const payloadStale = staleLevel > 0;
+      const credHint = staleLevel >= 2;
+      const title = rejected ? 'API key rejected' : (needsAuth ? 'Credentials required' : (errMsg ? 'Provider error' : (credHint ? 'Configuração não verificada' : (staleLevel === 1 ? 'Dados desatualizados' : 'No rentals'))));
+      const staleHint = credHint
+        ? (isContracts
+          ? 'Dados carregados por uma versão antiga do servidor — não dá para confirmar se a conta está vazia. Adicione o owner token Braiins (hashpower.braiins.com → API Tokens) no Settings (⚙), ou recarregue para verificar:'
+          : 'Dados carregados por uma versão antiga do servidor — não dá para confirmar se a conta está vazia. Configure a chave MRR (miningrigrentals.com → My Account → API Access) no Settings (⚙), ou recarregue para verificar:')
+        : 'Os dados estão antigos (mais de 5 min) — recarregue para confirmar o estado real da conta.';
       listEl.innerHTML = '<div class="empty-state" style="grid-column:1/-1;border:none">' +
-        '<div class="empty-state__icon">' + (rejected ? '🔑' : '⛁') + '</div>' +
+        '<div class="empty-state__icon">' + (rejected ? '🔑' : (credHint ? '🔑' : '⛁')) + '</div>' +
         '<div class="empty-state__title">' + title + '</div>' +
         '<div class="empty-state__desc">' + (rejected
           ? rentalsAuthGuide(_rentalsFilter, errMsg)
           : (needsAuth
             ? (isContracts ? 'Add your Braiins Hashpower owner token to list contracts — where to get it: hashpower.braiins.com → API Tokens.' : 'Add your MiningRigRentals API key + secret to see history & performance — get them at miningrigrentals.com → My Account → API Access.')
-            : (errMsg ? escapeHtml(errMsg) : 'No ' + _rentalsFilter + ' rentals on this account'))) + '</div>' +
-        (needsAuth || rejected ? '<button type="button" class="btn btn--primary btn--mini" id="rentals-open-settings" style="margin-top:8px">⚙ OPEN SETTINGS</button>' : '') +
+            : (errMsg ? escapeHtml(errMsg) : (payloadStale ? staleHint : 'No ' + _rentalsFilter + ' rentals on this account')))) + '</div>' +
+        (needsAuth || rejected || credHint ? '<button type="button" class="btn btn--primary btn--mini" id="rentals-open-settings" style="margin-top:8px">⚙ OPEN SETTINGS</button>' : '') +
+        (payloadStale ? '<button type="button" class="btn btn--mini" id="rentals-refresh-btn" style="margin-top:8px">⟳ RECARREGAR</button>' : '') +
         '</div>';
       const cta = document.getElementById('rentals-open-settings');
       if (cta) cta.addEventListener('click', function() { openSettingsModal(); });
+      // RECARREGAR re-fetches with ?refresh=1 — creds just saved in Settings
+      // take effect without a full page reload.
+      const refreshBtn = document.getElementById('rentals-refresh-btn');
+      if (refreshBtn) refreshBtn.addEventListener('click', function() { loadRentals(true); });
       return;
     }
     listEl.innerHTML = items.map(_rentalCardHtml).join('');
@@ -6043,6 +6246,7 @@ function renderAccount(acct) {
     const ap = snap.auto_pilot || {};
     _apSetUi(!!ap.armed);
     _initAutoPilotToggle();
+    _initAutoPilotAutoToggle();
     _initAutoPilotAdvisory();
     _initAutoPilotDryRun();
   }
@@ -6167,6 +6371,133 @@ function renderAccount(acct) {
     }
 
     _apRefreshStatus();
+    _apRefreshAutoStatus();
+  }
+
+  // ── Issue #178 · Auto-Pilot AUTONOMOUS — execução autônoma (PRO gate) ──
+  // Backend: GET /api/auto-pilot/autonomous (pro/armed/autonomous),
+  // POST /api/auto-pilot/autonomous {autonomous} (gate PRO → 402 em modo
+  // licensed sem chave). Fase 4 do Big Bet: quando PRO + armado + ON, o
+  // piloto executa sozinho restart/pause das recomendações físicas.
+  let _apAuto = false;
+  let _apAutoToggleInit = false;
+
+  function _apSetAutoUi(auto) {
+    _apAuto = !!auto;
+    const btn = document.getElementById('ap-auto-btn');
+    const label = document.getElementById('ap-auto-label');
+    const dot = document.getElementById('ap-auto-dot');
+    if (label) label.textContent = auto ? 'ON' : 'OFF';
+    if (btn) {
+      btn.classList.toggle('is-armed', auto);
+      btn.title = auto
+        ? 'EXECUÇÃO AUTÔNOMA ON — o piloto executa restart/pause sozinho (PRO + armado). Clique para desligar.'
+        : 'EXECUÇÃO AUTÔNOMA OFF — as recomendações ficam manuais. Clique para ligar (requer PRO + armado).';
+    }
+    if (dot) {
+      dot.style.background = auto ? 'var(--green)' : 'var(--orange)';
+      dot.style.boxShadow = auto ? '0 0 8px rgba(0,200,83,0.8)' : '0 0 6px rgba(255,160,0,0.6)';
+    }
+  }
+
+  async function _apRefreshAutoStatus() {
+    try {
+      const r = await authFetch('/api/auto-pilot/autonomous');
+      if (!r.ok) return;
+      const d = await r.json().catch(() => ({}));
+      _apSetAutoUi(!!d.autonomous);
+      const badge = document.getElementById('ap-auto-pro-badge');
+      if (badge) {
+        badge.textContent = d.pro ? 'PRO ✓' : 'PRO 🔒';
+        badge.classList.toggle('badge--green', !!d.pro);
+        badge.classList.toggle('badge--amber', !d.pro);
+        badge.title = d.pro
+          ? 'Gate PRO ok — execução autônoma permitida (open mode ou licença válida)'
+          : 'Gate PRO fechado — é preciso licença PRO para ligar a execução autônoma';
+      }
+      if (_apAuto && d.armed === false) {
+        const autoBtn = document.getElementById('ap-auto-btn');
+        if (autoBtn) autoBtn.title = 'Execução autônoma ON mas o Auto-Pilot está DESARMADO — arme o piloto para ativar.';
+      }
+    } catch (e) { /* advisory — never break the panel */ }
+  }
+
+  async function _apSetAuto(enabled) {
+    const btn = document.getElementById('ap-auto-btn');
+    setBtnLoading(btn, true);
+    try {
+      const r = await authFetch('/api/auto-pilot/autonomous', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ autonomous: enabled }),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (r.status === 402) {
+        const price = d.upgrade && d.upgrade.price_usd_month ? ' ($' + d.upgrade.price_usd_month + '/m)' : '';
+        showToast('error', '🔒 EXECUÇÃO AUTÔNOMA é PRO — licença necessária' + price);
+        _apRefreshAutoStatus();
+        return false;
+      }
+      if (!r.ok || !d.success) {
+        showToast('error', '⚠ Auto-Pilot: ' + (d.error || ('HTTP ' + r.status)));
+        _apRefreshAutoStatus();
+        return false;
+      }
+      _apSetAutoUi(!!d.autonomous);
+      showToast('success', enabled ? '🤖 EXECUÇÃO AUTÔNOMA ON — o piloto age sozinho (PRO + armado)' : 'Execução autônoma desligada');
+      _apRefreshAutoStatus();
+      return true;
+    } catch (e) {
+      showToast('error', '⚠ falha de rede ao alterar a execução autônoma');
+      return false;
+    } finally {
+      setBtnLoading(btn, false);
+    }
+  }
+
+  function _initAutoPilotAutoToggle() {
+    if (_apAutoToggleInit) return;
+    _apAutoToggleInit = true;
+
+    const btn = document.getElementById('ap-auto-btn');
+    if (btn) {
+      btn.addEventListener('click', () => {
+        if (_apAuto) { _apSetAuto(false); return; }  // disabling is the kill switch — direct
+        const m = document.getElementById('ap-auto-modal');
+        const input = document.getElementById('ap-auto-type');
+        const confirm = document.getElementById('ap-auto-confirm');
+        if (m && input && confirm) {
+          input.value = '';
+          confirm.disabled = true;
+          openModalAnimated(m);
+          setTimeout(() => input.focus(), 50);
+        } else {
+          _apSetAuto(true);
+        }
+      });
+    }
+
+    const m = document.getElementById('ap-auto-modal');
+    if (m) {
+      m.addEventListener('click', (e) => {
+        if (e.target.matches('[data-close]') || e.target === m) closeModalAnimated(m);
+      });
+    }
+
+    const input = document.getElementById('ap-auto-type');
+    const confirm = document.getElementById('ap-auto-confirm');
+    if (input && confirm) {
+      input.addEventListener('input', () => {
+        confirm.disabled = input.value.trim().toUpperCase() !== 'AUTONOMO';
+      });
+      confirm.addEventListener('click', async () => {
+        confirm.disabled = true;
+        const ok = await _apSetAuto(true);
+        const modal = document.getElementById('ap-auto-modal');
+        if (modal) modal.classList.remove('modal--open');
+        if (!ok) input.value = '';
+      });
+    }
   }
 
   // ── Issue #20 · Auto-Pilot ADVISORY — recomendações por device ──────
@@ -6510,6 +6841,84 @@ function renderAccount(acct) {
       return resp;
     }
 
+    // PREMIUM (Issue #182): o AI real (LLM via SSE) é o recurso premium.
+    // Entitled quando open mode (tudo grátis) OU tier PREMIUM — e o servidor
+    // tem chave de LLM configurada (ai_configured). Senão, bot local.
+    function aiCanUseReal() {
+      return !!(_license.ai_configured && (_license.mode === 'open' || _license.premium));
+    }
+
+    function showPremiumCta(d) {
+      logMessage('PREMIUM', (d && d.error) || 'AI Operator real é PREMIUM — upgrade necessário', 'WARN');
+      openUpgradeModal();
+    }
+
+    // Streams /api/ai/query (SSE). On success morphs typingDiv into the real
+    // answer; returns true when a real response was shown (text or a handled
+    // provider error). False → caller falls back to the local bot.
+    async function tryRealAi(text, typingDiv) {
+      // Timeout: um LLM pendurado não pode deixar o indicador de typing
+      // para sempre — aborta após 45s e o caller cai no bot local.
+      const ctrl = (typeof AbortController !== 'undefined') ? new AbortController() : null;
+      const timer = ctrl ? setTimeout(function () { try { ctrl.abort(); } catch (e) {} }, 45000) : null;
+      try {
+        const r = await authFetch('/api/ai/query', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ query: text }),
+          signal: ctrl ? ctrl.signal : undefined,
+        });
+        if (!r.ok) {
+          if (r.status === 402) {
+            const d = await r.json().catch(() => ({}));
+            if (d && d.required_tier === 'premium') showPremiumCta(d);
+          }
+          return false;
+        }
+        if (!r.body || !r.body.getReader) return false;
+        const reader = r.body.getReader();
+        const decoder = new TextDecoder();
+        let buf = '';
+        let acc = '';
+        let sawText = false;
+        let sawError = false;
+        const contentEl = document.createElement('div');
+        contentEl.className = 'ai-msg__content';
+        typingDiv.innerHTML = '<div class="ai-msg__header">◆ CYPHER AI</div>';
+        typingDiv.appendChild(contentEl);
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buf += decoder.decode(value, { stream: true });
+          let idx;
+          while ((idx = buf.indexOf('\n\n')) !== -1) {
+            const raw = buf.slice(0, idx).trim();
+            buf = buf.slice(idx + 2);
+            if (!raw.startsWith('data:')) continue;
+            let obj = {};
+            try { obj = JSON.parse(raw.slice(5).trim()); } catch (e) { continue; }
+            if (obj.type === 'text') {
+              sawText = true;
+              acc += obj.content || '';
+              contentEl.textContent = acc;
+              messages.scrollTop = messages.scrollHeight;
+            } else if (obj.type === 'error') {
+              sawError = true;
+              contentEl.textContent = obj.message || 'AI error';
+            } else if (obj.type === 'done') {
+              break;
+            }
+          }
+        }
+        if (!sawText && !sawError) return false;
+        return true;
+      } catch (e) {
+        return false;  // aborted (timeout), rede ou 5xx → fallback pro bot local
+      } finally {
+        if (timer) clearTimeout(timer);
+      }
+    }
+
     async function handleSend() {
       try {
         const text = input.value.trim();
@@ -6526,14 +6935,19 @@ function renderAccount(acct) {
         messages.appendChild(typingDiv);
         messages.scrollTop = messages.scrollHeight;
 
-        // Brief processing delay
-        await new Promise(r => setTimeout(r, 200 + Math.random() * 300));
-
-        typingDiv.remove();
-
-        const response = getResponse(text);
-        const formatted = response.replace(/\*\*(.*?)\*\*/g, '<strong style="color:var(--accent-btc)">$1</strong>');
-        addMessage('assistant', formatted);
+        // Real AI (PREMIUM/open mode) ou bot local — nunca quebra o chat.
+        let usedReal = false;
+        if (aiCanUseReal()) {
+          usedReal = await tryRealAi(text, typingDiv);
+        }
+        if (!usedReal) {
+          // Brief processing delay (bot local)
+          await new Promise(r => setTimeout(r, 200 + Math.random() * 300));
+          typingDiv.remove();
+          const response = getResponse(text);
+          const formatted = response.replace(/\*\*(.*?)\*\*/g, '<strong style="color:var(--accent-btc)">$1</strong>');
+          addMessage('assistant', formatted);
+        }
       } finally {
         send.disabled = false;
       }
@@ -6767,6 +7181,10 @@ function renderAccount(acct) {
   function makeChart(id, label, color) {
     const canvas = document.getElementById(id);
     if (!canvas) return null;
+    // Issue #186: defensivo — app.js roda com defer após o Chart.js, mas se o
+    // CDN falhar (offline/blocked) o boot não pode crashar. Null é tratado
+    // pelos call sites (mesma convenção do canvas ausente).
+    if (typeof Chart === 'undefined') return null;
     const ctx = canvas.getContext('2d');
     const cfg = CHART_METRICS[id];
     // Human-readable Y ticks: hashrate/pool render fmt.hashrate (TH/s), best
@@ -7001,6 +7419,13 @@ function renderAccount(acct) {
     // edit the field, nothing changes, and the panel keeps saying "rejected".
     if ((SETTINGS_CACHE.env || {}).braiins_api_key && settings['braiins_api_key']) {
       html += '<div style="margin-top:2px;border:1px solid var(--accent-orange, #ffa000);border-radius:4px;padding:6px 8px;font-size:10px;line-height:1.4;color:var(--text-muted)">⚠ O servidor tem <code>BRAIINS_API_KEY</code> definida como env var — ela <b>SOBRESCREVE</b> o valor abaixo. Remova a env var (Render → Environment) para usar a chave do Settings.</div>';
+    }
+    // Same override warning for the MRR key/secret pair (Issue #189): the
+    // per-user model is Settings-only — env vars are a default-tenant trap
+    // that silently wins over the fields below.
+    const mrrEnv = (SETTINGS_CACHE.env || {}).mrr_api_key || (SETTINGS_CACHE.env || {}).mrr_api_secret;
+    if (mrrEnv && (settings['mrr_api_key'] || settings['mrr_api_secret'])) {
+      html += '<div style="margin-top:2px;border:1px solid var(--accent-orange, #ffa000);border-radius:4px;padding:6px 8px;font-size:10px;line-height:1.4;color:var(--text-muted)">⚠ O servidor tem <code>MRR_API_KEY/MRR_API_SECRET</code> como env var — elas <b>SOBRESCREVEM</b> os valores abaixo. Remova as env vars (Render → Environment) para usar as chaves do Settings.</div>';
     }
     // "Test connection" for Braiins: probes the live API and reports the same
     // verdict the RENTALS panel derives (ok / rejected / missing).
@@ -8795,7 +9220,7 @@ dom.walletSave?.addEventListener('click', async () => {
     const wrap = document.getElementById('axe-detail-chart-wrap');
     const canvas = document.getElementById('axe-detail-chart');
     const countBadge = document.getElementById('axe-detail-chart-count');
-    if (!wrap || !canvas) return;
+    if (!wrap || !canvas || typeof Chart === 'undefined') return;  // Issue #186: defer-safe
 
     // Destroy previous chart instance so Chart.js doesn't complain.
     if (_axeDetailChart) { _axeDetailChart.destroy(); _axeDetailChart = null; }
@@ -9953,6 +10378,7 @@ dom.walletSave?.addEventListener('click', async () => {
     initAxeFleetControls();
     initAuth();
     initThemeToggle();
+    initInstanceIndicator();
     _liveTermInit();
     await fetchSnapshot();
     setInterval(fetchSnapshot, POLL_MS);

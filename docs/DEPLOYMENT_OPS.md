@@ -208,7 +208,56 @@ O sidecar (`--profile tailscale`) transforma o servidor em **subnet router**:
 | `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` | — | **Web Push** (ver seção abaixo) |
 | `VAPID_SUBJECT` | `mailto:admin@cypher65.local` | Contato do push service (mailto:) |
 
+> ⚠ **NÃO configure `MRR_API_KEY` / `MRR_API_SECRET` / `BRAIINS_API_KEY` no `.env`**
+> em um deploy **multi-tenant** (veja a seção "Credenciais por usuário" abaixo).
+
 ---
+
+## 🔑 Credenciais por usuário (MRR/Braiins) — NUNCA chave global
+
+**Regra do produto:** nenhuma chave MRR/Braiins existe como chave global ou
+compartilhada. **Cada usuário configura a própria** no app
+(`Settings ⚙ → MRR credentials` / `Braiins credentials`), e a chave fica
+armazenada **criptografada em repouso** (Fernet derivada de `SECRET_KEY`) na
+linha `tenant_settings` daquele tenant — nunca no código, nunca no `.env`,
+nunca no repositório. (Sem `SECRET_KEY` em open self-host, as chaves são
+armazenadas em texto plano — por isso **sempre** setar `SECRET_KEY` em
+qualquer deploy com usuários.)
+
+Como o app garante isso:
+
+1. **Isolamento hermético por tenant** — os resolvers
+   (`mrr_credentials`/`braiins_credentials`) leem **somente** as linhas do
+   próprio tenant em `tenant_settings`. Env vars e a tabela global **nunca**
+   são consultadas para um tenant nomeado — um usuário sem chave própria
+   recebe vazio (`🔑` no painel), **nunca** a chave do operador.
+2. **Env vars são só do tenant default (self-host)** — `MRR_API_KEY` /
+   `MRR_API_SECRET` / `BRAIINS_API_KEY` afetam **apenas** a própria instância
+   do operador (comportamento legado de self-host). Em deploy multi-tenant o
+   boot **avisa** se elas existirem: remova-as do ambiente.
+3. **Settings UI avisa override** — se uma env var estiver setada, o modal
+   mostra "⚠ env var SOBRESCREVE o valor abaixo" para MRR e Braiins.
+4. **Testes fixam a regra** — `test_named_tenant_without_own_key_never_inherits_env`
+   garante que um tenant sem chave própria nunca herda env/global.
+
+**Em deploy multi-tenant:** não definir nenhuma dessas env vars. Cada usuário
+entra, abre Settings e adiciona a própria chave. O operador (tenant default)
+usa as próprias chaves da mesma forma.
+
+**Fluxo de validação por usuário** (passo a passo completo no guia do usuário,
+`docs/AGENT_SETUP_GUIDE.md` → **Passo 5**):
+
+1. **MRR**: `miningrigrentals.com → My Account → API Access` → gerar/copiar a
+   **API key + secret** do site → `Settings ⚙ → MRR credentials` → **Salvar** →
+   o painel RENTALS mostra as contagens reais (sem 🔑/⚠).
+2. **Braiins**: `hashpower.braiins.com → API Tokens` → copiar o **owner token**
+   → `Settings ⚙ → Braiins credentials` → **Salvar** → **🔑 TESTAR CHAVE
+   BRAIINS** (verdict ok/rejected na hora, sem esperar o painel).
+3. **Estados do painel**: 🔑 = chave não configurada · ⚠ = chave configurada
+   mas **REJEITADA** pela API (regenerar no site do provider) · número = conta
+   real OK.
+4. **Bad Nonce (MRR)**: a chave salva é inválida/desatualizada — **regenerar**
+   (copiar a antiga não resolve). Ver `Troubleshooting — Bad Nonce` abaixo.
 
 ## 📲 Web Push (VAPID) — Issue #15
 

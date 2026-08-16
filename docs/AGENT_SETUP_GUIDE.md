@@ -77,6 +77,55 @@ temperatura, status e mais. Se algo não aparecer, confira:
 | Algum miner não aparece | O miner está desligado, ou é um modelo que o agente não conhece ainda |
 | `AGENT INSTALLED` mas fleet vazio | Espere mais 1-2 minutos e recarregue a página |
 
+### Passo 5 · Conecte sua conta de aluguel (painel RENTALS) — MRR + Braiins
+
+O painel **RENTALS** lê **as SUAS contas** de hashrate alugado (MiningRigRentals
+e Braiins Hashpower). **Cada usuário configura a própria chave** — não existe
+chave global/compartilhada. Sem chave, o painel mostra `🔑 credentials missing`.
+
+#### MRR (MiningRigRentals) — key + secret
+
+1. Acesse `miningrigrentals.com` → **My Account → API Access** → **gere** (ou
+   regenerar) a **API key** + **API secret** do site (o par que aparece AGORA).
+2. No painel CYPHER65: **Settings (⚙) → MRR credentials** → cole a **API key**
+   e o **API secret** → **Salvar**.
+3. Volte em **RENTALS**: os cards MRR mostram as **contagens reais** (sem
+   `🔑`/`⚠`).
+
+#### Braiins (Braiins Hashpower) — owner token
+
+1. Acesse `hashpower.braiins.com` → **API Tokens** → copie o **owner token**
+   (mostrado uma vez no registro; se perder, regenere).
+2. No painel CYPHER65: **Settings (⚙) → Braiins credentials** → cole o token →
+   **Salvar**.
+3. Clique em **🔑 TESTAR CHAVE BRAIINS** — o painel valida na hora e responde
+   **ok** (chave aceita) ou **rejected** (chave rejeitada pela API).
+4. Em **RENTALS → aba Braiins**, seus contratos/bids aparecem.
+
+#### Como ler o painel RENTALS
+
+| Estado no card | Significado | Ação |
+|---|---|---|
+| `🔑` credentials missing | chave **não configurada** | Adicione em Settings (⚙) |
+| `⚠` API key rejected | chave configurada mas **REJEITADA pela API** | Regenerar a chave no site do provider (ver abaixo) |
+| número (ex.: `12`) | chave **OK** | conta real — nada a fazer |
+
+#### Troubleshooting rápido
+
+- **`Not Authenticated - Invalid Key - Bad Nonce.` (MRR):** a chave em si é
+  **inválida/desatualizada** — não é bug do app. **Regenere** uma chave NOVA em
+  `miningrigrentals.com → My Account → API Access` e salve o par novo (copiar a
+  antiga não resolve).
+- **Braiins sem contratos e o teste diz que o token não está configurado:**
+  confirme que salvou o **owner token** (não o read-only) em Settings e use o
+  botão **🔑 TESTAR CHAVE BRAIINS** — o verdict dele é a fonte da verdade
+  (ok / rejected / não configurado).
+- **Env var sobrescrevendo:** se o card de Settings mostrar *"⚠ env var
+  SOBRESCREVE"*, há uma chave antiga configurada como variável de ambiente no
+  deploy — remova-a (Render → Environment) para valer a do Settings.
+
+---
+
 ### Desinstalar / reinstalar
 
 - **Reinstalar** (mudou de máquina/token): rode o mesmo comando de novo.
@@ -125,3 +174,10 @@ cypher65-agent --network host -e CYPHER65_SERVER_URL=<URL> -e
 CYPHER65_AGENT_TOKEN=<TOKEN> ghcr.io/0xjc65eth/cypher65-agent`. Mas o
 comando de 1 linha acima
 é o caminho mais simples (não precisa de Docker).
+
+**O que é o painel RENTALS e por que ele pede a MINHA chave do MRR/Braiins?**
+O painel **RENTALS** consolida seus aluguéis de hashrate nas **suas próprias**
+contas (MiningRigRentals + Braiins Hashpower). Por segurança, **cada usuário
+conecta a própria conta** — o app nunca usa chave de outro usuário nem chave
+global. Veja o **Passo 5** acima: em ~2 minutos você conecta e aprende a ler os
+estados do painel (🔑 missing · ⚠ rejected · número = conta OK).

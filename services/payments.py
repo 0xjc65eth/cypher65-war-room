@@ -45,8 +45,10 @@ log = logging.getLogger("cypher65.payments")
 
 _API_BASE = "https://api.lemonsqueezy.com/v1"
 
-# Variant ids → (plan, months). Operators override the PRO variant via env.
-_PLAN_MONTHS = {"pro": 12}
+# Variant ids → (plan, months). Operators override the PRO variant via env
+# and pin the PREMIUM variant via LEMON_SQUEEZY_PREMIUM_VARIANT_ID (tier 2,
+# Issue #182). Unknown variants stay PRO — the legacy default.
+_PLAN_MONTHS = {"pro": 12, "premium": 12}
 
 
 def payments_configured() -> bool:
@@ -57,11 +59,14 @@ def payments_configured() -> bool:
 def _variant_months(variant_id: str):
     """Map a variant id to (plan, months).
 
-    Today every variant maps to a 12-month PRO license — this is the seam
-    where future multi-tier pricing (e.g. annual vs lifetime) would branch
-    on the operator's LEMON_SQUEEZY_VARIANT_ID.
+    The operator pins the PREMIUM variant via LEMON_SQUEEZY_PREMIUM_VARIANT_ID;
+    everything else maps to the PRO variant (legacy default).
     """
-    return "pro", 12
+    vid = str(variant_id or "")
+    premium_variant = (os.environ.get("LEMON_SQUEEZY_PREMIUM_VARIANT_ID") or "").strip()
+    if premium_variant and vid == premium_variant:
+        return "premium", _PLAN_MONTHS["premium"]
+    return "pro", _PLAN_MONTHS["pro"]
 
 
 def create_checkout(
@@ -78,7 +83,13 @@ def create_checkout(
     """
     api_key = os.environ.get("LEMON_SQUEEZY_API_KEY") or ""
     store_id = os.environ.get("LEMON_SQUEEZY_STORE_ID") or ""
-    variant_id = os.environ.get("LEMON_SQUEEZY_VARIANT_ID") or ""
+    # Tier-aware: PREMIUM plan uses its own pinned variant (Issue #182).
+    plan = plan if plan in _PLAN_MONTHS else "pro"
+    variant_id = (
+        os.environ.get("LEMON_SQUEEZY_PREMIUM_VARIANT_ID")
+        if plan == "premium"
+        else os.environ.get("LEMON_SQUEEZY_VARIANT_ID")
+    ) or ""
     if not (api_key and store_id and variant_id):
         return None
     custom = {"plan": plan}

@@ -29,6 +29,7 @@ from agents.solo_mining_advisor.tools import (
     mrr_credentials,
     braiins_credentials,
 )
+from helpers import csv_neutralize as _csv_neutralize
 from services.db import get_db
 from services.settings import is_default_tenant, load_settings
 
@@ -37,6 +38,21 @@ log = logging.getLogger("cypher65")
 MRR_BASE = "https://www.miningrigrentals.com/api/v2"
 BRAIINS_BASE = "https://hashpower.braiins.com/v1"
 PH_TO_TH = 1000.0
+
+# ── MRR list pagination (Issue #200) ───────────────────────────────────────
+# MRR list endpoints (/rental) paginate via ?page= (1-based) with a HARD cap
+# of 200 on `limit`. The old code made ONE call and ignored MRR's `total` —
+# every rental beyond the top silently didn't exist for the panel, the P/L
+# sweep and the CSV ledger. The loop below walks pages until MRR's `total`
+# is covered, bounded so a misbehaving/ignored pagination param can never
+# burn the MRR rate budget (the very reason the original single-call cap
+# existed).
+MRR_MAX_PAGE_SIZE = 200  # MRR API hard cap for `limit`
+MRR_PAGE_SAFETY_MAX_RECORDS = 1000  # loop ceiling (rate-budget protection)
+MRR_PAGE_SAFETY_MAX_PAGES = 10  # absolute loop bound (API-misbehavior guard)
+# Effective ceiling per fetch = min(pages_cap * page_size, records_cap): with
+# the panel's page size 50 → ≤10 pages / 500 records; CSV/sweep at 200 →
+# ≤5 pages / 1000 records. Always bounded, always surfaced as `truncated`.
 
 # ── Rig Trust Score + bad-rig exclusion (CFO: decide where to rent again) ──
 # Every rig accumulates a track record of delivery % (avg vs advertised) over
@@ -1101,18 +1117,6 @@ ADMIN_ACCEPTED_CSV_COLUMNS = [
 ]
 
 
-def _csv_neutralize(value) -> Any:
-    """Neutralize spreadsheet formula-injection on text cells (a leading
-    = + - @ is a formula risk when a sheet auto-evaluates). Numbers/None
-    pass through untouched."""
-    if value is None or isinstance(value, (int, float)):
-        return value
-    s = str(value)
-    if s[:1] in ("=", "+", "-", "@", "\t", "\r"):
-        return "'" + s
-    return s
-
-
 def admin_accepted_recos_csv(data: Dict[str, Any]) -> str:
     """Render the admin accepted-recos audit payload as CSV (header + one row
     per decision). Consumes the SAME payload compute_admin_accepted_recos
@@ -1652,69 +1656,131 @@ def fetch_mrr_rentals(
 ) -> Dict[str, Any]:
     """List MRR rentals for a tenant (default: renter, active only).
 
-    Returns a normalized list plus auth status so the panel can render an
-    honest empty/error state:
-      {"success": True, "needs_auth": False, "rentals": [...], "total": n}
+    Issue #200: walks EVERY MRR page (bounded by the rate-budget safety
+    caps) so rentals beyond the first page are no longer invisible to the
+    panel, the P/L sweep or the CSV ledger. ``limit`` is the page size
+    (clamped to MRR's 200 max); ``rendered``/``total``/``truncated`` expose
+    the honest surface ("X de N") when the safety cap kicks in.
+
+    Returns:
+      {"success": True, "needs_auth": False, "rentals": [...],
+       "total": MRR-reported total, "rendered": len(rentals),
+       "truncated": rendered < total, "pages_fetched": n}
     """
     creds = _mrr_creds(tenant_id=tenant_id)
     if not (creds["api_key"] and creds["api_secret"]):
-        return {"success": False, "needs_auth": True, "rentals": [], "total": 0}
+        return {
+            "success": False,
+            "needs_auth": True,
+            "rentals": [],
+            "total": 0,
+            "rendered": 0,
+            "truncated": False,
+            "pages_fetched": 0,
+        }
 
     # MRR signs the PATH WITHOUT query params (verified live: signing
     # '/rental?type=...' fails with 'String to sign: .../rental'). Pass the
     # filters as separate request params instead.
     endpoint = "/rental"
-    qparams = {"type": rtype}
-    if history:
-        qparams["history"] = "true"
-    qparams["limit"] = limit
+    page_size = max(1, min(int(limit or 25), MRR_MAX_PAGE_SIZE))
 
+    rentals: List[Dict[str, Any]] = []
+    seen_ids: Dict[str, bool] = {}  # dedup — pagination can drift mid-loop
+    total: int = 0
+    truncated = False
+    page = 0
     try:
-        r = requests.get(
-            MRR_BASE + endpoint,
-            headers=_mrr_signed_headers(
-                creds["api_key"], creds["api_secret"], endpoint
-            ),
-            params=qparams,
-            timeout=15,
-        )
-        if not r.ok:
-            _err = f"HTTP {r.status_code}"
-            return {
-                "success": False,
-                "needs_auth": False,
-                # Issue #152 (c): a 401/403 with a CONFIGURED key is a
-                # credential problem — the panel must explain 'regenerate'
-                # instead of a generic HTTP error.
-                "auth_rejected": _is_mrr_auth_rejection(_err)
-                or r.status_code in (401, 403),
-                "error": _err,
-                "rentals": [],
-                "total": 0,
-            }
-        data = r.json()
-        if not data.get("success"):
-            _err = str(data.get("data") or data.get("message") or "MRR error")
-            return {
-                "success": False,
-                "needs_auth": False,
-                "auth_rejected": _is_mrr_auth_rejection(_err),
-                "error": _err,
-                "rentals": [],
-                "total": 0,
-            }
-        raw = data.get("data") or {}
-        records = raw.get("rentals") or []
-        rentals = []
-        for rv in records:
-            if not isinstance(rv, dict):
-                continue
-            rentals.append(_normalize_rental(rv))
+        while True:
+            page += 1
+            if page > MRR_PAGE_SAFETY_MAX_PAGES:
+                truncated = True
+                break
+            qparams = {"type": rtype, "page": page}
+            if history:
+                qparams["history"] = "true"
+            qparams["limit"] = page_size
+            r = requests.get(
+                MRR_BASE + endpoint,
+                headers=_mrr_signed_headers(
+                    creds["api_key"], creds["api_secret"], endpoint
+                ),
+                params=qparams,
+                timeout=15,
+            )
+            if not r.ok:
+                _err = f"HTTP {r.status_code}"
+                return {
+                    "success": False,
+                    "needs_auth": False,
+                    # Issue #152 (c): a 401/403 with a CONFIGURED key is a
+                    # credential problem — the panel must explain
+                    # 'regenerate' instead of a generic HTTP error.
+                    "auth_rejected": _is_mrr_auth_rejection(_err)
+                    or r.status_code in (401, 403),
+                    "error": _err,
+                    "rentals": [],
+                    "total": 0,
+                    "rendered": 0,
+                    "truncated": False,
+                    "pages_fetched": page,
+                }
+            data = r.json()
+            if not data.get("success"):
+                _err = str(data.get("data") or data.get("message") or "MRR error")
+                return {
+                    "success": False,
+                    "needs_auth": False,
+                    "auth_rejected": _is_mrr_auth_rejection(_err),
+                    "error": _err,
+                    "rentals": [],
+                    "total": 0,
+                    "rendered": 0,
+                    "truncated": False,
+                    "pages_fetched": page,
+                }
+            raw = data.get("data") or {}
+            records = raw.get("rentals") or []
+            if page == 1:
+                # MRR's total is the target for the loop; later pages may
+                # omit it or drift, so the first observation is the truth. A
+                # malformed upstream total must NEVER fail the whole fetch
+                # (the rentals already fetched would be thrown away) —
+                # degrade to the page-1 count (single-page behavior, bounded).
+                try:
+                    total = int(raw.get("total") or 0)
+                except (TypeError, ValueError):
+                    total = 0
+                if not total:
+                    total = len(records)
+            new_on_page = 0
+            for rv in records:
+                if not isinstance(rv, dict):
+                    continue
+                norm = _normalize_rental(rv)
+                rid = norm.get("id")
+                if rid is not None and rid in seen_ids:
+                    continue  # page drift / duplicate — never double-list
+                seen_ids[rid] = True
+                rentals.append(norm)
+                new_on_page += 1
+            if not records:
+                break  # empty page → end of the series
+            if total and len(seen_ids) >= total:
+                break  # MRR-reported total fully covered
+            if new_on_page == 0:
+                break  # pagination not shifting (param ignored?) — stop honest
+            if len(seen_ids) >= MRR_PAGE_SAFETY_MAX_RECORDS:
+                truncated = True
+                break
         return {
             "success": True,
             "needs_auth": False,
             "rentals": rentals,
-            "total": raw.get("total") or len(rentals),
+            "total": total or len(rentals),
+            "rendered": len(rentals),
+            "truncated": truncated or bool(total and len(rentals) < total),
+            "pages_fetched": page,
         }
     except Exception as e:
         log.warning("[rental_performance] mrr rentals fetch failed: %s", e)
@@ -1724,6 +1790,9 @@ def fetch_mrr_rentals(
             "error": str(e)[:120],
             "rentals": [],
             "total": 0,
+            "rendered": 0,
+            "truncated": False,
+            "pages_fetched": page,
         }
 
 
@@ -1911,13 +1980,40 @@ def _braiins_list_items(data: Any) -> List[Dict]:
 
 def _normalize_braiins_contract(c: Dict[str, Any]) -> Dict[str, Any]:
     """Map a Braiins contract/bid dict to the panel's display schema.
-    Accepts both the legacy (`contract`) and spot (`bid`) field names."""
+    Accepts both the legacy (`contract`) and spot (`bid`) field names.
+
+    The LIVE /spot/bid API wraps each item in an envelope:
+        {"bid": {...}, "counters_committed": {...}}
+    with the id/status/amount nested under ``bid``. Unwrap it first —
+    otherwise ``c.get("id")`` is None and every order is silently
+    dropped, so a valid account renders as "no contracts" (Issue #193)."""
+    if isinstance(c, dict):
+        for wrap_key in ("bid", "contract"):
+            inner = c.get(wrap_key)
+            # Only unwrap the true envelope (top level has no id) — a flat
+            # contract item that happens to carry a `bid` sub-object as data
+            # must keep reading its own level.
+            if isinstance(inner, dict) and not (
+                c.get("id") or c.get("bid_id") or c.get("order_id")
+            ):
+                c = inner
+                break
     cid = c.get("id") or c.get("bid_id") or c.get("order_id")
     status = c.get("status") or c.get("bid_status") or ""
-    # Spot statuses are verbose (SPOT_BID_STATUS_ACTIVE) — collapse to the
-    # legacy-style short status the UI already renders (RUNNING/ACTIVE/…).
-    short_status = str(status).replace("SPOT_BID_STATUS_", "") if status else ""
-    started = c.get("started_at") or c.get("created_at") or c.get("created_ts")
+    # Spot statuses are verbose (SPOT_BID_STATUS_ACTIVE / BID_STATUS_ACTIVE)
+    # — collapse to the legacy-style short status the UI already renders
+    # (RUNNING/ACTIVE/FULFILLED/…).
+    short_status = (
+        str(status).replace("SPOT_BID_STATUS_", "").replace("BID_STATUS_", "")
+        if status
+        else ""
+    )
+    started = (
+        c.get("started_at")
+        or c.get("created_at")
+        or c.get("created_ts")
+        or c.get("created")
+    )
     ended = c.get("ended_at") or c.get("completed_at") or c.get("completed_ts")
     return {
         "id": cid,
@@ -1943,9 +2039,13 @@ def fetch_braiins_contracts(tenant_id: str = "") -> Dict[str, Any]:
     """
     key = _braiins_key(tenant_id=tenant_id)
     if not key:
+        # Issue #187: explicit credentials_missing flag — the panel shows the
+        # config hint whenever the key is missing, even on replayed/stale
+        # payloads (the version stamp on /api/rentals marks old payloads).
         return {
             "success": False,
             "needs_auth": True,
+            "credentials_missing": True,
             "error": "BRAIINS_API_KEY not configured",
             "contracts": [],
         }
@@ -1983,6 +2083,7 @@ def fetch_braiins_contracts(tenant_id: str = "") -> Dict[str, Any]:
         return {
             "success": False,
             "needs_auth": True,
+            "auth_rejected": True,
             "error": "Braiins API rejected the key (HTTP 401/403) — check the token in Settings",
             "contracts": [],
         }
@@ -3495,8 +3596,10 @@ def _sweep_fetch_history(tenant_id: str = "") -> List[Dict]:
     simply has nothing to evaluate. One fetch per enabled tenant per cycle,
     never per alert family."""
     try:
+        # Issue #200: page size 200 (MRR max) so the pagination loop covers
+        # the FULL history in ~5 calls max instead of 20 at the old 50.
         listing = fetch_mrr_rentals(
-            rtype="renter", history=True, limit=50, tenant_id=tenant_id
+            rtype="renter", history=True, limit=MRR_MAX_PAGE_SIZE, tenant_id=tenant_id
         )
         if not listing.get("success"):
             if listing.get("needs_auth"):

@@ -427,6 +427,67 @@ def api_automation_arm(tenant_id: str = ""):
 
 
 # ═══════════════════════════════════════════════════════════════════════
+#  Issue #178 · Auto-Pilot Fase 4 — execução autônoma atrás do gate PRO
+#  GET  /api/auto-pilot/autonomous → status (pro/armed/autonomous/cooldowns)
+#  POST /api/auto-pilot/autonomous → toggle {autonomous: bool} (gate PRO)
+# ═══════════════════════════════════════════════════════════════════════
+
+
+@alerts_bp.route("/auto-pilot/autonomous", methods=["GET"])
+@require_tenant
+@role_required("viewer")
+def api_auto_pilot_autonomous_status(tenant_id: str = ""):
+    """Issue #178 — status do modo autônomo (gate PRO + switches)."""
+    from services.auto_pilot import autonomous_status
+
+    tid = tenant_id or "default"
+    try:
+        return jsonify(autonomous_status(tid))
+    except Exception as e:
+        return jsonify({"autonomous": False, "error": str(e)}), 500
+
+
+@alerts_bp.route("/auto-pilot/autonomous", methods=["POST"])
+@require_tenant
+@role_required("admin")
+def api_auto_pilot_autonomous_set(tenant_id: str = ""):
+    """Issue #178 — liga/desliga a execução autônoma (fail-closed).
+
+    LIGAR é gateado por PRO (is_pro() da request): em modo licensed sem
+    chave válida → 402 com payload de upgrade (frente renderiza o CTA PRO).
+    Desligar é sempre permitido (kill switch). A execução em si ainda exige
+    ARMADO + server_pro_active() no pass do poll (dupla checagem).
+    """
+    from services.auto_pilot import set_autonomous_enabled
+    from services.licensing import is_pro
+
+    tid = tenant_id or "default"
+    data = request.get_json(silent=True) or {}
+    enabled = bool(data.get("autonomous"))
+    if enabled and not is_pro():
+        return (
+            jsonify(
+                {
+                    "success": False,
+                    "error": "execução autônoma é um recurso PRO — licença necessária",
+                    "code": "LICENSE_REQUIRED",
+                    "required_tier": "pro",
+                    "upgrade": {"plan": "PRO", "price_usd_month": 9},
+                }
+            ),
+            402,
+        )
+    ok = set_autonomous_enabled(tid, enabled)
+    if not ok:
+        return (
+            jsonify({"success": False, "error": "could not persist autonomous state"}),
+            500,
+        )
+    _log_audit(tid, "auto_pilot.autonomous", details={"autonomous": enabled})
+    return jsonify({"success": True, "autonomous": enabled})
+
+
+# ═══════════════════════════════════════════════════════════════════════
 #  Issue #76 · Auto-Pilot Fase 3 — dry-run visual (execução simulada)
 #  Simula o que o piloto FARIA com as regras armadas — resultados previstos
 #  + veredito do SafetyEngine — SEM executar/auditar/mutar nada.

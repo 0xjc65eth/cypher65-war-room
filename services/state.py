@@ -38,7 +38,9 @@ latest_snapshot = {
 # without exposing per-share logs (which the pool simply doesn't publish).
 timeline_state = {
     "_primed": False,  # becomes True after the first priming poll
-    "last_submit_ts": 0,  # unix ts of last known worker.lastSubmission
+    # unix ts of last known worker.lastSubmission; None = missing (Issue #203
+    # sentinel policy — a missing stamp must never surface as epoch-0).
+    "last_submit_ts": None,
     "last_best_diff_str": "",  # str form of last known worker.bestDifficulty
     "all_time_best_diff_raw": 0.0,  # never decreases across proxy reconnects (persisted in settings)
     "share_submit_history": collections.deque(maxlen=64),  # recent submit ts list

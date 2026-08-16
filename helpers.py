@@ -12,7 +12,7 @@ import os
 import hashlib
 import threading
 from collections import deque
-from typing import Optional
+from typing import Any, Optional
 
 log = logging.getLogger("cypher65")
 
@@ -78,6 +78,30 @@ def email_sha(email: str) -> str:
     if not email:
         return ""
     return hashlib.sha256(email.encode("utf-8")).hexdigest()[:24]
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#  Spreadsheet formula-injection guard (shared CSV exporter safety)
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+def csv_neutralize(value) -> Any:
+    """Neutralize spreadsheet formula-injection on text cells.
+
+    A leading ``= + - @ \t \r`` is a formula risk when the sheet opens the
+    CSV and auto-evaluates (Excel/Sheets) — ``=HYPERLINK(...)`` / ``=1+1``
+    would EXECUTE. Prefixing such cells with ``'`` makes them inert text.
+    Numbers/None pass through untouched (they are never a formula vector).
+
+    Shared by every CSV export (admin accepted-recos, funnel weekly) so the
+    guard lives in ONE place (Issue #184).
+    """
+    if value is None or isinstance(value, (int, float)):
+        return value
+    s = str(value)
+    if s[:1] in ("=", "+", "-", "@", "\t", "\r"):
+        return "'" + s
+    return s
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -152,6 +176,28 @@ def coerce_int(v, default=0):
         return int(float(v))
     except Exception:
         return default
+
+
+def coerce_ts(v) -> Optional[int]:
+    """Sentinel policy (Issue #203): a real unix timestamp or None.
+
+    Missing/invalid values and epoch sentinels (0, '', 'N/A', date strings
+    like '1970-01-01') become None — NEVER 0 — so 'no data' stays 'no data'
+    through the API instead of rendering as 1970-01-01. Note a bare numeric
+    string like "1970" IS a valid positive timestamp (not a sentinel).
+    Centralized like csv_neutralize so every layer speaks the same
+    missing-sentinel language. NaN is rejected too (``not (f > 0)`` is True
+    for NaN, avoiding int(nan) crash).
+    """
+    if v is None or isinstance(v, bool):
+        return None
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    if not (f > 0):
+        return None
+    return int(f)
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
