@@ -36,6 +36,7 @@ from helpers import (
     safe_num_from_str,
     coerce_float,
     coerce_int,
+    coerce_ts,
     human_int,
     human_secs_long,
     isfinite_v,
@@ -3256,7 +3257,7 @@ def _reset_session_state():
 
     # Reset timeline_state with fresh defaults
     timeline_state["_primed"] = False
-    timeline_state["last_submit_ts"] = 0
+    timeline_state["last_submit_ts"] = None  # sentinel policy (Issue #203)
     timeline_state["last_best_diff_str"] = ""
     timeline_state["all_time_best_diff_raw"] = 0.0
     timeline_state["share_submit_history"].clear()
@@ -4026,11 +4027,10 @@ def _do_poll():
     # BEST_DIFF_BUMP events. Subsequent polls fire only on real deltas.
     if not timeline_state["_primed"]:
         if worker:
-            try:
-                ls_int = int(worker.get("lastSubmission") or 0)
-            except Exception:
-                ls_int = 0
-            timeline_state["last_submit_ts"] = ls_int or 0
+            # Sentinel policy (Issue #203): coerce_ts keeps a missing
+            # lastSubmission as None — never 0 (0 renders as 1970-01-01).
+            ls_int = coerce_ts(worker.get("lastSubmission"))
+            timeline_state["last_submit_ts"] = ls_int
             timeline_state["last_best_diff_str"] = worker.get("bestDifficulty") or ""
             # seed the rolling share-rate history so sph is meaningful from poll 2
             if ls_int:
@@ -4040,11 +4040,7 @@ def _do_poll():
     else:
         fresh_bump_detected = False
         if worker:
-            ls = worker.get("lastSubmission")
-            try:
-                ls_int = int(ls) if ls else 0
-            except Exception:
-                ls_int = 0
+            ls_int = coerce_ts(worker.get("lastSubmission"))
             if ls_int and ls_int != timeline_state["last_submit_ts"]:
                 gap = (
                     (ls_int - timeline_state["last_submit_ts"])
@@ -6379,11 +6375,16 @@ def _hashrate_market_health() -> dict:
     """
     cache = _HASHRATE_MARKET_CACHE
     now = int(time.time())
-    ts = cache.get("ts") or 0
+    # Sentinel policy (Issue #203): a never-filled cache reports null
+    # last_fetch_ts, never epoch-0.
+    ts = coerce_ts(cache.get("ts"))
     offers = cache.get("offers")
     count = len(offers) if offers else 0
     ttl = _HASHRATE_MARKET_CACHE_TTL if offers else _HASHRATE_MARKET_EMPTY_CACHE_TTL
     age = (now - ts) if ts else None
+    # NOTE (Issue #203): the snapshot_enrichment copy of this helper reports
+    # stale=True on a never-filled cache; here a cold cache is 'never fetched'
+    # (stale=False, age_s=None). Documented divergence — Issue #206 follow-up.
     return {
         "last_fetch_ts": ts,
         "offers_count": count,
