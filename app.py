@@ -210,6 +210,35 @@ if (
         "JWT issuance/verification will fail. Set SECRET_KEY in the environment."
     )
 
+# ── Per-user credentials (Issue #189): NO shared provider keys ──────────
+# Multi-tenant deployments (TENANT_API_KEYS) must NOT carry operator
+# MRR/Braiins keys at env/global level — each user configures their OWN in
+# Settings (tenant-scoped rows, encrypted at rest). Named tenants never
+# inherit env keys (enforced + tested); env keys only ever apply to the
+# operator's own default tenant. Their presence in a shared deployment is an
+# operational footgun, so warn loudly at boot.
+
+
+def provider_keys_env_warning(tenant_api_keys, env) -> Optional[str]:
+    """Return the boot warning (or None) when a multi-tenant deployment
+    carries operator provider keys at env level. Pure + testable."""
+    if tenant_api_keys and any(
+        env.get(k) for k in ("MRR_API_KEY", "MRR_API_SECRET", "BRAIINS_API_KEY")
+    ):
+        return (
+            "provider keys (MRR_API_KEY/MRR_API_SECRET/BRAIINS_API_KEY) are set at "
+            "env level in a MULTI-TENANT deployment — they only apply to the operator's "
+            "own default tenant and are NEVER shared with users. Remove them from the "
+            "environment; every user must configure their OWN key in Settings (⚙)."
+        )
+    return None
+
+
+_w = provider_keys_env_warning(TENANT_API_KEYS, os.environ)
+if _w:
+    log.warning("[boot] %s", _w)
+
+
 # ── Register blueprints ─────────────────────────────────────────────────────
 app.register_blueprint(solo_mining_bp, url_prefix="/api/solo-mining")
 register_probability_routes(app)
