@@ -1912,13 +1912,33 @@ def _braiins_list_items(data: Any) -> List[Dict]:
 def _normalize_braiins_contract(c: Dict[str, Any]) -> Dict[str, Any]:
     """Map a Braiins contract/bid dict to the panel's display schema.
     Accepts both the legacy (`contract`) and spot (`bid`) field names."""
+    if isinstance(c.get("bid"), dict):
+        inner = c["bid"]
+        c = {**c, **inner}
+    elif isinstance(c.get("contract"), dict):
+        inner = c["contract"]
+        c = {**c, **inner}
+
     cid = c.get("id") or c.get("bid_id") or c.get("order_id")
     status = c.get("status") or c.get("bid_status") or ""
-    # Spot statuses are verbose (SPOT_BID_STATUS_ACTIVE) — collapse to the
+    # Spot statuses are verbose (SPOT_BID_STATUS_ACTIVE / BID_STATUS_ACTIVE) — collapse to the
     # legacy-style short status the UI already renders (RUNNING/ACTIVE/…).
-    short_status = str(status).replace("SPOT_BID_STATUS_", "") if status else ""
-    started = c.get("started_at") or c.get("created_at") or c.get("created_ts")
-    ended = c.get("ended_at") or c.get("completed_at") or c.get("completed_ts")
+    short_status = (
+        str(status).replace("SPOT_BID_STATUS_", "").replace("BID_STATUS_", "")
+        if status
+        else ""
+    )
+    started = (
+        c.get("started_at")
+        or c.get("created_at")
+        or c.get("created_ts")
+        or c.get("created")
+    )
+    ended = (
+        c.get("ended_at")
+        or c.get("completed_at")
+        or c.get("completed_ts")
+    )
     return {
         "id": cid,
         "status": short_status or status,
