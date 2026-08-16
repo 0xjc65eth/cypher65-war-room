@@ -167,6 +167,12 @@
       <span class="topbar__status" id="tbar-status">INIT</span>
       <span class="topbar__sep">|</span>
       <span class="topbar__clock" id="clock">--:--:--</span>
+      <span class="topbar__sep">|</span>
+      <!-- Instance indicator (Issue #198): deixa EXPLÍCITO em qual
+           instância/URL o dashboard está — resolve a confusão real de
+           salvar chaves na instância errada (local vs cloud). Populado
+           pelo initInstanceIndicator() no boot do app.js. -->
+      <span class="topbar__instance" id="topbar-instance" title="">⌁ …</span>
     </div>
   </div>
   <div class="topbar__right">

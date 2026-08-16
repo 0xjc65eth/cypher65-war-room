@@ -1416,6 +1416,30 @@ body {
   color: var(--text-tertiary);
   font-variant-numeric: tabular-nums;
 }
+/* Instance indicator — mostra EXPLICITAMENTE em qual instância/URL o
+   dashboard está (local vs cloud), evitando salvar chaves na instância
+   errada. Color-code por tipo: local=green · cloud=amber · remote=cyan. */
+.topbar__instance {
+  display: inline-block;  /* max-width/overflow/ellipsis só valem em block */
+  font-family: var(--font-mono);
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 3px;
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-input);
+  color: var(--text-secondary);
+  cursor: pointer;
+  white-space: nowrap;
+  max-width: 170px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  vertical-align: middle;
+  transition: border-color 0.2s ease, color 0.2s ease;
+}
+.topbar__instance:hover { border-color: var(--border-strong); }
+.topbar__instance--local { color: var(--green); border-color: rgba(0, 200, 83, 0.4); }
+.topbar__instance--cloud { color: var(--orange); border-color: rgba(255, 145, 0, 0.4); }
+.topbar__instance--remote { color: var(--cyan); border-color: rgba(0, 184, 212, 0.4); }
 .topbar__right {
   display: flex;
   align-items: center;
