@@ -63,6 +63,25 @@ dir). Novos testes devem seguir o mesmo padrão.
   `python -m services.workers`. Importar `app` NUNCA pode spawnar threads
   (ver `tests/test_boot_threads.py`).
 
+### Learning FAQ loop (Issue #19)
+
+A doc tem um mecanismo de feedback "isto ajudou?" (👍/👎) no fim de cada
+seção do DOCS / GUIDE. O loop de aprendizado funciona assim:
+
+1. **Coleta**: o widget grava um voto por (tenant, seção) — re-voto
+   sobrescreve, nunca duplica. Um 👎 revela um campo de pergunta livre
+   (máx. 500 chars) que vira um "recurring question".
+2. **Métrica**: o Admin (painel → DOCS FEEDBACK ou
+   `GET /api/admin/docs-feedback`) mostra votos/👍/👎/% útil por seção e a
+   lista de perguntas recorrentes. Essa é a métrica do Hidden Tax: se uma
+   seção tem % útil baixo ou perguntas repetidas, a doc está falhando ali.
+3. **Loop**: toda pergunta recorrente nova deve virar entrada na FAQ
+   (`templates/dashboard.html` → seção `#docs-faq`), com o texto da resposta
+   no mesmo PR que promove a pergunta — nunca deixe a pergunta só na lista.
+
+Backend: `services/doc_feedback.py` + rotas `/api/docs/feedback` (tenant) e
+`/api/admin/docs-feedback` (gate localhost/X-API-Key).
+
 ## Commits
 
 Use [Conventional Commits](https://www.conventionalcommits.org/):

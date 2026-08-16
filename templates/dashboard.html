@@ -7,46 +7,56 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<!-- Issue #186: defer no Chart.js — CDN nunca mais bloqueia o parse do DOM
+     (o retry hack _mktGridRetried no app.js era sintoma deste bloqueio).
+     Quem usa Chart guarda com `typeof Chart === 'undefined'` e re-renderiza
+     no próximo poll — zero risco de boot race. -->
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js" defer></script>
 {% if sentry_dsn %}
 <!-- Frontend Sentry (env-gated): carrega o SDK do browser só quando o
      operador configurou SENTRY_DSN. Sem DSN este bloco nem renderiza —
      zero requests externos, zero overhead, e2e intacto. Captura erros de
      runtime do frontend (além dos logs JSON do backend). -->
-<script src="https://browser.sentry-cdn.com/8.30.0/bundle.min.js" crossorigin="anonymous"></script>
+<script src="https://browser.sentry-cdn.com/8.30.0/bundle.min.js" crossorigin="anonymous" defer></script>
 <script>
-  /* Inicializa o mais cedo possível: o onLoad captura erros que ocorram
-     durante o parse do app.js (boot race). Fail-safe: se o CDN falhar,
-     window.Sentry fica undefined e nada quebra. */
+  /* Issue #186: com `defer`, o SDK executa DEPOIS deste inline — o init
+     espera o DOMContentLoaded (defer scripts rodam antes dele, então
+     window.Sentry já existe). Boot race preservado: ainda captura erros
+     durante o parse do app.js. Fail-safe: se o CDN falhar, window.Sentry
+     fica undefined e __initSentry é no-op — nada quebra. */
   window.__SENTRY_DSN__ = {{ sentry_dsn|tojson }};
-  if (window.Sentry) {
-    Sentry.onLoad(function () {
-      Sentry.init({
-        dsn: window.__SENTRY_DSN__,
-        environment: '{{ sentry_environment|default("self-hosted") }}',
-        release: 'cypher65-war-room',
-        tracesSampleRate: {{ sentry_traces_sample_rate|default(0.1) }},
-        // Anonymize: nunca enviar endereço de carteira / worker (telemetria
-        // honesta — erros sim, dados financeiros não).
-        beforeSend: function (event) {
-          delete event.extra;
-          return event;
-        },
-        // Privacidade: breadcrumbs de fetch/XHR capturam a URL por padrão —
-        // remover query strings (ex: /api/...?...tenant=...) antes de enviar.
-        beforeBreadcrumb: function (breadcrumb) {
-          if (breadcrumb.data && breadcrumb.data.url) {
-            breadcrumb.data.url = String(breadcrumb.data.url).split('?')[0];
-          }
-          return breadcrumb;
-        },
-        ignoreErrors: [
-          // ResizeObserver loop / favicon 404s — ruído conhecido de dashboards.
-          'ResizeObserver',
-          'Non-Error promise rejection captured',
-        ],
-      });
+  function __initSentry() {
+    if (!window.Sentry) return;  // CDN falhou / SDK ausente — fail-safe
+    Sentry.init({
+      dsn: window.__SENTRY_DSN__,
+      environment: '{{ sentry_environment|default("self-hosted") }}',
+      release: 'cypher65-war-room',
+      tracesSampleRate: {{ sentry_traces_sample_rate|default(0.1) }},
+      // Anonymize: nunca enviar endereço de carteira / worker (telemetria
+      // honesta — erros sim, dados financeiros não).
+      beforeSend: function (event) {
+        delete event.extra;
+        return event;
+      },
+      // Privacidade: breadcrumbs de fetch/XHR capturam a URL por padrão —
+      // remover query strings (ex: /api/...?...tenant=...) antes de enviar.
+      beforeBreadcrumb: function (breadcrumb) {
+        if (breadcrumb.data && breadcrumb.data.url) {
+          breadcrumb.data.url = String(breadcrumb.data.url).split('?')[0];
+        }
+        return breadcrumb;
+      },
+      ignoreErrors: [
+        // ResizeObserver loop / favicon 404s — ruído conhecido de dashboards.
+        'ResizeObserver',
+        'Non-Error promise rejection captured',
+      ],
     });
+  }
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', __initSentry);
+  } else {
+    __initSentry();
   }
 </script>
 {% endif %}
@@ -157,6 +167,12 @@
       <span class="topbar__status" id="tbar-status">INIT</span>
       <span class="topbar__sep">|</span>
       <span class="topbar__clock" id="clock">--:--:--</span>
+      <span class="topbar__sep">|</span>
+      <!-- Instance indicator (Issue #198): deixa EXPLÍCITO em qual
+           instância/URL o dashboard está — resolve a confusão real de
+           salvar chaves na instância errada (local vs cloud). Populado
+           pelo initInstanceIndicator() no boot do app.js. -->
+      <span class="topbar__instance" id="topbar-instance" title="">⌁ …</span>
     </div>
   </div>
   <div class="topbar__right">
@@ -824,6 +840,19 @@
     <div class="rentals-portfolio__cell"><span class="rentals-portfolio__label">OWNER INCOME</span><strong id="rentals-port-income">—</strong></div>
     <div class="rentals-portfolio__cell"><span class="rentals-portfolio__label">SPLIT</span><strong id="rentals-port-split">—</strong></div>
   </div>
+  <!-- CFO: consolidated portfolio P/L (Issue #21-A) — PRÓPRIO (self-mining
+       EV, share da rede × block reward) + RENTALS P/L (30d da série local e
+       acumulado) + NET 30d. EV = ESTIMATE (nunca receita realizada). -->
+  <div class="portfolio-consolidated" id="portfolio-consolidated" hidden>
+    <div class="portfolio-consolidated__head">P/L CONSOLIDADO <span class="rentals-series__meta" id="portfolio-consolidated-meta"></span></div>
+    <div class="rentals-portfolio">
+      <div class="rentals-portfolio__cell" title="EV de receita diária do hashrate próprio (share da rede × block reward)"><span class="rentals-portfolio__label">PRÓPRIO EV/dia</span><strong id="portfolio-own-daily">—</strong></div>
+      <div class="rentals-portfolio__cell" title="EV de receita do hashrate próprio em ~30 dias (últimas ~4 semanas)"><span class="rentals-portfolio__label">PRÓPRIO EV ~30d</span><strong id="portfolio-own-month">—</strong></div>
+      <div class="rentals-portfolio__cell" title="P/L dos rentals nas últimas ~4 semanas (mesma metodologia EV da série)"><span class="rentals-portfolio__label">RENTALS P/L ~30d</span><strong id="portfolio-rentals-30d">—</strong></div>
+      <div class="rentals-portfolio__cell" title="P/L acumulado de TODOS os rentals"><span class="rentals-portfolio__label">RENTALS P/L total</span><strong id="portfolio-rentals-all">—</strong></div>
+      <div class="rentals-portfolio__cell" title="NET ~30d = EV próprio (~30d) + P/L rentals (~30d) — ESTIMATE"><span class="rentals-portfolio__label">NET ~30d</span><strong id="portfolio-net-30d">—</strong></div>
+    </div>
+  </div>
   <!-- CFO: portfolio time series — spent + estimated P/L per week/month
        (from the local rental_history; P/L labeled ESTIMATE — current network
        hashrate). Toggle W/S to change the bucket. -->
@@ -861,6 +890,14 @@
   <div class="rentals-conc" id="rentals-conc" hidden>
     <div class="rentals-conc__head">CONCENTRAÇÃO <span id="rentals-conc-meta" class="rentals-conc__meta"></span></div>
     <div class="rentals-conc__bars" id="rentals-conc-bars"></div>
+  </div>
+  <!-- CFO: exposure allocation (Issue #21-B) — PRÓPRIO vs MRR vs Braiins,
+       share do hashrate total gerenciado + Herfindahl estendido incluindo
+       o próprio como classe de ativo. Reusa o CSS das barras de concentração. -->
+  <div class="rentals-exposure" id="rentals-exposure" hidden>
+    <div class="rentals-conc__head">ALOCAÇÃO DE EXPOSIÇÃO <span id="rentals-exposure-meta" class="rentals-conc__meta"></span></div>
+    <div class="rentals-conc__bars" id="rentals-exposure-bars"></div>
+    <div class="rentals-exposure__total" id="rentals-exposure-total"></div>
   </div>
   <!-- CFO recommendation engine: 'where to rent again' — rigs with a real
        track record, ranked by reliability × price vs the live market. -->
@@ -924,6 +961,7 @@
          that performed the exclusion — immediate feedback + alert dispatch
          status, without waiting for the next panel refresh. -->
     <div class="rentals-detail__autoex" id="rentals-detail-autoex" hidden></div>
+    <div class="rentals-detail__autoex rentals-detail__autoex--auth" id="rentals-detail-auth" hidden></div>
     <div class="rentals-detail__grid" id="rentals-detail-grid"></div>
     <div class="rentals-perf" id="rentals-detail-perf"></div>
     <div class="rentals-trust" id="rentals-detail-trust" hidden></div>
@@ -943,6 +981,11 @@
         <span class="ap-dot" id="ap-armed-dot"></span>AUTO-PILOT&nbsp;<span id="ap-armed-label">OFF</span>
       </button>
       <span class="badge badge--mute" id="ap-budget-badge" title="Ações do Auto-Pilot executadas na janela atual / limite">—</span>
+      <button class="chip ap-arm-chip" id="ap-auto-btn" title="EXECUÇÃO AUTÔNOMA OFF — as recomendações ficam manuais. Clique para ligar (requer PRO + armado).">
+        <span class="ap-dot" id="ap-auto-dot"></span>AUTONOMOUS&nbsp;<span id="ap-auto-label">OFF</span>
+      </button>
+      <span class="badge badge--mute" id="ap-auto-pro-badge" title="Gate PRO da execução autônoma">PRO —</span>
+      <button class="chip" id="ai-premium-cta" title="AI Operator real (LLM) é PREMIUM" hidden>🤖 AI PREMIUM</button>
       <button class="chip" id="open-alert-center" title="Alert Center">⚠ RULES</button>
       <button class="chip" id="ai-clear">clear</button>
     </div>
@@ -1049,6 +1092,28 @@
       <div class="ap-arm-modal__actions">
         <button class="btn" data-close="ap-arm-modal">CANCELAR</button>
         <button class="btn btn--primary" id="ap-arm-confirm" disabled>ARMAR AUTO-PILOT</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ── Auto-Pilot autonomous confirmation (typed — PRO-gated, Issue #178) ── -->
+<div id="ap-auto-modal" class="modal-overlay">
+  <div class="modal ap-arm-modal">
+    <div class="modal__header">
+      <span class="modal__title">🤖 LIGAR EXECUÇÃO AUTÔNOMA</span>
+      <button class="modal__close" data-close="ap-auto-modal">×</button>
+    </div>
+    <div class="modal__body">
+      <p class="ap-arm-modal__desc">Ao ligar, o piloto (quando <strong>PRO + ARMADO</strong>) passa a <strong>executar sozinho</strong> as ações físicas das recomendações — <strong>restart</strong> de miner offline/com hashrate baixo e <strong>pause</strong> por temperatura — respeitando SafetyEngine, cooldown (restart 15min / pause 10min) e o orçamento de ações. Ações financeiras (blacklist/buy) <strong>continuam manuais</strong>. Desligar a qualquer momento para parar imediatamente.</p>
+      <div class="ap-arm-modal__status" id="ap-auto-modal-status"></div>
+      <label class="ap-arm-modal__confirm">
+        <span class="field__label">DIGITE <strong>AUTONOMO</strong> PARA CONFIRMAR</span>
+        <input class="field__input field__input--mono" type="text" id="ap-auto-type" placeholder="digite AUTONOMO" autocomplete="off" spellcheck="false">
+      </label>
+      <div class="ap-arm-modal__actions">
+        <button class="btn" data-close="ap-auto-modal">CANCELAR</button>
+        <button class="btn btn--primary" id="ap-auto-confirm" disabled>LIGAR EXECUÇÃO AUTÔNOMA</button>
       </div>
     </div>
   </div>
@@ -1412,6 +1477,70 @@
   </div>
   <div class="admin-stall" id="admin-stall" hidden></div>
 
+  <!-- ── Pool metric trends (Issue #17) — sampler SQLite a cada 60s ──
+       Consome /api/admin/pool-metrics (mesmo gate localhost/X-API-Key).
+       Histórico persistente: sobrevive a restarts — ao contrário dos
+       contadores em memória do /api/admin/sessions. -->
+  <div class="panel__subtitle">TENDÊNCIAS DO POOL (24h) — histórico persistente · amostra a cada 60s</div>
+  <div class="admin-metrics" id="admin-metrics" hidden>
+    <div class="admin-metrics__chart-wrap">
+      <canvas id="admin-metrics-chart"></canvas>
+    </div>
+    <div class="admin-metrics__empty" id="admin-metrics-empty" hidden>
+      sem histórico ainda — o sampler grava a cada 60s (primeiros pontos em ~1 min)
+    </div>
+  </div>
+
+  <!-- ── Error rate (Issue #176) — telemetria local $0 + Sentry ──
+       Consome /api/admin/error-rate (mesmo gate localhost/X-API-Key).
+       Buckets por hora com request_id — funciona SEM Sentry (self-host);
+       quando SENTRY_DSN está configurado, os mesmos erros fluem pro Sentry
+       e o badge mostra o release/environment do deploy. -->
+  <div class="panel__subtitle">ERROR RATE (24h) — erros por hora · request_id correlacionado</div>
+  <div class="kpi-row">
+    <div class="kpi-card"><span class="kpi-card__label">Erros 24h</span><span class="kpi-card__value" id="admin-err-total">—</span></div>
+    <div class="kpi-card"><span class="kpi-card__label">Pico/hora</span><span class="kpi-card__value" id="admin-err-peak">—</span></div>
+    <div class="kpi-card" title="Sentry error tracking — release + environment do deploy (vazio quando sem DSN)"><span class="kpi-card__label">Sentry</span><span class="kpi-card__value" id="admin-err-sentry">—</span></div>
+  </div>
+  <div class="admin-metrics" id="admin-error-rate" hidden>
+    <div class="admin-metrics__chart-wrap">
+      <canvas id="admin-error-rate-chart"></canvas>
+    </div>
+    <div class="admin-metrics__empty" id="admin-error-rate-empty" hidden>
+      sem erros nas últimas 24h — zero é o estado saudável
+    </div>
+  </div>
+  <div class="admin-audit__table-wrap" id="admin-error-table-wrap" hidden>
+    <table class="admin-audit__table">
+      <thead>
+        <tr><th>módulo</th><th>erro (último no bucket)</th><th>nº</th><th>request_id</th><th>último</th></tr>
+      </thead>
+      <tbody id="admin-error-table-body"></tbody>
+    </table>
+  </div>
+
+  <!-- ── Degradation (Issue #202): WARNING bucket — falhas silenciosas ── -->
+  <!-- Consome /api/admin/degradation-rate (mesmo gate). WARNINGs das rotas
+       convertidas (except: pass → log.warning) caem aqui; spike/sustained
+       são o alerta de taxa $0 (sem Sentry). -->
+  <div class="panel__subtitle">DEGRADAÇÃO (24h) — WARNINGs/hora · falhas silenciosas viram telemetria</div>
+  <div class="kpi-row">
+    <div class="kpi-card"><span class="kpi-card__label">Warnings 24h</span><span class="kpi-card__value" id="admin-deg-total">—</span></div>
+    <div class="kpi-card"><span class="kpi-card__label">Pico/hora</span><span class="kpi-card__value" id="admin-deg-peak">—</span></div>
+    <div class="kpi-card" title="spike = pico ≥ 100 WARNINGs/hora · sustained = warnings em ≥ 2 horas distintas (o 'alerta de taxa' $0)"><span class="kpi-card__label">Estado</span><span class="kpi-card__value" id="admin-deg-state">—</span></div>
+  </div>
+  <div class="admin-audit__table-wrap" id="admin-deg-table-wrap" hidden>
+    <table class="admin-audit__table">
+      <thead>
+        <tr><th>módulo</th><th>warning (último no bucket)</th><th>nº</th><th>request_id</th><th>último</th></tr>
+      </thead>
+      <tbody id="admin-deg-table-body"></tbody>
+    </table>
+  </div>
+  <div class="admin-metrics__empty" id="admin-deg-empty" hidden>
+    sem warnings nas últimas 24h — zero é o estado saudável
+  </div>
+
   <!-- ── PRO funnel (conversion telemetry) ── -->
   <div class="panel__subtitle">FUNIL PRO (30d) — quem vira assinante, onde o funil perde</div>
   <div class="kpi-row">
@@ -1421,16 +1550,79 @@
     <div class="kpi-card"><span class="kpi-card__label">Conversion rate</span><span class="kpi-card__value" id="admin-conv-rate">—</span></div>
   </div>
   <div class="kpi-row">
-    <div class="kpi-card"><span class="kpi-card__label">LTV (12mo)</span><span class="kpi-card__value" id="admin-ltv">—</span></div>
+    <div class="kpi-card"><span class="kpi-card__label">LTV (12mo)</span><span class="kpi-card__value" id="admin-ltv">—</span><span class="kpi-card__tag" id="admin-ltv-source"></span></div>
     <div class="kpi-card"><span class="kpi-card__label">CAC</span><span class="kpi-card__value" id="admin-cac">—</span></div>
     <div class="kpi-card"><span class="kpi-card__label">LTV/CAC</span><span class="kpi-card__value" id="admin-ltv-cac">—</span></div>
     <div class="kpi-card"><span class="kpi-card__label">Payback (mo)</span><span class="kpi-card__value" id="admin-payback">—</span></div>
   </div>
 
+  <!-- ── LTV real por coorte (Issue #157 — 18-C) ── -->
+  <div class="panel__subtitle">LTV REAL POR COORTE — renewals do Lemon Squeezy (fonte: <span id="admin-cohort-source">estimativa</span>)</div>
+  <div class="admin-audit__table-wrap" id="admin-cohort-wrap" hidden>
+    <table class="mkt-table admin-audit__table">
+      <thead>
+        <tr>
+          <th>Coorte</th><th>Subs</th><th>Renewals</th><th>Receita</th><th>LTV</th>
+          <th>Ret M1</th><th>Ret M3</th><th>Ret M6</th><th>Ret M12</th>
+        </tr>
+      </thead>
+      <tbody id="admin-cohort-tbody"></tbody>
+    </table>
+  </div>
+  <div class="admin-audit__empty" id="admin-cohort-empty" hidden>sem dados de renewals ainda — usando estimativa</div>
+
+  <div class="kpi-row">
+    <div class="kpi-card"><span class="kpi-card__label">Sessões funil</span><span class="kpi-card__value" id="admin-funnel-sessions">—</span></div>
+    <div class="kpi-card"><span class="kpi-card__label">Conv. por usuário</span><span class="kpi-card__value" id="admin-funnel-session-conv">—</span></div>
+  </div>
+
+  <!-- ── Weekly trend (Issue #156 — 18-B) ── -->
+  <div class="panel__subtitle">TENDÊNCIA SEMANAL (ISO) — paywall_view × conversion rate</div>
+  <div class="admin-audit__toolbar">
+    <span class="admin-audit__meta" id="admin-funnel-trend-meta"></span>
+    <button class="chip" id="admin-funnel-csv" title="Exportar a tendência semanal (CSV)">⭳ CSV semanal</button>
+  </div>
+  <div class="admin-audit__chart-wrap" id="admin-funnel-trend-wrap" hidden>
+    <canvas id="admin-funnel-trend-chart"></canvas>
+  </div>
+  <div class="admin-audit__empty" id="admin-funnel-trend-empty" hidden>sem dados semanais no período</div>
+
   <!-- ── Stage counts ── -->
   <ul class="alerts-list" id="admin-funnel-list">
     <li class="alert-empty">aguardando dados…</li>
   </ul>
+
+  <!-- ── Feature over-concentration alert (Issue #163) ── -->
+  <div class="admin-stall" id="admin-feature-alert" hidden></div>
+
+  <!-- ── Feature breakdown (Issue #158 — 18-D) ── -->
+  <div class="panel__subtitle">FEATURES MAIS BLOQUEADAS (paywall, 30d) — onde o free trava</div>
+  <ul class="alerts-list" id="admin-feature-list">
+    <li class="alert-empty">aguardando dados…</li>
+  </ul>
+
+  <!-- ── Learning FAQ loop (Issue #19) — doc feedback 'isto ajudou?' ──
+       Consome /api/admin/docs-feedback (mesmo gate localhost/X-API-Key).
+       Votos por seção + perguntas recorrentes (comentários do 👎) que
+       alimentam o loop documentado: pergunta recorrente → nova FAQ. -->
+  <div class="panel__subtitle">DOCS FEEDBACK · LEARNING LOOP — 'isto ajudou?' por seção</div>
+  <div class="admin-audit" id="admin-docs-feedback" hidden>
+    <div class="admin-audit__toolbar">
+      <span class="admin-audit__meta" id="admin-docs-feedback-meta">—</span>
+    </div>
+    <div class="admin-audit__table-wrap">
+      <table class="admin-audit__table" id="admin-docs-feedback-table">
+        <thead>
+          <tr><th>Section</th><th>Votes</th><th>👍</th><th>👎</th><th>Helpful %</th></tr>
+        </thead>
+        <tbody><tr><td colspan="5" class="alert-empty">aguardando dados…</td></tr></tbody>
+      </table>
+    </div>
+    <div class="panel__subtitle" style="margin-top:10px">PERGUNTAS RECORRENTES → futura FAQ</div>
+    <ul class="alerts-list" id="admin-docs-recurring">
+      <li class="alert-empty">aguardando dados…</li>
+    </ul>
+  </div>
 
   <!-- ── Audit de recomendações aceitas (global — todos os tenants) ──
        Consome /api/admin/rentals/accepted-recos (mesmo gate localhost/
@@ -2571,12 +2763,13 @@
 <div class="modal-overlay" id="upgrade-modal">
   <div class="modal upgrade-modal">
     <div class="modal__header">
-      <div class="modal__title">⚡ CYPHER65 PRO</div>
+      <div class="modal__title" id="upgrade-modal-title">⚡ CYPHER65 PRO</div>
       <button class="modal__close" onclick="document.getElementById('upgrade-modal').classList.remove('modal--open')">⛌</button>
     </div>
     <div class="modal__body">
-      <p class="upgrade-modal__copy">Unlock <strong>Monte Carlo</strong>, <strong>proximity meter</strong>, <strong>30d history</strong> &amp; <strong>webhooks</strong>.</p>
+      <p class="upgrade-modal__copy" id="upgrade-modal-copy">Unlock <strong>Monte Carlo</strong>, <strong>proximity meter</strong>, <strong>30d history</strong> &amp; <strong>webhooks</strong>.</p>
       <button class="btn btn--primary upgrade-modal__buy" id="upgrade-buy-btn" hidden>Buy PRO — $9/mo</button>
+      <button class="btn btn--premium upgrade-modal__buy" id="upgrade-premium-buy-btn" hidden>Buy PREMIUM — $29/mo</button>
       <div class="upgrade-modal__divider" id="upgrade-divider" hidden><span>or activate a key</span></div>
       <div class="upgrade-modal__redeem">
         <input class="field__input field__input--mono" type="text" id="upgrade-key-input" placeholder="C65-XXXX-XXXX-XXXX-XXXX" autocomplete="off" spellcheck="false">
@@ -2831,7 +3024,7 @@
     <span id="next-poll"></span>
   </div>
 
-  <script src="/static/app.js?v60"></script>
+  <script src="/static/app.js?v61" defer></script>
 </div> <!-- end #app-main -->
 </div> <!-- end #app-layout -->
   <!-- Matrix rain canvas (full-screen background effect) -->

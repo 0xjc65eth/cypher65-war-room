@@ -532,7 +532,8 @@ class TestHashrateMarketHealth:
     def test_health_cold_cache(self, monkeypatch):
         monkeypatch.setattr("app._HASHRATE_MARKET_CACHE", {"ts": 0, "offers": None})
         h = _hashrate_market_health()
-        assert h["last_fetch_ts"] == 0
+        # Sentinel policy (Issue #203): never fetched → null, not epoch-0.
+        assert h["last_fetch_ts"] is None
         assert h["offers_count"] == 0
         assert h["age_s"] is None          # never fetched → no age
         assert h["stale"] is False

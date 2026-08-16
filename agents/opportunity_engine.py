@@ -18,6 +18,7 @@ log = logging.getLogger("cypher65")
 #  ID generation — stable, price-based dedup key
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+
 def generate_opportunity_id(platform: str, price: float) -> str:
     """Generate a stable, deterministic opportunity ID.
 
@@ -45,6 +46,7 @@ def generate_opportunity_id(platform: str, price: float) -> str:
 #  Platform scanners
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+
 def _scan_braiins(execute_tool, snapshot):
     """Query Braiins Hashpower marketplace and return an opportunity dict
     if a valid price is available and worker data exists in the snapshot.
@@ -65,26 +67,31 @@ def _scan_braiins(execute_tool, snapshot):
     difficulty = (snapshot.get("network") or {}).get("difficulty")
     worker_hr = (snapshot.get("worker") or {}).get("hashrate", 0)
     if not difficulty or not worker_hr:
-        log.debug("[opp] braiins scan skipped: missing data — difficulty=%s, worker_hr=%s",
-                   difficulty, worker_hr)
+        log.debug(
+            "[opp] braiins scan skipped: missing data — difficulty=%s, worker_hr=%s",
+            difficulty,
+            worker_hr,
+        )
         return []
 
     worker_th = float(worker_hr) / 1e12
     one_btc_worth_ph_days = 1.0 / (float(braiins_price) * 1e6)
 
-    return [{
-        "id": generate_opportunity_id("braiins", braiins_price),
-        "platform": "braiins",
-        "title": f"Braiins · {float(braiins_price)*1e6:.1f} sats/PH/day",
-        "description": (
-            f"With {worker_th:.1f} TH/s you could mine "
-            f"~{worker_th / 1000 * one_btc_worth_ph_days:.4f} BTC/day equivalent"
-        ),
-        "meta": "source: braiins hashpower marketplace — REAL price",
-        "price": braiins_price,
-        "severity": "INFO",
-        "status": "REAL",
-    }]
+    return [
+        {
+            "id": generate_opportunity_id("braiins", braiins_price),
+            "platform": "braiins",
+            "title": f"Braiins · {float(braiins_price)*1e6:.1f} sats/PH/day",
+            "description": (
+                f"With {worker_th:.1f} TH/s you could mine "
+                f"~{worker_th / 1000 * one_btc_worth_ph_days:.4f} BTC/day equivalent"
+            ),
+            "meta": "source: braiins hashpower marketplace — REAL price",
+            "price": braiins_price,
+            "severity": "INFO",
+            "status": "REAL",
+        }
+    ]
 
 
 def _scan_mrr(execute_tool, braiins_price):
@@ -112,20 +119,22 @@ def _scan_mrr(execute_tool, braiins_price):
     title = (
         f"MRR · {float(mrr_price)*1e6:.1f} sats/PH/day "
         f"({(1 - float(mrr_price)/float(braiins_price))*100:.0f}% cheaper)"
-        if braiins_price else
-        f"MRR · {float(mrr_price)*1e6:.1f} sats/PH/day"
+        if braiins_price
+        else f"MRR · {float(mrr_price)*1e6:.1f} sats/PH/day"
     )
 
-    return [{
-        "id": generate_opportunity_id("mrr", mrr_price),
-        "platform": "mrr",
-        "title": title,
-        "description": "MiningRigRentals has active listings — compare with Braiins for best deal",
-        "meta": "source: mrr.com marketplace — ESTIMATED",
-        "price": mrr_price,
-        "severity": "INFO",
-        "status": "ESTIMATED",
-    }]
+    return [
+        {
+            "id": generate_opportunity_id("mrr", mrr_price),
+            "platform": "mrr",
+            "title": title,
+            "description": "MiningRigRentals has active listings — compare with Braiins for best deal",
+            "meta": "source: mrr.com marketplace — ESTIMATED",
+            "price": mrr_price,
+            "severity": "INFO",
+            "status": "ESTIMATED",
+        }
+    ]
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -157,7 +166,9 @@ def _make_obsolete(platform, entry):
     if price is None or ts is None or not label:
         return None
     age_secs = int(time.time()) - ts
-    age_human = f"{age_secs // 60}m ago" if age_secs < 3600 else f"{age_secs // 3600}h ago"
+    age_human = (
+        f"{age_secs // 60}m ago" if age_secs < 3600 else f"{age_secs // 3600}h ago"
+    )
     return {
         "id": generate_opportunity_id(platform, price) + "_obsolete",
         "platform": platform,
@@ -176,6 +187,7 @@ def _make_obsolete(platform, entry):
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 #  Main scan — orchestrates both platforms
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
 
 def scan(execute_tool, snapshot, last_known_prices=None):
     """Run a full opportunity scan across all supported platforms.
@@ -220,7 +232,11 @@ def scan(execute_tool, snapshot, last_known_prices=None):
         # Cache real price
         if braiins_opps and last_known_prices is not None:
             p = braiins_opps[0]
-            short_label = p.get("title", "").split("\u00b7", 1)[-1].strip() if "\u00b7" in p.get("title", "") else p.get("title", "")
+            short_label = (
+                p.get("title", "").split("\u00b7", 1)[-1].strip()
+                if "\u00b7" in p.get("title", "")
+                else p.get("title", "")
+            )
             last_known_prices["braiins"] = {
                 "price": p["price"],
                 "ts": int(time.time()),
@@ -239,7 +255,11 @@ def scan(execute_tool, snapshot, last_known_prices=None):
         # Cache real price
         if mrr_opps and last_known_prices is not None:
             p = mrr_opps[0]
-            short_label = p.get("title", "").split("\u00b7", 1)[-1].strip() if "\u00b7" in p.get("title", "") else p.get("title", "")
+            short_label = (
+                p.get("title", "").split("\u00b7", 1)[-1].strip()
+                if "\u00b7" in p.get("title", "")
+                else p.get("title", "")
+            )
             last_known_prices["mrr"] = {
                 "price": p["price"],
                 "ts": int(time.time()),
@@ -263,6 +283,7 @@ def scan(execute_tool, snapshot, last_known_prices=None):
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 #  Response builder — wraps opportunities in the standard envelope
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
 
 def build_response(opportunities, scan_stats=None):
     """Wrap a list of opportunity dicts in the standard API response envelope.

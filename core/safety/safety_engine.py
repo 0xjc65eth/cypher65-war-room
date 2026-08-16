@@ -29,9 +29,9 @@ class SafetyEngine:
     DEFAULTS = {
         "max_temperature": 85.0,
         "min_hashrate": 0.0,
-        "max_reject_rate": 5.0,       # %
-        "max_stale_rate": 5.0,        # %
-        "max_hw_error_rate": 2.0,     # %
+        "max_reject_rate": 5.0,  # %
+        "max_stale_rate": 5.0,  # %
+        "max_hw_error_rate": 2.0,  # %
         "restart_cooldown_minutes": 5,
     }
 
@@ -76,7 +76,11 @@ class SafetyEngine:
 
         hashrate = telemetry.get("hashrate")
         min_hashrate = limits.get("min_hashrate")
-        if hashrate is not None and min_hashrate is not None and hashrate <= min_hashrate:
+        if (
+            hashrate is not None
+            and min_hashrate is not None
+            and hashrate <= min_hashrate
+        ):
             violations.append(f"Hashrate too low: {hashrate} (limit > {min_hashrate})")
 
         accepted = float(telemetry.get("accepted_shares") or 0)
@@ -88,12 +92,16 @@ class SafetyEngine:
             reject_rate = self._rate(rejected, total)
             max_reject = limits.get("max_reject_rate")
             if max_reject is not None and reject_rate > max_reject:
-                violations.append(f"Reject rate too high: {reject_rate:.1f}% (limit {max_reject}%)")
+                violations.append(
+                    f"Reject rate too high: {reject_rate:.1f}% (limit {max_reject}%)"
+                )
 
             stale_rate = self._rate(stale, total)
             max_stale = limits.get("max_stale_rate")
             if max_stale is not None and stale_rate > max_stale:
-                violations.append(f"Stale rate too high: {stale_rate:.1f}% (limit {max_stale}%)")
+                violations.append(
+                    f"Stale rate too high: {stale_rate:.1f}% (limit {max_stale}%)"
+                )
 
         return violations
 
@@ -105,10 +113,14 @@ class SafetyEngine:
             elapsed = (datetime.now(timezone.utc) - last_restart).total_seconds() / 60.0
             if elapsed < cooldown_min:
                 remaining = cooldown_min - elapsed
-                violations.append(f"Restart cooldown active: {remaining:.0f} minutes remaining")
+                violations.append(
+                    f"Restart cooldown active: {remaining:.0f} minutes remaining"
+                )
         return violations
 
-    def validate_command(self, device: Device, command: str, parameters: Optional[dict] = None) -> SafetyResult:
+    def validate_command(
+        self, device: Device, command: str, parameters: Optional[dict] = None
+    ) -> SafetyResult:
         """
         Valida se um comando pode ser executado com seguranca.
         """

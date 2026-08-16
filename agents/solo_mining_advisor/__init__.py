@@ -39,8 +39,10 @@ def get_system_prompt() -> str:
     try:
         with open(prompt_path, "r") as f:
             _system_prompt_cache = f.read()
-        log.info("[solo-mining-advisor] system prompt loaded (%d chars)",
-                 len(_system_prompt_cache))
+        log.info(
+            "[solo-mining-advisor] system prompt loaded (%d chars)",
+            len(_system_prompt_cache),
+        )
     except FileNotFoundError:
         log.error("[solo-mining-advisor] system-prompt.md not found at %s", prompt_path)
         _system_prompt_cache = (
@@ -55,6 +57,7 @@ def get_system_prompt() -> str:
 # ═══════════════════════════════════════════════════════════════════════════
 #  Agent descriptor — what freebuff/LLM orchestration needs to register
 # ═══════════════════════════════════════════════════════════════════════════
+
 
 def get_agent_descriptor() -> dict:
     """Return the full agent descriptor for registration in freebuff."""
@@ -92,6 +95,7 @@ def get_agent_descriptor() -> dict:
 #  Tool execution — called by freebuff when the LLM requests a tool call
 # ═══════════════════════════════════════════════════════════════════════════
 
+
 def execute_tool(tool_name: str, params: dict = None) -> dict:
     """Execute a tool by name. This is the main dispatch function
     that freebuff calls when the LLM decides to invoke a tool.
@@ -112,6 +116,7 @@ def execute_tool(tool_name: str, params: dict = None) -> dict:
 # ═══════════════════════════════════════════════════════════════════════════
 #  Quick self-test — run to verify agent integrity
 # ═══════════════════════════════════════════════════════════════════════════
+
 
 def self_test() -> dict:
     """Run a quick integrity check on the agent.
@@ -152,5 +157,6 @@ def self_test() -> dict:
 if __name__ == "__main__":
     # Run self-test when executed directly
     import json
+
     test_results = self_test()
     print(json.dumps(test_results, indent=2))

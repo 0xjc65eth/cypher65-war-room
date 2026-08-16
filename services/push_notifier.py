@@ -64,6 +64,7 @@ def _get_push_subscriptions() -> Dict[str, Any]:
     """
     try:
         import app as _app
+
         return getattr(_app, "_push_subscriptions", {})
     except Exception:
         return {}
@@ -79,6 +80,7 @@ def _get_push_subscriptions() -> Dict[str, Any]:
 def _ensure_subscriptions_table() -> None:
     try:
         from services.db import get_db
+
         conn = get_db()
         conn.execute(
             """
@@ -90,8 +92,10 @@ def _ensure_subscriptions_table() -> None:
             )
             """
         )
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_push_sub_tenant "
-                     "ON push_subscriptions(tenant_id)")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_push_sub_tenant "
+            "ON push_subscriptions(tenant_id)"
+        )
         conn.commit()
         conn.close()
     except Exception:
@@ -110,6 +114,7 @@ def save_subscription(endpoint: str, keys: Dict[str, str], tenant_id: str = "") 
     try:
         _ensure_subscriptions_table()
         from services.db import get_db
+
         conn = get_db()
         conn.execute(
             "INSERT INTO push_subscriptions (endpoint, keys, tenant_id, created_at) "
@@ -120,14 +125,15 @@ def save_subscription(endpoint: str, keys: Dict[str, str], tenant_id: str = "") 
         )
         # Bounded table: prune the oldest rows (by created_at) past the cap
         # so an unauthenticated subscribe endpoint cannot grow the DB forever.
-        row = conn.execute(
-            "SELECT COUNT(*) AS n FROM push_subscriptions").fetchone()
+        row = conn.execute("SELECT COUNT(*) AS n FROM push_subscriptions").fetchone()
         if row and row["n"] > _PUSH_SUBS_MAX:
             excess = row["n"] - _PUSH_SUBS_MAX
             conn.execute(
                 "DELETE FROM push_subscriptions WHERE endpoint IN "
                 "(SELECT endpoint FROM push_subscriptions ORDER BY created_at "
-                "ASC LIMIT ?)", (excess,))
+                "ASC LIMIT ?)",
+                (excess,),
+            )
         conn.commit()
         conn.close()
         return True
@@ -141,6 +147,7 @@ def remove_subscription(endpoint: str) -> bool:
     try:
         _ensure_subscriptions_table()
         from services.db import get_db
+
         conn = get_db()
         conn.execute("DELETE FROM push_subscriptions WHERE endpoint = ?", (endpoint,))
         conn.commit()
@@ -156,6 +163,7 @@ def get_subscriptions_for_tenant(tenant_id: str = "") -> List[Dict[str, Any]]:
     try:
         _ensure_subscriptions_table()
         from services.db import get_db
+
         conn = get_db()
         rows = conn.execute(
             "SELECT endpoint, keys FROM push_subscriptions WHERE tenant_id = ?",
@@ -175,8 +183,9 @@ def get_subscriptions_for_tenant(tenant_id: str = "") -> List[Dict[str, Any]]:
         return []
 
 
-def notify_tenant_alert(tenant_id: str, severity: str, category: str,
-                        message: str, url: str = "/") -> int:
+def notify_tenant_alert(
+    tenant_id: str, severity: str, category: str, message: str, url: str = "/"
+) -> int:
     """Send a Web Push to ALL devices subscribed under a tenant.
 
     Returns the number of devices notified. Requires pywebpush installed AND
@@ -214,7 +223,9 @@ def notify_tenant_alert(tenant_id: str, severity: str, category: str,
         "data": {"url": url, "severity": severity, "category": category},
         "requireInteraction": severity in ("CRIT", "CRITICAL"),
         "renotify": True,
-        "vibrate": [300, 100, 300] if severity in ("CRIT", "CRITICAL") else [200, 100, 200],
+        "vibrate": (
+            [300, 100, 300] if severity in ("CRIT", "CRITICAL") else [200, 100, 200]
+        ),
     }
 
     sent = 0
@@ -236,13 +247,17 @@ def notify_tenant_alert(tenant_id: str, severity: str, category: str,
         except Exception:
             pass
     if sent > 0:
-        log.info("[push] tenant %s notified on %d device(s) for %s/%s",
-                 log_tenant[:8], sent, severity, category)
+        log.info(
+            "[push] tenant %s notified on %d device(s) for %s/%s",
+            log_tenant[:8],
+            sent,
+            severity,
+            category,
+        )
     return sent
 
 
-def notify_alert(severity: str, category: str, message: str,
-                  url: str = "/") -> bool:
+def notify_alert(severity: str, category: str, message: str, url: str = "/") -> bool:
     """
     Send a push notification for a mining alert.
 
@@ -284,7 +299,9 @@ def notify_alert(severity: str, category: str, message: str,
         "data": {"url": url, "severity": severity, "category": category},
         "requireInteraction": severity in ("CRIT", "CRITICAL"),
         "renotify": True,
-        "vibrate": [300, 100, 300] if severity in ("CRIT", "CRITICAL") else [200, 100, 200],
+        "vibrate": (
+            [300, 100, 300] if severity in ("CRIT", "CRITICAL") else [200, 100, 200]
+        ),
     }
 
     sent = 0
@@ -307,6 +324,7 @@ def notify_alert(severity: str, category: str, message: str,
                 # Subscription expired
                 try:
                     import app as _app
+
                     if endpoint in _app._push_subscriptions:
                         del _app._push_subscriptions[endpoint]
                 except Exception:
@@ -403,11 +421,13 @@ def send_webhook_notification(
 
     try:
         if is_discord:
-            return _send_discord_webhook(url, severity, category, message,
-                                         ts, worker, address, timeout)
+            return _send_discord_webhook(
+                url, severity, category, message, ts, worker, address, timeout
+            )
         if is_telegram:
-            return _send_telegram_webhook(url, severity, category, message,
-                                          ts, worker, address, timeout)
+            return _send_telegram_webhook(
+                url, severity, category, message, ts, worker, address, timeout
+            )
         # Generic fallback — same JSON shape the legacy inline block used.
         payload = {
             "event": "cypher65_war_room_alert",
@@ -428,7 +448,14 @@ def send_webhook_notification(
 # Severity ordering for the webhook threshold filter. Single source of truth
 # shared by app.py's AlertEngine callback and services/polling.py — callers
 # must never re-declare their own ranking.
-WEBHOOK_SEVERITY_RANK = {"INFO": 0, "WARN": 1, "CRIT": 2, "CRITICAL": 2, "GOLD": 1, "SUCCESS": 1}
+WEBHOOK_SEVERITY_RANK = {
+    "INFO": 0,
+    "WARN": 1,
+    "CRIT": 2,
+    "CRITICAL": 2,
+    "GOLD": 1,
+    "SUCCESS": 1,
+}
 
 
 def severity_meets_threshold(severity: str, min_severity: str = "WARN") -> bool:
@@ -437,8 +464,9 @@ def severity_meets_threshold(severity: str, min_severity: str = "WARN") -> bool:
     Ordering: INFO < WARN / CRIT / GOLD / SUCCESS. Unknown severities rank
     as INFO so they are filtered out unless the threshold is INFO.
     """
-    return (WEBHOOK_SEVERITY_RANK.get(severity, 0)
-            >= WEBHOOK_SEVERITY_RANK.get(min_severity, 1))
+    return WEBHOOK_SEVERITY_RANK.get(severity, 0) >= WEBHOOK_SEVERITY_RANK.get(
+        min_severity, 1
+    )
 
 
 def send_webhook_for_alert(
@@ -460,19 +488,32 @@ def send_webhook_for_alert(
     if not url or not severity_meets_threshold(severity, min_severity):
         return False
     return send_webhook_notification(
-        url=url, severity=severity, category=category, message=message,
-        ts=ts, worker=worker, address=address, timeout=timeout,
+        url=url,
+        severity=severity,
+        category=category,
+        message=message,
+        ts=ts,
+        worker=worker,
+        address=address,
+        timeout=timeout,
     )
 
 
-def _send_discord_webhook(url, severity, category, message, ts, worker,
-                          address, timeout) -> bool:
+def _send_discord_webhook(
+    url, severity, category, message, ts, worker, address, timeout
+) -> bool:
     """Send a Discord webhook with a rich embed."""
     emoji = _WEBHOOK_SEVERITY_EMOJI.get(severity, "⚡")
     color = _WEBHOOK_SEVERITY_COLOR.get(severity, 0x5E5952)
 
     # Human-readable timestamp for the embed footer.
-    ts_str = _dt.datetime.fromtimestamp(ts, tz=_dt.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC") if ts else ""
+    ts_str = (
+        _dt.datetime.fromtimestamp(ts, tz=_dt.timezone.utc).strftime(
+            "%Y-%m-%d %H:%M:%S UTC"
+        )
+        if ts
+        else ""
+    )
 
     embed = {
         "title": f"{emoji} CYPHER65 — {severity} Alert",
@@ -483,7 +524,11 @@ def _send_discord_webhook(url, severity, category, message, ts, worker,
             {"name": "Category", "value": category, "inline": True},
         ],
         "footer": {"text": ts_str},
-        "timestamp": _dt.datetime.fromtimestamp(ts, tz=_dt.timezone.utc).isoformat() + "Z" if ts else None,
+        "timestamp": (
+            _dt.datetime.fromtimestamp(ts, tz=_dt.timezone.utc).isoformat() + "Z"
+            if ts
+            else None
+        ),
     }
 
     # Add worker / address as extra fields when available.
@@ -498,13 +543,17 @@ def _send_discord_webhook(url, severity, category, message, ts, worker,
 
     if not resp.ok:
         # Discord returns a helpful error body — log it once for debugging.
-        log.debug("[webhook] discord %s — %s", resp.status_code,
-                  resp.text[:200] if resp.text else "")
+        log.debug(
+            "[webhook] discord %s — %s",
+            resp.status_code,
+            resp.text[:200] if resp.text else "",
+        )
     return resp.ok
 
 
-def _send_telegram_webhook(url, severity, category, message, ts, worker,
-                           address, timeout) -> bool:
+def _send_telegram_webhook(
+    url, severity, category, message, ts, worker, address, timeout
+) -> bool:
     """Send a Telegram message via bot webhook.
 
     Telegram Bot API ``sendMessage``-compatible: the URL ends with
@@ -531,7 +580,9 @@ def _send_telegram_webhook(url, severity, category, message, ts, worker,
     if worker:
         lines.append(f"*Worker:* `{_tg_escape(worker)}`")
     if address:
-        lines.append(f"*Address:* `{address[:10]}…{address[-6:] if len(address) > 16 else address}`")
+        lines.append(
+            f"*Address:* `{address[:10]}…{address[-6:] if len(address) > 16 else address}`"
+        )
 
     payload = {
         "text": "\n".join(lines),
@@ -542,8 +593,11 @@ def _send_telegram_webhook(url, severity, category, message, ts, worker,
 
     resp = requests.post(url, json=payload, timeout=timeout)
     if not resp.ok:
-        log.debug("[webhook] telegram %s — %s", resp.status_code,
-                  resp.text[:200] if resp.text else "")
+        log.debug(
+            "[webhook] telegram %s — %s",
+            resp.status_code,
+            resp.text[:200] if resp.text else "",
+        )
     return resp.ok
 
 

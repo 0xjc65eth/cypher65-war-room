@@ -144,7 +144,7 @@ class TestResetSessionState:
         _reset_session_state()
 
         assert timeline["_primed"] is False
-        assert timeline["last_submit_ts"] == 0
+        assert timeline["last_submit_ts"] is None  # sentinel policy (Issue #203)
         assert timeline["last_best_diff_str"] == ""
         assert timeline["all_time_best_diff_raw"] == 0.0
         assert timeline["share_submit_history"] == []
