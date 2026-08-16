@@ -965,6 +965,10 @@
         <span class="ap-dot" id="ap-armed-dot"></span>AUTO-PILOT&nbsp;<span id="ap-armed-label">OFF</span>
       </button>
       <span class="badge badge--mute" id="ap-budget-badge" title="Ações do Auto-Pilot executadas na janela atual / limite">—</span>
+      <button class="chip ap-arm-chip" id="ap-auto-btn" title="EXECUÇÃO AUTÔNOMA OFF — as recomendações ficam manuais. Clique para ligar (requer PRO + armado).">
+        <span class="ap-dot" id="ap-auto-dot"></span>AUTONOMOUS&nbsp;<span id="ap-auto-label">OFF</span>
+      </button>
+      <span class="badge badge--mute" id="ap-auto-pro-badge" title="Gate PRO da execução autônoma">PRO —</span>
       <button class="chip" id="open-alert-center" title="Alert Center">⚠ RULES</button>
       <button class="chip" id="ai-clear">clear</button>
     </div>
@@ -1071,6 +1075,28 @@
       <div class="ap-arm-modal__actions">
         <button class="btn" data-close="ap-arm-modal">CANCELAR</button>
         <button class="btn btn--primary" id="ap-arm-confirm" disabled>ARMAR AUTO-PILOT</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ── Auto-Pilot autonomous confirmation (typed — PRO-gated, Issue #178) ── -->
+<div id="ap-auto-modal" class="modal-overlay">
+  <div class="modal ap-arm-modal">
+    <div class="modal__header">
+      <span class="modal__title">🤖 LIGAR EXECUÇÃO AUTÔNOMA</span>
+      <button class="modal__close" data-close="ap-auto-modal">×</button>
+    </div>
+    <div class="modal__body">
+      <p class="ap-arm-modal__desc">Ao ligar, o piloto (quando <strong>PRO + ARMADO</strong>) passa a <strong>executar sozinho</strong> as ações físicas das recomendações — <strong>restart</strong> de miner offline/com hashrate baixo e <strong>pause</strong> por temperatura — respeitando SafetyEngine, cooldown (restart 15min / pause 10min) e o orçamento de ações. Ações financeiras (blacklist/buy) <strong>continuam manuais</strong>. Desligar a qualquer momento para parar imediatamente.</p>
+      <div class="ap-arm-modal__status" id="ap-auto-modal-status"></div>
+      <label class="ap-arm-modal__confirm">
+        <span class="field__label">DIGITE <strong>AUTONOMO</strong> PARA CONFIRMAR</span>
+        <input class="field__input field__input--mono" type="text" id="ap-auto-type" placeholder="digite AUTONOMO" autocomplete="off" spellcheck="false">
+      </label>
+      <div class="ap-arm-modal__actions">
+        <button class="btn" data-close="ap-auto-modal">CANCELAR</button>
+        <button class="btn btn--primary" id="ap-auto-confirm" disabled>LIGAR EXECUÇÃO AUTÔNOMA</button>
       </div>
     </div>
   </div>

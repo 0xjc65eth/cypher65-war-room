@@ -4642,6 +4642,35 @@ def _do_poll():
         # own rules), fail-closed (unarmed = preview only) and rate-limited
         # (per-tenant action budget enforced inside the engine).
         _automation_engine.evaluate_rules(_core_devices, tenant_id="default")
+
+        # Auto-Pilot Fase 4 (Issue #178): execução autônoma das recomendações
+        # advisory atrás do gate PRO. Quando PRO + armado + auto_pilot_autonomous
+        # ON, o piloto executa SOZINHO as ações físicas (restart/pause) com
+        # safety + cooldown + orçamento compartilhado, auditando cada resultado
+        # (auto_pilot_rec_audit, note="autonomous"). Fail-closed: qualquer gate
+        # fechado = nada executa; o executor nunca levanta.
+        try:
+            from axe_fleet.routes import _execute_device_command as _ap_exec
+            from services.auto_pilot import execute_autonomous_actions as _ap_run
+
+            def _ap_exec_normalized(did, cmd):
+                # Normaliza o executor do fleet (Response ou (Response, status))
+                # para o contrato {ok, ...} que o executor autônomo espera.
+                _resp = _ap_exec(did, cmd, tenant_id="default")
+                _status = None
+                if isinstance(_resp, tuple) and len(_resp) == 2:
+                    _resp, _status = _resp
+                _payload = _resp.get_json() if hasattr(_resp, "get_json") else {}
+                _ok = (_status if _status is not None else _resp.status_code) == 200
+                return {"ok": _ok, **(_payload if _ok else {})}
+
+            _ap_run(
+                tenant_id="default",
+                engine=_automation_engine,
+                execute_fn=_ap_exec_normalized,
+            )
+        except Exception as e:
+            log.warning("[auto-pilot] autonomous pass error: %s", e)
     except Exception as e:
         log.warning("[alert_automation] error: %s", e)
 

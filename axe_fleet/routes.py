@@ -2124,13 +2124,19 @@ def remote_onboarding(tenant_id: str = ""):
 # ── Helpers ─────────────────────────────────────────────────────────────
 
 
-def _execute_device_command(device_id: str, command: str):
+def _execute_device_command(device_id: str, command: str, tenant_id: str = None):
     """Execute a command on a device. Shared by restart/identify endpoints.
 
     SaaS agent model: when the device is agent_managed (polled by the user's
     LOCAL agent), the command cannot be executed from the cloud — it is
-    ENQUEUED so the agent pulls and runs it on the home LAN."""
-    device = _registry.get_device(device_id, tenant_id=_get_tenant_id())
+    ENQUEUED so the agent pulls and runs it on the home LAN.
+
+    ``tenant_id`` (Issue #178): explicit tenant for BACKGROUND callers (the
+    Auto-Pilot autonomous pass runs in the poll thread with NO request
+    context — _get_tenant_id() would raise there). Falls back to the request
+    tenant when None."""
+    tid = tenant_id or _get_tenant_id()
+    device = _registry.get_device(device_id, tenant_id=tid)
     if not device:
         return jsonify({"error": "device not found"}), 404
 
@@ -2140,20 +2146,17 @@ def _execute_device_command(device_id: str, command: str):
 
     # Agent-managed → route through the command queue (agent executes locally).
     if int(device.get("agent_managed", 0) or 0):
-        queued = _registry.enqueue_agent_command(
-            device_id, command, tenant_id=_get_tenant_id()
-        )
+        queued = _registry.enqueue_agent_command(device_id, command, tenant_id=tid)
         if not queued:
             return jsonify({"error": "could not enqueue agent command"}), 500
         if command == "pause":
             # Issue #13: reflect the operator's intent immediately even when
             # the command runs on the home LAN — the agent's next telemetry
             # push (carrying mining_paused) confirms and self-heals any gap.
-            tid = _get_tenant_id()
             _registry.update_device(device_id, {"status": STATUS_PAUSED}, tenant_id=tid)
             _mark_cache_status(device_id, STATUS_PAUSED)
         _log_audit(
-            _get_tenant_id(),
+            tid,
             "fleet.agent_command_queued",
             target=device_id,
             details={"command": command, "cmd_id": queued.get("id")},
@@ -2169,7 +2172,7 @@ def _execute_device_command(device_id: str, command: str):
 
     try:
         conn = AxeOSConnector(device["ip_address"])
-        tid = _get_tenant_id()
+        tid = tenant_id or _get_tenant_id()
         if command == "restart":
             result = conn.restart()
         elif command == "identify":

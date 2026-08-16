@@ -31,6 +31,8 @@ Design:
 
 import json
 import logging
+import os
+import threading
 import time
 from typing import Any, Dict, List, Optional
 
@@ -456,6 +458,266 @@ def record_rec_decision(
     except Exception as e:
         log.warning("[auto_pilot] audit record failed: %s", e)
         return False
+
+
+# ═══════════════════════════════════════════════════════════════════════
+#  Fase 4 (Issue #178): execução autônoma atrás do gate PRO
+#  O piloto armado + PRO + execução autônoma ON age SOZINHO sobre as ações
+#  físicas das recomendações advisory — restart/pause/underclock — sem o
+#  clique manual do operador, respeitando safety + cooldown + orçamento e
+#  auditando cada resultado no auto_pilot_rec_audit (note="autonomous").
+# ═══════════════════════════════════════════════════════════════════════
+
+# Apenas ações FÍSICAS e reversíveis auto-executam. Ações financeiras
+# (blacklist de rig = decisão contratual; buy = dinheiro real) e
+# informativas (navigate) continuam MANUAIS — o piloto nunca gasta dinheiro
+# nem muda contratos sozinho.
+AUTONOMOUS_SAFE_ACTIONS = ("restart", "pause", "underclock")
+
+# Cooldown por ação (segundos): restart é pesado (reboot do miner leva
+# ~2min) → 15min entre restarts do MESMO device; pause (resfriamento) pode
+# agir mais rápido. Env-tunable para power users.
+_AUTONOMOUS_COOLDOWN_S = {
+    "restart": int(os.environ.get("AUTO_PILOT_RESTART_COOLDOWN_S", "900")),
+    "pause": int(os.environ.get("AUTO_PILOT_PAUSE_COOLDOWN_S", "600")),
+    "underclock": int(os.environ.get("AUTO_PILOT_UNDERCLOCK_COOLDOWN_S", "900")),
+}
+AUTONOMOUS_DEFAULT_COOLDOWN_S = 900
+
+# (tenant_id, device_id, action) -> last execution ts. Thread-safe via lock
+# (o pass autônomo roda na thread do poll; o toggle na thread da request).
+_autonomous_cooldown: Dict[tuple, int] = {}
+_autonomous_lock = threading.Lock()
+
+
+def _autonomous_cooldown_for(action: str) -> int:
+    return _AUTONOMOUS_COOLDOWN_S.get(action, AUTONOMOUS_DEFAULT_COOLDOWN_S)
+
+
+def is_autonomous_enabled(tenant_id: str = "") -> bool:
+    """Execução autônoma ligada para o tenant (fail-closed: default OFF)."""
+    try:
+        from services.settings import load_settings
+
+        s = load_settings(tenant_id=tenant_id or "default")
+        return str(s.get("auto_pilot_autonomous") or "").strip() == "1"
+    except Exception:
+        return False
+
+
+def set_autonomous_enabled(tenant_id: str = "", enabled: bool = False) -> bool:
+    """Persist the autonomous toggle (settings whitelist enforces the key)."""
+    try:
+        from services.settings import save_setting
+
+        return bool(
+            save_setting(
+                "auto_pilot_autonomous",
+                "1" if enabled else "0",
+                tenant_id=tenant_id or "default",
+            )
+        )
+    except Exception:
+        return False
+
+
+def autonomous_status(tenant_id: str = "") -> Dict[str, Any]:
+    """Status do toggle para o módulo Automations (gate + switches)."""
+    from core.alerts.automation_engine import AutomationEngine
+    from services.licensing import server_pro_active
+
+    tid = tenant_id or "default"
+    engine = AutomationEngine("", None)  # settings-only reads
+    return {
+        "pro": server_pro_active(),
+        "armed": engine.is_armed(tid),
+        "autonomous": is_autonomous_enabled(tid),
+        "safe_actions": list(AUTONOMOUS_SAFE_ACTIONS),
+        "cooldowns": dict(_AUTONOMOUS_COOLDOWN_S),
+    }
+
+
+def execute_autonomous_actions(
+    tenant_id: str = "",
+    engine=None,
+    execute_fn=None,
+    recs: Optional[List[Dict[str, Any]]] = None,
+    fleet: Optional[List[dict]] = None,
+    now: Optional[int] = None,
+) -> List[Dict[str, Any]]:
+    """Fase 4 — o piloto armado + PRO executa sozinho as ações físicas das
+    recomendações advisory (restart/pause/underclock).
+
+    Gates (TODOS precisam passar — fail-closed, como o resto do Auto-Pilot):
+      1. ``server_pro_active()``   — gate PRO (open mode = sempre True)
+      2. ``engine.is_armed(tid)``  — piloto explicitamente ARMADO
+      3. ``is_autonomous_enabled`` — toggle de execução autônoma ON
+
+    Depois, por recomendação com ação segura:
+      - cooldown por (tenant, device, ação) — nunca repete no mesmo window
+      - orçamento por tenant COMPARTILHADO com as regras (um orçamento do
+        piloto — o mesmo _consume_action_budget do AutomationEngine)
+      - SafetyEngine (fail-closed: bloqueou = não executa, audita BLOCKED)
+      - execute_fn(device_id, command) → executor do fleet (fila do agente)
+      - cada execução/erro auditado no auto_pilot_rec_audit com
+        decision="accept", note="autonomous"
+
+    ``recs``/``fleet`` injetáveis para testes herméticos (quando None, coleta
+    do registry real). Nunca levanta: falha por item degrada a um status.
+
+    Returns:
+        Lista de resultados por item:
+          {rec_id, device_id, action, status: executed|blocked|rate_limited|
+           cooldown|skipped|error, reason, ts}
+    """
+    results: List[Dict[str, Any]] = []
+    tid = tenant_id or "default"
+    now = int(time.time()) if now is None else now
+    try:
+        from services.licensing import server_pro_active
+
+        if not server_pro_active():
+            return [{"status": "skipped", "reason": "pro_gate", "ts": now}]
+        if engine is None:
+            return [{"status": "skipped", "reason": "no_engine", "ts": now}]
+        if not engine.is_armed(tid):
+            return [{"status": "skipped", "reason": "not_armed", "ts": now}]
+        if not is_autonomous_enabled(tid):
+            return [{"status": "skipped", "reason": "not_enabled", "ts": now}]
+
+        if fleet is None:
+            fleet = _collect_fleet(tid)
+        if recs is None:
+            recs = build_advisory_recommendations(
+                fleet=fleet,
+                peak_7d=_collect_peak_7d(tid),
+                worst_rigs=_collect_worst_rigs(tid),
+                arb_window=_collect_arb_window(tid),
+                blacklisted_rigs=_collect_blacklisted(tid),
+            )
+        fleet_by_id = {str(d.get("id") or ""): d for d in (fleet or [])}
+
+        for rec in recs or []:
+            action = rec.get("action") or {}
+            atype = str(action.get("type") or "").lower()
+            if atype not in AUTONOMOUS_SAFE_ACTIONS:
+                continue  # blacklist / buy / navigate ficam manuais
+            did = str(rec.get("device_id") or "")
+            if not did:
+                continue
+
+            # Cooldown por (tenant, device, ação) — nunca repete no window.
+            key = (tid, did, atype)
+            with _autonomous_lock:
+                last = _autonomous_cooldown.get(key, 0)
+                if (now - last) < _autonomous_cooldown_for(atype):
+                    results.append(
+                        {
+                            "rec_id": rec.get("id"),
+                            "device_id": did,
+                            "action": atype,
+                            "status": "cooldown",
+                            "reason": "",
+                            "ts": now,
+                        }
+                    )
+                    continue
+                _autonomous_cooldown[key] = now
+
+            # Orçamento compartilhado do piloto (janela rolante por tenant).
+            if not engine._consume_action_budget(tid, now):
+                results.append(
+                    {
+                        "rec_id": rec.get("id"),
+                        "device_id": did,
+                        "action": atype,
+                        "status": "rate_limited",
+                        "reason": "tenant action budget exceeded",
+                        "ts": now,
+                    }
+                )
+                continue
+
+            # SafetyEngine (fail-closed): valida o Device core montado do
+            # dict vivo do fleet (mesma ponte da Fase 3 dry-run).
+            dev = fleet_by_id.get(did)
+            if dev is None:
+                results.append(
+                    {
+                        "rec_id": rec.get("id"),
+                        "device_id": did,
+                        "action": atype,
+                        "status": "skipped",
+                        "reason": "device_not_found",
+                        "ts": now,
+                    }
+                )
+                continue
+            safety = None
+            try:
+                safety = engine.safety_engine.validate_command(
+                    axe_fleet_to_device(dev), atype, {}
+                )
+            except Exception as e:
+                results.append(
+                    {
+                        "rec_id": rec.get("id"),
+                        "device_id": did,
+                        "action": atype,
+                        "status": "error",
+                        "reason": "safety check failed: %s" % e,
+                        "ts": now,
+                    }
+                )
+                continue
+            if safety is not None and not safety.allowed:
+                reason = safety.reason or "SafetyEngine blocked action"
+                record_rec_decision(
+                    tid,
+                    rec,
+                    "accept",
+                    note="autonomous:blocked",
+                    action_result={"ok": False, "error": reason},
+                )
+                results.append(
+                    {
+                        "rec_id": rec.get("id"),
+                        "device_id": did,
+                        "action": atype,
+                        "status": "blocked",
+                        "reason": reason,
+                        "ts": now,
+                    }
+                )
+                continue
+
+            outcome: Dict[str, Any] = {"ok": False, "error": "no executor"}
+            if execute_fn is not None:
+                try:
+                    outcome = execute_fn(did, atype) or outcome
+                except Exception as e:
+                    outcome = {"ok": False, "error": str(e)}
+            record_rec_decision(
+                tid,
+                rec,
+                "accept",
+                note="autonomous" if outcome.get("ok") else "autonomous:error",
+                action_result=outcome,
+            )
+            results.append(
+                {
+                    "rec_id": rec.get("id"),
+                    "device_id": did,
+                    "action": atype,
+                    "status": "executed" if outcome.get("ok") else "error",
+                    "reason": outcome.get("error", ""),
+                    "ts": now,
+                }
+            )
+        return results
+    except Exception as e:
+        log.warning("[auto_pilot] autonomous pass failed: %s", e)
+        return [{"status": "error", "reason": str(e), "ts": now}]
 
 
 def get_rec_audit(tenant_id: str = "", limit: int = 50) -> List[Dict[str, Any]]:

@@ -114,6 +114,8 @@ DEFAULT_SETTINGS = {
     "mrr_api_secret": "",
     "braiins_api_key": "",
     "auto_pilot_armed": "0",
+    # Fase 4 (Issue #178): execução autônoma das recomendações (gate PRO).
+    "auto_pilot_autonomous": "0",
 }
 
 # Global (operator / self-host) settings cache — the `settings` table.

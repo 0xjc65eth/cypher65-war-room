@@ -6043,6 +6043,7 @@ function renderAccount(acct) {
     const ap = snap.auto_pilot || {};
     _apSetUi(!!ap.armed);
     _initAutoPilotToggle();
+    _initAutoPilotAutoToggle();
     _initAutoPilotAdvisory();
     _initAutoPilotDryRun();
   }
@@ -6167,6 +6168,133 @@ function renderAccount(acct) {
     }
 
     _apRefreshStatus();
+    _apRefreshAutoStatus();
+  }
+
+  // ── Issue #178 · Auto-Pilot AUTONOMOUS — execução autônoma (PRO gate) ──
+  // Backend: GET /api/auto-pilot/autonomous (pro/armed/autonomous),
+  // POST /api/auto-pilot/autonomous {autonomous} (gate PRO → 402 em modo
+  // licensed sem chave). Fase 4 do Big Bet: quando PRO + armado + ON, o
+  // piloto executa sozinho restart/pause das recomendações físicas.
+  let _apAuto = false;
+  let _apAutoToggleInit = false;
+
+  function _apSetAutoUi(auto) {
+    _apAuto = !!auto;
+    const btn = document.getElementById('ap-auto-btn');
+    const label = document.getElementById('ap-auto-label');
+    const dot = document.getElementById('ap-auto-dot');
+    if (label) label.textContent = auto ? 'ON' : 'OFF';
+    if (btn) {
+      btn.classList.toggle('is-armed', auto);
+      btn.title = auto
+        ? 'EXECUÇÃO AUTÔNOMA ON — o piloto executa restart/pause sozinho (PRO + armado). Clique para desligar.'
+        : 'EXECUÇÃO AUTÔNOMA OFF — as recomendações ficam manuais. Clique para ligar (requer PRO + armado).';
+    }
+    if (dot) {
+      dot.style.background = auto ? 'var(--green)' : 'var(--orange)';
+      dot.style.boxShadow = auto ? '0 0 8px rgba(0,200,83,0.8)' : '0 0 6px rgba(255,160,0,0.6)';
+    }
+  }
+
+  async function _apRefreshAutoStatus() {
+    try {
+      const r = await authFetch('/api/auto-pilot/autonomous');
+      if (!r.ok) return;
+      const d = await r.json().catch(() => ({}));
+      _apSetAutoUi(!!d.autonomous);
+      const badge = document.getElementById('ap-auto-pro-badge');
+      if (badge) {
+        badge.textContent = d.pro ? 'PRO ✓' : 'PRO 🔒';
+        badge.classList.toggle('badge--green', !!d.pro);
+        badge.classList.toggle('badge--amber', !d.pro);
+        badge.title = d.pro
+          ? 'Gate PRO ok — execução autônoma permitida (open mode ou licença válida)'
+          : 'Gate PRO fechado — é preciso licença PRO para ligar a execução autônoma';
+      }
+      if (_apAuto && d.armed === false) {
+        const autoBtn = document.getElementById('ap-auto-btn');
+        if (autoBtn) autoBtn.title = 'Execução autônoma ON mas o Auto-Pilot está DESARMADO — arme o piloto para ativar.';
+      }
+    } catch (e) { /* advisory — never break the panel */ }
+  }
+
+  async function _apSetAuto(enabled) {
+    const btn = document.getElementById('ap-auto-btn');
+    setBtnLoading(btn, true);
+    try {
+      const r = await authFetch('/api/auto-pilot/autonomous', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ autonomous: enabled }),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (r.status === 402) {
+        const price = d.upgrade && d.upgrade.price_usd_month ? ' ($' + d.upgrade.price_usd_month + '/m)' : '';
+        showToast('error', '🔒 EXECUÇÃO AUTÔNOMA é PRO — licença necessária' + price);
+        _apRefreshAutoStatus();
+        return false;
+      }
+      if (!r.ok || !d.success) {
+        showToast('error', '⚠ Auto-Pilot: ' + (d.error || ('HTTP ' + r.status)));
+        _apRefreshAutoStatus();
+        return false;
+      }
+      _apSetAutoUi(!!d.autonomous);
+      showToast('success', enabled ? '🤖 EXECUÇÃO AUTÔNOMA ON — o piloto age sozinho (PRO + armado)' : 'Execução autônoma desligada');
+      _apRefreshAutoStatus();
+      return true;
+    } catch (e) {
+      showToast('error', '⚠ falha de rede ao alterar a execução autônoma');
+      return false;
+    } finally {
+      setBtnLoading(btn, false);
+    }
+  }
+
+  function _initAutoPilotAutoToggle() {
+    if (_apAutoToggleInit) return;
+    _apAutoToggleInit = true;
+
+    const btn = document.getElementById('ap-auto-btn');
+    if (btn) {
+      btn.addEventListener('click', () => {
+        if (_apAuto) { _apSetAuto(false); return; }  // disabling is the kill switch — direct
+        const m = document.getElementById('ap-auto-modal');
+        const input = document.getElementById('ap-auto-type');
+        const confirm = document.getElementById('ap-auto-confirm');
+        if (m && input && confirm) {
+          input.value = '';
+          confirm.disabled = true;
+          openModalAnimated(m);
+          setTimeout(() => input.focus(), 50);
+        } else {
+          _apSetAuto(true);
+        }
+      });
+    }
+
+    const m = document.getElementById('ap-auto-modal');
+    if (m) {
+      m.addEventListener('click', (e) => {
+        if (e.target.matches('[data-close]') || e.target === m) closeModalAnimated(m);
+      });
+    }
+
+    const input = document.getElementById('ap-auto-type');
+    const confirm = document.getElementById('ap-auto-confirm');
+    if (input && confirm) {
+      input.addEventListener('input', () => {
+        confirm.disabled = input.value.trim().toUpperCase() !== 'AUTONOMO';
+      });
+      confirm.addEventListener('click', async () => {
+        confirm.disabled = true;
+        const ok = await _apSetAuto(true);
+        const modal = document.getElementById('ap-auto-modal');
+        if (modal) modal.classList.remove('modal--open');
+        if (!ok) input.value = '';
+      });
+    }
   }
 
   // ── Issue #20 · Auto-Pilot ADVISORY — recomendações por device ──────
