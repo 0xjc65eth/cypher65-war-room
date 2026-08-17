@@ -2914,6 +2914,42 @@ def test_bid_route_max_active_bids_returns_400(rclient, monkeypatch):
     assert "max active bids" in resp.get_json()["error"]
 
 
+def test_bid_route_market_settings(rclient, monkeypatch):
+    """GET /api/rentals/braiins/market — live MarketSettings (read-only,
+    tenant-scoped, no secrets): hr_unit + bounds + F7 cap."""
+    _fake_braiins_key(monkeypatch)
+    monkeypatch.setattr(
+        _app_module._rental_perf,
+        "braiins_market_limits",
+        lambda tenant_id="": {
+            "hr_unit": "PH/day",
+            "tick_size_sat": 1000.0,
+            "max_bid_price_sat": 1000000.0,
+            "max_bids_per_subaccount": 5,
+        },
+    )
+    m = rclient.get("/api/rentals/braiins/market")
+    assert m.status_code == 200
+    body = m.get_json()
+    assert body["success"] is True
+    assert body["market"]["hr_unit"] == "PH/day"
+    assert body["market"]["max_bids_per_subaccount"] == 5
+
+
+def test_bid_route_market_settings_unavailable(rclient, monkeypatch):
+    """Market route: no settings → 502 with actionable error (never an
+    empty 200 that could be mistaken for a real market)."""
+    _fake_braiins_key(monkeypatch)
+    monkeypatch.setattr(
+        _app_module._rental_perf, "braiins_market_limits", lambda tenant_id="": {}
+    )
+    m = rclient.get("/api/rentals/braiins/market")
+    assert m.status_code == 502
+    body = m.get_json()
+    assert body["success"] is False
+    assert "Settings" in body["error"]
+
+
 def test_quote_and_balance_routes(rclient, monkeypatch):
     """GET quote/balance routes surface the tenant data (mocked at module)."""
     _fake_braiins_key(monkeypatch)
