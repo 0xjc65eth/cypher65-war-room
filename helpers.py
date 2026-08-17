@@ -16,6 +16,39 @@ from typing import Any, Optional
 
 log = logging.getLogger("cypher65")
 
+# ── Braiins Hashpower price unit (audit 17-Aug, Issue #267) ────────────────
+# The official contract (docs/reference/braiins-hashpower-api-openapi.yml)
+# states: "Spot-market price fields use the hashrate unit returned by
+# GET /spot/settings. For example, when hr_unit is EH/day, price_sat is
+# expressed as satoshi per EH/day." — the field is `hr_unit`, NOT `price_unit`.
+# Single source of truth for converting a sats/PH/day price into the account's
+# reported unit (and back). Unknown unit → None → callers MUST fail closed
+# (never guess a price unit with real money).
+_BRAIINS_HR_UNIT_TO_PH_DAY = {
+    "ph/day": 1.0,  # 1 PH/day per PH/day
+    "sats/ph/day": 1.0,  # legacy alias used by older code
+    "th/day": 0.001,  # 1 TH/day = 0.001 PH/day
+    "10ph/day": 10.0,  # 1 (10 PH)/day = 10 PH/day
+    "100ph/day": 100.0,  # 1 (100 PH)/day = 100 PH/day
+    "eh/day": 1000.0,  # 1 EH/day = 1000 PH/day
+}
+
+
+def braiins_hr_unit_factor(hr_unit: str) -> Optional[float]:
+    """PH/day per unit of a Braiins ``hr_unit`` (official contract).
+
+    Returns how many PH/day one unit of ``hr_unit`` represents (e.g. EH/day
+    → 1000, TH/day → 0.001), or ``None`` when the unit is unknown/unsupported
+    — callers must fail closed (real money). Multiply a ``sats/PH/day`` price
+    by the factor to express it in the account's unit, or divide a
+    ``sats/<hr_unit>`` price by it to normalize back to ``sats/PH/day``.
+    """
+    if not hr_unit:
+        return 1.0
+    key = str(hr_unit).strip().lower().replace("sats/", "")
+    return _BRAIINS_HR_UNIT_TO_PH_DAY.get(key)
+
+
 # ── Monotonic nonce (Issue #150) — nonce ms estritamente crescente ─────────
 # APIs HMAC que rejeitam nonce duplicado (ex.: MiningRigRentals) exigem que
 # cada request use um nonce MAIOR que o último. Fonte única de verdade:

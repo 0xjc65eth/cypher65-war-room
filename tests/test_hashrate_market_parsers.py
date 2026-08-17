@@ -2,6 +2,7 @@
 Unit tests for hashrate market parsers.
 Tests both the raw API wrappers (tools.py) and the normalization layer (hashrate_market.py).
 """
+
 import json
 import time
 from unittest.mock import patch, MagicMock, PropertyMock
@@ -60,7 +61,8 @@ class TestGetBraiinsOrderbook:
 
     def test_success_with_asks(self, monkeypatch):
         """When asks exist, return lowest ask price in BTC/PH/day."""
-        settings = {"price_unit": "ph/s"}
+        # Issue #267: official settings field is `hr_unit` (not price_unit).
+        settings = {"hr_unit": "PH/day"}
         orderbook = {
             "asks": [
                 {"price_sat": "5000", "amount": "10.5"},
@@ -72,15 +74,18 @@ class TestGetBraiinsOrderbook:
         }
         self._make_mock(monkeypatch, settings, orderbook)
         from agents.solo_mining_advisor.tools import get_braiins_orderbook
+
         result = get_braiins_orderbook()
         assert "error" not in result, f"Unexpected error: {result.get('error')}"
-        assert result["price_btc_per_ph_day"] == pytest.approx(5000 / 100_000_000, rel=1e-6)
+        assert result["price_btc_per_ph_day"] == pytest.approx(
+            5000 / 100_000_000, rel=1e-6
+        )
         assert result["available_asks"] == 2
-        assert result["price_raw_unit"] == "sats/PH/day"
+        assert result["price_raw_unit"] == "PH/day"
 
     def test_success_with_bids_only(self, monkeypatch):
         """When only bids exist, use highest bid as best price."""
-        settings = {"price_unit": "ph/s"}
+        settings = {"hr_unit": "PH/day"}
         orderbook = {
             "asks": [],
             "bids": [
@@ -89,16 +94,20 @@ class TestGetBraiinsOrderbook:
         }
         self._make_mock(monkeypatch, settings, orderbook)
         from agents.solo_mining_advisor.tools import get_braiins_orderbook
+
         result = get_braiins_orderbook()
         assert "error" not in result, f"Unexpected error: {result.get('error')}"
-        assert result["price_btc_per_ph_day"] == pytest.approx(4900 / 100_000_000, rel=1e-6)
+        assert result["price_btc_per_ph_day"] == pytest.approx(
+            4900 / 100_000_000, rel=1e-6
+        )
 
     def test_empty_orderbook(self, monkeypatch):
         """Empty asks AND bids should return error."""
-        settings = {"price_unit": "ph/s"}
+        settings = {"hr_unit": "PH/day"}
         orderbook = {"asks": [], "bids": []}
         self._make_mock(monkeypatch, settings, orderbook)
         from agents.solo_mining_advisor.tools import get_braiins_orderbook
+
         result = get_braiins_orderbook()
         assert "error" in result
 
@@ -106,25 +115,30 @@ class TestGetBraiinsOrderbook:
         """Non-200 status should return error dict."""
         mock_resp = MagicMock()
         mock_resp.status_code = 500
-        monkeypatch.setattr("agents.solo_mining_advisor.tools.requests.get",
-                            lambda url, **kw: mock_resp)
+        monkeypatch.setattr(
+            "agents.solo_mining_advisor.tools.requests.get", lambda url, **kw: mock_resp
+        )
         from agents.solo_mining_advisor.tools import get_braiins_orderbook
+
         result = get_braiins_orderbook()
         assert "error" in result
 
     def test_connection_error(self, monkeypatch):
         """Connection failure should return error dict."""
+
         def _raise(*a, **kw):
             raise Exception("Connection refused")
+
         monkeypatch.setattr("agents.solo_mining_advisor.tools.requests.get", _raise)
         from agents.solo_mining_advisor.tools import get_braiins_orderbook
+
         result = get_braiins_orderbook()
         assert "error" in result
         assert "unreachable" in result["error"].lower()
 
     def test_price_sat_is_zero(self, monkeypatch):
         """If best ask has zero price_sat, return error."""
-        settings = {"price_unit": "ph/s"}
+        settings = {"hr_unit": "PH/day"}
         orderbook = {
             "asks": [
                 {"price_sat": "0", "amount": "10.0"},
@@ -133,6 +147,7 @@ class TestGetBraiinsOrderbook:
         }
         self._make_mock(monkeypatch, settings, orderbook)
         from agents.solo_mining_advisor.tools import get_braiins_orderbook
+
         result = get_braiins_orderbook()
         assert "error" in result
 
@@ -145,13 +160,15 @@ class TestGetMrrListings:
         monkeypatch.delenv("MRR_API_KEY", raising=False)
         monkeypatch.delenv("MRR_API_SECRET", raising=False)
         from agents.solo_mining_advisor.tools import get_mrr_listings
+
         result = get_mrr_listings(api_key="", api_secret="")
         assert result.get("needs_auth") is True
 
     def test_success_with_listings(self, monkeypatch):
         """When MRR API returns valid listings, return cheapest price.
         MRR structure: rig["hashrate"]["advertised"]["hash"] for TH/s,
-                       rig["price"]["BTC"] for BTC pricing (has 'price' and 'hour' keys)."""
+                       rig["price"]["BTC"] for BTC pricing (has 'price' and 'hour' keys).
+        """
         monkeypatch.setenv("MRR_API_KEY", "test-key")
         monkeypatch.setenv("MRR_API_SECRET", "test-secret")
         mock_resp = MagicMock()
@@ -171,11 +188,13 @@ class TestGetMrrListings:
                         "type": "sha256",
                     },
                 ]
-            }
+            },
         }
-        monkeypatch.setattr("agents.solo_mining_advisor.tools.requests.get",
-                            lambda url, **kw: mock_resp)
+        monkeypatch.setattr(
+            "agents.solo_mining_advisor.tools.requests.get", lambda url, **kw: mock_resp
+        )
         from agents.solo_mining_advisor.tools import get_mrr_listings
+
         result = get_mrr_listings()
         assert "error" not in result, f"Unexpected error: {result.get('error')}"
         assert "price_btc_per_ph_day" in result
@@ -188,9 +207,11 @@ class TestGetMrrListings:
         mock_resp = MagicMock()
         mock_resp.status_code = 200
         mock_resp.json.return_value = {"success": True, "records": []}
-        monkeypatch.setattr("agents.solo_mining_advisor.tools.requests.get",
-                            lambda url, **kw: mock_resp)
+        monkeypatch.setattr(
+            "agents.solo_mining_advisor.tools.requests.get", lambda url, **kw: mock_resp
+        )
         from agents.solo_mining_advisor.tools import get_mrr_listings
+
         result = get_mrr_listings()
         assert "error" in result
 
@@ -201,9 +222,11 @@ class TestGetMrrListings:
         mock_resp = MagicMock()
         mock_resp.status_code = 200
         mock_resp.json.return_value = {"success": False, "message": "rate limit"}
-        monkeypatch.setattr("agents.solo_mining_advisor.tools.requests.get",
-                            lambda url, **kw: mock_resp)
+        monkeypatch.setattr(
+            "agents.solo_mining_advisor.tools.requests.get", lambda url, **kw: mock_resp
+        )
         from agents.solo_mining_advisor.tools import get_mrr_listings
+
         result = get_mrr_listings()
         assert "error" in result
 
@@ -219,16 +242,33 @@ class TestGetNicehashOrderbook:
             "stats": {
                 "BTC": {
                     "orders": [
-                        {"alive": True, "price": "0.0005", "acceptedSpeed": "10.0", "type": "STANDARD"},
-                        {"alive": True, "price": "0.0006", "acceptedSpeed": "5.0", "type": "STANDARD"},
-                        {"alive": False, "price": "0.0003", "acceptedSpeed": "1.0", "type": "STANDARD"},
+                        {
+                            "alive": True,
+                            "price": "0.0005",
+                            "acceptedSpeed": "10.0",
+                            "type": "STANDARD",
+                        },
+                        {
+                            "alive": True,
+                            "price": "0.0006",
+                            "acceptedSpeed": "5.0",
+                            "type": "STANDARD",
+                        },
+                        {
+                            "alive": False,
+                            "price": "0.0003",
+                            "acceptedSpeed": "1.0",
+                            "type": "STANDARD",
+                        },
                     ]
                 }
             }
         }
-        monkeypatch.setattr("agents.solo_mining_advisor.tools.requests.get",
-                            lambda url, **kw: mock_resp)
+        monkeypatch.setattr(
+            "agents.solo_mining_advisor.tools.requests.get", lambda url, **kw: mock_resp
+        )
         from agents.solo_mining_advisor.tools import get_nicehash_orderbook
+
         result = get_nicehash_orderbook()
         assert "error" not in result, f"Unexpected error: {result.get('error')}"
         # price is BTC/TH/day → per_ph = per_th × 1000 (1 PH = 1000 TH)
@@ -241,9 +281,11 @@ class TestGetNicehashOrderbook:
         mock_resp = MagicMock()
         mock_resp.status_code = 200
         mock_resp.json.return_value = {"stats": {"BTC": {"orders": []}}}
-        monkeypatch.setattr("agents.solo_mining_advisor.tools.requests.get",
-                            lambda url, **kw: mock_resp)
+        monkeypatch.setattr(
+            "agents.solo_mining_advisor.tools.requests.get", lambda url, **kw: mock_resp
+        )
         from agents.solo_mining_advisor.tools import get_nicehash_orderbook
+
         result = get_nicehash_orderbook()
         assert "error" in result
 
@@ -255,23 +297,33 @@ class TestGetNicehashOrderbook:
             "stats": {
                 "BTC": {
                     "orders": [
-                        {"alive": False, "price": "0.0005", "acceptedSpeed": "10.0", "type": "STANDARD"},
+                        {
+                            "alive": False,
+                            "price": "0.0005",
+                            "acceptedSpeed": "10.0",
+                            "type": "STANDARD",
+                        },
                     ]
                 }
             }
         }
-        monkeypatch.setattr("agents.solo_mining_advisor.tools.requests.get",
-                            lambda url, **kw: mock_resp)
+        monkeypatch.setattr(
+            "agents.solo_mining_advisor.tools.requests.get", lambda url, **kw: mock_resp
+        )
         from agents.solo_mining_advisor.tools import get_nicehash_orderbook
+
         result = get_nicehash_orderbook()
         assert "error" in result
 
     def test_api_error(self, monkeypatch):
         """Connection failure should return error dict."""
+
         def _raise(*a, **kw):
             raise Exception("timeout")
+
         monkeypatch.setattr("agents.solo_mining_advisor.tools.requests.get", _raise)
         from agents.solo_mining_advisor.tools import get_nicehash_orderbook
+
         result = get_nicehash_orderbook()
         assert "error" in result
         assert "unreachable" in result["error"].lower()
@@ -394,7 +446,9 @@ class TestFetchParasiteOffer:
         """Pool data available, but the fee-only price model is mathematically
         sub-floor (~0.04 sats/TH·h — ~1000× below real rentals), so the
         estimate is REJECTED rather than polluting 'cheapest market'."""
-        with patch("agents.solo_mining_advisor.tools.get_parasite_pool_stats") as mock_pool:
+        with patch(
+            "agents.solo_mining_advisor.tools.get_parasite_pool_stats"
+        ) as mock_pool:
             mock_pool.return_value = {
                 "pool_hashrate": "161.6",  # PH/s
                 "worker_count": 6,
@@ -405,14 +459,18 @@ class TestFetchParasiteOffer:
 
     def test_no_pool_data_returns_none(self):
         """When pool stats fetch fails, return None."""
-        with patch("agents.solo_mining_advisor.tools.get_parasite_pool_stats") as mock_pool:
+        with patch(
+            "agents.solo_mining_advisor.tools.get_parasite_pool_stats"
+        ) as mock_pool:
             mock_pool.side_effect = Exception("API error")
             result = fetch_parasite_offer()
             assert result is None
 
     def test_empty_pool_data(self):
         """When pool stats returns empty dict, return None."""
-        with patch("agents.solo_mining_advisor.tools.get_parasite_pool_stats") as mock_pool:
+        with patch(
+            "agents.solo_mining_advisor.tools.get_parasite_pool_stats"
+        ) as mock_pool:
             mock_pool.return_value = {}
             result = fetch_parasite_offer()
             assert result is None
@@ -423,15 +481,48 @@ class TestFetchAllOffers:
 
     def test_returns_list_of_offers(self):
         """When multiple providers return data, return their NormalizedOffers."""
-        with patch("services.hashrate_market.fetch_braiins_offer") as mock_b, \
-             patch("services.hashrate_market.fetch_nicehash_offer") as mock_n, \
-             patch("services.hashrate_market.fetch_mrr_offer") as mock_m, \
-             patch("services.hashrate_market.fetch_parasite_offer") as mock_p:
+        with patch("services.hashrate_market.fetch_braiins_offer") as mock_b, patch(
+            "services.hashrate_market.fetch_nicehash_offer"
+        ) as mock_n, patch("services.hashrate_market.fetch_mrr_offer") as mock_m, patch(
+            "services.hashrate_market.fetch_parasite_offer"
+        ) as mock_p:
 
-            mock_b.return_value = NormalizedOffer(provider="braiins", hashrate=10000.0, price_per_th_day=5e-11, duration_days=1.0, fee_pct=0.0, algorithm="sha256", meta={})
-            mock_n.return_value = NormalizedOffer(provider="nicehash", hashrate=5000.0, price_per_th_day=5e-10, duration_days=1.0, fee_pct=0.0, algorithm="sha256", meta={})
-            mock_m.return_value = NormalizedOffer(provider="mrr", hashrate=1000.0, price_per_th_day=2e-8, duration_days=1.0, fee_pct=0.0, algorithm="sha256", meta={})
-            mock_p.return_value = NormalizedOffer(provider="parasite", hashrate=100000.0, price_per_th_day=1e-11, duration_days=1.0, fee_pct=0.0, algorithm="sha256", meta={})
+            mock_b.return_value = NormalizedOffer(
+                provider="braiins",
+                hashrate=10000.0,
+                price_per_th_day=5e-11,
+                duration_days=1.0,
+                fee_pct=0.0,
+                algorithm="sha256",
+                meta={},
+            )
+            mock_n.return_value = NormalizedOffer(
+                provider="nicehash",
+                hashrate=5000.0,
+                price_per_th_day=5e-10,
+                duration_days=1.0,
+                fee_pct=0.0,
+                algorithm="sha256",
+                meta={},
+            )
+            mock_m.return_value = NormalizedOffer(
+                provider="mrr",
+                hashrate=1000.0,
+                price_per_th_day=2e-8,
+                duration_days=1.0,
+                fee_pct=0.0,
+                algorithm="sha256",
+                meta={},
+            )
+            mock_p.return_value = NormalizedOffer(
+                provider="parasite",
+                hashrate=100000.0,
+                price_per_th_day=1e-11,
+                duration_days=1.0,
+                fee_pct=0.0,
+                algorithm="sha256",
+                meta={},
+            )
 
             results = fetch_all_offers()
             assert len(results) == 4
@@ -443,15 +534,32 @@ class TestFetchAllOffers:
 
     def test_some_providers_fail(self):
         """When some providers return None, only include successful ones."""
-        with patch("services.hashrate_market.fetch_braiins_offer") as mock_b, \
-             patch("services.hashrate_market.fetch_nicehash_offer") as mock_n, \
-             patch("services.hashrate_market.fetch_mrr_offer") as mock_m, \
-             patch("services.hashrate_market.fetch_parasite_offer") as mock_p:
+        with patch("services.hashrate_market.fetch_braiins_offer") as mock_b, patch(
+            "services.hashrate_market.fetch_nicehash_offer"
+        ) as mock_n, patch("services.hashrate_market.fetch_mrr_offer") as mock_m, patch(
+            "services.hashrate_market.fetch_parasite_offer"
+        ) as mock_p:
 
             mock_b.return_value = None  # Braiins fails
-            mock_n.return_value = NormalizedOffer(provider="nicehash", hashrate=5000.0, price_per_th_day=5e-10, duration_days=1.0, fee_pct=0.0, algorithm="sha256", meta={})
+            mock_n.return_value = NormalizedOffer(
+                provider="nicehash",
+                hashrate=5000.0,
+                price_per_th_day=5e-10,
+                duration_days=1.0,
+                fee_pct=0.0,
+                algorithm="sha256",
+                meta={},
+            )
             mock_m.return_value = None  # MRR fails
-            mock_p.return_value = NormalizedOffer(provider="parasite", hashrate=100000.0, price_per_th_day=1e-11, duration_days=1.0, fee_pct=0.0, algorithm="sha256", meta={})
+            mock_p.return_value = NormalizedOffer(
+                provider="parasite",
+                hashrate=100000.0,
+                price_per_th_day=1e-11,
+                duration_days=1.0,
+                fee_pct=0.0,
+                algorithm="sha256",
+                meta={},
+            )
 
             results = fetch_all_offers()
             assert len(results) == 2
@@ -461,35 +569,76 @@ class TestFetchAllOffers:
 
     def test_all_providers_fail(self):
         """When ALL providers return None, return empty list."""
-        with patch("services.hashrate_market.fetch_braiins_offer", return_value=None), \
-             patch("services.hashrate_market.fetch_nicehash_offer", return_value=None), \
-             patch("services.hashrate_market.fetch_mrr_offer", return_value=None), \
-             patch("services.hashrate_market.fetch_parasite_offer", return_value=None):
+        with patch(
+            "services.hashrate_market.fetch_braiins_offer", return_value=None
+        ), patch(
+            "services.hashrate_market.fetch_nicehash_offer", return_value=None
+        ), patch(
+            "services.hashrate_market.fetch_mrr_offer", return_value=None
+        ), patch(
+            "services.hashrate_market.fetch_parasite_offer", return_value=None
+        ):
             results = fetch_all_offers()
             assert results == []
 
     def test_offers_in_deterministic_order(self):
         """Offers should be returned in the order: Braiins, MRR, NiceHash, Parasite.
         fetch_all_offers does NOT sort by price — it appends in provider loop order."""
-        with patch("services.hashrate_market.fetch_braiins_offer") as mock_b, \
-             patch("services.hashrate_market.fetch_nicehash_offer") as mock_n, \
-             patch("services.hashrate_market.fetch_mrr_offer") as mock_m, \
-             patch("services.hashrate_market.fetch_parasite_offer") as mock_p:
+        with patch("services.hashrate_market.fetch_braiins_offer") as mock_b, patch(
+            "services.hashrate_market.fetch_nicehash_offer"
+        ) as mock_n, patch("services.hashrate_market.fetch_mrr_offer") as mock_m, patch(
+            "services.hashrate_market.fetch_parasite_offer"
+        ) as mock_p:
 
-            mock_b.return_value = NormalizedOffer(provider="braiins", hashrate=10000.0, price_per_th_day=1e-10, duration_days=1.0, fee_pct=0.0, algorithm="sha256", meta={})
-            mock_m.return_value = NormalizedOffer(provider="mrr", hashrate=1000.0, price_per_th_day=1e-9, duration_days=1.0, fee_pct=0.0, algorithm="sha256", meta={})
-            mock_n.return_value = NormalizedOffer(provider="nicehash", hashrate=5000.0, price_per_th_day=5e-10, duration_days=1.0, fee_pct=0.0, algorithm="sha256", meta={})
-            mock_p.return_value = NormalizedOffer(provider="parasite", hashrate=100000.0, price_per_th_day=5e-11, duration_days=1.0, fee_pct=0.0, algorithm="sha256", meta={})
+            mock_b.return_value = NormalizedOffer(
+                provider="braiins",
+                hashrate=10000.0,
+                price_per_th_day=1e-10,
+                duration_days=1.0,
+                fee_pct=0.0,
+                algorithm="sha256",
+                meta={},
+            )
+            mock_m.return_value = NormalizedOffer(
+                provider="mrr",
+                hashrate=1000.0,
+                price_per_th_day=1e-9,
+                duration_days=1.0,
+                fee_pct=0.0,
+                algorithm="sha256",
+                meta={},
+            )
+            mock_n.return_value = NormalizedOffer(
+                provider="nicehash",
+                hashrate=5000.0,
+                price_per_th_day=5e-10,
+                duration_days=1.0,
+                fee_pct=0.0,
+                algorithm="sha256",
+                meta={},
+            )
+            mock_p.return_value = NormalizedOffer(
+                provider="parasite",
+                hashrate=100000.0,
+                price_per_th_day=5e-11,
+                duration_days=1.0,
+                fee_pct=0.0,
+                algorithm="sha256",
+                meta={},
+            )
 
             results = fetch_all_offers()
             expected_order = ["braiins", "mrr", "nicehash", "parasite"]
             got_order = [o.provider for o in results]
-            assert got_order == expected_order, f"Expected {expected_order}, got {got_order}"
+            assert (
+                got_order == expected_order
+            ), f"Expected {expected_order}, got {got_order}"
 
 
 # ══════════════════════════════════════════════════════════════════════════
 #  NormalizedOffer dataclass tests
 # ══════════════════════════════════════════════════════════════════════════
+
 
 class TestNormalizedOffer:
     """Tests for the NormalizedOffer dataclass."""
