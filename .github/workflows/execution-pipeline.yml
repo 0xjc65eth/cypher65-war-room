@@ -159,9 +159,35 @@ jobs:
           [ -n "$ok" ] || { echo "❌ Render healthz never returned 200 — production is DOWN"; exit 1; }
           echo "  ✅ healthz OK"
 
-          # 2) bundle parity — soft gate with retry
+          # 2) paywall gate — hard gate (Issue #256)
+          # PRO_KEYS_DB=1 lives in render.yaml (infra-as-code). The blueprint
+          # sync applies env changes on push to master, but can lag the build
+          # by a few minutes — retry mirrors healthz's semantics. 402 = gate
+          # ACTIVE (paid features locked + funnel collecting); 200 = open mode
+          # (paywall NOT active — something reverted the env var).
+          # NOTE: the probe assumes no API auth (API_KEY/TENANT_API_KEYS) is
+          # configured — if those are ever enabled, send the key here too.
+          echo "── 2. paywall gate (PRO_KEYS_DB=1 → /api/proximity=402) ──"
+          gate=""
+          for i in $(seq 1 10); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 "$BASE/api/proximity" 2>/dev/null || echo 000)
+            echo "  attempt $i: proximity=$code"
+            if [ "$code" = "402" ]; then gate="1"; break; fi
+            sleep 20
+          done
+          if [ -n "$gate" ]; then
+            echo "  ✅ paywall ativo — PRO_KEYS_DB=1 aplicado (402 em feature PRO)"
+          else
+            echo "❌ paywall em OPEN MODE (proximity != 402) — PRO_KEYS_DB=1 não aplicado."
+            echo "   Causa provável: sync do blueprint pendente. Faça:"
+            echo "   https://dashboard.render.com → cypher65-war-room → Blueprint → Sync now"
+            echo "   (a env var já está no render.yaml — o sync a aplica; depois re-run este job)"
+            exit 1
+          fi
+
+          # 3) bundle parity — soft gate with retry
           local_md5=$(md5sum static/app.js | awk '{print $1}')
-          echo "── 2. bundle parity (local app.js md5=$local_md5) ──"
+          echo "── 3. bundle parity (local app.js md5=$local_md5) ──"
           match=""
           for i in $(seq 1 27); do  # 27 × 20s ≈ 9 min for the async build
             live_md5=$(curl -s --max-time 25 "$BASE/static/app.js" --compressed 2>/dev/null | python3 -c "import sys,hashlib,gzip; d=sys.stdin.buffer.read(); d=gzip.decompress(d) if d[:2]==b'\x1f\x8b' else d; print(hashlib.md5(d).hexdigest())" 2>/dev/null || echo "")
@@ -174,7 +200,7 @@ jobs:
             exit 0
           fi
 
-          # 3) CDN-proof backend marker — the new code may be live behind a
+          # 4) CDN-proof backend marker — the new code may be live behind a
           # cached static file (Cloudflare). Diagnose a private LAN IP; the
           # 'IP privado' hint lives in scanner.py, not the CDN-cached bundle.
           echo "  ⚠ bundle still differs after ~9 min — probing backend marker"
