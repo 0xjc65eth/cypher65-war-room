@@ -7675,6 +7675,7 @@ def api_rentals_export(tenant_id: str = ""):
 # Three endpoints power the 'COMPRAR HASHRATE' modal:
 #   GET  /api/rentals/braiins/quote   → cheapest live ask + account balance
 #   GET  /api/rentals/braiins/balance → BTC balances (total/available)
+#   GET  /api/rentals/braiins/market  → live MarketSettings (hr_unit + bounds + F7 cap)
 #   POST /api/rentals/braiins/bid     → place the spot bid (idempotent)
 # Tenant-scoped: the tenant's OWN Braiins key resolves from tenant_settings,
 # never the operator's global key. Server-side clamps + explicit confirmation
@@ -7693,6 +7694,29 @@ def api_braiins_quote(tenant_id: str = ""):
     except Exception as e:
         log.warning("[braiins] quote error: %s", e)
         return jsonify({"success": False, "error": "quote failed"}), 500
+
+
+@app.route("/api/rentals/braiins/market")
+@require_tenant
+@role_required("viewer")
+def api_braiins_market(tenant_id: str = ""):
+    """Live MarketSettings for the tenant's Braiins account (GET
+    /spot/settings with the tenant's OWN key — Issues #267/#268).
+    Read-only market data: hr_unit (unit proof), tick_size_sat,
+    price/amount/speed bounds and max_bids_per_subaccount (F7).
+    Never exposes the key."""
+    limits = _rental_perf.braiins_market_limits(tenant_id=tenant_id)
+    if not limits:
+        return (
+            jsonify(
+                {
+                    "success": False,
+                    "error": "market settings unavailable (Braiins key missing in Settings or provider unreachable)",
+                }
+            ),
+            502,
+        )
+    return jsonify({"success": True, "market": limits})
 
 
 @app.route("/api/rentals/braiins/balance")
