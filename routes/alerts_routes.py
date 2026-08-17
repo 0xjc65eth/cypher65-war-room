@@ -5,12 +5,15 @@ Exposes REST endpoints for alert management and automation rules.
 """
 
 import json
+import logging
 import time
 from typing import Any, Dict
 
 from flask import Blueprint, jsonify, request
 
 from services.tenant import require_tenant, role_required, log_audit as _log_audit
+
+log = logging.getLogger("cypher65.alerts")
 
 alerts_bp = Blueprint("alerts", __name__, url_prefix="/api")
 
@@ -553,6 +556,10 @@ def api_automation_dry_run_replay(tenant_id: str = ""):
         engine = _get_ap_engine() or AutomationEngine(_ap_db_path, SafetyEngine())
         rules = engine.load_rules(tenant_id=tid)
         history: dict = {}
+        # Issue #204: amostras sem ts são dropadas das séries — contabilizar
+        # (antes: subconta silenciosa dos gráficos de alerta). O warning cai
+        # no bucket de degradação (#202) quando o app está com o sampler ativo.
+        dropped_ts = 0
         if _registry is not None:
             for dev in _registry.list_devices(tenant_id=tid) or []:
                 dev_id = dev.get("id")
@@ -572,6 +579,7 @@ def api_automation_dry_run_replay(tenant_id: str = ""):
                     sample = dict(p)
                     sample["ts"] = int(p.get("ts") or r.get("ts") or 0)
                     if not sample["ts"]:
+                        dropped_ts += 1
                         continue
                     sample.setdefault("hashrate", p.get("hashrate_hs"))
                     sample.setdefault("power", p.get("power_watts"))
@@ -587,6 +595,14 @@ def api_automation_dry_run_replay(tenant_id: str = ""):
         window_s = hours * 3600
         result = engine.simulate_replay_window(rules, history, window_seconds=window_s)
         result["armed"] = engine.is_armed(tid)
+        # Issue #204: superfície honesta do descarte — o cliente sabe quantas
+        # amostras saíram das séries por ts ausente/0.
+        result["dropped_ts_samples"] = dropped_ts
+        if dropped_ts:
+            log.warning(
+                "[alerts replay] %d amostras de telemetria sem ts dropadas das series",
+                dropped_ts,
+            )
         return jsonify(result)
     except Exception as e:
         return jsonify({"simulated": True, "error": str(e), "per_rule": []}), 500

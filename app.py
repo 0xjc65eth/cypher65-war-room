@@ -97,6 +97,7 @@ from services.hashrate_market import (
     market_offer_sort_key as _market_offer_sort_key,
 )
 import services.rental_performance as _rental_perf  # RENTALS panel (MRR + Braiins)
+from services.sli import sli as _sli  # Issue #206: SLIs de completude de dados
 import services.lan_scanner as _lan_scanner  # Phase B: LAN device auto-discovery
 from axe_fleet.routes import (
     axe_fleet_bp,
@@ -1317,6 +1318,14 @@ _error_tracker.install(get_db)
 # Issue #202: the WARNING half of the $0 sampler — fires on every WARNING log
 # record (the converted `except: pass` sites now WARN instead of dying silent).
 _error_tracker.install_degradation(get_db)
+# Issue #206: SLI de completude abaixo do target por >= 30min → degradação
+# no bucket WARNING (Issue #202) — alerta de qualidade de dados, não só de
+# erro de execução. Nunca lança (record_degradation é fail-safe).
+_sli.set_degradation_sink(
+    lambda kind, metric, msg: _error_tracker.record_degradation(
+        get_db(), module="sli", func=kind, message=msg
+    )
+)
 
 
 # Markers written exclusively by the demo seeders. Devices carrying these
@@ -7001,6 +7010,12 @@ def api_rentals(tenant_id: str = ""):
             rtype="owner", history=True, limit=50, tenant_id=tenant_id
         )
         braiins = _rental_perf.fetch_braiins_contracts(tenant_id=tenant_id)
+        # Issue #206: SLI de completude rentals — processados ÷ total do MRR
+        # (superfície honesta rendered/total da #200). Amostrado a cada fetch
+        # real de providers; o payload do cache TTL (20s) reusa os mesmos
+        # números, então um sample por janela real de coleta. Sem total (conta
+        # vazia / chave ausente) → sem amostra — unknown nunca é breach.
+        _sli.record_completude(mrr_active, mrr_history, mrr_owner)
         # Portfolio 21-A: own hashrate (fleet física vs worker do pool — dedup
         # honesto: NUNCA soma, usa max + expõe a fonte) e rentals 30d P/L
         # (soma das últimas ~4 semanas da série local, mesma metodologia EV).
