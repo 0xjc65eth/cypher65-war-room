@@ -2349,7 +2349,7 @@ def braiins_market_limits(tenant_id: str = "") -> Dict[str, Any]:
     Returns {} when unavailable (no key / network / parse) — callers fall
     back to the static band (never skip BOTH layers). Also carries
     ``hr_unit`` so a single settings call serves the #267 unit conversion
-    AND the #268 bounds.
+    AND the #268 bounds (incl. ``max_bids_per_subaccount`` — F7 cap).
     """
     key = _braiins_key(tenant_id=tenant_id)
     if not key:
@@ -2372,6 +2372,7 @@ def braiins_market_limits(tenant_id: str = "") -> Dict[str, Any]:
             "max_bid_amount_sat",
             "min_bid_speed_limit_ph",
             "max_bid_speed_limit_ph",
+            "max_bids_per_subaccount",
         )
         out: Dict[str, Any] = {}
         for k in want:
@@ -2380,6 +2381,11 @@ def braiins_market_limits(tenant_id: str = "") -> Dict[str, Any]:
                 continue
             if k == "hr_unit":
                 out[k] = str(v)
+            elif k == "max_bids_per_subaccount":
+                try:
+                    out[k] = int(v)
+                except (TypeError, ValueError):
+                    continue
             else:
                 try:
                     out[k] = float(v)
@@ -2494,7 +2500,8 @@ def create_braiins_bid(
 
     Returns {"success": True, "bid": {...}} or {"success": False, "error": ...,
     "needs_auth": bool}. Sanity clamps run BEFORE the POST — a unit bug must
-    never reach the wire.
+    never reach the wire. F7: never exceeds MarketSettings.max_bids_per_subaccount
+    (live count first; fail-closed when the count is unverifiable).
     """
     key = _braiins_key(tenant_id=tenant_id)
     if not key:
@@ -2621,6 +2628,31 @@ def create_braiins_bid(
             return {
                 "success": False,
                 "error": f"speed_limit must be at most {hi_spd:g} PH/s",
+            }
+
+    # Issue #268 (F7): MarketSettings.max_bids_per_subaccount — never exceed
+    # the account's active-bid cap. Count live bids via /spot/bid/current
+    # (F8) and reject BEFORE the wire when at the cap. When the count cannot
+    # be obtained (provider unreachable), fail closed — real money, absence
+    # of evidence is risk. When the limit itself is unknown (settings
+    # unavailable), the provider's own 4xx on an over-limit POST is the
+    # final net (same discipline as the static clamps in F3).
+    # Note: the check-then-POST window is a known TOCTOU (two concurrent bids
+    # can both pass) — the provider's own 4xx on an over-limit POST is the
+    # accepted backstop for that residual race.
+    max_bids = limits.get("max_bids_per_subaccount")
+    if max_bids is not None:
+        active = braiins_active_bids(tenant_id=tenant_id)
+        if not active.get("success"):
+            return {
+                "success": False,
+                "error": "cannot verify active bids count (provider unreachable) — retry",
+            }
+        count = len(active.get("bids") or [])
+        if count >= max_bids:
+            return {
+                "success": False,
+                "error": f"max active bids reached ({count}/{max_bids}) — cancel a bid first",
             }
 
     body: Dict[str, Any] = {

@@ -7892,10 +7892,11 @@ def api_braiins_bid(tenant_id: str = ""):
                 "provider_bid_id": recon.get("bid_id"),
             }
         )
+    _bid_err = result.get("error") or ""
     status = (
         401
         if result.get("needs_auth")
-        else (400 if "must be" in (result.get("error") or "") else 502)
+        else (400 if ("must be" in _bid_err or "active bids" in _bid_err) else 502)
     )
     return (
         jsonify({"success": False, "error": result.get("error") or "bid failed"}),
