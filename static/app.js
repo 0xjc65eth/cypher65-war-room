@@ -1548,6 +1548,24 @@
     container.appendChild(ov);
   }
   function skelShow(container, kind) { if (container) _skelBuild(container, kind); }
+
+  // ── Flicker dedup (audit 18-Ago) ────────────────────────────────────────
+  // renderMarketGrid / renderTerminalEvents / renderLeaderboard etc. wrote
+  // innerHTML on EVERY 15s snapshot even when the rendered content was
+  // byte-identical — destroying/recreating rows every poll ("infinite
+  // blinking"). Same root cause the Command Center had (_lastCcKey fix);
+  // generalize it: skip the DOM write when the serialized HTML matches the
+  // last write for that element. WeakMap keyed by element keeps zero state
+  // on window and auto-GCs. Returns true when the write happened.
+  const _lastSetHtml = new WeakMap();
+  function setHtmlIfChanged(el, html) {
+    if (!el || typeof el.innerHTML !== 'string') return false;
+    if (_lastSetHtml.get(el) === html) return false;
+    _lastSetHtml.set(el, html);
+    el.innerHTML = html;
+    return true;
+  }
+
   function skelHide(container) {
     if (!container) return;
     const ov = container.querySelector('.skel-overlay');
@@ -1711,14 +1729,16 @@
       return;
     }
     box.style.display = '';
-    // QR (pure JS encoder — no external service, address never leaves browser)
+    // QR (pure JS encoder — no external service, address never leaves browser).
+    // setHtmlIfChanged: the QR SVG is byte-identical for the same address, so
+    // re-encoding on every 15s poll made the identity card visibly flicker.
     var qrBox = document.getElementById('wallet-id-qr');
     if (qrBox) {
       try {
         var qr = qrEncode(addr, 'M');
-        qrBox.innerHTML = qrSvg(qr.modules);
+        setHtmlIfChanged(qrBox, qrSvg(qr.modules));
       } catch (e) {
-        qrBox.innerHTML = '<div class="wallet-id__qr-error">QR unavailable</div>';
+        setHtmlIfChanged(qrBox, '<div class="wallet-id__qr-error">QR unavailable</div>');
       }
     }
     // Checksum-highlighted address
@@ -1726,9 +1746,9 @@
     if (addrEl) {
       var parts = walletAddressParts(addr);
       if (parts) {
-        addrEl.innerHTML = '<span class="addr-pfx">' + escapeHtml(parts.prefix) + '</span>' +
+        setHtmlIfChanged(addrEl, '<span class="addr-pfx">' + escapeHtml(parts.prefix) + '</span>' +
           '<span class="addr-body">' + escapeHtml(parts.body) + '</span>' +
-          '<span class="addr-ck">' + escapeHtml(parts.checksum) + '</span>';
+          '<span class="addr-ck">' + escapeHtml(parts.checksum) + '</span>');
       } else {
         addrEl.textContent = addr;
       }
@@ -1759,13 +1779,13 @@
     var checksEl = document.getElementById('wallet-id-checks');
     if (checksEl && health.connected) {
       checksEl.style.display = '';
-      checksEl.innerHTML = health.checks.map(function(c) {
+      setHtmlIfChanged(checksEl, health.checks.map(function(c) {
         return '<li class="wallet-id__check wallet-id__check--' + (c.ok ? 'ok' : 'bad') + '">' +
           '<span class="wallet-id__check-dot"></span>' + escapeHtml(c.label) + '</li>';
-      }).join('');
+      }).join(''));
     } else if (checksEl) {
       checksEl.style.display = 'none';
-      checksEl.innerHTML = '';
+      setHtmlIfChanged(checksEl, '');
     }
   }
 
@@ -2031,27 +2051,27 @@ function renderAccount(acct) {
   function renderAlerts(alerts) {
     if (!dom.alertsList) return;
     if (!alerts || !alerts.length) {
-      dom.alertsList.innerHTML = '<li class="alert-empty">no alerts — all systems nominal</li>';
+      setHtmlIfChanged(dom.alertsList, '<li class="alert-empty">no alerts — all systems nominal</li>');
       if (dom.alertsCountBadge) dom.alertsCountBadge.textContent = '0 active';
       return;
     }
     if (dom.alertsCountBadge) dom.alertsCountBadge.textContent = `${alerts.length} active`;
-    dom.alertsList.innerHTML = alerts.slice(0, 10).map(a => `
+    setHtmlIfChanged(dom.alertsList, alerts.slice(0, 10).map(a => `
       <li class="alert-item SEVERITY-${escapeHtml(a.severity || 'INFO')}">
         <span class="alert-icon">!</span><span class="alert-msg">${escapeHtml(a.message || '')}</span><span class="alert-time">${fmt.age(a.ts)}</span>
-      </li>`).join('');
+      </li>`).join(''));
   }
 
   function renderEvents(events) {
     if (!dom.eventsTbody) return;
-    if (!events || !events.length) { dom.eventsTbody.innerHTML = '<tr><td colspan="5" class="empty">awaiting data\u2026</td></tr>'; return; }
-    dom.eventsTbody.innerHTML = events.map(e => `<tr><td>#${escapeHtml(e.block_height || e.block || '\u2014')}</td><td>${escapeHtml(fmt.shortAddr(e.address || ''))}</td><td>${escapeHtml(fmt.diff(e.difficulty))}</td><td>${escapeHtml(fmt.age(e.block_timestamp || e.ts))}</td><td>${e.claimed ? 'YES' : 'NO'}</td></tr>`).join('');
+    if (!events || !events.length) { setHtmlIfChanged(dom.eventsTbody, '<tr><td colspan="5" class="empty">awaiting data\u2026</td></tr>'); return; }
+    setHtmlIfChanged(dom.eventsTbody, events.map(e => `<tr><td>#${escapeHtml(e.block_height || e.block || '\u2014')}</td><td>${escapeHtml(fmt.shortAddr(e.address || ''))}</td><td>${escapeHtml(fmt.diff(e.difficulty))}</td><td>${escapeHtml(fmt.age(e.block_timestamp || e.ts))}</td><td>${e.claimed ? 'YES' : 'NO'}</td></tr>`).join(''));
   }
 
   function renderLeaderboard(lb) {
     if (!dom.lbTbody) return;
-    if (!lb || !lb.length) { dom.lbTbody.innerHTML = '<tr><td colspan="6" class="empty">awaiting data\u2026</td></tr>'; return; }
-    dom.lbTbody.innerHTML = lb.map((r, i) => `<tr><td>${i+1}</td><td>${escapeHtml(fmt.shortAddr(r.address))}</td><td>${escapeHtml(r.diff_rank || r.diffRank || '\u2014')}</td><td>${escapeHtml(r.loyalty_rank || r.loyalty || '\u2014')}</td><td>${escapeHtml(r.combined_score || r.score || '\u2014')}</td><td>${escapeHtml(r.total_blocks || r.blocks || 0)}</td></tr>`).join('');
+    if (!lb || !lb.length) { setHtmlIfChanged(dom.lbTbody, '<tr><td colspan="6" class="empty">awaiting data\u2026</td></tr>'); return; }
+    setHtmlIfChanged(dom.lbTbody, lb.map((r, i) => `<tr><td>${i+1}</td><td>${escapeHtml(fmt.shortAddr(r.address))}</td><td>${escapeHtml(r.diff_rank || r.diffRank || '\u2014')}</td><td>${escapeHtml(r.loyalty_rank || r.loyalty || '\u2014')}</td><td>${escapeHtml(r.combined_score || r.score || '\u2014')}</td><td>${escapeHtml(r.total_blocks || r.blocks || 0)}</td></tr>`).join(''));
   }
 
   // ── Charts — renderChart fetches data and updates Chart.js instances ──
@@ -2295,7 +2315,7 @@ function renderAccount(acct) {
   function renderTerminalEvents(list) {
     if (!dom.terminalEventsList) return;
     if (!list || !list.length) {
-      dom.terminalEventsList.innerHTML = '<div class="terminal-empty">awaiting events from pool polling...</div>';
+      setHtmlIfChanged(dom.terminalEventsList, '<div class="terminal-empty">awaiting events from pool polling...</div>');
       if (dom.terminalEventCount) dom.terminalEventCount.textContent = '0';
       return;
     }
@@ -2307,7 +2327,7 @@ function renderAccount(acct) {
       const sev = (ev.severity || 'INFO').toLowerCase();
       return `<div class="terminal-events-row"><span class="ts">[${ts}]</span><span class="tag tag-${sev}">${escapeHtml(ev.event_type || 'EVENT')}</span>${escapeHtml(ev.message || '')}</div>`;
     }).join('');
-    dom.terminalEventsList.innerHTML = rows;
+    setHtmlIfChanged(dom.terminalEventsList, rows);
     if (dom.terminalEventCount) dom.terminalEventCount.textContent = String(normalized.length);
   }
 
@@ -4005,7 +4025,7 @@ function renderAccount(acct) {
     document.getElementById('mkt-count-badge') && (document.getElementById('mkt-count-badge').textContent = (snap.offer_count || venues.length) + ' venues');
 
     if (!venues.length) {
-      tbody.innerHTML = '<tr><td colspan="9" class="mkt-table__empty">' + (_mktOffers.length ? 'no venues for selected filter' : 'no market data — configure API keys in Settings') + '</td></tr>';
+      setHtmlIfChanged(tbody, '<tr><td colspan="9" class="mkt-table__empty">' + (_mktOffers.length ? 'no venues for selected filter' : 'no market data — configure API keys in Settings') + '</td></tr>');
       document.getElementById('mkt-notes') && (document.getElementById('mkt-notes').style.display = 'none');
       return;
     }
@@ -4027,7 +4047,7 @@ function renderAccount(acct) {
     if (notesEl && notesBody) {
       if (notes.length) {
         notesEl.style.display = 'block';
-        notesBody.innerHTML = notes.map(n => '<div class="mkt-notes__item">' + escapeHtml(n) + '</div>').join('');
+        setHtmlIfChanged(notesBody, notes.map(n => '<div class="mkt-notes__item">' + escapeHtml(n) + '</div>').join(''));
       } else {
         notesEl.style.display = 'none';
       }
@@ -4043,7 +4063,7 @@ function renderAccount(acct) {
       }
     });
 
-    tbody.innerHTML = venues.map(v => {
+    setHtmlIfChanged(tbody, venues.map(v => {
       const tierCls = v.risk_tier === 1 ? 'mkt-table__tier--t1' : v.risk_tier === 2 ? 'mkt-table__tier--t2' : v.risk_tier === 3 ? 'mkt-table__tier--t3' : 'mkt-table__tier--t4';
       const spreadCls = v.spread_vs_best_pct <= 2 ? 'mkt-table__spread--tight' : v.spread_vs_best_pct > 20 ? 'mkt-table__spread--wide' : '';
       const recCls = v.recommendation.indexOf('Preferred') === 0 ? 'mkt-table__rec--best' : v.recommendation.indexOf('Avoid') === 0 ? 'mkt-table__rec--avoid' : '';
@@ -4058,7 +4078,7 @@ function renderAccount(acct) {
         <td><span class="mkt-table__tier ${tierCls}">${escapeHtml(v.risk_tier_label)}</span></td>
         <td class="${recCls}">${escapeHtml(v.recommendation)}</td>
       </tr>`;
-    }).join('');
+    }).join(''));
   }
 
   function renderMarket(snap) {
@@ -4439,7 +4459,7 @@ function renderAccount(acct) {
         (rec.avoid_count ? ' · ' + rec.avoid_count + ' evitar' : '');
     }
     const topEl = document.getElementById('rentals-reco-cards');
-    if (topEl) topEl.innerHTML = (rec.top || []).map(t => {
+    if (topEl) setHtmlIfChanged(topEl, (rec.top || []).map(t => {
       const vMkt = t.vs_market_pct != null
         ? (t.vs_market_pct <= 0 ? '✓ ' : '') + (t.vs_market_pct > 0 ? '+' : '') + Number(t.vs_market_pct).toFixed(0) + '% vs mkt'
         : '';
@@ -4457,12 +4477,12 @@ function renderAccount(acct) {
         '<span>COST</span><strong>' + (t.avg_cost_sats_per_thh != null ? Number(t.avg_cost_sats_per_thh).toFixed(0) + ' st' : '—') + '</strong></div>' +
         '<div class="rentals-reco__row rentals-reco__row--sub"><span>' + escapeHtml(vMkt || '') + '</span><span>' + samples + '</span>' + trend + '</div>' +
         '</div>';
-    }).join('');
+    }).join(''));
     // Pilot's avoid case — grade-F rigs with a ONE-CLICK accept (blacklist).
     const avoidHead = document.getElementById('rentals-avoid-head');
     if (avoidHead) avoidHead.hidden = !hasAvoid;
     const avoidEl = document.getElementById('rentals-avoid-cards');
-    if (avoidEl) avoidEl.innerHTML = (rec.avoid || []).map(t => {
+    if (avoidEl) setHtmlIfChanged(avoidEl, (rec.avoid || []).map(t => {
       const trend = t.trend_pct != null
         ? '<span class="rentals-reco__trend ' + (t.trend_pct >= 0 ? 'is-good' : 'is-bad') + '">' +
           (t.trend_pct >= 0 ? '▲' : '▼') + Math.abs(Number(t.trend_pct)).toFixed(1) + '%</span>' : '';
@@ -4477,7 +4497,7 @@ function renderAccount(acct) {
         '<div class="rentals-reco__row rentals-reco__row--sub"><span>' + samples + '</span>' + trend + '</div>' +
         '<button type="button" class="btn btn--mini btn--danger rentals-reco__blacklist" data-rig-id="' + escapeHtml(String(t.rig_id != null ? t.rig_id : '')) + '" title="aceitar a sugestão do piloto: nunca alugar este rig de novo">' + _ic('ban', 12, true) + 'BLACKLISTAR</button>' +
         '</div>';
-    }).join('');
+    }).join(''));
   }
 
   // CFO: accepted recommendations — rigs que o piloto sugeriu blacklistar e

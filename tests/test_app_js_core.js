@@ -5538,6 +5538,67 @@ function sortMarketVenues(venues, key, dir) {
 })();
 
 // ═══════════════════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════════════════════
+//  SUITE 13: setHtmlIfChanged() — flicker-dedup contract (audit 18-Ago)
+// ═══════════════════════════════════════════════════════════════════════════
+// Mirror of the app.js helper: skips the innerHTML write when the serialized
+// HTML matches the last write for that element (WeakMap keyed by element).
+// Same root cause the Command Center had (_lastCcKey) — the market grid,
+// terminal events, wallet identity etc. used to re-render byte-identical
+// content on every 15s poll ("infinite blinking").
+
+console.log('\n📊 SUITE 13: setHtmlIfChanged() — dedup contract');
+
+function makeSetHtmlIfChanged() {
+  const _last = new WeakMap();
+  return function setHtmlIfChanged(el, html) {
+    if (!el || typeof el.innerHTML !== 'string') return false;
+    if (_last.get(el) === html) return false;
+    _last.set(el, html);
+    el.innerHTML = html;
+    return true;
+  };
+}
+
+// --- identical content → skipped (no DOM write) ---
+{
+  const el = { innerHTML: '' };
+  const set = makeSetHtmlIfChanged();
+  assertEqual('first write happens', set(el, '<tr>x</tr>'), true);
+  assertEqual('identical second write skipped', set(el, '<tr>x</tr>'), false);
+  assertEqual('innerHTML unchanged after skip', el.innerHTML, '<tr>x</tr>');
+}
+// --- different content → written ---
+{
+  const el = { innerHTML: '' };
+  const set = makeSetHtmlIfChanged();
+  set(el, '<tr>x</tr>');
+  assertEqual('changed content written', set(el, '<tr>y</tr>'), true);
+  assertEqual('innerHTML updated', el.innerHTML, '<tr>y</tr>');
+}
+// --- element-scoped: two elements never collide ---
+{
+  const a = { innerHTML: '' };
+  const b = { innerHTML: '' };
+  const set = makeSetHtmlIfChanged();
+  set(a, 'same');
+  assertEqual('element B writes even with same html as A', set(b, 'same'), true);
+}
+// --- empty-string reset path stays in sync ---
+{
+  const el = { innerHTML: '<ul><li>old</li></ul>' };
+  const set = makeSetHtmlIfChanged();
+  set(el, '<ul><li>old</li></ul>');
+  assertEqual('reset to empty string written', set(el, ''), true);
+  assertEqual('re-write of old html after reset written', set(el, '<ul><li>old</li></ul>'), true);
+}
+// --- null/undefined element → false, never throws ---
+{
+  const set = makeSetHtmlIfChanged();
+  assertEqual('null element returns false', set(null, 'x'), false);
+  assertEqual('undefined element returns false', set(undefined, 'x'), false);
+}
+
 //  RESULTS
 // ═══════════════════════════════════════════════════════════════════════════
 
