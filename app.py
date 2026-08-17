@@ -7717,6 +7717,7 @@ def _audit_braiins_bid(
     amount_sat=None,
     price_sat=None,
     error: str = "",
+    bid_id: str = "",
 ):
     """Immutable, best-effort audit of EVERY bid attempt (Issue #268 F5).
 
@@ -7736,6 +7737,7 @@ def _audit_braiins_bid(
                 "amount_sat": amount_sat,
                 "price_sat": price_sat,
                 "error": (error or "")[:160],
+                "bid_id": (bid_id or "")[:64],
             },
         )
     except Exception:
@@ -7839,6 +7841,8 @@ def api_braiins_bid(tenant_id: str = ""):
         tenant_id=tenant_id,
     )
     # F5: immutable audit of EVERY attempt (placed / rejected + provider error).
+    # bid_id (when the provider returned one) goes into the row so the F8
+    # reconcile view can correlate audit ↔ provider.
     _audit_braiins_bid(
         tenant_id,
         "placed" if result.get("success") else "rejected",
@@ -7847,6 +7851,7 @@ def api_braiins_bid(tenant_id: str = ""):
         amount_sat=amount_sat,
         price_sat=price_sat,
         error=result.get("error") or "",
+        bid_id=(result.get("bid") or {}).get("id") or "",
     )
     if result.get("success"):
         # Record the placed order in the conversion funnel + audit (no PII).
@@ -7858,7 +7863,35 @@ def api_braiins_bid(tenant_id: str = ""):
             )
         except Exception:
             pass
-        return jsonify({"success": True, "bid": result.get("bid")})
+        # F8: post-creation reconciliation — confirm the placed bid actually
+        # exists on the provider (GET /spot/bid/current × cl_order_id).
+        # Best-effort: a failure NEVER revokes the placement; the operator
+        # sees reconciled=unknown (confirmation pending) instead. A False
+        # right after a successful POST is the provider's eventual
+        # consistency (fresh bids take a moment to appear), so it is surfaced
+        # as "pending" — the /reconcile view is the definitive check later.
+        recon = {"reconciled": "unknown"}
+        try:
+            recon = _rental_perf.reconcile_braiins_bid(
+                tenant_id=tenant_id, cl_order_id=cl_order_id
+            )
+        except Exception as e:
+            log.warning("[braiins] reconcile failed: %s", e)
+        if recon.get("reconciled") is False:
+            recon = {
+                "reconciled": "pending",
+                "reason": "just placed — eventual consistency",
+            }
+        return jsonify(
+            {
+                "success": True,
+                "bid": result.get("bid"),
+                "reconciled": recon.get("reconciled"),
+                "reconcile_reason": recon.get("reason"),
+                "provider_status": recon.get("status"),
+                "provider_bid_id": recon.get("bid_id"),
+            }
+        )
     status = (
         401
         if result.get("needs_auth")
@@ -7889,6 +7922,54 @@ def api_braiins_bid_audit(tenant_id: str = ""):
         rows = []
     bids = [r for r in rows if str(r.get("action") or "").startswith("braiins.bid")]
     return jsonify({"success": True, "count": len(bids), "entries": bids})
+
+
+@app.route("/api/rentals/braiins/bid/reconcile")
+@require_tenant
+@role_required("viewer")
+def api_braiins_bid_reconcile(tenant_id: str = ""):
+    """F8: operator view — every audited 'placed' bid cross-referenced
+    against the provider's ACTIVE bids (GET /spot/bid/current ×
+    cl_order_id). Read-only: never deletes/revokes. A placed bid missing
+    from the provider is surfaced as reconciled=false (silent-loss guard).
+    """
+    audited = []
+    try:
+        from services.tenant import recent_audit_logs
+
+        rows = recent_audit_logs(tenant_id=tenant_id, limit=200) or []
+        audited = [
+            r
+            for r in rows
+            if str(r.get("action") or "") == "braiins.bid"
+            and (r.get("details") or {}).get("outcome") == "placed"
+        ]
+    except Exception:
+        audited = []
+    active = _rental_perf.braiins_active_bids(tenant_id=tenant_id)
+    by_cl = {(b.get("cl_order_id") or ""): b for b in (active.get("bids") or [])}
+    entries = []
+    for r in audited:
+        cl = r.get("target") or ""
+        prov = by_cl.get(cl)
+        entries.append(
+            {
+                "cl_order_id": cl,
+                "ts": r.get("ts"),
+                "reconciled": bool(prov),
+                "provider_bid_id": (prov or {}).get("id"),
+                "provider_status": (prov or {}).get("status"),
+            }
+        )
+    return jsonify(
+        {
+            "success": True,
+            "active_provider_bids": len(active.get("bids") or []),
+            "audited_placed": len(entries),
+            "reconciled": sum(1 for e in entries if e["reconciled"]),
+            "entries": entries,
+        }
+    )
 
 
 @app.route("/api/rentals/rig")

@@ -2657,6 +2657,107 @@ def create_braiins_bid(
         return {"success": False, "error": str(e)[:160]}
 
 
+def braiins_active_bids(tenant_id: str = "") -> Dict[str, Any]:
+    """Active spot bids for the tenant (GET /spot/bid/current, official
+    SpotGetCurrentBidsResponse — Issue #268 F8). Each item wraps the bid
+    under ``bid``: ``{"bid": {...}, "counters_committed": {...}}``.
+
+    Returns {"success": True, "bids": [...]} with id / cl_order_id / status /
+    amounts, or {"success": False, "needs_auth": bool, "error": ...} — a
+    rejected key is surfaced, never mistaken for an empty account (same
+    discipline as fetch_braiins_contracts).
+    """
+    key = _braiins_key(tenant_id=tenant_id)
+    if not key:
+        return {
+            "success": False,
+            "needs_auth": True,
+            "error": "BRAIINS_API_KEY not configured",
+            "bids": [],
+        }
+    try:
+        r = requests.get(
+            f"{BRAIINS_BASE}/spot/bid/current", headers={"apikey": key}, timeout=15
+        )
+        if not r.ok:
+            return {
+                "success": False,
+                "needs_auth": r.status_code in (401, 403),
+                "error": f"HTTP {r.status_code}",
+                "bids": [],
+            }
+        bids = []
+        for it in _braiins_list_items(r.json()):
+            b = it.get("bid") if isinstance(it, dict) else None
+            if not isinstance(b, dict):
+                b = it  # tolerate flat items
+            if not isinstance(b, dict):
+                continue
+            bids.append(
+                {
+                    "id": b.get("id") or b.get("bid_id"),
+                    "cl_order_id": (b.get("cl_order_id") or "").strip(),
+                    "status": (b.get("status") or "").strip(),
+                    "amount_sat": b.get("amount_sat"),
+                    "price_sat": b.get("price_sat"),
+                    "created": b.get("created"),
+                }
+            )
+        return {"success": True, "bids": bids}
+    except Exception as e:
+        log.warning("[rental_performance] braiins active bids failed: %s", e)
+        return {"success": False, "error": str(e)[:120], "bids": []}
+
+
+def reconcile_braiins_bid(
+    tenant_id: str = "",
+    cl_order_id: str = "",
+    retries: int = 2,
+    backoff: float = 0.8,
+) -> Dict[str, Any]:
+    """Post-creation reconciliation (Issue #268 F8): confirm a just-placed
+    bid actually exists on the provider by correlating cl_order_id against
+    GET /spot/bid/current.
+
+    Best-effort by design — a failure here NEVER revokes the placement; it
+    only means confirmation is pending (surfaced to the operator as
+    ``reconciled: "unknown"``). Returns {"reconciled": True|False|"unknown",
+    "bid_id", "status", "active_count", "reason"}.
+    """
+    # Truncated to 64 chars to mirror the POST payload (create_braiins_bid)
+    # — the correlation key must be IDENTICAL in every layer, otherwise a
+    # long client id would never match the provider's echo (Issue #268 F8).
+    cl = (cl_order_id or "").strip()[:64]
+    if not cl:
+        return {"reconciled": False, "reason": "no cl_order_id"}
+    # Retries absorb the provider's eventual consistency: a freshly placed
+    # bid may take a moment to appear on /spot/bid/current. retries=0 (tests,
+    # one-shot callers) disables the backoff entirely.
+    attempts = max(retries, 0)
+    for attempt in range(attempts + 1):
+        res = braiins_active_bids(tenant_id=tenant_id)
+        if not res.get("success"):
+            return {
+                "reconciled": "unknown",
+                "reason": res.get("error") or "provider unreachable",
+            }
+        for b in res.get("bids") or []:
+            if (b.get("cl_order_id") or "").strip() == cl:
+                return {
+                    "reconciled": True,
+                    "bid_id": b.get("id"),
+                    "status": b.get("status"),
+                    "active_count": len(res.get("bids") or []),
+                }
+        if attempt < attempts:
+            time.sleep(backoff)
+    return {
+        "reconciled": False,
+        "reason": "not found in active bids",
+        "active_count": len(res.get("bids") or []),
+    }
+
+
 # ── Analytics: market reference + rig track record ──────────────────────────
 
 # Shared live market fetcher (cheapest SHA-256 rental price). Imported at
