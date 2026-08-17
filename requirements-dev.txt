@@ -23,7 +23,7 @@ pre-commit==4.6.2
 
 # ── Mutation testing (Issue #29 · quality) — equivalente Python do Stryker.
 #    Uso: SECRET_KEY=... mutmut run --paths-to-mutate core/ services/
-mutmut==2.4.1
+mutmut==3.7.0
 
 # ── Property-based testing for the probability/profitability math ────────
 hypothesis==6.123.2
