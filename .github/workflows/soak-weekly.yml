@@ -90,6 +90,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
+    # Issue #257: mesmo SECRET_KEY do job `test` — o soak roda a MESMA
+    # suíte pytest e os testes JWT (export/tenant isolation) recusam emitir
+    # token sem SECRET_KEY (RuntimeError no master desde sempre; nos PRs o
+    # job é skipped, então a falha só aparecia pós-merge).
+    env:
+      SECRET_KEY: "ci-test-secret-key-0123456789abcdef"
+
     defaults:
       run:
         working-directory: ./
