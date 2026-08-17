@@ -166,6 +166,16 @@ Fonte da chave: Render env `BRAIINS_API_KEY` (operador self-host) ou Settings �
 
 > **Rigor (regra da revisão):** ausência de evidência = risco. Sem a chave do operador a prova não é executável deste ambiente — o registro acima documenta o que foi possível verificar hoje e deixa a ação rastreável (issue de operação). O fail-closed (#269) garante que nenhum dinheiro real depende desta confirmação.
 
+### Progresso (17-Ago, noite) — rota de coleta no ar
+
+Para rodar a prova **onde a chave vive** (modelo per-tenant #189 — nunca em `.env` local), foi entregue a rota read-only `GET /api/rentals/braiins/market` (PR #280, `b11aad0`): devolve o `MarketSettings` ao vivo com a chave do PRÓPRIO tenant — `hr_unit` (prova), bounds F3 e `max_bids_per_subaccount` (F7) — **sem nunca expor a chave**.
+
+| Probe (produção, 17-Ago ~21:00 UTC) | Resultado | Conclusão |
+|---|---|---|
+| `GET https://cypher65-war-room.onrender.com/api/rentals/braiins/market` (sem sessão) | **HTTP 502** `{"success":false,"error":"market settings unavailable (Braiins key missing in Settings or provider unreachable)"}` | Rota **no ar** (deploy refletido); tenant anônimo/default sem chave — a prova exige **login com a conta do operador que tem a chave no Settings** |
+
+**Coleta (operador, 1 passo):** logar na produção com a conta que tem a chave Braiins no Settings → abrir `https://cypher65-war-room.onrender.com/api/rentals/braiins/market` (ou a aba Rentals) → colar o JSON aqui no relatório §8. Aplicar a tabela de interpretação acima.
+
 ## Histórico de artefatos
 
 | Artefato | Onde |
@@ -173,3 +183,6 @@ Fonte da chave: Render env `BRAIINS_API_KEY` (operador self-host) ou Settings �
 | OpenAPI oficial (3083 linhas, 17-Ago-2026) | `docs/reference/braiins-hashpower-api-openapi.yml` |
 | Fix Sev-1 unidade (PR #269, `6a1f68a`) | `helpers.py`, `services/rental_performance.py`, `agents/solo_mining_advisor/tools.py`, testes |
 | Fix Sev-2 F3-F6 (PR #270, `46a9ac9`) | `services/rental_performance.py`, `app.py`, `static/app.js`, `templates/dashboard.html`, testes, e2e |
+| Fix F8 reconciliação (PR #276, `486a792`) | `services/rental_performance.py`, `app.py`, testes |
+| Fix F7 cap de bids (PR #278, `c16b40d`) | `services/rental_performance.py`, `app.py`, testes |
+| Rota coleta /market (PR #280, `b11aad0`) | `app.py`, testes |
