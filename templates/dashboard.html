@@ -2913,6 +2913,12 @@
         <!-- Braiins available balance — shown live; the submit is BLOCKED
              while the budget exceeds the available balance. -->
         <div class="braiins-buy__balance" id="braiins-buy-balance">saldo: carregando…</div>
+        <!-- Live pricing unit (MarketSettings.hr_unit) — the unit the API
+             expects for price_sat; a non-PH/day account is visible here
+             before any money moves (Issue 267). Populated by /market. -->
+        <div class="braiins-buy__unit">
+          <span class="chip chip--unit" id="braiins-buy-unit" title="unidade de precificação da conta (MarketSettings.hr_unit)">unit: —</span>
+        </div>
         <div class="braiins-buy__fields">
           <label class="field">
             <span class="field__label">HASHRATE (TH/s)</span>

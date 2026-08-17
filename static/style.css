@@ -901,6 +901,8 @@ body.module-mode .tab-pane:not(.active) { display: none; }
 .chip--affiliate:hover { background: var(--amber-bg); }
 .chip--zoom { border-color: transparent; color: var(--text-tertiary); font-size: 11px; padding: 2px 7px; line-height: 1; }
 .chip--zoom:hover { color: var(--brand); border-color: var(--brand-dim); }
+.chip--unit { cursor: default; }
+.chip--unit.is-active { border-color: var(--green); color: var(--green); }
 
 .pill {
   display: inline-flex;
