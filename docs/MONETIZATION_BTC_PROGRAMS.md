@@ -1,7 +1,7 @@
 # 💎 CYPHER65 WAR ROOM — ENTERPRISE PLAN + BTC MONETIZATION PROGRAMS
 
 **Owner:** Staff Engineering Team (Pesquisa · Implementação · Validação)
-**Status:** Plano executável · **Baseline:** Aug 2026 · **Paywall validado** (PRO_KEYS_DB=1, 11/11 checks) em 17-Aug-2026 — aguarda ativação em produção (#256)
+**Status:** Plano executável · **Baseline:** Aug 2026 · **Paywall ATIVO em produção** (PRO_KEYS_DB=1 via infra-as-code, `GET /api/proximity` → 402 confirmado em 17-Aug-2026) — validação local 11/11 checks em docs §10
 **Pagamento (regra inegociável):** exclusivamente em Bitcoin para
 `35gjAoadgQxrNc1Kx6QiSLx7wCCXRnRFkM` (P2SH — **validado** com
 `helpers.validate_btc_address()` → `{'valid': True}`)
@@ -29,8 +29,11 @@ P1/P2, na tabela §2); **(c)** a infra BTC **já existe e está subutilizada** �
 
 **Estado atualizado (17-Aug-2026):** o paywall foi **validado end-to-end
 localmente** — `PRO_KEYS_DB=1` → 402 em rota PRO + `paywall_view` countado +
-`funnel_report` não-vazio (**11/11 checks**, §10). Falta apenas o flip da env
-var em produção (Issue **#256**) para o funil coletar dados reais.
+`funnel_report` não-vazio (**11/11 checks**, §10) — e **ativado em produção**:
+`PRO_KEYS_DB=1` virou infra-as-code no `render.yaml` (PR #262), o blueprint
+sync aplicou a env var e `GET https://cypher65-war-room.onrender.com/api/proximity`
+já responde **402** (gate ativo). O funil agora coleta dados reais; faltam as
+primeiras chaves e `MARKETING_SPEND_USD` para a economia completa.
 
 **Oportunidade de receita:** três programas premium pagos **só em BTC**
 (PRO/PREMIUM/ENTERPRISE) reutilizando 100% da infra pronta (licensing,
@@ -51,7 +54,7 @@ dinâmica via `merge_btc_quotes`, já no código).
 | Sev | Problema | Evidência | Impacto | Owner | Fase |
 |---|---|---|---|---|---|
 | Sev-2 | Paywall exige cartão/PayPal via Lemon Squeezy — **zero aceitação BTC** | `services/payments.py` (LS-only) · `config.py:15` | Público-alvo Bitcoin-native não converte; perda de receita | Implementação | **P4** |
-| Sev-2 | Gate de licensing em *open mode* permanente (tudo free, sem data de ativação) | `services/licensing.py` (`_ACTIVATION_ENV` vazia) · **validação 17-Aug: `PRO_KEYS_DB=1` → 402 + funil ativo (11/11, §10)** | Monetização validada localmente; falta flip da env var em prod (**#256**) | Implementação | P4 |
+| Sev-2 | Gate de licensing em *open mode* permanente (tudo free, sem data de ativação) | `services/licensing.py` (`_ACTIVATION_ENV` vazia) · **validação 17-Aug: `PRO_KEYS_DB=1` → 402 + funil ativo (11/11, §10)** · **resolvido: gate ATIVO em prod (402 confirmado, PR #262)** | Monetização ativa em produção desde 17-Aug | Implementação | P4 ✅ |
 | Sev-2 | Dados de alerta/rentals marcados stale sem `updated_at` + amostras ts=0 dropadas | Issue **#204** (P2, **fechada** — PRs #252/#253) | Séries históricas incompletas = decisão errada | Backend | P2 |
 | Sev-3 | Sem SLIs/SLOs de completude de dados (expected-vs-received) | Issue **#206** (P3, **fechada** — PRs #252/#253) | Degradação invisível até o cliente reclamar | DevOps/SRE | P2 |
 | Sev-3 | Buckets de auditoria dropam ts≤0 sem bucket "desconhecido" + meta JSON corrompido silencioso | Issue **#205** (P3, aberta) | Auditoria não auditável | Frontend | P1 |
@@ -226,15 +229,18 @@ license de teste. Evidência > opinião.
 2. **Issue P4-2:** Modal upgrade com aba Bitcoin (QR + sats + status poll + WebLN) + e2e
 3. **Issue P4-3:** `PAYMENT_BTC_ADDRESS` no config + migração de copy do modal
 4. ✅ **#204 e #206 fechadas** (PRs #252/#253) — pré-requisito de confiança concluído
-5. **Ativação do paywall (#256):** `PRO_KEYS_DB=1` no Render — runbook em §10.2
+5. ✅ **Paywall ativado (#256/#261 → PR #262):** `PRO_KEYS_DB=1` via infra-as-code
+   no render.yaml; 402 confirmado em produção; verificação automática no CI
+   (diagnose-render). Falta: emitir as primeiras chaves + `MARKETING_SPEND_USD`.
 6. **Validação real:** 1-sat test no endereço real → GO da fase P4
 
 ---
 
-## 10. Validação do Paywall (PRO_KEYS_DB) + Runbook de Ativação em Produção
+## 10. Validação do Paywall (PRO_KEYS_DB) + Ativação em Produção
 
 **Data:** 17-Aug-2026 · **Evidência:** validação local end-to-end em DB scratch
-(`PRO_KEYS_DB=1`) · **Issue:** #256 (aberta — ação do operador pendente)
+(`PRO_KEYS_DB=1`, 11/11 checks) · **Ativação:** PR #262 (infra-as-code) —
+**#256/#261 fechadas** · **Estado em prod:** `GET /api/proximity` → **402** ✅
 
 ### 10.1 Resultado da validação (11/11 checks ✅)
 
@@ -258,43 +264,41 @@ tudo grátis; `PRO_KEYS_DB=1` = gate ativo + funil alimentado. A validação de
 produção anterior (14-Aug) mostrou funil vazio **por construção** (open mode),
 não por bug de tracking.
 
-### 10.2 Runbook de ativação em produção (operator action — #256)
+### 10.2 Ativação em produção — CONCLUÍDA (17-Aug-2026)
 
-> **Atualização (17-Aug):** a ativação virou **infra-as-code** — `PRO_KEYS_DB=1`
-> agora vive no `render.yaml` (blueprint) e o job `diagnose-render` do
-> `execution-pipeline.yml` **verifica o 402 após cada deploy** (falha com
-> mensagem acionável se o gate voltar a open mode). O passo 1 manual abaixo
-> só é necessário como fallback se o sync do blueprint não aplicar a var.
+**Como foi feito (infra-as-code, PR #262):** `PRO_KEYS_DB=1` declarada no
+`render.yaml` (blueprint) → sync do blueprint no push a master aplicou a env
+var → gate ativo. O job `diagnose-render` do `execution-pipeline.yml` **verifica
+o 402 após cada deploy** (falha com mensagem acionável se o gate voltar a open
+mode). Pré-requisito atendido: **PR #255** (gate admin proxy-aware) garante que
+`/api/admin/licenses` exige `X-API-Key` real.
 
-Pré-requisito: **PR #255 mergeado** (gate admin proxy-aware — sem ele,
-`/api/admin/licenses` fica público no Render; com ele, exige `X-API-Key` real).
+**Confirmação do gate ativo (evidência ao vivo):**
+```bash
+curl -s https://cypher65-war-room.onrender.com/api/proximity
+# → 402 {"error":"PRO feature requires a license key","code":"LICENSE_REQUIRED",...}
+```
 
-1. **Aplicar a env var:** o merge do PR de infra (`render.yaml` com
-   `PRO_KEYS_DB=1`) dispara o sync do blueprint no push a master. Se o sync
-   não aplicar sozinho: Render Dashboard → `cypher65-war-room` → **Blueprint**
-   → **Sync now** (ou `render login` local + `render env set PRO_KEYS_DB 1`).
-2. **Validar o gate ativo:**
-   ```bash
-   curl -s https://cypher65-war-room.onrender.com/api/proximity
-   # → 402 {"error":"PRO feature requires a license key","code":"LICENSE_REQUIRED",...}
-   ```
-3. **Emitir a primeira chave** (admin — exige a `API_KEY` real de produção):
+**Próximos passos do operador (não são mais "ativação" — são operação):**
+
+1. **Emitir as primeiras chaves** (admin — exige a `API_KEY` real):
    ```bash
    curl -s -X POST https://cypher65-war-room.onrender.com/api/admin/licenses \
      -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
-     -d '{"tier":"pro","days":30,"note":"ativação inicial"}'
+     -d '{"tier":"pro","days":30,"note":"early-adopter"}'
    # → {"license_key":"C65-XXXX-...","ok":true}
    ```
-4. **Confirmar que o funil começou a coletar** (após tráfego/402s):
+2. **Acompanhar o funil** (dados reais acumulando desde 17-Aug):
    ```bash
    curl -s "https://cypher65-war-room.onrender.com/api/admin/conversion?days=30&weeks=8"
-   # → funnel.stages.paywall_view > 0
+   # → funnel.stages.paywall_view > 0 (crescendo com o tráfego)
    ```
-5. **Opcional — completar a economia:** setar `MARKETING_SPEND_USD` para
+3. **Completar a economia:** setar `MARKETING_SPEND_USD` para
    LTV:CAC/payback saírem do `null` em `ltv_cac_report()`.
 
-**Rollback:** remover `PRO_KEYS_DB` → open mode imediato (gate volta a ser
-no-op; nenhuma feature quebra).
+**Rollback:** remover `PRO_KEYS_DB` do render.yaml → open mode imediato (gate
+volta a ser no-op; nenhuma feature quebra) — o próprio CI acusa se isso
+acontecer.
 
 ### 10.3 Critério de GO da fase P4 (atualizado)
 
