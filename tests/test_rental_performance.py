@@ -2224,6 +2224,117 @@ def test_create_braiins_bid_settings_unavailable_falls_back_to_static(monkeypatc
     assert sent[-1]["price_sat"] == 123456
 
 
+def test_create_braiins_bid_rejects_when_max_active_bids_reached(monkeypatch):
+    """F7: MarketSettings.max_bids_per_subaccount — at the cap → rejected
+    BEFORE the wire (no POST, no partial balance consumption)."""
+    _fake_braiins_key(monkeypatch)
+    monkeypatch.setattr(rp, "braiins_price_unit", lambda tenant_id="": "sats/PH/day")
+    called = []
+    monkeypatch.setattr(
+        rp.requests, "post", lambda *a, **k: called.append(1) or FakeResponse()
+    )
+    monkeypatch.setattr(
+        rp,
+        "braiins_market_limits",
+        lambda tenant_id="": {"max_bids_per_subaccount": 2},
+    )
+    monkeypatch.setattr(
+        rp,
+        "braiins_active_bids",
+        lambda tenant_id="": {
+            "success": True,
+            "bids": [
+                {"id": "B1", "status": "ACTIVE"},
+                {"id": "B2", "status": "ACTIVE"},
+            ],
+        },
+    )
+    out = rp.create_braiins_bid(1.0, 500000, 123456, "stratum+tcp://h:3333", "u.w")
+    assert out["success"] is False
+    assert "max active bids reached (2/2)" in out["error"]
+    assert called == []  # NOTHING reached the API
+
+
+def test_create_braiins_bid_allows_under_max(monkeypatch):
+    """F7: below the cap → proceeds to the wire (live count respected)."""
+    _fake_braiins_key(monkeypatch)
+    monkeypatch.setattr(rp, "braiins_price_unit", lambda tenant_id="": "sats/PH/day")
+    sent = []
+    monkeypatch.setattr(
+        rp.requests,
+        "post",
+        lambda url, json=None, headers=None, timeout=20: sent.append(json)
+        or FakeResponse(payload={"bid_id": "B1"}),
+    )
+    monkeypatch.setattr(
+        rp,
+        "braiins_market_limits",
+        lambda tenant_id="": {"max_bids_per_subaccount": 3},
+    )
+    monkeypatch.setattr(
+        rp,
+        "braiins_active_bids",
+        lambda tenant_id="": {
+            "success": True,
+            "bids": [{"id": "B1", "status": "ACTIVE"}],
+        },
+    )
+    out = rp.create_braiins_bid(1.0, 500000, 123456, "stratum+tcp://h:3333", "u.w")
+    assert out["success"] is True
+    assert sent[-1]["price_sat"] == 123456
+
+
+def test_create_braiins_bid_fail_closed_when_count_unknown(monkeypatch):
+    """F7: limit known but active-bid count unavailable → fail closed
+    (absence of evidence is risk with real money)."""
+    _fake_braiins_key(monkeypatch)
+    monkeypatch.setattr(rp, "braiins_price_unit", lambda tenant_id="": "sats/PH/day")
+    called = []
+    monkeypatch.setattr(
+        rp.requests, "post", lambda *a, **k: called.append(1) or FakeResponse()
+    )
+    monkeypatch.setattr(
+        rp,
+        "braiins_market_limits",
+        lambda tenant_id="": {"max_bids_per_subaccount": 2},
+    )
+    monkeypatch.setattr(
+        rp,
+        "braiins_active_bids",
+        lambda tenant_id="": {"success": False, "error": "HTTP 500"},
+    )
+    out = rp.create_braiins_bid(1.0, 500000, 123456, "stratum+tcp://h:3333", "u.w")
+    assert out["success"] is False
+    assert "cannot verify active bids" in out["error"]
+    assert called == []
+
+
+def test_create_braiins_bid_skips_cap_when_limit_unknown(monkeypatch):
+    """F7: settings unavailable → limit unknown → the cap check is skipped
+    (the provider rejects an over-limit POST itself) and active bids are NOT
+    queried."""
+    _fake_braiins_key(monkeypatch)
+    monkeypatch.setattr(rp, "braiins_price_unit", lambda tenant_id="": "sats/PH/day")
+    monkeypatch.setattr(rp, "braiins_market_limits", lambda tenant_id="": {})
+    active_called = []
+    monkeypatch.setattr(
+        rp,
+        "braiins_active_bids",
+        lambda tenant_id="": active_called.append(1) or {"success": True, "bids": []},
+    )
+    sent = []
+    monkeypatch.setattr(
+        rp.requests,
+        "post",
+        lambda url, json=None, headers=None, timeout=20: sent.append(json)
+        or FakeResponse(payload={"bid_id": "B1"}),
+    )
+    out = rp.create_braiins_bid(1.0, 500000, 123456, "stratum+tcp://h:3333", "u.w")
+    assert out["success"] is True
+    assert active_called == []  # cap check skipped, no extra network call
+    assert sent[-1]["price_sat"] == 123456
+
+
 def test_braiins_active_bids_parses_envelope(monkeypatch):
     """F8: /spot/bid/current envelope {items: [{bid: {...}}]} → flat list
     with id / cl_order_id / status (SpotGetCurrentBidsResponse)."""
@@ -2773,6 +2884,34 @@ def test_bid_route_reconcile_pending_on_fresh_false(rclient, monkeypatch):
     body = resp.get_json()
     assert body["reconciled"] == "pending"
     assert "eventual consistency" in (body.get("reconcile_reason") or "")
+
+
+def test_bid_route_max_active_bids_returns_400(rclient, monkeypatch):
+    """F7: 'max active bids reached' maps to HTTP 400 (business rejection,
+    not 502)."""
+    _fake_braiins_key(monkeypatch)
+    _app_module._braiins_bid_store.clear()
+    monkeypatch.setattr(
+        _app_module._rental_perf,
+        "create_braiins_bid",
+        lambda **k: {
+            "success": False,
+            "error": "max active bids reached (2/2) — cancel a bid first",
+        },
+    )
+    resp = rclient.post(
+        "/api/rentals/braiins/bid",
+        json={
+            "speed_limit_th": 1000,
+            "amount_sat": 500000,
+            "price_sat": 123456,
+            "upstream_url": "stratum+tcp://h:3333",
+            "upstream_identity": "u.w",
+            "cl_order_id": "c65-cap",
+        },
+    )
+    assert resp.status_code == 400
+    assert "max active bids" in resp.get_json()["error"]
 
 
 def test_quote_and_balance_routes(rclient, monkeypatch):
