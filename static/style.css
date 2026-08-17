@@ -326,7 +326,34 @@ a:hover { text-decoration: underline; }
 }
 .sidebar__link .icon svg { width: 16px; height: 16px; }
 .sidebar__link .label { font-size: var(--fs-sm); }
-.sidebar.collapsed .sidebar__link .label { display: none; }
+
+/* ── Utilitários sr-only (WebAIM) — Issue #246 ────────────────────────
+   Ocultam visualmente SEM remover da árvore de acessibilidade: ao
+   contrário de display:none, o texto continua disponível para screen
+   readers (o aria-label vira redundância defensiva, não a única fonte
+   do nome). Uso: aplicar nos elementos cujo texto deve sobreviver à
+   ocultação visual (ex.: labels da sidebar colapsada/mobile).
+   .sr-only-reset desfaz o sr-only (drawer aberto / estado visível).
+   Os utilitários são DEFINIDOS nos agrupamentos abaixo (o seletor
+   .sr-only aparece junto de .sidebar.collapsed; .sr-only-reset junto
+   de .sidebar.open) — media queries não agrupam, então os pontos ≤1024
+   e ≤768 repetem o bloco inline com referência ao padrão.
+   ──────────────────────────────────────────────────────────────── */
+
+/* Estado colapsado: .label com o padrão sr-only (define o utility .sr-only) */
+.sidebar.collapsed .sidebar__link .label,
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
 .sidebar.collapsed .sidebar__brand { display: none; }
 .sidebar.collapsed .sidebar-status-text { display: none; }
 .sidebar__divider { height: 1px; background: var(--border-subtle); margin: 6px 12px; }
@@ -2766,7 +2793,21 @@ tr:hover td { background: var(--bg-hover); }
 }
 @media (max-width: 1024px) {
   .sidebar { width: var(--sidebar-collapsed-width); }
-  .sidebar .sidebar__brand, .sidebar .sidebar__link .label, .sidebar .sidebar-status-text { display: none; }
+  .sidebar .sidebar__brand, .sidebar .sidebar-status-text { display: none; }
+  /* sr-only em vez de display:none — Issue #246 (mesmo padrão do
+     utility .sr-only; inline aqui porque media queries não agrupam) */
+  .sidebar .sidebar__link .label {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    clip-path: inset(50%);
+    white-space: nowrap;
+    border: 0;
+  }
   .main-area { margin-left: var(--sidebar-collapsed-width); }
   .profit-grid, .gauge-grid { grid-template-columns: repeat(2, 1fr); }
   .mkt-snapshot { grid-template-columns: repeat(3, 1fr); }
@@ -2779,7 +2820,34 @@ tr:hover td { background: var(--bg-hover); }
   }
   .sidebar.open { transform: translateX(0); }
   .sidebar .sidebar__brand { display: none; }
-  .sidebar .sidebar__link .label { display: none; }
+  /* sr-only em vez de display:none — Issue #246 (padrão do utility
+     .sr-only; inline porque media queries não agrupam) */
+  .sidebar .sidebar__link .label {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    clip-path: inset(50%);
+    white-space: nowrap;
+    border: 0;
+  }
+  /* Drawer aberto: desfaz o sr-only */
+  .sidebar.open .sidebar__link .label,
+  .sr-only-reset {
+    position: static;
+    width: auto;
+    height: auto;
+    padding: 0;
+    margin: 0;
+    overflow: visible;
+    clip: auto;
+    clip-path: none;
+    white-space: normal;
+    border: 0;
+  }
   .sidebar.open .sidebar__link .label { display: inline; }
   .sidebar.open .sidebar__brand { display: block; }
   .main-area { margin-left: 0; }
@@ -2832,6 +2900,20 @@ tr:hover td { background: var(--bg-hover); }
   .sidebar { width: 100vw; transform: translateX(-100%); }
   .sidebar.open { transform: translateX(0); }
   .sidebar.open .sidebar__brand { display: block; }
+  /* Drawer aberto (≤480px): reforça o reset sr-only do ≤768 (Issue #246) */
+  .sidebar.open .sidebar__link .label,
+  .sr-only-reset {
+    position: static;
+    width: auto;
+    height: auto;
+    padding: 0;
+    margin: 0;
+    overflow: visible;
+    clip: auto;
+    clip-path: none;
+    white-space: normal;
+    border: 0;
+  }
   .sidebar.open .sidebar__link .label { display: inline; }
   .main-area { margin-left: 0; }
   .topbar__actions .topbar__btn { padding: 1px 4px; font-size: 8px; }
