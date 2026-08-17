@@ -64,7 +64,8 @@
 <link rel="icon" href="/static/favicon.ico" sizes="any">
 <link rel="icon" type="image/png" sizes="32x32" href="/static/icon-32x32.png">
 <link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
-<meta name="theme-color" content="#00ff41">
+<!-- Issue #216: theme-color na paleta v2 (--bg-deep #070808) — sem verde matrix -->
+<meta name="theme-color" content="#070808">
 <link rel="apple-touch-startup-image" media="screen and (device-width: 375px) and (device-height: 812px) and (-webkit-device-pixel-ratio: 3)" href="/static/splash-1125x2436.png">
 <link rel="apple-touch-startup-image" media="screen and (device-width: 414px) and (device-height: 896px) and (-webkit-device-pixel-ratio: 3)" href="/static/splash-1242x2688.png">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -1251,20 +1252,20 @@
     </div>
     <div id="axe-agent-token-row" style="display:none;margin-top:8px">
       <div style="font-size:9px;letter-spacing:0.08em;color:var(--text-tertiary);margin-bottom:2px">AGENT TOKEN (secreto — vale 365 dias, escopo do seu tenant)</div>
-      <textarea id="axe-agent-token" readonly rows="2" style="width:100%;font-family:var(--mono,monospace);font-size:10px;background:var(--bg-deep,#050505);color:var(--cyan);border:1px solid var(--border-subtle);padding:4px"></textarea>
+      <textarea id="axe-agent-token" readonly rows="2" style="width:100%;font-family:var(--mono,monospace);font-size:10px;background:var(--bg-deep);color:var(--cyan);border:1px solid var(--border-subtle);padding:4px"></textarea>
       <div style="display:flex;gap:4px;margin-top:4px">
         <button class="btn btn--mini" id="axe-agent-copy-token">⧉ COPY TOKEN</button>
         <button class="btn btn--mini" id="axe-agent-hide-token" style="color:var(--text-tertiary)">hide</button>
       </div>
       <div style="font-size:9px;letter-spacing:0.08em;color:var(--text-tertiary);margin:8px 0 2px">▶ PASSO 1 · RODE ESTA ÚNICA LINHA NA MÁQUINA DA SUA REDE (macOS / Linux / Raspberry Pi — sem Docker, sem pip)</div>
-      <pre id="axe-agent-one-liner" style="white-space:pre-wrap;font-size:10px;background:var(--bg-deep,#050505);color:var(--green);border:1px solid var(--border-subtle);padding:6px;margin:0;line-height:1.5"></pre>
+      <pre id="axe-agent-one-liner" style="white-space:pre-wrap;font-size:10px;background:var(--bg-deep);color:var(--green);border:1px solid var(--border-subtle);padding:6px;margin:0;line-height:1.5"></pre>
       <button class="btn btn--mini" id="axe-agent-copy-one" style="margin-top:4px">⧉ COPY COMMAND</button>
       <div style="font-size:9px;color:var(--text-tertiary);margin-top:6px;line-height:1.5">
         Precisa de <code>python3</code> (já vem instalado). O agente descobre os miners na sua
         LAN, conecta <strong>para fora</strong> (sem abrir porta) e o fleet aparece aqui em ~1 min.
       </div>
       <div style="font-size:9px;letter-spacing:0.08em;color:var(--text-tertiary);margin:8px 0 2px">▶ ALTERNATIVA · Docker (para NAS/PC com Docker instalado)</div>
-      <pre id="axe-agent-docker" style="white-space:pre-wrap;font-size:10px;background:var(--bg-deep,#050505);color:var(--cyan);border:1px solid var(--border-subtle);padding:6px;margin:0"></pre>
+      <pre id="axe-agent-docker" style="white-space:pre-wrap;font-size:10px;background:var(--bg-deep);color:var(--cyan);border:1px solid var(--border-subtle);padding:6px;margin:0"></pre>
       <button class="btn btn--mini" id="axe-agent-copy-docker" style="margin-top:4px">⧉ COPY COMMAND</button>
     </div>
   </div>
@@ -1789,25 +1790,26 @@
     <div class="prox-hero">
       <svg class="prox-svg" viewBox="0 0 220 130" xmlns="http://www.w3.org/2000/svg">
         <defs>
+          <!-- Issue #216: gradient do radar na paleta v2 (green → brand → amber) -->
           <linearGradient id="proxArcGrad" x1="0" x2="1" y1="0" y2="0">
-            <stop offset="0%"  stop-color="#00ff9f"></stop>
-            <stop offset="50%" stop-color="#00ffff"></stop>
-            <stop offset="100%" stop-color="#ffb000"></stop>
+            <stop offset="0%"  style="stop-color:var(--green)"></stop>
+            <stop offset="50%" style="stop-color:var(--brand)"></stop>
+            <stop offset="100%" style="stop-color:var(--amber)"></stop>
           </linearGradient>
           <radialGradient id="proxCenterGlow" cx="0.5" cy="0.5" r="0.5">
-            <stop offset="0%"  stop-color="rgba(0,255,255,0.25)"></stop>
-            <stop offset="100%" stop-color="rgba(0,255,255,0)"></stop>
+            <stop offset="0%"  style="stop-color:var(--brand-bg)"></stop>
+            <stop offset="100%" style="stop-color:transparent"></stop>
           </radialGradient>
         </defs>
-        <path d="M 20 110 A 90 90 0 0 1 200 110" fill="none" stroke="rgba(0,255,65,0.08)" stroke-width="14" stroke-linecap="round"/>
+        <path d="M 20 110 A 90 90 0 0 1 200 110" fill="none" style="stroke:var(--green-bg)" stroke-width="14" stroke-linecap="round"/>
         <path id="prox-arc" d="M 20 110 A 90 90 0 0 1 200 110" fill="none" stroke="url(#proxArcGrad)" stroke-width="14" stroke-linecap="round" stroke-dasharray="283" stroke-dashoffset="283" pathLength="283"/>
-        <g id="prox-ticks" stroke="rgba(0,255,65,0.12)" stroke-width="1">
+        <g id="prox-ticks" style="stroke:var(--green-bg)" stroke-width="1">
           <line x1="33" y1="62" x2="44" y2="68"/>
           <line x1="110" y1="20" x2="110" y2="32"/>
           <line x1="187" y1="62" x2="176" y2="68"/>
         </g>
         <circle cx="110" cy="110" r="55" fill="url(#proxCenterGlow)"/>
-        <circle id="prox-tip" cx="200" cy="110" r="6" fill="#ffb000" opacity="0"/>
+        <circle id="prox-tip" cx="200" cy="110" r="6" style="fill:var(--amber)" opacity="0"/>
       </svg>
       <div class="prox-hero__center">
         <div class="prox-hero__pct" id="prox-hero-pct">—</div>
@@ -2486,7 +2488,7 @@
     <span class="doc-callout__icon">⌨</span>
     <span class="doc-callout__text">
       <strong>CYPHER65 War Room:</strong>
-      <a href="https://github.com/0xjc65eth/cypher65-war-room" target="_blank" rel="noopener noreferrer" style="color:var(--accent-cyan, #06d6f0)">github.com/0xjc65eth/cypher65-war-room</a>
+      <a href="https://github.com/0xjc65eth/cypher65-war-room" target="_blank" rel="noopener noreferrer" style="color:var(--accent-cyan)">github.com/0xjc65eth/cypher65-war-room</a>
       — abra uma <em>issue</em> para reportar problemas e sugestões, ou um <em>pull request</em> para contribuir com código.
     </span>
   </div>
@@ -2753,7 +2755,7 @@
       <div id="webln-status" class="webln-status" style="margin-top:4px"></div>
       <div style="display:flex;gap:6px;margin-top:6px">
         <button class="btn btn--primary" id="wallet-save" style="flex:1">CONNECT</button>
-        <button class="btn" id="webln-connect-btn" style="flex:1;border-color:var(--gold, #f5b942);color:var(--gold, #f5b942)">⚡ LN WALLET</button>
+        <button class="btn" id="webln-connect-btn" style="flex:1;border-color:var(--gold);color:var(--gold)">⚡ LN WALLET</button>
       </div>
     </div>
   </div>
@@ -2800,7 +2802,7 @@
       <span class="modal__status" id="auth-status"></span>
       <div style="display:flex;gap:6px;margin-top:6px">
         <button class="btn btn--primary" id="auth-login" style="flex:1">LOGIN</button>
-        <button class="btn" id="auth-logout" style="flex:1;border-color:var(--accent-red, #FF1744);color:var(--accent-red, #FF1744)">LOGOUT</button>
+        <button class="btn" id="auth-logout" style="flex:1;border-color:var(--accent-red);color:var(--accent-red)">LOGOUT</button>
       </div>
     </div>
   </div>

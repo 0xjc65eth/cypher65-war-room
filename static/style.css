@@ -78,6 +78,8 @@
   --accent-purple:   var(--brand);
   --accent-blue:     var(--brand);
   --accent-teal:     var(--brand);
+  --accent-cyan:     var(--brand);
+  --accent-cyan-bg:  var(--brand-bg);
   --accent-btc-bg:   var(--brand-bg);
   --accent-green-bg: var(--green-bg);
   --accent-red-bg:   var(--red-bg);
@@ -1200,6 +1202,7 @@ tr:hover td { background: var(--bg-hover); }
 .toast--error   { border-left-color: var(--red); }
 .toast--success { border-left-color: var(--green); }
 .toast--warn    { border-left-color: var(--amber); }
+.toast--info    { border-left-color: var(--brand); }
 
 /* ── Empty states ────────────────────────────────────────────────── */
 .empty-state {

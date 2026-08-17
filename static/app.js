@@ -261,20 +261,31 @@
   };
 
   
-  // ── FASE 2: Toast notification ──
+  // ── Design tokens para o canvas (Issue #216) ───────────────────────
+  // O canvas não resolve CSS var() — lê o valor real do :root. Zero hex
+  // fora do style.css: todo consumo de cor passa pelo token system.
+  function cssVar(name) {
+    return getComputedStyle(document.documentElement).getPropertyValue(name).trim() || '';
+  }
+
+  // ── FASE 2: Toast notification (design system: classes .toast + tokens) ──
   function showToast(type, message) {
     var t = document.getElementById('toast-container');
     if (!t) {
       t = document.createElement('div');
       t.id = 'toast-container';
-      t.style.cssText = 'position:fixed;bottom:60px;right:16px;z-index:9999;display:flex;flex-direction:column;gap:6px;max-width:320px';
       document.body.appendChild(t);
     }
     var el = document.createElement('div');
-    el.style.cssText = 'padding:8px 14px;border-radius:2px;font-size:12px;font-family:JetBrains Mono,monospace;background:#1A1B1D;border:1px solid ' + (type === 'success' ? '#00C853' : '#FF1744') + ';color:#EAEAEB;box-shadow:0 2px 8px rgba(0,0,0,0.4);animation:fadeIn 0.2s ease';
+    var kind = type === 'success' ? 'success' : (type === 'warn' || type === 'warning') ? 'warn' : (type === 'info' ? 'info' : 'error');
+    el.className = 'toast toast--' + kind;
     el.textContent = message;
     t.appendChild(el);
-    setTimeout(function() { el.style.opacity = '0'; el.style.transition = 'opacity 0.3s'; setTimeout(function() { el.remove(); }, 300); }, 3000);
+    requestAnimationFrame(function() { el.classList.add('visible'); });
+    setTimeout(function() {
+      el.classList.remove('visible');
+      setTimeout(function() { el.remove(); }, 300);
+    }, 3000);
   }
 
 // ── escape HTML ───────────────────────────────────────────────────────
@@ -2616,9 +2627,9 @@ function renderAccount(acct) {
     // Value arc
     const angle = Math.PI - (displayPct / 100) * Math.PI;
     const grad = ctx.createLinearGradient(cx - r, 0, cx + r, 0);
-    grad.addColorStop(0, '#00ff9f');
-    grad.addColorStop(0.5, '#06d6f0');
-    grad.addColorStop(1, '#f5b942');
+    grad.addColorStop(0, cssVar('--green'));
+    grad.addColorStop(0.5, cssVar('--brand'));
+    grad.addColorStop(1, cssVar('--amber'));
     ctx.beginPath();
     ctx.arc(cx, cy, r, Math.PI, angle, false);
     ctx.strokeStyle = grad;
@@ -7228,8 +7239,8 @@ function renderAccount(acct) {
             backgroundColor: 'rgba(17,18,20,0.94)',
             borderColor: 'rgba(255,255,255,0.08)',
             borderWidth: 1,
-            titleColor: '#EAEAEB',
-            bodyColor: '#C9C5BC',
+            titleColor: cssVar('--text-primary'),
+            bodyColor: cssVar('--text-secondary'),
             padding: 10,
             boxPadding: 4,
             usePointStyle: true,
@@ -7317,30 +7328,6 @@ function renderAccount(acct) {
         _resetChartZoom(charts[btn.dataset.zoomReset]);
       });
     });
-  }
-
-  // ── Matrix Rain ──
-  function initMatrix() {
-    const c = document.getElementById('matrix-canvas'); if (!c) return;
-    const ctx = c.getContext('2d'); let w, h, cols, drops;
-    const chars = '01アイウエオカキクケコサシスセソタチツテトABCDEF123456789#$%&*+<=>?';
-    function resize() { w = c.width = window.innerWidth; h = c.height = window.innerHeight; cols = Math.floor(w / 14); drops = Array(cols).fill(0).map(() => Math.random() * h / 14); }
-    resize(); window.addEventListener('resize', resize);
-    function step() {
-      if (document.hidden) { requestAnimationFrame(step); return; }
-      ctx.fillStyle = 'rgba(4, 6, 10, 0.07)'; ctx.fillRect(0, 0, w, h);
-      ctx.font = '13px JetBrains Mono';
-      for (let i = 0; i < cols; i++) {
-        const x = i * 14, y = drops[i] * 14;
-        const ch = chars[Math.floor(Math.random() * chars.length)];
-        ctx.fillStyle = Math.random() > 0.985 ? '#a855f7' : Math.random() > 0.95 ? '#00ff9f' : '#06d6f0';
-        ctx.fillText(ch, x, y);
-        if (y > h && Math.random() > 0.975) drops[i] = 0;
-        drops[i] += 0.95;
-      }
-      requestAnimationFrame(step);
-    }
-    step();
   }
 
   // ── Settings ──
@@ -7621,7 +7608,7 @@ function renderAccount(acct) {
       if (bar) {
         bar.innerHTML = methods.map(function(m) {
           return '<span class="support-method support-bar__method" title="' + escapeHtml(m.label) + '">' +
-            '<span class="support-method-tag" style="color:' + escapeHtml(m.color || '#00ff41') + '">' + escapeHtml(m.icon || '₿') + ' ' + escapeHtml(m.label) + '</span>' +
+            '<span class="support-method-tag" style="color:' + escapeHtml(m.color || cssVar('--green')) + '">' + escapeHtml(m.icon || '₿') + ' ' + escapeHtml(m.label) + '</span>' +
             '<span class="support-method-addr" title="' + escapeHtml(m.label) + ': ' + escapeHtml(m.address) + '" data-copy="' + escapeHtml(m.address) + '">' + escapeHtml(m.address) + '</span>' +
             '<button class="support-method-copy" data-copy-btn aria-label="Copy ' + escapeHtml(m.label) + ' address">⧉</button>' +
             '</span>';
@@ -7633,7 +7620,7 @@ function renderAccount(acct) {
       if (grid) {
         grid.innerHTML = methods.map(function(m) {
           return '<div class="support-modal__card">' +
-            '<div class="support-modal__card-icon" style="color:' + escapeHtml(m.color || '#00ff41') + '">' + escapeHtml(m.icon || '₿') + '</div>' +
+            '<div class="support-modal__card-icon" style="color:' + escapeHtml(m.color || cssVar('--green')) + '">' + escapeHtml(m.icon || '₿') + '</div>' +
             '<div class="support-modal__card-label">' + escapeHtml(m.label) + '</div>' +
             (m.note ? '<div class="support-modal__card-note">' + escapeHtml(m.note) + '</div>' : '') +
             '<div class="support-modal__card-addr" data-copy="' + escapeHtml(m.address) + '">' + escapeHtml(m.address) + '</div>' +
@@ -10294,7 +10281,7 @@ dom.walletSave?.addEventListener('click', async () => {
 
   // ── Boot ──
   async function boot() {
-    initMatrix(); initCharts(); bindChartRanges(); loadSettings(); initMarketControls(); initDecisionMatrixControls(); initCommandCenterControls(); _initRentalsPanel();
+    initCharts(); bindChartRanges(); loadSettings(); initMarketControls(); initDecisionMatrixControls(); initCommandCenterControls(); _initRentalsPanel();
     _initLmEventLogControls();
     initLicensing();  // R1: PRO badge + license state (off-by-default, no-op in open mode)
     fetchTailscale();
