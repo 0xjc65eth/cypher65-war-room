@@ -16,4 +16,4 @@ markdown==3.10.3
 # Sentry error tracking is OPTIONAL (Issue #176): services/sentry_telemetry
 # imports it lazily and only inits when SENTRY_DSN is set — without the env
 # var (or without this package) the app boots normally, zero overhead.
-sentry-sdk>=2.14.0
+sentry-sdk>=2.68.0
