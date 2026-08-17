@@ -195,7 +195,7 @@ jobs:
       # merge — o upload simplesmente fica pendente até o token existir.
       - name: Upload coverage to Codecov
         if: always()
-        uses: codecov/codecov-action@v5
+        uses: codecov/codecov-action@v7
         with:
           files: /tmp/coverage.xml
           fail_ci_if_error: false
