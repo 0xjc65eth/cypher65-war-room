@@ -1,7 +1,7 @@
 # 💎 CYPHER65 WAR ROOM — ENTERPRISE PLAN + BTC MONETIZATION PROGRAMS
 
 **Owner:** Staff Engineering Team (Pesquisa · Implementação · Validação)
-**Status:** Plano executável · **Baseline:** Aug 2026
+**Status:** Plano executável · **Baseline:** Aug 2026 · **Paywall validado** (PRO_KEYS_DB=1, 11/11 checks) em 17-Aug-2026 — aguarda ativação em produção (#256)
 **Pagamento (regra inegociável):** exclusivamente em Bitcoin para
 `35gjAoadgQxrNc1Kx6QiSLx7wCCXRnRFkM` (P2SH — **validado** com
 `helpers.validate_btc_address()` → `{'valid': True}`)
@@ -21,10 +21,16 @@ DOM/XSS, icon sweep Lucide, funil de conversão `paywall_view → modal_open →
 checkout_start → paid → key_activated` com LTV/CAC, licensing PRO/PREMIUM
 off-by-default). Os 3 buracos restantes são: **(a)** monetização ativa ainda
 inexistente — o gate está em *open mode* e o único provider é Lemon Squeezy
-(cartão/PayPal, 5%+$0.50), que **não** aceita BTC; **(b)** 6 issues abertas de
-dados/observabilidade (P2/P3) que corroem confiança de quem paga; **(c)** a
-infra BTC **já existe e está subutilizada** — `donations` (WebLN + on-chain via
-mempool.space + hashpower) provada por `test_donation_dedup.py`.
+(cartão/PayPal, 5%+$0.50), que **não** aceita BTC; **(b)** backlog de
+dados/observabilidade **fechado** (#204/#206 entregues — restam #205/#239/#185,
+P1/P2, na tabela §2); **(c)** a infra BTC **já existe e está subutilizada** —
+`donations` (WebLN + on-chain via mempool.space + hashpower) provada por
+`test_donation_dedup.py`.
+
+**Estado atualizado (17-Aug-2026):** o paywall foi **validado end-to-end
+localmente** — `PRO_KEYS_DB=1` → 402 em rota PRO + `paywall_view` countado +
+`funnel_report` não-vazio (**11/11 checks**, §10). Falta apenas o flip da env
+var em produção (Issue **#256**) para o funil coletar dados reais.
 
 **Oportunidade de receita:** três programas premium pagos **só em BTC**
 (PRO/PREMIUM/ENTERPRISE) reutilizando 100% da infra pronta (licensing,
@@ -45,9 +51,9 @@ dinâmica via `merge_btc_quotes`, já no código).
 | Sev | Problema | Evidência | Impacto | Owner | Fase |
 |---|---|---|---|---|---|
 | Sev-2 | Paywall exige cartão/PayPal via Lemon Squeezy — **zero aceitação BTC** | `services/payments.py` (LS-only) · `config.py:15` | Público-alvo Bitcoin-native não converte; perda de receita | Implementação | **P4** |
-| Sev-2 | Gate de licensing em *open mode* permanente (tudo free, sem data de ativação) | `services/licensing.py` (`_ACTIVATION_ENV` vazia) | Monetização não testada em produção | Implementação | P4 |
-| Sev-2 | Dados de alerta/rentals marcados stale sem `updated_at` + amostras ts=0 dropadas | Issue **#204** (P2, aberta) | Séries históricas incompletas = decisão errada | Backend | P2 |
-| Sev-3 | Sem SLIs/SLOs de completude de dados (expected-vs-received) | Issue **#206** (P3, aberta) | Degradação invisível até o cliente reclamar | DevOps/SRE | P2 |
+| Sev-2 | Gate de licensing em *open mode* permanente (tudo free, sem data de ativação) | `services/licensing.py` (`_ACTIVATION_ENV` vazia) · **validação 17-Aug: `PRO_KEYS_DB=1` → 402 + funil ativo (11/11, §10)** | Monetização validada localmente; falta flip da env var em prod (**#256**) | Implementação | P4 |
+| Sev-2 | Dados de alerta/rentals marcados stale sem `updated_at` + amostras ts=0 dropadas | Issue **#204** (P2, **fechada** — PRs #252/#253) | Séries históricas incompletas = decisão errada | Backend | P2 |
+| Sev-3 | Sem SLIs/SLOs de completude de dados (expected-vs-received) | Issue **#206** (P3, **fechada** — PRs #252/#253) | Degradação invisível até o cliente reclamar | DevOps/SRE | P2 |
 | Sev-3 | Buckets de auditoria dropam ts≤0 sem bucket "desconhecido" + meta JSON corrompido silencioso | Issue **#205** (P3, aberta) | Auditoria não auditável | Frontend | P1 |
 | Sev-3 | Mobile usa paleta RN antiga (149 hex fora do tema) | Issue **#239** (P3, aberta) | Inconsistência visual cross-platform | Frontend | P1 |
 | Sev-3 | Módulos pesados sem lazy loading (chart sob demanda + cap de render) | Issue **#185** (P3, aberta) | Percepção de lentidão em mobile | Frontend | P2 |
@@ -128,6 +134,7 @@ pytest+JS core 1359, frontend audit, e2e, axe 100/100).
 | Testes do modal/paywall (JS core + e2e) | JS core espelhado (padrão `test_app_js_core.js`) + `tests/e2e/upgrade-btc.spec.js` (Playwright): abrir modal, trocar para aba BTC, copiar endereço, mock de status pago → badge liberado |
 | Gate de a11y + tokens no novo modal | `check-axe.cjs` (score ≥ 90, button-name 0) + `check-tokens-hex.sh` no PR |
 | Funil BTC no dashboard CFO | `funnel_report()` com `method: "btc"` — conversão por etapa, drop-off |
+| Validação do paywall PRO_KEYS_DB | **Feito (17-Aug): 11/11 checks** — 402 em rota PRO · upgrade payload · `paywall_view` countado · `funnel_report` não-vazio · chave emitida passa no gate (script local, DB scratch) |
 | Release Readiness | Checklist: CI verde · 0 console errors no audit_ui · smoke 2 viewports · code review · PR com Closes #issue |
 
 ---
@@ -218,5 +225,72 @@ license de teste. Evidência > opinião.
 1. **Issue P4-1:** `services/btcpay.py` + rota webhook + testes (`test_btcpay_adapter.py`) — Closes: novo issue
 2. **Issue P4-2:** Modal upgrade com aba Bitcoin (QR + sats + status poll + WebLN) + e2e
 3. **Issue P4-3:** `PAYMENT_BTC_ADDRESS` no config + migração de copy do modal
-4. **Issue P2:** fechar #204 e #206 (pré-requisito de confiança antes de vender)
-5. **Validação real:** 1-sat test no endereço real → GO da fase P4
+4. ✅ **#204 e #206 fechadas** (PRs #252/#253) — pré-requisito de confiança concluído
+5. **Ativação do paywall (#256):** `PRO_KEYS_DB=1` no Render — runbook em §10.2
+6. **Validação real:** 1-sat test no endereço real → GO da fase P4
+
+---
+
+## 10. Validação do Paywall (PRO_KEYS_DB) + Runbook de Ativação em Produção
+
+**Data:** 17-Aug-2026 · **Evidência:** validação local end-to-end em DB scratch
+(`PRO_KEYS_DB=1`) · **Issue:** #256 (aberta — ação do operador pendente)
+
+### 10.1 Resultado da validação (11/11 checks ✅)
+
+| # | Check | Resultado |
+|---|---|---|
+| 1 | Open mode (sem env): `/api/proximity` | 200 — gate no-op (deploy atual intacto) |
+| 2 | `PRO_KEYS_DB=1` sem chave: `/api/proximity` | **402** |
+| 3 | Body do 402 | `code=LICENSE_REQUIRED` |
+| 4 | Body do 402 | payload `upgrade` com plano PRO ($9/mo) |
+| 5 | `/api/admin/conversion?days=30` | 200 (admin gate proxy-aware #254 ok) |
+| 6 | Telemetria de funil | `paywall_view` countado a cada 402 |
+| 7 | `funnel_report()` | **não-vazio** — stages preenchidos |
+| 8 | `visitors` | ≥ 1 (tenant anônimo — correto) |
+| 9 | Emissão de chave via `/api/admin/licenses` | `C65-XXXX-...` emitida |
+| 10 | Rota PRO com `X-License-Key` válida | **200** |
+| 11 | Rota PRO sem chave (pós-emissão) | ainda **402** |
+
+**Leitura:** o funil `paywall_view → key_activated` **funciona e coleta dados**
+assim que o paywall ativa. O design off-by-default foi confirmado: zero env =
+tudo grátis; `PRO_KEYS_DB=1` = gate ativo + funil alimentado. A validação de
+produção anterior (14-Aug) mostrou funil vazio **por construção** (open mode),
+não por bug de tracking.
+
+### 10.2 Runbook de ativação em produção (operator action — #256)
+
+Pré-requisito: **PR #255 mergeado** (gate admin proxy-aware — sem ele,
+`/api/admin/licenses` fica público no Render; com ele, exige `X-API-Key` real).
+
+1. **Setar a env var:** Render Dashboard → `cypher65-war-room` → **Environment**
+   → adicionar `PRO_KEYS_DB=1` → salvar → **Deploy/Restart** (ou `render login`
+   local + `render env set`).
+2. **Validar o gate ativo:**
+   ```bash
+   curl -s https://cypher65-war-room.onrender.com/api/proximity
+   # → 402 {"error":"PRO feature requires a license key","code":"LICENSE_REQUIRED",...}
+   ```
+3. **Emitir a primeira chave** (admin — exige a `API_KEY` real de produção):
+   ```bash
+   curl -s -X POST https://cypher65-war-room.onrender.com/api/admin/licenses \
+     -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
+     -d '{"tier":"pro","days":30,"note":"ativação inicial"}'
+   # → {"license_key":"C65-XXXX-...","ok":true}
+   ```
+4. **Confirmar que o funil começou a coletar** (após tráfego/402s):
+   ```bash
+   curl -s "https://cypher65-war-room.onrender.com/api/admin/conversion?days=30&weeks=8"
+   # → funnel.stages.paywall_view > 0
+   ```
+5. **Opcional — completar a economia:** setar `MARKETING_SPEND_USD` para
+   LTV:CAC/payback saírem do `null` em `ltv_cac_report()`.
+
+**Rollback:** remover `PRO_KEYS_DB` → open mode imediato (gate volta a ser
+no-op; nenhuma feature quebra).
+
+### 10.3 Critério de GO da fase P4 (atualizado)
+
+A validação local cobre os checks funcionais; **o GO final continua exigindo o
+teste de prova real**: 1 sat no endereço `35gjAoadgQxrNc1Kx6QiSLx7wCCXRnRFkM`
+com ativação automática detectada (webhook → license) — evidência > opinião.
