@@ -578,3 +578,94 @@ def test_email_sha_matches_funnel_anonymize():
 
     for email in ("Buyer@Example.com", "x@y.io", ""):
         assert payments.email_sha(email) == _anonymize(email)
+
+
+# ── Paywall end-to-end (11/11 validation, Issue #256) ────────────────
+# Published as automated tests the one-shot local validation that confirmed
+# the paywall activation before flipping PRO_KEYS_DB in production:
+#   1. Open mode → /api/proximity = 200 (gate no-op).
+#   2-4. PRO_KEYS_DB=1 → 402 + LICENSE_REQUIRED + PRO upgrade payload.
+#   5. /api/admin/conversion exposes the funnel (admin gate local ok).
+#   6-8. Every 402 tracks paywall_view; funnel_report non-empty; visitors≥1.
+#   9-11. Admin-issued key unlocks PRO (X-License-Key); no key stays 402.
+
+
+@pytest.fixture()
+def clean_events():
+    """Wipe conversion_events so paywall funnel tests stay hermetic."""
+    from services import conversion as _conv
+
+    from services.db import get_db
+
+    _conv.ensure_table()
+    conn = get_db()
+    conn.execute("DELETE FROM conversion_events")
+    conn.commit()
+    conn.close()
+    yield
+    conn = get_db()
+    conn.execute("DELETE FROM conversion_events")
+    conn.commit()
+    conn.close()
+
+
+def test_paywall_open_mode_proximity_200(client):
+    """Check 1 — open mode: gate is a no-op, PRO route answers 200."""
+    r = client.get("/api/proximity")
+    assert r.status_code == 200
+
+
+def test_paywall_gate_402_payload(client, monkeypatch):
+    """Checks 2-4 — PRO_KEYS_DB=1: 402 + LICENSE_REQUIRED + PRO upgrade."""
+    _activate_db_gate(monkeypatch)
+    r = client.get("/api/proximity")
+    assert r.status_code == 402
+    body = r.get_json()
+    assert body["code"] == "LICENSE_REQUIRED"
+    assert body["required_tier"] == "pro"
+    assert "features" in body  # PRO_FEATURES list exposed for the paywall
+    assert body["upgrade"]["plan"] == "PRO"
+    assert body["upgrade"]["price_usd_month"] == 9
+
+
+def test_paywall_402_tracks_paywall_view(client, monkeypatch, clean_events):
+    """Checks 5-8 — each 402 tracks paywall_view; funnel becomes non-empty."""
+    from services import conversion as _conv
+
+    _activate_db_gate(monkeypatch)
+    assert client.get("/api/proximity").status_code == 402
+    assert client.get("/api/proximity").status_code == 402
+    assert client.get("/api/monte_carlo").status_code == 402  # 3rd 402
+
+    funnel = _conv.funnel_report(days=30)
+    stages = funnel.get("stages") or {}
+    assert stages.get("paywall_view", 0) >= 3
+    assert funnel.get("visitors", 0) >= 1  # distinct tenant (anonymous here)
+    assert len(stages) > 0  # funnel_report non-empty
+
+    # Check 5 — the CFO route exposes the same funnel (admin gate: local ok).
+    r = client.get("/api/admin/conversion?days=30")
+    assert r.status_code == 200
+    funnel_route = (r.get_json() or {}).get("funnel") or {}
+    stages_route = funnel_route.get("stages") or {}
+    assert stages_route.get("paywall_view", 0) >= 3
+
+
+def test_paywall_issued_key_unlocks_route(client, monkeypatch):
+    """Checks 9-11 — admin-issued key unlocks PRO; no key stays 402."""
+    _activate_db_gate(monkeypatch)
+    monkeypatch.setenv("API_KEY", "op-secret")
+    r = client.post(
+        "/api/admin/licenses",
+        json={"plan": "pro", "days": 30, "note": "validate-paywall"},
+        headers={"X-API-Key": "op-secret"},
+    )
+    assert r.status_code == 200
+    key = r.get_json()["license_key"]
+    assert _KEY_RE.match(key)
+
+    r_ok = client.get("/api/proximity", headers={"X-License-Key": key})
+    assert r_ok.status_code == 200  # valid key passes the gate
+
+    r_no = client.get("/api/proximity")
+    assert r_no.status_code == 402  # absent key still blocked
