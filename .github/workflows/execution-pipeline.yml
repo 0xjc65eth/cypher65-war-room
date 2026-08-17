@@ -73,10 +73,12 @@ jobs:
           load: true
           tags: cypher65-ultimate:test
       - name: Run container and check health
+        # #283: curl --retry absorbs the container's boot-time variance (a cold
+        # Flask start can accept and reset the first connection → exit 56 flaky).
         run: |
           docker run -d -p 8765:8765 --name test-cypher cypher65-ultimate:test
           sleep 8
-          curl -fsS http://localhost:8765/api/healthz
+          curl -fsS --retry 5 --retry-delay 2 --retry-all-errors http://localhost:8765/api/healthz
           docker stop test-cypher && docker rm test-cypher
 
   # ── JOB 3: COMPOSE INTEGRATION ─────────────────────────────────────────
