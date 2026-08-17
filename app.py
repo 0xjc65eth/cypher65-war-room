@@ -7703,8 +7703,8 @@ def api_braiins_market(tenant_id: str = ""):
     """Live MarketSettings for the tenant's Braiins account (GET
     /spot/settings with the tenant's OWN key — Issues #267/#268).
     Read-only market data: hr_unit (unit proof), tick_size_sat,
-    price/amount/speed bounds and max_bids_per_subaccount (F7).
-    Never exposes the key."""
+    price/amount/speed bounds, max_bids_per_subaccount (F7) and
+    active_bids_count (F7 visibility, best-effort). Never exposes the key."""
     limits = _rental_perf.braiins_market_limits(tenant_id=tenant_id)
     if not limits:
         return (
@@ -7716,7 +7716,15 @@ def api_braiins_market(tenant_id: str = ""):
             ),
             502,
         )
-    return jsonify({"success": True, "market": limits})
+    payload = {"success": True, "market": limits}
+    # F7 visibility: live active-bid count (GET /spot/bid/current) so the
+    # operator sees N/M BEFORE placing — best-effort, never fails the route.
+    active = _rental_perf.braiins_active_bids(tenant_id=tenant_id)
+    if active.get("success"):
+        payload["active_bids_count"] = len(active.get("bids") or [])
+    else:
+        log.warning("[braiins] active-bid count unavailable: %s", active.get("error"))
+    return jsonify(payload)
 
 
 @app.route("/api/rentals/braiins/balance")

@@ -2916,7 +2916,7 @@ def test_bid_route_max_active_bids_returns_400(rclient, monkeypatch):
 
 def test_bid_route_market_settings(rclient, monkeypatch):
     """GET /api/rentals/braiins/market — live MarketSettings (read-only,
-    tenant-scoped, no secrets): hr_unit + bounds + F7 cap."""
+    tenant-scoped, no secrets): hr_unit + bounds + F7 cap + active count."""
     _fake_braiins_key(monkeypatch)
     monkeypatch.setattr(
         _app_module._rental_perf,
@@ -2928,12 +2928,46 @@ def test_bid_route_market_settings(rclient, monkeypatch):
             "max_bids_per_subaccount": 5,
         },
     )
+    monkeypatch.setattr(
+        _app_module._rental_perf,
+        "braiins_active_bids",
+        lambda tenant_id="": {
+            "success": True,
+            "bids": [
+                {"id": "B1", "status": "ACTIVE"},
+                {"id": "B2", "status": "ACTIVE"},
+            ],
+        },
+    )
     m = rclient.get("/api/rentals/braiins/market")
     assert m.status_code == 200
     body = m.get_json()
     assert body["success"] is True
     assert body["market"]["hr_unit"] == "PH/day"
     assert body["market"]["max_bids_per_subaccount"] == 5
+    assert body["active_bids_count"] == 2
+
+
+def test_bid_route_market_settings_count_best_effort(rclient, monkeypatch):
+    """F7 visibility: active_bids_count is best-effort — a provider count
+    failure still returns 200 with the market payload (no count key), never
+    a broken market route."""
+    _fake_braiins_key(monkeypatch)
+    monkeypatch.setattr(
+        _app_module._rental_perf,
+        "braiins_market_limits",
+        lambda tenant_id="": {"hr_unit": "PH/day", "max_bids_per_subaccount": 5},
+    )
+    monkeypatch.setattr(
+        _app_module._rental_perf,
+        "braiins_active_bids",
+        lambda tenant_id="": {"success": False, "error": "HTTP 500"},
+    )
+    m = rclient.get("/api/rentals/braiins/market")
+    assert m.status_code == 200
+    body = m.get_json()
+    assert body["success"] is True
+    assert "active_bids_count" not in body
 
 
 def test_bid_route_market_settings_unavailable(rclient, monkeypatch):
