@@ -2224,6 +2224,154 @@ def test_create_braiins_bid_settings_unavailable_falls_back_to_static(monkeypatc
     assert sent[-1]["price_sat"] == 123456
 
 
+def test_braiins_active_bids_parses_envelope(monkeypatch):
+    """F8: /spot/bid/current envelope {items: [{bid: {...}}]} → flat list
+    with id / cl_order_id / status (SpotGetCurrentBidsResponse)."""
+    _fake_braiins_key(monkeypatch)
+    monkeypatch.setattr(
+        rp.requests,
+        "get",
+        lambda *a, **k: FakeResponse(
+            payload={
+                "items": [
+                    {
+                        "bid": {
+                            "id": "B123",
+                            "cl_order_id": "c65-abc",
+                            "status": "ACTIVE",
+                            "amount_sat": 500000,
+                            "price_sat": 123456,
+                            "created": "2026-08-17T00:00:00Z",
+                        },
+                        "counters_committed": {},
+                    },
+                    {
+                        "bid": {
+                            "id": "B124",
+                            "cl_order_id": "c65-def",
+                            "status": "PAUSED",
+                        }
+                    },
+                ]
+            }
+        ),
+    )
+    out = rp.braiins_active_bids()
+    assert out["success"] is True
+    assert len(out["bids"]) == 2
+    assert out["bids"][0]["id"] == "B123"
+    assert out["bids"][0]["cl_order_id"] == "c65-abc"
+    assert out["bids"][0]["status"] == "ACTIVE"
+    assert out["bids"][1]["status"] == "PAUSED"
+
+
+def test_braiins_active_bids_401_surfaces(monkeypatch):
+    """F8: rejected key → needs_auth (never an empty account)."""
+    _fake_braiins_key(monkeypatch)
+    monkeypatch.setattr(
+        rp.requests, "get", lambda *a, **k: FakeResponse(ok=False, status_code=401)
+    )
+    out = rp.braiins_active_bids()
+    assert out["success"] is False
+    assert out["needs_auth"] is True
+
+
+def test_reconcile_braiins_bid_matches_cl_order_id(monkeypatch):
+    """F8: placed bid found on the provider by cl_order_id → reconciled."""
+    _fake_braiins_key(monkeypatch)
+    monkeypatch.setattr(
+        rp,
+        "braiins_active_bids",
+        lambda tenant_id="": {
+            "success": True,
+            "bids": [
+                {"id": "B1", "cl_order_id": "c65-x", "status": "ACTIVE"},
+                {"id": "B2", "cl_order_id": "other", "status": "PAUSED"},
+            ],
+        },
+    )
+    out = rp.reconcile_braiins_bid(cl_order_id="c65-x", retries=0)
+    assert out["reconciled"] is True
+    assert out["bid_id"] == "B1"
+    assert out["status"] == "ACTIVE"
+    assert out["active_count"] == 2
+
+
+def test_reconcile_braiins_bid_not_found(monkeypatch):
+    """F8: audited order missing from provider → reconciled False (silent-loss
+    guard — the operator sees it in the /reconcile view)."""
+    _fake_braiins_key(monkeypatch)
+    monkeypatch.setattr(
+        rp,
+        "braiins_active_bids",
+        lambda tenant_id="": {
+            "success": True,
+            "bids": [{"id": "B9", "cl_order_id": "other", "status": "ACTIVE"}],
+        },
+    )
+    out = rp.reconcile_braiins_bid(cl_order_id="c65-ghost", retries=0)
+    assert out["reconciled"] is False
+    assert "not found" in out["reason"]
+
+
+def test_reconcile_braiins_bid_provider_unreachable(monkeypatch):
+    """F8: provider error → reconciled "unknown" — never revokes the
+    placement, confirmation is simply pending."""
+    _fake_braiins_key(monkeypatch)
+    monkeypatch.setattr(
+        rp,
+        "braiins_active_bids",
+        lambda tenant_id="": {"success": False, "error": "HTTP 500"},
+    )
+    out = rp.reconcile_braiins_bid(cl_order_id="c65-x", retries=0)
+    assert out["reconciled"] == "unknown"
+
+
+def test_reconcile_braiins_bid_retries_eventual_consistency(monkeypatch):
+    """F8: a fresh bid may not appear on the first /spot/bid/current call —
+    the backoff retry absorbs eventual consistency (backoff=0 keeps the test
+    fast and hermetic)."""
+    _fake_braiins_key(monkeypatch)
+    calls = {"n": 0}
+
+    def _active(tenant_id=""):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return {"success": True, "bids": [{"id": "B9", "cl_order_id": "other"}]}
+        return {
+            "success": True,
+            "bids": [
+                {"id": "B1", "cl_order_id": "c65-late", "status": "ACTIVE"},
+                {"id": "B9", "cl_order_id": "other"},
+            ],
+        }
+
+    monkeypatch.setattr(rp, "braiins_active_bids", _active)
+    out = rp.reconcile_braiins_bid(cl_order_id="c65-late", retries=2, backoff=0)
+    assert out["reconciled"] is True
+    assert out["bid_id"] == "B1"
+    assert calls["n"] == 2
+
+
+def test_reconcile_braiins_bid_truncates_to_64(monkeypatch):
+    """F8: cl_order_id is truncated to 64 chars exactly like the POST payload
+    (create_braiins_bid) — the correlation key is identical in every layer, so
+    a long client id still matches the provider's echo."""
+    _fake_braiins_key(monkeypatch)
+    long_id = "c65-" + "x" * 90
+    monkeypatch.setattr(
+        rp,
+        "braiins_active_bids",
+        lambda tenant_id="": {
+            "success": True,
+            "bids": [{"id": "B1", "cl_order_id": long_id[:64], "status": "ACTIVE"}],
+        },
+    )
+    out = rp.reconcile_braiins_bid(cl_order_id=long_id, retries=0)
+    assert out["reconciled"] is True
+    assert out["bid_id"] == "B1"
+
+
 def test_create_braiins_bid_missing_key(monkeypatch):
     """No key anywhere → explicit needs_auth, no HTTP at all."""
     _fake_braiins_key(monkeypatch, key="")
@@ -2389,6 +2537,15 @@ def test_bid_route_th_to_ph_and_validation(rclient, monkeypatch):
         return {"success": True, "bid": {"id": "BID-ROUTE", "raw": {}}}
 
     monkeypatch.setattr(_app_module._rental_perf, "create_braiins_bid", fake_create)
+    monkeypatch.setattr(
+        _app_module._rental_perf,
+        "reconcile_braiins_bid",
+        lambda tenant_id="", cl_order_id="": {
+            "reconciled": True,
+            "status": "ACTIVE",
+            "bid_id": "BID-ROUTE",
+        },
+    )
 
     # Missing amount/price → 400 before any provider call.
     resp = rclient.post(
@@ -2467,6 +2624,15 @@ def test_bid_route_rate_limited_after_budget(rclient, monkeypatch):
         return {"success": True, "bid": {"id": "B"}}
 
     monkeypatch.setattr(_app_module._rental_perf, "create_braiins_bid", fake_create)
+    monkeypatch.setattr(
+        _app_module._rental_perf,
+        "reconcile_braiins_bid",
+        lambda tenant_id="", cl_order_id="": {
+            "reconciled": True,
+            "status": "ACTIVE",
+            "bid_id": "B",
+        },
+    )
     valid = {
         "speed_limit_th": 1000,
         "amount_sat": 500000,
@@ -2496,6 +2662,15 @@ def test_bid_route_audit_trail_readable(rclient, monkeypatch):
         "create_braiins_bid",
         lambda **k: {"success": True, "bid": {"id": "B"}},
     )
+    monkeypatch.setattr(
+        _app_module._rental_perf,
+        "reconcile_braiins_bid",
+        lambda tenant_id="", cl_order_id="": {
+            "reconciled": True,
+            "status": "ACTIVE",
+            "bid_id": "B",
+        },
+    )
     resp = rclient.post(
         "/api/rentals/braiins/bid",
         json={
@@ -2508,10 +2683,96 @@ def test_bid_route_audit_trail_readable(rclient, monkeypatch):
         },
     )
     assert resp.status_code == 200
+    assert resp.get_json()["reconciled"] is True
     audit = rclient.get("/api/rentals/braiins/bid/audit?limit=10")
     assert audit.status_code == 200
     assert audit.get_json()["success"] is True
     assert "entries" in audit.get_json()
+
+
+def test_bid_route_reconcile_view(rclient, monkeypatch):
+    """F8: GET /api/rentals/braiins/bid/reconcile — audit × provider view
+    (read-only), and the POST response carries the reconciliation result."""
+    _fake_braiins_key(monkeypatch)
+    _app_module._braiins_bid_store.clear()
+    monkeypatch.setattr(
+        _app_module._rental_perf,
+        "create_braiins_bid",
+        lambda **k: {"success": True, "bid": {"id": "B1"}},
+    )
+    monkeypatch.setattr(
+        _app_module._rental_perf,
+        "reconcile_braiins_bid",
+        lambda tenant_id="", cl_order_id="": {
+            "reconciled": True,
+            "status": "ACTIVE",
+            "bid_id": "B1",
+        },
+    )
+    monkeypatch.setattr(
+        _app_module._rental_perf,
+        "braiins_active_bids",
+        lambda tenant_id="": {
+            "success": True,
+            "bids": [{"id": "B1", "cl_order_id": "c65-rc", "status": "ACTIVE"}],
+        },
+    )
+    resp = rclient.post(
+        "/api/rentals/braiins/bid",
+        json={
+            "speed_limit_th": 1000,
+            "amount_sat": 500000,
+            "price_sat": 123456,
+            "upstream_url": "stratum+tcp://h:3333",
+            "upstream_identity": "u.w",
+            "cl_order_id": "c65-rc",
+        },
+    )
+    assert resp.status_code == 200
+    assert resp.get_json()["reconciled"] is True
+    assert resp.get_json()["provider_bid_id"] == "B1"
+    view = rclient.get("/api/rentals/braiins/bid/reconcile")
+    assert view.status_code == 200
+    body = view.get_json()
+    assert body["success"] is True
+    assert "active_provider_bids" in body
+    assert "entries" in body
+
+
+def test_bid_route_reconcile_pending_on_fresh_false(rclient, monkeypatch):
+    """F8: a False reconciliation right after a successful POST is the
+    provider's eventual consistency — surfaced as 'pending', never a false
+    silent-loss alarm."""
+    _fake_braiins_key(monkeypatch)
+    _app_module._braiins_bid_store.clear()
+    monkeypatch.setattr(
+        _app_module._rental_perf,
+        "create_braiins_bid",
+        lambda **k: {"success": True, "bid": {"id": "B1"}},
+    )
+    monkeypatch.setattr(
+        _app_module._rental_perf,
+        "reconcile_braiins_bid",
+        lambda tenant_id="", cl_order_id="": {
+            "reconciled": False,
+            "reason": "not found in active bids",
+        },
+    )
+    resp = rclient.post(
+        "/api/rentals/braiins/bid",
+        json={
+            "speed_limit_th": 1000,
+            "amount_sat": 500000,
+            "price_sat": 123456,
+            "upstream_url": "stratum+tcp://h:3333",
+            "upstream_identity": "u.w",
+            "cl_order_id": "c65-pending",
+        },
+    )
+    assert resp.status_code == 200
+    body = resp.get_json()
+    assert body["reconciled"] == "pending"
+    assert "eventual consistency" in (body.get("reconcile_reason") or "")
 
 
 def test_quote_and_balance_routes(rclient, monkeypatch):
