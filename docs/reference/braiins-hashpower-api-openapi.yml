@@ -1,0 +1,3083 @@
+openapi: 3.1.0
+info:
+  title: Braiins Hashpower API
+  description: |-
+    Public HTTP API for buying hashrate on the spot market, scheduling fixed-duration
+    contracts, and reading account and market data.
+
+    Send the API key in the `apikey` header unless an operation explicitly says that
+    authentication is optional or not required. API keys are scoped to an account role;
+    an authenticated request can still be rejected when its ACL role or resource ownership
+    is insufficient.
+
+    Spot-market price fields use the hashrate unit returned by `GET /spot/settings`.
+    For example, when `hr_unit` is `EH/day`, `price_sat` is expressed as satoshi
+    per EH/day. Share-price fields such as `fpps_share_price`
+    and `*_share_price_btc` are BTC per difficulty unit; fields ending in `_pct` are
+    percentages. Monetary fields ending in `_sat` are satoshis unless their field
+    description says otherwise.
+
+    Date-time strings use RFC 3339. Endpoint-specific pagination order and timestamp units
+    are documented on the relevant parameters.
+  version: 1.0.0
+servers:
+  - url: https://hashpower.braiins.com/v1
+    description: Production public API
+tags:
+  - name: Market configuration
+    description: Spot-market rules, units, and fees needed to construct valid orders.
+  - name: Bid orders
+    description: Create, update, cancel, and inspect caller-owned spot-market bids.
+  - name: Contracts
+    description: Quote, schedule, manage, and inspect caller-owned fixed-duration contracts.
+  - name: Accounts
+    description: Read caller-owned balances and accounting transactions.
+  - name: Market data
+    description: Public statistics, order-book snapshots, trades, and OHLCV bars.
+security:
+  - ApiKey: []
+paths:
+  /spot/settings:
+    get:
+      summary: Retrieve market settings & rules
+      description: |-
+        Returns the active spot-market status, price tick, hashrate unit, order limits, grace periods, and edit timing rules. Read this resource before placing or editing a bid because the server validates orders against these values.
+
+        **Access:** API key required; allowed ACLs: `staff`, `owner`, `read-only`.
+
+        **Rate limit:** 100 requests/minute per API credential.
+      tags: [Market configuration]
+      operationId: spotGetMarketSettings
+      x-required-acl: [staff, owner, read-only]
+      x-rate-limit: 100 requests/minute per API credential
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MarketSettings"
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+        default: { $ref: "#/components/responses/ServiceError" }
+  /spot/bid/current:
+    get:
+      summary: List user's bids (active)
+      description: |-
+        Returns the authenticated caller's currently active bids. Use the general bid-list endpoint when terminal and historical bids are also needed.
+
+        **Access:** API key required; allowed ACLs: `staff`, `owner`, `read-only`.
+
+        **Rate limit:** 100 requests/minute per API credential.
+      tags: [Bid orders]
+      operationId: spotGetCurrentBids
+      x-required-acl: [staff, owner, read-only]
+      x-rate-limit: 100 requests/minute per API credential
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SpotGetBidsResponse"
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+        default: { $ref: "#/components/responses/ServiceError" }
+  /spot/bid:
+    get:
+      summary: List user’s bids (historical & active).
+      description: |-
+        Lists caller-owned active and historical bids with optional time, identity, status, and destination filters. Results are ordered by creation time; `reverse=true` changes the order to newest first.
+
+        **Access:** API key required; allowed ACLs: `staff`, `owner`, `read-only`.
+
+        **Rate limit:** 100 requests/minute per API credential.
+      tags: [Bid orders]
+      operationId: spotGetBids
+      x-required-acl: [staff, owner, read-only]
+      x-rate-limit: 100 requests/minute per API credential
+      parameters:
+        - name: limit
+          in: query
+          description: Limit amount of rows retrieved. Must be between 1 and 1000.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 1000
+        - name: offset
+          in: query
+          description: Offset to start from. Must be >= 0.
+          schema:
+            $ref: "#/components/schemas/Uint32"
+        - name: reverse
+          in: query
+          description: Reverse (descending) order of results. Default is ascending. Orders are sorted by creation time.
+          schema:
+            type: boolean
+        - name: created_after
+          in: query
+          description: Filter for orders created on or after YYYY-MM-DD.
+          schema:
+            type: string
+            format: date
+            examples:
+              - 2025-10-25
+        - name: created_before
+          in: query
+          description: Filter for orders created before YYYY-MM-DD.
+          schema:
+            type: string
+            format: date
+            examples:
+              - 2025-10-26
+        - name: order_id
+          in: query
+          description: Filter by order ID.
+          schema:
+            type: string
+            examples:
+              - B123456789
+        - name: bid_status
+          in: query
+          description: Filter by order status.
+          schema:
+            $ref: "#/components/schemas/SpotMarketBidStatus"
+        - name: exclude_active
+          in: query
+          description: Exclude current orders.
+          schema:
+            type: boolean
+        - name: upstream_url
+          in: query
+          description: Filter by upstream URL.
+          schema:
+            type: string
+        - name: upstream_identity
+          in: query
+          description: Filter by upstream identity.
+          schema:
+            type: string
+
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SpotGetBidsResponse"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+        default: { $ref: "#/components/responses/ServiceError" }
+    post:
+      summary: Place new bid (buy order) to the market
+      description: |-
+        Creates a caller-owned spot buy order. The request is validated against current market settings and account constraints; the response contains the server-assigned public order identifier.
+
+        **Access:** API key required; allowed ACL: `owner`.
+
+        **Rate limit:** 100 requests/minute per API credential.
+      tags: [Bid orders]
+      operationId: spotPlaceBid
+      x-required-acl: [owner]
+      x-rate-limit: 100 requests/minute per API credential
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SpotPlaceBidRequest"
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PlaceOrderResponse"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+        default: { $ref: "#/components/responses/ServiceError" }
+    put:
+      summary: Edit existing bid
+      description: |-
+        Updates the provided editable fields of a caller-owned bid selected by its public or client-assigned identifier. Omitted fields remain unchanged; market timing and range rules can prevent price or hashrate-limit decreases.
+
+        **Access:** API key required; allowed ACL: `owner`.
+
+        **Rate limit:** 100 requests/minute per API credential.
+      tags: [Bid orders]
+      operationId: spotEditBid
+      x-required-acl: [owner]
+      x-rate-limit: 100 requests/minute per API credential
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SpotEditBidRequest"
+      responses:
+        "200":
+          description: Bid updated successfully.
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+        default: { $ref: "#/components/responses/ServiceError" }
+    delete:
+      summary: Cancel existing bid
+      tags: [Bid orders]
+      operationId: spotCancelBid
+      description: |-
+        Cancels a caller-owned bid. The JSON body must provide exactly one of `order_id` or `cl_order_id`; cancellation can be rejected while the configured bid grace period is active.
+
+        **Access:** API key required; allowed ACL: `owner`.
+
+        **Rate limit:** 100 requests/minute per API credential.
+      x-required-acl: [owner]
+      x-rate-limit: 100 requests/minute per API credential
+      requestBody:
+        required: true
+        description: Bid selector. Exactly one identifier must be present.
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SpotCancelBidRequest"
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CancelResponse"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+        default: { $ref: "#/components/responses/ServiceError" }
+  /spot/bid/detail/{order_id}:
+    get:
+      summary: Get detailed information for a specific bid
+      tags: [Bid orders]
+      operationId: spotGetBidDetail
+      description: |-
+        Retrieves a caller-visible bid including current lifecycle state, accounting counters, configured destination, and network status. The bid must belong to the caller unless the API key has staff access.
+
+        **Access:** API key required; allowed ACLs: `staff`, `owner`, `read-only`.
+
+        **Rate limit:** 100 requests/minute per API credential.
+      x-required-acl: [staff, owner, read-only]
+      x-rate-limit: 100 requests/minute per API credential
+      parameters:
+        - name: order_id
+          in: path
+          required: true
+          description: The bid order ID (e.g., B123456789)
+          schema:
+            type: string
+            pattern: '^B[0-9]+$'
+            examples:
+              - B123456789
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SpotGetBidDetailResponse"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+        default: { $ref: "#/components/responses/ServiceError" }
+  /spot/bid/speed/{order_id}:
+    get:
+      summary: Get bid hashrate history time series
+      tags: [Bid orders]
+      operationId: spotGetBidSpeedHistory
+      description: |-
+        Returns estimated delivered hashrate samples for a caller-visible bid. `aggregation_period` controls sample buckets and `sliding_window_size` controls the estimator window; use `datetime_from` and `limit` to bound the series.
+
+        **Access:** API key required; allowed ACLs: `staff`, `owner`, `read-only`.
+
+        **Rate limit:** 100 requests/minute per API credential.
+      x-required-acl: [staff, owner, read-only]
+      x-rate-limit: 100 requests/minute per API credential
+      parameters:
+        - name: order_id
+          in: path
+          required: true
+          description: The bid order ID (e.g., B123456789)
+          schema:
+            type: string
+            pattern: '^B[0-9]+$'
+            examples:
+              - B123456789
+        - name: aggregation_period
+          in: query
+          description: Aggregation period for resampling the data.
+          schema:
+            $ref: "#/components/schemas/AggregationPeriod"
+        - name: sliding_window_size
+          in: query
+          description: Sliding window size for estimating hashrate.
+          schema:
+            $ref: "#/components/schemas/SlidingWindowSize"
+        - name: datetime_from
+          in: query
+          description: Datetime from which to start the history (optional). RFC 3339 format expected.
+          schema:
+            type: string
+            format: date-time
+            examples:
+              - "2025-10-04T12:00:00Z"
+        - name: limit
+          in: query
+          description: Maximum number of items to return (optional).
+          schema:
+            $ref: "#/components/schemas/Uint32"
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SpotGetOrderSpeedHistoryResponse"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+        default: { $ref: "#/components/responses/ServiceError" }
+  /spot/bid/delivery/{order_id}:
+    get:
+      summary: Get bid delivery history time series
+      tags: [Bid orders]
+      operationId: spotGetBidDeliveryHistory
+      description: |-
+        Returns purchased, accepted, and rejected shares for a caller-visible bid, grouped by the selected aggregation period. Each value is expressed in millions of shares; use `datetime_from` and `limit` to bound the series.
+
+        **Access:** API key required; allowed ACLs: `staff`, `owner`, `read-only`.
+
+        **Rate limit:** 100 requests/minute per API credential.
+      x-required-acl: [staff, owner, read-only]
+      x-rate-limit: 100 requests/minute per API credential
+      parameters:
+        - name: order_id
+          in: path
+          required: true
+          description: The bid order ID (e.g., B123456789)
+          schema:
+            type: string
+            pattern: '^B[0-9]+$'
+            examples:
+              - B123456789
+        - name: aggregation_period
+          in: query
+          description: Aggregation period for resampling the data.
+          schema:
+            $ref: "#/components/schemas/AggregationPeriod"
+        - name: datetime_from
+          in: query
+          description: Datetime from which to start the history (optional). RFC 3339 format expected.
+          schema:
+            type: string
+            format: date-time
+            examples:
+              - "2025-10-04T12:00:00Z"
+        - name: limit
+          in: query
+          description: Maximum number of items to return (optional).
+          schema:
+            $ref: "#/components/schemas/Uint32"
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SpotGetBidDeliveryHistoryResponse"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+        default: { $ref: "#/components/responses/ServiceError" }
+  /contract:
+    get:
+      summary: List caller-owned contracts
+      description: |-
+        Lists contracts owned by the authenticated caller for one proof-of-work algorithm. Results can be paginated, reversed, and restricted to a created-at interval expressed in Unix nanoseconds.
+
+        **Access:** API key required; allowed ACLs: `owner`, `read-only`.
+
+        **Rate limit:** 100 requests/minute per API credential.
+      tags: [Contracts]
+      operationId: getContracts
+      x-required-acl: [owner, read-only]
+      x-rate-limit: 100 requests/minute per API credential
+      parameters:
+        - name: pow_algo
+          in: query
+          required: true
+          schema:
+            type: string
+          description: "Proof-of-work algorithm filter. Canonical spelling: `sha256`; parsing is ASCII case-insensitive."
+        - name: limit
+          in: query
+          description: Maximum number of contracts to return. Omit to use the service default.
+          schema:
+            type: integer
+            format: int32
+        - name: offset
+          in: query
+          description: Zero-based number of matching contracts to skip.
+          schema:
+            type: integer
+            format: int32
+        - name: reverse
+          in: query
+          description: Return newest contracts first when true; the default order is oldest first.
+          schema:
+            type: boolean
+        - name: start_timestamp
+          in: query
+          schema:
+            type: integer
+            format: int64
+            minimum: 0
+            maximum: 9223372036854775807
+          description: Inclusive lower created-at filter as Unix timestamp in nanoseconds. Zero disables the filter.
+        - name: end_timestamp
+          in: query
+          schema:
+            type: integer
+            format: int64
+            minimum: 0
+            maximum: 9223372036854775807
+          description: Exclusive upper created-at filter as Unix timestamp in nanoseconds. Zero disables the filter.
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GetContractsResponse"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+        default: { $ref: "#/components/responses/ServiceError" }
+    post:
+      summary: Schedule a new caller-owned contract
+      description: |-
+        Schedules a fixed-duration contract and reserves the required caller funds. Pricing, funds, policy, and capacity are recalculated atomically; a preceding quote or availability check is advisory and does not reserve capacity.
+
+        **Access:** API key required; allowed ACL: `owner`.
+
+        **Rate limit:** 100 requests/minute per API credential.
+      tags: [Contracts]
+      operationId: scheduleContract
+      x-required-acl: [owner]
+      x-rate-limit: 100 requests/minute per API credential
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ScheduleContractRequest"
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ScheduleContractResponse"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+        default: { $ref: "#/components/responses/ServiceError" }
+  /contract/quote:
+    post:
+      summary: Quote and validate a contract creation request
+      tags: [Contracts]
+      operationId: quoteContractCreation
+      description: |-
+        Calculates the current hashrate cost, premium, cancellation-weighted premium on the Contractual Funding Tail, available capacity, and caller balance for a proposed contract. This is advisory only and does not reserve funds or capacity; scheduling recomputes all checks.
+
+        **Access:** API key required; allowed ACL: `owner`.
+
+        **Rate limit:** 100 requests/minute per API credential.
+      x-required-acl: [owner]
+      x-rate-limit: 100 requests/minute per API credential
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/QuoteContractCreationRequest"
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QuoteContractCreationResponse"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+        default: { $ref: "#/components/responses/ServiceError" }
+  /contract/pricing:
+    get:
+      summary: List current contract pricing
+      tags: [Contracts]
+      operationId: getCurrentContractPricing
+      description: |-
+        Lists the active standard and time-limited pricing layers for the requested proof-of-work algorithm.
+        A valid API key also includes the authenticated caller's active individual pricing layer.
+        Requests without an API key, or with an invalid API key, receive generic pricing only.
+
+        **Access:** API key optional; allowed ACLs: `contract-pricing-public`, `owner`, `read-only`.
+
+        **Rate limit:** 100 requests/minute per client IP.
+      security:
+        - {}
+        - ApiKey: []
+      x-required-acl: [contract-pricing-public, owner, read-only]
+      x-rate-limit: 100 requests/minute per client IP
+      parameters:
+        - name: pow_algo
+          in: query
+          required: true
+          schema:
+            type: string
+          description: "Proof-of-work algorithm. Canonical spelling: `sha256`; parsing is ASCII case-insensitive."
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GetCurrentContractPricingResponse"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+        default: { $ref: "#/components/responses/ServiceError" }
+  /contract/cancel-fee:
+    get:
+      summary: List current contract cancellation fees
+      tags: [Contracts]
+      operationId: getCurrentContractCancelFees
+      description: |-
+        Lists active standard and time-limited cancellation-fee layers for the requested proof-of-work algorithm.
+        A valid API key also includes the authenticated caller's active individual fee layer.
+        Requests without an API key, or with an invalid API key, receive generic fee layers only.
+
+        **Access:** API key optional; allowed ACLs: `contract-cancel-fee-public`, `owner`, `read-only`.
+
+        **Rate limit:** 100 requests/minute per client IP.
+      security:
+        - {}
+        - ApiKey: []
+      x-required-acl: [contract-cancel-fee-public, owner, read-only]
+      x-rate-limit: 100 requests/minute per client IP
+      parameters:
+        - name: pow_algo
+          in: query
+          required: true
+          schema:
+            type: string
+          description: "Proof-of-work algorithm. Canonical spelling: `sha256`; parsing is ASCII case-insensitive."
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GetCurrentContractCancelFeesResponse"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+        default: { $ref: "#/components/responses/ServiceError" }
+  /contract/availability:
+    post:
+      summary: Check whether requested contract hashrate is available
+      tags: [Contracts]
+      operationId: checkContractSpeedAvailability
+      description: |-
+        Checks current contract capacity for the requested proof-of-work algorithm, hashrate, and time window. This is advisory and does not reserve capacity; scheduling rechecks while holding the service lock.
+
+        **Access:** API key required; allowed ACL: `owner`.
+
+        **Rate limit:** 100 requests/minute per API credential.
+      x-required-acl: [owner]
+      x-rate-limit: 100 requests/minute per API credential
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CheckContractSpeedAvailabilityRequest"
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CheckContractSpeedAvailabilityResponse"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+        default: { $ref: "#/components/responses/ServiceError" }
+  /contract/active:
+    get:
+      summary: List caller-owned pending, running, or paused contracts
+      description: |-
+        Returns only caller-owned contracts that can still activate or deliver hashrate. Finished, canceled, and terminated contracts remain available from the general contract list.
+
+        **Access:** API key required; allowed ACLs: `owner`, `read-only`.
+
+        **Rate limit:** 100 requests/minute per API credential.
+      tags: [Contracts]
+      operationId: getActiveContracts
+      x-required-acl: [owner, read-only]
+      x-rate-limit: 100 requests/minute per API credential
+      parameters:
+        - name: pow_algo
+          in: query
+          required: true
+          schema:
+            type: string
+          description: "Proof-of-work algorithm filter. Canonical spelling: `sha256`; parsing is ASCII case-insensitive."
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GetContractsResponse"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+        default: { $ref: "#/components/responses/ServiceError" }
+  /contract/{contract_id}/detail:
+    get:
+      summary: Get a caller-owned contract
+      description: |-
+        Returns the schedule, destination, lifecycle status, and commercial terms for one caller-owned contract. Current delivery state is included when runtime state is available.
+
+        **Access:** API key required; allowed ACLs: `owner`, `read-only`.
+
+        **Rate limit:** 100 requests/minute per API credential.
+      tags: [Contracts]
+      operationId: getContractDetail
+      x-required-acl: [owner, read-only]
+      x-rate-limit: 100 requests/minute per API credential
+      parameters:
+        - name: contract_id
+          in: path
+          required: true
+          description: Contract ID prefixed with C.
+          schema:
+            type: string
+            pattern: '^C[0-9]+$'
+            examples:
+              - C123456789
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GetContractDetailResponse"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+        default: { $ref: "#/components/responses/ServiceError" }
+  /contract/settings:
+    get:
+      summary: Get effective contract policy settings
+      description: |-
+        Returns the currently effective contract-duration, hashrate, activation-gap, cancellation-gap, and reservation-lead settings for the requested proof-of-work algorithm. Clients should validate scheduling forms against these settings.
+
+        **Access:** API key required; allowed ACLs: `owner`, `read-only`.
+
+        **Rate limit:** 100 requests/minute per API credential.
+      tags: [Contracts]
+      operationId: getContractSettings
+      x-required-acl: [owner, read-only]
+      x-rate-limit: 100 requests/minute per API credential
+      parameters:
+        - name: pow_algo
+          in: query
+          required: true
+          description: "Proof-of-work algorithm whose settings should be returned. Canonical spelling: `sha256`; parsing is ASCII case-insensitive."
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GetContractSettingsResponse"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+        default: { $ref: "#/components/responses/ServiceError" }
+  /contract/{contract_id}:cancel:
+    post:
+      summary: Request cancellation for a pending caller-owned contract
+      description: |-
+        Requests cancellation of a contract that has not started delivery. Flux evaluates the request and the response reports whether it was accepted; cancellation rules and fees can apply.
+
+        **Access:** API key required; allowed ACL: `owner`.
+
+        **Rate limit:** 100 requests/minute per API credential.
+      tags: [Contracts]
+      operationId: cancelContract
+      x-required-acl: [owner]
+      x-rate-limit: 100 requests/minute per API credential
+      parameters:
+        - name: contract_id
+          in: path
+          required: true
+          description: Contract ID prefixed with C.
+          schema:
+            type: string
+            pattern: '^C[0-9]+$'
+            examples:
+              - C123456789
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CancelContractRequest"
+      responses:
+        "200":
+          description: Cancellation request accepted or rejected by Flux
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CancelContractResponse"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+        default: { $ref: "#/components/responses/ServiceError" }
+  /contract/{contract_id}:terminate:
+    post:
+      summary: Terminate an active caller-owned contract
+      description: |-
+        Permanently stops an active caller-owned contract before its scheduled expiry. Termination is distinct from canceling a pending contract and can trigger final accounting.
+
+        **Access:** API key required; allowed ACL: `owner`.
+
+        **Rate limit:** 100 requests/minute per API credential.
+      tags: [Contracts]
+      operationId: terminateContract
+      x-required-acl: [owner]
+      x-rate-limit: 100 requests/minute per API credential
+      parameters:
+        - name: contract_id
+          in: path
+          required: true
+          description: Contract ID prefixed with C.
+          schema:
+            type: string
+            pattern: '^C[0-9]+$'
+            examples:
+              - C123456789
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TerminateContractRequest"
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TerminateContractResponse"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+        default: { $ref: "#/components/responses/ServiceError" }
+  /contract/activity:
+    get:
+      summary: List contract activity for the caller
+      tags: [Contracts]
+      operationId: getContractActivity
+      description: |-
+        Returns caller-owned reservation, settlement, termination, funding-warning, blocked-settlement, and late-yield events in ascending cursor order. Store `next_cursor` and pass it as `after_cursor` to continue without replaying the last item.
+
+        **Access:** API key required; allowed ACLs: `owner`, `read-only`.
+
+        **Rate limit:** 100 requests/minute per API credential.
+      x-required-acl: [owner, read-only]
+      x-rate-limit: 100 requests/minute per API credential
+      parameters:
+        - name: after_cursor
+          in: query
+          description: Return events with a cursor strictly greater than this value. Zero starts at the beginning.
+          schema:
+            type: integer
+            format: uint64
+            minimum: 0
+        - name: limit
+          in: query
+          description: Maximum number of events. Zero uses the server default; the service maximum is 500.
+          schema:
+            type: integer
+            format: uint32
+            minimum: 0
+            maximum: 4294967295
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GetContractActivityResponse"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+        default: { $ref: "#/components/responses/ServiceError" }
+  /contract/{contract_id}/reservation:
+    get:
+      summary: List reservation history for a caller-owned contract
+      description: |-
+        Returns up to 1,000 reservation adjustments for the contract, including when each became effective, the reserved amount, and the share price used when available.
+
+        **Access:** API key required; allowed ACLs: `owner`, `read-only`.
+
+        **Rate limit:** 100 requests/minute per API credential.
+      tags: [Contracts]
+      operationId: getContractReservations
+      x-required-acl: [owner, read-only]
+      x-rate-limit: 100 requests/minute per API credential
+      parameters:
+        - name: contract_id
+          in: path
+          required: true
+          description: Contract ID prefixed with C.
+          schema:
+            type: string
+            pattern: '^C[0-9]+$'
+            examples:
+              - C123456789
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GetContractReservationsResponse"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+        default: { $ref: "#/components/responses/ServiceError" }
+  /contract/{contract_id}/settlement:
+    get:
+      summary: List settlement history for a caller-owned contract
+      description: |-
+        Returns daily settlement records for the contract, including delivered value, fees, indicative PPS rate, and any cancellation settlement data. Zero-share rows represent completed accounting days without delivery.
+
+        **Access:** API key required; allowed ACLs: `owner`, `read-only`.
+
+        **Rate limit:** 100 requests/minute per API credential.
+      tags: [Contracts]
+      operationId: getContractSettlements
+      x-required-acl: [owner, read-only]
+      x-rate-limit: 100 requests/minute per API credential
+      parameters:
+        - name: contract_id
+          in: path
+          required: true
+          description: Contract ID prefixed with C.
+          schema:
+            type: string
+            pattern: '^C[0-9]+$'
+            examples:
+              - C123456789
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GetContractSettlementsResponse"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+        default: { $ref: "#/components/responses/ServiceError" }
+  /contract/{contract_id}/speed:
+    get:
+      summary: Get contract hashrate history time series
+      tags: [Contracts]
+      operationId: getContractSpeedHistory
+      description: |-
+        Returns estimated delivered hashrate samples for a caller-visible contract. `aggregation_period` controls sample buckets and `sliding_window_size` controls the estimator window.
+
+        **Access:** API key required; allowed ACLs: `staff`, `owner`, `read-only`.
+
+        **Rate limit:** 100 requests/minute per API credential.
+      x-required-acl: [staff, owner, read-only]
+      x-rate-limit: 100 requests/minute per API credential
+      parameters:
+        - name: contract_id
+          in: path
+          required: true
+          description: The contract ID (e.g., C123456789)
+          schema:
+            type: string
+            pattern: '^C[0-9]+$'
+            examples:
+              - C123456789
+        - name: aggregation_period
+          in: query
+          description: Aggregation period for resampling the data.
+          schema:
+            $ref: "#/components/schemas/ContractHistoryAggregationPeriod"
+        - name: sliding_window_size
+          in: query
+          description: Sliding window size for estimating hashrate.
+          schema:
+            $ref: "#/components/schemas/SlidingWindowSize"
+        - name: datetime_from
+          in: query
+          description: Datetime from which to start the history (optional). RFC 3339 format expected.
+          schema:
+            type: string
+            format: date-time
+            examples:
+              - "2025-10-04T12:00:00Z"
+        - name: limit
+          in: query
+          description: Maximum number of items to return (optional).
+          schema:
+            $ref: "#/components/schemas/Uint32"
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GetContractSpeedHistoryResponse"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+        default: { $ref: "#/components/responses/ServiceError" }
+  /contract/{contract_id}/delivery:
+    get:
+      summary: Get contract delivery history time series
+      tags: [Contracts]
+      operationId: getContractDeliveryHistory
+      description: |-
+        Returns delivered, accepted, and rejected shares for a caller-visible contract, grouped by the selected aggregation period. Each value is expressed in millions of shares.
+
+        **Access:** API key required; allowed ACLs: `staff`, `owner`, `read-only`.
+
+        **Rate limit:** 100 requests/minute per API credential.
+      x-required-acl: [staff, owner, read-only]
+      x-rate-limit: 100 requests/minute per API credential
+      parameters:
+        - name: contract_id
+          in: path
+          required: true
+          description: The contract ID (e.g., C123456789)
+          schema:
+            type: string
+            pattern: '^C[0-9]+$'
+            examples:
+              - C123456789
+        - name: aggregation_period
+          in: query
+          description: Aggregation period for resampling the data.
+          schema:
+            $ref: "#/components/schemas/ContractHistoryAggregationPeriod"
+        - name: datetime_from
+          in: query
+          description: Datetime from which to start the history (optional). RFC 3339 format expected.
+          schema:
+            type: string
+            format: date-time
+            examples:
+              - "2025-10-04T12:00:00Z"
+        - name: limit
+          in: query
+          description: Maximum number of items to return (optional).
+          schema:
+            $ref: "#/components/schemas/Uint32"
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GetContractDeliveryHistoryResponse"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+        default: { $ref: "#/components/responses/ServiceError" }
+  /spot/fee:
+    get:
+      summary: Get spot market fee structure
+      description: |-
+        Returns the caller-visible spot trading fee schedule used when bid trades settle. Read it together with market settings when estimating order cost.
+
+        **Access:** API key required; allowed ACLs: `staff`, `owner`, `read-only`.
+
+        **Rate limit:** 100 requests/minute per API credential.
+      tags: [Market configuration]
+      operationId: getFeeStructure
+      x-required-acl: [staff, owner, read-only]
+      x-rate-limit: 100 requests/minute per API credential
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GetFeeStructureResponse"
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+        default: { $ref: "#/components/responses/ServiceError" }
+  /account/balance:
+    get:
+      summary: Get account balance
+      description: |-
+        Returns the authenticated account's total, available, and blocked satoshi balances together with cumulative deposit, withdrawal, trading, revenue, and fee counters.
+
+        **Access:** API key required; allowed ACLs: `staff`, `owner`, `read-only`.
+
+        **Rate limit:** 100 requests/minute per API credential.
+      tags: [Accounts]
+      operationId: getAccountBalances
+      x-required-acl: [staff, owner, read-only]
+      x-rate-limit: 100 requests/minute per API credential
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GetAccountBalancesResponse"
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+        default: { $ref: "#/components/responses/ServiceError" }
+  /account/transaction:
+    get:
+      summary: List mixed account transactions (deprecated)
+      description: |-
+        Returns the legacy mixed stream of caller-owned account transactions. New integrations should use the settlement, lock, and on-chain endpoints so each response has an unambiguous transaction category.
+
+        **Access:** API key required; allowed ACLs: `staff`, `owner`, `read-only`.
+
+        **Rate limit:** 100 requests/minute per API credential.
+      tags: [Accounts]
+      operationId: getTransactions
+      deprecated: true
+      x-required-acl: [staff, owner, read-only]
+      x-rate-limit: 100 requests/minute per API credential
+      parameters:
+        - name: limit
+          in: query
+          description: Optional limit for the number of transactions to return.
+          schema:
+            $ref: "#/components/schemas/Uint32"
+            examples:
+              - 10
+        - name: offset
+          in: query
+          description: Optional offset for listing the transactions.
+          schema:
+            $ref: "#/components/schemas/Uint32"
+            examples:
+              - 0
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GetTransactionsResponse"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+        default: { $ref: "#/components/responses/ServiceError" }
+  /account/transaction/settlement:
+    get:
+      summary: List settlement account transactions
+      tags: [Accounts]
+      operationId: getSettlementTransactions
+      description: |-
+        Returns caller-owned spot or contract settlement transactions only. Provide at most one of `bid_id` or `contract_id`; omitting both lists settlements across all caller resources.
+
+        **Access:** API key required; allowed ACLs: `staff`, `owner`, `read-only`.
+
+        **Rate limit:** 100 requests/minute per API credential.
+      x-required-acl: [staff, owner, read-only]
+      x-rate-limit: 100 requests/minute per API credential
+      parameters:
+        - name: limit
+          in: query
+          description: Optional limit for the number of transactions to return.
+          schema:
+            $ref: "#/components/schemas/Uint32"
+            examples:
+              - 10
+        - name: offset
+          in: query
+          description: Optional offset for listing the transactions.
+          schema:
+            $ref: "#/components/schemas/Uint32"
+            examples:
+              - 0
+        - name: bid_id
+          in: query
+          description: Optional bid filter. Accepts the numeric bid ID or public B-prefixed bid ID.
+          schema:
+            type: string
+            examples:
+              - "B123"
+        - name: contract_id
+          in: query
+          description: Optional contract filter. Accepts the public C-prefixed contract ID.
+          schema:
+            type: string
+            examples:
+              - "C123"
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GetTransactionsResponse"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+        default: { $ref: "#/components/responses/ServiceError" }
+  /account/transaction/lock:
+    get:
+      summary: List lock account transactions
+      tags: [Accounts]
+      operationId: getLockTransactions
+      description: |-
+        Returns caller-owned fund lock, unlock, and release transactions. Provide at most one of `bid_id` or `contract_id`; omitting both lists lock activity across all caller resources.
+
+        **Access:** API key required; allowed ACLs: `staff`, `owner`, `read-only`.
+
+        **Rate limit:** 100 requests/minute per API credential.
+      x-required-acl: [staff, owner, read-only]
+      x-rate-limit: 100 requests/minute per API credential
+      parameters:
+        - name: limit
+          in: query
+          description: Optional limit for the number of transactions to return.
+          schema:
+            $ref: "#/components/schemas/Uint32"
+            examples:
+              - 10
+        - name: offset
+          in: query
+          description: Optional offset for listing the transactions.
+          schema:
+            $ref: "#/components/schemas/Uint32"
+            examples:
+              - 0
+        - name: bid_id
+          in: query
+          description: Optional bid filter. Accepts the numeric bid ID or public B-prefixed bid ID.
+          schema:
+            type: string
+            examples:
+              - "B123"
+        - name: contract_id
+          in: query
+          description: Optional contract filter. Accepts the public C-prefixed contract ID.
+          schema:
+            type: string
+            examples:
+              - "C123"
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GetTransactionsResponse"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+        default: { $ref: "#/components/responses/ServiceError" }
+  /account/transaction/on-chain:
+    get:
+      summary: List on-chain account transactions
+      description: |-
+        Returns caller-owned Bitcoin on-chain deposit and withdrawal transactions with pagination. Settlement and fund-lock activity is intentionally excluded.
+
+        **Access:** API key required; allowed ACLs: `staff`, `owner`, `read-only`.
+
+        **Rate limit:** 100 requests/minute per API credential.
+      tags: [Accounts]
+      operationId: getOnChainTransactions
+      x-required-acl: [staff, owner, read-only]
+      x-rate-limit: 100 requests/minute per API credential
+      parameters:
+        - name: limit
+          in: query
+          description: Optional limit for the number of transactions to return.
+          schema:
+            $ref: "#/components/schemas/Uint32"
+            examples:
+              - 10
+        - name: offset
+          in: query
+          description: Optional offset for listing the transactions.
+          schema:
+            $ref: "#/components/schemas/Uint32"
+            examples:
+              - 0
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GetOnChainTransactionsResponse"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+        default: { $ref: "#/components/responses/ServiceError" }
+  /spot/stats:
+    get:
+      summary: Get market statistics
+      description: |-
+        Returns a public snapshot of aggregate spot-market activity and current headline values.
+
+        **Access:** Public; no API key or ACL required.
+
+        **Rate limit:** 500 requests/minute per client IP.
+      tags: [Market data]
+      operationId: spotGetMarketStats
+      security: []
+      x-required-acl: []
+      x-rate-limit: 500 requests/minute per client IP
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SpotGetMarketStatsResponse"
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+        default: { $ref: "#/components/responses/ServiceError" }
+  /spot/orderbook:
+    get:
+      summary: Get spot market order book snapshot
+      description: |-
+        Returns the current public bid and ask depth aggregated by price level. The snapshot is point-in-time and can change immediately after it is returned.
+
+        **Access:** Public; no API key or ACL required.
+
+        **Rate limit:** 500 requests/minute per client IP.
+      tags: [Market data]
+      operationId: spotGetOrderbookSnapshot
+      security: []
+      x-required-acl: []
+      x-rate-limit: 500 requests/minute per client IP
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SpotGetOrderBookResponse"
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+        default: { $ref: "#/components/responses/ServiceError" }
+  /spot/trades:
+    get:
+      summary: Get last market trades
+      description: |-
+        Returns the most recent public spot trades, up to the requested limit, for market-history and price-discovery use.
+
+        **Access:** Public; no API key or ACL required.
+
+        **Rate limit:** 500 requests/minute per client IP.
+      tags: [Market data]
+      operationId: spotGetMarketTrades
+      security: []
+      x-required-acl: []
+      x-rate-limit: 500 requests/minute per client IP
+      parameters:
+        - name: limit
+          in: query
+          description: Limit amount of trades to retrieve.
+          schema:
+            $ref: "#/components/schemas/Uint32"
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SpotGetMarketTradesResponse"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+        default: { $ref: "#/components/responses/ServiceError" }
+  /spot/bars:
+    get:
+      summary: Get aggregated bars for a given market (OHLCV)
+      description: |-
+        Returns public open, high, low, close, and volume bars grouped by the required aggregation period. `limit` bounds the number of latest bars returned.
+
+        **Access:** Public; no API key or ACL required.
+
+        **Rate limit:** 500 requests/minute per client IP.
+      tags: [Market data]
+      operationId: spotGetMarketBars
+      security: []
+      x-required-acl: []
+      x-rate-limit: 500 requests/minute per client IP
+      parameters:
+        - name: aggregation_period
+          in: query
+          description: Aggregation period for the bars.
+          required: true
+          schema:
+            $ref: "#/components/schemas/AggregationPeriod"
+        - name: limit
+          in: query
+          description: Limit amount of bars to retrieve.
+          schema:
+            $ref: "#/components/schemas/Uint32"
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SpotGetBarsResponse"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+        default: { $ref: "#/components/responses/ServiceError" }
+components:
+  securitySchemes:
+    ApiKey:
+      type: apiKey
+      in: header
+      name: apikey
+      description: API credential issued for a Braiins Hashpower account. The credential's ACL role and resource ownership determine which authenticated operations and records are available.
+  responses:
+    BadRequest:
+      description: The path, query, or JSON body is invalid, violates a market rule, or contains mutually exclusive fields.
+    Unauthorized:
+      description: The `apikey` header is missing or does not contain a valid API credential.
+    Forbidden:
+      description: The API credential is valid but its ACL role or resource ownership does not permit this operation.
+    NotFound:
+      description: The requested caller-visible resource does not exist.
+    TooManyRequests:
+      description: The applicable per-credential or per-client-IP request limit was exceeded. Retry after reducing request frequency.
+    ServiceError:
+      description: The gateway or upstream service could not complete the request. The response body and status depend on the failing boundary.
+  schemas:
+    SpotInstrumentStatus:
+      type: string
+      enum:
+        - SPOT_INSTRUMENT_STATUS_UNSPECIFIED
+        - SPOT_INSTRUMENT_STATUS_ACTIVE
+        - SPOT_INSTRUMENT_STATUS_HALTED
+    MarketSettings:
+      type: object
+      required:
+        - status
+        - tick_size_sat
+        - hr_multiplier_log10
+        - hr_unit
+        - min_bid_price_sat
+        - max_bid_price_sat
+        - min_ask_price_sat
+        - max_ask_price_sat
+        - min_bid_amount_sat
+        - max_bid_amount_sat
+        - min_bid_speed_limit_ph
+        - max_bid_speed_limit_ph
+        - max_bid_idle_time_s
+        - created
+        - max_bids_per_subaccount
+        - max_asks_per_subaccount
+        - bid_grace_period_s
+        - ask_grace_period_s
+        - min_bid_price_decrease_period_s
+        - min_bid_speed_limit_decrease_period_s
+        - min_limited_bid_amount_sat
+        - max_limited_bid_amount_sat
+        - min_limited_bid_duration_s
+      properties:
+        status:
+          $ref: "#/components/schemas/SpotInstrumentStatus"
+        tick_size_sat:
+          $ref: "#/components/schemas/Double"
+          description: Order book decimalization step in satoshi.
+        hr_multiplier_log10:
+          $ref: "#/components/schemas/Int32"
+          description: Market base-10 exponent for hashrate units. For example, 18 makes EH/day the base unit.
+          examples:
+            - 18
+        hr_unit:
+          type: string
+          description: Human readable market log10 multiplier, e.g. 18 -> "EH/day", 17 -> "100PH/day"
+          examples:
+            - EH/day
+            - 100PH/day
+            - 10PH/day
+        min_bid_price_sat:
+          $ref: "#/components/schemas/Double"
+        max_bid_price_sat:
+          $ref: "#/components/schemas/Double"
+        min_ask_price_sat:
+          $ref: "#/components/schemas/Double"
+        max_ask_price_sat:
+          $ref: "#/components/schemas/Double"
+        min_bid_amount_sat:
+          $ref: "#/components/schemas/Double"
+          description: Minimum bid amount for bids with no hashrate limit in satoshi.
+        max_bid_amount_sat:
+          $ref: "#/components/schemas/Double"
+          description: Maximum bid amount for bids with no hashrate limit in satoshi.
+        min_bid_speed_limit_ph:
+          $ref: "#/components/schemas/Double"
+        max_bid_speed_limit_ph:
+          $ref: "#/components/schemas/Double"
+        max_bid_idle_time_s:
+          $ref: "#/components/schemas/Uint32"
+          description: Max allowed idle time for any bid in seconds. For example 7 days = 604800.
+        created:
+          type: string
+          format: date-time
+        max_bids_per_subaccount:
+          $ref: "#/components/schemas/Uint32"
+        max_asks_per_subaccount:
+          $ref: "#/components/schemas/Uint32"
+        bid_grace_period_s:
+          $ref: "#/components/schemas/Uint32"
+          description: Minimum period required to be able to cancel a bid in seconds.
+        ask_grace_period_s:
+          $ref: "#/components/schemas/Uint32"
+          description: Minimum period required to be able to cancel an ask in seconds.
+        min_bid_price_decrease_period_s:
+          $ref: "#/components/schemas/Uint32"
+          description: Price is allowed to be decreased only when this period passes since last decrease (in seconds).
+        min_bid_speed_limit_decrease_period_s:
+          $ref: "#/components/schemas/Uint32"
+          description: The hashrate limit can be decreased only after this many seconds have passed since the previous decrease.
+        min_limited_bid_amount_sat:
+          $ref: "#/components/schemas/Double"
+          description: Minimum bid amount for bids with a hashrate limit in satoshi.
+        max_limited_bid_amount_sat:
+          $ref: "#/components/schemas/Double"
+          description: Maximum bid amount for bids with a hashrate limit in satoshi.
+        min_limited_bid_duration_s:
+          $ref: "#/components/schemas/Uint32"
+          description: Minimum duration for bids with a hashrate limit in seconds.
+    ProfileIdentifier:
+      type: object
+      required:
+        - profile_name
+        - client_name
+      properties:
+        profile_name:
+          type: string
+        client_name:
+          type: string
+    ScheduleContractRequest:
+      type: object
+      required:
+        - destination
+        - speed_ph
+        - activates_at
+        - expires_at
+        - pow_algo
+      properties:
+        destination:
+          $ref: "#/components/schemas/ContractDestination"
+        speed_ph:
+          $ref: "#/components/schemas/Double"
+          description: Contract hashrate in PH/s.
+        activates_at:
+          type: string
+          format: date-time
+          description: Desired activation datetime of the contract.
+        expires_at:
+          type: string
+          format: date-time
+          description: Desired expiration datetime of the contract.
+        pow_algo:
+          type: string
+          description: "Proof-of-work algorithm. Canonical spelling: `sha256`; parsing is ASCII case-insensitive."
+        text:
+          type: string
+          description: Optional remark.
+    ScheduleContractResponse:
+      type: object
+      required:
+        - id
+      properties:
+        id:
+          type: string
+          description: Contract ID prefixed with C.
+    CheckContractSpeedAvailabilityRequest:
+      type: object
+      required:
+        - pow_algo
+        - speed_ph
+        - activates_at
+        - expires_at
+      properties:
+        pow_algo:
+          type: string
+          description: "Proof-of-work algorithm. Canonical spelling: `sha256`; parsing is ASCII case-insensitive."
+        speed_ph:
+          $ref: "#/components/schemas/Double"
+          description: Contract hashrate in PH/s.
+        activates_at:
+          type: string
+          format: date-time
+          description: Desired activation datetime of the contract.
+        expires_at:
+          type: string
+          format: date-time
+          description: Desired expiration datetime of the contract.
+    CheckContractSpeedAvailabilityResponse:
+      type: object
+      required:
+        - available
+        - reason_code
+        - reason
+      properties:
+        available:
+          type: boolean
+          description: True when the requested hashrate and window currently fit configured contract capacity.
+        reason_code:
+          type: string
+          description: Empty when available is true; otherwise a stable machine-readable rejection code.
+        reason:
+          type: string
+          description: Empty when available is true; otherwise a human-readable rejection reason.
+    QuoteContractCreationRequest:
+      type: object
+      required:
+        - pow_algo
+        - speed_ph
+        - activates_at
+        - expires_at
+      properties:
+        pow_algo:
+          type: string
+          description: "Proof-of-work algorithm. Canonical spelling: `sha256`; parsing is ASCII case-insensitive."
+        speed_ph:
+          $ref: "#/components/schemas/Double"
+          description: Contract hashrate in PH/s.
+        activates_at:
+          type: string
+          format: date-time
+          description: Desired activation datetime of the contract.
+        expires_at:
+          type: string
+          format: date-time
+          description: Desired expiration datetime of the contract.
+    ContractCreationQuoteStatus:
+      type: string
+      enum:
+        - CONTRACT_CREATION_QUOTE_STATUS_UNSPECIFIED
+        - CONTRACT_CREATION_QUOTE_STATUS_SUCCESS
+        - CONTRACT_CREATION_QUOTE_STATUS_FAILED
+    ContractCreationQuoteReason:
+      type: string
+      enum:
+        - CONTRACT_CREATION_QUOTE_REASON_UNSPECIFIED
+        - CONTRACT_CREATION_QUOTE_REASON_SALES_DISABLED
+        - CONTRACT_CREATION_QUOTE_REASON_SHARE_PRICE_UNAVAILABLE
+        - CONTRACT_CREATION_QUOTE_REASON_NO_VALID_PRICING
+        - CONTRACT_CREATION_QUOTE_REASON_SPEED_LIMIT_NOT_CONFIGURED
+        - CONTRACT_CREATION_QUOTE_REASON_INSUFFICIENT_SPEED_CAPACITY
+        - CONTRACT_CREATION_QUOTE_REASON_SPEED_UNAVAILABLE
+        - CONTRACT_CREATION_QUOTE_REASON_INSUFFICIENT_FUNDS
+    QuoteContractCreationResponse:
+      type: object
+      required:
+        - status
+        - reason_code
+        - reason
+        - account_available_balance
+        - fpps_share_price
+        - rate_pct
+        - hashrate_cost
+        - fee_amount
+        - initial_reservation_amount
+        - available_speed_ph
+        - quote_reason
+        - hashrate_cost_reservation_amount
+        - premium_reservation_amount
+        - cancellation_buffer_reservation_amount
+        - cancel_fee_pct
+      properties:
+        status:
+          $ref: "#/components/schemas/ContractCreationQuoteStatus"
+        reason_code:
+          type: string
+          description: Empty when status is SUCCESS; otherwise a stable machine-readable rejection code.
+        reason:
+          type: string
+          description: Empty when status is SUCCESS; otherwise a human-readable rejection reason.
+        account_available_balance:
+          $ref: "#/components/schemas/Int64"
+          description: Caller account available BTC balance in satoshis.
+        fpps_share_price:
+          type: string
+          description: Order-time FPPS share price from SharePrice service, BTC per difficulty-unit as a decimal string.
+        rate_pct:
+          type: string
+          description: Selected pricing fee/markup rate in percent as a decimal string.
+        hashrate_cost:
+          $ref: "#/components/schemas/Int64"
+          description: Buyer principal hashrate cost for the whole contract in satoshis.
+        fee_amount:
+          $ref: "#/components/schemas/Int64"
+          description: Total selected fee/markup for the whole contract in satoshis.
+        initial_reservation_amount:
+          $ref: "#/components/schemas/Int64"
+          description: Total initial reservation amount in satoshis.
+        available_speed_ph:
+          $ref: "#/components/schemas/Double"
+          description: Available contract hashrate for the requested window in PH/s.
+        quote_reason:
+          $ref: "#/components/schemas/ContractCreationQuoteReason"
+          description: Typed rejection reason for generated clients. UNSPECIFIED when status is SUCCESS.
+        hashrate_cost_reservation_amount:
+          $ref: "#/components/schemas/Int64"
+          description: Hashrate-principal portion of the upfront reservation in satoshis.
+        premium_reservation_amount:
+          $ref: "#/components/schemas/Int64"
+          description: Premium portion of the Forward Funding Window reservation in satoshis.
+        cancellation_buffer_reservation_amount:
+          $ref: "#/components/schemas/Int64"
+          description: Cancellation-weighted premium on the Contractual Funding Tail beyond the Forward Funding Window, in satoshis.
+        cancel_fee_pct:
+          type: string
+          description: Cancellation fee as a percentage of unpaid remaining contract premium.
+    CurrentContractPricingLayerKind:
+      type: string
+      enum:
+        - CURRENT_CONTRACT_PRICING_LAYER_KIND_UNSPECIFIED
+        - CURRENT_CONTRACT_PRICING_LAYER_KIND_GLOBAL
+        - CURRENT_CONTRACT_PRICING_LAYER_KIND_PROMO
+        - CURRENT_CONTRACT_PRICING_LAYER_KIND_USER
+    CurrentContractPricingBand:
+      type: object
+      required:
+        - shares_to
+        - premium_pct
+      properties:
+        shares_to:
+          type: string
+          description: Exclusive upper bound in difficulty-1 shares. Empty means open-ended top band.
+        premium_pct:
+          type: string
+          description: Markup/fee percentage as a normalized decimal string.
+    CurrentContractPricingLayer:
+      type: object
+      required:
+        - kind
+        - label
+        - valid_from
+        - valid_to
+        - bands
+      properties:
+        kind:
+          $ref: "#/components/schemas/CurrentContractPricingLayerKind"
+        label:
+          type: string
+        valid_from:
+          type: string
+          format: date-time
+          description: RFC3339 UTC timestamp from which this pricing layer is valid.
+        valid_to:
+          type: string
+          description: RFC3339 UTC timestamp at which this pricing layer stops being valid. Empty means open-ended.
+        bands:
+          type: array
+          items:
+            $ref: "#/components/schemas/CurrentContractPricingBand"
+    GetCurrentContractPricingResponse:
+      type: object
+      required:
+        - items
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/CurrentContractPricingLayer"
+    CurrentContractCancelFeeLayerKind:
+      type: string
+      enum:
+        - CURRENT_CONTRACT_CANCEL_FEE_LAYER_KIND_UNSPECIFIED
+        - CURRENT_CONTRACT_CANCEL_FEE_LAYER_KIND_GLOBAL
+        - CURRENT_CONTRACT_CANCEL_FEE_LAYER_KIND_PROMO
+        - CURRENT_CONTRACT_CANCEL_FEE_LAYER_KIND_USER
+    CurrentContractCancelFeeLayer:
+      type: object
+      required:
+        - kind
+        - label
+        - valid_from
+        - valid_to
+        - cancel_fee_pct
+      properties:
+        kind:
+          $ref: "#/components/schemas/CurrentContractCancelFeeLayerKind"
+        label:
+          type: string
+        valid_from:
+          type: string
+          format: date-time
+          description: RFC3339 UTC timestamp from which this fee layer is valid.
+        valid_to:
+          type: string
+          description: RFC3339 UTC timestamp at which this fee layer stops being valid. Empty means open-ended.
+        cancel_fee_pct:
+          type: string
+          description: Cancellation fee as a percentage of unpaid remaining contract premium.
+    GetCurrentContractCancelFeesResponse:
+      type: object
+      required:
+        - items
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/CurrentContractCancelFeeLayer"
+    CancelContractRequest:
+      type: object
+      properties:
+        memo:
+          type: string
+          description: Optional memo or reason.
+    ContractCancellationRequestState:
+      type: string
+      enum:
+        - CONTRACT_CANCELLATION_REQUEST_STATE_UNSPECIFIED
+        - CONTRACT_CANCELLATION_REQUEST_STATE_PENDING
+        - CONTRACT_CANCELLATION_REQUEST_STATE_ACCEPTED_BY_FLUX
+        - CONTRACT_CANCELLATION_REQUEST_STATE_REJECTED_BY_FLUX
+        - CONTRACT_CANCELLATION_REQUEST_STATE_CONFIRMED_RELEASED
+        - CONTRACT_CANCELLATION_REQUEST_STATE_RELEASE_FAILED
+    ContractCancellationRequest:
+      type: object
+      properties:
+        cancellation_request_id:
+          type: integer
+          format: uint64
+          minimum: 0
+        contract_id:
+          type: string
+          description: Contract ID prefixed with C.
+        state:
+          $ref: "#/components/schemas/ContractCancellationRequestState"
+        affected_ids:
+          type: array
+          items:
+            type: string
+        failure_code:
+          type: string
+        failure_reason:
+          type: string
+    CancelContractResponse:
+      type: object
+      properties:
+        cancellation_request:
+          $ref: "#/components/schemas/ContractCancellationRequest"
+    TerminateContractRequest:
+      type: object
+      properties:
+        memo:
+          type: string
+          description: Optional memo or reason.
+    TerminateContractResponse:
+      type: object
+      required:
+        - affected_ids
+      properties:
+        affected_ids:
+          type: array
+          items:
+            type: string
+    GetContractDetailResponse:
+      type: object
+      required:
+        - contract
+        - state
+      properties:
+        contract:
+          $ref: "#/components/schemas/ContractPublic"
+        state:
+          $ref: "#/components/schemas/ContractStatePublic"
+    GetContractSettingsResponse:
+      type: object
+      required:
+        - min_speed_ph
+        - max_speed_ph
+        - min_duration_seconds
+        - max_duration_seconds
+        - min_start_gap_seconds
+        - min_cancellation_gap_seconds
+        - reservation_lead_days
+        - max_start_gap_days
+      properties:
+        min_speed_ph:
+          type: number
+          format: double
+          description: Minimum allowed contract hashrate in PH/s.
+        max_speed_ph:
+          type: number
+          format: double
+          description: Maximum allowed contract hashrate in PH/s.
+        min_duration_seconds:
+          type: integer
+          format: int64
+        max_duration_seconds:
+          type: integer
+          format: int64
+        min_start_gap_seconds:
+          type: integer
+          format: int64
+        min_cancellation_gap_seconds:
+          type: integer
+          format: int64
+        reservation_lead_days:
+          type: string
+          description: Reservation lead time in days as an exact decimal string.
+        max_start_gap_days:
+          type: integer
+          format: int64
+          description: Maximum allowed number of days between the request time and contract activation.
+    GetContractsResponse:
+      type: object
+      required:
+        - items
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/GetContractsResponseItem"
+    GetContractsResponseItem:
+      type: object
+      required:
+        - contract
+        - state
+      properties:
+        contract:
+          $ref: "#/components/schemas/ContractPublic"
+        state:
+          $ref: "#/components/schemas/ContractStatePublic"
+    ContractPublic:
+      type: object
+      required:
+        - id
+        - issuer_subaccount
+        - subaccount
+        - destination
+        - nominal_speed_ph
+        - activates_at
+        - expires_at
+        - status
+        - pow_algo
+      properties:
+        id:
+          type: string
+          description: Contract ID prefixed with C.
+        issuer_subaccount:
+          type: string
+        subaccount:
+          type: string
+        destination:
+          $ref: "#/components/schemas/ContractDestination"
+        nominal_speed_ph:
+          $ref: "#/components/schemas/Double"
+          description: Contract nominal hashrate in PH/s.
+        activates_at:
+          type: string
+          format: date-time
+        expires_at:
+          type: string
+          format: date-time
+        status:
+          $ref: "#/components/schemas/ContractStatus"
+        pow_algo:
+          type: string
+        memo:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        last_updated_at:
+          type: string
+          format: date-time
+        last_status_change_timestamp:
+          type: string
+          format: date-time
+        last_status_change_reason:
+          $ref: "#/components/schemas/Uint32"
+        last_status_change_remark:
+          type: string
+        created_by:
+          $ref: "#/components/schemas/ProfileIdentifier"
+        last_updated_by:
+          $ref: "#/components/schemas/ProfileIdentifier"
+        last_pause_reason:
+          type: string
+        last_paused_at:
+          type: string
+          format: date-time
+        previous_status:
+          $ref: "#/components/schemas/ContractStatus"
+        premium_pct:
+          $ref: "#/components/schemas/OptionalDouble"
+          description: Premium percentage over the daily PPS rate. Omitted while commercial terms are not yet available.
+        cancel_fee_pct:
+          $ref: "#/components/schemas/OptionalDouble"
+          description: Agreed cancellation fee as a percentage of unpaid remaining contract premium. Omitted while commercial terms are not yet available.
+    ContractStatePublic:
+      type: object
+      required:
+        - shares_claimed
+        - shares_yielded
+        - shares_sold
+        - shares_delivered
+        - shares_accepted
+        - shares_rejected
+        - avg_speed_ph
+        - progress
+      properties:
+        shares_claimed:
+          $ref: "#/components/schemas/Double"
+        shares_yielded:
+          $ref: "#/components/schemas/Double"
+        shares_sold:
+          $ref: "#/components/schemas/Double"
+        shares_delivered:
+          $ref: "#/components/schemas/Double"
+        shares_accepted:
+          $ref: "#/components/schemas/Double"
+        shares_rejected:
+          $ref: "#/components/schemas/Double"
+        avg_speed_ph:
+          $ref: "#/components/schemas/Double"
+          description: Contract hashrate estimate in PH/s.
+        progress:
+          $ref: "#/components/schemas/Double"
+          description: Progress in percents from 0 to 100.
+    ContractStatus:
+      type: string
+      enum:
+        - CONTRACT_STATUS_UNSPECIFIED
+        - CONTRACT_STATUS_PENDING
+        - CONTRACT_STATUS_RUNNING
+        - CONTRACT_STATUS_FINISHED
+        - CONTRACT_STATUS_CANCELED
+        - CONTRACT_STATUS_PAUSED
+        - CONTRACT_STATUS_TERMINATED
+    GetContractReservationsResponse:
+      type: object
+      required:
+        - contract_id
+        - items
+      properties:
+        contract_id:
+          type: string
+          description: Contract ID prefixed with C.
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/ContractReservationPublicItem"
+    ContractReservationPublicItem:
+      type: object
+      required:
+        - effective_at
+        - amount
+        - origin
+        - created_at
+        - cancellation_buffer_amount
+      properties:
+        effective_at:
+          type: string
+          format: date-time
+          description: Logical timestamp represented by this reservation.
+        amount:
+          $ref: "#/components/schemas/Int64"
+          description: Incremental amount blocked by this reservation in the smallest unit of the implicit contract settlement currency.
+        origin:
+          $ref: "#/components/schemas/ContractReservationOriginPublic"
+        created_at:
+          type: string
+          format: date-time
+          description: Timestamp when the reservation row was recorded.
+        cancellation_buffer_amount:
+          $ref: "#/components/schemas/Int64"
+          description: Portion of this reservation attributed to the full Cancellation Cushion.
+        share_price_btc:
+          type: string
+          description: Exact BTC-per-difficulty-unit price used for this reservation, encoded as a decimal string. Omitted when no pricing evidence is available.
+    ContractReservationOriginPublic:
+      type: string
+      enum:
+        - CONTRACT_RESERVATION_ORIGIN_UNSPECIFIED
+        - CONTRACT_RESERVATION_ORIGIN_INITIAL
+        - CONTRACT_RESERVATION_ORIGIN_RECURRING
+    GetContractSettlementsResponse:
+      type: object
+      required:
+        - contract_id
+        - items
+      properties:
+        contract_id:
+          type: string
+          description: Contract ID prefixed with C.
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/ContractSettlementPublicItem"
+    ContractSettlementPublicItem:
+      type: object
+      required:
+        - settlement_date
+        - bare_price_amount
+        - premium_amount
+        - pps_rate_for_day
+        - shares_for_day
+        - created_at
+        - cancellation_fee_amount
+        - is_final
+      properties:
+        settlement_date:
+          type: string
+          description: Settlement day in YYYY-MM-DD format.
+        bare_price_amount:
+          $ref: "#/components/schemas/Int64"
+          description: Bare PPS price component in the implicit settlement currency smallest unit.
+        premium_amount:
+          $ref: "#/components/schemas/Int64"
+          description: Premium component in the implicit settlement currency smallest unit.
+        pps_rate_for_day:
+          $ref: "#/components/schemas/Double"
+          description: Indicative PPS rate used for this row. Derived from finalized daily pricing for delivered shares; a final row without delivery may use the cancellation price.
+        shares_for_day:
+          $ref: "#/components/schemas/Double"
+          description: Shares delivered for this accounting day. Zero records a completed day with no delivery.
+        released_amount:
+          type: integer
+          format: int64
+          nullable: true
+          description: Smallest-unit amount released by the final settlement row. Null or omitted for non-final rows.
+        created_at:
+          type: string
+          format: date-time
+          description: Timestamp when the settlement row was recorded.
+        cancellation_fee_amount:
+          $ref: "#/components/schemas/Int64"
+          description: Fee charged from unrealized remaining contract premium on termination.
+        is_final:
+          type: boolean
+          description: True when this row completed accounting and released the remaining locked funds.
+        cancellation_share_price_btc:
+          type: string
+          description: Exact BTC-per-difficulty-unit price used to calculate the final cancellation fee, encoded as a decimal string. Omitted when cancellation pricing was not required.
+    ContractActivityType:
+      type: string
+      enum:
+        - CONTRACT_ACTIVITY_TYPE_UNSPECIFIED
+        - CONTRACT_ACTIVITY_TYPE_RESERVATION
+        - CONTRACT_ACTIVITY_TYPE_SETTLEMENT
+        - CONTRACT_ACTIVITY_TYPE_AUTO_TERMINATION
+        - CONTRACT_ACTIVITY_TYPE_FUNDING_WARNING
+        - CONTRACT_ACTIVITY_TYPE_SETTLEMENT_BLOCKED
+        - CONTRACT_ACTIVITY_TYPE_LATE_YIELD
+    ContractActivityItem:
+      type: object
+      required:
+        - cursor
+        - contract_id
+        - type
+        - occurred_at
+        - effective_date
+        - amount
+        - message
+        - details_json
+      properties:
+        cursor:
+          type: integer
+          format: uint64
+          minimum: 0
+        contract_id:
+          type: string
+          description: Contract ID prefixed with C.
+        type:
+          $ref: "#/components/schemas/ContractActivityType"
+        occurred_at:
+          type: string
+          format: date-time
+          description: Event creation time in UTC.
+        effective_date:
+          type: string
+          description: Accounting day in YYYY-MM-DD format, or an empty string when not applicable.
+        amount:
+          $ref: "#/components/schemas/Int64"
+          description: Primary event amount in satoshis, or zero when not applicable.
+        message:
+          type: string
+          description: Human-readable event summary.
+        details_json:
+          type: string
+          description: Additional machine-readable values encoded as a JSON object.
+    GetContractActivityResponse:
+      type: object
+      required:
+        - items
+        - next_cursor
+        - has_more
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/ContractActivityItem"
+        next_cursor:
+          type: integer
+          format: uint64
+          minimum: 0
+          description: Cursor of the final returned item, or the request cursor when no items were returned.
+        has_more:
+          type: boolean
+          description: True when more matching events are currently available.
+    ContractDestination:
+      oneOf:
+        - $ref: "#/components/schemas/LocalContractDestination"
+        - $ref: "#/components/schemas/UpstreamContractDestination"
+    LocalContractDestination:
+      type: object
+      required:
+        - local
+      properties:
+        local:
+          type: integer
+          enum: [0]
+    UpstreamContractDestination:
+      type: object
+      required:
+        - upstream
+      properties:
+        upstream:
+          $ref: "#/components/schemas/UpstreamSpecification"
+    SpotGetBidsResponse:
+      type: object
+      required:
+        - items
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/SpotGetBidsResponseItem"
+    SpotGetBidsResponseItem:
+      type: object
+      required:
+        - bid
+        - counters_estimate
+        - counters_committed
+        - state_estimate
+      properties:
+        bid:
+          $ref: "#/components/schemas/SpotMarketBid"
+        counters_estimate:
+          $ref: "#/components/schemas/SpotMarketBidCounters"
+        counters_committed:
+          $ref: "#/components/schemas/SpotMarketBidCounters"
+        state_estimate:
+          $ref: "#/components/schemas/SpotMarketBidState"
+        last_network_failure:
+          description: Last network failure (if any).
+          $ref: "#/components/schemas/UpstreamFailure"
+    SpotGetBidDetailResponse:
+      type: object
+      required:
+        - bid
+        - counters_estimate
+        - counters_committed
+        - state_estimate
+      properties:
+        bid:
+          $ref: "#/components/schemas/SpotMarketBid"
+          description: Complete bid information including all metadata
+        counters_estimate:
+          $ref: "#/components/schemas/SpotMarketBidCounters"
+          description: Estimated counters for the bid (may be ahead of committed values)
+        counters_committed:
+          $ref: "#/components/schemas/SpotMarketBidCounters"
+          description: Committed counters for the bid (confirmed values)
+        state_estimate:
+          $ref: "#/components/schemas/SpotMarketBidState"
+          description: Current estimated state of the bid including hashrate and progress
+        last_network_failure:
+          description: Last network failure related to the bid, if any. For bids with external destinations only.
+          $ref: "#/components/schemas/UpstreamFailure"
+        history:
+          type: array
+          description: History of bid status changes and updates
+          items:
+            $ref: "#/components/schemas/SpotBidHistoryItem"
+    SpotMarketBid:
+      type: object
+      required:
+        - id
+        - cl_order_id
+        - client_name
+        - subaccount
+        - dest_upstream
+        - speed_limit_ph
+        - amount_sat
+        - price_sat
+        - status
+        - is_current
+        - memo
+        - created
+        - created_by
+        - last_updated
+        - last_updated_by
+        - last_paused
+        - last_pause_reason
+        - fee_rate_pct
+      properties:
+        id:
+          type: string
+          description: ID of this bid (autogenerated). 64bit integer prefixes with "B".
+        cl_order_id:
+          type: string
+          description: Client assigned ID of this bid, optional.
+        client_name:
+          type: string
+          description: Client owning this bid.
+        subaccount:
+          type: string
+          description: Subaccount owning this order.
+        dest_upstream:
+          $ref: "#/components/schemas/UpstreamSpecification"
+          description: Upstream specification for orders of dest type UPSTREAM
+        speed_limit_ph:
+          $ref: "#/components/schemas/Double"
+          description: Optional hashrate limit in PH/s.
+        amount_sat:
+          $ref: "#/components/schemas/Double"
+          description: Order amount in satoshi.
+        price_sat:
+          $ref: "#/components/schemas/Double"
+          description: Bid price specified in satoshi.
+        status:
+          $ref: "#/components/schemas/SpotMarketBidStatus"
+          description: This bid's status.
+        is_current:
+          type: boolean
+          description: True if status is not terminal.
+        memo:
+          type: string
+          description: Remark.
+        created:
+          type: string
+          format: date-time
+        created_by:
+          $ref: "#/components/schemas/ProfileIdentifier"
+          description: Profile which created this bid.
+        last_updated:
+          type: string
+          format: date-time
+          description: Timestamp of the last user update.
+        last_updated_by:
+          $ref: "#/components/schemas/ProfileIdentifier"
+          description: Profile which updated this bid last time.
+        last_paused:
+          type: string
+          format: date-time
+        last_pause_reason:
+          type: string
+        fee_rate_pct:
+          $ref: "#/components/schemas/Double"
+          description: Continuous spot buy fee rate in percents.
+        is_degraded:
+          type: boolean
+          description: If true, the bid is in degraded mode because of delivery problems.
+        degraded_speed_limit_ph:
+          $ref: "#/components/schemas/Double"
+          description: Hashrate limit applied during degradation, in PH/s.
+        degraded_since:
+          type: string
+          format: date-time
+          description: Timestamp since when the bid has been degraded.
+        degradation_reason:
+          type: string
+          description: Reason for degradation.
+    SpotMarketBidStatus:
+      type: string
+      description: Common status values used for multiple client management entities
+      enum:
+        - BID_STATUS_UNSPECIFIED
+        - BID_STATUS_ACTIVE
+        - BID_STATUS_PENDING_CANCEL
+        - BID_STATUS_CANCELED
+        - BID_STATUS_FULFILLED
+        - BID_STATUS_PAUSED
+        - BID_STATUS_FROZEN
+        - BID_STATUS_CREATED
+    SpotMarketBidCounters:
+      type: object
+      required:
+        - shares_purchased_m
+        - shares_accepted_m
+        - shares_rejected_m
+        - fee_paid_sat
+        - amount_consumed_sat
+      properties:
+        shares_purchased_m:
+          $ref: "#/components/schemas/Double"
+          description: Shares already purchased by this bid. In millions.
+        shares_accepted_m:
+          $ref: "#/components/schemas/Double"
+          description: Shares accepted by bid's target. In millions.
+        shares_rejected_m:
+          $ref: "#/components/schemas/Double"
+          description: Shares rejected by bid's target. In millions.
+        fee_paid_sat:
+          $ref: "#/components/schemas/Double"
+          description: Fees paid in total on this bid. In satoshi.
+        amount_consumed_sat:
+          $ref: "#/components/schemas/Double"
+          description: Consumed order amount in satoshi.
+    SpotMarketBidState:
+      type: object
+      required:
+        - avg_speed_ph
+        - progress_pct
+        - amount_remaining_sat
+      properties:
+        avg_speed_ph:
+          $ref: "#/components/schemas/Double"
+          description: Order hashrate estimate.
+        progress_pct:
+          type: number
+          format: float
+          description: Progress in percents (0..100)
+        amount_remaining_sat:
+          $ref: "#/components/schemas/Double"
+          description: Remaining order amount in satoshi.
+    UpstreamFailure:
+      type: object
+      required:
+        - timestamp
+        - description
+        - code
+      properties:
+        timestamp:
+          type: string
+          description: Timestamp of the failure.
+        description:
+          type: string
+          description: Failure description in English.
+        code:
+          type: string
+          description: Failure code (E_ERR_SOME_FAILURE).
+    SpotBidHistoryItem:
+      type: object
+      required:
+        - timestamp
+        - speed_limit_ph
+        - price_sat
+        - amount
+        - status
+        - remark
+        - updated_by
+      properties:
+        timestamp:
+          type: string
+          format: date-time
+          description: Timestamp of the status change or update
+        speed_limit_ph:
+          $ref: "#/components/schemas/Double"
+          description: Hashrate limit in PH/s at the time of this update
+        price_sat:
+          $ref: "#/components/schemas/Double"
+          description: Bid price in satoshi at the time of this update
+        amount:
+          $ref: "#/components/schemas/Double"
+          description: Allocated amount in satoshi at the time of this update
+        status:
+          $ref: "#/components/schemas/SpotMarketBidStatus"
+          description: Bid status at this point in history
+        remark:
+          type: string
+          description: Remark or reason for the status change
+        updated_by:
+          $ref: "#/components/schemas/ProfileIdentifier"
+          description: Profile that made this update
+    UpstreamSpecification:
+      type: object
+      required:
+        - url
+        - identity
+      properties:
+        url:
+          type: string
+          description: Upstream URL
+          examples:
+            - stratum+tcp://pool.net:7770
+        identity:
+          type: string
+          description: User / worker identification
+    SpotPlaceBidRequest:
+      type: object
+      required:
+        - dest_upstream
+        - amount_sat
+        - price_sat
+      properties:
+        cl_order_id:
+          type: string
+          description: Client assigned ID of this bid, optional.
+        dest_upstream:
+          $ref: "#/components/schemas/UpstreamSpecification"
+          description: Upstream specification for orders of dest type UPSTREAM
+        speed_limit_ph:
+          $ref: "#/components/schemas/Double"
+          description: Optional hashrate limit in PH/s.
+        amount_sat:
+          $ref: "#/components/schemas/Double"
+          description: Order amount in satoshi.
+        price_sat:
+          $ref: "#/components/schemas/Double"
+          description: Bid price specified in satoshi.
+        memo:
+          type: string
+          description: Remark (optional).
+    PlaceOrderResponse:
+      type: object
+      required:
+        - id
+        - cl_order_id
+      properties:
+        id:
+          type: string
+          description: Autogenerated order ID.
+        cl_order_id:
+          type: string
+          description: Client order ID passed through.
+    SpotEditBidRequest:
+      type: object
+      oneOf:
+        - required: [bid_id]
+        - required: [cl_order_id]
+      properties:
+        bid_id:
+          type: string
+          description: Bid ID (exclusive with cl_order_id).
+        cl_order_id:
+          type: string
+          description: Client assigned ID of this bid for identification (exclusive with bid_id).
+        new_amount_sat:
+          $ref: "#/components/schemas/Double"
+          description: New order amount (total). If provided, it must be greater than previous amount value.
+        new_price_sat:
+          $ref: "#/components/schemas/Double"
+          description: New bid price in satoshi.
+        new_speed_limit_ph:
+          $ref: "#/components/schemas/OptionalDouble"
+          description: New hashrate limit in PH/s. Set to 0 to disable. If omitted, the hashrate limit is unchanged.
+        memo:
+          type: string
+          description: Remark (optional).
+    SpotCancelBidRequest:
+      type: object
+      description: Identifies the caller-owned bid to cancel by its public or client-assigned ID.
+      oneOf:
+        - required: [order_id]
+        - required: [cl_order_id]
+      properties:
+        order_id:
+          type: string
+          description: Server-assigned public bid ID, exclusive with `cl_order_id`.
+          pattern: '^B[0-9]+$'
+          examples:
+            - B123456789
+        cl_order_id:
+          type: string
+          description: Client-assigned bid ID, exclusive with `order_id`.
+    CancelResponse:
+      description: IDs affected by the operation (canceled successfully).
+      type: object
+      required:
+        - affected_ids
+      properties:
+        affected_ids:
+          $ref: "#/components/schemas/MultipleStringIds"
+    MultipleStringIds:
+      type: object
+      required:
+        - id
+      properties:
+        id:
+          type: array
+          description: Client order IDs for identification.
+          items:
+            type: string
+    GetFeeStructureResponse:
+      type: object
+      required:
+        - spot_fees
+      properties:
+        spot_fees:
+          type: array
+          items:
+            $ref: "#/components/schemas/SpotFeePublic"
+    SpotFeePublic:
+      type: object
+      required:
+        - symbol
+        - fee_type
+        - fee
+      properties:
+        symbol:
+          type: string
+        fee_type:
+          $ref: '#/components/schemas/SpotMarketFeeType'
+        fee:
+          $ref: '#/components/schemas/FeeSpec'
+    SpotMarketFeeType:
+      type: string
+      description: |-
+        * SPOT_FEE_TYPE_UNSPECIFIED
+        * SPOT_FEE_TYPE_BUY - Continuous spot buy fee. Only percentage_fee_rate is used.
+        * SPOT_FEE_TYPE_SELL - Continuous spot sell fee. Only percentage_fee_rate is used.
+        * SPOT_FEE_TYPE_PLACEMENT - Fee for placing a new order. Both percentage_fee_rate and abs_fee are used.
+        * SPOT_FEE_TYPE_CANCEL - Fee for canceling an order. Both percentage_fee_rate and abs_fee are used.
+        * SPOT_FEE_TYPE_EDIT - Fee for editing an order. Both percentage_fee_rate and abs_fee are used.
+      enum:
+        - SPOT_FEE_TYPE_UNSPECIFIED
+        - SPOT_FEE_TYPE_BUY
+        - SPOT_FEE_TYPE_SELL
+        - SPOT_FEE_TYPE_PLACEMENT
+        - SPOT_FEE_TYPE_CANCEL
+        - SPOT_FEE_TYPE_EDIT
+    FeeSpec:
+      description: Generic fee specification. Allows to specify a fee w/ percents for now.
+      type: object
+      required:
+        - fee_rate_pct
+      properties:
+        fee_rate_pct:
+          $ref: "#/components/schemas/Double"
+          description: Fee rate in percents
+    GetAccountBalancesResponse:
+      type: object
+      required:
+        - accounts
+      properties:
+        accounts:
+          type: array
+          items:
+            $ref: "#/components/schemas/AccountBalance"
+    AccountBalance:
+      type: object
+      required:
+        - subaccount
+        - currency
+        - total_balance_sat
+        - available_balance_sat
+        - blocked_balance_sat
+        - total_deposited_sat
+        - total_withdrawn_sat
+        - total_spot_spent_sat
+        - total_spot_revenue_gross_sat
+        - total_spot_revenue_net_sat
+        - total_spent_spot_buy_fees_sat
+        - total_spent_spot_sell_fees_sat
+        - total_spent_fees_sat
+        - has_pending_withdrawal
+      properties:
+        subaccount:
+          type: string
+          description: Related subaccount
+        currency:
+          type: string
+          description: Account currency.
+          examples:
+            - USDC
+        total_balance_sat:
+          $ref: "#/components/schemas/Double"
+          description: Actual total account balance (including blocked funds).
+        available_balance_sat:
+          $ref: "#/components/schemas/Double"
+          description: Account balance minus blocked funds. Funds available for withdrawals / purchases.
+        blocked_balance_sat:
+          $ref: "#/components/schemas/Double"
+          description: Blocked amount (in orders, etc...).
+        total_deposited_sat:
+          $ref: "#/components/schemas/Double"
+          description: Total deposited.
+        total_withdrawn_sat:
+          $ref: "#/components/schemas/Double"
+          description: Total withdrawn from this account.
+        total_spot_spent_sat:
+          $ref: "#/components/schemas/Double"
+          description: Total spent on spot market bids (net).
+        total_spot_revenue_gross_sat:
+          $ref: "#/components/schemas/Double"
+          description: Total revenue from spot market asks (gross).
+        total_spot_revenue_net_sat:
+          $ref: "#/components/schemas/Double"
+          description: Total revenue from spot market asks (net).
+        total_spent_spot_buy_fees_sat:
+          $ref: "#/components/schemas/Double"
+          description: Total spent on spot fees (buy)
+        total_spent_spot_sell_fees_sat:
+          $ref: "#/components/schemas/Double"
+          description: Total spent on spot fees (sell).
+        total_spent_fees_sat:
+          $ref: "#/components/schemas/Double"
+          description: Total spent in fees.
+        has_pending_withdrawal:
+          type: boolean
+          description: True if there is a pending withdrawal (clients may only withdraw the full amount).
+    GetTransactionsResponse:
+      type: object
+      required:
+        - transactions
+      properties:
+        transactions:
+          type: array
+          items:
+            $ref: "#/components/schemas/Transaction"
+    GetOnChainTransactionsResponse:
+      type: object
+      required:
+        - transactions
+      properties:
+        transactions:
+          type: array
+          items:
+            $ref: "#/components/schemas/OnChainTransaction"
+    Transaction:
+      type: object
+      required:
+        - tx_type
+        - amount_sat
+        - details
+        - timestamp
+      properties:
+        tx_type:
+          type: string
+          description: Transaction type (deposit, withdrawal, fee, etc...).
+        amount_sat:
+          $ref: "#/components/schemas/Double"
+          description: Transaction amount in satoshi.
+        details:
+          type: string
+          description: Additional details.
+        timestamp:
+          type: string
+          format: date-time
+          description: Transaction timestamp.
+    OnChainTransaction:
+      type: object
+      required:
+        - tx_type
+        - timestamp
+        - amount_sat
+        - address
+      properties:
+        tx_type:
+          $ref: "#/components/schemas/OnChainTransactionType"
+        timestamp:
+          type: string
+          format: date-time
+          description: Timestamp of the transaction recording.
+        amount_sat:
+          $ref: "#/components/schemas/Double"
+          description: Transaction amount in satoshi.
+        tx_id:
+          type: string
+          description: Blockchain transaction ID (deposit, withdrawal confirmation only).
+        address:
+          type: string
+          description: BTC address of the realizing output.
+        order_no:
+          type: integer
+          format: uint32
+          description: Sequential order of the realizing output.
+        deposit_status:
+          $ref: "#/components/schemas/DepositStatus"
+        return_tx_id:
+          type: string
+          description: Return transaction ID (returned deposits only).
+    OnChainTransactionType:
+      type: integer
+      format: int32
+      description: On-chain transaction type.
+      enum:
+        - 0
+        - 1
+        - 2
+        - 3
+    DepositStatus:
+      type: integer
+      format: int32
+      description: Deposit status (deposit transactions only).
+      enum:
+        - 0
+        - 1
+        - 2
+        - 3
+        - 4
+        - 5
+    SpotGetMarketStatsResponse:
+      type: object
+      required:
+        - status
+        - volume_24h_m
+        - best_bid_sat
+        - best_ask_sat
+        - last_avg_price_sat
+        - hash_rate_matched_10m_ph
+        - hash_rate_available_10m_ph
+      properties:
+        status:
+          $ref: "#/components/schemas/SpotInstrumentStatus"
+        volume_24h_m:
+          $ref: "#/components/schemas/Double"
+          description: Shares sold here in last 24 hours. In millions of shares.
+        best_bid_sat:
+          $ref: "#/components/schemas/Double"
+        best_ask_sat:
+          $ref: "#/components/schemas/Double"
+        last_avg_price_sat:
+          $ref: "#/components/schemas/Double"
+          description: Last second's average price matched. In satoshi.
+        hash_rate_matched_10m_ph:
+          $ref: "#/components/schemas/Double"
+          description: Hashrate being matched, estimated over a 10-minute rolling window, in PH/s.
+        hash_rate_available_10m_ph:
+          $ref: "#/components/schemas/Double"
+          description: Hashrate available in asks, estimated over a 10-minute rolling window, in PH/s.
+    SpotGetOrderBookResponse:
+      type: object
+      required:
+        - bids
+        - asks
+      properties:
+        bids:
+          type: array
+          items:
+            $ref: "#/components/schemas/BidItem"
+          description: List of bid items.
+        asks:
+          type: array
+          items:
+            $ref: "#/components/schemas/AskItem"
+          description: List of ask items.
+    BidItem:
+      type: object
+      required:
+        - price_sat
+        - amount_sat
+        - hr_matched_ph
+        - speed_limit_ph
+      properties:
+        price_sat:
+          $ref: "#/components/schemas/Double"
+          description: Price of the bid item.
+        amount_sat:
+          $ref: "#/components/schemas/Double"
+          description: Amount in market currency available to purchase hashrate.
+        hr_matched_ph:
+          $ref: "#/components/schemas/Double"
+          description: Hashrate being matched at this level, estimated over a 10-minute window, in PH/s.
+        speed_limit_ph:
+          $ref: "#/components/schemas/Double"
+          description: Aggregated hashrate limit at this level. Zero means no limit. In PH/s.
+        degraded_bids_count:
+          $ref: "#/components/schemas/Uint32"
+          description: Number of degraded bids at this price level.
+    AskItem:
+      type: object
+      required:
+        - price_sat
+        - hr_matched_ph
+        - hr_available_ph
+      properties:
+        price_sat:
+          $ref: "#/components/schemas/Double"
+          description: Price of the ask item.
+        hr_matched_ph:
+          $ref: "#/components/schemas/Double"
+          description: Hashrate being matched at this level, estimated over a 10-minute window, in PH/s.
+        hr_available_ph:
+          $ref: "#/components/schemas/Double"
+          description: Hashrate available for sale at this level, estimated over a 10-minute window, in PH/s.
+    Int32:
+      type: integer
+      format: int32
+    Int64:
+      type: integer
+      format: int64
+    Uint32:
+      type: integer
+      format: uint32
+      minimum: 0
+      maximum: 4294967295
+    Double:
+      type: number
+      format: double
+    OptionalDouble:
+      description: Optional double value.
+      type: object
+      properties:
+        value:
+          $ref: "#/components/schemas/Double"
+    SpotGetMarketTradesResponse:
+      type: object
+      required:
+        - trades
+      properties:
+        trades:
+          type: array
+          items:
+            $ref: "#/components/schemas/TradeSha256Btc"
+    TradeSha256Btc:
+      type: object
+      required:
+        - timestamp
+        - volume_m
+        - price_sat
+      properties:
+        timestamp:
+          type: string
+          format: date-time
+          description: Timestamp of the trade.
+        volume_m:
+          $ref: "#/components/schemas/Double"
+          description: Volume in millions of shares.
+        price_sat:
+          $ref: "#/components/schemas/Double"
+          description: Average price in satoshi.
+    AggregationPeriod:
+      type: string
+      description: Aggregation period for bars (OHLCV candles).
+      enum:
+        - PERIOD_UNSPECIFIED
+        - PERIOD_5_MINUTES
+        - PERIOD_15_MINUTES
+        - PERIOD_1_HOUR
+        - PERIOD_4_HOURS
+        - PERIOD_1_DAY
+    ContractHistoryAggregationPeriod:
+      type: string
+      description: Aggregation period for contract history time series.
+      enum:
+        - PERIOD_UNSPECIFIED
+        - PERIOD_5_MINUTES
+        - PERIOD_15_MINUTES
+        - PERIOD_1_HOUR
+        - PERIOD_4_HOURS
+    SlidingWindowSize:
+      type: string
+      description: Sliding window size for estimating hashrate.
+      enum:
+        - WINDOW_SIZE_UNSPECIFIED
+        - WINDOW_SIZE_10_MINUTES
+        - WINDOW_SIZE_20_MINUTES
+        - WINDOW_SIZE_30_MINUTES
+    SpotGetBarsResponse:
+      type: object
+      required:
+        - bars
+      properties:
+        bars:
+          type: array
+          items:
+            $ref: "#/components/schemas/TradeBar"
+    TradeBar:
+      type: object
+      required:
+        - timestamp
+        - open
+        - high
+        - low
+        - close
+        - volume
+        - vwap
+      properties:
+        timestamp:
+          type: string
+          format: date-time
+          description: Timestamp of the bar.
+        open:
+          $ref: "#/components/schemas/Double"
+          description: Opening price.
+        high:
+          $ref: "#/components/schemas/Double"
+          description: Highest price during the period.
+        low:
+          $ref: "#/components/schemas/Double"
+          description: Lowest price during the period.
+        close:
+          $ref: "#/components/schemas/Double"
+          description: Closing price.
+        volume:
+          $ref: "#/components/schemas/Double"
+          description: Volume traded during the period.
+        vwap:
+          $ref: "#/components/schemas/Double"
+          description: Volume-weighted average price.
+    SpotGetOrderSpeedHistoryResponse:
+      type: object
+      required:
+        - items
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/SpotGetOrderSpeedHistoryItem"
+    SpotGetOrderSpeedHistoryItem:
+      type: object
+      required:
+        - timestamp
+        - speed_ph
+      properties:
+        timestamp:
+          type: string
+          format: date-time
+          description: Timestamp of the hashrate measurement.
+        speed_ph:
+          $ref: "#/components/schemas/Double"
+          description: Estimated hashrate in PH/s.
+    SpotGetBidDeliveryHistoryResponse:
+      type: object
+      required:
+        - items
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/SpotBidDeliveryHistoryItem"
+    SpotBidDeliveryHistoryItem:
+      type: object
+      required:
+        - timestamp
+        - shares_purchased_m
+        - shares_accepted_m
+        - shares_rejected_m
+      properties:
+        timestamp:
+          type: string
+          format: date-time
+          description: Timestamp of the delivery record.
+        shares_purchased_m:
+          $ref: "#/components/schemas/Double"
+          description: Shares purchased (validated by platform). In millions.
+        shares_accepted_m:
+          $ref: "#/components/schemas/Double"
+          description: Shares accepted by the target. In millions.
+        shares_rejected_m:
+          $ref: "#/components/schemas/Double"
+          description: Shares rejected by the target. In millions.
+    GetContractSpeedHistoryResponse:
+      type: object
+      required:
+        - items
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/GetContractSpeedHistoryItem"
+    GetContractSpeedHistoryItem:
+      type: object
+      required:
+        - timestamp
+        - speed_ph
+      properties:
+        timestamp:
+          type: string
+          format: date-time
+          description: Timestamp of the hashrate measurement.
+        speed_ph:
+          $ref: "#/components/schemas/Double"
+          description: Estimated hashrate in PH/s.
+    GetContractDeliveryHistoryResponse:
+      type: object
+      required:
+        - items
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/GetContractDeliveryHistoryItem"
+    GetContractDeliveryHistoryItem:
+      type: object
+      required:
+        - timestamp
+        - shares_delivered_m
+        - shares_accepted_m
+        - shares_rejected_m
+      properties:
+        timestamp:
+          type: string
+          format: date-time
+          description: Timestamp of the delivery record.
+        shares_delivered_m:
+          $ref: "#/components/schemas/Double"
+          description: Shares delivered (validated by platform). In millions.
+        shares_accepted_m:
+          $ref: "#/components/schemas/Double"
+          description: Shares accepted by the target. In millions.
+        shares_rejected_m:
+          $ref: "#/components/schemas/Double"
+          description: Shares rejected by the target. In millions.

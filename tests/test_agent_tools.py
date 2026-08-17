@@ -240,11 +240,12 @@ class TestGetBraiinsOrderbook:
         assert result["available_bids"] == 0
         assert "hashpower.braiins.com" in result["source"]
 
-    def test_success_with_btc_pricing(self):
-        """Settings return BTC/PH/day pricing."""
+    def test_success_with_ph_day_unit(self):
+        """Settings return hr_unit PH/day (official field, Issue #267) —
+        factor 1.0, price is already per PH/day."""
         mock_settings = Mock()
         mock_settings.ok = True
-        mock_settings.json.return_value = {"price_unit": "BTC/PH/day"}
+        mock_settings.json.return_value = {"hr_unit": "PH/day"}
 
         mock_orderbook = Mock()
         mock_orderbook.ok = True
@@ -260,6 +261,31 @@ class TestGetBraiinsOrderbook:
             result = get_braiins_orderbook()
 
         assert result["price_btc_per_ph_day"] == pytest.approx(0.00002847)
+
+    def test_success_with_eh_day_unit(self):
+        """Settings return hr_unit EH/day (official field, Issue #267) — the
+        orderbook price_sat is expressed per EH/day and must be normalized
+        to sats/PH/day before quoting BTC/PH/day."""
+        mock_settings = Mock()
+        mock_settings.ok = True
+        mock_settings.json.return_value = {"hr_unit": "EH/day"}
+
+        mock_orderbook = Mock()
+        mock_orderbook.ok = True
+        mock_orderbook.json.return_value = {
+            "asks": [{"price_sat": "2847"}],
+            "bids": [],
+        }
+
+        with patch(
+            "agents.solo_mining_advisor.tools.requests.get",
+            side_effect=[mock_settings, mock_orderbook],
+        ):
+            result = get_braiins_orderbook()
+
+        # 2847 sats/EH/day ÷ 1000 = 2.847 sats/PH/day → 2.847e-8 BTC/PH/day
+        assert result["price_btc_per_ph_day"] == pytest.approx(2.847e-8)
+        assert result["price_raw_unit"] == "EH/day"
 
     def test_fallback_to_bids_when_no_asks(self):
         """No asks → use highest bid as proxy for market rate."""

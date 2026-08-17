@@ -29,6 +29,7 @@ from agents.solo_mining_advisor.tools import (
     mrr_credentials,
     braiins_credentials,
 )
+import helpers
 from helpers import csv_neutralize as _csv_neutralize
 from services.db import get_db
 from services.settings import is_default_tenant, load_settings
@@ -2317,7 +2318,12 @@ BID_MAX_PRICE_SAT_PH_DAY = 1_000_000_000
 
 def braiins_price_unit(tenant_id: str = "") -> str:
     """The account's spot price unit (default 'sats/PH/day'). Reads
-    spot/settings with the tenant's key; falls back to the default unit."""
+    spot/settings with the tenant's key; falls back to the default unit.
+
+    Issue #267 (audit 17-Aug): the OFFICIAL contract field is ``hr_unit``
+    (e.g. 'EH/day', '100PH/day', '10PH/day') — ``price_unit`` does not exist
+    in the OpenAPI. We read ``hr_unit`` first, then ``price_unit`` as a
+    legacy fallback (older responses / mocks), then the default."""
     key = _braiins_key(tenant_id=tenant_id)
     if not key:
         return "sats/PH/day"
@@ -2326,7 +2332,9 @@ def braiins_price_unit(tenant_id: str = "") -> str:
             f"{BRAIINS_BASE}/spot/settings", headers={"apikey": key}, timeout=8
         )
         if r.ok:
-            return str((r.json().get("price_unit") or "sats/PH/day"))
+            data = r.json()
+            unit = data.get("hr_unit") or data.get("price_unit") or "sats/PH/day"
+            return str(unit)
     except Exception as e:
         log.warning("[rental_performance] braiins price unit failed: %s", e)
     return "sats/PH/day"
@@ -2477,20 +2485,20 @@ def create_braiins_bid(
         }
 
     # MONEY-SAFETY: the API expects price_sat in the ACCOUNT's configured unit
-    # (spot/settings, default sats/PH/day). The UI quote is always PH/day —
-    # convert to the account's unit before the wire, or FAIL CLOSED when the
-    # unit is unknown (never guess with real money). A unit mismatch would
-    # otherwise place an order 1000× too expensive without tripping the
-    # sanity band above.
-    unit = (braiins_price_unit(tenant_id=tenant_id) or "sats/PH/day").strip().lower()
-    price_for_api = price_sat
-    if "th/day" in unit:
-        price_for_api = round(price_sat / 1000.0)  # PH/day → TH/day
-    elif "ph/day" not in unit and unit not in ("", "sats/ph/day"):
+    # (spot/settings hr_unit, default sats/PH/day). The UI quote is always
+    # PH/day — convert to the account's unit before the wire, or FAIL CLOSED
+    # when the unit is unknown (never guess with real money). A unit mismatch
+    # would otherwise place an order 10-1000× too expensive without tripping
+    # the sanity band above (Issue #267: official field is hr_unit, which can
+    # be EH/day / 100PH/day / 10PH/day / TH/day — not only PH/day).
+    unit = (braiins_price_unit(tenant_id=tenant_id) or "sats/PH/day").strip()
+    factor = helpers.braiins_hr_unit_factor(unit)
+    if factor is None:
         return {
             "success": False,
-            "error": f"unsupported account price unit '{unit}' — not placing order",
+            "error": f"price unit must be supported (got '{unit}') — not placing order",
         }
+    price_for_api = round(price_sat * factor)
 
     body: Dict[str, Any] = {
         "dest_upstream": {"url": url},

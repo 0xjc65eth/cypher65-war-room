@@ -20,6 +20,8 @@ import logging
 
 import requests
 
+from helpers import braiins_hr_unit_factor
+
 
 # ── MRR nonce — estritamente crescente (fix do "Bad Nonce") ────────────────
 # O MRR exige que o nonce de cada request seja MAIOR que o último usado para
@@ -178,7 +180,11 @@ def get_braiins_orderbook():
         price_unit = "sats/PH/day"
         if settings_r.ok:
             settings = settings_r.json()
-            price_unit = settings.get("price_unit", "sats/PH/day")
+            # Issue #267 (audit 17-Aug): the OFFICIAL field is `hr_unit`
+            # (EH/day, 100PH/day, 10PH/day); `price_unit` is a legacy fallback.
+            price_unit = settings.get("hr_unit") or settings.get(
+                "price_unit", "sats/PH/day"
+            )
 
         # Fetch orderbook
         r = requests.get(
@@ -209,15 +215,21 @@ def get_braiins_orderbook():
             return {"error": "Braiins orderbook has no valid prices"}
 
         # Convert satoshis to BTC, honoring the API's reported price unit.
-        # Braiins quotes in sats/PH/day by default; if settings report
-        # sats/TH/day, scale by PH_TO_TH (1 PH = 1000 TH).
-        unit_norm = (price_unit or "sats/PH/day").lower()
-        if "th" in unit_norm:
-            btc_per_th_day = price_sat / 100_000_000
-            btc_per_ph_day = btc_per_th_day * PH_TO_TH
-        else:
-            btc_per_ph_day = price_sat / 100_000_000
-            btc_per_th_day = btc_per_ph_day / PH_TO_TH
+        # The orderbook's price_sat is expressed per the market's hr_unit
+        # (official contract). Normalize to sats/PH/day via the shared factor
+        # (Issue #267): EH/day → ×1000, 100PH/day → ×100, 10PH/day → ×10,
+        # TH/day → ÷1000, PH/day → ×1. Unknown unit → assume PH/day and log
+        # (read-only quote; the BID path fails closed on unknown units).
+        factor = braiins_hr_unit_factor(price_unit)
+        if factor is None:
+            log.warning(
+                "[get_braiins_orderbook] unknown price unit %r — assuming sats/PH/day",
+                price_unit,
+            )
+            factor = 1.0
+        price_sat_ph_day = price_sat / factor  # sats per hr_unit → sats/PH/day
+        btc_per_ph_day = price_sat_ph_day / 100_000_000
+        btc_per_th_day = btc_per_ph_day / PH_TO_TH
         available_hr_ph = float(best.get("hr_matched_ph", 0)) or float(
             best.get("hr_available_ph", 0)
         )
@@ -226,7 +238,7 @@ def get_braiins_orderbook():
             "price_btc_per_ph_day": btc_per_ph_day,
             "price_btc_per_th_day": btc_per_th_day,
             "price_raw": price_sat,
-            "price_raw_unit": "sats/TH/day" if "th" in unit_norm else "sats/PH/day",
+            "price_raw_unit": price_unit,
             "price_unit": price_unit,
             "source": "hashpower.braiins.com/v1/spot/orderbook",
             "available_asks": len(asks),

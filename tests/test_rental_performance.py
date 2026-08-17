@@ -2127,9 +2127,10 @@ def test_create_braiins_bid_missing_key(monkeypatch):
 
 
 def test_create_braiins_bid_honors_account_price_unit(monkeypatch):
-    """MONEY-SAFETY: the account's price unit (spot/settings) must be honored
-    on the wire. A sats/TH/day account gets price_sat / 1000 (PH/day → TH/day);
-    an UNKNOWN unit fails closed (never guess with real money)."""
+    """MONEY-SAFETY: the account's price unit (spot/settings hr_unit) must be
+    honored on the wire. TH/day → ÷1000; EH/day → ×1000; 100PH/day → ×100;
+    10PH/day → ×10; PH/day → unchanged. UNKNOWN unit fails closed (never
+    guess with real money) — Issue #267."""
     _fake_braiins_key(monkeypatch)
     sent = []
 
@@ -2140,10 +2141,34 @@ def test_create_braiins_bid_honors_account_price_unit(monkeypatch):
     monkeypatch.setattr(rp.requests, "post", fake_post)
 
     # Account priced per TH/day → price 123456 sats/PH/day = 123 sats/TH/day.
-    monkeypatch.setattr(rp, "braiins_price_unit", lambda tenant_id="": "sats/TH/day")
+    monkeypatch.setattr(rp, "braiins_price_unit", lambda tenant_id="": "TH/day")
     out = rp.create_braiins_bid(1.0, 500000, 123456, "stratum+tcp://h:3333")
     assert out["success"] is True
-    assert sent[-1]["price_sat"] == 123
+    assert sent[-1]["price_sat"] == 123  # 123456 × 0.001
+
+    # EH/day → ×1000 (official example: price_sat expressed per EH/day).
+    monkeypatch.setattr(rp, "braiins_price_unit", lambda tenant_id="": "EH/day")
+    out = rp.create_braiins_bid(1.0, 500000, 123456, "stratum+tcp://h:3333")
+    assert out["success"] is True
+    assert sent[-1]["price_sat"] == 123_456_000
+
+    # 100PH/day → ×100.
+    monkeypatch.setattr(rp, "braiins_price_unit", lambda tenant_id="": "100PH/day")
+    out = rp.create_braiins_bid(1.0, 500000, 123456, "stratum+tcp://h:3333")
+    assert out["success"] is True
+    assert sent[-1]["price_sat"] == 12_345_600
+
+    # 10PH/day → ×10.
+    monkeypatch.setattr(rp, "braiins_price_unit", lambda tenant_id="": "10PH/day")
+    out = rp.create_braiins_bid(1.0, 500000, 123456, "stratum+tcp://h:3333")
+    assert out["success"] is True
+    assert sent[-1]["price_sat"] == 1_234_560
+
+    # PH/day (default) → unchanged.
+    monkeypatch.setattr(rp, "braiins_price_unit", lambda tenant_id="": "sats/PH/day")
+    out = rp.create_braiins_bid(1.0, 500000, 123456, "stratum+tcp://h:3333")
+    assert out["success"] is True
+    assert sent[-1]["price_sat"] == 123456
 
     # Unknown unit → refuse before the wire (no POST made for this call).
     n_before = len(sent)
@@ -2351,6 +2376,44 @@ def test_braiins_price_unit_default(monkeypatch):
         lambda *a, **k: FakeResponse(payload={"price_unit": "sats/TH/h"}),
     )
     assert rp.braiins_price_unit() == "sats/TH/h"
+
+
+def test_braiins_price_unit_reads_official_hr_unit(monkeypatch):
+    """Issue #267: the OFFICIAL contract field is `hr_unit` (EH/day,
+    100PH/day, 10PH/day) — it must be read before the legacy price_unit."""
+    _fake_braiins_key(monkeypatch)
+    monkeypatch.setattr(
+        rp.requests,
+        "get",
+        lambda *a, **k: FakeResponse(payload={"hr_unit": "EH/day"}),
+    )
+    assert rp.braiins_price_unit() == "EH/day"
+    # hr_unit wins when both fields present (contract truth).
+    monkeypatch.setattr(
+        rp.requests,
+        "get",
+        lambda *a, **k: FakeResponse(
+            payload={"hr_unit": "100PH/day", "price_unit": "sats/PH/day"}
+        ),
+    )
+    assert rp.braiins_price_unit() == "100PH/day"
+
+
+def test_braiins_hr_unit_factor_helper():
+    """Single source of truth maps official hr_unit → PH/day factor."""
+    from helpers import braiins_hr_unit_factor
+
+    assert braiins_hr_unit_factor("PH/day") == 1.0
+    assert braiins_hr_unit_factor("sats/PH/day") == 1.0
+    assert braiins_hr_unit_factor("TH/day") == 0.001
+    assert braiins_hr_unit_factor("10PH/day") == 10.0
+    assert braiins_hr_unit_factor("100PH/day") == 100.0
+    assert braiins_hr_unit_factor("EH/day") == 1000.0
+    assert braiins_hr_unit_factor("eh/day") == 1000.0  # case-insensitive
+    assert braiins_hr_unit_factor("sats/KH/hour") is None  # unknown → fail-closed
+    assert braiins_hr_unit_factor("BTC/PH/day") is None
+    assert braiins_hr_unit_factor("") == 1.0
+    assert braiins_hr_unit_factor(None) == 1.0
 
 
 # ── Portfolio TIME SERIES: spent + estimated P/L per week/month ─────────────
