@@ -471,9 +471,10 @@ def test_checkout_route_returns_url(client, monkeypatch):
         # Issue #155: the route now also forwards the browser funnel_id.
         lambda plan="pro", email="", funnel_id="": "https://buy.lemonsqueezy.com/x",
     )
-    r = client.post("/api/upgrade/checkout", json={"plan": "pro"})
+    r = client.post("/api/upgrade/checkout", json={"plan": "pro", "method": "card"})
     assert r.status_code == 200
     assert r.get_json()["checkout_url"].startswith("https://")
+    assert r.get_json()["method"] == "card"
 
 
 # ── Admin route (manual key issuance) ────────────────────────────────
