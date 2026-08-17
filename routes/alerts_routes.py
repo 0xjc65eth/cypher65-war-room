@@ -14,6 +14,11 @@ from flask import Blueprint, jsonify, request
 from services.tenant import require_tenant, role_required, log_audit as _log_audit
 
 log = logging.getLogger("cypher65.alerts")
+# Issue #204: throttle do warning de amostras dropadas — o WARNING cai no
+# bucket de degradação (#202) e o replay pode ser chamado com frequência;
+# 1 log / 5min evita floodar o bucket com o mesmo problema recorrente.
+_REPLAY_WARN_INTERVAL_S = 300
+_last_replay_warn_ts = 0
 
 alerts_bp = Blueprint("alerts", __name__, url_prefix="/api")
 
@@ -599,10 +604,14 @@ def api_automation_dry_run_replay(tenant_id: str = ""):
         # amostras saíram das séries por ts ausente/0.
         result["dropped_ts_samples"] = dropped_ts
         if dropped_ts:
-            log.warning(
-                "[alerts replay] %d amostras de telemetria sem ts dropadas das series",
-                dropped_ts,
-            )
+            global _last_replay_warn_ts
+            _now = int(time.time())
+            if _now - _last_replay_warn_ts >= _REPLAY_WARN_INTERVAL_S:
+                _last_replay_warn_ts = _now
+                log.warning(
+                    "[alerts replay] %d amostras de telemetria sem ts dropadas das series",
+                    dropped_ts,
+                )
         return jsonify(result)
     except Exception as e:
         return jsonify({"simulated": True, "error": str(e), "per_rule": []}), 500
