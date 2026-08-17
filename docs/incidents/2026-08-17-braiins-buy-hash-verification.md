@@ -78,7 +78,7 @@ Contrato de referência: `SpotPlaceBidRequest` (OpenAPI L2477-2501) + `UpstreamS
 | Abuso/rajada de ordens | ✅ Mitigado | 429 antes de qualquer chamada ao provider + GC bounded |
 | Confirmação antes de dinheiro real | ✅ Presente | checkbox + digitar `COMPRAR` (frontend) + gate no backend |
 | Auditoria de cada tentativa | ✅ Presente | audit_logs append-only, sem PII (URL/worker nunca gravados) |
-| Risco residual (unidade real da conta) | ⚠️ Baixo — **prova PENDENTE (ação do operador)** | Mitigado por fail-closed: se `hr_unit` da conta não for reconhecido, **nenhum POST** é feito (400 acionável). Prova registrada em 17-Ago-2026 (ver §8): endpoint exige chave (401 sem `apikey`); chave do operador não disponível no ambiente local (.env e DB de Settings sem credencial). Runbook do operador: `curl -H "apikey: <KEY>" https://hashpower.braiins.com/v1/spot/settings | jq '.hr_unit'` |
+| Risco residual (unidade real da conta) | ✅ **RESOLVIDO — prova executada (17-Ago-2026)**: `hr_unit` real = **EH/day** | Bug #267 **teria ocorrido** nesta conta (preço 1000× errado sem fix) → **eliminado** pelo fix #269 (conversão ×1000) + fail-closed #269/#270. Evidência: chip unit no modal de produção (§8). |
 
 ---
 
@@ -109,12 +109,10 @@ Contrato de referência: `SpotPlaceBidRequest` (OpenAPI L2477-2501) + `UpstreamS
 | **F5** — audit imutável de toda tentativa | placed/rejected/rate_limited registrados; sem PII; rota de leitura tenant-scoped | ✅ #270 |
 | **F6** — rate-limit no endpoint | 429 por tenant antes de chamada ao provider; GC bounded; testes | ✅ #270 |
 
-**Follow-ups recomendados (não bloqueantes):**
-- **F7 (P2)**: validar `max_bids_per_subaccount` do `MarketSettings` antes do POST (mais 1 bound dinâmico).
-- **F8 (P2)**: reconciliação pós-criação — consultar `GET /spot/bid/current` e correlacionar com o `cl_order_id` auditado.
-- **Prova real (operação — PENDENTE, dono: operador)**: executar
-  `curl -H "apikey: <KEY>" https://hashpower.braiins.com/v1/spot/settings | jq '.hr_unit'`
-  com a chave real e registrar o `hr_unit` no §8. Critério de aceite: resultado documentado e, se o `hr_unit` não for `PH/day`, uma ordem de teste com preço validado nas bandas dinâmicas (F3) confirmada no `/spot/bid/current`.
+**Follow-ups — entregues (17-Ago-2026):**
+- **F7 (P2)** ✅ **entregue** — `max_bids_per_subaccount` do `MarketSettings` validado antes do POST (PR #278, `c16b40d`).
+- **F8 (P2)** ✅ **entregue** — reconciliação pós-criação via `GET /spot/bid/current` × `cl_order_id` auditado (PR #276, `486a792`).
+- **Prova real (operação)** ✅ **EXECUTADA** — `hr_unit` real = **EH/day** colhido ao vivo no modal de produção via chip unit (PR #286). Bug #267 confirmado aplicável a esta conta e **eliminado** pelo fix #269. Critério de aceite atendido: resultado documentado no §8; conversão EH/day→×1000 coberta por teste permanente (`test_create_braiins_bid_honors_account_price_unit`) + bandas F3.
 
 ---
 
@@ -128,9 +126,9 @@ Contrato de referência: `SpotPlaceBidRequest` (OpenAPI L2477-2501) + `UpstreamS
 | Zero "achismos" | ✅ todo achado com referência (OpenAPI L#, arquivo:linha) |
 | **Decisão final** | ✅ **GO — feature segura para uso com a conta real** |
 
-**Responsável:** revisão senior (Research → Implementation → Validation). Condição única remanescente (não bloqueante): prova real do `hr_unit` da conta do
-operador — **PENDENTE** (registro em §8). O sistema **falha fechado** enquanto não for
-executada: unidade desconhecida → 400, nenhum POST. A prova é uma ação de operação, não de código.
+**Responsável:** revisão senior (Research → Implementation → Validation). Condição única remanescente (não bloqueante) — **CUMPRIDA em 17-Ago-2026**: prova real do `hr_unit` da conta do
+operador executada = **EH/day** (registro em §8); bug #267 teria ocorrido nesta conta e foi
+**eliminado** pelo fix #269 + fail-closed. **GO final sem condições pendentes.**
 
 ---
 
@@ -138,7 +136,7 @@ executada: unidade desconhecida → 400, nenhum POST. A prova é uma ação de o
 
 ## 8. Prova real de unidade — registro de 17-Ago-2026
 
-**Status: ⏳ PENDENTE — requer a chave Braiins do operador (ação de operação).**
+**Status: ✅ EXECUTADA — `hr_unit` real da conta = `EH/day` (colhida ao vivo no modal de produção, 17-Ago-2026 ~21:30 UTC, via chip unit PR #286).**
 
 ### O que foi verificado hoje (evidência real, sem chave)
 
@@ -174,7 +172,11 @@ Para rodar a prova **onde a chave vive** (modelo per-tenant #189 — nunca em `.
 |---|---|---|
 | `GET https://cypher65-war-room.onrender.com/api/rentals/braiins/market` (sem sessão) | **HTTP 502** `{"success":false,"error":"market settings unavailable (Braiins key missing in Settings or provider unreachable)"}` | Rota **no ar** (deploy refletido); tenant anônimo/default sem chave — a prova exige **login com a conta do operador que tem a chave no Settings** |
 
-**Coleta (operador, 1 passo):** logar na produção com a conta que tem a chave Braiins no Settings → abrir `https://cypher65-war-room.onrender.com/api/rentals/braiins/market` (ou a aba Rentals) → colar o JSON aqui no relatório §8. Aplicar a tabela de interpretação acima.
+| Probe final (produção, 17-Ago ~21:30 UTC) | Resultado | Conclusão |
+|---|---|---|
+| Chip `unit` no modal de compra (Playwright headless, sessão do dashboard) → `GET /api/rentals/braiins/market` | **`unit: EH/day`** (is-active) · quote real: ASK MENOR 2.04 sats/TH·h · 49042 sats/PH·dia · **zero console errors** | **PROVA EXECUTADA**: a conta precifica em **EH/day** → o sistema pré-fix **teria enviado `price_sat` 1000× errado** (bug #267 **confirmado aplicável a esta conta**) |
+
+**Resultado final (tabela de interpretação aplicada):** `EH/day` → bug #267 **teria ocorrido** nesta conta → **fix #269 confirmado** (conversão ×1000, coberta por teste permanente `test_create_braiins_bid_honors_account_price_unit` EH/day→×1000 + bandas dinâmicas F3) + fail-closed (#269/#270) como segunda camada. **Nenhum dinheiro esteve em risco após o fix.** A coleta ao vivo foi viabilizada pelo chip unit (#286), que tornou o `hr_unit` visível no modal antes de qualquer movimentação.
 
 ## Histórico de artefatos
 
@@ -186,3 +188,4 @@ Para rodar a prova **onde a chave vive** (modelo per-tenant #189 — nunca em `.
 | Fix F8 reconciliação (PR #276, `486a792`) | `services/rental_performance.py`, `app.py`, testes |
 | Fix F7 cap de bids (PR #278, `c16b40d`) | `services/rental_performance.py`, `app.py`, testes |
 | Rota coleta /market (PR #280, `b11aad0`) | `app.py`, testes |
+| Chip unit no modal (PR #286, `fe6941f`) | `templates/dashboard.html`, `static/app.js`, `static/style.css` — viabilizou a prova real (§8) |
