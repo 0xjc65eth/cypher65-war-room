@@ -78,7 +78,7 @@ Contrato de referência: `SpotPlaceBidRequest` (OpenAPI L2477-2501) + `UpstreamS
 | Abuso/rajada de ordens | ✅ Mitigado | 429 antes de qualquer chamada ao provider + GC bounded |
 | Confirmação antes de dinheiro real | ✅ Presente | checkbox + digitar `COMPRAR` (frontend) + gate no backend |
 | Auditoria de cada tentativa | ✅ Presente | audit_logs append-only, sem PII (URL/worker nunca gravados) |
-| Risco residual (unidade real da conta) | ⚠️ Baixo | Mitigado por fail-closed: se `hr_unit` da conta não for reconhecido, **nenhum POST** é feito (400 acionável). Prova real pendente: `curl -H "apikey: <key>" https://hashpower.braiins.com/v1/spot/settings \| jq '.hr_unit'` |
+| Risco residual (unidade real da conta) | ⚠️ Baixo — **prova PENDENTE (ação do operador)** | Mitigado por fail-closed: se `hr_unit` da conta não for reconhecido, **nenhum POST** é feito (400 acionável). Prova registrada em 17-Ago-2026 (ver §8): endpoint exige chave (401 sem `apikey`); chave do operador não disponível no ambiente local (.env e DB de Settings sem credencial). Runbook do operador: `curl -H "apikey: <KEY>" https://hashpower.braiins.com/v1/spot/settings | jq '.hr_unit'` |
 
 ---
 
@@ -112,7 +112,9 @@ Contrato de referência: `SpotPlaceBidRequest` (OpenAPI L2477-2501) + `UpstreamS
 **Follow-ups recomendados (não bloqueantes):**
 - **F7 (P2)**: validar `max_bids_per_subaccount` do `MarketSettings` antes do POST (mais 1 bound dinâmico).
 - **F8 (P2)**: reconciliação pós-criação — consultar `GET /spot/bid/current` e correlacionar com o `cl_order_id` auditado.
-- **Prova real (operação)**: rodar o curl de `/spot/settings` com a chave do operador e documentar o `hr_unit` real.
+- **Prova real (operação — PENDENTE, dono: operador)**: executar
+  `curl -H "apikey: <KEY>" https://hashpower.braiins.com/v1/spot/settings | jq '.hr_unit'`
+  com a chave real e registrar o `hr_unit` no §8. Critério de aceite: resultado documentado e, se o `hr_unit` não for `PH/day`, uma ordem de teste com preço validado nas bandas dinâmicas (F3) confirmada no `/spot/bid/current`.
 
 ---
 
@@ -126,11 +128,43 @@ Contrato de referência: `SpotPlaceBidRequest` (OpenAPI L2477-2501) + `UpstreamS
 | Zero "achismos" | ✅ todo achado com referência (OpenAPI L#, arquivo:linha) |
 | **Decisão final** | ✅ **GO — feature segura para uso com a conta real** |
 
-**Responsável:** revisão senior (Research → Implementation → Validation). Condição
-única remanescente (não bloqueante): prova real do `hr_unit` da conta do
-operador — o sistema **falha fechado** se ela divergir do esperado.
+**Responsável:** revisão senior (Research → Implementation → Validation). Condição única remanescente (não bloqueante): prova real do `hr_unit` da conta do
+operador — **PENDENTE** (registro em §8). O sistema **falha fechado** enquanto não for
+executada: unidade desconhecida → 400, nenhum POST. A prova é uma ação de operação, não de código.
 
 ---
+
+---
+
+## 8. Prova real de unidade — registro de 17-Ago-2026
+
+**Status: ⏳ PENDENTE — requer a chave Braiins do operador (ação de operação).**
+
+### O que foi verificado hoje (evidência real, sem chave)
+
+| Probe | Resultado | Conclusão |
+|---|---|---|
+| `GET https://hashpower.braiins.com/v1/spot/settings` (público, sem `apikey`) | **HTTP 401** `{"message":"No API key found in request","request_id":"6bb86d73b964f266c35f9a4d61d88e4c"}` | O endpoint **exige** a chave — a prova não pode rodar anônima (consistente com o OpenAPI: "API key required; allowed ACLs: staff, owner, read-only") |
+| Chave em `.env` local | não presente (sem `BRAIINS_API_KEY`) | Chave não disponível no ambiente de dev |
+| Chave em DB local (`settings`/`tenant_settings`) | 0 linhas com credencial Braiins | Não há credencial armazenada localmente |
+
+### Runbook do operador (executar com a chave real)
+
+```bash
+curl -H "apikey: <KEY>" https://hashpower.braiins.com/v1/spot/settings | jq '.hr_unit'
+```
+
+Fonte da chave: Render env `BRAIINS_API_KEY` (operador self-host) ou Settings → Braiins credentials (`services.settings.load_settings`).
+
+### Interpretação do resultado
+
+| `hr_unit` retornado | Significado | Ação |
+|---|---|---|
+| `PH/day` | Unidade padrão — o bug #267 não teria ocorrido nesta conta | Fechar a prova; risco residual → baixo confirmado |
+| `EH/day` / `100PH/day` / `10PH/day` / `TH/day` | **O sistema pré-fix teria enviado preço 10×–1000× errado** | Confirmar que o fix #269 converte corretamente; teste de ordem nas bandas F3 |
+| Valor inesperado/desconhecido | Fator não mapeado | **Fail-closed ativo**: o bid é recusado com 400 até mapear — nenhum dinheiro em risco |
+
+> **Rigor (regra da revisão):** ausência de evidência = risco. Sem a chave do operador a prova não é executável deste ambiente — o registro acima documenta o que foi possível verificar hoje e deixa a ação rastreável (issue de operação). O fail-closed (#269) garante que nenhum dinheiro real depende desta confirmação.
 
 ## Histórico de artefatos
 
