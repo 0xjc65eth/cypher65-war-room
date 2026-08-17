@@ -1385,8 +1385,8 @@
     }
     const dim = size + q * 2;
     return '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ' + dim + ' ' + dim + '" shape-rendering="crispEdges" role="img" aria-label="QR code">' +
-      '<rect width="' + dim + '" height="' + dim + '" fill="#fff"/>' +
-      (cells.length ? '<path d="' + cells.join('') + '" fill="#111"/>' : '') +
+      '<rect width="' + dim + '" height="' + dim + '" fill="' + cssVar('--text-primary') + '"/>' +
+      (cells.length ? '<path d="' + cells.join('') + '" fill="' + cssVar('--bg-deep') + '"/>' : '') +
       '</svg>';
   }
 
@@ -2393,8 +2393,8 @@ function renderAccount(acct) {
       arc.setAttribute('stroke-dasharray', circumference);
       arc.setAttribute('stroke-dashoffset', offset);
       // Color based on progress
-      if (pct > 50) arc.setAttribute('stroke', '#f5b942');
-      else if (pct > 10) arc.setAttribute('stroke', '#06d6f0');
+      if (pct > 50) arc.setAttribute('stroke', cssVar('--amber'));
+      else if (pct > 10) arc.setAttribute('stroke', cssVar('--brand'));
       else arc.setAttribute('stroke', 'rgba(6,214,240,0.5)');
     }
 
@@ -2473,14 +2473,14 @@ function renderAccount(acct) {
     ctx.fill();
 
     // Line
-    ctx.strokeStyle = '#06d6f0';
+    ctx.strokeStyle = cssVar('--brand');
     ctx.lineWidth = 1;
     ctx.beginPath();
     data.forEach((v, i) => i === 0 ? ctx.moveTo(x(i), y(v)) : ctx.lineTo(x(i), y(v)));
     ctx.stroke();
 
     // Dot at latest
-    ctx.fillStyle = '#06d6f0';
+    ctx.fillStyle = cssVar('--brand');
     ctx.beginPath();
     ctx.arc(x(data.length - 1), y(data[data.length - 1]), 2.5, 0, Math.PI * 2);
     ctx.fill();
@@ -2637,7 +2637,7 @@ function renderAccount(acct) {
     ctx.stroke();
 
     // Center label
-    ctx.fillStyle = '#f0f0f0';
+    ctx.fillStyle = cssVar('--text-primary');
     ctx.font = 'bold 13px Space Grotesk';
     ctx.textAlign = 'center';
     ctx.fillText(displayPct.toFixed(displayPct < 1 ? 4 : 1) + '%', cx, cy - 6);
@@ -3307,9 +3307,9 @@ function renderAccount(acct) {
         maintainAspectRatio: false,
         interaction: { mode: 'index', intersect: false },
         scales: {
-          x: { ticks: { color: '#5E5952', font: { size: 9 }, maxRotation: 0 }, grid: { display: false } },
-          y: { beginAtZero: true, position: 'left', title: { display: true, text: 'paywall', color: 'rgb(6,214,240)', font: { size: 8 } }, ticks: { color: '#5E5952', font: { size: 9 }, precision: 0 }, grid: { color: 'rgba(94,89,82,0.10)' } },
-          y1: { beginAtZero: true, position: 'right', title: { display: true, text: 'conv %', color: 'rgb(0,200,83)', font: { size: 8 } }, ticks: { color: '#5E5952', font: { size: 9 } }, grid: { display: false } },
+          x: { ticks: { color: cssVar('--text-tertiary'), font: { size: 9 }, maxRotation: 0 }, grid: { display: false } },
+          y: { beginAtZero: true, position: 'left', title: { display: true, text: 'paywall', color: 'rgb(6,214,240)', font: { size: 8 } }, ticks: { color: cssVar('--text-tertiary'), font: { size: 9 }, precision: 0 }, grid: { color: 'rgba(94,89,82,0.10)' } },
+          y1: { beginAtZero: true, position: 'right', title: { display: true, text: 'conv %', color: 'rgb(0,200,83)', font: { size: 8 } }, ticks: { color: cssVar('--text-tertiary'), font: { size: 9 } }, grid: { display: false } },
         },
       },
     });
@@ -3398,11 +3398,11 @@ function renderAccount(acct) {
         responsive: true,
         maintainAspectRatio: false,
         interaction: { mode: 'index', intersect: false },
-        plugins: { legend: { labels: { color: '#5E5952', font: { size: 9 }, boxWidth: 12 } } },
+        plugins: { legend: { labels: { color: cssVar('--text-tertiary'), font: { size: 9 }, boxWidth: 12 } } },
         scales: {
-          x: { ticks: { color: '#5E5952', font: { size: 9 }, maxTicksLimit: 12, maxRotation: 0 }, grid: { color: 'rgba(94,89,82,0.10)' } },
-          y: { type: 'linear', position: 'left', title: { display: true, text: 'sessions', color: 'rgb(6,214,240)' }, ticks: { color: '#5E5952', font: { size: 9 }, precision: 0 }, grid: { color: 'rgba(94,89,82,0.08)' } },
-          y1: { type: 'linear', position: 'right', title: { display: true, text: 'pps / queue', color: 'rgb(186,133,224)' }, ticks: { color: '#5E5952', font: { size: 9 } }, grid: { display: false } },
+          x: { ticks: { color: cssVar('--text-tertiary'), font: { size: 9 }, maxTicksLimit: 12, maxRotation: 0 }, grid: { color: 'rgba(94,89,82,0.10)' } },
+          y: { type: 'linear', position: 'left', title: { display: true, text: 'sessions', color: 'rgb(6,214,240)' }, ticks: { color: cssVar('--text-tertiary'), font: { size: 9 }, precision: 0 }, grid: { color: 'rgba(94,89,82,0.08)' } },
+          y1: { type: 'linear', position: 'right', title: { display: true, text: 'pps / queue', color: 'rgb(186,133,224)' }, ticks: { color: cssVar('--text-tertiary'), font: { size: 9 } }, grid: { display: false } },
         },
       },
     });
@@ -3488,8 +3488,8 @@ function renderAccount(acct) {
           },
         },
         scales: {
-          x: { ticks: { color: '#5E5952', font: { size: 9 }, maxTicksLimit: 12, maxRotation: 0 }, grid: { color: 'rgba(94,89,82,0.06)' } },
-          y: { beginAtZero: true, ticks: { color: '#5E5952', font: { size: 9 }, precision: 0 }, grid: { color: 'rgba(94,89,82,0.08)' }, title: { display: true, text: 'erros' + (topMod ? ' · top: ' + topMod : ''), color: 'rgb(255,23,68)', font: { size: 9 } } },
+          x: { ticks: { color: cssVar('--text-tertiary'), font: { size: 9 }, maxTicksLimit: 12, maxRotation: 0 }, grid: { color: 'rgba(94,89,82,0.06)' } },
+          y: { beginAtZero: true, ticks: { color: cssVar('--text-tertiary'), font: { size: 9 }, precision: 0 }, grid: { color: 'rgba(94,89,82,0.08)' }, title: { display: true, text: 'erros' + (topMod ? ' · top: ' + topMod : ''), color: 'rgb(255,23,68)', font: { size: 9 } } },
         },
       },
     });
@@ -3734,8 +3734,8 @@ function renderAccount(acct) {
         maintainAspectRatio: false,
         plugins: { legend: { display: false } },
         scales: {
-          x: { ticks: { color: '#5E5952', font: { size: 9 }, maxRotation: 0 }, grid: { display: false } },
-          y: { beginAtZero: true, ticks: { color: '#5E5952', font: { size: 9 }, precision: 0 }, grid: { color: 'rgba(94,89,82,0.10)' } },
+          x: { ticks: { color: cssVar('--text-tertiary'), font: { size: 9 }, maxRotation: 0 }, grid: { display: false } },
+          y: { beginAtZero: true, ticks: { color: cssVar('--text-tertiary'), font: { size: 9 }, precision: 0 }, grid: { color: 'rgba(94,89,82,0.10)' } },
         },
       },
     });
@@ -4286,7 +4286,7 @@ function renderAccount(acct) {
       window._mktTrendChart = new Chart(ctx, {
         type: 'line',
         data: { labels, datasets },
-        options: { responsive: true, maintainAspectRatio: false, scales: { x: { ticks: { color: '#5E5952', maxTicksLimit: 8 } }, y: { ticks: { color: '#5E5952' } } }, plugins: { legend: { display: false } } }
+        options: { responsive: true, maintainAspectRatio: false, scales: { x: { ticks: { color: cssVar('--text-tertiary'), maxTicksLimit: 8 } }, y: { ticks: { color: cssVar('--text-tertiary') } } }, plugins: { legend: { display: false } } }
       });
       return true;
     } catch (e) { return false; }
@@ -4578,8 +4578,8 @@ function renderAccount(acct) {
         responsive: true, maintainAspectRatio: false,
         plugins: { legend: { display: false } },
         scales: {
-          x: { ticks: { color: '#5E5952', font: { size: 8 }, maxTicksLimit: 8 }, grid: { display: false } },
-          y: { ticks: { color: '#5E5952', font: { size: 8 } }, grid: { color: 'rgba(94,89,82,0.12)' } }
+          x: { ticks: { color: cssVar('--text-tertiary'), font: { size: 8 }, maxTicksLimit: 8 }, grid: { display: false } },
+          y: { ticks: { color: cssVar('--text-tertiary'), font: { size: 8 } }, grid: { color: 'rgba(94,89,82,0.12)' } }
         }
       }
     });
@@ -4828,8 +4828,8 @@ function renderAccount(acct) {
           if (pt) openRentalsBucketDrill(pt.label, series.bucket || _rentalsSeriesBucket);
         },
         scales: {
-          x: { ticks: { color: '#5E5952', font: { size: 9 }, maxTicksLimit: 12 }, grid: { display: false } },
-          y: { ticks: { color: '#5E5952', font: { size: 9 } }, grid: { color: 'rgba(94,89,82,0.12)' } }
+          x: { ticks: { color: cssVar('--text-tertiary'), font: { size: 9 }, maxTicksLimit: 12 }, grid: { display: false } },
+          y: { ticks: { color: cssVar('--text-tertiary'), font: { size: 9 } }, grid: { color: 'rgba(94,89,82,0.12)' } }
         }
       }
     });
@@ -5787,8 +5787,8 @@ function renderAccount(acct) {
                   responsive: true, maintainAspectRatio: false,
                   plugins: { legend: { display: false } },
                   scales: {
-                    y: { min: 0, max: 110, ticks: { color: '#5E5952', font: { size: 8 }, callback: function (v) { return v + '%'; } }, grid: { color: 'rgba(94,89,82,0.12)' } },
-                    x: { ticks: { color: '#5E5952', font: { size: 8 } }, grid: { display: false } }
+                    y: { min: 0, max: 110, ticks: { color: cssVar('--text-tertiary'), font: { size: 8 }, callback: function (v) { return v + '%'; } }, grid: { color: 'rgba(94,89,82,0.12)' } },
+                    x: { ticks: { color: cssVar('--text-tertiary'), font: { size: 8 } }, grid: { display: false } }
                   }
                 }
               });
@@ -6730,7 +6730,7 @@ function renderAccount(acct) {
   }
 
   function _apDrErrHtml(msg) {
-    return '<div class="ap-dr-banner" style="border-color:var(--accent-red,#ff4d4d);color:var(--accent-red,#ff4d4d)">' +
+    return '<div class="ap-dr-banner" style="border-color:var(--accent-red);color:var(--accent-red)">' +
       '⚠ ' + escapeHtml(msg) + '</div>';
   }
 
@@ -7229,9 +7229,9 @@ function renderAccount(acct) {
         maintainAspectRatio: false,
         interaction: { mode: 'index', intersect: false },
         scales: {
-          x: { ticks: { color: '#5E5952', maxTicksLimit: 8, font: { family: 'JetBrains Mono, monospace', size: 10 } }, grid: { color: 'rgba(94,89,82,0.14)' } },
-          y: { ticks: { color: '#5E5952', font: { family: 'JetBrains Mono, monospace', size: 10 }, ...(yTickCb ? { callback: yTickCb } : {}) }, grid: { color: 'rgba(94,89,82,0.14)' } },
-          y1: { position: 'right', display: false, grid: { drawOnChartArea: false }, ticks: { color: '#06d6f0', font: { family: 'JetBrains Mono, monospace', size: 10 } } },
+          x: { ticks: { color: cssVar('--text-tertiary'), maxTicksLimit: 8, font: { family: 'JetBrains Mono, monospace', size: 10 } }, grid: { color: 'rgba(94,89,82,0.14)' } },
+          y: { ticks: { color: cssVar('--text-tertiary'), font: { family: 'JetBrains Mono, monospace', size: 10 }, ...(yTickCb ? { callback: yTickCb } : {}) }, grid: { color: 'rgba(94,89,82,0.14)' } },
+          y1: { position: 'right', display: false, grid: { drawOnChartArea: false }, ticks: { color: cssVar('--brand'), font: { family: 'JetBrains Mono, monospace', size: 10 } } },
         },
         plugins: {
           legend: { display: false },
@@ -7390,7 +7390,7 @@ function renderAccount(acct) {
       const s = settings[k] || {};
       const val = (s.value !== undefined && s.value !== null && s.value !== '') ? s.value : s.default;
     const label = escapeHtml(s.label || k);
-    const hint = SETTINGS_HINTS[k] ? `<small style="color:#8b93a7;font-size:10px;line-height:1.3">${escapeHtml(SETTINGS_HINTS[k])}</small>` : '';
+    const hint = SETTINGS_HINTS[k] ? `<small style="color:${cssVar('--text-tertiary')};font-size:10px;line-height:1.3">${escapeHtml(SETTINGS_HINTS[k])}</small>` : '';
     if (SETTINGS_SELECTS[k]) {
       const opts = SETTINGS_SELECTS[k].map(o => `<option value="${o}" ${String(val)===o?'selected':''}>${o}</option>`).join('');
       html += `<label style="display:flex;flex-direction:column;gap:2px;font-size:11px"><span>${label}</span><select name="${k}" class="field__input">${opts}</select>${hint}</label>`;
@@ -7405,14 +7405,14 @@ function renderAccount(acct) {
     // environment silently wins over this field — tell the operator, or they
     // edit the field, nothing changes, and the panel keeps saying "rejected".
     if ((SETTINGS_CACHE.env || {}).braiins_api_key && settings['braiins_api_key']) {
-      html += '<div style="margin-top:2px;border:1px solid var(--accent-orange, #ffa000);border-radius:4px;padding:6px 8px;font-size:10px;line-height:1.4;color:var(--text-muted)">⚠ O servidor tem <code>BRAIINS_API_KEY</code> definida como env var — ela <b>SOBRESCREVE</b> o valor abaixo. Remova a env var (Render → Environment) para usar a chave do Settings.</div>';
+      html += '<div style="margin-top:2px;border:1px solid var(--accent-orange);border-radius:4px;padding:6px 8px;font-size:10px;line-height:1.4;color:var(--text-muted)">⚠ O servidor tem <code>BRAIINS_API_KEY</code> definida como env var — ela <b>SOBRESCREVE</b> o valor abaixo. Remova a env var (Render → Environment) para usar a chave do Settings.</div>';
     }
     // Same override warning for the MRR key/secret pair (Issue #189): the
     // per-user model is Settings-only — env vars are a default-tenant trap
     // that silently wins over the fields below.
     const mrrEnv = (SETTINGS_CACHE.env || {}).mrr_api_key || (SETTINGS_CACHE.env || {}).mrr_api_secret;
     if (mrrEnv && (settings['mrr_api_key'] || settings['mrr_api_secret'])) {
-      html += '<div style="margin-top:2px;border:1px solid var(--accent-orange, #ffa000);border-radius:4px;padding:6px 8px;font-size:10px;line-height:1.4;color:var(--text-muted)">⚠ O servidor tem <code>MRR_API_KEY/MRR_API_SECRET</code> como env var — elas <b>SOBRESCREVEM</b> os valores abaixo. Remova as env vars (Render → Environment) para usar as chaves do Settings.</div>';
+      html += '<div style="margin-top:2px;border:1px solid var(--accent-orange);border-radius:4px;padding:6px 8px;font-size:10px;line-height:1.4;color:var(--text-muted)">⚠ O servidor tem <code>MRR_API_KEY/MRR_API_SECRET</code> como env var — elas <b>SOBRESCREVEM</b> os valores abaixo. Remova as env vars (Render → Environment) para usar as chaves do Settings.</div>';
     }
     // "Test connection" for Braiins: probes the live API and reports the same
     // verdict the RENTALS panel derives (ok / rejected / missing).
@@ -7430,7 +7430,7 @@ function renderAccount(acct) {
     if (whConfigured) {
       html += '<div class="wh-preview" style="margin-top:6px;border:1px dashed var(--border);border-radius:4px;padding:8px">' +
         '<div style="font-size:10px;color:var(--text-tertiary);letter-spacing:0.06em">WEBHOOK PREVIEW — payload enviado a cada alerta (JSON)</div>' +
-        '<pre id="wh-preview-payload" style="background:#0d0f12;padding:6px;border-radius:4px;font-size:9px;line-height:1.5;overflow:auto;margin:6px 0;max-height:140px;color:var(--green)"></pre>' +
+        '<pre id="wh-preview-payload" style="background:' + cssVar('--bg-input') + ';padding:6px;border-radius:4px;font-size:9px;line-height:1.5;overflow:auto;margin:6px 0;max-height:140px;color:var(--green)"></pre>' +
         '<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">' +
         '<button type="button" class="btn btn--primary btn--mini" id="wh-send-test">📡 ENVIAR TESTE</button>' +
         '<span id="wh-test-status" style="font-size:10px;color:var(--text-muted)"></span>' +
@@ -8413,7 +8413,7 @@ dom.walletSave?.addEventListener('click', async () => {
     const k = _ccKpiAgg(fleet);
     if (dom.fccSummaryHr) dom.fccSummaryHr.textContent = k.totalHr ? fmt.hashrate(k.totalHr) : '—';
     _ccHrSeries.push(k.totalHr); if (_ccHrSeries.length > 40) _ccHrSeries.shift();
-    if (dom.fccSummaryHrSpark) dom.fccSummaryHrSpark.innerHTML = _ccSvgSparkline(_ccHrSeries, '#00b8d4');
+    if (dom.fccSummaryHrSpark) dom.fccSummaryHrSpark.innerHTML = _ccSvgSparkline(_ccHrSeries, cssVar('--brand'));
     const onlineN = fleet.filter(d => d.status === 'ONLINE' || d.status === 'HASHING').length;
     const warnN = fleet.filter(d => d.status === 'WARNING').length;
     const offlineN = fleet.length - onlineN - warnN;
@@ -8517,7 +8517,7 @@ dom.walletSave?.addEventListener('click', async () => {
       const hs = r.healthScore != null ? r.healthScore : 0;
       const circumference = 2 * Math.PI * 13;
       const offset = circumference * (1 - Math.min(100, hs) / 100);
-      const healthColor = hs >= 80 ? '#00c853' : hs >= 50 ? '#ffd600' : '#ff1744';
+      const healthColor = hs >= 80 ? cssVar('--green') : hs >= 50 ? cssVar('--amber') : cssVar('--red');
       const healthSvg = '<svg class="fcc-card__ring" viewBox="0 0 32 32"><circle class="fcc-card__ring-bg" cx="16" cy="16" r="13"/><circle class="fcc-card__ring-fill" cx="16" cy="16" r="13" stroke="' + healthColor + '" stroke-dasharray="' + circumference + '" stroke-dashoffset="' + offset + '"/></svg>';
       const tempTxt = r.temp != null ? Math.round(r.temp) + '°C' : '—';
       const tempCls = r.temp != null ? 't' + _ccTempBand(r.temp) : '';
@@ -8540,7 +8540,7 @@ dom.walletSave?.addEventListener('click', async () => {
           '</div>' +
           (restartBtn || identifyBtn || pauseBtn || resumeBtn ? '<div class="fcc-card__cmds">' + restartBtn + identifyBtn + pauseBtn + resumeBtn + '</div>' : '<div class="fcc-card__cmds"><span class="axe-card__ro-badge">READ-ONLY</span></div>') +
         '</div>' +
-        '<div class="fcc-card__hr"><span class="fcc-card__hr-val">' + esc(r.hrStr) + '</span>' + _ccSvgSparkline(_ccHrHist[r.id], '#00b8d4') + '</div>' +
+        '<div class="fcc-card__hr"><span class="fcc-card__hr-val">' + esc(r.hrStr) + '</span>' + _ccSvgSparkline(_ccHrHist[r.id], cssVar('--brand')) + '</div>' +
         '<div class="fcc-card__stats">' +
           '<div class="fcc-card__stat"><span class="lbl">TEMP</span><span class="val ' + tempCls + '">' + tempTxt + '</span></div>' +
           '<div class="fcc-card__stat"><span class="lbl">POWER</span><span class="val">' + power + '</span></div>' +
@@ -9246,12 +9246,12 @@ dom.walletSave?.addEventListener('click', async () => {
           maintainAspectRatio: false,
           interaction: { mode: 'index', intersect: false },
           scales: {
-            x: { ticks: { color: '#5E5952', maxTicksLimit: 10, font: { size: 9 } }, grid: { color: 'rgba(94,89,82,0.12)' } },
-            y: { type: 'linear', position: 'left', title: { display: true, text: 'TH/s', color: 'rgb(6,214,240)' }, ticks: { color: '#5E5952', font: { size: 9 } }, grid: { color: 'rgba(94,89,82,0.10)' } },
-            y1: { type: 'linear', position: 'right', title: { display: true, text: '°C / J/TH', color: 'rgb(255,160,0)' }, ticks: { color: '#5E5952', font: { size: 9 } }, grid: { display: false } }
+            x: { ticks: { color: cssVar('--text-tertiary'), maxTicksLimit: 10, font: { size: 9 } }, grid: { color: 'rgba(94,89,82,0.12)' } },
+            y: { type: 'linear', position: 'left', title: { display: true, text: 'TH/s', color: 'rgb(6,214,240)' }, ticks: { color: cssVar('--text-tertiary'), font: { size: 9 } }, grid: { color: 'rgba(94,89,82,0.10)' } },
+            y1: { type: 'linear', position: 'right', title: { display: true, text: '°C / J/TH', color: 'rgb(255,160,0)' }, ticks: { color: cssVar('--text-tertiary'), font: { size: 9 } }, grid: { display: false } }
           },
           plugins: {
-            legend: { labels: { color: '#C6C3BF', font: { size: 9 }, usePointStyle: true, padding: 12 } }
+            legend: { labels: { color: cssVar('--text-secondary'), font: { size: 9 }, usePointStyle: true, padding: 12 } }
           }
         }
       });
