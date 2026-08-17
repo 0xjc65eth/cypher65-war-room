@@ -1946,6 +1946,28 @@ def api_doc_feedback_get(tenant_id: str = ""):
     return jsonify({"votes": _doc_feedback.my_doc_feedback(tenant_id or "default")})
 
 
+def _admin_request_allowed() -> bool:
+    """Admin gate compartilhado (Issue #254) — localhost REAL ou X-API-Key.
+
+    Sev-2 fix: no Render (e em qualquer proxy reverso) o `remote_addr` do
+    request vira loopback — o gate antigo (`remote_addr in loopback`) tratava
+    o proxy como operador local e expunha as rotas /api/admin/* publicamente
+    (validado em produção: /api/admin/conversion respondia 200 sem key).
+    Agora a presença de header de proxy (X-Forwarded-For / Forwarded) marca o
+    request como REMOTO → exige X-API-Key válida. Localhost real (sem proxy)
+    segue liberado para dev / ssh-tunnel.
+    """
+    remote = (request.remote_addr or "").strip()
+    operator_key = (os.environ.get("API_KEY") or "").strip()
+    sent = (request.headers.get("X-API-Key") or "").strip()
+    proxied = bool(
+        (request.headers.get("X-Forwarded-For") or "").strip()
+        or (request.headers.get("Forwarded") or "").strip()
+    )
+    local = (not proxied) and remote in ("127.0.0.1", "::1", "localhost")
+    return local or bool(operator_key and hmac.compare_digest(sent, operator_key))
+
+
 @app.route("/api/admin/docs-feedback", methods=["GET"])
 def api_admin_docs_feedback():
     """Admin-gated summary of doc feedback (Learning FAQ loop).
@@ -1954,11 +1976,7 @@ def api_admin_docs_feedback():
     Returns per-section helpful %, totals, and the recurring questions list
     (comments typed on thumbs-down votes) — the input to the FAQ loop.
     """
-    remote = request.remote_addr or ""
-    local = remote in ("127.0.0.1", "::1", "localhost")
-    operator_key = os.environ.get("API_KEY") or ""
-    sent = (request.headers.get("X-API-Key") or "").strip()
-    if not local and not (operator_key and hmac.compare_digest(sent, operator_key)):
+    if not _admin_request_allowed():
         return jsonify({"error": "admin access required"}), 403
     return jsonify(_doc_feedback.doc_feedback_summary())
 
@@ -3577,11 +3595,7 @@ def api_admin_pool_metrics():
     last ``hours`` (default 24) so the Admin CFO renders trend lines that
     survive restarts (unlike the in-memory /api/admin/sessions counters).
     """
-    remote = request.remote_addr or ""
-    local = remote in ("127.0.0.1", "::1", "localhost")
-    operator_key = os.environ.get("API_KEY") or ""
-    sent = (request.headers.get("X-API-Key") or "").strip()
-    if not local and not (operator_key and hmac.compare_digest(sent, operator_key)):
+    if not _admin_request_allowed():
         return jsonify({"error": "admin access required"}), 403
 
     hours = request.args.get("hours", 24, type=int)
@@ -3614,11 +3628,7 @@ def api_admin_error_rate():
     flag drives the admin badge — honest: local telemetry works with or
     without a DSN.
     """
-    remote = request.remote_addr or ""
-    local = remote in ("127.0.0.1", "::1", "localhost")
-    operator_key = os.environ.get("API_KEY") or ""
-    sent = (request.headers.get("X-API-Key") or "").strip()
-    if not local and not (operator_key and hmac.compare_digest(sent, operator_key)):
+    if not _admin_request_allowed():
         return jsonify({"error": "admin access required"}), 403
 
     hours = request.args.get("hours", 24, type=int)
@@ -3651,11 +3661,7 @@ def api_admin_degradation_rate():
     = pico >= 100/h; ``sustained`` = warnings in >= 2 distinct hours) and the
     since-boot counter. Honest: an empty response means zero warnings.
     """
-    remote = request.remote_addr or ""
-    local = remote in ("127.0.0.1", "::1", "localhost")
-    operator_key = os.environ.get("API_KEY") or ""
-    sent = (request.headers.get("X-API-Key") or "").strip()
-    if not local and not (operator_key and hmac.compare_digest(sent, operator_key)):
+    if not _admin_request_allowed():
         return jsonify({"error": "admin access required"}), 403
 
     hours = request.args.get("hours", 24, type=int)
@@ -5385,11 +5391,7 @@ def api_admin_issue_license():
 
     Gated to localhost requests or a valid X-API-Key matching the operator's
     API_KEY env var — never exposed to the public checkout path."""
-    remote = request.remote_addr or ""
-    local = remote in ("127.0.0.1", "::1", "localhost")
-    operator_key = os.environ.get("API_KEY") or ""
-    sent = (request.headers.get("X-API-Key") or "").strip()
-    if not local and not (operator_key and hmac.compare_digest(sent, operator_key)):
+    if not _admin_request_allowed():
         return jsonify({"error": "admin access required"}), 403
     body = request.get_json(silent=True) or {}
     months = body.get("months")
@@ -5448,11 +5450,7 @@ def api_admin_conversion():
     Admin-gated exactly like /api/admin/licenses (localhost or operator API
     key) — never exposed to the public.
     """
-    remote = request.remote_addr or ""
-    local = remote in ("127.0.0.1", "::1", "localhost")
-    operator_key = os.environ.get("API_KEY") or ""
-    sent = (request.headers.get("X-API-Key") or "").strip()
-    if not local and not (operator_key and hmac.compare_digest(sent, operator_key)):
+    if not _admin_request_allowed():
         return jsonify({"error": "admin access required"}), 403
     days = request.args.get("days", 30, type=int)
     weeks = request.args.get("weeks", 8, type=int)
@@ -5504,11 +5502,7 @@ def api_admin_rentals_accepted_recos():
     trail as a spreadsheet (BOM UTF-8, attachment) — same payload, same
     gate.
     """
-    remote = request.remote_addr or ""
-    local = remote in ("127.0.0.1", "::1", "localhost")
-    operator_key = os.environ.get("API_KEY") or ""
-    sent = (request.headers.get("X-API-Key") or "").strip()
-    if not local and not (operator_key and hmac.compare_digest(sent, operator_key)):
+    if not _admin_request_allowed():
         return jsonify({"error": "admin access required"}), 403
     days = request.args.get("days", 0, type=int)
     if request.args.get("format", "").lower() == "csv":

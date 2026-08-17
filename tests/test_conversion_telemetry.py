@@ -580,6 +580,70 @@ def test_admin_conversion_with_operator_key(isolated_client, monkeypatch):
     assert "ltv_usd" in data["economics"]
 
 
+# ── Proxy-aware admin gate (Issue #254 — Sev-2 Render) ────────────────────
+# No Render o proxy entrega remote_addr=loopback; o gate antigo tratava isso
+# como operador local e expunha /api/admin/* publicamente. Agora header de
+# proxy marca o request como remoto → exige X-API-Key válida.
+
+
+def test_admin_conversion_localhost_without_proxy_allowed(isolated_client, monkeypatch):
+    """Localhost REAL (sem proxy headers) continua liberado — dev/ssh-tunnel."""
+    monkeypatch.delenv("API_KEY", raising=False)
+    resp = isolated_client.get("/api/admin/conversion")
+    assert resp.status_code == 200
+
+
+def test_admin_conversion_blocked_behind_proxy_without_key(
+    isolated_client, monkeypatch
+):
+    """O caso do Render: loopback COM X-Forwarded-For = remoto → 403 sem key."""
+    monkeypatch.delenv("API_KEY", raising=False)
+    resp = isolated_client.get(
+        "/api/admin/conversion",
+        environ_base={"REMOTE_ADDR": "127.0.0.1"},
+        headers={"X-Forwarded-For": "203.0.113.5"},
+    )
+    assert resp.status_code == 403
+
+
+def test_admin_conversion_allowed_behind_proxy_with_valid_key(
+    isolated_client, monkeypatch
+):
+    """Operador remoto com X-API-Key válida → 200 mesmo atrás do proxy."""
+    monkeypatch.setenv("API_KEY", "operator-key-123")
+    resp = isolated_client.get(
+        "/api/admin/conversion",
+        environ_base={"REMOTE_ADDR": "127.0.0.1"},
+        headers={"X-Forwarded-For": "203.0.113.5", "X-API-Key": "operator-key-123"},
+    )
+    assert resp.status_code == 200
+
+
+def test_admin_conversion_blocked_behind_proxy_with_wrong_key(
+    isolated_client, monkeypatch
+):
+    """Key errada atrás do proxy → 403 (nunca cai no caminho local)."""
+    monkeypatch.setenv("API_KEY", "operator-key-123")
+    resp = isolated_client.get(
+        "/api/admin/conversion",
+        environ_base={"REMOTE_ADDR": "127.0.0.1"},
+        headers={"X-Forwarded-For": "203.0.113.5", "X-API-Key": "nope"},
+    )
+    assert resp.status_code == 403
+
+
+def test_admin_licenses_blocked_behind_proxy_without_key(isolated_client, monkeypatch):
+    """Rota crítica de emissão de chaves: loopback+proxy sem key → 403."""
+    monkeypatch.delenv("API_KEY", raising=False)
+    resp = isolated_client.post(
+        "/api/admin/licenses",
+        json={"months": 1},
+        environ_base={"REMOTE_ADDR": "127.0.0.1"},
+        headers={"X-Forwarded-For": "203.0.113.5"},
+    )
+    assert resp.status_code == 403
+
+
 # ── Session attribution (Issue #155 — funnel_id ponta-a-ponta) ─────────────
 
 
