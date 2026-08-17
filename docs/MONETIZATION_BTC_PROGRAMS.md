@@ -260,12 +260,19 @@ não por bug de tracking.
 
 ### 10.2 Runbook de ativação em produção (operator action — #256)
 
+> **Atualização (17-Aug):** a ativação virou **infra-as-code** — `PRO_KEYS_DB=1`
+> agora vive no `render.yaml` (blueprint) e o job `diagnose-render` do
+> `execution-pipeline.yml` **verifica o 402 após cada deploy** (falha com
+> mensagem acionável se o gate voltar a open mode). O passo 1 manual abaixo
+> só é necessário como fallback se o sync do blueprint não aplicar a var.
+
 Pré-requisito: **PR #255 mergeado** (gate admin proxy-aware — sem ele,
 `/api/admin/licenses` fica público no Render; com ele, exige `X-API-Key` real).
 
-1. **Setar a env var:** Render Dashboard → `cypher65-war-room` → **Environment**
-   → adicionar `PRO_KEYS_DB=1` → salvar → **Deploy/Restart** (ou `render login`
-   local + `render env set`).
+1. **Aplicar a env var:** o merge do PR de infra (`render.yaml` com
+   `PRO_KEYS_DB=1`) dispara o sync do blueprint no push a master. Se o sync
+   não aplicar sozinho: Render Dashboard → `cypher65-war-room` → **Blueprint**
+   → **Sync now** (ou `render login` local + `render env set PRO_KEYS_DB 1`).
 2. **Validar o gate ativo:**
    ```bash
    curl -s https://cypher65-war-room.onrender.com/api/proximity

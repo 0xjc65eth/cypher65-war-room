@@ -57,6 +57,15 @@ services:
         generateValue: true
       # Optional: API_KEY / TENANT_API_KEYS to lock the API behind auth.
       # Optional: SENTRY_DSN for error monitoring.
+      # ── Paywall / licensing (Issue #256) ─────────────────────────────────
+      # PRO_KEYS_DB=1 ATIVA o gate de licensing: features PRO (proximity,
+      # monte_carlo) respondem 402 sem chave e o funil paywall_view →
+      # key_activated começa a coletar (validado 17-Aug: 11/11 checks —
+      # docs/MONETIZATION_BTC_PROGRAMS.md §10). Valor ESTÁTICO (não é
+      # segredo). O job diagnose-render (execution-pipeline.yml) verifica o
+      # 402 após o deploy — se remover esta var, o CI acusa gate em open mode.
+      - key: PRO_KEYS_DB
+        value: "1"
       # ── Web Push (VAPID) — Issue #15 ────────────────────────────────────
       # Push de alertas no browser só liga com um par de chaves VAPID.
       # Gere uma vez localmente e cole os valores REAIS no Render dashboard
