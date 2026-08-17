@@ -6107,6 +6107,7 @@ function renderAccount(acct) {
     _braiinsBuySet('braiins-buy-quote', _prefillPrice > 0
       ? '⚡ pré-preenchido do sinal: ' + _prefillPrice + ' sats/TH·h · carregando cotação live…'
       : 'carregando cotação…');
+    _renderBraiinsBuyUnit();
     fetch('/api/rentals/braiins/quote')
       .then(r => r.ok ? r.json() : null)
       .then(q => {
@@ -6157,6 +6158,26 @@ function renderAccount(acct) {
       _braiinsBuySet('braiins-buy-balance', 'saldo: indisponível — verifique sua chave Braiins no Settings');
       _syncBraiinsBalanceClass('unknown');
     }
+  }
+
+  function _renderBraiinsBuyUnit() {
+    // Live pricing unit (MarketSettings.hr_unit, GET /api/rentals/braiins/market)
+    // — shows the account's unit next to the quote so a non-PH/day account is
+    // visible before any money moves. Never blocks the modal: on failure the
+    // chip stays '—' (the 400 fail-closed in create_braiins_bid is the guard).
+    const el = document.getElementById('braiins-buy-unit');
+    if (!el) return;
+    _braiinsBuySet('braiins-buy-unit', 'unit: —');  // reset on every open — never carry a stale unit
+    el.classList.remove('is-active');
+    fetch('/api/rentals/braiins/market')
+      .then(r => (r.ok ? r.json() : null))
+      .then(m => {
+        const hr = m && m.market && m.market.hr_unit;
+        if (!hr) return;
+        el.textContent = 'unit: ' + hr;
+        el.classList.add('is-active');
+      })
+      .catch(() => {});
   }
 
   function _braiinsBuyCalc() {
