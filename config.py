@@ -13,6 +13,10 @@ load_dotenv()
 
 # ── Core Settings ─────────────────────────────────────────────────────
 BTC_ADDRESS = os.environ.get("BTC_ADDRESS", "")
+# P4 (#250): fixed address that receives PREMIUM payments in Bitcoin —
+# STRICTLY SEPARATE from BTC_ADDRESS (data wallet used by services/polling.py
+# for Parasite API fetches). Never conflate the two roles.
+PAYMENT_BTC_ADDRESS = os.environ.get("PAYMENT_BTC_ADDRESS", "")
 WORKER_NAME = os.environ.get("WORKER_NAME", "")
 PARASITE_API = os.environ.get("PARASITE_API", "https://parasite.space/api")
 MEMPOOL_API = os.environ.get("MEMPOOL_API", "https://mempool.space/api")
@@ -28,7 +32,9 @@ POLL_INTERVAL = int(os.environ.get("POLL_INTERVAL", 15))
 # the module self-contained for tests. P1 Phase 2: ALL connected sessions
 # share a fixed pool (default 8 threads, env POLL_WORKER_POOL_SIZE).
 PORT = int(os.environ.get("PORT", 8765))
-RATE_LIMIT_PER_MINUTE = int(os.environ.get("RATE_LIMIT_PER_MINUTE", 300))  # E2E overrides to 1000
+RATE_LIMIT_PER_MINUTE = int(
+    os.environ.get("RATE_LIMIT_PER_MINUTE", 300)
+)  # E2E overrides to 1000
 # Stricter per-IP budget for the auth endpoints (login/register/refresh/
 # logout) — credential brute-force protection. Tight budget, separate store.
 AUTH_RATE_LIMIT_PER_MINUTE = int(os.environ.get("AUTH_RATE_LIMIT_PER_MINUTE", 10))
@@ -70,6 +76,7 @@ def is_cloud_deploy() -> bool:
         if val and str(val).strip().lower() not in ("", "0", "false", "no"):
             return True
     return False
+
 
 # ── Wallet source tracking ────────────────────────────────────────────
 WALLET_ADDRESS_SOURCE = os.environ.get("WALLET_SOURCE", "none")

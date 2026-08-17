@@ -681,7 +681,7 @@ def test_checkout_route_passes_funnel_id(isolated_client, monkeypatch):
     monkeypatch.setattr(_app_module._payments, "create_checkout", _fake)
     resp = isolated_client.post(
         "/api/upgrade/checkout",
-        json={"plan": "pro", "funnel_id": "f_route_test"},
+        json={"plan": "pro", "method": "card", "funnel_id": "f_route_test"},
     )
     assert resp.status_code == 200
     assert captured["funnel_id"] == "f_route_test"
