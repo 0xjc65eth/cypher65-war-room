@@ -208,6 +208,7 @@ test.describe('RENTALS — performance dos aluguéis (P2)', () => {
     await expect(page.locator('#braiins-buy-calc')).not.toContainText(/EXCEDE/);
     await expect(page.locator('#braiins-buy-submit')).toBeDisabled();
     await page.fill('#braiins-buy-stratum', 'stratum+tcp://pool.example:3333');
+    await page.fill('#braiins-buy-identity', 'user.worker');  // F4: obrigatória
     await page.check('#braiins-buy-ack');
     await page.fill('#braiins-buy-type', 'COMPRAR');
     await expect(page.locator('#braiins-buy-submit')).toBeEnabled({ timeout: 5000 });
