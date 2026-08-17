@@ -6161,21 +6161,33 @@ function renderAccount(acct) {
   }
 
   function _renderBraiinsBuyUnit() {
-    // Live pricing unit (MarketSettings.hr_unit, GET /api/rentals/braiins/market)
-    // — shows the account's unit next to the quote so a non-PH/day account is
-    // visible before any money moves. Never blocks the modal: on failure the
-    // chip stays '—' (the 400 fail-closed in create_braiins_bid is the guard).
+    // Live pricing unit + F7 bid cap (GET /api/rentals/braiins/market) — shows
+    // the account's unit next to the quote and the active-bid count against
+    // max_bids_per_subaccount (N/M), so a non-PH/day account AND a cap
+    // situation are visible before any money moves. Never blocks the modal:
+    // on failure the chip stays '—' (the 400 fail-closed in
+    // create_braiins_bid is the guard).
     const el = document.getElementById('braiins-buy-unit');
     if (!el) return;
     _braiinsBuySet('braiins-buy-unit', 'unit: —');  // reset on every open — never carry a stale unit
-    el.classList.remove('is-active');
+    el.classList.remove('is-active', 'is-danger');
     fetch('/api/rentals/braiins/market')
       .then(r => (r.ok ? r.json() : null))
       .then(m => {
         const hr = m && m.market && m.market.hr_unit;
         if (!hr) return;
-        el.textContent = 'unit: ' + hr;
+        const maxBids = m.market.max_bids_per_subaccount;
+        const active = m.active_bids_count;
+        let txt = 'unit: ' + hr;
+        if (maxBids != null) {
+          txt += ' · bids ' + (active != null ? active : '?') + '/' + maxBids;
+        }
+        el.textContent = txt;
         el.classList.add('is-active');
+        // At the cap: the submit would 400 (F7) — surface it in red.
+        if (maxBids != null && active != null && active >= maxBids) {
+          el.classList.add('is-danger');
+        }
       })
       .catch(() => {});
   }

@@ -903,6 +903,7 @@ body.module-mode .tab-pane:not(.active) { display: none; }
 .chip--zoom:hover { color: var(--brand); border-color: var(--brand-dim); }
 .chip--unit { cursor: default; }
 .chip--unit.is-active { border-color: var(--green); color: var(--green); }
+.chip--unit.is-danger { border-color: var(--red-dim); color: var(--red); }
 
 .pill {
   display: inline-flex;
