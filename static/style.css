@@ -505,8 +505,20 @@ a:hover { text-decoration: underline; }
   letter-spacing: 0.06em;
   text-transform: uppercase;
   transition: color var(--dur-fast) var(--ease-out), border-color var(--dur-fast) var(--ease-out);
-}
-.topbar__btn svg { width: 14px; height: 14px; }
+}  .topbar__btn svg { width: 14px; height: 14px; }
+  /* Icon sweep (#236): SVGs Lucide inline em ações — mesmo padrão do sidebar */
+  .btn svg, .chip svg, .profit-mode-btn svg, .mkt-card__buy svg,
+  .rentals-signals__buy svg, .rentals-trust__btn svg, .rentals-reco__blacklist svg,
+  .doc-feedback__btn svg, .scan-results__dismiss svg, .sidebar-mobile-toggle svg {
+    vertical-align: -2px;
+    flex-shrink: 0;
+  }
+  .empty-state__icon svg { width: 20px; height: 20px; }
+  .wallet-cta__icon svg { width: 20px; height: 20px; }
+  .support-bar__icon svg { width: 11px; height: 11px; }
+  .axe-wiz__method-icon svg { width: 16px; height: 16px; }
+  .docs-search__clear svg { width: 9px; height: 9px; }
+  .doc-callout__icon svg { width: 12px; height: 12px; }
 .topbar__btn:hover { color: var(--brand); border-color: var(--brand-dim); }
 .topbar__btn--auth:hover { color: var(--green); border-color: var(--green-dim); }
 .topbar__btn--wallet:hover { color: var(--amber); border-color: var(--amber-dim); }

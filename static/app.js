@@ -268,6 +268,36 @@
     return getComputedStyle(document.documentElement).getPropertyValue(name).trim() || '';
   }
 
+  // ── Icon sweep (Issue #236): Lucide 24×24 stroke icons via helper (zero emoji) ──
+  // Mesma linguagem visual do sidebar: stroke currentColor, viewBox 0 0 24 24.
+  // Uso: _ic('zap', 12, true) → svg 12px com gap para texto ao lado.
+  function _ic(name, size, gap) {
+    var ICONS = {
+      zap: '<polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>',
+      sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/>',
+      moon: '<path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/>',
+      settings: '<path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/>',
+      search: '<circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>',
+      flask: '<path d="M10 2v7.527a2 2 0 0 1-.211.896L4.72 20.55a1 1 0 0 0 .9 1.45h12.76a1 1 0 0 0 .9-1.45l-5.069-10.127A2 2 0 0 1 14 9.527V2"/><path d="M8.5 2h7"/><path d="M7 16h10"/>',
+      x: '<path d="M18 6 6 18"/><path d="m6 6 12 12"/>',
+      check: '<path d="M20 6 9 17l-5-5"/>',
+      alert: '<path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 20h16a2 2 0 0 0 1.73-2Z"/><path d="M12 9v4"/><path d="M12 17h.01"/>',
+      rotate: '<path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l4 2"/>',
+      refresh: '<path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/>',
+      send: '<path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/>',
+      ban: '<circle cx="12" cy="12" r="10"/><path d="m4.9 4.9 14.2 14.2"/>',
+      robot: '<path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2"/><path d="M20 14h2"/><path d="M15 13v2"/><path d="M9 13v2"/>',
+      key: '<path d="m15.5 7.5 2.3 2.3a1 1 0 0 0 1.4 0l2.1-2.1a1 1 0 0 0 0-1.4L19 4"/><path d="m21 2-9.6 9.6"/><circle cx="7.5" cy="15.5" r="5.5"/>',
+      package: '<path d="m7.5 4.27 9 5.15"/><path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/><path d="m3.3 7 8.7 5 8.7-5"/><path d="M12 22V12"/>',
+      thumbsUp: '<path d="M7 10v12"/><path d="M15 5.88 14 10h5.83a2 2 0 0 1 1.92 2.56l-2.33 8A2 2 0 0 1 17.5 22H4a2 2 0 0 1-2-2v-8a2 2 0 0 1 2-2h2.76a2 2 0 0 0 1.79-1.11L12 2a3.13 3.13 0 0 1 3 3.88Z"/>',
+      thumbsDown: '<path d="M17 14V2"/><path d="M9 18.12 10 14H4.17a2 2 0 0 1-1.92-2.56l2.33-8A2 2 0 0 1 6.5 2H20a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2h-2.76a2 2 0 0 0-1.79 1.11L12 22a3.13 3.13 0 0 1-3-3.88Z"/>',
+      trophy: '<path d="M6 9H4.5a2.5 2.5 0 0 1 0-5H6"/><path d="M18 9h1.5a2.5 2.5 0 0 0 0-5H18"/><path d="M4 22h16"/><path d="M10 14.66V17c0 .55-.47.98-.97 1.21C7.85 18.75 7 20.24 7 22"/><path d="M14 14.66V17c0 .55.47.98.97 1.21C16.15 18.75 17 20.24 17 22"/><path d="M18 2H6v7a6 6 0 0 0 12 0V2Z"/>'
+    };
+    var s = size || 12;
+    var st = ' style="vertical-align:-2px' + (gap ? ';margin-right:4px' : '') + '"';
+    return '<svg xmlns="http://www.w3.org/2000/svg" width="' + s + '" height="' + s + '" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"' + st + '>' + (ICONS[name] || '') + '</svg>';
+  }
+
   // ── FASE 2: Toast notification (design system: classes .toast + tokens) ──
   function showToast(type, message) {
     var t = document.getElementById('toast-container');
@@ -439,7 +469,7 @@
     const locked = _license.mode === 'licensed' && !_license.premium;
     cta.hidden = !locked;
     if (locked) {
-      cta.textContent = _license.pro ? '🤖 AI PREMIUM' : '🤖 AI = PREMIUM';
+      cta.innerHTML = _ic('robot', 12, true) + (_license.pro ? 'AI PREMIUM' : 'AI = PREMIUM');
       cta.onclick = openUpgradeModal;
     } else {
       cta.onclick = null;
@@ -679,7 +709,7 @@
     const tenant = connected ? (s.tenant_id || 'default') : 'default';
     const toggle = dom.authToggle;
     if (toggle) {
-      toggle.textContent = connected ? '🔑 ' + tenant.toUpperCase() : '🔑 LOGIN';
+      toggle.innerHTML = _ic('key', 12, true) + escapeHtml(connected ? tenant.toUpperCase() : 'LOGIN');
       toggle.classList.toggle('is-authed', connected);
       toggle.title = connected ? 'Tenant: ' + tenant + ' — click to manage' : 'Tenant Login';
     }
@@ -821,7 +851,7 @@
     try { localStorage.setItem(THEME_STORAGE_KEY, next); } catch (e) { /* storage unavailable */ }
     const btn = document.getElementById('theme-toggle');
     if (btn) {
-      btn.textContent = next === 'light' ? '☾' : '☀';
+      btn.innerHTML = next === 'light' ? _ic('moon', 14) : _ic('sun', 14);
       btn.title = next === 'light' ? 'Switch to dark theme' : 'Switch to light theme';
     }
   }
@@ -835,7 +865,7 @@
     const btn = document.getElementById('theme-toggle');
     if (btn) {
       btn.addEventListener('click', function() { themeToggle(); });
-      btn.textContent = themeCurrent() === 'light' ? '☾' : '☀';
+      btn.innerHTML = themeCurrent() === 'light' ? _ic('moon', 14) : _ic('sun', 14);
     }
   }
 
@@ -4073,7 +4103,7 @@ function renderAccount(acct) {
     if (buyEl) {
       if (aff && aff.url) {
         buyEl.hidden = false;
-        buyEl.textContent = '⚡ BUY ' + String(aff.provider || '').toUpperCase();
+        buyEl.innerHTML = _ic('zap', 12, true) + 'BUY ' + escapeHtml(String(aff.provider || '').toUpperCase());
         buyEl.onclick = () => { window.open(aff.url, '_blank', 'noopener'); };
       } else {
         buyEl.hidden = true;
@@ -4445,7 +4475,7 @@ function renderAccount(acct) {
         '<span>WORST</span><strong>' + (t.worst_pct != null ? Number(t.worst_pct).toFixed(1) + '%' : '—') + '</strong>' +
         '<span>COST</span><strong>' + (t.avg_cost_sats_per_thh != null ? Number(t.avg_cost_sats_per_thh).toFixed(0) + ' st' : '—') + '</strong></div>' +
         '<div class="rentals-reco__row rentals-reco__row--sub"><span>' + samples + '</span>' + trend + '</div>' +
-        '<button type="button" class="btn btn--mini btn--danger rentals-reco__blacklist" data-rig-id="' + escapeHtml(String(t.rig_id != null ? t.rig_id : '')) + '" title="aceitar a sugestão do piloto: nunca alugar este rig de novo">⛔ BLACKLISTAR</button>' +
+        '<button type="button" class="btn btn--mini btn--danger rentals-reco__blacklist" data-rig-id="' + escapeHtml(String(t.rig_id != null ? t.rig_id : '')) + '" title="aceitar a sugestão do piloto: nunca alugar este rig de novo">' + _ic('ban', 12, true) + 'BLACKLISTAR</button>' +
         '</div>';
     }).join('');
   }
@@ -4615,7 +4645,7 @@ function renderAccount(acct) {
     wrap.hidden = false;
     wrap.innerHTML = alerts.map(a => {
       const sev = (a.severity || 'WARN') === 'CRIT' ? 'is-crit' : 'is-warn';
-      const icon = (a.severity || 'WARN') === 'CRIT' ? '🚨' : '⚠️';
+      const icon = _ic('alert', 12, true);
       return '<div class="rentals-riskbanner__item ' + sev + '">' + icon + ' ' +
         escapeHtml(String(a.message || '')) + '</div>';
     }).join('');
@@ -4639,7 +4669,7 @@ function renderAccount(acct) {
       const total = overpay.length;
       const worst = overpay.reduce((m, a) => Math.max(m, Number(a.overpay_pct) || 0), 0);
       items.push('<div class="rentals-signals__item is-overpay' + (crit ? ' is-crit' : '') + '" data-signal="overpay" title="ver histórico — compras caras">' +
-        '<span class="rentals-signals__icon">' + (crit ? '🚨' : '⚠️') + '</span>' +
+        '<span class="rentals-signals__icon">' + _ic('alert', 12) + '</span>' +
         '<span class="rentals-signals__msg"><strong>' + total + ' compra(s) cara(s) detectada(s)</strong> — até ' + Math.round(worst) + '% acima do mercado na compra' +
         (overpay.length <= 3 ? ' · ' + overpay.map(a => '#' + escapeHtml(String(a.rental_id || '?')) + ' +' + Math.round(Number(a.overpay_pct) || 0) + '%').join(' · ') : '') + '</span>' +
         '<span class="rentals-signals__cta">VER HISTÓRICO →</span></div>');
@@ -4653,10 +4683,10 @@ function renderAccount(acct) {
       // from the signal) — falls back to 1000 TH ≈ 1 PH/s on the frontend.
       const sugTh = Number(a.suggested_th) > 0 ? Number(a.suggested_th) : 0;
       const buyCta = mkt > 0
-        ? '<button type="button" class="rentals-signals__buy" data-signal="arb-buy" data-price="' + mkt + '" data-th="' + sugTh + '" title="abrir compra Braiins com o preço atual pré-preenchido">⚡ COMPRAR AGORA</button>'
+        ? '<button type="button" class="rentals-signals__buy" data-signal="arb-buy" data-price="' + mkt + '" data-th="' + sugTh + '" title="abrir compra Braiins com o preço atual pré-preenchido">' + _ic('zap', 12, true) + 'COMPRAR AGORA</button>'
         : '<span class="rentals-signals__cta">COMPRAR →</span>';
       items.push('<div class="rentals-signals__item is-arb" data-signal="arb" title="abrir compra Braiins — janela aberta">' +
-        '<span class="rentals-signals__icon">🏆</span>' +
+        '<span class="rentals-signals__icon">' + _ic('trophy', 12) + '</span>' +
         '<span class="rentals-signals__msg"><strong>JANELA DE ARBITRAGEM ABERTA</strong> — ' +
         escapeHtml(String(a.message || '')) + '</span>' + buyCta + '</div>');
     }
@@ -5133,8 +5163,8 @@ function renderAccount(acct) {
         '</div>' +
         '<div class="rentals-rig__hist">' + (histRows || '<div class="rentals-rig__none">sem track record local</div>') + '</div>' +
         (data.blacklisted
-          ? '<button class="btn btn--mini" id="rentals-rig-unblacklist" data-rig-id="' + escapeHtml(String(rigId || '')) + '">♻ restaurar rig (remover da blacklist)</button>'
-          : '<button class="btn btn--mini btn--danger" id="rentals-rig-blacklist" data-rig-id="' + escapeHtml(String(rigId || '')) + '">✕ nunca alugar este rig</button>');
+          ? '<button class="btn btn--mini" id="rentals-rig-unblacklist" data-rig-id="' + escapeHtml(String(rigId || '')) + '">' + _ic('rotate', 12, true) + 'restaurar rig (remover da blacklist)</button>'
+          : '<button class="btn btn--mini btn--danger" id="rentals-rig-blacklist" data-rig-id="' + escapeHtml(String(rigId || '')) + '">' + _ic('x', 12, true) + 'nunca alugar este rig</button>');
       const blBtn = document.getElementById('rentals-rig-blacklist');
       const unBtn = document.getElementById('rentals-rig-unblacklist');
       const handler = (btn, method) => {
@@ -5406,15 +5436,15 @@ function renderAccount(acct) {
           : 'Dados carregados por uma versão antiga do servidor — não dá para confirmar se a conta está vazia. Configure a chave MRR (miningrigrentals.com → My Account → API Access) no Settings (⚙), ou recarregue para verificar:')
         : 'Os dados estão antigos (mais de 5 min) — recarregue para confirmar o estado real da conta.';
       listEl.innerHTML = '<div class="empty-state" style="grid-column:1/-1;border:none">' +
-        '<div class="empty-state__icon">' + (rejected ? '🔑' : (credHint ? '🔑' : '⛁')) + '</div>' +
+        '<div class="empty-state__icon">' + (rejected || credHint ? _ic('key', 20) : _ic('package', 20)) + '</div>' +
         '<div class="empty-state__title">' + title + '</div>' +
         '<div class="empty-state__desc">' + (rejected
           ? rentalsAuthGuide(_rentalsFilter, errMsg)
           : (needsAuth
             ? (isContracts ? 'Add your Braiins Hashpower owner token to list contracts — where to get it: hashpower.braiins.com → API Tokens.' : 'Add your MiningRigRentals API key + secret to see history & performance — get them at miningrigrentals.com → My Account → API Access.')
             : (errMsg ? escapeHtml(errMsg) : (payloadStale ? staleHint : 'No ' + _rentalsFilter + ' rentals on this account')))) + '</div>' +
-        (needsAuth || rejected || credHint ? '<button type="button" class="btn btn--primary btn--mini" id="rentals-open-settings" style="margin-top:8px">⚙ OPEN SETTINGS</button>' : '') +
-        (payloadStale ? '<button type="button" class="btn btn--mini" id="rentals-refresh-btn" style="margin-top:8px">⟳ RECARREGAR</button>' : '') +
+        (needsAuth || rejected || credHint ? '<button type="button" class="btn btn--primary btn--mini" id="rentals-open-settings" style="margin-top:8px">' + _ic('settings', 12, true) + 'OPEN SETTINGS</button>' : '') +
+        (payloadStale ? '<button type="button" class="btn btn--mini" id="rentals-refresh-btn" style="margin-top:8px">' + _ic('refresh', 12, true) + 'RECARREGAR</button>' : '') +
         '</div>';
       const cta = document.getElementById('rentals-open-settings');
       if (cta) cta.addEventListener('click', function() { openSettingsModal(); });
@@ -5470,11 +5500,11 @@ function renderAccount(acct) {
         if (rejected) {
           authBanner.hidden = false;
           authBanner.innerHTML =
-            '<span class="rentals-detail__autoex-icon">🔑</span>' +
+            '<span class="rentals-detail__autoex-icon">' + _ic('key', 12) + '</span>' +
             '<div class="rentals-detail__autoex-body"><strong>API KEY REJECTED</strong>' +
             '<div class="rentals-detail__autoex-sub">' + rentalsAuthGuide(provider, dErr) +
             '</div></div>' +
-            '<button type="button" class="rentals-detail__autoex-btn" id="rentals-detail-auth-settings" title="abrir Settings para regenerar a chave">⚙ OPEN SETTINGS</button>';
+            '<button type="button" class="rentals-detail__autoex-btn" id="rentals-detail-auth-settings" title="abrir Settings para regenerar a chave">' + _ic('settings', 12, true) + 'OPEN SETTINGS</button>';
           const authCta = document.getElementById('rentals-detail-auth-settings');
           if (authCta) authCta.addEventListener('click', function() { openSettingsModal(); });
         } else {
@@ -5500,7 +5530,7 @@ function renderAccount(acct) {
              ? String(data.detail.rig.id) : '');
         autoExBanner.hidden = false;
         autoExBanner.innerHTML =
-          '<span class="rentals-detail__autoex-icon">🤖</span>' +
+          '<span class="rentals-detail__autoex-icon">' + _ic('robot', 12) + '</span>' +
           '<div class="rentals-detail__autoex-body">' +
           '<strong>AUTO-EXCLUSÃO DISPARADA</strong>' +
           '<div class="rentals-detail__autoex-sub">régua vigente: ' + ruleStr +
@@ -5684,8 +5714,8 @@ function renderAccount(acct) {
             verdict = 'Sem histórico suficiente deste rig — colete mais amostras antes de confiar.';
           }
           const btn = bl
-            ? '<button type="button" class="rentals-trust__btn rentals-trust__btn--restore" id="rentals-trust-toggle">✓ RESTAURAR RIG</button>'
-            : '<button type="button" class="rentals-trust__btn" id="rentals-trust-toggle">⛔ EXCLUIR RIG (BLACKLIST)</button>';
+            ? '<button type="button" class="rentals-trust__btn rentals-trust__btn--restore" id="rentals-trust-toggle">' + _ic('check', 12, true) + 'RESTAURAR RIG</button>'
+            : '<button type="button" class="rentals-trust__btn" id="rentals-trust-toggle">' + _ic('ban', 12, true) + 'EXCLUIR RIG (BLACKLIST)</button>';
           trustEl.innerHTML =
             '<div class="rentals-trust__cells">' + cells.map(c =>
               '<div class="rentals-trust__cell"><span class="rentals-trust__label">' + escapeHtml(c.l) + '</span><span class="rentals-trust__value' + (c.cls ? ' rentals-trust__value--' + escapeHtml(c.cls) : '') + '">' + escapeHtml(c.v) + '</span></div>'
@@ -5933,11 +5963,11 @@ function renderAccount(acct) {
             body: JSON.stringify({ rig_id: rid }),
           });
           if (r.ok) loadRentals();  // avoid shrinks, accepted grows
-          else { bl.disabled = false; bl.textContent = '⛔ BLACKLISTAR'; }
+          else { bl.disabled = false; bl.innerHTML = _ic('ban', 12, true) + 'BLACKLISTAR'; }
         } catch (err) {
           // Fail-closed, but never leave the button stuck on '…'.
           bl.disabled = false;
-          bl.textContent = '⛔ BLACKLISTAR';
+          bl.innerHTML = _ic('ban', 12, true) + 'BLACKLISTAR';
         }
         return;
       }
@@ -7418,7 +7448,7 @@ function renderAccount(acct) {
     // verdict the RENTALS panel derives (ok / rejected / missing).
     if (settings['braiins_api_key']) {
       html += '<div style="display:flex;align-items:center;gap:6px;margin-top:2px;flex-wrap:wrap">' +
-        '<button type="button" class="btn btn--primary btn--mini" id="braiins-test">🔑 TESTAR CHAVE BRAIINS</button>' +
+        '<button type="button" class="btn btn--primary btn--mini" id="braiins-test">' + _ic('key', 12, true) + 'TESTAR CHAVE BRAIINS</button>' +
         '<span id="braiins-test-status" style="font-size:10px;color:var(--text-muted)"></span>' +
         '</div>';
     }
@@ -7432,7 +7462,7 @@ function renderAccount(acct) {
         '<div style="font-size:10px;color:var(--text-tertiary);letter-spacing:0.06em">WEBHOOK PREVIEW — payload enviado a cada alerta (JSON)</div>' +
         '<pre id="wh-preview-payload" style="background:' + cssVar('--bg-input') + ';padding:6px;border-radius:4px;font-size:9px;line-height:1.5;overflow:auto;margin:6px 0;max-height:140px;color:var(--green)"></pre>' +
         '<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">' +
-        '<button type="button" class="btn btn--primary btn--mini" id="wh-send-test">📡 ENVIAR TESTE</button>' +
+        '<button type="button" class="btn btn--primary btn--mini" id="wh-send-test">' + _ic('send', 12, true) + 'ENVIAR TESTE</button>' +
         '<span id="wh-test-status" style="font-size:10px;color:var(--text-muted)"></span>' +
         '</div></div>';
     }
@@ -7446,7 +7476,7 @@ function renderAccount(acct) {
         '<div style="font-size:10px;color:var(--text-tertiary);letter-spacing:0.06em">ALERTA AUTO-EXCLUSÃO — teste do canal (webhook + push)</div>' +
         '<div style="font-size:10px;color:var(--text-muted);line-height:1.4;margin:4px 0 6px">Envia uma mensagem de exemplo do tipo que o piloto dispara quando o sweep exclui um rig por sub-entrega. Nenhuma exclusão real é feita.</div>' +
         '<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">' +
-        '<button type="button" class="btn btn--primary btn--mini" id="ae-send-test">🧪 TESTAR ALERTA</button>' +
+        '<button type="button" class="btn btn--primary btn--mini" id="ae-send-test">' + _ic('flask', 12, true) + 'TESTAR ALERTA</button>' +
         '<span id="ae-test-status" style="font-size:10px;color:var(--text-muted)"></span>' +
         '</div></div>';
     }
@@ -8706,7 +8736,10 @@ dom.walletSave?.addEventListener('click', async () => {
       logMessage('SCAN', 'Network scan failed: ' + e.message, 'WARN');
     } finally {
       _scanning = false;
-      if (btn) { btn.textContent = '🔍 SCAN NETWORK'; btn.disabled = false; }
+      if (btn) {
+        btn.innerHTML = _ic('search', 12, true) + 'SCAN NETWORK';
+        btn.disabled = false;
+      }
     }
   }
 
@@ -8732,7 +8765,7 @@ dom.walletSave?.addEventListener('click', async () => {
         '<button class="chip scan-results__add" data-ip="' + escapeHtml(d.ip) + '">+ Add</button>' +
         '</div>';
     }).join('');
-    container.innerHTML = '<div class="scan-results__head">🔍 SCAN RESULTS <button class="chip scan-results__dismiss">✕ dismiss</button></div>' + items;
+    container.innerHTML = '<div class="scan-results__head">' + _ic('search', 10, true) + 'SCAN RESULTS <button class="chip scan-results__dismiss">' + _ic('x', 10, true) + 'dismiss</button></div>' + items;
     container.style.display = 'block';
     // Wire dismiss + per-device Add buttons
     container.querySelector('.scan-results__dismiss')?.addEventListener('click', function() {
@@ -11385,8 +11418,8 @@ dom.walletSave?.addEventListener('click', async () => {
       widget.setAttribute('data-section', id);
       widget.innerHTML =
         '<span class="doc-feedback__ask">Was this section helpful?</span>' +
-        '<button type="button" class="doc-feedback__btn doc-feedback__btn--yes" data-helpful="1" title="Yes — it helped">👍 Yes</button>' +
-        '<button type="button" class="doc-feedback__btn doc-feedback__btn--no" data-helpful="0" title="No — could be better">👎 No</button>' +
+        '<button type="button" class="doc-feedback__btn doc-feedback__btn--yes" data-helpful="1" title="Yes — it helped">' + _ic('thumbsUp', 12, true) + 'Yes</button>' +
+        '<button type="button" class="doc-feedback__btn doc-feedback__btn--no" data-helpful="0" title="No — could be better">' + _ic('thumbsDown', 12, true) + 'No</button>' +
         '<span class="doc-feedback__state" aria-live="polite"></span>' +
         '<div class="doc-feedback__comment" hidden>' +
         '  <textarea class="doc-feedback__textarea" rows="2" maxlength="500" placeholder="What were you looking for? (feeds the FAQ loop)"></textarea>' +
