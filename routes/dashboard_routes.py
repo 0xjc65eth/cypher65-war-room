@@ -24,7 +24,8 @@ import services.state as state
 from services.db import get_db
 from services.licensing import pro_required
 from services.snapshot_enrichment import enrich_snapshot
-from helpers import fmt_diff
+from services.sli import sli as _sli  # Issue #206: SLIs de completude de dados
+from helpers import coerce_ts, fmt_diff
 
 log = logging.getLogger("cypher65.dashboard")
 
@@ -42,7 +43,15 @@ def api_snapshot():
     for open self-host mode (default tenant) this preserves the current
     behaviour.
     """
-    return jsonify(enrich_snapshot(state.latest_snapshot, axe_registry=None))
+    snap = enrich_snapshot(state.latest_snapshot, axe_registry=None)
+    # Issue #206: SLI de frescura do market — uma amostra por ciclo (age do
+    # market_data < 5min). Completude rentals é amostrada em /api/rentals;
+    # ambos convergem em health.sli (targets + status + breach). Sentinel
+    # policy (#203): updated_at ausente → None → amostra não-fresca, nunca
+    # epoch-0.
+    _sli.record_market(coerce_ts((snap.get("market_data") or {}).get("updated_at")))
+    snap.setdefault("health", {})["sli"] = _sli.summary()
+    return jsonify(snap)
 
 
 @dashboard_bp.route("/history")
