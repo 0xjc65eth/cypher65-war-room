@@ -419,10 +419,6 @@ jobs:
 
       # Comentário @dependabot rebase — deduplicado por marcador (evita
       # spammar o PR a cada push enquanto o rebase não acontece).
-      # Comentário @dependabot rebase — deduplicado por marcador (evita
-      # spammar o PR a cada push enquanto o rebase não acontece).
-      # Comentário @dependabot rebase — deduplicado por marcador (evita
-      # spammar o PR a cada push enquanto o rebase não acontece).
       - name: Comentar @dependabot rebase
         if: steps.detect.outputs.stale == 'true'
         env:

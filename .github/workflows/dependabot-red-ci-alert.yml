@@ -1,0 +1,149 @@
+# ── Dependabot CI vermelho — fallback do guard #211 ─────────────────────
+# O guard dependabot-workflow-guard (ci.yml) comenta @dependabot rebase
+# quando .github/workflows/ está defasado. FALLBACK para o caso que o
+# comentário não resolve ou não se aplica: um PR dependabot que fica >N
+# dias com CI VERMELHO (qualquer check do head com failure/timed_out/
+# action_required) ganha um CHECK-RUN com ANNOTATION de erro no checks UI
+# do PR — mais visível e acionável do que um comentário, e deduplicado por
+# head_sha (um push novo do dependabot = sha novo = reavaliação).
+#
+# Incidente real 2026-08: PRs #1/#7 ficaram 13 dias com CI vermelho sem
+# nenhum alerta além do status do próprio PR. Este job limita o tempo de
+# exposição: diariamente (09:00 UTC) varre dependabots abertos e alerta os
+# que passaram do limite.
+#
+# Dedup: só cria o check-run se NÃO existir um com o mesmo nome para o
+# head_sha atual. Enquanto o dependabot não pushar, o alerta permanece
+# (a annotation continua visível no PR) sem duplicar.
+#
+# O check-run usa conclusion: failure DE PROPÓSITO — o PR já está
+# vermelho; o check novo É o alerta. Não é um check required (não está
+# nos required_status_checks do ruleset), então não altera o merge state:
+# renderiza um ✗ extra no checks UI como sinal de alerta. Não remover
+# essa conclusão "para limpar o X" sem substituir por outro mecanismo.
+#
+# Trigger: schedule (diário) + workflow_dispatch manual com input
+# days_red (default 3). Input vazio no schedule → fallback 3.
+#
+# Smoke test pós-merge: gh workflow run dependabot-red-ci-alert.yml
+# (dispatch) — com zero dependabots deve terminar em <10s sem criar nada.
+name: "Dependabot CI vermelho — fallback #211"
+
+on:
+  schedule:
+    - cron: "0 9 * * *"
+  workflow_dispatch:
+    inputs:
+      days_red:
+        description: "N dias com CI vermelho antes de alertar (default 3)"
+        required: false
+        default: "3"
+
+permissions:
+  contents: read
+  checks: write
+  pull-requests: read
+
+jobs:
+  red-ci-alert:
+    name: "dependabot: alerta CI vermelho >N dias (#211)"
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ github.token }}
+      DAYS_RED: ${{ github.event.inputs.days_red || '3' }}
+    steps:
+      - name: Listar dependabots abertos
+        run: |
+          set -euo pipefail
+          # Paginação: dependabot pode manter filas longas (incidente #1/#7
+          # mostrou acúmulo). Loop de 100 em 100 até esvaziar.
+          : > /tmp/dependabot_prs.tsv
+          PAGE=1
+          while :; do
+            RESULT="$(gh pr list --repo "${{ github.repository }}" \
+              --author "dependabot[bot]" --state open --limit 100 --page "${PAGE}" \
+              --json number,createdAt,headRefOid,title \
+              --jq '.[] | [.number, .createdAt, .headRefOid, .title] | @tsv' 2>/dev/null || true)"
+            [ -z "${RESULT}" ] && break
+            printf '%s\n' "${RESULT}" >> /tmp/dependabot_prs.tsv
+            COUNT="$(printf '%s\n' "${RESULT}" | wc -l | tr -d ' ')"
+            [ "${COUNT}" -lt 100 ] && break
+            PAGE=$((PAGE + 1))
+          done
+          echo "dependabots abertos: $(wc -l < /tmp/dependabot_prs.tsv | tr -d ' ')"
+          echo "dependabots abertos: $(wc -l < /tmp/dependabot_prs.tsv | tr -d ' ')"
+
+      # Para cada dependabot aberto com idade > DAYS_RED: se o head tem
+      # check(s) concluído(s) com falha e ainda não existe check-run de
+      # alerta para esse sha, cria um check-run com annotation de erro.
+      - name: Detectar CI vermelho e criar check annotation
+        run: |
+          set -euo pipefail
+          REPO="${{ github.repository }}"
+          ALERT_NAME="dependabot: CI vermelho (fallback #211)"
+          NOW_EPOCH="$(date +%s)"
+          DAY_SECS=$((60 * 60 * 24))
+          ALERTED=0
+          SKIPPED=0
+
+          if [ ! -s /tmp/dependabot_prs.tsv ]; then
+            echo "Nenhum dependabot aberto — nada a fazer."
+            exit 0
+          fi
+
+          while IFS=$'\t' read -r PR_NUM CREATED_AT SHA TITLE; do
+            PR_EPOCH="$(date -d "${CREATED_AT}" +%s 2>/dev/null || echo 0)"
+            AGE_DAYS=$(( (NOW_EPOCH - PR_EPOCH) / DAY_SECS ))
+
+            if [ "${AGE_DAYS}" -le "${DAYS_RED}" ]; then
+              echo "#${PR_NUM}: ${AGE_DAYS}d — dentro do limite (${DAYS_RED}d), ok"
+              SKIPPED=$((SKIPPED + 1))
+              continue
+            fi
+
+            # CI vermelho? qualquer check concluído com falha no head commit.
+            RED="$(gh api "repos/${REPO}/commits/${SHA}/check-runs" \
+              --jq '[.check_runs[] | select(.status == "completed") | select(.conclusion == "failure" or .conclusion == "timed_out" or .conclusion == "action_required")] | length' \
+              2>/dev/null || echo 0)"
+
+            if [ "${RED}" -eq 0 ]; then
+              echo "#${PR_NUM}: ${AGE_DAYS}d — CI não está vermelho, ok"
+              SKIPPED=$((SKIPPED + 1))
+              continue
+            fi
+
+            # Dedup por head_sha: alerta já criado para este commit?
+            EXISTS="$(gh api "repos/${REPO}/commits/${SHA}/check-runs" \
+              --jq '[.check_runs[] | select(.name == "dependabot: CI vermelho (fallback #211)")] | length' \
+              2>/dev/null || echo 0)"
+
+            if [ "${EXISTS}" -gt 0 ]; then
+              echo "#${PR_NUM}: annotation já existe para ${SHA:0:8} — pulando (dedup)"
+              SKIPPED=$((SKIPPED + 1))
+              continue
+            fi
+
+            # Cria o check-run com annotation de erro (Checks API).
+            PAYLOAD="$(jq -n \
+              --arg name "${ALERT_NAME}" \
+              --arg sha "${SHA}" \
+            --arg title "CI vermelho há ${AGE_DAYS}d (PR #${PR_NUM})" \
+            --arg summary "O PR dependabot #${PR_NUM} (${TITLE}) está com CI vermelho há ${AGE_DAYS} dias (limite: ${DAYS_RED}). O comentário @dependabot rebase do guard #211 pode não ter resolvido — o CI segue falhando no head. Abra o PR e veja qual check falha: corrigir o manifest, rebase ou fechar o dependabot. → ${{ github.server_url }}/${{ github.repository }}/pull/${PR_NUM}" \
+            --arg msg "PR #${PR_NUM} com CI vermelho há ${AGE_DAYS} dias. Intervenção necessária: abra ${{ github.server_url }}/${{ github.repository }}/pull/${PR_NUM} e corrija ou feche o dependabot." \
+              '{name: $name, head_sha: $sha, status: "completed", conclusion: "failure",
+                output: {title: $title, summary: $summary, annotations: [{
+                  path: ".github/workflows/dependabot-red-ci-alert.yml",
+                  start_line: 1, end_line: 1,
+                  annotation_level: "failure",
+                  message: $msg,
+                  title: $title
+                }]}}')"
+            printf '%s' "${PAYLOAD}" > /tmp/checkrun.json
+            gh api --method POST "repos/${REPO}/check-runs" \
+              --input /tmp/checkrun.json >/dev/null
+            echo "#${PR_NUM}: CHECK ANNOTATION criada (${AGE_DAYS}d > ${DAYS_RED}d, ${RED} checks vermelhos)"
+            ALERTED=$((ALERTED + 1))
+          done < /tmp/dependabot_prs.tsv
+
+          echo "resumo: ${ALERTED} alerta(s) criado(s), ${SKIPPED} ignorado(s)"
