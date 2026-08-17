@@ -7766,7 +7766,7 @@ def api_braiins_bid(tenant_id: str = ""):
     # deliberate; more than BRAIINS_BID_PER_MINUTE in a minute is abuse or a
     # stuck client — reject BEFORE any provider call, audited.
     _now = time.time()
-    _rk = f"t:{tenant_id}" if tenant_id else f"ip:{request.remote_addr or '0.0.0.0'}"
+    _rk = f"t:{tenant_id}" if tenant_id else f"ip:{request.remote_addr or '127.0.0.1'}"
     _stamps = _braiins_bid_store.setdefault(_rk, [])
     _stamps[:] = [t for t in _stamps if _now - t < 60.0]
     if len(_stamps) >= BRAIINS_BID_PER_MINUTE:
