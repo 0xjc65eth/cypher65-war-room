@@ -8,12 +8,15 @@
 #   1. check:dom          — guard estático DOM (ids duplicados + XSS
 #                           innerHTML/concat/sinks) + 📊 report
 #   2. test:dom-guards    — self-test do próprio guard DOM
-#   3. JS core            — node --check static/app.js + test_app_js_core.js
+#   3. check:a11y         — guard a11y (Issue #235): lang pt-BR, botão
+#                           ícone-only sem nome, label órfão
+#   4. test:a11y-guards   — self-test do guard a11y
+#   5. JS core            — node --check static/app.js + test_app_js_core.js
 #                           (suíte espelhada dos helpers do app.js)
-#   4. check-mobile-xss   — guard XSS mobile (React Native): WebView
+#   6. check-mobile-xss   — guard XSS mobile (React Native): WebView
 #                           html/injectedJavaScript, eval, openURL
-#   5. test:mobile-guards — self-test do guard mobile
-#   6. audit:ui:all       — auditoria visual desktop + mobile (console
+#   7. test:mobile-guards — self-test do guard mobile
+#   8. audit:ui:all       — auditoria visual desktop + mobile (console
 #                           errors, overflow, truncamento, skeletons presos)
 #
 # Boota o Flask localmente (porta 8765) com rate-limit alto (o audit faz
@@ -91,6 +94,8 @@ step() {
 
 step node scripts/check-dom-regression.cjs --report
 step node tests/test_dom_guards.js
+step node scripts/check-a11y.cjs --report
+step node tests/test_a11y_guards.js
 step node --check static/app.js
 step node --check static/sw.js
 step node --test tests/test_app_js_core.js
@@ -104,5 +109,5 @@ if [ "$FAIL" -ne 0 ]; then
   echo "❌ [frontend] pipeline FAILED — $FAIL check(s) vermelho(s)"
   exit 1
 fi
-echo "✅ [frontend] pipeline green — guards DOM + XSS mobile + JS core + audit visual"
+echo "✅ [frontend] pipeline green — guards DOM + a11y + XSS mobile + JS core + audit visual"
 exit 0

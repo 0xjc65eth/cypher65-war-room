@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="pt-BR">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -80,7 +80,7 @@
      SIDEBAR — fixed left navigation
      ══════════════════════════════════════════════════════════════════════ -->
 <div class="sidebar-overlay" id="sidebar-overlay"></div>
-<button class="sidebar-mobile-toggle" id="sidebar-mobile-toggle" title="Open menu">☰</button>
+<button class="sidebar-mobile-toggle" id="sidebar-mobile-toggle" title="Abrir menu" aria-label="Abrir menu">☰</button>
 <div id="sidebar-backdrop" class="sidebar-backdrop"></div>
 <!-- NOTE: #sidebar-hamburger was intentionally removed — it had no CSS rules
      and rendered a stray ☰ on desktop. Use #sidebar-mobile-toggle or the
@@ -90,7 +90,7 @@
         <span class="sidebar__brand">CYPHER65</span>
         <span id="sidebar-led" class="sidebar-led" style="display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--accent-red);margin-left:6px"></span>
         <span id="sidebar-status-text" class="sidebar-status-text" style="font-size:8px;color:var(--text-tertiary);margin-left:4px">INIT</span>
-        <button class="sidebar__toggle" id="sidebar-collapse" title="Collapse">◀</button>
+        <button class="sidebar__toggle" id="sidebar-collapse" title="Recolher sidebar" aria-label="Recolher sidebar">◀</button>
       </div>
   <nav class="sidebar__nav">
     <button class="sidebar__link active" data-module="dashboard">
@@ -197,7 +197,7 @@
       <button id="refresh-now" class="topbar__btn" title="Refresh now"><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></svg></button>
       <button id="open-exports" class="topbar__btn" title="Exports"><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg></button>
       <button id="open-settings" class="topbar__btn" title="Settings"><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg></button>
-      <button id="theme-toggle" class="topbar__btn" title="Toggle theme">☀</button>
+      <button id="theme-toggle" class="topbar__btn" title="Alternar tema" aria-label="Alternar tema">☀</button>
       <button id="ai-panel-toggle" class="topbar__btn" title="AI Assistant"><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9.937 15.5A2 2 0 0 0 8.5 14.063l-6.135-1.582a.5.5 0 0 1 0-.962L8.5 9.936A2 2 0 0 0 9.937 8.5l1.582-6.135a.5.5 0 0 1 .963 0L14.063 8.5A2 2 0 0 0 15.5 9.937l6.135 1.581a.5.5 0 0 1 0 .964L15.5 14.063a2 2 0 0 0-1.437 1.437l-1.582 6.135a.5.5 0 0 1-.963 0z"/><path d="M20 3v4"/><path d="M22 5h-4"/><path d="M4 17v2"/><path d="M5 18H3"/></svg></button>
       <button id="sidebar-toggle" class="topbar__btn" title="Toggle Sidebar"><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M9 3v18"/></svg></button>
       <button id="auth-toggle" class="topbar__btn topbar__btn--auth" title="Tenant Login"><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/><polyline points="10 17 15 12 10 7"/><line x1="15" y1="12" x2="3" y2="12"/></svg> LOGIN</button>
@@ -482,7 +482,7 @@
 <section class="panel panel--large panel--collapsible" id="pool-overview" data-module="dashboard">
   <div class="panel__header">
     <div class="panel__eyebrow"># POOL CONTEXT <span class="badge badge--amber" id="p-stale-badge" style="display:none">STALE</span></div>
-    <div class="panel__tools"><span class="badge badge--mute" id="pool-uptime">up —</span><button class="panel__toggle" data-panel="pool-overview"></button></div>
+    <div class="panel__tools"><span class="badge badge--mute" id="pool-uptime">up —</span><button class="panel__toggle" data-panel="pool-overview" aria-label="Alternar painel do pool"></button></div>
   </div>
   <div class="stat-row">
     <div class="stat"><div class="stat__label">POOL HR</div><div class="stat__val" id="p-hashrate">—</div><div class="stat__sub">aggregate</div></div>
@@ -506,7 +506,7 @@
 <section class="panel panel--large panel--collapsible" id="account-panel" data-module="wallet">
   <div class="panel__header">
     <div class="panel__eyebrow">§ ACCOUNT</div>
-    <div class="panel__tools"><span class="badge badge--gold" id="acct-blocks-badge">0 BLOCKS</span><button class="panel__toggle" data-panel="account-panel"></button></div>
+    <div class="panel__tools"><span class="badge badge--gold" id="acct-blocks-badge">0 BLOCKS</span><button class="panel__toggle" data-panel="account-panel" aria-label="Alternar painel da conta"></button></div>
   </div>
   <div class="account-grid">
     <div class="acct-row"><span class="acct-row__label">LN ADDRESS</span><span class="acct-row__val mono copyable" id="acct-ln">—</span></div>
@@ -522,7 +522,7 @@
 <section class="panel panel--large panel--collapsible" id="network-panel" data-module="dashboard">
   <div class="panel__header">
     <div class="panel__eyebrow">⌬ NETWORK · MEMPOOL</div>
-    <div class="panel__tools"><span class="badge badge--mute" id="net-status">fetching</span><button class="panel__toggle" data-panel="network-panel"></button></div>
+    <div class="panel__tools"><span class="badge badge--mute" id="net-status">fetching</span><button class="panel__toggle" data-panel="network-panel" aria-label="Alternar painel da rede"></button></div>
   </div>
   <div class="stat-row stat-row--compact">
     <div class="stat"><div class="stat__label">HEIGHT</div><div class="stat__val" id="n-height">—</div></div>
@@ -542,7 +542,7 @@
 <section class="panel panel--large panel--collapsible" id="halving-panel" data-module="dashboard">
   <div class="panel__header">
     <div class="panel__eyebrow">⚒ HALVING COUNTDOWN</div>
-    <div class="panel__tools"><span class="badge" id="halving-epoch-badge">epoch —</span><button class="panel__toggle" data-panel="halving-panel"></button></div>
+    <div class="panel__tools"><span class="badge" id="halving-epoch-badge">epoch —</span><button class="panel__toggle" data-panel="halving-panel" aria-label="Alternar painel do halving"></button></div>
   </div>
   <div class="stat-row stat-row--compact">
     <div class="stat"><div class="stat__label">BLOCKS LEFT</div><div class="stat__val" id="h-blocks">—</div><div class="stat__sub">to halving</div></div>
@@ -557,7 +557,7 @@
 <section class="panel panel--large panel--collapsible" id="fees-panel" data-module="dashboard">
   <div class="panel__header">
     <div class="panel__eyebrow">⛽ FEE TIERS · SAT/VB</div>
-    <div class="panel__tools"><span class="badge badge--mute" id="fees-status">—</span><button class="panel__toggle" data-panel="fees-panel"></button></div>
+    <div class="panel__tools"><span class="badge badge--mute" id="fees-status">—</span><button class="panel__toggle" data-panel="fees-panel" aria-label="Alternar painel de taxas"></button></div>
   </div>
   <div class="fee-row">
     <div class="fee-cell"><div class="fee-cell__label">ECONOMY</div><div class="fee-cell__val" id="fee-economy">—</div></div>
@@ -575,7 +575,7 @@
     <div class="panel__tools">
       <span class="badge badge--green" id="profit-share-badge">0%</span>
       <span class="badge badge--mute" id="profit-cost-badge">cost: $0</span>
-      <button class="panel__toggle" data-panel="profit-panel"></button>
+      <button class="panel__toggle" data-panel="profit-panel" aria-label="Alternar painel de lucro"></button>
     </div>
   </div>
   <div class="profit-modes">
@@ -711,7 +711,7 @@
       <span class="badge badge--btc" id="mkt-best-price-badge">best —</span>
       <span class="badge badge--mute" id="mkt-count-badge">0 venues</span>
       <span class="badge" id="mkt-regime-badge" title="Market regime">REGIME —</span>
-      <button class="chip" id="mkt-config-btn" title="Configure API keys">⚙</button>
+      <button class="chip" id="mkt-config-btn" title="Configurar chaves de API" aria-label="Configurar chaves de API">⚙</button>
     </div>
   </div>
 
@@ -1001,7 +1001,7 @@
       </div>
       <div class="ai-chat__input-row">
         <input type="text" id="ai-input" class="ai-chat__input" placeholder="Ask about your fleet…" autocomplete="off" spellcheck="false">
-        <button class="ai-chat__send" id="ai-send">→</button>
+        <button class="ai-chat__send" id="ai-send"aria-label="Enviar">→</button>
       </div>
     </div>
     <div class="ai-context" id="ai-context">
@@ -1081,7 +1081,7 @@
   <div class="modal ap-arm-modal">
     <div class="modal__header">
       <span class="modal__title">🛡 ARMAR AUTO-PILOT</span>
-      <button class="modal__close" data-close="ap-arm-modal">×</button>
+      <button class="modal__close" data-close="ap-arm-modal"aria-label="Fechar">×</button>
     </div>
     <div class="modal__body">
       <p class="ap-arm-modal__desc">Ao armar, as <strong>regras de automação passam a executar ações sozinhas</strong> (restart, power-cycle, comandos de dispositivo) sempre que as condições baterem — respeitando o orçamento de ações por janela. Desarmar a qualquer momento para parar imediatamente.</p>
@@ -1103,7 +1103,7 @@
   <div class="modal ap-arm-modal">
     <div class="modal__header">
       <span class="modal__title">🤖 LIGAR EXECUÇÃO AUTÔNOMA</span>
-      <button class="modal__close" data-close="ap-auto-modal">×</button>
+      <button class="modal__close" data-close="ap-auto-modal"aria-label="Fechar">×</button>
     </div>
     <div class="modal__body">
       <p class="ap-arm-modal__desc">Ao ligar, o piloto (quando <strong>PRO + ARMADO</strong>) passa a <strong>executar sozinho</strong> as ações físicas das recomendações — <strong>restart</strong> de miner offline/com hashrate baixo e <strong>pause</strong> por temperatura — respeitando SafetyEngine, cooldown (restart 15min / pause 10min) e o orçamento de ações. Ações financeiras (blacklist/buy) <strong>continuam manuais</strong>. Desligar a qualquer momento para parar imediatamente.</p>
@@ -1170,7 +1170,7 @@
         <span class="axe-wiz__step" data-wiz-step="2"><span class="axe-wiz__num">2</span> connect</span>
         <span class="axe-wiz__step" data-wiz-step="3"><span class="axe-wiz__num">3</span> confirm</span>
       </div>
-      <button class="btn" id="axe-add-cancel" title="close wizard" style="padding:1px 7px;font-size:10px">✕</button>
+      <button class="btn" id="axe-add-cancel" title="close wizard" style="padding:1px 7px;font-size:10px"aria-label="Fechar">✕</button>
     </div>
 
     <!-- STEP 1 · method choice -->
@@ -1236,7 +1236,7 @@
   <div class="axe-agent" id="axe-agent-panel" style="display:none">
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
       <div class="axe-wiz__eyebrow" style="font-size:9px;letter-spacing:0.08em;color:var(--cyan)">🤖 LOCAL AGENT · CLOUD-CONTROLLED FLEET</div>
-      <button class="btn" id="axe-agent-close" title="close" style="padding:1px 7px;font-size:10px">✕</button>
+      <button class="btn" id="axe-agent-close" title="close" style="padding:1px 7px;font-size:10px"aria-label="Fechar">✕</button>
     </div>
     <div style="font-size:10px;color:var(--text-secondary);line-height:1.5">
       O dashboard na nuvem não alcança a sua LAN (<code>192.168.x.x</code> não é roteável
@@ -2179,7 +2179,7 @@
   <div class="modal support-modal">
     <div class="modal__header">
       <div class="modal__title">♥ SUPPORT CYPHER65</div>
-      <button class="modal__close" onclick="document.getElementById('support-panel').classList.remove('modal--open')">⛌</button>
+      <button class="modal__close" onclick="document.getElementById('support-panel').classList.remove('modal--open')"aria-label="Fechar">⛌</button>
     </div>
     <div class="modal__body support-modal__body">
       <div class="support-modal__hero">
@@ -2223,7 +2223,7 @@
 <aside id="off-canvas-ai">
   <div class="off-canvas-ai__header">
     <span class="off-canvas-ai__title">◆ CYPHER AI</span>
-    <button class="off-canvas-ai__close" id="off-canvas-ai-close">✕</button>
+    <button class="off-canvas-ai__close" id="off-canvas-ai-close"aria-label="Fechar">✕</button>
   </div>
   <div class="off-canvas-ai__body">
     <div class="off-canvas-ai__messages" id="ai-messages-offcanvas">
@@ -2234,7 +2234,7 @@
     </div>
     <div class="off-canvas-ai__input-row">
       <input type="text" id="ai-input-offcanvas" class="off-canvas-ai__input" placeholder="Ask about your fleet…" autocomplete="off" spellcheck="false">
-      <button class="off-canvas-ai__send" id="ai-send-offcanvas">→</button>
+      <button class="off-canvas-ai__send" id="ai-send-offcanvas"aria-label="Enviar">→</button>
     </div>
   </div>
 </aside>
@@ -2717,7 +2717,7 @@
   <div class="modal">
     <div class="modal__header">
       <div class="modal__title">>> CONNECT WALLET</div>
-      <button class="modal__close" onclick="document.getElementById('wallet-modal').classList.remove('modal--open')">⛌</button>
+      <button class="modal__close" onclick="document.getElementById('wallet-modal').classList.remove('modal--open')"aria-label="Fechar">⛌</button>
     </div>
     <div class="modal__body">
       <div class="wallet-id" id="wallet-id" style="display:none">
@@ -2766,7 +2766,7 @@
   <div class="modal upgrade-modal">
     <div class="modal__header">
       <div class="modal__title" id="upgrade-modal-title">⚡ CYPHER65 PRO</div>
-      <button class="modal__close" onclick="document.getElementById('upgrade-modal').classList.remove('modal--open')">⛌</button>
+      <button class="modal__close" onclick="document.getElementById('upgrade-modal').classList.remove('modal--open')"aria-label="Fechar">⛌</button>
     </div>
     <div class="modal__body">
       <p class="upgrade-modal__copy" id="upgrade-modal-copy">Unlock <strong>Monte Carlo</strong>, <strong>proximity meter</strong>, <strong>30d history</strong> &amp; <strong>webhooks</strong>.</p>
@@ -2787,7 +2787,7 @@
   <div class="modal">
     <div class="modal__header">
       <div class="modal__title">>> TENANT LOGIN</div>
-      <button class="modal__close" onclick="document.getElementById('auth-modal').classList.remove('modal--open')">⛌</button>
+      <button class="modal__close" onclick="document.getElementById('auth-modal').classList.remove('modal--open')"aria-label="Fechar">⛌</button>
     </div>
     <div class="modal__body">
       <div class="wallet-current">
@@ -2813,7 +2813,7 @@
   <div class="modal" style="width:600px">
     <div class="modal__header">
       <div class="modal__title">>> ALERT CENTER</div>
-      <button class="modal__close" onclick="document.getElementById('alert-center-modal').classList.remove('modal--open')">⛌</button>
+      <button class="modal__close" onclick="document.getElementById('alert-center-modal').classList.remove('modal--open')"aria-label="Fechar">⛌</button>
     </div>
     <div class="modal__body">
       <div class="ac-tabs" id="ac-tabs"></div>
@@ -2879,7 +2879,7 @@
   <div class="modal" style="width:560px">
     <div class="modal__header">
       <div class="modal__title">>> SETTINGS</div>
-      <button class="modal__close" onclick="document.getElementById('settings-modal').classList.remove('modal--open')">⛌</button>
+      <button class="modal__close" onclick="document.getElementById('settings-modal').classList.remove('modal--open')"aria-label="Fechar">⛌</button>
     </div>
     <div class="modal__body">
       <div id="settings-body"></div>
@@ -2906,7 +2906,7 @@
     <div class="modal braiins-buy-modal">
       <div class="modal__header">
         <span class="modal__title">⚡ COMPRAR HASHRATE · BRAIINS SPOT</span>
-        <button class="modal__close" data-close="braiins-buy-modal">×</button>
+        <button class="modal__close" data-close="braiins-buy-modal"aria-label="Fechar">×</button>
       </div>
       <div class="modal__body">
         <div class="braiins-buy__quote" id="braiins-buy-quote">carregando cotação…</div>
@@ -2954,7 +2954,7 @@
     <div class="modal rentals-rig-modal">
       <div class="modal__header">
         <span class="modal__title" id="rentals-rig-modal-title">RIG TRACK RECORD</span>
-        <button class="modal__close" data-close="rentals-rig-modal">×</button>
+        <button class="modal__close" data-close="rentals-rig-modal"aria-label="Fechar">×</button>
       </div>
       <div class="modal__body" id="rentals-rig-modal-body"></div>
     </div>
@@ -2964,7 +2964,7 @@
     <div class="modal rentals-drill-modal">
       <div class="modal__header">
         <span class="modal__title" id="rentals-drill-title">DRILL-DOWN</span>
-        <button class="modal__close" data-close="rentals-drill-modal">×</button>
+        <button class="modal__close" data-close="rentals-drill-modal"aria-label="Fechar">×</button>
       </div>
       <div class="modal__body" id="rentals-drill-body"></div>
     </div>
@@ -2974,7 +2974,7 @@
     <div class="modal rentals-backtest-modal">
       <div class="modal__header">
         <span class="modal__title">🔬 BACKTEST · E SE EU ALUGASSE…</span>
-        <button class="modal__close" data-close="rentals-backtest-modal">×</button>
+        <button class="modal__close" data-close="rentals-backtest-modal"aria-label="Fechar">×</button>
       </div>
       <div class="modal__body">
         <div class="braiins-buy__fields">
@@ -2998,7 +2998,7 @@
     <div class="modal">
       <div class="modal__header">
         <span class="modal__title">EXPORT DATA</span>
-        <button class="modal__close" data-close="export-modal">×</button>
+        <button class="modal__close" data-close="export-modal"aria-label="Fechar">×</button>
       </div>
       <div class="modal__body">
         <div id="export-json" class="btn btn--mini" style="margin:4px 0">Export JSON</div>
