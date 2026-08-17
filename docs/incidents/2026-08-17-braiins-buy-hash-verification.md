@@ -189,3 +189,4 @@ Para rodar a prova **onde a chave vive** (modelo per-tenant #189 — nunca em `.
 | Fix F7 cap de bids (PR #278, `c16b40d`) | `services/rental_performance.py`, `app.py`, testes |
 | Rota coleta /market (PR #280, `b11aad0`) | `app.py`, testes |
 | Chip unit no modal (PR #286, `fe6941f`) | `templates/dashboard.html`, `static/app.js`, `static/style.css` — viabilizou a prova real (§8) |
+| Chip F7 bids ativos/cap (PR #290, `1d7899b`) | `/market` ganha `active_bids_count` (best-effort via F8, `log.warning` em falha); chip renderiza `unit · bids N/M` com `.is-danger` no cap — o 400 do F7 fica visível antes do clique |
