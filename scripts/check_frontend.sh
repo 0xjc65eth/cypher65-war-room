@@ -18,10 +18,12 @@
 #                           (suíte espelhada dos helpers do app.js)
 #   8. check-mobile-xss   — guard XSS mobile (React Native): WebView
 #                           html/injectedJavaScript, eval, openURL
-#   9. test:mobile-guards — self-test do guard mobile
-#  10. audit:ui:all       — auditoria visual desktop + mobile (console
-#                           errors, overflow, truncamento, skeletons presos)
-#
+#   9. test:mobile-guards — self-test do guard mobile   #  10. audit:ui:all       — auditoria visual desktop + mobile (console
+   #                           errors, overflow, truncamento, skeletons presos)
+   #  11. check:axe           — GATE axe-core real (Issue #244): falha se
+   #                           button-name > 0 ou score proxy < 90 (2 viewports)
+   #  12. test:axe-guards     — self-test do gate axe-core (fixtures file://)
+   #
 # Boota o Flask localmente (porta 8765) com rate-limit alto (o audit faz
 # muitas navegações por viewport) e derruba o servidor ao final. Setando
 # AUDIT_URL, o boot é pulado (aponta para servidor externo).
@@ -108,11 +110,13 @@ step node tests/test_sw_push.cjs
 step node scripts/check-mobile-xss.cjs
 step node tests/test_mobile_xss_guards.js
 step node scripts/audit_ui.cjs --all
+step node scripts/check-axe.cjs --report
+step node tests/test_axe_gate.js
 
 echo
 if [ "$FAIL" -ne 0 ]; then
   echo "❌ [frontend] pipeline FAILED — $FAIL check(s) vermelho(s)"
   exit 1
 fi
-echo "✅ [frontend] pipeline green — guards DOM + a11y + tokens-hex + XSS mobile + JS core + audit visual"
+echo "✅ [frontend] pipeline green — guards DOM + a11y + tokens-hex + XSS mobile + JS core + audit visual + axe-core"
 exit 0
