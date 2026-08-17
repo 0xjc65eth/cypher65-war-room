@@ -85,63 +85,63 @@
 <!-- NOTE: #sidebar-hamburger was intentionally removed — it had no CSS rules
      and rendered a stray ☰ on desktop. Use #sidebar-mobile-toggle or the
      topbar #sidebar-toggle instead. Do not re-add without styling it. -->
-<aside class="sidebar" id="sidebar">
+<aside class="sidebar" id="sidebar" aria-label="Menu lateral">
       <div class="sidebar__logo">
         <span class="sidebar__brand">CYPHER65</span>
         <span id="sidebar-led" class="sidebar-led" style="display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--accent-red);margin-left:6px"></span>
         <span id="sidebar-status-text" class="sidebar-status-text" style="font-size:8px;color:var(--text-tertiary);margin-left:4px">INIT</span>
         <button class="sidebar__toggle" id="sidebar-collapse" title="Recolher sidebar" aria-label="Recolher sidebar">◀</button>
       </div>
-  <nav class="sidebar__nav">
-    <button class="sidebar__link active" data-module="dashboard">
+  <nav class="sidebar__nav" aria-label="Navegação principal">
+    <button class="sidebar__link active" data-module="dashboard" aria-label="Dashboard">
       <span class="icon"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="7" height="9" x="3" y="3"/><rect width="7" height="5" x="14" y="3"/><rect width="7" height="9" x="14" y="12"/><rect width="7" height="5" x="3" y="16"/></svg></span>
       <span class="label">Dashboard</span>
     </button>
-    <button class="sidebar__link" data-module="wallet">
+    <button class="sidebar__link" data-module="wallet" aria-label="Wallet">
       <span class="icon"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 7V4a1 1 0 0 0-1-1H5a2 2 0 0 0 0 4h15a1 1 0 0 1 1 1v4h-3a2 2 0 0 0 0 4h3a1 1 0 0 0 1-1v-2a1 1 0 0 0-1-1"/><path d="M3 5v14a2 2 0 0 0 2 2h15a1 1 0 0 0 1-1v-4"/></svg></span>
       <span class="label">Wallet</span>
     </button>
-    <button class="sidebar__link" data-module="fleet">
+    <button class="sidebar__link" data-module="fleet" aria-label="Fleet">
       <span class="icon"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" x2="2" y1="12" y2="12"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/><line x1="6" x2="6.01" y1="16" y2="16"/><line x1="10" x2="10.01" y1="16" y2="16"/></svg></span>
       <span class="label">Fleet</span>
     </button>
-    <button class="sidebar__link" data-module="live">
+    <button class="sidebar__link" data-module="live" aria-label="Live Mining">
       <span class="icon"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12h-2.48a2 2 0 0 0-1.93 1.46l-2.35 8.36a.25.25 0 0 1-.48 0L9.24 2.18a.25.25 0 0 0-.48 0l-2.35 8.36A2 2 0 0 1 4.49 12H2"/></svg></span>
       <span class="label">Live Mining</span>
     </button>
-    <button class="sidebar__link" data-module="probability">
+    <button class="sidebar__link" data-module="probability" aria-label="Probability">
       <span class="icon"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/></svg></span>
       <span class="label">Probability</span>
     </button>
-    <button class="sidebar__link" data-module="market">
+    <button class="sidebar__link" data-module="market" aria-label="Hash Market">
       <span class="icon"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/><polyline points="16 7 22 7 22 13"/></svg></span>
       <span class="label">Hash Market</span>
     </button>
-    <button class="sidebar__link" data-module="rentals">
+    <button class="sidebar__link" data-module="rentals" aria-label="Rentals">
       <span class="icon"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5V19A9 3 0 0 0 21 19V5"/><path d="M3 12A9 3 0 0 0 21 12"/></svg></span>
       <span class="label">Rentals</span>
     </button>
-    <button class="sidebar__link" data-module="alerts">
+    <button class="sidebar__link" data-module="alerts" aria-label="Alerts">
       <span class="icon"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.268 21a2 2 0 0 0 3.464 0"/><path d="M3.262 15.326A1 1 0 0 0 4 17h16a1 1 0 0 0 .74-1.673C19.41 13.956 18 12.499 18 8A6 6 0 0 0 6 8c0 4.499-1.411 5.956-2.738 7.326"/></svg></span>
       <span class="label">Alerts</span>
     </button>
-    <button class="sidebar__link" data-module="automations">
+    <button class="sidebar__link" data-module="automations" aria-label="Automations">
       <span class="icon"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg></span>
       <span class="label">Automations</span>
     </button>
-    <button class="sidebar__link" data-module="docs">
+    <button class="sidebar__link" data-module="docs" aria-label="Docs">
       <span class="icon"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 7v14"/><path d="M3 18a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h5a4 4 0 0 1 4 4 4 4 0 0 1 4-4h5a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1h-6a3 3 0 0 0-3 3 3 3 0 0 0-3-3z"/></svg></span>
       <span class="label">Docs</span>
     </button>
-    <button class="sidebar__link" data-module="learning">
+    <button class="sidebar__link" data-module="learning" aria-label="Learning">
       <span class="icon"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H20v20H6.5a2.5 2.5 0 0 1 0-5H20"/></svg></span>
       <span class="label">Learning</span>
     </button>
-    <button class="sidebar__link" data-module="support">
+    <button class="sidebar__link" data-module="support" aria-label="Support">
       <span class="icon"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 14c1.49-1.46 3-3.21 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.76 0-3 .5-4.5 2-1.5-1.5-2.74-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4.05 3 5.5l7 7Z"/></svg></span>
       <span class="label">Support</span>
     </button>
-    <button class="sidebar__link" data-module="admin">
+    <button class="sidebar__link" data-module="admin" aria-label="Admin">
       <span class="icon"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v16a2 2 0 0 0 2 2h16"/><path d="M18 17V9"/><path d="M13 17V5"/><path d="M8 17v-3"/></svg></span>
       <span class="label">Admin</span>
     </button>
@@ -210,9 +210,9 @@
 <!-- ══════════════════════════════════════════════════════════════════════
      MODULE HEADER — indica o módulo ativo
      ══════════════════════════════════════════════════════════════════════ -->
-<div class="module-header" id="module-header">
+<div class="module-header" id="module-header" role="region" aria-label="Cabeçalho do módulo">
   <span class="module-header__eyebrow">MODULE</span>
-  <span class="module-header__title" id="module-header-title">DASHBOARD</span>
+  <h1 class="module-header__title" id="module-header-title">DASHBOARD</h1>
   <span class="module-header__desc" id="module-header-desc">Visão geral — pool, worker e rede</span>
 </div>
 
@@ -232,7 +232,7 @@
 <!-- ══════════════════════════════════════════════════════════════════════
      STATUS BAR — 6 blocos compactos
      ══════════════════════════════════════════════════════════════════════ -->
-<div class="status-bar" id="status-bar" data-module="dashboard">
+<div class="status-bar" id="status-bar" data-module="dashboard" role="region" aria-label="Status do sistema">
   <div class="status-block status-block--system" id="sb-system">
     <div class="status-block__label">SYSTEM</div>
     <div class="status-block__row">
@@ -288,7 +288,7 @@
 <!-- ══════════════════════════════════════════════════════════════════════
      KPI CARDS — 4 métricas principais
      ══════════════════════════════════════════════════════════════════════ -->
-<div class="kpi-row" id="kpi-row" data-module="dashboard">
+<div class="kpi-row" id="kpi-row" data-module="dashboard" role="region" aria-label="Métricas principais">
   <div class="kpi-card" data-kpi-target="live" title="Ir para Live Mining — telemetria em tempo real">
     <span class="kpi-label">Hashrate <span class="tip-wrap" data-tip="Taxa de processamento do minerador principal"><span class="tip-wrap__icon">?</span></span></span>
     <div class="kpi-value-row">
@@ -327,7 +327,7 @@
      WALLET CTA — onboarding quando nenhuma wallet está conectada
      (honest telemetry: sem endereço conectado não há dados de wallet)
      ══════════════════════════════════════════════════════════════════════ -->
-<div class="wallet-cta" id="wallet-cta" style="display:none">
+<div class="wallet-cta" id="wallet-cta" role="region" aria-label="Conectar carteira" style="display:none">
   <div class="wallet-cta__lead">
     <div class="wallet-cta__icon"><svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg></div>
     <div>
@@ -349,7 +349,7 @@
 <!-- ══════════════════════════════════════════════════════════════════════
      SECTION 1: WORKER FLEET — Raio X + Host Core + Hero
      ══════════════════════════════════════════════════════════════════════ -->
-<section class="section" id="section-fleet" data-module="dashboard fleet">
+<section class="section" id="section-fleet" data-module="dashboard fleet" role="region" aria-label="Worker fleet">
   <div class="section__header">SECTION 1 :: WORKER FLEET</div>
   <div class="section__body">
 
@@ -365,7 +365,7 @@
 </section>
 
 <!-- HOST CORE + HERO -->
-<section class="panel panel--large" id="hero-worker" data-module="dashboard">
+<section class="panel panel--large" id="hero-worker" data-module="dashboard" role="region" aria-label="Worker principal">
   <div class="panel__header">
     <div class="panel__eyebrow">>> HOST CORE :: CENTRAL NERVOUS SYSTEM</div>
     <div class="panel__tools">
@@ -447,7 +447,7 @@
 <!-- ══════════════════════════════════════════════════════════════════════
      TAB NAVIGATION — Institutional style tab system
      ══════════════════════════════════════════════════════════════════════ -->
-<nav class="tabs-nav" id="main-tabs">
+<nav class="tabs-nav" id="main-tabs" aria-label="Abas do módulo">
   <button class="tab-btn active" data-target="tab-fleet">Fleet & Mining</button>
   <button class="tab-btn" data-target="tab-charts">Deep Analytics</button>
   <button class="tab-btn" data-target="tab-stats">Solo & Stats</button>
@@ -458,7 +458,7 @@
 <!-- ══════════════════════════════════════════════════════════════════════
      GRID PRINCIPAL — todos os painéis em grid 2-col
      ══════════════════════════════════════════════════════════════════════ -->
-<main class="grid">
+<main class="grid" aria-label="Painel principal">
 
 <!-- ── COMMAND CENTER (P0-3) — 3 ações contextuais ── -->
 <section class="panel panel--command-center panel--large" id="command-center-panel" data-module="dashboard">
@@ -2059,7 +2059,7 @@
      TAB 3: Solo & Stats — solo mining probability + stats
      ══════════════════════════════════════════════════════════════════════ -->
 <div class="tab-pane" id="tab-stats">
-  <main class="grid">
+  <main class="grid" aria-label="Painel de estatísticas solo">
     <section class="panel panel--large" id="solo-stats-panel" data-module="probability">
       <div class="panel__header">
         <div class="panel__eyebrow">☀ SOLO & STATS</div>
@@ -2084,7 +2084,7 @@
      TAB 4: Live Terminal -- real-time system log & event viewer
      ══════════════════════════════════════════════════════════════════════ -->
 <div class="tab-pane" id="tab-terminal">
-  <main class="grid">
+  <main class="grid" aria-label="Painel do terminal">
     <section class="panel panel--large" id="terminal-panel" data-module="live">
       <div class="panel__header">
         <div class="panel__eyebrow">>> LIVE TERMINAL</div>
@@ -2220,7 +2220,7 @@
 <!-- ══════════════════════════════════════════════════════════════════════
      OFF-CANVAS AI OPERATOR PANEL — slide-in from right
      ══════════════════════════════════════════════════════════════════════ -->
-<aside id="off-canvas-ai">
+<aside id="off-canvas-ai" aria-label="Painel auxiliar da IA">
   <div class="off-canvas-ai__header">
     <span class="off-canvas-ai__title">◆ CYPHER AI</span>
     <button class="off-canvas-ai__close" id="off-canvas-ai-close"aria-label="Fechar"><svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg></button>
@@ -2249,7 +2249,7 @@
 <div class="docs-container">
 
 <!-- ── Index ── -->
-<nav class="docs-index" id="docs-index">
+<nav class="docs-index" id="docs-index" aria-label="Índice da documentação">
   <div class="docs-index__title">SECTIONS</div>
   <div class="docs-search" id="docs-search">
     <input type="text" class="docs-search__input" id="docs-search-input" placeholder="search docs…" autocomplete="off" spellcheck="false" role="combobox" aria-expanded="false" aria-controls="docs-search-suggestions" aria-autocomplete="list">

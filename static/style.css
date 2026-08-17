@@ -26,7 +26,7 @@
   /* Text */
   --text-primary:   #eaeaea;
   --text-secondary: #909296;
-  --text-tertiary:  #5c5e62;
+  --text-tertiary:  #84878b;
 
   /* Marca (1 cor) — Bitcoin */
   --brand:          #f7931a;
@@ -539,12 +539,14 @@ a:hover { text-decoration: underline; }
   color: var(--text-tertiary);
   text-transform: uppercase;
 }
-.module-header__title {
+h1.module-header__title {
   font-family: var(--font-mono);
   font-size: var(--fs-md);
   font-weight: 700;
   color: var(--brand);
   letter-spacing: 0.06em;
+  margin: 0;
+  line-height: 1.2;
 }
 .module-header__desc { font-size: 10px; color: var(--text-secondary); margin-left: 4px; }
 
@@ -970,7 +972,7 @@ body.module-mode .tab-pane:not(.active) { display: none; }
 .badge--blue   { border-color: var(--brand); color: var(--brand); }
 .badge--purple { border-color: var(--brand); color: var(--brand); }
 .badge--btc    { border-color: var(--brand); color: var(--brand); }
-.badge--mute   { opacity: 0.7; }
+.badge--mute   { opacity: 0.9; }
 
 .tag-info     { border-color: var(--brand-dim) !important; color: var(--brand) !important; background: var(--brand-bg) !important; }
 .tag-share    { border-color: rgba(247, 147, 26, 0.55) !important; color: var(--brand) !important; background: var(--brand-bg) !important; }

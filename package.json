@@ -21,6 +21,7 @@
     "@playwright/test": "^1.52.0",
     "qrcode-terminal": "^0.12.0",
     "@commitlint/cli": "^19.3.0",
-    "@commitlint/config-conventional": "^19.2.2"
+    "@commitlint/config-conventional": "^19.2.2",
+    "axe-core": "^4.10.0"
   }
 }
