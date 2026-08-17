@@ -6195,8 +6195,20 @@ function renderAccount(acct) {
     const typed = (document.getElementById('braiins-buy-type')?.value || '').trim().toUpperCase() === 'COMPRAR';
     const ack = document.getElementById('braiins-buy-ack')?.checked || false;
     const stratum = (document.getElementById('braiins-buy-stratum')?.value || '').trim();
+    const identity = (document.getElementById('braiins-buy-identity')?.value || '').trim();
     const submit = document.getElementById('braiins-buy-submit');
-    if (submit) submit.disabled = !(quoteOk && th > 0 && amount >= 1000 && !exceeded && stratum && typed && ack);
+    if (submit) submit.disabled = !(quoteOk && th > 0 && amount >= 1000 && !exceeded && stratum && identity && typed && ack);
+    // F4 hint: worker identity is REQUIRED (Braiins contract) — never leave
+    // the operator guessing why the button is dead. Set when missing, and
+    // CLEAR the hint once filled (stale-hint bug: the status must not keep
+    // saying "informe a worker identity" after the field is filled).
+    if (!identity && th > 0 && stratum) {
+      const cur = document.getElementById('braiins-buy-status')?.textContent || '';
+      if (!cur) _braiinsBuySet('braiins-buy-status', 'informe a worker identity (user.worker) para liberar a compra');
+    } else if (identity) {
+      const cur = document.getElementById('braiins-buy-status')?.textContent || '';
+      if (cur.includes('worker identity')) _braiinsBuySet('braiins-buy-status', '');
+    }
   }
 
   async function submitBraiinsBid() {
@@ -6242,7 +6254,7 @@ function renderAccount(acct) {
     modal.addEventListener('click', (e) => {
       if (e.target.matches('[data-close]') || e.target === modal) closeModalAnimated(modal);
     });
-    ['braiins-buy-th', 'braiins-buy-amount', 'braiins-buy-stratum', 'braiins-buy-type']
+    ['braiins-buy-th', 'braiins-buy-amount', 'braiins-buy-stratum', 'braiins-buy-identity', 'braiins-buy-type']
       .forEach(id => {
         const el = document.getElementById(id);
         if (el) el.addEventListener('input', _braiinsBuyCalc);

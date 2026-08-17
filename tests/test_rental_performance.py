@@ -2024,6 +2024,7 @@ def test_create_braiins_bid_posts_correct_body(monkeypatch):
     amount_sat, price_sat, dest_upstream.url + identity, memo, cl_order_id."""
     _fake_braiins_key(monkeypatch)
     monkeypatch.setattr(rp, "braiins_price_unit", lambda tenant_id="": "sats/PH/day")
+    monkeypatch.setattr(rp, "braiins_market_limits", lambda tenant_id="": {})
     sent = {}
 
     def fake_post(url, json=None, headers=None, timeout=20):
@@ -2061,11 +2062,12 @@ def test_create_braiins_bid_401_fail_closed(monkeypatch):
     """Rejected key → needs_auth (never a generic failure)."""
     _fake_braiins_key(monkeypatch)
     monkeypatch.setattr(rp, "braiins_price_unit", lambda tenant_id="": "sats/PH/day")
+    monkeypatch.setattr(rp, "braiins_market_limits", lambda tenant_id="": {})
     monkeypatch.setattr(
         rp.requests, "post", lambda *a, **k: FakeResponse(ok=False, status_code=401)
     )
     out = rp.create_braiins_bid(
-        1.0, 500000, 123456, "stratum+tcp://h:3333", tenant_id=""
+        1.0, 500000, 123456, "stratum+tcp://h:3333", "u.w", tenant_id=""
     )
     assert out["success"] is False
     assert out["needs_auth"] is True
@@ -2113,6 +2115,115 @@ def test_create_braiins_bid_clamps_out_of_band(monkeypatch):
     assert called == []  # NOTHING reached the API
 
 
+def test_create_braiins_bid_requires_identity(monkeypatch):
+    """F4: the official UpstreamSpecification requires url AND identity — a
+    bid without a worker identity is rejected before the wire."""
+    _fake_braiins_key(monkeypatch)
+    called = []
+    monkeypatch.setattr(
+        rp.requests, "post", lambda *a, **k: called.append(1) or FakeResponse()
+    )
+    out = rp.create_braiins_bid(
+        1.0, 500000, 123456, "stratum+tcp://h:3333", "", tenant_id=""
+    )
+    assert out["success"] is False
+    assert "identity must be provided" in out["error"]
+    assert called == []
+
+
+def test_create_braiins_bid_dynamic_settings_reject_out_of_band(monkeypatch):
+    """F3: LIVE /spot/settings bounds (tick + price + amount + speed) reject
+    locally — before the wire — orders the server would reject."""
+    _fake_braiins_key(monkeypatch)
+    monkeypatch.setattr(rp, "braiins_price_unit", lambda tenant_id="": "sats/PH/day")
+    called = []
+    monkeypatch.setattr(
+        rp.requests, "post", lambda *a, **k: called.append(1) or FakeResponse()
+    )
+    monkeypatch.setattr(
+        rp,
+        "braiins_market_limits",
+        lambda tenant_id="": {
+            "hr_unit": "sats/PH/day",
+            "tick_size_sat": 1000.0,
+            "min_bid_price_sat": 50000.0,
+            "max_bid_price_sat": 1000000.0,
+            "min_limited_bid_amount_sat": 100000.0,
+            "max_limited_bid_amount_sat": 5000000.0,
+            "min_bid_speed_limit_ph": 0.01,
+            "max_bid_speed_limit_ph": 100.0,
+        },
+    )
+    # price not a multiple of the tick → rejected
+    out = rp.create_braiins_bid(1.0, 500000, 123456, "stratum+tcp://h:3333", "u.w")
+    assert out["success"] is False and "tick" in out["error"]
+    # price below the LIVE market min (passes the static band, fails the
+    # dynamic one — 50000 > static 10000 floor) → rejected
+    out = rp.create_braiins_bid(1.0, 500000, 20000, "stratum+tcp://h:3333", "u.w")
+    assert out["success"] is False and "at least" in out["error"]
+    # amount above market max (limited band) → rejected
+    out = rp.create_braiins_bid(1.0, 6_000_000, 123000, "stratum+tcp://h:3333", "u.w")
+    assert out["success"] is False and "amount must be at most" in out["error"]
+    # speed above market max → rejected
+    out = rp.create_braiins_bid(500.0, 500000, 123000, "stratum+tcp://h:3333", "u.w")
+    assert out["success"] is False and "speed_limit must be at most" in out["error"]
+    assert called == []  # NOTHING reached the API
+
+
+def test_create_braiins_bid_dynamic_settings_pass_in_band(monkeypatch):
+    """F3: in-band order (tick multiple + within price/amount/speed limits)
+    reaches the wire with the worker identity attached."""
+    _fake_braiins_key(monkeypatch)
+    monkeypatch.setattr(rp, "braiins_price_unit", lambda tenant_id="": "sats/PH/day")
+    sent = []
+    monkeypatch.setattr(
+        rp.requests,
+        "post",
+        lambda url, json=None, headers=None, timeout=20: sent.append(json)
+        or FakeResponse(payload={"bid_id": "B1"}),
+    )
+    monkeypatch.setattr(
+        rp,
+        "braiins_market_limits",
+        lambda tenant_id="": {
+            "hr_unit": "sats/PH/day",
+            "tick_size_sat": 1000.0,
+            "min_bid_price_sat": 10000.0,
+            "max_bid_price_sat": 1000000.0,
+            "min_limited_bid_amount_sat": 100000.0,
+            "max_limited_bid_amount_sat": 5000000.0,
+            "min_bid_speed_limit_ph": 0.01,
+            "max_bid_speed_limit_ph": 100.0,
+        },
+    )
+    out = rp.create_braiins_bid(
+        1.0, 500000, 123000, "stratum+tcp://h:3333", "user.worker", tenant_id=""
+    )
+    assert out["success"] is True
+    assert sent[-1]["price_sat"] == 123000
+    assert sent[-1]["dest_upstream"]["identity"] == "user.worker"
+
+
+def test_create_braiins_bid_settings_unavailable_falls_back_to_static(monkeypatch):
+    """F3: when /spot/settings is unavailable ({}), the static sanity clamps
+    remain the final net and the order still goes out."""
+    _fake_braiins_key(monkeypatch)
+    monkeypatch.setattr(rp, "braiins_price_unit", lambda tenant_id="": "sats/PH/day")
+    monkeypatch.setattr(rp, "braiins_market_limits", lambda tenant_id="": {})
+    sent = []
+    monkeypatch.setattr(
+        rp.requests,
+        "post",
+        lambda url, json=None, headers=None, timeout=20: sent.append(json)
+        or FakeResponse(payload={"bid_id": "B1"}),
+    )
+    out = rp.create_braiins_bid(
+        1.0, 500000, 123456, "stratum+tcp://h:3333", "u.w", tenant_id=""
+    )
+    assert out["success"] is True
+    assert sent[-1]["price_sat"] == 123456
+
+
 def test_create_braiins_bid_missing_key(monkeypatch):
     """No key anywhere → explicit needs_auth, no HTTP at all."""
     _fake_braiins_key(monkeypatch, key="")
@@ -2132,6 +2243,7 @@ def test_create_braiins_bid_honors_account_price_unit(monkeypatch):
     10PH/day → ×10; PH/day → unchanged. UNKNOWN unit fails closed (never
     guess with real money) — Issue #267."""
     _fake_braiins_key(monkeypatch)
+    monkeypatch.setattr(rp, "braiins_market_limits", lambda tenant_id="": {})
     sent = []
 
     def fake_post(url, json=None, headers=None, timeout=20):
@@ -2142,38 +2254,38 @@ def test_create_braiins_bid_honors_account_price_unit(monkeypatch):
 
     # Account priced per TH/day → price 123456 sats/PH/day = 123 sats/TH/day.
     monkeypatch.setattr(rp, "braiins_price_unit", lambda tenant_id="": "TH/day")
-    out = rp.create_braiins_bid(1.0, 500000, 123456, "stratum+tcp://h:3333")
+    out = rp.create_braiins_bid(1.0, 500000, 123456, "stratum+tcp://h:3333", "u.w")
     assert out["success"] is True
     assert sent[-1]["price_sat"] == 123  # 123456 × 0.001
 
     # EH/day → ×1000 (official example: price_sat expressed per EH/day).
     monkeypatch.setattr(rp, "braiins_price_unit", lambda tenant_id="": "EH/day")
-    out = rp.create_braiins_bid(1.0, 500000, 123456, "stratum+tcp://h:3333")
+    out = rp.create_braiins_bid(1.0, 500000, 123456, "stratum+tcp://h:3333", "u.w")
     assert out["success"] is True
     assert sent[-1]["price_sat"] == 123_456_000
 
     # 100PH/day → ×100.
     monkeypatch.setattr(rp, "braiins_price_unit", lambda tenant_id="": "100PH/day")
-    out = rp.create_braiins_bid(1.0, 500000, 123456, "stratum+tcp://h:3333")
+    out = rp.create_braiins_bid(1.0, 500000, 123456, "stratum+tcp://h:3333", "u.w")
     assert out["success"] is True
     assert sent[-1]["price_sat"] == 12_345_600
 
     # 10PH/day → ×10.
     monkeypatch.setattr(rp, "braiins_price_unit", lambda tenant_id="": "10PH/day")
-    out = rp.create_braiins_bid(1.0, 500000, 123456, "stratum+tcp://h:3333")
+    out = rp.create_braiins_bid(1.0, 500000, 123456, "stratum+tcp://h:3333", "u.w")
     assert out["success"] is True
     assert sent[-1]["price_sat"] == 1_234_560
 
     # PH/day (default) → unchanged.
     monkeypatch.setattr(rp, "braiins_price_unit", lambda tenant_id="": "sats/PH/day")
-    out = rp.create_braiins_bid(1.0, 500000, 123456, "stratum+tcp://h:3333")
+    out = rp.create_braiins_bid(1.0, 500000, 123456, "stratum+tcp://h:3333", "u.w")
     assert out["success"] is True
     assert sent[-1]["price_sat"] == 123456
 
     # Unknown unit → refuse before the wire (no POST made for this call).
     n_before = len(sent)
     monkeypatch.setattr(rp, "braiins_price_unit", lambda tenant_id="": "sats/KH/hour")
-    out = rp.create_braiins_bid(1.0, 500000, 123456, "stratum+tcp://h:3333")
+    out = rp.create_braiins_bid(1.0, 500000, 123456, "stratum+tcp://h:3333", "u.w")
     assert out["success"] is False
     assert "unit" in out["error"].lower()
     assert len(sent) == n_before
@@ -2260,6 +2372,7 @@ def test_bid_route_th_to_ph_and_validation(rclient, monkeypatch):
     """POST /api/rentals/braiins/bid: TH→PH conversion, required fields,
     clamped errors, and the idempotency key passthrough."""
     _fake_braiins_key(monkeypatch)
+    _app_module._braiins_bid_store.clear()  # hermetic per-tenant budget (F6)
     sent = {}
 
     def fake_create(
@@ -2320,6 +2433,7 @@ def test_bid_route_surfaces_clamp_error(rclient, monkeypatch):
     """Out-of-band inputs come back as 400 with the clamp message (a unit bug
     must never look like a provider failure)."""
     _fake_braiins_key(monkeypatch)
+    _app_module._braiins_bid_store.clear()  # hermetic per-tenant budget (F6)
     monkeypatch.setattr(
         _app_module._rental_perf,
         "create_braiins_bid",
@@ -2339,6 +2453,65 @@ def test_bid_route_surfaces_clamp_error(rclient, monkeypatch):
     )
     assert resp.status_code == 400
     assert "speed_limit" in resp.get_json()["error"]
+
+
+def test_bid_route_rate_limited_after_budget(rclient, monkeypatch):
+    """F6: more than BRAIINS_BID_PER_MINUTE posts in a minute → 429, before
+    any provider call. The 7th request never reaches the service layer."""
+    _fake_braiins_key(monkeypatch)
+    _app_module._braiins_bid_store.clear()
+    calls = {"n": 0}
+
+    def fake_create(**k):
+        calls["n"] += 1
+        return {"success": True, "bid": {"id": "B"}}
+
+    monkeypatch.setattr(_app_module._rental_perf, "create_braiins_bid", fake_create)
+    valid = {
+        "speed_limit_th": 1000,
+        "amount_sat": 500000,
+        "price_sat": 123456,
+        "upstream_url": "stratum+tcp://h:3333",
+        "upstream_identity": "u.w",
+        "cl_order_id": "c65-rl",
+    }
+    codes = []
+    for _ in range(_app_module.BRAIINS_BID_PER_MINUTE + 1):
+        codes.append(rclient.post("/api/rentals/braiins/bid", json=valid).status_code)
+    assert (
+        codes[: _app_module.BRAIINS_BID_PER_MINUTE]
+        == [200] * _app_module.BRAIINS_BID_PER_MINUTE
+    )
+    assert codes[-1] == 429
+    assert calls["n"] == _app_module.BRAIINS_BID_PER_MINUTE
+
+
+def test_bid_route_audit_trail_readable(rclient, monkeypatch):
+    """F5: the tenant-scoped bid audit trail is readable after an attempt
+    (write path is best-effort; the endpoint must 200 with the shape)."""
+    _fake_braiins_key(monkeypatch)
+    _app_module._braiins_bid_store.clear()
+    monkeypatch.setattr(
+        _app_module._rental_perf,
+        "create_braiins_bid",
+        lambda **k: {"success": True, "bid": {"id": "B"}},
+    )
+    resp = rclient.post(
+        "/api/rentals/braiins/bid",
+        json={
+            "speed_limit_th": 1000,
+            "amount_sat": 500000,
+            "price_sat": 123456,
+            "upstream_url": "stratum+tcp://h:3333",
+            "upstream_identity": "u.w",
+            "cl_order_id": "c65-aw",
+        },
+    )
+    assert resp.status_code == 200
+    audit = rclient.get("/api/rentals/braiins/bid/audit?limit=10")
+    assert audit.status_code == 200
+    assert audit.get_json()["success"] is True
+    assert "entries" in audit.get_json()
 
 
 def test_quote_and_balance_routes(rclient, monkeypatch):

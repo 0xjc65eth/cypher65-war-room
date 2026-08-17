@@ -2340,6 +2340,57 @@ def braiins_price_unit(tenant_id: str = "") -> str:
     return "sats/PH/day"
 
 
+def braiins_market_limits(tenant_id: str = "") -> Dict[str, Any]:
+    """LIVE order bounds from GET /spot/settings (official MarketSettings
+    schema — Issue #268 F3). The server validates orders against these
+    values, so the bid path must pre-validate against the SAME numbers
+    instead of only the static clamps.
+
+    Returns {} when unavailable (no key / network / parse) — callers fall
+    back to the static band (never skip BOTH layers). Also carries
+    ``hr_unit`` so a single settings call serves the #267 unit conversion
+    AND the #268 bounds.
+    """
+    key = _braiins_key(tenant_id=tenant_id)
+    if not key:
+        return {}
+    try:
+        r = requests.get(
+            f"{BRAIINS_BASE}/spot/settings", headers={"apikey": key}, timeout=8
+        )
+        if not r.ok:
+            return {}
+        data = r.json() or {}
+        want = (
+            "hr_unit",
+            "tick_size_sat",
+            "min_bid_price_sat",
+            "max_bid_price_sat",
+            "min_limited_bid_amount_sat",
+            "max_limited_bid_amount_sat",
+            "min_bid_amount_sat",
+            "max_bid_amount_sat",
+            "min_bid_speed_limit_ph",
+            "max_bid_speed_limit_ph",
+        )
+        out: Dict[str, Any] = {}
+        for k in want:
+            v = data.get(k)
+            if v is None:
+                continue
+            if k == "hr_unit":
+                out[k] = str(v)
+            else:
+                try:
+                    out[k] = float(v)
+                except (TypeError, ValueError):
+                    continue
+        return out
+    except Exception as e:
+        log.warning("[rental_performance] braiins settings failed: %s", e)
+        return {}
+
+
 def fetch_braiins_balance(tenant_id: str = "") -> Dict[str, Any]:
     """BTC balances for all subaccounts (total/available/blocked, in sats).
     Requires the tenant's Braiins key; 401/403 is surfaced, never swallowed."""
@@ -2484,6 +2535,15 @@ def create_braiins_bid(
             "error": "upstream_url must be a stratum URL (stratum+tcp://host:port)",
         }
 
+    # Issue #268 (F4): the official UpstreamSpecification REQUIRES both url
+    # and identity — a bid without a worker identity is rejected upstream.
+    identity = (upstream_identity or "").strip()
+    if not identity:
+        return {
+            "success": False,
+            "error": "upstream_identity must be provided (Braiins requires a worker identity)",
+        }
+
     # MONEY-SAFETY: the API expects price_sat in the ACCOUNT's configured unit
     # (spot/settings hr_unit, default sats/PH/day). The UI quote is always
     # PH/day — convert to the account's unit before the wire, or FAIL CLOSED
@@ -2491,7 +2551,19 @@ def create_braiins_bid(
     # would otherwise place an order 10-1000× too expensive without tripping
     # the sanity band above (Issue #267: official field is hr_unit, which can
     # be EH/day / 100PH/day / 10PH/day / TH/day — not only PH/day).
-    unit = (braiins_price_unit(tenant_id=tenant_id) or "sats/PH/day").strip()
+    #
+    # Issue #268 (F3): the SAME settings call also returns the LIVE order
+    # bounds (tick_size_sat, min/max price, amount and speed bands). The
+    # server validates orders against these, so pre-validate against the SAME
+    # numbers and fail closed locally. {} → the static clamps above remain
+    # the final net (never skip BOTH layers).
+    limits = braiins_market_limits(tenant_id=tenant_id)
+    unit = (
+        str(
+            limits.get("hr_unit") or braiins_price_unit(tenant_id=tenant_id) or ""
+        ).strip()
+        or "sats/PH/day"
+    )
     factor = helpers.braiins_hr_unit_factor(unit)
     if factor is None:
         return {
@@ -2500,14 +2572,63 @@ def create_braiins_bid(
         }
     price_for_api = round(price_sat * factor)
 
+    if limits:
+        tick = limits.get("tick_size_sat") or 0
+        if tick > 0 and abs(price_for_api / tick - round(price_for_api / tick)) > 1e-6:
+            return {
+                "success": False,
+                "error": f"price must be a multiple of the market tick ({tick:g} sats)",
+            }
+        lo_price = limits.get("min_bid_price_sat")
+        hi_price = limits.get("max_bid_price_sat")
+        if lo_price is not None and price_for_api < lo_price:
+            return {
+                "success": False,
+                "error": f"price must be at least {lo_price:g} sats",
+            }
+        if hi_price is not None and price_for_api > hi_price:
+            return {
+                "success": False,
+                "error": f"price must be at most {hi_price:g} sats",
+            }
+        # Limited bids (we always send speed_limit_ph) use the *limited*
+        # amount band; fall back to the plain band when absent (explicit
+        # None checks — `or` would misread a legitimate 0.0 bound).
+        lo_amt = limits.get("min_limited_bid_amount_sat")
+        if lo_amt is None:
+            lo_amt = limits.get("min_bid_amount_sat")
+        hi_amt = limits.get("max_limited_bid_amount_sat")
+        if hi_amt is None:
+            hi_amt = limits.get("max_bid_amount_sat")
+        if lo_amt is not None and amount_sat < lo_amt:
+            return {
+                "success": False,
+                "error": f"amount must be at least {lo_amt:g} sats",
+            }
+        if hi_amt is not None and amount_sat > hi_amt:
+            return {
+                "success": False,
+                "error": f"amount must be at most {hi_amt:g} sats",
+            }
+        lo_spd = limits.get("min_bid_speed_limit_ph")
+        hi_spd = limits.get("max_bid_speed_limit_ph")
+        if lo_spd is not None and speed_limit_ph < lo_spd:
+            return {
+                "success": False,
+                "error": f"speed_limit must be at least {lo_spd:g} PH/s",
+            }
+        if hi_spd is not None and speed_limit_ph > hi_spd:
+            return {
+                "success": False,
+                "error": f"speed_limit must be at most {hi_spd:g} PH/s",
+            }
+
     body: Dict[str, Any] = {
-        "dest_upstream": {"url": url},
+        "dest_upstream": {"url": url, "identity": identity[:120]},
         "speed_limit_ph": speed_limit_ph,
         "amount_sat": amount_sat,
         "price_sat": price_for_api,
     }
-    if upstream_identity and str(upstream_identity).strip():
-        body["dest_upstream"]["identity"] = str(upstream_identity).strip()[:120]
     if memo and str(memo).strip():
         body["memo"] = str(memo).strip()[:200]
     if cl_order_id and str(cl_order_id).strip():

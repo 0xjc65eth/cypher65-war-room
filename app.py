@@ -46,6 +46,7 @@ from helpers import (
 )
 
 import services.state as _shared_state
+from services.tenant import log_audit as _log_audit
 
 # Worker sanitization/dedup helpers now live in services.poll_compute
 # (Issue #135) — services.names is consumed there.
@@ -290,6 +291,13 @@ RATE_LIMIT_PERSIST_INTERVAL = 30.0
 # tighter than the generic RATE_LIMIT_PER_MINUTE: subscribing is a rare
 # user action, so a low cap blocks DB-bloat floods without false positives.
 _PUSH_SUBSCRIBE_PER_MINUTE = 10
+
+# Tighter budget for the REAL-MONEY bid endpoint (Issue #268 F6): the generic
+# RATE_LIMIT_PER_MINUTE (300) is far too loose for placing orders. Keyed per
+# tenant (falls back to IP for anonymous). Not persisted — a restart merely
+# resets a burst budget, which is acceptable for a deliberate money action.
+_braiins_bid_store: Dict[str, list] = {}
+BRAIINS_BID_PER_MINUTE = 6
 
 
 def _rate_limit_ensure_table():
@@ -7701,6 +7709,39 @@ def api_braiins_balance(tenant_id: str = ""):
         return jsonify({"success": False, "error": "balance fetch failed"}), 500
 
 
+def _audit_braiins_bid(
+    tenant_id: str,
+    outcome: str,
+    cl_order_id: str = "",
+    speed_limit_ph: float = 0,
+    amount_sat=None,
+    price_sat=None,
+    error: str = "",
+):
+    """Immutable, best-effort audit of EVERY bid attempt (Issue #268 F5).
+
+    Append-only by design (audit_logs has no UPDATE path; log_audit only
+    INSERTs). No PII: the stratum URL / worker identity are NEVER stored —
+    the client order id correlates the attempt. Any failure is swallowed
+    (audit must never break the request it records).
+    """
+    try:
+        _log_audit(
+            tenant_id,
+            "braiins.bid",
+            target=(cl_order_id or "")[:64] or "no-order-id",
+            details={
+                "outcome": outcome,
+                "speed_limit_ph": speed_limit_ph,
+                "amount_sat": amount_sat,
+                "price_sat": price_sat,
+                "error": (error or "")[:160],
+            },
+        )
+    except Exception:
+        pass
+
+
 @app.route("/api/rentals/braiins/bid", methods=["POST"])
 @require_tenant
 @role_required("member")
@@ -7713,18 +7754,53 @@ def api_braiins_bid(tenant_id: str = ""):
       amount_sat      int    — budget cap in sats (0 < amt ≤ 1 BTC)
       price_sat       int    — price in the account's unit (default sats/PH/day)
       upstream_url    str    — stratum URL: stratum+tcp://host:port[/worker]
-      upstream_identity str  — optional worker identity (user.worker)
+      upstream_identity str  — worker identity (user.worker) — REQUIRED (F4)
       memo            str    — optional label
       cl_order_id     str    — idempotency key (regenerated per modal session)
 
     Fail-closed: numeric conversion + sanity clamps run BEFORE the POST; a
     unit bug can never turn a 1 TH bid into a 1000 PH order. Errors carry
-    HTTP 400 (validation) or 502 (provider rejected/failed).
+    HTTP 400 (validation), 429 (rate limited) or 502 (provider rejected).
     """
+    # F6: tight per-tenant budget for the money endpoint. Bids are rare and
+    # deliberate; more than BRAIINS_BID_PER_MINUTE in a minute is abuse or a
+    # stuck client — reject BEFORE any provider call, audited.
+    _now = time.time()
+    _rk = f"t:{tenant_id}" if tenant_id else f"ip:{request.remote_addr or '0.0.0.0'}"
+    _stamps = _braiins_bid_store.setdefault(_rk, [])
+    _stamps[:] = [t for t in _stamps if _now - t < 60.0]
+    if len(_stamps) >= BRAIINS_BID_PER_MINUTE:
+        _audit_braiins_bid(tenant_id, "rate_limited")
+        return (
+            jsonify(
+                {
+                    "success": False,
+                    "error": "rate limited — too many bid attempts, slow down",
+                }
+            ),
+            429,
+        )
+    _stamps.append(_now)
+    # Bounded GC (same discipline as _rate_limit_store): drop keys whose most
+    # recent attempt fell outside the window, so a one-time bidder does not
+    # leave a permanent entry.
+    if len(_braiins_bid_store) > 512:
+        _cutoff = _now - 60.0
+        _stale = [
+            k
+            for k, stamps in _braiins_bid_store.items()
+            if not stamps or stamps[-1] < _cutoff
+        ]
+        for k in _stale:
+            _braiins_bid_store.pop(k, None)
+
     body = request.get_json(silent=True) or {}
     try:
         speed_th = float(body.get("speed_limit_th") or 0)
     except (TypeError, ValueError):
+        _audit_braiins_bid(
+            tenant_id, "rejected", error="speed_limit_th must be a number"
+        )
         return (
             jsonify({"success": False, "error": "speed_limit_th must be a number"}),
             400,
@@ -7739,8 +7815,12 @@ def api_braiins_bid(tenant_id: str = ""):
     # Positive TH required; PH conversion = TH / 1000. The server clamps
     # (1 TH..1 EH) reject nonsense before the wire.
     if speed_th <= 0:
+        _audit_braiins_bid(tenant_id, "rejected", error="speed_limit_th must be > 0")
         return jsonify({"success": False, "error": "speed_limit_th must be > 0"}), 400
     if amount_sat is None or price_sat is None:
+        _audit_braiins_bid(
+            tenant_id, "rejected", error="amount_sat and price_sat are required"
+        )
         return (
             jsonify(
                 {"success": False, "error": "amount_sat and price_sat are required"}
@@ -7757,6 +7837,16 @@ def api_braiins_bid(tenant_id: str = ""):
         memo=memo,
         cl_order_id=cl_order_id,
         tenant_id=tenant_id,
+    )
+    # F5: immutable audit of EVERY attempt (placed / rejected + provider error).
+    _audit_braiins_bid(
+        tenant_id,
+        "placed" if result.get("success") else "rejected",
+        cl_order_id=cl_order_id,
+        speed_limit_ph=speed_th / 1000.0,
+        amount_sat=amount_sat,
+        price_sat=price_sat,
+        error=result.get("error") or "",
     )
     if result.get("success"):
         # Record the placed order in the conversion funnel + audit (no PII).
@@ -7778,6 +7868,27 @@ def api_braiins_bid(tenant_id: str = ""):
         jsonify({"success": False, "error": result.get("error") or "bid failed"}),
         status,
     )
+
+
+@app.route("/api/rentals/braiins/bid/audit")
+@require_tenant
+@role_required("viewer")
+def api_braiins_bid_audit(tenant_id: str = ""):
+    """Tenant-scoped, read-only view of the immutable bid audit trail
+    (Issue #268 F5): every attempt (placed / rejected / rate_limited) with
+    outcome, amounts and correlation id. No PII (URL/worker never stored)."""
+    try:
+        limit = min(int(request.args.get("limit") or 50), 200)
+    except (TypeError, ValueError):
+        limit = 50
+    try:
+        from services.tenant import recent_audit_logs
+
+        rows = recent_audit_logs(tenant_id=tenant_id, limit=max(limit, 1)) or []
+    except Exception:
+        rows = []
+    bids = [r for r in rows if str(r.get("action") or "").startswith("braiins.bid")]
+    return jsonify({"success": True, "count": len(bids), "entries": bids})
 
 
 @app.route("/api/rentals/rig")
