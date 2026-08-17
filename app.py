@@ -5051,6 +5051,11 @@ def _start_background_threads():
     # Warm the Hash Market cache in the background (5 min loop) so the
     # LEASE profitability mode always has real offers to compare against,
     # regardless of whether the Hash Market panel was ever opened.
+    # Issue #206: alinha o threshold de frescura à cadência real (warmup +
+    # TTL) — um ciclo legítimo de ~300s não acusa breach falso de 5min.
+    _sli.set_market_fresh_max_age(
+        _HASHRATE_MARKET_WARMUP_INTERVAL_S + _HASHRATE_MARKET_CACHE_TTL
+    )
     threading.Thread(target=_hashrate_market_warmup_loop, daemon=True).start()
     # Watch on-chain donation addresses (mempool.space) so the operator is
     # alerted as soon as someone sends BTC/hashpower donations.
@@ -6595,6 +6600,11 @@ def _hashrate_market_warmup_cycle():
         _get_hashrate_market_offers()
     except Exception as e:
         log.warning("[hashrate_market] warmup cycle error: %s", e)
+    # Issue #206: SLI de frescura também é amostrado server-side (não só nos
+    # polls do frontend) — 1 sample por ciclo de warmup. Sem tráfego não
+    # fica cego; e sem cache nunca preenchido não acusa (None → não-fresco,
+    # sentinela #203).
+    _sli.record_market(coerce_ts(_HASHRATE_MARKET_CACHE.get("ts")))
 
 
 def _hashrate_market_warmup_loop():

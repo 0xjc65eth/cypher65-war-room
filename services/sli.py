@@ -19,6 +19,13 @@ WARNING/degradation da Issue #202). A recuperação limpa o estado.
 Sem dados não é breach: um ciclo sem `total` do MRR (conta vazia / chave
 não configurada) não gera amostra — "unknown" nunca acusa degradação.
 
+Semântica de breach (escolha de design, Issue #206): janela deslizante de
+30min com MÉDIA do SLI sobre a janela (padrão SLO) — um sample ruim
+mantém a janela abaixo do target até envelhecer, e o alerta dispara quando
+a janela fica continuamente abaixo por >= 30min. Não é "todo sample deve
+ser ruim" (leitura mais estrita possível do texto da issue); é a leitura
+operacional padrão de SLO. A recuperação exige a janela voltar ao target.
+
 Todo o estado é in-memory (deque com janela deslizante). Nunca lança
 exceção — telemetria não pode quebrar a aplicação.
 """
@@ -33,7 +40,7 @@ log = logging.getLogger("cypher65.sli")
 # ── Targets / janelas (Issue #206) ────────────────────────────────────
 RENTALS_COMPLETUDE_TARGET = 0.99  # ≥ 99%
 MARKET_FRESH_TARGET = 0.98  # ≥ 98%
-MARKET_FRESH_MAX_AGE_S = 300  # market_data age < 5 min
+MARKET_FRESH_MAX_AGE_S = 300  # market_data age < 5 min (default; configuravel)
 BREACH_WINDOW_S = 1800  # alerta após 30 min abaixo do target
 PERIODIC_LOG_S = 300  # cadência do log estruturado periódico (5 min)
 _MAX_SAMPLES = 500
@@ -54,7 +61,19 @@ class SLITracker:
         self._bad_since: Dict[str, Optional[int]] = {}
         self._alerted: Dict[str, bool] = {}
         self._last_log = 0
+        self._market_fresh_max_age = MARKET_FRESH_MAX_AGE_S
         self._sink: Optional[Callable[[str, float, str], None]] = None
+
+    def set_market_fresh_max_age(self, seconds: int) -> None:
+        """Ajusta o threshold de frescura à cadência real do mercado.
+
+        Operação warmup-only (sem frontend aberto) atualiza o cache a cada
+        `warmup_interval` (default 300s); o app.py chama isto com
+        `warmup_interval + cache_ttl` (~360s) para o SLI medir "no máximo
+        um ciclo de coleta de idade" — nunca acusar breach falso porque a
+        cadência legítima é maior que 5min.
+        """
+        self._market_fresh_max_age = max(60, int(seconds))
 
     def set_degradation_sink(
         self, fn: Optional[Callable[[str, float, str], None]]
@@ -80,7 +99,10 @@ class SLITracker:
             total += int(src.get("total") or len(rentals))
         if total <= 0:
             return None
-        return min(1.0, rendered / total)  # nunca acima de 100%
+        # Cap de segurança: rendered > total seria resposta anômala do
+        # provider — o SLI nunca estoura 100% (o summary carrega rendered
+        # e total crus por bucket via rentals payload, se precisar auditar).
+        return min(1.0, rendered / total)
 
     def record_completude(self, active, history, owner, now: Optional[int] = None):
         value = self.compute_rentals_completude(active, history, owner)
@@ -89,10 +111,10 @@ class SLITracker:
         return self._record("completude_rentals", value, now)
 
     def record_market(self, updated_at, now: Optional[int] = None):
-        """Uma amostra de frescura por ciclo do snapshot."""
+        """Uma amostra de frescura por ciclo do snapshot / warmup."""
         now = int(now if now is not None else time.time())
         ts = updated_at
-        fresh = bool(ts and (now - int(ts)) < MARKET_FRESH_MAX_AGE_S)
+        fresh = bool(ts and (now - int(ts)) < self._market_fresh_max_age)
         return self._record("frescura_market", 1.0 if fresh else 0.0, now)
 
     # ── core ────────────────────────────────────────────────────────────
@@ -168,6 +190,11 @@ class SLITracker:
                     1 for s in self._samples[kind] if s["ts"] >= now - BREACH_WINDOW_S
                 ),
             }
+            if kind == "frescura_market":
+                # Review #253: expõe o threshold efetivo (300s default vs
+                # 360s cadence-aware do boot) — o operador lê health.sli e
+                # sabe qual cadência está em vigor.
+                out[kind]["max_age_s"] = self._market_fresh_max_age
             out["breach"][kind] = self._alerted.get(kind, False)
         return out
 

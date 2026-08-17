@@ -103,6 +103,23 @@ class TestMarketFreshness:
         assert s["frescura_market"]["samples"] == 3
         assert s["frescura_market"]["target"] == 0.98
 
+    def test_threshold_is_configurable_to_cadence(self):
+        """Review #252: warmup de 300s + TTL 60s → threshold 360s; um ciclo
+        legítimo de ~350s de idade NÃO pode acusar breach falso."""
+        now = 50000
+        t = SLITracker()
+        t.set_market_fresh_max_age(360)  # warmup_interval + cache_ttl
+        t.record_market(now - 350, now=now)
+        s = t.summary(now=now)
+        assert s["frescura_market"]["value"] == 1.0
+        assert s["frescura_market"]["status"] == "ok"
+        # o threshold efetivo é exposto no summary (observabilidade)
+        assert s["frescura_market"]["max_age_s"] == 360
+        # com o default de 300s, a mesma amostra seria stale
+        t2 = SLITracker()
+        t2.record_market(now - 350, now=now)
+        assert t2.summary(now=now)["frescura_market"]["value"] == 0.0
+
     def test_all_fresh_is_ok(self):
         t = SLITracker()
         now = 50000
