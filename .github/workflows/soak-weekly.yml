@@ -48,7 +48,12 @@ jobs:
 
     steps:
       - name: Checkout
+        # fetch-depth: 0 — histórico completo: o mutation test dos fetchers
+        # (tests/test_fetcher_units_mutations.py) extrai o tools.py PRÉ-FIX
+        # real via `git show <merge>^` — depth 1 quebraria a suíte pytest.
         uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
 
       - name: Setup Node.js
         uses: actions/setup-node@v7
@@ -103,7 +108,12 @@ jobs:
 
     steps:
       - name: Checkout
+        # fetch-depth: 0 — histórico completo: o mutation test dos fetchers
+        # (tests/test_fetcher_units_mutations.py) extrai o tools.py PRÉ-FIX
+        # real via `git show <merge>^` — depth 1 quebraria a suíte pytest.
         uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
 
       - name: Setup Node.js
         uses: actions/setup-node@v7
