@@ -17,6 +17,7 @@ import os
 import hmac
 import hashlib
 import logging
+from statistics import median
 
 import requests
 
@@ -555,8 +556,21 @@ def get_nicehash_orderbook(algorithm="SHA256", location=None):
         if not active_orders:
             return {"error": "NiceHash has no active sell orders"}
 
-        # Find cheapest: lowest price wins
-        best = min(active_orders, key=lambda o: float(o.get("price", float("inf"))))
+        # Outlier rejection (audit 18-Aug follow-up): a junk/market order
+        # (limit=0, e.g. 0.0001 BTC/EH/d vs the real book at 0.5876-0.6823)
+        # can carry acceptedSpeed>0, pass the ghost filter and win
+        # "cheapest" — the panel then shows ROI +5.4M% (cost ~0). Reject
+        # orders priced below 20% of the book median before picking.
+        median_price = median(float(o["price"]) for o in active_orders)
+        sane_orders = [
+            o for o in active_orders if float(o["price"]) >= 0.2 * median_price
+        ]
+        # Mathematically non-empty (median >= 0.2 × median), kept explicit.
+        if not sane_orders:
+            sane_orders = active_orders
+
+        # Find cheapest: lowest price wins (among sane orders)
+        best = min(sane_orders, key=lambda o: float(o.get("price", float("inf"))))
         price_raw = float(best.get("price", 0))
         if price_raw <= 0:
             return {"error": "NiceHash best order has invalid price"}
