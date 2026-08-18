@@ -25,6 +25,10 @@
 #  13. check:fetcher-units — guard de regressão de unidade dos fetchers
 #                           (NiceHash/MRR/Braiins × payloads reais, Issue #319)
 #  14. test:fetcher-units  — self-test do guard (regressões 1e6x/24k/1000x)
+#  15. check:fetcher-units-mutations — MUTATION test real: roda o código
+#                           PRÉ-FIX autêntico de cada bug (git show ^) contra
+#                           as fixtures — o guard bloquearia as 3 regressões
+#  16. test:fetcher-units-mutations — self-test do mutation test
    #
 # Boota o Flask localmente (porta 8765) com rate-limit alto (o audit faz
 # muitas navegações por viewport) e derruba o servidor ao final. Setando
@@ -116,11 +120,13 @@ step node scripts/check-axe.cjs --report
 step node tests/test_axe_gate.js
 step python scripts/check-fetcher-units.py
 step python tests/test_fetcher_units_guard.py
+step python scripts/check-fetcher-units-mutations.py
+step python tests/test_fetcher_units_mutations.py
 
 echo
 if [ "$FAIL" -ne 0 ]; then
   echo "❌ [frontend] pipeline FAILED — $FAIL check(s) vermelho(s)"
   exit 1
 fi
-echo "✅ [frontend] pipeline green — guards DOM + a11y + tokens-hex + XSS mobile + JS core + audit visual + axe-core + fetcher-units"
+echo "✅ [frontend] pipeline green — guards DOM + a11y + tokens-hex + XSS mobile + JS core + audit visual + axe-core + fetcher-units + mutations"
 exit 0
