@@ -1,7 +1,7 @@
 # 🧭 Trilha de Auditoria — Unidades dos Fetchers do HashMarket (18-Ago-2026)
 
 **Auditoria única e consolidada de fatores de unidade de todos os fetchers de preço**
-**Status: 2/3 corrigidos · 1 pendente (Braiins Bug B — fallback sem chave)**
+**Status: ✅ 3/3 corrigidos · trilha 100% fechada (18-Ago-2026)**
 
 > **Motivação:** a auditoria de 18-Ago-2026 (varredura de fatores de unidade) revelou um
 > padrão sistêmico: **cada API de mercado declara a unidade dos preços/hashrates no próprio
@@ -19,7 +19,7 @@
 | **NiceHash (junk)** | `acceptedSpeed=0` (ordem fantasma) e `limit=0` (ordem lixo) | vence o "cheapest" | ROI +5.4M% | **Sev-1** | #305 | #306 (`076e453`) | ✅ **RESOLVIDO** |
 | **MRR** | `price.type="ph"` · `hashrate.advertised.type="ph"` | BTC/hora + TH/s | **24.000×** (11.4M vs 66 sats/TH/d) | **Sev-1** | #311 | #312 (`88715b7`) | ✅ **RESOLVIDO** |
 | **Braiins (bid, com chave)** | `hr_unit` (`EH/day`, `100PH/day`, `10PH/day`, `TH/day`) | `price_unit` (campo inexistente) | 10×–1000× no `price_sat` | **Sev-1** | #267 | #269 (`6a1f68a`) + #270 | ✅ **RESOLVIDO** (fail-closed + prova real EH/day) |
-| **Braiins (orderbook, SEM chave)** | orderbook público cotiza em `sats/EH/day` | fallback `sats/PH/day` (fator 1.0) quando `/spot/settings` → 401 | **1000×** (49.050 vs ~49 sats/TH/d no prod) | **Sev-2** | — | — | ⚠️ **PENDENTE (Bug B)** |
+| **Braiins (orderbook, SEM chave)** | orderbook público cotiza em `sats/EH/day` | fallback `sats/PH/day` (fator 1.0) quando `/spot/settings` → 401 | **1000×** (49.050 vs ~49 sats/TH/d no prod) | **Sev-2** | #315 | #316 (`ced0721`) | ✅ **RESOLVIDO** |
 | **Parasite** | — (retired, sempre `None`) | — | — | — | — | — | ✅ sem risco |
 
 ---
@@ -69,16 +69,20 @@
   produção (PR #286); risco residual #267 fechado (PR #288).
 - **Registro:** [`docs/incidents/2026-08-17-braiins-buy-hash-verification.md`](./2026-08-17-braiins-buy-hash-verification.md) (Go/No-Go completo).
 
-### 2.4 Braiins — orderbook sem chave (Sev-2, ⚠️ PENDENTE — Bug B)
+### 2.4 Braiins — orderbook sem chave (Sev-2, ✅ resolvido — Bug B)
 - **Sintoma no prod (18-Ago):** Braiins 2044 SATS/TH·h (= **49.050 sats/TH/d**) vs ~49 reais.
 - **Causa raiz:** sem chave válida, `/spot/settings` responde **401** (`{"message":"No API key
-  found in request"}` — probe real) → o código cai no default `price_unit = "sats/PH/day"`
+  found in request"}` — probe real) → o código caía no default `price_unit = "sats/PH/day"`
   (fator 1.0) — mas o **orderbook público cotiza em `sats/EH/day`** → 1000×.
 - **Local:** `agents/solo_mining_advisor/tools.py` L181-188 (`get_braiins_orderbook`).
-- **Status:** ⚠️ **sem issue aberta** — correção pendente (o usuário optou por corrigir
-  NiceHash → MRR primeiro; este ficou de fora).
-- **Fix sugerido:** quando `/spot/settings` não responde OK, assumir `sats/EH/day` (fator
-  `braiins_hr_unit_factor("EH/day") = 1000`) em vez de `sats/PH/day`, e registrar warning.
+- **Fix (#316, commit `47af8a7` → merge `ced0721`):** quando `/spot/settings` **não responde
+  OK**, fallback para `EH/day` (fator `braiins_hr_unit_factor("EH/day") = 1000`, unidade do
+  orderbook público) + warning com status_code (guard isinstance); caminho **com chave
+  intacto** (lê `hr_unit` oficial).
+- **Testes:** `test_unauthorized_fallback_uses_eh_day` (valor real do prod: 49.126.000
+  sats/EH/day → ~49 sats/TH/d), `test_settings_http_error_still_returns_error` (orderbook
+  500 continua erro) e `test_settings_failure_uses_default_unit` atualizado para o novo
+  contrato (`price_raw_unit == "EH/day"`).
 
 ---
 
@@ -91,7 +95,8 @@
 | 11:42 | Fix network hashrate 24× (#308, merge `9a1adfe`) — achado durante a verificação do deploy |
 | 12:09 | Incidente NiceHash registrado (#310, merge `e203092`) |
 | 12:49 | Fix MRR price.type/hashrate.type (#312, merge `88715b7`) |
-| 14:14 | **Este documento** — trilha consolidada |
+| 14:14 | **Este documento** — trilha consolidada (#314, merge `7322bb2`) |
+| ~15:00 | Fix Braiins Bug B — fallback EH/day sem chave (#316, merge `ced0721`) → **trilha 100% fechada** |
 
 ---
 
@@ -111,9 +116,9 @@
 
 ## 5. Pendências
 
-| Item | Sev | Ação necessária |
-|---|---|---|
-| **Braiins Bug B** — fallback sem chave assume `sats/PH/day` (orderbook cotiza em `sats/EH/day`) | Sev-2 | Abrir issue + fix no `get_braiins_orderbook` (L181-188): default `sats/EH/day` quando `/spot/settings` falha |
+✅ **Nenhuma.** Todos os achados da varredura de unidades foram corrigidos:
+NiceHash (1e6×, #304/#306), MRR (24.000×, #312), Braiins bid (`hr_unit`, #269/#270) e
+Braiins orderbook sem chave (1000×, #316).
 
 ---
 
