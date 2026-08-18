@@ -30,7 +30,12 @@ jobs:
     env:
       SECRET_KEY: "ci-test-secret-key-0123456789abcdef"
     steps:
+      # fetch-depth: 0 — histórico completo: o mutation test dos fetchers
+      # (tests/test_fetcher_units_mutations.py) extrai o tools.py PRÉ-FIX real
+      # via `git show <merge>^` — depth 1 quebraria a suíte pytest.
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
       - name: Set up Python
         uses: actions/setup-python@v7
         with:

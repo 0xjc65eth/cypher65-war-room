@@ -169,6 +169,34 @@ def _evaluate(name: str, result: dict, expected_unit) -> bool:
     return detected
 
 
+def _check_git_refs() -> bool:
+    """Confirma que os refs pré-fix existem no histórico local.
+
+    O teste extrai o tools.py pré-fix via `git show <merge>^` — se o checkout
+    do CI for raso (fetch-depth: 1), os merges antigos não existem localmente
+    e o `git show` falha. Em vez de contar como "mutação não detectada"
+    (falso seguro), detectamos a causa e retornamos exit 2 com instrução.
+    """
+    for _, merge_sha, _, _ in MUTATIONS:
+        probe = subprocess.run(
+            ["git", "cat-file", "-e", f"{merge_sha}^{{commit}}"],
+            capture_output=True,
+            text=True,
+            cwd=str(ROOT),
+        )
+        if probe.returncode != 0:
+            print(
+                f"❌ histórico git raso/incompleto: ref {merge_sha} não existe "
+                "localmente (checkout com fetch-depth: 1?)"
+            )
+            print(
+                "   Configure `fetch-depth: 0` no job de CI ou rode "
+                "`git fetch --unshallow` localmente."
+            )
+            return False
+    return True
+
+
 def main() -> int:
     # Pré-requisitos
     if not FIXTURES.exists():
@@ -182,6 +210,8 @@ def main() -> int:
     )
     if probe.returncode != 0:
         print("❌ não estamos num repo git — mutation test exige histórico")
+        return 2
+    if not _check_git_refs():
         return 2
 
     print("Fetcher-units MUTATION test — código pré-fix real (git show ^)")
