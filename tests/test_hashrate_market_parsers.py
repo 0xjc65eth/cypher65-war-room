@@ -330,6 +330,88 @@ class TestGetNicehashOrderbook:
         assert result["price_btc_per_th_day"] == pytest.approx(6.8e-7, rel=1e-6)
         assert result["available_orders"] == 1
 
+    def test_junk_order_rejected(self, monkeypatch):
+        """A junk/market order (limit=0, price ~6000× below the book but
+        acceptedSpeed>0) must NOT win as cheapest — it made the panel show
+        ROI +5.4M% (cost≈0). Cheapest must come from the sane price cluster
+        (book captured live from api2.nicehash.com, 18-Aug)."""
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {
+            "stats": {
+                "BTC": {
+                    **self.REAL_FACTORS,
+                    "orders": [
+                        {
+                            "alive": True,
+                            "price": "0.00010000",
+                            "acceptedSpeed": "0.00080172",
+                            "limit": "0.00000000",
+                            "rigsCount": 121,
+                            "type": "STANDARD",
+                        },
+                        {
+                            "alive": True,
+                            "price": "0.10000000",
+                            "acceptedSpeed": "0.00005010",
+                            "type": "STANDARD",
+                        },
+                        {
+                            "alive": True,
+                            "price": "0.10010000",
+                            "acceptedSpeed": "0.00034359",
+                            "type": "STANDARD",
+                        },
+                        {
+                            "alive": True,
+                            "price": "0.58760000",
+                            "acceptedSpeed": "0.00007158",
+                            "type": "STANDARD",
+                        },
+                        {
+                            "alive": True,
+                            "price": "0.67550000",
+                            "acceptedSpeed": "0.00004503",
+                            "type": "STANDARD",
+                        },
+                        {
+                            "alive": True,
+                            "price": "0.67550000",
+                            "acceptedSpeed": "0.00012760",
+                            "type": "STANDARD",
+                        },
+                        {
+                            "alive": True,
+                            "price": "0.68000000",
+                            "acceptedSpeed": "0.00026485",
+                            "type": "STANDARD",
+                        },
+                        {
+                            "alive": True,
+                            "price": "0.68230000",
+                            "acceptedSpeed": "0.00011453",
+                            "type": "STANDARD",
+                        },
+                    ],
+                }
+            }
+        }
+        monkeypatch.setattr(
+            "agents.solo_mining_advisor.tools.requests.get", lambda url, **kw: mock_resp
+        )
+        from agents.solo_mining_advisor.tools import get_nicehash_orderbook
+
+        result = get_nicehash_orderbook()
+        assert "error" not in result, f"Unexpected error: {result.get('error')}"
+        # The junk 0.0001 and the sub-floor 0.10/0.1001 orders (all < 20% of
+        # the book median 0.63155) are rejected: cheapest = 0.5876 BTC/EH/d
+        # = 5.876e-7 BTC/TH/d = 58.76 sats/TH/d (the real market price).
+        assert result["price_btc_per_th_day"] == pytest.approx(5.876e-7, rel=1e-4)
+        # acceptedSpeed 0.00007158 EH = 7.158e13 H/s = 0.07158 PH/s
+        assert result["best_order_speed_ph"] == pytest.approx(0.07158, rel=1e-4)
+        # available_orders = all 8 active (ghost filter only removes speed=0)
+        assert result["available_orders"] == 8
+
     def test_legacy_payload_defaults_to_eh_factor(self, monkeypatch):
         """Payload WITHOUT priceFactor (pre-audit mocks) falls back to 1e18
         (EH) — the only factor the real SHA256 API ever returns. Locks the
