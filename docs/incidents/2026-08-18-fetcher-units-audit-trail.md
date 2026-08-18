@@ -1,7 +1,7 @@
 # 🧭 Trilha de Auditoria — Unidades dos Fetchers do HashMarket (18-Ago-2026)
 
 **Auditoria única e consolidada de fatores de unidade de todos os fetchers de preço**
-**Status: ✅ 3/3 corrigidos · trilha 100% fechada (18-Ago-2026)**
+**Status: ✅ 3/3 corrigidos · trilha 100% fechada · deploy verificado em prod (18-Ago-2026)**
 
 > **Motivação:** a auditoria de 18-Ago-2026 (varredura de fatores de unidade) revelou um
 > padrão sistêmico: **cada API de mercado declara a unidade dos preços/hashrates no próprio
@@ -79,6 +79,13 @@
   OK**, fallback para `EH/day` (fator `braiins_hr_unit_factor("EH/day") = 1000`, unidade do
   orderbook público) + warning com status_code (guard isinstance); caminho **com chave
   intacto** (lê `hr_unit` oficial).
+- **Prova real do deploy (prod, 18-Ago):**
+  - Probe `GET /api/snapshot` → **Braiins 49.04 sats/TH/d** (antes do fix: 49.050 — 1000×).
+  - Playwright no painel (aba HashMarket, prod) → **49.0 sats/TH/d · ROI +0.6%** ·
+    est. cost 0.00049038 BTC — valores plausíveis (−40% a +40%).
+  - **Console: `consoleErrors: []`** — zero erros na sessão de verificação.
+  - Comparação na mesma sessão (mercado real flutuando): NiceHash 62.9 sats/TH/d ·
+    ROI −21.6% — ambos os venues dentro da faixa econômica.
 - **Testes:** `test_unauthorized_fallback_uses_eh_day` (valor real do prod: 49.126.000
   sats/EH/day → ~49 sats/TH/d), `test_settings_http_error_still_returns_error` (orderbook
   500 continua erro) e `test_settings_failure_uses_default_unit` atualizado para o novo
@@ -97,6 +104,7 @@
 | 12:49 | Fix MRR price.type/hashrate.type (#312, merge `88715b7`) |
 | 14:14 | **Este documento** — trilha consolidada (#314, merge `7322bb2`) |
 | ~15:00 | Fix Braiins Bug B — fallback EH/day sem chave (#316, merge `ced0721`) → **trilha 100% fechada** |
+| ~16:30 | **Deploy verificado em prod** — probe `/api/snapshot` (Braiins 49.04 sats/TH/d) + Playwright (49.0 sats/TH/d · ROI +0.6% · sem erros de console) |
 
 ---
 
