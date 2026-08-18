@@ -2049,6 +2049,8 @@ tr:hover td { background: var(--bg-hover); }
 .mkt-table__venue { color: var(--text-primary); font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; }
 .mkt-table__est { font-size: 7px; color: var(--amber); border: 1px solid var(--amber-dim); padding: 0 3px; margin-left: 4px; vertical-align: middle; }
 .mkt-table__fresh { font-size: 7px; color: var(--text-tertiary); border: 1px solid var(--border-default); padding: 0 3px; margin-left: 4px; vertical-align: middle; border-radius: var(--radius-sm); }
+.mkt-snapshot__age { margin-left: 6px; }
+.mkt-snapshot__age .mkt-table__fresh { font-size: 9px; padding: 1px 5px; vertical-align: 1px; white-space: nowrap; }
 .mkt-table__fresh--stale { color: var(--red); border-color: var(--red-dim); }
 .mkt-table__roi--pos { color: var(--green); }
 .mkt-table__roi--neg { color: var(--red); }

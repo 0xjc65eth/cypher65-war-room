@@ -3033,6 +3033,7 @@ function renderAccount(acct) {
   let _mktOffers = [];
   let _mktBtcUsd = null;  // BTC/USD from snapshot — for the USD/TH/d line on cards
   let _mktAffiliate = null;  // market_data.affiliate {provider,url,...} — one-click BUY on the offer card
+  let _mktSnapTs = 0;  // top-level snapshot ts — when the whole /api/snapshot was generated
   let _mktTrendLoaded = false;  // lazy: /api/market/trend fetched on first module activation
   let _mktInstitutional = null;  // HashratePulse institutional view {regime, snapshot, venues, notes}
   let _adminLoaded = false;  // lazy: fetch once per session (admin-gated)
@@ -4017,6 +4018,20 @@ function renderAccount(acct) {
       }
     }
 
+    // Snapshot freshness — how long since the whole /api/snapshot payload
+    // was generated (top-level ts stamped by the polling loop). Same badge
+    // pattern as per-venue freshness (M4): '—' on legacy payloads, stale
+    // when > 10 min. Written via setHtmlIfChanged so a fresh poll every 15s
+    // doesn't rewrite the summary DOM (anti-flicker dedup).
+    const snapAgeEl = document.getElementById('mkt-snap-age');
+    if (snapAgeEl) {
+      const snapFresh = venueFreshness(_mktSnapTs);
+      const snapAgeHtml = snapFresh
+        ? '<span class="mkt-table__fresh' + (snapFresh.stale ? ' mkt-table__fresh--stale' : '') + '" title="snapshot generated ' + new Date(_mktSnapTs * 1000).toLocaleTimeString() + ' (' + snapFresh.mins + 'm ago)">snapshot ' + (snapFresh.stale ? 'STALE ' + snapFresh.mins + 'm' : snapFresh.mins + 'm') + '</span>'
+        : '';
+      setHtmlIfChanged(snapAgeEl, snapAgeHtml);
+    }
+
     // Regime badge — Dislocated now gets a red treatment (audit: it had NO
     // class, rendering identical to the default badge).
     const regimeEl = document.getElementById('mkt-regime-badge');
@@ -4132,6 +4147,7 @@ function renderAccount(acct) {
     _mktBtcUsd = Number(snap.btc_price && snap.btc_price.usd) || null;
     _mktAffiliate = mkt.affiliate || null;
     _mktInstitutional = mkt.institutional || null;
+    _mktSnapTs = Number(snap && snap.ts) || 0;
     renderMarketGrid();
   }
 
