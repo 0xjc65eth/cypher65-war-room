@@ -1,0 +1,619 @@
+{
+ "success": true,
+ "data": {
+  "records": [
+   {
+    "id": "373133",
+    "name": "\ud83c\udf4f--1a ",
+    "owner": "skywalker10",
+    "type": "sha256",
+    "status": {
+     "status": "available",
+     "hours": 0,
+     "rented": false,
+     "online": true
+    },
+    "online": true,
+    "xnonce": "no",
+    "poolstatus": "online",
+    "region": "eu-de",
+    "rpi": "84.80",
+    "suggested_diff": "",
+    "optimal_diff": {
+     "min": "321306.288",
+     "max": "1927837.729"
+    },
+    "ndevices": "1",
+    "device_memory": null,
+    "extensions": true,
+    "price": {
+     "type": "ph",
+     "BTC": {
+      "currency": "BTC",
+      "price": "0.00066000",
+      "hour": "0.000003795000",
+      "minhrs": "0.00009108",
+      "maxhrs": "0.00182160",
+      "min_rental_length": 24,
+      "enabled": true
+     },
+     "LTC": {
+      "currency": "LTC",
+      "price": "0.95238095",
+      "hour": "0.005476190436",
+      "minhrs": "0.13142857",
+      "maxhrs": "2.62857141",
+      "min_rental_length": 24,
+      "enabled": true
+     },
+     "ETH": {
+      "currency": "ETH",
+      "price": "0.02230634",
+      "hour": "0.000128261456",
+      "minhrs": "0.00307827",
+      "maxhrs": "0.06156550",
+      "min_rental_length": 24,
+      "enabled": true
+     },
+     "BCH": {
+      "currency": "BCH",
+      "price": "0.20846494",
+      "hour": "0.001198673396",
+      "minhrs": "0.02876816",
+      "maxhrs": "0.57536323",
+      "min_rental_length": 24,
+      "enabled": true
+     },
+     "DOGE": {
+      "currency": "DOGE",
+      "price": "605.50458275",
+      "hour": "3.481651350796",
+      "minhrs": "83.55963242",
+      "maxhrs": "1671.19264838",
+      "min_rental_length": 24,
+      "enabled": true
+     }
+    },
+    "minhours": "24",
+    "maxhours": "480",
+    "hashrate": {
+     "advertised": {
+      "hash": 0.138,
+      "type": "ph",
+      "nice": "138.00T"
+     },
+     "last_5min": {
+      "hash": "137.137",
+      "nice": "137.14T",
+      "type": "th"
+     },
+     "last_15min": {
+      "hash": "132.500",
+      "nice": "132.50T",
+      "type": "th"
+     },
+     "last_30min": {
+      "hash": "131.768",
+      "nice": "131.77T",
+      "type": "th"
+     }
+    },
+    "error_notice": null,
+    "description": "",
+    "available_status": "available",
+    "shorturl": "http://rig.rent/rigs/373133",
+    "device_ram": "0"
+   },
+   {
+    "id": "372821",
+    "name": "\ud83c\udf4f--2a ",
+    "owner": "skywalker10",
+    "type": "sha256",
+    "status": {
+     "status": "available",
+     "hours": 0,
+     "rented": false,
+     "online": true
+    },
+    "online": true,
+    "xnonce": "no",
+    "poolstatus": "online",
+    "region": "eu-de",
+    "rpi": "80.59",
+    "suggested_diff": "",
+    "optimal_diff": {
+     "min": "284053.385",
+     "max": "1704320.312"
+    },
+    "ndevices": "1",
+    "device_memory": null,
+    "extensions": true,
+    "price": {
+     "type": "ph",
+     "BTC": {
+      "currency": "BTC",
+      "price": "0.00066000",
+      "hour": "0.000003355000",
+      "minhrs": "0.00008052",
+      "maxhrs": "0.00161040",
+      "min_rental_length": 24,
+      "enabled": true
+     },
+     "LTC": {
+      "currency": "LTC",
+      "price": "0.95238095",
+      "hour": "0.004841269806",
+      "minhrs": "0.11619048",
+      "maxhrs": "2.32380951",
+      "min_rental_length": 24,
+      "enabled": true
+     },
+     "ETH": {
+      "currency": "ETH",
+      "price": "0.02230634",
+      "hour": "0.000113390563",
+      "minhrs": "0.00272137",
+      "maxhrs": "0.05442747",
+      "min_rental_length": 24,
+      "enabled": true
+     },
+     "BCH": {
+      "currency": "BCH",
+      "price": "0.20846494",
+      "hour": "0.001059696771",
+      "minhrs": "0.02543272",
+      "maxhrs": "0.50865445",
+      "min_rental_length": 24,
+      "enabled": true
+     },
+     "DOGE": {
+      "currency": "DOGE",
+      "price": "605.50458275",
+      "hour": "3.077981628965",
+      "minhrs": "73.87155910",
+      "maxhrs": "1477.43118190",
+      "min_rental_length": 24,
+      "enabled": true
+     }
+    },
+    "minhours": "24",
+    "maxhours": "480",
+    "hashrate": {
+     "advertised": {
+      "hash": 0.122,
+      "type": "ph",
+      "nice": "122.00T"
+     },
+     "last_5min": {
+      "hash": "122.740",
+      "nice": "122.74T",
+      "type": "th"
+     },
+     "last_15min": {
+      "hash": "118.510",
+      "nice": "118.51T",
+      "type": "th"
+     },
+     "last_30min": {
+      "hash": "117.656",
+      "nice": "117.66T",
+      "type": "th"
+     }
+    },
+    "error_notice": null,
+    "description": "",
+    "available_status": "available",
+    "shorturl": "http://rig.rent/rigs/372821",
+    "device_ram": "0"
+   },
+   {
+    "id": "366918",
+    "name": "sm (FastUP\ud83d\ude80)",
+    "owner": "hamidpsus",
+    "type": "sha256",
+    "status": {
+     "status": "available",
+     "hours": 0,
+     "rented": false,
+     "online": true
+    },
+    "online": true,
+    "xnonce": "yes",
+    "poolstatus": "online",
+    "region": "us-east",
+    "rpi": "98.83",
+    "suggested_diff": "1000000",
+    "optimal_diff": {
+     "min": "612712.220",
+     "max": "3676273.321"
+    },
+    "ndevices": "38",
+    "device_memory": null,
+    "extensions": true,
+    "price": {
+     "type": "ph",
+     "BTC": {
+      "currency": "BTC",
+      "price": "0.00070000",
+      "hour": "0.000291666670",
+      "minhrs": "0.00350000",
+      "maxhrs": "0.43750001",
+      "min_rental_length": 12,
+      "enabled": true
+     },
+     "LTC": {
+      "currency": "LTC",
+      "price": "1.01010102",
+      "hour": "0.420875425712",
+      "minhrs": "5.05050511",
+      "maxhrs": "631.31313857",
+      "min_rental_length": 12,
+      "enabled": true
+     },
+     "ETH": {
+      "currency": "ETH",
+      "price": "0.02365824",
+      "hour": "0.009857600041",
+      "minhrs": "0.11829120",
+      "maxhrs": "14.78640006",
+      "min_rental_length": 12,
+      "enabled": true
+     },
+     "BCH": {
+      "currency": "BCH",
+      "price": "0.22109918",
+      "hour": "0.092124658881",
+      "minhrs": "1.10549591",
+      "maxhrs": "138.18698832",
+      "min_rental_length": 12,
+      "enabled": true
+     },
+     "DOGE": {
+      "currency": "DOGE",
+      "price": "642.20184224",
+      "hour": "267.584100934618",
+      "minhrs": "3211.00921122",
+      "maxhrs": "401376.15140193",
+      "min_rental_length": 12,
+      "enabled": true
+     }
+    },
+    "minhours": "12",
+    "maxhours": "1500",
+    "hashrate": {
+     "advertised": {
+      "hash": 10,
+      "type": "ph",
+      "nice": "10.00P"
+     },
+     "last_5min": {
+      "hash": "0.000",
+      "nice": "0.00",
+      "type": "th"
+     },
+     "last_15min": {
+      "hash": "0.000",
+      "nice": "0.00",
+      "type": "th"
+     },
+     "last_30min": {
+      "hash": "0.000",
+      "nice": "0.00",
+      "type": "th"
+     }
+    },
+    "error_notice": null,
+    "description": "<h3><b>Hello and welcome!</b></h3><br /><div>If the rig doesn't have hash, don't worry; it <u>will be up immediately after purchase</u>.</div><div><br /></div><div>And please note: some pools like <b>solohash</b>, <b>solopool</b>... are not compatible with <b>MRR</b>, you can set up <b>molepool</b> for most major coins.</div><div><br /></div><div>Support is available throughout the rental for any issues. Just ask!</div><h3><b>Good luck!</b></h3><br />",
+    "available_status": "available",
+    "shorturl": "http://rig.rent/rigs/366918",
+    "device_ram": "0"
+   },
+   {
+    "id": "377734",
+    "name": "Samow1",
+    "owner": "maha",
+    "type": "sha256",
+    "status": {
+     "status": "available",
+     "hours": 0,
+     "rented": false,
+     "online": true
+    },
+    "online": true,
+    "xnonce": "no",
+    "poolstatus": "online",
+    "region": "us-east",
+    "rpi": "92.28",
+    "suggested_diff": "",
+    "optimal_diff": {
+     "min": "488944.352",
+     "max": "2933666.110"
+    },
+    "ndevices": "1",
+    "device_memory": null,
+    "extensions": true,
+    "price": {
+     "type": "ph",
+     "BTC": {
+      "currency": "BTC",
+      "price": "0.00070000",
+      "hour": "0.000006125000",
+      "minhrs": "0.00007350",
+      "maxhrs": "0.00918750",
+      "min_rental_length": 12,
+      "enabled": true
+     },
+     "LTC": {
+      "currency": "",
+      "price": 0,
+      "hour": 0,
+      "minhrs": 0,
+      "maxhrs": 0,
+      "min_rental_length": 0,
+      "enabled": false
+     },
+     "ETH": {
+      "currency": "",
+      "price": 0,
+      "hour": 0,
+      "minhrs": 0,
+      "maxhrs": 0,
+      "min_rental_length": 0,
+      "enabled": false
+     },
+     "BCH": {
+      "currency": "",
+      "price": 0,
+      "hour": 0,
+      "minhrs": 0,
+      "maxhrs": 0,
+      "min_rental_length": 0,
+      "enabled": false
+     },
+     "DOGE": {
+      "currency": "",
+      "price": 0,
+      "hour": 0,
+      "minhrs": 0,
+      "maxhrs": 0,
+      "min_rental_length": 0,
+      "enabled": false
+     }
+    },
+    "minhours": "12",
+    "maxhours": "1500",
+    "hashrate": {
+     "advertised": {
+      "hash": 0.21,
+      "type": "ph",
+      "nice": "210.00T"
+     },
+     "last_5min": {
+      "hash": "210.829",
+      "nice": "210.83T",
+      "type": "th"
+     },
+     "last_15min": {
+      "hash": "210.341",
+      "nice": "210.34T",
+      "type": "th"
+     },
+     "last_30min": {
+      "hash": "213.635",
+      "nice": "213.64T",
+      "type": "th"
+     }
+    },
+    "error_notice": null,
+    "description": "",
+    "available_status": "available",
+    "shorturl": "http://rig.rent/rigs/377734",
+    "device_ram": "0"
+   },
+   {
+    "id": "377679",
+    "name": "Telman2",
+    "owner": "gokdepe",
+    "type": "sha256",
+    "status": {
+     "status": "available",
+     "hours": 0,
+     "rented": false,
+     "online": true
+    },
+    "online": true,
+    "xnonce": "no",
+    "poolstatus": "online",
+    "region": "us-east",
+    "rpi": "87.39",
+    "suggested_diff": "",
+    "optimal_diff": {
+     "min": "3469176.590",
+     "max": "20815059.543"
+    },
+    "ndevices": "1",
+    "device_memory": null,
+    "extensions": true,
+    "price": {
+     "type": "ph",
+     "BTC": {
+      "currency": "BTC",
+      "price": "0.00070000",
+      "hour": "0.000043458334",
+      "minhrs": "0.00052150",
+      "maxhrs": "0.06518750",
+      "min_rental_length": 12,
+      "enabled": true
+     },
+     "LTC": {
+      "currency": "",
+      "price": 0,
+      "hour": 0,
+      "minhrs": 0,
+      "maxhrs": 0,
+      "min_rental_length": 0,
+      "enabled": false
+     },
+     "ETH": {
+      "currency": "",
+      "price": 0,
+      "hour": 0,
+      "minhrs": 0,
+      "maxhrs": 0,
+      "min_rental_length": 0,
+      "enabled": false
+     },
+     "BCH": {
+      "currency": "",
+      "price": 0,
+      "hour": 0,
+      "minhrs": 0,
+      "maxhrs": 0,
+      "min_rental_length": 0,
+      "enabled": false
+     },
+     "DOGE": {
+      "currency": "",
+      "price": 0,
+      "hour": 0,
+      "minhrs": 0,
+      "maxhrs": 0,
+      "min_rental_length": 0,
+      "enabled": false
+     }
+    },
+    "minhours": "12",
+    "maxhours": "1500",
+    "hashrate": {
+     "advertised": {
+      "hash": 1.49,
+      "type": "ph",
+      "nice": "1.49P"
+     },
+     "last_5min": {
+      "hash": "1283.765",
+      "nice": "1.28P",
+      "type": "th"
+     },
+     "last_15min": {
+      "hash": "1032.185",
+      "nice": "1.03P",
+      "type": "th"
+     },
+     "last_30min": {
+      "hash": "526.829",
+      "nice": "526.83T",
+      "type": "th"
+     }
+    },
+    "error_notice": null,
+    "description": "",
+    "available_status": "available",
+    "shorturl": "http://rig.rent/rigs/377679",
+    "device_ram": "0"
+   },
+   {
+    "id": "377678",
+    "name": "Telman1",
+    "owner": "gokdepe",
+    "type": "sha256",
+    "status": {
+     "status": "available",
+     "hours": 0,
+     "rented": false,
+     "online": true
+    },
+    "online": true,
+    "xnonce": "no",
+    "poolstatus": "online",
+    "region": "us-east",
+    "rpi": "85.44",
+    "suggested_diff": "",
+    "optimal_diff": {
+     "min": "4889443.517",
+     "max": "29336661.100"
+    },
+    "ndevices": "1",
+    "device_memory": null,
+    "extensions": true,
+    "price": {
+     "type": "ph",
+     "BTC": {
+      "currency": "BTC",
+      "price": "0.00070000",
+      "hour": "0.000061250001",
+      "minhrs": "0.00073500",
+      "maxhrs": "0.09187500",
+      "min_rental_length": 12,
+      "enabled": true
+     },
+     "LTC": {
+      "currency": "",
+      "price": 0,
+      "hour": 0,
+      "minhrs": 0,
+      "maxhrs": 0,
+      "min_rental_length": 0,
+      "enabled": false
+     },
+     "ETH": {
+      "currency": "",
+      "price": 0,
+      "hour": 0,
+      "minhrs": 0,
+      "maxhrs": 0,
+      "min_rental_length": 0,
+      "enabled": false
+     },
+     "BCH": {
+      "currency": "",
+      "price": 0,
+      "hour": 0,
+      "minhrs": 0,
+      "maxhrs": 0,
+      "min_rental_length": 0,
+      "enabled": false
+     },
+     "DOGE": {
+      "currency": "",
+      "price": 0,
+      "hour": 0,
+      "minhrs": 0,
+      "maxhrs": 0,
+      "min_rental_length": 0,
+      "enabled": false
+     }
+    },
+    "minhours": "12",
+    "maxhours": "1500",
+    "hashrate": {
+     "advertised": {
+      "hash": 2.1,
+      "type": "ph",
+      "nice": "2.10P"
+     },
+     "last_5min": {
+      "hash": "1776.188",
+      "nice": "1.78P",
+      "type": "th"
+     },
+     "last_15min": {
+      "hash": "1463.767",
+      "nice": "1.46P",
+      "type": "th"
+     },
+     "last_30min": {
+      "hash": "965.406",
+      "nice": "965.41T",
+      "type": "th"
+     }
+    },
+    "error_notice": null,
+    "description": "",
+    "available_status": "available",
+    "shorturl": "http://rig.rent/rigs/377678",
+    "device_ram": "0"
+   }
+  ]
+ }
+}
