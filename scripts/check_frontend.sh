@@ -115,7 +115,7 @@ step node scripts/audit_ui.cjs --all
 step node scripts/check-axe.cjs --report
 step node tests/test_axe_gate.js
 step python scripts/check-fetcher-units.py
-step python -m pytest tests/test_fetcher_units_guard.py -q
+step python tests/test_fetcher_units_guard.py
 
 echo
 if [ "$FAIL" -ne 0 ]; then

@@ -4,6 +4,10 @@ O guard (scripts/check-fetcher-units.py) roda os fetchers contra payloads
 REAIS capturados (tests/fixtures/fetchers/*.json) e falha se o preço
 normalizado sair da faixa econômica plausível (10–200 sats/TH/d).
 
+Roda de duas formas (padrão dos guards do repo):
+    python tests/test_fetcher_units_guard.py   # standalone (exit code)
+    pytest tests/test_fetcher_units_guard.py   # suíte completa
+
 Testes:
 1. Guard passa com as fixtures reais (4 caminhos na faixa).
 2. Regressão de unidade é DETECTADA: NiceHash 1e6x, MRR 24.000x e Braiins
@@ -58,3 +62,33 @@ def test_braiins_wrong_unit_label_detected():
         "price_raw_unit": "sats/PH/day",  # unidade errada (bug pré-fix)
     }
     assert guard._check("braiins (unit errada)", fake_result, "EH/day") is False
+
+
+def _run_all() -> int:
+    """Standalone runner (exit code 0/1) — padrão dos self-tests dos guards."""
+    tests = [
+        ("guard verde nas fixtures reais", test_guard_passes_with_real_fixtures),
+        ("detecta regressão nicehash 1e6x", test_nicehash_unit_regression_detected),
+        ("detecta regressão mrr 24.000x", test_mrr_unit_regression_detected),
+        ("detecta regressão braiins 1000x", test_braiins_unit_regression_detected),
+        ("detecta unit label errada braiins", test_braiins_wrong_unit_label_detected),
+    ]
+    fails = 0
+    print("fetcher-units guard self-test")
+    for name, fn in tests:
+        try:
+            fn()
+            print(f"  ✅ {name}")
+        except AssertionError as exc:
+            print(f"  ❌ {name}: {exc}")
+            fails += 1
+    print()
+    if fails:
+        print(f"❌ self-test FAILED — {fails} teste(s) vermelho(s)")
+        return 1
+    print("✅ self-test green")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(_run_all())
