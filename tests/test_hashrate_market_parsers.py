@@ -151,6 +151,70 @@ class TestGetBraiinsOrderbook:
         result = get_braiins_orderbook()
         assert "error" in result
 
+    def test_unauthorized_fallback_uses_eh_day(self, monkeypatch):
+        """When /spot/settings 401s (no API key), the PUBLIC orderbook quotes
+        in sats/EH/day — Issue #315 (Bug B, audit 18-Aug). The old default
+        (sats/PH/day, factor 1.0) inflated the price 1000x on prod
+        (49,050 vs ~49 sats/TH/d). Fallback must be EH/day (factor 1000).
+        """
+        mock_settings = MagicMock()
+        mock_settings.status_code = 401
+        mock_settings.ok = False
+        mock_settings.json.return_value = {"message": "No API key found in request"}
+
+        mock_orderbook = MagicMock()
+        mock_orderbook.status_code = 200
+        mock_orderbook.ok = True
+        # Real public orderbook value: 49,126,000 sats/EH/day
+        mock_orderbook.json.return_value = {
+            "asks": [
+                {"price_sat": "49126000", "amount": "1.0"},
+            ],
+            "bids": [],
+        }
+
+        def _fake_get(url, **kw):
+            if "settings" in url:
+                return mock_settings
+            return mock_orderbook
+
+        monkeypatch.setattr("agents.solo_mining_advisor.tools.requests.get", _fake_get)
+        from agents.solo_mining_advisor.tools import get_braiins_orderbook
+
+        result = get_braiins_orderbook()
+        assert "error" not in result, f"Unexpected error: {result.get('error')}"
+        # 49,126,000 sats/EH/day ÷ 1000 (EH→PH) = 49,126 sats/PH/day
+        # = 0.00049126 BTC/PH/day → 4.9126e-7 BTC/TH/day = ~49 sats/TH/d
+        assert result["price_btc_per_ph_day"] == pytest.approx(
+            49126000 / 1000 / 100_000_000, rel=1e-9
+        )
+        assert result["price_btc_per_th_day"] == pytest.approx(
+            49126000 / 1000 / 100_000_000 / 1000, rel=1e-9
+        )
+        assert result["price_raw_unit"] == "EH/day"
+
+    def test_settings_http_error_still_returns_error(self, monkeypatch):
+        """Orderbook HTTP error still returns error dict even when settings 401."""
+        mock_settings = MagicMock()
+        mock_settings.status_code = 401
+        mock_settings.ok = False
+
+        mock_orderbook = MagicMock()
+        mock_orderbook.status_code = 500
+        mock_orderbook.ok = False
+
+        def _fake_get(url, **kw):
+            if "settings" in url:
+                return mock_settings
+            return mock_orderbook
+
+        monkeypatch.setattr("agents.solo_mining_advisor.tools.requests.get", _fake_get)
+        from agents.solo_mining_advisor.tools import get_braiins_orderbook
+
+        result = get_braiins_orderbook()
+        assert "error" in result
+        assert "500" in result["error"]
+
 
 class TestGetMrrListings:
     """Tests for get_mrr_listings() — MiningRigRentals marketplace."""
@@ -217,7 +281,11 @@ class TestGetMrrListings:
                     {
                         "name": "Apple--1a",
                         "hashrate": {
-                            "advertised": {"hash": "0.138", "type": "ph", "nice": "138.00T"}
+                            "advertised": {
+                                "hash": "0.138",
+                                "type": "ph",
+                                "nice": "138.00T",
+                            }
                         },
                         "price": {
                             "type": "ph",
@@ -228,7 +296,11 @@ class TestGetMrrListings:
                     {
                         "name": "Apple--2a",
                         "hashrate": {
-                            "advertised": {"hash": "0.200", "type": "ph", "nice": "200.00T"}
+                            "advertised": {
+                                "hash": "0.200",
+                                "type": "ph",
+                                "nice": "200.00T",
+                            }
                         },
                         "price": {
                             "type": "ph",

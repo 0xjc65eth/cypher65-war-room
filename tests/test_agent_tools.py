@@ -328,8 +328,10 @@ class TestGetBraiinsOrderbook:
         assert "empty" in result["error"].lower()
 
     def test_settings_failure_uses_default_unit(self):
-        """Settings API fails → assumes sats/PH/day as default."""
-        mock_settings = Mock(ok=False)
+        """Settings API fails (e.g. 401 without key) → the PUBLIC orderbook
+        quotes in sats/EH/day, so the fallback must be EH/day (Issue #315,
+        Bug B, audit 18-Aug) — NOT sats/PH/day (which inflated 1000x)."""
+        mock_settings = Mock(ok=False, status_code=401)
 
         mock_orderbook = Mock()
         mock_orderbook.ok = True
@@ -344,8 +346,11 @@ class TestGetBraiinsOrderbook:
         ):
             result = get_braiins_orderbook()
 
-        # 5000 sats = 0.00005 BTC
-        assert result["price_btc_per_ph_day"] == pytest.approx(0.00005)
+        # 5000 sats/EH/day ÷ 1000 (EH→PH) = 5 sats/PH/day = 5e-8 BTC/PH/day
+        assert result["price_btc_per_ph_day"] == pytest.approx(
+            5000 / 1000 / 100_000_000, rel=1e-9
+        )
+        assert result["price_raw_unit"] == "EH/day"
 
     def test_orderbook_http_error(self):
         """Orderbook endpoint returns HTTP error."""

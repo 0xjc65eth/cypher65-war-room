@@ -186,6 +186,21 @@ def get_braiins_orderbook():
             price_unit = settings.get("hr_unit") or settings.get(
                 "price_unit", "sats/PH/day"
             )
+        else:
+            # Issue #315 (Bug B, audit 18-Aug): without a valid API key the
+            # /spot/settings probe 401s and the PUBLIC orderbook quotes in
+            # sats/EH/day. The old default (sats/PH/day, factor 1.0) applied
+            # a 1.0 factor to an EH/day price — 1000x inflated on prod
+            # (49,050 vs ~49 sats/TH/d). Default to EH/day + warn.
+            settings_status = getattr(settings_r, "status_code", None)
+            if not isinstance(settings_status, int):
+                settings_status = "?"
+            log.warning(
+                "[get_braiins_orderbook] /spot/settings unavailable (HTTP %s) "
+                "— assuming public orderbook unit sats/EH/day",
+                settings_status,
+            )
+            price_unit = "EH/day"
 
         # Fetch orderbook
         r = requests.get(
