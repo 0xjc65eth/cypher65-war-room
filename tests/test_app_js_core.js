@@ -5098,6 +5098,9 @@ function sortMarketVenues(venues, key, dir) {
     if (k === 'venue') return String(v.venue || '').toLowerCase();
     if (k === 'price') return Number(v.price_btc_ph_day);
     if (k === 'usd') return v.price_usd_th_day != null ? Number(v.price_usd_th_day) : NaN;
+    if (k === 'roi') return v.roi_pct != null ? Number(v.roi_pct) : NaN;
+    if (k === 'ev') return v.expected_value_btc != null ? Number(v.expected_value_btc) : NaN;
+    if (k === 'cost') return v.estimated_cost_btc != null ? Number(v.estimated_cost_btc) : NaN;
     if (k === 'tier') return Number(v.risk_tier);
     return v[k] != null ? Number(v[k]) : NaN;
   };
@@ -5117,9 +5120,9 @@ function sortMarketVenues(venues, key, dir) {
 
 (function marketSortTests() {
   const venues = [
-    { venue: 'mrr', price_btc_ph_day: 0.000120, risk_tier: 3, price_usd_th_day: 7.2 },
-    { venue: 'braiins', price_btc_ph_day: 0.000100, risk_tier: 1, price_usd_th_day: 6.0 },
-    { venue: 'nicehash', price_btc_ph_day: 0.000110, risk_tier: 2, price_usd_th_day: 6.6 },
+    { venue: 'mrr', price_btc_ph_day: 0.000120, risk_tier: 3, price_usd_th_day: 7.2, roi_pct: 1.0, expected_value_btc: 0.0000003, estimated_cost_btc: 0.0002 },
+    { venue: 'braiins', price_btc_ph_day: 0.000100, risk_tier: 1, price_usd_th_day: 6.0, roi_pct: 3.0, expected_value_btc: 0.0000009, estimated_cost_btc: 0.0001 },
+    { venue: 'nicehash', price_btc_ph_day: 0.000110, risk_tier: 2, price_usd_th_day: 6.6, roi_pct: 2.0, expected_value_btc: 0.0000006, estimated_cost_btc: 0.00015 },
   ];
   const byPrice = sortMarketVenues(venues, 'price', 1);
   assertEqual('sort by price asc → braiins first', byPrice[0].venue, 'braiins');
@@ -5130,6 +5133,12 @@ function sortMarketVenues(venues, key, dir) {
   assertEqual('sort by venue desc → nicehash first', byVenueDesc[0].venue, 'nicehash');
   const byUsd = sortMarketVenues(venues, 'usd', 1);
   assertEqual('sort by usd asc → 6.0 first', byUsd[0].price_usd_th_day, 6.0);
+  const byRoi = sortMarketVenues(venues, 'roi', -1);
+  assertEqual('sort by roi desc → braiins first', byRoi[0].roi_pct, 3.0);
+  const byEv = sortMarketVenues(venues, 'ev', -1);
+  assertEqual('sort by ev desc → braiins first', byEv[0].expected_value_btc, 0.0000009);
+  const byCost = sortMarketVenues(venues, 'cost', 1);
+  assertEqual('sort by cost asc → braiins first (0.0001)', byCost[0].estimated_cost_btc, 0.0001);
   // Original array untouched (pure fn).
   assertEqual('pure: input not mutated', venues[0].venue, 'mrr');
   // Missing/absent USD sorts last on asc (undefined key AND explicit null).
