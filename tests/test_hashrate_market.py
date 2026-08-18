@@ -55,6 +55,7 @@ def _clear_fetch_cache():
 #  Helper: build a mock tool function / data dict
 # ══════════════════════════════════════════════════════════════════════
 
+
 def _mock_tool(data: dict, raises: bool = False):
     """Return a callable that simulates a solo_mining_advisor tool.
 
@@ -72,16 +73,19 @@ def _mock_tool(data: dict, raises: bool = False):
     raises : bool
         If True, the mock raises RuntimeError instead of returning data.
     """
+
     def _fn(*args, **kwargs):  # noqa: ARG001
         if raises:
             raise RuntimeError("API unreachable")
         return data
+
     return _fn
 
 
 # ══════════════════════════════════════════════════════════════════════
 #  _safe_float helper
 # ══════════════════════════════════════════════════════════════════════
+
 
 class TestSafeFloat:
     def test_none_returns_default(self):
@@ -119,6 +123,7 @@ class TestSafeFloat:
 #  NormalizedOffer
 # ══════════════════════════════════════════════════════════════════════
 
+
 class TestNormalizedOffer:
     def test_to_dict_includes_all_fields(self):
         o = NormalizedOffer(
@@ -141,8 +146,12 @@ class TestNormalizedOffer:
 
     def test_default_meta_is_empty_dict(self):
         o = NormalizedOffer(
-            provider="test", hashrate=500.0, price_per_th_day=1e-6,
-            duration_days=1.0, fee_pct=0.0, algorithm="sha256",
+            provider="test",
+            hashrate=500.0,
+            price_per_th_day=1e-6,
+            duration_days=1.0,
+            fee_pct=0.0,
+            algorithm="sha256",
         )
         assert o.meta == {}
 
@@ -150,6 +159,7 @@ class TestNormalizedOffer:
 # ══════════════════════════════════════════════════════════════════════
 #  fetch_braiins_offer
 # ══════════════════════════════════════════════════════════════════════
+
 
 class TestFetchBraiinsOffer:
     """Uses monkeypatch to replace agents.solo_mining_advisor.tools.get_braiins_orderbook."""
@@ -165,7 +175,9 @@ class TestFetchBraiinsOffer:
         offer = fetch_braiins_offer()
         assert offer is not None
         assert offer.provider == "braiins"
-        assert offer.price_per_th_day == pytest.approx(5e-7)  # 0.000500 / 1000 (1 PH = 1000 TH)
+        assert offer.price_per_th_day == pytest.approx(
+            5e-7
+        )  # 0.000500 / 1000 (1 PH = 1000 TH)
         assert offer.hashrate == 1000.0  # DEFAULT_RENTAL_HASHRATE_TH
         assert offer.algorithm == "sha256"
 
@@ -197,13 +209,16 @@ class TestFetchBraiinsOffer:
         assert fetch_braiins_offer() is None
 
     def test_success_sets_meta_fields(self, monkeypatch):
-        self._mock({
-            "price_btc_per_ph_day": 0.000123,
-            "available_asks": 10,
-            "available_bids": 3,
-            "price_unit": "BTC",
-            "price_raw": "0.000123456",
-        }, monkeypatch)
+        self._mock(
+            {
+                "price_btc_per_ph_day": 0.000123,
+                "available_asks": 10,
+                "available_bids": 3,
+                "price_unit": "BTC",
+                "price_raw": "0.000123456",
+            },
+            monkeypatch,
+        )
         offer = fetch_braiins_offer()
         assert offer is not None
         assert offer.meta["available_asks"] == 10
@@ -216,6 +231,7 @@ class TestFetchBraiinsOffer:
 #  fetch_mrr_offer
 # ══════════════════════════════════════════════════════════════════════
 
+
 class TestFetchMrtOffer:
     def _mock(self, data: dict, monkeypatch, raises=False):
         monkeypatch.setattr(
@@ -224,7 +240,9 @@ class TestFetchMrtOffer:
         )
 
     def test_success_returns_offer(self, monkeypatch):
-        self._mock({"price_btc_per_ph_day": 0.000400, "best_rig_hash_th": "2000"}, monkeypatch)
+        self._mock(
+            {"price_btc_per_ph_day": 0.000400, "best_rig_hash_th": "2000"}, monkeypatch
+        )
         offer = fetch_mrr_offer()
         assert offer is not None
         assert offer.provider == "mrr"
@@ -255,17 +273,22 @@ class TestFetchMrtOffer:
         assert offer.price_per_th_day == pytest.approx(3e-7)
 
     def test_zero_hashrate_uses_default(self, monkeypatch):
-        self._mock({"price_btc_per_ph_day": 0.000300, "best_rig_hash_th": 0}, monkeypatch)
+        self._mock(
+            {"price_btc_per_ph_day": 0.000300, "best_rig_hash_th": 0}, monkeypatch
+        )
         offer = fetch_mrr_offer()
         assert offer is not None
         assert offer.hashrate == 1000.0  # fallback to default
 
     def test_sets_meta_fields(self, monkeypatch):
-        self._mock({
-            "price_btc_per_ph_day": 0.000200,
-            "best_rig_name": "Antminer S21",
-            "total_listings": 15,
-        }, monkeypatch)
+        self._mock(
+            {
+                "price_btc_per_ph_day": 0.000200,
+                "best_rig_name": "Antminer S21",
+                "total_listings": 15,
+            },
+            monkeypatch,
+        )
         offer = fetch_mrr_offer()
         assert offer.meta["rig_name"] == "Antminer S21"
         assert offer.meta["total_listings"] == 15
@@ -276,6 +299,7 @@ class TestFetchMrtOffer:
 #  fetch_nicehash_offer
 # ══════════════════════════════════════════════════════════════════════
 
+
 class TestFetchNicehashOffer:
     def _mock(self, data: dict, monkeypatch, raises=False):
         monkeypatch.setattr(
@@ -284,7 +308,9 @@ class TestFetchNicehashOffer:
         )
 
     def test_success_returns_offer(self, monkeypatch):
-        self._mock({"price_btc_per_ph_day": 0.000600, "best_order_speed_ph": 0.5}, monkeypatch)
+        self._mock(
+            {"price_btc_per_ph_day": 0.000600, "best_order_speed_ph": 0.5}, monkeypatch
+        )
         offer = fetch_nicehash_offer()
         assert offer is not None
         assert offer.provider == "nicehash"
@@ -310,17 +336,22 @@ class TestFetchNicehashOffer:
         assert offer.hashrate == 1000.0  # default
 
     def test_zero_speed_uses_default(self, monkeypatch):
-        self._mock({"price_btc_per_ph_day": 0.000500, "best_order_speed_ph": 0}, monkeypatch)
+        self._mock(
+            {"price_btc_per_ph_day": 0.000500, "best_order_speed_ph": 0}, monkeypatch
+        )
         offer = fetch_nicehash_offer()
         assert offer.hashrate == 1000.0
 
     def test_sets_meta_fields(self, monkeypatch):
-        self._mock({
-            "price_btc_per_ph_day": 0.000500,
-            "available_orders": 25,
-            "algorithm": "SHA256",
-            "market": "hashpower",
-        }, monkeypatch)
+        self._mock(
+            {
+                "price_btc_per_ph_day": 0.000500,
+                "available_orders": 25,
+                "algorithm": "SHA256",
+                "market": "hashpower",
+            },
+            monkeypatch,
+        )
         offer = fetch_nicehash_offer()
         assert offer.meta["available_orders"] == 25
         assert offer.meta["algorithm"] == "SHA256"
@@ -331,6 +362,7 @@ class TestFetchNicehashOffer:
 # ══════════════════════════════════════════════════════════════════════
 #  fetch_parasite_offer
 # ══════════════════════════════════════════════════════════════════════
+
 
 class TestFetchParasiteOffer:
     def _mock_parasite(self, data: dict, monkeypatch):
@@ -345,13 +377,16 @@ class TestFetchParasiteOffer:
         """The fee-only pool estimate is mathematically sub-floor (~1e-8 BTC/
         TH·day = ~0.04 sats/TH·h — ~1000× below real rental prices), so the
         estimator now REJECTS it instead of polluting 'cheapest market'."""
-        self._mock_parasite({
-            "pool_hashrate": 6e20 * 0.01,  # 1% of network (~6 EH/s)
-            "pool_workers": 1500,
-            "pool_users": 750,
-            "pool_highest_diff": "128.5T",
-            "pool_status": "active",
-        }, monkeypatch)
+        self._mock_parasite(
+            {
+                "pool_hashrate": 6e20 * 0.01,  # 1% of network (~6 EH/s)
+                "pool_workers": 1500,
+                "pool_users": 750,
+                "pool_highest_diff": "128.5T",
+                "pool_status": "active",
+            },
+            monkeypatch,
+        )
         offer = fetch_parasite_offer()
         assert offer is None  # fee-only model can never reach a plausible price
 
@@ -373,8 +408,10 @@ class TestFetchParasiteOffer:
 
     def test_tool_exception_returns_none(self, monkeypatch):
         """Exception inside fetch_parasite_offer caught and returns None."""
+
         def _raise(*args):
             raise RuntimeError("pool stats crash")
+
         monkeypatch.setattr(
             "agents.solo_mining_advisor.tools.get_parasite_pool_stats",
             _raise,
@@ -386,18 +423,22 @@ class TestFetchParasiteOffer:
         """Same sub-floor rejection as test_success_returns_offer — the
         disclaimer path is unreachable while the fee-only price stays below
         the plausible floor."""
-        self._mock_parasite({
-            "pool_hashrate": 6e20 * 0.005,
-            "pool_workers": 100,
-            "pool_users": 50,
-            "pool_status": "active",
-        }, monkeypatch)
+        self._mock_parasite(
+            {
+                "pool_hashrate": 6e20 * 0.005,
+                "pool_workers": 100,
+                "pool_users": 50,
+                "pool_status": "active",
+            },
+            monkeypatch,
+        )
         assert fetch_parasite_offer() is None
 
 
 # ══════════════════════════════════════════════════════════════════════
 #  _cached_fetch — retry/backoff (Fase 3 · P1)
 # ══════════════════════════════════════════════════════════════════════
+
 
 class TestCachedFetchRetry:
     """Retry/backoff behavior of _cached_fetch on transient failures.
@@ -411,8 +452,12 @@ class TestCachedFetchRetry:
     @staticmethod
     def _offer(provider="t"):
         return NormalizedOffer(
-            provider=provider, hashrate=1000.0, price_per_th_day=1e-9,
-            duration_days=1.0, fee_pct=0.0, algorithm="sha256",
+            provider=provider,
+            hashrate=1000.0,
+            price_per_th_day=1e-9,
+            duration_days=1.0,
+            fee_pct=0.0,
+            algorithm="sha256",
         )
 
     def test_success_first_try_calls_once(self):
@@ -429,6 +474,7 @@ class TestCachedFetchRetry:
 
     def test_none_retries_then_returns_none(self, monkeypatch):
         import services.hashrate_market as m
+
         monkeypatch.setattr(m, "_FETCH_RETRIES", 2)
         monkeypatch.setattr(m, "_FETCH_BACKOFF_BASE", 0.0)
         calls = []
@@ -443,6 +489,7 @@ class TestCachedFetchRetry:
 
     def test_exception_retries_then_returns_none(self, monkeypatch):
         import services.hashrate_market as m
+
         monkeypatch.setattr(m, "_FETCH_RETRIES", 1)
         monkeypatch.setattr(m, "_FETCH_BACKOFF_BASE", 0.0)
         calls = []
@@ -457,6 +504,7 @@ class TestCachedFetchRetry:
 
     def test_recovers_after_transient_failure(self, monkeypatch):
         import services.hashrate_market as m
+
         monkeypatch.setattr(m, "_FETCH_RETRIES", 2)
         monkeypatch.setattr(m, "_FETCH_BACKOFF_BASE", 0.0)
         calls = []
@@ -476,6 +524,7 @@ class TestCachedFetchRetry:
         """A None result is cached for _FETCH_CACHE_EMPTY_TTL only — the
         second call within TTL is served from cache (no extra fetches)."""
         import services.hashrate_market as m
+
         monkeypatch.setattr(m, "_FETCH_RETRIES", 0)
         monkeypatch.setattr(m, "_FETCH_CACHE_EMPTY_TTL", 60)
         calls = []
@@ -491,6 +540,7 @@ class TestCachedFetchRetry:
 
     def test_success_result_cached_full_ttl(self, monkeypatch):
         import services.hashrate_market as m
+
         monkeypatch.setattr(m, "_FETCH_RETRIES", 0)
         monkeypatch.setattr(m, "_FETCH_CACHE_TTL", 60)
         calls = []
@@ -508,6 +558,7 @@ class TestCachedFetchRetry:
         """Linear backoff: sleep = _FETCH_BACKOFF_BASE * attempt before
         each retry."""
         import services.hashrate_market as m
+
         monkeypatch.setattr(m, "_FETCH_RETRIES", 2)
         monkeypatch.setattr(m, "_FETCH_BACKOFF_BASE", 0.5)
         sleeps = []
@@ -526,6 +577,7 @@ class TestCachedFetchRetry:
 # ══════════════════════════════════════════════════════════════════════
 #  fetch_all_offers — orchestration
 # ══════════════════════════════════════════════════════════════════════
+
 
 class TestFetchAllOffers:
     def test_returns_multiple_offers(self, monkeypatch):
@@ -617,6 +669,7 @@ class TestFetchAllOffers:
 #  compute_metrics
 # ══════════════════════════════════════════════════════════════════════
 
+
 class TestComputeMetrics:
     """Verify the math behind compute_metrics with controlled inputs."""
 
@@ -649,7 +702,9 @@ class TestComputeMetrics:
         """
         offer = self._offer(price_per_th_day=1e-6)
         m = compute_metrics(offer, self.KNOWN_NET_HR)
-        assert m["risk_level"] == "HIGH", f"Expected HIGH, got {m['risk_level']}. EV={m['expected_value_btc']}, score={m['score']}"
+        assert (
+            m["risk_level"] == "HIGH"
+        ), f"Expected HIGH, got {m['risk_level']}. EV={m['expected_value_btc']}, score={m['score']}"
         assert m["expected_value_btc"] < 0
 
     def test_neutral_ev_medium_risk(self):
@@ -662,7 +717,9 @@ class TestComputeMetrics:
         """
         offer = self._offer(price_per_th_day=7.21e-7)
         m = compute_metrics(offer, self.KNOWN_NET_HR)
-        assert m["risk_level"] == "MEDIUM", f"Expected MEDIUM, got {m['risk_level']}. score={m['score']}, EV={m['expected_value_btc']}, roi≈{m['score']/100}"
+        assert (
+            m["risk_level"] == "MEDIUM"
+        ), f"Expected MEDIUM, got {m['risk_level']}. score={m['score']}, EV={m['expected_value_btc']}, roi≈{m['score']/100}"
 
     def test_estimated_cost_includes_fee(self):
         """Fee percentage is included in cost calculation."""
@@ -679,7 +736,9 @@ class TestComputeMetrics:
         off2 = self._offer(hashrate=2000.0)
         m1 = compute_metrics(off1, self.KNOWN_NET_HR)
         m2 = compute_metrics(off2, self.KNOWN_NET_HR)
-        assert m2["estimated_revenue_btc"] == pytest.approx(m1["estimated_revenue_btc"] * 2.0)
+        assert m2["estimated_revenue_btc"] == pytest.approx(
+            m1["estimated_revenue_btc"] * 2.0
+        )
 
     def test_longer_duration_increases_cost_and_revenue(self):
         """Duration > 1 → both cost and revenue scale linearly."""
@@ -707,8 +766,14 @@ class TestComputeMetrics:
         """compute_metrics returns all expected keys."""
         m = compute_metrics(self._offer(), self.KNOWN_NET_HR)
         expected_keys = {
-            "score", "estimated_cost_btc", "estimated_revenue_btc",
-            "expected_value_btc", "risk_level", "network_hashrate", "duration_days",
+            "score",
+            "roi",
+            "estimated_cost_btc",
+            "estimated_revenue_btc",
+            "expected_value_btc",
+            "risk_level",
+            "network_hashrate",
+            "duration_days",
         }
         assert set(m.keys()) == expected_keys
 
@@ -728,12 +793,16 @@ class TestComputeMetrics:
 #  score_offer wrapper
 # ══════════════════════════════════════════════════════════════════════
 
+
 class TestScoreOffer:
     def test_returns_offer_and_metrics(self):
         o = NormalizedOffer(
-            provider="nicehash", hashrate=500.0,
-            price_per_th_day=2e-9, duration_days=1.0,
-            fee_pct=0.0, algorithm="sha256",
+            provider="nicehash",
+            hashrate=500.0,
+            price_per_th_day=2e-9,
+            duration_days=1.0,
+            fee_pct=0.0,
+            algorithm="sha256",
         )
         s = score_offer(o, network_hashrate=6e20)
         # price_per_th_day=2e-9 → f"{2e-9:.6f}" → "0.000000" (rounded to 6 decimal places)
@@ -747,6 +816,7 @@ class TestScoreOffer:
 # ══════════════════════════════════════════════════════════════════════
 #  enrich_opportunity_dict
 # ══════════════════════════════════════════════════════════════════════
+
 
 class TestEnrichOpportunityDict:
     def test_attaches_metrics(self):
@@ -783,6 +853,7 @@ class TestEnrichOpportunityDict:
 # ══════════════════════════════════════════════════════════════════════
 #  build_highlights
 # ══════════════════════════════════════════════════════════════════════
+
 
 class TestBuildHighlights:
     def test_empty_when_no_prices(self):
@@ -882,7 +953,12 @@ class TestBuildHighlights:
         parasite pool-fee card must never steal the top of the HASH MARKET."""
         now = int(time.time())
         prices = {
-            "parasite": {"price": 1e-5, "ts": now, "label": "Parasite", "estimated": True},
+            "parasite": {
+                "price": 1e-5,
+                "ts": now,
+                "label": "Parasite",
+                "estimated": True,
+            },
             "braiins": {"price": 5e-2, "ts": now, "label": "Braiins"},
             "mrr": {"price": 4e-2, "ts": now, "label": "MRR"},
         }
@@ -934,19 +1010,22 @@ class TestBuildHighlights:
 #  Persistence
 # ══════════════════════════════════════════════════════════════════════
 
+
 class TestPersistence:
     @pytest.fixture
     def conn(self):
         """In-memory SQLite with the required schema."""
         c = sqlite3.connect(":memory:")
         c.row_factory = sqlite3.Row
-        c.execute("""
+        c.execute(
+            """
             CREATE TABLE IF NOT EXISTS hashrate_market_history (
                 ts INTEGER, provider TEXT, hashrate REAL,
                 price_per_th_day REAL, duration_days REAL, fee_pct REAL,
                 algorithm TEXT, score REAL, raw_data TEXT
             )
-        """)
+        """
+        )
         yield c
         c.close()
 
@@ -954,9 +1033,12 @@ class TestPersistence:
         # 5e-5 BTC/TH/day ≈ 208 sats/TH·h — a realistic SHA-256 quote above
         # the MIN_PLAUSIBLE_PRICE_BTC_TH_DAY floor.
         return NormalizedOffer(
-            provider=provider, hashrate=1000.0,
-            price_per_th_day=price, duration_days=1.0,
-            fee_pct=0.0, algorithm="sha256",
+            provider=provider,
+            hashrate=1000.0,
+            price_per_th_day=price,
+            duration_days=1.0,
+            fee_pct=0.0,
+            algorithm="sha256",
         )
 
     def test_persist_empty_offers_does_nothing(self, conn):
@@ -994,9 +1076,12 @@ class TestPersistence:
         assert parsed["provider"] == "braiins"
 
     def test_fetch_market_history_returns_recent_first(self, conn):
-        persist_market_history(conn, [
-            self._offer("mrr", 5e-5),
-        ])
+        persist_market_history(
+            conn,
+            [
+                self._offer("mrr", 5e-5),
+            ],
+        )
         # Manually add an older row with a different TS
         c = conn.cursor()
         old_ts = 1000
@@ -1022,8 +1107,17 @@ class TestPersistence:
     def test_fetch_has_all_keys(self, conn):
         persist_market_history(conn, [self._offer()])
         row = fetch_market_history(conn, limit=1)[0]
-        expected = {"ts", "provider", "hashrate", "price_per_th_day",
-                    "duration_days", "fee_pct", "algorithm", "score", "raw_data"}
+        expected = {
+            "ts",
+            "provider",
+            "hashrate",
+            "price_per_th_day",
+            "duration_days",
+            "fee_pct",
+            "algorithm",
+            "score",
+            "raw_data",
+        }
         assert set(row.keys()) == expected
 
     def test_persist_skips_subfloor_offers(self, conn):
@@ -1047,7 +1141,10 @@ class TestPersistence:
         )
         conn.commit()
         import services.hashrate_market as _m
+
         _m._purged_glitch_history = False  # reset the one-time gate for this test
         persist_market_history(conn, [self._offer()])  # triggers the purge
-        c.execute("SELECT COUNT(*) as cnt FROM hashrate_market_history WHERE price_per_th_day < 1e-7")
+        c.execute(
+            "SELECT COUNT(*) as cnt FROM hashrate_market_history WHERE price_per_th_day < 1e-7"
+        )
         assert c.fetchone()["cnt"] == 0
