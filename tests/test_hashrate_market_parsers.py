@@ -234,33 +234,46 @@ class TestGetMrrListings:
 class TestGetNicehashOrderbook:
     """Tests for get_nicehash_orderbook() — NiceHash hashpower marketplace."""
 
+    # Audit 18-Aug (Sev-1): the real API declares priceFactor=1e18 (EH) and
+    # marketFactor=1e18 — `price` is BTC/EH/day, NOT BTC/TH/day. The old
+    # mocks omitted the factors, which is exactly why the 1e6× unit bug
+    # slipped through. These tests now use the REAL payload shape.
+    REAL_FACTORS = {
+        "priceFactor": "1000000000000000000.00000000",
+        "marketFactor": "1000000000000000000.00000000",
+        "displayPriceFactor": "EH",
+        "displayMarketFactor": "EH",
+    }
+
     def test_success_with_orders(self, monkeypatch):
-        """When orders exist at stats.BTC.orders, return cheapest."""
+        """When orders exist at stats.BTC.orders, return cheapest with correct
+        priceFactor/marketFactor conversion (audit 18-Aug fix)."""
         mock_resp = MagicMock()
         mock_resp.status_code = 200
         mock_resp.json.return_value = {
             "stats": {
                 "BTC": {
+                    **self.REAL_FACTORS,
                     "orders": [
                         {
                             "alive": True,
-                            "price": "0.0005",
-                            "acceptedSpeed": "10.0",
+                            "price": "0.68",
+                            "acceptedSpeed": "0.0005",
                             "type": "STANDARD",
                         },
                         {
                             "alive": True,
-                            "price": "0.0006",
-                            "acceptedSpeed": "5.0",
+                            "price": "0.70",
+                            "acceptedSpeed": "0.0006",
                             "type": "STANDARD",
                         },
                         {
                             "alive": False,
-                            "price": "0.0003",
-                            "acceptedSpeed": "1.0",
+                            "price": "0.30",
+                            "acceptedSpeed": "0.0001",
                             "type": "STANDARD",
                         },
-                    ]
+                    ],
                 }
             }
         }
@@ -271,10 +284,98 @@ class TestGetNicehashOrderbook:
 
         result = get_nicehash_orderbook()
         assert "error" not in result, f"Unexpected error: {result.get('error')}"
-        # price is BTC/TH/day → per_ph = per_th × 1000 (1 PH = 1000 TH)
-        assert result["price_btc_per_th_day"] == pytest.approx(0.0005, rel=1e-6)
-        assert result["price_btc_per_ph_day"] == pytest.approx(0.5, rel=1e-6)
+        # price 0.68 BTC/EH/day ÷ priceFactor 1e18 × 1e12 = 6.8e-7 BTC/TH/day
+        # (= 68 sats/TH/d — the real market price, ~fair value).
+        # per-PH = per-TH × 1000 (1 PH = 1000 TH).
+        assert result["price_btc_per_th_day"] == pytest.approx(6.8e-7, rel=1e-6)
+        assert result["price_btc_per_ph_day"] == pytest.approx(6.8e-7 * 1000, rel=1e-6)
+        # acceptedSpeed 0.0005 EH = 5e14 H/s = 500 TH/s = 0.5 PH/s
+        assert result["best_order_speed_ph"] == pytest.approx(0.5, rel=1e-6)
         assert result["available_orders"] == 2
+
+    def test_ghost_orders_ignored(self, monkeypatch):
+        """Orders with acceptedSpeed=0 (no rigs matched) must NOT win as
+        cheapest — they poisoned the panel with absurd ROI (audit 18-Aug)."""
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {
+            "stats": {
+                "BTC": {
+                    **self.REAL_FACTORS,
+                    "orders": [
+                        {
+                            "alive": True,
+                            "price": "0.0001",
+                            "acceptedSpeed": "0.0",
+                            "type": "STANDARD",
+                        },
+                        {
+                            "alive": True,
+                            "price": "0.68",
+                            "acceptedSpeed": "0.0005",
+                            "type": "STANDARD",
+                        },
+                    ],
+                }
+            }
+        }
+        monkeypatch.setattr(
+            "agents.solo_mining_advisor.tools.requests.get", lambda url, **kw: mock_resp
+        )
+        from agents.solo_mining_advisor.tools import get_nicehash_orderbook
+
+        result = get_nicehash_orderbook()
+        assert "error" not in result, f"Unexpected error: {result.get('error')}"
+        # The ghost order (0.0001, speed 0) is filtered: the real 0.68 wins.
+        assert result["price_btc_per_th_day"] == pytest.approx(6.8e-7, rel=1e-6)
+        assert result["available_orders"] == 1
+
+    def test_legacy_payload_defaults_to_eh_factor(self, monkeypatch):
+        """Payload WITHOUT priceFactor (pre-audit mocks) falls back to 1e18
+        (EH) — the only factor the real SHA256 API ever returns. Locks the
+        path that let the original 1e6× unit bug slip through."""
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {
+            "stats": {
+                "BTC": {
+                    "orders": [
+                        {"alive": True, "price": "0.68", "acceptedSpeed": "0.0005"},
+                    ],
+                }
+            }
+        }
+        monkeypatch.setattr(
+            "agents.solo_mining_advisor.tools.requests.get", lambda url, **kw: mock_resp
+        )
+        from agents.solo_mining_advisor.tools import get_nicehash_orderbook
+
+        result = get_nicehash_orderbook()
+        assert "error" not in result, f"Unexpected error: {result.get('error')}"
+        # Default 1e18 (EH): 0.68 BTC/EH/d → 6.8e-7 BTC/TH/d = 68 sats/TH/d.
+        assert result["price_btc_per_th_day"] == pytest.approx(6.8e-7, rel=1e-6)
+
+    def test_all_ghost_orders_error(self, monkeypatch):
+        """If every order has acceptedSpeed=0, return error (nothing sellable)."""
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {
+            "stats": {
+                "BTC": {
+                    **self.REAL_FACTORS,
+                    "orders": [
+                        {"alive": True, "price": "0.68", "acceptedSpeed": "0.0"},
+                    ],
+                }
+            }
+        }
+        monkeypatch.setattr(
+            "agents.solo_mining_advisor.tools.requests.get", lambda url, **kw: mock_resp
+        )
+        from agents.solo_mining_advisor.tools import get_nicehash_orderbook
+
+        result = get_nicehash_orderbook()
+        assert "error" in result
 
     def test_empty_orders(self, monkeypatch):
         """No orders should return error."""

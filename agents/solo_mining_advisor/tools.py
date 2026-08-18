@@ -527,9 +527,30 @@ def get_nicehash_orderbook(algorithm="SHA256", location=None):
         if not orders:
             return {"error": "NiceHash orderbook is empty (no orders found)"}
 
-        # Filter active STANDARD/MARKET sell orders
+        # NiceHash v2 declares the units in the response itself: priceFactor
+        # and marketFactor (1e18 → EH). Audit 18-Aug (Sev-1): the orderBook
+        # `price` is BTC per (priceFactor) per DAY, NOT BTC/TH/day — the old
+        # code skipped the factor, inflating the price 1e6× (NiceHash showed
+        # 68.000.000 sats/TH/d vs the real ~68) and breaking ROI/EV/score.
+        try:
+            price_factor = float(btc_stats.get("priceFactor", 1e18))
+            market_factor = float(btc_stats.get("marketFactor", 1e18))
+        except (TypeError, ValueError):
+            price_factor = market_factor = 1e18
+        if price_factor <= 0:
+            price_factor = 1e18
+        if market_factor <= 0:
+            market_factor = 1e18
+
+        # Filter active sell orders — REQUIRES real allocated hashrate.
+        # Orders with acceptedSpeed=0 are ghosts (no rigs matched): picking
+        # one as "cheapest" poisoned the panel (audit 18-Aug).
         active_orders = [
-            o for o in orders if o.get("alive", False) and float(o.get("price", 0)) > 0
+            o
+            for o in orders
+            if o.get("alive", False)
+            and float(o.get("price", 0)) > 0
+            and float(o.get("acceptedSpeed") or o.get("speed") or 0) > 0
         ]
         if not active_orders:
             return {"error": "NiceHash has no active sell orders"}
@@ -540,18 +561,22 @@ def get_nicehash_orderbook(algorithm="SHA256", location=None):
         if price_raw <= 0:
             return {"error": "NiceHash best order has invalid price"}
 
-        # NiceHash v2 orderBook `price` is BTC/TH/day (per API docs). The old
-        # code assigned the same number to both PH and TH keys — impossible.
+        # price is BTC per (priceFactor) H/s per day. Convert to BTC/TH/day:
+        # 1 TH = 1e12 H/s → per-TH = per-(priceFactor) / priceFactor × 1e12.
+        # priceFactor 1e18 (EH): 0.68 BTC/EH/d ÷ 1e6 = 6.8e-7 BTC/TH/d = 68
+        # sats/TH/d — the real market price (fair value ≈ 75 sats/TH/d).
+        btc_per_th_day = price_raw / price_factor * 1e12
         # per-PH = per-TH × 1000 (1 PH = 1000 TH).
-        btc_per_th_day = price_raw  # already BTC/TH/day
-        btc_per_ph_day = price_raw * PH_TO_TH
+        btc_per_ph_day = btc_per_th_day * PH_TO_TH
 
-        # Speed is in H/s (marketFactor = 1e18 for EH)
-        speed_hs = float(best.get("acceptedSpeed", 0) or best.get("speed", 0))
+        # acceptedSpeed is in marketFactor units (e.g. 0.00057 EH). Convert to
+        # H/s (× market_factor) then to PH/s (÷ 1e15).
+        speed_factor_units = float(best.get("acceptedSpeed", 0) or best.get("speed", 0))
+        speed_hs = speed_factor_units * market_factor
         speed_ph = speed_hs / 1e15 if speed_hs > 0 else 0
 
-        # Limit in H/s
-        limit_hs = float(best.get("limit", 0))
+        # Limit in H/s (also marketFactor units)
+        limit_hs = float(best.get("limit", 0)) * market_factor
 
         return {
             "price_btc_per_ph_day": btc_per_ph_day,
