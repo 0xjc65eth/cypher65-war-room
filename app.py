@@ -629,18 +629,22 @@ def add_security_headers(response):
     The dashboard template uses a small inline <script> boot block (window
     globals injected from Flask) plus legacy inline onclick handlers, so
     script-src keeps 'unsafe-inline' — the meaningful restrictions here are
-    connect-src 'self' (no data exfiltration to third parties), object-src
-    'none' (no plugin/embed attacks) and frame-ancestors 'self' (no
-    clickjacking). Chart.js is loaded from the jsDelivr CDN and fonts from
-    Google Fonts, so those origins are explicitly allowed.
+    connect-src 'self' https://cdn.jsdelivr.net (no data exfiltration to
+    arbitrary third parties — jsDelivr is allowed solely because Chart.js
+    ships an embedded sourceMappingURL, whose fetch was previously blocked
+    and spammed the console; the origin is already trusted via script-src,
+    so this adds no new execution/exfiltration channel), object-src 'none'
+    (no plugin/embed attacks) and frame-ancestors 'self' (no clickjacking).
+    Chart.js is loaded from the jsDelivr CDN and fonts from Google Fonts, so
+    those origins are explicitly allowed.
     """
     csp = (
         "default-src 'self'; "
-        "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
+        "    script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
         "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
         "font-src 'self' https://fonts.gstatic.com; "
         "img-src 'self' data:; "
-        "connect-src 'self'; "
+        "connect-src 'self' https://cdn.jsdelivr.net; "
         "object-src 'none'; "
         "base-uri 'self'; "
         "frame-ancestors 'self'; "

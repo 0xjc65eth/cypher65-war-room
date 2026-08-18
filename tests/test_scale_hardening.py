@@ -270,3 +270,42 @@ class TestSchemaVersion:
         conn.close()
         assert row is not None
         assert row["version"] == app_module.SCHEMA_VERSION
+
+
+# ── 5. CSP hardening headers ────────────────────────────────────────────────
+
+
+class TestCspHeaders:
+    """Locks the CSP contract: jsDelivr stays allowed in connect-src (Chart.js
+    ships an embedded sourceMappingURL whose fetch was previously blocked and
+    spammed the console) while arbitrary origins remain forbidden."""
+
+    def test_connect_src_allows_jsdelivr_only(self, monkeypatch):
+        monkeypatch.setenv("SECRET_KEY", "test-secret-0123456789")
+        import app as app_module
+
+        c = app_module.app.test_client()
+        resp = c.get("/")
+        csp = resp.headers.get("Content-Security-Policy", "")
+        assert csp, "CSP header must be present"
+        connect = next(
+            (p.strip() for p in csp.split(";") if p.strip().startswith("connect-src")),
+            "",
+        )
+        # Chart.js sourcemap fetch (jsDelivr) must no longer be blocked.
+        assert "https://cdn.jsdelivr.net" in connect
+        # No arbitrary third-party origin may join connect-src.
+        assert "https://evil.example" not in connect
+
+    def test_hardening_headers_present(self, monkeypatch):
+        monkeypatch.setenv("SECRET_KEY", "test-secret-0123456789")
+        import app as app_module
+
+        c = app_module.app.test_client()
+        resp = c.get("/")
+        assert resp.headers.get("X-Content-Type-Options") == "nosniff"
+        assert resp.headers.get("X-Frame-Options") == "SAMEORIGIN"
+        assert resp.headers.get("Referrer-Policy") == "no-referrer"
+        csp = resp.headers.get("Content-Security-Policy", "")
+        assert "object-src 'none'" in csp
+        assert "frame-ancestors 'self'" in csp
