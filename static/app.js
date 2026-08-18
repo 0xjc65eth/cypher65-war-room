@@ -3947,6 +3947,9 @@ function renderAccount(acct) {
       // Numeric keys: null/undefined → NaN so missing values sort LAST
       // (Number(null) would be 0 and wrongly sort FIRST — reviewer catch).
       if (k === 'usd') return v.price_usd_th_day != null ? Number(v.price_usd_th_day) : NaN;
+      if (k === 'sats') return v.price_sats_th_day != null ? Number(v.price_sats_th_day) : NaN;
+      if (k === 'roi') return v.roi_pct != null ? Number(v.roi_pct) : NaN;
+      if (k === 'ev') return v.expected_value_btc != null ? Number(v.expected_value_btc) : NaN;
       if (k === 'tier') return Number(v.risk_tier);
       return v[k] != null ? Number(v[k]) : NaN;
     };
@@ -4025,7 +4028,7 @@ function renderAccount(acct) {
     document.getElementById('mkt-count-badge') && (document.getElementById('mkt-count-badge').textContent = (snap.offer_count || venues.length) + ' venues');
 
     if (!venues.length) {
-      setHtmlIfChanged(tbody, '<tr><td colspan="9" class="mkt-table__empty">' + (_mktOffers.length ? 'no venues for selected filter' : 'no market data — configure API keys in Settings') + '</td></tr>');
+      setHtmlIfChanged(tbody, '<tr><td colspan="11" class="mkt-table__empty">' + (_mktOffers.length ? 'no venues for selected filter' : 'no market data — configure API keys in Settings') + '</td></tr>');
       document.getElementById('mkt-notes') && (document.getElementById('mkt-notes').style.display = 'none');
       return;
     }
@@ -4063,20 +4066,57 @@ function renderAccount(acct) {
       }
     });
 
+    // M4: freshness — how OLD this venue's quote really is (fetched_at from
+    // the backend stamp). Shows '—' on legacy payloads; stale when > 10 min.
+    function venueFreshness(fetchedAt) {
+      if (!fetchedAt) return null;
+      const mins = Math.max(0, Math.floor((Date.now() / 1000 - fetchedAt) / 60));
+      return { mins, stale: mins > 10 };
+    }
+    // M2: provider metadata surfaced as a hover detail line (asks/bids/rigs/
+    // orders/pool stats the fetchers already attach — never exposed before).
+    function venueMetaDetail(v) {
+      const m = v.meta || {};
+      const bits = [];
+      if (m.available_asks != null) bits.push('asks ' + m.available_asks);
+      if (m.available_bids != null) bits.push('bids ' + m.available_bids);
+      if (m.total_listings != null) bits.push(m.total_listings + ' rigs');
+      if (m.rig_name) bits.push(String(m.rig_name));
+      if (m.available_orders != null) bits.push(m.available_orders + ' orders');
+      if (m.pool_hashrate_hs != null) bits.push('pool ' + fmt.hashrate(m.pool_hashrate_hs));
+      // No escaping here — the whole string is escapeHtml()'d once at the
+      // title attribute (double-escaping would show literal '&amp;').
+      return bits.join(' · ');
+    }
+
     setHtmlIfChanged(tbody, venues.map(v => {
       const tierCls = v.risk_tier === 1 ? 'mkt-table__tier--t1' : v.risk_tier === 2 ? 'mkt-table__tier--t2' : v.risk_tier === 3 ? 'mkt-table__tier--t3' : 'mkt-table__tier--t4';
       const spreadCls = v.spread_vs_best_pct <= 2 ? 'mkt-table__spread--tight' : v.spread_vs_best_pct > 20 ? 'mkt-table__spread--wide' : '';
       const recCls = v.recommendation.indexOf('Preferred') === 0 ? 'mkt-table__rec--best' : v.recommendation.indexOf('Avoid') === 0 ? 'mkt-table__rec--avoid' : '';
+      const metaDetail = venueMetaDetail(v);
+      // M1: sats/TH·h — the unit Braiins actually bills (price_sats_th_day is
+      // sats/TH/day; ÷24 → the per-hour rate shown in the buy modal).
+      const satsPerThH = v.price_sats_th_day != null ? Number(v.price_sats_th_day) / 24 : null;
+      const roi = v.roi_pct != null ? (v.roi_pct >= 0 ? '+' : '') + v.roi_pct + '%' : '—';
+      const roiCls = v.roi_pct != null ? (v.roi_pct >= 0 ? 'mkt-table__roi--pos' : 'mkt-table__roi--neg') : '';
+      const ev = v.expected_value_btc != null ? Number(v.expected_value_btc).toFixed(8) : '—';
+      const fresh = venueFreshness(v.fetched_at);
+      const freshBadge = fresh
+        ? '<span class="mkt-table__fresh' + (fresh.stale ? ' mkt-table__fresh--stale' : '') + '" title="quote fetched ' + fresh.mins + 'm ago">' + (fresh.stale ? 'STALE ' + fresh.mins + 'm' : fresh.mins + 'm') + '</span>'
+        : '';
+      const venueTitle = [v.venue + (v.estimated ? ' (modeled)' : ''), metaDetail].filter(Boolean).join(' · ');
       return `<tr>
-        <td><span class="mkt-table__venue">${escapeHtml(v.venue)}</span>${v.estimated ? ' <span class="mkt-table__est">EST</span>' : ''}</td>
-        <td class="mono">${v.price_btc_ph_day.toFixed(6)}</td>
-        <td class="mono">${v.price_usd_th_day != null ? '$' + v.price_usd_th_day.toFixed(4) : '—'}</td>
-        <td class="mono ${spreadCls}">${v.spread_vs_best_pct >= 0 ? '+' : ''}${escapeHtml(v.spread_vs_best_pct)}%</td>
-        <td class="mono">${v.spread_vs_vwap_pct >= 0 ? '+' : ''}${escapeHtml(v.spread_vs_vwap_pct)}%</td>
-        <td class="mono">${escapeHtml(v.available_ph)} PH/s</td>
-        <td>${escapeHtml(v.depth_score)}</td>
-        <td><span class="mkt-table__tier ${tierCls}">${escapeHtml(v.risk_tier_label)}</span></td>
-        <td class="${recCls}">${escapeHtml(v.recommendation)}</td>
+        <td data-label="Venue"><span class="mkt-table__venue" title="${escapeHtml(venueTitle)}">${escapeHtml(v.venue)}</span>${v.estimated ? ' <span class="mkt-table__est">EST</span>' : ''}${freshBadge}</td>
+        <td class="mono" data-label="Price">${v.price_btc_ph_day.toFixed(6)}</td>
+        <td class="mono" data-label="USD/TH/d">${v.price_usd_th_day != null ? '$' + v.price_usd_th_day.toFixed(4) : '—'}</td>
+        <td class="mono" data-label="sats/TH·h">${satsPerThH != null ? satsPerThH.toFixed(2) : '—'}</td>
+        <td class="mono ${spreadCls}" data-label="vs Best">${v.spread_vs_best_pct >= 0 ? '+' : ''}${escapeHtml(v.spread_vs_best_pct)}%</td>
+        <td class="mono" data-label="vs 4h VWAP">${v.spread_vs_vwap_pct >= 0 ? '+' : ''}${escapeHtml(v.spread_vs_vwap_pct)}%</td>
+        <td class="mono" data-label="Available">${escapeHtml(v.available_ph)} PH/s</td>
+        <td class="mono ${roiCls}" data-label="ROI">${roi}</td>
+        <td class="mono" data-label="EV (BTC)">${ev}</td>
+        <td data-label="Risk Tier"><span class="mkt-table__tier ${tierCls}">${escapeHtml(v.risk_tier_label)}</span></td>
+        <td class="${recCls}" data-label="Recommendation">${escapeHtml(v.recommendation)}</td>
       </tr>`;
     }).join(''));
   }

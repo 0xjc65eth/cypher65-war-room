@@ -294,6 +294,12 @@ def _cached_fetch(key: str, fetcher: Any) -> Optional[NormalizedOffer]:
     # Record completion time, not the pre-fetch time, so backoff/slow
     # fetches don't silently eat into the TTL.
     _FETCH_CACHE[key] = {"ts": time.time(), "value": value}
+    # Freshness stamp (M4): the institutional view exposes per-venue
+    # fetched_at so the panel can show how OLD the quote really is instead
+    # of pretending a cached price is "now". Only stamped on a real fetch
+    # (a cache hit returns the same object — the timestamp stays truthful).
+    if value is not None and hasattr(value, "meta") and isinstance(value.meta, dict):
+        value.meta["fetched_at"] = int(_FETCH_CACHE[key]["ts"])
     return value
 
 
@@ -366,6 +372,7 @@ def compute_metrics(
 
     return {
         "score": score,
+        "roi": round(roi, 6),
         "estimated_cost_btc": round(estimated_cost, 8),
         "estimated_revenue_btc": round(estimated_revenue, 8),
         "expected_value_btc": round(expected_value, 8),
@@ -420,6 +427,7 @@ def enrich_opportunity_dict(
 def _empty_metrics() -> Dict[str, Any]:
     return {
         "score": 0.0,
+        "roi": 0.0,
         "estimated_cost_btc": 0.0,
         "estimated_revenue_btc": 0.0,
         "expected_value_btc": 0.0,
@@ -753,6 +761,8 @@ def compute_institutional_view(
         else:
             rec = "Acceptable risk-adjusted"
 
+        metrics = s.get("metrics") or {}
+        _meta = s.get("meta") or {}
         venues.append(
             {
                 "venue": s["provider"],
@@ -767,7 +777,23 @@ def compute_institutional_view(
                 "recommendation": rec,
                 "estimated": bool(s.get("estimated", False)),
                 "source": s.get("source", ""),
-                "meta": s.get("meta", {}),
+                # M5: profit-oriented columns — score/ROI/EV are already
+                # computed by compute_metrics() but were dropped at the view
+                # boundary; expose them so the panel ranks by VALUE, not just
+                # by sticker price.
+                "score": metrics.get("score"),
+                "roi_pct": (
+                    round(metrics.get("roi", 0.0) * 100.0, 1)
+                    if metrics.get("roi") is not None
+                    else None
+                ),
+                "expected_value_btc": metrics.get("expected_value_btc"),
+                "estimated_cost_btc": metrics.get("estimated_cost_btc"),
+                "risk_level": metrics.get("risk_level"),
+                # M4: freshness — when this quote was really fetched (0/absent
+                # on legacy payloads → frontend shows '—').
+                "fetched_at": _meta.get("fetched_at"),
+                "meta": _meta,
             }
         )
 
