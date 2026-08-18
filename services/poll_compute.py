@@ -36,6 +36,11 @@ def derive_network_values(bc_diff_val, bc_hashrate_val):
       2025-2026 it returns GH/s. Multiply by 1e9 to get H/s.
     - If hashrate is unknown/zero but difficulty is known, derive hashrate
       from the canonical Bitcoin formula: hashrate = difficulty * 2^32 / 600.
+    - Sanity clamp (audit 18-Aug, Sev-2): if the reported hashrate diverges
+      from the difficulty-implied value by more than 2x (either direction),
+      the source is wrong (blockchain.info /q/hashrate returned ~24x low on
+      18-Aug: 38 EH/s vs ~912 EH/s implied by difficulty) — the difficulty
+      is the protocol truth, so fall back to the canonical derivation.
     """
     if bc_hashrate_val is not None:
         net_hashrate = float(bc_hashrate_val) * 1e9
@@ -45,6 +50,25 @@ def derive_network_values(bc_diff_val, bc_hashrate_val):
     # Fallback: derive net_hashrate from difficulty + target block time
     if current_difficulty is not None and (net_hashrate is None or net_hashrate == 0):
         net_hashrate = current_difficulty * (2**32) / 600
+    # Sanity clamp: the canonical hashrate implied by difficulty is the
+    # protocol truth; a reported value more than 2x off is a broken source.
+    if (
+        current_difficulty is not None
+        and current_difficulty > 0
+        and net_hashrate is not None
+        and net_hashrate > 0
+    ):
+        canonical_hr = current_difficulty * (2**32) / 600
+        ratio = net_hashrate / canonical_hr
+        if ratio > 2.0 or ratio < 0.5:
+            log.warning(
+                "[poll_compute] network hashrate %.3e H/s is %.2fx off the "
+                "difficulty-implied %.3e H/s — using canonical value",
+                net_hashrate,
+                ratio,
+                canonical_hr,
+            )
+            net_hashrate = canonical_hr
     return current_difficulty, net_hashrate
 
 
