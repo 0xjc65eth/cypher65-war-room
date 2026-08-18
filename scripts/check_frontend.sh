@@ -13,16 +13,18 @@
 #   4. test:a11y-guards   — self-test do guard a11y
 #   5. check:tokens-hex   — guard de tokens (Issue #237): zero #hex fora
 #                           do style.css/theme-color em app.js/templates
-#   6. test:tokens-hex    — self-test do guard de tokens
-#   7. JS core            — node --check static/app.js + test_app_js_core.js
+#   6. test:tokens-hex    — self-test do guard de tokens#   7. JS core            — node --check static/app.js + test_app_js_core.js
 #                           (suíte espelhada dos helpers do app.js)
 #   8. check-mobile-xss   — guard XSS mobile (React Native): WebView
 #                           html/injectedJavaScript, eval, openURL
 #   9. test:mobile-guards — self-test do guard mobile   #  10. audit:ui:all       — auditoria visual desktop + mobile (console
-   #                           errors, overflow, truncamento, skeletons presos)
-   #  11. check:axe           — GATE axe-core real (Issue #244): falha se
-   #                           button-name > 0 ou score proxy < 90 (2 viewports)
-   #  12. test:axe-guards     — self-test do gate axe-core (fixtures file://)
+#                           errors, overflow, truncamento, skeletons presos)
+#  11. check:axe           — GATE axe-core real (Issue #244): falha se
+#                           button-name > 0 ou score proxy < 90 (2 viewports)
+#  12. test:axe-guards     — self-test do gate axe-core (fixtures file://)
+#  13. check:fetcher-units — guard de regressão de unidade dos fetchers
+#                           (NiceHash/MRR/Braiins × payloads reais, Issue #319)
+#  14. test:fetcher-units  — self-test do guard (regressões 1e6x/24k/1000x)
    #
 # Boota o Flask localmente (porta 8765) com rate-limit alto (o audit faz
 # muitas navegações por viewport) e derruba o servidor ao final. Setando
@@ -112,11 +114,13 @@ step node tests/test_mobile_xss_guards.js
 step node scripts/audit_ui.cjs --all
 step node scripts/check-axe.cjs --report
 step node tests/test_axe_gate.js
+step python scripts/check-fetcher-units.py
+step python tests/test_fetcher_units_guard.py
 
 echo
 if [ "$FAIL" -ne 0 ]; then
   echo "❌ [frontend] pipeline FAILED — $FAIL check(s) vermelho(s)"
   exit 1
 fi
-echo "✅ [frontend] pipeline green — guards DOM + a11y + tokens-hex + XSS mobile + JS core + audit visual + axe-core"
+echo "✅ [frontend] pipeline green — guards DOM + a11y + tokens-hex + XSS mobile + JS core + audit visual + axe-core + fetcher-units"
 exit 0
