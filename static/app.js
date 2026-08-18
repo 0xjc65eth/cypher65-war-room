@@ -3950,6 +3950,7 @@ function renderAccount(acct) {
       if (k === 'sats') return v.price_sats_th_day != null ? Number(v.price_sats_th_day) : NaN;
       if (k === 'roi') return v.roi_pct != null ? Number(v.roi_pct) : NaN;
       if (k === 'ev') return v.expected_value_btc != null ? Number(v.expected_value_btc) : NaN;
+      if (k === 'cost') return v.estimated_cost_btc != null ? Number(v.estimated_cost_btc) : NaN;
       if (k === 'tier') return Number(v.risk_tier);
       return v[k] != null ? Number(v[k]) : NaN;
     };
@@ -4028,7 +4029,7 @@ function renderAccount(acct) {
     document.getElementById('mkt-count-badge') && (document.getElementById('mkt-count-badge').textContent = (snap.offer_count || venues.length) + ' venues');
 
     if (!venues.length) {
-      setHtmlIfChanged(tbody, '<tr><td colspan="11" class="mkt-table__empty">' + (_mktOffers.length ? 'no venues for selected filter' : 'no market data — configure API keys in Settings') + '</td></tr>');
+      setHtmlIfChanged(tbody, '<tr><td colspan="12" class="mkt-table__empty">' + (_mktOffers.length ? 'no venues for selected filter' : 'no market data — configure API keys in Settings') + '</td></tr>');
       document.getElementById('mkt-notes') && (document.getElementById('mkt-notes').style.display = 'none');
       return;
     }
@@ -4100,6 +4101,9 @@ function renderAccount(acct) {
       const roi = v.roi_pct != null ? (v.roi_pct >= 0 ? '+' : '') + v.roi_pct + '%' : '—';
       const roiCls = v.roi_pct != null ? (v.roi_pct >= 0 ? 'mkt-table__roi--pos' : 'mkt-table__roi--neg') : '';
       const ev = v.expected_value_btc != null ? Number(v.expected_value_btc).toFixed(8) : '—';
+      // Estimated cost for the standard 1-day rental (metrics) — what this
+      // venue actually charges to deploy 1 TH for the offer's duration.
+      const costBtc = v.estimated_cost_btc != null ? Number(v.estimated_cost_btc).toFixed(8) : '—';
       const fresh = venueFreshness(v.fetched_at);
       const freshBadge = fresh
         ? '<span class="mkt-table__fresh' + (fresh.stale ? ' mkt-table__fresh--stale' : '') + '" title="quote fetched ' + fresh.mins + 'm ago">' + (fresh.stale ? 'STALE ' + fresh.mins + 'm' : fresh.mins + 'm') + '</span>'
@@ -4115,6 +4119,7 @@ function renderAccount(acct) {
         <td class="mono" data-label="Available">${escapeHtml(v.available_ph)} PH/s</td>
         <td class="mono ${roiCls}" data-label="ROI">${roi}</td>
         <td class="mono" data-label="EV (BTC)">${ev}</td>
+        <td class="mono" data-label="Est. Cost (BTC)" title="est. cost for the offer's listed duration">${costBtc}</td>
         <td data-label="Risk Tier"><span class="mkt-table__tier ${tierCls}">${escapeHtml(v.risk_tier_label)}</span></td>
         <td class="${recCls}" data-label="Recommendation">${escapeHtml(v.recommendation)}</td>
       </tr>`;
