@@ -347,6 +347,35 @@ def _mrr_signed_headers(api_key: str, api_secret: str, endpoint: str) -> dict:
     }
 
 
+def _mrr_hashrate_th(rig: dict) -> float:
+    """Extract a rig's advertised hashrate in TH/s honoring the declared unit.
+
+    MRR API v2 declares the unit in the payload: `hashrate.advertised.type`
+    = "ph" means `hash` is in PH/s (×1000 → TH/s). Legacy records without
+    a type field keep the old contract (hash already in TH/s). Returns 0
+    when the hashrate is missing/invalid so callers can skip the rig.
+    """
+    if not isinstance(rig, dict):
+        return 0.0
+    hashrate_obj = rig.get("hashrate", {})
+    if isinstance(hashrate_obj, dict):
+        advertised = hashrate_obj.get("advertised", {})
+        if isinstance(advertised, dict):
+            hash_val = float(advertised.get("hash", 0))
+            hash_type = str(advertised.get("type", "") or "").lower()
+        else:
+            hash_val = (
+                float(hashrate_obj.get("hash", 0))
+                if isinstance(hashrate_obj.get("hash"), (int, float, str))
+                else 0
+            )
+            hash_type = ""
+    else:
+        hash_val = float(rig.get("hash", 0))
+        hash_type = ""
+    return hash_val * PH_TO_TH if hash_type == "ph" else hash_val
+
+
 def get_mrr_listings(algo="sha256", api_key=None, api_secret=None):
     """Fetch active MiningRigRentals listings for SHA-256/AsicBoost.
     Requires MRR API credentials (key + secret).
@@ -415,33 +444,42 @@ def get_mrr_listings(algo="sha256", api_key=None, api_secret=None):
             if not btc_price_data or not isinstance(btc_price_data, dict):
                 continue
 
-            # Price comes in BTC per hour
-            price_per_hour = float(btc_price_data.get("price", 0))
-            if price_per_hour <= 0:
-                price_per_hour = float(btc_price_data.get("hour", 0))
-            if price_per_hour <= 0:
-                continue
+            # MRR API v2 DECLARES the units in the payload (audit 18-Aug,
+            # Sev-1 — same pattern as the NiceHash priceFactor bug #303):
+            # price.type="ph" → price.BTC.price is BTC per PH per DAY (NOT
+            # per hour) and hashrate.advertised.type="ph" → hash is in PH/s
+            # (NOT TH/s). Ignoring these inflates the price 24,000x
+            # (0.00066×24/0.138 = 11.4M sats vs the real 66 sats/TH/d).
+            price_type = str(price_currencies.get("type", "") or "").lower()
 
-            # Hashrate: MRR API v2 hashrate.advertised.hash (in TH/s)
-            hashrate_obj = rig.get("hashrate", {})
-            if isinstance(hashrate_obj, dict):
-                advertised = hashrate_obj.get("advertised", {})
-                if isinstance(advertised, dict):
-                    hashrate_th = float(advertised.get("hash", 0))
-                else:
-                    hashrate_th = (
-                        float(hashrate_obj.get("hash", 0))
-                        if isinstance(hashrate_obj.get("hash"), (int, float, str))
-                        else 0
-                    )
-            else:
-                hashrate_th = float(rig.get("hash", 0))
-
+            # Hashrate: MRR API v2 hashrate.advertised.hash with declared type
+            # (helper honors type="ph" → ×1000 to TH/s; legacy = TH/s)
+            hashrate_th = _mrr_hashrate_th(rig)
             if hashrate_th <= 0:
                 continue
 
-            # Price per TH per day = (price_per_hour * 24) / hashrate_in_th
-            btc_per_th_day = (price_per_hour * 24) / hashrate_th
+            price_raw = float(btc_price_data.get("price", 0))
+            hour_raw = float(btc_price_data.get("hour", 0))
+
+            if price_type == "ph":
+                # price = BTC/PH/day → per-TH/day = price / 1000 (66 sats)
+                btc_per_th_day = price_raw / PH_TO_TH
+                if btc_per_th_day <= 0 and hour_raw > 0:
+                    # fallback: hour = BTC/rig/hour → ×24 / hashrate_th
+                    btc_per_th_day = (hour_raw * 24) / hashrate_th
+            elif price_type == "th":
+                # price = BTC/TH/day (explicitly declared)
+                btc_per_th_day = price_raw
+                if btc_per_th_day <= 0 and hour_raw > 0:
+                    btc_per_th_day = (hour_raw * 24) / hashrate_th
+            else:
+                # legacy (no type declared): price in BTC/hour
+                btc_per_th_day = (price_raw * 24) / hashrate_th
+                if btc_per_th_day <= 0 and hour_raw > 0:
+                    btc_per_th_day = (hour_raw * 24) / hashrate_th
+
+            if btc_per_th_day <= 0:
+                continue
 
             if btc_per_th_day < best_price_btc_per_th_day:
                 best_price_btc_per_th_day = btc_per_th_day
@@ -459,16 +497,8 @@ def get_mrr_listings(algo="sha256", api_key=None, api_secret=None):
         # TH/day → PH/day: multiply by PH_TO_TH (1 PH = 1000 TH)
         btc_per_ph_day = best_price_btc_per_th_day * PH_TO_TH
 
-        # Extract hashrate from best listing for return
-        hashrate_obj = best_listing.get("hashrate", {})
-        if isinstance(hashrate_obj, dict):
-            advertised = hashrate_obj.get("advertised", {})
-            if isinstance(advertised, dict):
-                best_hashrate_th = float(advertised.get("hash", 0))
-            else:
-                best_hashrate_th = float(hashrate_obj.get("hash", 0))
-        else:
-            best_hashrate_th = float(best_listing.get("hash", 0))
+        # Extract hashrate from best listing for return (same unit handling)
+        best_hashrate_th = _mrr_hashrate_th(best_listing)
 
         return {
             "price_btc_per_ph_day": btc_per_ph_day,
