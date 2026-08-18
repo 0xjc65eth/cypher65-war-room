@@ -23,9 +23,32 @@ from services.poll_compute import (  # noqa: E402
 
 def test_derive_network_ghs_scaled_to_hs():
     """blockchain.info /q/hashrate returns GH/s — multiply by 1e9 for H/s."""
-    diff, hr = derive_network_values(108_000_000_000_000.0, 700_000.0)
-    assert diff == 108_000_000_000_000.0
-    assert hr == 700_000.0 * 1e9
+    # Realistic SHA256 network (18-Aug-2026): difficulty ~127T implies
+    # ~9.1e20 H/s (912 EH/s); 900_000_000_000 GH/s = 9e20 H/s stays within
+    # the 2x sanity band, so the reported value is kept.
+    diff, hr = derive_network_values(127_000_000_000_000.0, 900_000_000_000.0)
+    assert diff == 127_000_000_000_000.0
+    assert hr == 900_000_000_000.0 * 1e9
+
+
+def test_derive_network_implausible_hashrate_uses_difficulty():
+    """A reported hashrate ~24x off the difficulty-implied value (audit
+    18-Aug: blockchain.info /q/hashrate returned 38 EH/s vs ~912 EH/s) must
+    be rejected — the difficulty is the protocol truth and ROI/EV depend on
+    it (NiceHash showed +2143% instead of ~+10% with the broken value)."""
+    diff, hr = derive_network_values(127_000_000_000_000.0, 38_000_000_000.0)
+    assert diff == 127_000_000_000_000.0
+    # Canonical: difficulty * 2^32 / 600
+    assert hr == 127_000_000_000_000.0 * (2 ** 32) / 600
+
+
+def test_derive_network_zero_difficulty_no_division_error():
+    """A parseable-but-zero difficulty must NOT divide by zero in the sanity
+    clamp (review 18-Aug): canonical_hr would be 0 — the reported hashrate is
+    kept as-is instead of crashing the poll loop."""
+    diff, hr = derive_network_values(0.0, 900_000_000_000.0)
+    assert diff == 0.0
+    assert hr == 900_000_000_000.0 * 1e9
 
 
 def test_derive_network_none_hashrate_derives_from_difficulty():
