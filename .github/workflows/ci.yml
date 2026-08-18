@@ -262,7 +262,11 @@ jobs:
   frontend-audit:
     name: "frontend: audit visual + guards"
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # 30min: o pipeline tem 16 passos (DOM + a11y + tokens-hex + JS core +
+    # XSS mobile + audit visual + axe + fetcher-units + mutation test) e o
+    # boot do Flask + audit por viewport pesam — 20min estourou no #324
+    # (rodou 15:54→16:14 = 20min exatos → cancelled). Issue #325.
+    timeout-minutes: 30
 
     env:
       SECRET_KEY: "ci-test-secret-key-0123456789abcdef"
