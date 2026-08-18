@@ -166,8 +166,8 @@ class TestGetMrrListings:
 
     def test_success_with_listings(self, monkeypatch):
         """When MRR API returns valid listings, return cheapest price.
-        MRR structure: rig["hashrate"]["advertised"]["hash"] for TH/s,
-                       rig["price"]["BTC"] for BTC pricing (has 'price' and 'hour' keys).
+        Legacy records WITHOUT declared type keys keep the old contract
+        (hash in TH/s, price in BTC/hour) for backward compatibility.
         """
         monkeypatch.setenv("MRR_API_KEY", "test-key")
         monkeypatch.setenv("MRR_API_SECRET", "test-secret")
@@ -199,6 +199,90 @@ class TestGetMrrListings:
         assert "error" not in result, f"Unexpected error: {result.get('error')}"
         assert "price_btc_per_ph_day" in result
         assert result["total_listings"] == 2
+
+    def test_success_with_ph_units_real_payload(self, monkeypatch):
+        """Real MRR payload (18-Aug): price.type and hashrate.advertised.type
+        declare "ph" units. hash=0.138 PH/s → 138 TH/s; price=0.00066
+        BTC/PH/day → 6.6e-7 BTC/TH/day = 66 sats/TH/d (fair value).
+        Proven arithmetically: price/24 × hash_ph == hour (exact).
+        """
+        monkeypatch.setenv("MRR_API_KEY", "test-key")
+        monkeypatch.setenv("MRR_API_SECRET", "test-secret")
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {
+            "success": True,
+            "data": {
+                "records": [
+                    {
+                        "name": "Apple--1a",
+                        "hashrate": {
+                            "advertised": {"hash": "0.138", "type": "ph", "nice": "138.00T"}
+                        },
+                        "price": {
+                            "type": "ph",
+                            "BTC": {"price": "0.00066000", "hour": "0.000003795000"},
+                        },
+                        "type": "sha256",
+                    },
+                    {
+                        "name": "Apple--2a",
+                        "hashrate": {
+                            "advertised": {"hash": "0.200", "type": "ph", "nice": "200.00T"}
+                        },
+                        "price": {
+                            "type": "ph",
+                            "BTC": {"price": "0.00070000", "hour": "0.000004083333"},
+                        },
+                        "type": "sha256",
+                    },
+                ]
+            },
+        }
+        monkeypatch.setattr(
+            "agents.solo_mining_advisor.tools.requests.get", lambda url, **kw: mock_resp
+        )
+        from agents.solo_mining_advisor.tools import get_mrr_listings
+
+        result = get_mrr_listings()
+        assert "error" not in result, f"Unexpected error: {result.get('error')}"
+        # Cheapest: rig 1 → 0.00066/1000 = 6.6e-7 BTC/TH/day = 66 sats
+        assert result["price_btc_per_th_day"] == pytest.approx(6.6e-7, rel=1e-9)
+        assert result["price_btc_per_ph_day"] == pytest.approx(6.6e-4, rel=1e-9)
+        # hash 0.138 PH/s → 138 TH/s
+        assert result["best_rig_hash_th"] == pytest.approx(138.0)
+        assert result["best_rig_name"] == "Apple--1a"
+        assert result["total_listings"] == 2
+
+    def test_ph_units_without_type_field_legacy(self, monkeypatch):
+        """Records without type fields keep legacy contract (hash=TH,
+        price=BTC/hour) — no regression for old mocks/cache."""
+        monkeypatch.setenv("MRR_API_KEY", "test-key")
+        monkeypatch.setenv("MRR_API_SECRET", "test-secret")
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {
+            "success": True,
+            "data": {
+                "records": [
+                    {
+                        "hashrate": {"advertised": {"hash": "100.0"}},
+                        "price": {"BTC": {"price": "0.0000005", "hour": "0.0000005"}},
+                        "type": "sha256",
+                    },
+                ]
+            },
+        }
+        monkeypatch.setattr(
+            "agents.solo_mining_advisor.tools.requests.get", lambda url, **kw: mock_resp
+        )
+        from agents.solo_mining_advisor.tools import get_mrr_listings
+
+        result = get_mrr_listings()
+        assert "error" not in result, f"Unexpected error: {result.get('error')}"
+        # 0.0000005 × 24 / 100 TH → 1.2e-7 BTC/TH/day
+        assert result["price_btc_per_th_day"] == pytest.approx(1.2e-7, rel=1e-9)
+        assert result["best_rig_hash_th"] == pytest.approx(100.0)
 
     def test_empty_records(self, monkeypatch):
         """No records should return error dict."""
