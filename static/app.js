@@ -6959,9 +6959,12 @@ function renderAccount(acct) {
     const input = document.getElementById('ap-arm-type');
     const confirm = document.getElementById('ap-arm-confirm');
     if (input && confirm) {
-      input.addEventListener('input', () => {
-        confirm.disabled = input.value.trim().toUpperCase() !== 'ARMAR';
-      });
+      const consent = document.getElementById('ap-arm-consent');
+      const _checkArmReady = () => {
+        confirm.disabled = !(input.value.trim().toUpperCase() === 'ARMAR' && consent && consent.checked);
+      };
+      input.addEventListener('input', _checkArmReady);
+      if (consent) consent.addEventListener('change', _checkArmReady);
       input.addEventListener('keydown', (e) => {
         if (e.key === 'Enter' && !confirm.disabled) confirm.click();
       });
@@ -7093,9 +7096,12 @@ function renderAccount(acct) {
     const input = document.getElementById('ap-auto-type');
     const confirm = document.getElementById('ap-auto-confirm');
     if (input && confirm) {
-      input.addEventListener('input', () => {
-        confirm.disabled = input.value.trim().toUpperCase() !== 'AUTONOMO';
-      });
+      const consent = document.getElementById('ap-auto-consent');
+      const _checkAutoReady = () => {
+        confirm.disabled = !(input.value.trim().toUpperCase() === 'AUTONOMO' && consent && consent.checked);
+      };
+      input.addEventListener('input', _checkAutoReady);
+      if (consent) consent.addEventListener('change', _checkAutoReady);
       confirm.addEventListener('click', async () => {
         confirm.disabled = true;
         const ok = await _apSetAuto(true);
