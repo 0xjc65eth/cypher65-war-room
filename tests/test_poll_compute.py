@@ -134,6 +134,51 @@ def test_merge_btc_none_everywhere():
                    "jpy": None, "krw": None, "cny": None}
 
 
+def test_merge_btc_mempool_fills_when_coingecko_and_binance_fail():
+    """Issue #345: mempool.space cobre USD/EUR/GBP/JPY quando as fontes
+    primárias (CoinGecko/Binance) falham — o caso de produção stale."""
+    mp = {"time": 1787000000, "USD": 77326.0, "EUR": 66003.0,
+          "GBP": 56610.0, "JPY": 12264719.0}
+    out = merge_btc_quotes(None, None, None, mp)
+    assert out["usd"] == 77326.0
+    assert out["brl"] is None  # mempool não tem BRL
+    assert out["eur"] == 66003.0
+    assert out["gbp"] == 56610.0
+    assert out["jpy"] == 12264719.0
+    assert out["krw"] is None
+    assert out["cny"] is None
+
+
+def test_merge_btc_mempool_never_overrides_live_quotes():
+    """Precedência: Binance > CoinGecko > mempool. O mempool NUNCA sobrescreve
+    uma cotação viva — só cobre quando a primária não tem valor."""
+    cg = {"bitcoin": {"usd": 100000, "brl": 550000, "eur": 92000}}
+    mp = {"USD": 77326.0, "EUR": 66003.0, "GBP": 56610.0}
+    out = merge_btc_quotes(cg, {"price": "100500"}, {"price": "580000"}, mp)
+    assert out["usd"] == 100500.0   # Binance real-time wins
+    assert out["brl"] == 580000.0
+    assert out["eur"] == 92000.0    # CoinGecko wins over mempool
+    assert out["gbp"] == 56610.0    # CoinGecko sem GBP → mempool cobre
+
+
+def test_merge_btc_mempool_bad_values_ignored():
+    """Valores inválidos do mempool (string/zero/negativo) nunca propagam."""
+    mp = {"USD": "nope", "EUR": 0, "GBP": -5, "JPY": 12264719.0}
+    out = merge_btc_quotes(None, None, None, mp)
+    assert out["usd"] is None
+    assert out["eur"] is None
+    assert out["gbp"] is None
+    assert out["jpy"] == 12264719.0
+
+
+def test_merge_btc_mempool_omitted_still_works():
+    """Assinatura compatível: chamadas sem o 4º arg (callers antigos) intactas."""
+    cg = {"bitcoin": {"usd": 100000, "brl": 550000}}
+    out = merge_btc_quotes(cg, None, None)
+    assert out["usd"] == 100000
+    assert out["brl"] == 550000
+
+
 # ── compute_halving_countdown ───────────────────────────────────────────────
 
 def test_halving_countdown_known_height():
