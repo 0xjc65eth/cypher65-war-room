@@ -9,7 +9,7 @@ solo/pool/rental/lease profitability, hashrate market intelligence, alerts & aut
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](requirements.txt)
-[![Tests](https://img.shields.io/badge/tests-1878%20pytest%20%2B%201261%20JS%20core%20%2B%20E2E-brightgreen.svg)](tests/)
+[![Tests](https://img.shields.io/badge/tests-2651%20pytest%20%2B%201401%20JS%20core%20%2B%20E2E-brightgreen.svg)](tests/)
 [![Codecov](https://codecov.io/gh/0xjc65eth/cypher65-war-room/branch/master/graph/badge.svg)](https://app.codecov.io/gh/0xjc65eth/cypher65-war-room)
 
 </div>
@@ -34,7 +34,7 @@ fails, the UI shows a stale/offline badge with the last real cached value, never
 | **Auto-Pilot** | Automation rules with fail-closed arming, per-tenant action budget (rate limit), deadlock prevention, SafetyEngine-validated execution |
 | **Alerts & Automations** | Rule engine with cooldowns, history, tenant-scoped persistence; Discord/Telegram webhooks |
 | **AI Operator** | Natural-language assistant over fleet, probability, market and metrics (DeepSeek/OpenAI, SSE streaming) |
-| **Multi-tenant** | JWT auth with tenant isolation for fleet, alerts, rentals, settings and exports (1000+ users) |
+| **Multi-tenant** | JWT auth with tenant isolation for fleet, alerts, rentals, settings and exports (1000+ tenants) |
 | **Learning & Support** | Bitcoin whitepaper, free book library, cypherpunk support panel (BTC / Lightning / hashrate donations) |
 | **Mobile companion** | React Native app in [`mobile/`](mobile/) — Command, Fleet, Block, Market, **Rentals**, AI |
 
@@ -48,7 +48,7 @@ fails, the UI shows a stale/offline badge with the last real cached value, never
 ├─ routes/                API blueprints (dashboard, alerts, settings, device control, solo mining, export)
 ├─ static/ + templates/   Dashboard UI (templates/dashboard.html, static/app.js, static/style.css)
 ├─ mobile/                React Native companion app
-├─ tests/                 1800+ pytest, JS core tests, Playwright E2E suite
+├─ tests/                 2650+ pytest, JS core tests, Playwright E2E suite
 └─ docs/                  Architecture, data model, audits, design system, mobile strategy
 ```
 
@@ -97,8 +97,8 @@ All settings are environment variables (see [`.env.example`](.env.example)):
 ## 🧪 Testing
 
 ```bash
-# Python unit + integration (800+ tests)
-python -m pytest tests/ --cov=app --cov=helpers --cov=axe_fleet --cov=services --cov=core --cov-fail-under=45
+# Python unit + integration (2650+ tests)
+python -m pytest tests/ --cov=app --cov=helpers --cov=axe_fleet --cov=services --cov=core --cov-fail-under=65
 
 # JS core tests (rendering helpers, probability math, terminal)
 node --test tests/test_app_js_core.js
@@ -151,6 +151,24 @@ a `C65-XXXX-XXXX-XXXX-XXXX` key is issued and honored immediately by the existin
 `X-License-Key` header. Lemon Squeezy emails the key to the buyer natively; the
 webhook keeps the gate in sync. Manual/beta keys: `POST /api/admin/licenses`
 with `X-API-Key` (or from localhost).
+
+## ⚡ R2 — Bitcoin channel (off-by-default)
+
+The upgrade modal also accepts **Bitcoin directly** — no payment processor.
+Two paths, both off until configured (without env vars the BTC checkout
+returns `503` and the tab stays hidden):
+
+| Env var | Purpose |
+| --- | --- |
+| `BTCPAY_URL` / `BTCPAY_API_KEY` / `BTCPAY_STORE_ID` | BTCPay Greenfield API (invoice creation + polling) |
+| `BTCPAY_WEBHOOK_SECRET` | HMAC-SHA256 secret verifying `x-btcpay-sig` on the settlement webhook |
+| `PAYMENT_BTC_ADDRESS` | Fixed on-chain payment address (BIP-21 target — separate from `BTC_ADDRESS`, which stays the operator's data wallet) |
+| `LN_INVOICE_ENDPOINT` | WebLN fallback — operator Lightning node that mints BOLT-11 invoices |
+
+Flow: **Buy PRO → Bitcoin** → BTCPay invoice (QR / copy / countdown) or WebLN
+BOLT-11 → settlement webhook (or preimage) → a `C65-XXXX-…` key is issued and
+honored immediately via the existing `X-License-Key` header. Self-custody:
+0% processor fee, no KYC — tax obligations stay with the operator.
 
 ## 📄 License
 

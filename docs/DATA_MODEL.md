@@ -1,8 +1,8 @@
 # CYPHER65 — DATA MODEL (MILESTONE 1)
 
-**Version:** 1.0  
-**Status:** Foundation  
-**Date:** 2026-07-27
+**Version:** 1.1
+**Status:** Foundation
+**Date:** 2026-08-23
 
 ---
 
@@ -142,6 +142,40 @@ class DeviceStatus(str, Enum):
 - Dispositivos e telemetria histórica → SQLite (`data/war_room.sqlite`)
 - Telemetria em tempo real → memória (DeviceRegistry) + flush periódico
 - Audit logs → tabela dedicada `audit_logs`
+- Schema versionado via `schema_version` (`app.py`) — evolução aditiva com
+  `CREATE TABLE IF NOT EXISTS` + migrações explícitas
+
+---
+
+## 9. LEDGERS & PAYMENTS (SQLite)
+
+Tabelas reais de receita e auditoria adicionadas nas fases de monetização
+(Issues #248/#249) — a versão 1.0 deste documento cobria só o modelo de domínio:
+
+### `donations` — cypherpunk support (BTC / Lightning / hashrate)
+`id` · `ts` · `method` (`lightning` \| `btc` \| `hashpower`) · `amount_sat` ·
+`txid` · `preimage` · `note` · `source` (`webln` \| `onchain` \| `manual`)
+
+### `pro_licenses` — chaves PRO/PREMIUM emitidas (`services/licensing.py`)
+`key` (PK) · `plan` (default `pro`) · `email` · `source` (`manual` default,
+`lemon_squeezy` \| `btcpay` \| `webln`) · `created_at` · `expires_at` · `revoked_at`
+
+### `btcpay_invoice_plans` — checkout BTC → plano (`services/btcpay.py`)
+`invoice_id` (PK) · `plan` · `created_ts`
+
+### `processed_invoices` — webhooks BTCPay idempotentes (`services/btcpay.py`)
+`invoice_id` (PK) · `event` (default `invoice_settled`) · `license_key` · `processed_ts`
+
+### `conversion_events` — funil paywall→paid (`services/conversion.py`)
+`id` · `ts` · `event` · `tenant_id` · `meta` (JSON) · `created_at`
+
+### `subscription_events` — assinaturas (`services/conversion.py`)
+`id` · `subscription_id` · `event` · `ts` · `renews_at` · `created_at` ·
+`created_at_ts` · `UNIQUE(subscription_id, event, renews_at)`
+
+### `audit_logs` — auditoria operacional (`app.py`)
+`id` · `ts` · `tenant_id` · `user_id` · `action` · `target` · `details` (JSON) ·
+índice `(tenant_id, ts)`
 
 ---
 
