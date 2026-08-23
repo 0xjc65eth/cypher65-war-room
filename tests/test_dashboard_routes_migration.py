@@ -113,6 +113,39 @@ class TestMigratedDashboardRoutes:
         assert r.get_json()["total_events"] == 5
         assert r.get_json()["server_now"] > 0
 
+    def test_share_timeline_corrupt_meta_becomes_null(self, client, monkeypatch, caplog):
+        """Sev-3 #205: a corrupt meta JSON cell must surface as null (never the
+        raw string) and log a warning — the event still renders, nothing is
+        lost silently."""
+        import logging
+        import sqlite3
+
+        import routes.dashboard_routes as dr
+
+        db = sqlite3.connect(":memory:")
+        db.row_factory = sqlite3.Row
+        db.execute(
+            "CREATE TABLE share_timeline (id INTEGER PRIMARY KEY, ts INTEGER,"
+            " event_type TEXT, severity TEXT, message TEXT, meta TEXT)"
+        )
+        db.execute(
+            "INSERT INTO share_timeline (id, ts, event_type, severity, message, meta)"
+            " VALUES (1, 1784505600, 'SHARE_FOUND', 'INFO', 'ok', '{\"n\":1}'),"
+            " (2, 1784505600, 'SHARE_FOUND', 'INFO', 'broken', '{not-json')"
+        )
+        db.commit()
+        monkeypatch.setattr(dr, "get_db", lambda: db)
+
+        with caplog.at_level(logging.WARNING, logger="cypher65.dashboard"):
+            r = client.get("/api/share_timeline")
+
+        assert r.status_code == 200
+        events = {e["id"]: e for e in r.get_json()["events"]}
+        assert events[1]["meta"] == {"n": 1}
+        assert events[2]["meta"] is None
+        assert any("meta JSON corrupt" in rec.message for rec in caplog.records)
+        db.close()
+
     def test_leaderboard(self, client, seeded_snapshot):
         r = client.get("/api/leaderboard")
         assert r.status_code == 200

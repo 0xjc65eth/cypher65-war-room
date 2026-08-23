@@ -163,8 +163,10 @@ def api_share_timeline():
                 if r.get("meta"):
                     r["meta"] = json.loads(r["meta"])
             except Exception as e:
-                # Issue #202: a corrupt meta cell is degradation — never silent
-                # (the event still renders, minus the detail, but is logged).
+                # Issue #205: a corrupt meta cell must never surface as a raw
+                # string — degrade to null (the event still renders) and log
+                # loudly (Issue #202: never silent).
+                r["meta"] = None
                 log.warning("[events] meta JSON corrupt (id=%s): %s", r.get("id"), e)
         return jsonify({"events": rows, "count": len(rows)})
     except Exception as e:

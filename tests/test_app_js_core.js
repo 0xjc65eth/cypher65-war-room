@@ -5194,13 +5194,14 @@ function sortMarketVenues(venues, key, dir) {
   }
   function buildAdminAuditWeekly(decisions) {
     const buckets = {};
+    let withoutDate = 0;
     (decisions || []).forEach(function (d) {
       const k = adminAuditIsoWeekKey(d && d.ts);
-      if (!k) return;
+      if (!k) { withoutDate += 1; return; }
       buckets[k] = (buckets[k] || 0) + 1;
     });
     const labels = Object.keys(buckets).sort();
-    return { labels: labels, counts: labels.map(function (k) { return buckets[k]; }) };
+    return { labels: labels, counts: labels.map(function (k) { return buckets[k]; }), withoutDate: withoutDate };
   }
   function filterAdminAuditDecisions(decisions, tenant, verdict) {
     return (decisions || []).filter(function (d) {
@@ -5229,19 +5230,21 @@ function sortMarketVenues(venues, key, dir) {
   assertEqual('ISO week key invalid ts → empty', adminAuditIsoWeekKey(0), '');
   assertEqual('ISO week key garbage → empty', adminAuditIsoWeekKey('nope'), '');
 
-  // Weekly bucketing — sorted labels, correct counts, null ts skipped.
+  // Weekly bucketing — sorted labels, correct counts; ts<=0/null/garbage are
+  // NEVER dropped silently (Issue #205): they surface in withoutDate.
   const weekly = buildAdminAuditWeekly([
     { ts: 1784505600 },          // W30
     { ts: 1785110400 },          // W31
     { ts: 1785110400 + 86400 },  // W31
-    { ts: 0 },                   // skipped
-    { ts: null },                // skipped
-    { ts: 'garbage' },           // skipped
+    { ts: 0 },                   // withoutDate
+    { ts: null },                // withoutDate
+    { ts: 'garbage' },           // withoutDate
   ]);
   assertEqual('weekly labels sorted', weekly.labels, ['2026-W30', '2026-W31']);
   assertEqual('weekly counts', weekly.counts, [1, 2]);
-  assertEqual('weekly empty input', buildAdminAuditWeekly([]), { labels: [], counts: [] });
-  assertEqual('weekly undefined input', buildAdminAuditWeekly(undefined), { labels: [], counts: [] });
+  assertEqual('weekly withoutDate counts ts<=0/null/garbage', weekly.withoutDate, 3);
+  assertEqual('weekly empty input', buildAdminAuditWeekly([]), { labels: [], counts: [], withoutDate: 0 });
+  assertEqual('weekly undefined input', buildAdminAuditWeekly(undefined), { labels: [], counts: [], withoutDate: 0 });
 
   // Feature over-concentration alert (Issue #163) — banner builder mirror.
   function buildFeatureAlert(featureAlert) {
