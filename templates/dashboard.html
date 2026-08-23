@@ -2767,7 +2767,7 @@
   </div>
 </div>
 
-<!-- PRO UPGRADE MODAL (R1 revenue: buy via Lemon Squeezy / redeem a key) -->
+<!-- PRO UPGRADE MODAL (R2 revenue: BTC/Issue 249 + card Lemon Squeezy / redeem a key) -->
 <div class="modal-overlay" id="upgrade-modal">
   <div class="modal upgrade-modal">
     <div class="modal__header">
@@ -2776,12 +2776,45 @@
     </div>
     <div class="modal__body">
       <p class="upgrade-modal__copy" id="upgrade-modal-copy">Unlock <strong>Monte Carlo</strong>, <strong>proximity meter</strong>, <strong>30d history</strong> &amp; <strong>webhooks</strong>.</p>
-      <button class="btn btn--primary upgrade-modal__buy" id="upgrade-buy-btn" hidden>Buy PRO — $9/mo</button>
-      <button class="btn btn--premium upgrade-modal__buy" id="upgrade-premium-buy-btn" hidden>Buy PREMIUM — $29/mo</button>
-      <div class="upgrade-modal__divider" id="upgrade-divider" hidden><span>or activate a key</span></div>
-      <div class="upgrade-modal__redeem">
-        <input class="field__input field__input--mono" type="text" id="upgrade-key-input" placeholder="C65-XXXX-XXXX-XXXX-XXXX" autocomplete="off" spellcheck="false">
-        <button class="btn upgrade-modal__activate" id="upgrade-redeem-btn">ACTIVATE KEY</button>
+      <!-- Payment method tabs: Bitcoin (default) / Card (LS fallback) -->
+      <div class="upgrade-tabs" id="upgrade-tabs" role="tablist" aria-label="Método de pagamento" hidden>
+        <button class="upgrade-tab is-active" id="upgrade-tab-btc" role="tab" aria-selected="true" aria-controls="upgrade-pane-btc">₿ Bitcoin</button>
+        <button class="upgrade-tab" id="upgrade-tab-card" role="tab" aria-selected="false" aria-controls="upgrade-pane-card">Card</button>
+      </div>
+      <!-- BTC pane (Issue 249) -->
+      <div class="upgrade-pane" id="upgrade-pane-btc" role="tabpanel" aria-labelledby="upgrade-tab-btc">
+        <div id="upgrade-btc-start">
+          <div class="upgrade-btc__price" id="upgrade-btc-price"></div>
+          <button class="btn btn--primary upgrade-modal__buy" id="upgrade-btc-start-btn">PAY WITH BITCOIN</button>
+        </div>
+        <div id="upgrade-btc-pending" hidden>
+          <div class="upgrade-btc__qr" id="upgrade-btc-qr" role="img" aria-label="QR code do pagamento Bitcoin"></div>
+          <div class="upgrade-btc__rows">
+            <div class="upgrade-btc__row"><span class="upgrade-btc__label">AMOUNT</span><span class="mono" id="upgrade-btc-amount">—</span></div>
+            <div class="upgrade-btc__row"><span class="upgrade-btc__label">EXPIRES</span><span class="mono" id="upgrade-btc-countdown">—</span></div>
+            <div class="upgrade-btc__row"><span class="upgrade-btc__label">STATUS</span><span class="upgrade-btc__status" id="upgrade-btc-status">—</span></div>
+          </div>
+          <div class="upgrade-btc__actions">
+            <button class="btn" id="upgrade-btc-copy">⧉ COPIAR</button>
+            <button class="btn upgrade-btc__open" id="upgrade-btc-open" hidden>OPEN CHECKOUT</button>
+            <button class="btn upgrade-btc__webln" id="upgrade-btc-webln" hidden>⚡ PAY WITH LIGHTNING</button>
+          </div>
+          <button class="chip" id="upgrade-btc-new">⟳ nova invoice</button>
+        </div>
+        <div id="upgrade-btc-paid" hidden>
+          <div class="upgrade-btc__activated">✓ PRO ATIVADO</div>
+          <div class="upgrade-btc__key mono" id="upgrade-btc-paid-key"></div>
+        </div>
+      </div>
+      <!-- Card pane (Lemon Squeezy legacy) -->
+      <div class="upgrade-pane" id="upgrade-pane-card" role="tabpanel" aria-labelledby="upgrade-tab-card" hidden>
+        <button class="btn btn--primary upgrade-modal__buy" id="upgrade-buy-btn" hidden>Buy PRO — $9/mo</button>
+        <button class="btn btn--premium upgrade-modal__buy" id="upgrade-premium-buy-btn" hidden>Buy PREMIUM — $29/mo</button>
+        <div class="upgrade-modal__divider" id="upgrade-divider" hidden><span>or activate a key</span></div>
+        <div class="upgrade-modal__redeem">
+          <input class="field__input field__input--mono" type="text" id="upgrade-key-input" placeholder="C65-XXXX-XXXX-XXXX-XXXX" autocomplete="off" spellcheck="false">
+          <button class="btn upgrade-modal__activate" id="upgrade-redeem-btn">ACTIVATE KEY</button>
+        </div>
       </div>
       <span class="modal__status" id="upgrade-status"></span>
     </div>

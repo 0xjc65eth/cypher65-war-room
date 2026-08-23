@@ -343,6 +343,29 @@ function escapeHtml(s) {
   });
 }
 
+// ── BTC upgrade helpers (P4 #249) — mirror static/app.js ───────────────────
+function fmtSats(n) {
+  n = Math.max(0, Math.round(Number(n) || 0));
+  return n.toLocaleString('en-US') + ' sats';
+}
+function countdownLabel(ms) {
+  if (!isFinite(Number(ms)) || Number(ms) <= 0) return '00:00';
+  const s = Math.floor(Number(ms) / 1000);
+  const m = Math.floor(s / 60); const r = s % 60;
+  return (m < 10 ? '0' + m : String(m)) + ':' + (r < 10 ? '0' + r : String(r));
+}
+function bolt11AmountSats(invoice) {
+  if (!invoice) return null;
+  const m = String(invoice).match(/^(?:lnbc|lntb)(?:(\d+)([munp]?))?1/i);
+  if (m && m[1] !== undefined) {
+    const mult = { '': 1e11, m: 1e8, u: 1e5, n: 1e2, p: 1e-1 }[m[2] || ''];
+    if (mult !== undefined) {
+      return Math.round((parseInt(m[1], 10) * mult) / 1000);
+    }
+  }
+  return null;
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 //  PURE FUNCTION IMPLEMENTATIONS (mirrors static/app.js)
 // ═══════════════════════════════════════════════════════════════════════════
@@ -5607,6 +5630,53 @@ function makeSetHtmlIfChanged() {
   assertEqual('null element returns false', set(null, 'x'), false);
   assertEqual('undefined element returns false', set(undefined, 'x'), false);
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  P4 #249 · BTC UPGRADE HELPERS — fmtSats / countdownLabel / bolt11AmountSats
+// ═══════════════════════════════════════════════════════════════════════════
+
+(function btcUpgradeSuite() {
+  // ── fmtSats: grouping + suffix ──
+  assertEqual('fmtSats 0', fmtSats(0), '0 sats');
+  assertEqual('fmtSats 12000', fmtSats(12000), '12,000 sats');
+  assertEqual('fmtSats 1234567', fmtSats(1234567), '1,234,567 sats');
+  assertEqual('fmtSats string', fmtSats('99999'), '99,999 sats');
+  assertEqual('fmtSats negative→0', fmtSats(-5), '0 sats');
+  assertEqual('fmtSats null→0', fmtSats(null), '0 sats');
+  assertEqual('fmtSats undefined→0', fmtSats(undefined), '0 sats');
+  assertEqual('fmtSats NaN→0', fmtSats(NaN), '0 sats');
+  assertEqual('fmtSats float rounds display', fmtSats(12000.4), '12,000 sats');
+
+  // ── countdownLabel: mm:ss from ms ──
+  assertEqual('countdown 15:00', countdownLabel(15 * 60000), '15:00');
+  assertEqual('countdown 14:59.9', countdownLabel(14 * 60000 + 59900), '14:59');
+  assertEqual('countdown 09:05', countdownLabel(9 * 60000 + 5000), '09:05');
+  assertEqual('countdown 0', countdownLabel(0), '00:00');
+  assertEqual('countdown negative', countdownLabel(-1000), '00:00');
+  assertEqual('countdown NaN', countdownLabel('x'), '00:00');
+  assertEqual('countdown under 1s', countdownLabel(999), '00:00');
+  assertEqual('countdown exactly 1s', countdownLabel(1000), '00:01');
+  assertEqual('countdown over 60m clamps minutes', countdownLabel(61 * 60000), '61:00');
+
+  // ── bolt11AmountSats: BOLT11 amount parsing (msat → sats) ──
+  // 100m = 0.1 BTC = 10,000,000 sats (m = 1e8 msat → /1000 → sats)
+  assertEqual('bolt11 100m → 10M sats', bolt11AmountSats('lnbc100m1mockinvoice'), 10000000);
+  // No digits before the '1' separator → amountless invoice → null.
+  assertEqual('bolt11 amountless → null', bolt11AmountSats('lnbc1mockinvoice'), null);
+  // 2500u = 0.0025 BTC = 250,000 sats
+  assertEqual('bolt11 2500u → 250000 sats', bolt11AmountSats('lnbc2500u1mock'), 250000);
+  // 123n = 12300 msat = 12.3 sats → rounds to 12
+  assertEqual('bolt11 123n rounds', bolt11AmountSats('lnbc123n1mock'), 12);
+  // 5p = 0.5 msat → 0 sats (sub-sat invoice)
+  assertEqual('bolt11 5p → 0 sats', bolt11AmountSats('lnbc5p1mock'), 0);
+  assertEqual('bolt11 testnet accepted', bolt11AmountSats('lntb100m1mock'), 10000000);
+  assertEqual('bolt11 null → null', bolt11AmountSats(null), null);
+  assertEqual('bolt11 empty → null', bolt11AmountSats(''), null);
+  assertEqual('bolt11 garbage → null', bolt11AmountSats('not-an-invoice'), null);
+  // The '1' HRP separator is REQUIRED — 'lnbc100mX' (no separator) is not an
+  // amount-bearing invoice shape.
+  assertEqual('bolt11 requires separator', bolt11AmountSats('lnbc100mX'), null);
+})();
 
 //  RESULTS
 // ═══════════════════════════════════════════════════════════════════════════

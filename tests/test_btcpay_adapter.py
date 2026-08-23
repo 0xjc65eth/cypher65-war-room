@@ -541,6 +541,116 @@ def test_status_route_returns_status(client, monkeypatch):
     assert body["invoice_id"] == "inv_live"
 
 
+def test_status_route_returns_license_key_when_settled(client, monkeypatch):
+    """Issue #249: Settled + fulfilled → the frontend gets the key so it can
+    apply it and show "PRO ativado ✓" without waiting for the webhook."""
+    _btcpay_env(monkeypatch)
+    monkeypatch.setattr(
+        btcpay,
+        "get_invoice",
+        lambda iid: {"id": iid, "status": "Settled", "amount": "0.00012"},
+    )
+    # Fulfill once (webhook path) so the ledger holds the key.
+    key = btcpay.handle_invoice_webhook(_invoice_payload(invoice_id="inv_settled_key"))
+    assert key and _KEY_RE.match(key)
+    r = client.get("/api/upgrade/status/inv_settled_key")
+    assert r.status_code == 200
+    assert r.get_json()["license_key"] == key
+
+
+def test_status_route_no_key_when_not_settled(client, monkeypatch):
+    """Pending invoices never leak a key — the field is empty until Settled."""
+    _btcpay_env(monkeypatch)
+    monkeypatch.setattr(
+        btcpay,
+        "get_invoice",
+        lambda iid: {"id": iid, "status": "New", "amount": "0.00012"},
+    )
+    r = client.get("/api/upgrade/status/inv_pending")
+    assert r.status_code == 200
+    assert r.get_json()["license_key"] == ""
+
+
+def test_webln_confirm_fulfills_with_preimage_proof(client, monkeypatch):
+    """Issue #249: sha256(preimage) == payment_hash (BOLT-11) → license issued
+    from the LOCAL plan ledger — idempotent per payment_hash."""
+    monkeypatch.setenv("LN_INVOICE_ENDPOINT", "https://ln.example.com/invoice")
+    preimage = "ab" * 32  # 32-byte preimage, hex
+    payment_hash = hashlib.sha256(bytes.fromhex(preimage)).hexdigest()
+    btcpay.record_invoice_plan(payment_hash, "pro")
+    r = client.post(
+        "/api/upgrade/webln/confirm",
+        json={"payment_hash": payment_hash, "preimage": preimage},
+    )
+    assert r.status_code == 200
+    key = r.get_json()["license_key"]
+    assert _KEY_RE.match(key)
+    assert licensing._key_valid(key) is True
+    # Replay → SAME key, never a second license.
+    r2 = client.post(
+        "/api/upgrade/webln/confirm",
+        json={"payment_hash": payment_hash, "preimage": preimage},
+    )
+    assert r2.status_code == 200
+    assert r2.get_json()["license_key"] == key
+
+
+def test_webln_confirm_premium_plan(client, monkeypatch):
+    """Plan comes from the ledger recorded at checkout — premium honored."""
+    monkeypatch.setenv("LN_INVOICE_ENDPOINT", "https://ln.example.com/invoice")
+    preimage = "cd" * 32
+    payment_hash = hashlib.sha256(bytes.fromhex(preimage)).hexdigest()
+    btcpay.record_invoice_plan(payment_hash, "premium")
+    r = client.post(
+        "/api/upgrade/webln/confirm",
+        json={"payment_hash": payment_hash, "preimage": preimage},
+    )
+    assert r.status_code == 200
+    assert licensing._key_plan(r.get_json()["license_key"]) == "premium"
+
+
+def test_webln_confirm_wrong_preimage_403(client, monkeypatch):
+    """A preimage that does NOT hash to the payment_hash is rejected."""
+    monkeypatch.setenv("LN_INVOICE_ENDPOINT", "https://ln.example.com/invoice")
+    preimage = "ef" * 32
+    payment_hash = hashlib.sha256(bytes.fromhex(preimage)).hexdigest()
+    btcpay.record_invoice_plan(payment_hash, "pro")
+    r = client.post(
+        "/api/upgrade/webln/confirm",
+        json={"payment_hash": payment_hash, "preimage": "11" * 32},
+    )
+    assert r.status_code == 403
+    assert r.get_json()["code"] == "WEBLN_PROOF_REJECTED"
+
+
+def test_webln_confirm_unknown_hash_403(client, monkeypatch):
+    monkeypatch.setenv("LN_INVOICE_ENDPOINT", "https://ln.example.com/invoice")
+    preimage = "22" * 32
+    payment_hash = hashlib.sha256(bytes.fromhex(preimage)).hexdigest()
+    # Never checked out → hash unknown; no preimage can exist for it.
+    r = client.post(
+        "/api/upgrade/webln/confirm",
+        json={"payment_hash": payment_hash, "preimage": preimage},
+    )
+    assert r.status_code == 403
+
+
+def test_webln_confirm_unconfigured_503(client):
+    r = client.post(
+        "/api/upgrade/webln/confirm",
+        json={"payment_hash": "ph", "preimage": "ab"},
+    )
+    assert r.status_code == 503
+
+
+def test_webln_confirm_missing_fields_400(client, monkeypatch):
+    monkeypatch.setenv("LN_INVOICE_ENDPOINT", "https://ln.example.com/invoice")
+    r = client.post("/api/upgrade/webln/confirm", json={"payment_hash": "ph"})
+    assert r.status_code == 400
+    r = client.post("/api/upgrade/webln/confirm", json={})
+    assert r.status_code == 400
+
+
 def test_license_status_enriches_btc_payload(client, monkeypatch):
     """license-status exposes the BTC payment surface for the frontend."""
     r = client.get("/api/license-status")

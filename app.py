@@ -5280,6 +5280,11 @@ def _api_upgrade_checkout_btc(plan: str, method: str, email: str, funnel_id: str
         if _btcpay.webln_invoice_available():
             inv = _btcpay.create_webln_invoice(plan=plan)
             if inv:
+                # Persist payment_hash → plan at checkout so the WebLN
+                # confirm route resolves the plan from the LOCAL ledger
+                # (Issue #249 — same zero-network rule as the BTCPay path).
+                if inv.get("payment_hash"):
+                    _btcpay.record_invoice_plan(inv["payment_hash"], plan)
                 return jsonify(
                     {
                         "ok": True,
@@ -5347,14 +5352,53 @@ def api_upgrade_btc_status(invoice_id: str):
     inv = _btcpay.get_invoice(invoice_id)
     if not inv:
         return jsonify({"error": "invoice not found"}), 404
+    settled = str(inv.get("status") or "").lower() == "settled"
+    # Issue #249: once Settled, surface the issued key from the local ledger
+    # so the frontend can apply it and flip to "PRO ativado ✓" without
+    # waiting for the webhook round-trip (webhook may still be in flight).
+    license_key = _btcpay.fulfilled_license_key(invoice_id) if settled else ""
     return jsonify(
         {
             "ok": True,
             "invoice_id": inv.get("id"),
             "status": inv.get("status"),
             "amount": inv.get("amount"),
+            "license_key": license_key,
         }
     )
+
+
+@app.route("/api/upgrade/webln/confirm", methods=["POST"])
+def api_upgrade_webln_confirm():
+    """WebLN payment proof → license (Issue #249).
+
+    The frontend pays the BOLT-11 via window.webln.sendPayment() and posts
+    the returned preimage. The payment_hash is the SHA-256 of the preimage
+    (BOLT-11 protocol), so a matching preimage is cryptographic proof of
+    payment — the license is issued AT MOST ONCE per payment_hash
+    (idempotent, mirrors the BTCPay webhook ledger).
+
+    Off-by-default: 503 unless an LN invoice endpoint is configured.
+    """
+    if not _btcpay.webln_invoice_available():
+        return jsonify({"error": "not configured"}), 503
+    body = request.get_json(silent=True) or {}
+    payment_hash = str(body.get("payment_hash") or "").strip()
+    preimage = str(body.get("preimage") or "").strip()
+    if not (payment_hash and preimage):
+        return jsonify({"error": "payment_hash and preimage are required"}), 400
+    key = _btcpay.fulfill_webln_payment(payment_hash, preimage)
+    if key is None:
+        return (
+            jsonify(
+                {
+                    "error": "payment proof rejected — preimage does not match the invoice",
+                    "code": "WEBLN_PROOF_REJECTED",
+                }
+            ),
+            403,
+        )
+    return jsonify({"ok": True, "license_key": key}), 200
 
 
 @app.route("/api/payments/btcpay/webhook", methods=["POST"])

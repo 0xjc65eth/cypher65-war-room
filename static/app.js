@@ -104,6 +104,35 @@
     },
   };
 
+  // ── BTC upgrade helpers (Issue 249) ────────────────────────────────────
+  // Pure functions mirrored in tests/test_app_js_core.js — keep in sync.
+  function fmtSats(n) {
+    n = Math.max(0, Math.round(Number(n) || 0));
+    return n.toLocaleString('en-US') + ' sats';
+  }
+  function countdownLabel(ms) {
+    if (!isFinite(Number(ms)) || Number(ms) <= 0) return '00:00';
+    const s = Math.floor(Number(ms) / 1000);
+    const m = Math.floor(s / 60); const r = s % 60;
+    return (m < 10 ? '0' + m : String(m)) + ':' + (r < 10 ? '0' + r : String(r));
+  }
+  // BOLT11 amount (msat → sats): lnbc<number><multiplier>1... where the
+  // multiplier (m/u/n/p) scales the BTC figure to millisatoshis. Requiring
+  // the mandatory '1' HRP separator avoids misreading amountless invoices
+  // (lnbc1... — wallet decides the value) as '1 BTC'. Returns null when the
+  // amount can't be parsed (amountless or malformed).
+  function bolt11AmountSats(invoice) {
+    if (!invoice) return null;
+    const m = String(invoice).match(/^(?:lnbc|lntb)(?:(\d+)([munp]?))?1/i);
+    if (m && m[1] !== undefined) {
+      const mult = { '': 1e11, m: 1e8, u: 1e5, n: 1e2, p: 1e-1 }[m[2] || ''];
+      if (mult !== undefined) {
+        return Math.round((parseInt(m[1], 10) * mult) / 1000);
+      }
+    }
+    return null;
+  }
+
   // ── DOM cache ─────────────────────────────────────────────────────────
   const $ = (s) => document.querySelector(s);
   const $$ = (s) => document.querySelectorAll(s);
@@ -507,12 +536,16 @@
   function openUpgradeModal() {
     const m = document.getElementById('upgrade-modal');
     openModalAnimated(m);
+    // Fresh invoice every open — never resume a stale pending payment.
+    resetBtcUpgradePane();
+    syncUpgradeModal();
     const up = _license.upgrade || {};
     trackConversionEvent('modal_open', { plan: (up.plan || 'PRO').toLowerCase() });
   }
   // Exposed for e2e + support console (the PRO badge already wires onclick).
   window.openUpgradeModal = openUpgradeModal;
   function closeUpgradeModal() {
+    stopBtcTimers();
     closeModalAnimated(document.getElementById('upgrade-modal'));
   }
   // Show the Buy button only when the server has a payment provider configured,
@@ -534,6 +567,24 @@
       pbuy.textContent = 'Buy PREMIUM — $' + ((up && up.price_usd_month) || 29) + '/mo';
     }
     if (div) div.hidden = !_license.payments;
+    // Issue 249: payment tabs — Bitcoin is the DEFAULT when a BTC provider is
+    // live (BTCPay or WebLN fallback); Card is the discreet fallback.
+    const btcLive = btcProviderLive();
+    const cardLive = !!_license.payments;
+    const tabs = document.getElementById('upgrade-tabs');
+    const tabBtc = document.getElementById('upgrade-tab-btc');
+    const tabCard = document.getElementById('upgrade-tab-card');
+    if (tabs) tabs.hidden = !(btcLive || cardLive);
+    if (tabBtc) tabBtc.hidden = !btcLive;
+    if (tabCard) tabCard.hidden = !cardLive;
+    // Default tab is only locked when the tabs are actually visible — a boot
+    // in open mode (no provider) must never pin 'card' before the real
+    // license-status arrives (Issue 249 default: Bitcoin).
+    if (btcLive || cardLive) {
+      if (!_upgradeTabSet) setUpgradeTab(btcLive ? 'btc' : 'card');
+      else if (_upgradeTab === 'btc' && !btcLive) setUpgradeTab('card');
+      else if (_upgradeTab === 'card' && !cardLive) setUpgradeTab('btc');
+    }
     const title = document.getElementById('upgrade-modal-title');
     if (title) title.textContent = wantsPremium ? '🤖 CYPHER65 PREMIUM' : '⚡ CYPHER65 PRO';
     const copy = document.getElementById('upgrade-modal-copy');
@@ -542,6 +593,14 @@
         ? 'Unlock the <strong>real AI Operator</strong> (LLM — fleet, pool, probability &amp; market answers) on top of every PRO feature.'
         : 'Unlock <strong>Monte Carlo</strong>, <strong>proximity meter</strong>, <strong>30d history</strong> &amp; <strong>webhooks</strong>.';
     }
+    // BTC start pane: server-driven price (single source of truth) + tier.
+    const btcPrice = document.getElementById('upgrade-btc-price');
+    if (btcPrice) {
+      const usd = (up && up.price_usd_month) || (wantsPremium ? 29 : 9);
+      btcPrice.textContent = (wantsPremium ? 'PREMIUM' : 'PRO') + ' — $' + usd + '/mo via Bitcoin';
+    }
+    const btcStart = document.getElementById('upgrade-btc-start-btn');
+    if (btcStart) btcStart.dataset.plan = wantsPremium ? 'premium' : 'pro';
   }
   async function buyUpgrade(plan) {
     const tier = plan === 'premium' ? 'premium' : 'pro';
@@ -569,7 +628,7 @@
   }
   // Legacy name kept for e2e / support console compatibility.
   async function buyPro() { return buyUpgrade('pro'); }
-  // Wire the modal CTA buttons once (Buy PRO / Buy PREMIUM / activate key).
+  // Wire the modal CTA buttons once (tabs / Buy PRO / Buy PREMIUM / BTC / key).
   let _upgradeBound = false;
   function _initUpgradeBindings() {
     if (_upgradeBound) return;
@@ -580,6 +639,30 @@
     if (buy) buy.addEventListener('click', function () { buyUpgrade('pro'); });
     if (pbuy) pbuy.addEventListener('click', function () { buyUpgrade('premium'); });
     if (redeem) redeem.addEventListener('click', redeemLicenseKey);
+    // Issue 249: Bitcoin tab wiring.
+    const tabBtc = document.getElementById('upgrade-tab-btc');
+    const tabCard = document.getElementById('upgrade-tab-card');
+    const btcStart = document.getElementById('upgrade-btc-start-btn');
+    const btcCopy = document.getElementById('upgrade-btc-copy');
+    const btcOpen = document.getElementById('upgrade-btc-open');
+    const btcWebln = document.getElementById('upgrade-btc-webln');
+    const btcNew = document.getElementById('upgrade-btc-new');
+    if (tabBtc) tabBtc.addEventListener('click', function () { setUpgradeTab('btc'); });
+    if (tabCard) tabCard.addEventListener('click', function () { setUpgradeTab('card'); });
+    if (btcStart) btcStart.addEventListener('click', startBtcUpgrade);
+    if (btcCopy) btcCopy.addEventListener('click', copyBtcPayload);
+    if (btcOpen) {
+      btcOpen.addEventListener('click', function () {
+        if (_btcUpgrade.checkoutUrl) window.open(_btcUpgrade.checkoutUrl, '_blank', 'noopener');
+      });
+    }
+    if (btcWebln) btcWebln.addEventListener('click', payBtcWithWebLN);
+    if (btcNew) btcNew.addEventListener('click', function () { resetBtcUpgradePane(); });
+    // Late-injected WebLN extension (webln:ready) → reveal the pay CTA.
+    document.addEventListener('webln:ready', function () {
+      const wl = document.getElementById('upgrade-btc-webln');
+      if (wl && _btcUpgrade.started && _btcUpgrade.provider === 'webln') wl.hidden = false;
+    });
   }
   async function redeemLicenseKey() {
     const input = document.getElementById('upgrade-key-input');
@@ -594,6 +677,323 @@
     logMessage('PRO', _license.pro ? 'license key accepted — PRO unlocked' : 'license key rejected', _license.pro ? 'SUCCESS' : 'WARN');
     if (input) input.value = '';  // clear the field for the next activation
   }
+
+  // ── BTC upgrade (Issue 249): Bitcoin tab — BTCPay invoice or WebLN BOLT-11 ──
+  // The checkout payload is the single source of truth for amount/provider;
+  // the BTC tab only ever renders what the backend returned (the BTCPay
+  // hosted checkout renders its OWN per-invoice QR — the fixed
+  // PAYMENT_BTC_ADDRESS never settles a BTCPay invoice, so we never show it
+  // as a payment target here).
+  const _btcUpgrade = {
+    plan: 'pro', started: false, provider: '', // 'btcpay' | 'webln'
+    invoiceId: '', checkoutUrl: '', bolt11: '', paymentHash: '',
+    amountSat: 0, expiresAt: 0,
+    pollTimer: null, countdownTimer: null, statusTries: 0,
+  };
+  let _upgradeTab = 'btc';
+  let _upgradeTabSet = false;
+
+  function btcProviderLive() { return !!(_license.btcpay || _license.webln); }
+
+  function weblnPresentSync() {
+    return !!(window.webln && typeof window.webln.sendPayment === 'function');
+  }
+
+  function stopBtcTimers() {
+    if (_btcUpgrade.pollTimer) { clearInterval(_btcUpgrade.pollTimer); _btcUpgrade.pollTimer = null; }
+    if (_btcUpgrade.countdownTimer) { clearInterval(_btcUpgrade.countdownTimer); _btcUpgrade.countdownTimer = null; }
+  }
+
+  function setUpgradeTab(tab) {
+    _upgradeTab = tab === 'card' ? 'card' : 'btc';
+    _upgradeTabSet = true;
+    const isBtc = _upgradeTab === 'btc';
+    const tabBtc = document.getElementById('upgrade-tab-btc');
+    const tabCard = document.getElementById('upgrade-tab-card');
+    const paneBtc = document.getElementById('upgrade-pane-btc');
+    const paneCard = document.getElementById('upgrade-pane-card');
+    if (tabBtc) { tabBtc.classList.toggle('is-active', isBtc); tabBtc.setAttribute('aria-selected', isBtc ? 'true' : 'false'); }
+    if (tabCard) { tabCard.classList.toggle('is-active', !isBtc); tabCard.setAttribute('aria-selected', isBtc ? 'false' : 'true'); }
+    if (paneBtc) paneBtc.hidden = !isBtc;
+    if (paneCard) paneCard.hidden = isBtc;
+  }
+
+  // Reset the BTC pane to the "start" step (fresh invoice). Keeps the
+  // pending/paid step untouched unless explicitly requested.
+  function resetBtcUpgradePane() {
+    stopBtcTimers();
+    _btcUpgrade.started = false;
+    _btcUpgrade.invoiceId = ''; _btcUpgrade.checkoutUrl = '';
+    _btcUpgrade.bolt11 = ''; _btcUpgrade.paymentHash = '';
+    _btcUpgrade.amountSat = 0; _btcUpgrade.expiresAt = 0; _btcUpgrade.statusTries = 0;
+    const startEl = document.getElementById('upgrade-btc-start');
+    const pendingEl = document.getElementById('upgrade-btc-pending');
+    const paidEl = document.getElementById('upgrade-btc-paid');
+    if (startEl) startEl.hidden = false;
+    if (pendingEl) pendingEl.hidden = true;
+    if (paidEl) paidEl.hidden = true;
+    const qr = document.getElementById('upgrade-btc-qr'); if (qr) qr.innerHTML = '';
+    const amt = document.getElementById('upgrade-btc-amount'); if (amt) amt.textContent = '—';
+    const cd = document.getElementById('upgrade-btc-countdown'); if (cd) cd.textContent = '—';
+    const st = document.getElementById('upgrade-btc-status'); if (st) { st.textContent = '—'; st.className = 'upgrade-btc__status'; }
+    const wl = document.getElementById('upgrade-btc-webln'); if (wl) wl.hidden = true;
+    const op = document.getElementById('upgrade-btc-open'); if (op) op.hidden = true;
+    const keyEl = document.getElementById('upgrade-btc-paid-key'); if (keyEl) keyEl.textContent = '';
+  }
+
+  function showBtcStatus(msg, kind) {
+    const el = document.getElementById('upgrade-btc-status');
+    if (!el) return;
+    el.textContent = msg || '';
+    el.className = 'upgrade-btc__status' + (kind ? ' upgrade-btc__status--' + kind : '');
+  }
+
+  async function startBtcUpgrade() {
+    const btn = document.getElementById('upgrade-btc-start-btn');
+    const plan = (btn && btn.dataset && btn.dataset.plan) || 'pro';
+    setBtnLoading(btn, true);
+    trackConversionEvent('checkout_start', { plan: plan, method: 'btc' });
+    try {
+      const r = await fetch('/api/upgrade/checkout', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ plan: plan, method: 'btc', funnel_id: funnelId() }),
+      });
+      let data = {};
+      try { data = await r.json(); } catch (e) {}
+      if (!r.ok || !data.ok) {
+        showBtcStatus((data && data.error) || 'Checkout unavailable', 'error');
+        return;
+      }
+      _btcUpgrade.started = true;
+      _btcUpgrade.plan = plan;
+      _btcUpgrade.provider = data.provider || (data.method === 'lightning' ? 'webln' : 'btcpay');
+      _btcUpgrade.amountSat = Number(data.amount_sat) || 0;
+      if (_btcUpgrade.provider === 'webln') {
+        _btcUpgrade.bolt11 = data.bolt11 || '';
+        _btcUpgrade.paymentHash = data.payment_hash || '';
+      } else {
+        _btcUpgrade.invoiceId = data.invoice_id || '';
+        _btcUpgrade.checkoutUrl = data.checkout_url || '';
+        _btcUpgrade.expiresAt = Date.now() + (Number(data.expires_in_min) || 15) * 60000;
+      }
+      renderBtcPending();
+    } catch (e) {
+      showBtcStatus('Checkout unavailable', 'error');
+    } finally {
+      setBtnLoading(btn, false);
+    }
+  }
+
+  function renderBtcPending() {
+    const startEl = document.getElementById('upgrade-btc-start');
+    const pendingEl = document.getElementById('upgrade-btc-pending');
+    const paidEl = document.getElementById('upgrade-btc-paid');
+    if (startEl) startEl.hidden = true;
+    if (paidEl) paidEl.hidden = true;
+    if (pendingEl) pendingEl.hidden = false;
+    const isWebln = _btcUpgrade.provider === 'webln';
+    // Amount: exact sats from the checkout payload + USD reference.
+    const amt = document.getElementById('upgrade-btc-amount');
+    if (amt) {
+      const up = _license.upgrade || {};
+      const usd = (up && up.price_usd_month) || (_btcUpgrade.plan === 'premium' ? 29 : 9);
+      amt.textContent = fmtSats(_btcUpgrade.amountSat) + ' · ≈ $' + usd + '/mo';
+    }
+    // QR: BOLT-11 (WebLN fallback — real payment QR) or the hosted BTCPay
+    // checkout URL (scan opens the page that renders the per-invoice BIP-21).
+    const qrBox = document.getElementById('upgrade-btc-qr');
+    if (qrBox) {
+      try {
+        const payload = isWebln ? _btcUpgrade.bolt11 : _btcUpgrade.checkoutUrl;
+        if (payload) {
+          const qr = qrEncode(payload, 'M');
+          qrBox.innerHTML = qrSvg(qr.modules);
+          qrBox.setAttribute('aria-label', isWebln ? 'QR code do invoice Lightning (BOLT-11)' : 'QR code do checkout Bitcoin');
+          qrBox.title = payload;
+        }
+      } catch (e) {
+        qrBox.innerHTML = '<div class="upgrade-btc__qr-error">QR unavailable</div>';
+      }
+    }
+    const copy = document.getElementById('upgrade-btc-copy');
+    if (copy) copy.textContent = isWebln ? '⧉ COPIAR INVOICE' : '⧉ COPIAR LINK';
+    const open = document.getElementById('upgrade-btc-open');
+    if (open) open.hidden = isWebln;
+    const wl = document.getElementById('upgrade-btc-webln');
+    // CTA only when a WebLN provider is actually present (Issue 249: no
+    // webln → CTA disappears, never errors). Late-injected extensions re-show
+    // it via the 'webln:ready' listener wired in _initUpgradeBindings.
+    if (wl) wl.hidden = !isWebln || !weblnPresentSync();
+    if (isWebln) {
+      showBtcStatus('Abra o invoice na sua wallet ou pague com Lightning', 'info');
+    } else {
+      const cd = document.getElementById('upgrade-btc-countdown');
+      if (cd) cd.textContent = countdownLabel(_btcUpgrade.expiresAt - Date.now());
+      startBtcPoll();
+      startBtcCountdown();
+      pollBtcStatus();
+    }
+  }
+
+  function startBtcPoll() {
+    stopBtcPoll();
+    _btcUpgrade.pollTimer = setInterval(pollBtcStatus, 5000);
+  }
+  function stopBtcPoll() {
+    if (_btcUpgrade.pollTimer) { clearInterval(_btcUpgrade.pollTimer); _btcUpgrade.pollTimer = null; }
+  }
+  async function pollBtcStatus() {
+    if (!_btcUpgrade.started || _btcUpgrade.provider !== 'btcpay' || !_btcUpgrade.invoiceId) return;
+    if (Date.now() > _btcUpgrade.expiresAt) {
+      showBtcStatus('Invoice expirada — gere uma nova.', 'error');
+      stopBtcPoll(); stopBtcCountdown();
+      return;
+    }
+    try {
+      const r = await fetch('/api/upgrade/status/' + encodeURIComponent(_btcUpgrade.invoiceId));
+      const d = await r.json().catch(function () { return {}; });
+      if (!r.ok) {
+        _btcUpgrade.statusTries++;
+        if (_btcUpgrade.statusTries >= 6) {
+          showBtcStatus('Não foi possível consultar o status — tente novamente.', 'error');
+          stopBtcPoll();
+        }
+        return;
+      }
+      _btcUpgrade.statusTries = 0;
+      const st = String(d.status || '').toLowerCase();
+      if (st === 'settled') {
+        // Webhook may still be in flight — keep polling until the key lands.
+        if (d.license_key) applyUpgradeKey(d.license_key);
+        else showBtcStatus('Pagamento confirmado — ativando PRO...', 'pending');
+        return;
+      }
+      if (st === 'expired' || st === 'invalid') {
+        showBtcStatus('Invoice expirada/inválida — gere uma nova.', 'error');
+        stopBtcPoll(); stopBtcCountdown();
+        return;
+      }
+      showBtcStatus(
+        st === 'processing' ? 'Pagamento recebido — aguardando confirmação...' : 'Aguardando pagamento...',
+        st === 'processing' ? 'pending' : 'info'
+      );
+    } catch (e) { /* keep polling silently */ }
+  }
+
+  function startBtcCountdown() {
+    stopBtcCountdown();
+    const el = document.getElementById('upgrade-btc-countdown');
+    if (!el) return;
+    const tick = function () {
+      const left = _btcUpgrade.expiresAt - Date.now();
+      el.textContent = countdownLabel(left);
+      if (left <= 0) {
+        stopBtcCountdown();
+        showBtcStatus('Invoice expirada — gere uma nova.', 'error');
+        stopBtcPoll();
+      }
+    };
+    tick();
+    _btcUpgrade.countdownTimer = setInterval(tick, 1000);
+  }
+  function stopBtcCountdown() {
+    if (_btcUpgrade.countdownTimer) { clearInterval(_btcUpgrade.countdownTimer); _btcUpgrade.countdownTimer = null; }
+  }
+
+  function copyBtcPayload() {
+    const payload = _btcUpgrade.provider === 'webln' ? _btcUpgrade.bolt11 : _btcUpgrade.checkoutUrl;
+    if (!payload) return;
+    const btn = document.getElementById('upgrade-btc-copy');
+    const done = function () {
+      if (!btn) return;
+      const orig = btn.textContent;
+      btn.textContent = '✓ copiado';
+      setTimeout(function () { btn.textContent = orig; }, 1800);
+    };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(payload).then(done).catch(done);
+    } else {
+      // Legacy fallback: hidden textarea + execCommand.
+      const ta = document.createElement('textarea');
+      ta.value = payload;
+      ta.style.position = 'fixed'; ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      try { document.execCommand('copy'); } catch (e) {}
+      document.body.removeChild(ta);
+      done();
+    }
+  }
+
+  async function payBtcWithWebLN() {
+    if (!_btcUpgrade.bolt11) return;
+    showBtcStatus('Conectando wallet Lightning...', 'pending');
+    try {
+      const provider = await detectWebLN(5000);
+      if (!provider) {
+        showBtcStatus('Nenhuma wallet WebLN detectada. Instale Alby ou Joule.', 'error');
+        return;
+      }
+      await provider.enable();
+      showBtcStatus('Enviando pagamento...', 'pending');
+      const result = await provider.sendPayment(_btcUpgrade.bolt11);
+      const preimage = (result && result.preimage) ? String(result.preimage) : '';
+      // Record on the donations ledger (existing pattern, dedup by preimage)
+      // so the operator sees the payment in Recent Donations + Alerts.
+      if (preimage) {
+        try {
+          authFetch('/api/donations', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ method: 'lightning', preimage: preimage, amount_sat: _btcUpgrade.amountSat, source: 'webln' }),
+          }).catch(function () {});
+        } catch (e) { /* non-fatal */ }
+      }
+      if (!preimage) {
+        showBtcStatus('Pagamento enviado — aguardando confirmação.', 'info');
+        return;
+      }
+      showBtcStatus('Pagamento confirmado — ativando PRO...', 'pending');
+      // Server-side activation: sha256(preimage) == payment_hash proof.
+      try {
+        const r = await fetch('/api/upgrade/webln/confirm', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ payment_hash: _btcUpgrade.paymentHash, preimage: preimage }),
+        });
+        const d = await r.json().catch(function () { return {}; });
+        if (r.ok && d.license_key) {
+          applyUpgradeKey(d.license_key);
+        } else {
+          showBtcStatus('Pagamento registrado — se a key não ativar, use ACTIVATE KEY na aba Card.', 'info');
+        }
+      } catch (e) {
+        showBtcStatus('Pagamento enviado — aguardando confirmação.', 'info');
+      }
+    } catch (e) {
+      const denied = e && e.message && e.message.indexOf('denied') !== -1;
+      showBtcStatus((denied ? 'Pagamento negado: ' : 'Pagamento falhou: ') + ((e && e.message) || 'erro'), 'error');
+    }
+  }
+
+  async function applyUpgradeKey(key) {
+    if (!key) return;
+    try { localStorage.setItem(LICENSE_STORAGE_KEY, key); } catch (e) {}
+    stopBtcPoll(); stopBtcCountdown();
+    const pendingEl = document.getElementById('upgrade-btc-pending');
+    const paidEl = document.getElementById('upgrade-btc-paid');
+    const keyEl = document.getElementById('upgrade-btc-paid-key');
+    if (pendingEl) pendingEl.hidden = true;
+    if (paidEl) paidEl.hidden = false;
+    if (keyEl) keyEl.textContent = key;
+    showBtcStatus('PRO ativado — key aplicada', 'success');
+    trackConversionEvent('key_activated');
+    await initLicensing();
+    renderCharts();
+    logMessage('PRO', 'BTC payment confirmed — PRO unlocked', 'SUCCESS');
+  }
+
   // Shared handler for 402 (PRO required) responses: surface the upgrade CTA.
   async function handleLicenseRequired(res) {
     let data = {};
@@ -7906,22 +8306,8 @@ function renderAccount(acct) {
         return;
       }
       // Extract the invoice amount (msat → sat) for the donation record.
-      // BOLT11 encodes amount as lnbc<number><multiplier>1... where the
-      // multiplier (m/u/n/p) scales the BTC figure to millisatoshis.
-      var invAmtSat = null;
-      // BOLT11 amount = digits + optional multiplier (m/u/n/p) followed by
-      // the mandatory '1' HRP separator. Requiring the separator avoids
-      // misreading amountless invoices (lnbc1... — the '1' is the separator,
-      // and the wallet decides the value) as '1 BTC'.
-      var m = invoice.match(/^(?:lnbc|lntb)(?:(\d+)([munp]?))?1/i);
-      if (m && m[1] !== undefined) {
-        // Multipliers per BOLT11: bare = BTC (1e11 msat), m/u/n/p scale down.
-        var mult = { '': 1e11, m: 1e8, u: 1e5, n: 1e2, p: 1e-1 }[m[2] || ''];
-        if (mult !== undefined) {
-          var msat = parseInt(m[1], 10) * mult;
-          invAmtSat = Math.round(msat / 1000);
-        }
-      }
+      // Shared BOLT11 parser — see bolt11AmountSats() (Issue 249).
+      var invAmtSat = bolt11AmountSats(invoice);
 
       statusEl.textContent = '\uD83D\uDD0D Connecting Lightning wallet...';
       statusEl.className = 'support-modal__ln-status support-modal__ln-status--pending';
