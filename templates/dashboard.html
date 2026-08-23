@@ -701,6 +701,10 @@
     </div>
     <div class="bh-whatif__note">simulação · hash power constante · share rate igual ao atual</div>
   </div>
+  <div class="prob-disclaimer" role="note" aria-label="Aviso importante sobre probabilidade">
+    <span class="prob-disclaimer__icon">⚠</span>
+    <span class="prob-disclaimer__text">Estes valores são <strong>estatísticos e não representam previsão ou garantia de resultado</strong>. Mining é probabilístico — a sorte real pode diferir significativamente das estimativas. O CYPHER65 não oferece aconselhamento financeiro.</span>
+  </div>
 </section>
 
 <!-- ─── HASHMARKET ─── -->
@@ -1096,6 +1100,13 @@
     </div>
     <div class="modal__body">
       <p class="ap-arm-modal__desc">Ao armar, as <strong>regras de automação passam a executar ações sozinhas</strong> (restart, power-cycle, comandos de dispositivo) sempre que as condições baterem — respeitando o orçamento de ações por janela. Desarmar a qualquer momento para parar imediatamente.</p>
+      <div class="ap-arm-modal__eula" role="alert">
+        <p class="ap-arm-modal__eula-text">⚠ <strong>Aviso importante:</strong> O Auto-Pilot executa comandos reais em hardware real (reinicio, pausa, alteração de frequência). Você é responsável por todas as ações executadas. O CYPHER65 não se responsabiliza por perdas de shares, downtime ou danos a equipamentos. Ao marcar abaixo, você confirma que leu e aceita os termos.</p>
+        <label class="ap-arm-modal__consent">
+          <input type="checkbox" id="ap-arm-consent" class="ap-arm-modal__consent-check">
+          <span>Li e aceito os termos de uso do Auto-Pilot. Entendo que comandos serão executados em hardware real.</span>
+        </label>
+      </div>
       <div class="ap-arm-modal__status" id="ap-arm-modal-status"></div>
       <label class="ap-arm-modal__confirm">
         <span class="field__label">DIGITE <strong>ARMAR</strong> PARA CONFIRMAR</span>
@@ -1118,6 +1129,13 @@
     </div>
     <div class="modal__body">
       <p class="ap-arm-modal__desc">Ao ligar, o piloto (quando <strong>PRO + ARMADO</strong>) passa a <strong>executar sozinho</strong> as ações físicas das recomendações — <strong>restart</strong> de miner offline/com hashrate baixo e <strong>pause</strong> por temperatura — respeitando SafetyEngine, cooldown (restart 15min / pause 10min) e o orçamento de ações. Ações financeiras (blacklist/buy) <strong>continuam manuais</strong>. Desligar a qualquer momento para parar imediatamente.</p>
+      <div class="ap-arm-modal__eula" role="alert">
+        <p class="ap-arm-modal__eula-text">⚠ <strong>Aviso importante:</strong> A execução autônoma reinicia e pausa ASICs reais em produção. Você é responsável por todas as ações executadas. O CYPHER65 não se responsabiliza por perdas financeiras, shares perdidos ou danos a equipamentos. Ao marcar abaixo, você confirma que leu e aceita os termos.</p>
+        <label class="ap-arm-modal__consent">
+          <input type="checkbox" id="ap-auto-consent" class="ap-arm-modal__consent-check">
+          <span>Li e aceito os termos de uso da execução autônoma. Entendo que comandos serão executados em hardware real de mineração.</span>
+        </label>
+      </div>
       <div class="ap-arm-modal__status" id="ap-auto-modal-status"></div>
       <label class="ap-arm-modal__confirm">
         <span class="field__label">DIGITE <strong>AUTONOMO</strong> PARA CONFIRMAR</span>
@@ -2345,6 +2363,10 @@
   <div class="doc-callout doc-callout--info">
     <span class="doc-callout__icon">i</span>
     <span class="doc-callout__text">Formula: <code>P = 1 - exp(-(hashrate * time) / (network_difficulty * 2^32))</code>. Results are estimates — actual luck varies.</span>
+  </div>
+  <div class="doc-callout doc-callout--warn">
+    <span class="doc-callout__icon">⚠</span>
+    <span class="doc-callout__text"><strong>Aviso:</strong> Valores probabilísticos não representam previsão nem garantia de resultado. Mining é estocástico — a sorte real pode diferir significativamente. O CYPHER65 não oferece aconselhamento financeiro.</span>
   </div>
   <p class="doc-section__text">Three scenarios are shown: <strong>conservative</strong> (95% of current HR), <strong>base</strong> (current HR), and <strong>aggressive</strong> (110% of current HR). This helps you understand the range of possible outcomes.</p>
 </section>

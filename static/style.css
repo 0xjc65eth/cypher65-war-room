@@ -1726,6 +1726,12 @@ tr:hover td { background: var(--bg-hover); }
 .bh-whatif__cell-value { font-family: var(--font-mono); font-size: var(--fs-sm); font-weight: 600; color: var(--text-primary); font-variant-numeric: tabular-nums; }
 .bh-whatif__note { margin-top: 6px; font-size: 8px; color: var(--text-tertiary); font-style: italic; }
 
+/* ── Probability Disclaimer ───────────────────────────────────── */
+.prob-disclaimer { display: flex; gap: 8px; align-items: flex-start; padding: 10px 14px; margin: 8px 0 0; border-radius: var(--radius-sm); background: var(--amber-bg); border: 1px solid var(--amber-dim); font-size: var(--fs-sm); color: var(--text-secondary); line-height: 1.5; }
+.prob-disclaimer__icon { flex-shrink: 0; font-size: 14px; }
+.prob-disclaimer__text { font-size: 11px; }
+.prob-disclaimer__text strong { color: var(--text-primary); }
+
 /* ── Terminal ────────────────────────────────────────────────────── */
 .terminal {
   max-height: 200px;
@@ -1964,6 +1970,10 @@ tr:hover td { background: var(--bg-hover); }
 .ap-arm-modal__desc { font-size: 12px; line-height: 1.65; color: var(--text-secondary); margin: 0 0 10px; }
 .ap-arm-modal__status { font-size: 11px; min-height: 14px; margin-bottom: 10px; color: var(--red); }
 .ap-arm-modal__confirm { display: block; margin-bottom: 12px; }
+.ap-arm-modal__eula { padding: 10px 12px; margin-bottom: 12px; border-radius: var(--radius-sm); background: var(--amber-bg); border: 1px solid var(--amber-dim); }
+.ap-arm-modal__eula-text { font-size: 11px; line-height: 1.5; color: var(--text-secondary); margin: 0 0 8px; }
+.ap-arm-modal__consent { display: flex; align-items: flex-start; gap: 8px; font-size: 11px; line-height: 1.4; color: var(--text-primary); cursor: pointer; }
+.ap-arm-modal__consent-check { margin-top: 2px; flex-shrink: 0; }
 .ap-arm-modal__actions { display: flex; justify-content: flex-end; gap: 8px; }
 
 /* ── Market ──────────────────────────────────────────────────────── */
