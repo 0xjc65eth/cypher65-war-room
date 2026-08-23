@@ -297,6 +297,30 @@ def _invoice_plan(invoice_id: str) -> str:
     return plan if plan in _PLAN_MONTHS else "pro"
 
 
+def invoice_hash_known(payment_hash: str) -> bool:
+    """True when a payment_hash was created by OUR checkout (plan ledger).
+
+    The WebLN confirm route only fulfills hashes WE issued — an attacker can
+    trivially compute sha256(preimage) for any self-chosen preimage, so a
+    hash that was never recorded at checkout must be rejected (never falls
+    back to the defensive PRO plan)."""
+    if not payment_hash:
+        return False
+    try:
+        _ensure_invoice_plan_table()
+        conn = get_db()
+        try:
+            row = conn.execute(
+                "SELECT 1 FROM btcpay_invoice_plans WHERE invoice_id = ?",
+                (payment_hash,),
+            ).fetchone()
+        finally:
+            conn.close()
+    except Exception:
+        return False
+    return row is not None
+
+
 # ── Idempotency ledger ───────────────────────────────────────────────
 # processed_invoices(invoice_id UNIQUE) — a BTCPay invoice is fulfilled AT
 # MOST ONCE, even under webhook retries / concurrent deliveries / replays.
@@ -374,6 +398,29 @@ def _release_claim(invoice_id: str) -> None:
         conn.close()
 
 
+def fulfilled_license_key(invoice_id: str) -> str:
+    """The license key already issued for a fulfilled invoice (or "").
+
+    Local ledger read — no network. Lets the frontend status poll flip to
+    "PRO ativado ✓" with the key applied the moment the invoice Settles,
+    without waiting for the webhook round-trip (Issue #249)."""
+    if not invoice_id:
+        return ""
+    try:
+        _ensure_processed_invoices_table()
+        conn = get_db()
+        try:
+            row = conn.execute(
+                "SELECT license_key FROM processed_invoices WHERE invoice_id = ?",
+                (invoice_id,),
+            ).fetchone()
+        finally:
+            conn.close()
+    except Exception:
+        return ""
+    return str(row["license_key"] or "") if row else ""
+
+
 # ── Fulfillment ──────────────────────────────────────────────────────
 
 
@@ -445,6 +492,77 @@ def handle_invoice_webhook(payload: dict) -> Optional[str]:
     log.info(
         "btcpay fulfilled: invoice=%s plan=%s key_sha=%s",
         invoice_id[:16],
+        plan,
+        email_sha(key),
+    )
+    return key
+
+
+def fulfill_webln_payment(payment_hash: str, preimage: str) -> Optional[str]:
+    """Verify a WebLN payment proof and issue the license AT MOST ONCE.
+
+    The BOLT-11 payment_hash is the SHA-256 of the 32-byte preimage — only
+    the payer (or the payee after settlement) ever holds the preimage, so a
+    matching preimage is cryptographic proof of payment. The plan comes from
+    the LOCAL ledger written at checkout (payment_hash → plan), never from
+    network calls.
+
+    Returns:
+      - license key str → fulfilled now (or replay of an already-fulfilled
+        payment returns the SAME key — idempotent, mirrors BTCPay).
+      - ""  → verified payment whose fulfillment is in-flight (another
+        delivery claimed it) — frontend keeps showing "ativando…".
+      - None → proof rejected: unknown payment_hash or preimage mismatch.
+    """
+    if not (payment_hash and preimage):
+        return None
+    # SHA-256 proof: sha256(preimage) == payment_hash (BOLT-11 spec).
+    try:
+        digest = hashlib.sha256(bytes.fromhex(preimage)).hexdigest().lower()
+    except (TypeError, ValueError):
+        # Non-hex preimage (some wallets return raw bytes/base64) — hash the
+        # utf-8 text as a lenient fallback; the ledger hash decides.
+        digest = hashlib.sha256(preimage.encode("utf-8", "ignore")).hexdigest().lower()
+    if digest != str(payment_hash).strip().lower():
+        return None
+    # Only hashes WE issued at checkout may fulfill — never fall back to the
+    # defensive PRO plan for a hash an attacker generated themselves.
+    if not invoice_hash_known(payment_hash):
+        return None
+    plan = _invoice_plan(payment_hash)
+    claimed, existing_key = _claim_invoice(payment_hash)
+    if not claimed:
+        # Replay of an already-fulfilled payment → same key; in-flight → "".
+        return existing_key
+    try:
+        key = licensing.issue_license(
+            plan=plan,
+            email="",
+            source="webln",
+            months=_plan_months(plan),
+        )
+    except Exception:
+        _release_claim(payment_hash)
+        raise
+    _complete_invoice(payment_hash, key)
+    try:
+        from services.conversion import track_event
+
+        track_event(
+            "paid",
+            email="",
+            meta={
+                "method": "lightning",
+                "provider": "webln",
+                "invoice": str(payment_hash)[:16],
+                "plan": plan,
+            },
+        )
+    except Exception:
+        pass
+    log.info(
+        "webln fulfilled: hash=%s plan=%s key_sha=%s",
+        str(payment_hash)[:16],
         plan,
         email_sha(key),
     )

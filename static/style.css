@@ -2796,6 +2796,49 @@ tr:hover td { background: var(--bg-hover); }
 .upgrade-modal__divider::before, .upgrade-modal__divider::after { content: ''; flex: 1; height: 1px; background: var(--border-subtle); }
 .upgrade-modal__redeem { display: flex; gap: 6px; }
 .upgrade-modal__activate { white-space: nowrap; font-family: var(--font-mono); }
+
+/* ── Upgrade modal — Bitcoin tab (P4 #249) ───────────────────────── */
+.upgrade-tabs { display: flex; gap: 6px; margin-bottom: 14px; border-bottom: 1px solid var(--border-subtle); }
+.upgrade-tab {
+  appearance: none; background: none; border: none; cursor: pointer;
+  padding: 8px 12px; font-family: var(--font-mono); font-size: 11px;
+  letter-spacing: 0.06em; color: var(--text-tertiary);
+  border-bottom: 2px solid transparent; margin-bottom: -1px;
+  transition: color 160ms cubic-bezier(0.4, 0, 0.2, 1), border-color 160ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+.upgrade-tab:hover { color: var(--text-primary); }
+.upgrade-tab.is-active { color: var(--brand); border-bottom-color: var(--brand); }
+.upgrade-tab:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }
+.upgrade-tab[hidden] { display: none; }
+.upgrade-pane { display: flex; flex-direction: column; gap: 10px; }
+.upgrade-pane[hidden] { display: none; }
+.upgrade-btc__price { font-family: var(--font-mono); font-size: 12px; color: var(--text-secondary); margin-bottom: 4px; }
+.upgrade-btc__qr { display: flex; justify-content: center; padding: 10px; background: var(--bg-surface); border: 1px solid var(--border-subtle); border-radius: var(--radius-md); }
+.upgrade-btc__qr svg { width: 168px; height: 168px; image-rendering: pixelated; }
+.upgrade-btc__qr-error { color: var(--text-tertiary); font-size: 11px; padding: 8px; }
+.upgrade-btc__rows { display: flex; flex-direction: column; gap: 4px; }
+.upgrade-btc__row { display: flex; justify-content: space-between; align-items: baseline; font-size: 11px; gap: 8px; }
+.upgrade-btc__label { color: var(--text-tertiary); text-transform: uppercase; letter-spacing: 0.08em; font-size: 9px; }
+.upgrade-btc__status { font-size: 11px; color: var(--text-tertiary); }
+.upgrade-btc__status--pending { color: var(--amber); }
+.upgrade-btc__status--info { color: var(--text-secondary); }
+.upgrade-btc__status--success { color: var(--green); }
+.upgrade-btc__status--error { color: var(--red); }
+.upgrade-btc__actions { display: flex; gap: 6px; flex-wrap: wrap; }
+.upgrade-btc__actions .btn { flex: 1; min-width: 0; white-space: nowrap; font-family: var(--font-mono); font-size: 10px; }
+/* .btn sets display:inline-flex — restore the hidden attribute semantics */
+.upgrade-btc__actions .btn[hidden] { display: none; }
+.upgrade-btc__open { border-color: var(--brand); color: var(--brand); }
+.upgrade-btc__webln { border-color: var(--gold); color: var(--gold); }
+.upgrade-btc__activated {
+  font-family: var(--font-mono); font-size: 14px; font-weight: 700;
+  color: var(--green); text-align: center; padding: 14px 0 4px;
+  letter-spacing: 0.04em;
+}
+.upgrade-btc__key { font-size: 11px; color: var(--text-secondary); text-align: center; word-break: break-all; }
+@media (prefers-reduced-motion: reduce) {
+  .upgrade-tab { transition: none; }
+}
 .braiins-buy-modal { width: min(520px, 92vw); }
 .braiins-buy__quote { font-family: var(--font-mono); font-size: 12px; color: var(--brand); background: var(--brand-bg); border: 1px solid var(--brand-dim); border-radius: var(--radius-md); padding: 8px 12px; }
 .braiins-buy__balance { font-family: var(--font-mono); font-size: 11px; margin-top: 6px; padding: 6px 12px; border-radius: var(--radius-md); }
