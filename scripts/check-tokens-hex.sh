@@ -21,6 +21,9 @@
 #   GATE (exit 1) — mobile/ (Issue #239):
 #     - qualquer #hex fora de mobile/src/theme.ts — a paleta RN vive SÓ
 #       nos tokens (theme.ts é excluído do scan, como style.css no web).
+#     - testes co-localizados *.test.ts / *.spec.ts / __tests__ / tests/
+#       ficam FORA do GATE (Issue #341) — fixtures de cor em teste não
+#       devem quebrar o CI; o GATE cobre código de produção apenas.
 #
 # Env overrides (self-test):
 #   TOKENS_SCAN_FILES — lista de arquivos a escanear (substitui o GATE)
@@ -90,6 +93,7 @@ if [ -n "$MOBILE_DIR" ] && [ -d "$MOBILE_DIR" ]; then
   MOBILE_HEX=$(grep -rnE "$HEX_RE" "$MOBILE_DIR" \
       --include='*.tsx' --include='*.ts' --include='*.js' \
       --exclude='theme.ts' \
+      --exclude='*.test.ts' --exclude='*.spec.ts' \
       --exclude-dir=node_modules --exclude-dir='__tests__' 2>/dev/null \
     | grep -vE '/tests/' \
     | grep -vE 'Issue[[:space:]]*#[0-9a-fA-F]{3,8}' \
