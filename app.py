@@ -3990,6 +3990,7 @@ def _do_poll():
     # para o frontend exibir o selo "dados em cache". Sem cache real → sem
     # preço (honesto), nunca um número falso.
     btc_price_stale = False
+    _mempool_live = False  # Issue #345: tracks if mempool.space delivered live price
     if not (isinstance(btc_quote, dict) and btc_quote.get("bitcoin")):
         # Issue #345: mempool.space é fonte VIVA (mesmo datacenter, sempre
         # online em produção). Se entregou USD real, o preço é FRESCO — não
@@ -4834,7 +4835,9 @@ def _do_poll():
             "krw": btc_krw,
             "cny": btc_cny,
             "stale": btc_price_stale,
-            "_source": "binance+coingecko",
+            "_source": (
+                "binance+coingecko+mempool" if _mempool_live else "binance+coingecko"
+            ),
             "_age_s": max(0, int(time.time()) - btc_price_cache.get("ts", 0)),
         },
         "luck_estimate": luck,
