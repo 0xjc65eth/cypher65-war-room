@@ -132,6 +132,53 @@ test.describe('ADMIN — audit trail de recomendações aceitas (Issue #96)', ()
     await expect(page.locator('#admin-audit-csv')).toBeVisible();
   });
 
+  test('decisões com ts=0/nulo aparecem na nota "sem data" (Issue #205)', async ({ page }) => {
+    // Sev-3 #205 honest telemetry: decisions without a valid ts must NEVER
+    // vanish silently from the weekly chart — they surface as a visible
+    // undercount note, while the table still renders the rows (date '—').
+    await page.route('**/api/admin/sessions**', (route) =>
+      route.fulfill({ json: { pool: { auto_exclude_alerts: { sweep: 0, panel: 0, total: 0 } } } }));
+    await page.route('**/api/admin/conversion**', (route) =>
+      route.fulfill({ json: { funnel: {}, economics: {} } }));
+    await page.route('**/api/admin/rentals/accepted-recos**', (route) =>
+      route.fulfill({ json: {
+        ...AUDIT,
+        count: 5,
+        decisions: [
+          ...DECISIONS,
+          { ts: 0, tenant_id: 'tenant-a', rig_id: '4001', name: 'Rig NoDate zero',
+            source: 'auto', grade: 'C', pilot_flagged: false, delivery_pct: 70.0,
+            delivery_after_pct: 71.0, verdict: 'same' },
+          { ts: null, tenant_id: 'default', rig_id: '4002', name: 'Rig NoDate null',
+            source: 'manual', grade: 'B', pilot_flagged: false, delivery_pct: 80.0,
+            delivery_after_pct: 82.0, verdict: 'improved' },
+        ],
+      } }));
+
+    await page.goto('/', { waitUntil: 'domcontentloaded' });
+    await page.waitForSelector('#app-shell', { timeout: 15000 });
+    await page.waitForSelector('#open-wallet', { timeout: 10000 });
+    await page.waitForFunction(() => {
+      return document.querySelectorAll('.skel-overlay').length === 0;
+    }, { timeout: 10000 }).catch(() => {});
+    await page.waitForTimeout(500);
+
+    await ensureSidebarOpen(page);
+    await page.click('.sidebar__link[data-module="admin"]');
+    await expect(page.locator('#admin-audit')).toBeVisible({ timeout: 10000 });
+
+    // Undercount note is visible and honest (never a silent drop).
+    const note = page.locator('#admin-audit-note');
+    await expect(note).toBeVisible();
+    await expect(note).toContainText('2 decisões sem data');
+    await expect(note).toContainText('fora do gráfico semanal');
+
+    // The without-date rows still render in the table (date cell '—').
+    await expect(page.locator('#admin-audit-tbody tr')).toHaveCount(5);
+    await expect(page.locator('#admin-audit-tbody')).toContainText('Rig NoDate zero');
+    await expect(page.locator('#admin-audit-tbody')).toContainText('Rig NoDate null');
+  });
+
   test('auto-exclusões renderizam no RENTALS (tenant) e no admin (global, Issue #100)', async ({ page }) => {
     // RENTALS payload with the tenant-scoped auto-exclusion history.
     await page.route('**/api/rentals**', (route) => {
