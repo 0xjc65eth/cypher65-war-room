@@ -6,6 +6,71 @@ e versionamento semântico ([SemVer](https://semver.org/lang/pt-BR/)).
 
 ## [Unreleased]
 
+### Adicionado — cap de render no HASH MARKET (top-50 do sort) com nota honesta (Issue #185)
+- **`MKT_RENDER_CAP = 50`** no `renderMarketGrid()`: o DOM renderiza só as **top-50
+  venues do sort atual** (helper puro `_mktRenderCap`, aplicado DEPOIS do sort) —
+  a lista pode crescer sem travar o render. O badge de contagem segue honesto
+  com o **total real** (cap é só de render).
+- **Nota visível** `#mkt-render-cap-note` quando o cap ativa: *"mostrando as 50
+  melhores venues do sort atual — N venues no total (use sort/filtro para
+  refinar)"* — nada some silenciosamente (mesmo padrão da nota "sem data" do
+  audit admin, #205). CSS espelha `.admin-audit__note`; hidden por padrão.
+- **Chart.js under-demand**: critério da issue já satisfeito pelo `defer` no head
+  (Issue #186) — sem custo de parse no boot; quem usa Chart guarda com
+  `typeof Chart === 'undefined'` e re-renderiza no próximo poll.
+  `prefers-reduced-motion` intacto (sem mudança de motion).
+- Testes: JS core +12 asserts (`mktRenderCap` null / <cap / 60→50 / ordem); e2e
+  `market-affiliate.spec.js` +1 caso (60 venues → 50 linhas + nota visível nos
+  dois viewports). Bump CDN-safe `app.js` (render do mercado).
+
+### Corrigido — run-e2e.sh: health-check usa /api/healthz com 200 explícito e janela de 30s (Issue #336)
+- **Boot frio (~16s) estourava a janela de 15s** do harness: `bash run-e2e.sh
+  --file=...` falhava com "Flask server failed to start" apesar do boot normal.
+- **3 problemas corrigidos**: endpoint pesado `/api/snapshot` → `/api/healthz`
+  (leve, isento do rate limiter); `curl -s` sem status → `-w '%{http_code}' ==
+  200` explícito (HTTP 500 não passa mais como "ready"); janela 15s → **30s**
+  (alinhada ao `check_frontend.sh`) + erro claro com tail do log se estourar.
+- Validação: `bash run-e2e.sh --file=admin-audit.spec.js` verde em boot frio
+  (10/10, chromium + mobile-chrome).
+
+### Alterado — docs: README com contagens/gate reais + seção BTC; DATA_MODEL com ledgers (Issue #333)
+- **README**: badge corrigido para **2651 pytest + 1401 JS core** (medido; era
+  1878 + 1261), `--cov-fail-under` **65** (gate real do CI, era 45), multi-tenant
+  "1000+ tenants" (isolamento JWT é por tenant, não users) e `/api/v1/status`
+  confirmado. Nova seção **R2 — Bitcoin channel (off-by-default)** com as env
+  vars reais de `services/btcpay.py` (BTCPAY_* / PAYMENT_BTC_ADDRESS /
+  LN_INVOICE_ENDPOINT) e o 503 sem config (linka com a Issue #330 de ops).
+- **DATA_MODEL.md v1.1**: nova seção **9. LEDGERS & PAYMENTS** com os schemas
+  reais — `donations`, `pro_licenses` (sources `manual`/`lemon_squeezy`/
+  `btcpay`/`webln`), `btcpay_invoice_plans`, `processed_invoices`,
+  `conversion_events`, `subscription_events`, `audit_logs` + nota de
+  `schema_version`.
+
+### Adicionado — mobile: theme.ts com a paleta RN (149 hex → 0) e guard vira GATE (Issue #239)
+- **`mobile/src/theme.ts`** (novo): 26 tokens tipados (`as const`) espelhando o
+  DSv2 web — App.tsx + 6 componentes + 9 screens importam o theme; **149 hex
+  hardcoded → 0** fora do theme.
+- **Guard `check-tokens-hex.sh`**: o scan do mobile virou **GATE** (exit 1 quando
+  um hex fora do theme aparece; era INFO não-bloqueante). `theme.ts` é excluído
+  do scan (fonte dos tokens, simétrico ao `style.css` no web). Self-test +2 casos
+  (hex fora do theme → exit 1; só theme → exit 0) — 10/10.
+- Validação: typecheck ✓, jest 7/7 (20 tests) ✓, guard exit 0 ✓, pipeline
+  frontend verde ✓.
+
+### Corrigido — audit admin: buckets semanais contam ts≤0 em "sem data" + meta corrompido vira null (Issue #205)
+- **Buckets semanais**: `buildAdminAuditWeekly` não dropa mais decisões com
+  `ts≤0`/nulo silenciosamente — contabiliza em `withoutDate` e o gráfico do
+  admin mostra a nota visível **"N decisões sem data (ts inválido) fora do
+  gráfico semanal"** (`#admin-audit-note`). Honest telemetry: dado nunca some
+  sem aviso.
+- **`meta` corrompido**: `/api/share_timeline` degrada para `null` +
+  `log.warning` (antes a string crua vazava no payload; o evento continua
+  renderizando).
+- Testes: JS core +1 (`withoutDate` conta `ts<=0`/`null`/garbage), pytest +1
+  (meta corrompido → null + warning via caplog), e2e `admin-audit.spec.js` +1
+  caso (decisões `ts: 0`/`null` → nota visível com "2 decisões sem data" e
+  linhas ainda renderizam com data `—`).
+
 ### Corrigido — RENTALS: histórico real visível + veredito de performance por aluguel (UX do operador)
 - **Bug de descoberta**: o painel RENTALS abria na aba "Active" (0 rentals ativos) e escondia o
   histórico atrás do chip History — parecia que a conta não tinha nada. Agora o painel **cai
