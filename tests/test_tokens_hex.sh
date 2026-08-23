@@ -13,6 +13,8 @@
 #   7. repo real (sem override)          → exit 0 (sweep #239; mobile é GATE)
 #   8. mobile/ com hex fora do theme.ts  → exit 1 (GATE #239)
 #   9. mobile/ só com theme.ts           → exit 0 (fonte dos tokens)
+#  10. mobile/ *.test.ts com hex         → exit 0 (fora do GATE, #341)
+#  11. mobile/ App.tsx (produção) hex    → exit 1 (GATE continua em prod)
 #
 # Run: bash tests/test_tokens_hex.sh   (wire no check_frontend.sh)
 
@@ -100,6 +102,41 @@ if [ "$?" -eq 0 ]; then
 else
   FAIL=$((FAIL + 1))
   echo '  ❌ 9 · mobile só theme.ts exit 0'
+fi
+
+# 10. Mobile GATE (Issue #341): *.test.ts com hex → exit 0 — teste com
+# fixture de cor é teste, não código de produção; o GATE ignora.
+mkdir -p "$TMP/mobile3/src"
+printf 'import { render } from "@testing-library/react-native";\nconst c = "#38bdf8"; // fixture de cor esperada\n' > "$TMP/mobile3/src/StatusBadge.test.ts"
+TOKENS_MOBILE_DIR="$TMP/mobile3" bash "$GUARD" >/dev/null 2>&1
+if [ "$?" -eq 0 ]; then
+  PASS=$((PASS + 1))
+else
+  FAIL=$((FAIL + 1))
+  echo '  ❌ 10 · mobile *.test.ts com hex exit 0'
+fi
+
+# 11. Mobile GATE (Issue #341): *.spec.ts também fora do GATE.
+mkdir -p "$TMP/mobile4/src"
+printf 'const expected = "#0ea5e9";\n' > "$TMP/mobile4/src/Chart.spec.ts"
+TOKENS_MOBILE_DIR="$TMP/mobile4" bash "$GUARD" >/dev/null 2>&1
+if [ "$?" -eq 0 ]; then
+  PASS=$((PASS + 1))
+else
+  FAIL=$((FAIL + 1))
+  echo '  ❌ 11 · mobile *.spec.ts com hex exit 0'
+fi
+
+# 12. Mobile GATE (Issue #341): App.tsx (produção) com hex → exit 1 —
+# exclusão de testes NÃO enfraquece o GATE em código de produção.
+mkdir -p "$TMP/mobile5/src"
+printf 'const brand = "#38bdf8";\n' > "$TMP/mobile5/src/App.tsx"
+TOKENS_MOBILE_DIR="$TMP/mobile5" bash "$GUARD" >/dev/null 2>&1
+if [ "$?" -eq 1 ]; then
+  PASS=$((PASS + 1))
+else
+  FAIL=$((FAIL + 1))
+  echo '  ❌ 12 · mobile App.tsx hex exit 1 (GATE prod intacto)'
 fi
 
 echo
