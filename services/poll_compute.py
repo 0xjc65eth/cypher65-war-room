@@ -90,12 +90,22 @@ def parse_mempool_fees(mf_raw):
     return mempool_fees
 
 
-def merge_btc_quotes(coingecko_quote, binance_usd_raw, binance_brl_raw):
-    """Merge CoinGecko (multi-currency) with Binance real-time USD/BRL.
+def merge_btc_quotes(
+    coingecko_quote, binance_usd_raw, binance_brl_raw, mempool_quote=None
+):
+    """Merge CoinGecko + Binance with mempool.space as a resilient 3rd source.
 
-    Binance wins when available (faster, lower latency); CoinGecko values
-    fill the rest (EUR/GBP/JPY/KRW/CNY). Returns a dict with exactly the
-    keys ``usd/brl/eur/gbp/jpy/krw/cny`` (None when unknown).
+    Precedence per currency:
+      USD/BRL — Binance real-time wins when available; CoinGecko fills;
+                mempool.space covers USD only (no BRL) as last resort.
+      EUR/GBP/JPY — CoinGecko; mempool.space fills when CoinGecko fails
+                (production issue: CoinGecko/Binance intermittently unreachable
+                from the Render datacenter while mempool.space stays up).
+      KRW/CNY — CoinGecko only (no mempool equivalent).
+
+    mempool.space /api/v1/prices shape: {"USD": 77326, "EUR": 66003, ...}.
+    Returns a dict with exactly the keys ``usd/brl/eur/gbp/jpy/krw/cny``
+    (None when unknown).
     """
     binance_usd = None
     binance_brl = None
@@ -125,24 +135,31 @@ def merge_btc_quotes(coingecko_quote, binance_usd_raw, binance_brl_raw):
         btc_usd = binance_usd
     if binance_brl is not None and binance_brl > 0:
         btc_brl = binance_brl
+    # mempool.space last resort for USD (never overrides a live quote)
+    if btc_usd is None and isinstance(mempool_quote, dict):
+        _mp = mempool_quote.get("USD")
+        if isinstance(_mp, (int, float)) and _mp > 0:
+            btc_usd = float(_mp)
+
+    def _mp_cur(cg_key, mp_key):
+        """CoinGecko value (lowercase key), falling back to mempool.space
+        (uppercase key) when absent."""
+        if isinstance(coingecko_quote, dict):
+            _cg = coingecko_quote.get("bitcoin", {}).get(cg_key)
+            if _cg is not None:
+                return _cg  # CoinGecko wins; mempool never overrides
+        if isinstance(mempool_quote, dict):
+            _v = mempool_quote.get(mp_key)
+            if isinstance(_v, (int, float)) and _v > 0:
+                return float(_v)
+        return None
+
     return {
         "usd": btc_usd,
         "brl": btc_brl,
-        "eur": (
-            (coingecko_quote or {}).get("bitcoin", {}).get("eur")
-            if isinstance(coingecko_quote, dict)
-            else None
-        ),
-        "gbp": (
-            (coingecko_quote or {}).get("bitcoin", {}).get("gbp")
-            if isinstance(coingecko_quote, dict)
-            else None
-        ),
-        "jpy": (
-            (coingecko_quote or {}).get("bitcoin", {}).get("jpy")
-            if isinstance(coingecko_quote, dict)
-            else None
-        ),
+        "eur": _mp_cur("eur", "EUR"),
+        "gbp": _mp_cur("gbp", "GBP"),
+        "jpy": _mp_cur("jpy", "JPY"),
         "krw": (
             (coingecko_quote or {}).get("bitcoin", {}).get("krw")
             if isinstance(coingecko_quote, dict)

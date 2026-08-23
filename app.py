@@ -3864,6 +3864,11 @@ def _do_poll():
                 4,
             )
         )
+        # mempool.space /api/v1/prices — 3ª fonte resiliente (Issue #345):
+        # CoinGecko/Binance ficam intermitentemente inalcançáveis do datacenter
+        # do Render (429/451/timeout) enquanto o mempool.space permanece online
+        # (é o mesmo host que alimenta net_height, sempre verde em produção).
+        fetch_specs.append(("btc_mempool", f"{MEMPOOL_API}/v1/prices", 6))
     else:
         # Cache recente — pula fetch, usa o cache existente
         fetch_specs.append(("btc", None, 0))
@@ -3986,22 +3991,36 @@ def _do_poll():
     # preço (honesto), nunca um número falso.
     btc_price_stale = False
     if not (isinstance(btc_quote, dict) and btc_quote.get("bitcoin")):
-        _cached = btc_price_cache.get("data")
-        if isinstance(_cached, dict) and _cached.get("bitcoin"):
-            log.warning(
-                "[btc] %d consecutive failures — serving last real cached price (stale)",
-                _btc_consec_failures,
-            )
-            btc_quote = _cached
-            btc_price_stale = True
+        # Issue #345: mempool.space é fonte VIVA (mesmo datacenter, sempre
+        # online em produção). Se entregou USD real, o preço é FRESCO — não
+        # usa o cache e não marca stale; o merge passa a usar o mempool.
+        _mempool_live = (
+            isinstance(results.get("btc_mempool"), dict)
+            and isinstance(results["btc_mempool"].get("USD"), (int, float))
+            and results["btc_mempool"]["USD"] > 0
+        )
+        if _mempool_live:
+            btc_quote = None  # merge usa o mempool como fonte (Issue #345)
         else:
-            btc_quote = None
+            _cached = btc_price_cache.get("data")
+            if isinstance(_cached, dict) and _cached.get("bitcoin"):
+                log.warning(
+                    "[btc] %d consecutive failures — serving last real cached price (stale)",
+                    _btc_consec_failures,
+                )
+                btc_quote = _cached
+                btc_price_stale = True
+            else:
+                btc_quote = None
 
     # Merge Binance (fast, USD-only) with CoinGecko (multi-currency)
     # Merge CoinGecko (multi-currency) with Binance real-time USD/BRL —
     # pure, extracted to services.poll_compute (Issue #135).
     _btc_merged = merge_btc_quotes(
-        btc_quote, results.get("btc_binance"), results.get("btc_binance_brl")
+        btc_quote,
+        results.get("btc_binance"),
+        results.get("btc_binance_brl"),
+        results.get("btc_mempool"),
     )
     btc_usd = _btc_merged["usd"]
     btc_brl = _btc_merged["brl"]

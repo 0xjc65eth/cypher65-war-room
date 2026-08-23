@@ -181,6 +181,14 @@ def _base_payloads(worker=None, worker_hr=None):
         },
         "BTCUSDT": {"symbol": "BTCUSDT", "price": "61234.5"},
         "BTCBRL": {"symbol": "BTCBRL", "price": "350000"},
+        # mempool.space /api/v1/prices — 3ª fonte (Issue #345)
+        "v1/prices": {
+            "time": 1787000000,
+            "USD": 61234.5,
+            "EUR": 56000.0,
+            "GBP": 48000.0,
+            "JPY": 9000000.0,
+        },
     }
 
 
@@ -417,17 +425,48 @@ class TestDoPollFallbacks:
         assert appmod.latest_snapshot["btc_price"]["usd"] == 61234.5
 
     def test_btc_stale_serves_last_real_price(self, poll_env, monkeypatch):
+        """Issue #345: TODAS as fontes de preço falham (coingecko, binance,
+        mempool) → serve o último valor REAL do cache marcado como stale.
+        Antes só o coingecko falhava — com a 3ª fonte, mempool entregando
+        torna o preço FRESCO (stale=False), então o cenário stale real exige
+        falha em todas."""
         appmod = poll_env
         install_fetch(appmod, monkeypatch, _base_payloads())
         appmod._do_poll()
-        # cache populado no 1º poll; 2º poll com coingecko falhando
+        # cache populado no 1º poll; 2º poll com todas as fontes falhando
         appmod._btc_last_fetch_ts = 0
         payloads = _base_payloads()
-        install_fetch(appmod, monkeypatch, payloads, fail_urls=("coingecko",))
+        install_fetch(
+            appmod, monkeypatch, payloads,
+            fail_urls=("coingecko", "BTCUSDT", "BTCBRL", "v1/prices"),
+        )
         appmod._do_poll()
         snap = appmod.latest_snapshot
         assert snap["btc_price"]["stale"] is True
         assert snap["btc_price"]["usd"] == 61234.5  # último valor REAL
+
+    def test_btc_mempool_keeps_price_fresh_when_primaries_fail(self, poll_env, monkeypatch):
+        """Issue #345: coingecko+binance fora, mempool.space dentro → preço
+        FRESCO (stale=False) vindo da 3ª fonte — o fix do exchange_api stale
+        de produção."""
+        appmod = poll_env
+        install_fetch(appmod, monkeypatch, _base_payloads())
+        appmod._do_poll()
+        appmod._btc_last_fetch_ts = 0
+        payloads = _base_payloads()
+        # mempool com valor DIFERENTE do cache — prova que veio do mempool,
+        # não do cache velho (61234.5)
+        payloads["v1/prices"] = {"time": 1787000000, "USD": 70000.0,
+                                  "EUR": 60000.0, "GBP": 52000.0}
+        install_fetch(
+            appmod, monkeypatch, payloads,
+            fail_urls=("coingecko", "BTCUSDT", "BTCBRL"),
+        )
+        appmod._do_poll()
+        snap = appmod.latest_snapshot
+        assert snap["btc_price"]["stale"] is False
+        assert snap["btc_price"]["usd"] == 70000.0   # fresco do mempool
+        assert snap["btc_price"]["eur"] == 60000.0
 
     def test_network_stale_serves_last_valid(self, poll_env, monkeypatch):
         appmod = poll_env
