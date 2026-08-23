@@ -18,14 +18,13 @@
 #     - "Issue #NNN"                — refs de issues em comentários
 #     - "#hex-"                     — seletores de DOM por id ($('#fcc-...'))
 #
-#   INFO (não bloqueia):
-#     - mobile/                     — paleta React Native própria (~150 hex);
-#                                     tokenização é a Issue #239. O scan roda
-#                                     e imprime a contagem como regressômetro.
+#   GATE (exit 1) — mobile/ (Issue #239):
+#     - qualquer #hex fora de mobile/src/theme.ts — a paleta RN vive SÓ
+#       nos tokens (theme.ts é excluído do scan, como style.css no web).
 #
 # Env overrides (self-test):
 #   TOKENS_SCAN_FILES — lista de arquivos a escanear (substitui o GATE)
-#   TOKENS_MOBILE_DIR — dir mobile a medir ("" desliga o info)
+#   TOKENS_MOBILE_DIR — dir mobile a medir ("" desliga o scan mobile)
 #
 # Exit: 0 clean · 1 violações · 2 erro de execução
 set -u
@@ -83,25 +82,28 @@ else
   check_cssvar_tokens
 fi
 
-# INFO — mobile/ (paleta RN própria, Issue #239): contagem como regressômetro.
+# GATE — mobile/ (Issue #239): a paleta RN vive SÓ em theme.ts. Qualquer
+# #hex fora dos tokens falha o CI (theme.ts é excluído do scan).
 MOBILE_DIR="${TOKENS_MOBILE_DIR:-mobile}"
 MOBILE_HEX=0
 if [ -n "$MOBILE_DIR" ] && [ -d "$MOBILE_DIR" ]; then
   MOBILE_HEX=$(grep -rnE "$HEX_RE" "$MOBILE_DIR" \
       --include='*.tsx' --include='*.ts' --include='*.js' \
+      --exclude='theme.ts' \
       --exclude-dir=node_modules --exclude-dir='__tests__' 2>/dev/null \
     | grep -vE '/tests/' \
     | grep -vE 'Issue[[:space:]]*#[0-9a-fA-F]{3,8}' \
     | grep -vE '#[0-9a-fA-F]{3,8}-' \
     | wc -l | tr -d ' ')
+  if [ "$MOBILE_HEX" -gt 0 ]; then
+    echo "❌ [tokens-hex] mobile/: $MOBILE_HEX hex fora do theme.ts — use tokens de mobile/src/theme.ts"
+    FAILED=1
+  fi
 fi
 
 if [ "$FAILED" -ne 0 ]; then
   echo "❌ [tokens-hex] $VIOLATIONS hex fora do allowlist (style.css + theme-color) — use cssVar()/tokens"
   exit 1
 fi
-if [ "$MOBILE_HEX" -gt 0 ]; then
-  echo "⚠  [tokens-hex] mobile/: $MOBILE_HEX hex (paleta RN própria) — tokenização na Issue #239 (não bloqueia)"
-fi
-echo "✅ [tokens-hex] guards OK — zero hex fora do style.css em app.js/sw/templates"
+echo "✅ [tokens-hex] guards OK — zero hex fora do style.css em app.js/sw/templates e zero hex fora do theme.ts em mobile/"
 exit 0

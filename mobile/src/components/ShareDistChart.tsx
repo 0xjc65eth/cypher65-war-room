@@ -2,6 +2,7 @@ import React from 'react';
 import { View, Text, StyleSheet, ActivityIndicator } from 'react-native';
 import Svg, { Rect, Line } from 'react-native-svg';
 import type { ShareDistData } from '../types';
+import { theme } from '../theme';
 
 // Live Mining → Probability parity (P0-1): the share-difficulty histogram with
 // the network target rendered as a solid purple reference line + target badge.
@@ -9,8 +10,8 @@ import type { ShareDistData } from '../types';
 // the server already sends `target_diff` / `target_bucket` (null when
 // unavailable) — this component only draws them, never fabricates data.
 
-const TARGET_COLOR = '#a855f7';
-const BAR_COLOR = '#10b981';
+const TARGET_COLOR = theme.purple;
+const BAR_COLOR = theme.green.dim;
 const VIEW_W = 280;
 const CHART_HEIGHT = 120;
 
@@ -56,7 +57,7 @@ export const ShareDistChart = ({ data, loading, error }: Props) => {
   const max = values.length ? Math.max(...values) : 0;
 
   if (loading && !data) {
-    return <ActivityIndicator color="#38bdf8" style={styles.loading} />;
+    return <ActivityIndicator color={theme.brand.DEFAULT} style={styles.loading} />;
   }
   if (error && !data) {
     return <Text style={styles.empty}>{error}</Text>;
@@ -114,7 +115,7 @@ const styles = StyleSheet.create({
     marginVertical: 16,
   },
   empty: {
-    color: '#64748b',
+    color: theme.text.secondary,
     fontStyle: 'italic',
     paddingVertical: 12,
   },
@@ -125,7 +126,7 @@ const styles = StyleSheet.create({
     marginBottom: 8,
   },
   badgeLabel: {
-    color: '#64748b',
+    color: theme.text.secondary,
     fontSize: 11,
     textTransform: 'uppercase',
     letterSpacing: 0.08,
@@ -137,7 +138,7 @@ const styles = StyleSheet.create({
     fontVariant: ['tabular-nums'],
   },
   badgeCount: {
-    color: '#64748b',
+    color: theme.text.secondary,
     fontSize: 11,
     marginLeft: 'auto',
   },

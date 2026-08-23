@@ -12,6 +12,7 @@ import {
 } from 'react-native';
 import { useSnapshot } from '../../hooks/useSnapshot';
 import { api } from '../../api/client';
+import { theme } from '../../theme';
 
 interface ChatMessage {
   id: string;
@@ -123,14 +124,14 @@ export const AiOperatorScreen = () => {
         <TextInput
           style={styles.input}
           placeholder="Type a command..."
-          placeholderTextColor="#64748b"
+          placeholderTextColor={theme.text.secondary}
           value={input}
           onChangeText={setInput}
           onSubmitEditing={sendMessage}
           editable={!sending}
         />
         <TouchableOpacity style={styles.sendButton} onPress={sendMessage} disabled={sending}>
-          {sending ? <ActivityIndicator color="#ffffff" /> : <Text style={styles.sendText}>Send</Text>}
+          {sending ? <ActivityIndicator color={theme.text.onBrand} /> : <Text style={styles.sendText}>Send</Text>}
         </TouchableOpacity>
       </View>
     </KeyboardAvoidingView>
@@ -140,7 +141,7 @@ export const AiOperatorScreen = () => {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#0b0f19',
+    backgroundColor: theme.bg.deep,
   },
   list: {
     flex: 1,
@@ -157,20 +158,20 @@ const styles = StyleSheet.create({
   },
   userBubble: {
     alignSelf: 'flex-end',
-    backgroundColor: '#0ea5e9',
+    backgroundColor: theme.bg.brand,
   },
   aiBubble: {
     alignSelf: 'flex-start',
-    backgroundColor: '#1f2937',
+    backgroundColor: theme.bg.elevated,
   },
   userText: {
-    color: '#ffffff',
+    color: theme.text.onBrand,
   },
   aiText: {
-    color: '#e2e8f0',
+    color: theme.text.faint,
   },
   hint: {
-    color: '#64748b',
+    color: theme.text.secondary,
     textAlign: 'center',
     marginTop: 24,
     fontStyle: 'italic',
@@ -178,26 +179,26 @@ const styles = StyleSheet.create({
   inputRow: {
     flexDirection: 'row',
     padding: 12,
-    backgroundColor: '#111827',
+    backgroundColor: theme.bg.surface,
     alignItems: 'center',
   },
   input: {
     flex: 1,
-    backgroundColor: '#1f2937',
-    color: '#f8fafc',
+    backgroundColor: theme.bg.elevated,
+    color: theme.text.primary,
     borderRadius: 8,
     paddingHorizontal: 12,
     paddingVertical: 10,
     marginRight: 8,
   },
   sendButton: {
-    backgroundColor: '#0ea5e9',
+    backgroundColor: theme.bg.brand,
     borderRadius: 8,
     paddingHorizontal: 16,
     paddingVertical: 10,
   },
   sendText: {
-    color: '#ffffff',
+    color: theme.text.onBrand,
     fontWeight: '600',
   },
 });

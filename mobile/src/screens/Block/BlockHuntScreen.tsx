@@ -3,6 +3,7 @@ import { View, Text, StyleSheet, ScrollView, RefreshControl, ActivityIndicator }
 import { MetricCard } from '../../components/MetricCard';
 import { fetchBlockHunt } from '../../api/client';
 import type { BlockHuntData } from '../../types';
+import { theme } from '../../theme';
 
 export const BlockHuntScreen = () => {
   const [data, setData] = useState<BlockHuntData | null>(null);
@@ -29,11 +30,11 @@ export const BlockHuntScreen = () => {
   return (
     <ScrollView
       style={styles.container}
-      refreshControl={<RefreshControl refreshing={loading} onRefresh={load} tintColor="#38bdf8" />}
+      refreshControl={<RefreshControl refreshing={loading} onRefresh={load} tintColor={theme.brand.DEFAULT} />}
     >
       <Text style={styles.heading}>Block Hunt</Text>
 
-      {loading && !data && <ActivityIndicator color="#38bdf8" />}
+      {loading && !data && <ActivityIndicator color={theme.brand.DEFAULT} />}
       {error && <Text style={styles.error}>{error}</Text>}
 
       {data && (
@@ -82,17 +83,17 @@ export const BlockHuntScreen = () => {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#0b0f19',
+    backgroundColor: theme.bg.deep,
     padding: 16,
   },
   heading: {
-    color: '#f8fafc',
+    color: theme.text.primary,
     fontSize: 24,
     fontWeight: '700',
     marginTop: 16,
   },
   section: {
-    color: '#f8fafc',
+    color: theme.text.primary,
     fontSize: 18,
     fontWeight: '600',
     marginTop: 24,
@@ -104,11 +105,11 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   error: {
-    color: '#f87171',
+    color: theme.red.DEFAULT,
     marginVertical: 8,
   },
   expected: {
-    color: '#f8fafc',
+    color: theme.text.primary,
     fontSize: 16,
     fontWeight: '600',
   },

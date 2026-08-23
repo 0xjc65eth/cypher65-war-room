@@ -6,6 +6,7 @@ import { DeviceListItem } from '../../components/DeviceListItem';
 import { useFleet } from '../../hooks/useFleet';
 import type { Device, DeviceStatus } from '../../types';
 import type { FleetStackParamList } from '../../types/navigation';
+import { theme } from '../../theme';
 
 type Filter = 'ALL' | DeviceStatus;
 
@@ -40,7 +41,7 @@ export const FleetScreen = () => {
       <TextInput
         style={styles.search}
         placeholder="Search by name, id or ip"
-        placeholderTextColor="#64748b"
+        placeholderTextColor={theme.text.secondary}
         value={search}
         onChangeText={setSearch}
       />
@@ -63,7 +64,7 @@ export const FleetScreen = () => {
         data={filtered}
         keyExtractor={(item) => item.id}
         renderItem={({ item }) => <DeviceListItem device={item} onPress={handlePress} />}
-        refreshControl={<RefreshControl refreshing={loading} onRefresh={load} tintColor="#38bdf8" />}
+        refreshControl={<RefreshControl refreshing={loading} onRefresh={load} tintColor={theme.brand.DEFAULT} />}
         ListEmptyComponent={<Text style={styles.empty}>No devices found</Text>}
       />
     </View>
@@ -73,19 +74,19 @@ export const FleetScreen = () => {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#0b0f19',
+    backgroundColor: theme.bg.deep,
     padding: 16,
   },
   heading: {
-    color: '#f8fafc',
+    color: theme.text.primary,
     fontSize: 24,
     fontWeight: '700',
     marginTop: 16,
     marginBottom: 12,
   },
   search: {
-    backgroundColor: '#111827',
-    color: '#f8fafc',
+    backgroundColor: theme.bg.surface,
+    color: theme.text.primary,
     borderRadius: 8,
     paddingHorizontal: 12,
     paddingVertical: 10,
@@ -98,29 +99,29 @@ const styles = StyleSheet.create({
     marginBottom: 12,
   },
   filterChip: {
-    backgroundColor: '#1f2937',
+    backgroundColor: theme.bg.elevated,
     borderRadius: 16,
     paddingHorizontal: 12,
     paddingVertical: 6,
   },
   filterChipActive: {
-    backgroundColor: '#0ea5e9',
+    backgroundColor: theme.bg.brand,
   },
   filterText: {
-    color: '#94a3b8',
+    color: theme.text.tertiary,
     fontSize: 12,
     fontWeight: '600',
     textTransform: 'uppercase',
   },
   filterTextActive: {
-    color: '#ffffff',
+    color: theme.text.onBrand,
   },
   error: {
-    color: '#f87171',
+    color: theme.red.DEFAULT,
     marginBottom: 8,
   },
   empty: {
-    color: '#64748b',
+    color: theme.text.secondary,
     textAlign: 'center',
     marginTop: 24,
     fontStyle: 'italic',

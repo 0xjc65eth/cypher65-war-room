@@ -1,5 +1,6 @@
 import React, { Component, ReactNode } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
+import { theme } from '../theme';
 
 interface Props {
   children: ReactNode;
@@ -44,31 +45,31 @@ export class ErrorBoundary extends Component<Props, State> {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#0b0f19',
+    backgroundColor: theme.bg.deep,
     justifyContent: 'center',
     alignItems: 'center',
     padding: 24,
   },
   heading: {
-    color: '#f87171',
+    color: theme.red.DEFAULT,
     fontSize: 20,
     fontWeight: '700',
     marginBottom: 12,
   },
   message: {
-    color: '#94a3b8',
+    color: theme.text.tertiary,
     fontSize: 14,
     textAlign: 'center',
     marginBottom: 24,
   },
   button: {
-    backgroundColor: '#0ea5e9',
+    backgroundColor: theme.bg.brand,
     borderRadius: 8,
     paddingHorizontal: 24,
     paddingVertical: 12,
   },
   buttonText: {
-    color: '#ffffff',
+    color: theme.text.onBrand,
     fontWeight: '600',
   },
 });

@@ -1,6 +1,7 @@
 import React from 'react';
 import { TouchableOpacity, Text, StyleSheet } from 'react-native';
 import type { Capability } from '../types';
+import { theme } from '../theme';
 
 interface CommandButtonProps {
   capability: Capability;
@@ -9,9 +10,9 @@ interface CommandButtonProps {
 }
 
 const riskColors: Record<string, { bg: string; border: string }> = {
-  low: { bg: '#064e3b', border: '#34d399' },
-  medium: { bg: '#713f12', border: '#facc15' },
-  high: { bg: '#7f1d1d', border: '#f87171' },
+  low: { bg: theme.bg.green, border: theme.green.DEFAULT },
+  medium: { bg: theme.bg.amber, border: theme.amber.DEFAULT },
+  high: { bg: theme.bg.red, border: theme.red.DEFAULT },
 };
 
 export const CommandButton: React.FC<CommandButtonProps> = ({ capability, onPress, disabled }) => {
@@ -42,7 +43,7 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
   },
   text: {
-    color: '#f8fafc',
+    color: theme.text.primary,
     fontSize: 14,
     fontWeight: '600',
     textTransform: 'capitalize',
@@ -51,7 +52,7 @@ const styles = StyleSheet.create({
     fontSize: 12,
   },
   unsupported: {
-    color: '#64748b',
+    color: theme.text.secondary,
     fontSize: 12,
   },
 });

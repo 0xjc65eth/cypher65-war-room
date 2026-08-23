@@ -10,7 +10,9 @@
 #   4. seletor de id "$('#fcc-…')"       → exit 0 (sem falso positivo)
 #   5. template só com theme-color       → exit 0 (allowlist)
 #   6. rgb() permitido                   → exit 0 (tradeoff documentado)
-#   7. repo real (sem override)          → exit 0 (sweep feito; mobile é INFO)
+#   7. repo real (sem override)          → exit 0 (sweep #239; mobile é GATE)
+#   8. mobile/ com hex fora do theme.ts  → exit 1 (GATE #239)
+#   9. mobile/ só com theme.ts           → exit 0 (fonte dos tokens)
 #
 # Run: bash tests/test_tokens_hex.sh   (wire no check_frontend.sh)
 
@@ -76,6 +78,28 @@ if [ "$?" -eq 0 ]; then
 else
   FAIL=$((FAIL + 1))
   echo '  ❌ 7 · repo real exit 0'
+fi
+
+# 8. Mobile GATE (Issue #239): hex fora do theme.ts → exit 1.
+mkdir -p "$TMP/mobile/src"
+printf 'const c = "#38bdf8";\n' > "$TMP/mobile/src/Bad.tsx"
+TOKENS_MOBILE_DIR="$TMP/mobile" bash "$GUARD" >/dev/null 2>&1
+if [ "$?" -eq 1 ]; then
+  PASS=$((PASS + 1))
+else
+  FAIL=$((FAIL + 1))
+  echo '  ❌ 8 · mobile hex fora do theme exit 1'
+fi
+
+# 9. Mobile GATE: hex SÓ no theme.ts → exit 0 (fonte dos tokens, excluída).
+mkdir -p "$TMP/mobile2/src"
+printf 'export const theme = { brand: "#38bdf8" };\n' > "$TMP/mobile2/src/theme.ts"
+TOKENS_MOBILE_DIR="$TMP/mobile2" bash "$GUARD" >/dev/null 2>&1
+if [ "$?" -eq 0 ]; then
+  PASS=$((PASS + 1))
+else
+  FAIL=$((FAIL + 1))
+  echo '  ❌ 9 · mobile só theme.ts exit 0'
 fi
 
 echo

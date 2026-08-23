@@ -18,6 +18,7 @@ import { fetchShareDist } from '../../api/client';
 import type { ShareDistData } from '../../types';
 import type { RootTabParamList } from '../../types/navigation';
 import { formatDistance } from 'date-fns';
+import { theme } from '../../theme';
 
 export const CommandScreen = () => {
   const { snapshot, refreshing, refresh } = useSnapshot();
@@ -66,7 +67,7 @@ export const CommandScreen = () => {
   return (
     <ScrollView
       style={styles.container}
-      refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#38bdf8" />}
+      refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={theme.brand.DEFAULT} />}
     >
       <Text style={styles.heading}>Command Center</Text>
       <Text style={styles.updated}>
@@ -109,17 +110,17 @@ export const CommandScreen = () => {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#0b0f19',
+    backgroundColor: theme.bg.deep,
     padding: 16,
   },
   heading: {
-    color: '#f8fafc',
+    color: theme.text.primary,
     fontSize: 24,
     fontWeight: '700',
     marginTop: 16,
   },
   updated: {
-    color: '#64748b',
+    color: theme.text.secondary,
     fontSize: 12,
     marginBottom: 16,
   },
@@ -130,7 +131,7 @@ const styles = StyleSheet.create({
     marginBottom: 24,
   },
   sectionTitle: {
-    color: '#f8fafc',
+    color: theme.text.primary,
     fontSize: 18,
     fontWeight: '600',
     marginBottom: 12,
@@ -138,37 +139,37 @@ const styles = StyleSheet.create({
   alertRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#111827',
+    backgroundColor: theme.bg.surface,
     borderRadius: 8,
     padding: 12,
     marginBottom: 8,
     gap: 8,
   },
   alertText: {
-    color: '#e2e8f0',
+    color: theme.text.faint,
     fontSize: 13,
     flex: 1,
   },
   empty: {
-    color: '#64748b',
+    color: theme.text.secondary,
     fontStyle: 'italic',
   },
   sharePanel: {
-    backgroundColor: '#111827',
+    backgroundColor: theme.bg.surface,
     borderRadius: 8,
     padding: 12,
     marginBottom: 8,
   },
   cta: {
     borderWidth: 1,
-    borderColor: '#a855f7',
+    borderColor: theme.purple,
     borderRadius: 8,
     paddingVertical: 10,
     alignItems: 'center',
     marginTop: 10,
   },
   ctaText: {
-    color: '#a855f7',
+    color: theme.purple,
     fontSize: 13,
     fontWeight: '700',
   },

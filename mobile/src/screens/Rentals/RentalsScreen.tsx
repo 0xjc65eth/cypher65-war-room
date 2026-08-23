@@ -3,6 +3,7 @@ import { View, Text, StyleSheet, FlatList, RefreshControl, ActivityIndicator, To
 import { fetchRentals } from '../../api/client';
 import { MetricCard } from '../../components/MetricCard';
 import type { RentalsData, Rental } from '../../types';
+import { theme } from '../../theme';
 
 const fmtSats = (n: number | undefined | null): string => {
   if (n === undefined || n === null) return '—';
@@ -20,9 +21,9 @@ const fmtDate = (ts: number | undefined | null): string => {
 
 const statusColor = (status?: string): string => {
   const s = (status || '').toLowerCase();
-  if (s.includes('active') || s.includes('running') || s.includes('started')) return '#4ade80';
-  if (s.includes('end') || s.includes('close') || s.includes('finish')) return '#94a3b8';
-  return '#38bdf8';
+  if (s.includes('active') || s.includes('running') || s.includes('started')) return theme.green.strong;
+  if (s.includes('end') || s.includes('close') || s.includes('finish')) return theme.text.tertiary;
+  return theme.brand.DEFAULT;
 };
 
 const RentalCard = ({ rental }: { rental: Rental }) => {
@@ -178,11 +179,11 @@ export const RentalsScreen = () => {
       data={list}
       keyExtractor={(item, idx) => `${item.provider}-${item.id}-${idx}`}
       renderItem={({ item }) => <RentalCard rental={item} />}
-      refreshControl={<RefreshControl refreshing={loading} onRefresh={load} tintColor="#38bdf8" />}
+      refreshControl={<RefreshControl refreshing={loading} onRefresh={load} tintColor={theme.brand.DEFAULT} />}
       ListHeaderComponent={renderHeader}
       ListEmptyComponent={
         loading ? (
-          <ActivityIndicator color="#38bdf8" style={styles.loader} />
+          <ActivityIndicator color={theme.brand.DEFAULT} style={styles.loader} />
         ) : (
           <Text style={styles.empty}>{error || emptyText}</Text>
         )
@@ -194,11 +195,11 @@ export const RentalsScreen = () => {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#0b0f19',
+    backgroundColor: theme.bg.deep,
     padding: 16,
   },
   heading: {
-    color: '#f8fafc',
+    color: theme.text.primary,
     fontSize: 24,
     fontWeight: '700',
     marginTop: 16,
@@ -231,13 +232,13 @@ const styles = StyleSheet.create({
     borderWidth: 1,
   },
   signalTitle: {
-    color: '#f8fafc',
+    color: theme.text.primary,
     fontSize: 13,
     fontWeight: '700',
     marginBottom: 2,
   },
   signalText: {
-    color: '#cbd5e1',
+    color: theme.text.muted,
     fontSize: 12,
   },
   tabs: {
@@ -250,18 +251,18 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
     paddingVertical: 8,
     borderRadius: 6,
-    backgroundColor: '#1e293b',
+    backgroundColor: theme.bg.overlay,
   },
   tabActive: {
-    backgroundColor: '#0ea5e9',
+    backgroundColor: theme.bg.brand,
   },
   tabText: {
-    color: '#94a3b8',
+    color: theme.text.tertiary,
     fontSize: 12,
     fontWeight: '700',
   },
   tabTextActive: {
-    color: '#0b0f19',
+    color: theme.text.onDeep,
   },
   sectionHead: {
     flexDirection: 'row',
@@ -271,17 +272,17 @@ const styles = StyleSheet.create({
     marginBottom: 4,
   },
   sectionTitle: {
-    color: '#38bdf8',
+    color: theme.brand.DEFAULT,
     fontSize: 12,
     fontWeight: '700',
     letterSpacing: 0.08,
   },
   sectionCount: {
-    color: '#64748b',
+    color: theme.text.secondary,
     fontSize: 12,
   },
   card: {
-    backgroundColor: '#111827',
+    backgroundColor: theme.bg.surface,
     borderRadius: 8,
     padding: 12,
     marginVertical: 6,
@@ -293,7 +294,7 @@ const styles = StyleSheet.create({
     marginBottom: 6,
   },
   provider: {
-    color: '#38bdf8',
+    color: theme.brand.DEFAULT,
     fontSize: 12,
     fontWeight: '700',
     letterSpacing: 0.05,
@@ -304,12 +305,12 @@ const styles = StyleSheet.create({
     textTransform: 'uppercase',
   },
   blacklistBadge: {
-    color: '#f87171',
+    color: theme.red.DEFAULT,
     fontSize: 10,
     fontWeight: '700',
   },
   rigName: {
-    color: '#f8fafc',
+    color: theme.text.primary,
     fontSize: 14,
     fontWeight: '600',
     marginBottom: 8,
@@ -325,11 +326,11 @@ const styles = StyleSheet.create({
     marginTop: 8,
   },
   date: {
-    color: '#64748b',
+    color: theme.text.secondary,
     fontSize: 10,
   },
   cost: {
-    color: '#4ade80',
+    color: theme.green.strong,
     fontSize: 11,
     fontWeight: '700',
   },
@@ -337,7 +338,7 @@ const styles = StyleSheet.create({
     marginTop: 24,
   },
   empty: {
-    color: '#64748b',
+    color: theme.text.secondary,
     textAlign: 'center',
     marginTop: 24,
     fontStyle: 'italic',
