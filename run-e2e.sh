@@ -88,19 +88,26 @@ fi
 RATE_LIMIT_PER_MINUTE="${RATE_LIMIT_PER_MINUTE:-1000}" SECRET_KEY="${SECRET_KEY:-e2e-test-secret-key}" $VENV_PYTHON app.py &>"$FLASK_LOG" &
 SERVER_PID=$!
 
-# Wait for server to start
-for i in $(seq 1 15); do
-  if curl -s "$BASE_URL/api/snapshot" >/dev/null 2>&1; then
-    echo "Flask server ready (PID $SERVER_PID)"
+# Wait for server to start — cold boot can take ~16s (init_db + first poll with
+# external fetches/retry), so the window is >= 30s like scripts/check_frontend.sh.
+# /api/healthz is lightweight and exempt from the rate limiter (app.py:6415);
+# the explicit %{http_code} == 200 check avoids false positives (e.g. a 500).
+HEALTHZ_OK=0
+for i in $(seq 1 30); do
+  STATUS=$(curl -s -o /dev/null -w '%{http_code}' "$BASE_URL/api/healthz" 2>/dev/null || echo 000)
+  if [ "$STATUS" = "200" ]; then
+    echo "Flask server ready (PID $SERVER_PID, healthz 200 after ${i}s)"
+    HEALTHZ_OK=1
     break
-  fi
-  if [ "$i" -eq 15 ]; then
-    echo "ERROR: Flask server failed to start (see $FLASK_LOG)"
-    cat "$FLASK_LOG" | tail -20
-    exit 1
   fi
   sleep 1
 done
+
+if [ "$HEALTHZ_OK" -ne 1 ]; then
+  echo "ERROR: Flask server failed to start (healthz not 200 after 30s — see $FLASK_LOG)"
+  cat "$FLASK_LOG" | tail -20
+  exit 1
+fi
 
 # Allow one full poll cycle to populate data
 sleep 5
