@@ -4174,7 +4174,7 @@ function renderAccount(acct) {
       const n = Number(weekly && weekly.withoutDate) || 0;
       note.hidden = n === 0;
       if (n > 0) {
-        note.textContent = n + ' decis' + (n === 1 ? 'ão' : 'ões') + ' sem data (ts inválido) fora do gráfico semanal';
+        note.textContent = n + ' decis' + (n === 1 ? 'ão' : 'ões') + ' sem data (ts ausente ou inválido) fora do gráfico semanal';
       }
     }
     const canvas = document.getElementById('admin-audit-chart');
@@ -4494,7 +4494,8 @@ function renderAccount(acct) {
     if (capNoteEl) {
       capNoteEl.hidden = !mktCap.capped;
       if (mktCap.capped) {
-        capNoteEl.textContent = 'mostrando as ' + mktCap.rows.length + ' melhores venues do sort atual — ' + mktCap.total + ' venues no total (use sort/filtro para refinar)';
+        const _capText = 'mostrando as ' + mktCap.rows.length + ' melhores venues do sort atual — ' + mktCap.total + ' venues no total (use sort/filtro para refinar)';
+        if (capNoteEl.textContent !== _capText) capNoteEl.textContent = _capText;
       }
     }
 
