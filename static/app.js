@@ -3460,16 +3460,20 @@ function renderAccount(acct) {
     const week = 1 + Math.round((thursday - firstThu) / (7 * 86400 * 1000));
     return thursday.getUTCFullYear() + '-W' + String(week).padStart(2, '0');
   }
-  // decisions → weekly buckets {labels: ['2026-W31', …], counts: [n, …]}
+  // decisions → weekly buckets {labels: ['2026-W31', …], counts: [n, …],
+  // withoutDate: n}. Entries with ts<=0/null/garbage are NEVER dropped
+  // silently (Issue #205 — honest telemetry): they surface as a counter the
+  // chart renders as a "sem data" note instead of vanishing.
   function buildAdminAuditWeekly(decisions) {
     const buckets = {};
+    let withoutDate = 0;
     (decisions || []).forEach(function (d) {
       const k = adminAuditIsoWeekKey(d && d.ts);
-      if (!k) return;
+      if (!k) { withoutDate += 1; return; }
       buckets[k] = (buckets[k] || 0) + 1;
     });
     const labels = Object.keys(buckets).sort();
-    return { labels: labels, counts: labels.map(function (k) { return buckets[k]; }) };
+    return { labels: labels, counts: labels.map(function (k) { return buckets[k]; }), withoutDate: withoutDate };
   }
   // feature_alert (Issue #163) → safe banner payload {feature, count,
   // sharePct, minPct, active}; no HTML, numbers guarded against NaN.
@@ -4162,6 +4166,17 @@ function renderAccount(acct) {
     }).join('');
   }
   function _renderAdminAuditChart(weekly) {
+    // Issue #205: ts<=0/null decisions must never vanish — surface them as a
+    // visible undercount note under the chart (bar axis is weekly, so an
+    // "unknown" bar would fake a date that doesn't exist).
+    const note = document.getElementById('admin-audit-note');
+    if (note) {
+      const n = Number(weekly && weekly.withoutDate) || 0;
+      note.hidden = n === 0;
+      if (n > 0) {
+        note.textContent = n + ' decis' + (n === 1 ? 'ão' : 'ões') + ' sem data (ts inválido) fora do gráfico semanal';
+      }
+    }
     const canvas = document.getElementById('admin-audit-chart');
     if (!canvas || typeof Chart === 'undefined') return;
     if (_adminAuditChart) { _adminAuditChart.destroy(); _adminAuditChart = null; }

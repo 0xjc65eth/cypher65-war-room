@@ -2680,6 +2680,7 @@ tr:hover td { background: var(--bg-hover); }
 .admin-audit__filter-label { font-size: 9px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-tertiary); }
 .admin-audit__filter select { background: var(--bg-input); border: 1px solid var(--border-default); color: var(--text-primary); font-family: var(--font-mono); font-size: 10px; padding: 3px 8px; border-radius: var(--radius-sm); outline: none; cursor: pointer; max-width: 180px; }
 .admin-audit__chart-wrap, .admin-metrics__chart-wrap { position: relative; height: 130px; border: 1px solid var(--border-subtle); border-radius: var(--radius-sm); background: var(--bg-surface); padding: 6px; }
+.admin-audit__note { font-size: 10px; color: var(--text-tertiary); font-style: italic; padding: 4px 2px 0; }
 .admin-metrics__chart-wrap { height: 150px; }
 .admin-metrics__empty { padding: 14px 8px; color: var(--text-tertiary); font-size: 12px; font-style: italic; border: 1px dashed var(--border-subtle); border-radius: var(--radius-sm); text-align: center; }
 .admin-err__rid { font-family: ui-monospace, monospace; font-size: 10px; color: var(--text-tertiary); word-break: break-all; }
