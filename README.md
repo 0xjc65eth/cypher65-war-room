@@ -1,6 +1,6 @@
 <div align="center">
 
-# ⚡ CYPHER65 · WAR ROOM
+# ⚡ CYPHER65™ · WAR ROOM
 
 **Real-time Bitcoin mining operations dashboard** — fleet telemetry, live probability engine,
 solo/pool/rental/lease profitability, hashrate market intelligence, alerts & automation.
@@ -120,6 +120,8 @@ The CI workflow (`.github/workflows/ci.yml`) gates merges on all suites plus a *
 - [`docs/WALLET_POOL_SETUP.md`](docs/WALLET_POOL_SETUP.md) — wallet & pool configuration guide
 - [`docs/archive/`](docs/archive/) — consolidated historical audits (stale, kept for reference)
 - [`docs/`](docs/) — full index (mobile, milestones, audits)
+- [`docs/TRADEMARK_POLICY.md`](docs/TRADEMARK_POLICY.md) — brand protection: registration strategy, costs & enforcement
+- [`TRADEMARKS.md`](TRADEMARKS.md) — public trademark usage guidelines
 
 ## 🛡 Honest Telemetry
 
@@ -153,6 +155,8 @@ with `X-API-Key` (or from localhost).
 ## 📄 License
 
 [MIT](LICENSE) © 2026 [0xjc65eth](https://github.com/0xjc65eth)
+
+**CYPHER65**, **CYPHER65 WAR ROOM** and the ⚡ logo are trademarks of 0xjc65eth — the MIT license covers the code only. See [TRADEMARKS.md](TRADEMARKS.md) for usage guidelines.
 
 ---
 
