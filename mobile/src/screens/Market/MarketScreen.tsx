@@ -3,6 +3,7 @@ import { View, Text, StyleSheet, FlatList, RefreshControl, ActivityIndicator } f
 import { fetchHashrateMarket, compareOffers } from '../../api/client';
 import { MetricCard } from '../../components/MetricCard';
 import type { MarketOffer } from '../../types';
+import { theme } from '../../theme';
 
 export const MarketScreen = () => {
   const [offers, setOffers] = useState<MarketOffer[]>([]);
@@ -61,11 +62,11 @@ export const MarketScreen = () => {
       data={offers}
       keyExtractor={(item) => item.id}
       renderItem={renderItem}
-      refreshControl={<RefreshControl refreshing={loading} onRefresh={load} tintColor="#38bdf8" />}
+      refreshControl={<RefreshControl refreshing={loading} onRefresh={load} tintColor={theme.brand.DEFAULT} />}
       ListHeaderComponent={<Text style={styles.heading}>Hashrate Market</Text>}
       ListEmptyComponent={
         loading ? (
-          <ActivityIndicator color="#38bdf8" style={styles.loader} />
+          <ActivityIndicator color={theme.brand.DEFAULT} style={styles.loader} />
         ) : (
           <Text style={styles.empty}>{error || 'No offers available'}</Text>
         )
@@ -77,18 +78,18 @@ export const MarketScreen = () => {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#0b0f19',
+    backgroundColor: theme.bg.deep,
     padding: 16,
   },
   heading: {
-    color: '#f8fafc',
+    color: theme.text.primary,
     fontSize: 24,
     fontWeight: '700',
     marginTop: 16,
     marginBottom: 12,
   },
   card: {
-    backgroundColor: '#111827',
+    backgroundColor: theme.bg.surface,
     borderRadius: 8,
     padding: 12,
     marginVertical: 6,
@@ -100,13 +101,13 @@ const styles = StyleSheet.create({
     marginBottom: 8,
   },
   provider: {
-    color: '#f8fafc',
+    color: theme.text.primary,
     fontSize: 16,
     fontWeight: '700',
     textTransform: 'uppercase',
   },
   score: {
-    color: '#38bdf8',
+    color: theme.brand.DEFAULT,
     fontSize: 12,
     fontWeight: '600',
   },
@@ -119,7 +120,7 @@ const styles = StyleSheet.create({
     marginTop: 24,
   },
   empty: {
-    color: '#64748b',
+    color: theme.text.secondary,
     textAlign: 'center',
     marginTop: 24,
     fontStyle: 'italic',

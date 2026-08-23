@@ -2,6 +2,7 @@ import React from 'react';
 import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
 import { StatusBadge } from './StatusBadge';
 import type { Device } from '../types';
+import { theme } from '../theme';
 
 interface DeviceListItemProps {
   device: Device;
@@ -29,7 +30,7 @@ export const DeviceListItem: React.FC<DeviceListItemProps> = ({ device, onPress 
 
 const styles = StyleSheet.create({
   row: {
-    backgroundColor: '#111827',
+    backgroundColor: theme.bg.surface,
     borderRadius: 8,
     padding: 12,
     marginVertical: 4,
@@ -41,7 +42,7 @@ const styles = StyleSheet.create({
     marginBottom: 6,
   },
   name: {
-    color: '#f8fafc',
+    color: theme.text.primary,
     fontSize: 15,
     fontWeight: '600',
   },
@@ -50,11 +51,11 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
   },
   metric: {
-    color: '#cbd5e1',
+    color: theme.text.muted,
     fontSize: 13,
   },
   ip: {
-    color: '#64748b',
+    color: theme.text.secondary,
     fontSize: 12,
   },
 });

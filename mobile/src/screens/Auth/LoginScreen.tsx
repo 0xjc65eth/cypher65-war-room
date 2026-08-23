@@ -14,6 +14,7 @@ import {
 import * as SecureStore from 'expo-secure-store';
 import { authenticateWithBiometrics, isBiometricAvailable } from '../../services/biometrics';
 import { useAuth } from '../../hooks/useAuth';
+import { theme } from '../../theme';
 
 export const LoginScreen = () => {
   const [username, setUsername] = useState('');
@@ -77,7 +78,7 @@ export const LoginScreen = () => {
         <TextInput
           style={styles.input}
           placeholder="Username"
-          placeholderTextColor="#64748b"
+          placeholderTextColor={theme.text.secondary}
           autoCapitalize="none"
           autoCorrect={false}
           value={username}
@@ -89,7 +90,7 @@ export const LoginScreen = () => {
           <TextInput
             style={styles.passwordInput}
             placeholder="Password"
-            placeholderTextColor="#64748b"
+            placeholderTextColor={theme.text.secondary}
             secureTextEntry={!showPassword}
             value={password}
             onChangeText={setPassword}
@@ -101,7 +102,7 @@ export const LoginScreen = () => {
         </View>
 
         <TouchableOpacity style={styles.button} onPress={handleLogin} disabled={loading}>
-          {loading ? <ActivityIndicator color="#ffffff" /> : <Text style={styles.buttonText}>Login</Text>}
+          {loading ? <ActivityIndicator color={theme.text.onBrand} /> : <Text style={styles.buttonText}>Login</Text>}
         </TouchableOpacity>
 
         {biometricAvailable && (
@@ -124,26 +125,26 @@ const styles = StyleSheet.create({
   },
   container: {
     flex: 1,
-    backgroundColor: '#0b0f19',
+    backgroundColor: theme.bg.deep,
     justifyContent: 'center',
     padding: 24,
   },
   heading: {
-    color: '#f8fafc',
+    color: theme.text.primary,
     fontSize: 32,
     fontWeight: '700',
     textAlign: 'center',
   },
   subheading: {
-    color: '#38bdf8',
+    color: theme.brand.DEFAULT,
     fontSize: 18,
     fontWeight: '600',
     textAlign: 'center',
     marginBottom: 32,
   },
   input: {
-    backgroundColor: '#111827',
-    color: '#f8fafc',
+    backgroundColor: theme.bg.surface,
+    color: theme.text.primary,
     borderRadius: 8,
     paddingHorizontal: 16,
     paddingVertical: 14,
@@ -153,31 +154,31 @@ const styles = StyleSheet.create({
   passwordContainer: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#111827',
+    backgroundColor: theme.bg.surface,
     borderRadius: 8,
     paddingLeft: 16,
     marginBottom: 12,
   },
   passwordInput: {
     flex: 1,
-    color: '#f8fafc',
+    color: theme.text.primary,
     paddingVertical: 14,
     fontSize: 15,
   },
   toggle: {
-    color: '#38bdf8',
+    color: theme.brand.DEFAULT,
     paddingHorizontal: 12,
     fontSize: 14,
   },
   button: {
-    backgroundColor: '#0ea5e9',
+    backgroundColor: theme.bg.brand,
     borderRadius: 8,
     paddingVertical: 14,
     alignItems: 'center',
     marginTop: 8,
   },
   buttonText: {
-    color: '#ffffff',
+    color: theme.text.onBrand,
     fontSize: 16,
     fontWeight: '600',
   },
@@ -187,11 +188,11 @@ const styles = StyleSheet.create({
     padding: 8,
   },
   biometricText: {
-    color: '#94a3b8',
+    color: theme.text.tertiary,
     fontSize: 14,
   },
   hint: {
-    color: '#64748b',
+    color: theme.text.secondary,
     fontSize: 12,
     textAlign: 'center',
     marginTop: 24,

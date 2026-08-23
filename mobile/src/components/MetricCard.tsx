@@ -1,5 +1,6 @@
 import React from 'react';
 import { View, Text, StyleSheet } from 'react-native';
+import { theme } from '../theme';
 
 interface MetricCardProps {
   title: string;
@@ -20,24 +21,24 @@ export const MetricCard: React.FC<MetricCardProps> = ({ title, value, subtext, a
 
 const styles = StyleSheet.create({
   card: {
-    backgroundColor: '#111827',
+    backgroundColor: theme.bg.surface,
     borderRadius: 8,
     padding: 12,
     minWidth: 100,
     flex: 1,
   },
   title: {
-    color: '#94a3b8',
+    color: theme.text.tertiary,
     fontSize: 12,
     marginBottom: 4,
   },
   value: {
-    color: '#f8fafc',
+    color: theme.text.primary,
     fontSize: 20,
     fontWeight: '700',
   },
   subtext: {
-    color: '#64748b',
+    color: theme.text.secondary,
     fontSize: 11,
     marginTop: 4,
   },

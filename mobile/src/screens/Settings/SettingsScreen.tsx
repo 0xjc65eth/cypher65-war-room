@@ -3,6 +3,7 @@ import { View, Text, StyleSheet, Switch, TouchableOpacity } from 'react-native';
 import { useAppStore } from '../../store';
 import { useAuth } from '../../hooks/useAuth';
 import { BatteryMode } from '../../types';
+import { theme } from '../../theme';
 
 const BATTERY_MODES: { key: BatteryMode; label: string }[] = [
   { key: 'max_battery', label: 'Max Battery' },
@@ -66,8 +67,8 @@ export const SettingsScreen = () => {
           <Switch
             value={!!pushCategories[cat.key]}
             onValueChange={(value) => toggleCategory(cat.key, value)}
-            thumbColor="#0ea5e9"
-            trackColor={{ false: '#374151', true: '#0c4a6e' }}
+            thumbColor={theme.bg.brand}
+            trackColor={{ false: theme.border.strong, true: theme.bg.brandDeep }}
           />
         </View>
       ))}
@@ -82,17 +83,17 @@ export const SettingsScreen = () => {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#0b0f19',
+    backgroundColor: theme.bg.deep,
     padding: 16,
   },
   heading: {
-    color: '#f8fafc',
+    color: theme.text.primary,
     fontSize: 24,
     fontWeight: '700',
     marginTop: 16,
   },
   section: {
-    color: '#94a3b8',
+    color: theme.text.tertiary,
     fontSize: 13,
     textTransform: 'uppercase',
     marginTop: 24,
@@ -102,45 +103,45 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    backgroundColor: '#111827',
+    backgroundColor: theme.bg.surface,
     borderRadius: 8,
     padding: 14,
     marginBottom: 8,
   },
   modeRowActive: {
-    borderColor: '#0ea5e9',
+    borderColor: theme.bg.brand,
     borderWidth: 1,
   },
   modeText: {
-    color: '#f8fafc',
+    color: theme.text.primary,
     fontSize: 15,
   },
   check: {
-    color: '#0ea5e9',
+    color: theme.bg.brand,
     fontSize: 18,
   },
   row: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    backgroundColor: '#111827',
+    backgroundColor: theme.bg.surface,
     borderRadius: 8,
     padding: 14,
     marginBottom: 8,
   },
   label: {
-    color: '#e2e8f0',
+    color: theme.text.faint,
     fontSize: 14,
   },
   logout: {
     marginTop: 32,
-    backgroundColor: '#7f1d1d',
+    backgroundColor: theme.bg.red,
     borderRadius: 8,
     padding: 14,
     alignItems: 'center',
   },
   logoutText: {
-    color: '#f87171',
+    color: theme.red.DEFAULT,
     fontSize: 16,
     fontWeight: '600',
   },

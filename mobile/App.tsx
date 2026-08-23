@@ -15,6 +15,7 @@ import { AiOperatorScreen } from './src/screens/AI/AiOperatorScreen';
 import { LoginScreen } from './src/screens/Auth/LoginScreen';
 import { SettingsScreen } from './src/screens/Settings/SettingsScreen';
 import { ErrorBoundary } from './src/components/ErrorBoundary';
+import { theme } from './src/theme';
 import { configureNotificationHandler, registerForPushNotifications } from './src/services/push';
 import { useAuth } from './src/hooks/useAuth';
 
@@ -61,8 +62,8 @@ const AppContent = () => {
       screenOptions={({ route }) => ({
         headerShown: false,
         tabBarStyle: styles.tabBar,
-        tabBarActiveTintColor: '#38bdf8',
-        tabBarInactiveTintColor: '#64748b',
+        tabBarActiveTintColor: theme.brand.DEFAULT,
+        tabBarInactiveTintColor: theme.text.secondary,
         tabBarLabelStyle: styles.tabLabel,
         tabBarIcon: () => <Text style={styles.tabIcon}>{TabIcon[route.name] || '•'}</Text>,
       })}
@@ -96,12 +97,12 @@ const styles = StyleSheet.create({
     flex: 1,
     textAlign: 'center',
     textAlignVertical: 'center',
-    color: '#f8fafc',
-    backgroundColor: '#0b0f19',
+    color: theme.text.primary,
+    backgroundColor: theme.bg.deep,
   },
   tabBar: {
-    backgroundColor: '#111827',
-    borderTopColor: '#1f2937',
+    backgroundColor: theme.bg.surface,
+    borderTopColor: theme.border.subtle,
     borderTopWidth: 1,
     paddingTop: 6,
     paddingBottom: 8,

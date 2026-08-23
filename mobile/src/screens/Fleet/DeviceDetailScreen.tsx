@@ -10,6 +10,7 @@ import { CommandButton } from '../../components/CommandButton';
 import { promptCriticalAction } from '../../services/biometrics';
 import type { Capability, Device as DeviceType } from '../../types';
 import type { FleetStackParamList } from '../../types/navigation';
+import { theme } from '../../theme';
 
 type Props = NativeStackScreenProps<FleetStackParamList, 'DeviceDetail'>;
 
@@ -59,7 +60,7 @@ export const DeviceDetailScreen = () => {
   if (loading || !device) {
     return (
       <View style={styles.center}>
-        <ActivityIndicator size="large" color="#38bdf8" />
+        <ActivityIndicator size="large" color={theme.brand.DEFAULT} />
       </View>
     );
   }
@@ -94,7 +95,7 @@ export const DeviceDetailScreen = () => {
       </View>
 
       <Text style={styles.section}>Capabilities</Text>
-      {commandLoading && <ActivityIndicator color="#38bdf8" style={styles.loader} />}
+      {commandLoading && <ActivityIndicator color={theme.brand.DEFAULT} style={styles.loader} />}
       <View style={styles.commands}>
         {device.capabilities?.map((cap) => (
           <CommandButton key={cap.name} capability={cap} onPress={handleCommand} />
@@ -107,23 +108,23 @@ export const DeviceDetailScreen = () => {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#0b0f19',
+    backgroundColor: theme.bg.deep,
     padding: 16,
   },
   center: {
     flex: 1,
-    backgroundColor: '#0b0f19',
+    backgroundColor: theme.bg.deep,
     justifyContent: 'center',
     alignItems: 'center',
   },
   back: {
-    color: '#38bdf8',
+    color: theme.brand.DEFAULT,
     fontSize: 14,
     marginTop: 16,
     marginBottom: 8,
   },
   heading: {
-    color: '#f8fafc',
+    color: theme.text.primary,
     fontSize: 24,
     fontWeight: '700',
   },
@@ -135,15 +136,15 @@ const styles = StyleSheet.create({
     marginBottom: 16,
   },
   ip: {
-    color: '#94a3b8',
+    color: theme.text.tertiary,
     fontSize: 13,
   },
   model: {
-    color: '#64748b',
+    color: theme.text.secondary,
     fontSize: 13,
   },
   section: {
-    color: '#f8fafc',
+    color: theme.text.primary,
     fontSize: 18,
     fontWeight: '600',
     marginTop: 24,

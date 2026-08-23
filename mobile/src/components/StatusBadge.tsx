@@ -1,5 +1,6 @@
 import React from 'react';
 import { View, Text, StyleSheet } from 'react-native';
+import { theme } from '../theme';
 
 type StatusBadgeProps = {
   status: 'ONLINE' | 'OFFLINE' | 'WARNING' | 'CRITICAL' | 'CRIT' | 'WARN' | 'GOLD' | 'SUCCESS' | 'INFO';
@@ -7,15 +8,15 @@ type StatusBadgeProps = {
 };
 
 const statusColors: Record<string, { bg: string; text: string }> = {
-  ONLINE: { bg: '#064e3b', text: '#34d399' },
-  OFFLINE: { bg: '#7f1d1d', text: '#f87171' },
-  WARNING: { bg: '#713f12', text: '#facc15' },
-  WARN: { bg: '#713f12', text: '#facc15' },
-  CRITICAL: { bg: '#7f1d1d', text: '#f87171' },
-  CRIT: { bg: '#7f1d1d', text: '#f87171' },
-  GOLD: { bg: '#422006', text: '#fbbf24' },
-  SUCCESS: { bg: '#064e3b', text: '#34d399' },
-  INFO: { bg: '#0c4a6e', text: '#38bdf8' },
+  ONLINE: { bg: theme.bg.green, text: theme.green.DEFAULT },
+  OFFLINE: { bg: theme.bg.red, text: theme.red.DEFAULT },
+  WARNING: { bg: theme.bg.amber, text: theme.amber.DEFAULT },
+  WARN: { bg: theme.bg.amber, text: theme.amber.DEFAULT },
+  CRITICAL: { bg: theme.bg.red, text: theme.red.DEFAULT },
+  CRIT: { bg: theme.bg.red, text: theme.red.DEFAULT },
+  GOLD: { bg: theme.bg.amberDeep, text: theme.amber.soft },
+  SUCCESS: { bg: theme.bg.green, text: theme.green.DEFAULT },
+  INFO: { bg: theme.bg.brandDeep, text: theme.brand.DEFAULT },
 };
 
 export const StatusBadge: React.FC<StatusBadgeProps> = ({ status, label }) => {
