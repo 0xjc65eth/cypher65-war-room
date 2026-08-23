@@ -115,6 +115,7 @@ from services.tenant import require_tenant, role_required, SELF_HOST_MAX_WORKERS
 import services.db_backup as _db_backup  # C4: automatic SQLite backup + boot integrity check
 import services.remote_backup as _remote_backup  # $0 persistence: gist backup + boot restore
 import services.conversion as _conversion  # CFO: PRO funnel telemetry + LTV/CAC
+import services.beta_analytics as _beta_analytics  # Beta: self-hosted usage tracking (boot, module, time)
 import services.doc_feedback as _doc_feedback  # #19: Learning FAQ loop — doc "was this helpful?"
 import services.error_tracker as _error_tracker  # #176: local error-rate sampler ($0 observability)
 from services.licensing import (
@@ -1251,6 +1252,12 @@ def init_db():
         _conversion.ensure_table()
     except Exception as e:
         log.warning("[migrate] conversion_events init failed: %s", e)
+
+    # ── Beta: self-hosted usage analytics (boot, module, time) ──
+    try:
+        _beta_analytics.ensure_table()
+    except Exception as e:
+        log.warning("[migrate] beta_analytics init failed: %s", e)
 
     # ── Fase 4 · B2: add tenant_id to alerts/automations/core tables ──
     for table_name in (
@@ -5519,6 +5526,52 @@ def api_conversion_track():
         meta = {}
     _conversion.track_event(event, tenant_id=tenant_id, meta=meta)
     return jsonify({"ok": True})
+
+
+@app.route("/api/analytics/track", methods=["POST"])
+def api_analytics_track():
+    """Record a frontend analytics event (boot, module_switch, module_time).
+
+    Public endpoint (no auth): rate-limited to 1 event/second per client IP.
+    All data stays in local SQLite — no external telemetry.
+    """
+    body = request.get_json(silent=True) or {}
+    event = (body.get("event") or "").strip()
+    meta = body.get("meta") or {}
+    if not isinstance(meta, dict):
+        meta = {}
+    tenant_id = ""
+    auth = request.headers.get("Authorization", "")
+    if auth.startswith("Bearer "):
+        try:
+            from services.auth import verify_token
+            payload = verify_token(auth[7:]) or {}
+            tenant_id = payload.get("sub") or ""
+        except Exception:
+            pass
+    client_ip = request.remote_addr or ""
+    if not event:
+        return jsonify({"ok": False, "error": "event required"}), 400
+    ok = _beta_analytics.track_event(
+        event, meta=meta, tenant_id=tenant_id, client_ip=client_ip
+    )
+    if not ok:
+        return jsonify({"ok": False, "error": "rate limited or invalid event"}), 429
+    return jsonify({"ok": True})
+
+
+@app.route("/api/admin/analytics", methods=["GET"])
+def api_admin_analytics():
+    """Beta analytics report: DAU/WAU, module usage, time per module, dropoff.
+
+    Admin-gated exactly like /api/admin/conversion.
+    """
+    if not _admin_request_allowed():
+        return jsonify({"error": "admin access required"}), 403
+    days = request.args.get("days", 30, type=int)
+    days = max(1, min(days, 365))
+    report = _beta_analytics.get_report(days=days)
+    return jsonify(report)
 
 
 @app.route("/api/admin/conversion", methods=["GET"])
