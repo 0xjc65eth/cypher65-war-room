@@ -163,6 +163,15 @@ function renderMarketOfferHtml(offer, isBest, affiliate) {
   '</div>';
 }
 
+// Render-cap helper (mirrors app.js _mktRenderCap, Issue #185): limits how
+// many venue rows the DOM renders, reporting the total so the UI can show an
+// honest note instead of silently truncating.
+function mktRenderCap(venues, cap) {
+  var total = (venues || []).length;
+  var rows = total > cap ? (venues || []).slice(0, cap) : (venues || []);
+  return { rows: rows, total: total, capped: total > cap };
+}
+
 // Generate market grid HTML (pure function)
 function renderMarketGridHtml(offers, activeFilter) {
   if (!offers || !offers.length) {
@@ -2600,6 +2609,29 @@ var phOffers = [
 var phGrid = renderMarketGridHtml(phOffers, 'all');
 assertTruthy('phGrid shows PH/s', /PH/.test(phGrid));
 assertTruthy('phGrid shows 2.50', /2\.50/.test(phGrid));
+
+// ── mktRenderCap tests (Issue #185) ───────────────────────────────────
+var capNull = mktRenderCap(null, 50);
+assertEqual('renderCap null → total 0', capNull.total, 0);
+assertEqual('renderCap null → rows empty', capNull.rows.length, 0);
+assertFalsy('renderCap null → not capped', capNull.capped);
+
+var capBelow = mktRenderCap(twoOffers, 50);
+assertEqual('renderCap 2/50 → total 2', capBelow.total, 2);
+assertEqual('renderCap 2/50 → rows 2', capBelow.rows.length, 2);
+assertFalsy('renderCap 2/50 → not capped', capBelow.capped);
+assertEqual('renderCap 2/50 keeps order', capBelow.rows[0].provider, 'Braiins');
+
+var manyVenues = [];
+for (var vi = 0; vi < 60; vi++) {
+  manyVenues.push({ provider: 'Venue' + vi, price_btc_per_th_day: 0.00001 + vi / 1e8, hashrate: 10e12, fee: 1.0 });
+}
+var capHit = mktRenderCap(manyVenues, 50);
+assertEqual('renderCap 60/50 → total 60', capHit.total, 60);
+assertEqual('renderCap 60/50 → rows 50', capHit.rows.length, 50);
+assertTruthy('renderCap 60/50 → capped', capHit.capped);
+assertEqual('renderCap keeps first venue', capHit.rows[0].provider, 'Venue0');
+assertEqual('renderCap drops venue 59', capHit.rows[49].provider, 'Venue49');
 
 
 // ═══════════════════════════════════════════════════════════════════════════

@@ -761,6 +761,11 @@
     </table>
   </div>
 
+  <!-- Issue #185: cap de render honesto — quando a lista passa de 50 venues,
+       o DOM renderiza só as top-50 do sort atual e esta nota explica (nada
+       some silenciosamente). Preenchida pelo renderMarketGrid(). -->
+  <div class="mkt-render-cap__note" id="mkt-render-cap-note" hidden></div>
+
   <!-- ── Institutional Notes (collapsible, M6) ── -->
   <details class="mkt-notes" id="mkt-notes" style="display:none">
     <summary class="mkt-notes__title">◆ INSTITUTIONAL NOTES <span class="mkt-snapshot__caret"></span></summary>
