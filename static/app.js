@@ -4353,6 +4353,18 @@ function renderAccount(acct) {
   // Sort state: { key, dir } — dir -1 desc (best price first), 1 asc.
   let _mktSort = { key: 'price', dir: 1 };
 
+  // Render cap (Issue #185): the venue list can grow past 50 rows; the DOM
+  // only renders the top-50 of the CURRENT sort. The full count stays honest
+  // in the badge and a visible note explains the truncation (never silent).
+  const MKT_RENDER_CAP = 50;
+
+  // Pure helper (mirrored in tests/test_app_js_core.js).
+  function _mktRenderCap(venues, cap) {
+    const total = (venues || []).length;
+    const rows = total > cap ? (venues || []).slice(0, cap) : (venues || []);
+    return { rows, total, capped: total > cap };
+  }
+
   // Pure sort comparator (mirrored in tests/test_app_js_core.js):
   // returns venues sorted by the chosen key with the current direction.
   function sortMarketVenues(venues, key, dir) {
@@ -4474,6 +4486,18 @@ function renderAccount(acct) {
     });
     venues = sortMarketVenues(venues, _mktSort.key, _mktSort.dir);
 
+    // Render cap: keep the full sorted list for the honest count badge, but
+    // render only the top-50 in the DOM. The note makes the truncation
+    // explicit (Issue #185) — same pattern as the admin audit undercount.
+    const mktCap = _mktRenderCap(venues, MKT_RENDER_CAP);
+    const capNoteEl = document.getElementById('mkt-render-cap-note');
+    if (capNoteEl) {
+      capNoteEl.hidden = !mktCap.capped;
+      if (mktCap.capped) {
+        capNoteEl.textContent = 'mostrando as ' + mktCap.rows.length + ' melhores venues do sort atual — ' + mktCap.total + ' venues no total (use sort/filtro para refinar)';
+      }
+    }
+
     // Institutional Notes
     const notes = inst.notes || [];
     const notesEl = document.getElementById('mkt-notes');
@@ -4520,7 +4544,7 @@ function renderAccount(acct) {
       return bits.join(' · ');
     }
 
-    setHtmlIfChanged(tbody, venues.map(v => {
+    setHtmlIfChanged(tbody, mktCap.rows.map(v => {
       const tierCls = v.risk_tier === 1 ? 'mkt-table__tier--t1' : v.risk_tier === 2 ? 'mkt-table__tier--t2' : v.risk_tier === 3 ? 'mkt-table__tier--t3' : 'mkt-table__tier--t4';
       const spreadCls = v.spread_vs_best_pct <= 2 ? 'mkt-table__spread--tight' : v.spread_vs_best_pct > 20 ? 'mkt-table__spread--wide' : '';
       const recCls = v.recommendation.indexOf('Preferred') === 0 ? 'mkt-table__rec--best' : v.recommendation.indexOf('Avoid') === 0 ? 'mkt-table__rec--avoid' : '';

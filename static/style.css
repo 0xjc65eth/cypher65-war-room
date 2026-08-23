@@ -1991,6 +1991,7 @@ tr:hover td { background: var(--bg-hover); }
 .mkt-trend__legend-item { display: inline-flex; align-items: center; gap: 3px; font-size: 8px; color: var(--text-tertiary); font-family: var(--font-mono); }
 .mkt-trend__legend-dot { width: 6px; height: 6px; border-radius: 50%; display: inline-block; }
 .mkt-footnote { font-size: 9px; color: var(--text-tertiary); padding: 4px; font-style: italic; }
+.mkt-render-cap__note { font-size: 10px; color: var(--text-tertiary); font-style: italic; padding: 4px 2px 0; }
 /* M6: collapsible Executive Snapshot / Institutional Notes (details/summary
    — native, keyboard-accessible, zero JS). The summary acts as the header
    row; the caret rotates on open. */

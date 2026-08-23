@@ -245,6 +245,82 @@ test.describe('Hash Market — institutional table + affiliate (HashratePulse)',
     expect(tiers.some(t => t.includes('Tier 2'))).toBe(true);
   });
 
+  test('render cap: 60 venues → 50 linhas no DOM + nota honesta (Issue #185)', async ({ page }) => {
+    // Clone the base snapshot and inflate the venue list past the 50-row cap.
+    function buildCappedSnapshot() {
+      const snap = buildSnapshot();
+      const venues = [];
+      for (let i = 0; i < 60; i++) {
+        venues.push({
+          venue: 'venue-' + i,
+          price_btc_ph_day: 0.000012 + i * 0.000001,
+          price_sats_th_day: 1.2 + i * 0.1,
+          spread_vs_best_pct: i * 5,
+          spread_vs_vwap_pct: -10 + i,
+          available_ph: 0.05,
+          depth_score: 'Thin',
+          risk_tier: i % 4 === 0 ? 1 : 2,
+          risk_tier_label: 'Tier ' + (i % 4 === 0 ? 1 : 2),
+          recommendation: 'Acceptable for tactical allocation',
+          estimated: false,
+          source: 'mrr',
+          meta: {},
+        });
+      }
+      snap.market_data.institutional.venues = venues;
+      snap.market_data.institutional.snapshot.offer_count = 60;
+      return snap;
+    }
+
+    await page.addInitScript(() => {
+      if ('serviceWorker' in navigator) {
+        Object.defineProperty(navigator, 'serviceWorker', {
+          value: {
+            register: () => Promise.resolve(),
+            getRegistrations: () => Promise.resolve([]),
+            addEventListener: () => {},
+          },
+          configurable: true,
+        });
+      }
+      window.EventSource = class {
+        constructor() {}
+        close() {}
+        addEventListener() {}
+      };
+    });
+
+    await page.route('**/api/snapshot', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify(buildCappedSnapshot()),
+      });
+    });
+
+    await page.goto(BASE_URL);
+    await page.waitForSelector('#app-shell', { timeout: 15000 });
+    await ensureSidebarOpen(page);
+    await page.locator('.sidebar__link[data-module="market"]').click();
+
+    // Table renders (cap applied) and the honest note is visible.
+    await page.waitForFunction(() => {
+      const body = document.getElementById('mkt-table-body');
+      return body && body.querySelectorAll('.mkt-table__venue').length >= 50;
+    }, { timeout: 15000 });
+
+    const rowCount = await page.evaluate(() => {
+      const body = document.getElementById('mkt-table-body');
+      return body ? body.querySelectorAll('.mkt-table__venue').length : 0;
+    });
+    expect(rowCount).toBe(50);
+
+    const note = page.locator('#mkt-render-cap-note');
+    await expect(note).toBeVisible();
+    await expect(note).toContainText('50 melhores venues');
+    await expect(note).toContainText('60 venues no total');
+  });
+
   test('Decision Matrix shows affiliate BUY CTA', async ({ page }) => {
     await page.addInitScript(() => {
       if ('serviceWorker' in navigator) {
