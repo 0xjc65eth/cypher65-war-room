@@ -4836,8 +4836,7 @@ def _do_poll():
             "cny": btc_cny,
             "stale": btc_price_stale,
             "_source": (
-                "binance+coingecko+mempool" if _mempool_live
-                else "binance+coingecko"
+                "binance+coingecko+mempool" if _mempool_live else "binance+coingecko"
             ),
             "_age_s": max(0, int(time.time()) - btc_price_cache.get("ts", 0)),
         },
