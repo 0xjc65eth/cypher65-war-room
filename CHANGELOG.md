@@ -6,6 +6,29 @@ e versionamento semântico ([SemVer](https://semver.org/lang/pt-BR/)).
 
 ## [Unreleased]
 
+### Adicionado — disclaimer no módulo Probability — risco regulatório (Issues #347/#350)
+- **Disclaimer visual** no bloco Block Hunt: box amber "Estes valores são
+  estatísticos e não representam previsão nem garantia de resultado... Mining é
+  probabilístico — a sorte real pode diferir significativamente das estimativas."
+- **Callout warn** na seção docs Probability do dashboard.
+- CSS `.prob-disclaimer` consistente com `.doc-callout--warn` do design system.
+
+### Adicionado — EULA + consent explícito para Auto-Pilot (Issues #348/#350)
+- **Modal ARMAR**: checkbox "Li e aceito os termos" obrigatório antes de habilitar
+  o botão ARMAR — aviso de que comandos são executados em hardware real.
+- **Modal AUTONOMO**: checkbox equivalente com aviso de risco para execução autônoma.
+- JS: `_checkArmReady()` e `_checkAutoReady()` verificam consent + text input.
+- Botão desabilitado até AMBOS (consent checked + "ARMAR"/"AUTONOMO" digitado).
+- CSS `.ap-arm-modal__eula` amber box consistente com o design system.
+
+### Adicionado — ICPs, Beta Program e script de trial keys (Issue #349/#350)
+- **docs/ICPS.md**: 3 perfis de cliente (Solo Miner, Small Farm, Rental Op) com
+  dor, oferta, mensagem comercial, canal, ticket e critérios de validação.
+- **docs/BETA_PROGRAM.md**: programa de beta com regras, EULA summary, instruções
+  de trial key (3 métodos) e métricas de rastreamento.
+- **scripts/issue-beta-trial.sh**: emissor de N trial keys com expiração, health
+  check prévio, suporta --count/--days/--email/--url/--api-key.
+
 ### Adicionado — cap de render no HASH MARKET (top-50 do sort) com nota honesta (Issue #185)
 - **`MKT_RENDER_CAP = 50`** no `renderMarketGrid()`: o DOM renderiza só as **top-50
   venues do sort atual** (helper puro `_mktRenderCap`, aplicado DEPOIS do sort) —
