@@ -28,6 +28,7 @@ log = logging.getLogger(__name__)
 # Rate limit: max 1 event per second per client (by IP)
 # Set _RATE_LIMIT_WINDOW = 0 to disable (for tests).
 import os
+
 RATE_LIMIT_WINDOW = float(os.environ.get("BETA_ANALYTICS_RATE_LIMIT", "1"))
 _rate_cache: Dict[str, float] = {}
 
@@ -154,8 +155,7 @@ def get_report(days: int = 30) -> Dict[str, Any]:
 
         # Module time (avg seconds per module from module_time events)
         mod_time_rows = conn.execute(
-            "SELECT meta FROM beta_analytics "
-            "WHERE event='module_time' AND ts >= ?",
+            "SELECT meta FROM beta_analytics " "WHERE event='module_time' AND ts >= ?",
             (since,),
         ).fetchall()
         mod_times: Dict[str, list] = {}
@@ -195,8 +195,7 @@ def get_report(days: int = 30) -> Dict[str, Any]:
 
         # Boot count
         row = conn.execute(
-            "SELECT COUNT(*) FROM beta_analytics "
-            "WHERE event='boot' AND ts >= ?",
+            "SELECT COUNT(*) FROM beta_analytics " "WHERE event='boot' AND ts >= ?",
             (since,),
         ).fetchone()
         boot_count = row[0] if row else 0
@@ -214,8 +213,7 @@ def get_report(days: int = 30) -> Dict[str, Any]:
         # fall back to client_ip grouping, and if that's also empty (test
         # client), use row-level counting (boots without ANY switch).
         boot_rows = conn.execute(
-            "SELECT client_ip FROM beta_analytics "
-            "WHERE event='boot' AND ts >= ?",
+            "SELECT client_ip FROM beta_analytics " "WHERE event='boot' AND ts >= ?",
             (since,),
         ).fetchall()
         switch_rows = conn.execute(
@@ -232,15 +230,15 @@ def get_report(days: int = 30) -> Dict[str, Any]:
             dropoff_count = len(boot_ips - switch_ips)
         else:
             # Fallback: count boots where no module_switch exists at all
-            dropoff_count = boot_total - module_switch_count if module_switch_count < boot_total else 0
+            dropoff_count = (
+                boot_total - module_switch_count
+                if module_switch_count < boot_total
+                else 0
+            )
         dropoff = {
             "boot_without_switch": dropoff_count,
             "boot_total": boot_total,
-            "rate": (
-                round(dropoff_count / boot_total * 100, 1)
-                if boot_total
-                else 0
-            ),
+            "rate": (round(dropoff_count / boot_total * 100, 1) if boot_total else 0),
         }
 
         conn.close()

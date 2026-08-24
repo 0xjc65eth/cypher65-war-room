@@ -5545,6 +5545,7 @@ def api_analytics_track():
     if auth.startswith("Bearer "):
         try:
             from services.auth import verify_token
+
             payload = verify_token(auth[7:]) or {}
             tenant_id = payload.get("sub") or ""
         except Exception:
