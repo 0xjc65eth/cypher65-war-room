@@ -5,7 +5,7 @@
 # Versions verified locally on Python 3.12/3.13; CI gates on pytest-cov.
 -r requirements.txt
 
-pytest==9.0.2
+pytest==9.1.1
 pytest-cov==7.1.0
 pytest-mock==3.15.1
 coverage==7.15.4
@@ -18,7 +18,7 @@ flake8==7.3.0
 
 # ── Quality / security scanning (local use; CI integration pending) ──────
 bandit==1.9.4  # 1.8.2 crasha no AST do Python 3.14 ('Constant' object has no attribute 's') — Issue #125
-mypy==2.3.0
+mypy==2.3.1
 pre-commit==4.6.2
 
 # ── Mutation testing (Issue #29 · quality) — equivalente Python do Stryker.
@@ -26,4 +26,4 @@ pre-commit==4.6.2
 mutmut==3.7.0
 
 # ── Property-based testing for the probability/profitability math ────────
-hypothesis==6.165.6
+hypothesis==6.165.10

@@ -11337,6 +11337,50 @@ dom.walletSave?.addEventListener('click', async () => {
   }
   // Module navigation with exit/enter motion (design-motion-principles).
   // Exit (120ms) plays BEFORE the switch so display:none doesn't kill it;
+  // ── Beta analytics: self-hosted usage tracking (Issue #353) ──
+  const _analytics = { _lastModule: null, _lastModuleTs: 0 };
+  function _betaTrack(event, meta) {
+    try {
+      if (navigator.sendBeacon) {
+        const blob = new Blob([JSON.stringify({ event: event, meta: meta || {} })],
+          { type: 'application/json' });
+        navigator.sendBeacon('/api/analytics/track', blob);
+      } else {
+        fetch('/api/analytics/track', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ event: event, meta: meta || {} }),
+          keepalive: true,
+        }).catch(function() {});
+      }
+    } catch(e) {}
+  }
+  function _betaTrackModuleSwitch(toMod) {
+    var prev = _analytics._lastModule;
+    var prevTs = _analytics._lastModuleTs;
+    var now = Date.now();
+    if (prev && prevTs) {
+      var secs = Math.round((now - prevTs) / 1000);
+      if (secs > 0 && secs < 3600) {
+        _betaTrack('module_time', { module: prev, seconds: secs });
+      }
+    }
+    _analytics._lastModule = toMod;
+    _analytics._lastModuleTs = now;
+    _betaTrack('module_switch', { from: prev || '(boot)', to: toMod });
+  }
+
+  // Boot event
+  (function() {
+    try {
+      _betaTrack('boot', {
+        vw: (window.innerWidth || 0) + 'x' + (window.innerHeight || 0),
+        ua: navigator.userAgent ? navigator.userAgent.substring(0, 128) : '',
+        ts: Date.now(),
+      });
+    } catch(e) {}
+  })();
+
   // the switch is deferred by the same amount and token-guarded so rapid
   // sidebar clicks cancel the pending transition (Emil: interruptible).
   let _moduleNavToken = 0;
@@ -11404,6 +11448,8 @@ dom.walletSave?.addEventListener('click', async () => {
     if (mhDesc) mhDesc.textContent = info.desc || '';
     // Persist
     try { localStorage.setItem('_active_module', name); } catch(e) {}
+    // Beta analytics: track module switch + time in previous module
+    try { _betaTrackModuleSwitch(name); } catch(e) {}
     closeSidebar();
     // Depois que a visibilidade estabiliza: resize dos charts já criados
     // E cria/atualiza charts dos canvases que acabaram de ficar visíveis
