@@ -1,5 +1,6 @@
 """Tests for the core device API routes in app.py."""
 import time
+from unittest.mock import patch
 
 import pytest
 
@@ -153,6 +154,51 @@ class TestAppDeviceRoutes:
         data = response.get_json()
         assert data["success"] is False
         assert "offline" in data["error"].lower()
+        assert data["requires_confirmation"] is True
+
+    @pytest.mark.parametrize(
+        "path_suffix, payload, error",
+        [
+            ("command", ["restart"], "JSON body must be an object"),
+            ("command", {"command": 123}, "command must be a string"),
+            ("command", {"command": "restart", "parameters": []}, "parameters must be an object"),
+            ("test", ["restart"], "JSON body must be an object"),
+            ("test", {"command": 123}, "command must be a string"),
+        ],
+    )
+    def test_device_command_rejects_invalid_json_payloads(
+        self, client, path_suffix, payload, error
+    ):
+        """Invalid JSON shapes must return 400 instead of an internal error."""
+        flask_client, registry = client
+        device = Device(name="Test-Invalid-Payload", model="Bitaxe", ip="192.168.1.56")
+        registry.add_device(device)
+
+        response = flask_client.post(
+            f"/api/devices/{device.id}/{path_suffix}", json=payload
+        )
+
+        assert response.status_code == 400
+        assert response.get_json() == {"success": False, "error": error}
+
+    def test_device_test_command_is_simulated_without_building_an_adapter(self, client):
+        """The test endpoint is a dry-run: it must never touch ASIC I/O."""
+        flask_client, registry = client
+        device = Device(name="Test-Dry-Run", model="Bitaxe", ip="192.168.1.56")
+        registry.add_device(device)
+
+        with patch("routes.device_control._build_adapter") as build_adapter:
+            response = flask_client.post(
+                f"/api/devices/{device.id}/test", json={"command": "restart"}
+            )
+
+        assert response.status_code == 200
+        data = response.get_json()
+        assert data["success"] is True
+        assert data["simulated"] is True
+        assert data["test_mode"] is True
+        assert data["result"]["simulated"] is True
+        build_adapter.assert_not_called()
 
     def test_device_command_history_empty(self, client):
         flask_client, registry = client
@@ -182,7 +228,11 @@ class TestAppDeviceRoutes:
         data = response.get_json()
         assert data["success"] is True
         assert len(data["commands"]) == 1
-        assert data["commands"][0]["command"] == "restart"
+        entry = data["commands"][0]
+        assert entry["command"] == "restart"
+        assert entry["success"] is False
+        assert entry["result"]["requires_confirmation"] is True
+        assert isinstance(entry["timestamp"], int)
 
     def test_get_device_includes_health_fields(self, client):
         flask_client, registry = client

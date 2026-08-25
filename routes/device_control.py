@@ -191,6 +191,23 @@ def _record_attempt(
         log.warning("[device_control] record_command callback failed: %s", e)
 
 
+def _request_json_object():
+    """Return a JSON object body, or a JSON-safe 400 response.
+
+    Flask returns lists and scalar JSON values successfully. Command routes
+    accept objects only, so validate the envelope before accessing ``.get``.
+    """
+    data = request.get_json(silent=True)
+    if data is None:
+        return {}, None
+    if not isinstance(data, dict):
+        return None, (
+            jsonify({"success": False, "error": "JSON body must be an object"}),
+            400,
+        )
+    return data, None
+
+
 @device_control_bp.route("/api/devices/<device_id>/command", methods=["POST"])
 @require_tenant
 def execute_device_command(device_id: str, tenant_id: str = ""):
@@ -220,9 +237,19 @@ def execute_device_command(device_id: str, tenant_id: str = ""):
     if not raw:
         return jsonify({"success": False, "error": "device not found"}), 404
 
-    data = request.get_json(silent=True) or {}
-    command = (data.get("command") or "").strip().lower()
-    parameters = data.get("parameters") or {}
+    data, error_response = _request_json_object()
+    if error_response:
+        return error_response
+
+    command_value = data.get("command") or ""
+    if not isinstance(command_value, str):
+        return jsonify({"success": False, "error": "command must be a string"}), 400
+    command = command_value.strip().lower()
+    parameters = data.get("parameters")
+    if parameters is None:
+        parameters = {}
+    elif not isinstance(parameters, dict):
+        return jsonify({"success": False, "error": "parameters must be an object"}), 400
 
     if not command:
         return jsonify({"success": False, "error": "command is required"}), 400
@@ -372,8 +399,14 @@ def test_device_command(device_id: str, tenant_id: str = ""):
     if not raw:
         return jsonify({"success": False, "error": "device not found"}), 404
 
-    data = request.get_json(silent=True) or {}
-    command = (data.get("command") or "").strip().lower()
+    data, error_response = _request_json_object()
+    if error_response:
+        return error_response
+
+    command_value = data.get("command") or ""
+    if not isinstance(command_value, str):
+        return jsonify({"success": False, "error": "command must be a string"}), 400
+    command = command_value.strip().lower()
 
     if not command:
         return jsonify({"success": False, "error": "command is required"}), 400
