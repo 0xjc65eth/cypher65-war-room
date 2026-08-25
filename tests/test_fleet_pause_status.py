@@ -10,6 +10,7 @@ Covers the full propagation chain:
   5. POST .../resume — re-polls and derives ONLINE/IDLE from the real hashrate.
   6. Agent telemetry push — derives PAUSED from miningPaused in the payload.
 """
+
 import json
 import sqlite3
 
@@ -17,8 +18,11 @@ import pytest
 from unittest.mock import MagicMock, patch
 
 from axe_fleet.models import (
-    STATUS_PAUSED, STATUS_ONLINE, STATUS_OFFLINE,
-    derive_device_status, new_telemetry,
+    STATUS_PAUSED,
+    STATUS_ONLINE,
+    STATUS_OFFLINE,
+    derive_device_status,
+    new_telemetry,
 )
 
 
@@ -79,6 +83,7 @@ class TestDeriveDeviceStatus:
 class TestConnectorExtractMiningPaused:
     def _extract(self, info):
         from axe_fleet.connector import AxeOSConnector
+
         with patch.object(AxeOSConnector, "fetch_info", return_value=info):
             return AxeOSConnector("192.168.1.100").extract_telemetry()
 
@@ -110,7 +115,9 @@ def _make_registry(tmp_path):
         conn.row_factory = sqlite3.Row  # registry expects sqlite3.Row rows
         return conn
 
-    reg = __import__("axe_fleet.registry", fromlist=["DeviceRegistry"]).DeviceRegistry(_get_db)
+    reg = __import__("axe_fleet.registry", fromlist=["DeviceRegistry"]).DeviceRegistry(
+        _get_db
+    )
     reg.ensure_tables()
     return reg, db_path
 
@@ -185,9 +192,17 @@ def _mock_registry(device=DEVICE):
     return m
 
 
+def _confirmed_post(client, endpoint):
+    prepared = client.post(endpoint, json={})
+    assert prepared.status_code == 202
+    token = prepared.get_json()["confirmation_token"]
+    return client.post(endpoint, json={"confirmation_token": token})
+
+
 @pytest.fixture
 def client():
     import app as _app_module
+
     _app_module.app.config["TESTING"] = True
     with _app_module.app.test_client() as c:
         yield c
@@ -204,9 +219,10 @@ class TestPauseResumeRoutes:
             def pause(self):
                 return {"success": True}
 
-        with patch("axe_fleet.routes._registry", reg), \
-             patch("axe_fleet.routes.AxeOSConnector", FakeConn):
-            resp = client.post("/api/axe-fleet/devices/dev-pause-1/pause")
+        with patch("axe_fleet.routes._registry", reg), patch(
+            "axe_fleet.routes.AxeOSConnector", FakeConn
+        ):
+            resp = _confirmed_post(client, "/api/axe-fleet/devices/dev-pause-1/pause")
         assert resp.status_code == 200
         data = resp.get_json()
         assert data["success"] is True
@@ -219,11 +235,15 @@ class TestPauseResumeRoutes:
     def test_pause_updates_snapshot_cache(self, client):
         reg = _mock_registry()
         import services.state as _shared_state
+
         _shared_state.axe_telemetry_cache["dev-pause-1"] = {
-            "device_id": "dev-pause-1", "hashrate_hs": 1.4e12,
-            "status": "ONLINE", "hashrate": 1.4e12,
+            "device_id": "dev-pause-1",
+            "hashrate_hs": 1.4e12,
+            "status": "ONLINE",
+            "hashrate": 1.4e12,
         }
         try:
+
             class FakeConn:
                 def __init__(self, ip):
                     pass
@@ -231,9 +251,12 @@ class TestPauseResumeRoutes:
                 def pause(self):
                     return {"success": True}
 
-            with patch("axe_fleet.routes._registry", reg), \
-                 patch("axe_fleet.routes.AxeOSConnector", FakeConn):
-                resp = client.post("/api/axe-fleet/devices/dev-pause-1/pause")
+            with patch("axe_fleet.routes._registry", reg), patch(
+                "axe_fleet.routes.AxeOSConnector", FakeConn
+            ):
+                resp = _confirmed_post(
+                    client, "/api/axe-fleet/devices/dev-pause-1/pause"
+                )
             assert resp.status_code == 200
             cached = _shared_state.axe_telemetry_cache["dev-pause-1"]
             assert cached["status"] == STATUS_PAUSED
@@ -259,8 +282,9 @@ class TestPauseResumeRoutes:
                 tel["mining_paused"] = state["paused"]
                 return tel
 
-        with patch("axe_fleet.routes._registry", reg), \
-             patch("axe_fleet.routes.AxeOSConnector", FakeConn):
+        with patch("axe_fleet.routes._registry", reg), patch(
+            "axe_fleet.routes.AxeOSConnector", FakeConn
+        ):
             resp = client.post("/api/axe-fleet/devices/dev-pause-1/resume")
         assert resp.status_code == 200
         calls = reg.update_device.call_args_list
@@ -275,7 +299,7 @@ class TestPauseResumeRoutes:
         reg.enqueue_agent_command.return_value = {"id": "cmd-1"}
 
         with patch("axe_fleet.routes._registry", reg):
-            resp = client.post("/api/axe-fleet/devices/dev-pause-1/pause")
+            resp = _confirmed_post(client, "/api/axe-fleet/devices/dev-pause-1/pause")
         assert resp.status_code == 200
         assert resp.get_json()["queued"] is True
         assert reg.update_device.call_args[0][1]["status"] == STATUS_PAUSED
@@ -296,8 +320,9 @@ class TestPauseResumeRoutes:
                 tel["mining_paused"] = False
                 return tel
 
-        with patch("axe_fleet.routes._registry", reg), \
-             patch("axe_fleet.routes.AxeOSConnector", FakeConn):
+        with patch("axe_fleet.routes._registry", reg), patch(
+            "axe_fleet.routes.AxeOSConnector", FakeConn
+        ):
             resp = client.post("/api/axe-fleet/devices/dev-pause-1/resume")
         assert resp.status_code == 200
         assert reg.update_device.call_args[0][1]["status"] == "IDLE"
@@ -315,10 +340,12 @@ class TestPauseResumeRoutes:
 
             def extract_telemetry(self):
                 from axe_fleet.connector import AxeOSConnectorError
+
                 raise AxeOSConnectorError("device busy")
 
-        with patch("axe_fleet.routes._registry", reg), \
-             patch("axe_fleet.routes.AxeOSConnector", FakeConn):
+        with patch("axe_fleet.routes._registry", reg), patch(
+            "axe_fleet.routes.AxeOSConnector", FakeConn
+        ):
             resp = client.post("/api/axe-fleet/devices/dev-pause-1/resume")
         assert resp.status_code == 200
         assert resp.get_json()["success"] is True
@@ -331,17 +358,22 @@ class TestAgentTelemetryPaused:
     def test_agent_telemetry_response_reports_paused(self, client):
         reg = _mock_registry()
         reg.get_device_by_ip.return_value = {
-            "id": "dev-pause-1", "name": "T", "ip_address": "192.168.1.55",
+            "id": "dev-pause-1",
+            "name": "T",
+            "ip_address": "192.168.1.55",
         }
 
         from services import auth as _auth
-        with patch("axe_fleet.routes._registry", reg), \
-             patch.object(_auth, "verify_token",
-                          return_value={"sub": "t1", "agent": True}):
+
+        with patch("axe_fleet.routes._registry", reg), patch.object(
+            _auth, "verify_token", return_value={"sub": "t1", "agent": True}
+        ):
             resp = client.post(
                 "/api/agent/telemetry",
-                json={"ip": "192.168.1.55",
-                      "telemetry": {"hashrate_hs": 0, "mining_paused": True}},
+                json={
+                    "ip": "192.168.1.55",
+                    "telemetry": {"hashrate_hs": 0, "mining_paused": True},
+                },
                 headers={"Authorization": "Bearer fake-agent-token"},
             )
         assert resp.status_code == 200

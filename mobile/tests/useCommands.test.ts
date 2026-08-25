@@ -37,4 +37,30 @@ describe('useCommands', () => {
     expect(response.success).toBe(false);
     expect(response.error).toBe('Device offline');
   });
+
+  it('consumes the server confirmation before reporting success', async () => {
+    (client.sendDeviceCommand as jest.Mock)
+      .mockResolvedValueOnce({
+        success: false,
+        confirmation_required: true,
+        confirmation_token: 'one-time-token',
+      })
+      .mockResolvedValueOnce({ success: true });
+    const { result } = renderHook(() => useCommands('d1'));
+
+    let response: any;
+    await act(async () => {
+      response = await result.current.sendCommand('restart');
+    });
+
+    expect(client.sendDeviceCommand).toHaveBeenNthCalledWith(1, 'd1', 'restart', {});
+    expect(client.sendDeviceCommand).toHaveBeenNthCalledWith(
+      2,
+      'd1',
+      'restart',
+      {},
+      'one-time-token'
+    );
+    expect(response.success).toBe(true);
+  });
 });

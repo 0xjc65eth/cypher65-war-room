@@ -22,7 +22,12 @@ from typing import Any, Callable, Dict, List, Optional
 
 from flask import Blueprint, jsonify, request
 
-from services.tenant import require_tenant
+from services.command_confirmation import (
+    consume_confirmation,
+    issue_confirmation,
+    requires_confirmation,
+)
+from services.tenant import require_tenant, role_required
 
 from core.adapters.bitaxe_adapter import BitaxeAdapter
 from core.adapters.cgminer_adapter import CgminerAdapter
@@ -193,6 +198,7 @@ def _record_attempt(
 
 @device_control_bp.route("/api/devices/<device_id>/command", methods=["POST"])
 @require_tenant
+@role_required("member")
 def execute_device_command(device_id: str, tenant_id: str = ""):
     """Execute a command on a device (scoped to the request tenant).
 
@@ -221,11 +227,15 @@ def execute_device_command(device_id: str, tenant_id: str = ""):
         return jsonify({"success": False, "error": "device not found"}), 404
 
     data = request.get_json(silent=True) or {}
+    if not isinstance(data, dict):
+        return jsonify({"success": False, "error": "JSON object required"}), 400
     command = (data.get("command") or "").strip().lower()
     parameters = data.get("parameters") or {}
 
     if not command:
         return jsonify({"success": False, "error": "command is required"}), 400
+    if not isinstance(parameters, dict):
+        return jsonify({"success": False, "error": "parameters must be an object"}), 400
 
     # Normalize to a core Device for the SafetyEngine
     device = _dict_to_device(raw)
@@ -311,6 +321,56 @@ def execute_device_command(device_id: str, tenant_id: str = ""):
             400,
         )
 
+    # Restarting or pausing a physical miner is a two-step operation. The
+    # first request performs every non-I/O safety check and receives a short,
+    # one-time confirmation bound to this exact tenant/device/payload. A
+    # direct/replayed API call cannot skip this server-side control.
+    if requires_confirmation(command):
+        confirmation_token = data.get("confirmation_token")
+        if not confirmation_token:
+            confirmation = issue_confirmation(tenant_id, device_id, command, parameters)
+            _record_attempt(
+                device_id,
+                command,
+                parameters,
+                {
+                    "success": False,
+                    "pending_confirmation": True,
+                    "error": "server confirmation required",
+                },
+            )
+            return (
+                jsonify(
+                    {
+                        "success": False,
+                        "confirmation_required": True,
+                        "device_id": device_id,
+                        "command": command,
+                        "confirmation_token": confirmation["confirmation_token"],
+                        "expires_at": confirmation["expires_at"],
+                    }
+                ),
+                202,
+            )
+        if not consume_confirmation(
+            confirmation_token, tenant_id, device_id, command, parameters
+        ):
+            _record_attempt(
+                device_id,
+                command,
+                parameters,
+                {"success": False, "error": "invalid or expired confirmation"},
+            )
+            return (
+                jsonify(
+                    {
+                        "success": False,
+                        "error": "invalid, expired, or already used confirmation",
+                    }
+                ),
+                409,
+            )
+
     try:
         exec_result = adapter.execute_command(command, parameters)
     except Exception as e:
@@ -356,6 +416,7 @@ def execute_device_command(device_id: str, tenant_id: str = ""):
 
 @device_control_bp.route("/api/devices/<device_id>/test", methods=["POST"])
 @require_tenant
+@role_required("member")
 def test_device_command(device_id: str, tenant_id: str = ""):
     """Simulate a command on a device for UI testing (tenant-scoped).
     Does NOT contact real hardware. Returns simulated success response.
@@ -434,6 +495,7 @@ def test_device_command(device_id: str, tenant_id: str = ""):
 
 @device_control_bp.route("/api/devices/<device_id>/capabilities", methods=["GET"])
 @require_tenant
+@role_required("viewer")
 def get_device_capabilities(device_id: str, tenant_id: str = ""):
     """Get supported commands and their metadata for a device (tenant-scoped).
     Returns both raw capabilities and enriched command list with metadata.

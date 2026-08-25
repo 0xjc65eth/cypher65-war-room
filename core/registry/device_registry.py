@@ -178,9 +178,12 @@ class DeviceRegistry:
             device = self._ensure_capabilities(device)
             self.devices[device.id] = device
 
-    def count_by_status(self) -> Dict[str, int]:
+    def count_by_status(self, tenant_id: str = "") -> Dict[str, int]:
+        """Count device statuses, optionally limited to one tenant."""
         result = {s.value: 0 for s in DeviceStatus}
         for d in self.devices.values():
+            if tenant_id and d.tenant_id != tenant_id:
+                continue
             result[d.status.value] += 1
         return result
 
