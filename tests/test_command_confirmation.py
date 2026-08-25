@@ -1,6 +1,10 @@
 """Unit tests for one-time physical-command confirmations."""
 
-from services.command_confirmation import consume_confirmation, issue_confirmation
+from services.command_confirmation import (
+    consume_confirmation,
+    issue_confirmation,
+    requires_confirmation,
+)
 
 
 def test_confirmation_is_bound_to_exact_command_and_single_use(monkeypatch, tmp_path):
@@ -62,3 +66,16 @@ def test_confirmation_expires_fail_closed(monkeypatch, tmp_path):
         "restart",
         now=issued["expires_at"] + 1,
     )
+
+
+def test_all_physical_control_actions_require_server_confirmation():
+    for command in (
+        "restart",
+        "pause",
+        "configure",
+        "power_cycle",
+        "power_on",
+        "power_off",
+        "toggle",
+    ):
+        assert requires_confirmation(command)

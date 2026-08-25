@@ -709,36 +709,24 @@ def _require_local_or_session(f):
     return wrapper
 
 
-def _command_confirmation_response(device_id: str, command: str, tenant_id: str):
-    """Return a confirmation response when a physical action needs one.
-
-    Axe Fleet command endpoints do not accept operational parameters today,
-    so the confirmation is bound to an empty parameter object. This helper is
-    intentionally called immediately before dispatch/enqueueing.
-    """
+def _operational_confirmation_response(
+    target_id: str, command: str, tenant_id: str, parameters: dict
+):
+    """Issue or consume an exact, one-time confirmation for an operation."""
     if not requires_confirmation(command):
         return None
-    # Do not mint an authorization artifact for an unknown device or a
-    # capability that cannot execute. _execute_device_command repeats these
-    # checks immediately before dispatch to avoid TOCTOU surprises.
-    device = _registry.get_device(device_id, tenant_id=tenant_id) if _registry else None
-    if not device:
-        return jsonify({"error": "device not found"}), 404
-    capabilities = device.get("capabilities", {})
-    if not capabilities.get(command):
-        return jsonify({"error": f"'{command}' not supported by this device"}), 400
     data = request.get_json(silent=True) or {}
     if not isinstance(data, dict):
         return jsonify({"success": False, "error": "JSON object required"}), 400
     token = data.get("confirmation_token")
     if not token:
-        confirmation = issue_confirmation(tenant_id, device_id, command, {})
+        confirmation = issue_confirmation(tenant_id, target_id, command, parameters)
         return (
             jsonify(
                 {
                     "success": False,
                     "confirmation_required": True,
-                    "device_id": device_id,
+                    "target_id": target_id,
                     "command": command,
                     "confirmation_token": confirmation["confirmation_token"],
                     "expires_at": confirmation["expires_at"],
@@ -746,7 +734,7 @@ def _command_confirmation_response(device_id: str, command: str, tenant_id: str)
             ),
             202,
         )
-    if not consume_confirmation(token, tenant_id, device_id, command, {}):
+    if not consume_confirmation(token, tenant_id, target_id, command, parameters):
         return (
             jsonify(
                 {
@@ -757,6 +745,120 @@ def _command_confirmation_response(device_id: str, command: str, tenant_id: str)
             409,
         )
     return None
+
+
+def _command_confirmation_response(device_id: str, command: str, tenant_id: str):
+    """Confirm a supported physical miner command before dispatching it."""
+    # Do not mint an authorization artifact for an unknown device or a
+    # capability that cannot execute. _execute_device_command repeats these
+    # checks immediately before dispatch to avoid TOCTOU surprises.
+    device = _registry.get_device(device_id, tenant_id=tenant_id) if _registry else None
+    if not device:
+        return jsonify({"error": "device not found"}), 404
+    capabilities = device.get("capabilities", {})
+    if not capabilities.get(command):
+        return jsonify({"error": f"'{command}' not supported by this device"}), 400
+    return _operational_confirmation_response(device_id, command, tenant_id, {})
+
+
+_CONFIG_INT_LIMITS = {
+    "frequency": (100, 1200),
+    "coreVoltage": (500, 2000),
+    "fanSpeed": (0, 100),
+}
+_CONFIG_TEXT_LIMITS = {"pool": 255, "poolUser": 255, "hostname": 63}
+_TUYA_REGIONS = frozenset({"us", "eu", "cn", "in"})
+
+
+def _validate_device_settings(settings: object) -> tuple[dict | None, str | None]:
+    """Validate the documented AxeOS settings before a physical write.
+
+    The public endpoint previously forwarded arbitrary JSON directly to the
+    firmware. Keep the documented keys compatible, but fail closed for unknown
+    fields and unsafe ranges so a malformed client cannot overclock a miner or
+    alter its pool configuration accidentally.
+    """
+    if not isinstance(settings, dict) or not settings:
+        return None, "settings object required"
+    normalized = {}
+    for key, value in settings.items():
+        if key in _CONFIG_INT_LIMITS:
+            if isinstance(value, bool) or not isinstance(value, int):
+                return None, f"{key} must be an integer"
+            lower, upper = _CONFIG_INT_LIMITS[key]
+            if not lower <= value <= upper:
+                return None, f"{key} must be between {lower} and {upper}"
+            normalized[key] = value
+        elif key in _CONFIG_TEXT_LIMITS:
+            if not isinstance(value, str):
+                return None, f"{key} must be a string"
+            text = value.strip()
+            if not text or len(text) > _CONFIG_TEXT_LIMITS[key]:
+                return None, f"{key} has an invalid length"
+            if any(ord(char) < 32 for char in text):
+                return None, f"{key} contains invalid characters"
+            normalized[key] = text
+        else:
+            return None, f"unsupported setting: {key}"
+    return normalized, None
+
+
+def _request_json_object() -> tuple[dict | None, tuple | None]:
+    """Return a JSON object or a consistent 400 response."""
+    data = request.get_json(silent=True)
+    if data is None:
+        return {}, None
+    if not isinstance(data, dict):
+        return None, (jsonify({"success": False, "error": "JSON object required"}), 400)
+    return data, None
+
+
+def _valid_target_id(value: object, field: str) -> tuple[str | None, str | None]:
+    """Reject empty/control-character identifiers before external dispatch."""
+    if not isinstance(value, str):
+        return None, f"{field} is required"
+    normalized = value.strip()
+    if (
+        not normalized
+        or len(normalized) > 128
+        or any(ord(char) < 32 for char in normalized)
+    ):
+        return None, f"{field} is invalid"
+    return normalized, None
+
+
+def _validated_tuya_values(
+    data: dict, *, require_credentials: bool
+) -> tuple[dict | None, str | None]:
+    """Normalize a Tuya credential payload without logging its secrets."""
+    values = {}
+    limits = {"access_id": 256, "access_secret": 512, "uid": 256}
+    for field, limit in limits.items():
+        raw = data.get(field)
+        if raw is None:
+            if require_credentials and field in {"access_id", "access_secret"}:
+                return None, "access_id and access_secret are required"
+            continue
+        if not isinstance(raw, str):
+            return None, f"{field} must be a string"
+        value = raw.strip()
+        if not value:
+            if require_credentials and field in {"access_id", "access_secret"}:
+                return None, "access_id and access_secret are required"
+            continue
+        if len(value) > limit or any(ord(char) < 32 for char in value):
+            return None, f"{field} is invalid"
+        values[field] = value
+
+    raw_region = data.get("region", "us" if require_credentials else None)
+    if raw_region is not None:
+        if not isinstance(raw_region, str):
+            return None, "region must be a string"
+        region = raw_region.strip().lower()
+        if region not in _TUYA_REGIONS:
+            return None, "region must be one of: us, eu, cn, in"
+        values["region"] = region
+    return values, None
 
 
 # ── Device commands ─────────────────────────────────────────────────────
@@ -818,22 +920,33 @@ def resume_device(device_id: str, tenant_id: str = ""):
 
 @axe_fleet_bp.route("/devices/<device_id>/config", methods=["POST"])
 @_require_local_or_session
+@require_tenant
 @_role_required("member")
-def configure_device(device_id: str):
+def configure_device(device_id: str, tenant_id: str = ""):
     """Update device settings.
     JSON body: { "settings": { "frequency": 600, "coreVoltage": 1200 } }
     """
     if _registry is None:
         return jsonify({"error": "registry not initialized"}), 500
-    device = _registry.get_device(device_id, tenant_id=_get_tenant_id())
+    device = _registry.get_device(device_id, tenant_id=tenant_id)
     if not device:
         return jsonify({"error": "device not found"}), 404
 
-    data = request.get_json(silent=True) or {}
-    settings = data.get("settings", {})
-
-    if not settings:
-        return jsonify({"error": "settings object required"}), 400
+    data, error = _request_json_object()
+    if error:
+        return error
+    settings, error_message = _validate_device_settings(data.get("settings"))
+    if error_message:
+        _log_audit(
+            tenant_id,
+            "fleet.device_config_rejected",
+            target=device_id,
+            details={"reason": error_message},
+        )
+        return jsonify({"error": error_message}), 400
+    dry_run = data.get("dry_run", False)
+    if not isinstance(dry_run, bool):
+        return jsonify({"error": "dry_run must be a boolean"}), 400
 
     caps = device.get("capabilities", {})
     if not caps.get("configure"):
@@ -845,11 +958,49 @@ def configure_device(device_id: str):
     if "coreVoltage" in settings and not caps.get("voltageControl"):
         return jsonify({"error": "voltage control not supported by this device"}), 400
 
+    if dry_run:
+        _log_audit(
+            tenant_id,
+            "fleet.device_config_dry_run",
+            target=device_id,
+            details={"settings_keys": sorted(settings)},
+        )
+        return jsonify({"success": True, "dry_run": True, "settings": settings})
+
+    confirmation = _operational_confirmation_response(
+        device_id, "configure", tenant_id, {"settings": settings}
+    )
+    if confirmation is not None:
+        return confirmation
+
     try:
         conn = AxeOSConnector(device["ip_address"])
         result = conn.update_settings(settings)
-        return jsonify({"success": True, "result": result})
+        command_success = isinstance(result, dict) and bool(result.get("success"))
+        _log_audit(
+            tenant_id,
+            (
+                "fleet.device_config_applied"
+                if command_success
+                else "fleet.device_config_failed"
+            ),
+            target=device_id,
+            details={
+                "settings_keys": sorted(settings),
+                "success": command_success,
+            },
+        )
+        return (
+            jsonify({"success": command_success, "result": result}),
+            200 if command_success else 502,
+        )
     except AxeOSConnectorError as e:
+        _log_audit(
+            tenant_id,
+            "fleet.device_config_failed",
+            target=device_id,
+            details={"error": str(e), "settings_keys": sorted(settings)},
+        )
         return jsonify({"error": str(e)}), 503
 
 
@@ -1703,37 +1854,35 @@ def remote_test_connection(tenant_id: str = ""):
 # ── Power Plugs (Tuya Smart Plugs) ────────────────────────────────────────
 
 
-def _get_tuya_credentials() -> dict:
-    """Read Tuya credentials from settings DB or environment variables.
-    Returns dict with keys: access_id, access_secret, region (or empty).
-    """
-    s = {}
-    try:
-        conn = _get_db_internal()
-        cur = conn.cursor()
-        for k in ("tuya_access_id", "tuya_access_secret", "tuya_region", "tuya_uid"):
-            cur.execute("SELECT value FROM settings WHERE key=?", (k,))
-            r = cur.fetchone()
-            if r and r["value"]:
-                s[k] = r["value"]
-        conn.close()
-    except Exception as e:
-        log.warning("[tuya] failed to read settings from DB: %s", e)
+def _get_tuya_credentials(tenant_id: str = "") -> dict:
+    """Read only this tenant's Tuya credentials.
 
-    # Environment variables override DB
-    s["access_id"] = os.environ.get("TUYA_ACCESS_ID", "") or s.get("tuya_access_id", "")
-    s["access_secret"] = os.environ.get("TUYA_ACCESS_SECRET", "") or s.get(
-        "tuya_access_secret", ""
-    )
-    s["region"] = os.environ.get("TUYA_REGION", "") or s.get("tuya_region", "us")
-    s["uid"] = os.environ.get("TUYA_UID", "") or s.get("tuya_uid", "")
+    ``services.settings`` keeps named tenants isolated in ``tenant_settings``
+    and decrypts the credential values on read. Environment values remain a
+    self-host convenience for the default tenant only; inheriting the
+    operator's environment into a named tenant would permit cross-account
+    control of physical plugs.
+    """
+    from services.settings import is_default_tenant, load_settings
+
+    s = load_settings(tenant_id)
+    if is_default_tenant(tenant_id):
+        access_id = os.environ.get("TUYA_ACCESS_ID", "") or s.get("tuya_access_id", "")
+        access_secret = os.environ.get("TUYA_ACCESS_SECRET", "") or s.get(
+            "tuya_access_secret", ""
+        )
+        region = os.environ.get("TUYA_REGION", "") or s.get("tuya_region", "us")
+        uid = os.environ.get("TUYA_UID", "") or s.get("tuya_uid", "")
+    else:
+        access_id = s.get("tuya_access_id", "")
+        access_secret = s.get("tuya_access_secret", "")
+        region = s.get("tuya_region", "us")
+        uid = s.get("tuya_uid", "")
     return {
-        "access_id": s.get("tuya_access_id", "")
-        or os.environ.get("TUYA_ACCESS_ID", ""),
-        "access_secret": s.get("tuya_access_secret", "")
-        or os.environ.get("TUYA_ACCESS_SECRET", ""),
-        "region": s.get("tuya_region", "") or os.environ.get("TUYA_REGION", "us"),
-        "uid": s.get("tuya_uid", "") or os.environ.get("TUYA_UID", ""),
+        "access_id": access_id,
+        "access_secret": access_secret,
+        "region": region,
+        "uid": uid,
     }
 
 
@@ -1746,7 +1895,7 @@ def list_power_plugs(tenant_id: str = ""):
     """
     from services.tuya_adapter import TuyaCloudAdapter
 
-    creds = _get_tuya_credentials()
+    creds = _get_tuya_credentials(tenant_id)
     if not creds.get("access_id") or not creds.get("access_secret"):
         return jsonify(
             {
@@ -1770,8 +1919,9 @@ def list_power_plugs(tenant_id: str = ""):
 
 @axe_fleet_bp.route("/power-plugs/save-credentials", methods=["POST"])
 @_require_local_or_session
+@require_tenant
 @_role_required("member")
-def save_tuya_credentials():
+def save_tuya_credentials(tenant_id: str = ""):
     """Save Tuya Cloud credentials to the settings DB.
     Body (JSON):
       - access_id (str, required)
@@ -1779,19 +1929,19 @@ def save_tuya_credentials():
       - region (str, optional, default 'us')
       - uid (str, optional)
     """
-    data = request.get_json(silent=True) or {}
-    access_id = (data.get("access_id") or "").strip()
-    access_secret = (data.get("access_secret") or "").strip()
-    region = (data.get("region") or "us").strip()
-    uid = (data.get("uid") or "").strip()
-
-    if not access_id or not access_secret:
+    data, error = _request_json_object()
+    if error:
+        return error
+    values, error_message = _validated_tuya_values(data, require_credentials=True)
+    if error_message:
         return (
-            jsonify(
-                {"success": False, "error": "access_id and access_secret are required"}
-            ),
+            jsonify({"success": False, "error": error_message}),
             400,
         )
+    access_id = values["access_id"]
+    access_secret = values["access_secret"]
+    region = values["region"]
+    uid = values.get("uid", "")
 
     from services.tuya_adapter import TuyaCloudAdapter
 
@@ -1805,8 +1955,8 @@ def save_tuya_credentials():
         )
 
     try:
-        conn = _get_db_internal()
-        now = int(time.time())
+        from services.settings import save_setting
+
         pairs = [
             ("tuya_access_id", access_id),
             ("tuya_access_secret", access_secret),
@@ -1814,16 +1964,14 @@ def save_tuya_credentials():
         ]
         if uid:
             pairs.append(("tuya_uid", uid))
-        c = conn.cursor()
-        for k, v in pairs:
-            c.execute(
-                "INSERT INTO settings (key, value, updated_ts) VALUES (?, ?, ?) "
-                "ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_ts=excluded.updated_ts",
-                (k, v, now),
-            )
-        conn.commit()
-        conn.close()
+        if not all(save_setting(key, value, tenant_id) for key, value in pairs):
+            raise RuntimeError("failed to persist Tuya credentials")
         log.info("[tuya] credentials saved (region=%s)", region)
+        _log_audit(
+            tenant_id,
+            "fleet.tuya_credentials_saved",
+            details={"region": region, "uid_configured": bool(uid)},
+        )
         return jsonify(
             {"success": True, "valid": True, "uid": validation.get("uid", uid)}
         )
@@ -1833,53 +1981,101 @@ def save_tuya_credentials():
 
 
 @axe_fleet_bp.route("/power-plugs/validate", methods=["POST"])
+@_require_local_or_session
+@require_tenant
 @_role_required("member")
-def validate_tuya_credentials():
+def validate_tuya_credentials(tenant_id: str = ""):
     """Validate Tuya credentials without listing devices.
     Body (JSON, optional): override stored credentials.
     """
     from services.tuya_adapter import TuyaCloudAdapter
 
-    data = request.get_json(silent=True) or {}
-    creds = _get_tuya_credentials()
+    data, error = _request_json_object()
+    if error:
+        return error
+    overrides, error_message = _validated_tuya_values(data, require_credentials=False)
+    if error_message:
+        return jsonify({"valid": False, "error": error_message}), 400
+    creds = _get_tuya_credentials(tenant_id)
     # Allow override from request body
-    if data.get("access_id"):
-        creds["access_id"] = data["access_id"]
-    if data.get("access_secret"):
-        creds["access_secret"] = data["access_secret"]
-    if data.get("region"):
-        creds["region"] = data["region"]
+    for field in ("access_id", "access_secret", "region"):
+        if field in overrides:
+            creds[field] = overrides[field]
 
     if not creds.get("access_id") or not creds.get("access_secret"):
         return jsonify({"valid": False, "error": "missing credentials"})
 
     adapter = TuyaCloudAdapter()
     result = adapter.validate_credentials(**creds)
+    _log_audit(
+        tenant_id,
+        "fleet.tuya_credentials_validated",
+        details={"valid": bool(result.get("valid")), "region": creds.get("region", "")},
+    )
     return jsonify(result)
+
+
+def _execute_guarded_plug_command(plug_id: str, method: str, tenant_id: str):
+    """Validate, dry-run, confirm, and dispatch a physical plug command."""
+    normalized_plug_id, error_message = _valid_target_id(plug_id, "plug_id")
+    if error_message:
+        return jsonify({"success": False, "error": error_message}), 400
+    data, error = _request_json_object()
+    if error:
+        return error
+    dry_run = data.get("dry_run", False)
+    if not isinstance(dry_run, bool):
+        return jsonify({"success": False, "error": "dry_run must be a boolean"}), 400
+    if dry_run:
+        configured = bool(_get_tuya_credentials(tenant_id).get("access_id"))
+        _log_audit(
+            tenant_id,
+            "fleet.plug_command_dry_run",
+            target=normalized_plug_id,
+            details={"command": method, "configured": configured},
+        )
+        return jsonify(
+            {
+                "success": True,
+                "dry_run": True,
+                "plug_id": normalized_plug_id,
+                "command": method,
+                "configured": configured,
+            }
+        )
+    confirmation = _operational_confirmation_response(
+        normalized_plug_id, method, tenant_id, {}
+    )
+    if confirmation is not None:
+        return confirmation
+    return _execute_plug_command(normalized_plug_id, method, tenant_id=tenant_id)
 
 
 @axe_fleet_bp.route("/power-plugs/<plug_id>/on", methods=["POST"])
 @_require_local_or_session
+@require_tenant
 @_role_required("member")
-def power_plug_on(plug_id: str):
+def power_plug_on(plug_id: str, tenant_id: str = ""):
     """Turn a Tuya smart plug ON."""
-    return _execute_plug_command(plug_id, "power_on")
+    return _execute_guarded_plug_command(plug_id, "power_on", tenant_id)
 
 
 @axe_fleet_bp.route("/power-plugs/<plug_id>/off", methods=["POST"])
 @_require_local_or_session
+@require_tenant
 @_role_required("member")
-def power_plug_off(plug_id: str):
+def power_plug_off(plug_id: str, tenant_id: str = ""):
     """Turn a Tuya smart plug OFF."""
-    return _execute_plug_command(plug_id, "power_off")
+    return _execute_guarded_plug_command(plug_id, "power_off", tenant_id)
 
 
 @axe_fleet_bp.route("/power-plugs/<plug_id>/toggle", methods=["POST"])
 @_require_local_or_session
+@require_tenant
 @_role_required("member")
-def power_plug_toggle(plug_id: str):
+def power_plug_toggle(plug_id: str, tenant_id: str = ""):
     """Toggle a Tuya smart plug ON/OFF."""
-    return _execute_plug_command(plug_id, "toggle")
+    return _execute_guarded_plug_command(plug_id, "toggle", tenant_id)
 
 
 @axe_fleet_bp.route("/power-plugs/<plug_id>/status", methods=["GET"])
@@ -1889,7 +2085,7 @@ def power_plug_status(plug_id: str, tenant_id: str = ""):
     """Get current status of a specific Tuya plug."""
     from services.tuya_adapter import TuyaCloudAdapter
 
-    creds = _get_tuya_credentials()
+    creds = _get_tuya_credentials(tenant_id)
     if not creds.get("access_id") or not creds.get("access_secret"):
         return jsonify({"success": False, "error": "Tuya credentials not configured"})
 
@@ -1901,12 +2097,30 @@ def power_plug_status(plug_id: str, tenant_id: str = ""):
 # Background power-cycle task store
 _power_cycle_tasks: dict = {}
 _power_cycle_lock = threading.Lock()
+_ACTIVE_POWER_CYCLE_STATUSES = frozenset(
+    {"pending", "turning_off", "waiting", "turning_on"}
+)
+
+
+def _find_active_power_cycle(
+    tenant_id: str, device_id: str, plug_id: str
+) -> dict | None:
+    """Return a conflicting in-flight cycle for the same miner or plug."""
+    for task in _power_cycle_tasks.values():
+        if task.get("tenant_id") != tenant_id:
+            continue
+        if task.get("status") not in _ACTIVE_POWER_CYCLE_STATUSES:
+            continue
+        if task.get("device_id") == device_id or task.get("plug_id") == plug_id:
+            return task
+    return None
 
 
 @axe_fleet_bp.route("/miners/<device_id>/power-cycle", methods=["POST"])
 @_require_local_or_session
+@require_tenant
 @_role_required("member")
-def miner_power_cycle(device_id: str):
+def miner_power_cycle(device_id: str, tenant_id: str = ""):
     """Power-cycle a miner: turn plug OFF, wait, turn ON.
     Runs asynchronously in a background thread so the request returns
     immediately. Poll /power-cycle/status/<task_id> for progress.
@@ -1918,39 +2132,82 @@ def miner_power_cycle(device_id: str):
     Body (JSON):
       - plug_id (str, required): Tuya plug to cycle
       - off_seconds (int, optional): seconds to stay off, default 10
-      - confirm (bool, required): must be true — safety confirmation
+      - confirmation_token (str, required after prepare): server-issued token
+      - dry_run (bool, optional): validates without changing power state
     """
-    from services.tuya_adapter import TuyaCloudAdapter
+    data, error = _request_json_object()
+    if error:
+        return error
+    plug_id, error_message = _valid_target_id(data.get("plug_id"), "plug_id")
+    if error_message:
+        return jsonify({"success": False, "error": error_message}), 400
+    try:
+        off_seconds = int(data.get("off_seconds", 10))
+    except (TypeError, ValueError):
+        return (
+            jsonify({"success": False, "error": "off_seconds must be an integer"}),
+            400,
+        )
+    if not 5 <= off_seconds <= 60:
+        return (
+            jsonify(
+                {"success": False, "error": "off_seconds must be between 5 and 60"}
+            ),
+            400,
+        )
+    dry_run = data.get("dry_run", False)
+    if not isinstance(dry_run, bool):
+        return jsonify({"success": False, "error": "dry_run must be a boolean"}), 400
 
-    data = request.get_json(silent=True) or {}
-    plug_id = data.get("plug_id", "")
-    off_seconds = max(5, min(60, int(data.get("off_seconds", 10))))
-    confirmed = data.get("confirm", False)
+    if _registry is None:
+        return jsonify({"success": False, "error": "registry not initialized"}), 500
+    device = _registry.get_device(device_id, tenant_id=tenant_id)
+    if not device:
+        return jsonify({"success": False, "error": "miner not found"}), 404
 
-    if not plug_id:
-        return jsonify({"success": False, "error": "plug_id is required"})
-    if not confirmed:
-        return jsonify(
-            {
-                "success": False,
-                "error": "power-cycle requires confirmation (confirm: true)",
-            }
+    creds = _get_tuya_credentials(tenant_id)
+    if not creds.get("access_id") or not creds.get("access_secret"):
+        return (
+            jsonify({"success": False, "error": "Tuya credentials not configured"}),
+            503,
         )
 
-    if _registry:
-        device = _registry.get_device(device_id, tenant_id=_get_tenant_id())
-        if not device:
-            return jsonify({"success": False, "error": "miner not found"})
+    parameters = {"plug_id": plug_id, "off_seconds": off_seconds}
+    if dry_run:
+        _log_audit(
+            tenant_id,
+            "fleet.power_cycle_dry_run",
+            target=device_id,
+            details=parameters,
+        )
+        return jsonify({"success": True, "dry_run": True, **parameters})
 
-    creds = _get_tuya_credentials()
-    if not creds.get("access_id") or not creds.get("access_secret"):
-        return jsonify({"success": False, "error": "Tuya credentials not configured"})
+    with _power_cycle_lock:
+        active_task = _find_active_power_cycle(tenant_id, device_id, plug_id)
+    if active_task:
+        return (
+            jsonify(
+                {
+                    "success": False,
+                    "error": "power-cycle already in progress",
+                    "task_id": active_task["id"],
+                }
+            ),
+            409,
+        )
 
-    # Create async task
+    confirmation = _operational_confirmation_response(
+        device_id, "power_cycle", tenant_id, parameters
+    )
+    if confirmation is not None:
+        return confirmation
+
+    # Deduplicate again inside the same critical section used to create the
+    # task. The confirmation token remains one-time even when two clients race.
     task_id = uuid.uuid4().hex[:12]
     task = {
         "id": task_id,
-        "tenant_id": _get_tenant_id(),
+        "tenant_id": tenant_id,
         "device_id": device_id,
         "plug_id": plug_id,
         "status": "pending",
@@ -1959,7 +2216,26 @@ def miner_power_cycle(device_id: str):
         "created_at": int(time.time()),
     }
     with _power_cycle_lock:
+        active_task = _find_active_power_cycle(tenant_id, device_id, plug_id)
+        if active_task:
+            return (
+                jsonify(
+                    {
+                        "success": False,
+                        "error": "power-cycle already in progress",
+                        "task_id": active_task["id"],
+                    }
+                ),
+                409,
+            )
         _power_cycle_tasks[task_id] = task
+
+    _log_audit(
+        tenant_id,
+        "fleet.power_cycle_started",
+        target=device_id,
+        details={"plug_id": plug_id, "off_seconds": off_seconds, "task_id": task_id},
+    )
 
     def _run():
         from services.tuya_adapter import TuyaCloudAdapter as _TCA
@@ -1972,7 +2248,9 @@ def miner_power_cycle(device_id: str):
             if not off_r.get("success"):
                 task["status"] = "failed"
                 task["error"] = f"power-off failed: {off_r.get('error')}"
-                _audit_power_action(device_id, "power_cycle", False, task["error"])
+                _audit_power_action(
+                    device_id, "power_cycle", False, task["error"], tenant_id=tenant_id
+                )
                 return
             task["steps"].append("off")
             log.info("[power-cycle] %s → OFF (task %s)", device_id, task_id)
@@ -1988,7 +2266,9 @@ def miner_power_cycle(device_id: str):
             if not on_r.get("success"):
                 task["status"] = "failed"
                 task["error"] = f"power-on failed: {on_r.get('error')}"
-                _audit_power_action(device_id, "power_cycle", False, task["error"])
+                _audit_power_action(
+                    device_id, "power_cycle", False, task["error"], tenant_id=tenant_id
+                )
                 return
             task["steps"].append("on")
             log.info("[power-cycle] %s → ON (task %s)", device_id, task_id)
@@ -1999,11 +2279,15 @@ def miner_power_cycle(device_id: str):
                 "power_cycle",
                 True,
                 f"cycled via plug {plug_id} ({off_seconds}s off)",
+                tenant_id=tenant_id,
             )
         except Exception as e:
             task["status"] = "failed"
             task["error"] = str(e)
             log.error("[power-cycle] task %s exception: %s", task_id, e)
+            _audit_power_action(
+                device_id, "power_cycle", False, str(e), tenant_id=tenant_id
+            )
 
     t = threading.Thread(target=_run, daemon=True, name=f"pwr-cycle-{task_id}")
     t.start()
@@ -2036,8 +2320,15 @@ def power_cycle_status(task_id: str, tenant_id: str = ""):
 # ── Audit helpers ──────────────────────────────────────────────────────────
 
 
-def _audit_power_action(device_id: str, action: str, success: bool, detail: str = ""):
-    """Log a power action to the alerts/audit trail."""
+def _audit_power_action(
+    device_id: str,
+    action: str,
+    success: bool,
+    detail: str = "",
+    *,
+    tenant_id: str = "",
+):
+    """Log a power action to the legacy and structured audit trails."""
     try:
         conn = _get_db_internal()
         c = conn.cursor()
@@ -2056,6 +2347,12 @@ def _audit_power_action(device_id: str, action: str, success: bool, detail: str 
         conn.close()
     except Exception as e:
         log.warning("[audit] power action log error: %s", e)
+    _log_audit(
+        tenant_id,
+        f"fleet.{action.replace(' ', '_')}",
+        target=device_id,
+        details={"success": success, "detail": detail[:300]},
+    )
 
 
 # DB path — same as app.py's DB_PATH, but with a local default
@@ -2070,11 +2367,11 @@ def _get_db_internal():
     return conn
 
 
-def _execute_plug_command(plug_id: str, method: str) -> tuple:
+def _execute_plug_command(plug_id: str, method: str, tenant_id: str = "") -> tuple:
     """Execute a power plug command with consistent error handling."""
     from services.tuya_adapter import TuyaCloudAdapter
 
-    creds = _get_tuya_credentials()
+    creds = _get_tuya_credentials(tenant_id)
     if not creds.get("access_id") or not creds.get("access_secret"):
         return (
             jsonify({"success": False, "error": "Tuya credentials not configured"}),
@@ -2087,8 +2384,13 @@ def _execute_plug_command(plug_id: str, method: str) -> tuple:
         return jsonify({"success": False, "error": f"unknown method: {method}"}), 400
 
     result = fn(plug_id, **creds)
-    if result.get("success"):
-        _audit_power_action(plug_id, method.replace("_", " "), True)
+    _audit_power_action(
+        plug_id,
+        method.replace("_", " "),
+        bool(result.get("success")),
+        str(result.get("error", "")),
+        tenant_id=tenant_id,
+    )
     return jsonify(result)
 
 
@@ -2138,7 +2440,7 @@ def remote_onboarding(tenant_id: str = ""):
         {
             "id": "tuya_configured",
             "label": "Tomadas Tuya configuradas",
-            "done": bool(_get_tuya_credentials().get("access_id")),
+            "done": bool(_get_tuya_credentials(tenant_id).get("access_id")),
             "instructions": "Adicione as credenciais Tuya Cloud (Access ID, Secret, Region) em Settings ou no .env",
         },
     ]

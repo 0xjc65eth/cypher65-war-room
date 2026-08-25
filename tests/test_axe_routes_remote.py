@@ -91,77 +91,43 @@ class TestFmtUptime:
 # ═══════════════════════════════════════════════════════════════════════════
 
 class TestGetTuyaCredentials:
-    """Tests for _get_tuya_credentials() with mocked DB."""
+    """Tests for _get_tuya_credentials() through tenant settings."""
 
-    def test_reads_from_db(self):
-        """Should read Tuya keys from settings table."""
-        from tests.conftest import MockRow
+    def test_reads_default_tenant_settings(self):
+        """The self-host tenant reads its own settings before env fallback."""
+        values = {
+            "tuya_access_id": "tuya_id_123",
+            "tuya_access_secret": "tuya_secret_456",
+            "tuya_region": "eu",
+            "tuya_uid": "uid_789",
+        }
+        with patch("services.settings.load_settings", return_value=values):
+            with patch.dict("axe_fleet.routes.os.environ", {}, clear=True):
+                from axe_fleet.routes import _get_tuya_credentials
 
-        mock_conn = MagicMock()
-        mock_cursor = MagicMock()
-        mock_conn.cursor.return_value = mock_cursor
+                creds = _get_tuya_credentials()
+        assert creds == {
+            "access_id": "tuya_id_123",
+            "access_secret": "tuya_secret_456",
+            "region": "eu",
+            "uid": "uid_789",
+        }
 
-        # Return one value per fetchone call, in order
-        mock_cursor.fetchone.side_effect = [
-            MockRow({"value": "tuya_id_123"}),
-            MockRow({"value": "tuya_secret_456"}),
-            MockRow({"value": "eu"}),
-            MockRow({"value": "uid_789"}),
-        ]
-
-        with patch("axe_fleet.routes._get_db_internal", return_value=mock_conn):
-            from axe_fleet.routes import _get_tuya_credentials
-            creds = _get_tuya_credentials()
-            assert creds.get("access_id") == "tuya_id_123"
-            assert creds.get("access_secret") == "tuya_secret_456"
-            assert creds.get("region") == "eu"
-            assert creds.get("uid") == "uid_789"
-
-    def test_empty_db_falls_to_env(self):
-        """Empty DB should fall back to environment variables."""
-        mock_conn = MagicMock()
-        mock_cursor = MagicMock()
-        mock_conn.cursor.return_value = mock_cursor
-        mock_cursor.fetchone.return_value = None
-
+    def test_default_tenant_falls_to_env(self):
+        """Empty self-host settings may use operator environment values."""
         test_env = {
             "TUYA_ACCESS_ID": "env_id",
             "TUYA_ACCESS_SECRET": "env_secret",
             "TUYA_REGION": "cn",
         }
-
-        with patch("axe_fleet.routes._get_db_internal", return_value=mock_conn):
-            with patch.dict("axe_fleet.routes.os.environ", test_env, clear=False):
+        with patch("services.settings.load_settings", return_value={}):
+            with patch.dict("axe_fleet.routes.os.environ", test_env, clear=True):
                 from axe_fleet.routes import _get_tuya_credentials
-                creds = _get_tuya_credentials()
-                assert creds.get("access_id") == "env_id"
-                assert creds.get("access_secret") == "env_secret"
-                assert creds.get("region") == "cn"
 
-    def test_db_and_env_empty(self):
-        """Both empty should return region default 'us'."""
-        mock_conn = MagicMock()
-        mock_cursor = MagicMock()
-        mock_conn.cursor.return_value = mock_cursor
-        mock_cursor.fetchone.return_value = None
-
-        with patch("axe_fleet.routes._get_db_internal", return_value=mock_conn):
-            with patch.dict("axe_fleet.routes.os.environ", {}, clear=True):
-                from axe_fleet.routes import _get_tuya_credentials
                 creds = _get_tuya_credentials()
-                assert creds.get("access_id") == ""
-                assert creds.get("access_secret") == ""
-                assert creds.get("region") == "us"  # default
-
-    def test_db_error_handled(self):
-        """DB connection error should not crash, fall back to env."""
-        with patch("axe_fleet.routes._get_db_internal",
-                   side_effect=RuntimeError("DB down")):
-            with patch.dict("axe_fleet.routes.os.environ",
-                            {"TUYA_ACCESS_ID": "backup_id"}, clear=False):
-                from axe_fleet.routes import _get_tuya_credentials
-                creds = _get_tuya_credentials()
-                assert creds.get("access_id") == "backup_id"
+        assert creds.get("access_id") == "env_id"
+        assert creds.get("access_secret") == "env_secret"
+        assert creds.get("region") == "cn"
 
 
 # ═══════════════════════════════════════════════════════════════════════════
