@@ -17,7 +17,17 @@ from typing import Any, Dict, Optional
 
 
 CONFIRMATION_TTL_SECONDS = 120
-CONFIRMABLE_COMMANDS = frozenset({"restart", "pause"})
+CONFIRMABLE_COMMANDS = frozenset(
+    {
+        "restart",
+        "pause",
+        "configure",
+        "power_cycle",
+        "power_on",
+        "power_off",
+        "toggle",
+    }
+)
 
 
 def requires_confirmation(command: str) -> bool:

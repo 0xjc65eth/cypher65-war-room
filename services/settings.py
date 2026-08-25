@@ -24,7 +24,13 @@ log = logging.getLogger("cypher65.settings")
 # stores the ciphertext. No SECRET_KEY (open self-host) → values are stored
 # as-is (best-effort, same behavior as before). Legacy plaintext values are
 # read back unchanged.
-_CREDENTIAL_KEYS = {"braiins_api_key", "mrr_api_key", "mrr_api_secret"}
+_CREDENTIAL_KEYS = {
+    "braiins_api_key",
+    "mrr_api_key",
+    "mrr_api_secret",
+    "tuya_access_id",
+    "tuya_access_secret",
+}
 _ENC_PREFIX = "enc:v1:"
 # Cached Fernet instance + the SECRET_KEY it was derived from — creating a
 # Fernet (SHA256 + b64) on every credential call is wasteful on the hot
@@ -113,6 +119,12 @@ DEFAULT_SETTINGS = {
     "mrr_api_key": "",
     "mrr_api_secret": "",
     "braiins_api_key": "",
+    # Fleet power control credentials. These are tenant-scoped and encrypted
+    # at rest by ``save_setting`` like the rental-provider credentials above.
+    "tuya_access_id": "",
+    "tuya_access_secret": "",
+    "tuya_region": "us",
+    "tuya_uid": "",
     "auto_pilot_armed": "0",
     # Fase 4 (Issue #178): execução autônoma das recomendações (gate PRO).
     "auto_pilot_autonomous": "0",
