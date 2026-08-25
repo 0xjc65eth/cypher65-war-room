@@ -220,7 +220,7 @@ def recent_audit_logs(tenant_id: str = "", limit: int = 100) -> list:
 def get_tenant_id() -> str:
     """Extract tenant ID from the current request context.
 
-    Priority: JWT auth payload > Authorization Bearer > session.
+    Priority: JWT auth payload > Authorization Bearer > API key > session.
     Returns 'default' as fallback (single-tenant mode).
     """
     # 1) JWT auth payload (from require_auth decorator)
@@ -242,19 +242,35 @@ def get_tenant_id() -> str:
                 return payload["sub"]
     except Exception:
         pass
-    # 3) Flask session (legacy)
+    # 3) API key — deployment-owner credentials map to exactly one tenant.
+    try:
+        api_key = request.headers.get("X-API-Key", "")
+        if api_key:
+            from services.auth import resolve_tenant_for_api_key
+
+            tenant_id = resolve_tenant_for_api_key(api_key)
+            if tenant_id:
+                return tenant_id
+    except Exception:
+        pass
+    # 4) Flask session (legacy)
     try:
         if session and session.get("authenticated"):
             return session.get("tenant_id", "default")
     except RuntimeError:
         pass
-    # 4) Default tenant (single-user mode)
+    # 5) Default tenant (single-user mode)
     return "default"
 
 
 def require_tenant(f):
-    """Flask decorator: extract tenant_id from JWT/session and inject
-    as keyword argument `tenant_id` to the route handler."""
+    """Inject the resolved ``tenant_id`` into a tenant-scoped route.
+
+    Tenant isolation and authentication are separate concerns: endpoints that
+    require a caller identity must also use ``role_required`` or their own
+    authentication decorator. This keeps intentionally public ingestion
+    endpoints compatible while avoiding accidental cross-tenant access.
+    """
 
     @wraps(f)
     def wrapper(*args, **kwargs):
@@ -311,6 +327,19 @@ def get_current_role() -> str:
                 return str(payload["role"])
             if payload:
                 return "admin"
+    except Exception:
+        pass
+    try:
+        if session and session.get("authenticated"):
+            return str(session.get("role", "admin"))
+    except RuntimeError:
+        pass
+    try:
+        from services.auth import resolve_tenant_for_api_key
+
+        api_key = request.headers.get("X-API-Key", "")
+        if api_key and resolve_tenant_for_api_key(api_key):
+            return "admin"
     except Exception:
         pass
     # Localhost is the deployment operator by definition (dev + VPS shell) —

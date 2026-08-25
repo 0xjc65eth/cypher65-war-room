@@ -1,4 +1,5 @@
 """Tests for core/registry/device_registry.py."""
+
 import pytest
 
 from core.registry.device_registry import DeviceRegistry
@@ -58,6 +59,19 @@ class TestDeviceRegistry:
         assert counts["online"] == 1
         assert counts["offline"] == 1
         assert counts["warning"] == 1
+
+    def test_count_by_status_is_tenant_scoped(self, registry):
+        tenant_a = Device(name="tenant-a", model="Bitaxe", tenant_id="tenant-a")
+        tenant_a.status = DeviceStatus.ONLINE
+        tenant_b = Device(name="tenant-b", model="Bitaxe", tenant_id="tenant-b")
+        tenant_b.status = DeviceStatus.OFFLINE
+        registry.add_device(tenant_a)
+        registry.add_device(tenant_b)
+
+        counts = registry.count_by_status(tenant_id="tenant-a")
+
+        assert counts["online"] == 1
+        assert counts["offline"] == 0
 
     def test_load_from_db_persists_state(self, tmp_path):
         db_path = tmp_path / "persist.sqlite"

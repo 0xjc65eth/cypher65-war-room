@@ -10,7 +10,20 @@ export const useCommands = (deviceId: string) => {
       setLoading(true);
       setError(null);
       try {
-        const result = await sendDeviceCommand(deviceId, command, parameters);
+        let result = await sendDeviceCommand(deviceId, command, parameters);
+        if (result?.confirmation_required && result.confirmation_token) {
+          result = await sendDeviceCommand(
+            deviceId,
+            command,
+            parameters,
+            result.confirmation_token
+          );
+        }
+        if (!result?.success) {
+          const message = result?.error || 'Command failed';
+          setError(message);
+          return { success: false, error: message, data: result };
+        }
         return { success: true, data: result };
       } catch (err) {
         const message = (err as Error).message;
