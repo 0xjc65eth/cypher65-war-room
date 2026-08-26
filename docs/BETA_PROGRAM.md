@@ -105,3 +105,21 @@ The full EULA is displayed in the Auto-Pilot arm/auto modal before consent is re
 - Conversion funnel: paywall_view → modal_open → checkout_start → key_activated
 - Auto-Pilot: arm events, autonomous executions, SafetyEngine blocks
 - No telemetry is sent to external servers. All metrics are stored in the local SQLite database.
+
+### Viewing the beta analytics dashboard
+
+Open **Admin → Uso do Beta** from the War Room running on localhost. The panel
+shows real events from the selected instance: boots, DAU/WAU, module usage,
+time per module, and boot-to-navigation dropoff. It is loaded only when the
+Admin module is opened.
+
+Remote access requires the same operator API-key gate as the other
+`/api/admin/*` endpoints. The raw report remains available for diagnostics:
+
+```bash
+curl -H "X-API-Key: $API_KEY" \
+  "https://your-war-room.example/api/admin/analytics?days=30"
+```
+
+An empty panel means that the local instance has not recorded beta usage in
+the selected period; the UI does not generate placeholder analytics.

@@ -134,20 +134,40 @@ def get_report(days: int = 30) -> Dict[str, Any]:
         ).fetchone()
         unique_tenants = row[0] if row else 0
 
-        # DAU (unique tenants per day)
+        # DAU/WAU: authenticated installs use tenant_id; self-hosted anonymous
+        # installs fall back to client_ip. Only aggregate counts leave SQLite.
+        # A final anonymous bucket keeps test/CLI events honest without
+        # exposing raw IPs or inventing users in the frontend.
         dau_rows = conn.execute(
-            "SELECT DATE(ts, 'unixepoch') as day, COUNT(DISTINCT tenant_id) "
-            "FROM beta_analytics WHERE ts >= ? AND tenant_id != '' "
+            "SELECT DATE(ts, 'unixepoch') as day, "
+            "COUNT(DISTINCT CASE "
+            "WHEN tenant_id != '' THEN 'tenant:' || tenant_id "
+            "WHEN client_ip != '' THEN 'ip:' || client_ip "
+            "ELSE 'anonymous' END) "
+            "FROM beta_analytics WHERE ts >= ? "
             "GROUP BY day ORDER BY day",
             (since,),
         ).fetchall()
         dau = [{"day": r[0], "users": r[1]} for r in dau_rows]
 
-        # WAU (unique tenants per week)
+        # Daily boots drive the admin usage trend. Keep this aggregation in
+        # SQLite so the browser receives a bounded, presentation-ready series
+        # instead of raw events or synthetic zero-filled samples.
+        boot_day_rows = conn.execute(
+            "SELECT DATE(ts, 'unixepoch') as day, COUNT(*) "
+            "FROM beta_analytics WHERE event='boot' AND ts >= ? "
+            "GROUP BY day ORDER BY day",
+            (since,),
+        ).fetchall()
+        boots_by_day = [{"day": r[0], "boots": r[1]} for r in boot_day_rows]
+
         wau_rows = conn.execute(
             "SELECT STRFTIME('%Y-W%W', ts, 'unixepoch') as week, "
-            "COUNT(DISTINCT tenant_id) "
-            "FROM beta_analytics WHERE ts >= ? AND tenant_id != '' "
+            "COUNT(DISTINCT CASE "
+            "WHEN tenant_id != '' THEN 'tenant:' || tenant_id "
+            "WHEN client_ip != '' THEN 'ip:' || client_ip "
+            "ELSE 'anonymous' END) "
+            "FROM beta_analytics WHERE ts >= ? "
             "GROUP BY week ORDER BY week",
             (since,),
         ).fetchall()
@@ -248,6 +268,7 @@ def get_report(days: int = 30) -> Dict[str, Any]:
             "unique_tenants": unique_tenants,
             "dau": dau,
             "wau": wau,
+            "boots_by_day": boots_by_day,
             "module_time": module_time,
             "module_usage": module_usage,
             "boot_count": boot_count,

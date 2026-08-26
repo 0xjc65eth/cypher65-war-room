@@ -137,6 +137,7 @@ class TestAnalyticsReport:
         assert "unique_tenants" in data
         assert "dau" in data
         assert "wau" in data
+        assert "boots_by_day" in data
         assert "module_time" in data
         assert "module_usage" in data
         assert "boot_count" in data
@@ -184,10 +185,13 @@ class TestAnalyticsReport:
         assert resp.status_code == 200
         data = resp.get_json()
         assert data["boot_count"] >= 3
+        assert sum(point["boots"] for point in data["boots_by_day"]) >= 3
         assert data["module_switch_count"] >= 1
         assert "market" in data["module_usage"]
         assert "market" in data["module_time"]
         assert data["module_time"]["market"]["avg_seconds"] == 90.0
+        assert data["dau"][-1]["users"] >= 1
+        assert data["wau"][-1]["users"] >= 1
 
     def test_dropoff_calculation(self, isolated_client):
         """Report always includes dropoff structure with correct keys."""
