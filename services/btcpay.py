@@ -1,8 +1,9 @@
 """
 CYPHER65 // Payments (P4 — BTCPay Server adapter, Issue #248)
 =============================================================
-Bitcoin payment fulfillment for the PRO/PREMIUM license gate, paid
-exclusively in BTC to the operator's fixed address.
+Bitcoin payment fulfillment for the PRO/PREMIUM license gate. BTCPay settles
+to the wallet configured in its store; the optional fixed address is operator
+metadata and is never substituted for a per-invoice payment target.
 
 Provider: BTCPay Server Greenfield API — self-custody (funds go straight to
 the operator's own wallet), 0% platform fee, no KYC (aligned with the
@@ -10,9 +11,9 @@ Bitcoin-native audience). Supports on-chain (BIP-21) AND Lightning (BOLT-11)
 payment rails; Lightning settles instantly, on-chain after 1 confirmation.
 
 Design — OFF BY DEFAULT (same ethos as payments.py / Lemon Squeezy):
-  No ``BTCPAY_URL`` + ``BTCPAY_API_KEY`` → ``btcpay_configured()`` is False,
-  the BTC checkout path returns 503 and the webhook returns 400. The
-  existing Lemon Squeezy (card) path is untouched.
+  URL + API key + store id + webhook secret are all required. Any missing
+  value keeps ``btcpay_configured()`` false, checkout at 503, and the public
+  tab hidden. The existing Lemon Squeezy (card) path is untouched.
 
 Fulfillment flow:
   Frontend "Pay with Bitcoin" → POST /api/upgrade/checkout {method:"btc"}
@@ -28,19 +29,20 @@ returns the already-issued key, never a second license.
 
 Fallback WebLN (Issue #248): when the server can't reach a BTCPay instance,
 ``create_webln_invoice()`` generates a BOLT-11 via the operator's Lightning
-node env (LN_ADDRESS) — the frontend calls window.webln.sendPayment() and
-records the preimage through the EXISTING donations ledger path.
+node adapter (LN_INVOICE_ENDPOINT) — the frontend calls
+window.webln.sendPayment() and records the preimage through the EXISTING
+donations ledger path.
 
-Payment address (fixed, P4-3): PAYMENT_BTC_ADDRESS (default "")
+Payment address metadata (P4-3): PAYMENT_BTC_ADDRESS (default "")
   — NEVER the data-wallet BTC_ADDRESS (services/polling.py uses that for
-  Parasite API data; the two roles are strictly separated).
+  Parasite API data). It does not settle BTCPay or WebLN invoices.
 
 Env vars:
   BTCPAY_URL             — e.g. https://btcpay.example.com (Greenfield API root)
   BTCPAY_API_KEY         — Greenfield API key (store + invoice scope)
   BTCPAY_STORE_ID        — store id
   BTCPAY_WEBHOOK_SECRET  — shared secret for the x-btcpay-sig HMAC-SHA256
-  PAYMENT_BTC_ADDRESS    — the operator's fixed BTC address (BIP-21 target)
+  PAYMENT_BTC_ADDRESS    — operator revenue/reference address (not invoice target)
 """
 
 import hashlib
@@ -69,16 +71,22 @@ _DEFAULT_BTC_USD = 75_000.0
 
 
 def btcpay_configured() -> bool:
-    """True when the BTCPay instance env is present (checkout/webhook live)."""
+    """True only when checkout *and fulfillment* are fully configured.
+
+    Creating invoices without a webhook secret exposes a payment method that
+    can accept funds but can never issue the purchased license. Keep the gate
+    off until the settlement HMAC can be verified end-to-end.
+    """
     return bool(
         os.environ.get("BTCPAY_URL")
         and os.environ.get("BTCPAY_API_KEY")
         and os.environ.get("BTCPAY_STORE_ID")
+        and os.environ.get("BTCPAY_WEBHOOK_SECRET")
     )
 
 
 def payment_address() -> str:
-    """The fixed payment address (P4-3): PAYMENT_BTC_ADDRESS, never BTC_ADDRESS."""
+    """Operator reference address (P4-3), never the monitored BTC_ADDRESS."""
     return (os.environ.get("PAYMENT_BTC_ADDRESS") or "").strip()
 
 
@@ -577,7 +585,10 @@ def fulfill_webln_payment(payment_hash: str, preimage: str) -> Optional[str]:
 
 
 def webln_invoice_available() -> bool:
-    return bool(os.environ.get("LN_ADDRESS") or os.environ.get("LN_INVOICE_ENDPOINT"))
+    # A Lightning Address cannot mint the BOLT-11 + payment_hash required by
+    # the checkout proof flow. Only advertise this provider when the operator
+    # configured the invoice endpoint that implements that contract.
+    return bool(os.environ.get("LN_INVOICE_ENDPOINT"))
 
 
 def create_webln_invoice(

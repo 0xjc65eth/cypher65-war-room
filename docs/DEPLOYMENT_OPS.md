@@ -171,6 +171,119 @@ significa:
 
 ---
 
+## ₿ Canal Bitcoin em produção — BTCPay Server
+
+### Decisão
+
+Use **BTCPay Server** em produção. O War Room precisa criar uma invoice única,
+consultar seu estado e receber `InvoiceSettled` assinado antes de emitir a
+licença. BTCPay entrega on-chain e Lightning pela mesma store e mantém a
+custódia com o operador. O `LN_INVOICE_ENDPOINT` é apenas fallback quando não
+há BTCPay: ele cobre Lightning, exige um serviço próprio para gerar BOLT-11 e
+não oferece o checkout on-chain por invoice.
+
+A API oficial recomenda chave restrita aos endpoints usados. Para este app,
+limite a chave à store correta com **Create invoice**
+(`btcpay.store.cancreateinvoice`) e **View invoices**
+(`btcpay.store.canviewinvoices`). O webhook pode ser criado manualmente no
+painel; não dê permissão de alterar webhooks à chave de runtime. Referências:
+[Greenfield API](https://docs.btcpayserver.org/API/Greenfield/v1/) e
+[guia oficial de integração](https://docs.btcpayserver.org/Development/ecommerce-integration-guide/).
+
+### 1. Preparar a store BTCPay
+
+1. Configure na store a wallet on-chain e/ou o node Lightning que realmente
+   receberá os pagamentos. `PAYMENT_BTC_ADDRESS` no War Room é referência do
+   operador; ele **não substitui** a wallet da store nem liquida invoices
+   BTCPay, que usam endereços próprios.
+2. Copie o Store ID.
+3. Em `Account → Manage account → API keys`, crie uma chave vinculada somente
+   a essa store e somente com Create invoice + View invoices.
+4. Em `Store settings → Webhooks`, crie um webhook habilitado:
+   - payload: `https://cypher65-war-room.onrender.com/api/payments/btcpay/webhook`;
+   - evento específico: `InvoiceSettled`;
+   - automatic redelivery: ligado;
+   - copie o secret gerado. O BTCPay assina o corpo bruto no header
+     `BTCPay-Sig` como HMAC-SHA256; o app rejeita assinatura ausente/inválida.
+
+### 2. Configurar secrets no Render
+
+O `render.yaml` provisiona os nomes abaixo com `sync: false`. Cole valores
+reais somente em `Render → cypher65-war-room → Environment`; nunca em Git,
+Issue, PR, log ou terminal compartilhado.
+
+| Variável | Obrigatória | Valor esperado |
+|---|---:|---|
+| `BTCPAY_URL` | sim | origem HTTPS da instância, sem `/api/v1` |
+| `BTCPAY_API_KEY` | sim | chave Greenfield store-scoped |
+| `BTCPAY_STORE_ID` | sim | id exato da store |
+| `BTCPAY_WEBHOOK_SECRET` | sim | secret do webhook acima |
+| `PAYMENT_BTC_ADDRESS` | política operacional | endereço de receita/referência, diferente da wallet monitorada em `BTC_ADDRESS` |
+
+Deixe `LN_INVOICE_ENDPOINT` vazio no caminho BTCPay. Para usar o fallback,
+configure-o como endpoint HTTPS com o contrato:
+
+```text
+GET <LN_INVOICE_ENDPOINT>?amount_sat=N&memo=CYPHER65+PRO
+→ {"invoice":"lnbc…", "payment_hash":"<hex>"}
+```
+
+Um `LN_ADDRESS` isolado não consegue gerar essa prova e não habilita checkout.
+
+### 3. Redeploy e smoke test sem inventar sucesso
+
+Após salvar as variáveis, faça redeploy e execute exatamente contra produção:
+
+```bash
+BASE_URL=https://cypher65-war-room.onrender.com
+
+curl -fsS "$BASE_URL/api/healthz"
+curl -fsS "$BASE_URL/api/license-status"
+curl -fsS -X POST "$BASE_URL/api/upgrade/checkout" \
+  -H 'Content-Type: application/json' \
+  --data '{"plan":"pro","method":"btc"}'
+```
+
+Critérios:
+
+- health retorna HTTP 200;
+- `license-status` retorna `"btcpay": true`;
+- checkout retorna HTTP 200 com `provider=btcpay`, `invoice_id` não vazio,
+  `checkout_url` HTTPS e `amount_sat > 0`;
+- a invoice aparece na store correta. Criar invoice não prova liquidação e
+  não autoriza marcar o canal como concluído.
+
+### 4. Prova de settlement e licença
+
+1. Abra o `checkout_url` gerado e pague uma invoice de teste real (Lightning
+   reduz tempo/custo do teste).
+2. No BTCPay, confirme delivery HTTP 200 do evento `InvoiceSettled` para o
+   webhook do War Room. `Processing`, `Expired` e `Invalid` são no-op.
+3. Consulte `GET /api/upgrade/status/<invoice_id>` até obter
+   `status=Settled` e uma `license_key` não vazia.
+4. Reenvie a delivery no painel BTCPay: deve retornar a mesma chave; a tabela
+   `processed_invoices` usa `invoice_id` como dedupe e não emite uma segunda.
+5. Ative a chave no modal e confirme `tier=pro` em `/api/license-status` no
+   navegador/sessão que enviou `X-License-Key`.
+
+Registre no issue apenas timestamp, status HTTP, invoice id mascarado e
+resultado de idempotência. Nunca cole API key, secret, invoice completa,
+preimage ou licença.
+
+### 5. Falha segura e rollback
+
+- Se qualquer uma das quatro variáveis BTCPay obrigatórias faltar, a aba fica
+  oculta e o checkout responde 503. Isso evita receber sem conseguir cumprir.
+- Resposta 502 indica falha na criação da invoice: valide URL, store, scopes e
+  conectividade antes de reativar o canal.
+- Assinatura inválida retorna 403 e nunca emite licença.
+- Para rollback, remova **todas** as variáveis `BTCPAY_*` no Render e faça
+  redeploy; confirme `"btcpay": false`. Não deixe configuração parcial.
+- Não apague `processed_invoices` ou `btcpay_invoice_plans`: são o ledger de
+  idempotência e o vínculo invoice → plano.
+
+---
+
 ## 🛰 Acesso Remoto (Tailscale)
 
 O sidecar (`--profile tailscale`) transforma o servidor em **subnet router**:

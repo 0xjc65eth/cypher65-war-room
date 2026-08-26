@@ -99,6 +99,21 @@ def test_btcpay_configured_with_env(monkeypatch):
     assert btcpay.payment_address() == FIXED_ADDR
 
 
+def test_btcpay_requires_webhook_secret_before_exposing_checkout(monkeypatch, client):
+    """Invoice creation without settlement fulfillment is an unsafe partial
+    configuration and must keep the public BTC channel off."""
+    _btcpay_env(monkeypatch)
+    monkeypatch.delenv("BTCPAY_WEBHOOK_SECRET")
+    assert btcpay.btcpay_configured() is False
+    assert client.get("/api/license-status").get_json()["btcpay"] is False
+    response = client.post(
+        "/api/upgrade/checkout",
+        json={"plan": "pro", "method": "btc"},
+    )
+    assert response.status_code == 503
+    assert response.get_json()["code"] == "PAYMENTS_NOT_CONFIGURED"
+
+
 def test_payment_address_never_uses_data_btc_address(monkeypatch):
     """P4-3: PAYMENT_BTC_ADDRESS (receita) é independente do BTC_ADDRESS
     (dados — polling da Parasite). Setar apenas BTC_ADDRESS não ativa o
@@ -329,6 +344,8 @@ def test_webhook_log_masks_key_sha(caplog, monkeypatch):
 def test_webln_available_only_with_endpoint(monkeypatch):
     assert btcpay.webln_invoice_available() is False
     monkeypatch.setenv("LN_ADDRESS", "ops@ln.example.com")
+    assert btcpay.webln_invoice_available() is False
+    monkeypatch.setenv("LN_INVOICE_ENDPOINT", "https://ln.example.com/invoice")
     assert btcpay.webln_invoice_available() is True
 
 

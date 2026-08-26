@@ -5363,7 +5363,8 @@ def _api_upgrade_checkout_btc(plan: str, method: str, email: str, funnel_id: str
             # Hosted BTCPay checkout: renders its OWN per-invoice QR/BIP-21
             # (a payment to the fixed address would never settle this invoice
             # — BTCPay tracks per-invoice addresses). The fixed
-            # PAYMENT_BTC_ADDRESS is only for the manual/WebLN path.
+            # PAYMENT_BTC_ADDRESS is operator metadata only; the WebLN node
+            # and BTCPay store decide their real per-invoice payment target.
             "checkout_url": invoice.get("checkoutLink") or "",
             "amount_sat": amount_sat,
             "expires_in_min": 15,
