@@ -57,12 +57,27 @@ class TestDeviceConfigurationSafety:
             token = prepared.get_json()["confirmation_token"]
             connector.update_settings.assert_not_called()
 
+            import axe_fleet.routes as routes
+
+            routes._log_audit.assert_any_call(
+                "default",
+                "fleet.command_confirmation_issued",
+                target="miner-1",
+                details={"command": "configure", "parameter_keys": ["settings"]},
+            )
+
             changed = client.post(
                 self.endpoint,
                 json={"settings": {"frequency": 650}, "confirmation_token": token},
             )
             assert changed.status_code == 409
             connector.update_settings.assert_not_called()
+            routes._log_audit.assert_any_call(
+                "default",
+                "fleet.command_confirmation_rejected",
+                target="miner-1",
+                details={"command": "configure", "reason": "invalid_or_expired"},
+            )
 
             executed = client.post(
                 self.endpoint,
@@ -150,6 +165,13 @@ class TestPowerControlSafety:
             json={"plug_id": "plug-1", "off_seconds": "five"},
         )
         assert bad_duration.status_code == 400
+        assert (
+            client.post(
+                self.cycle_endpoint,
+                json={"plug_id": "plug-1", "off_seconds": 5.5},
+            ).status_code
+            == 400
+        )
 
         import axe_fleet.routes as routes
 
@@ -268,3 +290,27 @@ class TestTuyaCredentialInputSafety:
             "region": "eu",
             "uid": "",
         }
+
+    def test_tuya_errors_never_echo_credentials(self, physical_controls):
+        client, _ = physical_controls
+        access_id = "sensitive-access-id"
+        access_secret = "sensitive-access-secret"
+        with patch("services.tuya_adapter.TuyaCloudAdapter") as adapter:
+            adapter.return_value.validate_credentials.return_value = {
+                "valid": False,
+                "error": f"denied {access_id} with {access_secret}",
+            }
+            response = client.post(
+                "/api/axe-fleet/power-plugs/save-credentials",
+                json={
+                    "access_id": access_id,
+                    "access_secret": access_secret,
+                    "region": "eu",
+                },
+            )
+
+        body = response.get_data(as_text=True)
+        assert response.status_code == 200
+        assert access_id not in body
+        assert access_secret not in body
+        assert "[REDACTED]" in body

@@ -721,6 +721,12 @@ def _operational_confirmation_response(
     token = data.get("confirmation_token")
     if not token:
         confirmation = issue_confirmation(tenant_id, target_id, command, parameters)
+        _log_audit(
+            tenant_id,
+            "fleet.command_confirmation_issued",
+            target=target_id,
+            details={"command": command, "parameter_keys": sorted(parameters)},
+        )
         return (
             jsonify(
                 {
@@ -735,6 +741,12 @@ def _operational_confirmation_response(
             202,
         )
     if not consume_confirmation(token, tenant_id, target_id, command, parameters):
+        _log_audit(
+            tenant_id,
+            "fleet.command_confirmation_rejected",
+            target=target_id,
+            details={"command": command, "reason": "invalid_or_expired"},
+        )
         return (
             jsonify(
                 {
@@ -859,6 +871,16 @@ def _validated_tuya_values(
             return None, "region must be one of: us, eu, cn, in"
         values["region"] = region
     return values, None
+
+
+def _safe_control_error(value: object, *sensitive_values: object) -> str:
+    """Remove known credential values before an error reaches logs or APIs."""
+    message = str(value or "operation failed")
+    for sensitive in sensitive_values:
+        secret = str(sensitive or "")
+        if secret:
+            message = message.replace(secret, "[REDACTED]")
+    return message[:300]
 
 
 # ── Device commands ─────────────────────────────────────────────────────
@@ -1950,9 +1972,13 @@ def save_tuya_credentials(tenant_id: str = ""):
         access_id=access_id, access_secret=access_secret, region=region
     )
     if not validation.get("valid"):
-        return jsonify(
-            {"success": False, "error": validation.get("error", "invalid credentials")}
+        safe_error = _safe_control_error(
+            validation.get("error", "invalid credentials"),
+            access_id,
+            access_secret,
+            uid,
         )
+        return jsonify({"success": False, "error": safe_error})
 
     try:
         from services.settings import save_setting
@@ -1976,8 +2002,12 @@ def save_tuya_credentials(tenant_id: str = ""):
             {"success": True, "valid": True, "uid": validation.get("uid", uid)}
         )
     except Exception as e:
-        log.error("[tuya] failed to save credentials: %s", e)
-        return jsonify({"success": False, "error": f"failed to save: {str(e)}"}), 500
+        safe_error = _safe_control_error(e, access_id, access_secret, uid)
+        log.error("[tuya] failed to save credentials: %s", safe_error)
+        return (
+            jsonify({"success": False, "error": f"failed to save: {safe_error}"}),
+            500,
+        )
 
 
 @axe_fleet_bp.route("/power-plugs/validate", methods=["POST"])
@@ -2007,12 +2037,20 @@ def validate_tuya_credentials(tenant_id: str = ""):
 
     adapter = TuyaCloudAdapter()
     result = adapter.validate_credentials(**creds)
+    public_result = dict(result) if isinstance(result, dict) else {"valid": False}
+    if public_result.get("error"):
+        public_result["error"] = _safe_control_error(
+            public_result["error"], *creds.values()
+        )
     _log_audit(
         tenant_id,
         "fleet.tuya_credentials_validated",
-        details={"valid": bool(result.get("valid")), "region": creds.get("region", "")},
+        details={
+            "valid": bool(public_result.get("valid")),
+            "region": creds.get("region", ""),
+        },
     )
-    return jsonify(result)
+    return jsonify(public_result)
 
 
 def _execute_guarded_plug_command(plug_id: str, method: str, tenant_id: str):
@@ -2141,9 +2179,8 @@ def miner_power_cycle(device_id: str, tenant_id: str = ""):
     plug_id, error_message = _valid_target_id(data.get("plug_id"), "plug_id")
     if error_message:
         return jsonify({"success": False, "error": error_message}), 400
-    try:
-        off_seconds = int(data.get("off_seconds", 10))
-    except (TypeError, ValueError):
+    off_seconds = data.get("off_seconds", 10)
+    if isinstance(off_seconds, bool) or not isinstance(off_seconds, int):
         return (
             jsonify({"success": False, "error": "off_seconds must be an integer"}),
             400,
@@ -2247,7 +2284,9 @@ def miner_power_cycle(device_id: str, tenant_id: str = ""):
             off_r = _adapter.power_off(plug_id, **creds)
             if not off_r.get("success"):
                 task["status"] = "failed"
-                task["error"] = f"power-off failed: {off_r.get('error')}"
+                task["error"] = "power-off failed: " + _safe_control_error(
+                    off_r.get("error"), *creds.values()
+                )
                 _audit_power_action(
                     device_id, "power_cycle", False, task["error"], tenant_id=tenant_id
                 )
@@ -2265,7 +2304,9 @@ def miner_power_cycle(device_id: str, tenant_id: str = ""):
             on_r = _adapter.power_on(plug_id, **creds)
             if not on_r.get("success"):
                 task["status"] = "failed"
-                task["error"] = f"power-on failed: {on_r.get('error')}"
+                task["error"] = "power-on failed: " + _safe_control_error(
+                    on_r.get("error"), *creds.values()
+                )
                 _audit_power_action(
                     device_id, "power_cycle", False, task["error"], tenant_id=tenant_id
                 )
@@ -2283,10 +2324,10 @@ def miner_power_cycle(device_id: str, tenant_id: str = ""):
             )
         except Exception as e:
             task["status"] = "failed"
-            task["error"] = str(e)
-            log.error("[power-cycle] task %s exception: %s", task_id, e)
+            task["error"] = _safe_control_error(e, *creds.values())
+            log.error("[power-cycle] task %s exception: %s", task_id, task["error"])
             _audit_power_action(
-                device_id, "power_cycle", False, str(e), tenant_id=tenant_id
+                device_id, "power_cycle", False, task["error"], tenant_id=tenant_id
             )
 
     t = threading.Thread(target=_run, daemon=True, name=f"pwr-cycle-{task_id}")
@@ -2384,14 +2425,19 @@ def _execute_plug_command(plug_id: str, method: str, tenant_id: str = "") -> tup
         return jsonify({"success": False, "error": f"unknown method: {method}"}), 400
 
     result = fn(plug_id, **creds)
+    public_result = dict(result) if isinstance(result, dict) else {"success": False}
+    if public_result.get("error"):
+        public_result["error"] = _safe_control_error(
+            public_result["error"], *creds.values()
+        )
     _audit_power_action(
         plug_id,
         method.replace("_", " "),
-        bool(result.get("success")),
-        str(result.get("error", "")),
+        bool(public_result.get("success")),
+        str(public_result.get("error", "")),
         tenant_id=tenant_id,
     )
-    return jsonify(result)
+    return jsonify(public_result)
 
 
 # ── Onboarding ────────────────────────────────────────────────────────────
