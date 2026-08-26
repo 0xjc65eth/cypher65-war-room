@@ -1,6 +1,7 @@
 """Tests for the core device API routes in app.py."""
+
 import time
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import pytest
 
@@ -8,6 +9,17 @@ from core.models.device import Device, DeviceStatus
 
 
 class TestAppDeviceRoutes:
+    @pytest.fixture(autouse=True)
+    def clear_pending_confirmations(self):
+        """Keep one-time command approvals isolated between route tests."""
+        from routes import device_control
+
+        with device_control._confirmation_lock:
+            device_control._pending_confirmations.clear()
+        yield
+        with device_control._confirmation_lock:
+            device_control._pending_confirmations.clear()
+
     @pytest.fixture
     def client(self):
         from app import app, _core_registry
@@ -106,6 +118,7 @@ class TestAppDeviceRoutes:
     def test_device_command_not_supported(self, client):
         flask_client, registry = client
         from core.adapters.bitaxe_adapter import BitaxeAdapter
+
         device = Device(name="Test-Command", model="Bitaxe", ip="192.168.1.55")
         device.capabilities = BitaxeAdapter(device).get_capabilities()
         registry.add_device(device)
@@ -122,26 +135,349 @@ class TestAppDeviceRoutes:
 
     def test_device_command_set_frequency_now_supported_but_safety_gated(self, client):
         """P0 Bitaxe: set_frequency is now a REAL command (overclock endpoint).
-        The SafetyEngine still gates it — HIGH risk requires confirmation, so
-        an unconfirmed call is blocked (403) rather than reaching the ASIC."""
+        An online ASIC must still require a server-side confirmation and never
+        reach its adapter from an unconfirmed request."""
         flask_client, registry = client
         from core.adapters.bitaxe_adapter import BitaxeAdapter
-        device = Device(name="Test-Command", model="Bitaxe", ip="192.168.1.55")
+
+        device = Device(
+            name="Test-Command",
+            model="Bitaxe",
+            ip="192.168.1.55",
+            status=DeviceStatus.ONLINE,
+        )
         device.capabilities = BitaxeAdapter(device).get_capabilities()
         registry.add_device(device)
 
-        response = flask_client.post(
-            f"/api/devices/{device.id}/command",
-            json={"command": "set_frequency", "parameters": {"frequency": 550}},
-        )
-        assert response.status_code == 403  # SafetyEngine blocks unconfirmed HIGH
+        with patch("routes.device_control._build_adapter") as build_adapter:
+            response = flask_client.post(
+                f"/api/devices/{device.id}/command",
+                json={"command": "set_frequency", "parameters": {"frequency": 550}},
+            )
+
+        assert response.status_code == 403
         data = response.get_json()
         assert data["success"] is False
         assert data.get("requires_confirmation") is True
+        assert data["confirmation_phrase"] == "CONFIRM SET_FREQUENCY"
+        build_adapter.assert_not_called()
+
+    def test_confirmation_token_executes_exact_online_command_once(self, client):
+        flask_client, registry = client
+        from core.adapters.bitaxe_adapter import BitaxeAdapter
+
+        device = Device(
+            name="Confirmed-Command",
+            model="Bitaxe",
+            ip="192.168.1.59",
+            status=DeviceStatus.ONLINE,
+        )
+        device.capabilities = BitaxeAdapter(device).get_capabilities()
+        registry.add_device(device)
+        payload = {"command": "set_frequency", "parameters": {"frequency": 550}}
+
+        confirmation = flask_client.post(
+            f"/api/devices/{device.id}/command/confirmation",
+            json={**payload, "confirmation": "CONFIRM SET_FREQUENCY"},
+        )
+        assert confirmation.status_code == 201
+        assert "no-store" in confirmation.headers["Cache-Control"]
+        assert confirmation.headers["Pragma"] == "no-cache"
+        token = confirmation.get_json()["confirmation_token"]
+
+        adapter = Mock()
+        adapter.execute_command.return_value = {"success": True, "status_code": 200}
+        with patch(
+            "routes.device_control._build_adapter", return_value=adapter
+        ) as build_adapter:
+            response = flask_client.post(
+                f"/api/devices/{device.id}/command",
+                json={**payload, "confirmation_token": token},
+            )
+
+        assert response.status_code == 200
+        assert response.get_json()["success"] is True
+        build_adapter.assert_called_once()
+        adapter.execute_command.assert_called_once_with(
+            "set_frequency", {"frequency": 550}
+        )
+
+    def test_viewer_cannot_confirm_or_execute_physical_commands(
+        self, client, monkeypatch
+    ):
+        flask_client, registry = client
+        from core.adapters.bitaxe_adapter import BitaxeAdapter
+
+        monkeypatch.setenv("API_KEY", "rbac-is-enabled")
+        device = Device(
+            name="Viewer-Blocked",
+            model="Bitaxe",
+            ip="192.168.1.64",
+            status=DeviceStatus.ONLINE,
+        )
+        device.capabilities = BitaxeAdapter(device).get_capabilities()
+        registry.add_device(device)
+        payload = {"command": "set_frequency", "parameters": {"frequency": 550}}
+
+        with patch("services.tenant.get_current_role", return_value="viewer"):
+            with patch("routes.device_control._build_adapter") as build_adapter:
+                confirmation = flask_client.post(
+                    f"/api/devices/{device.id}/command/confirmation",
+                    json={**payload, "confirmation": "CONFIRM SET_FREQUENCY"},
+                )
+                execution = flask_client.post(
+                    f"/api/devices/{device.id}/command",
+                    json=payload,
+                )
+
+        assert confirmation.status_code == 403
+        assert execution.status_code == 403
+        assert confirmation.get_json()["required_role"] == "member"
+        assert execution.get_json()["role"] == "viewer"
+        build_adapter.assert_not_called()
+
+    def test_member_can_confirm_and_execute_physical_commands(
+        self, client, monkeypatch
+    ):
+        flask_client, registry = client
+        from core.adapters.bitaxe_adapter import BitaxeAdapter
+
+        monkeypatch.setenv("API_KEY", "rbac-is-enabled")
+        device = Device(
+            name="Member-Allowed",
+            model="Bitaxe",
+            ip="192.168.1.65",
+            status=DeviceStatus.ONLINE,
+        )
+        device.capabilities = BitaxeAdapter(device).get_capabilities()
+        registry.add_device(device)
+        payload = {"command": "set_frequency", "parameters": {"frequency": 550}}
+        adapter = Mock()
+        adapter.execute_command.return_value = {"success": True}
+
+        with patch("services.tenant.get_current_role", return_value="member"):
+            confirmation = flask_client.post(
+                f"/api/devices/{device.id}/command/confirmation",
+                json={**payload, "confirmation": "CONFIRM SET_FREQUENCY"},
+            )
+            token = confirmation.get_json()["confirmation_token"]
+            with patch("routes.device_control._build_adapter", return_value=adapter):
+                execution = flask_client.post(
+                    f"/api/devices/{device.id}/command",
+                    json={**payload, "confirmation_token": token},
+                )
+
+        assert confirmation.status_code == 201
+        assert execution.status_code == 200
+        adapter.execute_command.assert_called_once_with(
+            "set_frequency", {"frequency": 550}
+        )
+
+    def test_command_credentials_are_redacted_from_response_history_and_audit(
+        self, client
+    ):
+        flask_client, registry = client
+        from core.adapters.bitaxe_adapter import BitaxeAdapter
+        from services.tenant import recent_audit_logs
+
+        device = Device(
+            name="Redacted-Command",
+            model="Bitaxe",
+            ip="192.168.1.63",
+            status=DeviceStatus.ONLINE,
+        )
+        device.capabilities = BitaxeAdapter(device).get_capabilities()
+        registry.add_device(device)
+        secret = "never-persist-this-value"
+        parameters = {
+            "stratumURL": "stratum.example.test",
+            "poolPassword": secret,
+            "nested": {"access_token": secret},
+        }
+        payload = {"command": "update_pool", "parameters": parameters}
+        confirmation = flask_client.post(
+            f"/api/devices/{device.id}/command/confirmation",
+            json={**payload, "confirmation": "CONFIRM UPDATE_POOL"},
+        )
+        token = confirmation.get_json()["confirmation_token"]
+
+        adapter = Mock()
+        adapter.execute_command.return_value = {
+            "success": True,
+            "parameters": parameters,
+        }
+        with patch("routes.device_control._build_adapter", return_value=adapter):
+            response = flask_client.post(
+                f"/api/devices/{device.id}/command",
+                json={**payload, "confirmation_token": token},
+            )
+
+        assert response.status_code == 200
+        assert secret not in response.get_data(as_text=True)
+        assert (
+            response.get_json()["result"]["parameters"]["poolPassword"] == "[REDACTED]"
+        )
+        history = flask_client.get(f"/api/devices/{device.id}/commands")
+        assert history.status_code == 200
+        assert secret not in history.get_data(as_text=True)
+        audit_rows = recent_audit_logs(limit=200)
+        matching = [
+            row
+            for row in audit_rows
+            if row["action"] == "device.command" and row["target"] == device.id
+        ]
+        assert matching
+        assert secret not in str(matching)
+
+    def test_confirmation_token_cannot_be_replayed_or_rebound(self, client):
+        flask_client, registry = client
+        from core.adapters.bitaxe_adapter import BitaxeAdapter
+
+        device = Device(
+            name="One-Time-Command",
+            model="Bitaxe",
+            ip="192.168.1.60",
+            status=DeviceStatus.ONLINE,
+        )
+        device.capabilities = BitaxeAdapter(device).get_capabilities()
+        registry.add_device(device)
+        payload = {"command": "set_frequency", "parameters": {"frequency": 550}}
+        confirmation = flask_client.post(
+            f"/api/devices/{device.id}/command/confirmation",
+            json={**payload, "confirmation": "CONFIRM SET_FREQUENCY"},
+        )
+        token = confirmation.get_json()["confirmation_token"]
+
+        adapter = Mock()
+        adapter.execute_command.return_value = {"success": True}
+        with patch("routes.device_control._build_adapter", return_value=adapter):
+            mismatch = flask_client.post(
+                f"/api/devices/{device.id}/command",
+                json={
+                    "command": "set_frequency",
+                    "parameters": {"frequency": 600},
+                    "confirmation_token": token,
+                },
+            )
+            replay = flask_client.post(
+                f"/api/devices/{device.id}/command",
+                json={**payload, "confirmation_token": token},
+            )
+
+        assert mismatch.status_code == 403
+        assert "does not match" in mismatch.get_json()["error"]
+        assert replay.status_code == 403
+        assert "expired, or was already used" in replay.get_json()["error"]
+        adapter.execute_command.assert_not_called()
+
+    def test_confirmation_requires_typed_phrase_and_expires(self, client):
+        flask_client, registry = client
+        from core.adapters.bitaxe_adapter import BitaxeAdapter
+        from routes import device_control
+
+        device = Device(
+            name="Expiry-Command",
+            model="Bitaxe",
+            ip="192.168.1.61",
+            status=DeviceStatus.ONLINE,
+        )
+        device.capabilities = BitaxeAdapter(device).get_capabilities()
+        registry.add_device(device)
+        payload = {"command": "set_frequency", "parameters": {"frequency": 550}}
+
+        invalid = flask_client.post(
+            f"/api/devices/{device.id}/command/confirmation",
+            json={**payload, "confirmation": "yes"},
+        )
+        assert invalid.status_code == 400
+        assert invalid.get_json()["confirmation_phrase"] == "CONFIRM SET_FREQUENCY"
+
+        binding = device_control._confirmation_binding(
+            "default", device.id, "set_frequency", {"frequency": 550}
+        )
+        with patch("routes.device_control.time.time", return_value=1_000):
+            token = device_control._issue_confirmation(binding)
+        with patch("routes.device_control.time.time", return_value=1_121):
+            confirmed, reason = device_control._consume_confirmation(token, binding)
+        assert confirmed is False
+        assert "expired" in reason
+
+    def test_confirmation_token_is_tenant_bound(self):
+        from routes import device_control
+
+        binding = device_control._confirmation_binding(
+            "tenant-a", "device-1", "restart", {}
+        )
+        other_tenant = device_control._confirmation_binding(
+            "tenant-b", "device-1", "restart", {}
+        )
+        token = device_control._issue_confirmation(binding)
+        confirmed, reason = device_control._consume_confirmation(token, other_tenant)
+
+        assert confirmed is False
+        assert "tenant" in reason
+
+    def test_device_execution_error_is_safe_and_persistently_audited(self, client):
+        flask_client, registry = client
+        from core.adapters.bitaxe_adapter import BitaxeAdapter
+        from services.tenant import recent_audit_logs
+
+        device = Device(
+            name="Safe-Error",
+            model="Bitaxe",
+            ip="192.168.1.62",
+            status=DeviceStatus.ONLINE,
+        )
+        device.capabilities = BitaxeAdapter(device).get_capabilities()
+        registry.add_device(device)
+        payload = {"command": "set_frequency", "parameters": {"frequency": 550}}
+        confirmation = flask_client.post(
+            f"/api/devices/{device.id}/command/confirmation",
+            json={**payload, "confirmation": "CONFIRM SET_FREQUENCY"},
+        )
+        token = confirmation.get_json()["confirmation_token"]
+
+        adapter = Mock()
+        adapter.execute_command.side_effect = RuntimeError(
+            "http://192.168.1.62: secret firmware diagnostic"
+        )
+        with patch("routes.device_control._build_adapter", return_value=adapter):
+            response = flask_client.post(
+                f"/api/devices/{device.id}/command",
+                json={**payload, "confirmation_token": token},
+            )
+
+        assert response.status_code == 503
+        data = response.get_json()
+        assert data["error"] == (
+            "The device did not accept the command. Verify connectivity and firmware before retrying."
+        )
+        assert "192.168" not in str(data)
+        assert "secret firmware" not in str(data)
+        audit_rows = recent_audit_logs(limit=200)
+        assert any(
+            row["action"] == "device.command"
+            and row["target"] == device.id
+            and row["details"]["success"] is False
+            for row in audit_rows
+        )
+
+    def test_only_one_runtime_command_route_is_registered(self, client):
+        from app import app
+
+        matching_rules = [
+            rule
+            for rule in app.url_map.iter_rules()
+            if rule.rule == "/api/devices/<device_id>/command"
+            and "POST" in rule.methods
+        ]
+        assert len(matching_rules) == 1
+        assert matching_rules[0].endpoint == "device_control.execute_device_command"
 
     def test_device_command_offline_blocked_by_safety(self, client):
         flask_client, registry = client
         from core.adapters.bitaxe_adapter import BitaxeAdapter
+
         device = Device(name="Test-Offline", model="Bitaxe", ip="192.168.1.56")
         device.capabilities = BitaxeAdapter(device).get_capabilities()
         registry.add_device(device)
@@ -161,7 +497,11 @@ class TestAppDeviceRoutes:
         [
             ("command", ["restart"], "JSON body must be an object"),
             ("command", {"command": 123}, "command must be a string"),
-            ("command", {"command": "restart", "parameters": []}, "parameters must be an object"),
+            (
+                "command",
+                {"command": "restart", "parameters": []},
+                "parameters must be an object",
+            ),
             ("test", ["restart"], "JSON body must be an object"),
             ("test", {"command": 123}, "command must be a string"),
         ],
@@ -203,6 +543,7 @@ class TestAppDeviceRoutes:
     def test_device_command_history_empty(self, client):
         flask_client, registry = client
         from core.adapters.bitaxe_adapter import BitaxeAdapter
+
         device = Device(name="Test-History", model="Bitaxe", ip="192.168.1.57")
         device.capabilities = BitaxeAdapter(device).get_capabilities()
         registry.add_device(device)
@@ -216,12 +557,15 @@ class TestAppDeviceRoutes:
     def test_device_command_history_records_entry(self, client):
         flask_client, registry = client
         from core.adapters.bitaxe_adapter import BitaxeAdapter
+
         device = Device(name="Test-History-Rec", model="Bitaxe", ip="192.168.1.58")
         device.capabilities = BitaxeAdapter(device).get_capabilities()
         registry.add_device(device)
 
         # First command should be blocked by safety (offline) but still recorded
-        flask_client.post(f"/api/devices/{device.id}/command", json={"command": "restart"})
+        flask_client.post(
+            f"/api/devices/{device.id}/command", json={"command": "restart"}
+        )
 
         response = flask_client.get(f"/api/devices/{device.id}/commands")
         assert response.status_code == 200
@@ -236,7 +580,12 @@ class TestAppDeviceRoutes:
 
     def test_get_device_includes_health_fields(self, client):
         flask_client, registry = client
-        device = Device(name="Health-Device", model="Bitaxe", ip="192.168.1.70", status=DeviceStatus.ONLINE)
+        device = Device(
+            name="Health-Device",
+            model="Bitaxe",
+            ip="192.168.1.70",
+            status=DeviceStatus.ONLINE,
+        )
         device.current_telemetry = {"temperature": 95}
         registry.add_device(device)
 
@@ -252,7 +601,12 @@ class TestAppDeviceRoutes:
 
     def test_list_devices_includes_health_fields(self, client):
         flask_client, registry = client
-        device = Device(name="Health-Listed", model="Bitaxe", ip="192.168.1.71", status=DeviceStatus.ONLINE)
+        device = Device(
+            name="Health-Listed",
+            model="Bitaxe",
+            ip="192.168.1.71",
+            status=DeviceStatus.ONLINE,
+        )
         registry.add_device(device)
 
         response = flask_client.get("/api/devices")
@@ -272,7 +626,13 @@ class TestAppDeviceRoutes:
     def test_timeline_includes_command_and_maintenance(self, client):
         flask_client, registry = client
         from core.adapters.bitaxe_adapter import BitaxeAdapter
-        device = Device(name="Timeline-Device", model="Bitaxe", ip="192.168.1.72", status=DeviceStatus.ONLINE)
+
+        device = Device(
+            name="Timeline-Device",
+            model="Bitaxe",
+            ip="192.168.1.72",
+            status=DeviceStatus.ONLINE,
+        )
         device.capabilities = BitaxeAdapter(device).get_capabilities()
         registry.add_device(device)
 
@@ -284,7 +644,9 @@ class TestAppDeviceRoutes:
         assert maintenance_response.status_code == 201
 
         # Issue a command that is blocked by safety but recorded
-        flask_client.post(f"/api/devices/{device.id}/command", json={"command": "restart"})
+        flask_client.post(
+            f"/api/devices/{device.id}/command", json={"command": "restart"}
+        )
 
         response = flask_client.get(f"/api/devices/{device.id}/timeline")
         assert response.status_code == 200
@@ -299,12 +661,22 @@ class TestAppDeviceRoutes:
     def test_timeline_sorted_newest_first(self, client):
         flask_client, registry = client
         from core.adapters.bitaxe_adapter import BitaxeAdapter
-        device = Device(name="Timeline-Sorted", model="Bitaxe", ip="192.168.1.73", status=DeviceStatus.ONLINE)
+
+        device = Device(
+            name="Timeline-Sorted",
+            model="Bitaxe",
+            ip="192.168.1.73",
+            status=DeviceStatus.ONLINE,
+        )
         device.capabilities = BitaxeAdapter(device).get_capabilities()
         registry.add_device(device)
 
-        flask_client.post(f"/api/devices/{device.id}/maintenance", json={"type": "cleaning"})
-        flask_client.post(f"/api/devices/{device.id}/maintenance", json={"type": "firmware_update"})
+        flask_client.post(
+            f"/api/devices/{device.id}/maintenance", json={"type": "cleaning"}
+        )
+        flask_client.post(
+            f"/api/devices/{device.id}/maintenance", json={"type": "firmware_update"}
+        )
 
         response = flask_client.get(f"/api/devices/{device.id}/timeline")
         assert response.status_code == 200
@@ -315,7 +687,13 @@ class TestAppDeviceRoutes:
     def test_timeline_includes_status_change(self, client):
         flask_client, registry = client
         from core.adapters.bitaxe_adapter import BitaxeAdapter
-        device = Device(name="Timeline-Status", model="Bitaxe", ip="192.168.1.74", status=DeviceStatus.ONLINE)
+
+        device = Device(
+            name="Timeline-Status",
+            model="Bitaxe",
+            ip="192.168.1.74",
+            status=DeviceStatus.ONLINE,
+        )
         device.capabilities = BitaxeAdapter(device).get_capabilities()
         registry.add_device(device)
 
@@ -346,8 +724,13 @@ class TestAppDeviceRoutes:
         SAFETY evaluation (not a 400 'not supported')."""
         flask_client, registry = client
         from core.adapters.bitaxe_adapter import BitaxeAdapter
-        device = Device(name="Test-Pause-Core", model="Bitaxe", ip="192.168.1.78",
-                        status=DeviceStatus.ONLINE)
+
+        device = Device(
+            name="Test-Pause-Core",
+            model="Bitaxe",
+            ip="192.168.1.78",
+            status=DeviceStatus.ONLINE,
+        )
         device.capabilities = BitaxeAdapter(device).get_capabilities()
         registry.add_device(device)
 

@@ -37,8 +37,8 @@ def _isolated(monkeypatch):
     role gates are active — open self-host mode would bypass them)."""
     app.config["TESTING"] = True
     saved = app.config.get("JWT_SECRET_KEY")
-    app.config["JWT_SECRET_KEY"] = "fleet-scope-secret"
-    monkeypatch.setenv("SECRET_KEY", "fleet-scope-secret")
+    app.config["JWT_SECRET_KEY"] = "fleet-scope-secret-0123456789abcdef"
+    monkeypatch.setenv("SECRET_KEY", "fleet-scope-secret-0123456789abcdef")
     monkeypatch.setenv("API_KEY", "fleet-scope-test-key")
     for d in _axe_registry.list_devices():
         _axe_registry.remove_device(d["id"], tenant_id=d.get("tenant_id") or "default")

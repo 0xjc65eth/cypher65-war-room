@@ -41,8 +41,8 @@ def _scrub_env(monkeypatch):
     test files in the same process (exact footgun test_tenant_auth.py
     documents: cross-file pollution broke test_rbac_register.py).
     """
-    monkeypatch.setenv("SECRET_KEY", "push-subscribe-test-secret")
-    monkeypatch.setitem(app.config, "JWT_SECRET_KEY", "push-subscribe-test-secret")
+    monkeypatch.setenv("SECRET_KEY", "push-subscribe-test-secret-0123456789abcdef")
+    monkeypatch.setitem(app.config, "JWT_SECRET_KEY", "push-subscribe-test-secret-0123456789abcdef")
 
 
 @pytest.fixture()

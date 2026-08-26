@@ -23,6 +23,27 @@ class TestSafetyEngine:
 
         assert result.allowed is True
         assert result.reason is None or result.reason == ""
+        assert result.requires_confirmation is True
+        assert result.risk_level == RiskLevel.MEDIUM
+
+    @pytest.mark.parametrize(
+        ("command", "risk_level"),
+        [
+            ("pause", RiskLevel.MEDIUM),
+            ("resume", RiskLevel.MEDIUM),
+            ("set_frequency", RiskLevel.HIGH),
+            ("update_pool", RiskLevel.HIGH),
+        ],
+    )
+    def test_state_changing_commands_require_confirmation(self, command, risk_level):
+        engine = SafetyEngine()
+        device = Device(name="Bitaxe", model="Bitaxe Max", status=DeviceStatus.ONLINE)
+
+        result = engine.validate_command(device, command)
+
+        assert result.allowed is True
+        assert result.requires_confirmation is True
+        assert result.risk_level == risk_level
 
     def test_high_temperature_blocked(self):
         engine = SafetyEngine(config={"max_temperature": 85})

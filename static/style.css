@@ -501,6 +501,17 @@ a:hover { text-decoration: underline; }
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.topbar__freshness {
+  color: var(--amber);
+  border: 1px solid var(--amber-dim);
+  border-radius: var(--radius-sm);
+  font-family: var(--font-mono);
+  font-size: 8px;
+  letter-spacing: 0.06em;
+  padding: 1px 6px;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
 .topbar__right { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .topbar__metric { display: flex; align-items: baseline; gap: 4px; }
 .topbar__metric-label { font-size: 8px; color: var(--text-tertiary); text-transform: uppercase; letter-spacing: 0.08em; }
@@ -3012,6 +3023,7 @@ tr:hover td { background: var(--bg-hover); }
 @media (max-width: 500px) {
   .status-bar { grid-template-columns: repeat(2, 1fr); }
   .topbar__metric-label { display: none; }
+  .topbar__freshness { order: 2; }
   .host-core__meta { grid-template-columns: repeat(2, 1fr); }
   .mkt-snapshot__grid { grid-template-columns: repeat(2, 1fr); }
 }

@@ -2358,7 +2358,7 @@ _seed_axe_telemetry_cache(_axe_registry)
 
 # ── Device Control: import now, but init is deferred until after
 #    _record_command is defined (below) so commands can be audited.
-from routes.device_control import init_device_control
+from routes.device_control import init_device_control, redact_command_data
 
 # ── Initialize Core CYPHER65 device registry ───────────────────────────────
 # Uses the same SQLite file (WAL mode enabled above) but a separate `devices`
@@ -2560,16 +2560,18 @@ def _record_command(
 ):
     """Append a command execution record to the in-memory history.
 
-    Each entry exposes a top-level "success" boolean plus the original
-    "result" payload, making the history easy to consume by the frontend.
+    Each entry exposes a top-level "success" boolean plus a credential-redacted
+    result payload, making the history safe to consume by the frontend.
     """
+    safe_parameters = redact_command_data(parameters or {})
+    safe_result = redact_command_data(result)
     entry = {
         "device_id": device_id,
         "command": command,
-        "parameters": parameters or {},
+        "parameters": safe_parameters,
         "timestamp": int(time.time()),
-        "success": bool(result.get("success")),
-        "result": result,
+        "success": bool(safe_result.get("success")),
+        "result": safe_result,
     }
     with _command_history_lock:
         _command_history.setdefault(device_id, []).append(entry)
@@ -2588,9 +2590,9 @@ def _record_command(
             target=device_id,
             details={
                 "command": command,
-                "parameters": parameters or {},
-                "success": bool(result.get("success")),
-                "error": result.get("error", ""),
+                "parameters": safe_parameters,
+                "success": bool(safe_result.get("success")),
+                "error": safe_result.get("error", ""),
             },
         )
     except Exception:
@@ -5533,7 +5535,9 @@ def api_analytics_track():
     """Record a frontend analytics event (boot, module_switch, module_time).
 
     Public endpoint (no auth): rate-limited to 1 event/second per client IP.
-    All data stays in local SQLite — no external telemetry.
+    All data stays in local SQLite — no external telemetry. A duplicate event
+    inside that window is deliberately a successful no-op: analytics is
+    optional and must not surface a browser-console error to the operator.
     """
     body = request.get_json(silent=True) or {}
     event = (body.get("event") or "").strip()
@@ -5553,11 +5557,13 @@ def api_analytics_track():
     client_ip = request.remote_addr or ""
     if not event:
         return jsonify({"ok": False, "error": "event required"}), 400
+    if event not in ("boot", "module_switch", "module_time"):
+        return jsonify({"ok": False, "error": "invalid analytics event"}), 400
     ok = _beta_analytics.track_event(
         event, meta=meta, tenant_id=tenant_id, client_ip=client_ip
     )
     if not ok:
-        return jsonify({"ok": False, "error": "rate limited or invalid event"}), 429
+        return jsonify({"ok": True, "recorded": False}), 202
     return jsonify({"ok": True})
 
 
@@ -6174,92 +6180,6 @@ def api_fleet_summary(tenant_id: str = ""):
             "status_counts": summary,
             "devices_with_recent_telemetry": devices_with_recent_telemetry,
             "total_hashrate": total_hashrate,
-        }
-    )
-
-
-@app.route("/api/devices/<device_id>/command", methods=["POST"])
-@require_tenant
-def api_device_command(device_id: str, tenant_id: str = ""):
-    """Execute a command on a device after safety validation (tenant-scoped).
-
-    Body (JSON):
-      - command (str, required): command to execute (e.g. "restart", "identify")
-      - parameters (dict, optional): command-specific parameters
-
-    Flow:
-      1. Find the device in the registry (tenant-scoped).
-      2. Instantiate the correct adapter.
-      3. Check that the adapter supports the command.
-      4. Run SafetyEngine.validate_command().
-      5. Execute via the adapter.
-      6. Record the command in the in-memory history.
-      7. Update the device status when applicable.
-    """
-    device = _core_registry.get_device(device_id, tenant_id=tenant_id)
-    if not device:
-        return jsonify({"error": "device not found", "success": False}), 404
-
-    payload = request.get_json(silent=True) or {}
-    command = (payload.get("command") or "").strip()
-    parameters = payload.get("parameters") or {}
-
-    if not command:
-        return jsonify({"error": "command is required", "success": False}), 400
-
-    try:
-        adapter = get_adapter(device)
-    except NotImplementedError as e:
-        return jsonify({"error": str(e), "success": False}), 501
-
-    if not adapter.supports(command):
-        return (
-            jsonify({"error": f"command '{command}' not supported", "success": False}),
-            400,
-        )
-
-    previous_status = device.status
-
-    safety_result = _safety_engine.validate_command(device, command, parameters)
-    if not safety_result.allowed:
-        record = {
-            "success": False,
-            "allowed": False,
-            "reason": safety_result.reason,
-            "risk_level": safety_result.risk_level.value,
-            "requires_confirmation": safety_result.requires_confirmation,
-        }
-        _record_command(device_id, command, parameters, record)
-        return (
-            jsonify(
-                {
-                    "success": False,
-                    "error": safety_result.reason,
-                    "risk_level": safety_result.risk_level.value,
-                    "requires_confirmation": safety_result.requires_confirmation,
-                }
-            ),
-            403,
-        )
-
-    result = adapter.execute_command(command, parameters)
-    _record_command(device_id, command, parameters, result)
-
-    # Update restart cooldown tracking and device status when command succeeds
-    if command == "restart" and result.get("success"):
-        _safety_engine.record_restart(device)
-        device.status = CoreDeviceStatus.OFFLINE
-
-    if previous_status != device.status:
-        _record_status_change(device, previous_status.value, device.status.value)
-        _core_registry.update_device(device)
-
-    return jsonify(
-        {
-            "success": bool(result.get("success")),
-            "device_id": device_id,
-            "command": command,
-            "result": result,
         }
     )
 

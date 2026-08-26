@@ -18,7 +18,7 @@ sys.path.insert(0, ".")
 
 class TestCredentialEncryption:
     def test_encrypt_decrypt_round_trip(self, monkeypatch):
-        monkeypatch.setenv("SECRET_KEY", "test-secret-0123456789")
+        monkeypatch.setenv("SECRET_KEY", "test-secret-0123456789-abcdef0123456789")
         import services.settings as s
         s._settings_cache = None
         s._tenant_settings_cache.clear()
@@ -39,7 +39,7 @@ class TestCredentialEncryption:
         assert row["value"].startswith("enc:v1:")
 
     def test_legacy_plaintext_passthrough(self, monkeypatch):
-        monkeypatch.setenv("SECRET_KEY", "test-secret-0123456789")
+        monkeypatch.setenv("SECRET_KEY", "test-secret-0123456789-abcdef0123456789")
         import services.settings as s
         s._settings_cache = None
         s._tenant_settings_cache.clear()
@@ -86,7 +86,7 @@ class TestRateLimitKey:
             assert key.startswith("ip:")
 
     def test_valid_bearer_uses_tenant(self, app_ctx, monkeypatch):
-        monkeypatch.setenv("SECRET_KEY", "rl-test-secret-0123456789")
+        monkeypatch.setenv("SECRET_KEY", "rl-test-secret-0123456789-abcdef0123456789")
         from services.auth import create_token
         with app_ctx.app.app_context():
             tok = create_token(subject="tenant-xyz", extra_claims={"role": "admin"})
@@ -114,7 +114,7 @@ class TestTokenSubCache:
         return app_module
 
     def test_cache_returns_same_tenant_without_verify(self, app_ctx, monkeypatch):
-        monkeypatch.setenv("SECRET_KEY", "cache-test-secret-0123456789")
+        monkeypatch.setenv("SECRET_KEY", "cache-test-secret-0123456789-abcdef0123456789")
         calls = {"n": 0}
         real_verify = None
         from services.auth import verify_token as _real
@@ -281,7 +281,7 @@ class TestCspHeaders:
     spammed the console) while arbitrary origins remain forbidden."""
 
     def test_connect_src_allows_jsdelivr_only(self, monkeypatch):
-        monkeypatch.setenv("SECRET_KEY", "test-secret-0123456789")
+        monkeypatch.setenv("SECRET_KEY", "test-secret-0123456789-abcdef0123456789")
         import app as app_module
 
         c = app_module.app.test_client()
@@ -298,7 +298,7 @@ class TestCspHeaders:
         assert "https://evil.example" not in connect
 
     def test_hardening_headers_present(self, monkeypatch):
-        monkeypatch.setenv("SECRET_KEY", "test-secret-0123456789")
+        monkeypatch.setenv("SECRET_KEY", "test-secret-0123456789-abcdef0123456789")
         import app as app_module
 
         c = app_module.app.test_client()
