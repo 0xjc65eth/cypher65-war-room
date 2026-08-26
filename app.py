@@ -47,6 +47,7 @@ from helpers import (
 
 import services.state as _shared_state
 from services.tenant import log_audit as _log_audit
+from services.schema import CURRENT_SCHEMA_VERSION
 
 # Worker sanitization/dedup helpers now live in services.poll_compute
 # (Issue #135) — services.names is consumed there.
@@ -118,6 +119,7 @@ import services.conversion as _conversion  # CFO: PRO funnel telemetry + LTV/CAC
 import services.beta_analytics as _beta_analytics  # Beta: self-hosted usage tracking (boot, module, time)
 import services.doc_feedback as _doc_feedback  # #19: Learning FAQ loop — doc "was this helpful?"
 import services.error_tracker as _error_tracker  # #176: local error-rate sampler ($0 observability)
+import services.postgres_readiness as _postgres_readiness  # #22: traction gate
 from services.licensing import (
     is_pro,
     license_status as _license_status,
@@ -717,7 +719,8 @@ app.register_blueprint(alerts_bp)
 # current schema revision; _record_schema_version() stamps it into the
 # schema_version table on every boot so operators/tests can verify the DB
 # layout matches the code that wrote it.
-SCHEMA_VERSION = 4  # Issue #17: + pool_metrics · Issue #176: + error_metrics · Issue #202: + degradation_metrics (WARNING-rate)
+# Backwards-compatible name used by existing tests and operational probes.
+SCHEMA_VERSION = CURRENT_SCHEMA_VERSION
 
 
 def _record_schema_version(conn):
@@ -5579,6 +5582,21 @@ def api_admin_analytics():
     days = request.args.get("days", 30, type=int)
     days = max(1, min(days, 365))
     report = _beta_analytics.get_report(days=days)
+    return jsonify(report)
+
+
+@app.route("/api/admin/postgres-readiness", methods=["GET"])
+def api_admin_postgres_readiness():
+    """Redacted, read-only traction gate for the future Postgres rehearsal."""
+    if not _admin_request_allowed():
+        return jsonify({"error": "admin access required"}), 403
+    try:
+        report = _postgres_readiness.readiness_report(
+            os.environ.get("DB_PATH", DB_PATH)
+        )
+    except _postgres_readiness.ReadinessError as exc:
+        # The exception contract never contains tokens, DSNs, or database rows.
+        return jsonify({"decision": "blocked", "error": str(exc)}), 503
     return jsonify(report)
 
 
