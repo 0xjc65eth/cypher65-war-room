@@ -2151,6 +2151,214 @@
     el.title = 'Dados desatualizados: ' + sourceText + ' · última atualização ' + ageText + ' atrás.';
   }
 
+  // ── Operational Overview (Issue 367) ─────────────────────────────────
+  // Combines the real snapshot with the independently polled fleet health
+  // endpoint. The model is pure and mirrored in the JS core suite. A missing
+  // value remains unavailable — zero is shown only when the source proves it.
+  let _operationalFleetData = null;
+  let _operationalFleetError = false;
+
+  function buildOperationalOverviewModel(snap, fleetData, fleetError, nowSec) {
+    const data = snap || {};
+    const fleet = fleetData && fleetData.fleet_stats;
+    const devices = fleetData && Array.isArray(fleetData.device_health) ? fleetData.device_health : [];
+    const freshness = snapshotFreshness(data, nowSec);
+    const fleetAges = devices.map(function(d) {
+      const raw = d && d.telemetry && d.telemetry.age_seconds;
+      return raw === null || raw === undefined || raw === '' ? null : Number(raw);
+    }).filter(function(v) { return v !== null && isFinite(v) && v >= 0; });
+    const fleetAge = fleetAges.length ? Math.max.apply(null, fleetAges) : null;
+    const fleetTelemetryStale = fleetAge !== null && fleetAge > 150;
+    const staleSources = freshness.sources.slice();
+    if (freshness.stale && freshness.sources.length === 0) staleSources.push('snapshot');
+    if (fleetTelemetryStale) staleSources.push('fleet telemetry');
+    // Combined freshness cannot be called FRESH when the snapshot has no
+    // timestamp, even if the independently fetched Fleet samples are recent.
+    const dataAge = freshness.age === null ? null : (fleetAge === null ? freshness.age : Math.max(freshness.age, fleetAge));
+    const dataStale = freshness.stale || fleetTelemetryStale;
+
+    const profit = data.profitability || {};
+    const costValuePresent = profit.cost_per_day_usd !== null && profit.cost_per_day_usd !== undefined && profit.cost_per_day_usd !== '';
+    const rawCost = Number(profit.cost_per_day_usd);
+    const hasCost = profit.cost_model_configured === true && costValuePresent && isFinite(rawCost) && rawCost >= 0;
+
+    const model = {
+      loading: !fleet && !fleetError,
+      fleetError: !!fleetError,
+      empty: false,
+      overall: 'LOADING',
+      tone: 'neutral',
+      health: 'WAITING',
+      healthDetail: 'Reading fleet telemetry…',
+      attention: null,
+      attentionDetail: 'Waiting for devices…',
+      lostHashrateHs: null,
+      lossBaselineDevices: 0,
+      costPerDayUsd: hasCost ? rawCost : null,
+      costDetail: hasCost ? String(profit.cost_label || 'Configured cost model') : 'Cost model not configured',
+      freshness: dataStale ? 'STALE' : (dataAge === null ? 'UNKNOWN' : 'FRESH'),
+      dataAge: dataAge,
+      freshnessDetail: staleSources.length ? staleSources.join(', ') : (dataAge === null ? 'Snapshot timestamp unavailable' : 'Snapshot and fleet telemetry'),
+      actionTitle: 'WAIT FOR DATA',
+      actionTarget: '',
+      actionPanel: '',
+      actionEnabled: false,
+      stateText: 'Loading real operational data…',
+    };
+
+    if (fleetError) {
+      model.loading = false;
+      model.overall = 'UNAVAILABLE';
+      model.tone = 'critical';
+      model.health = 'UNAVAILABLE';
+      model.healthDetail = 'Fleet health endpoint unavailable';
+      model.attentionDetail = 'Cannot verify ASIC state';
+      model.freshness = 'PARTIAL';
+      model.freshnessDetail = 'Fleet telemetry unavailable';
+      model.actionTitle = 'OPEN FLEET DIAGNOSTIC';
+      model.actionTarget = 'fleet';
+      model.actionPanel = 'axe-fleet-panel';
+      model.actionEnabled = true;
+      model.stateText = 'Fleet data could not be loaded. Snapshot metrics may still be current.';
+      return model;
+    }
+    if (!fleet) return model;
+
+    const total = Math.max(0, Number(fleet.total_devices) || 0);
+    const offline = Math.max(0, Number(fleet.offline) || 0);
+    const warning = Math.max(0, Number(fleet.warning) || 0);
+    const online = Math.max(0, Number(fleet.online) || 0);
+    const attention = offline + warning;
+    const healthScore = Number(fleet.avg_health_score);
+    const baselineCount = Math.max(0, Number(fleet.hashrate_loss_baseline_devices) || 0);
+    const lost = Number(fleet.hashrate_lost_hs);
+    model.loading = false;
+    model.attention = attention;
+    model.attentionDetail = warning + ' warning · ' + offline + ' offline';
+    model.lossBaselineDevices = baselineCount;
+    model.lostHashrateHs = baselineCount > 0 && isFinite(lost) && lost >= 0 ? lost : null;
+
+    if (total === 0) {
+      model.empty = true;
+      model.overall = dataStale ? 'STALE DATA' : 'NO FLEET';
+      model.tone = dataStale ? 'warning' : 'neutral';
+      model.health = 'NO FLEET';
+      model.healthDetail = 'No ASIC registered';
+      model.attentionDetail = '0 registered devices';
+      model.actionTitle = 'REGISTER OR DISCOVER ASIC';
+      model.actionTarget = 'fleet';
+      model.actionPanel = 'axe-fleet-panel';
+      model.actionEnabled = true;
+      model.stateText = 'No ASIC is registered; fleet health and hashrate loss cannot be calculated.';
+      return model;
+    }
+
+    if (offline > 0 || (isFinite(healthScore) && healthScore < 30)) {
+      model.overall = 'CRITICAL';
+      model.tone = 'critical';
+      model.health = 'CRITICAL';
+    } else if (warning > 0 || (isFinite(healthScore) && healthScore < 60)) {
+      model.overall = 'ATTENTION';
+      model.tone = 'warning';
+      model.health = 'DEGRADED';
+    } else {
+      model.overall = 'HEALTHY';
+      model.tone = 'healthy';
+      model.health = 'HEALTHY';
+    }
+    model.healthDetail = online + '/' + total + ' reachable · health ' + (isFinite(healthScore) ? Math.round(healthScore) + '/100' : 'unavailable');
+    if (dataStale) {
+      model.overall = 'STALE DATA';
+      if (model.tone === 'healthy') model.tone = 'warning';
+    }
+    model.stateText = attention > 0
+      ? attention + ' ASIC exception' + (attention === 1 ? '' : 's') + ' require operator diagnosis.'
+      : (dataStale ? 'One or more operational sources are stale; verify data before deciding.' : 'Fleet telemetry is loaded and current.');
+
+    // Exception-first action. Snapshot Command Center cards are advisory, but
+    // this surface intentionally ignores external URLs and only navigates to
+    // an internal diagnostic module. It cannot dispatch a device command.
+    let action = null;
+    if (dataStale) {
+      action = fleetTelemetryStale
+        ? { title: 'VERIFY STALE FLEET TELEMETRY', target: 'fleet', panel: 'axe-fleet-panel' }
+        : { title: 'VERIFY STALE DATA SOURCES', target: 'dashboard', panel: staleSources.indexOf('rede') !== -1 || staleSources.indexOf('preço BTC') !== -1 ? 'network-panel' : 'pool-overview' };
+    } else if (attention > 0) {
+      action = { title: 'INSPECT ' + attention + ' ASIC EXCEPTION' + (attention === 1 ? '' : 'S'), target: 'fleet', panel: 'axe-fleet-panel' };
+    } else {
+      const cards = Array.isArray(data.command_center) ? data.command_center : [];
+      const card = cards.find(function(c) { return c && c.target; });
+      if (card) action = { title: String(card.title || 'OPEN DIAGNOSTIC').toUpperCase(), target: String(card.target), panel: String(card.panel || '') };
+    }
+    if (!action && !hasCost) {
+      action = { title: 'CONFIGURE OPERATIONAL COST', target: 'dashboard', panel: 'profit-panel' };
+    }
+    if (action) {
+      model.actionTitle = action.title;
+      model.actionTarget = action.target;
+      model.actionPanel = action.panel;
+      model.actionEnabled = true;
+    } else {
+      model.actionTitle = 'NO ACTION REQUIRED';
+      model.stateText = dataStale ? 'Operation appears stable, but one or more data sources are stale.' : 'Operation is healthy and current; no operator action is required.';
+    }
+    return model;
+  }
+
+  function renderOperationalOverview(snap, fleetData, fleetError) {
+    const root = document.getElementById('operational-overview');
+    if (!root) return;
+    const model = buildOperationalOverviewModel(snap, fleetData, fleetError);
+    const put = function(id, value) { const node = document.getElementById(id); if (node) node.textContent = value; };
+    root.setAttribute('aria-busy', model.loading ? 'true' : 'false');
+    root.classList.toggle('is-critical', model.tone === 'critical');
+    root.classList.toggle('is-warning', model.tone === 'warning');
+    root.classList.toggle('is-healthy', model.tone === 'healthy');
+    put('op-overall-status', model.overall);
+    const badge = document.getElementById('op-overall-status');
+    if (badge) badge.className = 'badge ' + (model.tone === 'critical' ? 'badge--red' : model.tone === 'warning' ? 'badge--amber' : model.tone === 'healthy' ? 'badge--green' : 'badge--mute');
+    put('op-health', model.health);
+    put('op-health-detail', model.healthDetail);
+    put('op-attention', model.attention === null ? '—' : String(model.attention));
+    put('op-attention-detail', model.attentionDetail);
+    put('op-lost-hashrate', model.lostHashrateHs === null ? '—' : fmt.hashrate(model.lostHashrateHs));
+    put('op-lost-hashrate-detail', model.lossBaselineDevices > 0 ? 'Baseline available for ' + model.lossBaselineDevices + ' ASIC' + (model.lossBaselineDevices === 1 ? '' : 's') : 'Baseline unavailable');
+    put('op-cost', model.costPerDayUsd === null ? 'NOT CONFIGURED' : '$' + model.costPerDayUsd.toFixed(2) + '/day');
+    put('op-cost-detail', model.costDetail);
+    put('op-freshness', model.freshness + (model.dataAge === null ? '' : ' · ' + fmt.secsToHuman(model.dataAge)));
+    put('op-freshness-detail', model.freshnessDetail);
+    put('op-action-title', model.actionTitle);
+    put('op-action-detail', model.actionEnabled ? 'Opens diagnostic only · no command is executed' : 'Advisory only · no command is executed');
+    put('op-state', model.stateText);
+    const action = document.getElementById('op-action');
+    if (action) {
+      action.disabled = !model.actionEnabled;
+      action.dataset.target = model.actionTarget;
+      action.dataset.panel = model.actionPanel;
+      action.textContent = model.actionEnabled ? 'OPEN DIAGNOSTIC' : 'NO ACTION';
+    }
+  }
+
+  function initOperationalOverviewControls() {
+    const action = document.getElementById('op-action');
+    if (!action) return;
+    action.addEventListener('click', function() {
+      if (action.disabled) return;
+      const target = action.dataset.target || '';
+      const panel = action.dataset.panel || '';
+      if (target) activateModule(target);
+      if (panel) {
+        setTimeout(function() {
+          const node = document.getElementById(panel);
+          if (!node) return;
+          const reduceMotion = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+          node.scrollIntoView({ behavior: reduceMotion ? 'auto' : 'smooth', block: 'start' });
+          node.focus && node.focus({ preventScroll: true });
+        }, 140);
+      }
+    });
+  }
+
   // ── P0-4 · Wallet identity card (QR + checksum + health) ─────────────
   // Renders the CONNECT WALLET modal's WALLET IDENTITY block: a scannable
   // QR of the full address, the address with its checksum highlighted, a
@@ -7619,6 +7827,7 @@ function renderAccount(acct) {
     renderHUD(snap);
     renderStatusBar(snap);
     renderSnapshotFreshness(snap);
+    renderOperationalOverview(snap, _operationalFleetData, _operationalFleetError);
     // P0-4 fix: an empty shortAddr('') collapses the topbar span to a
     // zero-width box (Playwright/flex reports it hidden on wallet-less
     // boots). Keep the '—' placeholder (same convention as #sb-wallet-addr)
@@ -9295,11 +9504,16 @@ dom.walletSave?.addEventListener('click', async () => {
   async function fetchAxeFleet() {
     try {
       const r = await authFetch('/api/axe-fleet/health');
-      if (!r.ok) return;
+      if (!r.ok) throw new Error('fleet health failed (' + r.status + ')');
       const data = await r.json();
+      _operationalFleetData = data;
+      _operationalFleetError = false;
       renderAxeFleet(data);
+      renderOperationalOverview(_lastSnapshot || {}, data, false);
     } catch (e) {
+      _operationalFleetError = true;
       if (dom.axeFleetStatusBadge) dom.axeFleetStatusBadge.textContent = 'ERROR';
+      renderOperationalOverview(_lastSnapshot || {}, _operationalFleetData, true);
     }
     // FLEET COMMAND CENTER rides the same poll/SSE cadence.
     fetchFleetCommandCenter();
@@ -10920,7 +11134,7 @@ dom.walletSave?.addEventListener('click', async () => {
 
   // ── Boot ──
   async function boot() {
-    initCharts(); bindChartRanges(); loadSettings(); initMarketControls(); initDecisionMatrixControls(); initCommandCenterControls(); _initRentalsPanel();
+    initCharts(); bindChartRanges(); loadSettings(); initMarketControls(); initDecisionMatrixControls(); initCommandCenterControls(); initOperationalOverviewControls(); _initRentalsPanel();
     _initLmEventLogControls();
     initLicensing();  // R1: PRO badge + license state (off-by-default, no-op in open mode)
     fetchTailscale();

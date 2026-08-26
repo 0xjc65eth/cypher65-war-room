@@ -644,6 +644,93 @@ h1.module-header__title {
 .status-block__sub { font-size: 9px; color: var(--text-tertiary); }
 .status-block__sep { color: var(--text-tertiary); font-size: 10px; }
 
+/* ── OPERATIONAL OVERVIEW (#367) ──────────────────────────────────
+   Exception-first decision surface. Metrics refresh on the polling cadence,
+   so state changes are deliberately instant rather than animated. */
+.operational-overview {
+  margin: 8px 10px 0;
+  padding: 12px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-default);
+  border-left: 3px solid var(--border-default);
+  border-radius: var(--radius-md);
+}
+.operational-overview.is-healthy { border-left-color: var(--green); }
+.operational-overview.is-warning { border-left-color: var(--amber); }
+.operational-overview.is-critical { border-left-color: var(--red); }
+.operational-overview__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+.operational-overview__eyebrow {
+  color: var(--text-tertiary);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.1em;
+}
+.operational-overview__title {
+  margin: 2px 0 0;
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: var(--fs-md);
+  line-height: 1.25;
+}
+.operational-overview__grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+}
+.op-signal {
+  min-width: 0;
+  min-height: 96px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+}
+.op-signal__label {
+  color: var(--text-tertiary);
+  font-size: 8px;
+  letter-spacing: 0.11em;
+}
+.op-signal__value {
+  min-height: 22px;
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 17px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+}
+.is-healthy #op-health { color: var(--green); }
+.is-warning #op-health,
+.is-warning #op-freshness { color: var(--amber); }
+.is-critical #op-health { color: var(--red); }
+.op-signal__detail {
+  color: var(--text-secondary);
+  font-size: 9px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+.op-signal--action { border-color: var(--border-default); }
+.op-signal__button {
+  align-self: flex-start;
+  margin-top: auto;
+  min-height: 32px;
+}
+.operational-overview__state {
+  margin: 8px 0 0;
+  color: var(--text-secondary);
+  font-size: 9px;
+  line-height: 1.4;
+}
+
 /* ── Panels (sólido, 2px, sem ::before de acento, sem sombra) ────── */
 .panel {
   position: relative; /* containing block para .skel-overlay */
@@ -2967,6 +3054,8 @@ tr:hover td { background: var(--bg-hover); }
   .kpi-card { padding: 12px 10px; }
   .kpi-value { font-size: 18px; }
   .status-bar { grid-template-columns: repeat(2, 1fr); gap: 4px; padding: 6px; }
+  .operational-overview { margin: 6px 6px 0; padding: 10px; }
+  .operational-overview__grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .grid { grid-template-columns: 1fr; gap: 6px; }
   .host-core__meta { grid-template-columns: repeat(2, 1fr); gap: 4px; }
   .hero-grid { grid-template-columns: repeat(2, 1fr); }
@@ -3051,6 +3140,9 @@ tr:hover td { background: var(--bg-hover); }
   .kpi-row { grid-template-columns: 1fr 1fr; gap: 6px; padding: 8px 4px; }
   .kpi-value { font-size: 16px; }
   .status-bar { grid-template-columns: 1fr; }
+  .operational-overview { margin: 4px 4px 0; padding: 8px; }
+  .operational-overview__grid { grid-template-columns: 1fr; }
+  .op-signal { min-height: 84px; }
   .profit-grid { grid-template-columns: 1fr; }
   .bh-grid { grid-template-columns: 1fr; }
   .chart-wrap { min-height: 140px; }

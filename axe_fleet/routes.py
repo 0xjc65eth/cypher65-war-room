@@ -19,6 +19,7 @@ Endpoints:
 
 import json
 import logging
+import math
 import os
 import socket
 import sqlite3
@@ -100,6 +101,24 @@ def _latest_telemetry(tel_raw) -> dict:
     ):
         return tel_raw[0]["payload"]
     return {}
+
+
+def _nonnegative_finite_int(value) -> int:
+    """Normalize an untrusted telemetry number without propagating NaN/Inf.
+
+    Firmware payloads are external input. A malformed hashrate must degrade
+    to the honest unavailable/zero state instead of crashing the fleet health
+    endpoint or poisoning its aggregates.
+    """
+    if isinstance(value, bool):
+        return 0
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return 0
+    if not math.isfinite(number) or number <= 0:
+        return 0
+    return int(number)
 
 
 def _mark_cache_status(device_id: str, status: str) -> None:
@@ -241,7 +260,7 @@ def _device_advice(status: str, tel: dict, latency_ms: int | None = None) -> lis
     rssi = tel.get("wifi_rssi")
     if rssi is not None and rssi <= -75:
         advice.append("Wi-Fi fraco (≤-75dBm) — usar cabo de rede")
-    hr = int(tel.get("hashrate_hs") or 0)
+    hr = _nonnegative_finite_int(tel.get("hashrate_hs"))
     if hr == 0 and status in ("ONLINE", "WARNING", "HASHING"):
         advice.append("hashrate zero — checar conexão stratum/pool")
     return advice
@@ -540,7 +559,7 @@ def device_health(device_id: str, tenant_id: str = ""):
         hw_pct = tel.get("hw_error_pct", 0)
         if hw_pct >= 5:
             issues.append("high_hw_error_rate")
-        hr = int(tel.get("hashrate_hs", 0))
+        hr = _nonnegative_finite_int(tel.get("hashrate_hs"))
         if hr == 0:
             issues.append("zero_hashrate")
 
@@ -2304,6 +2323,8 @@ def fleet_health(tenant_id: str = ""):
     health_count = 0
     best_diff_global = 0.0
     best_diff_str_global = ""
+    hashrate_lost_hs = 0
+    hashrate_loss_baseline_devices = 0
 
     device_health_list = []
     groups = {"online": [], "warning": [], "offline": []}
@@ -2344,7 +2365,17 @@ def fleet_health(tenant_id: str = ""):
             latency_ms = _probe_miner_latency_ms(d.get("ip_address", ""))
         advice = _device_advice(status, tel, latency_ms)
 
-        hr = int(tel.get("hashrate_hs", 0))
+        reported_hr = _nonnegative_finite_int(tel.get("hashrate_hs", 0))
+        reachable = status == "WARNING" or device_status_is_online(status)
+        # A stale non-zero sample on an OFFLINE device is last-known capacity,
+        # not live production. Excluding it prevents the operational overview
+        # from claiming hashrate that is no longer available.
+        hr = reported_hr if reachable else 0
+        one_hour_hr = _nonnegative_finite_int(tel.get("hashrate_1h"))
+        baseline_hr = one_hour_hr or (reported_hr if not reachable else 0)
+        if baseline_hr > 0:
+            hashrate_loss_baseline_devices += 1
+            hashrate_lost_hs += max(0, baseline_hr - hr)
         pw = tel.get("power_watts")
         tmp = tel.get("temperature")
         bd = (
@@ -2385,6 +2416,10 @@ def fleet_health(tenant_id: str = ""):
                 "telemetry": {
                     "hashrate_hs": hr,
                     "hashrate_str": _fmt_hr(hr),
+                    "last_known_hashrate_hs": (
+                        reported_hr if not reachable and reported_hr > 0 else None
+                    ),
+                    "hashrate_loss_baseline_hs": baseline_hr or None,
                     "temperature": tmp,
                     "power_watts": pw,
                     "frequency_mhz": tel.get("frequency_mhz"),
@@ -2442,6 +2477,10 @@ def fleet_health(tenant_id: str = ""):
                 "offline": offline,
                 "total_hashrate_hs": total_hashrate_hs,
                 "total_hashrate_str": _fmt_hr(total_hashrate_hs),
+                "hashrate_lost_hs": hashrate_lost_hs,
+                "hashrate_lost_str": _fmt_hr(hashrate_lost_hs),
+                "hashrate_loss_baseline_devices": hashrate_loss_baseline_devices,
+                "hashrate_loss_basis": "1h_or_last_known",
                 "total_power_w": total_power_w,
                 "avg_temperature_c": avg_temp,
                 "avg_health_score": avg_health,

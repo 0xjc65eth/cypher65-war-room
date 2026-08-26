@@ -60,7 +60,7 @@
   }
 </script>
 {% endif %}
-<link rel="stylesheet" href="/static/style.css?v54">
+<link rel="stylesheet" href="/static/style.css?v55">
 <link rel="icon" href="/static/favicon.ico" sizes="any">
 <link rel="icon" type="image/png" sizes="32x32" href="/static/icon-32x32.png">
 <link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
@@ -285,6 +285,53 @@
     </div>
   </div>
 </div>
+
+<!-- Operational decision strip: one scan answers health, loss, cost,
+     freshness and the next SAFE diagnostic step. It never dispatches a
+     hardware command; the CTA only navigates to an existing module. -->
+<section class="operational-overview" id="operational-overview" data-module="dashboard" role="region" aria-labelledby="operational-overview-title" aria-busy="true">
+  <div class="operational-overview__header">
+    <div>
+      <div class="operational-overview__eyebrow">OPERATIONAL OVERVIEW · DECIDE IN SECONDS</div>
+      <h2 class="operational-overview__title" id="operational-overview-title">Estado da operação</h2>
+    </div>
+    <span class="badge badge--mute" id="op-overall-status">LOADING</span>
+  </div>
+  <div class="operational-overview__grid">
+    <div class="op-signal" id="op-health-card">
+      <span class="op-signal__label">OPERATION HEALTH</span>
+      <strong class="op-signal__value" id="op-health"><span class="skel skel--line w-60"></span></strong>
+      <span class="op-signal__detail" id="op-health-detail">Reading fleet telemetry…</span>
+    </div>
+    <div class="op-signal" id="op-attention-card">
+      <span class="op-signal__label">ASICS NEED ATTENTION</span>
+      <strong class="op-signal__value" id="op-attention"><span class="skel skel--line w-40"></span></strong>
+      <span class="op-signal__detail" id="op-attention-detail">Waiting for devices…</span>
+    </div>
+    <div class="op-signal" id="op-loss-card">
+      <span class="op-signal__label">HASHRATE LOST</span>
+      <strong class="op-signal__value" id="op-lost-hashrate"><span class="skel skel--line w-60"></span></strong>
+      <span class="op-signal__detail" id="op-lost-hashrate-detail">1h or last-known baseline</span>
+    </div>
+    <div class="op-signal" id="op-cost-card">
+      <span class="op-signal__label">OPERATIONAL COST</span>
+      <strong class="op-signal__value" id="op-cost"><span class="skel skel--line w-60"></span></strong>
+      <span class="op-signal__detail" id="op-cost-detail">Reading configured cost model…</span>
+    </div>
+    <div class="op-signal" id="op-freshness-card">
+      <span class="op-signal__label">DATA FRESHNESS</span>
+      <strong class="op-signal__value" id="op-freshness"><span class="skel skel--line w-60"></span></strong>
+      <span class="op-signal__detail" id="op-freshness-detail">Waiting for snapshot…</span>
+    </div>
+    <div class="op-signal op-signal--action" id="op-action-card">
+      <span class="op-signal__label">NEXT SAFE ACTION</span>
+      <strong class="op-signal__value" id="op-action-title">WAIT FOR DATA</strong>
+      <span class="op-signal__detail" id="op-action-detail">Advisory only · no command is executed</span>
+      <button class="btn btn--secondary op-signal__button" type="button" id="op-action" disabled>OPEN DIAGNOSTIC</button>
+    </div>
+  </div>
+  <p class="operational-overview__state" id="op-state" role="status" aria-live="polite">Loading real operational data…</p>
+</section>
 
 <!-- ══════════════════════════════════════════════════════════════════════
      KPI CARDS — 4 métricas principais
@@ -3100,7 +3147,7 @@
     <span id="next-poll"></span>
   </div>
 
-  <script src="/static/app.js?v61" defer></script>
+  <script src="/static/app.js?v62" defer></script>
 </div> <!-- end #app-main -->
 </div> <!-- end #app-layout -->
   <!-- DESIGN SYSTEM v2: matrix rain canvas removido (zero decorativo) —
