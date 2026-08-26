@@ -153,7 +153,9 @@ sem o processo de workers — o dashboard ficaria vazio para sempre.
   o restore poderia pisar em dados frescos — não rode replicação neste modo.
 - **Tamanho**: limite de arquivo do gist (~100MB) — folga enorme para o
   SQLite real deste app (poucos MB). Se um dia exceder, aí sim migrar para
-  Postgres (Supabase/Neon free tier — Gravity Index recommend).
+  Postgres (Supabase/Neon free tier — Gravity Index recommend). A migração é
+  gated por tração e ensaio com backup real; veja
+  [`POSTGRES_MIGRATION.md`](POSTGRES_MIGRATION.md).
 
 ### ⚠️ Rotação do `SECRET_KEY` e credenciais criptografadas
 
