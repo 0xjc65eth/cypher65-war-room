@@ -9655,14 +9655,26 @@ dom.walletSave?.addEventListener('click', async () => {
     const url = isAgentRouted
       ? '/api/axe-fleet/devices/' + encodeURIComponent(deviceId) + '/' + command
       : '/api/devices/' + encodeURIComponent(deviceId) + '/command';
+    const payload = isAgentRouted ? {} : { command: command };
     const opts = {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(isAgentRouted ? {} : { command: command }),
+      body: JSON.stringify(payload),
     };
     try {
-      const resp = isAgentRouted ? await authFetch(url, opts) : await fetch(url, opts);
-      const data = await resp.json().catch(() => ({}));
+      const send = authFetch;
+      let resp = await send(url, opts);
+      let data = await resp.json().catch(() => ({}));
+      // The server owns the authorization to execute a physical action. The
+      // browser confirmation above informs the operator; this short-lived,
+      // one-time token makes the second step enforceable at the API boundary.
+      if (data.confirmation_required && data.confirmation_token) {
+        resp = await send(url, {
+          ...opts,
+          body: JSON.stringify({ ...payload, confirmation_token: data.confirmation_token }),
+        });
+        data = await resp.json().catch(() => ({}));
+      }
       if (data.success) {
         const name = btn.closest('.axe-card, .fcc-card')?.querySelector('.axe-card__name, .fcc-card__name')?.textContent || 'device';
         showToast('success', (data.message || command + ' sent to ' + name));

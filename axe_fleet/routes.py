@@ -29,7 +29,13 @@ from functools import wraps
 
 from flask import Blueprint, jsonify, request, session, send_file
 
+from services.command_confirmation import (
+    consume_confirmation,
+    issue_confirmation,
+    requires_confirmation,
+)
 from services.tenant import (
+    auth_configured,
     get_tenant_id as _get_tenant_id,
     require_tenant,
     role_required as _role_required,
@@ -661,13 +667,16 @@ def _require_local_or_session(f):
 
     @wraps(f)
     def wrapper(*args, **kwargs):
-        # Allow localhost always (safe for development)
         remote = request.remote_addr or ""
-        if remote in ("127.0.0.1", "::1", "localhost"):
-            return f(*args, **kwargs)
+        is_local = (
+            remote in ("127.0.0.1", "::1", "localhost")
+            or remote == request.host.split(":")[0]
+        )
 
-        # Also allow requests from the same machine
-        if remote == request.host.split(":")[0]:
+        # Open self-host mode is deliberately local-only. A raw arbitrary
+        # header is not authentication and must never unlock physical miner
+        # control over a tailnet or public bind.
+        if is_local and not auth_configured():
             return f(*args, **kwargs)
 
         # Check for active Flask session
@@ -687,15 +696,6 @@ def _require_local_or_session(f):
         api_key = request.headers.get("X-API-Key", "")
         if api_key and resolve_tenant_for_api_key(api_key) is not None:
             return f(*args, **kwargs)
-        # Open self-host mode (no auth configured): fall back to the legacy
-        # lenient header check so the documented tailnet/session flow keeps
-        # working exactly as before — there is no auth to validate against.
-        from services.tenant import auth_configured
-
-        if not auth_configured():
-            if len(auth) > 20 or (api_key and len(api_key) >= 16):
-                return f(*args, **kwargs)
-
         log.warning("[axe] Unauthorized device control attempt from %s", remote)
         return (
             jsonify(
@@ -709,33 +709,89 @@ def _require_local_or_session(f):
     return wrapper
 
 
+def _command_confirmation_response(device_id: str, command: str, tenant_id: str):
+    """Return a confirmation response when a physical action needs one.
+
+    Axe Fleet command endpoints do not accept operational parameters today,
+    so the confirmation is bound to an empty parameter object. This helper is
+    intentionally called immediately before dispatch/enqueueing.
+    """
+    if not requires_confirmation(command):
+        return None
+    # Do not mint an authorization artifact for an unknown device or a
+    # capability that cannot execute. _execute_device_command repeats these
+    # checks immediately before dispatch to avoid TOCTOU surprises.
+    device = _registry.get_device(device_id, tenant_id=tenant_id) if _registry else None
+    if not device:
+        return jsonify({"error": "device not found"}), 404
+    capabilities = device.get("capabilities", {})
+    if not capabilities.get(command):
+        return jsonify({"error": f"'{command}' not supported by this device"}), 400
+    data = request.get_json(silent=True) or {}
+    if not isinstance(data, dict):
+        return jsonify({"success": False, "error": "JSON object required"}), 400
+    token = data.get("confirmation_token")
+    if not token:
+        confirmation = issue_confirmation(tenant_id, device_id, command, {})
+        return (
+            jsonify(
+                {
+                    "success": False,
+                    "confirmation_required": True,
+                    "device_id": device_id,
+                    "command": command,
+                    "confirmation_token": confirmation["confirmation_token"],
+                    "expires_at": confirmation["expires_at"],
+                }
+            ),
+            202,
+        )
+    if not consume_confirmation(token, tenant_id, device_id, command, {}):
+        return (
+            jsonify(
+                {
+                    "success": False,
+                    "error": "invalid, expired, or already used confirmation",
+                }
+            ),
+            409,
+        )
+    return None
+
+
 # ── Device commands ─────────────────────────────────────────────────────
 
 
 @axe_fleet_bp.route("/devices/<device_id>/restart", methods=["POST"])
 @_require_local_or_session
+@require_tenant
 @_role_required("member")
-def restart_device(device_id: str):
+def restart_device(device_id: str, tenant_id: str = ""):
     """Restart a device. Requires restart capability."""
     if _registry is None:
         return jsonify({"error": "registry not initialized"}), 500
-    return _execute_device_command(device_id, "restart")
+    confirmation = _command_confirmation_response(device_id, "restart", tenant_id)
+    if confirmation is not None:
+        return confirmation
+    return _execute_device_command(device_id, "restart", tenant_id=tenant_id)
 
 
 @axe_fleet_bp.route("/devices/<device_id>/identify", methods=["POST"])
 @_require_local_or_session
+@require_tenant
 @_role_required("member")
-def identify_device(device_id: str):
+def identify_device(device_id: str, tenant_id: str = ""):
     """Flash device LED/screen for identification."""
     if _registry is None:
         return jsonify({"error": "registry not initialized"}), 500
-    return _execute_device_command(device_id, "identify")
+    return _execute_device_command(device_id, "identify", tenant_id=tenant_id)
 
 
 @axe_fleet_bp.route("/devices/<device_id>/pause", methods=["POST"])
 @_require_local_or_session
+@require_tenant
 @_role_required("member")
-def pause_device(device_id: str):
+def pause_device(device_id: str, tenant_id: str = ""):
     """Pause hashing on a device (ESP-Miner miningPause).
 
     Agent-managed devices route through the LOCAL agent command queue (the
@@ -743,17 +799,21 @@ def pause_device(device_id: str):
     """
     if _registry is None:
         return jsonify({"error": "registry not initialized"}), 500
-    return _execute_device_command(device_id, "pause")
+    confirmation = _command_confirmation_response(device_id, "pause", tenant_id)
+    if confirmation is not None:
+        return confirmation
+    return _execute_device_command(device_id, "pause", tenant_id=tenant_id)
 
 
 @axe_fleet_bp.route("/devices/<device_id>/resume", methods=["POST"])
 @_require_local_or_session
+@require_tenant
 @_role_required("member")
-def resume_device(device_id: str):
+def resume_device(device_id: str, tenant_id: str = ""):
     """Resume hashing on a paused device (ESP-Miner miningResume)."""
     if _registry is None:
         return jsonify({"error": "registry not initialized"}), 500
-    return _execute_device_command(device_id, "resume")
+    return _execute_device_command(device_id, "resume", tenant_id=tenant_id)
 
 
 @axe_fleet_bp.route("/devices/<device_id>/config", methods=["POST"])
@@ -1407,15 +1467,18 @@ def diagnose_device(ip_or_host: str):
 
 
 @axe_fleet_bp.route("/detect/<path:ip_or_host>", methods=["GET"])
-def detect_firmware_endpoint(ip_or_host: str):
+@_require_local_or_session
+@require_tenant
+@_role_required("viewer")
+def detect_firmware_endpoint(ip_or_host: str, tenant_id: str = ""):
     """Quick firmware detection via ``detect_firmware()``.
 
     Lighter than /diagnose — calls only the firmware detector (REST APIs +
     cgminer fingerprint), no TCP connectivity scan or per-protocol flags.
     Returns the raw detector result for fast firmware preview.
 
-    This endpoint does NOT require auth (local-only for the wizard).
-    The device does NOT need to be registered.
+    The endpoint is restricted to an authenticated operator and validates the
+    target before any network I/O. The device does not need to be registered.
 
     Example:
       GET /api/axe-fleet/detect/192.168.1.200
@@ -1431,10 +1494,13 @@ def detect_firmware_endpoint(ip_or_host: str):
       }
     """
     try:
-        from core.registry.detector import detect_firmware
+        from core.registry.detector import detect_firmware, resolve_private_target
 
-        result = detect_firmware(ip_or_host)
+        target = resolve_private_target(ip_or_host)
+        result = detect_firmware(target)
         return jsonify(result)
+    except ValueError as e:
+        return jsonify({"error": str(e), "reachable": False}), 400
     except Exception as e:
         return jsonify(
             {

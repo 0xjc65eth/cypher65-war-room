@@ -6054,6 +6054,7 @@ def _serialize_device(
 
 @app.route("/api/devices", methods=["GET"])
 @require_tenant
+@role_required("viewer")
 def api_list_devices(tenant_id: str = ""):
     """List all devices registered in the core DeviceRegistry (tenant-scoped).
 
@@ -6063,7 +6064,7 @@ def api_list_devices(tenant_id: str = ""):
       total: total number of registered devices
     """
     devices = _core_registry.list_devices(tenant_id=tenant_id)
-    summary = _core_registry.count_by_status()
+    summary = _core_registry.count_by_status(tenant_id=tenant_id)
     return jsonify(
         {
             "devices": [_serialize_device(d) for d in devices],
@@ -6075,6 +6076,7 @@ def api_list_devices(tenant_id: str = ""):
 
 @app.route("/api/devices/<device_id>", methods=["GET"])
 @require_tenant
+@role_required("viewer")
 def api_get_device(device_id: str, tenant_id: str = ""):
     """Return full details for a single device, including telemetry and capabilities."""
     device = _core_registry.get_device(device_id, tenant_id=tenant_id)
@@ -6090,6 +6092,7 @@ def api_get_device(device_id: str, tenant_id: str = ""):
 
 @app.route("/api/devices/<device_id>/refresh", methods=["POST"])
 @require_tenant
+@role_required("member")
 def api_refresh_device(device_id: str, tenant_id: str = ""):
     """Refresh a single device: fetch telemetry, update status, persist.
 
@@ -6155,10 +6158,11 @@ def api_refresh_device(device_id: str, tenant_id: str = ""):
 
 @app.route("/api/fleet/summary", methods=["GET"])
 @require_tenant
+@role_required("viewer")
 def api_fleet_summary(tenant_id: str = ""):
     """Return a high-level health summary for the tenant's device fleet."""
     devices = _core_registry.list_devices(tenant_id=tenant_id)
-    summary = _core_registry.count_by_status()
+    summary = _core_registry.count_by_status(tenant_id=tenant_id)
     now = int(time.time())
     threshold = TELEMETRY_FRESHNESS_THRESHOLD
 
@@ -6186,6 +6190,7 @@ def api_fleet_summary(tenant_id: str = ""):
 
 @app.route("/api/devices/<device_id>/commands", methods=["GET"])
 @require_tenant
+@role_required("viewer")
 def api_device_command_history(device_id: str, tenant_id: str = ""):
     """Return the command execution history for a single device.
 
@@ -6207,6 +6212,7 @@ def api_device_command_history(device_id: str, tenant_id: str = ""):
 
 @app.route("/api/devices/<device_id>/diagnostics", methods=["GET"])
 @require_tenant
+@role_required("viewer")
 def api_device_diagnostics(device_id: str, tenant_id: str = ""):
     """Return operational diagnostics for a single device (tenant-scoped).
 
@@ -6280,41 +6286,15 @@ def _get_maintenance_records(device_id: str, limit: int = 100) -> list:
     ]
 
 
-@app.route("/api/devices/<device_id>/maintenance", methods=["POST", "GET"])
+@app.route("/api/devices/<device_id>/maintenance", methods=["GET"])
 @require_tenant
+@role_required("viewer")
 def api_device_maintenance(device_id: str, tenant_id: str = ""):
-    """Record or list maintenance events for a single device (tenant-scoped).
-
-    POST body (JSON):
-      - type (str, required): e.g. firmware_update, cleaning, hardware_check
-      - notes (str, optional)
-      - performed_by (str, optional)
-    """
+    """List maintenance events for a single device (tenant-scoped)."""
     device = _core_registry.get_device(device_id, tenant_id=tenant_id)
     if not device:
         return jsonify({"error": "device not found", "success": False}), 404
 
-    if request.method == "POST":
-        data = request.get_json(silent=True) or {}
-        record_type = (data.get("type") or "").strip()
-        notes = (data.get("notes") or "").strip()
-        performed_by = (data.get("performed_by") or "").strip()
-
-        if not record_type:
-            return jsonify({"error": "type is required", "success": False}), 400
-
-        record = _add_maintenance_record(device_id, record_type, notes, performed_by)
-        return (
-            jsonify(
-                {
-                    "success": True,
-                    "record": record,
-                }
-            ),
-            201,
-        )
-
-    # GET
     records = _get_maintenance_records(device_id)
     return jsonify(
         {
@@ -6325,8 +6305,44 @@ def api_device_maintenance(device_id: str, tenant_id: str = ""):
     )
 
 
+@app.route("/api/devices/<device_id>/maintenance", methods=["POST"])
+@require_tenant
+@role_required("member")
+def api_create_device_maintenance(device_id: str, tenant_id: str = ""):
+    """Record a maintenance event for a single device (tenant-scoped).
+
+    POST body (JSON):
+      - type (str, required): e.g. firmware_update, cleaning, hardware_check
+      - notes (str, optional)
+      - performed_by (str, optional)
+    """
+    device = _core_registry.get_device(device_id, tenant_id=tenant_id)
+    if not device:
+        return jsonify({"error": "device not found", "success": False}), 404
+
+    data = request.get_json(silent=True) or {}
+    record_type = (data.get("type") or "").strip()
+    notes = (data.get("notes") or "").strip()
+    performed_by = (data.get("performed_by") or "").strip()
+
+    if not record_type:
+        return jsonify({"error": "type is required", "success": False}), 400
+
+    record = _add_maintenance_record(device_id, record_type, notes, performed_by)
+    return (
+        jsonify(
+            {
+                "success": True,
+                "record": record,
+            }
+        ),
+        201,
+    )
+
+
 @app.route("/api/devices/<device_id>/timeline", methods=["GET"])
 @require_tenant
+@role_required("viewer")
 def api_device_timeline(device_id: str, tenant_id: str = ""):
     """Return a combined timeline of events for a single device (tenant-scoped).
 

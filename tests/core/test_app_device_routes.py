@@ -6,6 +6,7 @@ from unittest.mock import Mock, patch
 import pytest
 
 from core.models.device import Device, DeviceStatus
+from core.models.capability import Capability
 
 
 class TestAppDeviceRoutes:
@@ -417,6 +418,28 @@ class TestAppDeviceRoutes:
         assert confirmed is False
         assert "tenant" in reason
 
+    def test_capability_metadata_cannot_downgrade_default_command_safety(self):
+        from core.models.capability import Capability, RiskLevel
+        from routes.device_control import _command_metadata
+
+        device = Device(
+            name="Legacy-Capability",
+            model="Bitaxe",
+            capabilities=[
+                Capability(
+                    name="restart",
+                    supported=True,
+                    requires_confirmation=False,
+                    risk_level=RiskLevel.LOW,
+                )
+            ],
+        )
+
+        metadata = _command_metadata(device, device, "restart")
+
+        assert metadata["requires_confirmation"] is True
+        assert metadata["risk_level"] == "medium"
+
     def test_device_execution_error_is_safe_and_persistently_audited(self, client):
         flask_client, registry = client
         from core.adapters.bitaxe_adapter import BitaxeAdapter
@@ -744,3 +767,105 @@ class TestAppDeviceRoutes:
         data = response.get_json()
         assert data["success"] is False or data["success"] is True
         assert "not supported" not in data.get("error", "").lower()
+
+
+class TestDeviceCommandSecurity:
+    @pytest.fixture
+    def client(self):
+        from app import app, _core_registry
+
+        app.config["TESTING"] = True
+        yield app.test_client(), _core_registry
+
+    def test_protected_device_list_rejects_anonymous_request(self, client, monkeypatch):
+        flask_client, _ = client
+        monkeypatch.setenv("API_KEY", "device-api-key")
+
+        response = flask_client.get(
+            "/api/devices", environ_overrides={"REMOTE_ADDR": "203.0.113.10"}
+        )
+        assert response.status_code == 403
+
+    def test_protected_device_list_accepts_valid_api_key(self, client, monkeypatch):
+        flask_client, _ = client
+        monkeypatch.setenv("API_KEY", "device-api-key")
+
+        response = flask_client.get(
+            "/api/devices",
+            headers={"X-API-Key": "device-api-key"},
+            environ_overrides={"REMOTE_ADDR": "203.0.113.10"},
+        )
+        assert response.status_code == 200
+
+    def test_restart_needs_one_time_server_confirmation(self, client, monkeypatch):
+        flask_client, registry = client
+        device = Device(
+            name="Confirmation Device",
+            model="Bitaxe",
+            firmware="axeos",
+            ip="192.168.1.91",
+            status=DeviceStatus.ONLINE,
+            capabilities=[Capability(name="restart", supported=True)],
+        )
+        registry.add_device(device)
+
+        class FakeAdapter:
+            calls = 0
+
+            def execute_command(self, command, parameters):
+                self.calls += 1
+                return {"success": True, "command": command}
+
+        adapter = FakeAdapter()
+        monkeypatch.setattr(
+            "routes.device_control._build_adapter", lambda *args: adapter
+        )
+
+        unconfirmed = flask_client.post(
+            f"/api/devices/{device.id}/command", json={"command": "restart"}
+        )
+        assert unconfirmed.status_code == 403
+        payload = unconfirmed.get_json()
+        assert payload["requires_confirmation"] is True
+        assert adapter.calls == 0
+
+        prepared = flask_client.post(
+            f"/api/devices/{device.id}/command/confirmation",
+            json={"command": "restart", "confirmation": "CONFIRM RESTART"},
+        )
+        assert prepared.status_code == 201
+        confirmation_token = prepared.get_json()["confirmation_token"]
+
+        executed = flask_client.post(
+            f"/api/devices/{device.id}/command",
+            json={
+                "command": "restart",
+                "confirmation_token": confirmation_token,
+            },
+        )
+        assert executed.status_code == 200
+        assert executed.get_json()["success"] is True
+        assert adapter.calls == 1
+
+        replay = flask_client.post(
+            f"/api/devices/{device.id}/command",
+            json={
+                "command": "restart",
+                "confirmation_token": confirmation_token,
+            },
+        )
+        # The restart cooldown may reject before token replay is checked; both
+        # paths fail closed and never perform a second physical call.
+        assert replay.status_code == 403
+        assert adapter.calls == 1
+
+    def test_only_one_device_command_route_is_registered(self):
+        from app import app
+
+        routes = [
+            rule
+            for rule in app.url_map.iter_rules()
+            if str(rule) == "/api/devices/<device_id>/command"
+        ]
+        assert len(routes) == 1
+        assert routes[0].endpoint == "device_control.execute_device_command"

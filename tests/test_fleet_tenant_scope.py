@@ -20,6 +20,7 @@ and the connector monkeypatched to fail fast (no network). Anonymous tests
 use environ_overrides REMOTE_ADDR so the "localhost = admin" rule does not
 mask the gate.
 """
+
 import pytest
 
 from services.auth import create_token
@@ -124,11 +125,19 @@ class TestSnapshotFleetScope:
         cache — it must be filtered to the caller's tenant."""
         da = _axe_registry.add_device("10.0.0.1", "A-miner", tenant_id="tenantA")
         db = _axe_registry.add_device("10.0.0.2", "B-miner", tenant_id="tenantB")
-        _shared_state.axe_telemetry_cache[da["id"]] = {"device_id": da["id"], "hashrate_hs": 1}
-        _shared_state.axe_telemetry_cache[db["id"]] = {"device_id": db["id"], "hashrate_hs": 2}
+        _shared_state.axe_telemetry_cache[da["id"]] = {
+            "device_id": da["id"],
+            "hashrate_hs": 1,
+        }
+        _shared_state.axe_telemetry_cache[db["id"]] = {
+            "device_id": db["id"],
+            "hashrate_hs": 2,
+        }
         # Simulate what _do_poll does: sync the snapshot's fleet field from
         # the (global) telemetry cache.
-        _app_module.latest_snapshot["axe_fleet"] = list(_shared_state.axe_telemetry_cache.values())
+        _app_module.latest_snapshot["axe_fleet"] = list(
+            _shared_state.axe_telemetry_cache.values()
+        )
 
         r = client.get("/api/snapshot", headers=_bearer("tenantA"))
         assert r.status_code == 200
@@ -151,8 +160,8 @@ class TestDiagnoseSsfrGate:
         assert r.status_code in (401, 403)
 
     def test_authenticated_local_can_diagnose(self, client, no_connect):
-        # Localhost (default test REMOTE_ADDR) is the operator → allowed.
-        r = client.get("/api/axe-fleet/diagnose/10.0.0.99")
+        # A protected deployment requires a real credential even on localhost.
+        r = client.get("/api/axe-fleet/diagnose/10.0.0.99", headers=_bearer("tenantA"))
         assert r.status_code == 200
         # diagnose_host() unified contract (AxeOS :80 + cgminer :4028)
         data = r.get_json()
@@ -205,19 +214,29 @@ class TestNo500Regression:
         assert r.status_code == 200
 
     def test_power_plug_status_accepts_tenant_kwarg(self, client):
-        r = client.get("/api/axe-fleet/power-plugs/x/status", headers=_bearer("tenantA"))
-        assert r.status_code == 200  # no TypeError; Tuya not configured → 200 error body
+        r = client.get(
+            "/api/axe-fleet/power-plugs/x/status", headers=_bearer("tenantA")
+        )
+        assert (
+            r.status_code == 200
+        )  # no TypeError; Tuya not configured → 200 error body
 
     def test_power_cycle_status_accepts_tenant_kwarg(self, client):
-        r = client.get("/api/axe-fleet/power-cycle/status/nonexistent",
-                       headers=_bearer("tenantA"))
+        r = client.get(
+            "/api/axe-fleet/power-cycle/status/nonexistent", headers=_bearer("tenantA")
+        )
         assert r.status_code == 404  # no TypeError
 
     def test_remote_onboarding_accepts_tenant_kwarg(self, client, monkeypatch):
         monkeypatch.setattr(
             "services.tailscale_adapter.get_local_status",
-            lambda: {"connected": False, "tailscale_installed": False,
-                     "ip": "", "hostname": "", "error": "not installed"},
+            lambda: {
+                "connected": False,
+                "tailscale_installed": False,
+                "ip": "",
+                "hostname": "",
+                "error": "not installed",
+            },
         )
         r = client.get("/api/axe-fleet/remote/onboarding", headers=_bearer("tenantA"))
         assert r.status_code == 200

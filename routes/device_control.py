@@ -304,12 +304,20 @@ def _capability_metadata(raw: Any, device: Device, command: str) -> Dict[str, An
 
 
 def _command_metadata(raw: Any, device: Device, command: str) -> Dict[str, Any]:
-    """Merge default and firmware-declared safety metadata for a command."""
-    metadata = dict(COMMAND_META.get(command, {}))
-    metadata.update(_capability_metadata(raw, device, command))
+    """Merge safety metadata without allowing either source to lower a gate."""
+    defaults = dict(COMMAND_META.get(command, {}))
+    capability = _capability_metadata(raw, device, command)
+    metadata = {**defaults, **capability}
+    metadata["requires_confirmation"] = bool(
+        defaults.get("requires_confirmation") or capability.get("requires_confirmation")
+    )
+    risk_rank = {"low": 0, "medium": 1, "high": 2, "critical": 3}
+    default_risk = str(defaults.get("risk_level") or "low").lower()
+    capability_risk = str(capability.get("risk_level") or "low").lower()
+    metadata["risk_level"] = max(
+        (default_risk, capability_risk), key=lambda risk: risk_rank.get(risk, 0)
+    )
     metadata.setdefault("label", command.replace("_", " ").title())
-    metadata.setdefault("requires_confirmation", False)
-    metadata.setdefault("risk_level", "low")
     return metadata
 
 
@@ -542,6 +550,8 @@ def execute_device_command(device_id: str, tenant_id: str = ""):
 
     if not command:
         return jsonify({"success": False, "error": "command is required"}), 400
+    if not isinstance(parameters, dict):
+        return jsonify({"success": False, "error": "parameters must be an object"}), 400
 
     # Normalize to a core Device for the SafetyEngine
     device = _dict_to_device(raw)
@@ -740,6 +750,7 @@ def execute_device_command(device_id: str, tenant_id: str = ""):
 
 @device_control_bp.route("/api/devices/<device_id>/test", methods=["POST"])
 @require_tenant
+@role_required("member")
 def test_device_command(device_id: str, tenant_id: str = ""):
     """Simulate a command on a device for UI testing (tenant-scoped).
     Does NOT contact real hardware. Returns simulated success response.
@@ -824,6 +835,7 @@ def test_device_command(device_id: str, tenant_id: str = ""):
 
 @device_control_bp.route("/api/devices/<device_id>/capabilities", methods=["GET"])
 @require_tenant
+@role_required("viewer")
 def get_device_capabilities(device_id: str, tenant_id: str = ""):
     """Get supported commands and their metadata for a device (tenant-scoped).
     Returns both raw capabilities and enriched command list with metadata.

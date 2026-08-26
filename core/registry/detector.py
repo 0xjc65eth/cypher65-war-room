@@ -12,7 +12,9 @@ Detection order:
 """
 
 import json
+import ipaddress
 import logging
+import re
 import socket
 import time
 
@@ -22,6 +24,56 @@ log = logging.getLogger(__name__)
 
 # Timeout for detection attempts (seconds)
 DETECT_TIMEOUT = 3
+
+_SAFE_PRIVATE_NETWORKS = (
+    ipaddress.ip_network("10.0.0.0/8"),
+    ipaddress.ip_network("172.16.0.0/12"),
+    ipaddress.ip_network("192.168.0.0/16"),
+    # Tailscale uses CGNAT space. It is an intentional local-network target,
+    # unlike link-local/loopback ranges that commonly expose host metadata.
+    ipaddress.ip_network("100.64.0.0/10"),
+)
+_HOSTNAME_RE = re.compile(
+    r"^(?=.{1,253}$)(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)*[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$"
+)
+
+
+def resolve_private_target(host: str) -> str:
+    """Resolve an operator-supplied miner target to one safe IPv4 address.
+
+    The public API must never pass an arbitrary hostname into requests/socket.
+    Hostnames are resolved once and the returned numeric address is used for
+    probing, preventing DNS rebinding between validation and execution.
+    """
+    value = str(host or "").strip()
+    if not value or "://" in value or "/" in value or "@" in value:
+        raise ValueError("target must be an IP address or hostname")
+
+    try:
+        candidates = {ipaddress.ip_address(value)}
+    except ValueError:
+        if not _HOSTNAME_RE.fullmatch(value):
+            raise ValueError("invalid hostname")
+        try:
+            candidates = {
+                ipaddress.ip_address(info[4][0])
+                for info in socket.getaddrinfo(value, None, type=socket.SOCK_STREAM)
+            }
+        except OSError as exc:
+            raise ValueError("hostname could not be resolved") from exc
+
+    # An ambiguous answer is rejected rather than choosing an address that may
+    # change across DNS responses. The detector currently supports IPv4 only.
+    if len(candidates) != 1:
+        raise ValueError("hostname must resolve to exactly one address")
+    address = candidates.pop()
+    if address.version != 4 or not any(
+        address in net for net in _SAFE_PRIVATE_NETWORKS
+    ):
+        raise ValueError(
+            "target must resolve to a private LAN or Tailscale IPv4 address"
+        )
+    return str(address)
 
 
 def detect_firmware(ip_address: str) -> dict:

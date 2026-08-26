@@ -79,9 +79,26 @@ export const refreshDevice = async (deviceId: string): Promise<{ success: boolea
 export const sendDeviceCommand = async (
   deviceId: string,
   command: string,
-  parameters: Record<string, unknown> = {}
+  parameters: Record<string, unknown> = {},
+  confirmationToken?: string
 ) => {
-  const { data } = await api.post(`/devices/${deviceId}/command`, { command, parameters });
+  const payload: Record<string, unknown> = { command, parameters };
+  if (confirmationToken) payload.confirmation_token = confirmationToken;
+  const { data } = await api.post(`/devices/${deviceId}/command`, payload);
+  return data;
+};
+
+export const requestDeviceCommandConfirmation = async (
+  deviceId: string,
+  command: string,
+  parameters: Record<string, unknown>,
+  confirmation: string
+) => {
+  const { data } = await api.post(`/devices/${deviceId}/command/confirmation`, {
+    command,
+    parameters,
+    confirmation,
+  });
   return data;
 };
 
