@@ -39,7 +39,7 @@ def client():
     """Return a Flask test client configured for testing."""
     app.config["TESTING"] = True
     saved = app.config.get("JWT_SECRET_KEY")
-    app.config["JWT_SECRET_KEY"] = "tenant-test-secret"
+    app.config["JWT_SECRET_KEY"] = "tenant-test-secret-0123456789abcdef"
     with app.test_client() as c:
         yield c
     # Restore any pre-existing secret so we don't leak config into other
@@ -103,7 +103,7 @@ class TestResolveTenantForKey:
 class TestLoginTenant:
     def test_login_returns_tenant_id(self, client, monkeypatch):
         monkeypatch.setenv("TENANT_API_KEYS", json.dumps({"acme": "key-acme-1"}))
-        monkeypatch.setenv("SECRET_KEY", "tenant-test-secret")
+        monkeypatch.setenv("SECRET_KEY", "tenant-test-secret-0123456789abcdef")
         res = client.post("/api/auth/login", json={"api_key": "key-acme-1"})
         assert res.status_code == 200
         data = res.get_json()
@@ -113,7 +113,7 @@ class TestLoginTenant:
 
     def test_login_token_sub_is_tenant_id(self, client, monkeypatch):
         monkeypatch.setenv("TENANT_API_KEYS", json.dumps({"acme": "key-acme-1"}))
-        monkeypatch.setenv("SECRET_KEY", "tenant-test-secret")
+        monkeypatch.setenv("SECRET_KEY", "tenant-test-secret-0123456789abcdef")
         res = client.post("/api/auth/login", json={"api_key": "key-acme-1"})
         token = res.get_json()["access_token"]
         payload = verify_token(token, expected_type="access")
@@ -123,7 +123,7 @@ class TestLoginTenant:
     def test_login_legacy_key_maps_to_default_tenant(self, client, monkeypatch):
         monkeypatch.setenv("API_KEY", "legacy-key-1")
         monkeypatch.delenv("TENANT_API_KEYS", raising=False)
-        monkeypatch.setenv("SECRET_KEY", "tenant-test-secret")
+        monkeypatch.setenv("SECRET_KEY", "tenant-test-secret-0123456789abcdef")
         res = client.post("/api/auth/login", json={"api_key": "legacy-key-1"})
         assert res.status_code == 200
         data = res.get_json()
@@ -151,7 +151,7 @@ class TestLoginTenant:
 class TestRefreshTenant:
     def test_refresh_preserves_tenant_subject(self, client, monkeypatch):
         monkeypatch.setenv("TENANT_API_KEYS", json.dumps({"acme": "key-acme-1"}))
-        monkeypatch.setenv("SECRET_KEY", "tenant-test-secret")
+        monkeypatch.setenv("SECRET_KEY", "tenant-test-secret-0123456789abcdef")
         login = client.post("/api/auth/login", json={"api_key": "key-acme-1"}).get_json()
         refresh_token = login["refresh_token"]
 
@@ -207,7 +207,7 @@ class TestAuthenticateWithApiKey:
 class TestGetTenantId:
     def test_bearer_token_is_used_as_tenant(self, client, monkeypatch):
         """list_devices receives tenant_id derived from the Bearer token."""
-        monkeypatch.setenv("SECRET_KEY", "tenant-test-secret")
+        monkeypatch.setenv("SECRET_KEY", "tenant-test-secret-0123456789abcdef")
         token = create_token(subject="acme")
 
         mock_registry = MagicMock()

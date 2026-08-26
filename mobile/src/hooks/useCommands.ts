@@ -1,24 +1,39 @@
 import { useState, useCallback } from 'react';
-import { sendDeviceCommand, fetchCommandHistory } from '../api/client';
+import {
+  sendDeviceCommand,
+  requestDeviceCommandConfirmation,
+  fetchCommandHistory,
+} from '../api/client';
 
 export const useCommands = (deviceId: string) => {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const sendCommand = useCallback(
-    async (command: string, parameters: Record<string, unknown> = {}) => {
+    async (
+      command: string,
+      parameters: Record<string, unknown> = {},
+      humanConfirmation?: string
+    ) => {
       setLoading(true);
       setError(null);
       try {
-        let result = await sendDeviceCommand(deviceId, command, parameters);
-        if (result?.confirmation_required && result.confirmation_token) {
-          result = await sendDeviceCommand(
+        let confirmationToken: string | undefined;
+        if (humanConfirmation) {
+          const confirmation = await requestDeviceCommandConfirmation(
             deviceId,
             command,
             parameters,
-            result.confirmation_token
+            humanConfirmation
           );
+          confirmationToken = confirmation?.confirmation_token;
         }
+        const result = await sendDeviceCommand(
+          deviceId,
+          command,
+          parameters,
+          confirmationToken
+        );
         if (!result?.success) {
           const message = result?.error || 'Command failed';
           setError(message);

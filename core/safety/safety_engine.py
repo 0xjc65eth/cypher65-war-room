@@ -35,6 +35,18 @@ class SafetyEngine:
         "restart_cooldown_minutes": 5,
     }
 
+    # Safety approval and operator approval are distinct gates.  A healthy
+    # device can be technically safe to change while the action still changes
+    # its operating state, pool, or frequency and therefore needs an explicit
+    # human confirmation in the request controller.
+    COMMAND_RISKS = {
+        "restart": RiskLevel.MEDIUM,
+        "pause": RiskLevel.MEDIUM,
+        "resume": RiskLevel.MEDIUM,
+        "set_frequency": RiskLevel.HIGH,
+        "update_pool": RiskLevel.HIGH,
+    }
+
     def __init__(self, config: Optional[dict] = None):
         self.config = dict(self.DEFAULTS)
         if config:
@@ -124,16 +136,17 @@ class SafetyEngine:
         """
         Valida se um comando pode ser executado com seguranca.
         """
+        command_key = str(command or "").strip().lower()
         violations = []
         limits = self._get_limits(device)
 
         if device.status == DeviceStatus.OFFLINE:
             violations.append("Device is offline")
 
-        if command == "restart":
+        if command_key == "restart":
             violations.extend(self._check_cooldown(device, limits))
 
-        if command in ("restart", "identify"):
+        if command_key in ("restart", "identify"):
             violations.extend(self._check_telemetry(device, limits))
 
         if violations:
@@ -145,7 +158,12 @@ class SafetyEngine:
                 violations=violations,
             )
 
-        return SafetyResult(allowed=True)
+        risk_level = self.COMMAND_RISKS.get(command_key, RiskLevel.LOW)
+        return SafetyResult(
+            allowed=True,
+            risk_level=risk_level,
+            requires_confirmation=command_key in self.COMMAND_RISKS,
+        )
 
     def record_restart(self, device: Device):
         """Register that a restart was just executed for cooldown tracking."""

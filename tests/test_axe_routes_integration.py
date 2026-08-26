@@ -1104,8 +1104,8 @@ class TestCloudDeployGuards:
         """POST /api/agent/token must return server_url so the frontend can
         build the agent one-liner from the real origin (behind proxies/CDNs)."""
         from services.auth import create_token
-        monkeypatch.setenv("SECRET_KEY", "agent-test-secret-123")
-        app.config["JWT_SECRET_KEY"] = "agent-test-secret-123"
+        monkeypatch.setenv("SECRET_KEY", "agent-test-secret-123-0123456789abcdef")
+        app.config["JWT_SECRET_KEY"] = "agent-test-secret-123-0123456789abcdef"
         try:
             tok = create_token(subject="acme", extra_claims={"role": "admin"})
             resp = client.post("/api/agent/token", headers={"Authorization": f"Bearer {tok}"})

@@ -17,16 +17,13 @@ Supports BOTH registry shapes:
 
 import json
 import logging
+import secrets
+import threading
 import time
 from typing import Any, Callable, Dict, List, Optional
 
 from flask import Blueprint, jsonify, request
 
-from services.command_confirmation import (
-    consume_confirmation,
-    issue_confirmation,
-    requires_confirmation,
-)
 from services.tenant import require_tenant, role_required
 
 from core.adapters.bitaxe_adapter import BitaxeAdapter
@@ -40,6 +37,13 @@ log = logging.getLogger("cypher65.device_control")
 _registry = None
 _safety: Optional[SafetyEngine] = None
 _record_cb: Optional[Callable] = None  # app._record_command — audits every attempt
+
+# Confirmation tokens are intentionally process-local: a restart invalidates
+# all pending approvals and fails closed. Tokens are single-use and protected by
+# a lock because Flask can serve concurrent command requests.
+CONFIRMATION_TTL_SECONDS = 120
+_confirmation_lock = threading.Lock()
+_pending_confirmations: Dict[str, Dict[str, Any]] = {}
 
 
 def init_device_control(
@@ -177,23 +181,322 @@ COMMAND_META = {
     },
     "resume": {
         "label": "Resume",
-        "requires_confirmation": False,
+        "requires_confirmation": True,
         "risk_level": "low",
         "description": "Resume mining after pause",
     },
+    "set_frequency": {
+        "label": "Set frequency",
+        "requires_confirmation": True,
+        "risk_level": "high",
+        "description": "Change ASIC frequency (can affect power and thermals)",
+    },
+    "update_pool": {
+        "label": "Update pool",
+        "requires_confirmation": True,
+        "risk_level": "high",
+        "description": "Change the miner pool configuration",
+    },
 }
+
+
+_SENSITIVE_FIELD_NAMES = {
+    "api_key",
+    "apikey",
+    "auth",
+    "authorization",
+    "credential",
+    "credentials",
+    "passphrase",
+    "private_key",
+    "privatekey",
+    "secret",
+}
+_SENSITIVE_FIELD_SUFFIXES = ("password", "secret", "token")
+
+
+def redact_command_data(value: Any) -> Any:
+    """Return a JSON-like copy with credential-shaped fields redacted.
+
+    Command payloads can be extended by firmware integrations, so audit and
+    API output must not rely on a fixed list of today's adapter parameters.
+    """
+    if isinstance(value, dict):
+        redacted = {}
+        for key, item in value.items():
+            normalized = str(key).strip().lower().replace("-", "_")
+            compact = normalized.replace("_", "")
+            if (
+                normalized in _SENSITIVE_FIELD_NAMES
+                or compact in _SENSITIVE_FIELD_NAMES
+                or compact.endswith(_SENSITIVE_FIELD_SUFFIXES)
+            ):
+                redacted[key] = "[REDACTED]"
+            else:
+                redacted[key] = redact_command_data(item)
+        return redacted
+    if isinstance(value, list):
+        return [redact_command_data(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(redact_command_data(item) for item in value)
+    return value
 
 
 def _record_attempt(
     device_id: str, command: str, parameters: Dict[str, Any], result: Dict[str, Any]
 ):
-    """Audit a command attempt (blocked or executed) through app._record_command."""
+    """Audit an attempt without persisting credentials from command payloads."""
     if _record_cb is None:
         return
     try:
-        _record_cb(device_id, command, parameters, result)
+        _record_cb(
+            device_id,
+            command,
+            redact_command_data(parameters),
+            redact_command_data(result),
+        )
     except Exception as e:
         log.warning("[device_control] record_command callback failed: %s", e)
+
+
+def _request_json_object():
+    """Return a JSON object body, or a JSON-safe 400 response.
+
+    Flask returns lists and scalar JSON values successfully. Command routes
+    accept objects only, so validate the envelope before accessing ``.get``.
+    """
+    data = request.get_json(silent=True)
+    if data is None:
+        return {}, None
+    if not isinstance(data, dict):
+        return None, (
+            jsonify({"success": False, "error": "JSON body must be an object"}),
+            400,
+        )
+    return data, None
+
+
+def _capability_metadata(raw: Any, device: Device, command: str) -> Dict[str, Any]:
+    """Return command metadata declared by the device capability, if present."""
+    if _is_core_device(raw):
+        for capability in device.capabilities or []:
+            if getattr(capability, "name", "") == command:
+                risk = getattr(capability, "risk_level", None)
+                return {
+                    "requires_confirmation": bool(
+                        getattr(capability, "requires_confirmation", False)
+                    ),
+                    "risk_level": getattr(risk, "value", risk) or "low",
+                }
+        return {}
+
+    capabilities = raw.get("capabilities") or {}
+    if isinstance(capabilities, list):
+        for capability in capabilities:
+            if isinstance(capability, dict) and capability.get("name") == command:
+                return {
+                    "requires_confirmation": bool(
+                        capability.get("requires_confirmation", False)
+                    ),
+                    "risk_level": capability.get("risk_level") or "low",
+                }
+    return {}
+
+
+def _command_metadata(raw: Any, device: Device, command: str) -> Dict[str, Any]:
+    """Merge safety metadata without allowing either source to lower a gate."""
+    defaults = dict(COMMAND_META.get(command, {}))
+    capability = _capability_metadata(raw, device, command)
+    metadata = {**defaults, **capability}
+    metadata["requires_confirmation"] = bool(
+        defaults.get("requires_confirmation") or capability.get("requires_confirmation")
+    )
+    risk_rank = {"low": 0, "medium": 1, "high": 2, "critical": 3}
+    default_risk = str(defaults.get("risk_level") or "low").lower()
+    capability_risk = str(capability.get("risk_level") or "low").lower()
+    metadata["risk_level"] = max(
+        (default_risk, capability_risk), key=lambda risk: risk_rank.get(risk, 0)
+    )
+    metadata.setdefault("label", command.replace("_", " ").title())
+    return metadata
+
+
+def _confirmation_phrase(command: str) -> str:
+    return f"CONFIRM {command.upper()}"
+
+
+def _confirmation_binding(
+    tenant_id: str, device_id: str, command: str, parameters: Dict[str, Any]
+) -> Optional[str]:
+    """Create a stable, strict binding for a one-time approval token."""
+    try:
+        return json.dumps(
+            {
+                "tenant_id": tenant_id or "default",
+                "device_id": device_id,
+                "command": command,
+                "parameters": parameters,
+            },
+            allow_nan=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+    except (TypeError, ValueError):
+        return None
+
+
+def _purge_expired_confirmations(now: float) -> None:
+    for token, pending in list(_pending_confirmations.items()):
+        if pending["expires_at"] <= now:
+            _pending_confirmations.pop(token, None)
+
+
+def _issue_confirmation(binding: str) -> str:
+    now = time.time()
+    with _confirmation_lock:
+        _purge_expired_confirmations(now)
+        token = secrets.token_urlsafe(32)
+        _pending_confirmations[token] = {
+            "binding": binding,
+            "expires_at": now + CONFIRMATION_TTL_SECONDS,
+        }
+    return token
+
+
+def _consume_confirmation(token: Any, binding: str) -> tuple[bool, str]:
+    """Consume an approval once; mismatched tokens also fail closed."""
+    if not isinstance(token, str) or not token.strip():
+        return False, "A one-time human confirmation is required before this command."
+
+    now = time.time()
+    with _confirmation_lock:
+        _purge_expired_confirmations(now)
+        pending = _pending_confirmations.pop(token, None)
+
+    if pending is None:
+        return False, "Confirmation is missing, expired, or was already used."
+    if not secrets.compare_digest(pending["binding"], binding):
+        return (
+            False,
+            "Confirmation does not match this tenant, device, command, or parameters.",
+        )
+    return True, ""
+
+
+def _safe_execution_failure() -> Dict[str, Any]:
+    """Keep transport and firmware internals in server logs, not API output."""
+    return {
+        "success": False,
+        "error": "The device did not accept the command. Verify connectivity and firmware before retrying.",
+    }
+
+
+@device_control_bp.route(
+    "/api/devices/<device_id>/command/confirmation", methods=["POST"]
+)
+@require_tenant
+@role_required("member")
+def issue_device_command_confirmation(device_id: str, tenant_id: str = ""):
+    """Issue a short-lived approval after the operator types the confirmation.
+
+    The resulting token is bound to this tenant, device, command, and exact
+    parameters. It can be consumed once by the execution endpoint and is not
+    persisted so a process restart fails closed.
+    """
+    if _registry is None:
+        return jsonify({"success": False, "error": "registry not initialized"}), 500
+
+    raw = _registry.get_device(device_id, tenant_id=tenant_id)
+    if not raw:
+        return jsonify({"success": False, "error": "device not found"}), 404
+
+    data, error_response = _request_json_object()
+    if error_response:
+        return error_response
+
+    command_value = data.get("command") or ""
+    if not isinstance(command_value, str):
+        return jsonify({"success": False, "error": "command must be a string"}), 400
+    command = command_value.strip().lower()
+    parameters = data.get("parameters")
+    if parameters is None:
+        parameters = {}
+    elif not isinstance(parameters, dict):
+        return jsonify({"success": False, "error": "parameters must be an object"}), 400
+
+    device = _dict_to_device(raw)
+    caps = _capability_map(device, raw)
+    if not command or not caps.get(command):
+        return (
+            jsonify(
+                {"success": False, "error": "command is not supported by this device"}
+            ),
+            400,
+        )
+
+    metadata = _command_metadata(raw, device, command)
+    if not metadata["requires_confirmation"]:
+        return (
+            jsonify(
+                {
+                    "success": False,
+                    "error": "this command does not require confirmation",
+                }
+            ),
+            400,
+        )
+
+    if _safety:
+        result = _safety.validate_command(device, command, parameters)
+        if not result.allowed:
+            return (
+                jsonify(
+                    {
+                        "success": False,
+                        "error": result.reason or "Command blocked by safety engine",
+                        "device_id": device_id,
+                        "command": command,
+                        "violations": result.violations,
+                    }
+                ),
+                403,
+            )
+
+    phrase = _confirmation_phrase(command)
+    if data.get("confirmation") != phrase:
+        return (
+            jsonify(
+                {
+                    "success": False,
+                    "error": f"Type '{phrase}' to confirm this command.",
+                    "confirmation_phrase": phrase,
+                }
+            ),
+            400,
+        )
+
+    binding = _confirmation_binding(tenant_id, device_id, command, parameters)
+    if binding is None:
+        return (
+            jsonify(
+                {"success": False, "error": "parameters must be valid JSON values"}
+            ),
+            400,
+        )
+
+    response = jsonify(
+        {
+            "success": True,
+            "confirmation_token": _issue_confirmation(binding),
+            "expires_in_seconds": CONFIRMATION_TTL_SECONDS,
+            "command": command,
+            "device_id": device_id,
+        }
+    )
+    response.status_code = 201
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Pragma"] = "no-cache"
+    return response
 
 
 @device_control_bp.route("/api/devices/<device_id>/command", methods=["POST"])
@@ -203,15 +506,20 @@ def execute_device_command(device_id: str, tenant_id: str = ""):
     """Execute a command on a device (scoped to the request tenant).
 
     JSON body:
-      { "command": "restart|identify|pause|resume", "parameters": {} }
+      {
+        "command": "restart|identify|pause|resume",
+        "parameters": {},
+        "confirmation_token": "required for state-changing commands"
+      }
 
     Flow:
       1. Lookup device in registry (scoped by tenant)
       2. Check if command is supported via capabilities
       3. Validate through SafetyEngine (blocked → 403, audited)
-      4. Execute via adapter (record result)
-      5. Record restart cooldown if applicable
-      6. Return result
+      4. Consume a server-side confirmation token when required
+      5. Execute via adapter (record result)
+      6. Record restart cooldown if applicable
+      7. Return result
 
     Returns 400 if command not supported / validation fails.
     Returns 403 if blocked by the SafetyEngine.
@@ -226,11 +534,19 @@ def execute_device_command(device_id: str, tenant_id: str = ""):
     if not raw:
         return jsonify({"success": False, "error": "device not found"}), 404
 
-    data = request.get_json(silent=True) or {}
-    if not isinstance(data, dict):
-        return jsonify({"success": False, "error": "JSON object required"}), 400
-    command = (data.get("command") or "").strip().lower()
-    parameters = data.get("parameters") or {}
+    data, error_response = _request_json_object()
+    if error_response:
+        return error_response
+
+    command_value = data.get("command") or ""
+    if not isinstance(command_value, str):
+        return jsonify({"success": False, "error": "command must be a string"}), 400
+    command = command_value.strip().lower()
+    parameters = data.get("parameters")
+    if parameters is None:
+        parameters = {}
+    elif not isinstance(parameters, dict):
+        return jsonify({"success": False, "error": "parameters must be an object"}), 400
 
     if not command:
         return jsonify({"success": False, "error": "command is required"}), 400
@@ -271,37 +587,80 @@ def execute_device_command(device_id: str, tenant_id: str = ""):
         )
 
     # 3. Validate through SafetyEngine
+    safety_result = None
     if _safety:
-        result = _safety.validate_command(device, command, parameters)
-        if not result.allowed:
+        safety_result = _safety.validate_command(device, command, parameters)
+        if not safety_result.allowed:
             record = {
                 "success": False,
                 "allowed": False,
-                "reason": result.reason,
+                "reason": safety_result.reason,
                 "risk_level": (
-                    result.risk_level.value if result.risk_level else "unknown"
+                    safety_result.risk_level.value
+                    if safety_result.risk_level
+                    else "unknown"
                 ),
-                "requires_confirmation": result.requires_confirmation,
+                "requires_confirmation": safety_result.requires_confirmation,
             }
             _record_attempt(device_id, command, parameters, record)
             return (
                 jsonify(
                     {
                         "success": False,
-                        "error": result.reason or "Command blocked by safety engine",
+                        "error": safety_result.reason
+                        or "Command blocked by safety engine",
                         "device_id": device_id,
                         "command": command,
-                        "violations": result.violations,
-                        "requires_confirmation": result.requires_confirmation,
+                        "violations": safety_result.violations,
+                        "requires_confirmation": safety_result.requires_confirmation,
                         "risk_level": (
-                            result.risk_level.value if result.risk_level else "unknown"
+                            safety_result.risk_level.value
+                            if safety_result.risk_level
+                            else "unknown"
                         ),
                     }
                 ),
                 403,
             )
 
-    # 4. Build adapter and execute
+    # 4. A device capability and SafetyEngine can both require confirmation.
+    # The controller is the enforcement point: metadata is never just a UI hint.
+    metadata = _command_metadata(raw, device, command)
+    confirmation_required = bool(metadata["requires_confirmation"]) or bool(
+        safety_result and safety_result.requires_confirmation
+    )
+    if confirmation_required:
+        binding = _confirmation_binding(tenant_id, device_id, command, parameters)
+        confirmed, reason = _consume_confirmation(
+            data.get("confirmation_token"), binding or ""
+        )
+        if not confirmed:
+            record = {
+                "success": False,
+                "allowed": False,
+                "error": reason,
+                "reason": reason,
+                "risk_level": metadata["risk_level"],
+                "requires_confirmation": True,
+            }
+            _record_attempt(device_id, command, parameters, record)
+            return (
+                jsonify(
+                    {
+                        "success": False,
+                        "error": reason,
+                        "device_id": device_id,
+                        "command": command,
+                        "requires_confirmation": True,
+                        "confirmation_phrase": _confirmation_phrase(command),
+                        "confirmation_endpoint": f"/api/devices/{device_id}/command/confirmation",
+                        "risk_level": metadata["risk_level"],
+                    }
+                ),
+                403,
+            )
+
+    # 5. Build adapter and execute
     adapter = _build_adapter(raw, device)
     if adapter is None:
         return (
@@ -321,85 +680,60 @@ def execute_device_command(device_id: str, tenant_id: str = ""):
             400,
         )
 
-    # Restarting or pausing a physical miner is a two-step operation. The
-    # first request performs every non-I/O safety check and receives a short,
-    # one-time confirmation bound to this exact tenant/device/payload. A
-    # direct/replayed API call cannot skip this server-side control.
-    if requires_confirmation(command):
-        confirmation_token = data.get("confirmation_token")
-        if not confirmation_token:
-            confirmation = issue_confirmation(tenant_id, device_id, command, parameters)
-            _record_attempt(
-                device_id,
-                command,
-                parameters,
-                {
-                    "success": False,
-                    "pending_confirmation": True,
-                    "error": "server confirmation required",
-                },
-            )
-            return (
-                jsonify(
-                    {
-                        "success": False,
-                        "confirmation_required": True,
-                        "device_id": device_id,
-                        "command": command,
-                        "confirmation_token": confirmation["confirmation_token"],
-                        "expires_at": confirmation["expires_at"],
-                    }
-                ),
-                202,
-            )
-        if not consume_confirmation(
-            confirmation_token, tenant_id, device_id, command, parameters
-        ):
-            _record_attempt(
-                device_id,
-                command,
-                parameters,
-                {"success": False, "error": "invalid or expired confirmation"},
-            )
-            return (
-                jsonify(
-                    {
-                        "success": False,
-                        "error": "invalid, expired, or already used confirmation",
-                    }
-                ),
-                409,
-            )
-
     try:
         exec_result = adapter.execute_command(command, parameters)
-    except Exception as e:
-        log.error("[device_control] execute error: %s", e)
+    except Exception:
+        log.exception("[device_control] execute error for %s → %s", device_id, command)
+        safe_result = _safe_execution_failure()
+        _record_attempt(device_id, command, parameters, safe_result)
         return (
             jsonify(
                 {
                     "success": False,
-                    "error": f"execution failed: {str(e)}",
+                    "error": safe_result["error"],
                     "device_id": device_id,
                     "command": command,
                 }
             ),
-            500,
+            503,
         )
 
-    # 5. Record restart cooldown
+    if not isinstance(exec_result, dict) or not exec_result.get("success", False):
+        log.warning(
+            "[device_control] device rejected %s → %s: %r",
+            device_id,
+            command,
+            redact_command_data(exec_result),
+        )
+        safe_result = _safe_execution_failure()
+        _record_attempt(device_id, command, parameters, safe_result)
+        return (
+            jsonify(
+                {
+                    "success": False,
+                    "error": safe_result["error"],
+                    "device_id": device_id,
+                    "command": command,
+                    "result": safe_result,
+                }
+            ),
+            503,
+        )
+
+    # 6. Record restart cooldown
     if command == "restart" and _safety and exec_result.get("success"):
         _safety.record_restart(device)
 
-    # 6. Audit the executed attempt
-    _record_attempt(device_id, command, parameters, exec_result)
+    # 7. Audit the executed attempt
+    public_result = redact_command_data(exec_result)
+    _record_attempt(device_id, command, parameters, public_result)
 
-    # 7. Log execution to terminal
+    # 8. Log execution to terminal
     log.info(
         "[device_control] %s → %s: %s (success=%s)",
         device_id,
         command,
-        parameters,
+        redact_command_data(parameters),
         exec_result.get("success", False),
     )
 
@@ -408,8 +742,8 @@ def execute_device_command(device_id: str, tenant_id: str = ""):
             "success": exec_result.get("success", False),
             "device_id": device_id,
             "command": command,
-            "result": exec_result,
-            "meta": COMMAND_META.get(command),
+            "result": public_result,
+            "meta": metadata,
         }
     )
 
@@ -433,8 +767,14 @@ def test_device_command(device_id: str, tenant_id: str = ""):
     if not raw:
         return jsonify({"success": False, "error": "device not found"}), 404
 
-    data = request.get_json(silent=True) or {}
-    command = (data.get("command") or "").strip().lower()
+    data, error_response = _request_json_object()
+    if error_response:
+        return error_response
+
+    command_value = data.get("command") or ""
+    if not isinstance(command_value, str):
+        return jsonify({"success": False, "error": "command must be a string"}), 400
+    command = command_value.strip().lower()
 
     if not command:
         return jsonify({"success": False, "error": "command is required"}), 400

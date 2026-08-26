@@ -41,15 +41,17 @@ export const DeviceDetailScreen = () => {
   const handleCommand = async (capability: Capability) => {
     if (!device) return;
 
+    let humanConfirmation: string | undefined;
     if (capability.requires_confirmation) {
       const biometric = await promptCriticalAction(capability.name);
       if (!biometric.success) {
         Alert.alert('Cancelled', biometric.error || 'Biometric check failed');
         return;
       }
+      humanConfirmation = `CONFIRM ${capability.name.toUpperCase()}`;
     }
 
-    const result = await sendCommand(capability.name);
+    const result = await sendCommand(capability.name, {}, humanConfirmation);
     if (result.success) {
       Alert.alert('Success', `${capability.name} executed successfully`);
     } else {

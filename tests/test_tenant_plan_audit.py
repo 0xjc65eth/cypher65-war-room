@@ -49,7 +49,7 @@ def client():
     """Return a Flask test client configured for testing."""
     app.config["TESTING"] = True
     saved = app.config.get("JWT_SECRET_KEY")
-    app.config["JWT_SECRET_KEY"] = "tenant-plan-test-secret"
+    app.config["JWT_SECRET_KEY"] = "tenant-plan-test-secret-0123456789abcdef"
     with app.test_client() as c:
         yield c
     # Restore any pre-existing secret (cross-file config pollution broke
@@ -256,7 +256,7 @@ class TestAuditLog:
 
 class TestTenantStatusEndpoint:
     def test_returns_plan_usage(self, client, tenant_db, monkeypatch):
-        monkeypatch.setenv("SECRET_KEY", "tenant-plan-test-secret")
+        monkeypatch.setenv("SECRET_KEY", "tenant-plan-test-secret-0123456789abcdef")
         _seed_tenant(tenant_db, "acme", max_workers=2)
         _seed_axe_device(tenant_db, "d1", "A", "10.0.0.1", "acme")
         token = create_token(subject="acme")
@@ -271,7 +271,7 @@ class TestTenantStatusEndpoint:
         assert data["remaining_workers"] == 1
 
     def test_defaults_when_no_tenant_row(self, client, tenant_db, monkeypatch):
-        monkeypatch.setenv("SECRET_KEY", "tenant-plan-test-secret")
+        monkeypatch.setenv("SECRET_KEY", "tenant-plan-test-secret-0123456789abcdef")
         token = create_token(subject="ghost")
 
         res = client.get("/api/tenant/status", headers={"Authorization": f"Bearer {token}"})
@@ -288,7 +288,7 @@ class TestTenantStatusEndpoint:
 
 class TestAddDeviceEnforcement:
     def test_add_blocked_at_limit(self, client, tenant_db, monkeypatch):
-        monkeypatch.setenv("SECRET_KEY", "tenant-plan-test-secret")
+        monkeypatch.setenv("SECRET_KEY", "tenant-plan-test-secret-0123456789abcdef")
         _seed_tenant(tenant_db, "acme", max_workers=1)
         _seed_axe_device(tenant_db, "d1", "Existing", "10.0.0.1", "acme")
         registry = _make_hermetic_registry(tenant_db)
@@ -309,7 +309,7 @@ class TestAddDeviceEnforcement:
         assert len(registry.list_devices(tenant_id="acme")) == 1
 
     def test_add_allowed_under_limit(self, client, tenant_db, monkeypatch):
-        monkeypatch.setenv("SECRET_KEY", "tenant-plan-test-secret")
+        monkeypatch.setenv("SECRET_KEY", "tenant-plan-test-secret-0123456789abcdef")
         _seed_tenant(tenant_db, "brave", max_workers=3)
         registry = _make_hermetic_registry(tenant_db)
         token = create_token(subject="brave")
@@ -325,7 +325,7 @@ class TestAddDeviceEnforcement:
         assert len(registry.list_devices(tenant_id="brave")) == 1
 
     def test_audit_written_on_blocked_attempt(self, client, tenant_db, monkeypatch):
-        monkeypatch.setenv("SECRET_KEY", "tenant-plan-test-secret")
+        monkeypatch.setenv("SECRET_KEY", "tenant-plan-test-secret-0123456789abcdef")
         _seed_tenant(tenant_db, "acme", max_workers=1)
         _seed_axe_device(tenant_db, "d1", "Existing", "10.0.0.1", "acme")
         registry = _make_hermetic_registry(tenant_db)

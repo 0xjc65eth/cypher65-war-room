@@ -137,7 +137,7 @@
   const $ = (s) => document.querySelector(s);
   const $$ = (s) => document.querySelectorAll(s);
   const dom = {
-    topbarAddress: $('#topbar-address'), statusPill: $('#status-pill'), statusText: $('#status-text'),
+    topbarAddress: $('#topbar-address'), statusPill: $('#status-pill'), statusText: $('#status-text'), topbarFreshness: $('#topbar-freshness'),
     topbarInstance: $('#topbar-instance'),
     clock: $('#clock'), nextPoll: $('#next-poll'), refreshNow: $('#refresh-now'),
     workerRankBadge: $('#worker-rank-badge'), workerUptimeBadge: $('#worker-uptime-badge'),
@@ -2114,6 +2114,41 @@
     }
     // Wallet connection state — only topbar button remains
     // Connection state tracked via localStorage.getItem('_wallet_connected')
+  }
+
+  // A single, quiet freshness signal for the operational shell. Individual
+  // panels retain their detailed badges; this one prevents a stale network,
+  // BTC price, pool, or entire snapshot from being missed while another module
+  // is open. It deliberately does not animate because it can update every poll.
+  function snapshotFreshness(snap, nowSec) {
+    const data = snap || {};
+    const rawTs = Number(data.ts);
+    const ts = rawTs > 1e11 ? rawTs / 1000 : rawTs;
+    const now = Number(nowSec) || Math.floor(Date.now() / 1000);
+    const age = ts > 0 ? Math.max(0, now - ts) : null;
+    const staleSources = [];
+    if (data.network && data.network.stale === true) staleSources.push('rede');
+    if (data.btc_price && data.btc_price.stale === true) staleSources.push('preço BTC');
+    if (data.pool && data.pool._stale === true) staleSources.push('pool');
+    const snapshotStale = age !== null && age > 150;
+    if (!snapshotStale && staleSources.length === 0) return { stale: false, age, sources: [] };
+    return { stale: true, age, sources: staleSources };
+  }
+
+  function renderSnapshotFreshness(snap) {
+    const el = dom.topbarFreshness;
+    if (!el) return;
+    const freshness = snapshotFreshness(snap);
+    el.hidden = !freshness.stale;
+    if (!freshness.stale) {
+      el.textContent = '';
+      el.title = '';
+      return;
+    }
+    const sourceText = freshness.sources.length ? freshness.sources.join(', ') : 'snapshot';
+    const ageText = freshness.age === null ? 'idade desconhecida' : fmt.secsToHuman(freshness.age);
+    el.textContent = 'DADOS ANTIGOS · ' + ageText;
+    el.title = 'Dados desatualizados: ' + sourceText + ' · última atualização ' + ageText + ' atrás.';
   }
 
   // ── P0-4 · Wallet identity card (QR + checksum + health) ─────────────
@@ -7583,6 +7618,7 @@ function renderAccount(acct) {
     toggleWalletCTA();
     renderHUD(snap);
     renderStatusBar(snap);
+    renderSnapshotFreshness(snap);
     // P0-4 fix: an empty shortAddr('') collapses the topbar span to a
     // zero-width box (Playwright/flex reports it hidden on wallet-less
     // boots). Keep the '—' placeholder (same convention as #sb-wallet-addr)
@@ -11350,8 +11386,18 @@ dom.walletSave?.addEventListener('click', async () => {
   // Module navigation with exit/enter motion (design-motion-principles).
   // Exit (120ms) plays BEFORE the switch so display:none doesn't kill it;
   // ── Beta analytics: self-hosted usage tracking (Issue #353) ──
-  const _analytics = { _lastModule: null, _lastModuleTs: 0 };
-  function _betaTrack(event, meta) {
+  const ANALYTICS_MIN_INTERVAL_MS = 1100;
+  const _analytics = {
+    _lastModule: null,
+    _lastModuleTs: 0,
+    _lastSentAt: 0,
+    _flushTimer: 0,
+    _queue: [],
+  };
+  function analyticsNextDelay(lastSentAt, nowMs) {
+    return Math.max(0, ANALYTICS_MIN_INTERVAL_MS - (nowMs - lastSentAt));
+  }
+  function _sendBetaAnalytics(event, meta) {
     try {
       if (navigator.sendBeacon) {
         const blob = new Blob([JSON.stringify({ event: event, meta: meta || {} })],
@@ -11366,6 +11412,29 @@ dom.walletSave?.addEventListener('click', async () => {
         }).catch(function() {});
       }
     } catch(e) {}
+  }
+  function _flushBetaAnalytics() {
+    if (!_analytics._queue.length) return;
+    const delay = analyticsNextDelay(_analytics._lastSentAt, Date.now());
+    if (delay > 0) {
+      if (!_analytics._flushTimer) {
+        _analytics._flushTimer = window.setTimeout(function() {
+          _analytics._flushTimer = 0;
+          _flushBetaAnalytics();
+        }, delay);
+      }
+      return;
+    }
+    const next = _analytics._queue.shift();
+    _analytics._lastSentAt = Date.now();
+    _sendBetaAnalytics(next.event, next.meta);
+    if (_analytics._queue.length) _flushBetaAnalytics();
+  }
+  function _betaTrack(event, meta) {
+    // The server remains the abuse-control authority. This small client queue
+    // avoids known-good dashboard navigation creating visible 429 responses.
+    _analytics._queue.push({ event: event, meta: meta || {} });
+    _flushBetaAnalytics();
   }
   function _betaTrackModuleSwitch(toMod) {
     var prev = _analytics._lastModule;

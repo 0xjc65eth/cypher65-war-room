@@ -5713,6 +5713,62 @@ function makeSetHtmlIfChanged() {
   assertEqual('bolt11 requires separator', bolt11AmountSats('lnbc100mX'), null);
 })();
 
+// ═══════════════════════════════════════════════════════════════════════════
+//  #368 · SNAPSHOT FRESHNESS — topbar must surface stale operational inputs
+// ═══════════════════════════════════════════════════════════════════════════
+
+(function snapshotFreshnessSuite() {
+  // Mirrors static/app.js snapshotFreshness(). A single global indicator must
+  // fail open only for fresh data; source-specific stale flags are authoritative.
+  function snapshotFreshness(snap, nowSec) {
+    const data = snap || {};
+    const rawTs = Number(data.ts);
+    const ts = rawTs > 1e11 ? rawTs / 1000 : rawTs;
+    const now = Number(nowSec) || Math.floor(Date.now() / 1000);
+    const age = ts > 0 ? Math.max(0, now - ts) : null;
+    const staleSources = [];
+    if (data.network && data.network.stale === true) staleSources.push('rede');
+    if (data.btc_price && data.btc_price.stale === true) staleSources.push('preço BTC');
+    if (data.pool && data.pool._stale === true) staleSources.push('pool');
+    const snapshotStale = age !== null && age > 150;
+    if (!snapshotStale && staleSources.length === 0) return { stale: false, age, sources: [] };
+    return { stale: true, age, sources: staleSources };
+  }
+
+  assertEqual('fresh snapshot stays quiet', snapshotFreshness({ ts: 1000 }, 1100), {
+    stale: false, age: 100, sources: [],
+  });
+  assertEqual('old snapshot is surfaced', snapshotFreshness({ ts: 1000 }, 1151), {
+    stale: true, age: 151, sources: [],
+  });
+  assertEqual('network/BTC/pool stale sources are named', snapshotFreshness({
+    ts: 1000,
+    network: { stale: true },
+    btc_price: { stale: true },
+    pool: { _stale: true },
+  }, 1001), {
+    stale: true, age: 1, sources: ['rede', 'preço BTC', 'pool'],
+  });
+  assertEqual('millisecond timestamps stay comparable', snapshotFreshness({ ts: 1000000000000 }, 1000000100), {
+    stale: false, age: 100, sources: [],
+  });
+})();
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  #368 · BETA ANALYTICS — client pacing avoids expected 429 console noise
+// ═══════════════════════════════════════════════════════════════════════════
+
+(function analyticsPacingSuite() {
+  const interval = 1100;
+  function analyticsNextDelay(lastSentAt, nowMs) {
+    return Math.max(0, interval - (nowMs - lastSentAt));
+  }
+  assertEqual('first analytics event sends immediately', analyticsNextDelay(0, 5000), 0);
+  assertEqual('same-moment event waits full interval', analyticsNextDelay(5000, 5000), 1100);
+  assertEqual('event at server-safe interval sends', analyticsNextDelay(5000, 6100), 0);
+  assertEqual('partial interval waits only remainder', analyticsNextDelay(5000, 5600), 500);
+})();
+
 //  RESULTS
 // ═══════════════════════════════════════════════════════════════════════════
 

@@ -4,6 +4,7 @@ import * as client from '../src/api/client';
 
 jest.mock('../src/api/client', () => ({
   sendDeviceCommand: jest.fn(),
+  requestDeviceCommandConfirmation: jest.fn(),
   fetchCommandHistory: jest.fn(),
 }));
 
@@ -21,7 +22,12 @@ describe('useCommands', () => {
       response = await result.current.sendCommand('restart');
     });
 
-    expect(client.sendDeviceCommand).toHaveBeenCalledWith('d1', 'restart', {});
+    expect(client.sendDeviceCommand).toHaveBeenCalledWith(
+      'd1',
+      'restart',
+      {},
+      undefined
+    );
     expect(response.success).toBe(true);
   });
 
@@ -38,29 +44,51 @@ describe('useCommands', () => {
     expect(response.error).toBe('Device offline');
   });
 
-  it('consumes the server confirmation before reporting success', async () => {
-    (client.sendDeviceCommand as jest.Mock)
-      .mockResolvedValueOnce({
-        success: false,
-        confirmation_required: true,
-        confirmation_token: 'one-time-token',
-      })
-      .mockResolvedValueOnce({ success: true });
+  it('executes only after an explicit human confirmation obtains a token', async () => {
+    (client.requestDeviceCommandConfirmation as jest.Mock).mockResolvedValue({
+      success: true,
+      confirmation_token: 'one-time-token',
+    });
+    (client.sendDeviceCommand as jest.Mock).mockResolvedValue({ success: true });
     const { result } = renderHook(() => useCommands('d1'));
 
     let response: any;
     await act(async () => {
-      response = await result.current.sendCommand('restart');
+      response = await result.current.sendCommand('restart', {}, 'CONFIRM RESTART');
     });
 
-    expect(client.sendDeviceCommand).toHaveBeenNthCalledWith(1, 'd1', 'restart', {});
-    expect(client.sendDeviceCommand).toHaveBeenNthCalledWith(
-      2,
+    expect(client.requestDeviceCommandConfirmation).toHaveBeenCalledWith(
+      'd1',
+      'restart',
+      {},
+      'CONFIRM RESTART'
+    );
+    expect(client.sendDeviceCommand).toHaveBeenCalledWith(
       'd1',
       'restart',
       {},
       'one-time-token'
     );
     expect(response.success).toBe(true);
+  });
+
+  it('never requests a confirmation token without explicit human confirmation', async () => {
+    (client.sendDeviceCommand as jest.Mock).mockResolvedValue({
+      success: false,
+      error: 'human confirmation required',
+    });
+    const { result } = renderHook(() => useCommands('d1'));
+
+    await act(async () => {
+      await result.current.sendCommand('restart');
+    });
+
+    expect(client.requestDeviceCommandConfirmation).not.toHaveBeenCalled();
+    expect(client.sendDeviceCommand).toHaveBeenCalledWith(
+      'd1',
+      'restart',
+      {},
+      undefined
+    );
   });
 });

@@ -88,6 +88,20 @@ export const sendDeviceCommand = async (
   return data;
 };
 
+export const requestDeviceCommandConfirmation = async (
+  deviceId: string,
+  command: string,
+  parameters: Record<string, unknown>,
+  confirmation: string
+) => {
+  const { data } = await api.post(`/devices/${deviceId}/command/confirmation`, {
+    command,
+    parameters,
+    confirmation,
+  });
+  return data;
+};
+
 export const fetchCommandHistory = async (deviceId: string) => {
   const { data } = await api.get(`/devices/${deviceId}/commands`);
   return data;
