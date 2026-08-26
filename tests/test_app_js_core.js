@@ -5930,6 +5930,82 @@ function makeSetHtmlIfChanged() {
   assertEqual('partial interval waits only remainder', analyticsNextDelay(5000, 5600), 500);
 })();
 
+// ═══════════════════════════════════════════════════════════════════════════
+//  #361 · ADMIN ANALYTICS — pure report-to-chart model
+// ═══════════════════════════════════════════════════════════════════════════
+
+(function adminAnalyticsModelSuite() {
+  function buildAdminAnalyticsModel(report) {
+    report = report || {};
+    function safeCount(value) {
+      const n = Number(value);
+      return Number.isFinite(n) && n > 0 ? n : 0;
+    }
+    const usage = report.module_usage || {};
+    const timing = report.module_time || {};
+    const names = Array.from(new Set(Object.keys(usage).concat(Object.keys(timing))));
+    const modules = names.map(function(name) {
+      const time = timing[name] || {};
+      return {
+        name: name,
+        accesses: safeCount(usage[name]),
+        sessions: safeCount(time.sessions),
+        totalSeconds: safeCount(time.total_seconds),
+        avgSeconds: safeCount(time.avg_seconds),
+      };
+    }).sort(function(a, b) {
+      return b.accesses - a.accesses || b.totalSeconds - a.totalSeconds || a.name.localeCompare(b.name);
+    });
+    const boots = (Array.isArray(report.boots_by_day) ? report.boots_by_day : []).map(function(point) {
+      return { day: String(point.day || ''), boots: safeCount(point.boots) };
+    }).filter(function(point) { return point.day; });
+    const dau = Array.isArray(report.dau) ? report.dau : [];
+    const wau = Array.isArray(report.wau) ? report.wau : [];
+    const dropoff = report.dropoff || {};
+    const bootTotal = safeCount(dropoff.boot_total != null ? dropoff.boot_total : report.boot_count);
+    const withoutSwitch = Math.min(bootTotal, safeCount(dropoff.boot_without_switch));
+    return {
+      totalEvents: safeCount(report.total_events),
+      bootCount: safeCount(report.boot_count),
+      currentDau: dau.length ? safeCount(dau[dau.length - 1].users) : 0,
+      currentWau: wau.length ? safeCount(wau[wau.length - 1].users) : 0,
+      modules: modules,
+      boots: boots,
+      topModule: modules.length ? modules[0].name : '',
+      dropoff: { withoutSwitch: withoutSwitch, navigated: Math.max(0, bootTotal - withoutSwitch), total: bootTotal },
+    };
+  }
+
+  const model = buildAdminAnalyticsModel({
+    total_events: 12,
+    boot_count: 4,
+    dau: [{ day: '2026-08-25', users: 2 }, { day: '2026-08-26', users: 3 }],
+    wau: [{ week: '2026-W34', users: 5 }],
+    boots_by_day: [{ day: '2026-08-25', boots: 1 }, { day: '2026-08-26', boots: 3 }],
+    module_usage: { market: 2, dashboard: 5 },
+    module_time: {
+      market: { sessions: 2, total_seconds: 120, avg_seconds: 60 },
+      probability: { sessions: 1, total_seconds: 90, avg_seconds: 90 },
+    },
+    dropoff: { boot_total: 4, boot_without_switch: 1 },
+  });
+  assertEqual('analytics KPI boots', model.bootCount, 4);
+  assertEqual('analytics current DAU uses latest bucket', model.currentDau, 3);
+  assertEqual('analytics current WAU uses latest bucket', model.currentWau, 5);
+  assertEqual('analytics union includes usage/time-only modules', model.modules.map(m => m.name), ['dashboard', 'market', 'probability']);
+  assertEqual('analytics top module is highest usage', model.topModule, 'dashboard');
+  assertEqual('analytics boot series stays real/bounded', model.boots, [{ day: '2026-08-25', boots: 1 }, { day: '2026-08-26', boots: 3 }]);
+  assertEqual('analytics dropoff splits boot funnel', model.dropoff, { withoutSwitch: 1, navigated: 3, total: 4 });
+
+  const empty = buildAdminAnalyticsModel(null);
+  assertEqual('analytics empty modules', empty.modules, []);
+  assertEqual('analytics empty boot series', empty.boots, []);
+  assertEqual('analytics empty funnel avoids division/negative', empty.dropoff, { withoutSwitch: 0, navigated: 0, total: 0 });
+  const extreme = buildAdminAnalyticsModel({ boot_count: 2, module_usage: { bad: Infinity, negative: -4 }, dropoff: { boot_total: 2, boot_without_switch: 99 } });
+  assertEqual('analytics invalid counts clamp to zero', extreme.modules.map(m => m.accesses), [0, 0]);
+  assertEqual('analytics dropoff cannot exceed boots', extreme.dropoff, { withoutSwitch: 2, navigated: 0, total: 2 });
+})();
+
 //  RESULTS
 // ═══════════════════════════════════════════════════════════════════════════
 

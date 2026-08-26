@@ -149,6 +149,34 @@ def test_named_tenant_without_own_key_never_inherits_env(monkeypatch):
     assert _tools_mod.braiins_credentials()["api_key"] == "env-token"
 
 
+def test_tuya_credentials_are_encrypted_and_tenant_isolated(monkeypatch):
+    """A named tenant never inherits the operator's Tuya plug credentials."""
+    from axe_fleet.routes import _get_tuya_credentials
+
+    monkeypatch.setenv("SECRET_KEY", "tuya-settings-test-secret-0123456789")
+    monkeypatch.setenv("TUYA_ACCESS_ID", "operator-id")
+    monkeypatch.setenv("TUYA_ACCESS_SECRET", "operator-secret")
+    _settings_mod.save_setting("tuya_access_id", "tenant-id", tenant_id="tenant-aaa")
+    _settings_mod.save_setting(
+        "tuya_access_secret", "tenant-secret", tenant_id="tenant-aaa"
+    )
+    _settings_mod.save_setting("tuya_region", "eu", tenant_id="tenant-aaa")
+
+    creds = _get_tuya_credentials("tenant-aaa")
+    assert creds["access_id"] == "tenant-id"
+    assert creds["access_secret"] == "tenant-secret"
+    assert creds["region"] == "eu"
+    assert _get_tuya_credentials("tenant-empty")["access_id"] == ""
+
+    conn = get_db()
+    row = conn.execute(
+        "SELECT value FROM tenant_settings WHERE tenant_id=? AND key=?",
+        ("tenant-aaa", "tuya_access_secret"),
+    ).fetchone()
+    conn.close()
+    assert row["value"].startswith("enc:v1:")
+
+
 def test_boot_guard_warns_on_provider_env_keys_in_multitenant():
     """Boot guard (Issue #189): a multi-tenant deployment must NOT carry
     operator provider keys at env level — they only apply to the default

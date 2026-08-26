@@ -109,7 +109,8 @@ class TestRemoteOnboarding:
             lambda *a, **k: {"reachable": True},
         )
         monkeypatch.setattr(
-            "axe_fleet.routes._get_tuya_credentials", lambda: {"access_id": ""}
+            "axe_fleet.routes._get_tuya_credentials",
+            lambda tenant_id="": {"access_id": ""},
         )
 
     def test_payload_includes_scope_and_limitations(self, client):

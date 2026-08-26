@@ -1555,6 +1555,48 @@
   </div>
   <div class="admin-stall" id="admin-stall" hidden></div>
 
+  <!-- ── Beta usage analytics (Issue #361) ────────────────────────────
+       Dados reais e locais de /api/admin/analytics. O endpoint usa o mesmo
+       gate localhost/X-API-Key das demais ferramentas administrativas. -->
+  <section class="admin-analytics" id="admin-analytics" aria-labelledby="admin-analytics-title" aria-busy="true">
+    <div class="panel__subtitle" id="admin-analytics-title">USO DO BETA (30d) — eventos self-hosted · nenhum dado externo</div>
+    <div class="kpi-row admin-analytics__kpis">
+      <div class="kpi-card"><span class="kpi-card__label">Boots</span><span class="kpi-card__value" id="admin-analytics-boots">—</span></div>
+      <div class="kpi-card"><span class="kpi-card__label">DAU atual</span><span class="kpi-card__value" id="admin-analytics-dau">—</span></div>
+      <div class="kpi-card"><span class="kpi-card__label">WAU atual</span><span class="kpi-card__value" id="admin-analytics-wau">—</span></div>
+      <div class="kpi-card"><span class="kpi-card__label">Módulos ativos</span><span class="kpi-card__value" id="admin-analytics-modules">—</span></div>
+      <div class="kpi-card"><span class="kpi-card__label">Mais usado</span><span class="kpi-card__value kpi-card__value--compact" id="admin-analytics-top-module">—</span></div>
+    </div>
+    <p class="admin-analytics__state" id="admin-analytics-state" role="status" aria-live="polite">Carregando analytics…</p>
+    <div class="admin-analytics__charts">
+      <figure class="admin-analytics__chart" aria-labelledby="admin-analytics-modules-title">
+        <figcaption id="admin-analytics-modules-title">Uso e tempo médio por módulo</figcaption>
+        <div class="admin-analytics__skeleton" data-analytics-skeleton><div class="skel skel--chart"></div></div>
+        <div class="admin-analytics__canvas" data-analytics-canvas hidden><canvas id="admin-analytics-modules-chart"></canvas></div>
+        <p class="admin-analytics__empty" data-analytics-empty="modules" hidden>Sem navegação por módulos no período.</p>
+      </figure>
+      <figure class="admin-analytics__chart" aria-labelledby="admin-analytics-boots-title">
+        <figcaption id="admin-analytics-boots-title">Boots por dia</figcaption>
+        <div class="admin-analytics__skeleton" data-analytics-skeleton><div class="skel skel--chart"></div></div>
+        <div class="admin-analytics__canvas" data-analytics-canvas hidden><canvas id="admin-analytics-boots-chart"></canvas></div>
+        <p class="admin-analytics__empty" data-analytics-empty="boots" hidden>Sem boots no período.</p>
+      </figure>
+      <figure class="admin-analytics__chart" aria-labelledby="admin-analytics-dropoff-title">
+        <figcaption id="admin-analytics-dropoff-title">Boot → navegação</figcaption>
+        <div class="admin-analytics__skeleton" data-analytics-skeleton><div class="skel skel--chart"></div></div>
+        <div class="admin-analytics__canvas" data-analytics-canvas hidden><canvas id="admin-analytics-dropoff-chart"></canvas></div>
+        <p class="admin-analytics__empty" data-analytics-empty="dropoff" hidden>Sem boots suficientes para calcular dropoff.</p>
+      </figure>
+    </div>
+    <div class="admin-audit__table-wrap admin-analytics__table-wrap" id="admin-analytics-table-wrap" hidden>
+      <table class="admin-audit__table">
+        <caption class="sr-only">Detalhes de uso por módulo</caption>
+        <thead><tr><th scope="col">Módulo</th><th scope="col">Acessos</th><th scope="col">Sessões medidas</th><th scope="col">Tempo total</th><th scope="col">Tempo médio</th></tr></thead>
+        <tbody id="admin-analytics-table-body"></tbody>
+      </table>
+    </div>
+  </section>
+
   <!-- ── Pool metric trends (Issue #17) — sampler SQLite a cada 60s ──
        Consome /api/admin/pool-metrics (mesmo gate localhost/X-API-Key).
        Histórico persistente: sobrevive a restarts — ao contrário dos
