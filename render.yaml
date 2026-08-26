@@ -66,6 +66,27 @@ services:
       # 402 após o deploy — se remover esta var, o CI acusa gate em open mode.
       - key: PRO_KEYS_DB
         value: "1"
+      # ── Bitcoin checkout — BTCPay recommended (Issue #330) ─────────────
+      # All values are operator-specific and stay in the Render dashboard.
+      # The app keeps the Bitcoin tab OFF until URL + API key + store id +
+      # webhook secret are all present; a half-configured checkout must never
+      # accept funds without being able to fulfill the license.
+      # Runbook: docs/DEPLOYMENT_OPS.md → "Canal Bitcoin em produção".
+      - key: BTCPAY_URL
+        sync: false
+      - key: BTCPAY_API_KEY
+        sync: false
+      - key: BTCPAY_STORE_ID
+        sync: false
+      - key: BTCPAY_WEBHOOK_SECRET
+        sync: false
+      - key: PAYMENT_BTC_ADDRESS
+        sync: false
+      # Optional fallback when no BTCPay Server is available. This must be an
+      # HTTPS endpoint that mints BOLT-11 invoices; LN_ADDRESS alone is not a
+      # checkout provider and does not enable the tab.
+      - key: LN_INVOICE_ENDPOINT
+        sync: false
       # ── Web Push (VAPID) — Issue #15 ────────────────────────────────────
       # Push de alertas no browser só liga com um par de chaves VAPID.
       # Gere uma vez localmente e cole os valores REAIS no Render dashboard

@@ -155,20 +155,26 @@ with `X-API-Key` (or from localhost).
 ## ⚡ R2 — Bitcoin channel (off-by-default)
 
 The upgrade modal also accepts **Bitcoin directly** — no payment processor.
-Two paths, both off until configured (without env vars the BTC checkout
-returns `503` and the tab stays hidden):
+The production decision is **BTCPay Server**: it creates a unique invoice,
+supports on-chain + Lightning through the store, and signs settlement
+webhooks. `LN_INVOICE_ENDPOINT` remains a reduced Lightning-only fallback.
+Both paths stay off until fully configured (otherwise checkout returns `503`
+and the tab stays hidden):
 
 | Env var | Purpose |
 | --- | --- |
 | `BTCPAY_URL` / `BTCPAY_API_KEY` / `BTCPAY_STORE_ID` | BTCPay Greenfield API (invoice creation + polling) |
-| `BTCPAY_WEBHOOK_SECRET` | HMAC-SHA256 secret verifying `x-btcpay-sig` on the settlement webhook |
-| `PAYMENT_BTC_ADDRESS` | Fixed on-chain payment address (BIP-21 target — separate from `BTC_ADDRESS`, which stays the operator's data wallet) |
+| `BTCPAY_WEBHOOK_SECRET` | Required HMAC-SHA256 secret verifying `BTCPay-Sig` on the settlement webhook |
+| `PAYMENT_BTC_ADDRESS` | Operator revenue/reference address, separate from `BTC_ADDRESS`; BTCPay invoices settle to the wallet configured in the BTCPay store |
 | `LN_INVOICE_ENDPOINT` | WebLN fallback — operator Lightning node that mints BOLT-11 invoices |
 
 Flow: **Buy PRO → Bitcoin** → BTCPay invoice (QR / copy / countdown) or WebLN
 BOLT-11 → settlement webhook (or preimage) → a `C65-XXXX-…` key is issued and
 honored immediately via the existing `X-License-Key` header. Self-custody:
 0% processor fee, no KYC — tax obligations stay with the operator.
+
+Production setup, least-privilege API scopes, webhook registration, smoke
+test and rollback: [Deploy & Operations — Canal Bitcoin em produção](docs/DEPLOYMENT_OPS.md#-canal-bitcoin-em-produção--btcpay-server).
 
 ## 📄 License
 
