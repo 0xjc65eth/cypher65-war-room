@@ -29,8 +29,8 @@ def client(monkeypatch):
     """Test client with pinned JWT secret (app.config + env, in sync)."""
     _app.config["TESTING"] = True
     saved = _app.config.get("JWT_SECRET_KEY")
-    _app.config["JWT_SECRET_KEY"] = "agent-test-secret-123"
-    monkeypatch.setenv("SECRET_KEY", "agent-test-secret-123")
+    _app.config["JWT_SECRET_KEY"] = "agent-test-secret-123-0123456789abcdef"
+    monkeypatch.setenv("SECRET_KEY", "agent-test-secret-123-0123456789abcdef")
     c = _app.test_client()
     yield c
     if saved is not None:

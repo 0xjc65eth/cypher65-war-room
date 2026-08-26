@@ -34,8 +34,8 @@ def client(monkeypatch):
     secrets leaked by other test files (cross-file pollution)."""
     _app.config["TESTING"] = True
     saved = _app.config.get("JWT_SECRET_KEY")
-    _app.config["JWT_SECRET_KEY"] = "test-secret-key-123"
-    monkeypatch.setenv("SECRET_KEY", "test-secret-key-123")
+    _app.config["JWT_SECRET_KEY"] = "test-secret-key-123-0123456789abcdef"
+    monkeypatch.setenv("SECRET_KEY", "test-secret-key-123-0123456789abcdef")
     c = _app.test_client()
     yield c
     if saved is not None:
@@ -199,7 +199,7 @@ class TestApiRegister:
     @pytest.fixture(autouse=True)
     def _scratch_db(self, tmp_path, monkeypatch):
         monkeypatch.setenv("DB_PATH", str(_seed_users_db(tmp_path)))
-        monkeypatch.setenv("SECRET_KEY", "test-secret-key-123")
+        monkeypatch.setenv("SECRET_KEY", "test-secret-key-123-0123456789abcdef")
 
     def test_register_returns_tokens_and_role(self, client):
         res = client.post("/api/auth/register", json={
@@ -310,7 +310,7 @@ class TestRbacEnforcement:
     @pytest.fixture(autouse=True)
     def _scratch_db(self, tmp_path, monkeypatch):
         monkeypatch.setenv("DB_PATH", str(_seed_users_db(tmp_path)))
-        monkeypatch.setenv("SECRET_KEY", "test-secret-key-123")
+        monkeypatch.setenv("SECRET_KEY", "test-secret-key-123-0123456789abcdef")
         # Create the axe_fleet tables in the scratch DB so the real add path
         # (registry → get_db → env DB_PATH) persists into the scratch file.
         from app import _axe_registry
@@ -320,7 +320,7 @@ class TestRbacEnforcement:
         # No API_KEY / TENANT_API_KEYS → operator is admin, writes pass RBAC.
         monkeypatch.delenv("API_KEY", raising=False)
         monkeypatch.delenv("TENANT_API_KEYS", raising=False)
-        monkeypatch.setenv("SECRET_KEY", "test-secret-key-123")
+        monkeypatch.setenv("SECRET_KEY", "test-secret-key-123-0123456789abcdef")
         res = client.post("/api/axe-fleet/devices", json={
             "ip_address": "192.168.1.250", "name": "Test-rbac-open",
         })
@@ -331,7 +331,7 @@ class TestRbacEnforcement:
 
     def test_viewer_role_blocked_from_write(self, client, monkeypatch):
         monkeypatch.setenv("API_KEY", "master-key")
-        monkeypatch.setenv("SECRET_KEY", "test-secret-key-123")
+        monkeypatch.setenv("SECRET_KEY", "test-secret-key-123-0123456789abcdef")
         from services.auth import create_token
         viewer_token = create_token(subject="default", extra_claims={"role": "viewer"})
         res = client.post(
@@ -345,7 +345,7 @@ class TestRbacEnforcement:
 
     def test_member_role_allowed(self, client, monkeypatch):
         monkeypatch.setenv("API_KEY", "master-key")
-        monkeypatch.setenv("SECRET_KEY", "test-secret-key-123")
+        monkeypatch.setenv("SECRET_KEY", "test-secret-key-123-0123456789abcdef")
         from services.auth import create_token
         member_token = create_token(subject="default", extra_claims={"role": "member"})
         res = client.post(
@@ -375,7 +375,7 @@ class TestRbacReadRoutes:
     @pytest.fixture(autouse=True)
     def _scratch_db(self, tmp_path, monkeypatch):
         monkeypatch.setenv("DB_PATH", str(_seed_users_db(tmp_path)))
-        monkeypatch.setenv("SECRET_KEY", "test-secret-key-123")
+        monkeypatch.setenv("SECRET_KEY", "test-secret-key-123-0123456789abcdef")
         # Seed the read-route tables so viewer/member/open-mode requests that
         # PASS the RBAC gate reach the handler without crashing (api_export has
         # no try/except, so a missing snapshots table would raise in-test).

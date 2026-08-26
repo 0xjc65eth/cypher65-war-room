@@ -34,7 +34,7 @@ from core.alerts.automation_engine import AutomationEngine, AutomationRule
 def client():
     app.config["TESTING"] = True
     saved = app.config.get("JWT_SECRET_KEY")
-    app.config["JWT_SECRET_KEY"] = "tenant-b2-secret"
+    app.config["JWT_SECRET_KEY"] = "tenant-b2-secret-0123456789abcdef"
     with app.test_client() as c:
         yield c
     # Restore any pre-existing secret (cross-file config pollution broke

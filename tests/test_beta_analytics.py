@@ -79,8 +79,8 @@ class TestAnalyticsTrack:
             "/api/analytics/track",
             json={"event": "unknown_event"},
         )
-        # Rate-limited or invalid: 429 (service rejects unknown events)
-        assert resp.status_code == 429
+        assert resp.status_code == 400
+        assert resp.get_json()["error"] == "invalid analytics event"
 
     def test_meta_defaults_to_empty_dict(self, isolated_client):
         resp = isolated_client.post(
@@ -106,12 +106,14 @@ class TestAnalyticsTrack:
             json={"event": "boot"},
         )
         assert resp1.status_code == 200
-        # Immediate second call should be rate-limited → 429
+        # Immediate second call is rate-limited without turning optional
+        # browser analytics into a visible resource error.
         resp2 = isolated_client.post(
             "/api/analytics/track",
             json={"event": "boot"},
         )
-        assert resp2.status_code == 429
+        assert resp2.status_code == 202
+        assert resp2.get_json() == {"ok": True, "recorded": False}
 
 
 # ── GET /api/admin/analytics ─────────────────────────────────────────────
