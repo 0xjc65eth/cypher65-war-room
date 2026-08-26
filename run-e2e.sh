@@ -22,6 +22,8 @@ PORT="${PORT:-8765}"
 BASE_URL="http://127.0.0.1:${PORT}"
 FLASK_LOG="/tmp/cypher65_e2e_server.log"
 PLAYWRIGHT_ARGS=""
+E2E_TMP_DIR=""
+E2E_DB_PATH=""
 
 # Parse CLI flags
 for arg in "$@"; do
@@ -41,6 +43,12 @@ cleanup() {
     echo "Stopping Flask server (PID $SERVER_PID)..."
     kill "$SERVER_PID" 2>/dev/null || true
     wait "$SERVER_PID" 2>/dev/null || true
+  fi
+  if [ -n "$E2E_TMP_DIR" ]; then
+    case "$E2E_TMP_DIR" in
+      /tmp/cypher65-e2e.*) rm -r -- "$E2E_TMP_DIR" 2>/dev/null || true ;;
+      *) echo "Refusing to remove unexpected E2E temp path: $E2E_TMP_DIR" ;;
+    esac
   fi
 }
 trap cleanup EXIT INT TERM
@@ -71,6 +79,9 @@ fi
 echo ""
 echo "═══ Starting Flask server on port ${PORT} ═══"
 
+E2E_TMP_DIR="$(mktemp -d /tmp/cypher65-e2e.XXXXXX)"
+E2E_DB_PATH="$E2E_TMP_DIR/war_room.sqlite"
+
 VENV_PYTHON="venv/bin/python3"
 if [ ! -f "$VENV_PYTHON" ]; then
   VENV_PYTHON="venv/bin/python"
@@ -85,7 +96,7 @@ fi
 # panel fetches) — raise the per-IP rate limit so the suite never hits 429.
 # SECRET_KEY is pinned so the P1 #8 boot-time guard never aborts the E2E
 # server when API_KEY happens to be exported in the calling shell.
-RATE_LIMIT_PER_MINUTE="${RATE_LIMIT_PER_MINUTE:-1000}" SECRET_KEY="${SECRET_KEY:-e2e-test-secret-key}" $VENV_PYTHON app.py &>"$FLASK_LOG" &
+DB_PATH="$E2E_DB_PATH" RATE_LIMIT_PER_MINUTE="${RATE_LIMIT_PER_MINUTE:-1000}" SECRET_KEY="${SECRET_KEY:-e2e-test-secret-key-0123456789abcdef}" $VENV_PYTHON app.py &>"$FLASK_LOG" &
 SERVER_PID=$!
 
 # Wait for server to start — cold boot can take ~16s (init_db + first poll with

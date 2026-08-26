@@ -3588,16 +3588,62 @@ function renderAccount(acct) {
     return map[verdict] || { cls: 'admin-audit__verdict--mute', label: String(verdict || 'unknown').toUpperCase() };
   }
 
+  // Convert the protected analytics report into bounded chart/table series.
+  // Kept pure so zero/partial payloads can be unit-tested without Chart.js.
+  function buildAdminAnalyticsModel(report) {
+    report = report || {};
+    function safeCount(value) {
+      const n = Number(value);
+      return Number.isFinite(n) && n > 0 ? n : 0;
+    }
+    const usage = report.module_usage || {};
+    const timing = report.module_time || {};
+    const names = Array.from(new Set(Object.keys(usage).concat(Object.keys(timing))));
+    const modules = names.map(function(name) {
+      const time = timing[name] || {};
+      return {
+        name: name,
+        accesses: safeCount(usage[name]),
+        sessions: safeCount(time.sessions),
+        totalSeconds: safeCount(time.total_seconds),
+        avgSeconds: safeCount(time.avg_seconds),
+      };
+    }).sort(function(a, b) {
+      return b.accesses - a.accesses || b.totalSeconds - a.totalSeconds || a.name.localeCompare(b.name);
+    });
+    const boots = (Array.isArray(report.boots_by_day) ? report.boots_by_day : []).map(function(point) {
+      return { day: String(point.day || ''), boots: safeCount(point.boots) };
+    }).filter(function(point) { return point.day; });
+    const dau = Array.isArray(report.dau) ? report.dau : [];
+    const wau = Array.isArray(report.wau) ? report.wau : [];
+    const dropoff = report.dropoff || {};
+    const bootTotal = safeCount(dropoff.boot_total != null ? dropoff.boot_total : report.boot_count);
+    const withoutSwitch = Math.min(bootTotal, safeCount(dropoff.boot_without_switch));
+    return {
+      totalEvents: safeCount(report.total_events),
+      bootCount: safeCount(report.boot_count),
+      currentDau: dau.length ? safeCount(dau[dau.length - 1].users) : 0,
+      currentWau: wau.length ? safeCount(wau[wau.length - 1].users) : 0,
+      modules: modules,
+      boots: boots,
+      topModule: modules.length ? modules[0].name : '',
+      dropoff: { withoutSwitch: withoutSwitch, navigated: Math.max(0, bootTotal - withoutSwitch), total: bootTotal },
+    };
+  }
+
   let _adminAuditDecisions = [];      // last payload (for client-side filters)
   let _adminAuditChart = null;        // Chart.js instance (destroy before recreate)
+  let _adminAnalyticsCharts = {};
+  let _adminAnalyticsRendered = false;
 
   async function fetchAdminData() {
     if (_adminLoaded) return;
     const errEl = document.getElementById('admin-error');
     const gate = document.getElementById('admin-gate-badge');
+    _setAdminAnalyticsLoading(true);
     try {
       // Pool health — no auth needed for localhost/operator-key admin routes.
-      const [sessionsResp, convResp, auditResp, metricsResp, docsResp, errResp, degResp] = await Promise.all([
+      const [sessionsResp, convResp, auditResp, metricsResp, docsResp, errResp, degResp, analyticsResp] = await Promise.all([
         fetch('/api/admin/sessions', { headers: { 'X-Requested-With': 'fetch' } }),
         fetch('/api/admin/conversion?weeks=8', { headers: { 'X-Requested-With': 'fetch' } }),
         fetch('/api/admin/rentals/accepted-recos?limit=1000', { headers: { 'X-Requested-With': 'fetch' } }),
@@ -3605,13 +3651,15 @@ function renderAccount(acct) {
         fetch('/api/admin/docs-feedback', { headers: { 'X-Requested-With': 'fetch' } }),
         fetch('/api/admin/error-rate?hours=24', { headers: { 'X-Requested-With': 'fetch' } }),
         fetch('/api/admin/degradation-rate?hours=24', { headers: { 'X-Requested-With': 'fetch' } }),
+        fetch('/api/admin/analytics?days=30', { headers: { 'X-Requested-With': 'fetch' } }),
       ]);
-      if (sessionsResp.status === 403 || convResp.status === 403 || auditResp.status === 403 || metricsResp.status === 403 || docsResp.status === 403 || errResp.status === 403 || degResp.status === 403) {
+      if (sessionsResp.status === 403 || convResp.status === 403 || auditResp.status === 403 || metricsResp.status === 403 || docsResp.status === 403 || errResp.status === 403 || degResp.status === 403 || analyticsResp.status === 403) {
         if (gate) gate.textContent = 'restricted';
         if (errEl) {
           errEl.hidden = false;
           errEl.textContent = 'Admin access required — endpoint só responde de localhost ou com a API key do operador (X-API-Key).';
         }
+        _renderAdminAnalytics({ error: 'admin access required' });
         _adminLoaded = true;  // don't re-hammer a 403
         return;
       }
@@ -3623,18 +3671,22 @@ function renderAccount(acct) {
       const docsFb = docsResp.ok ? await docsResp.json() : {};
       const errData = errResp.ok ? await errResp.json() : {};
       const degData = degResp.ok ? await degResp.json() : {};
-      _renderAdmin(sessions, conv, audit, metrics, docsFb, errData, degData);
+      const analytics = analyticsResp.ok ? await analyticsResp.json() : { error: 'analytics request failed (' + analyticsResp.status + ')' };
+      _renderAdmin(sessions, conv, audit, metrics, docsFb, errData, degData, analytics);
+      _adminLoaded = true;
     } catch (e) {
       if (errEl) { errEl.hidden = false; errEl.textContent = 'admin fetch error: ' + e.message; }
+      _renderAdminAnalytics({ error: 'analytics indisponível' });
     }
   }
-  function _renderAdmin(sessions, conv, audit, metrics, docsFb, errData, degData) {
+  function _renderAdmin(sessions, conv, audit, metrics, docsFb, errData, degData, analytics) {
     _renderAdminMetrics(metrics || {});
     _renderAdminErrorRate(errData || {});
     _renderAdminDegradation(degData || {});
     _renderAdminAudit(audit);
     _renderAdminAutoExclusions(audit);
     _renderAdminDocsFeedback(docsFb || {});
+    _renderAdminAnalytics(analytics || {});
     const pool = sessions.pool || {};
     _setAdminText('admin-sessions', pool.sessions_active != null ? pool.sessions_active : '—');
     _setAdminText('admin-polls-per-sec', pool.polls_per_sec != null ? pool.polls_per_sec : '—');
@@ -3694,6 +3746,164 @@ function renderAccount(acct) {
     _renderAdminFeatureAlert(conv.feature_alert || null);
     // Weekly trend (Issue #156 — 18-B): paywall_view × conversion rate.
     _renderAdminFunnelTrend(conv.weekly || []);
+  }
+
+  function _setAdminAnalyticsLoading(isLoading) {
+    const root = document.getElementById('admin-analytics');
+    if (!root) return;
+    root.setAttribute('aria-busy', isLoading ? 'true' : 'false');
+    root.querySelectorAll('[data-analytics-skeleton]').forEach(function(el) { el.hidden = !isLoading; });
+    if (isLoading) {
+      root.querySelectorAll('[data-analytics-canvas], [data-analytics-empty]').forEach(function(el) { el.hidden = true; });
+      const state = document.getElementById('admin-analytics-state');
+      if (state) { state.textContent = 'Carregando analytics…'; state.classList.remove('admin-analytics__state--error'); }
+    }
+  }
+
+  function _destroyAdminAnalyticsCharts() {
+    Object.keys(_adminAnalyticsCharts).forEach(function(key) {
+      const chart = _adminAnalyticsCharts[key];
+      if (chart && typeof chart.destroy === 'function') chart.destroy();
+    });
+    _adminAnalyticsCharts = {};
+  }
+
+  function _formatAnalyticsSeconds(value) {
+    const seconds = Math.max(0, Number(value) || 0);
+    if (seconds < 60) return Math.round(seconds) + 's';
+    if (seconds < 3600) return Math.round(seconds / 60) + 'm';
+    return (seconds / 3600).toFixed(seconds < 36000 ? 1 : 0) + 'h';
+  }
+
+  function _renderAdminAnalytics(report) {
+    const root = document.getElementById('admin-analytics');
+    const state = document.getElementById('admin-analytics-state');
+    if (!root) return;
+    _setAdminAnalyticsLoading(false);
+    _destroyAdminAnalyticsCharts();
+    root.querySelectorAll('[data-analytics-canvas], [data-analytics-empty]').forEach(function(el) { el.hidden = true; });
+
+    if (report && report.error) {
+      if (state) {
+        state.textContent = 'Analytics indisponível: ' + String(report.error);
+        state.classList.add('admin-analytics__state--error');
+      }
+      const tableWrap = document.getElementById('admin-analytics-table-wrap');
+      if (tableWrap) tableWrap.hidden = true;
+      return;
+    }
+
+    const model = buildAdminAnalyticsModel(report);
+    _setAdminText('admin-analytics-boots', model.bootCount);
+    _setAdminText('admin-analytics-dau', model.currentDau);
+    _setAdminText('admin-analytics-wau', model.currentWau);
+    _setAdminText('admin-analytics-modules', model.modules.length);
+    _setAdminText('admin-analytics-top-module', model.topModule || '—');
+    if (state) {
+      state.classList.remove('admin-analytics__state--error');
+      state.textContent = model.totalEvents
+        ? model.totalEvents + ' eventos reais nos últimos ' + String((report && report.days) || 30) + ' dias.'
+        : 'Sem eventos reais no período. O painel não preenche métricas com dados fictícios.';
+    }
+
+    const tableWrap = document.getElementById('admin-analytics-table-wrap');
+    const tableBody = document.getElementById('admin-analytics-table-body');
+    if (tableWrap) tableWrap.hidden = model.modules.length === 0;
+    if (tableBody) {
+      tableBody.innerHTML = model.modules.map(function(row) {
+        return '<tr><td>' + escapeHtml(row.name) + '</td>' +
+          '<td>' + escapeHtml(String(row.accesses)) + '</td>' +
+          '<td>' + escapeHtml(String(row.sessions)) + '</td>' +
+          '<td>' + escapeHtml(_formatAnalyticsSeconds(row.totalSeconds)) + '</td>' +
+          '<td>' + escapeHtml(_formatAnalyticsSeconds(row.avgSeconds)) + '</td></tr>';
+      }).join('');
+    }
+
+    const availability = {
+      modules: model.modules.length > 0,
+      boots: model.boots.length > 0,
+      dropoff: model.dropoff.total > 0,
+    };
+    Object.keys(availability).forEach(function(key) {
+      const empty = root.querySelector('[data-analytics-empty="' + key + '"]');
+      if (empty) empty.hidden = availability[key];
+    });
+
+    if (typeof Chart === 'undefined') {
+      if (state && (availability.modules || availability.boots || availability.dropoff)) {
+        state.textContent = 'Os dados foram carregados, mas os gráficos estão indisponíveis (Chart.js não carregou).';
+        state.classList.add('admin-analytics__state--error');
+      }
+      return;
+    }
+
+    const style = getComputedStyle(document.documentElement);
+    const color = function(name, fallback) { return style.getPropertyValue(name).trim() || fallback; };
+    const reduced = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    const animation = (reduced || _adminAnalyticsRendered) ? false : { duration: 180, easing: 'easeOutQuart' };
+    const baseOptions = function() {
+      return {
+        responsive: true,
+        maintainAspectRatio: false,
+        animation: animation,
+        plugins: { legend: { labels: { color: color('--text-secondary', 'rgb(144, 146, 150)'), boxWidth: 10 } } },
+        scales: {
+          x: { ticks: { color: color('--text-tertiary', 'rgb(94, 89, 82)'), maxRotation: 45, minRotation: 0 }, grid: { display: false } },
+          y: { beginAtZero: true, ticks: { color: color('--text-tertiary', 'rgb(94, 89, 82)'), precision: 0 }, grid: { color: color('--border-subtle', 'rgba(94, 89, 82, 0.2)') } },
+        },
+      };
+    };
+    function showCanvas(id) {
+      const canvas = document.getElementById(id);
+      const wrap = canvas && canvas.closest('[data-analytics-canvas]');
+      if (wrap) wrap.hidden = false;
+      return canvas;
+    }
+
+    if (availability.modules) {
+      const canvas = showCanvas('admin-analytics-modules-chart');
+      const options = baseOptions();
+      options.scales.y1 = { beginAtZero: true, position: 'right', ticks: { color: color('--text-tertiary', 'rgb(94, 89, 82)') }, grid: { drawOnChartArea: false } };
+      _adminAnalyticsCharts.modules = new Chart(canvas.getContext('2d'), {
+        type: 'bar',
+        data: {
+          labels: model.modules.map(function(row) { return row.name; }),
+          datasets: [
+            { label: 'Acessos', data: model.modules.map(function(row) { return row.accesses; }), backgroundColor: color('--brand-dim', 'rgba(247, 147, 26, 0.55)'), borderColor: color('--brand', 'rgb(247, 147, 26)'), borderWidth: 1, yAxisID: 'y' },
+            { label: 'Tempo médio (min)', data: model.modules.map(function(row) { return Math.round(row.avgSeconds / 6) / 10; }), backgroundColor: color('--cyan-dim', 'rgba(247, 147, 26, 0.35)'), borderColor: color('--cyan', 'rgb(247, 147, 26)'), borderWidth: 1, yAxisID: 'y1' },
+          ],
+        },
+        options: options,
+      });
+    }
+    if (availability.boots) {
+      const canvas = showCanvas('admin-analytics-boots-chart');
+      _adminAnalyticsCharts.boots = new Chart(canvas.getContext('2d'), {
+        type: 'line',
+        data: {
+          labels: model.boots.map(function(point) { return point.day; }),
+          datasets: [{ label: 'Boots', data: model.boots.map(function(point) { return point.boots; }), borderColor: color('--green', 'rgb(0, 200, 83)'), backgroundColor: color('--green-bg', 'rgba(0, 200, 83, 0.12)'), fill: true, tension: 0.2, pointRadius: 2 }],
+        },
+        options: baseOptions(),
+      });
+    }
+    if (availability.dropoff) {
+      const canvas = showCanvas('admin-analytics-dropoff-chart');
+      _adminAnalyticsCharts.dropoff = new Chart(canvas.getContext('2d'), {
+        type: 'doughnut',
+        data: {
+          labels: ['Navegou', 'Saiu no boot'],
+          datasets: [{ data: [model.dropoff.navigated, model.dropoff.withoutSwitch], backgroundColor: [color('--green', 'rgb(0, 200, 83)'), color('--amber', 'rgb(255, 176, 0)')], borderWidth: 0 }],
+        },
+        options: { responsive: true, maintainAspectRatio: false, animation: animation, cutout: '62%', plugins: { legend: { position: 'bottom', labels: { color: color('--text-secondary', 'rgb(144, 146, 150)'), boxWidth: 10 } } } },
+      });
+    }
+
+    if (!_adminAnalyticsRendered) {
+      root.classList.add('admin-analytics--first-ready');
+      setTimeout(function() { root.classList.remove('admin-analytics--first-ready'); }, 260);
+    }
+    _adminAnalyticsRendered = true;
   }
 
   // ── Learning FAQ loop (Issue #19) — docs feedback summary ─────────────
