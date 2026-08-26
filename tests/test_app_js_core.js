@@ -5755,6 +5755,167 @@ function makeSetHtmlIfChanged() {
 })();
 
 // ═══════════════════════════════════════════════════════════════════════════
+//  #367 · OPERATIONAL OVERVIEW — exception-first, honest missing states
+// ═══════════════════════════════════════════════════════════════════════════
+
+(function operationalOverviewSuite() {
+  function snapshotFreshness(snap, nowSec) {
+    const data = snap || {};
+    const rawTs = Number(data.ts);
+    const ts = rawTs > 1e11 ? rawTs / 1000 : rawTs;
+    const now = Number(nowSec) || Math.floor(Date.now() / 1000);
+    const age = ts > 0 ? Math.max(0, now - ts) : null;
+    const staleSources = [];
+    if (data.network && data.network.stale === true) staleSources.push('rede');
+    if (data.btc_price && data.btc_price.stale === true) staleSources.push('preço BTC');
+    if (data.pool && data.pool._stale === true) staleSources.push('pool');
+    const snapshotStale = age !== null && age > 150;
+    if (!snapshotStale && staleSources.length === 0) return { stale: false, age, sources: [] };
+    return { stale: true, age, sources: staleSources };
+  }
+
+  // Mirrors static/app.js buildOperationalOverviewModel. The test exercises
+  // decision values, not DOM styling, so omitted display-only fields are kept
+  // at their production defaults.
+  function buildOperationalOverviewModel(snap, fleetData, fleetError, nowSec) {
+    const data = snap || {};
+    const fleet = fleetData && fleetData.fleet_stats;
+    const devices = fleetData && Array.isArray(fleetData.device_health) ? fleetData.device_health : [];
+    const freshness = snapshotFreshness(data, nowSec);
+    const fleetAges = devices.map(function(d) {
+      const raw = d && d.telemetry && d.telemetry.age_seconds;
+      return raw === null || raw === undefined || raw === '' ? null : Number(raw);
+    }).filter(function(v) { return v !== null && isFinite(v) && v >= 0; });
+    const fleetAge = fleetAges.length ? Math.max.apply(null, fleetAges) : null;
+    const fleetTelemetryStale = fleetAge !== null && fleetAge > 150;
+    const staleSources = freshness.sources.slice();
+    if (freshness.stale && freshness.sources.length === 0) staleSources.push('snapshot');
+    if (fleetTelemetryStale) staleSources.push('fleet telemetry');
+    const dataAge = freshness.age === null ? null : (fleetAge === null ? freshness.age : Math.max(freshness.age, fleetAge));
+    const dataStale = freshness.stale || fleetTelemetryStale;
+    const profit = data.profitability || {};
+    const costValuePresent = profit.cost_per_day_usd !== null && profit.cost_per_day_usd !== undefined && profit.cost_per_day_usd !== '';
+    const rawCost = Number(profit.cost_per_day_usd);
+    const hasCost = profit.cost_model_configured === true && costValuePresent && isFinite(rawCost) && rawCost >= 0;
+    const model = {
+      loading: !fleet && !fleetError,
+      overall: 'LOADING', tone: 'neutral', health: 'WAITING', attention: null,
+      lostHashrateHs: null, lossBaselineDevices: 0,
+      costPerDayUsd: hasCost ? rawCost : null,
+      freshness: dataStale ? 'STALE' : (dataAge === null ? 'UNKNOWN' : 'FRESH'),
+      dataAge: dataAge, actionTitle: 'WAIT FOR DATA', actionTarget: '',
+      actionPanel: '', actionEnabled: false,
+    };
+    if (fleetError) {
+      Object.assign(model, {
+        loading: false, overall: 'UNAVAILABLE', tone: 'critical', health: 'UNAVAILABLE',
+        freshness: 'PARTIAL', actionTitle: 'OPEN FLEET DIAGNOSTIC',
+        actionTarget: 'fleet', actionPanel: 'axe-fleet-panel', actionEnabled: true,
+      });
+      return model;
+    }
+    if (!fleet) return model;
+    const total = Math.max(0, Number(fleet.total_devices) || 0);
+    const offline = Math.max(0, Number(fleet.offline) || 0);
+    const warning = Math.max(0, Number(fleet.warning) || 0);
+    const attention = offline + warning;
+    const healthScore = Number(fleet.avg_health_score);
+    const baselineCount = Math.max(0, Number(fleet.hashrate_loss_baseline_devices) || 0);
+    const lost = Number(fleet.hashrate_lost_hs);
+    Object.assign(model, {
+      loading: false,
+      attention: attention,
+      lossBaselineDevices: baselineCount,
+      lostHashrateHs: baselineCount > 0 && isFinite(lost) && lost >= 0 ? lost : null,
+    });
+    if (total === 0) {
+      Object.assign(model, {
+        overall: dataStale ? 'STALE DATA' : 'NO FLEET', tone: dataStale ? 'warning' : 'neutral',
+        health: 'NO FLEET', actionTitle: 'REGISTER OR DISCOVER ASIC', actionTarget: 'fleet',
+        actionPanel: 'axe-fleet-panel', actionEnabled: true,
+      });
+      return model;
+    }
+    if (offline > 0 || (isFinite(healthScore) && healthScore < 30)) {
+      Object.assign(model, { overall: 'CRITICAL', tone: 'critical', health: 'CRITICAL' });
+    } else if (warning > 0 || (isFinite(healthScore) && healthScore < 60)) {
+      Object.assign(model, { overall: 'ATTENTION', tone: 'warning', health: 'DEGRADED' });
+    } else {
+      Object.assign(model, { overall: 'HEALTHY', tone: 'healthy', health: 'HEALTHY' });
+    }
+    if (dataStale) {
+      model.overall = 'STALE DATA';
+      if (model.tone === 'healthy') model.tone = 'warning';
+    }
+    let action = null;
+    if (dataStale) {
+      action = fleetTelemetryStale
+        ? { title: 'VERIFY STALE FLEET TELEMETRY', target: 'fleet', panel: 'axe-fleet-panel' }
+        : { title: 'VERIFY STALE DATA SOURCES', target: 'dashboard', panel: staleSources.indexOf('rede') !== -1 || staleSources.indexOf('preço BTC') !== -1 ? 'network-panel' : 'pool-overview' };
+    } else if (attention > 0) {
+      action = { title: 'INSPECT ' + attention + ' ASIC EXCEPTION' + (attention === 1 ? '' : 'S'), target: 'fleet', panel: 'axe-fleet-panel' };
+    } else {
+      const cards = Array.isArray(data.command_center) ? data.command_center : [];
+      const card = cards.find(function(c) { return c && c.target; });
+      if (card) action = { title: String(card.title || 'OPEN DIAGNOSTIC').toUpperCase(), target: String(card.target), panel: String(card.panel || '') };
+    }
+    if (!action && !hasCost) action = { title: 'CONFIGURE OPERATIONAL COST', target: 'dashboard', panel: 'profit-panel' };
+    if (action) Object.assign(model, { actionTitle: action.title, actionTarget: action.target, actionPanel: action.panel, actionEnabled: true });
+    else model.actionTitle = 'NO ACTION REQUIRED';
+    return model;
+  }
+
+  const critical = buildOperationalOverviewModel({
+    ts: 1000,
+    profitability: { cost_model_configured: true, cost_per_day_usd: 12.345 },
+    command_center: [{ title: 'External offer', target: 'market', url: 'https://example.invalid' }],
+  }, {
+    fleet_stats: { total_devices: 3, online: 1, warning: 1, offline: 1, avg_health_score: 50, hashrate_lost_hs: 2e12, hashrate_loss_baseline_devices: 2 },
+    device_health: [{ telemetry: { age_seconds: 20 } }],
+  }, false, 1100);
+  assertEqual('exceptions make operation critical', critical.overall, 'CRITICAL');
+  assertEqual('warning + offline are attention count', critical.attention, 2);
+  assertEqual('real loss is preserved when baseline exists', critical.lostHashrateHs, 2e12);
+  assertEqual('configured cost can legitimately be shown', critical.costPerDayUsd, 12.345);
+  assertEqual('fleet exception beats commercial command-center card', critical.actionTarget, 'fleet');
+  assertEqual('overview action carries no external URL field', Object.prototype.hasOwnProperty.call(critical, 'url'), false);
+
+  const stale = buildOperationalOverviewModel({ ts: 1000, profitability: { cost_model_configured: true, cost_per_day_usd: 0 } }, {
+    fleet_stats: { total_devices: 1, online: 1, warning: 0, offline: 0, avg_health_score: 95, hashrate_lost_hs: 0, hashrate_loss_baseline_devices: 1 },
+    device_health: [{ telemetry: { age_seconds: 200 } }],
+  }, false, 1200);
+  assertEqual('stale telemetry overrides healthy headline', stale.overall, 'STALE DATA');
+  assertEqual('stale healthy operation uses warning tone', stale.tone, 'warning');
+  assertEqual('configured zero cost is not mistaken for missing', stale.costPerDayUsd, 0);
+  assertEqual('stale fleet directs operator to verify telemetry first', stale.actionTarget, 'fleet');
+
+  const noBaseline = buildOperationalOverviewModel({ ts: 1000 }, {
+    fleet_stats: { total_devices: 1, online: 1, warning: 0, offline: 0, avg_health_score: 90, hashrate_lost_hs: 0, hashrate_loss_baseline_devices: 0 },
+    device_health: [],
+  }, false, 1001);
+  assertEqual('zero without baseline remains unavailable', noBaseline.lostHashrateHs, null);
+  assertEqual('missing cost prompts safe configuration navigation', noBaseline.actionPanel, 'profit-panel');
+
+  const empty = buildOperationalOverviewModel({ ts: 1000 }, { fleet_stats: { total_devices: 0 }, device_health: [] }, false, 1001);
+  assertEqual('empty fleet is explicit', empty.overall, 'NO FLEET');
+  assertEqual('empty fleet navigates to registration', empty.actionTarget, 'fleet');
+
+  const failure = buildOperationalOverviewModel({ ts: 1000 }, null, true, 1001);
+  assertEqual('fleet failure is explicit', failure.overall, 'UNAVAILABLE');
+  assertEqual('fleet failure is never left loading', failure.loading, false);
+
+  const loading = buildOperationalOverviewModel({ ts: 1000 }, null, false, 1001);
+  assertEqual('first fleet request has loading state', loading.loading, true);
+
+  const unknownSnapshotAge = buildOperationalOverviewModel({ ts: 0 }, {
+    fleet_stats: { total_devices: 1, online: 1, warning: 0, offline: 0, avg_health_score: 90 },
+    device_health: [{ telemetry: { age_seconds: 20 } }],
+  }, false, 1001);
+  assertEqual('fresh fleet cannot make timestamp-less snapshot fresh', unknownSnapshotAge.freshness, 'UNKNOWN');
+  assertEqual('combined age remains unknown without snapshot timestamp', unknownSnapshotAge.dataAge, null);
+})();
+
+// ═══════════════════════════════════════════════════════════════════════════
 //  #368 · BETA ANALYTICS — client pacing avoids expected 429 console noise
 // ═══════════════════════════════════════════════════════════════════════════
 
