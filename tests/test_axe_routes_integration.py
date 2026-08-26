@@ -681,6 +681,59 @@ class TestFleetHealth:
         assert fs["avg_temperature_c"] is None
         assert fs["avg_health_score"] == 0
         assert fs["total_hashrate_hs"] == 0
+        assert fs["hashrate_lost_hs"] == 0
+        assert fs["hashrate_loss_baseline_devices"] == 0
+        assert fs["hashrate_loss_basis"] == "1h_or_last_known"
+
+    def test_hashrate_loss_uses_one_hour_and_offline_last_known_baselines(self, client):
+        """Only reachable production is live; 1h/last-known values form the
+        honest loss baseline and are never added to active hashrate."""
+        mock_registry = MagicMock()
+        mock_registry.list_devices.return_value = [
+            self._device("d1", "Degraded online", "ONLINE"),
+            self._device("d2", "Recently offline", "OFFLINE"),
+        ]
+        online = self._telemetry(4_000_000_000_000)[0]
+        online["payload"]["hashrate_1h"] = 5_000_000_000_000
+        offline = self._telemetry(3_000_000_000_000)[0]
+        mock_registry.get_recent_telemetry.side_effect = [[online], [offline]]
+
+        with patch("axe_fleet.routes._registry", mock_registry):
+            with patch("axe_fleet.models.infer_health_score", return_value=70):
+                resp = client.get(self.ENDPOINT)
+
+        assert resp.status_code == 200
+        data = resp.get_json()
+        fs = data["fleet_stats"]
+        assert fs["total_hashrate_hs"] == 4_000_000_000_000
+        assert fs["hashrate_lost_hs"] == 4_000_000_000_000
+        assert fs["hashrate_lost_str"] == "4.00 TH/s"
+        assert fs["hashrate_loss_baseline_devices"] == 2
+        # The offline sample is retained as last-known telemetry for
+        # diagnosis, but is explicitly not presented as current production.
+        offline_device = next(d for d in data["device_health"] if d["id"] == "d2")
+        assert offline_device["telemetry"]["hashrate_hs"] == 0
+        assert offline_device["telemetry"]["last_known_hashrate_hs"] == 3_000_000_000_000
+        assert offline_device["telemetry"]["hashrate_loss_baseline_hs"] == 3_000_000_000_000
+
+    def test_invalid_hashrate_values_do_not_poison_fleet_aggregates(self, client):
+        """NaN/Inf/garbage are external payloads, never valid production or
+        baselines, and must not crash JSON serialization."""
+        mock_registry = MagicMock()
+        mock_registry.list_devices.return_value = [self._device("d1", "Bad firmware", "ONLINE")]
+        telemetry = self._telemetry("NaN")[0]
+        telemetry["payload"]["hashrate_1h"] = "Infinity"
+        mock_registry.get_recent_telemetry.return_value = [telemetry]
+
+        with patch("axe_fleet.routes._registry", mock_registry):
+            with patch("axe_fleet.models.infer_health_score", return_value=0):
+                resp = client.get(self.ENDPOINT)
+
+        assert resp.status_code == 200
+        fs = resp.get_json()["fleet_stats"]
+        assert fs["total_hashrate_hs"] == 0
+        assert fs["hashrate_lost_hs"] == 0
+        assert fs["hashrate_loss_baseline_devices"] == 0
 
     def test_device_health_normalized_for_cards(self, client):
         """device_health items should carry the fields _renderAxeCard reads."""
