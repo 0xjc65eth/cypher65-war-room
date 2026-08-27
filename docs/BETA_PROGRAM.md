@@ -10,7 +10,7 @@
 The CYPHER65 War Room beta program gives early testers 30 days of free PRO access in exchange for feedback.
 
 ### What's included in PRO (beta)
-- Probability Engine (Monte Carlo, proximity meter, 30d history)
+- Block Model (Monte Carlo scenarios, best-share ratio history, 30d history; no predictions)
 - Webhooks (Discord/Telegram alert integration)
 - Auto-Pilot (advisory + dry-run; autonomous requires separate consent)
 - Hash Market (Braiins/NiceHash/MRR live prices)

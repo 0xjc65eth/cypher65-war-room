@@ -160,7 +160,7 @@ nunca como cobrança em fiat).
 
 | # | Programa | Incluído | Público | Preço sugerido | Ativação |
 |---|---|---|---|---|---|
-| 1 | **PRO (mensal)** | Monte Carlo, proximity meter, 30d history, webhooks, alerts avançados | Miner ativo Parasite/Bitaxe | **0.00012 BTC/mo** (~$9) | Webhook Settled → key automática; Lightning = imediata, on-chain = 1 confirmação |
+| 1 | **PRO (mensal)** | Monte Carlo scenarios, best-share ratio history, 30d history, webhooks, alerts avançados | Miner ativo Parasite/Bitaxe | **0.00012 BTC/mo** (~$9) | Webhook Settled → key automática; Lightning = imediata, on-chain = 1 confirmação |
 | 2 | **PREMIUM (mensal)** | Tudo do PRO + **AI Operator real (LLM)** + multi-wallet + CSV export + backup | Operador multi-frota / decisor | **0.00040 BTC/mo** (~$29) | idem; upsell natural de PRO |
 | 3 | **ENTERPRISE (mensal)** | White-label, API keys, integrações custom, SLA, suporte dedicado | Pool/marketplace/empresa | **0.00135 BTC/mo** (~$99) | Contrato manual + key dedicada (`/api/admin/licenses`) |
 | 4 | **LIFETIME PRO** | PRO vitalício (license sem expiração — `issue_license(months=None)`) | Hobbyist que quer 1 pagamento | **0.0024 BTC** one-shot (~$180) | on-chain 1 confirmação |

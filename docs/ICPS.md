@@ -16,7 +16,7 @@
 
 ### Oferta CYPHER65
 - **AXE Fleet Command**: telemetria em tempo real (hashrate, temp, fan, efficiency, uptime).
-- **Probability Engine**: entende quanto tempo falta para encontrar um bloco, dado o hashrate real.
+- **Block Statistics**: compara cenários probabilísticos por janela e mostra a média estatística do modelo, explicitamente sem prazo ou contagem regressiva.
 - **Auto-Pilot (advisory)**: alertas de miner offline/overheating sem executar nada.
 - **Alerts**: Discord/Telegram quando algo sai do normal.
 
@@ -43,7 +43,7 @@
 
 ### Oferta CYPHER65
 - **AXE Fleet Command**: ranking de rigs por eficiência, alerta de outlier.
-- **Profitability (POOL/SOLO)**: cálculo de break-even com custo de energia real.
+- **Scenario Economics (POOL/SOLO)**: limiar de custo modelado com energia configurada, sem promessa de lucro.
 - **Rentals Hub**: compara alugar hash vs. manter rig próprio.
 - **Auto-Pilot**: restart automático de rig offline (com consent, EULA assinado).
 - **Audit Log**: trilha imutável de cada mudança em cada dispositivo.
@@ -65,7 +65,7 @@
 ### Dor
 - Aluga hashrate no Braiins/MRR/NiceHash e não sabe se o preço pago é competitivo.
 - Comprou hash a 70 sats/TH/d e agora o mercado caiu para 50 — precisa decidir: manter ou revender.
-- Não consegue rastrear ROI por contrato de aluguel — tudo é média suja.
+- Não consegue rastrear razão de retorno realizada por contrato de aluguel — tudo é média agregada.
 - Preocupa-se com concentração: 80% do hash em 1 provider = risco de single point of failure.
 - Oportunidades de arbitragem (Braiins 49 vs MRR 66) passam batido porque não tem alerta.
 
@@ -73,7 +73,7 @@
 - **Hash Market**: comparação ao vivo Braiins vs NiceHash vs MRR vs Parasite.
 - **Rentals Hub**: P/L por contrato, custo vs. mercado, worst-rig leaderboard, arbitrage alerts.
 - **One-click Braiins spot buy**: compra com balance guard e audit log.
-- **Profitability (RENTAL/LEASE)**: cálculo de break-even com dados reais de mercado.
+- **Scenario Economics (RENTAL/LEASE)**: limiar de custo modelado com dados reais de mercado e premissas explícitas.
 
 ### Mensagem comercial
 > "Você pagou 70 sats/TH/d por hash que hoje custa 50. O CYPHER65 te alertou 3 dias antes."

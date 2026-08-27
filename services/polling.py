@@ -1667,7 +1667,7 @@ def poll_once():
         log.warning("[sample_proximity] error: %s", e)
 
     # Hot-streak detection: build the alert dict NOW so it's available when
-    # the inject block (placed after the alerts_recent DB read) runs. Capture
+    # Share-difficulty change: legacy category retained for compatibility.
     # as a local dict; persistence + render-inject happen downstream.
     hot_streak_alert = None
     if (
@@ -1682,8 +1682,8 @@ def poll_once():
             "severity": "SUCCESS",
             "category": "hot_streak",
             "message": (
-                f"{(config.WORKER_NAME or 'worker').upper()} best-diff HOT STREAK: {prox['best_diff_str']} "
-                f"(+{prox['trend_1h_pct']:.1f}% in 1h) — keep going!"
+                f"{(config.WORKER_NAME or 'worker').upper()} share-difficulty change: best {prox['best_diff_str']} "
+                f"({prox['trend_1h_pct']:+.1f}% in 1h). Historical signal only; next-hash odds are unchanged."
             ),
         }
 

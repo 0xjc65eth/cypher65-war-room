@@ -147,7 +147,7 @@ read-only precursor to the Auto-Pilot Big Bet: it proves the
 
 | Layer | Change |
 |---|---|
-| Backend | `helpers.build_command_center(snapshot)` — pure aggregation (no network/DB, never raises) of up to **3** cards, severity-ranked crit > gold > warn > info: `worker_offline` (crit, gated on `ts > 0` so a cold boot with no wallet never false-fires), `fleet_attention` (OFFLINE/WARNING devices), `proximity_streak` (hot streak) / `proximity_milestone` (≥1% of network diff), `capital_lease` (Decision Matrix best=lease), `negative_operation` (pool net < 0), `affiliate_buy` (operator-configured affiliate link). Each card carries `target`/`panel`/`url` for one-click navigation |
+| Backend | `helpers.build_command_center(snapshot)` — pure aggregation (no network/DB, never raises) of up to **3** cards, severity-ranked crit > gold > warn > info: `worker_offline` (crit, gated on `ts > 0` so a cold boot with no wallet never false-fires), `fleet_attention` (OFFLINE/WARNING devices), legacy `proximity_streak` (mudança retrospectiva da dificuldade dos shares, nunca odds futuras) / `proximity_milestone` (razão histórica best-share/alvo ≥1%), `capital_lease` (Decision Matrix best=lease), `negative_operation` (pool net < 0), `affiliate_buy` (operator-configured affiliate link). Each card carries `target`/`panel`/`url` for one-click navigation |
 | Snapshot | `api_snapshot` injects `resp["command_center"]` computed from `resp` **after** `attach_affiliate` (regression-tested: the affiliate card must see the real resolved link, not a dead `latest_snapshot`) |
 | Frontend | New **Command Center** panel at the top of the dashboard grid: card grid with severity accent bars, status badge (0 actions = "All systems nominal"), click navigates via `activateModule(target)` + scrolls to the target panel, or opens the affiliate buy URL in a new tab (`templates/dashboard.html`, `static/app.js`, `static/style.css`) |
 | Tests | `tests/test_command_center.py` — 27 hermetic + integration: every rule, severity ranking, max-3 cap, cold-boot vs real-offline gate, snapshot injection, affiliate card sees the real URL |
@@ -171,7 +171,7 @@ Cost figures are **estimates** from the CPO/CFO analysis, not quotes.
 | ✅ P0-3 Command Center widget (3 contextual actions) | Quick Win | ~$1.5k | +8% session time; −10% lost navigation | Shipped |
 | Wallet QR + checksum highlight + wallet health | Quick Win | ~$1.2k | −15% wrong-address support tickets | 2–3 mo |
 | Support triage → auto-FAQ loop into Learning | Strategic | ~$2.0k | −30% recurring support volume (the Hidden Tax) | 3–4 mo |
-| Live Mining → Probability real-time feed (shorter feed loop) | Strategic | ~$3.0k | Higher forecast accuracy → PRO stickiness | 4–6 mo |
+| Live Mining → Block Model real-time feed (shorter feed loop) | Strategic | ~$3.0k | Fresher source windows and clearer uncertainty → PRO stickiness | 4–6 mo |
 | 🛸 **Auto-Pilot** (Live+Prob+Automations merge) | Moonshot | ~$12k | Repositioning + premium tier (positioning change) | 12+ mo |
 | AI Operator premium tier (per-query or PRO add-on) | Moonshot | ~$4k | New revenue stream (upsell PRO → $29/mo PREMIUM) | 6–9 mo |
 
@@ -184,9 +184,9 @@ migration while the schema is stable; white-label before the first paying users.
 
 **The one architectural change with the highest global impact.**
 
-> Merge **Live Mining** (real-time telemetry) + **Probability** (forecasts) +
+> Merge **Live Mining** (real-time telemetry) + **Block Model** (statistical scenarios, not forecasts) +
 > **Automations** (trigger → action) into a single **Auto-Pilot command center**:
-> when hashrate drops below its 7-day peak or the proximity meter crosses a
+> when hashrate drops below its 7-day peak or the historical best-share ratio crosses a
 > threshold, Auto-Pilot surfaces *the one action to take right now* (reset
 > device, switch pool, buy lease) as a decision card — not a raw metric.
 

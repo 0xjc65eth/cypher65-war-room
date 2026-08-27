@@ -22,7 +22,7 @@ Aug 2026 (`payments: null`, `btcpay: false`, `webln: false`).
 
 | Competitor | Strengths | Weaknesses | Our Advantage |
 |-----------|-----------|------------|---------------|
-| **Parasite.space dashboard** | Free, official | Basic stats only, no analytics | Monte Carlo, proximity meter, CFO view |
+| **Parasite.space dashboard** | Free, official | Basic stats only, no analytics | Monte Carlo scenarios, best-share ratio history, CFO view |
 | **Braiins OS+** | Stratum V2, firmware | Paid, overkill for hobbyists | Free tier, pool-agnostic observability |
 | **Mining Rig Rentals** | Marketplace | No analytics dashboard | Real-time financial intelligence |
 | **Custom scripts** | Flexible | No UI, maintenance burden | Turnkey dashboard with zero setup |
@@ -36,7 +36,7 @@ Aug 2026 (`payments: null`, `btcpay: false`, `webln: false`).
 | Tier | Price | Features |
 |------|-------|----------|
 | **FREE** | $0/mo | Basic dashboard, worker stats, pool overview, 24h history |
-| **PRO** | $9/mo | Monte Carlo simulation, proximity meter, 30d history, alerts, webhooks |
+| **PRO** | $9/mo | Monte Carlo scenarios, best-share ratio history, 30d history, alerts, webhooks |
 | **PREMIUM** | $29/mo | Multi-wallet support, advanced financial analytics, CSV exports, config backup, priority support |
 | **ENTERPRISE** | $99/mo | White-label, custom integrations, API access, uptime SLA, dedicated support |
 
@@ -71,7 +71,7 @@ Aug 2026 (`payments: null`, `btcpay: false`, `webln: false`).
 | Parasite.space shutdown | Low | Critical | Multi-pool support in roadmap |
 | Low conversion to paid | High | Medium | Freemium drives adoption; premium features must be compelling |
 | Bitcoin price crash | Medium | Low | Dashboard value is analytics, not dependent on BTC price |
-| Open-source competition | Medium | Medium | Proprietary features (Monte Carlo, CFO, proximity) as moat |
+| Open-source competition | Medium | Medium | Operational workflow, Monte Carlo scenarios and CFO context as moat; never position historical share ratio as predictive |
 
 ---
 

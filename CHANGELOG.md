@@ -6,6 +6,19 @@ e versionamento semântico ([SemVer](https://semver.org/lang/pt-BR/)).
 
 ## [Unreleased]
 
+### Corrigido — linguagem de probabilidade e economia não-promissória (Issue #378)
+- Rótulos de prazo/progresso foram substituídos por **model mean interval**,
+  **session P(≥1) estimate**, **best-share/target ratio** e **modeled cost
+  threshold**, preservando chaves de API e IDs DOM legados.
+- Tooltips e payloads agora expõem fonte, janela, unidade, premissas e avisos de
+  independência; cenários econômicos deixam explícito que não prometem lucro.
+- “Quantum Lock” virou **session work signal — heuristic** e alertas de “hot
+  streak” deixaram de incentivar ação com base em shares passados.
+- Corrigida a fórmula de probabilidade de exceder um threshold de share para
+  `1-(1-1/(difficulty·2³²))^N`, com teste do vetor `lambda=1`.
+- Auditoria e testes de compreensão: `docs/PROBABILITY_LANGUAGE_AUDIT.md` e
+  `tests/test_probability_language.py`.
+
 ### Adicionado — disclaimer no módulo Probability — risco regulatório (Issues #347/#350)
 - **Disclaimer visual** no bloco Block Hunt: box amber "Estes valores são
   estatísticos e não representam previsão nem garantia de resultado... Mining é

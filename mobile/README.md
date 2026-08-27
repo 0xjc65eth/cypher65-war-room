@@ -20,7 +20,7 @@ Update `app.json` → `extra.apiBaseUrl` and `extra.apiBaseUrlDev` to point to y
 
 - **Command**: global operation status and recent alerts.
 - **Fleet**: device list, status filters, device detail, and remote commands.
-- **Block**: network stats, probabilities, and expected block time.
+- **Block**: network stats, per-window probability estimates, and a model mean interval (not a countdown or prediction).
 - **Market**: hashrate market offers and opportunity comparison.
 - **AI**: chat interface for the CYPHER65 AI Operator.
 

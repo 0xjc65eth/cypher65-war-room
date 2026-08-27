@@ -2,8 +2,8 @@
 
 # ⚡ CYPHER65™ · WAR ROOM
 
-**Real-time Bitcoin mining operations dashboard** — fleet telemetry, live probability engine,
-solo/pool/rental/lease profitability, hashrate market intelligence, alerts & automation.
+**Real-time Bitcoin mining operations dashboard** — fleet telemetry, block-statistics models,
+solo/pool/rental/lease economic scenarios, hashrate market intelligence, alerts & automation.
 
 `Python · Flask · SQLite · Vanilla JS · React Native`
 
@@ -26,8 +26,8 @@ fails, the UI shows a stale/offline badge with the last real cached value, never
 | Module | What it does |
 |---|---|
 | **Live Mining** | Share timeline, worker/pool hashrate, best-difficulty tracking, network difficulty, event stream + live terminal |
-| **Probability Engine** | P(block)/share, expected block time, cumulative P progression, hash-proximity ladder, quantum-lock health score |
-| **Profitability** | POOL / SOLO / RENTAL / LEASE scenarios with break-even, fiat conversion (USD/BRL/EUR/GBP), variance-aware math |
+| **Block Statistics** | Per-window P(≥1) estimates, model mean interval, session-work probability estimate and best-share/target ratio. These are not countdowns, progress or predictions. |
+| **Scenario Economics** | POOL / SOLO / RENTAL / LEASE constant-input scenarios, modeled cost threshold and fiat conversion (USD/BRL/EUR/GBP); no profit promise. |
 | **AXE Fleet Command** | ASIC registry with chip/VR temperature, 1h hashrate, efficiency (J/TH), power (W), latency/ping advice, remote commands |
 | **Hash Market** | Braiins / NiceHash / MRR / Parasite rental offers, BTC + USD per TH/day, provider filters, warm background cache |
 | **Rentals Hub** | MRR + Braiins rentals, per-rental P/L (historical network HR), cost vs market, worst-rig leaderboard, concentration risk, arbitrage window + overpay alerts, ⚡ one-click Braiins spot buy with balance guard, portfolio time series |
@@ -128,6 +128,8 @@ The CI workflow (`.github/workflows/ci.yml`) gates merges on all suites plus a *
 - External APIs (pool, mempool, CoinGecko) are polled in the background; failures never fabricate data.
 - Stale responses are served from the last **real** cached value with a `stale` badge in the UI.
 - `/api/v1/status` reports integration health (`online` / `stale` / `offline`).
+- Probability uses current worker/network snapshots and the window shown in the UI. The model assumes independent hashes and constant hashrate/difficulty within that window. A statistical mean is not a deadline; historical shares and round work do not improve the next-hash odds.
+- Economic values use the latest available price plus configured fees/costs. They are constant-input scenarios in the displayed units and window, not profit, ROI or break-even guarantees.
 
 ## ⚡ Licensing and checkout (off-by-default)
 
@@ -136,9 +138,10 @@ The CI workflow (`.github/workflows/ci.yml`) gates merges on all suites plus a *
 > access or activation of an existing operator-issued key; it does not show a
 > purchase action. Prices below are product hypotheses, not an available sale.
 
-The PRO gate (`Monte Carlo`, `proximity meter`, `30d history`, `webhooks`) is a
-no-op until the operator activates it. These explicit controls flip the gate ON;
-BTCPay/WebLN do so only when checkout and fulfillment are complete:
+The PRO gate (`Monte Carlo scenarios`, `best-share ratio history`, `30d history`,
+`webhooks`) is a no-op until the operator activates it. These explicit controls
+flip the gate ON; BTCPay/WebLN do so only when checkout and fulfillment are
+complete:
 
 | Env var | Purpose |
 | --- | --- |

@@ -65,15 +65,20 @@ export const BlockHuntScreen = () => {
             />
           </View>
 
-          <Text style={styles.section}>Probability</Text>
+          <Text style={styles.section}>Block probability model</Text>
           <View style={styles.grid}>
             <MetricCard title="1 Hour" value={`${(data.probability_1h * 100).toExponential(2)}%`} />
             <MetricCard title="24 Hours" value={`${(data.probability_24h * 100).toExponential(2)}%`} />
             <MetricCard title="7 Days" value={`${(data.probability_7d * 100).toExponential(2)}%`} />
           </View>
 
-          <Text style={styles.section}>Expected Time</Text>
+          <Text style={styles.section}>Model mean interval</Text>
           <Text style={styles.expected}>{data.expected_time || '—'}</Text>
+          <Text style={styles.disclaimer}>
+            Statistical mean, not a countdown or guarantee. Source: current worker and network snapshot;
+            windows: 1h, 24h and 7d; units: probability and time. Assumes constant hashrate,
+            difficulty and independent hashes. Past work does not change the next-hash odds.
+          </Text>
         </>
       )}
     </ScrollView>
@@ -112,5 +117,12 @@ const styles = StyleSheet.create({
     color: theme.text.primary,
     fontSize: 16,
     fontWeight: '600',
+  },
+  disclaimer: {
+    color: theme.text.muted,
+    fontSize: 12,
+    lineHeight: 18,
+    marginTop: 8,
+    marginBottom: 24,
   },
 });

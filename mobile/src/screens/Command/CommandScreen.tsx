@@ -91,7 +91,7 @@ export const CommandScreen = () => {
           onPress={() => navigation.navigate('Block')}
           accessibilityRole="button"
         >
-          <Text style={styles.ctaText}>⚡ P(block) → Probability</Text>
+          <Text style={styles.ctaText}>⚡ P(block) → Block Model</Text>
         </TouchableOpacity>
       </View>
 

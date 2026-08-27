@@ -145,13 +145,13 @@ def build_system_prompt(snapshot: Dict[str, Any]) -> str:
     lines.append(f"- Network height: #{net.get('height', 'N/A')}")
     lines.append(f"- BTC price: ${btc.get('usd', 'N/A')}")
 
-    # Proximity / block finding
+    # Block model (legacy snapshot field: proximity)
     pct = prox.get("pct_of_network_cur")
     if pct is not None:
-        lines.append(f"- Share of network: {pct:.6f}%")
+        lines.append(f"- Historical best-share / target ratio: {pct:.3g}%")
     exp_time = prox.get("expected_time_human")
     if exp_time:
-        lines.append(f"- Expected block time: {exp_time}")
+        lines.append(f"- Model mean block interval (not a countdown): {exp_time}")
     chance = prox.get("chance_per_share_label")
     if chance:
         lines.append(f"- Per-share chance: {chance}")
@@ -199,6 +199,7 @@ def build_system_prompt(snapshot: Dict[str, Any]) -> str:
             "- Be concise — keep responses under 200 words unless asked for detail",
             "- Use metric: TH/s for hashrate, BTC for prices, sat/vB for fees",
             "- Mark estimated/probabilistic values clearly",
+            "- Never describe mean time as a deadline, best-share ratio as progress, past luck as future odds, or modeled economics as guaranteed profit",
         ]
     )
 

@@ -483,19 +483,14 @@ def cmd_status(json_mode=False):
     if prob_data:
         print(C.header("24h Block Probability"))
         pct = prob_data["p_at_least_1_block_pct"]
-        if pct < 0.0001:
-            pct_str = f"{pct:.6f}%"
-        elif pct < 0.01:
-            pct_str = f"{pct:.4f}%"
-        else:
-            pct_str = f"{pct:.2f}%"
+        pct_str = f"{pct:.3g}%"
 
         print(f"  {C.BOLD}P(>=1 block){C.RST}     {C.WHITE}{pct_str}{C.RST}")
         print(
             f"  {C.BOLD}P(0 blocks){C.RST}      {C.MUTED}{prob_data['p_zero_blocks_pct']:.1f}%{C.RST}"
         )
         print(
-            f"  {C.BOLD}E[time]{C.RST}           {C.WHITE}{prob_data['expected_time_days']:,.0f} days{C.RST} {C.MUTED}({prob_data['expected_time_years']:.1f} years){C.RST}"
+            f"  {C.BOLD}Mean interval{C.RST}      {C.WHITE}{prob_data['expected_time_days']:,.0f} days{C.RST} {C.MUTED}({prob_data['expected_time_years']:.1f} years; not a countdown){C.RST}"
         )
         print(
             f"  {C.BOLD}Hashes/24h{C.RST}      {C.WHITE}{prob_data['hashes_24h']:,.0f}{C.RST}"
@@ -708,30 +703,34 @@ def cmd_calc(args, json_mode=False):
         f"  {C.BOLD}Lambda(t){C.RST}............ {C.MUTED}{prob['lambda']:.6e}{C.RST}"
     )
     print(
-        f"  {C.BOLD}P(>=1 block){C.RST}......... {C.WHITE}{prob['p_at_least_1_block_pct']:.6f}%{C.RST}"
+        f"  {C.BOLD}P(>=1 block){C.RST}......... {C.WHITE}{prob['p_at_least_1_block_pct']:.3g}%{C.RST}"
     )
     print(
         f"  {C.BOLD}P(0 blocks){C.RST}.......... {C.MUTED}{prob['p_zero_blocks_pct']:.2f}%{C.RST}"
     )
 
     print()
-    print(C.header("Expected Time"))
+    print(C.header("Model Mean Interval (not a countdown)"))
     print(
-        f"  {C.BOLD}E[time to block]{C.RST}.... {C.WHITE}{exp_time['days']:,.1f} days{C.RST}"
+        f"  {C.BOLD}Mean interval model{C.RST}... {C.WHITE}{exp_time['days']:,.1f} days{C.RST}"
     )
     print(f"                    {C.MUTED}= {exp_time['years']:,.2f} years{C.RST}")
 
     print()
-    print(C.header("Best Difficulty (Estimated)"))
+    print(C.header("Best-Share Difficulty Scale (not progress)"))
     print(
         f"  {C.BOLD}Total hashes{C.RST}......... {C.WHITE}{best_diff['total_hashes']:,.0f}{C.RST}"
     )
     print(
-        f"  {C.BOLD}Expected best diff{C.RST}... {C.WHITE}{best_diff['expected_best_diff']:,.1f}{C.RST}"
+        f"  {C.BOLD}Model scale diff{C.RST}...... {C.WHITE}{best_diff['model_scale_diff']:,.1f}{C.RST}"
     )
 
     print()
-    print(C.warn("Solo mining is a lottery. EV is negative vs pool mining."))
+    print(
+        C.warn(
+            "Statistical model only: no deadline, progress signal, or profit guarantee. Inputs are assumed constant for the selected window."
+        )
+    )
     print(C.ok("Calculation complete."))
     print()
 
