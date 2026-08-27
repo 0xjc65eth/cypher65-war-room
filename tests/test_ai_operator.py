@@ -8,9 +8,11 @@ Covers services/ai_operator.py (12% → target ≥80%):
   - stream_response: no API key, HTTP error, timeout, connection error,
     success stream with text + tool calls (suggest_action), malformed lines
 """
+
 import json
 import sys
 import os
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import pytest
@@ -18,7 +20,11 @@ from unittest.mock import patch, MagicMock
 
 from services import ai_operator
 from services.ai_operator import (
-    build_system_prompt, _build_messages, _fmt_hashrate, _fmt_diff, _fmt_age,
+    build_system_prompt,
+    _build_messages,
+    _fmt_hashrate,
+    _fmt_diff,
+    _fmt_age,
     stream_response,
 )
 
@@ -26,6 +32,7 @@ from services.ai_operator import (
 # ═══════════════════════════════════════════════════════════════════════════
 # 1. build_system_prompt
 # ═══════════════════════════════════════════════════════════════════════════
+
 
 class TestBuildSystemPrompt:
     def test_empty_snapshot(self):
@@ -37,17 +44,29 @@ class TestBuildSystemPrompt:
 
     def test_full_snapshot_populates_sections(self):
         snap = {
-            "worker": {"name": "w1", "id": "dev-1", "hashrate": 15e12,
-                       "bestDifficulty": "2.5P", "lastSubmission": "999"},
+            "worker": {
+                "name": "w1",
+                "id": "dev-1",
+                "hashrate": 15e12,
+                "bestDifficulty": "2.5P",
+                "lastSubmission": "999",
+            },
             "pool": {"hashrate": 300e12, "workers": 12, "lastBlock": "900000"},
             "network": {"difficulty": "120T", "height": 900000},
             "btc_price": {"usd": 63125},
-            "proximity": {"pct_of_network_cur": 0.000123,
-                          "expected_time_human": "3 days",
-                          "chance_per_share_label": "1 in 4,567"},
+            "proximity": {
+                "pct_of_network_cur": 0.000123,
+                "expected_time_human": "3 days",
+                "chance_per_share_label": "1 in 4,567",
+            },
             "account": {"total_diff": "5P"},
             "axe_fleet": [
-                {"name": "a1", "status": "ONLINE", "temperature": 65, "hashrate": 3.5e12},
+                {
+                    "name": "a1",
+                    "status": "ONLINE",
+                    "temperature": 65,
+                    "hashrate": 3.5e12,
+                },
                 {"name": "a2", "status": "OFFLINE"},
             ],
             "alerts_recent": [
@@ -64,24 +83,31 @@ class TestBuildSystemPrompt:
         assert "a2: OFFLINE" in prompt
         assert "Active alerts: 1" in prompt
         assert "[CRIT] worker offline" in prompt
-        assert "Share of network" in prompt
+        assert "Historical best-share / target ratio" in prompt
+        assert "Model mean block interval (not a countdown)" in prompt
 
     def test_empty_axe_fleet_no_fleet_line(self):
         prompt = build_system_prompt({"axe_fleet": []})
         assert "Fleet:" not in prompt
 
     def test_proximity_none_values_skipped(self):
-        prompt = build_system_prompt({
-            "proximity": {"pct_of_network_cur": None, "expected_time_human": None,
-                          "chance_per_share_label": None},
-        })
-        assert "Share of network" not in prompt
-        assert "Expected block time" not in prompt
+        prompt = build_system_prompt(
+            {
+                "proximity": {
+                    "pct_of_network_cur": None,
+                    "expected_time_human": None,
+                    "chance_per_share_label": None,
+                },
+            }
+        )
+        assert "Historical best-share / target ratio" not in prompt
+        assert "Model mean block interval" not in prompt
 
 
 # ═══════════════════════════════════════════════════════════════════════════
 # 2. _build_messages
 # ═══════════════════════════════════════════════════════════════════════════
+
 
 class TestBuildMessages:
     def test_message_structure(self):
@@ -95,6 +121,7 @@ class TestBuildMessages:
 # ═══════════════════════════════════════════════════════════════════════════
 # 3. Formatters
 # ═══════════════════════════════════════════════════════════════════════════
+
 
 class TestFormatters:
     def test_fmt_hashrate_none(self):
@@ -129,6 +156,7 @@ class TestFormatters:
 
     def test_fmt_age_ranges(self, monkeypatch):
         import time as _t
+
         monkeypatch.setattr(ai_operator.time, "time", lambda: 1000)
         assert _fmt_age(999) == "1s"
         assert _fmt_age(940) == "1m"
@@ -141,6 +169,7 @@ class TestFormatters:
 # ═══════════════════════════════════════════════════════════════════════════
 # 4. stream_response — no key / error paths
 # ═══════════════════════════════════════════════════════════════════════════
+
 
 class TestStreamNoKey:
     def test_no_api_key_yields_error_then_done(self, monkeypatch):
@@ -165,24 +194,31 @@ class TestStreamHttpError:
 
     def test_timeout(self, monkeypatch):
         monkeypatch.setattr(ai_operator, "AI_API_KEY", "sk-test")
-        with patch.object(ai_operator.requests, "post",
-                          side_effect=ai_operator.requests.exceptions.Timeout()):
+        with patch.object(
+            ai_operator.requests,
+            "post",
+            side_effect=ai_operator.requests.exceptions.Timeout(),
+        ):
             out = list(stream_response("oi", {}))
         assert "timed out" in json.loads(out[0])["message"]
         assert json.loads(out[-1])["type"] == "done"
 
     def test_connection_error(self, monkeypatch):
         monkeypatch.setattr(ai_operator, "AI_API_KEY", "sk-test")
-        with patch.object(ai_operator.requests, "post",
-                          side_effect=ai_operator.requests.exceptions.ConnectionError()):
+        with patch.object(
+            ai_operator.requests,
+            "post",
+            side_effect=ai_operator.requests.exceptions.ConnectionError(),
+        ):
             out = list(stream_response("oi", {}))
         assert "conectar" in json.loads(out[0])["message"].lower()
         assert json.loads(out[-1])["type"] == "done"
 
     def test_generic_exception(self, monkeypatch):
         monkeypatch.setattr(ai_operator, "AI_API_KEY", "sk-test")
-        with patch.object(ai_operator.requests, "post",
-                          side_effect=RuntimeError("weird")):
+        with patch.object(
+            ai_operator.requests, "post", side_effect=RuntimeError("weird")
+        ):
             out = list(stream_response("oi", {}))
         assert "AI error" in json.loads(out[0])["message"]
         assert json.loads(out[-1])["type"] == "done"
@@ -191,6 +227,7 @@ class TestStreamHttpError:
 # ═══════════════════════════════════════════════════════════════════════════
 # 5. stream_response — success streaming (text + tool calls)
 # ═══════════════════════════════════════════════════════════════════════════
+
 
 class _IterLines:
     """Mock response.iter_lines() yielding SSE data lines."""
@@ -222,21 +259,32 @@ class TestStreamSuccess:
         mock_resp.iter_lines.side_effect = _IterLines(lines).iter_lines
         with patch.object(ai_operator.requests, "post", return_value=mock_resp):
             out = list(stream_response("oi", {}))
-        texts = [json.loads(o)["content"] for o in out if json.loads(o)["type"] == "text"]
+        texts = [
+            json.loads(o)["content"] for o in out if json.loads(o)["type"] == "text"
+        ]
         assert "".join(texts) == "Olá miner!"
         assert json.loads(out[-1])["type"] == "done"
 
     def test_tool_call_suggest_action(self, monkeypatch):
         monkeypatch.setattr(ai_operator, "AI_API_KEY", "sk-test")
-        args = json.dumps({"device_id": "d1", "action": "restart",
-                           "params": {}, "reason": "overheat"})
+        args = json.dumps(
+            {"device_id": "d1", "action": "restart", "params": {}, "reason": "overheat"}
+        )
         # Stream: first the tool-call fragment, then finish_reason=tool_calls
-        tool_frag = {"tool_calls": [{"index": 0, "id": "call_1",
-                                     "function": {"name": "suggest_action",
-                                                  "arguments": ""}}]}
-        args_frag = {"tool_calls": [{"index": 0, "id": "",
-                                     "function": {"name": "",
-                                                  "arguments": args}}]}
+        tool_frag = {
+            "tool_calls": [
+                {
+                    "index": 0,
+                    "id": "call_1",
+                    "function": {"name": "suggest_action", "arguments": ""},
+                }
+            ]
+        }
+        args_frag = {
+            "tool_calls": [
+                {"index": 0, "id": "", "function": {"name": "", "arguments": args}}
+            ]
+        }
         lines = [
             b"data: " + json.dumps(_make_chunk(tool_frag)).encode(),
             b"data: " + json.dumps(_make_chunk(args_frag)).encode(),
@@ -247,7 +295,9 @@ class TestStreamSuccess:
         mock_resp.iter_lines.side_effect = _IterLines(lines).iter_lines
         with patch.object(ai_operator.requests, "post", return_value=mock_resp):
             out = list(stream_response("oi", {}))
-        actions = [json.loads(o)["action"] for o in out if json.loads(o)["type"] == "action"]
+        actions = [
+            json.loads(o)["action"] for o in out if json.loads(o)["type"] == "action"
+        ]
         assert len(actions) == 1
         assert actions[0]["device_id"] == "d1"
         assert actions[0]["command"] == "restart"
@@ -256,9 +306,15 @@ class TestStreamSuccess:
 
     def test_bad_tool_args_skipped(self, monkeypatch):
         monkeypatch.setattr(ai_operator, "AI_API_KEY", "sk-test")
-        tool_frag = {"tool_calls": [{"index": 0, "id": "call_1",
-                                     "function": {"name": "suggest_action",
-                                                  "arguments": "not-json"}}]}
+        tool_frag = {
+            "tool_calls": [
+                {
+                    "index": 0,
+                    "id": "call_1",
+                    "function": {"name": "suggest_action", "arguments": "not-json"},
+                }
+            ]
+        }
         lines = [
             b"data: " + json.dumps(_make_chunk(tool_frag)).encode(),
             b"data: " + json.dumps(_make_chunk({}, "tool_calls")).encode(),
@@ -276,8 +332,8 @@ class TestStreamSuccess:
     def test_malformed_sse_lines_skipped(self, monkeypatch):
         monkeypatch.setattr(ai_operator, "AI_API_KEY", "sk-test")
         lines = [
-            b"event: ping",                       # non-data line → skipped
-            b"data: not-json",                    # bad JSON → skipped
+            b"event: ping",  # non-data line → skipped
+            b"data: not-json",  # bad JSON → skipped
             b"data: " + json.dumps(_make_chunk({"content": "ok"})).encode(),
         ]
         mock_resp = MagicMock()
@@ -285,5 +341,7 @@ class TestStreamSuccess:
         mock_resp.iter_lines.side_effect = _IterLines(lines).iter_lines
         with patch.object(ai_operator.requests, "post", return_value=mock_resp):
             out = list(stream_response("oi", {}))
-        texts = [json.loads(o)["content"] for o in out if json.loads(o)["type"] == "text"]
+        texts = [
+            json.loads(o)["content"] for o in out if json.loads(o)["type"] == "text"
+        ]
         assert "".join(texts) == "ok"

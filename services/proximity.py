@@ -32,7 +32,7 @@ log = logging.getLogger("cypher65")
 
 # ── Proximity constants ──────────────────────────────────────────────────
 PROXIMITY_MILESTONES_PCT = [0.01, 0.1, 1.0, 5.0, 10.0, 25.0, 50.0, 100.0]
-PROXIMITY_HOT_STREAK_THRESHOLD_PCT = 10.0  # >10% growth in rolling avg → hot streak
+PROXIMITY_HOT_STREAK_THRESHOLD_PCT = 10.0  # legacy key: >10% rolling share-diff change
 PROXIMITY_SAMPLE_THROTTLE_S = 60  # 1 sample/min → manageable DB size
 _last_proximity_sample_ts = 0  # module-level throttle
 
@@ -265,10 +265,10 @@ def _compute_rolling_avg_share_diffs(sch, ts_now, window_seconds=3600):
 def _compute_quantum_lock(
     pct_cur, best_diff_raw, net_diff, sch, session_shares, trend_pct, worker_hps
 ):
-    """Assess mining operation "lock" — a composite confidence score.
+    """Compute a legacy composite session-work heuristic.
     Components:
       1. share_density:  how many shares observed (proxy for work done)
-      2. proximity:      current pct_of_network (how close to block)
+      2. proximity:      historical best-share / network-target ratio
       3. avg_share_power: avg share diff relative to best diff
       4. momentum:       trend direction
 
@@ -278,7 +278,7 @@ def _compute_quantum_lock(
     lock = {
         "status": "NO_DATA",
         "score": 0,
-        "label": "awaiting share data — submit share to compute quantum lock",
+        "label": "Awaiting share data. Heuristic only; not block probability or device health.",
         "components": {"shares": 0, "proximity": 0, "power": 0, "momentum": 0},
         "confidence": "NONE",
         "assessed_at": int(time.time()),
@@ -300,8 +300,8 @@ def _compute_quantum_lock(
     else:
         density_score = 5
 
-    # 2. Proximity score (0-40)
-    #    Higher pct_of_network = closer to block = stronger lock
+    # 2. Historical best-share ratio score (0-40). This is descriptive only;
+    #    it does not measure progress or alter the next-hash probability.
     if pct_cur >= QUANTUM_LOCK_STRONG_PCT:
         prox_score = 40
     elif pct_cur >= QUANTUM_LOCK_MODERATE_PCT:
@@ -348,23 +348,23 @@ def _compute_quantum_lock(
     # Status label
     if total_score >= 75:
         status = "STRONG_LOCK"
-        label = "Strong quantum lock — statistically tracking at high confidence"
+        label = "High session-work signal — descriptive heuristic only."
         confidence = "HIGH"
     elif total_score >= 50:
         status = "MODERATE_LOCK"
-        label = "Moderate quantum lock — building statistical significance"
+        label = "Moderate session-work signal — descriptive heuristic only."
         confidence = "MEDIUM"
     elif total_score >= 25:
         status = "WEAK_LOCK"
-        label = "Weak quantum lock — early stage, needs more shares"
+        label = "Low session-work signal — limited observed session data."
         confidence = "LOW"
     elif total_score >= 5:
         status = "TRACKING"
-        label = "Tracking — insufficient data for meaningful assessment"
+        label = "Insufficient session data for this heuristic."
         confidence = "VERY_LOW"
     else:
         status = "NO_DATA"
-        label = "No data — submit a share to begin quantum lock assessment"
+        label = "No session shares available for this heuristic."
         confidence = "NONE"
 
     return {
@@ -384,6 +384,10 @@ def _compute_quantum_lock(
             "share_count": actual_shares,
             "trend_pct": trend_pct,
         },
+        "semantic_notice": "Legacy heuristic: not block probability, device health, progress, prediction, or a guarantee. A higher score does not change next-hash odds.",
+        "source": "retained session shares and current network target",
+        "window": "current session with rolling 1h share-difficulty change",
+        "unit": "0-100 heuristic score",
     }
 
 
@@ -506,7 +510,7 @@ def compute_proximity(worker, current_difficulty, net_hashrate, ts):
         )
         if chance_per_share_raw and net_diff:
             chance_per_share_in = int(round(net_diff / chance_per_share_raw))
-            chance_per_share_label = f"1 in {chance_per_share_in:,}"
+            chance_per_share_label = f"~1 in {_human_int(chance_per_share_in)}"
             chance_source = (
                 "avg" if avg_share_diff_raw and avg_share_diff_raw > 0 else "best"
             )
@@ -539,9 +543,9 @@ def compute_proximity(worker, current_difficulty, net_hashrate, ts):
                 "pct_of_network_all_time": pct_all,
                 "distance_factor": distance,
                 "distance_label": (
-                    "~" + _human_int(distance) + "× smaller than a block"
+                    "~" + _human_int(distance) + "× target / historical best share"
                     if distance >= 1000
-                    else f"{distance:.2f}× smaller than a block"
+                    else f"{distance:.2f}× target / historical best share"
                 ),
                 "expected_time_secs": expected_secs,
                 "expected_time_seconds": expected_secs,  # alias for frontend consistency
@@ -563,11 +567,22 @@ def compute_proximity(worker, current_difficulty, net_hashrate, ts):
                 "hot_streak": hot_streak,
                 "milestone_cur_pct": pct_cur,
                 "next_milestone_pct": next_ms,
-                "next_milestone_label": f"{next_ms:g}% of network difficulty",
+                "next_milestone_label": f"{next_ms:g}% best-share / target ratio",
                 "milestones_achieved": [
                     m for m in PROXIMITY_MILESTONES_PCT if m <= pct_all
                 ],
                 "quantum_lock": quantum_lock,
+                "model_context": {
+                    "source": "pool worker telemetry and current network difficulty",
+                    "window": "retained account history; share trend uses rolling 1h",
+                    "units": ["difficulty", "percent", "seconds", "blocks/year"],
+                    "assumptions": [
+                        "constant hashrate",
+                        "constant network difficulty",
+                        "independent hashes",
+                    ],
+                    "notice": "Best-share ratios and past work are not progress and do not change next-hash odds.",
+                },
             }
         )
 
@@ -614,7 +629,7 @@ def compute_proximity(worker, current_difficulty, net_hashrate, ts):
                         expected_time_per_share
                     )
 
-            # ── Charts data: cumulative P(block) progression ──
+            # ── Chart data: session P(>=1) estimate over observed work ──
             # Uses EACH share's actual p_block_this_share (not a constant average)
             # for a didactic chart showing real variance in share quality.
             charts_data = {"cumulative_timeline": [], "consistency_check": {}}

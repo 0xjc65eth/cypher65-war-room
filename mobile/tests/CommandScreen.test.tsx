@@ -40,7 +40,7 @@ describe('CommandScreen', () => {
 
     render(<CommandScreen />);
     expect(screen.getByText('Share Difficulty')).toBeTruthy();
-    expect(screen.getByText(/P\(block\) → Probability/)).toBeTruthy();
+    expect(screen.getByText(/P\(block\) → Block Model/)).toBeTruthy();
     // The mocked client returns an empty session — chart falls back gracefully.
     expect(await screen.findByText(/No shares yet/)).toBeTruthy();
   });

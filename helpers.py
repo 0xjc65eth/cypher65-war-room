@@ -1063,7 +1063,7 @@ def build_command_center(snapshot: Optional[dict] = None) -> list:
                 }
             )
 
-    # ── 3. Proximity hot streak (gold) ──
+    # ── 3. Share-difficulty change (legacy event id retained) ──
     prox = snap.get("proximity") or {}
     if isinstance(prox, dict) and prox.get("hot_streak"):
         trend = _num(prox.get("trend_1h_pct"))
@@ -1071,11 +1071,11 @@ def build_command_center(snapshot: Optional[dict] = None) -> list:
             {
                 "id": "proximity_streak",
                 "severity": "gold",
-                "title": "HOT STREAK na proximidade",
+                "title": "Mudança na dificuldade dos shares",
                 "message": (
-                    f"Best-diff subiu {trend:.1f}% em 1h — a proximidade de bloco está acelerando."
+                    f"A dificuldade média dos shares subiu {trend:.1f}% na janela de 1h. Isso não altera a chance do próximo hash."
                     if trend is not None
-                    else "Best-diff subindo — a proximidade de bloco está acelerando."
+                    else "A dificuldade observada dos shares subiu; isso não altera a chance do próximo hash."
                 ),
                 "action": "VER PROBABILITY",
                 "target": "probability",
@@ -1091,8 +1091,8 @@ def build_command_center(snapshot: Optional[dict] = None) -> list:
                 {
                     "id": "proximity_milestone",
                     "severity": "info",
-                    "title": "Proximidade de bloco relevante",
-                    "message": f"Você está a {pct:.2f}% da dificuldade da rede — cada share tem valor real.",
+                    "title": "Novo nível da razão best-share/alvo",
+                    "message": f"O melhor share observado equivale a {pct:.2f}% da dificuldade-alvo. É histórico, não progresso para um bloco.",
                     "action": "VER PROBABILITY",
                     "target": "probability",
                     "panel": "proximity-panel",

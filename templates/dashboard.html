@@ -109,9 +109,9 @@
       <span class="icon"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12h-2.48a2 2 0 0 0-1.93 1.46l-2.35 8.36a.25.25 0 0 1-.48 0L9.24 2.18a.25.25 0 0 0-.48 0l-2.35 8.36A2 2 0 0 1 4.49 12H2"/></svg></span>
       <span class="label">Live Mining</span>
     </button>
-    <button class="sidebar__link" data-module="probability" aria-label="Probability">
+    <button class="sidebar__link" data-module="probability" aria-label="Block model">
       <span class="icon"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/></svg></span>
-      <span class="label">Probability</span>
+      <span class="label">Block Model</span>
     </button>
     <button class="sidebar__link" data-module="market" aria-label="Hash Market">
       <span class="icon"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/><polyline points="16 7 22 7 22 13"/></svg></span>
@@ -345,7 +345,7 @@
     </div>
     <span class="kpi-sub">primary worker</span>
   </div>
-  <div class="kpi-card" data-kpi-target="probability" title="Ir para Probability — Block Hunt e estatísticas">
+  <div class="kpi-card" data-kpi-target="probability" title="Ir para Block Model — estatísticas sem prazo ou previsão">
     <span class="kpi-label">Best Difficulty <span class="tip-wrap" data-tip="Maior dificuldade de share já encontrada"><span class="tip-wrap__icon">?</span></span></span>
     <div class="kpi-value-row">
       <span class="kpi-value kpi-value--gold" id="kpi-bestdiff">—</span>
@@ -361,7 +361,7 @@
     </div>
     <span class="kpi-sub">last hour</span>
   </div>
-  <div class="kpi-card" data-kpi-target="probability" title="Ir para Probability — estatísticas de rede e pool">
+  <div class="kpi-card" data-kpi-target="probability" title="Ir para Block Model — estatísticas de rede e pool">
     <span class="kpi-label">Pool Hashrate <span class="tip-wrap" data-tip="Taxa de processamento total da pool"><span class="tip-wrap__icon">?</span></span></span>
     <div class="kpi-value-row">
       <span class="kpi-value kpi-value--cyan" id="kpi-poolhr">—</span>
@@ -465,7 +465,7 @@
       <div class="metric__sub" id="m-hashrate-sub">core processing speed</div>
     </div>
     <div class="metric metric--xl">
-      <div class="metric__label">BEST DIFFICULTY <span class="tip-wrap" data-tip="Maior dificuldade de share já encontrada. Quanto mais próxima da dificuldade da rede, maior a chance de encontrar um bloco"><span class="tip-wrap__icon">?</span></span></div>
+      <div class="metric__label">BEST SHARE DIFFICULTY <span class="tip-wrap" data-tip="Maior dificuldade de share observada nesta conta. Fonte: pool; janela: histórico disponível; unidade: difficulty. É um recorde passado e não aumenta a chance do próximo hash."><span class="tip-wrap__icon">?</span></span></div>
       <div class="metric__value metric__value--gold" id="m-bestdiff">—</div>
       <div class="metric__sub" id="m-bestdiff-sub">highest share</div>
     </div>
@@ -485,7 +485,7 @@
     <div class="cell__label">SHARE-OF-POOL</div><div class="cell__val" id="m-share-pct">—%</div>
     <div class="cell__label">FAIR DIFF/BLOCK</div><div class="cell__val" id="m-fair-diff">—</div>
     <div class="cell__label">EXPECTED SHARE</div><div class="cell__val" id="m-expected-share">—</div>
-    <div class="cell__label">TIME / BLOCK</div><div class="cell__val" id="m-expected-block">—</div>
+    <div class="cell__label">MODEL MEAN / BLOCK <span class="tip-wrap" data-tip="Média estatística sob hashrate e dificuldade constantes; não é prazo nem contagem regressiva. Fonte: snapshot atual; unidade: tempo."><span class="tip-wrap__icon">?</span></span></div><div class="cell__val" id="m-expected-block">—</div>
   </div>
 </section>
 
@@ -546,7 +546,7 @@
       <div class="progress-track__milestone" style="left:75%"></div>
       <div class="progress-track__milestone" style="left:100%"></div>
     </div>
-    <div class="progress-block__sub">Next block ≈ <b id="p-expected-blocks">—</b></div>
+    <div class="progress-block__sub">Observed work / network target: <b id="p-expected-blocks">—</b> · past work does not change the next hash</div>
   </div>
 </section>
 
@@ -619,7 +619,7 @@
 <!-- ── PROFITABILITY ── -->
 <section class="panel panel--profit panel--large panel--collapsible" id="profit-panel" data-module="dashboard">
   <div class="panel__header">
-    <div class="panel__eyebrow">Ξ PROFITABILITY</div>
+    <div class="panel__eyebrow">Ξ SCENARIO ECONOMICS</div>
     <div class="panel__tools">
       <span class="badge badge--green" id="profit-share-badge">0%</span>
       <span class="badge badge--mute" id="profit-cost-badge">cost: $0</span>
@@ -636,17 +636,17 @@
     ⚡ Conecte seu endereço BTC e aguarde dados do miner para ver cálculos de rentabilidade
   </div>
   <div class="profit-grid">
-    <div class="profit-cell profit-cell--xl"><div class="profit-cell__label">NET BTC/DAY <span class="tip-wrap" data-tip="BTC estimado por dia, já descontando taxa da pool e custo de energia. Fórmula: (hashrate ÷ rede) × blocos/dia × recompensa"><span class="tip-wrap__icon">?</span></span></div><div class="profit-cell__val" id="p-btc-day">—</div><div class="profit-cell__sub" id="p-btc-sub">after fees</div></div>
-    <div class="profit-cell"><div class="profit-cell__label">FIAT/DAY <span id="p-cur-badge" class="profit-cur-pill">USD</span> <span class="tip-wrap" data-tip="Valor em moeda local do BTC estimado por dia. Calculado usando taxa de câmbio atual"><span class="tip-wrap__icon">?</span></span></div><div class="profit-cell__val stat__val--green" id="p-fiat-day">—</div><div class="profit-cell__sub" id="p-fiat-day-week">—/week</div></div>
-    <div class="profit-cell"><div class="profit-cell__label">FIAT/MONTH <span class="tip-wrap" data-tip="Projeção mensal: (BTC/dia × 30) × preço BTC. Não considera variação de dificuldade"><span class="tip-wrap__icon">?</span></span></div><div class="profit-cell__val" id="p-fiat-month">—</div><div class="profit-cell__sub" id="p-fiat-month-sub">net cost</div></div>
-    <div class="profit-cell"><div class="profit-cell__label">BREAK-EVEN <span class="tip-wrap" data-tip="Custo máximo por TH/s/dia antes de prejuízo (ex.: aluguel de hashrate). Se o custo ultrapassar esse valor, a operação fica no vermelho. No modo SOLO mostra o tempo esperado até o próximo bloco"><span class="tip-wrap__icon">?</span></span></div><div class="profit-cell__val stat__val--gold" id="p-breakeven">—</div><div class="profit-cell__sub" id="p-breakeven-sub">$/TH·d</div></div>
+    <div class="profit-cell profit-cell--xl"><div class="profit-cell__label">MODELED NET BTC/DAY <span class="tip-wrap" data-tip="Cenário, não promessa de lucro. Fonte: hashrate e dificuldade do snapshot, recompensa/taxas e custos configurados; janela: dia-modelo; unidade: BTC/dia; premissa: entradas constantes."><span class="tip-wrap__icon">?</span></span></div><div class="profit-cell__val" id="p-btc-day">—</div><div class="profit-cell__sub" id="p-btc-sub">after configured costs</div></div>
+    <div class="profit-cell"><div class="profit-cell__label">MODELED FIAT/DAY <span id="p-cur-badge" class="profit-cur-pill">USD</span> <span class="tip-wrap" data-tip="Conversão do cenário BTC/dia pelo último câmbio disponível. Fonte: snapshot atual; janela: dia-modelo; unidade: moeda/dia. Não é lucro garantido."><span class="tip-wrap__icon">?</span></span></div><div class="profit-cell__val stat__val--green" id="p-fiat-day">—</div><div class="profit-cell__sub" id="p-fiat-day-week">—/week</div></div>
+    <div class="profit-cell"><div class="profit-cell__label">30-DAY SCENARIO <span class="tip-wrap" data-tip="BTC/dia modelado × 30 × câmbio atual. Fonte: snapshot atual; janela: 30 dias; unidade: moeda. Pressupõe hashrate, dificuldade, preço, taxas e custos constantes."><span class="tip-wrap__icon">?</span></span></div><div class="profit-cell__val" id="p-fiat-month">—</div><div class="profit-cell__sub" id="p-fiat-month-sub">modeled net</div></div>
+    <div class="profit-cell"><div class="profit-cell__label" id="p-breakeven-label">MODELED COST THRESHOLD <span class="tip-wrap" data-tip="Taxa de custo em que receita modelada e custo se igualam. Fonte: snapshot e custos configurados; janela: dia-modelo; unidade: USD/TH·d; premissa: entradas constantes. No modo solo, este campo mostra a média estatística entre blocos, nunca um prazo."><span class="tip-wrap__icon">?</span></span></div><div class="profit-cell__val stat__val--gold" id="p-breakeven">—</div><div class="profit-cell__sub" id="p-breakeven-sub">$/TH·d</div></div>
   </div>
   <div class="profit-solo-stats" id="solo-extra-stats" style="display:none">
     <div class="profit-cell"><div class="profit-cell__label">P(BLOCK) TODAY</div><div class="profit-cell__val stat__val--gold" id="solo-p-today">—</div></div>
     <div class="profit-cell"><div class="profit-cell__label">P(BLOCK) YEAR</div><div class="profit-cell__val" id="solo-p-year">—</div></div>
     <div class="profit-cell"><div class="profit-cell__label">P(BLOCK) 5Y</div><div class="profit-cell__val" id="solo-p-5y">—</div></div>
-    <div class="profit-cell"><div class="profit-cell__label">BLOCKS/YEAR</div><div class="profit-cell__val" id="solo-blocks-year">—</div></div>
-    <div class="profit-cell"><div class="profit-cell__label">TIME TO BLOCK</div><div class="profit-cell__val" id="solo-expected-time">—</div></div>
+    <div class="profit-cell"><div class="profit-cell__label">MODEL AVG BLOCKS/YEAR <span class="tip-wrap" data-tip="Long-run model average. Source: current worker/network snapshot; window: 365 days; unit: blocks/year; assumes constant hashrate, difficulty and 144 blocks/day. Not a forecast."><span class="tip-wrap__icon">?</span></span></div><div class="profit-cell__val" id="solo-blocks-year">—</div></div>
+    <div class="profit-cell"><div class="profit-cell__label">MODEL MEAN INTERVAL <span class="tip-wrap" data-tip="Statistical mean, not a deadline. Source: current worker/network snapshot; unit: time; assumes constant hashrate/difficulty and independent hashes."><span class="tip-wrap__icon">?</span></span></div><div class="profit-cell__val" id="solo-expected-time">—</div></div>
   </div>
   <div class="profit-lender-stats" id="lender-extra-stats" style="display:none">
     <div class="profit-cell"><div class="profit-cell__label">MARKET RATE</div><div class="profit-cell__val" id="lender-market-rate">—</div></div>
@@ -688,12 +688,12 @@
       <div class="gauge-cell__sub">share of total BTC hashrate</div>
     </div>
     <div class="gauge-cell">
-      <div class="gauge-cell__label">POOL LUCK · THIS ROUND</div>
+      <div class="gauge-cell__label">ROUND WORK RATIO <span class="tip-wrap" data-tip="Retrospective ratio of observed round work to model work. Source: current pool round; window: since last block; unit: %. It does not alter future odds."><span class="tip-wrap__icon">?</span></span></div>
       <div class="gauge-cell__canvas-wrap">
         <canvas id="gauge-luck-canvas" width="180" height="100"></canvas>
         <div class="gauge-cell__val" id="gauge-luck-pct">—</div>
       </div>
-      <div class="gauge-cell__sub">&gt;100% lucky · &lt;100% unlucky</div>
+      <div class="gauge-cell__sub">observed vs model · not future odds</div>
     </div>
   </div>
 </section>
@@ -725,10 +725,10 @@
   <div class="bh-grid">
     <div class="bh-card"><div class="bh-card__title">NETWORK DIFF</div><div class="bh-card__value" id="bh-network-diff">—</div><div class="bh-card__sub">current target</div></div>
     <div class="bh-card"><div class="bh-card__title">YOUR BEST</div><div class="bh-card__value bh-card__value--green" id="bh-best-diff">—</div><div class="bh-card__sub" id="bh-best-diff-sub">highest share</div></div>
-    <div class="bh-card"><div class="bh-card__title">DISTANCE</div><div class="bh-card__value bh-card__value--cyan" id="bh-distance">—</div><div class="bh-card__sub" id="bh-distance-sub">× smaller</div></div>
+    <div class="bh-card"><div class="bh-card__title">BEST-SHARE / TARGET <span class="tip-wrap" data-tip="Historical best share ÷ current network target. Source: pool + network snapshot; window: retained history; unit: ratio. Not progress."><span class="tip-wrap__icon">?</span></span></div><div class="bh-card__value bh-card__value--cyan" id="bh-distance">—</div><div class="bh-card__sub" id="bh-distance-sub">historical ratio only</div></div>
     <div class="bh-card"><div class="bh-card__title">P(BLOCK)/SHARE</div><div class="bh-card__value bh-card__value--purple" id="bh-p-block">—</div><div class="bh-card__sub">each share = chance</div></div>
-    <div class="bh-card"><div class="bh-card__title">EXPECTED TIME</div><div class="bh-card__value" id="bh-expected-time">—</div><div class="bh-card__sub" id="bh-expected-time-sub">@ current HR</div></div>
-    <div class="bh-card"><div class="bh-card__title">CUMULATIVE P</div><div class="bh-card__value" id="bh-cumulative-p">—</div><div class="bh-card__sub" id="bh-cumulative-p-sub">since session</div></div>
+    <div class="bh-card"><div class="bh-card__title">MODEL MEAN INTERVAL <span class="tip-wrap" data-tip="D×2³²÷hashrate. Source: current snapshot; unit: time; assumes constant hashrate/difficulty. Mean, not deadline."><span class="tip-wrap__icon">?</span></span></div><div class="bh-card__value" id="bh-expected-time">—</div><div class="bh-card__sub" id="bh-expected-time-sub">not a countdown</div></div>
+    <div class="bh-card"><div class="bh-card__title">SESSION P(≥1) ESTIMATE <span class="tip-wrap" data-tip="Probability model over recorded session work. Source: current session shares; window: session; unit: %. Past work does not change the next hash."><span class="tip-wrap__icon">?</span></span></div><div class="bh-card__value" id="bh-cumulative-p">—</div><div class="bh-card__sub" id="bh-cumulative-p-sub">observed work; no progress</div></div>
   </div>
   <div class="bh-whatif" id="bh-whatif" title="Simule o impacto de uma mudança de dificuldade na probabilidade">
     <div class="bh-whatif__header">
@@ -744,14 +744,14 @@
     <div class="bh-whatif__grid">
       <div class="bh-whatif__cell"><div class="bh-whatif__cell-title">NET DIFF</div><div class="bh-whatif__cell-value" id="bh-whatif-diff">—</div></div>
       <div class="bh-whatif__cell"><div class="bh-whatif__cell-title">P(BLOCK)/SHARE</div><div class="bh-whatif__cell-value bh-card__value--purple" id="bh-whatif-pblock">—</div></div>
-      <div class="bh-whatif__cell"><div class="bh-whatif__cell-title">EXPECTED TIME</div><div class="bh-whatif__cell-value" id="bh-whatif-etime">—</div></div>
-      <div class="bh-whatif__cell"><div class="bh-whatif__cell-title">CUMULATIVE P</div><div class="bh-whatif__cell-value" id="bh-whatif-cum">—</div></div>
+      <div class="bh-whatif__cell"><div class="bh-whatif__cell-title">MODEL MEAN INTERVAL</div><div class="bh-whatif__cell-value" id="bh-whatif-etime">—</div></div>
+      <div class="bh-whatif__cell"><div class="bh-whatif__cell-title">SESSION P(≥1) EST.</div><div class="bh-whatif__cell-value" id="bh-whatif-cum">—</div></div>
     </div>
     <div class="bh-whatif__note">simulação · hash power constante · share rate igual ao atual</div>
   </div>
   <div class="prob-disclaimer" role="note" aria-label="Aviso importante sobre probabilidade">
     <span class="prob-disclaimer__icon">⚠</span>
-    <span class="prob-disclaimer__text">Estes valores são <strong>estatísticos e não representam previsão ou garantia de resultado</strong>. Mining é probabilístico — a sorte real pode diferir significativamente das estimativas. O CYPHER65 não oferece aconselhamento financeiro.</span>
+    <span class="prob-disclaimer__text"><strong>Modelo estatístico, não prazo, progresso ou garantia.</strong> Fonte: telemetria da pool/worker e rede; janela indicada em cada métrica; unidades exibidas. Premissas: hashes independentes, hashrate e dificuldade constantes na janela. Trabalho passado — inclusive o melhor share — não aumenta a chance do próximo hash. Cenários econômicos não prometem lucro.</span>
   </div>
 </section>
 
@@ -800,8 +800,8 @@
           <th data-mkt-sort="spread" title="Sort by spread">vs Best <span class="mkt-sort-arrow"></span></th>
           <th data-mkt-sort="vwap" title="Sort by vs VWAP">vs 4h VWAP <span class="mkt-sort-arrow"></span></th>
           <th data-mkt-sort="liquidity" title="Sort by availability">Available <span class="mkt-sort-arrow"></span></th>
-          <th data-mkt-sort="roi" title="Sort by estimated ROI (metrics)">ROI <span class="mkt-sort-arrow"></span></th>
-          <th data-mkt-sort="ev" title="Sort by expected value (metrics)">EV (BTC) <span class="mkt-sort-arrow"></span></th>
+          <th data-mkt-sort="roi" title="Modeled net value divided by modeled cost for the listed duration; not realized return">Modeled Return Ratio <span class="mkt-sort-arrow"></span></th>
+          <th data-mkt-sort="ev" title="Modeled revenue minus modeled cost for the listed duration; not profit guaranteed">Modeled Net (BTC) <span class="mkt-sort-arrow"></span></th>
           <th data-mkt-sort="cost" title="Estimated cost for the offer's listed duration (metrics) — durations vary per venue, compare within the same basis">Est. Cost (BTC) <span class="mkt-sort-arrow"></span></th>
           <th data-mkt-sort="tier" title="Sort by risk tier">Risk Tier <span class="mkt-sort-arrow"></span></th>
           <th>Recommendation</th>
@@ -1898,7 +1898,7 @@
 <!-- ─── HASH PROXIMITY METER ─── -->
 <section class="panel panel--proximity panel--large" id="proximity-panel" data-module="probability">
   <div class="panel__header">
-    <div class="panel__eyebrow">⌖ HASH PROXIMITY · QUANTUM-LOCK</div>
+    <div class="panel__eyebrow">⌖ BEST-SHARE / NETWORK TARGET</div>
     <div class="panel__tools">
       <span class="badge" id="prox-pct-badge">—</span>
       <span class="badge" id="prox-alltime-badge">peak —</span>
@@ -1941,8 +1941,8 @@
     <div class="prox-side">
       <div class="prox-stats">
         <div class="prox-stat"><div class="prox-stat__label">CHANCE/SHARE</div><div class="prox-stat__val mono" id="prox-chance">—</div><div class="prox-stat__sub">vs network</div></div>
-        <div class="prox-stat"><div class="prox-stat__label">EXPECTED/BLOCK</div><div class="prox-stat__val mono" id="prox-time">—</div><div class="prox-stat__sub" id="prox-time-sub">@ current HR</div></div>
-        <div class="prox-stat"><div class="prox-stat__label">DISTANCE</div><div class="prox-stat__val mono" id="prox-distance">—</div><div class="prox-stat__sub">× smaller</div></div>
+        <div class="prox-stat"><div class="prox-stat__label">MODEL MEAN INTERVAL <span class="tip-wrap" data-tip="Source: current worker/network snapshot; window: current sample; unit: time; assumes constant inputs. Not a countdown."><span class="tip-wrap__icon">?</span></span></div><div class="prox-stat__val mono" id="prox-time">—</div><div class="prox-stat__sub" id="prox-time-sub">not a countdown</div></div>
+        <div class="prox-stat"><div class="prox-stat__label">TARGET / BEST-SHARE RATIO <span class="tip-wrap" data-tip="Current target ÷ historical best share. Source: pool/network; window: retained history; unit: ratio. Not distance in time or progress."><span class="tip-wrap__icon">?</span></span></div><div class="prox-stat__val mono" id="prox-distance">—</div><div class="prox-stat__sub">historical ratio</div></div>
         <div class="prox-stat"><div class="prox-stat__label">TREND 1H</div><div class="prox-stat__val mono" id="prox-trend">—</div><div class="prox-stat__sub" id="prox-trend-sub">vs network</div></div>
       </div>
       <div class="prox-chart-wrap">
@@ -1950,14 +1950,14 @@
         <canvas id="prox-sparkline"></canvas>
       </div>
       <div class="prox-ladder">
-        <div class="prox-ladder__title">PROXIMITY LADDER · % NETWORK</div>
+        <div class="prox-ladder__title">BEST-SHARE RATIO LEVELS · % OF TARGET</div>
         <div class="prox-ladder__row" id="prox-ladder-row"></div>
       </div>
     </div>
   </div>
 
   <div class="prox-footnote" id="prox-footnote">
-    ⌖ Proximity = worker.bestDifficulty ÷ network.difficulty. Peak persists across restarts.
+    ⌖ Best-share ratio = worker.bestDifficulty ÷ network.difficulty. Source: pool; window: retained account history; unit: %. This is not progress: a past share does not change the next hash.
   </div>
 
   <!-- LIVE HASH CALCULATOR -->
@@ -1980,8 +1980,8 @@
     <div class="prox-live-calc__totals">
       <div class="lc-total"><div class="lc-k">SESSION SHARES</div><div class="lc-v" id="lc-session-shares">—</div><div class="lc-f">since start</div></div>
       <div class="lc-total"><div class="lc-k">AVG SHARE DIFF</div><div class="lc-v" id="lc-avg-share-diff">—</div><div class="lc-f">last 20 shares</div></div>
-      <div class="lc-total"><div class="lc-k">P(BLOCK) CUM</div><div class="lc-v" id="lc-cum-p">—</div><div class="lc-f">= 1−(1−p)ⁿ</div></div>
-      <div class="lc-total"><div class="lc-k">EXPECTED BLOCKS</div><div class="lc-v" id="lc-expected-blocks">—</div><div class="lc-f">= N·p</div></div>
+      <div class="lc-total"><div class="lc-k">SESSION P(≥1) EST. <span class="tip-wrap" data-tip="1−∏(1−pᵢ) over retained session shares; unit: %. Describes observed work, never progress or next-hash odds."><span class="tip-wrap__icon">?</span></span></div><div class="lc-v" id="lc-cum-p">—</div><div class="lc-f">= 1−(1−p)ⁿ · no progress</div></div>
+      <div class="lc-total"><div class="lc-k">MODELED BLOCK COUNT <span class="tip-wrap" data-tip="Expectation N×p from current session shares; window: session; unit: blocks. It can be fractional and is not a prediction."><span class="tip-wrap__icon">?</span></span></div><div class="lc-v" id="lc-expected-blocks">—</div><div class="lc-f">= N·p · not a prediction</div></div>
     </div>
     <div class="prox-live-calc__ticker">
       <div class="prox-live-calc__ticker-title">RECENT SHARES · NEWEST FIRST</div>
@@ -1995,7 +1995,7 @@
 <!-- ─── CUMULATIVE PROBABILITY CHART ─── -->
 <section class="panel panel--chart panel--large" id="chart-cumulative-p-panel" data-module="probability">
   <div class="panel__header">
-    <div class="panel__eyebrow">⬡ CUMULATIVE P(BLOCK) PROGRESSION</div>
+    <div class="panel__eyebrow">⬡ SESSION P(≥1) ESTIMATE · OBSERVED WORK</div>
     <div class="panel__tools"><span class="badge badge--green" id="cum-p-status-badge">live</span></div>
   </div>
   <div class="chart-wrap"><canvas id="chart-cumulative-p"></canvas></div>
@@ -2014,10 +2014,10 @@
   <div class="chart-wrap"><canvas id="chart-share-dist"></canvas></div>
 </section>
 
-<!-- ─── QUANTUM LOCK HEALTH SCORE ─── -->
+<!-- ─── SESSION WORK SIGNAL (legacy API key: quantum_lock) ─── -->
 <section class="panel panel--large" id="quantum-lock-panel" data-module="probability">
   <div class="panel__header">
-    <div class="panel__eyebrow">◈ QUANTUM LOCK · HEALTH SCORE</div>
+    <div class="panel__eyebrow">◈ SESSION WORK SIGNAL · HEURISTIC <span class="tip-wrap" data-tip="Source: retained session shares; window: session + rolling 1h; unit: 0–100 heuristic. Not block probability, device health or prediction."><span class="tip-wrap__icon">?</span></span></div>
     <div class="panel__tools">
       <span class="badge" id="ql-status-badge">NO DATA</span>
       <span class="badge badge--mute" id="ql-score-badge">0/100</span>
@@ -2030,11 +2030,12 @@
     </div>
     <div class="ql-components" id="ql-components">
       <div class="ql-comp"><span class="ql-comp__label">Shares</span><span class="ql-comp__bar" id="ql-comp-shares"><span style="width:0%"></span></span></div>
-      <div class="ql-comp"><span class="ql-comp__label">Proximity</span><span class="ql-comp__bar" id="ql-comp-prox"><span style="width:0%"></span></span></div>
+      <div class="ql-comp"><span class="ql-comp__label">Best-share ratio</span><span class="ql-comp__bar" id="ql-comp-prox"><span style="width:0%"></span></span></div>
       <div class="ql-comp"><span class="ql-comp__label">Power</span><span class="ql-comp__bar" id="ql-comp-power"><span style="width:0%"></span></span></div>
       <div class="ql-comp"><span class="ql-comp__label">Momentum</span><span class="ql-comp__bar" id="ql-comp-momentum"><span style="width:0%"></span></span></div>
     </div>
-    <div class="ql-label" id="ql-label">awaiting share data — submit share to compute quantum lock</div>
+    <div class="ql-label" id="ql-label">Awaiting share data. This heuristic is not block probability, device health or a prediction.</div>
+    <div class="prox-footnote">Source: retained session shares; window: current session/rolling 1h; unit: 0–100 heuristic. A higher score does not increase the next-hash odds.</div>
   </div>
 </section>
 
@@ -2191,8 +2192,8 @@
         <div class="solo-card"><div class="solo-card__title">Network Diff</div><div class="solo-card__value" id="solo-net-diff">—</div><div class="solo-card__sub">current</div></div>
         <div class="solo-card"><div class="solo-card__title">Worker HR</div><div class="solo-card__value solo-card__value--green" id="solo-worker-hr">—</div><div class="solo-card__sub">your hashrate</div></div>
         <div class="solo-card"><div class="solo-card__title">P(Block)/Share</div><div class="solo-card__value solo-card__value--purple" id="solo-p-block">—</div><div class="solo-card__sub">per share chance</div></div>
-        <div class="solo-card"><div class="solo-card__title">Expected Time</div><div class="solo-card__value" id="solo-cards-expected-time">—</div><div class="solo-card__sub" id="solo-expected-time-sub">@ current HR</div></div>
-        <div class="solo-card"><div class="solo-card__title">Blocks/Year</div><div class="solo-card__value" id="solo-cards-blocks-year">—</div><div class="solo-card__sub">expected</div></div>
+        <div class="solo-card"><div class="solo-card__title">Model Mean Interval</div><div class="solo-card__value" id="solo-cards-expected-time">—</div><div class="solo-card__sub" id="solo-expected-time-sub">not a countdown</div></div>
+        <div class="solo-card"><div class="solo-card__title">Model Avg Blocks/Year</div><div class="solo-card__value" id="solo-cards-blocks-year">—</div><div class="solo-card__sub">constant-input model</div></div>
         <div class="solo-card"><div class="solo-card__title">Best Diff</div><div class="solo-card__value solo-card__value--gold" id="solo-best-diff">—</div><div class="solo-card__sub" id="solo-best-diff-sub">all-time</div></div>
       </div>
     </section>
@@ -2380,7 +2381,7 @@
     <a href="#docs-overview" class="docs-index__link" data-section="docs-overview">1. Overview</a>
     <a href="#docs-fleet" class="docs-index__link" data-section="docs-fleet">2. Fleet View</a>
     <a href="#docs-health" class="docs-index__link" data-section="docs-health">3. Device Health</a>
-    <a href="#docs-probability" class="docs-index__link" data-section="docs-probability">4. Probability</a>
+    <a href="#docs-probability" class="docs-index__link" data-section="docs-probability">4. Block Model</a>
     <a href="#docs-market" class="docs-index__link" data-section="docs-market">5. Hash Market</a>
     <a href="#docs-live" class="docs-index__link" data-section="docs-live">6. Live Mining</a>
     <a href="#docs-automations" class="docs-index__link" data-section="docs-automations">7. Automations</a>
@@ -2398,7 +2399,7 @@
 <!-- 1 ── Overview ── -->
 <section class="doc-section" id="docs-overview">
   <h2 class="doc-section__title">1 · Overview</h2>
-  <p class="doc-section__text">Axe Fleet is a real-time monitoring and operations platform for Bitcoin home miners. It connects to your wallet via the Parasite Pool public API and provides fleet telemetry, probability analysis, hash market intelligence, automation rules, and latency diagnostics — all from a single dashboard.</p>
+  <p class="doc-section__text">Axe Fleet is a real-time monitoring and operations platform for Bitcoin home miners. It connects to your wallet via the Parasite Pool public API and provides fleet telemetry, block-statistics models, hash market intelligence, automation rules, and latency diagnostics — all from a single dashboard.</p>
   <p class="doc-section__text">The platform works with any BTC address. Data comes from public pool endpoints, on-chain sources (Mempool, CoinGecko), and optionally from your local AxeOS/Bitaxe devices if you add them to the Axe Fleet.</p>
   <div class="doc-callout doc-callout--info">
     <span class="doc-callout__icon">i</span>
@@ -2440,23 +2441,23 @@
   <p class="doc-section__text">A health score below 60% triggers a WARN alert. Below 30% triggers a CRIT alert. Use the Alerts panel to configure custom thresholds for your fleet.</p>
 </section>
 
-<!-- 4 ── Probability ── -->
+<!-- 4 ── Block model ── -->
 <section class="doc-section" id="docs-probability">
-  <h2 class="doc-section__title">4 · Probability</h2>
-  <p class="doc-section__text">Probability shows your estimated chance of finding a block given your hashrate, the network difficulty, and the time window. Calculated per share and per time period:</p>
+  <h2 class="doc-section__title">4 · Block Model</h2>
+  <p class="doc-section__text">The model estimates P(≥1 block) from the worker/network snapshot and the explicit time window. Source: current pool/worker telemetry and network data; units: decimal probability, percent and time. It assumes constant hashrate/difficulty and independent hashes.</p>
   <ul class="doc-list">
     <li><strong>P(Block)/Share</strong> — chance per individual share submission</li>
     <li><strong>P(Block) 24h</strong> — cumulative probability over 24 hours</li>
     <li><strong>P(Block) 7d</strong> — cumulative probability over 7 days</li>
-    <li><strong>Cumulative P</strong> — total probability since your session started</li>
+    <li><strong>Session P(≥1) estimate</strong> — probability model over recorded session work; not progress toward a block</li>
   </ul>
   <div class="doc-callout doc-callout--info">
     <span class="doc-callout__icon">i</span>
-    <span class="doc-callout__text">Formula: <code>P = 1 - exp(-(hashrate * time) / (network_difficulty * 2^32))</code>. Results are estimates — actual luck varies.</span>
+    <span class="doc-callout__text">Formula: <code>P = 1 - exp(-(hashrate * time) / (network_difficulty * 2^32))</code>. The model mean interval is <code>network_difficulty * 2^32 / hashrate</code>; it is not a deadline or countdown.</span>
   </div>
   <div class="doc-callout doc-callout--warn">
     <span class="doc-callout__icon">⚠</span>
-    <span class="doc-callout__text"><strong>Aviso:</strong> Valores probabilísticos não representam previsão nem garantia de resultado. Mining é estocástico — a sorte real pode diferir significativamente. O CYPHER65 não oferece aconselhamento financeiro.</span>
+    <span class="doc-callout__text"><strong>Aviso:</strong> Valores probabilísticos não representam prazo, progresso, previsão ou garantia. Trabalho passado, “luck” da rodada e melhor share não aumentam a chance do próximo hash. Cenários econômicos não prometem lucro. O CYPHER65 não oferece aconselhamento financeiro.</span>
   </div>
   <p class="doc-section__text">Three scenarios are shown: <strong>conservative</strong> (95% of current HR), <strong>base</strong> (current HR), and <strong>aggressive</strong> (110% of current HR). This helps you understand the range of possible outcomes.</p>
 </section>
@@ -2893,7 +2894,7 @@
       <button class="modal__close" onclick="document.getElementById('upgrade-modal').classList.remove('modal--open')"aria-label="Fechar"><svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg></button>
     </div>
     <div class="modal__body">
-      <p class="upgrade-modal__copy" id="upgrade-modal-copy">Unlock <strong>Monte Carlo</strong>, <strong>proximity meter</strong>, <strong>30d history</strong> &amp; <strong>webhooks</strong>.</p>
+      <p class="upgrade-modal__copy" id="upgrade-modal-copy">Unlock <strong>Monte Carlo scenarios</strong>, <strong>best-share ratio history</strong>, <strong>30d history</strong> &amp; <strong>webhooks</strong>. Statistical models are not predictions.</p>
       <div class="upgrade-availability upgrade-availability--loading" id="upgrade-loading" role="status" aria-live="polite">
         <span class="upgrade-availability__skeleton" aria-hidden="true"></span>
         Verificando disponibilidade do checkout…

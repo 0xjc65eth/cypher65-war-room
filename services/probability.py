@@ -99,7 +99,20 @@ def calculate_block_probability(
         "expected_time_to_block_human": _seconds_to_human(expected_time_to_block),
         "lambda": round(lambda_rate, 6),
         "duration_seconds": response_duration_seconds,
-        "note": "EXPECTED VALUE — NOT A GUARANTEE. Mining is probabilistic.",
+        "note": "EXPECTED VALUE / STATISTICAL MODEL — NOT A DEADLINE OR FORECAST; NOT A GUARANTEE.",
+        "model_context": {
+            "model": "Poisson",
+            "source": "current worker hashrate and network hashrate snapshot",
+            "window_seconds": response_duration_seconds,
+            "units": {"probability": "decimal 0..1", "mean_interval": "seconds"},
+            "assumptions": [
+                "constant hashrate during the selected window",
+                "constant network hashrate during the selected window",
+                "independent hashes",
+                "600-second network block interval",
+            ],
+            "independence_notice": "Past work does not increase the probability of the next hash.",
+        },
     }
 
 
@@ -129,7 +142,7 @@ def calculate_multiple_periods(
         "user_hashrate": user_hashrate,
         "network_hashrate": network_hashrate,
         "periods": results,
-        "disclaimer": "All values are EXPECTED. Actual results follow probability distribution.",
+        "disclaimer": "Statistical estimates, not deadlines, forecasts, progress, or guarantees. Past work does not change the next-hash odds.",
     }
 
 

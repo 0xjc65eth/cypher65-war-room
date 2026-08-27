@@ -58,7 +58,7 @@ When the product needs:
 
 - The UI is data-dense (gauges, charts, real-time meters); Flutter's rendering engine delivers more consistent 60fps performance.
 - Single codebase for iOS and Android.
-- Strong out-of-the-box support for animations and custom painters (useful for the proximity meter and network gauges).
+- Strong out-of-the-box support for animations and custom painters (useful for the best-share ratio and network gauges).
 - Dart's null-safety reduces runtime errors for a finance/mining app.
 
 ---

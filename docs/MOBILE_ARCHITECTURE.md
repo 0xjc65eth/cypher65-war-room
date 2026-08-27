@@ -73,7 +73,7 @@ mobile/
 |---|---|---|
 | **Command** | `CommandScreen` | Global operation status, alerts, quick actions, top-level dashboard. |
 | **Fleet** | `FleetScreen` | List miners, filter by status, drill into a device. |
-| **Block** | `BlockHuntScreen` | Probability, network stats, best-diff history. |
+| **Block** | `BlockHuntScreen` | Per-window probability model, network stats and best-share history; no countdown/progress semantics. |
 | **Market** | `MarketScreen` | Hashrate market offers, opportunity comparison. |
 | **AI** | `AiOperatorScreen` | Chat with the CYPHER65 AI Operator. |
 

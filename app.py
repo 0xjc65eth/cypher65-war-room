@@ -2896,7 +2896,7 @@ _make_memory_alert = make_memory_alert
 # ━━━ Proximity meter helpers ━━━
 # bestDifficulty vs network difficulty, probability math, trend, hot-streak.
 PROXIMITY_MILESTONES_PCT = [0.01, 0.1, 1.0, 5.0, 10.0, 25.0, 50.0, 100.0]
-PROXIMITY_HOT_STREAK_THRESHOLD_PCT = 10.0  # >10% growth in 1h → hot streak
+PROXIMITY_HOT_STREAK_THRESHOLD_PCT = 10.0  # legacy key: >10% share-diff change in 1h
 PROXIMITY_SAMPLE_THROTTLE_S = 60  # 1 sample/min → manageable DB size
 _last_proximity_sample_ts = 0  # python int (seconds), module-level
 
@@ -3110,9 +3110,9 @@ def _compute_proximity(worker, current_difficulty, net_hashrate, ts):
                 "pct_of_network_all_time": pct_all,
                 "distance_factor": distance,
                 "distance_label": (
-                    "~" + _human_int(distance) + "× smaller than a block"
+                    "~" + _human_int(distance) + "× target / historical best share"
                     if distance >= 1000
-                    else f"{distance:.2f}× smaller than a block"
+                    else f"{distance:.2f}× target / historical best share"
                 ),
                 "expected_time_secs": expected_secs,
                 "expected_time_seconds": expected_secs,  # alias for frontend consistency
@@ -3121,7 +3121,7 @@ def _compute_proximity(worker, current_difficulty, net_hashrate, ts):
                 ),
                 "blocks_per_year": blocks_per_year,
                 "chance_per_share_label": (
-                    f"1 in {int(round(net_diff / best_diff_raw)):,}"
+                    f"~1 in {_human_int(net_diff / best_diff_raw)}"
                     if best_diff_raw
                     else "—"
                 ),
@@ -3135,10 +3135,21 @@ def _compute_proximity(worker, current_difficulty, net_hashrate, ts):
                 "hot_streak": bool(trend_1h_pct >= PROXIMITY_HOT_STREAK_THRESHOLD_PCT),
                 "milestone_cur_pct": pct_cur,
                 "next_milestone_pct": next_ms,
-                "next_milestone_label": f"{next_ms:g}% of network difficulty",
+                "next_milestone_label": f"{next_ms:g}% best-share / target ratio",
                 "milestones_achieved": [
                     m for m in PROXIMITY_MILESTONES_PCT if m <= pct_all
                 ],
+                "model_context": {
+                    "source": "pool worker telemetry and current network difficulty",
+                    "window": "retained account history; trend window as labeled",
+                    "units": ["difficulty", "percent", "seconds", "blocks/year"],
+                    "assumptions": [
+                        "constant hashrate",
+                        "constant network difficulty",
+                        "independent hashes",
+                    ],
+                    "notice": "Best-share ratios and past work are not progress and do not change next-hash odds.",
+                },
             }
         )
 
@@ -4593,7 +4604,7 @@ def _do_poll():
     except Exception as e:
         log.warning("[sample_proximity] error: %s", e)
 
-    # Hot-streak detection: build the alert dict NOW so it's available when
+    # Share-difficulty change: legacy category retained for compatibility.
     # the inject block (placed after the alerts_recent DB read) runs. Capture
     # as a local dict; persistence + render-inject happen downstream.
     hot_streak_alert = None
@@ -4609,8 +4620,8 @@ def _do_poll():
             "severity": "SUCCESS",
             "category": "hot_streak",
             "message": (
-                f"cypher65 best-diff HOT STREAK: {proximity['best_diff_str']} "
-                f"(+{proximity['trend_1h_pct']:.1f}% in 1h) — keep going!"
+                f"cypher65 share-difficulty change: best {proximity['best_diff_str']} "
+                f"({proximity['trend_1h_pct']:+.1f}% in 1h). Historical signal only; next-hash odds are unchanged."
             ),
         }
 

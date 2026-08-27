@@ -630,7 +630,7 @@
     if (copy) {
       copy.innerHTML = wantsPremium
         ? 'Unlock the <strong>real AI Operator</strong> (LLM — fleet, pool, probability &amp; market answers) on top of every PRO feature.'
-        : 'Unlock <strong>Monte Carlo</strong>, <strong>proximity meter</strong>, <strong>30d history</strong> &amp; <strong>webhooks</strong>.';
+        : 'Unlock <strong>Monte Carlo scenarios</strong>, <strong>best-share ratio history</strong>, <strong>30d history</strong> &amp; <strong>webhooks</strong>. Models are not predictions.';
     }
     // BTC start pane: server-driven price (single source of truth) + tier.
     const btcPrice = document.getElementById('upgrade-btc-price');
@@ -3175,13 +3175,13 @@ function renderAccount(acct) {
     if (prox.insufficient_data) return;
 
     // Badges
-    if (dom.proxPctBadge) dom.proxPctBadge.textContent = prox.pct_of_network_cur != null ? prox.pct_of_network_cur.toFixed(6) + '% of network' : '—';
+    if (dom.proxPctBadge) dom.proxPctBadge.textContent = prox.pct_of_network_cur != null ? Number(prox.pct_of_network_cur).toPrecision(3) + '% of target' : '—';
     if (dom.proxAlltimeBadge) dom.proxAlltimeBadge.textContent = prox.all_time_best_diff_str ? 'peak ' + prox.all_time_best_diff_str : 'peak —';
-    if (dom.proxStreakBadge) dom.proxStreakBadge.textContent = prox.hot_streak ? 'hot streak!' : 'streak —';
+    if (dom.proxStreakBadge) dom.proxStreakBadge.textContent = prox.hot_streak ? 'share diff ↑ 1h' : 'share trend —';
 
     // Hero
-    if (dom.proxHeroPct) dom.proxHeroPct.textContent = prox.pct_of_network_cur != null ? prox.pct_of_network_cur.toFixed(4) + '%' : '—';
-    if (dom.proxHeroSub) dom.proxHeroSub.textContent = prox.next_milestone_label || 'of network difficulty';
+    if (dom.proxHeroPct) dom.proxHeroPct.textContent = prox.pct_of_network_cur != null ? Number(prox.pct_of_network_cur).toPrecision(3) + '%' : '—';
+    if (dom.proxHeroSub) dom.proxHeroSub.textContent = 'best-share / target ratio';
     if (dom.proxHeroBest) dom.proxHeroBest.textContent = 'best ' + (prox.all_time_best_diff_str || '—');
 
     // SVG arc — animate stroke-dashoffset
@@ -3214,7 +3214,7 @@ function renderAccount(acct) {
     if (dom.proxChance) dom.proxChance.textContent = prox.chance_per_share_label || '—';
     if (dom.proxTime) dom.proxTime.textContent = prox.expected_time_human || '—';
     if (dom.proxTimeSub && prox.blocks_per_year != null) {
-      dom.proxTimeSub.textContent = '~' + prox.blocks_per_year.toFixed(4) + ' blocks/yr @ current HR';
+      dom.proxTimeSub.textContent = '~' + Number(prox.blocks_per_year).toPrecision(3) + ' model avg blocks/yr';
     }
     if (dom.proxDistance) dom.proxDistance.textContent = prox.distance_label || '—';
     if (dom.proxTrend) dom.proxTrend.textContent = (prox.trend_1h_pct != null ? (prox.trend_1h_pct >= 0 ? '+' : '') + prox.trend_1h_pct.toFixed(1) + '%' : '—') + ' · ' + (prox.trend_label || 'flat');
@@ -3287,7 +3287,7 @@ function renderAccount(acct) {
   }
 
   // ══════════════════════════════════════════════════════════════════════
-  // QUANTUM LOCK HEALTH SCORE — composite confidence score (0-100)
+  // SESSION WORK SIGNAL — legacy payload key `quantum_lock` (0-100 heuristic)
   // ══════════════════════════════════════════════════════════════════════
 
   function renderQuantumLock(prox) {
@@ -3297,7 +3297,7 @@ function renderAccount(acct) {
       if (dom.qlStatusBadge) dom.qlStatusBadge.textContent = 'NO DATA';
       if (dom.qlScoreBadge) dom.qlScoreBadge.textContent = '0/100';
       if (dom.qlBarFill) dom.qlBarFill.style.width = '0%';
-      if (dom.qlLabel) dom.qlLabel.textContent = 'awaiting share data — submit share to compute quantum lock';
+      if (dom.qlLabel) dom.qlLabel.textContent = 'Awaiting share data. This heuristic is not block probability, device health or a prediction.';
       _setQlComp('ql-comp-shares', 0, 30);
       _setQlComp('ql-comp-prox', 0, 40);
       _setQlComp('ql-comp-power', 0, 20);
@@ -3308,7 +3308,7 @@ function renderAccount(acct) {
     if (dom.qlStatusBadge) dom.qlStatusBadge.textContent = ql.status || 'TRACKING';
     if (dom.qlScoreBadge) dom.qlScoreBadge.textContent = Math.round(score) + '/100';
     if (dom.qlBarFill) dom.qlBarFill.style.width = score + '%';
-    if (dom.qlLabel) dom.qlLabel.textContent = ql.label || '';
+    if (dom.qlLabel) dom.qlLabel.textContent = (ql.label || 'Session work signal') + ' This score does not change the next-hash odds.';
     const comps = ql.components || {};
     _setQlComp('ql-comp-shares', comps.shares, 30);
     _setQlComp('ql-comp-prox', comps.proximity, 40);
@@ -3519,20 +3519,23 @@ function renderAccount(acct) {
     if (dom.pFiatDay) dom.pFiatDay.textContent = fiatPerCur(view.fiatDay[cur]);
     if (dom.pFiatDayWeek) dom.pFiatDayWeek.textContent = fiatPerCur(view.fiatWeek[cur]) + '/week';
     if (dom.pFiatMonth) dom.pFiatMonth.textContent = fiatPerCur(view.fiatMonth[cur]);
-    // Break-even: rental → max rental cost per TH/day; solo → expected time to
-    // block (matches the BREAK-EVEN tooltip: 'no modo SOLO mostra o tempo
-    // esperado até o próximo bloco').
+    const thresholdLabel = document.getElementById('p-breakeven-label');
+    // The legacy shared cell remains for compatibility. Its visible label
+    // changes by mode so a statistical mean is never presented as break-even.
     if (dom.pBreakeven) {
       if (_profitMode === 'solo' && view.soloStats && view.soloStats.expectedDays != null) {
+        if (thresholdLabel) thresholdLabel.childNodes[0].nodeValue = 'MODEL MEAN INTERVAL ';
         dom.pBreakeven.textContent = fmt.secsToHuman(view.soloStats.expectedDays * 86400);
-        if (dom.pBreakevenSub) dom.pBreakevenSub.textContent = 'to block';
+        if (dom.pBreakevenSub) dom.pBreakevenSub.textContent = 'not a countdown';
       } else if (_profitMode === 'solo') {
         // Honest telemetry: without solo data the break-even shows '—', so
         // the sub-label must NOT claim 'to block' (that would imply solo
         // stats rendered when they didn't — the old copy misled the UI).
+        if (thresholdLabel) thresholdLabel.childNodes[0].nodeValue = 'MODEL MEAN INTERVAL ';
         dom.pBreakeven.textContent = '\u2014';
         if (dom.pBreakevenSub) dom.pBreakevenSub.textContent = 'no data';
       } else {
+        if (thresholdLabel) thresholdLabel.childNodes[0].nodeValue = 'MODELED COST THRESHOLD ';
         dom.pBreakeven.textContent = view.breakeven != null ? `$${Number(view.breakeven).toFixed(4)}` : '\u2014';
         if (dom.pBreakevenSub) dom.pBreakevenSub.textContent = '$/TH·d';
       }
@@ -3702,7 +3705,7 @@ function renderAccount(acct) {
     }
     const sim = simulateDifficultyShift(_bhBase, pct);
     diffEl.textContent = fmt.diff(sim.netDiff);
-    pEl.textContent = sim.pBlock != null ? (sim.pBlock * 100).toFixed(8) + '%' : '\u2014';
+    pEl.textContent = sim.pBlock != null ? (sim.pBlock * 100).toExponential(2) + '%' : '\u2014';
     etEl.textContent = sim.expectedTime ? fmt.secsToHuman(sim.expectedTime) : '\u2014';
     cumEl.textContent = sim.cumulativeP != null ? (sim.cumulativeP * 100).toFixed(4) + '%' : '\u2014';
   }
@@ -3722,26 +3725,26 @@ function renderAccount(acct) {
 
     document.getElementById('bh-network-diff') && (document.getElementById('bh-network-diff').textContent = fmt.diff(netDiff));
     document.getElementById('bh-best-diff') && (document.getElementById('bh-best-diff').textContent = fmt.diff(bestDiff));
-    document.getElementById('bh-chance-badge') && (document.getElementById('bh-chance-badge').textContent = pBlock != null ? (Number(pBlock) * 100).toFixed(6) + '% per share' : '—');
+    document.getElementById('bh-chance-badge') && (document.getElementById('bh-chance-badge').textContent = pBlock != null ? (Number(pBlock) * 100).toExponential(2) + '% per share' : '—');
     document.getElementById('bh-difficulty-badge') && (document.getElementById('bh-difficulty-badge').textContent = 'diff ' + fmt.diff(netDiff));
 
     // Distance
     if (bestDiff > 0 && netDiff > 0) {
       const dist = netDiff / bestDiff;
       document.getElementById('bh-distance') && (document.getElementById('bh-distance').textContent = dist.toFixed(1) + '×');
-      document.getElementById('bh-distance-sub') && (document.getElementById('bh-distance-sub').textContent = 'your best is ' + (dist > 1 ? 'smaller' : 'larger') + ' than network');
+      document.getElementById('bh-distance-sub') && (document.getElementById('bh-distance-sub').textContent = 'target / historical best-share ratio');
     } else {
       document.getElementById('bh-distance') && (document.getElementById('bh-distance').textContent = '—');
     }
 
     // P(block) per share
-    document.getElementById('bh-p-block') && (document.getElementById('bh-p-block').textContent = pBlock != null ? (Number(pBlock) * 100).toFixed(8) + '%' : '—');
+    document.getElementById('bh-p-block') && (document.getElementById('bh-p-block').textContent = pBlock != null ? (Number(pBlock) * 100).toExponential(2) + '%' : '—');
 
     // Expected time
     document.getElementById('bh-expected-time') && (document.getElementById('bh-expected-time').textContent = expectedTime ? fmt.secsToHuman(expectedTime) : '—');
     if (typeof expectedTime === 'number') {
       const blocksPerYear = expectedTime > 0 ? (365 * 86400) / expectedTime : 0;
-      document.getElementById('bh-expected-time-sub') && (document.getElementById('bh-expected-time-sub').textContent = '~' + blocksPerYear.toFixed(4) + ' blocks/yr');
+      document.getElementById('bh-expected-time-sub') && (document.getElementById('bh-expected-time-sub').textContent = '~' + blocksPerYear.toPrecision(3) + ' model avg blocks/yr · not a countdown');
     }
 
     // Cumulative P(block) — calculate from shares if not provided
@@ -3754,7 +3757,7 @@ function renderAccount(acct) {
     };
     const finalCumP = _calcCumP();
     document.getElementById('bh-cumulative-p') && (document.getElementById('bh-cumulative-p').textContent = finalCumP != null ? (Number(finalCumP) * 100).toFixed(4) + '%' : '—');
-    document.getElementById('bh-cumulative-p-sub') && (document.getElementById('bh-cumulative-p-sub').textContent = 'since session start');
+    document.getElementById('bh-cumulative-p-sub') && (document.getElementById('bh-cumulative-p-sub').textContent = 'session work; next hash remains independent');
 
     // Best diff sub
     document.getElementById('bh-best-diff-sub') && (document.getElementById('bh-best-diff-sub').textContent = bh.best_diff_worker ? 'by ' + bh.best_diff_worker : 'highest share found');
@@ -5132,8 +5135,8 @@ function renderAccount(acct) {
         <td class="mono ${spreadCls}" data-label="vs Best">${v.spread_vs_best_pct >= 0 ? '+' : ''}${escapeHtml(v.spread_vs_best_pct)}%</td>
         <td class="mono" data-label="vs 4h VWAP">${v.spread_vs_vwap_pct >= 0 ? '+' : ''}${escapeHtml(v.spread_vs_vwap_pct)}%</td>
         <td class="mono" data-label="Available">${escapeHtml(v.available_ph)} PH/s</td>
-        <td class="mono ${roiCls}" data-label="ROI">${roi}</td>
-        <td class="mono" data-label="EV (BTC)">${ev}</td>
+        <td class="mono ${roiCls}" data-label="Modeled Return Ratio">${roi}</td>
+        <td class="mono" data-label="Modeled Net (BTC)">${ev}</td>
         <td class="mono" data-label="Est. Cost (BTC)" title="est. cost for the offer's listed duration">${costBtc}</td>
         <td data-label="Risk Tier"><span class="mkt-table__tier ${tierCls}">${escapeHtml(v.risk_tier_label)}</span></td>
         <td class="${recCls}" data-label="Recommendation">${escapeHtml(v.recommendation)}</td>
@@ -5710,10 +5713,11 @@ function renderAccount(acct) {
     const chg = (f.projected_change_pct >= 0 ? '+' : '') + Number(f.projected_change_pct).toFixed(0) + '%';
     el.className = 'rentals-timing__forecast ' + cls;
     el.innerHTML = '<span class="rentals-timing__fc-icon">' + arrow + '</span>' +
-      '<span class="rentals-timing__fc-body"><b>PRÓXIMO AJUSTE DE DIFF</b> · ' +
+      '<span class="rentals-timing__fc-body"><b>ESTIMATIVA DO RETARGET ATUAL</b> · ' +
       escapeHtml(chg) + ' em ~' + Number(f.hours_to_adjustment).toFixed(0) + 'h ' +
       '(blocos a cada ' + Number(f.avg_block_time_s).toFixed(0) + 's)' +
-      '<div class="rentals-timing__fc-verdict">' + escapeHtml(String(f.verdict || '')) + '</div></span>';
+      '<div class="rentals-timing__fc-verdict">' + escapeHtml(String(f.verdict || '')) +
+      ' · Fonte: snapshots locais; janela: até 100 amostras; unidades: % e horas; premissa: cadência recente constante. Não é previsão garantida.</div></span>';
   }
 
   // Risk alerts fired on this panel load (worst-rig top-N + concentration) —
@@ -7968,11 +7972,11 @@ function renderAccount(acct) {
       'hashrate': 'Current hashrate is **{hr}**. This is the speed at which your miners are computing SHA-256 hashes. To improve: add more ASICs, optimize your fleet, or rent hashpower from the market.',
       'temperature': 'Monitoring fleet temperature is critical. Keep ASICs below 75°C for optimal lifespan. Check the Axe Fleet panel for per-device telemetry.',
       'probability': 'Block finding probability depends on your hashrate vs the network difficulty. Currently {pblock}. With solo mining, each share is an independent lottery ticket.',
-      'difficulty': 'Network difficulty adjusts every 2016 blocks (~2 weeks). Higher difficulty = more competition. Your best difficulty shows how close you\'ve come to finding a block.',
-      'best diff': 'Your best difficulty is the highest share difficulty you\'ve found. The closer to network difficulty, the closer to a block.',
+      'difficulty': 'Network difficulty adjusts every 2016 blocks. Your best difficulty is historical context only; it is not progress toward a block.',
+      'best diff': 'Best difficulty is the highest observed share difficulty. It is historical context, not progress, and does not change the next-hash odds.',
       'market': 'Hashrate market data shows rental prices from various providers. Compare costs and expected value before renting hashpower.',
       'fleet': 'Your fleet dashboard shows {fleet} devices. Each device reports hashrate, temperature, power draw, and shares. Monitor for anomalies.',
-      'profitability': 'Profitability depends on hashrate, power cost, and BTC price. Use the Profitability panel to estimate returns across pool, solo, and rental modes.',
+      'profitability': 'Scenario economics uses the current hashrate, difficulty, configured costs and BTC price. It is a constant-input estimate, not a profit promise.',
       'hello': 'I\'m CYPHER AI, your mining operations intelligence. Ask me about your fleet, probability calculations, market opportunities, or mining metrics.',
     };
 
@@ -11852,7 +11856,7 @@ dom.walletSave?.addEventListener('click', async () => {
     'wallet':      { title: 'WALLET',        desc: 'Conexão e status da wallet' },
     'fleet':       { title: 'FLEET',         desc: 'Visão dos miners' },
     'live':        { title: 'LIVE MINING',   desc: 'Dados ao vivo' },
-    'probability': { title: 'PROBABILITY',   desc: 'Chance e probabilidade' },
+    'probability': { title: 'BLOCK MODEL',   desc: 'Estatísticas por janela · sem prazo ou previsão' },
     'market':      { title: 'HASH MARKET',   desc: 'Mercado e cotações' },
     'rentals':     { title: 'RENTALS',       desc: 'Performance dos aluguéis (MRR + Braiins)' },
     'alerts':      { title: 'ALERTS',        desc: 'Alertas e eventos' },

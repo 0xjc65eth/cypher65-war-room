@@ -750,7 +750,24 @@ def compute_profitability(
                     # Pool fee info
                     "pool_fee_info": f"Pool fee: {pool_fee_pct}% · Orphan rate: {orphan_pct}% · Reward: {reward}+{fee} BTC/block",
                     # Disclaimer
-                    "disclaimer": "Estimates based on current hashrate, network difficulty, and BTC price. Actual results vary significantly due to variance, pool luck, and difficulty changes.",
+                    "disclaimer": "Constant-input economic scenarios, not profit promises. Source: current hashrate, network difficulty, reward/fees, BTC price and configured costs; windows: 1/7/30/365 days as labeled; units: BTC, fiat and USD/TH/day. Actual results vary with mining variance, fees, price, uptime and difficulty.",
+                    "model_context": {
+                        "source": "current worker/network snapshot, configured costs, reward/fees and latest BTC price",
+                        "windows": ["1 day", "7 days", "30 days", "365 days"],
+                        "units": [
+                            "BTC/day",
+                            "fiat/day",
+                            "fiat/30 days",
+                            "USD/TH/day",
+                            "blocks/year",
+                        ],
+                        "assumptions": [
+                            "constant hashrate",
+                            "constant network difficulty",
+                            "constant price",
+                            "constant configured costs and fees",
+                        ],
+                    },
                 }
             )
             # P0-2: unified solo vs pool vs lease Decision Matrix (pure agg).

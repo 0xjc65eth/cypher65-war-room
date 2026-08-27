@@ -147,7 +147,7 @@
 
 ### Fase 4 — Pesquisa top-tier (Contínuo) · Squad Epsilon
 - [ ] Benchmarking de features (GitHub/BitcoinTalk/Reddit): ASIC boost (Braiins OS+/VNish), eficiência J/TH por device, latency/ping por pool (stale share ratio), hardware errors >1% → alerta.
-- [ ] Treinar Quantum Lock com os shares reais coletados na Fase 1.
+- [ ] Validar ou remover o legacy session-work heuristic com shares reais; não tratá-lo como probabilidade, confiança ou saúde.
 
 ---
 

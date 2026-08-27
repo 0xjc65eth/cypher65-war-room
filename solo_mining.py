@@ -134,31 +134,46 @@ def calc_expected_time(hashrate_hs, difficulty):
 
 
 def calc_best_diff_expected(hashrate_hs, duration_seconds):
-    """Expected best share difficulty after N hashes."""
+    """Characteristic best-share difficulty scale after N hashes.
+
+    The legacy function/key name is retained for callers. ``N / 2**32`` is
+    a scale estimate, not an expected maximum and not progress toward a block.
+    """
     total_hashes = hashrate_hs * duration_seconds
     expected_best_diff = total_hashes / HASHES_PER_DIFF
     return {
         "total_hashes": total_hashes,
         "expected_best_diff": expected_best_diff,
+        "model_scale_diff": expected_best_diff,
+        "note": "Characteristic scale only; not a prediction or progress toward a block.",
     }
 
 
 def calc_prob_best_diff_exceeds(hashrate_hs, duration_seconds, threshold_diff):
     """
     Probability that the best share in a period exceeds a threshold difficulty.
-    Uses exponential approximation: P(best > X) ≈ 1 - (1 - e^(-X/avg_share))^N
+    For each hash, P(difficulty >= X) = 1 / (X * 2^32). For N independent
+    hashes, P(at least one) = 1 - (1 - p)^N. Uses log1p/expm1 for tiny p.
     """
     total_hashes = hashrate_hs * duration_seconds
-    n_shares = total_hashes / HASHES_PER_DIFF  # approximate share count
-    avg_share_diff = 1.0  # per-hash expected
-    prob_one_exceeds = (
-        math.exp(-threshold_diff / avg_share_diff) if threshold_diff > 0 else 1
-    )
-    prob_at_least_one = 1 - (1 - prob_one_exceeds) ** max(1, n_shares)
+    n_shares = total_hashes / HASHES_PER_DIFF  # difficulty-1 work equivalents
+    if threshold_diff <= 0:
+        prob_at_least_one = 1.0
+    elif total_hashes <= 0:
+        prob_at_least_one = 0.0
+    else:
+        probability_per_hash = min(1.0, 1.0 / (threshold_diff * HASHES_PER_DIFF))
+        if probability_per_hash >= 1.0:
+            prob_at_least_one = 1.0
+        else:
+            prob_at_least_one = -math.expm1(
+                total_hashes * math.log1p(-probability_per_hash)
+            )
     return {
         "n_shares_approx": n_shares,
         "p_best_exceeds_threshold": prob_at_least_one,
         "p_best_exceeds_pct": prob_at_least_one * 100,
+        "note": "Window probability under independent hashes; historical best shares do not affect future hashes.",
     }
 
 
@@ -282,11 +297,11 @@ def compare_rentals(
         prob = calc_block_probability(hashrate_hs, difficulty, duration_seconds)
         exp_time = calc_expected_time(hashrate_hs, difficulty)
 
-        # EV calculation (simplified: assume finder gets 1 BTC bonus)
+        # Modeled net value (simplified: configured pool finder payout assumption)
         block_reward = 3.125  # current subsidy
-        # EV = P(block) * (1 BTC finder bonus + proportional share of remaining reward)
-        # Conservative estimate: finder bonus is the main value driver for solo miners
-        finder_bonus = 1.0  # parasite.space guarantees 1 BTC to block finder
+        # This is a scenario assumption, not a guarantee; pool terms may change
+        # and must be independently verified before spending.
+        finder_bonus = 1.0
         proportional_share = (
             prob["p_at_least_1_block"] * block_reward * 0.01
         )  # ~1% of block reward as pool share
@@ -306,6 +321,7 @@ def compare_rentals(
                 "expected_time_days": exp_time["days"],
                 "expected_time_years": exp_time["years"],
                 "ev_btc": ev_liquido,
+                "economics_note": "Modeled net value using a 1 BTC finder-payout assumption; verify current pool terms. Not a profit promise.",
             }
         )
 
@@ -381,18 +397,20 @@ def format_calc_output(hashrate, difficulty, duration_hours, user=None):
     lines.append(f"  Hashes per block.... {prob['hashes_per_block']:,.0f}")
     lines.append(f"  Block rate........... {prob['block_rate_per_sec']:.6e} blocks/s")
     lines.append(f"  Lambda(t)............ {prob['lambda']:.6e}")
-    lines.append(f"  P(>=1 block)......... {prob['p_at_least_1_block_pct']:.6f}%")
+    lines.append(f"  P(>=1 block)......... {prob['p_at_least_1_block_pct']:.3g}%")
     lines.append(f"  P(0 blocks).......... {prob['p_zero_blocks_pct']:.2f}%")
     lines.append("")
-    lines.append("─── Expected Time ───")
-    lines.append(f"  E[time to block].... {exp_time['days']:,.1f} days")
+    lines.append("─── Model Mean Interval (not a countdown) ───")
+    lines.append(f"  Mean interval....... {exp_time['days']:,.1f} days")
     lines.append(f"                    = {exp_time['years']:,.2f} years")
     lines.append("")
-    lines.append("─── Best Difficulty (Estimated) ───")
+    lines.append("─── Best-Share Difficulty Scale (not progress) ───")
     lines.append(f"  Total hashes......... {best_diff['total_hashes']:,.0f}")
-    lines.append(f"  Expected best diff... {best_diff['expected_best_diff']:,.1f}")
+    lines.append(f"  Model scale diff..... {best_diff['model_scale_diff']:,.1f}")
     lines.append("")
-    lines.append("[WARN] Solo mining is a lottery. EV is negative vs pool mining.")
+    lines.append(
+        "[WARN] Statistical model only: no deadline, progress signal, or profit guarantee."
+    )
     lines.append("[OK] Calculation complete.")
 
     return "\n".join(lines)

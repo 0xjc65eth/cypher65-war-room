@@ -20,7 +20,7 @@
 ## Template 1: Reddit r/BitcoinMining
 
 ```
-Title: [Beta] Self-hosted mining dashboard — fleet telemetry, probability engine, hash market comparison (free PRO keys)
+Title: [Beta] Self-hosted mining dashboard — fleet telemetry, block-statistics model, hash market comparison (free PRO keys)
 
 ---
 
@@ -31,11 +31,11 @@ I've been building a self-hosted command center for Bitcoin SHA-256 mining opera
 **What it does:**
 
 - **Fleet telemetry** — real-time hashrate, temperature, fan speed, efficiency (J/TH), uptime for every ASIC (Antminer, Bitaxe, NerdQaxe, etc.)
-- **Probability engine** — P(block)/share based on your actual hashrate and current difficulty (not a calculator, Poisson-based with variance)
+- **Block model** — P(≥1) by explicit window from current hashrate/difficulty; statistical estimate, never countdown or progress
 - **Hash market comparison** — live prices from Braiins, NiceHash, MRR, and Parasite side by side
 - **Rental P/L tracking** — cost vs. market per contract, worst-rig leaderboard, arbitrage alerts
 - **Auto-Pilot** — alert when a miner goes offline, restart rules (with consent, safety checks)
-- **Profitability** — pool/solo/rental/lease break-even with real electricity costs
+- **Scenario economics** — pool/solo/rental/lease modeled cost threshold with configured electricity costs; no profit promise
 
 **What it's NOT:**
 
@@ -54,7 +54,7 @@ I've been building a self-hosted command center for Bitcoin SHA-256 mining opera
 
 **What you get:**
 
-- 30-day free PRO access (Probability Engine, Hash Market, Rentals Hub, Auto-Pilot advisory)
+- 30-day free PRO access (Block Model, Hash Market, Rentals Hub, Auto-Pilot advisory)
 - Direct input on the roadmap
 - Your name in the credits (if you want)
 
@@ -133,7 +133,7 @@ I've been building a self-hosted mining dashboard that pulls data from Braiins (
 - Fleet telemetry across all your rigs (not just what the pool shows)
 - Live hash market comparison (Braiins vs NiceHash vs MRR)
 - Rental P/L tracking with arbitrage alerts
-- Probability engine (P(block)/share based on your real hashrate)
+- Block model (P(block)/share based on current hashrate; not a prediction)
 - Auto-Pilot alerts (miner offline, overheating)
 
 **What it doesn't do:**
@@ -192,7 +192,7 @@ CYPHER65 War Room — one dashboard, all your data.
 • Fleet: hashrate, temp, efficiency per rig
 • Market: Braiins vs NiceHash vs MRR live prices
 • Rentals: P/L per contract, arbitrage alerts
-• Probability: P(block) based on YOUR hashrate
+• Block Model: P(block) based on YOUR current hashrate and an explicit window — not a deadline
 
 ---
 
@@ -315,7 +315,7 @@ Quick start:
 What to try:
 → Fleet tab: see your rigs in real time
 → Market tab: compare hash prices across providers
-→ Probability tab: see P(block) for your hashrate
+→ Block Model tab: see P(block) for your hashrate and selected window
 → Rentals tab: track your rental P/L (if applicable)
 
 Feedback: Open a GitHub Issue (label: beta-feedback) or DM me.
