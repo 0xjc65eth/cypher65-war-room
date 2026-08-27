@@ -2975,10 +2975,32 @@ tr:hover td { background: var(--bg-hover); }
 .upgrade-modal__divider { display: flex; align-items: center; gap: 8px; margin: 10px 0; color: var(--text-tertiary); font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; }
 .upgrade-modal__divider::before, .upgrade-modal__divider::after { content: ''; flex: 1; height: 1px; background: var(--border-subtle); }
 .upgrade-modal__redeem { display: flex; gap: 6px; }
+.upgrade-modal__redeem .field__input { min-width: 0; }
 .upgrade-modal__activate { white-space: nowrap; font-family: var(--font-mono); }
+.upgrade-availability {
+  margin-bottom: 14px; padding: 10px 12px; border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md); color: var(--text-secondary); font-size: 11px;
+  line-height: 1.5; animation: upgrade-state-enter 180ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+.upgrade-availability[hidden] { display: none; }
+.upgrade-availability strong { display: block; color: var(--text-primary); }
+.upgrade-availability--loading { display: flex; align-items: center; gap: 8px; }
+.upgrade-availability--unavailable { background: var(--bg-surface); }
+.upgrade-availability--error { color: var(--red); border-color: var(--red-dim); }
+.upgrade-availability__skeleton {
+  display: inline-block; width: 44px; height: 8px; flex: 0 0 auto;
+  border-radius: var(--radius-sm); background: var(--border-subtle);
+}
+.modal__status--error { color: var(--red); }
+.modal__status--success { color: var(--green); }
+@keyframes upgrade-state-enter {
+  from { opacity: 0; transform: translateY(4px); filter: blur(2px); }
+  to { opacity: 1; transform: translateY(0); filter: blur(0); }
+}
 
 /* ── Upgrade modal — Bitcoin tab (P4 #249) ───────────────────────── */
 .upgrade-tabs { display: flex; gap: 6px; margin-bottom: 14px; border-bottom: 1px solid var(--border-subtle); }
+.upgrade-tabs[hidden], .upgrade-modal .btn[hidden] { display: none; }
 .upgrade-tab {
   appearance: none; background: none; border: none; cursor: pointer;
   padding: 8px 12px; font-family: var(--font-mono); font-size: 11px;
@@ -3018,6 +3040,11 @@ tr:hover td { background: var(--bg-hover); }
 .upgrade-btc__key { font-size: 11px; color: var(--text-secondary); text-align: center; word-break: break-all; }
 @media (prefers-reduced-motion: reduce) {
   .upgrade-tab { transition: none; }
+  .upgrade-availability { animation: none; }
+}
+@media (max-width: 420px) {
+  .upgrade-modal__redeem { flex-direction: column; }
+  .upgrade-modal__activate { width: 100%; }
 }
 .braiins-buy-modal { width: min(520px, 92vw); }
 .braiins-buy__quote { font-family: var(--font-mono); font-size: 12px; color: var(--brand); background: var(--brand-bg); border: 1px solid var(--brand-dim); border-radius: var(--radius-md); padding: 8px 12px; }

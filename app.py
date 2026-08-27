@@ -15,6 +15,7 @@ import collections
 import logging
 import hmac
 import re
+import secrets
 from typing import Any, Dict, List, Optional
 from datetime import datetime, timezone
 
@@ -5243,9 +5244,19 @@ def api_license_status():
     payload with the BTC payment surface (P4 #248/#250): the fixed payment
     address + which BTC provider is live."""
     body = _license_status()
+    card = _payments.payment_capabilities()
+    body["payments"] = card["provider"]
+    body["payment_plans"] = card["plans"]
     body["btcpay"] = bool(_btcpay.btcpay_configured())
     body["webln"] = bool(_btcpay.webln_invoice_available())
     body["payment_btc_address"] = _btcpay.payment_address()
+    checkout_available = bool(card["available"] or body["btcpay"] or body["webln"])
+    body["checkout_state"] = "available" if checkout_available else "unavailable"
+    body["payment_state"] = (
+        "confirmed"
+        if body.get("access_source") in ("lemon_squeezy", "btcpay", "webln")
+        else "not_started" if checkout_available else "checkout_unavailable"
+    )
     return jsonify(body)
 
 
@@ -5254,18 +5265,21 @@ def api_upgrade_checkout():
     """Revenue: create a checkout — BTC (BTCPay/WebLN, P4 #248) or card
     (Lemon Squeezy legacy, R1).
 
-    Off-by-default — returns 503 until the operator configures at least one
-    provider (LEMON_SQUEEZY_* for card, BTCPAY_* for BTC).
+    Off-by-default — returns 503 until the operator configures BTCPay or the
+    WebLN fallback. The legacy Lemon Squeezy card path remains unavailable
+    until authenticated customer license delivery exists.
     """
     body = request.get_json(silent=True) or {}
-    plan = (body.get("plan") or "pro").strip()
+    plan = str(body.get("plan") or "pro").strip().lower()
+    if plan not in ("pro", "premium"):
+        return jsonify({"error": "unknown plan", "code": "INVALID_PLAN"}), 400
     # Default "card" (Lemon Squeezy legacy) preserves the existing frontend
     # (app.js doesn't send `method` yet — the BTC tab lands with Issue #249).
-    method = (body.get("method") or "card").strip().lower()
-    email = (body.get("email") or "").strip()
+    method = str(body.get("method") or "card").strip().lower()
+    email = str(body.get("email") or "").strip()
     # Issue #155: anonymous browser session id — attributed to the funnel on
     # both payment channels (never stored raw; PII-free random token).
-    funnel_id = (body.get("funnel_id") or "").strip()[:64]
+    funnel_id = str(body.get("funnel_id") or "").strip()[:64]
     if method in ("btc", "lightning", "onchain"):
         return _api_upgrade_checkout_btc(plan, method, email, funnel_id)
     if method == "card":
@@ -5274,13 +5288,20 @@ def api_upgrade_checkout():
 
 
 def _api_upgrade_checkout_card(plan: str, email: str, funnel_id: str):
-    """Lemon Squeezy (card) checkout — R1 legacy path, unchanged behavior."""
-    if not _payments.payments_configured():
+    """Legacy card path; fail closed until key delivery is implemented."""
+    if not _payments.payments_configured(plan):
+        _log_audit(
+            "default",
+            "payment.checkout_unavailable",
+            details={"provider": "lemon_squeezy", "plan": plan},
+        )
         return (
             jsonify(
                 {
                     "error": "Payments are not configured on this server",
                     "code": "PAYMENTS_NOT_CONFIGURED",
+                    "checkout_state": "unavailable",
+                    "payment_state": "checkout_unavailable",
                     "upgrade": {"plan": "PRO", "price_usd_month": 9},
                 }
             ),
@@ -5288,16 +5309,36 @@ def _api_upgrade_checkout_card(plan: str, email: str, funnel_id: str):
         )
     url = _payments.create_checkout(plan=plan, email=email, funnel_id=funnel_id)
     if not url:
+        _log_audit(
+            "default",
+            "payment.checkout_failed",
+            details={"provider": "lemon_squeezy", "plan": plan},
+        )
         return (
             jsonify(
                 {
                     "error": "Could not create a checkout — check LEMON_SQUEEZY_* env vars",
                     "code": "CHECKOUT_FAILED",
+                    "checkout_state": "error",
+                    "payment_state": "error",
                 }
             ),
             502,
         )
-    return jsonify({"checkout_url": url, "plan": plan, "method": "card"})
+    _log_audit(
+        "default",
+        "payment.checkout_started",
+        details={"provider": "lemon_squeezy", "plan": plan},
+    )
+    return jsonify(
+        {
+            "checkout_url": url,
+            "plan": plan,
+            "method": "card",
+            "checkout_state": "ready",
+            "payment_state": "pending",
+        }
+    )
 
 
 def _api_upgrade_checkout_btc(plan: str, method: str, email: str, funnel_id: str):
@@ -5318,7 +5359,25 @@ def _api_upgrade_checkout_btc(plan: str, method: str, email: str, funnel_id: str
                 # confirm route resolves the plan from the LOCAL ledger
                 # (Issue #249 — same zero-network rule as the BTCPay path).
                 if inv.get("payment_hash"):
-                    _btcpay.record_invoice_plan(inv["payment_hash"], plan)
+                    recorded = _btcpay.record_invoice_plan(inv["payment_hash"], plan)
+                    if not recorded:
+                        return (
+                            jsonify(
+                                {
+                                    "error": "Could not secure the Lightning invoice",
+                                    "code": "CHECKOUT_FAILED",
+                                    "checkout_state": "error",
+                                    "payment_state": "error",
+                                }
+                            ),
+                            502,
+                        )
+                    _log_audit(
+                        "default",
+                        "payment.checkout_started",
+                        target=str(inv["payment_hash"])[:32],
+                        details={"provider": "webln", "plan": plan},
+                    )
                 return jsonify(
                     {
                         "ok": True,
@@ -5328,13 +5387,22 @@ def _api_upgrade_checkout_btc(plan: str, method: str, email: str, funnel_id: str
                         "bolt11": inv["bolt11"],
                         "amount_sat": inv["amount_sat"],
                         "payment_hash": inv.get("payment_hash", ""),
+                        "checkout_state": "ready",
+                        "payment_state": "pending",
                     }
                 )
+        _log_audit(
+            "default",
+            "payment.checkout_unavailable",
+            details={"provider": "bitcoin", "plan": plan},
+        )
         return (
             jsonify(
                 {
                     "error": "Payments are not configured on this server",
                     "code": "PAYMENTS_NOT_CONFIGURED",
+                    "checkout_state": "unavailable",
+                    "payment_state": "checkout_unavailable",
                     "upgrade": {"plan": "PRO", "price_usd_month": 9},
                 }
             ),
@@ -5342,11 +5410,18 @@ def _api_upgrade_checkout_btc(plan: str, method: str, email: str, funnel_id: str
         )
     invoice = _btcpay.create_invoice(plan=plan, funnel_id=funnel_id, buyer_email=email)
     if not invoice or not invoice.get("id"):
+        _log_audit(
+            "default",
+            "payment.checkout_failed",
+            details={"provider": "btcpay", "plan": plan},
+        )
         return (
             jsonify(
                 {
                     "error": "Could not create a Bitcoin invoice — check BTCPAY_* env vars",
                     "code": "CHECKOUT_FAILED",
+                    "checkout_state": "error",
+                    "payment_state": "error",
                 }
             ),
             502,
@@ -5354,7 +5429,25 @@ def _api_upgrade_checkout_btc(plan: str, method: str, email: str, funnel_id: str
     # Persist invoice_id → plan at checkout time so the WEBHOOK resolves the
     # plan WITHOUT any network call (BTCPay could be down during delivery;
     # a live get_invoice() there could silently downgrade PREMIUM→PRO).
-    _btcpay.record_invoice_plan(invoice["id"], plan)
+    status_token = secrets.token_urlsafe(32)
+    if not _btcpay.record_invoice_plan(invoice["id"], plan, status_token=status_token):
+        return (
+            jsonify(
+                {
+                    "error": "Could not secure the Bitcoin invoice",
+                    "code": "CHECKOUT_FAILED",
+                    "checkout_state": "error",
+                    "payment_state": "error",
+                }
+            ),
+            502,
+        )
+    _log_audit(
+        "default",
+        "payment.checkout_started",
+        target=str(invoice["id"])[:32],
+        details={"provider": "btcpay", "plan": plan},
+    )
     amount_sat = _btcpay.plan_amount_sats(plan)
     return jsonify(
         {
@@ -5363,6 +5456,7 @@ def _api_upgrade_checkout_btc(plan: str, method: str, email: str, funnel_id: str
             "provider": "btcpay",
             "plan": plan,
             "invoice_id": invoice["id"],
+            "status_token": status_token,
             # Hosted BTCPay checkout: renders its OWN per-invoice QR/BIP-21
             # (a payment to the fixed address would never settle this invoice
             # — BTCPay tracks per-invoice addresses). The fixed
@@ -5371,6 +5465,8 @@ def _api_upgrade_checkout_btc(plan: str, method: str, email: str, funnel_id: str
             "checkout_url": invoice.get("checkoutLink") or "",
             "amount_sat": amount_sat,
             "expires_in_min": 15,
+            "checkout_state": "ready",
+            "payment_state": "pending",
         }
     )
 
@@ -5383,15 +5479,37 @@ def api_upgrade_btc_status(invoice_id: str):
     so the Bitcoin tab can flip to "PRO ativado ✓" the moment it Settles.
     Off-by-default → 503 when BTCPay isn't configured."""
     if not _btcpay.btcpay_configured():
-        return jsonify({"error": "not configured"}), 503
+        return (
+            jsonify(
+                {"error": "not configured", "payment_state": "checkout_unavailable"}
+            ),
+            503,
+        )
+    # Never put the bearer-like token in the URL: query strings leak into
+    # browser history, reverse-proxy access logs and referrer telemetry.
+    status_token = str(request.headers.get("X-Checkout-Token") or "").strip()
+    if not _btcpay.verify_invoice_status_token(invoice_id, status_token):
+        _log_audit(
+            "default",
+            "payment.status_rejected",
+            target=str(invoice_id)[:32],
+            details={"provider": "btcpay", "reason": "invalid_token"},
+        )
+        return (
+            jsonify({"error": "status access denied", "payment_state": "invalid"}),
+            403,
+        )
+    if not _btcpay.invoice_hash_known(invoice_id):
+        return jsonify({"error": "invoice not found", "payment_state": "invalid"}), 404
     inv = _btcpay.get_invoice(invoice_id)
     if not inv:
-        return jsonify({"error": "invoice not found"}), 404
+        return jsonify({"error": "invoice not found", "payment_state": "error"}), 404
     settled = str(inv.get("status") or "").lower() == "settled"
     # Issue #249: once Settled, surface the issued key from the local ledger
     # so the frontend can apply it and flip to "PRO ativado ✓" without
     # waiting for the webhook round-trip (webhook may still be in flight).
     license_key = _btcpay.fulfilled_license_key(invoice_id) if settled else ""
+    normalized_state = _btcpay.payment_state(inv.get("status"), bool(license_key))
     return jsonify(
         {
             "ok": True,
@@ -5399,6 +5517,7 @@ def api_upgrade_btc_status(invoice_id: str):
             "status": inv.get("status"),
             "amount": inv.get("amount"),
             "license_key": license_key,
+            "payment_state": normalized_state,
         }
     )
 
@@ -5416,7 +5535,12 @@ def api_upgrade_webln_confirm():
     Off-by-default: 503 unless an LN invoice endpoint is configured.
     """
     if not _btcpay.webln_invoice_available():
-        return jsonify({"error": "not configured"}), 503
+        return (
+            jsonify(
+                {"error": "not configured", "payment_state": "checkout_unavailable"}
+            ),
+            503,
+        )
     body = request.get_json(silent=True) or {}
     payment_hash = str(body.get("payment_hash") or "").strip()
     preimage = str(body.get("preimage") or "").strip()
@@ -5429,11 +5553,21 @@ def api_upgrade_webln_confirm():
                 {
                     "error": "payment proof rejected — preimage does not match the invoice",
                     "code": "WEBLN_PROOF_REJECTED",
+                    "payment_state": "invalid",
                 }
             ),
             403,
         )
-    return jsonify({"ok": True, "license_key": key}), 200
+    return (
+        jsonify(
+            {
+                "ok": True,
+                "license_key": key,
+                "payment_state": "confirmed" if key else "pending",
+            }
+        ),
+        200,
+    )
 
 
 @app.route("/api/payments/btcpay/webhook", methods=["POST"])
@@ -5447,11 +5581,16 @@ def api_payments_btcpay_webhook():
     raw = request.get_data()
     sig = (request.headers.get("x-btcpay-sig") or "").strip()
     if not _btcpay.verify_webhook_signature(raw, sig):
+        _log_audit(
+            "default",
+            "payment.webhook_rejected",
+            details={"provider": "btcpay", "reason": "invalid_signature"},
+        )
         return jsonify({"error": "invalid signature"}), 403
     payload = request.get_json(silent=True) or {}
     key = _btcpay.handle_invoice_webhook(payload)
     if key:
-        return jsonify({"ok": True, "license_key": key}), 200
+        return jsonify({"ok": True, "handled": True}), 200
     # Unhandled event (Processing/Expired/Invalid) — acknowledge, no-op.
     return jsonify({"ok": True, "handled": False}), 200
 
@@ -5462,16 +5601,21 @@ def api_payments_webhook():
 
     Server-to-server — no auth decorator; trust comes from the HMAC-SHA256
     signature over the raw body (x-signature header)."""
-    if not _payments.payments_configured():
+    if not _payments.webhook_configured():
         return jsonify({"error": "not configured"}), 400
     raw = request.get_data()
     sig = (request.headers.get("X-Signature") or "").strip()
     if not _payments.verify_webhook_signature(raw, sig):
+        _log_audit(
+            "default",
+            "payment.webhook_rejected",
+            details={"provider": "lemon_squeezy", "reason": "invalid_signature"},
+        )
         return jsonify({"error": "invalid signature"}), 403
     payload = request.get_json(silent=True) or {}
     key = _payments.handle_webhook(payload)
     if key:
-        return jsonify({"ok": True, "license_key": key}), 200
+        return jsonify({"ok": True, "handled": True}), 200
     # Unhandled event (subscription_created etc.) — acknowledge, no-op.
     return jsonify({"ok": True, "handled": False}), 200
 

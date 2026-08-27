@@ -485,35 +485,34 @@ def test_detect_tenant_worse_concentration(db, monkeypatch):
 
 def test_create_checkout_missing_env_returns_none(db, monkeypatch):
     monkeypatch.delenv("LEMON_SQUEEZY_API_KEY", raising=False)
+    monkeypatch.delenv("LEMON_SQUEEZY_WEBHOOK_SECRET", raising=False)
     monkeypatch.delenv("LEMON_SQUEEZY_STORE_ID", raising=False)
     monkeypatch.delenv("LEMON_SQUEEZY_VARIANT_ID", raising=False)
     assert payments.create_checkout() is None
 
 
-def test_create_checkout_success_returns_url(db, monkeypatch):
+def test_create_checkout_full_legacy_env_remains_disabled(db, monkeypatch):
     monkeypatch.setenv("LEMON_SQUEEZY_API_KEY", "k")
+    monkeypatch.setenv("LEMON_SQUEEZY_WEBHOOK_SECRET", "whsec")
     monkeypatch.setenv("LEMON_SQUEEZY_STORE_ID", "s")
     monkeypatch.setenv("LEMON_SQUEEZY_VARIANT_ID", "42")
 
-    class _FakeResp:
-        def raise_for_status(self):
-            pass
-        def json(self):
-            return {"data": {"attributes": {"url": "https://buy.ls/x"}}}
+    def _unexpected_request(*args, **kwargs):
+        raise AssertionError("disabled checkout must not contact provider")
 
-    monkeypatch.setattr(payments.requests, "post",
-                        lambda *a, **k: _FakeResp())
+    monkeypatch.setattr(payments.requests, "post", _unexpected_request)
     url = payments.create_checkout(plan="pro", email="a@b.co")
-    assert url == "https://buy.ls/x"
+    assert url is None
 
 
-def test_create_checkout_network_error_returns_none(db, monkeypatch):
+def test_disabled_checkout_returns_before_legacy_network_call(db, monkeypatch):
     monkeypatch.setenv("LEMON_SQUEEZY_API_KEY", "k")
+    monkeypatch.setenv("LEMON_SQUEEZY_WEBHOOK_SECRET", "whsec")
     monkeypatch.setenv("LEMON_SQUEEZY_STORE_ID", "s")
     monkeypatch.setenv("LEMON_SQUEEZY_VARIANT_ID", "42")
 
-    def _boom(*a, **k):
-        raise payments.requests.RequestException("down")
+    def _boom(*args, **kwargs):
+        raise AssertionError("disabled checkout must not reach the network")
 
     monkeypatch.setattr(payments.requests, "post", _boom)
     assert payments.create_checkout() is None

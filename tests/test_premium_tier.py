@@ -8,8 +8,8 @@ Covers:
      200. paywall_view (tier=premium) entra no funil.
   4. license_status: premium payload (tier premium, upgrade None,
      ai_configured) + pro payload (upgrade PREMIUM).
-  5. payments._variant_months: LEMON_SQUEEZY_PREMIUM_VARIANT_ID → premium;
-     default → pro. create_checkout usa o variant do plan.
+  5. payments._variant_months: variantes conhecidas resolvem o plano; checkout
+     Lemon permanece desabilitado sem entrega autenticada da chave.
   6. Webhook order_created com variant premium → issue_license(plan='premium').
   7. /api/ai/query: open mode 200; licensed sem premium 402; premium 200.
   8. /api/admin/licenses: plan=premium aceito; plan inválido → 400.
@@ -221,54 +221,17 @@ def test_variant_months_premium(monkeypatch):
     _ls_env(monkeypatch, premium_variant="99")
     assert payments._variant_months("99") == ("premium", 12)
     assert payments._variant_months("10") == ("pro", 12)
-    assert payments._variant_months("") == ("pro", 12)
+    assert payments._variant_months("") is None
 
 
-def test_create_checkout_uses_premium_variant(monkeypatch):
+def test_create_checkout_premium_is_disabled_without_key_delivery(monkeypatch):
     _ls_env(monkeypatch, premium_variant="99")
-
-    captured = {}
-
-    class FakeResp:
-        ok = True
-
-        def raise_for_status(self):
-            return None
-
-        def json(self):
-            return {"data": {"attributes": {"url": "https://ls.test/checkout"}}}
-
-    def fake_post(url, **kwargs):
-        captured["url"] = url
-        captured["json"] = kwargs.get("json") or {}
-        return FakeResp()
-
-    monkeypatch.setattr(payments.requests, "post", fake_post)
-    url = payments.create_checkout(plan="premium", funnel_id="f_abc")
-    assert url == "https://ls.test/checkout"
-    attrs = captured["json"]["data"]["attributes"]
-    rel_variant = captured["json"]["data"]["relationships"]["variant"]["data"]["id"]
-    assert rel_variant == "99"
-    assert attrs["checkout_data"]["custom"]["plan"] == "premium"
+    assert payments.create_checkout(plan="premium", funnel_id="f_abc") is None
 
 
-def test_create_checkout_unknown_plan_falls_back_to_pro(monkeypatch):
+def test_create_checkout_unknown_plan_is_disabled(monkeypatch):
     _ls_env(monkeypatch, premium_variant="99")
-
-    def fake_post(url, **kwargs):
-        return FakeResp()
-
-    class FakeResp:
-        ok = True
-
-        def raise_for_status(self):
-            return None
-
-        def json(self):
-            return {"data": {"attributes": {"url": "u"}}}
-
-    monkeypatch.setattr(payments.requests, "post", fake_post)
-    assert payments.create_checkout(plan="bogus") is not None
+    assert payments.create_checkout(plan="bogus") is None
 
 
 def test_webhook_premium_variant_issues_premium_key(client, monkeypatch):
@@ -278,6 +241,7 @@ def test_webhook_premium_variant_issues_premium_key(client, monkeypatch):
         "data": {
             "id": "order-prem-1",
             "attributes": {
+                "store_id": 1,
                 "user_email": "buyer@example.com",
                 "first_order_item": {"variant_id": 99},
             },
@@ -291,7 +255,18 @@ def test_webhook_premium_variant_issues_premium_key(client, monkeypatch):
         headers={"X-Signature": sig, "Content-Type": "application/json"},
     )
     assert r.status_code == 200
-    issued = r.get_json().get("license_key")
+    assert r.get_json() == {"ok": True, "handled": True}
+    from services.db import get_db
+
+    conn = get_db()
+    try:
+        row = conn.execute(
+            "SELECT license_key FROM processed_webhooks WHERE order_id = ?",
+            ("order-prem-1",),
+        ).fetchone()
+    finally:
+        conn.close()
+    issued = row["license_key"] if row else ""
     assert issued
     assert licensing._key_valid(issued) is True
     assert licensing._key_plan(issued) == "premium"

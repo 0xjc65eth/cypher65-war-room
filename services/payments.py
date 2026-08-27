@@ -3,18 +3,20 @@ CYPHER65 // Payments (R1 revenue — Lemon Squeezy adapter)
 ==========================================================
 Off-by-default payment fulfillment for the PRO license gate.
 
-Provider: Lemon Squeezy — Merchant of Record (handles global sales tax/VAT,
-cards, PayPal, Apple/Google Pay) with a native license-key product model.
-Chosen over Stripe for R1 because a solo operator without a US entity avoids
-global tax nexus entirely (Stripe is a processor, not a MoR) and LS delivers
-license keys natively at 5% + $0.50 per sale.
+Provider adapter: Lemon Squeezy (legacy, checkout intentionally disabled).
 
-Design — OFF BY DEFAULT:
-  No ``LEMON_SQUEEZY_API_KEY`` → ``payments_configured()`` is False, the
-  checkout route returns 503, and the webhook route returns 400. The R1 gate
-  stays exactly as today until the operator activates it (see licensing.py).
+The signed webhook and idempotency ledger remain available for historical
+orders, but the application-generated CYPHER65 key is not yet delivered back
+to the authenticated checkout browser.  Enabling the hosted checkout before
+that channel exists could accept money without giving the buyer a usable key.
 
-Fulfillment flow:
+Design — CHECKOUT DISABLED:
+  ``payments_configured()`` stays false even when the legacy provider env vars
+  exist.  The route returns 503 and purchase CTAs stay hidden.  Re-enable only
+  after implementing an authenticated, expiring checkout-status channel that
+  delivers the generated key to the same browser that started the purchase.
+
+Historical fulfillment flow (not exposed for new checkout):
   Frontend "Buy PRO" → POST /api/upgrade/checkout → create_checkout() →
   LS hosted checkout URL (opened in a new tab) → LS posts order_created →
   POST /api/payments/webhook (x-signature HMAC-SHA256 verified) →
@@ -22,10 +24,10 @@ Fulfillment flow:
   in the upgrade modal (X-License-Key header, already wired in app.js).
 
 Env vars:
-  LEMON_SQUEEZY_API_KEY        — API key (private) — ALSO activates the R1 gate
+  LEMON_SQUEEZY_API_KEY        — API key (private; insufficient by itself)
   LEMON_SQUEEZY_WEBHOOK_SECRET — secret for x-signature verification
-  LEMON_SQUEEZY_STORE_ID       — numeric store id (checkout creation)
-  LEMON_SQUEEZY_VARIANT_ID     — numeric variant/price id of the PRO product
+  LEMON_SQUEEZY_STORE_ID       — expected store id for legacy webhooks
+  LEMON_SQUEEZY_VARIANT_ID     — accepted legacy PRO variant id
 """
 
 import hashlib
@@ -47,40 +49,96 @@ _API_BASE = "https://api.lemonsqueezy.com/v1"
 
 # Variant ids → (plan, months). Operators override the PRO variant via env
 # and pin the PREMIUM variant via LEMON_SQUEEZY_PREMIUM_VARIANT_ID (tier 2,
-# Issue #182). Unknown variants stay PRO — the legacy default.
+# Issue #182). Unknown variants are rejected and never fulfill a license.
 _PLAN_MONTHS = {"pro": 12, "premium": 12}
 
 
-def payments_configured() -> bool:
-    """True when an LS API key is present (checkout/webhook live)."""
-    return bool(os.environ.get("LEMON_SQUEEZY_API_KEY"))
+def payments_configured(plan: str = "pro") -> bool:
+    """Return False until card-license delivery is implemented end to end.
+
+    The provider can create and sign orders, but that alone is insufficient:
+    the generated CYPHER65 key currently has no authenticated delivery channel
+    back to the buyer.  Keeping this public capability false is deliberate and
+    prevents the UI/API from presenting a checkout that cannot complete.
+    """
+    del plan
+    return False
+
+
+def webhook_configured() -> bool:
+    """True when signed webhooks can validate at least one sold variant."""
+    return bool(
+        os.environ.get("LEMON_SQUEEZY_API_KEY")
+        and os.environ.get("LEMON_SQUEEZY_WEBHOOK_SECRET")
+        and os.environ.get("LEMON_SQUEEZY_STORE_ID")
+        and (
+            os.environ.get("LEMON_SQUEEZY_VARIANT_ID")
+            or os.environ.get("LEMON_SQUEEZY_PREMIUM_VARIANT_ID")
+        )
+    )
+
+
+def payment_capabilities() -> dict:
+    """Public, secret-free checkout capabilities for the UI."""
+    plans = {
+        "pro": payments_configured("pro"),
+        "premium": payments_configured("premium"),
+    }
+    return {
+        "provider": "lemon_squeezy" if any(plans.values()) else None,
+        "available": any(plans.values()),
+        "plans": plans,
+        "reason": "license_delivery_unavailable",
+    }
 
 
 def _variant_months(variant_id: str):
     """Map a variant id to (plan, months).
 
     The operator pins the PREMIUM variant via LEMON_SQUEEZY_PREMIUM_VARIANT_ID;
-    everything else maps to the PRO variant (legacy default).
+    Unknown variants return ``None`` and can never issue a license.
     """
     vid = str(variant_id or "")
     premium_variant = (os.environ.get("LEMON_SQUEEZY_PREMIUM_VARIANT_ID") or "").strip()
     if premium_variant and vid == premium_variant:
         return "premium", _PLAN_MONTHS["premium"]
-    return "pro", _PLAN_MONTHS["pro"]
+    pro_variant = (os.environ.get("LEMON_SQUEEZY_VARIANT_ID") or "").strip()
+    if pro_variant and vid == pro_variant:
+        return "pro", _PLAN_MONTHS["pro"]
+    return None
+
+
+def _audit(action: str, target: str = "", details: Optional[dict] = None) -> None:
+    """Persist a payment audit event without PII, keys or provider payloads."""
+    try:
+        from services.tenant import log_audit
+
+        log_audit(
+            "default",
+            action,
+            target=str(target or "")[:32],
+            details=details or {},
+        )
+    except Exception:
+        log.warning("payment audit failed: %s", action, exc_info=True)
 
 
 def create_checkout(
     plan: str = "pro", email: str = "", funnel_id: str = ""
 ) -> Optional[str]:
-    """Create a Lemon Squeezy hosted checkout; return its URL or None.
+    """Return None while Lemon Squeezy customer key delivery is unavailable.
 
-    Network/API errors never raise — the route turns None into a clean 503.
+    The retained request-building code is unreachable until
+    ``payments_configured`` can truthfully attest to a complete delivery
+    flow. The public route therefore turns this into a clean 503.
 
     ``funnel_id`` (Issue #155): the browser's anonymous session id is carried
     inside ``checkout_data.custom`` so Lemon Squeezy echoes it back in the
     webhook's ``meta.custom_data`` — the ``paid`` funnel event can then be
     attributed to the same funnel that saw the paywall / started checkout.
     """
+    if not payments_configured(plan):
+        return None
     api_key = os.environ.get("LEMON_SQUEEZY_API_KEY") or ""
     store_id = os.environ.get("LEMON_SQUEEZY_STORE_ID") or ""
     # Tier-aware: PREMIUM plan uses its own pinned variant (Issue #182).
@@ -90,8 +148,6 @@ def create_checkout(
         if plan == "premium"
         else os.environ.get("LEMON_SQUEEZY_VARIANT_ID")
     ) or ""
-    if not (api_key and store_id and variant_id):
-        return None
     custom = {"plan": plan}
     if funnel_id:
         custom["funnel_id"] = str(funnel_id)[:64]
@@ -320,40 +376,52 @@ def handle_webhook(payload: dict) -> Optional[str]:
     attrs = data.get("attributes") or {}
     order_id = str(data.get("id") or "").strip()
 
-    if order_id:
-        claimed, existing_key = _claim_order(order_id, "order_created")
-        if not claimed:
-            if existing_key:
-                # Replay of a completed order — return the key we already
-                # issued. Never a second license, never a second "paid".
-                log.info(
-                    "webhook replay: order=%s already fulfilled — returning existing key",
-                    order_id,
-                )
-                return existing_key
-            # Another delivery of the same order is still in flight. Acknowledge
-            # without issuing; LS will retry and then find the completed key.
-            log.info(
-                "webhook in-flight: order=%s already being fulfilled — no-op", order_id
-            )
-            return None
-    else:
-        # PII-safe (Issue #116): NEVER dump the raw payload — order_created
-        # carries data.attributes.user_email. Log only safe identifiers.
-        log.warning(
-            "webhook without order id — processing without dedup: event=%s data_id=%s",
-            meta.get("event_name"),
-            data.get("id"),
+    if not order_id:
+        log.warning("webhook without order id — rejected")
+        _audit(
+            "payment.webhook_rejected",
+            details={"provider": "lemon_squeezy", "reason": "missing_order_id"},
         )
+        return None
 
-    email = (attrs.get("user_email") or "").strip()
     first_item = attrs.get("first_order_item") or {}
     variant_id = str(first_item.get("variant_id") or "")
-    plan, months = _variant_months(variant_id)
+    plan_data = _variant_months(variant_id)
+    configured_store = str(os.environ.get("LEMON_SQUEEZY_STORE_ID") or "").strip()
+    payload_store = str(attrs.get("store_id") or "").strip()
+    if not plan_data or not configured_store or payload_store != configured_store:
+        reason = "unknown_variant" if not plan_data else "store_mismatch"
+        log.warning("webhook rejected: order=%s reason=%s", order_id[:16], reason)
+        _audit(
+            "payment.webhook_rejected",
+            target=order_id,
+            details={"provider": "lemon_squeezy", "reason": reason},
+        )
+        return None
+    plan, months = plan_data
+    claimed, existing_key = _claim_order(order_id, "order_created")
+    if not claimed:
+        _audit(
+            "payment.webhook_duplicate",
+            target=order_id,
+            details={
+                "provider": "lemon_squeezy",
+                "status": "confirmed" if existing_key else "processing",
+            },
+        )
+        if existing_key:
+            log.info("webhook replay: order=%s already fulfilled", order_id[:16])
+            return existing_key
+        log.info("webhook in-flight: order=%s already being fulfilled", order_id[:16])
+        return None
+
+    email = (attrs.get("user_email") or "").strip()
     try:
         key = licensing.issue_license(
             plan=plan,
-            email=email,
+            # Email is needed transiently for provider attribution only; the
+            # access-control DB does not need payment PII.
+            email="",
             source="lemon_squeezy",
             months=months,
         )
@@ -372,6 +440,11 @@ def handle_webhook(payload: dict) -> Optional[str]:
     # key natively. Do NOT move this inside the try.
     if order_id:
         _complete_order(order_id, key)
+    _audit(
+        "payment.confirmed",
+        target=order_id,
+        details={"provider": "lemon_squeezy", "plan": plan},
+    )
     # CFO: a PAID conversion — the funnel's money stage. Email hashed only.
     # Deduped implicitly: this block only runs for the delivery that CLAIMED
     # the order (replays return early above).

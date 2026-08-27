@@ -43,6 +43,7 @@ app = _app_module.app
 _KEY_RE = re.compile(r"^C65-[A-Z0-9]{4}(-[A-Z0-9]{4}){3}$")
 
 FIXED_ADDR = "35gjAoadgQxrNc1Kx6QiSLx7wCCXRnRFkM"
+STATUS_TOKEN = "status-token-test"
 
 
 @pytest.fixture(autouse=True)
@@ -81,7 +82,9 @@ def _sign(raw: bytes, secret: str = "btcpay-whsec-test") -> str:
     return "sha256=" + hmac.new(secret.encode(), raw, hashlib.sha256).hexdigest()
 
 
-def _invoice_payload(invoice_id="inv_1", event_type="InvoiceSettled"):
+def _invoice_payload(invoice_id="inv_1", event_type="InvoiceSettled", known=True):
+    if known and invoice_id:
+        btcpay.record_invoice_plan(invoice_id, "pro")
     return {"invoiceId": invoice_id, "type": event_type, "deliveryId": "d1"}
 
 
@@ -176,12 +179,15 @@ def test_create_invoice_payload_and_url(monkeypatch):
         return R()
 
     monkeypatch.setattr(btcpay.requests, "post", _fake_post)
-    inv = btcpay.create_invoice(plan="pro", funnel_id="f-1")
+    inv = btcpay.create_invoice(
+        plan="pro", funnel_id="f-1", buyer_email="not-stored@example.com"
+    )
     assert inv["id"] == "inv_payload"
     assert "checkoutLink" in inv
     assert captured["url"].endswith("/api/v1/stores/store_1/invoices")
     assert captured["json"]["currency"] == "BTC"
     assert captured["json"]["metadata"]["plan"] == "pro"
+    assert "buyerEmail" not in captured["json"]["metadata"]
     assert captured["json"]["additionalData"]["posData"]["funnel_id"] == "f-1"
     assert captured["headers"]["Authorization"] == "token btcpay-api-test"
     assert captured["timeout"] == 15
@@ -319,13 +325,14 @@ def test_webhook_plan_resolution_premium(monkeypatch):
     assert licensing._key_plan(key) == "premium"
 
 
-def test_webhook_plan_fallback_pro_when_ledger_missing(monkeypatch):
-    """Unknown invoice in the ledger still fulfills (defensive PRO), never
-    raises — a replayed/legacy invoice can't block the buyer."""
+def test_webhook_unknown_invoice_never_issues_license(monkeypatch):
+    """A signed store event is insufficient without local checkout intent."""
     _btcpay_env(monkeypatch)
-    key = btcpay.handle_invoice_webhook(_invoice_payload(invoice_id="inv_unknown"))
-    assert key and _KEY_RE.match(key)
-    assert licensing._key_plan(key) == "pro"
+    key = btcpay.handle_invoice_webhook(
+        _invoice_payload(invoice_id="inv_unknown", known=False)
+    )
+    assert key is None
+    assert btcpay.fulfilled_license_key("inv_unknown") == ""
 
 
 def test_webhook_log_masks_key_sha(caplog, monkeypatch):
@@ -364,7 +371,7 @@ def test_create_webln_invoice(monkeypatch):
             def json(self):
                 return {
                     "invoice": "lnbc1mockbolt11invoice",
-                    "payment_hash": "ph_1",
+                    "payment_hash": "ab" * 32,
                 }
 
         return R()
@@ -414,6 +421,7 @@ def test_checkout_btc_payload(client, monkeypatch):
     assert body["method"] == "btc"
     assert body["provider"] == "btcpay"
     assert body["invoice_id"] == "inv_route"
+    assert body["status_token"]
     # Hosted checkout URL (BTCPay renders its own per-invoice QR/BIP-21).
     assert body["checkout_url"] == "https://btcpay.example.com/i/inv_route"
     assert "address" not in body and "bip21" not in body
@@ -450,6 +458,24 @@ def test_invoice_plan_ledger_roundtrip():
     # Invalid plan normalizes to PRO.
     btcpay.record_invoice_plan("inv_bad_plan", "enterprise")
     assert btcpay._invoice_plan("inv_bad_plan") == "pro"
+
+
+def test_status_token_is_hashed_at_rest_and_compared_exactly():
+    from services.db import get_db
+
+    assert btcpay.record_invoice_plan("inv_token_hash", "pro", STATUS_TOKEN) is True
+    conn = get_db()
+    try:
+        row = conn.execute(
+            "SELECT status_token_hash FROM btcpay_invoice_plans WHERE invoice_id = ?",
+            ("inv_token_hash",),
+        ).fetchone()
+    finally:
+        conn.close()
+    assert row["status_token_hash"] == hashlib.sha256(STATUS_TOKEN.encode()).hexdigest()
+    assert row["status_token_hash"] != STATUS_TOKEN
+    assert btcpay.verify_invoice_status_token("inv_token_hash", STATUS_TOKEN) is True
+    assert btcpay.verify_invoice_status_token("inv_token_hash", "wrong") is False
 
 
 def test_checkout_webln_fallback(client, monkeypatch):
@@ -489,11 +515,12 @@ def test_btcpay_webhook_route_end_to_end(client, monkeypatch):
     )
     assert r.status_code == 200
     body = r.get_json()
-    assert body["ok"] is True
-    assert _KEY_RE.match(body["license_key"])
+    assert body == {"ok": True, "handled": True}
 
 
-def test_btcpay_webhook_route_replay_same_key(client, monkeypatch):
+def test_btcpay_webhook_route_replay_is_idempotent_without_exposing_key(
+    client, monkeypatch
+):
     _btcpay_env(monkeypatch)
     raw = json.dumps(_invoice_payload(invoice_id="inv_e2e_replay")).encode()
     hdrs = {"x-btcpay-sig": _sign(raw)}
@@ -510,7 +537,8 @@ def test_btcpay_webhook_route_replay_same_key(client, monkeypatch):
         headers=hdrs,
     )
     assert r1.status_code == 200
-    assert r2.get_json()["license_key"] == r1.get_json()["license_key"]
+    assert r1.get_json() == {"ok": True, "handled": True}
+    assert r2.get_json() == {"ok": True, "handled": True}
 
 
 def test_btcpay_webhook_route_bad_signature(client, monkeypatch):
@@ -540,22 +568,46 @@ def test_status_route_503_unconfigured(client):
 def test_status_route_404_unknown(client, monkeypatch):
     _btcpay_env(monkeypatch)
     monkeypatch.setattr(btcpay, "get_invoice", lambda iid: None)
-    r = client.get("/api/upgrade/status/inv_nope")
-    assert r.status_code == 404
+    r = client.get(
+        "/api/upgrade/status/inv_nope", headers={"X-Checkout-Token": "forged"}
+    )
+    assert r.status_code == 403
+
+
+def test_status_route_rejects_missing_or_wrong_checkout_token(client, monkeypatch):
+    _btcpay_env(monkeypatch)
+    btcpay.record_invoice_plan("inv_private", "pro", STATUS_TOKEN)
+    assert client.get("/api/upgrade/status/inv_private").status_code == 403
+    assert (
+        client.get(f"/api/upgrade/status/inv_private?token={STATUS_TOKEN}").status_code
+        == 403
+    )
+    assert (
+        client.get(
+            "/api/upgrade/status/inv_private",
+            headers={"X-Checkout-Token": "wrong"},
+        ).status_code
+        == 403
+    )
 
 
 def test_status_route_returns_status(client, monkeypatch):
     _btcpay_env(monkeypatch)
+    btcpay.record_invoice_plan("inv_live", "pro", STATUS_TOKEN)
     monkeypatch.setattr(
         btcpay,
         "get_invoice",
         lambda iid: {"id": iid, "status": "Settled", "amount": "0.00012"},
     )
-    r = client.get("/api/upgrade/status/inv_live")
+    r = client.get(
+        "/api/upgrade/status/inv_live",
+        headers={"X-Checkout-Token": STATUS_TOKEN},
+    )
     assert r.status_code == 200
     body = r.get_json()
     assert body["status"] == "Settled"
     assert body["invoice_id"] == "inv_live"
+    assert body["payment_state"] == "pending"
 
 
 def test_status_route_returns_license_key_when_settled(client, monkeypatch):
@@ -568,24 +620,57 @@ def test_status_route_returns_license_key_when_settled(client, monkeypatch):
         lambda iid: {"id": iid, "status": "Settled", "amount": "0.00012"},
     )
     # Fulfill once (webhook path) so the ledger holds the key.
+    btcpay.record_invoice_plan("inv_settled_key", "pro", STATUS_TOKEN)
     key = btcpay.handle_invoice_webhook(_invoice_payload(invoice_id="inv_settled_key"))
     assert key and _KEY_RE.match(key)
-    r = client.get("/api/upgrade/status/inv_settled_key")
+    r = client.get(
+        "/api/upgrade/status/inv_settled_key",
+        headers={"X-Checkout-Token": STATUS_TOKEN},
+    )
     assert r.status_code == 200
     assert r.get_json()["license_key"] == key
+    assert r.get_json()["payment_state"] == "confirmed"
 
 
 def test_status_route_no_key_when_not_settled(client, monkeypatch):
     """Pending invoices never leak a key — the field is empty until Settled."""
     _btcpay_env(monkeypatch)
+    btcpay.record_invoice_plan("inv_pending", "pro", STATUS_TOKEN)
     monkeypatch.setattr(
         btcpay,
         "get_invoice",
         lambda iid: {"id": iid, "status": "New", "amount": "0.00012"},
     )
-    r = client.get("/api/upgrade/status/inv_pending")
+    r = client.get(
+        "/api/upgrade/status/inv_pending",
+        headers={"X-Checkout-Token": STATUS_TOKEN},
+    )
     assert r.status_code == 200
     assert r.get_json()["license_key"] == ""
+    assert r.get_json()["payment_state"] == "pending"
+
+
+@pytest.mark.parametrize(
+    ("provider_status", "expected"),
+    [("Expired", "expired"), ("Invalid", "invalid")],
+)
+def test_status_route_normalizes_terminal_payment_states(
+    client, monkeypatch, provider_status, expected
+):
+    _btcpay_env(monkeypatch)
+    invoice_id = f"inv_{expected}"
+    btcpay.record_invoice_plan(invoice_id, "pro", STATUS_TOKEN)
+    monkeypatch.setattr(
+        btcpay,
+        "get_invoice",
+        lambda iid: {"id": iid, "status": provider_status, "amount": "0.00012"},
+    )
+    response = client.get(
+        f"/api/upgrade/status/{invoice_id}",
+        headers={"X-Checkout-Token": STATUS_TOKEN},
+    )
+    assert response.status_code == 200
+    assert response.get_json()["payment_state"] == expected
 
 
 def test_webln_confirm_fulfills_with_preimage_proof(client, monkeypatch):

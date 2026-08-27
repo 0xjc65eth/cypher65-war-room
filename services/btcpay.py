@@ -94,6 +94,33 @@ def _plan_months(plan: str) -> int:
     return _PLAN_MONTHS.get(plan, _PLAN_MONTHS["pro"])
 
 
+def payment_state(provider_status: str, fulfilled: bool = False) -> str:
+    """Normalize provider-specific invoice states for API/UI consumers."""
+    status = str(provider_status or "").strip().lower()
+    if status == "settled":
+        return "confirmed" if fulfilled else "pending"
+    if status == "expired":
+        return "expired"
+    if status == "invalid":
+        return "invalid"
+    return "pending"
+
+
+def _audit(action: str, target: str = "", details: Optional[dict] = None) -> None:
+    """Persist a payment audit event without keys, preimages or buyer data."""
+    try:
+        from services.tenant import log_audit
+
+        log_audit(
+            "default",
+            action,
+            target=str(target or "")[:32],
+            details=details or {},
+        )
+    except Exception:
+        log.warning("payment audit failed: %s", action, exc_info=True)
+
+
 # ── Price helpers ────────────────────────────────────────────────────
 # The dashboard already tracks a live BTC/USD quote (merge_btc_quotes,
 # cached 5min). The invoice amount is ALWAYS expressed in sats; USD is only
@@ -150,6 +177,9 @@ def create_invoice(
     ``amount`` is passed without currency = "BTC" and we use sats*1e8
     precision — we pass exact sats via currency BTC and amount in BTC).
     """
+    # Kept in the signature for caller compatibility; CYPHER65 does not need
+    # buyer PII to create or fulfill an invoice, so it is never transmitted.
+    del buyer_email
     api_key = os.environ.get("BTCPAY_API_KEY") or ""
     store_id = os.environ.get("BTCPAY_STORE_ID") or ""
     base = (os.environ.get("BTCPAY_URL") or "").rstrip("/")
@@ -164,8 +194,6 @@ def create_invoice(
         "plan": plan,
         "months": _plan_months(plan),
     }
-    if buyer_email:
-        metadata["buyerEmail"] = buyer_email[:200]
     payload = {
         "amount": amount_sat / 100_000_000.0,  # BTC (BTCPay native unit)
         "currency": "BTC",
@@ -255,34 +283,52 @@ def _ensure_invoice_plan_table() -> None:
             CREATE TABLE IF NOT EXISTS btcpay_invoice_plans (
                 invoice_id TEXT PRIMARY KEY,
                 plan       TEXT NOT NULL DEFAULT 'pro',
-                created_ts INTEGER NOT NULL
+                created_ts INTEGER NOT NULL,
+                status_token_hash TEXT NOT NULL DEFAULT ''
             )
             """
         )
+        cols = {
+            row[1] for row in conn.execute("PRAGMA table_info(btcpay_invoice_plans)")
+        }
+        if "status_token_hash" not in cols:
+            conn.execute(
+                "ALTER TABLE btcpay_invoice_plans "
+                "ADD COLUMN status_token_hash TEXT NOT NULL DEFAULT ''"
+            )
         conn.commit()
     finally:
         conn.close()
 
 
-def record_invoice_plan(invoice_id: str, plan: str = "pro") -> None:
+def record_invoice_plan(
+    invoice_id: str, plan: str = "pro", status_token: str = ""
+) -> bool:
     """Persist invoice_id → plan at checkout time (best-effort, never raises)."""
     if not invoice_id:
-        return
+        return False
     plan = plan if plan in _PLAN_MONTHS else "pro"
     try:
         _ensure_invoice_plan_table()
         conn = get_db()
         try:
-            conn.execute(
-                "INSERT OR REPLACE INTO btcpay_invoice_plans"
-                " (invoice_id, plan, created_ts) VALUES (?, ?, ?)",
-                (invoice_id, plan, int(time.time())),
+            token_hash = (
+                hashlib.sha256(status_token.encode("utf-8")).hexdigest()
+                if status_token
+                else ""
+            )
+            cur = conn.execute(
+                "INSERT OR IGNORE INTO btcpay_invoice_plans"
+                " (invoice_id, plan, created_ts, status_token_hash) VALUES (?, ?, ?, ?)",
+                (invoice_id, plan, int(time.time()), token_hash),
             )
             conn.commit()
+            return cur.rowcount == 1
         finally:
             conn.close()
     except Exception:
         log.warning("record_invoice_plan failed: %s", invoice_id[:16])
+        return False
 
 
 def _invoice_plan(invoice_id: str) -> str:
@@ -327,6 +373,27 @@ def invoice_hash_known(payment_hash: str) -> bool:
     except Exception:
         return False
     return row is not None
+
+
+def verify_invoice_status_token(invoice_id: str, status_token: str) -> bool:
+    """Authorize polling without treating a provider invoice id as a secret."""
+    if not (invoice_id and status_token):
+        return False
+    try:
+        _ensure_invoice_plan_table()
+        conn = get_db()
+        try:
+            row = conn.execute(
+                "SELECT status_token_hash FROM btcpay_invoice_plans WHERE invoice_id = ?",
+                (invoice_id,),
+            ).fetchone()
+        finally:
+            conn.close()
+    except Exception:
+        return False
+    expected = str(row["status_token_hash"] or "") if row else ""
+    actual = hashlib.sha256(status_token.encode("utf-8")).hexdigest()
+    return bool(expected) and hmac.compare_digest(expected, actual)
 
 
 # ── Idempotency ledger ───────────────────────────────────────────────
@@ -448,13 +515,37 @@ def handle_invoice_webhook(payload: dict) -> Optional[str]:
     event_type = str(payload.get("type") or "").strip()
     if not invoice_id:
         log.warning("btcpay webhook without invoice id — no-op (event=%s)", event_type)
+        _audit(
+            "payment.webhook_rejected",
+            details={"provider": "btcpay", "reason": "missing_invoice_id"},
+        )
         return None
     # Only Settled (final, 1+ confirmation) fulfills.
     if event_type not in ("InvoiceSettled", "invoice_settled"):
         return None
 
+    # A valid store signature authenticates BTCPay, not the commercial intent
+    # of every invoice in that store. Only invoices created by this checkout
+    # and recorded locally may issue CYPHER65 licenses.
+    if not invoice_hash_known(invoice_id):
+        log.warning("btcpay webhook for unknown invoice rejected: %s", invoice_id[:16])
+        _audit(
+            "payment.webhook_rejected",
+            target=invoice_id,
+            details={"provider": "btcpay", "reason": "unknown_invoice"},
+        )
+        return None
+
     claimed, existing_key = _claim_invoice(invoice_id)
     if not claimed:
+        _audit(
+            "payment.webhook_duplicate",
+            target=invoice_id,
+            details={
+                "provider": "btcpay",
+                "status": "confirmed" if existing_key else "processing",
+            },
+        )
         if existing_key:
             log.info("btcpay replay: invoice=%s already fulfilled", invoice_id[:16])
             return existing_key
@@ -465,7 +556,8 @@ def handle_invoice_webhook(payload: dict) -> Optional[str]:
 
     # Plan resolution: from the LOCAL ledger written at checkout time —
     # zero network in the webhook path (a BTCPay outage during delivery must
-    # never silently downgrade PREMIUM→PRO). Unknown → PRO (defensive).
+    # never silently downgrade PREMIUM→PRO). Unknown invoices were rejected
+    # above and can never reach this plan resolution.
     plan = _invoice_plan(invoice_id)
     months = _plan_months(plan)
     try:
@@ -481,6 +573,11 @@ def handle_invoice_webhook(payload: dict) -> Optional[str]:
         raise
     if invoice_id:
         _complete_invoice(invoice_id, key)
+    _audit(
+        "payment.confirmed",
+        target=invoice_id,
+        details={"provider": "btcpay", "plan": plan},
+    )
     # CFO: a PAID conversion attributed to the BTC channel.
     try:
         from services.conversion import track_event
@@ -532,15 +629,33 @@ def fulfill_webln_payment(payment_hash: str, preimage: str) -> Optional[str]:
         # utf-8 text as a lenient fallback; the ledger hash decides.
         digest = hashlib.sha256(preimage.encode("utf-8", "ignore")).hexdigest().lower()
     if digest != str(payment_hash).strip().lower():
+        _audit(
+            "payment.proof_rejected",
+            target=payment_hash,
+            details={"provider": "webln", "reason": "preimage_mismatch"},
+        )
         return None
     # Only hashes WE issued at checkout may fulfill — never fall back to the
     # defensive PRO plan for a hash an attacker generated themselves.
     if not invoice_hash_known(payment_hash):
+        _audit(
+            "payment.proof_rejected",
+            target=payment_hash,
+            details={"provider": "webln", "reason": "unknown_invoice"},
+        )
         return None
     plan = _invoice_plan(payment_hash)
     claimed, existing_key = _claim_invoice(payment_hash)
     if not claimed:
         # Replay of an already-fulfilled payment → same key; in-flight → "".
+        _audit(
+            "payment.webhook_duplicate",
+            target=payment_hash,
+            details={
+                "provider": "webln",
+                "status": "confirmed" if existing_key else "processing",
+            },
+        )
         return existing_key
     try:
         key = licensing.issue_license(
@@ -553,6 +668,11 @@ def fulfill_webln_payment(payment_hash: str, preimage: str) -> Optional[str]:
         _release_claim(payment_hash)
         raise
     _complete_invoice(payment_hash, key)
+    _audit(
+        "payment.confirmed",
+        target=payment_hash,
+        details={"provider": "webln", "plan": plan},
+    )
     try:
         from services.conversion import track_event
 
@@ -616,11 +736,16 @@ def create_webln_invoice(
         r.raise_for_status()
         data = r.json()
         invoice = str(data.get("invoice") or "").strip()
-        if not invoice:
+        payment_hash = str(data.get("payment_hash") or "").strip().lower()
+        if not invoice or len(payment_hash) != 64:
+            return None
+        try:
+            bytes.fromhex(payment_hash)
+        except ValueError:
             return None
         return {
             "bolt11": invoice,
-            "payment_hash": str(data.get("payment_hash") or "").strip(),
+            "payment_hash": payment_hash,
             "amount_sat": amount_sat,
             "plan": plan,
         }

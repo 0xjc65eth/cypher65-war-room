@@ -40,7 +40,7 @@ investimento em infraestrutura paga.
 | Rate limiting | `app.py` — bucket em memória, originalmente por IP |
 | Segurança de credenciais | `services/settings.py` — chaves Braiins/MRR em texto claro (antes do hardening) |
 | Schema | sem versão/rastreio de migrações (antes do hardening) |
-| Monetização | `services/licensing.py` + Lemon Squeezy checkout + telemetria de conversão (funil LTV/CAC) — ver §4.7 |
+| Monetização | `services/licensing.py` + adapter Lemon Squeezy legado (checkout desabilitado) + telemetria de conversão (funil LTV/CAC) — ver §4.7 |
 | Observabilidade | sem Sentry/Prometheus/Datadog, mas o pool agora expõe saúde em `/api/admin/sessions` (sessions, polls/seg, fila) |
 | Testes | 1684 pytest + 1259 testes JS + e2e Playwright (chromium + mobile-chrome) |
 

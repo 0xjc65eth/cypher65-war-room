@@ -450,17 +450,32 @@
   }
   // PRO licensing state (open/free/pro) — populated by initLicensing() on
   // boot and used to render the topbar badge + upgrade CTA on 402s.
-  let _license = { mode: 'open', tier: 'pro', pro: true, premium: true, ai_configured: false };
+  let _license = {
+    mode: 'loading', tier: 'free', pro: false, premium: false,
+    ai_configured: false, checkout_state: 'loading', payment_state: 'not_started',
+  };
+  async function fetchLicenseStatus(candidateKey) {
+    const headers = {};
+    const key = typeof candidateKey === 'string' ? candidateKey : licenseKey();
+    if (key) headers['X-License-Key'] = key;
+    const r = await fetch('/api/license-status', { headers: headers });
+    if (!r.ok) throw new Error('license status unavailable');
+    return r.json();
+  }
   async function initLicensing() {
     try {
-      const r = await fetch('/api/license-status');
-      if (!r.ok) return;
-      _license = await r.json();
-    } catch (e) { return; }
-    renderLicenseBadge();
-    syncUpgradeModal();
-    syncAiPremiumUi();
-    _initUpgradeBindings();
+      _license = await fetchLicenseStatus();
+    } catch (e) {
+      _license = {
+        mode: 'error', tier: 'free', pro: false, premium: false,
+        checkout_state: 'error', payment_state: 'error', ai_configured: false,
+      };
+    } finally {
+      renderLicenseBadge();
+      syncUpgradeModal();
+      syncAiPremiumUi();
+      _initUpgradeBindings();
+    }
   }
   function renderLicenseBadge() {
     const badge = dom.topbarProBadge;
@@ -471,11 +486,11 @@
       // mostra PRO como antes — o operador self-host não vê tier pago).
       const premiumTag = _license.mode === 'licensed' && _license.premium;
       badge.hidden = false;
-      badge.textContent = premiumTag ? 'PREMIUM' : (_license.pro ? 'PRO' : 'FREE');
+      badge.textContent = _license.mode === 'open' ? 'BETA' : (premiumTag ? 'PREMIUM' : (_license.pro ? 'PRO' : 'FREE'));
       badge.classList.toggle('is-pro', !!(_license.premium || _license.pro));
       badge.title = premiumTag
         ? 'PREMIUM license active — AI Operator real liberado'
-        : (_license.pro ? 'PRO license active' : 'Open mode — all features free');
+        : (_license.mode === 'open' ? 'Beta/trial access active — checkout is not required' : (_license.pro ? 'PRO license active' : 'Free tier'));
       badge.onclick = null;  // clear any leftover upgrade-CTA handler (audit)
       syncUpgradeModal();
       syncAiPremiumUi();
@@ -485,7 +500,12 @@
     badge.hidden = false;
     badge.textContent = 'UPGRADE';
     badge.classList.toggle('is-pro', false);
-    badge.title = 'PRO features locked — click to upgrade';
+    const stateTitles = {
+      revoked: 'License revoked — open for details',
+      expired: 'License expired — open for details',
+      invalid: 'Stored license is invalid — open for details',
+    };
+    badge.title = stateTitles[_license.license_state] || 'PRO features locked — open access options';
     badge.onclick = openUpgradeModal;
     syncUpgradeModal();
     syncAiPremiumUi();
@@ -538,6 +558,8 @@
     openModalAnimated(m);
     // Fresh invoice every open — never resume a stale pending payment.
     resetBtcUpgradePane();
+    const status = document.getElementById('upgrade-status');
+    if (status) { status.textContent = ''; status.className = 'modal__status'; }
     syncUpgradeModal();
     const up = _license.upgrade || {};
     trackConversionEvent('modal_open', { plan: (up.plan || 'PRO').toLowerCase() });
@@ -553,37 +575,54 @@
   function syncUpgradeModal() {
     const buy = document.getElementById('upgrade-buy-btn');
     const pbuy = document.getElementById('upgrade-premium-buy-btn');
-    const div = document.getElementById('upgrade-divider');
     const up = _license.upgrade || {};
     // Server-driven tier target: upgrade.plan === 'PREMIUM' means the user
     // is PRO (not premium) → the modal sells the PREMIUM upsell; else PRO.
     const wantsPremium = up.plan === 'PREMIUM';
+    const cardPlans = _license.payment_plans || {};
+    const cardLive = !!_license.payments;
+    const targetCardLive = wantsPremium ? !!cardPlans.premium : !!cardPlans.pro;
     if (buy) {
-      buy.hidden = !_license.payments || wantsPremium;
+      buy.hidden = !cardLive || !cardPlans.pro || wantsPremium;
       buy.textContent = 'Buy PRO — $' + ((up && up.price_usd_month) || 9) + '/mo';
     }
     if (pbuy) {
-      pbuy.hidden = !_license.payments || !wantsPremium;
+      pbuy.hidden = !cardLive || !cardPlans.premium || !wantsPremium;
       pbuy.textContent = 'Buy PREMIUM — $' + ((up && up.price_usd_month) || 29) + '/mo';
     }
-    if (div) div.hidden = !_license.payments;
     // Issue 249: payment tabs — Bitcoin is the DEFAULT when a BTC provider is
     // live (BTCPay or WebLN fallback); Card is the discreet fallback.
     const btcLive = btcProviderLive();
-    const cardLive = !!_license.payments;
+    const checkoutLive = btcLive || targetCardLive;
     const tabs = document.getElementById('upgrade-tabs');
     const tabBtc = document.getElementById('upgrade-tab-btc');
     const tabCard = document.getElementById('upgrade-tab-card');
-    if (tabs) tabs.hidden = !(btcLive || cardLive);
+    const loading = document.getElementById('upgrade-loading');
+    const unavailable = document.getElementById('upgrade-unavailable');
+    const statusLoading = _license.checkout_state === 'loading';
+    const statusError = _license.checkout_state === 'error';
+    if (loading) {
+      loading.hidden = !(statusLoading || statusError);
+      loading.classList.toggle('upgrade-availability--error', statusError);
+      if (statusError) loading.textContent = 'Não foi possível verificar o checkout. Nenhuma compra foi habilitada.';
+    }
+    if (unavailable) unavailable.hidden = statusLoading || statusError || checkoutLive;
+    if (tabs) tabs.hidden = !checkoutLive;
     if (tabBtc) tabBtc.hidden = !btcLive;
-    if (tabCard) tabCard.hidden = !cardLive;
+    if (tabCard) tabCard.hidden = !targetCardLive;
     // Default tab is only locked when the tabs are actually visible — a boot
     // in open mode (no provider) must never pin 'card' before the real
     // license-status arrives (Issue 249 default: Bitcoin).
-    if (btcLive || cardLive) {
+    if (checkoutLive) {
       if (!_upgradeTabSet) setUpgradeTab(btcLive ? 'btc' : 'card');
       else if (_upgradeTab === 'btc' && !btcLive) setUpgradeTab('card');
-      else if (_upgradeTab === 'card' && !cardLive) setUpgradeTab('btc');
+      else if (_upgradeTab === 'card' && !targetCardLive) setUpgradeTab('btc');
+    } else {
+      const paneBtc = document.getElementById('upgrade-pane-btc');
+      const paneCard = document.getElementById('upgrade-pane-card');
+      if (paneBtc) paneBtc.hidden = true;
+      if (paneCard) paneCard.hidden = true;
+      _upgradeTabSet = false;
     }
     const title = document.getElementById('upgrade-modal-title');
     if (title) title.textContent = wantsPremium ? '🤖 CYPHER65 PREMIUM' : '⚡ CYPHER65 PRO';
@@ -600,12 +639,29 @@
       btcPrice.textContent = (wantsPremium ? 'PREMIUM' : 'PRO') + ' — $' + usd + '/mo via Bitcoin';
     }
     const btcStart = document.getElementById('upgrade-btc-start-btn');
-    if (btcStart) btcStart.dataset.plan = wantsPremium ? 'premium' : 'pro';
+    if (btcStart) {
+      btcStart.dataset.plan = wantsPremium ? 'premium' : 'pro';
+      btcStart.hidden = !btcLive;
+    }
+    const stateStatus = document.getElementById('upgrade-status');
+    if (stateStatus && !stateStatus.textContent) {
+      const stateMessages = {
+        revoked: 'A licença salva foi revogada. Ative outra chave válida.',
+        expired: 'A licença salva expirou. Ative outra chave válida.',
+        invalid: 'A licença salva é inválida. Nenhum recurso pago foi liberado.',
+      };
+      if (stateMessages[_license.license_state]) {
+        stateStatus.textContent = stateMessages[_license.license_state];
+        stateStatus.className = 'modal__status modal__status--error';
+      }
+    }
   }
   async function buyUpgrade(plan) {
     const tier = plan === 'premium' ? 'premium' : 'pro';
     const btn = document.getElementById(tier === 'premium' ? 'upgrade-premium-buy-btn' : 'upgrade-buy-btn');
-    if (btn) btn.disabled = true;
+    const status = document.getElementById('upgrade-status');
+    setBtnLoading(btn, true);
+    if (status) { status.textContent = 'Preparando checkout seguro…'; status.className = 'modal__status'; }
     trackConversionEvent('checkout_start', { plan: tier });
     try {
       const r = await fetch('/api/upgrade/checkout', {
@@ -617,13 +673,16 @@
       try { data = await r.json(); } catch (e) {}
       if (r.ok && data.checkout_url) {
         window.open(data.checkout_url, '_blank', 'noopener');
+        if (status) status.textContent = 'Checkout aberto. O pagamento está pendente até a confirmação do provedor.';
       } else {
+        if (status) { status.textContent = (data && data.error) || 'Checkout indisponível'; status.className = 'modal__status modal__status--error'; }
         logMessage(tier.toUpperCase(), (data && data.error) || 'Checkout unavailable', 'WARN');
       }
     } catch (e) {
+      if (status) { status.textContent = 'Checkout indisponível. Nenhuma cobrança foi iniciada.'; status.className = 'modal__status modal__status--error'; }
       logMessage(tier.toUpperCase(), 'Checkout unavailable', 'WARN');
     } finally {
-      if (btn) btn.disabled = false;
+      setBtnLoading(btn, false);
     }
   }
   // Legacy name kept for e2e / support console compatibility.
@@ -666,16 +725,40 @@
   }
   async function redeemLicenseKey() {
     const input = document.getElementById('upgrade-key-input');
+    const btn = document.getElementById('upgrade-redeem-btn');
+    const status = document.getElementById('upgrade-status');
     const key = (input && input.value || '').trim();
     if (!key) return;
-    try { localStorage.setItem(LICENSE_STORAGE_KEY, key); } catch (e) {}
-    await initLicensing();
-    closeUpgradeModal();
-    // Re-run the current snapshot render so gated panels refresh.
-    renderCharts();
-    if (_license.pro) trackConversionEvent('key_activated');
-    logMessage('PRO', _license.pro ? 'license key accepted — PRO unlocked' : 'license key rejected', _license.pro ? 'SUCCESS' : 'WARN');
-    if (input) input.value = '';  // clear the field for the next activation
+    setBtnLoading(btn, true);
+    if (status) { status.textContent = 'Validando licença no servidor…'; status.className = 'modal__status'; }
+    try {
+      const verified = await fetchLicenseStatus(key);
+      if (!verified.key_valid) {
+        const keyState = verified.submitted_license_state || verified.license_state;
+        const messages = {
+          revoked: 'Esta licença foi revogada.',
+          expired: 'Esta licença expirou.',
+          invalid: 'Licença inválida. Nenhuma alteração foi aplicada.',
+        };
+        if (status) { status.textContent = messages[keyState] || 'Licença não aceita.'; status.className = 'modal__status modal__status--error'; }
+        logMessage('LICENSE', messages[keyState] || 'license key rejected', 'WARN');
+        return;
+      }
+      try { localStorage.setItem(LICENSE_STORAGE_KEY, key); } catch (e) {}
+      _license = verified;
+      renderLicenseBadge();
+      syncUpgradeModal();
+      syncAiPremiumUi();
+      renderCharts();
+      trackConversionEvent('key_activated');
+      if (status) { status.textContent = verified.license_state === 'trial_active' ? 'Trial ativado.' : 'Licença paga ativada.'; status.className = 'modal__status modal__status--success'; }
+      logMessage('LICENSE', 'license key accepted — ' + verified.tier.toUpperCase() + ' unlocked', 'SUCCESS');
+      if (input) input.value = '';
+    } catch (e) {
+      if (status) { status.textContent = 'Não foi possível validar a licença. Tente novamente.'; status.className = 'modal__status modal__status--error'; }
+    } finally {
+      setBtnLoading(btn, false);
+    }
   }
 
   // ── BTC upgrade (Issue 249): Bitcoin tab — BTCPay invoice or WebLN BOLT-11 ──
@@ -686,7 +769,7 @@
   // as a payment target here).
   const _btcUpgrade = {
     plan: 'pro', started: false, provider: '', // 'btcpay' | 'webln'
-    invoiceId: '', checkoutUrl: '', bolt11: '', paymentHash: '',
+    invoiceId: '', statusToken: '', checkoutUrl: '', bolt11: '', paymentHash: '',
     amountSat: 0, expiresAt: 0,
     pollTimer: null, countdownTimer: null, statusTries: 0,
   };
@@ -723,7 +806,7 @@
   function resetBtcUpgradePane() {
     stopBtcTimers();
     _btcUpgrade.started = false;
-    _btcUpgrade.invoiceId = ''; _btcUpgrade.checkoutUrl = '';
+    _btcUpgrade.invoiceId = ''; _btcUpgrade.statusToken = ''; _btcUpgrade.checkoutUrl = '';
     _btcUpgrade.bolt11 = ''; _btcUpgrade.paymentHash = '';
     _btcUpgrade.amountSat = 0; _btcUpgrade.expiresAt = 0; _btcUpgrade.statusTries = 0;
     const startEl = document.getElementById('upgrade-btc-start');
@@ -750,8 +833,10 @@
 
   async function startBtcUpgrade() {
     const btn = document.getElementById('upgrade-btc-start-btn');
+    const modalStatus = document.getElementById('upgrade-status');
     const plan = (btn && btn.dataset && btn.dataset.plan) || 'pro';
     setBtnLoading(btn, true);
+    if (modalStatus) { modalStatus.textContent = 'Criando invoice segura…'; modalStatus.className = 'modal__status'; }
     trackConversionEvent('checkout_start', { plan: plan, method: 'btc' });
     try {
       const r = await fetch('/api/upgrade/checkout', {
@@ -763,6 +848,7 @@
       try { data = await r.json(); } catch (e) {}
       if (!r.ok || !data.ok) {
         showBtcStatus((data && data.error) || 'Checkout unavailable', 'error');
+        if (modalStatus) { modalStatus.textContent = (data && data.error) || 'Checkout indisponível. Nenhuma cobrança foi iniciada.'; modalStatus.className = 'modal__status modal__status--error'; }
         return;
       }
       _btcUpgrade.started = true;
@@ -774,12 +860,15 @@
         _btcUpgrade.paymentHash = data.payment_hash || '';
       } else {
         _btcUpgrade.invoiceId = data.invoice_id || '';
+        _btcUpgrade.statusToken = data.status_token || '';
         _btcUpgrade.checkoutUrl = data.checkout_url || '';
         _btcUpgrade.expiresAt = Date.now() + (Number(data.expires_in_min) || 15) * 60000;
       }
       renderBtcPending();
+      if (modalStatus) modalStatus.textContent = '';
     } catch (e) {
       showBtcStatus('Checkout unavailable', 'error');
+      if (modalStatus) { modalStatus.textContent = 'Checkout indisponível. Nenhuma cobrança foi iniciada.'; modalStatus.className = 'modal__status modal__status--error'; }
     } finally {
       setBtnLoading(btn, false);
     }
@@ -851,7 +940,10 @@
       return;
     }
     try {
-      const r = await fetch('/api/upgrade/status/' + encodeURIComponent(_btcUpgrade.invoiceId));
+      const statusUrl = '/api/upgrade/status/' + encodeURIComponent(_btcUpgrade.invoiceId);
+      const r = await fetch(statusUrl, {
+        headers: { 'X-Checkout-Token': _btcUpgrade.statusToken }
+      });
       const d = await r.json().catch(function () { return {}; });
       if (!r.ok) {
         _btcUpgrade.statusTries++;
@@ -863,13 +955,14 @@
       }
       _btcUpgrade.statusTries = 0;
       const st = String(d.status || '').toLowerCase();
-      if (st === 'settled') {
+      const paymentState = String(d.payment_state || '').toLowerCase();
+      if (paymentState === 'confirmed' || st === 'settled') {
         // Webhook may still be in flight — keep polling until the key lands.
         if (d.license_key) applyUpgradeKey(d.license_key);
         else showBtcStatus('Pagamento confirmado — ativando PRO...', 'pending');
         return;
       }
-      if (st === 'expired' || st === 'invalid') {
+      if (paymentState === 'expired' || paymentState === 'invalid' || st === 'expired' || st === 'invalid') {
         showBtcStatus('Invoice expirada/inválida — gere uma nova.', 'error');
         stopBtcPoll(); stopBtcCountdown();
         return;
@@ -979,7 +1072,19 @@
 
   async function applyUpgradeKey(key) {
     if (!key) return;
+    let verified;
+    try {
+      verified = await fetchLicenseStatus(key);
+    } catch (e) {
+      showBtcStatus('Pagamento confirmado, mas a licença ainda não pôde ser validada.', 'error');
+      return;
+    }
+    if (!verified.key_valid || verified.license_state !== 'paid_active') {
+      showBtcStatus('Pagamento confirmado, mas a licença retornada é inválida.', 'error');
+      return;
+    }
     try { localStorage.setItem(LICENSE_STORAGE_KEY, key); } catch (e) {}
+    _license = verified;
     stopBtcPoll(); stopBtcCountdown();
     const pendingEl = document.getElementById('upgrade-btc-pending');
     const paidEl = document.getElementById('upgrade-btc-paid');
@@ -989,7 +1094,9 @@
     if (keyEl) keyEl.textContent = key;
     showBtcStatus('PRO ativado — key aplicada', 'success');
     trackConversionEvent('key_activated');
-    await initLicensing();
+    renderLicenseBadge();
+    syncUpgradeModal();
+    syncAiPremiumUi();
     renderCharts();
     logMessage('PRO', 'BTC payment confirmed — PRO unlocked', 'SUCCESS');
   }
