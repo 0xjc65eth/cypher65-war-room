@@ -50,6 +50,7 @@ def _scrub_payment_env(monkeypatch):
         "LEMON_SQUEEZY_WEBHOOK_SECRET",
         "LEMON_SQUEEZY_STORE_ID",
         "LEMON_SQUEEZY_VARIANT_ID",
+        "LEMON_SQUEEZY_PREMIUM_VARIANT_ID",
         "PRO_KEYS_DB",
         "API_KEY",
     ):
@@ -116,6 +117,15 @@ def test_expired_key_invalid(monkeypatch):
     assert licensing._key_valid(key) is False
 
 
+def test_expired_key_status_is_explicit_and_never_pro(client, monkeypatch):
+    _activate_db_gate(monkeypatch)
+    key = licensing.issue_license(months=0)
+    body = client.get("/api/license-status", headers={"X-License-Key": key}).get_json()
+    assert body["license_state"] == "expired"
+    assert body["tier"] == "free"
+    assert body["pro"] is False
+
+
 def test_lifetime_key_never_expires(monkeypatch):
     _activate_db_gate(monkeypatch)
     key = licensing.issue_license(months=None)
@@ -130,6 +140,49 @@ def test_revoked_key_invalid(monkeypatch):
     assert licensing.revoke_license(key) is False  # already revoked
 
 
+def test_revoked_key_status_is_explicit_and_never_pro(client, monkeypatch):
+    _activate_db_gate(monkeypatch)
+    key = licensing.issue_license()
+    assert licensing.revoke_license(key) is True
+    body = client.get("/api/license-status", headers={"X-License-Key": key}).get_json()
+    assert body["license_state"] == "revoked"
+    assert body["pro"] is False
+
+
+def test_revoked_paid_license_keeps_confirmed_payment_history(client, monkeypatch):
+    _activate_db_gate(monkeypatch)
+    key = licensing.issue_license(source="lemon_squeezy")
+    assert licensing.revoke_license(key) is True
+    body = client.get("/api/license-status", headers={"X-License-Key": key}).get_json()
+    assert body["license_state"] == "revoked"
+    assert body["payment_state"] == "confirmed"
+
+
+def test_trial_and_paid_license_states_are_distinct(client, monkeypatch):
+    _activate_db_gate(monkeypatch)
+    trial = licensing.issue_license(source="beta-trial")
+    paid = licensing.issue_license(source="btcpay")
+    trial_body = client.get(
+        "/api/license-status", headers={"X-License-Key": trial}
+    ).get_json()
+    paid_body = client.get(
+        "/api/license-status", headers={"X-License-Key": paid}
+    ).get_json()
+    assert trial_body["license_state"] == "trial_active"
+    assert paid_body["license_state"] == "paid_active"
+    assert paid_body["payment_state"] == "confirmed"
+
+
+def test_unknown_key_status_is_invalid(client, monkeypatch):
+    _activate_db_gate(monkeypatch)
+    body = client.get(
+        "/api/license-status",
+        headers={"X-License-Key": "C65-ABCD-EFGH-JKMN-PQRS"},
+    ).get_json()
+    assert body["license_state"] == "invalid"
+    assert body["pro"] is False
+
+
 def test_unknown_key_invalid(monkeypatch):
     _activate_db_gate(monkeypatch)
     # A key that was never issued is invalid (clean False, never raises).
@@ -139,9 +192,29 @@ def test_unknown_key_invalid(monkeypatch):
 # ── Gate activation ──────────────────────────────────────────────────
 
 
-def test_ls_api_key_activates_gate(monkeypatch):
+def test_ls_config_does_not_activate_gate_without_license_delivery(monkeypatch, client):
     _ls_env(monkeypatch)
-    assert licensing.licensing_configured() is True
+    assert licensing.licensing_configured() is False
+    status = client.get("/api/license-status").get_json()
+    assert status["payments"] is None
+    assert status["payment_plans"] == {"pro": False, "premium": False}
+    response = client.post(
+        "/api/upgrade/checkout", json={"plan": "pro", "method": "card"}
+    )
+    assert response.status_code == 503
+
+
+def test_partial_ls_config_does_not_activate_gate_or_checkout(monkeypatch, client):
+    monkeypatch.setenv("LEMON_SQUEEZY_API_KEY", "partial-only")
+    assert licensing.licensing_configured() is False
+    status = client.get("/api/license-status").get_json()
+    assert status["payments"] is None
+    assert status["checkout_state"] == "unavailable"
+    assert status["payment_state"] == "checkout_unavailable"
+    response = client.post(
+        "/api/upgrade/checkout", json={"plan": "pro", "method": "card"}
+    )
+    assert response.status_code == 503
 
 
 def test_pro_keys_db_activates_gate(monkeypatch):
@@ -163,6 +236,7 @@ def _order_payload(email="buyer@example.com", variant_id=10, order_id="12345"):
         "data": {
             "id": order_id,
             "attributes": {
+                "store_id": 1,
                 "user_email": email,
                 "first_order_item": {"variant_id": variant_id},
             },
@@ -204,6 +278,43 @@ def test_webhook_fulfills_order(monkeypatch):
     key = payments.handle_webhook(payload)
     assert key and _KEY_RE.match(key)
     assert licensing._key_valid(key) is True  # the gate honors the issued key
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        _order_payload(order_id="", variant_id=10),
+        _order_payload(order_id="bad-variant", variant_id=999),
+        {
+            **_order_payload(order_id="bad-store", variant_id=10),
+            "data": {
+                **_order_payload(order_id="bad-store", variant_id=10)["data"],
+                "attributes": {
+                    **_order_payload(order_id="bad-store", variant_id=10)["data"][
+                        "attributes"
+                    ],
+                    "store_id": 999,
+                },
+            },
+        },
+    ],
+)
+def test_invalid_webhook_payload_never_issues_license(monkeypatch, payload):
+    _ls_env(monkeypatch)
+    from services.db import get_db
+
+    conn = get_db()
+    try:
+        before = conn.execute("SELECT COUNT(*) AS n FROM pro_licenses").fetchone()["n"]
+    finally:
+        conn.close()
+    assert payments.handle_webhook(payload) is None
+    conn = get_db()
+    try:
+        after = conn.execute("SELECT COUNT(*) AS n FROM pro_licenses").fetchone()["n"]
+    finally:
+        conn.close()
+    assert after == before
 
 
 def _sub_payload(
@@ -342,8 +453,25 @@ def test_webhook_replay_issues_only_one_license(monkeypatch):
     assert _count() == baseline + 1
 
 
-def test_webhook_replay_route_returns_same_key(client, monkeypatch):
-    """The HTTP route also dedupes: POST twice → same key both times."""
+def test_webhook_writes_pii_safe_confirmation_and_duplicate_audit(monkeypatch):
+    _ls_env(monkeypatch)
+    from services.tenant import recent_audit_logs
+
+    payload = _order_payload(email="audit-buyer@example.com", order_id="audit-7002")
+    key = payments.handle_webhook(payload)
+    assert key
+    assert payments.handle_webhook(payload) == key
+    rows = [r for r in recent_audit_logs("default", 200) if r["target"] == "audit-7002"]
+    actions = [r["action"] for r in rows]
+    assert actions.count("payment.confirmed") == 1
+    assert actions.count("payment.webhook_duplicate") == 1
+    serialized = json.dumps(rows)
+    assert key not in serialized
+    assert "audit-buyer@example.com" not in serialized
+
+
+def test_webhook_replay_route_is_idempotent_without_exposing_key(client, monkeypatch):
+    """The HTTP route dedupes and never sends a license to provider logs."""
     _ls_env(monkeypatch)
     raw = json.dumps(
         _order_payload(email="buyer@example.com", order_id="7003")
@@ -356,7 +484,7 @@ def test_webhook_replay_route_returns_same_key(client, monkeypatch):
         headers={"X-Signature": sig},
     )
     assert r1.status_code == 200
-    key1 = r1.get_json()["license_key"]
+    assert r1.get_json() == {"ok": True, "handled": True}
     r2 = client.post(
         "/api/payments/webhook",
         data=raw,
@@ -364,7 +492,7 @@ def test_webhook_replay_route_returns_same_key(client, monkeypatch):
         headers={"X-Signature": sig},
     )
     assert r2.status_code == 200
-    assert r2.get_json()["license_key"] == key1
+    assert r2.get_json() == {"ok": True, "handled": True}
 
 
 def test_webhook_different_orders_issue_different_keys(monkeypatch):
@@ -431,8 +559,7 @@ def test_webhook_route_end_to_end(client, monkeypatch):
     )
     assert r.status_code == 200
     body = r.get_json()
-    assert body["ok"] is True
-    assert _KEY_RE.match(body["license_key"])
+    assert body == {"ok": True, "handled": True}
 
 
 def test_webhook_route_bad_signature(client, monkeypatch):
@@ -463,7 +590,7 @@ def test_checkout_route_503_unconfigured(client):
     assert r.get_json()["code"] == "PAYMENTS_NOT_CONFIGURED"
 
 
-def test_checkout_route_returns_url(client, monkeypatch):
+def test_checkout_route_stays_unavailable_with_legacy_ls_env(client, monkeypatch):
     _ls_env(monkeypatch)
     monkeypatch.setattr(
         payments,
@@ -472,9 +599,8 @@ def test_checkout_route_returns_url(client, monkeypatch):
         lambda plan="pro", email="", funnel_id="": "https://buy.lemonsqueezy.com/x",
     )
     r = client.post("/api/upgrade/checkout", json={"plan": "pro", "method": "card"})
-    assert r.status_code == 200
-    assert r.get_json()["checkout_url"].startswith("https://")
-    assert r.get_json()["method"] == "card"
+    assert r.status_code == 503
+    assert r.get_json()["code"] == "PAYMENTS_NOT_CONFIGURED"
 
 
 # ── Admin route (manual key issuance) ────────────────────────────────
@@ -519,11 +645,12 @@ def test_admin_route_rejects_wrong_api_key(client, monkeypatch):
 # ── license-status payload ───────────────────────────────────────────
 
 
-def test_license_status_reports_payments_provider(client, monkeypatch):
+def test_license_status_does_not_advertise_legacy_card_provider(client, monkeypatch):
     _ls_env(monkeypatch)
     r = client.get("/api/license-status")
     assert r.status_code == 200
-    assert r.get_json()["payments"] == "lemon_squeezy"
+    assert r.get_json()["payments"] is None
+    assert r.get_json()["checkout_state"] == "unavailable"
 
 
 def test_license_status_open_mode_no_payments(client):
@@ -531,6 +658,18 @@ def test_license_status_open_mode_no_payments(client):
     assert r.status_code == 200
     assert r.get_json()["payments"] is None
     assert r.get_json()["mode"] == "open"
+    assert r.get_json()["license_state"] == "trial_active"
+    assert r.get_json()["checkout_state"] == "unavailable"
+
+
+def test_open_beta_does_not_validate_an_arbitrary_submitted_key(client):
+    body = client.get(
+        "/api/license-status",
+        headers={"X-License-Key": "C65-FAKE-FAKE-FAKE-FAKE"},
+    ).get_json()
+    assert body["license_state"] == "trial_active"
+    assert body["submitted_license_state"] == "invalid"
+    assert body["key_valid"] is False
 
 
 # ── PII redaction (Issue #116) ────────────────────────────────────────
@@ -546,6 +685,16 @@ def test_webhook_log_masks_email(caplog, monkeypatch):
     assert raw not in caplog.text  # full email NEVER reaches the log
     assert "pri…@example.com" in caplog.text  # masked form present
     assert "email_sha=" in caplog.text  # correlation hash present
+    from services.db import get_db
+
+    conn = get_db()
+    try:
+        row = conn.execute(
+            "SELECT email FROM pro_licenses WHERE key = ?", (key,)
+        ).fetchone()
+    finally:
+        conn.close()
+    assert row["email"] == ""
 
 
 def test_webhook_no_order_id_logs_without_payload(caplog, monkeypatch):
@@ -560,7 +709,7 @@ def test_webhook_no_order_id_logs_without_payload(caplog, monkeypatch):
     with caplog.at_level(logging.WARNING, logger="cypher65.payments"):
         payments.handle_webhook(payload)
     assert raw_email not in caplog.text  # payload never dumped
-    assert "processing without dedup: event=order_created data_id=" in caplog.text
+    assert "webhook without order id — rejected" in caplog.text
 
 
 def test_mask_email_edge_cases():

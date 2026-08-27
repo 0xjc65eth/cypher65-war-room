@@ -129,28 +129,37 @@ The CI workflow (`.github/workflows/ci.yml`) gates merges on all suites plus a *
 - Stale responses are served from the last **real** cached value with a `stale` badge in the UI.
 - `/api/v1/status` reports integration health (`online` / `stale` / `offline`).
 
-## ⚡ R1 — Activating PRO revenue (off-by-default)
+## ⚡ Licensing and checkout (off-by-default)
+
+> **Current public deployment (Aug 2026):** checkout is not operational
+> (`payments: null`, `btcpay: false`, `webln: false`). The UI offers beta/trial
+> access or activation of an existing operator-issued key; it does not show a
+> purchase action. Prices below are product hypotheses, not an available sale.
 
 The PRO gate (`Monte Carlo`, `proximity meter`, `30d history`, `webhooks`) is a
-no-op until the operator activates it. All of the following flip the gate ON:
+no-op until the operator activates it. These explicit controls flip the gate ON;
+BTCPay/WebLN do so only when checkout and fulfillment are complete:
 
 | Env var | Purpose |
 | --- | --- |
 | `PRO_LICENSE_KEYS` | Static comma-separated keys (manual mode) |
-| `LEMON_SQUEEZY_API_KEY` | Dynamic keys issued from paid checkouts (recommended) |
 | `PRO_KEYS_DB=1` | Dynamic keys issued manually via `POST /api/admin/licenses` |
 
-When using Lemon Squeezy (Merchant of Record — handles global tax/VAT, cards,
-PayPal; 5% + $0.50 per sale), also set:
+The Lemon Squeezy adapter is **legacy and intentionally unavailable for new
+checkout**, even if all variables below exist. Its authenticated webhook and
+dedup ledger remain for historical orders, but the generated CYPHER65 key has
+no authenticated delivery channel back to the checkout browser. Until that
+channel is implemented and tested, these variables do not activate the gate or
+a purchase CTA:
 
+- `LEMON_SQUEEZY_API_KEY` — private API credential
 - `LEMON_SQUEEZY_WEBHOOK_SECRET` — verifies `x-signature` on `/api/payments/webhook`
 - `LEMON_SQUEEZY_STORE_ID` / `LEMON_SQUEEZY_VARIANT_ID` — checkout creation
 
-Flow: **Buy PRO** (upgrade modal) → hosted checkout → `order_created` webhook →
-a `C65-XXXX-XXXX-XXXX-XXXX` key is issued and honored immediately by the existing
-`X-License-Key` header. Lemon Squeezy emails the key to the buyer natively; the
-webhook keeps the gate in sync. Manual/beta keys: `POST /api/admin/licenses`
-with `X-API-Key` (or from localhost).
+The old webhook can issue a `C65-XXXX-XXXX-XXXX-XXXX` key idempotently, but it
+does not expose that key in its HTTP response and must not be treated as a
+customer-delivery mechanism. Manual/beta keys use `POST /api/admin/licenses`
+with `X-API-Key` (or localhost) and are activated through `X-License-Key`.
 
 ## ⚡ R2 — Bitcoin channel (off-by-default)
 
@@ -158,8 +167,9 @@ The upgrade modal also accepts **Bitcoin directly** — no payment processor.
 The production decision is **BTCPay Server**: it creates a unique invoice,
 supports on-chain + Lightning through the store, and signs settlement
 webhooks. `LN_INVOICE_ENDPOINT` remains a reduced Lightning-only fallback.
-Both paths stay off until fully configured (otherwise checkout returns `503`
-and the tab stays hidden):
+Both paths stay off until fully configured. In that state checkout returns
+`503` with `payment_state: "checkout_unavailable"`; the tab and every purchase
+CTA remain hidden:
 
 | Env var | Purpose |
 | --- | --- |
@@ -172,6 +182,13 @@ Flow: **Buy PRO → Bitcoin** → BTCPay invoice (QR / copy / countdown) or WebL
 BOLT-11 → settlement webhook (or preimage) → a `C65-XXXX-…` key is issued and
 honored immediately via the existing `X-License-Key` header. Self-custody:
 0% processor fee, no KYC — tax obligations stay with the operator.
+
+Payment fulfillment is server-authoritative: signed webhooks/preimage proofs
+are accepted only for locally-created orders/invoices, replays are deduplicated,
+and paid licenses are issued idempotently. Payment webhooks never return the
+license key and the license database does not retain buyer email for new paid
+licenses. BTCPay status polling also requires the opaque token returned only to
+the browser that created the checkout; an invoice ID alone cannot retrieve a key.
 
 Production setup, least-privilege API scopes, webhook registration, smoke
 test and rollback: [Deploy & Operations — Canal Bitcoin em produção](docs/DEPLOYMENT_OPS.md#-canal-bitcoin-em-produção--btcpay-server).

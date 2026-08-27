@@ -34,7 +34,9 @@ const BOLT11 = 'lnbc12000n1pjmockupgradebolt11invoiceqqqq';
 function licenseStatusBtcOnly() {
   return {
     mode: 'licensed', tier: 'free', pro: false, premium: false,
-    ai_configured: false, payments: false, btcpay: true, webln: false,
+    license_state: 'license_required', key_valid: false,
+    checkout_state: 'available', payment_state: 'not_started',
+    ai_configured: false, payments: null, payment_plans: { pro: false, premium: false }, btcpay: true, webln: false,
     payment_btc_address: '35gjAoadgQxrNc1Kx6QiSLx7wCCXRnRFkM',
     upgrade: { plan: 'PRO', price_usd_month: 9 },
   };
@@ -42,14 +44,25 @@ function licenseStatusBtcOnly() {
 /** License-status payload: BTC live + already PRO (activation assertions). */
 function licenseStatusPro() {
   const b = licenseStatusBtcOnly();
-  b.pro = true; b.tier = 'pro';
+  b.pro = true; b.tier = 'pro'; b.license_state = 'paid_active'; b.key_valid = true; b.payment_state = 'confirmed';
   return b;
 }
 /** License-status payload: both BTC and card providers live. */
 function licenseStatusBoth() {
   const b = licenseStatusBtcOnly();
-  b.payments = true;
+  b.payments = 'lemon_squeezy';
+  b.payment_plans = { pro: true, premium: false };
   return b;
+}
+
+function licenseStatusUnavailable() {
+  return {
+    mode: 'open', tier: 'premium', pro: true, premium: true,
+    license_state: 'trial_active', key_valid: null, access_source: 'open_beta',
+    checkout_state: 'unavailable', payment_state: 'checkout_unavailable',
+    ai_configured: false, payments: null, payment_plans: { pro: false, premium: false },
+    btcpay: false, webln: false, upgrade: null,
+  };
 }
 
 /** BTCPay checkout payload (mirrors services/btcpay.py contract). */
@@ -57,15 +70,17 @@ function checkoutBtcpay(invoiceId = 'inv_e2e_1') {
   return {
     ok: true, method: 'btc', provider: 'btcpay', plan: 'pro',
     invoice_id: invoiceId,
+    status_token: 'e2e-status-token',
     checkout_url: `https://btcpay.example.com/i/${invoiceId}`,
-    amount_sat: 12000, expires_in_min: 15,
+    amount_sat: 12000, expires_in_min: 15, checkout_state: 'ready', payment_state: 'pending',
   };
 }
 /** WebLN fallback checkout payload (BOLT-11). */
 function checkoutWebln() {
   return {
     ok: true, method: 'lightning', provider: 'webln', plan: 'pro',
-    bolt11: BOLT11, amount_sat: 12000, payment_hash: 'ph_e2e_webln',
+    bolt11: BOLT11, amount_sat: 12000, payment_hash: 'ab'.repeat(32),
+    checkout_state: 'ready', payment_state: 'pending',
   };
 }
 
@@ -103,7 +118,8 @@ function setupErrorCapture(page) {
 /** Mock the API surface the BTC tab depends on. */
 async function mockApi(page, { license, status, checkout, weblnConfirm, donations } = {}) {
   await page.route('**/api/license-status', route => {
-    route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(license) });
+    const body = typeof license === 'function' ? license(route.request()) : license;
+    route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(body) });
   });
   if (checkout) {
     await page.route('**/api/upgrade/checkout', route => {
@@ -112,6 +128,8 @@ async function mockApi(page, { license, status, checkout, weblnConfirm, donation
   }
   if (status) {
     await page.route('**/api/upgrade/status/**', route => {
+      expect(route.request().headers()['x-checkout-token']).toBe('e2e-status-token');
+      expect(route.request().url()).not.toContain('token=');
       route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(status) });
     });
   }
@@ -164,7 +182,7 @@ test.describe('BTC upgrade tab (P4 #249)', () => {
     await mockApi(page, {
       license: licenseStatusBtcOnly(),
       checkout: checkoutBtcpay(),
-      status: { ok: true, invoice_id: 'inv_e2e_1', status: 'New', amount: '0.00012', license_key: '' },
+      status: { ok: true, invoice_id: 'inv_e2e_1', status: 'New', payment_state: 'pending', amount: '0.00012', license_key: '' },
     });
     await page.context().grantPermissions(['clipboard-read', 'clipboard-write'], { origin: BASE_URL });
     await page.goto(BASE_URL);
@@ -196,7 +214,7 @@ test.describe('BTC upgrade tab (P4 #249)', () => {
     await mockApi(page, {
       license: licenseStatusPro(),
       checkout: checkoutBtcpay(),
-      status: { ok: true, invoice_id: 'inv_e2e_1', status: 'Settled', amount: '0.00012', license_key: KEY },
+      status: { ok: true, invoice_id: 'inv_e2e_1', status: 'Settled', payment_state: 'confirmed', amount: '0.00012', license_key: KEY },
     });
     await page.goto(BASE_URL);
     await waitForDashboard(page);
@@ -220,7 +238,7 @@ test.describe('BTC upgrade tab (P4 #249)', () => {
     await mockApi(page, {
       license: licenseStatusBtcOnly(),
       checkout: checkoutBtcpay('inv_e2e_pending'),
-      status: { ok: true, invoice_id: 'inv_e2e_pending', status: 'New', amount: '0.00012', license_key: '' },
+      status: { ok: true, invoice_id: 'inv_e2e_pending', status: 'New', payment_state: 'pending', amount: '0.00012', license_key: '' },
     });
     await page.goto(BASE_URL);
     await waitForDashboard(page);
@@ -246,9 +264,9 @@ test.describe('BTC upgrade tab (P4 #249)', () => {
       window.webln = provider;
     });
     await mockApi(page, {
-      license: licenseStatusBtcOnly(),
+      license: request => request.headers()['x-license-key'] ? licenseStatusPro() : licenseStatusBtcOnly(),
       checkout: checkoutWebln(),
-      weblnConfirm: { ok: true, license_key: 'C65-WEBN-1111-2222-3333' },
+      weblnConfirm: { ok: true, payment_state: 'confirmed', license_key: 'C65-WEBN-1111-2222-3333' },
       donations: true,
     });
     await page.goto(BASE_URL);
@@ -311,5 +329,37 @@ test.describe('BTC upgrade tab (P4 #249)', () => {
     await page.locator('#upgrade-tab-btc').click();
     await expect(page.locator('#upgrade-pane-btc')).toBeVisible();
     expect(errors.critical()).toEqual([]);
+  });
+
+  test('no provider shows beta/trial copy and never exposes a purchase CTA', async ({ page }) => {
+    await mockApi(page, { license: licenseStatusUnavailable() });
+    await page.goto(BASE_URL);
+    await waitForDashboard(page);
+    await page.evaluate(() => window.openUpgradeModal());
+    await expectModalOpen(page, 'upgrade-modal');
+    await expect(page.locator('#upgrade-unavailable')).toBeVisible();
+    await expect(page.locator('#upgrade-unavailable')).toContainText('Checkout indisponível');
+    await expect(page.locator('#upgrade-tabs')).toBeHidden();
+    await expect(page.locator('#upgrade-btc-start-btn')).toBeHidden();
+    await expect(page.locator('#upgrade-buy-btn')).toBeHidden();
+    await expect(page.locator('#upgrade-premium-buy-btn')).toBeHidden();
+    await expect(page.locator('#upgrade-redeem-btn')).toBeVisible();
+  });
+
+  test('invalid frontend key is rejected before localStorage changes', async ({ page }) => {
+    await mockApi(page, {
+      license: request => request.headers()['x-license-key']
+        ? { ...licenseStatusUnavailable(), submitted_license_state: 'invalid', key_valid: false }
+        : licenseStatusUnavailable(),
+    });
+    await page.goto(BASE_URL);
+    await waitForDashboard(page);
+    await page.evaluate(() => window.openUpgradeModal());
+    await page.locator('#upgrade-key-input').fill('C65-FAKE-FAKE-FAKE-FAKE');
+    await page.locator('#upgrade-redeem-btn').click();
+    await expect(page.locator('#upgrade-status')).toContainText('Licença inválida');
+    const stored = await page.evaluate(k => localStorage.getItem(k), LICENSE_STORAGE_KEY);
+    expect(stored).toBeNull();
+    await expect(page.locator('#upgrade-modal')).toHaveClass(/modal--open/);
   });
 });

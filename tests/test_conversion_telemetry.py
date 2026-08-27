@@ -727,9 +727,8 @@ def test_funnel_report_session_view_paywall_without_ids(clean_events):
     assert rep["session_conversion_rate_pct"] == 100.0
 
 
-def test_checkout_route_passes_funnel_id(isolated_client, monkeypatch):
-    """/api/upgrade/checkout forwards the browser funnel_id into the LS
-    checkout custom data."""
+def test_disabled_card_checkout_does_not_call_provider(isolated_client, monkeypatch):
+    """Legacy LS credentials cannot bypass the disabled delivery gate."""
     captured = {}
 
     def _fake(plan="pro", email="", funnel_id=""):
@@ -738,6 +737,7 @@ def test_checkout_route_passes_funnel_id(isolated_client, monkeypatch):
         return "https://checkout.example/x"
 
     monkeypatch.setenv("LEMON_SQUEEZY_API_KEY", "ls-test-key")
+    monkeypatch.setenv("LEMON_SQUEEZY_WEBHOOK_SECRET", "whsec-test")
     monkeypatch.setenv("LEMON_SQUEEZY_STORE_ID", "1")
     monkeypatch.setenv("LEMON_SQUEEZY_VARIANT_ID", "10")
     import app as _app_module
@@ -747,42 +747,28 @@ def test_checkout_route_passes_funnel_id(isolated_client, monkeypatch):
         "/api/upgrade/checkout",
         json={"plan": "pro", "method": "card", "funnel_id": "f_route_test"},
     )
-    assert resp.status_code == 200
-    assert captured["funnel_id"] == "f_route_test"
+    assert resp.status_code == 503
+    assert captured == {}
 
 
-def test_create_checkout_carries_funnel_id(monkeypatch):
-    """The LS payload carries funnel_id inside checkout_data.custom — the
-    webhook will echo it back in meta.custom_data."""
+def test_disabled_card_checkout_never_contacts_provider(monkeypatch):
+    """Complete legacy env still fails closed before any provider request."""
     import services.payments as payments
 
     monkeypatch.setenv("LEMON_SQUEEZY_API_KEY", "ls-test-key")
+    monkeypatch.setenv("LEMON_SQUEEZY_WEBHOOK_SECRET", "whsec-test")
     monkeypatch.setenv("LEMON_SQUEEZY_STORE_ID", "1")
     monkeypatch.setenv("LEMON_SQUEEZY_VARIANT_ID", "10")
-    sent = {}
+    sent = []
 
-    class _FakeResp:
-        ok = True
-        status_code = 201
-        text = '{"data": {"attributes": {"url": "https://checkout.example/x"}}}'
-
-        def raise_for_status(self):
-            return None
-
-        def json(self):
-            return {"data": {"attributes": {"url": "https://checkout.example/x"}}}
-
-    def _post(url, json=None, timeout=15, **kwargs):
-        sent["url"] = url
-        sent["json"] = json
-        return _FakeResp()
+    def _post(*args, **kwargs):
+        sent.append((args, kwargs))
+        raise AssertionError("disabled checkout must not contact Lemon Squeezy")
 
     monkeypatch.setattr(payments.requests, "post", _post)
     url = payments.create_checkout(plan="pro", funnel_id="f_payload_test")
-    assert url == "https://checkout.example/x"
-    custom = sent["json"]["data"]["attributes"]["checkout_data"]["custom"]
-    assert custom["plan"] == "pro"
-    assert custom["funnel_id"] == "f_payload_test"
+    assert url is None
+    assert sent == []
 
 
 def test_webhook_paid_attributes_funnel_id(monkeypatch):
@@ -791,6 +777,7 @@ def test_webhook_paid_attributes_funnel_id(monkeypatch):
     import services.payments as payments
 
     monkeypatch.setenv("LEMON_SQUEEZY_API_KEY", "ls-test-key")
+    monkeypatch.setenv("LEMON_SQUEEZY_WEBHOOK_SECRET", "whsec-test")
     monkeypatch.setenv("LEMON_SQUEEZY_STORE_ID", "1")
     monkeypatch.setenv("LEMON_SQUEEZY_VARIANT_ID", "10")
     payload = {
@@ -801,6 +788,7 @@ def test_webhook_paid_attributes_funnel_id(monkeypatch):
         "data": {
             "id": "9001",
             "attributes": {
+                "store_id": 1,
                 "user_email": "buyer@example.com",
                 "first_order_item": {"variant_id": 10},
             },
@@ -825,6 +813,7 @@ def test_webhook_paid_no_custom_data_no_crash(monkeypatch):
     import services.payments as payments
 
     monkeypatch.setenv("LEMON_SQUEEZY_API_KEY", "ls-test-key")
+    monkeypatch.setenv("LEMON_SQUEEZY_WEBHOOK_SECRET", "whsec-test")
     monkeypatch.setenv("LEMON_SQUEEZY_STORE_ID", "1")
     monkeypatch.setenv("LEMON_SQUEEZY_VARIANT_ID", "10")
     payload = {
@@ -832,6 +821,7 @@ def test_webhook_paid_no_custom_data_no_crash(monkeypatch):
         "data": {
             "id": "9002",
             "attributes": {
+                "store_id": 1,
                 "user_email": "buyer@example.com",
                 "first_order_item": {"variant_id": 10},
             },

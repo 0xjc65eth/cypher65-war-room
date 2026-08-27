@@ -1,10 +1,17 @@
 # 💎 CYPHER65 WAR ROOM — ENTERPRISE PLAN + BTC MONETIZATION PROGRAMS
 
 **Owner:** Staff Engineering Team (Pesquisa · Implementação · Validação)
-**Status:** Plano executável · **Baseline:** Aug 2026 · **Paywall ATIVO em produção** (PRO_KEYS_DB=1 via infra-as-code, `GET /api/proximity` → 402 confirmado em 17-Aug-2026) — validação local 11/11 checks em docs §10
-**Pagamento (regra inegociável):** exclusivamente em Bitcoin para
-`35gjAoadgQxrNc1Kx6QiSLx7wCCXRnRFkM` (P2SH — **validado** com
-`helpers.validate_btc_address()` → `{'valid': True}`)
+**Status real (27-Aug-2026):** beta/trial; checkout público **indisponível**
+(`payments: null`, `btcpay: false`, `webln: false`). O gate de features e a
+emissão administrativa de chaves existem, mas isso não comprova uma venda.
+**Pagamento:** nenhum canal está sendo oferecido até um provider completar
+checkout + confirmação autenticada + emissão idempotente em teste real.
+
+> Este documento preserva hipóteses e o plano técnico histórico. Qualquer
+> trecho abaixo que descreva preços, conversão, endereço ou programa “ativo”
+> deve ser lido como proposta/registro histórico, não como oferta disponível.
+> A fonte operacional é `GET /api/license-status`: sem provider, a UI mostra
+> beta/trial ou lista de espera e nunca um botão de compra.
 
 > North star: transformar o War Room de *monitoring dashboard* em *autonomous
 > mining operation system* — a única mudança que aumenta pricing power — e
@@ -20,22 +27,22 @@
 DOM/XSS, icon sweep Lucide, funil de conversão `paywall_view → modal_open →
 checkout_start → paid → key_activated` com LTV/CAC, licensing PRO/PREMIUM
 off-by-default). Os 3 buracos restantes são: **(a)** monetização ativa ainda
-inexistente — o gate está em *open mode* e o único provider é Lemon Squeezy
-(cartão/PayPal, 5%+$0.50), que **não** aceita BTC; **(b)** backlog de
+inexistente — o adapter legado Lemon Squeezy valida webhook, mas o checkout
+fica desabilitado porque não entrega a chave gerada ao comprador; **(b)** backlog de
 dados/observabilidade **fechado** (#204/#206 entregues — restam #205/#239/#185,
 P1/P2, na tabela §2); **(c)** a infra BTC **já existe e está subutilizada** —
 `donations` (WebLN + on-chain via mempool.space + hashpower) provada por
 `test_donation_dedup.py`.
 
-**Estado atualizado (17-Aug-2026):** o paywall foi **validado end-to-end
+**Estado histórico (17-Aug-2026):** o paywall foi **validado end-to-end
 localmente** — `PRO_KEYS_DB=1` → 402 em rota PRO + `paywall_view` countado +
 `funnel_report` não-vazio (**11/11 checks**, §10) — e **ativado em produção**:
 `PRO_KEYS_DB=1` virou infra-as-code no `render.yaml` (PR #262), o blueprint
 sync aplicou a env var e `GET https://cypher65-war-room.onrender.com/api/proximity`
-já responde **402** (gate ativo). O funil agora coleta dados reais; faltam as
-primeiras chaves e `MARKETING_SPEND_USD` para a economia completa.
+já respondia **402** (gate ativo). Isso validou bloqueio e chave administrativa,
+não checkout nem recebimento. Em 27-Aug o canal de pagamento segue desligado.
 
-**Oportunidade de receita:** três programas premium pagos **só em BTC**
+**Hipótese de receita:** três programas premium pagos **só em BTC**
 (PRO/PREMIUM/ENTERPRISE) reutilizando 100% da infra pronta (licensing,
 conversion, upgrade modal) e adicionando **um adaptador de pagamento BTC**
 (~2 semanas de dev) + **paywall BTC nativa no modal existente**. Público-alvo
@@ -53,7 +60,7 @@ dinâmica via `merge_btc_quotes`, já no código).
 
 | Sev | Problema | Evidência | Impacto | Owner | Fase |
 |---|---|---|---|---|---|
-| Sev-2 | Paywall exige cartão/PayPal via Lemon Squeezy — **zero aceitação BTC** | `services/payments.py` (LS-only) · `config.py:15` | Público-alvo Bitcoin-native não converte; perda de receita | Implementação | **P4** |
+| Sev-2 | Checkout Lemon Squeezy não possui entrega autenticada da chave; fica deliberadamente desabilitado | `services/payments.py` · `GET /api/license-status` | Habilitar aceitaria dinheiro sem completar ativação | Implementação | **P4** |
 | Sev-2 | Gate de licensing em *open mode* permanente (tudo free, sem data de ativação) | `services/licensing.py` (`_ACTIVATION_ENV` vazia) · **validação 17-Aug: `PRO_KEYS_DB=1` → 402 + funil ativo (11/11, §10)** · **resolvido: gate ATIVO em prod (402 confirmado, PR #262)** | Monetização ativa em produção desde 17-Aug | Implementação | P4 ✅ |
 | Sev-2 | Dados de alerta/rentals marcados stale sem `updated_at` + amostras ts=0 dropadas | Issue **#204** (P2, **fechada** — PRs #252/#253) | Séries históricas incompletas = decisão errada | Backend | P2 |
 | Sev-3 | Sem SLIs/SLOs de completude de dados (expected-vs-received) | Issue **#206** (P3, **fechada** — PRs #252/#253) | Degradação invisível até o cliente reclamar | DevOps/SRE | P2 |
@@ -124,9 +131,9 @@ pytest+JS core 1359, frontend audit, e2e, axe 100/100).
 | Entregável | Spec resumida |
 |---|---|
 | `services/btcpay.py` (novo) | Adapter BTCPay Greenfield API: criar invoice (amount em sats, `orderId` = plano+funnel_id), verificar webhook HMAC, mapear `Settled` → `licensing.issue_license`. Fallback: WebLN `sendPayment` (BOLT-11) + watcher on-chain existente |
-| `POST /api/upgrade/checkout` (alterar) | `plan` + `method: "btc"|"lightning"` → invoice BTC (sats dinâmicos via `merge_btc_quotes`) ou LS (legado) |
+| `POST /api/upgrade/checkout` (alterar) | `plan` + `method: "btc"|"lightning"` → invoice BTC (sats dinâmicos via `merge_btc_quotes`); cartão continua indisponível |
 | `POST /api/payments/btcpay/webhook` (novo) | Verificação de assinatura → `issue_license(plan, source="btcpay")` → `track_event("paid", meta={method:"btc"})` → `key_activated` no próximo request |
-| Upgrade modal (dashboard.html + app.js) | Aba **Bitcoin**: QR BIP-21 (endereço fixo + amount), botão copiar endereço, badge de sats, countdown, poll de status (`/api/upgrade/status/:invoiceId`), CTA WebLN quando disponível; manter aba "cartão" (LS) como fallback |
+| Upgrade modal (dashboard.html + app.js) | Aba **Bitcoin**: checkout hospedado BTCPay por invoice, badge de sats, countdown e poll autenticado (`X-Checkout-Token`); ocultar cartão enquanto a entrega da licença não existir |
 | `config.py` | Renomear papel do endereço: `PAYMENT_BTC_ADDRESS` (novo, = `35gj...`) separado de `BTC_ADDRESS` (wallet de dados do operador) |
 | Loja de planos (novo painel "Upgrade") | Tabela PRO/PREMIUM/ENTERPRISE/LIFETIME com preços em BTC + USD-referência, comparação free vs pago, FAQ "como pagar em BTC" |
 
@@ -144,8 +151,9 @@ pytest+JS core 1359, frontend audit, e2e, axe 100/100).
 
 ## 5. Programas de Vendas Detalhados
 
-**Pagamento:** exclusivamente Bitcoin — endereço fixo **`35gjAoadgQxrNc1Kx6QiSLx7wCCXRnRFkM`**
-(P2SH, validado) · canais: on-chain (BIP-21 QR) e Lightning (WebLN/BOLT-11).
+**Proposta de pagamento (não ativa):** Bitcoin via invoice única BTCPay ou
+Lightning/WebLN. `PAYMENT_BTC_ADDRESS` é somente metadado operacional; não é
+exibido como destino e não liquida uma invoice BTCPay.
 Preços em **sats** convertidos na hora do checkout (fonte: `merge_btc_quotes`,
 cache 5min), com valor de referência em USD exibido ("≈ $9/mo" para orientação,
 nunca como cobrança em fiat).
@@ -158,7 +166,7 @@ nunca como cobrança em fiat).
 | 4 | **LIFETIME PRO** | PRO vitalício (license sem expiração — `issue_license(months=None)`) | Hobbyist que quer 1 pagamento | **0.0024 BTC** one-shot (~$180) | on-chain 1 confirmação |
 | 5 | **Doar (não-tiers)** | Apoio ao projeto (já existe!) | Comunidade | livre, WebLN/on-chain | `donations` (já implementado) |
 
-**Fluxo de compra e ativação na interface (elegante, enterprise, zero agressividade):**
+**Fluxo pretendido quando um provider estiver operacional:**
 1. Operador acessa recurso gated → **402** → modal de upgrade (já existe) com
    **aba "Bitcoin" como padrão** e aba "Cartão" como fallback discreto.
 2. Aba Bitcoin mostra: resumo do plano, **endereço fixo + QR BIP-21** com
@@ -236,7 +244,7 @@ license de teste. Evidência > opinião.
 
 ---
 
-## 10. Validação do Paywall (PRO_KEYS_DB) + Ativação em Produção
+## 10. Validação histórica do gate (não valida checkout)
 
 **Data:** 17-Aug-2026 · **Evidência:** validação local end-to-end em DB scratch
 (`PRO_KEYS_DB=1`, 11/11 checks) · **Ativação:** PR #262 (infra-as-code) —
@@ -302,6 +310,7 @@ acontecer.
 
 ### 10.3 Critério de GO da fase P4 (atualizado)
 
-A validação local cobre os checks funcionais; **o GO final continua exigindo o
-teste de prova real**: 1 sat no endereço `35gjAoadgQxrNc1Kx6QiSLx7wCCXRnRFkM`
-com ativação automática detectada (webhook → license) — evidência > opinião.
+A validação local cobre os checks funcionais; **o GO final continua exigindo um
+teste de prova real** numa invoice criada pelo provider configurado, com
+confirmação autenticada, audit log e exatamente uma licença emitida. Esse teste
+ainda não foi apresentado; portanto checkout permanece indisponível.

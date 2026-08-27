@@ -3,8 +3,18 @@
 ## Executive Summary
 
 **Product:** Bitcoin Mining Intelligence Platform for Parasite Pool miners.
-**Status:** Internal tool → Commercial SaaS opportunity.
+**Status:** Beta/trial; commercial checkout indisponível no deploy público em
+Aug 2026 (`payments: null`, `btcpay: false`, `webln: false`).
 **Target Market:** Bitcoin miners using Parasite.space (2,675+ users, 12,514+ workers as of Jul 2026).
+
+> As tabelas de preço e unit economics abaixo são hipóteses de validação, não
+> uma oferta atualmente comprável. Enquanto nenhum provider estiver completo,
+> a interface mostra beta/trial ou ativação de chave emitida pelo operador e
+> não exibe botões de compra. Um lançamento pago exige checkout real de ponta
+> a ponta, webhook assinado, prova de liquidação e suporte operacional.
+> O adaptador Lemon Squeezy permanece desabilitado para novas compras: embora
+> valide webhooks legados, ainda não entrega a chave gerada ao navegador que
+> iniciou o checkout. Configurar suas env vars não torna esse fluxo vendável.
 
 ---
 
@@ -21,7 +31,7 @@
 
 ## Monetization Strategy
 
-### Freemium Model
+### Freemium Model (hipótese; ainda não disponível para compra)
 
 | Tier | Price | Features |
 |------|-------|----------|
@@ -34,7 +44,7 @@
 
 | Metric | Value |
 |--------|-------|
-| Monthly Revenue | $9.00 |
+| Monthly Revenue | $9.00 (hipótese) |
 | Infrastructure Cost | ~$0.15/mo (SQLite + Flask on $5 VPS serves ~200 users) |
 | Customer Acquisition Cost (CAC) | ~$5 (Bitcoin Twitter, Reddit r/BitAxe, Parasite Discord) |
 | Lifetime Value (LTV) | ~$108 (12 months avg retention) |
@@ -46,7 +56,8 @@
 ## Go-to-Market Strategy
 
 1. **Phase 1 (Now):** Open-source the core dashboard. Build credibility in the Parasite/Bitaxe community.
-2. **Phase 2 (Month 3):** Launch PRO tier with premium features gated behind license key.
+2. **Phase 2 (após validação):** beta fechado do PRO; só habilitar compra após
+   provider configurado e pagamento real de prova confirmar uma licença.
 3. **Phase 3 (Month 6):** Integrate with additional pools (Braiins, Slush, CKPool) to expand TAM.
 4. **Phase 4 (Month 12):** Enterprise white-label deals with mining rental marketplaces.
 

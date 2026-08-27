@@ -10,8 +10,8 @@ Design principle — OFF BY DEFAULT:
 
   The gate ACTIVATES when the operator sets any of:
     - ``PRO_LICENSE_KEYS``        — static comma-separated keys (legacy mode)
-    - ``LEMON_SQUEEZY_API_KEY``   — dynamic keys issued from paid checkouts
-                                   (services/payments.py fulfills them here)
+    - complete payment provider   — checkout + signed fulfillment settings;
+                                   a partial API credential never activates it
     - ``PRO_KEYS_DB=1``           — dynamic keys issued manually via the
                                    /api/admin/licenses route (no provider)
 
@@ -60,7 +60,7 @@ from datetime import datetime, timedelta, timezone
 from functools import wraps
 from typing import List, Optional
 
-from flask import jsonify, request
+from flask import has_request_context, jsonify, request
 
 from services.db import get_db
 
@@ -83,13 +83,12 @@ PREMIUM_FEATURES = ["ai_operator"]
 _KEY_PREFIX = "C65"
 _KEY_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"  # no I/L/O/0/1 — copy-safe
 
-# Env vars that flip the gate ON (additive; existing deployments untouched).
-_ACTIVATION_ENV = (
-    "PRO_LICENSE_KEYS",
-    "PREMIUM_LICENSE_KEYS",
-    "LEMON_SQUEEZY_API_KEY",
-    "PRO_KEYS_DB",
-)
+# Explicit key stores flip the gate on immediately. Payment providers only
+# activate it when checkout *and* fulfillment are complete; a stray API key
+# must never lock the product behind a checkout that cannot deliver a key.
+_ACTIVATION_ENV = ("PRO_LICENSE_KEYS", "PREMIUM_LICENSE_KEYS", "PRO_KEYS_DB")
+
+_PAID_SOURCES = frozenset(("lemon_squeezy", "btcpay", "webln"))
 
 _UTC = timezone.utc
 
@@ -114,11 +113,109 @@ def _configured_premium_keys() -> List[str]:
 
 
 def licensing_configured() -> bool:
-    """True when the operator has activated the gate (any activation env)."""
+    """True when the operator has activated a usable license gate."""
     for name in _ACTIVATION_ENV:
         if os.environ.get(name):
             return True
-    return False
+    btcpay_ready = all(
+        os.environ.get(name)
+        for name in (
+            "BTCPAY_URL",
+            "BTCPAY_API_KEY",
+            "BTCPAY_STORE_ID",
+            "BTCPAY_WEBHOOK_SECRET",
+        )
+    )
+    return bool(btcpay_ready or os.environ.get("LN_INVOICE_ENDPOINT"))
+
+
+def _db_license_record(key: str) -> Optional[dict]:
+    """Return the complete DB record needed to explain a key's state."""
+    if not key:
+        return None
+    try:
+        conn = get_db()
+        try:
+            row = conn.execute(
+                "SELECT plan, source, expires_at, revoked_at FROM pro_licenses "
+                "WHERE key = ?",
+                (key,),
+            ).fetchone()
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return None
+    return dict(row) if row else None
+
+
+def license_details(key: str = "") -> dict:
+    """Resolve an authoritative, user-facing license lifecycle state.
+
+    The response deliberately contains no key, email or provider payment
+    details. ``trial_active`` covers open beta and non-payment/manual keys;
+    provider-issued keys are ``paid_active``.
+    """
+    if not key and not licensing_configured():
+        return {
+            "license_state": "trial_active",
+            "tier": "premium",
+            "access_source": "open_beta",
+            "expires_at": None,
+        }
+    if not key:
+        return {
+            "license_state": "license_required",
+            "tier": "free",
+            "access_source": None,
+            "expires_at": None,
+        }
+    for configured in _configured_premium_keys():
+        if hmac.compare_digest(str(key), str(configured)):
+            return {
+                "license_state": "paid_active",
+                "tier": "premium",
+                "access_source": "static",
+                "expires_at": None,
+            }
+    for configured in _configured_keys():
+        if hmac.compare_digest(str(key), str(configured)):
+            return {
+                "license_state": "paid_active",
+                "tier": "pro",
+                "access_source": "static",
+                "expires_at": None,
+            }
+    row = _db_license_record(key)
+    if not row:
+        return {
+            "license_state": "invalid",
+            "tier": "free",
+            "access_source": None,
+            "expires_at": None,
+        }
+    source = str(row.get("source") or "manual").strip().lower()
+    expires_at = row.get("expires_at") or None
+    if row.get("revoked_at"):
+        state = "revoked"
+    elif expires_at:
+        try:
+            state = (
+                "expired"
+                if datetime.fromisoformat(str(expires_at)) <= datetime.now(_UTC)
+                else "paid_active" if source in _PAID_SOURCES else "trial_active"
+            )
+        except (TypeError, ValueError):
+            state = "invalid"
+    else:
+        state = "paid_active" if source in _PAID_SOURCES else "trial_active"
+    active = state in ("paid_active", "trial_active")
+    plan = str(row.get("plan") or "pro").strip().lower()
+    return {
+        "license_state": state,
+        "tier": ("premium" if plan == "premium" else "pro") if active else "free",
+        "access_source": source,
+        "expires_at": expires_at,
+    }
 
 
 def _db_key_valid(key: str) -> bool:
@@ -129,27 +226,7 @@ def _db_key_valid(key: str) -> bool:
     """
     if not key:
         return False
-    try:
-        conn = get_db()
-        try:
-            row = conn.execute(
-                "SELECT expires_at FROM pro_licenses "
-                "WHERE key = ? AND revoked_at IS NULL",
-                (key,),
-            ).fetchone()
-        finally:
-            conn.close()
-    except sqlite3.Error:
-        return False
-    if not row:
-        return False
-    exp = row["expires_at"]
-    if not exp:
-        return True  # lifetime key
-    try:
-        return datetime.fromisoformat(exp) > datetime.now(_UTC)
-    except (TypeError, ValueError):
-        return False
+    return license_details(key)["license_state"] in ("paid_active", "trial_active")
 
 
 def _key_valid(key: str) -> bool:
@@ -174,31 +251,13 @@ def _key_plan(key: str) -> str:
     """
     if not key:
         return "free"
-    for k in _configured_premium_keys():
-        if hmac.compare_digest(str(key), str(k)):
-            return "premium"
-    for k in _configured_keys():
-        if hmac.compare_digest(str(key), str(k)):
-            return "pro"
-    try:
-        conn = get_db()
-        try:
-            row = conn.execute(
-                "SELECT plan FROM pro_licenses WHERE key = ? AND revoked_at IS NULL",
-                (key,),
-            ).fetchone()
-        finally:
-            conn.close()
-    except sqlite3.Error:
-        return "free"
-    if not row:
-        return "free"
-    plan = str(row["plan"] or "pro").strip().lower()
-    return "premium" if plan == "premium" else "pro"
+    return str(license_details(key)["tier"])
 
 
 def current_license_key() -> str:
     """Extract the license key from X-License-Key header or ?license= param."""
+    if not has_request_context():
+        return ""
     key = (request.headers.get("X-License-Key", "") or "").strip()
     if not key:
         key = (request.args.get("license", "") or "").strip()
@@ -364,21 +423,30 @@ def license_status() -> dict:
 
     Drives the topbar PRO badge + frontend lock overlays + upgrade modal.
     """
-    payments = "lemon_squeezy" if os.environ.get("LEMON_SQUEEZY_API_KEY") else None
     ai_configured = _ai_operator_configured()
-    if not licensing_configured():
+    configured = licensing_configured()
+    key = current_license_key()
+    details = license_details(key)
+    if not configured:
+        key_valid = (
+            details["license_state"] in ("paid_active", "trial_active") if key else None
+        )
         return {
-            "mode": "open",  # gate inactive — everything free
+            "mode": "open",
             "tier": "premium",
             "pro": True,
             "premium": True,
+            "license_state": "trial_active",
+            "submitted_license_state": details["license_state"] if key else None,
+            "key_valid": key_valid,
+            "access_source": "open_beta",
+            "expires_at": None,
             "features": {f: "unlocked" for f in PRO_FEATURES + PREMIUM_FEATURES},
             "upgrade": None,
-            "payments": payments,
+            "payments": None,
             "ai_configured": ai_configured,
         }
-    key = current_license_key()
-    plan = _key_plan(key)
+    plan = details["tier"]
     premium = plan == "premium"
     pro = plan in ("premium", "pro")
     upgrade = None
@@ -387,14 +455,18 @@ def license_status() -> dict:
     elif not premium:
         upgrade = {"plan": "PREMIUM", "price_usd_month": 29}
     return {
-        "mode": "licensed",
+        "mode": "licensed" if configured else "open",
         "tier": plan,  # premium | pro | free
         "pro": pro,
         "premium": premium,
+        "license_state": details["license_state"],
+        "access_source": details["access_source"],
+        "expires_at": details["expires_at"],
+        "key_valid": details["license_state"] in ("paid_active", "trial_active"),
         "features": {f: ("unlocked" if pro else "locked") for f in PRO_FEATURES}
         | {f: ("unlocked" if premium else "locked") for f in PREMIUM_FEATURES},
         "upgrade": upgrade,
-        "payments": payments,
+        "payments": None,
         "ai_configured": ai_configured,
     }
 

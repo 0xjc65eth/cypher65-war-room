@@ -175,6 +175,18 @@ significa:
 
 ## ₿ Canal Bitcoin em produção — BTCPay Server
 
+> **Estado atual (27-Aug-2026): NÃO operacional.** O deploy público reporta
+> `btcpay: false` e `webln: false`. As instruções desta seção são um runbook de
+> ativação futura; não indicam que pagamentos estejam disponíveis. Até todos os
+> critérios de smoke test e pagamento de prova serem satisfeitos, a aplicação
+> mantém o checkout oculto e oferece beta/trial ou chave administrativa.
+
+> **Cartão/Lemon Squeezy:** o adaptador legado não deve ser ativado. Webhooks
+> assinados e deduplicados continuam aceitos para pedidos históricos, porém
+> ainda não há entrega autenticada da chave CYPHER65 ao browser comprador.
+> Mesmo com todas as `LEMON_SQUEEZY_*`, `/api/license-status` mantém
+> `payments: null` e o checkout por cartão retorna 503.
+
 ### Decisão
 
 Use **BTCPay Server** em produção. O War Room precisa criar uma invoice única,
@@ -248,9 +260,15 @@ curl -fsS -X POST "$BASE_URL/api/upgrade/checkout" \
 
 Critérios:
 
+- `/api/license-status` só pode mudar `checkout_state` para `available` quando
+  URL, API key, Store ID e webhook secret estiverem todos configurados;
+- antes disso, deve responder `payment_state: "checkout_unavailable"` e a UI
+  não pode renderizar CTA de compra;
+
 - health retorna HTTP 200;
 - `license-status` retorna `"btcpay": true`;
 - checkout retorna HTTP 200 com `provider=btcpay`, `invoice_id` não vazio,
+  `status_token` não vazio (necessário no poll; manter apenas em memória),
   `checkout_url` HTTPS e `amount_sat > 0`;
 - a invoice aparece na store correta. Criar invoice não prova liquidação e
   não autoriza marcar o canal como concluído.
@@ -261,8 +279,9 @@ Critérios:
    reduz tempo/custo do teste).
 2. No BTCPay, confirme delivery HTTP 200 do evento `InvoiceSettled` para o
    webhook do War Room. `Processing`, `Expired` e `Invalid` são no-op.
-3. Consulte `GET /api/upgrade/status/<invoice_id>` até obter
-   `status=Settled` e uma `license_key` não vazia.
+3. Consulte `GET /api/upgrade/status/<invoice_id>` com o header
+   `X-Checkout-Token: <status_token>` até obter `status=Settled` e uma
+   `license_key` não vazia. Não use query string, storage persistente ou logs.
 4. Reenvie a delivery no painel BTCPay: deve retornar a mesma chave; a tabela
    `processed_invoices` usa `invoice_id` como dedupe e não emite uma segunda.
 5. Ative a chave no modal e confirme `tier=pro` em `/api/license-status` no
