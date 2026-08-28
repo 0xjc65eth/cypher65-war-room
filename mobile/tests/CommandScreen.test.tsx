@@ -18,7 +18,7 @@ jest.mock('../src/api/client', () => ({
 }));
 
 describe('CommandScreen', () => {
-  it('renders the command center heading', () => {
+  it('renders the command center heading', async () => {
     jest.spyOn(snapshotHook, 'useSnapshot').mockReturnValue({
       snapshot: { ts: Date.now() / 1000, worker: {}, pool: {}, network: {} },
       refreshing: false,
@@ -28,6 +28,9 @@ describe('CommandScreen', () => {
 
     render(<CommandScreen />);
     expect(screen.getByText('Command Center')).toBeTruthy();
+    // Wait for the mount-time share request so React 19 observes every state
+    // update inside the testing-library act() boundary.
+    expect(await screen.findByText(/No shares yet/)).toBeTruthy();
   });
 
   it('renders the Live→Probability share difficulty section', async () => {

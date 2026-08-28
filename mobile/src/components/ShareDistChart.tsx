@@ -1,4 +1,3 @@
-import React from 'react';
 import { View, Text, StyleSheet, ActivityIndicator } from 'react-native';
 import Svg, { Rect, Line } from 'react-native-svg';
 import type { ShareDistData } from '../types';
@@ -20,7 +19,7 @@ const CHART_HEIGHT = 120;
 // x >= 100 → 0, space before the unit). The '—' fallback for null/0 mirrors
 // the web badge's `data.target_diff ? ... : 'target —'` branch.
 export function formatDiff(v: number | null | undefined): string {
-  if (v === null || v === undefined || !isFinite(v) || v === 0) return '—';
+  if (v === null || v === undefined || !Number.isFinite(v) || v === 0) return '—';
   const units = ['', 'K', 'M', 'G', 'T', 'P', 'E'];
   let i = 0;
   let x = Math.abs(v);
@@ -39,7 +38,7 @@ export function targetLineX(
   width: number
 ): number | null {
   if (bucket === null || bucket === undefined || nBuckets <= 0) return null;
-  if (!isFinite(width) || width <= 0) return null;
+  if (!Number.isFinite(width) || width <= 0) return null;
   const b = Math.max(0, Math.min(nBuckets - 1, bucket));
   return ((b + 0.5) / nBuckets) * width;
 }
@@ -83,6 +82,8 @@ export const ShareDistChart = ({ data, loading, error }: Props) => {
           const h = max > 0 ? (v / max) * (CHART_HEIGHT - 10) : 2;
           return (
             <Rect
+              // Histogram bins are positional and never reorder independently.
+              // biome-ignore lint/suspicious/noArrayIndexKey: the bucket index is the bin identity
               key={i}
               x={i * barW + 1}
               y={CHART_HEIGHT - h}

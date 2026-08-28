@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import {
   View,
   Text,
@@ -31,7 +31,7 @@ export const CommandScreen = () => {
   const [distLoading, setDistLoading] = useState(false);
   const [distError, setDistError] = useState<string | null>(null);
 
-  const loadDist = async () => {
+  const loadDist = useCallback(async () => {
     setDistLoading(true);
     setDistError(null);
     try {
@@ -41,15 +41,15 @@ export const CommandScreen = () => {
     } finally {
       setDistLoading(false);
     }
-  };
+  }, []);
 
   useEffect(() => {
     loadDist();
-  }, []);
+  }, [loadDist]);
 
   const onRefresh = async () => {
     await refresh();
-    loadDist();
+    await loadDist();
   };
 
   const worker = (snapshot?.worker as Record<string, unknown>) || {};

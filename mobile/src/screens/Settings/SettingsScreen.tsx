@@ -1,8 +1,7 @@
-import React from 'react';
 import { View, Text, StyleSheet, Switch, TouchableOpacity } from 'react-native';
 import { useAppStore } from '../../store';
 import { useAuth } from '../../hooks/useAuth';
-import { BatteryMode } from '../../types';
+import type { BatteryMode } from '../../types';
 import { theme } from '../../theme';
 
 const BATTERY_MODES: { key: BatteryMode; label: string }[] = [

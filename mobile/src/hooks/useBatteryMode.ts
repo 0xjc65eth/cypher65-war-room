@@ -11,7 +11,7 @@ const POLL_INTERVALS: Record<BatteryMode, number | null> = {
 export const useBatteryMode = () => {
   const { batteryMode, setBatteryMode } = useAppStore();
 
-  const intervalRef = useRef<NodeJS.Timeout | null>(null);
+  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const schedule = useCallback(
     (callback: () => void) => {

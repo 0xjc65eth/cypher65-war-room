@@ -94,7 +94,9 @@ if [ -n "$MOBILE_DIR" ] && [ -d "$MOBILE_DIR" ]; then
       --include='*.tsx' --include='*.ts' --include='*.js' \
       --exclude='theme.ts' \
       --exclude='*.test.ts' --exclude='*.spec.ts' \
-      --exclude-dir=node_modules --exclude-dir='__tests__' 2>/dev/null \
+      --exclude-dir=node_modules --exclude-dir='__tests__' \
+      --exclude-dir=dist --exclude-dir=.expo \
+      --exclude-dir=ios --exclude-dir=android 2>/dev/null \
     | grep -vE '/tests/' \
     | grep -vE 'Issue[[:space:]]*#[0-9a-fA-F]{3,8}' \
     | grep -vE '#[0-9a-fA-F]{3,8}-' \

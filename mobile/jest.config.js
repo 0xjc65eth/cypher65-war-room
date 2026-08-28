@@ -1,5 +1,5 @@
 // CYPHER65 Mobile — Jest configuration
-// Uses the jest-expo preset (matches expo SDK 51) so expo/react-native
+// Uses the jest-expo preset matching Expo SDK 57 so Expo/React Native
 // modules are transformed and native modules are mocked automatically.
 // External-review quick win: closes the "mobile not tested in CI" gap.
 module.exports = {

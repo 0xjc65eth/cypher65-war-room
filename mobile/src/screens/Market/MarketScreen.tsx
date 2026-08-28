@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { View, Text, StyleSheet, FlatList, RefreshControl, ActivityIndicator } from 'react-native';
 import { fetchHashrateMarket, compareOffers } from '../../api/client';
 import { MetricCard } from '../../components/MetricCard';
@@ -10,7 +10,7 @@ export const MarketScreen = () => {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const load = async () => {
+  const load = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
@@ -26,11 +26,11 @@ export const MarketScreen = () => {
     } finally {
       setLoading(false);
     }
-  };
+  }, []);
 
   useEffect(() => {
     load();
-  }, []);
+  }, [load]);
 
   const renderItem = ({ item }: { item: MarketOffer }) => (
     <View style={styles.card}>

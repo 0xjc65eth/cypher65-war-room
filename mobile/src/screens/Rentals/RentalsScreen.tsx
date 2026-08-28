@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { View, Text, StyleSheet, FlatList, RefreshControl, ActivityIndicator, TouchableOpacity } from 'react-native';
 import { fetchRentals } from '../../api/client';
 import { MetricCard } from '../../components/MetricCard';
@@ -66,20 +66,13 @@ const RentalCard = ({ rental }: { rental: Rental }) => {
   );
 };
 
-const SectionHeader = ({ title, count }: { title: string; count: number }) => (
-  <View style={styles.sectionHead}>
-    <Text style={styles.sectionTitle}>{title}</Text>
-    <Text style={styles.sectionCount}>{count}</Text>
-  </View>
-);
-
 export const RentalsScreen = () => {
   const [data, setData] = useState<RentalsData | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [tab, setTab] = useState<'active' | 'history'>('active');
 
-  const load = async () => {
+  const load = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
@@ -90,11 +83,11 @@ export const RentalsScreen = () => {
     } finally {
       setLoading(false);
     }
-  };
+  }, []);
 
   useEffect(() => {
     load();
-  }, []);
+  }, [load]);
 
   const mrr = data?.mrr;
   const braiins = data?.braiins;
@@ -263,23 +256,6 @@ const styles = StyleSheet.create({
   },
   tabTextActive: {
     color: theme.text.onDeep,
-  },
-  sectionHead: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginTop: 8,
-    marginBottom: 4,
-  },
-  sectionTitle: {
-    color: theme.brand.DEFAULT,
-    fontSize: 12,
-    fontWeight: '700',
-    letterSpacing: 0.08,
-  },
-  sectionCount: {
-    color: theme.text.secondary,
-    fontSize: 12,
   },
   card: {
     backgroundColor: theme.bg.surface,

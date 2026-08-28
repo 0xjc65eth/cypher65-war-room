@@ -1,4 +1,4 @@
-import React from 'react';
+import type { FC } from 'react';
 import { View, Text, StyleSheet } from 'react-native';
 import { theme } from '../theme';
 
@@ -19,7 +19,7 @@ const statusColors: Record<string, { bg: string; text: string }> = {
   INFO: { bg: theme.bg.brandDeep, text: theme.brand.DEFAULT },
 };
 
-export const StatusBadge: React.FC<StatusBadgeProps> = ({ status, label }) => {
+export const StatusBadge: FC<StatusBadgeProps> = ({ status, label }) => {
   const colors = statusColors[status] || statusColors.INFO;
   return (
     <View style={[styles.badge, { backgroundColor: colors.bg }]}>

@@ -19,6 +19,16 @@ e versionamento semântico ([SemVer](https://semver.org/lang/pt-BR/)).
 - Auditoria e testes de compreensão: `docs/PROBABILITY_LANGUAGE_AUDIT.md` e
   `tests/test_probability_language.py`.
 
+### Alterado — mobile: Expo SDK 57 e gates reproduzíveis (Issue #379)
+- Atualização compatível para Expo SDK 57, React Native 0.86 e React 19, com
+  assets reais do produto e configuração moderna de splash screen.
+- CI mobile agora bloqueia em Expo Doctor, vulnerabilidades high/critical,
+  Biome sem warnings, TypeScript, Jest e export dos bundles iOS, Android e web.
+- O handler de notificações preserva alerta, som e badge e também declara os
+  campos de banner/lista exigidos pelo SDK atual.
+- Documentação mobile registra requisitos de runtime e distingue export de
+  bundle de compilação nativa assinada.
+
 ### Adicionado — disclaimer no módulo Probability — risco regulatório (Issues #347/#350)
 - **Disclaimer visual** no bloco Block Hunt: box amber "Estes valores são
   estatísticos e não representam previsão nem garantia de resultado... Mining é
