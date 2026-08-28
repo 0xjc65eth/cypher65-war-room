@@ -216,7 +216,7 @@ jobs:
           echo "Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
 
   mobile:
-    name: "mobile: typecheck + jest"
+    name: "mobile: lint + typecheck + jest + build"
     runs-on: ubuntu-latest
     timeout-minutes: 20
 
@@ -231,11 +231,21 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v7
         with:
-          node-version: "20"
+          node-version: "22.13.0"
+          cache: npm
+          cache-dependency-path: mobile/package-lock.json
 
-      # No lockfile committed yet, so npm install (not npm ci).
       - name: Install dependencies
-        run: npm install
+        run: npm ci
+
+      - name: Expo SDK compatibility
+        run: npm run doctor
+
+      - name: Dependency audit (high/critical)
+        run: npm audit --audit-level=high
+
+      - name: Biome lint (blocking)
+        run: npm run lint
 
       - name: Typecheck (tsc --noEmit)
         run: npm run typecheck
@@ -243,11 +253,8 @@ jobs:
       - name: Run jest suite
         run: npm test -- --ci
 
-      # Lint/quality (Issue #29) — advisory: report violations but never
-      # block the merge. The real JS gate stays tests/test_app_js_core.js.
-      - name: Biome lint (advisory)
-        continue-on-error: true
-        run: npx @biomejs/biome lint src App.tsx --reporter=summary || true
+      - name: Export iOS, Android and web bundles
+        run: npm run build
 
       - name: Knip dead-code (advisory)
         continue-on-error: true
@@ -449,5 +456,4 @@ jobs:
           BODY=$'👀 **CI guard (#211):** sua branch está com `.github/workflows/` **defasado** em relação ao master — o CI que roda aqui pode não refletir o pipeline atual (caso dos PRs #1/#7: 13 dias vermelhos por um fix de workflow que nunca chegou à branch).\n\nRebaseie para validar com o pipeline real:\n\n`@dependabot rebase`'
           gh pr comment "${PR_NUMBER}" --body "${BODY}"
           echo "Comentário @dependabot rebase postado."
-
 

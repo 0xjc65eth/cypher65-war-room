@@ -1,4 +1,4 @@
-import React from 'react';
+import type { FC } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
 import { StatusBadge } from './StatusBadge';
 import type { Device } from '../types';
@@ -9,7 +9,7 @@ interface DeviceListItemProps {
   onPress: (device: Device) => void;
 }
 
-export const DeviceListItem: React.FC<DeviceListItemProps> = ({ device, onPress }) => {
+export const DeviceListItem: FC<DeviceListItemProps> = ({ device, onPress }) => {
   const hashrate = device.current_telemetry?.hashrate ?? 0;
   const temp = device.current_telemetry?.temperature ?? 0;
 

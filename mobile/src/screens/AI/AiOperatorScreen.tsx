@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react';
+import { useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -41,7 +41,7 @@ export const AiOperatorScreen = () => {
   };
 
   const generateFallbackResponse = (): string => {
-    const fleetSummary = (snapshot?.axe_fleet as any[])?.length ?? 0;
+    const fleetSummary = Array.isArray(snapshot?.axe_fleet) ? snapshot.axe_fleet.length : 0;
     if (fleetSummary > 0) {
       return `I see ${fleetSummary} device(s) connected. How can I help you with your fleet?`;
     }
@@ -75,7 +75,7 @@ export const AiOperatorScreen = () => {
         ts: Date.now(),
       };
       appendMessage(aiResponse);
-    } catch (error) {
+    } catch {
       // Fallback simulated response while the AI backend is not available.
       const fallback: ChatMessage = {
         id: `${Date.now()}_a`,

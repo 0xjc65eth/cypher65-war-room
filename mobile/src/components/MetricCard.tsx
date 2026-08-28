@@ -1,4 +1,4 @@
-import React from 'react';
+import type { FC } from 'react';
 import { View, Text, StyleSheet } from 'react-native';
 import { theme } from '../theme';
 
@@ -9,7 +9,7 @@ interface MetricCardProps {
   accent?: string;
 }
 
-export const MetricCard: React.FC<MetricCardProps> = ({ title, value, subtext, accent }) => {
+export const MetricCard: FC<MetricCardProps> = ({ title, value, subtext, accent }) => {
   return (
     <View style={styles.card}>
       <Text style={styles.title}>{title}</Text>

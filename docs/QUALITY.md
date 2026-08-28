@@ -43,7 +43,7 @@ SENTRY_DSN=... python app.py      # Sentry ativo (traces 0.1 default)
 
 | Ferramenta | Escopo | Status | Gate? |
 |---|---|---|---|
-| **Biome** (Rust, lint+format JS/TS) | `mobile/` (TS) + `static/app.js` | ✅ configurado | CI check (advisory 1º) |
+| **Biome** (Rust, lint JS/TS) | `mobile/` (TS/TSX) | ✅ schema 2.5, zero warnings | ✅ blocking |
 | **Knip** (dead code) | `mobile/` | ✅ knip.json | CI check (advisory) |
 | **commitlint** | mensagens de commit | ✅ config | CI check |
 | **mutmut** (mutation Python) | `core/` + `services/` | ✅ dev-dep + doc | manual (advisory) |
@@ -82,8 +82,8 @@ make lint-sec     # bandit -ll + flake8 (.flake8) + black — blocking
 ### Instalação / uso
 
 ```bash
-# Biome (mobile) — lint + format em um passo (substitui ESLint+Prettier)
-cd mobile && npx @biomejs/biome lint . && npx @biomejs/biome format .
+# Biome (mobile) — lint bloqueante, inclusive warnings; substitui o ESLint sem configuração
+cd mobile && npm run lint
 
 # Knip — dead code no mobile
 cd mobile && npx knip

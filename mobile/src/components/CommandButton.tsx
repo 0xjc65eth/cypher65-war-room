@@ -1,4 +1,4 @@
-import React from 'react';
+import type { FC } from 'react';
 import { TouchableOpacity, Text, StyleSheet } from 'react-native';
 import type { Capability } from '../types';
 import { theme } from '../theme';
@@ -15,11 +15,11 @@ const riskColors: Record<string, { bg: string; border: string }> = {
   high: { bg: theme.bg.red, border: theme.red.DEFAULT },
 };
 
-export const CommandButton: React.FC<CommandButtonProps> = ({ capability, onPress, disabled }) => {
+export const CommandButton: FC<CommandButtonProps> = ({ capability, onPress, disabled }) => {
   const colors = riskColors[capability.risk_level] || riskColors.low;
   return (
     <TouchableOpacity
-      style={[styles.button, { backgroundColor: colors.bg, borderColor: colors.border } as any]}
+      style={[styles.button, { backgroundColor: colors.bg, borderColor: colors.border }]}
       onPress={() => onPress(capability)}
       disabled={disabled || !capability.supported}
       activeOpacity={0.7}
