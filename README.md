@@ -166,11 +166,13 @@ with `X-API-Key` (or localhost) and are activated through `X-License-Key`.
 
 ## ⚡ R2 — Bitcoin channel (off-by-default)
 
-The upgrade modal also accepts **Bitcoin directly** — no payment processor.
+The upgrade modal can accept **Bitcoin** only after the channel is released.
 The production decision is **BTCPay Server**: it creates a unique invoice,
 supports on-chain + Lightning through the store, and signs settlement
-webhooks. `LN_INVOICE_ENDPOINT` remains a reduced Lightning-only fallback.
-Both paths stay off until fully configured. In that state checkout returns
+webhooks. The legacy `LN_INVOICE_ENDPOINT` adapter is not a public commercial
+fallback in this beta. BTCPay stays off until it is fully configured and a
+real settlement, duplicate webhook and license activation have been
+reconciled. Before that, checkout returns
 `503` with `payment_state: "checkout_unavailable"`; the tab and every purchase
 CTA remain hidden:
 
@@ -178,11 +180,12 @@ CTA remain hidden:
 | --- | --- |
 | `BTCPAY_URL` / `BTCPAY_API_KEY` / `BTCPAY_STORE_ID` | BTCPay Greenfield API (invoice creation + polling) |
 | `BTCPAY_WEBHOOK_SECRET` | Required HMAC-SHA256 secret verifying `BTCPay-Sig` on the settlement webhook |
+| `BTCPAY_RECONCILIATION_VERIFIED` | Release gate; keep `0` until the real end-to-end runbook passes, then set `1` |
 | `PAYMENT_BTC_ADDRESS` | Operator revenue/reference address, separate from `BTC_ADDRESS`; BTCPay invoices settle to the wallet configured in the BTCPay store |
-| `LN_INVOICE_ENDPOINT` | WebLN fallback — operator Lightning node that mints BOLT-11 invoices |
+| `LN_INVOICE_ENDPOINT` | Legacy internal adapter; does not enable public checkout in the beta |
 
-Flow: **Buy PRO → Bitcoin** → BTCPay invoice (QR / copy / countdown) or WebLN
-BOLT-11 → settlement webhook (or preimage) → a `C65-XXXX-…` key is issued and
+Flow after release: **Buy PRO → Bitcoin** → BTCPay invoice (QR / copy /
+countdown) → signed settlement webhook → a `C65-XXXX-…` key is issued and
 honored immediately via the existing `X-License-Key` header. Self-custody:
 0% processor fee, no KYC — tax obligations stay with the operator.
 
@@ -195,6 +198,27 @@ the browser that created the checkout; an invoice ID alone cannot retrieve a key
 
 Production setup, least-privilege API scopes, webhook registration, smoke
 test and rollback: [Deploy & Operations — Canal Bitcoin em produção](docs/DEPLOYMENT_OPS.md#-canal-bitcoin-em-produção--btcpay-server).
+
+## Beta safety gates
+
+- Physical commands are read-only by default. Real execution requires
+  `dry_run:false`, an exact one-time human confirmation bound to tenant,
+  device, command and parameters, a bounded adapter timeout and audit logging.
+- Browser settings and configuration exports never return stored provider
+  credentials. Encrypted remote backups require a dedicated stable Fernet key;
+  plaintext legacy Gists are rejected.
+- Named tenants receive only their own fleet/session data plus public network
+  context. Legacy operator-global history and wallet views fail closed.
+- MRR and Braiins diagnostics are read-only and return structured status
+  without echoing credentials. Provider acceptance still must be verified with
+  the operator's real account.
+- Public hardware release remains blocked until the evidence in
+  [Physical validation matrix](docs/PHYSICAL_VALIDATION_MATRIX.md) records 200
+  dry-runs and 50 controlled human commands across Bitaxe, NerdQaxe and one
+  farm ASIC family.
+- Payments remain unavailable until a real BTCPay settlement, signed webhook,
+  duplicate delivery and license activation are reconciled end to end. Provider
+  credentials alone do not enable checkout.
 
 ## 📄 License
 

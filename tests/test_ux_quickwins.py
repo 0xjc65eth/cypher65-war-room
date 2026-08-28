@@ -31,14 +31,18 @@ def _db():
 
 class TestTestWebhook:
     def test_400_when_no_webhook_configured(self, client, monkeypatch):
-        monkeypatch.setattr(settings_routes, "load_settings", lambda: {"webhook_url": ""})
+        monkeypatch.setattr(
+            settings_routes,
+            "load_settings",
+            lambda tenant_id="": {"webhook_url": ""},
+        )
         r = client.post("/api/settings/test-webhook")
         assert r.status_code == 400
         assert "not configured" in r.get_json()["error"]
 
     def test_403_when_not_pro(self, client, monkeypatch):
         monkeypatch.setattr(settings_routes, "load_settings",
-                            lambda: {"webhook_url": "https://hooks.example.com/abc"})
+                            lambda tenant_id="": {"webhook_url": "https://hooks.example.com/abc"})
         monkeypatch.setattr(settings_routes, "is_pro", lambda: False)
         r = client.post("/api/settings/test-webhook")
         assert r.status_code == 403
@@ -46,7 +50,7 @@ class TestTestWebhook:
 
     def test_posts_sample_payload_and_reports_status(self, client, monkeypatch):
         monkeypatch.setattr(settings_routes, "load_settings",
-                            lambda: {"webhook_url": "https://hooks.example.com/abc"})
+                            lambda tenant_id="": {"webhook_url": "https://hooks.example.com/abc"})
         monkeypatch.setattr(settings_routes, "is_pro", lambda: True)
         sent = {}
 
@@ -76,7 +80,7 @@ class TestTestWebhook:
 
     def test_502_on_network_error(self, client, monkeypatch):
         monkeypatch.setattr(settings_routes, "load_settings",
-                            lambda: {"webhook_url": "https://hooks.example.com/abc"})
+                            lambda tenant_id="": {"webhook_url": "https://hooks.example.com/abc"})
         monkeypatch.setattr(settings_routes, "is_pro", lambda: True)
 
         def boom(url, json=None, timeout=4):

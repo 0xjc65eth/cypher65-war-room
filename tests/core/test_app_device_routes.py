@@ -12,14 +12,20 @@ from core.models.capability import Capability
 class TestAppDeviceRoutes:
     @pytest.fixture(autouse=True)
     def clear_pending_confirmations(self):
-        """Keep one-time command approvals isolated between route tests."""
-        from routes import device_control
+        """Keep durable one-time command approvals isolated between tests."""
+        from services.command_confirmation import _connect, ensure_table
 
-        with device_control._confirmation_lock:
-            device_control._pending_confirmations.clear()
+        conn = _connect()
+        ensure_table(conn)
+        conn.execute("DELETE FROM command_confirmations")
+        conn.commit()
+        conn.close()
         yield
-        with device_control._confirmation_lock:
-            device_control._pending_confirmations.clear()
+        conn = _connect()
+        ensure_table(conn)
+        conn.execute("DELETE FROM command_confirmations")
+        conn.commit()
+        conn.close()
 
     @pytest.fixture
     def client(self):
@@ -153,7 +159,11 @@ class TestAppDeviceRoutes:
         with patch("routes.device_control._build_adapter") as build_adapter:
             response = flask_client.post(
                 f"/api/devices/{device.id}/command",
-                json={"command": "set_frequency", "parameters": {"frequency": 550}},
+                json={
+                    "command": "set_frequency",
+                    "parameters": {"frequency": 550},
+                    "dry_run": False,
+                },
             )
 
         assert response.status_code == 403
@@ -175,7 +185,11 @@ class TestAppDeviceRoutes:
         )
         device.capabilities = BitaxeAdapter(device).get_capabilities()
         registry.add_device(device)
-        payload = {"command": "set_frequency", "parameters": {"frequency": 550}}
+        payload = {
+            "command": "set_frequency",
+            "parameters": {"frequency": 550},
+            "dry_run": False,
+        }
 
         confirmation = flask_client.post(
             f"/api/devices/{device.id}/command/confirmation",
@@ -218,7 +232,11 @@ class TestAppDeviceRoutes:
         )
         device.capabilities = BitaxeAdapter(device).get_capabilities()
         registry.add_device(device)
-        payload = {"command": "set_frequency", "parameters": {"frequency": 550}}
+        payload = {
+            "command": "set_frequency",
+            "parameters": {"frequency": 550},
+            "dry_run": False,
+        }
 
         with patch("services.tenant.get_current_role", return_value="viewer"):
             with patch("routes.device_control._build_adapter") as build_adapter:
@@ -252,7 +270,11 @@ class TestAppDeviceRoutes:
         )
         device.capabilities = BitaxeAdapter(device).get_capabilities()
         registry.add_device(device)
-        payload = {"command": "set_frequency", "parameters": {"frequency": 550}}
+        payload = {
+            "command": "set_frequency",
+            "parameters": {"frequency": 550},
+            "dry_run": False,
+        }
         adapter = Mock()
         adapter.execute_command.return_value = {"success": True}
 
@@ -295,7 +317,11 @@ class TestAppDeviceRoutes:
             "poolPassword": secret,
             "nested": {"access_token": secret},
         }
-        payload = {"command": "update_pool", "parameters": parameters}
+        payload = {
+            "command": "update_pool",
+            "parameters": parameters,
+            "dry_run": False,
+        }
         confirmation = flask_client.post(
             f"/api/devices/{device.id}/command/confirmation",
             json={**payload, "confirmation": "CONFIRM UPDATE_POOL"},
@@ -342,7 +368,11 @@ class TestAppDeviceRoutes:
         )
         device.capabilities = BitaxeAdapter(device).get_capabilities()
         registry.add_device(device)
-        payload = {"command": "set_frequency", "parameters": {"frequency": 550}}
+        payload = {
+            "command": "set_frequency",
+            "parameters": {"frequency": 550},
+            "dry_run": False,
+        }
         confirmation = flask_client.post(
             f"/api/devices/{device.id}/command/confirmation",
             json={**payload, "confirmation": "CONFIRM SET_FREQUENCY"},
@@ -357,6 +387,7 @@ class TestAppDeviceRoutes:
                 json={
                     "command": "set_frequency",
                     "parameters": {"frequency": 600},
+                    "dry_run": False,
                     "confirmation_token": token,
                 },
             )
@@ -366,7 +397,7 @@ class TestAppDeviceRoutes:
             )
 
         assert mismatch.status_code == 403
-        assert "does not match" in mismatch.get_json()["error"]
+        assert "mismatched" in mismatch.get_json()["error"]
         assert replay.status_code == 403
         assert "expired, or was already used" in replay.get_json()["error"]
         adapter.execute_command.assert_not_called()
@@ -384,7 +415,11 @@ class TestAppDeviceRoutes:
         )
         device.capabilities = BitaxeAdapter(device).get_capabilities()
         registry.add_device(device)
-        payload = {"command": "set_frequency", "parameters": {"frequency": 550}}
+        payload = {
+            "command": "set_frequency",
+            "parameters": {"frequency": 550},
+            "dry_run": False,
+        }
 
         invalid = flask_client.post(
             f"/api/devices/{device.id}/command/confirmation",
@@ -416,7 +451,7 @@ class TestAppDeviceRoutes:
         confirmed, reason = device_control._consume_confirmation(token, other_tenant)
 
         assert confirmed is False
-        assert "tenant" in reason
+        assert "mismatched" in reason
 
     def test_capability_metadata_cannot_downgrade_default_command_safety(self):
         from core.models.capability import Capability, RiskLevel
@@ -453,7 +488,11 @@ class TestAppDeviceRoutes:
         )
         device.capabilities = BitaxeAdapter(device).get_capabilities()
         registry.add_device(device)
-        payload = {"command": "set_frequency", "parameters": {"frequency": 550}}
+        payload = {
+            "command": "set_frequency",
+            "parameters": {"frequency": 550},
+            "dry_run": False,
+        }
         confirmation = flask_client.post(
             f"/api/devices/{device.id}/command/confirmation",
             json={**payload, "confirmation": "CONFIRM SET_FREQUENCY"},
@@ -561,6 +600,31 @@ class TestAppDeviceRoutes:
         assert data["simulated"] is True
         assert data["test_mode"] is True
         assert data["result"]["simulated"] is True
+        build_adapter.assert_not_called()
+
+    def test_physical_command_endpoint_defaults_to_audited_dry_run(self, client):
+        flask_client, registry = client
+        from core.adapters.bitaxe_adapter import BitaxeAdapter
+
+        device = Device(
+            name="Default-Dry-Run",
+            model="Bitaxe",
+            ip="192.168.1.58",
+            status=DeviceStatus.ONLINE,
+        )
+        device.capabilities = BitaxeAdapter(device).get_capabilities()
+        registry.add_device(device)
+
+        with patch("routes.device_control._build_adapter") as build_adapter:
+            response = flask_client.post(
+                f"/api/devices/{device.id}/command",
+                json={"command": "restart"},
+            )
+
+        assert response.status_code == 200
+        assert response.get_json()["dry_run"] is True
+        assert response.get_json()["read_only"] is True
+        assert response.get_json()["would_require_confirmation"] is True
         build_adapter.assert_not_called()
 
     def test_device_command_history_empty(self, client):
@@ -822,7 +886,8 @@ class TestDeviceCommandSecurity:
         )
 
         unconfirmed = flask_client.post(
-            f"/api/devices/{device.id}/command", json={"command": "restart"}
+            f"/api/devices/{device.id}/command",
+            json={"command": "restart", "dry_run": False},
         )
         assert unconfirmed.status_code == 403
         payload = unconfirmed.get_json()
@@ -840,6 +905,7 @@ class TestDeviceCommandSecurity:
             f"/api/devices/{device.id}/command",
             json={
                 "command": "restart",
+                "dry_run": False,
                 "confirmation_token": confirmation_token,
             },
         )
@@ -851,6 +917,7 @@ class TestDeviceCommandSecurity:
             f"/api/devices/{device.id}/command",
             json={
                 "command": "restart",
+                "dry_run": False,
                 "confirmation_token": confirmation_token,
             },
         )

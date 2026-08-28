@@ -80,9 +80,14 @@ export const sendDeviceCommand = async (
   deviceId: string,
   command: string,
   parameters: Record<string, unknown> = {},
-  confirmationToken?: string
+  confirmationToken?: string,
+  execute = false
 ) => {
-  const payload: Record<string, unknown> = { command, parameters };
+  const payload: Record<string, unknown> = {
+    command,
+    parameters,
+    dry_run: !execute,
+  };
   if (confirmationToken) payload.confirmation_token = confirmationToken;
   const { data } = await api.post(`/devices/${deviceId}/command`, payload);
   return data;

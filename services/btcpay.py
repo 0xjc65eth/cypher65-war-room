@@ -11,9 +11,11 @@ Bitcoin-native audience). Supports on-chain (BIP-21) AND Lightning (BOLT-11)
 payment rails; Lightning settles instantly, on-chain after 1 confirmation.
 
 Design — OFF BY DEFAULT (same ethos as payments.py / Lemon Squeezy):
-  URL + API key + store id + webhook secret are all required. Any missing
-  value keeps ``btcpay_configured()`` false, checkout at 503, and the public
-  tab hidden. The existing Lemon Squeezy (card) path is untouched.
+  URL + API key + store id + webhook secret are all required, as is the
+  explicit post-reconciliation release gate
+  ``BTCPAY_RECONCILIATION_VERIFIED=1``. Any missing value keeps
+  ``btcpay_configured()`` false, checkout at 503, and the public tab hidden.
+  The existing Lemon Squeezy (card) path is untouched.
 
 Fulfillment flow:
   Frontend "Pay with Bitcoin" → POST /api/upgrade/checkout {method:"btc"}
@@ -42,6 +44,7 @@ Env vars:
   BTCPAY_API_KEY         — Greenfield API key (store + invoice scope)
   BTCPAY_STORE_ID        — store id
   BTCPAY_WEBHOOK_SECRET  — shared secret for the x-btcpay-sig HMAC-SHA256
+  BTCPAY_RECONCILIATION_VERIFIED — set to 1 only after the real E2E runbook
   PAYMENT_BTC_ADDRESS    — operator revenue/reference address (not invoice target)
 """
 
@@ -70,19 +73,31 @@ _PLAN_MONTHS = {"pro": 12, "premium": 12}
 _DEFAULT_BTC_USD = 75_000.0
 
 
-def btcpay_configured() -> bool:
-    """True only when checkout *and fulfillment* are fully configured.
-
-    Creating invoices without a webhook secret exposes a payment method that
-    can accept funds but can never issue the purchased license. Keep the gate
-    off until the settlement HMAC can be verified end-to-end.
-    """
+def btcpay_credentials_configured() -> bool:
+    """True when the four server-side BTCPay credentials are present."""
     return bool(
         os.environ.get("BTCPAY_URL")
         and os.environ.get("BTCPAY_API_KEY")
         and os.environ.get("BTCPAY_STORE_ID")
         and os.environ.get("BTCPAY_WEBHOOK_SECRET")
     )
+
+
+def btcpay_reconciliation_verified() -> bool:
+    """Explicit operator release gate set only after real settlement tests."""
+    value = str(os.environ.get("BTCPAY_RECONCILIATION_VERIFIED") or "").strip()
+    return value.lower() in {"1", "true", "yes"}
+
+
+def btcpay_configured() -> bool:
+    """True only when checkout, fulfillment and reconciliation are ready.
+
+    Creating invoices without a webhook secret exposes a payment method that
+    can accept funds but can never issue the purchased license. Keep the gate
+    off until the settlement HMAC and idempotent license delivery have been
+    verified end-to-end in the target environment.
+    """
+    return btcpay_credentials_configured() and btcpay_reconciliation_verified()
 
 
 def payment_address() -> str:
@@ -705,10 +720,13 @@ def fulfill_webln_payment(payment_hash: str, preimage: str) -> Optional[str]:
 
 
 def webln_invoice_available() -> bool:
-    # A Lightning Address cannot mint the BOLT-11 + payment_hash required by
-    # the checkout proof flow. Only advertise this provider when the operator
-    # configured the invoice endpoint that implements that contract.
-    return bool(os.environ.get("LN_INVOICE_ENDPOINT"))
+    """Legacy adapter capability; never expose it as a commercial checkout.
+
+    The beta release policy permits payments only through a reconciled BTCPay
+    flow. Keeping invoice creation helpers available preserves internal API
+    compatibility without advertising an unvalidated purchase path.
+    """
+    return False
 
 
 def create_webln_invoice(

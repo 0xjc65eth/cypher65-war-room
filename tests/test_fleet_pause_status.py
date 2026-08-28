@@ -193,10 +193,12 @@ def _mock_registry(device=DEVICE):
 
 
 def _confirmed_post(client, endpoint):
-    prepared = client.post(endpoint, json={})
+    prepared = client.post(endpoint, json={"dry_run": False})
     assert prepared.status_code == 202
     token = prepared.get_json()["confirmation_token"]
-    return client.post(endpoint, json={"confirmation_token": token})
+    return client.post(
+        endpoint, json={"dry_run": False, "confirmation_token": token}
+    )
 
 
 @pytest.fixture
@@ -285,7 +287,9 @@ class TestPauseResumeRoutes:
         with patch("axe_fleet.routes._registry", reg), patch(
             "axe_fleet.routes.AxeOSConnector", FakeConn
         ):
-            resp = client.post("/api/axe-fleet/devices/dev-pause-1/resume")
+            resp = _confirmed_post(
+                client, "/api/axe-fleet/devices/dev-pause-1/resume"
+            )
         assert resp.status_code == 200
         calls = reg.update_device.call_args_list
         assert len(calls) >= 1
@@ -323,7 +327,9 @@ class TestPauseResumeRoutes:
         with patch("axe_fleet.routes._registry", reg), patch(
             "axe_fleet.routes.AxeOSConnector", FakeConn
         ):
-            resp = client.post("/api/axe-fleet/devices/dev-pause-1/resume")
+            resp = _confirmed_post(
+                client, "/api/axe-fleet/devices/dev-pause-1/resume"
+            )
         assert resp.status_code == 200
         assert reg.update_device.call_args[0][1]["status"] == "IDLE"
 
@@ -346,7 +352,9 @@ class TestPauseResumeRoutes:
         with patch("axe_fleet.routes._registry", reg), patch(
             "axe_fleet.routes.AxeOSConnector", FakeConn
         ):
-            resp = client.post("/api/axe-fleet/devices/dev-pause-1/resume")
+            resp = _confirmed_post(
+                client, "/api/axe-fleet/devices/dev-pause-1/resume"
+            )
         assert resp.status_code == 200
         assert resp.get_json()["success"] is True
 

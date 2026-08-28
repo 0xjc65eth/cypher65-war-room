@@ -80,11 +80,14 @@ services:
         sync: false
       - key: BTCPAY_WEBHOOK_SECRET
         sync: false
+      # Keep 0 until the real settlement/idempotency runbook passes in the
+      # target environment. Credentials alone never expose checkout.
+      - key: BTCPAY_RECONCILIATION_VERIFIED
+        value: "0"
       - key: PAYMENT_BTC_ADDRESS
         sync: false
-      # Optional fallback when no BTCPay Server is available. This must be an
-      # HTTPS endpoint that mints BOLT-11 invoices; LN_ADDRESS alone is not a
-      # checkout provider and does not enable the tab.
+      # Legacy internal adapter only; never exposed as commercial checkout in
+      # the beta. Payments require reconciled BTCPay.
       - key: LN_INVOICE_ENDPOINT
         sync: false
       # ── Web Push (VAPID) — Issue #15 ────────────────────────────────────
@@ -107,12 +110,14 @@ services:
         sync: false
       - key: VAPID_SUBJECT
         sync: false
-      # ── $0 persistence: remote backup to a private GitHub gist ─────────
+      # ── $0 persistence: encrypted backup to an unlisted GitHub gist ───
       # `sync: false` provisions the key but NOT its value — set the real PAT
       # (scope `gist`) in the Render dashboard so the secret never hits git.
-      # The app snapshots data/war_room.sqlite → private gist every interval
-      # and restores on boot when the DB is empty (services/remote_backup.py).
+      # Gists are unlisted, not a confidentiality boundary. The app encrypts
+      # every snapshot with REMOTE_BACKUP_ENCRYPTION_KEY before upload.
       - key: GITHUB_TOKEN
+        sync: false
+      - key: REMOTE_BACKUP_ENCRYPTION_KEY
         sync: false
       - key: REMOTE_BACKUP_INTERVAL
         value: "300"           # seconds between remote snapshots (default 300)

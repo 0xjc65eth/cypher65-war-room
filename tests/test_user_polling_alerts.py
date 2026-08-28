@@ -372,6 +372,31 @@ def test_connect_wallet_threads_tenant_id(rclient, monkeypatch):
     assert resp.status_code == 200
     assert captured["tenant_id"] == "tenant-aaa"
     assert captured["address"] == "bc1q" + "a" * 39
+    sid = resp.get_json()["session_id"]
+    assert _app_module._session_manager.get_session(sid).tenant_id == "tenant-aaa"
+
+
+def test_session_id_cannot_cross_tenant_boundary(rclient):
+    session = _app_module._session_manager.create_session(
+        "bc1q" + "a" * 39, "w1", tenant_id="tenant-aaa"
+    )
+    _app_module._session_manager.update_snapshot(session.session_id, {"private": 65})
+    headers = {"Authorization": "Bearer " + _token("tenant-bbb")}
+
+    snapshot = rclient.get(
+        "/api/session-snapshot", query_string={"session_id": session.session_id}, headers=headers
+    )
+    status = rclient.get(
+        "/api/session-status", query_string={"session_id": session.session_id}, headers=headers
+    )
+    disconnect = rclient.post(
+        "/api/disconnect", json={"session_id": session.session_id}, headers=headers
+    )
+
+    assert snapshot.status_code == 404
+    assert status.get_json()["valid"] is False
+    assert disconnect.status_code == 404
+    assert _app_module._session_manager.get_session(session.session_id) is not None
 
 
 def test_connect_wallet_anonymous_default_tenant(rclient, monkeypatch):

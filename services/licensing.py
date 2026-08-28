@@ -125,8 +125,14 @@ def licensing_configured() -> bool:
             "BTCPAY_STORE_ID",
             "BTCPAY_WEBHOOK_SECRET",
         )
-    )
-    return bool(btcpay_ready or os.environ.get("LN_INVOICE_ENDPOINT"))
+    ) and str(
+        os.environ.get("BTCPAY_RECONCILIATION_VERIFIED") or ""
+    ).strip().lower() in {
+        "1",
+        "true",
+        "yes",
+    }
+    return bool(btcpay_ready)
 
 
 def _db_license_record(key: str) -> Optional[dict]:

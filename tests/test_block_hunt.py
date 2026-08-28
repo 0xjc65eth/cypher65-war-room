@@ -103,8 +103,12 @@ class TestBlockHuntSnapshotInjection:
         bh = data.get("block_hunt") or {}
         assert bh["network_difficulty"] == 8e13
         assert bh["best_difficulty"] == 45.2e12
-        # p_block_per_share = best_difficulty / network_difficulty
+        # Historical ratio has an honest canonical name. The legacy field is
+        # retained only for API compatibility and explicitly deprecated.
+        assert bh["best_share_target_ratio"] == pytest.approx(45.2e12 / 8e13)
         assert bh["p_block_per_share"] == pytest.approx(45.2e12 / 8e13)
+        assert "deprecated" in bh["legacy_fields"]["p_block_per_share"]
+        assert bh["modeled_share_probability"] is None
         assert bh["expected_time_seconds"] is not None
         assert bh["cumulative_p_block"] == pytest.approx(0.0314)
         assert bh["best_diff_worker"] == "cypher65"

@@ -32,7 +32,8 @@ export const useCommands = (deviceId: string) => {
           deviceId,
           command,
           parameters,
-          confirmationToken
+          confirmationToken,
+          Boolean(confirmationToken)
         );
         if (!result?.success) {
           const message = result?.error || 'Command failed';

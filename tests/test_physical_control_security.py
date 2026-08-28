@@ -52,7 +52,10 @@ class TestDeviceConfigurationSafety:
         connector.update_settings.return_value = {"success": True}
 
         with patch("axe_fleet.routes.AxeOSConnector", return_value=connector):
-            prepared = client.post(self.endpoint, json={"settings": {"frequency": 600}})
+            prepared = client.post(
+                self.endpoint,
+                json={"settings": {"frequency": 600}, "dry_run": False},
+            )
             assert prepared.status_code == 202
             token = prepared.get_json()["confirmation_token"]
             connector.update_settings.assert_not_called()
@@ -68,7 +71,8 @@ class TestDeviceConfigurationSafety:
 
             changed = client.post(
                 self.endpoint,
-                json={"settings": {"frequency": 650}, "confirmation_token": token},
+                json={"settings": {"frequency": 650}, "confirmation_token": token,
+                      "dry_run": False},
             )
             assert changed.status_code == 409
             connector.update_settings.assert_not_called()
@@ -79,9 +83,14 @@ class TestDeviceConfigurationSafety:
                 details={"command": "configure", "reason": "invalid_or_expired"},
             )
 
+            prepared_again = client.post(
+                self.endpoint,
+                json={"settings": {"frequency": 600}, "dry_run": False},
+            )
             executed = client.post(
                 self.endpoint,
-                json={"settings": {"frequency": 600}, "confirmation_token": token},
+                json={"settings": {"frequency": 600}, "dry_run": False,
+                      "confirmation_token": prepared_again.get_json()["confirmation_token"]},
             )
             assert executed.status_code == 200
             connector.update_settings.assert_called_once_with({"frequency": 600})
@@ -105,11 +114,15 @@ class TestDeviceConfigurationSafety:
         connector = MagicMock()
         connector.update_settings.return_value = {"success": False, "error": "rejected"}
         with patch("axe_fleet.routes.AxeOSConnector", return_value=connector):
-            prepared = client.post(self.endpoint, json={"settings": {"frequency": 600}})
+            prepared = client.post(
+                self.endpoint,
+                json={"settings": {"frequency": 600}, "dry_run": False},
+            )
             failed = client.post(
                 self.endpoint,
                 json={
                     "settings": {"frequency": 600},
+                    "dry_run": False,
                     "confirmation_token": prepared.get_json()["confirmation_token"],
                 },
             )
@@ -138,7 +151,7 @@ class TestPowerControlSafety:
         with patch("axe_fleet.routes.threading.Thread") as thread:
             prepared = client.post(
                 self.cycle_endpoint,
-                json={"plug_id": "plug-1", "off_seconds": 5},
+                json={"plug_id": "plug-1", "off_seconds": 5, "dry_run": False},
             )
             assert prepared.status_code == 202
             token = prepared.get_json()["confirmation_token"]
@@ -149,6 +162,7 @@ class TestPowerControlSafety:
                 json={
                     "plug_id": "plug-1",
                     "off_seconds": 5,
+                    "dry_run": False,
                     "confirmation_token": token,
                 },
             )
@@ -190,7 +204,9 @@ class TestPowerControlSafety:
     def test_plug_off_requires_server_confirmation(self, physical_controls):
         client, _ = physical_controls
         with patch("axe_fleet.routes._execute_plug_command") as execute:
-            prepared = client.post("/api/axe-fleet/power-plugs/plug-1/off", json={})
+            prepared = client.post(
+                "/api/axe-fleet/power-plugs/plug-1/off", json={"dry_run": False}
+            )
             assert prepared.status_code == 202
             token = prepared.get_json()["confirmation_token"]
             execute.assert_not_called()
@@ -198,7 +214,7 @@ class TestPowerControlSafety:
             execute.return_value = {"success": True}
             confirmed = client.post(
                 "/api/axe-fleet/power-plugs/plug-1/off",
-                json={"confirmation_token": token},
+                json={"confirmation_token": token, "dry_run": False},
             )
             assert confirmed.status_code == 200
             execute.assert_called_once_with("plug-1", "power_off", tenant_id="default")

@@ -79,15 +79,30 @@ def _decrypt_credential(value: str) -> str:
         return value
     f = _fernet()
     if f is None:
-        return value
+        log.error("[settings] encrypted credential unavailable: SECRET_KEY missing")
+        return ""
     try:
         raw = f.decrypt(value[len(_ENC_PREFIX) :].encode("ascii"))
         return raw.decode("utf-8")
     except Exception:
-        # Wrong SECRET_KEY or corrupt value — return as-is (never raise, so
-        # an operator key rotation can't brick credential consumers).
+        # Wrong SECRET_KEY or corrupt value must fail closed. Returning the
+        # ciphertext would send it upstream as if it were an API credential.
         log.warning("[settings] could not decrypt credential value")
-        return value
+        return ""
+
+
+def credential_keys() -> frozenset[str]:
+    """Public, immutable view of settings that must remain write-only."""
+    return frozenset(_CREDENTIAL_KEYS)
+
+
+def redact_settings(settings: dict) -> dict:
+    """Return a copy safe for browser and configuration-export responses."""
+    safe = dict(settings or {})
+    for key in _CREDENTIAL_KEYS:
+        if key in safe:
+            safe[key] = ""
+    return safe
 
 
 DEFAULT_SETTINGS = {

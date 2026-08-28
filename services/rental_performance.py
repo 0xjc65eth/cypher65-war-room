@@ -1649,6 +1649,81 @@ def _is_mrr_auth_rejection(msg: str) -> bool:
     )
 
 
+def probe_mrr_credentials(tenant_id: str = "") -> Dict[str, Any]:
+    """Perform one read-only MRR /whoami probe without exposing credentials."""
+    creds = _mrr_creds(tenant_id=tenant_id)
+    if not (creds["api_key"] and creds["api_secret"]):
+        return {
+            "success": False,
+            "configured": False,
+            "status": "missing",
+            "provider": "mrr",
+        }
+    endpoint = "/whoami"
+    try:
+        response = requests.get(
+            MRR_BASE + endpoint,
+            headers=_mrr_signed_headers(
+                creds["api_key"], creds["api_secret"], endpoint
+            ),
+            timeout=15,
+        )
+        if response.status_code in (401, 403):
+            return {
+                "success": False,
+                "configured": True,
+                "status": "rejected",
+                "provider": "mrr",
+                "http_status": response.status_code,
+            }
+        if not response.ok:
+            return {
+                "success": False,
+                "configured": True,
+                "status": "upstream_error",
+                "provider": "mrr",
+                "http_status": response.status_code,
+            }
+        data = response.json()
+        auth = data.get("data") if isinstance(data, dict) else None
+        authenticated = isinstance(auth, dict) and auth.get("authed") is True
+        if authenticated:
+            return {
+                "success": True,
+                "configured": True,
+                "status": "accepted",
+                "provider": "mrr",
+                "http_status": response.status_code,
+            }
+        message = str((auth or {}).get("auth_mesage") or "")
+        return {
+            "success": False,
+            "configured": True,
+            "status": (
+                "rejected" if _is_mrr_auth_rejection(message) else "unexpected_response"
+            ),
+            "provider": "mrr",
+            "http_status": response.status_code,
+        }
+    except requests.Timeout:
+        return {
+            "success": False,
+            "configured": True,
+            "status": "timeout",
+            "provider": "mrr",
+        }
+    except (requests.RequestException, ValueError, TypeError) as exc:
+        log.warning(
+            "[rental_performance] MRR credential probe failed: %s", type(exc).__name__
+        )
+        return {
+            "success": False,
+            "configured": True,
+            "status": "provider_unavailable",
+            "provider": "mrr",
+        }
+
+
 def fetch_mrr_rentals(
     rtype: str = "renter",
     history: bool = False,

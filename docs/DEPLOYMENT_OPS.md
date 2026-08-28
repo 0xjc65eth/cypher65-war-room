@@ -94,10 +94,10 @@ implementado. Prefira `python app.py` quando live-push importar.
 `render.yaml` documenta o mesmo: **nunca** rode `gunicorn app:app` sozinho
 sem o processo de workers — o dashboard ficaria vazio para sempre.
 
-## 💾 Persistência no Render — ZERO CUSTO (backup remoto via GitHub gist)
+## 💾 Persistência no Render — backup remoto criptografado via GitHub gist
 
 > **Decisão CFO/CRO (2026-08-09):** o projeto roda no **free tier ($0)** e a
-> persistência é feita com **backup remoto automático** em um **gist privado
+> persistência é feita com **backup remoto automático criptografado** em um **gist não listado
 > do GitHub** (`services/remote_backup.py`). O free tier do Render apaga o
 > SQLite a cada redeploy/restart — este mecanismo restaura os dados no boot
 > seguinte, então **credenciais, settings, alertas e histórico por-usuário
@@ -106,46 +106,52 @@ sem o processo de workers — o dashboard ficaria vazio para sempre.
 ### Como funciona
 
 - A cada `REMOTE_BACKUP_INTERVAL` (default 600s), o app faz um snapshot
-  crash-safe do SQLite (`sqlite3.Connection.backup`) e envia base64 para um
-  **gist PRIVADO** do GitHub (uma só instância do arquivo, sobrescrita).
+  crash-safe do SQLite (`sqlite3.Connection.backup`), cifra-o com Fernet e
+  envia somente ciphertext autenticado a um **gist não listado**.
 - No boot, se o DB local está vazio (boot efêmero) e o gist tem snapshot,
   o app **restaura** o arquivo antes de qualquer escrita. Um DB que já tem
   dados de usuário **nunca é sobrescrito**.
-- É env-gated: **sem `GITHUB_TOKEN`, nada acontece** (comportamento atual).
+- É env-gated: sem `GITHUB_TOKEN` **ou** `REMOTE_BACKUP_ENCRYPTION_KEY`, nada
+  acontece. Backups legados em base64/plaintext são rejeitados no restore.
 
 ### Ativação (uma vez, $0)
 
-> **Issue #14 (feito):** o blueprint (`render.yaml`) já provisiona as duas
+> O blueprint (`render.yaml`) provisiona as três
 > vars — `GITHUB_TOKEN` com `sync: false` (a chave é criada no deploy, o
-> **valor nunca vai para o git** — só no dashboard) e
-> `REMOTE_BACKUP_INTERVAL=300`. Depois de mergear o PR, o operador só
-> precisa colar o PAT real no painel.
+> **valor nunca vai para o git** — só no dashboard),
+> `REMOTE_BACKUP_ENCRYPTION_KEY` com `sync: false` e
+> `REMOTE_BACKUP_INTERVAL=300`. O operador deve preencher os dois secrets.
 
 1. Crie um **Personal Access Token** do GitHub com scope `gist`:
    GitHub → Settings → Developer settings → Personal access tokens →
    **Generate new token (classic)** → marque `gist` → copie.
    (PAT fine-grained também funciona se tiver permissão de escrita em gists;
    o classic com scope `gist` é o caminho mais simples e suficiente.)
-2. Render → Dashboard → o serviço → **Environment** → edite a var
+2. Gere uma chave dedicada e guarde-a em seu cofre de secrets:
+   ```bash
+   python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+   ```
+3. Render → Dashboard → o serviço → **Environment** → edite a var
    `GITHUB_TOKEN` (criada pelo blueprint com `sync: false`) e cole o token
-   como secret. `REMOTE_BACKUP_INTERVAL` já vem com `300`.
-3. **Redeploy** (ou Restart). Confira no log:
+   como secret. Cole a chave gerada em `REMOTE_BACKUP_ENCRYPTION_KEY`.
+   `REMOTE_BACKUP_INTERVAL` já vem com `300`.
+4. **Redeploy** (ou Restart). Confira no log:
    `[remote_backup] snapshot pushed ... -> gist ...`
-4. **Valide no shell do Render** (Render → o serviço → Shell):
+5. **Valide no shell do Render** (Render → o serviço → Shell):
    ```bash
    python scripts/verify_remote_backup.py             # probe read-only
    python scripts/verify_remote_backup.py --roundtrip # + teste de upload
    ```
    Saída esperada: `✔ verified — the gist is receiving backups...` (exit 0).
    O `--roundtrip` grava em um arquivo de verificação **separado**
-   (`war_room.verify.sqlite.b64`) — nunca toca no snapshot real.
-5. Teste o restore: conecte uma wallet/salve uma chave → force um redeploy →
-   os dados **voltam** (o log mostra `[remote_backup] restored ... from gist`).
+   (`war_room.verify.sqlite.enc`) — nunca toca no snapshot real.
+6. Teste o restore em staging: grave um marcador não sensível → faça backup →
+   recrie a instância efêmera → confirme o marcador e `PRAGMA quick_check`.
+   Não valide produção apagando dados.
 
-> 🔒 O gist é **privado** (só o seu token lê). A base64 não é criptografia —
-> a proteção real das credenciais em repouso é o **Fernet** em
-> `services/settings.py` (criptografa `braiins_api_key`/`mrr_*` quando
-> `SECRET_KEY` está setada).
+> 🔒 Gists secretos são não listados, mas qualquer pessoa com a URL pode
+> acessá-los. A confidencialidade vem da chave Fernet dedicada, nunca enviada
+> ao GitHub.
 
 ### Limites honestos
 
@@ -157,19 +163,18 @@ sem o processo de workers — o dashboard ficaria vazio para sempre.
   gated por tração e ensaio com backup real; veja
   [`POSTGRES_MIGRATION.md`](POSTGRES_MIGRATION.md).
 
-### ⚠️ Rotação do `SECRET_KEY` e credenciais criptografadas
+### ⚠️ Rotação de chaves
 
 As credenciais (`braiins_api_key`, `mrr_api_key`, `mrr_api_secret`) são
 armazenadas **criptografadas com Fernet derivado do `SECRET_KEY`**. Isso
 significa:
 
-- **Trocar o `SECRET_KEY` = credenciais legadas ficam ilegíveis.** O app
-  degrada graciosamente (nunca quebra), mas os consumidores passariam a
-  receber o ciphertext como se fosse a chave → auth das pools falha em
-  silêncio. **Após rotacionar o `SECRET_KEY`, peça que cada usuário
-  re-salve suas credenciais** (ou rode um script de re-criptografia).
+- **Trocar o `SECRET_KEY` torna credenciais legadas ilegíveis.** O app falha
+  fechado; cada tenant deve salvar novamente as credenciais.
 - **Sem `SECRET_KEY`** (open self-host), os valores ficam em plaintext
   (comportamento legado, sem mudança).
+- **Trocar/perder `REMOTE_BACKUP_ENCRYPTION_KEY` torna snapshots anteriores
+  irrecuperáveis.** Preserve a chave até concluir e testar uma rotação explícita.
 
 ---
 
@@ -192,9 +197,8 @@ significa:
 Use **BTCPay Server** em produção. O War Room precisa criar uma invoice única,
 consultar seu estado e receber `InvoiceSettled` assinado antes de emitir a
 licença. BTCPay entrega on-chain e Lightning pela mesma store e mantém a
-custódia com o operador. O `LN_INVOICE_ENDPOINT` é apenas fallback quando não
-há BTCPay: ele cobre Lightning, exige um serviço próprio para gerar BOLT-11 e
-não oferece o checkout on-chain por invoice.
+custódia com o operador. O `LN_INVOICE_ENDPOINT` permanece somente como
+adapter legado interno e não habilita checkout comercial durante o beta.
 
 A API oficial recomenda chave restrita aos endpoints usados. Para este app,
 limite a chave à store correta com **Create invoice**
@@ -232,17 +236,23 @@ Issue, PR, log ou terminal compartilhado.
 | `BTCPAY_API_KEY` | sim | chave Greenfield store-scoped |
 | `BTCPAY_STORE_ID` | sim | id exato da store |
 | `BTCPAY_WEBHOOK_SECRET` | sim | secret do webhook acima |
+| `BTCPAY_RECONCILIATION_VERIFIED` | sim, após validar | `0` durante configuração; `1` somente após concluir a seção 4 |
 | `PAYMENT_BTC_ADDRESS` | política operacional | endereço de receita/referência, diferente da wallet monitorada em `BTC_ADDRESS` |
 
-Deixe `LN_INVOICE_ENDPOINT` vazio no caminho BTCPay. Para usar o fallback,
-configure-o como endpoint HTTPS com o contrato:
+Deixe `BTCPAY_RECONCILIATION_VERIFIED=0` e `LN_INVOICE_ENDPOINT` vazio durante
+todo o ensaio. Credenciais completas com o gate em `0` devem continuar
+reportando `btcpay: false`, `checkout_state: unavailable` e
+`checkout_unavailable_reason: reconciliation_required`.
+
+O contrato legado de `LN_INVOICE_ENDPOINT` continua documentado apenas para
+compatibilidade interna:
 
 ```text
 GET <LN_INVOICE_ENDPOINT>?amount_sat=N&memo=CYPHER65+PRO
 → {"invoice":"lnbc…", "payment_hash":"<hex>"}
 ```
 
-Um `LN_ADDRESS` isolado não consegue gerar essa prova e não habilita checkout.
+Nem `LN_ADDRESS` nem `LN_INVOICE_ENDPOINT` habilitam checkout público no beta.
 
 ### 3. Redeploy e smoke test sem inventar sucesso
 
@@ -261,7 +271,8 @@ curl -fsS -X POST "$BASE_URL/api/upgrade/checkout" \
 Critérios:
 
 - `/api/license-status` só pode mudar `checkout_state` para `available` quando
-  URL, API key, Store ID e webhook secret estiverem todos configurados;
+  URL, API key, Store ID, webhook secret e o gate de reconciliação estiverem
+  configurados;
 - antes disso, deve responder `payment_state: "checkout_unavailable"` e a UI
   não pode renderizar CTA de compra;
 
@@ -275,6 +286,9 @@ Critérios:
 
 ### 4. Prova de settlement e licença
 
+Para executar o ensaio, habilite `BTCPAY_RECONCILIATION_VERIFIED=1` somente
+em ambiente de teste isolado. Então:
+
 1. Abra o `checkout_url` gerado e pague uma invoice de teste real (Lightning
    reduz tempo/custo do teste).
 2. No BTCPay, confirme delivery HTTP 200 do evento `InvoiceSettled` para o
@@ -287,19 +301,26 @@ Critérios:
 5. Ative a chave no modal e confirme `tier=pro` em `/api/license-status` no
    navegador/sessão que enviou `X-License-Key`.
 
+Somente após todos os cinco passos, sem divergência entre BTCPay, webhook,
+ledger local e licença, replique o gate `BTCPAY_RECONCILIATION_VERIFIED=1` no
+ambiente alvo. Se qualquer passo falhar, volte o ambiente de teste para `0` e
+mantenha produção em `0`.
+
 Registre no issue apenas timestamp, status HTTP, invoice id mascarado e
 resultado de idempotência. Nunca cole API key, secret, invoice completa,
 preimage ou licença.
 
 ### 5. Falha segura e rollback
 
-- Se qualquer uma das quatro variáveis BTCPay obrigatórias faltar, a aba fica
-  oculta e o checkout responde 503. Isso evita receber sem conseguir cumprir.
+- Se qualquer credencial BTCPay faltar ou o gate de reconciliação não for `1`,
+  a aba fica oculta e o checkout responde 503. Isso evita receber sem conseguir
+  cumprir.
 - Resposta 502 indica falha na criação da invoice: valide URL, store, scopes e
   conectividade antes de reativar o canal.
 - Assinatura inválida retorna 403 e nunca emite licença.
-- Para rollback, remova **todas** as variáveis `BTCPAY_*` no Render e faça
-  redeploy; confirme `"btcpay": false`. Não deixe configuração parcial.
+- Para rollback imediato, defina `BTCPAY_RECONCILIATION_VERIFIED=0` e faça
+  redeploy; confirme `"btcpay": false`. Depois remova as credenciais se o canal
+  não será retomado. Não deixe configuração parcial exposta.
 - Não apague `processed_invoices` ou `btcpay_invoice_plans`: são o ledger de
   idempotência e o vínculo invoice → plano.
 

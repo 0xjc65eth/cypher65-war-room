@@ -4,26 +4,29 @@ Covers env-gating, snapshot→gist round-trip, boot-restore guard, and the
 loop worker. All GitHub API calls are mocked — no network.
 """
 
-import base64
-import io
 import os
 import sqlite3
 import sys
 import types
 
 import pytest
+from cryptography.fernet import Fernet
 
 sys.path.insert(0, ".")
 
 import services.remote_backup as rb  # noqa: E402
 
+TEST_BACKUP_KEY = Fernet.generate_key().decode("ascii")
+
 
 @pytest.fixture(autouse=True)
 def _clean_env():
     saved = {k: os.environ.get(k) for k in
-             ("GITHUB_TOKEN", "REMOTE_BACKUP_INTERVAL", "REMOTE_BACKUP_GIST_ID")}
+             ("GITHUB_TOKEN", "REMOTE_BACKUP_INTERVAL", "REMOTE_BACKUP_GIST_ID",
+              "REMOTE_BACKUP_ENCRYPTION_KEY")}
     os.environ["GITHUB_TOKEN"] = "gh_test_token"
     os.environ["REMOTE_BACKUP_INTERVAL"] = "300"
+    os.environ["REMOTE_BACKUP_ENCRYPTION_KEY"] = TEST_BACKUP_KEY
     os.environ.pop("REMOTE_BACKUP_GIST_ID", None)
     yield
     for k, v in saved.items():
@@ -69,7 +72,7 @@ def _mock_requests(monkeypatch, gist_id="gist123"):
     )
 
     def _get(url, **kw):
-        fake.calls.append(("GET", url))
+        fake.calls.append(("GET", url, kw))
         if url.endswith("/gists"):
             return _FakeResp(True, [{"id": gist_id, "files": {rb.GIST_FILENAME: {}}}])
         return _FakeResp(True, {
@@ -78,11 +81,11 @@ def _mock_requests(monkeypatch, gist_id="gist123"):
         })
 
     def _post(url, **kw):
-        fake.calls.append(("POST", url))
+        fake.calls.append(("POST", url, kw))
         return _FakeResp(True, {"id": gist_id})
 
     def _patch(url, **kw):
-        fake.calls.append(("PATCH", url))
+        fake.calls.append(("PATCH", url, kw))
         return _FakeResp(True, {"id": gist_id})
 
     monkeypatch.setattr(rb.requests, "get", _get)
@@ -104,35 +107,47 @@ def test_disabled_with_zero_interval(monkeypatch):
     assert rb.remote_backup_enabled() is False
 
 
+def test_disabled_without_encryption_key(monkeypatch):
+    monkeypatch.delenv("REMOTE_BACKUP_ENCRYPTION_KEY", raising=False)
+    assert rb.remote_backup_enabled() is False
+
+
+def test_disabled_with_invalid_encryption_key(monkeypatch):
+    monkeypatch.setenv("REMOTE_BACKUP_ENCRYPTION_KEY", "not-a-fernet-key")
+    assert rb.remote_backup_enabled() is False
+
+
 def test_enabled_with_token_and_interval():
     assert rb.remote_backup_enabled() is True
 
 
 # ── Backup → gist round trip ───────────────────────────────────────────────
 
-def test_backup_pushes_base64_snapshot(monkeypatch, tmp_path):
+def test_backup_pushes_authenticated_encrypted_snapshot(monkeypatch, tmp_path):
     db = _make_db(str(tmp_path / "war.sqlite"))
     fake = _mock_requests(monkeypatch)
 
     ok = rb.remote_backup_now(db_path=db)
 
     assert ok is True
-    # PATCH carried a base64 payload that decodes to a valid SQLite file
+    # PATCH carries only authenticated ciphertext, never raw SQLite bytes.
     patch_call = [c for c in fake.calls if c[0] == "PATCH"]
     assert patch_call, "expected a PATCH to the gist"
+    content = patch_call[0][2]["json"]["files"][rb.GIST_FILENAME]["content"]
+    assert content.startswith(rb.ENCRYPTED_PREFIX)
+    assert "SQLite format 3" not in content
     # The snapshot helper must produce a file whose bytes carry the SQLite
     # magic header (0x53514c69746520666f726d61742033 = 'SQLite format 3').
     raw = rb._snapshot_bytes(db)
     assert raw[:16] == b"SQLite format 3\x00"
-    # And the file is reconstructable from the base64 string we push.
-    assert base64.b64decode(base64.b64encode(raw)) == raw
+    assert rb._decrypt_snapshot(content) == raw
 
 
 def test_restore_round_trip(monkeypatch, tmp_path):
     db = str(tmp_path / "war.sqlite")
     _make_db(db)
     raw = rb._snapshot_bytes(db)
-    b64 = base64.b64encode(raw).decode("ascii")
+    encrypted = rb._encrypt_snapshot(raw)
 
     # Fresh boot: local DB is empty (no user rows) → restore happens.
     empty = str(tmp_path / "fresh.sqlite")
@@ -142,7 +157,7 @@ def test_restore_round_trip(monkeypatch, tmp_path):
         if url.endswith("/gists"):
             return _FakeResp(True, [{"id": "g1", "files": {rb.GIST_FILENAME: {}}}])
         return _FakeResp(True, {"id": "g1",
-                                "files": {rb.GIST_FILENAME: {"content": b64}}})
+                                "files": {rb.GIST_FILENAME: {"content": encrypted}}})
 
     def _post(url, **kw):
         return _FakeResp(True, {"id": "g1"})
@@ -182,6 +197,24 @@ def test_restore_noop_when_gist_empty(monkeypatch, tmp_path):
 
     monkeypatch.setattr(rb.requests, "get", _get)
     assert rb.remote_restore(db_path=empty) is False
+
+
+@pytest.mark.parametrize("content", ["legacy-base64", rb.ENCRYPTED_PREFIX + "tampered"])
+def test_restore_rejects_legacy_or_tampered_payload(monkeypatch, tmp_path, content):
+    empty = str(tmp_path / "fresh.sqlite")
+    _empty_db(empty)
+    before = rb._snapshot_bytes(empty)
+
+    monkeypatch.setattr(
+        rb.requests,
+        "get",
+        lambda *a, **k: _FakeResp(
+            True, {"files": {rb.GIST_FILENAME: {"content": content}}}
+        ),
+    )
+
+    assert rb.remote_restore(db_path=empty) is False
+    assert rb._snapshot_bytes(empty) == before
 
 
 def test_restore_noop_when_disabled(monkeypatch, tmp_path):

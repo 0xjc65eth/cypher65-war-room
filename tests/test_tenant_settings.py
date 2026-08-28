@@ -262,7 +262,7 @@ def test_settings_post_writes_tenant_row(rclient):
 
 
 def test_settings_get_tenant_values_no_env_override(rclient, monkeypatch):
-    """A named tenant sees THEIR own values; env vars never override for them."""
+    """Credential presence is visible, but its value never leaves the server."""
     monkeypatch.setenv("BRAIINS_API_KEY", "env-key")
     _settings_mod.save_setting("braiins_api_key", "t1-key", tenant_id="tenant-aaa")
 
@@ -271,8 +271,11 @@ def test_settings_get_tenant_values_no_env_override(rclient, monkeypatch):
     )
     assert resp.status_code == 200
     data = resp.get_json()
-    by_key = {s["key"]: s["value"] for s in data["settings"]}
-    assert by_key["braiins_api_key"] == "t1-key"
+    by_key = {s["key"]: s for s in data["settings"]}
+    assert by_key["braiins_api_key"]["value"] == ""
+    assert by_key["braiins_api_key"]["secret"] is True
+    assert by_key["braiins_api_key"]["configured"] is True
+    assert "t1-key" not in resp.get_data(as_text=True)
     # env override only applies to the operator's default tenant.
     assert data["env_overrides"]["braiins_api_key"] is False
     assert data["tenant_id"] == "tenant-aaa"
@@ -292,6 +295,7 @@ def test_config_backup_is_tenant_scoped(rclient, monkeypatch):
     """A named tenant's config backup must NEVER include the operator's
     global settings (which can hold the operator's provider keys)."""
     _settings_mod.save_setting("braiins_api_key", "OPERATOR-SECRET-KEY")
+    _settings_mod.save_setting("mrr_api_secret", "TENANT-SECRET", tenant_id="tenant-aaa")
     _settings_mod.save_setting("cost_mode", "power", tenant_id="tenant-aaa")
 
     resp = rclient.get(
@@ -302,6 +306,11 @@ def test_config_backup_is_tenant_scoped(rclient, monkeypatch):
     data = resp.get_json()
     # Tenant's own value, NOT the operator's global secret.
     assert data["settings"]["braiins_api_key"] == ""
+    assert data["settings"]["mrr_api_secret"] == ""
+    assert data["credentials_included"] is False
+    assert data["worker_name"] == ""
+    assert data["btc_address"] == ""
+    assert "TENANT-SECRET" not in resp.get_data(as_text=True)
     assert data["settings"]["cost_mode"] == "power"
 
 
@@ -320,6 +329,39 @@ def test_config_restore_writes_tenant_row(rclient):
     assert _settings_mod.load_settings("tenant-aaa")["braiins_api_key"] == "t1-key"
     # Operator's global table untouched (still the original key).
     assert _settings_mod.load_settings()["braiins_api_key"] == "OPERATOR-KEY"
+
+
+def test_blank_secret_post_preserves_existing_value(rclient):
+    _settings_mod.save_setting("mrr_api_secret", "keep-me", tenant_id="tenant-aaa")
+    resp = rclient.post(
+        "/api/settings",
+        headers={"Authorization": "Bearer " + _token("tenant-aaa")},
+        json={"mrr_api_secret": "", "cost_mode": "power"},
+    )
+    assert resp.status_code == 200
+    assert "mrr_api_secret" in resp.get_json()["preserved"]
+    assert _settings_mod.load_settings("tenant-aaa")["mrr_api_secret"] == "keep-me"
+
+
+def test_secret_requires_explicit_clear(rclient):
+    _settings_mod.save_setting("mrr_api_secret", "remove-me", tenant_id="tenant-aaa")
+    resp = rclient.post(
+        "/api/settings",
+        headers={"Authorization": "Bearer " + _token("tenant-aaa")},
+        json={"_clear_credentials": ["mrr_api_secret"]},
+    )
+    assert resp.status_code == 200
+    assert _settings_mod.load_settings("tenant-aaa")["mrr_api_secret"] == ""
+
+
+def test_solo_compare_rejects_credentials_in_query(rclient):
+    resp = rclient.get(
+        "/api/solo-mining/compare?budget=0.01&mrr_api_key=leak&mrr_api_secret=leak",
+        headers={"Authorization": "Bearer " + _token("tenant-aaa")},
+    )
+    assert resp.status_code == 400
+    assert resp.get_json()["code"] == "CREDENTIALS_IN_URL_REJECTED"
+    assert "leak" not in resp.get_data(as_text=True)
 
 
 def test_test_braiins_route_uses_tenant_key(rclient, monkeypatch):

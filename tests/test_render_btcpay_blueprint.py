@@ -20,6 +20,7 @@ BTCPAY_ENV_KEYS = (
     "BTCPAY_API_KEY",
     "BTCPAY_STORE_ID",
     "BTCPAY_WEBHOOK_SECRET",
+    "BTCPAY_RECONCILIATION_VERIFIED",
     "PAYMENT_BTC_ADDRESS",
     "LN_INVOICE_ENDPOINT",
 )
@@ -35,8 +36,11 @@ def _env_by_key():
 def test_btcpay_env_is_provisioned_without_committed_value(key):
     entry = _env_by_key().get(key)
     assert entry is not None, f"{key} must be provisioned by the Render blueprint"
-    assert entry.get("sync") is False
-    assert "value" not in entry, f"{key} value must never be committed"
+    if key == "BTCPAY_RECONCILIATION_VERIFIED":
+        assert entry.get("value") == "0"
+    else:
+        assert entry.get("sync") is False
+        assert "value" not in entry, f"{key} value must never be committed"
 
 
 def test_runbook_pins_safe_activation_and_rollback():
