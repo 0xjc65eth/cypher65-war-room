@@ -72,7 +72,12 @@ def test_all_physical_control_actions_require_server_confirmation():
     for command in (
         "restart",
         "pause",
+        "resume",
+        "identify",
         "configure",
+        "set_frequency",
+        "set_voltage",
+        "update_pool",
         "power_cycle",
         "power_on",
         "power_off",

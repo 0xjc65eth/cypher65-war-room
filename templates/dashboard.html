@@ -726,7 +726,7 @@
     <div class="bh-card"><div class="bh-card__title">NETWORK DIFF</div><div class="bh-card__value" id="bh-network-diff">—</div><div class="bh-card__sub">current target</div></div>
     <div class="bh-card"><div class="bh-card__title">YOUR BEST</div><div class="bh-card__value bh-card__value--green" id="bh-best-diff">—</div><div class="bh-card__sub" id="bh-best-diff-sub">highest share</div></div>
     <div class="bh-card"><div class="bh-card__title">BEST-SHARE / TARGET <span class="tip-wrap" data-tip="Historical best share ÷ current network target. Source: pool + network snapshot; window: retained history; unit: ratio. Not progress."><span class="tip-wrap__icon">?</span></span></div><div class="bh-card__value bh-card__value--cyan" id="bh-distance">—</div><div class="bh-card__sub" id="bh-distance-sub">historical ratio only</div></div>
-    <div class="bh-card"><div class="bh-card__title">P(BLOCK)/SHARE</div><div class="bh-card__value bh-card__value--purple" id="bh-p-block">—</div><div class="bh-card__sub">each share = chance</div></div>
+    <div class="bh-card"><div class="bh-card__title">MODELED BLOCK RATE / SUBMITTED SHARE <span class="tip-wrap" data-tip="Average retained share difficulty ÷ current network target. Source: pool session + network; window: retained session; unit: probability per submitted share. Not based on historical best and not progress."><span class="tip-wrap__icon">?</span></span></div><div class="bh-card__value bh-card__value--purple" id="bh-p-block">—</div><div class="bh-card__sub">session model · next hash independent</div></div>
     <div class="bh-card"><div class="bh-card__title">MODEL MEAN INTERVAL <span class="tip-wrap" data-tip="D×2³²÷hashrate. Source: current snapshot; unit: time; assumes constant hashrate/difficulty. Mean, not deadline."><span class="tip-wrap__icon">?</span></span></div><div class="bh-card__value" id="bh-expected-time">—</div><div class="bh-card__sub" id="bh-expected-time-sub">not a countdown</div></div>
     <div class="bh-card"><div class="bh-card__title">SESSION P(≥1) ESTIMATE <span class="tip-wrap" data-tip="Probability model over recorded session work. Source: current session shares; window: session; unit: %. Past work does not change the next hash."><span class="tip-wrap__icon">?</span></span></div><div class="bh-card__value" id="bh-cumulative-p">—</div><div class="bh-card__sub" id="bh-cumulative-p-sub">observed work; no progress</div></div>
   </div>
@@ -1526,8 +1526,8 @@
 <!-- ─── ALERTS ─── -->
 <section class="panel panel--alerts panel--large" id="alerts-panel" data-module="alerts">
   <div class="panel__header">
-    <div class="panel__eyebrow">⚠ ALERTS</div>
-    <div class="panel__tools"><span class="badge badge--mute" id="alerts-count-badge">0 active</span></div>
+    <div class="panel__eyebrow">⚠ OPERATIONAL ALERTS · SEVERITY FIRST</div>
+    <div class="panel__tools"><span class="badge badge--mute">READ-ONLY</span><span class="badge badge--mute" id="alerts-count-badge">0 active</span></div>
   </div>
   <ul class="alerts-list" id="alerts-list">
     <li class="alert-empty">nominal — no alerts</li>

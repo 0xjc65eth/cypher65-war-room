@@ -9,12 +9,12 @@ import json
 import time
 import logging
 
-import os
-
 from flask import Blueprint, jsonify, request
 
 import services.state as state
 import solo_mining
+from agents.solo_mining_advisor.tools import mrr_credentials
+from services.tenant import require_tenant
 
 log = logging.getLogger("cypher65")
 
@@ -86,10 +86,12 @@ def api_solo_mining_calc():
 
 
 @solo_mining_bp.route("/compare")
-def api_solo_mining_compare():
+@require_tenant
+def api_solo_mining_compare(tenant_id: str = ""):
     """Compare rental platforms. Auto-fetches Braiins orderbook + MRR listings.
     Params: budget (BTC), duration (hours), braiins_price, mrr_price (optional),
-            mrr_api_key, mrr_api_secret (optional, for MRR auth)
+    Credentials are resolved server-side for the authenticated tenant. They
+    are never accepted in the URL, where proxies and browser history leak them.
     """
     budget = request.args.get("budget", 0)
     duration = request.args.get("duration", 24)
@@ -97,10 +99,19 @@ def api_solo_mining_compare():
     braiins_price = request.args.get("braiins_price", None)
     mrr_price = request.args.get("mrr_price", None)
     auto_fetch = request.args.get("auto_fetch", "1") != "0"
-    mrr_api_key = request.args.get("mrr_api_key") or os.environ.get("MRR_API_KEY")
-    mrr_api_secret = request.args.get("mrr_api_secret") or os.environ.get(
-        "MRR_API_SECRET"
-    )
+    if "mrr_api_key" in request.args or "mrr_api_secret" in request.args:
+        return (
+            jsonify(
+                {
+                    "error": "credentials must be configured in Settings, never sent in a URL",
+                    "code": "CREDENTIALS_IN_URL_REJECTED",
+                }
+            ),
+            400,
+        )
+    creds = mrr_credentials(tenant_id=tenant_id)
+    mrr_api_key = creds["api_key"]
+    mrr_api_secret = creds["api_secret"]
 
     try:
         budget = float(budget)

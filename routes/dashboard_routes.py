@@ -16,6 +16,7 @@ import json
 import random
 import time
 import logging
+from functools import wraps
 
 from flask import Blueprint, jsonify, request
 
@@ -26,14 +27,37 @@ from services.licensing import pro_required
 from services.snapshot_enrichment import enrich_snapshot
 from services.sli import sli as _sli  # Issue #206: SLIs de completude de dados
 from helpers import coerce_ts, fmt_diff
+from services.tenant import get_tenant_id, require_tenant
 
 log = logging.getLogger("cypher65.dashboard")
 
 dashboard_bp = Blueprint("dashboard", __name__, url_prefix="/api")
 
 
+def _operator_only(view):
+    """Fail closed for legacy tables that do not carry tenant_id."""
+
+    @wraps(view)
+    def wrapped(*args, **kwargs):
+        if (get_tenant_id() or "default") != "default":
+            return (
+                jsonify(
+                    {
+                        "error": "forbidden",
+                        "code": "OPERATOR_SCOPED_DATA",
+                        "detail": "this telemetry is not tenant-partitioned",
+                    }
+                ),
+                403,
+            )
+        return view(*args, **kwargs)
+
+    return wrapped
+
+
 @dashboard_bp.route("/snapshot")
-def api_snapshot():
+@require_tenant
+def api_snapshot(tenant_id: str = ""):
     """Full dashboard snapshot enriched with market highlights, auto-pilot,
     command center, block-hunt and affiliate links.
 
@@ -44,6 +68,25 @@ def api_snapshot():
     behaviour.
     """
     snap = enrich_snapshot(state.latest_snapshot, axe_registry=None)
+    if (tenant_id or "default") != "default":
+        # The poll-loop wallet/account payload is operator-global. Named
+        # tenants get public network context plus only their filtered fleet;
+        # their wallet telemetry lives behind /api/session-snapshot.
+        public_keys = {
+            "ts",
+            "pool",
+            "network",
+            "btc_price",
+            "mempool_fees",
+            "halving",
+            "axe_fleet",
+            "market_data",
+            "market_highlights",
+            "health",
+        }
+        snap = {key: value for key, value in snap.items() if key in public_keys}
+        snap["tenant_scope"] = tenant_id
+        snap["data_scope"] = "global_public+tenant_fleet"
     # Issue #206: SLI de frescura do market — uma amostra por ciclo (age do
     # market_data < 5min). Completude rentals é amostrada em /api/rentals;
     # ambos convergem em health.sli (targets + status + breach). Sentinel
@@ -55,6 +98,7 @@ def api_snapshot():
 
 
 @dashboard_bp.route("/history")
+@_operator_only
 def api_history():
     metric = request.args.get("metric", "worker_hashrate")
     rng = request.args.get("range", "24h")
@@ -98,6 +142,7 @@ def api_history():
 
 
 @dashboard_bp.route("/diff_events")
+@_operator_only
 def api_diff_events():
     only_mine = request.args.get("mine", "0") == "1"
     limit = int(request.args.get("limit", 30))
@@ -119,6 +164,7 @@ def api_diff_events():
 
 
 @dashboard_bp.route("/leaderboard")
+@_operator_only
 def api_leaderboard():
     top = state.latest_snapshot.get("leaderboard_table_top_30") or []
     enriched = []
@@ -139,6 +185,7 @@ def api_leaderboard():
 
 
 @dashboard_bp.route("/share_timeline")
+@_operator_only
 def api_share_timeline():
     """Return recent share-timeline events. Newest first."""
     try:
@@ -174,6 +221,7 @@ def api_share_timeline():
 
 
 @dashboard_bp.route("/event_stats")
+@_operator_only
 def api_event_stats():
     snap = dict(state.latest_snapshot.get("event_stats") or {})
     snap["server_now"] = int(time.time())
@@ -196,6 +244,7 @@ def api_mempool_fees():
 
 
 @dashboard_bp.route("/profitability")
+@_operator_only
 def api_profitability():
     from services.settings import load_settings
 
@@ -205,22 +254,26 @@ def api_profitability():
 
 
 @dashboard_bp.route("/network_share")
+@_operator_only
 def api_network_share():
     return jsonify(state.latest_snapshot.get("network_share_gauge") or {})
 
 
 @dashboard_bp.route("/milestones")
+@_operator_only
 def api_milestones():
     return jsonify({"milestones": state.latest_snapshot.get("milestones") or []})
 
 
 @dashboard_bp.route("/workers")
+@_operator_only
 def api_workers():
     """Return all workers from the connected wallet's workerData."""
     return jsonify({"workers": state.latest_snapshot.get("all_workers") or []})
 
 
 @dashboard_bp.route("/monte_carlo")
+@_operator_only
 @pro_required
 def api_monte_carlo():
     """Monte Carlo simulation engine.
@@ -322,6 +375,7 @@ def api_monte_carlo():
 
 
 @dashboard_bp.route("/proximity")
+@_operator_only
 @pro_required
 def api_proximity():
     """Returns the current proximity meter payload PLUS a 24h history slice

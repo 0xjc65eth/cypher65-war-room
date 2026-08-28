@@ -2800,16 +2800,37 @@ function renderAccount(acct) {
 
   function renderAlerts(alerts) {
     if (!dom.alertsList) return;
+    if (alerts == null) {
+      setHtmlIfChanged(dom.alertsList, '<li class="alert-empty">loading operational alerts…</li>');
+      if (dom.alertsCountBadge) dom.alertsCountBadge.textContent = 'loading';
+      return;
+    }
     if (!alerts || !alerts.length) {
       setHtmlIfChanged(dom.alertsList, '<li class="alert-empty">no alerts — all systems nominal</li>');
       if (dom.alertsCountBadge) dom.alertsCountBadge.textContent = '0 active';
       return;
     }
-    if (dom.alertsCountBadge) dom.alertsCountBadge.textContent = `${alerts.length} active`;
-    setHtmlIfChanged(dom.alertsList, alerts.slice(0, 10).map(a => `
+    const severityRank = { CRIT: 4, CRITICAL: 4, ERROR: 4, WARN: 3, WARNING: 3, INFO: 2, SUCCESS: 1 };
+    const ordered = alerts.slice().sort((a, b) => {
+      const rank = (severityRank[String(b?.severity || '').toUpperCase()] || 0) - (severityRank[String(a?.severity || '').toUpperCase()] || 0);
+      return rank || (Number(b?.ts || 0) - Number(a?.ts || 0));
+    });
+    const criticalCount = ordered.filter(a => (severityRank[String(a?.severity || '').toUpperCase()] || 0) >= 4).length;
+    if (dom.alertsCountBadge) dom.alertsCountBadge.textContent = `${alerts.length} active${criticalCount ? ' · ' + criticalCount + ' critical' : ''}`;
+    setHtmlIfChanged(dom.alertsList, ordered.slice(0, 10).map(a => `
       <li class="alert-item SEVERITY-${escapeHtml(a.severity || 'INFO')}">
-        <span class="alert-icon">!</span><span class="alert-msg">${escapeHtml(a.message || '')}</span><span class="alert-time">${fmt.age(a.ts)}</span>
+        <span class="alert-icon" aria-hidden="true">!</span>
+        <span class="alert-msg"><strong>${escapeHtml(String(a.severity || 'INFO').toUpperCase())}</strong> · ${escapeHtml(a.message || '')}<small>${escapeHtml(a.category || 'uncategorized')}${a.device_id ? ' · ' + escapeHtml(a.device_id) : ''}</small></span>
+        <span class="alert-time">${fmt.age(a.ts)}</span>
+        ${a.device_id ? '<button type="button" class="chip alert-inspect" data-device-id="' + escapeHtml(a.device_id) + '">INSPECT ASIC</button>' : ''}
       </li>`).join(''));
+    dom.alertsList.querySelectorAll('.alert-inspect').forEach(button => {
+      button.addEventListener('click', () => {
+        activateModule('fleet');
+        const id = button.dataset.deviceId;
+        if (id) setTimeout(() => openAxeDetail(id), 0);
+      });
+    });
   }
 
   function renderEvents(events) {
@@ -3719,19 +3740,28 @@ function renderAccount(acct) {
 
     const netDiff = net.difficulty || bh.network_difficulty || 0;
     const bestDiff = w.bestDifficulty || bh.best_difficulty || 0;
-    const pBlock = bh.p_block_per_share != null ? bh.p_block_per_share : (prox.chance_per_share_pct != null ? prox.chance_per_share_pct : (prox.chance_per_share_raw != null && netDiff > 0 ? prox.chance_per_share_raw / netDiff : 0));
+    const bestShareRatio = bh.best_share_target_ratio != null
+      ? Number(bh.best_share_target_ratio)
+      : (bh.p_block_per_share != null ? Number(bh.p_block_per_share) : null);
+    const pBlock = bh.modeled_share_probability != null
+      ? Number(bh.modeled_share_probability)
+      : (prox.chance_per_share_pct != null
+        ? Number(prox.chance_per_share_pct)
+        : (prox.chance_per_share_raw != null && netDiff > 0
+          ? Number(prox.chance_per_share_raw) / netDiff
+          : null));
     const expectedTime = bh.expected_time_seconds || prox.expected_time_seconds || prox.expected_time_secs;
     const cumulativeP = bh.cumulative_p_block;
 
     document.getElementById('bh-network-diff') && (document.getElementById('bh-network-diff').textContent = fmt.diff(netDiff));
     document.getElementById('bh-best-diff') && (document.getElementById('bh-best-diff').textContent = fmt.diff(bestDiff));
-    document.getElementById('bh-chance-badge') && (document.getElementById('bh-chance-badge').textContent = pBlock != null ? (Number(pBlock) * 100).toExponential(2) + '% per share' : '—');
+    document.getElementById('bh-chance-badge') && (document.getElementById('bh-chance-badge').textContent = pBlock != null ? (Number(pBlock) * 100).toExponential(2) + '% modeled/share' : '—');
     document.getElementById('bh-difficulty-badge') && (document.getElementById('bh-difficulty-badge').textContent = 'diff ' + fmt.diff(netDiff));
 
     // Distance
     if (bestDiff > 0 && netDiff > 0) {
-      const dist = netDiff / bestDiff;
-      document.getElementById('bh-distance') && (document.getElementById('bh-distance').textContent = dist.toFixed(1) + '×');
+      const ratio = bestShareRatio != null ? bestShareRatio : bestDiff / netDiff;
+      document.getElementById('bh-distance') && (document.getElementById('bh-distance').textContent = (ratio * 100).toPrecision(3) + '%');
       document.getElementById('bh-distance-sub') && (document.getElementById('bh-distance-sub').textContent = 'target / historical best-share ratio');
     } else {
       document.getElementById('bh-distance') && (document.getElementById('bh-distance').textContent = '—');
@@ -8556,7 +8586,7 @@ function renderAccount(acct) {
     let html = '<div style="display:flex;flex-direction:column;gap:8px;padding:4px 0">';
     keys.forEach(k => {
       const s = settings[k] || {};
-      const val = (s.value !== undefined && s.value !== null && s.value !== '') ? s.value : s.default;
+      const val = s.secret ? '' : ((s.value !== undefined && s.value !== null && s.value !== '') ? s.value : s.default);
     const label = escapeHtml(s.label || k);
     const hint = SETTINGS_HINTS[k] ? `<small style="color:${cssVar('--text-tertiary')};font-size:10px;line-height:1.3">${escapeHtml(SETTINGS_HINTS[k])}</small>` : '';
     if (SETTINGS_SELECTS[k]) {
@@ -8565,7 +8595,10 @@ function renderAccount(acct) {
     } else if (SETTINGS_CHECKBOX[k]) {
       html += `<label style="display:flex;gap:6px;font-size:11px;align-items:center"><input type="checkbox" name="${k}" ${String(val)==='1'?'checked':''}> ${label}${hint}</label>`;
     } else {
-      html += `<label style="display:flex;flex-direction:column;gap:2px;font-size:11px"><span>${label}</span><input type="text" name="${k}" value="${escapeHtml(String(val ?? ''))}" class="field__input">${hint}</label>`;
+      const inputType = s.secret ? 'password' : 'text';
+      const placeholder = s.secret && s.configured ? 'Configurado — deixe vazio para preservar' : '';
+      const configured = s.secret && s.configured ? '<small class="settings-secret-state">✓ configurado · valor nunca é retornado pelo servidor</small>' : '';
+      html += `<label style="display:flex;flex-direction:column;gap:2px;font-size:11px"><span>${label}</span><input type="${inputType}" name="${k}" value="${escapeHtml(String(val ?? ''))}" placeholder="${escapeHtml(placeholder)}" autocomplete="new-password" class="field__input">${configured}${hint}</label>`;
     }
     });
     // Credential sanity helpers for the RENTALS providers. Env-var override
@@ -8588,6 +8621,12 @@ function renderAccount(acct) {
       html += '<div style="display:flex;align-items:center;gap:6px;margin-top:2px;flex-wrap:wrap">' +
         '<button type="button" class="btn btn--primary btn--mini" id="braiins-test">' + _ic('key', 12, true) + 'TESTAR CHAVE BRAIINS</button>' +
         '<span id="braiins-test-status" style="font-size:10px;color:var(--text-muted)"></span>' +
+        '</div>';
+    }
+    if (settings['mrr_api_key'] && settings['mrr_api_secret']) {
+      html += '<div style="display:flex;align-items:center;gap:6px;margin-top:2px;flex-wrap:wrap">' +
+        '<button type="button" class="btn btn--primary btn--mini" id="mrr-test">' + _ic('key', 12, true) + 'TESTAR MRR (READ-ONLY)</button>' +
+        '<span id="mrr-test-status" style="font-size:10px;color:var(--text-muted)"></span>' +
         '</div>';
     }
     // Webhook preview + test send (UX audit Quick Win): the operator sees
@@ -8678,6 +8717,36 @@ function renderAccount(acct) {
           }
         } catch (e) {
           if (st) { st.textContent = '✗ network error: ' + e.message; st.style.color = 'var(--accent-red)'; }
+        }
+      });
+    }
+    const mrrTestBtn = document.getElementById('mrr-test');
+    if (mrrTestBtn) {
+      mrrTestBtn.addEventListener('click', async function() {
+        const st = document.getElementById('mrr-test-status');
+        if (st) { st.textContent = 'testando /whoami…'; st.style.color = 'var(--text-muted)'; }
+        const ctrl = new AbortController();
+        const timer = setTimeout(() => ctrl.abort(), 20000);
+        try {
+          const r = await authFetch('/api/settings/test-mrr', { method: 'POST', signal: ctrl.signal });
+          const d = await r.json();
+          if (!st) return;
+          const labels = {
+            accepted: '✓ credenciais aceitas pelo MRR',
+            missing: '✗ key e secret não estão configuradas',
+            rejected: '✗ MRR rejeitou a credencial — regenere o par key/secret',
+            timeout: '✗ timeout ao alcançar o MRR',
+            provider_unavailable: '✗ MRR indisponível ou resposta inválida',
+            upstream_error: '✗ MRR respondeu HTTP ' + (d.http_status || 'erro'),
+            unexpected_response: '✗ resposta de autenticação não reconhecida',
+          };
+          st.textContent = labels[d.status] || ('✗ diagnóstico: ' + (d.status || 'erro'));
+          if (d.env_override) st.textContent += ' · credencial vem da env var';
+          st.style.color = d.status === 'accepted' ? 'var(--green)' : 'var(--accent-red)';
+        } catch (e) {
+          if (st) { st.textContent = e.name === 'AbortError' ? '✗ timeout local (20s)' : '✗ network error'; st.style.color = 'var(--accent-red)'; }
+        } finally {
+          clearTimeout(timer);
         }
       });
     }
@@ -9130,7 +9199,11 @@ dom.walletSave?.addEventListener('click', async () => {
       // Secrets/URLs must be trimmed: an owner token pasted with a trailing
       // newline makes the `apikey` header invalid → 401 "key rejected".
       const _trim = ['braiins_api_key', 'mrr_api_key', 'mrr_api_secret', 'webhook_url'].includes(el.name);
-      data[el.name] = el.type === 'checkbox' ? (el.checked ? '1' : '0') : (_trim ? el.value.trim() : el.value);
+      const value = el.type === 'checkbox' ? (el.checked ? '1' : '0') : (_trim ? el.value.trim() : el.value);
+      // Credential fields are write-only. Empty means "preserve existing",
+      // never "erase"; explicit clearing uses the backend clear contract.
+      if (el.type === 'password' && value === '') return;
+      data[el.name] = value;
     });
     try {
       const r = await authFetch('/api/settings', {
@@ -10164,11 +10237,13 @@ dom.walletSave?.addEventListener('click', async () => {
     const command = btn.dataset.cmd;
     if (!deviceId || !command) return;
 
-    // Confirmation for restart and pause
+    // Explicit human confirmation for every physical state change.
     if (command === 'restart') {
       if (!confirm('Restart this miner? It will go offline for ~30 seconds.')) return;
     } else if (command === 'pause') {
       if (!confirm('Pause mining on this device? Use Resume to restart.')) return;
+    } else if (!confirm('Execute ' + command + ' on this miner?')) {
+      return;
     }
 
     // Captura o label original (ex.: '↻' no botão mini da tabela) para
@@ -10190,7 +10265,7 @@ dom.walletSave?.addEventListener('click', async () => {
     const url = isAgentRouted
       ? '/api/axe-fleet/devices/' + encodeURIComponent(deviceId) + '/' + command
       : '/api/devices/' + encodeURIComponent(deviceId) + '/command';
-    const payload = isAgentRouted ? {} : { command: command };
+    const payload = isAgentRouted ? { dry_run: false } : { command: command, dry_run: false };
     const opts = {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },

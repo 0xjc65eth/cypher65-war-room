@@ -3408,7 +3408,7 @@ def api_connect_wallet(tenant_id: str = ""):
         return jsonify({"success": False, "error": "invalid address length"}), 400
 
     # Create session
-    session = _session_manager.create_session(address, worker_name)
+    session = _session_manager.create_session(address, worker_name, tenant_id=tenant_id)
     sid = session.session_id
 
     # Start polling worker for this session — tenant-scoped, so alerts and
@@ -3435,7 +3435,8 @@ def api_connect_wallet(tenant_id: str = ""):
 
 
 @app.route("/api/session-snapshot", methods=["GET"])
-def api_session_snapshot():
+@require_tenant
+def api_session_snapshot(tenant_id: str = ""):
     """Return the snapshot for the current session.
     Session ID is passed as query param 'session_id'.
     """
@@ -3447,7 +3448,7 @@ def api_session_snapshot():
         return jsonify({"error": "session_id required", "has_wallet": False}), 400
 
     session = _session_manager.get_session(sid)
-    if not session:
+    if not session or session.tenant_id != (tenant_id or "default"):
         return (
             jsonify({"error": "session not found or expired", "has_wallet": False}),
             404,
@@ -3470,7 +3471,8 @@ def api_session_snapshot():
 
 
 @app.route("/api/disconnect", methods=["POST"])
-def api_disconnect():
+@require_tenant
+def api_disconnect(tenant_id: str = ""):
     """Stop polling and destroy the session."""
     global _session_manager, _session_workers
 
@@ -3479,6 +3481,10 @@ def api_disconnect():
 
     if not sid:
         return jsonify({"success": False, "error": "session_id required"}), 400
+
+    session = _session_manager.get_session(sid)
+    if not session or session.tenant_id != (tenant_id or "default"):
+        return jsonify({"success": False, "error": "session not found or expired"}), 404
 
     # Stop the worker thread
     worker = _session_workers.pop(sid, None)
@@ -3493,13 +3499,14 @@ def api_disconnect():
 
 
 @app.route("/api/session-status", methods=["GET"])
-def api_session_status():
+@require_tenant
+def api_session_status(tenant_id: str = ""):
     """Check if a session is valid."""
     sid = request.args.get("session_id") or request.headers.get("X-Session-Id") or ""
     if not sid:
         return jsonify({"valid": False})
     session = _session_manager.get_session(sid)
-    if not session:
+    if not session or session.tenant_id != (tenant_id or "default"):
         return jsonify({"valid": False})
     return jsonify(
         {
@@ -5260,6 +5267,12 @@ def api_license_status():
     body["payment_plans"] = card["plans"]
     body["btcpay"] = bool(_btcpay.btcpay_configured())
     body["webln"] = bool(_btcpay.webln_invoice_available())
+    body["btcpay_credentials_configured"] = bool(
+        _btcpay.btcpay_credentials_configured()
+    )
+    body["btcpay_reconciliation_verified"] = bool(
+        _btcpay.btcpay_reconciliation_verified()
+    )
     body["payment_btc_address"] = _btcpay.payment_address()
     checkout_available = bool(card["available"] or body["btcpay"] or body["webln"])
     body["checkout_state"] = "available" if checkout_available else "unavailable"
@@ -5267,6 +5280,15 @@ def api_license_status():
         "confirmed"
         if body.get("access_source") in ("lemon_squeezy", "btcpay", "webln")
         else "not_started" if checkout_available else "checkout_unavailable"
+    )
+    body["checkout_unavailable_reason"] = (
+        None
+        if checkout_available
+        else (
+            "reconciliation_required"
+            if body["btcpay_credentials_configured"]
+            else "provider_not_configured"
+        )
     )
     return jsonify(body)
 
@@ -5362,46 +5384,6 @@ def _api_upgrade_checkout_btc(plan: str, method: str, email: str, funnel_id: str
     WebLN fallback (no BTCPay): returns a BOLT-11 for window.webln.
     """
     if not _btcpay.btcpay_configured():
-        # Fallback: a Lightning node via WebLN can still sell without BTCPay.
-        if _btcpay.webln_invoice_available():
-            inv = _btcpay.create_webln_invoice(plan=plan)
-            if inv:
-                # Persist payment_hash → plan at checkout so the WebLN
-                # confirm route resolves the plan from the LOCAL ledger
-                # (Issue #249 — same zero-network rule as the BTCPay path).
-                if inv.get("payment_hash"):
-                    recorded = _btcpay.record_invoice_plan(inv["payment_hash"], plan)
-                    if not recorded:
-                        return (
-                            jsonify(
-                                {
-                                    "error": "Could not secure the Lightning invoice",
-                                    "code": "CHECKOUT_FAILED",
-                                    "checkout_state": "error",
-                                    "payment_state": "error",
-                                }
-                            ),
-                            502,
-                        )
-                    _log_audit(
-                        "default",
-                        "payment.checkout_started",
-                        target=str(inv["payment_hash"])[:32],
-                        details={"provider": "webln", "plan": plan},
-                    )
-                return jsonify(
-                    {
-                        "ok": True,
-                        "method": "lightning",
-                        "provider": "webln",
-                        "plan": plan,
-                        "bolt11": inv["bolt11"],
-                        "amount_sat": inv["amount_sat"],
-                        "payment_hash": inv.get("payment_hash", ""),
-                        "checkout_state": "ready",
-                        "payment_state": "pending",
-                    }
-                )
         _log_audit(
             "default",
             "payment.checkout_unavailable",
@@ -5414,6 +5396,11 @@ def _api_upgrade_checkout_btc(plan: str, method: str, email: str, funnel_id: str
                     "code": "PAYMENTS_NOT_CONFIGURED",
                     "checkout_state": "unavailable",
                     "payment_state": "checkout_unavailable",
+                    "reason": (
+                        "reconciliation_required"
+                        if _btcpay.btcpay_credentials_configured()
+                        else "provider_not_configured"
+                    ),
                     "upgrade": {"plan": "PRO", "price_usd_month": 9},
                 }
             ),

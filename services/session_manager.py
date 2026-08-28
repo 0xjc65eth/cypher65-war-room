@@ -7,6 +7,7 @@ Each session maintains:
   - session_id (str, UUID)
   - btc_address (str)
   - worker_name (str)
+  - tenant_id (str) — immutable owner used for authorization
   - snapshot (dict) — latest polled data
   - created_at (int) — unix timestamp
   - last_activity (int) — unix timestamp, bumped on each snapshot/request
@@ -36,6 +37,7 @@ class UserSession:
         "session_id",
         "btc_address",
         "worker_name",
+        "tenant_id",
         "snapshot",
         "created_at",
         "last_activity",
@@ -43,10 +45,17 @@ class UserSession:
         "pending_worker_name",
     )
 
-    def __init__(self, session_id: str, btc_address: str = "", worker_name: str = ""):
+    def __init__(
+        self,
+        session_id: str,
+        btc_address: str = "",
+        worker_name: str = "",
+        tenant_id: str = "default",
+    ):
         self.session_id = session_id
         self.btc_address = btc_address
         self.worker_name = worker_name
+        self.tenant_id = tenant_id or "default"
         self.snapshot = {}
         now = int(time.time())
         self.created_at = now
@@ -71,6 +80,7 @@ class UserSession:
             "session_id": self.session_id,
             "btc_address": self.btc_address,
             "worker_name": self.worker_name,
+            "tenant_id": self.tenant_id,
             "created_at": self.created_at,
             "last_activity": self.last_activity,
             "has_wallet": self.has_wallet,
@@ -90,11 +100,11 @@ class SessionManager:
     # ── Public API ──────────────────────────────────────────────────────────
 
     def create_session(
-        self, btc_address: str = "", worker_name: str = ""
+        self, btc_address: str = "", worker_name: str = "", tenant_id: str = "default"
     ) -> UserSession:
         """Create a new session and return it."""
         sid = uuid.uuid4().hex
-        session = UserSession(sid, btc_address, worker_name)
+        session = UserSession(sid, btc_address, worker_name, tenant_id)
         with self._lock:
             self._sessions[sid] = session
         log.info(

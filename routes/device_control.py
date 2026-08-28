@@ -17,14 +17,16 @@ Supports BOTH registry shapes:
 
 import json
 import logging
-import secrets
-import threading
 import time
 from typing import Any, Callable, Dict, List, Optional
 
 from flask import Blueprint, jsonify, request
 
 from services.tenant import require_tenant, role_required
+from services.command_confirmation import (
+    consume_confirmation as _consume_persisted_confirmation,
+    issue_confirmation as _issue_persisted_confirmation,
+)
 
 from core.adapters.bitaxe_adapter import BitaxeAdapter
 from core.adapters.cgminer_adapter import CgminerAdapter
@@ -38,12 +40,7 @@ _registry = None
 _safety: Optional[SafetyEngine] = None
 _record_cb: Optional[Callable] = None  # app._record_command — audits every attempt
 
-# Confirmation tokens are intentionally process-local: a restart invalidates
-# all pending approvals and fails closed. Tokens are single-use and protected by
-# a lock because Flask can serve concurrent command requests.
 CONFIRMATION_TTL_SECONDS = 120
-_confirmation_lock = threading.Lock()
-_pending_confirmations: Dict[str, Dict[str, Any]] = {}
 
 
 def init_device_control(
@@ -169,7 +166,7 @@ COMMAND_META = {
     },
     "identify": {
         "label": "Identify",
-        "requires_confirmation": False,
+        "requires_confirmation": True,
         "risk_level": "low",
         "description": "Flash LED/screen to locate the device",
     },
@@ -345,41 +342,37 @@ def _confirmation_binding(
         return None
 
 
-def _purge_expired_confirmations(now: float) -> None:
-    for token, pending in list(_pending_confirmations.items()):
-        if pending["expires_at"] <= now:
-            _pending_confirmations.pop(token, None)
-
-
 def _issue_confirmation(binding: str) -> str:
-    now = time.time()
-    with _confirmation_lock:
-        _purge_expired_confirmations(now)
-        token = secrets.token_urlsafe(32)
-        _pending_confirmations[token] = {
-            "binding": binding,
-            "expires_at": now + CONFIRMATION_TTL_SECONDS,
-        }
-    return token
+    """Compatibility wrapper over the durable multi-process store."""
+    parsed = json.loads(binding)
+    issued = _issue_persisted_confirmation(
+        parsed["tenant_id"],
+        parsed["device_id"],
+        parsed["command"],
+        parsed["parameters"],
+        now=int(time.time()),
+    )
+    return issued["confirmation_token"]
 
 
 def _consume_confirmation(token: Any, binding: str) -> tuple[bool, str]:
-    """Consume an approval once; mismatched tokens also fail closed."""
+    """Consume an approval atomically; mismatches and replays fail closed."""
     if not isinstance(token, str) or not token.strip():
         return False, "A one-time human confirmation is required before this command."
-
-    now = time.time()
-    with _confirmation_lock:
-        _purge_expired_confirmations(now)
-        pending = _pending_confirmations.pop(token, None)
-
-    if pending is None:
-        return False, "Confirmation is missing, expired, or was already used."
-    if not secrets.compare_digest(pending["binding"], binding):
-        return (
-            False,
-            "Confirmation does not match this tenant, device, command, or parameters.",
+    try:
+        parsed = json.loads(binding)
+        valid = _consume_persisted_confirmation(
+            token,
+            parsed["tenant_id"],
+            parsed["device_id"],
+            parsed["command"],
+            parsed["parameters"],
+            now=int(time.time()),
         )
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+        valid = False
+    if not valid:
+        return False, "Confirmation is mismatched, expired, or was already used."
     return True, ""
 
 
@@ -401,7 +394,8 @@ def issue_device_command_confirmation(device_id: str, tenant_id: str = ""):
 
     The resulting token is bound to this tenant, device, command, and exact
     parameters. It can be consumed once by the execution endpoint and is not
-    persisted so a process restart fails closed.
+    persisted as a one-way token digest so multi-process deployments enforce
+    the same single-use approval.
     """
     if _registry is None:
         return jsonify({"success": False, "error": "registry not initialized"}), 500
@@ -509,6 +503,7 @@ def execute_device_command(device_id: str, tenant_id: str = ""):
       {
         "command": "restart|identify|pause|resume",
         "parameters": {},
+        "dry_run": true,
         "confirmation_token": "required for state-changing commands"
       }
 
@@ -547,6 +542,9 @@ def execute_device_command(device_id: str, tenant_id: str = ""):
         parameters = {}
     elif not isinstance(parameters, dict):
         return jsonify({"success": False, "error": "parameters must be an object"}), 400
+    dry_run = data.get("dry_run", True)
+    if not isinstance(dry_run, bool):
+        return jsonify({"success": False, "error": "dry_run must be a boolean"}), 400
 
     if not command:
         return jsonify({"success": False, "error": "command is required"}), 400
@@ -622,6 +620,30 @@ def execute_device_command(device_id: str, tenant_id: str = ""):
                 ),
                 403,
             )
+
+    # Read-only is the API default. A caller must explicitly opt into physical
+    # execution; dry-runs still traverse capability and safety validation and
+    # are recorded in the same audit stream.
+    if dry_run:
+        record = {
+            "success": True,
+            "dry_run": True,
+            "read_only": True,
+            "allowed": True,
+            "would_require_confirmation": bool(
+                _command_metadata(raw, device, command)["requires_confirmation"]
+            )
+            or bool(safety_result and safety_result.requires_confirmation),
+        }
+        _record_attempt(device_id, command, parameters, record)
+        return jsonify(
+            {
+                **record,
+                "device_id": device_id,
+                "command": command,
+                "parameters": redact_command_data(parameters),
+            }
+        )
 
     # 4. A device capability and SafetyEngine can both require confirmation.
     # The controller is the enforcement point: metadata is never just a UI hint.

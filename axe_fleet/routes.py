@@ -792,6 +792,44 @@ def _command_confirmation_response(device_id: str, command: str, tenant_id: str)
     return _operational_confirmation_response(device_id, command, tenant_id, {})
 
 
+def _command_dry_run_response(device_id: str, command: str, tenant_id: str):
+    """Keep physical commands read-only unless execution is explicit."""
+    device = _registry.get_device(device_id, tenant_id=tenant_id) if _registry else None
+    if not device:
+        return jsonify({"success": False, "error": "device not found"}), 404
+    if not (device.get("capabilities") or {}).get(command):
+        return (
+            jsonify(
+                {"success": False, "error": f"'{command}' not supported by this device"}
+            ),
+            400,
+        )
+    data, error = _request_json_object()
+    if error:
+        return error
+    dry_run = data.get("dry_run", True)
+    if not isinstance(dry_run, bool):
+        return jsonify({"success": False, "error": "dry_run must be a boolean"}), 400
+    if not dry_run:
+        return None
+    _log_audit(
+        tenant_id,
+        "fleet.device_command_dry_run",
+        target=device_id,
+        details={"command": command},
+    )
+    return jsonify(
+        {
+            "success": True,
+            "dry_run": True,
+            "read_only": True,
+            "device_id": device_id,
+            "command": command,
+            "would_require_confirmation": requires_confirmation(command),
+        }
+    )
+
+
 _CONFIG_INT_LIMITS = {
     "frequency": (100, 1200),
     "coreVoltage": (500, 2000),
@@ -913,6 +951,9 @@ def restart_device(device_id: str, tenant_id: str = ""):
     """Restart a device. Requires restart capability."""
     if _registry is None:
         return jsonify({"error": "registry not initialized"}), 500
+    dry_run = _command_dry_run_response(device_id, "restart", tenant_id)
+    if dry_run is not None:
+        return dry_run
     confirmation = _command_confirmation_response(device_id, "restart", tenant_id)
     if confirmation is not None:
         return confirmation
@@ -927,6 +968,12 @@ def identify_device(device_id: str, tenant_id: str = ""):
     """Flash device LED/screen for identification."""
     if _registry is None:
         return jsonify({"error": "registry not initialized"}), 500
+    dry_run = _command_dry_run_response(device_id, "identify", tenant_id)
+    if dry_run is not None:
+        return dry_run
+    confirmation = _command_confirmation_response(device_id, "identify", tenant_id)
+    if confirmation is not None:
+        return confirmation
     return _execute_device_command(device_id, "identify", tenant_id=tenant_id)
 
 
@@ -942,6 +989,9 @@ def pause_device(device_id: str, tenant_id: str = ""):
     """
     if _registry is None:
         return jsonify({"error": "registry not initialized"}), 500
+    dry_run = _command_dry_run_response(device_id, "pause", tenant_id)
+    if dry_run is not None:
+        return dry_run
     confirmation = _command_confirmation_response(device_id, "pause", tenant_id)
     if confirmation is not None:
         return confirmation
@@ -956,6 +1006,12 @@ def resume_device(device_id: str, tenant_id: str = ""):
     """Resume hashing on a paused device (ESP-Miner miningResume)."""
     if _registry is None:
         return jsonify({"error": "registry not initialized"}), 500
+    dry_run = _command_dry_run_response(device_id, "resume", tenant_id)
+    if dry_run is not None:
+        return dry_run
+    confirmation = _command_confirmation_response(device_id, "resume", tenant_id)
+    if confirmation is not None:
+        return confirmation
     return _execute_device_command(device_id, "resume", tenant_id=tenant_id)
 
 
@@ -985,7 +1041,7 @@ def configure_device(device_id: str, tenant_id: str = ""):
             details={"reason": error_message},
         )
         return jsonify({"error": error_message}), 400
-    dry_run = data.get("dry_run", False)
+    dry_run = data.get("dry_run", True)
     if not isinstance(dry_run, bool):
         return jsonify({"error": "dry_run must be a boolean"}), 400
 
@@ -2080,7 +2136,7 @@ def _execute_guarded_plug_command(plug_id: str, method: str, tenant_id: str):
     data, error = _request_json_object()
     if error:
         return error
-    dry_run = data.get("dry_run", False)
+    dry_run = data.get("dry_run", True)
     if not isinstance(dry_run, bool):
         return jsonify({"success": False, "error": "dry_run must be a boolean"}), 400
     if dry_run:
@@ -2211,7 +2267,7 @@ def miner_power_cycle(device_id: str, tenant_id: str = ""):
             ),
             400,
         )
-    dry_run = data.get("dry_run", False)
+    dry_run = data.get("dry_run", True)
     if not isinstance(dry_run, bool):
         return jsonify({"success": False, "error": "dry_run must be a boolean"}), 400
 
@@ -2229,15 +2285,6 @@ def miner_power_cycle(device_id: str, tenant_id: str = ""):
         )
 
     parameters = {"plug_id": plug_id, "off_seconds": off_seconds}
-    if dry_run:
-        _log_audit(
-            tenant_id,
-            "fleet.power_cycle_dry_run",
-            target=device_id,
-            details=parameters,
-        )
-        return jsonify({"success": True, "dry_run": True, **parameters})
-
     with _power_cycle_lock:
         active_task = _find_active_power_cycle(tenant_id, device_id, plug_id)
     if active_task:
@@ -2251,6 +2298,15 @@ def miner_power_cycle(device_id: str, tenant_id: str = ""):
             ),
             409,
         )
+
+    if dry_run:
+        _log_audit(
+            tenant_id,
+            "fleet.power_cycle_dry_run",
+            target=device_id,
+            details=parameters,
+        )
+        return jsonify({"success": True, "dry_run": True, **parameters})
 
     confirmation = _operational_confirmation_response(
         device_id, "power_cycle", tenant_id, parameters

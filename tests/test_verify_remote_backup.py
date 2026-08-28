@@ -9,6 +9,7 @@ import os
 import sys
 
 import pytest
+from cryptography.fernet import Fernet
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _SPEC = importlib.util.spec_from_file_location(
@@ -31,8 +32,10 @@ class _FakeResp:
 
 @pytest.fixture(autouse=True)
 def _clean_env(monkeypatch):
-    for k in ("GITHUB_TOKEN", "REMOTE_BACKUP_INTERVAL", "REMOTE_BACKUP_GIST_ID"):
+    for k in ("GITHUB_TOKEN", "REMOTE_BACKUP_INTERVAL", "REMOTE_BACKUP_GIST_ID",
+              "REMOTE_BACKUP_ENCRYPTION_KEY"):
         monkeypatch.delenv(k, raising=False)
+    monkeypatch.setenv("REMOTE_BACKUP_ENCRYPTION_KEY", Fernet.generate_key().decode())
 
 
 def test_exit_1_when_no_token(monkeypatch, capsys):
@@ -46,6 +49,13 @@ def test_exit_1_when_disabled(monkeypatch, capsys):
     monkeypatch.setattr(rb, "remote_backup_enabled", lambda: False)
     assert _mod.run([]) == 1
     assert "remote_backup_enabled()=False" in capsys.readouterr().out
+
+
+def test_exit_1_when_encryption_key_missing(monkeypatch, capsys):
+    monkeypatch.setattr(rb, "_token", lambda: "gh_test_token")
+    monkeypatch.setattr(rb, "_encryption_key", lambda: "")
+    assert _mod.run([]) == 1
+    assert "REMOTE_BACKUP_ENCRYPTION_KEY" in capsys.readouterr().out
 
 
 def test_exit_2_when_gist_unreachable(monkeypatch, capsys):
@@ -131,4 +141,4 @@ def test_exit_0_with_hint_when_gist_empty(monkeypatch, capsys):
 def test_script_compiles_and_is_importable():
     """The script must stay importable (it is, at module import time)."""
     assert hasattr(_mod, "run")
-    assert _mod.VERIFY_FILENAME == "war_room.verify.sqlite.b64"
+    assert _mod.VERIFY_FILENAME == "war_room.verify.sqlite.enc"

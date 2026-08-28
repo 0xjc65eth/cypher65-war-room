@@ -16,12 +16,13 @@ from config import BTC_ADDRESS, WORKER_NAME
 log = logging.getLogger("cypher65.settings")
 from services.settings import (
     DEFAULT_SETTINGS,
+    credential_keys,
     is_default_tenant,
     load_settings,
     save_setting,
     settings_label,
 )
-from services.tenant import require_tenant, role_required
+from services.tenant import require_tenant, role_required, log_audit
 from services.licensing import is_pro
 
 settings_bp = Blueprint("settings", __name__, url_prefix="/api")
@@ -32,9 +33,19 @@ settings_bp = Blueprint("settings", __name__, url_prefix="/api")
 def api_settings_get(tenant_id: str = ""):
     s = load_settings(tenant_id=tenant_id)
     out = []
+    secret_keys = credential_keys()
     for k, v in DEFAULT_SETTINGS.items():
+        is_secret = k in secret_keys
+        current = s.get(k, v)
         out.append(
-            {"key": k, "value": s.get(k, v), "default": v, "label": settings_label(k)}
+            {
+                "key": k,
+                "value": "" if is_secret else current,
+                "default": "" if is_secret else v,
+                "label": settings_label(k),
+                "secret": is_secret,
+                "configured": bool(current) if is_secret else None,
+            }
         )
     # Which credential settings are currently OVERRIDDEN by an env var.
     # On a deployed instance (Render) BRAIINS_API_KEY/MRR_API_KEY set in the
@@ -72,6 +83,21 @@ def api_settings_post(tenant_id: str = ""):
         return jsonify({"error": "expected JSON object body"}), 400
     applied = []
     rejected = []
+    preserved = []
+    secret_keys = credential_keys()
+    clear_keys = body.pop("_clear_credentials", [])
+    if not isinstance(clear_keys, list) or any(
+        k not in secret_keys for k in clear_keys
+    ):
+        return (
+            jsonify({"error": "_clear_credentials must contain credential keys"}),
+            400,
+        )
+    for key in clear_keys:
+        if save_setting(key, "", tenant_id=tenant_id):
+            applied.append(key)
+        else:
+            rejected.append({"key": key, "reason": "db error"})
     for k, v in body.items():
         # R1 (PRO tier): webhooks are a PRO feature. Off-by-default — the
         # gate only fires when the operator sets PRO_LICENSE_KEYS and the
@@ -85,11 +111,14 @@ def api_settings_post(tenant_id: str = ""):
         if not k.startswith("_") and k not in DEFAULT_SETTINGS:
             rejected.append({"key": k, "reason": "unknown key"})
             continue
+        if k in secret_keys and (v is None or str(v).strip() == ""):
+            preserved.append(k)
+            continue
         if save_setting(k, v, tenant_id=tenant_id):
             applied.append(k)
         else:
             rejected.append({"key": k, "reason": "db error"})
-    return jsonify({"applied": applied, "rejected": rejected})
+    return jsonify({"applied": applied, "preserved": preserved, "rejected": rejected})
 
 
 @settings_bp.route("/settings/test-braiins", methods=["POST"])
@@ -121,10 +150,14 @@ def api_settings_test_braiins(tenant_id: str = ""):
             {
                 "success": False,
                 "configured": False,
+                "status": "missing",
+                "provider": "braiins",
+                "read_only": True,
                 "env_override": env_key,
                 "error": "BRAIINS_API_KEY not configured — add the owner token below",
             }
         )
+
     try:
         result = _rp.fetch_braiins_contracts(tenant_id=tenant_id)
         if result.get("needs_auth"):
@@ -132,6 +165,9 @@ def api_settings_test_braiins(tenant_id: str = ""):
                 {
                     "success": False,
                     "configured": True,
+                    "status": "rejected",
+                    "provider": "braiins",
+                    "read_only": True,
                     "env_override": env_key,
                     "verdict": "rejected",
                     "error": result.get("error")
@@ -143,6 +179,9 @@ def api_settings_test_braiins(tenant_id: str = ""):
                 {
                     "success": False,
                     "configured": True,
+                    "status": "provider_error",
+                    "provider": "braiins",
+                    "read_only": True,
                     "env_override": env_key,
                     "verdict": "error",
                     "error": result.get("error") or "Braiins API returned no data",
@@ -152,24 +191,62 @@ def api_settings_test_braiins(tenant_id: str = ""):
             {
                 "success": True,
                 "configured": True,
+                "status": "accepted",
+                "provider": "braiins",
+                "read_only": True,
                 "env_override": env_key,
                 "verdict": "ok",
                 "contracts": len(result.get("contracts", [])),
             }
         )
     except Exception as e:
+        log.warning("[settings] Braiins credential probe failed: %s", type(e).__name__)
         return (
             jsonify(
                 {
                     "success": False,
                     "configured": True,
+                    "status": "provider_unavailable",
+                    "provider": "braiins",
+                    "read_only": True,
                     "env_override": env_key,
                     "verdict": "error",
-                    "error": str(e)[:160],
+                    "error": "Braiins provider unavailable or returned an invalid response",
                 }
             ),
             502,
         )
+
+
+@settings_bp.route("/settings/test-mrr", methods=["POST"])
+@require_tenant
+@role_required("member")
+def api_settings_test_mrr(tenant_id: str = ""):
+    """Run a single read-only, tenant-scoped MRR authentication probe."""
+    from services.rental_performance import probe_mrr_credentials
+
+    result = probe_mrr_credentials(tenant_id=tenant_id)
+    env_override = is_default_tenant(tenant_id) and bool(
+        (os.environ.get("MRR_API_KEY") or "").strip()
+        or (os.environ.get("MRR_API_SECRET") or "").strip()
+    )
+    payload = {
+        **result,
+        "env_override": env_override,
+        "checked_at": int(time.time()),
+        "endpoint": "/whoami",
+        "read_only": True,
+    }
+    log_audit(
+        tenant_id,
+        "settings.provider_diagnostic",
+        target="mrr",
+        details={
+            "status": result.get("status"),
+            "configured": result.get("configured"),
+        },
+    )
+    return jsonify(payload)
 
 
 @settings_bp.route("/settings/test-webhook", methods=["POST"])
@@ -182,7 +259,7 @@ def api_settings_test_webhook(tenant_id: str = ""):
     (Discord/Telegram) without waiting for a real alert event. Same payload
     shape the polling loop fires on every alert, same PRO gate as webhook_url.
     """
-    s = load_settings()
+    s = load_settings(tenant_id=tenant_id)
     url = (s.get("webhook_url") or "").strip()
     if not url:
         return (

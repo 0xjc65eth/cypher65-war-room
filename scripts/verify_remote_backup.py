@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verify the $0 GitHub-gist backup is LIVE (Issue #14).
+"""Verify the encrypted GitHub-gist backup is live (Issues #14, #384).
 
 Run it in the Render shell (or anywhere with GITHUB_TOKEN in the env):
 
@@ -7,17 +7,16 @@ Run it in the Render shell (or anywhere with GITHUB_TOKEN in the env):
     python scripts/verify_remote_backup.py --roundtrip  # + safe upload test
 
 Checks:
-  1. env-gating: GITHUB_TOKEN set + REMOTE_BACKUP_INTERVAL > 0
+  1. env-gating: token + dedicated Fernet key + interval
   2. remote_backup_enabled()
   3. gist discovery (the exact path services/remote_backup uses)
   4. read-only: the backup file exists in the gist → size + updated_at
-  5. --roundtrip: pushes a tiny scratch DB to a SEPARATE verify file
-     (war_room.verify.sqlite.b64) — the production war_room.sqlite.b64 is
+  5. --roundtrip: pushes a tiny encrypted scratch DB to a SEPARATE verify file
+     (war_room.verify.sqlite.enc) — the production war_room.sqlite.enc is
      NEVER touched, so this is safe to run against the live gist.
 
 Exit codes: 0 verified · 1 not enabled/misconfigured · 2 probe/push failed
 """
-import base64
 import os
 import sqlite3
 import sys
@@ -32,7 +31,7 @@ if ROOT not in sys.path:
 
 import services.remote_backup as rb  # noqa: E402
 
-VERIFY_FILENAME = "war_room.verify.sqlite.b64"
+VERIFY_FILENAME = "war_room.verify.sqlite.enc"
 _API = rb._API
 
 
@@ -61,7 +60,7 @@ def _roundtrip_scratch() -> bool:
         conn.commit()
         conn.close()
         with open(tmp, "rb") as f:
-            b64 = base64.b64encode(f.read()).decode("ascii")
+            encrypted = rb._encrypt_snapshot(f.read())
     finally:
         try:
             os.unlink(tmp)
@@ -72,7 +71,7 @@ def _roundtrip_scratch() -> bool:
         return False
     r = requests.patch(f"{_API}/gists/{gid}", headers=rb._headers(),
                        timeout=20,
-                       json={"files": {VERIFY_FILENAME: {"content": b64}}})
+                       json={"files": {VERIFY_FILENAME: {"content": encrypted}}})
     return bool(r.ok)
 
 
@@ -89,6 +88,11 @@ def run(argv=None) -> int:
         print("  Guide: docs/DEPLOYMENT_OPS.md → 'Persistência no Render'.")
         return 1
     print(f"✓ GITHUB_TOKEN set (len={len(tok)})")
+
+    if not rb._encryption_key():
+        print("✗ REMOTE_BACKUP_ENCRYPTION_KEY missing or invalid — backup is DISABLED.")
+        return 1
+    print("✓ REMOTE_BACKUP_ENCRYPTION_KEY set (value not displayed)")
 
     interval = rb._interval()
     print(f"✓ REMOTE_BACKUP_INTERVAL={interval}s")

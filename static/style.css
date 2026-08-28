@@ -731,6 +731,18 @@ h1.module-header__title {
   line-height: 1.4;
 }
 
+.alert-msg small {
+  display: block;
+  margin-top: 2px;
+  color: var(--text-tertiary);
+  font-size: 8px;
+  line-height: 1.35;
+}
+.alert-inspect {
+  flex: 0 0 auto;
+  min-height: 28px;
+}
+
 /* ── Panels (sólido, 2px, sem ::before de acento, sem sombra) ────── */
 .panel {
   position: relative; /* containing block para .skel-overlay */

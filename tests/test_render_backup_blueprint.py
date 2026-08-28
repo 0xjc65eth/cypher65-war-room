@@ -44,6 +44,13 @@ def test_remote_backup_interval_enabled():
     assert env.get("value") == "300"
 
 
+def test_remote_backup_encryption_key_is_provisioned_as_secret():
+    env = _env("REMOTE_BACKUP_ENCRYPTION_KEY")
+    assert env is not None, "dedicated backup encryption key must be provisioned"
+    assert env.get("sync") is False
+    assert "value" not in env
+
+
 def test_no_token_pattern_committed():
     text = open(RENDER_YAML, "r").read()
     for pat in (r"github_pat_[A-Za-z0-9_]+", r"ghp_[A-Za-z0-9]+",

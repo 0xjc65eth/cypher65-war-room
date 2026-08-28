@@ -227,6 +227,42 @@ class TestAutomationEngineTenant:
 # ══════════════════════════════════════════════════════════════════════
 
 class TestApiTenantIsolation:
+    def test_named_tenant_snapshot_excludes_operator_wallet_payload(self, client, monkeypatch):
+        import services.state as state
+
+        monkeypatch.setattr(
+            state,
+            "latest_snapshot",
+            {
+                "ts": int(time.time()),
+                "btc_address": "bc1q-operator-private",
+                "worker": {"name": "operator-worker", "hashrate": 65},
+                "all_workers": [{"name": "operator-worker"}],
+                "account": {"total": 999},
+                "network": {"difficulty": 1, "hashrate": 2},
+                "btc_price": {"usd": 3},
+                "axe_fleet": [],
+            },
+        )
+
+        res = client.get("/api/snapshot", headers=_bearer("acme"))
+        assert res.status_code == 200
+        payload = res.get_json()
+        assert payload["tenant_scope"] == "acme"
+        assert payload["data_scope"] == "global_public+tenant_fleet"
+        for private_key in ("btc_address", "worker", "all_workers", "account",
+                            "block_hunt", "command_center", "auto_pilot"):
+            assert private_key not in payload
+
+    @pytest.mark.parametrize(
+        "path",
+        ["/api/history", "/api/workers", "/api/proximity", "/api/share_timeline"],
+    )
+    def test_named_tenant_cannot_read_operator_only_telemetry(self, client, path):
+        res = client.get(path, headers=_bearer("acme"))
+        assert res.status_code == 403
+        assert res.get_json()["code"] == "OPERATOR_SCOPED_DATA"
+
     def test_alerts_scoped_by_tenant(self, client):
         """GET /api/alerts only returns the current tenant's alerts."""
         from app import get_db

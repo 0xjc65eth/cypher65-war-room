@@ -13,8 +13,11 @@ describe('useCommands', () => {
     jest.clearAllMocks();
   });
 
-  it('sends a command successfully', async () => {
-    (client.sendDeviceCommand as jest.Mock).mockResolvedValue({ success: true });
+  it('defaults an unconfirmed command to dry-run', async () => {
+    (client.sendDeviceCommand as jest.Mock).mockResolvedValue({
+      success: true,
+      dry_run: true,
+    });
     const { result } = renderHook(() => useCommands('d1'));
 
     let response: any;
@@ -26,7 +29,8 @@ describe('useCommands', () => {
       'd1',
       'restart',
       {},
-      undefined
+      undefined,
+      false
     );
     expect(response.success).toBe(true);
   });
@@ -67,7 +71,8 @@ describe('useCommands', () => {
       'd1',
       'restart',
       {},
-      'one-time-token'
+      'one-time-token',
+      true
     );
     expect(response.success).toBe(true);
   });
@@ -88,7 +93,8 @@ describe('useCommands', () => {
       'd1',
       'restart',
       {},
-      undefined
+      undefined,
+      false
     );
   });
 });

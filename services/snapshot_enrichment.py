@@ -220,23 +220,32 @@ def _compute_block_hunt(snap: dict) -> dict:
         or leaderboard_entry.get("rank")
     )
 
+    proximity = snap.get("proximity") or {}
     cumulative_p_block = None
     try:
         cumulative_p_block = (
-            (snap.get("proximity") or {})
-            .get("live_calc", {})
-            .get("session_totals", {})
-            .get("cum_p_block")
+            proximity.get("live_calc", {}).get("session_totals", {}).get("cum_p_block")
         )
     except Exception:
         cumulative_p_block = None
 
+    best_share_target_ratio = (
+        (best_diff_raw / net_diff) if net_diff and best_diff_raw else None
+    )
+    modeled_share_probability = proximity.get("chance_per_share_pct")
+
     return {
         "network_difficulty": net_diff,
         "best_difficulty": best_diff_raw,
-        "p_block_per_share": (
-            (best_diff_raw / net_diff) if net_diff and best_diff_raw else None
-        ),
+        "best_share_target_ratio": best_share_target_ratio,
+        "modeled_share_probability": modeled_share_probability,
+        "modeled_share_probability_source": proximity.get("chance_per_share_source"),
+        # Compatibility only. Historically this field was mislabeled as a
+        # probability although it contains best-share ÷ network-target ratio.
+        "p_block_per_share": best_share_target_ratio,
+        "legacy_fields": {
+            "p_block_per_share": "deprecated: use best_share_target_ratio; not probability"
+        },
         "expected_time_seconds": expected_time,
         "cumulative_p_block": cumulative_p_block,
         "best_diff_worker": worker.get("name") or WORKER_NAME or "",

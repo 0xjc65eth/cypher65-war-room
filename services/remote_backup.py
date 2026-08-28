@@ -8,9 +8,10 @@ every redeploy/restart. That would silently destroy per-user credentials
 (tenant_settings), settings, alerts and wallet history built for 1000+
 users. This module fixes it at $0:
 
-  - `remote_backup_now()`: snapshots the DB via the crash-safe sqlite
-    online backup API, base64-encodes it, and PATCHes it into a PRIVATE
-    GitHub gist (no public exposure, no repo write access needed).
+  - `remote_backup_now()`: snapshots the DB via the crash-safe sqlite online
+    backup API, encrypts and authenticates it, then PATCHes the ciphertext into
+    a secret GitHub gist. Secret gists are unlisted, not private; encryption is
+    therefore mandatory.
   - `remote_restore()`: on boot, if the local DB is missing or has NO user
     data (fresh ephemeral boot), downloads the gist and restores the file
     BEFORE the app starts writing. Never overwrites a DB that already has
@@ -21,21 +22,21 @@ Env-gated (all optional — nothing happens without them):
   - GITHUB_TOKEN            — personal access token with `gist` scope.
   - REMOTE_BACKUP_INTERVAL  — seconds between remote snapshots (default 600).
   - REMOTE_BACKUP_GIST_ID   — optional; reuse a known gist id (skips lookup).
+  - REMOTE_BACKUP_ENCRYPTION_KEY — stable Fernet key; required.
   - GIST_DESCRIPTION        — optional description used to find/create the gist.
 
 Design notes:
   - Uses the existing sqlite3.Connection.backup() API, so the snapshot is
     consistent even under concurrent writers (same guarantee as
     services/db_backup.py).
-  - GitHub gist API: a single file (base64 text) keeps the payload under
-    the per-file size limit for a long time (SQLite of this app is a few MB;
-    base64 inflates 33%). The 100MB hard per-file limit is far above the
+  - GitHub gist API: a single authenticated ciphertext stays under the
+    per-file size limit for a long time (SQLite of this app is a few MB).
+    The 100MB hard per-file limit is far above the
     realistic size here; the restore path tolerates a missing gist.
   - Failures are logged and NEVER raise — a backup outage must not break
     the app (honest telemetry: backup is best-effort, like db_backup).
 """
 
-import base64
 import logging
 import os
 import sqlite3
@@ -43,11 +44,13 @@ import tempfile
 import time
 
 import requests
+from cryptography.fernet import Fernet, InvalidToken
 
 log = logging.getLogger("cypher65.remote_backup")
 
 GIST_DEFAULT_DESCRIPTION = "cypher65-war-room automatic backup"
-GIST_FILENAME = "war_room.sqlite.b64"
+GIST_FILENAME = "war_room.sqlite.enc"
+ENCRYPTED_PREFIX = "c65-fernet-v1:"
 _API = "https://api.github.com"
 
 # Cached discovered gist id — avoids a GET /gists round trip on every cycle
@@ -72,9 +75,24 @@ def _gist_id_env():
     return (os.environ.get("REMOTE_BACKUP_GIST_ID") or "").strip()
 
 
+def _encryption_key() -> str:
+    return (os.environ.get("REMOTE_BACKUP_ENCRYPTION_KEY") or "").strip()
+
+
+def _cipher() -> Fernet | None:
+    key = _encryption_key()
+    if not key:
+        return None
+    try:
+        return Fernet(key.encode("ascii"))
+    except (ValueError, UnicodeEncodeError):
+        log.error("[remote_backup] REMOTE_BACKUP_ENCRYPTION_KEY is invalid")
+        return None
+
+
 def remote_backup_enabled() -> bool:
-    """True only when a gist-scoped token is configured AND interval > 0."""
-    return bool(_token()) and _interval() > 0
+    """True only with GitHub auth, a valid encryption key and interval."""
+    return bool(_token()) and _cipher() is not None and _interval() > 0
 
 
 def _headers():
@@ -108,14 +126,14 @@ def _find_or_create_gist() -> str | None:
     if _cached_gist_id:
         return _cached_gist_id
     try:
-        # Look for an existing private gist with our filename.
+        # Look for an existing unlisted gist with our encrypted filename.
         r = requests.get(f"{_API}/gists", headers=_headers(), timeout=10)
         if r.ok:
             for g in r.json():
                 if GIST_FILENAME in g.get("files", {}):
                     _cached_gist_id = g["id"]
                     return g["id"]
-        # None found — create a private gist with an empty placeholder.
+        # None found — create an unlisted gist with an empty placeholder.
         r = requests.post(
             f"{_API}/gists",
             headers=_headers(),
@@ -165,8 +183,52 @@ def _snapshot_bytes(db_path: str) -> bytes:
             pass
 
 
+def _encrypt_snapshot(raw: bytes) -> str:
+    cipher = _cipher()
+    if cipher is None:
+        raise ValueError("remote backup encryption key unavailable")
+    return ENCRYPTED_PREFIX + cipher.encrypt(raw).decode("ascii")
+
+
+def _decrypt_snapshot(content: str) -> bytes:
+    if not content.startswith(ENCRYPTED_PREFIX):
+        raise ValueError("legacy plaintext remote backup rejected")
+    cipher = _cipher()
+    if cipher is None:
+        raise ValueError("remote backup encryption key unavailable")
+    try:
+        return cipher.decrypt(content[len(ENCRYPTED_PREFIX) :].encode("ascii"))
+    except InvalidToken as exc:
+        raise ValueError("remote backup authentication failed") from exc
+
+
+def _write_validated_snapshot(raw: bytes, db_path: str) -> None:
+    """Validate decrypted SQLite bytes before atomically replacing the DB."""
+    target_dir = os.path.dirname(os.path.abspath(db_path))
+    os.makedirs(target_dir, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(suffix=".restore.sqlite", dir=target_dir)
+    try:
+        with os.fdopen(fd, "wb") as restored:
+            restored.write(raw)
+            restored.flush()
+            os.fsync(restored.fileno())
+        conn = sqlite3.connect(f"file:{tmp}?mode=ro", uri=True)
+        try:
+            check = conn.execute("PRAGMA quick_check").fetchone()
+            if not check or check[0] != "ok":
+                raise ValueError("restored SQLite snapshot failed integrity check")
+        finally:
+            conn.close()
+        os.replace(tmp, db_path)
+    finally:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+
+
 def remote_backup_now(db_path=None) -> bool:
-    """Snapshot the DB and PATCH it into the private gist (base64).
+    """Snapshot, encrypt and PATCH the DB into an unlisted gist.
 
     Returns True on success, False on any failure (never raises).
     """
@@ -175,7 +237,7 @@ def remote_backup_now(db_path=None) -> bool:
     db_path = _resolve_db_path(db_path)
     try:
         raw = _snapshot_bytes(db_path)
-        b64 = base64.b64encode(raw).decode("ascii")
+        encrypted = _encrypt_snapshot(raw)
         gid = _find_or_create_gist()
         if not gid:
             return False
@@ -183,7 +245,7 @@ def remote_backup_now(db_path=None) -> bool:
             f"{_API}/gists/{gid}",
             headers=_headers(),
             timeout=20,
-            json={"files": {GIST_FILENAME: {"content": b64}}},
+            json={"files": {GIST_FILENAME: {"content": encrypted}}},
         )
         if not r.ok:
             log.warning(
@@ -265,10 +327,8 @@ def remote_restore(db_path=None) -> bool:
         if not content.strip():
             log.info("[remote_backup] gist empty — nothing to restore")
             return False
-        raw = base64.b64decode(content.encode("ascii"))
-        os.makedirs(os.path.dirname(os.path.abspath(db_path)), exist_ok=True)
-        with open(db_path, "wb") as f:
-            f.write(raw)
+        raw = _decrypt_snapshot(content)
+        _write_validated_snapshot(raw, db_path)
         log.info(
             "[remote_backup] restored %.0f KB from gist %s -> %s",
             len(raw) / 1024,

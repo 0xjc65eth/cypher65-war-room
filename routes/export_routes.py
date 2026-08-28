@@ -22,7 +22,14 @@ import config
 import services.state as _state
 from helpers import csv_neutralize as _csv_neutralize
 from services.db import get_db
-from services.settings import load_settings, DEFAULT_SETTINGS, save_setting
+from services.settings import (
+    load_settings,
+    DEFAULT_SETTINGS,
+    credential_keys,
+    redact_settings,
+    save_setting,
+    is_default_tenant,
+)
 from services.tenant import require_tenant, role_required
 
 export_bp = Blueprint("export", __name__, url_prefix="/api")
@@ -166,13 +173,16 @@ def api_config_backup(tenant_id: str = ""):
     Tenant-scoped: a named tenant downloads THEIR OWN settings — never the
     operator's global table (which may hold the operator's provider keys).
     """
-    s = load_settings(tenant_id=tenant_id)
+    s = redact_settings(load_settings(tenant_id=tenant_id))
     payload = {
         "settings": s,
-        "worker_name": config.WORKER_NAME,
-        "btc_address": config.BTC_ADDRESS,
+        # These legacy values are operator-global, not tenant-scoped. Never
+        # leak them into a named tenant's otherwise isolated export.
+        "worker_name": config.WORKER_NAME if is_default_tenant(tenant_id) else "",
+        "btc_address": config.BTC_ADDRESS if is_default_tenant(tenant_id) else "",
         "exported_ts": int(time.time()),
-        "version": 1,
+        "version": 2,
+        "credentials_included": False,
     }
     return Response(
         json.dumps(payload, indent=2, default=str),
@@ -198,9 +208,12 @@ def api_config_restore(tenant_id: str = ""):
     if not isinstance(settings, dict):
         return jsonify({"error": "expected object with 'settings' key"}), 400
     applied, rejected = [], []
+    secret_keys = credential_keys()
     for k, v in settings.items():
         if k not in DEFAULT_SETTINGS:
             rejected.append(k)
+            continue
+        if k in secret_keys and (v is None or str(v).strip() == ""):
             continue
         if save_setting(k, v, tenant_id=tenant_id):
             applied.append(k)

@@ -21,7 +21,12 @@ CONFIRMABLE_COMMANDS = frozenset(
     {
         "restart",
         "pause",
+        "resume",
+        "identify",
         "configure",
+        "set_frequency",
+        "set_voltage",
+        "update_pool",
         "power_cycle",
         "power_on",
         "power_off",
@@ -147,8 +152,9 @@ def consume_confirmation(
 ) -> bool:
     """Consume a confirmation once, returning ``False`` for every mismatch.
 
-    A single conditional UPDATE makes concurrent/replayed consumes fail closed:
-    only the first valid request can change ``consumed_at`` from NULL.
+    The token is burned on its first consume attempt, including a mismatched
+    binding. ``BEGIN IMMEDIATE`` serializes concurrent attempts so only one
+    request can observe an unused token.
     """
     if not isinstance(token, str) or len(token) < 32:
         return False
@@ -160,27 +166,29 @@ def consume_confirmation(
     conn = _connect()
     try:
         ensure_table(conn)
-        cursor = conn.execute(
-            """UPDATE command_confirmations
-               SET consumed_at = ?
-             WHERE token_hash = ?
-               AND tenant_id = ?
-               AND device_id = ?
-               AND command = ?
-               AND parameters_hash = ?
-               AND expires_at >= ?
-               AND consumed_at IS NULL""",
-            (
-                consumed_at,
-                _token_hash(token),
-                tenant_id or "default",
-                device_id,
-                str(command or "").strip().lower(),
-                _parameters_hash(normalized_parameters),
-                consumed_at,
-            ),
+        token_hash = _token_hash(token)
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            """SELECT tenant_id, device_id, command, parameters_hash, expires_at,
+                      consumed_at
+                 FROM command_confirmations WHERE token_hash = ?""",
+            (token_hash,),
+        ).fetchone()
+        valid = bool(
+            row
+            and row[0] == (tenant_id or "default")
+            and row[1] == device_id
+            and row[2] == str(command or "").strip().lower()
+            and row[3] == _parameters_hash(normalized_parameters)
+            and row[4] >= consumed_at
+            and row[5] is None
         )
+        if row and row[5] is None:
+            conn.execute(
+                "UPDATE command_confirmations SET consumed_at = ? WHERE token_hash = ?",
+                (consumed_at, token_hash),
+            )
         conn.commit()
-        return cursor.rowcount == 1
+        return valid
     finally:
         conn.close()

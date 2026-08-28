@@ -66,6 +66,17 @@ class TestCredentialEncryption:
         out = s.load_settings("carol")
         assert out["braiins_api_key"] == "no-key-value"
 
+    def test_encrypted_value_fails_closed_after_key_loss(self, monkeypatch):
+        monkeypatch.setenv("SECRET_KEY", "original-secret-0123456789-abcdef")
+        import services.settings as s
+        s._settings_cache = None
+        s._tenant_settings_cache.clear()
+        s.save_setting("mrr_api_secret", "must-not-be-ciphertext", tenant_id="dora")
+
+        monkeypatch.setenv("SECRET_KEY", "rotated-secret-0123456789-abcdef")
+        s._tenant_settings_cache.clear()
+        assert s.load_settings("dora")["mrr_api_secret"] == ""
+
 
 # ── 2. Tenant-keyed rate limiting ───────────────────────────────────────────
 
