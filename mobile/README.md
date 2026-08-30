@@ -2,7 +2,8 @@
 
 React Native 0.86 + Expo SDK 57 mobile command center for the CYPHER65 War Room.
 
-Requirements: Node.js 22.13 or newer, iOS 16.4+, Android 7+ and Android SDK 36.
+Development requirement: Node.js 22.13 or newer. Native iOS/Android version
+support is not yet release-certified; see the compatibility status below.
 
 ## Quick Start
 
@@ -48,3 +49,9 @@ uses Expo Continuous Native Generation, so `ios/` and `android/` are generated
 artifacts rather than committed source directories. The custom notification sound
 reference was removed because the referenced file did not exist; notifications use
 the platform default sound until a reviewed audio asset is added.
+
+An Expo Android export is not an APK/AAB release. Android compatibility and the
+remaining native release gates are tracked in
+[`docs/ANDROID_COMPATIBILITY.md`](../docs/ANDROID_COMPATIBILITY.md). Do not label
+the app Android-ready until the exact signed release APK passes installation,
+launch, security and human E2E validation.
