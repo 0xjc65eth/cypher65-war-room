@@ -20,7 +20,15 @@ export const DeviceDetailScreen = () => {
   const { deviceId } = route.params;
   const [device, setDevice] = useState<DeviceType | null>(null);
   const [loading, setLoading] = useState(true);
-  const { sendCommand, loading: commandLoading } = useCommands(deviceId);
+  const {
+    sendCommand,
+    loading: commandLoading,
+    phase: commandPhase,
+    operationId,
+    reconciling,
+    error: commandError,
+    auditRecorded,
+  } = useCommands(deviceId);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -53,7 +61,11 @@ export const DeviceDetailScreen = () => {
 
     const result = await sendCommand(capability.name, {}, humanConfirmation);
     if (result.success) {
-      Alert.alert('Success', `${capability.name} executed successfully`);
+      if (result.data?.dry_run) {
+        Alert.alert('Dry-run complete', `${capability.name} was validated without execution`);
+      } else {
+        Alert.alert('Command acknowledged', 'ACK received. CYPHER65 is verifying physical state.');
+      }
     } else {
       Alert.alert('Error', result.error || 'Command failed');
     }
@@ -100,9 +112,38 @@ export const DeviceDetailScreen = () => {
       {commandLoading && <ActivityIndicator color={theme.brand.DEFAULT} style={styles.loader} />}
       <View style={styles.commands}>
         {device.capabilities?.map((cap) => (
-          <CommandButton key={cap.name} capability={cap} onPress={handleCommand} />
+          <CommandButton
+            key={cap.name}
+            capability={cap}
+            onPress={handleCommand}
+            disabled={commandLoading || reconciling}
+          />
         ))}
       </View>
+
+      {commandPhase !== 'idle' && (
+        <View style={styles.lifecycle} accessible accessibilityLabel={`Command verification: ${commandPhase}`}>
+          <View style={styles.lifecycleHeading}>
+            <Text style={styles.lifecycleTitle}>Command verification</Text>
+            {reconciling && <ActivityIndicator size="small" color={theme.brand.DEFAULT} />}
+          </View>
+          <Text style={styles.lifecycleState}>{commandPhase.toUpperCase()}</Text>
+          <Text style={styles.lifecycleDetail}>
+            {commandPhase === 'acknowledged' && 'Device ACK received; success is not yet verified.'}
+            {commandPhase === 'offline' && 'Expected reboot outage observed.'}
+            {commandPhase === 'reconnecting' && 'Device is online; checking fresh telemetry and uptime reset.'}
+            {commandPhase === 'verified' && 'Offline transition, reconnection and uptime reset verified.'}
+            {commandPhase === 'unknown' && (commandError || 'Final physical state is unknown.')}
+            {commandPhase === 'failed' && (commandError || 'Observed state contradicts the command.')}
+          </Text>
+          {operationId && <Text style={styles.operationId}>Audit operation: {operationId}</Text>}
+          {commandPhase === 'verified' && (
+            <Text style={styles.operationId}>
+              Audit Log: {auditRecorded ? 'RECORDED' : 'NOT CONFIRMED'}
+            </Text>
+          )}
+        </View>
+      )}
     </ScrollView>
   );
 };
@@ -162,5 +203,39 @@ const styles = StyleSheet.create({
   },
   loader: {
     marginVertical: 12,
+  },
+  lifecycle: {
+    backgroundColor: theme.bg.surface,
+    borderColor: theme.brand.DEFAULT,
+    borderWidth: 1,
+    borderRadius: 8,
+    padding: 12,
+    marginBottom: 32,
+  },
+  lifecycleHeading: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  lifecycleTitle: {
+    color: theme.text.primary,
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  lifecycleState: {
+    color: theme.brand.DEFAULT,
+    fontSize: 13,
+    fontWeight: '700',
+    marginTop: 8,
+  },
+  lifecycleDetail: {
+    color: theme.text.tertiary,
+    fontSize: 13,
+    marginTop: 4,
+  },
+  operationId: {
+    color: theme.text.secondary,
+    fontSize: 11,
+    marginTop: 8,
   },
 });

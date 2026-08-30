@@ -2385,7 +2385,7 @@ _axe_registry.gc_tombstones(max_age_days=30)
 # Stores executed commands per device for lightweight audit logging.
 # Each entry: { "device_id": str, "command": str, "parameters": dict,
 #              "timestamp": int, "result": dict }
-_command_history: Dict[str, List[Dict[str, Any]]] = {}
+_command_history: Dict[tuple, List[Dict[str, Any]]] = {}
 
 # ── Session Manager (multi-user support) ──────────────────────────────────────
 _session_manager = SessionManager()
@@ -2619,10 +2619,13 @@ def _record_command(
         "success": bool(safe_result.get("success")),
         "result": safe_result,
     }
+    from services.tenant import get_tenant_id
+
+    history_key = (get_tenant_id(), device_id)
     with _command_history_lock:
-        _command_history.setdefault(device_id, []).append(entry)
+        _command_history.setdefault(history_key, []).append(entry)
         # Keep the last 100 entries per device to avoid unbounded growth.
-        _command_history[device_id] = _command_history[device_id][-100:]
+        _command_history[history_key] = _command_history[history_key][-100:]
 
     # ── Fase 4 · B3: structured audit — every command attempt (including
     #    blocked ones) is recorded so the operator can trace who/what ran
@@ -2639,6 +2642,10 @@ def _record_command(
                 "parameters": safe_parameters,
                 "success": bool(safe_result.get("success")),
                 "error": safe_result.get("error", ""),
+                "operation_id": safe_result.get("operation_id"),
+                "ack_state": safe_result.get("ack_state"),
+                "reconciliation_state": safe_result.get("reconciliation_state"),
+                "reason": safe_result.get("reason"),
             },
         )
     except Exception:
@@ -6465,7 +6472,7 @@ def api_device_command_history(device_id: str, tenant_id: str = ""):
     if not device:
         return jsonify({"error": "device not found", "success": False}), 404
 
-    history = _command_history.get(device_id, [])
+    history = _command_history.get((tenant_id or "default", device_id), [])
     return jsonify(
         {
             "success": True,
@@ -6622,7 +6629,9 @@ def api_device_timeline(device_id: str, tenant_id: str = ""):
     events: List[Dict[str, Any]] = []
 
     # Commands
-    for entry in _command_history.get(device_id, [])[::-1][:50]:
+    for entry in _command_history.get((tenant_id or "default", device_id), [])[::-1][
+        :50
+    ]:
         events.append(
             {
                 "timestamp": entry["timestamp"],
