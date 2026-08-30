@@ -11,6 +11,12 @@ import pytest
 import services.rental_performance as rp
 
 
+@pytest.fixture(autouse=True)
+def _enable_validated_hashrate_purchases(monkeypatch):
+    """Bid tests explicitly opt in to the production purchase boundary."""
+    monkeypatch.setenv("ENABLE_REAL_HASHRATE_PURCHASES", "true")
+
+
 class FakeResponse:
     def __init__(self, ok=True, status_code=200, payload=None, text=""):
         self.ok = ok

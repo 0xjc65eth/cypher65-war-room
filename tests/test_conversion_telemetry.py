@@ -21,6 +21,12 @@ sys.path.insert(0, ".")
 import services.conversion as conv  # noqa: E402
 
 
+@pytest.fixture(autouse=True)
+def _enable_validated_payment_processing(monkeypatch):
+    """Webhook telemetry tests intentionally run behind the payment gate."""
+    monkeypatch.setenv("ENABLE_REAL_PAYMENTS", "true")
+
+
 @pytest.fixture
 def isolated_client():
     """Flask test client against the conftest-owned SCRATCH DB."""

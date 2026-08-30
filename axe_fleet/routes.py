@@ -1064,6 +1064,27 @@ def configure_device(device_id: str, tenant_id: str = ""):
         )
         return jsonify({"success": True, "dry_run": True, "settings": settings})
 
+    from services.safety_policy import can_execute_physical_command
+
+    if not can_execute_physical_command():
+        _log_audit(
+            tenant_id,
+            "fleet.device_config_blocked",
+            target=device_id,
+            details={"reason": "deployment_policy_disabled"},
+        )
+        return (
+            jsonify(
+                {
+                    "success": False,
+                    "error": "physical commands are disabled by deployment policy",
+                    "code": "PHYSICAL_COMMANDS_DISABLED",
+                    "read_only": True,
+                }
+            ),
+            503,
+        )
+
     confirmation = _operational_confirmation_response(
         device_id, "configure", tenant_id, {"settings": settings}
     )
@@ -2156,6 +2177,26 @@ def _execute_guarded_plug_command(plug_id: str, method: str, tenant_id: str):
                 "configured": configured,
             }
         )
+    from services.safety_policy import can_execute_physical_command
+
+    if not can_execute_physical_command():
+        _log_audit(
+            tenant_id,
+            "fleet.plug_command_blocked",
+            target=normalized_plug_id,
+            details={"command": method, "reason": "deployment_policy_disabled"},
+        )
+        return (
+            jsonify(
+                {
+                    "success": False,
+                    "error": "physical commands are disabled by deployment policy",
+                    "code": "PHYSICAL_COMMANDS_DISABLED",
+                    "read_only": True,
+                }
+            ),
+            503,
+        )
     confirmation = _operational_confirmation_response(
         normalized_plug_id, method, tenant_id, {}
     )
@@ -2307,6 +2348,27 @@ def miner_power_cycle(device_id: str, tenant_id: str = ""):
             details=parameters,
         )
         return jsonify({"success": True, "dry_run": True, **parameters})
+
+    from services.safety_policy import can_execute_physical_command
+
+    if not can_execute_physical_command():
+        _log_audit(
+            tenant_id,
+            "fleet.power_cycle_blocked",
+            target=device_id,
+            details={"reason": "deployment_policy_disabled"},
+        )
+        return (
+            jsonify(
+                {
+                    "success": False,
+                    "error": "physical commands are disabled by deployment policy",
+                    "code": "PHYSICAL_COMMANDS_DISABLED",
+                    "read_only": True,
+                }
+            ),
+            503,
+        )
 
     confirmation = _operational_confirmation_response(
         device_id, "power_cycle", tenant_id, parameters
@@ -2486,6 +2548,22 @@ def _get_db_internal():
 def _execute_plug_command(plug_id: str, method: str, tenant_id: str = "") -> tuple:
     """Execute a power plug command with consistent error handling."""
     from services.tuya_adapter import TuyaCloudAdapter
+    from services.safety_policy import can_execute_physical_command
+
+    # Defense in depth for internal callers that bypass the HTTP dry-run and
+    # confirmation wrapper.
+    if not can_execute_physical_command():
+        return (
+            jsonify(
+                {
+                    "success": False,
+                    "error": "physical commands are disabled by deployment policy",
+                    "code": "PHYSICAL_COMMANDS_DISABLED",
+                    "read_only": True,
+                }
+            ),
+            503,
+        )
 
     creds = _get_tuya_credentials(tenant_id)
     if not creds.get("access_id") or not creds.get("access_secret"):
@@ -2632,6 +2710,29 @@ def _execute_device_command(device_id: str, command: str, tenant_id: str = None)
     caps = device.get("capabilities", {})
     if not caps.get(command):
         return jsonify({"error": f"'{command}' not supported by this device"}), 400
+
+    from services.safety_policy import can_execute_physical_command
+
+    # Central enforcement point shared by Fleet HTTP routes, accepted
+    # recommendations and the background Auto-Pilot executor.
+    if not can_execute_physical_command():
+        _log_audit(
+            tid,
+            "fleet.command_blocked",
+            target=device_id,
+            details={"command": command, "reason": "deployment_policy_disabled"},
+        )
+        return (
+            jsonify(
+                {
+                    "success": False,
+                    "error": "physical commands are disabled by deployment policy",
+                    "code": "PHYSICAL_COMMANDS_DISABLED",
+                    "read_only": True,
+                }
+            ),
+            503,
+        )
 
     # Agent-managed → route through the command queue (agent executes locally).
     if int(device.get("agent_managed", 0) or 0):

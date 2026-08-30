@@ -27,6 +27,7 @@ from services.command_confirmation import (
     consume_confirmation as _consume_persisted_confirmation,
     issue_confirmation as _issue_persisted_confirmation,
 )
+from services.safety_policy import can_execute_physical_command
 
 from core.adapters.bitaxe_adapter import BitaxeAdapter
 from core.adapters.cgminer_adapter import CgminerAdapter
@@ -644,6 +645,20 @@ def execute_device_command(device_id: str, tenant_id: str = ""):
                 "parameters": redact_command_data(parameters),
             }
         )
+
+    # Deployment-level kill switch.  Dry-runs have already returned above;
+    # only a real side effect reaches this gate.  Licensing, role and a valid
+    # confirmation token are necessary but never sufficient to bypass it.
+    if not dry_run and not can_execute_physical_command():
+        record = {
+            "success": False,
+            "allowed": False,
+            "error": "physical commands are disabled by deployment policy",
+            "reason": "deployment_policy_disabled",
+            "read_only": True,
+        }
+        _record_attempt(device_id, command, parameters, record)
+        return jsonify(record), 503
 
     # 4. A device capability and SafetyEngine can both require confirmation.
     # The controller is the enforcement point: metadata is never just a UI hint.

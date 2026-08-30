@@ -137,6 +137,10 @@ def create_checkout(
     webhook's ``meta.custom_data`` — the ``paid`` funnel event can then be
     attributed to the same funnel that saw the paywall / started checkout.
     """
+    from services.safety_policy import can_process_real_payment
+
+    if not can_process_real_payment():
+        return None
     if not payments_configured(plan):
         return None
     api_key = os.environ.get("LEMON_SQUEEZY_API_KEY") or ""
@@ -363,6 +367,11 @@ def handle_webhook(payload: dict) -> Optional[str]:
     purchase). This handler's real job is keeping the gate in sync so the
     issued key is honored immediately by X-License-Key.
     """
+    from services.safety_policy import can_process_real_payment
+
+    if not can_process_real_payment():
+        return None
+
     meta = payload.get("meta") or {}
     event_name = meta.get("event_name") or ""
     # Issue #157 (18-C): subscription lifecycle → real cohort LTV. These are

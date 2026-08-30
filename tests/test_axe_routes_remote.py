@@ -17,6 +17,12 @@ import pytest
 from unittest.mock import patch, MagicMock
 
 
+@pytest.fixture(autouse=True)
+def _enable_validated_physical_commands(monkeypatch):
+    """These legacy tests intentionally exercise post-gate command behavior."""
+    monkeypatch.setenv("ENABLE_PHYSICAL_COMMANDS", "true")
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # 1. Helper function tests
 # ═══════════════════════════════════════════════════════════════════════════

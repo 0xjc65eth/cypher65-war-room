@@ -63,6 +63,7 @@ def _scrub_btcpay_env(monkeypatch):
         "LEMON_SQUEEZY_API_KEY",
     ):
         monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("ENABLE_REAL_PAYMENTS", "true")
 
 
 @pytest.fixture()

@@ -2578,6 +2578,14 @@ def create_braiins_bid(
     never reach the wire. F7: never exceeds MarketSettings.max_bids_per_subaccount
     (live count first; fail-closed when the count is unverifiable).
     """
+    from services.safety_policy import can_purchase_hashrate
+
+    if not can_purchase_hashrate():
+        return {
+            "success": False,
+            "error": "real hashrate purchases are disabled by deployment policy",
+            "policy_disabled": True,
+        }
     key = _braiins_key(tenant_id=tenant_id)
     if not key:
         return {

@@ -121,6 +121,7 @@ import services.beta_analytics as _beta_analytics  # Beta: self-hosted usage tra
 import services.doc_feedback as _doc_feedback  # #19: Learning FAQ loop — doc "was this helpful?"
 import services.error_tracker as _error_tracker  # #176: local error-rate sampler ($0 observability)
 import services.postgres_readiness as _postgres_readiness  # #22: traction gate
+import services.safety_policy as _safety_policy
 from services.licensing import (
     is_pro,
     license_status as _license_status,
@@ -2515,6 +2516,18 @@ def _execute_command_for_automation(
 ) -> Dict[str, Any]:
     """Adapter used by AutomationEngine to run a device command through the
     same path as the REST endpoint (lookup, supports, safety, execute)."""
+    if not _safety_policy.can_execute_autonomous_command():
+        return {
+            "success": False,
+            "error": "autonomous commands are disabled by deployment policy",
+            "code": "AUTONOMOUS_COMMANDS_DISABLED",
+        }
+    if not _safety_policy.can_execute_physical_command():
+        return {
+            "success": False,
+            "error": "physical commands are disabled by deployment policy",
+            "code": "PHYSICAL_COMMANDS_DISABLED",
+        }
     device = _core_registry.get_device(device_id)
     if not device:
         return {"success": False, "error": "device not found"}
@@ -5263,10 +5276,14 @@ def api_license_status():
     address + which BTC provider is live."""
     body = _license_status()
     card = _payments.payment_capabilities()
-    body["payments"] = card["provider"]
-    body["payment_plans"] = card["plans"]
-    body["btcpay"] = bool(_btcpay.btcpay_configured())
-    body["webln"] = bool(_btcpay.webln_invoice_available())
+    payments_enabled = _safety_policy.can_process_real_payment()
+    body["payments"] = card["provider"] if payments_enabled else None
+    body["payment_plans"] = (
+        card["plans"] if payments_enabled else {name: False for name in card["plans"]}
+    )
+    body["btcpay"] = bool(payments_enabled and _btcpay.btcpay_configured())
+    body["webln"] = bool(payments_enabled and _btcpay.webln_invoice_available())
+    body["safety_policy"] = _safety_policy.safety_policy_status()
     body["btcpay_credentials_configured"] = bool(
         _btcpay.btcpay_credentials_configured()
     )
@@ -5285,9 +5302,13 @@ def api_license_status():
         None
         if checkout_available
         else (
-            "reconciliation_required"
-            if body["btcpay_credentials_configured"]
-            else "provider_not_configured"
+            "deployment_policy_disabled"
+            if not payments_enabled
+            else (
+                "reconciliation_required"
+                if body["btcpay_credentials_configured"]
+                else "provider_not_configured"
+            )
         )
     )
     return jsonify(body)
@@ -5322,6 +5343,27 @@ def api_upgrade_checkout():
 
 def _api_upgrade_checkout_card(plan: str, email: str, funnel_id: str):
     """Legacy card path; fail closed until key delivery is implemented."""
+    if not _safety_policy.can_process_real_payment():
+        _log_audit(
+            "default",
+            "payment.checkout_blocked",
+            details={
+                "provider": "lemon_squeezy",
+                "reason": "deployment_policy_disabled",
+            },
+        )
+        return (
+            jsonify(
+                {
+                    "error": "real payments are disabled by deployment policy",
+                    "code": "REAL_PAYMENTS_DISABLED",
+                    "checkout_state": "unavailable",
+                    "payment_state": "checkout_unavailable",
+                    "reason": "deployment_policy_disabled",
+                }
+            ),
+            503,
+        )
     if not _payments.payments_configured(plan):
         _log_audit(
             "default",
@@ -5383,6 +5425,24 @@ def _api_upgrade_checkout_btc(plan: str, method: str, email: str, funnel_id: str
     invoice id + expiry, and persists invoice_id → plan for the webhook.
     WebLN fallback (no BTCPay): returns a BOLT-11 for window.webln.
     """
+    if not _safety_policy.can_process_real_payment():
+        _log_audit(
+            "default",
+            "payment.checkout_blocked",
+            details={"provider": "bitcoin", "reason": "deployment_policy_disabled"},
+        )
+        return (
+            jsonify(
+                {
+                    "error": "real payments are disabled by deployment policy",
+                    "code": "REAL_PAYMENTS_DISABLED",
+                    "checkout_state": "unavailable",
+                    "payment_state": "checkout_unavailable",
+                    "reason": "deployment_policy_disabled",
+                }
+            ),
+            503,
+        )
     if not _btcpay.btcpay_configured():
         _log_audit(
             "default",
@@ -5532,6 +5592,17 @@ def api_upgrade_webln_confirm():
 
     Off-by-default: 503 unless an LN invoice endpoint is configured.
     """
+    if not _safety_policy.can_process_real_payment():
+        return (
+            jsonify(
+                {
+                    "error": "real payments are disabled by deployment policy",
+                    "code": "REAL_PAYMENTS_DISABLED",
+                    "payment_state": "checkout_unavailable",
+                }
+            ),
+            503,
+        )
     if not _btcpay.webln_invoice_available():
         return (
             jsonify(
@@ -5574,6 +5645,8 @@ def api_payments_btcpay_webhook():
 
     Server-to-server — no auth decorator; trust comes from the HMAC-SHA256
     signature over the raw body (x-btcpay-sig header, "sha256=<hex>")."""
+    if not _safety_policy.can_process_real_payment():
+        return jsonify({"error": "real payments disabled"}), 503
     if not _btcpay.btcpay_configured():
         return jsonify({"error": "not configured"}), 400
     raw = request.get_data()
@@ -5599,6 +5672,8 @@ def api_payments_webhook():
 
     Server-to-server — no auth decorator; trust comes from the HMAC-SHA256
     signature over the raw body (x-signature header)."""
+    if not _safety_policy.can_process_real_payment():
+        return jsonify({"error": "real payments disabled"}), 503
     if not _payments.webhook_configured():
         return jsonify({"error": "not configured"}), 400
     raw = request.get_data()
@@ -8017,6 +8092,24 @@ def api_braiins_bid(tenant_id: str = ""):
     unit bug can never turn a 1 TH bid into a 1000 PH order. Errors carry
     HTTP 400 (validation), 429 (rate limited) or 502 (provider rejected).
     """
+    if not _safety_policy.can_purchase_hashrate():
+        _audit_braiins_bid(
+            tenant_id,
+            "blocked",
+            error="deployment_policy_disabled",
+        )
+        return (
+            jsonify(
+                {
+                    "success": False,
+                    "error": "real hashrate purchases are disabled by deployment policy",
+                    "code": "REAL_HASHRATE_PURCHASES_DISABLED",
+                    "dry_run": True,
+                }
+            ),
+            503,
+        )
+
     # F6: tight per-tenant budget for the money endpoint. Bids are rare and
     # deliberate; more than BRAIINS_BID_PER_MINUTE in a minute is abuse or a
     # stuck client — reject BEFORE any provider call, audited.

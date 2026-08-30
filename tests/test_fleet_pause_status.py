@@ -26,6 +26,12 @@ from axe_fleet.models import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _enable_validated_physical_commands(monkeypatch):
+    """Pause/resume route tests intentionally exercise actual command flow."""
+    monkeypatch.setenv("ENABLE_PHYSICAL_COMMANDS", "true")
+
+
 # ══════════════════════════════════════════════════════════════════════════
 # 1. derive_device_status — pure helper
 # ══════════════════════════════════════════════════════════════════════════
