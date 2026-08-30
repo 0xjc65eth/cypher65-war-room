@@ -65,5 +65,8 @@
   "private": true,
   "engines": {
     "node": ">=22.13.0"
+  },
+  "overrides": {
+    "qs": "6.16.0"
   }
 }
