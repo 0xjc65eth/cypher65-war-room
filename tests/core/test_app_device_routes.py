@@ -916,6 +916,9 @@ class TestDeviceCommandSecurity:
             },
         )
         assert executed.status_code == 200
+        assert executed.get_json()["ack"]["state"] == "acknowledged"
+        assert executed.get_json()["reconciliation"]["state"] == "pending"
+        assert executed.get_json()["operation_id"]
         assert executed.get_json()["success"] is True
         assert adapter.calls == 1
 

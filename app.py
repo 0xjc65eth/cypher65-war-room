@@ -2540,7 +2540,36 @@ def _execute_command_for_automation(
     safety_result = _safety_engine.validate_command(device, command, parameters)
     if not safety_result.allowed:
         return {"success": False, "error": safety_result.reason}
-    result = adapter.execute_command(device, command, parameters)
+    from services import operation_ledger as _operation_ledger
+
+    operation = _operation_ledger.claim_operation(
+        "default", "physical_command", device_id, command, parameters
+    )
+    try:
+        result = adapter.execute_command(device, command, parameters)
+    except Exception:
+        _operation_ledger.update_operation(
+            operation["operation_id"],
+            state="unknown",
+            ack_state="unknown",
+            reconciliation_state="unknown",
+            safe_result={"error": "automation transport failure"},
+        )
+        raise
+    acknowledged = bool(result.get("success"))
+    _operation_ledger.update_operation(
+        operation["operation_id"],
+        state="acknowledged" if acknowledged else "rejected",
+        ack_state="acknowledged" if acknowledged else "rejected",
+        reconciliation_state="pending" if acknowledged else "failed",
+        safe_result=redact_command_data(result),
+    )
+    result = {
+        **result,
+        "operation_id": operation["operation_id"],
+        "ack": {"state": "acknowledged" if acknowledged else "rejected"},
+        "reconciliation": {"state": "pending" if acknowledged else "failed"},
+    }
     _record_command(device_id, command, parameters, result)
     if command in ("restart", "reboot") and result.get("success"):
         device.status = "OFFLINE"
@@ -8092,7 +8121,15 @@ def api_braiins_bid(tenant_id: str = ""):
     unit bug can never turn a 1 TH bid into a 1000 PH order. Errors carry
     HTTP 400 (validation), 429 (rate limited) or 502 (provider rejected).
     """
-    if not _safety_policy.can_purchase_hashrate():
+    body = request.get_json(silent=True) or {}
+    if not isinstance(body, dict):
+        return jsonify({"success": False, "error": "JSON body must be an object"}), 400
+    dry_run = body.get("dry_run", True) is not False
+
+    # Real-money execution is opt-in twice: deployment policy and an explicit
+    # dry_run=false request. Preflight remains read-only when the kill switch
+    # is disabled.
+    if not dry_run and not _safety_policy.can_purchase_hashrate():
         _audit_braiins_bid(
             tenant_id,
             "blocked",
@@ -8110,6 +8147,187 @@ def api_braiins_bid(tenant_id: str = ""):
             503,
         )
 
+    # Parse and normalize before issuing a payload-bound confirmation.
+    try:
+        speed_th = float(body.get("speed_limit_th") or 0)
+    except (TypeError, ValueError):
+        _audit_braiins_bid(
+            tenant_id, "rejected", error="speed_limit_th must be a number"
+        )
+        return (
+            jsonify({"success": False, "error": "speed_limit_th must be a number"}),
+            400,
+        )
+    amount_sat = body.get("amount_sat")
+    price_sat = body.get("price_sat")
+    upstream_url = (body.get("upstream_url") or "").strip()
+    upstream_identity = (body.get("upstream_identity") or "").strip()
+    memo = (body.get("memo") or "").strip()
+    cl_order_id = (body.get("cl_order_id") or "").strip()
+
+    if speed_th <= 0:
+        _audit_braiins_bid(tenant_id, "rejected", error="speed_limit_th must be > 0")
+        return jsonify({"success": False, "error": "speed_limit_th must be > 0"}), 400
+    if amount_sat is None or price_sat is None:
+        _audit_braiins_bid(
+            tenant_id, "rejected", error="amount_sat and price_sat are required"
+        )
+        return (
+            jsonify(
+                {"success": False, "error": "amount_sat and price_sat are required"}
+            ),
+            400,
+        )
+
+    confirmation_payload = {
+        "speed_limit_th": speed_th,
+        "amount_sat": amount_sat,
+        "price_sat": price_sat,
+        "upstream_url": upstream_url,
+        "upstream_identity": upstream_identity,
+        "memo": memo,
+        "cl_order_id": cl_order_id,
+    }
+
+    from services import operation_ledger as _operation_ledger
+
+    if dry_run:
+        preview = _rental_perf.create_braiins_bid(
+            speed_limit_ph=speed_th / 1000.0,
+            amount_sat=amount_sat,
+            price_sat=price_sat,
+            upstream_url=upstream_url,
+            upstream_identity=upstream_identity,
+            memo=memo,
+            cl_order_id=cl_order_id,
+            tenant_id=tenant_id,
+            dry_run=True,
+        )
+        if not preview.get("success"):
+            return jsonify(preview), 400 if not preview.get("needs_auth") else 401
+        confirmation = _operation_ledger.issue_confirmation(
+            tenant_id,
+            "braiins_bid",
+            "spot",
+            confirmation_payload,
+        )
+        _audit_braiins_bid(
+            tenant_id,
+            "dry_run",
+            cl_order_id=cl_order_id,
+            speed_limit_ph=speed_th / 1000.0,
+            amount_sat=amount_sat,
+            price_sat=price_sat,
+        )
+        return jsonify(
+            {
+                **preview,
+                **confirmation,
+                "requires_confirmation": True,
+                "confirmation_phrase": "CONFIRM HASHRATE PURCHASE",
+            }
+        )
+
+    idempotency_key = (
+        request.headers.get("Idempotency-Key") or cl_order_id or ""
+    ).strip()
+    if not re.fullmatch(r"[A-Za-z0-9._:-]{8,64}", idempotency_key):
+        return (
+            jsonify(
+                {
+                    "success": False,
+                    "error": "Idempotency-Key must be 8-64 safe characters",
+                    "code": "IDEMPOTENCY_KEY_REQUIRED",
+                }
+            ),
+            400,
+        )
+    if not cl_order_id or idempotency_key != cl_order_id:
+        return (
+            jsonify(
+                {
+                    "success": False,
+                    "error": "Idempotency-Key must match cl_order_id for provider reconciliation",
+                    "code": "IDEMPOTENCY_CORRELATION_MISMATCH",
+                }
+            ),
+            409,
+        )
+
+    existing = _operation_ledger.get_by_idempotency(
+        tenant_id, "braiins_bid", idempotency_key
+    )
+    if existing:
+        if existing.get("request_hash") != _operation_ledger.payload_hash(
+            confirmation_payload
+        ):
+            return (
+                jsonify(
+                    {
+                        "success": False,
+                        "error": "idempotency key is already bound to another payload",
+                        "code": "IDEMPOTENCY_PAYLOAD_MISMATCH",
+                    }
+                ),
+                409,
+            )
+        return (
+            jsonify(
+                {
+                    "success": existing.get("state") in {"acknowledged", "reconciled"},
+                    "replayed": True,
+                    "operation_id": existing["operation_id"],
+                    "state": existing.get("state"),
+                    "ack": {"state": existing.get("ack_state")},
+                    "reconciliation": {"state": existing.get("reconciliation_state")},
+                    "result": existing.get("safe_result") or {},
+                }
+            ),
+            200 if existing.get("state") in {"acknowledged", "reconciled"} else 202,
+        )
+
+    if not _operation_ledger.consume_confirmation(
+        body.get("confirmation_token"),
+        tenant_id,
+        "braiins_bid",
+        "spot",
+        confirmation_payload,
+    ):
+        return (
+            jsonify(
+                {
+                    "success": False,
+                    "error": "valid server confirmation required",
+                    "code": "CONFIRMATION_REQUIRED",
+                    "requires_confirmation": True,
+                }
+            ),
+            403,
+        )
+
+    operation = _operation_ledger.claim_operation(
+        tenant_id,
+        "braiins_bid",
+        "spot",
+        "create",
+        confirmation_payload,
+        idempotency_key=idempotency_key,
+    )
+    if not operation.get("created"):
+        # Another worker won the atomic claim after our pre-check. Never send
+        # a second POST and force the caller to read the existing operation.
+        return (
+            jsonify(
+                {
+                    "success": False,
+                    "replayed": True,
+                    "operation_id": operation["operation_id"],
+                    "state": operation.get("state"),
+                }
+            ),
+            202,
+        )
+
     # F6: tight per-tenant budget for the money endpoint. Bids are rare and
     # deliberate; more than BRAIINS_BID_PER_MINUTE in a minute is abuse or a
     # stuck client — reject BEFORE any provider call, audited.
@@ -8118,6 +8336,13 @@ def api_braiins_bid(tenant_id: str = ""):
     _stamps = _braiins_bid_store.setdefault(_rk, [])
     _stamps[:] = [t for t in _stamps if _now - t < 60.0]
     if len(_stamps) >= BRAIINS_BID_PER_MINUTE:
+        _operation_ledger.update_operation(
+            operation["operation_id"],
+            state="rejected",
+            ack_state="not_received",
+            reconciliation_state="failed",
+            safe_result={"error": "rate_limited"},
+        )
         _audit_braiins_bid(tenant_id, "rate_limited")
         return (
             jsonify(
@@ -8142,40 +8367,6 @@ def api_braiins_bid(tenant_id: str = ""):
         for k in _stale:
             _braiins_bid_store.pop(k, None)
 
-    body = request.get_json(silent=True) or {}
-    try:
-        speed_th = float(body.get("speed_limit_th") or 0)
-    except (TypeError, ValueError):
-        _audit_braiins_bid(
-            tenant_id, "rejected", error="speed_limit_th must be a number"
-        )
-        return (
-            jsonify({"success": False, "error": "speed_limit_th must be a number"}),
-            400,
-        )
-    amount_sat = body.get("amount_sat")
-    price_sat = body.get("price_sat")
-    upstream_url = (body.get("upstream_url") or "").strip()
-    upstream_identity = (body.get("upstream_identity") or "").strip()
-    memo = (body.get("memo") or "").strip()
-    cl_order_id = (body.get("cl_order_id") or "").strip()
-
-    # Positive TH required; PH conversion = TH / 1000. The server clamps
-    # (1 TH..1 EH) reject nonsense before the wire.
-    if speed_th <= 0:
-        _audit_braiins_bid(tenant_id, "rejected", error="speed_limit_th must be > 0")
-        return jsonify({"success": False, "error": "speed_limit_th must be > 0"}), 400
-    if amount_sat is None or price_sat is None:
-        _audit_braiins_bid(
-            tenant_id, "rejected", error="amount_sat and price_sat are required"
-        )
-        return (
-            jsonify(
-                {"success": False, "error": "amount_sat and price_sat are required"}
-            ),
-            400,
-        )
-
     result = _rental_perf.create_braiins_bid(
         speed_limit_ph=speed_th / 1000.0,
         amount_sat=amount_sat,
@@ -8185,7 +8376,34 @@ def api_braiins_bid(tenant_id: str = ""):
         memo=memo,
         cl_order_id=cl_order_id,
         tenant_id=tenant_id,
+        dry_run=False,
     )
+    provider_bid_id = (result.get("bid") or {}).get("id") or ""
+    if result.get("success"):
+        _operation_ledger.update_operation(
+            operation["operation_id"],
+            state="acknowledged",
+            ack_state="acknowledged",
+            reconciliation_state="pending",
+            provider_reference=provider_bid_id,
+            safe_result={"provider_bid_id": provider_bid_id},
+        )
+    elif result.get("ambiguous"):
+        _operation_ledger.update_operation(
+            operation["operation_id"],
+            state="unknown",
+            ack_state="unknown",
+            reconciliation_state="unknown",
+            safe_result={"error": result.get("error") or "ambiguous outcome"},
+        )
+    else:
+        _operation_ledger.update_operation(
+            operation["operation_id"],
+            state="rejected",
+            ack_state="rejected",
+            reconciliation_state="failed",
+            safe_result={"error": result.get("error") or "provider rejected bid"},
+        )
     # F5: immutable audit of EVERY attempt (placed / rejected + provider error).
     # bid_id (when the provider returned one) goes into the row so the F8
     # reconcile view can correlate audit ↔ provider.
@@ -8197,7 +8415,7 @@ def api_braiins_bid(tenant_id: str = ""):
         amount_sat=amount_sat,
         price_sat=price_sat,
         error=result.get("error") or "",
-        bid_id=(result.get("bid") or {}).get("id") or "",
+        bid_id=provider_bid_id,
     )
     if result.get("success"):
         # Record the placed order in the conversion funnel + audit (no PII).
@@ -8228,10 +8446,24 @@ def api_braiins_bid(tenant_id: str = ""):
                 "reconciled": "pending",
                 "reason": "just placed — eventual consistency",
             }
+        if recon.get("reconciled") is True:
+            _operation_ledger.update_operation(
+                operation["operation_id"],
+                state="reconciled",
+                ack_state="acknowledged",
+                reconciliation_state="confirmed",
+                provider_reference=recon.get("bid_id") or provider_bid_id,
+                safe_result={
+                    "provider_bid_id": recon.get("bid_id") or provider_bid_id,
+                    "provider_status": recon.get("status"),
+                },
+            )
         return jsonify(
             {
                 "success": True,
+                "operation_id": operation["operation_id"],
                 "bid": result.get("bid"),
+                "ack": {"state": "acknowledged", "source": "braiins"},
                 "reconciled": recon.get("reconciled"),
                 "reconcile_reason": recon.get("reason"),
                 "provider_status": recon.get("status"),
@@ -8239,6 +8471,21 @@ def api_braiins_bid(tenant_id: str = ""):
             }
         )
     _bid_err = result.get("error") or ""
+    if result.get("ambiguous"):
+        return (
+            jsonify(
+                {
+                    "success": False,
+                    "operation_id": operation["operation_id"],
+                    "state": "unknown",
+                    "ack": {"state": "unknown"},
+                    "reconciliation": {"state": "unknown"},
+                    "error": _bid_err,
+                    "retry_allowed": False,
+                }
+            ),
+            202,
+        )
     status = (
         401
         if result.get("needs_auth")
@@ -8280,6 +8527,8 @@ def api_braiins_bid_reconcile(tenant_id: str = ""):
     cl_order_id). Read-only: never deletes/revokes. A placed bid missing
     from the provider is surfaced as reconciled=false (silent-loss guard).
     """
+    from services import operation_ledger as _operation_ledger
+
     audited = []
     try:
         from services.tenant import recent_audit_logs
@@ -8299,11 +8548,43 @@ def api_braiins_bid_reconcile(tenant_id: str = ""):
     for r in audited:
         cl = r.get("target") or ""
         prov = by_cl.get(cl)
+        if not active.get("success"):
+            reconciled = "unknown"
+            reason = active.get("error") or "provider unavailable"
+        elif not prov:
+            reconciled = "unknown"
+            reason = "not present in active bids; verify provider history"
+        else:
+            reconciled = True
+            reason = "provider match"
+        operation = _operation_ledger.get_by_idempotency(tenant_id, "braiins_bid", cl)
+        if operation:
+            _operation_ledger.update_operation(
+                operation["operation_id"],
+                state=(
+                    "reconciled"
+                    if reconciled is True
+                    else ("reconciliation_failed" if reconciled is False else "unknown")
+                ),
+                reconciliation_state=(
+                    "confirmed"
+                    if reconciled is True
+                    else ("failed" if reconciled is False else "unknown")
+                ),
+                provider_reference=(prov or {}).get("id") or "",
+                safe_result={
+                    "provider_bid_id": (prov or {}).get("id"),
+                    "provider_status": (prov or {}).get("status"),
+                    "reason": reason,
+                },
+            )
         entries.append(
             {
                 "cl_order_id": cl,
+                "operation_id": (operation or {}).get("operation_id"),
                 "ts": r.get("ts"),
-                "reconciled": bool(prov),
+                "reconciled": reconciled,
+                "reason": reason,
                 "provider_bid_id": (prov or {}).get("id"),
                 "provider_status": (prov or {}).get("status"),
             }
@@ -8312,8 +8593,9 @@ def api_braiins_bid_reconcile(tenant_id: str = ""):
         {
             "success": True,
             "active_provider_bids": len(active.get("bids") or []),
+            "provider_available": bool(active.get("success")),
             "audited_placed": len(entries),
-            "reconciled": sum(1 for e in entries if e["reconciled"]),
+            "reconciled": sum(1 for e in entries if e["reconciled"] is True),
             "entries": entries,
         }
     )

@@ -17,6 +17,7 @@ Supports BOTH registry shapes:
 
 import json
 import logging
+import os
 import time
 from typing import Any, Callable, Dict, List, Optional
 
@@ -28,6 +29,7 @@ from services.command_confirmation import (
     issue_confirmation as _issue_persisted_confirmation,
 )
 from services.safety_policy import can_execute_physical_command
+from services import operation_ledger
 
 from core.adapters.bitaxe_adapter import BitaxeAdapter
 from core.adapters.cgminer_adapter import CgminerAdapter
@@ -697,7 +699,8 @@ def execute_device_command(device_id: str, tenant_id: str = ""):
                 403,
             )
 
-    # 5. Build adapter and execute
+    # 5. Build adapter and execute.  Claim a durable operation before touching
+    # hardware so an ACK can never be confused with observed post-command state.
     adapter = _build_adapter(raw, device)
     if adapter is None:
         return (
@@ -717,11 +720,26 @@ def execute_device_command(device_id: str, tenant_id: str = ""):
             400,
         )
 
+    operation = operation_ledger.claim_operation(
+        tenant_id,
+        "physical_command",
+        device_id,
+        command,
+        parameters,
+    )
+    operation_id = operation["operation_id"]
     try:
         exec_result = adapter.execute_command(command, parameters)
     except Exception:
         log.exception("[device_control] execute error for %s → %s", device_id, command)
         safe_result = _safe_execution_failure()
+        operation_ledger.update_operation(
+            operation_id,
+            state="dispatch_failed",
+            ack_state="not_received",
+            reconciliation_state="unknown",
+            safe_result=safe_result,
+        )
         _record_attempt(device_id, command, parameters, safe_result)
         return (
             jsonify(
@@ -730,6 +748,9 @@ def execute_device_command(device_id: str, tenant_id: str = ""):
                     "error": safe_result["error"],
                     "device_id": device_id,
                     "command": command,
+                    "operation_id": operation_id,
+                    "ack": {"state": "not_received"},
+                    "reconciliation": {"state": "unknown"},
                 }
             ),
             503,
@@ -743,6 +764,13 @@ def execute_device_command(device_id: str, tenant_id: str = ""):
             redact_command_data(exec_result),
         )
         safe_result = _safe_execution_failure()
+        operation_ledger.update_operation(
+            operation_id,
+            state="rejected",
+            ack_state="rejected",
+            reconciliation_state="failed",
+            safe_result=safe_result,
+        )
         _record_attempt(device_id, command, parameters, safe_result)
         return (
             jsonify(
@@ -751,6 +779,9 @@ def execute_device_command(device_id: str, tenant_id: str = ""):
                     "error": safe_result["error"],
                     "device_id": device_id,
                     "command": command,
+                    "operation_id": operation_id,
+                    "ack": {"state": "rejected"},
+                    "reconciliation": {"state": "failed"},
                     "result": safe_result,
                 }
             ),
@@ -763,6 +794,13 @@ def execute_device_command(device_id: str, tenant_id: str = ""):
 
     # 7. Audit the executed attempt
     public_result = redact_command_data(exec_result)
+    operation_ledger.update_operation(
+        operation_id,
+        state="acknowledged",
+        ack_state="acknowledged",
+        reconciliation_state="pending",
+        safe_result=public_result,
+    )
     _record_attempt(device_id, command, parameters, public_result)
 
     # 8. Log execution to terminal
@@ -779,8 +817,137 @@ def execute_device_command(device_id: str, tenant_id: str = ""):
             "success": exec_result.get("success", False),
             "device_id": device_id,
             "command": command,
+            "operation_id": operation_id,
+            "ack": {"state": "acknowledged", "source": "device_adapter"},
+            "reconciliation": {"state": "pending"},
             "result": public_result,
             "meta": metadata,
+        }
+    )
+
+
+def _observed_device_state(raw: Any) -> Dict[str, Any]:
+    """Extract only non-sensitive evidence used for command reconciliation."""
+    if _is_core_device(raw):
+        telemetry = getattr(raw, "current_telemetry", None) or {}
+        status = getattr(raw, "status", "")
+        if hasattr(status, "value"):
+            status = status.value
+    else:
+        telemetry = (
+            (raw or {}).get("current_telemetry") or (raw or {}).get("telemetry") or {}
+        )
+        status = (raw or {}).get("status") or ""
+    observed_at = telemetry.get("timestamp") or telemetry.get("collected_at") or 0
+    try:
+        observed_at = int(observed_at)
+    except (TypeError, ValueError):
+        observed_at = 0
+    return {
+        "status": str(status or "").lower(),
+        "observed_at": observed_at,
+        "mining_paused": telemetry.get("mining_paused"),
+        "frequency": telemetry.get("frequency"),
+        "voltage": telemetry.get("voltage"),
+    }
+
+
+@device_control_bp.route(
+    "/api/devices/<device_id>/commands/<operation_id>", methods=["GET"]
+)
+@require_tenant
+@role_required("viewer")
+def reconcile_device_command(device_id: str, operation_id: str, tenant_id: str = ""):
+    """Reconcile an adapter ACK with fresh, observed device telemetry.
+
+    This endpoint is read-only and never retries the command. Unsupported
+    observations remain explicit ``unknown`` instead of becoming success.
+    """
+    operation = operation_ledger.get_operation(operation_id)
+    if (
+        not operation
+        or operation.get("tenant_id") != (tenant_id or "default")
+        or operation.get("kind") != "physical_command"
+        or operation.get("target") != device_id
+    ):
+        return jsonify({"success": False, "error": "operation not found"}), 404
+
+    raw = _registry.get_device(device_id, tenant_id=tenant_id) if _registry else None
+    observed = (
+        _observed_device_state(raw)
+        if raw
+        else {
+            "status": "offline",
+            "observed_at": 0,
+            "mining_paused": None,
+            "frequency": None,
+            "voltage": None,
+        }
+    )
+    ack_at = int(operation.get("ack_at") or 0)
+    fresh = bool(observed["observed_at"] and observed["observed_at"] > ack_at)
+    try:
+        timeout_seconds = max(
+            10, int(os.environ.get("COMMAND_RECONCILIATION_TIMEOUT_SECONDS", "120"))
+        )
+    except (TypeError, ValueError):
+        timeout_seconds = 120
+    timed_out = bool(ack_at and int(time.time()) - ack_at > timeout_seconds)
+    command = operation.get("action")
+    reconciliation = "pending"
+    reason = "waiting for fresh telemetry"
+
+    if operation.get("ack_state") != "acknowledged":
+        reconciliation = operation.get("reconciliation_state") or "unknown"
+        reason = "command was not acknowledged"
+    elif not raw or observed["status"] == "offline":
+        reconciliation = "unknown"
+        reason = "device offline after dispatch"
+    elif fresh and command == "pause" and observed["mining_paused"] is True:
+        reconciliation, reason = "confirmed", "fresh telemetry reports paused"
+    elif fresh and command == "resume" and observed["mining_paused"] is False:
+        reconciliation, reason = "confirmed", "fresh telemetry reports resumed"
+    elif fresh and command in {"restart", "reboot"} and observed["status"] == "online":
+        reconciliation, reason = "confirmed", "fresh telemetry observed after restart"
+    elif fresh and command in {"pause", "resume", "restart", "reboot"}:
+        reconciliation, reason = "failed", "fresh telemetry contradicts expected state"
+    elif fresh:
+        reconciliation, reason = "unknown", "firmware exposes no comparable state"
+    elif timed_out:
+        reconciliation, reason = (
+            "unknown",
+            "reconciliation timed out without fresh telemetry",
+        )
+
+    state = (
+        "reconciled"
+        if reconciliation == "confirmed"
+        else ("reconciliation_failed" if reconciliation == "failed" else "acknowledged")
+    )
+    updated = operation_ledger.update_operation(
+        operation_id,
+        state=state,
+        reconciliation_state=reconciliation,
+        safe_result={"reason": reason, "observed": observed},
+    )
+    _record_attempt(
+        device_id,
+        str(command or ""),
+        {},
+        {
+            "operation_id": operation_id,
+            "ack_state": operation.get("ack_state"),
+            "reconciliation_state": reconciliation,
+            "reason": reason,
+        },
+    )
+    return jsonify(
+        {
+            "success": reconciliation == "confirmed",
+            "operation_id": operation_id,
+            "ack": {"state": updated.get("ack_state")},
+            "reconciliation": {"state": reconciliation, "reason": reason},
+            "observed": observed,
         }
     )
 

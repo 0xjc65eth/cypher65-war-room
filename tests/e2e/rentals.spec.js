@@ -174,6 +174,7 @@ test.describe('RENTALS — performance dos aluguéis (P2)', () => {
   });
 
   test('saldo Braiins suficiente → submit desbloqueia após confirmação', async ({ page }) => {
+    const bidCalls = [];
     await page.route('**/api/rentals', (route) => {
       route.fulfill({ contentType: 'application/json', body: JSON.stringify({
         success: true, updated_at: Date.now(),
@@ -196,6 +197,21 @@ test.describe('RENTALS — performance dos aluguéis (P2)', () => {
         price_sats_per_thh: 40, price_sat_per_ph_day: 960000, price_unit: 'sats/PH/day',
         balance: { available: true, available_sat: 10000000, total_sat: 10000000, blocked_sat: 0 },
       }) }));
+    await page.route('**/api/rentals/braiins/bid', async (route) => {
+      const body = route.request().postDataJSON();
+      bidCalls.push({ body, idempotencyKey: route.request().headers()['idempotency-key'] });
+      if (body.dry_run === true) {
+        return route.fulfill({ contentType: 'application/json', body: JSON.stringify({
+          success: true, dry_run: true, validated: true,
+          confirmation_token: 'server-bound-confirmation-token',
+          requires_confirmation: true,
+        }) });
+      }
+      return route.fulfill({ contentType: 'application/json', body: JSON.stringify({
+        success: true, operation_id: 'op-1', bid: { id: 'BID-SAFE-1' },
+        ack: { state: 'acknowledged' }, reconciliation: { state: 'pending' },
+      }) });
+    });
     await page.goto('/');
     await page.waitForSelector('#sidebar', { timeout: 25000 });
     await ensureSidebarOpen(page);
@@ -212,6 +228,13 @@ test.describe('RENTALS — performance dos aluguéis (P2)', () => {
     await page.check('#braiins-buy-ack');
     await page.fill('#braiins-buy-type', 'COMPRAR');
     await expect(page.locator('#braiins-buy-submit')).toBeEnabled({ timeout: 5000 });
+    await page.click('#braiins-buy-submit');
+    await expect(page.locator('#braiins-buy-status')).toContainText(/ordem enviada.*BID-SAFE-1/, { timeout: 5000 });
+    expect(bidCalls).toHaveLength(2);
+    expect(bidCalls[0].body.dry_run).toBe(true);
+    expect(bidCalls[1].body.dry_run).toBe(false);
+    expect(bidCalls[1].body.confirmation_token).toBe('server-bound-confirmation-token');
+    expect(bidCalls[1].idempotencyKey).toBeTruthy();
   });
 
   test('chave Braiins configurada mas REJEITADA (401) → mostra erro, não "No rentals"', async ({ page }) => {

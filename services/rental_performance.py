@@ -2570,6 +2570,7 @@ def create_braiins_bid(
     memo: str = "",
     cl_order_id: str = "",
     tenant_id: str = "",
+    dry_run: bool = False,
 ) -> Dict[str, Any]:
     """Place a spot bid on Braiins (REAL MONEY). Fail-closed on every axis.
 
@@ -2580,7 +2581,7 @@ def create_braiins_bid(
     """
     from services.safety_policy import can_purchase_hashrate
 
-    if not can_purchase_hashrate():
+    if not dry_run and not can_purchase_hashrate():
         return {
             "success": False,
             "error": "real hashrate purchases are disabled by deployment policy",
@@ -2749,6 +2750,20 @@ def create_braiins_bid(
     if cl_order_id and str(cl_order_id).strip():
         body["cl_order_id"] = str(cl_order_id).strip()[:64]
 
+    if dry_run:
+        return {
+            "success": True,
+            "dry_run": True,
+            "validated": True,
+            "request": {
+                "speed_limit_ph": speed_limit_ph,
+                "amount_sat": amount_sat,
+                "price_sat": price_for_api,
+                "price_unit": unit,
+                "cl_order_id": body.get("cl_order_id") or "",
+            },
+        }
+
     try:
         r = requests.post(
             f"{BRAIINS_BASE}/spot/bid", json=body, headers={"apikey": key}, timeout=20
@@ -2767,6 +2782,20 @@ def create_braiins_bid(
             or (data.get("order_id") if isinstance(data, dict) else None)
         )
         return {"success": True, "bid": {"id": bid_id, "raw": data}}
+    except requests.Timeout as e:
+        log.warning("[rental_performance] braiins bid timed out: %s", e)
+        return {
+            "success": False,
+            "error": "provider timeout — submission outcome is unknown; do not retry automatically",
+            "ambiguous": True,
+        }
+    except requests.RequestException as e:
+        log.warning("[rental_performance] braiins bid transport failed: %s", e)
+        return {
+            "success": False,
+            "error": "provider transport failure — submission outcome is unknown; reconcile before retrying",
+            "ambiguous": True,
+        }
     except Exception as e:
         log.warning("[rental_performance] braiins bid post failed: %s", e)
         return {"success": False, "error": str(e)[:160]}

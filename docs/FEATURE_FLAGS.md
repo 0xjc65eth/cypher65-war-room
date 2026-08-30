@@ -60,3 +60,28 @@ Antes de habilitar uma flag:
 Em incidentes ou estado desconhecido, defina imediatamente as quatro flags como
 `false`. A desativação não substitui a reconciliação de ações já enviadas a
 hardware ou provedores externos.
+
+## ACK, reconciliação e idempotência
+
+- Um `ack.state=acknowledged` confirma somente que o adaptador ou provedor
+  aceitou a requisição. Ele não comprova o estado físico ou financeiro final.
+- Comandos físicos retornam `operation_id` e começam com
+  `reconciliation.state=pending`. Consulte
+  `GET /api/devices/<device_id>/commands/<operation_id>`; somente telemetria
+  coletada depois do ACK pode produzir `confirmed`.
+- Dispositivo offline, telemetria antiga ou firmware sem estado comparável
+  resultam em `unknown` ou `pending`, nunca em sucesso presumido.
+- Sem telemetria nova dentro de `COMMAND_RECONCILIATION_TIMEOUT_SECONDS`
+  (padrão: 120 segundos), a reconciliação muda para `unknown`; o comando não é
+  reenviado.
+- `POST /api/rentals/braiins/bid` é dry-run por padrão. O dry-run devolve um
+  token de confirmação curto e vinculado ao payload exato.
+- A execução real exige `dry_run=false`, o token retornado e o header
+  `Idempotency-Key` (8–64 caracteres), idêntico a `cl_order_id` para permitir
+  correlação com o provedor. Reutilizar a chave devolve a operação persistida
+  e nunca cria uma segunda ordem.
+- Timeout ou falha de transporte após iniciar o POST Braiins é registrado como
+  `unknown` com `retry_allowed=false`. Reconcilie no provedor antes de criar
+  uma nova idempotency key; não repita automaticamente.
+- O ledger persiste somente hashes, estados, timestamps e referências
+  sanitizadas. API keys, URL Stratum e identidade do worker não são guardadas.
