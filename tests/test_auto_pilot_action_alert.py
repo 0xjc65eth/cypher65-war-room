@@ -48,8 +48,10 @@ def _enable_alert():
 
 
 @pytest.fixture(autouse=True)
-def _reset_state():
+def _reset_state(monkeypatch):
     """Isola o DB scratch compartilhado: alerta OFF + autonomous OFF por teste."""
+    monkeypatch.setenv("ENABLE_AUTONOMOUS_COMMANDS", "true")
+    monkeypatch.setenv("ENABLE_PHYSICAL_COMMANDS", "true")
     with ap._autonomous_lock:
         ap._autonomous_cooldown.clear()
     try:

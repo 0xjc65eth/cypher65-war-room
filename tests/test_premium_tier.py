@@ -53,6 +53,7 @@ def _scrub_env(monkeypatch):
         "OPENAI_API_KEY",
     ):
         monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("ENABLE_REAL_PAYMENTS", "true")
 
 
 @pytest.fixture()

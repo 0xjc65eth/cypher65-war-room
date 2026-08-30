@@ -192,6 +192,10 @@ def create_invoice(
     ``amount`` is passed without currency = "BTC" and we use sats*1e8
     precision — we pass exact sats via currency BTC and amount in BTC).
     """
+    from services.safety_policy import can_process_real_payment
+
+    if not can_process_real_payment():
+        return None
     # Kept in the signature for caller compatibility; CYPHER65 does not need
     # buyer PII to create or fulfill an invoice, so it is never transmitted.
     del buyer_email
@@ -524,6 +528,10 @@ def handle_invoice_webhook(payload: dict) -> Optional[str]:
     IDEMPOTENT: each invoice is fulfilled at most once; a replay returns the
     already-issued key. Returns the issued key, or None when unhandled.
     """
+    from services.safety_policy import can_process_real_payment
+
+    if not can_process_real_payment():
+        return None
     # BTCPay webhook shape: {"invoiceId": "...", "type": "InvoiceSettled",
     #                        "deliveryId": "...", "webhookId": "..."}
     invoice_id = str(payload.get("invoiceId") or payload.get("id") or "").strip()
@@ -634,6 +642,10 @@ def fulfill_webln_payment(payment_hash: str, preimage: str) -> Optional[str]:
         delivery claimed it) — frontend keeps showing "ativando…".
       - None → proof rejected: unknown payment_hash or preimage mismatch.
     """
+    from services.safety_policy import can_process_real_payment
+
+    if not can_process_real_payment():
+        return None
     if not (payment_hash and preimage):
         return None
     # SHA-256 proof: sha256(preimage) == payment_hash (BOLT-11 spec).

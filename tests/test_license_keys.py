@@ -55,6 +55,7 @@ def _scrub_payment_env(monkeypatch):
         "API_KEY",
     ):
         monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("ENABLE_REAL_PAYMENTS", "true")
 
 
 @pytest.fixture()

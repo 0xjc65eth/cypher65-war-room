@@ -525,13 +525,22 @@ def autonomous_status(tenant_id: str = "") -> Dict[str, Any]:
     """Status do toggle para o módulo Automations (gate + switches)."""
     from core.alerts.automation_engine import AutomationEngine
     from services.licensing import server_pro_active
+    from services.safety_policy import (
+        can_execute_autonomous_command,
+        can_execute_physical_command,
+    )
 
     tid = tenant_id or "default"
     engine = AutomationEngine("", None)  # settings-only reads
+    physical_enabled = can_execute_physical_command()
+    autonomous_enabled = can_execute_autonomous_command()
     return {
         "pro": server_pro_active(),
         "armed": engine.is_armed(tid),
         "autonomous": is_autonomous_enabled(tid),
+        "deployment_physical_enabled": physical_enabled,
+        "deployment_autonomous_enabled": autonomous_enabled,
+        "effective_execution_enabled": physical_enabled and autonomous_enabled,
         "safe_actions": list(AUTONOMOUS_SAFE_ACTIONS),
         "cooldowns": dict(_AUTONOMOUS_COOLDOWN_S),
     }
@@ -621,6 +630,27 @@ def execute_autonomous_actions(
     now = int(time.time()) if now is None else now
     try:
         from services.licensing import server_pro_active
+        from services.safety_policy import (
+            can_execute_autonomous_command,
+            can_execute_physical_command,
+        )
+
+        if not can_execute_autonomous_command():
+            return [
+                {
+                    "status": "skipped",
+                    "reason": "autonomous_commands_disabled",
+                    "ts": now,
+                }
+            ]
+        if not can_execute_physical_command():
+            return [
+                {
+                    "status": "skipped",
+                    "reason": "physical_commands_disabled",
+                    "ts": now,
+                }
+            ]
 
         if not server_pro_active():
             return [{"status": "skipped", "reason": "pro_gate", "ts": now}]

@@ -121,6 +121,9 @@ def _reset_state(monkeypatch):
     """
     from services.settings import invalidate_cache
 
+    monkeypatch.setenv("ENABLE_AUTONOMOUS_COMMANDS", "true")
+    monkeypatch.setenv("ENABLE_PHYSICAL_COMMANDS", "true")
+
     with ap._autonomous_lock:
         ap._autonomous_cooldown.clear()
     # Audit trail é persistido no DB scratch compartilhado → limpar antes

@@ -9,9 +9,15 @@ from core.models.device import Device, DeviceStatus
 from core.models.capability import Capability
 
 
+@pytest.fixture(autouse=True)
+def _enable_validated_physical_commands(monkeypatch):
+    """This module intentionally exercises behavior beyond the global gate."""
+    monkeypatch.setenv("ENABLE_PHYSICAL_COMMANDS", "true")
+
+
 class TestAppDeviceRoutes:
     @pytest.fixture(autouse=True)
-    def clear_pending_confirmations(self):
+    def clear_pending_confirmations(self, monkeypatch):
         """Keep durable one-time command approvals isolated between tests."""
         from services.command_confirmation import _connect, ensure_table
 

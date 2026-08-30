@@ -11,6 +11,7 @@ import app as _app_module
 def physical_controls(monkeypatch):
     import axe_fleet.routes as routes
 
+    monkeypatch.setenv("ENABLE_PHYSICAL_COMMANDS", "true")
     _app_module.app.config["TESTING"] = True
     registry = MagicMock()
     registry.get_device.return_value = {
