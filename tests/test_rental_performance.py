@@ -2633,6 +2633,22 @@ def test_braiins_quote_converts_units_and_includes_balance(monkeypatch):
     assert q["balance"]["available_sat"] == 800000
 
 
+def _confirmed_bid(rclient, payload):
+    preview = rclient.post(
+        "/api/rentals/braiins/bid", json={**payload, "dry_run": True}
+    )
+    assert preview.status_code == 200, preview.get_json()
+    return rclient.post(
+        "/api/rentals/braiins/bid",
+        json={
+            **payload,
+            "dry_run": False,
+            "confirmation_token": preview.get_json()["confirmation_token"],
+        },
+        headers={"Idempotency-Key": payload["cl_order_id"]},
+    )
+
+
 def test_bid_route_th_to_ph_and_validation(rclient, monkeypatch):
     """POST /api/rentals/braiins/bid: TH→PH conversion, required fields,
     clamped errors, and the idempotency key passthrough."""
@@ -2649,6 +2665,7 @@ def test_bid_route_th_to_ph_and_validation(rclient, monkeypatch):
         memo="",
         cl_order_id="",
         tenant_id="",
+        dry_run=False,
     ):
         sent.update(locals())
         return {"success": True, "bid": {"id": "BID-ROUTE", "raw": {}}}
@@ -2684,23 +2701,23 @@ def test_bid_route_th_to_ph_and_validation(rclient, monkeypatch):
     assert resp.status_code == 400
 
     # Valid: 1000 TH → 1.0 PH on the wire; cl_order_id passed through.
-    resp = rclient.post(
-        "/api/rentals/braiins/bid",
-        json={
+    resp = _confirmed_bid(
+        rclient,
+        {
             "speed_limit_th": 1000,
             "amount_sat": 500000,
             "price_sat": 123456,
             "upstream_url": "stratum+tcp://h:3333",
             "upstream_identity": "u.w",
             "memo": "bat",
-            "cl_order_id": "c65-x",
+            "cl_order_id": "c65-route",
         },
     )
     assert resp.status_code == 200
     assert resp.get_json()["success"] is True
     assert sent["speed_limit_ph"] == 1.0
     assert sent["amount_sat"] == 500000
-    assert sent["cl_order_id"] == "c65-x"
+    assert sent["cl_order_id"] == "c65-route"
 
 
 def test_bid_route_surfaces_clamp_error(rclient, monkeypatch):
@@ -2737,7 +2754,8 @@ def test_bid_route_rate_limited_after_budget(rclient, monkeypatch):
     calls = {"n": 0}
 
     def fake_create(**k):
-        calls["n"] += 1
+        if not k.get("dry_run"):
+            calls["n"] += 1
         return {"success": True, "bid": {"id": "B"}}
 
     monkeypatch.setattr(_app_module._rental_perf, "create_braiins_bid", fake_create)
@@ -2756,11 +2774,12 @@ def test_bid_route_rate_limited_after_budget(rclient, monkeypatch):
         "price_sat": 123456,
         "upstream_url": "stratum+tcp://h:3333",
         "upstream_identity": "u.w",
-        "cl_order_id": "c65-rl",
+        "cl_order_id": "c65-rate-0",
     }
     codes = []
-    for _ in range(_app_module.BRAIINS_BID_PER_MINUTE + 1):
-        codes.append(rclient.post("/api/rentals/braiins/bid", json=valid).status_code)
+    for index in range(_app_module.BRAIINS_BID_PER_MINUTE + 1):
+        payload = {**valid, "cl_order_id": f"c65-rate-{index}"}
+        codes.append(_confirmed_bid(rclient, payload).status_code)
     assert (
         codes[: _app_module.BRAIINS_BID_PER_MINUTE]
         == [200] * _app_module.BRAIINS_BID_PER_MINUTE
@@ -2788,15 +2807,15 @@ def test_bid_route_audit_trail_readable(rclient, monkeypatch):
             "bid_id": "B",
         },
     )
-    resp = rclient.post(
-        "/api/rentals/braiins/bid",
-        json={
+    resp = _confirmed_bid(
+        rclient,
+        {
             "speed_limit_th": 1000,
             "amount_sat": 500000,
             "price_sat": 123456,
             "upstream_url": "stratum+tcp://h:3333",
             "upstream_identity": "u.w",
-            "cl_order_id": "c65-aw",
+            "cl_order_id": "c65-audit",
         },
     )
     assert resp.status_code == 200
@@ -2831,18 +2850,18 @@ def test_bid_route_reconcile_view(rclient, monkeypatch):
         "braiins_active_bids",
         lambda tenant_id="": {
             "success": True,
-            "bids": [{"id": "B1", "cl_order_id": "c65-rc", "status": "ACTIVE"}],
+            "bids": [{"id": "B1", "cl_order_id": "c65-reconcile", "status": "ACTIVE"}],
         },
     )
-    resp = rclient.post(
-        "/api/rentals/braiins/bid",
-        json={
+    resp = _confirmed_bid(
+        rclient,
+        {
             "speed_limit_th": 1000,
             "amount_sat": 500000,
             "price_sat": 123456,
             "upstream_url": "stratum+tcp://h:3333",
             "upstream_identity": "u.w",
-            "cl_order_id": "c65-rc",
+            "cl_order_id": "c65-reconcile",
         },
     )
     assert resp.status_code == 200
@@ -2854,6 +2873,17 @@ def test_bid_route_reconcile_view(rclient, monkeypatch):
     assert body["success"] is True
     assert "active_provider_bids" in body
     assert "entries" in body
+    monkeypatch.setattr(
+        _app_module._rental_perf,
+        "braiins_active_bids",
+        lambda tenant_id="": {"success": True, "bids": []},
+    )
+    missing = rclient.get("/api/rentals/braiins/bid/reconcile").get_json()
+    entry = next(
+        item for item in missing["entries"] if item["cl_order_id"] == "c65-reconcile"
+    )
+    assert entry["reconciled"] == "unknown"
+    assert "provider history" in entry["reason"]
 
 
 def test_bid_route_reconcile_pending_on_fresh_false(rclient, monkeypatch):
@@ -2875,9 +2905,9 @@ def test_bid_route_reconcile_pending_on_fresh_false(rclient, monkeypatch):
             "reason": "not found in active bids",
         },
     )
-    resp = rclient.post(
-        "/api/rentals/braiins/bid",
-        json={
+    resp = _confirmed_bid(
+        rclient,
+        {
             "speed_limit_th": 1000,
             "amount_sat": 500000,
             "price_sat": 123456,

@@ -7375,10 +7375,33 @@ function renderAccount(acct) {
         memo: (document.getElementById('braiins-buy-memo')?.value || '').trim(),
         cl_order_id: _braiinsBuyOrderId,
       };
-      const r = await authFetch('/api/rentals/braiins/bid', {
+      // Server-side two-phase safety: validate a read-only preview first, then
+      // bind the one-time confirmation token to this exact payload. The same
+      // client order id is also the persistent idempotency key.
+      _braiinsBuySet('braiins-buy-status', 'validando ordem (dry-run)…');
+      const previewResponse = await authFetch('/api/rentals/braiins/bid', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
+        body: JSON.stringify({ ...body, dry_run: true }),
+      });
+      const preview = await previewResponse.json().catch(() => ({}));
+      if (!previewResponse.ok || !preview.success || !preview.confirmation_token) {
+        _braiinsBuySet('braiins-buy-status', '⚠ ' + (preview.error || 'dry-run rejeitado'));
+        setBtnLoading(submit, false);
+        return;
+      }
+      _braiinsBuySet('braiins-buy-status', 'dry-run aprovado · enviando uma única ordem…');
+      const r = await authFetch('/api/rentals/braiins/bid', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Idempotency-Key': _braiinsBuyOrderId,
+        },
+        body: JSON.stringify({
+          ...body,
+          dry_run: false,
+          confirmation_token: preview.confirmation_token,
+        }),
       });
       const data = await r.json().catch(() => ({}));
       if (r.ok && data.success) {
@@ -7386,6 +7409,9 @@ function renderAccount(acct) {
         _braiinsBuySet('braiins-buy-status', '✅ ordem enviada — id ' + (data.bid && data.bid.id ? data.bid.id : 'confirmada na Braiins'));
         // Conversion telemetry is recorded SERVER-SIDE on bid success
         // (single source of truth — no double counting).
+      } else if (data.state === 'unknown' || data.reconciliation?.state === 'unknown') {
+        _braiinsBuySet('braiins-buy-status', '⚠ resultado desconhecido — NÃO tente novamente; reconcilie com a Braiins');
+        setBtnLoading(submit, false);
       } else {
         _braiinsBuySet('braiins-buy-status', '⚠ ' + (data.error || 'falha ao enviar ordem'));
         setBtnLoading(submit, false);

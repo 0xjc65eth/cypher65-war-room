@@ -2565,6 +2565,8 @@ def _execute_plug_command(plug_id: str, method: str, tenant_id: str = "") -> tup
             503,
         )
 
+    from services import operation_ledger
+
     creds = _get_tuya_credentials(tenant_id)
     if not creds.get("access_id") or not creds.get("access_secret"):
         return (
@@ -2577,7 +2579,21 @@ def _execute_plug_command(plug_id: str, method: str, tenant_id: str = "") -> tup
     if not fn:
         return jsonify({"success": False, "error": f"unknown method: {method}"}), 400
 
-    result = fn(plug_id, **creds)
+    operation = operation_ledger.claim_operation(
+        tenant_id, "physical_command", plug_id, method, {}
+    )
+    operation_id = operation["operation_id"]
+    try:
+        result = fn(plug_id, **creds)
+    except Exception:
+        operation_ledger.update_operation(
+            operation_id,
+            state="unknown",
+            ack_state="unknown",
+            reconciliation_state="unknown",
+            safe_result={"error": "power provider transport failure"},
+        )
+        raise
     public_result = dict(result) if isinstance(result, dict) else {"success": False}
     if public_result.get("error"):
         public_result["error"] = _safe_control_error(
@@ -2589,6 +2605,27 @@ def _execute_plug_command(plug_id: str, method: str, tenant_id: str = "") -> tup
         bool(public_result.get("success")),
         str(public_result.get("error", "")),
         tenant_id=tenant_id,
+    )
+    acknowledged = bool(public_result.get("success"))
+    operation_ledger.update_operation(
+        operation_id,
+        state="acknowledged" if acknowledged else "rejected",
+        ack_state="acknowledged" if acknowledged else "rejected",
+        reconciliation_state="pending" if acknowledged else "failed",
+        safe_result={
+            "success": acknowledged,
+            "error": str(public_result.get("error") or "")[:160],
+        },
+    )
+    public_result.update(
+        {
+            "operation_id": operation_id,
+            "ack": {
+                "state": "acknowledged" if acknowledged else "rejected",
+                "source": "tuya",
+            },
+            "reconciliation": {"state": "pending" if acknowledged else "failed"},
+        }
     )
     return jsonify(public_result)
 
@@ -2734,10 +2771,24 @@ def _execute_device_command(device_id: str, command: str, tenant_id: str = None)
             503,
         )
 
+    from services import operation_ledger
+
+    operation = operation_ledger.claim_operation(
+        tid, "physical_command", device_id, command, {}
+    )
+    operation_id = operation["operation_id"]
+
     # Agent-managed → route through the command queue (agent executes locally).
     if int(device.get("agent_managed", 0) or 0):
         queued = _registry.enqueue_agent_command(device_id, command, tenant_id=tid)
         if not queued:
+            operation_ledger.update_operation(
+                operation_id,
+                state="dispatch_failed",
+                ack_state="not_received",
+                reconciliation_state="unknown",
+                safe_result={"error": "could not enqueue agent command"},
+            )
             return jsonify({"error": "could not enqueue agent command"}), 500
         if command == "pause":
             # Issue #13: reflect the operator's intent immediately even when
@@ -2751,12 +2802,23 @@ def _execute_device_command(device_id: str, command: str, tenant_id: str = None)
             target=device_id,
             details={"command": command, "cmd_id": queued.get("id")},
         )
+        operation_ledger.update_operation(
+            operation_id,
+            state="dispatched",
+            ack_state="pending",
+            reconciliation_state="pending",
+            provider_reference=queued.get("id") or "",
+            safe_result={"queued": True, "command_id": queued.get("id")},
+        )
         return jsonify(
             {
                 "success": True,
                 "queued": True,
                 "message": f"'{command}' enviado para o agente local executar",
                 "command_id": queued.get("id"),
+                "operation_id": operation_id,
+                "ack": {"state": "pending", "source": "local_agent"},
+                "reconciliation": {"state": "pending"},
             }
         )
 
@@ -2789,10 +2851,49 @@ def _execute_device_command(device_id: str, command: str, tenant_id: str = None)
                 _registry.update_device(device_id, {"status": new_st}, tenant_id=tid)
                 _mark_cache_status(device_id, new_st)
         else:
+            operation_ledger.update_operation(
+                operation_id,
+                state="rejected",
+                ack_state="rejected",
+                reconciliation_state="failed",
+                safe_result={"error": f"unknown command: {command}"},
+            )
             return jsonify({"error": f"unknown command: {command}"}), 400
-        return jsonify({"success": True, "result": result})
+        operation_ledger.update_operation(
+            operation_id,
+            state="acknowledged",
+            ack_state="acknowledged",
+            reconciliation_state="pending",
+            safe_result={"success": True},
+        )
+        return jsonify(
+            {
+                "success": True,
+                "result": result,
+                "operation_id": operation_id,
+                "ack": {"state": "acknowledged", "source": "axeos"},
+                "reconciliation": {"state": "pending"},
+            }
+        )
     except AxeOSConnectorError as e:
-        return jsonify({"error": str(e)}), 503
+        operation_ledger.update_operation(
+            operation_id,
+            state="unknown",
+            ack_state="unknown",
+            reconciliation_state="unknown",
+            safe_result={"error": "device transport failure"},
+        )
+        return (
+            jsonify(
+                {
+                    "error": str(e),
+                    "operation_id": operation_id,
+                    "ack": {"state": "unknown"},
+                    "reconciliation": {"state": "unknown"},
+                }
+            ),
+            503,
+        )
 
 
 @axe_fleet_bp.route("/health", methods=["GET"])

@@ -123,6 +123,7 @@ def test_braiins_http_bypass_never_contacts_provider(client, monkeypatch):
     response = client.post(
         "/api/rentals/braiins/bid",
         json={
+            "dry_run": False,
             "speed_limit_th": 1000,
             "amount_sat": 500000,
             "price_sat": 123456,
