@@ -81,7 +81,8 @@ export const sendDeviceCommand = async (
   command: string,
   parameters: Record<string, unknown> = {},
   confirmationToken?: string,
-  execute = false
+  execute = false,
+  idempotencyKey?: string
 ) => {
   const payload: Record<string, unknown> = {
     command,
@@ -89,7 +90,9 @@ export const sendDeviceCommand = async (
     dry_run: !execute,
   };
   if (confirmationToken) payload.confirmation_token = confirmationToken;
-  const { data } = await api.post(`/devices/${deviceId}/command`, payload);
+  const { data } = await api.post(`/devices/${deviceId}/command`, payload, {
+    headers: idempotencyKey ? { 'Idempotency-Key': idempotencyKey } : undefined,
+  });
   return data;
 };
 
@@ -109,6 +112,11 @@ export const requestDeviceCommandConfirmation = async (
 
 export const fetchCommandHistory = async (deviceId: string) => {
   const { data } = await api.get(`/devices/${deviceId}/commands`);
+  return data;
+};
+
+export const fetchDeviceCommandStatus = async (deviceId: string, operationId: string) => {
+  const { data } = await api.get(`/devices/${deviceId}/commands/${operationId}`);
   return data;
 };
 

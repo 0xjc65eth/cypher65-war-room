@@ -23,7 +23,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 from flask import Blueprint, jsonify, request
 
-from services.tenant import require_tenant, role_required
+from services.tenant import log_audit, require_tenant, role_required
 from services.command_confirmation import (
     consume_confirmation as _consume_persisted_confirmation,
     issue_confirmation as _issue_persisted_confirmation,
@@ -527,11 +527,6 @@ def execute_device_command(device_id: str, tenant_id: str = ""):
     if _registry is None:
         return jsonify({"success": False, "error": "registry not initialized"}), 500
 
-    # 1. Lookup device (tenant-scoped)
-    raw = _registry.get_device(device_id, tenant_id=tenant_id)
-    if not raw:
-        return jsonify({"success": False, "error": "device not found"}), 404
-
     data, error_response = _request_json_object()
     if error_response:
         return error_response
@@ -548,11 +543,66 @@ def execute_device_command(device_id: str, tenant_id: str = ""):
     dry_run = data.get("dry_run", True)
     if not isinstance(dry_run, bool):
         return jsonify({"success": False, "error": "dry_run must be a boolean"}), 400
+    idempotency_key = str(request.headers.get("Idempotency-Key") or "").strip()
+    if idempotency_key and (
+        len(idempotency_key) > 128
+        or not all(char.isalnum() or char in "-_.:" for char in idempotency_key)
+    ):
+        return jsonify({"success": False, "error": "invalid idempotency key"}), 400
 
     if not command:
         return jsonify({"success": False, "error": "command is required"}), 400
     if not isinstance(parameters, dict):
         return jsonify({"success": False, "error": "parameters must be an object"}), 400
+
+    # Recover a previously claimed operation before consulting mutable device
+    # state. A reboot may temporarily remove the miner from the registry; that
+    # must not turn a lost-response retry into a second physical dispatch.
+    if idempotency_key:
+        existing = operation_ledger.get_by_idempotency(
+            tenant_id or "default", "physical_command", idempotency_key
+        )
+        if existing:
+            same_request = bool(
+                existing.get("request_hash")
+                == operation_ledger.payload_hash(parameters)
+                and existing.get("target") == device_id
+                and existing.get("action") == command
+            )
+            if not same_request:
+                return (
+                    jsonify(
+                        {
+                            "success": False,
+                            "error": "idempotency key was already used for another command",
+                        }
+                    ),
+                    409,
+                )
+            existing_result = existing.get("safe_result") or {}
+            existing_reconciliation = existing.get("reconciliation_state")
+            return jsonify(
+                {
+                    "success": existing.get("ack_state") == "acknowledged",
+                    "duplicate": True,
+                    "device_id": device_id,
+                    "command": command,
+                    "operation_id": existing["operation_id"],
+                    "ack": {"state": existing.get("ack_state")},
+                    "reconciliation": {"state": existing_reconciliation},
+                    "phase": (
+                        "verified"
+                        if existing_reconciliation == "confirmed"
+                        else (existing_result.get("reboot_evidence") or {}).get("phase")
+                    ),
+                    "audit": existing_result.get("audit") or {"state": "failed"},
+                }
+            )
+
+    # 1. Lookup device (tenant-scoped) only for a new operation.
+    raw = _registry.get_device(device_id, tenant_id=tenant_id)
+    if not raw:
+        return jsonify({"success": False, "error": "device not found"}), 404
 
     # Normalize to a core Device for the SafetyEngine
     device = _dict_to_device(raw)
@@ -720,14 +770,51 @@ def execute_device_command(device_id: str, tenant_id: str = ""):
             400,
         )
 
+    pre_command_observation = _observed_device_state(raw)
     operation = operation_ledger.claim_operation(
         tenant_id,
         "physical_command",
         device_id,
         command,
         parameters,
+        idempotency_key=idempotency_key,
     )
     operation_id = operation["operation_id"]
+    if not operation.get("created", True):
+        same_request = bool(
+            operation.get("payload_matches")
+            and operation.get("target") == device_id
+            and operation.get("action") == command
+        )
+        if not same_request:
+            return (
+                jsonify(
+                    {
+                        "success": False,
+                        "error": "idempotency key was already used for another command",
+                    }
+                ),
+                409,
+            )
+        operation_result = operation.get("safe_result") or {}
+        operation_reconciliation = operation.get("reconciliation_state")
+        return jsonify(
+            {
+                "success": operation.get("ack_state") == "acknowledged",
+                "duplicate": True,
+                "device_id": device_id,
+                "command": command,
+                "operation_id": operation_id,
+                "ack": {"state": operation.get("ack_state")},
+                "reconciliation": {"state": operation_reconciliation},
+                "phase": (
+                    "verified"
+                    if operation_reconciliation == "confirmed"
+                    else (operation_result.get("reboot_evidence") or {}).get("phase")
+                ),
+                "audit": operation_result.get("audit") or {"state": "failed"},
+            }
+        )
     try:
         exec_result = adapter.execute_command(command, parameters)
     except Exception:
@@ -794,6 +881,15 @@ def execute_device_command(device_id: str, tenant_id: str = ""):
 
     # 7. Audit the executed attempt
     public_result = redact_command_data(exec_result)
+    if command in {"restart", "reboot"}:
+        public_result = {
+            **public_result,
+            "reboot_evidence": {
+                "phase": "acknowledged",
+                "offline_seen": False,
+                "pre_command": pre_command_observation,
+            },
+        }
     operation_ledger.update_operation(
         operation_id,
         state="acknowledged",
@@ -843,12 +939,20 @@ def _observed_device_state(raw: Any) -> Dict[str, Any]:
         observed_at = int(observed_at)
     except (TypeError, ValueError):
         observed_at = 0
+    uptime = telemetry.get("uptime")
+    if uptime is None:
+        uptime = telemetry.get("uptime_seconds")
+    try:
+        uptime = int(uptime) if uptime is not None else None
+    except (TypeError, ValueError):
+        uptime = None
     return {
         "status": str(status or "").lower(),
         "observed_at": observed_at,
         "mining_paused": telemetry.get("mining_paused"),
         "frequency": telemetry.get("frequency"),
         "voltage": telemetry.get("voltage"),
+        "uptime_seconds": uptime,
     }
 
 
@@ -872,6 +976,24 @@ def reconcile_device_command(device_id: str, operation_id: str, tenant_id: str =
     ):
         return jsonify({"success": False, "error": "operation not found"}), 404
 
+    if operation.get("reconciliation_state") == "confirmed":
+        evidence = operation.get("safe_result") or {}
+        audit_evidence = evidence.get("audit") or {"state": "failed"}
+        return jsonify(
+            {
+                "success": True,
+                "operation_id": operation_id,
+                "ack": {"state": operation.get("ack_state")},
+                "reconciliation": {
+                    "state": "confirmed",
+                    "reason": evidence.get("reason", "physical state verified"),
+                },
+                "observed": evidence.get("observed") or {},
+                "phase": "verified",
+                "audit": audit_evidence,
+            }
+        )
+
     raw = _registry.get_device(device_id, tenant_id=tenant_id) if _registry else None
     observed = (
         _observed_device_state(raw)
@@ -894,13 +1016,38 @@ def reconcile_device_command(device_id: str, operation_id: str, tenant_id: str =
         timeout_seconds = 120
     timed_out = bool(ack_at and int(time.time()) - ack_at > timeout_seconds)
     command = operation.get("action")
+    safe_result = operation.get("safe_result") or {}
+    reboot_evidence = safe_result.get("reboot_evidence") or {}
+    pre_command = reboot_evidence.get("pre_command") or {}
+    offline_seen = bool(reboot_evidence.get("offline_seen"))
     reconciliation = "pending"
     reason = "waiting for fresh telemetry"
 
     if operation.get("ack_state") != "acknowledged":
         reconciliation = operation.get("reconciliation_state") or "unknown"
         reason = "command was not acknowledged"
-    elif not raw or observed["status"] == "offline":
+    elif not raw:
+        reconciliation = "unknown" if timed_out else "pending"
+        reason = "device registry unavailable; offline transition not proven"
+    elif command in {"restart", "reboot"} and observed["status"] == "offline" and fresh:
+        # Going offline is expected during a reboot. Persist the transition so
+        # a later online sample cannot be mistaken for proof unless this phase
+        # was independently observed by CYPHER65.
+        offline_seen = True
+        reconciliation = "unknown" if timed_out else "pending"
+        reason = (
+            "reconciliation timed out while device remained offline"
+            if timed_out
+            else "reboot offline transition observed; waiting for reconnection"
+        )
+    elif command in {"restart", "reboot"} and observed["status"] == "offline":
+        reconciliation = "unknown" if timed_out else "pending"
+        reason = (
+            "reconciliation timed out without a fresh offline observation"
+            if timed_out
+            else "offline status lacks post-dispatch timestamp evidence"
+        )
+    elif observed["status"] == "offline":
         reconciliation = "unknown"
         reason = "device offline after dispatch"
     elif fresh and command == "pause" and observed["mining_paused"] is True:
@@ -908,7 +1055,30 @@ def reconcile_device_command(device_id: str, operation_id: str, tenant_id: str =
     elif fresh and command == "resume" and observed["mining_paused"] is False:
         reconciliation, reason = "confirmed", "fresh telemetry reports resumed"
     elif fresh and command in {"restart", "reboot"} and observed["status"] == "online":
-        reconciliation, reason = "confirmed", "fresh telemetry observed after restart"
+        before_uptime = pre_command.get("uptime_seconds")
+        after_uptime = observed.get("uptime_seconds")
+        uptime_reset = bool(
+            offline_seen
+            and isinstance(before_uptime, int)
+            and before_uptime > 0
+            and isinstance(after_uptime, int)
+            and 0 <= after_uptime < before_uptime
+        )
+        if not offline_seen:
+            reconciliation, reason = (
+                "pending",
+                "fresh online telemetry received but offline transition was not observed",
+            )
+        elif not uptime_reset:
+            reconciliation, reason = (
+                "pending" if not timed_out else "unknown",
+                "device reconnected but uptime reset is not yet verified",
+            )
+        else:
+            reconciliation, reason = (
+                "confirmed",
+                "offline transition, reconnection and uptime reset verified",
+            )
     elif fresh and command in {"pause", "resume", "restart", "reboot"}:
         reconciliation, reason = "failed", "fresh telemetry contradicts expected state"
     elif fresh:
@@ -924,11 +1094,50 @@ def reconcile_device_command(device_id: str, operation_id: str, tenant_id: str =
         if reconciliation == "confirmed"
         else ("reconciliation_failed" if reconciliation == "failed" else "acknowledged")
     )
+    audit_id = log_audit(
+        tenant_id or "default",
+        "device.command.reconciliation",
+        target=device_id,
+        details={
+            "operation_id": operation_id,
+            "command": command,
+            "ack_state": operation.get("ack_state"),
+            "reconciliation_state": reconciliation,
+            "reason": reason,
+            "observed": observed,
+        },
+    )
+    audit_evidence = {
+        "state": "recorded" if audit_id is not None else "failed",
+        "operation_id": operation_id,
+    }
+    if audit_id is not None:
+        audit_evidence["id"] = audit_id
+    result_evidence = {
+        "reason": reason,
+        "observed": observed,
+        "audit": audit_evidence,
+    }
+    if command in {"restart", "reboot"}:
+        result_evidence["reboot_evidence"] = {
+            "phase": (
+                "verified"
+                if reconciliation == "confirmed"
+                else (
+                    "offline"
+                    if offline_seen and observed["status"] == "offline"
+                    else "reconnecting"
+                )
+            ),
+            "offline_seen": offline_seen,
+            "pre_command": pre_command,
+            "post_command": observed if observed["status"] == "online" else None,
+        }
     updated = operation_ledger.update_operation(
         operation_id,
         state=state,
         reconciliation_state=reconciliation,
-        safe_result={"reason": reason, "observed": observed},
+        safe_result=result_evidence,
     )
     _record_attempt(
         device_id,
@@ -948,6 +1157,8 @@ def reconcile_device_command(device_id: str, operation_id: str, tenant_id: str =
             "ack": {"state": updated.get("ack_state")},
             "reconciliation": {"state": reconciliation, "reason": reason},
             "observed": observed,
+            "phase": result_evidence.get("reboot_evidence", {}).get("phase"),
+            "audit": audit_evidence,
         }
     )
 
