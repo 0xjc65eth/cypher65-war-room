@@ -1,0 +1,79 @@
+name: "iOS · Native Gate"
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - "mobile/**"
+      - ".github/workflows/ios-native.yml"
+  workflow_dispatch:
+
+jobs:
+  simulator-build:
+    runs-on: macos-15
+    timeout-minutes: 30
+    env:
+      CYPHER65_APP_ENV: testing
+      CYPHER65_API_BASE_URL: http://127.0.0.1:8765/api
+    defaults:
+      run:
+        working-directory: mobile
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22.13.0"
+          cache: npm
+          cache-dependency-path: mobile/package-lock.json
+      - run: npm ci
+      - name: Generate native iOS project
+        run: npm run native:generate:ios
+      - name: Install CocoaPods
+        run: cd ios && pod install
+      - name: Build for iOS Simulator
+        run: |
+          mkdir -p build
+          xcodebuild \
+            -workspace ios/CYPHER65WarRoom.xcworkspace \
+            -scheme CYPHER65WarRoom \
+            -configuration Release \
+            -sdk iphonesimulator \
+            -derivedDataPath build/ios-derived \
+            -resultBundlePath build/ios-build.xcresult \
+            CODE_SIGNING_ALLOWED=NO build
+      - name: Install and launch on an available iPhone simulator
+        run: |
+          DEVICE_ID=$(xcrun simctl list devices available | awk -F '[()]' '/iPhone/{print $2; exit}')
+          test -n "$DEVICE_ID"
+          xcrun simctl boot "$DEVICE_ID" 2>/dev/null || true
+          xcrun simctl bootstatus "$DEVICE_ID" -b
+          APP_PATH=$(find build/ios-derived/Build/Products -type d -name '*.app' | head -1)
+          test -n "$APP_PATH"
+          xcrun simctl install "$DEVICE_ID" "$APP_PATH"
+          LAUNCH_OUTPUT=$(xcrun simctl launch "$DEVICE_ID" com.cypher65.warroom)
+          echo "$LAUNCH_OUTPUT"
+          APP_PID=${LAUNCH_OUTPUT##*: }
+          [[ "$APP_PID" =~ ^[0-9]+$ ]] || { echo "invalid launch PID"; exit 1; }
+          sleep 5
+          xcrun simctl spawn "$DEVICE_ID" launchctl procinfo "$APP_PID" > build/ios-process.txt
+          xcrun simctl io "$DEVICE_ID" screenshot build/ios-launch.png
+      - name: Verify generated app contains no obvious server secrets
+        run: |
+          APP_PATH=$(find build/ios-derived/Build/Products -type d -name '*.app' | head -1)
+          test -n "$APP_PATH"
+          if grep -R -a -l -E 'BTCPAY_API_KEY|JWT_SIGNING_KEY|WALLET_PRIVATE_KEY|MRR_API_SECRET|BRAIINS_API_KEY|-----BEGIN [A-Z ]*PRIVATE KEY-----|sk_live_[A-Za-z0-9]{16,}' "$APP_PATH"; then
+            echo "::error::possible server secret found in iOS app; file names listed above"
+            exit 1
+          fi
+      - name: Upload native iOS evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ios-native-evidence-${{ github.sha }}
+          path: |
+            mobile/build/ios-derived/Build/Products/**/*.app
+            mobile/build/ios-build.xcresult
+            mobile/build/ios-launch.png
+            mobile/build/ios-process.txt
+          if-no-files-found: warn
+          retention-days: 14

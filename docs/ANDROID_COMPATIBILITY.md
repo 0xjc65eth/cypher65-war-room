@@ -18,7 +18,9 @@ install, sign, or exercise an APK or AAB.
 |---|---:|---|
 | Expo SDK | 57.0.18 | `mobile/package-lock.json` |
 | React Native | 0.86.3 | `mobile/package-lock.json` |
-| Android package | `com.cypher65.warroom` | `mobile/app.json` |
+| Android package | `com.cypher65.warroom` | `mobile/app.config.js` |
+| Orientation | phone/tablet rotation enabled | Shared cross-platform requirement; physical Android regression test pending |
+| Native colors | platform notification default; black native splash | Exact DSv2 native colors require a reviewed Expo-compatible token bridge |
 | Claimed Android OS range | Not certified | No emulator or physical-install campaign has passed |
 | minSdk / targetSdk / compileSdk | Expo SDK defaults | Must be recorded from a generated native project before release |
 
