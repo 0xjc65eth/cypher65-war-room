@@ -18,8 +18,10 @@ workspace; CYPHER65 does not maintain a second fake Swift application.
 - Minimum deployment target: iOS 16.4, observed in the generated Podfile and
   Xcode project. Certification targets iOS 16.4 through the latest runtime
   supported by the selected release Xcode.
-- React Native 0.86 requires Xcode 16.1 or newer. Toolchain observed locally on
-  2026-08-31: Xcode 26.6, with no installed iOS runtime/device.
+- The current ExpoModulesJSI package declares Swift tools 6.2, so native CI uses
+  the macOS 26 runner and rejects Swift toolchains older than 6.2 before build.
+  Toolchain observed locally on 2026-08-31: Xcode 26.6, with no installed iOS
+  runtime/device.
 - Native modules: AsyncStorage, Gesture Handler, Safe Area Context, Screens,
   SVG, Expo Notifications, SecureStore, Local Authentication and Splash Screen.
 
