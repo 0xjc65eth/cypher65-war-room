@@ -21,18 +21,49 @@ describe('mobile toolchain contract', () => {
   });
 
   test('all configured app assets exist and splash uses the supported plugin', () => {
-    const app = readJson('app.json').expo;
+    const previousEnvironment = process.env.CYPHER65_APP_ENV;
+    process.env.CYPHER65_APP_ENV = 'production';
+    const app = require('../app.config.js')();
+    if (previousEnvironment === undefined) delete process.env.CYPHER65_APP_ENV;
+    else process.env.CYPHER65_APP_ENV = previousEnvironment;
     const splashPlugin = app.plugins.find(
       (plugin) => Array.isArray(plugin) && plugin[0] === 'expo-splash-screen',
     );
 
     expect(app.splash).toBeUndefined();
     expect(splashPlugin).toBeDefined();
+    expect(app.orientation).toBe('default');
+    expect(app.ios.bundleIdentifier).toBe('com.cypher65.warroom');
+    expect(app.ios.buildNumber).toMatch(/^\d+$/);
+    expect(app.ios.infoPlist.NSAppTransportSecurity.NSAllowsArbitraryLoads).toBe(false);
+    expect(app.ios.infoPlist.NSFaceIDUsageDescription).toMatch(/Face ID/);
+    expect(app.ios.infoPlist.UIBackgroundModes).toEqual(['remote-notification']);
+    expect(JSON.stringify(app)).not.toMatch(
+      /BTCPAY_API_KEY|JWT_SIGNING_KEY|WALLET_PRIVATE_KEY|MRR_API_SECRET|BRAIINS_API_KEY/
+    );
 
     const assetPaths = [app.icon, app.web.favicon, splashPlugin[1].image];
     for (const assetPath of assetPaths) {
       expect(fs.existsSync(path.resolve(root, assetPath))).toBe(true);
     }
+  });
+
+  test.each([
+    'http://example.com/api',
+    'https://localhost/api',
+    'https://192.168.1.5/api',
+    'https://169.254.169.254/api',
+    'https://[::1]/api',
+  ])('dynamic production config rejects unsafe API %s', (apiUrl) => {
+    const previousEnvironment = process.env.CYPHER65_APP_ENV;
+    const previousUrl = process.env.CYPHER65_API_BASE_URL;
+    process.env.CYPHER65_APP_ENV = 'production';
+    process.env.CYPHER65_API_BASE_URL = apiUrl;
+    expect(() => require('../app.config.js')()).toThrow();
+    if (previousEnvironment === undefined) delete process.env.CYPHER65_APP_ENV;
+    else process.env.CYPHER65_APP_ENV = previousEnvironment;
+    if (previousUrl === undefined) delete process.env.CYPHER65_API_BASE_URL;
+    else process.env.CYPHER65_API_BASE_URL = previousUrl;
   });
 
   test('CI treats mobile lint, audit, doctor and build as blocking gates', () => {

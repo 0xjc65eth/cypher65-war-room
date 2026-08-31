@@ -1,6 +1,7 @@
 import axios, { type AxiosError, type AxiosInstance } from 'axios';
 import * as SecureStore from 'expo-secure-store';
 import Constants from 'expo-constants';
+import { resolveMobileEnvironment } from '../config/environment';
 import type {
   Device,
   FleetSummary,
@@ -12,11 +13,8 @@ import type {
   RentalsData,
 } from '../types';
 
-const isDev = __DEV__;
-const baseURL =
-  (isDev
-    ? Constants.expoConfig?.extra?.apiBaseUrlDev
-    : Constants.expoConfig?.extra?.apiBaseUrl) || 'http://127.0.0.1:8765/api';
+const mobileEnvironment = resolveMobileEnvironment(Constants.expoConfig?.extra, __DEV__);
+const baseURL = mobileEnvironment.apiBaseUrl;
 
 const api: AxiosInstance = axios.create({
   baseURL,
@@ -42,7 +40,7 @@ api.interceptors.response.use(
   }
 );
 
-export { api };
+export { api, mobileEnvironment };
 
 // ── Snapshot & Command Center ───────────────────────────────────────────────
 export const fetchSnapshot = async () => {

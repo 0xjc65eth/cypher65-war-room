@@ -50,7 +50,7 @@
 ```
 mobile/
 ├── App.tsx                         # Entry + navigation container
-├── app.json / package.json           # Expo config
+├── app.config.js / package.json      # Expo environment/native config
 ├── src/
 │   ├── api/                         # REST client + endpoints map
 │   ├── components/                  # shared UI primitives
