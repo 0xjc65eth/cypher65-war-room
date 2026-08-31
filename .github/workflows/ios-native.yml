@@ -89,7 +89,7 @@ jobs:
                   stdout=subprocess.PIPE,
                   stderr=subprocess.STDOUT,
                   text=True,
-                  timeout=180,
+                  timeout=420,
                   check=False,
               )
               output = result.stdout
@@ -98,7 +98,7 @@ jobs:
               output = error.stdout or ""
               if isinstance(output, bytes):
                   output = output.decode("utf-8", errors="replace")
-              output += "\nSimulator boot timed out after 180 seconds.\n"
+              output += "\nSimulator boot timed out after 420 seconds.\n"
               return_code = 124
           with open("build/ios-simulator.txt", "a", encoding="utf-8") as handle:
               handle.write(output)
