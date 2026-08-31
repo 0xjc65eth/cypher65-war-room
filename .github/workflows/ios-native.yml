@@ -53,7 +53,10 @@ jobs:
             -sdk iphonesimulator \
             -derivedDataPath build/ios-derived \
             -resultBundlePath build/ios-build.xcresult \
-            CODE_SIGNING_ALLOWED=NO build
+            CODE_SIGNING_ALLOWED=NO \
+            ONLY_ACTIVE_ARCH=YES \
+            ARCHS=arm64 \
+            build
       - name: Install and launch on an available iPhone simulator
         run: |
           mkdir -p build
@@ -74,7 +77,34 @@ jobs:
           test -n "$DEVICE_ID"
           echo "Selected simulator: $DEVICE_ID" | tee build/ios-simulator.txt
           xcrun simctl boot "$DEVICE_ID" 2>&1 | tee -a build/ios-simulator.txt
-          perl -e 'alarm shift; exec @ARGV' 180 xcrun simctl bootstatus "$DEVICE_ID" -b 2>&1 | tee -a build/ios-simulator.txt
+          DEVICE_ID="$DEVICE_ID" python3 - <<'PY'
+          import os
+          import subprocess
+          import sys
+
+          command = ["xcrun", "simctl", "bootstatus", os.environ["DEVICE_ID"], "-b"]
+          try:
+              result = subprocess.run(
+                  command,
+                  stdout=subprocess.PIPE,
+                  stderr=subprocess.STDOUT,
+                  text=True,
+                  timeout=420,
+                  check=False,
+              )
+              output = result.stdout
+              return_code = result.returncode
+          except subprocess.TimeoutExpired as error:
+              output = error.stdout or ""
+              if isinstance(output, bytes):
+                  output = output.decode("utf-8", errors="replace")
+              output += "\nSimulator boot timed out after 420 seconds.\n"
+              return_code = 124
+          with open("build/ios-simulator.txt", "a", encoding="utf-8") as handle:
+              handle.write(output)
+          sys.stdout.write(output)
+          raise SystemExit(return_code)
+          PY
           APP_PATH=$(find build/ios-derived/Build/Products -type d -name '*.app' | head -1)
           test -n "$APP_PATH"
           xcrun simctl install "$DEVICE_ID" "$APP_PATH"
