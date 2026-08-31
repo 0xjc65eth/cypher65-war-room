@@ -10,7 +10,9 @@ on:
 
 jobs:
   simulator-build:
-    runs-on: macos-15
+    # ExpoModulesJSI currently requires Swift tools 6.2. macOS 15 runners
+    # default to Xcode 16.4 / Swift 6.1 and cannot resolve that package.
+    runs-on: macos-26
     timeout-minutes: 30
     env:
       CYPHER65_APP_ENV: testing
@@ -25,6 +27,17 @@ jobs:
           node-version: "22.13.0"
           cache: npm
           cache-dependency-path: mobile/package-lock.json
+      - name: Verify native Apple toolchain
+        run: |
+          xcodebuild -version
+          SWIFT_VERSION=$(swift --version | sed -nE 's/.*Swift version ([0-9]+\.[0-9]+(\.[0-9]+)?).*/\1/p' | head -1)
+          test -n "$SWIFT_VERSION"
+          echo "Swift $SWIFT_VERSION"
+          SWIFT_MAJOR=${SWIFT_VERSION%%.*}
+          SWIFT_MINOR_PART=${SWIFT_VERSION#*.}
+          SWIFT_MINOR=${SWIFT_MINOR_PART%%.*}
+          test "$SWIFT_MAJOR" -gt 6 || { test "$SWIFT_MAJOR" -eq 6 && test "$SWIFT_MINOR" -ge 2; }
+        shell: bash
       - run: npm ci
       - name: Generate native iOS project
         run: npm run native:generate:ios
@@ -43,10 +56,25 @@ jobs:
             CODE_SIGNING_ALLOWED=NO build
       - name: Install and launch on an available iPhone simulator
         run: |
-          DEVICE_ID=$(xcrun simctl list devices available | awk -F '[()]' '/iPhone/{print $2; exit}')
+          mkdir -p build
+          xcrun simctl list devices available -j > build/ios-simulators.json
+          DEVICE_ID=$(python3 - <<'PY'
+          import json
+
+          with open("build/ios-simulators.json", encoding="utf-8") as handle:
+              devices = json.load(handle)["devices"]
+          print(next(
+              device["udid"]
+              for runtime in devices.values()
+              for device in runtime
+              if device.get("isAvailable") and device.get("name", "").startswith("iPhone")
+          ))
+          PY
+          )
           test -n "$DEVICE_ID"
-          xcrun simctl boot "$DEVICE_ID" 2>/dev/null || true
-          xcrun simctl bootstatus "$DEVICE_ID" -b
+          echo "Selected simulator: $DEVICE_ID" | tee build/ios-simulator.txt
+          xcrun simctl boot "$DEVICE_ID" 2>&1 | tee -a build/ios-simulator.txt
+          perl -e 'alarm shift; exec @ARGV' 180 xcrun simctl bootstatus "$DEVICE_ID" -b 2>&1 | tee -a build/ios-simulator.txt
           APP_PATH=$(find build/ios-derived/Build/Products -type d -name '*.app' | head -1)
           test -n "$APP_PATH"
           xcrun simctl install "$DEVICE_ID" "$APP_PATH"
@@ -75,5 +103,7 @@ jobs:
             mobile/build/ios-build.xcresult
             mobile/build/ios-launch.png
             mobile/build/ios-process.txt
+            mobile/build/ios-simulator.txt
+            mobile/build/ios-simulators.json
           if-no-files-found: warn
           retention-days: 14
