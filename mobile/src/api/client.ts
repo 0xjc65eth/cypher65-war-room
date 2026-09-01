@@ -42,6 +42,121 @@ api.interceptors.response.use(
 
 export { api, mobileEnvironment };
 
+export class AiOperatorResponseError extends Error {
+  constructor(
+    message: string,
+    readonly code: 'backend_error' | 'invalid_response' | 'incomplete_response'
+  ) {
+    super(message);
+    this.name = 'AiOperatorResponseError';
+  }
+}
+
+type AiOperatorEvent =
+  | { type: 'text'; content: string }
+  | { type: 'action'; action: Record<string, unknown> }
+  | { type: 'error'; message: string }
+  | { type: 'done' };
+
+const AI_RESPONSE_MAX_BYTES = 512_000;
+const AI_RESPONSE_MAX_EVENTS = 4_096;
+
+const validateAiOperatorEvent = (value: unknown): AiOperatorEvent => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new AiOperatorResponseError('AI Operator returned an invalid response.', 'invalid_response');
+  }
+  const event = value as Record<string, unknown>;
+  switch (event.type) {
+    case 'text':
+      if (typeof event.content === 'string') return { type: 'text', content: event.content };
+      break;
+    case 'action':
+      if (event.action && typeof event.action === 'object' && !Array.isArray(event.action)) {
+        return { type: 'action', action: event.action as Record<string, unknown> };
+      }
+      break;
+    case 'error':
+      if (typeof event.message === 'string') return { type: 'error', message: event.message };
+      break;
+    case 'done':
+      return { type: 'done' };
+  }
+  throw new AiOperatorResponseError('AI Operator returned an invalid response.', 'invalid_response');
+};
+
+/**
+ * Parse the backend's complete SSE response. React Native's axios adapter
+ * buffers the response body, so the mobile client validates every event before
+ * presenting any assistant text as real.
+ */
+export const parseAiOperatorResponse = (payload: unknown): string => {
+  if (typeof payload !== 'string') {
+    throw new AiOperatorResponseError('AI Operator returned an invalid response.', 'invalid_response');
+  }
+  if (payload.length > AI_RESPONSE_MAX_BYTES) {
+    throw new AiOperatorResponseError('AI Operator response exceeded the safe limit.', 'invalid_response');
+  }
+
+  const events: AiOperatorEvent[] = [];
+  let doneSeen = false;
+  for (const rawLine of payload.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line.startsWith('data:')) continue;
+
+    const encoded = line.slice(5).trim();
+    if (!encoded) continue;
+
+    try {
+      if (doneSeen || events.length >= AI_RESPONSE_MAX_EVENTS) {
+        throw new AiOperatorResponseError('AI Operator returned an invalid response.', 'invalid_response');
+      }
+      const event = validateAiOperatorEvent(JSON.parse(encoded));
+      events.push(event);
+      doneSeen = event.type === 'done';
+    } catch (error) {
+      if (error instanceof AiOperatorResponseError) throw error;
+      throw new AiOperatorResponseError('AI Operator returned an invalid response.', 'invalid_response');
+    }
+  }
+
+  const backendError = events.find((event) => event.type === 'error');
+  if (backendError?.type === 'error') {
+    throw new AiOperatorResponseError('AI Operator is unavailable on this server.', 'backend_error');
+  }
+  if (!events.some((event) => event.type === 'done')) {
+    throw new AiOperatorResponseError('AI Operator response was incomplete.', 'incomplete_response');
+  }
+
+  const text = events
+    .filter((event): event is Extract<AiOperatorEvent, { type: 'text' }> => event.type === 'text')
+    .map((event) => (typeof event.content === 'string' ? event.content : ''))
+    .join('')
+    .trim();
+
+  if (!text) {
+    throw new AiOperatorResponseError('AI Operator returned no answer.', 'invalid_response');
+  }
+  return text;
+};
+
+export const queryAiOperator = async (query: string): Promise<string> => {
+  const normalized = query.trim();
+  if (!normalized) {
+    throw new AiOperatorResponseError('A question is required.', 'invalid_response');
+  }
+
+  const { data } = await api.post(
+    '/ai/query',
+    { query: normalized },
+    {
+      headers: { Accept: 'text/event-stream' },
+      responseType: 'text',
+      timeout: 35_000,
+    }
+  );
+  return parseAiOperatorResponse(data);
+};
+
 // ── Snapshot & Command Center ───────────────────────────────────────────────
 export const fetchSnapshot = async () => {
   const { data } = await api.get('/snapshot');
