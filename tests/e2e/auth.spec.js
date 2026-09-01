@@ -2,7 +2,7 @@
  * CYPHER65 War Room — E2E: Tenant Login (Fase 4 · B1-frontend)
  * ===========================================================
  * Tests the tenant-auth UI added in the B1-frontend block:
- *   - open / close the auth modal from the topbar toggle (🔑 LOGIN)
+ *   - open / close the auth modal from the topbar toggle (key icon + LOGIN)
  *   - login with an API key → badge + toggle + logout button update
  *   - the `Authorization: Bearer` header is attached to /api/axe-fleet/*
  *     (the core B1-frontend goal — makes backend tenant isolation visible)
@@ -157,6 +157,12 @@ async function expectLogoutDisplay(page, value) {
   ).toBe(value);
 }
 
+async function expectAuthToggle(page, label) {
+  const toggle = page.locator('#auth-toggle');
+  await expect(toggle).toHaveText(label);
+  await expect(toggle).toHaveAccessibleName(label);
+}
+
 // ══════════════════════════════════════════════════════════════════════
 //  Suite
 // ══════════════════════════════════════════════════════════════════════
@@ -190,14 +196,14 @@ test.describe('CYPHER65 — Tenant Login (Fase 4 · B1-frontend)', () => {
 
   test.describe('02 — Login updates the tenant UI', () => {
 
-    test('successful login → badge TENANT: acme (green), toggle 🔑 ACME, logout display:""', async ({ page }) => {
+    test('successful login → badge TENANT: acme (green), toggle ACME, logout display:""', async ({ page }) => {
       await mockAuthEndpoints(page);
       await loginAs(page, 'key-acme-1');
 
       await expect(page.locator('#auth-status')).toHaveText('✓ connected as acme');
       await expect(page.locator('#axe-fleet-tenant-badge')).toHaveText('TENANT: acme');
       await expect(page.locator('#axe-fleet-tenant-badge')).toHaveClass(/badge--green/);
-      await expect(page.locator('#auth-toggle')).toHaveText('🔑 ACME');
+      await expectAuthToggle(page, 'ACME');
       await expect(page.locator('#auth-toggle')).toHaveClass(/is-authed/);
       await expect(page.locator('#auth-current-tenant')).toHaveText('acme');
       await expectLogoutDisplay(page, ''); // logout button enabled
@@ -240,7 +246,7 @@ test.describe('CYPHER65 — Tenant Login (Fase 4 · B1-frontend)', () => {
 
       await expect(page.locator('#auth-status')).toHaveText('⚠ API key required');
       await expect(page.locator('#axe-fleet-tenant-badge')).toHaveText('TENANT: default');
-      await expect(page.locator('#auth-toggle')).toHaveText('🔑 LOGIN');
+      await expectAuthToggle(page, 'LOGIN');
     });
 
     test('invalid API key (401 mock) → error status, UI stays default', async ({ page }) => {
@@ -252,7 +258,7 @@ test.describe('CYPHER65 — Tenant Login (Fase 4 · B1-frontend)', () => {
       await expect(page.locator('#auth-status')).toContainText('invalid api_key', { timeout: 5000 });
       await expect(page.locator('#auth-status')).toHaveClass(/modal__status--err/);
       await expect(page.locator('#axe-fleet-tenant-badge')).toHaveText('TENANT: default');
-      await expect(page.locator('#auth-toggle')).toHaveText('🔑 LOGIN');
+      await expectAuthToggle(page, 'LOGIN');
     });
   });
 
@@ -267,7 +273,7 @@ test.describe('CYPHER65 — Tenant Login (Fase 4 · B1-frontend)', () => {
 
       await expect(page.locator('#axe-fleet-tenant-badge')).toHaveText('TENANT: acme', { timeout: 5000 });
       await expect(page.locator('#axe-fleet-tenant-badge')).toHaveClass(/badge--green/);
-      await expect(page.locator('#auth-toggle')).toHaveText('🔑 ACME');
+      await expectAuthToggle(page, 'ACME');
     });
   });
 
@@ -285,7 +291,7 @@ test.describe('CYPHER65 — Tenant Login (Fase 4 · B1-frontend)', () => {
 
       await expect(page.locator('#axe-fleet-tenant-badge')).toHaveText('TENANT: default', { timeout: 5000 });
       await expect(page.locator('#axe-fleet-tenant-badge')).toHaveClass(/badge--mute/);
-      await expect(page.locator('#auth-toggle')).toHaveText('🔑 LOGIN');
+      await expectAuthToggle(page, 'LOGIN');
       await expect(page.locator('#auth-current-tenant')).toHaveText('—');
       await expectLogoutDisplay(page, 'none'); // disabled after logout
 
