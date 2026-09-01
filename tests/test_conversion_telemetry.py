@@ -871,12 +871,41 @@ def _iso_key(ts):
     return f"{iso[0]}-W{iso[1]:02d}"
 
 
-def test_funnel_weekly_buckets(clean_events):
+@pytest.fixture
+def weekly_clock(monkeypatch):
+    """Freeze weekly reports and their fixtures to one deterministic anchor."""
     from datetime import datetime, timezone
 
-    # Two distinct ISO weeks (2026-07-27 W31 and 2026-08-03 W32).
-    t_old = int(datetime(2026, 7, 27, 12, 0, tzinfo=timezone.utc).timestamp())
-    t_new = int(datetime(2026, 8, 3, 12, 0, tzinfo=timezone.utc).timestamp())
+    anchor = int(datetime(2030, 8, 14, 12, 0, tzinfo=timezone.utc).timestamp())
+    monkeypatch.setattr(conv.time, "time", lambda: anchor)
+    return anchor
+
+
+def _recent_week_ts(now_ts, weeks_ago=1):
+    """Noon-UTC timestamp in a completed ISO week before ``now_ts``."""
+    from datetime import datetime, timedelta, timezone
+
+    now = datetime.fromtimestamp(now_ts, tz=timezone.utc)
+    this_monday = (now - timedelta(days=now.weekday())).replace(
+        hour=12, minute=0, second=0, microsecond=0
+    )
+    return int((this_monday - timedelta(weeks=weeks_ago)).timestamp())
+
+
+def _iso_week_start_ts(ts):
+    from datetime import datetime, timedelta, timezone
+
+    instant = datetime.fromtimestamp(ts, tz=timezone.utc)
+    monday = (instant - timedelta(days=instant.weekday())).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
+    return int(monday.timestamp())
+
+
+def test_funnel_weekly_buckets(clean_events, weekly_clock):
+    # Two distinct, completed ISO weeks inside the report window.
+    t_old = _recent_week_ts(weekly_clock, weeks_ago=2)
+    t_new = _recent_week_ts(weekly_clock, weeks_ago=1)
     _insert_at(t_old, "paywall_view")
     _insert_at(t_old, "modal_open")
     _insert_at(t_old, "checkout_start")
@@ -902,15 +931,11 @@ def test_funnel_weekly_buckets(clean_events):
     assert new["stages"]["paywall_view"] == 2
     assert new["conversion_rate_pct"] == 0.0
     # week_start_ts is the Monday 00:00 UTC of the bucket.
-    assert new["week_start_ts"] == int(
-        datetime(2026, 8, 3, 0, 0, tzinfo=timezone.utc).timestamp()
-    )
+    assert new["week_start_ts"] == _iso_week_start_ts(t_new)
 
 
-def test_funnel_weekly_sessions_count(clean_events):
-    from datetime import datetime, timezone
-
-    t = int(datetime(2026, 8, 3, 12, 0, tzinfo=timezone.utc).timestamp())
+def test_funnel_weekly_sessions_count(clean_events, weekly_clock):
+    t = _recent_week_ts(weekly_clock)
     _insert_at(t, "paywall_view", {"funnel_id": "f_1"})
     _insert_at(t, "modal_open", {"funnel_id": "f_1"})
     _insert_at(t, "checkout_start", {"funnel_id": "f_1"})
@@ -932,10 +957,8 @@ def test_funnel_weekly_empty_and_weeks_clamp(clean_events):
     assert conv.funnel_weekly_report(weeks=999) == []
 
 
-def test_funnel_weekly_csv(clean_events):
-    from datetime import datetime, timezone
-
-    t = int(datetime(2026, 8, 3, 12, 0, tzinfo=timezone.utc).timestamp())
+def test_funnel_weekly_csv(clean_events, weekly_clock):
+    t = _recent_week_ts(weekly_clock)
     _insert_at(t, "paywall_view")
     _insert_at(t, "key_activated")
 
@@ -957,12 +980,10 @@ def test_funnel_weekly_csv(clean_events):
     )
 
 
-def test_funnel_weekly_csv_feature_columns(clean_events):
-    from datetime import datetime, timezone
-
+def test_funnel_weekly_csv_feature_columns(clean_events, weekly_clock):
     # Week 1: monte_carlo (2) + auto_pilot (1); Week 2: only monte_carlo (1).
-    t1 = int(datetime(2026, 7, 27, 12, 0, tzinfo=timezone.utc).timestamp())
-    t2 = int(datetime(2026, 8, 3, 12, 0, tzinfo=timezone.utc).timestamp())
+    t1 = _recent_week_ts(weekly_clock, weeks_ago=2)
+    t2 = _recent_week_ts(weekly_clock, weeks_ago=1)
     _insert_at(t1, "paywall_view", {"feature": "monte_carlo"})
     _insert_at(t1, "paywall_view", {"feature": "monte_carlo"})
     _insert_at(t1, "paywall_view", {"feature": "auto_pilot"})
@@ -1139,11 +1160,11 @@ def test_funnel_weekly_csv_week_cell_neutralized():
     assert row[0] == '\'=HYPERLINK("http://evil","x")'
 
 
-def test_admin_conversion_weekly_payload(isolated_client, monkeypatch, clean_events):
-    from datetime import datetime, timezone
-
+def test_admin_conversion_weekly_payload(
+    isolated_client, monkeypatch, clean_events, weekly_clock
+):
     monkeypatch.setenv("API_KEY", "operator-key-123")
-    t = int(datetime(2026, 8, 3, 12, 0, tzinfo=timezone.utc).timestamp())
+    t = _recent_week_ts(weekly_clock)
     _insert_at(t, "paywall_view")
     _insert_at(t, "key_activated")
 
@@ -1158,11 +1179,11 @@ def test_admin_conversion_weekly_payload(isolated_client, monkeypatch, clean_eve
     assert data["weekly"][0]["week"] == _iso_key(t)
 
 
-def test_admin_conversion_csv_export(isolated_client, monkeypatch, clean_events):
-    from datetime import datetime, timezone
-
+def test_admin_conversion_csv_export(
+    isolated_client, monkeypatch, clean_events, weekly_clock
+):
     monkeypatch.setenv("API_KEY", "operator-key-123")
-    t = int(datetime(2026, 8, 3, 12, 0, tzinfo=timezone.utc).timestamp())
+    t = _recent_week_ts(weekly_clock)
     _insert_at(t, "paywall_view")
     _insert_at(t, "modal_open")
 
@@ -1180,12 +1201,10 @@ def test_admin_conversion_csv_export(isolated_client, monkeypatch, clean_events)
 
 
 def test_admin_conversion_csv_feature_columns(
-    isolated_client, monkeypatch, clean_events
+    isolated_client, monkeypatch, clean_events, weekly_clock
 ):
-    from datetime import datetime, timezone
-
     monkeypatch.setenv("API_KEY", "operator-key-123")
-    t = int(datetime(2026, 8, 3, 12, 0, tzinfo=timezone.utc).timestamp())
+    t = _recent_week_ts(weekly_clock)
     _insert_at(t, "paywall_view", {"feature": "monte_carlo"})
     _insert_at(t, "paywall_view", {"feature": "auto_pilot"})
 

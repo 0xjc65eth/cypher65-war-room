@@ -137,11 +137,14 @@ class TestSamplerLoop:
         fake = {"now": 1_700_000_000.0}
         monkeypatch.setattr(pool_metrics_module.time, "time", lambda: fake["now"])
         stop = threading.Event()
+        two_samples = threading.Event()
         calls = {"n": 0}
 
         def _stats_fn():
             fake["now"] += 60.0
             calls["n"] += 1
+            if calls["n"] >= 2:
+                two_samples.set()
             return _stats(sessions_active=calls["n"])
 
         def _conn_fn():
@@ -161,9 +164,12 @@ class TestSamplerLoop:
             daemon=True,
         )
         t.start()
-        time.sleep(0.12)  # ~6 ticks
-        stop.set()
-        t.join(timeout=2)
+        try:
+            reached_two_samples = two_samples.wait(timeout=2)
+        finally:
+            stop.set()
+            t.join(timeout=2)
+        assert reached_two_samples, "sampler did not reach a second tick"
         assert not t.is_alive()
         db = sqlite3.connect(db_file)
         try:
@@ -179,6 +185,7 @@ class TestSamplerLoop:
         fake = {"now": 1_700_000_000.0}
         monkeypatch.setattr(pool_metrics_module.time, "time", lambda: fake["now"])
         stop = threading.Event()
+        healthy_tick = threading.Event()
         calls = {"n": 0}
 
         def _stats_fn():
@@ -186,6 +193,7 @@ class TestSamplerLoop:
             calls["n"] += 1
             if calls["n"] % 2 == 1:
                 raise RuntimeError("upstream poll pool broken (mock)")
+            healthy_tick.set()
             return _stats()
 
         def _conn_fn():
@@ -203,9 +211,12 @@ class TestSamplerLoop:
             daemon=True,
         )
         t.start()
-        time.sleep(0.12)  # even-numbered ticks succeed
-        stop.set()
-        t.join(timeout=2)
+        try:
+            recovered = healthy_tick.wait(timeout=2)
+        finally:
+            stop.set()
+            t.join(timeout=2)
+        assert recovered, "sampler did not recover after an error"
         assert not t.is_alive()  # the loop must NOT die on the error
         db = sqlite3.connect(db_file)
         try:

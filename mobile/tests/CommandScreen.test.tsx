@@ -1,7 +1,6 @@
-import React from 'react';
-import { render, screen } from '@testing-library/react-native';
-import { CommandScreen } from '../src/screens/Command/CommandScreen';
+import { act, render, screen } from '@testing-library/react-native';
 import * as snapshotHook from '../src/hooks/useSnapshot';
+import { CommandScreen } from '../src/screens/Command/CommandScreen';
 
 jest.mock('../src/hooks/useSnapshot');
 jest.mock('@react-navigation/native', () => ({
@@ -27,10 +26,13 @@ describe('CommandScreen', () => {
     });
 
     render(<CommandScreen />);
+    // Flush the already-resolved share request explicitly. Polling for its UI
+    // made this test depend on runner scheduling during cold suite startup.
+    await act(async () => {
+      await Promise.resolve();
+    });
     expect(screen.getByText('Command Center')).toBeTruthy();
-    // Wait for the mount-time share request so React 19 observes every state
-    // update inside the testing-library act() boundary.
-    expect(await screen.findByText(/No shares yet/)).toBeTruthy();
+    expect(screen.getByText(/No shares yet/)).toBeTruthy();
   });
 
   it('renders the Live→Probability share difficulty section', async () => {
@@ -42,9 +44,12 @@ describe('CommandScreen', () => {
     });
 
     render(<CommandScreen />);
+    await act(async () => {
+      await Promise.resolve();
+    });
     expect(screen.getByText('Share Difficulty')).toBeTruthy();
     expect(screen.getByText(/P\(block\) → Block Model/)).toBeTruthy();
     // The mocked client returns an empty session — chart falls back gracefully.
-    expect(await screen.findByText(/No shares yet/)).toBeTruthy();
+    expect(screen.getByText(/No shares yet/)).toBeTruthy();
   });
 });
