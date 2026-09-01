@@ -5,6 +5,11 @@ protocol probes are later stages and must consume a validated policy result.
 """
 
 from .endpoint import EndpointError, parse_pool_endpoint
+from .configuration import (
+    PoolConfigurationError,
+    ValidatedPoolConfiguration,
+    validate_pool_configuration,
+)
 from .models import CapabilityState, PoolEndpoint, PoolProtocol, Provenance
 from .policy import DestinationPolicy, PolicyError, ValidatedDestination
 
@@ -13,9 +18,12 @@ __all__ = [
     "DestinationPolicy",
     "EndpointError",
     "PolicyError",
+    "PoolConfigurationError",
     "PoolEndpoint",
     "PoolProtocol",
     "Provenance",
     "ValidatedDestination",
+    "ValidatedPoolConfiguration",
     "parse_pool_endpoint",
+    "validate_pool_configuration",
 ]

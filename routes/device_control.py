@@ -30,6 +30,10 @@ from services.command_confirmation import (
 )
 from services.safety_policy import can_execute_physical_command
 from services import operation_ledger
+from services.pool_intelligence import (
+    PoolConfigurationError,
+    validate_pool_configuration,
+)
 
 from core.adapters.bitaxe_adapter import BitaxeAdapter
 from core.adapters.cgminer_adapter import CgminerAdapter
@@ -211,6 +215,11 @@ _SENSITIVE_FIELD_NAMES = {
     "private_key",
     "privatekey",
     "secret",
+    "stratumurl",
+    "poolurl",
+    "stratumuser",
+    "pooluser",
+    "worker",
 }
 _SENSITIVE_FIELD_SUFFIXES = ("password", "secret", "token")
 
@@ -240,6 +249,15 @@ def redact_command_data(value: Any) -> Any:
     if isinstance(value, tuple):
         return tuple(redact_command_data(item) for item in value)
     return value
+
+
+def _validated_command_parameters(
+    command: str, parameters: Dict[str, Any]
+) -> Dict[str, Any]:
+    """Return the canonical command payload before any safety/side-effect gate."""
+    if command != "update_pool":
+        return parameters
+    return validate_pool_configuration(parameters).to_adapter_parameters()
 
 
 def _record_attempt(
@@ -421,6 +439,11 @@ def issue_device_command_confirmation(device_id: str, tenant_id: str = ""):
     elif not isinstance(parameters, dict):
         return jsonify({"success": False, "error": "parameters must be an object"}), 400
 
+    try:
+        parameters = _validated_command_parameters(command, parameters)
+    except PoolConfigurationError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 400
+
     device = _dict_to_device(raw)
     caps = _capability_map(device, raw)
     if not command or not caps.get(command):
@@ -554,6 +577,19 @@ def execute_device_command(device_id: str, tenant_id: str = ""):
         return jsonify({"success": False, "error": "command is required"}), 400
     if not isinstance(parameters, dict):
         return jsonify({"success": False, "error": "parameters must be an object"}), 400
+
+    try:
+        parameters = _validated_command_parameters(command, parameters)
+    except PoolConfigurationError as exc:
+        record = {
+            "success": False,
+            "allowed": False,
+            "reason": str(exc),
+            "risk_level": "high",
+            "requires_confirmation": True,
+        }
+        _record_attempt(device_id, command, parameters, record)
+        return jsonify({"success": False, "error": str(exc)}), 400
 
     # Recover a previously claimed operation before consulting mutable device
     # state. A reboot may temporarily remove the miner from the registry; that
@@ -956,6 +992,37 @@ def _observed_device_state(raw: Any) -> Dict[str, Any]:
     }
 
 
+def _observed_pool_parameters(raw: Any) -> Optional[Dict[str, Any]]:
+    """Return a comparable canonical pool payload without exposing identity.
+
+    The returned value is used only for an in-memory digest comparison against
+    the operation ledger.  Raw endpoint and worker values never enter the
+    response, audit details, or persisted safe result.
+    """
+    if _is_core_device(raw):
+        telemetry = getattr(raw, "current_telemetry", None) or {}
+    else:
+        telemetry = (
+            (raw or {}).get("current_telemetry") or (raw or {}).get("telemetry") or {}
+        )
+    if not isinstance(telemetry, dict):
+        return None
+    pool = telemetry.get("pool") or {}
+    if not isinstance(pool, dict):
+        pool = {}
+    candidate = {
+        "stratumURL": pool.get("url") or telemetry.get("pool_url"),
+        "stratumPort": pool.get("port") or telemetry.get("pool_port"),
+        "stratumUser": (
+            pool.get("user") or telemetry.get("pool_user") or telemetry.get("worker")
+        ),
+    }
+    try:
+        return validate_pool_configuration(candidate).to_adapter_parameters()
+    except PoolConfigurationError:
+        return None
+
+
 @device_control_bp.route(
     "/api/devices/<device_id>/commands/<operation_id>", methods=["GET"]
 )
@@ -1081,6 +1148,25 @@ def reconcile_device_command(device_id: str, operation_id: str, tenant_id: str =
             )
     elif fresh and command in {"pause", "resume", "restart", "reboot"}:
         reconciliation, reason = "failed", "fresh telemetry contradicts expected state"
+    elif command == "update_pool" and fresh:
+        observed_pool = _observed_pool_parameters(raw)
+        if observed_pool is None:
+            reconciliation, reason = (
+                "unknown",
+                "fresh telemetry exposes no comparable pool configuration",
+            )
+        elif operation_ledger.payload_hash(observed_pool) == operation.get(
+            "request_hash"
+        ):
+            reconciliation, reason = (
+                "confirmed",
+                "fresh telemetry matches the requested pool configuration",
+            )
+        else:
+            reconciliation, reason = (
+                "failed",
+                "fresh telemetry reports a different pool configuration",
+            )
     elif fresh:
         reconciliation, reason = "unknown", "firmware exposes no comparable state"
     elif timed_out:

@@ -6,10 +6,14 @@ from typing import Any, Dict, List, Optional
 import requests
 
 from core.adapters.base_adapter import BaseAdapter
+from core.models.capability import Capability, RiskLevel
+from core.models.device import Device, DeviceStatus
+from services.pool_intelligence import (
+    PoolConfigurationError,
+    validate_pool_configuration,
+)
 
 log = logging.getLogger(__name__)
-from core.models.device import Device, DeviceStatus
-from core.models.capability import Capability, RiskLevel
 
 
 class BitaxeAdapter(BaseAdapter):
@@ -283,24 +287,20 @@ class BitaxeAdapter(BaseAdapter):
             return self._post_command("overclock", command, body=body)
         elif command == "update_pool":
             # ESP-Miner: POST /api/system/updatePool {stratumURL, stratumPort, stratumUser}
-            body = {}
-            url = str(parameters.get("stratumURL") or "").strip()
-            port = self._safe_number(parameters.get("stratumPort"), int, None)
-            user = str(parameters.get("stratumUser") or "").strip()
-            if url:
-                body["stratumURL"] = url
-            if port is not None:
-                body["stratumPort"] = int(max(1, min(65535, port)))
-            if user:
-                body["stratumUser"] = user
-            if not body:
+            try:
+                configuration = validate_pool_configuration(parameters)
+            except PoolConfigurationError as exc:
                 return {
                     "success": False,
                     "command": command,
                     "device_id": self.device.id,
-                    "error": "update_pool requires at least one of: stratumURL, stratumPort, stratumUser",
+                    "error": f"invalid update_pool configuration: {exc}",
                 }
-            return self._post_command("updatePool", command, body=body)
+            return self._post_command(
+                "updatePool",
+                command,
+                body=configuration.to_adapter_parameters(),
+            )
 
         # Unknown but "supported" command — honest failure, not a silent stub.
         return {

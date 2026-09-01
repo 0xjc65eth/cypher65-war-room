@@ -8,10 +8,10 @@ import routes.device_control as device_control
 from services import operation_ledger
 
 
-def _acknowledged(command="pause", ack_at=None):
+def _acknowledged(command="pause", ack_at=None, parameters=None):
     ack_at = int(time.time()) if ack_at is None else ack_at
     operation = operation_ledger.claim_operation(
-        "default", "physical_command", "miner-1", command, {}
+        "default", "physical_command", "miner-1", command, parameters or {}
     )
     safe_result = {}
     if command in {"restart", "reboot"}:
@@ -85,6 +85,103 @@ def test_stale_telemetry_never_confirms_command(monkeypatch):
     assert body["success"] is False
     assert body["reconciliation"]["state"] == "pending"
     assert "fresh telemetry" in body["reconciliation"]["reason"]
+
+
+def test_update_pool_ack_without_comparable_telemetry_is_never_verified(monkeypatch):
+    parameters = {
+        "stratumURL": "stratum+tcp://pool.example.com",
+        "stratumPort": 3333,
+        "stratumUser": "wallet.worker",
+    }
+    operation = _acknowledged("update_pool", ack_at=100, parameters=parameters)
+    registry = MagicMock()
+    registry.get_device.return_value = {
+        "id": "miner-1",
+        "status": "ONLINE",
+        "current_telemetry": {"timestamp": 101, "hashrate_hs": 1},
+    }
+    monkeypatch.setattr(device_control, "_registry", registry)
+
+    body = (
+        app_module.app.test_client()
+        .get(f"/api/devices/miner-1/commands/{operation['operation_id']}")
+        .get_json()
+    )
+
+    assert body["success"] is False
+    assert body["reconciliation"]["state"] == "unknown"
+    assert body["phase"] is None
+    assert "no comparable" in body["reconciliation"]["reason"]
+
+
+def test_update_pool_fresh_matching_telemetry_confirms_without_exposing_identity(
+    monkeypatch,
+):
+    parameters = {
+        "stratumURL": "stratum+tcp://pool.example.com",
+        "stratumPort": 3333,
+        "stratumUser": "wallet.worker",
+    }
+    operation = _acknowledged("update_pool", ack_at=100, parameters=parameters)
+    registry = MagicMock()
+    registry.get_device.return_value = {
+        "id": "miner-1",
+        "status": "ONLINE",
+        "current_telemetry": {
+            "timestamp": 101,
+            "hashrate_hs": 1,
+            "pool": {
+                "url": "POOL.EXAMPLE.COM",
+                "port": 3333,
+                "user": "wallet.worker",
+            },
+        },
+    }
+    monkeypatch.setattr(device_control, "_registry", registry)
+
+    response = app_module.app.test_client().get(
+        f"/api/devices/miner-1/commands/{operation['operation_id']}"
+    )
+    body = response.get_json()
+
+    assert body["success"] is True
+    assert body["reconciliation"]["state"] == "confirmed"
+    assert "pool.example.com" not in response.get_data(as_text=True)
+    assert "wallet.worker" not in response.get_data(as_text=True)
+
+
+def test_update_pool_fresh_contradictory_telemetry_fails(monkeypatch):
+    parameters = {
+        "stratumURL": "stratum+tcp://pool.example.com",
+        "stratumPort": 3333,
+        "stratumUser": "wallet.worker",
+    }
+    operation = _acknowledged("update_pool", ack_at=100, parameters=parameters)
+    registry = MagicMock()
+    registry.get_device.return_value = {
+        "id": "miner-1",
+        "status": "ONLINE",
+        "current_telemetry": {
+            "timestamp": 101,
+            "hashrate_hs": 1,
+            "pool": {
+                "url": "other.example.com",
+                "port": 3333,
+                "user": "wallet.worker",
+            },
+        },
+    }
+    monkeypatch.setattr(device_control, "_registry", registry)
+
+    body = (
+        app_module.app.test_client()
+        .get(f"/api/devices/miner-1/commands/{operation['operation_id']}")
+        .get_json()
+    )
+
+    assert body["success"] is False
+    assert body["reconciliation"]["state"] == "failed"
+    assert "different" in body["reconciliation"]["reason"]
 
 
 def test_reconciliation_timeout_becomes_unknown_without_retry(monkeypatch):
