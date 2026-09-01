@@ -63,15 +63,24 @@ jobs:
           xcrun simctl list devices available -j > build/ios-simulators.json
           DEVICE_ID=$(python3 - <<'PY'
           import json
+          import re
 
           with open("build/ios-simulators.json", encoding="utf-8") as handle:
               devices = json.load(handle)["devices"]
-          print(next(
-              device["udid"]
-              for runtime in devices.values()
-              for device in runtime
-              if device.get("isAvailable") and device.get("name", "").startswith("iPhone")
-          ))
+          candidates = []
+          for runtime, runtime_devices in devices.items():
+              match = re.search(r"iOS-(\d+)-(\d+)$", runtime)
+              if not match:
+                  continue
+              version = tuple(map(int, match.groups()))
+              for device in runtime_devices:
+                  if device.get("isAvailable") and device.get("name", "").startswith("iPhone"):
+                      candidates.append((version, device["name"], device["udid"]))
+          # The oldest installed runtime is deliberate: GitHub's macOS 26 image
+          # currently exposes newer runtimes whose cold CoreLocation migration
+          # does not terminate. Compatibility with the latest runtime is a
+          # separate matrix gate, not a reason to make the launch smoke test flaky.
+          print(min(candidates)[2])
           PY
           )
           test -n "$DEVICE_ID"
