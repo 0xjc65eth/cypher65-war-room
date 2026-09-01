@@ -1,7 +1,8 @@
 # CYPHER65 iOS architecture
 
-Status: foundation implemented; native runtime and Apple distribution remain
-subject to the release gates in `IOS_RELEASE_GATES.md`.
+Status: foundation and native simulator smoke implemented; human runtime
+validation and Apple distribution remain subject to the release gates in
+`IOS_RELEASE_GATES.md`.
 
 ## Architecture
 
@@ -22,6 +23,10 @@ workspace; CYPHER65 does not maintain a second fake Swift application.
   the macOS 26 runner and rejects Swift toolchains older than 6.2 before build.
   Toolchain observed locally on 2026-08-31: Xcode 26.6, with no installed iOS
   runtime/device.
+- Native CI selects the oldest installed iPhone runtime for its deterministic
+  launch smoke test. Run `33441597209` passed on iOS 26.2 after newer runner
+  images repeatedly stalled in the cold CoreLocation migration. Testing the
+  latest installed runtime remains a separate release-matrix requirement.
 - Native modules: AsyncStorage, Gesture Handler, Safe Area Context, Screens,
   SVG, Expo Notifications, SecureStore, Local Authentication and Splash Screen.
 

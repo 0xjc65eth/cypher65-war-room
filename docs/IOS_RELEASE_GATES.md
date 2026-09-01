@@ -1,14 +1,14 @@
 # iOS release gates 062–077
 
-Last reviewed: 2026-08-31. `PASS` requires reproducible evidence; configuration
+Last reviewed: 2026-09-01. `PASS` requires reproducible evidence; configuration
 or JavaScript export alone is not a native release.
 
 | Gate | State | Current evidence / remaining work |
 |---|---|---|
 | 062 Architecture | PASS | `IOS_ARCHITECTURE.md`, Expo CNG and four environments documented. |
-| 063 Xcode build | FAIL | macOS workflow added; requires first green native run. |
-| 064 Simulator install | FAIL | Workflow now installs; no completed CI evidence yet. |
-| 065 iOS launch | FAIL | Workflow now launches/screenshots; no completed CI evidence yet. |
+| 063 Xcode build | PASS | Release simulator build passed with Xcode 26.6 / Swift 6.2 in Actions run `33441597209`. |
+| 064 Simulator install | PASS | The same run installed the generated `.app` on the iOS 26.2 iPhone 16e simulator. |
+| 065 iOS launch | PASS | Bundle `com.cypher65.warroom` launched as PID `21157`, remained observable after five seconds, and rendered the login UI in the captured screenshot. |
 | 066 Human E2E | FAIL | Human/native journey is not implemented. |
 | 067 Lifecycle | FAIL | Background/foreground/termination matrix not implemented. |
 | 068 Networking | FAIL | Latency, packet loss, DNS and recovery matrix not implemented. |
@@ -24,3 +24,11 @@ or JavaScript export alone is not a native release.
 
 Do not release publicly until all non-external gates pass and the external gates
 have operator-owned evidence.
+
+Native smoke evidence: run `33441597209`, artifact `9776883580`, artifact
+SHA-256 `0bc0de912da31583f8f6bf7a99650cf8d816e5588f52f9ecde5d450381ec8908`.
+The artifact contains the simulator `.app`, Xcode result bundle, simulator
+inventory/boot log, process evidence and launch screenshot. This automated
+smoke test is not a substitute for gate 066 human E2E. GitHub retains this
+artifact for 14 days; after expiry, the recorded run and digest remain
+historical evidence, but the artifact itself can no longer be re-inspected.
