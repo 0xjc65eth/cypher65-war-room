@@ -39,7 +39,11 @@ from `npm run build:ios`, which only exports a JavaScript bundle.
 - **Block**: network statistics, per-window probability estimates and a model
   mean interval (not a countdown, prediction or guarantee).
 - **Market**: hashrate market offers and opportunity comparison.
-- **AI**: chat interface for the CYPHER65 AI Operator.
+- **AI**: authenticated chat interface for the backend CYPHER65 AI Operator.
+  The app consumes `POST /api/ai/query` and displays only completed, validated
+  SSE responses. Missing configuration, licensing, connectivity or malformed
+  responses are shown as unavailable/error states; there is no local simulated
+  answer.
 
 ## Backend endpoints used
 

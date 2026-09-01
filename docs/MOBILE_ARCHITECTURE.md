@@ -102,7 +102,7 @@ Tech: **React Navigation v6** (`@react-navigation/bottom-tabs`) with a custom da
 | Market | `GET /api/hashrate-market` | Live offers. |
 | Market compare | `GET /api/opportunities/compare` | Side-by-side offer comparison. |
 | Market history | `GET /api/hashrate-market/history` | Price history. |
-| AI chat | `POST /api/ai/chat` *(planned)* | Natural-language operator. |
+| AI chat | `POST /api/ai/query` | Authenticated, Premium-gated SSE response; mobile buffers and validates the complete stream. |
 
 ### 4.2 Polling vs Push strategy
 
@@ -195,9 +195,15 @@ Command executed + audit logged
 
 ## 8. AI Operator Mobile
 
-- Reuse the planned `/api/ai/chat` endpoint.
-- Keep conversation context: current fleet status, recent alerts, telemetry.
-- UI: chat bubble list + suggested quick commands.
+- Use the existing authenticated `/api/ai/query` endpoint. The backend, not the
+  device, grounds responses in the current tenant snapshot.
+- The current React Native transport buffers the complete SSE response and
+  requires a terminal `done` event before displaying assistant text.
+- Missing AI configuration, Premium access, rate limits, network errors and
+  malformed/incomplete streams are explicit unavailable/error states. The app
+  never generates a local substitute response.
+- AI action suggestions are not executable from this screen. Device commands
+  continue through the separate dry-run, confirmation and audit flow.
 
 ---
 
@@ -221,6 +227,7 @@ Command executed + audit logged
 
 ## 10. Open Decisions / Next Steps
 
-1. Confirm whether the AI chat endpoint should be a new `/api/ai/chat` route or an extension of the existing CLI/agent tool chain.
+1. Evaluate incremental SSE rendering on native transports without weakening
+   the complete-response validation or error handling.
 2. Decide whether to keep VAPID web push only or unify all push delivery under Expo Push Service.
-3. Define the exact authentication flow (login + token refresh) before implementing Task 10.
+3. Complete token refresh and installed-app authentication E2E validation.
