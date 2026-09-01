@@ -319,9 +319,9 @@ class TestAppDeviceRoutes:
         registry.add_device(device)
         secret = "never-persist-this-value"
         parameters = {
-            "stratumURL": "stratum.example.test",
-            "poolPassword": secret,
-            "nested": {"access_token": secret},
+            "stratumURL": "private-pool.example.test",
+            "stratumPort": 3333,
+            "stratumUser": "private-wallet.worker",
         }
         payload = {
             "command": "update_pool",
@@ -337,7 +337,7 @@ class TestAppDeviceRoutes:
         adapter = Mock()
         adapter.execute_command.return_value = {
             "success": True,
-            "parameters": parameters,
+            "parameters": {**parameters, "poolPassword": secret},
         }
         with patch("routes.device_control._build_adapter", return_value=adapter):
             response = flask_client.post(
@@ -347,6 +347,8 @@ class TestAppDeviceRoutes:
 
         assert response.status_code == 200
         assert secret not in response.get_data(as_text=True)
+        assert "private-pool.example.test" not in response.get_data(as_text=True)
+        assert "private-wallet.worker" not in response.get_data(as_text=True)
         assert (
             response.get_json()["result"]["parameters"]["poolPassword"] == "[REDACTED]"
         )
@@ -361,6 +363,143 @@ class TestAppDeviceRoutes:
         ]
         assert matching
         assert secret not in str(matching)
+        assert "private-pool.example.test" not in str(matching)
+        assert "private-wallet.worker" not in str(matching)
+
+    def test_update_pool_invalid_port_fails_before_safety_and_adapter(self, client):
+        flask_client, registry = client
+        from core.adapters.bitaxe_adapter import BitaxeAdapter
+
+        device = Device(
+            name="Invalid-Pool-Port",
+            model="Bitaxe",
+            ip="192.168.1.66",
+            status=DeviceStatus.ONLINE,
+        )
+        device.capabilities = BitaxeAdapter(device).get_capabilities()
+        registry.add_device(device)
+
+        with patch("routes.device_control._build_adapter") as build_adapter:
+            response = flask_client.post(
+                f"/api/devices/{device.id}/command",
+                json={
+                    "command": "update_pool",
+                    "parameters": {
+                        "stratumURL": "pool.example.com",
+                        "stratumPort": 70000,
+                        "stratumUser": "wallet.worker",
+                    },
+                },
+            )
+
+        assert response.status_code == 400
+        assert "never clamped" in response.get_json()["error"]
+        build_adapter.assert_not_called()
+
+    def test_update_pool_confirmation_cannot_be_rebound_after_canonicalization(
+        self, client
+    ):
+        flask_client, registry = client
+        from core.adapters.bitaxe_adapter import BitaxeAdapter
+
+        device = Device(
+            name="Pool-Confirmation-Binding",
+            model="Bitaxe",
+            ip="192.168.1.67",
+            status=DeviceStatus.ONLINE,
+        )
+        device.capabilities = BitaxeAdapter(device).get_capabilities()
+        registry.add_device(device)
+        parameters = {
+            "stratumURL": "POOL.EXAMPLE.COM",
+            "stratumPort": "3333",
+            "stratumUser": "wallet.worker-a",
+        }
+        confirmation = flask_client.post(
+            f"/api/devices/{device.id}/command/confirmation",
+            json={
+                "command": "update_pool",
+                "parameters": parameters,
+                "confirmation": "CONFIRM UPDATE_POOL",
+            },
+        )
+
+        adapter = Mock()
+        with patch("routes.device_control._build_adapter", return_value=adapter):
+            response = flask_client.post(
+                f"/api/devices/{device.id}/command",
+                json={
+                    "command": "update_pool",
+                    "parameters": {**parameters, "stratumUser": "wallet.worker-b"},
+                    "dry_run": False,
+                    "confirmation_token": confirmation.get_json()["confirmation_token"],
+                },
+            )
+
+        assert confirmation.status_code == 201
+        assert response.status_code == 403
+        assert "mismatched" in response.get_json()["error"]
+        adapter.execute_command.assert_not_called()
+
+    def test_update_pool_idempotent_replay_never_redispatches(
+        self, client, monkeypatch, tmp_path
+    ):
+        flask_client, registry = client
+        from core.adapters.bitaxe_adapter import BitaxeAdapter
+
+        monkeypatch.setenv("DB_PATH", str(tmp_path / "pool-idempotency.sqlite"))
+        device = Device(
+            name="Pool-Idempotency",
+            model="Bitaxe",
+            ip="192.168.1.68",
+            status=DeviceStatus.ONLINE,
+        )
+        device.capabilities = BitaxeAdapter(device).get_capabilities()
+        registry.add_device(device)
+        parameters = {
+            "stratumURL": "pool.example.com",
+            "stratumPort": 3333,
+            "stratumUser": "wallet.worker",
+        }
+        confirmation = flask_client.post(
+            f"/api/devices/{device.id}/command/confirmation",
+            json={
+                "command": "update_pool",
+                "parameters": parameters,
+                "confirmation": "CONFIRM UPDATE_POOL",
+            },
+        )
+        execution = {
+            "command": "update_pool",
+            "parameters": parameters,
+            "dry_run": False,
+            "confirmation_token": confirmation.get_json()["confirmation_token"],
+        }
+        adapter = Mock()
+        adapter.execute_command.return_value = {"success": True}
+        with patch("routes.device_control._build_adapter", return_value=adapter):
+            first = flask_client.post(
+                f"/api/devices/{device.id}/command",
+                headers={"Idempotency-Key": "pool-update-1"},
+                json=execution,
+            )
+            replay = flask_client.post(
+                f"/api/devices/{device.id}/command",
+                headers={"Idempotency-Key": "pool-update-1"},
+                json=execution,
+            )
+
+        assert first.status_code == 200
+        assert replay.status_code == 200
+        assert replay.get_json()["duplicate"] is True
+        adapter.execute_command.assert_called_once_with(
+            "update_pool",
+            {
+                "stratumURL": "stratum+tcp://pool.example.com",
+                "stratumPort": 3333,
+                "stratumUser": "wallet.worker",
+            },
+        )
 
     def test_confirmation_token_cannot_be_replayed_or_rebound(self, client):
         flask_client, registry = client

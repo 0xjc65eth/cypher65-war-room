@@ -339,6 +339,37 @@ class TestBitaxeAdapter:
             timeout=5,
         )
 
+    @pytest.mark.parametrize("port", [0, -1, 65536, True, 3333.5])
+    def test_execute_command_update_pool_rejects_invalid_port_without_http(self, port):
+        device = self._device_with_capabilities()
+        adapter = BitaxeAdapter(device)
+
+        with patch("core.adapters.bitaxe_adapter.requests.post") as mock_post:
+            result = adapter.execute_command(
+                "update_pool",
+                {
+                    "stratumURL": "pool.example.com",
+                    "stratumPort": port,
+                    "stratumUser": "wallet.worker",
+                },
+            )
+
+        assert result["success"] is False
+        assert "invalid" in result["error"]
+        mock_post.assert_not_called()
+
+    def test_execute_command_update_pool_rejects_partial_payload_without_http(self):
+        device = self._device_with_capabilities()
+        adapter = BitaxeAdapter(device)
+
+        with patch("core.adapters.bitaxe_adapter.requests.post") as mock_post:
+            result = adapter.execute_command(
+                "update_pool", {"stratumURL": "pool.example.com"}
+            )
+
+        assert result["success"] is False
+        mock_post.assert_not_called()
+
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 #  Fase 5 · Hashrate windows (1m / 10m / 1h)
