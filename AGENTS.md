@@ -9,7 +9,7 @@ Este arquivo é lido automaticamente por agentes de IA (GitHub Copilot, Claude, 
 3. **Commits convencionais** — `feat(scope):`, `fix(scope):`, `docs(scope):`, etc.
 4. **UI segue motion principles** — skeleton loading, lazy loading, animações suaves de entrada/saída/carregamento, `prefers-reduced-motion` (skill `.agents/skills/design-motion-principles`).
 5. **Code review obrigatório antes do merge** — skill `.agents/skills/enterprise-code-review` (security + bugs + UI/UX + motion + observability + quality + tests, organizado por equipe). Para auditorias profundas: [`AUDIT_PROMPT.md`](./AUDIT_PROMPT.md).
-6. **Qualidade/observabilidade** — Sentry (env-gated) + logs JSON; pytest (gate `--cov-fail-under=65`) + JS core + e2e Playwright + Codecov; guards DOM/mobile no CI.
+6. **Qualidade/observabilidade** — Sentry (env-gated) + logs JSON; pytest (gate `--cov-fail-under=80`) + JS core + e2e Playwright + Codecov; guards DOM/mobile no CI.
 
 ## Comandos rápidos de validação local
 

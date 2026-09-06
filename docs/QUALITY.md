@@ -115,7 +115,7 @@ cd mobile && npx stryker run
 
 | Camada | Ferramenta | Cobertura | Gate CI |
 |---|---|---|---|
-| Unit/integration (Python) | pytest | 2255 testes, `--cov-fail-under=78` | ✅ blocking |
+| Unit/integration (Python) | pytest | 2255 testes, `--cov-fail-under=80` | ✅ blocking |
 | JS core (mirror do app.js) | node --test | 1261 testes | ✅ blocking |
 | E2E (browser) | **Playwright** | specs chromium + mobile-chrome | ✅ job `e2e` |
 | Cobertura pública | **Codecov** (free p/ repo público) | upload do coverage.xml | ✅ non-blocking |

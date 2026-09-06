@@ -498,7 +498,7 @@ device** em um ciclo:
 ## 🧪 Testes
 
 ```bash
-python -m pytest tests/ --cov=app --cov=helpers --cov=axe_fleet --cov=services --cov=core --cov-fail-under=45
+python -m pytest tests/ --cov=app --cov=helpers --cov=axe_fleet --cov=services --cov=core --cov-fail-under=80
 node --test tests/test_app_js_core.js
 npm run test:e2e        # Playwright
 ```

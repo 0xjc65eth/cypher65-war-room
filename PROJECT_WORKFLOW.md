@@ -171,7 +171,7 @@ Baseado em [kylezantos/design-motion-principles](https://github.com/kylezantos/d
 | arch-contract | Architecture enforcement | SIM |
 | Stryker | Mutation testing | Recomendado (PRs críticos) |
 
-> **Nota do projeto:** gates reais deste repo em `.github/workflows/ci.yml` + `docs/QUALITY.md` — pytest com `--cov-fail-under=65`, JS core espelhado, e2e Playwright, guards DOM/mobile (`check-dom-regression.cjs`, `check-mobile-xss.cjs`), audit visual (`audit_ui.cjs --all`), Codecov (project + patch).
+> **Nota do projeto:** gates reais deste repo em `.github/workflows/ci.yml` + `docs/QUALITY.md` — pytest com `--cov-fail-under=80`, JS core espelhado, e2e Playwright, guards DOM/mobile (`check-dom-regression.cjs`, `check-mobile-xss.cjs`), audit visual (`audit_ui.cjs --all`), Codecov (project + patch).
 
 ## 8. Testing — Cobertura Obrigatória
 

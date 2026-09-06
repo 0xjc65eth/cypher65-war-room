@@ -174,7 +174,7 @@ Aplicar o que for aplicável à mudança:
 - **Lint/qualidade**: Biome (mobile + advisory no app.js), Knip (dead code),
   commitlint (Conventional Commits), mutmut/Stryker (mutation testing sob
   demanda). Pre-commit: `flake8` + `black` + `commitlint`.
-- **Testes**: unit/integration pytest (gate `--cov-fail-under=65`), JS core
+- **Testes**: unit/integration pytest (gate `--cov-fail-under=80`), JS core
   (`node tests/test_app_js_core.js`), e2e Playwright (job `e2e` no CI),
   cobertura no Codecov (badge dinâmico no README).
 - **Auditoria visual** (mudanças de UI): `node scripts/audit_ui.cjs --all`

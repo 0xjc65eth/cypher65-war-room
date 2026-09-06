@@ -98,7 +98,7 @@ All settings are environment variables (see [`.env.example`](.env.example)):
 
 ```bash
 # Python unit + integration (2650+ tests)
-python -m pytest tests/ --cov=app --cov=helpers --cov=axe_fleet --cov=services --cov=core --cov-fail-under=65
+python -m pytest tests/ --cov=app --cov=helpers --cov=axe_fleet --cov=services --cov=core --cov-fail-under=80
 
 # JS core tests (rendering helpers, probability math, terminal)
 node --test tests/test_app_js_core.js
@@ -108,7 +108,7 @@ npm install
 npm run test:e2e
 ```
 
-The CI workflow (`.github/workflows/ci.yml`) gates merges on all suites plus a **65% coverage floor** (matching `codecov.yml` and the local `--cov-fail-under=65`).
+The CI workflow (`.github/workflows/ci.yml`) gates merges on all suites plus an **80% coverage floor** (matching `codecov.yml` and the local `--cov-fail-under=80`).
 
 ## 📚 Documentation
 
