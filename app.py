@@ -2546,7 +2546,7 @@ def _execute_command_for_automation(
         "default", "physical_command", device_id, command, parameters
     )
     try:
-        result = adapter.execute_command(device, command, parameters)
+        result = adapter.execute_command(command, parameters)
     except Exception:
         _operation_ledger.update_operation(
             operation["operation_id"],
@@ -2572,6 +2572,7 @@ def _execute_command_for_automation(
     }
     _record_command(device_id, command, parameters, result)
     if command in ("restart", "reboot") and result.get("success"):
+        _safety_engine.record_restart(device)
         device.status = "OFFLINE"
         _core_registry.update_device(device.id, status="OFFLINE")
     return result

@@ -6,6 +6,15 @@ e versionamento semântico ([SemVer](https://semver.org/lang/pt-BR/)).
 
 ## [Unreleased]
 
+### Corrigido — SafetyEngine no plano da frota e cooldown persistente (Issue #415)
+- Comandos `axe-fleet` (restart/identify/pause/resume/config) passam por
+  `SafetyEngine.validate_command` antes do dispatch.
+- Cooldown de restart persiste em SQLite e sobrevive a reboot do processo.
+- Overclock/pool exigem telemetria fresca; `pause` continua permitido a quente.
+- `min_hashrate` default 0 deixa de bloquear miner idle; o engine lê `hashrate_hs`.
+- Automação chama `adapter.execute_command(command, parameters)` e não audita
+  `success: false` como EXECUTED.
+
 ### Corrigido — linguagem de probabilidade e economia não-promissória (Issue #378)
 - Rótulos de prazo/progresso foram substituídos por **model mean interval**,
   **session P(≥1) estimate**, **best-share/target ratio** e **modeled cost
