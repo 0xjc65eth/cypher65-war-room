@@ -45,7 +45,8 @@ from services.tenant import (
     log_audit as _log_audit,
 )
 
-from core.models.device import device_status_is_online
+from core.models.device import Device, DeviceStatus, device_status_is_online
+from core.safety.safety_engine import SafetyEngine
 
 from .connector import AxeOSConnector, AxeOSConnectorError
 from .models import infer_capabilities, STATUS_PAUSED, derive_device_status
@@ -55,6 +56,7 @@ log = logging.getLogger("cypher65.axe.routes")
 
 # Registry is injected by app.py after creation
 _registry = None
+_safety_engine = SafetyEngine()
 
 
 def init_routes(registry: DeviceRegistry):
@@ -119,6 +121,77 @@ def _nonnegative_finite_int(value) -> int:
     if not math.isfinite(number) or number <= 0:
         return 0
     return int(number)
+
+
+_FLEET_STATUS_TO_CORE = {
+    "ONLINE": DeviceStatus.ONLINE,
+    "HASHING": DeviceStatus.ONLINE,
+    "IDLE": DeviceStatus.ONLINE,
+    "WARNING": DeviceStatus.WARNING,
+    "PAUSED": DeviceStatus.WARNING,
+    "OFFLINE": DeviceStatus.OFFLINE,
+    "CRITICAL": DeviceStatus.CRITICAL,
+    "ERROR": DeviceStatus.CRITICAL,
+}
+
+
+def _fleet_device_for_safety(device: dict, tenant_id: str = "") -> Device:
+    """Bridge an axe-fleet dict + latest telemetry into a core Device."""
+    tel = {}
+    device_id = str(device.get("id") or "")
+    if _registry is not None and device_id:
+        tel = _latest_telemetry(
+            _registry.get_recent_telemetry(device_id, limit=1, tenant_id=tenant_id)
+        )
+    if not tel:
+        try:
+            import services.state as _shared_state
+
+            cached = _shared_state.axe_telemetry_cache.get(device_id)
+            if isinstance(cached, dict) and _is_trusted_payload(cached):
+                tel = cached
+        except Exception as exc:
+            log.warning("[axe] safety telemetry cache miss for %s: %s", device_id, exc)
+    sample = dict(tel) if isinstance(tel, dict) else {}
+    sample.setdefault("hashrate", sample.get("hashrate_hs"))
+    sample.setdefault("accepted_shares", sample.get("shares_accepted"))
+    sample.setdefault("rejected_shares", sample.get("shares_rejected"))
+    sample.setdefault("stale_shares", sample.get("shares_stale"))
+    if sample.get("temperature") is None:
+        sample["temperature"] = sample.get("temp_asic") or sample.get("temp")
+    status_key = str(device.get("status") or "").upper()
+    core_device = Device(
+        id=device_id,
+        name=str(device.get("name") or device_id),
+        model=str(device.get("model") or ""),
+        firmware=str(device.get("firmware") or ""),
+        ip=device.get("ip_address"),
+        hostname=device.get("hostname"),
+        status=_FLEET_STATUS_TO_CORE.get(status_key, DeviceStatus.OFFLINE),
+    )
+    if sample and ("hashrate_hs" in sample or "hashrate" in sample):
+        core_device.current_telemetry = sample
+    return core_device
+
+
+def _safety_block_response(device_id: str, command: str, tenant_id: str, reason: str):
+    _log_audit(
+        tenant_id,
+        "fleet.command_blocked",
+        target=device_id,
+        details={"command": command, "reason": reason},
+    )
+    return (
+        jsonify(
+            {
+                "success": False,
+                "error": reason,
+                "code": "SAFETY_ENGINE_BLOCKED",
+                "read_only": True,
+            }
+        ),
+        403,
+    )
 
 
 def _mark_cache_status(device_id: str, status: str) -> None:
@@ -1090,6 +1163,19 @@ def configure_device(device_id: str, tenant_id: str = ""):
     )
     if confirmation is not None:
         return confirmation
+
+    core_device = _fleet_device_for_safety(device, tenant_id)
+    safety_command = "set_frequency" if "frequency" in settings else "configure"
+    safety_result = _safety_engine.validate_command(
+        core_device, safety_command, settings
+    )
+    if not safety_result.allowed:
+        return _safety_block_response(
+            device_id,
+            "configure",
+            tenant_id,
+            safety_result.reason or "SafetyEngine blocked action",
+        )
 
     try:
         conn = AxeOSConnector(device["ip_address"])
@@ -2771,6 +2857,16 @@ def _execute_device_command(device_id: str, command: str, tenant_id: str = None)
             503,
         )
 
+    core_device = _fleet_device_for_safety(device, tid)
+    safety_result = _safety_engine.validate_command(core_device, command)
+    if not safety_result.allowed:
+        return _safety_block_response(
+            device_id,
+            command,
+            tid,
+            safety_result.reason or "SafetyEngine blocked action",
+        )
+
     from services import operation_ledger
 
     operation = operation_ledger.claim_operation(
@@ -2796,6 +2892,8 @@ def _execute_device_command(device_id: str, command: str, tenant_id: str = None)
             # push (carrying mining_paused) confirms and self-heals any gap.
             _registry.update_device(device_id, {"status": STATUS_PAUSED}, tenant_id=tid)
             _mark_cache_status(device_id, STATUS_PAUSED)
+        if command == "restart":
+            _safety_engine.record_restart(core_device)
         _log_audit(
             tid,
             "fleet.agent_command_queued",
@@ -2827,6 +2925,7 @@ def _execute_device_command(device_id: str, command: str, tenant_id: str = None)
         tid = tenant_id or _get_tenant_id()
         if command == "restart":
             result = conn.restart()
+            _safety_engine.record_restart(core_device)
         elif command == "identify":
             result = conn.identify()
         elif command == "pause":

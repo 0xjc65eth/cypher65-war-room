@@ -17,12 +17,25 @@ def physical_controls(monkeypatch):
     registry.get_device.return_value = {
         "id": "miner-1",
         "ip_address": "192.168.1.91",
+        "status": "ONLINE",
         "capabilities": {
             "configure": True,
             "frequencyControl": True,
             "voltageControl": True,
+            "restart": True,
+            "pause": True,
         },
     }
+    registry.get_recent_telemetry.return_value = [
+        {
+            "payload": {
+                "hashrate_hs": 1_000_000_000_000,
+                "temperature": 60,
+                "shares_accepted": 100,
+                "shares_rejected": 0,
+            }
+        }
+    ]
     monkeypatch.setattr(routes, "_registry", registry)
     monkeypatch.setattr(
         routes,
@@ -72,8 +85,11 @@ class TestDeviceConfigurationSafety:
 
             changed = client.post(
                 self.endpoint,
-                json={"settings": {"frequency": 650}, "confirmation_token": token,
-                      "dry_run": False},
+                json={
+                    "settings": {"frequency": 650},
+                    "confirmation_token": token,
+                    "dry_run": False,
+                },
             )
             assert changed.status_code == 409
             connector.update_settings.assert_not_called()
@@ -90,8 +106,13 @@ class TestDeviceConfigurationSafety:
             )
             executed = client.post(
                 self.endpoint,
-                json={"settings": {"frequency": 600}, "dry_run": False,
-                      "confirmation_token": prepared_again.get_json()["confirmation_token"]},
+                json={
+                    "settings": {"frequency": 600},
+                    "dry_run": False,
+                    "confirmation_token": prepared_again.get_json()[
+                        "confirmation_token"
+                    ],
+                },
             )
             assert executed.status_code == 200
             connector.update_settings.assert_called_once_with({"frequency": 600})
@@ -331,3 +352,67 @@ class TestTuyaCredentialInputSafety:
         assert access_id not in body
         assert access_secret not in body
         assert "[REDACTED]" in body
+
+
+class TestFleetSafetyEngineGate:
+    restart_endpoint = "/api/axe-fleet/devices/miner-1/restart"
+    config_endpoint = "/api/axe-fleet/devices/miner-1/config"
+
+    def test_restart_blocked_when_temperature_is_high(self, physical_controls):
+        client, registry = physical_controls
+        registry.get_recent_telemetry.return_value = [
+            {
+                "payload": {
+                    "hashrate_hs": 1_000_000_000_000,
+                    "temperature": 95,
+                    "shares_accepted": 100,
+                    "shares_rejected": 0,
+                }
+            }
+        ]
+        connector = MagicMock()
+        with patch("axe_fleet.routes.AxeOSConnector", return_value=connector):
+            prepared = client.post(self.restart_endpoint, json={"dry_run": False})
+            assert prepared.status_code == 202
+            blocked = client.post(
+                self.restart_endpoint,
+                json={
+                    "dry_run": False,
+                    "confirmation_token": prepared.get_json()["confirmation_token"],
+                },
+            )
+        assert blocked.status_code == 403
+        body = blocked.get_json()
+        assert body["code"] == "SAFETY_ENGINE_BLOCKED"
+        assert "temperature" in body["error"].lower()
+        connector.restart.assert_not_called()
+
+    def test_configure_blocked_when_temperature_is_high(self, physical_controls):
+        client, registry = physical_controls
+        registry.get_recent_telemetry.return_value = [
+            {
+                "payload": {
+                    "hashrate_hs": 1_000_000_000_000,
+                    "temperature": 95,
+                    "shares_accepted": 100,
+                    "shares_rejected": 0,
+                }
+            }
+        ]
+        connector = MagicMock()
+        with patch("axe_fleet.routes.AxeOSConnector", return_value=connector):
+            prepared = client.post(
+                self.config_endpoint,
+                json={"settings": {"frequency": 600}, "dry_run": False},
+            )
+            blocked = client.post(
+                self.config_endpoint,
+                json={
+                    "settings": {"frequency": 600},
+                    "dry_run": False,
+                    "confirmation_token": prepared.get_json()["confirmation_token"],
+                },
+            )
+        assert blocked.status_code == 403
+        assert blocked.get_json()["code"] == "SAFETY_ENGINE_BLOCKED"
+        connector.update_settings.assert_not_called()

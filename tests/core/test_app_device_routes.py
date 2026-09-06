@@ -9,6 +9,12 @@ from core.models.device import Device, DeviceStatus
 from core.models.capability import Capability
 
 
+def _with_telemetry(device):
+    """HIGH commands fail closed without a sample; tests must be explicit."""
+    device.current_telemetry = {"temperature": 50, "hashrate": 5e12}
+    return device
+
+
 @pytest.fixture(autouse=True)
 def _enable_validated_physical_commands(monkeypatch):
     """This module intentionally exercises behavior beyond the global gate."""
@@ -134,6 +140,7 @@ class TestAppDeviceRoutes:
 
         device = Device(name="Test-Command", model="Bitaxe", ip="192.168.1.55")
         device.capabilities = BitaxeAdapter(device).get_capabilities()
+        _with_telemetry(device)
         registry.add_device(device)
 
         # firmware_flash is genuinely unsupported by the Bitaxe adapter.
@@ -160,6 +167,7 @@ class TestAppDeviceRoutes:
             status=DeviceStatus.ONLINE,
         )
         device.capabilities = BitaxeAdapter(device).get_capabilities()
+        _with_telemetry(device)
         registry.add_device(device)
 
         with patch("routes.device_control._build_adapter") as build_adapter:
@@ -190,6 +198,7 @@ class TestAppDeviceRoutes:
             status=DeviceStatus.ONLINE,
         )
         device.capabilities = BitaxeAdapter(device).get_capabilities()
+        _with_telemetry(device)
         registry.add_device(device)
         payload = {
             "command": "set_frequency",
@@ -237,6 +246,7 @@ class TestAppDeviceRoutes:
             status=DeviceStatus.ONLINE,
         )
         device.capabilities = BitaxeAdapter(device).get_capabilities()
+        _with_telemetry(device)
         registry.add_device(device)
         payload = {
             "command": "set_frequency",
@@ -275,6 +285,7 @@ class TestAppDeviceRoutes:
             status=DeviceStatus.ONLINE,
         )
         device.capabilities = BitaxeAdapter(device).get_capabilities()
+        _with_telemetry(device)
         registry.add_device(device)
         payload = {
             "command": "set_frequency",
@@ -316,6 +327,7 @@ class TestAppDeviceRoutes:
             status=DeviceStatus.ONLINE,
         )
         device.capabilities = BitaxeAdapter(device).get_capabilities()
+        _with_telemetry(device)
         registry.add_device(device)
         secret = "never-persist-this-value"
         parameters = {
@@ -377,6 +389,7 @@ class TestAppDeviceRoutes:
             status=DeviceStatus.ONLINE,
         )
         device.capabilities = BitaxeAdapter(device).get_capabilities()
+        _with_telemetry(device)
         registry.add_device(device)
 
         with patch("routes.device_control._build_adapter") as build_adapter:
@@ -409,6 +422,7 @@ class TestAppDeviceRoutes:
             status=DeviceStatus.ONLINE,
         )
         device.capabilities = BitaxeAdapter(device).get_capabilities()
+        _with_telemetry(device)
         registry.add_device(device)
         parameters = {
             "stratumURL": "POOL.EXAMPLE.COM",
@@ -455,6 +469,7 @@ class TestAppDeviceRoutes:
             status=DeviceStatus.ONLINE,
         )
         device.capabilities = BitaxeAdapter(device).get_capabilities()
+        _with_telemetry(device)
         registry.add_device(device)
         parameters = {
             "stratumURL": "pool.example.com",
@@ -512,6 +527,7 @@ class TestAppDeviceRoutes:
             status=DeviceStatus.ONLINE,
         )
         device.capabilities = BitaxeAdapter(device).get_capabilities()
+        _with_telemetry(device)
         registry.add_device(device)
         payload = {
             "command": "set_frequency",
@@ -559,6 +575,7 @@ class TestAppDeviceRoutes:
             status=DeviceStatus.ONLINE,
         )
         device.capabilities = BitaxeAdapter(device).get_capabilities()
+        _with_telemetry(device)
         registry.add_device(device)
         payload = {
             "command": "set_frequency",
@@ -632,6 +649,7 @@ class TestAppDeviceRoutes:
             status=DeviceStatus.ONLINE,
         )
         device.capabilities = BitaxeAdapter(device).get_capabilities()
+        _with_telemetry(device)
         registry.add_device(device)
         payload = {
             "command": "set_frequency",
@@ -687,6 +705,7 @@ class TestAppDeviceRoutes:
 
         device = Device(name="Test-Offline", model="Bitaxe", ip="192.168.1.56")
         device.capabilities = BitaxeAdapter(device).get_capabilities()
+        _with_telemetry(device)
         registry.add_device(device)
 
         response = flask_client.post(
@@ -758,6 +777,7 @@ class TestAppDeviceRoutes:
             status=DeviceStatus.ONLINE,
         )
         device.capabilities = BitaxeAdapter(device).get_capabilities()
+        _with_telemetry(device)
         registry.add_device(device)
 
         with patch("routes.device_control._build_adapter") as build_adapter:
@@ -778,6 +798,7 @@ class TestAppDeviceRoutes:
 
         device = Device(name="Test-History", model="Bitaxe", ip="192.168.1.57")
         device.capabilities = BitaxeAdapter(device).get_capabilities()
+        _with_telemetry(device)
         registry.add_device(device)
 
         response = flask_client.get(f"/api/devices/{device.id}/commands")
@@ -792,6 +813,7 @@ class TestAppDeviceRoutes:
 
         device = Device(name="Test-History-Rec", model="Bitaxe", ip="192.168.1.58")
         device.capabilities = BitaxeAdapter(device).get_capabilities()
+        _with_telemetry(device)
         registry.add_device(device)
 
         # First command should be blocked by safety (offline) but still recorded
@@ -866,6 +888,7 @@ class TestAppDeviceRoutes:
             status=DeviceStatus.ONLINE,
         )
         device.capabilities = BitaxeAdapter(device).get_capabilities()
+        _with_telemetry(device)
         registry.add_device(device)
 
         # Record a maintenance event
@@ -901,6 +924,7 @@ class TestAppDeviceRoutes:
             status=DeviceStatus.ONLINE,
         )
         device.capabilities = BitaxeAdapter(device).get_capabilities()
+        _with_telemetry(device)
         registry.add_device(device)
 
         flask_client.post(
@@ -927,6 +951,7 @@ class TestAppDeviceRoutes:
             status=DeviceStatus.ONLINE,
         )
         device.capabilities = BitaxeAdapter(device).get_capabilities()
+        _with_telemetry(device)
         registry.add_device(device)
 
         # Force the adapter to report no telemetry so the device goes offline
@@ -964,6 +989,7 @@ class TestAppDeviceRoutes:
             status=DeviceStatus.ONLINE,
         )
         device.capabilities = BitaxeAdapter(device).get_capabilities()
+        _with_telemetry(device)
         registry.add_device(device)
 
         response = flask_client.post(

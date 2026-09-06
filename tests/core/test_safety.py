@@ -1,4 +1,5 @@
 """Tests for core/safety/safety_engine.py."""
+
 import pytest
 
 from core.safety.safety_engine import SafetyEngine, SafetyResult
@@ -38,6 +39,8 @@ class TestSafetyEngine:
     def test_state_changing_commands_require_confirmation(self, command, risk_level):
         engine = SafetyEngine()
         device = Device(name="Bitaxe", model="Bitaxe Max", status=DeviceStatus.ONLINE)
+        if command in SafetyEngine.TELEMETRY_REQUIRED_COMMANDS:
+            device.current_telemetry = {"temperature": 50, "hashrate": 5e12}
 
         result = engine.validate_command(device, command)
 
@@ -79,8 +82,11 @@ class TestSafetyEngine:
         engine = SafetyEngine()
         device = Device(name="Bitaxe", model="Bitaxe Max", status=DeviceStatus.ONLINE)
         device.current_telemetry = {
-            "temperature": 50, "hashrate": 5e12,
-            "accepted_shares": 80, "rejected_shares": 20, "stale_shares": 0,
+            "temperature": 50,
+            "hashrate": 5e12,
+            "accepted_shares": 80,
+            "rejected_shares": 20,
+            "stale_shares": 0,
         }
         result = engine.validate_command(device, "restart")
 
@@ -92,8 +98,11 @@ class TestSafetyEngine:
         engine = SafetyEngine()
         device = Device(name="Bitaxe", model="Bitaxe Max", status=DeviceStatus.ONLINE)
         device.current_telemetry = {
-            "temperature": 50, "hashrate": 5e12,
-            "accepted_shares": 80, "rejected_shares": 0, "stale_shares": 20,
+            "temperature": 50,
+            "hashrate": 5e12,
+            "accepted_shares": 80,
+            "rejected_shares": 0,
+            "stale_shares": 20,
         }
         result = engine.validate_command(device, "restart")
 
@@ -109,10 +118,12 @@ class TestSafetyEngine:
 
     def test_model_defaults_override_global(self):
         """Per-model defaults override global limits (layered config)."""
-        engine = SafetyEngine(config={
-            "max_temperature": 85,
-            "model_defaults": {"bitaxe max": {"max_temperature": 70.0}},
-        })
+        engine = SafetyEngine(
+            config={
+                "max_temperature": 85,
+                "model_defaults": {"bitaxe max": {"max_temperature": 70.0}},
+            }
+        )
         device = Device(name="Bitaxe", model="Bitaxe Max", status=DeviceStatus.ONLINE)
         device.current_telemetry = {"temperature": 75}
         result = engine.validate_command(device, "restart")
@@ -122,10 +133,12 @@ class TestSafetyEngine:
 
     def test_device_safety_config_overrides_all(self):
         """Per-device safety_config (metadata) has the highest priority."""
-        engine = SafetyEngine(config={
-            "max_temperature": 85,
-            "model_defaults": {"bitaxe max": {"max_temperature": 70.0}},
-        })
+        engine = SafetyEngine(
+            config={
+                "max_temperature": 85,
+                "model_defaults": {"bitaxe max": {"max_temperature": 70.0}},
+            }
+        )
         device = Device(name="Bitaxe", model="Bitaxe Max", status=DeviceStatus.ONLINE)
         device.metadata = {"safety_config": {"max_temperature": 90.0}}
         device.current_telemetry = {"temperature": 88}
@@ -164,3 +177,83 @@ class TestSafetyEngine:
 
         result = engine.validate_command(device, "restart")
         assert result.allowed is True
+
+    def test_zero_hashrate_with_default_floor_is_not_a_violation(self):
+        """Default min_hashrate 0.0 is 'no floor', not 'block idle miners'."""
+        engine = SafetyEngine()
+        device = Device(
+            id="idle-1", name="Bitaxe", model="Bitaxe Max", status=DeviceStatus.ONLINE
+        )
+        device.current_telemetry = {"temperature": 50, "hashrate": 0}
+        result = engine.validate_command(device, "restart")
+        assert result.allowed is True
+
+    def test_hashrate_hs_alias_is_read(self):
+        engine = SafetyEngine(config={"min_hashrate": 10.0})
+        device = Device(
+            id="hs-1", name="Bitaxe", model="Bitaxe Max", status=DeviceStatus.ONLINE
+        )
+        device.current_telemetry = {"temperature": 50, "hashrate_hs": 5.0}
+        result = engine.validate_command(device, "restart")
+        assert result.allowed is False
+        assert "hashrate" in result.reason.lower()
+
+    def test_set_frequency_blocked_when_hot(self):
+        engine = SafetyEngine(config={"max_temperature": 85})
+        device = Device(
+            id="hot-1", name="Bitaxe", model="Bitaxe Max", status=DeviceStatus.ONLINE
+        )
+        device.current_telemetry = {"temperature": 95, "hashrate": 5e12}
+        result = engine.validate_command(device, "set_frequency")
+        assert result.allowed is False
+        assert "temperature" in result.reason.lower()
+
+    def test_pause_allowed_when_hot(self):
+        """pause is the thermal escape hatch and must not inherit the HIGH gate."""
+        engine = SafetyEngine(config={"max_temperature": 85})
+        device = Device(
+            id="hot-2", name="Bitaxe", model="Bitaxe Max", status=DeviceStatus.ONLINE
+        )
+        device.current_telemetry = {"temperature": 95, "hashrate": 5e12}
+        result = engine.validate_command(device, "pause")
+        assert result.allowed is True
+
+    def test_set_frequency_without_telemetry_is_blocked(self):
+        engine = SafetyEngine()
+        device = Device(
+            id="no-tel", name="Bitaxe", model="Bitaxe Max", status=DeviceStatus.ONLINE
+        )
+        device.current_telemetry = None
+        result = engine.validate_command(device, "set_frequency")
+        assert result.allowed is False
+        assert "telemetry" in result.reason.lower()
+
+    def test_hw_error_rate_is_enforced(self):
+        engine = SafetyEngine()
+        device = Device(
+            id="hw-1", name="Bitaxe", model="Bitaxe Max", status=DeviceStatus.ONLINE
+        )
+        device.current_telemetry = {
+            "temperature": 50,
+            "hashrate": 5e12,
+            "hw_error_pct": 10.0,
+        }
+        result = engine.validate_command(device, "restart")
+        assert result.allowed is False
+        assert "hw error" in result.reason.lower()
+
+    def test_restart_cooldown_survives_new_engine_instance(self):
+        engine = SafetyEngine(config={"restart_cooldown_minutes": 5})
+        device = Device(
+            id="persist-1",
+            name="Bitaxe",
+            model="Bitaxe Max",
+            status=DeviceStatus.ONLINE,
+        )
+        device.current_telemetry = {"temperature": 50, "hashrate": 5e12}
+        engine.record_restart(device)
+
+        restarted = SafetyEngine(config={"restart_cooldown_minutes": 5})
+        result = restarted.validate_command(device, "restart")
+        assert result.allowed is False
+        assert "cooldown" in result.reason.lower()

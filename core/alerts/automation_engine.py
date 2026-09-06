@@ -751,6 +751,19 @@ class AutomationEngine:
                 result = self.execute_command_callback(
                     device.id, rule.action_command, rule.action_parameters
                 )
+                if isinstance(result, dict) and result.get("success") is False:
+                    reason = str(
+                        result.get("error") or "command returned success=false"
+                    )
+                    self._audit(rule, device, status="EXECUTION_FAILED", reason=reason)
+                    return {
+                        "rule_id": rule.id,
+                        "rule_name": rule.name,
+                        "device_id": device.id,
+                        "status": "error",
+                        "reason": reason,
+                        "result": result,
+                    }
                 self._audit(rule, device, status="EXECUTED", result=result)
                 return {
                     "rule_id": rule.id,
