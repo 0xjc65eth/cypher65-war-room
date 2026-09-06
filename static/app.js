@@ -333,6 +333,9 @@
     if (!t) {
       t = document.createElement('div');
       t.id = 'toast-container';
+      t.setAttribute('role', 'status');
+      t.setAttribute('aria-live', 'polite');
+      t.setAttribute('aria-atomic', 'true');
       document.body.appendChild(t);
     }
     var el = document.createElement('div');

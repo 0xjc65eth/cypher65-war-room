@@ -20,6 +20,12 @@
 
 'use strict';
 
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
 // ── Test counters ─────────────────────────────────────────────────────────
 let passed = 0;
 let failed = 0;
@@ -6004,6 +6010,14 @@ function makeSetHtmlIfChanged() {
   const extreme = buildAdminAnalyticsModel({ boot_count: 2, module_usage: { bad: Infinity, negative: -4 }, dropoff: { boot_total: 2, boot_without_switch: 99 } });
   assertEqual('analytics invalid counts clamp to zero', extreme.modules.map(m => m.accesses), [0, 0]);
   assertEqual('analytics dropoff cannot exceed boots', extreme.dropoff, { withoutSwitch: 2, navigated: 0, total: 2 });
+})();
+
+// ── Issue #420: toast live region contract ────────────────────────────
+(function testToastA11yContract() {
+  const src = fs.readFileSync(path.join(__dirname, '..', 'static', 'app.js'), 'utf8');
+  assertEqual("toast sets role=status", /setAttribute\('role', 'status'\)/.test(src), true);
+  assertEqual("toast sets aria-live=polite", /setAttribute\('aria-live', 'polite'\)/.test(src), true);
+  assertEqual("toast sets aria-atomic", /setAttribute\('aria-atomic', 'true'\)/.test(src), true);
 })();
 
 //  RESULTS
