@@ -6,6 +6,11 @@ e versionamento semântico ([SemVer](https://semver.org/lang/pt-BR/)).
 
 ## [Unreleased]
 
+### Corrigido — AxeOS POST/PATCH fail-closed em HTTP de erro (Issue #422)
+- 4xx/5xx viram `AxeOSConnectorError` (antes estouravam `HTTPError` no Flask).
+- Corpo não-JSON em 2xx continua ACK de texto do firmware.
+- Falha de audit log de comando deixa de ser `except: pass`.
+
 ### Corrigido — SafetyEngine no plano da frota e cooldown persistente (Issue #415)
 - Comandos `axe-fleet` (restart/identify/pause/resume/config) passam por
   `SafetyEngine.validate_command` antes do dispatch.

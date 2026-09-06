@@ -2649,8 +2649,8 @@ def _record_command(
                 "reason": safe_result.get("reason"),
             },
         )
-    except Exception:
-        pass
+    except Exception as e:
+        log.warning("[command-audit] failed to persist device.command: %s", e)
 
 
 # ── Wire Device Control to the CORE registry + safety + command history ──────

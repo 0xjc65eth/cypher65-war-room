@@ -127,9 +127,7 @@ class AxeOSConnector:
             elapsed = time.time() - t0
             log.info("[%s] POST %s → %s (%.2fs)", self.ip, path, r.status_code, elapsed)
             r.raise_for_status()
-            if r.text and r.text.strip():
-                return r.json()
-            return {"success": True}
+            return self._decode_success_body(r, "POST", path, elapsed)
         except requests.exceptions.ConnectionError as e:
             elapsed = time.time() - t0
             err_type = self._classify_connection_error(e)
@@ -158,16 +156,8 @@ class AxeOSConnector:
                 f"Timeout connecting to {self.ip} (POST {path}): "
                 f"no response after {elapsed:.1f}s"
             )
-        except json.JSONDecodeError:
-            # Some AxeOS POST endpoints return plain text, not JSON
-            elapsed = time.time() - t0
-            log.warning(
-                "[%s] POST %s → non-JSON response (%.2fs), treating as success",
-                self.ip,
-                path,
-                elapsed,
-            )
-            return {"success": True}
+        except requests.exceptions.HTTPError as e:
+            self._raise_http_error("POST", path, e, time.time() - t0)
 
     def _patch(self, path: str, data: dict, timeout: int = None) -> dict:
         """PATCH request to device (used for settings updates)."""
@@ -183,9 +173,7 @@ class AxeOSConnector:
                 "[%s] PATCH %s → %s (%.2fs)", self.ip, path, r.status_code, elapsed
             )
             r.raise_for_status()
-            if r.text and r.text.strip():
-                return r.json()
-            return {"success": True}
+            return self._decode_success_body(r, "PATCH", path, elapsed)
         except requests.exceptions.ConnectionError as e:
             elapsed = time.time() - t0
             err_type = self._classify_connection_error(e)
@@ -214,6 +202,8 @@ class AxeOSConnector:
                 f"Timeout connecting to {self.ip} (PATCH {path}): "
                 f"no response after {elapsed:.1f}s"
             )
+        except requests.exceptions.HTTPError as e:
+            self._raise_http_error("PATCH", path, e, time.time() - t0)
 
     def _classify_connection_error(
         self, exc: requests.exceptions.ConnectionError
@@ -237,6 +227,37 @@ class AxeOSConnector:
         if "eof" in msg or "end of file" in msg:
             return "EOF"
         return "UNKNOWN"
+
+    def _raise_http_error(self, method: str, path: str, exc, elapsed: float):
+        status = exc.response.status_code if exc.response is not None else "N/A"
+        log.error(
+            "[%s] %s %s HTTP %s after %.2fs — %s",
+            self.ip,
+            method,
+            path,
+            status,
+            elapsed,
+            exc,
+        )
+        raise AxeOSConnectorError(
+            f"HTTP error from {self.ip} ({method} {path}): status={status}"
+        )
+
+    def _decode_success_body(self, response, method: str, path: str, elapsed: float):
+        """Parse a 2xx body. AxeOS restart/pause often returns plain text."""
+        if not (response.text and response.text.strip()):
+            return {"success": True}
+        try:
+            return response.json()
+        except json.JSONDecodeError:
+            log.warning(
+                "[%s] %s %s → non-JSON 2xx (%.2fs), treating as success",
+                self.ip,
+                method,
+                path,
+                elapsed,
+            )
+            return {"success": True}
 
     # ── Read endpoints ────────────────────────────────────────────────
 

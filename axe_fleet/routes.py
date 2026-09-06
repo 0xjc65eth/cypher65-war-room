@@ -206,8 +206,8 @@ def _mark_cache_status(device_id: str, status: str) -> None:
             entry = dict(entry)
             entry["status"] = status
             _shared_state.axe_telemetry_cache[device_id] = entry
-    except Exception:
-        pass
+    except Exception as exc:
+        log.warning("[axe] cache status mark failed for %s: %s", device_id, exc)
 
 
 # Per-IP latency probe cache (FLEET audit). Probing every reachable device
