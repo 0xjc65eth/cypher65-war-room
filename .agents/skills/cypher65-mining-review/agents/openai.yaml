@@ -1,0 +1,4 @@
+interface:
+  display_name: "CYPHER65 Mining Review"
+  short_description: "Auditoria técnica e operacional de mineração"
+  default_prompt: "Use $cypher65-mining-review para auditar o CYPHER65 e entregar um relatório técnico em português, sem modificar arquivos."
