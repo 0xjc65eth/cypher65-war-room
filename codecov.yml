@@ -3,7 +3,7 @@
 #
 # A cobertura é gerada no CI (pytest --cov) e enviada pelo codecov-action
 # (token: ${{ secrets.CODECOV_TOKEN }}). O gate local já existe
-# (--cov-fail-under=65); este arquivo replica o mesmo threshold no Codecov
+# (--cov-fail-under=80); este arquivo replica o mesmo threshold no Codecov
 # para o comentário de PR e o status check.
 
 codecov:
@@ -15,12 +15,12 @@ coverage:
   status:
     project:
       default:
-        target: 65%          # mesmo gate do pytest --cov-fail-under=65
+        target: 80%          # mesmo gate do pytest --cov-fail-under=80
         threshold: 1%        # tolerância de flutuação entre ambientes
         informational: false # falha abaixo do target → status vermelho
     patch:
       default:
-        target: 65%
+        target: 80%
         informational: true  # patch não bloqueia (repo pequeno, varia muito)
 
 comment:
