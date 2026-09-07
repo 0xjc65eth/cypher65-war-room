@@ -225,7 +225,7 @@
   <div class="hud-sep"></div>
   <div class="hud-item"><span class="hud-label">BEST</span><span class="hud-val hud-val--gold" id="hud-bestdiff">—</span></div>
   <div class="hud-sep"></div>
-  <div class="hud-item"><span class="hud-label">SHARES</span><span class="hud-val hud-val--cyan" id="hud-shares">0</span></div>
+  <div class="hud-item"><span class="hud-label">SHARES</span><span class="hud-val hud-val--cyan" id="hud-shares">—</span></div>
   <div class="hud-sep"></div>
   <div class="hud-item"><span class="hud-label">POOL</span><span class="hud-val" id="hud-poolhr">—</span></div>
 </div>
@@ -239,7 +239,7 @@
     <div class="status-block__row">
       <span class="led" id="sb-led"></span>
       <span class="status-block__val" id="sb-status">INIT</span>
-      <span class="status-block__sub" id="sb-workers">0 w</span>
+      <span class="status-block__sub" id="sb-workers">— w</span>
     </div>
   </div>
   <div class="status-block status-block--mining" id="sb-mining">
@@ -256,7 +256,7 @@
     <div class="status-block__row">
       <span class="status-block__val" id="sb-pool-hr">—</span>
       <span class="status-block__sep">|</span>
-      <span class="status-block__val" id="sb-pool-workers">0</span>
+      <span class="status-block__val" id="sb-pool-workers">—</span>
       <span class="status-block__sub" id="sb-pool-block">—</span>
     </div>
   </div>
@@ -272,9 +272,9 @@
   <div class="status-block status-block--fleet" id="sb-fleet">
     <div class="status-block__label">FLEET</div>
     <div class="status-block__row">
-      <span class="status-block__val" id="sb-fleet-online">0</span>
+      <span class="status-block__val" id="sb-fleet-online">—</span>
       <span class="status-block__sep">/</span>
-      <span class="status-block__val" id="sb-fleet-total">0</span>
+      <span class="status-block__val" id="sb-fleet-total">—</span>
       <span class="status-block__sub" id="sb-fleet-hr">—</span>
     </div>
   </div>
@@ -511,9 +511,9 @@
 <!-- ── COMMAND CENTER (P0-3) — 3 ações contextuais ── -->
 <section class="panel panel--command-center panel--large" id="command-center-panel" data-module="dashboard">
   <div class="panel__header">
-    <div class="panel__eyebrow">⌘ AUTO-PILOT · O QUE FAZER AGORA?</div>
+    <div class="panel__eyebrow">⌘ COMMAND CENTER · ADVISORY</div>
     <div class="panel__tools">
-      <span class="badge badge--purple" id="cc-mode-badge" title="Fase 1 do Auto-Pilot: modo ADVISORY (read-only) — as automações ainda não executam sozinhas, apenas sinalizam o que fariam.">ADVISORY</span>
+      <span class="badge badge--purple" id="cc-mode-badge" title="Diagnóstico somente leitura: os cards orientam a investigação e nunca executam comandos ou abrem compras.">READ-ONLY</span>
       <span class="badge badge--mute" id="cc-status-badge">—</span>
     </div>
   </div>
@@ -521,7 +521,7 @@
     <div class="empty-state" style="grid-column:1/-1;border:none;padding:10px">
       <div class="empty-state__icon">⌘</div>
       <div class="empty-state__title">All systems nominal</div>
-      <div class="empty-state__desc">Auto-Pilot (advisory) cards appear when the dashboard detects something worth your attention — an offline worker, a hashrate drop below the 7-day peak, a hot miner, a proximity streak, or an automation rule ready to fire.</div>
+      <div class="empty-state__desc">Operational cards appear when real telemetry identifies something worth reviewing — an offline worker, a hashrate drop, a hot miner or an automation rule ready for inspection.</div>
     </div>
   </div>
 </section>
@@ -2066,7 +2066,7 @@
     </div>
     <div class="fcc-header__badges">
       <span class="badge badge--green" id="lm-status-badge">LIVE</span>
-      <span class="badge badge--mute" id="lm-workers-badge">0 workers</span>
+      <span class="badge badge--mute" id="lm-workers-badge">— workers</span>
       <span class="lm-event-log__conn" id="lm-conn-dot" title="connection status"></span>
     </div>
   </div>
