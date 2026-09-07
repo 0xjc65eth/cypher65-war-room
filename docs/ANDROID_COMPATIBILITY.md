@@ -1,6 +1,6 @@
 # Android compatibility and release status
 
-Last verified: 2026-08-30
+Last verified: 2026-09-07
 
 ## Architecture
 
@@ -16,7 +16,7 @@ install, sign, or exercise an APK or AAB.
 
 | Property | Current value | Evidence |
 |---|---:|---|
-| Expo SDK | 57.0.18 | `mobile/package-lock.json` |
+| Expo SDK | 57.0.20 | `mobile/package-lock.json` |
 | React Native | 0.86.3 | `mobile/package-lock.json` |
 | Android package | `com.cypher65.warroom` | `mobile/app.config.js` |
 | Orientation | phone/tablet rotation enabled | Shared cross-platform requirement; physical Android regression test pending |
@@ -33,12 +33,24 @@ been installed and tested on that version/profile.
 denial-of-service advisory reachable through the development-only Stryker
 toolchain is pinned to the patched `6.16.0` release through an npm override.
 
-The remaining 11 moderate findings are in the Expo build/configuration
-toolchain, including the `uuid` version constrained by Expo's `xcode` parser.
-The automated npm recommendation is a downgrade to Expo 46, which is not a safe
-or compatible fix for an SDK 57 application. They remain release advisories
-until Expo publishes a compatible dependency tree. They are build-time risks,
-not evidence that the runtime APK is safe; APK inspection is still mandatory.
+The SDK-compatible patch update also moves `@xmldom/xmldom` to the patched
+`0.9.12` release. The remaining 15 moderate findings are two transitive risk
+families repeated through their parent packages:
+
+- Expo build/configuration tooling → `xcode@3.0.1` → `uuid@7.0.3`;
+- React Navigation → `query-string` → `decode-uri-component`.
+
+The application does not configure React Navigation deep-link parsing, so the
+second family is not currently exposed to untrusted URL input. The first family
+runs while generating native projects, not in the shipped JavaScript runtime.
+They still remain supply-chain/release advisories until compatible upstream
+trees are published. The automated npm recommendations downgrade Expo 57 to 46
+or React Navigation 6 to 3, so `npm audit fix --force` is explicitly rejected.
+No override may be added if `npm ls` marks the dependency tree invalid.
+
+This triage means **zero high/critical and zero currently reachable moderate
+runtime findings**, not “zero advisories”. It is not evidence that a future APK
+is safe; APK inspection and malicious deep-link tests are still mandatory.
 
 ## Gates not yet satisfied
 

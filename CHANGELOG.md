@@ -14,6 +14,16 @@ e versionamento semântico ([SemVer](https://semver.org/lang/pt-BR/)).
 - Falhas HTTP, de rede ou de payload em Rentals mostram estado de erro
   explícito, sem estimativas, com retry acessível e estado de carregamento.
 
+### Corrigido — patches compatíveis e triagem mobile (Issue #393)
+- Expo SDK 57 foi atualizado somente dentro da faixa recomendada pelo Expo
+  Doctor: Expo 57.0.20, Metro Runtime 57.0.15, Notifications 57.0.17 e Secure
+  Store 57.0.3.
+- `@xmldom/xmldom` transitivo subiu para 0.9.12, removendo o advisory corrigível
+  sem `--force`; Expo Doctor volta a 21/21.
+- Permanecem 15 findings moderate transitivos sem correção compatível, ligados
+  a Expo/Xcode/UUID e React Navigation/query-string. O downgrade automático
+  para Expo 46/React Navigation 3 segue rejeitado e o risco está documentado.
+
 ### Corrigido — AxeOS POST/PATCH fail-closed em HTTP de erro (Issue #422)
 - 4xx/5xx viram `AxeOSConnectorError` (antes estouravam `HTTPError` no Flask).
 - Corpo não-JSON em 2xx continua ACK de texto do firmware.
