@@ -872,6 +872,7 @@ def init_db():
         """CREATE TABLE IF NOT EXISTS proximity_history (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             ts INTEGER NOT NULL,
+            tenant_id TEXT NOT NULL DEFAULT 'default',
             best_diff REAL,
             best_diff_str TEXT,
             all_time_best_diff REAL,
@@ -881,6 +882,20 @@ def init_db():
             hot_streak INTEGER DEFAULT 0
         )"""
     )
+    # Issue #423: legacy proximity rows predate tenant isolation.  Attribute
+    # those rows to the operator/default tenant instead of allowing them to be
+    # read by every tenant through an unscoped peak query.
+    c.execute("PRAGMA table_info(proximity_history)")
+    proximity_cols = {row[1] for row in c.fetchall()}
+    if "tenant_id" not in proximity_cols:
+        try:
+            c.execute(
+                "ALTER TABLE proximity_history "
+                "ADD COLUMN tenant_id TEXT NOT NULL DEFAULT 'default'"
+            )
+            log.info("[migrate] added proximity_history.tenant_id column")
+        except sqlite3.Error as e:
+            log.warning("[migrate] could not add proximity_history.tenant_id: %s", e)
     # NOTE: achievements (milestones) are computed in-memory per poll from
     # session_share_count / worker best-difficulty / worker uptime. No DB
     # table needed — kept lightweight so the badge grid re-derives naturally
@@ -903,6 +918,10 @@ def init_db():
     )
     c.execute(
         "CREATE INDEX IF NOT EXISTS idx_proximity_history_ts ON proximity_history(ts)"
+    )
+    c.execute(
+        "CREATE INDEX IF NOT EXISTS idx_proximity_history_tenant_ts "
+        "ON proximity_history(tenant_id, ts)"
     )
     # ── Data audit (2026-08-02): missing time-series ts indexes ──
     c.execute(
@@ -3045,7 +3064,12 @@ def _nearest_history_before(ts_target):
 
 
 def _sample_proximity(
-    ts, best_diff_raw, current_difficulty, worker_hashrate, hot_streak
+    ts,
+    best_diff_raw,
+    current_difficulty,
+    worker_hashrate,
+    hot_streak,
+    tenant_id="default",
 ):
     """Insert a proximity_history row, throttled to once per
     PROXIMITY_SAMPLE_THROTTLE_S seconds."""
@@ -3060,11 +3084,12 @@ def _sample_proximity(
         c = conn.cursor()
         c.execute(
             "INSERT INTO proximity_history "
-            "(ts, best_diff, best_diff_str, all_time_best_diff, "
+            "(ts, tenant_id, best_diff, best_diff_str, all_time_best_diff, "
             " network_difficulty, worker_hashrate, pct_of_network, hot_streak) "
-            "VALUES (?,?,?,?,?,?,?,?)",
+            "VALUES (?,?,?,?,?,?,?,?,?)",
             (
                 int(ts),
+                str(tenant_id or "default"),
                 best_diff_raw,
                 fmt_diff(best_diff_raw) if best_diff_raw else "",
                 timeline_state.get("all_time_best_diff_raw") or 0.0,
