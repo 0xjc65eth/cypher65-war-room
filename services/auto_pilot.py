@@ -325,20 +325,28 @@ def _collect_fleet(tenant_id: str = "") -> List[dict]:
 
 
 def _collect_peak_7d(tenant_id: str = "") -> float:
-    """Max worker hashrate observed over the last 7 days (proximity_history)."""
+    """Tenant-scoped max worker hashrate observed over the last 7 days."""
+    conn = None
     try:
         from services.db import get_db
 
+        scoped_tenant_id = str(tenant_id or "default")
         conn = get_db()
         row = conn.execute(
-            "SELECT MAX(worker_hashrate) FROM proximity_history WHERE ts >= ?",
-            (int(time.time()) - 7 * 86400,),
+            "SELECT MAX(worker_hashrate) FROM proximity_history "
+            "WHERE tenant_id = ? AND ts >= ?",
+            (scoped_tenant_id, int(time.time()) - 7 * 86400),
         ).fetchone()
-        conn.close()
         if row and row[0]:
             return float(row[0])
     except Exception as e:
         log.warning("[auto_pilot] peak query failed: %s", e)
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception as e:
+                log.warning("[auto_pilot] peak connection close failed: %s", e)
     return 0.0
 
 

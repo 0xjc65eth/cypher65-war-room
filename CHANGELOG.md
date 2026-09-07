@@ -19,6 +19,16 @@ e versionamento semântico ([SemVer](https://semver.org/lang/pt-BR/)).
 - Corpo não-JSON em 2xx continua ACK de texto do firmware.
 - Falha de audit log de comando deixa de ser `except: pass`.
 
+### Corrigido — pico de hashrate do Auto-Pilot isolado por tenant (Issue #423)
+- `proximity_history` passa a registrar `tenant_id`; bancos legados recebem a
+  coluna de forma idempotente e suas linhas existentes ficam atribuídas ao
+  tenant operador `default`, sem perda de histórico.
+- O pico de sete dias usado pelo modo advisory e pelo snapshot é consultado
+  apenas no tenant resolvido. Sem histórico próprio, o valor é `0` e nenhuma
+  recomendação de queda é inventada a partir dos dados de outro usuário.
+- Índice `(tenant_id, ts)` preserva o custo das consultas por janela; testes
+  cobrem migração, isolamento A/B, ausência de dados e fechamento de conexão.
+
 ### Corrigido — SafetyEngine no plano da frota e cooldown persistente (Issue #415)
 - Comandos `axe-fleet` (restart/identify/pause/resume/config) passam por
   `SafetyEngine.validate_command` antes do dispatch.

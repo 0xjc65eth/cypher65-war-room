@@ -145,7 +145,12 @@ def _nearest_history_before(ts_target):
 
 
 def _sample_proximity(
-    ts, best_diff_raw, current_difficulty, worker_hashrate, hot_streak
+    ts,
+    best_diff_raw,
+    current_difficulty,
+    worker_hashrate,
+    hot_streak,
+    tenant_id="default",
 ):
     """Insert a proximity_history row, throttled to once per
     PROXIMITY_SAMPLE_THROTTLE_S seconds."""
@@ -160,11 +165,12 @@ def _sample_proximity(
         c = conn.cursor()
         c.execute(
             "INSERT INTO proximity_history "
-            "(ts, best_diff, best_diff_str, all_time_best_diff, "
+            "(ts, tenant_id, best_diff, best_diff_str, all_time_best_diff, "
             " network_difficulty, worker_hashrate, pct_of_network, hot_streak) "
-            "VALUES (?,?,?,?,?,?,?,?)",
+            "VALUES (?,?,?,?,?,?,?,?,?)",
             (
                 int(ts),
+                str(tenant_id or "default"),
                 best_diff_raw,
                 fmt_diff(best_diff_raw) if best_diff_raw else "",
                 state.timeline_state.get("all_time_best_diff_raw") or 0.0,
