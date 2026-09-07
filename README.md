@@ -38,6 +38,10 @@ fails, the UI shows a stale/offline badge with the last real cached value, never
 | **Learning & Support** | Bitcoin whitepaper, free book library, cypherpunk support panel (BTC / Lightning / hashrate donations) |
 | **Mobile companion** | React Native app in [`mobile/`](mobile/) — Command, Fleet, Block, Market, **Rentals**, AI |
 
+The Overview Command Center is read-only and operational: its cards navigate
+only to internal diagnostics. Affiliate offers and external purchase links are
+kept out of that decision surface.
+
 ## 🏗 Architecture
 
 ```

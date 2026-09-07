@@ -4,16 +4,30 @@ CYPHER65 // P0-3 + P1 — Command Center / Auto-Pilot contextual cards
 Unit tests for helpers.build_command_center() — the pure aggregation that
 surfaces up to 3 contextual "what to do right now" cards from the snapshot
 (offline worker, fleet attention, proximity streak, capital allocation,
-negative operation, affiliate buy + P1 Auto-Pilot advisory rules: hashrate
+negative operation + P1 Auto-Pilot advisory rules: hashrate
 drop below 7d peak, hot fleet device, automation rule ready to fire).
 Hermetic: no network, no DB, no app import needed (same ethos as
 test_decision_matrix.py).
 """
 import time
+from pathlib import Path
 
 import pytest
 
 from helpers import build_command_center, CC_MAX_ACTIONS
+
+
+def test_initial_dashboard_uses_unknown_counts_and_operational_heading():
+    html = (Path(__file__).parents[1] / "templates" / "dashboard.html").read_text(
+        encoding="utf-8"
+    )
+    assert 'id="hud-shares">—</span>' in html
+    assert 'id="sb-workers">— w</span>' in html
+    assert 'id="sb-pool-workers">—</span>' in html
+    assert 'id="sb-fleet-online">—</span>' in html
+    assert 'id="sb-fleet-total">—</span>' in html
+    assert "COMMAND CENTER · ADVISORY" in html
+    assert "O QUE FAZER AGORA?" not in html
 
 
 def _base_snapshot(**overrides):
@@ -147,18 +161,16 @@ class TestCapitalAllocation:
         assert neg[0]["severity"] == "warn"
 
 
-class TestAffiliate:
-    def test_affiliate_url_fires_buy_card(self):
+class TestCommercialCardsExcluded:
+    def test_affiliate_url_never_fires_buy_card(self):
         snap = _base_snapshot(
             market_data={
                 "affiliate": {"provider": "mrr", "url": "https://mrr.example/ref"},
             },
         )
         cards = build_command_center(snap)
-        buy = [c for c in cards if c["id"] == "affiliate_buy"]
-        assert len(buy) == 1
-        assert buy[0]["url"] == "https://mrr.example/ref"
-        assert buy[0]["target"] == "market"
+        assert cards == []
+        assert all(c["id"] != "affiliate_buy" for c in cards)
 
     def test_affiliate_none_no_card(self):
         snap = _base_snapshot(market_data={"affiliate": None})
@@ -173,7 +185,8 @@ class TestAffiliate:
 
 class TestRankingAndCap:
     def test_max_three_cards(self):
-        # Fire every rule at once → capped at CC_MAX_ACTIONS.
+        # Fire operational rules plus a commercial offer → still capped;
+        # the commercial offer is never eligible for this panel.
         snap = _base_snapshot(
             worker=None,
             axe_fleet=[{"status": "OFFLINE"}],
@@ -214,10 +227,8 @@ class TestRankingAndCap:
 
 
 class TestSnapshotInjection:
-    """P0-3 integration — /api/snapshot must inject the command_center payload
-    AFTER the affiliate link is attached, so the affiliate_buy rule sees the
-    real market_data.affiliate (regression: computing from latest_snapshot
-    before attach_affiliate produced a dead card in production)."""
+    """P0-3 integration — /api/snapshot injects an operational-only
+    command_center payload even when market_data has an affiliate URL."""
 
     @pytest.fixture
     def client(self):
@@ -254,13 +265,11 @@ class TestSnapshotInjection:
         assert response.status_code == 200
         data = response.get_json()
         cc = data.get("command_center") or []
-        # Healthy snapshot → no crit/warn; affiliate link present → buy card.
+        # Healthy snapshot + affiliate link → no commercial Command Center card.
         assert isinstance(cc, list)
         assert len(cc) <= 3
-        assert any(c["id"] == "affiliate_buy" for c in cc)
-        # The affiliate_buy card must carry the REAL resolved URL.
-        buy = next(c for c in cc if c["id"] == "affiliate_buy")
-        assert buy["url"] == "https://mrr.example/ref"
+        assert all(c["id"] != "affiliate_buy" for c in cc)
+        assert cc == []
 
     def test_snapshot_worker_offline_after_poll(self, client, monkeypatch):
         """A snapshot with ts>0 and no worker must produce the crit card

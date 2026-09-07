@@ -6,6 +6,14 @@ e versionamento semântico ([SemVer](https://semver.org/lang/pt-BR/)).
 
 ## [Unreleased]
 
+### Corrigido — Command Center operacional e Rentals recuperável (Issue #424)
+- O Command Center deixa de emitir ofertas afiliadas e não abre URLs externas;
+  seus cards agora encaminham apenas para diagnósticos internos.
+- Contagens desconhecidas usam travessão no primeiro paint, evitando zeros
+  falsos antes do primeiro snapshot real.
+- Falhas HTTP, de rede ou de payload em Rentals mostram estado de erro
+  explícito, sem estimativas, com retry acessível e estado de carregamento.
+
 ### Corrigido — AxeOS POST/PATCH fail-closed em HTTP de erro (Issue #422)
 - 4xx/5xx viram `AxeOSConnectorError` (antes estouravam `HTTPError` no Flask).
 - Corpo não-JSON em 2xx continua ACK de texto do firmware.

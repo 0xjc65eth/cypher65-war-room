@@ -963,8 +963,8 @@ def build_command_center(snapshot: Optional[dict] = None) -> list:
     """P0-3 // Build up to CC_MAX_ACTIONS contextual action cards.
 
     The Command Center is the advisory read-only layer that precedes the
-    Auto-Pilot Big Bet: instead of raw metrics, it surfaces the ONE action to
-    take right now (check the fleet, see the probability, buy hashrate) as a
+    Auto-Pilot Big Bet: instead of raw metrics, it surfaces the ONE diagnostic
+    to review right now (check the fleet, probability, or operating cost) as a
     decision card — each carrying a navigation target so a single click takes
     the operator to the right module.
 
@@ -982,7 +982,7 @@ def build_command_center(snapshot: Optional[dict] = None) -> list:
         "action": str,        // CTA label, e.g. "VER FLEET"
         "target": str,        // module to navigate to: fleet|probability|market
         "panel": str,         // optional panel id to scroll into view
-        "url": str | None,    // optional external link (affiliate buy)
+        "url": None,          // retained for API compatibility; never commercial
       }
 
     Rule set (all fed by REAL snapshot data):
@@ -992,14 +992,12 @@ def build_command_center(snapshot: Optional[dict] = None) -> list:
       4. proximity_milestone (info) — pct_of_network_cur >= 1.0%
       5. capital_lease       (info) — decision_matrix.best_option == 'lease'
       6. negative_operation  (warn) — pool_net_usd_per_day < 0
-      7. affiliate_buy       (info) — market_data.affiliate.url configured
-
     P1 Auto-Pilot advisory rules (phased start of the Big Bet — read-only,
     fed by the real `auto_pilot` snapshot block injected in app.py):
-      8. hashrate_drop       (gold) — current hashrate < 70% of the real
+      7. hashrate_drop       (gold) — current hashrate < 70% of the real
          7-day peak (proximity_history MAX, window AP_PEAK_WINDOW_S)
-      9. temp_high           (warn) — fleet device temperature >= AP_TEMP_HIGH_C
-      10. automation_ready   (info) — AutomationEngine.preview_rules()
+      8. temp_high           (warn) — fleet device temperature >= AP_TEMP_HIGH_C
+      9. automation_ready    (info) — AutomationEngine.preview_rules()
           reports a rule that WOULD fire right now (no execution)
 
     Cards are ranked by severity (crit > gold > warn > info), then emitted in
@@ -1136,27 +1134,7 @@ def build_command_center(snapshot: Optional[dict] = None) -> list:
             }
         )
 
-    # ── 7. Affiliate buy CTA (info) ──
-    md = snap.get("market_data") or {}
-    aff = (md.get("affiliate") or {}) if isinstance(md, dict) else {}
-    if isinstance(aff, dict) and aff.get("url"):
-        _add(
-            {
-                "id": "affiliate_buy",
-                "severity": "info",
-                "title": "Comprar hashrate em 1 clique",
-                "message": (
-                    f"Melhor oferta afiliada: {str(aff.get('provider') or 'hashrate').upper()} "
-                    "— link direto para o marketplace."
-                ),
-                "action": "COMPRAR HASHRATE",
-                "target": "market",
-                "panel": "market-panel",
-                "url": aff.get("url"),
-            }
-        )
-
-    # ── 8. P1 Auto-Pilot: hashrate below its real 7-day peak (gold) ──
+    # ── 7. P1 Auto-Pilot: hashrate below its real 7-day peak (gold) ──
     # Fed by snap["auto_pilot"]["peak_hashrate_7d"] — the true MAX worker
     # hashrate observed over the last 7 days (from proximity_history, real
     # data, injected by app.py). When the current hashrate has dropped below
@@ -1183,7 +1161,7 @@ def build_command_center(snapshot: Optional[dict] = None) -> list:
             }
         )
 
-    # ── 9. P1 Auto-Pilot: fleet device running hot (warn) ──
+    # ── 8. P1 Auto-Pilot: fleet device running hot (warn) ──
     if isinstance(fleet, list):
         hot_devices = [
             d
@@ -1210,7 +1188,7 @@ def build_command_center(snapshot: Optional[dict] = None) -> list:
                 }
             )
 
-    # ── 10. P1 Auto-Pilot: automation rule ready to fire (info) ──
+    # ── 9. P1 Auto-Pilot: automation rule ready to fire (info) ──
     # The Big Bet merge with Automations — read-only advisory preview of what
     # a rule WOULD do right now (AutomationEngine.preview_rules, no execution
     # by design). The operator sees the pending trigger and can confirm or

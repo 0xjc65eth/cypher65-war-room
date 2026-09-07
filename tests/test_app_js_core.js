@@ -3535,8 +3535,8 @@ console.log('📊 SUITE 25: Fase 2.1 chart helpers (computeSMA + buildChartAnnot
 // ═══════════════════════════════════════════════════════════════════════════
 // Mirrors static/app.js commandCenterCardHtml() — pure HTML generation for
 // the P0-3 Command Center panel. Severity maps to a modifier class; every
-// card carries data-cc-* attributes consumed by the delegated click handler
-// (module navigation + optional external affiliate link).
+// card carries internal data-cc-* navigation attributes consumed by the
+// delegated click handler. Commercial/external URLs are ignored.
 
 console.log('⌘ SUITE 22: renderCommandCenter() — action card HTML + severity');
 
@@ -3548,12 +3548,10 @@ function commandCenterCardHtmlTest(card) {
   const esc = escapeHtmlTest;
   const target = String(card.target || '');
   const panel = String(card.panel || '');
-  const url = String(card.url || '');
   return (
     '<button type="button" class="cc-card cc-card--' + sev + '" ' +
     'data-cc-target="' + esc(target) + '" ' +
-    'data-cc-panel="' + esc(panel) + '" ' +
-    'data-cc-url="' + esc(url) + '">' +
+    'data-cc-panel="' + esc(panel) + '">' +
     '<span class="cc-card__title">' + esc(card.title || 'Atenção') + '</span>' +
     '<span class="cc-card__message">' + esc(card.message || '') + '</span>' +
     '<span class="cc-card__action">' + esc(card.action || 'IR') + ' →</span>' +
@@ -3570,7 +3568,7 @@ assertTruthy('crit card has message', /Sem worker/.test(critCard));
 assertTruthy('crit card has action label', /VER FLEET/.test(critCard));
 assertTruthy('crit card has target fleet', /data-cc-target="fleet"/.test(critCard));
 assertTruthy('crit card has panel id', /data-cc-panel="axe-fleet-panel"/.test(critCard));
-assertTruthy('crit card no url attr', /data-cc-url=""/.test(critCard));
+assertTruthy('crit card has no external-url attr', !/data-cc-url=/.test(critCard));
 
 // Severity defaults to info
 var plainCard = commandCenterCardHtmlTest({ title: 'x' });
@@ -3582,11 +3580,10 @@ assertTruthy('gold modifier', /cc-card--gold/.test(commandCenterCardHtmlTest({ s
 assertTruthy('warn modifier', /cc-card--warn/.test(commandCenterCardHtmlTest({ severity: 'warn' })));
 assertTruthy('info modifier', /cc-card--info/.test(commandCenterCardHtmlTest({ severity: 'info' })));
 
-// Affiliate card carries the URL for the one-click buy
-var buyCard = commandCenterCardHtmlTest({ severity: 'info', action: 'COMPRAR HASHRATE', url: 'https://mrr.example/ref?a=1&b=2', target: 'market' });
-assertTruthy('buy card has url escaped', /data-cc-url="https:\/\/mrr\.example\/ref\?a=1&amp;b=2"/.test(buyCard));
-assertTruthy('buy card has COMPRAR label', /COMPRAR HASHRATE/.test(buyCard));
-assertTruthy('buy card has market target', /data-cc-target="market"/.test(buyCard));
+// Legacy URLs from an older backend are never rendered into the card.
+var legacyUrlCard = commandCenterCardHtmlTest({ severity: 'info', action: 'VER MARKET', url: 'https://mrr.example/ref?a=1&b=2', target: 'market' });
+assertTruthy('legacy URL is ignored', !/mrr\.example/.test(legacyUrlCard));
+assertTruthy('legacy URL card keeps internal target', /data-cc-target="market"/.test(legacyUrlCard));
 
 // Null / garbage never produce HTML
 assertEqual('null card → empty string', commandCenterCardHtmlTest(null), '');
@@ -3599,6 +3596,25 @@ assertFalsy('title is escaped (no raw <img>)', /<img/.test(evil));
 assertTruthy('title escapes to &lt;img', /&lt;img/.test(evil));
 assertFalsy('message quotes escaped', /"&<>"/.test(evil));
 assertTruthy('message &lt; entity', /&lt;/.test(evil));
+
+
+// Rentals top-level fetch failure: honest, retryable, injection-safe state.
+function rentalsLoadErrorHtmlTest(reason) {
+  return '<div class="empty-state" role="alert" style="grid-column:1/-1;border:none">' +
+    '<div class="empty-state__icon">⚠</div>' +
+    '<div class="empty-state__title">Rentals indisponível</div>' +
+    '<div class="empty-state__desc">Não foi possível carregar dados reais de MRR/Braiins (' + escapeHtmlTest(reason || 'falha de rede') + '). Nenhum valor foi estimado.</div>' +
+    '<button type="button" class="btn btn--primary btn--mini" id="rentals-load-retry">TENTAR NOVAMENTE</button>' +
+    '</div>';
+}
+
+var rentalsError = rentalsLoadErrorHtmlTest('HTTP 503');
+assertTruthy('rentals load error is announced', /role="alert"/.test(rentalsError));
+assertTruthy('rentals load error names providers', /MRR\/Braiins/.test(rentalsError));
+assertTruthy('rentals load error has retry', /rentals-load-retry/.test(rentalsError));
+assertTruthy('rentals load error rejects estimates', /Nenhum valor foi estimado/.test(rentalsError));
+var rentalsErrorEvil = rentalsLoadErrorHtmlTest('<img src=x onerror=alert(1)>');
+assertFalsy('rentals load error escapes reason', /<img/.test(rentalsErrorEvil));
 
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -5862,7 +5878,9 @@ function makeSetHtmlIfChanged() {
       action = { title: 'INSPECT ' + attention + ' ASIC EXCEPTION' + (attention === 1 ? '' : 'S'), target: 'fleet', panel: 'axe-fleet-panel' };
     } else {
       const cards = Array.isArray(data.command_center) ? data.command_center : [];
-      const card = cards.find(function(c) { return c && c.target; });
+      const card = cards.find(function(c) {
+        return c && c.target && c.id !== 'affiliate_buy' && !c.url;
+      });
       if (card) action = { title: String(card.title || 'OPEN DIAGNOSTIC').toUpperCase(), target: String(card.target), panel: String(card.panel || '') };
     }
     if (!action && !hasCost) action = { title: 'CONFIGURE OPERATIONAL COST', target: 'dashboard', panel: 'profit-panel' };
@@ -5885,6 +5903,16 @@ function makeSetHtmlIfChanged() {
   assertEqual('configured cost can legitimately be shown', critical.costPerDayUsd, 12.345);
   assertEqual('fleet exception beats commercial command-center card', critical.actionTarget, 'fleet');
   assertEqual('overview action carries no external URL field', Object.prototype.hasOwnProperty.call(critical, 'url'), false);
+
+  const commercialOnly = buildOperationalOverviewModel({
+    ts: 1000,
+    profitability: { cost_model_configured: true, cost_per_day_usd: 10 },
+    command_center: [{ id: 'affiliate_buy', title: 'Buy now', target: 'market', url: 'https://example.invalid' }],
+  }, {
+    fleet_stats: { total_devices: 1, online: 1, warning: 0, offline: 0, avg_health_score: 95, hashrate_lost_hs: 0, hashrate_loss_baseline_devices: 1 },
+    device_health: [{ telemetry: { age_seconds: 20 } }],
+  }, false, 1001);
+  assertEqual('commercial-only card is ignored', commercialOnly.actionTitle, 'NO ACTION REQUIRED');
 
   const stale = buildOperationalOverviewModel({ ts: 1000, profitability: { cost_model_configured: true, cost_per_day_usd: 0 } }, {
     fleet_stats: { total_devices: 1, online: 1, warning: 0, offline: 0, avg_health_score: 95, hashrate_lost_hs: 0, hashrate_loss_baseline_devices: 1 },
