@@ -52,6 +52,12 @@ This triage means **zero high/critical and zero currently reachable moderate
 runtime findings**, not “zero advisories”. It is not evidence that a future APK
 is safe; APK inspection and malicious deep-link tests are still mandatory.
 
+The 68-test Jest suite runs in-band. The shared GitHub runner showed worker
+contention that exhausted the default five-second timeout before the first
+AI Operator assertion, while the same assertion completed normally when
+serialized. Serialization changes scheduling only: test timeouts and assertions
+remain unchanged, and `npm test -- --ci` is the CI-equivalent command.
+
 ## Gates not yet satisfied
 
 - Generate a native Android project in a clean, controlled build environment.
