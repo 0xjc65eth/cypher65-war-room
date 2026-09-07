@@ -24,7 +24,7 @@
  * execuções do run-e2e.sh.
  *
  * Prerequisites: Flask server running on BASE_URL (default http://127.0.0.1:8765).
- * The server MUST be started via `bash run-e2e.sh` (RATE_LIMIT_PER_MINUTE=1000
+ * The server MUST be started via `bash run-e2e.sh` (RATE_LIMIT_PER_MINUTE=10000
  * — an env var that wins over .env). A plain dev server loads `.env` via
  * load_dotenv() (config.py), and if `.env` sets RATE_LIMIT_PER_MINUTE=60 the
  * dashboard polling + this suite's API calls exhaust that budget mid-run,

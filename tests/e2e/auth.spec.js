@@ -16,7 +16,7 @@
  * covered by tests/test_tenant_b2_isolation.py.
  *
  * Prerequisites: Flask server running on BASE_URL (default http://127.0.0.1:8765)
- * IMPORTANT: start the server with RATE_LIMIT_PER_MINUTE=1000 (as run-e2e.sh
+ * IMPORTANT: start the server with RATE_LIMIT_PER_MINUTE=10000 (as run-e2e.sh
  * does) — the default 300/min limit returns 429 for GET / under E2E load and
  * the dashboard will never render (#app-shell missing).
  *

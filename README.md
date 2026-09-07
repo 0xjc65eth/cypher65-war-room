@@ -107,9 +107,9 @@ python -m pytest tests/ --cov=app --cov=helpers --cov=axe_fleet --cov=services -
 # JS core tests (rendering helpers, probability math, terminal)
 node --test tests/test_app_js_core.js
 
-# Playwright E2E (spawns its own server on a free port, RATE_LIMIT_PER_MINUTE=1000)
+# Playwright E2E (runner starts a server with a temporary DB on PORT=8765)
 npm install
-npm run test:e2e
+bash run-e2e.sh --file=dashboard.spec.js
 ```
 
 The CI workflow (`.github/workflows/ci.yml`) gates merges on all suites plus an **80% coverage floor** (matching `codecov.yml` and the local `--cov-fail-under=80`).

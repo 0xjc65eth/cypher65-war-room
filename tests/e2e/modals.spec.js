@@ -35,6 +35,17 @@ async function waitForDashboard(page) {
   await page.waitForTimeout(800); // let the IIFE wire all handlers
 }
 
+/** Navigate and report server failures before waiting for application markup. */
+async function gotoDashboard(page) {
+  const response = await page.goto(BASE_URL);
+  expect(response, `No HTTP response received for GET ${BASE_URL}`).not.toBeNull();
+  expect(
+    response.status(),
+    `GET ${BASE_URL} returned HTTP ${response.status()}`,
+  ).toBe(200);
+  await waitForDashboard(page);
+}
+
 /**
  * Assert a modal is open: has modal--open AND is actually visible.
  * This is the regression assertion — before the CSS fix the modal got
@@ -89,8 +100,7 @@ function setupErrorCapture(page) {
 test.describe('CYPHER65 — Modals (wallet / settings / export)', () => {
 
   test.beforeEach(async ({ page }) => {
-    await page.goto(BASE_URL);
-    await waitForDashboard(page);
+    await gotoDashboard(page);
   });
 
   // ──────────────────────────────────────────────────────────────────

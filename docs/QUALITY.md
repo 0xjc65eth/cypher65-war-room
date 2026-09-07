@@ -208,6 +208,13 @@ node scripts/check-dom-regression.cjs  # guards DOM (ids duplicados + XSS innerH
 node scripts/check-mobile-xss.cjs      # guards XSS mobile (React Native — WebView/eval/openURL)
 ```
 
+O runner E2E usa banco temporário e `RATE_LIMIT_PER_MINUTE=10000` por padrão,
+alinhado ao CI; um valor explicitamente exportado continua prevalecendo. Use
+`CI=false` para uma reprodução local sem retries e `CI=true` para a política do
+CI (um retry e bloqueio de `test.only`). As specs de boot validam o status HTTP
+da navegação antes de aguardar o DOM, portanto 429/5xx aparecem como causa real
+em vez de um timeout enganoso em `#app-shell`.
+
 ### Guards DOM de regressão — `scripts/check-dom-regression.cjs`
 
 Guards estáticos **blocking** no job `gate` do CI (Issue #58):
