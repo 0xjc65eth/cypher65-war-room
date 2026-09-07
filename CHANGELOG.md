@@ -26,6 +26,15 @@ e versionamento semântico ([SemVer](https://semver.org/lang/pt-BR/)).
   a Expo/Xcode/UUID e React Navigation/query-string. O downgrade automático
   para Expo 46/React Navigation 3 segue rejeitado e o risco está documentado.
 
+### Corrigido — estabilidade e diagnóstico do boot E2E (Issue #430)
+- O servidor com banco temporário do `run-e2e.sh` usa o mesmo teto de 10.000
+  req/min do CI, evitando HTTP 429 em suítes longas de desktop + mobile sem
+  desativar o limiter.
+- `CI=false` agora é interpretado como falso de verdade e executa sem retry;
+  `CI=true` preserva um retry e o bloqueio de `test.only`.
+- Dashboard e modais validam HTTP 200 antes de esperar `#app-shell`, expondo
+  imediatamente 429/5xx em vez de reportar um timeout DOM enganoso.
+
 ### Corrigido — AxeOS POST/PATCH fail-closed em HTTP de erro (Issue #422)
 - 4xx/5xx viram `AxeOSConnectorError` (antes estouravam `HTTPError` no Flask).
 - Corpo não-JSON em 2xx continua ACK de texto do firmware.

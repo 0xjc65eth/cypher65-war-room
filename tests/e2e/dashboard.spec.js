@@ -28,6 +28,17 @@ async function waitForDashboard(page) {
   await page.waitForTimeout(1000);
 }
 
+/** Navigate to the dashboard and surface HTTP failures before DOM waits. */
+async function gotoDashboard(page, url = '/') {
+  const response = await page.goto(url);
+  expect(response, `No HTTP response received for GET ${url}`).not.toBeNull();
+  expect(
+    response.status(),
+    `GET ${url} returned HTTP ${response.status()}`,
+  ).toBe(200);
+  await waitForDashboard(page);
+}
+
 /** Attach console + page error listeners and return a checker object */
 function setupErrorCapture(page) {
   const errors = [];
@@ -84,8 +95,7 @@ test.describe('CYPHER65 War Room — Dashboard E2E', () => {
     test('page loads with correct title and no critical console errors', async ({ page }) => {
       const capture = setupErrorCapture(page);
 
-      await page.goto('/');
-      await waitForDashboard(page);
+      await gotoDashboard(page);
 
       const title = await page.title();
       expect(title).toContain('CYPHER65');
@@ -120,11 +130,14 @@ test.describe('CYPHER65 War Room — Dashboard E2E', () => {
         page.removeAllListeners('console');
         page.removeAllListeners('pageerror');
         const capture = setupErrorCapture(page);
-        if (boot === 0) {
-          await page.goto('/');
-        } else {
-          await page.reload({ waitUntil: 'domcontentloaded' });
-        }
+        const response = boot === 0
+          ? await page.goto('/')
+          : await page.reload({ waitUntil: 'domcontentloaded' });
+        expect(response, 'No HTTP response received while booting dashboard').not.toBeNull();
+        expect(
+          response.status(),
+          `Dashboard boot returned HTTP ${response.status()}`,
+        ).toBe(200);
         await waitForDashboard(page);
 
         const liveLog = (await page.locator('#terminal').textContent()) || '';
@@ -176,8 +189,7 @@ test.describe('CYPHER65 War Room — Dashboard E2E', () => {
 
   test.describe('02 — Key Panel Rendering', () => {
     test.beforeEach(async ({ page }) => {
-      await page.goto('/');
-      await waitForDashboard(page);
+      await gotoDashboard(page);
     });
 
     test('sidebar is visible with system status', async ({ page }) => {
@@ -402,8 +414,7 @@ test.describe('CYPHER65 War Room — Dashboard E2E', () => {
 
   test.describe('03 — Theme Toggle', () => {
     test.beforeEach(async ({ page }) => {
-      await page.goto('/');
-      await waitForDashboard(page);
+      await gotoDashboard(page);
     });
 
     test('toggle switches between dark and light theme', async ({ page }) => {
@@ -448,8 +459,7 @@ test.describe('CYPHER65 War Room — Dashboard E2E', () => {
 
   test.describe('04 — Navigation & Tabs', () => {
     test.beforeEach(async ({ page }) => {
-      await page.goto('/');
-      await waitForDashboard(page);
+      await gotoDashboard(page);
     });
 
     test('sidebar links navigate to modules', async ({ page }) => {
@@ -506,8 +516,7 @@ test.describe('CYPHER65 War Room — Dashboard E2E', () => {
 
   test.describe('05 — Interactive Controls', () => {
     test.beforeEach(async ({ page }) => {
-      await page.goto('/');
-      await waitForDashboard(page);
+      await gotoDashboard(page);
     });
 
     test('profit mode buttons switch POOL/SOLO/RENTAL and reveal solo stats', async ({ page }) => {
@@ -767,8 +776,7 @@ test.describe('CYPHER65 War Room — Dashboard E2E', () => {
     test.use({ viewport: { width: 375, height: 812 } });
 
     test('mobile layout: sidebar hidden by default, toggle works', async ({ page }) => {
-      await page.goto('/');
-      await waitForDashboard(page);
+      await gotoDashboard(page);
 
       // Sidebar should be closed by default on mobile
       const sidebar = page.locator('#sidebar');
@@ -792,8 +800,7 @@ test.describe('CYPHER65 War Room — Dashboard E2E', () => {
     });
 
     test('mobile: KPI cards stack in one column', async ({ page }) => {
-      await page.goto('/');
-      await waitForDashboard(page);
+      await gotoDashboard(page);
 
       const kpiCards = page.locator('#kpi-hashrate, #kpi-bestdiff, #kpi-shares, #kpi-poolhr');
       const count = await kpiCards.count();
@@ -807,8 +814,7 @@ test.describe('CYPHER65 War Room — Dashboard E2E', () => {
 
   test.describe('07 — Live Terminal Commands', () => {
     test.beforeEach(async ({ page }) => {
-      await page.goto('/');
-      await waitForDashboard(page);
+      await gotoDashboard(page);
       // Navigate to the Live Mining module (contains the terminal pane)
       await ensureSidebarOpen(page);
       await page.locator('.sidebar__link[data-module="live"]').click();
@@ -860,8 +866,7 @@ test.describe('CYPHER65 War Room — Dashboard E2E', () => {
   });
 
   test('HOST CORE hero keeps its metric nodes after first render (Issue #51)', async ({ page }) => {
-    await page.goto('/');
-    await waitForDashboard(page);
+    await gotoDashboard(page);
     // Regression: DashboardCore.setText('hero-worker', …) used to target the
     // <section> itself, wiping every child metric (m-hashrate/m-state/hc-*).
     // After the fix, the metric nodes must still exist inside the section.
@@ -873,8 +878,7 @@ test.describe('CYPHER65 War Room — Dashboard E2E', () => {
   });
 
   test('support addresses do not overflow their container (Issue #49)', async ({ page }) => {
-    await page.goto('/');
-    await waitForDashboard(page);
+    await gotoDashboard(page);
     const overflow = await page.evaluate(() => {
       const doc = document.documentElement;
       return { sw: doc.scrollWidth, cw: doc.clientWidth };

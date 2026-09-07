@@ -7,14 +7,19 @@
  * Tests are located in tests/e2e/*.spec.js
  */
 import { defineConfig } from '@playwright/test';
+import { isCiEnabled } from './tests/e2e/support/ci-policy.js';
+
+// Environment variables are strings: Boolean('false') is true. Parse CI
+// explicitly so `CI=false bash run-e2e.sh` really runs without retries.
+const isCI = isCiEnabled();
 
 export default defineConfig({
   testDir: './tests/e2e',
   timeout: 60000,
   expect: { timeout: 10000 },
   fullyParallel: false,
-  forbidOnly: !!process.env.CI,
-  retries: process.env.CI ? 1 : 0,
+  forbidOnly: isCI,
+  retries: isCI ? 1 : 0,
   workers: 1,
   reporter: [
     ['list'],

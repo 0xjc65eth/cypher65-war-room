@@ -92,11 +92,12 @@ if [ ! -f "$VENV_PYTHON" ]; then
   VENV_PYTHON="python3"
 fi
 
-# E2E suites fire dozens of requests per minute (page load + 15s polling +
-# panel fetches) — raise the per-IP rate limit so the suite never hits 429.
+# E2E suites fire thousands of requests across both browser projects (page
+# load + polling + panel fetches). Match the CI ceiling so a full local run
+# does not hit the application limiter; callers can still override it.
 # SECRET_KEY is pinned so the P1 #8 boot-time guard never aborts the E2E
 # server when API_KEY happens to be exported in the calling shell.
-DB_PATH="$E2E_DB_PATH" RATE_LIMIT_PER_MINUTE="${RATE_LIMIT_PER_MINUTE:-1000}" SECRET_KEY="${SECRET_KEY:-e2e-test-secret-key-0123456789abcdef}" $VENV_PYTHON app.py &>"$FLASK_LOG" &
+DB_PATH="$E2E_DB_PATH" RATE_LIMIT_PER_MINUTE="${RATE_LIMIT_PER_MINUTE:-10000}" SECRET_KEY="${SECRET_KEY:-e2e-test-secret-key-0123456789abcdef}" $VENV_PYTHON app.py &>"$FLASK_LOG" &
 SERVER_PID=$!
 
 # Wait for server to start — cold boot can take ~16s (init_db + first poll with
