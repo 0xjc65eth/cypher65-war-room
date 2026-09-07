@@ -6,6 +6,14 @@ e versionamento semântico ([SemVer](https://semver.org/lang/pt-BR/)).
 
 ## [Unreleased]
 
+### Corrigido — recomendações do Auto-Pilot estritamente consultivas (Issue #433)
+- Aceitar uma recomendação não executa mais restart/pause, não altera a
+  blacklist e não abre uma compra; apenas registra a intenção no audit log.
+- A resposta preserva os campos legados e passa a declarar explicitamente
+  `advisory_only`, `executed: false` e o módulo seguro de revisão.
+- A interface usa CTAs de revisão, mostra estado de registro e encaminha para
+  Fleet ou Rentals, onde continuam valendo dry-run, confirmação e proteções.
+
 ### Corrigido — AxeOS POST/PATCH fail-closed em HTTP de erro (Issue #422)
 - 4xx/5xx viram `AxeOSConnectorError` (antes estouravam `HTTPError` no Flask).
 - Corpo não-JSON em 2xx continua ACK de texto do firmware.

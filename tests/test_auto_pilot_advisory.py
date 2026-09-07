@@ -312,7 +312,7 @@ def test_audit_endpoint(client, scratch_db):
     assert data["audit"][0]["decision"] == "accept"
 
 
-def test_respond_accept_buy_opens_flow(client, scratch_db, monkeypatch):
+def test_respond_accept_buy_is_advisory_only(client, scratch_db, monkeypatch):
     monkeypatch.setattr(
         "services.auto_pilot.build_recommendations_for_tenant",
         lambda tenant_id="": [{
@@ -331,20 +331,25 @@ def test_respond_accept_buy_opens_flow(client, scratch_db, monkeypatch):
     assert resp.status_code == 200
     data = resp.get_json()
     assert data["success"] is True
-    assert data["open_buy_flow"] is True
+    assert data["open_buy_flow"] is False
     assert data["action_type"] == "buy"
+    assert data["advisory_only"] is True
+    assert data["executed"] is False
+    assert data["navigate_to"] == "rentals"
+    assert data["action_result"] == {
+        "ok": True,
+        "executed": False,
+        "reason": "advisory_only",
+        "navigate_to": "rentals",
+    }
 
 
-def test_respond_accept_device_error_tuple_is_unpacked(client, scratch_db, monkeypatch):
-    """Reviewer catch: _execute_device_command returns (jsonify, status)
-    tuples on error paths — the respond handler must unpack both shapes and
-    surface the real error, not an AttributeError on the tuple."""
-    from flask import jsonify
+def test_respond_accept_device_never_dispatches_command(client, scratch_db, monkeypatch):
+    """Accepting advisory intent must never bypass Fleet command controls."""
+    def forbidden_execute(*args, **kwargs):
+        raise AssertionError("advisory endpoint dispatched a physical command")
 
-    def fake_execute(device_id, command):
-        return jsonify({"error": "device not found"}), 404
-
-    monkeypatch.setattr("axe_fleet.routes._execute_device_command", fake_execute)
+    monkeypatch.setattr("axe_fleet.routes._execute_device_command", forbidden_execute)
     resp = client.post(
         "/api/auto-pilot/recommendations/ap-offline-dev-1/respond",
         json={"decision": "accept"},
@@ -352,11 +357,58 @@ def test_respond_accept_device_error_tuple_is_unpacked(client, scratch_db, monke
     assert resp.status_code == 200
     data = resp.get_json()
     assert data["success"] is True
-    assert data["action_result"] == {"ok": False, "error": "device not found"}
-    # The failed action is still audited with its result.
+    assert data["executed"] is False
+    assert data["navigate_to"] == "fleet"
+    assert data["action_result"]["reason"] == "advisory_only"
+    # The accepted intent is audited explicitly as not executed.
     audit = get_rec_audit("default")
     assert audit and audit[-1]["decision"] == "accept"
-    assert "device not found" in audit[-1]["result"]
+    assert '"executed": false' in audit[-1]["result"]
+
+
+def test_respond_accept_blacklist_never_changes_blacklist(client, scratch_db, monkeypatch):
+    def forbidden_blacklist(*args, **kwargs):
+        raise AssertionError("advisory endpoint changed the blacklist")
+
+    monkeypatch.setattr(
+        "services.rental_performance.add_rig_to_blacklist", forbidden_blacklist
+    )
+    monkeypatch.setattr(
+        "services.auto_pilot.build_recommendations_for_tenant",
+        lambda tenant_id="": [{
+            "id": "ap-rig-poor",
+            "device_id": "rig-9",
+            "device_name": "RIG-9",
+            "issue_type": "rig_poor",
+            "severity": "warn",
+            "action": {"type": "blacklist", "label": "BLACKLIST"},
+        }],
+    )
+    resp = client.post(
+        "/api/auto-pilot/recommendations/ap-rig-poor/respond",
+        json={"decision": "accept"},
+    )
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data["executed"] is False
+    assert data["navigate_to"] == "rentals"
+    assert data["open_buy_flow"] is False
+
+
+def test_respond_fails_closed_when_decision_audit_cannot_be_recorded(
+    client, monkeypatch
+):
+    monkeypatch.setattr("services.auto_pilot.record_rec_decision", lambda *a, **k: False)
+    resp = client.post(
+        "/api/auto-pilot/recommendations/ap-offline-dev-1/respond",
+        json={"decision": "accept"},
+    )
+    assert resp.status_code == 503
+    data = resp.get_json()
+    assert data["success"] is False
+    assert data["recorded"] is False
+    assert data["executed"] is False
+    assert data["advisory_only"] is True
 
 
 def test_audit_endpoint_malformed_limit_never_500(client, scratch_db):

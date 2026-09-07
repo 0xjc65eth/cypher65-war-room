@@ -7740,8 +7740,9 @@ function renderAccount(acct) {
   // Backend: GET /api/auto-pilot/recommendations (recs + armed),
   // POST /api/auto-pilot/recommendations/<id>/respond {decision} (audited),
   // GET /api/auto-pilot/recommendations/audit (trail). Fase 2 do Big Bet:
-  // o piloto consolida por dispositivo o que merece atenção e sugere a
-  // ação em um clique (restart / pause / blacklist / comprar).
+  // o piloto consolida por dispositivo o que merece atenção. Aceitar uma
+  // recomendação só registra a intenção e abre o módulo seguro de revisão;
+  // nunca executa comando, blacklist ou compra por este painel.
   let _apRecs = [];
   let _apAudit = [];
   let _apRecsInit = false;
@@ -7752,16 +7753,10 @@ function renderAccount(acct) {
     const sev = String(rec.severity || 'info').toLowerCase();
     const action = (rec.action && typeof rec.action === 'object') ? rec.action : {};
     const actionType = String(action.type || 'navigate');
-    const actionLabel = String(action.label || (actionType === 'buy' ? 'COMPRAR AGORA' : 'APLICAR'));
-    // Confirm text varies by action; buy opens the Braiins flow pre-filled.
-    // deviceName is escaped ONCE here (raw value), and data-confirm escapes
-    // it a second time for the HTML attribute — no double-escaping (&amp;amp;).
+    const reviewLabel = actionType === 'buy' || actionType === 'blacklist'
+      ? 'REVISAR EM RENTALS'
+      : 'REVISAR NO FLEET';
     const rawDevice = rec.device_name || rec.device_id || 'device';
-    const confirmMsg = actionType === 'blacklist'
-      ? 'Adicionar o rig à blacklist (nunca alugar de novo)?'
-      : actionType === 'buy'
-        ? 'Abrir o fluxo de compra Braiins com o preço atual?'
-        : 'Executar \'' + actionLabel + '\' em ' + rawDevice + '?';
     return (
       '<div class="ap-rec ap-rec--' + esc(sev) + '" data-rec-id="' + esc(rec.id || '') + '">' +
       '<div class="ap-rec__head">' +
@@ -7771,7 +7766,7 @@ function renderAccount(acct) {
       '</div>' +
       '<div class="ap-rec__msg">' + esc(rec.message || '') + '</div>' +
       '<div class="ap-rec__actions">' +
-      '<button type="button" class="btn btn--primary btn--mini ap-rec-apply" data-confirm="' + esc(confirmMsg) + '">' + esc(actionLabel) + '</button>' +
+      '<button type="button" class="btn btn--primary btn--mini ap-rec-apply" data-action-type="' + esc(actionType) + '" title="Registrar a recomendação e abrir a revisão segura; nenhuma ação será executada">' + reviewLabel + '</button>' +
       '<button type="button" class="btn btn--mini ap-rec-ignore" title="Ignorar e registrar no audit trail">IGNORAR</button>' +
       '</div>' +
       '</div>'
@@ -7850,8 +7845,13 @@ function renderAccount(acct) {
     _apRenderAudit();
   }
 
-  async function _apRespond(recId, decision, confirmMsg) {
-    if (decision === 'accept' && confirmMsg && !window.confirm(confirmMsg)) return;
+  async function _apRespond(recId, decision, trigger) {
+    const originalText = trigger ? trigger.textContent : '';
+    if (trigger) {
+      trigger.disabled = true;
+      trigger.setAttribute('aria-busy', 'true');
+      trigger.textContent = 'REGISTRANDO…';
+    }
     try {
       const r = await authFetch('/api/auto-pilot/recommendations/' + encodeURIComponent(recId) + '/respond', {
         method: 'POST',
@@ -7864,22 +7864,25 @@ function renderAccount(acct) {
         return;
       }
       if (decision === 'accept' && d.action_result && d.action_result.ok === false) {
-        showToast('error', '⚠ ' + (d.action_result.error || 'ação falhou'));
+        showToast('error', '⚠ ' + (d.action_result.error || 'não foi possível registrar a recomendação'));
       } else if (decision === 'accept') {
-        showToast('success', d.action_type === 'buy' ? '🛒 abrindo compra…' : '✓ ação executada: ' + (d.action_type || 'ok'));
+        const destination = d.navigate_to === 'rentals' ? 'Rentals' : 'Fleet';
+        showToast('success', '✓ recomendação auditada — revise a ação em ' + destination);
+        if (d.navigate_to === 'rentals' || d.navigate_to === 'fleet') {
+          activateModule(d.navigate_to);
+        }
       } else {
         showToast('success', 'recomendação ignorada (auditado)');
-      }
-      // Buy flow: open the Braiins spot modal pre-filled with the current
-      // price (real-money step stays behind the typed confirmation).
-      if (d.open_buy_flow) {
-        const buyBtn = document.getElementById('rentals-buy');
-        activateModule('rentals');
-        setTimeout(() => { if (buyBtn) buyBtn.click(); }, 250);
       }
       _apLoadRecs();
     } catch (e) {
       showToast('error', '⚠ Auto-Pilot: ' + (e.message || 'falha de rede'));
+    } finally {
+      if (trigger && trigger.isConnected) {
+        trigger.disabled = false;
+        trigger.removeAttribute('aria-busy');
+        trigger.textContent = originalText;
+      }
     }
   }
 
@@ -7898,7 +7901,7 @@ function renderAccount(acct) {
         const recId = card.getAttribute('data-rec-id');
         if (!recId) return;
         if (apply) {
-          _apRespond(recId, 'accept', apply.getAttribute('data-confirm') || '');
+          _apRespond(recId, 'accept', apply);
         } else if (ignore) {
           _apRespond(recId, 'ignore');
         }

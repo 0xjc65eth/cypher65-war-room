@@ -12,7 +12,9 @@ The CYPHER65 War Room beta program gives early testers 30 days of free PRO acces
 ### What's included in PRO (beta)
 - Block Model (Monte Carlo scenarios, best-share ratio history, 30d history; no predictions)
 - Webhooks (Discord/Telegram alert integration)
-- Auto-Pilot (advisory + dry-run; autonomous requires separate consent)
+- Auto-Pilot (advisory + dry-run; accepting an advisory only records intent
+  and opens the safe review module; autonomous execution requires separate
+  consent)
 - Hash Market (Braiins/NiceHash/MRR live prices)
 - Rentals Hub (P/L tracking, arbitrage alerts, one-click Braiins buy)
 
@@ -72,6 +74,8 @@ Open ⚙ Settings → paste the key in the License Key field.
 2. **Feedback required**: Beta testers agree to provide at least 1 written feedback per week (bug report, feature request, or UX observation).
 3. **No production SLA**: Beta deployments are not covered by any uptime guarantee. The operator is responsible for their own data.
 4. **Auto-Pilot consent**: Autonomous execution requires separate opt-in via the EULA consent checkbox in the dashboard. The beta key does NOT auto-enable autonomous mode.
+   Accepting a recommendation in the advisory panel never dispatches a device
+   command, changes a rental blacklist, or opens a purchase automatically.
 5. **Data ownership**: All telemetry and fleet data stays on the operator's self-hosted instance. CYPHER65 has zero access to user data.
 6. ** termination**: Keys can be revoked at any time by the operator via `POST /api/admin/licenses` or by editing the database directly.
 
