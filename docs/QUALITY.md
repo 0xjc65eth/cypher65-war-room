@@ -218,6 +218,12 @@ CI (um retry e bloqueio de `test.only`). As specs de boot validam o status HTTP
 da navegação antes de aguardar o DOM, portanto 429/5xx aparecem como causa real
 em vez de um timeout enganoso em `#app-shell`.
 
+Antes de spawnar o Flask, `scripts/e2e_port_guard.py` sonda `127.0.0.1:$PORT`
+(padrão 8765). Porta ocupada → exit 1 com PID/comando via `lsof` quando
+disponível. O runner **nunca** mata o processo ocupante: pare-o ou rode
+`PORT=<livre> bash run-e2e.sh`. Override explícito de `PORT` continua
+prevalecendo; o guard só valida a porta escolhida.
+
 ### Guards DOM de regressão — `scripts/check-dom-regression.cjs`
 
 Guards estáticos **blocking** no job `gate` do CI (Issue #58):

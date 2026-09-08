@@ -6,6 +6,15 @@ e versionamento semântico ([SemVer](https://semver.org/lang/pt-BR/)).
 
 ## [Unreleased]
 
+### Corrigido — runner E2E falha se a porta já estiver ocupada (Issue #437)
+- `run-e2e.sh` sonda `127.0.0.1:$PORT` (padrão 8765) antes de spawnar o Flask.
+  Um listener antigo que já responda 200 em `/api/healthz` deixa de sequestrar
+  a suíte.
+- A mensagem inclui PID/comando via `lsof` quando disponível. O runner nunca
+  mata o processo ocupante: pare-o ou rode `PORT=<livre> bash run-e2e.sh`.
+- Override explícito de `PORT` continua prevalecendo; o guard só valida a
+  porta escolhida.
+
 ### Corrigido — recomendações do Auto-Pilot estritamente consultivas (Issue #433)
 - Aceitar uma recomendação não executa mais restart/pause, não altera a
   blacklist e não abre uma compra; apenas registra a intenção no audit log.
