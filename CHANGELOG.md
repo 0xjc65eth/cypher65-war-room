@@ -15,6 +15,13 @@ e versionamento semântico ([SemVer](https://semver.org/lang/pt-BR/)).
 - Teste de contrato mantém módulos, headings e sentenças de segurança alinhados
   com a narrativa usada no walkthrough.
 
+### Corrigido — uuid transitivo do toolchain Expo (Issue #393)
+- Override `uuid@11.1.1` no `xcode` usado por `@expo/config-plugins`.
+  Override `decode-uri-component@0.5.0` elimina os quatro advisories restantes
+  de `query-string` / React Navigation sem downgrade major. `npm audit`: 0.
+- Expo atualizado para `57.0.21`, mantendo Expo Doctor 21/21 e builds iOS,
+  Android e web verdes. Sem `--force`.
+
 ### Corrigido — suíte e2e local alinhada ao fail-closed (Issue #438)
 - `POST /api/axe-fleet/devices` registra primeiro e limita o probe de firmware
   a 1s; TEST-NET/loopback não são sondados (SSRF fail-closed).
