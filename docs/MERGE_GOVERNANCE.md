@@ -7,6 +7,7 @@ O ruleset ativo do GitHub `Protect main and release branches` protege
 ## Controles obrigatórios
 
 - Todo merge passa por pull request com pelo menos uma aprovação.
+- O único método permitido nas branches protegidas é squash merge.
 - Novos commits invalidam aprovações existentes.
 - Todas as conversas de review devem estar resolvidas.
 - A branch do PR deve estar atualizada em relação à base.
