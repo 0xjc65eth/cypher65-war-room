@@ -47,7 +47,7 @@ SENTRY_DSN=... python app.py      # Sentry ativo (traces 0.1 default)
 | **Knip** (dead code) | `mobile/` | ✅ knip.json (exit 0, Issue #440) | CI check (advisory) |
 | **commitlint** | mensagens de commit | ✅ config | CI check |
 | **mutmut** (mutation Python) | `core/` + `services/` | ✅ dev-dep + doc | manual (advisory) |
-| **Stryker 9.6.1** (mutation JS) | `mobile/` hooks/services | ✅ Babel 7-compatible config | manual (advisory) |
+| **Stryker 9.6.1** (mutation JS) | `mobile/` hooks/services | ✅ Babel 7 + threshold 40% (Issue #439) | manual (advisory, `break: 40`) |
 | **arch-contract** (TS layers) | — | ⚪ N/A nesta stack | — |
 | **bandit** (segurança estática Python) | Python | ✅ gate (Issue #125) — 0 MEDIUM/HIGH | ✅ blocking |
 | **flake8** (bug-codes) | Python | ✅ gate via `.flake8` (F821/F541/E9) | ✅ blocking |
@@ -111,6 +111,9 @@ cd mobile && npm run mutate
   usa Babel 7, compatível com Expo 57/Metro/Jest; Stryker 10 exige Babel 8 e
   torna a árvore npm inválida. Uma futura atualização major exige validar
   primeiro a compatibilidade do Expo com Babel 8.
+- Baseline incremental medido na Issue #439: 450 mutantes, 115 mortos e 335
+  sobreviventes (25,56%) antes; 214 mortos, 236 sobreviventes e zero
+  erros/timeouts (47,56%) depois. O gate manual falha abaixo de 40%.
 
 ---
 

@@ -9,5 +9,10 @@
   "reporters": ["clear-text", "html"],
   "coverageAnalysis": "off",
   "timeoutMS": 20000,
-  "concurrency": 4
+  "concurrency": 4,
+  "thresholds": {
+    "high": 80,
+    "low": 40,
+    "break": 40
+  }
 }
