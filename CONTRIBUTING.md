@@ -38,7 +38,11 @@ make test                     # pytest completo (usa .venv)
 python -m pytest tests/test_seu_arquivo.py -q   # teste isolado
 node tests/test_app_js_core.js                   # suíte JS espelhada (873+)
 bash run-e2e.sh --file=dashboard.spec.js         # E2E Playwright
+PORT=8766 bash run-e2e.sh --file=dashboard.spec.js  # se 8765 já estiver ocupada
 ```
+
+O `run-e2e.sh` recusa subir se `PORT` (padrão 8765) já estiver em uso. Ele
+não mata o processo ocupante: pare-o ou escolha outra porta.
 
 Regra de ouro: **todo teste é hermético** — nenhum toca em
 `data/war_room.sqlite` (o conftest redireciona `DB_PATH` para um scratch

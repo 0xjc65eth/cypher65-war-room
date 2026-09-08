@@ -9,6 +9,10 @@
 #   bash run-e2e.sh --headed                 # with browser UI visible
 #   bash run-e2e.sh --file dashboard.spec.js # single test file
 #   bash run-e2e.sh --debug                  # Playwright UI debug mode
+#   PORT=8766 bash run-e2e.sh                # explicit free port (default 8765)
+#
+# The runner refuses to start when PORT is already occupied. It never kills
+# the other process — stop it yourself or pick another PORT.
 #
 # CI usage:
 #   CI=true bash run-e2e.sh                  # retry failures once, strict mode
@@ -63,6 +67,16 @@ fi
 if ! command -v npx &>/dev/null; then
   echo "ERROR: npx not found (install Node.js ≥18)"; exit 1
 fi
+
+# ── Occupied-port guard (Issue #437) ──────────────────────────────────────
+# Probe 127.0.0.1:$PORT before installing browsers or spawning Flask. A
+# leftover listener that already returns 200 on /api/healthz would otherwise
+# steal the suite after a long setup.
+PORT_GUARD_PY="scripts/e2e_port_guard.py"
+if [ ! -f "$PORT_GUARD_PY" ]; then
+  echo "ERROR: missing $PORT_GUARD_PY"; exit 1
+fi
+python3 "$PORT_GUARD_PY" "$PORT"
 
 # Ensure Playwright browsers are installed
 if [ ! -d "node_modules" ] || [ ! -d "node_modules/@playwright" ]; then

@@ -110,7 +110,13 @@ node --test tests/test_app_js_core.js
 # Playwright E2E (runner starts a server with a temporary DB on PORT=8765)
 npm install
 bash run-e2e.sh --file=dashboard.spec.js
+PORT=8766 bash run-e2e.sh --file=dashboard.spec.js   # if 8765 is already taken
 ```
+
+The runner probes `127.0.0.1:$PORT` before spawning Flask. If the port is
+already occupied it exits immediately with the listener PID (when `lsof` is
+available) and **does not kill** that process. Stop the leftover server or
+pass a free `PORT`.
 
 The CI workflow (`.github/workflows/ci.yml`) gates merges on all suites plus an **80% coverage floor** (matching `codecov.yml` and the local `--cov-fail-under=80`).
 
