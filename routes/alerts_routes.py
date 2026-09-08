@@ -665,15 +665,11 @@ def api_auto_pilot_respond(rec_id: str, tenant_id: str = ""):
 
     Body: {"decision": "accept"|"ignore", "note": "..." (optional)}
 
-    Accepting executes the recommendation's action when executable from the
-    cloud:
-      - restart / pause  → runs the fleet device command (agent-managed
-        devices route through the local-agent queue, same as the panel).
-      - blacklist        → adds the rig to the tenant's rental blacklist.
-      - buy              → returns ``open_buy_flow: true`` so the frontend
-        opens the Braiins spot flow pre-filled (real-money step stays in
-        the UI with its own typed confirmation).
-      - navigate         → informational only; nothing to execute.
+    This endpoint is deliberately advisory-only. Accepting records operator
+    intent and returns the module where the recommendation can be reviewed;
+    it never executes a device command, changes a blacklist, or starts a
+    purchase. Operational actions remain behind their dedicated dry-run,
+    confirmation, timeout, idempotency and audit controls.
 
     Every decision (accepted OR ignored) is recorded in the tenant's audit
     trail (auto_pilot_rec_audit) — the operator can always review what the
@@ -718,57 +714,17 @@ def api_auto_pilot_respond(rec_id: str, tenant_id: str = ""):
 
     action_type = (rec or {}).get("action", {}).get("type", "") if rec else ""
     action_result = None
+    navigate_to = None
     open_buy_flow = False
 
     if decision == "accept" and rec:
-        if action_type in ("restart", "pause"):
-            did = str(rec.get("device_id") or "")
-            if did:
-                # Reuse the fleet command executor (same agent-queue path the
-                # Fleet panel uses) via a lazy import to avoid a circular
-                # import at module load. NOTE: like the Fleet panel, this path
-                # does NOT re-run SafetyEngine — the operator explicitly
-                # confirmed the action in the UI (intentional; the automation
-                # engine keeps its own safety-gated execution path).
-                try:
-                    from axe_fleet.routes import _execute_device_command
-
-                    resp = _execute_device_command(did, action_type)
-                    # _execute_device_command returns (jsonify(...), status)
-                    # tuples on its error paths — unpack both shapes and honor
-                    # the tuple's status (the jsonify body alone reports 200).
-                    resp_status = None
-                    if isinstance(resp, tuple) and len(resp) == 2:
-                        resp, resp_status = resp
-                    payload = resp.get_json() if hasattr(resp, "get_json") else {}
-                    status = (
-                        resp_status if resp_status is not None else resp.status_code
-                    )
-                    if status == 200:
-                        action_result = {"ok": True, **payload}
-                    else:
-                        action_result = {
-                            "ok": False,
-                            "error": payload.get("error") or f"HTTP {status}",
-                        }
-                except Exception as e:
-                    action_result = {"ok": False, "error": str(e)}
-        elif action_type == "blacklist":
-            rid = str(rec.get("device_id") or "")
-            if rid:
-                try:
-                    from services.rental_performance import add_rig_to_blacklist
-
-                    ok = add_rig_to_blacklist(rid, tenant_id=tid)
-                    action_result = {"ok": ok}
-                except Exception as e:
-                    action_result = {"ok": False, "error": str(e)}
-        elif action_type == "buy":
-            # Real-money purchase stays in the UI (typed confirmation). The
-            # backend records the accept and signals the frontend to open
-            # the Braiins spot flow pre-filled.
-            open_buy_flow = True
-            action_result = {"ok": True, "open_buy_flow": True}
+        navigate_to = "rentals" if action_type in ("blacklist", "buy") else "fleet"
+        action_result = {
+            "ok": True,
+            "executed": False,
+            "reason": "advisory_only",
+            "navigate_to": navigate_to,
+        }
 
     recorded = record_rec_decision(
         tid,
@@ -781,8 +737,33 @@ def api_auto_pilot_respond(rec_id: str, tenant_id: str = ""):
         tid,
         "auto_pilot.respond",
         target=str(rec_id),
-        details={"decision": decision, "action_type": action_type, "note": note[:200]},
+        details={
+            "decision": decision,
+            "action_type": action_type,
+            "note": note[:200],
+            "advisory_only": True,
+            "executed": False,
+            "navigate_to": navigate_to,
+        },
     )
+    if not recorded:
+        return (
+            jsonify(
+                {
+                    "success": False,
+                    "recorded": False,
+                    "decision": decision,
+                    "action_type": action_type,
+                    "action_result": action_result,
+                    "open_buy_flow": False,
+                    "advisory_only": True,
+                    "executed": False,
+                    "navigate_to": navigate_to,
+                    "error": "não foi possível registrar a decisão no audit log",
+                }
+            ),
+            503,
+        )
     return jsonify(
         {
             "success": True,
@@ -791,6 +772,9 @@ def api_auto_pilot_respond(rec_id: str, tenant_id: str = ""):
             "action_type": action_type,
             "action_result": action_result,
             "open_buy_flow": open_buy_flow,
+            "advisory_only": True,
+            "executed": False,
+            "navigate_to": navigate_to,
         }
     )
 
