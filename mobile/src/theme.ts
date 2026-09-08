@@ -58,6 +58,3 @@ export const theme = {
   },
   purple: '#a855f7',        // linha de target do gráfico / CTA P(block)
 } as const;
-
-export type Theme = typeof theme;
-export default theme;

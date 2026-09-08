@@ -1,14 +1,14 @@
 {
   "$schema": "https://unpkg.com/knip@5/schema.json",
-  "entry": ["index.js", "App.tsx", "src/index.ts", "jest.setup.js"],
+  "entry": [
+    "App.tsx",
+    "tests/**/*.{ts,tsx,js}"
+  ],
   "project": ["**/*.{js,jsx,ts,tsx}"],
-  "ignore": ["node_modules/**", "ios/**", "android/**", ".expo/**"],
+  "ignore": ["config/api-url.d.ts"],
   "ignoreDependencies": [
-    "@react-native/metro-config",
-    "react-native-safe-area-context",
-    "react-native-screens",
-    "react-native-gesture-handler",
-    "react-native-svg",
-    "@react-navigation/native"
+    "@babel/core",
+    "expo-updates",
+    "react-native-gesture-handler"
   ]
 }

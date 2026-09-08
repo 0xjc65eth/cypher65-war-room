@@ -6,7 +6,7 @@ import {
   fetchDeviceCommandStatus,
 } from '../api/client';
 
-export type CommandPhase =
+type CommandPhase =
   | 'idle'
   | 'acknowledged'
   | 'offline'

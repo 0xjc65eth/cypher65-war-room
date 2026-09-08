@@ -16,7 +16,17 @@ jest.mock('../src/api/client', () => ({
 }));
 
 import * as Notifications from 'expo-notifications';
-import { configureNotificationHandler } from '../src/services/push';
+import * as Device from 'expo-device';
+import {
+  configureNotificationHandler,
+  DEFAULT_PUSH_CATEGORIES,
+  requestPushPermissions,
+  getPushToken,
+  updatePushCategories,
+  addNotificationReceivedListener,
+  addNotificationResponseListener,
+} from '../src/services/push';
+import { registerPushToken } from '../src/api/client';
 
 describe('push notification handler', () => {
   it('declares the complete Expo SDK 57 foreground presentation behavior', async () => {
@@ -32,5 +42,32 @@ describe('push notification handler', () => {
       shouldPlaySound: true,
       shouldSetBadge: true,
     });
+  });
+
+  it('refuses push registration on a simulator and returns a token on a device', async () => {
+    (Device as { isDevice: boolean }).isDevice = false;
+    await expect(requestPushPermissions()).resolves.toBe(false);
+    await expect(getPushToken()).resolves.toBeNull();
+
+    (Device as { isDevice: boolean }).isDevice = true;
+    (Notifications.getPermissionsAsync as jest.Mock).mockResolvedValue({ status: 'granted' });
+    (Notifications.getExpoPushTokenAsync as jest.Mock).mockResolvedValue({ data: 'ExponentPushToken[x]' });
+    await expect(requestPushPermissions()).resolves.toBe(true);
+    await expect(getPushToken()).resolves.toBe('ExponentPushToken[x]');
+  });
+
+  it('updates categories through the register endpoint and wires listeners', async () => {
+    (registerPushToken as jest.Mock).mockResolvedValue(undefined);
+    const prefs = await updatePushCategories('tok', { ...DEFAULT_PUSH_CATEGORIES, temperature: false });
+    expect(prefs?.token).toBe('tok');
+    expect(prefs?.categories.temperature).toBe(false);
+    expect(registerPushToken).toHaveBeenCalled();
+
+    const received = jest.fn();
+    const response = jest.fn();
+    addNotificationReceivedListener(received);
+    addNotificationResponseListener(response);
+    expect(Notifications.addNotificationReceivedListener).toHaveBeenCalledWith(received);
+    expect(Notifications.addNotificationResponseReceivedListener).toHaveBeenCalledWith(response);
   });
 });
