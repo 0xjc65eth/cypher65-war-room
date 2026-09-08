@@ -2397,7 +2397,9 @@
       action = { title: 'INSPECT ' + attention + ' ASIC EXCEPTION' + (attention === 1 ? '' : 'S'), target: 'fleet', panel: 'axe-fleet-panel' };
     } else {
       const cards = Array.isArray(data.command_center) ? data.command_center : [];
-      const card = cards.find(function(c) { return c && c.target; });
+      const card = cards.find(function(c) {
+        return c && c.target && c.id !== 'affiliate_buy' && !c.url;
+      });
       if (card) action = { title: String(card.title || 'OPEN DIAGNOSTIC').toUpperCase(), target: String(card.target), panel: String(card.panel || '') };
     }
     if (!action && !hasCost) {
@@ -5242,21 +5244,19 @@ function renderAccount(acct) {
 
   // ── P0-3: Command Center — contextual action cards ──
   // Renders snap.command_center (backend-aggregated, advisory-only) into the
-  // cc-grid. Each card carries data-cc-target (module to navigate to),
-  // data-cc-panel (panel id to scroll) and data-cc-url (optional external
-  // link — affiliate buy). Pure helper mirrored in tests/test_app_js_core.js.
+  // cc-grid. Each card carries only an internal module/panel destination;
+  // Command Center never opens commercial URLs. Pure helper mirrored in
+  // tests/test_app_js_core.js.
   function commandCenterCardHtml(card) {
     if (!card || typeof card !== 'object') return '';
     const sev = String(card.severity || 'info').toLowerCase();
     const esc = escapeHtml;
     const target = String(card.target || '');
     const panel = String(card.panel || '');
-    const url = String(card.url || '');
     return (
       '<button type="button" class="cc-card cc-card--' + sev + '" ' +
       'data-cc-target="' + esc(target) + '" ' +
-      'data-cc-panel="' + esc(panel) + '" ' +
-      'data-cc-url="' + esc(url) + '">' +
+      'data-cc-panel="' + esc(panel) + '">' +
       '<span class="cc-card__title">' + esc(card.title || 'Atenção') + '</span>' +
       '<span class="cc-card__message">' + esc(card.message || '') + '</span>' +
       '<span class="cc-card__action">' + esc(card.action || 'IR') + ' →</span>' +
@@ -5275,13 +5275,17 @@ function renderAccount(acct) {
     const grid = document.getElementById('cc-grid');
     if (!grid) return;
     const badge = document.getElementById('cc-status-badge');
-    const cards = (snap && Array.isArray(snap.command_center)) ? snap.command_center : [];
-    // Stable serialization key: id + severity + url + title + message.
+    const cards = (snap && Array.isArray(snap.command_center))
+      ? snap.command_center.filter(function(c) {
+          return c && c.id !== 'affiliate_buy' && !c.url;
+        })
+      : [];
+    // Stable serialization key: id + severity + title + message.
     // Messages are DYNAMIC (proximity_streak embeds the live 1h trend %,
-    // negative_operation embeds the $ amount) — a key of id|severity|url
+    // negative_operation embeds the $ amount) — a key of id|severity
     // alone froze the card text on the first render (reviewer catch). Only
     // skip the DOM write when the rendered text is truly identical.
-    const key = cards.map(c => (c && c.id || '') + '|' + (c && c.severity || '') + '|' + (c && c.url || '') + '|' + (c && c.title || '') + '|' + (c && c.message || '')).join('\n');
+    const key = cards.map(c => (c && c.id || '') + '|' + (c && c.severity || '') + '|' + (c && c.title || '') + '|' + (c && c.message || '')).join('\n');
     const keyChanged = key !== _lastCcKey;
     _lastCcKey = key;
     if (keyChanged) {
@@ -5313,8 +5317,6 @@ function renderAccount(acct) {
     grid.addEventListener('click', (e) => {
       const card = e.target.closest ? e.target.closest('.cc-card') : null;
       if (!card) return;
-      const url = card.getAttribute('data-cc-url');
-      if (url) { window.open(url, '_blank', 'noopener'); return; }
       const target = card.getAttribute('data-cc-target');
       if (target) activateModule(target);
       const panel = card.getAttribute('data-cc-panel');
@@ -6404,6 +6406,37 @@ function renderAccount(acct) {
     '</div>';
   }
 
+  function _rentalsLoadErrorHtml(reason) {
+    return '<div class="empty-state" role="alert" style="grid-column:1/-1;border:none">' +
+      '<div class="empty-state__icon">⚠</div>' +
+      '<div class="empty-state__title">Rentals indisponível</div>' +
+      '<div class="empty-state__desc">Não foi possível carregar dados reais de MRR/Braiins (' + escapeHtml(reason || 'falha de rede') + '). Nenhum valor foi estimado.</div>' +
+      '<button type="button" class="btn btn--primary btn--mini" id="rentals-load-retry">TENTAR NOVAMENTE</button>' +
+      '</div>';
+  }
+
+  function _renderRentalsLoadError(reason) {
+    const listEl = document.getElementById('rentals-list');
+    if (!listEl) return;
+    listEl.innerHTML = _rentalsLoadErrorHtml(reason);
+    const badge = document.getElementById('rentals-count-badge');
+    if (badge) {
+      badge.textContent = 'erro';
+      badge.className = 'badge badge--amber';
+    }
+    const retry = document.getElementById('rentals-load-retry');
+    if (retry) {
+      retry.addEventListener('click', function () {
+        retry.disabled = true;
+        retry.setAttribute('aria-busy', 'true');
+        retry.textContent = 'CARREGANDO…';
+        const panel = document.getElementById('rentals-panel');
+        skelShow(panel, 'table');
+        loadRentals(true).then(function () { skelHide(panel); });
+      });
+    }
+  }
+
   async function loadRentals(force) {
     const listEl = document.getElementById('rentals-list');
     if (!listEl) return false;
@@ -6415,7 +6448,10 @@ function renderAccount(acct) {
       // server TTL cache so credentials just added in Settings show up
       // without a full page reload.
       const r = await authFetch('/api/rentals' + (force ? '?refresh=1' : ''));
-      if (!r.ok) return false;
+      if (!r.ok) {
+        _renderRentalsLoadError('HTTP ' + r.status);
+        return false;
+      }
       _rentalsData = await r.json();
       // UX: on the first load, land on the first tab that actually has data —
       // an empty 'Active' default used to hide the History tab (e.g. the
@@ -6438,7 +6474,10 @@ function renderAccount(acct) {
       }
       renderRentals();
       return true;
-    } catch (e) { return false; }
+    } catch (e) {
+      _renderRentalsLoadError('rede ou resposta inválida');
+      return false;
+    }
   }
 
   function renderRentals() {

@@ -300,8 +300,9 @@ def build_auto_pilot_context() -> dict:
 
             conn = get_db()
             row = conn.execute(
-                "SELECT MAX(worker_hashrate) FROM proximity_history " "WHERE ts >= ?",
-                (int(time.time()) - AP_PEAK_WINDOW_S,),
+                "SELECT MAX(worker_hashrate) FROM proximity_history "
+                "WHERE tenant_id = ? AND ts >= ?",
+                (tenant_id, int(time.time()) - AP_PEAK_WINDOW_S),
             ).fetchone()
             if row and row[0]:
                 peak_7d = float(row[0])

@@ -38,6 +38,10 @@ fails, the UI shows a stale/offline badge with the last real cached value, never
 | **Learning & Support** | Bitcoin whitepaper, free book library, cypherpunk support panel (BTC / Lightning / hashrate donations) |
 | **Mobile companion** | React Native app in [`mobile/`](mobile/) — Command, Fleet, Block, Market, **Rentals**, AI |
 
+The Overview Command Center is read-only and operational: its cards navigate
+only to internal diagnostics. Affiliate offers and external purchase links are
+kept out of that decision surface.
+
 ## 🏗 Architecture
 
 ```
@@ -103,9 +107,9 @@ python -m pytest tests/ --cov=app --cov=helpers --cov=axe_fleet --cov=services -
 # JS core tests (rendering helpers, probability math, terminal)
 node --test tests/test_app_js_core.js
 
-# Playwright E2E (spawns its own server on a free port, RATE_LIMIT_PER_MINUTE=1000)
+# Playwright E2E (runner starts a server with a temporary DB on PORT=8765)
 npm install
-npm run test:e2e
+bash run-e2e.sh --file=dashboard.spec.js
 ```
 
 The CI workflow (`.github/workflows/ci.yml`) gates merges on all suites plus an **80% coverage floor** (matching `codecov.yml` and the local `--cov-fail-under=80`).

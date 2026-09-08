@@ -14,10 +14,56 @@ e versionamento semântico ([SemVer](https://semver.org/lang/pt-BR/)).
 - A interface usa CTAs de revisão, mostra estado de registro e encaminha para
   Fleet ou Rentals, onde continuam valendo dry-run, confirmação e proteções.
 
+### Corrigido — árvore Stryker/Babel válida no mobile (Issue #431)
+- Stryker Core e Jest Runner foram alinhados e fixados em 9.6.1, versão que
+  preserva Babel 7 e a compatibilidade com Expo 57/Metro/Jest.
+- A opção de timeout usa o nome suportado `timeoutMS`; o glob de exclusão
+  redundante foi removido do conjunto de arquivos já restrito a hooks/services.
+- O downgrade deliberado da linha 10 evita peers Babel 8 inválidos sem alterar
+  dependências ou comportamento de runtime do aplicativo.
+
+### Corrigido — Command Center operacional e Rentals recuperável (Issue #424)
+- O Command Center deixa de emitir ofertas afiliadas e não abre URLs externas;
+  seus cards agora encaminham apenas para diagnósticos internos.
+- Contagens desconhecidas usam travessão no primeiro paint, evitando zeros
+  falsos antes do primeiro snapshot real.
+- Falhas HTTP, de rede ou de payload em Rentals mostram estado de erro
+  explícito, sem estimativas, com retry acessível e estado de carregamento.
+
+### Corrigido — patches compatíveis e triagem mobile (Issue #393)
+- Expo SDK 57 foi atualizado somente dentro da faixa recomendada pelo Expo
+  Doctor: Expo 57.0.20, Metro Runtime 57.0.15, Notifications 57.0.17 e Secure
+  Store 57.0.3.
+- `@xmldom/xmldom` transitivo subiu para 0.9.12, removendo o advisory corrigível
+  sem `--force`; Expo Doctor volta a 21/21.
+- A suíte Jest mobile roda em série para evitar contenção entre workers no
+  runner compartilhado; timeouts e assertions permanecem inalterados.
+- Permanecem 15 findings moderate transitivos sem correção compatível, ligados
+  a Expo/Xcode/UUID e React Navigation/query-string. O downgrade automático
+  para Expo 46/React Navigation 3 segue rejeitado e o risco está documentado.
+
+### Corrigido — estabilidade e diagnóstico do boot E2E (Issue #430)
+- O servidor com banco temporário do `run-e2e.sh` usa o mesmo teto de 10.000
+  req/min do CI, evitando HTTP 429 em suítes longas de desktop + mobile sem
+  desativar o limiter.
+- `CI=false` agora é interpretado como falso de verdade e executa sem retry;
+  `CI=true` preserva um retry e o bloqueio de `test.only`.
+- Dashboard e modais validam HTTP 200 antes de esperar `#app-shell`, expondo
+  imediatamente 429/5xx em vez de reportar um timeout DOM enganoso.
 ### Corrigido — AxeOS POST/PATCH fail-closed em HTTP de erro (Issue #422)
 - 4xx/5xx viram `AxeOSConnectorError` (antes estouravam `HTTPError` no Flask).
 - Corpo não-JSON em 2xx continua ACK de texto do firmware.
 - Falha de audit log de comando deixa de ser `except: pass`.
+
+### Corrigido — pico de hashrate do Auto-Pilot isolado por tenant (Issue #423)
+- `proximity_history` passa a registrar `tenant_id`; bancos legados recebem a
+  coluna de forma idempotente e suas linhas existentes ficam atribuídas ao
+  tenant operador `default`, sem perda de histórico.
+- O pico de sete dias usado pelo modo advisory e pelo snapshot é consultado
+  apenas no tenant resolvido. Sem histórico próprio, o valor é `0` e nenhuma
+  recomendação de queda é inventada a partir dos dados de outro usuário.
+- Índice `(tenant_id, ts)` preserva o custo das consultas por janela; testes
+  cobrem migração, isolamento A/B, ausência de dados e fechamento de conexão.
 
 ### Corrigido — SafetyEngine no plano da frota e cooldown persistente (Issue #415)
 - Comandos `axe-fleet` (restart/identify/pause/resume/config) passam por

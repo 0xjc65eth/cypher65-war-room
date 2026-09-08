@@ -298,7 +298,18 @@ class TestDbHelpers:
         assert prox._last_proximity_sample_ts == 1_001_000
         # pct = 5/100*100 = 5.0
         args = conn.cursor.return_value.execute.call_args[0][1]
-        assert args[7] == 0  # hot_streak=0
+        assert args[1] == "default"
+        assert args[8] == 0  # hot_streak=0
+
+    def test_sample_proximity_persists_explicit_tenant(self):
+        conn = MagicMock()
+        prox._get_db = lambda: conn
+        prox._last_proximity_sample_ts = 1_000_000
+        prox._sample_proximity(
+            1_001_000, 5.0, 100.0, 1e12, False, tenant_id="tenant-a"
+        )
+        args = conn.cursor.return_value.execute.call_args[0][1]
+        assert args[1] == "tenant-a"
 
     def test_sample_proximity_hot_streak_flag(self):
         conn = MagicMock()
@@ -306,7 +317,7 @@ class TestDbHelpers:
         prox._last_proximity_sample_ts = 1_000_000
         prox._sample_proximity(1_001_000, 5.0, 100.0, 1e12, True)
         args = conn.cursor.return_value.execute.call_args[0][1]
-        assert args[7] == 1
+        assert args[8] == 1
 
     def test_sample_proximity_error_swallowed(self):
         def boom():
