@@ -44,7 +44,7 @@ SENTRY_DSN=... python app.py      # Sentry ativo (traces 0.1 default)
 | Ferramenta | Escopo | Status | Gate? |
 |---|---|---|---|
 | **Biome** (Rust, lint JS/TS) | `mobile/` (TS/TSX) | ✅ schema 2.5, zero warnings | ✅ blocking |
-| **Knip** (dead code) | `mobile/` | ✅ knip.json | CI check (advisory) |
+| **Knip** (dead code) | `mobile/` | ✅ knip.json (exit 0, Issue #440) | CI check (advisory) |
 | **commitlint** | mensagens de commit | ✅ config | CI check |
 | **mutmut** (mutation Python) | `core/` + `services/` | ✅ dev-dep + doc | manual (advisory) |
 | **Stryker 9.6.1** (mutation JS) | `mobile/` hooks/services | ✅ Babel 7-compatible config | manual (advisory) |

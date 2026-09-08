@@ -22,6 +22,13 @@ e versionamento semântico ([SemVer](https://semver.org/lang/pt-BR/)).
 - Expo atualizado para `57.0.21`, mantendo Expo Doctor 21/21 e builds iOS,
   Android e web verdes. Sem `--force`.
 
+### Corrigido — Knip mobile reconcilia dependências e exports (Issue #440)
+- `expo-constants` passa a ser dependência direta (já era importada).
+- `@babel/core` permanece como peer do Babel/Jest; `expo-updates` não é
+  usado e fica ignorado. `config/api-url.d.ts` descreve o loader CJS.
+- Exports da API/offline/push/auth/biometria ganharam testes; o default
+  duplicado de `theme` foi removido. `npx knip` exit 0.
+
 ### Corrigido — suíte e2e local alinhada ao fail-closed (Issue #438)
 - `POST /api/axe-fleet/devices` registra primeiro e limita o probe de firmware
   a 1s; TEST-NET/loopback não são sondados (SSRF fail-closed).
