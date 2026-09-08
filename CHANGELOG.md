@@ -30,6 +30,14 @@ e versionamento semântico ([SemVer](https://semver.org/lang/pt-BR/)).
   comportamentais. Exports de tipos internos e o default duplicado de `theme`
   foram removidos. `npx knip` exit 0.
 
+### Corrigido — flakes residuais da suíte E2E completa (Issue #450)
+- Testes Braiins e Rentals bloqueiam o service worker, evitando reload por
+  `controllerchange` durante navegação controlada pelo Playwright.
+- O contrato visual de LEASE usa snapshot determinístico; disponibilidade de
+  venues externos permanece responsabilidade dos testes de integração.
+- A suíte atual tem 290 casos: a #438 consolidou um contrato duplicado de
+  `detect-endpoint` em um teste fail-closed, executado nos dois viewports.
+
 ### Corrigido — suíte e2e local alinhada ao fail-closed (Issue #438)
 - `POST /api/axe-fleet/devices` registra primeiro e limita o probe de firmware
   a 1s; TEST-NET/loopback não são sondados (SSRF fail-closed).
