@@ -47,7 +47,7 @@ SENTRY_DSN=... python app.py      # Sentry ativo (traces 0.1 default)
 | **Knip** (dead code) | `mobile/` | ✅ knip.json | CI check (advisory) |
 | **commitlint** | mensagens de commit | ✅ config | CI check |
 | **mutmut** (mutation Python) | `core/` + `services/` | ✅ dev-dep + doc | manual (advisory) |
-| **Stryker** (mutation JS) | `mobile/` utils/hooks | ✅ config | manual (advisory) |
+| **Stryker 9.6.1** (mutation JS) | `mobile/` hooks/services | ✅ Babel 7-compatible config | manual (advisory) |
 | **arch-contract** (TS layers) | — | ⚪ N/A nesta stack | — |
 | **bandit** (segurança estática Python) | Python | ✅ gate (Issue #125) — 0 MEDIUM/HIGH | ✅ blocking |
 | **flake8** (bug-codes) | Python | ✅ gate via `.flake8` (F821/F541/E9) | ✅ blocking |
@@ -95,8 +95,8 @@ npx commitlint --from HEAD~1
 SECRET_KEY=test-secret-0123456789 mutmut run --paths-to-mutate core/ services/probability.py
 mutmut results   # surviving mutants = testes que não pegam o bug
 
-# Stryker — mutation no mobile (escopo em utils/hooks — RN é lento)
-cd mobile && npx stryker run
+# Stryker — mutation no mobile (escopo em hooks/services — RN é lento)
+cd mobile && npm run mutate
 ```
 
 ### Notas
@@ -106,8 +106,11 @@ cd mobile && npx stryker run
   real do JS continua sendo `tests/test_app_js_core.js`.
 - **arch-contract** é TypeScript-only e o backend é Python → documentado como
   N/A. Se o `mobile/` ganhar camadas (domain/application/infra), adotamos lá.
-- **Stryker em React Native** é lento por natureza — escopo em funções puras
-  (hooks/utils), rodar sob demanda, nunca no gate do PR.
+- **Stryker em React Native** é lento por natureza — escopo em hooks/services,
+  rodar sob demanda, nunca no gate do PR. A linha 9.6.1 permanece fixada porque
+  usa Babel 7, compatível com Expo 57/Metro/Jest; Stryker 10 exige Babel 8 e
+  torna a árvore npm inválida. Uma futura atualização major exige validar
+  primeiro a compatibilidade do Expo com Babel 8.
 
 ---
 
