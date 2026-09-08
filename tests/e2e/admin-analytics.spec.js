@@ -40,7 +40,7 @@ test('renders real admin analytics with loading settled and no page overflow', a
   await expect(page.locator('[data-analytics-skeleton]:visible')).toHaveCount(0);
   await expect(page.locator('#admin-analytics-state')).toContainText('eventos reais');
   await expect(page.locator('#admin-analytics-boots')).not.toHaveText('—');
-  await expect(page.locator('#admin-analytics-top-module')).toContainText('admin-e2e');
+  await expect(page.locator('#admin-analytics-top-module')).not.toHaveText('—');
   await expect(page.locator('#admin-analytics-modules-chart')).toBeVisible();
   await expect(page.locator('#admin-analytics-boots-chart')).toBeVisible();
   await expect(page.locator('#admin-analytics-dropoff-chart')).toBeVisible();

@@ -4937,17 +4937,31 @@ const QR_GOLDEN = {"helloM":{"text":"HELLO WORLD","level":"M","rows":["111111101
 //  from the shifted per-share probability and the session's share count).
 // ═══════════════════════════════════════════════════════════════════════════
 (function() {
+  function _bhFinitePositive(value) {
+    const n = Number(value);
+    return Number.isFinite(n) && n > 0 ? n : 0;
+  }
+
   function simulateDifficultyShift(base, pct) {
     base = base || {};
     const mult = 1 + (Number(pct) || 0) / 100;
-    const netDiff = base.netDiff > 0 ? base.netDiff * mult : 0;
+    const baseNet = _bhFinitePositive(base.netDiff);
+    const netDiff = baseNet > 0 ? baseNet * mult : 0;
+    const bestDiff = _bhFinitePositive(base.bestDiff);
+    const baseP = Number(base.pBlock);
     let pBlock = null;
-    if (base.bestDiff > 0 && netDiff > 0) pBlock = base.bestDiff / netDiff;
-    else if (base.pBlock != null && base.netDiff > 0 && netDiff > 0) pBlock = base.pBlock * (base.netDiff / netDiff);
-    const expectedTime = base.expectedTime > 0 ? base.expectedTime * mult : (base.expectedTime || 0);
-    const distance = base.bestDiff > 0 && netDiff > 0 ? netDiff / base.bestDiff : 0;
-    let cumulativeP = base.cumulativeP;
-    if (base.shares > 0 && pBlock != null && pBlock > 0) cumulativeP = 1 - Math.pow(1 - pBlock, base.shares);
+    if (bestDiff > 0 && netDiff > 0) pBlock = bestDiff / netDiff;
+    else if (Number.isFinite(baseP) && baseNet > 0 && netDiff > 0) pBlock = baseP * (baseNet / netDiff);
+    const expectedTimeRaw = Number(base.expectedTime);
+    const expectedTime = Number.isFinite(expectedTimeRaw) && expectedTimeRaw > 0
+      ? expectedTimeRaw * mult
+      : (Number.isFinite(expectedTimeRaw) ? expectedTimeRaw : 0);
+    const distance = bestDiff > 0 && netDiff > 0 ? netDiff / bestDiff : 0;
+    let cumulativeP = Number.isFinite(Number(base.cumulativeP)) ? Number(base.cumulativeP) : base.cumulativeP;
+    const shares = _bhFinitePositive(base.shares);
+    if (shares > 0 && pBlock != null && Number.isFinite(pBlock) && pBlock > 0) {
+      cumulativeP = 1 - Math.pow(1 - pBlock, shares);
+    }
     return { shiftPct: Number(pct) || 0, netDiff, pBlock, expectedTime, distance, cumulativeP };
   }
 
@@ -4996,6 +5010,14 @@ const QR_GOLDEN = {"helloM":{"text":"HELLO WORLD","level":"M","rows":["111111101
   assertEqual('whatif empty pBlock null', empty.pBlock, null);
   assertEqual('whatif empty expectedTime 0', empty.expectedTime, 0);
   assertEqual('whatif empty cumulativeP undefined', empty.cumulativeP, undefined);
+
+  // Non-numeric / non-finite difficulty must not invent a probability.
+  const junk = simulateDifficultyShift({ netDiff: 'pending', bestDiff: 10e9, pBlock: 0.01 }, 10);
+  assertEqual('whatif junk netDiff 0', junk.netDiff, 0);
+  assertEqual('whatif junk pBlock null', junk.pBlock, null);
+  const nanBase = simulateDifficultyShift({ netDiff: Number.NaN, bestDiff: Number.NaN }, 10);
+  assertEqual('whatif nan netDiff 0', nanBase.netDiff, 0);
+  assertEqual('whatif nan pBlock null', nanBase.pBlock, null);
 })();
 
 // ═══════════════════════════════════════════════════════════════════════════

@@ -304,7 +304,8 @@ test.describe('LIVE MINING — Worker Intelligence', () => {
     const toast = page.locator('#toast-container div', { hasText: 'pause' });
     await expect(toast).toBeVisible({ timeout: 8000 });
 
-    // ── Resume: no confirm dialog (safe action), fires the resume endpoint ──
+    // ── Resume: confirm dialog (physical action), then fire the endpoint ──
+    page.once('dialog', d => d.accept());
     await resumeBtn.click();
     await expect
       .poll(() => fired.resume, { timeout: 5000 })

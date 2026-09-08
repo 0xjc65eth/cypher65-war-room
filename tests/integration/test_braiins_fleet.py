@@ -564,6 +564,62 @@ class TestAutoDetectOnAddDevice:
         # Registration succeeded despite probe failure
         mock_reg.add_device.assert_called_once()
 
+    def test_hanging_probe_does_not_block_registration(self, client, monkeypatch):
+        """A blackhole detect_firmware must not stall POST /devices past 1s."""
+        import time
+        from unittest.mock import MagicMock, patch
+
+        def hang(_ip):
+            time.sleep(5)
+            return {"firmware": "axeos", "adapter_type": "bitaxe", "reachable": True}
+
+        monkeypatch.setattr("core.registry.detector.detect_firmware", hang)
+
+        mock_reg = MagicMock()
+        mock_reg.get_device_by_ip.return_value = None
+        mock_reg.add_device.return_value = {
+            "id": "dev-004", "name": "blackhole", "status": "OFFLINE",
+            "ip_address": "10.0.0.77", "tenant_id": "default",
+        }
+
+        with patch("axe_fleet.routes._registry", mock_reg), \
+             patch("axe_fleet.routes._can_add_worker", return_value=True):
+            started = time.monotonic()
+            resp = client.post(self.ENDPOINT,
+                              json={"ip_address": "10.0.0.77", "name": "blackhole"})
+            elapsed = time.monotonic() - started
+
+        assert resp.status_code == 201
+        assert elapsed < 2.5
+        mock_reg.add_device.assert_called_once()
+        mock_reg.update_device.assert_not_called()
+
+    def test_testnet_ip_skips_probe_and_registers(self, client, monkeypatch):
+        """RFC 5737 TEST-NET addresses are not LAN targets — skip the probe."""
+        from unittest.mock import MagicMock, patch
+
+        probes = []
+        monkeypatch.setattr(
+            "core.registry.detector.detect_firmware",
+            lambda ip: probes.append(ip) or {"reachable": True, "firmware": "axeos"},
+        )
+
+        mock_reg = MagicMock()
+        mock_reg.get_device_by_ip.return_value = None
+        mock_reg.add_device.return_value = {
+            "id": "dev-005", "name": "E2E Alpha", "status": "OFFLINE",
+            "ip_address": "192.0.2.10", "tenant_id": "default",
+        }
+
+        with patch("axe_fleet.routes._registry", mock_reg), \
+             patch("axe_fleet.routes._can_add_worker", return_value=True):
+            resp = client.post(self.ENDPOINT,
+                              json={"ip_address": "192.0.2.10", "name": "E2E Alpha"})
+
+        assert resp.status_code == 201
+        assert probes == []
+        mock_reg.update_device.assert_not_called()
+
     def test_detected_cgminer_device_gets_firmware(self, client, monkeypatch):
         """detect_firmware returning cgminer also enriches the device."""
         from unittest.mock import MagicMock, patch

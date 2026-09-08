@@ -3699,17 +3699,31 @@ function renderAccount(acct) {
   // (Poisson: E[time] = diff·2³² / hashrate) and inverse for P(block)/share
   // (p = bestDiff / diff). Cumulative P re-derives from the shifted per-share
   // probability and the session's share count.
+  function _bhFinitePositive(value) {
+    const n = Number(value);
+    return Number.isFinite(n) && n > 0 ? n : 0;
+  }
+
   function simulateDifficultyShift(base, pct) {
     base = base || {};
     const mult = 1 + (Number(pct) || 0) / 100;
-    const netDiff = base.netDiff > 0 ? base.netDiff * mult : 0;
+    const baseNet = _bhFinitePositive(base.netDiff);
+    const netDiff = baseNet > 0 ? baseNet * mult : 0;
+    const bestDiff = _bhFinitePositive(base.bestDiff);
+    const baseP = Number(base.pBlock);
     let pBlock = null;
-    if (base.bestDiff > 0 && netDiff > 0) pBlock = base.bestDiff / netDiff;
-    else if (base.pBlock != null && base.netDiff > 0 && netDiff > 0) pBlock = base.pBlock * (base.netDiff / netDiff);
-    const expectedTime = base.expectedTime > 0 ? base.expectedTime * mult : (base.expectedTime || 0);
-    const distance = base.bestDiff > 0 && netDiff > 0 ? netDiff / base.bestDiff : 0;
-    let cumulativeP = base.cumulativeP;
-    if (base.shares > 0 && pBlock != null && pBlock > 0) cumulativeP = 1 - Math.pow(1 - pBlock, base.shares);
+    if (bestDiff > 0 && netDiff > 0) pBlock = bestDiff / netDiff;
+    else if (Number.isFinite(baseP) && baseNet > 0 && netDiff > 0) pBlock = baseP * (baseNet / netDiff);
+    const expectedTimeRaw = Number(base.expectedTime);
+    const expectedTime = Number.isFinite(expectedTimeRaw) && expectedTimeRaw > 0
+      ? expectedTimeRaw * mult
+      : (Number.isFinite(expectedTimeRaw) ? expectedTimeRaw : 0);
+    const distance = bestDiff > 0 && netDiff > 0 ? netDiff / bestDiff : 0;
+    let cumulativeP = Number.isFinite(Number(base.cumulativeP)) ? Number(base.cumulativeP) : base.cumulativeP;
+    const shares = _bhFinitePositive(base.shares);
+    if (shares > 0 && pBlock != null && Number.isFinite(pBlock) && pBlock > 0) {
+      cumulativeP = 1 - Math.pow(1 - pBlock, shares);
+    }
     return { shiftPct: Number(pct) || 0, netDiff, pBlock, expectedTime, distance, cumulativeP };
   }
 
@@ -3725,15 +3739,18 @@ function renderAccount(acct) {
     if (!badge || !diffEl) return;
     const pct = _bhSliderValue();
     badge.textContent = (pct > 0 ? '+' : '') + pct + '%';
-    if (!_bhBase || !_bhBase.netDiff) {
+    const baseNet = _bhFinitePositive(_bhBase && _bhBase.netDiff);
+    if (!_bhBase || !baseNet) {
       diffEl.textContent = '\u2014'; pEl.textContent = '\u2014'; etEl.textContent = '\u2014'; cumEl.textContent = '\u2014';
       return;
     }
     const sim = simulateDifficultyShift(_bhBase, pct);
-    diffEl.textContent = fmt.diff(sim.netDiff);
-    pEl.textContent = sim.pBlock != null ? (sim.pBlock * 100).toExponential(2) + '%' : '\u2014';
+    const pBlock = Number(sim.pBlock);
+    const cumP = Number(sim.cumulativeP);
+    diffEl.textContent = Number.isFinite(sim.netDiff) && sim.netDiff > 0 ? fmt.diff(sim.netDiff) : '\u2014';
+    pEl.textContent = Number.isFinite(pBlock) ? (pBlock * 100).toExponential(2) + '%' : '\u2014';
     etEl.textContent = sim.expectedTime ? fmt.secsToHuman(sim.expectedTime) : '\u2014';
-    cumEl.textContent = sim.cumulativeP != null ? (sim.cumulativeP * 100).toFixed(4) + '%' : '\u2014';
+    cumEl.textContent = Number.isFinite(cumP) ? (cumP * 100).toFixed(4) + '%' : '\u2014';
   }
 
   // ── Block Hunt render ──
