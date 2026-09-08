@@ -3,6 +3,10 @@
 // simple CSV chip still works (mode=simple is the default).
 import { test, expect } from '@playwright/test';
 
+// CSV behavior does not depend on the PWA cache. Blocking service workers
+// prevents controllerchange from aborting the second navigation in each test.
+test.use({ serviceWorkers: 'block' });
+
 const PASSWORD = 'Test1234!';
 
 async function ensureSidebarOpen(page) {

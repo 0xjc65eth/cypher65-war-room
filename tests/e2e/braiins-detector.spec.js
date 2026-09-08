@@ -12,6 +12,11 @@
 
 import { test, expect } from '@playwright/test';
 
+// The app deliberately reloads when a freshly installed service worker takes
+// control. That lifecycle is unrelated to firmware rendering and can destroy
+// the page context between the readiness check and the Fleet interaction.
+test.use({ serviceWorkers: 'block' });
+
 // ══════════════════════════════════════════════════════════════════════
 
 test.describe('Braiins OS+ Firmware Detector — E2E', () => {
