@@ -122,6 +122,8 @@ The CI workflow (`.github/workflows/ci.yml`) gates merges on all suites plus an 
 
 ## 📚 Documentation
 
+- [`docs/OPERATOR_FLYOVER.md`](docs/OPERATOR_FLYOVER.md) — operator story: what
+  the War Room is, the 15-minute path, and its fail-closed boundaries
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — system design & data flow
 - [`docs/DATA_MODEL.md`](docs/DATA_MODEL.md) — persistence model
 - [`docs/DEPLOYMENT_OPS.md`](docs/DEPLOYMENT_OPS.md) — deploy & operations guide
