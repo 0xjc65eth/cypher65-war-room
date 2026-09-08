@@ -6,6 +6,14 @@ e versionamento semântico ([SemVer](https://semver.org/lang/pt-BR/)).
 
 ## [Unreleased]
 
+### Corrigido — árvore Stryker/Babel válida no mobile (Issue #431)
+- Stryker Core e Jest Runner foram alinhados e fixados em 9.6.1, versão que
+  preserva Babel 7 e a compatibilidade com Expo 57/Metro/Jest.
+- A opção de timeout usa o nome suportado `timeoutMS`; o glob de exclusão
+  redundante foi removido do conjunto de arquivos já restrito a hooks/services.
+- O downgrade deliberado da linha 10 evita peers Babel 8 inválidos sem alterar
+  dependências ou comportamento de runtime do aplicativo.
+
 ### Corrigido — Command Center operacional e Rentals recuperável (Issue #424)
 - O Command Center deixa de emitir ofertas afiliadas e não abre URLs externas;
   seus cards agora encaminham apenas para diagnósticos internos.

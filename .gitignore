@@ -23,6 +23,7 @@ e2e-report/
 # Mutation testing (mutmut) artifacts — local-only
 .mutmut-cache
 *.py.bak
+mobile/reports/
 data/*.db
 # Production SQLite backups / corrupt snapshots must never reach the repo
 data/*.bak*
