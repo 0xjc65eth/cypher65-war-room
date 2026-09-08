@@ -22,6 +22,14 @@ e versionamento semântico ([SemVer](https://semver.org/lang/pt-BR/)).
 - Expo atualizado para `57.0.21`, mantendo Expo Doctor 21/21 e builds iOS,
   Android e web verdes. Sem `--force`.
 
+### Corrigido — mutation score mobile acima do baseline (Issue #439)
+- Stryker nos hooks/services: **25,56% → 47,56%** (115→214 mutantes mortos;
+  335→236 sobreviventes; 450 mutantes; zero erros/timeouts).
+- `useAuth` 77%, `biometrics` 74%, `offline` 78%, `useBatteryMode` 61% e
+  `useSnapshot` 68%. Threshold incremental: `break: 40` / `low: 40` /
+  `high: 80`.
+- Sem excluir arquivos nem enfraquecer mutadores.
+
 ### Corrigido — Knip mobile reconcilia dependências e exports (Issue #440)
 - `expo-constants` passa a ser dependência direta (já era importada).
 - `@babel/core` permanece como peer do Babel/Jest; `expo-updates` não é

@@ -90,4 +90,14 @@ describe('mobile toolchain contract', () => {
       expect(guard).toContain(`--exclude-dir=${generatedDir}`);
     }
   });
+
+  test('mutation testing preserves the measured incremental threshold', () => {
+    const stryker = readJson('stryker.config.json');
+
+    expect(stryker.thresholds).toEqual({ high: 80, low: 40, break: 40 });
+    expect(stryker.mutate).toEqual([
+      'src/hooks/**/*.{ts,tsx}',
+      'src/services/**/*.{ts,tsx}',
+    ]);
+  });
 });
