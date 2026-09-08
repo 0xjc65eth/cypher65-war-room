@@ -26,8 +26,9 @@ e versionamento semântico ([SemVer](https://semver.org/lang/pt-BR/)).
 - `expo-constants` passa a ser dependência direta (já era importada).
 - `@babel/core` permanece como peer do Babel/Jest; `expo-updates` não é
   usado e fica ignorado. `config/api-url.d.ts` descreve o loader CJS.
-- Exports da API/offline/push/auth/biometria ganharam testes; o default
-  duplicado de `theme` foi removido. `npx knip` exit 0.
+- APIs de offline, push, auth, biometria e device history ganharam testes
+  comportamentais. Exports de tipos internos e o default duplicado de `theme`
+  foram removidos. `npx knip` exit 0.
 
 ### Corrigido — suíte e2e local alinhada ao fail-closed (Issue #438)
 - `POST /api/axe-fleet/devices` registra primeiro e limita o probe de firmware

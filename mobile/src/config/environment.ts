@@ -1,8 +1,8 @@
 import { validateApiBaseUrl } from '../../config/api-url';
 
-export type MobileEnvironment = 'development' | 'testing' | 'staging' | 'production';
+type MobileEnvironment = 'development' | 'testing' | 'staging' | 'production';
 
-export interface ExpoEnvironmentExtra {
+interface ExpoEnvironmentExtra {
   environment?: string;
   apiBaseUrl?: string;
 }

@@ -1,5 +1,5 @@
 import { renderHook, act, waitFor } from '@testing-library/react-native';
-import { useCommands, type CommandPhase } from '../src/hooks/useCommands';
+import { useCommands } from '../src/hooks/useCommands';
 import * as client from '../src/api/client';
 
 jest.mock('../src/api/client', () => ({
@@ -12,19 +12,6 @@ jest.mock('../src/api/client', () => ({
 describe('useCommands', () => {
   beforeEach(() => {
     jest.clearAllMocks();
-  });
-
-  it('exports the reconciliation phase union used by the command UI', () => {
-    const phases: CommandPhase[] = [
-      'idle',
-      'acknowledged',
-      'offline',
-      'reconnecting',
-      'verified',
-      'unknown',
-      'failed',
-    ];
-    expect(phases).toHaveLength(7);
   });
 
   it('defaults an unconfirmed command to dry-run', async () => {
