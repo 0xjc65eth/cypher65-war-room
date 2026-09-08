@@ -15,6 +15,12 @@ e versionamento semântico ([SemVer](https://semver.org/lang/pt-BR/)).
 - Teste de contrato mantém módulos, headings e sentenças de segurança alinhados
   com a narrativa usada no walkthrough.
 
+### Corrigido — uuid transitivo do toolchain Expo (Issue #393)
+- Override `uuid@11.1.1` no `xcode` usado por `@expo/config-plugins`.
+  Advisories moderate: 15 → 4. High/critical: 0.
+- Os 4 restantes são `query-string` / `@react-navigation/*`; o “fix” do npm
+  é downgrade para React Navigation 3, incompatível com Expo 57. Sem `--force`.
+
 ### Corrigido — suíte e2e local alinhada ao fail-closed (Issue #438)
 - `POST /api/axe-fleet/devices` registra primeiro e limita o probe de firmware
   a 1s; TEST-NET/loopback não são sondados (SSRF fail-closed).
