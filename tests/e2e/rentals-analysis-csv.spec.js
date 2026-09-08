@@ -5,6 +5,20 @@ import { test, expect } from '@playwright/test';
 
 const PASSWORD = 'Test1234!';
 
+async function ensureSidebarOpen(page) {
+  const isOpen = await page.evaluate(() => {
+    const sb = document.getElementById('sidebar');
+    return sb && sb.classList.contains('open');
+  });
+  if (!isOpen) {
+    const toggle = page.locator('#sidebar-mobile-toggle');
+    if (await toggle.isVisible()) {
+      await toggle.click();
+      await page.waitForTimeout(400);
+    }
+  }
+}
+
 // Realistic MRR payloads for the mocked /api/rentals + /api/rentals/export.
 const RENTALS_PAYLOAD = {
   success: true, needs_auth: false,
@@ -107,9 +121,10 @@ test.describe('Rentals analysis export', () => {
     await login(page);
     await routeMocks(page, { exportMode: 'analysis' });
     await page.goto('/');
+    await ensureSidebarOpen(page);
 
     // Open the RENTALS tab (nav).
-    await page.locator('nav a:has-text("Rentals"), [data-module="rentals"]').first().click();
+    await page.locator('.sidebar__link[data-module="rentals"]').click();
     const analysisChip = page.locator('#rentals-export-analysis');
     await expect(analysisChip).toBeVisible({ timeout: 15000 });
 
@@ -125,7 +140,8 @@ test.describe('Rentals analysis export', () => {
     await login(page);
     await routeMocks(page, {});
     await page.goto('/');
-    await page.locator('nav a:has-text("Rentals"), [data-module="rentals"]').first().click();
+    await ensureSidebarOpen(page);
+    await page.locator('.sidebar__link[data-module="rentals"]').click();
     const csvChip = page.locator('#rentals-export');
     await expect(csvChip).toBeVisible({ timeout: 15000 });
     const [download] = await Promise.all([

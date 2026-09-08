@@ -431,25 +431,52 @@ def add_device(tenant_id: str = ""):
             403,
         )
 
-    # ── Auto-detect firmware (best-effort, never blocks registration) ──
+    # Registration is the contract. Firmware probing is best-effort and
+    # must never block the 201 (TEST-NET / blackhole LAN used to stall the
+    # request for DETECT_TIMEOUT × probes, past the Playwright actionTimeout).
+    try:
+        device = _registry.add_device(ip, name or ip, tenant_id=tenant_id)
+    except Exception as e:
+        log.error("[axe] add_device error: %s", e)
+        return jsonify({"error": f"failed to add device: {str(e)}"}), 500
+
     firmware = ""
     model = ""
     version = ""
     status = "OFFLINE"
     try:
-        from core.registry.detector import detect_firmware
+        from concurrent.futures import ThreadPoolExecutor
+        from concurrent.futures import TimeoutError as FuturesTimeout
+        from core.registry.detector import detect_firmware, resolve_private_target
 
-        fw = detect_firmware(ip)
+        try:
+            probe_ip = resolve_private_target(ip)
+        except ValueError as exc:
+            log.info("[axe] add_device skip firmware probe for %s: %s", ip, exc)
+            probe_ip = None
+
+        fw = None
+        if probe_ip:
+            pool = ThreadPoolExecutor(max_workers=1)
+            try:
+                fw = pool.submit(detect_firmware, probe_ip).result(timeout=1.0)
+            except FuturesTimeout:
+                log.warning(
+                    "[axe] add_device firmware probe timed out for %s", probe_ip
+                )
+                fw = None
+            finally:
+                pool.shutdown(wait=False, cancel_futures=True)
+
         if fw and fw.get("reachable"):
             firmware = fw.get("firmware", "")
             model = fw.get("model", "")
             version = fw.get("version", "")
             status = "ONLINE" if fw.get("adapter_type") else "OFFLINE"
     except Exception:
-        pass  # probe failure must never prevent registration
+        log.warning("[axe] add_device firmware probe failed for %s", ip, exc_info=True)
 
     try:
-        device = _registry.add_device(ip, name or ip, tenant_id=tenant_id)
         # Enrich with auto-detected metadata when available
         if firmware or model:
             try:
@@ -481,8 +508,8 @@ def add_device(tenant_id: str = ""):
         )
         return jsonify({"success": True, "device": device}), 201
     except Exception as e:
-        log.error("[axe] add_device error: %s", e)
-        return jsonify({"error": f"failed to add device: {str(e)}"}), 500
+        log.error("[axe] add_device enrich error: %s", e)
+        return jsonify({"success": True, "device": device}), 201
 
 
 @axe_fleet_bp.route("/devices/<device_id>", methods=["DELETE"])

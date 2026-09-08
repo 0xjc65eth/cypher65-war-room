@@ -6,6 +6,13 @@ e versionamento semântico ([SemVer](https://semver.org/lang/pt-BR/)).
 
 ## [Unreleased]
 
+### Corrigido — suíte e2e local alinhada ao fail-closed (Issue #438)
+- `POST /api/axe-fleet/devices` registra primeiro e limita o probe de firmware
+  a 1s; TEST-NET/loopback não são sondados (SSRF fail-closed).
+- WHAT-IF deixa de renderir probabilidade a partir de `netDiff` não-finito.
+- Specs e2e passam a exigir consentimento no ARMAR, 400 no detect inválido,
+  confirm no Resume, sidebar mobile aberta e KPI de analytics sem exigir top.
+
 ### Corrigido — runner E2E falha se a porta já estiver ocupada (Issue #437)
 - `run-e2e.sh` sonda `127.0.0.1:$PORT` (padrão 8765) antes de spawnar o Flask.
   Um listener antigo que já responda 200 em `/api/healthz` deixa de sequestrar

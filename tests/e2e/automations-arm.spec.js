@@ -95,11 +95,14 @@ test.describe('Auto-Pilot arm toggle — automations panel', () => {
     // Wrong text keeps the confirm disabled
     const typeInput = page.locator('#ap-arm-type');
     const confirmBtn = page.locator('#ap-arm-confirm');
+    const consent = page.locator('#ap-arm-consent');
     await typeInput.fill('ARM');
     await expect(confirmBtn).toBeDisabled();
 
-    // Typing ARMAR enables the button; confirming fires the POST and flips the label
+    // ARMAR alone is not enough: the EULA checkbox is a second fail-closed gate
     await typeInput.fill('ARMAR');
+    await expect(confirmBtn).toBeDisabled();
+    await consent.check();
     await expect(confirmBtn).toBeEnabled();
     const [req] = await Promise.all([
       page.waitForRequest(r => r.url().includes('/api/automation/arm') && r.method() === 'POST'),

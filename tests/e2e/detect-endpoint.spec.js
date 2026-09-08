@@ -22,137 +22,82 @@ import { test, expect } from '@playwright/test';
 
 // ══════════════════════════════════════════════════════════════════════
 
-const DETECT_IP = '127.0.0.1';  // localhost — fails fast (connection refused)
+const LOOPBACK_IP = '127.0.0.1';  // SSRF fail-closed — not a private LAN target
 
-/** All required top-level keys in the /detect response,
- *  with their expected types when reachable=False. */
-const DETECT_CONTRACT = {
-  firmware: 'string',
-  adapter_type: 'string',
-  version: 'string',
-  model: 'string',
-  capabilities: 'object',
-  reachable: 'boolean',
-};
+async function detectCall(page, target) {
+  return page.evaluate(async (ip) => {
+    const r = await fetch('/api/axe-fleet/detect/' + encodeURIComponent(ip));
+    let body = null;
+    try { body = await r.json(); } catch (e) { body = { _parseError: String(e) }; }
+    return { status: r.status, body };
+  }, target);
+}
 
-/** Expected values when the target is unreachable (localhost). */
-const UNREACHABLE_FALLBACK = {
-  firmware: 'unknown',
-  adapter_type: 'unknown',
-  reachable: false,
-};
+test.describe('GET /api/axe-fleet/detect/<ip> — SSRF fail-closed', () => {
 
-test.describe('GET /api/axe-fleet/detect/<ip> — contract', () => {
-
-  test('returns all required firmware-contract fields', async ({ page }) => {
-    // Navigate to get a browser session (cookies, CSRF, etc.)
+  test('rejects loopback without probing', async ({ page }) => {
     await page.goto('/');
     await page.waitForSelector('#app-shell', { timeout: 15000 });
 
-    // Call the detect endpoint via the browser's fetch (shares session)
-    const result = await page.evaluate(async (ip) => {
-      const r = await fetch('/api/axe-fleet/detect/' + encodeURIComponent(ip));
-      // Graceful skip when the server or route is unreachable
-      if (r.status >= 500) {
-        return { _skip: true, _reason: 'server returned ' + r.status };
-      }
-      return await r.json();
-    }, DETECT_IP);
-
-    // If the server is down / route missing, skip gracefully
-    if (result._skip) {
-      test.skip(true, result._reason);
+    const result = await detectCall(page, LOOPBACK_IP);
+    if (result.status >= 500) {
+      test.skip(true, 'server returned ' + result.status);
       return;
     }
 
-    // ── Contract: every required key must be present ──────────────────
-    for (const [key, typeHint] of Object.entries(DETECT_CONTRACT)) {
-      expect(result, `missing key: "${key}"`).toHaveProperty(key);
+    expect(result.status).toBe(400);
+    expect(result.body.reachable).toBe(false);
+    expect(String(result.body.error || '')).toMatch(/private LAN|Tailscale/i);
+    expect(result.body).not.toHaveProperty('firmware');
+    expect(result.body).not.toHaveProperty('capabilities');
+  });
 
-      if (typeHint === 'string') {
-        expect(typeof result[key], `"${key}" must be a string`).toBe('string');
-      } else if (typeHint === 'boolean') {
-        expect(typeof result[key], `"${key}" must be a boolean`).toBe('boolean');
-      } else if (typeHint === 'object') {
-        expect(typeof result[key], `"${key}" must be an object`).toBe('object');
-      }
+  test('rejects unresolved hostname without probing', async ({ page }) => {
+    await page.goto('/');
+    await page.waitForSelector('#app-shell', { timeout: 15000 });
+
+    const result = await detectCall(page, 'miner.lan');
+    if (result.status >= 500) {
+      test.skip(true, 'server returned ' + result.status);
+      return;
     }
 
-    // ── Unreachable fallback values ──────────────────────────────────
-    expect(result.reachable, 'reachable must be false for localhost').toBe(false);
-    expect(result.firmware, 'firmware must be "unknown" for unreachable').toBe('unknown');
-    expect(result.adapter_type, 'adapter_type must be "unknown" for unreachable').toBe('unknown');
-    expect(result.model, 'model must be "" (empty) for unreachable').toBe('');
-    expect(result.version, 'version must be "" (empty) for unreachable').toBe('');
+    expect(result.status).toBe(400);
+    expect(result.body.reachable).toBe(false);
+    expect(String(result.body.error || '')).toMatch(/could not be resolved|invalid hostname|private LAN|Tailscale/i);
+    expect(result.body).not.toHaveProperty('firmware');
   });
 
-  test('unreachable response has empty capabilities dict', async ({ page }) => {
+  test('reachable flag stays boolean on the fail-closed body', async ({ page }) => {
     await page.goto('/');
     await page.waitForSelector('#app-shell', { timeout: 15000 });
 
-    const result = await page.evaluate(async (ip) => {
-      const r = await fetch('/api/axe-fleet/detect/' + encodeURIComponent(ip));
-      return await r.json();
-    }, DETECT_IP);
+    const result = await detectCall(page, LOOPBACK_IP);
+    if (result.status >= 500) {
+      test.skip(true, 'server returned ' + result.status);
+      return;
+    }
 
-    if (result._skip) { test.skip(true, result._reason); return; }
-
-    expect(typeof result.capabilities).toBe('object');
-    // Unreachable → empty capabilities (no probes succeeded)
-    expect(Object.keys(result.capabilities).length).toBe(0);
+    expect(typeof result.body.reachable).toBe('boolean');
+    expect(result.body.reachable).toBe(false);
   });
 
-  test('accepts hostname path parameter', async ({ page }) => {
-    await page.goto('/');
-    await page.waitForSelector('#app-shell', { timeout: 15000 });
+  test('returns JSON with correct content-type on 400', async ({ request }) => {
+    const r = await request.get('/api/axe-fleet/detect/' + LOOPBACK_IP);
 
-    // miner.lan won't resolve → DNS failure in detector → unreachable
-    const result = await page.evaluate(async () => {
-      const r = await fetch('/api/axe-fleet/detect/miner.lan');
-      return await r.json();
-    });
-
-    if (result._skip) { test.skip(true, result._reason); return; }
-
-    // Must still return a valid contract (not 404 or 500)
-    expect(result).toHaveProperty('reachable');
-    expect(result).toHaveProperty('firmware');
-    expect(result).toHaveProperty('adapter_type');
-  });
-
-  test('response includes reachable flag as boolean', async ({ page }) => {
-    await page.goto('/');
-    await page.waitForSelector('#app-shell', { timeout: 15000 });
-
-    const result = await page.evaluate(async (ip) => {
-      const r = await fetch('/api/axe-fleet/detect/' + encodeURIComponent(ip));
-      return await r.json();
-    }, DETECT_IP);
-
-    if (result._skip) { test.skip(true, result._reason); return; }
-
-    // reachable is ALWAYS a boolean — never null, undefined, or string
-    expect(typeof result.reachable).toBe('boolean');
-  });
-
-  test('returns JSON with correct content-type', async ({ request }) => {
-    // Direct API call via Playwright request fixture (no browser session needed)
-    const r = await request.get('/api/axe-fleet/detect/' + DETECT_IP);
-
-    // Graceful skip when server is down
     if (r.status() >= 500) {
       test.skip(true, 'server returned ' + r.status());
       return;
     }
 
-    expect(r.status()).toBe(200);
+    expect(r.status()).toBe(400);
     const ct = r.headers()['content-type'] || '';
     expect(ct, 'response must be application/json').toContain('application/json');
 
     const data = await r.json();
     expect(data).toHaveProperty('reachable');
-    expect(data).toHaveProperty('firmware');
-    expect(data).toHaveProperty('adapter_type');
+    expect(data.reachable).toBe(false);
+    expect(data).toHaveProperty('error');
   });
 
   test.describe('Braiins OS+ firmware contract (mocked)', () => {

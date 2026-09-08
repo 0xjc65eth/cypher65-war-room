@@ -77,18 +77,20 @@ test.describe('Probability WHAT-IF difficulty slider — regression', () => {
 
     if (hasData) {
       // +10% difficulty → P(block)/share must drop (inverse scaling).
+      const parsePct = (raw) => {
+        const n = parseFloat(String(raw).replace('%', '').replace('\u2014', ''));
+        return Number.isFinite(n) ? n : null;
+      };
       const before = await page.locator('#bh-whatif-pblock').textContent();
-      const pBefore = parseFloat(String(before).replace('%', ''));
+      const pBefore = parsePct(before);
       await slider.evaluate(el => { el.value = 30; el.dispatchEvent(new Event('input', { bubbles: true })); });
       await expect(badge).toHaveText('+30%');
       const after = await page.locator('#bh-whatif-pblock').textContent();
-      const pAfter = parseFloat(String(after).replace('%', ''));
+      const pAfter = parsePct(after);
       // 30% > 10% shift → strictly smaller probability. Guard: on a server
-      // with pool difficulty but zero bestDiff (no worker), pBlock is 0 and
-      // stays 0 — skip the strict comparison rather than failing.
-      if (pBefore === 0 && pAfter === 0) {
-        // Cold-ish server: pool data present but no best share → pBlock = 0.
-        // Both values are honest zeroes; the badge still tracked the shift.
+      // with pool difficulty but zero/non-finite bestDiff, skip the comparison.
+      if (pBefore == null || pAfter == null || (pBefore === 0 && pAfter === 0)) {
+        // Honest empty/zero readouts; the badge still tracked the shift.
       } else {
         expect(pAfter).toBeLessThan(pBefore);
       }

@@ -55,6 +55,19 @@ test('admin module renders pool + funnel KPIs', async ({ page }) => {
   await page.goto(BASE_URL, { waitUntil: 'domcontentloaded' });
   await waitForDashboard(page);
 
+  // Mobile off-canvas hides the sidebar until opened.
+  const sidebarOpen = await page.evaluate(() => {
+    const sb = document.getElementById('sidebar');
+    return sb && sb.classList.contains('open');
+  });
+  if (!sidebarOpen) {
+    const toggle = page.locator('#sidebar-mobile-toggle');
+    if (await toggle.isVisible()) {
+      await toggle.click();
+      await page.waitForTimeout(400);
+    }
+  }
+
   // Navigate to the Admin module via the sidebar link.
   const adminLink = page.locator('.sidebar__link[data-module="admin"]');
   await adminLink.click();
