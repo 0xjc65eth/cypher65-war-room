@@ -6,6 +6,15 @@ e versionamento semântico ([SemVer](https://semver.org/lang/pt-BR/)).
 
 ## [Unreleased]
 
+### Documentação — walkthrough do operador para Flyovers (Issue #452)
+- Novo roteiro bilíngue conecta arquitetura, dor operacional, percurso inicial
+  de 15 minutos e benefícios permitidos sem inventar telemetria ou retorno.
+- Quickstart e runtime map registram os limites fail-closed: advisory apenas
+  audita e navega, comandos físicos exigem dry-run e confirmação humana, e
+  checkout permanece indisponível até a reconciliação BTCPay.
+- Teste de contrato mantém módulos, headings e sentenças de segurança alinhados
+  com a narrativa usada no walkthrough.
+
 ### Corrigido — suíte e2e local alinhada ao fail-closed (Issue #438)
 - `POST /api/axe-fleet/devices` registra primeiro e limita o probe de firmware
   a 1s; TEST-NET/loopback não são sondados (SSRF fail-closed).
