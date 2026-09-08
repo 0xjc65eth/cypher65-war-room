@@ -67,7 +67,7 @@ fi
 # Ensure Playwright browsers are installed
 if [ ! -d "node_modules" ] || [ ! -d "node_modules/@playwright" ]; then
   echo "Installing Playwright test dependencies..."
-  npm install 2>&1 | tail -3
+  npm ci --legacy-peer-deps=false 2>&1 | tail -3
 fi
 
 if ! npx playwright install chromium 2>/dev/null; then

@@ -69,6 +69,9 @@ jobs:
         with:
           node-version: "20"
 
+      - name: Verify root lockfile consistency
+        run: npm run check:lockfile
+
       - name: Run JS core tests (app.js helpers)
         run: node --test tests/test_app_js_core.js
 
@@ -300,7 +303,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          npm install
+          npm ci --legacy-peer-deps=false
           python -m venv .venv
           source .venv/bin/activate
           pip install --upgrade pip
@@ -349,7 +352,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          npm install
+          npm ci --legacy-peer-deps=false
           python -m venv .venv
           source .venv/bin/activate
           pip install --upgrade pip
@@ -456,4 +459,3 @@ jobs:
           BODY=$'👀 **CI guard (#211):** sua branch está com `.github/workflows/` **defasado** em relação ao master — o CI que roda aqui pode não refletir o pipeline atual (caso dos PRs #1/#7: 13 dias vermelhos por um fix de workflow que nunca chegou à branch).\n\nRebaseie para validar com o pipeline real:\n\n`@dependabot rebase`'
           gh pr comment "${PR_NUMBER}" --body "${BODY}"
           echo "Comentário @dependabot rebase postado."
-
