@@ -24,6 +24,12 @@ from .configuration import (
     ValidatedPoolConfiguration,
     validate_pool_configuration,
 )
+from .dry_run import (
+    PoolDryRunError,
+    PoolDryRunResult,
+    PoolDryRunStage,
+    run_pool_dry_run,
+)
 from .models import CapabilityState, PoolEndpoint, PoolProtocol, Provenance
 from .policy import DestinationPolicy, PolicyError, ValidatedDestination
 from .resolver import PoolResolution, ResolutionError, resolve_pool_destination
@@ -77,6 +83,9 @@ __all__ = [
     "FailoverSkip",
     "PolicyError",
     "PoolConfigurationError",
+    "PoolDryRunError",
+    "PoolDryRunResult",
+    "PoolDryRunStage",
     "PoolCapabilities",
     "PoolEndpoint",
     "PoolProtocol",
@@ -106,6 +115,7 @@ __all__ = [
     "probe_stratum_v1",
     "record_pool_rollout_batch",
     "resolve_pool_destination",
+    "run_pool_dry_run",
     "select_failover_candidate",
     "start_pool_rollout",
     "validate_pool_configuration",

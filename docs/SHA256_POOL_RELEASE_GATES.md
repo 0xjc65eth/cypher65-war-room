@@ -1,8 +1,8 @@
 # SHA-256 Pool Intelligence gates 078–101
 
-Last reviewed: 2026-09-09. A bounded, read-only V1 probe performs explicit
-network I/O. Sanitized evidence can be aggregated without further I/O, but the
-probe is not exposed as arbitrary discovery and cannot change a pool.
+Last reviewed: 2026-09-09. A bounded, read-only V1 probe and the explicit pool
+dry-run perform network I/O. Sanitized evidence can be aggregated without
+further I/O, but neither path is arbitrary discovery or can change a pool.
 
 | Gate | State | Evidence / remaining work |
 |---|---|---|
@@ -20,7 +20,7 @@ probe is not exposed as arbitrary discovery and cannot change a pool.
 | 089 Pool latency | PASS | Probe records bounded DNS, TCP, TLS, Stratum and total timings. |
 | 090 Failover | PASS | Pure, bounded and deterministic policy keeps an eligible active pool or selects the lowest numeric priority; unhealthy, incompatible or cooling-down candidates fail closed. |
 | 091 ASIC compatibility | PASS | Typed device/pool profiles compare only effective capability-graph states; missing, unauthorized, unsupported or erroneous evidence never becomes compatible. |
-| 092 Pool dry-run | FAIL | Bitaxe `update_pool` now validates a complete canonical payload without network I/O, but DNS/destination/Stratum checks are still absent. |
+| 092 Pool dry-run | PASS | Bitaxe `update_pool` dry-run and confirmation compose canonical validation, one DNS resolution, public-destination/port policy and credential-free V1 subscribe; failure returns only controlled state/latencies and prevents a confirmation token. |
 | 093 Confirmation | FAIL | The Bitaxe route binds canonical config to a one-time server token; the universal pool engine and other firmware paths are not integrated. |
 | 094 Reconciliation | FAIL | Bitaxe can compare fresh firmware telemetry to the request hash and never treats HTTP ACK as verified; auth/jobs/hashrate evidence and other firmware remain absent. |
 | 095 Rollback | FAIL | Previous known-good pool model absent. |

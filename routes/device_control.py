@@ -32,6 +32,7 @@ from services.safety_policy import can_execute_physical_command
 from services import operation_ledger
 from services.pool_intelligence import (
     PoolConfigurationError,
+    run_pool_dry_run,
     validate_pool_configuration,
 )
 
@@ -495,6 +496,28 @@ def issue_device_command_confirmation(device_id: str, tenant_id: str = ""):
             400,
         )
 
+    if command == "update_pool":
+        pool_dry_run = run_pool_dry_run(parameters)
+        if not pool_dry_run.ready:
+            public_dry_run = pool_dry_run.to_public_dict()
+            record = {
+                "success": False,
+                "allowed": False,
+                "reason": "pool_preflight_failed",
+                "pool_dry_run": public_dry_run,
+            }
+            _record_attempt(device_id, command, parameters, record)
+            return (
+                jsonify(
+                    {
+                        "success": False,
+                        "error": "pool destination did not pass the read-only preflight",
+                        "pool_dry_run": public_dry_run,
+                    }
+                ),
+                422,
+            )
+
     binding = _confirmation_binding(tenant_id, device_id, command, parameters)
     if binding is None:
         return (
@@ -714,6 +737,30 @@ def execute_device_command(device_id: str, tenant_id: str = ""):
     # execution; dry-runs still traverse capability and safety validation and
     # are recorded in the same audit stream.
     if dry_run:
+        pool_dry_run = None
+        if command == "update_pool":
+            pool_dry_run = run_pool_dry_run(parameters).to_public_dict()
+            if not pool_dry_run["ready"]:
+                record = {
+                    "success": False,
+                    "dry_run": True,
+                    "read_only": True,
+                    "allowed": False,
+                    "reason": "pool_preflight_failed",
+                    "pool_dry_run": pool_dry_run,
+                }
+                _record_attempt(device_id, command, parameters, record)
+                return (
+                    jsonify(
+                        {
+                            **record,
+                            "device_id": device_id,
+                            "command": command,
+                            "parameters": redact_command_data(parameters),
+                        }
+                    ),
+                    422,
+                )
         record = {
             "success": True,
             "dry_run": True,
@@ -724,6 +771,8 @@ def execute_device_command(device_id: str, tenant_id: str = ""):
             )
             or bool(safety_result and safety_result.requires_confirmation),
         }
+        if pool_dry_run is not None:
+            record["pool_dry_run"] = pool_dry_run
         _record_attempt(device_id, command, parameters, record)
         return jsonify(
             {

@@ -25,7 +25,29 @@ class TestAppDeviceRoutes:
     @pytest.fixture(autouse=True)
     def clear_pending_confirmations(self, monkeypatch):
         """Keep durable one-time command approvals isolated between tests."""
+        from routes import device_control
         from services.command_confirmation import _connect, ensure_table
+        from services.pool_intelligence import (
+            CapabilityState,
+            PoolDryRunResult,
+            PoolDryRunStage,
+            PoolProtocol,
+        )
+
+        monkeypatch.setattr(
+            device_control,
+            "run_pool_dry_run",
+            lambda parameters: PoolDryRunResult(
+                ready=True,
+                stage=PoolDryRunStage.READY,
+                protocol=PoolProtocol.STRATUM_V1,
+                capability=CapabilityState.SUPPORTED,
+                dns_latency_ms=1.0,
+                tcp_latency_ms=2.0,
+                stratum_latency_ms=3.0,
+                total_latency_ms=6.0,
+            ),
+        )
 
         conn = _connect()
         ensure_table(conn)
@@ -408,6 +430,161 @@ class TestAppDeviceRoutes:
         assert response.status_code == 400
         assert "never clamped" in response.get_json()["error"]
         build_adapter.assert_not_called()
+
+    def test_update_pool_dry_run_requires_sanitized_pool_preflight(
+        self, client, monkeypatch
+    ):
+        flask_client, registry = client
+        from core.adapters.bitaxe_adapter import BitaxeAdapter
+        from routes import device_control
+        from services.pool_intelligence import (
+            CapabilityState,
+            PoolDryRunResult,
+            PoolDryRunStage,
+            PoolProtocol,
+        )
+
+        device = Device(
+            name="Pool-Preflight",
+            model="Bitaxe",
+            ip="192.168.1.69",
+            status=DeviceStatus.ONLINE,
+        )
+        device.capabilities = BitaxeAdapter(device).get_capabilities()
+        _with_telemetry(device)
+        registry.add_device(device)
+        calls = []
+
+        def successful_preflight(parameters):
+            calls.append(parameters)
+            return PoolDryRunResult(
+                ready=True,
+                stage=PoolDryRunStage.READY,
+                protocol=PoolProtocol.STRATUM_V1,
+                capability=CapabilityState.SUPPORTED,
+                dns_latency_ms=1.0,
+                tcp_latency_ms=2.0,
+                stratum_latency_ms=3.0,
+                total_latency_ms=6.0,
+            )
+
+        monkeypatch.setattr(device_control, "run_pool_dry_run", successful_preflight)
+        with patch("routes.device_control._build_adapter") as build_adapter:
+            response = flask_client.post(
+                f"/api/devices/{device.id}/command",
+                json={
+                    "command": "update_pool",
+                    "parameters": {
+                        "stratumURL": "private-pool.example.test",
+                        "stratumPort": 3333,
+                        "stratumUser": "private-wallet.worker",
+                    },
+                },
+            )
+
+        assert response.status_code == 200
+        data = response.get_json()
+        assert data["pool_dry_run"]["ready"] is True
+        assert data["pool_dry_run"]["stage"] == "ready"
+        assert data["parameters"]["stratumURL"] == "[REDACTED]"
+        assert data["parameters"]["stratumUser"] == "[REDACTED]"
+        assert "private-pool" not in response.get_data(as_text=True)
+        assert "private-wallet" not in response.get_data(as_text=True)
+        assert len(calls) == 1
+        build_adapter.assert_not_called()
+
+    def test_failed_pool_preflight_blocks_confirmation_without_exposing_identity(
+        self, client, monkeypatch
+    ):
+        flask_client, registry = client
+        from core.adapters.bitaxe_adapter import BitaxeAdapter
+        from routes import device_control
+        from services.pool_intelligence import (
+            CapabilityState,
+            PoolDryRunResult,
+            PoolDryRunStage,
+        )
+
+        device = Device(
+            name="Pool-Preflight-Failure",
+            model="Bitaxe",
+            ip="192.168.1.70",
+            status=DeviceStatus.ONLINE,
+        )
+        device.capabilities = BitaxeAdapter(device).get_capabilities()
+        _with_telemetry(device)
+        registry.add_device(device)
+        monkeypatch.setattr(
+            device_control,
+            "run_pool_dry_run",
+            lambda parameters: PoolDryRunResult(
+                ready=False,
+                stage=PoolDryRunStage.RESOLUTION,
+                capability=CapabilityState.ERROR,
+                failure_code="destination_rejected",
+            ),
+        )
+
+        parameters = {
+            "stratumURL": "private-pool.example.test",
+            "stratumPort": 3333,
+            "stratumUser": "private-wallet.worker",
+        }
+        dry_run_response = flask_client.post(
+            f"/api/devices/{device.id}/command",
+            json={"command": "update_pool", "parameters": parameters},
+        )
+        confirmation_response = flask_client.post(
+            f"/api/devices/{device.id}/command/confirmation",
+            json={
+                "command": "update_pool",
+                "parameters": parameters,
+                "confirmation": "CONFIRM UPDATE_POOL",
+            },
+        )
+
+        for response in (dry_run_response, confirmation_response):
+            assert response.status_code == 422
+            data = response.get_json()
+            assert data["pool_dry_run"]["failure_code"] == "destination_rejected"
+            assert "confirmation_token" not in data
+            assert "private-pool" not in response.get_data(as_text=True)
+            assert "private-wallet" not in response.get_data(as_text=True)
+
+    def test_wrong_confirmation_phrase_does_not_start_pool_network_preflight(
+        self, client, monkeypatch
+    ):
+        flask_client, registry = client
+        from core.adapters.bitaxe_adapter import BitaxeAdapter
+        from routes import device_control
+
+        device = Device(
+            name="Pool-Wrong-Phrase",
+            model="Bitaxe",
+            ip="192.168.1.71",
+            status=DeviceStatus.ONLINE,
+        )
+        device.capabilities = BitaxeAdapter(device).get_capabilities()
+        _with_telemetry(device)
+        registry.add_device(device)
+        preflight = Mock(side_effect=AssertionError("must not perform network I/O"))
+        monkeypatch.setattr(device_control, "run_pool_dry_run", preflight)
+
+        response = flask_client.post(
+            f"/api/devices/{device.id}/command/confirmation",
+            json={
+                "command": "update_pool",
+                "parameters": {
+                    "stratumURL": "pool.example.test",
+                    "stratumPort": 3333,
+                    "stratumUser": "wallet.worker",
+                },
+                "confirmation": "yes",
+            },
+        )
+
+        assert response.status_code == 400
+        preflight.assert_not_called()
 
     def test_update_pool_confirmation_cannot_be_rebound_after_canonicalization(
         self, client

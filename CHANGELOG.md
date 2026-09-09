@@ -6,6 +6,15 @@ e versionamento semântico ([SemVer](https://semver.org/lang/pt-BR/)).
 
 ## [Unreleased]
 
+### Adicionado — dry-run de pool com DNS, SSRF e Stratum V1 (Issue #469)
+- `update_pool` valida configuração completa, resolve DNS uma vez, aplica a
+  política de destino público/portas e exige um subscribe V1 saudável antes de
+  retornar dry-run positivo ou emitir confirmação humana.
+- Respostas omitem endpoint, IP, worker e payload remoto; falhas de configuração,
+  DNS, SSRF, timeout, TLS e protocolo usam somente códigos controlados.
+- O caminho continua read-only: não autentica worker, envia share ou chama o
+  adapter do ASIC; pools locais e portas customizadas permanecem bloqueados.
+
 ### Corrigido — instalação Playwright resiliente a race do índice APT (Issue #467)
 - Os jobs frontend e E2E reutilizam um instalador que isola temporariamente o
   repositório Chrome não utilizado e repete somente a etapa idempotente de
