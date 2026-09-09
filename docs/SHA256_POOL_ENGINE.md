@@ -115,10 +115,35 @@ sample exposes a complete pool configuration whose canonical hash matches the
 request. Missing comparable telemetry remains `unknown`; contradictory
 telemetry fails reconciliation.
 
-The pool-update command boundary does not invoke the compatibility,
-failover or canary decision layers yet and still does not preserve a rollback
-target. A successful dry-run is evidence only for the proposed endpoint at that
-moment; it does not authenticate the worker or prove a physical ASIC mutation.
-Physical commands therefore remain disabled by deployment policy unless
-explicitly enabled, and the V1 health probe is not evidence that arbitrary pool
-mutation is production-ready.
+Before physical dispatch, the controller now requires a complete previous pool
+configuration from telemetry no older than 120 seconds. It rejects missing,
+future, stale and no-op observations. The previous target is authenticated-
+encrypted with a domain-separated key derived from the deployment
+`SECRET_KEY`, bound to the tenant/device/source operation, limited to a 24-hour
+window and purged on the next target access/write after expiry. The rollback
+store, operation ledger, public responses, audit records and controller logs
+never receive its plaintext endpoint or worker.
+
+Rollback is a separate member-only action. The operator types
+`CONFIRM ROLLBACK POOL`; the server decrypts the immutable target internally,
+repeats the read-only V1 preflight and issues a short-lived confirmation bound
+to the source operation. Execution requires an `Idempotency-Key`, consumes the
+confirmation once, atomically claims the target and sends it through the same
+firmware `update_pool` adapter. A retry returns the existing operation and never
+dispatches twice. ACK remains pending until newer telemetry hashes to the
+preserved target. An exception after dispatch is explicitly unknown and cannot
+be retried automatically.
+
+`POOL_ROLLBACK_OBSERVATION_MAX_AGE_SECONDS` tunes the observation window within
+10–600 seconds. `POOL_ROLLBACK_TARGET_TTL_SECONDS` tunes encrypted retention
+within 5 minutes–7 days. Defaults are 120 seconds and 24 hours. Missing or
+rotated `SECRET_KEY`, invalid ciphertext, failed preflight and expired/already-
+claimed targets all fail closed before another physical dispatch.
+
+The pool-update command boundary does not invoke the compatibility, failover or
+canary decision layers yet. A successful dry-run is evidence only for the
+proposed endpoint at that moment; it does not authenticate the worker or prove
+a physical ASIC mutation. Gate 095 remains partial until rollback is observed
+on supported hardware under #386. Physical commands therefore remain disabled
+by deployment policy unless explicitly enabled, and the V1 health probe is not
+evidence that arbitrary pool mutation is production-ready.

@@ -15,6 +15,22 @@ def _with_telemetry(device):
     return device
 
 
+def _with_pool_telemetry(device):
+    """Attach a recent complete rollback target for pool mutation tests."""
+    _with_telemetry(device)
+    device.current_telemetry.update(
+        {
+            "timestamp": int(time.time()),
+            "pool": {
+                "url": "stratum+tcp://prior-pool.example.test",
+                "port": 3333,
+                "user": "private-wallet.prior-worker",
+            },
+        }
+    )
+    return device
+
+
 @pytest.fixture(autouse=True)
 def _enable_validated_physical_commands(monkeypatch):
     """This module intentionally exercises behavior beyond the global gate."""
@@ -349,7 +365,7 @@ class TestAppDeviceRoutes:
             status=DeviceStatus.ONLINE,
         )
         device.capabilities = BitaxeAdapter(device).get_capabilities()
-        _with_telemetry(device)
+        _with_pool_telemetry(device)
         registry.add_device(device)
         secret = "never-persist-this-value"
         parameters = {
@@ -599,7 +615,7 @@ class TestAppDeviceRoutes:
             status=DeviceStatus.ONLINE,
         )
         device.capabilities = BitaxeAdapter(device).get_capabilities()
-        _with_telemetry(device)
+        _with_pool_telemetry(device)
         registry.add_device(device)
         parameters = {
             "stratumURL": "POOL.EXAMPLE.COM",
@@ -646,7 +662,7 @@ class TestAppDeviceRoutes:
             status=DeviceStatus.ONLINE,
         )
         device.capabilities = BitaxeAdapter(device).get_capabilities()
-        _with_telemetry(device)
+        _with_pool_telemetry(device)
         registry.add_device(device)
         parameters = {
             "stratumURL": "pool.example.com",

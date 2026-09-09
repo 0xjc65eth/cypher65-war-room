@@ -32,7 +32,12 @@ from services.safety_policy import can_execute_physical_command
 from services import operation_ledger
 from services.pool_intelligence import (
     PoolConfigurationError,
+    PoolRollbackError,
+    claim_pool_rollback_target,
+    load_pool_rollback_target,
+    rollback_encryption_ready,
     run_pool_dry_run,
+    store_pool_rollback_target,
     validate_pool_configuration,
 )
 
@@ -404,6 +409,34 @@ def _safe_execution_failure() -> Dict[str, Any]:
         "success": False,
         "error": "The device did not accept the command. Verify connectivity and firmware before retrying.",
     }
+
+
+def _pool_rollback_observation(
+    raw: Any, requested_parameters: Dict[str, Any]
+) -> Dict[str, Any]:
+    """Return a recent, complete previous pool target or fail closed."""
+    previous = _observed_pool_parameters(raw)
+    observed_at = _observed_device_state(raw).get("observed_at") or 0
+    try:
+        max_age = int(
+            os.environ.get("POOL_ROLLBACK_OBSERVATION_MAX_AGE_SECONDS", "120")
+        )
+    except (TypeError, ValueError):
+        max_age = 120
+    max_age = max(10, min(max_age, 600))
+    now = int(time.time())
+    if (
+        not previous
+        or not observed_at
+        or observed_at > now + 30
+        or now - observed_at > max_age
+    ):
+        raise PoolRollbackError("rollback_observation_unavailable")
+    if operation_ledger.payload_hash(previous) == operation_ledger.payload_hash(
+        requested_parameters
+    ):
+        raise PoolRollbackError("pool_configuration_unchanged")
+    return previous
 
 
 @device_control_bp.route(
@@ -797,6 +830,39 @@ def execute_device_command(device_id: str, tenant_id: str = ""):
         _record_attempt(device_id, command, parameters, record)
         return jsonify(record), 503
 
+    rollback_target = None
+    if command == "update_pool":
+        if not rollback_encryption_ready():
+            record = {
+                "success": False,
+                "allowed": False,
+                "reason": "rollback_encryption_unavailable",
+            }
+            _record_attempt(device_id, command, parameters, record)
+            return (
+                jsonify(
+                    {
+                        **record,
+                        "error": "a stable encrypted rollback target is required",
+                    }
+                ),
+                503,
+            )
+        try:
+            rollback_target = _pool_rollback_observation(raw, parameters)
+        except PoolRollbackError as exc:
+            record = {"success": False, "allowed": False, "reason": exc.code}
+            _record_attempt(device_id, command, parameters, record)
+            return (
+                jsonify(
+                    {
+                        **record,
+                        "error": "a recent complete previous pool observation is required",
+                    }
+                ),
+                409,
+            )
+
     # 4. A device capability and SafetyEngine can both require confirmation.
     # The controller is the enforcement point: metadata is never just a UI hint.
     metadata = _command_metadata(raw, device, command)
@@ -900,6 +966,29 @@ def execute_device_command(device_id: str, tenant_id: str = ""):
                 "audit": operation_result.get("audit") or {"state": "failed"},
             }
         )
+    if command == "update_pool":
+        try:
+            store_pool_rollback_target(
+                operation_id,
+                tenant_id,
+                device_id,
+                rollback_target or {},
+            )
+        except PoolRollbackError as exc:
+            safe_result = {
+                "success": False,
+                "error": "The rollback target could not be preserved; command not dispatched.",
+                "reason": exc.code,
+            }
+            operation_ledger.update_operation(
+                operation_id,
+                state="dispatch_failed",
+                ack_state="not_received",
+                reconciliation_state="unknown",
+                safe_result=safe_result,
+            )
+            _record_attempt(device_id, command, parameters, safe_result)
+            return jsonify(safe_result), 503
     try:
         exec_result = adapter.execute_command(command, parameters)
     except Exception:
@@ -974,6 +1063,11 @@ def execute_device_command(device_id: str, tenant_id: str = ""):
                 "offline_seen": False,
                 "pre_command": pre_command_observation,
             },
+        }
+    elif command == "update_pool":
+        public_result = {
+            **public_result,
+            "rollback": {"state": "available"},
         }
     operation_ledger.update_operation(
         operation_id,
@@ -1070,6 +1164,371 @@ def _observed_pool_parameters(raw: Any) -> Optional[Dict[str, Any]]:
         return validate_pool_configuration(candidate).to_adapter_parameters()
     except PoolConfigurationError:
         return None
+
+
+def _rollback_source_operation(
+    operation_id: str, tenant_id: str, device_id: str
+) -> Optional[Dict[str, Any]]:
+    operation = operation_ledger.get_operation(operation_id)
+    if (
+        not operation
+        or operation.get("tenant_id") != (tenant_id or "default")
+        or operation.get("kind") != "physical_command"
+        or operation.get("target") != device_id
+        or operation.get("action") != "update_pool"
+        or operation.get("ack_state") != "acknowledged"
+    ):
+        return None
+    return operation
+
+
+def _rollback_confirmation_parameters(operation_id: str) -> Dict[str, str]:
+    return {"source_operation_id": operation_id}
+
+
+@device_control_bp.route(
+    "/api/devices/<device_id>/commands/<operation_id>/rollback/confirmation",
+    methods=["POST"],
+)
+@require_tenant
+@role_required("member")
+def issue_pool_rollback_confirmation(
+    device_id: str, operation_id: str, tenant_id: str = ""
+):
+    """Preflight the sealed prior pool and issue a one-time rollback approval."""
+    if not _rollback_source_operation(operation_id, tenant_id, device_id):
+        return jsonify({"success": False, "error": "operation not found"}), 404
+    data, error_response = _request_json_object()
+    if error_response:
+        return error_response
+    phrase = "CONFIRM ROLLBACK POOL"
+    if data.get("confirmation") != phrase:
+        return (
+            jsonify(
+                {
+                    "success": False,
+                    "error": f"Type '{phrase}' to confirm this rollback.",
+                    "confirmation_phrase": phrase,
+                }
+            ),
+            400,
+        )
+    try:
+        target = load_pool_rollback_target(operation_id, tenant_id, device_id)
+    except PoolRollbackError as exc:
+        return (
+            jsonify(
+                {
+                    "success": False,
+                    "error": "rollback target is unavailable",
+                    "reason": exc.code,
+                }
+            ),
+            409,
+        )
+    pool_dry_run = run_pool_dry_run(target.parameters).to_public_dict()
+    if not pool_dry_run["ready"]:
+        return (
+            jsonify(
+                {
+                    "success": False,
+                    "error": "rollback destination did not pass the read-only preflight",
+                    "reason": "rollback_preflight_failed",
+                    "pool_dry_run": pool_dry_run,
+                }
+            ),
+            422,
+        )
+    issued = _issue_persisted_confirmation(
+        tenant_id or "default",
+        device_id,
+        "rollback_pool",
+        _rollback_confirmation_parameters(operation_id),
+        now=int(time.time()),
+    )
+    response = jsonify(
+        {
+            "success": True,
+            "confirmation_token": issued["confirmation_token"],
+            "expires_in_seconds": CONFIRMATION_TTL_SECONDS,
+            "command": "rollback_pool",
+            "device_id": device_id,
+            "operation_id": operation_id,
+            "pool_dry_run": pool_dry_run,
+        }
+    )
+    response.status_code = 201
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Pragma"] = "no-cache"
+    return response
+
+
+@device_control_bp.route(
+    "/api/devices/<device_id>/commands/<operation_id>/rollback", methods=["POST"]
+)
+@require_tenant
+@role_required("member")
+def execute_pool_rollback(device_id: str, operation_id: str, tenant_id: str = ""):
+    """Dispatch the sealed prior pool once after fresh preflight and approval."""
+    source_operation = _rollback_source_operation(operation_id, tenant_id, device_id)
+    if not source_operation:
+        return jsonify({"success": False, "error": "operation not found"}), 404
+    data, error_response = _request_json_object()
+    if error_response:
+        return error_response
+    idempotency_key = str(request.headers.get("Idempotency-Key") or "").strip()
+    if not idempotency_key:
+        return jsonify({"success": False, "error": "Idempotency-Key is required"}), 400
+    if len(idempotency_key) > 128 or not all(
+        char.isalnum() or char in "-_.:" for char in idempotency_key
+    ):
+        return jsonify({"success": False, "error": "invalid idempotency key"}), 400
+    claim_payload = _rollback_confirmation_parameters(operation_id)
+    existing = operation_ledger.get_by_idempotency(
+        tenant_id or "default", "physical_command", idempotency_key
+    )
+    if existing:
+        if not (
+            existing.get("request_hash") == operation_ledger.payload_hash(claim_payload)
+            and existing.get("target") == device_id
+            and existing.get("action") == "rollback_pool"
+        ):
+            return (
+                jsonify(
+                    {
+                        "success": False,
+                        "error": "idempotency key was already used for another command",
+                    }
+                ),
+                409,
+            )
+        return jsonify(
+            {
+                "success": existing.get("ack_state") == "acknowledged",
+                "duplicate": True,
+                "device_id": device_id,
+                "command": "rollback_pool",
+                "operation_id": existing["operation_id"],
+                "ack": {"state": existing.get("ack_state")},
+                "reconciliation": {"state": existing.get("reconciliation_state")},
+            }
+        )
+    if not can_execute_physical_command():
+        return (
+            jsonify(
+                {
+                    "success": False,
+                    "error": "physical commands are disabled by deployment policy",
+                    "reason": "deployment_policy_disabled",
+                    "read_only": True,
+                }
+            ),
+            503,
+        )
+    raw = _registry.get_device(device_id, tenant_id=tenant_id) if _registry else None
+    if not raw:
+        return jsonify({"success": False, "error": "device not found"}), 404
+    device = _dict_to_device(raw)
+    if not _capability_map(device, raw).get("update_pool"):
+        return (
+            jsonify(
+                {
+                    "success": False,
+                    "error": "pool update is not supported by this device",
+                    "read_only": True,
+                }
+            ),
+            400,
+        )
+    try:
+        target = load_pool_rollback_target(operation_id, tenant_id, device_id)
+    except PoolRollbackError as exc:
+        return (
+            jsonify(
+                {
+                    "success": False,
+                    "error": "rollback target is unavailable",
+                    "reason": exc.code,
+                }
+            ),
+            409,
+        )
+    pool_dry_run = run_pool_dry_run(target.parameters).to_public_dict()
+    if not pool_dry_run["ready"]:
+        return (
+            jsonify(
+                {
+                    "success": False,
+                    "error": "rollback destination did not pass the read-only preflight",
+                    "reason": "rollback_preflight_failed",
+                    "pool_dry_run": pool_dry_run,
+                }
+            ),
+            422,
+        )
+    if _safety:
+        safety_result = _safety.validate_command(
+            device, "update_pool", target.parameters
+        )
+        if not safety_result.allowed:
+            return (
+                jsonify(
+                    {
+                        "success": False,
+                        "error": safety_result.reason
+                        or "Command blocked by safety engine",
+                        "reason": "safety_policy_blocked",
+                    }
+                ),
+                403,
+            )
+    confirmed = _consume_persisted_confirmation(
+        data.get("confirmation_token"),
+        tenant_id or "default",
+        device_id,
+        "rollback_pool",
+        claim_payload,
+        now=int(time.time()),
+    )
+    if not confirmed:
+        return (
+            jsonify(
+                {
+                    "success": False,
+                    "error": "Confirmation is mismatched, expired, or was already used.",
+                    "requires_confirmation": True,
+                }
+            ),
+            403,
+        )
+    adapter = _build_adapter(raw, device)
+    if adapter is None:
+        return (
+            jsonify(
+                {
+                    "success": False,
+                    "error": "firmware not supported for command execution",
+                    "read_only": True,
+                }
+            ),
+            400,
+        )
+    operation = operation_ledger.claim_operation(
+        tenant_id,
+        "physical_command",
+        device_id,
+        "rollback_pool",
+        claim_payload,
+        idempotency_key=idempotency_key,
+    )
+    rollback_operation_id = operation["operation_id"]
+    if not operation.get("created", True):
+        if not (
+            operation.get("payload_matches")
+            and operation.get("target") == device_id
+            and operation.get("action") == "rollback_pool"
+        ):
+            return (
+                jsonify(
+                    {
+                        "success": False,
+                        "error": "idempotency key was already used for another command",
+                    }
+                ),
+                409,
+            )
+        return jsonify(
+            {
+                "success": operation.get("ack_state") == "acknowledged",
+                "duplicate": True,
+                "device_id": device_id,
+                "command": "rollback_pool",
+                "operation_id": rollback_operation_id,
+                "ack": {"state": operation.get("ack_state")},
+                "reconciliation": {"state": operation.get("reconciliation_state")},
+            }
+        )
+    try:
+        target = claim_pool_rollback_target(
+            operation_id,
+            tenant_id,
+            device_id,
+            rollback_operation_id,
+        )
+    except PoolRollbackError as exc:
+        safe_result = {
+            "success": False,
+            "error": "rollback target is unavailable",
+            "reason": exc.code,
+            "source_operation_id": operation_id,
+        }
+        operation_ledger.update_operation(
+            rollback_operation_id,
+            state="dispatch_failed",
+            ack_state="not_received",
+            reconciliation_state="unknown",
+            safe_result=safe_result,
+        )
+        return jsonify(safe_result), 409
+    try:
+        exec_result = adapter.execute_command("update_pool", target.parameters)
+    except Exception:
+        log.exception("[device_control] rollback dispatch failed for %s", device_id)
+        safe_result = {
+            "success": False,
+            "error": "The device rollback outcome is unknown; reconcile before any action.",
+            "source_operation_id": operation_id,
+        }
+        operation_ledger.update_operation(
+            rollback_operation_id,
+            state="dispatch_failed",
+            ack_state="not_received",
+            reconciliation_state="unknown",
+            safe_result=safe_result,
+        )
+        _record_attempt(device_id, "rollback_pool", claim_payload, safe_result)
+        return jsonify(safe_result), 503
+    if not isinstance(exec_result, dict) or not exec_result.get("success", False):
+        safe_result = {
+            "success": False,
+            "error": "The device did not accept the rollback.",
+            "source_operation_id": operation_id,
+        }
+        operation_ledger.update_operation(
+            rollback_operation_id,
+            state="rejected",
+            ack_state="rejected",
+            reconciliation_state="failed",
+            safe_result=safe_result,
+        )
+        _record_attempt(device_id, "rollback_pool", claim_payload, safe_result)
+        return jsonify(safe_result), 503
+    safe_result = {
+        "success": True,
+        "source_operation_id": operation_id,
+        "expected_pool_hash": target.target_hash,
+        "rollback": {"state": "acknowledged"},
+    }
+    operation_ledger.update_operation(
+        rollback_operation_id,
+        state="acknowledged",
+        ack_state="acknowledged",
+        reconciliation_state="pending",
+        safe_result=safe_result,
+    )
+    _record_attempt(device_id, "rollback_pool", claim_payload, safe_result)
+    return jsonify(
+        {
+            "success": True,
+            "device_id": device_id,
+            "command": "rollback_pool",
+            "operation_id": rollback_operation_id,
+            "source_operation_id": operation_id,
+            "ack": {"state": "acknowledged", "source": "device_adapter"},
+            "reconciliation": {"state": "pending"},
+            "rollback": {"state": "acknowledged"},
+        }
+    )
 
 
 @device_control_bp.route(
@@ -1197,19 +1656,29 @@ def reconcile_device_command(device_id: str, operation_id: str, tenant_id: str =
             )
     elif fresh and command in {"pause", "resume", "restart", "reboot"}:
         reconciliation, reason = "failed", "fresh telemetry contradicts expected state"
-    elif command == "update_pool" and fresh:
+    elif command in {"update_pool", "rollback_pool"} and fresh:
         observed_pool = _observed_pool_parameters(raw)
+        expected_pool_hash = (
+            operation.get("request_hash")
+            if command == "update_pool"
+            else safe_result.get("expected_pool_hash")
+        )
         if observed_pool is None:
             reconciliation, reason = (
                 "unknown",
                 "fresh telemetry exposes no comparable pool configuration",
             )
-        elif operation_ledger.payload_hash(observed_pool) == operation.get(
-            "request_hash"
+        elif (
+            expected_pool_hash
+            and operation_ledger.payload_hash(observed_pool) == expected_pool_hash
         ):
             reconciliation, reason = (
                 "confirmed",
-                "fresh telemetry matches the requested pool configuration",
+                (
+                    "fresh telemetry matches the preserved rollback target"
+                    if command == "rollback_pool"
+                    else "fresh telemetry matches the requested pool configuration"
+                ),
             )
         else:
             reconciliation, reason = (
@@ -1253,6 +1722,14 @@ def reconcile_device_command(device_id: str, operation_id: str, tenant_id: str =
         "observed": observed,
         "audit": audit_evidence,
     }
+    if command == "rollback_pool":
+        result_evidence.update(
+            {
+                "source_operation_id": safe_result.get("source_operation_id"),
+                "expected_pool_hash": safe_result.get("expected_pool_hash"),
+                "rollback": {"state": reconciliation},
+            }
+        )
     if command in {"restart", "reboot"}:
         result_evidence["reboot_evidence"] = {
             "phase": (

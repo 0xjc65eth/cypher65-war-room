@@ -73,6 +73,7 @@ def test_all_physical_control_actions_require_server_confirmation():
         "restart",
         "pause",
         "resume",
+        "rollback_pool",
         "identify",
         "configure",
         "set_frequency",
