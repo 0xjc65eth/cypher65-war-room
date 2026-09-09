@@ -15,6 +15,14 @@ e versionamento semântico ([SemVer](https://semver.org/lang/pt-BR/)).
   erro do browser sem retry indevido, isolamento/restauração da fonte externa
   e rejeição de configuração inválida.
 
+### Adicionado — rollout canário fail-closed de pool (Issue #465)
+- Máquina de estados imutável libera primeiro o canário obrigatório e depois
+  lotes determinísticos, sem executar rede, retry ou comando físico.
+- Todos os devices do lote ativo exigem reconciliação explícita; qualquer
+  `failed` ou `unknown` interrompe a frota antes do próximo lote.
+- Planos limitam devices e batches e referenciam a configuração somente por
+  SHA-256, sem endpoint, worker ou credencial.
+
 ### Segurança — fuzzing e red team do conector Stratum V1 (Issue #463)
 - Validador público e limitado rejeita IDs booleanos, JSON duplicado, shapes de
   subscribe inválidos, extra nonce malformado e respostas acima de 64 KiB.
