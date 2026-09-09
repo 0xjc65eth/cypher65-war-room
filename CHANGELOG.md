@@ -6,6 +6,18 @@ e versionamento semântico ([SemVer](https://semver.org/lang/pt-BR/)).
 
 ## [Unreleased]
 
+### Segurança — rollback cifrado e confirmado de pool (Issue #471)
+- Antes de um `update_pool` físico, telemetria recente deve comprovar a
+  configuração anterior completa; sem alvo ou `SECRET_KEY` estável, nenhum
+  comando é enviado ao ASIC.
+- O alvo anterior fica cifrado, vinculado a tenant/device/operação, expira e é
+  removido; endpoint e worker não entram em resposta, audit ou log.
+- Rollback exige novo preflight, confirmação humana one-time e idempotência;
+  um claim atômico impede segundo dispatch, e telemetria posterior reconcilia
+  o retorno pelo hash esperado.
+- O contrato foi comprovado apenas em testes herméticos. O Gate 095 permanece
+  parcial e a execução física continua condicionada à matriz #386.
+
 ### Adicionado — dry-run de pool com DNS, SSRF e Stratum V1 (Issue #469)
 - `update_pool` valida configuração completa, resolve DNS uma vez, aplica a
   política de destino público/portas e exige um subscribe V1 saudável antes de

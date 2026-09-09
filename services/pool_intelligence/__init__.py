@@ -33,6 +33,14 @@ from .dry_run import (
 from .models import CapabilityState, PoolEndpoint, PoolProtocol, Provenance
 from .policy import DestinationPolicy, PolicyError, ValidatedDestination
 from .resolver import PoolResolution, ResolutionError, resolve_pool_destination
+from .rollback import (
+    PoolRollbackError,
+    PoolRollbackTarget,
+    claim_pool_rollback_target,
+    load_pool_rollback_target,
+    rollback_encryption_ready,
+    store_pool_rollback_target,
+)
 from .rollout import (
     PoolRolloutPlan,
     PoolRolloutState,
@@ -90,6 +98,8 @@ __all__ = [
     "PoolEndpoint",
     "PoolProtocol",
     "PoolResolution",
+    "PoolRollbackError",
+    "PoolRollbackTarget",
     "PoolRolloutPlan",
     "PoolRolloutState",
     "ProviderFingerprint",
@@ -108,16 +118,20 @@ __all__ = [
     "ValidatedPoolConfiguration",
     "build_capability_graph",
     "capability_from_v1_probe",
+    "claim_pool_rollback_target",
     "classify_chain",
     "evaluate_pool_compatibility",
     "fingerprint_provider",
+    "load_pool_rollback_target",
     "parse_pool_endpoint",
     "probe_stratum_v1",
     "record_pool_rollout_batch",
     "resolve_pool_destination",
+    "rollback_encryption_ready",
     "run_pool_dry_run",
     "select_failover_candidate",
     "start_pool_rollout",
+    "store_pool_rollback_target",
     "validate_pool_configuration",
     "validate_stratum_v1_subscribe_response",
 ]

@@ -22,6 +22,7 @@ CONFIRMABLE_COMMANDS = frozenset(
         "restart",
         "pause",
         "resume",
+        "rollback_pool",
         "identify",
         "configure",
         "set_frequency",
