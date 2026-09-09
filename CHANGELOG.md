@@ -6,6 +6,14 @@ e versionamento semântico ([SemVer](https://semver.org/lang/pt-BR/)).
 
 ## [Unreleased]
 
+### Adicionado — grafo de capabilities e classificação por evidência (Issue #459)
+- Grafo imutável e limitado resolve provenance, dependências ausentes,
+  conflitos e ciclos sem executar I/O ou carregar payload remoto.
+- Fingerprinting de provider e classificação de chain exigem dois sinais
+  fortes e independentes; evidência fraca, inferida ou conflitante fica unknown.
+- O probe V1 pode alimentar apenas a capability Stratum comprovada, sem inferir
+  provider, chain, autenticação, payout ou compatibilidade física.
+
 ### Segurança — `js-yaml` transitivo corrigido (Issue #457)
 - Lockfile mobile resolve `js-yaml` 3.15.2 no Jest/Istanbul, corrigindo o
   advisory HIGH `GHSA-2883-xcg3-v3hh` sem override major.

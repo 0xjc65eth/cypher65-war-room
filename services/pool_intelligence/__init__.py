@@ -5,6 +5,20 @@ consume validated numeric destinations and never resolve a hostname again.
 """
 
 from .endpoint import EndpointError, parse_pool_endpoint
+from .evidence import (
+    CapabilityAssertion,
+    CapabilityGraph,
+    CapabilityNode,
+    ChainClassification,
+    ChainSignal,
+    EvidenceError,
+    ProviderFingerprint,
+    ProviderSignal,
+    build_capability_graph,
+    capability_from_v1_probe,
+    classify_chain,
+    fingerprint_provider,
+)
 from .configuration import (
     PoolConfigurationError,
     ValidatedPoolConfiguration,
@@ -20,20 +34,32 @@ from .stratum_v1 import (
 )
 
 __all__ = [
+    "CapabilityAssertion",
+    "CapabilityGraph",
+    "CapabilityNode",
     "CapabilityState",
+    "ChainClassification",
+    "ChainSignal",
     "DestinationPolicy",
     "EndpointError",
+    "EvidenceError",
     "PolicyError",
     "PoolConfigurationError",
     "PoolEndpoint",
     "PoolProtocol",
     "PoolResolution",
+    "ProviderFingerprint",
+    "ProviderSignal",
     "Provenance",
     "ResolutionError",
     "StratumV1ProbeError",
     "StratumV1ProbeResult",
     "ValidatedDestination",
     "ValidatedPoolConfiguration",
+    "build_capability_graph",
+    "capability_from_v1_probe",
+    "classify_chain",
+    "fingerprint_provider",
     "parse_pool_endpoint",
     "probe_stratum_v1",
     "resolve_pool_destination",
