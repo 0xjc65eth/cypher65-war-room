@@ -14,6 +14,7 @@ printf '%s\n' \
   '#!/usr/bin/env bash' \
   'set -u' \
   'if [ "${2:-}" = "install-deps" ]; then' \
+  '  if [ -n "${FAKE_BLOCKING_APT_SOURCE:-}" ] && [ -f "$FAKE_BLOCKING_APT_SOURCE" ]; then exit 43; fi' \
   '  count=0' \
   '  [ ! -f "$FAKE_NPX_STATE" ] || count="$(cat "$FAKE_NPX_STATE")"' \
   '  count=$((count + 1))' \
@@ -38,6 +39,7 @@ run_case() { # label expected_exit failures max_attempts browser_status expected
     FAKE_NPX_BROWSER_STATUS="$browser_status" \
     PLAYWRIGHT_DEPS_MAX_ATTEMPTS="$max_attempts" \
     PLAYWRIGHT_DEPS_BACKOFF_SECONDS=0 \
+    PLAYWRIGHT_APT_SOURCES_DIR="$TMP/empty-sources" \
     bash "$INSTALLER" >/dev/null 2>&1
   got=$?
   calls=0
@@ -55,8 +57,28 @@ run_case 'four transient failures recover' 0 4 5 0 5
 run_case 'persistent failure remains blocking' 42 9 3 0 3
 run_case 'browser failure stops before apt deps' 17 0 5 17 0
 
+mkdir -p "$TMP/apt-sources"
+printf '%s\n' 'deb [arch=amd64] https://dl.google.com/linux/chrome-stable/deb stable main' \
+  > "$TMP/apt-sources/google-chrome.list"
+rm -f "$TMP/state"
+PATH="$TMP/bin:$PATH" FAKE_NPX_STATE="$TMP/state" \
+  FAKE_BLOCKING_APT_SOURCE="$TMP/apt-sources/google-chrome.list" \
+  PLAYWRIGHT_APT_SOURCES_DIR="$TMP/apt-sources" \
+  PLAYWRIGHT_DEPS_MAX_ATTEMPTS=1 PLAYWRIGHT_DEPS_BACKOFF_SECONDS=0 \
+  bash "$INSTALLER" >/dev/null 2>&1
+source_status=$?
+if [ "$source_status" -eq 0 ] \
+  && [ -f "$TMP/apt-sources/google-chrome.list" ] \
+  && [ ! -e "$TMP/apt-sources/google-chrome.list.cypher65-disabled" ]; then
+  PASS=$((PASS + 1))
+else
+  FAIL=$((FAIL + 1))
+  echo "FAIL: Chrome source isolation and restoration" >&2
+fi
+
 PATH="$TMP/bin:$PATH" FAKE_NPX_STATE="$TMP/state" \
   PLAYWRIGHT_DEPS_MAX_ATTEMPTS=0 PLAYWRIGHT_DEPS_BACKOFF_SECONDS=0 \
+  PLAYWRIGHT_APT_SOURCES_DIR="$TMP/empty-sources" \
   bash "$INSTALLER" >/dev/null 2>&1
 invalid_status=$?
 if [ "$invalid_status" -eq 2 ]; then

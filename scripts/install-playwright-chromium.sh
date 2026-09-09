@@ -9,6 +9,7 @@ set -euo pipefail
 
 MAX_ATTEMPTS="${PLAYWRIGHT_DEPS_MAX_ATTEMPTS:-5}"
 BACKOFF_SECONDS="${PLAYWRIGHT_DEPS_BACKOFF_SECONDS:-15}"
+APT_SOURCES_DIR="${PLAYWRIGHT_APT_SOURCES_DIR:-/etc/apt/sources.list.d}"
 
 case "$MAX_ATTEMPTS" in
   ''|*[!0-9]*) echo "PLAYWRIGHT_DEPS_MAX_ATTEMPTS must be an integer from 1 to 5" >&2; exit 2 ;;
@@ -26,6 +27,36 @@ if [ "$BACKOFF_SECONDS" -gt 60 ]; then
 fi
 
 npx playwright install chromium
+
+# GitHub's Ubuntu images include Chrome's own repository even though
+# Playwright installs bundled Chromium. A publication race in that unrelated
+# index can make every `apt-get update` fail. Quarantine only source files that
+# explicitly name that repository, then restore them on every exit path.
+disabled_sources=()
+restore_sources() {
+  local source
+  for source in "${disabled_sources[@]}"; do
+    if [ -e "${source}.cypher65-disabled" ]; then
+      sudo mv -- "${source}.cypher65-disabled" "$source"
+    fi
+  done
+}
+
+if [ -d "$APT_SOURCES_DIR" ]; then
+  while IFS= read -r source; do
+    if [ -e "${source}.cypher65-disabled" ]; then
+      echo "Refusing to overwrite existing disabled APT source: ${source}.cypher65-disabled" >&2
+      exit 2
+    fi
+    sudo mv -- "$source" "${source}.cypher65-disabled"
+    disabled_sources+=("$source")
+    trap restore_sources EXIT
+    echo "Temporarily disabled unrelated Chrome APT source: $source"
+  done < <(
+    sudo grep -lF 'dl.google.com/linux/chrome-stable/deb' \
+      "$APT_SOURCES_DIR"/*.list "$APT_SOURCES_DIR"/*.sources 2>/dev/null || true
+  )
+fi
 
 attempt=1
 while true; do
