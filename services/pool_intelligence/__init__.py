@@ -1,7 +1,7 @@
 """Security-first primitives for SHA-256 mining-pool discovery.
 
-This package intentionally performs no network I/O.  Endpoint resolution and
-protocol probes are later stages and must consume a validated policy result.
+Network access is limited to explicit resolver and probe stages. Connectors
+consume validated numeric destinations and never resolve a hostname again.
 """
 
 from .endpoint import EndpointError, parse_pool_endpoint
@@ -12,6 +12,12 @@ from .configuration import (
 )
 from .models import CapabilityState, PoolEndpoint, PoolProtocol, Provenance
 from .policy import DestinationPolicy, PolicyError, ValidatedDestination
+from .resolver import PoolResolution, ResolutionError, resolve_pool_destination
+from .stratum_v1 import (
+    StratumV1ProbeError,
+    StratumV1ProbeResult,
+    probe_stratum_v1,
+)
 
 __all__ = [
     "CapabilityState",
@@ -21,9 +27,15 @@ __all__ = [
     "PoolConfigurationError",
     "PoolEndpoint",
     "PoolProtocol",
+    "PoolResolution",
     "Provenance",
+    "ResolutionError",
+    "StratumV1ProbeError",
+    "StratumV1ProbeResult",
     "ValidatedDestination",
     "ValidatedPoolConfiguration",
     "parse_pool_endpoint",
+    "probe_stratum_v1",
+    "resolve_pool_destination",
     "validate_pool_configuration",
 ]

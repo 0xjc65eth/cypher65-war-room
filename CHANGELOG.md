@@ -12,6 +12,14 @@ e versionamento semântico ([SemVer](https://semver.org/lang/pt-BR/)).
 - Instalação limpa, árvore npm, audit, Expo Doctor 21/21, Biome, TypeScript,
   91 testes Jest e exports iOS/Android/Web permanecem verdes.
 
+### Adicionado — probe Stratum V1 fixado ao destino validado (Issue #455)
+- Resolver de passagem única aplica a política SSRF a todas as respostas DNS;
+  o conector usa diretamente o IP aprovado, sem uma segunda resolução.
+- Probe somente leitura envia apenas `mining.subscribe`, limita timeout,
+  tentativas e resposta, preserva SNI/validação TLS e retorna erros sanitizados.
+- Laboratório virtual stateful comprova V1, latências, timeout, JSON inválido e
+  resposta excessiva sem autenticar worker, enviar share ou alterar ASIC.
+
 ### Documentação — walkthrough do operador para Flyovers (Issue #452)
 - Novo roteiro bilíngue conecta arquitetura, dor operacional, percurso inicial
   de 15 minutos e benefícios permitidos sem inventar telemetria ou retorno.
