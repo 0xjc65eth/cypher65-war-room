@@ -18,8 +18,8 @@ probe is not exposed as arbitrary discovery and cannot change a pool.
 | 087 Authentication | FAIL | Credentials deliberately excluded from foundation. |
 | 088 Pool health | PASS | Sanitized health result distinguishes valid V1 subscribe from timeout, TLS, transport and protocol failures. |
 | 089 Pool latency | PASS | Probe records bounded DNS, TCP, TLS, Stratum and total timings. |
-| 090 Failover | FAIL | Ordered failover policy absent. |
-| 091 ASIC compatibility | FAIL | No DeviceCapabilities + PoolCapabilities evaluator. |
+| 090 Failover | PASS | Pure, bounded and deterministic policy keeps an eligible active pool or selects the lowest numeric priority; unhealthy, incompatible or cooling-down candidates fail closed. |
+| 091 ASIC compatibility | PASS | Typed device/pool profiles compare only effective capability-graph states; missing, unauthorized, unsupported or erroneous evidence never becomes compatible. |
 | 092 Pool dry-run | FAIL | Bitaxe `update_pool` now validates a complete canonical payload without network I/O, but DNS/destination/Stratum checks are still absent. |
 | 093 Confirmation | FAIL | The Bitaxe route binds canonical config to a one-time server token; the universal pool engine and other firmware paths are not integrated. |
 | 094 Reconciliation | FAIL | Bitaxe can compare fresh firmware telemetry to the request hash and never treats HTTP ACK as verified; auth/jobs/hashrate evidence and other firmware remain absent. |
@@ -33,4 +33,4 @@ probe is not exposed as arbitrary discovery and cannot change a pool.
 
 Arbitrary pool discovery must remain disabled until Gates 079–083 and resource
 limits are proven together. Pool mutation must remain unavailable until Gates
-091–096 pass.
+092–096 pass.
