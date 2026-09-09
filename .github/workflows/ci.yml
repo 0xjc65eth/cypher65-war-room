@@ -75,6 +75,9 @@ jobs:
       - name: Run JS core tests (app.js helpers)
         run: node --test tests/test_app_js_core.js
 
+      - name: Playwright installer self-test
+        run: bash tests/test_install_playwright_chromium.sh
+
       # DOM regression guards (Issue #58) — bloqueiam merge quando:
       #   GUARD 1: templates/*.html têm id="" duplicado (quebra querySelector)
       #   GUARD 2: innerHTML interpola campo de registro externo sem
@@ -310,11 +313,9 @@ jobs:
           pip install -r requirements.txt
 
       # Browsers SEM sudo para o binário (cache no HOME do runner), deps de
-      # sistema com sudo — mesmo fix do job e2e.
+      # sistema com sudo e retry APT limitado — mesmo fix do job e2e (#467).
       - name: Install Playwright browsers
-        run: |
-          npx playwright install chromium
-          sudo npx playwright install-deps chromium
+        run: bash scripts/install-playwright-chromium.sh
 
       - name: Run combined frontend pipeline
         run: |
@@ -360,10 +361,9 @@ jobs:
 
       # Browsers SEM sudo: cache fica no HOME do runner (/home/runner/.cache/ms-playwright).
       # Com sudo o HOME vira /root e o runtime não acha o binário → launch fail.
+      # O script repete somente install-deps para absorver race do índice APT (#467).
       - name: Install Playwright browsers
-        run: |
-          npx playwright install chromium
-          sudo npx playwright install-deps chromium
+        run: bash scripts/install-playwright-chromium.sh
 
       - name: Boot app + run e2e specs
         run: |

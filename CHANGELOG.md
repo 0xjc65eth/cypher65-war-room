@@ -6,6 +6,13 @@ e versionamento semântico ([SemVer](https://semver.org/lang/pt-BR/)).
 
 ## [Unreleased]
 
+### Corrigido — instalação Playwright resiliente a race do índice APT (Issue #467)
+- Os jobs frontend e E2E reutilizam um instalador que repete somente a etapa
+  idempotente de dependências do sistema, com cinco tentativas e backoff
+  limitado; falhas persistentes continuam bloqueando o merge.
+- Self-test hermético comprova recuperação transitória, exaustão fail-closed,
+  erro do browser sem retry indevido e rejeição de configuração inválida.
+
 ### Segurança — fuzzing e red team do conector Stratum V1 (Issue #463)
 - Validador público e limitado rejeita IDs booleanos, JSON duplicado, shapes de
   subscribe inválidos, extra nonce malformado e respostas acima de 64 KiB.
