@@ -27,6 +27,16 @@ The reusable stateful simulator in `tests/virtual_pool/stratum_v1_lab.py` proves
 successful subscriptions, timeouts, malformed JSON and oversized responses
 without contacting an external pool.
 
+The public subscribe-response validator rejects boolean IDs, missing or
+duplicate JSON keys, invalid subscription tuples, absent `mining.notify`,
+malformed extra nonces and responses above 64 KiB. It returns no remote data;
+only controlled reason codes cross the boundary. A deterministic 6,000-case
+byte/structured fuzz corpus verifies that malformed input cannot escape an
+uncontrolled parser exception. Hermetic red-team cases also replay DNS
+rebinding and mixed SSRF answers, and forge typed destinations to prove the
+connector revalidates numeric address scope and resolution metadata before it
+creates a socket.
+
 `evidence.py` builds an immutable capability dependency graph from at most 128
 sanitized assertions, 256 total nodes and 16 dependencies per assertion. Only
 `observed` and `api_reported` provenance can establish a capability or dependency;

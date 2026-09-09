@@ -6,6 +6,14 @@ e versionamento semântico ([SemVer](https://semver.org/lang/pt-BR/)).
 
 ## [Unreleased]
 
+### Segurança — fuzzing e red team do conector Stratum V1 (Issue #463)
+- Validador público e limitado rejeita IDs booleanos, JSON duplicado, shapes de
+  subscribe inválidos, extra nonce malformado e respostas acima de 64 KiB.
+- Corpus determinístico cobre 6.000 payloads arbitrários/estruturados sem
+  exceção não controlada; ataques herméticos cobrem SSRF e DNS rebinding.
+- O conector revalida escopo do IP e metadados da resolução antes de criar o
+  socket, inclusive contra objetos tipados forjados com destino privado.
+
 ### Adicionado — compatibilidade ASIC e failover ordenado (Issue #461)
 - Perfis tipados de device e pool avaliam somente estados efetivos do grafo de
   capabilities; ausência ou evidência não suportada falha como incompatível.
