@@ -78,6 +78,16 @@ no later device is released. State objects validate their own ordering, and the
 public transition path offers no way to skip the canary. This layer still
 performs no physical update or rollback.
 
+`dry_run.py` composes the reviewed boundaries before an `update_pool` command
+can receive a confirmation token: complete canonical configuration, exactly
+one DNS resolution, the default public-destination and Stratum-port policy,
+then the credential-free V1 subscribe probe. The worker identity is validated
+but is never passed to the resolver or probe. Public results omit endpoint,
+numeric address, worker and remote payload; they contain only controlled state,
+protocol, capability and finite non-negative latency values. Invalid config,
+DNS failure, SSRF/private destinations, custom ports and protocol failures all
+fail closed. Local-pool mode remains unavailable on this member-facing path.
+
 Stratum V2 requires a separate adapter. Active unknown-pool discovery,
 authentication and physical fleet rollout remain disabled until their own gates
 pass.
@@ -87,10 +97,12 @@ normalized URLs, logs or the pool knowledge model.
 
 ## Safe `update_pool` boundary (Bitaxe/AxeOS)
 
-The existing device-command API now applies the network-free parser before a
-pool dry-run, confirmation, idempotency claim, or adapter call. The supported
-payload remains `stratumURL`, `stratumPort`, and `stratumUser`, but all three are
-required so a partial write cannot combine new input with stale firmware state.
+The existing device-command API applies the network-free parser before a pool
+dry-run, confirmation, idempotency claim, or adapter call. A pool dry-run then
+performs the bounded network preflight above, and a failed preflight prevents
+the server from issuing a confirmation token. The supported payload remains
+`stratumURL`, `stratumPort`, and `stratumUser`, but all three are required so a
+partial write cannot combine new input with stale firmware state.
 Ports outside `1..65535`, ambiguous/mismatched endpoints, invalid worker
 identities, credentials embedded in a URL, and unknown fields are rejected;
 values are never clamped or repaired silently.
@@ -103,9 +115,10 @@ sample exposes a complete pool configuration whose canonical hash matches the
 request. Missing comparable telemetry remains `unknown`; contradictory
 telemetry fails reconciliation.
 
-The pool-update command boundary does not invoke the read-only probe or the
-compatibility/failover/canary decision layers yet and still does not preserve a
-rollback target.
+The pool-update command boundary does not invoke the compatibility,
+failover or canary decision layers yet and still does not preserve a rollback
+target. A successful dry-run is evidence only for the proposed endpoint at that
+moment; it does not authenticate the worker or prove a physical ASIC mutation.
 Physical commands therefore remain disabled by deployment policy unless
 explicitly enabled, and the V1 health probe is not evidence that arbitrary pool
 mutation is production-ready.
