@@ -6,6 +6,12 @@ e versionamento semântico ([SemVer](https://semver.org/lang/pt-BR/)).
 
 ## [Unreleased]
 
+### Segurança — `js-yaml` transitivo corrigido (Issue #457)
+- Lockfile mobile resolve `js-yaml` 3.15.2 no Jest/Istanbul, corrigindo o
+  advisory HIGH `GHSA-2883-xcg3-v3hh` sem override major.
+- Instalação limpa, árvore npm, audit, Expo Doctor 21/21, Biome, TypeScript,
+  91 testes Jest e exports iOS/Android/Web permanecem verdes.
+
 ### Documentação — walkthrough do operador para Flyovers (Issue #452)
 - Novo roteiro bilíngue conecta arquitetura, dor operacional, percurso inicial
   de 15 minutos e benefícios permitidos sem inventar telemetria ou retorno.
