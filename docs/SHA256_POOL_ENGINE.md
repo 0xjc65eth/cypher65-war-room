@@ -43,9 +43,23 @@ evidence stays `unknown`. No provider catalog or hostname/port heuristic is
 embedded in the engine; callers must supply sanitized signals produced by
 separately reviewed observers.
 
+`selection.py` adds a network-free decision layer for device/pool compatibility
+and ordered failover. Compatibility accepts at most 32 named requirements and
+compares only effective states already present in the immutable capability
+graphs. Missing nodes remain `unknown`; `error`, `unsupported`,
+`auth_required`, and `unknown` all prevent a positive compatibility result.
+Model names, firmware names, provider names and endpoints are not heuristics.
+
+Failover accepts at most 16 pre-evaluated candidates. It keeps the active pool
+while health and compatibility remain `supported`; otherwise it selects the
+lowest numeric priority, preserving caller order for ties. Cooldown, unhealthy
+and incompatible candidates are skipped with controlled reason codes. The
+policy never resolves DNS, retries, sleeps, handles credentials, opens a socket
+or mutates an ASIC. Its result is a decision for a separately reviewed caller,
+not permission to execute a command.
+
 Stratum V2 requires a separate adapter. Active unknown-pool discovery,
-authentication, failover and fleet rollout remain disabled until their own gates
-pass.
+authentication and fleet rollout remain disabled until their own gates pass.
 
 Credentials remain separate from endpoint metadata. Passwords are never part of
 normalized URLs, logs or the pool knowledge model.
@@ -68,8 +82,9 @@ sample exposes a complete pool configuration whose canonical hash matches the
 request. Missing comparable telemetry remains `unknown`; contradictory
 telemetry fails reconciliation.
 
-The pool-update command boundary does not invoke the read-only probe yet and
-still does not preserve a rollback target or provide canary fleet rollout.
+The pool-update command boundary does not invoke the read-only probe or the
+compatibility/failover decision layer yet and still does not preserve a rollback
+target or provide canary fleet rollout.
 Physical commands therefore remain disabled by deployment policy unless
 explicitly enabled, and the V1 health probe is not evidence that arbitrary pool
 mutation is production-ready.

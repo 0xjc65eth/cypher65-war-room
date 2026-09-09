@@ -6,6 +6,14 @@ e versionamento semântico ([SemVer](https://semver.org/lang/pt-BR/)).
 
 ## [Unreleased]
 
+### Adicionado — compatibilidade ASIC e failover ordenado (Issue #461)
+- Perfis tipados de device e pool avaliam somente estados efetivos do grafo de
+  capabilities; ausência ou evidência não suportada falha como incompatível.
+- Política pura e limitada preserva o pool ativo saudável ou escolhe o menor
+  priority de forma estável, respeitando cooldown, saúde e compatibilidade.
+- A decisão não resolve DNS, usa credenciais, abre conexão ou altera ASIC; a
+  integração com comandos físicos permanece bloqueada pelos gates 092–096.
+
 ### Adicionado — grafo de capabilities e classificação por evidência (Issue #459)
 - Grafo imutável e limitado resolve provenance, dependências ausentes,
   conflitos e ciclos sem executar I/O ou carregar payload remoto.
