@@ -27,6 +27,16 @@ from .configuration import (
 from .models import CapabilityState, PoolEndpoint, PoolProtocol, Provenance
 from .policy import DestinationPolicy, PolicyError, ValidatedDestination
 from .resolver import PoolResolution, ResolutionError, resolve_pool_destination
+from .rollout import (
+    PoolRolloutPlan,
+    PoolRolloutState,
+    RolloutError,
+    RolloutFailure,
+    RolloutOutcome,
+    RolloutPhase,
+    record_pool_rollout_batch,
+    start_pool_rollout,
+)
 from .selection import (
     CompatibilityCheck,
     CompatibilityRequirement,
@@ -71,10 +81,16 @@ __all__ = [
     "PoolEndpoint",
     "PoolProtocol",
     "PoolResolution",
+    "PoolRolloutPlan",
+    "PoolRolloutState",
     "ProviderFingerprint",
     "ProviderSignal",
     "Provenance",
     "ResolutionError",
+    "RolloutError",
+    "RolloutFailure",
+    "RolloutOutcome",
+    "RolloutPhase",
     "SelectionError",
     "StratumV1ProbeError",
     "StratumV1ProbeResult",
@@ -88,8 +104,10 @@ __all__ = [
     "fingerprint_provider",
     "parse_pool_endpoint",
     "probe_stratum_v1",
+    "record_pool_rollout_batch",
     "resolve_pool_destination",
     "select_failover_candidate",
+    "start_pool_rollout",
     "validate_pool_configuration",
     "validate_stratum_v1_subscribe_response",
 ]

@@ -68,8 +68,19 @@ policy never resolves DNS, retries, sleeps, handles credentials, opens a socket
 or mutates an ASIC. Its result is a decision for a separately reviewed caller,
 not permission to execute a command.
 
+`rollout.py` provides the equally pure fleet canary state machine. A plan holds
+only a sanitized rollout ID, a SHA-256 configuration reference and at most
+1,000 unique device IDs; it contains no endpoint, worker or credential. The
+first transition releases only the mandatory canary (at most 10 devices), then
+stable batches of at most 100. Every active device must have an exact
+reconciled outcome. A single `failed` or `unknown` outcome halts the rollout and
+no later device is released. State objects validate their own ordering, and the
+public transition path offers no way to skip the canary. This layer still
+performs no physical update or rollback.
+
 Stratum V2 requires a separate adapter. Active unknown-pool discovery,
-authentication and fleet rollout remain disabled until their own gates pass.
+authentication and physical fleet rollout remain disabled until their own gates
+pass.
 
 Credentials remain separate from endpoint metadata. Passwords are never part of
 normalized URLs, logs or the pool knowledge model.
@@ -93,8 +104,8 @@ request. Missing comparable telemetry remains `unknown`; contradictory
 telemetry fails reconciliation.
 
 The pool-update command boundary does not invoke the read-only probe or the
-compatibility/failover decision layer yet and still does not preserve a rollback
-target or provide canary fleet rollout.
+compatibility/failover/canary decision layers yet and still does not preserve a
+rollback target.
 Physical commands therefore remain disabled by deployment policy unless
 explicitly enabled, and the V1 health probe is not evidence that arbitrary pool
 mutation is production-ready.

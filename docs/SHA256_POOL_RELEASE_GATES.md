@@ -24,7 +24,7 @@ probe is not exposed as arbitrary discovery and cannot change a pool.
 | 093 Confirmation | FAIL | The Bitaxe route binds canonical config to a one-time server token; the universal pool engine and other firmware paths are not integrated. |
 | 094 Reconciliation | FAIL | Bitaxe can compare fresh firmware telemetry to the request hash and never treats HTTP ACK as verified; auth/jobs/hashrate evidence and other firmware remain absent. |
 | 095 Rollback | FAIL | Previous known-good pool model absent. |
-| 096 Canary | FAIL | Fleet rollout state machine absent. |
+| 096 Canary | PASS | Immutable, bounded state machine releases a mandatory canary then deterministic batches; any failed/unknown reconciliation halts before another batch. |
 | 097 Virtual Pool Lab | PASS | Stateful local V1 simulator covers successive sessions, timeout, invalid JSON and oversized responses. |
 | 098 Fuzzing | PASS | Public bounded response validator survives a seeded corpus of 6,000 arbitrary/structured payloads plus duplicate-key, deep-nesting and oversized cases with controlled failures only. |
 | 099 Red Team | PASS | Hermetic endpoint-to-socket attacks prove single DNS resolution, mixed-answer rejection and connector-side revalidation of forged private/metadata destinations before socket creation. |
