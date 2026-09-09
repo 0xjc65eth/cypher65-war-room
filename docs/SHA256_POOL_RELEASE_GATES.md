@@ -1,7 +1,8 @@
 # SHA-256 Pool Intelligence gates 078–101
 
-Last reviewed: 2026-09-09. A bounded, read-only V1 probe now performs explicit
-network I/O. It is not exposed as arbitrary discovery and cannot change a pool.
+Last reviewed: 2026-09-09. A bounded, read-only V1 probe performs explicit
+network I/O. Sanitized evidence can be aggregated without further I/O, but the
+probe is not exposed as arbitrary discovery and cannot change a pool.
 
 | Gate | State | Evidence / remaining work |
 |---|---|---|
@@ -11,9 +12,9 @@ network I/O. It is not exposed as arbitrary discovery and cannot change a pool.
 | 081 Generic Stratum V1 | PASS | Bounded `mining.subscribe` probe validates the generic V1 response without credentials or share submission. |
 | 082 Stratum V2 | FAIL | Separate protocol model exists; adapter absent. |
 | 083 Unknown discovery | FAIL | No active discovery. |
-| 084 Fingerprinting | FAIL | No provider confidence engine. |
-| 085 Capability graph | FAIL | Capability states exist; discovery graph absent. |
-| 086 Chain detection | FAIL | No observed chain classifier. |
+| 084 Fingerprinting | PASS | Provider identity requires two independent trusted signals at or above 80%; weak, inferred or conflicting evidence returns unknown. |
+| 085 Capability graph | PASS | Immutable graph caps assertions/nodes/dependencies and resolves observed states, missing nodes, conflicts and cycles fail-closed. |
+| 086 Chain detection | PASS | Chain classification accepts only explicit observed/API-reported chain signals; endpoint and provider heuristics are not inputs. |
 | 087 Authentication | FAIL | Credentials deliberately excluded from foundation. |
 | 088 Pool health | PASS | Sanitized health result distinguishes valid V1 subscribe from timeout, TLS, transport and protocol failures. |
 | 089 Pool latency | PASS | Probe records bounded DNS, TCP, TLS, Stratum and total timings. |

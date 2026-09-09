@@ -27,9 +27,25 @@ The reusable stateful simulator in `tests/virtual_pool/stratum_v1_lab.py` proves
 successful subscriptions, timeouts, malformed JSON and oversized responses
 without contacting an external pool.
 
+`evidence.py` builds an immutable capability dependency graph from at most 128
+sanitized assertions, 256 total nodes and 16 dependencies per assertion. Only
+`observed` and `api_reported` provenance can establish a capability or dependency;
+missing dependencies become explicit `unknown` nodes, conflicting states become
+`error`, and dependency cycles are rejected. The V1 result can be converted into
+an observed `protocol.stratum_v1.subscribe` assertion without copying endpoint
+data or remote payloads into the graph.
+
+Provider fingerprinting and chain classification use separate signal types so a
+provider cannot accidentally become chain evidence. Each classifier accepts at
+most 64 signals, and identification requires two independent trusted sources with
+at least 80% confidence. Inferred/user-provided, weak, single-source or conflicting
+evidence stays `unknown`. No provider catalog or hostname/port heuristic is
+embedded in the engine; callers must supply sanitized signals produced by
+separately reviewed observers.
+
 Stratum V2 requires a separate adapter. Active unknown-pool discovery,
-fingerprinting, chain classification, authentication, failover and fleet rollout
-remain disabled until their own gates pass.
+authentication, failover and fleet rollout remain disabled until their own gates
+pass.
 
 Credentials remain separate from endpoint metadata. Passwords are never part of
 normalized URLs, logs or the pool knowledge model.
