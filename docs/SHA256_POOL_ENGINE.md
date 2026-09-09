@@ -1,20 +1,35 @@
 # Universal SHA-256 Pool Intelligence Engine
 
-## Implemented foundation
+## Implemented foundation and read-only V1 probe
 
 `services/pool_intelligence/` provides a network-free endpoint parser, typed
-protocol/capability/provenance models and a post-DNS destination policy. Unknown
-providers are valid: provider identity is separate from protocol compatibility,
-chain and payout mechanism.
+protocol/capability/provenance models, a single-pass resolver, a post-DNS
+destination policy and a bounded Stratum V1 health probe. Unknown providers are
+valid: provider identity is separate from protocol compatibility, chain and
+payout mechanism.
 
-The current package does **not** yet probe a pool, authorize a worker, infer a
-chain or change an ASIC. No compatibility claim is made without observed
-protocol evidence.
+The probe sends only `mining.subscribe`; it does **not** authorize a worker,
+submit a share, infer a chain or change an ASIC. A valid subscribe response is
+evidence for generic Stratum V1 compatibility only. It is not evidence for a
+provider identity, payout method, worker authentication or usable jobs.
 
-Planned stages are: parse → policy → DNS → revalidate every address → connect to
-the validated address → TLS/Stratum negotiation → capabilities → fingerprint →
-optional specialized adapter. Stratum V1 and V2 require separate adapters behind
-a common interface.
+The implemented V1 path is: parse → resolve once → validate every address →
+connect directly to a validated numeric address → optional TLS with the original
+hostname used only for SNI/certificate verification → bounded subscribe request
+and response. No connector calls DNS after policy validation, closing the
+classic DNS-rebinding gap between validation and connection. At most four
+validated addresses are attempted, each with a maximum 30-second configurable
+timeout; a response may not exceed 64 KiB.
+
+The result exposes sanitized state plus DNS, TCP, TLS and Stratum latency. It
+never returns a remote error message, extra nonce, worker identity or credential.
+The reusable stateful simulator in `tests/virtual_pool/stratum_v1_lab.py` proves
+successful subscriptions, timeouts, malformed JSON and oversized responses
+without contacting an external pool.
+
+Stratum V2 requires a separate adapter. Active unknown-pool discovery,
+fingerprinting, chain classification, authentication, failover and fleet rollout
+remain disabled until their own gates pass.
 
 Credentials remain separate from endpoint metadata. Passwords are never part of
 normalized URLs, logs or the pool knowledge model.
@@ -37,8 +52,8 @@ sample exposes a complete pool configuration whose canonical hash matches the
 request. Missing comparable telemetry remains `unknown`; contradictory
 telemetry fails reconciliation.
 
-This boundary does not resolve DNS, apply the post-DNS destination policy,
-negotiate Stratum, prove authentication/jobs/hashrate, preserve a rollback
-target, or provide canary fleet rollout. Physical commands therefore remain
-disabled by deployment policy unless explicitly enabled, and this work is not
-evidence that arbitrary pool mutation is production-ready.
+The pool-update command boundary does not invoke the read-only probe yet and
+still does not preserve a rollback target or provide canary fleet rollout.
+Physical commands therefore remain disabled by deployment policy unless
+explicitly enabled, and the V1 health probe is not evidence that arbitrary pool
+mutation is production-ready.
