@@ -35,7 +35,7 @@ def _resolution(address: str, port: int, *, tls: bool = False) -> PoolResolution
         destination=ValidatedDestination(
             endpoint=endpoint,
             addresses=(address,),
-            local_pool_mode=True,
+            local_pool_mode=False,
         ),
         dns_latency_ms=1.25,
     )
@@ -105,13 +105,18 @@ def test_resolver_caps_answers_and_sanitizes_dns_failures():
 
 def test_virtual_lab_is_stateful_and_probe_reports_v1_health():
     with StratumV1Lab() as lab:
-        first = probe_stratum_v1(_resolution("127.0.0.1", lab.port))
-        second = probe_stratum_v1(_resolution("127.0.0.1", lab.port))
+        socket_factory = _lab_socket_factory(lab.port)
+        first = probe_stratum_v1(
+            _resolution("8.8.8.8", lab.port), socket_factory=socket_factory
+        )
+        second = probe_stratum_v1(
+            _resolution("8.8.8.8", lab.port), socket_factory=socket_factory
+        )
 
     assert first.healthy is True
     assert first.protocol is PoolProtocol.STRATUM_V1
     assert first.capability is CapabilityState.SUPPORTED
-    assert first.connected_address == "127.0.0.1"
+    assert first.connected_address == "8.8.8.8"
     assert first.failure_code is None
     assert first.tcp_latency_ms is not None
     assert first.stratum_latency_ms is not None
@@ -137,9 +142,10 @@ def test_virtual_lab_failures_are_bounded_and_sanitized(
 ):
     with StratumV1Lab(mode=mode, oversized_bytes=1024) as lab:
         result = probe_stratum_v1(
-            _resolution("127.0.0.1", lab.port),
+            _resolution("8.8.8.8", lab.port),
             timeout_seconds=0.05,
             maximum_response_bytes=maximum_bytes,
+            socket_factory=_lab_socket_factory(lab.port),
         )
 
     assert result.healthy is False
@@ -171,6 +177,34 @@ class _FakeSocket:
 
     def close(self):
         return None
+
+
+class _LabRedirectSocket:
+    """Test-only transport that keeps the virtual lab on loopback."""
+
+    def __init__(self, port):
+        self._port = port
+        self._socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+
+    def settimeout(self, timeout):
+        self._socket.settimeout(timeout)
+
+    def connect(self, target):
+        assert target == ("8.8.8.8", self._port)
+        self._socket.connect(("127.0.0.1", self._port))
+
+    def sendall(self, payload):
+        self._socket.sendall(payload)
+
+    def recv(self, size):
+        return self._socket.recv(size)
+
+    def close(self):
+        self._socket.close()
+
+
+def _lab_socket_factory(port):
+    return lambda family, kind: _LabRedirectSocket(port)
 
 
 class _FailingSocket(_FakeSocket):
@@ -374,5 +408,5 @@ def test_tls_failure_is_sanitized():
 
 @pytest.mark.parametrize("address", ["pool.example.test", "127.1"])
 def test_connector_rejects_non_numeric_validated_destinations(address):
-    with pytest.raises(StratumV1ProbeError, match="numeric"):
+    with pytest.raises(StratumV1ProbeError, match="connector policy"):
         probe_stratum_v1(_resolution(address, 3333))

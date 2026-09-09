@@ -43,7 +43,9 @@ from .selection import (
 from .stratum_v1 import (
     StratumV1ProbeError,
     StratumV1ProbeResult,
+    StratumV1ResponseError,
     probe_stratum_v1,
+    validate_stratum_v1_subscribe_response,
 )
 
 __all__ = [
@@ -76,6 +78,7 @@ __all__ = [
     "SelectionError",
     "StratumV1ProbeError",
     "StratumV1ProbeResult",
+    "StratumV1ResponseError",
     "ValidatedDestination",
     "ValidatedPoolConfiguration",
     "build_capability_graph",
@@ -88,4 +91,5 @@ __all__ = [
     "resolve_pool_destination",
     "select_failover_candidate",
     "validate_pool_configuration",
+    "validate_stratum_v1_subscribe_response",
 ]

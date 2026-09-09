@@ -26,8 +26,8 @@ probe is not exposed as arbitrary discovery and cannot change a pool.
 | 095 Rollback | FAIL | Previous known-good pool model absent. |
 | 096 Canary | FAIL | Fleet rollout state machine absent. |
 | 097 Virtual Pool Lab | PASS | Stateful local V1 simulator covers successive sessions, timeout, invalid JSON and oversized responses. |
-| 098 Fuzzing | FAIL | Protocol parser/fuzzer absent. |
-| 099 Red Team | FAIL | Endpoint matrix exists; active connector attack remains. |
+| 098 Fuzzing | PASS | Public bounded response validator survives a seeded corpus of 6,000 arbitrary/structured payloads plus duplicate-key, deep-nesting and oversized cases with controlled failures only. |
+| 099 Red Team | PASS | Hermetic endpoint-to-socket attacks prove single DNS resolution, mixed-answer rejection and connector-side revalidation of forged private/metadata destinations before socket creation. |
 | 100 iOS pool E2E | FAIL | Installed-app pool journey is not implemented. |
 | 101 Android pool E2E | FAIL | Installed-app pool journey is not implemented. |
 

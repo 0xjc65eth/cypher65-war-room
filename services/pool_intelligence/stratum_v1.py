@@ -3,12 +3,15 @@
 from dataclasses import dataclass
 import ipaddress
 import json
+import math
+import re
 import socket
 import ssl
 import time
 from typing import Callable
 
-from .models import CapabilityState, PoolProtocol
+from .models import CapabilityState, PoolEndpoint, PoolProtocol
+from .policy import DestinationPolicy, PolicyError, ValidatedDestination
 from .resolver import PoolResolution
 
 DEFAULT_PROBE_TIMEOUT_SECONDS = 3.0
@@ -19,16 +22,40 @@ _SUBSCRIBE_REQUEST = {
     "method": "mining.subscribe",
     "params": ["CYPHER65-War-Room/1.0"],
 }
+_HEX_EXTRA_NONCE = re.compile(r"[0-9a-fA-F]{2,256}")
+_RESPONSE_FAILURE_CODES = frozenset(
+    {
+        "invalid_json",
+        "invalid_response",
+        "subscribe_rejected",
+        "invalid_subscribe_result",
+        "response_too_large",
+    }
+)
 
 
 class StratumV1ProbeError(ValueError):
     """The validated destination or probe configuration is unusable."""
 
 
+class StratumV1ResponseError(ValueError):
+    """A bounded subscribe response failed with a controlled reason code."""
+
+    def __init__(self, code: str):
+        if code not in _RESPONSE_FAILURE_CODES:
+            raise ValueError("invalid Stratum V1 response failure code")
+        super().__init__(code)
+        self.code = code
+
+
 class _ProtocolFailure(Exception):
     def __init__(self, code: str):
         super().__init__(code)
         self.code = code
+
+
+class _DuplicateJsonKey(ValueError):
+    pass
 
 
 @dataclass(frozen=True)
@@ -51,12 +78,7 @@ def _round_ms(seconds: float) -> float:
 
 
 def _numeric_socket_target(address: str, port: int) -> tuple[int, tuple]:
-    try:
-        parsed = ipaddress.ip_address(address)
-    except ValueError as exc:
-        raise StratumV1ProbeError(
-            "validated destination must contain numeric IP addresses"
-        ) from exc
+    parsed = ipaddress.ip_address(address)
     if isinstance(parsed, ipaddress.IPv6Address):
         return socket.AF_INET6, (parsed.compressed, port, 0, 0)
     return socket.AF_INET, (parsed.compressed, port)
@@ -78,29 +100,109 @@ def _read_response_line(connection, *, maximum_bytes: int) -> bytes:
             raise _ProtocolFailure("response_too_large")
 
 
-def _validate_subscribe_response(raw_line: bytes) -> None:
+def _reject_duplicate_json_keys(pairs: list[tuple[str, object]]) -> dict:
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise _DuplicateJsonKey("duplicate JSON key")
+        result[key] = value
+    return result
+
+
+def validate_stratum_v1_subscribe_response(raw_line: bytes) -> None:
+    """Validate one bounded `mining.subscribe` response without returning data.
+
+    Remote-controlled values are deliberately discarded. Callers receive only
+    a controlled failure code and can never use this validator to extract a
+    worker, session, provider or credential.
+    """
+    if not isinstance(raw_line, bytes):
+        raise StratumV1ProbeError("Stratum V1 response must be bytes")
+    if len(raw_line) > MAX_STRATUM_RESPONSE_BYTES:
+        raise StratumV1ResponseError("response_too_large")
     try:
-        message = json.loads(raw_line.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise _ProtocolFailure("invalid_json") from exc
-    if not isinstance(message, dict) or message.get("id") != 1:
-        raise _ProtocolFailure("invalid_response")
-    if message.get("error") is not None:
-        raise _ProtocolFailure("subscribe_rejected")
-    result = message.get("result")
+        message = json.loads(
+            raw_line.decode("utf-8"),
+            object_pairs_hook=_reject_duplicate_json_keys,
+        )
+    except (UnicodeDecodeError, ValueError, RecursionError) as exc:
+        raise StratumV1ResponseError("invalid_json") from exc
+    if (
+        not isinstance(message, dict)
+        or not {"id", "result", "error"}.issubset(message)
+        or isinstance(message["id"], bool)
+        or message["id"] != 1
+    ):
+        raise StratumV1ResponseError("invalid_response")
+    if message["error"] is not None:
+        raise StratumV1ResponseError("subscribe_rejected")
+    result = message["result"]
     if not isinstance(result, list) or len(result) < 3:
-        raise _ProtocolFailure("invalid_subscribe_result")
+        raise StratumV1ResponseError("invalid_subscribe_result")
     subscriptions, extra_nonce, extra_nonce_size = result[:3]
-    if not isinstance(subscriptions, list):
-        raise _ProtocolFailure("invalid_subscribe_result")
-    if not isinstance(extra_nonce, str) or not 1 <= len(extra_nonce) <= 256:
-        raise _ProtocolFailure("invalid_subscribe_result")
+    subscriptions_valid = bool(subscriptions) and isinstance(subscriptions, list)
+    notify_subscription = False
+    if subscriptions_valid:
+        for subscription in subscriptions:
+            if (
+                not isinstance(subscription, list)
+                or len(subscription) != 2
+                or not all(isinstance(value, str) for value in subscription)
+                or not 1 <= len(subscription[0]) <= 64
+                or not 1 <= len(subscription[1]) <= 256
+                or any(
+                    ord(char) < 33 or ord(char) > 126
+                    for value in subscription
+                    for char in value
+                )
+            ):
+                subscriptions_valid = False
+                break
+            notify_subscription = (
+                notify_subscription or subscription[0] == "mining.notify"
+            )
+    if not subscriptions_valid or not notify_subscription:
+        raise StratumV1ResponseError("invalid_subscribe_result")
+    if (
+        not isinstance(extra_nonce, str)
+        or len(extra_nonce) % 2
+        or not _HEX_EXTRA_NONCE.fullmatch(extra_nonce)
+    ):
+        raise StratumV1ResponseError("invalid_subscribe_result")
     if (
         isinstance(extra_nonce_size, bool)
         or not isinstance(extra_nonce_size, int)
         or not 1 <= extra_nonce_size <= 32
     ):
-        raise _ProtocolFailure("invalid_subscribe_result")
+        raise StratumV1ResponseError("invalid_subscribe_result")
+
+
+def _validated_probe_destination(resolution: PoolResolution) -> ValidatedDestination:
+    if not isinstance(resolution, PoolResolution):
+        raise StratumV1ProbeError("resolution must be a PoolResolution")
+    destination = resolution.destination
+    if (
+        not isinstance(destination, ValidatedDestination)
+        or not isinstance(destination.endpoint, PoolEndpoint)
+        or not isinstance(destination.local_pool_mode, bool)
+        or isinstance(resolution.dns_latency_ms, bool)
+        or not isinstance(resolution.dns_latency_ms, (int, float))
+        or not math.isfinite(resolution.dns_latency_ms)
+        or resolution.dns_latency_ms < 0
+    ):
+        raise StratumV1ProbeError("validated resolution is malformed")
+    if not destination.addresses:
+        raise StratumV1ProbeError("validated destination contains no addresses")
+    try:
+        return DestinationPolicy(
+            allowed_ports=frozenset({destination.endpoint.port}),
+            local_pool_mode=destination.local_pool_mode,
+            administrator_authorized=destination.local_pool_mode,
+        ).validate(destination.endpoint, destination.addresses)
+    except (PolicyError, TypeError, ValueError) as exc:
+        raise StratumV1ProbeError(
+            "validated destination failed connector policy"
+        ) from exc
 
 
 def probe_stratum_v1(
@@ -123,14 +225,12 @@ def probe_stratum_v1(
     if not 256 <= maximum_response_bytes <= MAX_STRATUM_RESPONSE_BYTES:
         raise StratumV1ProbeError("response limit must be between 256 and 65536 bytes")
 
-    destination = resolution.destination
+    destination = _validated_probe_destination(resolution)
     endpoint = destination.endpoint
     targets = [
         (address, *_numeric_socket_target(address, endpoint.port))
         for address in destination.addresses[:MAX_CONNECT_ATTEMPTS]
     ]
-    if not targets:
-        raise StratumV1ProbeError("validated destination contains no addresses")
 
     total_started = clock()
     last_address: str | None = None
@@ -172,7 +272,10 @@ def probe_stratum_v1(
                 connection,
                 maximum_bytes=maximum_response_bytes,
             )
-            _validate_subscribe_response(response)
+            try:
+                validate_stratum_v1_subscribe_response(response)
+            except StratumV1ResponseError as exc:
+                raise _ProtocolFailure(exc.code) from exc
             last_stratum_ms = _round_ms(clock() - stratum_started)
             return StratumV1ProbeResult(
                 endpoint=endpoint.normalized_url,
