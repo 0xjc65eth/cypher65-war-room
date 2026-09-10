@@ -79,6 +79,39 @@ make lint-sec     # bandit -ll + flake8 (.flake8) + black — blocking
   do escopo foram reformatados no commit de formatação; qualquer diff fora
   do padrão agora falha o merge. Rode `black <arquivo>` antes de commitar.
 
+### Política de exceções silenciadas (Issue #477)
+
+`except Exception: pass` é permitido **apenas** em dois padrões — sempre com
+comentário de justificativa na linha do `pass` (ou imediatamente acima):
+
+1. **Best-effort side-effect** — a falha não muda o resultado da operação
+   principal (analytics, telemetry, cache, warn/alert, event-tracking).
+   Padrão: `# best-effort: nunca propaga`. O log do bug de fundo é feito
+   pelo except externo do worker/rota.
+2. **Resource-cleanup** — `conn.close()` após o trabalho já ter sido
+   concluído (ou o caminho de falha já sinalizado). Padrão:
+   `# cleanup best-effort`.
+
+3. **Default-on-parse** — parse/conversão de dado externo com fallback
+   determinístico. NÃO use `pass`: atribua o default no `except`
+   (`except Exception: x = DEFAULT`) para que a intenção fique explícita.
+
+Proibido: `pass` nu (sem comentário) em qualquer `except` novo; engolir
+exceção em caminho que decide dado exibido ao operador (princípio
+honest-telemetry vale para erros: `stale` > silêncio).
+
+Inventário de referência (auditoria 2026-09-10, Issue #477): os 29 sites de
+`app.py` foram classificados — best-effort side-effect (16), cleanup (6),
+default-on-parse (6), boot/diagnóstico (1). Nenhum swallow perigoso.
+
+### Warnings do pytest — política zero-acúmulo (Issue #477)
+
+O run local com `SECRET_KEY` curta disparava 26× `InsecureKeyLengthWarning`
+(PyJWT) — causa raiz única, eliminada no `tests/conftest.py` (garante
+SECRET_KEY ≥ 32 bytes p/ HMAC-SHA256, RFC 7518 §3.2, sem sobrescrever env
+do operador). Regra: **warnings novos são triados na PR que os introduz** —
+fix na causa raiz (não filtro) ou justificativa documentada aqui.
+
 ### Instalação / uso
 
 ```bash
