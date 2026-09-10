@@ -1999,6 +1999,14 @@ def _admin_request_allowed() -> bool:
     Agora a presença de header de proxy (X-Forwarded-For / Forwarded) marca o
     request como REMOTO → exige X-API-Key válida. Localhost real (sem proxy)
     segue liberado para dev / ssh-tunnel.
+
+    Fail-closed para credenciais declaradas (Issue #481): se o chamador
+    ENVIA um X-API-Key (declara uma credencial) e ela NÃO confere com a
+    API_KEY do operador, o request é NEGADO mesmo vindo de localhost —
+    não há "sucesso autenticado" com credencial inválida. Comportamento
+    idêntico em remote (que já exigia a key). Ausência de header em
+    localhost continua liberada (dev / Render Shell), e API_KEY não
+    configurada preserva o localhost-trust original (Issue #254).
     """
     remote = (request.remote_addr or "").strip()
     operator_key = (os.environ.get("API_KEY") or "").strip()
@@ -2008,7 +2016,12 @@ def _admin_request_allowed() -> bool:
         or (request.headers.get("Forwarded") or "").strip()
     )
     local = (not proxied) and remote in ("127.0.0.1", "::1", "localhost")
-    return local or bool(operator_key and hmac.compare_digest(sent, operator_key))
+    key_matches = bool(operator_key and hmac.compare_digest(sent, operator_key))
+    # Credencial declarada e errada → fail-closed (Issue #481), em qualquer
+    # origem. Credencial correta → sempre autorizado.
+    if sent and not key_matches:
+        return False
+    return local or key_matches
 
 
 @app.route("/api/admin/docs-feedback", methods=["GET"])
