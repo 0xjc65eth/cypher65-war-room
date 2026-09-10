@@ -26,6 +26,15 @@ logging.disable(logging.CRITICAL)
 _SCRATCH_DIR = tempfile.mkdtemp(prefix="cypher65_tests_")
 os.environ["DB_PATH"] = os.path.join(_SCRATCH_DIR, "war_room.sqlite")
 
+# Issue #477: a SECRET_KEY de teste documentada localmente (22 bytes) dispara
+# InsecureKeyLengthWarning do PyJWT (HMAC-SHA256 pede >= 32 bytes, RFC 7518
+# §3.2) em cada emit/verify de JWT — 26 warnings por run, todos dessa causa
+# raiz única. A env aqui garante >= 32 bytes quando o operador não exportou
+# uma própria (o CI já roda com chave de 35 bytes); uma SECRET_KEY exportada
+# de 22+ bytes continua vencendo, então o warning permanece como sinal real.
+if len(os.environ.get("SECRET_KEY", "")) < 32:
+    os.environ["SECRET_KEY"] = "test-secret-0123456789-0123456789-0123456789"
+
 
 class MockRow:
     """Mimics sqlite3.Row dict-like access for test mocking.
@@ -33,6 +42,7 @@ class MockRow:
     replicates only the interface that _restore_btc_address_from_db
     actually uses (__getitem__ with string keys).
     """
+
     def __init__(self, data: dict):
         self._data = data
 
