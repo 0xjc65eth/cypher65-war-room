@@ -7,7 +7,6 @@ __pycache__/
 .DS_Store
 *.log
 .env
-.agents/*
 
 # Backup files
 *.backup*
