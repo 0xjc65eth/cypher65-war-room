@@ -11,9 +11,14 @@ O ruleset ativo do GitHub `Protect main and release branches` protege
 - Novos commits invalidam aprovações existentes.
 - Todas as conversas de review devem estar resolvidas.
 - A branch do PR deve estar atualizada em relação à base.
-- Não existe ator de bypass administrativo configurado. Um procedimento de
-  emergência deve ser rastreado em Issue/incidente e passar por alteração
-  explícita e auditável do ruleset; não há break-glass permanente.
+- **Bypass administrativo (break-glass, Issue #482):** existe um único actor
+  de bypass — `RepositoryRole: Admin`, `bypass_mode: pull_request` — capaz de
+  fazer merge admin em PRs nas branches protegidas (ex.: deadlock de
+  auto-approval do único maintainer, caso das PRs #479/#480). O bypass é
+  restrito a merges de PR: deleção e non-fast-forward continuam bloqueadas
+  para todos. Regra de uso: merge admin apenas com CI 100% verde e a
+  justificativa registrada na descrição do PR. Qualquer mudança neste actor
+  passa por Issue + PR neste arquivo.
 - Deleção e atualização non-fast-forward das branches protegidas são
   bloqueadas.
 
