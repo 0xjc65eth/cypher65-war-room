@@ -49,6 +49,7 @@ const MANIFEST = [
   '20-dom-primitives.js',
   '30-core-escape.js',
   '40-app-logic.js',
+  '45-market.js',
   '50-close.js',
 ];
 
