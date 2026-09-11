@@ -26,6 +26,14 @@
 > `_record_schema_version`, `init_db()` (576 linhas) e `purge_old()` para
 > `services/bootstrap.py`; `app.py` 9.084 → 8.444 linhas. Achado: o `get_db` do
 > `app.py` era uma **duplicata idêntica** de `services.db.get_db` — eliminada.
+> **Postmortem da trilha backend: [`478-postmortem.md`](./478-postmortem.md)**
+> (Issue #511) — divergências plano × realidade, achados por PR e lições
+> acionáveis para os PRs de frontend 2–6.
+> **Alerta ao executar o PR 2 (Market):** a descrição "orderbook, rent offers"
+> desta tabela **não corresponde ao código** (não existe orderbook); o cluster é
+> o grid de venues do `/api/market/*` + `market_data.offers`, espalhado em 4
+> regiões disjuntas com o domínio Admin inteiro entre duas delas. Detalhes no
+> postmortem, §7.
 
 ## 1. Contexto e problema
 
