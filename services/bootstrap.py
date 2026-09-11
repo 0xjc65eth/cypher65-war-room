@@ -16,9 +16,20 @@ Peças movidas:
   * ``purge_old()`` — retenção de 30 dias (snapshots/alerts/share_timeline/
     proximity_history) + o passe de ``purge_pool_metrics`` (7 dias, Issue #17).
 
-A conexão vem de ``services.db.get_db()``, a implementação canônica. O ``app.py``
-carregava uma **DUPLICATA idêntica** (``app.get_db``) — removida neste PR: era o
-item "WAL" da tabela do RFC, e agora existe uma única implementação.
+**``get_db()`` é definido AQUI** — este módulo é o dono do bootstrap do SQLite,
+então a conexão (com os pragmas WAL/synchronous/busy_timeout) mora junto do
+schema que ela serve. Antes existiam **duas** implementações idênticas
+(``app.get_db`` e ``services.db.get_db``); o ``app.py`` perdeu a cópia no PR B4
+(#509) e agora ``services/db.py`` é só um re-export deste módulo — uma
+implementação só, e o caminho histórico ``from services.db import get_db``
+segue devolvendo o MESMO objeto.
+
+Ordem de import (importa para não fechar ciclo): ``doc_feedback``,
+``conversion`` e ``beta_analytics`` importam ``services.db`` — que re-exporta
+``get_db`` daqui. Por isso eles entram por **import tardio dentro do
+``init_db()``** (único lugar que os usa), e não no topo deste módulo.
+``tenant``, ``error_tracker`` e ``schema`` foram verificados sem dependência de
+``services.db``, então podem ficar no topo.
 
 O ``app.py`` re-exporta os nomes movidos (o MESMO objeto, sem segunda
 implementação), então ``app.init_db()``, ``appmod.purge_old()`` e
@@ -32,20 +43,41 @@ dele.
 """
 
 import logging
+import os
 import sqlite3
 import time
 
-import services.beta_analytics as _beta_analytics
-import services.conversion as _conversion
-import services.doc_feedback as _doc_feedback
 import services.error_tracker as _error_tracker
-from services.db import get_db
+from config import DB_PATH
 from services.schema import CURRENT_SCHEMA_VERSION
 from services.tenant import SELF_HOST_MAX_WORKERS
 
 log = logging.getLogger("cypher65.bootstrap")
 
 SCHEMA_VERSION = CURRENT_SCHEMA_VERSION
+
+
+def get_db():
+    """Return a new SQLite connection with row_factory set.
+
+    DB_PATH is read from the environment at call time (falling back to
+    ``config.DB_PATH``) so test suites can redirect every query to a scratch DB
+    with monkeypatch.setenv('DB_PATH', ...) — no import-order tricks needed.
+
+    Audit C5: every connection enables WAL + busy_timeout so concurrent
+    polling writers never hit "database is locked" and readers see fresh data.
+    Best-effort — WAL is unavailable on :memory: DBs and the pragmas are
+    skipped rather than raised.
+    """
+    conn = sqlite3.connect(os.environ.get("DB_PATH", DB_PATH))
+    conn.row_factory = sqlite3.Row
+    try:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
+        conn.execute("PRAGMA busy_timeout=3000")
+    except sqlite3.Error:
+        pass
+    return conn
 
 
 # ── Schema version tracking (#5: versioned migrations) ─────────────────────
@@ -77,6 +109,13 @@ def _record_schema_version(conn):
 
 
 def init_db():
+    # Import tardio (não subir para o topo do módulo): estes três importam
+    # `services.db`, que re-exporta o `get_db` DESTE módulo — no topo fecharia
+    # um ciclo na inicialização parcial. Só o init_db os usa.
+    import services.beta_analytics as _beta_analytics
+    import services.conversion as _conversion
+    import services.doc_feedback as _doc_feedback
+
     conn = get_db()
     c = conn.cursor()
     c.execute(

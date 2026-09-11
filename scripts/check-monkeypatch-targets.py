@@ -27,6 +27,13 @@ O guard é estático (só AST, sem importar o alvo) e usa uma definição precis
 Nome que o módulo **só importa e nunca usa** (re-export puro) NÃO é dele —
 patchear ali é órfão.
 
+Exceção importante (e um caso real do repositório): quando algum módulo faz o
+import **dentro de uma função** (`from services.db import get_db` no corpo de uma
+view, não no topo), o lookup acontece no momento da CHAMADA, lendo o atributo do
+módulo de origem. Aí patchear o re-export **intercepta de verdade** — o nome não
+precisa ser do módulo. O guard detecta esse padrão (`deferred_import_targets`) e
+não marca como órfão.
+
 Uso:
     python scripts/check-monkeypatch-targets.py
     python scripts/check-monkeypatch-targets.py --list      # só lista os alvos
@@ -248,6 +255,32 @@ def resolve_module(
     return None
 
 
+def deferred_import_targets(index: dict[str, Path]) -> set[tuple[str, str]]:
+    """Pares (módulo, nome) importados DENTRO de uma função, no repo inteiro.
+
+    `from M import N` no corpo de uma função lê ``M.N`` na hora da chamada, então
+    patchear ``M.N`` intercepta esse consumidor — mesmo que ``M`` só re-exporte o
+    nome. Sem essa exceção o guard marcaria como órfão um patch que funciona.
+    """
+    targets: set[tuple[str, str]] = set()
+    for path in set(index.values()):
+        try:
+            tree = ast.parse(path.read_text(), filename=str(path))
+        except SyntaxError:  # pragma: no cover
+            continue
+        functions = [
+            n
+            for n in ast.walk(tree)
+            if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+        ]
+        for fn in functions:
+            for node in ast.walk(fn):
+                if isinstance(node, ast.ImportFrom) and node.module in index:
+                    for alias in node.names:
+                        targets.add((node.module, alias.asname or alias.name))
+    return targets
+
+
 def _has_escape(source_lines: list[str], first: int, last: int) -> bool:
     """`# orphan-patch-ok: …` em qualquer linha da chamada ou na de cima.
 
@@ -270,6 +303,7 @@ def find_violations(root: Path) -> list[Violation]:
         except SyntaxError:  # pragma: no cover — arquivo inválido quebra o flake8
             continue
 
+    deferred = deferred_import_targets(index)
     violations: list[Violation] = []
     tests_dir = root / "tests"
     if not tests_dir.is_dir():
@@ -296,6 +330,10 @@ def find_violations(root: Path) -> list[Violation]:
                     continue
                 module, name = resolved
                 if name in owned.get(module, set()):
+                    continue
+                # Patch no destino de um import tardio funciona (lookup na
+                # chamada) — não é órfão.
+                if (module, name) in deferred:
                     continue
                 if _has_escape(
                     lines,

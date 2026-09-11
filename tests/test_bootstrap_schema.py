@@ -136,9 +136,49 @@ def test_schema_version_constant_is_shared_with_the_app():
 
 
 def test_get_db_has_a_single_implementation():
-    """A duplicata `app.get_db` (idêntica a `services.db.get_db`) morreu."""
-    assert app_module.get_db is db_module.get_db
-    assert app_module.get_db.__module__ == "services.db"
+    """Uma implementação só, em três caminhos: bootstrap → services.db → app."""
+    assert app_module.get_db is bootstrap.get_db
+    assert db_module.get_db is bootstrap.get_db
+    assert bootstrap.get_db.__module__ == "services.bootstrap"
+
+
+def test_historical_import_path_still_serves_the_canonical_connection(
+    monkeypatch, tmp_path
+):
+    """`from services.db import get_db` — o caminho usado em ~90 lugares."""
+    target = str(tmp_path / "historical.sqlite")
+    monkeypatch.setenv("DB_PATH", target)
+    from services.db import get_db
+
+    conn = get_db()
+    try:
+        conn.execute("SELECT 1")
+    finally:
+        conn.close()
+    assert tmp_path.joinpath("historical.sqlite").exists()
+
+
+def test_bootstrap_top_level_imports_avoid_the_cycle():
+    """O import de `get_db` não pode voltar ao topo — fecharia ciclo.
+
+    `doc_feedback`/`conversion`/`beta_analytics` importam `services.db`, que
+    re-exporta `get_db` do bootstrap: no topo do módulo vira inicialização
+    parcial. Eles só podem entrar por import tardio dentro do `init_db()`.
+    """
+    tree = ast.parse(open(bootstrap.__file__).read())
+    top: list[str] = []
+    for node in tree.body:  # só o nível do módulo
+        if isinstance(node, ast.Import):
+            top += [alias.name for alias in node.names]
+        elif isinstance(node, ast.ImportFrom):
+            top.append(node.module or "")
+    forbidden = [
+        m
+        for m in top
+        if m in ("services.db", "services.doc_feedback", "services.conversion")
+        or m.startswith("services.beta_analytics")
+    ]
+    assert forbidden == [], f"import que fecha o ciclo no topo do módulo: {forbidden}"
 
 
 def test_get_db_reads_db_path_from_the_environment_at_call_time(monkeypatch, tmp_path):
