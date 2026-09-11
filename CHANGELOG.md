@@ -6,6 +6,22 @@ e versionamento semântico ([SemVer](https://semver.org/lang/pt-BR/)).
 
 ## [Unreleased]
 
+### Alterado — extração do admin gate + rotas /api/admin/* (RFC #478 · PR B1, Issue #495)
+- O gate compartilhado `_admin_request_allowed` e as **10 rotas `/api/admin/*`**
+  saíram de `app.py` para `routes/admin_routes.py` (blueprint `admin_bp`,
+  `url_prefix="/api/admin"`). É o primeiro PR da trilha backend do RFC #478 —
+  extração mecânica, **sem um único comportamento novo**.
+- `app.py` cai de 9.448 para 9.137 linhas (300 linhas movidas verbatim —
+  mesmos corpos, mesma formatação). O gate fica re-exportado
+  (`from app import _admin_request_allowed` segue válido) e o `SessionManager`
+  do boot é injetado via `init_admin_routes()` — sem import circular.
+- `url_map` provado idêntico antes/depois: mesmos paths, mesmos métodos, mesma
+  decisão de gate (as 9 rotas gateadas continuam negando origem remota sem key
+  e credencial declarada e errada — matriz #481).
+- Cobertura preservada: `--cov=routes.admin_routes` entra no CI para as linhas
+  movidas não saírem da régua — o conjunto medido é o mesmo do master, então o
+  TOTAL (83,99%) não melhora por subtração.
+
 ### Adicionado — build determinístico do app.js + extração do core (Issue #489)
 - `static/app.js` (13k linhas num IIFE único) passa a ser **artefato gerado**
   por `scripts/build_app_js.cjs`: concatenação na ordem do MANIFEST, Node puro

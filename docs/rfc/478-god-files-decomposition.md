@@ -2,9 +2,12 @@
 
 > Issue #478 · auditoria enterprise 2026-09-10 (achado M9) · Frontend + Backend
 > Status: **APROVADO** (PR #488) — **Opção A** ratificada pelo mantenedor.
-> Execução em andamento: PR 1 (build + extração do core `fmt`/`escape`) = Issue #489 (PR #491 · mergeada).
+> Execução em andamento — frontend: PR 1 (build + extração do core `fmt`/`escape`) = Issue #489 (PR #491 · mergeada).
 > Achado do PR 1: o espelho do `fmt` no harness divergia do fonte e escondia 3 
 > defeitos reais de produção — corrigidos na Issue #490 (PR 2 do frontend).
+> Backend: PR B1 (admin gate + `/api/admin/*`) = Issue #495 — 300 linhas movidas
+> para `routes/admin_routes.py`, `url_map` idêntico, gate re-exportado por `app.py`.
+> Achado do B1: `/api/admin/sessions` não usa o gate — Issue #496 (fora do escopo do B1).
 
 ## 1. Contexto e problema
 
@@ -51,12 +54,14 @@ O padrão já existe (`routes/*.py` com blueprints) — o RFC o estende:
 
 | PR | Extração | De `app.py` para |
 |---|---|---|
-| B1 | Admin gate + licenças | `_admin_request_allowed`, `issue_license`, rotas `/api/admin/*` → `routes/admin_routes.py` + `services/licensing_routes.py` (após PR #486, o gate tem testes próprios — momento ideal) |
+| B1 | Admin gate + licenças | ✅ #495 — gate `_admin_request_allowed` + 10 rotas `/api/admin/*` → `routes/admin_routes.py` (blueprint `admin_bp`), `app.py` re-exporta o gate. `issue_license` já vivia em `services/licensing.py`: nada a mover. Achado: `/api/admin/sessions` sem gate → #496 |
 | B2 | SSE fan-out | `_sse_clients`, broadcast, `/api/stream` → `services/sse.py` |
 | B3 | Snapshot assembly | `_build_snapshot` e agregações → `services/snapshot_assembly.py` (o `poll_compute.py` de 100% de cobertura prova o padrão) |
 | B4 | DB bootstrap/schema | init_db, índices, WAL, purges → `services/bootstrap.py` |
 
 Regra dura: **cada PR-B mantém o gate de cobertura 80% e não pode reduzir a cobertura de `app.py`** (linhas movidas continuam cobertas nos novos módulos — import re-export temporário em `app.py` permite migração sem big-bang).
+
+Mecanismo fixado no B1 (#495): o módulo extraído entra no `--cov` do `ci.yml` (`--cov=routes.admin_routes`). O código sai de `app.py` mas **não** sai da régua — o conjunto medido continua sendo o mesmo, então o TOTAL não pode "melhorar por subtração". Cada PR-B acrescenta o módulo novo da vez ao mesmo `--cov`.
 
 ## 4. Guardrails por PR (checklist de aceite)
 
