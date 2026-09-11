@@ -6,6 +6,18 @@ e versionamento semântico ([SemVer](https://semver.org/lang/pt-BR/)).
 
 ## [Unreleased]
 
+### Adicionado — postmortem do RFC #478 (Issue #511)
+- `docs/rfc/478-postmortem.md` — postmortem da trilha backend (PRs B1–B4) e do
+  frontend PR 1/1b: cronologia, tabela de **divergências plano × realidade**,
+  achados por PR, controles que funcionaram, os três erros do agente e lições
+  acionáveis para os PRs de frontend 2–6. Linkado a partir do RFC.
+- Achado de recon registrado no postmortem e no RFC: a descrição do domínio
+  **Market** no RFC ("orderbook, rent offers") **não corresponde ao código** —
+  não existe orderbook; o cluster real (grid de venues do `/api/market/*` +
+  `market_data.offers` + BUY afiliado) está espalhado em 4 regiões disjuntas de
+  `static/src/40-app-logic.js`, com o domínio Admin (~1.100 linhas) entre duas
+  delas.
+
 ### Alterado — `get_db` passa a morar em `services/bootstrap.py` (Issue #508)
 - `get_db()` — a conexão SQLite com os pragmas WAL/`synchronous=NORMAL`/
   `busy_timeout` — passa a ser **definido** em `services/bootstrap.py`, o dono do
