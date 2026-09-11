@@ -24,7 +24,7 @@ For a multi-process deploy (gunicorn + worker):
 The workers process imports `app` (registers routes + runs init_db) but
 never binds a port — it starts the daemon threads and blocks forever.
 
-Honest note on SSE: /api/stream fans out in-process (_sse_clients), so in
+Honest note on SSE: /api/stream fans out in-process (services/sse.py), so in
 a two-process topology live-push only reaches clients connected to the
 gunicorn process that owns them. The dashboard's 15s poll fallback keeps
 data fresh regardless; for full live-push across workers you'd need a

@@ -32,6 +32,12 @@
 #              comando para o gate não melhorar por subtração (o arquivo sai
 #              de app.py mas não pode sair da régua). Próximos PRs-B (B2-B4)
 #              acrescentam o módulo novo da vez ao mesmo --cov.
+#   2026-09-11  TOTAL 83% · RFC #478 · PR B2 (Issue #499): SSE fan-out
+#              extraído para services/sse.py. Nada a acrescentar no --cov: o
+#              pacote inteiro já é medido por --cov=services, então o módulo
+#              novo nasce na régua (o --cov explícito por arquivo só é
+#              necessário para módulos FORA de services/, como
+#              routes.admin_routes no B1).
 # O --cov-fail-under é o gate real: abaixo dele o merge é bloqueado.
 # A margem (~1pp) absorve variação entre ambientes (CI vs local) sem
 # deixar o gate frouxo.

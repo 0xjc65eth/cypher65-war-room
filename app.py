@@ -22,7 +22,6 @@ from datetime import datetime, timezone
 from flask import Flask, jsonify, render_template, request, abort, Response
 import requests
 import concurrent.futures
-import queue
 import markdown as _md
 from markupsafe import Markup
 
@@ -117,6 +116,10 @@ from routes.admin_routes import (
     admin_bp,
     _admin_request_allowed,  # noqa: F401 — re-export: testes importam de app
     init_admin_routes as _init_admin_routes,
+)
+from services.sse import (
+    sse_bp,
+    broadcast_snapshot as _broadcast_snapshot,  # re-export: poll_loop chama este
 )
 from services.tenant import require_tenant, role_required, SELF_HOST_MAX_WORKERS
 import services.db_backup as _db_backup  # C4: automatic SQLite backup + boot integrity check
@@ -283,6 +286,10 @@ app.register_blueprint(dashboard_bp)
 # ── Register Admin blueprint (RFC #478 · PR B1: migrated from app.py) ──
 # Operator-only /api/admin/* — gate `_admin_request_allowed` (Issue #254/#481).
 app.register_blueprint(admin_bp)
+
+# ── Register SSE blueprint (RFC #478 · PR B2: migrated from app.py) ────
+# `/api/stream` (EventSource) — fan-out in-process, ver services/sse.py.
+app.register_blueprint(sse_bp)
 
 # ━━ Simple in-memory rate limiter ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # Keyed by TENANT (JWT sub) when authenticated, by IP for anonymous traffic.
@@ -8985,71 +8992,11 @@ def api_ai_query(tenant_id: str = ""):
     )
 
 
-# ── SSE live stream endpoint ──────────────────────────────────────────────
-# Pushes snapshot updates to the frontend via Server-Sent Events (EventSource)
-# so the UI updates in near-real-time without polling.
-_sse_clients: List["queue.Queue"] = []
-_sse_clients_lock = threading.Lock()
-
-
-@app.route("/api/stream")
-def sse_stream():
-    """SSE endpoint: yields latest snapshot data when it changes.
-    Frontend connects via EventSource and receives push updates at ~3s intervals.
-    Falls back gracefully to polling if SSE disconnects."""
-
-    def event_stream():
-        q = queue.Queue(maxsize=5)
-        with _sse_clients_lock:
-            _sse_clients.append(q)
-            _sse_client_count = len(_sse_clients)
-        try:
-            # Yield initial keepalive
-            yield ": connected\n\n"
-            while True:
-                try:
-                    data = q.get(timeout=3)
-                    yield f"data: {data}\n\n"
-                except queue.Empty:
-                    # Send keepalive comment to prevent proxy timeouts
-                    yield ": keepalive\n\n"
-        except GeneratorExit:
-            pass
-        finally:
-            with _sse_clients_lock:
-                try:
-                    _sse_clients.remove(q)
-                except ValueError:
-                    pass
-
-    return Response(
-        event_stream(),
-        mimetype="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",
-        },
-    )
-
-
-def _broadcast_snapshot(snapshot: dict):
-    """Send the latest snapshot to all connected SSE clients.
-    Called by poll_loop after fetching and processing data."""
-    try:
-        payload = json.dumps(snapshot, default=str)
-        dead_clients = []
-        with _sse_clients_lock:
-            for q in _sse_clients:
-                try:
-                    q.put_nowait(payload)
-                except queue.Full:
-                    dead_clients.append(q)
-            for q in dead_clients:
-                _sse_clients.remove(q)
-    except Exception as e:
-        log.warning("[sse broadcast] error: %s", e)
-
+# ── SSE live stream endpoint (RFC #478 · PR B2: migrated from app.py) ─────
+# O registry de clientes, `broadcast_snapshot()` e a rota GET /api/stream
+# (blueprint `sse_bp`, registrado no topo deste arquivo) vivem em
+# services/sse.py. `_broadcast_snapshot` segue importado no topo — o poll_loop
+# chama o MESMO objeto do módulo.
 
 # ── FASE 2: Wallet address history table ──
 # In init_db(), add the wallet_address_history table
