@@ -87,7 +87,9 @@ Não mergear PR com workflow vermelho. O CI roda em `push` e `pull_request`
 
 ```bash
 SECRET_KEY=test-secret-0123456789 python -m pytest tests/ -q   # suíte afetada primeiro
-node tests/test_app_js_core.js                                   # suíte JS espelhada
+node scripts/build_app_js.cjs                                    # regera app.js de static/src/
+node scripts/build_app_js.cjs --check                            # drift gate (app.js × static/src/)
+node tests/test_app_js_core.js                                   # suíte JS core (carrega o fonte real)
 node --check static/app.js
 node scripts/check-dom-regression.cjs   # guards DOM: ids duplicados + XSS innerHTML
 node tests/test_dom_guards.js           # self-test do próprio guard (casos adversários)

@@ -5,6 +5,11 @@
 # único comando — para dev local e como check único do job `frontend-audit`
 # no CI:
 #
+#   0. build_app_js --check — drift gate (Issue #489 · RFC #478 Opção A):
+#                           static/app.js é ARTEFATO GERADO pela concatenação
+#                           de static/src/*.js — editar o artefato à mão não
+#                           passa, e fragmento órfão falha o build em vez de
+#                           escapar de todos os guards abaixo
 #   1. check:dom          — guard estático DOM (ids duplicados + XSS
 #                           innerHTML/concat/sinks) + 📊 report
 #   2. test:dom-guards    — self-test do próprio guard DOM
@@ -103,6 +108,7 @@ step() {
   fi
 }
 
+step node scripts/build_app_js.cjs --check
 step node scripts/check-dom-regression.cjs --report
 step node tests/test_dom_guards.js
 step node scripts/check-a11y.cjs --report
@@ -128,5 +134,5 @@ if [ "$FAIL" -ne 0 ]; then
   echo "❌ [frontend] pipeline FAILED — $FAIL check(s) vermelho(s)"
   exit 1
 fi
-echo "✅ [frontend] pipeline green — guards DOM + a11y + tokens-hex + XSS mobile + JS core + audit visual + axe-core + fetcher-units + mutations"
+echo "✅ [frontend] pipeline green — app.js em sincronia com static/src + guards DOM + a11y + tokens-hex + XSS mobile + JS core + audit visual + axe-core + fetcher-units + mutations"
 exit 0
