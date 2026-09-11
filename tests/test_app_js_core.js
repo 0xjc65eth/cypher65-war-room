@@ -3,7 +3,13 @@
  * CYPHER65 // WAR ROOM — Core JS Unit Tests
  * ===========================================
  *
- * Tests critical pure functions from static/app.js:
+ * Testa funções puras críticas do cliente. Como `static/app.js` é ARTEFATO
+ * GERADO de `static/src/*.js` (RFC #478 · Issue #489), os helpers puros são
+ * carregados do FRAGMENTO REAL via `loadFragment()` — o mesmo código que roda
+ * no navegador — e não de cópias escritas à mão. O `fmt` ainda vive num espelho
+ * com um ledger de drift explícito (KNOWN_FMT_DRIFT) até a Issue #490.
+ *
+ * Cobertos:
  *   - fmt.hashrate()       → hashrate formatting
  *   - fmt.diff()           → difficulty formatting
  *   - fmt.secsToHuman()    → human-readable time
@@ -22,9 +28,45 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import vm from 'node:vm';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+// ── FONTE REAL (RFC #478 · Opção A · Issue #489) ─────────────────────────────
+// `static/app.js` é ARTEFATO GERADO de `static/src/*.js` (scripts/build_app_js.cjs).
+// Os helpers puros são carregados do FRAGMENTO REAL — o mesmo código que o
+// navegador roda — em vez de reimplementados aqui.
+//
+// Testar uma cópia à mão não é teórico: o espelho do `fmt` havia sido escrito
+// contra um ideal e divergia do app.js em vários pontos (ver FMT_DRIFT_LEDGER
+// mais abaixo). Enquanto o harness carregava só a cópia, a suíte passava sem
+// provar nada sobre produção.
+//
+// Cada fragmento de domínio é sintaticamente balanceado (o IIFE abre em
+// `00-preamble.js` e fecha em `50-close.js`), então roda isolado num contexto
+// vm sem `window`/`document`.
+function loadFragment(relPath, exportExpr) {
+  const file = path.join(__dirname, '..', 'static', 'src', relPath);
+  let code;
+  try {
+    code = fs.readFileSync(file, 'utf8');
+  } catch (e) {
+    throw new Error(
+      `fragmento ausente: static/src/${relPath} — rode \`node scripts/build_app_js.cjs\``
+    );
+  }
+  return vm.runInNewContext(`(function () {\n${code}\n; return (${exportExpr});\n})()`, {}, {
+    filename: file,
+    timeout: 5000,
+  });
+}
+
+const _coreFmt = loadFragment('10-core-fmt.js', '{ fmt, fmtSats, countdownLabel, bolt11AmountSats }');
+const _coreEscape = loadFragment(
+  '30-core-escape.js',
+  '{ escapeHtml, rentalsAuthRejected, rentalsAuthGuide, rentalsPayloadStale, rentalsCountSurface, RENTALS_PAYLOAD_VERSION }'
+);
 
 // ── Test counters ─────────────────────────────────────────────────────────
 let passed = 0;
@@ -349,37 +391,16 @@ function chunkAddr(a) {
 })();
 
 /* ═══════════════════════════════════════════════════════════════════════════
-//  HTML ESCAPE (mirrors static/app.js)
+//  HTML ESCAPE (carregado de static/src/30-core-escape.js · Issue #489)
 // ═══════════════════════════════════════════════════════════════════════════ */
 
-function escapeHtml(s) {
-  return String(s).replace(/[&<>"']/g, function(c) {
-    return ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' })[c];
-  });
-}
+// Carregado do FONTE REAL: antes era uma cópia à mão.
+const escapeHtml = _coreEscape.escapeHtml;
 
-// ── BTC upgrade helpers (P4 #249) — mirror static/app.js ───────────────────
-function fmtSats(n) {
-  n = Math.max(0, Math.round(Number(n) || 0));
-  return n.toLocaleString('en-US') + ' sats';
-}
-function countdownLabel(ms) {
-  if (!isFinite(Number(ms)) || Number(ms) <= 0) return '00:00';
-  const s = Math.floor(Number(ms) / 1000);
-  const m = Math.floor(s / 60); const r = s % 60;
-  return (m < 10 ? '0' + m : String(m)) + ':' + (r < 10 ? '0' + r : String(r));
-}
-function bolt11AmountSats(invoice) {
-  if (!invoice) return null;
-  const m = String(invoice).match(/^(?:lnbc|lntb)(?:(\d+)([munp]?))?1/i);
-  if (m && m[1] !== undefined) {
-    const mult = { '': 1e11, m: 1e8, u: 1e5, n: 1e2, p: 1e-1 }[m[2] || ''];
-    if (mult !== undefined) {
-      return Math.round((parseInt(m[1], 10) * mult) / 1000);
-    }
-  }
-  return null;
-}
+// ── BTC upgrade helpers (P4 #249) — carregado de static/src/10-core-fmt.js (Issue #489) ───────────────────
+const fmtSats = _coreFmt.fmtSats;
+const countdownLabel = _coreFmt.countdownLabel;
+const bolt11AmountSats = _coreFmt.bolt11AmountSats;
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  PURE FUNCTION IMPLEMENTATIONS (mirrors static/app.js)
@@ -397,7 +418,7 @@ const _diffFromNum = (v) => {
   return `${x.toFixed(x >= 100 ? 0 : 2)} ${units[i]}`.trim();
 };
 
-const fmt = {
+const fmtMirror = {
   hashrate(h) {
     if (!h && h !== 0) return '\u2014';
     const v = Number(h);
@@ -457,6 +478,90 @@ const fmt = {
     return a.slice(0, 10) + '\u2026' + a.slice(-6);
   },
 };
+
+// `fmt` continua sendo o espelho NESTE PR: a Issue #489 é refactor puro (zero
+// mudança de comportamento), então as asserções existentes não mudam de valor.
+// O FONTE REAL entra como `fmtSrc` e o ledger abaixo exige que a divergência
+// seja EXATAMENTE a conhecida/documentada — nenhuma nova passa despercebida.
+// O espelho morre no PR que corrigir os defeitos do app.js que ele mascarava
+// (cada entrada de KNOWN_FMT_DRIFT é um deles).
+const fmt = fmtMirror;
+const fmtSrc = _coreFmt.fmt;
+
+// ── Drift ledger do espelho (RFC #478 · Issue #489) ─────────────────
+// O `fmtMirror` foi escrito à mão a partir do app.js e virou uma SEGUNDA
+// implementação: ele responde '2h ago' para 7200s, enquanto o app.js real
+// responde '0h ago'. Ou seja, a suíte passava validando um ideal que não roda
+// em produção. Este ledger roda as duas implementações sobre a mesma entrada e
+// exige que o conjunto de divergências seja EXATAMENTE o documentado:
+//   · divergência NOVA  → falha (drift voltou a crescer)
+//   · entrada OBsoleta → falha (o app foi corrigido: remova do ledger)
+function _probeFmt(f, probe) {
+  try {
+    return JSON.stringify(probe(f));
+  } catch (e) {
+    return 'THROWS:' + (e && e.constructor ? e.constructor.name : 'Error');
+  }
+}
+
+const _nowSec = Math.floor(Date.now() / 1000);
+const FMT_PROBES = [
+  ['hashrate(1.5e12)', f => f.hashrate(1.5e12)],
+  ['hashrate(0)', f => f.hashrate(0)],
+  ['diff("1.5T")', f => f.diff('1.5T')],
+  ['diff("garbage")', f => f.diff('garbage')],
+  ['secsToHuman(0)', f => f.secsToHuman(0)],
+  ['secsToHuman(7200)', f => f.secsToHuman(7200)],
+  ['secsToHuman(null)', f => f.secsToHuman(null)],
+  ['age(now-30)', f => f.age(_nowSec - 30)],
+  ['age(now-7200)', f => f.age(_nowSec - 7200)],
+  ['age(now-172800)', f => f.age(_nowSec - 172800)],
+  ['pct(42.5)', f => f.pct(42.5)],
+  ['pct(null)', f => f.pct(null)],
+  ['usd(null)', f => f.usd(null)],
+  ['uptime(90)', f => f.uptime(90)],
+  ['uptime("N/A")', f => f.uptime('N/A')],
+  ['shortAddr(null)', f => f.shortAddr(null)],
+  ['expectedBlock(0, 1)', f => f.expectedBlock(0, 1)],
+];
+
+// Divergências conhecidas (Issue #490): cada uma é um defeito REAL do app.js que
+// o espelho mascarava. O valor descreve o que cada lado responde hoje.
+const KNOWN_FMT_DRIFT = {
+  'secsToHuman(null)': '#490 · espelho=— · app.js=THROWS:TypeError (sem guard; os call-sites atuais guardam — defeito latente)',
+  'age(now-7200)': '#490 · espelho=2h ago · app.js=0h ago (a branch de horas divide por 86400 em vez de 3600 — visível no dashboard)',
+  'pct(null)': '#490 · espelho=— · app.js=0.00% (isFinite(null) é true — dado ausente renderizado como zero)',
+  'uptime("N/A")': '#490 · espelho=0m · app.js=— (aqui o APP está certo: falta o guard no espelho)',
+};
+
+(function testFmtDriftLedger() {
+  const diverged = [];
+  for (const [label, probe] of FMT_PROBES) {
+    if (_probeFmt(fmtMirror, probe) !== _probeFmt(fmtSrc, probe)) diverged.push(label);
+  }
+  const known = Object.keys(KNOWN_FMT_DRIFT);
+  assertEqual(
+    'fmt drift: nenhuma divergência NOVA entre espelho e fonte',
+    diverged.filter(d => !known.includes(d)),
+    []
+  );
+  assertEqual(
+    'fmt drift: ledger sem entradas obsoletas (app.js corrigido? remova a entrada)',
+    known.filter(k => !diverged.includes(k)),
+    []
+  );
+})();
+
+// Contrato dos FRAGMENTOS (Issue #489): o harness falha se um fragmento perder
+// um helper que o app e a suíte consomem, ou se o MANIFEST deixar de incluí-lo
+// no build (neste caso o próprio loadFragment acima já lança).
+(function testFragmentSurfaceContract() {
+  ['hashrate', 'diff', 'uptime', 'age', 'shortAddr', 'chunkAddr', 'pct', 'usd', 'num', 'expectedBlock', 'secsToHuman']
+    .forEach(m => assertTruthy('static/src/10-core-fmt.js expõe fmt.' + m, typeof fmtSrc[m] === 'function'));
+  ['escapeHtml', 'rentalsAuthRejected', 'rentalsAuthGuide', 'rentalsPayloadStale', 'rentalsCountSurface']
+    .forEach(f => assertTruthy('static/src/30-core-escape.js expõe ' + f, typeof _coreEscape[f] === 'function'));
+  assertEqual('30-core-escape.js expõe RENTALS_PAYLOAD_VERSION', _coreEscape.RENTALS_PAYLOAD_VERSION, 2);
+})();
 
 // ── Probability math ───────────────────────────────────────────────────────
 function calcCumulativeP(pBlock, shares) {

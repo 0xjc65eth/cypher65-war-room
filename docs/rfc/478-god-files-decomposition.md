@@ -1,7 +1,8 @@
 # RFC — Decomposição dos god files (`static/app.js` 13k / `app.py` 9.4k)
 
 > Issue #478 · auditoria enterprise 2026-09-10 (achado M9) · Frontend + Backend
-> Status: **PROPOSTO** — nenhum movimento de código começa sem este RFC aprovado por PR.
+> Status: **APROVADO** (PR #488) — **Opção A** ratificada pelo mantenedor.
+> Execução em andamento: PR 1 (build + extração do core `fmt`/`escape`) = Issue #489.
 
 ## 1. Contexto e problema
 
