@@ -2,7 +2,9 @@
 
 > Issue #478 · auditoria enterprise 2026-09-10 (achado M9) · Frontend + Backend
 > Status: **APROVADO** (PR #488) — **Opção A** ratificada pelo mantenedor.
-> Execução em andamento: PR 1 (build + extração do core `fmt`/`escape`) = Issue #489.
+> Execução em andamento: PR 1 (build + extração do core `fmt`/`escape`) = Issue #489 (PR #491 · mergeada).
+> Achado do PR 1: o espelho do `fmt` no harness divergia do fonte e escondia 3 
+> defeitos reais de produção — corrigidos na Issue #490 (PR 2 do frontend).
 
 ## 1. Contexto e problema
 
@@ -35,7 +37,8 @@ Ordem de extração (uma PR por domínio, cada uma ≤ ~1500 linhas movidas):
 
 | PR | Domínio | Conteúdo aproximado |
 |---|---|---|
-| 1 | Infra de build + `fmt/escape` | `build_app_js.cjs`, move helpers puros (`_fmtBtcPerTh`, `escapeHtml`, validação) — a suíte core espelhada passa a importar **do fonte** via extração de contrato, eliminando o risco de drift do espelho |
+| 1 | Infra de build + `fmt/escape` | ✅ #489 (PR #491) — `build_app_js.cjs`, `static/app.js` vira artefato gerado; a suíte core passa a carregar os helpers puros **do fonte** via `loadFragment()`, eliminando o drift do espelho |
+| 1b | Correção dos defeitos revelados pelo PR 1 | ✅ #490 — `fmt.age` (`0h ago` para 1h-24h), `fmt.secsToHuman(null)` (TypeError) e `fmt.pct(null)` (`0.00%`) |
 | 2 | Market | orderbook, rent offers, BUY button, `_mktRenderCap` |
 | 3 | Rentals | P/L, worst-rig leaderboard, sweep/advisory UI |
 | 4 | Fleet/AXE | device cards, telemetria, comandos remotos |

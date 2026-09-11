@@ -17,6 +17,20 @@ e versionamento semântico ([SemVer](https://semver.org/lang/pt-BR/)).
 - Zero mudança de comportamento: mesma tag `<script>`, mesma ordem lexical dos
   blocos (hoisting/TDZ intactos), mesmos ids, rotas e contratos de fetch.
 
+### Corrigido — formatters do dashboard exibiam dado errado ao operador (Issue #490)
+- `fmt.age` dividia por **86400** na branch de horas: toda idade entre 1h e 24h
+  renderizava `0h ago` (último bloco, last share, linha de tempo, eventos,
+  alertas, last-seen do fleet). Agora 1h→`1h ago`, 23h59→`23h ago`.
+- `fmt.secsToHuman(null)` estourava `TypeError` (`isFinite(null)` é `true`, o
+  guard não pegava) e `fmt.pct(null)` devolvia `0.00%` — dado ausente
+  apresentado como medição real, contra o princípio de honest telemetry.
+- Causa-raiz comum: `isFinite(...)` global coage (`null`, `''` e `' '` passam).
+  Um guard único (`_finiteNum`) aceita só número real ou string numérica
+  não-vazia e devolve em-dash para o resto; saída para números válidos
+  permanece idêntica.
+- O ledger de drift (`KNOWN_FMT_DRIFT`) e o espelho do `fmt` do harness foram
+  removidos: a suíte passa a ter uma única implementação — a do fonte.
+
 ### Segurança — rollback cifrado e confirmado de pool (Issue #471)
 - Antes de um `update_pool` físico, telemetria recente deve comprovar a
   configuração anterior completa; sem alvo ou `SECRET_KEY` estável, nenhum

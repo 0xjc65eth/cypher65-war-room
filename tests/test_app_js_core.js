@@ -6,8 +6,10 @@
  * Testa funções puras críticas do cliente. Como `static/app.js` é ARTEFATO
  * GERADO de `static/src/*.js` (RFC #478 · Issue #489), os helpers puros são
  * carregados do FRAGMENTO REAL via `loadFragment()` — o mesmo código que roda
- * no navegador — e não de cópias escritas à mão. O `fmt` ainda vive num espelho
- * com um ledger de drift explícito (KNOWN_FMT_DRIFT) até a Issue #490.
+ * no navegador — e não de cópias escritas à mão. Desde a Issue #490 existe uma
+ * única implementação de `fmt` (o próprio fonte); o espelho e o ledger de drift
+ * do #489 foram removidos quando os defeitos que eles documentavam foram
+ * corrigidos.
  *
  * Cobertos:
  *   - fmt.hashrate()       → hashrate formatting
@@ -409,155 +411,20 @@ const bolt11AmountSats = _coreFmt.bolt11AmountSats;
 // ── fmt helpers ────────────────────────────────────────────────────────────
 const DEFAULT_NETWORK_DIFFICULTY = 126231507121868.0;
 
-const _diffFromNum = (v) => {
-  if (!isFinite(v) || v === 0) return '0';
-  v = Math.abs(v);
-  const units = ['', 'K', 'M', 'G', 'T', 'P', 'E'];
-  let i = 0; let x = v;
-  while (x >= 1000 && i < units.length - 1) { x /= 1000; i++; }
-  return `${x.toFixed(x >= 100 ? 0 : 2)} ${units[i]}`.trim();
-};
-
-const fmtMirror = {
-  hashrate(h) {
-    if (!h && h !== 0) return '\u2014';
-    const v = Number(h);
-    const units = ['H/s', 'kH/s', 'MH/s', 'GH/s', 'TH/s', 'PH/s', 'EH/s'];
-    let i = 0; let x = v;
-    while (x >= 1000 && i < units.length - 1) { x /= 1000; i++; }
-    return `${x.toFixed(x >= 100 ? 1 : 2)} ${units[i]}`;
-  },
-  diff(s) {
-    if (!s && s !== 0) return '\u2014';
-    if (typeof s === 'number') return _diffFromNum(s);
-    const str = String(s).trim();
-    const m = str.match(/^([\d.,]+)\s*([a-zA-Z]*)$/);
-    if (!m) return str;
-    const num = parseFloat(m[1].replace(',', '.'));
-    const suf = (m[2] || '').toUpperCase();
-    const multMap = { '': 1, K: 1e3, M: 1e6, G: 1e9, T: 1e12, P: 1e15, E: 1e18 };
-    return _diffFromNum(num * (multMap[suf] || 1));
-  },
-  secsToHuman(s) {
-    if (s == null || !isFinite(s)) return '\u2014';
-    if (s < 60) return `${s.toFixed(1)}s`;
-    const min = s / 60; if (min < 60) return `${min.toFixed(1)}m`;
-    const h = min / 60; if (h < 24) return `${h.toFixed(1)}h`;
-    const d = h / 24; if (d < 365) return `${d.toFixed(1)}d`;
-    return `${(d / 365).toFixed(2)}y`;
-  },
-  expectedBlock(workerHr, networkDiff) {
-    if (!workerHr || !networkDiff) return null;
-    const secs = (networkDiff * Math.pow(2, 32)) / workerHr * 65536;
-    return secs;
-  },
-  age(ts) {
-    if (ts == null || !ts) return '\u2014';
-    const d = Math.max(0, Math.floor((Date.now() / 1000) - Number(ts)));
-    if (d < 60) return `${d}s ago`;
-    if (d < 3600) return `${Math.floor(d / 60)}m ago`;      if (d < 86400) return `${Math.floor(d / 3600)}h ago`;
-    return `${Math.floor(d / 86400)}d ago`;
-  },
-  uptime(s) {
-    if (s == null || (!s && s !== 0)) return '\u2014';
-    s = Math.floor(Number(s));
-    if (s < 60) return `${s}s`;
-    const d = Math.floor(s / 86400); const h = Math.floor((s % 86400) / 3600);
-    const m = Math.floor((s % 3600) / 60);
-    const parts = [];
-    if (d) parts.push(`${d}d`);
-    if (h) parts.push(`${h}h`);
-    if (m && !d) parts.push(`${m}m`);
-    return parts.join(' ') || '0m';
-  },
-  pct(n) { if (n == null || !isFinite(n)) return '\u2014'; return `${Number(n).toFixed(2)}%`; },
-  usd(n) { if (n == null || !n) return '\u2014'; return `$${Number(n).toLocaleString('en-US', { maximumFractionDigits: 0 })}`; },
-  shortAddr(a) {
-    if (!a) return '';
-    if (a.length <= 16) return a;
-    return a.slice(0, 10) + '\u2026' + a.slice(-6);
-  },
-};
-
-// `fmt` continua sendo o espelho NESTE PR: a Issue #489 é refactor puro (zero
-// mudança de comportamento), então as asserções existentes não mudam de valor.
-// O FONTE REAL entra como `fmtSrc` e o ledger abaixo exige que a divergência
-// seja EXATAMENTE a conhecida/documentada — nenhuma nova passa despercebida.
-// O espelho morre no PR que corrigir os defeitos do app.js que ele mascarava
-// (cada entrada de KNOWN_FMT_DRIFT é um deles).
-const fmt = fmtMirror;
-const fmtSrc = _coreFmt.fmt;
-
-// ── Drift ledger do espelho (RFC #478 · Issue #489) ─────────────────
-// O `fmtMirror` foi escrito à mão a partir do app.js e virou uma SEGUNDA
-// implementação: ele responde '2h ago' para 7200s, enquanto o app.js real
-// responde '0h ago'. Ou seja, a suíte passava validando um ideal que não roda
-// em produção. Este ledger roda as duas implementações sobre a mesma entrada e
-// exige que o conjunto de divergências seja EXATAMENTE o documentado:
-//   · divergência NOVA  → falha (drift voltou a crescer)
-//   · entrada OBsoleta → falha (o app foi corrigido: remova do ledger)
-function _probeFmt(f, probe) {
-  try {
-    return JSON.stringify(probe(f));
-  } catch (e) {
-    return 'THROWS:' + (e && e.constructor ? e.constructor.name : 'Error');
-  }
-}
-
-const _nowSec = Math.floor(Date.now() / 1000);
-const FMT_PROBES = [
-  ['hashrate(1.5e12)', f => f.hashrate(1.5e12)],
-  ['hashrate(0)', f => f.hashrate(0)],
-  ['diff("1.5T")', f => f.diff('1.5T')],
-  ['diff("garbage")', f => f.diff('garbage')],
-  ['secsToHuman(0)', f => f.secsToHuman(0)],
-  ['secsToHuman(7200)', f => f.secsToHuman(7200)],
-  ['secsToHuman(null)', f => f.secsToHuman(null)],
-  ['age(now-30)', f => f.age(_nowSec - 30)],
-  ['age(now-7200)', f => f.age(_nowSec - 7200)],
-  ['age(now-172800)', f => f.age(_nowSec - 172800)],
-  ['pct(42.5)', f => f.pct(42.5)],
-  ['pct(null)', f => f.pct(null)],
-  ['usd(null)', f => f.usd(null)],
-  ['uptime(90)', f => f.uptime(90)],
-  ['uptime("N/A")', f => f.uptime('N/A')],
-  ['shortAddr(null)', f => f.shortAddr(null)],
-  ['expectedBlock(0, 1)', f => f.expectedBlock(0, 1)],
-];
-
-// Divergências conhecidas (Issue #490): cada uma é um defeito REAL do app.js que
-// o espelho mascarava. O valor descreve o que cada lado responde hoje.
-const KNOWN_FMT_DRIFT = {
-  'secsToHuman(null)': '#490 · espelho=— · app.js=THROWS:TypeError (sem guard; os call-sites atuais guardam — defeito latente)',
-  'age(now-7200)': '#490 · espelho=2h ago · app.js=0h ago (a branch de horas divide por 86400 em vez de 3600 — visível no dashboard)',
-  'pct(null)': '#490 · espelho=— · app.js=0.00% (isFinite(null) é true — dado ausente renderizado como zero)',
-  'uptime("N/A")': '#490 · espelho=0m · app.js=— (aqui o APP está certo: falta o guard no espelho)',
-};
-
-(function testFmtDriftLedger() {
-  const diverged = [];
-  for (const [label, probe] of FMT_PROBES) {
-    if (_probeFmt(fmtMirror, probe) !== _probeFmt(fmtSrc, probe)) diverged.push(label);
-  }
-  const known = Object.keys(KNOWN_FMT_DRIFT);
-  assertEqual(
-    'fmt drift: nenhuma divergência NOVA entre espelho e fonte',
-    diverged.filter(d => !known.includes(d)),
-    []
-  );
-  assertEqual(
-    'fmt drift: ledger sem entradas obsoletas (app.js corrigido? remova a entrada)',
-    known.filter(k => !diverged.includes(k)),
-    []
-  );
-})();
+// `fmt` vem do FONTE REAL (static/src/10-core-fmt.js · RFC #478 · Issue #489) —
+// é o mesmo código que roda no navegador, não uma cópia.
+// O espelho que vivia aqui foi removido na Issue #490: escrito à mão contra um
+// ideal, ele respondia `'2h ago'` para 7200s enquanto o app.js entregava
+// `'0h ago'`, então a suíte passava sem provar nada sobre produção. Agora existe
+// uma única implementação — e ela é a que o operador recebe.
+const fmt = _coreFmt.fmt;
 
 // Contrato dos FRAGMENTOS (Issue #489): o harness falha se um fragmento perder
 // um helper que o app e a suíte consomem, ou se o MANIFEST deixar de incluí-lo
 // no build (neste caso o próprio loadFragment acima já lança).
 (function testFragmentSurfaceContract() {
   ['hashrate', 'diff', 'uptime', 'age', 'shortAddr', 'chunkAddr', 'pct', 'usd', 'num', 'expectedBlock', 'secsToHuman']
-    .forEach(m => assertTruthy('static/src/10-core-fmt.js expõe fmt.' + m, typeof fmtSrc[m] === 'function'));
+    .forEach(m => assertTruthy('static/src/10-core-fmt.js expõe fmt.' + m, typeof fmt[m] === 'function'));
   ['escapeHtml', 'rentalsAuthRejected', 'rentalsAuthGuide', 'rentalsPayloadStale', 'rentalsCountSurface']
     .forEach(f => assertTruthy('static/src/30-core-escape.js expõe ' + f, typeof _coreEscape[f] === 'function'));
   assertEqual('30-core-escape.js expõe RENTALS_PAYLOAD_VERSION', _coreEscape.RENTALS_PAYLOAD_VERSION, 2);
@@ -772,8 +639,14 @@ console.log('📊 SUITE 3: fmt.secsToHuman()');
 
 // Edge cases
 assertEqual('secsToHuman(null) → em-dash', fmt.secsToHuman(null), '\u2014');
+assertEqual('secsToHuman(undefined) → em-dash', fmt.secsToHuman(undefined), '\u2014');
 assertEqual('secsToHuman(Infinity) → em-dash', fmt.secsToHuman(Infinity), '\u2014');
 assertEqual('secsToHuman(NaN) → em-dash', fmt.secsToHuman(NaN), '\u2014');
+// Issue #490: `isFinite(null)` e `isFinite(' ')` são true — o guard tem de
+// recusar strings não-numéricas e vazias antes de qualquer `.toFixed`.
+assertEqual('secsToHuman("") → em-dash', fmt.secsToHuman(''), '\u2014');
+assertEqual('secsToHuman(" ") → em-dash', fmt.secsToHuman(' '), '\u2014');
+assertEqual('secsToHuman("N/A") → em-dash', fmt.secsToHuman('N/A'), '\u2014');
 
 // Seconds
 assertEqual('secsToHuman(0) → 0.0s', fmt.secsToHuman(0), '0.0s');
@@ -822,7 +695,13 @@ assertApprox('expectedBlock(100TH/s, 126.23T) → ~' + expected.toFixed(1),
 console.log('📊 SUITE 5: fmt.pct() & fmt.usd()');
 
 assertEqual('pct(null) → em-dash', fmt.pct(null), '\u2014');
+assertEqual('pct(undefined) → em-dash', fmt.pct(undefined), '\u2014');
 assertEqual('pct(Infinity) → em-dash', fmt.pct(Infinity), '\u2014');
+assertEqual('pct(NaN) → em-dash', fmt.pct(NaN), '\u2014');
+// Issue #490: dado ausente não é zero — `isFinite('')` é true, então o guard
+// também tem de recusar string vazia/não-numérica.
+assertEqual('pct("") → em-dash', fmt.pct(''), '\u2014');
+assertEqual('pct(" ") → em-dash', fmt.pct(' '), '\u2014');
 assertEqual('pct(0) → 0.00%', fmt.pct(0), '0.00%');
 assertEqual('pct(0.061) → 0.06%', fmt.pct(0.061), '0.06%');
 assertEqual('pct(100) → 100.00%', fmt.pct(100), '100.00%');
@@ -849,10 +728,17 @@ const ageNow = fmt.age(now);
 assertTruthy('age(now) is 0s or 1s', ageNow === '0s ago' || ageNow === '1s ago');
 assertEqual('age(now - 30) → 30s ago', fmt.age(now - 30), '30s ago');
 assertEqual('age(now - 120) → 2m ago', fmt.age(now - 120), '2m ago');
+// Issue #490: a branch de horas dividia por 86400 — 1h..24h virava "0h ago".
+assertEqual('age(now - 3600) → 1h ago', fmt.age(now - 3600), '1h ago');
 assertEqual('age(now - 7200) → 2h ago', fmt.age(now - 7200), '2h ago');
+assertEqual('age(now - (86340)) → 23h ago', fmt.age(now - 86340), '23h ago');
 assertEqual('age(now - 172800) → 2d ago', fmt.age(now - 172800), '2d ago');
 
 assertEqual('uptime(null) → em-dash', fmt.uptime(null), '\u2014');
+// Issue #490: a API do pool devolve o literal 'N/A' — o app já guardava isso
+// corretamente; o espelho do #489 devolvia '0m' e agora a única implementação
+// (o fonte) fica travada no comportamento honesto.
+assertEqual('uptime("N/A") → em-dash', fmt.uptime('N/A'), '\u2014');
 assertEqual('uptime(0) → 0s', fmt.uptime(0), '0s');
 assertEqual('uptime(30) → 30s', fmt.uptime(30), '30s');
 assertEqual('uptime(120) → 2m', fmt.uptime(120), '2m');
