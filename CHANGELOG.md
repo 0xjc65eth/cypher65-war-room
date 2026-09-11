@@ -6,6 +6,31 @@ e versionamento semântico ([SemVer](https://semver.org/lang/pt-BR/)).
 
 ## [Unreleased]
 
+### Alterado — extração da montagem de snapshot para `services/snapshot_assembly.py` (RFC #478 · PR B3, Issue #501)
+- `_build_snapshot` (as ~240 linhas que montam o dict consumido pelo painel) e a
+  camada de fetch global que a alimenta saíram de `services/user_polling.py` para
+  `services/snapshot_assembly.py`: cache global LRU (`_global_cache`,
+  `_update_global`, `_cached_user_fetch`), `_get_global`, as constantes de fetch,
+  `btc_price_cache`, `_fetch_json`/`_fetch_text`, os 6 fetchers `_fetch_global_*`
+  e os per-address `_fetch_user_data`/`_fetch_account`.
+- `services/user_polling.py` cai de 1.606 para 1.152 linhas e **re-exporta** os
+  24 nomes movidos — `from services.user_polling import _build_snapshot` (o
+  contrato que o `app.py` e a suíte usam) segue válido e aponta para o mesmo
+  objeto.
+- Premissa do RFC corrigida: o B3 estava descrito como extração "de `app.py`" e
+  o código vivia em `services/user_polling.py` — o `app.py` apenas importava a
+  função. O RFC foi atualizado com a origem real.
+- ⚠️ **Alvo de monkeypatch**: o fetch layer agora resolve os nomes nos globals
+  de `services.snapshot_assembly`, então `setattr(services.user_polling,
+  "_fetch_json", …)` deixou de interceptar. Três arquivos de teste foram
+  retargetados — incluindo `test_anti_mock.py`, que passava **vacuamente**: os
+  patches não interceptavam mais e o snapshot montado caía no except, com as
+  asserções ainda satisfeitas pelos defaults (e indo à rede de verdade).
+- Contrato novo: `tests/test_snapshot_assembly.py` (24 testes) — identidade dos
+  nomes re-exportados, ausência de ciclo (checada no AST), schema e defaults do
+  snapshot, contagem do halving, short-circuit de endereço vazio, e o teste
+  **negativo** do alvo de patch (patchear `user_polling` não intercepta).
+
 ### Alterado — extração do SSE fan-out para `services/sse.py` (RFC #478 · PR B2, Issue #499)
 - O fan-out Server-Sent Events saiu do meio do `app.py`: o registry de clientes
   (`_sse_clients` + lock), o `broadcast_snapshot()` chamado pelo `poll_loop` e a
