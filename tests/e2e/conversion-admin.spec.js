@@ -78,7 +78,19 @@ test('admin module renders pool + funnel KPIs', async ({ page }) => {
   await expect(page.locator('#admin-polls-per-sec')).toBeVisible();
   await expect(page.locator('#admin-funnel-list')).toBeVisible();
 
-  // Refresh button exists and is wired (click must not throw).
+  // Refresh button: o listener roda `_adminLoaded = false; fetchAdminData()`,
+  // então um clique tem de DISPARAR uma nova leva de `/api/admin/*`. Contar as
+  // requisições é a asserção real — "clicar não lança" também passaria sem
+  // listener nenhum (Issue #518: verificação dos listeners do bloco de topo).
+  const adminSessionsCalls = [];
+  page.on('request', (req) => {
+    if (req.url().includes('/api/admin/sessions')) adminSessionsCalls.push(req.url());
+  });
+  const callsBeforeRefresh = adminSessionsCalls.length;
+
   await page.locator('#admin-refresh-btn').click();
   await expect(page.locator('#admin-gate-badge')).toBeVisible();
+  await expect
+    .poll(() => adminSessionsCalls.length, { timeout: 8000 })
+    .toBeGreaterThan(callsBeforeRefresh);
 });
