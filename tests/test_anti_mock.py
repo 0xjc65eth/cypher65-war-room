@@ -24,9 +24,9 @@ def test_btc_price_mock_fallback_removed():
     MOCK price that violated the honesty premise. Stale-while-revalidate
     serves the last REAL cached value (flagged stale) or None instead.
     """
-    assert not hasattr(_app_module, "_BTC_PRICE_FALLBACK_USD"), (
-        "Fabricated BTC price fallback must not exist — use stale-while-revalidate"
-    )
+    assert not hasattr(
+        _app_module, "_BTC_PRICE_FALLBACK_USD"
+    ), "Fabricated BTC price fallback must not exist — use stale-while-revalidate"
 
 
 def test_last_valid_network_cache_exists():
@@ -47,14 +47,18 @@ def test_api_v1_status_endpoint():
             assert src in data["integrations"], f"missing {src} in status payload"
         # Each source reports a valid status enum
         for src, info in data["integrations"].items():
-            assert info["status"] in ("online", "stale", "offline"), f"bad status for {src}"
+            assert info["status"] in (
+                "online",
+                "stale",
+                "offline",
+            ), f"bad status for {src}"
 
 
 def test_snapshot_carries_stale_flags():
     """Every snapshot (initial + built) carries network.stale and
     btc_price.stale so the frontend chip logic is always well-defined.
 
-    The poll-built snapshot (services.user_polling._build_snapshot) must also
+    The poll-built snapshot (services.snapshot_assembly._build_snapshot) must also
     carry the keys — if the poll path ever drops them, the frontend would
     silently stop showing the "dados em cache" chip.
     """
@@ -71,19 +75,34 @@ def test_snapshot_carries_stale_flags():
     # when no external source has provided real data yet). All global fetches
     # are MOCKED so the unit suite never touches the network (deterministic).
     from unittest.mock import patch
-    import services.user_polling as up
-    with patch("services.user_polling._fetch_user_data", return_value={"workerData": []}), \
-         patch("services.user_polling._fetch_account", return_value=None), \
-         patch("services.user_polling._fetch_global_pool", return_value={"hashrate": 1e15}), \
-         patch("services.user_polling._fetch_global_leaderboard", return_value=[]), \
-         patch("services.user_polling._fetch_global_highest_diffs", return_value=[]), \
-         patch("services.user_polling._fetch_global_network", return_value=(857200, 126231507121868.0, 6e20)), \
-         patch("services.user_polling._fetch_global_btc_price", return_value={"bitcoin": {"usd": 61234, "brl": 350000}}), \
-         patch("services.user_polling._fetch_global_mempool_fees", return_value={"fastestFee": 12}):
-        built = up._build_snapshot("bc1qtest", "testminer")
-    assert isinstance(built, dict) and built.get("network"), "_build_snapshot should build a snapshot"
+    import services.snapshot_assembly as sa
+
+    with patch(
+        "services.snapshot_assembly._fetch_user_data", return_value={"workerData": []}
+    ), patch("services.snapshot_assembly._fetch_account", return_value=None), patch(
+        "services.snapshot_assembly._fetch_global_pool", return_value={"hashrate": 1e15}
+    ), patch(
+        "services.snapshot_assembly._fetch_global_leaderboard", return_value=[]
+    ), patch(
+        "services.snapshot_assembly._fetch_global_highest_diffs", return_value=[]
+    ), patch(
+        "services.snapshot_assembly._fetch_global_network",
+        return_value=(857200, 126231507121868.0, 6e20),
+    ), patch(
+        "services.snapshot_assembly._fetch_global_btc_price",
+        return_value={"bitcoin": {"usd": 61234, "brl": 350000}},
+    ), patch(
+        "services.snapshot_assembly._fetch_global_mempool_fees",
+        return_value={"fastestFee": 12},
+    ):
+        built = sa._build_snapshot("bc1qtest", "testminer")
+    assert isinstance(built, dict) and built.get(
+        "network"
+    ), "_build_snapshot should build a snapshot"
     assert "stale" in built["network"], "poll-built snapshot lost network.stale"
-    assert "stale" in built.get("btc_price", {}), "poll-built snapshot lost btc_price.stale"
+    assert "stale" in built.get(
+        "btc_price", {}
+    ), "poll-built snapshot lost btc_price.stale"
     assert built["network"]["stale"] is False
     assert built["btc_price"]["stale"] is False
 
@@ -97,6 +116,6 @@ def test_gzip_compression_enabled():
     with app.test_client() as c:
         r = c.get("/", headers={"Accept-Encoding": "gzip"})
         assert r.status_code == 200
-        assert r.headers.get("Content-Encoding") == "gzip", (
-            "gzip not applied — Compress(app) missing or misconfigured"
-        )
+        assert (
+            r.headers.get("Content-Encoding") == "gzip"
+        ), "gzip not applied — Compress(app) missing or misconfigured"
