@@ -6,6 +6,26 @@ e versionamento semântico ([SemVer](https://semver.org/lang/pt-BR/)).
 
 ## [Unreleased]
 
+### Alterado — extração do SSE fan-out para `services/sse.py` (RFC #478 · PR B2, Issue #499)
+- O fan-out Server-Sent Events saiu do meio do `app.py`: o registry de clientes
+  (`_sse_clients` + lock), o `broadcast_snapshot()` chamado pelo `poll_loop` e a
+  rota `GET /api/stream` agora vivem em `services/sse.py` (blueprint `sse_bp`).
+  O `app.py` registra o blueprint e re-exporta `_broadcast_snapshot` — o
+  `poll_loop` segue chamando o **mesmo objeto**.
+- `url_map` provado idêntico (178 regras antes e depois, mesmo path e método) e
+  o `import queue` do `app.py` saiu junto — o módulo era o único consumidor.
+  Mimetype (`text/event-stream`) e headers (`Cache-Control`, `Connection`,
+  `X-Accel-Buffering`) inalterados: o `EventSource` do dashboard não percebe.
+- O SSE tinha **zero testes** (a única régua era um navegador). Nasce com
+  `tests/test_sse_fanout.py` (11 testes): propriedade do blueprint, headers,
+  identidade do `_broadcast_snapshot` re-exportado, sem import circular,
+  entrega do payload, `default=str`, evicção de cliente com fila cheia e
+  keepalive do gerador.
+- Cobertura: nada a acrescentar no `--cov` — o pacote inteiro já é medido por
+  `--cov=services`, então o módulo novo nasce dentro da régua. O `--cov`
+  explícito por arquivo só é necessário para módulos fora de `services/`
+  (como `routes.admin_routes` no PR B1).
+
 ### Segurança — `/api/admin/sessions` sem gate expunha sessões de todos os tenants (Issue #496)
 - A rota era a **única** `/api/admin/*` sem o gate compartilhado: respondia a
   qualquer origem e devolvia `sessions[].to_dict()` de **todos** os tenants

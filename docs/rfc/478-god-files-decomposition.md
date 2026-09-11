@@ -8,8 +8,11 @@
 > Backend: PR B1 (admin gate + `/api/admin/*`) = Issue #495 — 300 linhas movidas
 > para `routes/admin_routes.py`, `url_map` idêntico, gate re-exportado por `app.py`.
 > Achado do B1: `/api/admin/sessions` não usa o gate — Issue #496, **corrigida**
-> na branch `fix/496-admin-sessions-gate` (a rota passa a usar
-> `_admin_request_allowed()`, sem um PR-B de extração).
+> (PR #498: a rota passa a usar `_admin_request_allowed()`, sem um PR-B de
+> extração).
+> Backend: PR B2 (SSE fan-out) = Issue #499 — `_sse_clients` +
+> `broadcast_snapshot()` + `GET /api/stream` movidos para `services/sse.py`,
+> `url_map` idêntico (178 regras).
 
 ## 1. Contexto e problema
 
@@ -57,7 +60,7 @@ O padrão já existe (`routes/*.py` com blueprints) — o RFC o estende:
 | PR | Extração | De `app.py` para |
 |---|---|---|
 | B1 | Admin gate + licenças | ✅ #495 — gate `_admin_request_allowed` + 10 rotas `/api/admin/*` → `routes/admin_routes.py` (blueprint `admin_bp`), `app.py` re-exporta o gate. `issue_license` já vivia em `services/licensing.py`: nada a mover. Achado: `/api/admin/sessions` sem gate → #496 ✅ corrigida (gate aplicado, conjunto de rotas sem gate agora vazio) |
-| B2 | SSE fan-out | `_sse_clients`, broadcast, `/api/stream` → `services/sse.py` |
+| B2 | SSE fan-out | ✅ #499 — `_sse_clients` + lock, `broadcast_snapshot()` e `GET /api/stream` → `services/sse.py` (blueprint `sse_bp`, sem `url_prefix`), `app._broadcast_snapshot` re-exporta o MESMO objeto. `url_map` provado idêntico (178 regras, mesmo path/método) e o `import queue` do `app.py` saiu junto. O módulo nasceu com contrato próprio (11 testes) — antes o SSE tinha **zero** cobertura, porque a única régua era um navegador |
 | B3 | Snapshot assembly | `_build_snapshot` e agregações → `services/snapshot_assembly.py` (o `poll_compute.py` de 100% de cobertura prova o padrão) |
 | B4 | DB bootstrap/schema | init_db, índices, WAL, purges → `services/bootstrap.py` |
 
