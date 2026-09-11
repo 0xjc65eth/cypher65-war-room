@@ -11,7 +11,7 @@
 #   • curl --fail: 4xx/5xx não são engolidos (antes, HTML de erro virava
 #     "ERROR" 10× em silêncio). POST NÃO tem retry — reemitir duplica keys.
 #
-# Contrato da API (verificado em app.py::api_admin_issue_license):
+# Contrato da API (verificado em routes/admin_routes.py::api_admin_issue_license):
 #   POST /api/admin/licenses  {"plan":"pro","months":1,"source":...,
 #                              "email":...}
 #     → 200 {"ok": true, "license_key": "C65-XXXX-..."}

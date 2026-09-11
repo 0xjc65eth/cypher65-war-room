@@ -177,7 +177,8 @@ Medição `pytest --cov` com o comando exato do CI (arquivo de dados isolado;
 | `services/rental_performance.py` | **89%** | preço de mercado real em SQL, auto-exclusão, forecast |
 | `services/licensing.py` | **89%** | — |
 | `services/auto_pilot.py` | **84%** | collectors fail-closed (Issue #123) |
-| `app.py` | **74%** | 2920 stmts — blocos fetch/persist/purge do `_do_poll` + rotas de dashboard cobertos por injeção de mock (Issue #141); restam rotas admin/CLI |
+| `app.py` | **76%** | 3321 stmts — blocos fetch/persist/purge do `_do_poll` + rotas de dashboard cobertos por injeção de mock (Issue #141); rotas admin extraídas no PR B1 (Issue #495). Restam CLI/agente |
+| `routes/admin_routes.py` | **96%** | 171 stmts — gate `_admin_request_allowed` + 10 rotas `/api/admin/*`, movidos verbatim de `app.py` (RFC #478 · PR B1, Issue #495); 7 linhas descobertas são os ramos de erro de I/O |
 
 **Roadmap do gate (incremental, sem bloquear deploys no meio):**
 
@@ -190,19 +191,27 @@ Medição `pytest --cov` com o comando exato do CI (arquivo de dados isolado;
                               + fetchers globais e _build_snapshot — Issue #137)
 2026-08-14  82%  → gate 80   (blocos fetch/persist/purge do _do_poll por
                               injeção de mock + rotas de dashboard — Issue
-                              #141; app.py 58% → 74%)  ← estamos aqui ✅ meta 80%
-próxima      ~84% → gate 82   (app.py 74% → 80%+: rotas admin + CLI/agente)
+                              #141; app.py 58% → 74%)
+2026-09-11  84%  → gate 80   (RFC #478 · PR B1: admin gate + /api/admin/*
+                              extraídos p/ routes/admin_routes.py. A linha
+                              movida entra no --cov do CI (--cov=routes.
+                              admin_routes): o conjunto medido é o do master,
+                              então o TOTAL não ganha por subtração)
+                              ← estamos aqui ✅ meta 80%
+próxima      ~84% → gate 82   (app.py 76% → 80%+: CLI/agente + demais PRs-B
+                              do RFC #478 — SSE, snapshot assembly, bootstrap)
 ```
 
-Margem deliberada de ~2pp (82% real vs gate 80) — absorve variação de
+Margem deliberada de ~4pp (84% real vs gate 80) — absorve variação de
 ambiente sem deixar o gate frouxo. O degrau #141 cobriu o maior buraco: o
 `_do_poll` (fetch fan-out com fallbacks, persist de snapshot/high-diff/
 timeline, purge, ladder de falha, rotas de dashboard) via injeção de mock
 nos fetchers upstream + DB real descartável (`tests/test_do_poll_io.py`,
 20 testes). Para medir os clusters de linhas descobertas de qualquer módulo,
 use `python3 scripts/analyze_cov_bands.py <coverage-report.txt>` (bandas de
-200 linhas por arquivo). Próximos alvos: rotas admin/CLI restantes do
-`app.py`.
+200 linhas por arquivo). Próximos alvos: CLI/agente restantes do `app.py` e
+os demais PRs-B do RFC #478 (SSE, snapshot assembly, bootstrap) — cada um
+acrescenta o módulo novo ao `--cov` para a régua não encolher.
 
 ### Codecov — ✅ ATIVO (Issue #38 → PR #42)
 

@@ -26,6 +26,12 @@
 #              (app.py 58% → 74%) · gate --cov-fail-under=80 ← meta 80% atingida
 #   ROADMAP → 80%+ já cumprido; próximos degraus: app.py 74% → 80%+
 #   (rotas restantes + CLI/agente) com margem ~1pp.
+#   2026-09-11  TOTAL 82% · RFC #478 · PR B1 (Issue #495): admin gate +
+#              /api/admin/* extraídos para routes/admin_routes.py. A linha
+#              movida continua MEDIDA — --cov=routes.admin_routes entra no
+#              comando para o gate não melhorar por subtração (o arquivo sai
+#              de app.py mas não pode sair da régua). Próximos PRs-B (B2-B4)
+#              acrescentam o módulo novo da vez ao mesmo --cov.
 # O --cov-fail-under é o gate real: abaixo dele o merge é bloqueado.
 # A margem (~1pp) absorve variação entre ambientes (CI vs local) sem
 # deixar o gate frouxo.
@@ -179,6 +185,7 @@ jobs:
           source .venv/bin/activate
           python -m pytest tests/ -q --tb=short --junitxml=/tmp/pytest-results.xml \
             --cov=app --cov=helpers --cov=axe_fleet --cov=services --cov=core \
+            --cov=routes.admin_routes \
             --cov-report=term-missing --cov-report=html:/tmp/coverage_html \
             --cov-report=xml:/tmp/coverage.xml \
             --cov-fail-under=80
