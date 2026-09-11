@@ -6,6 +6,36 @@ e versionamento semântico ([SemVer](https://semver.org/lang/pt-BR/)).
 
 ## [Unreleased]
 
+### Alterado — extração do domínio Market para `static/src/45-market.js` (RFC #478 · PR 2, Issue #513)
+- O domínio **Market** saiu de `static/src/40-app-logic.js` para o fragmento
+  `static/src/45-market.js` (455 linhas): estado do módulo, helpers de preço
+  (`_fmtBtcPerTh`, `_mktUsdPerTh`, `_mktSourceLabel`, `_mktBestIndex`), o grid
+  institucional (`MKT_RENDER_CAP`, `_mktRenderCap`, `sortMarketVenues`,
+  `renderMarketGrid` + `venueFreshness`), `renderMarket`, `initMarketControls`,
+  `buildMarketTrendDatasets` e `loadMarketTrend`. `40-app-logic.js`
+  12.666 → 12.236 linhas.
+- **Correção de premissa do RFC**: a tabela listava o PR 2 como *"orderbook,
+  rent offers"* — **não existe orderbook no código**. O domínio real é o grid de
+  venues do `/api/market/*` + `market_data.offers` + BUY afiliado + tendência 7d,
+  e ele **não é contíguo**: as três regiões estão separadas pelo domínio Admin
+  (~1.050 linhas) e por Decision Matrix/Command Center, que **não** foram movidos.
+  `_adminLoaded` mora dentro do bloco de estado do market mas pertence ao Admin
+  — a fronteira foi por posse do estado, não por adjacência textual.
+- **Movimento mecânico provado**: recorte verbatim das três regiões (fidelidade
+  byte-idêntica conferida contra o `40-app-logic.js` anterior) e o `static/app.js`
+  gerado é uma **permutação** do anterior — 0 linhas perdidas, 25 adicionadas
+  (todas de comentário de cabeçalho do fragmento novo). Nenhum id de DOM,
+  contrato de fetch, formato de snapshot ou ordem de execução mudou.
+- Ordem de execução preservada: as regiões movidas contêm só **declarações**
+  (nenhuma lê o estado durante a avaliação do IIFE), e todos os consumidores
+  (`render()` no poll, `boot()` no DOM-ready, `_doActivateModule()` na troca de
+  aba) rodam depois — então o fragmento entra antes de `50-close.js` sem TDZ.
+- Achado registrado (Issue #514): `tests/test_app_js_core.js` ainda **espelha**
+  os helpers puros do Market em vez de carregá-los com `loadFragment()`, e
+  mantém uma **suíte legada** do card grid que o redesign institucional
+  substituiu — o mesmo padrão de drift que escondeu 3 bugs de produção no PR 1.
+  Fica para PR próprio.
+
 ### Adicionado — postmortem do RFC #478 (Issue #511)
 - `docs/rfc/478-postmortem.md` — postmortem da trilha backend (PRs B1–B4) e do
   frontend PR 1/1b: cronologia, tabela de **divergências plano × realidade**,
