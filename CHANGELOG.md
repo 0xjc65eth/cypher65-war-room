@@ -6,6 +6,39 @@ e versionamento semântico ([SemVer](https://semver.org/lang/pt-BR/)).
 
 ## [Unreleased]
 
+### Alterado — extração do domínio Rentals para `static/src/46-rentals.js` (RFC #478 · PR 3, Issue #517)
+- O domínio **Rentals** saiu de `static/src/40-app-logic.js` para o fragmento
+  `static/src/46-rentals.js` (1.795 linhas, sendo **1.770 movidas verbatim**):
+  estado do módulo, núcleo (`_setRentalsFilter`, `_renderRentalsPortfolio`,
+  `_mrToTh`, `_rentalStatus`, `_rentalHashrateStr`, `_rentalPriceStr`,
+  `_rentalRigTrust`, `_rentalIsBad`), painéis (recomendações, accepted,
+  auto-exclusões, market timing, forecast, risk banner, signals, consolidado),
+  série temporal + drill-down por bucket, analytics click-first (rankings,
+  heatmap, expiring, worst-rig leaderboard, exposure, concentration), modais
+  (`openRigTrackRecord`, `runBacktest`, `openBacktestModal`, `openRentalDetail`)
+  e `loadRentals`/`renderRentals`/`_initRentalsPanel`.
+  `40-app-logic.js` 12.236 → **10.465 linhas**.
+- **Correção da previsão do RFC**: o fragmento previsto era `55-rentals.js`, mas
+  `50-close.js` **fecha o IIFE** — nenhum fragmento pode ter ordinal maior. O
+  arquivo é `46-rentals.js`, imediatamente antes do fechamento. Registrado no
+  RFC e na Issue #517.
+- **Movimento mecânico provado**: recorte verbatim (fidelidade byte-idêntica
+  conferida contra o `40-app-logic.js` anterior) e `static/app.js` gerado é uma
+  **permutação** do anterior — 0 linhas perdidas, 24 adicionadas (comentário de
+  cabeçalho). Nenhum id de DOM, contrato de fetch, formato de payload ou ordem
+  de execução mudou.
+- **Zero execução no topo** (verificado): o cluster contém só declarações, então
+  o fragmento entra antes de `50-close.js` sem TDZ. O acoplamento externo é de
+  **4 pontos** — `_initRentalsPanel()` (boot), `loadRentals()` (poll + ativação
+  do módulo), `_rentalsLoaded` (guard de lazy-load) e `_rentalsData` — todos
+  dentro de funções que rodam depois da avaliação do IIFE. Os listeners do
+  painel vivem dentro de `_initRentalsPanel()`, não no nível do módulo.
+- Ficaram **fora** do fragmento (seguem em `40-app-logic.js`): o modal de compra
+  spot da Braiins, o AI Operator e o Auto-Pilot.
+- Escopo ampliado por decisão explícita: o cluster tem 1.770 linhas, acima do
+  guardrail de ~1.500 do RFC. Aceito num único PR porque o cluster é coeso e
+  contíguo.
+
 ### Alterado — harness do Market passa a testar o FONTE, não um espelho (Issue #515)
 - `tests/test_app_js_core.js` agora carrega os helpers puros do Market de
   `static/src/45-market.js` via `loadFragment()` — `_fmtBtcPerTh`,

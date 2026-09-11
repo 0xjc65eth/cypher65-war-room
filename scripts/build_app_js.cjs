@@ -50,6 +50,7 @@ const MANIFEST = [
   '30-core-escape.js',
   '40-app-logic.js',
   '45-market.js',
+  '46-rentals.js',
   '50-close.js',
 ];
 
