@@ -16,10 +16,12 @@ The shared admin gate ``_admin_request_allowed`` now lives HERE (single
 source of truth) and is re-exported by app.py, so
 ``from app import _admin_request_allowed`` keeps working.
 
-Known gap — NOT changed by this refactor (tracked in Issue #496):
-``/api/admin/sessions`` predates the gate and is the only route in this
-blueprint that does not call it. Fixing that is a behaviour change and
-deliberately stays out of a pure-extraction PR.
+Every route below is gated — including ``/api/admin/sessions``. That was the
+last hole (Issue #496): the route predates the gate and leaked the session
+list of ALL tenants (``to_dict()`` carries ``btc_address`` and ``tenant_id``)
+to any origin. It now applies the same gate as its neighbours, so the
+ungated set is empty and the contract test
+``test_ungated_admin_routes_are_exactly_the_known_gap`` pins it that way.
 """
 
 import hmac
@@ -115,12 +117,20 @@ def api_admin_docs_feedback():
 def api_admin_sessions():
     """List all active sessions + pool observability (debug/admin).
 
+    Admin-gated exactly like the other routes in this blueprint (localhost
+    without a declared credential, or the operator X-API-Key) — Issue #496.
+    Before the fix this endpoint answered ANY origin and returned every
+    tenant's session (``btc_address``, ``tenant_id``); it now fails closed to
+    403 like its neighbours.
+
     The ``pool`` block exposes PollWorkerPool health: active sessions,
     polls/sec (sliding 60s window), ready-queue depth, scheduled heap,
     live worker threads, total poll/error counters, and auto_exclude_alerts
     (auto-exclusion alerts dispatched by path: sweep vs panel) — everything
     an operator needs to spot a thundering-herd or a stuck pool at a glance.
     """
+    if not _admin_request_allowed():
+        return jsonify({"error": "admin access required"}), 403
     sessions = _session_manager.get_all_sessions()
     pool = _POLL_POOL.stats()  # never raises, even on an unstarted pool
     # Auto-exclude alert observability (Issue #112): how many alertas the

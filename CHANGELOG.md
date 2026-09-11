@@ -6,6 +6,22 @@ e versionamento semântico ([SemVer](https://semver.org/lang/pt-BR/)).
 
 ## [Unreleased]
 
+### Segurança — `/api/admin/sessions` sem gate expunha sessões de todos os tenants (Issue #496)
+- A rota era a **única** `/api/admin/*` sem o gate compartilhado: respondia a
+  qualquer origem e devolvia `sessions[].to_dict()` de **todos** os tenants
+  (incluindo `btc_address` e `tenant_id`), além do bloco de observabilidade do
+  pool. Foi encontrada pelo contrato do PR B1 (Issue #495), que fixou o
+  conjunto de rotas sem gate.
+- Agora aplica `_admin_request_allowed()` como as rotas vizinhas: localhost sem
+  credencial declarada (dev / Render Shell) continua liberado, origem remota
+  exige `X-API-Key` válida, e credencial declarada e errada falha fechada
+  (matriz #481).
+- **Sem impacto no painel admin**: `fetchAdminData()` já busca as 8 rotas admin
+  num único `Promise.all` e trata 403 no lote inteiro — o comportamento visível
+  não muda.
+- O contrato `tests/test_admin_routes_blueprint.py` passa a exigir
+  `KNOWN_UNGATED == set()`: rota nova `/api/admin/*` sem gate quebra o CI.
+
 ### Alterado — extração do admin gate + rotas /api/admin/* (RFC #478 · PR B1, Issue #495)
 - O gate compartilhado `_admin_request_allowed` e as **10 rotas `/api/admin/*`**
   saíram de `app.py` para `routes/admin_routes.py` (blueprint `admin_bp`,
