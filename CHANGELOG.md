@@ -30,7 +30,7 @@ e versionamento semântico ([SemVer](https://semver.org/lang/pt-BR/)).
   (nenhuma lê o estado durante a avaliação do IIFE), e todos os consumidores
   (`render()` no poll, `boot()` no DOM-ready, `_doActivateModule()` na troca de
   aba) rodam depois — então o fragmento entra antes de `50-close.js` sem TDZ.
-- Achado registrado (Issue #514): `tests/test_app_js_core.js` ainda **espelha**
+- Achado registrado (Issue #515): `tests/test_app_js_core.js` ainda **espelha**
   os helpers puros do Market em vez de carregá-los com `loadFragment()`, e
   mantém uma **suíte legada** do card grid que o redesign institucional
   substituiu — o mesmo padrão de drift que escondeu 3 bugs de produção no PR 1.
