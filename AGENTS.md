@@ -15,6 +15,7 @@ Este arquivo é lido automaticamente por agentes de IA (GitHub Copilot, Claude, 
 
 ```bash
 SECRET_KEY=test-secret-0123456789 python -m pytest tests/ -q   # suíte Python
+python scripts/check-monkeypatch-targets.py                      # patches de teste em alvo órfão (Issue #505)
 node scripts/build_app_js.cjs                                    # regera app.js de static/src/
 node scripts/build_app_js.cjs --check                            # drift gate (app.js × static/src/)
 node tests/test_app_js_core.js                                   # suíte JS core (carrega o fonte real)

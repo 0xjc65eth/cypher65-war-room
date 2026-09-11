@@ -160,6 +160,7 @@ cd mobile && npm run mutate
 | Cobertura pública | **Codecov** (free p/ repo público) | upload do coverage.xml | ✅ non-blocking |
 | Guards DOM (XSS/ids) | `scripts/check-dom-regression.cjs` | ids duplicados + innerHTML sem escape | ✅ blocking |
 | Guards XSS mobile (RN) | `scripts/check-mobile-xss.cjs` | WebView html/injectedJavaScript + eval + openURL `javascript:` | ✅ blocking |
+| Higiene de teste | `scripts/check-monkeypatch-targets.py` | patch de teste em nome que o módulo alvo não possui (re-export) → patch no-op silencioso | ✅ blocking |
 | Frontend (combinado) | `scripts/check_frontend.sh` (Issue #62) | guards DOM + XSS mobile + JS core + **audit visual** (console/overflow/truncamento) | ✅ blocking job `frontend-audit` |
 
 ### Mapa de cobertura por módulo (Issue #123) — TOTAL 82%
@@ -367,6 +368,35 @@ literal → PASS, builder → PASS, bare-id cru/safe → FAIL/PASS, multi-linha 
 comentário citando sink (inline incluso) → PASS, shorthand safe/cru →
 PASS/FAIL, interp escapada → PASS, concat openURL começando com literal →
 FAIL, `+` dentro de literal URL (query) → PASS.
+
+### Guard de alvo de patch órfão — `scripts/check-monkeypatch-targets.py` (Issue #505)
+
+Guard **estático** (só AST, sem importar o alvo) e **blocking** no job `gate`.
+Um patch de teste só intercepta o código se o nome patcheado for **usado pelo
+próprio módulo** que está sendo alvo — o lookup de um global acontece no
+dicionário do módulo. Quando um símbolo muda de casa, o módulo antigo continua
+expondo o nome por re-export, e aí
+`monkeypatch.setattr(services.user_polling, "_fetch_json", fake)` virou no-op:
+**nada falha**, o teste apenas deixa de injetar o fake.
+
+Foi a armadilha real do PR B3 (#502): `tests/test_anti_mock.py` patcheava
+`services.user_polling._fetch_*`, os patches deixaram de interceptar, o
+`_build_snapshot` foi à rede de verdade, caiu no `except` e devolveu o snapshot
+default — com as asserções ainda satisfeitas pelos defaults. O teste passou a
+não testar nada e a suíte tocava a rede.
+
+Definição precisa de "dono": o módulo é dono de `N` se `N` for (a) definido por
+ele (função/classe/atribuição/for/with/except), ou (b) referenciado em algum
+ponto do seu corpo (patch num nome importado E usado funciona). Nome que o
+módulo **só importa e nunca usa** é re-export e não conta. Alvo que o guard não
+consegue resolver é ignorado (**fail-open**, nunca falso positivo), e uma
+exceção real e documentada passa com `# orphan-patch-ok: <motivo>` na chamada.
+
+**Self-test** (`python tests/test_monkeypatch_targets_guard.py` ou via pytest,
+10 casos): verde no repositório real; detecta o re-export patcheado (o caso
+#502) e a forma string `patch("pkg.mod.nome")`; permite patch no dono e em nome
+importado-e-usado; respeita o escape hatch; ignora third-party e alvo não
+resolvido.
 
 ### Pipeline combinado de frontend — `scripts/check_frontend.sh` (Issue #62)
 
