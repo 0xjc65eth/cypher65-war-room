@@ -36,7 +36,7 @@ import services.bootstrap as bootstrap  # noqa: E402
 import services.db as db_module  # noqa: E402
 
 # Tabelas criadas por `bootstrap.init_db()` SOZINHO (dump ao vivo do
-# sqlite_master; ver a PR #508). `devices` e `axe_agent_commands` NÃO entram
+# sqlite_master; ver a PR #509). `devices` e `axe_agent_commands` NÃO entram
 # aqui: quem as cria são os registries no boot (DeviceRegistry /
 # CoreDeviceRegistry) — ver BOOT_TABLES abaixo.
 EXPECTED_TABLES = {
