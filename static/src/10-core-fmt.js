@@ -1,4 +1,19 @@
   // ── formatters ────────────────────────────────────────────────────────
+  // Issue #490: `isFinite(...)` (global) coage — `isFinite(null)`,
+  // `isFinite('')` e `isFinite(' ')` são `true`. Só número real ou string
+  // numérica não-vazia é valor; o resto é dado ausente (em-dash). Imports de
+  // API devolvem `null` e a normalização do backend usa `''` para "sem dado".
+  function _finiteNum(v) {
+    if (typeof v === 'number') return isFinite(v) ? v : null;
+    if (typeof v === 'string') {
+      const t = v.trim();
+      if (t === '') return null;
+      const n = Number(t);
+      return isFinite(n) ? n : null;
+    }
+    return null;
+  }
+
   const fmt = {
     hashrate(h) {
       if (!h && h !== 0) return '\u2014';
@@ -47,7 +62,9 @@
       const d = Math.max(0, Math.floor((Date.now() / 1000) - Number(ts)));
       if (d < 60) return `${d}s ago`;
       if (d < 3600) return `${Math.floor(d / 60)}m ago`;
-      if (d < 86400) return `${Math.floor(d / 86400)}h ago`;
+      // Issue #490: era `/ 86400` — toda idade entre 1h e 24h renderizava
+      // "0h ago" no dashboard (último bloco, last share, eventos, alertas).
+      if (d < 86400) return `${Math.floor(d / 3600)}h ago`;
       return `${Math.floor(d / 86400)}d ago`;
     },
     shortAddr(a) {
@@ -72,7 +89,9 @@
       if (a.length <= 20) return fmt.chunkAddr(a);
       return a.slice(0, 6) + '...' + a.slice(-4);
     },
-    pct(n) { if (!isFinite(n)) return '\u2014'; return `${n.toFixed(2)}%`; },
+    // Issue #490: dado ausente não é zero — null/undefined/''/NaN/' ' viram
+    // em-dash; um zero real continua sendo `0.00%`.
+    pct(n) { const v = _finiteNum(n); return v === null ? '\u2014' : `${v.toFixed(2)}%`; },
     usd(n) { if (!n) return '\u2014'; return `$${Number(n).toLocaleString('en-US', { maximumFractionDigits: 0 })}`; },
     // Shared numeric guard (Fase 5): telemetry fields may hold the literal
     // string "NOT AVAILABLE" after backend normalization — only real finite
@@ -84,7 +103,12 @@
       return secs;
     },
     secsToHuman(s) {
-      if (!isFinite(s)) return '\u2014';
+      // Issue #490: o guard antigo (`isFinite(s)`) aceitava null e strings
+      // em branco e então estourava em `null.toFixed` — `_finiteNum` recusa
+      // null/undefined/''/' '/NaN/'N/A' com em-dash e devolve número de fato.
+      const v = _finiteNum(s);
+      if (v === null) return '\u2014';
+      s = v;
       if (s < 60) return `${s.toFixed(1)}s`;
       const min = s / 60; if (min < 60) return `${min.toFixed(1)}m`;
       const h = min / 60; if (h < 24) return `${h.toFixed(1)}h`;
