@@ -6,6 +6,33 @@ e versionamento semântico ([SemVer](https://semver.org/lang/pt-BR/)).
 
 ## [Unreleased]
 
+### Alterado — harness do Market passa a testar o FONTE, não um espelho (Issue #515)
+- `tests/test_app_js_core.js` agora carrega os helpers puros do Market de
+  `static/src/45-market.js` via `loadFragment()` — `_fmtBtcPerTh`,
+  `_mktUsdPerTh`, `_mktBestIndex`, `_mktRenderCap`, `sortMarketVenues` e
+  `buildMarketTrendDatasets`. Antes eram **cópias à mão** no harness, o mesmo
+  padrão que escondeu 3 bugs de produção no PR 1 (Issue #490).
+- **Removidas 108 asserções de suítes legadas** (1.492 → 1.384 testes), todas
+  espelhando código que **não existe** em `static/src/*.js`:
+  - *card grid* (SUITE 17): `formatMarketPrice`, `formatOfferHashrate`,
+    `formatOfferCount`, `computeBestPrice`, `findBestOfferIndex`,
+    `filterOffersByProvider`, `renderMarketOfferHtml`, `renderMarketGridHtml`,
+    `fmtHashrateThToHps` — operavam no campo `price_btc_per_th_day`, que o
+    backend não envia mais.
+  - *gráfico antigo* (SUITE 18): `renderMarketTrend`, `getProviderColor`,
+    `_providerColors`, `formatTrendLabel`, `buildTrendDatasets` — montavam
+    datasets num formato que produção não produz (`(TH/s)`/`(PH/s)` com eixo
+    duplo, cor por mapa fixo, rótulo MM/DD HH:mm).
+
+  Passavam sempre e não protegiam nada. O caminho vivo (tabela institucional +
+  render cap + BUY afiliado + gráfico 7d de sats/TH/d) segue coberto por
+  `tests/e2e/market-affiliate.spec.js` e pelos helpers carregados do fragmento.
+- **Prova de dentes**: mutar `_mktRenderCap` no fragmento (deixar de capar as
+  50 linhas, regressão do Issue #185) faz o harness falhar
+  (`1/1412 TESTS FAILED`); antes da conversão, a mutação passava invisível.
+- Contrato do fragmento: um teste novo falha se `45-market.js` deixar de expor
+  qualquer um dos 6 helpers puros.
+
 ### Alterado — extração do domínio Market para `static/src/45-market.js` (RFC #478 · PR 2, Issue #513)
 - O domínio **Market** saiu de `static/src/40-app-logic.js` para o fragmento
   `static/src/45-market.js` (455 linhas): estado do módulo, helpers de preço

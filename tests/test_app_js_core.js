@@ -70,6 +70,20 @@ const _coreEscape = loadFragment(
   '{ escapeHtml, rentalsAuthRejected, rentalsAuthGuide, rentalsPayloadStale, rentalsCountSurface, RENTALS_PAYLOAD_VERSION }'
 );
 
+// ── FONTE REAL do domínio Market (RFC 478 · PR 2 · Issue #515) ───────────────
+// Os helpers puros do Market vêm de `static/src/45-market.js` — o MESMO código
+// que o navegador roda. Antes eram cópias à mão aqui, que é exatamente o padrão
+// que escondeu 3 bugs de produção no PR 1. O fragmento só contém declarações,
+// então roda isolado num contexto vm sem window/document.
+const _market = loadFragment('45-market.js',
+  '{ _fmtBtcPerTh, _mktUsdPerTh, _mktBestIndex, _mktRenderCap, sortMarketVenues, buildMarketTrendDatasets }');
+const fmtBtcPerTh = _market._fmtBtcPerTh;
+const mktRenderCap = _market._mktRenderCap;
+const mktBestIndexMirror = _market._mktBestIndex;
+const mktUsdPerThMirror = _market._mktUsdPerTh;
+const sortMarketVenues = _market.sortMarketVenues;
+const buildMarketTrendDatasets = _market.buildMarketTrendDatasets;
+
 // ── Test counters ─────────────────────────────────────────────────────────
 let passed = 0;
 let failed = 0;
@@ -115,130 +129,18 @@ function assertFalsy(label, actual) {
   }
 }
 
-// ── Market price formatting ──────────────────────────────────────────
-function formatMarketPrice(btcPrice) {
-  // BTC/TH/day → formatted string with 6 significant digits
-  if (btcPrice == null || !isFinite(btcPrice) || btcPrice === 0) return '\u2014';
-  if (btcPrice < 1e-8) return btcPrice.toExponential(3) + ' BTC';
-  if (btcPrice < 1) return btcPrice.toFixed(8) + ' BTC';
-  return btcPrice.toFixed(6) + ' BTC';
-}
 
-function formatOfferHashrate(hr) {
-  // TH/s formatting for market offers (converts to appropriate unit)
-  if (!hr && hr !== 0) return '\u2014';
-  var v = Number(hr);
-  if (v >= 1e15) return (v / 1e15).toFixed(2) + ' PH/s';
-  if (v >= 1e12) return (v / 1e12).toFixed(2) + ' TH/s';
-  if (v >= 1e9) return (v / 1e9).toFixed(2) + ' GH/s';
-  return v.toFixed(0) + ' H/s';
-}
-
-function formatOfferCount(visible, total) {
-  return visible + ' / ' + total + ' offers';
-}
-
-// Compute best price from offers (lowest price_btc_per_th_day)
-function computeBestPrice(offers) {
-  if (!offers || !offers.length) return null;
-  var best = null;
-  offers.forEach(function(o) {
-    var p = parseFloat(o.price_btc_per_th_day || o.price || 0);
-    if (p > 0 && (best === null || p < best)) best = p;
-  });
-  return best;
-}
 
 // Format BTC/TH/day price for display — mirrors app.js _fmtBtcPerTh()
-// (P2 schema fix: backend sends price_per_th_day, not price_btc_per_th_day)
-function fmtBtcPerTh(v) {
-  var n = Number(v);
-  if (!isFinite(n) || n <= 0) return '\u2014';
-  if (n >= 0.001) return n.toFixed(6) + ' BTC/TH/d';
-  return (n * 1e8).toLocaleString('en-US', { maximumFractionDigits: 2 }) + ' sats/TH/d';
-}
 
-// Index of the best (lowest valid price_per_th_day) offer — mirrors renderMarket()
-function findBestOfferIndex(offers) {
-  if (!offers || !offers.length) return -1;
-  var bestIdx = -1;
-  var bestVal = Infinity;
-  offers.forEach(function (o, idx) {
-    var p = Number(o.price_per_th_day);
-    if (isFinite(p) && p > 0 && p < bestVal) { bestVal = p; bestIdx = idx; }
-  });
-  return bestIdx;
-}
 
-// Filter offers by provider name (case-insensitive)
-function filterOffersByProvider(offers, provider) {
-  if (!offers || !offers.length) return [];
-  if (!provider || provider === 'all') return offers;
-  return offers.filter(function(o) {
-    return (o.provider || o.name || '').toLowerCase() === provider.toLowerCase();
-  });
-}
 
 // Generate market offer card HTML (pure function)
 // P0-4: `affiliate` = market_data.affiliate {provider,url} — when it matches
-// the card's provider, render the one-click BUY button (mirrors app.js).
-function renderMarketOfferHtml(offer, isBest, affiliate) {
-  var provider = offer.provider || offer.name || 'unknown';
-  var price = formatMarketPrice(parseFloat(offer.price_btc_per_th_day || offer.price || 0));
-  var hashrate = formatOfferHashrate(offer.hashrate || 0);
-  var fee = offer.fee != null ? offer.fee.toFixed(1) + '%' : '\u2014';
-  var duration = offer.duration || offer.min_duration || '\u2014';
-  var stale = offer._stale || offer.meta === 'stale';
-  var bestClass = isBest ? ' mkt-card--best' : '';
-  var staleClass = stale ? ' mkt-card--stale' : '';
-  var staleBadge = stale ? '<span class="badge badge--amber" style="font-size:7px">stale</span>' : '';
-  var isAffCard = !!(affiliate && affiliate.url
-    && provider.toLowerCase() === String(affiliate.provider || '').toLowerCase());
-  var affBtn = isAffCard
-    ? '<button type="button" class="mkt-card__buy chip chip--affiliate" data-aff-url="'
-      + escapeHtml(affiliate.url) + '" data-aff-provider="' + escapeHtml(affiliate.provider) + '">⚡ BUY '
-      + escapeHtml(String(affiliate.provider).toUpperCase()) + '</button>'
-    : '';
-  // Grab a simple provider icon from name
-  var icon = (provider.slice(0, 2).toUpperCase());
-  return '<div class="mkt-card' + bestClass + staleClass + '" data-provider="' + escapeHtml(provider) + '">' +
-    '<div class="mkt-card__head">' +
-      '<span class="mkt-card__icon">' + icon + '</span>' +
-      '<span class="mkt-card__name">' + escapeHtml(provider) + '</span>' +
-      staleBadge +
-    '</div>' +
-    '<div class="mkt-card__price">' + price + '</div>' +
-    '<div class="mkt-card__meta">' + hashrate + ' · ' + fee + ' fee · ' + duration + '</div>' +
-    affBtn +
-  '</div>';
-}
 
 // Render-cap helper (mirrors app.js _mktRenderCap, Issue #185): limits how
 // many venue rows the DOM renders, reporting the total so the UI can show an
-// honest note instead of silently truncating.
-function mktRenderCap(venues, cap) {
-  var total = (venues || []).length;
-  var rows = total > cap ? (venues || []).slice(0, cap) : (venues || []);
-  return { rows: rows, total: total, capped: total > cap };
-}
 
-// Generate market grid HTML (pure function)
-function renderMarketGridHtml(offers, activeFilter) {
-  if (!offers || !offers.length) {
-    return '<div class="mkt-empty">no marketplace offers available</div>';
-  }
-  var filtered = filterOffersByProvider(offers, activeFilter);
-  if (!filtered.length) {
-    return '<div class="mkt-empty">no offers for selected provider</div>';
-  }
-  var bestPrice = computeBestPrice(filtered);
-  var html = filtered.map(function(o) {
-    var price = parseFloat(o.price_btc_per_th_day || o.price || 0);
-    var isBest = bestPrice !== null && price > 0 && Math.abs(price - bestPrice) < 1e-12;
-    return renderMarketOfferHtml(o, isBest);
-  }).join('');
-  return html;
-}
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  HTML ESCAPE (mirrors static/app.js)
@@ -2303,75 +2205,24 @@ assertTruthy('csv filename format', /^test-format-.*\.csv$/.test(generateFilenam
 
 
 // ═══════════════════════════════════════════════════════════════════════════
-//  SUITE 17: renderMarket() — market offer card generation + best-price logic
+//  SUITE 17: Market — helpers puros carregados do FRAGMENTO REAL (Issue #515)
 // ═══════════════════════════════════════════════════════════════════════════
+//
+// O que saiu daqui (e por quê): esta suíte espelhava à mão o CARD GRID do
+// Hashrate Market, substituído pelo grid institucional do HashratePulse. Os
+// espelhos (`formatMarketPrice`, `formatOfferHashrate`/`formatOfferCount`,
+// `computeBestPrice`, `findBestOfferIndex`, `filterOffersByProvider`,
+// `renderMarketOfferHtml`, `renderMarketGridHtml`, `fmtHashrateThToHps`)
+// tinham ZERO contraparte em `static/src/*.js` e operavam no campo
+// `price_btc_per_th_day` que o backend não envia mais — passavam sempre e não
+// protegiam nada. O caminho vivo (tabela institucional + render cap + BUY
+// afiliado) é coberto por tests/e2e/market-affiliate.spec.js e pelas
+// asserções abaixo, que rodam contra o CÓDIGO DE PRODUÇÃO via
+// `loadFragment('45-market.js')` — não contra uma cópia.
 
-console.log('📊 SUITE 17: renderMarket() — offer cards + best price');
+console.log('📊 SUITE 17: Market — helpers puros do fragmento 45-market.js');
 
-// ── formatMarketPrice tests ────────────────────────────────────────────
-assertEqual('mktPrice(null) → em-dash', formatMarketPrice(null), '\u2014');
-assertEqual('mktPrice(undefined) → em-dash', formatMarketPrice(undefined), '\u2014');
-assertEqual('mktPrice(Infinity) → em-dash', formatMarketPrice(Infinity), '\u2014');
-assertEqual('mktPrice(0) → em-dash', formatMarketPrice(0), '\u2014');
-
-// Different ranges
-assertEqual('mktPrice(0.1) → 0.10000000 BTC', formatMarketPrice(0.1), '0.10000000 BTC');
-assertEqual('mktPrice(0.00001234) → 0.00001234 BTC', formatMarketPrice(0.00001234), '0.00001234 BTC');
-assertEqual('mktPrice(1e-8) → 0.00000001 BTC', formatMarketPrice(1e-8), '0.00000001 BTC');
-
-// Exponential for very small
-assertEqual('mktPrice(5e-9) → 5.000e-9 BTC', formatMarketPrice(5e-9), '5.000e-9 BTC');
-assertEqual('mktPrice(1.23e-10) → 1.230e-10 BTC', formatMarketPrice(1.23e-10), '1.230e-10 BTC');
-
-// Large values
-assertEqual('mktPrice(1) → 1.000000 BTC', formatMarketPrice(1), '1.000000 BTC');
-assertEqual('mktPrice(12.345) → 12.345000 BTC', formatMarketPrice(12.345), '12.345000 BTC');
-
-
-// ── formatOfferHashrate tests ──────────────────────────────────────────
-assertEqual('offerHr(null) → em-dash', formatOfferHashrate(null), '\u2014');
-assertEqual('offerHr(undefined) → em-dash', formatOfferHashrate(undefined), '\u2014');
-assertEqual('offerHr(0) → 0 H/s', formatOfferHashrate(0), '0 H/s');
-assertEqual('offerHr(500) → 500 H/s', formatOfferHashrate(500), '500 H/s');
-assertEqual('offerHr(1e9) → 1.00 GH/s', formatOfferHashrate(1e9), '1.00 GH/s');
-assertEqual('offerHr(500e9) → 500.00 GH/s', formatOfferHashrate(500e9), '500.00 GH/s');
-assertEqual('offerHr(1e12) → 1.00 TH/s', formatOfferHashrate(1e12), '1.00 TH/s');
-assertEqual('offerHr(100e12) → 100.00 TH/s', formatOfferHashrate(100e12), '100.00 TH/s');
-assertEqual('offerHr(1e15) → 1.00 PH/s', formatOfferHashrate(1e15), '1.00 PH/s');
-assertEqual('offerHr(2.5e15) → 2.50 PH/s', formatOfferHashrate(2.5e15), '2.50 PH/s');
-
-
-// ── formatOfferCount tests ─────────────────────────────────────────────
-assertEqual('offerCount 5/5', formatOfferCount(5, 5), '5 / 5 offers');
-assertEqual('offerCount 0/10', formatOfferCount(0, 10), '0 / 10 offers');
-assertEqual('offerCount 3/12', formatOfferCount(3, 12), '3 / 12 offers');
-
-
-// ── computeBestPrice tests ─────────────────────────────────────────────
-assertEqual('bestPrice null → null', computeBestPrice(null), null);
-assertEqual('bestPrice [] → null', computeBestPrice([]), null);
-
-var singleOffer = [{ price_btc_per_th_day: 0.00001234 }];
-assertApprox('bestPrice single → 0.00001234', computeBestPrice(singleOffer), 0.00001234, 1e-10);
-
-var multipleOffers = [
-  { price_btc_per_th_day: 0.00001500 },
-  { price_btc_per_th_day: 0.00001234 },
-  { price_btc_per_th_day: 0.00001800 },
-];
-assertApprox('bestPrice lowest → 0.00001234', computeBestPrice(multipleOffers), 0.00001234, 1e-10);
-
-var withZero = [{ price_btc_per_th_day: 0 }, { price_btc_per_th_day: 0.00001 }];
-assertApprox('bestPrice skips zero → 0.00001', computeBestPrice(withZero), 0.00001, 1e-10);
-
-var priceField = [{ price: 0.00005 }];
-assertApprox('bestPrice uses price fallback → 0.00005', computeBestPrice(priceField), 0.00005, 1e-10);
-
-var allZero = [{ price_btc_per_th_day: 0 }, { price_btc_per_th_day: 0 }];
-assertEqual('bestPrice all zero → null', computeBestPrice(allZero), null);
-
-
-// ── fmtBtcPerTh / findBestOfferIndex tests (P2 schema-mismatch regression) ─
+// ── fmtBtcPerTh/_fmtBtcPerTh (P2 schema-mismatch regression) ───────────
 assertEqual('fmtBtcPerTh null → —', fmtBtcPerTh(null), '\u2014');
 assertEqual('fmtBtcPerTh 0 → —', fmtBtcPerTh(0), '\u2014');
 assertEqual('fmtBtcPerTh -1 → —', fmtBtcPerTh(-1), '\u2014');
@@ -2381,62 +2232,7 @@ assertEqual('fmtBtcPerTh 1e-8 → 1 sats/TH/d', fmtBtcPerTh(1e-8), '1 sats/TH/d'
 assertEqual('fmtBtcPerTh 0.001 → 0.001000 BTC/TH/d', fmtBtcPerTh(0.001), '0.001000 BTC/TH/d');
 assertEqual('fmtBtcPerTh 0.0025 → 0.002500 BTC/TH/d', fmtBtcPerTh(0.0025), '0.002500 BTC/TH/d');
 
-var bestOffers = [
-  { provider: 'braiins', price_per_th_day: 2e-8 },
-  { provider: 'nicehash', price_per_th_day: 1e-10 },
-  { provider: 'mrr', price_per_th_day: 5e-9 },
-];
-assertEqual('bestIdx lowest → 1', findBestOfferIndex(bestOffers), 1);
-
-// ── renderMarketOfferHtml affiliate BUY button (P0-4) ──────────────────
-var affOffer = { provider: 'mrr', price_btc_per_th_day: 0.00001234, hashrate: 1e12, fee: 3, duration: 30 };
-var affMatch = { provider: 'mrr', url: 'https://www.miningrigrentals.com/?ref=test' };
-var affOther = { provider: 'nicehash', url: 'https://www.nicehash.com/?ref=test' };
-
-var htmlAffMatch = renderMarketOfferHtml(affOffer, true, affMatch);
-assertEqual('affiliate match → has BUY btn', htmlAffMatch.indexOf('mkt-card__buy') !== -1, true);
-assertEqual('affiliate match → data-aff-url present', htmlAffMatch.indexOf('https://www.miningrigrentals.com/?ref=test') !== -1, true);
-assertEqual('affiliate match → BUY MRR label', htmlAffMatch.indexOf('BUY MRR') !== -1, true);
-assertEqual('affiliate match → best class kept', htmlAffMatch.indexOf('mkt-card--best') !== -1, true);
-
-var htmlNoAff = renderMarketOfferHtml(affOffer, true, null);
-assertEqual('no affiliate → no BUY btn', htmlNoAff.indexOf('mkt-card__buy') === -1, true);
-
-var htmlOtherProv = renderMarketOfferHtml(affOffer, true, affOther);
-assertEqual('mismatched provider → no BUY btn', htmlOtherProv.indexOf('mkt-card__buy') === -1, true);
-
-// ── _mktBestIndex mirror: highest metrics.score wins; only with NO scores at
-// all does it fall back to lowest valid price (two-pass, first-max on ties).
-// Estimated offers (parasite pool-fee model) are NEVER
-// crowned best — they are filtered out first, keeping original indices for
-// mapping back; if ALL offers are estimated, the full list is used as fallback
-// (matches static/app.js _mktBestIndex). ─
-function mktBestIndexMirror(offers) {
-  if (!offers || !offers.length) return -1;
-  // Build the market-only subset, keeping original indices for mapping back.
-  var market = [];
-  var marketIdx = [];
-  offers.forEach(function (o, idx) {
-    if (!o.estimated) { market.push(o); marketIdx.push(idx); }
-  });
-  var pool = market.length ? market : offers;           // all-estimated → fallback to full list
-  var poolIdx = market.length ? marketIdx : offers.map(function (_, i) { return i; });
-  // Pass 1: highest finite metrics.score (first max wins on ties).
-  var bestPos = -1;
-  var bestScore = -Infinity;
-  pool.forEach(function (o, i) {
-    var sc = Number(o.metrics && o.metrics.score);
-    if (isFinite(sc) && sc > bestScore) { bestScore = sc; bestPos = i; }
-  });
-  if (bestPos >= 0) return poolIdx[bestPos];
-  // Pass 2: no scores anywhere → lowest valid price_per_th_day.
-  var bestVal = Infinity;
-  pool.forEach(function (o, i) {
-    var p = Number(o.price_per_th_day);
-    if (isFinite(p) && p > 0 && p < bestVal) { bestVal = p; bestPos = i; }
-  });
-  return bestPos >= 0 ? poolIdx[bestPos] : -1;
-}
+// ── _mktBestIndex — highest metrics.score wins; fallback p/ menor preço ─
 var scoredOffers = [
   { provider: 'braiins', price_per_th_day: 1e-8, metrics: { score: 5.0 } },
   { provider: 'mrr', price_per_th_day: 2e-9, metrics: { score: 12.5 } },
@@ -2484,18 +2280,7 @@ var mixedNoScores = [
 ];
 assertEqual('mixed no scores → estimated skipped → braiins (idx 1)', mktBestIndexMirror(mixedNoScores), 1);
 
-// ── USD/TH/d companion on market cards (BTC/TH/day × snapshot BTC/USD) ─
-// Mirrors app.js _mktUsdPerTh(): $1+ → 2 decimals; below $1 → 3 sig figs.
-function mktUsdPerThMirror(v, btcUsd) {
-  var n = Number(v), usd = Number(btcUsd);
-  if (!isFinite(n) || n <= 0 || !isFinite(usd) || usd <= 0) return null;
-  var x = n * usd;
-  if (x >= 1) return '$' + x.toLocaleString('en-US', { maximumFractionDigits: 2 }) + '/TH/d';
-  var s = x.toPrecision(3);
-  if (s.indexOf('e') !== -1) s = Number(s).toString();
-  else s = s.replace(/\.?0+$/, '');
-  return '$' + s + '/TH/d';
-}
+// ── _mktUsdPerTh — companheiro USD/TH/d dos cards ──────────────────────
 assertEqual('usd 50 sats @$60k → $0.03/TH/d', mktUsdPerThMirror(50e-8, 60000), '$0.03/TH/d');
 assertEqual('usd 10k sats @$60k → $6/TH/d', mktUsdPerThMirror(10000e-8, 60000), '$6/TH/d');
 assertEqual('usd 1 sat @$60k → $0.0006/TH/d', mktUsdPerThMirror(1e-8, 60000), '$0.0006/TH/d');
@@ -2504,110 +2289,14 @@ assertEqual('usd no price → null', mktUsdPerThMirror(0, 60000), null);
 assertEqual('usd no btc price → null', mktUsdPerThMirror(1e-8, 0), null);
 assertEqual('usd null → null', mktUsdPerThMirror(null, 60000), null);
 
-// ── hashrate TH/s → H/s display (Fase 5 fix: backend sends TH/s, fmt.hashrate expects H/s) ─
-function fmtHashrateThToHps(th) {
-  var hrHps = Number(th) > 0 ? Number(th) * 1e12 : 0;
-  if (hrHps <= 0) return '\u2014';
-  var units = ['H/s', 'kH/s', 'MH/s', 'GH/s', 'TH/s', 'PH/s', 'EH/s'];
-  var i = 0, x = hrHps;
-  while (x >= 1000 && i < units.length - 1) { x /= 1000; i++; }
-  return x.toFixed(x >= 100 ? 1 : 2) + ' ' + units[i];
-}
-assertEqual('hr 1000 TH → 1.00 PH/s', fmtHashrateThToHps(1000), '1.00 PH/s');
-assertEqual('hr 100 TH → 100.0 TH/s', fmtHashrateThToHps(100), '100.0 TH/s');
-assertEqual('hr 0 → —', fmtHashrateThToHps(0), '\u2014');
-assertEqual('hr null → —', fmtHashrateThToHps(null), '\u2014');
-assertEqual('hr 0.5 TH → 500.0 GH/s', fmtHashrateThToHps(0.5), '500.0 GH/s');
-var bestSkipZero = [{ price_per_th_day: 0 }, { price_per_th_day: 1e-8 }];
-assertEqual('bestIdx skips zero → 1', findBestOfferIndex(bestSkipZero), 1);
-var bestAllInvalid = [{ price_per_th_day: 0 }, { price_per_th_day: NaN }];
-assertEqual('bestIdx all invalid → -1', findBestOfferIndex(bestAllInvalid), -1);
-assertEqual('bestIdx null → -1', findBestOfferIndex(null), -1);
-assertEqual('bestIdx [] → -1', findBestOfferIndex([]), -1);
-
-
-// ── filterOffersByProvider tests ───────────────────────────────────────
-assertEqual('filterOffers null → []', filterOffersByProvider(null, 'all').length, 0);
-assertEqual('filterOffers [] → []', filterOffersByProvider([], 'all').length, 0);
-
-var sampleOffers = [
-  { provider: 'Braiins' },
-  { provider: 'NiceHash' },
-  { provider: 'Braiins' },
-];
-assertEqual('filter all → 3', filterOffersByProvider(sampleOffers, 'all').length, 3);
-assertEqual('filter undefined → 3', filterOffersByProvider(sampleOffers).length, 3);
-assertEqual('filter braiins → 2', filterOffersByProvider(sampleOffers, 'Braiins').length, 2);
-assertEqual('filter nicehash → 1', filterOffersByProvider(sampleOffers, 'NiceHash').length, 1);
-assertEqual('filter case-insensitive braiins → 2', filterOffersByProvider(sampleOffers, 'braiins').length, 2);
-assertEqual('filter unknown → 0', filterOffersByProvider(sampleOffers, 'Mrr').length, 0);
-
-var nameOffers = [{ name: 'Parasite' }, { name: 'MRR' }];
-assertEqual('filter by name → 1', filterOffersByProvider(nameOffers, 'Parasite').length, 1);
-assertEqual('filter by name MRR → 1', filterOffersByProvider(nameOffers, 'MRR').length, 1);
-
-
-// ── renderMarketOfferHtml tests ────────────────────────────────────────
-var basicOfferHtml = renderMarketOfferHtml({ provider: 'Braiins', price_btc_per_th_day: 0.00001234, hashrate: 100e12, fee: 2.5, duration: '1 month' }, false);
-assertTruthy('offerHtml has mkt-card class', /mkt-card/.test(basicOfferHtml));
-assertTruthy('offerHtml has provider icon BR', /BR/.test(basicOfferHtml));
-assertTruthy('offerHtml has provider name Braiins', /Braiins/.test(basicOfferHtml));
-assertTruthy('offerHtml has price formatted', /0\.00001234 BTC/.test(basicOfferHtml));
-assertTruthy('offerHtml has hashrate 100.00 TH/s', /100\.00 TH/.test(basicOfferHtml));
-assertTruthy('offerHtml has fee 2.5%', /2\.5%/.test(basicOfferHtml));
-assertTruthy('offerHtml has duration 1 month', /1 month/.test(basicOfferHtml));
-assertFalsy('offerHtml no mkt-card--best when not best', /mkt-card--best/.test(basicOfferHtml));
-
-var bestOfferHtml = renderMarketOfferHtml({ provider: 'NiceHash', price_btc_per_th_day: 0.00001, hashrate: 50e12, fee: 1.0, duration: '7 days' }, true);
-assertTruthy('bestOfferHtml has mkt-card--best', /mkt-card--best/.test(bestOfferHtml));
-assertTruthy('bestOfferHtml has NI icon', /NI/.test(bestOfferHtml));
-
-var staleOfferHtml = renderMarketOfferHtml({ provider: 'MRR', price_btc_per_th_day: 0.00002, hashrate: 200e12, fee: 3.0, _stale: true }, false);
-assertTruthy('staleOfferHtml has mkt-card--stale', /mkt-card--stale/.test(staleOfferHtml));
-assertTruthy('staleOfferHtml has stale badge', /stale/.test(staleOfferHtml));
-
-var metaStale = renderMarketOfferHtml({ provider: 'Parasite', price_btc_per_th_day: 0.00003, hashrate: 300e12, fee: 2.0, meta: 'stale' }, false);
-assertTruthy('metaStale has stale via meta string', /mkt-card--stale/.test(metaStale));
-
-var htmlEscaped = renderMarketOfferHtml({ provider: '<script>', price_btc_per_th_day: 0.00001, hashrate: 10e12, fee: 1.0 }, false);
-assertTruthy('offerHtml escapes provider name', /&lt;script&gt;/.test(htmlEscaped));
-assertFalsy('offerHtml no raw script tag', /<script>/.test(htmlEscaped));
-
-var unknownFields = renderMarketOfferHtml({ price_btc_per_th_day: 0.00001 }, false);
-assertTruthy('offerHtml handles missing provider', /unknown/.test(unknownFields));
-assertTruthy('offerHtml handles 0 hashrate', /0 H/.test(unknownFields));
-assertTruthy('offerHtml handles missing fee', /\u2014/.test(unknownFields));
-assertTruthy('offerHtml handles missing duration', /\u2014/.test(unknownFields));
-
-
-// ── renderMarketGridHtml tests ─────────────────────────────────────────
-assertTruthy('gridHtml null → empty', /no marketplace offers/.test(renderMarketGridHtml(null, 'all')));
-assertTruthy('gridHtml [] → empty', /no marketplace offers/.test(renderMarketGridHtml([], 'all')));
-
+// ── _mktRenderCap (Issue #185) — cap honesto de 50 linhas ──────────────
+// Fixture de venues no formato que o grid institucional consome (antes vinha
+// emprestada do bloco legado do card grid, removido neste PR).
 var twoOffers = [
   { provider: 'Braiins', price_btc_per_th_day: 0.00002, hashrate: 100e12, fee: 2.5, duration: '1d' },
   { provider: 'NiceHash', price_btc_per_th_day: 0.00001, hashrate: 50e12, fee: 1.5, duration: '1d' },
 ];
-var gridHtml = renderMarketGridHtml(twoOffers, 'all');
-assertTruthy('gridHtml has Braiins card', /Braiins/.test(gridHtml));
-assertTruthy('gridHtml has NiceHash card', /NiceHash/.test(gridHtml));
-assertTruthy('gridHtml best offer has mkt-card--best', /mkt-card--best/.test(gridHtml));
 
-var filteredGrid = renderMarketGridHtml(twoOffers, 'Braiins');
-assertTruthy('filteredGrid has Braiins', /Braiins/.test(filteredGrid));
-assertFalsy('filteredGrid no NiceHash', /NiceHash/.test(filteredGrid));
-
-var emptyFilter = renderMarketGridHtml(twoOffers, 'Mrr');
-assertTruthy('emptyFilter shows no offers for selected', /no offers for selected/.test(emptyFilter));
-
-var phOffers = [
-  { provider: 'Braiins', price_btc_per_th_day: 0.00001, hashrate: 2.5e15, fee: 1.0, duration: '1d' },
-];
-var phGrid = renderMarketGridHtml(phOffers, 'all');
-assertTruthy('phGrid shows PH/s', /PH/.test(phGrid));
-assertTruthy('phGrid shows 2.50', /2\.50/.test(phGrid));
-
-// ── mktRenderCap tests (Issue #185) ───────────────────────────────────
 var capNull = mktRenderCap(null, 50);
 assertEqual('renderCap null → total 0', capNull.total, 0);
 assertEqual('renderCap null → rows empty', capNull.rows.length, 0);
@@ -2630,146 +2319,24 @@ assertTruthy('renderCap 60/50 → capped', capHit.capped);
 assertEqual('renderCap keeps first venue', capHit.rows[0].provider, 'Venue0');
 assertEqual('renderCap drops venue 59', capHit.rows[49].provider, 'Venue49');
 
-
-// ═══════════════════════════════════════════════════════════════════════════
-//  SUITE 18: renderMarketTrend() — trend data preparation & dataset format
-// ═══════════════════════════════════════════════════════════════════════════
-
-console.log('📊 SUITE 18: renderMarketTrend() — chart data prep & providers');
-
-// ── Provider color helpers ─────────────────────────────────────────────
-var _providerColors = {
-  braiins: '#f7931a',
-  nicehash: '#00e676',
-  mrr: '#40c4ff',
-  parasite: '#ce93d8',
-};
-
-function getProviderColor(name) {
-  return _providerColors[(name || '').toLowerCase()] || '#888888';
-}
-
-assertEqual('getProviderColor braiins → #f7931a', getProviderColor('braiins'), '#f7931a');
-assertEqual('getProviderColor Braiins → #f7931a (case)', getProviderColor('Braiins'), '#f7931a');
-assertEqual('getProviderColor nicehash → #00e676', getProviderColor('nicehash'), '#00e676');
-assertEqual('getProviderColor mrr → #40c4ff', getProviderColor('mrr'), '#40c4ff');
-assertEqual('getProviderColor parasite → #ce93d8', getProviderColor('parasite'), '#ce93d8');
-assertEqual('getProviderColor unknown → #888888', getProviderColor('unknown'), '#888888');
-assertEqual('getProviderColor null → #888888', getProviderColor(null), '#888888');
-assertEqual('getProviderColor "" → #888888', getProviderColor(''), '#888888');
-
-// ── Format trend label (MM/DD HH:mm) ───────────────────────────────────
-function formatTrendLabel(ts) {
-  var d = new Date(ts);
-  return (d.getMonth()+1)+'/'+String(d.getDate()).padStart(2,'0')+' '+String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0');
-}
-
-var nowDate = new Date(2026, 6, 15, 14, 30); // July 15, 2026 14:30 UTC
-var formatted = formatTrendLabel(nowDate.getTime());
-assertEqual('formatTrendLabel July 15 14:30', formatted, '7/15 14:30');
-
-var midnight = new Date(2026, 0, 1, 0, 5).getTime();
-assertEqual('formatTrendLabel Jan 1 00:05', formatTrendLabel(midnight), '1/01 00:05');
-
-// ── Build trend datasets (pure version of renderMarketTrend logic) ──────
-function buildTrendDatasets(providers) {
-  if (!providers || typeof providers !== 'object') return { datasets: [], labels: [], hasPHData: false };
-  var labels = [];
-  var datasets = [];
-  var hasPHData = false;
-  var providerKeys = Object.keys(providers);
-  providerKeys.forEach(function(pname) {
-    var points = providers[pname];
-    if (!points || !points.length) return;
-    // Initialize labels from first provider
-    if (labels.length === 0 && points.length >= 2) {
-      labels = points.map(function(p) { return formatTrendLabel(p.ts * 1000); });
-    }
-    var color = getProviderColor(pname);
-    var thsData = points.map(function(p) { return p.price_btc_per_th_day; });
-    datasets.push({
-      label: pname + ' (TH/s)',
-      data: thsData,
-      borderColor: color,
-      backgroundColor: color + '33',
-      yAxisID: 'y-ths',
-      borderWidth: 1.5,
-    });
-    // Check for PH/s data
-    var hasPH = points.some(function(p) { return p.price_btc_per_ph_day != null; });
-    if (hasPH) {
-      hasPHData = true;
-      var phsData = points.map(function(p) { return p.price_btc_per_ph_day; });
-      datasets.push({
-        label: pname + ' (PH/s)',
-        data: phsData,
-        borderColor: color,
-        backgroundColor: color + '22',
-        yAxisID: 'y-phs',
-        borderWidth: 1.5,
-        borderDash: [4, 3],
-      });
-    }
+// ── contrato do fragmento: os helpers puros do Market vêm do FONTE ─────
+['_fmtBtcPerTh', '_mktUsdPerTh', '_mktBestIndex', '_mktRenderCap', 'sortMarketVenues', 'buildMarketTrendDatasets']
+  .forEach(function (n) {
+    assertTruthy('static/src/45-market.js expõe ' + n, typeof _market[n] === 'function');
   });
-  return { datasets: datasets, labels: labels, hasPHData: hasPHData };
-}
 
-assertEqual('buildTrendDatasets(null).labels → []', buildTrendDatasets(null).labels.length, 0);
-assertEqual('buildTrendDatasets({}).datasets → 0', buildTrendDatasets({}).datasets.length, 0);
+// ═══════════════════════════════════════════════════════════════════════════
+//  SUITE 18 (removida) — renderMarketTrend(): espelho legado do gráfico
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// Esta suíte espelhava `renderMarketTrend`, `getProviderColor`, `_providerColors`,
+// `formatTrendLabel` e `buildTrendDatasets` — NENHUM deles existe em
+// `static/src/*.js`. O gráfico 7d do Hashrate Market é hoje
+// `buildMarketTrendDatasets` + `loadMarketTrend` (static/src/45-market.js), que
+// roda contra o FONTE em SUITE 32. O espelho montava datasets num formato que
+// produção não produz (`(TH/s)`/`(PH/s)` com eixo duplo, cor por mapa fixo e
+// rótulo MM/DD HH:mm) — passava sempre e não protegia nada (Issue #515).
 
-var singleProvider = {
-  braiins: [
-    { ts: 1745000000, price_btc_per_th_day: 0.000010, price_btc_per_ph_day: 0.010 },
-    { ts: 1745000100, price_btc_per_th_day: 0.000011, price_btc_per_ph_day: 0.011 },
-  ],
-};
-var singleResult = buildTrendDatasets(singleProvider);
-assertEqual('singleResult.datasets → 2 (TH/s + PH/s)', singleResult.datasets.length, 2);
-assertEqual('singleResult.labels → 2', singleResult.labels.length, 2);
-assertTruthy('singleResult hasPHData → true', singleResult.hasPHData);
-assertEqual('singleResult dataset[0] label braiins (TH/s)', singleResult.datasets[0].label, 'braiins (TH/s)');
-assertEqual('singleResult dataset[0] yAxisID → y-ths', singleResult.datasets[0].yAxisID, 'y-ths');
-assertEqual('singleResult dataset[1] label braiins (PH/s)', singleResult.datasets[1].label, 'braiins (PH/s)');
-assertEqual('singleResult dataset[1] yAxisID → y-phs', singleResult.datasets[1].yAxisID, 'y-phs');
-assertTruthy('singleResult dataset[1] has borderDash (dashed)', Array.isArray(singleResult.datasets[1].borderDash));
-
-// No PH/s data
-var noPHProvider = {
-  nicehash: [
-    { ts: 1745000000, price_btc_per_th_day: 0.000015 },
-    { ts: 1745000100, price_btc_per_th_day: 0.000016 },
-  ],
-};
-var noPHResult = buildTrendDatasets(noPHProvider);
-assertEqual('noPHResult.datasets → 1 (no PH/s)', noPHResult.datasets.length, 1);
-assertFalsy('noPHResult hasPHData → false', noPHResult.hasPHData);
-assertEqual('noPHResult dataset[0] yAxisID → y-ths', noPHResult.datasets[0].yAxisID, 'y-ths');
-
-// Multiple providers
-var multiProvider = {
-  braiins: [
-    { ts: 1745000000, price_btc_per_th_day: 0.000010 },
-    { ts: 1745000100, price_btc_per_th_day: 0.000011 },
-  ],
-  nicehash: [
-    { ts: 1745000000, price_btc_per_th_day: 0.000012 },
-    { ts: 1745000100, price_btc_per_th_day: 0.000013 },
-  ],
-};
-var multiResult = buildTrendDatasets(multiProvider);
-assertEqual('multiResult.datasets → 2 providers × 1 line each', multiResult.datasets.length, 2);
-assertEqual('multiResult labels → 2', multiResult.labels.length, 2);
-assertEqual('multiResult dataset[0] color braiins #f7931a', multiResult.datasets[0].borderColor, '#f7931a');
-assertEqual('multiResult dataset[1] color nicehash #00e676', multiResult.datasets[1].borderColor, '#00e676');
-
-// Single point (not enough to chart)
-var singlePoint = {
-  mrr: [
-    { ts: 1745000000, price_btc_per_th_day: 0.000020 },
-  ],
-};
-var singlePointResult = buildTrendDatasets(singlePoint);
-assertEqual('singlePointResult labels → 0 (<2 points)', singlePointResult.labels.length, 0);	
 
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -4871,25 +4438,6 @@ const QR_GOLDEN = {"helloM":{"text":"HELLO WORLD","level":"M","rows":["111111101
 //  gaps, union of timestamps, and BTC/TH/d → sats/TH/d (×1e8) conversion.
 // ═══════════════════════════════════════════════════════════════════════════
 (function() {
-  function buildMarketTrendDatasets(providers) {
-    const colors = ['rgb(247,147,26)', 'rgb(6,214,240)', 'rgb(168,85,247)', 'rgb(245,158,11)', 'rgb(16,185,129)'];
-    const allTs = new Set();
-    Object.values(providers || {}).forEach(pts => (pts || []).forEach(p => { if (p && p.ts) allTs.add(p.ts); }));
-    const times = Array.from(allTs).sort((a, b) => a - b);
-    const labels = times.map(t => { const d = new Date(t * 1000); return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0'); });
-    const datasets = Object.keys(providers || {}).map((name, i) => {
-      const byTs = {};
-      ((providers[name]) || []).forEach(p => { if (p && p.ts != null) byTs[p.ts] = p.price_btc_per_th_day; });
-      return {
-        label: name,
-        data: times.map(t => byTs[t] != null ? Number(byTs[t]) * 1e8 : null),
-        borderColor: colors[i % colors.length],
-        backgroundColor: colors[i % colors.length].replace(')', ',0.08)').replace('rgb', 'rgba'),
-        tension: 0.4, pointRadius: 0, fill: false,
-      };
-    });
-    return { times, labels, datasets };
-  }
 
   // Two providers at three shared timestamps.
   const provs = {
@@ -5182,31 +4730,6 @@ const QR_GOLDEN = {"helloM":{"text":"HELLO WORLD","level":"M","rows":["111111101
 //  MARKET SORT (mirrors static/app.js sortMarketVenues — pure)
 // ═══════════════════════════════════════════════════════════════════════════
 
-function sortMarketVenues(venues, key, dir) {
-  const arr = (venues || []).slice();
-  const val = (v, k) => {
-    if (k === 'venue') return String(v.venue || '').toLowerCase();
-    if (k === 'price') return Number(v.price_btc_ph_day);
-    if (k === 'usd') return v.price_usd_th_day != null ? Number(v.price_usd_th_day) : NaN;
-    if (k === 'roi') return v.roi_pct != null ? Number(v.roi_pct) : NaN;
-    if (k === 'ev') return v.expected_value_btc != null ? Number(v.expected_value_btc) : NaN;
-    if (k === 'cost') return v.estimated_cost_btc != null ? Number(v.estimated_cost_btc) : NaN;
-    if (k === 'tier') return Number(v.risk_tier);
-    return v[k] != null ? Number(v[k]) : NaN;
-  };
-  arr.sort((a, b) => {
-    const va = val(a, key);
-    const vb = val(b, key);
-    if (va === vb) return 0;
-    if (typeof va === 'number' && typeof vb === 'number') {
-      if (!isFinite(va)) return 1;
-      if (!isFinite(vb)) return -1;
-      return (va - vb) * dir;
-    }
-    return String(va).localeCompare(String(vb)) * dir;
-  });
-  return arr;
-}
 
 (function marketSortTests() {
   const venues = [
