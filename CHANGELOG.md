@@ -6,6 +6,33 @@ e versionamento semântico ([SemVer](https://semver.org/lang/pt-BR/)).
 
 ## [Unreleased]
 
+### Alterado — extração do bootstrap de DB para `services/bootstrap.py` (RFC #478 · PR B4, Issue #507)
+- `init_db()` (576 linhas de DDL: tabelas, ALTERs guardados por
+  `PRAGMA table_info` para DBs legados, todos os índices, os pragmas da conexão
+  e o carimbo da revisão) e `purge_old()` (retenção de 30 dias + o passe de
+  `pool_metrics`) saíram do `app.py` para `services/bootstrap.py`, junto de
+  `SCHEMA_VERSION` e `_record_schema_version()`. O `app.py` cai de 9.084 para
+  **8.444 linhas**.
+- Schema provado **idêntico** antes/depois: dump completo do `sqlite_master`
+  (73 objetos, mesmo SQL) e **idempotência** verificada nas duas árvores.
+- O `app.py` re-exporta os nomes movidos (mesmo objeto), então `app.init_db()`,
+  `appmod.purge_old()` e `app_module.SCHEMA_VERSION` — usados pela suíte —
+  seguem válidos, e a chamada de boot `init_db()` continua no lugar, na mesma
+  ordem em relação a `ensure_users_schema()`, Sentry e `error_tracker`.
+- **Duplicata eliminada**: o `get_db()` do `app.py` era funcionalmente idêntico
+  ao de `services/db.py` (mesma leitura de `DB_PATH` no call time, mesmos
+  pragmas WAL/synchronous/busy_timeout, mesmo fallback). O `app.py` passa a
+  importar o canônico — `app.get_db is services.db.get_db` — e o item "WAL" da
+  tabela do RFC vira a remoção de uma segunda implementação em vez de mover
+  código.
+- Contrato novo: `tests/test_bootstrap_schema.py` (13 testes) — identidade dos
+  re-exports, `get_db` de fonte única, ausência de ciclo (AST), schema exato,
+  idempotência, carimbo da revisão, tabelas de telemetria delegadas, o boot
+  criando o schema no `DB_PATH` do env (contrato do `conftest`) e a retenção de
+  30 dias do `purge_old`.
+- Achado de fronteira registrado no teste: `devices` e `axe_agent_commands`
+  **não** vêm do `init_db` — são criadas pelos registries no boot.
+
 ### Adicionado — guard de alvo de patch órfão no CI (Issue #505)
 - `scripts/check-monkeypatch-targets.py`: guard **blocking** no job `gate` que
   falha quando um teste patcheia um nome que o módulo alvo **não possui**. Um

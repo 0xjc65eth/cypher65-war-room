@@ -17,6 +17,10 @@
 > código **não** estava em `app.py` e sim em `services/user_polling.py`; a cache
 > global + a camada de fetchers + `_build_snapshot` foram para
 > `services/snapshot_assembly.py` (user_polling: 1.606 → 1.152 linhas).
+> Backend: PR B4 (DB bootstrap) = Issue #507 — `SCHEMA_VERSION`,
+> `_record_schema_version`, `init_db()` (576 linhas) e `purge_old()` para
+> `services/bootstrap.py`; `app.py` 9.084 → 8.444 linhas. Achado: o `get_db` do
+> `app.py` era uma **duplicata idêntica** de `services.db.get_db` — eliminada.
 
 ## 1. Contexto e problema
 
@@ -66,7 +70,7 @@ O padrão já existe (`routes/*.py` com blueprints) — o RFC o estende:
 | B1 | Admin gate + licenças | ✅ #495 — gate `_admin_request_allowed` + 10 rotas `/api/admin/*` → `routes/admin_routes.py` (blueprint `admin_bp`), `app.py` re-exporta o gate. `issue_license` já vivia em `services/licensing.py`: nada a mover. Achado: `/api/admin/sessions` sem gate → #496 ✅ corrigida (gate aplicado, conjunto de rotas sem gate agora vazio) |
 | B2 | SSE fan-out | ✅ #499 — `_sse_clients` + lock, `broadcast_snapshot()` e `GET /api/stream` → `services/sse.py` (blueprint `sse_bp`, sem `url_prefix`), `app._broadcast_snapshot` re-exporta o MESMO objeto. `url_map` provado idêntico (178 regras, mesmo path/método) e o `import queue` do `app.py` saiu junto. O módulo nasceu com contrato próprio (11 testes) — antes o SSE tinha **zero** cobertura, porque a única régua era um navegador |
 | B3 | Snapshot assembly | ✅ #501 — **premissa corrigida**: a origem é `services/user_polling.py`, não `app.py` (o `app.py` só importava `_build_snapshot`). Foram para `services/snapshot_assembly.py`: cache global LRU + `_get_global`/`_update_global`/`_cached_user_fetch`, constantes de fetch, `btc_price_cache`, `_fetch_json`/`_fetch_text`, os 6 `_fetch_global_*`, `_fetch_user_data`/`_fetch_account` e `_build_snapshot` (528 linhas). `user_polling.py` 1.606 → 1.152 linhas e re-exporta os 24 nomes. **Caveat de monkeypatch**: o fetch layer resolve os nomes nos globals do módulo novo — quem patcheava `services.user_polling._fetch_*` passou a mirar `services.snapshot_assembly` (3 arquivos de teste retargetados, um deles passava *vacuamente* sem interceptar) |
-| B4 | DB bootstrap/schema | init_db, índices, WAL, purges → `services/bootstrap.py` |
+| B4 | DB bootstrap/schema | ✅ #507 — `SCHEMA_VERSION` + `_record_schema_version` + **`init_db()` (576 linhas: tabelas, ALTERs guardados por `PRAGMA table_info`, índices, pragmas e o carimbo da revisão)** + `purge_old()` → `services/bootstrap.py` (678 linhas, sem importar `app`). Schema provado **idêntico** antes/depois (73 objetos no `sqlite_master`, mesmo SQL) e idempotente. O item **“WAL”** do RFC era o `get_db()` — que existia **duplicado**: `app.get_db` ≡ `services.db.get_db` (mesma expressão de fallback `os.environ.get("DB_PATH", "data/war_room.sqlite")`, mesmos pragmas). A duplicata morreu: `app.get_db is services.db.get_db`, uma implementação só. `app.py` 9.084 → 8.444 linhas |
 
 Regra dura: **cada PR-B mantém o gate de cobertura 80% e não pode reduzir a cobertura de `app.py`** (linhas movidas continuam cobertas nos novos módulos — import re-export temporário em `app.py` permite migração sem big-bang).
 
