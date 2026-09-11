@@ -6,6 +6,30 @@ e versionamento semântico ([SemVer](https://semver.org/lang/pt-BR/)).
 
 ## [Unreleased]
 
+### Alterado — `get_db` passa a morar em `services/bootstrap.py` (Issue #508)
+- `get_db()` — a conexão SQLite com os pragmas WAL/`synchronous=NORMAL`/
+  `busy_timeout` — passa a ser **definido** em `services/bootstrap.py`, o dono do
+  bootstrap/schema do SQLite. `services/db.py` vira um re-export: o caminho
+  histórico `from services.db import get_db` (~90 usos em rotas, serviços e
+  testes) continua devolvendo o **mesmo objeto**. Uma implementação só nos três
+  caminhos: `bootstrap` → `services.db` → `app`.
+- **Sem ciclo, de propósito**: `doc_feedback`, `conversion` e `beta_analytics`
+  importam `services.db` — que re-exporta o `get_db` do bootstrap — então eles
+  entram por **import tardio dentro do `init_db()`** (o único lugar que os usa).
+  No topo do módulo o grafo fecharia um ciclo na inicialização parcial.
+  `tenant`, `error_tracker` e `schema` foram verificados sem dependência de
+  `services.db` e seguem no topo. Há teste travando isso no AST.
+- O alias morto `DB_PATH = config.DB_PATH` do `services/db.py` saiu (ninguém o
+  importava). **Correção de registro**: a premissa anotada na Issue #508 de uma
+  duplicata `config.DB_PATH` × `app.DB_PATH` era **falsa** — a linha 27 que
+  originou a nota é do `config.py`, e o `app.py` já importa `DB_PATH` de lá
+  (com comentário explícito de "single source of truth"). Nada a reconciliar.
+- **Achado real do levantamento**: `core/data_layer.py` deriva o próprio caminho
+  (`CYPHER65_DATA_DIR` + `war_room.sqlite`), **ignorando** o `DB_PATH` do
+  ambiente — e o usa como default de argumento do `__init__`. Hoje o módulo só é
+  exercitado por `tests/test_data_layer.py` (sem chamador de produção), então
+  ficou fora deste PR para não mudar a semântica dele em silêncio.
+
 ### Alterado — extração do bootstrap de DB para `services/bootstrap.py` (RFC #478 · PR B4, Issue #507)
 - `init_db()` (576 linhas de DDL: tabelas, ALTERs guardados por
   `PRAGMA table_info` para DBs legados, todos os índices, os pragmas da conexão

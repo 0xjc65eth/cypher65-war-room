@@ -17,6 +17,11 @@
 > código **não** estava em `app.py` e sim em `services/user_polling.py`; a cache
 > global + a camada de fetchers + `_build_snapshot` foram para
 > `services/snapshot_assembly.py` (user_polling: 1.606 → 1.152 linhas).
+> Backend: Issue #508 (sub-issue do B4) — `get_db()` passa a ser definido em
+> `services/bootstrap.py` e `services/db.py` vira re-export (uma implementação
+> só); o import de telemetria virou tardio dentro do `init_db()` para não fechar
+> ciclo. A parte "reconciliar `config.DB_PATH` × `app.DB_PATH`" da issue era
+> **premissa falsa** (a linha 27 é do `config.py`; o `app.py` já importa de lá).
 > Backend: PR B4 (DB bootstrap) = Issue #507 — `SCHEMA_VERSION`,
 > `_record_schema_version`, `init_db()` (576 linhas) e `purge_old()` para
 > `services/bootstrap.py`; `app.py` 9.084 → 8.444 linhas. Achado: o `get_db` do
