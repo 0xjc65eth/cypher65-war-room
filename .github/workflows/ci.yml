@@ -186,6 +186,17 @@ jobs:
           python -m flake8 app.py helpers.py solo_mining.py services core axe_fleet routes agents
           python -m black --check app.py helpers.py solo_mining.py services core axe_fleet routes agents
 
+      # Higiene de teste (Issue #505). BLOQUEIA quando um teste patcheia um
+      # nome que o módulo alvo NÃO possui: se o módulo só re-exporta o símbolo
+      # (importa e nunca usa), o patch não intercepta — o código resolve o nome
+      # nos globals do dono real. Nada falha, o teste só deixa de injetar o
+      # fake. Foi o que aconteceu no PR B3 (#502): `test_anti_mock.py` passou a
+      # não testar nada e a suíte foi à rede. Guard estático (só AST).
+      - name: Monkeypatch target guard (orphan patch targets)
+        run: |
+          source .venv/bin/activate
+          python scripts/check-monkeypatch-targets.py
+
       - name: Run Python tests with coverage
         run: |
           source .venv/bin/activate

@@ -6,6 +6,26 @@ e versionamento semântico ([SemVer](https://semver.org/lang/pt-BR/)).
 
 ## [Unreleased]
 
+### Adicionado — guard de alvo de patch órfão no CI (Issue #505)
+- `scripts/check-monkeypatch-targets.py`: guard **blocking** no job `gate` que
+  falha quando um teste patcheia um nome que o módulo alvo **não possui**. Um
+  patch só intercepta se o nome for **usado pelo próprio módulo** (o lookup de
+  global acontece no dicionário dele) — se o módulo apenas **re-exporta** o
+  símbolo, o patch vira no-op silencioso: nada falha, o teste só deixa de
+  injetar o fake.
+- É a armadilha que o PR B3 (#502) expôs: `tests/test_anti_mock.py` patcheava
+  `services.user_polling._fetch_*`, os patches deixaram de interceptar, o
+  `_build_snapshot` foi à rede de verdade e caiu no `except`, e as asserções
+  continuaram satisfeitas pelos defaults. O guard reproduz esse caso real e
+  falha apontando o arquivo e a linha exatos.
+- Análise estática (só AST, sem importar o alvo). "Dono" = o módulo define o
+  nome **ou** o referencia no corpo; nomes que ele só importa e nunca usa ficam
+  de fora. Alvo não resolvido é ignorado (fail-open) e exceções documentadas
+  passam com `# orphan-patch-ok: <motivo>`.
+- Self-test próprio: `python tests/test_monkeypatch_targets_guard.py` (10
+  casos) ou pelos testes do pytest.
+- Documentado em `docs/QUALITY.md` e nos comandos rápidos do `AGENTS.md`.
+
 ### Alterado — extração da montagem de snapshot para `services/snapshot_assembly.py` (RFC #478 · PR B3, Issue #501)
 - `_build_snapshot` (as ~240 linhas que montam o dict consumido pelo painel) e a
   camada de fetch global que a alimenta saíram de `services/user_polling.py` para
