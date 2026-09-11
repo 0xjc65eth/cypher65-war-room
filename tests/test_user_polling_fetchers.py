@@ -6,7 +6,6 @@ highest-diffs / network / btc-price / mempool-fees). Every upstream call is
 mocked; no test touches the network. This was the ~73% uncovered tail of
 user_polling.py — the sweep paths are covered by tests/test_rentals_sweep.py.
 """
-
 import sys
 import threading
 
@@ -19,7 +18,6 @@ import services.user_polling as up  # noqa: E402
 
 
 # ── _fetch_json / _fetch_text (retry + fallback) ────────────────────────────
-
 
 def test_fetch_json_success(monkeypatch):
     calls = []
@@ -96,14 +94,9 @@ def test_fetch_text_retries_then_none(monkeypatch):
 
 # ── _fetch_global_pool / leaderboard / highest-diffs (cache-first) ──────────
 
-
 def test_fetch_global_pool_cache_hit(monkeypatch):
-    monkeypatch.setattr(
-        sa, "_get_global", lambda key, ttl=up.GLOBAL_CACHE_TTL: {"hashrate": 1e15}
-    )
-    monkeypatch.setattr(
-        sa, "_fetch_json", lambda *a, **k: pytest.fail("must not fetch on cache hit")
-    )
+    monkeypatch.setattr(sa, "_get_global", lambda key, ttl=up.GLOBAL_CACHE_TTL: {"hashrate": 1e15})
+    monkeypatch.setattr(sa, "_fetch_json", lambda *a, **k: pytest.fail("must not fetch on cache hit"))
     assert up._fetch_global_pool() == {"hashrate": 1e15}
 
 
@@ -119,9 +112,7 @@ def test_fetch_global_pool_fetch_and_cache(monkeypatch):
 
     monkeypatch.setattr(sa, "_fetch_json", _fetch_json)
     monkeypatch.setattr(sa, "_get_global", _get_global)
-    monkeypatch.setattr(
-        sa, "_update_global", lambda key, val: fetched.append(("cached", key))
-    )
+    monkeypatch.setattr(sa, "_update_global", lambda key, val: fetched.append(("cached", key)))
     assert up._fetch_global_pool() == {"hashrate": 2e15}
     assert ("cached", "pool") in fetched
 
@@ -150,9 +141,7 @@ def test_fetch_global_leaderboard(monkeypatch):
 
 def test_fetch_global_highest_diffs_per_address_cache(monkeypatch):
     monkeypatch.setattr(sa, "_get_global", lambda key, ttl=60: [{"difficulty": "1T"}])
-    monkeypatch.setattr(
-        sa, "_fetch_json", lambda *a, **k: pytest.fail("cache hit — no fetch")
-    )
+    monkeypatch.setattr(sa, "_fetch_json", lambda *a, **k: pytest.fail("cache hit — no fetch"))
     assert up._fetch_global_highest_diffs("bc1qabc") == [{"difficulty": "1T"}]
 
 
@@ -165,7 +154,6 @@ def test_fetch_global_highest_diffs_fetch(monkeypatch):
 
 
 # ── _fetch_global_network (parallel + derivation fallback) ──────────────────
-
 
 def test_fetch_global_network_full_cache(monkeypatch):
     def _get_global(key, ttl=up.GLOBAL_CACHE_TTL):
@@ -200,9 +188,8 @@ def test_fetch_global_network_fetch_and_derive(monkeypatch):
         def submit(self_, fn, *args):
             return _Fut(next(results_iter))
 
-    monkeypatch.setattr(
-        up.concurrent.futures, "ThreadPoolExecutor", lambda max_workers=4: _Ex()
-    )
+    monkeypatch.setattr(up.concurrent.futures, "ThreadPoolExecutor",
+                        lambda max_workers=4: _Ex())
     monkeypatch.setattr(sa, "_update_global", lambda key, val: None)
 
     h, d, hr = up._fetch_global_network()
@@ -235,15 +222,14 @@ def test_fetch_global_network_hashrate_derived_from_difficulty(monkeypatch):
         def submit(self_, fn, *args):
             return _Fut(next(results_iter))
 
-    monkeypatch.setattr(
-        up.concurrent.futures, "ThreadPoolExecutor", lambda max_workers=4: _Ex()
-    )
+    monkeypatch.setattr(up.concurrent.futures, "ThreadPoolExecutor",
+                        lambda max_workers=4: _Ex())
     monkeypatch.setattr(sa, "_update_global", lambda key, val: None)
 
     h, d, hr = up._fetch_global_network()
     assert h == 857202
     assert d == pytest.approx(126231507121868.0)
-    assert hr == pytest.approx(126231507121868.0 * (2**32) / 600)
+    assert hr == pytest.approx(126231507121868.0 * (2 ** 32) / 600)
 
 
 def test_fetch_global_network_mempool_fees_stored(monkeypatch):
@@ -270,12 +256,10 @@ def test_fetch_global_network_mempool_fees_stored(monkeypatch):
         def submit(self_, fn, *args):
             return _Fut(next(results_iter))
 
-    monkeypatch.setattr(
-        up.concurrent.futures, "ThreadPoolExecutor", lambda max_workers=4: _Ex()
-    )
-    monkeypatch.setattr(
-        sa, "_update_global", lambda key, val: cached.__setitem__(key, val)
-    )
+    monkeypatch.setattr(up.concurrent.futures, "ThreadPoolExecutor",
+                        lambda max_workers=4: _Ex())
+    monkeypatch.setattr(sa, "_update_global",
+                        lambda key, val: cached.__setitem__(key, val))
 
     up._fetch_global_network()
     assert cached.get("mempool_fees") == {"fastestFee": 10, "hourFee": 4}
@@ -285,29 +269,20 @@ def test_fetch_global_network_mempool_fees_stored(monkeypatch):
 
 # ── _fetch_global_btc_price (TTL cache + stale fallback) ────────────────────
 
-
 def test_btc_price_fresh_cache(monkeypatch):
-    monkeypatch.setattr(
-        sa, "btc_price_cache", {"ts": 100, "data": {"bitcoin": {"usd": 50000}}}
-    )
-    monkeypatch.setattr(
-        sa, "time", type("T", (), {"time": staticmethod(lambda: 150)})()
-    )
-    monkeypatch.setattr(
-        sa, "_fetch_json", lambda *a, **k: pytest.fail("no fetch on fresh cache")
-    )
+    monkeypatch.setattr(sa, "btc_price_cache",
+                        {"ts": 100, "data": {"bitcoin": {"usd": 50000}}})
+    monkeypatch.setattr(sa, "time", type("T", (), {"time": staticmethod(lambda: 150)})())
+    monkeypatch.setattr(sa, "_fetch_json", lambda *a, **k: pytest.fail("no fetch on fresh cache"))
     assert up._fetch_global_btc_price() == {"bitcoin": {"usd": 50000}}
 
 
 def test_btc_price_fetch_success(monkeypatch):
     now = 1_000_000
-    monkeypatch.setattr(
-        sa, "time", type("T", (), {"time": staticmethod(lambda: now)})()
-    )
+    monkeypatch.setattr(sa, "time", type("T", (), {"time": staticmethod(lambda: now)})())
     monkeypatch.setattr(sa, "btc_price_cache", {"ts": 0, "data": None})
-    monkeypatch.setattr(
-        sa, "_fetch_json", lambda *a, **k: {"bitcoin": {"usd": 61000, "brl": 350000}}
-    )
+    monkeypatch.setattr(sa, "_fetch_json",
+                        lambda *a, **k: {"bitcoin": {"usd": 61000, "brl": 350000}})
     out = up._fetch_global_btc_price()
     assert out["bitcoin"]["usd"] == 61000
     assert sa.btc_price_cache["ts"] == now  # cache written
@@ -315,20 +290,15 @@ def test_btc_price_fetch_success(monkeypatch):
 
 def test_btc_price_stale_fallback(monkeypatch):
     """Provider fails → falls back to the last real quote (never a fake)."""
-    monkeypatch.setattr(
-        sa, "time", type("T", (), {"time": staticmethod(lambda: 2_000_000)})()
-    )
-    monkeypatch.setattr(
-        sa, "btc_price_cache", {"ts": 100, "data": {"bitcoin": {"usd": 59000}}}
-    )
+    monkeypatch.setattr(sa, "time", type("T", (), {"time": staticmethod(lambda: 2_000_000)})())
+    monkeypatch.setattr(sa, "btc_price_cache",
+                        {"ts": 100, "data": {"bitcoin": {"usd": 59000}}})
     monkeypatch.setattr(sa, "_fetch_json", lambda *a, **k: None)
     assert up._fetch_global_btc_price() == {"bitcoin": {"usd": 59000}}
 
 
 def test_btc_price_empty_when_no_cache_and_fetch_fails(monkeypatch):
-    monkeypatch.setattr(
-        sa, "time", type("T", (), {"time": staticmethod(lambda: 3_000_000)})()
-    )
+    monkeypatch.setattr(sa, "time", type("T", (), {"time": staticmethod(lambda: 3_000_000)})())
     monkeypatch.setattr(sa, "btc_price_cache", {"ts": 0, "data": None})
     monkeypatch.setattr(sa, "_fetch_json", lambda *a, **k: None)
     assert up._fetch_global_btc_price() == {}
@@ -336,23 +306,17 @@ def test_btc_price_empty_when_no_cache_and_fetch_fails(monkeypatch):
 
 def test_btc_price_bad_quote_ignored_stale_kept(monkeypatch):
     """Fetch returns a malformed payload → not cached, stale quote returned."""
-    monkeypatch.setattr(
-        sa, "time", type("T", (), {"time": staticmethod(lambda: 4_000_000)})()
-    )
-    monkeypatch.setattr(
-        sa, "btc_price_cache", {"ts": 500, "data": {"bitcoin": {"usd": 58000}}}
-    )
+    monkeypatch.setattr(sa, "time", type("T", (), {"time": staticmethod(lambda: 4_000_000)})())
+    monkeypatch.setattr(sa, "btc_price_cache",
+                        {"ts": 500, "data": {"bitcoin": {"usd": 58000}}})
     monkeypatch.setattr(sa, "_fetch_json", lambda *a, **k: {"bitcoin": None})
     assert up._fetch_global_btc_price() == {"bitcoin": {"usd": 58000}}
 
 
 # ── _fetch_global_mempool_fees ──────────────────────────────────────────────
 
-
 def test_mempool_fees_cache_hit(monkeypatch):
-    monkeypatch.setattr(
-        sa, "_get_global", lambda key, ttl=up.GLOBAL_CACHE_TTL: {"fastestFee": 11}
-    )
+    monkeypatch.setattr(sa, "_get_global", lambda key, ttl=up.GLOBAL_CACHE_TTL: {"fastestFee": 11})
     assert up._fetch_global_mempool_fees() == {"fastestFee": 11}
 
 
@@ -364,11 +328,8 @@ def test_mempool_fees_miss_returns_none_shape(monkeypatch):
 
 # ── _cached_user_fetch dedup (per-address short TTL) ────────────────────────
 
-
 def test_cached_user_fetch_hit_no_upstream(monkeypatch):
-    monkeypatch.setattr(
-        sa, "_get_global", lambda key, ttl=up.USER_FETCH_TTL: {"data": 1}
-    )
+    monkeypatch.setattr(sa, "_get_global", lambda key, ttl=up.USER_FETCH_TTL: {"data": 1})
     fetched = []
 
     def _fetcher(*a):
@@ -386,15 +347,12 @@ def test_cached_user_fetch_miss_fetches_and_caches(monkeypatch):
     def _fetcher(*a):
         return {"data": "fresh"}
 
-    monkeypatch.setattr(
-        sa, "_update_global", lambda key, val: stored.__setitem__(key, val)
-    )
+    monkeypatch.setattr(sa, "_update_global", lambda key, val: stored.__setitem__(key, val))
     assert up._cached_user_fetch("user_bc1q", _fetcher) == {"data": "fresh"}
     assert stored.get("user_bc1q") == {"data": "fresh"}
 
 
 # ── _update_global LRU eviction guard ───────────────────────────────────────
-
 
 def test_update_global_evicts_oldest_when_over_cap(monkeypatch):
     orig = dict(sa._global_cache)
@@ -423,11 +381,9 @@ def test_update_global_empty_cache_eviction_guard(monkeypatch):
 
 # ── Async dispatch exception guards ─────────────────────────────────────────
 
-
 def test_notify_tenant_push_exception_swallowed(monkeypatch):
     """The internal notify call raising (push provider down) is swallowed by
     the function's own guard — never propagates."""
-
     def _boom(*a, **k):
         raise RuntimeError("push provider down")
 
@@ -437,11 +393,8 @@ def test_notify_tenant_push_exception_swallowed(monkeypatch):
 
 
 def test_dispatch_rental_pl_alerts_noop_when_empty(monkeypatch):
-    monkeypatch.setattr(
-        up,
-        "_dispatch_tenant_alert_family",
-        lambda *a, **k: pytest.fail("must not dispatch on empty"),
-    )
+    monkeypatch.setattr(up, "_dispatch_tenant_alert_family",
+                        lambda *a, **k: pytest.fail("must not dispatch on empty"))
     up.dispatch_rental_pl_alerts("t1", [])
 
 
@@ -455,59 +408,34 @@ def test_dispatch_rental_pl_alerts_exception_swallowed(monkeypatch):
 
 # ── _build_snapshot (worker build + dedup + halving) ────────────────────────
 
-
 def test_build_snapshot_with_real_workers(monkeypatch):
     """The worker build loop (primary match by name, dedup, halving) is the
     ~46-line block that previously only ran live. All upstream fetchers are
     mocked; workerData is real so the loop executes."""
     from unittest.mock import patch
 
-    user = {
-        "workerData": [
-            {
-                "name": "MINER-A",
-                "id": "1",
-                "hashrate": 100e12,
-                "bestDifficulty": "87T",
-                "lastSubmission": 1000,
-                "uptime": 90000,
-            },
-            {
-                "name": "miner-a",
-                "id": "2",
-                "hashrate": 200e12,  # dup — wins
-                "bestDifficulty": "90T",
-                "lastSubmission": 2000,
-                "uptime": 100,
-            },
-            {
-                "name": "backup",
-                "id": "3",
-                "hashrate": 50e12,
-                "bestDifficulty": "1T",
-                "lastSubmission": 3000,
-                "uptime": 0,
-            },
-        ]
-    }
-    with patch("services.snapshot_assembly._fetch_user_data", return_value=user), patch(
-        "services.snapshot_assembly._fetch_account", return_value=None
-    ), patch(
-        "services.snapshot_assembly._fetch_global_pool", return_value={"hashrate": 1e15}
-    ), patch(
-        "services.snapshot_assembly._fetch_global_leaderboard", return_value=[]
-    ), patch(
-        "services.snapshot_assembly._fetch_global_highest_diffs", return_value=[]
-    ), patch(
-        "services.snapshot_assembly._fetch_global_network",
-        return_value=(857200, 1.26e14, 6e20),
-    ), patch(
-        "services.snapshot_assembly._fetch_global_btc_price",
-        return_value={"bitcoin": {"usd": 61234, "brl": 350000}},
-    ), patch(
-        "services.snapshot_assembly._fetch_global_mempool_fees",
-        return_value={"fastestFee": 12},
-    ):
+    user = {"workerData": [
+        {"name": "MINER-A", "id": "1", "hashrate": 100e12,
+         "bestDifficulty": "87T", "lastSubmission": 1000, "uptime": 90000},
+        {"name": "miner-a", "id": "2", "hashrate": 200e12,  # dup — wins
+         "bestDifficulty": "90T", "lastSubmission": 2000, "uptime": 100},
+        {"name": "backup", "id": "3", "hashrate": 50e12,
+         "bestDifficulty": "1T", "lastSubmission": 3000, "uptime": 0},
+    ]}
+    with patch("services.snapshot_assembly._fetch_user_data", return_value=user), \
+         patch("services.snapshot_assembly._fetch_account", return_value=None), \
+         patch("services.snapshot_assembly._fetch_global_pool",
+               return_value={"hashrate": 1e15}), \
+         patch("services.snapshot_assembly._fetch_global_leaderboard",
+               return_value=[]), \
+         patch("services.snapshot_assembly._fetch_global_highest_diffs",
+               return_value=[]), \
+         patch("services.snapshot_assembly._fetch_global_network",
+               return_value=(857200, 1.26e14, 6e20)), \
+         patch("services.snapshot_assembly._fetch_global_btc_price",
+               return_value={"bitcoin": {"usd": 61234, "brl": 350000}}), \
+         patch("services.snapshot_assembly._fetch_global_mempool_fees",
+               return_value={"fastestFee": 12}):
         snap = up._build_snapshot("bc1qtest", "miner-a")
 
     # Primary matched by normalized name (case-insensitive) → idx 1 (the dup).
@@ -525,22 +453,21 @@ def test_build_snapshot_no_worker_data(monkeypatch):
     """Empty workerData — worker stays None, snapshot still assembles."""
     from unittest.mock import patch
 
-    with patch(
-        "services.snapshot_assembly._fetch_user_data", return_value={"workerData": []}
-    ), patch("services.snapshot_assembly._fetch_account", return_value=None), patch(
-        "services.snapshot_assembly._fetch_global_pool", return_value={"hashrate": 1e15}
-    ), patch(
-        "services.snapshot_assembly._fetch_global_leaderboard", return_value=[]
-    ), patch(
-        "services.snapshot_assembly._fetch_global_highest_diffs", return_value=[]
-    ), patch(
-        "services.snapshot_assembly._fetch_global_network",
-        return_value=(None, None, None),
-    ), patch(
-        "services.snapshot_assembly._fetch_global_btc_price", return_value={}
-    ), patch(
-        "services.snapshot_assembly._fetch_global_mempool_fees", return_value={}
-    ):
+    with patch("services.snapshot_assembly._fetch_user_data",
+               return_value={"workerData": []}), \
+         patch("services.snapshot_assembly._fetch_account", return_value=None), \
+         patch("services.snapshot_assembly._fetch_global_pool",
+               return_value={"hashrate": 1e15}), \
+         patch("services.snapshot_assembly._fetch_global_leaderboard",
+               return_value=[]), \
+         patch("services.snapshot_assembly._fetch_global_highest_diffs",
+               return_value=[]), \
+         patch("services.snapshot_assembly._fetch_global_network",
+               return_value=(None, None, None)), \
+         patch("services.snapshot_assembly._fetch_global_btc_price",
+               return_value={}), \
+         patch("services.snapshot_assembly._fetch_global_mempool_fees",
+               return_value={}):
         snap = up._build_snapshot("bc1qempty", "nope")
 
     assert snap["worker"] is None
@@ -555,20 +482,15 @@ def test_build_snapshot_exception_survives(monkeypatch):
     def _boom(*a, **k):
         raise RuntimeError("fetch exploded")
 
-    with patch("services.snapshot_assembly._fetch_user_data", _boom), patch(
-        "services.snapshot_assembly._fetch_account", return_value=None
-    ), patch("services.snapshot_assembly._fetch_global_pool", return_value={}), patch(
-        "services.snapshot_assembly._fetch_global_leaderboard", return_value=[]
-    ), patch(
-        "services.snapshot_assembly._fetch_global_highest_diffs", return_value=[]
-    ), patch(
-        "services.snapshot_assembly._fetch_global_network",
-        return_value=(None, None, None),
-    ), patch(
-        "services.snapshot_assembly._fetch_global_btc_price", return_value={}
-    ), patch(
-        "services.snapshot_assembly._fetch_global_mempool_fees", return_value={}
-    ):
+    with patch("services.snapshot_assembly._fetch_user_data", _boom), \
+         patch("services.snapshot_assembly._fetch_account", return_value=None), \
+         patch("services.snapshot_assembly._fetch_global_pool", return_value={}), \
+         patch("services.snapshot_assembly._fetch_global_leaderboard", return_value=[]), \
+         patch("services.snapshot_assembly._fetch_global_highest_diffs", return_value=[]), \
+         patch("services.snapshot_assembly._fetch_global_network",
+               return_value=(None, None, None)), \
+         patch("services.snapshot_assembly._fetch_global_btc_price", return_value={}), \
+         patch("services.snapshot_assembly._fetch_global_mempool_fees", return_value={}):
         snap = up._build_snapshot("bc1qboom", "x")
     assert isinstance(snap, dict)  # base shape survived
 
@@ -577,10 +499,8 @@ def test_build_snapshot_empty_address_short_circuits(monkeypatch):
     """No address → returns the empty base snapshot without fetching."""
     from unittest.mock import patch
 
-    with patch(
-        "services.snapshot_assembly._fetch_user_data",
-        side_effect=AssertionError("must not fetch without address"),
-    ):
+    with patch("services.snapshot_assembly._fetch_user_data",
+               side_effect=AssertionError("must not fetch without address")):
         snap = up._build_snapshot("", "x")
     assert snap["btc_address"] == ""
     assert snap["worker"] is None
@@ -593,22 +513,16 @@ def test_build_snapshot_pool_stale_normalized(monkeypatch):
     snapshot still assembles with pool=None."""
     from unittest.mock import patch
 
-    with patch(
-        "services.snapshot_assembly._fetch_user_data", return_value={"workerData": []}
-    ), patch("services.snapshot_assembly._fetch_account", return_value=None), patch(
-        "services.snapshot_assembly._fetch_global_pool", return_value=None
-    ), patch(
-        "services.snapshot_assembly._fetch_global_leaderboard", return_value=[]
-    ), patch(
-        "services.snapshot_assembly._fetch_global_highest_diffs", return_value=[]
-    ), patch(
-        "services.snapshot_assembly._fetch_global_network",
-        return_value=(857200, 1.26e14, 6e20),
-    ), patch(
-        "services.snapshot_assembly._fetch_global_btc_price", return_value={}
-    ), patch(
-        "services.snapshot_assembly._fetch_global_mempool_fees", return_value={}
-    ):
+    with patch("services.snapshot_assembly._fetch_user_data",
+               return_value={"workerData": []}), \
+         patch("services.snapshot_assembly._fetch_account", return_value=None), \
+         patch("services.snapshot_assembly._fetch_global_pool", return_value=None), \
+         patch("services.snapshot_assembly._fetch_global_leaderboard", return_value=[]), \
+         patch("services.snapshot_assembly._fetch_global_highest_diffs", return_value=[]), \
+         patch("services.snapshot_assembly._fetch_global_network",
+               return_value=(857200, 1.26e14, 6e20)), \
+         patch("services.snapshot_assembly._fetch_global_btc_price", return_value={}), \
+         patch("services.snapshot_assembly._fetch_global_mempool_fees", return_value={}):
         snap = up._build_snapshot("bc1qstale", "x")
     assert snap["pool"] is None  # stale pool normalized
 
@@ -618,29 +532,23 @@ def test_build_snapshot_leaderboard_substring_match(monkeypatch):
     on the last-8-chars (case-insensitive)."""
     from unittest.mock import patch
 
-    with patch(
-        "services.snapshot_assembly._fetch_user_data", return_value={"workerData": []}
-    ), patch("services.snapshot_assembly._fetch_account", return_value=None), patch(
-        "services.snapshot_assembly._fetch_global_pool", return_value={"hashrate": 1e15}
-    ), patch(
-        "services.snapshot_assembly._fetch_global_leaderboard",
-        return_value=[{"address": "bc1qxxxxxABC12345", "rank": 3}],
-    ), patch(
-        "services.snapshot_assembly._fetch_global_highest_diffs", return_value=[]
-    ), patch(
-        "services.snapshot_assembly._fetch_global_network",
-        return_value=(857200, 1.26e14, 6e20),
-    ), patch(
-        "services.snapshot_assembly._fetch_global_btc_price", return_value={}
-    ), patch(
-        "services.snapshot_assembly._fetch_global_mempool_fees", return_value={}
-    ):
+    with patch("services.snapshot_assembly._fetch_user_data",
+               return_value={"workerData": []}), \
+         patch("services.snapshot_assembly._fetch_account", return_value=None), \
+         patch("services.snapshot_assembly._fetch_global_pool",
+               return_value={"hashrate": 1e15}), \
+         patch("services.snapshot_assembly._fetch_global_leaderboard",
+               return_value=[{"address": "bc1qxxxxxABC12345", "rank": 3}]), \
+         patch("services.snapshot_assembly._fetch_global_highest_diffs", return_value=[]), \
+         patch("services.snapshot_assembly._fetch_global_network",
+               return_value=(857200, 1.26e14, 6e20)), \
+         patch("services.snapshot_assembly._fetch_global_btc_price", return_value={}), \
+         patch("services.snapshot_assembly._fetch_global_mempool_fees", return_value={}):
         snap = up._build_snapshot("bc1qxxxxxabc12345", "x")  # suffix matches
     assert snap["leaderboard_entry"]["rank"] == 3
 
 
 # ── evaluate_user_alerts GC guard ───────────────────────────────────────────
-
 
 def test_evaluate_user_alerts_gc_trims_oversized_seen_set():
     """alert_seen > 1000 → trimmed in place to the last 500 (same policy as
@@ -653,7 +561,6 @@ def test_evaluate_user_alerts_gc_trims_oversized_seen_set():
 
 
 # ── auto-exclude counter / dispatch guards ──────────────────────────────────
-
 
 def test_bump_auto_exclude_counter_rejects_invalid_path():
     orig = dict(up._AUTO_EXCLUDE_ALERTS_BY_PATH)
@@ -688,7 +595,6 @@ def test_fire_webhook_async_fallback_on_queue_failure(monkeypatch):
     """When the retry queue itself blows up, the last-resort direct webhook
     send runs (never crash the daemon thread)."""
     import threading
-
     calls = []
 
     def _boom(**kw):
@@ -742,15 +648,11 @@ def test_network_mempool_fees_empty_payload_fallback(monkeypatch):
         def submit(self_, fn, *args):
             return _Fut()
 
-    monkeypatch.setattr(
-        up.concurrent.futures, "ThreadPoolExecutor", lambda max_workers=4: _Ex()
-    )
-    monkeypatch.setattr(
-        sa, "_update_global", lambda key, val: cached.__setitem__(key, val)
-    )
+    monkeypatch.setattr(up.concurrent.futures, "ThreadPoolExecutor",
+                        lambda max_workers=4: _Ex())
+    monkeypatch.setattr(sa, "_update_global",
+                        lambda key, val: cached.__setitem__(key, val))
     up._fetch_global_network()
-    assert cached.get("mempool_fees") == {
-        "fastestFee": None,
-        "halfHourFee": None,
-        "hourFee": None,
-    }
+    assert cached.get("mempool_fees") == {"fastestFee": None,
+                                           "halfHourFee": None,
+                                           "hourFee": None}
