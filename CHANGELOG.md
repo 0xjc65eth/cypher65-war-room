@@ -6,6 +6,17 @@ e versionamento semântico ([SemVer](https://semver.org/lang/pt-BR/)).
 
 ## [Unreleased]
 
+### Adicionado — build determinístico do app.js + extração do core (Issue #489)
+- `static/app.js` (13k linhas num IIFE único) passa a ser **artefato gerado**
+  por `scripts/build_app_js.cjs`: concatenação na ordem do MANIFEST, Node puro
+  e sem dependências (Opção A do RFC #478). A fonte vive em `static/src/*.js`.
+- O CI roda `node scripts/build_app_js.cjs --check` e **bloqueia o merge** se o
+  artefato divergir das fontes; editar `static/app.js` à mão não passa. Um
+  fragmento órfão em `static/src/` falha o build em vez de nunca chegar ao
+  navegador e escapar dos guards (DOM/XSS, tokens-hex, a11y).
+- Zero mudança de comportamento: mesma tag `<script>`, mesma ordem lexical dos
+  blocos (hoisting/TDZ intactos), mesmos ids, rotas e contratos de fetch.
+
 ### Segurança — rollback cifrado e confirmado de pool (Issue #471)
 - Antes de um `update_pool` físico, telemetria recente deve comprovar a
   configuração anterior completa; sem alvo ou `SECRET_KEY` estável, nenhum

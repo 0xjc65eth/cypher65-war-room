@@ -36,7 +36,9 @@ pre-commit install            # hooks de higiene (opcional, não-gate)
 ```bash
 make test                     # pytest completo (usa .venv)
 python -m pytest tests/test_seu_arquivo.py -q   # teste isolado
-node tests/test_app_js_core.js                   # suíte JS espelhada (873+)
+node tests/test_app_js_core.js                   # suíte JS core (carrega o fonte real)
+node scripts/build_app_js.cjs                    # regera static/app.js (fonte: static/src/)
+node scripts/build_app_js.cjs --check            # drift gate do CI (app.js × static/src/)
 bash run-e2e.sh --file=dashboard.spec.js         # E2E Playwright
 PORT=8766 bash run-e2e.sh --file=dashboard.spec.js  # se 8765 já estiver ocupada
 ```
@@ -56,6 +58,12 @@ dir). Novos testes devem seguir o mesmo padrão.
   `design-motion-principles`) e **qualidade técnica** (observabilidade
   Sentry/logs JSON, lint Biome/Knip/commitlint, mutation testing, Codecov) e
   o **code review pré-merge** (skill `enterprise-code-review`).
+- **`static/app.js` é artefato gerado**: a fonte vive em `static/src/*.js` e o
+  arquivo servido é montado por `node scripts/build_app_js.cjs` (Opção A do RFC
+  #478 — concatenação na ordem do MANIFEST, Node puro, sem bundler). **Nunca
+  edite `static/app.js` à mão**: edite o fragmento e rode o build. O CI roda
+  `node scripts/build_app_js.cjs --check` e bloqueia o merge se houver drift,
+  e um fragmento órfão em `static/src/` falha o build.
 - **Honest telemetry**: o app bota com zero estado e só mostra dados reais.
   Nunca insira mocks/seed de devices em produção.
 - **Env-gating**: features sensíveis são off-by-default via env var
@@ -99,7 +107,9 @@ docs(deploy): document two-process gunicorn option
 ## Antes do PR
 
 1. Rode a suíte Python + JS (acima).
-2. Se mexeu em IDs de DOM, rode `node scripts/validate-dom-ids.cjs`.
-3. Atualize `CHANGELOG.md` (seção `Unreleased`) para mudanças notáveis.
-4. Se é um fix/feature sensível (auth, device control, dados), adicione um
+2. Se mexeu em JS de frontend, edite `static/src/*.js` e rode
+   `node scripts/build_app_js.cjs` (nunca edite `static/app.js` à mão).
+3. Se mexeu em IDs de DOM, rode `node scripts/validate-dom-ids.cjs`.
+4. Atualize `CHANGELOG.md` (seção `Unreleased`) para mudanças notáveis.
+5. Se é um fix/feature sensível (auth, device control, dados), adicione um
    teste de regressão no padrão dos existentes.
