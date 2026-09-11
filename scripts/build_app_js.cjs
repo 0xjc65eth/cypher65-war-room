@@ -51,6 +51,7 @@ const MANIFEST = [
   '40-app-logic.js',
   '45-market.js',
   '46-rentals.js',
+  '47-admin.js',
   '50-close.js',
 ];
 

@@ -6,6 +6,44 @@ e versionamento semântico ([SemVer](https://semver.org/lang/pt-BR/)).
 
 ## [Unreleased]
 
+### Alterado — extração do domínio Admin/CFO/CRO para `static/src/47-admin.js` (RFC #478, Issue #518)
+- O bloco **Admin/CFO/CRO** saiu de `static/src/40-app-logic.js` para
+  `static/src/47-admin.js` (1.092 linhas, sendo **1.057 movidas verbatim**):
+  estado (`_adminLoaded`, `_adminAuditDecisions`, `_adminAuditChart`,
+  `_adminAnalyticsCharts`, `_adminMetricsChart`, `_adminErrorChart`,
+  `_adminFunnelTrendChart`), os builders puros do audit trail
+  (`adminAuditIsoWeekKey`, `buildAdminAuditWeekly`, `buildFeatureAlert`,
+  `buildFeatureBreakdown`, `buildCohortRows`, `buildFunnelTrend`,
+  `filterAdminAuditDecisions`, `adminAuditVerdictMeta`,
+  `buildAdminAnalyticsModel`), `fetchAdminData`, `_renderAdmin` + os renderers
+  (analytics, docs feedback, features, funnel trend, coortes LTV, pool metrics,
+  error rate, degradação, audit trail) e os CSV/filtros do painel.
+  `40-app-logic.js` 10.465 → **9.407 linhas**.
+- **Correção da previsão da issue**: o fragmento previsto era `52-admin.js`, mas
+  `50-close.js` **fecha o IIFE** — o arquivo é `47-admin.js`, antes do
+  fechamento (mesma correção feita no PR 3 para o Rentals).
+- **Este cluster NÃO contém só declarações** — ao contrário do Market e do
+  Rentals, ele tem **4 statements de topo** que executam na avaliação do script:
+  o listener delegado de `#admin-panel` (`change` → filtros do audit trail) e os
+  `click` de `#admin-audit-csv`, `#admin-funnel-csv` e `#admin-refresh-btn`.
+  Verificado: nenhum depende de ordem em relação aos outros listeners do IIFE e
+  `static/app.js` é carregado com `defer` (o DOM já está parseado), então rodar
+  mais tarde dentro do **mesmo IIFE síncrono** não altera o resultado.
+- **A verificação dos listeners tem dentes**: a e2e
+  `admin-audit.spec.js` já provava o listener de filtro (muda a contagem de
+  linhas ao selecionar tenant/verdict); para o refresh, a
+  `conversion-admin.spec.js` foi **fortalecida** — agora conta as requisições a
+  `/api/admin/sessions` e exige que o clique dispare uma nova leva (antes só
+  afirmava "clicar não lança", o que passaria sem listener nenhum). Mutação que
+  desliga o listener de refresh faz a spec falhar nos dois projetos.
+- **Movimento mecânico provado**: recorte verbatim byte-idêntico e
+  `static/app.js` gerado é uma **permutação** do anterior — 0 linhas perdidas,
+  34 adicionadas (todas comentário). Nenhum id de DOM, contrato de fetch ou
+  formato de payload mudou.
+- Ficou registrado como follow-up: os builders puros do audit trail continuam
+  **espelhados** em `tests/test_app_js_core.js`; a conversão para
+  `loadFragment('47-admin.js')` segue o padrão fixado na Issue #515.
+
 ### Alterado — extração do domínio Rentals para `static/src/46-rentals.js` (RFC #478 · PR 3, Issue #517)
 - O domínio **Rentals** saiu de `static/src/40-app-logic.js` para o fragmento
   `static/src/46-rentals.js` (1.795 linhas, sendo **1.770 movidas verbatim**):
