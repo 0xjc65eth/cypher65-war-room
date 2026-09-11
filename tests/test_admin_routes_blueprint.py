@@ -15,9 +15,9 @@ mais domínios para fora do monólito:
   3. cada rota gateada responde 403 para origem remota sem key E para
      credencial declarada e errada (matriz da Issue #481) — prova de que o
      gate continua aplicado depois da mudança de arquivo;
-  4. a lista de rotas **sem** gate é exatamente a lacuna conhecida
-     (`/api/admin/sessions`, Issue #496) — rota nova sem gate quebra o CI,
-     e corrigir #496 também quebra (obrigando a atualizar o contrato);
+  4. a lista de rotas **sem** gate é VAZIA — `/api/admin/sessions` foi
+     gateada na Issue #496, então nenhuma rota `/api/admin/*` pode ficar
+     sem gate. Rota nova sem gate quebra o CI;
   5. o `SessionManager` do boot é injetado (sem import circular).
 
 Nada aqui lê `app.py` para "confirmar a extração": os testes falam com o
@@ -41,6 +41,7 @@ REMOTE = "8.8.8.8"
 # (method, path, kwargs do test client)
 GATED_ROUTES = [
     ("GET", "/api/admin/docs-feedback", {}),
+    ("GET", "/api/admin/sessions", {}),
     ("GET", "/api/admin/pool-metrics", {}),
     ("GET", "/api/admin/error-rate", {}),
     ("GET", "/api/admin/degradation-rate", {}),
@@ -51,10 +52,11 @@ GATED_ROUTES = [
     ("GET", "/api/admin/rentals/accepted-recos", {}),
 ]
 
-# Lacuna conhecida e ACEITA por enquanto: `/api/admin/sessions` é anterior ao
-# gate. Corrigir é mudança de comportamento → Issue #496 (fora do B1). A lista
-# é fechada de propósito: qualquer rota nova sem gate falha o CI.
-KNOWN_UNGATED = {"/api/admin/sessions"}
+# Lacuna fechada na Issue #496: `/api/admin/sessions` era a única rota
+# anterior ao gate e agora usa `_admin_request_allowed()` como as demais.
+# O conjunto é vazio e fechado de propósito: qualquer rota nova sem gate
+# falha o CI, e desgatear uma rota existente também.
+KNOWN_UNGATED = set()
 
 
 @pytest.fixture
@@ -194,14 +196,13 @@ def test_gated_route_allows_localhost_without_key(rclient, monkeypatch):
 
 
 def test_ungated_admin_routes_are_exactly_the_known_gap():
-    """Rota nova sem gate → CI vermelho. Corrigir #496 → CI pede atualizar."""
+    """Nenhuma rota `/api/admin/*` pode existir sem gate (Issue #496)."""
     gated = {path for _, path, _ in GATED_ROUTES}
     ungated = set(_admin_rules()) - gated
     assert ungated == KNOWN_UNGATED, (
         f"conjunto de rotas sem gate mudou: {ungated}. "
-        "Se você ADICIONOU uma rota, adicione o gate e mova para GATED_ROUTES. "
-        "Se você GATEOU /api/admin/sessions, mova-a para GATED_ROUTES e "
-        "atualize KNOWN_UNGATED (Issue #496)."
+        "Toda rota /api/admin/* precisa do gate `_admin_request_allowed()`: "
+        "adicione a chamada na rota e mova-a para GATED_ROUTES."
     )
 
 
