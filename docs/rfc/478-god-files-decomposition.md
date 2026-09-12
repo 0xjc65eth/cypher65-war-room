@@ -128,20 +128,28 @@ Ordem de extração (uma PR por domínio, cada uma ≤ ~1500 linhas movidas):
 
 | PR | Domínio | Blocos | Linhas movidas | `40-app-logic.js` após | Execução no topo |
 |---|---|---|---|---|---|
-| **5** | Terminal/SSE | R9 + R22 + R23 | **773** | 6.933 | 3 (`window.onerror`, `unhandledrejection`, `#clear-logs` click) |
-| **6** | Automations + Alerts + Auto-Pilot + Decision Matrix/Command Center | R7 + R13 + R16 + R26 | **1.062** | 5.871 | 1 (`if (dom.openAlertCenter)` em R26) |
-| **7** | Probability/Block Model | R10 + R11 + R12 | **635** | 5.236 | 1 (`window.setProfitMode = …`) |
-| **8** | Billing/Auth | R1 | **923** | 4.313 | 1 (`window.openUpgradeModal = …`) |
-| **9** | Wallet + Support | R3 + R20 | **1.032** | **3.281** | **17** — o maior de todos: listeners de WebLN/wallet, `renderSupportMethods()`/`loadDonations()` chamados direto no topo, e a região **vendorada do QR** (`(function buildQrMath(){…})()` + `QrPoly.prototype.*`) |
-| — | **residual** — Dashboard (`render()`/gráficos/HUD/overview/painéis), Docs, Settings, Export, Braiins buy, AI Chat/Operator, Theme, primitivas DOM, shell (sidebar/módulos), `boot()` | R2+R4+R5+R6+R8+R14+R15+R17+R18+R19+R21+R24+R25+R27+R28+R29+R30+R31 | — | **3.281** (3.275 nos blocos + 6 linhas de borda do IIFE) | — |
+| **5** | Terminal/SSE | R9 + R22 + R23 | ✅ **#529** (PR #530) — **752 linhas** movidas para `static/src/39-terminal.js` (804 com cabeçalho) | **6.959** | 3 (`window.onerror`, `unhandledrejection`, `#clear-logs` click) |
+| **6** | Automations + Alerts + Auto-Pilot + Decision Matrix/Command Center | R7 + R13 + R16 + R26 | **1.062** | 5.897 | 1 (`if (dom.openAlertCenter)` em R26) |
+| **7** | Probability/Block Model | R10 + R11 + R12 | **635** | 5.262 | 1 (`window.setProfitMode = …`) |
+| **8** | Billing/Auth | R1 | **923** | 4.339 | 1 (`window.openUpgradeModal = …`) |
+| **9** | Wallet + Support | R3 + R20 | **1.032** | **3.307** | **17** — o maior de todos: listeners de WebLN/wallet, `renderSupportMethods()`/`loadDonations()` chamados direto no topo, e a região **vendorada do QR** (`(function buildQrMath(){…})()` + `QrPoly.prototype.*`) |
+| — | **residual** — Dashboard (`render()`/gráficos/HUD/overview/painéis), Docs, Settings, Export, Braiins buy, AI Chat/Operator, Theme, primitivas DOM, shell (sidebar/módulos), `boot()` | R2+R4+R5+R6+R8+R14+R15+R17+R18+R19+R21+R24+R25+R27+R28+R29+R30+R31 | — | **≈3.307** | — |
 
-**A meta de ~4.000 linhas é atingida no PR 9** (os PRs 5–8 param em 4.313). O residual de 3.281 linhas ainda tem domínios extraíveis — inclusive um PR 10 natural de **Dashboard/`render()`** (R5+R6+R8+R18+R24+R31 ≈ 1.096) — mas eles ficam **fora da meta**; a lista acima é o que fecha o objetivo.
+Os valores de `40-app-logic.js` após cada PR carregam o delta real do PR 5 (−747, não −773): ficaram no god file o bloco de estado do FCC (`_cc*`, 5 linhas, que **não pode** mover — ver abaixo) e o global compartilhado `_lastSnapshot` (5 linhas).
+
+**A meta de ~4.000 linhas é atingida no PR 9** (os PRs 5–8 param em 4.339). O residual ainda tem domínios extraíveis — inclusive um PR 10 natural de **Dashboard/`render()`** (R5+R6+R8+R18+R24+R31 ≈ 1.096) — mas eles ficam **fora da meta**; a lista acima é o que fecha o objetivo.
 
 **Nota de risco do PR 6.** O bloco R26 (Automations) tem 1 statement de topo (`if (dom.openAlertCenter)`, listener do Alert Center) e R7/R13/R16 têm 0. O PR deve rodar a mesma varredura de TDZ do 4b antes de mover — com um cuidado a mais: o scan ingênuo de "linha não-declaração em indent 2" acusa **12 statements** no PR 6, dos quais **11 são falsos positivos** das funções sem indentação (`acctRankLabels`/`renderAccount`). Quem for medir precisa tratar declarações em **coluna 0** também.
 
 #### Duas restrições estruturais que governam todos os PRs §3.3
 
-1. **`boot()` é chamado no topo do IIFE — em `40-app-logic.js`, linhas 6245–6388.** O `boot();` nu está na linha 6388, ou seja: ele é executado **durante a avaliação do 5º de 11 fragmentos**, ANTES de `45-market.js` … `49-axe-fleet.js` existirem (os `function` declarations sofrem hoisting no IIFE único, então são chamáveis; os `const`/`let` deles ainda estão em **TDZ**). É essa a origem de toda a análise de TDZ registrada no Admin (2b) e no 4b — e a razão pela qual o prefixo síncrono do `boot` não pode ser tocado. O fragmento de Terminal/SSE (PR 5) entra **depois** do `boot` no arquivo gerado, como todos os outros.
+1. **`boot()` é chamado no topo do IIFE — em `40-app-logic.js`, linhas 6245–6388.** O `boot();` nu está na linha 6388, ou seja: ele é executado **durante a avaliação do 5º de 11 fragmentos**, ANTES de `45-market.js` … `49-axe-fleet.js` existirem (os `function` declarations sofrem hoisting no IIFE único, então são chamáveis; os `const`/`let` deles ainda estão em **TDZ**). É essa a origem de toda a análise de TDZ registrada no Admin (2b) e no 4b — e a razão pela qual o prefixo síncrono do `boot` não pode ser tocado.
+
+   **Correção (medida ao executar o PR 5, Issue #529):** a previsão original desta seção — "o fragmento de Terminal/SSE entra **depois** do `boot`, como todos os outros" — estava **errada**, e o erro é instrutivo. O corpo síncrono do `boot` **lê estado do Terminal**: `_initLmEventLogControls()` (que chama `_lmRenderStats()` → `const _lmStats`), `_liveTermInit()` e `logMessage('SYSTEM', …)` (que faz `events.push(...)` → `let events`). Com o fragmento **depois** do 40, esse estado estaria em **TDZ** nesse instante → `ReferenceError` no boot. Logo:
+
+   > **Regra de posicionamento.** Um domínio cujo estado seja lido por uma chamada de **nível de módulo** do `40-app-logic.js` (o `boot();` da linha 6.388, ou qualquer `X()` executado no topo, como o `renderSupportMethods()` do domínio Wallet) tem de ser posicionado **ANTES** do god file. Caso contrário, seu estado precisa permanecer no god file. É a primeira exceção à regra "45–49 vêm depois".
+
+   O PR 5 usou a primeira opção: `static/src/39-terminal.js` é o primeiro fragmento **anterior** ao 40. A consequência deliberada é que o error boundary global (`window.onerror`/`unhandledrejection`) passa a cobrir também a avaliação do `40-app-logic.js` — estritamente mais proteção, nunca menos.
 2. **A lógica de conexão/reconexão SSE mora DENTRO do `boot()`** (o `EventSource`, o debounce de 2s e o fallback para polling após 5 erros vivem em `40-app-logic.js`, ~6.340–6.383) — **não** em um módulo próprio. O item "reconexão" do PR 5, portanto, **não é uma extração mecânica**: tem duas opções. **(a)** mover só os terminais (R9+R22+R23) e deixar o bloco SSE no `boot`, documentando o acoplamento — é o que mantém a disciplina de "nenhum comportamento novo" e é a recomendação. **(b)** extrair o bloco SSE para uma função `connectLiveStream()` no fragmento do Terminal/SSE — é um refactor pequeno e legítimo, mas **não** é movimento verbatim e merece PR próprio. Registro isto agora para ninguém descobrir no meio do PR (o fan-out do lado do servidor já foi para `services/sse.py` no B2).
 
 **Achado de forma, não de estrutura.** R6/R7 contêm uma "bolha" sem indentação: `renderPool` (2.242), `acctRankLabels` (2.294) e `renderAccount` (2.320) estão **em coluna 0** enquanto o resto do arquivo usa 2 espaços para declaracões de topo. Não quebra nada (`acctRankLabels` é espelhado nos testes), mas quem for mover R6/R7 deve preservar o recorte verbatim e não "aproveitar" para reindentar — isso infla o diff e destrói a prova de permutação.
@@ -196,7 +204,7 @@ Nuance fixada no B2 (#499): se o destino já está dentro de um `--cov` agregado
 
 `static/app.js` torna-se artefato gerado; os domínios vivem em `static/src/*.js` de ≤ ~1500 linhas cada; `app.py` cai para ≤ ~4000 linhas (bootstrap + glue), com cada domínio em módulo testável isoladamente. Tudo isso **sem um único comportamento novo** entre PRs.
 
-**Alvo do frontend (fixado em §3.3, 2026-09-12).** `40-app-logic.js` sai de **7.706** para **~3.281 linhas** ao fim do **PR 9**, atingindo a meta de ~4.000 (os PRs 5–8 param em 4.313). O que sobra são ~3.300 linhas de **orquestração**: `boot()`, o loop de poll, o sistema de módulos/sidebar, `render()` e as primitivas de DOM — mais os blocos de Dashboard/Docs/Settings que ainda são extraíveis num PR 10+, fora desta meta.
+**Alvo do frontend (fixado em §3.3, 2026-09-12; PR 5 executado).** `40-app-logic.js` sai de **7.706** para **~3.307 linhas** ao fim do **PR 9**, atingindo a meta de ~4.000 (os PRs 5–8 param em 4.339). O que sobra são ~3.300 linhas de **orquestração**: `boot()`, o loop de poll, o sistema de módulos/sidebar, `render()` e as primitivas de DOM — mais os blocos de Dashboard/Docs/Settings que ainda são extraíveis num PR 10+, fora desta meta.
 
 Estado de execução:
 
