@@ -2,9 +2,16 @@
   // AXE Fleet — domínio extraído de `40-app-logic.js`
   // ══════════════════════════════════════════════════════════════════════
   // RFC 478 (Issue 523). Movimento MECÂNICO: nenhum nome, id de DOM, contrato
-  // de fetch, formato de payload ou ordem de execução mudou — as 1.304 linhas
+  // de fetch, formato de payload ou ordem de execução mudou — as 1.229 linhas
   // abaixo foram recortadas verbatim. Fecha o domínio Fleet/AXE (o 4a levou o
   // Fleet Command Center para `48-fleet-cc.js`).
+  //
+  // LIMPEZA POSTERIOR (Issue 525): o resíduo do Fleet Command Center que o 4b
+  // deixou aqui por vizinhança textual (o raster de hash-flow + os 4 consts que
+  // ele usa, o `fetchFleetCommandCenter()` e o `initFleetCommandCenterControls()`)
+  // voltou para `48-fleet-cc.js`, que é o dono. Isto DESFEZ a dependência
+  // invertida que existia entre os dois fragmentos: o `48` (avaliado ANTES)
+  // consumia 8 nomes definidos aqui; agora todo código do FCC vive no `48`.
   //
   // DIFERENTE DO MARKET, RENTALS E DO PR 4a — mas igual ao Admin: a região tem
   // UM statement de execução no topo, o listener de `#remote-test-btn` (click
@@ -12,15 +19,14 @@
   // e `static/app.js` é carregado com `defer` (o DOM já está parseado), então
   // registrar mais tarde dentro do MESMO IIFE síncrono não muda o resultado.
   //
-  // TDZ: a região declara 7 variáveis (`_scanning`, `_lmFlow`,
-  // `_lmLastCounters`, `_LM_FLOW_MAX`, `_LM_FLOW_LABELS`, `_axeDetailChart`,
+  // TDZ: a região declara 3 variáveis (`_scanning`, `_axeDetailChart`,
   // `_axeWizState`) e NENHUMA delas é referenciada fora da região. O único
   // caminho que entra aqui ANTES da avaliação do fragmento é o prefixo síncrono
   // do `boot()`, que chama `initAxeFleetControls()` → `initAxeScanControls()` /
   // `initAxeAgentPanel()`: varridos os três corpos, nenhuma dessas variáveis é
   // tocada em nível síncrono — todas vivem dentro de handlers.
   //
-  // Acoplamento externo (6 nomes, todos no mesmo IIFE — function declarations
+  // Acoplamento externo (5 nomes, todos no mesmo IIFE — function declarations
   // são hoisted, então a ordem de concatenação não importa):
   //   · `fetchAxeFleet()`             — `initAuth`, `fetchSnapshot`, o SSE do `boot`
   //                                     e `_doActivateModule`
@@ -28,12 +34,10 @@
   //   · `fetchTailscale()`           — `boot`
   //   · `initAxeFleetControls()`     — `boot`
   //   · `openAxeDetail()`            — `renderAlerts`
-  //   · `initFleetCommandCenterControls()` — `boot`
   //
-  // WART CONHECIDO: `initFleetCommandCenterControls` (13 linhas) é controle do
-  // painel Fleet Command Center, mas é vizinho de `fetchFleetCommandCenter` e
-  // veio junto para o recorte seguir verbatim e contíguo. A posse está
-  // documentada na Issue 523 como candidata a realocação mecânica posterior.
+  // Dependência de SAÍDA (1 nome, agora no `48`): `fetchAxeFleet()` chama
+  // `fetchFleetCommandCenter()` ao fim do poll para o FCC andar no mesmo
+  // cadence — chamada a função hoisted, não a estado movido.
 
   // AXE FLEET — render device cards from snapshot.axe_fleet
   // ══════════════════════════════════════════════════════════════════════
@@ -282,82 +286,7 @@
     });
     return rows;
   }
-  // Hash Flow Raster — rolling per-worker status samples (client-side ring
-  // buffer, one column per poll tick, max 24) so the feed shows worker
-  // health over time without requiring a new backend series.
-  const _lmFlow = {};
-  const _lmLastCounters = {}; // per-device previous cumulative share counters
-  const _LM_FLOW_MAX = 24;
-  // Raster cell color reflects SHARE QUALITY for the tick, not just device
-  // status: we diff the firmware's cumulative counters (shares_accepted /
-  // rejected / stale) between consecutive polls. A reject/stale is far more
-  // actionable than a plain "online" cell — it signals pool/hardware trouble.
-  const _LM_FLOW_LABELS = { ok: 'share', rej: 'reject', stale: 'stale', idle: 'online', warn: 'warn', bad: 'offline', mute: '' };
-  // Pure: map (device status, per-tick share delta) → raster cell color code.
-  function _lmFlowSampleFromDelta(status, delta) {
-    if (delta) {
-      if (delta.r > 0) return 'rej';    // reject beats everything
-      if (delta.s > 0) return 'stale';  // stale beats accepted
-      if (delta.a > 0) return 'ok';     // accepted share
-    }
-    const s = String(status || '').toUpperCase();
-    if (s === 'ONLINE' || s === 'HASHING') return 'idle';
-    if (s === 'WARNING' || s === 'IDLE' || s === 'PAUSED') return 'warn';
-    if (s === 'OFFLINE' || s === 'ERROR' || s === 'CRITICAL') return 'bad';
-    return 'mute';
-  }
-  // Pure: diff cumulative share counters, clamping negatives (a firmware
-  // reboot resets them — a drop is a reset, not negative shares).
-  function _lmShareDelta(prev, cur) {
-    if (!prev) return null;
-    return {
-      a: Math.max(0, (cur.a || 0) - (prev.a || 0)),
-      r: Math.max(0, (cur.r || 0) - (prev.r || 0)),
-      s: Math.max(0, (cur.s || 0) - (prev.s || 0)),
-    };
-  }
-  // Pure: human tooltip for a tick's delta ("+3 acc · +1 rej").
-  function _lmFlowDetail(delta) {
-    if (!delta) return '';
-    const parts = [];
-    if (delta.a > 0) parts.push('+' + delta.a + ' acc');
-    if (delta.r > 0) parts.push('+' + delta.r + ' rej');
-    if (delta.s > 0) parts.push('+' + delta.s + ' stale');
-    return parts.join(' · ');
-  }
-  function _pushLmFlowSample(id, sample) {
-    if (!_lmFlow[id]) _lmFlow[id] = [];
-    const buf = _lmFlow[id];
-    buf.push(sample);
-    if (buf.length > _LM_FLOW_MAX) buf.shift();
-  }
 
-  // FLEET COMMAND CENTER — fetch /summary and render. Non-fatal: on
-  // failure the panel simply keeps the last good data.
-  async function fetchFleetCommandCenter() {
-    try {
-      const r = await authFetch('/api/axe-fleet/summary');
-      if (!r.ok) return;
-      const data = await r.json();
-      _ccLastFleet = (data && data.devices) || [];
-      _ccRenderFleet();
-    } catch (e) { /* non-fatal */ }
-  }
-
-  // View toggle (grid cards / dense table) — persisted per browser.
-  function initFleetCommandCenterControls() {
-    try { _ccView = localStorage.getItem('_cc_view') || 'grid'; } catch (e) {}
-    const chips = document.querySelectorAll('.chip--view');
-    chips.forEach(chip => {
-      chip.classList.toggle('is-active', chip.getAttribute('data-cc-view') === _ccView);
-      chip.addEventListener('click', () => {
-        _ccView = chip.getAttribute('data-cc-view') || 'grid';
-        chips.forEach(c => c.classList.toggle('is-active', c.getAttribute('data-cc-view') === _ccView));
-        try { localStorage.setItem('_cc_view', _ccView); } catch (e) {}
-        _ccRenderFleet();
-      });
-    });
-  }
   function renderAxeFleet(data) {
     if (!dom.axeGrid) return;
     if (!data || !data.fleet_stats) {

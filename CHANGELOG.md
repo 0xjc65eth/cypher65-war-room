@@ -6,6 +6,37 @@ e versionamento semântico ([SemVer](https://semver.org/lang/pt-BR/)).
 
 ## [Unreleased]
 
+### Corrigido — resíduo do Fleet Command Center realocado para seu dono (RFC #478, Issue #525)
+- O 4b (#523) havia deixado em `static/src/49-axe-fleet.js`, por **vizinhança
+  textual**, código que pertence ao **Fleet Command Center**. Voltaram verbatim
+  para `static/src/48-fleet-cc.js`: o **raster de hash-flow** (`_lmFlow`,
+  `_lmLastCounters`, `_LM_FLOW_MAX`, `_LM_FLOW_LABELS` + os 4 helpers puros que
+  os consomem) e o `fetchFleetCommandCenter()` + `initFleetCommandCenterControls()`.
+  **75 linhas movidas** (o wart documentado dizia ~53: faltavam na conta o
+  `fetchFleetCommandCenter` — também FCC, também deixado para trás — e os
+  comentários das declarações). `48-fleet-cc.js` 424 → **500 linhas**,
+  `49-axe-fleet.js` 1.342 → **1.267 linhas**.
+- **Achado que dá o real motivo da limpeza: a dependência entre os dois
+  fragmentos estava INVERTIDA.** O `48-fleet-cc.js` é avaliado **antes** do `49`,
+  mas o `_ccRenderFleet()` (no `48`) lia **8 nomes definidos no `49`**. Funcionava
+  por acidente feliz — `function` declarations sofrem hoisting no IIFE
+  compartilhado e os `const` do `49` já estavam inicializados quando o
+  `_ccRenderFleet` **rodava** (o `48` só o chama em runtime). A fronteira do
+  domínio estava violada nas duas direções; agora todo o código do FCC vive no
+  `48` e a única travessia que resta é a natural: o poll do AXE Fleet
+  (`fetchAxeFleet`, no `49`) chama `fetchFleetCommandCenter()` para o FCC andar no
+  mesmo cadence.
+- **Prova de movimento mecânico**: `static/app.js` gerado é uma **permutação** do
+  anterior — multiset comparado linha a linha, **0 linhas não-brancas/não-comentário
+  alteradas** (17 comentários removidos, 32 adicionados, 2 em branco).
+- **Prova de que os testes exercitam o código no novo dono**: mutação de
+  `_LM_FLOW_MAX` (24 → 1) em `48-fleet-cc.js` faz `live-mining.spec.js` falhar nos
+  dois projetos (`✘ chromium`, `✘ mobile-chrome`).
+- **Fora do escopo, registrado**: `_ccShareSeen` continua em `40-app-logic.js`
+  porque é **compartilhado** (usado pelo `_ccRenderFleet` no `48` **e** pelo ticker
+  do Live Mining); e o harness ainda **espelha** os 3 helpers puros em vez de
+  carregar via `loadFragment()` — follow-up no padrão da Issue #515.
+
 ### Alterado — extração do AXE Fleet para `static/src/49-axe-fleet.js` (RFC #478, Issue #523)
 - O domínio **AXE Fleet** saiu de `static/src/40-app-logic.js` para
   `static/src/49-axe-fleet.js` (**1.304 linhas movidas verbatim**): acesso remoto
@@ -41,10 +72,11 @@ e versionamento semântico ([SemVer](https://semver.org/lang/pt-BR/)).
 - **Prova de movimento mecânico**: `static/app.js` gerado é uma permutação do
   anterior — **0 linhas perdidas** (nem as em branco), 36 adicionadas (todas
   comentário de cabeçalho).
-- **Wart documentado**: `initFleetCommandCenterControls` (13 linhas) é controle
+- ~~**Wart documentado**: `initFleetCommandCenterControls` (13 linhas) é controle
   do painel **Fleet Command Center**, mas é vizinho físico de
   `fetchFleetCommandCenter` e veio junto para o recorte continuar verbatim e
-  contíguo. Candidato a realocação mecânica posterior.
+  contíguo. Candidato a realocação mecânica posterior.~~ **RESOLVIDO na Issue
+  #525** — o resíduo do FCC (75 linhas) voltou para `48-fleet-cc.js`.
 
 ### Alterado — extração do Fleet Command Center para `static/src/48-fleet-cc.js` (RFC #478, Issue #521)
 - O painel **Fleet Command Center** + a telemetria saíram de
