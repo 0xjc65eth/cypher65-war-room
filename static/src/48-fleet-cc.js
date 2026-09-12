@@ -11,18 +11,27 @@
   // `40-app-logic.js` e vai para o PR 5 (Terminal/SSE). A metade de baixo começa
   // no comentário de seção ("FLEET-fed rendering"), que veio junto.
   //
-  // Zero execução no topo: a região contém APENAS declarações de função —
-  // nenhuma `const`/`let`/`var`, nenhum statement de nível de módulo. Entra depois
-  // de `47-admin.js` e antes de `50-close.js` sem TDZ e sem mudar o instante de
-  // nada que já rodava.
+  // LIMPEZA POSTERIOR (Issue 525): o 4b tinha deixado no `49-axe-fleet.js` 75
+  // linhas de resíduo do FCC que só moravam lá por vizinhança textual — o
+  // raster de hash-flow (`_lmFlow`, `_lmLastCounters`, `_LM_FLOW_MAX`,
+  // `_LM_FLOW_LABELS` e os 4 helpers puros que os consomem), o
+  // `fetchFleetCommandCenter()` e o `initFleetCommandCenterControls()`. O `48`
+  // é o dono; voltaram verbatim e a dependência invertida (48 → 49) morreu.
   //
-  // Acoplamento externo (3 pontos, todos no MESMO IIFE — function declarations
+  // Execução no topo: 4 `const` de ESTADO do raster (`_lmFlow = {}`,
+  // `_lmLastCounters = {}`, `_LM_FLOW_MAX = 24`, `_LM_FLOW_LABELS = {...}`) +
+  // apenas declarações de função. Nenhuma linha executa efeito colateral: a
+  // alocação dos literais é a única coisa que roda na avaliação do fragmento, e
+  // ela antecede (nunca segue) o `boot()` — não há superfície de TDZ.
+  //
+  // Acoplamento externo (4 pontos, todos no MESMO IIFE — function declarations
   // são hoisted, então a ordem de concatenação não importa):
   //   · `renderFleetCommandCenter()` — chamado por `render()`
-  //   · `_ccRenderFleet()`            — chamado por `initFleetCommandCenterControls()`
-  //                                      (região B, permanece) e pelo chip de view
+  //   · `initFleetCommandCenterControls()` — chamado por `boot()` (agora definido aqui)
+  //   · `fetchFleetCommandCenter()`   — chamado pelo poll do AXE Fleet (`fetchAxeFleet`,
+  //                                     que segue no `49`) e pela reconexão do SSE
   //   · `_numOrNull()`                — consumido por `buildCommandCenterRows()`
-  //                                      (região B, permanece)
+  //                                      (agora definido aqui, também veio do 4b)
   // O terminal de eventos (`_logMiningEvent`) é alimentado por
   // `renderFleetCommandCenter()` e escreve no widget do Live Mining; ambos
   // seguem no mesmo escopo, então a relação não muda.
@@ -222,6 +231,83 @@
     if (t === 'SHARE') _lmStats.shares++;
     else if (t === 'ERR' || t === 'ERROR') _lmStats.err++;
     _lmAppendEvent(t, msg);
+  }
+
+  // Hash Flow Raster — rolling per-worker status samples (client-side ring
+  // buffer, one column per poll tick, max 24) so the feed shows worker
+  // health over time without requiring a new backend series.
+  const _lmFlow = {};
+  const _lmLastCounters = {}; // per-device previous cumulative share counters
+  const _LM_FLOW_MAX = 24;
+  // Raster cell color reflects SHARE QUALITY for the tick, not just device
+  // status: we diff the firmware's cumulative counters (shares_accepted /
+  // rejected / stale) between consecutive polls. A reject/stale is far more
+  // actionable than a plain "online" cell — it signals pool/hardware trouble.
+  const _LM_FLOW_LABELS = { ok: 'share', rej: 'reject', stale: 'stale', idle: 'online', warn: 'warn', bad: 'offline', mute: '' };
+  // Pure: map (device status, per-tick share delta) → raster cell color code.
+  function _lmFlowSampleFromDelta(status, delta) {
+    if (delta) {
+      if (delta.r > 0) return 'rej';    // reject beats everything
+      if (delta.s > 0) return 'stale';  // stale beats accepted
+      if (delta.a > 0) return 'ok';     // accepted share
+    }
+    const s = String(status || '').toUpperCase();
+    if (s === 'ONLINE' || s === 'HASHING') return 'idle';
+    if (s === 'WARNING' || s === 'IDLE' || s === 'PAUSED') return 'warn';
+    if (s === 'OFFLINE' || s === 'ERROR' || s === 'CRITICAL') return 'bad';
+    return 'mute';
+  }
+  // Pure: diff cumulative share counters, clamping negatives (a firmware
+  // reboot resets them — a drop is a reset, not negative shares).
+  function _lmShareDelta(prev, cur) {
+    if (!prev) return null;
+    return {
+      a: Math.max(0, (cur.a || 0) - (prev.a || 0)),
+      r: Math.max(0, (cur.r || 0) - (prev.r || 0)),
+      s: Math.max(0, (cur.s || 0) - (prev.s || 0)),
+    };
+  }
+  // Pure: human tooltip for a tick's delta ("+3 acc · +1 rej").
+  function _lmFlowDetail(delta) {
+    if (!delta) return '';
+    const parts = [];
+    if (delta.a > 0) parts.push('+' + delta.a + ' acc');
+    if (delta.r > 0) parts.push('+' + delta.r + ' rej');
+    if (delta.s > 0) parts.push('+' + delta.s + ' stale');
+    return parts.join(' · ');
+  }
+  function _pushLmFlowSample(id, sample) {
+    if (!_lmFlow[id]) _lmFlow[id] = [];
+    const buf = _lmFlow[id];
+    buf.push(sample);
+    if (buf.length > _LM_FLOW_MAX) buf.shift();
+  }
+
+  // FLEET COMMAND CENTER — fetch /summary and render. Non-fatal: on
+  // failure the panel simply keeps the last good data.
+  async function fetchFleetCommandCenter() {
+    try {
+      const r = await authFetch('/api/axe-fleet/summary');
+      if (!r.ok) return;
+      const data = await r.json();
+      _ccLastFleet = (data && data.devices) || [];
+      _ccRenderFleet();
+    } catch (e) { /* non-fatal */ }
+  }
+
+  // View toggle (grid cards / dense table) — persisted per browser.
+  function initFleetCommandCenterControls() {
+    try { _ccView = localStorage.getItem('_cc_view') || 'grid'; } catch (e) {}
+    const chips = document.querySelectorAll('.chip--view');
+    chips.forEach(chip => {
+      chip.classList.toggle('is-active', chip.getAttribute('data-cc-view') === _ccView);
+      chip.addEventListener('click', () => {
+        _ccView = chip.getAttribute('data-cc-view') || 'grid';
+        chips.forEach(c => c.classList.toggle('is-active', c.getAttribute('data-cc-view') === _ccView));
+        try { localStorage.setItem('_cc_view', _ccView); } catch (e) {}
+        _ccRenderFleet();
+      });
+    });
   }
 
   // ── FLEET-fed rendering: KPIs + worker grid + exceptions + thermal ──
