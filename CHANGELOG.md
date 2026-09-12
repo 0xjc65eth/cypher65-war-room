@@ -6,6 +6,53 @@ e versionamento semântico ([SemVer](https://semver.org/lang/pt-BR/)).
 
 ## [Unreleased]
 
+### Alterado — extração do domínio Terminal/SSE para `static/src/39-terminal.js` (RFC #478, Issue #529)
+- O domínio **Terminal/SSE** saiu de `static/src/40-app-logic.js` para
+  `static/src/39-terminal.js` (**752 linhas movidas verbatim**): o terminal de
+  eventos do **LIVE MINING** (`_lm*` + `_initLmEventLogControls`, com o ring
+  buffer limitado, scroll lock, filtro e stats), o **log/timeline de eventos**
+  com o **error boundary global** (`logMessage`, `window.onerror` +
+  `unhandledrejection`, `renderTerminalEvents`/`renderTimelineFeed`/
+  `renderTimelineStats`) e o **TERMINAL SOLO** interativo (`_soloTerm*`,
+  `_termBindInput`, `_soloTermInit`, `_liveTermInit`).
+  `40-app-logic.js` 7.706 → **6.959 linhas**.
+- **Este é o primeiro fragmento que vem ANTES do god file** — e isso não foi
+  escolha estética. O `boot()` é **chamado no topo do IIFE, dentro do próprio
+  `40-app-logic.js`** (linha 6.388), então o corpo síncrono dele roda **durante a
+  avaliação do fragmento 40**, antes de 45–49 existirem. E esse corpo **lê estado
+  do Terminal**: `_initLmEventLogControls()` (que termina em `_lmRenderStats()` →
+  `const _lmStats`), `_liveTermInit()` e `logMessage('SYSTEM', 'WAR ROOM ONLINE')`
+  (que faz `events.push(...)` → `let events`). Com o fragmento **depois** do 40,
+  esse estado estaria em **TDZ** nesse instante → `ReferenceError` no boot.
+- **Regra nova e sistêmica:** domínio cujo estado seja lido por uma chamada de
+  **nível de módulo** do `40-app-logic.js` (o `boot();` ou um `X()` no topo, como
+  o `renderSupportMethods()` do domínio Wallet no PR 9) tem de vir **antes** do
+  god file — ou deixar o estado no god file. É a primeira exceção à regra
+  "45–49 vêm depois". A previsão do RFC §3.3 que dizia o contrário foi **corrigida
+  no próprio RFC**, com o motivo.
+- **Consequência deliberada:** o error boundary global passa a cobrir também a
+  avaliação do `40-app-logic.js` (antes ele só existia a partir da linha 2.625 do
+  arquivo original). É estritamente mais proteção, nunca menos — e o handler usa
+  apenas `window`/`document` + funções do próprio fragmento.
+- **Ficou no god file, de propósito:** o bloco de estado do **Fleet Command
+  Center** (`_ccLastFleet`/`_ccView`/`_ccHrSeries`/`_ccHrHist`/`_ccShareSeen`)
+  morava no meio do bloco de estado do Terminal, mas mover para `48-fleet-cc.js`
+  seria um `ReferenceError`: o `boot()` chama `initFleetCommandCenterControls()`
+  (que lê/escreve `_ccView`) de forma síncrona **antes** do fragmento 48 ser
+  avaliado. E `_lastSnapshot` é global compartilhado (poll/SSE escrevem, AXE Fleet
+  lê).
+- **Prova de movimento mecânico**: `static/app.js` gerado — **0 linhas
+  removidas**, 56 adicionadas (todas comentário de cabeçalho) + 5 separadores em
+  branco. **0 diferenças não-comentário/não-branco**.
+- **Prova de que a e2e exercita o código no novo fragmento**: mutação de
+  `_soloTermPrint` (early return) em `39-terminal.js` → `terminal.spec.js` falha
+  em 4 testes nos dois projetos (`✘ status command`, `✘ workers command`, chromium
+  + mobile-chrome). Restaurado.
+- **O item "reconexão" do PR 5 NÃO foi extraído:** a lógica de `EventSource`
+  (debounce de 2s, fallback para polling após 5 erros) mora **dentro do `boot()`**
+  e permanece lá — é o caminho síncrono do boot, e extrair mudaria o instante de
+  execução. Fica como PR próprio, se valer.
+
 ### Documentação — RFC #478: domínios não planejados e reordenação dos PRs até a meta (Issue #527)
 - A seção de frontend do RFC parava em "PR 5 Terminal/SSE" e "PR 6
   Alerts/Auto-Pilot", sugerindo **2 PRs** restantes. O inventário linha a linha

@@ -48,6 +48,10 @@ const MANIFEST = [
   '10-core-fmt.js',
   '20-dom-primitives.js',
   '30-core-escape.js',
+  // Terminal/SSE fica ANTES do god file: o `boot()` é chamado no topo do
+  // `40-app-logic.js` e o corpo síncrono dele lê o estado deste domínio
+  // (`_lmStats`, `events`). Depois do 40 seria TDZ. Ver o cabeçalho do fragmento.
+  '39-terminal.js',
   '40-app-logic.js',
   '45-market.js',
   '46-rentals.js',
