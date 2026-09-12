@@ -52,6 +52,7 @@ const MANIFEST = [
   '45-market.js',
   '46-rentals.js',
   '47-admin.js',
+  '48-fleet-cc.js',
   '50-close.js',
 ];
 
