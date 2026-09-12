@@ -6,6 +6,38 @@ e versionamento semântico ([SemVer](https://semver.org/lang/pt-BR/)).
 
 ## [Unreleased]
 
+### Alterado — extração do Fleet Command Center para `static/src/48-fleet-cc.js` (RFC #478, Issue #521)
+- O painel **Fleet Command Center** + a telemetria saíram de
+  `static/src/40-app-logic.js` para `static/src/48-fleet-cc.js` (**393 linhas
+  movidas verbatim**): `parseBestDiff`, o guard numérico `_numOrNull`, a agregação
+  pura `_ccKpiAgg`, `_ccShareBar`/`_ccSvgSparkline`/`_ccTempBand`/
+  `_ccRenderNetwork`, o destaque de best-share `_updateFleetBestShare`,
+  `renderFleetCommandCenter` + `_logMiningEvent` (alimentação do terminal de
+  eventos) e os renderers fleet-fed `_ccRenderFleet`/`_ccRenderExceptions`/
+  `_ccRenderThermal`/`_ccRenderCards`/`_ccRenderTable`.
+  `40-app-logic.js` 9.407 → **9.011 linhas**.
+- **O PR 4 do RFC foi dividido em dois.** O cluster Fleet/AXE tem 1.695 linhas e
+  a seção 4 do RFC fixa ≤ ~1.500 linhas movidas por PR. Este é o **4a** (painel +
+  telemetria, 393 linhas); o **4b** (`49-axe-fleet.js`, cards/scan/wizard/agente/
+  Tailscale, ~1.300 linhas) vem em seguida.
+- **Duas regiões disjuntas.** O cluster não é contíguo: `_initLmEventLogControls`
+  — UI do terminal de eventos do módulo LIVE MINING, que pertence ao **PR 5**
+  (Terminal/SSE) — estava **entre** as duas metades e **permanece** no app-logic.
+  A metade de baixo carrega junto o comentário de seção ("FLEET-fed rendering")
+  para o recorte seguir verbatim.
+- **Zero execução no topo e zero `const`/`let`** na região extraída: só
+  declarações de função, nenhuma variável. O fragmento entra depois de
+  `47-admin.js` e antes de `50-close.js` sem TDZ — e como não há variável movida,
+  não existe superfície de TDZ nem para os consumidores que rodam antes.
+- **Acoplamento externo de 3 pontos**, todos no mesmo IIFE (function declarations
+  são hoisted, a ordem de concatenação não muda nada): `renderFleetCommandCenter`
+  é chamado por `render()`; `_ccRenderFleet` por `initFleetCommandCenterControls()`
+  (região B, permanece) e pelo chip de view; `_numOrNull` é consumido por
+  `buildCommandCenterRows` (região B).
+- **Prova de movimento mecânico**: `static/app.js` gerado é uma permutação do
+  anterior — **0 linhas não-brancas perdidas**, 28 adicionadas (todas comentário
+  de cabeçalho) e 1 linha em branco a menos (normalização das costuras).
+
 ### Alterado — extração do domínio Admin/CFO/CRO para `static/src/47-admin.js` (RFC #478, Issue #518)
 - O bloco **Admin/CFO/CRO** saiu de `static/src/40-app-logic.js` para
   `static/src/47-admin.js` (1.092 linhas, sendo **1.057 movidas verbatim**):
