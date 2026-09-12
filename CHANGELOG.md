@@ -6,6 +6,46 @@ e versionamento semântico ([SemVer](https://semver.org/lang/pt-BR/)).
 
 ## [Unreleased]
 
+### Alterado — extração do AXE Fleet para `static/src/49-axe-fleet.js` (RFC #478, Issue #523)
+- O domínio **AXE Fleet** saiu de `static/src/40-app-logic.js` para
+  `static/src/49-axe-fleet.js` (**1.304 linhas movidas verbatim**): acesso remoto
+  (`renderTailscale`/`fetchTailscale`/`renderRemoteOnboarding`/
+  `fetchRemoteOnboarding`), `fetchAxeFleet`, o scanner de LAN
+  (`scanNetwork`/`renderScanResults`/`renderAxeScanResults`/`startAxeScan`/
+  `initAxeScanControls`/`openAxeAddForm`), os cards e a inteligência por worker
+  (`renderAxeFleet`/`_renderAxeCard`/`_handleAxeCmdClick`/`openAxeDetail`/
+  `loadDeviceHistoryChart`/`buildCommandCenterRows`), o hash-flow raster
+  (`_lmShareDelta`/`_lmFlowSampleFromDelta`/`_lmFlowDetail`/`_pushLmFlowSample`
+  — prefixo `_lm`, mas consumidos **só** pelo `_ccRenderFleet`),
+  `fetchFleetCommandCenter`/`initFleetCommandCenterControls`, o wizard
+  (`gotoAxeWizStep`/`setAxeWizMode`/`resetAxeWizard`/`renderAxeConfirm`/
+  `testAxeConnectivity`/`buildConnectivityReport`/`renderConnectivityReport`),
+  `initAxeFleetControls`, `initAxeAgentPanel` e `addAxeDevice`.
+  `40-app-logic.js` 9.011 → **7.706 linhas**. Isso **fecha o domínio Fleet/AXE**
+  (o 4a levou o Fleet Command Center para `48-fleet-cc.js`).
+- **Um statement de execução no topo** — igual ao Admin, e diferente do Market/
+  Rentals/4a: o listener de `#remote-test-btn` (`click` → `fetchTailscale()`).
+  Nenhum listener do IIFE depende de ordem e `static/app.js` é `defer`, então
+  registrar mais tarde dentro do mesmo IIFE síncrono não muda o resultado.
+- **Sem TDZ.** A região declara 7 variáveis (`_scanning`, `_lmFlow`,
+  `_lmLastCounters`, `_LM_FLOW_MAX`, `_LM_FLOW_LABELS`, `_axeDetailChart`,
+  `_axeWizState`) e **nenhuma** é referenciada fora dela. O único caminho que
+  entra na região antes da avaliação do fragmento é o prefixo síncrono do
+  `boot()`, que chama `initAxeFleetControls()` → `initAxeScanControls()` /
+  `initAxeAgentPanel()`: os três corpos foram varridos e não tocam nenhuma
+  dessas variáveis em nível síncrono.
+- **Acoplamento externo de 6 nomes**, todos no mesmo IIFE (function declarations
+  são hoisted): `fetchAxeFleet` (4 locais), `fetchRemoteOnboarding`,
+  `fetchTailscale`, `initAxeFleetControls`, `openAxeDetail` e
+  `initFleetCommandCenterControls`.
+- **Prova de movimento mecânico**: `static/app.js` gerado é uma permutação do
+  anterior — **0 linhas perdidas** (nem as em branco), 36 adicionadas (todas
+  comentário de cabeçalho).
+- **Wart documentado**: `initFleetCommandCenterControls` (13 linhas) é controle
+  do painel **Fleet Command Center**, mas é vizinho físico de
+  `fetchFleetCommandCenter` e veio junto para o recorte continuar verbatim e
+  contíguo. Candidato a realocação mecânica posterior.
+
 ### Alterado — extração do Fleet Command Center para `static/src/48-fleet-cc.js` (RFC #478, Issue #521)
 - O painel **Fleet Command Center** + a telemetria saíram de
   `static/src/40-app-logic.js` para `static/src/48-fleet-cc.js` (**393 linhas
