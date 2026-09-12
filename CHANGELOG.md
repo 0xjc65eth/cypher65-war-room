@@ -6,6 +6,31 @@ e versionamento semântico ([SemVer](https://semver.org/lang/pt-BR/)).
 
 ## [Unreleased]
 
+### Documentação — RFC #478: domínios não planejados e reordenação dos PRs até a meta (Issue #527)
+- A seção de frontend do RFC parava em "PR 5 Terminal/SSE" e "PR 6
+  Alerts/Auto-Pilot", sugerindo **2 PRs** restantes. O inventário linha a linha
+  de `40-app-logic.js` (381 declarações de topo, 31 blocos contíguos que cobrem o
+  arquivo sem lacuna) mostra **cinco domínios** mais um residual, e a **§3.3**
+  nova fixa a ordem: **5** Terminal/SSE (773), **6** Automations+Alerts+
+  Auto-Pilot+Decision Matrix (1.062), **7** Probability/Block Model (635),
+  **8** Billing/Auth (923) e **9** Wallet+Support (1.032). A meta de ~4.000
+  linhas é atingida no PR 9 (`7.706 → 3.281`; os PRs 5–8 param em 4.313).
+- **A regra muda de "por tamanho" para "um PR = um domínio".** A divisão 4a/4b
+  foi feita **por tamanho** e cortou um bloco fisicamente entrelaçado, o que
+  produziu o resíduo de posse que a Issue #525 acabou de realocar. Todos os
+  blocos medidos agora são ≤ 1.500, então a régua não força mais nenhum corte.
+- **Duas restrições estruturais documentadas.** (1) `boot();` é chamado no topo
+  do IIFE **dentro de `40-app-logic.js`** (linha 6.388) — ou seja, durante a
+  avaliação do 5º de 11 fragmentos, antes de `45-market.js`…`49-axe-fleet.js`
+  existirem: é a origem real da disciplina de TDZ de Admin/4b. (2) A lógica de
+  **reconexão SSE** (EventSource, debounce de 2s, fallback para polling após 5
+  erros) mora **dentro do `boot()`**, então o item "reconexão" do PR 5 não é
+  extração mecânica — recomenda-se mover só os terminais e documentar o
+  acoplamento, deixando a extração do `connectLiveStream()` para um PR próprio.
+- Registrado também um achado de forma: `renderPool`, `acctRankLabels` e
+  `renderAccount` estão em **coluna 0** (bolha sem indentação) no meio de R6/R7 —
+  quem mover esses blocos deve preservar o recorte verbatim em vez de reindentar.
+
 ### Corrigido — resíduo do Fleet Command Center realocado para seu dono (RFC #478, Issue #525)
 - O 4b (#523) havia deixado em `static/src/49-axe-fleet.js`, por **vizinhança
   textual**, código que pertence ao **Fleet Command Center**. Voltaram verbatim
