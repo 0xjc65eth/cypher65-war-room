@@ -19,6 +19,11 @@ e2e-report/
 
 # Runtime artifacts
 .coverage
+
+# Rascunhos locais de corpo de issue/PR (evitam escaping de heredoc em textos
+# longos). Nunca devem ser commitados: o PR #530 versionou um `.tmp-pr-*-body.md`
+# por acidente, porque o arquivo foi criado em paralelo a um `git add -A`.
+.tmp-*
 # Mutation testing (mutmut) artifacts — local-only
 .mutmut-cache
 *.py.bak
