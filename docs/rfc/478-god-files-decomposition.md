@@ -34,6 +34,12 @@
 > o grid de venues do `/api/market/*` + `market_data.offers`, espalhado em 4
 > regiões disjuntas com o domínio Admin inteiro entre duas delas. Detalhes no
 > postmortem, §7.
+> **Reordenacão de 2026-09-12 (Issue #525):** o frontend entregou 1, 1b, 2, 2b,
+> 3, 4a e 4b; a **§3.3** mede os domínios que faltavam (a lista original parava
+> em "5" e "6", mas são **cinco** PRs mais um residual) e fixa a ordem e o alvo
+> de linhas. Também registra duas restrições estruturais recém-descobertas: o
+> `boot()` é chamado **dentro** de `40-app-logic.js` (linha 6.388) e a lógica de
+> **reconexão SSE** mora **dentro** do `boot`, não num módulo.
 
 ## 1. Contexto e problema
 
@@ -73,8 +79,74 @@ Ordem de extração (uma PR por domínio, cada uma ≤ ~1500 linhas movidas):
 | 2b | Admin/CFO/CRO *(não estava no plano original)* | ✅ #518 — o bloco ficou **isolado e visível** quando o Market saiu (é o vizinho que separava as regiões R1 e R2 dele), então virou extração própria. `static/src/47-admin.js` (**1.057 linhas movidas**): builders puros do audit trail, `fetchAdminData`, `_renderAdmin` + renderers (analytics, docs feedback, features, funnel trend, coortes LTV, pool metrics, error rate, degradação, audit trail) e CSV/filtros. `40-app-logic.js` 10.465 → **9.407 linhas**. Nome corrigido: o previsto era `52-admin.js`, mas `50-close.js` fecha o IIFE → é `47-admin.js`. **Único dos três fragmentos com execução no topo**: 4 statements registram listeners (`#admin-panel` change, `#admin-audit-csv`/`#admin-funnel-csv`/`#admin-refresh-btn` click); nenhum depende de ordem e o `app.js` é `defer`, então mover para o fim do mesmo IIFE é inócuo — **provado com mutação**: desligar o listener de refresh faz a e2e falhar |
 | 4a | Fleet/AXE · Fleet Command Center + telemetria | ✅ #521 — **o PR 4 foi dividido em dois** (ratificado pelo mantenedor): o cluster tinha **1.695 linhas** e a seção 4 fixa ≤ ~1.500 por fragmento. `static/src/48-fleet-cc.js` (**393 linhas movidas**): `parseBestDiff`, `_numOrNull`, `_ccKpiAgg`, `_ccShareBar`, `_ccSvgSparkline`, `_ccTempBand`, `_ccRenderNetwork`, `_updateFleetBestShare`, `renderFleetCommandCenter`, `_logMiningEvent`, `_ccRenderFleet`, `_ccRenderExceptions`, `_ccRenderThermal`, `_ccRenderCards`, `_ccRenderTable`. `40-app-logic.js` 9.407 → **9.011 linhas**. **Duas regiões disjuntas** (4.792-4.987 e 5.031-5.227 no pré-recorte): `_initLmEventLogControls` — UI do terminal de eventos do Live Mining, que é **PR 5** — ficava **entre** as metades e permanece no app-logic. **Zero execução no topo** e **zero `const`/`let`/`var`** na região → nenhuma superfície de TDZ, mesmo com o fragmento entrando depois de `47-admin.js`. Acoplamento externo de 3 pontos, todos no mesmo IIFE: `renderFleetCommandCenter` ← `render()`, `_ccRenderFleet` ← `initFleetCommandCenterControls()`/chip de view, `_numOrNull` ← `buildCommandCenterRows` (região B). **Prova**: 0 linhas **não-brancas** perdidas no artefato gerado (28 adicionadas, todas comentário) + `live-mining.spec.js` (4) e `dashboard.spec.js` (58) verdes |
 | 4b | Fleet/AXE · AXE Fleet (cards, scan LAN, wizard, agente, remoto) | ✅ #523 — fecha o domínio Fleet/AXE. `static/src/49-axe-fleet.js` (**1.304 linhas movidas**, dentro do guardrail): `renderTailscale`/`fetchTailscale`/`renderRemoteOnboarding`/`fetchRemoteOnboarding`, `fetchAxeFleet`, `scanNetwork`/`renderScanResults`/`renderAxeScanResults`/`startAxeScan`/`initAxeScanControls`, `renderAxeFleet`/`_renderAxeCard`/`_handleAxeCmdClick`/`openAxeDetail`/`loadDeviceHistoryChart`, `buildCommandCenterRows`, o hash-flow raster (`_lmShareDelta`/`_lmFlowSampleFromDelta`/`_lmFlowDetail`/`_pushLmFlowSample` — prefixo `_lm` mas consumidos **só** pelo `_ccRenderFleet`), `fetchFleetCommandCenter`/`initFleetCommandCenterControls`, o wizard (`gotoAxeWizStep`/`setAxeWizMode`/`resetAxeWizard`/`renderAxeConfirm`/`testAxeConnectivity`/`buildConnectivityReport`/`renderConnectivityReport`/`openAxeAddForm`), `initAxeFleetControls`, `initAxeAgentPanel` e `addAxeDevice`. `40-app-logic.js` 9.011 → **7.706 linhas**. **Um statement de topo** (o listener de `#remote-test-btn`), igual ao Admin; **7 `const`/`let` na região, nenhuma referenciada fora dela** e **sem TDZ** — o prefixo síncrono do `boot()` chama `initAxeFleetControls()` → `initAxeScanControls()`/`initAxeAgentPanel()`, e os três corpos foram varridos sem acesso síncrono a variável movida. Acoplamento externo de 6 nomes (`fetchAxeFleet`, `fetchRemoteOnboarding`, `fetchTailscale`, `initAxeFleetControls`, `openAxeDetail`, `initFleetCommandCenterControls`). **Prova**: 0 linhas perdidas (nem brancas) no artefato gerado — 36 adicionadas, todas comentário — + `auth` (20), `live-mining` (4), `operational-overview` (6), `auto-pilot-advisory` (2) e `dashboard` (58) verdes. **Wart RESOLVIDO na Issue #525** (PR de limpeza): o resíduo do FCC que ficou aqui por vizinhança textual — o raster de hash-flow (`_lmFlow`/`_lmLastCounters`/`_LM_FLOW_MAX`/`_LM_FLOW_LABELS` + `_lmFlowSampleFromDelta`/`_lmShareDelta`/`_lmFlowDetail`/`_pushLmFlowSample`), o `fetchFleetCommandCenter()` e o `initFleetCommandCenterControls()` — **75 linhas** voltaram para `48-fleet-cc.js`. Isso eliminou uma **dependência invertida** que a divisão 4a/4b criou: o `48` (avaliado ANTES) consumia 8 nomes definidos no `49` |
-| 5 | Terminal/SSE | event stream, live terminal, reconexão |
-| 6 | Alerts/Auto-Pilot | regras, cooldowns, arming UI |
+| 5 | Terminal/SSE | ✅ reordenado e detalhado em **§3.3** (Issue #525 mediu o residual) |
+| 6 | Alerts/Auto-Pilot | ✅ reordenado e detalhado em **§3.3** (a lista original tinha só 2 PRs restantes; são **5**, mais o residual) |
+
+### 3.3 Frontend — domínios que NÃO estavam no plano original + reordenação até a meta
+
+**Reconhecimento de 2026-09-12 (Issue #525).** Depois do 4b, `40-app-logic.js` estava em **7.706 linhas** — contra a meta de ~4.000 do §7. A tabela original do §3.1 parava em "5 Terminal/SSE" e "6 Alerts/Auto-Pilot", o que dava a entender que faltavam **2 PRs**. O inventário linha a linha mostra que faltam **cinco domínios** (e um residual).
+
+**Método.** Todas as 381 declarações de topo do `40-app-logic.js` foram mapeadas com sua linha de início; os blocos abaixo são intervalos **contíguos** que cobrem o arquivo **sem lacuna nem sobreposição** (somam 7.700 linhas; a diferença para 7.706 são as bordas do IIFE).
+
+| Bloco | Linhas | Domínio |
+|---|---|---|
+| R1 | 923 | **Billing/Auth** — sessão, licença/\(PRO\), fluxo de upgrade on-chain (BTC/WebLN), `auth*`, indicador de instância, `handleLicenseRequired` |
+| R2 | 38 | Theme (apply/toggle/persistência) |
+| R3 | 599 | **Wallet crypto** — WebLN (`detectWebLN`/`connectWebLN`), bech32, validação de endereço, gerador de QR inteiro (`QrPoly`/`qrEncode`/`qrSvg`) |
+| R4 | 163 | Primitivas DOM/UX — skeletons, `smoothUpdate`, `countUpValue`, `setBtnLoading`, modais animados |
+| R5 | 333 | HUD/StatusBar + **Operational Overview** (`buildOperationalOverviewModel`) |
+| R6 | 233 | Painéis do dashboard — `renderWalletIdentity`/`renderHostCore`/`renderHero`/`renderMinersXRay`/`renderNetwork` |
+| R7 | 143 | **Alerts/eventos** — `renderAlerts`/`renderEvents`/`renderLeaderboard` + preços/halving/mempool |
+| R8 | 102 | Gráficos do dashboard + share-dist |
+| R9 | 243 | **Terminal de eventos/Timeline** — `logMessage`, error beacon do cliente (`window.onerror`), `renderTerminalEvents`/`renderTimelineFeed` |
+| R10 | 276 | **Probability/Block Model** — `renderProximity`, `renderQuantumLock`, `renderLiveCalc`, `renderNetworkGauge` |
+| R11 | 214 | Profitability/Comparison/SoloStats/Milestones |
+| R12 | 145 | Block Hunt (what-if de dificuldade) |
+| R13 | 140 | Decision Matrix + Command Center |
+| R14 | 270 | Modal de compra spot da Braiins (vizinho do Market) |
+| R15 | 41 | AI Operator |
+| R16 | 538 | **Auto-Pilot** — arming, advisory, dry-run |
+| R17 | 178 | AI Chat |
+| R18 | 360 | `render()` + infraestrutura de gráficos (SMA, anotações, zoom, `makeChart`) |
+| R19 | 277 | **Settings** (`renderSettingsForm`/`loadSettings`) |
+| R20 | 433 | **Support** — doações, Lightning (`sendLNPayment`), modal/histórico da wallet |
+| R21 | 19 | Modal de export |
+| R22 | 161 | **Terminal do Live Mining** (`_lm*`, `_initLmEventLogControls`) + estado do FCC |
+| R23 | 369 | **Terminal solo / live terminal** (`_soloTerm*`, `_termBindInput`, `_liveTermInit`) |
+| R24 | 40 | Loop de poll/relógio/snapshot |
+| R25 | 148 | **`boot()`** |
+| R26 | 241 | **Automations** (`ac*` — `acLoadRules`/`acRenderExecutions`/tabs) |
+| R27 | 323 | Shell — sidebar, `MODULE_MAP`, sistema de módulos, beta analytics, `activateModule` |
+| R28 | 131 | Status da sidebar + refresh de wallet |
+| R29 | 196 | `InstitutionalUI`/`DashboardCore` |
+| R30 | 395 | **Docs** — índice, busca, snippets, feedback |
+| R31 | 28 | `renderKpiCards` |
+
+#### Reordenação dos PRs restantes (domínio por PR, nunca por tamanho)
+
+**O erro que esta reordenação corrige é de método, não de ordem.** O 4a/4b foi dividido **por tamanho** (o cluster tinha 1.695 linhas e o guardrail manda ≤ ~1.500), e essa divisão cortou no meio de um bloco fisicamente entrelaçado — o que produziu exatamente o resíduo de posse que a Issue #525 acabou de realocar (75 linhas de FCC morando no fragmento do AXE Fleet, com a dependência entre os dois **invertida**). A partir daqui a regra é: **um PR = um domínio, e nenhum PR parte um domínio ao meio.** Todos os blocos abaixo são ≤ 1.500, então a régua não força mais nenhum corte.
+
+| PR | Domínio | Blocos | Linhas movidas | `40-app-logic.js` após | Execução no topo |
+|---|---|---|---|---|---|
+| **5** | Terminal/SSE | R9 + R22 + R23 | **773** | 6.933 | 3 (`window.onerror`, `unhandledrejection`, `#clear-logs` click) |
+| **6** | Automations + Alerts + Auto-Pilot + Decision Matrix/Command Center | R7 + R13 + R16 + R26 | **1.062** | 5.871 | 1 (`if (dom.openAlertCenter)` em R26) |
+| **7** | Probability/Block Model | R10 + R11 + R12 | **635** | 5.236 | 1 (`window.setProfitMode = …`) |
+| **8** | Billing/Auth | R1 | **923** | 4.313 | 1 (`window.openUpgradeModal = …`) |
+| **9** | Wallet + Support | R3 + R20 | **1.032** | **3.281** | **17** — o maior de todos: listeners de WebLN/wallet, `renderSupportMethods()`/`loadDonations()` chamados direto no topo, e a região **vendorada do QR** (`(function buildQrMath(){…})()` + `QrPoly.prototype.*`) |
+| — | **residual** — Dashboard (`render()`/gráficos/HUD/overview/painéis), Docs, Settings, Export, Braiins buy, AI Chat/Operator, Theme, primitivas DOM, shell (sidebar/módulos), `boot()` | R2+R4+R5+R6+R8+R14+R15+R17+R18+R19+R21+R24+R25+R27+R28+R29+R30+R31 | — | **3.281** (3.275 nos blocos + 6 linhas de borda do IIFE) | — |
+
+**A meta de ~4.000 linhas é atingida no PR 9** (os PRs 5–8 param em 4.313). O residual de 3.281 linhas ainda tem domínios extraíveis — inclusive um PR 10 natural de **Dashboard/`render()`** (R5+R6+R8+R18+R24+R31 ≈ 1.096) — mas eles ficam **fora da meta**; a lista acima é o que fecha o objetivo.
+
+**Nota de risco do PR 6.** O bloco R26 (Automations) tem 1 statement de topo (`if (dom.openAlertCenter)`, listener do Alert Center) e R7/R13/R16 têm 0. O PR deve rodar a mesma varredura de TDZ do 4b antes de mover — com um cuidado a mais: o scan ingênuo de "linha não-declaração em indent 2" acusa **12 statements** no PR 6, dos quais **11 são falsos positivos** das funções sem indentação (`acctRankLabels`/`renderAccount`). Quem for medir precisa tratar declarações em **coluna 0** também.
+
+#### Duas restrições estruturais que governam todos os PRs §3.3
+
+1. **`boot()` é chamado no topo do IIFE — em `40-app-logic.js`, linhas 6245–6388.** O `boot();` nu está na linha 6388, ou seja: ele é executado **durante a avaliação do 5º de 11 fragmentos**, ANTES de `45-market.js` … `49-axe-fleet.js` existirem (os `function` declarations sofrem hoisting no IIFE único, então são chamáveis; os `const`/`let` deles ainda estão em **TDZ**). É essa a origem de toda a análise de TDZ registrada no Admin (2b) e no 4b — e a razão pela qual o prefixo síncrono do `boot` não pode ser tocado. O fragmento de Terminal/SSE (PR 5) entra **depois** do `boot` no arquivo gerado, como todos os outros.
+2. **A lógica de conexão/reconexão SSE mora DENTRO do `boot()`** (o `EventSource`, o debounce de 2s e o fallback para polling após 5 erros vivem em `40-app-logic.js`, ~6.340–6.383) — **não** em um módulo próprio. O item "reconexão" do PR 5, portanto, **não é uma extração mecânica**: tem duas opções. **(a)** mover só os terminais (R9+R22+R23) e deixar o bloco SSE no `boot`, documentando o acoplamento — é o que mantém a disciplina de "nenhum comportamento novo" e é a recomendação. **(b)** extrair o bloco SSE para uma função `connectLiveStream()` no fragmento do Terminal/SSE — é um refactor pequeno e legítimo, mas **não** é movimento verbatim e merece PR próprio. Registro isto agora para ninguém descobrir no meio do PR (o fan-out do lado do servidor já foi para `services/sse.py` no B2).
+
+**Achado de forma, não de estrutura.** R6/R7 contêm uma "bolha" sem indentação: `renderPool` (2.242), `acctRankLabels` (2.294) e `renderAccount` (2.320) estão **em coluna 0** enquanto o resto do arquivo usa 2 espaços para declaracões de topo. Não quebra nada (`acctRankLabels` é espelhado nos testes), mas quem for mover R6/R7 deve preservar o recorte verbatim e não "aproveitar" para reindentar — isso infla o diff e destrói a prova de permutação.
+
+**O que os relatórios de guard DOM esperam.** R13/R16/R26 são os domínios com mais `innerHTML` dinâmico da parte restante; a régua do §4 (superfície XSS não cresce) continua valendo por PR.
 
 ### 3.2 Backend — continuar o padrão `routes/` + extrair módulos de domínio
 
@@ -123,3 +195,12 @@ Nuance fixada no B2 (#499): se o destino já está dentro de um `--cov` agregado
 ## 7. Critério de sucesso
 
 `static/app.js` torna-se artefato gerado; os domínios vivem em `static/src/*.js` de ≤ ~1500 linhas cada; `app.py` cai para ≤ ~4000 linhas (bootstrap + glue), com cada domínio em módulo testável isoladamente. Tudo isso **sem um único comportamento novo** entre PRs.
+
+**Alvo do frontend (fixado em §3.3, 2026-09-12).** `40-app-logic.js` sai de **7.706** para **~3.281 linhas** ao fim do **PR 9**, atingindo a meta de ~4.000 (os PRs 5–8 param em 4.313). O que sobra são ~3.300 linhas de **orquestração**: `boot()`, o loop de poll, o sistema de módulos/sidebar, `render()` e as primitivas de DOM — mais os blocos de Dashboard/Docs/Settings que ainda são extraíveis num PR 10+, fora desta meta.
+
+Estado de execução:
+
+| Trilha | Entregue | Restante até a meta |
+|---|---|---|
+| Frontend | 1, 1b, 2, 2b, 3, 4a, 4b (+ limpeza #525) | **5, 6, 7, 8, 9** (§3.3) |
+| Backend | B1, B2, B3, B4 (+ #496, #508) | **nenhum** — a trilha B fechou em 8.444 linhas de `app.py` |
