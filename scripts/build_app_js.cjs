@@ -48,6 +48,12 @@ const MANIFEST = [
   '10-core-fmt.js',
   '20-dom-primitives.js',
   '30-core-escape.js',
+  // Wallet + Support também fica ANTES do god file: as 18 statements de topo do
+  // domínio (renderSupportMethods(), loadDonations(), toggleWalletCTA(), os
+  // QrPoly.prototype.*, o IIFE buildQrMath e os listeners de wallet) executam
+  // durante a avaliação do fragmento e, no arquivo original, rodavam ANTES do
+  // `boot();` — depois do 40 elas rodariam DEPOIS do boot. Ver o cabeçalho.
+  '37-wallet-support.js',
   // Billing/Auth também fica ANTES do god file: o prefixo síncrono do `boot()`
   // (dentro do 40) chama `initLicensing()`/`initAuth()`/`initInstanceIndicator()`,
   // que leem `_license`/`AUTH_SESSION_KEY`. Além disso é a ordem original (o R1

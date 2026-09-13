@@ -84,6 +84,45 @@ e versionamento semântico ([SemVer](https://semver.org/lang/pt-BR/)).
   os outros 13 fragmentos. O harness JS **espelha** `authBuildHeaders`/
   `authIsExpired`/`authSessionValid` (Suite 22), portanto não carrega o god file.
 
+### Alterado — extração do domínio Wallet + Support para `static/src/37-wallet-support.js` (RFC #478 · PR 9, Issue #551)
+- **A meta do RFC #478 foi atingida**: `static/src/40-app-logic.js` sai de **4.320**
+  para **3.288 linhas** (partiu de 7.706), abaixo da meta de ~4.000.
+- **1.032 linhas movidas verbatim** em **2 blocos contíguos** para
+  `static/src/37-wallet-support.js` (1.062 com cabeçalho):
+  - **R3** `44–642` (599) — Wallet crypto: WebLN (`detectWebLN`/`connectWebLN`),
+    bech32 (`_bech32Polymod`), validação de endereço
+    (`validateBitcoinAddress`/`_updateWalletValidation`), o gerador de QR
+    inteiro (`buildQrMath`/`QrPoly`/`qrEncode`/`qrSvg`) e identidade/health da
+    wallet (`walletAddressParts`/`walletHealth`).
+  - **R20** `2599–3031` (433) — Support: doações
+    (`renderSupportMethods`/`loadDonations`), LN
+    (`_populateLNAddress`/`sendLNPayment`), modal/histórico da wallet
+    (`openWalletModal`/`closeWalletModal`/`toggleWalletCTA`/
+    `fetchWalletHistory`/`walletGreeting`/`walletHasFullAccess`).
+- O fragmento entra **ANTES** do god file (como o `38` e o `39`), desta vez por
+  **ordem de execução**, não por TDZ: as **18 statements de topo** do domínio
+  rodavam em 2711–2928, ou seja **antes** do `boot();` (linha 3260). Depois do
+  40 elas rodariam depois do boot — inversão silenciosa, sem erro e sem teste.
+  Todas as dependências resolvem por *hoisting* (`escapeHtml`, `cssVar`,
+  `openModalAnimated`, `authFetch` são `function` declarations do IIFE único)
+  ou por fragmento anterior (`dom`, `const` no `20-dom-primitives.js`).
+- **Prova de permutação**: `static/app.js` gerado tem **11.029 = 11.029**
+  linhas de código — **0 removidas, 0 adicionadas**; o `40` novo é byte-idêntico
+  ao antigo menos as duas faixas, e o `37` termina exatamente no corpo verbatim
+  após um cabeçalho de 31 linhas só de comentário.
+- **Prova de mutação dupla (2 caminhos)**: mutar o *listener de topo* do
+  `_onSupportOpen` derruba `webln.spec.js` **10/26** (a statement de topo
+  relocada realmente executa); mutar o *opening tag* do `qrSvg` derruba
+  `upgrade-btc.spec.js` **6/18** (a ponte com o `38-billing-auth.js` segue viva
+  por hoisting). Ambos restaurados.
+- **Gates**: pytest 3366 · JS core 1406 · `check:frontend` completo · guards
+  DOM · e2e `webln` 26, `upgrade-btc` 18, `wallet-identity` 2, `modals` 26,
+  `dashboard` 58, `probability-whatif` 6.
+- **Achado de cobertura registrado (não resolvido aqui)**: o harness JS ainda
+  **espelha** `validateBitcoinAddress` e `QrPoly`, os dois recém-movidos para o
+  `37-wallet-support.js`. Mesmo padrão já corrigido no #515 (Market) e no #548
+  (Block Hunt) — follow-up explícito, fora do escopo deste PR.
+
 ### Corrigido — cobertura do Block Hunt: harness carrega o fonte e e2e tem fixture determinístico (RFC #478, Issue #548)
 - O PR 7 (#542) registrou duas lacunas de cobertura em vez de escondê-las. Esta
   issue fecha as duas:
