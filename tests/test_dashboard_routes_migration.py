@@ -15,6 +15,8 @@ plus the contract guarantees the migration promised (mesmas respostas):
   - pro_required gates are preserved on /monte_carlo and /proximity.
 """
 
+import time
+
 import pytest
 
 from app import app, latest_snapshot
@@ -70,10 +72,89 @@ class TestMigratedDashboardRoutes:
         assert data["metric"] == "worker_hashrate"
         assert data["range"] == "24h"
         assert isinstance(data["rows"], list)
+        assert set(data) == {"metric", "range", "rows"}
 
     def test_history_invalid_metric_400(self, client):
         r = client.get("/api/history?metric=not_a_real_metric")
         assert r.status_code == 400
+
+    def test_history_limit_offset_has_more(self, client, monkeypatch, tmp_path):
+        import sqlite3
+
+        import routes.dashboard_routes as dr
+
+        db_path = tmp_path / "history.sqlite"
+        db = sqlite3.connect(db_path)
+        db.row_factory = sqlite3.Row
+        db.execute("CREATE TABLE snapshots (ts INTEGER, worker_hashrate REAL)")
+        now = int(time.time())
+        db.executemany(
+            "INSERT INTO snapshots (ts, worker_hashrate) VALUES (?, ?)",
+            [(now - 3, 10.0), (now - 2, 20.0), (now - 1, 30.0)],
+        )
+        db.commit()
+        db.close()
+
+        def open_db():
+            conn = sqlite3.connect(db_path)
+            conn.row_factory = sqlite3.Row
+            return conn
+
+        monkeypatch.setattr(dr, "get_db", open_db)
+
+        first = client.get(
+            "/api/history?metric=worker_hashrate&range=24h&limit=2&offset=0"
+        )
+        assert first.status_code == 200
+        data = first.get_json()
+        assert data["rows"] == [
+            {"ts": now - 3, "value": 10.0},
+            {"ts": now - 2, "value": 20.0},
+        ]
+        assert data["total"] == 3
+        assert data["has_more"] is True
+
+        second = client.get(
+            "/api/history?metric=worker_hashrate&range=24h&limit=2&offset=2"
+        )
+        assert second.get_json()["rows"] == [
+            {"ts": now - 1, "value": 30.0}
+        ]
+        assert second.get_json()["has_more"] is False
+
+    def test_leaderboard_paginates(self, client, seeded_snapshot, monkeypatch):
+        import services.state as state
+
+        rows = [{"address": f"bc1q{i}", "rank": i} for i in range(3)]
+        monkeypatch.setattr(state, "leaderboard_rows", rows, raising=False)
+        monkeypatch.setattr(
+            state,
+            "latest_snapshot",
+            {"btc_address": "bc1q1", "leaderboard_total": 3},
+            raising=False,
+        )
+        first = client.get("/api/leaderboard?limit=2&offset=0")
+        assert first.status_code == 200
+        body = first.get_json()
+        assert body["count"] == 2
+        assert body["has_more"] is True
+        assert body["entries"][1]["is_me"] is True
+        second = client.get("/api/leaderboard?limit=2&offset=2")
+        assert second.get_json()["count"] == 1
+        assert second.get_json()["has_more"] is False
+
+    def test_leaderboard_default_preserves_top_30(self, client, monkeypatch):
+        import services.state as state
+
+        rows = [{"address": f"bc1q{i}", "rank": i} for i in range(60)]
+        monkeypatch.setattr(state, "leaderboard_rows", rows, raising=False)
+        monkeypatch.setattr(
+            state, "latest_snapshot", {"leaderboard_total": 60}, raising=False
+        )
+        body = client.get("/api/leaderboard").get_json()
+        assert body["limit"] == 30
+        assert body["count"] == 30
+        assert body["has_more"] is True
 
     # ── Simple snapshot-derived routes ───────────────────────────────────
 
@@ -91,6 +172,20 @@ class TestMigratedDashboardRoutes:
         r = client.get("/api/network_share")
         assert r.status_code == 200
         assert r.get_json()["share_pct"] == 1.5
+
+    def test_healthz_persistence_flags(self, client, monkeypatch):
+        monkeypatch.setenv("GITHUB_TOKEN", "github-secret-value")
+        monkeypatch.setenv("REMOTE_BACKUP_ENCRYPTION_KEY", "backup-secret-value")
+        monkeypatch.setenv("SENTRY_DSN", "https://sentry-secret.example/1")
+        r = client.get("/api/healthz")
+        assert r.status_code == 200
+        data = r.get_json()
+        assert data["ok"] is True
+        assert data["persistence"] == {"remote_backup": True, "sentry": True}
+        assert data["rate_limit_scope"] == "process"
+        assert "github-secret-value" not in r.get_data(as_text=True)
+        assert "backup-secret-value" not in r.get_data(as_text=True)
+        assert "sentry-secret" not in r.get_data(as_text=True)
 
     def test_halving(self, client, seeded_snapshot):
         r = client.get("/api/halving")

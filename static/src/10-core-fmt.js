@@ -200,3 +200,44 @@
     return { text: 'SYNCED · ' + age, tone: 'synced', hidden: false };
   }
 
+  function liveMetricsFromSnapshot(snap) {
+    const data = snap || {};
+    const worker = data.worker || {};
+    const pool = data.pool || {};
+    const fleet = Array.isArray(data.axe_fleet) ? data.axe_fleet : [];
+    const temps = [];
+    for (var i = 0; i < fleet.length; i++) {
+      var device = fleet[i] || {};
+      var tel = device.telemetry || device._telemetry || {};
+      var raw = tel.temperature;
+      if (raw === null || raw === undefined) raw = device.temperature;
+      var n = Number(raw);
+      if (isFinite(n)) temps.push(n);
+    }
+    return {
+      type: 'live',
+      ts: data.ts,
+      worker_hashrate: worker.hashrate,
+      pool_hashrate: pool.hashrate,
+      fleet_avg_temp: temps.length ? Math.round((temps.reduce(function (a, b) { return a + b; }, 0) / temps.length) * 10) / 10 : null,
+    };
+  }
+
+  function liveMetricsPatch(live) {
+    const data = live || {};
+    const temp = data.fleet_avg_temp;
+    var tempText = (temp === null || temp === undefined || temp === '') ? '\u2014' : (Number(temp).toFixed(1) + '\u00b0C');
+    if (!isFinite(Number(temp)) && temp !== 0) tempText = '\u2014';
+    return {
+      hashrateText: fmt.hashrate(data.worker_hashrate),
+      poolHashrateText: fmt.hashrate(data.pool_hashrate),
+      tempText: tempText,
+      ts: data.ts,
+    };
+  }
+
+  function mergeLeaderboardHead(currentRows, freshHead) {
+    const current = Array.isArray(currentRows) ? currentRows : [];
+    const head = Array.isArray(freshHead) ? freshHead.slice() : [];
+    return head.concat(current.length > head.length ? current.slice(head.length) : []);
+  }

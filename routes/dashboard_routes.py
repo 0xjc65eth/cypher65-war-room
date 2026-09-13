@@ -126,19 +126,53 @@ def api_history():
     }
     if metric not in allowed:
         return jsonify({"error": f"invalid metric {metric}"}), 400
-    conn = get_db()
-    c = conn.cursor()
-    # bandit B608 false positive: metric validated against the allowed set
-    # above (line ~73) before reaching the SQL text.
-    c.execute(
-        f"SELECT ts, {metric} FROM snapshots WHERE ts >= ? AND {metric} IS NOT NULL ORDER BY ts ASC",  # nosec B608
-        (since,),
-    )
-    rows = [{"ts": r["ts"], "value": r[metric]} for r in c.fetchall()]
-    conn.close()
     # Contract parity with the pre-migration app.py route: the payload key
     # is "rows" (NOT "history") — preserved so existing clients keep working.
-    return jsonify({"metric": metric, "rows": rows, "range": rng})
+    # Optional limit/offset (Issue #539): omit both → full window (charts).
+    paginated = not (
+        request.args.get("limit") is None and request.args.get("offset") is None
+    )
+    try:
+        limit = min(int(request.args.get("limit") or 50), 500)
+    except (TypeError, ValueError):
+        limit = 50
+    limit = max(1, limit)
+    try:
+        offset = max(int(request.args.get("offset") or 0), 0)
+    except (TypeError, ValueError):
+        offset = 0
+    conn = get_db()
+    c = conn.cursor()
+    # bandit B608 false positive: metric is validated against the allow-list
+    # above before it is interpolated as a column identifier.
+    base_sql = (
+        f"FROM snapshots WHERE ts >= ? AND {metric} IS NOT NULL"  # nosec B608
+    )
+    if not paginated:
+        c.execute(f"SELECT ts, {metric} {base_sql} ORDER BY ts ASC", (since,))  # nosec B608
+        rows = [{"ts": row["ts"], "value": row[metric]} for row in c.fetchall()]
+        conn.close()
+        return jsonify({"metric": metric, "rows": rows, "range": rng})
+
+    c.execute(f"SELECT COUNT(*) AS total {base_sql}", (since,))  # nosec B608
+    total = int(c.fetchone()["total"])
+    c.execute(
+        f"SELECT ts, {metric} {base_sql} ORDER BY ts ASC LIMIT ? OFFSET ?",  # nosec B608
+        (since, limit, offset),
+    )
+    page = [{"ts": row["ts"], "value": row[metric]} for row in c.fetchall()]
+    conn.close()
+    return jsonify(
+        {
+            "metric": metric,
+            "rows": page,
+            "range": rng,
+            "offset": offset,
+            "limit": limit,
+            "total": total,
+            "has_more": offset + len(page) < total,
+        }
+    )
 
 
 @dashboard_bp.route("/diff_events")
@@ -166,19 +200,39 @@ def api_diff_events():
 @dashboard_bp.route("/leaderboard")
 @_operator_only
 def api_leaderboard():
-    top = state.latest_snapshot.get("leaderboard_table_top_30") or []
+    try:
+        # Preserve the pre-pagination contract: no query returned the top 30.
+        limit = min(int(request.args.get("limit") or 30), 100)
+    except (TypeError, ValueError):
+        limit = 30
+    limit = max(1, limit)
+    try:
+        offset = max(int(request.args.get("offset") or 0), 0)
+    except (TypeError, ValueError):
+        offset = 0
+    rows = list(getattr(state, "leaderboard_rows", None) or [])
+    if not rows:
+        rows = list(state.latest_snapshot.get("leaderboard_table_top_30") or [])
+    page = rows[offset : offset + limit]
+    me = (
+        state.latest_snapshot.get("btc_address")
+        or state.latest_snapshot.get("address")
+        or config.BTC_ADDRESS
+    )
     enriched = []
-    for entry in top:
+    for entry in page:
         if isinstance(entry, dict):
             entry_copy = dict(entry)
-            entry_copy["is_me"] = entry_copy.get("address") == (
-                state.latest_snapshot.get("address") or config.BTC_ADDRESS
-            )
+            entry_copy["is_me"] = entry_copy.get("address") == me
             enriched.append(entry_copy)
     return jsonify(
         {
             "entries": enriched,
-            "total": state.latest_snapshot.get("leaderboard_total", len(top)),
+            "offset": offset,
+            "limit": limit,
+            "count": len(enriched),
+            "total": state.latest_snapshot.get("leaderboard_total", len(rows)),
+            "has_more": offset + limit < len(rows),
             "stale_after_s": config.POLL_INTERVAL,
         }
     )

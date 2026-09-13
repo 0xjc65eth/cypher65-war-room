@@ -33,6 +33,10 @@ latest_snapshot = {
     "leaderboard_table_top_30": [],
 }
 
+# Full pool leaderboard (up to the poll fetch cap). Kept off the snapshot
+# payload so /api/snapshot stays small; /api/leaderboard pages this list.
+leaderboard_rows: list = []
+
 # Timeline delta tracker ─ tracks last-known values across polls
 # so we can flag REAL events (share submit, best-diff bump, work deltas)
 # without exposing per-share logs (which the pool simply doesn't publish).
