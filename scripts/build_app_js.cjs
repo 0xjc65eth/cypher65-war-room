@@ -58,6 +58,10 @@ const MANIFEST = [
   // por `initDecisionMatrixControls()`/`initCommandCenterControls()`, que não
   // leem estado movido. Ver o cabeçalho do fragmento.
   '41-automations.js',
+  // Probability/Block Model: mesmo caso do 41 — nenhuma função/estado deste
+  // domínio é tocado por chamada de nível de módulo do 40 (o bloco do slider
+  // what-if só registra handlers). Ver o cabeçalho do fragmento.
+  '42-probability.js',
   '45-market.js',
   '46-rentals.js',
   '47-admin.js',
