@@ -48,7 +48,10 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // Cada fragmento de domínio é sintaticamente balanceado (o IIFE abre em
 // `00-preamble.js` e fecha em `50-close.js`), então roda isolado num contexto
 // vm sem `window`/`document`.
-function loadFragment(relPath, exportExpr) {
+// `sandbox` é opcional: fragmentos com statement de topo que toca `window`
+// (ex.: o `window.setProfitMode` do 42-probability.js) precisam de um contexto
+// mínimo — os puramente declarativos rodam em contexto vazio.
+function loadFragment(relPath, exportExpr, sandbox) {
   const file = path.join(__dirname, '..', 'static', 'src', relPath);
   let code;
   try {
@@ -58,7 +61,7 @@ function loadFragment(relPath, exportExpr) {
       `fragmento ausente: static/src/${relPath} — rode \`node scripts/build_app_js.cjs\``
     );
   }
-  return vm.runInNewContext(`(function () {\n${code}\n; return (${exportExpr});\n})()`, {}, {
+  return vm.runInNewContext(`(function () {\n${code}\n; return (${exportExpr});\n})()`, sandbox || {}, {
     filename: file,
     timeout: 5000,
   });
@@ -89,6 +92,19 @@ const mktBestIndexMirror = _market._mktBestIndex;
 const mktUsdPerThMirror = _market._mktUsdPerTh;
 const sortMarketVenues = _market.sortMarketVenues;
 const buildMarketTrendDatasets = _market.buildMarketTrendDatasets;
+
+// ── FONTE REAL do domínio Probability/Block Model (RFC 478 · PR 7 · Issue #548) ─
+// `simulateDifficultyShift`/`_bhFinitePositive` (Block Hunt what-if) e
+// `profitModeView` (rentabilidade pool|solo|rental|lender) vivem em
+// `static/src/42-probability.js`. Antes eram espelhos escritos à mão aqui — o
+// padrão que escondeu 3 defeitos de produção no PR 1. O fragmento tem UM
+// statement de topo (`window.setProfitMode = setProfitMode;`), daí o sandbox
+// mínimo com `window`; o resto só declara.
+const _probability = loadFragment(
+  '42-probability.js',
+  '{ _bhFinitePositive, simulateDifficultyShift, profitModeView }',
+  { window: {} }
+);
 
 // ── Test counters ─────────────────────────────────────────────────────────
 let passed = 0;
@@ -2880,51 +2896,9 @@ console.log('\n📊 SUITE 24: renderLiveCalc() — lc-* values + sparkline DPR')
   // Mirror of static/app.js profitModeView() — pure selector that returns the
   // values to display for the requested profitability mode (pool|solo|rental).
   // Validates the corrected solo math keys + per-mode fiat/break-even wiring.
-  function profitModeView(p, mode) {
-    if (!p || !Object.keys(p).length) return null;
-    const m = (mode === 'solo' || mode === 'rental' || mode === 'lender') ? mode : 'pool';
-    const view = { mode: m, btcDay: null, fiatDay: {}, fiatWeek: {}, fiatMonth: {}, breakeven: null, soloStats: null, lenderStats: null };
-    if (m === 'solo') {
-      view.btcDay = p.net_btc_per_day_solo;
-      view.fiatDay = p.fiat_per_day_solo || {};
-      view.fiatMonth = p.fiat_per_month_solo || {};
-      view.breakeven = null;
-      view.soloStats = {
-        pToday: p.solo_p_day_pct,
-        pYear: p.solo_p_year_pct,
-        p5y: p.solo_p_5year_pct,
-        blocksYear: p.solo_expected_blocks_per_year,
-        expectedDays: p.solo_expected_time_to_block_days,
-      };
-    } else if (m === 'rental') {
-      view.btcDay = p.net_btc_per_day_rental;
-      view.fiatDay = p.fiat_per_day_rental || {};
-      view.fiatMonth = p.fiat_per_month_rental || {};
-      view.breakeven = p.break_even_rental_usd_per_th_day;
-    } else if (m === 'lender') {
-      view.btcDay = p.lender_net_btc_per_day;
-      view.fiatDay = p.lender_fiat_per_day || {};
-      view.fiatMonth = p.lender_fiat_per_month || {};
-      view.breakeven = p.lender_breakeven_usd_per_th_day;
-      view.lenderStats = {
-        marketRateUsd: p.lender_market_rate_usd_per_th_day,
-        leaseNetUsd: p.lender_net_usd_per_day,
-        mineNetUsd: p.lender_mine_net_usd_per_day,
-        vsMiningUsd: p.lender_vs_mining_usd_per_day,
-        recommendation: p.lender_recommendation,
-      };
-    } else {
-      view.btcDay = p.net_btc_per_day_pool;
-      view.fiatDay = p.fiat_per_day_pool || {};
-      view.fiatMonth = p.fiat_per_month_pool || {};
-      view.breakeven = p.breakeven_cost_per_th_day;
-    }
-    Object.keys(view.fiatDay).forEach(c => {
-      view.fiatWeek[c] = view.fiatDay[c] != null ? view.fiatDay[c] * 7 : null;
-    });
-    return view;
-  }
-
+  // FONTE REAL: `profitModeView` vem de static/src/42-probability.js (Issue #548).
+  // O espelho à mão foi removido — mutar o fragmento derruba esta suíte.
+  const profitModeView = _probability.profitModeView;
   const p = {
     net_btc_per_day_pool: 0.00012345,
     fiat_per_day_pool: { USD: 7.5, BRL: 40.0 },
@@ -4476,39 +4450,16 @@ const QR_GOLDEN = {"helloM":{"text":"HELLO WORLD","level":"M","rows":["111111101
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  SUITE 33: simulateDifficultyShift (UX audit Módulo_05 — WHAT-IF slider)
-//  Pure mirror of static/app.js: given the base Block Hunt values + a
-//  difficulty shift %, recompute netDiff (linear), P(block)/share (inverse),
-//  expected time (linear), distance (linear) and cumulative P (re-derived
-//  from the shifted per-share probability and the session's share count).
+//  FONTE REAL (static/src/42-probability.js · RFC 478 · PR 7 · Issue #548):
+//  dados os valores-base do Block Hunt + um shift de dificuldade (%), recalcula
+//  netDiff (linear), P(block)/share (inversa), tempo esperado (linear), distância
+//  (linear) e P acumulada (re-derivada do p por share e do nº de shares). O
+//  espelho à mão que vivia aqui foi REMOVIDO — mutar o fragmento derruba isto.
 // ═══════════════════════════════════════════════════════════════════════════
 (function() {
-  function _bhFinitePositive(value) {
-    const n = Number(value);
-    return Number.isFinite(n) && n > 0 ? n : 0;
-  }
-
-  function simulateDifficultyShift(base, pct) {
-    base = base || {};
-    const mult = 1 + (Number(pct) || 0) / 100;
-    const baseNet = _bhFinitePositive(base.netDiff);
-    const netDiff = baseNet > 0 ? baseNet * mult : 0;
-    const bestDiff = _bhFinitePositive(base.bestDiff);
-    const baseP = Number(base.pBlock);
-    let pBlock = null;
-    if (bestDiff > 0 && netDiff > 0) pBlock = bestDiff / netDiff;
-    else if (Number.isFinite(baseP) && baseNet > 0 && netDiff > 0) pBlock = baseP * (baseNet / netDiff);
-    const expectedTimeRaw = Number(base.expectedTime);
-    const expectedTime = Number.isFinite(expectedTimeRaw) && expectedTimeRaw > 0
-      ? expectedTimeRaw * mult
-      : (Number.isFinite(expectedTimeRaw) ? expectedTimeRaw : 0);
-    const distance = bestDiff > 0 && netDiff > 0 ? netDiff / bestDiff : 0;
-    let cumulativeP = Number.isFinite(Number(base.cumulativeP)) ? Number(base.cumulativeP) : base.cumulativeP;
-    const shares = _bhFinitePositive(base.shares);
-    if (shares > 0 && pBlock != null && Number.isFinite(pBlock) && pBlock > 0) {
-      cumulativeP = 1 - Math.pow(1 - pBlock, shares);
-    }
-    return { shiftPct: Number(pct) || 0, netDiff, pBlock, expectedTime, distance, cumulativeP };
-  }
+  // Funções REAIS do fragmento (ver `_probability` no topo do arquivo).
+  const _bhFinitePositive = _probability._bhFinitePositive;
+  const simulateDifficultyShift = _probability.simulateDifficultyShift;
 
   // Base: 110T difficulty, 10G best share → pBlock = 10e9/110e12.
   const base = {

@@ -44,6 +44,65 @@ test.describe('Probability WHAT-IF difficulty slider — regression', () => {
     await expect(page.locator('#block-hunt-panel')).toBeVisible({ timeout: 15000 });
   }
 
+
+  // ── Fixture determinístico (Issue #548) ────────────────────────────────────
+  // O painel só tem números quando o snapshot traz dificuldade de rede + best
+  // share. Em vez de depender do que o servidor tem (o que fazia o spec PULAR a
+  // comparação numérica via guard `hasData`), forçamos exatamente os campos que
+  // o simulador lê e cortamos o SSE — que empurraria o snapshot do servidor por
+  // cima do fixture — deixando o poll interceptado como única fonte.
+  //
+  // Com dificuldade de rede = 110 T e best share = 10 G:
+  //   P(bloco)/share = bestDiff / netDiff(1+shift), exibido como
+  //   (p × 100).toExponential(2) pelo `_bhRenderWhatIf`.
+  const NET_DIFF = 110e12;
+  const BEST_DIFF = 10e9;
+  const PBLOCK_0 = '9.09e-3%';      // 10G / 110T
+  const PBLOCK_10 = '8.26e-3%';     // 10G / 121T
+  const PBLOCK_30 = '6.99e-3%';     // 10G / 143T
+  const PBLOCK_NEG25 = '1.21e-2%';  // 10G / 82.5T
+
+  const parsePct = (raw) => {
+    const n = parseFloat(String(raw).replace('%', ''));
+    return Number.isFinite(n) ? n : null;
+  };
+
+  async function forceBlockHuntData(page) {
+    // O boot REGISTRA um service worker; quando ele assume o controle o app faz
+    // `location.reload()` e, pior, o próprio SW responde `/api/snapshot` do
+    // cache — e `page.route` NÃO intercepta requests originados do SW. Sem
+    // desligar o SW o fixture abaixo é ignorado e o painel volta ao snapshot
+    // real (foi exatamente o que fazia este spec falhar). Negar o registro
+    // deixa a página sem SW: sem reload e com o poll interceptado como única
+    // fonte de dados.
+    await page.addInitScript(() => {
+      try {
+        if (navigator.serviceWorker) {
+          navigator.serviceWorker.register = () => Promise.reject(new Error('sw disabled in e2e'));
+        }
+      } catch (e) { /* ambiente sem serviceWorker — segue sem SW */ }
+    });
+    await page.route('**/api/stream*', (route) => route.abort());
+    await page.route('**/api/snapshot*', async (route) => {
+      const response = await route.fetch();
+      const snap = await response.json();
+      snap.network = Object.assign({}, snap.network, { difficulty: NET_DIFF });
+      snap.worker = Object.assign({}, snap.worker, { bestDifficulty: BEST_DIFF });
+      snap.block_hunt = Object.assign({}, snap.block_hunt, {
+        network_difficulty: NET_DIFF,
+        best_difficulty: BEST_DIFF,
+        modeled_share_probability: BEST_DIFF / NET_DIFF,
+        expected_time_seconds: 123456,
+      });
+      snap.proximity = Object.assign({}, snap.proximity, {
+        live_calc: Object.assign({}, snap.proximity && snap.proximity.live_calc, {
+          session_totals: { shares_so_far: 1000 },
+        }),
+      });
+      await route.fulfill({ json: snap });
+    });
+  }
+
   test('renders the slider, badge and reset button in Block Hunt', async ({ page }) => {
     await openProbability(page);
 
@@ -61,61 +120,61 @@ test.describe('Probability WHAT-IF difficulty slider — regression', () => {
   });
 
   test('dragging the slider updates badge and readouts live; reset returns to baseline', async ({ page }) => {
+    await forceBlockHuntData(page);
     await openProbability(page);
 
     const slider = page.locator('#bh-whatif-slider');
     const badge = page.locator('#bh-whatif-badge');
     const diffCell = page.locator('#bh-whatif-diff');
+    const pblockCell = page.locator('#bh-whatif-pblock');
 
-    // If the server has no pool data yet, the panel shows the honest empty
-    // state — the badge still tracks the shift %, and reset must still work.
-    const hasData = await diffCell.textContent().then(t => t && t.trim() !== '—');
+    // Issue #548: com o fixture, o painel mostra números REAIS — a comparação
+    // numérica abaixo não é mais pulada (era o guard `hasData` que deixava o
+    // math do simulador sem cobertura de e2e).
+    await expect(diffCell).not.toHaveText('\u2014');
+    await expect(pblockCell).toHaveText(PBLOCK_0);
 
-    // Drag to +10% (value attribute drives the pure simulator).
+    // +10% de dificuldade → P(bloco)/share cai (escala inversa).
     await slider.evaluate(el => { el.value = 10; el.dispatchEvent(new Event('input', { bubbles: true })); });
     await expect(badge).toHaveText('+10%');
+    await expect(pblockCell).toHaveText(PBLOCK_10);
+    const p10 = parsePct(await pblockCell.textContent());
 
-    if (hasData) {
-      // +10% difficulty → P(block)/share must drop (inverse scaling).
-      const parsePct = (raw) => {
-        const n = parseFloat(String(raw).replace('%', '').replace('\u2014', ''));
-        return Number.isFinite(n) ? n : null;
-      };
-      const before = await page.locator('#bh-whatif-pblock').textContent();
-      const pBefore = parsePct(before);
-      await slider.evaluate(el => { el.value = 30; el.dispatchEvent(new Event('input', { bubbles: true })); });
-      await expect(badge).toHaveText('+30%');
-      const after = await page.locator('#bh-whatif-pblock').textContent();
-      const pAfter = parsePct(after);
-      // 30% > 10% shift → strictly smaller probability. Guard: on a server
-      // with pool difficulty but zero/non-finite bestDiff, skip the comparison.
-      if (pBefore == null || pAfter == null || (pBefore === 0 && pAfter === 0)) {
-        // Honest empty/zero readouts; the badge still tracked the shift.
-      } else {
-        expect(pAfter).toBeLessThan(pBefore);
-      }
-    }
+    // +30% → cai mais (bate com o fixture, não só com o sinal).
+    await slider.evaluate(el => { el.value = 30; el.dispatchEvent(new Event('input', { bubbles: true })); });
+    await expect(badge).toHaveText('+30%');
+    await expect(pblockCell).toHaveText(PBLOCK_30);
+    const p30 = parsePct(await pblockCell.textContent());
 
-    // Reset → back to 0% baseline.
+    expect(p10).toBeGreaterThan(0);
+    expect(p30).toBeLessThan(p10);
+
+    // Reset → volta ao baseline 0% (inclusive o readout).
     await page.click('#bh-whatif-reset');
     await expect(badge).toHaveText('0%');
     await expect(slider).toHaveValue('0');
+    await expect(pblockCell).toHaveText(PBLOCK_0);
   });
 
   test('simulates NEGATIVE difficulty shifts (drop) without breaking', async ({ page }) => {
+    await forceBlockHuntData(page);
     await openProbability(page);
 
     const slider = page.locator('#bh-whatif-slider');
     const badge = page.locator('#bh-whatif-badge');
+    const pblockCell = page.locator('#bh-whatif-pblock');
 
     await slider.evaluate(el => { el.value = -25; el.dispatchEvent(new Event('input', { bubbles: true })); });
     await expect(badge).toHaveText('-25%');
+    // Dificuldade CAI → P(bloco)/share SOBE (1.21e-2 > 9.09e-3 do baseline).
+    await expect(pblockCell).toHaveText(PBLOCK_NEG25);
 
-    // Readouts must be present (values or honest em-dashes — never empty).
+    // Readouts sempre presentes (números reais ou em-dash honesto — nunca vazio).
     const cum = await page.locator('#bh-whatif-cum').textContent();
     expect(String(cum).trim()).not.toBe('');
+    expect(String(cum).trim()).toMatch(/%$/);
 
-    // Reset for cleanliness.
+    // Reset para o baseline.
     await page.click('#bh-whatif-reset');
     await expect(badge).toHaveText('0%');
   });

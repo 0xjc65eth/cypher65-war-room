@@ -84,6 +84,31 @@ e versionamento semântico ([SemVer](https://semver.org/lang/pt-BR/)).
   os outros 13 fragmentos. O harness JS **espelha** `authBuildHeaders`/
   `authIsExpired`/`authSessionValid` (Suite 22), portanto não carrega o god file.
 
+### Corrigido — cobertura do Block Hunt: harness carrega o fonte e e2e tem fixture determinístico (RFC #478, Issue #548)
+- O PR 7 (#542) registrou duas lacunas de cobertura em vez de escondê-las. Esta
+  issue fecha as duas:
+  - **SUITE 33 do harness JS** deixou de **espelhar** o what-if e passa a carregar
+    `static/src/42-probability.js` via `loadFragment(..., { window: {} })` —
+    `simulateDifficultyShift`/`_bhFinitePositive` agora são o **código real**.
+    Mutar o fragmento derruba **5 asserções** da suíte.
+  - **`tests/e2e/probability-whatif.spec.js`** ganhou `forceBlockHuntData()`:
+    intercepta `/api/snapshot` e injeta `network.difficulty = 110 T` +
+    `worker.bestDifficulty = 10 G`, corta `/api/stream` e compara os readouts
+    **numéricos** (9.09e-3% / 8.26e-3% / 6.99e-3% / 1.21e-2%) em vez de só o
+    sinal. Antes o spec **pulava** a comparação quando o servidor não tinha
+    dados de pool (guard `hasData`).
+- **Achado — o service worker, não o `hasData`, era a causa raiz.** O boot
+  registra um SW; quando ele assume o controle o app faz `location.reload()` e o
+  **próprio SW passa a responder `/api/snapshot` do cache**. `page.route` não
+  intercepta request originado de dentro do SW, então o fixture era ignorado e o
+  painel voltava ao snapshot real (`0.00e+0%`, 127 T). Corrigido negando o
+  registro via `page.addInitScript` (`navigator.serviceWorker.register → reject`).
+  Qualquer e2e futuro que dependa de `page.route` em `/api/*` precisa da mesma guarda.
+- **Prova de mutação dupla**: mutar o *math* no fragmento derruba a SUITE 33
+  (**5 asserções**); mutar o mesmo ponto no **bundle** `static/app.js` — o
+  artefato que o navegador realmente executa — derruba o spec (**4/4**).
+  Nenhum código de produção mudou (`static/app.js` em sincronia, 15 fragmentos).
+
 ### Alterado — extração do domínio Probability/Block Model para `static/src/42-probability.js` (RFC #478, Issue #542)
 - O cluster **Probability/Block Model** saiu de `static/src/40-app-logic.js` para
   `static/src/42-probability.js` (**635 linhas movidas verbatim** — o cluster é
