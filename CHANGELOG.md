@@ -36,6 +36,66 @@ e versionamento semântico ([SemVer](https://semver.org/lang/pt-BR/)).
 - Lab virtual hermético; DNS continua pinado na resolução V1. Discovery
   ativo (Gate 083) permanece desligado.
 
+### Alterado — extração do domínio Probability/Block Model para `static/src/42-probability.js` (RFC #478, Issue #542)
+- O cluster **Probability/Block Model** saiu de `static/src/40-app-logic.js` para
+  `static/src/42-probability.js` (**635 linhas movidas verbatim** — o cluster é
+  contíguo, 2.381–3.015, então não houve corte no meio de domínio como no
+  4a/4b): probabilidade + block model (`renderProximity`,
+  `_drawProximitySparkline`, `renderQuantumLock`, `_setQlComp`, `renderLiveCalc`,
+  `renderNetworkGauge`, `_drawGauge`), rentabilidade/comparação/solo/marcos
+  (`profitModeView`, `setProfitMode`, `renderProfitability`, `renderComparison`,
+  `renderSoloStats`, `renderMilestones`) e o **Block Hunt** what-if
+  (`_bhSliderValue`, `_bhFinitePositive`, `simulateDifficultyShift`,
+  `_bhRenderWhatIf`, `renderBlockHunt`). `40-app-logic.js` 5.877 → **5.243
+  linhas**.
+- **Sem exceção de posicionamento:** o fragmento entra **depois** do god file,
+  como o `41`. O único statement de topo da faixa
+  (`window.setProfitMode = setProfitMode;`) viaja junto; os 5 nomes de estado
+  (`_proxSparklineData`, `_profitMode`, `_lastProfitability`, `_bhBase`,
+  `_bhSliderEl`) não são lidos em nenhum outro ponto do 40 nem em outro
+  fragmento; o prefixo síncrono do `boot()` não chama nada do domínio; e o bloco
+  do `#bh-whatif-slider` que **fica** no god file só registra handlers.
+- **Prova de movimento mecânico**: `static/app.js` == fragmentos do
+  `origin/master` com as 635 linhas realocadas verbatim — sequência de código
+  (não-comentário/não-branco) idêntica, 10.924 = 10.924; **0 removidas**, 36
+  adicionadas (35 de cabeçalho + 1 marcador) + 1 separador em branco.
+- **Prova de mutação**: mutação no badge do `_bhRenderWhatIf`
+  (`badge.textContent = 'MUTADO'`) em `42-probability.js` →
+  `probability-whatif.spec.js` falha **6/6** nos dois projetos. Restaurado.
+- **Lacuna de cobertura registrada (não corrigida neste PR)**: uma mutação no
+  *math* (`simulateDifficultyShift` retornando `base`) **sobrevive** — o spec
+  pula a comparação numérica quando o servidor não tem dados de pool (guard
+  `hasData`, `#bh-whatif-diff` = '—'), e a SUITE 33 do harness JS **espelha** o
+  what-if em vez de carregar o fragmento. O caminho aberto pelo `loadFragment()`
+  do PR 2 (#515) para o Market é o candidato natural a follow-up.
+
+### Alterado — extração de Automations/Alerts/Auto-Pilot/Decision Matrix para `static/src/41-automations.js` (RFC #478, Issue #540)
+- Quatro blocos contíguos do `40-app-logic.js` foram para
+  `static/src/41-automations.js` (**1.073 linhas movidas verbatim**): os feeds de
+  **alertas/eventos** do dashboard + painel de conta (`acctRankLabels`,
+  `renderAccount`, `_staleChip`, `renderBtcPrices`, `renderHalving`,
+  `renderMempoolFees`, `renderAlerts`, `renderEvents`, `renderLeaderboard`), a
+  **Decision Matrix + Command Center** (`renderDecisionMatrix`,
+  `commandCenterCardHtml`, `renderCommandCenter` + os dois `init*Controls`), o
+  **Auto-Pilot** (arming/advisory/dry-run: `_apSetUi`, `_apRefreshStatus`,
+  `_apSetArmed`, `_initAutoPilot*`, `_apDr*`) e o **Alert Center/Automations**
+  (`acState`, `ac*`, `acShowTab` + o bloco de topo que injeta a tab-strip e
+  registra os listeners). `40-app-logic.js` 6.946 → **5.877 linhas**.
+- **Primeiro fragmento DEPOIS do god file que passa na régua sem exceção:** os
+  12 nomes de estado do domínio não são lidos por nenhuma chamada de nível de
+  módulo do 40 (varredura do arquivo inteiro e dos outros 12 fragmentos), e o
+  prefixo síncrono do `boot()` só toca o domínio por
+  `initDecisionMatrixControls()`/`initCommandCenterControls()` — que leem apenas
+  `document`. Ficaram no god file, de propósito, o `_lastSnapshot` (poll/SSE
+  escrevem, terminais e AXE Fleet leem) e o estado do Fleet Command Center
+  (`_cc*`), que o `boot()` toca antes de o fragmento 48 existir.
+- **Prova de movimento mecânico**: 0 linhas removidas e **0 linhas de código
+  adicionadas** (só comentários e separadores); sequência de código
+  10.924 = 10.924 contra os fragmentos do `origin/master` com os 4 blocos
+  realocados.
+- **Prova de mutação**: desligar a injeção da tab-strip no único statement de
+  topo do fragmento derruba `alert-center-tabs.spec.js` (**4/4**). Restaurado.
+
 ### Alterado — extração do domínio Terminal/SSE para `static/src/39-terminal.js` (RFC #478, Issue #529)
 - O domínio **Terminal/SSE** saiu de `static/src/40-app-logic.js` para
   `static/src/39-terminal.js` (**752 linhas movidas verbatim**): o terminal de
