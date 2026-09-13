@@ -54,9 +54,10 @@ services:
       #   value: ""
       # ── Secrets ──────────────────────────────────────────────────────────
       - key: SECRET_KEY
-        generateValue: true
-      # Optional: API_KEY / TENANT_API_KEYS to lock the API behind auth.
-      # Optional: SENTRY_DSN for error monitoring.
+        generateValue: true   # required on cloud; boot aborts if missing (Issue #535)
+      # Optional: API_KEY / TENANT_API_KEYS to lock mutations / private deploys.
+      # Public /api/snapshot stays open by design unless those keys are set.
+      # Optional: SENTRY_DSN for error monitoring (env-gated; unset = no SDK).
       # ── Paywall / licensing (Issue #256) ─────────────────────────────────
       # PRO_KEYS_DB=1 ATIVA o gate de licensing: features PRO (proximity,
       # monte_carlo) respondem 402 sem chave e o funil paywall_view →

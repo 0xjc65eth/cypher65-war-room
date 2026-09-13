@@ -50,6 +50,7 @@ SENTRY_DSN=... python app.py      # Sentry ativo (traces 0.1 default)
 | **Stryker 9.6.1** (mutation JS) | `mobile/` hooks/services | ✅ Babel 7 + threshold 40% (Issue #439) | manual (advisory, `break: 40`) |
 | **arch-contract** (TS layers) | — | ⚪ N/A nesta stack | — |
 | **bandit** (segurança estática Python) | Python | ✅ gate (Issue #125) — 0 MEDIUM/HIGH | ✅ blocking |
+| **pip-audit** (CVEs em requirements.txt) | pip | ✅ gate (Issue #535) | ✅ blocking |
 | **flake8** (bug-codes) | Python | ✅ gate via `.flake8` (F821/F541/E9) | ✅ blocking |
 | **black** | Python | ✅ formatação commitada (Issue #133, 62 arquivos) | ✅ blocking |
 

@@ -92,7 +92,7 @@ All settings are environment variables (see [`.env.example`](.env.example)):
 | `PORT` | `8765` | HTTP port |
 | `POLL_INTERVAL` | `15` | Pool polling interval (seconds) |
 | `RATE_LIMIT_PER_MINUTE` | `300` | API rate limit |
-| `SECRET_KEY` | random | Session signing (rotate for persistence) |
+| `SECRET_KEY` | random locally; **required on cloud** | Session signing. Cloud boot (Render) aborts if unset |
 | `API_KEY` | — | Static HTTP basic auth |
 | `TENANT_API_KEYS` | — | JSON `{tenant: api_key}` map → multi-tenant JWT auth |
 | `DEBUG_MOCK` | `0` | `1` enables demo seeding (dev only) |
@@ -127,6 +127,7 @@ The CI workflow (`.github/workflows/ci.yml`) gates merges on all suites plus an 
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — system design & data flow
 - [`docs/DATA_MODEL.md`](docs/DATA_MODEL.md) — persistence model
 - [`docs/DEPLOYMENT_OPS.md`](docs/DEPLOYMENT_OPS.md) — deploy & operations guide
+- [`docs/PRE_PUBLIC_DEPLOY_CHECKLIST.md`](docs/PRE_PUBLIC_DEPLOY_CHECKLIST.md) — live public-deploy gates (PASS / PARTIAL / OPERATOR)
 - [`docs/DESIGN_SYSTEM_V2.md`](docs/DESIGN_SYSTEM_V2.md) — UI design system
 - [`docs/REMOTE_ACCESS_TUTORIAL.md`](docs/REMOTE_ACCESS_TUTORIAL.md) — Tailscale remote access
 - [`docs/WALLET_POOL_SETUP.md`](docs/WALLET_POOL_SETUP.md) — wallet & pool configuration guide
