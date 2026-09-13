@@ -47,6 +47,43 @@ e versionamento semântico ([SemVer](https://semver.org/lang/pt-BR/)).
 - Lab virtual hermético; DNS continua pinado na resolução V1. Discovery
   ativo (Gate 083) permanece desligado.
 
+### Alterado — extração do domínio Billing/Auth para `static/src/38-billing-auth.js` (RFC #478, Issue #545)
+- O bloco **Billing/Auth** (o R1, topo do god file) saiu de
+  `static/src/40-app-logic.js` para `static/src/38-billing-auth.js` (**924 linhas
+  movidas verbatim**): sessão/tenant (`AUTH_SESSION_KEY`, `authLoadSession`,
+  `authBuildHeaders`, `authFetch`, `authRefresh`, `authLogin`/`authLogout`,
+  `authUpdateUi`, `authIsExpired`/`authSessionValid`/`authGetToken`, `initAuth`),
+  licença/PRO (`LICENSE_STORAGE_KEY`, `_license`, `fetchLicenseStatus`,
+  `initLicensing`, `renderLicenseBadge`, `syncAiPremiumUi`,
+  `handleLicenseRequired`), funil + upgrade on-chain
+  (`openUpgradeModal`/`syncUpgradeModal`, `buyUpgrade`/`buyPro`, `_btcUpgrade`,
+  `setUpgradeTab`, `startBtcUpgrade`, `pollBtcStatus`, `startBtcCountdown`,
+  `copyBtcPayload`, `payBtcWithWebLN`, `applyUpgradeKey`, `renderBtcPending`) e o
+  indicador de instância (`instanceClassify`, `initInstanceIndicator`).
+  `40-app-logic.js` 5.243 → **4.320 linhas**.
+- **Primeiro domínio desde o PR 5 que PRECISA vir ANTES do god file** (ordinal
+  `38`, antes do `39-terminal.js`). A régua é sobre *estado* lido por chamada de
+  nível de módulo, e o prefixo **síncrono** do `boot()` chama `initLicensing()`
+  (lê o `let _license`, via `renderLicenseBadge`/`syncUpgradeModal`/
+  `syncAiPremiumUi`), `initAuth()` e `initInstanceIndicator()`. Depois do 40 o
+  estado estaria em **TDZ** no boot → `ReferenceError`.
+- **É também a ordem original:** o R1 era a **linha 1** do god file, antes do
+  bloco de terminal (linha 2.540+). Entrar como `38` restaura a ordem relativa do
+  arquivo original — e o error boundary do `39` volta a cobrir a avaliação do
+  domínio, como cobria antes do split.
+- **Prova de movimento mecânico**: `static/app.js` == fragmentos do
+  `origin/master` com as 924 linhas realocadas verbatim — sequência de código
+  idêntica, 10.924 = 10.924; **0 removidas**, 46 adicionadas (45 de cabeçalho + 1
+  marcador) + 1 separador em branco.
+- **Prova de mutação**: `renderBtcPending` com `return;` antecipado em
+  `38-billing-auth.js` → `upgrade-btc.spec.js` falha **10/18**. Restaurado.
+- **Verificações antes de mover:** 1 statement de topo na faixa
+  (`window.openUpgradeModal = openUpgradeModal;`, que só atribui referência),
+  **zero** declarações/statements em coluna 0, nenhuma linha de nível de módulo do
+  R1 lê estado definido depois no IIFE, e zero colisão dos 7 nomes de estado com
+  os outros 13 fragmentos. O harness JS **espelha** `authBuildHeaders`/
+  `authIsExpired`/`authSessionValid` (Suite 22), portanto não carrega o god file.
+
 ### Alterado — extração do domínio Probability/Block Model para `static/src/42-probability.js` (RFC #478, Issue #542)
 - O cluster **Probability/Block Model** saiu de `static/src/40-app-logic.js` para
   `static/src/42-probability.js` (**635 linhas movidas verbatim** — o cluster é
