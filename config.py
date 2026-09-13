@@ -63,16 +63,21 @@ DATA_DIR.mkdir(exist_ok=True)
 _CLOUD_ENV_FLAGS = ("RENDER", "RENDER_SERVICE_ID", "RENDER_INSTANCE_ID", "CLOUD_MODE")
 
 
-def is_cloud_deploy() -> bool:
+def is_cloud_deploy(env=None) -> bool:
     """True when this process is deployed on a PaaS cloud (Render etc.).
 
     Used by the axe-fleet onboarding to switch the UX to the local-agent
     model: subnet scan and manual private-IP adds are physically impossible
     from a cloud host, so they are blocked/redirected instead of letting the
     user chase an unreachable miner forever.
+
+    ``env`` is optional so boot-policy tests can pass a mapping without
+    mutating process environment. Production callers omit it and read
+    ``os.environ`` at CALL time.
     """
+    source = env if env is not None else os.environ
     for flag in _CLOUD_ENV_FLAGS:
-        val = os.environ.get(flag, "")
+        val = source.get(flag, "") if hasattr(source, "get") else ""
         if val and str(val).strip().lower() not in ("", "0", "false", "no"):
             return True
     return False

@@ -28,7 +28,8 @@ WORKER_NAME=your-worker-name
 PORT=8765
 ```
 
-Generate and set a stable `SECRET_KEY` if sessions must survive a restart:
+Generate and set a stable `SECRET_KEY` if sessions must survive a restart.
+On Render / any `CLOUD_MODE` host the process **will not boot** without one:
 
 ```bash
 python3 -c "import secrets; print(secrets.token_hex(32))"

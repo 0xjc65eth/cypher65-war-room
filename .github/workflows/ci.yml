@@ -161,7 +161,7 @@ jobs:
           # Static-analysis gate tools (Issue #125) — versions pinned to
           # requirements-dev.txt so CI matches local dev. bandit 1.9.4:
           # 1.8.2 crasha no AST do Python 3.14.
-          pip install bandit==1.9.4 flake8==7.1.1 black==25.1.0
+          pip install bandit==1.9.4 flake8==7.1.1 black==25.1.0 pip-audit==2.10.1
 
       # Static security gates (Issue #125). BLOQUEIAM o merge quando:
       #   bandit  -ll   — qualquer achado MEDIUM/HIGH (B6xx SQL/shell,
@@ -185,6 +185,15 @@ jobs:
             app.py helpers.py solo_mining.py -ll -q
           python -m flake8 app.py helpers.py solo_mining.py services core axe_fleet routes agents
           python -m black --check app.py helpers.py solo_mining.py services core axe_fleet routes agents
+
+      # Dependency CVE audit (Issue #535). BLOQUEIA o merge quando pip-audit
+      # encontra uma CVE conhecida em requirements.txt. Dependabot continua
+      # abrindo PRs semanais; este step impede um merge com advisory já
+      # publicada. 2026-09-13: 0 vulns conhecidas.
+      - name: Dependency CVE audit (pip-audit)
+        run: |
+          source .venv/bin/activate
+          python -m pip_audit -r requirements.txt
 
       # Higiene de teste (Issue #505). BLOQUEIA quando um teste patcheia um
       # nome que o módulo alvo NÃO possui: se o módulo só re-exporta o símbolo

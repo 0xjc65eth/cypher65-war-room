@@ -197,6 +197,7 @@ from config import (
     AUTH_RATE_LIMIT_PER_MINUTE,
     API_KEY,
     TENANT_API_KEYS,
+    is_cloud_deploy,
 )
 
 app = Flask(__name__)
@@ -226,6 +227,13 @@ if (
         "[boot] SECRET_KEY is not set but auth (API_KEY/TENANT_API_KEYS) is configured — "
         "JWT issuance/verification will fail. Set SECRET_KEY in the environment."
     )
+
+# Cloud-only import-time abort (Issue #535): gunicorn `app:app` never
+# reaches `if __name__ == "__main__"`. Local pytest has no RENDER flag.
+if is_cloud_deploy():
+    from services.boot_policy import validate_boot_policy as _validate_boot_policy
+
+    _validate_boot_policy()
 
 # ── Per-user credentials (Issue #189): NO shared provider keys ──────────
 # Multi-tenant deployments (TENANT_API_KEYS) must NOT carry operator
@@ -619,27 +627,26 @@ def add_cors_headers(response):
     """Env-gated CORS for the React Native mobile companion.
 
     Enabled only when CORS_ORIGINS is set (comma-separated allow-list, or
-    '*' for any origin). Same-origin dashboard users are unaffected — no
-    CORS headers are emitted unless configured, so self-host stays locked
-    down by default.
+    '*' for any origin on local self-host). Cloud deploys (Render etc.)
+    never emit a wildcard — Issue #535. Same-origin dashboard users are
+    unaffected: no CORS headers unless configured.
     """
-    origins = os.environ.get("CORS_ORIGINS", "").strip()
-    if origins:
-        origin = request.headers.get("Origin", "")
-        allowed = origins == "*" or (
-            origin and origin in [o.strip() for o in origins.split(",")]
+    from services.boot_policy import cors_allow_origin
+
+    allowed_origin = cors_allow_origin(
+        os.environ.get("CORS_ORIGINS", ""),
+        request.headers.get("Origin", ""),
+        cloud=is_cloud_deploy(),
+    )
+    if allowed_origin:
+        response.headers["Access-Control-Allow-Origin"] = allowed_origin
+        response.headers["Access-Control-Allow-Methods"] = (
+            "GET, POST, PUT, DELETE, OPTIONS"
         )
-        if allowed:
-            response.headers["Access-Control-Allow-Origin"] = (
-                "*" if origins == "*" else origin
-            )
-            response.headers["Access-Control-Allow-Methods"] = (
-                "GET, POST, PUT, DELETE, OPTIONS"
-            )
-            response.headers["Access-Control-Allow-Headers"] = (
-                "Authorization, Content-Type, X-API-Key"
-            )
-            response.headers["Access-Control-Max-Age"] = "86400"
+        response.headers["Access-Control-Allow-Headers"] = (
+            "Authorization, Content-Type, X-API-Key"
+        )
+        response.headers["Access-Control-Max-Age"] = "86400"
     return response
 
 
@@ -8385,19 +8392,13 @@ def _compute_block_hunt(snap):
 
 
 if __name__ == "__main__":
-    # External-review quick win (P1 #8): when the API is locked behind API
-    # keys, SECRET_KEY must be stable — a missing/volatile secret silently
-    # invalidates every JWT and Flask session on restart. Refuse to boot
-    # instead of running with broken auth. Open mode (no API_KEY /
-    # TENANT_API_KEYS) is unaffected. Checked here (not at import) so pytest
-    # and gunicorn app:app imports never abort.
-    if (API_KEY or TENANT_API_KEYS) and not (
-        os.environ.get("SECRET_KEY") or os.environ.get("JWT_SECRET_KEY")
-    ):
-        raise SystemExit(
-            "FATAL: SECRET_KEY is required when API_KEY/TENANT_API_KEYS is set. "
-            "Set a stable SECRET_KEY in the environment."
-        )
+    # Fail-closed boot (Issue #535): cloud deploys and any auth-configured
+    # process refuse an ephemeral SECRET_KEY, CORS_ORIGINS=*, and Flask
+    # debug. Checked here (not at import) so pytest and gunicorn app:app
+    # imports never abort. Local open self-host is unchanged.
+    from services.boot_policy import validate_boot_policy
+
+    validate_boot_policy()
     art = r"""
    ___ __  __ ____  _   _ ____  __  __ ___ ______   __
   / __|  \/  |  _ \| \ | |  _ \ \ \/ // ___/ __\ \ / /

@@ -10,7 +10,7 @@ help:
 	@echo "  make logs       - Tail container logs"
 	@echo "  make test       - Run the full pytest suite in the venv"
 	@echo "  make lint       - Advisory flake8/black (non-blocking)"
-	@echo "  make lint-sec   - Static security gates: bandit -ll + flake8 bug-codes + black (BLOCKING no CI)"
+	@echo "  make lint-sec   - bandit + flake8 + black + pip-audit (BLOCKING no CI)"
 	@echo "  make format     - Roda black no escopo do gate (Issue #133)"
 	@echo "  make clean      - Stop containers and remove volumes"
 	@echo "  make clean-data - DELETE the SQLite databases (device registry!)"
@@ -47,16 +47,19 @@ format:
 	@test -d .venv || (echo "no .venv — run ./run.sh once first" && exit 1)
 	.venv/bin/python -m black app.py helpers.py solo_mining.py services core axe_fleet routes agents
 
-# Static security gates (Issues #125 + #133) — EXACTAMENTE o que o CI
-# bloqueia: bandit -ll (medium+), flake8 .flake8 (F821/F541/E9) e black
-# (reformatado no commit dedicado #133 — agora é gate real).
-# Usa o venv (igual `make test`). Deps: pip install -r requirements-dev.txt.
+# Static security gates (Issues #125 + #133 + #535) — EXACTAMENTE o que o CI
+# bloqueia: bandit -ll (medium+), flake8 .flake8 (F821/F541/E9), black
+# (reformatado no commit dedicado #133 — agora é gate real) e pip-audit
+# contra requirements.txt. Usa o venv (igual `make test`).
+# Deps: pip install -r requirements-dev.txt.
 lint-sec:
 	@test -d .venv || (echo "no .venv — run ./run.sh once first" && exit 1)
-	@echo "🔐 Static security gates (bandit + flake8 + black)"
+	@echo "🔐 Static security gates (bandit + flake8 + black + pip-audit)"
 	.venv/bin/python -m bandit -r services core axe_fleet routes agents app.py helpers.py solo_mining.py -ll -q
 	.venv/bin/python -m flake8 app.py helpers.py solo_mining.py services core axe_fleet routes agents
 	.venv/bin/python -m black --check app.py helpers.py solo_mining.py services core axe_fleet routes agents
+	@echo "🔐 pip-audit (requirements.txt)"
+	.venv/bin/python -m pip_audit -r requirements.txt
 
 clean:
 	docker compose down -v

@@ -465,9 +465,21 @@ class TestCorsHeaders:
 
     def test_cors_wildcard(self, client, monkeypatch):
         monkeypatch.setenv("CORS_ORIGINS", "*")
+        monkeypatch.delenv("RENDER", raising=False)
+        monkeypatch.delenv("RENDER_SERVICE_ID", raising=False)
+        monkeypatch.delenv("RENDER_INSTANCE_ID", raising=False)
+        monkeypatch.delenv("CLOUD_MODE", raising=False)
         res = self._get_snapshot(client, monkeypatch, {"Origin": "https://app.example.com"})
         assert res.headers.get("Access-Control-Allow-Origin") == "*"
         assert "GET" in res.headers.get("Access-Control-Allow-Methods", "")
+
+    def test_cors_wildcard_ignored_on_cloud(self, client, monkeypatch):
+        monkeypatch.setenv("CORS_ORIGINS", "*")
+        monkeypatch.setenv("RENDER", "true")
+        res = self._get_snapshot(
+            client, monkeypatch, {"Origin": "https://site-qualquer.com"}
+        )
+        assert res.headers.get("Access-Control-Allow-Origin") is None
 
     def test_cors_allowlist(self, client, monkeypatch):
         monkeypatch.setenv("CORS_ORIGINS", "https://app.example.com,https://x.io")

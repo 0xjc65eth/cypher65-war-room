@@ -6,6 +6,19 @@ e versionamento semântico ([SemVer](https://semver.org/lang/pt-BR/)).
 
 ## [Unreleased]
 
+### Adicionado — boot fail-closed em cloud + pip-audit + checklist pré-deploy (Issue #535)
+- `services/boot_policy.py`: em `is_cloud_deploy()`, o processo recusa
+  `SECRET_KEY` ausente, `CORS_ORIGINS=*` e Flask debug (`FLASK_DEBUG` /
+  `FLASK_ENV=development`). Self-host local continua permitindo secret
+  efêmera e CORS wildcard.
+- After-request CORS deixa de emitir `Access-Control-Allow-Origin: *`
+  quando o host é PaaS, mesmo que a env escape do boot.
+- CI: `pip-audit -r requirements.txt` entra no job `pytest + JS core`
+  (0 CVEs conhecidas em 2026-09-13).
+- `docs/PRE_PUBLIC_DEPLOY_CHECKLIST.md` mapeia o roteiro de segurança /
+  operação / fluidez em PASS, PARTIAL e OPERATOR. O deploy público
+  **não** é declarado 100% seguro.
+
 ### Adicionado — adapter Stratum V2 SetupConnection limitado (Issue #533, Gate 082)
 - Framing Common-layer binário com teto de 4 KiB; o adapter envia somente
   `SetupConnection` sem credencial, canal de mining ou submit de shares.
