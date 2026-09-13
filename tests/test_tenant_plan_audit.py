@@ -249,6 +249,16 @@ class TestAuditLog:
     def test_recent_audit_logs_empty_ok(self, tenant_db):
         assert recent_audit_logs("acme") == []
 
+    def test_recent_audit_logs_offset_paginates(self, tenant_db):
+        for i in range(3):
+            log_audit("acme", "test.page", details={"i": i})
+        page1 = recent_audit_logs("acme", limit=2, offset=0)
+        page2 = recent_audit_logs("acme", limit=2, offset=2)
+        assert len(page1) == 2
+        assert len(page2) == 1
+        ids = {row["id"] for row in page1 + page2}
+        assert len(ids) == 3
+
 
 # ══════════════════════════════════════════════════════════════════════
 #  GET /api/tenant/status — endpoint
@@ -280,6 +290,39 @@ class TestTenantStatusEndpoint:
         assert data["plan"] == DEFAULT_PLAN
         assert data["max_workers"] == DEFAULT_MAX_WORKERS
         assert data["used_workers"] == 0
+
+
+class TestAuditLogsEndpoint:
+    def test_paginates_with_has_more(self, client, tenant_db, monkeypatch):
+        monkeypatch.setenv("SECRET_KEY", "tenant-plan-test-secret-0123456789abcdef")
+        for i in range(3):
+            log_audit("acme", "test.page", details={"i": i})
+        token = create_token(subject="acme")
+        headers = {"Authorization": f"Bearer {token}"}
+        first = client.get("/api/audit-logs?limit=2&offset=0", headers=headers)
+        assert first.status_code == 200
+        body = first.get_json()
+        assert body["success"] is True
+        assert body["count"] == 2
+        assert body["has_more"] is True
+        assert body["limit"] == 2
+        second = client.get("/api/audit-logs?limit=2&offset=2", headers=headers)
+        assert second.status_code == 200
+        body2 = second.get_json()
+        assert body2["count"] == 1
+        assert body2["has_more"] is False
+
+    def test_invalid_limit_falls_back(self, client, tenant_db, monkeypatch):
+        monkeypatch.setenv("SECRET_KEY", "tenant-plan-test-secret-0123456789abcdef")
+        token = create_token(subject="acme")
+        res = client.get(
+            "/api/audit-logs?limit=abc&offset=-3",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert res.status_code == 200
+        data = res.get_json()
+        assert data["limit"] == 50
+        assert data["offset"] == 0
 
 
 # ══════════════════════════════════════════════════════════════════════

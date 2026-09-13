@@ -502,8 +502,8 @@ a:hover { text-decoration: underline; }
   white-space: nowrap;
 }
 .topbar__freshness {
-  color: var(--amber);
-  border: 1px solid var(--amber-dim);
+  color: var(--text-tertiary);
+  border: 1px solid var(--border-subtle);
   border-radius: var(--radius-sm);
   font-family: var(--font-mono);
   font-size: 8px;
@@ -511,6 +511,17 @@ a:hover { text-decoration: underline; }
   padding: 1px 6px;
   text-transform: uppercase;
   white-space: nowrap;
+}
+.topbar__freshness--live { color: var(--green); border-color: var(--green-dim); }
+.topbar__freshness--synced { color: var(--text-secondary); border-color: var(--border-default); }
+.topbar__freshness--stale { color: var(--amber); border-color: var(--amber-dim); }
+.topbar__freshness--mute { color: var(--text-tertiary); border-color: var(--border-subtle); }
+.profit-estimate-note {
+  margin: 8px 0 0;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--amber);
+  letter-spacing: 0.02em;
 }
 .topbar__right { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .topbar__metric { display: flex; align-items: baseline; gap: 4px; }

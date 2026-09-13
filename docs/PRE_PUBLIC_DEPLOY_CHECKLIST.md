@@ -134,12 +134,12 @@ single-instance. Não tratar como teto contra abuso distribuído.
 
 | Item | Estado | Evidência |
 |---|---|---|
-| Separar LIVE / SYNCED / ESTIMATED / NO DATA | **PARTIAL** | Overview tem FRESH/STALE/PARTIAL; Hash Market tem ESTIMATED. Selo unificado por card: Issue #536 |
-| Timestamp de idade ("atualizado há Xs") | **PARTIAL** | `op-freshness` + topbar só quando STALE. Idade sempre visível: Issue #536 |
-| WebSocket/SSE atualização parcial | **PARTIAL** | `GET /api/stream` (SSE in-process, snapshot completo) + poll 15s. Stream por card (só hashrate/temp) é follow-up |
-| Nunca esconder que lucro é estimado | **PARTIAL** | Copy de honest telemetry no README; badges EST no market. Nota visível em receita: Issue #536 |
+| Separar LIVE / SYNCED / ESTIMATED / NO DATA | **PASS** | `metricProvenance` + topbar LIVE/SYNCED/DADOS ANTIGOS/NO DATA (Issue #536). Overview usa LIVE/NO DATA/STALE/PARTIAL |
+| Timestamp de idade ("atualizado há Xs") | **PASS** | Topbar sempre visível com idade (`snapshotFreshnessLabel`) |
+| WebSocket/SSE atualização parcial | **PARTIAL** | `GET /api/stream` (SSE in-process, snapshot completo) + poll 15s. Stream por card (só hashrate/temp) permanece follow-up |
+| Nunca esconder que lucro é estimado | **PASS** | Badge ESTIMATED + nota "actual earnings may vary" no painel de scenario economics |
 | Cache dificuldade / preço BTC | **PASS** | `btc_price._age_s` no snapshot; poll de mercado não é 15s para cada fonte |
-| Paginação listas longas | **PARTIAL** | Leaderboard top 30 / total 100. Audit `LIMIT` 50–200 sem cursor: Issue #536 |
+| Paginação listas longas | **PARTIAL** | Leaderboard top 30/100. Audit: `GET /api/audit-logs?limit=&offset=` com `has_more` (Issue #536). Histórico/leaderboard "load more" ainda é follow-up |
 
 ---
 
@@ -151,5 +151,6 @@ single-instance. Não tratar como teto contra abuso distribuído.
 4. Redis para rate-limit multi-instância.
 5. Matriz física e checkout BTCPay — continuam bloqueados de propósito.
 
-Enquanto esses itens OPERATOR e as Issues #536 (UX) / matriz física
-estiverem abertos, **não** chame o deploy público de 100% seguro.
+Enquanto os itens OPERATOR, o stream por card, o "load more" de
+leaderboard/histórico e a matriz física estiverem abertos, **não** chame
+o deploy público de 100% seguro.

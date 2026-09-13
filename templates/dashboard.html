@@ -174,7 +174,7 @@
            salvar chaves na instância errada (local vs cloud). Populado
            pelo initInstanceIndicator() no boot do app.js. -->
       <span class="topbar__instance" id="topbar-instance" title="">⌁ …</span>
-      <span class="topbar__freshness" id="topbar-freshness" role="status" aria-live="polite" hidden></span>
+      <span class="topbar__freshness" id="topbar-freshness" role="status" aria-live="polite">NO DATA</span>
     </div>
   </div>
   <div class="topbar__right">
@@ -621,6 +621,7 @@
   <div class="panel__header">
     <div class="panel__eyebrow">Ξ SCENARIO ECONOMICS</div>
     <div class="panel__tools">
+      <span class="badge badge--amber" id="profit-estimated-badge" title="Modeled scenario, not a pool payout">ESTIMATED</span>
       <span class="badge badge--green" id="profit-share-badge">0%</span>
       <span class="badge badge--mute" id="profit-cost-badge">cost: $0</span>
       <button class="panel__toggle" data-panel="profit-panel" aria-label="Alternar painel de lucro"></button>
@@ -661,6 +662,7 @@
     <div class="profit-fiat-cell" data-cur="EUR"><span class="cur">EUR</span><span class="val" id="profit-fiat-EUR">—</span><span class="per">/d</span></div>
     <div class="profit-fiat-cell" data-cur="GBP"><span class="cur">GBP</span><span class="val" id="profit-fiat-GBP">—</span><span class="per">/d</span></div>
   </div>
+  <p class="profit-estimate-note" id="profit-estimate-note">ESTIMATED scenario — actual earnings may vary. Constant-input model, not a payout.</p>
   <div class="profit-footnote" id="profit-footnote">⚙️ <a href="#" onclick="document.getElementById('open-settings').click();return false" style="color:var(--green);text-decoration:underline">Configurar custo de energia</a> para cálculos precisos</div>
 </section>
 

@@ -165,6 +165,60 @@
     return null;
   }
 
+  // ── Metric provenance (Issue #536) ─────────────────────────────────────
+  // Honest labels for any dashboard number. ESTIMATED always wins over LIVE
+  // so modeled profit cannot look like a pool payout. Missing values are
+  // NO DATA, never a silent gap without a seal.
+  var METRIC_LIVE_MAX_S = 30;
+
+  function metricProvenance(value, opts) {
+    opts = opts || {};
+    if (value === null || value === undefined || value === '' ||
+        value === 'NOT AVAILABLE' || value === '\u2014' || value === '—') {
+      return 'NO DATA';
+    }
+    if (opts.estimated === true) return 'ESTIMATED';
+    var ageS = opts.ageS;
+    if (ageS === null || ageS === undefined || ageS === '') return 'SYNCED';
+    var age = Number(ageS);
+    if (!isFinite(age) || age < 0) return 'SYNCED';
+    var liveMax = Number(opts.liveMaxS);
+    if (!isFinite(liveMax) || liveMax <= 0) liveMax = METRIC_LIVE_MAX_S;
+    if (opts.stale === true) return 'SYNCED';
+    if (age <= liveMax) return 'LIVE';
+    return 'SYNCED';
+  }
+
+  function snapshotFreshness(snap, nowSec) {
+    const data = snap || {};
+    const rawTs = Number(data.ts);
+    const ts = rawTs > 1e11 ? rawTs / 1000 : rawTs;
+    const now = Number(nowSec) || Math.floor(Date.now() / 1000);
+    const age = ts > 0 ? Math.max(0, now - ts) : null;
+    const staleSources = [];
+    if (data.network && data.network.stale === true) staleSources.push('rede');
+    if (data.btc_price && data.btc_price.stale === true) staleSources.push('preço BTC');
+    if (data.pool && data.pool._stale === true) staleSources.push('pool');
+    const snapshotStale = age !== null && age > 150;
+    if (!snapshotStale && staleSources.length === 0) return { stale: false, age: age, sources: [] };
+    return { stale: true, age: age, sources: staleSources };
+  }
+
+  function snapshotFreshnessLabel(freshness, ageText) {
+    const data = freshness || {};
+    if (data.age === null || data.age === undefined) {
+      return { text: 'NO DATA', tone: 'mute', hidden: false };
+    }
+    const age = ageText || (String(data.age) + 's');
+    if (data.stale) {
+      return { text: 'DADOS ANTIGOS · ' + age, tone: 'stale', hidden: false };
+    }
+    if (data.age <= METRIC_LIVE_MAX_S) {
+      return { text: 'LIVE · ' + age, tone: 'live', hidden: false };
+    }
+    return { text: 'SYNCED · ' + age, tone: 'synced', hidden: false };
+  }
+
   // ── DOM cache ─────────────────────────────────────────────────────────
   const $ = (s) => document.querySelector(s);
   const $$ = (s) => document.querySelectorAll(s);
@@ -3065,35 +3119,22 @@
   // panels retain their detailed badges; this one prevents a stale network,
   // BTC price, pool, or entire snapshot from being missed while another module
   // is open. It deliberately does not animate because it can update every poll.
-  function snapshotFreshness(snap, nowSec) {
-    const data = snap || {};
-    const rawTs = Number(data.ts);
-    const ts = rawTs > 1e11 ? rawTs / 1000 : rawTs;
-    const now = Number(nowSec) || Math.floor(Date.now() / 1000);
-    const age = ts > 0 ? Math.max(0, now - ts) : null;
-    const staleSources = [];
-    if (data.network && data.network.stale === true) staleSources.push('rede');
-    if (data.btc_price && data.btc_price.stale === true) staleSources.push('preço BTC');
-    if (data.pool && data.pool._stale === true) staleSources.push('pool');
-    const snapshotStale = age !== null && age > 150;
-    if (!snapshotStale && staleSources.length === 0) return { stale: false, age, sources: [] };
-    return { stale: true, age, sources: staleSources };
-  }
-
+  // snapshotFreshness / snapshotFreshnessLabel live in 10-core-fmt.js (Issue #536)
+  // so the age is always visible — LIVE / SYNCED / DADOS ANTIGOS / NO DATA.
   function renderSnapshotFreshness(snap) {
     const el = dom.topbarFreshness;
     if (!el) return;
     const freshness = snapshotFreshness(snap);
-    el.hidden = !freshness.stale;
-    if (!freshness.stale) {
-      el.textContent = '';
-      el.title = '';
-      return;
-    }
-    const sourceText = freshness.sources.length ? freshness.sources.join(', ') : 'snapshot';
     const ageText = freshness.age === null ? 'idade desconhecida' : fmt.secsToHuman(freshness.age);
-    el.textContent = 'DADOS ANTIGOS · ' + ageText;
-    el.title = 'Dados desatualizados: ' + sourceText + ' · última atualização ' + ageText + ' atrás.';
+    const label = snapshotFreshnessLabel(freshness, ageText);
+    el.hidden = !!label.hidden;
+    el.textContent = label.text;
+    el.classList.remove('topbar__freshness--live', 'topbar__freshness--synced', 'topbar__freshness--stale', 'topbar__freshness--mute');
+    el.classList.add('topbar__freshness--' + label.tone);
+    const sourceText = freshness.sources.length ? freshness.sources.join(', ') : 'snapshot';
+    el.title = label.tone === 'stale'
+      ? ('Dados desatualizados: ' + sourceText + ' · última atualização ' + ageText + ' atrás.')
+      : ('Atualizado há ' + ageText + ' · ' + sourceText);
   }
 
   // ── Operational Overview (Issue 367) ─────────────────────────────────
@@ -3117,7 +3158,7 @@
     const staleSources = freshness.sources.slice();
     if (freshness.stale && freshness.sources.length === 0) staleSources.push('snapshot');
     if (fleetTelemetryStale) staleSources.push('fleet telemetry');
-    // Combined freshness cannot be called FRESH when the snapshot has no
+    // Combined freshness cannot be called LIVE when the snapshot has no
     // timestamp, even if the independently fetched Fleet samples are recent.
     const dataAge = freshness.age === null ? null : (fleetAge === null ? freshness.age : Math.max(freshness.age, fleetAge));
     const dataStale = freshness.stale || fleetTelemetryStale;
@@ -3141,7 +3182,7 @@
       lossBaselineDevices: 0,
       costPerDayUsd: hasCost ? rawCost : null,
       costDetail: hasCost ? String(profit.cost_label || 'Configured cost model') : 'Cost model not configured',
-      freshness: dataStale ? 'STALE' : (dataAge === null ? 'UNKNOWN' : 'FRESH'),
+      freshness: dataStale ? 'STALE' : (dataAge === null ? 'NO DATA' : 'LIVE'),
       dataAge: dataAge,
       freshnessDetail: staleSources.length ? staleSources.join(', ') : (dataAge === null ? 'Snapshot timestamp unavailable' : 'Snapshot and fleet telemetry'),
       actionTitle: 'WAIT FOR DATA',
