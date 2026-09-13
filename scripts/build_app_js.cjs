@@ -48,6 +48,11 @@ const MANIFEST = [
   '10-core-fmt.js',
   '20-dom-primitives.js',
   '30-core-escape.js',
+  // Billing/Auth também fica ANTES do god file: o prefixo síncrono do `boot()`
+  // (dentro do 40) chama `initLicensing()`/`initAuth()`/`initInstanceIndicator()`,
+  // que leem `_license`/`AUTH_SESSION_KEY`. Além disso é a ordem original (o R1
+  // era o topo do god file, antes do bloco de terminal). Ver o cabeçalho.
+  '38-billing-auth.js',
   // Terminal/SSE fica ANTES do god file: o `boot()` é chamado no topo do
   // `40-app-logic.js` e o corpo síncrono dele lê o estado deste domínio
   // (`_lmStats`, `events`). Depois do 40 seria TDZ. Ver o cabeçalho do fragmento.
