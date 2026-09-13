@@ -145,11 +145,11 @@ def api_history():
     c = conn.cursor()
     # bandit B608 false positive: metric is validated against the allow-list
     # above before it is interpolated as a column identifier.
-    base_sql = (
-        f"FROM snapshots WHERE ts >= ? AND {metric} IS NOT NULL"  # nosec B608
-    )
+    base_sql = f"FROM snapshots WHERE ts >= ? AND {metric} IS NOT NULL"  # nosec B608
     if not paginated:
-        c.execute(f"SELECT ts, {metric} {base_sql} ORDER BY ts ASC", (since,))  # nosec B608
+        c.execute(
+            f"SELECT ts, {metric} {base_sql} ORDER BY ts ASC", (since,)
+        )  # nosec B608
         rows = [{"ts": row["ts"], "value": row[metric]} for row in c.fetchall()]
         conn.close()
         return jsonify({"metric": metric, "rows": rows, "range": rng})
