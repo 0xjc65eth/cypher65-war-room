@@ -6,6 +6,15 @@ e versionamento semântico ([SemVer](https://semver.org/lang/pt-BR/)).
 
 ## [Unreleased]
 
+### Adicionado — selos LIVE/SYNCED/ESTIMATED/NO DATA, idade sempre visível, audit paginado (Issue #536)
+- `metricProvenance` + `snapshotFreshnessLabel` no núcleo JS: o topbar mostra
+  a idade do snapshot mesmo quando fresco (LIVE · Ns / SYNCED · …).
+- Painel de scenario economics carrega badge **ESTIMATED** e a nota
+  "actual earnings may vary".
+- `GET /api/audit-logs?limit=&offset=` devolve `has_more` (default 50, cap 200).
+- SSE por card (só hashrate/temp) e "load more" do leaderboard permanecem
+  follow-up. O deploy público **não** é 100% seguro.
+
 ### Adicionado — boot fail-closed em cloud + pip-audit + checklist pré-deploy (Issue #535)
 - `services/boot_policy.py`: em `is_cloud_deploy()`, o processo recusa
   `SECRET_KEY` ausente, `CORS_ORIGINS=*` e Flask debug (`FLASK_DEBUG` /

@@ -1422,6 +1422,37 @@ def api_tenant_status(tenant_id: str = ""):
     )
 
 
+@app.route("/api/audit-logs")
+@require_tenant
+@role_required("viewer")
+def api_audit_logs(tenant_id: str = ""):
+    """Paginated tenant audit trail (Issue #536). Default 50, cap 200."""
+    try:
+        limit = min(int(request.args.get("limit") or 50), 200)
+    except (TypeError, ValueError):
+        limit = 50
+    limit = max(1, limit)
+    try:
+        offset = max(int(request.args.get("offset") or 0), 0)
+    except (TypeError, ValueError):
+        offset = 0
+    from services.tenant import recent_audit_logs
+
+    rows = recent_audit_logs(tenant_id=tenant_id, limit=limit + 1, offset=offset) or []
+    has_more = len(rows) > limit
+    entries = rows[:limit]
+    return jsonify(
+        {
+            "success": True,
+            "count": len(entries),
+            "offset": offset,
+            "limit": limit,
+            "has_more": has_more,
+            "entries": entries,
+        }
+    )
+
+
 # ── Donation tracking ──────────────────────────────────────────────────────
 # Records confirmed donations so the operator can see who donated (the
 # Support modal shows a Recent Donations list fed by GET /api/donations).

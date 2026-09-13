@@ -192,15 +192,25 @@ def log_audit(
         return None
 
 
-def recent_audit_logs(tenant_id: str = "", limit: int = 100) -> list:
-    """Return the tenant's most recent audit entries, newest first."""
+def recent_audit_logs(tenant_id: str = "", limit: int = 100, offset: int = 0) -> list:
+    """Return the tenant's most recent audit entries, newest first.
+
+    ``limit`` is capped at 201 so the API can peek one extra row for
+    ``has_more`` (public cap remains 200). ``offset`` paginates long
+    histories (Issue #536) without loading the full table into the UI.
+    """
     tid = tenant_id or "default"
+    try:
+        lim = max(1, min(int(limit), 201))
+        off = max(0, int(offset))
+    except (TypeError, ValueError):
+        lim, off = 100, 0
     try:
         conn = _db_conn()
         c = conn.cursor()
         c.execute(
-            "SELECT * FROM audit_logs WHERE tenant_id=? ORDER BY ts DESC, id DESC LIMIT ?",
-            (tid, int(limit)),
+            "SELECT * FROM audit_logs WHERE tenant_id=? ORDER BY ts DESC, id DESC LIMIT ? OFFSET ?",
+            (tid, lim, off),
         )
         rows = [dict(r) for r in c.fetchall()]
         conn.close()

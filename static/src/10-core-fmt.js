@@ -146,3 +146,57 @@
     return null;
   }
 
+  // ── Metric provenance (Issue #536) ─────────────────────────────────────
+  // Honest labels for any dashboard number. ESTIMATED always wins over LIVE
+  // so modeled profit cannot look like a pool payout. Missing values are
+  // NO DATA, never a silent gap without a seal.
+  var METRIC_LIVE_MAX_S = 30;
+
+  function metricProvenance(value, opts) {
+    opts = opts || {};
+    if (value === null || value === undefined || value === '' ||
+        value === 'NOT AVAILABLE' || value === '\u2014' || value === '—') {
+      return 'NO DATA';
+    }
+    if (opts.estimated === true) return 'ESTIMATED';
+    var ageS = opts.ageS;
+    if (ageS === null || ageS === undefined || ageS === '') return 'SYNCED';
+    var age = Number(ageS);
+    if (!isFinite(age) || age < 0) return 'SYNCED';
+    var liveMax = Number(opts.liveMaxS);
+    if (!isFinite(liveMax) || liveMax <= 0) liveMax = METRIC_LIVE_MAX_S;
+    if (opts.stale === true) return 'SYNCED';
+    if (age <= liveMax) return 'LIVE';
+    return 'SYNCED';
+  }
+
+  function snapshotFreshness(snap, nowSec) {
+    const data = snap || {};
+    const rawTs = Number(data.ts);
+    const ts = rawTs > 1e11 ? rawTs / 1000 : rawTs;
+    const now = Number(nowSec) || Math.floor(Date.now() / 1000);
+    const age = ts > 0 ? Math.max(0, now - ts) : null;
+    const staleSources = [];
+    if (data.network && data.network.stale === true) staleSources.push('rede');
+    if (data.btc_price && data.btc_price.stale === true) staleSources.push('preço BTC');
+    if (data.pool && data.pool._stale === true) staleSources.push('pool');
+    const snapshotStale = age !== null && age > 150;
+    if (!snapshotStale && staleSources.length === 0) return { stale: false, age: age, sources: [] };
+    return { stale: true, age: age, sources: staleSources };
+  }
+
+  function snapshotFreshnessLabel(freshness, ageText) {
+    const data = freshness || {};
+    if (data.age === null || data.age === undefined) {
+      return { text: 'NO DATA', tone: 'mute', hidden: false };
+    }
+    const age = ageText || (String(data.age) + 's');
+    if (data.stale) {
+      return { text: 'DADOS ANTIGOS · ' + age, tone: 'stale', hidden: false };
+    }
+    if (data.age <= METRIC_LIVE_MAX_S) {
+      return { text: 'LIVE · ' + age, tone: 'live', hidden: false };
+    }
+    return { text: 'SYNCED · ' + age, tone: 'synced', hidden: false };
+  }
+

@@ -64,7 +64,10 @@ function loadFragment(relPath, exportExpr) {
   });
 }
 
-const _coreFmt = loadFragment('10-core-fmt.js', '{ fmt, fmtSats, countdownLabel, bolt11AmountSats }');
+const _coreFmt = loadFragment('10-core-fmt.js', '{ fmt, fmtSats, countdownLabel, bolt11AmountSats, metricProvenance, snapshotFreshness, snapshotFreshnessLabel }');
+const metricProvenance = _coreFmt.metricProvenance;
+const snapshotFreshness = _coreFmt.snapshotFreshness;
+const snapshotFreshnessLabel = _coreFmt.snapshotFreshnessLabel;
 const _coreEscape = loadFragment(
   '30-core-escape.js',
   '{ escapeHtml, rentalsAuthRejected, rentalsAuthGuide, rentalsPayloadStale, rentalsCountSurface, RENTALS_PAYLOAD_VERSION }'
@@ -5276,24 +5279,8 @@ function makeSetHtmlIfChanged() {
 // ═══════════════════════════════════════════════════════════════════════════
 
 (function snapshotFreshnessSuite() {
-  // Mirrors static/app.js snapshotFreshness(). A single global indicator must
-  // fail open only for fresh data; source-specific stale flags are authoritative.
-  function snapshotFreshness(snap, nowSec) {
-    const data = snap || {};
-    const rawTs = Number(data.ts);
-    const ts = rawTs > 1e11 ? rawTs / 1000 : rawTs;
-    const now = Number(nowSec) || Math.floor(Date.now() / 1000);
-    const age = ts > 0 ? Math.max(0, now - ts) : null;
-    const staleSources = [];
-    if (data.network && data.network.stale === true) staleSources.push('rede');
-    if (data.btc_price && data.btc_price.stale === true) staleSources.push('preço BTC');
-    if (data.pool && data.pool._stale === true) staleSources.push('pool');
-    const snapshotStale = age !== null && age > 150;
-    if (!snapshotStale && staleSources.length === 0) return { stale: false, age, sources: [] };
-    return { stale: true, age, sources: staleSources };
-  }
-
-  assertEqual('fresh snapshot stays quiet', snapshotFreshness({ ts: 1000 }, 1100), {
+  // Real helpers from static/src/10-core-fmt.js (Issue #536).
+  assertEqual('fresh snapshot is not stale', snapshotFreshness({ ts: 1000 }, 1100), {
     stale: false, age: 100, sources: [],
   });
   assertEqual('old snapshot is surfaced', snapshotFreshness({ ts: 1000 }, 1151), {
@@ -5310,6 +5297,29 @@ function makeSetHtmlIfChanged() {
   assertEqual('millisecond timestamps stay comparable', snapshotFreshness({ ts: 1000000000000 }, 1000000100), {
     stale: false, age: 100, sources: [],
   });
+  assertEqual('live label always visible', snapshotFreshnessLabel({ stale: false, age: 4 }, '4.0s'), {
+    text: 'LIVE · 4.0s', tone: 'live', hidden: false,
+  });
+  assertEqual('synced label for older but not stale', snapshotFreshnessLabel({ stale: false, age: 100 }, '1.7m'), {
+    text: 'SYNCED · 1.7m', tone: 'synced', hidden: false,
+  });
+  assertEqual('stale label keeps age', snapshotFreshnessLabel({ stale: true, age: 151 }, '2.5m'), {
+    text: 'DADOS ANTIGOS · 2.5m', tone: 'stale', hidden: false,
+  });
+  assertEqual('missing ts is NO DATA', snapshotFreshnessLabel({ stale: false, age: null }), {
+    text: 'NO DATA', tone: 'mute', hidden: false,
+  });
+})();
+
+(function metricProvenanceSuite() {
+  assertEqual('null is NO DATA', metricProvenance(null), 'NO DATA');
+  assertEqual('empty is NO DATA', metricProvenance(''), 'NO DATA');
+  assertEqual('NOT AVAILABLE is NO DATA', metricProvenance('NOT AVAILABLE'), 'NO DATA');
+  assertEqual('estimated wins over live age', metricProvenance(0.012, { estimated: true, ageS: 2 }), 'ESTIMATED');
+  assertEqual('recent telemetry is LIVE', metricProvenance(12.5, { ageS: 4 }), 'LIVE');
+  assertEqual('older telemetry is SYNCED', metricProvenance(12.5, { ageS: 90 }), 'SYNCED');
+  assertEqual('stale value stays SYNCED not LIVE', metricProvenance(12.5, { ageS: 4, stale: true }), 'SYNCED');
+  assertEqual('value without age is SYNCED', metricProvenance(1), 'SYNCED');
 })();
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -5360,7 +5370,7 @@ function makeSetHtmlIfChanged() {
       overall: 'LOADING', tone: 'neutral', health: 'WAITING', attention: null,
       lostHashrateHs: null, lossBaselineDevices: 0,
       costPerDayUsd: hasCost ? rawCost : null,
-      freshness: dataStale ? 'STALE' : (dataAge === null ? 'UNKNOWN' : 'FRESH'),
+      freshness: dataStale ? 'STALE' : (dataAge === null ? 'NO DATA' : 'LIVE'),
       dataAge: dataAge, actionTitle: 'WAIT FOR DATA', actionTarget: '',
       actionPanel: '', actionEnabled: false,
     };
@@ -5481,7 +5491,7 @@ function makeSetHtmlIfChanged() {
     fleet_stats: { total_devices: 1, online: 1, warning: 0, offline: 0, avg_health_score: 90 },
     device_health: [{ telemetry: { age_seconds: 20 } }],
   }, false, 1001);
-  assertEqual('fresh fleet cannot make timestamp-less snapshot fresh', unknownSnapshotAge.freshness, 'UNKNOWN');
+  assertEqual('fresh fleet cannot make timestamp-less snapshot fresh', unknownSnapshotAge.freshness, 'NO DATA');
   assertEqual('combined age remains unknown without snapshot timestamp', unknownSnapshotAge.dataAge, null);
 })();
 
