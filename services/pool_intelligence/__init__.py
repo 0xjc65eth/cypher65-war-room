@@ -16,6 +16,7 @@ from .evidence import (
     ProviderSignal,
     build_capability_graph,
     capability_from_v1_probe,
+    capability_from_v2_probe,
     classify_chain,
     fingerprint_provider,
 )
@@ -71,6 +72,15 @@ from .stratum_v1 import (
     probe_stratum_v1,
     validate_stratum_v1_subscribe_response,
 )
+from .stratum_v2 import (
+    StratumV2ProbeError,
+    StratumV2ProbeResult,
+    StratumV2ResponseError,
+    build_setup_connection,
+    encode_stratum_v2_frame,
+    probe_stratum_v2,
+    validate_stratum_v2_setup_response,
+)
 
 __all__ = [
     "CapabilityAssertion",
@@ -116,15 +126,22 @@ __all__ = [
     "StratumV1ResponseError",
     "ValidatedDestination",
     "ValidatedPoolConfiguration",
+    "StratumV2ProbeError",
+    "StratumV2ProbeResult",
+    "StratumV2ResponseError",
     "build_capability_graph",
+    "build_setup_connection",
     "capability_from_v1_probe",
+    "capability_from_v2_probe",
     "claim_pool_rollback_target",
+    "encode_stratum_v2_frame",
     "classify_chain",
     "evaluate_pool_compatibility",
     "fingerprint_provider",
     "load_pool_rollback_target",
     "parse_pool_endpoint",
     "probe_stratum_v1",
+    "probe_stratum_v2",
     "record_pool_rollout_batch",
     "resolve_pool_destination",
     "rollback_encryption_ready",
@@ -134,4 +151,5 @@ __all__ = [
     "store_pool_rollback_target",
     "validate_pool_configuration",
     "validate_stratum_v1_subscribe_response",
+    "validate_stratum_v2_setup_response",
 ]

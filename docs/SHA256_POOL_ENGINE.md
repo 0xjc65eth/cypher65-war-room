@@ -88,9 +88,14 @@ protocol, capability and finite non-negative latency values. Invalid config,
 DNS failure, SSRF/private destinations, custom ports and protocol failures all
 fail closed. Local-pool mode remains unavailable on this member-facing path.
 
-Stratum V2 requires a separate adapter. Active unknown-pool discovery,
-authentication and physical fleet rollout remain disabled until their own gates
-pass.
+`stratum_v2.py` is the Common-layer SetupConnection adapter. It reuses the
+pinned destination and never re-resolves DNS. The only outbound message is
+credential-free `SetupConnection`; the only accepted reply is
+`SetupConnectionSuccess` with protocol version 2. Mining channels, share
+submit, worker authorization and Noise NX are absent. A remote that begins a
+Noise handshake is `noise_required` and not healthy. Active unknown-pool
+discovery, authentication and physical fleet rollout remain disabled until
+their own gates pass.
 
 Credentials remain separate from endpoint metadata. Passwords are never part of
 normalized URLs, logs or the pool knowledge model.

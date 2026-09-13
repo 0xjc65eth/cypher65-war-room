@@ -10,7 +10,7 @@ further I/O, but neither path is arbitrary discovery or can change a pool.
 | 079 SSRF protection | PASS | Single-pass resolver validates every answer before the read-only connector opens a socket; mixed public/private responses fail closed. |
 | 080 DNS rebinding | PASS | Connector uses only numeric addresses captured by the validated result; TLS retains the original hostname only for SNI/certificate verification. |
 | 081 Generic Stratum V1 | PASS | Bounded `mining.subscribe` probe validates the generic V1 response without credentials or share submission. |
-| 082 Stratum V2 | FAIL | Separate protocol model exists; adapter absent. |
+| 082 Stratum V2 | PASS | Bounded Common-layer SetupConnection adapter over pinned TCP/TLS; no Noise NX, mining channel, credentials or share submit. Noise-only remotes fail as `noise_required`. |
 | 083 Unknown discovery | FAIL | No active discovery. |
 | 084 Fingerprinting | PASS | Provider identity requires two independent trusted signals at or above 80%; weak, inferred or conflicting evidence returns unknown. |
 | 085 Capability graph | PASS | Immutable graph caps assertions/nodes/dependencies and resolves observed states, missing nodes, conflicts and cycles fail-closed. |
