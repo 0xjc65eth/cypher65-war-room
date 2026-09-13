@@ -35,7 +35,7 @@
 > regiões disjuntas com o domínio Admin inteiro entre duas delas. Detalhes no
 > postmortem, §7.
 > **Reordenacão de 2026-09-12 (Issue #525):** o frontend entregou 1, 1b, 2, 2b,
-> 3, 4a e 4b; a **§3.3** mede os domínios que faltavam (a lista original parava
+> 3, 4a e 4b — e depois 5 (#529) e 6 (#540); a **§3.3** mede os domínios que faltavam (a lista original parava
 > em "5" e "6", mas são **cinco** PRs mais um residual) e fixa a ordem e o alvo
 > de linhas. Também registra duas restrições estruturais recém-descobertas: o
 > `boot()` é chamado **dentro** de `40-app-logic.js` (linha 6.388) e a lógica de
@@ -129,7 +129,7 @@ Ordem de extração (uma PR por domínio, cada uma ≤ ~1500 linhas movidas):
 | PR | Domínio | Blocos | Linhas movidas | `40-app-logic.js` após | Execução no topo |
 |---|---|---|---|---|---|
 | **5** | Terminal/SSE | R9 + R22 + R23 | ✅ **#529** (PR #530) — **752 linhas** movidas para `static/src/39-terminal.js` (804 com cabeçalho) | **6.959** | 3 (`window.onerror`, `unhandledrejection`, `#clear-logs` click) |
-| **6** | Automations + Alerts + Auto-Pilot + Decision Matrix/Command Center | R7 + R13 + R16 + R26 | **1.062** | 5.897 | 1 (`if (dom.openAlertCenter)` em R26) |
+| **6** | Automations + Alerts + Auto-Pilot + Decision Matrix/Command Center | R7 + R13 + R16 + R26 | ✅ **#540** (PR #541) — **1.073 linhas** movidas para `static/src/41-automations.js` (1.140 com cabeçalho): R7 2.288–2.436 (149), R13 3.178–3.318 (141), R16 3.628–4.168 (541), R26 5.643–5.884 (242). A projeção era 1.062 — a diferença são os **comentários de seção**, que viajam com o recorte verbatim | **5.890** | 1 (`if (dom.openAlertCenter)` em R26) |
 | **7** | Probability/Block Model | R10 + R11 + R12 | **635** | 5.262 | 1 (`window.setProfitMode = …`) |
 | **8** | Billing/Auth | R1 | **923** | 4.339 | 1 (`window.openUpgradeModal = …`) |
 | **9** | Wallet + Support | R3 + R20 | **1.032** | **3.307** | **17** — o maior de todos: listeners de WebLN/wallet, `renderSupportMethods()`/`loadDonations()` chamados direto no topo, e a região **vendorada do QR** (`(function buildQrMath(){…})()` + `QrPoly.prototype.*`) |
@@ -137,9 +137,15 @@ Ordem de extração (uma PR por domínio, cada uma ≤ ~1500 linhas movidas):
 
 Os valores de `40-app-logic.js` após cada PR carregam o delta real do PR 5 (−747, não −773): ficaram no god file o bloco de estado do FCC (`_cc*`, 5 linhas, que **não pode** mover — ver abaixo) e o global compartilhado `_lastSnapshot` (5 linhas).
 
-**A meta de ~4.000 linhas é atingida no PR 9** (os PRs 5–8 param em 4.339). O residual ainda tem domínios extraíveis — inclusive um PR 10 natural de **Dashboard/`render()`** (R5+R6+R8+R18+R24+R31 ≈ 1.096) — mas eles ficam **fora da meta**; a lista acima é o que fecha o objetivo.
+**A meta de ~4.000 linhas é atingida no PR 9** (com o PR 6 executado, os PRs 7–8 param em ~4.332: 5.890 − 635 − 923). O residual ainda tem domínios extraíveis — inclusive um PR 10 natural de **Dashboard/`render()`** (R5+R6+R8+R18+R24+R31 ≈ 1.096) — mas eles ficam **fora da meta**; a lista acima é o que fecha o objetivo.
 
 **Nota de risco do PR 6.** O bloco R26 (Automations) tem 1 statement de topo (`if (dom.openAlertCenter)`, listener do Alert Center) e R7/R13/R16 têm 0. O PR deve rodar a mesma varredura de TDZ do 4b antes de mover — com um cuidado a mais: o scan ingênuo de "linha não-declaração em indent 2" acusa **12 statements** no PR 6, dos quais **11 são falsos positivos** das funções sem indentação (`acctRankLabels`/`renderAccount`). Quem for medir precisa tratar declarações em **coluna 0** também.
+
+**Achado do PR 6 (posicionamento) — a varredura confirmou a previsão, e o fragmento pôde ir DEPOIS do 40.** O scan de indent 2 acusou exatamente 12 "statements" (11 deles corpos das funções em coluna 0: `acctRankLabels`, `renderAccount`); o único statement real é o `if (dom.openAlertCenter)` do R26. Como a regra da §3.3 é sobre **estado** lido por chamada de nível de módulo — e não sobre statements —, o teste decisivo foi outro: varredura dos **12 nomes de estado movido** (`_lastCcKey`, `_apArmed`, `_apToggleInit`, `_apAuto`, `_apAutoToggleInit`, `_apRecs`, `_apAudit`, `_apRecsInit`, `_apDrInit`, `acState`, `severityClass`, `severityLabel`) em todo o `40-app-logic.js` fora dos blocos e em todos os outros fragmentos → **0 leituras** (a única menção é um comentário em `setHtmlIfChanged` citando o `_lastCcKey` do Command Center). O prefixo síncrono do `boot()` chama deste domínio só `initDecisionMatrixControls()`/`initCommandCenterControls()` (R13) — declarações de função, hoisted, e ambas leem apenas `document`. O resto (`render()` → `renderAccount`/`renderBtcPrices`/`renderHalving`/`renderMempoolFees`/`renderDecisionMatrix`/`renderAlerts`/`renderEvents`/`renderLeaderboard`/`renderCommandCenter`, e `renderAiOperator` → `_apSetUi`/`_initAutoPilot*`) só roda via `await fetchSnapshot()` ou pelo `onmessage` do SSE — isto é, depois de o IIFE inteiro ser avaliado. O `restoreActiveModule` (IIFE de topo) → `activateModule` → `_doActivateModule` foi varrido e não toca nenhum símbolo movido. Consequência: o PR 6 é o **primeiro fragmento de domínio que entra depois do 40 sem precisar de exceção** — a exceção do `39-terminal.js` continua sendo a única.
+
+**Onde ele entra.** `41-automations.js`, entre `40-app-logic.js` e `45-market.js` (ordem de execução preservada quanto ao resto: os 4 blocos já eram lidos só por funções). **Prova**: `app.js` = os fragmentos do `HEAD` com os 4 blocos realocados **verbatim** — sequência de linhas de código (não-comentário/não-branco) idêntica, 10.892 = 10.892; 0 linhas perdidas e 0 linhas de código adicionadas (só comentários e espaços). **Prova de mutação**: desligar a injeção da tab-strip dentro do statement de topo do R26 derruba `alert-center-tabs` (4/4 falham) — o único código de execução no topo do fragmento está coberto.
+
+**Ganho de cobertura de boot:** como os blocos saíram do meio do god file para um fragmento próprio, a e2e de alert-center/automations/auto-pilot passa a exercitar o domínio a partir do fragmento (nenhuma mudança de comportamento — a ordem de avaliação do IIFE é a mesma para funções).
 
 #### Duas restrições estruturais que governam todos os PRs §3.3
 
@@ -150,6 +156,8 @@ Os valores de `40-app-logic.js` após cada PR carregam o delta real do PR 5 (−
    > **Regra de posicionamento.** Um domínio cujo estado seja lido por uma chamada de **nível de módulo** do `40-app-logic.js` (o `boot();` da linha 6.388, ou qualquer `X()` executado no topo, como o `renderSupportMethods()` do domínio Wallet) tem de ser posicionado **ANTES** do god file. Caso contrário, seu estado precisa permanecer no god file. É a primeira exceção à regra "45–49 vêm depois".
 
    O PR 5 usou a primeira opção: `static/src/39-terminal.js` é o primeiro fragmento **anterior** ao 40. A consequência deliberada é que o error boundary global (`window.onerror`/`unhandledrejection`) passa a cobrir também a avaliação do `40-app-logic.js` — estritamente mais proteção, nunca menos.
+
+   **O PR 6 (#540) passou pela mesma régua e NÃO precisou da exceção:** nenhum dos 12 nomes de estado do domínio é lido por chamada de nível de módulo do 40, e o fragmento `41-automations.js` entrou **depois** dele. A varredura é o que decide — não o tamanho nem a posição textual do bloco original.
 2. **A lógica de conexão/reconexão SSE mora DENTRO do `boot()`** (o `EventSource`, o debounce de 2s e o fallback para polling após 5 erros vivem em `40-app-logic.js`, ~6.340–6.383) — **não** em um módulo próprio. O item "reconexão" do PR 5, portanto, **não é uma extração mecânica**: tem duas opções. **(a)** mover só os terminais (R9+R22+R23) e deixar o bloco SSE no `boot`, documentando o acoplamento — é o que mantém a disciplina de "nenhum comportamento novo" e é a recomendação. **(b)** extrair o bloco SSE para uma função `connectLiveStream()` no fragmento do Terminal/SSE — é um refactor pequeno e legítimo, mas **não** é movimento verbatim e merece PR próprio. Registro isto agora para ninguém descobrir no meio do PR (o fan-out do lado do servidor já foi para `services/sse.py` no B2).
 
 **Achado de forma, não de estrutura.** R6/R7 contêm uma "bolha" sem indentação: `renderPool` (2.242), `acctRankLabels` (2.294) e `renderAccount` (2.320) estão **em coluna 0** enquanto o resto do arquivo usa 2 espaços para declaracões de topo. Não quebra nada (`acctRankLabels` é espelhado nos testes), mas quem for mover R6/R7 deve preservar o recorte verbatim e não "aproveitar" para reindentar — isso infla o diff e destrói a prova de permutação.
@@ -210,5 +218,5 @@ Estado de execução:
 
 | Trilha | Entregue | Restante até a meta |
 |---|---|---|
-| Frontend | 1, 1b, 2, 2b, 3, 4a, 4b (+ limpeza #525) | **5, 6, 7, 8, 9** (§3.3) |
+| Frontend | 1, 1b, 2, 2b, 3, 4a, 4b (+ limpeza #525), 5 (#529) e 6 (#540) | **7, 8, 9** (§3.3) |
 | Backend | B1, B2, B3, B4 (+ #496, #508) | **nenhum** — a trilha B fechou em 8.444 linhas de `app.py` |

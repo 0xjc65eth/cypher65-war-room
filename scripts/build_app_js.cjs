@@ -53,6 +53,11 @@ const MANIFEST = [
   // (`_lmStats`, `events`). Depois do 40 seria TDZ. Ver o cabeçalho do fragmento.
   '39-terminal.js',
   '40-app-logic.js',
+  // Automations/Alerts/Auto-Pilot/Decision Matrix: pode vir DEPOIS do god file
+  // (ao contrário do 39) — o prefixo síncrono do `boot()` só toca este domínio
+  // por `initDecisionMatrixControls()`/`initCommandCenterControls()`, que não
+  // leem estado movido. Ver o cabeçalho do fragmento.
+  '41-automations.js',
   '45-market.js',
   '46-rentals.js',
   '47-admin.js',
