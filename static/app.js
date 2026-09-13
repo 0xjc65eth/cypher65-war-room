@@ -219,6 +219,47 @@
     return { text: 'SYNCED · ' + age, tone: 'synced', hidden: false };
   }
 
+  function liveMetricsFromSnapshot(snap) {
+    const data = snap || {};
+    const worker = data.worker || {};
+    const pool = data.pool || {};
+    const fleet = Array.isArray(data.axe_fleet) ? data.axe_fleet : [];
+    const temps = [];
+    for (var i = 0; i < fleet.length; i++) {
+      var device = fleet[i] || {};
+      var tel = device.telemetry || device._telemetry || {};
+      var raw = tel.temperature;
+      if (raw === null || raw === undefined) raw = device.temperature;
+      var n = Number(raw);
+      if (isFinite(n)) temps.push(n);
+    }
+    return {
+      type: 'live',
+      ts: data.ts,
+      worker_hashrate: worker.hashrate,
+      pool_hashrate: pool.hashrate,
+      fleet_avg_temp: temps.length ? Math.round((temps.reduce(function (a, b) { return a + b; }, 0) / temps.length) * 10) / 10 : null,
+    };
+  }
+
+  function liveMetricsPatch(live) {
+    const data = live || {};
+    const temp = data.fleet_avg_temp;
+    var tempText = (temp === null || temp === undefined || temp === '') ? '\u2014' : (Number(temp).toFixed(1) + '\u00b0C');
+    if (!isFinite(Number(temp)) && temp !== 0) tempText = '\u2014';
+    return {
+      hashrateText: fmt.hashrate(data.worker_hashrate),
+      poolHashrateText: fmt.hashrate(data.pool_hashrate),
+      tempText: tempText,
+      ts: data.ts,
+    };
+  }
+
+  function mergeLeaderboardHead(currentRows, freshHead) {
+    const current = Array.isArray(currentRows) ? currentRows : [];
+    const head = Array.isArray(freshHead) ? freshHead.slice() : [];
+    return head.concat(current.length > head.length ? current.slice(head.length) : []);
+  }
   // ── DOM cache ─────────────────────────────────────────────────────────
   const $ = (s) => document.querySelector(s);
   const $$ = (s) => document.querySelectorAll(s);
@@ -3578,6 +3619,18 @@ function renderPool(pool, luck) {
 
   // → domínio Automations/Alerts/Auto-Pilot/Decision Matrix extraído para `static/src/41-automations.js` (RFC 478, Issue 540)
 
+  function applyLiveMetrics(live) {
+    const patch = liveMetricsPatch(live);
+    const hr = document.getElementById('tbar-hr');
+    if (hr) hr.textContent = patch.hashrateText;
+    const temp = document.getElementById('tbar-temp');
+    if (temp) temp.textContent = patch.tempText;
+    if (dom.mHashrate) dom.mHashrate.textContent = patch.hashrateText;
+    if (dom.hudHashrate) dom.hudHashrate.textContent = patch.hashrateText;
+    if (dom.pHashrate) dom.pHashrate.textContent = patch.poolHashrateText;
+    renderSnapshotFreshness({ ts: live && live.ts });
+  }
+
   // ── Charts — renderChart fetches data and updates Chart.js instances ──
   const CHART_METRICS = {
     'chart-hashrate': { chart: 'hashrate', label: 'Worker Hashrate', color: 'rgb(6,214,240)' },
@@ -4850,7 +4903,8 @@ function renderPool(pool, luck) {
     renderMilestones(snap.milestones);
     renderAlerts(snap.alerts_recent);
     renderEvents(snap.highest_diffs);
-    renderLeaderboard(snap.leaderboard_table_top_30);
+    resetLeaderboardFromSnapshot(snap);
+    applyLiveMetrics(liveMetricsFromSnapshot(snap));
     if (typeof updateSidebarStatus === 'function') {
       updateSidebarStatus(!!snap.worker);
     }
@@ -6051,6 +6105,7 @@ dom.walletSave?.addEventListener('click', async () => {
     // forever. Force-hide after 20s so the panels degrade to their honest
     // empty/error state instead of a frozen skeleton screen.
     setTimeout(function () { hideSkeletons(); }, 20000);
+    initLeaderboardPager();
     initFleetCommandCenterControls();
     initAxeFleetControls();
     initAxeFleetControls();
@@ -6070,11 +6125,14 @@ dom.walletSave?.addEventListener('click', async () => {
         var sseLastFleetFetch = 0;
         es.onmessage = function(e) {
           try {
-            var snap = JSON.parse(e.data);
-            if (snap && snap.ts) {
-              _lastSnapshot = snap;
-              render(snap);
-              // Debounce fleet fetch to avoid 5x request rate
+            var msg = JSON.parse(e.data);
+            if (msg && msg.type === 'live') {
+              applyLiveMetrics(msg);
+              return;
+            }
+            if (msg && msg.ts) {
+              _lastSnapshot = msg;
+              render(msg);
               var now = Date.now();
               if (now - sseLastFleetFetch > 10000) {
                 sseLastFleetFetch = now;
@@ -6623,7 +6681,6 @@ dom.walletSave?.addEventListener('click', async () => {
       this.updateTopbar(snap.network, snap.mempool_fees, snap.btc_price, snap.alerts_recent);
       this.updateCommandCenter(snap.worker, snap.axe_fleet, snap.pool, snap.profitability);
       this.updateRadar(snap.proximity, snap.worker);
-      this.updateDataGrids(snap.all_workers, snap.axe_fleet, snap.account, snap.leaderboard_table_top_30);
       this.setSystemStatus('online');
     },
     setText: function(id, text) {
@@ -6680,22 +6737,6 @@ dom.walletSave?.addEventListener('click', async () => {
       this.setText('prox-hero-best', prox && prox.all_time_best_diff_str ? 'best ' + prox.all_time_best_diff_str : '--');
       this.setText('hunt-metrics-bestdiff', worker && worker.bestDifficulty ? String(worker.bestDifficulty) : '--');
     },
-    updateDataGrids: function(workers, fleet, account, leaderboard) {
-    // raio-x grid is rendered by renderMinersXRay() — do not overwrite
-      // The whole ACCOUNT block (ln address, total diff, COMBINED / DIFF /
-      // LOYALTY ranks) is owned by renderAccount() — it applies the C3
-      // fallback labels (TOP X% / ACTIVE) and formats with the shared em-dash.
-      // Stomping any of those fields here with '--' both hid the fallbacks
-      // (P0-5 audit) and rendered a different dash style. This pass only
-      // touches the leaderboard table, which no other renderer writes.
-
-      var lbBody = document.getElementById('lb-tbody');
-      if (lbBody && leaderboard && leaderboard.length) {
-        lbBody.innerHTML = leaderboard.slice(0, 10).map(function(row, i) {
-          return '<tr><td>' + (i + 1) + '</td><td>' + (row.address ? escapeHtml(row.address.substring(0, 10)) + '...' : '--') + '</td><td>' + escapeHtml(row.diff_rank || '--') + '</td><td>' + escapeHtml(row.loyalty_rank || '--') + '</td><td>' + escapeHtml(row.combined_score || '--') + '</td><td>' + escapeHtml(row.total_blocks || 0) + '</td></tr>';
-        }).join('');
-      }
-    }
   };
 
   // ── Extend existing InstitutionalUI to also handle off-canvas AI panel ──
@@ -7385,6 +7426,72 @@ function renderAccount(acct) {
     if (!dom.lbTbody) return;
     if (!lb || !lb.length) { setHtmlIfChanged(dom.lbTbody, '<tr><td colspan="6" class="empty">awaiting data\u2026</td></tr>'); return; }
     setHtmlIfChanged(dom.lbTbody, lb.map((r, i) => `<tr><td>${i+1}</td><td>${escapeHtml(fmt.shortAddr(r.address))}</td><td>${escapeHtml(r.diff_rank || r.diffRank || '\u2014')}</td><td>${escapeHtml(r.loyalty_rank || r.loyalty || '\u2014')}</td><td>${escapeHtml(r.combined_score || r.score || '\u2014')}</td><td>${escapeHtml(r.total_blocks || r.blocks || 0)}</td></tr>`).join(''));
+  }
+
+  let _lbRows = [];
+  let _lbHasMore = false;
+  let _lbLoading = false;
+  let _lbTotal = 0;
+  let _lbError = '';
+
+  function paintLeaderboardPager() {
+    const btn = document.getElementById('lb-load-more');
+    const totalEl = document.getElementById('leaderboard-total');
+    if (totalEl) {
+      totalEl.textContent = String(_lbRows.length) + (_lbTotal > _lbRows.length ? ' / ' + _lbTotal : '') + ' miners';
+    }
+    if (btn) {
+      btn.hidden = !_lbHasMore;
+      btn.disabled = _lbLoading;
+      btn.setAttribute('aria-busy', _lbLoading ? 'true' : 'false');
+      btn.textContent = _lbLoading ? 'LOADING…' : (_lbError ? 'RETRY LOAD MORE' : 'LOAD MORE');
+      btn.title = _lbError;
+    }
+  }
+
+  function resetLeaderboardFromSnapshot(snap) {
+    const rows = (snap && snap.leaderboard_table_top_30) || [];
+    const head = Array.isArray(rows) ? rows.slice() : [];
+    // Keep pages the operator explicitly loaded. The 15s full poll owns the
+    // first 30 rows but must not collapse an expanded table back to 30.
+    _lbRows = mergeLeaderboardHead(_lbRows, head);
+    const total = Number(snap && snap.leaderboard_total);
+    _lbTotal = isFinite(total) ? Math.max(total, _lbRows.length) : _lbRows.length;
+    _lbHasMore = _lbRows.length < _lbTotal;
+    _lbError = '';
+    renderLeaderboard(_lbRows);
+    paintLeaderboardPager();
+  }
+
+  async function loadMoreLeaderboard() {
+    if (_lbLoading || !_lbHasMore) return;
+    _lbLoading = true;
+    _lbError = '';
+    paintLeaderboardPager();
+    try {
+      const r = await fetch('/api/leaderboard?offset=' + _lbRows.length + '&limit=50');
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      const data = await r.json();
+      const extra = Array.isArray(data && data.entries) ? data.entries : [];
+      _lbRows = _lbRows.concat(extra);
+      const total = Number(data && data.total);
+      _lbTotal = isFinite(total) ? Math.max(total, _lbRows.length) : _lbRows.length;
+      _lbHasMore = !!(data && data.has_more);
+      renderLeaderboard(_lbRows);
+    } catch (err) {
+      _lbError = 'Leaderboard unavailable; click to retry.';
+      logMessage('LEADERBOARD', 'Load more failed: ' + (err && err.message || 'unknown error'), 'WARN');
+    } finally {
+      _lbLoading = false;
+      paintLeaderboardPager();
+    }
+  }
+
+  function initLeaderboardPager() {
+    const btn = document.getElementById('lb-load-more');
+    if (!btn || btn.dataset.bound === '1') return;
+    btn.dataset.bound = '1';
+    btn.addEventListener('click', function () { loadMoreLeaderboard(); });
   }
 
   // ↳ R13 — Decision Matrix + Command Center (cards contextuais do snapshot)

@@ -516,6 +516,12 @@ a:hover { text-decoration: underline; }
 .topbar__freshness--synced { color: var(--text-secondary); border-color: var(--border-default); }
 .topbar__freshness--stale { color: var(--amber); border-color: var(--amber-dim); }
 .topbar__freshness--mute { color: var(--text-tertiary); border-color: var(--border-subtle); }
+.lb-pager {
+  display: flex;
+  justify-content: center;
+  padding: 10px 0 4px;
+}
+.lb-pager .btn[hidden] { display: none; }
 .profit-estimate-note {
   margin: 8px 0 0;
   font-size: 11px;

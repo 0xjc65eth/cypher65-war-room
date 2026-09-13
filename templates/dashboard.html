@@ -183,6 +183,10 @@
       <span class="topbar__metric-val" id="tbar-hr">—</span>
     </div>
     <div class="topbar__metric">
+      <span class="topbar__metric-label">TEMP</span>
+      <span class="topbar__metric-val" id="tbar-temp">—</span>
+    </div>
+    <div class="topbar__metric">
       <span class="topbar__metric-label">BEST</span>
       <span class="topbar__metric-val topbar__metric-val--gold" id="tbar-best">—</span>
     </div>
@@ -1392,6 +1396,9 @@
       <thead><tr><th>#</th><th>address</th><th>diff rank</th><th>loyalty</th><th>score</th><th>blocks</th></tr></thead>
       <tbody id="lb-tbody"><tr><td colspan="6" style="text-align:center;padding:12px"><div class="empty-state" style="border:none;display:inline-block"><div class="empty-state__title">awaiting data…</div></div></td></tr></tbody>
     </table>
+  </div>
+  <div class="lb-pager" aria-live="polite">
+    <button type="button" class="btn" id="lb-load-more" hidden>LOAD MORE</button>
   </div>
 </section>
 

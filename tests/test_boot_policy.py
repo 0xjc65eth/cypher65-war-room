@@ -4,8 +4,10 @@ import pytest
 
 from config import is_cloud_deploy
 from services.boot_policy import (
+    cloud_ops_warnings,
     cors_allow_origin,
     flask_debug_requested,
+    persistence_flags,
     validate_boot_policy,
 )
 
@@ -90,3 +92,26 @@ def test_cors_allow_origin_allowlist():
     )
     assert cors_allow_origin(allow, "https://evil.io", cloud=True) is None
     assert cors_allow_origin(allow, "", cloud=False) is None
+
+
+def test_persistence_flags_are_booleans_without_secrets():
+    flags = persistence_flags(
+        {
+            "GITHUB_TOKEN": "ghs_x",
+            "REMOTE_BACKUP_ENCRYPTION_KEY": "k",
+            "SENTRY_DSN": "https://public@example/1",
+        }
+    )
+    assert flags == {"remote_backup": True, "sentry": True}
+    empty = persistence_flags({})
+    assert empty == {"remote_backup": False, "sentry": False}
+
+
+def test_cloud_ops_warnings_local_silent():
+    assert cloud_ops_warnings({}, cloud=False) == []
+
+
+def test_cloud_ops_warnings_on_cloud_without_backup():
+    msgs = cloud_ops_warnings({"SECRET_KEY": "x"}, cloud=True)
+    assert any("backup" in m.lower() for m in msgs)
+    assert any("SENTRY_DSN" in m for m in msgs)
