@@ -7,6 +7,7 @@ from typing import Iterable
 
 from .models import CapabilityState, PoolProtocol, Provenance
 from .stratum_v1 import StratumV1ProbeResult
+from .stratum_v2 import StratumV2ProbeResult
 
 MAX_CAPABILITY_ASSERTIONS = 128
 MAX_CAPABILITY_DEPENDENCIES = 16
@@ -237,6 +238,26 @@ def capability_from_v1_probe(result: StratumV1ProbeResult) -> CapabilityAssertio
         state=state,
         provenance=Provenance.OBSERVED,
         source="stratum_v1_probe",
+    )
+
+
+def capability_from_v2_probe(result: StratumV2ProbeResult) -> CapabilityAssertion:
+    """Convert a sanitized V2 result into one observed capability assertion."""
+
+    if not isinstance(result, StratumV2ProbeResult):
+        raise EvidenceError("result must be a StratumV2ProbeResult")
+    state = CapabilityState.ERROR
+    if (
+        result.healthy
+        and result.protocol is PoolProtocol.STRATUM_V2
+        and result.capability is CapabilityState.SUPPORTED
+    ):
+        state = CapabilityState.SUPPORTED
+    return CapabilityAssertion(
+        name="protocol.stratum_v2.setup",
+        state=state,
+        provenance=Provenance.OBSERVED,
+        source="stratum_v2_probe",
     )
 
 

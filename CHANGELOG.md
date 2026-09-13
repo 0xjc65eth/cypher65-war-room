@@ -6,6 +6,14 @@ e versionamento semântico ([SemVer](https://semver.org/lang/pt-BR/)).
 
 ## [Unreleased]
 
+### Adicionado — adapter Stratum V2 SetupConnection limitado (Issue #533, Gate 082)
+- Framing Common-layer binário com teto de 4 KiB; o adapter envia somente
+  `SetupConnection` sem credencial, canal de mining ou submit de shares.
+- `SetupConnectionSuccess` sanitizado (versão 2); Noise, tipos recusados e
+  frames oversized falham closed (`noise_required` / `unsupported_message`).
+- Lab virtual hermético; DNS continua pinado na resolução V1. Discovery
+  ativo (Gate 083) permanece desligado.
+
 ### Alterado — extração do domínio Terminal/SSE para `static/src/39-terminal.js` (RFC #478, Issue #529)
 - O domínio **Terminal/SSE** saiu de `static/src/40-app-logic.js` para
   `static/src/39-terminal.js` (**752 linhas movidas verbatim**): o terminal de
