@@ -64,10 +64,13 @@ function loadFragment(relPath, exportExpr) {
   });
 }
 
-const _coreFmt = loadFragment('10-core-fmt.js', '{ fmt, fmtSats, countdownLabel, bolt11AmountSats, metricProvenance, snapshotFreshness, snapshotFreshnessLabel }');
+const _coreFmt = loadFragment('10-core-fmt.js', '{ fmt, fmtSats, countdownLabel, bolt11AmountSats, metricProvenance, snapshotFreshness, snapshotFreshnessLabel, liveMetricsFromSnapshot, liveMetricsPatch, mergeLeaderboardHead }');
 const metricProvenance = _coreFmt.metricProvenance;
 const snapshotFreshness = _coreFmt.snapshotFreshness;
 const snapshotFreshnessLabel = _coreFmt.snapshotFreshnessLabel;
+const liveMetricsFromSnapshot = _coreFmt.liveMetricsFromSnapshot;
+const liveMetricsPatch = _coreFmt.liveMetricsPatch;
+const mergeLeaderboardHead = _coreFmt.mergeLeaderboardHead;
 const _coreEscape = loadFragment(
   '30-core-escape.js',
   '{ escapeHtml, rentalsAuthRejected, rentalsAuthGuide, rentalsPayloadStale, rentalsCountSurface, RENTALS_PAYLOAD_VERSION }'
@@ -5320,6 +5323,29 @@ function makeSetHtmlIfChanged() {
   assertEqual('older telemetry is SYNCED', metricProvenance(12.5, { ageS: 90 }), 'SYNCED');
   assertEqual('stale value stays SYNCED not LIVE', metricProvenance(12.5, { ageS: 4, stale: true }), 'SYNCED');
   assertEqual('value without age is SYNCED', metricProvenance(1), 'SYNCED');
+})();
+
+(function liveMetricsSuite() {
+  const live = liveMetricsFromSnapshot({
+    ts: 42,
+    worker: { hashrate: 1e12 },
+    pool: { hashrate: 2e12 },
+    axe_fleet: [{ telemetry: { temperature: 60 } }, { temperature: 70 }],
+  });
+  assertEqual('live type', live.type, 'live');
+  assertEqual('live ts', live.ts, 42);
+  assertEqual('avg temp', live.fleet_avg_temp, 65);
+  assertEqual('live payload has five keys', Object.keys(live).length, 5);
+  const patch = liveMetricsPatch(live);
+  assertEqual('hr text', patch.hashrateText, fmt.hashrate(1e12));
+  assertEqual('temp text', patch.tempText, '65.0\u00b0C');
+  assertEqual('missing temp is emdash', liveMetricsPatch({}).tempText, '\u2014');
+  const expanded = Array.from({ length: 80 }, (_, i) => ({ rank: i + 1 }));
+  const refreshed = Array.from({ length: 30 }, (_, i) => ({ rank: i + 101 }));
+  const merged = mergeLeaderboardHead(expanded, refreshed);
+  assertEqual('poll keeps explicitly loaded leaderboard pages', merged.length, 80);
+  assertEqual('poll refreshes leaderboard head', merged[0].rank, 101);
+  assertEqual('poll keeps leaderboard tail', merged[30].rank, 31);
 })();
 
 // ═══════════════════════════════════════════════════════════════════════════

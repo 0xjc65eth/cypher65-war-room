@@ -206,6 +206,72 @@ function renderAccount(acct) {
     setHtmlIfChanged(dom.lbTbody, lb.map((r, i) => `<tr><td>${i+1}</td><td>${escapeHtml(fmt.shortAddr(r.address))}</td><td>${escapeHtml(r.diff_rank || r.diffRank || '\u2014')}</td><td>${escapeHtml(r.loyalty_rank || r.loyalty || '\u2014')}</td><td>${escapeHtml(r.combined_score || r.score || '\u2014')}</td><td>${escapeHtml(r.total_blocks || r.blocks || 0)}</td></tr>`).join(''));
   }
 
+  let _lbRows = [];
+  let _lbHasMore = false;
+  let _lbLoading = false;
+  let _lbTotal = 0;
+  let _lbError = '';
+
+  function paintLeaderboardPager() {
+    const btn = document.getElementById('lb-load-more');
+    const totalEl = document.getElementById('leaderboard-total');
+    if (totalEl) {
+      totalEl.textContent = String(_lbRows.length) + (_lbTotal > _lbRows.length ? ' / ' + _lbTotal : '') + ' miners';
+    }
+    if (btn) {
+      btn.hidden = !_lbHasMore;
+      btn.disabled = _lbLoading;
+      btn.setAttribute('aria-busy', _lbLoading ? 'true' : 'false');
+      btn.textContent = _lbLoading ? 'LOADING…' : (_lbError ? 'RETRY LOAD MORE' : 'LOAD MORE');
+      btn.title = _lbError;
+    }
+  }
+
+  function resetLeaderboardFromSnapshot(snap) {
+    const rows = (snap && snap.leaderboard_table_top_30) || [];
+    const head = Array.isArray(rows) ? rows.slice() : [];
+    // Keep pages the operator explicitly loaded. The 15s full poll owns the
+    // first 30 rows but must not collapse an expanded table back to 30.
+    _lbRows = mergeLeaderboardHead(_lbRows, head);
+    const total = Number(snap && snap.leaderboard_total);
+    _lbTotal = isFinite(total) ? Math.max(total, _lbRows.length) : _lbRows.length;
+    _lbHasMore = _lbRows.length < _lbTotal;
+    _lbError = '';
+    renderLeaderboard(_lbRows);
+    paintLeaderboardPager();
+  }
+
+  async function loadMoreLeaderboard() {
+    if (_lbLoading || !_lbHasMore) return;
+    _lbLoading = true;
+    _lbError = '';
+    paintLeaderboardPager();
+    try {
+      const r = await fetch('/api/leaderboard?offset=' + _lbRows.length + '&limit=50');
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      const data = await r.json();
+      const extra = Array.isArray(data && data.entries) ? data.entries : [];
+      _lbRows = _lbRows.concat(extra);
+      const total = Number(data && data.total);
+      _lbTotal = isFinite(total) ? Math.max(total, _lbRows.length) : _lbRows.length;
+      _lbHasMore = !!(data && data.has_more);
+      renderLeaderboard(_lbRows);
+    } catch (err) {
+      _lbError = 'Leaderboard unavailable; click to retry.';
+      logMessage('LEADERBOARD', 'Load more failed: ' + (err && err.message || 'unknown error'), 'WARN');
+    } finally {
+      _lbLoading = false;
+      paintLeaderboardPager();
+    }
+  }
+
+  function initLeaderboardPager() {
+    const btn = document.getElementById('lb-load-more');
+    if (!btn || btn.dataset.bound === '1') return;
+    btn.dataset.bound = '1';
+    btn.addEventListener('click', function () { loadMoreLeaderboard(); });
+  }
+
   // ↳ R13 — Decision Matrix + Command Center (cards contextuais do snapshot)
 
   // ── P0-2: Decision Matrix — solo vs pool vs lease (capital allocation) ──

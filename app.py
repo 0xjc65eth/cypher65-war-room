@@ -231,9 +231,14 @@ if (
 # Cloud-only import-time abort (Issue #535): gunicorn `app:app` never
 # reaches `if __name__ == "__main__"`. Local pytest has no RENDER flag.
 if is_cloud_deploy():
-    from services.boot_policy import validate_boot_policy as _validate_boot_policy
+    from services.boot_policy import (
+        cloud_ops_warnings as _cloud_ops_warnings,
+        validate_boot_policy as _validate_boot_policy,
+    )
 
     _validate_boot_policy()
+    for _boot_warning in _cloud_ops_warnings():
+        log.warning("[boot] %s", _boot_warning)
 
 # ── Per-user credentials (Issue #189): NO shared provider keys ──────────
 # Multi-tenant deployments (TENANT_API_KEYS) must NOT carry operator
@@ -4254,6 +4259,9 @@ def _do_poll():
         "axe_fleet": list(_shared_state.axe_telemetry_cache.values()),
     }  # ── Sync shared state after each poll ──
     _shared_state.latest_snapshot = latest_snapshot
+    _shared_state.leaderboard_rows = (
+        list(leaderboard) if isinstance(leaderboard, list) else []
+    )
 
 
 CLEANUP_EVERY_N_POLLS = max(60, int(86400 / POLL_INTERVAL))  # ~once a day
@@ -5833,12 +5841,18 @@ def service_worker():
 @app.route("/healthz")
 @app.route("/api/healthz")
 def healthz():
+    from config import is_cloud_deploy
+    from services.boot_policy import persistence_flags
+
     return jsonify(
         {
             "ok": True,
             "last_poll_ts": latest_snapshot.get("ts"),
             "now": int(time.time()),
             "age_s": int(time.time()) - (latest_snapshot.get("ts") or 0),
+            "cloud": is_cloud_deploy(),
+            "persistence": persistence_flags(),
+            "rate_limit_scope": "process",
         }
     )
 
@@ -8425,8 +8439,8 @@ def _compute_block_hunt(snap):
 if __name__ == "__main__":
     # Fail-closed boot (Issue #535): cloud deploys and any auth-configured
     # process refuse an ephemeral SECRET_KEY, CORS_ORIGINS=*, and Flask
-    # debug. Checked here (not at import) so pytest and gunicorn app:app
-    # imports never abort. Local open self-host is unchanged.
+    # debug. Cloud imports already validated above; this second call covers
+    # direct local/auth-configured starts. Local open self-host is unchanged.
     from services.boot_policy import validate_boot_policy
 
     validate_boot_policy()

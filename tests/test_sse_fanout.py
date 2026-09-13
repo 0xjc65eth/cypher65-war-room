@@ -177,6 +177,79 @@ def test_client_is_unregistered_when_the_response_closes(client):
     assert _sse.client_count() == before
 
 
+def test_live_metrics_from_full_snapshot():
+    live = _sse.live_metrics_from_snapshot(
+        {
+            "ts": 9,
+            "worker": {"hashrate": 1e12},
+            "pool": {"hashrate": 2e12},
+            "axe_fleet": [
+                {"telemetry": {"temperature": 61}},
+                {"_telemetry": {"temperature": 63}},
+                {"temperature": float("inf")},
+            ],
+        }
+    )
+    assert set(live) == {
+        "type",
+        "ts",
+        "worker_hashrate",
+        "pool_hashrate",
+        "fleet_avg_temp",
+    }
+    assert live["type"] == "live"
+    assert live["worker_hashrate"] == 1e12
+    assert live["fleet_avg_temp"] == 62.0
+
+
+def test_live_event_serializer_whitelists_fields_and_rejects_non_finite_values():
+    payload = json.loads(
+        _sse._sse_json(
+            {
+                "type": "live",
+                "ts": 10,
+                "worker_hashrate": float("inf"),
+                "pool_hashrate": 2e12,
+                "fleet_avg_temp": float("nan"),
+                "secret": "must-not-cross-sse",
+            }
+        )
+    )
+    assert set(payload) == {
+        "type",
+        "ts",
+        "worker_hashrate",
+        "pool_hashrate",
+        "fleet_avg_temp",
+    }
+    assert payload["worker_hashrate"] is None
+    assert payload["fleet_avg_temp"] is None
+    assert "secret" not in payload
+
+
+def test_broadcast_full_snapshot_sends_live_event(client):
+    resp = _open_stream(client)
+    iterator = resp.response
+    try:
+        next(iterator)
+        _sse.broadcast_snapshot(
+            {
+                "ts": 7,
+                "worker": {"hashrate": 5e11},
+                "pool": {"hashrate": 1e12},
+                "axe_fleet": [],
+            }
+        )
+        chunk = next(iterator)
+        payload = json.loads(chunk[len(b"data: ") :].strip())
+        assert payload["type"] == "live"
+        assert payload["ts"] == 7
+        assert payload["worker_hashrate"] == 5e11
+        assert "leaderboard_table_top_30" not in payload
+    finally:
+        resp.close()
+
+
 # ── 5. Keepalive do gerador (cadência de 3s do contrato) ───────────────────
 
 

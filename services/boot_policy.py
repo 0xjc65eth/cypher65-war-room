@@ -5,9 +5,9 @@ are allowed when no PaaS flags are set. A Render/CLOUD_MODE process must
 not boot with a rotating session secret, a wildcard CORS policy, or Flask
 debug — those combinations make a public URL unsafe.
 
-Checked in ``if __name__ == "__main__"`` so pytest and ``gunicorn app:app``
-imports never abort. CORS is also enforced per-request so a wildcard that
-slips past boot still emits no ``Access-Control-Allow-Origin``.
+Cloud imports validate from ``app.py`` so ``gunicorn app:app`` and the direct
+entry point enforce the same policy. CORS is also enforced per-request so a
+wildcard that slips past boot still emits no ``Access-Control-Allow-Origin``.
 """
 
 from __future__ import annotations
@@ -69,6 +69,37 @@ def validate_boot_policy(
             "FATAL: Flask debug is not allowed on cloud deploys. "
             "Unset FLASK_DEBUG and FLASK_ENV."
         )
+
+
+def persistence_flags(env: Optional[Mapping[str, str]] = None) -> dict:
+    """Booleans only — never the secret values (Issue #539)."""
+    source = env if env is not None else os.environ
+    token = (source.get("GITHUB_TOKEN") or "").strip()
+    key = (source.get("REMOTE_BACKUP_ENCRYPTION_KEY") or "").strip()
+    dsn = (source.get("SENTRY_DSN") or "").strip()
+    return {"remote_backup": bool(token and key), "sentry": bool(dsn)}
+
+
+def cloud_ops_warnings(
+    env: Optional[Mapping[str, str]] = None, *, cloud: Optional[bool] = None
+) -> list:
+    """Non-fatal operator warnings for a cloud boot without backup/Sentry."""
+    source = env if env is not None else os.environ
+    if cloud is None:
+        cloud = is_cloud_deploy(source)
+    if not cloud:
+        return []
+    flags = persistence_flags(source)
+    warnings = []
+    if not flags["remote_backup"]:
+        warnings.append(
+            "WARN: remote SQLite backup is not configured "
+            "(GITHUB_TOKEN + REMOTE_BACKUP_ENCRYPTION_KEY). "
+            "Ephemeral disks have no remote recovery copy."
+        )
+    if not flags["sentry"]:
+        warnings.append("WARN: SENTRY_DSN is unset — errors will not reach Sentry.")
+    return warnings
 
 
 def cors_allow_origin(
