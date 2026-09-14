@@ -27,4 +27,4 @@ pre-commit==4.6.2
 mutmut==3.7.0
 
 # ── Property-based testing for the probability/profitability math ────────
-hypothesis==6.167.1
+hypothesis==6.168.0
