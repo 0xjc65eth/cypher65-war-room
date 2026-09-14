@@ -63,6 +63,12 @@ const MANIFEST = [
   // `40-app-logic.js` e o corpo síncrono dele lê o estado deste domínio
   // (`_lmStats`, `events`). Depois do 40 seria TDZ. Ver o cabeçalho do fragmento.
   '39-terminal.js',
+  // Dashboard/render() também fica ANTES do god file (RFC 478 · PR 10): o
+  // `boot()` é chamado no topo do `40-app-logic.js` (linha 2232) e o corpo
+  // síncrono dele, antes do primeiro `await`, chama `initCharts()` (escreve/lê
+  // `const charts`) e `fetchSnapshot()` (lê/escreve `let _snapshotFetching`).
+  // Depois do 40 seria TDZ. Ver o cabeçalho do fragmento.
+  '39b-dashboard.js',
   '40-app-logic.js',
   // Automations/Alerts/Auto-Pilot/Decision Matrix: pode vir DEPOIS do god file
   // (ao contrário do 39) — o prefixo síncrono do `boot()` só toca este domínio

@@ -2608,7 +2608,9 @@ dom.walletSave?.addEventListener('click', async () => {
   //
   // Estado que NÃO veio junto, de propósito:
   //   · `_lastSnapshot` — global compartilhado (poll/SSE escrevem; AXE Fleet e o
-  //     próprio snapshot leem); ficou em `40-app-logic.js`.
+  //     próprio snapshot leem); ficou em `40-app-logic.js` até o PR 10
+  //     (RFC 478 · Issue 561), quando foi com o resto do domínio de poll para o
+  //     `39b-dashboard.js` — que também é avaliado ANTES deste fragmento.
   //   · `_ccLastFleet`/`_ccView`/`_ccHrSeries`/`_ccHrHist`/`_ccShareSeen` —
   //     estado do FLEET COMMAND CENTER (`48-fleet-cc.js`), que morava no meio do
   //     bloco de estado daqui. Ficou em `40-app-logic.js` porque o `boot()` chama
@@ -3378,213 +3380,66 @@ dom.walletSave?.addEventListener('click', async () => {
     // Welcome message
     _soloTermPrintHTML('<span class="c-muted">CYPHER65 WAR ROOM TERMINAL — type </span><span class="c-green">help</span><span class="c-muted"> for available commands.</span>', output);
   }
-  // → domínio Billing/Auth extraído para `static/src/38-billing-auth.js` (RFC 478, Issue 545)
-
-  // ── Theme Toggle ─────────────────────────────────────────────────────
-  // Persists the light/dark preference and toggles the <html data-theme>
-  // attribute consumed by the CSS :root[data-theme='light'] selectors.
-  // Dark = attribute absent (null) — matches the E2E theme test assertions.
-  const THEME_STORAGE_KEY = '_cypher65_theme';
-
-  function themeApply(pref) {
-    const isLight = pref === 'light';
-    const root = document.documentElement;
-    if (isLight) root.setAttribute('data-theme', 'light');
-    else root.removeAttribute('data-theme');
-  }
-
-  function themeCurrent() {
-    return document.documentElement.getAttribute('data-theme') === 'light' ? 'light' : 'dark';
-  }
-
-  function themeToggle() {
-    const next = themeCurrent() === 'light' ? 'dark' : 'light';
-    themeApply(next);
-    try { localStorage.setItem(THEME_STORAGE_KEY, next); } catch (e) { /* storage unavailable */ }
-    const btn = document.getElementById('theme-toggle');
-    if (btn) {
-      btn.innerHTML = next === 'light' ? _ic('moon', 14) : _ic('sun', 14);
-      btn.title = next === 'light' ? 'Switch to dark theme' : 'Switch to light theme';
-    }
-  }
-
-  function initThemeToggle() {
-    // Apply persisted preference on boot (fresh sessions default to dark).
-    try {
-      const saved = localStorage.getItem(THEME_STORAGE_KEY);
-      themeApply(saved === 'light' ? 'light' : 'dark');
-    } catch (e) { /* storage unavailable */ }
-    const btn = document.getElementById('theme-toggle');
-    if (btn) {
-      btn.addEventListener('click', function() { themeToggle(); });
-      btn.innerHTML = themeCurrent() === 'light' ? _ic('moon', 14) : _ic('sun', 14);
-    }
-  }
-
-  // → domínios Wallet crypto (R3) e Support (R20) extraídos para `static/src/37-wallet-support.js` (RFC 478, Issue 551)
-
-  // ── decode HTML entities (reverse of escapeHtml) ────────────────────
-  function decodeHtmlEntities(s) {
-    if (!s) return '';
-    var txt = document.createElement('textarea');
-    txt.innerHTML = String(s);
-    return txt.value;
-  }
-
-  // ── normalize worker name: decode HTML + trim + lowercase ───────────
-  function normalizeWorkerName(s) {
-    return decodeHtmlEntities(String(s || '')).trim().toLowerCase();
-  }
-
-  // ── Professional value transition ──
-  function smoothUpdate(el, newText) {
-    if (!el) return;
-    const old = el.textContent;
-    if (old !== newText && old !== '\u2014' && newText !== '\u2014') {
-      el.classList.remove('value-flash'); void el.offsetWidth; el.classList.add('value-flash');
-    }
-    el.textContent = newText;
-  }
-
-  // ── Count-up animation ──
-  const _countUpState = new WeakMap();
-  function _parseNum(txt) { if (!txt) return NaN; const m = String(txt).match(/([\d.,]+)/); if (!m) return NaN; return parseFloat(m[1].replace(/,/g, '')); }
-  function countUpValue(el, targetText, durationMs) {
-    durationMs = durationMs || 420;
-    if (!el || window.matchMedia('(prefers-reduced-motion: reduce)').matches) { if (el) el.textContent = targetText; return; }
-    const num = _parseNum(targetText);
-    if (isNaN(num)) { el.textContent = targetText; return; }
-    const prefix = String(targetText).replace(/^([^\d]*).*/, '$1');
-    const suffix = String(targetText).replace(/^.*?([^\d]*)$/, '$1');
-    const decimals = (String(targetText).match(/\.(\d+)/) || ['', ''])[1].length;
-    const start = performance.now();
-    const from = isNaN(_parseNum(el.textContent)) ? 0 : _parseNum(el.textContent);
-    const existing = _countUpState.get(el);
-    if (existing && existing.raf) cancelAnimationFrame(existing.raf);
-    const step = () => {
-      const t = Math.min(1, (performance.now() - start) / durationMs);
-      const eased = 1 - Math.pow(1 - t, 3);
-      const current = from + (num - from) * eased;
-      el.textContent = prefix + current.toFixed(decimals) + suffix;
-      if (t < 1) { const rafInner = requestAnimationFrame(step); _countUpState.set(el, { raf: rafInner }); }
-      else { el.textContent = targetText; _countUpState.delete(el); }
-    };
-    const rafOuter = requestAnimationFrame(step);
-  }
-
-  // ── Skeleton loading (design-motion-principles) ──
-  let _skeletonsHidden = false;
-  // Shape set per container kind — header line + rows (chart/KPI variants).
-  function _skelShapes(kind) {
-    if (kind === 'kpi') return ['skel--kpi','skel--kpi','skel--kpi','skel--kpi'];
-    if (kind === 'chart') return ['skel--chart','skel--line w-60','skel--line w-40'];
-    if (kind === 'table') return ['skel--row','skel--row','skel--row','skel--row w-80','skel--row w-60'];
-    return ['skel--line w-40','skel--line w-90','skel--line w-70','skel--line w-50'];
-  }
-  function _skelKind(p) {
-    const id = (p && p.id) || '';
-    if (p && p.classList.contains('kpi-row')) return 'kpi';
-    if (id.indexOf('chart') !== -1 || id.indexOf('trend') !== -1) return 'chart';
-    if (id.indexOf('market') !== -1) return 'table';  // offers grid dominates the panel
-    if (id.indexOf('table') !== -1 || (p && p.classList.contains('rentals-list'))) return 'table';
-    return '';
-  }
-  // Build a skeleton overlay INSIDE a container (used both at boot and for
-  // lazy module loads). Decorative only — pointer-events:none, aria-hidden.
-  function _skelBuild(container, kind) {
-    if (container.querySelector('.skel-overlay')) return;
-    const ov = document.createElement('div');
-    ov.className = 'skel-overlay';
-    ov.setAttribute('aria-hidden', 'true');
-    _skelShapes(_skelKind(container) || kind).forEach(function (cls) {
-      const s = document.createElement('div'); s.className = 'skel ' + cls;
-      ov.appendChild(s);
-    });
-    container.appendChild(ov);
-  }
-  function skelShow(container, kind) { if (container) _skelBuild(container, kind); }
-
-  // ── Flicker dedup (audit 18-Ago) ────────────────────────────────────────
-  // renderMarketGrid / renderTerminalEvents / renderLeaderboard etc. wrote
-  // innerHTML on EVERY 15s snapshot even when the rendered content was
-  // byte-identical — destroying/recreating rows every poll ("infinite
-  // blinking"). Same root cause the Command Center had (_lastCcKey fix);
-  // generalize it: skip the DOM write when the serialized HTML matches the
-  // last write for that element. WeakMap keyed by element keeps zero state
-  // on window and auto-GCs. Returns true when the write happened.
-  const _lastSetHtml = new WeakMap();
-  function setHtmlIfChanged(el, html) {
-    if (!el || typeof el.innerHTML !== 'string') return false;
-    if (_lastSetHtml.get(el) === html) return false;
-    _lastSetHtml.set(el, html);
-    el.innerHTML = html;
-    return true;
-  }
-
-  function skelHide(container) {
-    if (!container) return;
-    const ov = container.querySelector('.skel-overlay');
-    if (ov) { ov.remove(); }
-  }
-  // Skeleton around an async load: show → await → hide. Reused by manual
-  // refresh buttons and module re-activation when the panel is empty, so the
-  // shimmer is identical to the boot skeleton (transform-only, Emil <300ms).
-  function skelRefresh(container, kind, p) {
-    if (!container) return Promise.resolve(p);
-    skelShow(container, kind);
-    return Promise.resolve(p).then(
-      function (v) { skelHide(container); return v; },
-      function (e) { skelHide(container); throw e; }
-    );
-  }
-  function showSkeletons() {
-    document.querySelectorAll('.panel').forEach(p => _skelBuild(p, ''));
-    // KPI row is the most prominent loading surface — give it KPI-shaped
-    // blocks too (review fix: the kpi branch was previously dead code).
-    document.querySelectorAll('#kpi-row').forEach(k => _skelBuild(k, 'kpi'));
-  }
-  function hideSkeletons() {
-    document.querySelectorAll('.skel-overlay').forEach(o => o.remove());
-    _skeletonsHidden = true;
-  }
-
-  // ── Button loading state ──
-  function setBtnLoading(btn, on) {
-    if (!btn) return;
-    btn.classList.toggle('is-loading', on);
-    btn.disabled = on;
-  }
-
-  // ── Modal exit (Jakub: exit subtler than enter) ──
-  // Add .modal--closing, wait for the 120ms fade, then drop .modal--open.
-  // Pending close timers are tracked per-modal so a rapid reopen cancels the
-  // exit (review fix: close → reopen within 140ms must not force-close).
-  const _modalCloseTimers = new Map();
-  function closeModalAnimated(modal) {
-    if (!modal || !modal.classList.contains('modal--open')) return;
-    if (_modalCloseTimers.has(modal)) return;
-    const reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-    modal.classList.add('modal--closing');
-    const timer = setTimeout(function () {
-      _modalCloseTimers.delete(modal);
-      modal.classList.remove('modal--closing');
-      modal.classList.remove('modal--open');
-    }, reduce ? 0 : 140);
-    _modalCloseTimers.set(modal, timer);
-  }
-  // Open helper: cancels any pending close + clears the exit class so a modal
-  // reopened mid-exit animates in (not out). Pure add otherwise.
-  function openModalAnimated(modal) {
-    if (!modal) return;
-    const t = _modalCloseTimers.get(modal);
-    if (t) { clearTimeout(t); _modalCloseTimers.delete(modal); }
-    modal.classList.remove('modal--closing');
-    modal.classList.add('modal--open');
-  }
-
-  // ══════════════════════════════════════════════════════════════════════
-  // RENDER FUNCTIONS
-  // ══════════════════════════════════════════════════════════════════════
+  // ═════════════════════════════════════════════════════════════════════
+  // Dashboard / render() — HUD, painéis, gráficos, poll e KPI cards
+  // — domínio extraído de `40-app-logic.js` (RFC 478 · PR 10 · Issue 561)
+  // ═════════════════════════════════════════════════════════════════════
+  // Movimento MECÂNICO: nenhum nome, id de DOM, contrato de fetch ou formato de
+  // payload mudou — as 1.082 linhas abaixo são 6 recortes VERBATIM (na ordem do
+  // arquivo), somando 40 declarações (31 funções + 9 de estado) e ZERO
+  // statements de topo:
+  //   · R5  `209–504` (296) — HUD/status bar/freshness + Operational Overview
+  //          (`renderHUD`, `renderStatusBar`, `renderSnapshotFreshness`,
+  //           `_operationalFleetData`/`_operationalFleetError`,
+  //           `buildOperationalOverviewModel`, `renderOperationalOverview`).
+  //   · R6  `506–753` (248) — `initOperationalOverviewControls` + painéis do
+  //          dashboard (`renderWalletIdentity`, `renderHostCore`, `renderHero`,
+  //          `renderMinersXRay`, `renderPool`, `renderNetwork`).
+  //   · R8  `769–869` (101) — `CHART_METRICS`, `_chartRange`, `_fmtChartLabel`,
+  //          `_updateShareDistBadge`, `_applyShareDistTarget`, `loadChartData`,
+  //          `renderCharts`.
+  //   · R18 `1364–1723` (360) — `render()` + infraestrutura de gráficos
+  //          (`prevSnapshot`, `charts`, `computeSMA`, `buildChartAnnotations`,
+  //          `chartEventAnnotationsPlugin`, `clampZoomRange`, `_attachChartZoom`,
+  //          `makeChart`, `loadChart`, `initCharts`, `_resetChartZoom`,
+  //          `bindChartRanges`).
+  //   · R24 `2031–2082` (52) — poll/relógio/snapshot (`_lastSnapshot`,
+  //          `updateNextPoll`, `updateClock`, `_snapshotFetching`,
+  //          `fetchSnapshot`).
+  //   · R31 `3264–3288` (25) — `renderKpiCards`.
+  //
+  // ⚠ POR QUE ESTE FRAGMENTO VEM **ANTES** DO 40 — como o 37, o 38 e o 39. A
+  // régua da §3.3 é sobre ESTADO lido por chamada de NÍVEL DE MÓDULO, e o
+  // `boot()` é **chamado no topo do god file** (`40:2232`). O corpo síncrono
+  // dele — antes do primeiro `await` — toca este domínio:
+  //   · `initCharts()` (1a instrução do `boot()`) escreve/lê `const charts` (R18);
+  //   · `await fetchSnapshot()` chama `fetchSnapshot()` (R24), que antes do
+  //     primeiro `await` LÊ E ESCREVE `let _snapshotFetching`;
+  //   · `updateClock()`/`updateNextPoll()` (R24) e
+  //     `initOperationalOverviewControls()` (R5) são chamados nesse prefixo.
+  // Com o fragmento DEPOIS do 40, tudo isso seria TDZ → `ReferenceError` no boot.
+  //
+  // O que este fragmento NÃO tem: statements de topo. É o primeiro domínio
+  // extraído sem NENHUM (nem listener, nem `window.X = …`), então não há ordem
+  // de execução a preservar do lado dele — a única restrição é a de POSIÇÃO
+  // acima. Os 9 inicializadores de estado são literais (`null`/`false`/`{}`/
+  // objetos), logo nenhum avalia código no momento da declaração.
+  //
+  // Verificações feitas antes de mover: zero colisão de declaração dos 40 nomes
+  // com os outros 15 fragmentos; zero statement de topo (em qualquer fragmento)
+  // que mencione um nome movido; e os consumidores externos são todos de
+  // RUNTIME (hoisting de `function` no IIFE único) — `37-wallet-support.js`
+  // (`renderWalletIdentity(prevSnapshot)` no `openWalletModal`, `fetchSnapshot()`
+  // no save de settings), `38-billing-auth.js` (`renderCharts()` em
+  // `pollBtcStatus`/`applyUpgradeKey`), `39-terminal.js` (o handler de comando
+  // lê/escreve `_lastSnapshot`) e `49-axe-fleet.js` (`fetchAxeFleet` escreve
+  // `_operationalFleetData`/`_operationalFleetError` e chama
+  // `renderOperationalOverview(_lastSnapshot || {}, …)`).
+  //
+  // Desvio de ordem ORIGINAL, registrado: no arquivo pré-split, R5/R6/R8/R18
+  // ficavam ANTES do bloco de terminal (R9), e agora caem depois do
+  // `39-terminal.js`. Sem efeito observável — não há statement de topo deste
+  // lado para ordenar (ver parágrafo acima).
 
   // ── HUD — fixed bar with critical metrics ──
   function renderHUD(snap) {
@@ -3882,7 +3737,6 @@ dom.walletSave?.addEventListener('click', async () => {
       action.textContent = model.actionEnabled ? 'OPEN DIAGNOSTIC' : 'NO ACTION';
     }
   }
-
   function initOperationalOverviewControls() {
     const action = document.getElementById('op-action');
     if (!action) return;
@@ -4131,21 +3985,6 @@ function renderPool(pool, luck) {
     if (dom.nHashrate) dom.nHashrate.textContent = fmt.hashrate(net.hashrate);
     _staleChip(dom.nDiff, net.stale, 'dados em cache');
   }
-
-  // → domínio Automations/Alerts/Auto-Pilot/Decision Matrix extraído para `static/src/41-automations.js` (RFC 478, Issue 540)
-
-  function applyLiveMetrics(live) {
-    const patch = liveMetricsPatch(live);
-    const hr = document.getElementById('tbar-hr');
-    if (hr) hr.textContent = patch.hashrateText;
-    const temp = document.getElementById('tbar-temp');
-    if (temp) temp.textContent = patch.tempText;
-    if (dom.mHashrate) dom.mHashrate.textContent = patch.hashrateText;
-    if (dom.hudHashrate) dom.hudHashrate.textContent = patch.hashrateText;
-    if (dom.pHashrate) dom.pHashrate.textContent = patch.poolHashrateText;
-    renderSnapshotFreshness({ ts: live && live.ts });
-  }
-
   // ── Charts — renderChart fetches data and updates Chart.js instances ──
   const CHART_METRICS = {
     'chart-hashrate': { chart: 'hashrate', label: 'Worker Hashrate', color: 'rgb(6,214,240)' },
@@ -4247,6 +4086,670 @@ function renderPool(pool, luck) {
       loadChartData(id);
     });
   }
+  // ── Main render ──
+  let prevSnapshot = null;
+  function render(snap) {
+    if (!_skeletonsHidden) hideSkeletons();
+    // Sync window.BTC_ADDRESS from snapshot so modal and other components stay consistent
+    window.BTC_ADDRESS = snap.btc_address || window.BTC_ADDRESS || '';
+    toggleWalletCTA();
+    renderHUD(snap);
+    renderStatusBar(snap);
+    renderSnapshotFreshness(snap);
+    renderOperationalOverview(snap, _operationalFleetData, _operationalFleetError);
+    // P0-4 fix: an empty shortAddr('') collapses the topbar span to a
+    // zero-width box (Playwright/flex reports it hidden on wallet-less
+    // boots). Keep the '—' placeholder (same convention as #sb-wallet-addr)
+    // so the element always has a real box.
+    if (dom.topbarAddress) dom.topbarAddress.textContent = `${fmt.shortAddr(snap.btc_address || window.BTC_ADDRESS || '') || '—'}`;
+    if (dom.statusText) {
+      dom.statusText.textContent = snap.worker ? (snap.worker.hashrate ? 'ONLINE' : 'IDLE') : 'OFFLINE';
+    }
+    if (dom.statusPill) {
+      dom.statusPill.classList.toggle('is-online', !!(snap.worker && snap.worker.hashrate));
+      dom.statusPill.classList.toggle('is-idle', !!(snap.worker && !snap.worker.hashrate));
+    }
+    renderHero(snap);
+    renderHostCore(snap);
+    renderPool(snap.pool, snap.luck_estimate);
+    renderMinersXRay(snap);
+    renderNetwork(snap.network);
+    renderAccount(snap.account);
+    renderBtcPrices(snap.btc_price);
+    renderHalving(snap.halving);
+    renderMempoolFees(snap.mempool_fees);
+    renderProfitability(snap.profitability);
+    renderDecisionMatrix(snap.profitability);
+    renderComparison(snap);
+    renderSoloStats(snap.proximity);
+    renderProximity(snap.proximity);
+    renderQuantumLock(snap.proximity);
+    renderLiveCalc(snap.proximity);
+    renderNetworkGauge(snap);
+    renderMilestones(snap.milestones);
+    renderAlerts(snap.alerts_recent);
+    renderEvents(snap.highest_diffs);
+    resetLeaderboardFromSnapshot(snap);
+    applyLiveMetrics(liveMetricsFromSnapshot(snap));
+    if (typeof updateSidebarStatus === 'function') {
+      updateSidebarStatus(!!snap.worker);
+    }
+    renderTimelineFeed(snap.timeline_recent || snap.timeline_last_n);
+    renderTerminalEvents(snap.timeline_last_n || snap.timeline_recent);
+    renderTimelineStats(snap);
+    renderBlockHunt(snap);
+    renderCommandCenter(snap);
+    renderMarket(snap);
+    renderAiOperator(snap);
+    renderFleetCommandCenter(snap);
+    renderWalletIdentity(snap);
+    _lmSetConn(snap);
+    renderCharts();
+    prevSnapshot = snap;
+  }
+
+  // ══════════════════════════════════════════════════════════════════════
+  // CHARTS
+  // ══════════════════════════════════════════════════════════════════════
+  const charts = {};
+  // ══════════════════════════════════════════════════════════════════════
+  //  FASE 2.1 — PROFESSIONAL CHARTS
+  //  moving averages · bar+line overlays · zoom/pan · event annotations
+  //  Pure helpers below are mirrored in tests/test_app_js_core.js.
+  // ══════════════════════════════════════════════════════════════════════
+
+  // Simple moving average (window in points). Mirrors numpy-rolling mean so
+  // the SMA line starts at the first point (partial window at the head).
+  function computeSMA(values, windowSize) {
+    if (!Array.isArray(values) || !values.length) return [];
+    windowSize = Math.max(1, Math.floor(Number(windowSize) || 7));
+    const out = [];
+    let sum = 0;
+    for (let i = 0; i < values.length; i++) {
+      sum += Number(values[i]) || 0;
+      if (i >= windowSize) sum -= Number(values[i - windowSize]) || 0;
+      const n = Math.min(i + 1, windowSize);
+      out.push(Number((sum / n).toFixed(2)));
+    }
+    return out;
+  }
+
+  // Map persisted timeline events (ts in seconds) to the nearest label index
+  // so the annotation plugin can draw vertical lines at the right x position
+  // (category axis — no time adapter needed, stays offline-friendly).
+  function buildChartAnnotations(events, labels) {
+    if (!Array.isArray(events) || !Array.isArray(labels) || !labels.length) return [];
+    const out = [];
+    events.forEach(ev => {
+      const ts = Number(ev.ts || 0) * 1000;
+      if (!ts) return;
+      let idx = 0, best = Infinity;
+      for (let i = 0; i < labels.length; i++) {
+        const d = Math.abs(Number(labels[i]) - ts);
+        if (d < best) { best = d; idx = i; }
+      }
+      out.push({
+        index: idx,
+        severity: ev.severity || 'INFO',
+        message: String(ev.message || ev.event_type || ''),
+      });
+    });
+    return out;
+  }
+
+  // ── Zero-dependency annotation plugin (inline, per-chart) ───────────
+  // Draws subtle vertical dashed lines at event positions. Bumps/alerts are
+  // critical (red), share finds are neutral (amber). Driven by
+  // chart._annotations = buildChartAnnotations(...) set on each load.
+  const chartEventAnnotationsPlugin = {
+    id: 'cypher65EventAnnotations',
+    afterDraw(chart) {
+      const anns = chart._annotations || [];
+      if (!anns.length) return;
+      const xScale = chart.scales.x;
+      const area = chart.chartArea;
+      if (!xScale || !area) return;
+      const ctx = chart.ctx;
+      ctx.save();
+      anns.forEach(a => {
+        const x = xScale.getPixelForValue(a.index);
+        if (x < area.left || x > area.right) return;
+        // P0-1: network target difficulty reference line (solid purple).
+        if (a.target) {
+          ctx.strokeStyle = 'rgba(168,85,247,0.9)';
+          ctx.lineWidth = 1.5;
+          ctx.setLineDash([]);
+          ctx.beginPath(); ctx.moveTo(x, area.top); ctx.lineTo(x, area.bottom); ctx.stroke();
+          return;
+        }
+        const critical = a.severity === 'CRIT' || a.severity === 'GOLD';
+        ctx.strokeStyle = critical ? 'rgba(255,94,94,0.55)' : 'rgba(255,196,0,0.30)';
+        ctx.lineWidth = 1;
+        ctx.setLineDash([4, 3]);
+        ctx.beginPath(); ctx.moveTo(x, area.top); ctx.lineTo(x, area.bottom); ctx.stroke();
+        ctx.setLineDash([]);
+      });
+      ctx.restore();
+    },
+  };
+
+  // Pure zoom-range clamp for the category axis (x min/max are POINT INDICES,
+  // not timestamps). Expressed in point counts so it works on any dataset size.
+  // Mirrored in tests/test_app_js_core.js.
+  function clampZoomRange(currentRange, factor, minPoints, maxPoints) {
+    const next = currentRange * factor;
+    const upper = Math.max(minPoints, maxPoints);
+    return Math.max(minPoints, Math.min(next, upper));
+  }
+
+  // ── Lightweight zoom/pan (wheel zoom + drag pan + dblclick reset) ───
+  // Implemented against Chart.js scale min/max directly — no CDN plugin, so
+  // the self-hosted dashboard keeps working fully offline.
+  // IMPORTANT: the x scale is CATEGORY (labels are HH:mm strings), so min/max
+  // are point indices — zoom bounds are clamped in POINT COUNTS (min 5 points,
+  // max = full label count), never wall-clock ms.
+  // Drag uses Pointer Capture bound to the canvas only — no window listeners,
+  // so re-initializing charts can never leak handlers.
+  function _attachChartZoom(chart) {
+    const canvas = chart.canvas;
+    if (!canvas) return;
+    const MIN_POINTS = 5;
+    const maxPoints = () => Math.max(MIN_POINTS, (chart.data.labels || []).length);
+    const resetZoom = () => {
+      delete chart.options.scales.x.min;
+      delete chart.options.scales.x.max;
+      chart.update('none');
+    };
+    canvas.addEventListener('wheel', e => {
+      e.preventDefault();
+      const xs = chart.scales.x;
+      if (!xs) return;
+      const range = xs.max - xs.min;
+      if (!range) return;
+      const cursor = (e.offsetX / canvas.clientWidth);
+      const anchor = xs.min + range * cursor;
+      const factor = e.deltaY > 0 ? 1.2 : 0.8333;
+      const newRange = clampZoomRange(range, factor, MIN_POINTS, maxPoints());
+      const newMin = anchor - newRange * cursor;
+      chart.options.scales.x.min = newMin;
+      chart.options.scales.x.max = newMin + newRange;
+      chart.update('none');
+    }, { passive: false });
+    let drag = null;
+    canvas.addEventListener('pointerdown', e => {
+      if (e.button !== 0) return;
+      const xs = chart.scales.x;
+      if (!xs) return;
+      drag = { startX: e.clientX, startMin: xs.min };
+      try { canvas.setPointerCapture(e.pointerId); } catch (err) { /* ignore */ }
+      canvas.style.cursor = 'grabbing';
+    });
+    canvas.addEventListener('pointermove', e => {
+      if (!drag) return;
+      const xs = chart.scales.x;
+      if (!xs || !(xs.max - xs.min)) return;
+      const dx = (e.clientX - drag.startX) / canvas.clientWidth * (xs.max - xs.min);
+      const newMin = drag.startMin - dx;
+      chart.options.scales.x.min = newMin;
+      chart.options.scales.x.max = newMin + (xs.max - xs.min);
+      chart.update('none');
+    });
+    canvas.addEventListener('pointerup', () => {
+      drag = null;
+      canvas.style.cursor = '';
+    });
+    canvas.addEventListener('pointercancel', () => {
+      drag = null;
+      canvas.style.cursor = '';
+    });
+    canvas.addEventListener('dblclick', resetZoom);
+    canvas.title = 'scroll to zoom · drag to pan · double-click to reset';
+  }
+
+  function makeChart(id, label, color) {
+    const canvas = document.getElementById(id);
+    if (!canvas) return null;
+    // Issue #186: defensivo — app.js roda com defer após o Chart.js, mas se o
+    // CDN falhar (offline/blocked) o boot não pode crashar. Null é tratado
+    // pelos call sites (mesma convenção do canvas ausente).
+    if (typeof Chart === 'undefined') return null;
+    const ctx = canvas.getContext('2d');
+    const cfg = CHART_METRICS[id];
+    // Human-readable Y ticks: hashrate/pool render fmt.hashrate (TH/s), best
+    // diff/net render fmt.diff — raw 4.7e12 / 1.26e14 labels were unreadable.
+    const isHrAxis = cfg && (cfg.chart === 'hashrate' || cfg.chart === 'pool');
+    const isDiffAxis = cfg && (cfg.chart === 'bestdiff' || cfg.chart === 'net');
+    const yTickCb = isHrAxis ? (v) => fmt.hashrate(v) : isDiffAxis ? (v) => fmt.diff(v) : undefined;
+    // P0-5 audit: the share-difficulty histogram was rendered as a line chart
+    // with pointRadius 0 + fill alpha 0.1 — with a handful of shares the
+    // series was effectively invisible ("empty graph" despite 13+ shares).
+    // Histograms belong on bars: one visible column per difficulty bucket.
+    const isHistogram = cfg && cfg.chart === 'share_dist';
+    const datasets = [
+      isHistogram
+        ? { label, data: [], borderColor: color, backgroundColor: color.replace(')', ',0.55)').replace('rgb','rgba'), borderWidth: 1, maxBarThickness: 34 }
+        : { label, data: [], borderColor: color, backgroundColor: color.replace(')', ',0.1)').replace('rgb','rgba'), fill: true, tension: 0.4, pointRadius: 0 },
+    ];
+    // Fase 2.1: moving-average overlay (dashed, no fill) on time series
+    if (!isHistogram) {
+      datasets.push({ label: label + ' · SMA', data: [], borderColor: 'rgba(234,234,235,0.55)', backgroundColor: 'transparent', borderDash: [5, 3], fill: false, tension: 0.4, pointRadius: 0, borderWidth: 1.5 });
+    }
+    // Fase 2.1: share-volume bar overlay (2nd y-axis, right) on hashrate
+    if (cfg && cfg.chart === 'hashrate') {
+      datasets.push({ type: 'bar', label: 'Shares/min', data: [], yAxisID: 'y1', backgroundColor: 'rgba(6,214,240,0.14)', borderColor: 'rgba(6,214,240,0.35)', borderWidth: 1, order: 3 });
+    }
+    const chart = new Chart(ctx, {
+      type: isHistogram ? 'bar' : 'line',
+      data: { labels: [], datasets },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        interaction: { mode: 'index', intersect: false },
+        scales: {
+          x: { ticks: { color: cssVar('--text-tertiary'), maxTicksLimit: 8, font: { family: 'JetBrains Mono, monospace', size: 10 } }, grid: { color: 'rgba(94,89,82,0.14)' } },
+          y: { ticks: { color: cssVar('--text-tertiary'), font: { family: 'JetBrains Mono, monospace', size: 10 }, ...(yTickCb ? { callback: yTickCb } : {}) }, grid: { color: 'rgba(94,89,82,0.14)' } },
+          y1: { position: 'right', display: false, grid: { drawOnChartArea: false }, ticks: { color: cssVar('--brand'), font: { family: 'JetBrains Mono, monospace', size: 10 } } },
+        },
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            backgroundColor: 'rgba(17,18,20,0.94)',
+            borderColor: 'rgba(255,255,255,0.08)',
+            borderWidth: 1,
+            titleColor: cssVar('--text-primary'),
+            bodyColor: cssVar('--text-secondary'),
+            padding: 10,
+            boxPadding: 4,
+            usePointStyle: true,
+            font: { family: 'JetBrains Mono, monospace', size: 11 },
+          },
+        },
+      },
+      plugins: [chartEventAnnotationsPlugin],
+    });
+    if (!isHistogram) _attachChartZoom(chart);
+    return chart;
+  }
+
+  async function loadChart(id, metric, range) {
+    try {
+      _chartRange[id] = range || '1h'; // persist the toolbar choice across refreshes
+      const r = await fetch(`/api/chart-data?chart=${metric}&range=${range}`);
+      if (r.status === 402) { await handleLicenseRequired(r); _chartRange[id] = '1h'; const _tb = document.getElementById('share-dist-target-badge'); if (_tb) _tb.textContent = 'target —'; return; }
+      if (!r.ok) return;
+      const data = await r.json();
+      const chart = charts[id];
+      if (!chart) return;
+      const cfg = CHART_METRICS[id] || {};
+      const rawLabels = (data.labels || []);
+      const values = (data.datasets?.[0]?.data || data.datasets?.[0]?.values || []);
+      chart.data.labels = rawLabels.map(t => _fmtChartLabel(t, cfg, id));
+      chart.data.datasets[0].data = values;
+      _updateShareDistBadge(cfg, data, values);
+      // Fase 2.1: SMA overlay + shares bar + event annotations
+      if (chart.data.datasets[1] && cfg.chart !== 'share_dist') {
+        chart.data.datasets[1].data = computeSMA(values, Math.max(3, Math.round(values.length / 10)));
+      }
+      if (chart.data.datasets[2] && Array.isArray(data.shares)) {
+        chart.data.datasets[2].data = data.shares;
+        chart.options.scales.y1.display = data.shares.some(s => s > 0);
+      }
+      chart._annotations = buildChartAnnotations(data.events || [], rawLabels);
+      _applyShareDistTarget(cfg, data, chart);
+      chart.update('none');
+    } catch (e) { /* chart load silently */ }
+  }
+
+  function initCharts() {
+    charts['chart-hashrate'] = makeChart('chart-hashrate', 'Hashrate', 'rgb(247,147,26)');
+    charts['chart-pool'] = makeChart('chart-pool', 'Pool HR', 'rgb(6,214,240)');
+    charts['chart-bestdiff'] = makeChart('chart-bestdiff', 'Best Diff', 'rgb(16,185,129)');
+    charts['chart-net'] = makeChart('chart-net', 'Net Diff', 'rgb(139,92,246)');
+    charts['chart-cumulative-p'] = makeChart('chart-cumulative-p', 'Cum P(Block)', 'rgb(139,92,246)');
+    charts['chart-share-dist'] = makeChart('chart-share-dist', 'Share Dist', 'rgb(16,185,129)');
+  }
+
+  // Fase 2.1: clear any manual zoom/pan state so the chart renders the full
+  // window again (used when switching ranges or pressing the ⟲ button).
+  // Only re-renders when zoom state actually existed (cheap no-op otherwise).
+  function _resetChartZoom(chart) {
+    if (!chart || !chart.options || !chart.options.scales || !chart.options.scales.x) return;
+    const hadZoom = chart.options.scales.x.min !== undefined || chart.options.scales.x.max !== undefined;
+    delete chart.options.scales.x.min;
+    delete chart.options.scales.x.max;
+    if (hadZoom) chart.update('none');
+  }
+
+  function bindChartRanges() {
+    document.querySelectorAll('.chart-range').forEach(row => {
+      const target = row.dataset.target;
+      // Only real range chips carry data-range; the ⟲ reset button (data-zoom-reset)
+      // is bound separately below so it is never treated as a range.
+      row.querySelectorAll('button[data-range]').forEach(btn => {
+        btn.addEventListener('click', () => {
+          row.querySelectorAll('button[data-range]').forEach(b => b.classList.remove('active'));
+          btn.classList.add('active');
+          // Fase 2.2: use the BACKEND chart names (hashrate|pool|bestdiff|net).
+          // Passing DB column names (worker_hashrate etc.) made every range
+          // click fetch an unknown chart and render the panel blank.
+          const metricMap = { 'chart-hashrate': 'hashrate', 'chart-pool': 'pool', 'chart-bestdiff': 'bestdiff', 'chart-net': 'net' };
+          // Switching ranges resets any manual zoom/pan from the old window.
+          _resetChartZoom(charts[target]);
+          loadChart(target, metricMap[target] || target.replace('chart-',''), btn.dataset.range);
+        });
+      });
+    });
+    // Fase 2.1: explicit ⟲ reset-zoom buttons in each chart toolbar.
+    document.querySelectorAll('[data-zoom-reset]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        _resetChartZoom(charts[btn.dataset.zoomReset]);
+      });
+    });
+  }
+  // Latest dashboard snapshot received via polling/SSE. Terminal commands
+  // (status/workers/price) read this instead of fetching /api/snapshot,
+  // which internally triggers external hashrate-market offers and can take
+  // >1s — the E2E terminal tests only wait 1000ms after Enter.
+  let _lastSnapshot = null;
+
+  // → domínio Terminal/SSE extraído para `static/src/39-terminal.js` (RFC 478, Issue 529)
+
+// ══════════════════════════════════════════════════════════════════════
+  // POLLING
+  // ══════════════════════════════════════════════════════════════════════
+
+
+
+  function updateNextPoll() {
+    nextPollAt = Date.now() + POLL_MS;
+    if (dom.nextPoll) dom.nextPoll.textContent = `${Math.ceil(POLL_MS/1000)}s`;
+  }
+
+  // ── Clock ──
+  function updateClock() {
+    if (dom.clock) dom.clock.textContent = new Date().toLocaleTimeString();
+  }
+
+  // ── Snapshot fetch dedup ──
+  // Guards against concurrent /api/snapshot fetches (e.g. rapid market-module
+  // activations each firing fetchSnapshot) so render() never runs twice in
+  // parallel with two different snapshots. The poll loop and manual refreshes
+  // both go through fetchSnapshot, so this keeps a single in-flight fetch.
+  let _snapshotFetching = false;
+  async function fetchSnapshot() {
+    if (_snapshotFetching) return;
+    _snapshotFetching = true;
+    try {
+      const r = await fetch('/api/snapshot');
+      if (!r.ok) throw new Error('snapshot failed');
+      const snap = await r.json();
+      _lastSnapshot = snap;
+      render(snap);
+      fetchAxeFleet();
+      updateNextPoll();
+    } catch (e) {
+      // Sev-1 (UI audit 2026-08): a failed first fetch must NEVER leave the
+      // boot skeletons stuck — the old code only logged, so a fetch failure
+      // (network, rate limit on mobile) froze the whole dashboard in a
+      // skeleton overlay with the status bar stuck at INIT. Hide on EVERY
+      // outcome; the panels then show their honest empty/error state.
+      hideSkeletons();
+      logMessage('ERROR', e.message, 'WARN');
+    }
+    finally { _snapshotFetching = false; }
+  }
+  // ── KPI Cards render ──
+  function renderKpiCards(snap) {
+    if (!snap) return;
+    var w = snap.worker || {};
+    var pool = snap.pool || {};
+    var prox = snap.proximity || {};
+    var workers = snap.all_workers || [];
+
+    if (dom.kpiHashrate) dom.kpiHashrate.textContent = fmt.hashrate(w.hashrate);
+    if (dom.kpiBestdiff) dom.kpiBestdiff.textContent = fmt.diff(w.bestDifficulty || w.best_diff);
+    if (dom.kpiPoolhr) dom.kpiPoolhr.textContent = fmt.hashrate(pool.hashrate);
+
+    // Share rate — from active workers or timeline
+    if (dom.kpiShares) {
+      var sharesCount = prox.live_calc?.session_totals?.shares_so_far || 0;
+      var shareRate = prox.share_rate_hourly || 0;
+      if (shareRate > 0) {
+        dom.kpiShares.textContent = shareRate.toFixed(0) + '/h';
+      } else if (sharesCount > 0) {
+        dom.kpiShares.textContent = sharesCount + ' total';
+      } else {
+        dom.kpiShares.textContent = '\u2014';
+      }
+    }
+  }
+  // → domínio Billing/Auth extraído para `static/src/38-billing-auth.js` (RFC 478, Issue 545)
+
+  // ── Theme Toggle ─────────────────────────────────────────────────────
+  // Persists the light/dark preference and toggles the <html data-theme>
+  // attribute consumed by the CSS :root[data-theme='light'] selectors.
+  // Dark = attribute absent (null) — matches the E2E theme test assertions.
+  const THEME_STORAGE_KEY = '_cypher65_theme';
+
+  function themeApply(pref) {
+    const isLight = pref === 'light';
+    const root = document.documentElement;
+    if (isLight) root.setAttribute('data-theme', 'light');
+    else root.removeAttribute('data-theme');
+  }
+
+  function themeCurrent() {
+    return document.documentElement.getAttribute('data-theme') === 'light' ? 'light' : 'dark';
+  }
+
+  function themeToggle() {
+    const next = themeCurrent() === 'light' ? 'dark' : 'light';
+    themeApply(next);
+    try { localStorage.setItem(THEME_STORAGE_KEY, next); } catch (e) { /* storage unavailable */ }
+    const btn = document.getElementById('theme-toggle');
+    if (btn) {
+      btn.innerHTML = next === 'light' ? _ic('moon', 14) : _ic('sun', 14);
+      btn.title = next === 'light' ? 'Switch to dark theme' : 'Switch to light theme';
+    }
+  }
+
+  function initThemeToggle() {
+    // Apply persisted preference on boot (fresh sessions default to dark).
+    try {
+      const saved = localStorage.getItem(THEME_STORAGE_KEY);
+      themeApply(saved === 'light' ? 'light' : 'dark');
+    } catch (e) { /* storage unavailable */ }
+    const btn = document.getElementById('theme-toggle');
+    if (btn) {
+      btn.addEventListener('click', function() { themeToggle(); });
+      btn.innerHTML = themeCurrent() === 'light' ? _ic('moon', 14) : _ic('sun', 14);
+    }
+  }
+
+  // → domínios Wallet crypto (R3) e Support (R20) extraídos para `static/src/37-wallet-support.js` (RFC 478, Issue 551)
+
+  // ── decode HTML entities (reverse of escapeHtml) ────────────────────
+  function decodeHtmlEntities(s) {
+    if (!s) return '';
+    var txt = document.createElement('textarea');
+    txt.innerHTML = String(s);
+    return txt.value;
+  }
+
+  // ── normalize worker name: decode HTML + trim + lowercase ───────────
+  function normalizeWorkerName(s) {
+    return decodeHtmlEntities(String(s || '')).trim().toLowerCase();
+  }
+
+  // ── Professional value transition ──
+  function smoothUpdate(el, newText) {
+    if (!el) return;
+    const old = el.textContent;
+    if (old !== newText && old !== '\u2014' && newText !== '\u2014') {
+      el.classList.remove('value-flash'); void el.offsetWidth; el.classList.add('value-flash');
+    }
+    el.textContent = newText;
+  }
+
+  // ── Count-up animation ──
+  const _countUpState = new WeakMap();
+  function _parseNum(txt) { if (!txt) return NaN; const m = String(txt).match(/([\d.,]+)/); if (!m) return NaN; return parseFloat(m[1].replace(/,/g, '')); }
+  function countUpValue(el, targetText, durationMs) {
+    durationMs = durationMs || 420;
+    if (!el || window.matchMedia('(prefers-reduced-motion: reduce)').matches) { if (el) el.textContent = targetText; return; }
+    const num = _parseNum(targetText);
+    if (isNaN(num)) { el.textContent = targetText; return; }
+    const prefix = String(targetText).replace(/^([^\d]*).*/, '$1');
+    const suffix = String(targetText).replace(/^.*?([^\d]*)$/, '$1');
+    const decimals = (String(targetText).match(/\.(\d+)/) || ['', ''])[1].length;
+    const start = performance.now();
+    const from = isNaN(_parseNum(el.textContent)) ? 0 : _parseNum(el.textContent);
+    const existing = _countUpState.get(el);
+    if (existing && existing.raf) cancelAnimationFrame(existing.raf);
+    const step = () => {
+      const t = Math.min(1, (performance.now() - start) / durationMs);
+      const eased = 1 - Math.pow(1 - t, 3);
+      const current = from + (num - from) * eased;
+      el.textContent = prefix + current.toFixed(decimals) + suffix;
+      if (t < 1) { const rafInner = requestAnimationFrame(step); _countUpState.set(el, { raf: rafInner }); }
+      else { el.textContent = targetText; _countUpState.delete(el); }
+    };
+    const rafOuter = requestAnimationFrame(step);
+  }
+
+  // ── Skeleton loading (design-motion-principles) ──
+  let _skeletonsHidden = false;
+  // Shape set per container kind — header line + rows (chart/KPI variants).
+  function _skelShapes(kind) {
+    if (kind === 'kpi') return ['skel--kpi','skel--kpi','skel--kpi','skel--kpi'];
+    if (kind === 'chart') return ['skel--chart','skel--line w-60','skel--line w-40'];
+    if (kind === 'table') return ['skel--row','skel--row','skel--row','skel--row w-80','skel--row w-60'];
+    return ['skel--line w-40','skel--line w-90','skel--line w-70','skel--line w-50'];
+  }
+  function _skelKind(p) {
+    const id = (p && p.id) || '';
+    if (p && p.classList.contains('kpi-row')) return 'kpi';
+    if (id.indexOf('chart') !== -1 || id.indexOf('trend') !== -1) return 'chart';
+    if (id.indexOf('market') !== -1) return 'table';  // offers grid dominates the panel
+    if (id.indexOf('table') !== -1 || (p && p.classList.contains('rentals-list'))) return 'table';
+    return '';
+  }
+  // Build a skeleton overlay INSIDE a container (used both at boot and for
+  // lazy module loads). Decorative only — pointer-events:none, aria-hidden.
+  function _skelBuild(container, kind) {
+    if (container.querySelector('.skel-overlay')) return;
+    const ov = document.createElement('div');
+    ov.className = 'skel-overlay';
+    ov.setAttribute('aria-hidden', 'true');
+    _skelShapes(_skelKind(container) || kind).forEach(function (cls) {
+      const s = document.createElement('div'); s.className = 'skel ' + cls;
+      ov.appendChild(s);
+    });
+    container.appendChild(ov);
+  }
+  function skelShow(container, kind) { if (container) _skelBuild(container, kind); }
+
+  // ── Flicker dedup (audit 18-Ago) ────────────────────────────────────────
+  // renderMarketGrid / renderTerminalEvents / renderLeaderboard etc. wrote
+  // innerHTML on EVERY 15s snapshot even when the rendered content was
+  // byte-identical — destroying/recreating rows every poll ("infinite
+  // blinking"). Same root cause the Command Center had (_lastCcKey fix);
+  // generalize it: skip the DOM write when the serialized HTML matches the
+  // last write for that element. WeakMap keyed by element keeps zero state
+  // on window and auto-GCs. Returns true when the write happened.
+  const _lastSetHtml = new WeakMap();
+  function setHtmlIfChanged(el, html) {
+    if (!el || typeof el.innerHTML !== 'string') return false;
+    if (_lastSetHtml.get(el) === html) return false;
+    _lastSetHtml.set(el, html);
+    el.innerHTML = html;
+    return true;
+  }
+
+  function skelHide(container) {
+    if (!container) return;
+    const ov = container.querySelector('.skel-overlay');
+    if (ov) { ov.remove(); }
+  }
+  // Skeleton around an async load: show → await → hide. Reused by manual
+  // refresh buttons and module re-activation when the panel is empty, so the
+  // shimmer is identical to the boot skeleton (transform-only, Emil <300ms).
+  function skelRefresh(container, kind, p) {
+    if (!container) return Promise.resolve(p);
+    skelShow(container, kind);
+    return Promise.resolve(p).then(
+      function (v) { skelHide(container); return v; },
+      function (e) { skelHide(container); throw e; }
+    );
+  }
+  function showSkeletons() {
+    document.querySelectorAll('.panel').forEach(p => _skelBuild(p, ''));
+    // KPI row is the most prominent loading surface — give it KPI-shaped
+    // blocks too (review fix: the kpi branch was previously dead code).
+    document.querySelectorAll('#kpi-row').forEach(k => _skelBuild(k, 'kpi'));
+  }
+  function hideSkeletons() {
+    document.querySelectorAll('.skel-overlay').forEach(o => o.remove());
+    _skeletonsHidden = true;
+  }
+
+  // ── Button loading state ──
+  function setBtnLoading(btn, on) {
+    if (!btn) return;
+    btn.classList.toggle('is-loading', on);
+    btn.disabled = on;
+  }
+
+  // ── Modal exit (Jakub: exit subtler than enter) ──
+  // Add .modal--closing, wait for the 120ms fade, then drop .modal--open.
+  // Pending close timers are tracked per-modal so a rapid reopen cancels the
+  // exit (review fix: close → reopen within 140ms must not force-close).
+  const _modalCloseTimers = new Map();
+  function closeModalAnimated(modal) {
+    if (!modal || !modal.classList.contains('modal--open')) return;
+    if (_modalCloseTimers.has(modal)) return;
+    const reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    modal.classList.add('modal--closing');
+    const timer = setTimeout(function () {
+      _modalCloseTimers.delete(modal);
+      modal.classList.remove('modal--closing');
+      modal.classList.remove('modal--open');
+    }, reduce ? 0 : 140);
+    _modalCloseTimers.set(modal, timer);
+  }
+  // Open helper: cancels any pending close + clears the exit class so a modal
+  // reopened mid-exit animates in (not out). Pure add otherwise.
+  function openModalAnimated(modal) {
+    if (!modal) return;
+    const t = _modalCloseTimers.get(modal);
+    if (t) { clearTimeout(t); _modalCloseTimers.delete(modal); }
+    modal.classList.remove('modal--closing');
+    modal.classList.add('modal--open');
+  }
+
+  // ══════════════════════════════════════════════════════════════════════
+  // RENDER FUNCTIONS
+  // ══════════════════════════════════════════════════════════════════════
+
+  // → domínio Dashboard/render() extraído para `static/src/39b-dashboard.js` (RFC 478, Issue 561)
+
+  // → domínio Dashboard/render() extraído para `static/src/39b-dashboard.js` (RFC 478, Issue 561)
+
+  // → domínio Automations/Alerts/Auto-Pilot/Decision Matrix extraído para `static/src/41-automations.js` (RFC 478, Issue 540)
+
+  function applyLiveMetrics(live) {
+    const patch = liveMetricsPatch(live);
+    const hr = document.getElementById('tbar-hr');
+    if (hr) hr.textContent = patch.hashrateText;
+    const temp = document.getElementById('tbar-temp');
+    if (temp) temp.textContent = patch.tempText;
+    if (dom.mHashrate) dom.mHashrate.textContent = patch.hashrateText;
+    if (dom.hudHashrate) dom.hudHashrate.textContent = patch.hashrateText;
+    if (dom.pHashrate) dom.pHashrate.textContent = patch.poolHashrateText;
+    renderSnapshotFreshness({ ts: live && live.ts });
+  }
+
+  // → domínio Dashboard/render() extraído para `static/src/39b-dashboard.js` (RFC 478, Issue 561)
 
   // → domínio Terminal/SSE extraído para `static/src/39-terminal.js` (RFC 478, Issue 529)
 
@@ -4741,366 +5244,7 @@ function renderPool(pool, luck) {
     });
   }
 
-  // ── Main render ──
-  let prevSnapshot = null;
-  function render(snap) {
-    if (!_skeletonsHidden) hideSkeletons();
-    // Sync window.BTC_ADDRESS from snapshot so modal and other components stay consistent
-    window.BTC_ADDRESS = snap.btc_address || window.BTC_ADDRESS || '';
-    toggleWalletCTA();
-    renderHUD(snap);
-    renderStatusBar(snap);
-    renderSnapshotFreshness(snap);
-    renderOperationalOverview(snap, _operationalFleetData, _operationalFleetError);
-    // P0-4 fix: an empty shortAddr('') collapses the topbar span to a
-    // zero-width box (Playwright/flex reports it hidden on wallet-less
-    // boots). Keep the '—' placeholder (same convention as #sb-wallet-addr)
-    // so the element always has a real box.
-    if (dom.topbarAddress) dom.topbarAddress.textContent = `${fmt.shortAddr(snap.btc_address || window.BTC_ADDRESS || '') || '—'}`;
-    if (dom.statusText) {
-      dom.statusText.textContent = snap.worker ? (snap.worker.hashrate ? 'ONLINE' : 'IDLE') : 'OFFLINE';
-    }
-    if (dom.statusPill) {
-      dom.statusPill.classList.toggle('is-online', !!(snap.worker && snap.worker.hashrate));
-      dom.statusPill.classList.toggle('is-idle', !!(snap.worker && !snap.worker.hashrate));
-    }
-    renderHero(snap);
-    renderHostCore(snap);
-    renderPool(snap.pool, snap.luck_estimate);
-    renderMinersXRay(snap);
-    renderNetwork(snap.network);
-    renderAccount(snap.account);
-    renderBtcPrices(snap.btc_price);
-    renderHalving(snap.halving);
-    renderMempoolFees(snap.mempool_fees);
-    renderProfitability(snap.profitability);
-    renderDecisionMatrix(snap.profitability);
-    renderComparison(snap);
-    renderSoloStats(snap.proximity);
-    renderProximity(snap.proximity);
-    renderQuantumLock(snap.proximity);
-    renderLiveCalc(snap.proximity);
-    renderNetworkGauge(snap);
-    renderMilestones(snap.milestones);
-    renderAlerts(snap.alerts_recent);
-    renderEvents(snap.highest_diffs);
-    resetLeaderboardFromSnapshot(snap);
-    applyLiveMetrics(liveMetricsFromSnapshot(snap));
-    if (typeof updateSidebarStatus === 'function') {
-      updateSidebarStatus(!!snap.worker);
-    }
-    renderTimelineFeed(snap.timeline_recent || snap.timeline_last_n);
-    renderTerminalEvents(snap.timeline_last_n || snap.timeline_recent);
-    renderTimelineStats(snap);
-    renderBlockHunt(snap);
-    renderCommandCenter(snap);
-    renderMarket(snap);
-    renderAiOperator(snap);
-    renderFleetCommandCenter(snap);
-    renderWalletIdentity(snap);
-    _lmSetConn(snap);
-    renderCharts();
-    prevSnapshot = snap;
-  }
-
-  // ══════════════════════════════════════════════════════════════════════
-  // CHARTS
-  // ══════════════════════════════════════════════════════════════════════
-  const charts = {};
-  // ══════════════════════════════════════════════════════════════════════
-  //  FASE 2.1 — PROFESSIONAL CHARTS
-  //  moving averages · bar+line overlays · zoom/pan · event annotations
-  //  Pure helpers below are mirrored in tests/test_app_js_core.js.
-  // ══════════════════════════════════════════════════════════════════════
-
-  // Simple moving average (window in points). Mirrors numpy-rolling mean so
-  // the SMA line starts at the first point (partial window at the head).
-  function computeSMA(values, windowSize) {
-    if (!Array.isArray(values) || !values.length) return [];
-    windowSize = Math.max(1, Math.floor(Number(windowSize) || 7));
-    const out = [];
-    let sum = 0;
-    for (let i = 0; i < values.length; i++) {
-      sum += Number(values[i]) || 0;
-      if (i >= windowSize) sum -= Number(values[i - windowSize]) || 0;
-      const n = Math.min(i + 1, windowSize);
-      out.push(Number((sum / n).toFixed(2)));
-    }
-    return out;
-  }
-
-  // Map persisted timeline events (ts in seconds) to the nearest label index
-  // so the annotation plugin can draw vertical lines at the right x position
-  // (category axis — no time adapter needed, stays offline-friendly).
-  function buildChartAnnotations(events, labels) {
-    if (!Array.isArray(events) || !Array.isArray(labels) || !labels.length) return [];
-    const out = [];
-    events.forEach(ev => {
-      const ts = Number(ev.ts || 0) * 1000;
-      if (!ts) return;
-      let idx = 0, best = Infinity;
-      for (let i = 0; i < labels.length; i++) {
-        const d = Math.abs(Number(labels[i]) - ts);
-        if (d < best) { best = d; idx = i; }
-      }
-      out.push({
-        index: idx,
-        severity: ev.severity || 'INFO',
-        message: String(ev.message || ev.event_type || ''),
-      });
-    });
-    return out;
-  }
-
-  // ── Zero-dependency annotation plugin (inline, per-chart) ───────────
-  // Draws subtle vertical dashed lines at event positions. Bumps/alerts are
-  // critical (red), share finds are neutral (amber). Driven by
-  // chart._annotations = buildChartAnnotations(...) set on each load.
-  const chartEventAnnotationsPlugin = {
-    id: 'cypher65EventAnnotations',
-    afterDraw(chart) {
-      const anns = chart._annotations || [];
-      if (!anns.length) return;
-      const xScale = chart.scales.x;
-      const area = chart.chartArea;
-      if (!xScale || !area) return;
-      const ctx = chart.ctx;
-      ctx.save();
-      anns.forEach(a => {
-        const x = xScale.getPixelForValue(a.index);
-        if (x < area.left || x > area.right) return;
-        // P0-1: network target difficulty reference line (solid purple).
-        if (a.target) {
-          ctx.strokeStyle = 'rgba(168,85,247,0.9)';
-          ctx.lineWidth = 1.5;
-          ctx.setLineDash([]);
-          ctx.beginPath(); ctx.moveTo(x, area.top); ctx.lineTo(x, area.bottom); ctx.stroke();
-          return;
-        }
-        const critical = a.severity === 'CRIT' || a.severity === 'GOLD';
-        ctx.strokeStyle = critical ? 'rgba(255,94,94,0.55)' : 'rgba(255,196,0,0.30)';
-        ctx.lineWidth = 1;
-        ctx.setLineDash([4, 3]);
-        ctx.beginPath(); ctx.moveTo(x, area.top); ctx.lineTo(x, area.bottom); ctx.stroke();
-        ctx.setLineDash([]);
-      });
-      ctx.restore();
-    },
-  };
-
-  // Pure zoom-range clamp for the category axis (x min/max are POINT INDICES,
-  // not timestamps). Expressed in point counts so it works on any dataset size.
-  // Mirrored in tests/test_app_js_core.js.
-  function clampZoomRange(currentRange, factor, minPoints, maxPoints) {
-    const next = currentRange * factor;
-    const upper = Math.max(minPoints, maxPoints);
-    return Math.max(minPoints, Math.min(next, upper));
-  }
-
-  // ── Lightweight zoom/pan (wheel zoom + drag pan + dblclick reset) ───
-  // Implemented against Chart.js scale min/max directly — no CDN plugin, so
-  // the self-hosted dashboard keeps working fully offline.
-  // IMPORTANT: the x scale is CATEGORY (labels are HH:mm strings), so min/max
-  // are point indices — zoom bounds are clamped in POINT COUNTS (min 5 points,
-  // max = full label count), never wall-clock ms.
-  // Drag uses Pointer Capture bound to the canvas only — no window listeners,
-  // so re-initializing charts can never leak handlers.
-  function _attachChartZoom(chart) {
-    const canvas = chart.canvas;
-    if (!canvas) return;
-    const MIN_POINTS = 5;
-    const maxPoints = () => Math.max(MIN_POINTS, (chart.data.labels || []).length);
-    const resetZoom = () => {
-      delete chart.options.scales.x.min;
-      delete chart.options.scales.x.max;
-      chart.update('none');
-    };
-    canvas.addEventListener('wheel', e => {
-      e.preventDefault();
-      const xs = chart.scales.x;
-      if (!xs) return;
-      const range = xs.max - xs.min;
-      if (!range) return;
-      const cursor = (e.offsetX / canvas.clientWidth);
-      const anchor = xs.min + range * cursor;
-      const factor = e.deltaY > 0 ? 1.2 : 0.8333;
-      const newRange = clampZoomRange(range, factor, MIN_POINTS, maxPoints());
-      const newMin = anchor - newRange * cursor;
-      chart.options.scales.x.min = newMin;
-      chart.options.scales.x.max = newMin + newRange;
-      chart.update('none');
-    }, { passive: false });
-    let drag = null;
-    canvas.addEventListener('pointerdown', e => {
-      if (e.button !== 0) return;
-      const xs = chart.scales.x;
-      if (!xs) return;
-      drag = { startX: e.clientX, startMin: xs.min };
-      try { canvas.setPointerCapture(e.pointerId); } catch (err) { /* ignore */ }
-      canvas.style.cursor = 'grabbing';
-    });
-    canvas.addEventListener('pointermove', e => {
-      if (!drag) return;
-      const xs = chart.scales.x;
-      if (!xs || !(xs.max - xs.min)) return;
-      const dx = (e.clientX - drag.startX) / canvas.clientWidth * (xs.max - xs.min);
-      const newMin = drag.startMin - dx;
-      chart.options.scales.x.min = newMin;
-      chart.options.scales.x.max = newMin + (xs.max - xs.min);
-      chart.update('none');
-    });
-    canvas.addEventListener('pointerup', () => {
-      drag = null;
-      canvas.style.cursor = '';
-    });
-    canvas.addEventListener('pointercancel', () => {
-      drag = null;
-      canvas.style.cursor = '';
-    });
-    canvas.addEventListener('dblclick', resetZoom);
-    canvas.title = 'scroll to zoom · drag to pan · double-click to reset';
-  }
-
-  function makeChart(id, label, color) {
-    const canvas = document.getElementById(id);
-    if (!canvas) return null;
-    // Issue #186: defensivo — app.js roda com defer após o Chart.js, mas se o
-    // CDN falhar (offline/blocked) o boot não pode crashar. Null é tratado
-    // pelos call sites (mesma convenção do canvas ausente).
-    if (typeof Chart === 'undefined') return null;
-    const ctx = canvas.getContext('2d');
-    const cfg = CHART_METRICS[id];
-    // Human-readable Y ticks: hashrate/pool render fmt.hashrate (TH/s), best
-    // diff/net render fmt.diff — raw 4.7e12 / 1.26e14 labels were unreadable.
-    const isHrAxis = cfg && (cfg.chart === 'hashrate' || cfg.chart === 'pool');
-    const isDiffAxis = cfg && (cfg.chart === 'bestdiff' || cfg.chart === 'net');
-    const yTickCb = isHrAxis ? (v) => fmt.hashrate(v) : isDiffAxis ? (v) => fmt.diff(v) : undefined;
-    // P0-5 audit: the share-difficulty histogram was rendered as a line chart
-    // with pointRadius 0 + fill alpha 0.1 — with a handful of shares the
-    // series was effectively invisible ("empty graph" despite 13+ shares).
-    // Histograms belong on bars: one visible column per difficulty bucket.
-    const isHistogram = cfg && cfg.chart === 'share_dist';
-    const datasets = [
-      isHistogram
-        ? { label, data: [], borderColor: color, backgroundColor: color.replace(')', ',0.55)').replace('rgb','rgba'), borderWidth: 1, maxBarThickness: 34 }
-        : { label, data: [], borderColor: color, backgroundColor: color.replace(')', ',0.1)').replace('rgb','rgba'), fill: true, tension: 0.4, pointRadius: 0 },
-    ];
-    // Fase 2.1: moving-average overlay (dashed, no fill) on time series
-    if (!isHistogram) {
-      datasets.push({ label: label + ' · SMA', data: [], borderColor: 'rgba(234,234,235,0.55)', backgroundColor: 'transparent', borderDash: [5, 3], fill: false, tension: 0.4, pointRadius: 0, borderWidth: 1.5 });
-    }
-    // Fase 2.1: share-volume bar overlay (2nd y-axis, right) on hashrate
-    if (cfg && cfg.chart === 'hashrate') {
-      datasets.push({ type: 'bar', label: 'Shares/min', data: [], yAxisID: 'y1', backgroundColor: 'rgba(6,214,240,0.14)', borderColor: 'rgba(6,214,240,0.35)', borderWidth: 1, order: 3 });
-    }
-    const chart = new Chart(ctx, {
-      type: isHistogram ? 'bar' : 'line',
-      data: { labels: [], datasets },
-      options: {
-        responsive: true,
-        maintainAspectRatio: false,
-        interaction: { mode: 'index', intersect: false },
-        scales: {
-          x: { ticks: { color: cssVar('--text-tertiary'), maxTicksLimit: 8, font: { family: 'JetBrains Mono, monospace', size: 10 } }, grid: { color: 'rgba(94,89,82,0.14)' } },
-          y: { ticks: { color: cssVar('--text-tertiary'), font: { family: 'JetBrains Mono, monospace', size: 10 }, ...(yTickCb ? { callback: yTickCb } : {}) }, grid: { color: 'rgba(94,89,82,0.14)' } },
-          y1: { position: 'right', display: false, grid: { drawOnChartArea: false }, ticks: { color: cssVar('--brand'), font: { family: 'JetBrains Mono, monospace', size: 10 } } },
-        },
-        plugins: {
-          legend: { display: false },
-          tooltip: {
-            backgroundColor: 'rgba(17,18,20,0.94)',
-            borderColor: 'rgba(255,255,255,0.08)',
-            borderWidth: 1,
-            titleColor: cssVar('--text-primary'),
-            bodyColor: cssVar('--text-secondary'),
-            padding: 10,
-            boxPadding: 4,
-            usePointStyle: true,
-            font: { family: 'JetBrains Mono, monospace', size: 11 },
-          },
-        },
-      },
-      plugins: [chartEventAnnotationsPlugin],
-    });
-    if (!isHistogram) _attachChartZoom(chart);
-    return chart;
-  }
-
-  async function loadChart(id, metric, range) {
-    try {
-      _chartRange[id] = range || '1h'; // persist the toolbar choice across refreshes
-      const r = await fetch(`/api/chart-data?chart=${metric}&range=${range}`);
-      if (r.status === 402) { await handleLicenseRequired(r); _chartRange[id] = '1h'; const _tb = document.getElementById('share-dist-target-badge'); if (_tb) _tb.textContent = 'target —'; return; }
-      if (!r.ok) return;
-      const data = await r.json();
-      const chart = charts[id];
-      if (!chart) return;
-      const cfg = CHART_METRICS[id] || {};
-      const rawLabels = (data.labels || []);
-      const values = (data.datasets?.[0]?.data || data.datasets?.[0]?.values || []);
-      chart.data.labels = rawLabels.map(t => _fmtChartLabel(t, cfg, id));
-      chart.data.datasets[0].data = values;
-      _updateShareDistBadge(cfg, data, values);
-      // Fase 2.1: SMA overlay + shares bar + event annotations
-      if (chart.data.datasets[1] && cfg.chart !== 'share_dist') {
-        chart.data.datasets[1].data = computeSMA(values, Math.max(3, Math.round(values.length / 10)));
-      }
-      if (chart.data.datasets[2] && Array.isArray(data.shares)) {
-        chart.data.datasets[2].data = data.shares;
-        chart.options.scales.y1.display = data.shares.some(s => s > 0);
-      }
-      chart._annotations = buildChartAnnotations(data.events || [], rawLabels);
-      _applyShareDistTarget(cfg, data, chart);
-      chart.update('none');
-    } catch (e) { /* chart load silently */ }
-  }
-
-  function initCharts() {
-    charts['chart-hashrate'] = makeChart('chart-hashrate', 'Hashrate', 'rgb(247,147,26)');
-    charts['chart-pool'] = makeChart('chart-pool', 'Pool HR', 'rgb(6,214,240)');
-    charts['chart-bestdiff'] = makeChart('chart-bestdiff', 'Best Diff', 'rgb(16,185,129)');
-    charts['chart-net'] = makeChart('chart-net', 'Net Diff', 'rgb(139,92,246)');
-    charts['chart-cumulative-p'] = makeChart('chart-cumulative-p', 'Cum P(Block)', 'rgb(139,92,246)');
-    charts['chart-share-dist'] = makeChart('chart-share-dist', 'Share Dist', 'rgb(16,185,129)');
-  }
-
-  // Fase 2.1: clear any manual zoom/pan state so the chart renders the full
-  // window again (used when switching ranges or pressing the ⟲ button).
-  // Only re-renders when zoom state actually existed (cheap no-op otherwise).
-  function _resetChartZoom(chart) {
-    if (!chart || !chart.options || !chart.options.scales || !chart.options.scales.x) return;
-    const hadZoom = chart.options.scales.x.min !== undefined || chart.options.scales.x.max !== undefined;
-    delete chart.options.scales.x.min;
-    delete chart.options.scales.x.max;
-    if (hadZoom) chart.update('none');
-  }
-
-  function bindChartRanges() {
-    document.querySelectorAll('.chart-range').forEach(row => {
-      const target = row.dataset.target;
-      // Only real range chips carry data-range; the ⟲ reset button (data-zoom-reset)
-      // is bound separately below so it is never treated as a range.
-      row.querySelectorAll('button[data-range]').forEach(btn => {
-        btn.addEventListener('click', () => {
-          row.querySelectorAll('button[data-range]').forEach(b => b.classList.remove('active'));
-          btn.classList.add('active');
-          // Fase 2.2: use the BACKEND chart names (hashrate|pool|bestdiff|net).
-          // Passing DB column names (worker_hashrate etc.) made every range
-          // click fetch an unknown chart and render the panel blank.
-          const metricMap = { 'chart-hashrate': 'hashrate', 'chart-pool': 'pool', 'chart-bestdiff': 'bestdiff', 'chart-net': 'net' };
-          // Switching ranges resets any manual zoom/pan from the old window.
-          _resetChartZoom(charts[target]);
-          loadChart(target, metricMap[target] || target.replace('chart-',''), btn.dataset.range);
-        });
-      });
-    });
-    // Fase 2.1: explicit ⟲ reset-zoom buttons in each chart toolbar.
-    document.querySelectorAll('[data-zoom-reset]').forEach(btn => {
-      btn.addEventListener('click', () => {
-        _resetChartZoom(charts[btn.dataset.zoomReset]);
-      });
-    });
-  }
+  // → domínio Dashboard/render() extraído para `static/src/39b-dashboard.js` (RFC 478, Issue 561)
 
   // ── Settings ──
   const SETTINGS_CACHE = { data: null };
@@ -5408,58 +5552,7 @@ function renderPool(pool, luck) {
 
   // → domínio Terminal/SSE extraído para `static/src/39-terminal.js` (RFC 478, Issue 529)
 
-  // Latest dashboard snapshot received via polling/SSE. Terminal commands
-  // (status/workers/price) read this instead of fetching /api/snapshot,
-  // which internally triggers external hashrate-market offers and can take
-  // >1s — the E2E terminal tests only wait 1000ms after Enter.
-  let _lastSnapshot = null;
-
-  // → domínio Terminal/SSE extraído para `static/src/39-terminal.js` (RFC 478, Issue 529)
-
-// ══════════════════════════════════════════════════════════════════════
-  // POLLING
-  // ══════════════════════════════════════════════════════════════════════
-
-
-
-  function updateNextPoll() {
-    nextPollAt = Date.now() + POLL_MS;
-    if (dom.nextPoll) dom.nextPoll.textContent = `${Math.ceil(POLL_MS/1000)}s`;
-  }
-
-  // ── Clock ──
-  function updateClock() {
-    if (dom.clock) dom.clock.textContent = new Date().toLocaleTimeString();
-  }
-
-  // ── Snapshot fetch dedup ──
-  // Guards against concurrent /api/snapshot fetches (e.g. rapid market-module
-  // activations each firing fetchSnapshot) so render() never runs twice in
-  // parallel with two different snapshots. The poll loop and manual refreshes
-  // both go through fetchSnapshot, so this keeps a single in-flight fetch.
-  let _snapshotFetching = false;
-  async function fetchSnapshot() {
-    if (_snapshotFetching) return;
-    _snapshotFetching = true;
-    try {
-      const r = await fetch('/api/snapshot');
-      if (!r.ok) throw new Error('snapshot failed');
-      const snap = await r.json();
-      _lastSnapshot = snap;
-      render(snap);
-      fetchAxeFleet();
-      updateNextPoll();
-    } catch (e) {
-      // Sev-1 (UI audit 2026-08): a failed first fetch must NEVER leave the
-      // boot skeletons stuck — the old code only logged, so a fetch failure
-      // (network, rate limit on mobile) froze the whole dashboard in a
-      // skeleton overlay with the status bar stuck at INIT. Hide on EVERY
-      // outcome; the panels then show their honest empty/error state.
-      hideSkeletons();
-      logMessage('ERROR', e.message, 'WARN');
-    }
-    finally { _snapshotFetching = false; }
-  }
+  // → domínio Dashboard/render() extraído para `static/src/39b-dashboard.js` (RFC 478, Issue 561)
 
   // ── Boot ──
   async function boot() {
@@ -6236,6 +6329,7 @@ function renderPool(pool, luck) {
     // close at the very END of the file. Previously a stray `})();` here closed
     // the IIFE early, pushing renderKpiCards() and everything below into GLOBAL
     // scope where `dom` (a const inside the IIFE) does not exist — every render
+    // (o `renderKpiCards()` citado abaixo mora hoje no `39b-dashboard.js`)
     // threw "ReferenceError: dom is not defined" (throttled to ~5/min in the
     // LIVE LOG). The IIFE now continues to the file's last line.
 
@@ -6641,35 +6735,13 @@ function renderPool(pool, luck) {
     toggle.classList.toggle('collapsed');
   });
 
-  // ── KPI Cards render ──
-  function renderKpiCards(snap) {
-    if (!snap) return;
-    var w = snap.worker || {};
-    var pool = snap.pool || {};
-    var prox = snap.proximity || {};
-    var workers = snap.all_workers || [];
-
-    if (dom.kpiHashrate) dom.kpiHashrate.textContent = fmt.hashrate(w.hashrate);
-    if (dom.kpiBestdiff) dom.kpiBestdiff.textContent = fmt.diff(w.bestDifficulty || w.best_diff);
-    if (dom.kpiPoolhr) dom.kpiPoolhr.textContent = fmt.hashrate(pool.hashrate);
-
-    // Share rate — from active workers or timeline
-    if (dom.kpiShares) {
-      var sharesCount = prox.live_calc?.session_totals?.shares_so_far || 0;
-      var shareRate = prox.share_rate_hourly || 0;
-      if (shareRate > 0) {
-        dom.kpiShares.textContent = shareRate.toFixed(0) + '/h';
-      } else if (sharesCount > 0) {
-        dom.kpiShares.textContent = sharesCount + ' total';
-      } else {
-        dom.kpiShares.textContent = '\u2014';
-      }
-    }
-  }
+  // → domínio Dashboard/render() extraído para `static/src/39b-dashboard.js` (RFC 478, Issue 561)
 
   // ── Close the main IIFE (opened at the top of the file) ──
-  // The renderKpiCards() helper and every handler above live INSIDE this scope
-  // so `dom`, `fmt`, etc. resolve correctly. Do not add code after this line.
+  // Every handler above lives INSIDE this scope so `dom`, `fmt`, etc. resolve
+  // correctly. Do not add code after this line. (O `renderKpiCards()` — citado
+  // aqui até o PR 9 — saiu para `static/src/39b-dashboard.js` no PR 10, RFC 478
+  // · Issue 561.)
   // ══════════════════════════════════════════════════════════════════════
   // Automations / Alerts / Auto-Pilot / Decision Matrix
   // — domínio extraído de `40-app-logic.js` (RFC 478 · PR 6 · Issue 540)
@@ -6717,14 +6789,15 @@ function renderPool(pool, luck) {
   //   · `restoreActiveModule` (IIFE de topo) → `activateModule` →
   //     `_doActivateModule` foi varrido: não chama nenhum símbolo movido.
   //   · a direção inversa é segura por construção: 41 é avaliado depois do
-  //     40, então todo `const`/`let` do god file (incl. `_lastSnapshot`) já
+  //     39b e do 40, então todo `const`/`let` do god file (incl.
+  //     `_lastSnapshot`, hoje no `39b-dashboard.js` — PR 10 · Issue 561) já
   //     está inicializado.
   //
-  // Estado compartilhado que NÃO viajou: `_lastSnapshot` (poll/SSE escrevem;
-  // terminais e AXE Fleet leem) e o estado do Fleet Command Center
+  // Estado compartilhado que NÃO viajou: o do Fleet Command Center
   // (`_ccLastFleet`/`_ccView`/`_ccHrSeries`/`_ccHrHist`/`_ccShareSeen`, que o
-  // `boot()` toca de forma síncrona antes de o 48 existir) — permanecem no
-  // `40-app-logic.js`.
+  // `boot()` toca de forma síncrona antes de o 48 existir) — permanece no
+  // `40-app-logic.js`. O `_lastSnapshot` que este arquivo citava saiu para o
+  // `39b-dashboard.js` no PR 10, sem mudar a conclusão acima (39b < 41).
 
   // ↳ R7 — feeds de alertas/eventos do dashboard + painel de conta
 
