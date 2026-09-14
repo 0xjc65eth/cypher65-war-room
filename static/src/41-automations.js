@@ -45,14 +45,15 @@
   //   · `restoreActiveModule` (IIFE de topo) → `activateModule` →
   //     `_doActivateModule` foi varrido: não chama nenhum símbolo movido.
   //   · a direção inversa é segura por construção: 41 é avaliado depois do
-  //     40, então todo `const`/`let` do god file (incl. `_lastSnapshot`) já
+  //     39b e do 40, então todo `const`/`let` do god file (incl.
+  //     `_lastSnapshot`, hoje no `39b-dashboard.js` — PR 10 · Issue 561) já
   //     está inicializado.
   //
-  // Estado compartilhado que NÃO viajou: `_lastSnapshot` (poll/SSE escrevem;
-  // terminais e AXE Fleet leem) e o estado do Fleet Command Center
+  // Estado compartilhado que NÃO viajou: o do Fleet Command Center
   // (`_ccLastFleet`/`_ccView`/`_ccHrSeries`/`_ccHrHist`/`_ccShareSeen`, que o
-  // `boot()` toca de forma síncrona antes de o 48 existir) — permanecem no
-  // `40-app-logic.js`.
+  // `boot()` toca de forma síncrona antes de o 48 existir) — permanece no
+  // `40-app-logic.js`. O `_lastSnapshot` que este arquivo citava saiu para o
+  // `39b-dashboard.js` no PR 10, sem mudar a conclusão acima (39b < 41).
 
   // ↳ R7 — feeds de alertas/eventos do dashboard + painel de conta
 

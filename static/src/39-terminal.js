@@ -31,7 +31,9 @@
   //
   // Estado que NÃO veio junto, de propósito:
   //   · `_lastSnapshot` — global compartilhado (poll/SSE escrevem; AXE Fleet e o
-  //     próprio snapshot leem); ficou em `40-app-logic.js`.
+  //     próprio snapshot leem); ficou em `40-app-logic.js` até o PR 10
+  //     (RFC 478 · Issue 561), quando foi com o resto do domínio de poll para o
+  //     `39b-dashboard.js` — que também é avaliado ANTES deste fragmento.
   //   · `_ccLastFleet`/`_ccView`/`_ccHrSeries`/`_ccHrHist`/`_ccShareSeen` —
   //     estado do FLEET COMMAND CENTER (`48-fleet-cc.js`), que morava no meio do
   //     bloco de estado daqui. Ficou em `40-app-logic.js` porque o `boot()` chama

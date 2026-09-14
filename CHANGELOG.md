@@ -6,6 +6,39 @@ e versionamento semântico ([SemVer](https://semver.org/lang/pt-BR/)).
 
 ## [Unreleased]
 
+### Alterado — extração do domínio Dashboard/render() para `static/src/39b-dashboard.js` (RFC #478 · PR 10, Issue #561)
+- O cluster **Dashboard / `render()`** saiu de `static/src/40-app-logic.js` para
+  `static/src/39b-dashboard.js` — **1.082 linhas movidas verbatim** em **6 recortes**
+  (R5 `209–504`, R6 `506–753`, R8 `769–869`, R18 `1364–1723`, R24 `2031–2082`,
+  R31 `3264–3288`): HUD/status bar/freshness + Operational Overview, painéis
+  (`renderWalletIdentity`, `renderHostCore`, `renderHero`, `renderMinersXRay`,
+  `renderPool`, `renderNetwork`), infraestrutura de gráficos (`CHART_METRICS`,
+  `makeChart`, `loadChart`, `initCharts`, `bindChartRanges`, …), o `render()`
+  principal, poll/relógio/snapshot (`fetchSnapshot`, `_snapshotFetching`) e
+  `renderKpiCards`. **40 declarações** (31 funções + 9 de estado),
+  **zero statements de topo** — o primeiro domínio extraído sem nenhum.
+- O god file vai de **3.292 → 2.219 linhas**; `static/app.js` (17 fragmentos) é
+  regenerado e fica em sincronia.
+- **Posicionamento — o fragmento entra ANTES do 40** (como `37`/`38`/`39`), porque o
+  prefixo síncrono do `boot()` chama `initCharts()` (lê/escreve `const charts`) e
+  `fetchSnapshot()` (lê/escreve `let _snapshotFetching`). **Prova A/B medida:** com o
+  fragmento depois do 40 o boot lança `Cannot access 'charts' before initialization`
+  (probe e2e, chromium + mobile-chrome); antes, 0 pageerrors.
+- **Prova de permutação:** o corpo do fragmento é um recorte contíguo e byte-idêntico
+  das 1.082 linhas removidas; as 11 linhas adicionadas ao god file são as 6 costuras
+  + 5 linhas de uma edição de doc (o comentário de fecho do IIFE, que citava
+  `renderKpiCards`). No bundle, toda diferença é comentário — nenhuma linha executável
+  criada, perdida ou alterada.
+- **Prova de mutação:** desligar o ramo `CRITICAL` de `buildOperationalOverviewModel`
+  derruba `operational-overview.spec.js` (**2 falhas**). **Honestidade:** duas mutações
+  **sobreviveram** e ficam registradas — a asserção de `#kpi-hashrate` em
+  `dashboard.spec.js` é condicional a um worker conectado, e `renderOperationalOverview`
+  também é chamado pelo `49-axe-fleet.js`, de modo que o spec é alimentado por esse
+  caminho (não pelo `render()`).
+- **Verde:** JS core 1.435 · pytest 3.366 · `check:frontend` completo · e2e **82 testes**
+  (dashboard 58 + operational-overview/live-metrics-pagination/probability-whatif/
+  wallet-identity/market-affiliate 24).
+
 ### Alterado — guarda do service worker vira infra compartilhada dos e2e que mockam `/api/*` (RFC #478, Issue #562)
 - O PR #550 registrou que o **service worker** (e não o guard `hasData`) era a causa
   raiz do spec do Block Hunt falhar — e que **qualquer** e2e que mocke `/api/*`
