@@ -25,6 +25,7 @@
  */
 
 import { test, expect } from '@playwright/test';
+import { denyServiceWorker } from './support/sw-guard.js';
 
 const BASE_URL = process.env.BASE_URL || 'http://127.0.0.1:8765';
 
@@ -170,6 +171,10 @@ async function expectAuthToggle(page, label) {
 test.describe('CYPHER65 — Tenant Login (Fase 4 · B1-frontend)', () => {
 
   test.beforeEach(async ({ page }) => {
+    // Deny the service worker before goto: without it the SW answers `/api/*`
+    // from the real server (page.route can't see SW-originated fetches) and the
+    // mocks below are silently discarded — see support/sw-guard.js (RFC #478).
+    await denyServiceWorker(page);
     await mockFleetEndpoints(page); // before goto, so boot requests are intercepted
     // waitUntil 'domcontentloaded': #app-shell is static HTML present at
     // DOMContentLoaded — no need to wait for external CDN resources (Google
