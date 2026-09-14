@@ -19,6 +19,7 @@
  */
 
 import { test, expect } from '@playwright/test';
+import { denyServiceWorker } from './support/sw-guard.js';
 
 test.describe('Probability WHAT-IF difficulty slider — regression', () => {
 
@@ -68,20 +69,10 @@ test.describe('Probability WHAT-IF difficulty slider — regression', () => {
   };
 
   async function forceBlockHuntData(page) {
-    // O boot REGISTRA um service worker; quando ele assume o controle o app faz
-    // `location.reload()` e, pior, o próprio SW responde `/api/snapshot` do
-    // cache — e `page.route` NÃO intercepta requests originados do SW. Sem
-    // desligar o SW o fixture abaixo é ignorado e o painel volta ao snapshot
-    // real (foi exatamente o que fazia este spec falhar). Negar o registro
-    // deixa a página sem SW: sem reload e com o poll interceptado como única
-    // fonte de dados.
-    await page.addInitScript(() => {
-      try {
-        if (navigator.serviceWorker) {
-          navigator.serviceWorker.register = () => Promise.reject(new Error('sw disabled in e2e'));
-        }
-      } catch (e) { /* ambiente sem serviceWorker — segue sem SW */ }
-    });
+    // O SW derrota o fixture abaixo (page.route não vê o fetch do SW, e o
+    // `controllerchange` recarrega a página) — a guarda canônica vive em
+    // support/sw-guard.js; ver RFC #478 / Issue #548 para a causa raiz.
+    await denyServiceWorker(page);
     await page.route('**/api/stream*', (route) => route.abort());
     await page.route('**/api/snapshot*', async (route) => {
       const response = await route.fetch();

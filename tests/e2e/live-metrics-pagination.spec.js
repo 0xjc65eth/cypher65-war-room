@@ -1,6 +1,16 @@
 import { test, expect } from '@playwright/test';
+import { denyServiceWorker } from './support/sw-guard.js';
 
 test.describe('live metrics patch + leaderboard pagination (Issue #539)', () => {
+
+  // The leaderboard test patches `window.fetch` to serve `/api/snapshot` and
+  // `/api/leaderboard`; deny the SW so that patch — not the SW's network-first
+  // fetch — is the only data source, and no `controllerchange` reload races the
+  // captured in-page state. See support/sw-guard.js (RFC #478).
+  test.beforeEach(async ({ page }) => {
+    await denyServiceWorker(page);
+  });
+
   test('SSE live event patches only high-frequency metrics without motion', async ({ page }) => {
     await page.addInitScript(() => {
       class FakeEventSource {

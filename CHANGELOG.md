@@ -6,6 +6,33 @@ e versionamento semântico ([SemVer](https://semver.org/lang/pt-BR/)).
 
 ## [Unreleased]
 
+### Alterado — guarda do service worker vira infra compartilhada dos e2e que mockam `/api/*` (RFC #478, Issue #562)
+- O PR #550 registrou que o **service worker** (e não o guard `hasData`) era a causa
+  raiz do spec do Block Hunt falhar — e que **qualquer** e2e que mocke `/api/*`
+  precisaria da mesma guarda. Esta mudança fecha a varredura:
+  - **`tests/e2e/support/sw-guard.js`** (novo) expõe `denyServiceWorker(page)`: a
+    guarda canônica em `page.addInitScript` (`navigator.serviceWorker.register → reject`),
+    com a causa raiz explicada num só lugar.
+  - Aplicada aos **2 specs que mockavam `/api/*` sem guarda alguma**: `auth.spec.js`
+    (5 `page.route` em `/api/auth/*` e `/api/axe-fleet/*`) e
+    `live-metrics-pagination.spec.js` (patch de `window.fetch` em `/api/snapshot` +
+    `/api/leaderboard`).
+  - `probability-whatif.spec.js` passou a usar o helper em vez da cópia inline.
+- **Não precisavam de mudança:** os outros **13** specs que mockam `/api/*` já
+  neutralizavam o SW via `test.use({ serviceWorkers: 'block' })` (nativo do Playwright,
+  equivalente à guarda); `market-affiliate.spec.js` já tinha guarda própria (stub de
+  `navigator.serviceWorker` no `addInitScript`); e `conversion-admin`,
+  `wallet-identity`, `pause-resume-agent` e `restart-agent` **não interceptam**
+  `/api/*` (só observam ou usam `page.request`, que não passa pelo SW).
+- **Prova medida (probe com/sem guarda, chromium + mobile-chrome):** sem a guarda a
+  página termina com `controller: true, registrations: 1, caches: ['cypher65-v12']`;
+  com a guarda, `controller: false, registrations: 0, caches: []`. Honestidade: hoje
+  os 2 specs corrigidos **passavam mesmo sem** a guarda — a mudança é **preventiva**
+  (remove o reload do `controllerchange` e o bypass do `page.route` pelo SW), não o
+  fix de uma falha observada.
+- Nenhum código de produção mudou (`static/app.js` em sincronia com `static/src/`);
+  `check:frontend` verde e os 3 specs afetados verdes em chromium + mobile-chrome.
+
 ### Alterado — harness JS carrega os helpers de auth do fragmento real (RFC #478, Issue #559)
 - O `tests/test_app_js_core.js` deixou de **espelhar** `authBuildHeaders`,
   `authIsExpired` e `authSessionValid`: agora carrega **o código real** de
