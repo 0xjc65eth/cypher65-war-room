@@ -86,7 +86,10 @@ e versionamento semântico ([SemVer](https://semver.org/lang/pt-BR/)).
 
 ### Alterado — extração do domínio Wallet + Support para `static/src/37-wallet-support.js` (RFC #478 · PR 9, Issue #551)
 - **A meta do RFC #478 foi atingida**: `static/src/40-app-logic.js` sai de **4.320**
-  para **3.288 linhas** (partiu de 7.706), abaixo da meta de ~4.000.
+  para **3.292 linhas** (partiu de 7.706), abaixo da meta de ~4.000. A projeção
+  publicada antes do merge era 3.288; as **4 linhas de diferença** são a costura
+  (2 linhas de comentário `// → … extraídos para static/src/37-wallet-support.js`
+  + 2 linhas em branco), contabilizadas na Issue #557 (PR #558).
 - **1.032 linhas movidas verbatim** em **2 blocos contíguos** para
   `static/src/37-wallet-support.js` (1.062 com cabeçalho):
   - **R3** `44–642` (599) — Wallet crypto: WebLN (`detectWebLN`/`connectWebLN`),
@@ -118,10 +121,29 @@ e versionamento semântico ([SemVer](https://semver.org/lang/pt-BR/)).
 - **Gates**: pytest 3366 · JS core 1406 · `check:frontend` completo · guards
   DOM · e2e `webln` 26, `upgrade-btc` 18, `wallet-identity` 2, `modals` 26,
   `dashboard` 58, `probability-whatif` 6.
-- **Achado de cobertura registrado (não resolvido aqui)**: o harness JS ainda
-  **espelha** `validateBitcoinAddress` e `QrPoly`, os dois recém-movidos para o
-  `37-wallet-support.js`. Mesmo padrão já corrigido no #515 (Market) e no #548
-  (Block Hunt) — follow-up explícito, fora do escopo deste PR.
+- **Achado de cobertura registrado pelo PR 9 — fechado depois na Issue #553
+  (PR #554)**: o harness JS ainda **espelhava** `validateBitcoinAddress` e
+  `QrPoly`, os dois recém-movidos para o `37-wallet-support.js`. Mesmo padrão já
+  corrigido no #515 (Market) e no #548 (Block Hunt); entrou como follow-up
+  explícito em vez de silêncio.
+
+### Alterado — harness JS carrega validação, identidade e QR do fragmento real (RFC #478, Issue #553)
+- O `tests/test_app_js_core.js` deixou de **espelhar** `validateBitcoinAddress`,
+  o núcleo QR (`buildQrMath`/`QrPoly`/`qrEncode`/`qrSvg`) e
+  `walletAddressParts`/`walletHealth`: agora carrega **o código real** de
+  `static/src/37-wallet-support.js` via `loadFragment(...)`, com um sandbox
+  mínimo que mantém listeners e requests de topo inertes (sem DOM, rede,
+  pagamento ou efeitos assíncronos).
+- **−441 / +35 linhas** no harness (437 linhas duplicadas removidas).
+- **Prova de mutação no fragmento real**: `validateBitcoinAddress` forçado a
+  rejeitar tudo → **7/16 falhas, exit 1**; `qrEncode` forçado a devolver matriz
+  vazia → **37 falhas, exit 1**. Ambos restaurados, fonte sem diff.
+- **Corrigido no caminho — fail-closed da suíte**: os blocos legados `[btc-valid]`
+  e `[chunk]` imprimiam `FAIL` mas **não incrementavam o contador global**, então
+  o processo terminava com **exit 0 mesmo com asserts quebrados**; ambos agora
+  delegam ao `assertEqual`.
+- JS core: **1.406 → 1.428** testes (`check:frontend` completo, axe 100/100).
+  Nenhuma mudança no fragmento de produção, wallet, QR, checkout ou UI.
 
 ### Corrigido — cobertura do Block Hunt: harness carrega o fonte e e2e tem fixture determinístico (RFC #478, Issue #548)
 - O PR 7 (#542) registrou duas lacunas de cobertura em vez de escondê-las. Esta
