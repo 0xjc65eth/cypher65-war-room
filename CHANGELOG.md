@@ -89,7 +89,7 @@ e versionamento semântico ([SemVer](https://semver.org/lang/pt-BR/)).
   para **3.292 linhas** (partiu de 7.706), abaixo da meta de ~4.000. A projeção
   publicada antes do merge era 3.288; as **4 linhas de diferença** são a costura
   (2 linhas de comentário `// → … extraídos para static/src/37-wallet-support.js`
-  + 2 linhas em branco), contabilizadas na Issue #557.
+  + 2 linhas em branco), contabilizadas na Issue #557 (PR #558).
 - **1.032 linhas movidas verbatim** em **2 blocos contíguos** para
   `static/src/37-wallet-support.js` (1.062 com cabeçalho):
   - **R3** `44–642` (599) — Wallet crypto: WebLN (`detectWebLN`/`connectWebLN`),
