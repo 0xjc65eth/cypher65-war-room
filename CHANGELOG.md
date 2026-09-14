@@ -6,6 +6,27 @@ e versionamento semântico ([SemVer](https://semver.org/lang/pt-BR/)).
 
 ## [Unreleased]
 
+### Alterado — harness JS carrega os helpers de auth do fragmento real (RFC #478, Issue #559)
+- O `tests/test_app_js_core.js` deixou de **espelhar** `authBuildHeaders`,
+  `authIsExpired` e `authSessionValid`: agora carrega **o código real** de
+  `static/src/38-billing-auth.js` via `loadFragment(...)`, com um sandbox
+  mínimo (`window` para o único statement de topo e um `localStorage` que é
+  o que o `licenseKey()` real consulta). As 18 asserções do espelho seguem
+  válidas contra o fonte; 7 foram adicionadas.
+- **O espelho havia divergido do fonte.** Ele ignorava `licenseKey()`, então a
+  asserção `'no token -> empty headers'` ("`authBuildHeaders(null) === {}`")
+  codificava o contrato **do espelho**: com licença PRO persistida em
+  `_cypher65_license`, o fonte real devolve `{ 'X-License-Key': … }`. O header
+  do tier PRO passa a ser testado de verdade (licença + token, licença sem
+  token, valor preservado sem trim, licença vazia ignorada e limpeza).
+- **Prova de mutação no fragmento real**: desligar o branch do `X-License-Key`
+  — que é exatamente o contrato do espelho antigo — derruba a suíte
+  (**3/1.435 falhas, exit 1**); zerar a margem de 30s do `authIsExpired` derruba
+  1. Ambos restaurados; o mutante do header **sobrevivia** antes desta mudança.
+- JS core: **1.428 → 1.435** testes. Nenhuma mudança de comportamento no
+  fragmento de produção (só o comentário de cabeçalho, que passa a apontar o
+  harness) e nenhuma mudança em auth, licença, checkout ou UI.
+
 ### Adicionado — SSE live-metrics, load-more do leaderboard, healthz de persistência (Issue #539)
 - `/api/stream` envia `{type:"live", ts, worker_hashrate, pool_hashrate,
   fleet_avg_temp}` em vez do snapshot inteiro. O cliente atualiza só
