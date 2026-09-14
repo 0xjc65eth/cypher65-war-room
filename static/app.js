@@ -1651,8 +1651,12 @@ dom.walletSave?.addEventListener('click', async () => {
   // Stores the JWT session in localStorage and attaches
   // `Authorization: Bearer <token>` to every /api/axe-fleet/* request so
   // the backend's require_tenant() isolates per tenant.
-  // Pure helpers below (authBuildHeaders/authIsExpired/authSessionValid)
-  // are mirrored in tests/test_app_js_core.js.
+  // Pure helpers below (authBuildHeaders/authIsExpired/authSessionValid) are
+  // NOT mirrored: tests/test_app_js_core.js loads them from THIS fragment via
+  // loadFragment() (Issue #559), como já faz para o Market (Issue #515), o
+  // Block Hunt (Issue #548) e a Wallet (Issue #553). O espelho havia divergido
+  // aqui: ele ignorava `licenseKey()`, então o header `X-License-Key` (tier
+  // PRO) não era coberto.
   const AUTH_SESSION_KEY = '_cypher65_auth_session';
 
   function authLoadSession() {

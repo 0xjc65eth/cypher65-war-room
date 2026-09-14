@@ -135,6 +135,34 @@ const qrSvg = _wallet.qrSvg;
 const walletAddressParts = _wallet.walletAddressParts;
 const walletHealth = _wallet.walletHealth;
 
+// ── FONTE REAL do domínio Billing/Auth (RFC 478 · PR 8 · Issue #545) ─────────
+// `authBuildHeaders`/`authIsExpired`/`authSessionValid` vivem em
+// `static/src/38-billing-auth.js`. Eram espelhos à mão aqui — e o espelho havia
+// DIVERGIDO do fonte: omitia a leitura de `licenseKey()`, então o header
+// `X-License-Key` (tier PRO) não era testado em lugar nenhum, e a asserção
+// `'no token -> empty headers'` codificava o contrato do espelho (com licença
+// persistida, o fonte devolve `{ 'X-License-Key': … }`, não `{}`).
+// O fragmento tem UM statement de topo (`window.openUpgradeModal = …`), daí o
+// `window` no sandbox; o `localStorage` mínimo é o que o `licenseKey()` real
+// consulta (chave `_cypher65_license`), e os testes o manipulam diretamente.
+const _authLicenseStore = {};
+const _authLocalStorage = {
+  getItem(key) {
+    return Object.prototype.hasOwnProperty.call(_authLicenseStore, key)
+      ? _authLicenseStore[key] : null;
+  },
+  setItem(key, value) { _authLicenseStore[key] = String(value); },
+  removeItem(key) { delete _authLicenseStore[key]; },
+};
+const _auth = loadFragment(
+  '38-billing-auth.js',
+  '{ authBuildHeaders, authIsExpired, authSessionValid }',
+  { window: {}, localStorage: _authLocalStorage }
+);
+const authBuildHeaders = _auth.authBuildHeaders;
+const authIsExpired = _auth.authIsExpired;
+const authSessionValid = _auth.authSessionValid;
+
 // ── Test counters ─────────────────────────────────────────────────────────
 let passed = 0;
 let failed = 0;
@@ -2588,26 +2616,20 @@ assertEqual('null class not exempt', isSidebarLinkExempt(null), false);
 
 
 // ═══════════════════════════════════════════════════════════════════════════
-//  TENANT AUTH HELPERS (mirrors static/app.js — Fase 4 · B1-frontend)
+//  TENANT AUTH HELPERS (fonte REAL: static/src/38-billing-auth.js — RFC 478 · #559)
 // ═══════════════════════════════════════════════════════════════════════════
-
-function authBuildHeaders(token) {
-  if (!token) return {};
-  return { 'Authorization': 'Bearer ' + token };
-}
-
-function authIsExpired(expiresAt, now) {
-  if (!expiresAt) return true;
-  now = now || Math.floor(Date.now() / 1000);
-  return now >= (Number(expiresAt) - 30); // 30s safety margin
-}
-
-function authSessionValid(session, now) {
-  if (!session || !session.access_token) return false;
-  return !authIsExpired(session.expires_at, now);
-}
+// Fase 4 · B1-frontend. Os 3 helpers eram espelhos à mão (e o de
+// `authBuildHeaders` havia divergido do fonte). Agora vêm do fragmento — o
+// MESMO código do navegador — pelas consts carregadas acima.
+//
+// As asserções originais do espelho seguem válidas contra o fonte: com o
+// `_cypher65_license` vazio, `authBuildHeaders` se comporta igual ao espelho.
+// O bloco final cobre o que o espelho NÃO conseguia expressar (o header
+// `X-License-Key` do tier PRO) e trava a divergência.
 
 (function testTenantAuthHelpers() {
+  // Pré-condição do bloco abaixo: nenhuma licença persistida.
+  assertEqual('precondition: no license stored', _authLicenseStore, {});
   // authBuildHeaders
   assertEqual('no token -> empty headers', authBuildHeaders(null), {});
   assertEqual('empty token -> empty headers', authBuildHeaders(''), {});
@@ -2636,6 +2658,31 @@ function authSessionValid(session, now) {
     authSessionValid({ access_token: 't', expires_at: 900 }, 1000), false);
   assertEqual('no expiry -> invalid',
     authSessionValid({ access_token: 't' }, 1000), false);
+
+  // ── X-License-Key (R1 · tier PRO) — o caminho que o espelho escondia ──────
+  // `authBuildHeaders` real anexa o header de licença SEMPRE que há chave
+  // persistida, mesmo sem token: é o contrato que a asserção
+  // 'no token -> empty headers' acima só não contradiz porque o storage está
+  // vazio. Com licença, o resultado deixa de ser `{}`.
+  _authLocalStorage.setItem('_cypher65_license', 'PRO-KEY-123');
+  assertEqual('license + token -> license and bearer headers',
+    authBuildHeaders('abc.def.ghi'),
+    { 'X-License-Key': 'PRO-KEY-123', 'Authorization': 'Bearer abc.def.ghi' });
+  assertEqual('license without token -> license header only (not empty)',
+    authBuildHeaders(null), { 'X-License-Key': 'PRO-KEY-123' });
+
+  _authLocalStorage.setItem('_cypher65_license', '  spaced-key  ');
+  assertEqual('license value preserved raw (not trimmed)',
+    authBuildHeaders(null), { 'X-License-Key': '  spaced-key  ' });
+
+  _authLocalStorage.setItem('_cypher65_license', '');
+  assertEqual('empty license string -> header omitted',
+    authBuildHeaders('t'), { 'Authorization': 'Bearer t' });
+
+  _authLocalStorage.removeItem('_cypher65_license');
+  assertEqual('cleared license -> back to empty headers', authBuildHeaders(null), {});
+  assertEqual('cleared license -> token-only headers',
+    authBuildHeaders('t'), { 'Authorization': 'Bearer t' });
 })();
 
 
