@@ -6,6 +6,47 @@ e versionamento semântico ([SemVer](https://semver.org/lang/pt-BR/)).
 
 ## [Unreleased]
 
+### Corrigido — scan/agente identificam mineradores com evidência de protocolo, não por porta (Issue #569)
+- **A causa dos "vários IPs diferentes com `port:80 braiins`":**
+  `services/lan_scanner.py` derivava o `firmware_hint` **só da porta TCP aberta**
+  (`8080 → bitaxe`, `80 → braiins_rest`, `80+4028 → braiins`, `4028 → cgminer`).
+  Qualquer host com :80 — roteador, NAS, impressora, TV — virava "braiins". Pior:
+  AxeOS/Bitaxe é **:80** (`axe_fleet/scanner.py BITAXE_PORT = 80`,
+  `agent/agent.py AXEOS_PORT = 80`), então um Bitaxe **real** era rotulado
+  `braiins_rest`. A string `braiins_reset` citada no relato **não existe** no
+  repositório nem no histórico (`git log -S` → vazio): é a leitura de
+  `braiins_rest` + `ports: 80` (e/ou do erro de conexão `RESET` de
+  `axe_fleet/connector.py`).
+- **Novo contrato:** porta aberta é apenas *candidato*. O `firmware_hint` agora vem
+  exclusivamente de um protocolo de miner validado (`_identify_miner` →
+  `core/registry/detector.detect_firmware`). Host que abre porta e não responde
+  nenhum protocolo entra em `candidates` (com `alive`/`alive_ips`), **nunca** em
+  `devices` — e o UI não oferece "+ Add" para ele. mDNS deixou de carimbar
+  `firmware_hint: "braiins"` incondicionalmente: virou outra fonte de candidatos.
+- **Detector fail-closed:** `detect_firmware` agora exige os marcadores de
+  identidade do firmware — `/api/system/info` precisa de `hashrate`/`ASICModel`/
+  `boardVersion`/`frequency` (ESP-Miner) e `/api/v1/miner/stats` precisa de
+  `miner_stats` (Braiins OS+). Um `HTTP 200` com JSON — catch-all de roteador,
+  portal cativo — **não** é mais classificado como minerador. Ganhou também um
+  parâmetro `timeout`, usado pelo scanner (1,5 s) para não travar a varredura.
+- **Agente:** `_probe_axeos` rejeita JSON sem marcadores ESP-Miner (antes qualquer
+  200 com dict virava `type: "bitaxe"`, registrado no cloud e empurrando
+  telemetria `{}` para sempre); `_probe_host` passa a tentar
+  **AxeOS → Braiins OS+ REST → cgminer**, o que torna **visível** o hardware
+  Braiins/Antminer REST-only (sem :4028) que antes não era descoberto de forma
+  alguma. Novo `_braiins_rest_telemetry` traz hashrate, temps (board/ASIC), power,
+  shares aceitas/rejeitadas/stale, uptime, best share, eficiência J/TH e
+  `pool_url`/`pool_user` — mesmos campos de `braiins_adapter._parse_rest_telemetry`.
+  Comandos: `restart` (cgminer) e `identify` (`led`); `pause`/`resume` são
+  **rejeitados** em vez de reportar sucesso falso.
+- **Guard de cloud simétrico:** `/api/network/scan` agora responde `400 ·
+  is_cloud: true` em deploy cloud (como `/api/axe-fleet/scan`), em vez de varrer a
+  sub-rede do datacenter e devolver "IPs" que não são do operador. O UI mostra a
+  mensagem apontando para o AGENTE LOCAL.
+- **Testes:** `tests/test_scan_protocol_evidence.py` (24 casos) fixa as duas
+  direções — o falso positivo **deixa** de ser miner e o miner real **continua**
+  sendo detectado.
+
 ### Alterado — extração do domínio Dashboard/render() para `static/src/39b-dashboard.js` (RFC #478 · PR 10, Issue #561)
 - O cluster **Dashboard / `render()`** saiu de `static/src/40-app-logic.js` para
   `static/src/39b-dashboard.js` — **1.082 linhas movidas verbatim** em **6 recortes**

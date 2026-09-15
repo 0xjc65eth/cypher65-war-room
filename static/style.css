@@ -2969,6 +2969,18 @@ tr:hover td { background: var(--bg-hover); }
 .scan-results__ports { color: var(--text-tertiary); font-size: 9px; }
 .scan-results__hint { color: var(--brand); font-size: 8px; text-transform: uppercase; padding: 1px 4px; border: 1px solid var(--brand-dim); border-radius: var(--radius-sm); }
 .scan-results__host { color: var(--text-tertiary); font-size: 9px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Hosts with a port open but NO miner protocol — listed for transparency, and
+dimmed so they never read as a discovered miner. */
+.scan-results__item--other { opacity: 0.68; }
+.scan-results__subhead { margin-top: 6px; padding-top: 5px; border-top: 1px solid var(--border-subtle); font-size: 9px; color: var(--text-tertiary); font-family: var(--font-mono); text-transform: uppercase; letter-spacing: 0.04em; }
+/* Rows fade in as the scan resolves. Scoped with :not(--other) so the dimmed
+   variant keeps its own opacity (an animation with fill:both would win over
+   it). Fully skipped under prefers-reduced-motion. */
+@media (prefers-reduced-motion: no-preference) {
+  .scan-results__item:not(.scan-results__item--other),
+  .scan-results__subhead { animation: scan-results-in 160ms ease-out both; }
+}
+@keyframes scan-results-in { from { opacity: 0; } to { opacity: 1; } }
 .scan-results__add { margin-left: auto; border-color: var(--green-dim) !important; color: var(--green) !important; }
 
 /* ── Support modal ───────────────────────────────────────────────── */
