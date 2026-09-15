@@ -32,3 +32,29 @@ updates:
     labels:
       - "dependencies"
       - "docker"
+
+  # npm do app React Native (`mobile/`) — Issue #588.
+  #
+  # POR QUE ESTA ENTRADA EXISTE, e por que o cadence é DIÁRIO (diferente das
+  # outras): sem ela, o pin do Expo só é atualizado à mão, e um patch publicado
+  # pelo Expo deixa o job `mobile:` reprovando em TODO PR — o `expo-doctor`
+  # exige a versão EXATA esperada para o SDK, e o `npm ci` do CI instala o que
+  # o lockfile diz. O gate fica vermelho sem nenhuma mudança no código, o que é
+  # o pior tipo de gate: o que se aprende a ignorar.
+  #
+  # A assinatura do problema (para reconhecer em 10 segundos): o job `mobile:`
+  # reprova SÓ em "Expo SDK compatibility", com "Patch version mismatches" e
+  # nada mais. Quando isso aparecer, o PR do bot já está aberto — mergear ele
+  # destrava o resto.
+  #
+  # Semanal (como o pip) deixaria os PRs travados por até 7 dias esperando um
+  # patch de terceiro. Diário fecha essa janela em ~1 dia; o limite de PRs
+  # abertos mantém a fila curta.
+  - package-ecosystem: "npm"
+    directory: "/mobile"
+    schedule:
+      interval: "daily"
+    open-pull-requests-limit: 3
+    labels:
+      - "dependencies"
+      - "npm"
