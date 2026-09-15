@@ -2122,6 +2122,10 @@ latest_snapshot = {
     "worker": None,
     "user_aggregate": None,
     "pool": None,
+    # Detectadas no primeiro poll (Issue #574); presentes desde o boot para o
+    # schema do /api/snapshot nunca variar (Issue #576).
+    "pool_detection": None,
+    "pool_worker": None,
     "account": None,
     "lightning": None,
     "leaderboard_entry": None,
@@ -2793,6 +2797,8 @@ def _reset_session_state():
             "worker": None,
             "user_aggregate": None,
             "pool": None,
+            "pool_detection": None,
+            "pool_worker": None,
             "account": None,
             "lightning": None,
             "leaderboard_entry": None,
@@ -4303,6 +4309,11 @@ def _do_poll():
         "worker_index": worker_index,
         "user_aggregate": user,
         "pool": pool,
+        # Pool detectada a partir do report do ASIC (Issue #574). Presentes no
+        # schema desde o boot: o painel nunca precisa distinguir "ausente" de
+        # "nada a reportar" (Issue #576).
+        "pool_detection": None,
+        "pool_worker": None,
         "account": account,
         "account_meta": meta,
         "lightning": lightning,
@@ -4345,7 +4356,25 @@ def _do_poll():
         ),
         "all_workers": all_workers,
         "axe_fleet": list(_shared_state.axe_telemetry_cache.values()),
-    }  # ── Sync shared state after each poll ──
+    }
+
+    # ── Pool detectada a partir do report do ASIC (Issue #574) ──
+    # ESTE é o produtor que o painel consome: `fetchSnapshot()` polla
+    # `/api/snapshot`, que serve `state.latest_snapshot` (rotas do
+    # dashboard_bp) — não o `_build_snapshot()` de sessão. Sem esta chamada a
+    # faixa da pool nunca aparecia em produção, mesmo com todos os testes
+    # verdes: o e2e injeta as chaves no fixture e o teste de schema olhava só o
+    # caminho de sessão (achado na verificação pós-deploy do #575, Issue #576).
+    # Escopo `default`: o dict global é do OPERADOR desta instância — quem tem
+    # tenant nomeado recebe a própria detecção via `/api/session-snapshot`.
+    try:
+        from services.pool_detection import attach_to_snapshot
+
+        attach_to_snapshot(latest_snapshot, BTC_ADDRESS, "default")
+    except Exception as e:  # noqa: BLE001 — enriquecimento nunca derruba um poll
+        log.warning("[poll] pool detection failed: %s", e)
+
+    # ── Sync shared state after each poll ──
     _shared_state.latest_snapshot = latest_snapshot
     _shared_state.leaderboard_rows = (
         list(leaderboard) if isinstance(leaderboard, list) else []

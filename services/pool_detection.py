@@ -200,6 +200,53 @@ def detected_pool_for(
     return dict(result)
 
 
+def attach_to_snapshot(
+    snapshot: dict,
+    address: str,
+    tenant_id: str = "",
+    *,
+    get_db: Callable[[], Any] | None = None,
+    fetcher: Callable[[str], Any] | None = None,
+    now: float | None = None,
+) -> dict:
+    """Write ``pool_detection``/``pool_worker`` into ``snapshot``, in place.
+
+    **The single place that writes these two keys.** Every producer of a
+    snapshot dict calls this — the per-session builder
+    (``services.snapshot_assembly._build_snapshot``, served by
+    ``/api/session-snapshot`` and ``POST /api/connect-wallet``) and the global
+    poll (``app._do_poll``, served by ``/api/snapshot``, which is the route the
+    dashboard actually polls).
+
+    Why the explicitness: before this existed, the wiring lived inside the
+    session builder only. The dashboard's own ``/api/snapshot`` builds its dict
+    elsewhere, so production served a payload without the keys, the pure view
+    returned ``None`` and the panel stayed hidden — a feature that passed every
+    test (the session builder had the keys; the e2e injected them) and did
+    nothing live.
+
+    Both keys are always present afterwards, ``None`` when nothing was
+    reported, so the front never has to tell "absent" from "not applicable".
+    Never raises: a dead DB, a missing table or a pool API failure leaves the
+    snapshot exactly as it was.
+    """
+    snapshot.setdefault("pool_detection", None)
+    snapshot.setdefault("pool_worker", None)
+    try:
+        detected = detected_pool_for(
+            address, tenant_id, get_db=get_db, fetcher=fetcher, now=now
+        )
+    except Exception as e:  # noqa: BLE001 — enrichment must never break a poll
+        log.warning(
+            "[pool_detection] attach failed for %s: %s", str(address or "")[:8], e
+        )
+        return snapshot
+    if detected:
+        snapshot["pool_detection"] = detected.get("detection") or None
+        snapshot["pool_worker"] = detected.get("stats") or None
+    return snapshot
+
+
 def _is_api_miss(result: Mapping[str, Any]) -> bool:
     """True when a pool that HAS a public API fell back to the miner's numbers.
 

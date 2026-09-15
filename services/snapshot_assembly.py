@@ -291,18 +291,6 @@ def _fetch_account(address: str) -> dict | None:
 # ── Snapshot builder ─────────────────────────────────────────────────────────
 
 
-def _detect_pool(address: str, tenant_id: str = "") -> dict:
-    """Detected pool for an address, from the ASIC's own report (Issue #574).
-
-    Module-level indirection on purpose: it is ONE seam for tests to stub, and
-    it keeps the polling module from importing the detection module's internals.
-    Returns {} when no ASIC has reported a pool — see services.pool_detection.
-    """
-    from services.pool_detection import detected_pool_for
-
-    return detected_pool_for(address, tenant_id)
-
-
 def _build_snapshot(address: str, worker_name: str, tenant_id: str = "") -> dict:
     """Build a complete snapshot dict for one BTC address.
 
@@ -552,13 +540,15 @@ def _build_snapshot(address: str, worker_name: str, tenant_id: str = "") -> dict
     # the snapshot can say WHICH pool this address is on without anyone calling
     # an endpoint — and for a pool that publishes no public API the numbers come
     # from the miner itself instead of rendering empty.
+    #
+    # Written by the ONE helper that owns these two keys (Issue #576): the
+    # global poll in app.py writes them through the same call, because the
+    # dashboard polls /api/snapshot — not this per-session builder.
     try:
-        detected = _detect_pool(address, tenant_id)
+        from services.pool_detection import attach_to_snapshot
+
+        attach_to_snapshot(snapshot, address, tenant_id)
     except Exception as e:  # noqa: BLE001 — enrichment must never break a poll
         log.warning("[poll] pool detection failed for %s: %s", address[:8], e)
-        detected = {}
-    if detected:
-        snapshot["pool_detection"] = detected.get("detection") or None
-        snapshot["pool_worker"] = detected.get("stats") or None
 
     return snapshot

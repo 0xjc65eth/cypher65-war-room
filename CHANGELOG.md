@@ -6,6 +6,43 @@ e versionamento semântico ([SemVer](https://semver.org/lang/pt-BR/)).
 
 ## [Unreleased]
 
+### Corrigido — `/api/snapshot` não entregava `pool_detection`/`pool_worker`: a faixa da pool não aparecia em produção (Issue #576)
+- **Achado na verificação pós-deploy do #575**, com o bundle novo já no ar:
+  `static/app.js` servido com md5 **idêntico** ao local, e `/api/snapshot` com
+  **35 chaves** — `pool_detection` e `pool_worker` entre as ausentes. Com o
+  bundle novo e o JSON sem as chaves, `poolDetectionView()` devolvia `null` e a
+  faixa ficava **oculta para sempre**: a feature passou em toda a suíte e não
+  existia em produção.
+- **Causa-raiz:** existem **três** dicts que constroem o snapshot global e o
+  #574 só tocou o caminho de *sessão*. `/api/snapshot` — a rota que o
+  `fetchSnapshot()` polla — serve `enrich_snapshot(state.latest_snapshot)`, o
+  dict do `_do_poll()`, que tem a própria lista explícita de chaves.
+- **`services/pool_detection.attach_to_snapshot()` (novo):** o **único** lugar
+  que escreve as duas chaves, usado pelos **dois** produtores
+  (`_build_snapshot` e `_do_poll`) — o seam `snapshot_assembly._detect_pool`
+  morreu. Nunca levanta, e preserva o que um poll anterior achou quando a
+  leitura atual não reporta nada.
+- **Sem vazamento:** as chaves ficam **fora** da whitelist `public_keys` de
+  `dashboard_routes.py` — o dict global é do **operador** da instância (a
+  detecção sai da frota e da carteira dele), e servir isso a um tenant nomeado
+  entregaria pool, host e hashrate dos ASICs do dono. Tenant nomeado recebe a
+  própria detecção via `/api/session-snapshot`. Fail-closed por omissão, com
+  teste.
+- **Guard da CLASSE do bug, não da instância:** `ast` sobre `app.py` acha todo
+  literal que constrói o snapshot global e falha se algum esquecer as chaves.
+  Prova negativa medida: com `app.py` revertido para o estado pré-fix o guard
+  falha apontando as **três** linhas (`2119, 4299, 2790`); com o fix, verde. Os
+  outros 3 testes de payload passam nos dois estados de propósito — eles fixam
+  o contrato da rota, não a regressão.
+- **Um teste que passava sozinho e falhava na suíte inteira** foi corrigido no
+  caminho: `create_token` (sem contexto de request) lê o env, enquanto
+  `verify_token` (no request) prefere `app.config["JWT_SECRET_KEY"]` — um teste
+  anterior que setava o config sem restaurar fazia o token não verificar, a
+  request cair no tenant `default` e a asserção de não-vazamento **não testar
+  nada**. O secret agora é fixado nos dois lugares e o `tenant_scope` é
+  assertado **antes** das chaves, para o modo de falha ser explícito.
+- **Evidência:** pytest **3.514** (+10) · `check-monkeypatch-targets` verde.
+
 ### Adicionado — snapshot e painel dizem QUAL pool o ASIC reporta, em qual chain e de onde vêm os números (Issue #574)
 - **O problema:** o `stratumURL` que cada minerador reporta **já estava no banco**
   (`axe_telemetry.payload.pool_url`, gravado pelo agente) e **ninguém lia**. O

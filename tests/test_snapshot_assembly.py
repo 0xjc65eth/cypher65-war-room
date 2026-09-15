@@ -90,11 +90,14 @@ def _patch_fetchers(monkeypatch, module, *, height, usd):
         module, "_fetch_global_mempool_fees", lambda: {"fastestFee": 12}
     )
     # Pool detection (Issue #574) is a fetch boundary of its own: it reads fleet
-    # telemetry and may call a pool's public API. Stubbed here so the helper
-    # keeps its promise of "sem rede" — the detection path has its own tests in
+    # telemetry and may call a pool's public API. Stubbed at the detection
+    # module (Issue #576 moved the single seam there, shared by the session
+    # builder and the global poll) so the helper keeps its promise of "sem
+    # rede" — the detection path has its own tests in
     # tests/test_pool_detection.py.
-    if hasattr(module, "_detect_pool"):
-        monkeypatch.setattr(module, "_detect_pool", lambda address, tenant_id="": {})
+    from services import pool_detection as pd
+
+    monkeypatch.setattr(pd, "detected_pool_for", lambda address, tenant_id="", **kw: {})
 
 
 # ── 1. Re-export: um objeto só nos dois módulos ────────────────────────────
