@@ -3359,7 +3359,7 @@ def _require_caller_identity_on_cloud(f):
         return (
             jsonify(
                 {
-                    "error": "authentication required to mint an agent token",
+                    "error": "authentication required to manage agent tokens",
                     "code": "AGENT_TOKEN_NEEDS_IDENTITY",
                     "detail": (
                         "Esta instância roda na nuvem e não tem "
@@ -3469,7 +3469,7 @@ def agent_issue_token(tenant_id: str = ""):
 
 @agent_bp.route("/tokens/revoke", methods=["POST"])
 @require_tenant
-@_role_required("member")
+@_role_required("admin")
 @_require_caller_identity_on_cloud
 def agent_revoke_tokens(tenant_id: str = ""):
     """Revoga TODOS os tokens de agente do tenant do chamador (Issue #582).
@@ -3479,8 +3479,20 @@ def agent_revoke_tokens(tenant_id: str = ""):
     como epoch 0). Sem rotacionar ``SECRET_KEY``, que deslogaria todos os
     usuários do dashboard.
 
-    Mesma identidade exigida pela cunhagem (`member` + credencial real numa
-    instância de nuvem) e escopo estrito do tenant: ninguém revoga o de outro.
+    Identidade MAIS restrita que a cunhagem (Issue #586): `admin`, enquanto
+    `POST /api/agent/token` continua `member`. A assimetria é deliberada —
+    cunhar afeta quem cunha, revogar derruba a frota inteira do tenant de uma
+    vez e não tem desfazer. Também exige credencial real numa instância de
+    nuvem, e o escopo é estrito do tenant: ninguém revoga o de outro.
+
+    A ordem dos decorators importa: `_role_required` fica FORA de
+    `_require_caller_identity_on_cloud`, então numa instância sem
+    `API_KEY`/`TENANT_API_KEYS` o RBAC é no-op (modo aberto do self-host, onde
+    o operador é o dono) e a recusa de um POST anônimo vem da identidade —
+    403 `AGENT_TOKEN_NEEDS_IDENTITY`, que é o que
+    ``scripts/verify_production.py`` cobra em produção. Com auth configurada, o
+    RBAC recusa antes e a resposta é `permission denied`.
+
     Um erro de persistência devolve 500 — uma revogação que não aconteceu não
     pode ser reportada como sucesso.
     """

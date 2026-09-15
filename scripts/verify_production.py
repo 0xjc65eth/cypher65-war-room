@@ -14,7 +14,12 @@ Usage:
 
   python3 scripts/verify_production.py --base-url URL --json    # saída de máquina
 
-Exit codes: 0 = tudo verde · 1 = pelo menos um check falhou · 2 = uso/entorno.
+Exit codes: 0 = tudo verde · 1 = falhou (pode convergir — retry faz sentido) ·
+            2 = uso/entorno · 3 = falhou e RETRY NÃO CONSERTA. O exit 3 existe
+            porque o loop do `diagnose-render` repete 20× (~8 min): repetir uma
+            configuração errada gasta o dobro de CI para chegar no mesmo
+            vermelho. O 3 só aparece depois que o processo live provou ser o
+            código deste commit (`deploy marker`).
 
 O QUE ELE RESOLVE
 -----------------
@@ -27,6 +32,10 @@ Duas falhas reais passaram por "deploy verificado" e chegaram em produção:
     texto de um commit ANTERIOR (`IP privado`, do #570) — stale por construção.
   · #578 — `/api/agent/token` cunhava um JWT de frota de 1 ano para um POST
     anônimo numa instância pública. Nenhum gate olhava essa rota.
+  · #586 — `REVOKED_TOKENS_DB=1` foi ligada no blueprint sem sonda nenhuma. Uma
+    flag no `render.yaml` não prova que o processo a recebeu, e persistir num
+    disco efêmero (free tier) SEM o backup do gist não é persistir. A própria
+    rota de revogação também não era olhada por gate algum.
 
 Por isso o marcador do schema aqui **não é uma lista fixa**: as chaves esperadas
 são extraídas do PRÓPRIO `app.py` do checkout que está sendo deployado (os
@@ -43,7 +52,10 @@ REQUISIÇÕES FEITAS (todas read-only ou recusadas antes de qualquer efeito)
   POST /api/axe-fleet/scan          recusado na nuvem ANTES do scan (400 is_cloud)
   POST /api/agent/token             anônimo: recusado (403). Com --access-token:
                                     cunha o token DO CHAMADOR (o caminho legítimo)
+  POST /api/agent/tokens/revoke      anônimo: recusado (403) — nunca chamado em
+                                    self-host, onde ele REVOGARIA de verdade
   POST /api/agent/register          sem token: 401 antes de tocar no registry
+  GET  /api/healthz → persistence    leitura (modo da blacklist + durabilidade)
 
 Num self-host (sem flag de nuvem) os dois scans NÃO são disparados: um verificador
 não deve varrer a LAN de ninguém. Eles saem como `skip`, com o motivo.
@@ -212,6 +224,35 @@ def check_healthz(base: str, get, timeout: float) -> tuple:
     return "healthz", True, f"ok · cloud={bool(data.get('cloud'))}"
 
 
+def check_deploy_marker(health: dict | None) -> tuple:
+    """O processo que respondeu é o código DESTE commit?
+
+    Durante um deploy a instância ANTIGA continua servindo — então um check
+    vermelho pode ser só convergência, e um retry resolve. Este marcador é o
+    que permite distinguir os dois casos: ele exige algo que só o código novo
+    publica. `persistence.revoked_tokens_db` (Issue #586) é o mais recente.
+
+    O princípio é o do #576: um marcador que NÃO muda com o commit não prova
+    nada. Foi por isso que o gate ficou verde servindo um backend antigo.
+
+    Atenção: a PRESENÇA da chave prova o código; o VALOR dela é a configuração
+    (checada em `persistence · revoked_tokens_db`). Dois fatos, dois remédios —
+    redeploy num caso, sincronizar o blueprint no outro.
+    """
+    name = "deploy marker"
+    flags = (health or {}).get("persistence")
+    if not isinstance(flags, dict):
+        return name, False, "healthz sem o bloco `persistence`"
+    if "revoked_tokens_db" not in flags:
+        return (
+            name,
+            False,
+            "`persistence.revoked_tokens_db` ausente — quem responde é um "
+            "processo ANTERIOR a este commit (deploy ainda em andamento?)",
+        )
+    return name, True, "o código deste commit está no ar"
+
+
 def check_snapshot_schema(
     base: str,
     get,
@@ -368,6 +409,106 @@ def check_agent_token_with_identity(
     return name, True, f"200 · tenant={tenant} · expires_in={data.get('expires_in')}"
 
 
+def check_agent_revoke_anonymous(base: str, get, timeout: float, cloud: bool) -> tuple:
+    """A rota que derruba a frota tem de recusar quem não provou identidade.
+
+    Nenhum gate olhava esta rota (Issue #586). Se ela aceitar um POST anônimo,
+    qualquer estranho invalida todos os tokens de agente do tenant com um
+    curl — o kill switch é tão sensível quanto a cunhagem.
+
+    Em self-host o check é `skip`, e não por preguiça: no modo aberto o POST
+    anônimo **revoga de verdade** (incrementa o epoch do tenant). Um validador
+    não muta o ambiente que está medindo.
+    """
+    name = "agent revoke anônimo"
+    if not cloud:
+        return (
+            name,
+            None,
+            "skip — self-host: em modo aberto o POST anônimo revoga de verdade "
+            "(um validador não muta o que mede)",
+        )
+    resp = get("POST", f"{base}/api/agent/tokens/revoke", timeout, None)
+    if resp.error:
+        return name, False, resp.error
+    if resp.status != 403:
+        return (
+            name,
+            False,
+            f"HTTP {resp.status} (esperado 403 — anônimo não pode derrubar a frota)",
+        )
+    data = resp.json() or {}
+    # Duas camadas podem recusar, e as duas são legítimas: sem auth configurada
+    # a recusa é a identidade do #578 (`_require_caller_identity_on_cloud`); com
+    # auth configurada o RBAC recusa antes (`permission denied`). O check do
+    # MINT acima exige o code exato porque ele codifica a regressão do #578;
+    # aqui o que não pode variar é o EFEITO — nenhuma revogação pode ter
+    # acontecido.
+    refused = data.get("code") == "AGENT_TOKEN_NEEDS_IDENTITY" or (
+        data.get("error") == "permission denied"
+    )
+    if not refused:
+        return name, False, f"403 sem recusa reconhecível: {str(data)[:120]}"
+    if data.get("success") or data.get("active_epoch") is not None:
+        return name, False, "403 mas o corpo sugere que a revogação aconteceu"
+    return name, True, "403 · recusado antes de qualquer efeito"
+
+
+def check_persistence_revoked_db(health: dict | None, cloud: bool) -> tuple:
+    """A flag está no PROCESSO — não só no `render.yaml` (Issue #586).
+
+    Um valor no blueprint não prova nada sobre o código que está rodando: se o
+    Render não aplicar o `render.yaml`, a flag fica no git e a produção segue
+    com a blacklist só em memória, sem ninguém perceber.
+    """
+    name = "persistence · revoked_tokens_db"
+    flags = (health or {}).get("persistence") or {}
+    if not cloud:
+        return (
+            name,
+            None,
+            f"skip — self-host (revoked_tokens_db={flags.get('revoked_tokens_db')})",
+        )
+    if flags.get("revoked_tokens_db") is not True:
+        return (
+            name,
+            False,
+            "revoked_tokens_db != true — a flag existe no render.yaml e não no "
+            "processo: o deploy não aplicou o blueprint (sincronize o serviço "
+            "no Render) e a revogação continua só em memória",
+        )
+    return name, True, "true · a revogação sobrevive a um restart do processo"
+
+
+def check_persistence_durability(health: dict | None, cloud: bool) -> tuple:
+    """Persistir num disco efêmero sem backup não é persistir (Issue #586).
+
+    A tabela `revoked_tokens` vive em `data/war_room.sqlite`, então ela só
+    sobrevive a um redeploy se o backup remoto do gist a levar junto. Com
+    `plan: free` (disco efêmero) e sem `remote_backup`, ligar
+    `REVOKED_TOKENS_DB=1` é decorativo — e o mesmo vale para usuários, devices
+    e alertas que moram no mesmo arquivo.
+    """
+    name = "persistence · durabilidade"
+    flags = (health or {}).get("persistence") or {}
+    if not cloud:
+        return (
+            name,
+            None,
+            f"skip — self-host (disco próprio; remote_backup={flags.get('remote_backup')})",
+        )
+    if flags.get("remote_backup") is not True:
+        return (
+            name,
+            False,
+            "remote_backup=false — o disco do free tier é EFÊMERO: sem "
+            "GITHUB_TOKEN + REMOTE_BACKUP_ENCRYPTION_KEY, a tabela "
+            "revoked_tokens (e usuários/devices/alertas em data/war_room.sqlite) "
+            "some no próximo redeploy",
+        )
+    return name, True, "true · o gist leva e restaura data/war_room.sqlite"
+
+
 def check_agent_register_without_token(base: str, get, timeout: float) -> tuple:
     name = "agent register sem token"
     resp = get(
@@ -388,18 +529,46 @@ def check_agent_register_without_token(base: str, get, timeout: float) -> tuple:
 # ══════════════════════════════════════════════════════════════════════════
 
 
-def probe_cloud(base: str, get, timeout: float):
-    """Topologia vista PELO SERVIDOR (`healthz.cloud`), ou None se ele não responde.
+def probe_health(base: str, get, timeout: float) -> dict | None:
+    """O corpo de `/api/healthz` — ou None se ele não respondeu 200.
 
-    Não é `os.environ` de quem roda: o validador pode rodar no CI (sem RENDER)
-    verificando uma produção que É nuvem. A resposta do servidor é a única fonte
-    correta para decidir o modo dos checks.
+    Uma sonda, três fatos: a topologia vista PELO SERVIDOR (`cloud`), o modo da
+    blacklist (`persistence.revoked_tokens_db`) e a durabilidade
+    (`persistence.remote_backup`). `cloud` não pode vir do `os.environ` de quem
+    roda: o validador roda no CI (sem RENDER) verificando uma produção que É
+    nuvem — a resposta do servidor é a única fonte correta.
     """
     resp = get("GET", f"{base}/api/healthz", timeout, None)
     if resp.status != 200:
         return None
-    data = resp.json() or {}
-    return bool(data.get("cloud"))
+    return resp.json() or {}
+
+
+def probe_cloud(base: str, get, timeout: float):
+    """Só o modo (`healthz.cloud`), ou None quando o healthz não responde."""
+    health = probe_health(base, get, timeout)
+    if health is None:
+        return None
+    return bool(health.get("cloud"))
+
+
+# Checks que podem falhar num app recém-subido e ficar verdes no próximo poll.
+# Só o schema do snapshot: o boot já serve as chaves dele, o primeiro poll
+# (≤15s) traz o resto — a janela está medida em `--schema-wait`.
+_CONVERGING = {"snapshot schema"}
+
+
+def durable_failures(results: list[tuple]) -> list[str]:
+    """Falhas que repetir NÃO conserta — o loop de CI deve parar nelas.
+
+    Antes do `deploy marker` passar, um vermelho é (provavelmente) a instância
+    antiga servindo: retry. Depois que ele passa, o processo É este código, e
+    só o schema do snapshot tem direito de esperar. Persistência sem durabilidade
+    é uma configuração ausente: 20 tentativas depois o resultado é o mesmo.
+    """
+    if not any(name == "deploy marker" and ok is True for name, ok, _ in results):
+        return []
+    return [name for name, ok, _ in results if ok is False and name not in _CONVERGING]
 
 
 def run_checks(
@@ -428,9 +597,11 @@ def run_checks(
         # Um `expected_keys` explícito (testes) não tem classificação: tudo é
         # exigível já.
         boot = set(expected)
-    cloud = probe_cloud(base, get, timeout)
+    health = probe_health(base, get, timeout)
+    cloud = None if health is None else bool(health.get("cloud"))
 
     results = [check_healthz(base, get, timeout)]
+    results.append(check_deploy_marker(health))
     # O schema converge em um ciclo de poll (15s) num app recém-subido; exigir
     # as chaves de poll de uma vez acusaria uma janela legítima de boot.
     deadline = time.monotonic() + schema_wait
@@ -462,6 +633,9 @@ def run_checks(
         results.append(("guard /api/network/scan", None, reason))
         results.append(("guard /api/axe-fleet/scan", None, reason))
         results.append(("agent token anônimo", None, reason))
+        results.append(("agent revoke anônimo", None, reason))
+        results.append(("persistence · revoked_tokens_db", None, reason))
+        results.append(("persistence · durabilidade", None, reason))
     else:
         results.append(
             check_cloud_command_guard(
@@ -474,6 +648,9 @@ def run_checks(
             )
         )
         results.append(check_agent_token_anonymous(base, get, timeout, bool(cloud)))
+        results.append(check_agent_revoke_anonymous(base, get, timeout, bool(cloud)))
+        results.append(check_persistence_revoked_db(health, bool(cloud)))
+        results.append(check_persistence_durability(health, bool(cloud)))
 
     if access_token:
         results.append(
@@ -587,6 +764,7 @@ def main(argv: list[str] | None = None) -> int:
         schema_wait=args.schema_wait,
     )
 
+    durable = durable_failures(results)
     if args.as_json:
         print(
             json.dumps(
@@ -597,6 +775,7 @@ def main(argv: list[str] | None = None) -> int:
                         for name, ok, detail in results
                     ],
                     "failed": [n for n, ok, _ in results if ok is False],
+                    "durable_failed": durable,
                 },
                 ensure_ascii=False,
                 indent=2,
@@ -604,7 +783,14 @@ def main(argv: list[str] | None = None) -> int:
         )
     else:
         _print_report(results, args.base_url)
+        if durable:
+            print(
+                "\n⛔ falha DURÁVEL (exit 3) — repetir não conserta: "
+                + ", ".join(durable)
+            )
 
+    if durable:
+        return 3
     return 1 if any(ok is False for _, ok, _ in results) else 0
 
 

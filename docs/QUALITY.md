@@ -442,7 +442,14 @@ VERIFY_ACCESS_TOKEN="$JWT" python3 scripts/verify_production.py \
     --base-url URL --expect-tenant default
 ```
 
-Exit codes: `0` tudo verde · `1` pelo menos um check vermelho · `2` uso/entorno.
+Exit codes: `0` tudo verde · `1` pelo menos um check vermelho · `2` uso/entorno ·
+**`3` = falha que retry não conserta** (Issue #586).
+
+**Por que o `3` existe.** O loop do `diagnose-render` repete 20× (~8 min) — o que
+é correto enquanto o deploy não chegou e puro desperdício quando o processo live
+**já é** este commit e o que falta é configuração. O discriminador é o check
+`deploy marker`: antes dele, um vermelho pode ser a instância antiga servindo
+(retry); depois dele, só o schema do snapshot tem direito de esperar.
 
 **Por que existe.** Duas falhas reais passaram por "deploy verificado": o
 **#576** (`/api/snapshot` sem `pool_detection` — bundle novo, JSON velho, feature
@@ -451,15 +458,24 @@ anônimo). A causa-raiz era o *gate*, não os bugs: o marcador de backend era a
 string `IP privado` de um commit **anterior** (#570), então ele provava "o
 backend é novo o bastante" e não "o backend **é este**" — verde para sempre.
 
+O **#586** acrescentou o caso simétrico: `REVOKED_TOKENS_DB=1` ligada no
+`render.yaml` **sem nenhuma sonda** — uma flag no blueprint não prova que o
+processo a recebeu, e persistir num disco efêmero sem o backup do gist não é
+persistir.
+
 | Check | O que afirma |
 |---|---|
 | `healthz` | 200 + `ok`, e `cloud` (define os checks seguintes) |
+| `deploy marker` | o bloco `persistence` **existe**: quem responde é o código deste commit, não a instância antiga do deploy anterior (é o que separa "retry resolve" de "não resolve") |
 | `snapshot schema` | o payload servido carrega as chaves dos produtores do `app.py` **do checkout**, separando boot (exigível já) do primeiro poll (`--schema-wait`, 45s) |
 | `bundle parity` | `md5(/static/app.js)` = `md5(static/app.js)` local |
 | `agent.py parity` | `sha256(/agent/agent.py)` = o do repositório |
 | `guard /api/network/scan` · `/api/axe-fleet/scan` | 400 + `is_cloud` na nuvem; **skip** em self-host (não varre a LAN de ninguém) |
 | `agent token anônimo` | 403 + `AGENT_TOKEN_NEEDS_IDENTITY` na nuvem; 200 no modo aberto do self-host |
 | `agent token com identidade` | 200 com `VERIFY_ACCESS_TOKEN` (ou `--access-token`), tenant conferido; **o token nunca entra na saída** |
+| `agent revoke anônimo` | 403 numa das duas formas legítimas de recusa (identidade ou RBAC) e **sem epoch no corpo** — um 403 que revogou seria pior que um 200. Em self-host: **skip**, porque em modo aberto o POST anônimo revoga de verdade |
+| `persistence · revoked_tokens_db` | a flag chegou ao **processo** (não só ao `render.yaml`) — é o valor; a presença da chave é o `deploy marker` |
+| `persistence · durabilidade` | `remote_backup` — sem o gist, a tabela `revoked_tokens` (e usuários/devices/alertas) some no próximo redeploy |
 | `agent register sem token` | 401 antes de tocar no registry |
 
 `None` (skip) é sempre explícito, com motivo — nunca um verde mudo. O schema
@@ -467,11 +483,12 @@ esperado é derivado do `app.py`, então o marcador é específico do commit: qu
 alguém adiciona uma chave a um produtor e esquece o outro, a produção acusa
 sozinha (foi o #576).
 
-**Self-test** (`python3 tests/test_verify_production.py` ou via pytest, 23 casos,
-~19s): caminho feliz contra um `http.server` **real** em porta efêmera e **uma
+**Self-test** (`python3 tests/test_verify_production.py` ou via pytest, 36 casos,
+~30s): caminho feliz contra um `http.server` **real** em porta efêmera e **uma
 mutação por check** — um validador que só sabe dizer "verde" não é um validador.
-Cobre também a janela de convergência do primeiro poll e o fato de que a
-tolerância **não** é anistia (sem convergir, fica vermelho).
+Cobre também a janela de convergência do primeiro poll, o fato de que a
+tolerância **não** é anistia (sem convergir, fica vermelho) e a semântica do
+exit 3 (falha durável para o loop; convergência continua retryable).
 
 ---
 

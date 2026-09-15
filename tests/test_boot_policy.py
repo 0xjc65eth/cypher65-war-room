@@ -102,9 +102,23 @@ def test_persistence_flags_are_booleans_without_secrets():
             "SENTRY_DSN": "https://public@example/1",
         }
     )
-    assert flags == {"remote_backup": True, "sentry": True}
+    assert flags == {
+        "remote_backup": True,
+        "sentry": True,
+        "revoked_tokens_db": False,
+    }
     empty = persistence_flags({})
-    assert empty == {"remote_backup": False, "sentry": False}
+    assert empty == {
+        "remote_backup": False,
+        "sentry": False,
+        "revoked_tokens_db": False,
+    }
+    # O predicado é ESTRITO (`== "1"`), o mesmo de `services.auth`. Um
+    # `value: "true"` no render.yaml NÃO liga a persistência — e um teste que
+    # aceitasse os dois esconderia exatamente esse erro de operação.
+    assert persistence_flags({"REVOKED_TOKENS_DB": "1"})["revoked_tokens_db"] is True
+    assert persistence_flags({"REVOKED_TOKENS_DB": "true"})["revoked_tokens_db"] is False
+    assert persistence_flags({"REVOKED_TOKENS_DB": "0"})["revoked_tokens_db"] is False
 
 
 def test_cloud_ops_warnings_local_silent():

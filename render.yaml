@@ -122,6 +122,24 @@ services:
         sync: false
       - key: REMOTE_BACKUP_INTERVAL
         value: "300"           # seconds between remote snapshots (default 300)
+      # ── Blacklist de JWT que sobrevive a restart (Issue #586) ─────────
+      # A blacklist de revogação (logout) é um OrderedDict POR PROCESSO: um
+      # restart a esquece. Ligado, cada revogação vai para a tabela
+      # `revoked_tokens` de data/war_room.sqlite — o MESMO arquivo que o
+      # backup remoto acima leva para o gist e restaura no boot. Consequência
+      # honesta: sem GITHUB_TOKEN + REMOTE_BACKUP_ENCRYPTION_KEY, esta flag
+      # NÃO entrega persistência nenhuma no disco efêmero do free tier — ela
+      # só fica durável junto com aquele backup. `/api/healthz` reporta os
+      # dois em `persistence.*` e o gate scripts/verify_production.py reprova
+      # se faltar qualquer um (o job diagnose-render do CI).
+      # Custo medido: +0,95 ms por `verify_token` de token válido (0,02 ms →
+      # 0,97 ms; p99 2,07 ms) — ~1-3 ms por request autenticado.
+      # Retenção: linhas mais velhas que REFRESH_TTL + 1h (7d1h) são podadas,
+      # o que cobre o token de usuário mais longevo (refresh = 7d). O token de
+      # agente de 365 dias NÃO usa esta tabela — usa o epoch por tenant
+      # (services/agent_tokens.py, Issue #582).
+      - key: REVOKED_TOKENS_DB
+        value: "1"
       # ── Hash market warmup / donation watch tuning (optional) ──────────
       # - key: POLL_INTERVAL
       #   value: "15"

@@ -1205,6 +1205,28 @@
   //
   // `agentRevokeView` é PURA (estado → o que renderizar) para o harness de JS
   // core exercitar o MESMO código que o navegador roda, em vez de um espelho.
+  // Classifica uma recusa da rota de revogação (Issue #586) para a UI poder
+  // dizer o MOTIVO em vez de "permission denied".
+  //
+  // O servidor é a autoridade: o cliente nunca decide o papel, só lê o que
+  // veio na resposta. Duas camadas podem recusar —
+  //   · `_require_caller_identity_on_cloud` (nuvem sem auth configurada) →
+  //     `AGENT_TOKEN_NEEDS_IDENTITY`: falta IDENTIDADE;
+  //   · `@role_required("admin")` (nomeado no `render.yaml`) →
+  //     `permission denied` + `role`: falta PAPEL (ou identidade, quando o
+  //     `role` devolvido é `anonymous`).
+  // Recusa não reconhecida devolve '' e cai no caminho genérico — com o retry
+  // habilitado, porque uma recusa que não sabemos explicar pode ser transitória.
+  function classifyRevokeRefusal(status, data) {
+    const d = data || {};
+    if (status !== 403 && status !== 401) return '';
+    if (d.code === 'AGENT_TOKEN_NEEDS_IDENTITY') return 'login';
+    if (d.error === 'permission denied') {
+      return (d.role && d.role !== 'anonymous') ? 'admin' : 'login';
+    }
+    return 'unknown';
+  }
+
   function agentRevokeView(state) {
     const s = state || {};
     const phase = s.phase || 'idle';
@@ -1249,6 +1271,28 @@
         '✓ revogado · epoch ' + (s.from == null ? '?' : s.from) +
         ' → ' + (s.to == null ? '?' : s.to);
       view.statusTone = 'ok';
+    } else if (phase === 'error' && s.denied === 'login') {
+      // Recusa por identidade: repetir o clique não resolve nada, então o
+      // retry SAI de cena e o texto diz o que fazer. Oferecer "TRY AGAIN"
+      // aqui seria a UI mentindo sobre onde está o problema.
+      view.confirmTitle = 'REVOGAÇÃO EXIGE IDENTIDADE';
+      view.confirmBody =
+        'Esta instância só revoga a frota com credencial. Entre com a conta ' +
+        'do tenant e tente de novo. Nada foi revogado.';
+      view.confirmLabel = 'ENTENDI';
+      view.canConfirm = false;
+      view.statusText = '✗ sem identidade — nada foi revogado';
+      view.statusTone = 'danger';
+    } else if (phase === 'error' && s.denied === 'admin') {
+      view.confirmTitle = 'REVOGAÇÃO EXIGE ADMIN';
+      view.confirmBody =
+        'Revogar derruba a frota inteira do tenant, então a ação é de um ' +
+        'administrador. O seu papel não pode — peça a quem administra este ' +
+        'tenant. Nada foi revogado.';
+      view.confirmLabel = 'ENTENDI';
+      view.canConfirm = false;
+      view.statusText = '✗ papel insuficiente — nada foi revogado';
+      view.statusTone = 'danger';
     } else if (phase === 'error') {
       view.confirmTitle = 'NÃO REVOGADO';
       view.confirmBody =
@@ -1399,7 +1443,8 @@
         const data = await r.json().catch(() => ({}));
         if (!r.ok || !data.success) {
           setRevokePhase('error', {
-            reason: data.detail || data.error || ('HTTP ' + r.status)
+            reason: data.detail || data.error || ('HTTP ' + r.status),
+            denied: classifyRevokeRefusal(r.status, data)
           });
           setStatus('✗ revogação não registrada', 'var(--accent-red)');
           return;

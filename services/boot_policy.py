@@ -72,12 +72,37 @@ def validate_boot_policy(
 
 
 def persistence_flags(env: Optional[Mapping[str, str]] = None) -> dict:
-    """Booleans only — never the secret values (Issue #539)."""
+    """Booleans only — never the secret values (Issue #539).
+
+    `revoked_tokens_db` (Issue #586) é o terceiro flag, e o único que não é
+    sobre um segredo: ele responde "a blacklist de JWT sobrevive a um
+    restart?" lendo o MESMO predicado que `services.auth` usa
+    (`revoked_db_enabled`) — o sinal reportado não pode divergir do que o auth
+    faz. Sozinho ele NÃO prova durabilidade: a tabela vive em
+    `data/war_room.sqlite`, então só sobrevive a um redeploy se
+    `remote_backup` também for verdadeiro (disco efêmero no free tier).
+    """
     source = env if env is not None else os.environ
     token = (source.get("GITHUB_TOKEN") or "").strip()
     key = (source.get("REMOTE_BACKUP_ENCRYPTION_KEY") or "").strip()
     dsn = (source.get("SENTRY_DSN") or "").strip()
-    return {"remote_backup": bool(token and key), "sentry": bool(dsn)}
+    return {
+        "remote_backup": bool(token and key),
+        "sentry": bool(dsn),
+        "revoked_tokens_db": _revoked_tokens_db_enabled(source),
+    }
+
+
+def _revoked_tokens_db_enabled(env: Mapping[str, str]) -> bool:
+    """Delega ao precedente de `services/auth` — uma regra, um lugar.
+
+    Import local: `persistence_flags` roda no healthz e no boot, mas este
+    módulo é importado cedo por `app.py` e não deve arrastar flask/jwt para a
+    validação de boot.
+    """
+    from services.auth import revoked_db_enabled
+
+    return revoked_db_enabled(env)
 
 
 def cloud_ops_warnings(

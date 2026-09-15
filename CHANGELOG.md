@@ -6,6 +6,56 @@ e versionamento semântico ([SemVer](https://semver.org/lang/pt-BR/)).
 
 ## [Unreleased]
 
+### Adicionado — provar em produção a durabilidade da blacklist JWT (Issue #586)
+- **`REVOKED_TOKENS_DB=1` ligada no `render.yaml`** — a pendência que o #582
+  tinha registrado por escrito. A blacklist de revogação é um `OrderedDict`
+  **por processo**: um restart a esquece. Ligada, cada revogação (logout) vai
+  para a tabela `revoked_tokens` de `data/war_room.sqlite`.
+- **Sonda read-only no `/api/healthz`:** `persistence_flags()` passa a incluir
+  `revoked_tokens_db`, lendo o **mesmo predicado** que `services/auth` usa
+  (`revoked_db_enabled`, regra única). O sinal reportado não pode divergir do
+  que o auth faz.
+- **Dois checks novos e rígidos em `scripts/verify_production.py`** — uma flag
+  no blueprint **não** prova que o processo a recebeu:
+  `persistence · revoked_tokens_db` (a flag chegou ao processo) e
+  `persistence · durabilidade` (sem o backup remoto do gist, persistir num disco
+  efêmero **não é** persistir). E `agent revoke anônimo`: nenhum gate olhava a
+  rota que derruba a frota. Em self-host ele é `skip` por um motivo forte — em
+  modo aberto um POST anônimo **revoga de verdade**, e um validador não muta o
+  ambiente que mede.
+- **Exit code 3 = retry não conserta.** O loop do `diagnose-render` repetia 20×
+  (~8 min) qualquer vermelho, o que é certo enquanto o deploy não chegou e puro
+  desperdício quando o processo live **já é** este commit. O discriminador é o
+  novo check `deploy marker` (o bloco `persistence` só existe no código novo):
+  antes dele um vermelho pode ser a instância antiga servindo (retry), depois
+  dele só o schema do snapshot tem direito de esperar.
+- **Custo medido, não estimado:** ligar a flag custa **+0,95 ms** por
+  `verify_token` de token válido (0,021 ms → 0,966 ms; p99 2,07 ms — a conexão
+  SQLite é aberta a cada chamada), ~1-3 ms por request autenticado. Retenção de
+  **7d1h** cobre o token de usuário mais longevo (refresh = 7d); o token de
+  agente de 365 dias continua usando epoch, porque a blacklist exige a string do
+  token e ninguém consegue enumerar.
+
+### Alterado — revogação de tokens de agente exige `admin` (Issue #586)
+- **Era `member`, a mesma identidade da cunhagem.** A assimetria passa a ser
+  deliberada: cunhar afeta só a credencial de quem cunha; revogar derruba a
+  frota **inteira** do tenant de uma vez e não tem desfazer. `POST /api/agent/token`
+  continua `member`.
+- **Medido antes de afirmar:** hoje `member` **não é alcançável por HTTP nenhum**
+  — o signup grava `role='admin'`, o login por API key idem, e
+  `create_user(role="member")` não tem chamador. A restrição é defensiva, e o
+  teste que forja o JWT do membro é o que a mantém viva se a hierarquia mudar.
+- **A UI não fica oferecendo o que o servidor vai negar.** Em vez de guardar o
+  `role` no `localStorage` (sinal do cliente, não controle — seria código morto
+  para um papel inalcançável), `classifyRevokeRefusal` lê a recusa **do
+  servidor** e a UI explica o motivo: "REVOGAÇÃO EXIGE ADMIN" ou "...EXIGE
+  IDENTIDADE", com o botão em `ENTENDI` — **sem** `TRY AGAIN`, porque repetir o
+  clique não muda o seu papel. Recusa não reconhecida mantém o retry, e ambos
+  dizem que **nada foi revogado**.
+- **A recusa tem de ter ZERO efeito:** um teste confirma que um 403 de `member`
+  não incrementa o epoch e o token de agente continua entrando — um "negado" que
+  ainda assim derrubasse a frota seria pior que um 200.
+
 ### Adicionado — botão REVOKE AGENTS no painel (Issue #584)
 - **A API do #582 não tinha porta de entrada no painel:** revogar exigia curl, e
   quem precisa revogar é justamente quem acabou de perceber um token vazado.
