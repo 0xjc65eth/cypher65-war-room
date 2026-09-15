@@ -6,6 +6,33 @@ e versionamento semântico ([SemVer](https://semver.org/lang/pt-BR/)).
 
 ## [Unreleased]
 
+### Corrigido — `/api/agent/token` cunhava JWT de 1 ano sem credencial numa instância de nuvem (Issue #578)
+- **Achado na sonda de produção** (pós-deploy do #577), sem usar o token:
+  `POST /api/agent/token` **sem nenhum header** devolveu **200** com um JWT de
+  **1 ano**, claim `agent: true`, `tenant_id: "default"`. Com ele dava para
+  registrar devices na frota do operador, injetar telemetria nos painéis e
+  **puxar os comandos enfileirados**.
+- **Causa-raiz:** `role_required` é **no-op** quando `auth_configured()` é False
+  (modo aberto: sem `API_KEY`/`TENANT_API_KEYS` o operador é implicitamente
+  admin). Correto num self-host, **errado numa instância pública** — a produção
+  responde `cloud: true` e não tinha auth configurado. A docstring da rota
+  sempre prometeu "logged-in user (member+)"; o modo aberto nunca cumpriu.
+- **`_require_caller_identity_on_cloud` (novo decorator em `axe_fleet/routes.py`):**
+  em deploy de nuvem, cunhar token exige **JWT verificável** ou `X-API-Key` que
+  resolva para um tenant — as mesmas credenciais que `_require_local_or_session`
+  já aceita (header opaco nunca é autenticação). **Self-host preservado**: sem
+  flag de nuvem nada muda. **Sem exceção para localhost**: numa instância de
+  nuvem `127.0.0.1` é a infraestrutura da plataforma, não a máquina do operador.
+  O 403 é acionável (diz o que configurar) e não traz token no corpo.
+- **Prova negativa medida** (decorator removido, estado pré-fix): **4 dos 7**
+  testes novos falham — o mint anônimo volta a responder 200 com token. Os
+  outros 3 passam nos dois estados de propósito: fixam que JWT, API key e o
+  modo aberto do self-host continuam funcionando.
+- **⚠ Nota operacional:** depois deste deploy, o `Fleet → CONNECT AGENT` da
+  instância pública passa a exigir `API_KEY` (ou `TENANT_API_KEYS`) no Render,
+  enviado como `X-API-Key` — ou a geração do token rodando o dashboard
+  localmente. Sem isso o botão responde 403 com a instrução.
+
 ### Corrigido — `/api/snapshot` não entregava `pool_detection`/`pool_worker`: a faixa da pool não aparecia em produção (Issue #576)
 - **Achado na verificação pós-deploy do #575**, com o bundle novo já no ar:
   `static/app.js` servido com md5 **idêntico** ao local, e `/api/snapshot` com

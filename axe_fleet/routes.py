@@ -3308,6 +3308,76 @@ agent_bp = Blueprint("agent", __name__, url_prefix="/api/agent")
 AGENT_TOKEN_TTL = 365 * 86400
 
 
+def _require_caller_identity_on_cloud(f):
+    """On a public cloud deploy, minting an agent token requires a REAL identity.
+
+    Why this exists: ``_role_required("member")`` is a **no-op** in open mode (no
+    ``API_KEY``/``TENANT_API_KEYS`` configured) — the operator is implicitly the
+    owner. That is correct on a self-hosted instance, where being able to reach
+    the API already implies owning it, and wrong on a public one.
+
+    Measured in production (``healthz`` → ``"cloud": true``, no auth env set):
+    an **unauthenticated** ``POST /api/agent/token`` from the internet returned
+    **200** with a **1-year JWT for tenant `default`** — enough to register
+    devices into the operator's tenant and to pull its queued commands. The
+    route's own docstring promised "a logged-in user (member+)", which open mode
+    never enforced.
+
+    Credentials accepted are exactly the ones ``_require_local_or_session``
+    already trusts — a raw opaque header is never authentication:
+
+      * a Bearer token that decodes/verifies as a real JWT, or
+      * an ``X-API-Key`` that resolves to a configured tenant.
+
+    Self-hosted instances (no cloud flag) keep open mode untouched. There is no
+    localhost exemption: on a cloud host ``127.0.0.1`` is the platform's own
+    infrastructure, not the operator's machine.
+    """
+
+    @wraps(f)
+    def wrapper(*args, **kwargs):
+        from config import is_cloud_deploy
+
+        if not is_cloud_deploy():
+            return f(*args, **kwargs)
+
+        from services.auth import resolve_tenant_for_api_key, verify_token
+
+        auth = request.headers.get("Authorization", "")
+        if auth.startswith("Bearer ") and verify_token(
+            auth[7:], expected_type="access"
+        ):
+            return f(*args, **kwargs)
+        api_key = request.headers.get("X-API-Key", "")
+        if api_key and resolve_tenant_for_api_key(api_key) is not None:
+            return f(*args, **kwargs)
+
+        log.warning(
+            "[agent] anonymous agent-token mint refused from %s",
+            request.remote_addr or "?",
+        )
+        return (
+            jsonify(
+                {
+                    "error": "authentication required to mint an agent token",
+                    "code": "AGENT_TOKEN_NEEDS_IDENTITY",
+                    "detail": (
+                        "Esta instância roda na nuvem e não tem "
+                        "API_KEY/TENANT_API_KEYS configurados, então não há como "
+                        "provar quem está pedindo. Um token de agente dura 1 ano e "
+                        "dá acesso à sua frota: ele exige credencial. Configure "
+                        "API_KEY (ou TENANT_API_KEYS) no deploy e envie o header "
+                        "X-API-Key, ou rode o dashboard localmente para usar o modo "
+                        "aberto."
+                    ),
+                }
+            ),
+            403,
+        )
+
+    return wrapper
+
+
 def _require_agent(f):
     """Require a valid agent token (JWT with `agent: true` claim).
     Injects `agent_tenant_id` (the tenant that owns the agent) into kwargs."""
@@ -3331,10 +3401,16 @@ def _require_agent(f):
 @agent_bp.route("/token", methods=["POST"])
 @require_tenant
 @_role_required("member")
+@_require_caller_identity_on_cloud
 def agent_issue_token(tenant_id: str = ""):
     """Mint a long-lived agent token for the caller's tenant.
-    Requires a logged-in user (member+). Returns the JWT the user pastes
-    into the agent's env (CYPHER65_AGENT_TOKEN)."""
+
+    Requires a logged-in user (member+) — and, on a cloud deploy, a credential
+    that actually proves one: open mode makes ``_role_required`` a no-op, so
+    without ``_require_caller_identity_on_cloud`` a public instance handed a
+    1-year fleet token to any anonymous POST. Returns the JWT the user pastes
+    into the agent's env (CYPHER65_AGENT_TOKEN).
+    """
     from services.auth import create_token
 
     tid = tenant_id or "default"

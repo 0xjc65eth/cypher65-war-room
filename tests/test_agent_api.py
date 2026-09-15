@@ -104,6 +104,87 @@ class TestAgentToken:
 
 
 # ══════════════════════════════════════════════════════════════════════
+#  POST /api/agent/token — open mode has no owner (Issue #578)
+# ══════════════════════════════════════════════════════════════════════
+# `_role_required("member")` is a no-op when no auth is configured: the
+# operator is implicitly the owner. Correct for a self-hosted instance, wrong
+# for a public one — measured in production (`cloud: true`, no
+# API_KEY/TENANT_API_KEYS): an unauthenticated POST from the internet returned
+# 200 with a 1-year JWT for tenant `default`, enough to register devices into
+# the operator's tenant and pull its queued commands.
+
+
+class TestAgentTokenOnCloudDeploy:
+    CLOUD_FLAGS = ("RENDER", "RENDER_SERVICE_ID", "RENDER_INSTANCE_ID", "CLOUD_MODE")
+
+    @pytest.fixture
+    def cloud(self, monkeypatch):
+        """A public cloud deploy (the production topology)."""
+        monkeypatch.setenv("RENDER", "true")
+
+    @pytest.fixture
+    def self_hosted(self, monkeypatch):
+        for flag in self.CLOUD_FLAGS:
+            monkeypatch.delenv(flag, raising=False)
+
+    def test_anonymous_mint_is_refused_on_cloud(self, client, cloud):
+        resp = client.post("/api/agent/token")
+
+        assert resp.status_code == 403
+        data = resp.get_json()
+        assert data["code"] == "AGENT_TOKEN_NEEDS_IDENTITY"
+        assert "token" not in data, "a 1-year fleet token was minted anonymously"
+        # The operator has to be able to fix it without reading the source.
+        assert "API_KEY" in data["detail"]
+
+    def test_localhost_is_not_exempt_on_a_cloud_host(self, client, cloud):
+        """The test client comes from 127.0.0.1 — on a cloud host that address
+        is the platform's own infrastructure, not the operator's machine."""
+        resp = client.post(
+            "/api/agent/token", environ_overrides={"REMOTE_ADDR": "127.0.0.1"}
+        )
+
+        assert resp.status_code == 403
+
+    def test_an_opaque_bearer_header_is_not_an_identity(self, client, cloud):
+        resp = client.post(
+            "/api/agent/token", headers={"Authorization": "Bearer not-a-jwt"}
+        )
+
+        assert resp.status_code == 403
+
+    def test_a_logged_in_user_still_mints(self, client, cloud, user_token):
+        resp = client.post("/api/agent/token", headers=_headers(user_token))
+
+        assert resp.status_code == 200
+        assert resp.get_json()["tenant_id"] == "acme"
+
+    def test_a_configured_api_key_still_mints(self, client, cloud, monkeypatch):
+        monkeypatch.setenv("API_KEY", "cloud-owner-key-123")
+
+        resp = client.post(
+            "/api/agent/token", headers={"X-API-Key": "cloud-owner-key-123"}
+        )
+
+        assert resp.status_code == 200
+        assert resp.get_json()["tenant_id"] == "default"
+
+    def test_a_wrong_api_key_is_refused(self, client, cloud, monkeypatch):
+        monkeypatch.setenv("API_KEY", "cloud-owner-key-123")
+
+        resp = client.post("/api/agent/token", headers={"X-API-Key": "guess"})
+
+        assert resp.status_code == 403
+
+    def test_self_hosted_open_mode_keeps_working(self, client, self_hosted):
+        """The operator of a local instance must never be locked out."""
+        resp = client.post("/api/agent/token")
+
+        assert resp.status_code == 200
+        assert resp.get_json()["tenant_id"] == "default"
+
+
+# ══════════════════════════════════════════════════════════════════════
 #  POST /api/agent/register
 # ══════════════════════════════════════════════════════════════════════
 
