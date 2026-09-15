@@ -6,6 +6,43 @@ e versionamento semântico ([SemVer](https://semver.org/lang/pt-BR/)).
 
 ## [Unreleased]
 
+### Adicionado — verificação pós-deploy com marcador derivado do commit (`scripts/verify_production.py`, Issue #580)
+- **Dois bugs passaram por "deploy verificado"** e só apareceram na sonda manual
+  pós-merge: o **#576** (o `/api/snapshot` de produção sem `pool_detection` —
+  bundle novo, JSON velho, feature invisível) e o **#578** (`/api/agent/token`
+  cunhando JWT de frota de 1 ano para um POST anônimo). A causa-raiz era o
+  **gate**, não os bugs: o marcador de backend do `diagnose-render` era a string
+  `IP privado` do #570 — de um commit **anterior**. Um marcador que não muda com
+  o commit prova "o backend é novo o bastante", não "o backend **é este**": ele
+  fica verde para sempre.
+- **O schema esperado é derivado do `app.py` do checkout** (os literais que
+  constroem o snapshot global), separando chaves de **boot** (exigíveis já) das
+  do **primeiro poll** (`--schema-wait`, 45s) — exigir tudo de uma vez acusaria
+  uma janela legítima de boot de ~15s. Trocar a lista fixa pela derivação é o
+  que torna o marcador específico do commit: quando alguém adiciona uma chave a
+  um produtor e esquece o outro, a **produção** acusa sozinha.
+- **Cobertura nova de rotas que nenhum gate olhava:** `/api/agent/token`
+  (anônimo → 403 + `AGENT_TOKEN_NEEDS_IDENTITY` na nuvem, 200 no modo aberto do
+  self-host) e o caminho autenticado com `VERIFY_ACCESS_TOKEN` (tenant
+  conferido, e **o token nunca entra na saída** — nem truncado; o env existe
+  justamente porque `argv` aparece em `ps` e no histórico do shell). Somam-se às
+  guardas de `is_cloud` nos dois scans, à paridade de `md5(static/app.js)` e de
+  `sha256(agent/agent.py)`.
+- **Self-host não vira desvio:** os checks de scan saem como **skip com motivo**
+  em vez de disparar uma varredura de LAN de verdade, e o modo aberto é afirmado
+  ao contrário (200 esperado) — um verificador com falso vermelho é desligado, o
+  que é pior que não existir. Nenhum skip é verde mudo.
+- **`diagnose-render` deixa de ter marcador hardcoded** (`IP privado`): o passo
+  "Backend contract" roda o verificador com retry pela janela do build
+  assíncrono (o loop **já** é a espera, então ele roda com `--schema-wait 0` —
+  manter os 45s internos aninharia as duas e transformaria os ~8 min anunciados
+  em ~17), e a paridade de bundle deixou de ter o fallback que aprovava um
+  backend *mais antigo*.
+- **O verificador tem self-test** (`tests/test_verify_production.py`, 23 casos):
+  caminho feliz contra um `http.server` **real** em porta efêmera e **uma
+  mutação por check**. Prova que ele falha quando a resposta está errada — um
+  validador que só sabe dizer "verde" não é um validador.
+
 ### Corrigido — `/api/agent/token` cunhava JWT de 1 ano sem credencial numa instância de nuvem (Issue #578)
 - **Achado na sonda de produção** (pós-deploy do #577), sem usar o token:
   `POST /api/agent/token` **sem nenhum header** devolveu **200** com um JWT de
