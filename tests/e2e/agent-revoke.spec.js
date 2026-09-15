@@ -15,10 +15,14 @@
  *     um comando de instalação; deixá-la visível convida ao erro
  *   - Falha (500) mantém a confirmação aberta com o botão de tentar de novo,
  *     nunca "sucesso"
+ *   - Recusa (403) diz o MOTIVO e NÃO oferece retry (Issue #586): revogar
+ *     exige `admin`, e repetir o clique não muda o seu papel
  *
  * O servidor de e2e roda em modo self-host (sem flag de nuvem), então a
  * revogação é permitida no modo aberto — o gate de identidade da nuvem está
- * coberto por unidade (`test_agent_token_revocation.py`).
+ * coberto por unidade (`test_agent_token_revocation.py`). As recusas de 403 são
+ * forçadas com `page.route`, o MESMO precedente do caso de 500: o alvo é a
+ * reação da UI, não o servidor.
  */
 
 import { test, expect } from '@playwright/test';
@@ -146,6 +150,63 @@ test('um 500 mantém a confirmação aberta com tentar-de-novo (nunca sucesso)',
   await expect(page.locator('#axe-revoke-do')).toBeEnabled();
   await expect(page.locator('#axe-revoke-do')).toHaveText(/TRY AGAIN/);
   await expect(page.locator('#axe-revoke-body')).toContainText('continuam valendo');
+});
+
+test('um 403 de papel diz que exige admin e tira o retry de cena (Issue #586)', async ({ page }) => {
+  await openAgentPanel(page);
+
+  // A forma exata que `@role_required("admin")` devolve numa instância com auth
+  // configurada — onde o RBAC morde de verdade.
+  await page.route('**/api/agent/tokens/revoke', (route) =>
+    route.fulfill({
+      status: 403,
+      contentType: 'application/json',
+      body: JSON.stringify({ error: 'permission denied', required_role: 'admin', role: 'member' }),
+    }),
+  );
+
+  await page.click('#axe-revoke-open');
+  await page.click('#axe-revoke-do');
+
+  await expect(page.locator('#axe-revoke-title')).toHaveText(/REVOGAÇÃO EXIGE ADMIN/, { timeout: 8000 });
+  await expect(page.locator('#axe-revoke-body')).toContainText('administrador');
+  // Nada foi revogado: a credencial na tela continua válida e fica onde está.
+  await expect(page.locator('#axe-revoke-body')).toContainText('Nada foi revogado');
+  await expect(page.locator('#axe-revoke-status')).toHaveAttribute('data-tone', 'danger');
+  // O ponto do achado: "TRY AGAIN" aqui seria a UI mentindo — o papel não muda
+  // entre duas tentativas.
+  await expect(page.locator('#axe-revoke-do')).toBeDisabled();
+  await expect(page.locator('#axe-revoke-do')).toHaveText(/ENTENDI/);
+  // E a saída existe: dá para fechar o diálogo.
+  await expect(page.locator('#axe-revoke-cancel')).toBeEnabled();
+
+  await page.click('#axe-revoke-cancel');
+  await expect(page.locator('#axe-revoke-confirm')).toBeHidden();
+  await expect(page.locator('#axe-revoke-open')).toBeVisible();
+});
+
+test('um 403 de identidade manda entrar com a conta, não falar de papel', async ({ page }) => {
+  await openAgentPanel(page);
+
+  // A forma que `_require_caller_identity_on_cloud` devolve na nuvem sem
+  // `API_KEY` — a que roda na instância pública de verdade.
+  await page.route('**/api/agent/tokens/revoke', (route) =>
+    route.fulfill({
+      status: 403,
+      contentType: 'application/json',
+      body: JSON.stringify({ code: 'AGENT_TOKEN_NEEDS_IDENTITY', error: 'authentication required to manage agent tokens' }),
+    }),
+  );
+
+  await page.click('#axe-revoke-open');
+  await page.click('#axe-revoke-do');
+
+  await expect(page.locator('#axe-revoke-title')).toHaveText(/REVOGAÇÃO EXIGE IDENTIDADE/, { timeout: 8000 });
+  await expect(page.locator('#axe-revoke-body')).toContainText('Entre com a conta');
+  await expect(page.locator('#axe-revoke-do')).toBeDisabled();
+  // Falar de "papel" aqui seria diagnosticar errado: o problema é não ter
+  // identidade nenhuma, não estar num papel baixo.
+  await expect(page.locator('#axe-revoke-body')).not.toContainText('papel');
 });
 
 test('a barra de espera existe, mas o estado nunca depende só de movimento', async ({ page }) => {

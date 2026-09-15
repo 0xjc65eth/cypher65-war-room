@@ -372,17 +372,36 @@ token novo e você atualiza `CYPHER65_AGENT_TOKEN` no agente (Docker).
 | Detalhe | Comportamento |
 |---|---|
 | Escopo | Só o tenant do chamador — ninguém revoga o de outro |
-| Identidade | A mesma da cunhagem: `member` + credencial real numa instância de nuvem |
+| Identidade | **`admin`** + credencial real numa instância de nuvem (a cunhagem é `member`) |
 | Propagação | ≤ 5s (memo do epoch); persiste em SQLite, então sobrevive a restart/redeploy |
 | Tokens anteriores a esta feature | Não têm o claim do epoch, contam como 0 → morrem no primeiro revoke (fail-closed) |
 | Falha de escrita | **500**, nunca 200 — uma revogação que não persistiu não pode parecer sucesso |
 | Falha de leitura | Vale o último valor conhecido; sem nenhum, libera (best-effort, igual à blacklist de `services/auth.py`) |
 
+**Por que revogar exige mais que cunhar:** cunhar afeta só a credencial de quem
+cunha; revogar derruba a frota **inteira** do tenant de uma vez e não tem
+desfazer. Por isso `POST /api/agent/tokens/revoke` é `@role_required("admin")`
+enquanto `POST /api/agent/token` continua `member` (Issue #586). Sem
+`API_KEY`/`TENANT_API_KEYS` (modo aberto do self-host) o RBAC é no-op e a recusa
+de um anônimo vem da identidade — 403 `AGENT_TOKEN_NEEDS_IDENTITY`.
+
 **Por que não a blacklist existente:** `services/auth.revoke_token` exige a
 **string** do token (não há enumeração), a lista em memória é FIFO-podada
-(10 000 / guarda 5 000) e a persistência só liga com `REVOKED_TOKENS_DB=1` —
-que **não está no `render.yaml`**. Para um token de 365 dias isso significa que
-a revogação some antes do token.
+(10 000 / guarda 5 000) e a persistência (`REVOKED_TOKENS_DB=1`) só retém as
+revogações por **7d1h**. Para um token de 365 dias isso significa que a
+revogação some antes do token — é o motivo de os agentes usarem epoch, e não a
+blacklist.
+
+**Sobre a blacklist de JWT de USUÁRIO (Issue #586):** `REVOKED_TOKENS_DB=1`
+passou a estar no `render.yaml`, o que faz um logout sobreviver a restart do
+processo. Retenção de 7d1h cobre o token de usuário mais longevo (refresh = 7d).
+Custo medido: **+0,95 ms** por `verify_token` de token válido.
+
+⚠️ A flag sozinha **não** entrega durabilidade: a tabela vive em `data/war_room.sqlite`, então
+num free tier com disco efêmero ela só sobrevive a um redeploy se o backup
+remoto do gist estiver ativo. `/api/healthz` reporta os dois em
+`persistence.*` e `scripts/verify_production.py` reprova se faltar qualquer um
+— é o sinal, não a esperança.
 
 ---
 

@@ -116,14 +116,37 @@ def _good_snapshot():
     return snap
 
 
+def _healthz(cloud=True, **flags):
+    """Corpo do healthz com o bloco `persistence` — o marcador do commit (#586).
+
+    O bloco é o que permite ao validador distinguir "a instância antiga ainda
+    está servindo" (retry resolve) de "o código novo está no ar e um check
+    durável está vermelho" (retry não resolve). Sem ele o marcador reprova, o
+    que é o comportamento correto: um healthz sem `persistence` é código de um
+    commit anterior.
+    """
+    base = {"remote_backup": True, "sentry": True, "revoked_tokens_db": True}
+    base.update({k: v for k, v in flags.items() if k in base})
+    return {"ok": True, "cloud": cloud, "persistence": base}
+
+
+# Self-host: o código é este, então o bloco existe (a flag é que pode estar off).
+SELF_HOST_HEALTHZ = _healthz(
+    cloud=False, remote_backup=False, sentry=False, revoked_tokens_db=False
+)
+
 DEFAULT_ROUTES = {
-    ("GET", "/api/healthz"): (200, {"ok": True, "cloud": True}),
+    ("GET", "/api/healthz"): (200, _healthz()),
     ("GET", "/api/snapshot"): (200, _good_snapshot()),
     ("GET", "/static/app.js"): (200, APP_JS_BYTES),
     ("GET", "/agent/agent.py"): (200, AGENT_PY_BYTES),
     ("POST", "/api/network/scan"): (400, {"success": False, "is_cloud": True}),
     ("POST", "/api/axe-fleet/scan"): (400, {"success": False, "is_cloud": True}),
     ("POST", "/api/agent/token"): (403, {"code": "AGENT_TOKEN_NEEDS_IDENTITY"}),
+    ("POST", "/api/agent/tokens/revoke"): (
+        403,
+        {"code": "AGENT_TOKEN_NEEDS_IDENTITY"},
+    ),
     ("POST", "/api/agent/register"): (401, {"error": "agent token required"}),
 }
 
@@ -313,7 +336,11 @@ def test_scan_guard_without_is_cloud_flag_fails():
 
 
 def test_anonymous_agent_token_minted_on_cloud_fails():
-    """A regressão exata do #578."""
+    """A regressão exata do #578.
+
+    Exit **3**, não 1: o marcador passa (o código novo está no ar) e esta falha
+    é de configuração — o loop do CI não deve gastar 8 min repetindo.
+    """
     fixture = _with_fixture(
         {
             ("POST", "/api/agent/token"): (
@@ -325,7 +352,185 @@ def test_anonymous_agent_token_minted_on_cloud_fails():
     try:
         results = fixture.run()
         assert "agent token anônimo" in _failed(results)
-        assert fixture.main() == 1
+        assert VP.durable_failures(results) == ["agent token anônimo"]
+        assert fixture.main() == 3
+    finally:
+        fixture.close()
+
+
+def test_anonymous_revoke_on_cloud_is_refused():
+    """O kill switch da frota não pode aceitar um POST anônimo (Issue #586).
+
+    Se aceitar, qualquer estranho invalida todos os tokens de agente do tenant
+    com um curl — e nenhum gate olhava esta rota.
+    """
+    fixture = _with_fixture(
+        {
+            ("POST", "/api/agent/tokens/revoke"): (
+                200,
+                {"success": True, "active_epoch": 1, "revoked_epoch": 0},
+            )
+        }
+    )
+    try:
+        results = fixture.run()
+        assert "agent revoke anônimo" in _failed(results)
+        # Exit 3: o marcador passa (o código novo está no ar) e esta falha é de
+        # configuração. O loop do CI não deve repetir 20× por ela.
+        assert fixture.main() == 3
+    finally:
+        fixture.close()
+
+
+def test_a_refusal_that_still_revoked_is_a_failure():
+    """403 com epoch no corpo: o status diz "negado" e o efeito diz "revogou".
+
+    É o pior caso possível — o usuário acharia que a frota dele está de pé.
+    """
+    fixture = _with_fixture(
+        {
+            ("POST", "/api/agent/tokens/revoke"): (
+                403,
+                {"code": "AGENT_TOKEN_NEEDS_IDENTITY", "active_epoch": 3},
+            )
+        }
+    )
+    try:
+        assert "agent revoke anônimo" in _failed(fixture.run())
+    finally:
+        fixture.close()
+
+
+def test_the_rbac_refusal_shape_is_also_accepted():
+    """Com auth configurada quem recusa é o RBAC, com outro corpo.
+
+    As duas formas são legítimas: a identidade (nuvem sem `API_KEY`) e o papel.
+    Exigir só uma delas faria o check virar um falso vermelho no dia em que o
+    operador ligasse `TENANT_API_KEYS`.
+    """
+    fixture = _with_fixture(
+        {
+            ("POST", "/api/agent/tokens/revoke"): (
+                403,
+                {
+                    "error": "permission denied",
+                    "required_role": "admin",
+                    "role": "anonymous",
+                },
+            )
+        }
+    )
+    try:
+        by_name = {name: ok for name, ok, _ in fixture.run()}
+        assert by_name["agent revoke anônimo"] is True
+    finally:
+        fixture.close()
+
+
+def test_an_unrecognized_403_is_a_failure():
+    """Um 403 que não sabemos explicar não é a recusa que este check promete."""
+    fixture = _with_fixture(
+        {("POST", "/api/agent/tokens/revoke"): (403, {"error": "nope"})}
+    )
+    try:
+        assert "agent revoke anônimo" in _failed(fixture.run())
+    finally:
+        fixture.close()
+
+
+def test_revoked_db_flag_missing_in_the_process_fails():
+    """A regressão exata do #586: a flag no blueprint e não no processo.
+
+    Um `render.yaml` verde que o Render não aplicou deixa a produção com a
+    blacklist só em memória — invisível de fora, que é o motivo de existir a
+    sonda no healthz.
+    """
+    fixture = _with_fixture(
+        {
+            ("GET", "/api/healthz"): (
+                200,
+                {
+                    "ok": True,
+                    "cloud": True,
+                    "persistence": {
+                        "remote_backup": True,
+                        "revoked_tokens_db": False,
+                    },
+                },
+            )
+        }
+    )
+    try:
+        failed = {name: detail for name, ok, detail in fixture.run() if ok is False}
+        assert "persistence · revoked_tokens_db" in failed
+        assert "render.yaml" in failed["persistence · revoked_tokens_db"]
+        assert "persistence · durabilidade" not in failed, "os dois são independentes"
+    finally:
+        fixture.close()
+
+
+def test_persistence_without_a_remote_backup_fails():
+    """Persistir num disco efêmero e sem gist não é persistir."""
+    fixture = _with_fixture(
+        {
+            ("GET", "/api/healthz"): (
+                200,
+                {
+                    "ok": True,
+                    "cloud": True,
+                    "persistence": {
+                        "remote_backup": False,
+                        "revoked_tokens_db": True,
+                    },
+                },
+            )
+        }
+    )
+    try:
+        failed = {name: detail for name, ok, detail in fixture.run() if ok is False}
+        assert "persistence · durabilidade" in failed
+        assert "EFÊMERO" in failed["persistence · durabilidade"]
+        assert "persistence · revoked_tokens_db" not in failed, "a flag chegou"
+    finally:
+        fixture.close()
+
+
+def test_a_healthz_without_the_persistence_block_fails():
+    """Sem o bloco, os dois checks reprovam — nunca um verde silencioso."""
+    fixture = _with_fixture(
+        {("GET", "/api/healthz"): (200, {"ok": True, "cloud": True})}
+    )
+    try:
+        failed = _failed(fixture.run())
+        assert "persistence · revoked_tokens_db" in failed
+        assert "persistence · durabilidade" in failed
+    finally:
+        fixture.close()
+
+
+def test_self_host_skips_persistence_and_never_touches_revoke():
+    """Self-host: skip nos três, e o do revoke pelo motivo que importa.
+
+    Em modo aberto o POST anônimo revoga DE VERDADE. Um validador não pode
+    mutar o ambiente que está medindo — então aqui não se faz o request.
+    """
+    fixture = _with_fixture(
+        {
+            ("GET", "/api/healthz"): (200, SELF_HOST_HEALTHZ),
+            ("POST", "/api/agent/token"): (
+                200,
+                {"success": True, "tenant_id": "default"},
+            ),
+        }
+    )
+    try:
+        by_name = {name: (ok, detail) for name, ok, detail in fixture.run()}
+        assert by_name["deploy marker"][0] is True
+        assert by_name["agent revoke anônimo"][0] is None
+        assert "revoga de verdade" in by_name["agent revoke anônimo"][1]
+        assert by_name["persistence · revoked_tokens_db"][0] is None
+        assert by_name["persistence · durabilidade"][0] is None
+        assert _failed(fixture.run()) == []
     finally:
         fixture.close()
 
@@ -390,7 +595,7 @@ def test_audit_endpoint_not_found_is_detected():
 def test_self_host_skips_the_lan_scans_and_expects_open_mode():
     fixture = _with_fixture(
         {
-            ("GET", "/api/healthz"): (200, {"ok": True, "cloud": False}),
+            ("GET", "/api/healthz"): (200, SELF_HOST_HEALTHZ),
             ("POST", "/api/agent/token"): (
                 200,
                 {"success": True, "tenant_id": "default"},
@@ -413,7 +618,7 @@ def test_self_host_skips_the_lan_scans_and_expects_open_mode():
 def test_self_host_anonymous_mint_refused_is_a_failure():
     """Se o self-host parar de emitir, o operador local ficou trancado fora."""
     fixture = _with_fixture(
-        {("GET", "/api/healthz"): (200, {"ok": True, "cloud": False})}
+        {("GET", "/api/healthz"): (200, SELF_HOST_HEALTHZ)}
     )
     try:
         by_name = {name: ok for name, ok, _ in fixture.run()}
@@ -428,6 +633,111 @@ def test_mode_is_unknown_when_healthz_is_down():
         by_name = {name: ok for name, ok, _ in fixture.run()}
         assert by_name["guard /api/network/scan"] is None  # indefinido ≠ verde
         assert by_name["agent token anônimo"] is None
+        assert by_name["agent revoke anônimo"] is None
+        assert by_name["persistence · revoked_tokens_db"] is None
+        assert by_name["persistence · durabilidade"] is None
+    finally:
+        fixture.close()
+
+
+# ── 3b. Exit 3: a falha que o retry NÃO conserta (Issue #586) ────────────
+#
+# O loop do `diagnose-render` repete 20× (~8 min) qualquer vermelho. Isso faz
+# sentido enquanto o deploy não chegou — e é desperdício puro quando o processo
+# live JÁ é este commit e o que falta é uma configuração. O marcador distingue
+# os dois casos, e é o que dá ao gate o direito de parar cedo.
+
+
+def test_the_deploy_marker_requires_the_new_healthz_block():
+    """Sem o bloco `persistence`, quem responde é código anterior a este commit.
+
+    É o `persistence` que prova a identidade do commit — a mesma lição do #576:
+    um marcador que não muda com o commit não prova nada.
+    """
+    fixture = _with_fixture(
+        {("GET", "/api/healthz"): (200, {"ok": True, "cloud": True})}
+    )
+    try:
+        by_name = {name: (ok, detail) for name, ok, detail in fixture.run()}
+        assert by_name["deploy marker"][0] is False
+        assert "sem o bloco" in by_name["deploy marker"][1]
+        # Sem marcador nada é declarado durável: o loop TEM de tentar de novo,
+        # porque pode ser só a instância antiga servindo durante o deploy.
+        assert fixture.main() == 1
+    finally:
+        fixture.close()
+
+
+def test_the_deploy_marker_rejects_a_block_without_the_new_key():
+    """O caso do deploy pela metade: o bloco existe e a chave nova não.
+
+    É um healthz REAL de um commit anterior a este — e o marcador tem de
+    dizer exatamente isso ("processo ANTERIOR"), não confundir com "sem bloco".
+    """
+    fixture = _with_fixture(
+        {
+            ("GET", "/api/healthz"): (
+                200,
+                {
+                    "ok": True,
+                    "cloud": True,
+                    "persistence": {"remote_backup": True, "sentry": True},
+                },
+            )
+        }
+    )
+    try:
+        by_name = {name: (ok, detail) for name, ok, detail in fixture.run()}
+        assert by_name["deploy marker"][0] is False
+        assert "ANTERIOR" in by_name["deploy marker"][1]
+    finally:
+        fixture.close()
+
+
+def test_a_live_commit_with_a_durable_failure_exits_3():
+    """Marcador verde + check durável vermelho = parar o loop, não repetir 20×."""
+    fixture = _with_fixture(
+        {("GET", "/api/healthz"): (200, _healthz(revoked_tokens_db=False))}
+    )
+    try:
+        assert fixture.main() == 3
+    finally:
+        fixture.close()
+
+
+def test_a_convergence_failure_still_exits_1():
+    """A tolerância do primeiro poll não pode virar exit 3: ela É convergência."""
+    _, poll_keys = VP.snapshot_keys_by_producer()
+
+    def snapshot_body():
+        snap = _good_snapshot()
+        for key in poll_keys:
+            snap.pop(key, None)
+        return snap
+
+    fixture = _with_fixture({("GET", "/api/snapshot"): (200, snapshot_body)})
+    try:
+        results = fixture.run(schema_wait=0.0)
+        assert "snapshot schema" in _failed(results)
+        assert VP.durable_failures(results) == []
+        assert fixture.main() == 1
+    finally:
+        fixture.close()
+
+
+def test_marker_presence_is_the_code_and_the_value_is_the_config():
+    """Dois fatos, dois remédios: presença da chave = código; valor = configuração.
+
+    Confundir os dois daria o conselho errado ao operador — "faça redeploy"
+    quando o problema é sincronizar o blueprint, ou o contrário.
+    """
+    fixture = _with_fixture(
+        {("GET", "/api/healthz"): (200, _healthz(revoked_tokens_db=False))}
+    )
+    try:
+        by_name = {name: ok for name, ok, _ in fixture.run()}
+        assert by_name["deploy marker"] is True, "o código É este commit"
+        assert by_name["persistence · revoked_tokens_db"] is False, "a flag não chegou"
     finally:
         fixture.close()
 
@@ -507,7 +817,9 @@ def test_json_output_is_machine_readable():
         payload = json.loads(buf.getvalue())
         assert code == 0
         assert payload["failed"] == []
+        assert payload["durable_failed"] == []
         assert any(c["name"] == "snapshot schema" for c in payload["checks"])
+        assert any(c["name"] == "deploy marker" for c in payload["checks"])
     finally:
         fixture.close()
 

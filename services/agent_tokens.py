@@ -12,11 +12,16 @@ válido por ``AGENT_TOKEN_TTL`` (365 dias). E o mecanismo de revogação existen
 2. A blacklist em memória é FIFO-podada (``_BLACKLIST_MAX=10000``,
    ``KEEP=5000``): depois de 5 000 revogações posteriores a entrada é
    **descartada silenciosamente** e o token volta a valer.
-3. A persistência em SQLite (``REVOKED_TOKENS_DB=1``, opt-in, e **ausente do
-   ``render.yaml``**) apaga linhas mais antigas que ``REFRESH_TTL + 1h`` =
-   **7 dias + 1h**. Ou seja: a janela de revogação efetiva é MENOR que a
-   validade do token — a revogação de um token de 1 ano se autodestrói em ~7
-   dias sem avisar ninguém.
+3. A persistência em SQLite (``REVOKED_TOKENS_DB=1``) poda linhas mais antigas
+   que ``REFRESH_TTL + 1h`` = **7 dias + 1h**. Para um token de agente de 1 ano
+   isso significa que a janela de revogação efetiva é MENOR que a validade do
+   token — a revogação se autodestrói em ~7 dias sem avisar ninguém.
+   A Issue #586 ligou a flag no ``render.yaml``, e isso TORNA este item mais
+   relevante, não menos: a tabela passa a sobreviver a redeploys (junto com o
+   backup remoto), então uma revogação de agente realmente expiraria em 7d
+   enquanto o token segue vivo por 365d. O epoch continua sendo o mecanismo
+   dos agentes porque é durável por construção e escopado por tenant — a
+   blacklist exige a STRING do token, que ninguém consegue enumerar.
 
 O MODELO: UM EPOCH POR TENANT
 -----------------------------

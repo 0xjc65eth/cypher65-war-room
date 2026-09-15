@@ -10,10 +10,13 @@ O que este arquivo prova, e por quê:
    ter sido cunhado antes.
 4. **O epoch é durável e não depende de enumerar tokens.** A blacklist de
    `services/auth.revoke_token` exige a string do token, é FIFO-podada em
-   memória (10 000 / guarda 5 000) e a persistência só existe com
-   `REVOKED_TOKENS_DB=1` — que NÃO está no render.yaml. Para um token de 365
-   dias isso significa: a revogação some antes do token.
-5. **A falha de leitura é best-effort com valor conhecido, mas nunca inventa
+   memória (10 000 / guarda 5 000) e a persistência (`REVOKED_TOKENS_DB=1`,
+   agora ligada no render.yaml pela Issue #586) só retém **7d1h** — para um
+   token de 365 dias isso significa: a revogação some antes do token. É por
+   isso que os agentes usam epoch, e não a blacklist.
+5. **Só `admin` revoga** (Issue #586) — `member` cunha, `member` não revoga — e
+   uma recusa tem de ter ZERO efeito (ver `TestRevokeRequiresAdmin`).
+6. **A falha de leitura é best-effort com valor conhecido, mas nunca inventa
    sucesso** — o que NUNCA é best-effort é a resposta ao usuário: uma revogação
    que não persistiu devolve 500, não 200.
 
@@ -193,7 +196,7 @@ class TestRevocationEndToEnd:
 
 
 # ══════════════════════════════════════════════════════════════════════
-#  Quem pode revogar (mesma identidade da cunhagem)
+#  Quem pode revogar
 # ══════════════════════════════════════════════════════════════════════
 
 
@@ -247,6 +250,106 @@ class TestWhoCanRevoke:
             "from_epoch": 0,
             "to_epoch": 1,
         }
+
+
+class TestRevokeRequiresAdmin:
+    """Issue #586: revogar exige `admin`; cunhar continua `member`.
+
+    A assimetria é o desenho, não um descuido: cunhar só afeta a credencial de
+    quem cunha, revogar derruba a frota INTEIRA do tenant de uma vez e não tem
+    desfazer. Um teste que só olhasse o 200 do admin não distinguiria isso de
+    "todo mundo pode" — por isso os casos negativos são a maioria aqui.
+
+    Nota medida: hoje `member` NÃO é alcançável por HTTP nenhum — o signup
+    grava `role='admin'` (`provision_tenant_with_admin`), o login por API key
+    também, e `create_user(role="member")` não tem chamador. Estes testes forjam
+    o JWT do membro justamente porque nenhuma rota o produz: a restrição é
+    defensiva, e é o teste que a mantém viva se a hierarquia mudar.
+    """
+
+    def _rbac_on(self, monkeypatch):
+        """Auth configurada é o ÚNICO modo em que o `role_required` morde.
+
+        Sem `API_KEY`/`TENANT_API_KEYS` o modo aberto do self-host faz dele um
+        no-op — e aí a recusa de um anônimo vem da identidade
+        (`AGENT_TOKEN_NEEDS_IDENTITY`), não do papel.
+        """
+        monkeypatch.setenv("RENDER", "true")
+        monkeypatch.setenv("API_KEY", "op-key-que-liga-o-rbac")
+
+    def _as(self, tenant, role):
+        return _headers(create_token(subject=tenant, extra_claims={"role": role}))
+
+    def test_member_cannot_revoke(self, client, monkeypatch):
+        self._rbac_on(monkeypatch)
+        resp = client.post(
+            "/api/agent/tokens/revoke", headers=self._as(_tid("mbr"), "member")
+        )
+        assert resp.status_code == 403
+        body = resp.get_json()
+        assert body["required_role"] == "admin"
+        assert body["role"] == "member"
+
+    def test_viewer_cannot_revoke(self, client, monkeypatch):
+        self._rbac_on(monkeypatch)
+        resp = client.post(
+            "/api/agent/tokens/revoke", headers=self._as(_tid("viw"), "viewer")
+        )
+        assert resp.status_code == 403
+
+    def test_admin_can_revoke(self, client, monkeypatch):
+        self._rbac_on(monkeypatch)
+        tenant = _tid("adm")
+        resp = client.post("/api/agent/tokens/revoke", headers=self._as(tenant, "admin"))
+        assert resp.status_code == 200
+        assert resp.get_json()["tenant_id"] == tenant
+
+    def test_member_can_still_mint(self, client, monkeypatch):
+        """A assimetria, escrita como teste: `member` cunha, `member` não revoga.
+
+        Se um dia alguém "uniformizar" os dois decorators, este teste cai.
+        """
+        self._rbac_on(monkeypatch)
+        mint = client.post("/api/agent/token", headers=self._as(_tid("mnt"), "member"))
+        assert mint.status_code == 200
+        assert mint.get_json()["token"]
+        revoke = client.post(
+            "/api/agent/tokens/revoke", headers=self._as(_tid("mnt2"), "member")
+        )
+        assert revoke.status_code == 403
+
+    def test_a_refused_revoke_revokes_nothing(self, client, registry, monkeypatch):
+        """A parte que importa: recusa tem de significar ZERO efeito.
+
+        Um 403 que ainda assim incrementasse o epoch seria pior que um 200 — o
+        usuário veria "negado" enquanto a frota dele caía.
+        """
+        self._rbac_on(monkeypatch)
+        tenant = _tid("nop")
+        minted = client.post(
+            "/api/agent/token", headers=self._as(tenant, "admin")
+        ).get_json()["token"]
+        before = agent_tokens.get_epoch(tenant)
+
+        resp = client.post("/api/agent/tokens/revoke", headers=self._as(tenant, "member"))
+        assert resp.status_code == 403
+
+        agent_tokens.invalidate_memo(tenant)
+        assert agent_tokens.get_epoch(tenant) == before, "o 403 não pode ter revogado"
+        with patch("axe_fleet.routes._registry", registry):
+            assert _use_agent(client, minted).status_code == 201
+
+    def test_the_anonymous_refusal_names_the_identity_gap(self, client, monkeypatch):
+        """Sem auth configurada a recusa é a do #578 — o que o gate de produção cobra."""
+        monkeypatch.setenv("RENDER", "true")
+        monkeypatch.delenv("API_KEY", raising=False)
+        monkeypatch.delenv("TENANT_API_KEYS", raising=False)
+
+        resp = client.post("/api/agent/tokens/revoke")
+
+        assert resp.status_code == 403
+        assert resp.get_json()["code"] == "AGENT_TOKEN_NEEDS_IDENTITY"
+        assert "active_epoch" not in resp.get_json()
 
 
 # ══════════════════════════════════════════════════════════════════════

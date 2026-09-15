@@ -177,12 +177,17 @@ const _dashboard = loadFragment('39b-dashboard.js', '{ poolDetectionView }');
 // `#remote-test-btn`), daí o sandbox mínimo — `getElementById` devolve null e o
 // `?.` deixa o listener inerte. As funções exportadas abaixo são exatamente as
 // que o navegador avalia.
+// `classifyRevokeRefusal` (Issue #586) é a leitura pura da recusa do servidor:
+// sem auth configurada a recusa é de IDENTIDADE (`AGENT_TOKEN_NEEDS_IDENTITY`),
+// com auth configurada o RBAC recusa antes (`permission denied` + `role`). Ela
+// decide se o texto fala de login ou de papel — e se o retry continua oferecido.
 const _fleet = loadFragment(
   '49-axe-fleet.js',
-  '{ agentRevokeView }',
+  '{ agentRevokeView, classifyRevokeRefusal }',
   { window: {}, document: { getElementById: () => null } }
 );
 const agentRevokeView = _fleet.agentRevokeView;
+const classifyRevokeRefusal = _fleet.classifyRevokeRefusal;
 const poolDetectionView = _dashboard.poolDetectionView;
 
 // ── Test counters ─────────────────────────────────────────────────────────
@@ -5368,6 +5373,58 @@ console.log('\n📊 SUITE 39: agentRevokeView() — revogação de agentes (Issu
   // A barra indeterminada só existe enquanto a requisição está em voo.
   ['idle', 'confirm', 'done', 'error'].forEach((phase) => {
     assertEqual(`revoke: ${phase} não mostra barra`, agentRevokeView({ phase }).barVisible, false);
+  });
+
+  // ── Issue #586: a restrição a admin precisa de uma UI que não minta ──────
+  // Oferecer "TRY AGAIN" a quem foi recusado por papel/identidade é a UI
+  // dizendo que o problema é transitório quando ele é de permissão.
+  assertEqual('refusal: 403 de identidade é lido como login',
+    classifyRevokeRefusal(403, { code: 'AGENT_TOKEN_NEEDS_IDENTITY' }), 'login');
+  assertEqual('refusal: 403 de papel (member) é lido como admin',
+    classifyRevokeRefusal(403, { error: 'permission denied', role: 'member' }), 'admin');
+  assertEqual('refusal: 403 de papel (viewer) é lido como admin',
+    classifyRevokeRefusal(403, { error: 'permission denied', role: 'viewer' }), 'admin');
+  // Sem papel nenhum o problema é de identidade, não de hierarquia.
+  assertEqual('refusal: anônimo sem papel é lido como login',
+    classifyRevokeRefusal(403, { error: 'permission denied', role: 'anonymous' }), 'login');
+  assertEqual('refusal: 401 também é recusa',
+    classifyRevokeRefusal(401, { code: 'AGENT_TOKEN_NEEDS_IDENTITY' }), 'login');
+  // Nem sucesso nem falha de servidor são "recusa": o caminho genérico fica.
+  assertEqual('refusal: 200 não é recusa', classifyRevokeRefusal(200, { success: true }), '');
+  assertEqual('refusal: 500 não é recusa (o retry tem de continuar)',
+    classifyRevokeRefusal(500, { error: 'boom' }), '');
+  assertEqual('refusal: erro de rede não é recusa', classifyRevokeRefusal(0, {}), '');
+  assertEqual('refusal: 403 desconhecido é dito como desconhecido',
+    classifyRevokeRefusal(403, { error: 'nope' }), 'unknown');
+
+  const deniedLogin = agentRevokeView({ phase: 'error', denied: 'login' });
+  assertEqual('revoke: recusa de identidade mantém o diálogo aberto', deniedLogin.confirmVisible, true);
+  assertEqual('revoke: recusa de identidade NÃO oferece retry', deniedLogin.canConfirm, false);
+  assertEqual('revoke: recusa de identidade ainda pode ser fechada', deniedLogin.canCancel, true);
+  assertTruthy('revoke: recusa de identidade diz que nada foi revogado',
+    deniedLogin.confirmBody.includes('Nada foi revogado'));
+  assertTruthy('revoke: recusa de identidade manda entrar com a conta',
+    deniedLogin.confirmBody.includes('Entre com a conta'));
+
+  const deniedAdmin = agentRevokeView({ phase: 'error', denied: 'admin' });
+  assertEqual('revoke: recusa de papel NÃO oferece retry', deniedAdmin.canConfirm, false);
+  assertTruthy('revoke: recusa de papel nomeia quem pode',
+    deniedAdmin.confirmBody.includes('administrador'));
+  assertTruthy('revoke: recusa de papel também diz que nada foi revogado',
+    deniedAdmin.confirmBody.includes('Nada foi revogado'));
+  assertEqual('revoke: recusa de papel não é tom de sucesso', deniedAdmin.statusTone, 'danger');
+
+  // Uma recusa que não sabemos explicar NÃO pode desligar o retry: ela pode ser
+  // transitória (proxy, rate limit) e aí tentar de novo é o certo.
+  const deniedUnknown = agentRevokeView({ phase: 'error', denied: 'unknown', reason: 'proxy' });
+  assertEqual('revoke: recusa desconhecida mantém o retry', deniedUnknown.canConfirm, true);
+  assertTruthy('revoke: recusa desconhecida mostra o motivo', deniedUnknown.statusText.includes('proxy'));
+
+  // Nenhuma recusa pode se passar por sucesso, em nenhum dos três casos.
+  ['login', 'admin', 'unknown'].forEach((denied) => {
+    const v = agentRevokeView({ phase: 'error', denied });
+    assertEqual(`revoke: recusa ${denied} não esconde o token`, v.tokenRowVisible, true);
+    assertEqual(`revoke: recusa ${denied} mantém o diálogo aberto`, v.confirmVisible, true);
   });
 }
 

@@ -144,6 +144,13 @@ jobs:
   #      string from an OLDER commit (the private-IP hint from #570), so the gate
   #      stayed green while the deploy served a backend that never carried the
   #      new `pool_detection` key — the feature shipped invisible in production.
+  #      Issue #586 added `persistence · revoked_tokens_db` (a flag no longer
+  #      only in render.yaml), `persistence · durabilidade` (a blacklist
+  #      persistente num disco efêmero e sem backup do gist não é persistente) e
+  #      `agent revoke anônimo` (a rota que derruba a frota não pode aceitar um
+  #      POST anônimo). O validador sai com **3** quando a falha é de
+  #      configuração e o processo live já é este commit: o loop para na hora em
+  #      vez de repetir 20× (~8 min) para chegar no mesmo vermelho.
   #   2. healthz must answer 200 on the live URL (hard gate — prod down fails).
   #   3. The served /static/app.js must byte-match the commit (soft gate — the
   #      deploy is async, so we retry up to ~9 min; Render build typically
@@ -164,9 +171,19 @@ jobs:
           # pollou falha aqui e converge na tentativa seguinte, 25s depois.
           for i in $(seq 1 20); do  # 20 × ~25s ≈ 8 min for the async build
             echo "── tentativa $i ──"
-            if python3 scripts/verify_production.py --base-url "$BASE" \
-                 --skip-bundle --schema-wait 0; then
+            python3 scripts/verify_production.py --base-url "$BASE" \
+                 --skip-bundle --schema-wait 0
+            code=$?
+            if [ "$code" -eq 0 ]; then
               ok="1"; break
+            fi
+            # Exit 3 = o processo live JÁ é este commit e um check DURÁVEL está
+            # vermelho (ex.: persistência ligada sem o backup remoto do gist, ou
+            # a flag no render.yaml e não no processo). Repetir não muda nada:
+            # parar agora, com o motivo no relatório acima.
+            if [ "$code" -eq 3 ]; then
+              echo "⛔ falha DURÁVEL (exit 3) — retry não conserta; parando o loop."
+              break
             fi
             sleep 25
           done

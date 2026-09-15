@@ -49,6 +49,26 @@ DEFAULT_AUDIENCE = "cypher65"
 # DB (revoked_tokens table) — then every process honors the shared blacklist.
 # Persistence is strictly best-effort: a DB error degrades to memory-only and
 # NEVER breaks authentication.
+#
+# TRÊS EFEITOS QUE VÊM JUNTO COM A FLAG (medidos, Issue #586):
+#
+# 1. CUSTO. Todo `verify_token` de um token VÁLIDO ganha um SELECT: medido em
+#    0,021 ms → 0,966 ms por chamada (+0,95 ms; p99 2,07 ms — a conexão SQLite
+#    é aberta a cada chamada). Um request autenticado chama verify_token 1-3
+#    vezes (require_tenant + get_current_role no RBAC), então ~1-3 ms. Ruído
+#    perto da latência de rede, mas não é zero e por isso está escrito aqui.
+# 2. RETENÇÃO. `_persist_revocation` poda linhas mais velhas que
+#    DEFAULT_REFRESH_TTL + 1h (7d1h). Isso é dimensionado para o token de
+#    USUÁRIO mais longevo (refresh = 7d), que é o único que esta blacklist
+#    revoga. NÃO cobre o token de agente de 365 dias — por isso agentes usam
+#    o epoch de `services/agent_tokens.py`, e não esta tabela.
+# 3. DURABILIDADE. A tabela vive no MESMO `data/war_room.sqlite` do resto do
+#    app: ela só sobrevive a um redeploy porque o backup remoto do gist
+#    (GITHUB_TOKEN + REMOTE_BACKUP_ENCRYPTION_KEY) a leva junto. Com o disco
+#    efêmero do free tier e SEM esse backup, ligar a flag não entrega
+#    persistência nenhuma. É exatamente isso que `/api/healthz` reporta em
+#    `persistence.{revoked_tokens_db,remote_backup}` e o que
+#    `scripts/verify_production.py` reprova.
 _blacklisted_tokens: "OrderedDict[str, float]" = OrderedDict()
 _BLACKLIST_MAX = 10000
 _BLACKLIST_KEEP = 5000
@@ -59,11 +79,24 @@ _BLACKLIST_KEEP = 5000
 _revoked_table_ready: Optional[str] = None
 
 
+def revoked_db_enabled(env=None) -> bool:
+    """True quando a blacklist persistente está ligada (``REVOKED_TOKENS_DB=1``).
+
+    Predicado ÚNICO da flag: ``_revoked_db_path()`` e
+    ``services.boot_policy.persistence_flags()`` (exposto em ``/api/healthz``)
+    leem daqui — assim o sinal que a produção reporta não pode divergir do que
+    o auth realmente faz. Aceita um mapping opcional para os testes de boot
+    policy passarem um env sintético.
+    """
+    source = os.environ if env is None else env
+    return (source.get("REVOKED_TOKENS_DB") or "") == "1"
+
+
 def _revoked_db_path() -> Optional[str]:
     """Return the SQLite path for revoked-token persistence, or None when
     disabled (REVOKED_TOKENS_DB != 1). Reads DB_PATH at call time so test
     redirects (conftest sets os.environ["DB_PATH"]) are always honored."""
-    if os.environ.get("REVOKED_TOKENS_DB") != "1":
+    if not revoked_db_enabled():
         return None
     try:
         from config import DB_PATH as _cfg_db_path

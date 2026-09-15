@@ -177,11 +177,19 @@ class TestMigratedDashboardRoutes:
         monkeypatch.setenv("GITHUB_TOKEN", "github-secret-value")
         monkeypatch.setenv("REMOTE_BACKUP_ENCRYPTION_KEY", "backup-secret-value")
         monkeypatch.setenv("SENTRY_DSN", "https://sentry-secret.example/1")
+        # Issue #586: o terceiro flag é o modo da blacklist persistente. Ele é
+        # reportado pelo MESMO predicado que `services.auth` usa — a sonda
+        # responde "o que o auth está fazendo agora", não "o que está no env".
+        monkeypatch.setenv("REVOKED_TOKENS_DB", "1")
         r = client.get("/api/healthz")
         assert r.status_code == 200
         data = r.get_json()
         assert data["ok"] is True
-        assert data["persistence"] == {"remote_backup": True, "sentry": True}
+        assert data["persistence"] == {
+            "remote_backup": True,
+            "sentry": True,
+            "revoked_tokens_db": True,
+        }
         assert data["rate_limit_scope"] == "process"
         assert "github-secret-value" not in r.get_data(as_text=True)
         assert "backup-secret-value" not in r.get_data(as_text=True)
