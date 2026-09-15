@@ -134,21 +134,48 @@ jobs:
   # ── JOB 4: DIAGNOSE RENDER DEPLOY (MASTER ONLY) ────────────────────────
   # Render autoDeploys on push to master (render.yaml). This job turns the old
   # placeholder "Deploy to production server" into a real release verification:
-  #   1. healthz must answer 200 on the live URL (hard gate — prod down fails).
-  #   2. The served /static/app.js must byte-match the commit (soft gate — the
+  #   1. CONTRACT (hard gate, scripts/verify_production.py): the backend that is
+  #      LIVE serves what THIS commit's code writes. The expected snapshot schema
+  #      is derived from app.py in the checkout, so the marker is specific to the
+  #      commit being deployed and cannot go stale. It also covers the cloud scan
+  #      guards (#570), the anonymous agent-token mint (#578) and the sha256 of
+  #      the agent.py users download — routes no gate looked at before.
+  #      Why it exists (Issue #576): the previous backend marker was a hardcoded
+  #      string from an OLDER commit (the private-IP hint from #570), so the gate
+  #      stayed green while the deploy served a backend that never carried the
+  #      new `pool_detection` key — the feature shipped invisible in production.
+  #   2. healthz must answer 200 on the live URL (hard gate — prod down fails).
+  #   3. The served /static/app.js must byte-match the commit (soft gate — the
   #      deploy is async, so we retry up to ~9 min; Render build typically
   #      lands in 2-5 min).
-  #   3. If the bundle still differs, probe a BACKEND marker (the private-IP
-  #      hint from axe_fleet/scanner.py) — the API is not CDN-cached, so it
-  #      proves the new code reached the server even when Cloudflare caches a
-  #      stale static file. Only a fully-missing deploy (no bundle AND no
-  #      marker) fails the gate.
   diagnose-render:
     runs-on: ubuntu-latest
     needs: integration
     if: github.ref == 'refs/heads/master'
     steps:
       - uses: actions/checkout@v7
+      - name: Backend contract — schema do commit deployado (Issue #576)
+        run: |
+          BASE="https://cypher65-war-room.onrender.com"
+          ok=""
+          # `--schema-wait 0`: este loop JÁ é o retry. Deixar os 45s internos
+          # ligados aninharia as duas esperas (20 × ~50s ≈ 17 min, não os 8 min
+          # que este comentário prometia). Um app recém-subido que ainda não
+          # pollou falha aqui e converge na tentativa seguinte, 25s depois.
+          for i in $(seq 1 20); do  # 20 × ~25s ≈ 8 min for the async build
+            echo "── tentativa $i ──"
+            if python3 scripts/verify_production.py --base-url "$BASE" \
+                 --skip-bundle --schema-wait 0; then
+              ok="1"; break
+            fi
+            sleep 25
+          done
+          if [ -z "$ok" ]; then
+            echo "❌ o backend deste commit NÃO está live (schema/guards/paridade do agente)."
+            echo "   Ver o relatório acima: cada check traz o motivo exato."
+            echo "   Check: https://dashboard.render.com → cypher65-war-room → deploys"
+            exit 1
+          fi
       - name: Diagnose Render deploy
         run: |
           BASE="https://cypher65-war-room.onrender.com"
@@ -207,16 +234,12 @@ jobs:
             exit 0
           fi
 
-          # 4) CDN-proof backend marker — the new code may be live behind a
-          # cached static file (Cloudflare). Diagnose a private LAN IP; the
-          # 'IP privado' hint lives in scanner.py, not the CDN-cached bundle.
-          echo "  ⚠ bundle still differs after ~9 min — probing backend marker"
-          marker=$(curl -s --max-time 20 "$BASE/api/axe-fleet/diagnose/192.168.1.27" 2>/dev/null | python3 -c "import json,sys; d=json.load(sys.stdin); print('IP privado' in (d.get('error_detail') or ''))" 2>/dev/null || echo "False")
-          echo "  backend marker (private-IP hint present): $marker"
-          if [ "$marker" = "True" ]; then
-            echo "  ⚠ Deploy IS live (backend marker found) — static is CDN-cached. Check Render dashboard for the completed deploy."
-            exit 0
-          fi
-          echo "❌ No new code detected: bundle mismatch AND no backend marker — the deploy likely failed."
+          # Sem marcador hardcoded aqui: o passo "Backend contract" já provou
+          # que o backend DESTE commit está live (o schema esperado é derivado
+          # do app.py do checkout). Um marcador com texto de outro commit é o
+          # que manteve este gate verde com o #576 quebrado em produção.
+          echo "❌ bundle servido não bate com $local_md5 após ~9 min."
+          echo "   Backend: OK (o passo 'Backend contract' passou)."
+          echo "   Causa provável: /static/app.js servido do cache do CDN, ou build de estático pendente."
           echo "   Check: https://dashboard.render.com → cypher65-war-room → deploys"
           exit 1

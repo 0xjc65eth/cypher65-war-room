@@ -428,6 +428,51 @@ presença de skeleton nos módulos tardios. Exit codes CI-friendly
 Requer servidor local no ar (padrão `http://127.0.0.1:8765`, override
 `AUDIT_URL`).
 
+### Verificação pós-deploy — `scripts/verify_production.py` (Issue #580)
+
+Validação **read-only** de um deploy que já está no ar. É o passo "Backend
+contract" do job `diagnose-render` (master only) e roda local igual:
+
+```bash
+python3 scripts/verify_production.py --base-url https://cypher65-war-room.onrender.com
+python3 scripts/verify_production.py --base-url URL --json        # saída de máquina
+
+# caminho autenticado — o token vai pelo ENV (argv é visível em `ps`)
+VERIFY_ACCESS_TOKEN="$JWT" python3 scripts/verify_production.py \
+    --base-url URL --expect-tenant default
+```
+
+Exit codes: `0` tudo verde · `1` pelo menos um check vermelho · `2` uso/entorno.
+
+**Por que existe.** Duas falhas reais passaram por "deploy verificado": o
+**#576** (`/api/snapshot` sem `pool_detection` — bundle novo, JSON velho, feature
+invisível) e o **#578** (`/api/agent/token` cunhando JWT de frota para POST
+anônimo). A causa-raiz era o *gate*, não os bugs: o marcador de backend era a
+string `IP privado` de um commit **anterior** (#570), então ele provava "o
+backend é novo o bastante" e não "o backend **é este**" — verde para sempre.
+
+| Check | O que afirma |
+|---|---|
+| `healthz` | 200 + `ok`, e `cloud` (define os checks seguintes) |
+| `snapshot schema` | o payload servido carrega as chaves dos produtores do `app.py` **do checkout**, separando boot (exigível já) do primeiro poll (`--schema-wait`, 45s) |
+| `bundle parity` | `md5(/static/app.js)` = `md5(static/app.js)` local |
+| `agent.py parity` | `sha256(/agent/agent.py)` = o do repositório |
+| `guard /api/network/scan` · `/api/axe-fleet/scan` | 400 + `is_cloud` na nuvem; **skip** em self-host (não varre a LAN de ninguém) |
+| `agent token anônimo` | 403 + `AGENT_TOKEN_NEEDS_IDENTITY` na nuvem; 200 no modo aberto do self-host |
+| `agent token com identidade` | 200 com `VERIFY_ACCESS_TOKEN` (ou `--access-token`), tenant conferido; **o token nunca entra na saída** |
+| `agent register sem token` | 401 antes de tocar no registry |
+
+`None` (skip) é sempre explícito, com motivo — nunca um verde mudo. O schema
+esperado é derivado do `app.py`, então o marcador é específico do commit: quando
+alguém adiciona uma chave a um produtor e esquece o outro, a produção acusa
+sozinha (foi o #576).
+
+**Self-test** (`python3 tests/test_verify_production.py` ou via pytest, 23 casos,
+~19s): caminho feliz contra um `http.server` **real** em porta efêmera e **uma
+mutação por check** — um validador que só sabe dizer "verde" não é um validador.
+Cobre também a janela de convergência do primeiro poll e o fato de que a
+tolerância **não** é anistia (sem convergir, fica vermelho).
+
 ---
 
 ## 4. Referências
@@ -435,5 +480,6 @@ Requer servidor local no ar (padrão `http://127.0.0.1:8765`, override
 - Observabilidade: `services/observability.py` · `app.py` (Sentry env-gated)
 - CI: `.github/workflows/ci.yml` (pytest+JS core+coverage) ·
   `execution-pipeline.yml` (validate/build/integration/diagnose-render)
+- Verificação pós-deploy: `scripts/verify_production.py` (Issue #580)
 - Issues: #28 (testes) · #29 (lint) · #30 (observabilidade)
 - Regra de ouro: ver `docs/AUDITORIA_ESTRATEGICA.md`
