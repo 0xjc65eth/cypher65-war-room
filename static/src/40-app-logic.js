@@ -1125,7 +1125,13 @@
     setTimeout(function () { hideSkeletons(); }, 20000);
     initLeaderboardPager();
     initFleetCommandCenterControls();
-    initAxeFleetControls();
+    // UMA vez. Havia duas chamadas idênticas aqui (artefato de merge), então
+    // TODO botão do Fleet ganhava dois listeners no boot: como cada
+    // `initAxeFleetControls()` tem o próprio estado, o `if (phase === 'working')`
+    // de um não bloqueava o outro. Nos handlers idempotentes passou despercebido;
+    // no REVOKE AGENTS (Issue #582) significava revogar duas vezes com um clique —
+    // o segundo incremento mataria também o token recém-gerado pelo usuário.
+    // Achado pelo e2e `agent-revoke.spec.js` (contagem de POSTs).
     initAxeFleetControls();
     initAuth();
     initThemeToggle();

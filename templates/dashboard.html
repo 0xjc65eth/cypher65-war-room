@@ -1353,6 +1353,21 @@
       <button class="btn btn--mini" id="axe-agent-gen" style="border-color:var(--cyan);color:var(--cyan)"><svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:4px"><path d="m15.5 7.5 2.3 2.3a1 1 0 0 0 1.4 0l2.1-2.1a1 1 0 0 0 0-1.4L19 4"/><path d="m21 2-9.6 9.6"/><circle cx="7.5" cy="15.5" r="5.5"/></svg>GENERATE AGENT TOKEN</button>
       <span id="axe-agent-status" style="font-size:9px;color:var(--text-tertiary)"></span>
     </div>
+    <div class="axe-revoke" id="axe-revoke" data-phase="idle">
+      <button class="btn btn--mini axe-revoke__trigger" id="axe-revoke-open"
+              title="Invalida todos os tokens de agente deste tenant (Issue #582)">
+        <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:4px"><circle cx="12" cy="12" r="10"/><path d="m4.9 4.9 14.2 14.2"/></svg>REVOKE AGENTS</button>
+      <div class="axe-revoke__confirm" id="axe-revoke-confirm" hidden>
+        <div class="axe-revoke__title" id="axe-revoke-title"></div>
+        <div class="axe-revoke__body" id="axe-revoke-body"></div>
+        <div class="axe-revoke__actions">
+          <button class="btn btn--mini axe-revoke__danger" id="axe-revoke-do">REVOKE ALL TOKENS</button>
+          <button class="btn btn--mini axe-revoke__keep" id="axe-revoke-cancel">KEEP MY AGENTS</button>
+        </div>
+        <div class="axe-revoke__status" id="axe-revoke-status" role="status" aria-live="polite"></div>
+        <div class="axe-revoke__bar" id="axe-revoke-bar" aria-hidden="true"></div>
+      </div>
+    </div>
     <div id="axe-agent-token-row" style="display:none;margin-top:8px">
       <div style="font-size:9px;letter-spacing:0.08em;color:var(--text-tertiary);margin-bottom:2px">AGENT TOKEN (secreto — vale 365 dias, escopo do seu tenant)</div>
       <textarea id="axe-agent-token" readonly rows="2" style="width:100%;font-family:var(--mono,monospace);font-size:10px;background:var(--bg-deep);color:var(--cyan);border:1px solid var(--border-subtle);padding:4px"></textarea>

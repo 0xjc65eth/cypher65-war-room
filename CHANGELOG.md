@@ -6,6 +6,39 @@ e versionamento semântico ([SemVer](https://semver.org/lang/pt-BR/)).
 
 ## [Unreleased]
 
+### Adicionado — botão REVOKE AGENTS no painel (Issue #584)
+- **A API do #582 não tinha porta de entrada no painel:** revogar exigia curl, e
+  quem precisa revogar é justamente quem acabou de perceber um token vazado.
+- **Duas etapas com a consequência escrita** — nada de `window.confirm()`, que
+  pergunta sem explicar o que para de funcionar. O gatilho sozinho **não**
+  revoga; a confirmação diz que os agentes param de enviar telemetria em ≤5s e
+  como reconectar (`CYPHER65_AGENT_TOKEN`).
+- **Nenhum sucesso otimista:** `done` só com o 200 do servidor. Um 500 mantém a
+  confirmação aberta com o motivo que o servidor devolveu e o botão em
+  `TRY AGAIN` — o backend se recusa a mentir, e a UI também.
+- **Em `done` a linha do token sai da tela:** é credencial morta, e ao lado dela
+  está o comando de instalação. Manter visível convidaria a copiar o que já não
+  funciona.
+- **Movimento com propósito** (regra 4 do `AGENTS.md`): entrada de 160ms com
+  ease-out, e a barra indeterminada só existe enquanto a requisição está em voo.
+  Em `prefers-reduced-motion` a entrada some e a barra vira linha estática —
+  nenhum estado é transmitido **só** por animação: `role=status` + `aria-live`
+  carregam o mesmo recado em texto.
+
+### Corrigido — o boot chamava `initAxeFleetControls()` duas vezes (Issue #584)
+- **Achado pelo e2e do botão acima, não por leitura de código.** Duas chamadas
+  idênticas em `static/src/40-app-logic.js` (artefato de merge) faziam **todo**
+  botão do Fleet ganhar dois listeners. Como cada init tem o **próprio** estado
+  de painel, a guarda `if (phase === 'working') return` de um não bloqueava o
+  outro: **um clique disparava dois POSTs** e o epoch subia **de 2 em 2** —
+  invalidando também o token que o usuário gerasse em seguida. Medido no e2e:
+  `revoked_epoch: 0` com `active_epoch: 2`.
+- Nos handlers idempotentes (ADD, SCAN, GENERATE, COPY) o listener duplicado
+  passou despercebido por meses; o caminho **destrutivo** expôs.
+- **Além de remover a duplicata, o caminho destrutivo ganhou trava de
+  idempotência no DOM** (o único estado que dois inits enxergam): uma futura
+  duplicata não volta a revogar duas vezes.
+
 ### Adicionado — revogação de tokens de agente por tenant (Issue #582)
 - **O furo que o #578 deixou aberto:** fechar a *cunhagem* anônima não invalida o
   que já foi cunhado — um token mintado na janela de exposição segue válido por

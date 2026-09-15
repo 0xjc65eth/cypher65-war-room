@@ -3529,6 +3529,80 @@ dimmed so they never read as a discovered miner. */
 .axe-scan-add { margin-left: auto; }
 .axe-group-header { font-size: 9px; color: var(--text-tertiary); text-transform: uppercase; letter-spacing: 0.1em; margin: 8px 0 4px; }
 .axe-agent { font-size: 9px; color: var(--brand); border: 1px solid var(--brand-dim); padding: 0 4px; border-radius: var(--radius-sm); }
+
+/* ─── REVOGAÇÃO DE AGENTES (Issue #582) ───────────────────────────────────
+   Ação RARA e DESTRUTIVA: o motion existe para marcar a troca de estado, não
+   para enfeitar. 160ms com ease-out (curva de desaceleração) — o painel é
+   ferramenta de operação, então a referência é Emil: rápido e discreto. Nada
+   aqui anima continuamente, exceto a barra indeterminada do "revogando", que
+   é informação (a espera é real e de duração desconhecida).
+
+   Acessibilidade: em `prefers-reduced-motion` a entrada some e a barra vira
+   uma linha estática — o estado NUNCA é transmitido só por movimento, sempre
+   tem texto (`role=status` com aria-live) carregando o mesmo recado. */
+.axe-revoke { margin-top: 8px; }
+/* `.btn` é uma classe de autor (`display: inline-flex`) e VENCE o
+   `[hidden] { display: none }` da UA stylesheet — sem esta regra o gatilho
+   fica visível junto da confirmação (achado do e2e: dois caminhos abertos
+   para uma ação destrutiva). Mesma armadilha do `.skel-overlay` do #475. */
+.axe-revoke__trigger[hidden], .axe-revoke__confirm[hidden] { display: none; }
+.axe-revoke__trigger { color: var(--accent-red); border-color: var(--border-subtle); }
+.axe-revoke__trigger:hover { border-color: var(--accent-red); }
+.axe-revoke__confirm {
+  border: 1px solid var(--accent-red);
+  border-radius: var(--radius-sm);
+  padding: 6px 7px;
+  background: var(--bg-deep);
+}
+.axe-revoke__confirm:not([hidden]) { animation: axeRevokeIn 160ms cubic-bezier(0.2, 0, 0, 1) both; }
+@keyframes axeRevokeIn {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: none; }
+}
+.axe-revoke__title {
+  font-size: 9px; letter-spacing: 0.08em; font-weight: 700;
+  color: var(--accent-red); margin-bottom: 3px;
+}
+.axe-revoke__body { font-size: 10px; line-height: 1.5; color: var(--text-secondary); }
+.axe-revoke__actions { display: flex; gap: 4px; margin-top: 6px; flex-wrap: wrap; }
+.axe-revoke__danger { border-color: var(--accent-red); color: var(--accent-red); }
+.axe-revoke__danger:disabled, .axe-revoke__keep:disabled { opacity: 0.55; cursor: not-allowed; }
+.axe-revoke__keep { color: var(--text-tertiary); }
+.axe-revoke__status { font-size: 9px; margin-top: 4px; color: var(--text-tertiary); }
+.axe-revoke__status[data-tone="ok"] { color: var(--accent-green); }
+.axe-revoke__status[data-tone="danger"] { color: var(--accent-red); }
+
+/* Barra indeterminada: só existe enquanto a requisição está em voo. */
+.axe-revoke__bar { height: 1px; background: var(--accent-red); opacity: 0; margin-top: 5px; }
+.axe-revoke[data-phase="working"] .axe-revoke__bar {
+  opacity: 0.9;
+  transform-origin: left;
+  animation: axeRevokeBar 900ms linear infinite;
+}
+@keyframes axeRevokeBar {
+  from { transform: scaleX(0.12); }
+  to { transform: scaleX(1); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .axe-revoke__confirm:not([hidden]) { animation: none; }
+  /* Sem varredura: a espera vira uma linha cheia e discreta, e o texto ao
+     lado ("revogando tokens do tenant…") continua dizendo o que acontece. */
+  .axe-revoke[data-phase="working"] .axe-revoke__bar {
+    animation: none;
+    opacity: 0.35;
+    transform: none;
+  }
+}
+
+@media (max-width: 768px) {
+  /* minmax(0, 1fr), não 1fr: a trilha `1fr` tem mínimo `auto` = min-content do
+     item, então um título longo empurraria a largura em vez de recortar. */
+  .axe-revoke__confirm { min-width: 0; }
+  .axe-revoke__title, .axe-revoke__body, .axe-revoke__status {
+    min-width: 0; overflow-wrap: anywhere;
+  }
+}
 .axe-cap-badge, .axe-card__ro-badge { font-size: 8px; color: var(--amber); border: 1px solid var(--amber-dim); padding: 0 4px; border-radius: var(--radius-sm); }
 .axe-card__cmds { display: flex; gap: 4px; flex-shrink: 0; }
 .axe-card__caps { display: flex; gap: 4px; flex-wrap: wrap; }
