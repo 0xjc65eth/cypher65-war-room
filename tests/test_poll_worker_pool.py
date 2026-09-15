@@ -63,7 +63,7 @@ class TestPoolBoundedThreads:
         pool worker, not a per-session thread."""
         pool = _up.PollWorkerPool(size=2)
         snap = _snap()
-        monkeypatch.setattr(_up, "_build_snapshot", lambda a, w: snap)
+        monkeypatch.setattr(_up, "_build_snapshot", lambda a, w, t="": snap)
         monkeypatch.setattr(_up, "_poll_wait", lambda err: 0.01)  # fast re-poll
         pool.start()
         try:
@@ -95,7 +95,7 @@ class TestPoolBoundedThreads:
         monkeypatch.setattr(_up, "_poll_wait", lambda err: 0.01)
         monkeypatch.setattr(
             _up, "_build_snapshot",
-            lambda a, w: (count.__setitem__("n", count["n"] + 1) or _snap()))
+            lambda a, w, t="": (count.__setitem__("n", count["n"] + 1) or _snap()))
         pool.start()
         try:
             sm = SessionManager()
@@ -119,7 +119,7 @@ class TestPoolBoundedThreads:
     def test_reschedule_immediate_after_address_change(self, monkeypatch):
         pool = _up.PollWorkerPool(size=2)
         monkeypatch.setattr(_up, "_poll_wait", lambda err: 60.0)  # long wait
-        monkeypatch.setattr(_up, "_build_snapshot", lambda a, w: _snap())
+        monkeypatch.setattr(_up, "_build_snapshot", lambda a, w, t="": _snap())
         pool.start()
         try:
             sm = SessionManager()
@@ -168,7 +168,7 @@ class TestWorkerFacade:
         """poll_now() runs in the caller's thread — the connect path and unit
         tests depend on it; the pool must NOT be required for it."""
         snap = _snap()
-        monkeypatch.setattr(_up, "_build_snapshot", lambda a, w: snap)
+        monkeypatch.setattr(_up, "_build_snapshot", lambda a, w, t="": snap)
         monkeypatch.setattr(
             _up, "_load_settings", lambda tid: {"webhook_url": "",
                                                 "webhook_min_severity": "WARN"})
@@ -308,7 +308,7 @@ class TestPoolStats:
         """Real pool polls must increment total_polls and move the polls/sec
         window. sessions_active reflects the registered session."""
         pool = _up.PollWorkerPool(size=2)
-        monkeypatch.setattr(_up, "_build_snapshot", lambda a, w: _snap())
+        monkeypatch.setattr(_up, "_build_snapshot", lambda a, w, t="": _snap())
         monkeypatch.setattr(_up, "_poll_wait", lambda err: 0.01)  # fast re-poll
         pool.start()
         try:
@@ -338,7 +338,7 @@ class TestPoolStats:
         """A raising _build_snapshot is counted as an error, not a poll."""
         pool = _up.PollWorkerPool(size=1)
 
-        def boom(address, worker_name):
+        def boom(address, worker_name, tenant_id=""):
             raise RuntimeError("upstream down")
 
         monkeypatch.setattr(_up, "_build_snapshot", boom)
@@ -367,7 +367,7 @@ class TestPoolStats:
         """stats() exposes last_poll_ts + stalled flag; is_stalled() is False
         on a healthy pool that recently polled."""
         pool = _up.PollWorkerPool(size=1)
-        monkeypatch.setattr(_up, "_build_snapshot", lambda a, w: _snap())
+        monkeypatch.setattr(_up, "_build_snapshot", lambda a, w, t="": _snap())
         monkeypatch.setattr(_up, "_poll_wait", lambda err: 0.01)
         pool.start()
         try:

@@ -291,12 +291,29 @@ def _fetch_account(address: str) -> dict | None:
 # ── Snapshot builder ─────────────────────────────────────────────────────────
 
 
-def _build_snapshot(address: str, worker_name: str) -> dict:
+def _detect_pool(address: str, tenant_id: str = "") -> dict:
+    """Detected pool for an address, from the ASIC's own report (Issue #574).
+
+    Module-level indirection on purpose: it is ONE seam for tests to stub, and
+    it keeps the polling module from importing the detection module's internals.
+    Returns {} when no ASIC has reported a pool — see services.pool_detection.
+    """
+    from services.pool_detection import detected_pool_for
+
+    return detected_pool_for(address, tenant_id)
+
+
+def _build_snapshot(address: str, worker_name: str, tenant_id: str = "") -> dict:
     """Build a complete snapshot dict for one BTC address.
 
     This is the core polling logic, isolated per-session. It fetches:
     - User-specific: worker data, account data, leaderboard entry
     - Shared global: pool stats, network, BTC price, mempool fees
+
+    ``tenant_id`` scopes the pool-detection enrichment (Issue #574): the
+    stratum endpoint the operator's own ASIC reported is read from fleet
+    telemetry, which is tenant-isolated. It is optional so existing callers
+    that only have an address keep working.
 
     Returns a dict with the same schema as the original latest_snapshot.
     """
@@ -308,6 +325,11 @@ def _build_snapshot(address: str, worker_name: str) -> dict:
         "worker_index": None,
         "user_aggregate": None,
         "pool": None,
+        # Pool detection from the hardware's own report (Issue #574). Both stay
+        # in the schema even when nothing is detected, so the front-end never
+        # has to distinguish "absent" from "not applicable".
+        "pool_detection": None,
+        "pool_worker": None,
         "account": None,
         "account_meta": {},
         "lightning": None,
@@ -524,5 +546,19 @@ def _build_snapshot(address: str, worker_name: str) -> dict:
 
     except Exception as e:
         log.error("[poll] error for %s: %s", address[:8], e)
+
+    # ── Pool detection from the hardware's own report (Issue #574) ──
+    # The ASIC already reported its stratum endpoint into fleet telemetry, so
+    # the snapshot can say WHICH pool this address is on without anyone calling
+    # an endpoint — and for a pool that publishes no public API the numbers come
+    # from the miner itself instead of rendering empty.
+    try:
+        detected = _detect_pool(address, tenant_id)
+    except Exception as e:  # noqa: BLE001 — enrichment must never break a poll
+        log.warning("[poll] pool detection failed for %s: %s", address[:8], e)
+        detected = {}
+    if detected:
+        snapshot["pool_detection"] = detected.get("detection") or None
+        snapshot["pool_worker"] = detected.get("stats") or None
 
     return snapshot

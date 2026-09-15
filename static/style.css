@@ -1604,6 +1604,28 @@ tr:hover td { background: var(--bg-hover); }
 .stat__val--green { color: var(--green); }
 .stat__sub { font-size: 9px; color: var(--text-tertiary); }
 
+/* ── Pool detectada pelo ASIC (Issue #574) ───────────────────────── */
+/* Diz QUAL pool o minerador reporta, em qual chain, e se os números vêm da API
+   pública da pool ou do próprio ASIC. A borda esquerda carrega o estado: âmbar
+   quando a API da pool existe e não respondeu (precisa de olho), neutra quando
+   a pool está fora do registro — avisos diferentes, cores diferentes. */
+.pool-detect { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; margin-bottom: 4px; padding: 6px 8px; border: 1px solid var(--border-subtle); border-left: 2px solid var(--brand); background: var(--bg-elevated); border-radius: var(--radius-sm); animation: pool-detect-in var(--dur-enter) var(--ease-out-expo) both; }
+.pool-detect[hidden] { display: none; }
+.pool-detect--degraded { border-left-color: var(--amber); }
+.pool-detect--unknown { border-left-color: var(--text-tertiary); }
+/* `min-width: 0` é CARGA, não higiene: o item de grid tem mínimo automático
+   `auto` = min-content, e num texto com `white-space: nowrap` isso é a string
+   INTEIRA (medido: 1.790px de trilha para um host de 1.778px, painel com
+   `scrollWidth` 1.814 contra `clientWidth` 361 — 1.453px de estouro e ZERO
+   ellipsis). Com `min-width: 0` a trilha cai para 318px e o texto é recortado. */
+.pool-detect__cell { min-width: 0; }
+.pool-detect__label { font-size: 8px; color: var(--text-tertiary); text-transform: uppercase; letter-spacing: 0.08em; }
+.pool-detect__val { font-size: var(--fs-sm); color: var(--text-primary); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pool-detect__val--chain-bsv { color: var(--amber); }
+.pool-detect__sub { font-size: 9px; color: var(--text-tertiary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+@keyframes pool-detect-in { from { opacity: 0; transform: translateY(-2px); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) { .pool-detect { animation: none; } }
+
 .progress-block { padding: 6px; border: 1px solid var(--border-subtle); margin-top: 4px; background: var(--bg-surface); border-radius: var(--radius-sm); }
 .progress-block__label { display: flex; justify-content: space-between; font-size: 9px; color: var(--text-tertiary); }
 .progress-track { height: 4px; background: var(--bg-input); margin: 4px 0; position: relative; }
@@ -3199,6 +3221,11 @@ dimmed so they never read as a discovered miner. */
   .hero-grid { grid-template-columns: repeat(2, 1fr); }
   .hero-extra { grid-template-columns: repeat(2, 1fr); }
   .stat-row--compact { grid-template-columns: repeat(2, 1fr); }
+  /* Uma coluna no mobile: as 3 células com nowrap não cabem em 375px. Medido
+     com `1fr` e com `minmax(0, 1fr)` daqui: 318px de trilha nos dois (idêntico,
+     porque `.pool-detect__cell` tem `min-width: 0`) — quem impede o estouro é
+     aquela declaração, não a forma da trilha. */
+  .pool-detect { grid-template-columns: 1fr; }
   .fee-row { grid-template-columns: repeat(3, 1fr); }
   .profit-solo-stats, .profit-lender-stats { grid-template-columns: repeat(2, 1fr); }
   .gauge-grid { grid-template-columns: 1fr; }

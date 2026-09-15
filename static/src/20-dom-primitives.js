@@ -13,6 +13,8 @@
     topbarProBadge: $('#topbar-pro-badge'),
     pLastBlock: $('#p-last-block'), pLastBlockTime: $('#p-last-block-time'), pWorkNum: $('#p-work-num'), pWorkFill: $('#p-work-fill'), pExpectedBlocks: $('#p-expected-blocks'),
     pStaleBadge: $('#p-stale-badge'),
+    pdStrip: $('#pool-detect'), pdProvider: $('#pd-provider'), pdProviderSub: $('#pd-provider-sub'),
+    pdChain: $('#pd-chain'), pdChainSub: $('#pd-chain-sub'), pdSource: $('#pd-source'), pdSourceSub: $('#pd-source-sub'),
     acctBlocksBadge: $('#acct-blocks-badge'), acctLn: $('#acct-ln'), acctTotalDiff: $('#acct-total-diff'),
     acctHighestBlock: $('#acct-highest-block'), acctCombined: $('#acct-combined'), acctDiffRank: $('#acct-diff-rank'), acctLoyaltyRank: $('#acct-loyalty-rank'),
     netStatus: $('#net-status'), nHeight: $('#n-height'), nDiff: $('#n-diff'), nHashrate: $('#n-hashrate'),

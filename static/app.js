@@ -275,6 +275,8 @@
     topbarProBadge: $('#topbar-pro-badge'),
     pLastBlock: $('#p-last-block'), pLastBlockTime: $('#p-last-block-time'), pWorkNum: $('#p-work-num'), pWorkFill: $('#p-work-fill'), pExpectedBlocks: $('#p-expected-blocks'),
     pStaleBadge: $('#p-stale-badge'),
+    pdStrip: $('#pool-detect'), pdProvider: $('#pd-provider'), pdProviderSub: $('#pd-provider-sub'),
+    pdChain: $('#pd-chain'), pdChainSub: $('#pd-chain-sub'), pdSource: $('#pd-source'), pdSourceSub: $('#pd-source-sub'),
     acctBlocksBadge: $('#acct-blocks-badge'), acctLn: $('#acct-ln'), acctTotalDiff: $('#acct-total-diff'),
     acctHighestBlock: $('#acct-highest-block'), acctCombined: $('#acct-combined'), acctDiffRank: $('#acct-diff-rank'), acctLoyaltyRank: $('#acct-loyalty-rank'),
     netStatus: $('#net-status'), nHeight: $('#n-height'), nDiff: $('#n-diff'), nHashrate: $('#n-hashrate'),
@@ -3978,6 +3980,115 @@ function renderPool(pool, luck) {
     }
   }
 
+  // ── Pool detectada a partir do report do ASIC (Issue #574) ────────────
+  // A telemetria de frota já carrega o `stratumURL` de cada minerador, então o
+  // painel pode dizer EM QUAL pool esta carteira minera sem ninguém chamar
+  // endpoint nenhum. O view-model sai de uma função PURA (sem DOM, sem global)
+  // para a suíte JS core fixar os rótulos exatos a partir do fonte real.
+  //
+  // Dois fatos ficam separados de propósito, porque juntá-los mentiria:
+  //   · pool `stratum_only` NÃO publica API — o minerador é a única fonte que
+  //     existe ali, e isso é normal;
+  //   · pool que PUBLICA API e ainda assim respondeu pelo minerador significa
+  //     que a chamada à API falhou — transitório, e o painel diz isso em vez de
+  //     exibir um selo confiante.
+  const POOL_SOURCE_LABELS = { api: 'API DA POOL', asic: 'ASIC' };
+  const POOL_KIND_LABELS = { solo: 'SOLO', pool: 'POOL', both: 'SOLO/POOL' };
+  const _pdStr = (v) => (v === null || v === undefined ? '' : String(v).trim());
+
+  function poolDetectionView(snap) {
+    const det = (snap && snap.pool_detection) || null;
+    const worker = (snap && snap.pool_worker) || null;
+    // Nada honesto a mostrar: nenhum ASIC reportou pool ainda.
+    if (!det && !worker) return null;
+    const d = det || {};
+    const w = worker || {};
+
+    const host = _pdStr(d.host);
+    const known = _pdStr(d.provider_id) !== '' && d.provider_id !== 'unknown';
+    const provider = _pdStr(d.label) || _pdStr(w.label) || host || 'não identificada';
+    const kind = POOL_KIND_LABELS[_pdStr(w.kind) || _pdStr(d.kind)] || '';
+    // A sub-linha carrega a evidência: de onde veio o endpoint e se o registro
+    // conhece a pool. Host fora do registro é rotulado como tal, nunca maquiado.
+    const providerSub = [host, kind, known ? '' : 'fora do registro'].filter(Boolean).join(' · ')
+      || 'sem host reportado';
+
+    const chainSource = _pdStr(d.chain_source);
+    const chain = (_pdStr(w.chain) || _pdStr(d.chain)).toUpperCase();
+    // Ausência de chain é dita como ausência: BTC e BSV compartilham base58
+    // `1…`/`3…`, então o endereço não distingue as duas.
+    const chainSub = !chain ? 'não declarada — o endereço não distingue BTC de BSV'
+      : chainSource === 'provider_registry' ? 'pool do registro'
+      : chainSource === 'host_label' ? 'pelo host do ASIC'
+      : 'declarada';
+
+    const raw = _pdStr(w.source).toLowerCase();
+    const source = POOL_SOURCE_LABELS[raw] ? raw : '';
+    const hasApi = d.has_stats_api === true;
+    const apiMiss = hasApi && source === 'asic';
+    const sourceLabel = source ? POOL_SOURCE_LABELS[source] : '—';
+    const sourceSub = apiMiss ? 'API da pool não respondeu'
+      : source === 'asic' ? 'pool sem API pública'
+      : source === 'api' ? 'dados públicos da pool'
+      : 'sem leitura';
+    // Detalhe no hover: a URL pública que respondeu, ou o erro que a derrubou.
+    const sourceTitle = apiMiss ? _pdStr(w.error)
+      : source === 'api' ? _pdStr(w.stats_url)
+      : '';
+    return {
+      provider: provider,
+      providerSub: providerSub,
+      chain: chain || 'não declarada',
+      chainSub: chainSub,
+      source: source,
+      sourceLabel: sourceLabel,
+      sourceSub: sourceSub,
+      sourceTitle: sourceTitle,
+      // Borda: âmbar quando a API falhou (precisa de olho), neutra quando a pool
+      // está fora do registro — os dois são avisos, não o mesmo aviso.
+      accent: apiMiss ? 'degraded' : (known ? '' : 'unknown'),
+    };
+  }
+
+  function renderPoolDetection(snap) {
+    const strip = dom.pdStrip;
+    if (!strip) return;
+    const view = poolDetectionView(snap);
+    if (!view) {
+      // Oculta em vez de preencher com zeros: células vazias leriam como "pool
+      // desconhecida" quando o fato é "nada a reportar ainda".
+      strip.hidden = true;
+      return;
+    }
+    strip.hidden = false;
+    strip.classList.toggle('pool-detect--degraded', view.accent === 'degraded');
+    strip.classList.toggle('pool-detect--unknown', view.accent === 'unknown');
+    if (dom.pdProvider) dom.pdProvider.textContent = view.provider;
+    if (dom.pdProviderSub) {
+      dom.pdProviderSub.textContent = view.providerSub;
+      dom.pdProviderSub.title = view.providerSub;
+    }
+    if (dom.pdChain) {
+      dom.pdChain.textContent = view.chain;
+      dom.pdChain.classList.toggle('pool-detect__val--chain-bsv', view.chain === 'BSV');
+    }
+    if (dom.pdChainSub) {
+      dom.pdChainSub.textContent = view.chainSub;
+      dom.pdChainSub.title = view.chainSub;
+    }
+    if (dom.pdSource) {
+      dom.pdSource.textContent = view.sourceLabel;
+      dom.pdSource.title = view.sourceTitle;
+      dom.pdSource.classList.toggle('badge--green', view.source === 'api');
+      dom.pdSource.classList.toggle('badge--amber', view.accent === 'degraded');
+      dom.pdSource.classList.toggle('badge--mute', view.source !== 'api' && view.accent !== 'degraded');
+    }
+    if (dom.pdSourceSub) {
+      dom.pdSourceSub.textContent = view.sourceSub;
+      dom.pdSourceSub.title = view.sourceTitle || view.sourceSub;
+    }
+  }
+
   function renderNetwork(net) {
     if (!net) return;
     if (dom.nHeight) dom.nHeight.textContent = net.height ? `#${net.height}` : '\u2014';
@@ -4112,6 +4223,7 @@ function renderPool(pool, luck) {
     renderHero(snap);
     renderHostCore(snap);
     renderPool(snap.pool, snap.luck_estimate);
+    renderPoolDetection(snap);
     renderMinersXRay(snap);
     renderNetwork(snap.network);
     renderAccount(snap.account);

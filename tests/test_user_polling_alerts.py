@@ -205,7 +205,7 @@ def test_worker_dispatches_tenant_webhook(monkeypatch, sync_webhooks):
     now = int(time.time())
     snap = _snap(now, last_submission=now - 420, hashrate=100)  # stale → WARN
 
-    monkeypatch.setattr(_up, "_build_snapshot", lambda a, w: snap)
+    monkeypatch.setattr(_up, "_build_snapshot", lambda a, w, t="": snap)
     monkeypatch.setattr(
         _up, "_load_settings",
         lambda tid: _settings(
@@ -253,7 +253,7 @@ def test_worker_dispatches_tenant_webhook(monkeypatch, sync_webhooks):
 def test_worker_no_webhook_when_tenant_has_none(monkeypatch, sync_webhooks):
     now = int(time.time())
     snap = _snap(now, last_submission=now - 420, hashrate=100)
-    monkeypatch.setattr(_up, "_build_snapshot", lambda a, w: snap)
+    monkeypatch.setattr(_up, "_build_snapshot", lambda a, w, t="": snap)
     monkeypatch.setattr(_up, "_load_settings",
                         lambda tid: _settings(webhook_url=""))
 
@@ -283,7 +283,7 @@ def test_worker_settings_and_webhook_are_isolated_between_tenants(monkeypatch, s
     now = int(time.time())
     snap = _snap(now, last_submission=now - 420, hashrate=100)
 
-    monkeypatch.setattr(_up, "_build_snapshot", lambda a, w: snap)
+    monkeypatch.setattr(_up, "_build_snapshot", lambda a, w, t="": snap)
 
     settings_by_tenant = {
         "tenant-aaa": _settings(
@@ -322,7 +322,7 @@ def test_worker_delta_baseline_advances(monkeypatch, sync_webhooks):
     ]
     state = {"i": 0}
     monkeypatch.setattr(_up, "_build_snapshot",
-                        lambda a, w: snaps[state["i"] % len(snaps)])
+                        lambda a, w, t="": snaps[state["i"] % len(snaps)])
     monkeypatch.setattr(_up, "_load_settings",
                         lambda tid: _settings(
                             webhook_url="https://discord.com/api/webhooks/delta"))

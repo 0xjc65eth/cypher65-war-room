@@ -163,6 +163,15 @@ const authBuildHeaders = _auth.authBuildHeaders;
 const authIsExpired = _auth.authIsExpired;
 const authSessionValid = _auth.authSessionValid;
 
+// ── FONTE REAL do domínio Dashboard/render() (RFC 478 · PR 10 · Issue #561) ───
+// `poolDetectionView` (Issue #574) monta o view-model da pool detectada a partir
+// do que o PRÓPRIO ASIC reporta no snapshot. O fragmento tem ZERO statements de
+// topo — é o único domínio extraído sem nenhum (ver o cabeçalho dele) —, então
+// roda num contexto vazio; as outras funções só tocam `dom`/`document` quando
+// CHAMADAS, e `poolDetectionView` não toca nenhum dos dois.
+const _dashboard = loadFragment('39b-dashboard.js', '{ poolDetectionView }');
+const poolDetectionView = _dashboard.poolDetectionView;
+
 // ── Test counters ─────────────────────────────────────────────────────────
 let passed = 0;
 let failed = 0;
@@ -5203,6 +5212,88 @@ function makeSetHtmlIfChanged() {
   assertEqual('analytics invalid counts clamp to zero', extreme.modules.map(m => m.accesses), [0, 0]);
   assertEqual('analytics dropoff cannot exceed boots', extreme.dropoff, { withoutSwitch: 2, navigated: 0, total: 2 });
 })();
+
+// ── SUITE 38: poolDetectionView (Issue #574 — pool detectada no painel) ──
+// O painel precisa dizer TRÊS fatos e não inventar nenhum: qual pool o ASIC
+// reporta, em qual chain, e se os números vêm da API pública da pool ou do
+// próprio minerador. O caso mais fácil de errar é o terceiro: uma pool que
+// PUBLICA API e respondeu pelo ASIC não é "pool sem API" — é API que falhou.
+console.log('\n📊 SUITE 38: poolDetectionView() — pool detectada a partir do ASIC');
+{
+  assertEqual('pool detection: sem snapshot -> null', poolDetectionView(null), null);
+  assertEqual('pool detection: snapshot sem report -> null', poolDetectionView({ pool: {} }), null);
+  assertEqual('pool detection: só detecção vazia -> null', poolDetectionView({ pool_detection: null, pool_worker: null }), null);
+
+  // Pool do registro que respondeu pela própria API — o caso feliz.
+  const viaApi = poolDetectionView({
+    pool_detection: {
+      provider_id: 'parasite', label: 'Parasite', kind: 'solo', chain: 'btc',
+      chain_source: 'provider_registry', host: 'parasite.space', has_stats_api: true,
+    },
+    pool_worker: { source: 'api', chain: 'btc', kind: 'solo', stats_url: 'https://parasite.space/api/address/xyz' },
+  });
+  assertEqual('pool detection: provider do registro', viaApi.provider, 'Parasite');
+  assertEqual('pool detection: sub do provider traz host + tipo', viaApi.providerSub, 'parasite.space · SOLO');
+  assertEqual('pool detection: chain em maiúsculas', viaApi.chain, 'BTC');
+  assertEqual('pool detection: chain do registro é dita como tal', viaApi.chainSub, 'pool do registro');
+  assertEqual('pool detection: fonte API', viaApi.sourceLabel, 'API DA POOL');
+  assertEqual('pool detection: sub da fonte API', viaApi.sourceSub, 'dados públicos da pool');
+  assertEqual('pool detection: hover da fonte é a URL pública', viaApi.sourceTitle, 'https://parasite.space/api/address/xyz');
+  assertEqual('pool detection: pool do registro não é aviso', viaApi.accent, '');
+
+  // Pool `stratum_only`: NÃO existe API pública — o minerador é a fonte que há.
+  const stratumOnly = poolDetectionView({
+    pool_detection: {
+      provider_id: 'ocean', label: 'OCEAN', kind: 'pool', chain: 'btc',
+      chain_source: 'provider_registry', host: 'ocean.xyz', has_stats_api: false,
+    },
+    pool_worker: { source: 'asic', chain: 'btc', kind: 'pool' },
+  });
+  assertEqual('pool detection: fonte ASIC em pool stratum_only', stratumOnly.sourceLabel, 'ASIC');
+  assertEqual('pool detection: stratum_only explica a ausência de API', stratumOnly.sourceSub, 'pool sem API pública');
+  assertEqual('pool detection: stratum_only é normal, não aviso', stratumOnly.accent, '');
+  assertEqual('pool detection: stratum_only não inventa detalhe', stratumOnly.sourceTitle, '');
+
+  // Pool QUE TEM API e ainda assim respondeu pelo ASIC = a chamada falhou.
+  const apiMiss = poolDetectionView({
+    pool_detection: {
+      provider_id: 'ckpool_bsv', label: 'CKPool BSV (solo)', kind: 'solo', chain: 'bsv',
+      chain_source: 'provider_registry', host: 'solo.bsv.ckpool.org', has_stats_api: true,
+    },
+    pool_worker: { source: 'asic', chain: 'bsv', kind: 'solo', error: 'timeout' },
+  });
+  assertEqual('pool detection: API que falhou é dita como falha', apiMiss.sourceSub, 'API da pool não respondeu');
+  assertEqual('pool detection: API que falhou vira aviso âmbar', apiMiss.accent, 'degraded');
+  assertEqual('pool detection: hover carrega o erro real', apiMiss.sourceTitle, 'timeout');
+  assertEqual('pool detection: chain BSV', apiMiss.chain, 'BSV');
+
+  // Host fora do registro: honesto sobre não conhecer, e sem chain inventada.
+  const unknownHost = poolDetectionView({
+    pool_detection: {
+      provider_id: 'unknown', label: 'minha.pool.local', host: 'minha.pool.local',
+      chain: null, chain_source: 'unknown', has_stats_api: false,
+    },
+    pool_worker: { source: 'asic', chain: '', kind: null },
+  });
+  assertEqual('pool detection: host desconhecido usa o próprio host', unknownHost.provider, 'minha.pool.local');
+  assertEqual('pool detection: host fora do registro é rotulado', unknownHost.providerSub, 'minha.pool.local · fora do registro');
+  assertEqual('pool detection: chain ausente não é inventada', unknownHost.chain, 'não declarada');
+  assertEqual('pool detection: motivo da chain ausente cita o endereço', unknownHost.chainSub, 'não declarada — o endereço não distingue BTC de BSV');
+  assertEqual('pool detection: host desconhecido vira aviso neutro', unknownHost.accent, 'unknown');
+
+  // BSV reconhecida pelo rótulo do host (sem registro): a evidência é declarada.
+  const byHost = poolDetectionView({
+    pool_detection: { provider_id: 'unknown', label: 'bsv.exemplo.net', host: 'bsv.exemplo.net', chain: 'bsv', chain_source: 'host_label', has_stats_api: false },
+    pool_worker: { source: 'asic', chain: 'bsv' },
+  });
+  assertEqual('pool detection: chain por rótulo do host é declarada', byHost.chainSub, 'pelo host do ASIC');
+  assertEqual('pool detection: chain por host continua BSV', byHost.chain, 'BSV');
+
+  // Sem nenhuma fonte legível: a célula diz que não houve leitura, não "0".
+  const noSource = poolDetectionView({ pool_detection: { label: 'X' }, pool_worker: {} });
+  assertEqual('pool detection: fonte ausente não vira API', noSource.sourceLabel, '—');
+  assertEqual('pool detection: fonte ausente é dita como ausente', noSource.sourceSub, 'sem leitura');
+}
 
 // ── Issue #420: toast live region contract ────────────────────────────
 (function testToastA11yContract() {
