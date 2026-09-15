@@ -6,6 +6,38 @@ e versionamento semântico ([SemVer](https://semver.org/lang/pt-BR/)).
 
 ## [Unreleased]
 
+### Adicionado — revogação de tokens de agente por tenant (Issue #582)
+- **O furo que o #578 deixou aberto:** fechar a *cunhagem* anônima não invalida o
+  que já foi cunhado — um token mintado na janela de exposição segue válido por
+  **365 dias**, e não havia caminho prático para revogá-lo. Medido no código:
+  `revoke_token(token)` exige a **string** do token (sem enumeração, é impossível
+  revogar "quem cunhou naquela janela"); a blacklist em memória é **FIFO-podada**
+  (`_BLACKLIST_MAX=10000`, guarda 5 000), então a revogação de um token de 1 ano é
+  descartada silenciosamente após 5 000 revogações posteriores; e a persistência
+  em SQLite — opt-in por `REVOKED_TOKENS_DB=1`, **ausente do `render.yaml`** —
+  apaga linhas com `revoked_at < now − (REFRESH_TTL + 1h)`, isto é, **7 dias**.
+  A janela de revogação efetiva era **menor que a validade do token**, e nada
+  avisava.
+- **Um epoch por tenant em vez de uma lista de tokens** (`services/agent_tokens.py`):
+  o token carrega `agent_epoch` no momento em que é cunhado e `_require_agent`
+  recusa qualquer token anterior ao epoch atual. Revogar = incrementar o
+  contador — instantâneo, durável, sem rotacionar `SECRET_KEY` (que deslogaria
+  todos os usuários) e sem depender de enumerar tokens.
+- **Leitura direta no SQLite com memo de 5s, não o cache de `settings`.**
+  `load_settings()` cacheia por tenant no processo **para sempre** (só
+  `save_setting` do mesmo processo invalida): num topology de dois processos
+  (`python -m services.workers` + gunicorn — ver `render.yaml`) um worker ficaria
+  com o epoch velho **indefinidamente** e a revogação nunca teria efeito ali.
+  O que nunca é best-effort é a **resposta**: falha de persistência devolve
+  **500**, não um `success: true` mentiroso.
+- **`POST /api/agent/tokens/revoke`:** mesma identidade da cunhagem (`member` +
+  credencial real numa instância de nuvem) e escopo estrito do tenant. Grava os
+  dois epochs no audit log. Runbook em `docs/DEPLOYMENT_OPS.md`.
+- **Tokens pré-feature morrem no primeiro revoke** (não têm o claim → contam
+  como epoch 0) — fail-closed por construção, com teste.
+- **Prova negativa medida:** com o check de revogação desligado (`if False and
+  is_revoked(...)`), **4 dos 18** testes novos falham; restaurado, 18/18 passam.
+
 ### Adicionado — verificação pós-deploy com marcador derivado do commit (`scripts/verify_production.py`, Issue #580)
 - **Dois bugs passaram por "deploy verificado"** e só apareceram na sonda manual
   pós-merge: o **#576** (o `/api/snapshot` de produção sem `pool_detection` —

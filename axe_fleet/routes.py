@@ -3380,11 +3380,24 @@ def _require_caller_identity_on_cloud(f):
 
 def _require_agent(f):
     """Require a valid agent token (JWT with `agent: true` claim).
-    Injects `agent_tenant_id` (the tenant that owns the agent) into kwargs."""
+    Injects `agent_tenant_id` (the tenant that owns the agent) into kwargs.
+
+    Além da assinatura, um token de agente tem de estar **vigente**: o tenant
+    pode revogar TODOS os seus tokens de uma vez (`POST /api/agent/tokens/
+    revoke`), o que incrementa o epoch do tenant. Um token cujo `agent_epoch`
+    é anterior ao atual está morto — esta é a única via de invalidação, porque
+    a blacklist de `services/auth` exige a string do token e não é durável
+    para tokens de 1 ano (Issue #582).
+
+    Este é o ÚNICO consumidor de tokens de agente: o claim `role: "agent"`
+    resolve para prioridade 0 em ROLE_PRIORITY, então nenhuma rota de usuário
+    aceita um token de agente.
+    """
 
     @wraps(f)
     def wrapper(*args, **kwargs):
         from services.auth import verify_token
+        from services.agent_tokens import is_revoked
 
         auth_header = request.headers.get("Authorization", "")
         if not auth_header.startswith("Bearer "):
@@ -3392,6 +3405,21 @@ def _require_agent(f):
         payload = verify_token(auth_header[7:], expected_type="access")
         if not payload or not payload.get("agent"):
             return jsonify({"error": "invalid agent token"}), 401
+        if is_revoked(payload):
+            return (
+                jsonify(
+                    {
+                        "error": "agent token revoked",
+                        "code": "AGENT_TOKEN_REVOKED",
+                        "hint": (
+                            "Este token foi revogado. Gere um novo em "
+                            "POST /api/agent/token (logado) e atualize "
+                            "CYPHER65_AGENT_TOKEN no agente."
+                        ),
+                    }
+                ),
+                401,
+            )
         kwargs["agent_tenant_id"] = payload.get("sub") or "default"
         return f(*args, **kwargs)
 
@@ -3412,20 +3440,84 @@ def agent_issue_token(tenant_id: str = ""):
     into the agent's env (CYPHER65_AGENT_TOKEN).
     """
     from services.auth import create_token
+    from services.agent_tokens import EPOCH_CLAIM, get_epoch
 
     tid = tenant_id or "default"
+    # O epoch vai NO token: é ele que permite revogar todos os tokens deste
+    # tenant depois, sem rotacionar SECRET_KEY (Issue #582). `None` (leitura
+    # indisponível) vira 0, que é o mesmo valor dos tokens pré-feature —
+    # ambos morrem no primeiro bump, que é o comportamento fail-closed.
+    epoch = get_epoch(tid) or 0
     token = create_token(
-        subject=tid, ttl=AGENT_TOKEN_TTL, extra_claims={"agent": True, "role": "agent"}
+        subject=tid,
+        ttl=AGENT_TOKEN_TTL,
+        extra_claims={"agent": True, "role": "agent", EPOCH_CLAIM: epoch},
     )
-    _log_audit(tid, "agent.token_issued", details={"ttl_days": 365})
+    _log_audit(tid, "agent.token_issued", details={"ttl_days": 365, "epoch": epoch})
     return jsonify(
         {
             "success": True,
             "token": token,
             "tenant_id": tid,
             "expires_in": AGENT_TOKEN_TTL,
+            "agent_epoch": epoch,
             "server_url": request.url_root.rstrip("/"),
             "usage": "CYPHER65_AGENT_TOKEN=<token> em Docker na sua LAN (o agente conecta para fora)",
+        }
+    )
+
+
+@agent_bp.route("/tokens/revoke", methods=["POST"])
+@require_tenant
+@_role_required("member")
+@_require_caller_identity_on_cloud
+def agent_revoke_tokens(tenant_id: str = ""):
+    """Revoga TODOS os tokens de agente do tenant do chamador (Issue #582).
+
+    Incrementa o epoch do tenant: todo token cunhado antes deixa de valer —
+    inclusive os emitidos antes desta feature existir (não têm o claim, contam
+    como epoch 0). Sem rotacionar ``SECRET_KEY``, que deslogaria todos os
+    usuários do dashboard.
+
+    Mesma identidade exigida pela cunhagem (`member` + credencial real numa
+    instância de nuvem) e escopo estrito do tenant: ninguém revoga o de outro.
+    Um erro de persistência devolve 500 — uma revogação que não aconteceu não
+    pode ser reportada como sucesso.
+    """
+    from services.agent_tokens import bump_epoch, get_epoch
+
+    tid = tenant_id or "default"
+    try:
+        previous = get_epoch(tid) or 0
+        epoch = bump_epoch(tid)
+    except Exception as e:  # noqa: BLE001 — reporta, nunca mente
+        log.error("[agent] revogação de tokens falhou (%s): %s", tid, e)
+        return (
+            jsonify(
+                {
+                    "success": False,
+                    "error": "não consegui registrar a revogação",
+                    "detail": str(e)[:200],
+                }
+            ),
+            500,
+        )
+    _log_audit(
+        tid,
+        "agent.tokens_revoked",
+        details={"from_epoch": previous, "to_epoch": epoch},
+    )
+    return jsonify(
+        {
+            "success": True,
+            "tenant_id": tid,
+            "revoked_epoch": previous,
+            "active_epoch": epoch,
+            "agents_affected": "todos os tokens deste tenant",
+            "note": (
+                "Gere um token novo em POST /api/agent/token e atualize "
+                "CYPHER65_AGENT_TOKEN no agente (Docker) para reconectar."
+            ),
         }
     )
 

@@ -346,6 +346,40 @@ O sidecar (`--profile tailscale`) transforma o servidor em **subnet router**:
 
 ---
 
+## 🔐 Revogar os tokens de agente de um tenant (Issue #582)
+
+O token de agente (`CYPHER65_AGENT_TOKEN`) vive **365 dias**. Para invalidar
+todos os tokens de um tenant sem rotacionar `SECRET_KEY` (que deslogaria todos
+os usuários do dashboard):
+
+```bash
+# logado no painel, o authFetch já manda o JWT do usuário
+curl -X POST https://cypher65-war-room.onrender.com/api/agent/tokens/revoke \
+  -H "Authorization: Bearer $JWT_DO_USUARIO"
+# → {"success":true,"revoked_epoch":0,"active_epoch":1,...}
+```
+
+Depois disso, **todo** token já emitido para esse tenant é recusado com
+`401 AGENT_TOKEN_REVOKED`. Para reconectar: `Fleet → CONNECT AGENT` gera um
+token novo e você atualiza `CYPHER65_AGENT_TOKEN` no agente (Docker).
+
+| Detalhe | Comportamento |
+|---|---|
+| Escopo | Só o tenant do chamador — ninguém revoga o de outro |
+| Identidade | A mesma da cunhagem: `member` + credencial real numa instância de nuvem |
+| Propagação | ≤ 5s (memo do epoch); persiste em SQLite, então sobrevive a restart/redeploy |
+| Tokens anteriores a esta feature | Não têm o claim do epoch, contam como 0 → morrem no primeiro revoke (fail-closed) |
+| Falha de escrita | **500**, nunca 200 — uma revogação que não persistiu não pode parecer sucesso |
+| Falha de leitura | Vale o último valor conhecido; sem nenhum, libera (best-effort, igual à blacklist de `services/auth.py`) |
+
+**Por que não a blacklist existente:** `services/auth.revoke_token` exige a
+**string** do token (não há enumeração), a lista em memória é FIFO-podada
+(10 000 / guarda 5 000) e a persistência só liga com `REVOKED_TOKENS_DB=1` —
+que **não está no `render.yaml`**. Para um token de 365 dias isso significa que
+a revogação some antes do token.
+
+---
+
 ## 🔧 Configuração (`.env`)
 
 | Variável | Default | Descrição |
