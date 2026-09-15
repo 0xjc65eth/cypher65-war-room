@@ -409,7 +409,7 @@ class TestSnapshotWiring:
         import services.snapshot_assembly as sa
 
         self._patch_fetchers(monkeypatch, sa)
-        monkeypatch.setattr(sa, "_detect_pool", lambda a, t="": {})
+        monkeypatch.setattr(pd, "detected_pool_for", lambda a, t="", **kw: {})
 
         snap = sa._build_snapshot(ADDR, "w1", TENANT)
 
@@ -424,7 +424,7 @@ class TestSnapshotWiring:
         self._patch_fetchers(monkeypatch, sa)
         seen = {}
 
-        def fake_detect(address, tenant_id=""):
+        def fake_detect(address, tenant_id="", **kw):
             seen["address"] = address
             seen["tenant"] = tenant_id
             return {
@@ -432,7 +432,7 @@ class TestSnapshotWiring:
                 "stats": {"source": "asic", "hashrate_hs": 5e11, "provider_id": "ocean"},
             }
 
-        monkeypatch.setattr(sa, "_detect_pool", fake_detect)
+        monkeypatch.setattr(pd, "detected_pool_for", fake_detect)
 
         snap = sa._build_snapshot(ADDR, "w1", TENANT)
 
@@ -448,9 +448,9 @@ class TestSnapshotWiring:
         self._patch_fetchers(monkeypatch, sa)
         seen = {}
         monkeypatch.setattr(
-            sa,
-            "_detect_pool",
-            lambda address, tenant_id="": seen.setdefault("tenant", tenant_id) or {},
+            pd,
+            "detected_pool_for",
+            lambda address, tenant_id="", **kw: seen.setdefault("tenant", tenant_id) or {},
         )
 
         sa._build_snapshot(ADDR, "w1")
@@ -462,10 +462,10 @@ class TestSnapshotWiring:
 
         self._patch_fetchers(monkeypatch, sa)
 
-        def explode(address, tenant_id=""):
+        def explode(address, tenant_id="", **kw):
             raise RuntimeError("detection exploded")
 
-        monkeypatch.setattr(sa, "_detect_pool", explode)
+        monkeypatch.setattr(pd, "detected_pool_for", explode)
 
         snap = sa._build_snapshot(ADDR, "w1", TENANT)
 
@@ -474,20 +474,95 @@ class TestSnapshotWiring:
         assert snap["pool_detection"] is None
         assert snap["pool_worker"] is None
 
-    def test_detect_pool_delegates_to_the_detection_module(self, monkeypatch):
-        import services.snapshot_assembly as sa
 
-        called = {}
+# ══════════════════════════════════════════════════════════════════════════
+#  attach_to_snapshot — o ÚNICO escritor das duas chaves (Issue #576)
+# ══════════════════════════════════════════════════════════════════════════
+#
+# O #574 escreveu as chaves dentro do `_build_snapshot` (caminho de SESSÃO) e
+# ninguém notou que o painel polla `/api/snapshot`, servido pelo dict do poll
+# GLOBAL. Todo teste passava (o e2e injetava as chaves no fixture) e a faixa
+# nunca aparecia em produção. Estas asserções são sobre o contrato do helper
+# que os DOIS produtores usam.
+
+
+class TestAttachToSnapshot:
+    def test_writes_both_keys_and_reports_what_was_detected(self, monkeypatch):
         monkeypatch.setattr(
             pd,
             "detected_pool_for",
-            lambda address, tenant_id="": called.update(
-                {"address": address, "tenant": tenant_id}
-            )
-            or {"detection": {}, "stats": {}},
+            lambda a, t="", **kw: {
+                "detection": {"provider_id": "ocean"},
+                "stats": {"source": "asic"},
+            },
         )
+        snap = {}
 
-        result = sa._detect_pool(ADDR, TENANT)
+        pd.attach_to_snapshot(snap, ADDR, TENANT)
 
-        assert called == {"address": ADDR, "tenant": TENANT}
-        assert result == {"detection": {}, "stats": {}}
+        assert snap["pool_detection"] == {"provider_id": "ocean"}
+        assert snap["pool_worker"] == {"source": "asic"}
+
+    def test_always_leaves_both_keys_present(self, monkeypatch):
+        """`None` is a fact (nothing reported); a missing key is a bug."""
+        monkeypatch.setattr(pd, "detected_pool_for", lambda a, t="", **kw: {})
+
+        for snap in ({}, {"ts": 1}):
+            pd.attach_to_snapshot(snap, ADDR, TENANT)
+            assert "pool_detection" in snap and snap["pool_detection"] is None
+            assert "pool_worker" in snap and snap["pool_worker"] is None
+
+    def test_keeps_the_existing_keys_when_nothing_is_detected(self, monkeypatch):
+        """A poll with no report must not wipe what a previous one found."""
+        monkeypatch.setattr(pd, "detected_pool_for", lambda a, t="", **kw: {})
+        snap = {"pool_detection": {"provider_id": "ocean"}, "pool_worker": {"source": "api"}}
+
+        pd.attach_to_snapshot(snap, ADDR, TENANT)
+
+        assert snap["pool_detection"] == {"provider_id": "ocean"}
+        assert snap["pool_worker"] == {"source": "api"}
+
+    def test_a_raising_detection_never_raises(self, monkeypatch):
+        def explode(a, t="", **kw):
+            raise RuntimeError("detection exploded")
+
+        monkeypatch.setattr(pd, "detected_pool_for", explode)
+        snap = {"ts": 1}
+
+        pd.attach_to_snapshot(snap, ADDR, TENANT)
+
+        assert snap["pool_detection"] is None
+        assert snap["pool_worker"] is None
+
+    def test_empty_detection_dicts_normalize_to_none(self, monkeypatch):
+        """`{}` from the resolver must not reach the front as an empty object."""
+        monkeypatch.setattr(
+            pd,
+            "detected_pool_for",
+            lambda a, t="", **kw: {"detection": {}, "stats": {}},
+        )
+        snap = {}
+
+        pd.attach_to_snapshot(snap, ADDR, TENANT)
+
+        assert snap["pool_detection"] is None
+        assert snap["pool_worker"] is None
+
+    def test_one_writer_for_both_producers(self):
+        """`_build_snapshot` e `_do_poll` têm de chamar O MESMO helper.
+
+        Guard de fonte: o defeito do #576 foi exatamente uma segunda
+        implementação de "põe as duas chaves" num produtor só. Se alguém
+        voltar a escrever `snapshot["pool_detection"] = ...` fora do helper, o
+        acesso tem de ser exclusivo do módulo de detecção.
+        """
+        import inspect
+
+        import app as app_module
+        import services.snapshot_assembly as sa
+
+        assert "attach_to_snapshot" in inspect.getsource(sa._build_snapshot)
+        assert "attach_to_snapshot" in inspect.getsource(app_module._do_poll)
+        # Nenhum dos dois escreve a chave por conta própria.
+        for src in (inspect.getsource(sa._build_snapshot), inspect.getsource(app_module._do_poll)):
+            assert '["pool_detection"] =' not in src.replace("'", '"')

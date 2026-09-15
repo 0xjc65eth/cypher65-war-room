@@ -72,6 +72,13 @@ def api_snapshot(tenant_id: str = ""):
         # The poll-loop wallet/account payload is operator-global. Named
         # tenants get public network context plus only their filtered fleet;
         # their wallet telemetry lives behind /api/session-snapshot.
+        #
+        # `pool_detection`/`pool_worker` are deliberately NOT in this set
+        # (Issue #576): they are built from the OPERATOR's fleet telemetry and
+        # the operator's wallet, so serving them here would hand a named tenant
+        # the pool, host and hashrate of the instance owner's ASICs. A named
+        # tenant gets its own detection through /api/session-snapshot, which
+        # runs _build_snapshot with that tenant's id (fail-closed by omission).
         public_keys = {
             "ts",
             "pool",
