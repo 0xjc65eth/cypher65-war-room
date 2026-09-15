@@ -260,11 +260,12 @@ def scan_network() -> Dict[str, Any]:
     targets = [
         ip
         for ip, dev in results.items()
-        if ip in mdns_ips
-        or any(port in dev["open_ports"] for port in PORT_SIGNATURES)
+        if ip in mdns_ips or any(port in dev["open_ports"] for port in PORT_SIGNATURES)
     ]
     if targets:
-        with ThreadPoolExecutor(max_workers=min(_MAX_WORKERS, len(targets))) as executor:
+        with ThreadPoolExecutor(
+            max_workers=min(_MAX_WORKERS, len(targets))
+        ) as executor:
             probes = {executor.submit(_identify_miner, ip): ip for ip in targets}
             for future in as_completed(probes):
                 ip = probes[future]
