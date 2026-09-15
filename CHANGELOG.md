@@ -6,6 +6,53 @@ e versionamento semântico ([SemVer](https://semver.org/lang/pt-BR/)).
 
 ## [Unreleased]
 
+### Adicionado — registry multi-pool chain-aware (BTC + BSV) com detecção automática (Issue #571)
+- **O problema:** 100% dos dados de pool vinham de um único host (`PARASITE_API`,
+  `config.py:21` — `app.py:3225-3231`, `services/snapshot_assembly.py:107,157`,
+  `solo_mining.py:19,75`). Um worker apontado para qualquer outra pool
+  renderizava zeros — não por incompatibilidade, mas porque **nenhum outro
+  formato era parseado**. Não existia registry: busca por `ckpool`,
+  `public-pool`, `ocean.xyz` no código de produção retornava zero.
+- **`services/pool_intelligence/providers.py` (novo):** registry chain-aware com
+  **32 providers SHA-256** — BTC solo/pool e **BSV** (CKPool BSV, GorillaPool,
+  TAAL, AntPool/ViaBTC/SBI BSV). `detect_provider()` identifica o provider pelo
+  host de stratum com **precedência do padrão mais longo** (sem isso,
+  `solo.bsv.ckpool.org` casaria com o `ckpool.org` genérico e um worker BSV
+  seria marcado BTC) e **respeita limite de label** (`notbraiins.com` não é
+  Braiins). `stratum_host()` extrai o host das formas que o firmware realmente
+  reporta (`stratum+tcp://`, `stratum2+tcp://`, `tcp://`, `host:porta`, path,
+  userinfo, IPv6 com colchetes).
+- **Endpoints verificados, não inventados.** Só entram com API pública os que
+  têm API documentada: parasite.space, CKPool (`solo.ckpool.org/users/{addr}` /
+  `solo.bsv.ckpool.org/users/{addr}`) e Public Pool e forks
+  (`public-pool.io:40557/api/client/{addr}`). Todo o resto entra como
+  `stratum_only` — reconhecido, rotulado e chain-tagged, com os dados vindos do
+  **próprio ASIC**.
+- **`services/pool_intelligence/stats.py` (novo):** normaliza as três APIs
+  públicas para **um único shape** (`PoolWorkerStats`) e adiciona a quarta e mais
+  importante fonte: o hardware (`source: "asic"`). `parse_hashrate_to_hs()`
+  aceita número cru **e** as strings de unidade que as pools publicam
+  (`"1.21T"`, `"12 PH/s"`, `"950G"`) — e devolve `None` (não 0) quando não
+  reconhece, porque 0 na pool é um fato e falha de parse não é. `fields_found`
+  registra **quais** chaves foram entendidas, então "a pool respondeu 0" nunca
+  se confunde com "não entendemos o payload".
+- **Detecção automática ao conectar o endereço:** `resolve_pool_stats()` usa
+  evidência em ordem — (1) endpoint reportado pelo ASIC, que é **autoritativo**
+  por ser medido no hardware; (2) probe dos providers com API pública, o
+  primeiro que conhece o endereço é a pool; (3) desconhecida, com o host cru
+  como label. A chain **nunca** é inferida do endereço: BTC e BSV compartilham
+  os formatos base58 `1…`/`3…`, então inferir seria sinal fabricado.
+- **`POST /api/connect-wallet`** passa a resolver a pool no ato da conexão e
+  devolver `pool`; **`GET|POST /api/pool/resolve`** (novo) expõe a detecção sob
+  demanda, com `pool_url` opcional (endpoint do ASIC).
+- **Testes:** `tests/test_pool_providers.py` (90 casos) — extração de host,
+  precedência de padrão mais longo, guarda de limite de label, chain honesta vs.
+  inventada, parsing de hashrate nas duas formas, os três normalizadores, a
+  ordem de evidência da resolução e as duas rotas.
+- **Docs:** `docs/WALLET_POOL_SETUP.md` deixa de dizer "Parasite Pool / APIs
+  configuradas" (que prometia mais do que existia) e documenta a tabela real de
+  providers, a ordem de detecção e o que significa `source: "asic"`.
+
 ### Corrigido — scan/agente identificam mineradores com evidência de protocolo, não por porta (Issue #569)
 - **A causa dos "vários IPs diferentes com `port:80 braiins`":**
   `services/lan_scanner.py` derivava o `firmware_hint` **só da porta TCP aberta**

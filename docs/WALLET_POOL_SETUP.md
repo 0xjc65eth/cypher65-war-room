@@ -10,8 +10,50 @@
 ## 1. Visão geral
 
 O painel monitora **uma** carteira Bitcoin por sessão (endereço + worker name).
-A partir dela ele consulta telemetria real de pool (Parasite Pool / APIs
-configuradas), calcula hashrate, shares, dificuldade e lucratividade.
+A partir dela ele consulta telemetria real de pool, calcula hashrate, shares,
+dificuldade e lucratividade.
+
+O painel **não exige uma pool específica** (Issue #571). O registry em
+`services/pool_intelligence/providers.py` reconhece **32 providers SHA-256**
+(BTC e BSV) pelo host de stratum e sabe, para cada um, se existe API pública
+de estatísticas por worker:
+
+| Provider | Chain | API por worker |
+|---|---|---|
+| Parasite Pool | BTC | ✅ `parasite.space/api/user/{address}` |
+| CKPool solo | BTC | ✅ `solo.ckpool.org/users/{address}` |
+| CKPool BSV solo | BSV | ✅ `solo.bsv.ckpool.org/users/{address}` |
+| Public Pool (+ forks) | BTC | ✅ `public-pool.io:40557/api/client/{address}` |
+| OCEAN, AntPool, F2Pool, ViaBTC, Binance Pool, Braiins Pool, Luxor, Foundry, MARA, SBI, SpiderPool, EMCD, Poolin, BTC.com, Kano, NiceHash, Sigmapool, NovaBlock, WhitePool, Rawpool, 1THash, GorillaPool, TAAL | BTC / BSV | ❌ sem API pública |
+
+Para providers **sem** API pública os números vêm do **próprio ASIC**
+(hashrate, best diff e contadores de share medidos no hardware) — o painel
+nunca mostra zeros silenciosos nem inventa valores. Cada resposta declara a
+fonte em `source`: `"api"` (API da pool) ou `"asic"` (o minerador).
+
+### Como a pool é detectada
+
+1. **Endpoint reportado pelo ASIC** (`stratumURL`) — autoritativo, porque é
+   medido no hardware. É o sinal usado quando o fleet/agente está conectado.
+2. **Probe das APIs públicas** — sem sinal do ASIC, os providers com API
+   pública são consultados em ordem e o primeiro que conhece o endereço é a
+   pool daquele endereço. É o que torna a detecção automática ao conectar.
+3. **Desconhecida** — o host cru é exibido como label e a chain fica explícita
+   como desconhecida quando não há evidência. A chain **nunca** é inferida do
+   endereço: BTC e BSV compartilham os formatos base58 `1…`/`3…`, então o
+   endereço não distingue as duas.
+
+Para inspecionar manualmente:
+
+```bash
+# usando a carteira da sessão
+curl -X POST localhost:8765/api/pool/resolve   # ou GET ?address=<endereço>
+
+# informando o endpoint do ASIC (autoritativo)
+curl -X POST localhost:8765/api/pool/resolve \
+  -H 'Content-Type: application/json' \
+  -d '{"address":"bc1…","pool_url":"stratum+tcp://solo.ckpool.org:3333"}'
+```
 
 | Item | Onde é definido | Persistência |
 |---|---|---|
