@@ -510,6 +510,50 @@ def _ensure_licenses_table() -> None:
         conn.close()
 
 
+def ensure_licenses_table() -> None:
+    """Public alias of ``_ensure_licenses_table`` for transaction-aware callers.
+
+    Crash-safe fulfillment (Issue #565) must guarantee ``pro_licenses`` exists
+    BEFORE opening its write transaction — DDL helpers commit, and a commit
+    mid-transaction would prematurely persist the payment claim.
+    """
+    _ensure_licenses_table()
+
+
+def issue_license_in_conn(
+    conn: sqlite3.Connection,
+    plan: str = "pro",
+    email: str = "",
+    source: str = "manual",
+    months: Optional[int] = 12,
+) -> str:
+    """Generate a key and INSERT it into ``pro_licenses`` via ``conn``.
+
+    Transaction-aware primitive for crash-safe fulfillment (Issue #565):
+    executes ONLY the INSERT — no COMMIT, no CLOSE. The caller owns the
+    transaction, so the license row commits atomically with the payment
+    ledger update (claim + license + completion in ONE SQLite transaction)
+    instead of across three, where a crash between them could strand an empty
+    claim (replays would acknowledge forever without a key) or an issued key
+    unlinked from its invoice.
+
+    months=None → lifetime key. Raises sqlite3.Error on DB failure — the
+    caller's transaction rolls back and nothing is persisted. The caller
+    must ensure the table exists first (``ensure_licenses_table()``).
+    """
+    key = generate_license_key()
+    expires = None
+    if months is not None:  # months=0 → expires immediately; None → lifetime
+        expires = (datetime.now(_UTC) + timedelta(days=30 * months)).isoformat()
+    conn.execute(
+        "INSERT INTO pro_licenses "
+        "(key, plan, email, source, created_at, expires_at) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        (key, plan, email, source, datetime.now(_UTC).isoformat(), expires),
+    )
+    return key
+
+
 def issue_license(
     plan: str = "pro",
     email: str = "",
@@ -520,19 +564,16 @@ def issue_license(
 
     months=None → lifetime key. Raises sqlite3.Error on DB failure (caller
     decides whether to fail the request or degrade).
+
+    Crash-safe callers (payment fulfillment) should prefer
+    ``issue_license_in_conn`` so the license INSERT commits in the SAME
+    transaction as the payment ledger update (Issue #565).
     """
     _ensure_licenses_table()
-    key = generate_license_key()
-    expires = None
-    if months is not None:  # months=0 → expires immediately; None → lifetime
-        expires = (datetime.now(_UTC) + timedelta(days=30 * months)).isoformat()
     conn = get_db()
     try:
-        conn.execute(
-            "INSERT INTO pro_licenses "
-            "(key, plan, email, source, created_at, expires_at) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            (key, plan, email, source, datetime.now(_UTC).isoformat(), expires),
+        key = issue_license_in_conn(
+            conn, plan=plan, email=email, source=source, months=months
         )
         conn.commit()
     finally:

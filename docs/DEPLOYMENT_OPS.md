@@ -324,6 +324,41 @@ preimage ou licença.
 - Não apague `processed_invoices` ou `btcpay_invoice_plans`: são o ledger de
   idempotência e o vínculo invoice → plano.
 
+#### 5.1 Recuperação de fulfillment (Issue #565)
+
+A emissão da licença é **uma única transação SQLite** (`BEGIN IMMEDIATE`):
+claim em `processed_invoices` + INSERT em `pro_licenses` + vínculo da chave
+commitam juntos. Um crash no meio do fulfillment **desfaz tudo** — a redelivery
+do webhook (BTCPay) ou o reenvio do preimage (WebLN) cumpre o pedido do zero,
+sem intervenção manual. Não existem mais estados intermediários persistentes
+desse fluxo.
+
+**Claim órfão (legado, pré-#565):** uma linha em `processed_invoices` com
+`license_key = ''` só pode ter sido escrita por uma versão anterior (crash
+entre o claim e a conclusão) — e **pode** haver uma licença órfã correspondente
+em `pro_licenses`. O sistema **não reemite** automaticamente (o comprador teria
+duas chaves por um pagamento); cada redelivery falha VISIVELMENTE com
+`PaymentClaimStuckError`, log `payment claim stuck` e evento de auditoria
+`payment.fulfillment_stuck`. Reconciliação manual:
+
+1. Encontre a linha: `SELECT invoice_id FROM processed_invoices WHERE
+   license_key = '';` e o log de auditoria correspondente.
+2. Procure licença candidata: `SELECT key, plan, created_at FROM pro_licenses
+   WHERE source IN ('btcpay','webln') ORDER BY created_at DESC;` e case a
+   `created_at` com o timestamp de settlement da invoice no BTCPay.
+3. Se a licença órfã EXISTE: entregue-a ao comprador (ou vincule-a,
+   `UPDATE processed_invoices SET license_key = '<key>' WHERE invoice_id =
+   '<id>';`) e **nunca** emita uma nova.
+4. Se NÃO existe (crash antes do INSERT): a transação atômica garante que o
+   claim também não existiria; se ainda assim o claim estiver vazio sem
+   licença candidata, remova a linha legada (`DELETE FROM processed_invoices
+   WHERE invoice_id = '<id>' AND license_key = '';`) e deixe a redelivery do
+   webhook cumprir normalmente. Registre ambos os passos no issue.
+
+Nunca torne o passo 4 rotina: ele existe apenas para linhas legadas. Após a
+implantação do #565, um claim vazio persistente é sinal de intervenção manual
+malfeita — investigue antes de apagar qualquer coisa.
+
 ---
 
 ## 🛰 Acesso Remoto (Tailscale)

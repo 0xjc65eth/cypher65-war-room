@@ -6,6 +6,30 @@ e versionamento semântico ([SemVer](https://semver.org/lang/pt-BR/)).
 
 ## [Unreleased]
 
+### Alterado — fulfillment de licenças confirmadas à prova de crash (Issue #565)
+- **Uma transação, não três.** BTCPay (`handle_invoice_webhook`) e WebLN
+  (`fulfill_webln_payment`) emitiam a licença em três commits independentes:
+  claim (`_claim_invoice`) → INSERT (`licensing.issue_license`) → vínculo
+  (`_complete_invoice`). Um crash entre eles deixava um claim vazio eterno
+  (replays reconheciam para sempre, sem entregar chave) ou uma licença órfã
+  desvinculada da invoice. Agora `BEGIN IMMEDIATE` cobre claim + INSERT
+  (novo `licensing.issue_license_in_conn`, sem COMMIT próprio) + vínculo num
+  único commit: ou tudo dura, ou nada dura, e a redelivery do provider cumpre
+  do zero.
+- **Concorrência resolve no banco.** Deliveries simultâneas da mesma invoice
+  serializam no `BEGIN IMMEDIATE`: a perdedora espera o commit da vencedora e
+  devolve a MESMA chave — uma licença por pagamento, sem colunas extras.
+- **Claim órfão legado falha VISIVELMENTE.** Um claim vazio persistido (linha
+  pré-#565) levanta `PaymentClaimStuckError` com log de erro e evento de
+  auditoria `payment.fulfillment_stuck` — e **nunca** reemite automaticamente
+  (pode já existir licença órfã; o comprador não pode receber duas). Runbook
+  de reconciliação manual em `docs/DEPLOYMENT_OPS.md` §5.1.
+- **Compat mantida:** `_claim_invoice`/`_complete_invoice`/`_release_claim`
+  preservados para chamadores externos; rotas, kill-switches, verificação de
+  assinatura e resolução de plano via ledger local não mudam. 9 testes novos
+  cobrem crash entre INSERT e vínculo (rollback integral + retry),
+  concorrência (BTCPay e WebLN) e o caminho stuck — suíte: 60 passed.
+
 ### Adicionado — provar em produção a durabilidade da blacklist JWT (Issue #586)
 - **`REVOKED_TOKENS_DB=1` ligada no `render.yaml`** — a pendência que o #582
   tinha registrado por escrito. A blacklist de revogação é um `OrderedDict`
