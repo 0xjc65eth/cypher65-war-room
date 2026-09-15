@@ -170,6 +170,19 @@ const authSessionValid = _auth.authSessionValid;
 // roda num contexto vazio; as outras funções só tocam `dom`/`document` quando
 // CHAMADAS, e `poolDetectionView` não toca nenhum dos dois.
 const _dashboard = loadFragment('39b-dashboard.js', '{ poolDetectionView }');
+
+// ── FONTE REAL do domínio Fleet/AXE (RFC 478 · PR 4b · Issue #523) ──────────
+// `agentRevokeView` (Issue #582) é a view-model pura da revogação de tokens de
+// agente. O fragmento tem UM statement de execução no topo (o listener de
+// `#remote-test-btn`), daí o sandbox mínimo — `getElementById` devolve null e o
+// `?.` deixa o listener inerte. As funções exportadas abaixo são exatamente as
+// que o navegador avalia.
+const _fleet = loadFragment(
+  '49-axe-fleet.js',
+  '{ agentRevokeView }',
+  { window: {}, document: { getElementById: () => null } }
+);
+const agentRevokeView = _fleet.agentRevokeView;
 const poolDetectionView = _dashboard.poolDetectionView;
 
 // ── Test counters ─────────────────────────────────────────────────────────
@@ -5293,6 +5306,69 @@ console.log('\n📊 SUITE 38: poolDetectionView() — pool detectada a partir do
   const noSource = poolDetectionView({ pool_detection: { label: 'X' }, pool_worker: {} });
   assertEqual('pool detection: fonte ausente não vira API', noSource.sourceLabel, '—');
   assertEqual('pool detection: fonte ausente é dita como ausente', noSource.sourceSub, 'sem leitura');
+}
+
+// ── SUITE 39: agentRevokeView (Issue #582 — revogar agentes do tenant) ──
+// O botão REVOKE AGENTS é irreversível e derruba a frota do tenant inteira,
+// então a view-model tem de ser explícita em três pontos que um teste feliz
+// NÃO pega: (1) em NENHUM estado o sucesso é otimista — só o 200 do servidor
+// leva a `done`; (2) em `error` a confirmação CONTINUA aberta (senão o usuário
+// perde o botão de tentar de novo) e o tom é de falha, nunca de sucesso;
+// (3) em `done` a linha do token sai da tela — o token exibido morreu, e
+// deixar ali, ao lado do comando de instalação, convidaria o usuário a copiar
+// uma credencial que não funciona mais.
+console.log('\n📊 SUITE 39: agentRevokeView() — revogação de agentes (Issue #582)');
+{
+  const idle = agentRevokeView();
+  assertEqual('revoke: sem estado = idle', idle.phase, 'idle');
+  assertEqual('revoke: idle mostra o gatilho', idle.triggerVisible, true);
+  assertEqual('revoke: idle não abre confirmação', idle.confirmVisible, false);
+  assertEqual('revoke: idle mantém a linha do token', idle.tokenRowVisible, true);
+  assertEqual('revoke: idle não pede barra', idle.barVisible, false);
+
+  const confirm = agentRevokeView({ phase: 'confirm' });
+  assertEqual('revoke: confirm abre a confirmação', confirm.confirmVisible, true);
+  assertEqual('revoke: confirm esconde o gatilho', confirm.triggerVisible, false);
+  assertEqual('revoke: confirm pode confirmar', confirm.canConfirm, true);
+  assertEqual('revoke: confirm pode cancelar', confirm.canCancel, true);
+  assertEqual('revoke: confirm NÃO está busy', confirm.busy, false);
+  assertTruthy('revoke: confirm escreve a consequência', confirm.confirmBody.includes('≤5s'));
+  assertTruthy('revoke: confirm diz como reconectar', confirm.confirmBody.includes('CYPHER65_AGENT_TOKEN'));
+  assertEqual('revoke: confirm avisa que é irreversível', confirm.statusTone, 'danger');
+
+  const working = agentRevokeView({ phase: 'working' });
+  assertEqual('revoke: working está busy', working.busy, true);
+  assertEqual('revoke: working desliga o confirmar (sem disparo duplo)', working.canConfirm, false);
+  assertEqual('revoke: working desliga o cancelar', working.canCancel, false);
+  assertEqual('revoke: working mostra a barra de espera', working.barVisible, true);
+  assertEqual('revoke: working NÃO anuncia sucesso', working.statusTone, 'info');
+  assertEqual('revoke: working NÃO esconde o token ainda', working.tokenRowVisible, true);
+
+  // O único estado com tom de sucesso — e ele exige os epochs do servidor.
+  const done = agentRevokeView({ phase: 'done', from: 0, to: 1 });
+  assertEqual('revoke: done é o tom de sucesso', done.statusTone, 'ok');
+  assertEqual('revoke: done esconde a linha do token', done.tokenRowVisible, false);
+  assertTruthy('revoke: done mostra os dois epochs', done.statusText.includes('0 → 1'));
+  assertEqual('revoke: done não pode reconfirmar', done.canConfirm, false);
+  const doneNoEpoch = agentRevokeView({ phase: 'done' });
+  assertTruthy('revoke: done sem epoch não inventa número', doneNoEpoch.statusText.includes('?'));
+
+  // Falha: a confirmação FICA aberta para nova tentativa, e o tom é de erro.
+  const error = agentRevokeView({ phase: 'error', reason: 'database is locked' });
+  assertEqual('revoke: error mantém a confirmação aberta', error.confirmVisible, true);
+  assertEqual('revoke: error pode tentar de novo', error.canConfirm, true);
+  assertEqual('revoke: error pode cancelar', error.canCancel, true);
+  assertEqual('revoke: error não é tom de sucesso', error.statusTone, 'danger');
+  assertTruthy('revoke: error repete o motivo do servidor', error.statusText.includes('database is locked'));
+  assertTruthy('revoke: error diz que os tokens continuam valendo', error.confirmBody.includes('continuam valendo'));
+  const errorNoReason = agentRevokeView({ phase: 'error' });
+  assertTruthy('revoke: error sem motivo ainda diz algo', errorNoReason.statusText.length > 2);
+  assertEqual('revoke: error NÃO esconde o token', error.tokenRowVisible, true);
+
+  // A barra indeterminada só existe enquanto a requisição está em voo.
+  ['idle', 'confirm', 'done', 'error'].forEach((phase) => {
+    assertEqual(`revoke: ${phase} não mostra barra`, agentRevokeView({ phase }).barVisible, false);
+  });
 }
 
 // ── Issue #420: toast live region contract ────────────────────────────

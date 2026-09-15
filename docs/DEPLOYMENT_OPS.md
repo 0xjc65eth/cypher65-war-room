@@ -352,6 +352,12 @@ O token de agente (`CYPHER65_AGENT_TOKEN`) vive **365 dias**. Para invalidar
 todos os tokens de um tenant sem rotacionar `SECRET_KEY` (que deslogaria todos
 os usuários do dashboard):
 
+**Pelo painel (Issue #584):** `Fleet → 🤖 CONNECT AGENT → ⛔ REVOKE AGENTS`, em
+duas etapas — a confirmação diz o que para de funcionar antes de agir. Em caso
+de 500 a confirmação fica aberta com o motivo e o botão vira `TRY AGAIN`.
+
+**Por API:**
+
 ```bash
 # logado no painel, o authFetch já manda o JWT do usuário
 curl -X POST https://cypher65-war-room.onrender.com/api/agent/tokens/revoke \

@@ -1188,6 +1188,79 @@
     initAxeAgentPanel();
   }
 
+  // ── Revogação dos tokens de agente do tenant (Issue #582) ───────────
+  // Ação RARA e DESTRUTIVA: derruba TODOS os agentes do tenant até o usuário
+  // gerar um token novo. Daí três decisões de interação:
+  //
+  //   1. Duas etapas com a consequência escrita por extenso — nada de
+  //      `window.confirm()`, que pergunta sem explicar e não diz o que para de
+  //      funcionar. Frequência rara autoriza um pouco de expressividade, mas
+  //      não é lugar de folia: o alvo é clareza, não encanto.
+  //   2. Nenhum sucesso otimista: o estado só vai para `done` com o 200 do
+  //      servidor. Um 500 deixa a confirmação aberta, em vermelho, para o
+  //      usuário tentar de novo — o backend recusa mentir, e a UI também.
+  //   3. Em `done` a linha do token SAI da tela: o token que estava ali está
+  //      morto, e deixá-lo visível (com o comando de instalação ao lado)
+  //      convidaria o usuário a copiar uma credencial que não funciona mais.
+  //
+  // `agentRevokeView` é PURA (estado → o que renderizar) para o harness de JS
+  // core exercitar o MESMO código que o navegador roda, em vez de um espelho.
+  function agentRevokeView(state) {
+    const s = state || {};
+    const phase = s.phase || 'idle';
+    const working = phase === 'working';
+    const view = {
+      phase: phase,
+      confirmVisible: phase !== 'idle',
+      triggerVisible: phase === 'idle',
+      busy: working,
+      // Em `error` o mesmo botão é o "TRY AGAIN": desabilitá-lo ali deixaria o
+      // usuário sem caminho de volta depois de um 500 (achado pelo SUITE 39).
+      canConfirm: phase === 'confirm' || phase === 'error',
+      canCancel: phase === 'confirm' || phase === 'error',
+      barVisible: working,
+      confirmLabel: 'REVOKE ALL TOKENS',
+      confirmTitle: '',
+      confirmBody: '',
+      statusText: '',
+      statusTone: 'info',
+      // O token exibido morreu: a linha some junto.
+      tokenRowVisible: phase !== 'done'
+    };
+    if (phase === 'confirm') {
+      view.confirmTitle = 'REVOGAR TODOS OS AGENTES DESTE TENANT?';
+      view.confirmBody =
+        'Todo agente que já está rodando para de enviar telemetria no próximo ' +
+        'poll (≤5s). Para reconectar é preciso gerar um token novo e atualizar ' +
+        'CYPHER65_AGENT_TOKEN na máquina do agente.';
+      view.statusText = 'ação irreversível — os tokens antigos não voltam';
+      view.statusTone = 'danger';
+    } else if (working) {
+      view.confirmTitle = 'REVOGANDO…';
+      view.confirmBody = 'Aguardando o servidor confirmar. Não feche esta aba.';
+      view.confirmLabel = 'REVOKING…';
+      view.statusText = '> revogando tokens do tenant…';
+    } else if (phase === 'done') {
+      view.confirmTitle = 'REVOGADO';
+      view.confirmBody =
+        'Os tokens anteriores não funcionam mais. Gere um token novo para ' +
+        'reconectar o agente.';
+      view.statusText =
+        '✓ revogado · epoch ' + (s.from == null ? '?' : s.from) +
+        ' → ' + (s.to == null ? '?' : s.to);
+      view.statusTone = 'ok';
+    } else if (phase === 'error') {
+      view.confirmTitle = 'NÃO REVOGADO';
+      view.confirmBody =
+        'O servidor não registrou a revogação — os tokens continuam valendo. ' +
+        'Tente de novo.';
+      view.confirmLabel = 'TRY AGAIN';
+      view.statusText = '✗ ' + (s.reason || 'falha ao revogar');
+      view.statusTone = 'danger';
+    }
+    return view;
+  }
+
   // ── SaaS AGENT onboarding panel ─────────────────────────────────────
   // The cloud dashboard cannot reach the user's LAN (192.168.x.x is not
   // routable from Render), so a local agent connects OUT and pushes
@@ -1258,9 +1331,86 @@
         if (tokenArea) tokenArea.value = data.token;
         renderCommands(data.token, data.server_url || '');
         if (tokenRow) tokenRow.style.display = 'block';
+        // Um token novo é o fim do ciclo de revogação: a confirmação fecha e
+        // o painel volta ao repouso (senão o usuário ficaria olhando o
+        // aviso de "REVOGADO" enquanto já tem credencial boa em mãos).
+        setRevokePhase('idle');
         setStatus('✓ token issued · tenant ' + (data.tenant_id || ''), 'var(--accent-green)');
       } catch (e) {
         setStatus('✗ network error', 'var(--accent-red)');
+      }
+    });
+
+    // ── Revogação (Issue #582) ────────────────────────────────────────
+    const revokeRoot = document.getElementById('axe-revoke');
+    const revokeConfirm = document.getElementById('axe-revoke-confirm');
+    const revokeTitle = document.getElementById('axe-revoke-title');
+    const revokeBody = document.getElementById('axe-revoke-body');
+    const revokeDo = document.getElementById('axe-revoke-do');
+    const revokeCancel = document.getElementById('axe-revoke-cancel');
+    const revokeStatus = document.getElementById('axe-revoke-status');
+    const revokeTrigger = document.getElementById('axe-revoke-open');
+    let revokeState = { phase: 'idle' };
+
+    const renderRevoke = () => {
+      const v = agentRevokeView(revokeState);
+      if (revokeRoot) revokeRoot.dataset.phase = v.phase;
+      if (revokeConfirm) revokeConfirm.hidden = !v.confirmVisible;
+      if (revokeTrigger) revokeTrigger.hidden = !v.triggerVisible;
+      if (revokeTitle) revokeTitle.textContent = v.confirmTitle;
+      if (revokeBody) revokeBody.textContent = v.confirmBody;
+      if (revokeDo) {
+        revokeDo.textContent = v.confirmLabel;
+        revokeDo.disabled = !v.canConfirm;
+        revokeDo.setAttribute('aria-busy', v.busy ? 'true' : 'false');
+      }
+      if (revokeCancel) revokeCancel.disabled = !v.canCancel;
+      if (revokeStatus) {
+        revokeStatus.textContent = v.statusText;
+        revokeStatus.dataset.tone = v.statusTone;
+      }
+      // O token exibido morreu junto com a revogação — não deixe na tela o
+      // comando de instalação de uma credencial inválida.
+      if (tokenRow && !v.tokenRowVisible) tokenRow.style.display = 'none';
+      if (tokenArea && !v.tokenRowVisible) tokenArea.value = '';
+    };
+    const setRevokePhase = (phase, extra) => {
+      revokeState = Object.assign({ phase: phase }, extra || {});
+      renderRevoke();
+    };
+
+    revokeTrigger?.addEventListener('click', () => setRevokePhase('confirm'));
+    revokeCancel?.addEventListener('click', () => {
+      setRevokePhase('idle');
+      setStatus('');
+    });
+    revokeDo?.addEventListener('click', async () => {
+      if (revokeState.phase === 'working') return; // nada de disparo duplo local
+      // Caminho DESTRUTIVO: a guarda acima só cobre o estado deste closure. Se o
+      // painel for inicializado duas vezes (já aconteceu de verdade — a linha
+      // duplicada de `initAxeFleetControls()` no boot), cada init tem o PRÓPRIO
+      // estado e ambos disparariam. O DOM é o único estado compartilhado entre
+      // eles, então a trava vive aqui: um clique = no máximo um POST.
+      if (revokeRoot && revokeRoot.dataset.inflight === '1') return;
+      if (revokeRoot) revokeRoot.dataset.inflight = '1';
+      setRevokePhase('working');
+      try {
+        const r = await authFetch('/api/agent/tokens/revoke', { method: 'POST' });
+        const data = await r.json().catch(() => ({}));
+        if (!r.ok || !data.success) {
+          setRevokePhase('error', {
+            reason: data.detail || data.error || ('HTTP ' + r.status)
+          });
+          setStatus('✗ revogação não registrada', 'var(--accent-red)');
+          return;
+        }
+        setRevokePhase('done', { from: data.revoked_epoch, to: data.active_epoch });
+        setStatus('✓ tokens revogados — gere um token novo', 'var(--accent-green)');
+      } catch (e) {
+        setRevokePhase('error', { reason: 'network error' });
+        setStatus('✗ network error', 'var(--accent-red)');
+      } finally {
+        if (revokeRoot) revokeRoot.dataset.inflight = '0';
       }
     });
     document.getElementById('axe-agent-copy-token')?.addEventListener('click', () => {
@@ -1277,6 +1427,10 @@
       if (tokenRow) tokenRow.style.display = 'none';
       setStatus('token hidden');
     });
+
+    // Sincroniza o DOM com o estado inicial pela MESMA fonte de verdade da
+    // interação: o painel nunca chega num estado que a view não preveja.
+    renderRevoke();
   }
 
   // Shared device-add helper (used by the manual form + scan ADD buttons).
