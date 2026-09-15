@@ -2868,6 +2868,85 @@ def _reset_session_state():
 # ═══════════════════════════════════════════════════════════════════════════
 
 
+def _pool_stats_fetcher(url):
+    """Single-attempt JSON GET used when probing pool APIs (Issue #571).
+
+    Deliberately NOT ``fetch_json``: that helper retries with backoff, and the
+    resolver walks several providers in sequence — retries would multiply into
+    a multi-second stall on a wallet connect. One attempt each, and a failure
+    is just "this pool does not know the address".
+    """
+    try:
+        r = requests.get(
+            url, timeout=6, headers={"User-Agent": "cypher65-war-room/1.0"}
+        )
+        r.raise_for_status()
+        return r.json()
+    except Exception as e:  # noqa: BLE001 — a dead pool API is a normal outcome
+        log.debug("[pool] stats probe failed for %s: %s", url, e)
+        return None
+
+
+def _resolve_pool_for_address(address: str, pool_url: str = "") -> dict:
+    """Detect which pool *address* mines on and return normalized statistics.
+
+    ``pool_url`` (the stratum endpoint the ASIC reports) is authoritative when
+    present; otherwise the providers with a public API are probed. Never
+    raises — pool detection is an enrichment, and a failure here must not
+    break a wallet connect or a poll. Returns {} on failure.
+    """
+    from services.pool_intelligence import resolve_pool_stats
+
+    try:
+        stats = resolve_pool_stats(
+            address, fetcher=_pool_stats_fetcher, asic_pool_url=pool_url
+        )
+    except Exception as e:  # noqa: BLE001 — enrichment must never break the caller
+        log.warning("[pool] resolve failed for %s: %s", str(address)[:8], e)
+        return {}
+    return stats.to_dict()
+
+
+@app.route("/api/pool/resolve", methods=["GET", "POST"])
+def api_pool_resolve():
+    """Which pool is this address on, and what are its numbers? (Issue #571)
+
+    Query params / JSON body:
+      - address  (str) — defaults to the connected wallet
+      - pool_url (str, optional) — the stratum endpoint the ASIC reports; when
+        provided it is authoritative, because it is measured at the hardware
+        rather than inferred.
+
+    Returns the normalized statistics plus the detection evidence, so the UI
+    can state WHERE a number came from: ``source == "api"`` (the pool's own
+    public API) or ``source == "asic"`` (the miner itself, which is what any
+    pool without a public API falls back to).
+    """
+    from services.pool_intelligence import PROVIDERS, stats_api_providers
+
+    data = request.get_json(silent=True) or {}
+    address = str(
+        data.get("address") or request.args.get("address") or BTC_ADDRESS or ""
+    ).strip()
+    pool_url = str(data.get("pool_url") or request.args.get("pool_url") or "").strip()
+    if not address:
+        return jsonify({"success": False, "error": "address is required"}), 400
+
+    stats = _resolve_pool_for_address(address, pool_url)
+    if not stats:
+        return jsonify({"success": False, "error": "pool resolution failed"}), 500
+
+    return jsonify(
+        {
+            "success": True,
+            "address": address,
+            "stats": stats,
+            "known_providers": len(PROVIDERS),
+            "providers_with_api": [p.provider_id for p in stats_api_providers()],
+        }
+    )
+
+
 @app.route("/api/connect-wallet", methods=["POST"])
 @require_tenant
 @role_required("member")
@@ -2910,6 +2989,14 @@ def api_connect_wallet(tenant_id: str = ""):
     # Do an immediate first poll so the snapshot is ready
     snapshot = worker.poll_now()
 
+    # Detect the pool for this address right away (Issue #571). The operator
+    # connected a wallet; telling them which pool it mines on — and saying
+    # whether the numbers came from the pool's API or from the hardware — is
+    # exactly the moment that information is useful.
+    pool_stats = _resolve_pool_for_address(
+        address, str(data.get("pool_url") or "").strip()
+    )
+
     log.info("[connect] session %s wallet=%s", sid[:8], address[:10])
 
     return jsonify(
@@ -2918,6 +3005,7 @@ def api_connect_wallet(tenant_id: str = ""):
             "session_id": sid,
             "snapshot": snapshot,
             "has_wallet": True,
+            "pool": pool_stats,
         }
     )
 
