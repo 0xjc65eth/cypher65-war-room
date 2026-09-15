@@ -29,6 +29,13 @@ Idempotency: BTCPay invoices are fulfilled AT MOST ONCE — the invoice id is
 the dedup key (mirrors the LS processed_webhooks ledger). A webhook replay
 returns the already-issued key, never a second license.
 
+Crash-safety (Issue #565): fulfillment is ONE SQLite transaction (claim +
+license INSERT + completion, BEGIN IMMEDIATE). A crash mid-fulfillment
+rolls everything back — the provider retry re-claims on a clean slate.
+Legacy empty claims (pre-atomic rows) fail VISIBLY via
+PaymentClaimStuckError for manual reconciliation; a new key is NEVER
+issued automatically for them (an orphan license may already exist).
+
 Fallback WebLN (Issue #248): when the server can't reach a BTCPay instance,
 ``create_webln_invoice()`` generates a BOLT-11 via the operator's Lightning
 node adapter (LN_INVOICE_ENDPOINT) — the frontend calls
@@ -418,6 +425,14 @@ def verify_invoice_status_token(invoice_id: str, status_token: str) -> bool:
 # ── Idempotency ledger ───────────────────────────────────────────────
 # processed_invoices(invoice_id UNIQUE) — a BTCPay invoice is fulfilled AT
 # MOST ONCE, even under webhook retries / concurrent deliveries / replays.
+#
+# Crash-safe fulfillment (Issue #565): the claim row, the pro_licenses INSERT
+# and the completion UPDATE commit in ONE SQLite transaction (BEGIN
+# IMMEDIATE). There is no intermediate state to crash into: either the
+# invoice is claimed+unfulfilled (empty key, "in-flight") or claimed+linked
+# (key issued, replayable). A crash mid-fulfillment rolls BOTH back, so a
+# BTCPay retry re-claims and fulfills cleanly — no empty-claim tombstone,
+# no orphan license key.
 
 
 def _ensure_processed_invoices_table() -> None:
@@ -440,6 +455,10 @@ def _ensure_processed_invoices_table() -> None:
 
 def _claim_invoice(invoice_id: str) -> Tuple[bool, str]:
     """Atomically claim an invoice for fulfillment (INSERT OR IGNORE claim).
+
+    Legacy claim primitive, kept for API compatibility — the production
+    fulfillment path is ``_atomic_fulfill`` (Issue #565), which covers the
+    claim, the license INSERT and the completion in ONE transaction.
 
     Returns (claimed, existing_key):
       - claimed=True   → this call owns the invoice; issue the key.
@@ -467,6 +486,11 @@ def _claim_invoice(invoice_id: str) -> Tuple[bool, str]:
 
 
 def _complete_invoice(invoice_id: str, key: str) -> None:
+    """Persist the issued key on an existing claim row.
+
+    Legacy completion primitive, kept for API compatibility — the
+    production fulfillment path is ``_atomic_fulfill`` (Issue #565).
+    """
     conn = get_db()
     try:
         conn.execute(
@@ -480,7 +504,13 @@ def _complete_invoice(invoice_id: str, key: str) -> None:
 
 
 def _release_claim(invoice_id: str) -> None:
-    """Delete a claim so a retry can re-claim after a fulfillment failure."""
+    """Delete a claim so a retry can re-claim after a fulfillment failure.
+
+    Only for pre-existing empty claims (legacy rows or another delivery
+    crashed before Issue #565's atomic path). The atomic fulfillment path
+    never creates a claim it needs to release: a failed fulfillment rolls
+    back the claim together with the license INSERT.
+    """
     conn = get_db()
     try:
         conn.execute(
@@ -488,6 +518,127 @@ def _release_claim(invoice_id: str) -> None:
             (invoice_id,),
         )
         conn.commit()
+    finally:
+        conn.close()
+
+
+class PaymentClaimStuckError(RuntimeError):
+    """A previously persisted claim row has no license key attached.
+
+    Raised (never swallowed) so the delivery fails VISIBLY for manual
+    reconciliation. Automatic re-fulfillment is forbidden: a crash before
+    Issue #565's atomic path may have issued a license after persisting the
+    empty claim, and issuing a second key would give the buyer two licenses
+    for one payment ("never 2 keys for 1 purchase").
+    """
+
+    def __init__(self, invoice_id: str, provider: str = "btcpay"):
+        self.invoice_id = invoice_id
+        self.provider = provider
+        super().__init__(
+            f"payment claim stuck without license key: provider={provider} "
+            f"invoice={invoice_id[:16]} — manual reconciliation required"
+        )
+
+
+def _handle_stuck_claim(invoice_id: str, provider: str) -> str:
+    """Report a persisted empty claim and fail VISIBLY (never auto-reissue).
+
+    An empty claim row can only originate from a fulfillment that predates
+    the atomic path (Issue #565) and crashed between the claim and the
+    completion — exactly the state where a license may already exist in
+    ``pro_licenses`` without being linked here. Reissuing automatically
+    could hand the buyer a second license for one payment, so this raises
+    ``PaymentClaimStuckError`` and writes an audit trail for reconciliation.
+    Operators: see docs/DEPLOYMENT_OPS.md → "Falha segura e rollback".
+    """
+    _audit(
+        "payment.fulfillment_stuck",
+        target=invoice_id,
+        details={
+            "provider": provider,
+            "reason": "empty_claim_requires_manual_reconciliation",
+        },
+    )
+    log.error(
+        "payment claim stuck: provider=%s invoice=%s has no license key — "
+        "NOT issuing a new one (an orphan license may exist); "
+        "manual reconciliation required",
+        provider,
+        invoice_id[:16],
+    )
+    raise PaymentClaimStuckError(invoice_id, provider)
+
+
+def _atomic_fulfill(
+    invoice_id: str,
+    plan: str,
+    months: int,
+    source: str,
+    provider: str = "btcpay",
+) -> Tuple[str, bool]:
+    """Fulfill a confirmed payment in ONE SQLite transaction (Issue #565).
+
+    Returns ``(key, replayed)``. The caller must already have verified the
+    payment proof and resolved the plan — this function owns the
+    transactional part only:
+
+      1. ``BEGIN IMMEDIATE`` — serializes concurrent deliveries; exactly one
+         wins the claim INSERT OR IGNORE (rowcount 1), every other delivery
+         blocks until the winner commits and then sees the final row.
+      2. Claim winner: INSERT the license (``licensing.issue_license_in_conn``)
+         and UPDATE the claim with the key — both uncommitted until step 3.
+      3. ``COMMIT`` — claim + license + completion become durable together.
+
+    A crash or exception at ANY point rolls back claim and license
+    together: no empty claim, no orphan key, and the provider's retry
+    re-claims and fulfills cleanly. There is no intermediate committed
+    state, so a committed row with an empty key can only be a legacy orphan
+    (written before the atomic path) — that raises
+    ``PaymentClaimStuckError`` for manual reconciliation; it NEVER issues
+    another key automatically (an orphan license may already exist).
+
+    Raises: ``PaymentClaimStuckError`` on a committed empty claim;
+    ``sqlite3.Error`` on DB failure (after rollback) — the caller lets the
+    delivery fail and the provider retries on a clean slate.
+    """
+    licensing.ensure_licenses_table()
+    _ensure_processed_invoices_table()
+    conn = get_db()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        cur = conn.execute(
+            "INSERT OR IGNORE INTO processed_invoices"
+            " (invoice_id, event, license_key, processed_ts) VALUES (?, ?, '', ?)",
+            (invoice_id, "invoice_settled", int(time.time())),
+        )
+        if cur.rowcount != 1:
+            # Lost the claim race (or replay): read the final committed row.
+            row = conn.execute(
+                "SELECT license_key FROM processed_invoices WHERE invoice_id = ?",
+                (invoice_id,),
+            ).fetchone()
+            existing_key = str(row["license_key"] or "") if row else ""
+            conn.rollback()
+            if not existing_key:
+                _handle_stuck_claim(invoice_id, provider)
+            return existing_key, True
+        key = licensing.issue_license_in_conn(
+            conn, plan=plan, email="", source=source, months=months
+        )
+        conn.execute(
+            "UPDATE processed_invoices SET license_key = ?, processed_ts = ?"
+            " WHERE invoice_id = ?",
+            (key, int(time.time()), invoice_id),
+        )
+        conn.commit()
+        return key, False
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        raise
     finally:
         conn.close()
 
@@ -527,6 +678,13 @@ def handle_invoice_webhook(payload: dict) -> Optional[str]:
 
     IDEMPOTENT: each invoice is fulfilled at most once; a replay returns the
     already-issued key. Returns the issued key, or None when unhandled.
+
+    CRASH-SAFE (Issue #565): the claim, the license INSERT and the ledger
+    completion commit in ONE transaction — a mid-fulfillment crash rolls
+    back both and BTCPay's redelivery re-claims cleanly. A previously
+    persisted empty claim (legacy orphan) raises PaymentClaimStuckError:
+    the delivery fails visibly for manual reconciliation and no second key
+    is ever issued automatically.
     """
     from services.safety_policy import can_process_real_payment
 
@@ -559,43 +717,38 @@ def handle_invoice_webhook(payload: dict) -> Optional[str]:
         )
         return None
 
-    claimed, existing_key = _claim_invoice(invoice_id)
-    if not claimed:
-        _audit(
-            "payment.webhook_duplicate",
-            target=invoice_id,
-            details={
-                "provider": "btcpay",
-                "status": "confirmed" if existing_key else "processing",
-            },
-        )
-        if existing_key:
-            log.info("btcpay replay: invoice=%s already fulfilled", invoice_id[:16])
-            return existing_key
-        log.info(
-            "btcpay in-flight: invoice=%s already claimed — no-op", invoice_id[:16]
-        )
-        return None
-
-    # Plan resolution: from the LOCAL ledger written at checkout time —
-    # zero network in the webhook path (a BTCPay outage during delivery must
-    # never silently downgrade PREMIUM→PRO). Unknown invoices were rejected
-    # above and can never reach this plan resolution.
+    # Crash-safe fulfillment (Issue #565): claim, license INSERT and
+    # completion commit in ONE transaction — a failure at any point rolls
+    # everything back and the provider's retry starts on a clean slate.
+    # A committed empty claim is a legacy orphan → visible failure, never
+    # automatic reissuance (a license may already exist unlinked).
     plan = _invoice_plan(invoice_id)
     months = _plan_months(plan)
     try:
-        key = licensing.issue_license(
+        key, replayed = _atomic_fulfill(
+            invoice_id,
             plan=plan,
-            email="",
-            source="btcpay",
             months=months,
+            source="btcpay",
         )
-    except Exception:
-        if invoice_id:
-            _release_claim(invoice_id)
+    except PaymentClaimStuckError:
         raise
-    if invoice_id:
-        _complete_invoice(invoice_id, key)
+    except Exception:
+        log.warning(
+            "btcpay fulfillment failed: invoice=%s — rolls back atomically; "
+            "retry will re-claim",
+            invoice_id[:16],
+            exc_info=True,
+        )
+        raise
+    if replayed:
+        _audit(
+            "payment.webhook_duplicate",
+            target=invoice_id,
+            details={"provider": "btcpay", "status": "confirmed"},
+        )
+        log.info("btcpay replay: invoice=%s already fulfilled", invoice_id[:16])
+        return key
     _audit(
         "payment.confirmed",
         target=invoice_id,
@@ -638,8 +791,11 @@ def fulfill_webln_payment(payment_hash: str, preimage: str) -> Optional[str]:
     Returns:
       - license key str → fulfilled now (or replay of an already-fulfilled
         payment returns the SAME key — idempotent, mirrors BTCPay).
-      - ""  → verified payment whose fulfillment is in-flight (another
-        delivery claimed it) — frontend keeps showing "ativando…".
+        Concurrent deliveries of the same payment_hash serialize on the
+        atomic transaction (Issue #565): the loser blocks until the winner
+        commits and returns the same key.
+      - ""  → never returned by the atomic path (kept for API compat; the
+        confirm route maps it to "pending" defensively).
       - None → proof rejected: unknown payment_hash or preimage mismatch.
     """
     from services.safety_policy import can_process_real_payment
@@ -672,29 +828,33 @@ def fulfill_webln_payment(payment_hash: str, preimage: str) -> Optional[str]:
         )
         return None
     plan = _invoice_plan(payment_hash)
-    claimed, existing_key = _claim_invoice(payment_hash)
-    if not claimed:
-        # Replay of an already-fulfilled payment → same key; in-flight → "".
+    months = _plan_months(plan)
+    try:
+        key, replayed = _atomic_fulfill(
+            payment_hash,
+            plan=plan,
+            months=months,
+            source="webln",
+            provider="webln",
+        )
+    except PaymentClaimStuckError:
+        raise
+    except Exception:
+        log.warning(
+            "webln fulfillment failed: hash=%s — rolls back atomically; "
+            "retry will re-claim",
+            str(payment_hash)[:16],
+            exc_info=True,
+        )
+        raise
+    if replayed:
+        # Replay of an already-fulfilled payment → same key.
         _audit(
             "payment.webhook_duplicate",
             target=payment_hash,
-            details={
-                "provider": "webln",
-                "status": "confirmed" if existing_key else "processing",
-            },
+            details={"provider": "webln", "status": "confirmed"},
         )
-        return existing_key
-    try:
-        key = licensing.issue_license(
-            plan=plan,
-            email="",
-            source="webln",
-            months=_plan_months(plan),
-        )
-    except Exception:
-        _release_claim(payment_hash)
-        raise
-    _complete_invoice(payment_hash, key)
+        return key
     _audit(
         "payment.confirmed",
         target=payment_hash,
