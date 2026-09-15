@@ -12623,17 +12623,28 @@ function renderAccount(acct) {
     try {
       const r = await authFetch('/api/network/scan', { method: 'POST' });
       const data = await r.json();
+      if (data.is_cloud) {
+        // A cloud deploy sits in a datacenter and can never reach the
+        // operator's LAN. Explain it instead of reporting a bogus "0 found".
+        showToast('info', data.message || 'LAN scan unavailable on cloud deploy — use CONNECT AGENT.');
+        return;
+      }
       if (!data.success) throw new Error(data.error || 'scan failed');
       const found = data.found || 0;
+      const alive = data.alive || 0;
       const dur = data.duration_ms || 0;
       const devs = data.devices || [];
+      const others = data.candidates || [];
       if (found === 0) {
-        showToast('info', 'Scan complete — no mining devices found on LAN (' + (data.scanned || 0) + ' IPs probed in ' + dur + 'ms)');
+        showToast('info', alive
+          ? 'No mining protocol answered — ' + alive + ' host(s) have a port open (' + (data.scanned || 0) + ' IPs probed in ' + dur + 'ms). Use TEST CONNECTIVITY on a specific IP.'
+          : 'Scan complete — no mining devices found on LAN (' + (data.scanned || 0) + ' IPs probed in ' + dur + 'ms)');
       } else {
-        showToast('success', found + ' device(s) found (' + dur + 'ms) — check Fleet to add them');
-        // Render results as a simple list below the fleet grid
-        renderScanResults(devs);
+        showToast('success', found + ' miner(s) found (' + dur + 'ms)' +
+          (alive ? ' · ' + alive + ' other host(s) ignored' : '') + ' — check Fleet to add them');
       }
+      // Render results as a simple list below the fleet grid
+      if (found || alive) renderScanResults(devs, others);
     } catch (e) {
       logMessage('SCAN', 'Network scan failed: ' + e.message, 'WARN');
     } finally {
@@ -12645,7 +12656,7 @@ function renderAccount(acct) {
     }
   }
 
-  function renderScanResults(devices) {
+  function renderScanResults(devices, candidates) {
     let container = document.getElementById('scan-results');
     if (!container) {
       container = document.createElement('div');
@@ -12667,7 +12678,23 @@ function renderAccount(acct) {
         '<button class="chip scan-results__add" data-ip="' + escapeHtml(d.ip) + '">+ Add</button>' +
         '</div>';
     }).join('');
-    container.innerHTML = '<div class="scan-results__head">' + _ic('search', 10, true) + 'SCAN RESULTS <button class="chip scan-results__dismiss">' + _ic('x', 10, true) + 'dismiss</button></div>' + items;
+    // Hosts that opened a port but answered NO miner protocol are listed
+    // separately, without "+ Add": they are routers/NAS/printers as often as
+    // they are authenticated ASICs, so the operator decides — the scanner no
+    // longer labels them as miners.
+    const otherRows = (candidates || []).map(function(d) {
+      var ports = (d.open_ports || []).join(', ');
+      var host = d.hostname ? ' <span class="scan-results__host">' + escapeHtml(d.hostname) + '</span>' : '';
+      return '<div class="scan-results__item scan-results__item--other" data-ip="' + escapeHtml(d.ip) + '">' +
+        '<span class="scan-results__ip">' + escapeHtml(d.ip) + '</span>' +
+        '<span class="scan-results__ports">ports: ' + (ports || 'none') + '</span>' +
+        host +
+        '</div>';
+    }).join('');
+    const otherHead = otherRows
+      ? '<div class="scan-results__subhead">' + (candidates.length) + ' host(s) with an open port but NO miner protocol — not labelled as miners</div>'
+      : '';
+    container.innerHTML = '<div class="scan-results__head">' + _ic('search', 10, true) + 'SCAN RESULTS <button class="chip scan-results__dismiss">' + _ic('x', 10, true) + 'dismiss</button></div>' + items + otherHead + otherRows;
     container.style.display = 'block';
     // Wire dismiss + per-device Add buttons
     container.querySelector('.scan-results__dismiss')?.addEventListener('click', function() {

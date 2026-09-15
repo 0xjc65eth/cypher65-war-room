@@ -7857,10 +7857,31 @@ def api_rentals_series_rentals(tenant_id: str = ""):
 def api_network_scan():
     """Scan the local network for mining devices.
 
-    Probes ARP cache + subnet for IPs, then checks cgminer (4028),
-    Braiins REST (80), and Bitaxe (8080) ports with 200ms timeouts.
-    Returns discovered devices with firmware hints.
+    Probes the ARP cache + this host's own subnet for candidate IPs, then
+    asks a real miner protocol (AxeOS REST → Braiins OS+ REST → cgminer
+    socket) to identify each candidate. ``firmware_hint`` is set ONLY from
+    validated protocol evidence — never from an open port.
+
+    Same SaaS topology guard as /api/axe-fleet/scan: a cloud deploy lives in
+    a datacenter, so scanning "the local network" there would sweep the
+    provider's subnet and hand back machines that are not the operator's.
     """
+    from config import is_cloud_deploy
+
+    if is_cloud_deploy():
+        return (
+            jsonify(
+                {
+                    "success": False,
+                    "is_cloud": True,
+                    "error": "LAN scan unavailable on cloud deploy",
+                    "message": "Este dashboard roda na nuvem e não alcança a sua LAN. "
+                    "Instale o AGENTE LOCAL (Fleet → CONNECT AGENT) — ele roda na sua "
+                    "rede, descobre os miners e conecta para fora.",
+                }
+            ),
+            400,
+        )
     try:
         result = _lan_scanner.scan_network()
         return jsonify({"success": True, **result})

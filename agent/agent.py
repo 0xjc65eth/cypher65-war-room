@@ -51,9 +51,17 @@ MAX_HOSTS = 1024
 RESCAN_EVERY = 10       # full LAN re-scan every N poll cycles (new miners)
 
 # Protocol ports. Defaults match real hardware (AxeOS HTTP :80, cgminer
-# JSON-over-TCP :4028); overridable via env for test rigs/mock miners.
+# JSON-over-TCP :4028, Braiins OS+ REST alt :50051); overridable via env for
+# test rigs/mock miners.
 AXEOS_PORT = int(os.environ.get("CYPHER65_AXEOS_PORT") or 80)
 CGMINER_PORT = int(os.environ.get("CYPHER65_CGMINER_PORT") or 4028)
+BRAIINS_REST_PORT = int(os.environ.get("CYPHER65_BRAIINS_REST_PORT") or 50051)
+
+# ESP-Miner identity markers in /api/system/info. A bare HTTP 200 with a JSON
+# body is NOT a miner: routers, NAS panels and captive portals answer 200
+# (often with JSON) on any path. Only these ASIC-specific keys prove the
+# payload came from AxeOS/ESP-Miner.
+_AXEOS_MARKERS = ("hashrate", "ASICModel", "boardVersion", "frequency")
 
 # cgminer-family framing: most firmwares terminate JSON with \x00, some
 # (Avalon) wrap frames in ~ (\x7e) tildes. Mirror of the server scanner's
@@ -187,8 +195,36 @@ def _extract_json_lenient(raw):
 
 
 def _probe_axeos(ip):
-    """AxeOS/ESP-Miner HTTP :80 — returns info dict or None."""
-    return _get_json(f"http://{ip}:{AXEOS_PORT}/api/system/info")
+    """AxeOS/ESP-Miner HTTP :80 — returns info dict or None.
+
+    Requires ESP-Miner identity keys. Accepting any JSON 200 here is how a
+    router's JSON catch-all gets registered as a Bitaxe and then pushes empty
+    telemetry forever, so an unrecognized payload is rejected outright.
+    """
+    info = _get_json(f"http://{ip}:{AXEOS_PORT}/api/system/info")
+    if not isinstance(info, dict) or not info:
+        return None
+    if not any(key in info for key in _AXEOS_MARKERS):
+        return None
+    return info
+
+
+def _probe_braiins_rest(ip):
+    """Braiins OS+ REST (``GET /api/v1/miner/stats``) on :80 then :50051.
+
+    Returns the parsed payload, or None. ``miner_stats`` is the Braiins OS+
+    identity block — the whole telemetry lives under it — so a 200 without it
+    is not a Braiins miner we could read, and must not be reported as one.
+    """
+    for port in (AXEOS_PORT, BRAIINS_REST_PORT):
+        data = _get_json(f"http://{ip}:{port}/api/v1/miner/stats")
+        if (
+            isinstance(data, dict)
+            and isinstance(data.get("miner_stats"), dict)
+            and data["miner_stats"]
+        ):
+            return data
+    return None
 
 
 def _cgminer_cmd(ip, command):
@@ -228,7 +264,12 @@ def _probe_cgminer(ip):
 
 
 def _probe_host(ip):
-    """Full discovery probe for one host. Returns discovery dict or None."""
+    """Full discovery probe for one host. Returns discovery dict or None.
+
+    Every branch is gated on a validated minimer protocol (AxeOS REST →
+    Braiins OS+ REST → cgminer socket) — never on a mere open port, so a
+    neighbour on the LAN cannot be announced as a miner.
+    """
     info = _probe_axeos(ip)
     if isinstance(info, dict):
         try:
@@ -243,6 +284,25 @@ def _probe_host(ip):
             "hostname": str(info.get("hostname", "")),
             "mac": str(info.get("mac", "")),
             "hashrate_hs": hr,
+        }
+    rest = _probe_braiins_rest(ip)
+    if isinstance(rest, dict):
+        miner = rest.get("miner_stats") or {}
+        pool = rest.get("pool_stats") or {}
+        try:
+            ghps = float(miner.get("hashrate_avg") or miner.get("hashrate_ghps") or 0)
+        except (TypeError, ValueError):
+            ghps = 0.0
+        return {
+            "ip": ip, "type": "braiins",
+            "model": str(miner.get("model") or miner.get("miner_type") or "Braiins OS+"),
+            "firmware": "Braiins OS+",
+            "version": str(miner.get("version") or miner.get("firmware_version") or ""),
+            "hostname": "",
+            "mac": "",
+            "hashrate_hs": int(ghps * 1e9),
+            "pool_url": str(pool.get("url") or ""),
+            "pool_user": str(pool.get("user") or ""),
         }
     ver = _probe_cgminer(ip)
     if ver and ver.get("STATUS"):
@@ -292,6 +352,50 @@ def scan_lan():
 # ── Telemetry polling (normalized shape, mirrors registry extract_telemetry) ─
 
 
+def _braiins_rest_telemetry(ip):
+    """Normalized telemetry from the Braiins OS+ REST API, or {}.
+
+    Field names mirror core/adapters/braiins_adapter._parse_rest_telemetry so
+    the agent and the server-side adapter report the same columns. An empty
+    dict means "REST not answering" (the caller then tries cgminer) — never
+    "device is dead".
+    """
+    data = _probe_braiins_rest(ip)
+    if not isinstance(data, dict):
+        return {}
+    miner = data.get("miner_stats") or {}
+    pool = data.get("pool_stats") or {}
+    power = data.get("power_stats") or {}
+
+    def _num(value, cast=float):
+        try:
+            return cast(value)
+        except (TypeError, ValueError):
+            return None
+
+    ghps = _num(miner.get("hashrate_avg") or miner.get("hashrate_ghps"))
+    hr = int((ghps or 0.0) * 1e9)
+    power_w = _num(power.get("power_avg") or power.get("power_w"))
+    tel = {
+        "hashrate_hs": hr,
+        "temperature": _num(miner.get("board_temp_avg")),
+        "temp_asic": _num(miner.get("chip_temp_avg")),
+        "fan_rpm": None,  # REST exposes fans under /api/v1/cooling/state
+        "power_watts": power_w,
+        "best_diff": str(miner.get("best_share") or ""),
+        "shares_accepted": _num(miner.get("accepted_shares") or pool.get("accepted"), int) or 0,
+        "shares_rejected": _num(miner.get("rejected_shares") or pool.get("rejected"), int) or 0,
+        "shares_stale": _num(miner.get("stale_shares") or pool.get("stale"), int) or 0,
+        "uptime_seconds": _num(miner.get("uptime_s") or miner.get("uptime"), int) or 0,
+        "pool_url": str(pool.get("url") or ""),
+        "pool_user": str(pool.get("user") or ""),
+        "model": str(miner.get("model") or miner.get("miner_type") or "Braiins OS+"),
+    }
+    if hr and power_w:
+        tel["efficiency_jth"] = round(power_w / (hr / 1e12), 2)
+    return tel
+
+
 def _poll_telemetry(dev):
     """Fetch one device's telemetry. Returns normalized dict (hashrate_hs,
     temperature, fan_rpm, power_watts, best_diff, shares_*, ...) or {}."""
@@ -329,6 +433,14 @@ def _poll_telemetry(dev):
         if hr and power and power > 0:
             tel["efficiency_jth"] = round(power / (hr / 1e12), 2)
         return tel
+    if dev.get("type") == "braiins":
+        # Braiins OS+ REST carries the full telemetry. When the REST API does
+        # not answer (older firmware, /api/v1 disabled) fall through to the
+        # cgminer path below — Braiins OS+ serves that API too, so a
+        # reachable miner is never reported as dead.
+        rest_tel = _braiins_rest_telemetry(ip)
+        if rest_tel:
+            return rest_tel
     # cgminer: summary → hashrate/shares; stats → per-chain temps + fans
     # (Antminer/Braiins/LuxOS report temp2_0/temp3_0 and fan1/fan2 under the
     # second STATS entry); pools → pool URL/worker for the dashboard.
@@ -392,6 +504,9 @@ def _exec_command(cmd, known=None):
       - bitaxe/AxeOS: HTTP POST /api/system/{restart|identify} on :80
       - cgminer-family: JSON-over-TCP restart command on :4028 (cgminer has
         NO identify command — the server no longer advertises it).
+      - Braiins OS+: same cgminer API over :4028 for restart, plus `led` for
+        identify; Braiins OS+ has no pause/resume (the registry does not
+        advertise them for this type).
     """
     dev_ip = cmd.get("ip_address") or cmd.get("device_ip") or cmd.get("device_id")
     name = cmd.get("command")
@@ -407,6 +522,17 @@ def _exec_command(cmd, known=None):
             if parsed and parsed.get("STATUS"):
                 return True, "cgminer restart accepted"
             return False, "cgminer restart failed/unreachable"
+        if dev_type == "braiins":
+            if name not in ("restart", "identify"):
+                # Braiins OS+ has no pause/resume. Reject rather than fake a
+                # success the miner never performed.
+                return False, f"{name} not supported by Braiins OS+"
+            # Braiins OS+ exposes the cgminer API: `restart` reboots the miner
+            # and `led` blinks the identification LED.
+            parsed = _cgminer_cmd(dev_ip, "restart" if name == "restart" else "led")
+            if parsed and parsed.get("STATUS"):
+                return True, f"braiins {name} accepted"
+            return False, f"braiins {name} failed/unreachable"
         # bitaxe/AxeOS: the ESP-Miner API exposes pause/resume as
         # /api/system/miningPause + /api/system/miningResume (empty body),
         # restart/identify as /api/system/{restart|identify}.

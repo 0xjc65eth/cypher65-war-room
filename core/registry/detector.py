@@ -25,6 +25,12 @@ log = logging.getLogger(__name__)
 # Timeout for detection attempts (seconds)
 DETECT_TIMEOUT = 3
 
+# ESP-Miner identity markers in /api/system/info. A bare HTTP 200 with a JSON
+# body is NOT evidence of a miner: routers, NAS panels, printers and captive
+# portals answer 200 (often with JSON) on any path. Only the ASIC-specific
+# keys below prove the payload came from AxeOS/ESP-Miner.
+_AXEOS_MARKERS = ("hashrate", "ASICModel", "boardVersion", "frequency")
+
 _SAFE_PRIVATE_NETWORKS = (
     ipaddress.ip_network("10.0.0.0/8"),
     ipaddress.ip_network("172.16.0.0/12"),
@@ -76,8 +82,39 @@ def resolve_private_target(host: str) -> str:
     return str(address)
 
 
-def detect_firmware(ip_address: str) -> dict:
+def _looks_like_axeos(data: object) -> bool:
+    """True when a /api/system/info payload carries ESP-Miner identity keys.
+
+    Fail-closed on purpose: an unrecognized 200 falls through to the Braiins
+    and cgminer probes instead of being reported as a miner we cannot read
+    telemetry from.
+    """
+    if not isinstance(data, dict) or not data:
+        return False
+    return any(key in data for key in _AXEOS_MARKERS)
+
+
+def _braiins_miner_stats(data: object) -> dict | None:
+    """Return the Braiins OS+ ``miner_stats`` block, or None when absent.
+
+    Braiins OS+ always reports this block; a generic JSON endpoint that
+    happens to live on the same path does not. Requiring it stops a REST
+    catch-all from being classified as a Braiins miner.
+    """
+    if not isinstance(data, dict):
+        return None
+    miner = data.get("miner_stats")
+    if not isinstance(miner, dict) or not miner:
+        return None
+    return miner
+
+
+def detect_firmware(ip_address: str, timeout: float = DETECT_TIMEOUT) -> dict:
     """Detect firmware type by probing known API endpoints.
+
+    ``timeout`` bounds each individual probe. Callers that fan out over a
+    whole subnet (the LAN scanner) pass a shorter value so a /24 full of
+    web servers cannot stall the sweep.
 
     Returns:
         dict with keys:
@@ -99,9 +136,15 @@ def detect_firmware(ip_address: str) -> dict:
 
     # 1. Try AxeOS/ESP-Miner REST API
     try:
-        r = requests.get(f"http://{ip_address}/api/system/info", timeout=DETECT_TIMEOUT)
+        data = None
+        r = requests.get(f"http://{ip_address}/api/system/info", timeout=timeout)
         if r.status_code == 200:
             data = r.json()
+            if not _looks_like_axeos(data):
+                # Not an ESP-Miner payload — a JSON 200 alone must never be
+                # labelled AxeOS. Fall through to the Braiins/cgminer probes.
+                data = None
+        if data is not None:
             result.update(
                 {
                     "firmware": "axeos",
@@ -136,11 +179,14 @@ def detect_firmware(ip_address: str) -> dict:
         try:
             r = requests.get(
                 f"http://{ip_address}:{braiins_port}/api/v1/miner/stats",
-                timeout=DETECT_TIMEOUT,
+                timeout=timeout,
             )
             if r.status_code == 200:
                 data = r.json()
-                miner = data.get("miner_stats") or {}
+                miner = _braiins_miner_stats(data)
+                if miner is None:
+                    # 200 without the Braiins identity block — not this miner.
+                    continue
                 version_str = str(
                     miner.get("version") or miner.get("firmware_version") or ""
                 )
@@ -168,7 +214,7 @@ def detect_firmware(ip_address: str) -> dict:
     # 2b. Fallback: Braiins OS+ cgminer socket (detect "BOSminer" in version)
     try:
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.settimeout(DETECT_TIMEOUT)
+        sock.settimeout(timeout)
         sock.connect((ip_address, 4028))
         sock.send(b'{"command":"version"}\n')
         data = b""
@@ -220,7 +266,7 @@ def detect_firmware(ip_address: str) -> dict:
     # 3. Try cgminer protocol (TCP port 4028)
     try:
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.settimeout(DETECT_TIMEOUT)
+        sock.settimeout(timeout)
         sock.connect((ip_address, 4028))
         sock.send(b'{"command":"version"}\n')
         data = b""
