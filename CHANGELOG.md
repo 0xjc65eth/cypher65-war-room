@@ -6,6 +6,28 @@ e versionamento semântico ([SemVer](https://semver.org/lang/pt-BR/)).
 
 ## [Unreleased]
 
+### Adicionado — spec determinístico dos KPI cards fecha a lacuna de cobertura do PR 10 (RFC #478, Issue #568)
+- **A lacuna:** o PR 10 (#561) registrou, em vez de esconder, que a mutação que
+  provaria o movimento — desligar a escrita de `#kpi-hashrate` dentro de
+  `renderKpiCards` (R31) — **sobrevivia** à suíte inteira. A asserção que pegaria
+  isso em `dashboard.spec.js` (`#kpi-hashrate` ≠ `—`) é **condicional** a um worker
+  conectado (`#hud-hashrate` visível), e o servidor local de e2e sobe **sem worker**.
+- **`tests/e2e/dashboard-kpi-cards.spec.js` (novo):** fixture determinístico via
+  `page.route('**/api/snapshot*')` + `route.fetch()` com override de
+  `worker.hashrate`/`bestDifficulty`, `pool.hashrate` e
+  `proximity.share_rate_hourly`, com `/api/stream` abortado (para o poll mockado ser
+  a única fonte) e a guarda de service worker compartilhada da #562 — necessária
+  porque `page.route` não intercepta fetch originado do SW.
+- **Asserções incondicionais nos 4 cells** (valores medidos contra o `fmt` real):
+  `#kpi-hashrate` = `2.00 TH/s`, `#kpi-bestdiff` = `5.00 M`, `#kpi-poolhr` =
+  `3.00 TH/s`, `#kpi-shares` = `42/h` — mais um segundo caso cobrindo o fallback do
+  share rate (`1234 total` quando a taxa horária é 0 mas há shares na sessão).
+- **Prova de mutação:** a **mesma** mutação que sobreviveu ao PR 10 agora
+  **derruba o spec — 4/4 falhas, exit 1** (a célula fica presa no placeholder `—`
+  e o `waitForFunction` estoura o timeout). O mutante foi revertido e o
+  `build_app_js --check` confirma os 17 fragmentos em sincronia.
+- **Verde:** spec 4/4 (chromium + mobile-chrome) · `check:frontend` · JS core 1.435.
+
 ### Adicionado — registry multi-pool chain-aware (BTC + BSV) com detecção automática (Issue #571)
 - **O problema:** 100% dos dados de pool vinham de um único host (`PARASITE_API`,
   `config.py:21` — `app.py:3225-3231`, `services/snapshot_assembly.py:107,157`,
