@@ -6,6 +6,51 @@ e versionamento semântico ([SemVer](https://semver.org/lang/pt-BR/)).
 
 ## [Unreleased]
 
+### Adicionado — snapshot e painel dizem QUAL pool o ASIC reporta, em qual chain e de onde vêm os números (Issue #574)
+- **O problema:** o `stratumURL` que cada minerador reporta **já estava no banco**
+  (`axe_telemetry.payload.pool_url`, gravado pelo agente) e **ninguém lia**. O
+  `snapshot["pool"]` continuava vindo só do `pool-stats` do parasite.space, então
+  um operador em OCEAN/CKPool/qualquer `stratum_only` via o painel falar de uma
+  pool que não era a dele — ou de zeros silenciosos.
+- **`services/pool_detection.py` (novo):** a cada poll lê o report de pool mais
+  recente do **tenant** (janela de 50 linhas, cache de 60s), detecta o provider e
+  resolve as estatísticas. Duas propriedades deliberadas: **nenhuma requisição de
+  rede por iniciativa própria** (sem report de ASIC devolve `{}` na hora, e pool
+  `stratum_only` nunca chama API) e **nunca levanta** (enriquecimento; tabela
+  ausente/DB fora/API caída degradam para `{}`). Falha de API de uma pool que
+  **tem** API não é cacheada — o próximo poll tenta de novo em vez de servir
+  números do ASIC por um minuto inteiro.
+- **`services/snapshot_assembly.py`:** `_build_snapshot(address, worker_name,
+  tenant_id="")` ganha o tenant (para o isolamento da leitura) e as chaves
+  `pool_detection` / `pool_worker` **no schema**, nulas quando não há o que
+  reportar — o front nunca precisa distinguir "ausente" de "não se aplica".
+  `services/user_polling.py` passa `worker.tenant_id`; os doubles de teste que
+  stubavam `_build_snapshot` com 2 parâmetros passaram a aceitar o terceiro.
+- **Painel (`#pool-overview`):** faixa que mostra **provider**, **chain** e
+  **fonte** (`API DA POOL` ou `ASIC`). O view-model sai de `poolDetectionView()`
+  — função **pura**, sem DOM nem globais — e o `renderPoolDetection()` só escreve.
+  Três distinções que o painel faz questão de não achar: pool `stratum_only` (o
+  ASIC é a única fonte que existe, e isso é normal) ≠ pool que **tem** API e
+  respondeu pelo ASIC (**borda âmbar**: a chamada falhou); host fora do registro
+  (neutro, rotulado "fora do registro"); e **chain ausente não é inventada** —
+  BTC e BSV compartilham base58 `1…`/`3…`, então a assinatura diz "não declarada"
+  em vez de chutar. A faixa fica **oculta** sem report: células vazias leriam
+  como "pool desconhecida" quando o fato é "nada a reportar ainda".
+- **Evidência medida:** pytest **3.504** · JS core **1.463** (+28, SUITE 38 carrega
+  `39b-dashboard.js` via `loadFragment` — o fonte real) · e2e
+  `pool-detection-panel.spec.js` **12/12** (chromium + mobile-chrome) com fixture
+  determinístico. **Prova de mutação** (`apiMiss = false`, ou seja, esconder a
+  falha da API): JS core **3 asserções falham**, e2e **2/10 falham, exit 1** —
+  mutante revertido e `build_app_js --check` em sincronia.
+- **Achado de CSS do próprio guard:** o primeiro check de overflow do spec
+  comparava `scrollWidth > clientWidth` — que é o **comportamento normal** de uma
+  linha recortada com ellipsis, não um defeito; ele acusava o próprio clip. O
+  guard foi reescrito para medir o que importa (a faixa e as células, não a linha
+  cliada) e, com ele, a medição virou documentação: sem `min-width: 0` na célula,
+  um host de 1.778px produz trilha de **1.790px** e painel com `scrollWidth`
+  **1.814** contra `clientWidth` **361** (1.453px de estouro, zero ellipsis); com
+  ela, trilha de **318px** e recorte correto. `min-width: 0` é carga, não higiene.
+
 ### Adicionado — spec determinístico dos KPI cards fecha a lacuna de cobertura do PR 10 (RFC #478, Issue #568)
 - **A lacuna:** o PR 10 (#561) registrou, em vez de esconder, que a mutação que
   provaria o movimento — desligar a escrita de `#kpi-hashrate` dentro de

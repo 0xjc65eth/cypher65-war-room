@@ -43,6 +43,21 @@ fonte em `source`: `"api"` (API da pool) ou `"asic"` (o minerador).
    endereço: BTC e BSV compartilham os formatos base58 `1…`/`3…`, então o
    endereço não distingue as duas.
 
+### Onde isso aparece no painel
+
+A faixa do topo do painel **POOL CONTEXT** mostra os três fatos, a cada poll
+(sem chamada manual): **qual pool** o ASIC reporta, **qual chain** e **de onde
+vêm os números** — `API DA POOL` (número é da API pública) ou `ASIC` (número é
+do próprio minerador). A borda esquerda carrega o estado: **âmbar** quando a pool
+publica API e ela **não respondeu** (aí os números são do ASIC por falha, não por
+ausência de API — e a próxima tentativa não espera o TTL), neutra quando a pool
+está **fora do registro**. Sem report do ASIC a faixa fica **oculta**, em vez de
+mostrar zeros que pareceriam um fato.
+
+No JSON: `snapshot["pool_detection"]` (provider, chain, host, `has_stats_api`) e
+`snapshot["pool_worker"]` (números + `source`), ambos presentes no schema e
+`null` quando não há o que reportar.
+
 Para inspecionar manualmente:
 
 ```bash

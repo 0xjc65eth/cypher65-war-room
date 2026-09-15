@@ -536,6 +536,26 @@
     <div class="panel__eyebrow"># POOL CONTEXT <span class="badge badge--amber" id="p-stale-badge" style="display:none">STALE</span></div>
     <div class="panel__tools"><span class="badge badge--mute" id="pool-uptime">up —</span><button class="panel__toggle" data-panel="pool-overview" aria-label="Alternar painel do pool"></button></div>
   </div>
+  <!-- Pool detectada a partir do que o próprio ASIC reporta (Issue #574). Fica
+       oculta até haver um report de frota: células vazias leriam como "pool
+       desconhecida" quando o fato é "nada a reportar ainda". -->
+  <div class="pool-detect" id="pool-detect" hidden>
+    <div class="pool-detect__cell">
+      <div class="pool-detect__label">POOL</div>
+      <div class="pool-detect__val" id="pd-provider">—</div>
+      <div class="pool-detect__sub" id="pd-provider-sub">—</div>
+    </div>
+    <div class="pool-detect__cell">
+      <div class="pool-detect__label">CHAIN</div>
+      <div class="pool-detect__val" id="pd-chain">—</div>
+      <div class="pool-detect__sub" id="pd-chain-sub">—</div>
+    </div>
+    <div class="pool-detect__cell">
+      <div class="pool-detect__label">FONTE</div>
+      <div class="pool-detect__val"><span class="badge badge--mute" id="pd-source">—</span></div>
+      <div class="pool-detect__sub" id="pd-source-sub">—</div>
+    </div>
+  </div>
   <div class="stat-row">
     <div class="stat"><div class="stat__label">POOL HR</div><div class="stat__val" id="p-hashrate">—</div><div class="stat__sub">aggregate</div></div>
     <div class="stat"><div class="stat__label">WORKERS/USERS</div><div class="stat__val" id="p-workers">—/—</div><div class="stat__sub">active rigs</div></div>

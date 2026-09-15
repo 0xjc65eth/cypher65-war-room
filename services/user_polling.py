@@ -710,7 +710,9 @@ class PollWorkerPool:
             if worker is None:
                 continue
             try:
-                snapshot = _build_snapshot(worker.address, worker.worker_name)
+                snapshot = _build_snapshot(
+                    worker.address, worker.worker_name, worker.tenant_id
+                )
                 worker._dispatch_tenant_alerts(snapshot)
                 worker._sm.update_snapshot(worker.session_id, snapshot)
                 worker._consecutive_errors = 0
@@ -1038,7 +1040,7 @@ class UserPollingWorker:
         Used by /api/connect-wallet so the connect response carries data, and
         by tests. Does not consume a pool worker — runs in the caller's
         thread (no thread-per-session, ever)."""
-        snapshot = _build_snapshot(self.address, self.worker_name)
+        snapshot = _build_snapshot(self.address, self.worker_name, self.tenant_id)
         self._dispatch_tenant_alerts(snapshot)
         self._sm.update_snapshot(self.session_id, snapshot)
         return snapshot

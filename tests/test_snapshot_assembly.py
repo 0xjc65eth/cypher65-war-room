@@ -41,6 +41,9 @@ SNAPSHOT_KEYS = {
     "worker_index",
     "user_aggregate",
     "pool",
+    # Issue #574 — pool detected from the ASIC's own stratumURL report.
+    "pool_detection",
+    "pool_worker",
     "account",
     "account_meta",
     "lightning",
@@ -86,6 +89,12 @@ def _patch_fetchers(monkeypatch, module, *, height, usd):
     monkeypatch.setattr(
         module, "_fetch_global_mempool_fees", lambda: {"fastestFee": 12}
     )
+    # Pool detection (Issue #574) is a fetch boundary of its own: it reads fleet
+    # telemetry and may call a pool's public API. Stubbed here so the helper
+    # keeps its promise of "sem rede" — the detection path has its own tests in
+    # tests/test_pool_detection.py.
+    if hasattr(module, "_detect_pool"):
+        monkeypatch.setattr(module, "_detect_pool", lambda address, tenant_id="": {})
 
 
 # ── 1. Re-export: um objeto só nos dois módulos ────────────────────────────
