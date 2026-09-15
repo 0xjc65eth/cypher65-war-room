@@ -225,6 +225,57 @@ class TestApiRegister:
         })
         assert res.status_code == 400
 
+    def test_multi_user_cloud_mints_agent_token_without_any_api_key(
+        self, client, monkeypatch
+    ):
+        """Issue #578 — a plataforma multi-usuário NÃO precisa de API_KEY.
+
+        `auth_configured()` (API_KEY/TENANT_API_KEYS) é o que transforma
+        `role_required` em no-op — e é por isso que um POST anônimo na nuvem
+        recebia um token de frota de 1 ano. Mas este fluxo não depende dela:
+        cada signup provisiona o PRÓPRIO tenant e o login devolve um JWT com
+        `sub = tenant_id`, que é exatamente o header que o `authFetch` do
+        painel envia. A exigência de identidade é satisfeita pelo usuário
+        logado, por tenant, sem nenhuma configuração de operador.
+        """
+        from services.auth import verify_token
+
+        monkeypatch.setenv("RENDER", "true")  # topologia de produção
+        monkeypatch.delenv("API_KEY", raising=False)
+        monkeypatch.delenv("TENANT_API_KEYS", raising=False)
+
+        client.post("/api/auth/register", json={
+            "username": "bob", "password": "supersecret",
+        })
+        login = client.post("/api/auth/login", json={
+            "username": "bob", "password": "supersecret",
+        })
+        assert login.status_code == 200
+        access = login.get_json()["access_token"]
+        tenant = login.get_json()["tenant_id"]
+
+        resp = client.post(
+            "/api/agent/token", headers={"Authorization": f"Bearer {access}"}
+        )
+
+        assert resp.status_code == 200, resp.get_json()
+        payload = verify_token(resp.get_json()["token"], expected_type="access")
+        assert payload["sub"] == tenant  # o token é do tenant DELE
+        assert payload["agent"] is True
+
+    def test_anonymous_agent_token_is_refused_on_cloud(
+        self, client, monkeypatch
+    ):
+        """O contraponto: sem identidade nenhuma, a nuvem recusa."""
+        monkeypatch.setenv("RENDER", "true")
+        monkeypatch.delenv("API_KEY", raising=False)
+        monkeypatch.delenv("TENANT_API_KEYS", raising=False)
+
+        resp = client.post("/api/agent/token")
+
+        assert resp.status_code == 403
+        assert resp.get_json()["code"] == "AGENT_TOKEN_NEEDS_IDENTITY"
+
     def test_login_by_username_password(self, client):
         # register first, then log in with username/password (global lookup
         # finds the user in their provisioned tenant)
