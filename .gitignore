@@ -55,3 +55,11 @@ skills-lock.json
 # .DS_Store volta a ser lixo mesmo dentro do dir versionado de skills
 # (a negação acima re-inclui tudo; last-match-wins re-ignora só o lixo)
 .agents/skills/**/.DS_Store
+
+# Papéis da equipe multi-agente também são VERSIONADOS (Issue #596) — mesmo
+# racional das skills: viajam com o repo para que qualquer agente de qualquer
+# modelo assuma o papel em qualquer clone. Sem esta exceção os 30 arquivos de
+# `.agents/agents/` seriam silenciosamente ignorados pela regra `.agents/*`.
+!.agents/agents/
+!.agents/agents/**
+.agents/agents/**/.DS_Store

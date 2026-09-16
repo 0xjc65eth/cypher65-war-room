@@ -130,7 +130,48 @@ def test_mermaid_contract_has_one_runtime_flow_and_one_advisory_sequence():
         "Accept advisory",
         "Record advisory_only",
         "navigate_to destination",
-        "Require human confirmation",
-        "Command, blacklist, or buy",
+        "Show module guard",
+        "Satisfy module guard",
     ):
         assert step in runtime_blocks[0]
+
+
+def test_action_guards_are_documented_as_distinct():
+    """Issue #566: blacklist, purchase and physical command are not one gate.
+
+    The advisory handoff ends at a generic module guard. Each destination then
+    enforces its own boundary, and the confirmation token is scoped to physical
+    dispatch — never to the tenant-scoped blacklist mutation.
+    """
+    runtime = _read(RUNTIME_MAP)
+    assert "Guards are not shared" in runtime
+
+    # The blacklist is authorization-only and must not be described as
+    # confirmation-gated.
+    blacklist_row = next(
+        line for line in runtime.splitlines() if "/api/rentals/rig/blacklist" in line
+    )
+    assert '@role_required("member")' in blacklist_row
+    assert "**No**" in blacklist_row
+    assert "confirmation" in blacklist_row.lower()
+
+    # Physical dispatch keeps the single-use, expiring confirmation contract.
+    physical_row = next(
+        line for line in runtime.splitlines() if "/api/devices/:id/command" in line
+    )
+    assert "**Yes**" in physical_row
+    assert "120" in physical_row
+    assert "CMD-002" in physical_row
+
+    # The retired wording implied a single confirmed path for all three actions.
+    assert "Command, blacklist, or buy" not in runtime
+
+
+def test_quickstart_does_not_promise_a_loopback_bind():
+    """Issue #566: ./run.sh binds 0.0.0.0, so localhost does not constrain it."""
+    text = _read(QUICKSTART)
+    assert "0.0.0.0" in text
+    assert "not** to loopback" in text
+    assert "firewall" in text
+    # The old copy claimed the operator could keep the run loopback-only.
+    assert "Keep the instance on loopback for this first run." not in text

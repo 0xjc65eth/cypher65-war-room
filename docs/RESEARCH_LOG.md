@@ -103,6 +103,36 @@ Registro de descobertas técnicas, operacionais e de produto relevantes para o C
 
 ---
 
+## C65-R006 — O valor liquidado depende do trilho de payout, e o trilho barato tem teto
+
+- **Data:** 2026-09-16
+- **Fonte:** Braiins Academy — *Rewards & Payouts* (documentação do fornecedor)
+- **URL:** https://academy.braiins.com/braiins-pool/rewards-and-payouts · brief: https://github.com/0xjc65eth/cypher65-war-room/blob/master/docs/research/miners_and_hashpower_pain_points.md
+- **Categoria:** Liquidação · Payout · Hashrate · Transparência de números
+- **Problema observado:** A fonte primária declara regras de payout condicionais ao **trilho** e ao **tamanho** do saldo: on-chain é gratuito a partir de 0,005 BTC e custa 0,0001 BTC abaixo disso, enquanto o trilho Lightning é gratuito mas tem **teto** de 0,005 BTC. Payouts são criados uma vez por dia (9:00 UTC). O saldo bruto, portanto, não é o valor recebido.
+- **Relevância para o CYPHER65:** Exibir um saldo sem a taxa e o teto do trilho apresenta um número que não corresponde ao valor liquidado. Isso é interpretação financeira errada, não arredondamento.
+- **Licença:** MIT — documentação do próprio projeto. A resposta externa é citada como evidência, não incorporada; termos de uso da fonte externa não foram revalidados para reuso.
+- **Risco:** ALTO
+- **Decisão:** Validar antes de exibir qualquer valor líquido. Onde o dado de trilho não for confiável, exibir indisponível — nunca estimar.
+- **Próxima ação:** Issue `new-feature` para valor líquido por trilho, com métrica (divergência zero contra a tabela da fonte em 3 cenários) e critério de parada declarados.
+- **Status:** descoberto
+
+## C65-R007 — Solo mining não tem progresso intermediário: shares são cosméticas e o processo é memoryless
+
+- **Data:** 2026-09-16
+- **Fonte:** Solo CKPool (landing/FAQ) · M. Rosenfeld, *Analysis of Bitcoin Pooled Mining Reward Systems* (arXiv:1112.4980)
+- **URL:** https://solo.ckpool.org/ · https://arxiv.org/html/1112.4980v1 · brief: https://github.com/0xjc65eth/cypher65-war-room/blob/master/docs/research/miners_and_hashpower_pain_points.md
+- **Categoria:** Probabilidade · Solo mining · Variância · UX
+- **Problema observado:** Dois fornecedores independentes e uma fonte acadêmica convergem: o Solo CKPool declara que shares são "cosmetic for feedback only" e que o client-diff "has no influence on your chance of finding a block"; o §1.2 de arXiv:1112.4980 estabelece que o block finding em solo é processo de Poisson e que o processo é "completely random and memoryless" — após 3 meses sem bloco, o operador não está mais perto e aguarda em média mais 3. A mesma fonte aponta o custo operacional: "the lack of regular payments could make it technically more difficult to verify that all systems are working correctly".
+- **Relevância para o CYPHER65:** É a confirmação externa e formal da regra interna `C65-R001`. Qualquer superfície que trate shares acumuladas, *proximity* ou *luck* como progresso contradiz o mecanismo do próprio processo, não apenas o estilo de copy.
+- **Licença:** MIT — documentação do próprio projeto. Citações curtas das fontes externas usadas apenas como evidência; **licença da arXiv não validada para reincorporação** e nenhum trecho foi copiado para o produto.
+- **Risco:** ALTO
+- **Decisão:** Manter o bloco de variância sem contagem regressiva e sem barra de progresso; a única forma honesta de exibir a incerteza é declarar que ela **não** é reduzida por shares acumuladas.
+- **Próxima ação:** Implementar o bloco de variância sob guarda de copy (`docs/PROBABILITY_LANGUAGE_AUDIT.md`), com teste que reprova linguagem temporal ou preditiva.
+- **Status:** descoberto
+
+---
+
 ## Modelo para nova descoberta
 
 Copie o bloco abaixo e substitua todos os campos. Não deixe valores hipotéticos parecendo fatos.

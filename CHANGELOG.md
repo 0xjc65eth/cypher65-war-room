@@ -6,6 +6,57 @@ e versionamento semântico ([SemVer](https://semver.org/lang/pt-BR/)).
 
 ## [Unreleased]
 
+### Documentado — research rev. 2 fecha o gap de fontes de P2 (Issue #596, wave W1)
+- **S13 + S14 fecham P2.** O brief declarava P2 (variância do solo mining) com 2
+  fontes primárias, abaixo do mínimo de 3 — e isso estava declarado em vez de
+  arredondado para cima. Duas fontes novas, obtidas por acesso direto à URL,
+  fecham o gap: o **Solo CKPool** confirma, de dentro do próprio serviço, que
+  shares são "cosmetic for feedback only here" e que o client-diff "has no
+  influence on your chance of finding a block"; **arXiv:1112.4980 §1.2** dá o
+  mecanismo — block finding em solo é processo de Poisson e o processo é
+  "completely random and memoryless", ou seja hashes acumulados **não** são
+  progresso. Isso é a confirmação externa da regra interna `C65-R001`.
+- **Nota de vigência.** O exemplo numérico de S14 é de **2011** (D=1.690.906,
+  B=50 BTC) e está marcado como tal no brief: o que citamos é o mecanismo, não os
+  valores. Reapresentá-los como se descrevessem 2026 seria fabricar precisão.
+- **O que segue em aberto.** `braiins.com/hashpower` (404) e o NiceHash (shell JS)
+  continuam inacessíveis: **não** temos fonte primária que prometa SLA de entrega.
+  Esse gap não foi fechado por S13/S14 e está declarado no brief.
+- **Achados registrados:** `C65-R006` (liquidação é condicional ao trilho e o
+  trilho gratuito tem teto) e `C65-R007` (solo mining sem progresso
+  intermediário) em `docs/RESEARCH_LOG.md`.
+- **Três propostas viraram Issue `new-feature`:** #598 (valor líquido por trilho),
+  #599 (trilha de evidência de entrega), #600 (faixa de estimativa — esta
+  **bloqueada** até existir fonte consumível de floor/ceiling).
+
+### Corrigido — W5: premissa de artefato versionado estava errada (Issue #597)
+- **Nunca houve artefato versionado.** A Issue #597 afirmava que
+  `services/rental_performance.py.bak` e `.tmp-extract-pr6.cjs` estavam no
+  versionamento. `git ls-files` e `git log --all` voltam **vazios** para ambos, e
+  o `.gitignore` já os cobria (linha 26 `.tmp-*`, linha 29 `*.py.bak`) antes desta
+  Issue. A premissa era incorreta — inclusive porque foi este mesmo processo que
+  a levantou.
+- **Nenhuma regra de `.gitignore` precisou ser adicionada.** O critério de
+  aceitação que pedia cobertura de `*.py.bak` e `.tmp-*` já estava satisfeito.
+- **Working tree limpo:** os dois artefatos locais foram removidos (sem efeito no
+  git, pois não eram rastreados). Hashes registrados no fechamento de #597.
+- **Referências corrigidas:** o brief de pesquisa (§7, §8) e a fila de waves do
+  playbook descreviam os arquivos como "versionados no repo". Ambos agora
+  registram que nunca estiveram versionados.
+
+### Corrigido — docs do operador não distinguiam os gates de ação (Issue #566)
+- **Bind real, não loopback.** `./run.sh` sobe o Flask em `0.0.0.0` na `PORT`
+  (8765 por padrão): abrir `localhost` **não** restringe o bind. O quickstart
+  agora diz isso e exige firewall de host ou rede confiável, sem prometer
+  loopback-only.
+- **Blacklist não passa pelo gate de confirmação física.** O runtime map
+  tratava `Command, blacklist, or buy` como um único caminho confirmado.
+  Na realidade `POST`/`DELETE /api/rentals/rig/blacklist` (app.py:6924) exige
+  apenas `@require_tenant` + `@role_required("member")`, sem token de
+  confirmação; comando físico (`CMD-002`) e compra têm gates próprios. A seção
+  "Guards are not shared" documenta a diferença e o teste de contrato passa a
+  cobrar os dois lados.
+
 ### Alterado — fulfillment de licenças confirmadas à prova de crash (Issue #565)
 - **Uma transação, não três.** BTCPay (`handle_invoice_webhook`) e WebLN
   (`fulfill_webln_payment`) emitiam a licença em três commits independentes:
