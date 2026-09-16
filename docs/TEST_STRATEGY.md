@@ -87,3 +87,71 @@ que emite o token usa `Cache-Control: no-store` e `Pragma: no-cache`.
 
 Os endpoints de confirmação e execução exigem papel RBAC `member` (ou
 `admin`); `viewer` é somente leitura e recebe HTTP 403 antes de qualquer I/O.
+
+---
+
+## Mapa de cobertura — auditoria de 2026-09-16 (wave W3)
+
+A tabela do início deste documento é o **plano**. Esta seção registra o **estado real** de cada ID
+depois da wave W3 (`docs/MULTI_AGENT_TEAM.md` §8). A distinção existe porque as duas divergiam em
+silêncio: o plano lista 24 IDs e o §"Implementado neste lote" declara apenas onze deles.
+
+**Como a auditoria foi feita — e o que ela não fez.** A varredura foi por **arquivo sugerido** e
+depois por **comportamento**, não por ID, porque nenhum teste do repositório cita um ID da matriz
+(achado transversal abaixo). Para cada ID: (1) o arquivo sugerido existe? (2) se não, a exigência
+está coberta sob outro nome — o que a própria matriz autoriza (*"quando já houver cobertura
+equivalente, o teste deve ser reforçado ali em vez de duplicado"*)?
+
+| ID | Estado | Evidência / Issue |
+| --- | --- | --- |
+| MF-001 | implementado | `tests/test_mining_formula_contracts.py`; declarado no §"Implementado neste lote" |
+| MF-002 | implementado | idem |
+| MF-003 | **parcial** | arquivos existem, mas o plano declara só *"parte de `MF-003`"* → #613 |
+| MF-004 | **parcial** | não consta como implementado no plano → #613 |
+| API-001 | implementado | `tests/core/test_app_device_routes.py` |
+| API-002 | implementado | idem |
+| OPS-001 | implementado | idem |
+| OPS-002 | não auditado | `tests/test_polling_integration.py` existe; comportamento não verificado nesta rodada |
+| OPS-003 | **lacuna** | `tests/test_polling_reconnection.py` não existe → #610 |
+| TEL-001 | **lacuna** | nenhum teste de idempotência de telemetria de **device** → #608 |
+| TEL-002 | **lacuna** | `tests/test_telemetry_validation.py` não existe → #609 |
+| TIME-001 | **lacuna** | `tests/test_timezones.py` não existe; **0** usos de fuso nomeado no repo → #604 |
+| NUM-001 | parcial | o plano declara *"parte de `NUM-001`"* |
+| NUM-002 | **lacuna** | `hypothesis` declarado em `requirements-dev.txt` com **0 usos** → #605 |
+| SEC-001 | não auditado | `tests/test_tenant_b2_isolation.py` existe; comportamento não verificado |
+| SEC-002 | implementado | `tests/core/test_app_device_routes.py` |
+| CMD-001 | implementado | idem |
+| CMD-002 | implementado | Issue #368 |
+| AUD-001 | **parcial** | o plano declara só *"verificação de histórico"*; `tests/test_audit_log.py` não existe → #611 |
+| PER-001 | reconciliar | cobertura equivalente em `tests/test_persistence.py` (nome difere do sugerido) |
+| UI-001 | reconciliar | cobertura equivalente parcial em `tests/e2e/topbar-responsive.spec.js` |
+| UI-002 | **lacuna** | guardas de axe existem em outra camada; o spec e2e nomeado não → #612 |
+| LOAD-001 | **lacuna** | `tests/performance/` **não existe** no repositório → #606 |
+| LOAD-002 | **lacuna** | idem → #607 |
+
+**Estados:** `implementado` (teste existe e corresponde ao critério) · `parcial` (cobre parte do
+critério) · `lacuna` (Issue própria aberta) · `reconciliar` (cobertura existe sob outro nome —
+reforçar ali, não duplicar) · `não auditado`.
+
+### O que esta auditoria não conclui
+
+- **Não** afirma que os testes marcados `implementado` estão corretos ou passando — só que existem e
+  correspondem ao critério declarado. Nenhum teste foi executado para inferir os estados acima.
+- **Não** cobre os IDs marcados `não auditado`. Eles **não** devem ser tratados como cobertos.
+- **Não** mede cobertura de linha: a matriz é sobre exigências, e o gate de linha é outro
+  (`--cov-fail-under=80`).
+
+### Achado transversal
+
+**Nenhum dos 24 IDs é referenciado em nenhum arquivo de `tests/`.** O esquema descrito no
+§"Objetivo e prioridades" — *"os IDs ... permitem rastrear a exigência no CI e em incidentes"* —
+**não está implementado**. Isso obrigou esta auditoria a inferir cobertura por nome de arquivo e
+comportamento, um método mais frágil, que confunde cobertura equivalente com lacuna. Issue #614.
+
+### Bloqueio declarado em `LOAD-001`/`LOAD-002`
+
+Os dois critérios citam um **SLO acordado** (p95 do resumo; latência e backlog de ingestão).
+Esse SLO **não existe** em nenhum documento do projeto. Sem o número, um teste de performance não
+consegue falhar por mérito — e um gate que só registra medição é o tipo que se aprende a ignorar,
+que é exatamente o problema que a Issue #588 descreveu para o caso do `mobile:`. Isso é um
+**bloqueio**, não uma suposição: #606 e #607 só têm escopo executável depois do SLO declarado.
