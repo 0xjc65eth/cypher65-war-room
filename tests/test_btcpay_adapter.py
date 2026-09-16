@@ -27,9 +27,12 @@ import hmac
 import json
 import logging
 import os
+import queue
 import re
 import sqlite3
 import sys
+import threading
+import time
 
 import pytest
 
@@ -299,19 +302,22 @@ def test_webhook_replay_issues_only_one_license(monkeypatch):
     assert _count() == baseline + 1
 
 
-def test_webhook_releases_claim_on_license_failure(monkeypatch):
+def test_webhook_releases_claim_on_license_failure(_iso_db, monkeypatch):
+    """Issue #565: the license INSERT fails inside the atomic transaction →
+    the claim rolls back WITH it (the legacy _release_claim dance is gone)
+    and the provider retry fulfills cleanly on a fresh claim."""
     _btcpay_env(monkeypatch)
     payload = _invoice_payload(invoice_id="inv_flaky")
     calls = {"n": 0}
-    real = licensing.issue_license
+    real = licensing.issue_license_in_conn
 
-    def _flaky(**kw):
+    def _flaky(conn, **kw):
         calls["n"] += 1
         if calls["n"] == 1:
             raise sqlite3.OperationalError("db locked (simulated)")
-        return real(**kw)
+        return real(conn, **kw)
 
-    monkeypatch.setattr(licensing, "issue_license", _flaky)
+    monkeypatch.setattr(licensing, "issue_license_in_conn", _flaky)
     with pytest.raises(sqlite3.OperationalError):
         btcpay.handle_invoice_webhook(payload)
     key = btcpay.handle_invoice_webhook(payload)  # retry re-claims and succeeds
@@ -764,3 +770,300 @@ def test_license_status_enriches_btc_payload(client, monkeypatch):
     body2 = r2.get_json()
     assert body2["btcpay"] is True
     assert body2["payment_btc_address"] == FIXED_ADDR
+
+
+# ── Crash-safe fulfillment (Issue #565) ─────────────────────────────
+
+
+@pytest.fixture()
+def _iso_db(tmp_path, monkeypatch):
+    """Scratch DB_PATH for THIS test only.
+
+    The crash-safe tests make strict ledger assertions (counts == 0/1, claim
+    rows present/absent). The session-wide scratch DB (conftest) is shared by
+    every test that fulfills licenses, so counts there are not a reliable
+    baseline. A fresh DB file per test isolates the ledger completely —
+    get_db() resolves DB_PATH at call time (services/bootstrap.py).
+    """
+    db = tmp_path / "crash_safe.sqlite"
+    monkeypatch.setenv("DB_PATH", str(db))
+    return db
+
+
+class _BoomProxy:
+    """Connection proxy that raises when the guarded statement runs.
+
+    sqlite3.Connection is an immutable C type — its execute() cannot be
+    monkeypatched. The proxy delegates every call to the real connection and
+    injects the crash at exactly the statement the test chooses, modelling a
+    process death between two statements of the fulfillment transaction.
+    """
+
+    def __init__(self, inner, fragment: str):
+        self._inner = inner
+        self._fragment = fragment
+
+    def execute(self, sql, *args):
+        if self._fragment in sql:
+            raise sqlite3.OperationalError(f"crash at {self._fragment!r} (simulated)")
+        return self._inner.execute(sql, *args)
+
+    def commit(self):
+        return self._inner.commit()
+
+    def rollback(self):
+        return self._inner.rollback()
+
+    def close(self):
+        return self._inner.close()
+
+
+def _licenses_count(source: str) -> int:
+    from services.db import get_db
+
+    c = get_db()
+    try:
+        return c.execute(
+            "SELECT COUNT(*) AS n FROM pro_licenses WHERE source = ?", (source,)
+        ).fetchone()["n"]
+    finally:
+        c.close()
+
+
+def _claim_row(invoice_id: str):
+    from services.db import get_db
+
+    c = get_db()
+    try:
+        return c.execute(
+            "SELECT invoice_id, event, license_key FROM processed_invoices"
+            " WHERE invoice_id = ?",
+            (invoice_id,),
+        ).fetchone()
+    finally:
+        c.close()
+
+
+def test_atomic_fulfill_crash_after_license_insert_rolls_back_both(
+    _iso_db, monkeypatch
+):
+    """The core crash window (Issue #565): the license INSERT commits-able and
+    the process dies BEFORE the completion UPDATE — nothing may survive: no
+    empty claim, no orphan key. The provider's retry re-claims on a clean
+    slate and fulfills exactly one license."""
+    _btcpay_env(monkeypatch)
+    payload = _invoice_payload(invoice_id="inv_crash_mid")
+    real_get_db = btcpay.get_db
+
+    def _crashing_get_db():
+        return _BoomProxy(real_get_db(), "UPDATE processed_invoices")
+
+    monkeypatch.setattr(btcpay, "get_db", _crashing_get_db)
+    with pytest.raises(sqlite3.OperationalError):
+        btcpay.handle_invoice_webhook(payload)
+    # Rolled back: neither the claim nor the license survived.
+    assert _claim_row("inv_crash_mid") is None
+    assert _licenses_count("btcpay") == 0
+
+    # The provider retry re-claims and fulfills on a clean slate.
+    monkeypatch.setattr(btcpay, "get_db", real_get_db)
+    key = btcpay.handle_invoice_webhook(payload)
+    assert key and _KEY_RE.match(key)
+    row = _claim_row("inv_crash_mid")
+    assert row["license_key"] == key  # claim and key committed atomically
+    assert _licenses_count("btcpay") == 1
+    assert btcpay.handle_invoice_webhook(payload) == key  # replay → same key
+
+
+def test_atomic_fulfill_crash_at_license_insert_rolls_back_claim(
+    _iso_db, monkeypatch
+):
+    """Failure BEFORE the license INSERT (e.g. db locked): the claim must not
+    survive either — the atomic path never leaves a claimed-but-empty row."""
+    _btcpay_env(monkeypatch)
+    payload = _invoice_payload(invoice_id="inv_crash_ins")
+    real_get_db = btcpay.get_db
+
+    def _crashing_get_db():
+        return _BoomProxy(real_get_db(), "INSERT INTO pro_licenses")
+
+    monkeypatch.setattr(btcpay, "get_db", _crashing_get_db)
+    with pytest.raises(sqlite3.OperationalError):
+        btcpay.handle_invoice_webhook(payload)
+    assert _claim_row("inv_crash_ins") is None
+    assert _licenses_count("btcpay") == 0
+
+    monkeypatch.setattr(btcpay, "get_db", real_get_db)
+    key = btcpay.handle_invoice_webhook(payload)
+    assert key and _KEY_RE.match(key)
+    assert _licenses_count("btcpay") == 1
+    assert btcpay.handle_invoice_webhook(payload) == key
+
+
+def test_webln_fulfillment_crash_rolls_back_atomically(_iso_db, monkeypatch):
+    """WebLN path uses the same atomic transaction: a crash between the
+    license INSERT and the completion rolls back claim + license; the retry
+    fulfills exactly once with the ledger-resolved plan."""
+    monkeypatch.setenv("LN_INVOICE_ENDPOINT", "https://ln.example.com/invoice")
+    preimage = "cd" * 32
+    payment_hash = hashlib.sha256(bytes.fromhex(preimage)).hexdigest()
+    btcpay.record_invoice_plan(payment_hash, "premium")
+    real_get_db = btcpay.get_db
+
+    def _crashing_get_db():
+        return _BoomProxy(real_get_db(), "UPDATE processed_invoices")
+
+    monkeypatch.setattr(btcpay, "get_db", _crashing_get_db)
+    with pytest.raises(sqlite3.OperationalError):
+        btcpay.fulfill_webln_payment(payment_hash, preimage)
+    assert _claim_row(payment_hash) is None
+    assert _licenses_count("webln") == 0
+
+    monkeypatch.setattr(btcpay, "get_db", real_get_db)
+    key = btcpay.fulfill_webln_payment(payment_hash, preimage)
+    assert _KEY_RE.match(key)
+    assert licensing._key_plan(key) == "premium"  # plan preserved
+    assert _claim_row(payment_hash)["license_key"] == key
+    assert _licenses_count("webln") == 1
+    assert btcpay.fulfill_webln_payment(payment_hash, preimage) == key
+
+
+def test_webhook_concurrent_deliveries_issue_one_license(_iso_db, monkeypatch):
+    """Concurrent deliveries serialize on BEGIN IMMEDIATE: the loser blocks
+    until the winner commits and returns the SAME key — one license total."""
+    _btcpay_env(monkeypatch)
+    payload = _invoice_payload(invoice_id="inv_concurrent")
+    results = queue.Queue()
+    barrier = threading.Barrier(2)
+
+    def _worker():
+        barrier.wait()  # both threads race the same invoice at the same time
+        try:
+            results.put(("ok", btcpay.handle_invoice_webhook(payload)))
+        except Exception as exc:  # pragma: no cover - surfaces real bugs
+            results.put(("err", exc))
+
+    threads = [threading.Thread(target=_worker) for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=15)
+    outcomes = [results.get(timeout=1) for _ in range(2)]
+    assert all(status == "ok" for status, _ in outcomes), outcomes
+    keys = {key for _, key in outcomes}
+    assert len(keys) == 1  # same key from both deliveries
+    assert _licenses_count("btcpay") == 1  # exactly one license
+    assert _claim_row("inv_concurrent")["license_key"] == keys.pop()
+
+
+def test_webln_concurrent_confirms_issue_one_license(_iso_db, monkeypatch):
+    """Same serialization guarantee for the WebLN confirm path."""
+    monkeypatch.setenv("LN_INVOICE_ENDPOINT", "https://ln.example.com/invoice")
+    preimage = "ab" * 32
+    payment_hash = hashlib.sha256(bytes.fromhex(preimage)).hexdigest()
+    btcpay.record_invoice_plan(payment_hash, "pro")
+    results = queue.Queue()
+    barrier = threading.Barrier(2)
+
+    def _worker():
+        barrier.wait()
+        try:
+            results.put(
+                ("ok", btcpay.fulfill_webln_payment(payment_hash, preimage))
+            )
+        except Exception as exc:  # pragma: no cover - surfaces real bugs
+            results.put(("err", exc))
+
+    threads = [threading.Thread(target=_worker) for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=15)
+    outcomes = [results.get(timeout=1) for _ in range(2)]
+    assert all(status == "ok" for status, _ in outcomes), outcomes
+    keys = {key for _, key in outcomes}
+    assert len(keys) == 1
+    assert _licenses_count("webln") == 1
+
+
+def test_stuck_empty_claim_fails_visibly_and_never_reissues(
+    _iso_db, monkeypatch, caplog
+):
+    """A legacy persisted empty claim (pre-#565 crash) must fail VISIBLY:
+    PaymentClaimStuckError + audit trail + error log, and NO second license
+    is issued automatically — an orphan license may already exist."""
+    _btcpay_env(monkeypatch)
+    invoice_id = "inv_orphan"
+    btcpay.record_invoice_plan(invoice_id, "pro")  # known invoice
+    # Simulate the pre-#565 crash: claim committed with an empty key.
+    from services.db import get_db
+
+    licensing.ensure_licenses_table()  # fresh isolated DB
+    btcpay._ensure_processed_invoices_table()
+    c = get_db()
+    try:
+        c.execute(
+            "INSERT INTO processed_invoices (invoice_id, event, license_key,"
+            " processed_ts) VALUES (?, 'invoice_settled', '', ?)",
+            (invoice_id, int(time.time())),
+        )
+        c.commit()
+    finally:
+        c.close()
+    baseline = _licenses_count("btcpay")
+    with caplog.at_level(logging.ERROR, logger="cypher65.btcpay"):
+        with pytest.raises(btcpay.PaymentClaimStuckError) as excinfo:
+            btcpay.handle_invoice_webhook(
+                {"invoiceId": invoice_id, "type": "InvoiceSettled"}
+            )
+    assert excinfo.value.invoice_id == invoice_id
+    assert "manual reconciliation" in str(excinfo.value)
+    assert "NOT issuing a new one" in caplog.text  # visible operator signal
+    assert _licenses_count("btcpay") == baseline  # NO automatic reissue
+    # A later replay keeps failing visibly — the buyer is never silent-lost.
+    with pytest.raises(btcpay.PaymentClaimStuckError):
+        btcpay.handle_invoice_webhook(
+            {"invoiceId": invoice_id, "type": "InvoiceSettled"}
+        )
+
+
+def test_stuck_claim_error_propagates_through_webln_path(_iso_db, monkeypatch):
+    """The WebLN path surfaces the same visible failure (no silent OK, no
+    automatic reissue) for a legacy empty claim."""
+    monkeypatch.setenv("LN_INVOICE_ENDPOINT", "https://ln.example.com/invoice")
+    preimage = "ab" * 32
+    payment_hash = hashlib.sha256(bytes.fromhex(preimage)).hexdigest()
+    btcpay.record_invoice_plan(payment_hash, "pro")
+    from services.db import get_db
+
+    licensing.ensure_licenses_table()  # fresh isolated DB
+    btcpay._ensure_processed_invoices_table()
+    c = get_db()
+    try:
+        c.execute(
+            "INSERT INTO processed_invoices (invoice_id, event, license_key,"
+            " processed_ts) VALUES (?, 'invoice_settled', '', ?)",
+            (payment_hash, int(time.time())),
+        )
+        c.commit()
+    finally:
+        c.close()
+    baseline = _licenses_count("webln")
+    with pytest.raises(btcpay.PaymentClaimStuckError):
+        btcpay.fulfill_webln_payment(payment_hash, preimage)
+    assert _licenses_count("webln") == baseline  # no automatic reissue
+
+
+def test_legacy_claim_primitives_still_work(_iso_db, monkeypatch):
+    """Backward-compat: _claim_invoice/_complete_invoice/_release_claim keep
+    their pre-#565 behavior for any external caller."""
+    _btcpay_env(monkeypatch)
+    claimed, key = btcpay._claim_invoice("inv_legacy")
+    assert claimed is True and key == ""
+    claimed2, key2 = btcpay._claim_invoice("inv_legacy")
+    assert claimed2 is False and key2 == ""  # in-flight (empty key)
+    btcpay._complete_invoice("inv_legacy", "C65-AAAA-BBBB-CCCC-DDDD")
+    claimed3, key3 = btcpay._claim_invoice("inv_legacy")
+    assert claimed3 is False and key3 == "C65-AAAA-BBBB-CCCC-DDDD"
+    btcpay._release_claim("inv_legacy")
+    assert btcpay.fulfilled_license_key("inv_legacy") == ""
