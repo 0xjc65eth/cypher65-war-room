@@ -26,7 +26,7 @@
     "@expo/metro-runtime": "~57.0.15",
     "@react-native-async-storage/async-storage": "2.2.0",
     "@react-navigation/bottom-tabs": "^6.5.20",
-    "@react-navigation/native": "^6.1.17",
+    "@react-navigation/native": "^7.3.18",
     "@react-navigation/native-stack": "^6.9.26",
     "@tanstack/react-query": "^5.36.0",
     "axios": "^1.6.8",
