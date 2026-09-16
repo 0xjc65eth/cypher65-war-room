@@ -58,3 +58,47 @@ updates:
     labels:
       - "dependencies"
       - "npm"
+    # ── Ignore de major/minor nas dependências GERENCIADAS PELO EXPO ──────
+    #
+    # Um bump aqui não é "atualização": é o job `mobile:` reprovando em TODO
+    # PR. O `mobile:` é required status check do ruleset, então o master trava
+    # inteiro — foi o incidente da Issue #602 (react 19.2.3 → 19.3.0 e
+    # gesture-handler 2.32 → 3.3.0 mergeados pelo bot).
+    #
+    # Por que ignorar e não só confiar no CI: o `expo-doctor` exige a versão
+    # esperada para o SDK instalado (`expo/bundledNativeModules.json`). Não há
+    # versão "mais nova e compatível" para ele — ou é a esperada, ou reprova.
+    # Major/minor desses pacotes é MIGRAÇÃO (ex.: subir o SDK 57 → 58), trabalho
+    # humano deliberado, não PR de bot.
+    #
+    # Patch continua automatizado, e isso é o essencial: quando o Expo publica
+    # um patch, ele muda as versões esperadas no bundledNativeModules e os
+    # pacotes `expo-*` precisam acompanhar no MESMO ciclo. O cadence diário da
+    # Issue #588 continua fazendo exatamente o que foi criado para fazer.
+    #
+    # A lista é o conjunto gerenciado pelo SDK (interseção com
+    # `expo/bundledNativeModules.json`, 18 pacotes) mais `@types/react` e
+    # `react-test-renderer`, que o doctor valida por acompanharem o `react`.
+    ignore:
+      - dependency-name: "expo"
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
+      - dependency-name: "expo-*"
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
+      - dependency-name: "@expo/*"
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
+      - dependency-name: "react"
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
+      - dependency-name: "react-dom"
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
+      - dependency-name: "react-native"
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
+      - dependency-name: "react-native-*"
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
+      - dependency-name: "react-test-renderer"
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
+      - dependency-name: "@types/react"
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
+      - dependency-name: "@react-native-async-storage/*"
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
+      - dependency-name: "jest-expo"
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
