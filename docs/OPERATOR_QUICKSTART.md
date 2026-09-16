@@ -14,8 +14,12 @@ cd cypher65-war-room
 cp .env.example .env
 ```
 
-Keep the instance on loopback for this first run. Remote access needs an
-authenticated deployment and HTTPS termination.
+This first run is for a trusted host only. The launcher binds the Flask app to
+`0.0.0.0` on `PORT` (8765 by default), **not** to loopback — opening
+`http://localhost:8765` does not restrict who else can reach that port. Either
+block the port with a host firewall or keep the machine on a trusted network,
+and treat any remote access as needing an authenticated deployment with HTTPS
+termination.
 
 ## Minute 3–6 — identify the mining context
 

@@ -27,24 +27,41 @@ sequenceDiagram
     participant O as Operator
     participant A as Auto-Pilot
     participant L as Audit log
-    participant D as Fleet/Rentals
-    participant G as Guarded control
+    participant D as Destination module
+    participant G as Module guard
     O->>A: Accept advisory
     A->>L: Record advisory_only
     L-->>A: Intent audited
     A-->>O: navigate_to destination
     O->>D: Inspect live state
-    D->>G: Request dry run
-    G-->>O: Require human confirmation
-    O->>G: Confirm destination action
-    G->>D: Command, blacklist, or buy
+    D-->>O: Show module guard
+    O->>D: Satisfy module guard
+    D->>G: Request module action
+    G->>D: Apply action
 ```
 
 The `Accept advisory` step cannot jump to the final arrow. Its response carries
-`executed: false`. The operator must inspect the destination and satisfy that
-module's current guards. Physical commands need the deployment kill switch,
-`dry_run:false`, SafetyEngine approval, and a one-time confirmation. A Rentals
-purchase also needs its own confirmation and enabled purchase gates; public
+`executed: false`. The operator must inspect the destination and satisfy **that
+module's** current guard.
+
+## Guards are not shared
+
+Fleet commands, Rentals purchases, and the Rentals rig blacklist do **not** pass
+through the same gate. Confirmation is not universal:
+
+| Action | Route | Guard actually enforced | Confirmation token |
+| --- | --- | --- | --- |
+| Advisory accept | `POST /api/auto-pilot/recommendations/<id>/respond` | Records intent, returns `executed: false` | Not applicable — never executes |
+| Fleet command | `POST /api/devices/:id/command` | Tenant + `member` role, deployment kill switch, `dry_run:false`, SafetyEngine | **Yes** — `CMD-002`, single-use, 120 s |
+| Rentals rig blacklist | `POST`/`DELETE /api/rentals/rig/blacklist` | Tenant + `@role_required("member")` only | **No** — authorization only, never confirmation-gated |
+| Rentals purchase | Rentals buy control | Its own confirmation plus enabled purchase gates | **Yes** — module-specific |
+
+A physical command needs the deployment kill switch, `dry_run:false`,
+SafetyEngine approval, and the one-time human confirmation defined by `CMD-002`.
+The blacklist does not: it is an explicit, tenant-scoped settings mutation behind
+`@require_tenant` and `@role_required("member")`, and describing it as passing
+through the physical-command gate would misrepresent the real safety boundary.
+A Rentals purchase needs its own confirmation and enabled purchase gates; public
 checkout currently fails closed until BTCPay reconciliation.
 
 ## Data loop
