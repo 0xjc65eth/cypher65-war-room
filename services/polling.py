@@ -1378,11 +1378,15 @@ def poll_once():
                     "rental_net_btc_per_day": round(
                         pool_net_btc_per_day, 8
                     ),  # gross pool BTC
-                    "rental_net_usd_per_day": round(
-                        (pool_net_btc_per_day * (btc_usd or 0)) - cost_per_day, 4
+                    "rental_net_usd_per_day": (
+                        round((pool_net_btc_per_day * btc_usd) - cost_per_day, 4)
+                        if btc_usd
+                        else None
                     ),
-                    "rental_net_usd_per_month": round(
-                        ((pool_net_btc_per_day * (btc_usd or 0)) - cost_per_day) * 30, 2
+                    "rental_net_usd_per_month": (
+                        round(((pool_net_btc_per_day * btc_usd) - cost_per_day) * 30, 2)
+                        if btc_usd
+                        else None
                     ),
                     # Cost info
                     "cost_per_day_usd": round(cost_per_day, 4),

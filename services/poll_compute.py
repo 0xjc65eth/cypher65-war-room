@@ -543,9 +543,14 @@ def compute_profitability(
             _btc_conv = _cached_quote.get(
                 "usd"
             )  # stale-while-revalidate: último real, nunca mock
+        # Issue #613: _btc_conv may be None (no live quote AND empty price
+        # cache). Multiplying by None raised inside the outer try and the
+        # swallowed exception took the WHOLE profitability payload down with
+        # it. No price → no USD figure: None (unknown), never a crash, never
+        # a fabricated number. The BTC/TH/day rate above remains available.
         profitability["lender_market_rate_usd_per_th_day"] = (
             round(lender_market_rate_btc * _btc_conv, 4)
-            if lender_market_rate_btc
+            if lender_market_rate_btc and _btc_conv
             else None
         )
 
@@ -722,11 +727,19 @@ def compute_profitability(
                     "rental_net_btc_per_day": round(
                         pool_net_btc_per_day, 8
                     ),  # gross pool BTC
-                    "rental_net_usd_per_day": round(
-                        (pool_net_btc_per_day * (btc_usd or 0)) - cost_per_day, 4
+                    # Issue #613 (MF-004): with no BTC price these used
+                    # (btc_usd or 0) and emitted a NEGATIVE fiat figure
+                    # fabricated from a price the system does not have.
+                    # Unavailable → None, never an invented number.
+                    "rental_net_usd_per_day": (
+                        round((pool_net_btc_per_day * btc_usd) - cost_per_day, 4)
+                        if btc_usd
+                        else None
                     ),
-                    "rental_net_usd_per_month": round(
-                        ((pool_net_btc_per_day * (btc_usd or 0)) - cost_per_day) * 30, 2
+                    "rental_net_usd_per_month": (
+                        round(((pool_net_btc_per_day * btc_usd) - cost_per_day) * 30, 2)
+                        if btc_usd
+                        else None
                     ),
                     # Cost info (cost_model_configured, cost_per_kwh, cost_label
                     # already set above; cost_per_day_usd is dynamic)
