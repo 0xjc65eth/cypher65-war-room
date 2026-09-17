@@ -12,6 +12,7 @@ stdlib — importing this module has zero side effects (no DB, no network).
 """
 
 import logging
+import math
 
 from helpers import (
     parse_diff_to_float,
@@ -421,10 +422,34 @@ def compute_luck_estimate(worker, pool, current_difficulty):
 
 
 def fiat_convert(btc_val, btc_prices):
-    """Convert a BTC value into every tracked fiat currency (rounded to 4)."""
-    return {
-        cur: (round(btc_val * px, 4) if px else None) for cur, px in btc_prices.items()
-    }
+    """Convert a BTC value into every tracked fiat currency (rounded to 4).
+
+    Issue #605 (NUM-002): a quote of 0 is a valid quote and a NEGATIVE
+    quote is garbage — neither may be treated as "missing". Missing is None
+    only. A non-finite product (overflow garbage upstream) is unknown, not
+    a number: emit None instead of leaking inf/NaN into the payload.
+    """
+    out = {}
+    for cur, px in btc_prices.items():
+        if px is None:
+            out[cur] = None
+            continue
+        if not isinstance(px, (int, float)):
+            # NUM-002 (#605): precision-preserving feeds deliver Decimal (or
+            # Fraction) quotes — float*Decimal raises TypeError, which the
+            # caller's blanket except would turn into a LOST profitability
+            # payload. Coerce instead; non-numeric garbage becomes None.
+            try:
+                px = float(px)
+            except (TypeError, ValueError, OverflowError):
+                out[cur] = None
+                continue
+        val = btc_val * px
+        if isinstance(val, (int, float)) and math.isfinite(val):
+            out[cur] = round(val, 4)
+        else:
+            out[cur] = None
+    return out
 
 
 def compute_profitability(
@@ -602,7 +627,10 @@ def compute_profitability(
             # cost_per_day is the only cost value the payload uses
             # (rental_cost_per_day/power_cost_per_day were dead locals in the
             # original monolith too — dropped during extraction).
+            # NUM-002 (#605): an overflowing cost is unknown — the USD nets
+            # that depend on it must read unavailable (None), not inf.
             cost_per_day = _be["cost_per_day"]
+            cost_unavailable = cost_per_day is None
 
             def _fiat_convert(btc_val):
                 return fiat_convert(btc_val, btc_prices)
@@ -674,12 +702,12 @@ def compute_profitability(
                     "fiat_per_month_pool": _fiat_convert(pool_net_btc_per_day * 30),
                     "pool_net_usd_per_day": (
                         round((pool_net_btc_per_day * btc_usd) - cost_per_day, 4)
-                        if btc_usd
+                        if btc_usd and not cost_unavailable
                         else None
                     ),
                     "pool_net_usd_per_month": (
                         round(((pool_net_btc_per_day * btc_usd) - cost_per_day) * 30, 2)
-                        if btc_usd
+                        if btc_usd and not cost_unavailable
                         else None
                     ),
                     # Solo mode
@@ -697,10 +725,11 @@ def compute_profitability(
                         if solo_expected_time_to_block_days
                         else None
                     ),
-                    # Rental mode (cost subtracted)
+                    # Rental mode (cost subtracted). NUM-002 (#605): an
+                    # unknown (overflowing) cost → rental nets are None.
                     "net_btc_per_day_rental": (
                         round(pool_net_btc_per_day - (cost_per_day / (btc_usd or 1)), 8)
-                        if btc_usd
+                        if btc_usd and not cost_unavailable
                         else None
                     ),
                     "fiat_per_day_rental": (
@@ -710,7 +739,7 @@ def compute_profitability(
                                 pool_net_btc_per_day - (cost_per_day / (btc_usd or 1)),
                             )
                         )
-                        if btc_usd
+                        if btc_usd and not cost_unavailable
                         else None
                     ),
                     "fiat_per_month_rental": (
@@ -721,7 +750,7 @@ def compute_profitability(
                             )
                             * 30
                         )
-                        if btc_usd
+                        if btc_usd and not cost_unavailable
                         else None
                     ),
                     "rental_net_btc_per_day": round(
@@ -731,19 +760,23 @@ def compute_profitability(
                     # (btc_usd or 0) and emitted a NEGATIVE fiat figure
                     # fabricated from a price the system does not have.
                     # Unavailable → None, never an invented number.
+                    # Issue #605 (NUM-002): an unknown (overflowing) cost is
+                    # equally unavailable — never inf leaking into the payload.
                     "rental_net_usd_per_day": (
                         round((pool_net_btc_per_day * btc_usd) - cost_per_day, 4)
-                        if btc_usd
+                        if btc_usd and not cost_unavailable
                         else None
                     ),
                     "rental_net_usd_per_month": (
                         round(((pool_net_btc_per_day * btc_usd) - cost_per_day) * 30, 2)
-                        if btc_usd
+                        if btc_usd and not cost_unavailable
                         else None
                     ),
                     # Cost info (cost_model_configured, cost_per_kwh, cost_label
                     # already set above; cost_per_day_usd is dynamic)
-                    "cost_per_day_usd": round(cost_per_day, 4),
+                    "cost_per_day_usd": (
+                        round(cost_per_day, 4) if not cost_unavailable else None
+                    ),
                     # Break-even: rental rate at which pool_net = rental_cost
                     # (computed by helpers.compute_pool_rental_break_even)
                     "break_even_rental_usd_per_th_day": _be[

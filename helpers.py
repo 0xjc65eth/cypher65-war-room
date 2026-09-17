@@ -551,10 +551,20 @@ def compute_solo_probabilities(
 
     Returns a dict with keys: solo_p_day, solo_p_year, solo_p_5year,
     solo_expected_blocks_per_year, solo_expected_time_to_block_days.
-    When share <= 0, all probabilities are 0 and expected time is None
-    (guards the divide-by-zero; never raises).
+    When share <= 0 (or non-finite, or > 1 — invalid), all probabilities are
+    0 and expected time is None (guards the divide-by-zero; never raises).
+    Since NUM-002 (#605), unrepresentable results degrade to None instead of
+    emitting inf/NaN.
     """
-    if share_of_network is None or share_of_network <= 0:
+    if (
+        share_of_network is None
+        or not math.isfinite(share_of_network)
+        or share_of_network <= 0
+        or share_of_network > 1
+    ):
+        # NUM-002 (#605): a share > 1 (>100% of the network) or non-finite
+        # would make (1-p)**n explode (negative base) and break the [0,1]
+        # invariant — invalid input degrades to the base shape, never invents.
         return {
             "solo_p_day": 0.0,
             "solo_p_year": 0.0,
@@ -567,6 +577,12 @@ def compute_solo_probabilities(
     solo_p_5year = 1 - (1 - share_of_network) ** (blocks_per_day * 365 * 5)
     solo_expected_blocks_per_year = share_of_network * blocks_per_day * 365
     solo_expected_time_to_block_days = 1.0 / (share_of_network * blocks_per_day)
+    # NUM-002 (#605): unrepresentable results (overflowing window) are
+    # unknown, not numbers — degrade to None instead of emitting inf.
+    if not math.isfinite(solo_expected_blocks_per_year):
+        solo_expected_blocks_per_year = None
+    if not math.isfinite(solo_expected_time_to_block_days):
+        solo_expected_time_to_block_days = None
     return {
         "solo_p_day": solo_p_day,
         "solo_p_year": solo_p_year,
@@ -633,8 +649,18 @@ def compute_lender_profitability(
         power_btc = power_usd / price if price > 0 and power_usd > 0 else 0.0
         net_btc = revenue_btc - power_btc  # lease net
         mine_btc = mining_btc - power_btc  # mine net (same power)
+        # NUM-002 (#605): IEEE-edge inputs overflow products to inf and
+        # inf - inf evaluates to NaN. A NaN money field is exactly what the
+        # numeric-honesty contract (BE-04) forbids — the only honest output
+        # for an unrepresentable value is the base shape (insufficient/None).
+        if not (math.isfinite(net_btc) and math.isfinite(mine_btc)):
+            return out
         net_usd = net_btc * price if price > 0 else None
         mine_usd = mine_btc * price if price > 0 else None
+        if net_usd is not None and not math.isfinite(net_usd):
+            net_usd = None
+        if mine_usd is not None and not math.isfinite(mine_usd):
+            mine_usd = None
 
         out.update(
             {
@@ -657,10 +683,12 @@ def compute_lender_profitability(
         # Market rate where lease net == mine net. Power cancels (both sides
         # pay it), so breakeven rate = mining income / ths.
         breakeven_btc = mining_btc / ths if ths > 0 else None
-        if breakeven_btc is not None:
+        if breakeven_btc is not None and math.isfinite(breakeven_btc):
             out["lender_breakeven_btc_per_th_day"] = round(breakeven_btc, 12)
             if price > 0:
-                out["lender_breakeven_usd_per_th_day"] = round(breakeven_btc * price, 4)
+                be_usd = breakeven_btc * price
+                if math.isfinite(be_usd):  # NUM-002: overflow → unknown, not inf
+                    out["lender_breakeven_usd_per_th_day"] = round(be_usd, 4)
         return out
     except Exception:
         return out
@@ -718,13 +746,26 @@ def compute_pool_rental_break_even(
             watts = float(power_watts or 0)
             kwh_rate = float(power_kwh_usd or 0)
             out["power_cost_per_day"] = (watts / 1000.0) * 24.0 * kwh_rate
-        out["cost_per_day"] = out["rental_cost_per_day"] + out["power_cost_per_day"]
+        # NUM-002 (#605): a cost that overflows float (garbage config) is
+        # UNKNOWN — not zero, not Infinity. Degrade to None so the payload
+        # declares unavailability instead of leaking inf into JSON.
+        if not math.isfinite(out["rental_cost_per_day"]):
+            out["rental_cost_per_day"] = None
+        if not math.isfinite(out["power_cost_per_day"]):
+            out["power_cost_per_day"] = None
+        if out["rental_cost_per_day"] is None or out["power_cost_per_day"] is None:
+            out["cost_per_day"] = None
+        else:
+            out["cost_per_day"] = out["rental_cost_per_day"] + out["power_cost_per_day"]
+            if not math.isfinite(out["cost_per_day"]):
+                out["cost_per_day"] = None
 
         if price > 0 and ths > 0:
             be = (net_btc * price) / max(ths, 1e-12)
-            out["breakeven_cost_per_th_day"] = round(be, 4)
-            if mode == "rental":
-                out["break_even_rental_usd_per_th_day"] = round(be, 4)
+            if math.isfinite(be):  # NUM-002: overflow → unknown, not inf
+                out["breakeven_cost_per_th_day"] = round(be, 4)
+                if mode == "rental":
+                    out["break_even_rental_usd_per_th_day"] = round(be, 4)
         return out
     except Exception:
         return out

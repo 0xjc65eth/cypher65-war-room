@@ -44,7 +44,9 @@ jobs:
         run: |
           pip install --upgrade pip
           pip install -r requirements.txt
-          pip install pytest pytest-cov
+          # Property-based tests (NUM-002, Issue #605) — pinned to
+          # requirements-dev.txt so CI matches local dev.
+          pip install pytest pytest-cov hypothesis==6.168.0
       - name: Syntax gate (compileall)
         run: |
           python -m compileall -q app.py helpers.py config.py solo_mining.py core routes services axe_fleet agents || exit 1
