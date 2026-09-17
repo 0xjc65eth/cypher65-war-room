@@ -117,7 +117,7 @@ equivalente, o teste deve ser reforçado ali em vez de duplicado"*)?
 | TEL-002 | **lacuna** | `tests/test_telemetry_validation.py` não existe → #609 |
 | TIME-001 | **lacuna** | `tests/test_timezones.py` não existe; **0** usos de fuso nomeado no repo → #604 |
 | NUM-001 | parcial | o plano declara *"parte de `NUM-001`"* |
-| NUM-002 | **lacuna** | `hypothesis` declarado em `requirements-dev.txt` com **0 usos** → #605 |
+| NUM-002 | implementado (PR #605 wave W3) | `tests/test_numeric_properties.py`: hypothesis sobre o núcleo numérico puro — solo prob, lender, break-even, `fiat_convert`; invariantes [0,1]/serializável/sem NaN + bordas IEEE-754 e Decimal |
 | SEC-001 | não auditado | `tests/test_tenant_b2_isolation.py` existe; comportamento não verificado |
 | SEC-002 | implementado | `tests/core/test_app_device_routes.py` |
 | CMD-001 | implementado | idem |
