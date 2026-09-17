@@ -756,9 +756,7 @@ def compute_pool_rental_break_even(
         if out["rental_cost_per_day"] is None or out["power_cost_per_day"] is None:
             out["cost_per_day"] = None
         else:
-            out["cost_per_day"] = (
-                out["rental_cost_per_day"] + out["power_cost_per_day"]
-            )
+            out["cost_per_day"] = out["rental_cost_per_day"] + out["power_cost_per_day"]
             if not math.isfinite(out["cost_per_day"]):
                 out["cost_per_day"] = None
 
