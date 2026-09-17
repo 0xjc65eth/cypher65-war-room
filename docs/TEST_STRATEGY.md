@@ -55,9 +55,10 @@ reforçado ali em vez de duplicado.
 
 ## Implementado neste lote
 
-`MF-001`, `MF-002`, parte de `MF-003`/`NUM-001`, `API-001`, `API-002`,
+`MF-001`, `MF-002`, `MF-003`, `MF-004`, parte de `NUM-001`, `API-001`, `API-002`,
 `OPS-001`, `SEC-002`, `CMD-001` e a verificação de histórico para `AUD-001` foram
-adicionados ou reforçados no lote de fórmulas. A Issue #368 implementa
+adicionados ou reforçados no lote de fórmulas (MF-003/MF-004 completos em 2026-09-17,
+vetor de fórmula completa + indisponível ≠ 0). A Issue #368 implementa
 `CMD-002` e reforça `AUD-001`: as tentativas sem confirmação, os reusos, as
 falhas do adaptador e as execuções aprovadas passam pelo audit persistente.
 Os demais IDs definem a sequência de implementação e devem ganhar uma Issue
@@ -106,8 +107,8 @@ equivalente, o teste deve ser reforçado ali em vez de duplicado"*)?
 | --- | --- | --- |
 | MF-001 | implementado | `tests/test_mining_formula_contracts.py`; declarado no §"Implementado neste lote" |
 | MF-002 | implementado | idem |
-| MF-003 | **parcial** | arquivos existem, mas o plano declara só *"parte de `MF-003`"* → #613 |
-| MF-004 | **parcial** | não consta como implementado no plano → #613 |
+| MF-003 | **implementado** | vetores de fórmula completa + arredondamento contratado em `tests/test_pool_rental_break_even.py` (2026-09-17, wave W3) → #613 |
+| MF-004 | **implementado** | indisponível ≠ 0: cotação ausente/rede 0/worker 0/custo 0 nunca produzem fiat estimado nem divisão por zero (idem) → #613 |
 | API-001 | implementado | `tests/core/test_app_device_routes.py` |
 | API-002 | implementado | idem |
 | OPS-001 | implementado | idem |
