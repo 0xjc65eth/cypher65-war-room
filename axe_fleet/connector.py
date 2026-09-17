@@ -395,8 +395,12 @@ class AxeOSConnector:
         if hr_hs > 0 and pwr and pwr > 0:
             t["efficiency_jth"] = round(pwr / (hr_hs / 1e12), 2)
 
-        # Shares / best diff
-        t["best_diff"] = str(info.get("bestDiff") or "")
+        # Shares / best diff — Issue #627: use the shared normalizer, NOT
+        # `str(x or "")`: a legitimate Best Share of 0 (mining with no share
+        # accepted yet) must stay "0", not collapse into "unsupported".
+        from .models import best_diff_from_value
+
+        t["best_diff"] = best_diff_from_value(info.get("bestDiff"))
         # Worker-intelligence extras (best-effort — many AxeOS builds expose
         # the current stratum difficulty target; last-share time is rarer).
         # None → the UI renders an honest '—'.

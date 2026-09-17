@@ -719,18 +719,21 @@ class TestDevicesJoinTelemetry:
 
 
 class TestEmptyHeartbeatAccepted:
-    def test_server_accepts_empty_telemetry_and_marks_idle(self, client, agent_token, registry):
-        """Fix 4 contract: the agent pushes {} when a poll fails; the server
-        must accept it (updating last_seen) instead of rejecting."""
+    def test_server_accepts_empty_telemetry_and_marks_offline(self, client, agent_token, registry):
+        """Fix 4 contract, updated by the fleet audit (#627): the agent pushes
+        {} when a poll fails; the server must still ACCEPT it (updating
+        last_seen — presence) but the honest state is OFFLINE for a device
+        that never produced a measurement, not IDLE (the old fake-online).
+        """
         with patch("axe_fleet.routes._registry", registry):
             client.post("/api/agent/register", headers=_headers(agent_token),
                         json={"devices": [{"ip": "192.168.1.80"}]})
             resp = client.post("/api/agent/telemetry", headers=_headers(agent_token),
                                json={"ip": "192.168.1.80", "telemetry": {}})
             assert resp.status_code == 200
-            assert resp.get_json()["status"] == "IDLE"
+            assert resp.get_json()["status"] == "OFFLINE"
         dev = registry.get_device_by_ip("192.168.1.80", tenant_id="acme")
-        assert dev["status"] == "IDLE"
+        assert dev["status"] == "OFFLINE"
         assert dev["last_seen"] > 0
 
 

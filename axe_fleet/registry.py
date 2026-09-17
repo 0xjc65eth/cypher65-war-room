@@ -21,7 +21,9 @@ from .models import (
     infer_capabilities,
     STATUS_ONLINE,
     STATUS_OFFLINE,
+    STATUS_STALE,
     derive_device_status,
+    is_telemetry_stale,
 )
 from .connector import AxeOSConnector, AxeOSConnectorError
 
@@ -364,6 +366,15 @@ class DeviceRegistry:
                 if tel:
                     d["telemetry"] = tel
                     d["hashrate_hs"] = tel.get("hashrate_hs")
+                    # Fleet audit (Issue #627): a live-looking status backed by
+                    # an OLD reading is STALE, not ONLINE — the stored row is
+                    # the evidence, and no poll has refreshed it in time.
+                    if is_telemetry_stale(tel.get("ts")) and d.get("status") in (
+                        STATUS_ONLINE,
+                        "IDLE",
+                        "HASHING",
+                    ):
+                        d["status"] = STATUS_STALE
         return devices
 
     def _latest_telemetry_by_device(self, tenant_id: str = "") -> dict:
@@ -373,13 +384,19 @@ class DeviceRegistry:
         replace the last real reading."""
         conn = self._get_db()
         c = conn.cursor()
+        # rowid as the tiebreaker: two pushes in the same second must resolve
+        # by ARRIVAL order, or the newest reading can be shadowed by the one
+        # before it (Fleet audit #627 — a verified best_diff was shadowed).
         if tenant_id:
             c.execute(
-                "SELECT device_id, payload FROM axe_telemetry WHERE tenant_id=? ORDER BY ts DESC",
+                "SELECT device_id, payload FROM axe_telemetry "
+                "WHERE tenant_id=? ORDER BY ts DESC, rowid DESC",
                 (tenant_id,),
             )
         else:
-            c.execute("SELECT device_id, payload FROM axe_telemetry ORDER BY ts DESC")
+            c.execute(
+                "SELECT device_id, payload FROM axe_telemetry ORDER BY ts DESC, rowid DESC"
+            )
         rows = c.fetchall()
         conn.close()
         latest = {}
@@ -511,25 +528,94 @@ class DeviceRegistry:
         self._persist_device(device)
         return device
 
+    def _latest_measured_telemetry(
+        self, device_id: str, tenant_id: str = ""
+    ) -> dict | None:
+        """Newest stored telemetry payload that actually carries measurements
+        (a hashrate_hs key) — heartbeat-only {} rows are skipped. Used by the
+        agent-heartbeat path to degrade status honestly (STALE/OFFLINE).
+        Scans the newest 50 rows, which covers any sane heartbeat cadence.
+        Returns None when no measured reading exists."""
+        conn = self._get_db()
+        c = conn.cursor()
+        # ORDER BY rowid DESC: ARRIVAL order, not payload ts — a device with
+        # clock skew (or an agent re-pushing cached readings) must not make a
+        # stale measurement look like the newest one.
+        if tenant_id:
+            c.execute(
+                "SELECT payload FROM axe_telemetry "
+                "WHERE device_id=? AND tenant_id=? ORDER BY rowid DESC LIMIT 50",
+                (device_id, tenant_id),
+            )
+        else:
+            c.execute(
+                "SELECT payload FROM axe_telemetry "
+                "WHERE device_id=? ORDER BY rowid DESC LIMIT 50",
+                (device_id,),
+            )
+        rows = c.fetchall()
+        conn.close()
+        for row in rows:
+            try:
+                payload = json.loads(row["payload"])
+            except (TypeError, ValueError):
+                continue
+            if isinstance(payload, dict) and "hashrate_hs" in payload:
+                return payload
+        return None
+
     def save_agent_telemetry(
         self, device_id: str, telemetry: dict, tenant_id: str = "default"
-    ) -> None:
+    ) -> str:
         """Persist telemetry pushed by the user's local agent and update the
-        device status (ONLINE when hashrate > 0, IDLE otherwise)."""
+        device status. Returns the persisted status so callers (routes) can
+        echo the HONEST state instead of re-deriving from the raw payload.
+
+        Fleet audit (Issue #627): an EMPTY heartbeat (``{}`` — the agent pushes
+        one when the device answered nothing) is PRESENCE, not health. It
+        refreshes last_seen but must NOT keep a device at IDLE forever: the
+        status degrades to STALE when the newest MEASURED telemetry is older
+        than the staleness horizon, and OFFLINE when no measured reading has
+        ever been stored. Only a payload with real measurements can say
+        ONLINE/IDLE/PAUSED.
+        """
         now = int(time.time())
         payload = dict(telemetry or {})
         payload["ts"] = payload.get("ts") or now
         payload["device_id"] = device_id
         self.save_telemetry(device_id, payload, tenant_id=tenant_id)
+        has_measurements = any(
+            k in payload
+            for k in ("hashrate_hs", "temperature", "shares_accepted", "best_diff")
+        )
+        if has_measurements:
+            # Issue #13 precedence: PAUSED is explicit operator intent and
+            # never expires — it beats staleness. Everything else with an OLD
+            # ts is a stale reading even when it arrives now (agent backlog
+            # after a reboot): ONLINE requires a RECENT signal.
+            status = derive_device_status(payload)
+            if status != "PAUSED" and is_telemetry_stale(payload.get("ts"), now=now):
+                status = STATUS_STALE
+        else:
+            latest = self._latest_measured_telemetry(device_id, tenant_id=tenant_id)
+            if latest is None:
+                status = STATUS_OFFLINE
+            elif is_telemetry_stale(latest.get("ts"), now=now):
+                status = STATUS_STALE
+            else:
+                # Fresh-enough measured reading exists: keep its live status
+                # (PAUSED survives a heartbeat; IDLE stays IDLE).
+                status = derive_device_status(latest)
         self.update_device(
             device_id,
             {
                 "last_seen": now,
-                "status": derive_device_status(payload),
+                "status": status,
                 "agent_managed": 1,
             },
             tenant_id=tenant_id,
         )
+        return status
 
     def update_device(self, device_id: str, updates: dict, tenant_id: str = "") -> bool:
         """Update device fields. Keys in 'updates' overwrite stored values.

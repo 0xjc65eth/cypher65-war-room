@@ -12733,6 +12733,12 @@ function renderAccount(acct) {
 
   // ── LAN SCANNER (Phase B) — auto-discover miners on the local network ─
   let _scanning = false;
+  // Fleet audit (Issue #627): the auto-detect debounce timer MUST live in
+  // module scope — resetAxeWizard() (same scope) does clearTimeout() on it.
+  // Declared with `let` inside initAxeFleetControls() it produced
+  // "ReferenceError: _axeDetectTimer is not defined" on EVERY wizard open,
+  // so the manual-add form could never be shown (the agentless dead-end).
+  let _axeDetectTimer = null;
   async function scanNetwork() {
     if (_scanning) return;
     _scanning = true;
@@ -12824,6 +12830,18 @@ function renderAccount(acct) {
         if (ip) openAxeAddForm(ip);
       });
     });
+  }
+
+  // ── Helper: open the AXE add wizard (module scope on purpose) ─────────
+  // The runtime-rendered empty state (renderAxeFleet) re-creates its
+  // "+ Add Device" button on every render, so the opener must be reachable
+  // from there too — not only from initAxeFleetControls(). BUG A, Issue #627.
+  function openAxeWizard() {
+    resetAxeWizard();
+    const form = dom.axeAddForm || document.getElementById('axe-add-form');
+    if (!form) return;
+    form.style.display = 'block';
+    gotoAxeWizStep(1);
   }
 
   // ── Helper: open the AXE add form pre-filled with an IP ───────────────
@@ -12951,8 +12969,14 @@ function renderAccount(acct) {
     const offlineDevs = devices.filter(d => d.status !== 'ONLINE' && d.status !== 'HASHING' && d.status !== 'WARNING');
 
     if (!devices.length) {
+      // BUG A (Issue #627): the rendered empty state ships a REAL button and
+      // wires it right here — the static template one is replaced by this
+      // innerHTML, and a text-only empty state is a dead end for an operator
+      // whose scan found nothing.
       dom.axeGrid.innerHTML = '<div class="axe-empty">no devices registered — add your first Bitaxe/NerdAxe via the + ADD button' +
+        '<div class="axe-empty__action" style="margin:8px 0"><button class="btn btn--primary btn--mini" id="axe-empty-add">+ Add Device</button></div>' +
         '<div class="axe-empty__hint">⚠ Dashboard na nuvem não alcança a sua LAN (192.168.x.x não é roteável a partir do Render). Rode o <strong>AGENTE LOCAL</strong> na sua rede — Fleet → 🤖 CONNECT AGENT — ele descobre os miners e conecta para fora. (Self-host: rode o app na mesma Wi-Fi dos miners ou use um IP Tailscale.)</div></div>';
+      dom.axeGrid.querySelector('#axe-empty-add')?.addEventListener('click', openAxeWizard);
       return;
     }
 
@@ -13619,16 +13643,18 @@ function renderAccount(acct) {
     const nameInput = document.getElementById('axe-add-name');
     const statusEl = document.getElementById('axe-add-status');
     const emptyAdd = dom.axeEmptyAdd || document.getElementById('axe-empty-add');
-    if (!addBtn || !form) return;
 
-    const openWizard = () => {
-      resetAxeWizard();
-      form.style.display = 'block';
-      gotoAxeWizStep(1);
-    };
+    const openWizard = () => openAxeWizard();
 
-    addBtn.addEventListener('click', openWizard);
+    // BUG A (fleet agentless): the empty-state "+ Add Device" button must
+    // open the wizard EVEN when the header chip (#axe-fleet-add) is absent —
+    // the old `if (!addBtn || !form) return;` guard bailed BEFORE wiring it,
+    // leaving the only always-visible add trigger dead (dead-end screen).
+    // The wizard form is the one hard requirement; wire the empty-state and
+    // cancel first so they survive variants without the chip.
     emptyAdd?.addEventListener('click', openWizard);
+    if (!form) return;
+    addBtn?.addEventListener('click', openWizard);
     cancelBtn?.addEventListener('click', () => {
       form.style.display = 'none';
       resetAxeWizard();
@@ -13665,8 +13691,8 @@ function renderAccount(acct) {
     // as a live firmware preview chip so the operator sees the detected
     // firmware/model/protocol BEFORE clicking "TEST CONNECTIVITY" or
     // registering. This turns a blind IP type-in into an informative
-    // discovery flow.
-    let _axeDetectTimer = null;
+    // discovery flow. (The debounce timer itself lives in module scope —
+    // see the declaration near the LAN-scanner section.)
     const fwPreview = document.getElementById('axe-fw-preview');
 
     function _axeAutoDetect(ip) {
