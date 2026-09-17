@@ -162,6 +162,9 @@ jobs:
           # requirements-dev.txt so CI matches local dev. bandit 1.9.4:
           # 1.8.2 crasha no AST do Python 3.14.
           pip install bandit==1.9.4 flake8==7.1.1 black==25.1.0 pip-audit==2.10.1
+          # Property-based tests (NUM-002, Issue #605) — pinned to
+          # requirements-dev.txt so CI matches local dev.
+          pip install hypothesis==6.168.0
 
       # Static security gates (Issue #125). BLOQUEIAM o merge quando:
       #   bandit  -ll   — qualquer achado MEDIUM/HIGH (B6xx SQL/shell,
