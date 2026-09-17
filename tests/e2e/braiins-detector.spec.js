@@ -130,11 +130,13 @@ test.describe('Braiins OS+ Firmware Detector — E2E', () => {
       await page.locator('.sidebar__link[data-module="fleet"]').click();
       await page.waitForTimeout(800);
 
-      // Wait for the static HTML empty-state to be replaced by JS-rendered content
+      // Wait for the grid to be painted by JS (fetchAxeFleet). Probe the
+      // data-axe-rendered marker (#627): absence of #axe-empty-add is no
+      // longer a valid signal — the runtime empty state carries that button.
       await page.waitForFunction(() => {
         const grid = document.getElementById('axe-grid');
         if (!grid) return false;
-        return !grid.querySelector('#axe-empty-add');
+        return grid.getAttribute('data-axe-rendered') === '1';
       }, { timeout: 10000 }).catch(() => {
         // Grid may stay empty — check for the JS empty state
       });
@@ -201,7 +203,7 @@ test.describe('Braiins OS+ Firmware Detector — E2E', () => {
       await page.waitForFunction(() => {
         const grid = document.getElementById('axe-grid');
         if (!grid) return false;
-        return !grid.querySelector('#axe-empty-add');
+        return grid.getAttribute('data-axe-rendered') === '1';
       }, { timeout: 10000 }).catch(() => {});
 
       const cards = page.locator('#axe-grid .axe-card');

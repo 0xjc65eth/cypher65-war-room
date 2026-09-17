@@ -12927,6 +12927,7 @@ function renderAccount(acct) {
     if (!data || !data.fleet_stats) {
       dom.axeGrid.innerHTML = '<div class="mkt-empty" style="padding:20px;text-align:center">no AxeOS devices connected — register your hardware to enable fleet monitoring' +
         '<div class="axe-empty__hint" style="margin-top:8px">⚠ O host precisa estar na mesma rede local dos miners (ou usar Tailscale para alcançá-los remotamente).</div></div>';
+      dom.axeGrid.setAttribute('data-axe-rendered', '1');
       if (dom.axeFleetStatusBadge) dom.axeFleetStatusBadge.textContent = '0 devices';
       if (dom.axeFleetCountBadge) dom.axeFleetCountBadge.textContent = '0';
       return;
@@ -12977,6 +12978,7 @@ function renderAccount(acct) {
         '<div class="axe-empty__action" style="margin:8px 0"><button class="btn btn--primary btn--mini" id="axe-empty-add">+ Add Device</button></div>' +
         '<div class="axe-empty__hint">⚠ Dashboard na nuvem não alcança a sua LAN (192.168.x.x não é roteável a partir do Render). Rode o <strong>AGENTE LOCAL</strong> na sua rede — Fleet → 🤖 CONNECT AGENT — ele descobre os miners e conecta para fora. (Self-host: rode o app na mesma Wi-Fi dos miners ou use um IP Tailscale.)</div></div>';
       dom.axeGrid.querySelector('#axe-empty-add')?.addEventListener('click', openAxeWizard);
+      dom.axeGrid.setAttribute('data-axe-rendered', '1');
       return;
     }
 
@@ -13004,6 +13006,10 @@ function renderAccount(acct) {
     }
 
     dom.axeGrid.innerHTML = html;
+    // JS-render marker: e2e tests use this to know the grid was painted by
+    // fetchAxeFleet() (the old probe — absence of #axe-empty-add — became
+    // ambiguous once the runtime empty state legitimately carries that button).
+    dom.axeGrid.setAttribute('data-axe-rendered', '1');
 
     // Attach click handlers for detail panel
     dom.axeGrid.querySelectorAll('.axe-card').forEach(card => {

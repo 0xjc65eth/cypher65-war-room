@@ -271,11 +271,14 @@ test.describe('CYPHER65 War Room — Dashboard E2E', () => {
       await page.locator('.sidebar__link[data-module="fleet"]').click();
       await page.waitForTimeout(600);
 
-      // Wait until the static empty-state is replaced by JS-rendered content
+      // Wait until the grid was painted by JS (fetchAxeFleet). Probe the
+      // data-axe-rendered marker: absence of #axe-empty-add is no longer a
+      // valid signal — since #627 the runtime empty state legitimately
+      // carries that button (manual add must always be reachable).
       await page.waitForFunction(() => {
         const grid = document.getElementById('axe-grid');
         if (!grid) return false;
-        return !grid.querySelector('#axe-empty-add');
+        return grid.getAttribute('data-axe-rendered') === '1';
       }, { timeout: 10000 });
 
       const cards = page.locator('#axe-grid .axe-card');
@@ -320,11 +323,14 @@ test.describe('CYPHER65 War Room — Dashboard E2E', () => {
       await page.locator('.sidebar__link[data-module="fleet"]').click();
       await page.waitForTimeout(600);
 
-      // Wait until the static empty-state is replaced by JS-rendered content
+      // Wait until the grid was painted by JS (fetchAxeFleet). Probe the
+      // data-axe-rendered marker: absence of #axe-empty-add is no longer a
+      // valid signal — since #627 the runtime empty state legitimately
+      // carries that button (manual add must always be reachable).
       await page.waitForFunction(() => {
         const grid = document.getElementById('axe-grid');
         if (!grid) return false;
-        return !grid.querySelector('#axe-empty-add');
+        return grid.getAttribute('data-axe-rendered') === '1';
       }, { timeout: 10000 });
 
       const cards = page.locator('#axe-grid .axe-card');

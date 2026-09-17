@@ -37,6 +37,11 @@ Cobertura automatizada por cenário. Fontes: `tests/test_fleet_audit_regressions
 - Desktop 1280×720 + Mobile 390×844 (drawer da sidebar).
 - Assert de `pageerror` em **todos** os testes (regressão do F1 é impossível quebrar sem falhar).
 - Scan real contra o simulador virtual (`virtual_hardware`) via `DEBUG_MOCK`.
+- **Marker `data-axe-rendered`** na `#axe-grid` (todos os 3 pontos de pintura):
+  sinal explícito de "pintado por JS" usado pelos specs (dashboard, braiins-detector).
+  O probe antigo — ausência de `#axe-empty-add` — tornou-se ambíguo quando o
+  empty-state runtime passou a carregar legitimamente esse botão (F2). Specs
+  atualizados nesta branch; dashboard 58/58 local.
 
 ## Lacunas conhecidas (não automatizadas)
 
