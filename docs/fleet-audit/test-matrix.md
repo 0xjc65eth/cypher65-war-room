@@ -45,5 +45,11 @@ Cobertura automatizada por cenário. Fontes: `tests/test_fleet_audit_regressions
 
 ## Lacunas conhecidas (não automatizadas)
 
-- Stratum V1 server de teste dedicado (`virtual_pool/stratum_v1_lab.py` existe, mas não há suíte que o consuma end-to-end no Fleet) — registrado como follow-up.
+- ~~Stratum V2 sem suíte consumidora no Fleet~~ — **fechada pelo PR #631** (Issue #630):
+  `tests/test_fleet_stratum_v2_pipeline.py` cobre o pipeline ASIC → parsing
+  (`stratum2+tcp/ssl/tls`) → detecção → probe passivo no lab → capability.
+  A adaptação original da auditoria estava imprecisa: o adaptador SV2 já tinha
+  suíte própria (`test_stratum_v2_adapter.py`). Stratum V1 segue com lacuna
+  análoga (lab existe, sem consumidor end-to-end no Fleet).
 - Chaos matrix completa (reboot do miner, troca de IP/MAC, DNS failure) — parcialmente coberta pelos testes de staleness T06–T11; cenários de rede real exigem ambiente físico.
+- Eventos estruturados `fleet.*` (R7 do review) — Issue #629.
