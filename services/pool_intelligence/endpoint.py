@@ -6,7 +6,18 @@ from urllib.parse import urlsplit
 
 from .models import PoolEndpoint, PoolProtocol
 
-_SCHEMES = {"stratum+tcp": False, "stratum+ssl": True, "stratum+tls": True}
+# Transport schemes only. ``stratum2+*`` (Issue #630) names the V2 transport
+# real firmware reports; the negotiated Stratum VERSION is deliberately NOT
+# derived from the scheme — discovery fingerprints it via the SV2 probe
+# (``protocol`` stays UNKNOWN here, per the design note in parse_pool_endpoint).
+_SCHEMES = {
+    "stratum+tcp": False,
+    "stratum+ssl": True,
+    "stratum+tls": True,
+    "stratum2+tcp": False,
+    "stratum2+ssl": True,
+    "stratum2+tls": True,
+}
 _CONTROL = re.compile(r"[\x00-\x20\x7f]")
 _HOSTNAME = re.compile(
     r"^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)*"
