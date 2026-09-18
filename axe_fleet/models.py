@@ -26,12 +26,24 @@ DEFAULT_CAPABILITIES = {
 }
 
 # ── Device status constants ──────────────────────────────────────────────
+# STALE (Fleet audit, Issue #627): telemetry exists but is OLD. A device can
+# no longer sit at IDLE/ONLINE forever on a dead heartbeat — an empty agent
+# heartbeat (device unreachable) refreshes last_seen but carries NO fresh
+# measurement, so the honest status is STALE when the newest stored telemetry
+# is older than the staleness horizon, OFFLINE when there is none.
 STATUS_ONLINE = "ONLINE"
 STATUS_OFFLINE = "OFFLINE"
 STATUS_HASHING = "HASHING"
 STATUS_PAUSED = "PAUSED"
 STATUS_WARNING = "WARNING"
 STATUS_ERROR = "ERROR"
+STATUS_STALE = "STALE"
+STATUS_IDLE = "IDLE"
+
+# A telemetry reading older than this is STALE regardless of reachability
+# signals (agent polls every 30s in production; 15 min covers ~30 lost
+# cycles plus agent restarts without ever rendering week-old numbers as live).
+TELEMETRY_STALENESS_S = 15 * 60
 
 # ── Device schema keys ───────────────────────────────────────────────────
 DEVICE_SCHEMA = {
@@ -110,6 +122,51 @@ def new_telemetry(device_id: str) -> dict:
     t["device_id"] = device_id
     t["ts"] = 0
     return t
+
+
+def best_diff_from_value(value) -> str:
+    """Normalize a firmware/agent Best Share ("P Share") into the payload
+    string — the ONE conversion every producer must use.
+
+    Contract (Fleet audit, Issue #627):
+      - None / missing            → ""   ("—" in the UI: never invent a 0)
+      - 0 / "0" / "0.0" / 0.0    → "0"  (a VERIFIED zero stays zero)
+      - 1234 / "1.23M" / 5e8      → str(value).strip() (formatting is the
+        frontend's job via fmt.diff; K/M/G/T/P/E handled there)
+
+    The legacy idiom `str(value or "")` collapsed a legitimate 0 into "",
+    hiding a real "no share yet" state behind a false "unsupported" one —
+    and the three producers (connector, agent, adapters) disagreed with each
+    other. cgminer already preserved "0"; this makes every path agree.
+    """
+    if value is None:
+        return ""
+    if isinstance(value, bool):  # bool is int; a True/False here is garbage
+        return ""
+    try:
+        as_float = float(value)
+    except (TypeError, ValueError):
+        return str(value).strip()
+    if as_float == 0.0:
+        return "0"
+    return str(value).strip()
+
+
+def is_telemetry_stale(last_ts, now=None, horizon: int = TELEMETRY_STALENESS_S) -> bool:
+    """True when the newest stored telemetry for a device is older than the
+    staleness horizon (or absent). Pure — mirrored in the fleet audit tests.
+    """
+    if now is None:
+        import time
+
+        now = int(time.time())
+    try:
+        ts = int(last_ts or 0)
+    except (TypeError, ValueError):
+        return True
+    if ts <= 0:
+        return True
+    return (int(now) - ts) > horizon
 
 
 def derive_device_status(telemetry: dict = None, hashrate: int = None) -> str:

@@ -121,6 +121,21 @@ def _p(
 # and fed by the ASIC. Adding a real API later is a one-line change here.
 PROVIDERS: tuple[PoolProvider, ...] = (
     # ── Bitcoin · solo ──────────────────────────────────────────────
+    # Fleet audit (Issue #627): atlaspool verified by LIVE passive Stratum
+    # V1 probe — DNS resolves for solo.atlaspool.io and :3333 answered
+    # mining.subscribe with a valid notify subscription (no authorize, no
+    # share submission). Its web/docs presence is NOT verifiable from here
+    # (atlaspool.com/.org are swimming-pool companies; aggregators do not
+    # list it), so it stays stratum_only with the evidence in the docs field.
+    _p(
+        "atlaspool",
+        "AtlasPool",
+        Chain.BTC,
+        PoolKind.SOLO,
+        "solo.atlaspool.io",
+        "atlaspool.io",
+        docs="stratum solo.atlaspool.io:3333 (TCP verified 2026-09-17, mining.subscribe OK; official web presence unverified)",
+    ),
     _p(
         "parasite",
         "Parasite Pool",
@@ -224,6 +239,32 @@ PROVIDERS: tuple[PoolProvider, ...] = (
     _p("rawpool", "Rawpool", Chain.BTC, PoolKind.POOL, "rawpool.com"),
     _p("1thash", "1THash", Chain.BTC, PoolKind.POOL, "1thash.io"),
     _p("slushpool", "Slush Pool (legacy)", Chain.BTC, PoolKind.POOL, "slushpool.com"),
+    # ── Fleet audit additions (Issue #627) — stratum_only until each pool's
+    # own stats API is verified from official documentation ──
+    _p(
+        "braiins_solo",
+        "Braiins Solo",
+        Chain.BTC,
+        PoolKind.SOLO,
+        "solo.braiins.com",
+        docs="Braiins solo product family; endpoint unverified (braiins.com/pool/solo 404 at audit time) — flagged stratum_only",
+    ),
+    _p(
+        "solohash",
+        "SoloHash",
+        Chain.BTC,
+        PoolKind.SOLO,
+        "solohash.io",
+        docs="solohash.io is live but serves educational content only (2026-09-17); stratum endpoint NOT verified — recognition may need a custom entry",
+    ),
+    _p(
+        "satoshi_radio",
+        "Satoshi Radio Pool",
+        Chain.BTC,
+        PoolKind.SOLO,
+        "satoshiradio.xyz",
+        docs="satoshiradio.xyz does not resolve DNS at audit time (2026-09-17) — kept for historic telemetry labelling",
+    ),
     # ── Bitcoin SV ──────────────────────────────────────────────────
     # ckpool ships a BSV build, so the same stats adapter covers it — the
     # stats host is derived from the stratum host (see stats_url_for), which

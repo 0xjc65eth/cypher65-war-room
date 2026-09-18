@@ -3684,12 +3684,18 @@ def agent_telemetry(agent_tenant_id: str = ""):
                 ),
                 410,
             )
-    _registry.save_agent_telemetry(device["id"], tel, tenant_id=agent_tenant_id)
+    # Echo the PERSISTED status (the registry decides ONLINE/IDLE/PAUSED/
+    # STALE/OFFLINE honestly — an empty heartbeat is presence, not health;
+    # re-deriving from the raw payload here would fake an IDLE for a miner
+    # that answered nothing). Fleet audit, Issue #627.
+    status = _registry.save_agent_telemetry(
+        device["id"], tel, tenant_id=agent_tenant_id
+    )
     return jsonify(
         {
             "success": True,
             "device_id": device["id"],
-            "status": derive_device_status(tel),
+            "status": status,
         }
     )
 

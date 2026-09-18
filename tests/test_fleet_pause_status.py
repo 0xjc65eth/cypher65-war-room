@@ -366,7 +366,9 @@ class TestPauseResumeRoutes:
 
 
 # ══════════════════════════════════════════════════════════════════════════
-# 6. Agent telemetry endpoint — derives PAUSED from the pushed payload
+# 6. Agent telemetry endpoint — echoes the PERSISTED status; the registry
+#    decides PAUSED (explicit operator intent never expires — Issue #13 /
+#    fleet audit #627: the route must not re-derive from the raw payload)
 # ══════════════════════════════════════════════════════════════════════════
 class TestAgentTelemetryPaused:
     def test_agent_telemetry_response_reports_paused(self, client):
@@ -376,6 +378,7 @@ class TestAgentTelemetryPaused:
             "name": "T",
             "ip_address": "192.168.1.55",
         }
+        reg.save_agent_telemetry.return_value = STATUS_PAUSED
 
         from services import auth as _auth
 

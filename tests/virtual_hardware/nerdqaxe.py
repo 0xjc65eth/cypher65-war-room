@@ -63,14 +63,24 @@ class VirtualNerdQaxe:
                 self._json(
                     200,
                     {
+                        # Canonical AxeOS/ESP-Miner contract (mirrors the
+                        # fixtures in test_axe_fleet_scanner.py): lowercase
+                        # `hashrate`, `uptime`, plus `bestDiff`. The old
+                        # camelCase `hashRate`/`uptimeSeconds` shape matched
+                        # NO real firmware and the missing `bestDiff` meant
+                        # the P Share path was never exercised end-to-end
+                        # (Fleet audit, Issue #627).
                         "model": "NerdQaxe++",
                         "firmware": "AxeOS 2.4",
+                        "version": "2.4.0",
                         "hostname": "virtual-nerdqaxe",
-                        "hashRate": 4.8e12,
+                        "hashrate": 4800000000000,
+                        "bestDiff": 0,
                         "temp": 58.0,
-                        "uptimeSeconds": device.uptime_seconds,
+                        "uptime": device.uptime_seconds,
                         "sharesAccepted": 42,
                         "sharesRejected": 0,
+                        "frequency": 550,
                     },
                 )
 
