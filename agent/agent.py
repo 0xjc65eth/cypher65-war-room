@@ -23,6 +23,7 @@ Env vars:
 
 Run:  python3 agent.py        (stdlib only — no pip install needed)
 """
+
 import json
 import logging
 import os
@@ -687,12 +688,13 @@ def main():
     while True:
         t0 = time.time()
         # 2 · Poll each known device + push telemetry.
-        for ip, dev in known.items():
+        # A telemetry response may remove a device. Iterate a snapshot so
+        # dropping it does not interrupt polling the remaining miners.
+        for ip, dev in list(known.items()):
             tel = _poll_telemetry(dev)
-            # Push UNCONDITIONALLY: `telemetry: {}` is legal and keeps the
-            # server's last_seen/status fresh, so a device that answered
-            # nothing (firewall, reboot, poll failure) still shows as
-            # present+IDLE instead of looking dead forever. Empty heartbeats
+            # Push UNCONDITIONALLY: `telemetry: {}` is legal presence evidence,
+            # not proof of device health. The server preserves/degrades status
+            # according to the last real reading. Empty heartbeats
             # use a shorter timeout so unreachable devices can't stall the
             # poll loop on a cloud hiccup.
             code, resp = _post(
