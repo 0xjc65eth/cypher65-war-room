@@ -394,12 +394,20 @@ class TestAgentTelemetry:
 # ══════════════════════════════════════════════════════════════════════
 
 class TestAgentCommands:
+    @pytest.fixture(autouse=True)
+    def _enable_physical_commands(self, monkeypatch):
+        monkeypatch.setenv("ENABLE_PHYSICAL_COMMANDS", "true")
+
     def _registered_device(self, client, agent_token, registry):
         self._reg = registry
         with patch("axe_fleet.routes._registry", registry):
             client.post("/api/agent/register", headers=_headers(agent_token),
                         json={"devices": [{"ip": "192.168.1.50"}]})
-        return registry.get_device_by_ip("192.168.1.50", tenant_id="acme")
+        dev = registry.get_device_by_ip("192.168.1.50", tenant_id="acme")
+        registry.save_agent_telemetry(
+            dev["id"], {"hashrate_hs": 1}, tenant_id="acme"
+        )
+        return registry.get_device(dev["id"], tenant_id="acme")
 
     def test_pull_and_ack_round_trip(self, client, agent_token, registry):
         dev = self._registered_device(client, agent_token, registry)
@@ -433,6 +441,9 @@ class TestAgentCommands:
         """Tenant A pulling commands must not see tenant B's queue."""
         dev_a = registry.upsert_agent_device("192.168.1.10", tenant_id="acme")
         registry.upsert_agent_device("192.168.1.20", tenant_id="brave")
+        registry.save_agent_telemetry(
+            dev_a["id"], {"hashrate_hs": 1}, tenant_id="acme"
+        )
         registry.enqueue_agent_command(dev_a["id"], "identify", tenant_id="acme")
 
         token_a = create_token(subject="acme", ttl=86400,
@@ -746,11 +757,18 @@ class TestCommandPayloadCarriesIp:
     """Fix 1: the agent must receive the device's LAN ip_address in the
     pull payload — the registry UUID alone is useless for opening a socket."""
 
+    @pytest.fixture(autouse=True)
+    def _enable_physical_commands(self, monkeypatch):
+        monkeypatch.setenv("ENABLE_PHYSICAL_COMMANDS", "true")
+
     def test_pull_commands_include_ip_address(self, client, agent_token, registry):
         with patch("axe_fleet.routes._registry", registry):
             client.post("/api/agent/register", headers=_headers(agent_token),
                         json={"devices": [{"ip": "192.168.1.50"}]})
             dev = registry.get_device_by_ip("192.168.1.50", tenant_id="acme")
+            registry.save_agent_telemetry(
+                dev["id"], {"hashrate_hs": 1}, tenant_id="acme"
+            )
             registry.enqueue_agent_command(dev["id"], "restart", tenant_id="acme")
             pull = client.post("/api/agent/commands/pull",
                                headers=_headers(agent_token), json={})
@@ -759,15 +777,14 @@ class TestCommandPayloadCarriesIp:
             assert len(cmds) == 1
             assert cmds[0]["ip_address"] == "192.168.1.50"
 
-    def test_pull_missing_device_uses_empty_ip(self, client, agent_token, registry):
-        """A queued command for a vanished device still pulls (empty ip) —
-        the agent acks failure instead of the pull 500ing."""
+    def test_pull_missing_device_is_blocked(self, client, agent_token, registry):
+        """A vanished target cannot receive a physical command."""
         with patch("axe_fleet.routes._registry", registry):
             registry.enqueue_agent_command("ghost-device", "restart", tenant_id="acme")
             pull = client.post("/api/agent/commands/pull",
                                headers=_headers(agent_token), json={})
             assert pull.status_code == 200
-            assert pull.get_json()["commands"][0]["ip_address"] == ""
+            assert pull.get_json()["commands"] == []
 
 
 class TestHeartbeatKeepsCacheHashrate:
