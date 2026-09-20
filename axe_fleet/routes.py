@@ -3308,8 +3308,8 @@ agent_bp = Blueprint("agent", __name__, url_prefix="/api/agent")
 AGENT_TOKEN_TTL = 365 * 86400
 
 
-def _require_caller_identity_on_cloud(f):
-    """On a public cloud deploy, minting an agent token requires a REAL identity.
+def _require_caller_identity_on_cloud(min_role: str = "member"):
+    """Require an authorized human/API-key principal for cloud token admin.
 
     Why this exists: ``_role_required("member")`` is a **no-op** in open mode (no
     ``API_KEY``/``TENANT_API_KEYS`` configured) — the operator is implicitly the
@@ -3334,48 +3334,81 @@ def _require_caller_identity_on_cloud(f):
     infrastructure, not the operator's machine.
     """
 
-    @wraps(f)
-    def wrapper(*args, **kwargs):
-        from config import is_cloud_deploy
+    def decorator(f):
+        @wraps(f)
+        def wrapper(*args, **kwargs):
+            from config import is_cloud_deploy
 
-        if not is_cloud_deploy():
-            return f(*args, **kwargs)
+            if not is_cloud_deploy():
+                return f(*args, **kwargs)
 
-        from services.auth import resolve_tenant_for_api_key, verify_token
+            from services.auth import resolve_tenant_for_api_key, verify_token
+            from services.tenant import ROLE_PRIORITY
 
-        auth = request.headers.get("Authorization", "")
-        if auth.startswith("Bearer ") and verify_token(
-            auth[7:], expected_type="access"
-        ):
-            return f(*args, **kwargs)
-        api_key = request.headers.get("X-API-Key", "")
-        if api_key and resolve_tenant_for_api_key(api_key) is not None:
-            return f(*args, **kwargs)
+            auth = request.headers.get("Authorization", "")
+            if auth.startswith("Bearer "):
+                payload = verify_token(auth[7:], expected_type="access")
+                if payload:
+                    # Agent JWTs authenticate the unattended collector only.
+                    # They must never administer credentials, even when their
+                    # signature is valid or their epoch was later revoked.
+                    if payload.get("agent") or payload.get("role") == "agent":
+                        log.warning(
+                            "[agent] agent principal refused token administration"
+                        )
+                        return (
+                            jsonify(
+                                {
+                                    "error": "user identity required to manage agent tokens",
+                                    "code": "AGENT_TOKEN_USER_REQUIRED",
+                                }
+                            ),
+                            403,
+                        )
+                    role = str(payload.get("role") or "admin")
+                    if ROLE_PRIORITY.get(role, 0) >= ROLE_PRIORITY.get(min_role, 0):
+                        return f(*args, **kwargs)
+                    return (
+                        jsonify(
+                            {
+                                "error": "permission denied",
+                                "required_role": min_role,
+                                "role": role,
+                            }
+                        ),
+                        403,
+                    )
 
-        log.warning(
-            "[agent] anonymous agent-token mint refused from %s",
-            request.remote_addr or "?",
-        )
-        return (
-            jsonify(
-                {
-                    "error": "authentication required to manage agent tokens",
-                    "code": "AGENT_TOKEN_NEEDS_IDENTITY",
-                    "detail": (
-                        "Esta instância roda na nuvem e não tem "
-                        "API_KEY/TENANT_API_KEYS configurados, então não há como "
-                        "provar quem está pedindo. Um token de agente dura 1 ano e "
-                        "dá acesso à sua frota: ele exige credencial. Configure "
-                        "API_KEY (ou TENANT_API_KEYS) no deploy e envie o header "
-                        "X-API-Key, ou rode o dashboard localmente para usar o modo "
-                        "aberto."
-                    ),
-                }
-            ),
-            403,
-        )
+            api_key = request.headers.get("X-API-Key", "")
+            if api_key and resolve_tenant_for_api_key(api_key) is not None:
+                return f(*args, **kwargs)
 
-    return wrapper
+            log.warning(
+                "[agent] anonymous agent-token administration refused from %s",
+                request.remote_addr or "?",
+            )
+            return (
+                jsonify(
+                    {
+                        "error": "authentication required to manage agent tokens",
+                        "code": "AGENT_TOKEN_NEEDS_IDENTITY",
+                        "detail": (
+                            "Esta instância roda na nuvem e não tem "
+                            "API_KEY/TENANT_API_KEYS configurados, então não há como "
+                            "provar quem está pedindo. Um token de agente dura 1 ano e "
+                            "dá acesso à sua frota: ele exige credencial. Configure "
+                            "API_KEY (ou TENANT_API_KEYS) no deploy e envie o header "
+                            "X-API-Key, ou rode o dashboard localmente para usar o modo "
+                            "aberto."
+                        ),
+                    }
+                ),
+                403,
+            )
+
+        return wrapper
+
+    return decorator
 
 
 def _require_agent(f):
@@ -3429,7 +3462,7 @@ def _require_agent(f):
 @agent_bp.route("/token", methods=["POST"])
 @require_tenant
 @_role_required("member")
-@_require_caller_identity_on_cloud
+@_require_caller_identity_on_cloud("member")
 def agent_issue_token(tenant_id: str = ""):
     """Mint a long-lived agent token for the caller's tenant.
 
@@ -3470,7 +3503,7 @@ def agent_issue_token(tenant_id: str = ""):
 @agent_bp.route("/tokens/revoke", methods=["POST"])
 @require_tenant
 @_role_required("admin")
-@_require_caller_identity_on_cloud
+@_require_caller_identity_on_cloud("admin")
 def agent_revoke_tokens(tenant_id: str = ""):
     """Revoga TODOS os tokens de agente do tenant do chamador (Issue #582).
 
