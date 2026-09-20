@@ -123,6 +123,21 @@ def _nonnegative_finite_int(value) -> int:
     return int(number)
 
 
+def _valid_telemetry_ts(value):
+    """Return a positive measurement timestamp, otherwise None.
+
+    A serializer must not replace an absent timestamp with request time;
+    doing that makes missing telemetry look freshly collected.
+    """
+    if isinstance(value, bool):
+        return None
+    try:
+        timestamp = int(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return timestamp if timestamp > 0 else None
+
+
 _FLEET_STATUS_TO_CORE = {
     "ONLINE": DeviceStatus.ONLINE,
     "HASHING": DeviceStatus.ONLINE,
@@ -1250,7 +1265,9 @@ def fleet_summary(tenant_id: str = ""):
     """
     if _registry is None:
         return jsonify({"error": "registry not initialized"}), 500
-    devices = _registry.list_devices(tenant_id=tenant_id)
+    # Reconcile the stored status with the newest trusted telemetry. Reading
+    # only the device row can leave ONLINE frozen after the agent stops.
+    devices = _registry.list_devices(tenant_id=tenant_id, with_telemetry=True)
     total = len(devices)
     # Reachability via the shared helper (ONLINE/WARNING/HASHING). WARNING is
     # kept in its own bucket (mirrors fleet_health) — a degraded-but-reachable
@@ -1272,8 +1289,12 @@ def fleet_summary(tenant_id: str = ""):
     for d in devices:
         tel = _registry.get_recent_telemetry(d["id"], limit=1, tenant_id=tenant_id)
         p = _latest_telemetry(tel)
-        total_hr += int(p.get("hashrate_hs", 0))
+        measured_hr = p.get("hashrate_hs")
         status = d.get("status", "OFFLINE")
+        reported_hr = _nonnegative_finite_int(measured_hr)
+        reachable = status == "WARNING" or device_status_is_online(status)
+        current_hr = reported_hr if reachable else 0
+        total_hr += current_hr
         # Reachability latency (PING) — only probed for reachable statuses so
         # the endpoint never blocks on dead IPs (mirrors fleet_health).
         latency_ms = None
@@ -1293,21 +1314,26 @@ def fleet_summary(tenant_id: str = ""):
         enriched["capabilities"] = _caps_supported_commands(d.get("capabilities"))
         enriched["latency_ms"] = latency_ms
         enriched["advice"] = advice
+        telemetry_ts = _valid_telemetry_ts(p.get("ts"))
+        uptime_seconds = p.get("uptime_seconds")
         enriched["_telemetry"] = {
-            "hashrate_hs": p.get("hashrate_hs", 0),
-            "hashrate_str": _fmt_hr(int(p.get("hashrate_hs", 0))),
+            "hashrate_hs": current_hr if measured_hr is not None else None,
+            "hashrate_str": (_fmt_hr(current_hr) if measured_hr is not None else "—"),
+            "last_known_hashrate_hs": (
+                reported_hr if not reachable and reported_hr > 0 else None
+            ),
             "temperature": p.get("temperature"),
             "fan_speed": p.get("fan_speed"),
             "fan_rpm": p.get("fan_rpm"),
             "power_watts": p.get("power_watts"),
             "efficiency_jth": p.get("efficiency_jth"),
-            "shares_accepted": p.get("shares_accepted", 0),
-            "shares_rejected": p.get("shares_rejected", 0),
-            "shares_stale": p.get("shares_stale", 0),
-            "uptime_seconds": p.get("uptime_seconds", 0),
-            "uptime_str": _fmt_uptime(p.get("uptime_seconds", 0)),
+            "shares_accepted": p.get("shares_accepted"),
+            "shares_rejected": p.get("shares_rejected"),
+            "shares_stale": p.get("shares_stale"),
+            "uptime_seconds": uptime_seconds,
+            "uptime_str": _fmt_uptime(uptime_seconds),
             "best_diff": p.get("best_diff"),
-            "hw_error_pct": p.get("hw_error_pct", 0),
+            "hw_error_pct": p.get("hw_error_pct"),
             "voltage_mv": p.get("voltage_mv"),
             "frequency_mhz": p.get("frequency_mhz"),
             "wifi_rssi": p.get("wifi_rssi"),
@@ -1329,8 +1355,10 @@ def fleet_summary(tenant_id: str = ""):
             # them; the LIVE MINING panel renders an honest '—').
             "pool_diff": p.get("pool_diff"),
             "last_share_ts": p.get("last_share_ts"),
-            "ts": p.get("ts", now),
-            "age_seconds": now - p.get("ts", now),
+            "ts": telemetry_ts,
+            "age_seconds": (
+                max(0, now - telemetry_ts) if telemetry_ts is not None else None
+            ),
         }
         # Compute health score from model (import outside loop)
         try:
@@ -3038,7 +3066,9 @@ def fleet_health(tenant_id: str = ""):
     """
     if _registry is None:
         return jsonify({"error": "registry not initialized"}), 500
-    devices = _registry.list_devices(tenant_id=tenant_id)
+    # The registry's freshness-aware read degrades old ONLINE/HASHING rows to
+    # STALE. The bare device row cannot prove current health.
+    devices = _registry.list_devices(tenant_id=tenant_id, with_telemetry=True)
     now = int(time.time())
 
     from .models import infer_health_score
@@ -3097,7 +3127,8 @@ def fleet_health(tenant_id: str = ""):
             latency_ms = _probe_miner_latency_ms(d.get("ip_address", ""))
         advice = _device_advice(status, tel, latency_ms)
 
-        reported_hr = _nonnegative_finite_int(tel.get("hashrate_hs", 0))
+        measured_hr = tel.get("hashrate_hs")
+        reported_hr = _nonnegative_finite_int(measured_hr)
         reachable = status == "WARNING" or device_status_is_online(status)
         # A stale non-zero sample on an OFFLINE device is last-known capacity,
         # not live production. Excluding it prevents the operational overview
@@ -3132,6 +3163,8 @@ def fleet_health(tenant_id: str = ""):
         # helper: fleet_summary must never drift from this shape again).
         supported_cmds = _caps_supported_commands(d.get("capabilities"))
 
+        telemetry_ts = _valid_telemetry_ts(tel.get("ts"))
+        uptime_seconds = tel.get("uptime_seconds")
         device_health_list.append(
             {
                 "id": did,
@@ -3146,8 +3179,8 @@ def fleet_health(tenant_id: str = ""):
                 "health_score": health_score,
                 "capabilities": supported_cmds,
                 "telemetry": {
-                    "hashrate_hs": hr,
-                    "hashrate_str": _fmt_hr(hr),
+                    "hashrate_hs": hr if measured_hr is not None else None,
+                    "hashrate_str": _fmt_hr(hr) if measured_hr is not None else "—",
                     "last_known_hashrate_hs": (
                         reported_hr if not reachable and reported_hr > 0 else None
                     ),
@@ -3156,17 +3189,17 @@ def fleet_health(tenant_id: str = ""):
                     "power_watts": pw,
                     "frequency_mhz": tel.get("frequency_mhz"),
                     "voltage_mv": tel.get("voltage_mv"),
-                    "best_diff": tel.get("best_diff", ""),
+                    "best_diff": tel.get("best_diff"),
                     "pool_diff": tel.get("pool_diff"),
                     "last_share_ts": tel.get("last_share_ts"),
-                    "uptime_seconds": tel.get("uptime_seconds", 0),
-                    "uptime_str": _fmt_uptime(tel.get("uptime_seconds", 0)),
+                    "uptime_seconds": uptime_seconds,
+                    "uptime_str": _fmt_uptime(uptime_seconds),
                     "free_heap": tel.get("free_heap"),
                     "wifi_rssi": tel.get("wifi_rssi"),
-                    "shares_accepted": tel.get("shares_accepted", 0),
-                    "shares_rejected": tel.get("shares_rejected", 0),
-                    "shares_stale": tel.get("shares_stale", 0),
-                    "hw_error_pct": tel.get("hw_error_pct", 0.0),
+                    "shares_accepted": tel.get("shares_accepted"),
+                    "shares_rejected": tel.get("shares_rejected"),
+                    "shares_stale": tel.get("shares_stale"),
+                    "hw_error_pct": tel.get("hw_error_pct"),
                     "efficiency_jth": tel.get("efficiency_jth"),
                     # Fase 5: expose chip/ASIC/VR temps + hashrate windows the
                     # frontend cards render. Without these the cards always show
@@ -3183,8 +3216,10 @@ def fleet_health(tenant_id: str = ""):
                     "stratum_status": tel.get("stratum_status", ""),
                     "pool_url": tel.get("pool_url", ""),
                     "pool_user": tel.get("pool_user", ""),
-                    "ts": tel.get("ts", now),
-                    "age_seconds": now - tel.get("ts", now),
+                    "ts": telemetry_ts,
+                    "age_seconds": (
+                        max(0, now - telemetry_ts) if telemetry_ts is not None else None
+                    ),
                 },
                 "latency_ms": latency_ms,
                 "advice": advice,
