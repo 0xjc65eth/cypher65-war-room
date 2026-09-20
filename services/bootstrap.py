@@ -363,14 +363,37 @@ def init_db():
             device_id TEXT,
             best_diff REAL NOT NULL,
             best_diff_str TEXT DEFAULT '',
-            pool TEXT DEFAULT ''
+            pool TEXT DEFAULT '',
+            tenant_id TEXT NOT NULL DEFAULT 'default'
         )"""
     )
+    # Existing databases predate tenant ownership on this history table.
+    # Backfill those operator records to the default tenant and make every
+    # subsequent read explicitly tenant-scoped.
+    try:
+        c.execute("PRAGMA table_info(best_diff_history)")
+        best_diff_cols = {row[1] for row in c.fetchall()}
+        if "tenant_id" not in best_diff_cols:
+            c.execute(
+                "ALTER TABLE best_diff_history "
+                "ADD COLUMN tenant_id TEXT NOT NULL DEFAULT 'default'"
+            )
+            log.info("[migrate] added tenant_id to best_diff_history")
+    except Exception as e:
+        log.warning("[migrate] could not add tenant_id to best_diff_history: %s", e)
     c.execute(
         "CREATE INDEX IF NOT EXISTS idx_best_diff_history_ts ON best_diff_history(ts)"
     )
     c.execute(
         "CREATE INDEX IF NOT EXISTS idx_best_diff_history_device ON best_diff_history(device_id)"
+    )
+    c.execute(
+        "CREATE INDEX IF NOT EXISTS idx_best_diff_history_tenant_ts "
+        "ON best_diff_history(tenant_id, ts)"
+    )
+    c.execute(
+        "CREATE INDEX IF NOT EXISTS idx_best_diff_history_tenant_device_ts "
+        "ON best_diff_history(tenant_id, device_id, ts)"
     )
     # ── Hashrate market history table (Milestone 7) ──
     c.execute(
