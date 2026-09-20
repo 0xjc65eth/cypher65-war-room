@@ -1,5 +1,7 @@
 """Issue #636: device removal cannot interrupt other miners' telemetry."""
 
+from types import SimpleNamespace
+
 import pytest
 
 import agent.agent as agent
@@ -54,7 +56,9 @@ def test_removed_device_does_not_crash_poll_loop_or_return_on_rescan(
     monkeypatch.setattr(agent, "scan_lan", lambda: devices)
     monkeypatch.setattr(agent, "_poll_telemetry", poll)
     monkeypatch.setattr(agent, "_post", post)
-    monkeypatch.setattr(agent.time, "sleep", sleep)
+    monkeypatch.setattr(
+        agent, "time", SimpleNamespace(time=agent.time.time, sleep=sleep)
+    )
     with pytest.raises(StopLoop):
         agent.main()
 
