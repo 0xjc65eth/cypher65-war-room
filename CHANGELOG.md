@@ -6,6 +6,14 @@ e versionamento semântico ([SemVer](https://semver.org/lang/pt-BR/)).
 
 ## [Unreleased]
 
+### Corrigido — instalação e coleta do agente Fleet (Issue #636)
+- Comandos copiados usam continuações shell válidas e argumentos protegidos.
+- Instalador preserva IPs/faixas explícitas em launchd, systemd e fallback;
+  os arquivos com credenciais têm permissões restritas também na reinstalação.
+- Resposta de remoção HTTP 410 deixa os demais miners em coleta sem interromper
+  o loop. Recuperação de miner removido no cloud e descoberta após offline
+  continuam acompanhadas nas Issues #637 e #638.
+
 ### Documentado — research rev. 2 fecha o gap de fontes de P2 (Issue #596, wave W1)
 - **S13 + S14 fecham P2.** O brief declarava P2 (variância do solo mining) com 2
   fontes primárias, abaixo do mínimo de 3 — e isso estava declarado em vez de

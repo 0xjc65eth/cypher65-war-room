@@ -31,6 +31,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import vm from 'node:vm';
+import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -183,7 +184,7 @@ const _dashboard = loadFragment('39b-dashboard.js', '{ poolDetectionView }');
 // decide se o texto fala de login ou de papel — e se o retry continua oferecido.
 const _fleet = loadFragment(
   '49-axe-fleet.js',
-  '{ agentRevokeView, classifyRevokeRefusal }',
+  '{ agentRevokeView, classifyRevokeRefusal, agentInstallCommands }',
   { window: {}, document: { getElementById: () => null } }
 );
 const agentRevokeView = _fleet.agentRevokeView;
@@ -5435,6 +5436,36 @@ console.log('\n📊 SUITE 39: agentRevokeView() — revogação de agentes (Issu
   assertEqual("toast sets aria-live=polite", /setAttribute\('aria-live', 'polite'\)/.test(src), true);
   assertEqual("toast sets aria-atomic", /setAttribute\('aria-atomic', 'true'\)/.test(src), true);
 })();
+
+// Issue #636: execute the real command builder with inert shell functions.
+// No Docker, curl, installer, credential or service is used by this test.
+for (const [origin, token] of [
+  ['https://dashboard.example/', 'test.jwt.token'],
+  ["https://dashboard.example/a b?x='quoted'&v=$(printf INJECTED)", "test' token;$(printf INJECTED)"],
+]) {
+  const commands = _fleet.agentInstallCommands(token, origin);
+  const base = origin.replace(/\/$/, '');
+  const docker = spawnSync('bash', ['-c',
+    "docker() { printf '%s\\0' \"$@\"; };\n" + commands.docker,
+  ], { encoding: 'utf8' });
+  assertEqual('agent Docker: shell succeeds', docker.status, 0);
+  assertEqual('agent Docker: exact arguments, no literal newline escapes or shell expansion',
+    docker.stdout.split('\0').slice(0, -1), [
+      'run', '-d', '--name', 'cypher65-agent', '--network', 'host',
+      '-e', 'CYPHER65_SERVER_URL=' + base,
+      '-e', 'CYPHER65_AGENT_TOKEN=' + token,
+      '-e', 'CYPHER65_POLL_INTERVAL=30', 'ghcr.io/0xjc65eth/cypher65-agent',
+    ]);
+  const installer = spawnSync('bash', ['-c',
+    "curl() { printf '%s\\0' \"$@\"; };\n" +
+    "bash() { printf '%s\\0' \"$CYPHER65_SERVER_URL\" \"$CYPHER65_AGENT_TOKEN\"; cat; };\n" +
+    commands.installer,
+  ], { encoding: 'utf8' });
+  assertEqual('agent installer: shell succeeds', installer.status, 0);
+  assertEqual('agent installer: env reaches pipe consumer and URL remains one argument',
+    installer.stdout.split('\0').slice(0, -1),
+    [base, token, '-fsSL', base + '/agent/install.sh']);
+}
 
 //  RESULTS
 // ═══════════════════════════════════════════════════════════════════════════

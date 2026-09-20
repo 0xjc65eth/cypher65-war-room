@@ -90,6 +90,30 @@ test('o gatilho sozinho não revoga: mostra a consequência antes', async ({ pag
   await expect(page.locator('#axe-revoke-open')).toBeVisible();
 });
 
+test('onboarding renders and copies a valid Docker command (#636)', async ({ page }) => {
+  // UI contract: token issuance is stubbed; no real credential or install.
+  await page.route('**/api/agent/token', route => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({ token: 'test.jwt.token', server_url: 'https://dashboard.example/', tenant_id: 'fixture' }),
+  }));
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator, 'clipboard', {
+      value: { writeText: async text => { window.__copiedAgentCommand = text; } },
+    });
+  });
+  await openAgentPanel(page);
+  await page.click('#axe-agent-gen');
+  await expect(page.locator('#axe-agent-token-row')).toBeVisible();
+  const command = await page.locator('#axe-agent-docker').textContent();
+  expect(command.split('\n')).toHaveLength(5);
+  expect(command).not.toContain('\\n');
+  expect(command).toContain("CYPHER65_SERVER_URL=https://dashboard.example'");
+  expect(command).toContain("CYPHER65_AGENT_TOKEN=test.jwt.token'");
+  await page.click('#axe-agent-copy-docker');
+  await expect.poll(() => page.evaluate(() => window.__copiedAgentCommand)).toBe(command);
+});
+
 test('confirmar revoga de verdade, UMA vez, e assume o sucesso só com o 200', async ({ page }) => {
   await openAgentPanel(page);
 

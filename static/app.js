@@ -13927,6 +13927,28 @@ function renderAccount(acct) {
     return view;
   }
 
+  // Shell arguments stay quoted even when a deployment URL contains spaces
+  // or metacharacters. Joining with a real newline avoids literal "\\n" in
+  // the command copied from the onboarding panel (Issue #636).
+  function agentInstallCommands(token, serverUrl) {
+    const origin = serverUrl.replace(/\/$/, '');
+    const quote = value => "'" + String(value).replace(/'/g, "'\"'\"'") + "'";
+    const continuation = ' \\\n';
+    return {
+      installer: [
+        'curl -fsSL ' + quote(origin + '/agent/install.sh'),
+        '  | CYPHER65_SERVER_URL=' + quote(origin) + ' CYPHER65_AGENT_TOKEN=' + quote(token) + ' bash',
+      ].join(continuation),
+      docker: [
+        'docker run -d --name cypher65-agent --network host',
+        '  -e ' + quote('CYPHER65_SERVER_URL=' + origin),
+        '  -e ' + quote('CYPHER65_AGENT_TOKEN=' + token),
+        '  -e CYPHER65_POLL_INTERVAL=30',
+        '  ghcr.io/0xjc65eth/cypher65-agent',
+      ].join(continuation),
+    };
+  }
+
   // ── SaaS AGENT onboarding panel ─────────────────────────────────────
   // The cloud dashboard cannot reach the user's LAN (192.168.x.x is not
   // routable from Render), so a local agent connects OUT and pushes
@@ -13961,20 +13983,9 @@ function renderAccount(acct) {
     // piped `bash` process sees them (query-string vars would NOT reach the
     // script through `curl | bash`). Single command — no Docker, no pip.
     const renderCommands = (token, serverUrl) => {
-      const origin = (serverUrl || location.origin).replace(/\/$/, '');
-      if (oneLinerPre) {
-        oneLinerPre.textContent =
-          'curl -sSL "' + origin + '/agent/install.sh" \\\n' +
-          '  | CYPHER65_SERVER_URL=' + origin + ' CYPHER65_AGENT_TOKEN=' + token + ' bash';
-      }
-      if (dockerPre) {
-        dockerPre.textContent =
-          'docker run -d --name cypher65-agent --network host \\\n' +
-          '  -e CYPHER65_SERVER_URL=' + origin + ' \\n' +
-          '  -e CYPHER65_AGENT_TOKEN=' + token + ' \\n' +
-          '  -e CYPHER65_POLL_INTERVAL=30 \\n' +
-          '  ghcr.io/0xjc65eth/cypher65-agent';
-      }
+      const commands = agentInstallCommands(token, serverUrl || location.origin);
+      if (oneLinerPre) oneLinerPre.textContent = commands.installer;
+      if (dockerPre) dockerPre.textContent = commands.docker;
     };
     const copy = async (text, label) => {
       try {
