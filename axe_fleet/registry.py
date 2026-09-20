@@ -903,20 +903,72 @@ class DeviceRegistry:
                 r["params"] = {}
         return rows
 
-    def mark_command_pulled(self, command_id: str, tenant_id: str = "default") -> bool:
-        """Mark a command as pulled (agent will ack after executing)."""
+    def mark_command_pulled(
+        self,
+        command_id: str,
+        tenant_id: str = "default",
+        max_age: int = 300,
+        requeue_after: int = 60,
+    ) -> bool:
+        """Atomically release a pending/retryable command to an agent.
+
+        The age predicate closes the race between listing and marking: an
+        expired command can never become executable while a pull is in flight.
+        """
         conn = self._get_db()
         c = conn.cursor()
         try:
+            now = int(time.time())
             c.execute(
                 "UPDATE axe_agent_commands SET status='pulled', pulled_at=? "
-                "WHERE id=? AND tenant_id=?",
-                (int(time.time()), command_id, tenant_id),
+                "WHERE id=? AND tenant_id=? AND created_at>=? "
+                "AND (status='pending' OR "
+                "(status='pulled' AND ? - pulled_at > ?))",
+                (
+                    now,
+                    command_id,
+                    tenant_id,
+                    now - max(1, int(max_age)),
+                    now,
+                    max(1, int(requeue_after)),
+                ),
             )
             conn.commit()
             return c.rowcount > 0
         except Exception as e:
             log.warning("[agent-cmd] mark pulled failed: %s", e)
+            return False
+        finally:
+            conn.close()
+
+    def terminalize_agent_command(
+        self,
+        command_id: str,
+        tenant_id: str,
+        status: str,
+        reason: str,
+    ) -> bool:
+        """Move an undelivered command to an auditable terminal state."""
+        if status not in ("expired", "blocked", "failed"):
+            return False
+        conn = self._get_db()
+        c = conn.cursor()
+        try:
+            c.execute(
+                "UPDATE axe_agent_commands SET status=?, result=?, acked_at=? "
+                "WHERE id=? AND tenant_id=? AND status IN ('pending','pulled')",
+                (
+                    status,
+                    str(reason or "")[:2000],
+                    int(time.time()),
+                    command_id,
+                    tenant_id,
+                ),
+            )
+            conn.commit()
+            return c.rowcount > 0
+        except Exception as e:
+            log.warning("[agent-cmd] terminalize failed: %s", e)
             return False
         finally:
             conn.close()

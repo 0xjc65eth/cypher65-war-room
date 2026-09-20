@@ -3306,6 +3306,12 @@ agent_bp = Blueprint("agent", __name__, url_prefix="/api/agent")
 # Long-lived agent token: 1 year. The agent runs unattended on the home LAN;
 # a short-lived token would break polling until the user re-generates it.
 AGENT_TOKEN_TTL = 365 * 86400
+# Physical intent is short-lived. A command that was not delivered within
+# five minutes must be re-issued by the operator after state/policy recheck.
+AGENT_COMMAND_TTL_S = 5 * 60
+_AGENT_COMMAND_READY_STATES = frozenset(
+    {"ONLINE", "HASHING", "IDLE", "WARNING", "PAUSED"}
+)
 
 
 def _require_caller_identity_on_cloud(f):
@@ -3707,13 +3713,61 @@ def agent_pull_commands(agent_tenant_id: str = ""):
     Returns [] when nothing is pending."""
     cmds = _registry.pending_agent_commands(tenant_id=agent_tenant_id)
     pulled = []
+    now = int(time.time())
+    from services.safety_policy import can_execute_physical_command
+
     for c in cmds:
-        if _registry.mark_command_pulled(c["id"], tenant_id=agent_tenant_id):
-            # Resolve the device's LAN IP server-side. The agent executes
-            # commands on the HOME network — it needs the reachable IP, not
-            # the registry UUID. (The command's device_id alone was useless:
-            # the agent would try to open a TCP/HTTP socket to a UUID string.)
-            dev = _registry.get_device(c["device_id"], tenant_id=agent_tenant_id)
+        dev = _registry.get_device(c["device_id"], tenant_id=agent_tenant_id)
+        command = str(c.get("command") or "")
+        reason = ""
+        terminal_status = "blocked"
+        try:
+            age = now - int(c.get("created_at") or 0)
+        except (TypeError, ValueError, OverflowError):
+            age = AGENT_COMMAND_TTL_S + 1
+        if age < 0 or age > AGENT_COMMAND_TTL_S:
+            reason = "command_expired"
+            terminal_status = "expired"
+        elif not can_execute_physical_command():
+            reason = "deployment_policy_disabled"
+        elif not dev:
+            reason = "device_missing"
+        elif not int(dev.get("agent_managed", 0) or 0):
+            reason = "device_not_agent_managed"
+        elif (
+            str(dev.get("status") or "OFFLINE").upper()
+            not in _AGENT_COMMAND_READY_STATES
+        ):
+            reason = "device_not_ready"
+        elif not dev.get("ip_address"):
+            reason = "device_ip_missing"
+        elif command not in _caps_supported_commands(dev.get("capabilities")):
+            reason = "command_capability_missing"
+
+        if reason:
+            _registry.terminalize_agent_command(
+                c["id"], agent_tenant_id, terminal_status, reason
+            )
+            _log_audit(
+                agent_tenant_id,
+                "fleet.agent_command_blocked",
+                target=c.get("device_id") or "",
+                details={
+                    "command": command,
+                    "command_id": c.get("id"),
+                    "reason": reason,
+                    "terminal_status": terminal_status,
+                },
+            )
+            continue
+
+        if _registry.mark_command_pulled(
+            c["id"],
+            tenant_id=agent_tenant_id,
+            max_age=AGENT_COMMAND_TTL_S,
+        ):
+            # The agent executes commands on the HOME network and needs the
+            # LAN IP, not the registry UUID.
             pulled.append(
                 {
                     "id": c["id"],
@@ -3731,8 +3785,10 @@ def agent_pull_commands(agent_tenant_id: str = ""):
 def agent_ack_command(command_id: str, agent_tenant_id: str = ""):
     """Ack a command result after executing it locally.
     Body: {"success": bool, "result": str|dict}"""
-    data = request.get_json(silent=True) or {}
-    success = bool(data.get("success"))
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict) or type(data.get("success")) is not bool:
+        return jsonify({"error": "success must be a boolean"}), 400
+    success = data["success"]
     result = data.get("result") or ""
     if isinstance(result, (dict, list)):
         result = json.dumps(result)
