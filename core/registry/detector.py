@@ -20,16 +20,20 @@ import time
 
 import requests
 
+from axe_fleet.axeos_contract import (
+    AXEOS_STRONG_MARKERS,
+    looks_like_axeos as _looks_like_axeos,
+)
+
 log = logging.getLogger(__name__)
 
 # Timeout for detection attempts (seconds)
 DETECT_TIMEOUT = 3
 
-# ESP-Miner identity markers in /api/system/info. A bare HTTP 200 with a JSON
-# body is NOT evidence of a miner: routers, NAS panels, printers and captive
-# portals answer 200 (often with JSON) on any path. Only the ASIC-specific
-# keys below prove the payload came from AxeOS/ESP-Miner.
-_AXEOS_MARKERS = ("hashrate", "ASICModel", "boardVersion", "frequency")
+# ESP-Miner identity: strong markers only. ``frequency`` alone is a Wi-Fi
+# field on routers/HA/cameras and must NEVER classify a host as a miner.
+# Canonical list lives in axe_fleet.axeos_contract (Issue #643 / #655).
+_AXEOS_MARKERS = AXEOS_STRONG_MARKERS
 
 _SAFE_PRIVATE_NETWORKS = (
     ipaddress.ip_network("10.0.0.0/8"),
@@ -82,16 +86,7 @@ def resolve_private_target(host: str) -> str:
     return str(address)
 
 
-def _looks_like_axeos(data: object) -> bool:
-    """True when a /api/system/info payload carries ESP-Miner identity keys.
-
-    Fail-closed on purpose: an unrecognized 200 falls through to the Braiins
-    and cgminer probes instead of being reported as a miner we cannot read
-    telemetry from.
-    """
-    if not isinstance(data, dict) or not data:
-        return False
-    return any(key in data for key in _AXEOS_MARKERS)
+# _looks_like_axeos is imported from axe_fleet.axeos_contract.
 
 
 def _braiins_miner_stats(data: object) -> dict | None:
@@ -154,21 +149,21 @@ def detect_firmware(ip_address: str, timeout: float = DETECT_TIMEOUT) -> dict:
                     "reachable": True,
                 }
             )
-            # Detect capabilities from hashrate presence. ESP-Miner exposes
-            # the full command family (restart/blink/pause/resume/overclock/
-            # updatePool) on every firmware — declare them here so the fleet
-            # grid actually renders the buttons (P0 Bitaxe parity).
-            if data.get("hashrate") is not None:
-                result["capabilities"] = {
-                    "telemetry": True,
-                    "restart": True,
-                    "identify": True,
-                    "pause": True,
-                    "resume": True,
-                    "set_frequency": True,
-                    "update_pool": True,
-                }
-            if data.get("frequency") is not None:
+            # Official ESP-Miner uses hashRate (GH/s), not lowercase hashrate.
+            # Any validated AxeOS payload exposes the command family.
+            result["capabilities"] = {
+                "telemetry": True,
+                "restart": True,
+                "identify": True,
+                "pause": True,
+                "resume": True,
+                "set_frequency": True,
+                "update_pool": True,
+            }
+            if (
+                data.get("frequency") is not None
+                or data.get("actualFrequency") is not None
+            ):
                 result["capabilities"]["frequencyControl"] = True
             return result
     except (requests.ConnectionError, requests.Timeout, json.JSONDecodeError):

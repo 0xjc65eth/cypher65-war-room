@@ -42,30 +42,43 @@ class BitaxeAdapter(BaseAdapter):
 
             collected_at = int(time.time())
 
-            # Core metrics with multiple field-name fallbacks for compatibility
-            hashrate = self._safe_number(
-                (
-                    data.get("hashRate")
-                    if data.get("hashRate") is not None
-                    else data.get("hashrate")
-                ),
-                float,
-                0,
+            from axe_fleet.axeos_contract import (
+                axeos_rate_to_hs,
+                hashrate_hs_from_axeos,
             )
-            # Fase 5 · janelas de hashrate (AxeOS / ESP-Miner): hashRate1m,
-            # hashRate10m, hashRate1hr. Sem valor → None (a serialização
-            # preenche NOT AVAILABLE). NOTA: hashRate5m NÃO é promovido a
-            # hashRate10m — Honest Telemetry: um janela de 5m não é 10m.
-            hashrate_1m = self._safe_number(data.get("hashRate1m"), float, None)
-            hashrate_10m = self._safe_number(data.get("hashRate10m"), float, None)
-            hashrate_1h = self._safe_number(
+
+            # Official ESP-Miner ``hashRate`` is GH/s; convert to H/s.
+            hashrate = hashrate_hs_from_axeos(data)
+            if hashrate is None:
+                hashrate = 0
+            # Fase 5 · janelas: official hashRate_1m (GH/s) + legacy hashRate1m.
+            hashrate_1m = axeos_rate_to_hs(
                 (
-                    data.get("hashRate1hr")
-                    if data.get("hashRate1hr") is not None
-                    else data.get("hashRate1h")
+                    data.get("hashRate_1m")
+                    if data.get("hashRate_1m") is not None
+                    else data.get("hashRate1m")
                 ),
-                float,
-                None,
+                camel_hashrate=True,
+            )
+            hashrate_10m = axeos_rate_to_hs(
+                (
+                    data.get("hashRate_10m")
+                    if data.get("hashRate_10m") is not None
+                    else data.get("hashRate10m")
+                ),
+                camel_hashrate=True,
+            )
+            hashrate_1h = axeos_rate_to_hs(
+                (
+                    data.get("hashRate_1h")
+                    if data.get("hashRate_1h") is not None
+                    else (
+                        data.get("hashRate1hr")
+                        if data.get("hashRate1hr") is not None
+                        else data.get("hashRate1h")
+                    )
+                ),
+                camel_hashrate=True,
             )
             temperature = self._safe_number(
                 (

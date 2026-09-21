@@ -259,7 +259,7 @@ def probe_host(ip: str, timeout: float = HTTP_PROBE_TIMEOUT) -> dict:
     # ── Unified detection via core/registry/detector ───────────────────
     from core.registry.detector import detect_firmware
 
-    fw = detect_firmware(ip)
+    fw = detect_firmware(ip, timeout=timeout)
     if not fw or not fw.get("reachable"):
         return None
 
@@ -444,21 +444,28 @@ def diagnose_host(ip: str, timeout: float = HTTP_PROBE_TIMEOUT) -> dict:
 
         conn = AxeOSConnector(ip, timeout=timeout)
         info = conn.fetch_info()
-        if isinstance(info, dict):
+        from axe_fleet.axeos_contract import (
+            extract_axeos_telemetry,
+            looks_like_axeos,
+        )
+
+        if isinstance(info, dict) and looks_like_axeos(info):
+            tel = extract_axeos_telemetry(info)
             result["bitaxe_http"] = True
             result["reachable"] = True
             result["protocol"] = "bitaxe"
             result["device_info"] = {
-                "model": str(info.get("model") or info.get("board") or "Bitaxe"),
+                "model": str(
+                    tel.get("model")
+                    or info.get("model")
+                    or info.get("board")
+                    or "Bitaxe"
+                ),
                 "hostname": str(info.get("hostname", "")),
                 "firmware": str(info.get("firmware", "")),
                 "version": str(info.get("version", "")),
-                "hashrate_hs": 0,
+                "hashrate_hs": tel.get("hashrate_hs") or 0,
             }
-            try:
-                result["device_info"]["hashrate_hs"] = int(info.get("hashrate") or 0)
-            except (TypeError, ValueError):
-                pass
     except Exception as e:  # noqa: BLE001 — probe must never raise
         log.debug("[scan] diagnose bitaxe %s failed: %s", ip, e)
 

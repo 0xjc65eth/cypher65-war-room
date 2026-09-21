@@ -64,11 +64,27 @@ AXEOS_PORT = int(os.environ.get("CYPHER65_AXEOS_PORT") or 80)
 CGMINER_PORT = int(os.environ.get("CYPHER65_CGMINER_PORT") or 4028)
 BRAIINS_REST_PORT = int(os.environ.get("CYPHER65_BRAIINS_REST_PORT") or 50051)
 
-# ESP-Miner identity markers in /api/system/info. A bare HTTP 200 with a JSON
-# body is NOT a miner: routers, NAS panels and captive portals answer 200
-# (often with JSON) on any path. Only these ASIC-specific keys prove the
-# payload came from AxeOS/ESP-Miner.
-_AXEOS_MARKERS = ("hashrate", "ASICModel", "boardVersion", "frequency")
+# ESP-Miner identity: strong markers only. ``frequency`` alone is a Wi-Fi
+# field on routers/HA/cameras and must NEVER classify a host as a miner.
+# Mirror of axe_fleet.axeos_contract.AXEOS_STRONG_MARKERS (stdlib-only agent).
+_AXEOS_MARKERS = (
+    "ASICModel",
+    "boardVersion",
+    "hashRate",
+    "hashrate",
+    "expectedHashrate",
+    "bestDiff",
+    "sharesAccepted",
+)
+
+try:
+    from axe_fleet.axeos_contract import (  # type: ignore
+        extract_axeos_telemetry as _extract_axeos_telemetry,
+        looks_like_axeos as _looks_like_axeos_payload,
+    )
+except ImportError:  # standalone installer: agent.py only
+    _extract_axeos_telemetry = None
+    _looks_like_axeos_payload = None
 
 # cgminer-family framing: most firmwares terminate JSON with \x00, some
 # (Avalon) wrap frames in ~ (\x7e) tildes. Mirror of the server scanner's
@@ -126,6 +142,30 @@ def _post(path, payload, timeout=10.0):
         log_failures=True,
         timeout=timeout,
     )
+
+
+def _post_retry(path, payload, timeout=10.0, attempts=4):
+    """Retry transient cloud failures. Never retry 401 (bad token) or
+    403/410 (plan cap / tombstone) — those need operator action."""
+    delay = 1.0
+    last = (0, {})
+    for attempt in range(attempts):
+        code, resp = _post(path, payload, timeout=timeout)
+        if code in (200, 201):
+            return code, resp
+        if code in (401, 403, 410):
+            if code == 401:
+                log.error(
+                    "[FLEET_AUTH] HTTP 401 — token rejected; generate a new "
+                    "token in Fleet → CONNECT AGENT"
+                )
+            return code, resp
+        last = (code, resp)
+        if attempt < attempts - 1:
+            log.warning("[FLEET_RETRY] %s HTTP %s — retry in %.0fs", path, code, delay)
+            time.sleep(delay)
+            delay = min(delay * 2, 30)
+    return last
 
 
 def _get_json(url, timeout=HTTP_TIMEOUT):
@@ -219,6 +259,57 @@ def _extract_json_lenient(raw):
         return None
 
 
+def _probe_axeos_payload(info):
+    """True when a parsed /api/system/info body is ESP-Miner evidence."""
+    if _looks_like_axeos_payload is not None:
+        return bool(_looks_like_axeos_payload(info))
+    if not isinstance(info, dict) or not info:
+        return False
+    return any(key in info for key in _AXEOS_MARKERS)
+
+
+def _identity_from_axeos(ip, info):
+    """Discovery dict from a validated ESP-Miner info payload."""
+    tel = {}
+    if _extract_axeos_telemetry is not None:
+        try:
+            tel = _extract_axeos_telemetry(info) or {}
+        except Exception:
+            tel = {}
+    hr = tel.get("hashrate_hs")
+    if hr is None:
+        raw = info.get("hashRate")
+        camel = raw is not None
+        if raw is None:
+            raw = info.get("hashrate")
+        try:
+            n = float(raw)
+        except (TypeError, ValueError):
+            n = None
+        if n is None:
+            hr = 0
+        elif camel and 0 < abs(n) < 1e6:
+            hr = int(n * 1e9)
+        else:
+            hr = int(n or 0)
+    return {
+        "ip": ip,
+        "type": "bitaxe",
+        "model": str(
+            tel.get("model")
+            or info.get("model")
+            or info.get("board")
+            or info.get("ASICModel")
+            or "Bitaxe"
+        ),
+        "firmware": str(tel.get("firmware") or info.get("firmware") or ""),
+        "version": str(tel.get("version") or info.get("version") or ""),
+        "hostname": str(tel.get("hostname") or info.get("hostname") or ""),
+        "mac": str(tel.get("mac") or info.get("macAddr") or info.get("mac") or ""),
+        "hashrate_hs": int(hr or 0),
+    }
+
+
 def _probe_axeos(ip):
     """AxeOS/ESP-Miner HTTP :80 — returns info dict or None.
 
@@ -227,9 +318,7 @@ def _probe_axeos(ip):
     telemetry forever, so an unrecognized payload is rejected outright.
     """
     info = _get_json(f"http://{ip}:{AXEOS_PORT}/api/system/info")
-    if not isinstance(info, dict) or not info:
-        return None
-    if not any(key in info for key in _AXEOS_MARKERS):
+    if not _probe_axeos_payload(info):
         return None
     return info
 
@@ -297,20 +386,7 @@ def _probe_host(ip):
     """
     info = _probe_axeos(ip)
     if isinstance(info, dict):
-        try:
-            hr = int(info.get("hashrate") or 0)
-        except (TypeError, ValueError):
-            hr = 0
-        return {
-            "ip": ip,
-            "type": "bitaxe",
-            "model": str(info.get("model") or info.get("board") or "Bitaxe"),
-            "firmware": str(info.get("firmware", "")),
-            "version": str(info.get("version", "")),
-            "hostname": str(info.get("hostname", "")),
-            "mac": str(info.get("mac", "")),
-            "hashrate_hs": hr,
-        }
+        return _identity_from_axeos(ip, info)
     rest = _probe_braiins_rest(ip)
     if isinstance(rest, dict):
         miner = rest.get("miner_stats") or {}
@@ -363,23 +439,47 @@ def _probe_host(ip):
 def scan_lan():
     """Scan the configured subnet(s) and return discovered devices."""
     hosts = []
+    subnets = [SCAN_CIDR] if SCAN_CIDR else _default_subnets()
+    scan_id = f"{int(time.time())}-{os.getpid()}"
     if EXPLICIT_DEVICES:
         hosts = list(EXPLICIT_DEVICES)
+        subnets = ["explicit"]
     else:
-        for cidr in [SCAN_CIDR] if SCAN_CIDR else _default_subnets():
+        for cidr in subnets:
             hosts += _expand_cidr(cidr)
     found = []
+    log.info(
+        "[FLEET_SCAN] scan_id=%s subnet=%s hosts=%s",
+        scan_id,
+        ",".join(subnets) or "none",
+        len(hosts),
+    )
     if not hosts:
+        log.warning("[FLEET_SCAN] scan_id=%s result=NO_LAN_INTERFACE", scan_id)
         return found
     with ThreadPoolExecutor(max_workers=min(SCAN_WORKERS, len(hosts))) as ex:
         futs = {ex.submit(_probe_host, ip): ip for ip in hosts}
         for fut in as_completed(futs):
+            ip = futs[fut]
             try:
                 r = fut.result()
             except Exception:
                 r = None
             if r:
                 found.append(r)
+                log.info(
+                    "[FLEET_DISCOVERY] scan_id=%s ip=%s protocol=%s model=%s result=FOUND",
+                    scan_id,
+                    r.get("ip") or ip,
+                    r.get("type"),
+                    r.get("model"),
+                )
+    log.info(
+        "[FLEET_SCAN] scan_id=%s hosts=%s miners=%s",
+        scan_id,
+        len(hosts),
+        len(found),
+    )
     return found
 
 
@@ -464,37 +564,36 @@ def _poll_telemetry(dev):
         info = _probe_axeos(ip)
         if not isinstance(info, dict):
             return {}
-
-        def _num(v):
+        if _extract_axeos_telemetry is not None:
             try:
-                return float(v)
-            except (TypeError, ValueError):
-                return None
-
-        hr = _num(info.get("hashrate"))
-        power = _num(info.get("power"))
-        tel = {
-            "hashrate_hs": int(hr or 0),
-            "temperature": _num(info.get("temp")) or _num(info.get("temperature")),
-            "fan_rpm": _num(info.get("fanRPM")) or _num(info.get("fanrpm")),
-            "fan_speed": _num(info.get("fanSpeed")),
-            "power_watts": power,
-            "voltage_mv": _num(info.get("coreVoltage")),
-            "frequency_mhz": _num(info.get("frequency")),
+                tel = _extract_axeos_telemetry(info)
+            except Exception:
+                tel = {}
+            if tel:
+                log.info(
+                    "[FLEET_TELEMETRY] ip=%s hashrate=%s temp=%s accepted=%s "
+                    "rejected=%s best_diff=%s",
+                    ip,
+                    tel.get("hashrate_hs"),
+                    tel.get("temperature"),
+                    tel.get("shares_accepted"),
+                    tel.get("shares_rejected"),
+                    tel.get("best_diff"),
+                )
+                return tel
+        ident = _identity_from_axeos(ip, info)
+        return {
+            "hashrate_hs": ident.get("hashrate_hs"),
+            "temperature": info.get("temp"),
             "best_diff": _best_diff(info.get("bestDiff")),
-            "shares_accepted": int(info.get("sharesAccepted") or 0),
-            "shares_rejected": int(info.get("sharesRejected") or 0),
-            "uptime_seconds": int(info.get("uptime") or 0),
-            "pool_url": str(info.get("pool") or info.get("stratumURL") or ""),
-            "pool_user": str(info.get("poolUser") or ""),
-            "wifi_rssi": _num(info.get("wifiRSSI")),
-            "model": str(info.get("model") or "Bitaxe"),
-            # Issue #13: strict `is True` — a stringy "false" must never pause.
+            "shares_accepted": info.get("sharesAccepted"),
+            "shares_rejected": info.get("sharesRejected"),
+            "uptime_seconds": info.get("uptimeSeconds") or info.get("uptime"),
+            "pool_url": str(info.get("stratumURL") or info.get("pool") or ""),
+            "pool_user": str(info.get("stratumUser") or info.get("poolUser") or ""),
+            "model": ident.get("model") or "Bitaxe",
             "mining_paused": info.get("miningPaused") is True,
         }
-        if hr and power and power > 0:
-            tel["efficiency_jth"] = round(power / (hr / 1e12), 2)
-        return tel
     if dev.get("type") == "braiins":
         # Braiins OS+ REST carries the full telemetry. When the REST API does
         # not answer (older firmware, /api/v1 disabled) fall through to the
@@ -576,6 +675,20 @@ def _exec_command(cmd, known=None):
     """
     dev_ip = cmd.get("ip_address") or cmd.get("device_ip") or cmd.get("device_id")
     name = cmd.get("command")
+    if name == "probe":
+        target = (cmd.get("params") or {}).get("ip") or dev_ip
+        if not target or target == "_probe":
+            return False, "probe ip missing"
+        probed = _probe_host(target)
+        if not probed:
+            return False, "not a miner"
+        if known is not None:
+            known[target] = probed
+        code, resp = _post_retry("/api/agent/register", {"devices": [probed]})
+        if code in (200, 201):
+            log.info("[FLEET_REGISTER] ip=%s result=SUCCESS via probe", target)
+            return True, f"registered {target}"
+        return False, f"register HTTP {code}"
     if name in ("restart", "identify", "pause", "resume"):
         # Resolve device type from the agent's own discovery map when known
         # (the server does not persist type; the agent probed it directly).
@@ -636,7 +749,7 @@ def main():
     log.info("discovered %d device(s)", len(discovered))
     blocked_ips = set()
     if discovered:
-        code, resp = _post("/api/agent/register", {"devices": discovered})
+        code, resp = _post_retry("/api/agent/register", {"devices": discovered})
         if code in (200, 201):
             log.info("registered %s", resp.get("count"))
             blocked = resp.get("blocked") or []
@@ -687,12 +800,13 @@ def main():
     while True:
         t0 = time.time()
         # 2 · Poll each known device + push telemetry.
-        for ip, dev in known.items():
+        drop = []
+        for ip, dev in list(known.items()):
             tel = _poll_telemetry(dev)
             # Push UNCONDITIONALLY: `telemetry: {}` is legal and keeps the
             # server's last_seen/status fresh, so a device that answered
             # nothing (firewall, reboot, poll failure) still shows as
-            # present+IDLE instead of looking dead forever. Empty heartbeats
+            # present instead of looking dead forever. Empty heartbeats
             # use a shorter timeout so unreachable devices can't stall the
             # poll loop on a cloud hiccup.
             code, resp = _post(
@@ -700,12 +814,21 @@ def main():
                 {"ip": ip, "telemetry": tel},
                 timeout=3.0 if not tel else 10.0,
             )
+            if code in (0, 429, 500, 502, 503):
+                code, resp = _post_retry(
+                    "/api/agent/telemetry",
+                    {"ip": ip, "telemetry": tel},
+                    timeout=3.0 if not tel else 10.0,
+                    attempts=3,
+                )
             if code == 410 and resp.get("removed"):
                 # Operator removed this device on the dashboard — drop it from
                 # the poll set so we stop pushing a device that can never come
                 # back through the agent path.
                 log.warning("device %s removed by operator on dashboard — dropping", ip)
-                known.pop(ip, None)
+                drop.append(ip)
+        for ip in drop:
+            known.pop(ip, None)
         # 3 · Pull queued commands and execute them locally.
         code, resp = _post("/api/agent/commands/pull", {})
         if code == 200:
@@ -730,7 +853,7 @@ def main():
             fresh = scan_lan()
             new = [d for d in fresh if d["ip"] not in known]
             if new:
-                code, resp = _post("/api/agent/register", {"devices": new})
+                code, resp = _post_retry("/api/agent/register", {"devices": new})
                 log.info(
                     "registered %d new device(s)",
                     code in (200, 201) and resp.get("count") or 0,

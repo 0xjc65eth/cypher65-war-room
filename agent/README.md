@@ -25,7 +25,7 @@ O token é um JWT scoped ao SEU tenant — não compartilhe.
 ## 2 · Rodar com Docker (recomendado)
 
 ```bash
-docker run -d --name cypher65-agent --network host \
+docker run -d --restart unless-stopped --name cypher65-agent --network host \
   -e CYPHER65_SERVER_URL=https://SEU-APP.onrender.com \
   -e CYPHER65_AGENT_TOKEN=SEU_TOKEN \
   -e CYPHER65_POLL_INTERVAL=30 \

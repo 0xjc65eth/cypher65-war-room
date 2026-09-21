@@ -231,13 +231,23 @@ class DeviceRegistry:
         try:
             conn = AxeOSConnector(ip_address)
             info = conn.fetch_info()
-            device["model"] = str(info.get("model") or info.get("board", ""))
+            from .axeos_contract import extract_axeos_telemetry, looks_like_axeos
+            from .models import derive_device_status
+
+            if not looks_like_axeos(info):
+                raise AxeOSConnectorError("payload is not ESP-Miner")
+            tel = extract_axeos_telemetry(info)
+            device["model"] = str(
+                tel.get("model") or info.get("model") or info.get("board", "")
+            )
             device["firmware"] = str(info.get("firmware", ""))
             device["firmware_version"] = str(info.get("version", ""))
             device["hostname"] = str(info.get("hostname", ""))
-            device["mac_address"] = str(info.get("mac", ""))
+            device["mac_address"] = str(
+                tel.get("mac") or info.get("macAddr") or info.get("mac") or ""
+            )
             device["last_seen"] = int(time.time())
-            device["status"] = STATUS_ONLINE
+            device["status"] = derive_device_status(tel)
             device["capabilities"] = conn.detect_capabilities()
         except AxeOSConnectorError:
             device["status"] = STATUS_OFFLINE
@@ -432,6 +442,27 @@ class DeviceRegistry:
         conn.close()
         return self._row_to_device(r) if r else {}
 
+    def get_device_by_mac(self, mac_address: str, tenant_id: str = "") -> dict:
+        """Identity by MAC when DHCP moved the IP. Tenant-scoped."""
+        mac = str(mac_address or "").strip()
+        if not mac:
+            return {}
+        conn = self._get_db()
+        c = conn.cursor()
+        if tenant_id:
+            c.execute(
+                f"SELECT * FROM axe_devices WHERE mac_address=? AND tenant_id=? AND {self._tombstone_query()}",  # nosec B608
+                (mac, tenant_id),
+            )
+        else:
+            c.execute(
+                f"SELECT * FROM axe_devices WHERE mac_address=? AND {self._tombstone_query()}",  # nosec B608
+                (mac,),
+            )
+        r = c.fetchone()
+        conn.close()
+        return self._row_to_device(r) if r else {}
+
     def get_device_by_ip(self, ip_address: str, tenant_id: str = "") -> dict:
         """Get a device by IP address, scoped to tenant if provided.
         Tombstoned rows are never returned."""
@@ -481,6 +512,9 @@ class DeviceRegistry:
             )
             return {}
         existing = self.get_device_by_ip(ip_address, tenant_id=tenant_id)
+        mac = str((info or {}).get("mac") or "").strip()
+        if not existing and mac:
+            existing = self.get_device_by_mac(mac, tenant_id=tenant_id)
         if existing:
             updates = {
                 "model": str(info.get("model") or existing.get("model", "")),
@@ -489,9 +523,12 @@ class DeviceRegistry:
                     info.get("version") or existing.get("firmware_version", "")
                 ),
                 "hostname": str(info.get("hostname") or existing.get("hostname", "")),
+                "ip_address": ip_address,
                 "agent_managed": 1,
                 "last_seen": now,
             }
+            if mac:
+                updates["mac_address"] = mac
             # Recompute capabilities whenever the agent reports a type or
             # firmware — a device first seen via telemetry-only upsert (no
             # type) must still get honest caps once register carries it.
@@ -585,7 +622,7 @@ class DeviceRegistry:
         payload["device_id"] = device_id
         self.save_telemetry(device_id, payload, tenant_id=tenant_id)
         has_measurements = any(
-            k in payload
+            payload.get(k) not in (None, "")
             for k in ("hashrate_hs", "temperature", "shares_accepted", "best_diff")
         )
         if has_measurements:
