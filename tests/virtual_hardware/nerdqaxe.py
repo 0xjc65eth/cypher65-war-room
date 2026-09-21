@@ -60,28 +60,11 @@ class VirtualNerdQaxe:
                     return
                 if device.restart_count:
                     device.uptime_seconds = 3
+                from axe_fleet.axeos_contract import official_esp_miner_info
+
                 self._json(
                     200,
-                    {
-                        # Canonical AxeOS/ESP-Miner contract (mirrors the
-                        # fixtures in test_axe_fleet_scanner.py): lowercase
-                        # `hashrate`, `uptime`, plus `bestDiff`. The old
-                        # camelCase `hashRate`/`uptimeSeconds` shape matched
-                        # NO real firmware and the missing `bestDiff` meant
-                        # the P Share path was never exercised end-to-end
-                        # (Fleet audit, Issue #627).
-                        "model": "NerdQaxe++",
-                        "firmware": "AxeOS 2.4",
-                        "version": "2.4.0",
-                        "hostname": "virtual-nerdqaxe",
-                        "hashrate": 4800000000000,
-                        "bestDiff": 0,
-                        "temp": 58.0,
-                        "uptime": device.uptime_seconds,
-                        "sharesAccepted": 42,
-                        "sharesRejected": 0,
-                        "frequency": 550,
-                    },
+                    official_esp_miner_info(uptimeSeconds=device.uptime_seconds),
                 )
 
         self._server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)

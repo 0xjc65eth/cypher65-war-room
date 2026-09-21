@@ -377,7 +377,8 @@
     // Group devices by status
     const onlineDevs = devices.filter(d => d.status === 'ONLINE' || d.status === 'HASHING');
     const warningDevs = devices.filter(d => d.status === 'WARNING');
-    const offlineDevs = devices.filter(d => d.status !== 'ONLINE' && d.status !== 'HASHING' && d.status !== 'WARNING');
+    const staleDevs = devices.filter(d => d.status === 'STALE');
+    const offlineDevs = devices.filter(d => d.status !== 'ONLINE' && d.status !== 'HASHING' && d.status !== 'WARNING' && d.status !== 'STALE');
 
     if (!devices.length) {
       // BUG A (Issue #627): the rendered empty state ships a REAL button and
@@ -407,6 +408,11 @@
     if (warningDevs.length) {
       html += '<div class="axe-group-header"><strong>' + warningDevs.length + '</strong> WARNING</div>';
       html += warningDevs.map(d => _renderAxeCard(d, maxHr)).join('');
+    }
+
+    if (staleDevs.length) {
+      html += '<div class="axe-group-header"><strong>' + staleDevs.length + '</strong> STALE</div>';
+      html += staleDevs.map(d => _renderAxeCard(d, maxHr)).join('');
     }
 
     // Offline group
@@ -514,8 +520,9 @@
     const status = d.status || 'OFFLINE';
     const isOnline = status === 'ONLINE' || status === 'HASHING';
     const isWarning = status === 'WARNING';
-    const isOffline = !isOnline && !isWarning;
-    const statusClass = isOnline ? 'online' : isWarning ? 'warning' : 'offline';
+    const isStale = status === 'STALE';
+    const isOffline = !isOnline && !isWarning && !isStale;
+    const statusClass = isOnline ? 'online' : isWarning ? 'warning' : isStale ? 'warning' : 'offline';
     const hrStr = tel.hashrate_str || '—';
 
     // Health score ring
@@ -539,7 +546,8 @@
     const hr1h = fmt.num(tel.hashrate_1h) ? fmt.hashrate(tel.hashrate_1h) : _NA;
     const temp = fmt.num(tel.temperature) ? tel.temperature.toFixed(0) + '°C' : '—';
     const bestDiff = tel.best_diff ? fmt.diff(tel.best_diff) : '—';
-    const shares = tel.shares_accepted != null ? tel.shares_accepted.toLocaleString() : '—';
+    const shares = tel.shares_accepted != null ? Number(tel.shares_accepted).toLocaleString() : '—';
+    const worker = tel.pool_user ? String(tel.pool_user) : '—';
     const uptime = tel.uptime_str || '—';
     const freq = tel.frequency_mhz ? tel.frequency_mhz + ' MHz' : '—';
     const hw = tel.hw_error_pct != null ? tel.hw_error_pct.toFixed(2) + '%' : '—';
@@ -594,6 +602,8 @@
         '<div class="axe-card__stat"><div class="lbl">EFF</div><div class="val cyan">' + eff + '</div></div>' +
         '<div class="axe-card__stat"><div class="lbl">POWER</div><div class="val cyan">' + power + '</div></div>' +
         '<div class="axe-card__stat"><div class="lbl">DIFF</div><div class="val gold">' + bestDiff + '</div></div>' +
+        '<div class="axe-card__stat"><div class="lbl">SHARES</div><div class="val cyan">' + shares + '</div></div>' +
+        '<div class="axe-card__stat"><div class="lbl">WORKER</div><div class="val cyan">' + escapeHtml(worker) + '</div></div>' +
         '<div class="axe-card__stat"><div class="lbl">UPTIME</div><div class="val cyan">' + uptime + '</div></div>' +
         '<div class="axe-card__stat"><div class="lbl">PING</div><div class="val ' + pingClass + '">' + pingStr + '</div></div>' +
         '<div class="axe-card__stat"><div class="lbl">POOL</div><div class="val cyan" title="' + escapeHtml(tel.pool_url || tel.stratum_status || '') + '">' + escapeHtml(poolStr) + '</div></div>' +
@@ -1379,7 +1389,7 @@
       }
       if (dockerPre) {
         dockerPre.textContent =
-          'docker run -d --name cypher65-agent --network host \\\n' +
+          'docker run -d --restart unless-stopped --name cypher65-agent --network host \\\n' +
           '  -e CYPHER65_SERVER_URL=' + origin + ' \\n' +
           '  -e CYPHER65_AGENT_TOKEN=' + token + ' \\n' +
           '  -e CYPHER65_POLL_INTERVAL=30 \\n' +
@@ -1521,6 +1531,13 @@
         body: JSON.stringify({ ip_address: ip, name: name || '' })
       });
       const data = await r.json();
+      if (r.status === 202 && data && data.queued) {
+        showToast('info', data.message || 'Queued for local agent');
+        return true;
+      }
+      if (!r.ok && data && data.message) {
+        showToast('error', data.message);
+      }
       return r.ok;
     } catch (e) {
       return false;

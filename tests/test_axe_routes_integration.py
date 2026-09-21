@@ -5,11 +5,14 @@ Tests:
 - GET  /api/axe-fleet/remote/status      — Tailscale remote access status (unit-tested)
 - POST /api/axe-fleet/miners/{id}/power-cycle  — validates request structure
 """
+
 import json
+import time
 from unittest.mock import patch, MagicMock
 import pytest
 
 import app as _app_module
+
 app = _app_module.app
 
 
@@ -24,6 +27,7 @@ def client():
 # ══════════════════════════════════════════════════════════════════════════
 #  GET /api/axe-fleet/remote/status
 # ══════════════════════════════════════════════════════════════════════════
+
 
 class TestRemoteStatus:
     """Tests for GET /api/axe-fleet/remote/status."""
@@ -87,6 +91,7 @@ class TestRemoteStatus:
 #  so the REMOTE ACCESS tutorial sets expectations before setup.
 # ══════════════════════════════════════════════════════════════════════════
 
+
 class TestRemoteOnboarding:
     """Tests for GET /api/axe-fleet/remote/onboarding — G3 scope/limitations."""
 
@@ -136,7 +141,9 @@ class TestRemoteOnboarding:
         resp = client.get(self.ENDPOINT)
         data = resp.get_json()
         assert "steps" in data and len(data["steps"]) >= 4
-        assert all("id" in s and "label" in s and "instructions" in s for s in data["steps"])
+        assert all(
+            "id" in s and "label" in s and "instructions" in s for s in data["steps"]
+        )
         assert "progress" in data
 
 
@@ -146,6 +153,7 @@ class TestRemoteOnboarding:
 #  The route uses _registry which is set during app init. For deeper testing
 #  of the power-cycle logic itself, see test_axe_routes_remote.py (unit tests).
 # ══════════════════════════════════════════════════════════════════════════
+
 
 class TestMinerPowerCycle:
     """Tests for POST /api/axe-fleet/miners/{device_id}/power-cycle."""
@@ -194,6 +202,7 @@ class TestMinerPowerCycle:
 #  GET /api/axe-fleet/devices/{id}/telemetry
 # ══════════════════════════════════════════════════════════════════════════
 
+
 class TestDeviceTelemetry:
     """Tests for GET /api/axe-fleet/devices/<device_id>/telemetry."""
 
@@ -211,22 +220,28 @@ class TestDeviceTelemetry:
             "status": "ONLINE",
         }
         mock_registry.get_recent_telemetry.return_value = [
-            {"ts": 1700000000, "payload": {
-                "hashrate_hs": 5200000000000,
-                "temperature": 62,
-                "fan_speed": 80,
-                "power_watts": 42,
-                "efficiency_jth": 8.08,
-                "uptime_seconds": 259200,
-            }},
-            {"ts": 1699999700, "payload": {
-                "hashrate_hs": 5100000000000,
-                "temperature": 60,
-                "fan_speed": 78,
-                "power_watts": 41,
-                "efficiency_jth": 8.04,
-                "uptime_seconds": 258900,
-            }},
+            {
+                "ts": 1700000000,
+                "payload": {
+                    "hashrate_hs": 5200000000000,
+                    "temperature": 62,
+                    "fan_speed": 80,
+                    "power_watts": 42,
+                    "efficiency_jth": 8.08,
+                    "uptime_seconds": 259200,
+                },
+            },
+            {
+                "ts": 1699999700,
+                "payload": {
+                    "hashrate_hs": 5100000000000,
+                    "temperature": 60,
+                    "fan_speed": 78,
+                    "power_watts": 41,
+                    "efficiency_jth": 8.04,
+                    "uptime_seconds": 258900,
+                },
+            },
         ]
 
         with patch("axe_fleet.routes._registry", mock_registry):
@@ -255,7 +270,13 @@ class TestDeviceTelemetry:
     def test_respects_limit_param(self, client):
         """Should pass limit query param to get_recent_telemetry."""
         mock_registry = MagicMock()
-        mock_registry.get_device.return_value = {"id": self.DEVICE_ID, "name": "T", "model": "Bitaxe", "ip_address": "192.168.1.100", "status": "ONLINE"}
+        mock_registry.get_device.return_value = {
+            "id": self.DEVICE_ID,
+            "name": "T",
+            "model": "Bitaxe",
+            "ip_address": "192.168.1.100",
+            "status": "ONLINE",
+        }
         mock_registry.get_recent_telemetry.return_value = []
 
         with patch("axe_fleet.routes._registry", mock_registry):
@@ -267,7 +288,13 @@ class TestDeviceTelemetry:
     def test_returns_json_content_type(self, client):
         """Content-Type should be application/json."""
         mock_registry = MagicMock()
-        mock_registry.get_device.return_value = {"id": self.DEVICE_ID, "name": "T", "model": "Bitaxe", "ip_address": "192.168.1.100", "status": "ONLINE"}
+        mock_registry.get_device.return_value = {
+            "id": self.DEVICE_ID,
+            "name": "T",
+            "model": "Bitaxe",
+            "ip_address": "192.168.1.100",
+            "status": "ONLINE",
+        }
         mock_registry.get_recent_telemetry.return_value = []
 
         with patch("axe_fleet.routes._registry", mock_registry):
@@ -278,6 +305,7 @@ class TestDeviceTelemetry:
 # ══════════════════════════════════════════════════════════════════════════
 #  GET /api/axe-fleet/devices/{id}/chart-data
 # ══════════════════════════════════════════════════════════════════════════
+
 
 class TestDeviceChartData:
     """Tests for GET /api/axe-fleet/devices/<device_id>/chart-data."""
@@ -339,7 +367,10 @@ class TestDeviceChartData:
     def test_returns_device_name_in_response(self, client):
         """Should include device_name in response."""
         mock_registry = MagicMock()
-        mock_registry.get_device.return_value = {"id": self.DEVICE_ID, "name": "Chart Miner"}
+        mock_registry.get_device.return_value = {
+            "id": self.DEVICE_ID,
+            "name": "Chart Miner",
+        }
         mock_registry.get_telemetry_chart_data.return_value = {"ts": [], "hashrate": []}
 
         with patch("axe_fleet.routes._registry", mock_registry):
@@ -351,6 +382,7 @@ class TestDeviceChartData:
 # ══════════════════════════════════════════════════════════════════════════
 #  GET /api/axe-fleet/devices/{id}/health
 # ══════════════════════════════════════════════════════════════════════════
+
 
 class TestDeviceHealth:
     """Tests for GET /api/axe-fleet/devices/<device_id>/health."""
@@ -370,19 +402,22 @@ class TestDeviceHealth:
             "last_seen": 1700000000,
         }
         mock_registry.get_recent_telemetry.return_value = [
-            {"ts": 1700000000, "payload": {
-                "hashrate_hs": 5200000000000,
-                "temperature": 62,
-                "fan_speed": 80,
-                "fan_rpm": 4200,
-                "power_watts": 42,
-                "efficiency_jth": 8.08,
-                "hw_error_pct": 0.3,
-                "shares_accepted": 15823,
-                "shares_rejected": 47,
-                "uptime_seconds": 259200,
-                "best_diff": "42.8T",
-            }},
+            {
+                "ts": 1700000000,
+                "payload": {
+                    "hashrate_hs": 5200000000000,
+                    "temperature": 62,
+                    "fan_speed": 80,
+                    "fan_rpm": 4200,
+                    "power_watts": 42,
+                    "efficiency_jth": 8.08,
+                    "hw_error_pct": 0.3,
+                    "shares_accepted": 15823,
+                    "shares_rejected": 47,
+                    "uptime_seconds": 259200,
+                    "best_diff": "42.8T",
+                },
+            },
         ]
 
         with patch("axe_fleet.routes._registry", mock_registry):
@@ -411,15 +446,20 @@ class TestDeviceHealth:
         """High temperature (>=80) should appear in active_issues."""
         mock_registry = MagicMock()
         mock_registry.get_device.return_value = {
-            "id": self.DEVICE_ID, "name": "Hot Miner",
-            "status": "WARNING", "last_seen": 1700000000,
+            "id": self.DEVICE_ID,
+            "name": "Hot Miner",
+            "status": "WARNING",
+            "last_seen": 1700000000,
         }
         mock_registry.get_recent_telemetry.return_value = [
-            {"ts": 1700000000, "payload": {
-                "hashrate_hs": 5000000000000,
-                "temperature": 82,
-                "hw_error_pct": 0.5,
-            }},
+            {
+                "ts": 1700000000,
+                "payload": {
+                    "hashrate_hs": 5000000000000,
+                    "temperature": 82,
+                    "hw_error_pct": 0.5,
+                },
+            },
         ]
 
         with patch("axe_fleet.routes._registry", mock_registry):
@@ -433,15 +473,20 @@ class TestDeviceHealth:
         """Zero hashrate should appear in active_issues."""
         mock_registry = MagicMock()
         mock_registry.get_device.return_value = {
-            "id": self.DEVICE_ID, "name": "Dead Miner",
-            "status": "OFFLINE", "last_seen": 1700000000,
+            "id": self.DEVICE_ID,
+            "name": "Dead Miner",
+            "status": "OFFLINE",
+            "last_seen": 1700000000,
         }
         mock_registry.get_recent_telemetry.return_value = [
-            {"ts": 1700000000, "payload": {
-                "hashrate_hs": 0,
-                "temperature": 30,
-                "hw_error_pct": 0.0,
-            }},
+            {
+                "ts": 1700000000,
+                "payload": {
+                    "hashrate_hs": 0,
+                    "temperature": 30,
+                    "hw_error_pct": 0.0,
+                },
+            },
         ]
 
         with patch("axe_fleet.routes._registry", mock_registry):
@@ -455,15 +500,20 @@ class TestDeviceHealth:
         """Healthy online device should have minimal or empty issues."""
         mock_registry = MagicMock()
         mock_registry.get_device.return_value = {
-            "id": self.DEVICE_ID, "name": "Perfect Miner",
-            "status": "ONLINE", "last_seen": 1700000000,
+            "id": self.DEVICE_ID,
+            "name": "Perfect Miner",
+            "status": "ONLINE",
+            "last_seen": 1700000000,
         }
         mock_registry.get_recent_telemetry.return_value = [
-            {"ts": 1700000000, "payload": {
-                "hashrate_hs": 5000000000000,
-                "temperature": 55,
-                "hw_error_pct": 0.1,
-            }},
+            {
+                "ts": 1700000000,
+                "payload": {
+                    "hashrate_hs": 5000000000000,
+                    "temperature": 55,
+                    "hw_error_pct": 0.1,
+                },
+            },
         ]
 
         with patch("axe_fleet.routes._registry", mock_registry):
@@ -472,15 +522,21 @@ class TestDeviceHealth:
         data = resp.get_json()
         # No high temp, no high HW error, no offline, no warning status
         for issue in data["active_issues"]:
-            assert issue not in ("high_temperature", "high_hw_error_rate",
-                                 "device_offline", "zero_hashrate")
+            assert issue not in (
+                "high_temperature",
+                "high_hw_error_rate",
+                "device_offline",
+                "zero_hashrate",
+            )
 
     def test_returns_timestamp_and_age(self, client):
         """Should return last_seen and age_seconds fields."""
         mock_registry = MagicMock()
         mock_registry.get_device.return_value = {
-            "id": self.DEVICE_ID, "name": "T",
-            "status": "ONLINE", "last_seen": 1700000000,
+            "id": self.DEVICE_ID,
+            "name": "T",
+            "status": "ONLINE",
+            "last_seen": 1700000000,
         }
         mock_registry.get_recent_telemetry.return_value = []
 
@@ -495,6 +551,7 @@ class TestDeviceHealth:
 # ══════════════════════════════════════════════════════════════════════════
 #  GET /api/axe-fleet/devices/{id}/history  (Phase C)
 # ══════════════════════════════════════════════════════════════════════════
+
 
 class TestDeviceHistory:
     """Tests for GET /api/axe-fleet/devices/<device_id>/history."""
@@ -520,8 +577,11 @@ class TestDeviceHistory:
     def test_returns_history_for_existing_device(self, client):
         mock_registry = MagicMock()
         mock_registry.get_device.return_value = {
-            "id": self.DEVICE_ID, "name": "History Miner",
-            "model": "Bitaxe Max", "ip_address": "192.168.1.103", "status": "ONLINE",
+            "id": self.DEVICE_ID,
+            "name": "History Miner",
+            "model": "Bitaxe Max",
+            "ip_address": "192.168.1.103",
+            "status": "ONLINE",
         }
         mock_registry.get_telemetry_chart_data.return_value = self._series()
 
@@ -546,7 +606,10 @@ class TestDeviceHistory:
     def test_respects_limit_param(self, client):
         mock_registry = MagicMock()
         mock_registry.get_device.return_value = {"id": self.DEVICE_ID, "name": "T"}
-        mock_registry.get_telemetry_chart_data.return_value = {"ts": [], "hashrate_hs": []}
+        mock_registry.get_telemetry_chart_data.return_value = {
+            "ts": [],
+            "hashrate_hs": [],
+        }
         with patch("axe_fleet.routes._registry", mock_registry):
             resp = client.get(f"{self.ENDPOINT}?limit=60")
         assert resp.status_code == 200
@@ -569,7 +632,10 @@ class TestDeviceHistory:
     def test_empty_history_when_no_telemetry(self, client):
         mock_registry = MagicMock()
         mock_registry.get_device.return_value = {"id": self.DEVICE_ID, "name": "Empty"}
-        mock_registry.get_telemetry_chart_data.return_value = {"ts": [], "hashrate_hs": []}
+        mock_registry.get_telemetry_chart_data.return_value = {
+            "ts": [],
+            "hashrate_hs": [],
+        }
         with patch("axe_fleet.routes._registry", mock_registry):
             resp = client.get(self.ENDPOINT)
         assert resp.status_code == 200
@@ -585,6 +651,7 @@ class TestDeviceHistory:
 #  normalized per-device cards consumed by renderAxeFleet/_renderAxeCard.
 # ══════════════════════════════════════════════════════════════════════════
 
+
 class TestFleetHealth:
     """Tests for GET /api/axe-fleet/health — fleet_stats schema (P1.1)."""
 
@@ -595,38 +662,59 @@ class TestFleetHealth:
         """Never hit the network from these tests — the latency probe would
         otherwise do real socket connects to private IPs (slow + cache
         pollution across tests)."""
-        monkeypatch.setattr("axe_fleet.routes._probe_miner_latency_ms", lambda ip="", timeout=0.75: None)
+        monkeypatch.setattr(
+            "axe_fleet.routes._probe_miner_latency_ms", lambda ip="", timeout=0.75: None
+        )
 
-    def _device(self, device_id, name, status, last_seen=1700000000):
+    def _device(self, device_id, name, status, last_seen=None):
         return {
             "id": device_id,
             "name": name,
             "model": "Bitaxe ULP",
             "ip_address": "192.168.1.100",
-            "last_seen": last_seen,
+            "last_seen": int(time.time()) if last_seen is None else last_seen,
             "status": status,
             "capabilities": {"telemetry": True, "restart": True},
         }
 
-    def _telemetry(self, hashrate_hs, temperature=None, power_watts=None,
-                   best_diff="", uptime_seconds=0, efficiency_jth=None,
-                   hw_error_pct=0.0, shares_accepted=0, shares_rejected=0,
-                   frequency_mhz=None, voltage_mv=None, ts=1700000000):
-        return [{"ts": ts, "payload": {
-            "hashrate_hs": hashrate_hs,
-            "temperature": temperature,
-            "fan_speed": 80,
-            "fan_rpm": 4200,
-            "power_watts": power_watts,
-            "frequency_mhz": frequency_mhz,
-            "voltage_mv": voltage_mv,
-            "best_diff": best_diff,
-            "uptime_seconds": uptime_seconds,
-            "efficiency_jth": efficiency_jth,
-            "shares_accepted": shares_accepted,
-            "shares_rejected": shares_rejected,
-            "hw_error_pct": hw_error_pct,
-        }}]
+    def _telemetry(
+        self,
+        hashrate_hs,
+        temperature=None,
+        power_watts=None,
+        best_diff="",
+        uptime_seconds=0,
+        efficiency_jth=None,
+        hw_error_pct=0.0,
+        shares_accepted=0,
+        shares_rejected=0,
+        frequency_mhz=None,
+        voltage_mv=None,
+        ts=None,
+    ):
+        if ts is None:
+            ts = int(time.time())
+        return [
+            {
+                "ts": ts,
+                "payload": {
+                    "ts": ts,
+                    "hashrate_hs": hashrate_hs,
+                    "temperature": temperature,
+                    "fan_speed": 80,
+                    "fan_rpm": 4200,
+                    "power_watts": power_watts,
+                    "frequency_mhz": frequency_mhz,
+                    "voltage_mv": voltage_mv,
+                    "best_diff": best_diff,
+                    "uptime_seconds": uptime_seconds,
+                    "efficiency_jth": efficiency_jth,
+                    "shares_accepted": shares_accepted,
+                    "shares_rejected": shares_rejected,
+                    "hw_error_pct": hw_error_pct,
+                },
+            }
+        ]
 
     def test_returns_fleet_stats_with_status_counts(self, client):
         """fleet_stats should expose online/warning/offline counts and aggregates."""
@@ -638,9 +726,15 @@ class TestFleetHealth:
             self._device("d4", "Off D", "OFFLINE"),
         ]
         mock_registry.get_recent_telemetry.side_effect = [
-            self._telemetry(5200000000000, 62, 42, "42.8T", 259200, 8.08, 0.3, 15823, 47, 525, 1200),
-            self._telemetry(2100000000000, 58, 18, "12.5T", 604800, 8.57, 0.2, 45231, 89, 450, 1100),
-            self._telemetry(3800000000000, 82, 38, "28.3T", 43200, 10.0, 3.5, 5872, 215, 500, 1250),
+            self._telemetry(
+                5200000000000, 62, 42, "42.8T", 259200, 8.08, 0.3, 15823, 47, 525, 1200
+            ),
+            self._telemetry(
+                2100000000000, 58, 18, "12.5T", 604800, 8.57, 0.2, 45231, 89, 450, 1100
+            ),
+            self._telemetry(
+                3800000000000, 82, 38, "28.3T", 43200, 10.0, 3.5, 5872, 215, 500, 1250
+            ),
             self._telemetry(0, None, 0, "", 0, None, 0.0),
         ]
 
@@ -653,7 +747,7 @@ class TestFleetHealth:
         fs = data["fleet_stats"]
         # P1.1: online/warning/offline present and counted correctly
         assert fs["total_devices"] == 4
-        assert fs["online"] == 2     # ONLINE + HASHING
+        assert fs["online"] == 2  # ONLINE + HASHING
         assert fs["warning"] == 1
         assert fs["offline"] == 1
         # Aggregates
@@ -713,14 +807,21 @@ class TestFleetHealth:
         # diagnosis, but is explicitly not presented as current production.
         offline_device = next(d for d in data["device_health"] if d["id"] == "d2")
         assert offline_device["telemetry"]["hashrate_hs"] == 0
-        assert offline_device["telemetry"]["last_known_hashrate_hs"] == 3_000_000_000_000
-        assert offline_device["telemetry"]["hashrate_loss_baseline_hs"] == 3_000_000_000_000
+        assert (
+            offline_device["telemetry"]["last_known_hashrate_hs"] == 3_000_000_000_000
+        )
+        assert (
+            offline_device["telemetry"]["hashrate_loss_baseline_hs"]
+            == 3_000_000_000_000
+        )
 
     def test_invalid_hashrate_values_do_not_poison_fleet_aggregates(self, client):
         """NaN/Inf/garbage are external payloads, never valid production or
         baselines, and must not crash JSON serialization."""
         mock_registry = MagicMock()
-        mock_registry.list_devices.return_value = [self._device("d1", "Bad firmware", "ONLINE")]
+        mock_registry.list_devices.return_value = [
+            self._device("d1", "Bad firmware", "ONLINE")
+        ]
         telemetry = self._telemetry("NaN")[0]
         telemetry["payload"]["hashrate_1h"] = "Infinity"
         mock_registry.get_recent_telemetry.return_value = [telemetry]
@@ -743,8 +844,12 @@ class TestFleetHealth:
             self._device("d2", "Warn C", "WARNING"),
         ]
         mock_registry.get_recent_telemetry.side_effect = [
-            self._telemetry(5200000000000, 62, 42, "42.8T", 259200, 8.08, 0.3, 15823, 47, 525, 1200),
-            self._telemetry(3800000000000, 82, 38, "28.3T", 43200, 10.0, 3.5, 5872, 215, 500, 1250),
+            self._telemetry(
+                5200000000000, 62, 42, "42.8T", 259200, 8.08, 0.3, 15823, 47, 525, 1200
+            ),
+            self._telemetry(
+                3800000000000, 82, 38, "28.3T", 43200, 10.0, 3.5, 5872, 215, 500, 1250
+            ),
         ]
 
         with patch("axe_fleet.routes._registry", mock_registry):
@@ -821,19 +926,25 @@ class TestFleetHealth:
                 "hostname": "bitaxe-garage",
             }
         ]
-        tel = self._telemetry(5200000000000, 62, 42, "42.8T", 259200, 8.08, 0.3, 15823, 47, 525, 1200)[0]["payload"]
-        tel.update({
-            "chip_temp": 70,
-            "vr_temp": 67,
-            "temp_asic": 70,
-            "temp_vreg": 67,
-            "hashrate_1m": 5408000000000,
-            "hashrate_10m": 5300000000000,
-            "hashrate_1h": 5200000000000,
-            "shares_stale": 3,
-            "stratum_status": "connected",
-        })
-        mock_registry.get_recent_telemetry.return_value = [{"ts": 1700000000, "payload": tel}]
+        tel = self._telemetry(
+            5200000000000, 62, 42, "42.8T", 259200, 8.08, 0.3, 15823, 47, 525, 1200
+        )[0]["payload"]
+        tel.update(
+            {
+                "chip_temp": 70,
+                "vr_temp": 67,
+                "temp_asic": 70,
+                "temp_vreg": 67,
+                "hashrate_1m": 5408000000000,
+                "hashrate_10m": 5300000000000,
+                "hashrate_1h": 5200000000000,
+                "shares_stale": 3,
+                "stratum_status": "connected",
+            }
+        )
+        mock_registry.get_recent_telemetry.return_value = [
+            {"ts": 1700000000, "payload": tel}
+        ]
 
         with patch("axe_fleet.routes._registry", mock_registry):
             with patch("axe_fleet.models.infer_health_score", return_value=80):
@@ -858,9 +969,13 @@ class TestFleetHealth:
         """Hardening: legacy broken payloads (bare {"device_id": ...} stubs
         written before the poll fix) must be ignored — never zero the fleet."""
         mock_registry = MagicMock()
-        mock_registry.list_devices.return_value = [self._device("d1", "Online A", "ONLINE")]
+        mock_registry.list_devices.return_value = [
+            self._device("d1", "Online A", "ONLINE")
+        ]
         # The polluted legacy row: no hashrate_hs key at all.
-        mock_registry.get_recent_telemetry.return_value = [{"ts": 1700000000, "payload": {"device_id": "d1"}}]
+        mock_registry.get_recent_telemetry.return_value = [
+            {"ts": 1700000000, "payload": {"device_id": "d1"}}
+        ]
 
         with patch("axe_fleet.routes._registry", mock_registry):
             with patch("axe_fleet.models.infer_health_score", return_value=45):
@@ -881,6 +996,7 @@ class TestFleetHealth:
 #  degraded-but-reachable miner must never be counted as offline.
 # ══════════════════════════════════════════════════════════════════════════
 
+
 class TestFleetSummary:
     """Tests for GET /api/axe-fleet/summary — online/warning/offline counts
     + per-device latency_ms/advice layer (payload parity with fleet_health)."""
@@ -892,7 +1008,9 @@ class TestFleetSummary:
         """Never hit the network from these tests — the latency probe would
         otherwise do real socket connects to private IPs (slow + cache
         pollution across tests). Mirrors TestFleetHealth."""
-        monkeypatch.setattr("axe_fleet.routes._probe_miner_latency_ms", lambda ip="", timeout=0.75: None)
+        monkeypatch.setattr(
+            "axe_fleet.routes._probe_miner_latency_ms", lambda ip="", timeout=0.75: None
+        )
 
     def _device(self, device_id, status):
         return {
@@ -973,16 +1091,26 @@ class TestFleetSummary:
             self._device("d2", "OFFLINE"),
         ]
         mock_registry.get_recent_telemetry.side_effect = [
-            [{"ts": 1700000000, "payload": {
-                "hashrate_hs": 5200000000000, "temperature": 62,
-                "hw_error_pct": 0.3, "shares_accepted": 1000, "shares_stale": 0}}],
-            [{"ts": 1700000000, "payload": {
-                "hashrate_hs": 0, "temperature": None}}],
+            [
+                {
+                    "ts": 1700000000,
+                    "payload": {
+                        "hashrate_hs": 5200000000000,
+                        "temperature": 62,
+                        "hw_error_pct": 0.3,
+                        "shares_accepted": 1000,
+                        "shares_stale": 0,
+                    },
+                }
+            ],
+            [{"ts": 1700000000, "payload": {"hashrate_hs": 0, "temperature": None}}],
         ]
 
         with patch("axe_fleet.routes._registry", mock_registry):
-            with patch("axe_fleet.routes._probe_miner_latency_ms",
-                       side_effect=lambda ip="", timeout=0.75: 23 if ip else None):
+            with patch(
+                "axe_fleet.routes._probe_miner_latency_ms",
+                side_effect=lambda ip="", timeout=0.75: 23 if ip else None,
+            ):
                 resp = client.get(self.ENDPOINT)
         assert resp.status_code == 200
         devices = resp.get_json()["devices"]
@@ -1009,13 +1137,19 @@ class TestFleetSummary:
         renders and the whole agent round-trip is unreachable from the UI.
         dict → ["telemetry", "restart"] (only truthy entries)."""
         mock_registry = MagicMock()
-        mock_registry.list_devices.return_value = [{
-            **self._device("d1", "ONLINE"),
-            # Stored caps come back as a DICT (registry _row_to_device json-)
-            # loads the SQLite TEXT column) — the summary must flatten it.
-            "capabilities": {"telemetry": True, "restart": True,
-                             "identify": False, "configure": False},
-        }]
+        mock_registry.list_devices.return_value = [
+            {
+                **self._device("d1", "ONLINE"),
+                # Stored caps come back as a DICT (registry _row_to_device json-)
+                # loads the SQLite TEXT column) — the summary must flatten it.
+                "capabilities": {
+                    "telemetry": True,
+                    "restart": True,
+                    "identify": False,
+                    "configure": False,
+                },
+            }
+        ]
         mock_registry.get_recent_telemetry.return_value = []
 
         with patch("axe_fleet.routes._registry", mock_registry):
@@ -1031,12 +1165,14 @@ class TestFleetSummary:
         # And the raw dict must not be present either.
         assert not isinstance(d["capabilities"], dict)
 
+
 # ══════════════════════════════════════════════════════════════════════════
 #  POST /api/axe-fleet/test-devices
 #  Regression: the SEED TEST button route must emit the Fase 5 fields
 #  (chip_temp, vr_temp, hashrate_1h, ...) exactly like the boot auto-seed,
 #  or cards show NOT AVAILABLE after seeding. Gated by DEBUG_MOCK=1.
 # ══════════════════════════════════════════════════════════════════════════
+
 
 class TestSeedTestDevices:
     """Tests for POST /api/axe-fleet/test-devices — Fase 5 emission."""
@@ -1093,6 +1229,7 @@ class TestSeedTestDevices:
 #  Public-IP miners stay allowed (reachable from anywhere).
 # ══════════════════════════════════════════════════════════════════════════
 
+
 class TestCloudDeployGuards:
     """Tests for the cloud-deploy topology guards on device registration."""
 
@@ -1103,8 +1240,11 @@ class TestCloudDeployGuards:
         """Prevent real network probes from add_device's auto-detect."""
         monkeypatch.setattr(
             "core.registry.detector.detect_firmware",
-            lambda ip: {"firmware": "unknown", "adapter_type": "unknown",
-                        "reachable": False}
+            lambda ip: {
+                "firmware": "unknown",
+                "adapter_type": "unknown",
+                "reachable": False,
+            },
         )
 
     @pytest.fixture
@@ -1115,19 +1255,26 @@ class TestCloudDeployGuards:
         return r
 
     def test_private_ip_blocked_on_cloud(self, client, monkeypatch, mock_registry):
-        """Cloud + private LAN IP → 403 with agent CTA, and add_device is
-        NEVER called (no dead OFFLINE card created)."""
+        """Cloud + private LAN IP → 202 queued for the local agent. The
+        Render process never probes RFC1918 and never creates a dead card."""
         monkeypatch.setenv("RENDER", "true")
+        mock_registry.enqueue_agent_command.return_value = {
+            "id": "cmd1",
+            "command": "probe",
+            "status": "pending",
+        }
         try:
             with patch("axe_fleet.routes._registry", mock_registry):
                 resp = client.post(self.ENDPOINT, json={"ip_address": "192.168.1.100"})
         finally:
             monkeypatch.delenv("RENDER", raising=False)
-        assert resp.status_code == 403
+        assert resp.status_code == 202
         data = resp.get_json()
         assert data["is_cloud"] is True
+        assert data["queued"] is True
         assert "AGENTE LOCAL" in data["message"]
         mock_registry.add_device.assert_not_called()
+        mock_registry.enqueue_agent_command.assert_called_once()
 
     def test_public_ip_allowed_on_cloud(self, client, monkeypatch, mock_registry):
         """Cloud + public IP → still registered (a public miner IS reachable
@@ -1135,34 +1282,47 @@ class TestCloudDeployGuards:
         like 203.0.113.x count as is_private in Python's ipaddress."""
         monkeypatch.setenv("RENDER", "true")
         try:
-            with patch("axe_fleet.routes._registry", mock_registry), \
-                    patch("axe_fleet.routes._can_add_worker", return_value=True):
-                resp = client.post(self.ENDPOINT, json={"ip_address": "8.8.8.8", "name": "pub"})
+            with patch("axe_fleet.routes._registry", mock_registry), patch(
+                "axe_fleet.routes._can_add_worker", return_value=True
+            ):
+                resp = client.post(
+                    self.ENDPOINT, json={"ip_address": "8.8.8.8", "name": "pub"}
+                )
         finally:
             monkeypatch.delenv("RENDER", raising=False)
         assert resp.status_code == 201
-        mock_registry.add_device.assert_called_once_with("8.8.8.8", "pub", tenant_id="default")
+        mock_registry.add_device.assert_called_once_with(
+            "8.8.8.8", "pub", tenant_id="default"
+        )
 
     def test_private_ip_allowed_off_cloud(self, client, monkeypatch, mock_registry):
         """Self-host (not cloud): a private IP can be added — the dashboard
         may be on the same LAN as the miners (or Tailscale). RENDER is
         delenv'd so the test is deterministic in any shell."""
         monkeypatch.delenv("RENDER", raising=False)
-        with patch("axe_fleet.routes._registry", mock_registry), \
-                patch("axe_fleet.routes._can_add_worker", return_value=True):
-            resp = client.post(self.ENDPOINT, json={"ip_address": "192.168.1.100", "name": "lan"})
+        with patch("axe_fleet.routes._registry", mock_registry), patch(
+            "axe_fleet.routes._can_add_worker", return_value=True
+        ):
+            resp = client.post(
+                self.ENDPOINT, json={"ip_address": "192.168.1.100", "name": "lan"}
+            )
         assert resp.status_code == 201
-        mock_registry.add_device.assert_called_once_with("192.168.1.100", "lan", tenant_id="default")
+        mock_registry.add_device.assert_called_once_with(
+            "192.168.1.100", "lan", tenant_id="default"
+        )
 
     def test_agent_token_returns_server_url(self, client, monkeypatch):
         """POST /api/agent/token must return server_url so the frontend can
         build the agent one-liner from the real origin (behind proxies/CDNs)."""
         from services.auth import create_token
+
         monkeypatch.setenv("SECRET_KEY", "agent-test-secret-123-0123456789abcdef")
         app.config["JWT_SECRET_KEY"] = "agent-test-secret-123-0123456789abcdef"
         try:
             tok = create_token(subject="acme", extra_claims={"role": "admin"})
-            resp = client.post("/api/agent/token", headers={"Authorization": f"Bearer {tok}"})
+            resp = client.post(
+                "/api/agent/token", headers={"Authorization": f"Bearer {tok}"}
+            )
         finally:
             app.config.pop("JWT_SECRET_KEY", None)
         assert resp.status_code == 200
@@ -1177,6 +1337,7 @@ class TestCloudDeployGuards:
 #  pool_url/pool_user passthrough in GET /api/axe-fleet/health.
 # ══════════════════════════════════════════════════════════════════════════
 
+
 class TestFleetHealthTelemetryGaps:
     """Tests for the fleet_health per-device telemetry additions."""
 
@@ -1188,26 +1349,41 @@ class TestFleetHealthTelemetryGaps:
             "name": name,
             "model": "Bitaxe ULP",
             "ip_address": ip,
-            "last_seen": 1700000000,
+            "last_seen": int(time.time()),
             "status": status,
             "capabilities": {"telemetry": True, "restart": True},
         }
 
-    def _telemetry(self, hashrate_hs=5200000000000, temperature=62,
-                   chip_temp=None, hw_error_pct=0.3, shares_accepted=1000,
-                   shares_stale=0, wifi_rssi=-60, pool_url="",
-                   stratum_status="connected"):
-        return [{"ts": 1700000000, "payload": {
-            "hashrate_hs": hashrate_hs,
-            "temperature": temperature,
-            "chip_temp": chip_temp,
-            "hw_error_pct": hw_error_pct,
-            "shares_accepted": shares_accepted,
-            "shares_stale": shares_stale,
-            "wifi_rssi": wifi_rssi,
-            "pool_url": pool_url,
-            "stratum_status": stratum_status,
-        }}]
+    def _telemetry(
+        self,
+        hashrate_hs=5200000000000,
+        temperature=62,
+        chip_temp=None,
+        hw_error_pct=0.3,
+        shares_accepted=1000,
+        shares_stale=0,
+        wifi_rssi=-60,
+        pool_url="",
+        stratum_status="connected",
+    ):
+        now = int(time.time())
+        return [
+            {
+                "ts": now,
+                "payload": {
+                    "ts": now,
+                    "hashrate_hs": hashrate_hs,
+                    "temperature": temperature,
+                    "chip_temp": chip_temp,
+                    "hw_error_pct": hw_error_pct,
+                    "shares_accepted": shares_accepted,
+                    "shares_stale": shares_stale,
+                    "wifi_rssi": wifi_rssi,
+                    "pool_url": pool_url,
+                    "stratum_status": stratum_status,
+                },
+            }
+        ]
 
     def test_latency_ms_probed_for_online_device(self, client):
         """Online device gets a real latency_ms from the probe."""
@@ -1218,7 +1394,9 @@ class TestFleetHealthTelemetryGaps:
         mock_registry.get_recent_telemetry.return_value = self._telemetry()
 
         with patch("axe_fleet.routes._registry", mock_registry):
-            with patch("axe_fleet.routes._probe_miner_latency_ms", return_value=23) as probe:
+            with patch(
+                "axe_fleet.routes._probe_miner_latency_ms", return_value=23
+            ) as probe:
                 resp = client.get(self.ENDPOINT)
         assert resp.status_code == 200
         d = resp.get_json()["device_health"][0]
@@ -1248,9 +1426,15 @@ class TestFleetHealthTelemetryGaps:
             self._device("d1", "Hot Lab", "WARNING")
         ]
         mock_registry.get_recent_telemetry.return_value = self._telemetry(
-            hashrate_hs=3800000000000, temperature=82, chip_temp=90,
-            hw_error_pct=5.5, shares_accepted=100, shares_stale=4,
-            wifi_rssi=-80, stratum_status="connected")
+            hashrate_hs=3800000000000,
+            temperature=82,
+            chip_temp=90,
+            hw_error_pct=5.5,
+            shares_accepted=100,
+            shares_stale=4,
+            wifi_rssi=-80,
+            stratum_status="connected",
+        )
 
         with patch("axe_fleet.routes._registry", mock_registry):
             with patch("axe_fleet.routes._probe_miner_latency_ms", return_value=180):
@@ -1297,8 +1481,10 @@ class TestFleetHealthTelemetryGaps:
         mock_registry.list_devices.return_value = [
             self._device("d1", "Garage", "ONLINE")
         ]
-        tel = self._telemetry(pool_url="stratum+tcp://pool.parasite.example:3333",
-                              stratum_status="connected")
+        tel = self._telemetry(
+            pool_url="stratum+tcp://pool.parasite.example:3333",
+            stratum_status="connected",
+        )
         tel[0]["payload"]["pool_user"] = "bc1abc.worker1"
         mock_registry.get_recent_telemetry.return_value = tel
 
@@ -1315,16 +1501,20 @@ class TestFleetHealthTelemetryGaps:
 #  Unit tests — _device_advice + _probe_miner_latency_ms (pure functions)
 # ══════════════════════════════════════════════════════════════════════════
 
+
 class TestDeviceAdviceUnit:
     """Unit tests for the fleet advice rule engine."""
 
     def test_offline_short_circuits_to_offline_advice(self):
         from axe_fleet.routes import _device_advice
-        assert _device_advice("OFFLINE", {"temperature": 99}) == \
-            ["device offline — checar energia/rede"]
+
+        assert _device_advice("OFFLINE", {"temperature": 99}) == [
+            "device offline — checar energia/rede"
+        ]
 
     def test_high_temp_advice(self):
         from axe_fleet.routes import _device_advice
+
         advice = _device_advice("ONLINE", {"temperature": 85})
         assert any("temp ≥80°C" in a for a in advice)
 
@@ -1333,38 +1523,59 @@ class TestDeviceAdviceUnit:
         Locks in the advice branches so a paused miner never gets misleading
         'hashrate zero' telemetry advice."""
         from axe_fleet.routes import _device_advice
+
         for st in ("ERROR", "CRITICAL", "MAINTENANCE"):
             advice = _device_advice(st, {"temperature": 99, "hashrate_hs": 0})
             assert advice == [f"device {st.lower()} — checar energia/rede"]
-        assert _device_advice("PAUSED", {"hashrate_hs": 0}) == \
-            ["device pausado — miner não está hasheando"]
+        assert _device_advice("PAUSED", {"hashrate_hs": 0}) == [
+            "device pausado — miner não está hasheando"
+        ]
 
     def test_missing_status_defaults_to_offline(self):
         """None/empty status must default to the offline advice."""
         from axe_fleet.routes import _device_advice
-        assert _device_advice(None, {"hashrate_hs": 0}) == \
-            ["device offline — checar energia/rede"]
-        assert _device_advice("", {"temperature": 99}) == \
-            ["device offline — checar energia/rede"]
+
+        assert _device_advice(None, {"hashrate_hs": 0}) == [
+            "device offline — checar energia/rede"
+        ]
+        assert _device_advice("", {"temperature": 99}) == [
+            "device offline — checar energia/rede"
+        ]
 
     def test_zero_hashrate_online_advice(self):
         from axe_fleet.routes import _device_advice
+
         advice = _device_advice("ONLINE", {"hashrate_hs": 0})
         assert any("hashrate zero" in a for a in advice)
 
     def test_latency_threshold_advice(self):
         from axe_fleet.routes import _device_advice
+
         # A mining device (hashrate > 0) — so the only variable is latency.
         base = {"hashrate_hs": 1e12}
-        assert any("ping alto" in a for a in _device_advice("ONLINE", dict(base), latency_ms=200))
+        assert any(
+            "ping alto" in a
+            for a in _device_advice("ONLINE", dict(base), latency_ms=200)
+        )
         assert _device_advice("ONLINE", dict(base), latency_ms=50) == []
 
     def test_healthy_empty(self):
         from axe_fleet.routes import _device_advice
-        assert _device_advice("ONLINE", {"hashrate_hs": 1e12, "temperature": 50,
-                                           "hw_error_pct": 0.1,
-                                           "shares_accepted": 100, "shares_stale": 0,
-                                           "wifi_rssi": -55}) == []
+
+        assert (
+            _device_advice(
+                "ONLINE",
+                {
+                    "hashrate_hs": 1e12,
+                    "temperature": 50,
+                    "hw_error_pct": 0.1,
+                    "shares_accepted": 100,
+                    "shares_stale": 0,
+                    "wifi_rssi": -55,
+                },
+            )
+            == []
+        )
 
 
 class TestProbeLatencyUnit:
@@ -1372,21 +1583,28 @@ class TestProbeLatencyUnit:
 
     def test_empty_ip_returns_none(self):
         from axe_fleet.routes import _probe_miner_latency_ms
+
         assert _probe_miner_latency_ms("") is None
 
     def test_connection_error_returns_none(self):
         from axe_fleet.routes import _probe_miner_latency_ms
-        with patch("axe_fleet.routes.socket.create_connection", side_effect=OSError("refused")):
+
+        with patch(
+            "axe_fleet.routes.socket.create_connection", side_effect=OSError("refused")
+        ):
             assert _probe_miner_latency_ms("192.168.1.100") is None
 
     def test_success_returns_elapsed_ms(self):
         from axe_fleet.routes import _probe_miner_latency_ms, _latency_cache
+
         _latency_cache.clear()
         try:
             with patch("axe_fleet.routes.socket.create_connection") as conn:
                 conn.return_value.__enter__.return_value = conn.return_value
                 conn.return_value.__exit__.return_value = None
-                with patch("axe_fleet.routes.time.time", side_effect=[1.000, 1.045, 1.100]):
+                with patch(
+                    "axe_fleet.routes.time.time", side_effect=[1.000, 1.045, 1.100]
+                ):
                     # round((1.045-1.000)*1000) == 45 (int() would truncate
                     # the float delta to 44 — regression guard). The 3rd
                     # time.time() feeds the cache-store ts so the write path
@@ -1400,7 +1618,12 @@ class TestProbeLatencyUnit:
         """A fresh probe is cached; the next call within TTL reuses it.
         Cache is seeded directly (deterministic — no time/time mocking)."""
         import time as _t
-        from axe_fleet.routes import _probe_miner_latency_ms, _latency_cache, _LATENCY_TTL
+        from axe_fleet.routes import (
+            _probe_miner_latency_ms,
+            _latency_cache,
+            _LATENCY_TTL,
+        )
+
         _latency_cache.clear()
         try:
             _latency_cache["192.168.1.101"] = {"ms": 42, "ts": _t.time()}
@@ -1417,9 +1640,13 @@ class TestProbeLatencyUnit:
         detected on the next poll."""
         import time as _t
         from axe_fleet.routes import _probe_miner_latency_ms, _latency_cache
+
         _latency_cache.clear()
         try:
-            with patch("axe_fleet.routes.socket.create_connection", side_effect=OSError("refused")):
+            with patch(
+                "axe_fleet.routes.socket.create_connection",
+                side_effect=OSError("refused"),
+            ):
                 assert _probe_miner_latency_ms("192.168.1.102") is None
             assert "192.168.1.102" not in _latency_cache
         finally:
@@ -1430,10 +1657,17 @@ class TestProbeLatencyUnit:
         swept before the cap applies; fresh entries survive. Never a full
         clear, so live miner PINGs are preserved across a burst of new IPs."""
         from axe_fleet.routes import _cache_latency_ms, _latency_cache
+
         _latency_cache.clear()
         try:
-            _latency_cache["192.168.0.1"] = {"ms": 5, "ts": 1.0}   # stale (now=100 → age 99 ≥ TTL)
-            _latency_cache["192.168.0.2"] = {"ms": 6, "ts": 90.0}  # fresh (age 10 < TTL)
+            _latency_cache["192.168.0.1"] = {
+                "ms": 5,
+                "ts": 1.0,
+            }  # stale (now=100 → age 99 ≥ TTL)
+            _latency_cache["192.168.0.2"] = {
+                "ms": 6,
+                "ts": 90.0,
+            }  # fresh (age 10 < TTL)
             with patch("axe_fleet.routes.time.time", return_value=100.0):
                 _cache_latency_ms("192.168.0.3", 45)
             # stale swept, fresh preserved, new entry stored
@@ -1447,13 +1681,21 @@ class TestProbeLatencyUnit:
         """Past _LATENCY_CACHE_MAX entries, only the OLDEST fresh entries are
         dropped (FIFO by ts) — never a full clear — so the cache stays at the
         cap and the newest data survives."""
-        from axe_fleet.routes import _cache_latency_ms, _latency_cache, _LATENCY_CACHE_MAX
+        from axe_fleet.routes import (
+            _cache_latency_ms,
+            _latency_cache,
+            _LATENCY_CACHE_MAX,
+        )
+
         _latency_cache.clear()
         try:
             # Seed a FULL cache with FRESH entries (ages 1.0s → 0.5s, all < TTL)
             # before the time.time mock is installed.
             for i in range(_LATENCY_CACHE_MAX):
-                _latency_cache[f"192.168.{i // 256}.{i % 256}"] = {"ms": 5, "ts": 999.0 + i / 1000}
+                _latency_cache[f"192.168.{i // 256}.{i % 256}"] = {
+                    "ms": 5,
+                    "ts": 999.0 + i / 1000,
+                }
             with patch("axe_fleet.routes.time.time", return_value=1000.0):
                 _cache_latency_ms("10.255.255.250", 45)
             # Cap: drop 1 oldest → still 500 total, new entry present.

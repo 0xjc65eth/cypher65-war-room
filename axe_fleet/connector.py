@@ -355,55 +355,11 @@ class AxeOSConnector:
         t = new_telemetry("")
         t["ts"] = int(time.time())
 
-        t["hashrate_hs"] = int(info.get("hashrate") or 0)
-        t["expected_hashrate"] = int(info.get("hashrate") or 0)
+        from .axeos_contract import extract_axeos_telemetry
 
-        # Fase 5: hashrate windows (H/s) — AxeOS exposes hashRate1m/10m/1hr.
-        # Honest Telemetry: hashRate5m is never promoted to hashrate_10m.
-        hr_1m = info.get("hashRate1m")
-        hr_10m = info.get("hashRate10m")
-        hr_1h = info.get("hashRate1hr") or info.get("hashRate1h")
-        t["hashrate_1m"] = int(hr_1m) if hr_1m is not None else None
-        t["hashrate_10m"] = int(hr_10m) if hr_10m is not None else None
-        t["hashrate_1h"] = int(hr_1h) if hr_1h is not None else None
-
-        # Temperature
-        t["temperature"] = info.get("temp")
-        if t["temperature"] is None:
-            t["temperature"] = info.get("temperature")
-
-        # Fase 5: ASIC + VR temperatures
-        t["temp_asic"] = info.get("tempChip") or info.get("temp_asic")
-        t["temp_vreg"] = (
-            info.get("vrTemp") or info.get("temp2") or info.get("temp_vreg")
-        )
-
-        # Fan
-        t["fan_speed"] = info.get("fanSpeed")
-        t["fan_rpm"] = info.get("fanRPM")
-
-        # Power / voltage / frequency
-        t["power_watts"] = info.get("power")
-        t["voltage_mv"] = info.get("coreVoltage")
-        t["voltage_actual_mv"] = info.get("coreVoltageActual")
-        t["frequency_mhz"] = info.get("frequency")
-        t["current_ma"] = info.get("current")
-
-        # Efficiency
-        hr_hs = t["hashrate_hs"]
-        pwr = t["power_watts"]
-        if hr_hs > 0 and pwr and pwr > 0:
-            t["efficiency_jth"] = round(pwr / (hr_hs / 1e12), 2)
-
-        # Shares / best diff — Issue #627: use the shared normalizer, NOT
-        # `str(x or "")`: a legitimate Best Share of 0 (mining with no share
-        # accepted yet) must stay "0", not collapse into "unsupported".
-        from .models import best_diff_from_value
-
-        t["best_diff"] = best_diff_from_value(info.get("bestDiff"))
-        # Worker-intelligence extras (best-effort — many AxeOS builds expose
-        # the current stratum difficulty target; last-share time is rarer).
-        # None → the UI renders an honest '—'.
+        extracted = extract_axeos_telemetry(info)
+        t.update(extracted)
+        # Worker-intelligence extras (best-effort).
         t["pool_diff"] = (
             info.get("poolDifficulty") or info.get("difficulty") or info.get("poolDiff")
         )
@@ -411,34 +367,11 @@ class AxeOSConnector:
         if _last_share is None:
             _last_share = info.get("lastShareTime") or info.get("lastShareTimestamp")
         t["last_share_ts"] = _last_share
-        t["shares_accepted"] = int(info.get("sharesAccepted") or 0)
-        t["shares_rejected"] = int(info.get("sharesRejected") or 0)
-        accepted = t["shares_accepted"]
-        rejected = t["shares_rejected"]
-        total = accepted + rejected
-        if total > 0:
-            t["hw_error_pct"] = round(rejected / total * 100, 2)
-
-        # HW errors
-        t["hw_errors"] = int(info.get("hwErrors") or 0)
-
-        # Uptime / system
-        t["uptime_seconds"] = int(info.get("uptime") or 0)
-        t["free_heap"] = int(info.get("freeHeap") or 0)
-        t["wifi_rssi"] = info.get("wifiRSSI")
-
-        # Pause state — explicit operator intent (Issue #13): a paused device
-        # reports miningPaused=true and must render PAUSED, not IDLE/ONLINE.
-        # Strict `is True`: `bool("false")` is True in Python — a stringy
-        # firmware/agent value must never falsely pause a device.
-        t["mining_paused"] = info.get("miningPaused") is True
-
-        # Pool
-        t["pool_url"] = str(info.get("pool") or info.get("stratumURL") or "")
-        t["pool_user"] = str(info.get("poolUser") or info.get("poolUsername") or "")
-        t["stratum_status"] = str(
-            info.get("stratumStatus") or info.get("poolStatus") or ""
-        )
+        if info.get("hwErrors") is not None:
+            try:
+                t["hw_errors"] = int(info.get("hwErrors") or 0)
+            except (TypeError, ValueError):
+                t["hw_errors"] = None
 
         return t
 

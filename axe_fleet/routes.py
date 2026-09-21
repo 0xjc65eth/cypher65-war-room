@@ -75,8 +75,12 @@ axe_fleet_bp = Blueprint("axe_fleet", __name__)
 
 
 def _is_trusted_payload(payload) -> bool:
-    """True only for well-formed telemetry dicts (must contain hashrate_hs)."""
-    return isinstance(payload, dict) and "hashrate_hs" in payload
+    """True only for well-formed telemetry dicts with a real hashrate reading.
+
+    Empty heartbeats ``{}`` and rows that omit hashrate_hs are presence, not
+    health. ``hashrate_hs: 0`` is trusted (verified idle). ``None`` is not.
+    """
+    return isinstance(payload, dict) and payload.get("hashrate_hs") is not None
 
 
 def _caps_supported_commands(caps) -> list:
@@ -94,14 +98,19 @@ def _caps_supported_commands(caps) -> list:
 
 
 def _latest_telemetry(tel_raw) -> dict:
-    """Return the latest trusted telemetry payload from a
-    get_recent_telemetry(limit=1) result, or {} if none/untrusted."""
-    if (
-        tel_raw
-        and isinstance(tel_raw[0], dict)
-        and _is_trusted_payload(tel_raw[0].get("payload"))
-    ):
-        return tel_raw[0]["payload"]
+    """Return the newest trusted telemetry payload, skipping heartbeats.
+
+    An empty ``{}`` push is the latest *row* but not a measurement — walking
+    back keeps shares/hashrate on the Fleet UI after one failed poll.
+    """
+    if not tel_raw:
+        return {}
+    for row in tel_raw:
+        if not isinstance(row, dict):
+            continue
+        payload = row.get("payload")
+        if _is_trusted_payload(payload):
+            return payload
     return {}
 
 
@@ -389,22 +398,30 @@ def add_device(tenant_id: str = ""):
     from .scanner import is_private_ip
 
     if is_cloud_deploy() and is_private_ip(ip):
+        queued = _registry.enqueue_agent_command(
+            "_probe",
+            "probe",
+            params={"ip": ip, "name": name},
+            tenant_id=tenant_id,
+        )
         _log_audit(
             tenant_id,
-            "fleet.device_add_blocked",
+            "fleet.device_probe_queued",
             target=ip,
-            details={"reason": "cloud_private_ip_unreachable"},
+            details={"reason": "cloud_private_ip_agent_probe", "queued": bool(queued)},
         )
         return (
             jsonify(
                 {
-                    "success": False,
+                    "success": True,
+                    "queued": True,
                     "is_cloud": True,
-                    "error": "private LAN IP unreachable from cloud deploy",
-                    "message": "IP privado (LAN) inalcançável a partir da nuvem. Instale o AGENTE LOCAL (Fleet → CONNECT AGENT): ele roda na sua rede, descobre os miners e conecta para fora — é a única via que funciona no SaaS.",
+                    "command_id": (queued or {}).get("id"),
+                    "error": None,
+                    "message": "IP privado enfileirado para o AGENTE LOCAL. Com o agente online na mesma LAN, o miner será sondado e registrado automaticamente — o Render nunca conecta em 192.168.x.x.",
                 }
             ),
-            403,
+            202,
         )
 
     # ── Fase 4 · B3: plan enforcement — the FREE tier caps workers per
@@ -1824,11 +1841,27 @@ def diagnose_device(ip_or_host: str):
     # AxeOS HTTP :80 and cgminer TCP :4028.
     port = request.args.get("port", 80, type=int)
     try:
+        from config import is_cloud_deploy
+        from .scanner import diagnose_host as _diagnose_host, is_private_ip
+
+        if is_cloud_deploy() and is_private_ip(ip_or_host):
+            return (
+                jsonify(
+                    {
+                        "ip": ip_or_host,
+                        "port": port,
+                        "is_cloud": True,
+                        "reachable": False,
+                        "error": True,
+                        "error_type": "CLOUD_PRIVATE_IP",
+                        "error_detail": "Este dashboard está na nuvem e não alcança IPs da LAN. Use o AGENTE LOCAL (Fleet → CONNECT AGENT) ou adicione o IP para o agente sondar.",
+                    }
+                ),
+                400,
+            )
         # Unified diagnosis: AxeOS HTTP (:80) + cgminer TCP (:4028) with
         # per-protocol flags so the onboarding wizard can render a
         # step-by-step connectivity report (DNS → Bitaxe → cgminer).
-        from .scanner import diagnose_host as _diagnose_host
-
         result = _diagnose_host(ip_or_host)
         result["port"] = port
         return jsonify(result)
@@ -1878,7 +1911,22 @@ def detect_firmware_endpoint(ip_or_host: str, tenant_id: str = ""):
     try:
         from core.registry.detector import detect_firmware, resolve_private_target
 
+        from config import is_cloud_deploy
+        from .scanner import is_private_ip
+
         target = resolve_private_target(ip_or_host)
+        if is_cloud_deploy() and is_private_ip(target):
+            return (
+                jsonify(
+                    {
+                        "firmware": "unknown",
+                        "reachable": False,
+                        "is_cloud": True,
+                        "error": "private LAN IP unreachable from cloud deploy",
+                    }
+                ),
+                400,
+            )
         result = detect_firmware(target)
         return jsonify(result)
     except ValueError as e:
@@ -3063,12 +3111,25 @@ def fleet_health(tenant_id: str = ""):
 
     for d in devices:
         did = d["id"]
-        tel_raw = _registry.get_recent_telemetry(did, limit=1, tenant_id=tenant_id)
+        tel_raw = _registry.get_recent_telemetry(did, limit=50, tenant_id=tenant_id)
         # Hardening: trust only well-formed telemetry payloads. Legacy rows
         # written before the poll fix may be a bare {"device_id": ...} stub —
         # treat those as empty so the UI never shows zeroed fake data.
         tel = _latest_telemetry(tel_raw)
         status = d.get("status", "OFFLINE")
+        from .models import STATUS_STALE, is_telemetry_stale
+
+        try:
+            evidence_ts = int((tel or {}).get("ts") or d.get("last_seen") or 0)
+        except (TypeError, ValueError):
+            evidence_ts = 0
+        if (
+            status in ("ONLINE", "IDLE", "HASHING")
+            and evidence_ts > 0
+            and is_telemetry_stale(evidence_ts, now=now)
+        ):
+            status = STATUS_STALE
+            d["status"] = STATUS_STALE
 
         # Calculate health score
         health_score = infer_health_score(tel) if tel else 0
