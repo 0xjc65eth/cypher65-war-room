@@ -12,7 +12,7 @@ cryptography==50.0.1
 pywebpush>=2.5.0
 # CFO quick-win: gzip/brotli compression of JSON/HTML responses (smaller
 # snapshot/history payloads on mobile/slow links, near-zero CPU cost).
-flask-compress==1.24
+flask-compress==1.25
 # Renders docs/AGENT_SETUP_GUIDE.md at /docs/agent (guide page inside the app).
 markdown==3.10.3
 # Sentry error tracking is OPTIONAL (Issue #176): services/sentry_telemetry
