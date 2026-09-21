@@ -2431,14 +2431,24 @@ def _persist_best_diff_history(
     best_diff_str: str,
     device_id: str = "",
     pool: str = "",
+    tenant_id: str = "default",
 ):
     """Persist a new best-difficulty record to the SQLite history table."""
     try:
         conn = get_db()
         c = conn.cursor()
         c.execute(
-            "INSERT INTO best_diff_history (ts, device_id, best_diff, best_diff_str, pool) VALUES (?, ?, ?, ?, ?)",
-            (int(ts), device_id or "", best_diff_raw, best_diff_str or "", pool or ""),
+            "INSERT INTO best_diff_history "
+            "(ts, device_id, best_diff, best_diff_str, pool, tenant_id) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                int(ts),
+                device_id or "",
+                best_diff_raw,
+                best_diff_str or "",
+                pool or "",
+                tenant_id or "default",
+            ),
         )
         conn.commit()
         conn.close()
@@ -5219,11 +5229,14 @@ def api_analytics_track():
 #  Block Hunt + Best Difficulty (Milestone 6)
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 def _get_best_diff_history(
-    device_id: Optional[str] = None, limit: int = 100
+    device_id: Optional[str] = None,
+    limit: int = 100,
+    tenant_id: str = "default",
 ) -> List[Dict[str, Any]]:
     """Return best-difficulty history records, newest first.
 
-    If device_id is provided, filter to that device. Otherwise all records.
+    Every query is tenant-scoped. If device_id is provided, filter to that
+    device inside the tenant; otherwise return that tenant's records only.
     """
     records: List[Dict[str, Any]] = []
     try:
@@ -5232,15 +5245,16 @@ def _get_best_diff_history(
         if device_id:
             c.execute(
                 "SELECT ts, device_id, best_diff, best_diff_str, pool "
-                "FROM best_diff_history WHERE device_id = ? "
+                "FROM best_diff_history WHERE tenant_id = ? AND device_id = ? "
                 "ORDER BY ts DESC, id DESC LIMIT ?",
-                (device_id, limit),
+                (tenant_id or "default", device_id, limit),
             )
         else:
             c.execute(
                 "SELECT ts, device_id, best_diff, best_diff_str, pool "
-                "FROM best_diff_history ORDER BY ts DESC, id DESC LIMIT ?",
-                (limit,),
+                "FROM best_diff_history WHERE tenant_id = ? "
+                "ORDER BY ts DESC, id DESC LIMIT ?",
+                (tenant_id or "default", limit),
             )
         for r in c.fetchall():
             records.append(
@@ -5277,19 +5291,24 @@ def api_block_hunt():
 
 
 @app.route("/api/best-diff-history", methods=["GET"])
-def api_best_diff_history():
-    """Return the global best-difficulty history."""
+@require_tenant
+@role_required("viewer")
+def api_best_diff_history(tenant_id: str = ""):
+    """Return best-difficulty history for the caller's tenant."""
     limit = request.args.get("limit", 100, type=int)
     return jsonify(
         {
             "success": True,
-            "records": _get_best_diff_history(device_id=None, limit=limit),
+            "records": _get_best_diff_history(
+                device_id=None, limit=limit, tenant_id=tenant_id
+            ),
         }
     )
 
 
 @app.route("/api/devices/<device_id>/best-diff-history", methods=["GET"])
 @require_tenant
+@role_required("viewer")
 def api_device_best_diff_history(device_id: str, tenant_id: str = ""):
     """Return the best-difficulty history for a specific device."""
     limit = request.args.get("limit", 100, type=int)
@@ -5297,7 +5316,9 @@ def api_device_best_diff_history(device_id: str, tenant_id: str = ""):
         {
             "success": True,
             "device_id": device_id,
-            "records": _get_best_diff_history(device_id=device_id, limit=limit),
+            "records": _get_best_diff_history(
+                device_id=device_id, limit=limit, tenant_id=tenant_id
+            ),
         }
     )
 
