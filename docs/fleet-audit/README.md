@@ -11,7 +11,7 @@ a partir de `master` (squash do PR #625, wave W3).
 | [`01-code-map.md`](./01-code-map.md) | Mapa de código: módulos, rotas, frontend, grafo de dependências |
 | [`agent-ledger.md`](./agent-ledger.md) | Ledger de achados (F1–F10) com evidência, teste e status |
 | [`pool-matrix.md`](./pool-matrix.md) | Matriz de pools verificada + veredito sobre os pools citados no relato |
-| [`test-matrix.md`](./test-matrix.md) | Matriz de testes T01–T26 com automação e lacunas |
+| [`test-matrix.md`](./test-matrix.md) | Matriz de testes T01–T28 com automação e lacunas |
 
 ## Arquitetura (antes → depois)
 
@@ -64,7 +64,7 @@ a partir de `master` (squash do PR #625, wave W3).
 | Descoberta por pool | ✅ (parcial) | workers visíveis no pool ≠ device físico; identidade só após correlação |
 | Telemetria contínua | via agente | heartbeat vazio agora é honesto (não mantém verde) |
 
-## Evidência executada nesta branch
+## Evidência registrada na auditoria #627
 
 ```
 pytest regressões Fleet ......... 34 passed (nova suíte)
@@ -73,6 +73,30 @@ JS core ......................... 1525 passed + drift check ok
 e2e Playwright (BUG A) .......... 6 passed (desktop + mobile)
 Black/flake8 .................... clean
 ```
+
+## Continuação Stratum (Issue #635)
+
+Validação local das suítes de componentes em 2026-09-19:
+
+```
+Componentes SV2 (#630/#631) ...... 23 passed
+Componentes V1 (#635) ........... 34 passed
+Suítes Stratum relacionadas ..... 120 passed
+Black/flake8 + git diff --check .. clean
+```
+
+Os 120 testes incluem as duas suítes acima, `test_stratum_v1_probe.py`,
+`test_stratum_v1_fuzz_redteam.py` e `test_stratum_v2_adapter.py`.
+O follow-up V1 testa resposta parcial seguida de EOF com erro
+`connection_closed`, registra todos os envios do probe para exigir somente
+`mining.subscribe` e verifica capabilities e observações de protocolo.
+
+As suítes compõem funções de `pool_intelligence` com URLs sintéticas e labs
+TCP locais. DNS e latência são fixtures; o socket redireciona o endereço para
+loopback. SSL/TLS têm cobertura de parsing, sem handshake nestas duas suítes.
+Os resultados não demonstram ingestão/rotas/persistência Fleet, conexão com ASIC
+físico ou pool público, nem comportamento no cloud. Não há mudança de produção.
+Os resultados históricos de #627 acima não foram reexecutados neste follow-up.
 
 ## Regras permanentes extraídas
 

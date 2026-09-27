@@ -1,7 +1,10 @@
 # Test Matrix — Fleet audit (Issue #627)
 
 Cobertura automatizada por cenário. Fontes: `tests/test_fleet_audit_regressions.py`
-(34 testes), `tests/e2e/fleet-agentless-manual-add.spec.js`, suítes existentes.
+(34 testes), `tests/e2e/fleet-agentless-manual-add.spec.js`,
+`tests/test_fleet_stratum_v1_pipeline.py` (34 testes),
+`tests/test_fleet_stratum_v2_pipeline.py` (23 testes), suítes existentes.
+O follow-up Stratum V1 é rastreado pela Issue #635.
 
 | ID | Cenário | Agente | Miner | Pool | Protocolo | Esperado | Automatizado | Resultado | Evidência / Teste |
 |---|---|---|---|---|---|---|---|---|---|
@@ -31,6 +34,8 @@ Cobertura automatizada por cenário. Fontes: `tests/test_fleet_audit_regressions
 | T24 | Simulador AxeOS serve payload canônico | — | ✅ (virtual) | — | HTTP | hashRate→hashrate, bestDiff:0 | ✅ e2e/fixture | ✅ | `test_validate_physical_evidence` + e2e scan |
 | T25 | Rota ecoa status persistido (não re-deriva) | ✅ | — | — | — | OFFLINE ecoado | ✅ API | ✅ | `TestEmptyHeartbeatAccepted` |
 | T26 | Regressão: suítes Fleet completas | ✅ | ✅ | ✅ | — | 470 passed | ✅ pytest | ✅ | `pytest tests/test_fleet_audit_regressions.py tests/test_agent_api.py tests/test_axe_fleet_scanner.py tests/test_fleet_pause_status.py tests/test_axeos_connector.py` |
+| T27 | Componentes V1: parsing `stratum+tcp/ssl/tls`, detecção de provider, probe TCP local e capability `protocol.stratum_v1.subscribe` | — | — (URL fixture) | V1 lab | Stratum V1 | SUPPORTED/ERROR; todos os envios do caso read-only contêm só `mining.subscribe`; EOF retorna `connection_closed` | ✅ pytest | ✅ | `tests/test_fleet_stratum_v1_pipeline.py` (34 testes, #635) |
+| T28 | Scheme ≠ versão nos probes: `stratum2+tcp` contra lab V1 observa V1; probe V2 com `stratum+tcp` contra lab V2 observa V2 (probe V1 não declara V1) | — | — (URL fixture) | V1+V2 lab | ambos | observação vence o scheme | ✅ pytest | ✅ | `TestSchemeIsNotVersionEvidence` |
 
 ## Cobertura e2e (Playwright)
 
@@ -43,13 +48,35 @@ Cobertura automatizada por cenário. Fontes: `tests/test_fleet_audit_regressions
   empty-state runtime passou a carregar legitimamente esse botão (F2). Specs
   atualizados nesta branch; dashboard 58/58 local.
 
-## Lacunas conhecidas (não automatizadas)
+## Cobertura Stratum e limites (Issues #630 e #635)
 
-- ~~Stratum V2 sem suíte consumidora no Fleet~~ — **fechada pelo PR #631** (Issue #630):
-  `tests/test_fleet_stratum_v2_pipeline.py` cobre o pipeline ASIC → parsing
-  (`stratum2+tcp/ssl/tls`) → detecção → probe passivo no lab → capability.
-  A adaptação original da auditoria estava imprecisa: o adaptador SV2 já tinha
-  suíte própria (`test_stratum_v2_adapter.py`). Stratum V1 segue com lacuna
-  análoga (lab existe, sem consumidor end-to-end no Fleet).
+- **V2 (#630/PR #631):** 23 testes em `test_fleet_stratum_v2_pipeline.py`
+  exercitam parsing, detecção, probe TCP local e capability. O adaptador já tinha
+  sua própria suíte (`test_stratum_v2_adapter.py`); não estava ausente.
+- **V1 (#635, T27/T28):** 34 testes em `test_fleet_stratum_v1_pipeline.py`
+  exercitam os componentes equivalentes, normalização de endpoint
+  (`host:port` ≡ `stratum+tcp://host:port`), registro de todos os `sendall` do
+  caso read-only, falhas sanitizadas e resposta parcial seguida de EOF.
+  A normalização não prova deduplicação de dispositivos no registry Fleet.
+  O lab V1 já existia; este follow-up não altera produção.
+- **Protocolo observado:** probes V1/V2 são chamados explicitamente nos testes;
+  T28 verifica os dois sentidos da regra scheme ≠ versão. Isso não demonstra
+  seleção automática de protocolo no Fleet.
+- **Limites do ambiente:** DNS e latência são fixtures. Os sockets redirecionam
+  o destino numérico para labs TCP em loopback; não validam DNS real, pinning do
+  destino ou alcance de pools públicos. `ssl/tls` têm cobertura de parsing e
+  roundtrip, sem handshake TLS nestas duas suítes. Ingestão de telemetria,
+  scanner, rotas, persistência Fleet, ASIC físico e cloud ficam fora deste teste
+  de integração entre componentes.
+- **Execução local em 2026-09-19:** 120 testes passaram nas duas suítes Fleet
+  Stratum, `test_stratum_v1_probe.py`, `test_stratum_v1_fuzz_redteam.py` e
+  `test_stratum_v2_adapter.py`; Black, flake8 e `git diff --check` passaram.
+  A evidência histórica T01–T26 não foi reexecutada neste follow-up.
+
+## Lacunas conhecidas (não automatizadas por este follow-up)
+
+- Integração Fleet completa com ingestão de telemetria até observação de
+  protocolo/capability, incluindo seleção do probe e persistência.
+- Handshake TLS e operação com ASIC/pool reais ou implantação cloud.
 - Chaos matrix completa (reboot do miner, troca de IP/MAC, DNS failure) — parcialmente coberta pelos testes de staleness T06–T11; cenários de rede real exigem ambiente físico.
 - Eventos estruturados `fleet.*` (R7 do review) — Issue #629.
