@@ -79,6 +79,43 @@ test.describe('Fleet agentless · manual add always reachable (#627)', () => {
     await expect(page.locator('#axe-add-form')).toBeVisible();
   });
 
+  test('cloud wizard offers CONNECT AGENT and surfaces the API message (#637)', async ({ page }) => {
+    await page.route('**/api/axe-fleet/scan/subnets', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ subnets: [], is_cloud: true }),
+      });
+    });
+    await page.route('**/api/axe-fleet/scan', async (route) => {
+      if (route.request().method() === 'POST') {
+        await route.fulfill({
+          status: 400,
+          contentType: 'application/json',
+          body: JSON.stringify({
+            success: false,
+            is_cloud: true,
+            error: 'subnet scan unavailable on cloud deploy',
+            message: 'Este dashboard roda na nuvem e não alcança a sua LAN. Instale o AGENTE LOCAL (Fleet → CONNECT AGENT) — ele roda na sua rede, descobre os miners e conecta para fora.',
+          }),
+        });
+        return;
+      }
+      await route.continue();
+    });
+
+    await gotoShell(page);
+    await page.click('#axe-fleet-add');
+    const agentCard = page.locator('[data-wiz-method="agent"]');
+    await expect(agentCard).toBeVisible();
+    await expect(agentCard).toContainText('CONNECT AGENT');
+    await expect(page.locator('[data-wiz-method="scan"] .axe-wiz__method-desc')).toContainText('local agent');
+
+    await agentCard.click();
+    await expect(page.locator('#axe-agent-panel')).toBeVisible();
+    await expect(page.locator('#axe-agent-gen')).toBeVisible();
+  });
+
   test('scan refusal on cloud names the alternative instead of dead-ending', async ({ page }) => {
     await gotoShell(page);
 

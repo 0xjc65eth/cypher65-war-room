@@ -7,6 +7,8 @@ Registered in app.py with minimal integration.
 Endpoints:
   GET    /api/axe-fleet/devices          — list all devices
   POST   /api/axe-fleet/devices          — add a new device
+  GET    /api/axe-fleet/devices/removed  — list tombstoned devices
+  POST   /api/axe-fleet/devices/restore  — clear a tombstone (operator intent)
   DELETE /api/axe-fleet/devices/<id>     — remove a device
   GET    /api/axe-fleet/devices/<id>     — get device detail + telemetry
   POST   /api/axe-fleet/devices/<id>/refresh — re-detect capabilities
@@ -413,6 +415,10 @@ def add_device(tenant_id: str = ""):
     from .scanner import is_private_ip
 
     if is_cloud_deploy() and is_private_ip(ip):
+        # Operator typed this IP on cloud: that is restore intent for a
+        # previously removed miner. Clearing the tombstone does not probe
+        # the address — the agent on the LAN does.
+        restored = _registry.clear_tombstone(ip, tenant_id=tenant_id)
         queued = _registry.enqueue_agent_command(
             "_probe",
             "probe",
@@ -423,7 +429,11 @@ def add_device(tenant_id: str = ""):
             tenant_id,
             "fleet.device_probe_queued",
             target=ip,
-            details={"reason": "cloud_private_ip_agent_probe", "queued": bool(queued)},
+            details={
+                "reason": "cloud_private_ip_agent_probe",
+                "queued": bool(queued),
+                "tombstone_cleared": bool(restored),
+            },
         )
         return (
             jsonify(
@@ -431,6 +441,7 @@ def add_device(tenant_id: str = ""):
                     "success": True,
                     "queued": True,
                     "is_cloud": True,
+                    "restored": bool(restored),
                     "command_id": (queued or {}).get("id"),
                     "error": None,
                     "message": "IP privado enfileirado para o AGENTE LOCAL. Com o agente online na mesma LAN, o miner será sondado e registrado automaticamente — o Render nunca conecta em 192.168.x.x.",
@@ -542,6 +553,73 @@ def add_device(tenant_id: str = ""):
     except Exception as e:
         log.error("[axe] add_device enrich error: %s", e)
         return jsonify({"success": True, "device": device}), 201
+
+
+@axe_fleet_bp.route("/devices/removed", methods=["GET"])
+@require_tenant
+@_role_required("viewer")
+def list_removed_devices(tenant_id: str = ""):
+    """Tombstoned miners for this tenant. Restore is a separate POST."""
+    if _registry is None:
+        return jsonify({"error": "registry not initialized"}), 500
+    removed = _registry.list_removed(tenant_id=tenant_id)
+    return jsonify(
+        {
+            "devices": removed,
+            "count": len(removed),
+            "tenant_id": tenant_id,
+        }
+    )
+
+
+@axe_fleet_bp.route("/devices/restore", methods=["POST"])
+@require_tenant
+@_role_required("member")
+def restore_removed_device(tenant_id: str = ""):
+    """Clear a tombstone so the local agent may register the miner again.
+
+    Body: { "ip_address": "192.168.1.10" }
+
+    This is operator intent. It never probes the IP and never inserts an
+    active device, so a cloud deploy cannot use restore as an SSRF path
+    to private addresses. Auto-resurrection without this call stays blocked.
+    """
+    if _registry is None:
+        return jsonify({"error": "registry not initialized"}), 500
+    data = request.get_json(silent=True) or {}
+    ip = (data.get("ip_address") or "").strip()
+    if not ip:
+        return jsonify({"success": False, "error": "ip_address is required"}), 400
+    cleared = _registry.clear_tombstone(ip, tenant_id=tenant_id)
+    if not cleared:
+        return (
+            jsonify(
+                {
+                    "success": False,
+                    "error": "no removed device for this IP",
+                    "ip_address": ip,
+                }
+            ),
+            404,
+        )
+    _log_audit(
+        tenant_id,
+        "fleet.device_restored",
+        target=cleared.get("id") or ip,
+        details={"ip": ip, "name": cleared.get("name") or ""},
+    )
+    return jsonify(
+        {
+            "success": True,
+            "restored": True,
+            "ip_address": ip,
+            "device_id": cleared.get("id"),
+            "message": (
+                "Tombstone removido. O AGENTE LOCAL pode registrar este miner "
+                "de novo — o dashboard na nuvem não conecta no IP privado."
+            ),
+        }
+    )
 
 
 @axe_fleet_bp.route("/devices/<device_id>", methods=["DELETE"])

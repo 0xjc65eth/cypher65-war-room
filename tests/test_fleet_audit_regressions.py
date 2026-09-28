@@ -233,6 +233,8 @@ class TestFleetAgentless:
         html = resp.get_data(as_text=True)
         assert 'data-wiz-method="manual"' in html, "manual method card missing"
         assert "Enter IP manually" in html
+        assert 'data-wiz-method="agent"' in html, "agent method card missing"
+        assert "CONNECT AGENT" in html
         assert 'id="axe-empty-add"' in html, "empty-state add button missing"
         assert "+ Add Device" in html
 
