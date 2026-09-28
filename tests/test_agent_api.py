@@ -1138,3 +1138,35 @@ class TestTombstoneNoZombies:
         assert registry.gc_tombstones(max_age_days=30) == 1
         assert registry.get_removed_by_ip("192.168.1.75", tenant_id="acme") == {}
         assert registry.get_recent_telemetry(dev["id"], tenant_id="acme") == []
+
+
+class TestAgentHeartbeat:
+    def test_heartbeat_marks_agent_alive_without_miners(self, client, agent_token):
+        resp = client.post(
+            "/api/agent/heartbeat",
+            headers=_headers(agent_token),
+            json={
+                "result": "no_devices",
+                "host_count": 254,
+                "found": 0,
+                "truncated": False,
+                "subnet_count": 1,
+                "prefix_lens": [24],
+                "ip": "192.168.1.50",
+            },
+        )
+        assert resp.status_code == 200
+        info = resp.get_json()["agent"]
+        assert info["alive"] is True
+        assert info["scan"]["result"] == "no_devices"
+        assert info["scan"]["found"] == 0
+        assert "192.168.1" not in str(info)
+
+        health = client.get("/api/axe-fleet/health", headers=_headers(
+            create_token(subject="acme", extra_claims={"role": "admin"})
+        ))
+        assert health.status_code == 200
+        agent_info = health.get_json()["agent"]
+        assert agent_info["alive"] is True
+        assert agent_info["scan"]["host_count"] == 254
+        assert agent_info["scan"]["result"] == "no_devices"
