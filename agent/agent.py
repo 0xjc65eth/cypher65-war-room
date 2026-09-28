@@ -57,6 +57,7 @@ TCP_TIMEOUT = 1.0  # per cgminer TCP probe
 SCAN_WORKERS = 64
 MAX_HOSTS = 1024
 RESCAN_EVERY = 10  # full LAN re-scan every N poll cycles (new miners)
+_LAST_SCAN_REPORT = {}
 
 # Protocol ports. Defaults match real hardware (AxeOS HTTP :80, cgminer
 # JSON-over-TCP :4028, Braiins OS+ REST alt :50051); overridable via env for
@@ -203,8 +204,58 @@ def _local_ipv4_addresses():
     return out
 
 
+def _interface_cidrs():
+    """Best-effort IPv4 CIDRs from local interfaces (stdlib, POSIX ioctl).
+
+    Returns [] when ioctl is unavailable so callers fall back to /24s.
+    Skips loopback, link-local, and typical virtual bridges.
+    """
+    import ipaddress
+    import struct
+
+    try:
+        names = socket.if_nameindex()
+    except (OSError, AttributeError):
+        return []
+    try:
+        import fcntl
+    except ImportError:
+        return []
+    skip_prefix = ("lo", "utun", "awdl", "llw", "gif", "stf", "anpi", "bridge")
+    skip_exact = {"docker0", "veth", "br-"}
+    out = []
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        for _idx, name in names:
+            if name.startswith(skip_prefix) or name in skip_exact:
+                continue
+            if name.startswith("veth") or name.startswith("br-"):
+                continue
+            packed = struct.pack("256s", name.encode("utf-8")[:15])
+            try:
+                # Linux SIOCGIFADDR / SIOCGIFNETMASK. Other kernels raise OSError.
+                addr = socket.inet_ntoa(fcntl.ioctl(s, 0x8915, packed)[20:24])
+                mask = socket.inet_ntoa(fcntl.ioctl(s, 0x891B, packed)[20:24])
+            except OSError:
+                continue
+            if addr.startswith(("127.", "169.254.", "0.")):
+                continue
+            try:
+                prefix = ipaddress.IPv4Network(f"0.0.0.0/{mask}").prefixlen
+                cidr = str(ipaddress.IPv4Network(f"{addr}/{prefix}", strict=False))
+            except ValueError:
+                continue
+            if cidr not in out:
+                out.append(cidr)
+    finally:
+        s.close()
+    return out
+
+
 def _default_subnets():
-    subnets = []
+    subnets = list(_interface_cidrs())
+    if subnets:
+        return subnets
     for ip in _local_ipv4_addresses():
         parts = ip.split(".")
         if (
@@ -218,22 +269,73 @@ def _default_subnets():
     return subnets
 
 
-def _expand_cidr(cidr):
+def _expand_cidr(cidr, limit=MAX_HOSTS):
+    """Expand a CIDR/range without materializing the whole network.
+
+    A /8 has 16M hosts; building that list then slicing OOMs. Iterate the
+    generator and stop at ``limit``.
+    """
     import ipaddress
 
     try:
         if "/" in cidr:
-            return [str(h) for h in ipaddress.ip_network(cidr, strict=False).hosts()][
-                :MAX_HOSTS
-            ]
+            net = ipaddress.ip_network(cidr, strict=False)
+            hosts = []
+            for i, h in enumerate(net.hosts()):
+                if i >= limit:
+                    break
+                hosts.append(str(h))
+            return hosts
         if "-" in cidr:
             base, _, last = cidr.rpartition("-")
             head = ".".join(base.split(".")[:3])
             first = int(base.split(".")[3])
-            return [f"{head}.{i}" for i in range(first, int(last) + 1)][:MAX_HOSTS]
+            end = int(last)
+            if first < 0 or end < first:
+                return []
+            end = min(end, first + limit - 1, 255)
+            return [f"{head}.{i}" for i in range(first, end + 1)]
         return [cidr]
     except Exception:
         return []
+
+
+def _cidr_truncated(cidr, limit=MAX_HOSTS):
+    import ipaddress
+
+    try:
+        if "/" not in cidr:
+            return False
+        net = ipaddress.ip_network(cidr, strict=False)
+        usable = max(int(net.num_addresses) - 2, 0)
+        if net.prefixlen >= 31:
+            usable = int(net.num_addresses)
+        return usable > limit
+    except Exception:
+        return False
+
+
+def _pending_identity(ip):
+    """Explicit host that has not answered a protocol yet — not a Bitaxe."""
+    return {
+        "ip": ip,
+        "type": "unknown",
+        "model": "",
+        "firmware": "",
+        "version": "",
+        "hostname": "",
+        "mac": "",
+        "hashrate_hs": 0,
+        "pending": True,
+    }
+
+
+def _identity_unresolved(dev):
+    if not dev:
+        return True
+    if dev.get("pending"):
+        return True
+    return str(dev.get("type") or "").lower() in ("", "unknown")
 
 
 def _extract_json_lenient(raw):
@@ -437,27 +539,61 @@ def _probe_host(ip):
     return None
 
 
+def scan_report(subnets, hosts, found, truncated, explicit=False):
+    """Sanitized scan diagnostic: no device IPs, no credentials."""
+    prefixes = []
+    for cidr in subnets:
+        if explicit or cidr == "explicit":
+            continue
+        if "/" in str(cidr):
+            try:
+                prefixes.append(int(str(cidr).split("/")[-1]))
+            except ValueError:
+                continue
+    if not hosts:
+        result = "no_lan"
+    elif found:
+        result = "ok"
+    else:
+        result = "no_devices"
+    return {
+        "result": result,
+        "host_count": len(hosts),
+        "found": len(found) if not isinstance(found, int) else found,
+        "truncated": bool(truncated),
+        "subnet_count": 0 if explicit else len(subnets),
+        "prefix_lens": prefixes,
+        "explicit": bool(explicit),
+    }
+
+
 def scan_lan():
     """Scan the configured subnet(s) and return discovered devices."""
+    devices, _report = scan_lan_with_report()
+    return devices
+
+
+def scan_lan_with_report():
+    """Scan plus a sanitized diagnostic (Issue #638)."""
+    global _LAST_SCAN_REPORT
     hosts = []
     subnets = [SCAN_CIDR] if SCAN_CIDR else _default_subnets()
     scan_id = f"{int(time.time())}-{os.getpid()}"
+    truncated = False
+    explicit = bool(EXPLICIT_DEVICES)
     if EXPLICIT_DEVICES:
         hosts = list(EXPLICIT_DEVICES)
         subnets = ["explicit"]
     else:
         for cidr in subnets:
             hosts += _expand_cidr(cidr)
+            truncated = truncated or _cidr_truncated(cidr)
     found = []
-    log.info(
-        "[FLEET_SCAN] scan_id=%s subnet=%s hosts=%s",
-        scan_id,
-        ",".join(subnets) or "none",
-        len(hosts),
-    )
     if not hosts:
+        report = scan_report(subnets, hosts, found, truncated, explicit=explicit)
+        _LAST_SCAN_REPORT = report
         log.warning("[FLEET_SCAN] scan_id=%s result=NO_LAN_INTERFACE", scan_id)
-        return found
+        return found, report
     with ThreadPoolExecutor(max_workers=min(SCAN_WORKERS, len(hosts))) as ex:
         futs = {ex.submit(_probe_host, ip): ip for ip in hosts}
         for fut in as_completed(futs):
@@ -475,13 +611,17 @@ def scan_lan():
                     r.get("type"),
                     r.get("model"),
                 )
+    report = scan_report(subnets, hosts, found, truncated, explicit=explicit)
+    _LAST_SCAN_REPORT = report
     log.info(
-        "[FLEET_SCAN] scan_id=%s hosts=%s miners=%s",
+        "[FLEET_SCAN] scan_id=%s hosts=%s miners=%s truncated=%s result=%s",
         scan_id,
-        len(hosts),
-        len(found),
+        report["host_count"],
+        report["found"],
+        report["truncated"],
+        report["result"],
     )
-    return found
+    return found, report
 
 
 # ── Telemetry polling (normalized shape, mirrors registry extract_telemetry) ─
@@ -561,6 +701,8 @@ def _poll_telemetry(dev):
     """Fetch one device's telemetry. Returns normalized dict (hashrate_hs,
     temperature, fan_rpm, power_watts, best_diff, shares_*, ...) or {}."""
     ip = dev["ip"]
+    if _identity_unresolved(dev):
+        return {}
     if dev.get("type") == "bitaxe":
         info = _probe_axeos(ip)
         if not isinstance(info, dict):
@@ -748,54 +890,50 @@ def main():
     log.info("scanning LAN…")
     discovered = scan_lan()
     log.info("discovered %d device(s)", len(discovered))
+    _post(
+        "/api/agent/heartbeat",
+        _LAST_SCAN_REPORT
+        or scan_report(
+            [], discovered, discovered, False, explicit=bool(EXPLICIT_DEVICES)
+        ),
+    )
     blocked_ips = set()
+    known = {}
+
+    def ingest_blocked(resp):
+        for b in resp.get("blocked") or []:
+            ip = b.get("ip")
+            if ip:
+                blocked_ips.add(ip)
+                known.pop(ip, None)
+
     if discovered:
         code, resp = _post_retry("/api/agent/register", {"devices": discovered})
         if code in (200, 201):
             log.info("registered %s", resp.get("count"))
-            blocked = resp.get("blocked") or []
-            if blocked:
-                # Plan worker cap hit: the server refused NEW devices. The
-                # operator must free a slot or upgrade — surface it once so
-                # the agent log explains why some miners never appear, and
-                # drop them from the poll set so we don't 403-spam the server
-                # with telemetry pushes for devices that were never admitted.
-                blocked_ips = {b.get("ip") for b in blocked if b.get("ip")}
+            ingest_blocked(resp)
+            if blocked_ips:
                 log.warning(
-                    "plan worker limit: %d device(s) blocked — %s",
+                    "register blocked %d device(s) — %s",
                     len(blocked_ips),
-                    resp.get("message")
-                    or "remova devices ou aumente o limite do plano",
+                    resp.get("message") or "plan cap or removed by operator",
                 )
+            for d in discovered:
+                if d["ip"] not in blocked_ips:
+                    known[d["ip"]] = d
         else:
             log.warning("register failed (HTTP %s): %s", code, resp.get("error"))
+            for d in discovered:
+                known[d["ip"]] = d
 
-    known = {d["ip"]: d for d in discovered}
-    # Even if the scan found nothing, allow explicit IPs via CYPHER65_DEVICES.
-    # Run the FULL discovery probe (AxeOS :80 THEN cgminer :4028) so an
-    # explicit cgminer IP is detected as such — hardcoding type=bitaxe would
-    # only ever try :80 and miss every cgminer/ASIC miner.
+    # Explicit IPs stay in the map even when offline, but WITHOUT a fake
+    # Bitaxe identity — rescan must still be able to classify them as
+    # cgminer/Braiins when they come up (Issue #638).
     for ip in EXPLICIT_DEVICES:
-        if ip in known:
+        if ip in blocked_ips or ip in known:
             continue
         probed = _probe_host(ip)
-        if probed:
-            known[ip] = probed
-        else:
-            known[ip] = {
-                "ip": ip,
-                "type": "bitaxe",
-                "model": "Bitaxe",
-                "firmware": "",
-                "version": "",
-                "hostname": "",
-                "mac": "",
-                "hashrate_hs": 0,
-            }
-    # Never poll/push devices the server refused (plan cap) — each push would
-    # 403 forever and the dashboard would never show them anyway.
-    for ip in blocked_ips:
-        known.pop(ip, None)
+        known[ip] = probed if probed else _pending_identity(ip)
 
     cycle = 0
     while True:
@@ -805,6 +943,8 @@ def main():
         # dropping it does not interrupt polling the remaining miners.
         drop = []
         for ip, dev in list(known.items()):
+            if ip in blocked_ips or _identity_unresolved(dev):
+                continue
             tel = _poll_telemetry(dev)
             # Push UNCONDITIONALLY: `telemetry: {}` is legal presence evidence,
             # not proof of device health. The server preserves/degrades status
@@ -829,6 +969,10 @@ def main():
                 # back through the agent path.
                 log.warning("device %s removed by operator on dashboard — dropping", ip)
                 drop.append(ip)
+                blocked_ips.add(ip)
+            elif code == 403:
+                drop.append(ip)
+                blocked_ips.add(ip)
         for ip in drop:
             known.pop(ip, None)
         # 3 · Pull queued commands and execute them locally.
@@ -853,29 +997,39 @@ def main():
         if cycle % RESCAN_EVERY == 0:
             log.info("re-scanning LAN for new miners…")
             fresh = scan_lan()
-            new = [d for d in fresh if d["ip"] not in known]
-            if new:
-                code, resp = _post_retry("/api/agent/register", {"devices": new})
+            _post(
+                "/api/agent/heartbeat",
+                _LAST_SCAN_REPORT
+                or scan_report(
+                    [], fresh, fresh, False, explicit=bool(EXPLICIT_DEVICES)
+                ),
+            )
+            candidates = []
+            for d in fresh:
+                ip = d["ip"]
+                if ip in blocked_ips:
+                    continue
+                existing = known.get(ip)
+                if existing is None or _identity_unresolved(existing):
+                    candidates.append(d)
+                elif existing.get("type") != d.get("type"):
+                    candidates.append(d)
+            if candidates:
+                code, resp = _post_retry("/api/agent/register", {"devices": candidates})
                 log.info(
                     "registered %d new device(s)",
                     code in (200, 201) and resp.get("count") or 0,
                 )
                 if code in (200, 201):
-                    # Only trust the register response: devices the server
-                    # admitted go into the poll set; devices it refused (plan
-                    # cap OR tombstoned/removed) must NOT be polled/pushed —
-                    # otherwise telemetry 403-spams forever for refused ones.
-                    admitted = {
-                        b.get("ip") for b in (resp.get("blocked") or []) if b.get("ip")
-                    }
-                    for d in new:
-                        if d["ip"] not in admitted:
-                            known[d["ip"]] = d
-                        else:
+                    ingest_blocked(resp)
+                    for d in candidates:
+                        if d["ip"] in blocked_ips:
                             log.warning(
                                 "device %s refused by server (plan cap / removed) — skipping",
                                 d["ip"],
                             )
+                            continue
+                        known[d["ip"]] = d
                 else:
                     log.warning(
                         "re-register failed (HTTP %s): %s", code, resp.get("error")

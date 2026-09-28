@@ -3395,6 +3395,7 @@ def fleet_health(tenant_id: str = ""):
             },
             "device_health": device_health_list,
             "groups": groups,
+            "agent": agent_presence(tenant_id, now),
         }
     )
 
@@ -3745,6 +3746,77 @@ def agent_revoke_tokens(tenant_id: str = ""):
             ),
         }
     )
+
+
+_agent_heartbeats = {}
+_agent_heartbeats_lock = threading.Lock()
+_AGENT_HEARTBEAT_TTL_S = 90
+
+
+def _store_agent_heartbeat(tenant_id: str, payload: dict) -> dict:
+    """Keep the last sanitized scan diagnostic per tenant (Issue #638)."""
+    allowed = {
+        "result",
+        "host_count",
+        "found",
+        "truncated",
+        "subnet_count",
+        "prefix_lens",
+        "explicit",
+    }
+    clean = {k: payload.get(k) for k in allowed}
+    prefixes = clean.get("prefix_lens") or []
+    if not isinstance(prefixes, list):
+        prefixes = []
+    clean["prefix_lens"] = [
+        int(p) for p in prefixes if str(p).isdigit() or isinstance(p, int)
+    ][:8]
+    for key in ("host_count", "found", "subnet_count"):
+        try:
+            clean[key] = max(0, int(clean.get(key) or 0))
+        except (TypeError, ValueError):
+            clean[key] = 0
+    result = str(clean.get("result") or "unknown")[:32]
+    if result not in ("ok", "no_devices", "no_lan"):
+        result = "unknown"
+    clean["result"] = result
+    clean["truncated"] = bool(clean.get("truncated"))
+    clean["explicit"] = bool(clean.get("explicit"))
+    clean["seen_at"] = int(time.time())
+    with _agent_heartbeats_lock:
+        _agent_heartbeats[tenant_id or "default"] = clean
+    return clean
+
+
+def agent_presence(tenant_id: str, now=None) -> dict:
+    """Alive vs no-telemetry: a heartbeat proves the agent is running even
+    when zero miners answered."""
+    now = int(now or time.time())
+    with _agent_heartbeats_lock:
+        row = dict(_agent_heartbeats.get(tenant_id or "default") or {})
+    if not row:
+        return {"alive": False, "last_seen": None, "scan": None}
+    last = int(row.get("seen_at") or 0)
+    alive = last > 0 and (now - last) <= _AGENT_HEARTBEAT_TTL_S
+    scan = {
+        "result": row.get("result"),
+        "host_count": row.get("host_count"),
+        "found": row.get("found"),
+        "truncated": row.get("truncated"),
+        "subnet_count": row.get("subnet_count"),
+        "prefix_lens": row.get("prefix_lens") or [],
+        "explicit": row.get("explicit"),
+    }
+    return {"alive": alive, "last_seen": last or None, "scan": scan}
+
+
+@agent_bp.route("/heartbeat", methods=["POST"])
+@_require_agent
+def agent_heartbeat(agent_tenant_id: str = ""):
+    """Agent-alive diagnostic with no device IPs (Issue #638)."""
+    data = request.get_json(silent=True) or {}
+    _store_agent_heartbeat(agent_tenant_id, data)
+    return jsonify({"success": True, "agent": agent_presence(agent_tenant_id)})
 
 
 @agent_bp.route("/register", methods=["POST"])

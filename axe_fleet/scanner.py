@@ -169,8 +169,12 @@ def parse_cidr(cidr: str) -> list:
         # /31, the single address for a /32), so no special-casing needed.
         if "/" in cidr:
             net = ipaddress.ip_network(cidr, strict=False)
-            hosts = [str(h) for h in net.hosts()]
-            return hosts[:MAX_HOSTS_PER_SCAN]
+            hosts = []
+            for i, h in enumerate(net.hosts()):
+                if i >= MAX_HOSTS_PER_SCAN:
+                    break
+                hosts.append(str(h))
+            return hosts
         # Range form: a.b.c.x-y
         if "-" in cidr:
             base, _, last = cidr.rpartition("-")

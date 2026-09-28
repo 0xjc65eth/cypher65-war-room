@@ -24,6 +24,8 @@ def test_removed_device_does_not_crash_poll_loop_or_return_on_rescan(
         pass
 
     def post(path, payload, **kwargs):
+        if path == "/api/agent/heartbeat":
+            return 200, {"success": True}
         if path == "/api/agent/register":
             registrations.append(payload["devices"])
             blocked = (
@@ -66,4 +68,5 @@ def test_removed_device_does_not_crash_poll_loop_or_return_on_rescan(
     expected += [devices[1]["ip"]] if removed else expected[:]
     assert polls == expected
     assert len(pulls) == 2
-    assert len(registrations) == (3 if removed else 1)
+    # Tombstoned IPs stay in blocked_ips and are not re-registered (Issue #638).
+    assert len(registrations) == 1
