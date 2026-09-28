@@ -345,6 +345,43 @@ class DeviceRegistry:
         conn.close()
         return self._row_to_device(r) if r else {}
 
+    def list_removed(self, tenant_id: str = "") -> list:
+        """Tombstoned devices for this tenant (operator-intent restore list)."""
+        if not tenant_id:
+            return []
+        conn = self._get_db()
+        c = conn.cursor()
+        c.execute(
+            "SELECT * FROM axe_devices WHERE tenant_id=? AND COALESCE(removed_at,0)>0 ORDER BY removed_at DESC",
+            (tenant_id,),
+        )
+        rows = [self._row_to_device(r) for r in c.fetchall()]
+        conn.close()
+        return rows
+
+    def clear_tombstone(self, ip_address: str, tenant_id: str = "") -> dict:
+        """Drop the tenant-scoped tombstone so the agent may register again.
+
+        Does not create an active device and does not probe the IP — cloud
+        deploys must not turn restore into an SSRF/private-IP bypass. Returns
+        the tombstone that was cleared, or {} when this tenant has none.
+        """
+        if not ip_address or not tenant_id:
+            return {}
+        row = self.get_removed_by_ip(ip_address, tenant_id=tenant_id)
+        if not row:
+            return {}
+        conn = self._get_db()
+        c = conn.cursor()
+        c.execute(
+            "DELETE FROM axe_devices WHERE ip_address=? AND tenant_id=? AND COALESCE(removed_at,0)>0",
+            (ip_address, tenant_id),
+        )
+        deleted = c.rowcount > 0
+        conn.commit()
+        conn.close()
+        return row if deleted else {}
+
     def list_devices(self, tenant_id: str = "", with_telemetry: bool = False) -> list:
         """Return all registered devices, optionally filtered by tenant.
         If tenant_id is empty, returns all devices (admin). Tombstoned
@@ -500,6 +537,7 @@ class DeviceRegistry:
 
         REFUSES tombstoned IPs: a device the operator removed must not be
         resurrected by the agent — returns {} so callers treat it as blocked.
+        Only ``clear_tombstone`` (explicit restore) or a manual add unblocks.
         """
         info = info or {}
         now = int(time.time())

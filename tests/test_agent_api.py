@@ -991,6 +991,109 @@ class TestTombstoneNoZombies:
         assert revived, "manual add did not revive the IP"
         assert revived["name"] == "Revived"
 
+    def test_restore_then_agent_register_and_tenant_isolation(
+        self, client, agent_token, registry
+    ):
+        """Issue #637: operator restore unblocks agent register; another
+        tenant cannot restore or resurrect the same IP."""
+        ip = "192.168.1.81"
+        other_agent = create_token(
+            subject="brave", ttl=365 * 86400,
+            extra_claims={"agent": True, "role": "agent"},
+        )
+        other_user = create_token(subject="brave", extra_claims={"role": "admin"})
+        acme_user = create_token(subject="acme", extra_claims={"role": "admin"})
+        with patch("axe_fleet.routes._registry", registry), \
+                patch("axe_fleet.routes._can_add_worker", return_value=True):
+            client.post("/api/agent/register", headers=_headers(agent_token),
+                        json={"devices": [{"ip": ip, "type": "bitaxe"}]})
+        dev = registry.get_device_by_ip(ip, tenant_id="acme")
+        assert registry.remove_device(dev["id"], tenant_id="acme") is True
+        with patch("axe_fleet.routes._registry", registry), \
+                patch("axe_fleet.routes._can_add_worker", return_value=True):
+            blocked = client.post(
+                "/api/agent/register", headers=_headers(agent_token),
+                json={"devices": [{"ip": ip}]})
+            assert blocked.get_json()["count"] == 0
+            steal = client.post(
+                "/api/axe-fleet/devices/restore",
+                headers=_headers(other_user),
+                json={"ip_address": ip},
+            )
+            assert steal.status_code == 404
+            assert registry.get_removed_by_ip(ip, tenant_id="acme")
+            listed = client.get(
+                "/api/axe-fleet/devices/removed", headers=_headers(other_user)
+            )
+            assert listed.status_code == 200
+            assert listed.get_json()["count"] == 0
+            restored = client.post(
+                "/api/axe-fleet/devices/restore",
+                headers=_headers(acme_user),
+                json={"ip_address": ip},
+            )
+            assert restored.status_code == 200, restored.get_json()
+            body = restored.get_json()
+            assert body["restored"] is True
+            assert "AGENTE LOCAL" in body["message"]
+            assert registry.get_device_by_ip(ip, tenant_id="acme") == {}
+            assert registry.get_removed_by_ip(ip, tenant_id="acme") == {}
+            again = client.post(
+                "/api/agent/register", headers=_headers(agent_token),
+                json={"devices": [{"ip": ip, "type": "bitaxe"}]},
+            )
+            assert again.status_code == 201
+            assert again.get_json()["count"] == 1
+            assert registry.get_device_by_ip(ip, tenant_id="acme")
+            other_reg = client.post(
+                "/api/agent/register", headers=_headers(other_agent),
+                json={"devices": [{"ip": ip, "type": "bitaxe"}]},
+            )
+            assert other_reg.status_code == 201
+            assert registry.get_device_by_ip(ip, tenant_id="brave")
+            assert registry.get_device_by_ip(ip, tenant_id="acme")["id"] != \
+                registry.get_device_by_ip(ip, tenant_id="brave")["id"]
+
+    def test_cloud_private_add_queues_without_ssrf_and_clears_tombstone(
+        self, client, agent_token, registry
+    ):
+        """Cloud POST of a private IP never probes the LAN; restore intent
+        still unblocks the agent."""
+        ip = "10.8.0.12"
+        acme_user = create_token(subject="acme", extra_claims={"role": "admin"})
+        with patch("axe_fleet.routes._registry", registry), \
+                patch("axe_fleet.routes._can_add_worker", return_value=True):
+            client.post("/api/agent/register", headers=_headers(agent_token),
+                        json={"devices": [{"ip": ip}]})
+        dev = registry.get_device_by_ip(ip, tenant_id="acme")
+        registry.remove_device(dev["id"], tenant_id="acme")
+        with patch("axe_fleet.routes._registry", registry), \
+                patch("axe_fleet.routes._can_add_worker", return_value=True), \
+                patch("axe_fleet.routes.AxeOSConnector") as mock_conn, \
+                patch("config.is_cloud_deploy", return_value=True), \
+                patch("axe_fleet.scanner.is_private_ip", return_value=True):
+            mock_conn.side_effect = AssertionError("cloud must not probe LAN")
+            resp = client.post(
+                "/api/axe-fleet/devices",
+                headers=_headers(acme_user),
+                json={"ip_address": ip, "name": "lab"},
+            )
+        assert resp.status_code == 202, resp.get_json()
+        data = resp.get_json()
+        assert data["is_cloud"] is True
+        assert data["queued"] is True
+        assert data["restored"] is True
+        assert "AGENTE LOCAL" in data["message"]
+        mock_conn.assert_not_called()
+        assert registry.get_device_by_ip(ip, tenant_id="acme") == {}
+        with patch("axe_fleet.routes._registry", registry), \
+                patch("axe_fleet.routes._can_add_worker", return_value=True):
+            again = client.post(
+                "/api/agent/register", headers=_headers(agent_token),
+                json={"devices": [{"ip": ip}]},
+            )
+        assert again.get_json()["count"] == 1
+
     def test_removed_device_frees_plan_slot(self, client, agent_token, registry,
                                             monkeypatch, tmp_path):
         """A tombstoned device must not count against the worker cap.

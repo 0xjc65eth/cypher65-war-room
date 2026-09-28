@@ -184,11 +184,13 @@ const _dashboard = loadFragment('39b-dashboard.js', '{ poolDetectionView }');
 // decide se o texto fala de login ou de papel — e se o retry continua oferecido.
 const _fleet = loadFragment(
   '49-axe-fleet.js',
-  '{ agentRevokeView, classifyRevokeRefusal, agentInstallCommands }',
+  '{ agentRevokeView, classifyRevokeRefusal, agentInstallCommands, cloudWizardView, deviceAddOutcome }',
   { window: {}, document: { getElementById: () => null } }
 );
 const agentRevokeView = _fleet.agentRevokeView;
 const classifyRevokeRefusal = _fleet.classifyRevokeRefusal;
+const cloudWizardView = _fleet.cloudWizardView;
+const deviceAddOutcome = _fleet.deviceAddOutcome;
 const poolDetectionView = _dashboard.poolDetectionView;
 
 // ── Test counters ─────────────────────────────────────────────────────────
@@ -5466,6 +5468,36 @@ for (const [origin, token] of [
     installer.stdout.split('\0').slice(0, -1),
     [base, token, '-fsSL', base + '/agent/install.sh']);
 }
+
+// Issue #637: cloud wizard contract + explicit API messages (not a boolean).
+(function testCloudWizardAndDeviceAddOutcome() {
+  const cloud = cloudWizardView(true);
+  assertEqual('cloud wizard disables LAN scan', cloud.scanEnabled, false);
+  assertEqual('cloud wizard prefers agent', cloud.preferAgent, true);
+  assertTruthy('cloud wizard names the agent path', cloud.scanHint.includes('local agent'));
+  const selfHost = cloudWizardView(false);
+  assertEqual('self-host keeps LAN scan', selfHost.scanEnabled, true);
+  assertEqual('self-host does not force agent', selfHost.preferAgent, false);
+
+  const queued = deviceAddOutcome(202, {
+    queued: true,
+    is_cloud: true,
+    restored: true,
+    message: 'IP privado enfileirado para o AGENTE LOCAL.',
+  });
+  assertEqual('202 queued is success', queued.ok, true);
+  assertEqual('202 queued keeps is_cloud', queued.isCloud, true);
+  assertTruthy('202 queued keeps the API message', queued.message.includes('AGENTE LOCAL'));
+
+  const denied = deviceAddOutcome(400, {
+    is_cloud: true,
+    error: 'subnet scan unavailable on cloud deploy',
+    message: 'Instale o AGENTE LOCAL',
+  });
+  assertEqual('cloud error is not success', denied.ok, false);
+  assertEqual('cloud error prefers message over error', denied.message, 'Instale o AGENTE LOCAL');
+  assertEqual('cloud error keeps is_cloud', denied.isCloud, true);
+})();
 
 //  RESULTS
 // ═══════════════════════════════════════════════════════════════════════════
