@@ -197,9 +197,18 @@ else
   log "started with nohup loop (auto-restart on reboot via @reboot cron) — logs: $INSTALL_DIR/agent.log"
 fi
 
-log "✅ AGENT INSTALLED & RUNNING"
+log "✅ AGENT SERVICE CONFIGURED"
 log "   Server : $SERVER_URL"
 log "   Poll   : every ${POLL}s (telemetry push)"
+if [ -n "$DEVICES" ]; then
+  DEVICE_COUNT="$(printf '%s' "$DEVICES" | awk -F, '{print NF}')"
+  log "   Scan   : explicit IP list (${DEVICE_COUNT} host(s); values not logged)"
+elif [ -n "$SCAN_CIDR" ]; then
+  log "   Scan   : configured CIDR/range"
+else
+  log "   Scan   : automatic interface CIDRs (fallback may use /24)"
+fi
 log "   Dir    : $INSTALL_DIR"
 log "   Reinstall/restart: re-run this same command."
-log "   The fleet will appear in the dashboard within ~1 min."
+log "   Setup success does not confirm cloud registration or miner discovery."
+log "   Check agent logs for FLEET_SCAN/FLEET_REGISTER/FLEET_AUTH and verify Fleet in the dashboard."

@@ -42,6 +42,44 @@ def test_default_subnets_prefers_interface_netmasks(monkeypatch):
     assert agent._default_subnets() == ["10.4.0.0/22"]
 
 
+def test_default_subnets_falls_back_to_ipv4_derived_slash24(monkeypatch):
+    monkeypatch.setattr(agent, "_interface_cidrs", lambda: [])
+    monkeypatch.setattr(
+        agent, "_local_ipv4_addresses", lambda: ["10.4.7.18", "192.168.5.90"]
+    )
+    assert agent._default_subnets() == ["10.4.7.0/24", "192.168.5.0/24"]
+
+
+def test_scan_uses_only_explicit_ips_over_cidr(monkeypatch):
+    probes = []
+    monkeypatch.setattr(agent, "SCAN_CIDR", "10.0.0.0/8")
+    monkeypatch.setattr(agent, "EXPLICIT_DEVICES", ["192.0.2.8", "192.0.2.9"])
+    monkeypatch.setattr(agent, "_probe_host", lambda ip: probes.append(ip) or None)
+
+    devices, report = agent.scan_lan_with_report()
+
+    assert devices == []
+    assert sorted(probes) == ["192.0.2.8", "192.0.2.9"]
+    assert report["explicit"] is True
+    assert report["host_count"] == 2
+    assert report["subnet_count"] == 0
+    assert "192.0.2" not in str(report)
+
+
+def test_scan_caps_work_for_oversized_cidr(monkeypatch):
+    probes = []
+    monkeypatch.setattr(agent, "SCAN_CIDR", "10.0.0.0/8")
+    monkeypatch.setattr(agent, "EXPLICIT_DEVICES", [])
+    monkeypatch.setattr(agent, "_probe_host", lambda ip: probes.append(ip) or None)
+
+    devices, report = agent.scan_lan_with_report()
+
+    assert devices == []
+    assert len(probes) == agent.MAX_HOSTS
+    assert report["host_count"] == agent.MAX_HOSTS
+    assert report["truncated"] is True
+
+
 def test_scan_report_has_no_device_ips():
     report = agent.scan_report(
         ["192.168.1.0/24"],
