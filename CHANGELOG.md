@@ -6,6 +6,12 @@ e versionamento semântico ([SemVer](https://semver.org/lang/pt-BR/)).
 
 ## [Unreleased]
 
+### Corrigido — yield marginal BTC/TH/s/dia (#622, MF-003)
+- Corrige a normalização H/s → TH/s na fórmula de `effective_btc_per_th_per_day`
+  e preserva 16 casas decimais para não arredondar a zero valores de rede real.
+- Sem hashrate de rede, o payload continua omitindo o campo; a cópia histórica
+  de polling acompanha a fórmula corrigida. O campo segue sem consumidor na UI.
+
 ### Corrigido — instalação e coleta do agente Fleet (Issue #636)
 - Comandos copiados usam continuações shell válidas e argumentos protegidos.
 - Instalador preserva IPs/faixas explícitas em launchd, systemd e fallback;

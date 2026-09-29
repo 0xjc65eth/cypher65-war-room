@@ -44,7 +44,7 @@ from helpers import (
 
 sys.path.insert(0, ".")
 
-from services.poll_compute import fiat_convert  # noqa: E402
+from services.poll_compute import compute_profitability, fiat_convert  # noqa: E402
 
 # ── strategies ──────────────────────────────────────────────────────────────
 
@@ -373,6 +373,53 @@ class TestFiatConvertProperties:
     def test_rounding_contract_4_decimals(self, btc, px):
         out = fiat_convert(btc, {"USD": px})
         assert out["USD"] == round(btc * px, 4)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Invariant 5 — effective BTC/TH/day marginal yield follows the unit contract
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestEffectiveBtcPerThPerDayProperties:
+    @settings(max_examples=200, deadline=None)
+    @given(
+        net_hashrate=st.floats(
+            min_value=1e12, max_value=1e24, allow_nan=False, allow_infinity=False
+        ),
+        pool_fee_pct=st.floats(min_value=0.0, max_value=100.0),
+        orphan_pct=st.floats(min_value=0.0, max_value=100.0),
+    )
+    def test_formula_matches_one_th_per_network_share(
+        self, net_hashrate, pool_fee_pct, orphan_pct
+    ):
+        settings_data = {
+            "cost_mode": "none",
+            "btc_block_reward": 3.125,
+            "btc_avg_tx_fee": 0.05,
+            "pool_fee_pct": pool_fee_pct,
+            "orphan_rate_pct": orphan_pct,
+        }
+        result, _, _ = compute_profitability(
+            worker={"hashrate": 100e12},
+            net_hashrate=net_hashrate,
+            btc_prices={"USD": 100000.0},
+            market_cache={},
+            min_plausible_price=1e-8,
+            btc_price_cache={},
+            settings=settings_data,
+        )
+        actual = result["effective_btc_per_th_per_day"]
+        expected = (
+            (1e12 / net_hashrate)
+            * 144.0
+            * (3.125 + 0.05)
+            * (1 - pool_fee_pct / 100.0)
+            * (1 - orphan_pct / 100.0)
+        )
+        assert actual == pytest.approx(round(expected, 16), rel=1e-12, abs=1e-16)
+        assert actual is None or actual >= 0
+        _assert_finite_tree(result)
+        _assert_json_serializable(result)
 
 
 # ═══════════════════════════════════════════════════════════════════════════

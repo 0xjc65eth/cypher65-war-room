@@ -1407,14 +1407,20 @@ def poll_once():
                         if cost_mode == "rental" and btc_usd and ths > 0
                         else None
                     ),
-                    # Effective BTC/TH/s/day (marginal)
-                    "effective_btc_per_th_per_day": round(
-                        (1.0 / 1e12 / net_hr)
-                        * blocks_per_day
-                        * total_reward_per_block
-                        * (1 - pool_fee_pct / 100.0)
-                        * (1 - orphan_pct / 100.0),
-                        10,
+                    # Legacy only: keep its marginal BTC/TH/s/day field
+                    # aligned with compute_profitability; no network rate
+                    # means the quantity is unavailable, never a fabricated 0.
+                    "effective_btc_per_th_per_day": (
+                        round(
+                            (1e12 / net_hr)
+                            * blocks_per_day
+                            * total_reward_per_block
+                            * (1 - pool_fee_pct / 100.0)
+                            * (1 - orphan_pct / 100.0),
+                            16,
+                        )
+                        if net_hr > 0
+                        else None
                     ),
                     # Pool fee info
                     "pool_fee_info": f"Pool fee: {pool_fee_pct}% · Orphan rate: {orphan_pct}% · Reward: {reward}+{fee} BTC/block",
