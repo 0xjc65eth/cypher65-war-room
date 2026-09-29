@@ -17,9 +17,12 @@ Env vars:
   CYPHER65_AGENT_TOKEN    agent JWT minted in the dashboard:
                           POST /api/agent/token (logged-in user) → token
   CYPHER65_POLL_INTERVAL  telemetry push interval, seconds (default 30)
-  CYPHER65_SCAN_CIDR      optional override CIDR/range to scan; default =
-                          derived from this host's local IPv4 /24s
-  CYPHER65_DEVICES        optional comma-separated IPs (skip scan, poll only)
+  CYPHER65_SCAN_CIDR      optional CIDR/range; default uses detected interface
+                          CIDRs where supported, then IPv4-derived /24 fallback
+  CYPHER65_DEVICES        optional comma-separated IPs (skips subnet scan)
+
+Automatic discovery cannot infer other VLANs or guarantee the miners' subnet;
+configure CYPHER65_SCAN_CIDR or CYPHER65_DEVICES when the default misses them.
 
 Run:  python3 agent.py        (stdlib only — no pip install needed)
 """
@@ -910,7 +913,11 @@ def main():
     if discovered:
         code, resp = _post_retry("/api/agent/register", {"devices": discovered})
         if code in (200, 201):
-            log.info("registered %s", resp.get("count"))
+            log.info(
+                "[FLEET_REGISTER] result=SUCCESS registered=%s blocked=%s",
+                resp.get("count", 0),
+                resp.get("blocked_count", len(resp.get("blocked") or [])),
+            )
             ingest_blocked(resp)
             if blocked_ips:
                 log.warning(
@@ -922,7 +929,11 @@ def main():
                 if d["ip"] not in blocked_ips:
                     known[d["ip"]] = d
         else:
-            log.warning("register failed (HTTP %s): %s", code, resp.get("error"))
+            log.warning(
+                "[FLEET_REGISTER] result=FAILED http=%s error=%s",
+                code,
+                resp.get("error") or "no response detail",
+            )
             for d in discovered:
                 known[d["ip"]] = d
 
@@ -1017,8 +1028,10 @@ def main():
             if candidates:
                 code, resp = _post_retry("/api/agent/register", {"devices": candidates})
                 log.info(
-                    "registered %d new device(s)",
+                    "[FLEET_REGISTER] result=%s registered=%d blocked=%d",
+                    "SUCCESS" if code in (200, 201) else "FAILED",
                     code in (200, 201) and resp.get("count") or 0,
+                    len(resp.get("blocked") or []) if code in (200, 201) else 0,
                 )
                 if code in (200, 201):
                     ingest_blocked(resp)
@@ -1032,7 +1045,9 @@ def main():
                         known[d["ip"]] = d
                 else:
                     log.warning(
-                        "re-register failed (HTTP %s): %s", code, resp.get("error")
+                        "[FLEET_REGISTER] result=FAILED http=%s error=%s",
+                        code,
+                        resp.get("error") or "no response detail",
                     )
         elapsed = time.time() - t0
         sleep = max(1, POLL_INTERVAL - elapsed)

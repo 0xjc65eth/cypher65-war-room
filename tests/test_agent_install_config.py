@@ -172,3 +172,21 @@ def test_cron_escapes_percent_and_points_to_fallback(artifacts):
     assert "run.sh" in line
     assert "agent.log" in line
     assert line.count("\n") == 1
+
+
+def test_installer_output_does_not_claim_successful_discovery():
+    script = INSTALLER.read_text()
+    assert 'log "✅ AGENT SERVICE CONFIGURED"' in script
+    assert (
+        "Setup success does not confirm cloud registration or miner discovery."
+        in script
+    )
+    assert "FLEET_SCAN/FLEET_REGISTER/FLEET_AUTH" in script
+    assert "AGENT INSTALLED & RUNNING" not in script
+    assert "The fleet will appear in the dashboard within ~1 min." not in script
+    assert 'log "   Server : $SERVER_URL"' in script
+    assert (
+        'log "   Scan   : explicit IP list (${DEVICE_COUNT} host(s); values not logged)"'
+        in script
+    )
+    assert 'log "   Token' not in script

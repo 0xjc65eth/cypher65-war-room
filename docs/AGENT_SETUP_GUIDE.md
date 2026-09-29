@@ -46,36 +46,58 @@ Abra o link do CYPHER65 que você recebeu, crie sua conta e faça login.
 
 Abra o **Terminal** (macOS/Linux) no computador que fica na mesma rede dos
 miners e **cole o comando copiado** — ele é mais ou menos assim
-(substitua pela URL e token que aparecem no seu painel):
+(substitua pela URL e token que aparecem no seu painel). Em macOS/Linux, use
+o instalador nativo. No Windows, rode `agent/agent.py` com Python diretamente
+ou use uma máquina Linux/macOS na LAN; Docker Desktop não prova acesso à LAN.
 
 ```bash
 curl -sSL "https://SEU-APP.onrender.com/agent/install.sh" \
   | CYPHER65_SERVER_URL=https://SEU-APP.onrender.com CYPHER65_AGENT_TOKEN=SEU_TOKEN bash
 ```
 
-Pressione **Enter** e aguarde. Você vai ver:
+Pressione **Enter** e aguarde. O instalador confirma que configurou o serviço;
+isso não confirma autenticação, descoberta ou envio de telemetria. Consulte os
+logs do serviço e o dashboard antes de considerar a conexão concluída.
 
-```
-[cypher65] downloading agent from https://SEU-APP.onrender.com...
-[cypher65] installed as macOS service (com.cypher65.agent)
-[cypher65] ✅ AGENT INSTALLED & RUNNING
-[cypher65]    The fleet will appear in the dashboard within ~1 min.
+A faixa no exemplo precisa corresponder à LAN real. O agente aceita CIDR
+(`192.168.1.0/24`) ou intervalo final (`192.168.1.50-80`); o limite é 1.024
+hosts sondados. Em modo de IPs explícitos, os IPs são usados e o scan de faixa é
+ignorado.
+
+> ✅ O serviço foi configurado para iniciar automaticamente, re-escaneia
+> periodicamente e tenta enviar telemetria a cada 30s. O resultado real depende
+> de conectividade LAN, token válido e miners compatíveis.
+
+Por padrão, o agente obtém sub-redes IPv4 das interfaces quando suportado; em
+sistemas onde não é possível ler a máscara, usa um fallback `/24` calculado a
+partir do IP local. Ele não descobre automaticamente outras VLANs e limita cada
+faixa a 1.024 hosts. Para uma faixa conhecida, passe ao comando do instalador:
+
+```bash
+curl -fsSL https://SEU-APP.onrender.com/agent/install.sh \
+  | CYPHER65_SERVER_URL=https://SEU-APP.onrender.com \
+    CYPHER65_AGENT_TOKEN=SEU_TOKEN CYPHER65_SCAN_CIDR=192.168.1.0/24 bash
 ```
 
-> ✅ **Pronto.** O agente já está instalado como **serviço** — ele inicia
-> sozinho quando a máquina liga, re-escaneia a rede periodicamente (miner novo
-> aparece sozinho) e envia telemetria a cada 30s.
+Para IPs fixos, use `CYPHER65_DEVICES='192.168.1.50,192.168.1.60'`; isso
+limita o agente a esses IPs e pula o scan automático. A configuração é
+persistida no serviço pelo instalador. Diagnostique em
+`~/.cypher65-agent/agent.log` (fallback), `journalctl --user -u cypher65-agent`
+(Linux), `~/.cypher65-agent/agent.log` (macOS launchd) ou no log do serviço;
+procure eventos `FLEET_SCAN`, `FLEET_REGISTER` e `FLEET_AUTH`. Não cole nem
+compartilhe o token nos logs.
 
 ### Passo 4 · Veja seus miners
 
-Volte ao painel → **Fleet**. Em ~1 minuto seus miners aparecem com hashrate,
-temperatura, status e mais. Se algo não aparecer, confira:
+Volte ao painel → **Fleet**. Após a descoberta, registro e primeiro push aceitos,
+os miners aparecem com hashrate, temperatura, status e mais; o tempo depende da
+rede e do ciclo de scan/poll. Se algo não aparecer, confira:
 
 | Problema | Causa provável |
 |---|---|
 | Nenhum miner aparece | O agente está numa rede diferente da dos miners (mesma Wi-Fi? mesmo cabo?) |
 | Algum miner não aparece | O miner está desligado, ou é um modelo que o agente não conhece ainda |
-| `AGENT INSTALLED` mas fleet vazio | Espere mais 1-2 minutos e recarregue a página |
+| Serviço configurado, mas fleet vazio | Verifique `FLEET_SCAN`, `FLEET_REGISTER`/`FLEET_AUTH`, IP/CIDR, acesso LAN, token e limite do plano; aguardar não corrige rota ou credencial |
 
 ### Passo 5 · Conecte sua conta de aluguel (painel RENTALS) — MRR + Braiins
 
@@ -169,11 +191,14 @@ bloqueio (`plan worker limit`). Nada quebra: os miners já registrados
 continuam enviando telemetria normalmente. Para liberar vaga, remova um
 device (a vaga é liberada na hora) ou aumente o limite do plano.
 
-**Uso Docker?** Também funciona, se você preferir: `docker run -d --name
-cypher65-agent --network host -e CYPHER65_SERVER_URL=<URL> -e
-CYPHER65_AGENT_TOKEN=<TOKEN> ghcr.io/0xjc65eth/cypher65-agent`. Mas o
-comando de 1 linha acima
-é o caminho mais simples (não precisa de Docker).
+**Uso Docker?** No Docker Engine Linux, `--network host` usa a rede do host,
+mas você ainda pode precisar passar `CYPHER65_SCAN_CIDR` ou
+`CYPHER65_DEVICES`. A imagem é `ghcr.io/0xjc65eth/cypher65-agent`; passe o token
+e a URL conforme o exemplo no [README do agente](../agent/README.md). No Docker
+Desktop (macOS/Windows), o container roda em VM e `--network host` não garante
+alcance transparente da LAN; prefira o agente nativo no macOS/Linux ou Python
+direto no Windows. Se usar Desktop, teste primeiro a conectividade do
+container ao IP/porta do miner.
 
 **O que é o painel RENTALS e por que ele pede a MINHA chave do MRR/Braiins?**
 O painel **RENTALS** consolida seus aluguéis de hashrate nas **suas próprias**
