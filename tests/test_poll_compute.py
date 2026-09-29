@@ -395,6 +395,23 @@ def test_profitability_no_worker_sets_unavailable_reason():
     assert p["lender_market_rate_btc_per_th_day"] is None
 
 
+def test_profitability_effective_btc_per_th_day_known_vector():
+    """MF-003/#622: marginal BTC yield per TH/s uses H/s units and keeps precision."""
+    p, _, _ = compute_profitability(
+        {"hashrate": 100e12}, 5e18, _prices(usd=100000),
+        {}, 1e-8, {"ts": 0, "data": None},
+        {"cost_mode": "none", "btc_block_reward": 3.125,
+         "btc_avg_tx_fee": 0.05, "pool_fee_pct": 0.0,
+         "orphan_rate_pct": 0.0},
+    )
+
+    # 1 TH/s / 5 EH/s × 144 blocks/day × 3.175 BTC/block = 9.144e-5 BTC.
+    assert p["effective_btc_per_th_per_day"] == pytest.approx(9.144e-5)
+    assert p["effective_btc_per_th_per_day"] > 0
+    # Return value is marginal per TH/s, independent of the miner's size.
+    assert 1e12 / 5e18 * 144 * 3.175 == pytest.approx(9.144e-5)
+
+
 def test_profitability_pool_mode_math():
     worker = {"hashrate": 100e12}
     p, ch, nh = compute_profitability(
@@ -547,6 +564,14 @@ def test_profitability_stale_price_cache_fallback():
     assert p["lender_market_rate_btc_per_th_day"] == pytest.approx(2e-4, rel=1e-9)
     # stale-while-revalidate: USD conversion came from the cached quote
     assert p["lender_market_rate_usd_per_th_day"] == pytest.approx(18.0, rel=1e-6)
+
+
+def test_profitability_effective_btc_per_th_day_returns_none_without_network_rate():
+    p, _, _ = compute_profitability(
+        {"hashrate": 100e12}, 0, _prices(),
+        {}, 1e-8, {"ts": 0, "data": None}, {},
+    )
+    assert "effective_btc_per_th_per_day" not in p
 
 
 def test_profitability_worker_zero_hashrate_hoists_cur_hr():
