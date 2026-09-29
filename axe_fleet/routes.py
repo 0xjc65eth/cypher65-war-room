@@ -7,6 +7,8 @@ Registered in app.py with minimal integration.
 Endpoints:
   GET    /api/axe-fleet/devices          — list all devices
   POST   /api/axe-fleet/devices          — add a new device
+  GET    /api/axe-fleet/devices/removed  — list tombstoned devices
+  POST   /api/axe-fleet/devices/restore  — clear a tombstone (operator intent)
   DELETE /api/axe-fleet/devices/<id>     — remove a device
   GET    /api/axe-fleet/devices/<id>     — get device detail + telemetry
   POST   /api/axe-fleet/devices/<id>/refresh — re-detect capabilities
@@ -130,6 +132,21 @@ def _nonnegative_finite_int(value) -> int:
     if not math.isfinite(number) or number <= 0:
         return 0
     return int(number)
+
+
+def _valid_telemetry_ts(value):
+    """Return a positive measurement timestamp, otherwise None.
+
+    A serializer must not replace an absent timestamp with request time;
+    doing that makes missing telemetry look freshly collected.
+    """
+    if isinstance(value, bool):
+        return None
+    try:
+        timestamp = int(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return timestamp if timestamp > 0 else None
 
 
 _FLEET_STATUS_TO_CORE = {
@@ -398,6 +415,10 @@ def add_device(tenant_id: str = ""):
     from .scanner import is_private_ip
 
     if is_cloud_deploy() and is_private_ip(ip):
+        # Operator typed this IP on cloud: that is restore intent for a
+        # previously removed miner. Clearing the tombstone does not probe
+        # the address — the agent on the LAN does.
+        restored = _registry.clear_tombstone(ip, tenant_id=tenant_id)
         queued = _registry.enqueue_agent_command(
             "_probe",
             "probe",
@@ -408,7 +429,11 @@ def add_device(tenant_id: str = ""):
             tenant_id,
             "fleet.device_probe_queued",
             target=ip,
-            details={"reason": "cloud_private_ip_agent_probe", "queued": bool(queued)},
+            details={
+                "reason": "cloud_private_ip_agent_probe",
+                "queued": bool(queued),
+                "tombstone_cleared": bool(restored),
+            },
         )
         return (
             jsonify(
@@ -416,6 +441,7 @@ def add_device(tenant_id: str = ""):
                     "success": True,
                     "queued": True,
                     "is_cloud": True,
+                    "restored": bool(restored),
                     "command_id": (queued or {}).get("id"),
                     "error": None,
                     "message": "IP privado enfileirado para o AGENTE LOCAL. Com o agente online na mesma LAN, o miner será sondado e registrado automaticamente — o Render nunca conecta em 192.168.x.x.",
@@ -527,6 +553,73 @@ def add_device(tenant_id: str = ""):
     except Exception as e:
         log.error("[axe] add_device enrich error: %s", e)
         return jsonify({"success": True, "device": device}), 201
+
+
+@axe_fleet_bp.route("/devices/removed", methods=["GET"])
+@require_tenant
+@_role_required("viewer")
+def list_removed_devices(tenant_id: str = ""):
+    """Tombstoned miners for this tenant. Restore is a separate POST."""
+    if _registry is None:
+        return jsonify({"error": "registry not initialized"}), 500
+    removed = _registry.list_removed(tenant_id=tenant_id)
+    return jsonify(
+        {
+            "devices": removed,
+            "count": len(removed),
+            "tenant_id": tenant_id,
+        }
+    )
+
+
+@axe_fleet_bp.route("/devices/restore", methods=["POST"])
+@require_tenant
+@_role_required("member")
+def restore_removed_device(tenant_id: str = ""):
+    """Clear a tombstone so the local agent may register the miner again.
+
+    Body: { "ip_address": "192.168.1.10" }
+
+    This is operator intent. It never probes the IP and never inserts an
+    active device, so a cloud deploy cannot use restore as an SSRF path
+    to private addresses. Auto-resurrection without this call stays blocked.
+    """
+    if _registry is None:
+        return jsonify({"error": "registry not initialized"}), 500
+    data = request.get_json(silent=True) or {}
+    ip = (data.get("ip_address") or "").strip()
+    if not ip:
+        return jsonify({"success": False, "error": "ip_address is required"}), 400
+    cleared = _registry.clear_tombstone(ip, tenant_id=tenant_id)
+    if not cleared:
+        return (
+            jsonify(
+                {
+                    "success": False,
+                    "error": "no removed device for this IP",
+                    "ip_address": ip,
+                }
+            ),
+            404,
+        )
+    _log_audit(
+        tenant_id,
+        "fleet.device_restored",
+        target=cleared.get("id") or ip,
+        details={"ip": ip, "name": cleared.get("name") or ""},
+    )
+    return jsonify(
+        {
+            "success": True,
+            "restored": True,
+            "ip_address": ip,
+            "device_id": cleared.get("id"),
+            "message": (
+                "Tombstone removido. O AGENTE LOCAL pode registrar este miner "
+                "de novo — o dashboard na nuvem não conecta no IP privado."
+            ),
+        }
+    )
 
 
 @axe_fleet_bp.route("/devices/<device_id>", methods=["DELETE"])
@@ -1267,7 +1360,9 @@ def fleet_summary(tenant_id: str = ""):
     """
     if _registry is None:
         return jsonify({"error": "registry not initialized"}), 500
-    devices = _registry.list_devices(tenant_id=tenant_id)
+    # Reconcile the stored status with the newest trusted telemetry. Reading
+    # only the device row can leave ONLINE frozen after the agent stops.
+    devices = _registry.list_devices(tenant_id=tenant_id, with_telemetry=True)
     total = len(devices)
     # Reachability via the shared helper (ONLINE/WARNING/HASHING). WARNING is
     # kept in its own bucket (mirrors fleet_health) — a degraded-but-reachable
@@ -1289,8 +1384,12 @@ def fleet_summary(tenant_id: str = ""):
     for d in devices:
         tel = _registry.get_recent_telemetry(d["id"], limit=1, tenant_id=tenant_id)
         p = _latest_telemetry(tel)
-        total_hr += int(p.get("hashrate_hs", 0))
+        measured_hr = p.get("hashrate_hs")
         status = d.get("status", "OFFLINE")
+        reported_hr = _nonnegative_finite_int(measured_hr)
+        reachable = status == "WARNING" or device_status_is_online(status)
+        current_hr = reported_hr if reachable else 0
+        total_hr += current_hr
         # Reachability latency (PING) — only probed for reachable statuses so
         # the endpoint never blocks on dead IPs (mirrors fleet_health).
         latency_ms = None
@@ -1310,21 +1409,26 @@ def fleet_summary(tenant_id: str = ""):
         enriched["capabilities"] = _caps_supported_commands(d.get("capabilities"))
         enriched["latency_ms"] = latency_ms
         enriched["advice"] = advice
+        telemetry_ts = _valid_telemetry_ts(p.get("ts"))
+        uptime_seconds = p.get("uptime_seconds")
         enriched["_telemetry"] = {
-            "hashrate_hs": p.get("hashrate_hs", 0),
-            "hashrate_str": _fmt_hr(int(p.get("hashrate_hs", 0))),
+            "hashrate_hs": current_hr if measured_hr is not None else None,
+            "hashrate_str": (_fmt_hr(current_hr) if measured_hr is not None else "—"),
+            "last_known_hashrate_hs": (
+                reported_hr if not reachable and reported_hr > 0 else None
+            ),
             "temperature": p.get("temperature"),
             "fan_speed": p.get("fan_speed"),
             "fan_rpm": p.get("fan_rpm"),
             "power_watts": p.get("power_watts"),
             "efficiency_jth": p.get("efficiency_jth"),
-            "shares_accepted": p.get("shares_accepted", 0),
-            "shares_rejected": p.get("shares_rejected", 0),
-            "shares_stale": p.get("shares_stale", 0),
-            "uptime_seconds": p.get("uptime_seconds", 0),
-            "uptime_str": _fmt_uptime(p.get("uptime_seconds", 0)),
+            "shares_accepted": p.get("shares_accepted"),
+            "shares_rejected": p.get("shares_rejected"),
+            "shares_stale": p.get("shares_stale"),
+            "uptime_seconds": uptime_seconds,
+            "uptime_str": _fmt_uptime(uptime_seconds),
             "best_diff": p.get("best_diff"),
-            "hw_error_pct": p.get("hw_error_pct", 0),
+            "hw_error_pct": p.get("hw_error_pct"),
             "voltage_mv": p.get("voltage_mv"),
             "frequency_mhz": p.get("frequency_mhz"),
             "wifi_rssi": p.get("wifi_rssi"),
@@ -1346,8 +1450,10 @@ def fleet_summary(tenant_id: str = ""):
             # them; the LIVE MINING panel renders an honest '—').
             "pool_diff": p.get("pool_diff"),
             "last_share_ts": p.get("last_share_ts"),
-            "ts": p.get("ts", now),
-            "age_seconds": now - p.get("ts", now),
+            "ts": telemetry_ts,
+            "age_seconds": (
+                max(0, now - telemetry_ts) if telemetry_ts is not None else None
+            ),
         }
         # Compute health score from model (import outside loop)
         try:
@@ -3086,7 +3192,9 @@ def fleet_health(tenant_id: str = ""):
     """
     if _registry is None:
         return jsonify({"error": "registry not initialized"}), 500
-    devices = _registry.list_devices(tenant_id=tenant_id)
+    # The registry's freshness-aware read degrades old ONLINE/HASHING rows to
+    # STALE. The bare device row cannot prove current health.
+    devices = _registry.list_devices(tenant_id=tenant_id, with_telemetry=True)
     now = int(time.time())
 
     from .models import infer_health_score
@@ -3158,7 +3266,8 @@ def fleet_health(tenant_id: str = ""):
             latency_ms = _probe_miner_latency_ms(d.get("ip_address", ""))
         advice = _device_advice(status, tel, latency_ms)
 
-        reported_hr = _nonnegative_finite_int(tel.get("hashrate_hs", 0))
+        measured_hr = tel.get("hashrate_hs")
+        reported_hr = _nonnegative_finite_int(measured_hr)
         reachable = status == "WARNING" or device_status_is_online(status)
         # A stale non-zero sample on an OFFLINE device is last-known capacity,
         # not live production. Excluding it prevents the operational overview
@@ -3193,6 +3302,8 @@ def fleet_health(tenant_id: str = ""):
         # helper: fleet_summary must never drift from this shape again).
         supported_cmds = _caps_supported_commands(d.get("capabilities"))
 
+        telemetry_ts = _valid_telemetry_ts(tel.get("ts"))
+        uptime_seconds = tel.get("uptime_seconds")
         device_health_list.append(
             {
                 "id": did,
@@ -3207,8 +3318,8 @@ def fleet_health(tenant_id: str = ""):
                 "health_score": health_score,
                 "capabilities": supported_cmds,
                 "telemetry": {
-                    "hashrate_hs": hr,
-                    "hashrate_str": _fmt_hr(hr),
+                    "hashrate_hs": hr if measured_hr is not None else None,
+                    "hashrate_str": _fmt_hr(hr) if measured_hr is not None else "—",
                     "last_known_hashrate_hs": (
                         reported_hr if not reachable and reported_hr > 0 else None
                     ),
@@ -3217,17 +3328,17 @@ def fleet_health(tenant_id: str = ""):
                     "power_watts": pw,
                     "frequency_mhz": tel.get("frequency_mhz"),
                     "voltage_mv": tel.get("voltage_mv"),
-                    "best_diff": tel.get("best_diff", ""),
+                    "best_diff": tel.get("best_diff"),
                     "pool_diff": tel.get("pool_diff"),
                     "last_share_ts": tel.get("last_share_ts"),
-                    "uptime_seconds": tel.get("uptime_seconds", 0),
-                    "uptime_str": _fmt_uptime(tel.get("uptime_seconds", 0)),
+                    "uptime_seconds": uptime_seconds,
+                    "uptime_str": _fmt_uptime(uptime_seconds),
                     "free_heap": tel.get("free_heap"),
                     "wifi_rssi": tel.get("wifi_rssi"),
-                    "shares_accepted": tel.get("shares_accepted", 0),
-                    "shares_rejected": tel.get("shares_rejected", 0),
-                    "shares_stale": tel.get("shares_stale", 0),
-                    "hw_error_pct": tel.get("hw_error_pct", 0.0),
+                    "shares_accepted": tel.get("shares_accepted"),
+                    "shares_rejected": tel.get("shares_rejected"),
+                    "shares_stale": tel.get("shares_stale"),
+                    "hw_error_pct": tel.get("hw_error_pct"),
                     "efficiency_jth": tel.get("efficiency_jth"),
                     # Fase 5: expose chip/ASIC/VR temps + hashrate windows the
                     # frontend cards render. Without these the cards always show
@@ -3244,8 +3355,10 @@ def fleet_health(tenant_id: str = ""):
                     "stratum_status": tel.get("stratum_status", ""),
                     "pool_url": tel.get("pool_url", ""),
                     "pool_user": tel.get("pool_user", ""),
-                    "ts": tel.get("ts", now),
-                    "age_seconds": now - tel.get("ts", now),
+                    "ts": telemetry_ts,
+                    "age_seconds": (
+                        max(0, now - telemetry_ts) if telemetry_ts is not None else None
+                    ),
                 },
                 "latency_ms": latency_ms,
                 "advice": advice,
@@ -3282,6 +3395,7 @@ def fleet_health(tenant_id: str = ""):
             },
             "device_health": device_health_list,
             "groups": groups,
+            "agent": agent_presence(tenant_id, now),
         }
     )
 
@@ -3367,10 +3481,16 @@ agent_bp = Blueprint("agent", __name__, url_prefix="/api/agent")
 # Long-lived agent token: 1 year. The agent runs unattended on the home LAN;
 # a short-lived token would break polling until the user re-generates it.
 AGENT_TOKEN_TTL = 365 * 86400
+# Physical intent is short-lived. A command that was not delivered within
+# five minutes must be re-issued by the operator after state/policy recheck.
+AGENT_COMMAND_TTL_S = 5 * 60
+_AGENT_COMMAND_READY_STATES = frozenset(
+    {"ONLINE", "HASHING", "IDLE", "WARNING", "PAUSED"}
+)
 
 
-def _require_caller_identity_on_cloud(f):
-    """On a public cloud deploy, minting an agent token requires a REAL identity.
+def _require_caller_identity_on_cloud(min_role: str = "member"):
+    """Require an authorized human/API-key principal for cloud token admin.
 
     Why this exists: ``_role_required("member")`` is a **no-op** in open mode (no
     ``API_KEY``/``TENANT_API_KEYS`` configured) — the operator is implicitly the
@@ -3395,48 +3515,81 @@ def _require_caller_identity_on_cloud(f):
     infrastructure, not the operator's machine.
     """
 
-    @wraps(f)
-    def wrapper(*args, **kwargs):
-        from config import is_cloud_deploy
+    def decorator(f):
+        @wraps(f)
+        def wrapper(*args, **kwargs):
+            from config import is_cloud_deploy
 
-        if not is_cloud_deploy():
-            return f(*args, **kwargs)
+            if not is_cloud_deploy():
+                return f(*args, **kwargs)
 
-        from services.auth import resolve_tenant_for_api_key, verify_token
+            from services.auth import resolve_tenant_for_api_key, verify_token
+            from services.tenant import ROLE_PRIORITY
 
-        auth = request.headers.get("Authorization", "")
-        if auth.startswith("Bearer ") and verify_token(
-            auth[7:], expected_type="access"
-        ):
-            return f(*args, **kwargs)
-        api_key = request.headers.get("X-API-Key", "")
-        if api_key and resolve_tenant_for_api_key(api_key) is not None:
-            return f(*args, **kwargs)
+            auth = request.headers.get("Authorization", "")
+            if auth.startswith("Bearer "):
+                payload = verify_token(auth[7:], expected_type="access")
+                if payload:
+                    # Agent JWTs authenticate the unattended collector only.
+                    # They must never administer credentials, even when their
+                    # signature is valid or their epoch was later revoked.
+                    if payload.get("agent") or payload.get("role") == "agent":
+                        log.warning(
+                            "[agent] agent principal refused token administration"
+                        )
+                        return (
+                            jsonify(
+                                {
+                                    "error": "user identity required to manage agent tokens",
+                                    "code": "AGENT_TOKEN_USER_REQUIRED",
+                                }
+                            ),
+                            403,
+                        )
+                    role = str(payload.get("role") or "admin")
+                    if ROLE_PRIORITY.get(role, 0) >= ROLE_PRIORITY.get(min_role, 0):
+                        return f(*args, **kwargs)
+                    return (
+                        jsonify(
+                            {
+                                "error": "permission denied",
+                                "required_role": min_role,
+                                "role": role,
+                            }
+                        ),
+                        403,
+                    )
 
-        log.warning(
-            "[agent] anonymous agent-token mint refused from %s",
-            request.remote_addr or "?",
-        )
-        return (
-            jsonify(
-                {
-                    "error": "authentication required to manage agent tokens",
-                    "code": "AGENT_TOKEN_NEEDS_IDENTITY",
-                    "detail": (
-                        "Esta instância roda na nuvem e não tem "
-                        "API_KEY/TENANT_API_KEYS configurados, então não há como "
-                        "provar quem está pedindo. Um token de agente dura 1 ano e "
-                        "dá acesso à sua frota: ele exige credencial. Configure "
-                        "API_KEY (ou TENANT_API_KEYS) no deploy e envie o header "
-                        "X-API-Key, ou rode o dashboard localmente para usar o modo "
-                        "aberto."
-                    ),
-                }
-            ),
-            403,
-        )
+            api_key = request.headers.get("X-API-Key", "")
+            if api_key and resolve_tenant_for_api_key(api_key) is not None:
+                return f(*args, **kwargs)
 
-    return wrapper
+            log.warning(
+                "[agent] anonymous agent-token administration refused from %s",
+                request.remote_addr or "?",
+            )
+            return (
+                jsonify(
+                    {
+                        "error": "authentication required to manage agent tokens",
+                        "code": "AGENT_TOKEN_NEEDS_IDENTITY",
+                        "detail": (
+                            "Esta instância roda na nuvem e não tem "
+                            "API_KEY/TENANT_API_KEYS configurados, então não há como "
+                            "provar quem está pedindo. Um token de agente dura 1 ano e "
+                            "dá acesso à sua frota: ele exige credencial. Configure "
+                            "API_KEY (ou TENANT_API_KEYS) no deploy e envie o header "
+                            "X-API-Key, ou rode o dashboard localmente para usar o modo "
+                            "aberto."
+                        ),
+                    }
+                ),
+                403,
+            )
+
+        return wrapper
+
+    return decorator
 
 
 def _require_agent(f):
@@ -3490,7 +3643,7 @@ def _require_agent(f):
 @agent_bp.route("/token", methods=["POST"])
 @require_tenant
 @_role_required("member")
-@_require_caller_identity_on_cloud
+@_require_caller_identity_on_cloud("member")
 def agent_issue_token(tenant_id: str = ""):
     """Mint a long-lived agent token for the caller's tenant.
 
@@ -3531,7 +3684,7 @@ def agent_issue_token(tenant_id: str = ""):
 @agent_bp.route("/tokens/revoke", methods=["POST"])
 @require_tenant
 @_role_required("admin")
-@_require_caller_identity_on_cloud
+@_require_caller_identity_on_cloud("admin")
 def agent_revoke_tokens(tenant_id: str = ""):
     """Revoga TODOS os tokens de agente do tenant do chamador (Issue #582).
 
@@ -3593,6 +3746,77 @@ def agent_revoke_tokens(tenant_id: str = ""):
             ),
         }
     )
+
+
+_agent_heartbeats = {}
+_agent_heartbeats_lock = threading.Lock()
+_AGENT_HEARTBEAT_TTL_S = 90
+
+
+def _store_agent_heartbeat(tenant_id: str, payload: dict) -> dict:
+    """Keep the last sanitized scan diagnostic per tenant (Issue #638)."""
+    allowed = {
+        "result",
+        "host_count",
+        "found",
+        "truncated",
+        "subnet_count",
+        "prefix_lens",
+        "explicit",
+    }
+    clean = {k: payload.get(k) for k in allowed}
+    prefixes = clean.get("prefix_lens") or []
+    if not isinstance(prefixes, list):
+        prefixes = []
+    clean["prefix_lens"] = [
+        int(p) for p in prefixes if str(p).isdigit() or isinstance(p, int)
+    ][:8]
+    for key in ("host_count", "found", "subnet_count"):
+        try:
+            clean[key] = max(0, int(clean.get(key) or 0))
+        except (TypeError, ValueError):
+            clean[key] = 0
+    result = str(clean.get("result") or "unknown")[:32]
+    if result not in ("ok", "no_devices", "no_lan"):
+        result = "unknown"
+    clean["result"] = result
+    clean["truncated"] = bool(clean.get("truncated"))
+    clean["explicit"] = bool(clean.get("explicit"))
+    clean["seen_at"] = int(time.time())
+    with _agent_heartbeats_lock:
+        _agent_heartbeats[tenant_id or "default"] = clean
+    return clean
+
+
+def agent_presence(tenant_id: str, now=None) -> dict:
+    """Alive vs no-telemetry: a heartbeat proves the agent is running even
+    when zero miners answered."""
+    now = int(now or time.time())
+    with _agent_heartbeats_lock:
+        row = dict(_agent_heartbeats.get(tenant_id or "default") or {})
+    if not row:
+        return {"alive": False, "last_seen": None, "scan": None}
+    last = int(row.get("seen_at") or 0)
+    alive = last > 0 and (now - last) <= _AGENT_HEARTBEAT_TTL_S
+    scan = {
+        "result": row.get("result"),
+        "host_count": row.get("host_count"),
+        "found": row.get("found"),
+        "truncated": row.get("truncated"),
+        "subnet_count": row.get("subnet_count"),
+        "prefix_lens": row.get("prefix_lens") or [],
+        "explicit": row.get("explicit"),
+    }
+    return {"alive": alive, "last_seen": last or None, "scan": scan}
+
+
+@agent_bp.route("/heartbeat", methods=["POST"])
+@_require_agent
+def agent_heartbeat(agent_tenant_id: str = ""):
+    """Agent-alive diagnostic with no device IPs (Issue #638)."""
+    data = request.get_json(silent=True) or {}
+    _store_agent_heartbeat(agent_tenant_id, data)
+    return jsonify({"success": True, "agent": agent_presence(agent_tenant_id)})
 
 
 @agent_bp.route("/register", methods=["POST"])
@@ -3768,13 +3992,61 @@ def agent_pull_commands(agent_tenant_id: str = ""):
     Returns [] when nothing is pending."""
     cmds = _registry.pending_agent_commands(tenant_id=agent_tenant_id)
     pulled = []
+    now = int(time.time())
+    from services.safety_policy import can_execute_physical_command
+
     for c in cmds:
-        if _registry.mark_command_pulled(c["id"], tenant_id=agent_tenant_id):
-            # Resolve the device's LAN IP server-side. The agent executes
-            # commands on the HOME network — it needs the reachable IP, not
-            # the registry UUID. (The command's device_id alone was useless:
-            # the agent would try to open a TCP/HTTP socket to a UUID string.)
-            dev = _registry.get_device(c["device_id"], tenant_id=agent_tenant_id)
+        dev = _registry.get_device(c["device_id"], tenant_id=agent_tenant_id)
+        command = str(c.get("command") or "")
+        reason = ""
+        terminal_status = "blocked"
+        try:
+            age = now - int(c.get("created_at") or 0)
+        except (TypeError, ValueError, OverflowError):
+            age = AGENT_COMMAND_TTL_S + 1
+        if age < 0 or age > AGENT_COMMAND_TTL_S:
+            reason = "command_expired"
+            terminal_status = "expired"
+        elif not can_execute_physical_command():
+            reason = "deployment_policy_disabled"
+        elif not dev:
+            reason = "device_missing"
+        elif not int(dev.get("agent_managed", 0) or 0):
+            reason = "device_not_agent_managed"
+        elif (
+            str(dev.get("status") or "OFFLINE").upper()
+            not in _AGENT_COMMAND_READY_STATES
+        ):
+            reason = "device_not_ready"
+        elif not dev.get("ip_address"):
+            reason = "device_ip_missing"
+        elif command not in _caps_supported_commands(dev.get("capabilities")):
+            reason = "command_capability_missing"
+
+        if reason:
+            _registry.terminalize_agent_command(
+                c["id"], agent_tenant_id, terminal_status, reason
+            )
+            _log_audit(
+                agent_tenant_id,
+                "fleet.agent_command_blocked",
+                target=c.get("device_id") or "",
+                details={
+                    "command": command,
+                    "command_id": c.get("id"),
+                    "reason": reason,
+                    "terminal_status": terminal_status,
+                },
+            )
+            continue
+
+        if _registry.mark_command_pulled(
+            c["id"],
+            tenant_id=agent_tenant_id,
+            max_age=AGENT_COMMAND_TTL_S,
+        ):
+            # The agent executes commands on the HOME network and needs the
+            # LAN IP, not the registry UUID.
             pulled.append(
                 {
                     "id": c["id"],
@@ -3792,8 +4064,10 @@ def agent_pull_commands(agent_tenant_id: str = ""):
 def agent_ack_command(command_id: str, agent_tenant_id: str = ""):
     """Ack a command result after executing it locally.
     Body: {"success": bool, "result": str|dict}"""
-    data = request.get_json(silent=True) or {}
-    success = bool(data.get("success"))
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict) or type(data.get("success")) is not bool:
+        return jsonify({"error": "success must be a boolean"}), 400
+    success = data["success"]
     result = data.get("result") or ""
     if isinstance(result, (dict, list)):
         result = json.dumps(result)

@@ -31,6 +31,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import vm from 'node:vm';
+import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -183,11 +184,13 @@ const _dashboard = loadFragment('39b-dashboard.js', '{ poolDetectionView }');
 // decide se o texto fala de login ou de papel — e se o retry continua oferecido.
 const _fleet = loadFragment(
   '49-axe-fleet.js',
-  '{ agentRevokeView, classifyRevokeRefusal }',
+  '{ agentRevokeView, classifyRevokeRefusal, agentInstallCommands, cloudWizardView, deviceAddOutcome }',
   { window: {}, document: { getElementById: () => null } }
 );
 const agentRevokeView = _fleet.agentRevokeView;
 const classifyRevokeRefusal = _fleet.classifyRevokeRefusal;
+const cloudWizardView = _fleet.cloudWizardView;
+const deviceAddOutcome = _fleet.deviceAddOutcome;
 const poolDetectionView = _dashboard.poolDetectionView;
 
 // ── Test counters ─────────────────────────────────────────────────────────
@@ -5434,6 +5437,66 @@ console.log('\n📊 SUITE 39: agentRevokeView() — revogação de agentes (Issu
   assertEqual("toast sets role=status", /setAttribute\('role', 'status'\)/.test(src), true);
   assertEqual("toast sets aria-live=polite", /setAttribute\('aria-live', 'polite'\)/.test(src), true);
   assertEqual("toast sets aria-atomic", /setAttribute\('aria-atomic', 'true'\)/.test(src), true);
+})();
+
+// Issue #636: execute the real command builder with inert shell functions.
+// No Docker, curl, installer, credential or service is used by this test.
+for (const [origin, token] of [
+  ['https://dashboard.example/', 'test.jwt.token'],
+  ["https://dashboard.example/a b?x='quoted'&v=$(printf INJECTED)", "test' token;$(printf INJECTED)"],
+]) {
+  const commands = _fleet.agentInstallCommands(token, origin);
+  const base = origin.replace(/\/$/, '');
+  const docker = spawnSync('bash', ['-c',
+    "docker() { printf '%s\\0' \"$@\"; };\n" + commands.docker,
+  ], { encoding: 'utf8' });
+  assertEqual('agent Docker: shell succeeds', docker.status, 0);
+  assertEqual('agent Docker: exact arguments, no literal newline escapes or shell expansion',
+    docker.stdout.split('\0').slice(0, -1), [
+      'run', '-d', '--restart', 'unless-stopped', '--name', 'cypher65-agent', '--network', 'host',
+      '-e', 'CYPHER65_SERVER_URL=' + base,
+      '-e', 'CYPHER65_AGENT_TOKEN=' + token,
+      '-e', 'CYPHER65_POLL_INTERVAL=30', 'ghcr.io/0xjc65eth/cypher65-agent',
+    ]);
+  const installer = spawnSync('bash', ['-c',
+    "curl() { printf '%s\\0' \"$@\"; };\n" +
+    "bash() { printf '%s\\0' \"$CYPHER65_SERVER_URL\" \"$CYPHER65_AGENT_TOKEN\"; cat; };\n" +
+    commands.installer,
+  ], { encoding: 'utf8' });
+  assertEqual('agent installer: shell succeeds', installer.status, 0);
+  assertEqual('agent installer: env reaches pipe consumer and URL remains one argument',
+    installer.stdout.split('\0').slice(0, -1),
+    [base, token, '-fsSL', base + '/agent/install.sh']);
+}
+
+// Issue #637: cloud wizard contract + explicit API messages (not a boolean).
+(function testCloudWizardAndDeviceAddOutcome() {
+  const cloud = cloudWizardView(true);
+  assertEqual('cloud wizard disables LAN scan', cloud.scanEnabled, false);
+  assertEqual('cloud wizard prefers agent', cloud.preferAgent, true);
+  assertTruthy('cloud wizard names the agent path', cloud.scanHint.includes('local agent'));
+  const selfHost = cloudWizardView(false);
+  assertEqual('self-host keeps LAN scan', selfHost.scanEnabled, true);
+  assertEqual('self-host does not force agent', selfHost.preferAgent, false);
+
+  const queued = deviceAddOutcome(202, {
+    queued: true,
+    is_cloud: true,
+    restored: true,
+    message: 'IP privado enfileirado para o AGENTE LOCAL.',
+  });
+  assertEqual('202 queued is success', queued.ok, true);
+  assertEqual('202 queued keeps is_cloud', queued.isCloud, true);
+  assertTruthy('202 queued keeps the API message', queued.message.includes('AGENTE LOCAL'));
+
+  const denied = deviceAddOutcome(400, {
+    is_cloud: true,
+    error: 'subnet scan unavailable on cloud deploy',
+    message: 'Instale o AGENTE LOCAL',
+  });
+  assertEqual('cloud error is not success', denied.ok, false);
+  assertEqual('cloud error prefers message over error', denied.message, 'Instale o AGENTE LOCAL');
+  assertEqual('cloud error keeps is_cloud', denied.isCloud, true);
 })();
 
 //  RESULTS

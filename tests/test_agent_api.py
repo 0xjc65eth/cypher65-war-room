@@ -394,12 +394,20 @@ class TestAgentTelemetry:
 # ══════════════════════════════════════════════════════════════════════
 
 class TestAgentCommands:
+    @pytest.fixture(autouse=True)
+    def _enable_physical_commands(self, monkeypatch):
+        monkeypatch.setenv("ENABLE_PHYSICAL_COMMANDS", "true")
+
     def _registered_device(self, client, agent_token, registry):
         self._reg = registry
         with patch("axe_fleet.routes._registry", registry):
             client.post("/api/agent/register", headers=_headers(agent_token),
                         json={"devices": [{"ip": "192.168.1.50"}]})
-        return registry.get_device_by_ip("192.168.1.50", tenant_id="acme")
+        dev = registry.get_device_by_ip("192.168.1.50", tenant_id="acme")
+        registry.save_agent_telemetry(
+            dev["id"], {"hashrate_hs": 1}, tenant_id="acme"
+        )
+        return registry.get_device(dev["id"], tenant_id="acme")
 
     def test_pull_and_ack_round_trip(self, client, agent_token, registry):
         dev = self._registered_device(client, agent_token, registry)
@@ -433,6 +441,9 @@ class TestAgentCommands:
         """Tenant A pulling commands must not see tenant B's queue."""
         dev_a = registry.upsert_agent_device("192.168.1.10", tenant_id="acme")
         registry.upsert_agent_device("192.168.1.20", tenant_id="brave")
+        registry.save_agent_telemetry(
+            dev_a["id"], {"hashrate_hs": 1}, tenant_id="acme"
+        )
         registry.enqueue_agent_command(dev_a["id"], "identify", tenant_id="acme")
 
         token_a = create_token(subject="acme", ttl=86400,
@@ -746,11 +757,18 @@ class TestCommandPayloadCarriesIp:
     """Fix 1: the agent must receive the device's LAN ip_address in the
     pull payload — the registry UUID alone is useless for opening a socket."""
 
+    @pytest.fixture(autouse=True)
+    def _enable_physical_commands(self, monkeypatch):
+        monkeypatch.setenv("ENABLE_PHYSICAL_COMMANDS", "true")
+
     def test_pull_commands_include_ip_address(self, client, agent_token, registry):
         with patch("axe_fleet.routes._registry", registry):
             client.post("/api/agent/register", headers=_headers(agent_token),
                         json={"devices": [{"ip": "192.168.1.50"}]})
             dev = registry.get_device_by_ip("192.168.1.50", tenant_id="acme")
+            registry.save_agent_telemetry(
+                dev["id"], {"hashrate_hs": 1}, tenant_id="acme"
+            )
             registry.enqueue_agent_command(dev["id"], "restart", tenant_id="acme")
             pull = client.post("/api/agent/commands/pull",
                                headers=_headers(agent_token), json={})
@@ -759,15 +777,14 @@ class TestCommandPayloadCarriesIp:
             assert len(cmds) == 1
             assert cmds[0]["ip_address"] == "192.168.1.50"
 
-    def test_pull_missing_device_uses_empty_ip(self, client, agent_token, registry):
-        """A queued command for a vanished device still pulls (empty ip) —
-        the agent acks failure instead of the pull 500ing."""
+    def test_pull_missing_device_is_blocked(self, client, agent_token, registry):
+        """A vanished target cannot receive a physical command."""
         with patch("axe_fleet.routes._registry", registry):
             registry.enqueue_agent_command("ghost-device", "restart", tenant_id="acme")
             pull = client.post("/api/agent/commands/pull",
                                headers=_headers(agent_token), json={})
             assert pull.status_code == 200
-            assert pull.get_json()["commands"][0]["ip_address"] == ""
+            assert pull.get_json()["commands"] == []
 
 
 class TestHeartbeatKeepsCacheHashrate:
@@ -974,6 +991,109 @@ class TestTombstoneNoZombies:
         assert revived, "manual add did not revive the IP"
         assert revived["name"] == "Revived"
 
+    def test_restore_then_agent_register_and_tenant_isolation(
+        self, client, agent_token, registry
+    ):
+        """Issue #637: operator restore unblocks agent register; another
+        tenant cannot restore or resurrect the same IP."""
+        ip = "192.168.1.81"
+        other_agent = create_token(
+            subject="brave", ttl=365 * 86400,
+            extra_claims={"agent": True, "role": "agent"},
+        )
+        other_user = create_token(subject="brave", extra_claims={"role": "admin"})
+        acme_user = create_token(subject="acme", extra_claims={"role": "admin"})
+        with patch("axe_fleet.routes._registry", registry), \
+                patch("axe_fleet.routes._can_add_worker", return_value=True):
+            client.post("/api/agent/register", headers=_headers(agent_token),
+                        json={"devices": [{"ip": ip, "type": "bitaxe"}]})
+        dev = registry.get_device_by_ip(ip, tenant_id="acme")
+        assert registry.remove_device(dev["id"], tenant_id="acme") is True
+        with patch("axe_fleet.routes._registry", registry), \
+                patch("axe_fleet.routes._can_add_worker", return_value=True):
+            blocked = client.post(
+                "/api/agent/register", headers=_headers(agent_token),
+                json={"devices": [{"ip": ip}]})
+            assert blocked.get_json()["count"] == 0
+            steal = client.post(
+                "/api/axe-fleet/devices/restore",
+                headers=_headers(other_user),
+                json={"ip_address": ip},
+            )
+            assert steal.status_code == 404
+            assert registry.get_removed_by_ip(ip, tenant_id="acme")
+            listed = client.get(
+                "/api/axe-fleet/devices/removed", headers=_headers(other_user)
+            )
+            assert listed.status_code == 200
+            assert listed.get_json()["count"] == 0
+            restored = client.post(
+                "/api/axe-fleet/devices/restore",
+                headers=_headers(acme_user),
+                json={"ip_address": ip},
+            )
+            assert restored.status_code == 200, restored.get_json()
+            body = restored.get_json()
+            assert body["restored"] is True
+            assert "AGENTE LOCAL" in body["message"]
+            assert registry.get_device_by_ip(ip, tenant_id="acme") == {}
+            assert registry.get_removed_by_ip(ip, tenant_id="acme") == {}
+            again = client.post(
+                "/api/agent/register", headers=_headers(agent_token),
+                json={"devices": [{"ip": ip, "type": "bitaxe"}]},
+            )
+            assert again.status_code == 201
+            assert again.get_json()["count"] == 1
+            assert registry.get_device_by_ip(ip, tenant_id="acme")
+            other_reg = client.post(
+                "/api/agent/register", headers=_headers(other_agent),
+                json={"devices": [{"ip": ip, "type": "bitaxe"}]},
+            )
+            assert other_reg.status_code == 201
+            assert registry.get_device_by_ip(ip, tenant_id="brave")
+            assert registry.get_device_by_ip(ip, tenant_id="acme")["id"] != \
+                registry.get_device_by_ip(ip, tenant_id="brave")["id"]
+
+    def test_cloud_private_add_queues_without_ssrf_and_clears_tombstone(
+        self, client, agent_token, registry
+    ):
+        """Cloud POST of a private IP never probes the LAN; restore intent
+        still unblocks the agent."""
+        ip = "10.8.0.12"
+        acme_user = create_token(subject="acme", extra_claims={"role": "admin"})
+        with patch("axe_fleet.routes._registry", registry), \
+                patch("axe_fleet.routes._can_add_worker", return_value=True):
+            client.post("/api/agent/register", headers=_headers(agent_token),
+                        json={"devices": [{"ip": ip}]})
+        dev = registry.get_device_by_ip(ip, tenant_id="acme")
+        registry.remove_device(dev["id"], tenant_id="acme")
+        with patch("axe_fleet.routes._registry", registry), \
+                patch("axe_fleet.routes._can_add_worker", return_value=True), \
+                patch("axe_fleet.routes.AxeOSConnector") as mock_conn, \
+                patch("config.is_cloud_deploy", return_value=True), \
+                patch("axe_fleet.scanner.is_private_ip", return_value=True):
+            mock_conn.side_effect = AssertionError("cloud must not probe LAN")
+            resp = client.post(
+                "/api/axe-fleet/devices",
+                headers=_headers(acme_user),
+                json={"ip_address": ip, "name": "lab"},
+            )
+        assert resp.status_code == 202, resp.get_json()
+        data = resp.get_json()
+        assert data["is_cloud"] is True
+        assert data["queued"] is True
+        assert data["restored"] is True
+        assert "AGENTE LOCAL" in data["message"]
+        mock_conn.assert_not_called()
+        assert registry.get_device_by_ip(ip, tenant_id="acme") == {}
+        with patch("axe_fleet.routes._registry", registry), \
+                patch("axe_fleet.routes._can_add_worker", return_value=True):
+            again = client.post(
+                "/api/agent/register", headers=_headers(agent_token),
+                json={"devices": [{"ip": ip}]},
+            )
+        assert again.get_json()["count"] == 1
+
     def test_removed_device_frees_plan_slot(self, client, agent_token, registry,
                                             monkeypatch, tmp_path):
         """A tombstoned device must not count against the worker cap.
@@ -1018,3 +1138,35 @@ class TestTombstoneNoZombies:
         assert registry.gc_tombstones(max_age_days=30) == 1
         assert registry.get_removed_by_ip("192.168.1.75", tenant_id="acme") == {}
         assert registry.get_recent_telemetry(dev["id"], tenant_id="acme") == []
+
+
+class TestAgentHeartbeat:
+    def test_heartbeat_marks_agent_alive_without_miners(self, client, agent_token):
+        resp = client.post(
+            "/api/agent/heartbeat",
+            headers=_headers(agent_token),
+            json={
+                "result": "no_devices",
+                "host_count": 254,
+                "found": 0,
+                "truncated": False,
+                "subnet_count": 1,
+                "prefix_lens": [24],
+                "ip": "192.168.1.50",
+            },
+        )
+        assert resp.status_code == 200
+        info = resp.get_json()["agent"]
+        assert info["alive"] is True
+        assert info["scan"]["result"] == "no_devices"
+        assert info["scan"]["found"] == 0
+        assert "192.168.1" not in str(info)
+
+        health = client.get("/api/axe-fleet/health", headers=_headers(
+            create_token(subject="acme", extra_claims={"role": "admin"})
+        ))
+        assert health.status_code == 200
+        agent_info = health.get_json()["agent"]
+        assert agent_info["alive"] is True
+        assert agent_info["scan"]["host_count"] == 254
+        assert agent_info["scan"]["result"] == "no_devices"

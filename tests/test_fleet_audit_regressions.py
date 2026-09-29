@@ -41,7 +41,6 @@ from axe_fleet.models import (
 from axe_fleet.registry import DeviceRegistry
 from services.pool_intelligence import Chain, PoolKind, detect_provider
 
-
 # ══════════════════════════════════════════════════════════════════════════
 #  Fixtures — hermetic scratch SQLite + Flask test client (test_agent_api)
 # ══════════════════════════════════════════════════════════════════════════
@@ -208,6 +207,12 @@ class TestOnlineStateSemantics:
         devices = registry.list_devices(tenant_id="acme", with_telemetry=True)
         assert devices[0]["status"] == STATUS_STALE
 
+    def test_far_future_measurement_is_not_fresh(self):
+        """A producer clock in the future cannot keep a miner ONLINE."""
+        now = 1_700_000_000
+        assert is_telemetry_stale(now + 301, now=now) is True
+        assert is_telemetry_stale(now + 300, now=now) is False
+
     def test_derive_device_status_unchanged_for_measured_payloads(self):
         """Existing contract preserved: measured payloads decide ONLINE/IDLE."""
         assert derive_device_status({"hashrate_hs": 10}) == STATUS_ONLINE
@@ -228,6 +233,8 @@ class TestFleetAgentless:
         html = resp.get_data(as_text=True)
         assert 'data-wiz-method="manual"' in html, "manual method card missing"
         assert "Enter IP manually" in html
+        assert 'data-wiz-method="agent"' in html, "agent method card missing"
+        assert "CONNECT AGENT" in html
         assert 'id="axe-empty-add"' in html, "empty-state add button missing"
         assert "+ Add Device" in html
 

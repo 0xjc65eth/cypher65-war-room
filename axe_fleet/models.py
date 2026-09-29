@@ -44,6 +44,9 @@ STATUS_IDLE = "IDLE"
 # signals (agent polls every 30s in production; 15 min covers ~30 lost
 # cycles plus agent restarts without ever rendering week-old numbers as live).
 TELEMETRY_STALENESS_S = 15 * 60
+# Small producer clock skew is tolerated, but a far-future measurement cannot
+# prove current health.
+TELEMETRY_FUTURE_SKEW_S = 5 * 60
 
 # ── Device schema keys ───────────────────────────────────────────────────
 DEVICE_SCHEMA = {
@@ -166,7 +169,10 @@ def is_telemetry_stale(last_ts, now=None, horizon: int = TELEMETRY_STALENESS_S) 
         return True
     if ts <= 0:
         return True
-    return (int(now) - ts) > horizon
+    age = int(now) - ts
+    if age < -TELEMETRY_FUTURE_SKEW_S:
+        return True
+    return age > horizon
 
 
 def derive_device_status(telemetry: dict = None, hashrate: int = None) -> str:

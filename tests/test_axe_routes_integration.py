@@ -982,11 +982,15 @@ class TestFleetHealth:
                 resp = client.get(self.ENDPOINT)
         assert resp.status_code == 200
         d = resp.get_json()["device_health"][0]
-        # Because the payload was rejected, telemetry is honest zeros/—,
-        # not a crash and not a fabricated value.
-        assert d["telemetry"]["hashrate_hs"] == 0
+        # Because the payload was rejected, measurements stay unavailable,
+        # not a crash and not fabricated zero/fresh values.
+        assert d["telemetry"]["hashrate_hs"] is None
         assert d["telemetry"]["temperature"] is None
         assert d["telemetry"]["chip_temp"] is None
+        assert d["telemetry"]["shares_accepted"] is None
+        assert d["telemetry"]["uptime_seconds"] is None
+        assert d["telemetry"]["ts"] is None
+        assert d["telemetry"]["age_seconds"] is None
 
 
 # ══════════════════════════════════════════════════════════════════════════

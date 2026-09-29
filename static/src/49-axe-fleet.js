@@ -246,12 +246,79 @@
   // The runtime-rendered empty state (renderAxeFleet) re-creates its
   // "+ Add Device" button on every render, so the opener must be reachable
   // from there too — not only from initAxeFleetControls(). BUG A, Issue #627.
+  function cloudWizardView(isCloud) {
+    const cloud = !!isCloud;
+    return {
+      isCloud: cloud,
+      scanEnabled: !cloud,
+      preferAgent: cloud,
+      scanHint: cloud
+        ? 'Subnet scan unavailable on cloud deploy — install the local agent.'
+        : '',
+    };
+  }
+
+  function deviceAddOutcome(status, data) {
+    const body = data || {};
+    if (status === 202 && body.queued) {
+      return {
+        ok: true,
+        queued: true,
+        isCloud: !!body.is_cloud,
+        restored: !!body.restored,
+        message: body.message || 'Queued for local agent',
+        tone: 'info',
+      };
+    }
+    if (status >= 200 && status < 300) {
+      return {
+        ok: true,
+        queued: false,
+        isCloud: !!body.is_cloud,
+        restored: !!body.restored,
+        message: body.message || 'added',
+        tone: 'success',
+      };
+    }
+    return {
+      ok: false,
+      queued: false,
+      isCloud: !!body.is_cloud,
+      restored: false,
+      message: body.message || body.error || ('failed (' + status + ')'),
+      tone: 'danger',
+    };
+  }
+
+  function applyCloudWizardMode(isCloud) {
+    const view = cloudWizardView(isCloud);
+    const form = document.getElementById('axe-add-form');
+    if (form) form.dataset.cloud = view.isCloud ? '1' : '0';
+    const scanCard = document.querySelector('[data-wiz-method="scan"]');
+    if (scanCard) {
+      scanCard.disabled = !view.scanEnabled;
+      scanCard.classList.toggle('is-disabled', !view.scanEnabled);
+      if (view.scanHint) scanCard.title = view.scanHint;
+      const desc = scanCard.querySelector('.axe-wiz__method-desc');
+      if (desc && view.scanHint) desc.textContent = view.scanHint;
+    }
+    const cidrInput = document.getElementById('axe-scan-cidr');
+    const scanBtn = document.getElementById('axe-scan-btn');
+    if (cidrInput) cidrInput.disabled = !view.scanEnabled;
+    if (scanBtn) scanBtn.disabled = !view.scanEnabled;
+    return view;
+  }
+
   function openAxeWizard() {
     resetAxeWizard();
     const form = dom.axeAddForm || document.getElementById('axe-add-form');
     if (!form) return;
     form.style.display = 'block';
     gotoAxeWizStep(1);
+    authFetch('/api/axe-fleet/scan/subnets')
+      .then(r => r.ok ? r.json() : { is_cloud: false })
+      .then(d => applyCloudWizardMode(!!d.is_cloud))
+      .catch(() => applyCloudWizardMode(false));
   }
 
   // ── Helper: open the AXE add form pre-filled with an IP ───────────────
@@ -806,8 +873,18 @@
         body: JSON.stringify({ cidr })
       });
       const data = await r.json();
+      if (data && data.is_cloud) {
+        applyCloudWizardMode(true);
+        if (statusEl) {
+          statusEl.textContent = data.message || data.error || 'scan unavailable on cloud';
+          statusEl.style.color = 'var(--cyan)';
+        }
+        showToast('info', data.message || data.error || 'Use CONNECT AGENT.');
+        setAxeWizMode('agent');
+        return;
+      }
       if (!r.ok || !data.scan_id) {
-        if (statusEl) { statusEl.textContent = '? ' + ((data && data.error) || 'scan failed'); statusEl.style.color = 'var(--accent-red)'; }
+        if (statusEl) { statusEl.textContent = '✗ ' + ((data && (data.message || data.error)) || 'scan failed'); statusEl.style.color = 'var(--accent-red)'; }
         return;
       }
       const scanId = data.scan_id;
@@ -837,8 +914,9 @@
     } catch (e) {
       if (statusEl) { statusEl.textContent = '? network error: ' + e.message; statusEl.style.color = 'var(--accent-red)'; }
     } finally {
-      if (btn) btn.disabled = false;
-      if (cidrInput) cidrInput.disabled = false;
+      const cloud = document.getElementById('axe-add-form')?.dataset.cloud === '1';
+      if (btn) btn.disabled = cloud;
+      if (cidrInput) cidrInput.disabled = cloud;
     }
   }
 
@@ -849,8 +927,10 @@
     // Prefill with a suggested local subnet (best-effort; backend derives it
     // from this host's interfaces).
     authFetch('/api/axe-fleet/scan/subnets')
-      .then(r => r.ok ? r.json() : { subnets: [] })
+      .then(r => r.ok ? r.json() : { subnets: [], is_cloud: false })
       .then(d => {
+        applyCloudWizardMode(!!d.is_cloud);
+        if (d.is_cloud) return;
         const s = (d.subnets || [])[0];
         if (s && !cidrInput.value.trim()) cidrInput.value = s;
       })
@@ -1010,6 +1090,19 @@
   }
 
   function setAxeWizMode(mode) {
+    if (mode === 'agent') {
+      const form = dom.axeAddForm || document.getElementById('axe-add-form');
+      if (form) form.style.display = 'none';
+      document.getElementById('axe-agent-btn')?.click();
+      return;
+    }
+    if (mode === 'scan') {
+      const form = document.getElementById('axe-add-form');
+      if (form && form.dataset.cloud === '1') {
+        setAxeWizMode('agent');
+        return;
+      }
+    }
     _axeWizState.mode = mode === 'manual' ? 'manual' : 'scan';
     gotoAxeWizStep(2);
   }
@@ -1209,12 +1302,16 @@
       if (!ip) { if (statusEl) { statusEl.textContent = '? enter IP address'; statusEl.style.color = 'var(--accent-red)'; } gotoAxeWizStep(1); return; }
       const name = (nameInput?.value || '').trim();
       if (statusEl) { statusEl.textContent = '> connecting...'; statusEl.style.color = 'var(--text-tertiary)'; }
-      const ok = await addAxeDevice(ip, name);
+      const outcome = await addAxeDevice(ip, name);
       if (statusEl) {
-        statusEl.textContent = ok ? '? added — refreshing...' : '? failed — see console';
-        statusEl.style.color = ok ? 'var(--accent-green)' : 'var(--accent-red)';
+        statusEl.textContent = outcome.ok
+          ? (outcome.queued ? outcome.message : '✓ added — refreshing...')
+          : ('✗ ' + (outcome.message || 'failed'));
+        statusEl.style.color = outcome.ok
+          ? (outcome.queued ? 'var(--cyan)' : 'var(--accent-green)')
+          : 'var(--accent-red)';
       }
-      if (ok) {
+      if (outcome.ok) {
         setTimeout(() => {
           form.style.display = 'none';
           resetAxeWizard();
@@ -1347,6 +1444,28 @@
     return view;
   }
 
+  // Shell arguments stay quoted even when a deployment URL contains spaces
+  // or metacharacters. Joining with a real newline avoids literal "\\n" in
+  // the command copied from the onboarding panel (Issue #636).
+  function agentInstallCommands(token, serverUrl) {
+    const origin = serverUrl.replace(/\/$/, '');
+    const quote = value => "'" + String(value).replace(/'/g, "'\"'\"'") + "'";
+    const continuation = ' \\\n';
+    return {
+      installer: [
+        'curl -fsSL ' + quote(origin + '/agent/install.sh'),
+        '  | CYPHER65_SERVER_URL=' + quote(origin) + ' CYPHER65_AGENT_TOKEN=' + quote(token) + ' bash',
+      ].join(continuation),
+      docker: [
+        'docker run -d --restart unless-stopped --name cypher65-agent --network host',
+        '  -e ' + quote('CYPHER65_SERVER_URL=' + origin),
+        '  -e ' + quote('CYPHER65_AGENT_TOKEN=' + token),
+        '  -e CYPHER65_POLL_INTERVAL=30',
+        '  ghcr.io/0xjc65eth/cypher65-agent',
+      ].join(continuation),
+    };
+  }
+
   // ── SaaS AGENT onboarding panel ─────────────────────────────────────
   // The cloud dashboard cannot reach the user's LAN (192.168.x.x is not
   // routable from Render), so a local agent connects OUT and pushes
@@ -1381,20 +1500,9 @@
     // piped `bash` process sees them (query-string vars would NOT reach the
     // script through `curl | bash`). Single command — no Docker, no pip.
     const renderCommands = (token, serverUrl) => {
-      const origin = (serverUrl || location.origin).replace(/\/$/, '');
-      if (oneLinerPre) {
-        oneLinerPre.textContent =
-          'curl -sSL "' + origin + '/agent/install.sh" \\\n' +
-          '  | CYPHER65_SERVER_URL=' + origin + ' CYPHER65_AGENT_TOKEN=' + token + ' bash';
-      }
-      if (dockerPre) {
-        dockerPre.textContent =
-          'docker run -d --restart unless-stopped --name cypher65-agent --network host \\\n' +
-          '  -e CYPHER65_SERVER_URL=' + origin + ' \\n' +
-          '  -e CYPHER65_AGENT_TOKEN=' + token + ' \\n' +
-          '  -e CYPHER65_POLL_INTERVAL=30 \\n' +
-          '  ghcr.io/0xjc65eth/cypher65-agent';
-      }
+      const commands = agentInstallCommands(token, serverUrl || location.origin);
+      if (oneLinerPre) oneLinerPre.textContent = commands.installer;
+      if (dockerPre) dockerPre.textContent = commands.docker;
     };
     const copy = async (text, label) => {
       try {
@@ -1521,9 +1629,9 @@
   }
 
   // Shared device-add helper (used by the manual form + scan ADD buttons).
-  // Returns true on success.
+  // Returns a deviceAddOutcome so the wizard can show the API message.
   async function addAxeDevice(ip, name) {
-    if (!ip) return false;
+    if (!ip) return deviceAddOutcome(400, { error: 'enter IP address' });
     try {
       const r = await authFetch('/api/axe-fleet/devices', {
         method: 'POST',
@@ -1531,15 +1639,12 @@
         body: JSON.stringify({ ip_address: ip, name: name || '' })
       });
       const data = await r.json();
-      if (r.status === 202 && data && data.queued) {
-        showToast('info', data.message || 'Queued for local agent');
-        return true;
+      const outcome = deviceAddOutcome(r.status, data);
+      if (outcome.message) {
+        showToast(outcome.tone === 'danger' ? 'error' : outcome.tone, outcome.message);
       }
-      if (!r.ok && data && data.message) {
-        showToast('error', data.message);
-      }
-      return r.ok;
+      return outcome;
     } catch (e) {
-      return false;
+      return deviceAddOutcome(0, { error: e.message || 'network error' });
     }
   }
