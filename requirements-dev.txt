@@ -14,7 +14,7 @@ coverage==7.16.1
 #    Makefile `lint` target. Do not gate CI on these until a dedicated
 #    cleanup commit lands.) ────────────────────────────────────────────────
 black==26.5.1
-flake8==7.3.0
+flake8==7.4.1
 
 # ── Quality / security scanning ──────────────────────────────────────────
 bandit==1.9.4  # 1.8.2 crasha no AST do Python 3.14 ('Constant' object has no attribute 's') — Issue #125
