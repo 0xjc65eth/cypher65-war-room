@@ -282,25 +282,22 @@ def probe_host(ip: str, timeout: float = HTTP_PROBE_TIMEOUT) -> dict:
     if adapter_type == "bitaxe":
         try:
             from .connector import AxeOSConnector
+            from .axeos_contract import extract_axeos_telemetry
 
             conn = AxeOSConnector(ip, timeout=timeout)
             info = conn.fetch_info()
             if isinstance(info, dict):
-                hostname = str(info.get("hostname", ""))
-                mac = str(info.get("mac", ""))
-                try:
-                    hashrate_hs = int(info.get("hashrate") or 0)
-                except (TypeError, ValueError):
-                    hashrate_hs = 0
-                pool = info.get("pool")
-                if isinstance(pool, dict):
-                    pool_url = str(pool.get("url", ""))
-                    pool_user = str(pool.get("user", ""))
-                else:
-                    pool_url = str(info.get("poolUrl", ""))
-                    pool_user = str(info.get("poolUser", ""))
+                tel = extract_axeos_telemetry(info)
+                hostname = str(tel.get("hostname") or "")
+                mac = str(tel.get("mac") or "")
+                hashrate = tel.get("hashrate_hs")
+                hashrate_hs = int(hashrate) if hashrate is not None else 0
+                pool_url = str(tel.get("pool_url") or "")
+                pool_user = str(tel.get("pool_user") or "")
                 if not model:
-                    model = str(info.get("model") or info.get("board") or "Bitaxe")
+                    model = str(tel.get("model") or "Bitaxe")
+                firmware = firmware or str(tel.get("firmware") or "")
+                version = version or str(tel.get("version") or "")
         except Exception as e:  # noqa: BLE001
             log.debug("[scan] AxeOSConnector rich-info failed for %s: %s", ip, e)
 

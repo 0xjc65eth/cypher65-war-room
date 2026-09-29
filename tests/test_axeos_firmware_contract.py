@@ -130,6 +130,30 @@ class TestAgentUsesOfficialContract:
         assert tel["shares_rejected"] == 1
 
 
+class TestScannerUsesOfficialContract:
+    def test_probe_host_normalizes_official_esp_miner_fields(self):
+        from axe_fleet.scanner import probe_host
+
+        firmware = {
+            "firmware": "axeos",
+            "adapter_type": "bitaxe",
+            "version": "2.4.0",
+            "model": "NerdQaxe++",
+            "reachable": True,
+        }
+        with patch(
+            "core.registry.detector.detect_firmware", return_value=firmware
+        ), patch("axe_fleet.connector.AxeOSConnector") as mock_conn:
+            mock_conn.return_value.fetch_info.return_value = OFFICIAL
+            result = probe_host("192.168.1.50")
+
+        assert result["hashrate_hs"] == OFFICIAL_HS
+        assert result["mac"] == "AA:BB:CC:DD:EE:FF"
+        assert result["pool_url"] == "solo.ckpool.org"
+        assert result["pool_user"] == "virtual.worker"
+        assert result["model"] == "NerdQaxe++"
+
+
 class TestDetectorOfficialPayload:
     def test_detect_firmware_official_http(self):
         class _Resp:
