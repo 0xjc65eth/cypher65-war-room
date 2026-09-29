@@ -8,7 +8,6 @@ import pytest
 from app import app
 from axe_fleet.registry import DeviceRegistry
 from services.auth import create_token
-from sim.harness import assert_fleet_matches_ground_truth
 from tests.virtual_hardware.nerdqaxe import VirtualNerdQaxe
 import agent.agent as agent
 
@@ -101,20 +100,12 @@ def test_scan_register_telemetry_and_fleet_listing(fleet_pipeline, monkeypatch, 
         device = body["devices"][0]
         assert device["tenant_id"] == "sim-tenant"
 
-        assert_fleet_matches_ground_truth(
-            {
-                "ip_address": host,
-                "model": "NerdQaxe++",
-                "mac_address": "AA:BB:CC:DD:EE:FF",
-                "hashrate_hs": 4_800_000_000_000,
-                "shares_accepted": 42,
-                "uptime_seconds": uptime,
-            },
-            {
-                **device,
-                **device["telemetry"],
-            },
-        )
+        assert device["ip_address"] == host
+        assert device["model"] == "NerdQaxe++"
+        assert device["mac_address"] == "AA:BB:CC:DD:EE:FF"
+        assert device["telemetry"]["hashrate_hs"] == 4_800_000_000_000
+        assert device["telemetry"]["shares_accepted"] == 42
+        assert device["telemetry"]["uptime_seconds"] == uptime
 
         # Counterevidence: a different tenant cannot see this device.
         other_tenant = create_token(

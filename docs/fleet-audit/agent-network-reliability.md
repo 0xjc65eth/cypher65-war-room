@@ -14,8 +14,8 @@ Fleet data path with a virtual AxeOS miner.
 - `tests/integration/test_agent_fleet_pipeline.py` uses the production agent
   scan/probe/telemetry code, source-derived NerdQaxe/AxeOS payload, authenticated
   Flask registration and telemetry routes, the real SQLite `DeviceRegistry` on
-  a temporary database, and authenticated Fleet listing. It compares H/s, MAC,
-  shares, uptime, model and IP to strict ground truth, and checks tenant isolation.
+  a temporary database, and authenticated Fleet listing. It asserts H/s, MAC,
+  shares, uptime, model and IP, and checks tenant isolation.
 - Discovery tests prove CIDR interface masks take priority, fallback uses the
   documented IPv4-derived `/24`, and explicit IPs win over a configured CIDR.
 - Installer serializer tests parse launchd/systemd output and execute the
@@ -44,9 +44,9 @@ Fleet data path with a virtual AxeOS miner.
 Final affected-suite run: **125 passed in 20.51s**. Full Python suite:
 **3785 passed, 2 skipped in 251.70s**. `bash -n agent/install.sh`, Python
 `compileall`, Black checks for changed Python files, and `git diff --check`
-passed. CI feedback for the first PR revision found that the untracked simulator
-harness was absent from the #669 commit; the test import has been restored and
-must pass CI in the follow-up PR revision before merge.
+passed. CI feedback on the first PR revision found an accidental dependency on
+uncommitted #670 harness code; #669 now uses direct strict field assertions so
+it remains independently buildable and does not absorb simulator files.
 
 An initial run exposed an existing docs assertion requiring the Docker image
 reference; it was restored in the guide, after which `TestDocsAgent` passed.
