@@ -12,10 +12,10 @@ Fleet data path with a virtual AxeOS miner.
 ## Positive evidence
 
 - `tests/integration/test_agent_fleet_pipeline.py` uses the production agent
-  scan/probe/telemetry code, official NerdQaxe payload, authenticated Flask
-  registration and telemetry routes, the real SQLite `DeviceRegistry` on a
-  temporary database, and authenticated Fleet listing. It asserts H/s, MAC,
-  shares, tenant ID, and count across each hop.
+  scan/probe/telemetry code, source-derived NerdQaxe/AxeOS payload, authenticated
+  Flask registration and telemetry routes, the real SQLite `DeviceRegistry` on
+  a temporary database, and authenticated Fleet listing. It compares H/s, MAC,
+  shares, uptime, model and IP to strict ground truth, and checks tenant isolation.
 - Discovery tests prove CIDR interface masks take priority, fallback uses the
   documented IPv4-derived `/24`, and explicit IPs win over a configured CIDR.
 - Installer serializer tests parse launchd/systemd output and execute the
@@ -41,11 +41,12 @@ Fleet data path with a virtual AxeOS miner.
 
 `SECRET_KEY=test-secret-0123456789 python -m pytest tests/test_agent_api.py tests/test_agent_protocol.py tests/test_axeos_firmware_contract.py tests/test_agent_discovery.py tests/test_agent_install_config.py tests/test_agent_main_loop.py tests/integration/test_agent_fleet_pipeline.py -q`
 
-Final affected-suite run: **121 passed in 25.88s**. The preceding run, before
-the final output-assertion cleanup, had 122 passed; this is not the final count.
-A focused contra-evidence run of CIDR-cap, explicit-host selection, and full
-virtual pipeline: **3 passed in 1.13s**. `bash -n agent/install.sh`, Python
-`compileall`, and `git diff --check` passed.
+Final affected-suite run: **125 passed in 20.51s**. Full Python suite:
+**3785 passed, 2 skipped in 251.70s**. `bash -n agent/install.sh`, Python
+`compileall`, Black checks for changed Python files, and `git diff --check`
+passed. CI feedback for the first PR revision found that the untracked simulator
+harness was absent from the #669 commit; the test import has been restored and
+must pass CI in the follow-up PR revision before merge.
 
 An initial run exposed an existing docs assertion requiring the Docker image
 reference; it was restored in the guide, after which `TestDocsAgent` passed.

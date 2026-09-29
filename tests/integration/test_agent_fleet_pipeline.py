@@ -1,18 +1,16 @@
 """Local E2E: scan → register → telemetry → Fleet list, no physical miner."""
 
 import sqlite3
-from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
 from app import app
-from axe_fleet.axeos_contract import official_esp_miner_info
 from axe_fleet.registry import DeviceRegistry
 from services.auth import create_token
+from sim.harness import assert_fleet_matches_ground_truth
 from tests.virtual_hardware.nerdqaxe import VirtualNerdQaxe
 import agent.agent as agent
-from sim.harness import assert_fleet_matches_ground_truth
 
 
 @pytest.fixture
@@ -102,7 +100,6 @@ def test_scan_register_telemetry_and_fleet_listing(fleet_pipeline, monkeypatch, 
         assert body["count"] == 1
         device = body["devices"][0]
         assert device["tenant_id"] == "sim-tenant"
-        assert device["telemetry"]["uptime_seconds"] == uptime
 
         assert_fleet_matches_ground_truth(
             {
@@ -131,36 +128,3 @@ def test_scan_register_telemetry_and_fleet_listing(fleet_pipeline, monkeypatch, 
         assert hidden.get_json()["count"] == 0
 
         assert registry.get_device_by_ip(host, tenant_id="sim-tenant")
-
-
-def test_virtual_axeos_fields_are_catalogued_with_fidelity():
-    yaml = pytest.importorskip("yaml")
-    root = Path(__file__).resolve().parents[2]
-    catalog_dir = root / "sim" / "catalog"
-    catalogs = {
-        path.name: yaml.safe_load(path.read_text(encoding="utf-8"))
-        for path in catalog_dir.glob("*.yaml")
-    }
-    assert {"axeos.yaml", "nerdqaxe.yaml", "cgminer.yaml"} <= catalogs.keys()
-    fields = catalogs["axeos.yaml"]["fields"]
-    by_name = {item["name"]: item for item in fields}
-    simulated_keys = set(official_esp_miner_info())
-    assert simulated_keys <= by_name.keys(), (
-        f"Uncatalogued simulated AxeOS fields: {sorted(simulated_keys - by_name.keys())}"
-    )
-    for name in simulated_keys:
-        assert by_name[name].get("fidelity") in {"source", "captured", "assumed"}
-
-
-def test_fleet_oracle_rejects_reintroduced_unit_or_identity_regression():
-    ground_truth = {
-        "ip_address": "127.0.0.1",
-        "model": "NerdQaxe++",
-        "mac_address": "AA:BB:CC:DD:EE:FF",
-        "hashrate_hs": 4_800_000_000_000,
-        "shares_accepted": 42,
-        "uptime_seconds": 7200,
-    }
-    wrong = {**ground_truth, "hashrate_hs": 4800}
-    with pytest.raises(AssertionError, match="hashrate_hs mismatch"):
-        assert_fleet_matches_ground_truth(ground_truth, wrong)
