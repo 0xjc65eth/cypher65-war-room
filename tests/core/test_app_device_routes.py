@@ -225,6 +225,7 @@ class TestAppDeviceRoutes:
         assert data["confirmation_phrase"] == "CONFIRM SET_FREQUENCY"
         build_adapter.assert_not_called()
 
+    @pytest.mark.covers("CMD-002", status="partial")
     def test_confirmation_token_executes_exact_online_command_once(self, client):
         flask_client, registry = client
         from core.adapters.bitaxe_adapter import BitaxeAdapter
@@ -270,6 +271,7 @@ class TestAppDeviceRoutes:
             "set_frequency", {"frequency": 550}
         )
 
+    @pytest.mark.covers("SEC-002")
     def test_viewer_cannot_confirm_or_execute_physical_commands(
         self, client, monkeypatch
     ):
@@ -892,6 +894,7 @@ class TestAppDeviceRoutes:
         assert len(matching_rules) == 1
         assert matching_rules[0].endpoint == "device_control.execute_device_command"
 
+    @pytest.mark.covers("OPS-001", status="partial")
     def test_device_command_offline_blocked_by_safety(self, client):
         flask_client, registry = client
         from core.adapters.bitaxe_adapter import BitaxeAdapter
@@ -925,6 +928,8 @@ class TestAppDeviceRoutes:
             ("test", {"command": 123}, "command must be a string"),
         ],
     )
+    @pytest.mark.covers("API-001", status="partial")
+    @pytest.mark.covers("API-002", status="partial")
     def test_device_command_rejects_invalid_json_payloads(
         self, client, path_suffix, payload, error
     ):
@@ -940,6 +945,7 @@ class TestAppDeviceRoutes:
         assert response.status_code == 400
         assert response.get_json() == {"success": False, "error": error}
 
+    @pytest.mark.covers("CMD-001")
     def test_device_test_command_is_simulated_without_building_an_adapter(self, client):
         """The test endpoint is a dry-run: it must never touch ASIC I/O."""
         flask_client, registry = client

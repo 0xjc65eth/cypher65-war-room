@@ -113,6 +113,7 @@ def _assert_json_serializable(node):
 # ═══════════════════════════════════════════════════════════════════════════
 
 
+@pytest.mark.covers("NUM-002")
 class TestSoloProbabilitiesProperties:
     @settings(max_examples=300, deadline=None)
     @given(share=operational_share)
@@ -172,6 +173,7 @@ class TestSoloProbabilitiesProperties:
 # ═══════════════════════════════════════════════════════════════════════════
 
 
+@pytest.mark.covers("NUM-002")
 class TestLenderProfitabilityProperties:
     @settings(max_examples=300, deadline=None)
     @given(
@@ -267,6 +269,7 @@ class TestLenderProfitabilityProperties:
 # ═══════════════════════════════════════════════════════════════════════════
 
 
+@pytest.mark.covers("NUM-002")
 class TestBreakEvenProperties:
     @settings(max_examples=300, deadline=None)
     @given(
@@ -346,6 +349,7 @@ class TestBreakEvenProperties:
 # ═══════════════════════════════════════════════════════════════════════════
 
 
+@pytest.mark.covers("NUM-002")
 class TestFiatConvertProperties:
     @settings(max_examples=200, deadline=None)
     @given(
@@ -380,6 +384,7 @@ class TestFiatConvertProperties:
 # ═══════════════════════════════════════════════════════════════════════════
 
 
+@pytest.mark.covers("NUM-002")
 class TestEffectiveBtcPerThPerDayProperties:
     @settings(max_examples=200, deadline=None)
     @given(
@@ -427,9 +432,24 @@ class TestEffectiveBtcPerThPerDayProperties:
 # ═══════════════════════════════════════════════════════════════════════════
 
 
+@pytest.mark.covers("NUM-002")
 class TestIeeeEdgePins:
     """The four boundary classes the NUM-002 row demands, pinned on the two
     money helpers. Properties sweep broadly; these pin the named corners."""
+
+    def test_lender_overflow_in_comparison_difference_is_unavailable_not_infinite(self):
+        """Finite operands can still overflow when the two USD nets are subtracted."""
+        out = compute_lender_profitability(
+            ths=1e308,
+            market_btc_per_th_day=2.2250738585072014e-308,
+            power_cost_usd_per_day=1e308,
+            pool_net_btc_per_day=5e-324,
+            btc_usd=1e308,
+        )
+
+        _assert_finite_tree(out)
+        assert out["lender_vs_mining_usd_per_day"] is None
+        assert out["lender_recommendation"] == "lease"
 
     def test_lender_1e308_inputs(self):
         out = compute_lender_profitability(

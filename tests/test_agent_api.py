@@ -843,6 +843,7 @@ class TestTelemetryQuarantine:
 
         assert registry.get_telemetry_quarantines(tenant_id="acme") == {}
 
+    @pytest.mark.covers("TEL-002")
     def test_invalid_agent_sample_is_audited_and_preserves_last_good(
         self, client, agent_token, registry
     ):
@@ -910,6 +911,7 @@ class TestTelemetryQuarantine:
         }
         assert "must-not-be-logged" not in str(audit[-1])
 
+    @pytest.mark.covers("TEL-002")
     def test_invalid_standalone_axeos_hashrate_is_quarantined_without_overwrite(
         self, client, agent_token, registry
     ):
@@ -966,6 +968,7 @@ class TestTelemetryQuarantine:
         ]
         assert quarantine["fields"] == ["hashrate_hs"]
 
+    @pytest.mark.covers("TEL-002")
     def test_health_reports_quarantine_without_overwriting_last_good_status(
         self, client, agent_token, user_token, registry
     ):

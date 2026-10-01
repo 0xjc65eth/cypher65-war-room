@@ -12,6 +12,7 @@ from helpers import compute_pool_rental_break_even
 from services.probability import calculate_block_probability
 
 
+@pytest.mark.covers("MF-001")
 def test_block_probability_matches_the_poisson_model_for_a_known_vector():
     """lambda=1 must yield P(>=1)=1-e^-1 and a 10-minute expected interval."""
     result = calculate_block_probability(
@@ -30,6 +31,7 @@ def test_block_probability_matches_the_poisson_model_for_a_known_vector():
     assert "NOT A GUARANTEE" in result["note"]
 
 
+@pytest.mark.covers("MF-002")
 @pytest.mark.parametrize(
     "invalid_value", [0, -1, float("nan"), float("inf"), float("-inf")]
 )
@@ -48,6 +50,7 @@ def test_block_probability_rejects_zero_negative_and_non_finite_inputs(invalid_v
     }
 
 
+@pytest.mark.covers("MF-002")
 def test_block_probability_rejects_overflow_before_it_reaches_the_response():
     """Extreme finite inputs may overflow intermediate math; fail closed."""
     result = calculate_block_probability(
@@ -62,6 +65,7 @@ def test_block_probability_rejects_overflow_before_it_reaches_the_response():
     )
 
 
+@pytest.mark.covers("NUM-001", status="partial")
 def test_pool_rental_break_even_uses_income_per_th_and_never_divides_by_zero():
     """10 TH, 0.0005 BTC/day and BTC=$60k gives a $3/TH/day break-even."""
     result = compute_pool_rental_break_even(

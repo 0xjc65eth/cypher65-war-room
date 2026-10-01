@@ -672,8 +672,10 @@ def compute_lender_profitability(
         if net_usd is not None and mine_usd is not None:
             out["lender_net_usd_per_day"] = round(net_usd, 4)
             out["lender_mine_net_usd_per_day"] = round(mine_usd, 4)
-            out["lender_vs_mining_usd_per_day"] = round(net_usd - mine_usd, 4)
-            if abs(net_usd - mine_usd) < 0.005:
+            vs_mining_usd = net_usd - mine_usd
+            if math.isfinite(vs_mining_usd):
+                out["lender_vs_mining_usd_per_day"] = round(vs_mining_usd, 4)
+            if math.isfinite(vs_mining_usd) and abs(vs_mining_usd) < 0.005:
                 out["lender_recommendation"] = "equal"
             elif net_usd > mine_usd:
                 out["lender_recommendation"] = "lease"

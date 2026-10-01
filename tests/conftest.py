@@ -8,6 +8,8 @@ import logging
 import os
 import tempfile
 
+import pytest
+
 # Silence noisy loggers during tests
 logging.disable(logging.CRITICAL)
 
@@ -25,6 +27,47 @@ logging.disable(logging.CRITICAL)
 # test needs its own scratch DB via monkeypatch.setenv.
 _SCRATCH_DIR = tempfile.mkdtemp(prefix="cypher65_tests_")
 os.environ["DB_PATH"] = os.path.join(_SCRATCH_DIR, "war_room.sqlite")
+
+
+def pytest_configure(config):
+    """Register requirement markers used by the test traceability contract."""
+    config.addinivalue_line(
+        "markers",
+        "covers(requirement_id, status='full'): link a test to a strategy ID",
+    )
+
+
+def pytest_collection_finish(session):
+    """Expose only real, collected pytest items and their requirement markers."""
+    links = {}
+    for item in session.items:
+        for marker in item.iter_markers("covers"):
+            if marker.args:
+                requirement_id = marker.args[0]
+                status = marker.kwargs.get("status", "full")
+                links.setdefault(requirement_id, []).append((item.nodeid, status))
+
+    # Playwright specs are collected by a separate runner; their structured
+    # comment is valid only when the spec also declares at least one test.
+    import re
+    from pathlib import Path
+
+    for spec in Path(__file__).parent.joinpath("e2e").glob("*.spec.js"):
+        source = spec.read_text(encoding="utf-8")
+        marker_pattern = re.compile(
+            r"test-requirement:\s*([A-Z]+-\d{3})\s+status=(full|partial)"
+            r"(?:(?!test-requirement:).){0,200}\btest\s*\(",
+            re.DOTALL,
+        )
+        for requirement_id, status in marker_pattern.findall(source):
+            links.setdefault(requirement_id, []).append(
+                (
+                    f"{spec.relative_to(Path(__file__).parent.parent)}::Playwright test",
+                    status,
+                )
+            )
+    session.config._requirement_test_links = links
+
 
 # Issue #477: a SECRET_KEY de teste documentada localmente (22 bytes) dispara
 # InsecureKeyLengthWarning do PyJWT (HMAC-SHA256 pede >= 32 bytes, RFC 7518
