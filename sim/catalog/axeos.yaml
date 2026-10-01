@@ -222,7 +222,7 @@ operations:
     fidelity: source
     source_ref: ESP-Miner OpenAPI paths./api/system/restart
     response: GenericResponse object with required string message
-    simulator_policy: disabled in default E2E; optional state transition may return local synthetic ACK only
+    simulator_policy: pipeline E2E exercises restart against loopback VirtualNerdQaxe with a synthetic ACK and one synthetic HTTP 503; protocol tests also exercise loopback command mocks; never targets physical hardware
   - name: pause
     method: POST
     path: /api/system/pause
