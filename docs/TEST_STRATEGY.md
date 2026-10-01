@@ -27,6 +27,7 @@ reforçado ali em vez de duplicado.
 | OPS-003 | Integração | Reconexão após queda do ASIC/pool | falha transitória seguida de payload válido | estado `offline` → `online`, backoff respeitado e uma única transição auditada | `tests/test_polling_reconnection.py` |
 | TEL-001 | Integração de armazenamento | Telemetria repetida/replay | mesmo `device_id`, timestamp e idempotency key | apenas um ponto/histórico; agregados não duplicam | `tests/test_telemetry_idempotency.py` |
 | TEL-002 | Unitário + integração | Telemetria inválida ou fora de faixa | chaves ausentes, tipos errados, temperatura/hashrate não finitos | rejeição/quarentena com motivo, sem alterar último dado bom | `tests/test_telemetry_validation.py` |
+| TIME-001 | Unitário | Conversão de timestamp e DST | UTC antes/depois de mudança de horário em `America/Sao_Paulo` e `Europe/Brussels` | persistência em UTC; ordenação e duração idênticas na UI | `tests/test_timezones.py` |
 | TIME-001 | Unitário | Conversão de timestamp e DST | UTC antes/depois de mudança de horário em `America/Sao_Paulo` e `Europe/Brussels` | persistência de epoch e duração relativa da UI independentes do fuso; ordenação visual de listas permanece por cobrir | `tests/test_timezones.py` |
 | NUM-001 | Unitário | Divisão por zero de shares/custos | total shares, TH/s, preço e rede iguais a 0 | campos contratuais `0`/`None`, nunca exceção ou infinito | `tests/test_mining_formula_contracts.py`, `tests/core/test_safety.py` |
 | NUM-002 | Property-based | Valores extremos mas finitos | floats entre limites operacionais e bordas IEEE-754 | invariantes: probabilidades em [0,1], saída serializável e sem `NaN` | `tests/test_numeric_properties.py` |
@@ -40,6 +41,7 @@ reforçado ali em vez de duplicado.
 | UI-002 | E2E acessibilidade | Dashboard e fluxo de comando | teclado, foco contido em diálogo modal, labels e `prefers-reduced-motion` emulado | Axe sem violações críticas; foco retorna ao acionador e live region anuncia o resultado | `tests/e2e/accessibility.spec.js` |
 | LOAD-001 | Performance | Resumo com muitos ASICs | 100 e 500 devices; telemetria atual e stale | p95 do resumo abaixo do SLO acordado, memória limitada, contagens corretas | `tests/performance/test_fleet_scale.py` |
 | LOAD-002 | Performance + integração | Ingestão concorrente de telemetria | 10k eventos, duplicatas e 50 devices concorrentes | sem perda/duplicação fora da política; latência e backlog dentro do SLO | `tests/performance/test_telemetry_ingest.py` |
+| OBS-001 | Observabilidade + integração | Transições Fleet estruturadas | status ONLINE → OFFLINE/STALE → ONLINE, request context ativo/ausente, logger com falha | evento JSON com tenant/device/request_id, sem segredo/payload bruto; uma emissão por transição; logging não afeta ingestão | `tests/test_fleet_observability_events.py` |
 
 **Política TEL-002 (#609):** `telemetry: {}` continua sendo heartbeat válido.
 Uma amostra não vazia exige `hashrate_hs`; campos numéricos conhecidos devem
@@ -130,6 +132,9 @@ equivalente, o teste deve ser reforçado ali em vez de duplicado"*)?
 | OPS-002 | não auditado | `tests/test_polling_integration.py` existe; comportamento não verificado nesta rodada |
 | OPS-003 | **lacuna** | `tests/test_polling_reconnection.py` não existe → #610 |
 | TEL-001 | **implementado** | `tests/test_telemetry_idempotency.py`: event key opcional por tenant/device; replay idêntico é no-op, payload diferente retorna 409; clientes antigos sem key permanecem compatíveis, sem garantia de deduplicação |
+| OBS-001 | **implementado; revisão de aceite pendente** | `tests/test_fleet_observability_events.py`: envelope seguro/correlacionado, scan com contagens por categoria de rejeição (auth/timeout/refused/invalid response/reachable-unidentified), inclusão manual, transições online/offline/stale, provider pool e shares com serialização de snapshots concorrentes. Os eventos não carregam IPs; o caminho de pool está coberto pelo helper/cache, não por chamada real do provider externo. |
+| TEL-002 | implementado; regressão standalone reaberta | `tests/test_telemetry_validation.py`, `tests/test_agent_api.py`; PR #701 corrige o fallback standalone do agente → #609 |
+| TIME-001 | **lacuna** | `tests/test_timezones.py` não existe; **0** usos de fuso nomeado no repo → #604 |
 | TEL-002 | implementado, regressão standalone reaberta | `tests/test_telemetry_validation.py`, `tests/test_agent_api.py`; #609 acompanha correção adicional do fallback do agente standalone |
 | TIME-001 | **parcial** | `tests/test_timezones.py` cobre conversão ISO, bucket UTC, persistência e idade relativa na UI nos dois fusos; ordenação visual de listas ainda precisa de cobertura → #604 |
 | NUM-001 | parcial | o plano declara *"parte de `NUM-001`"* |

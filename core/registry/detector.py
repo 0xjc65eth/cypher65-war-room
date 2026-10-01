@@ -12,6 +12,7 @@ Detection order:
 """
 
 import json
+import errno
 import ipaddress
 import logging
 import re
@@ -128,11 +129,14 @@ def detect_firmware(ip_address: str, timeout: float = DETECT_TIMEOUT) -> dict:
         "capabilities": {},
         "reachable": False,
     }
+    failure_reasons = set()
 
     # 1. Try AxeOS/ESP-Miner REST API
     try:
         data = None
         r = requests.get(f"http://{ip_address}/api/system/info", timeout=timeout)
+        if r.status_code in (401, 403):
+            failure_reasons.add("auth")
         if r.status_code == 200:
             data = r.json()
             if not _looks_like_axeos(data):
@@ -166,8 +170,14 @@ def detect_firmware(ip_address: str, timeout: float = DETECT_TIMEOUT) -> dict:
             ):
                 result["capabilities"]["frequencyControl"] = True
             return result
-    except (requests.ConnectionError, requests.Timeout, json.JSONDecodeError):
-        pass
+    except requests.Timeout:
+        failure_reasons.add("timeout")
+    except requests.ConnectionError as exc:
+        failure_reasons.add(
+            "refused" if "refused" in str(exc).lower() else "unreachable"
+        )
+    except json.JSONDecodeError:
+        failure_reasons.add("invalid_response")
 
     # 2. Try Braiins OS+ REST API (port 80, then 50051)
     for braiins_port in (80, 50051):
@@ -176,6 +186,8 @@ def detect_firmware(ip_address: str, timeout: float = DETECT_TIMEOUT) -> dict:
                 f"http://{ip_address}:{braiins_port}/api/v1/miner/stats",
                 timeout=timeout,
             )
+            if r.status_code in (401, 403):
+                failure_reasons.add("auth")
             if r.status_code == 200:
                 data = r.json()
                 miner = _braiins_miner_stats(data)
@@ -203,7 +215,16 @@ def detect_firmware(ip_address: str, timeout: float = DETECT_TIMEOUT) -> dict:
                     }
                 )
                 return result
-        except (requests.ConnectionError, requests.Timeout, json.JSONDecodeError):
+        except requests.Timeout:
+            failure_reasons.add("timeout")
+            continue
+        except requests.ConnectionError as exc:
+            failure_reasons.add(
+                "refused" if "refused" in str(exc).lower() else "unreachable"
+            )
+            continue
+        except json.JSONDecodeError:
+            failure_reasons.add("invalid_response")
             continue
 
     # 2b. Fallback: Braiins OS+ cgminer socket (detect "BOSminer" in version)
@@ -255,8 +276,18 @@ def detect_firmware(ip_address: str, timeout: float = DETECT_TIMEOUT) -> dict:
                     )
                     return result
                 # Not Braiins — fall through to generic cgminer detection
-    except (socket.timeout, ConnectionRefusedError, OSError, json.JSONDecodeError):
-        pass
+    except socket.timeout:
+        failure_reasons.add("timeout")
+    except ConnectionRefusedError:
+        failure_reasons.add("refused")
+    except OSError as exc:
+        failure_reasons.add(
+            "refused"
+            if getattr(exc, "errno", None) == errno.ECONNREFUSED
+            else "unreachable"
+        )
+    except json.JSONDecodeError:
+        failure_reasons.add("invalid_response")
 
     # 3. Try cgminer protocol (TCP port 4028)
     try:
@@ -295,7 +326,21 @@ def detect_firmware(ip_address: str, timeout: float = DETECT_TIMEOUT) -> dict:
                     }
                 )
                 return result
-    except (socket.timeout, ConnectionRefusedError, OSError, json.JSONDecodeError):
-        pass
+    except socket.timeout:
+        failure_reasons.add("timeout")
+    except ConnectionRefusedError:
+        failure_reasons.add("refused")
+    except OSError as exc:
+        failure_reasons.add(
+            "refused"
+            if getattr(exc, "errno", None) == errno.ECONNREFUSED
+            else "unreachable"
+        )
+    except json.JSONDecodeError:
+        failure_reasons.add("invalid_response")
 
+    priority = ("auth", "timeout", "refused", "invalid_response", "unreachable")
+    result["failure_reason"] = next(
+        (reason for reason in priority if reason in failure_reasons), "unreachable"
+    )
     return result
