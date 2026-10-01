@@ -50,20 +50,27 @@ def fleet_pipeline(tmp_path, monkeypatch):
             app.config["JWT_SECRET_KEY"] = old_secret
 
 
-@pytest.mark.parametrize("seed", [7, 19, 43])
-def test_scan_register_telemetry_and_fleet_listing(fleet_pipeline, monkeypatch, seed):
-    """Each seed uses an explicit deterministic source payload override.
+@pytest.mark.parametrize("profile_id", [7, 19, 43])
+def test_scan_register_telemetry_and_fleet_listing(
+    fleet_pipeline, monkeypatch, profile_id
+):
+    """Each profile ID selects an explicit deterministic payload override.
 
-    The firmware contract is fixed by source, not stochastic. Seeds vary a
-    valid non-contract uptime value to prove the oracle follows the instance.
+    The firmware contract is fixed by source, not stochastic. Profile IDs vary
+    a valid non-contract uptime value to prove the oracle follows the instance.
     """
     client, registry, agent_jwt, viewer_jwt = fleet_pipeline
     agent_headers = {"Authorization": f"Bearer {agent_jwt}"}
     viewer_headers = {"Authorization": f"Bearer {viewer_jwt}"}
-    uptime = 7000 + seed
+    uptime = 7000 + profile_id
 
     with VirtualNerdQaxe(uptime_seconds=uptime) as virtual:
         host, port = virtual.address.split(":")
+        assert host == "127.0.0.1"
+        assert 0 < int(port) < 65536
+        # Avoid the production route-selection helper's UDP route probe to
+        # 8.8.8.8; this contract lab must make no non-loopback network calls.
+        monkeypatch.setattr(agent, "_local_ipv4_addresses", lambda: [host])
         monkeypatch.setattr(agent, "SCAN_CIDR", f"{host}/32")
         monkeypatch.setattr(agent, "EXPLICIT_DEVICES", [])
         monkeypatch.setattr(agent, "AXEOS_PORT", int(port))
@@ -119,3 +126,21 @@ def test_scan_register_telemetry_and_fleet_listing(fleet_pipeline, monkeypatch, 
         assert hidden.get_json()["count"] == 0
 
         assert registry.get_device_by_ip(host, tenant_id="sim-tenant")
+
+
+def test_fleet_oracle_rejects_hashrate_unit_regression():
+    """The strict oracle catches accidental GH/s values in an H/s field."""
+    from sim.harness import assert_fleet_matches_ground_truth
+
+    expected = {
+        "ip_address": "127.0.0.1",
+        "model": "NerdQaxe++",
+        "mac_address": "AA:BB:CC:DD:EE:FF",
+        "hashrate_hs": 4_800_000_000_000,
+        "shares_accepted": 42,
+        "uptime_seconds": 7007,
+    }
+    observed = {**expected, "hashrate_hs": 4_800}
+
+    with pytest.raises(AssertionError, match="hashrate_hs mismatch"):
+        assert_fleet_matches_ground_truth(expected, observed)
