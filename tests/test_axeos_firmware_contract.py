@@ -133,6 +133,18 @@ class TestAgentUsesOfficialContract:
         assert discovered["hashrate_hs"] == OFFICIAL_HS
         assert discovered["model"] == "NerdQaxe++"
 
+    def test_poll_telemetry_falls_back_without_shared_contract_module(self):
+        """The standalone agent must retain its stdlib AxeOS fallback."""
+        with patch.object(
+            agent_mod, "_probe_axeos", return_value=OFFICIAL
+        ), patch.object(agent_mod, "_extract_axeos_telemetry", None):
+            tel = agent_mod._poll_telemetry({"ip": "192.168.1.50", "type": "bitaxe"})
+
+        assert tel["hashrate_hs"] == OFFICIAL_HS
+        assert tel["shares_accepted"] == 42
+        assert tel["uptime_seconds"] == 7200
+        assert tel["model"] == "NerdQaxe++"
+
     def test_poll_telemetry_reads_official_fields(self):
         with patch.object(agent_mod, "_probe_axeos", return_value=OFFICIAL):
             tel = agent_mod._poll_telemetry({"ip": "192.168.1.50", "type": "bitaxe"})
