@@ -1,7 +1,8 @@
 """Timezone contract for subscription conversion and UTC reporting buckets.
 
-``services.conversion._iso_to_ts`` parses explicit offsets to Unix seconds and
-``_month_key`` formats those instants in UTC. Fleet relative-age UI likewise
+``services.conversion._iso_to_ts`` parses explicit offsets (and treats naive
+ISO input as UTC) to Unix seconds; ``_month_key`` formats those instants in
+UTC. Fleet relative-age UI likewise
 uses epoch arithmetic (``static/src/10-core-fmt.js``). This file tests the
 conversion contract under named host zones; it does not claim every timestamp
 producer in the application has been audited for end-to-end UTC behavior.
@@ -23,6 +24,12 @@ import pytest
         # Europe/Brussels spring-forward boundary in 2026.
         ("Europe/Brussels", "2026-03-29T00:59:59Z", 1774745999, "2026-03"),
         ("Europe/Brussels", "2026-03-29T01:00:00Z", 1774746000, "2026-03"),
+        # UTC month must win even when the host's local calendar month differs.
+        ("Europe/Brussels", "2026-02-28T23:30:00Z", 1772321400, "2026-02"),
+        ("America/Sao_Paulo", "2026-03-01T02:30:00Z", 1772332200, "2026-03"),
+        # Offsetless timestamps are interpreted as UTC, not host-local time.
+        ("Europe/Brussels", "2026-04-01T02:30:00", 1775010600, "2026-04"),
+        ("America/Sao_Paulo", "2026-04-01T02:30:00", 1775010600, "2026-04"),
     ],
 )
 def test_iso_and_utc_month_bucket_ignore_host_timezone(
