@@ -42,6 +42,19 @@ reforçado ali em vez de duplicado.
 | LOAD-002 | Performance + integração | Ingestão concorrente de telemetria | 10k eventos, duplicatas e 50 devices concorrentes | sem perda/duplicação fora da política; latência e backlog dentro do SLO | `tests/performance/test_telemetry_ingest.py` |
 | OBS-001 | Observabilidade + integração | Transições Fleet estruturadas | status ONLINE → OFFLINE/STALE → ONLINE, request context ativo/ausente, logger com falha | evento JSON com tenant/device/request_id, sem segredo/payload bruto; uma emissão por transição; logging não afeta ingestão | `tests/test_fleet_observability_events.py` |
 
+**Política TEL-002 (#609):** `telemetry: {}` continua sendo heartbeat válido.
+Uma amostra não vazia exige `hashrate_hs`; campos numéricos conhecidos devem
+ser numéricos, finitos e não negativos, exceto RSSI (-150..0 dBm) e temperaturas
+(-40..150 °C). Hashrate (medido ou esperado) é limitado a 1 EH/s por dispositivo;
+`fan_speed` é 0..100%, `fan_rpm` até 100.000 e percentuais 0..100. Campos
+opcionais não expostos pelo firmware podem ser omitidos ou `null`. Campo
+desconhecido segue ignorado; amostra inválida é rejeitada por inteiro com HTTP
+422, motivo/campos e audit sem valores da amostra. A rejeição não grava
+telemetria nem atualiza status/last_seen. Para device cadastrado, persiste-se
+somente instante, nomes de campos e motivos (sem payload), expostos como alerta
+na resposta Fleet; heartbeat vazio não limpa o alerta e amostra válida não vazia
+limpa.
+
 ## Gate de execução
 
 1. Em todo PR: unitários alterados, `git diff --check`, `make lint-sec` e
@@ -119,7 +132,7 @@ equivalente, o teste deve ser reforçado ali em vez de duplicado"*)?
 | OPS-003 | **lacuna** | `tests/test_polling_reconnection.py` não existe → #610 |
 | TEL-001 | **implementado** | `tests/test_telemetry_idempotency.py`: event key opcional por tenant/device; replay idêntico é no-op, payload diferente retorna 409; clientes antigos sem key permanecem compatíveis, sem garantia de deduplicação |
 | OBS-001 | **implementado; revisão de aceite pendente** | `tests/test_fleet_observability_events.py`: envelope seguro/correlacionado, scan com contagens por categoria de rejeição (auth/timeout/refused/invalid response/reachable-unidentified), inclusão manual, transições online/offline/stale, provider pool e shares com serialização de snapshots concorrentes. Os eventos não carregam IPs; o caminho de pool está coberto pelo helper/cache, não por chamada real do provider externo. |
-| TEL-002 | **lacuna** | `tests/test_telemetry_validation.py` não existe → #609 |
+| TEL-002 | implementado; regressão standalone reaberta | `tests/test_telemetry_validation.py`, `tests/test_agent_api.py`; PR #701 corrige o fallback standalone do agente → #609 |
 | TIME-001 | **lacuna** | `tests/test_timezones.py` não existe; **0** usos de fuso nomeado no repo → #604 |
 | NUM-001 | parcial | o plano declara *"parte de `NUM-001`"* |
 | NUM-002 | implementado (PR #605 wave W3) | `tests/test_numeric_properties.py`: hypothesis sobre o núcleo numérico puro — solo prob, lender, break-even, `fiat_convert`; invariantes [0,1]/serializável/sem NaN + bordas IEEE-754 e Decimal |

@@ -1,0 +1,75 @@
+family: cgminer-compatible
+scope: basic TCP API commands currently used by CYPHER65 for discovery and read telemetry
+source:
+  fidelity: source
+  project: ckolivas/cgminer
+  document: API-README
+  url: https://github.com/ckolivas/cgminer/blob/b8491c66e7e22f23a9edf095dd1337ee581e88bd/API-README
+  accessed: 2026-09-29
+  revision: b8491c66e7e22f23a9edf095dd1337ee581e88bd (archived master head observed 2026-09-29)
+  revision_url: https://github.com/ckolivas/cgminer/commit/b8491c66e7e22f23a9edf095dd1337ee581e88bd
+  notes: API-README says JSON request is {"command":"CMD"}, JSON replies have STATUS and command-specific sections. API-listen/network permissions are deployment configuration.
+fixtures:
+  physical_captures: []
+commands:
+  - name: version
+    request: '{"command":"version"}'
+    response_section: VERSION
+    fidelity: source
+    fields:
+      - {name: CGMiner, type: string, unit: null, fidelity: source}
+      - {name: API, type: string, unit: null, fidelity: source}
+      - {name: Type, type: string, unit: null, fidelity: source}
+  - name: summary
+    request: '{"command":"summary"}'
+    response_section: SUMMARY
+    fidelity: source
+    fields:
+      - {name: GHS 5s, type: number, unit: GH/s, fidelity: assumed}
+      - {name: GHS av, type: number, unit: GH/s, fidelity: assumed}
+      - {name: Accepted, type: number, unit: shares, fidelity: source}
+      - {name: Rejected, type: number, unit: shares, fidelity: source}
+      - {name: Elapsed, type: number, unit: seconds, fidelity: source}
+      - {name: Best Share, type: number_or_string, unit: difficulty, fidelity: source}
+  - name: stats
+    request: '{"command":"stats"}'
+    response_section: STATS
+    fidelity: source
+    fields:
+      - {name: vendor/device stats keys, type: heterogeneous, unit: vendor-defined, fidelity: source}
+      - {name: temp2_0, type: number, unit: Celsius, fidelity: assumed}
+      - {name: fan1, type: number, unit: RPM, fidelity: assumed}
+    caveat: Upstream specifically warns stats content may change and values are not normally suitable for display contracts.
+  - name: pools
+    request: '{"command":"pools"}'
+    response_section: POOLS
+    fidelity: source
+    fields:
+      - {name: URL, type: string, unit: null, fidelity: source}
+      - {name: User, type: string, unit: null, fidelity: source}
+      - {name: Status, type: string, unit: null, fidelity: source}
+  - name: restart
+    request: '{"command":"restart"}'
+    response_section: STATUS
+    fidelity: source
+    simulator_policy: no command is sent by default validation; virtual-only if explicitly enabled
+framing:
+  request: TCP JSON line in CYPHER65 implementation
+  response_terminator: NUL in current test server; cgminer API upstream documents API data format but not the exact firmware-specific terminator as a universal guarantee
+  fidelity: assumed_for_NUL_and_tilde_variants
+families:
+  - name: generic cgminer-compatible
+    fidelity: source_for_core_API; assumed_for_each_implementation
+  - name: Antminer/BMminer
+    fidelity: assumed
+    physical_captures: []
+  - name: Whatsminer
+    fidelity: assumed
+    physical_captures: []
+  - name: Avalon
+    fidelity: assumed
+    physical_captures: []
+limits:
+  - documentation is for cgminer API, not a guarantee for every vendor fork
+  - no real ASIC firmware, read-only allowlist, or command authorization behavior is tested against hardware
+  - telemetry values in tests are hand-authored illustrative responses, not recorded captures

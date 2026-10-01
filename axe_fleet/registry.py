@@ -24,6 +24,7 @@ from .models import (
     STATUS_STALE,
     derive_device_status,
     is_telemetry_stale,
+    validate_agent_telemetry,
 )
 from .connector import AxeOSConnector, AxeOSConnectorError
 from services.observability import emit_event
@@ -134,6 +135,16 @@ class DeviceRegistry:
                 pulled_at INTEGER DEFAULT 0,
                 acked_at INTEGER DEFAULT 0,
                 result TEXT DEFAULT ''
+            )"""
+        )
+        c.execute(
+            """CREATE TABLE IF NOT EXISTS axe_telemetry_quarantine (
+                tenant_id TEXT NOT NULL,
+                device_id TEXT NOT NULL,
+                ts INTEGER NOT NULL,
+                fields TEXT NOT NULL DEFAULT '[]',
+                reasons TEXT NOT NULL DEFAULT '[]',
+                PRIMARY KEY (tenant_id, device_id)
             )"""
         )
         conn.commit()
@@ -296,13 +307,18 @@ class DeviceRegistry:
                 "DELETE FROM axe_devices WHERE id=? AND tenant_id=?",
                 (device_id, tenant_id),
             )
+            deleted = c.rowcount > 0
         else:
             c.execute(
                 "UPDATE axe_devices SET removed_at=?, status='OFFLINE' "
                 "WHERE id=? AND tenant_id=? AND COALESCE(removed_at,0)=0",
                 (int(time.time()), device_id, tenant_id),
             )
-        deleted = c.rowcount > 0
+            deleted = c.rowcount > 0
+        c.execute(
+            "DELETE FROM axe_telemetry_quarantine WHERE device_id=? AND tenant_id=?",
+            (device_id, tenant_id),
+        )
         conn.commit()
         conn.close()
         return deleted
@@ -317,11 +333,17 @@ class DeviceRegistry:
             conn = self._get_db()
             c = conn.cursor()
             c.execute(
-                "SELECT id FROM axe_devices WHERE COALESCE(removed_at,0)>0 AND removed_at<?",
+                "SELECT id, tenant_id FROM axe_devices WHERE COALESCE(removed_at,0)>0 AND removed_at<?",
                 (cutoff,),
             )
-            ids = [r["id"] for r in c.fetchall()]
+            removed_devices = [dict(r) for r in c.fetchall()]
+            ids = [row["id"] for row in removed_devices]
             if ids:
+                # Quarantine metadata is scoped by both tenant and device ID.
+                c.executemany(
+                    "DELETE FROM axe_telemetry_quarantine WHERE tenant_id=? AND device_id=?",
+                    [(row["tenant_id"], row["id"]) for row in removed_devices],
+                )
                 placeholders = ",".join("?" * len(ids))
                 # placeholders are generated ?-markers only — no user input.
                 c.execute(
@@ -678,6 +700,9 @@ class DeviceRegistry:
         ever been stored. Only a payload with real measurements can say
         ONLINE/IDLE/PAUSED.
         """
+        errors = validate_agent_telemetry(telemetry)
+        if errors:
+            raise ValueError(f"invalid agent telemetry: {errors}")
         now = int(time.time())
         payload = dict(telemetry or {})
         payload["ts"] = payload.get("ts") or now
@@ -763,6 +788,8 @@ class DeviceRegistry:
             tenant_id=tenant_id,
             transition_events=transition_events,
         )
+        if telemetry:
+            self.clear_telemetry_quarantine(device_id, tenant_id=tenant_id)
         sample_ts = payload.get("ts")
         if updated and has_measurements and status != STATUS_STALE:
             emit_event(
@@ -773,6 +800,86 @@ class DeviceRegistry:
                 status=status,
             )
         return status
+
+    def record_telemetry_quarantine(
+        self, device_id: str, fields: list, reasons: list, tenant_id: str = "default"
+    ) -> bool:
+        """Persist only metadata; return True on first/change, never store sample."""
+        clean_fields = sorted({str(field)[:160] for field in fields})[:32]
+        clean_reasons = sorted({str(reason)[:80] for reason in reasons})[:16]
+        tenant = tenant_id or "default"
+        conn = self._get_db()
+        try:
+            previous = conn.execute(
+                "SELECT fields, reasons FROM axe_telemetry_quarantine "
+                "WHERE tenant_id=? AND device_id=?",
+                (tenant, device_id),
+            ).fetchone()
+            unchanged = False
+            if previous:
+                try:
+                    unchanged = (
+                        json.loads(previous["fields"] or "[]") == clean_fields
+                        and json.loads(previous["reasons"] or "[]") == clean_reasons
+                    )
+                except (json.JSONDecodeError, TypeError):
+                    unchanged = False
+            conn.execute(
+                "INSERT INTO axe_telemetry_quarantine "
+                "(tenant_id, device_id, ts, fields, reasons) VALUES (?, ?, ?, ?, ?) "
+                "ON CONFLICT(tenant_id, device_id) DO UPDATE SET "
+                "ts=excluded.ts, fields=excluded.fields, reasons=excluded.reasons",
+                (
+                    tenant,
+                    device_id,
+                    int(time.time()),
+                    json.dumps(clean_fields),
+                    json.dumps(clean_reasons),
+                ),
+            )
+            conn.commit()
+            return not unchanged
+        finally:
+            conn.close()
+
+    def get_telemetry_quarantines(self, tenant_id: str = "") -> dict:
+        """Latest quarantined-sample metadata, scoped to a single tenant."""
+        if not tenant_id:
+            return {}
+        conn = self._get_db()
+        try:
+            rows = conn.execute(
+                "SELECT device_id, ts, fields, reasons FROM axe_telemetry_quarantine "
+                "WHERE tenant_id=?",
+                (tenant_id,),
+            ).fetchall()
+            result = {}
+            for row in rows:
+                try:
+                    result[row["device_id"]] = {
+                        "ts": row["ts"],
+                        "fields": json.loads(row["fields"] or "[]"),
+                        "reasons": json.loads(row["reasons"] or "[]"),
+                    }
+                except (json.JSONDecodeError, TypeError):
+                    continue
+            return result
+        finally:
+            conn.close()
+
+    def clear_telemetry_quarantine(self, device_id: str, tenant_id: str = "") -> None:
+        """Clear warning metadata only after a non-empty valid sample is saved."""
+        if not tenant_id:
+            return
+        conn = self._get_db()
+        try:
+            conn.execute(
+                "DELETE FROM axe_telemetry_quarantine WHERE tenant_id=? AND device_id=?",
+                (tenant_id, device_id),
+            )
+            conn.commit()
+        finally:
+            conn.close()
 
     def update_device(
         self,

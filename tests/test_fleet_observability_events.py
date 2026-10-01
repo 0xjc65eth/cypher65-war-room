@@ -142,7 +142,7 @@ def test_status_events_report_stale_and_recovery_transitions(registry, caplog):
         "ts": int(time.time()) - 3600,
         "hashrate_hs": 4_000_000_000,
         "shares_accepted": 10,
-        "best_diff": 100,
+        "best_diff": "100",
     }
 
     registry.save_agent_telemetry(device["id"], old_sample, tenant_id="tenant-b")
@@ -153,7 +153,7 @@ def test_status_events_report_stale_and_recovery_transitions(registry, caplog):
             "ts": int(time.time()),
             "hashrate_hs": 4_000_000_000,
             "shares_accepted": 11,
-            "best_diff": 101,
+            "best_diff": "101",
         },
         tenant_id="tenant-b",
     )
