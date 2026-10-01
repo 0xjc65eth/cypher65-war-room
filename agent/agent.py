@@ -28,6 +28,7 @@ Run:  python3 agent.py        (stdlib only — no pip install needed)
 """
 
 import json
+import ipaddress
 import logging
 import os
 import re
@@ -822,9 +823,24 @@ def _exec_command(cmd, known=None):
     dev_ip = cmd.get("ip_address") or cmd.get("device_ip") or cmd.get("device_id")
     name = cmd.get("command")
     if name == "probe":
-        target = (cmd.get("params") or {}).get("ip") or dev_ip
-        if not target or target == "_probe":
-            return False, "probe ip missing"
+        params = cmd.get("params")
+        target = params.get("ip") if isinstance(params, dict) else dev_ip
+        if not isinstance(target, str) or not target or target != target.strip():
+            return False, "probe target is invalid"
+        try:
+            address = ipaddress.ip_address(target)
+        except (TypeError, ValueError):
+            return False, "probe target is invalid"
+        allowed_networks = (
+            ipaddress.ip_network("10.0.0.0/8"),
+            ipaddress.ip_network("172.16.0.0/12"),
+            ipaddress.ip_network("192.168.0.0/16"),
+            ipaddress.ip_network("100.64.0.0/10"),
+        )
+        if address.version != 4 or not any(
+            address in network for network in allowed_networks
+        ):
+            return False, "probe target is outside private IPv4 scope"
         probed = _probe_host(target)
         if not probed:
             return False, "not a miner"
