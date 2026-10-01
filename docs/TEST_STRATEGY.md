@@ -56,11 +56,13 @@ reforçado ali em vez de duplicado.
 ## Implementado neste lote
 
 `MF-001`, `MF-002`, `MF-003`, `MF-004`, parte de `NUM-001`, `API-001`, `API-002`,
-`OPS-001`, `SEC-002`, `CMD-001` e a verificação de histórico para `AUD-001` foram
+`OPS-001`, `SEC-002`, `CMD-001` e `AUD-001` foram
 adicionados ou reforçados no lote de fórmulas (MF-003/MF-004 completos em 2026-09-17,
 vetor de fórmula completa + indisponível ≠ 0). A Issue #368 implementa
 `CMD-002` e reforça `AUD-001`: as tentativas sem confirmação, os reusos, as
-falhas do adaptador e as execuções aprovadas passam pelo audit persistente.
+falhas do adaptador e as execuções aprovadas passam pelo audit persistente; a
+Issue #611 adiciona cobertura de actor/tenant/device, resultado e UTC, redação
+de credenciais, ordenação estável e triggers SQLite que rejeitam UPDATE/DELETE.
 Os demais IDs definem a sequência de implementação e devem ganhar uma Issue
 própria antes de alteração de código.
 
