@@ -1280,6 +1280,21 @@ tr:hover td { background: var(--bg-hover); }
   overflow-y: auto;
   box-shadow: var(--shadow-modal);
 }
+.axe-command-dialog {
+  width: min(440px, calc(100vw - 32px));
+  max-height: min(80vh, 560px);
+  padding: 20px;
+  color: var(--text-primary);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-modal);
+}
+.axe-command-dialog::backdrop { background: rgba(0, 0, 0, 0.68); }
+.axe-command-dialog h2 { margin: 0 0 10px; font-size: var(--fs-md); }
+.axe-command-dialog p { margin: 0; color: var(--text-secondary); line-height: 1.55; }
+.axe-command-dialog__actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px; }
+.axe-command-dialog__actions button { min-height: 40px; }
 .modal__header, .modal-box__header {
   display: flex;
   justify-content: space-between;

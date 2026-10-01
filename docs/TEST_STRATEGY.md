@@ -37,7 +37,7 @@ reforçado ali em vez de duplicado.
 | AUD-001 | Integração | Audit log de sucesso, bloqueio e erro | comandos permitidos/bloqueados e falha de adaptador | actor, tenant, device, comando, resultado e UTC persistidos; append-only | `tests/core/test_app_device_routes.py`, `tests/test_audit_log.py` |
 | PER-001 | Integração SQLite | Reinício da aplicação | device, telemetria, configuração e audit gravados; reabrir registry | estado e tenant sobrevivem sem duplicar pontos ou segredos | `tests/core/test_registry.py`, `tests/test_persistence_restart.py` |
 | UI-001 | E2E visual | Responsividade das telas críticas | viewports 320, 375, 768, 1024 e 1440 px | sem overflow horizontal, controles alcançáveis e dados essenciais visíveis | `tests/e2e/responsive.spec.js` |
-| UI-002 | E2E acessibilidade | Dashboard e fluxo de comando | teclado, focus trap, labels, contraste e `prefers-reduced-motion` | Axe sem violações críticas; foco e anúncio de estado corretos | `tests/e2e/accessibility.spec.js` |
+| UI-002 | E2E acessibilidade | Dashboard e fluxo de comando | teclado, foco contido em diálogo modal, labels e `prefers-reduced-motion` emulado | Axe sem violações críticas; foco retorna ao acionador e live region anuncia o resultado | `tests/e2e/accessibility.spec.js` |
 | LOAD-001 | Performance | Resumo com muitos ASICs | 100 e 500 devices; telemetria atual e stale | p95 do resumo abaixo do SLO acordado, memória limitada, contagens corretas | `tests/performance/test_fleet_scale.py` |
 | LOAD-002 | Performance + integração | Ingestão concorrente de telemetria | 10k eventos, duplicatas e 50 devices concorrentes | sem perda/duplicação fora da política; latência e backlog dentro do SLO | `tests/performance/test_telemetry_ingest.py` |
 
@@ -128,7 +128,7 @@ equivalente, o teste deve ser reforçado ali em vez de duplicado"*)?
 | AUD-001 | **parcial** | o plano declara só *"verificação de histórico"*; `tests/test_audit_log.py` não existe → #611 |
 | PER-001 | reconciliar | cobertura equivalente em `tests/test_persistence.py` (nome difere do sugerido) |
 | UI-001 | reconciliar | cobertura equivalente parcial em `tests/e2e/topbar-responsive.spec.js` |
-| UI-002 | **lacuna** | guardas de axe existem em outra camada; o spec e2e nomeado não → #612 |
+| UI-002 | implementado neste lote | `tests/e2e/accessibility.spec.js`: teclado no fluxo de Pause, foco contido em `<dialog>`, cancelamento por Escape, anúncio do resultado, reduced motion e Axe crítico |
 | LOAD-001 | **lacuna** | `tests/performance/` **não existe** no repositório → #606 |
 | LOAD-002 | **lacuna** | idem → #607 |
 

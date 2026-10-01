@@ -286,16 +286,20 @@ test.describe('LIVE MINING — Worker Intelligence', () => {
     await expect(pauseBtn).toBeVisible({ timeout: 15000 });
     await expect(resumeBtn).toBeVisible({ timeout: 5000 });
 
-    // ── Pause: confirm dialog must appear; dismissing it must NOT fire ──
-    page.once('dialog', d => d.dismiss());
+    // ── Pause: accessible modal must appear; Escape must cancel ──
     await pauseBtn.click();
-    await page.waitForTimeout(300);
+    const cancelDialog = page.getByRole('dialog', { name: 'Confirmar comando no minerador' });
+    await expect(cancelDialog).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(cancelDialog).toBeHidden();
     expect(fired.pause).toBe(0,
-      'dismissing the confirm dialog must cancel the pause command');
+      'cancelling the accessible confirmation must cancel the pause command');
 
     // ── Accepting the confirm fires the axe-fleet pause endpoint ──
-    page.once('dialog', d => d.accept());
     await pauseBtn.click();
+    const pauseDialog = page.getByRole('dialog', { name: 'Confirmar comando no minerador' });
+    await expect(pauseDialog).toBeVisible();
+    await pauseDialog.getByRole('button', { name: 'Confirmar pausa', exact: true }).click();
     await expect
       .poll(() => fired.pause, { timeout: 5000 })
       .toBeGreaterThanOrEqual(1);
@@ -304,9 +308,11 @@ test.describe('LIVE MINING — Worker Intelligence', () => {
     const toast = page.locator('#toast-container div', { hasText: 'pause' });
     await expect(toast).toBeVisible({ timeout: 8000 });
 
-    // ── Resume: confirm dialog (physical action), then fire the endpoint ──
-    page.once('dialog', d => d.accept());
+    // ── Resume: accessible confirmation, then fire the endpoint ──
     await resumeBtn.click();
+    const resumeDialog = page.getByRole('dialog', { name: 'Confirmar comando no minerador' });
+    await expect(resumeDialog).toBeVisible();
+    await resumeDialog.getByRole('button', { name: 'Confirmar retomada', exact: true }).click();
     await expect
       .poll(() => fired.resume, { timeout: 5000 })
       .toBeGreaterThanOrEqual(1);
