@@ -7,6 +7,69 @@ import pytest
 import agent.agent as agent
 
 
+@pytest.mark.parametrize("failure", [None, 503, TimeoutError])
+def test_presence_worker_is_independent_of_rescan_and_poll(monkeypatch, failure):
+    """A fake clock covers 150s without any device or scan completion."""
+    clock = [1000.0]
+    calls = []
+
+    class StopEvent:
+        def is_set(self):
+            return False
+
+        def wait(self, seconds):
+            assert seconds == 30
+            clock[0] += seconds
+            return clock[0] >= 1180
+
+    def post(path, payload, timeout):
+        calls.append((clock[0], path, payload, timeout))
+        if failure is TimeoutError:
+            raise TimeoutError("fixture")
+        return failure or 200, {}
+
+    monkeypatch.setattr(agent, "_post", post)
+    monkeypatch.setattr(agent, "POLL_INTERVAL", 300)
+    monkeypatch.setattr(agent, "RESCAN_EVERY", 100)
+    agent._heartbeat_loop(StopEvent())
+    assert [call[0] for call in calls] == [1000, 1030, 1060, 1090, 1120, 1150]
+    assert all(call[1:] == ("/api/agent/heartbeat", {}, 3.0) for call in calls)
+
+
+def test_heartbeat_worker_starts_before_scan_and_stops_on_failure(monkeypatch):
+    events = []
+
+    class StopEvent:
+        def set(self):
+            events.append("stop")
+
+    class Worker:
+        def __init__(self, *, target, args, name, daemon):
+            assert target is agent._heartbeat_loop
+            assert isinstance(args[0], StopEvent)
+            assert name == "agent-heartbeat" and daemon
+
+        def start(self):
+            events.append("start")
+
+        def join(self, timeout):
+            assert timeout == 4
+            events.append("join")
+
+    def scan():
+        events.append("scan")
+        raise RuntimeError("fixture scan interruption")
+
+    monkeypatch.setattr(agent, "AGENT_TOKEN", "fixture-token")
+    monkeypatch.setattr(
+        agent, "threading", SimpleNamespace(Event=StopEvent, Thread=Worker)
+    )
+    monkeypatch.setattr(agent, "scan_lan", scan)
+    with pytest.raises(RuntimeError, match="fixture scan interruption"):
+        agent.main()
+    assert events == ["start", "scan", "stop", "join"]
+
+
 @pytest.mark.parametrize("removed", [True, False])
 def test_removed_device_does_not_crash_poll_loop_or_return_on_rescan(
     monkeypatch, removed

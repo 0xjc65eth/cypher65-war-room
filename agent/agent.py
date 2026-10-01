@@ -60,6 +60,8 @@ TCP_TIMEOUT = 1.0  # per cgminer TCP probe
 SCAN_WORKERS = 64
 MAX_HOSTS = 1024
 RESCAN_EVERY = 10  # full LAN re-scan every N poll cycles (new miners)
+HEARTBEAT_INTERVAL = 30  # independent of polling/scanning; server TTL is 90s
+HEARTBEAT_TIMEOUT = 3.0
 _LAST_SCAN_REPORT = {}
 
 # Protocol ports. Defaults match real hardware (AxeOS HTTP :80, cgminer
@@ -881,12 +883,41 @@ def _exec_command(cmd, known=None):
 # ── Main loop ────────────────────────────────────────────────────────────
 
 
+def _heartbeat_loop(stop):
+    """Send presence only, even while a scan or device poll is slow.
+
+    Failed requests retry on the next bounded interval, without a retry burst.
+    No scan report or telemetry is replayed by this worker.
+    """
+    while not stop.is_set():
+        try:
+            _post("/api/agent/heartbeat", {}, timeout=HEARTBEAT_TIMEOUT)
+        except Exception as exc:
+            log.warning("[FLEET_HEARTBEAT] failed error_type=%s", type(exc).__name__)
+        if stop.wait(HEARTBEAT_INTERVAL):
+            break
+
+
 def main():
     if not AGENT_TOKEN:
         log.error(
             "CYPHER65_AGENT_TOKEN não definido — gere em Painel → Fleet → Connect Agent"
         )
         raise SystemExit(2)
+    stop = threading.Event()
+    heartbeat = threading.Thread(
+        target=_heartbeat_loop, args=(stop,), name="agent-heartbeat", daemon=True
+    )
+    heartbeat.start()
+    try:
+        _run_main()
+    finally:
+        stop.set()
+        heartbeat.join(timeout=HEARTBEAT_TIMEOUT + 1)
+
+
+def _run_main():
+    """Run discovery and telemetry independently from agent presence."""
     log.info("CYPHER65 agent — server=%s poll=%ds", SERVER_URL, POLL_INTERVAL)
 
     # 1 · Register discovered devices with the cloud dashboard.

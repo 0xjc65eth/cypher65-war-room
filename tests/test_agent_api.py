@@ -1141,6 +1141,18 @@ class TestTombstoneNoZombies:
 
 
 class TestAgentHeartbeat:
+    @pytest.mark.parametrize("payload", [[], False, 0, "", None])
+    def test_non_object_json_does_not_refresh_presence(
+        self, client, agent_token, payload
+    ):
+        resp = client.post(
+            "/api/agent/heartbeat",
+            headers=_headers(agent_token),
+            json=payload,
+        )
+        assert resp.status_code == 400
+        assert resp.get_json() == {"error": "invalid_payload"}
+
     def test_heartbeat_marks_agent_alive_without_miners(self, client, agent_token):
         resp = client.post(
             "/api/agent/heartbeat",
