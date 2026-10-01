@@ -101,7 +101,7 @@ def test_every_matrix_requirement_has_test_link_or_documented_exception(pytestco
         for line in plan_rows[2:]
         if len(cells := line.split("|")) > 2
         and re.fullmatch(
-            r"(?:MF|API|OPS|TEL|TIME|NUM|SEC|CMD|AUD|PER|UI|LOAD)-\d{3}",
+            r"(?:MF|API|OPS|TEL|TIME|NUM|SEC|CMD|AUD|PER|UI|LOAD|OBS)-\d{3}",
             cells[1].strip(),
         )
     ]
@@ -138,7 +138,7 @@ def test_every_matrix_requirement_has_test_link_or_documented_exception(pytestco
         for line in exception_rows[2:]
         if len(cells := line.split("|")) > 4
         and re.fullmatch(
-            r"(?:MF|API|OPS|TEL|TIME|NUM|SEC|CMD|AUD|PER|UI|LOAD)-\d{3}",
+            r"(?:MF|API|OPS|TEL|TIME|NUM|SEC|CMD|AUD|PER|UI|LOAD|OBS)-\d{3}",
             cells[1].strip(),
         )
     ]

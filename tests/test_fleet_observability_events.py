@@ -16,7 +16,6 @@ from core.registry import detector
 from services.auth import create_token
 from services import observability, pool_detection
 
-
 @pytest.fixture
 def registry(tmp_path):
     """Create a registry using an isolated SQLite database."""
@@ -52,6 +51,7 @@ def user_token():
     return create_token(subject="acme", extra_claims={"role": "admin"})
 
 
+@pytest.mark.covers("OBS-001")
 def test_emit_event_has_correlation_and_drops_unapproved_fields(caplog):
     """Events use the JSON context contract and reject raw/sensitive fields."""
     observability.set_request_id("req-fleet-event-001")
@@ -99,6 +99,7 @@ def test_emit_event_uses_event_correlation_when_context_is_absent(caplog):
     assert record.ctx["request_id"].startswith("evt-")
 
 
+@pytest.mark.covers("OBS-001")
 def test_event_logging_failure_never_escapes_business_path(monkeypatch):
     """A failing custom logging handler cannot raise into the caller."""
 
@@ -111,6 +112,7 @@ def test_event_logging_failure_never_escapes_business_path(monkeypatch):
     )
 
 
+@pytest.mark.covers("OBS-001")
 def test_status_events_are_edge_triggered_for_repeated_offline_heartbeats(
     registry, caplog
 ):
@@ -134,6 +136,7 @@ def test_status_events_are_edge_triggered_for_repeated_offline_heartbeats(
     assert offline[0]["status"] == "OFFLINE"
 
 
+@pytest.mark.covers("OBS-001")
 def test_status_events_report_stale_and_recovery_transitions(registry, caplog):
     """Stale and recovered status are each emitted only at their edge."""
     caplog.set_level(logging.INFO, logger="cypher65")
@@ -309,6 +312,7 @@ def test_agent_liveness_emits_only_connection_edges(monkeypatch, caplog):
     assert all("ip_address" not in event for event in events)
 
 
+@pytest.mark.covers("OBS-001")
 def test_scan_route_emits_correlated_lifecycle_without_network_identifiers(
     client, user_token, monkeypatch, caplog
 ):
@@ -386,6 +390,7 @@ def test_scanner_preserves_safe_detector_reason_counts(monkeypatch):
     assert "192.168.9.1" not in repr(result["rejected_reasons"])
 
 
+@pytest.mark.covers("OBS-001")
 def test_manual_add_route_emits_success_without_address_or_probe_data(
     client, user_token, registry, monkeypatch, caplog
 ):
@@ -512,6 +517,7 @@ def test_detector_returns_only_safe_probe_failure_categories(monkeypatch, reason
     assert "detail" not in repr(result)
 
 
+@pytest.mark.covers("OBS-001")
 def test_pool_provider_event_is_edge_triggered(monkeypatch, caplog):
     """Repeated stats/cache reads do not spam pool discovery events."""
     monkeypatch.setattr(pool_detection, "_LAST_DETECTED_PROVIDER", {})
@@ -536,6 +542,7 @@ def test_pool_provider_event_is_edge_triggered(monkeypatch, caplog):
     assert all("pool_url" not in event and "pool_user" not in event for event in events)
 
 
+@pytest.mark.covers("OBS-001")
 def test_detected_pool_cache_path_emits_safe_provider_event(
     registry, monkeypatch, caplog
 ):

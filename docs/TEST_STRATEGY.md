@@ -9,7 +9,7 @@ O primeiro gate de cada PR é determinístico e sem rede. Integrações usam
 adaptadores locais/fakes de protocolo, nunca ASICs, pools ou credenciais reais.
 E2E roda contra a aplicação local com dados explícitos.
 
-Os IDs `MF`, `API`, `OPS`, `TEL`, `SEC`, `CMD`, `AUD`, `PER`, `UI` e `LOAD`
+Os IDs `MF`, `API`, `OPS`, `TEL`, `SEC`, `CMD`, `AUD`, `PER`, `UI`, `LOAD` e `OBS`
 permitem rastrear a exigência no CI e em incidentes. Os arquivos sugeridos são
 o destino inicial; quando já houver cobertura equivalente, o teste deve ser
 reforçado ali em vez de duplicado.
@@ -130,7 +130,7 @@ posteriores e registram o estado atual; não reinterpretam as conclusões histó
 | OPS-003 | lacuna | `tests/test_polling_reconnection.py` não existe → #610 |
 | TEL-001 | implementado | `tests/test_telemetry_idempotency.py`: replay idempotente, conflito para payload alterado, isolamento por tenant e duplicata concorrente (PR #692 no master atual) |
 | OBS-001 | implementado | `tests/test_fleet_observability_events.py`: envelope seguro/correlacionado, scan, inclusão manual, transições online/offline/stale, provider pool e shares concorrentes; caminho externo de provider não é exercitado |
-| TEL-002 | parcial | validação/quarentena e fallback standalone inválido cobertos por #609 / PR #704; a cobertura listada não comprova a apresentação visual da quarentena |
+| TEL-002 | implementado | `tests/test_telemetry_validation.py` e `tests/test_agent_api.py`: rejeição/quarentena com motivo, preservação do último dado bom e fallback standalone inválido (#609 / PR #704) |
 | TIME-001 | parcial | `tests/test_timezones.py` cobre conversão ISO, bucket UTC, persistência e idade relativa na UI nos dois fusos; ordenação visual de listas ainda precisa de cobertura → #604 |
 | NUM-001 | parcial | o plano declara *"parte de `NUM-001`"* |
 | NUM-002 | implementado (PR #605 wave W3) | `tests/test_numeric_properties.py`: hypothesis sobre o núcleo numérico puro — solo prob, lender, break-even, `fiat_convert`; invariantes [0,1]/serializável/sem NaN + bordas IEEE-754 e Decimal |
@@ -157,7 +157,6 @@ exceções; IDs desconhecidos, duplicados, sem vínculo ou com classificação d
 | ID | Categoria | Justificativa | Acompanhamento |
 | --- | --- | --- | --- |
 | OPS-003 | lacuna | Fluxo de reconexão e backoff ainda não tem teste dedicado | Issue #610 |
-| TEL-002 | parcial | Validação/quarentena e fallback standalone inválido foram cobertos por #609 / PR #704; apresentação visual não é afirmada por esta matriz | Issue #609 / PR #704 |
 | UI-002 | lacuna | Falta spec E2E de acessibilidade de dashboard e comando | Issue #612 |
 | LOAD-001 | bloqueado | SLO de latência/memória não foi aprovado; não inventar limite para fazer gate | Issue #606 |
 | LOAD-002 | bloqueado | SLO de ingestão/backlog não foi aprovado; não inventar limite para fazer gate | Issue #607 |
