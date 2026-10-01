@@ -8,6 +8,7 @@ import pytest
 from app import app
 from axe_fleet.registry import DeviceRegistry
 from services.auth import create_token
+from sim.harness import seeded_profile_uptime
 from tests.virtual_hardware.nerdqaxe import VirtualNerdQaxe
 import agent.agent as agent
 
@@ -50,19 +51,17 @@ def fleet_pipeline(tmp_path, monkeypatch):
             app.config["JWT_SECRET_KEY"] = old_secret
 
 
-@pytest.mark.parametrize("profile_id", [7, 19, 43])
-def test_scan_register_telemetry_and_fleet_listing(
-    fleet_pipeline, monkeypatch, profile_id
-):
-    """Each profile ID selects an explicit deterministic payload override.
+@pytest.mark.parametrize("seed", [7, 19, 43])
+def test_scan_register_telemetry_and_fleet_listing(fleet_pipeline, monkeypatch, seed):
+    """Each seed selects an explicit reproducible synthetic uptime value.
 
-    The firmware contract is fixed by source, not stochastic. Profile IDs vary
-    a valid non-contract uptime value to prove the oracle follows the instance.
+    The firmware contract is fixed by source, not stochastic. The seeded value
+    varies only uptime; it is not a physical behavior model.
     """
     client, registry, agent_jwt, viewer_jwt = fleet_pipeline
     agent_headers = {"Authorization": f"Bearer {agent_jwt}"}
     viewer_headers = {"Authorization": f"Bearer {viewer_jwt}"}
-    uptime = 7000 + profile_id
+    uptime = seeded_profile_uptime(seed)
 
     with VirtualNerdQaxe(uptime_seconds=uptime) as virtual:
         host, port = virtual.address.split(":")
@@ -126,6 +125,29 @@ def test_scan_register_telemetry_and_fleet_listing(
         assert hidden.get_json()["count"] == 0
 
         assert registry.get_device_by_ip(host, tenant_id="sim-tenant")
+
+        # Exercise a real command/reboot/error/recovery sequence against only
+        # the loopback virtual device, never a physical miner.
+        restarted = agent._exec_command(
+            {"ip_address": host, "command": "restart"},
+            known={host: {"type": "bitaxe"}},
+        )
+        assert restarted == (True, "HTTP 200")
+        assert agent._poll_telemetry(discovered[0]) == {}
+        recovered = agent._poll_telemetry(discovered[0])
+        assert recovered["uptime_seconds"] == 3
+
+
+def test_seeded_profile_uptime_replays_and_varies():
+    assert seeded_profile_uptime(19) == seeded_profile_uptime(19)
+    assert len({seeded_profile_uptime(seed) for seed in (7, 19, 43)}) == 3
+
+
+def test_seeded_profile_rejects_boolean_and_non_integer_seeds():
+    with pytest.raises(TypeError, match="seed must be an integer"):
+        seeded_profile_uptime(True)
+    with pytest.raises(TypeError, match="seed must be an integer"):
+        seeded_profile_uptime("19")
 
 
 def test_fleet_oracle_rejects_hashrate_unit_regression():

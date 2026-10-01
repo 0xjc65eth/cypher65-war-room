@@ -5,10 +5,10 @@ that virtual miners equal real hardware. It reuses repository-owned NerdQaxe/
 AxeOS and cgminer API loopback servers, and validates the production agent
 probe + Fleet registration/telemetry routes with scratch SQLite storage.
 
-The three integration case labels (`7`, `19`, `43`) are fixed profile variants
-for repeatability, **not** a seeded random physics model. They only select
-different deterministic uptime values; no seed, PRNG, fake clock, or physical
-model is implemented by this protocol-only slice.
+The integration cases use seeds `7`, `19`, and `43` to generate reproducible
+synthetic uptime values. The seed affects one fixture field only; it is **not**
+a seeded random physics model. There is no fake clock or physical model in this
+protocol-only slice.
 
 ## What this lab proves
 
@@ -20,8 +20,10 @@ model is implemented by this protocol-only slice.
 - The existing cgminer mock accepts TCP JSON requests and tests the agent's
   `version`, `summary`, `stats`, `pools`, and parsing behavior against its
   authored response fixture.
-- Tests can repeat deterministically at the contract level. This first slice
-  does not yet provide a physical ASIC model or seeded stochastic simulation.
+- The seeded fixture value replays for the same integer seed and varies across
+  the three tested seeds. This does not model ASIC physics or runtime.
+- The E2E harness drives one virtual-only restart, a one-response 503 reboot
+  window, and recovery; it never sends a command to real hardware.
 
 ## What is deliberately not implemented / not proved
 
@@ -42,9 +44,9 @@ model is implemented by this protocol-only slice.
 
 ## Reproduction
 
-From the repository root. The three parameterized E2E cases use fixed profile
-  values keyed by profile ID; they are repeatable deterministic fixtures, not
-  seed variants or a randomized ASIC model.
+From the repository root. The three parameterized E2E cases use seeds `7`,
+`19`, and `43`; the seed deterministically varies a synthetic uptime fixture
+only, not a randomized ASIC model.
 
 
 ```bash
