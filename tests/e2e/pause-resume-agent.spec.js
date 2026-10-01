@@ -195,9 +195,11 @@ test.describe('FLEET COMMAND CENTER — Pause/Resume via agent', () => {
     const beforePause = countAgentExecutions(agentLogPath, 'pause');
     const beforeResume = countAgentExecutions(agentLogPath, 'resume');
 
-    // ── Pause: aceita o confirm do navegador ──
-    page.once('dialog', d => d.accept());
+    // ── Pause: aceita a confirmação modal acessível ──
     await pauseBtn.click();
+    const pauseDialog = page.getByRole('dialog', { name: 'Confirmar comando no minerador' });
+    await expect(pauseDialog).toBeVisible();
+    await pauseDialog.getByRole('button', { name: 'Confirmar pausa', exact: true }).click();
 
     // ── Toast de sucesso com a mensagem do servidor (some após ~3.3s) ──
     //    Filtra pelo comando: o toast do pause e o do resume podem coexistir
@@ -211,8 +213,11 @@ test.describe('FLEET COMMAND CENTER — Pause/Resume via agent', () => {
     // ── O AGENTE REAL puxou o comando e executou no miner (anti-teatro) ──
     await waitForAgentExecutions(agentLogPath, 'pause', beforePause + 1, 20000);
 
-    // ── Resume: ação segura, sem confirm — dispara direto ──
+    // ── Resume: confirmation is required for every physical state change ──
     await resumeBtn.click();
+    const resumeDialog = page.getByRole('dialog', { name: 'Confirmar comando no minerador' });
+    await expect(resumeDialog).toBeVisible();
+    await resumeDialog.getByRole('button', { name: 'Confirmar retomada', exact: true }).click();
 
     const toastResume = page.getByText(
       "'resume' enviado para o agente local executar");

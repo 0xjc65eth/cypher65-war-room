@@ -6,11 +6,21 @@ e versionamento semântico ([SemVer](https://semver.org/lang/pt-BR/)).
 
 ## [Unreleased]
 
+### Corrigido — acessibilidade no fluxo de comando Fleet (#612, UI-002)
+- Confirmação de pausa/reinício/identificação usa diálogo modal nativo com
+  foco contido, cancelamento por Escape e retorno do foco ao acionador.
+- E2E exercita Tab/Shift+Tab/Enter, anúncio no live region, Axe sem violações
+  críticas e movimento reduzido no browser; o spec roda no gate E2E do CI.
+
 ### Corrigido — yield marginal BTC/TH/s/dia (#622, MF-003)
 - Corrige a normalização H/s → TH/s na fórmula de `effective_btc_per_th_per_day`
   e preserva 16 casas decimais para não arredondar a zero valores de rede real.
 - Sem hashrate de rede, o payload continua omitindo o campo; a cópia histórica
   de polling acompanha a fórmula corrigida. O campo segue sem consumidor na UI.
+- Decisão de compatibilidade: manter a chave no payload para consumidores API
+  existentes; não expor na UI sem um desenho de produto que apresente unidade,
+  timestamp, janela e premissas. Hashrate de rede ou resultado não finito vira
+  indisponível, nunca um yield zero com aparência de válido.
 
 ### Corrigido — instalação e coleta do agente Fleet (Issue #636)
 - Comandos copiados usam continuações shell válidas e argumentos protegidos.

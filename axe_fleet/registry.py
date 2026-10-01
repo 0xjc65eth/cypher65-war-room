@@ -30,6 +30,10 @@ from .connector import AxeOSConnector, AxeOSConnectorError
 log = logging.getLogger("cypher65.axe.registry")
 
 
+class TelemetryIdempotencyConflict(ValueError):
+    """Raised when a telemetry event key is reused for another payload."""
+
+
 def _caps_for_type(info: dict) -> dict:
     """Capabilities derived from the agent's discovery info (type + firmware).
 
@@ -102,11 +106,13 @@ class DeviceRegistry:
                 ts INTEGER NOT NULL,
                 device_id TEXT NOT NULL,
                 payload TEXT NOT NULL,
+                idempotency_key TEXT,
                 FOREIGN KEY (device_id) REFERENCES axe_devices(id)
             )"""
         )
         # ── Multi-tenant migration: add tenant_id columns ──
         self._migrate_add_tenant_id(c)
+        self._migrate_telemetry_idempotency(c)
         # ── Agent-managed migration: devices polled by the user's LOCAL
         #    agent (SaaS: cloud dashboard can't reach the home LAN) must be
         #    marked so the server-side poll never touches them. ──
@@ -157,6 +163,19 @@ class DeviceRegistry:
             )
         except Exception:
             pass
+
+    @staticmethod
+    def _migrate_telemetry_idempotency(c):
+        """Add the optional sample key and enforce tenant/device uniqueness."""
+        c.execute("PRAGMA table_info(axe_telemetry)")
+        columns = {row[1] for row in c.fetchall()}
+        if "idempotency_key" not in columns:
+            c.execute("ALTER TABLE axe_telemetry ADD COLUMN idempotency_key TEXT")
+        c.execute(
+            """CREATE UNIQUE INDEX IF NOT EXISTS uq_axe_telemetry_idempotency
+            ON axe_telemetry(tenant_id, device_id, idempotency_key)
+            WHERE idempotency_key IS NOT NULL"""
+        )
 
     def _migrate_add_agent_managed(self, c):
         """Add agent_managed column to axe_devices if missing (SaaS agent
@@ -640,7 +659,11 @@ class DeviceRegistry:
         return None
 
     def save_agent_telemetry(
-        self, device_id: str, telemetry: dict, tenant_id: str = "default"
+        self,
+        device_id: str,
+        telemetry: dict,
+        tenant_id: str = "default",
+        idempotency_key: str = "",
     ) -> str:
         """Persist telemetry pushed by the user's local agent and update the
         device status. Returns the persisted status so callers (routes) can
@@ -658,7 +681,6 @@ class DeviceRegistry:
         payload = dict(telemetry or {})
         payload["ts"] = payload.get("ts") or now
         payload["device_id"] = device_id
-        self.save_telemetry(device_id, payload, tenant_id=tenant_id)
         has_measurements = any(
             payload.get(k) not in (None, "")
             for k in ("hashrate_hs", "temperature", "shares_accepted", "best_diff")
@@ -681,6 +703,28 @@ class DeviceRegistry:
                 # Fresh-enough measured reading exists: keep its live status
                 # (PAUSED survives a heartbeat; IDLE stays IDLE).
                 status = derive_device_status(latest)
+        # Compute status before inserting so concurrent replays can repair
+        # denormalized device state even if a writer stopped after the event
+        # row committed but before update_device completed.
+        if idempotency_key:
+            inserted = self.save_telemetry(
+                device_id,
+                payload,
+                tenant_id=tenant_id,
+                idempotency_key=idempotency_key,
+            )
+            if not inserted:
+                latest = self._latest_measured_telemetry(device_id, tenant_id=tenant_id)
+                if latest and latest.get("ts", 0) > payload.get("ts", 0):
+                    status = derive_device_status(latest)
+                    if status != "PAUSED" and is_telemetry_stale(
+                        latest.get("ts"), now=now
+                    ):
+                        status = STATUS_STALE
+        else:
+            # Preserve the established call shape for legacy instrumentation
+            # wrappers around save_telemetry.
+            self.save_telemetry(device_id, payload, tenant_id=tenant_id)
         self.update_device(
             device_id,
             {
@@ -743,22 +787,69 @@ class DeviceRegistry:
     # ── Telemetry persistence (tenant-aware) ──────────────────────────
 
     def save_telemetry(
-        self, device_id: str, telemetry: dict, tenant_id: str = "default"
-    ):
-        """Persist a telemetry snapshot for a device owned by the given tenant."""
+        self,
+        device_id: str,
+        telemetry: dict,
+        tenant_id: str = "default",
+        idempotency_key: str = "",
+    ) -> bool:
+        """Persist one sample, ignoring identical keyed replays.
+
+        Returns ``False`` when the event was already stored with an identical
+        canonical payload. Reusing a key for another payload raises
+        :class:`TelemetryIdempotencyConflict`. Legacy calls may omit the key.
+        """
+        serialized = json.dumps(telemetry, sort_keys=True, separators=(",", ":"))
         conn = self._get_db()
         c = conn.cursor()
-        c.execute(
-            "INSERT INTO axe_telemetry (ts, device_id, payload, tenant_id) VALUES (?, ?, ?, ?)",
-            (
-                telemetry.get("ts", int(time.time())),
-                device_id,
-                json.dumps(telemetry),
-                tenant_id,
-            ),
-        )
-        conn.commit()
-        conn.close()
+        try:
+            if idempotency_key:
+                c.execute(
+                    """INSERT OR IGNORE INTO axe_telemetry
+                    (ts, device_id, payload, tenant_id, idempotency_key)
+                    VALUES (?, ?, ?, ?, ?)""",
+                    (
+                        telemetry.get("ts", int(time.time())),
+                        device_id,
+                        serialized,
+                        tenant_id,
+                        idempotency_key,
+                    ),
+                )
+                if c.rowcount == 0:
+                    c.execute(
+                        """SELECT payload FROM axe_telemetry
+                        WHERE tenant_id=? AND device_id=? AND idempotency_key=?""",
+                        (tenant_id, device_id, idempotency_key),
+                    )
+                    existing = c.fetchone()
+                    if existing is None:
+                        raise RuntimeError("telemetry insert was ignored unexpectedly")
+                    if existing["payload"] != serialized:
+                        raise TelemetryIdempotencyConflict(
+                            "idempotency key already belongs to a different telemetry sample"
+                        )
+                    conn.commit()
+                    return False
+            else:
+                c.execute(
+                    """INSERT INTO axe_telemetry
+                    (ts, device_id, payload, tenant_id, idempotency_key)
+                    VALUES (?, ?, ?, ?, NULL)""",
+                    (
+                        telemetry.get("ts", int(time.time())),
+                        device_id,
+                        serialized,
+                        tenant_id,
+                    ),
+                )
+            conn.commit()
+            return True
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
 
     def get_recent_telemetry(
         self, device_id: str, limit: int = 120, tenant_id: str = ""

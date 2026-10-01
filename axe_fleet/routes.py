@@ -24,6 +24,7 @@ import json
 import logging
 import math
 import os
+import re
 import socket
 import sqlite3
 import threading
@@ -53,7 +54,7 @@ from core.safety.safety_engine import SafetyEngine
 
 from .connector import AxeOSConnector, AxeOSConnectorError
 from .models import infer_capabilities, STATUS_PAUSED, derive_device_status
-from .registry import DeviceRegistry
+from .registry import DeviceRegistry, TelemetryIdempotencyConflict
 
 log = logging.getLogger("cypher65.axe.routes")
 
@@ -3935,10 +3936,22 @@ def agent_telemetry(agent_tenant_id: str = ""):
     data = request.get_json(silent=True) or {}
     ip = (data.get("ip") or "").strip()
     tel = data.get("telemetry")
+    idempotency_key = data.get("idempotency_key", "")
     # Require the explicit key: `telemetry: {}` (empty) is legal (a device
     # that answered nothing), but a MISSING key is a malformed push.
     if not ip or not isinstance(tel, dict):
         return jsonify({"error": "ip and telemetry object required"}), 400
+    if idempotency_key and (
+        not isinstance(idempotency_key, str)
+        or not re.fullmatch(r"[A-Za-z0-9._:-]{8,128}", idempotency_key)
+        or not isinstance(tel.get("ts"), int)
+        or isinstance(tel.get("ts"), bool)
+        or tel.get("ts", 0) <= 0
+    ):
+        return (
+            jsonify({"error": "invalid idempotency_key or missing sample timestamp"}),
+            400,
+        )
     device = _registry.get_device_by_ip(ip, tenant_id=agent_tenant_id)
     if not device:
         # Agent reported a device it registered earlier but the row is gone
@@ -3992,9 +4005,18 @@ def agent_telemetry(agent_tenant_id: str = ""):
     # STALE/OFFLINE honestly — an empty heartbeat is presence, not health;
     # re-deriving from the raw payload here would fake an IDLE for a miner
     # that answered nothing). Fleet audit, Issue #627.
-    status = _registry.save_agent_telemetry(
-        device["id"], tel, tenant_id=agent_tenant_id
-    )
+    try:
+        status = _registry.save_agent_telemetry(
+            device["id"],
+            tel,
+            tenant_id=agent_tenant_id,
+            idempotency_key=idempotency_key,
+        )
+    except TelemetryIdempotencyConflict:
+        return (
+            jsonify({"success": False, "error": "idempotency key payload conflict"}),
+            409,
+        )
     return jsonify(
         {
             "success": True,
