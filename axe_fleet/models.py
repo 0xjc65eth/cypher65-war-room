@@ -5,6 +5,239 @@ Device, Capability, Telemetry, and related types for the AxeOS fleet manager.
 All models use simple dicts for SQLite compatibility (no ORM).
 """
 
+import math
+
+
+_AGENT_TELEMETRY_NUMERIC_FIELDS = {
+    "hashrate_hs": (0, 1e18, False),
+    "expected_hashrate": (0, 1e18, False),
+    "hashrate_1m": (0, 1e18, False),
+    "hashrate_10m": (0, 1e18, False),
+    "hashrate_1h": (0, 1e18, False),
+    "temperature": (-40, 150, False),
+    "temp_asic": (-40, 150, False),
+    "temp_vreg": (-40, 150, False),
+    "chip_temp": (-40, 150, False),
+    "vr_temp": (-40, 150, False),
+    "fan_speed": (0, 100, False),
+    "fan_rpm": (0, 100_000, False),
+    "power_watts": (0, None, False),
+    "voltage_mv": (0, None, False),
+    "voltage_actual_mv": (0, None, False),
+    "frequency_mhz": (0, None, False),
+    "current_ma": (0, None, False),
+    "efficiency_jth": (0, None, False),
+    "best_diff_raw": (0, None, False),
+    "shares_accepted": (0, None, True),
+    "shares_rejected": (0, None, True),
+    "shares_stale": (0, None, True),
+    "hw_errors": (0, None, True),
+    "hw_error_pct": (0, 100, False),
+    "uptime_seconds": (0, None, True),
+    "free_heap": (0, None, True),
+    "wifi_rssi": (-150, 0, False),
+    "ts": (0, None, True),
+}
+_AGENT_TELEMETRY_STRING_FIELDS = {
+    "best_diff",
+    "best_session_diff",
+    "pool_url",
+    "pool_user",
+    "stratum_status",
+    "model",
+    "mac",
+    "hostname",
+    "firmware",
+    "version",
+}
+_AGENT_TELEMETRY_FLEXIBLE_FIELDS = {"pool_diff", "last_share_ts"}
+_AGENT_TELEMETRY_OPTIONAL_NUMERIC_FIELDS = {
+    "expected_hashrate",
+    "hashrate_1m",
+    "hashrate_10m",
+    "hashrate_1h",
+    "temperature",
+    "temp_asic",
+    "temp_vreg",
+    "chip_temp",
+    "vr_temp",
+    "fan_speed",
+    "fan_rpm",
+    "power_watts",
+    "voltage_mv",
+    "voltage_actual_mv",
+    "frequency_mhz",
+    "current_ma",
+    "efficiency_jth",
+    "best_diff_raw",
+    "shares_accepted",
+    "shares_rejected",
+    "shares_stale",
+    "hw_errors",
+    "hw_error_pct",
+    "uptime_seconds",
+    "free_heap",
+    "wifi_rssi",
+}
+_AGENT_TELEMETRY_OPTIONAL_FLEXIBLE_FIELDS = {"pool_diff", "last_share_ts"}
+_AGENT_TELEMETRY_BOOLEAN_FIELDS = {"mining_paused"}
+
+
+def _is_finite_number(value):
+    try:
+        return math.isfinite(value)
+    except (TypeError, OverflowError):
+        return False
+
+
+def _numeric_string(value):
+    """Return a parsed float for numeric strings, otherwise None."""
+    try:
+        return float(value.strip())
+    except (AttributeError, TypeError, ValueError, OverflowError):
+        return None
+
+
+def _valid_field_name(field):
+    """Keep untrusted JSON keys from injecting control characters into logs."""
+    return "".join(
+        char if char.isalnum() or char in "_.-[]" else "_" for char in str(field)
+    )[:160]
+
+
+def _safe_field_path(value, path=""):
+    """Normalize an unknown nested path before returning it to logs/audit."""
+    if isinstance(value, dict):
+        return [
+            field
+            for key, nested in value.items()
+            for field in _safe_field_path(
+                nested,
+                f"{path}.{_valid_field_name(key)}" if path else _valid_field_name(key),
+            )
+        ]
+    if isinstance(value, list):
+        return [
+            field
+            for index, nested in enumerate(value)
+            for field in _safe_field_path(nested, f"{path}[{index}]")
+        ]
+    if isinstance(value, float) and not math.isfinite(value):
+        return [path or "telemetry"]
+    return []
+
+
+def _non_finite_fields(value, path=""):
+    """Compatibility alias for tests/callers of the former private helper."""
+    return _safe_field_path(value, path)
+
+
+def validate_agent_telemetry(payload: dict) -> list[dict]:
+    """Return safe field/reason pairs for invalid agent telemetry.
+
+    Empty objects are legal liveness heartbeats. A measured sample must carry
+    ``hashrate_hs``; optional sensors may be omitted or ``None`` when firmware
+    does not expose them. Hashrate fields are bounded at 1 EH/s per device: a
+    deliberately generous ceiling that leaves room for future ASICs while
+    rejecting values several orders beyond any single-device reading.
+    """
+    if not isinstance(payload, dict):
+        return [{"field": "telemetry", "reason": "must_be_object"}]
+    if not payload:
+        return []
+
+    errors = []
+    source_invalid_fields = payload.get("_invalid_fields")
+    if source_invalid_fields is not None:
+        if (
+            not isinstance(source_invalid_fields, list)
+            or len(source_invalid_fields) > 32
+        ):
+            errors.append({"field": "telemetry", "reason": "invalid_source_metadata"})
+        else:
+            for field in source_invalid_fields:
+                if not isinstance(field, str) or not field:
+                    errors.append(
+                        {"field": "telemetry", "reason": "invalid_source_metadata"}
+                    )
+                    continue
+                errors.append(
+                    {
+                        "field": _valid_field_name(field),
+                        "reason": "invalid_source_value",
+                    }
+                )
+    if "hashrate_hs" not in payload or payload.get("hashrate_hs") is None:
+        errors.append({"field": "hashrate_hs", "reason": "required_for_sample"})
+
+    for field in _non_finite_fields(payload):
+        errors.append({"field": field, "reason": "not_finite"})
+
+    for field, (minimum, maximum, integral) in _AGENT_TELEMETRY_NUMERIC_FIELDS.items():
+        if field not in payload:
+            continue
+        value = payload[field]
+        if value is None:
+            if (
+                field != "hashrate_hs"
+                and field not in _AGENT_TELEMETRY_OPTIONAL_NUMERIC_FIELDS
+            ):
+                errors.append({"field": field, "reason": "invalid_type"})
+            continue
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            errors.append({"field": field, "reason": "invalid_type"})
+            continue
+        if not _is_finite_number(value):
+            # Non-finite floats are already reported by the recursive pass.
+            if not isinstance(value, float):
+                errors.append({"field": field, "reason": "not_finite"})
+            continue
+        if integral and not isinstance(value, int) and not value.is_integer():
+            errors.append({"field": field, "reason": "must_be_integer"})
+            continue
+        if value < minimum or (maximum is not None and value > maximum):
+            errors.append({"field": field, "reason": "out_of_range"})
+
+    for field in _AGENT_TELEMETRY_STRING_FIELDS:
+        if field not in payload:
+            continue
+        value = payload[field]
+        if value is None or not isinstance(value, str):
+            errors.append({"field": field, "reason": "invalid_type"})
+    for field in _AGENT_TELEMETRY_BOOLEAN_FIELDS:
+        if field in payload and not isinstance(payload[field], bool):
+            errors.append({"field": field, "reason": "invalid_type"})
+
+    for field in _AGENT_TELEMETRY_FLEXIBLE_FIELDS:
+        if field not in payload:
+            continue
+        value = payload[field]
+        if value is None and field in _AGENT_TELEMETRY_OPTIONAL_FLEXIBLE_FIELDS:
+            continue
+        if isinstance(value, bool) or not isinstance(value, (str, int, float)):
+            errors.append({"field": field, "reason": "invalid_type"})
+            continue
+        if isinstance(value, (int, float)):
+            number = value
+        else:
+            number = _numeric_string(value)
+            # last_share_ts also accepts ISO-8601 strings; pool difficulty
+            # strings may carry unit suffixes (for example "256M").
+            if number is None:
+                continue
+        if not _is_finite_number(number):
+            errors.append({"field": field, "reason": "not_finite"})
+        elif number < 0:
+            errors.append({"field": field, "reason": "out_of_range"})
+
+    # Stable and unique diagnostics keep repeated malformed values from
+    # producing duplicate audit fields/reasons.
+    unique_errors = {(error["field"], error["reason"]) for error in errors}
+    return [
+        {"field": field, "reason": reason} for field, reason in sorted(unique_errors)
+    ]
+
+
 # ── Device capability flags ──────────────────────────────────────────────
 # Inferred from AxeOS/ESP-Miner API responses at connection time.
 # Never assume a capability exists — detect per-device.
