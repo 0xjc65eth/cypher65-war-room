@@ -786,16 +786,18 @@ def compute_profitability(
                     "breakeven_cost_per_th_day": _be["breakeven_cost_per_th_day"],
                     # Marginal BTC earned per TH/s per day. Keep sufficient
                     # precision: real-network values are far below 1e-10 BTC.
-                    "effective_btc_per_th_per_day": round(
-                        (1e12 / net_hr)
-                        * blocks_per_day
-                        * total_reward_per_block
-                        * (1 - pool_fee_pct / 100.0)
-                        * (1 - orphan_pct / 100.0),
-                        16,
-                    )
-                    if net_hr > 0
-                    else None,
+                    "effective_btc_per_th_per_day": (
+                        round(
+                            (1e12 / net_hr)
+                            * blocks_per_day
+                            * total_reward_per_block
+                            * (1 - pool_fee_pct / 100.0)
+                            * (1 - orphan_pct / 100.0),
+                            16,
+                        )
+                        if net_hr > 0
+                        else None
+                    ),
                     # Pool fee info
                     "pool_fee_info": f"Pool fee: {pool_fee_pct}% · Orphan rate: {orphan_pct}% · Reward: {reward}+{fee} BTC/block",
                     # Disclaimer
