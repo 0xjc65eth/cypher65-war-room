@@ -761,6 +761,87 @@ def test_agent_telemetry_validator_accepts_empty_heartbeat_and_extreme_finite_ha
 
 
 class TestTelemetryQuarantine:
+    def test_registry_refuses_invalid_telemetry_before_persisting(self, registry):
+        with pytest.raises(ValueError, match="invalid agent telemetry"):
+            registry.save_agent_telemetry(
+                "invalid-sample", {"temperature": 151}, tenant_id="acme"
+            )
+
+    def test_quarantine_helpers_require_an_explicit_tenant(self, registry):
+        registry.record_telemetry_quarantine(
+            "tenant-bound", ["temperature"], ["not_finite"], tenant_id="acme"
+        )
+
+        assert registry.get_telemetry_quarantines() == {}
+        registry.clear_telemetry_quarantine("tenant-bound")
+        quarantine = registry.get_telemetry_quarantines(tenant_id="acme")[
+            "tenant-bound"
+        ]
+        assert quarantine["fields"] == ["temperature"]
+        assert quarantine["reasons"] == ["not_finite"]
+
+    def test_unchanged_quarantine_is_not_reported_as_new(self, registry):
+        args = ("stable-quarantine", ["temperature"], ["not_finite"])
+
+        assert registry.record_telemetry_quarantine(
+            *args, tenant_id="acme"
+        ) is True
+        assert registry.record_telemetry_quarantine(
+            *args, tenant_id="acme"
+        ) is False
+
+    def test_device_removal_clears_quarantine_metadata(self, registry):
+        device = registry.upsert_agent_device("192.168.1.97", tenant_id="acme")
+        registry.record_telemetry_quarantine(
+            device["id"], ["temperature"], ["not_finite"], tenant_id="acme"
+        )
+
+        assert registry.remove_device(device["id"], tenant_id="acme") is True
+        assert registry.get_telemetry_quarantines(tenant_id="acme") == {}
+
+    def test_record_recovers_when_previous_quarantine_json_is_corrupt(self, registry):
+        device_id = "quarantine-json-recovery"
+        registry.record_telemetry_quarantine(
+            device_id, ["temperature"], ["not_finite"], tenant_id="acme"
+        )
+        conn = registry._get_db()
+        try:
+            conn.execute(
+                "UPDATE axe_telemetry_quarantine SET fields=?, reasons=? "
+                "WHERE tenant_id=? AND device_id=?",
+                ("{invalid", "{invalid", "acme", device_id),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        changed = registry.record_telemetry_quarantine(
+            device_id, ["fan_speed"], ["out_of_range"], tenant_id="acme"
+        )
+
+        assert changed is True
+        assert registry.get_telemetry_quarantines(tenant_id="acme")[device_id][
+            "fields"
+        ] == ["fan_speed"]
+
+    def test_list_ignores_corrupt_quarantine_json(self, registry):
+        device_id = "quarantine-json-read"
+        registry.record_telemetry_quarantine(
+            device_id, ["temperature"], ["not_finite"], tenant_id="acme"
+        )
+        conn = registry._get_db()
+        try:
+            conn.execute(
+                "UPDATE axe_telemetry_quarantine SET fields=? "
+                "WHERE tenant_id=? AND device_id=?",
+                ("{invalid", "acme", device_id),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        assert registry.get_telemetry_quarantines(tenant_id="acme") == {}
+
     def test_invalid_agent_sample_is_audited_and_preserves_last_good(
         self, client, agent_token, registry
     ):
@@ -1316,6 +1397,9 @@ class TestTombstoneNoZombies:
         (row + telemetry) so the tombstone guard never grows the DB forever."""
         dev = registry.upsert_agent_device("192.168.1.75", tenant_id="acme")
         registry.save_telemetry(dev["id"], {"hashrate_hs": 1e9}, tenant_id="acme")
+        registry.record_telemetry_quarantine(
+            dev["id"], ["temperature"], ["not_finite"], tenant_id="acme"
+        )
         assert registry.remove_device(dev["id"], tenant_id="acme") is True
         # Fresh tombstone survives the GC.
         assert registry.gc_tombstones(max_age_days=30) == 0
@@ -1330,6 +1414,7 @@ class TestTombstoneNoZombies:
         assert registry.gc_tombstones(max_age_days=30) == 1
         assert registry.get_removed_by_ip("192.168.1.75", tenant_id="acme") == {}
         assert registry.get_recent_telemetry(dev["id"], tenant_id="acme") == []
+        assert registry.get_telemetry_quarantines(tenant_id="acme") == {}
 
 
 class TestAgentHeartbeat:

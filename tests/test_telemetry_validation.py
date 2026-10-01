@@ -50,3 +50,92 @@ def test_agent_source_error_survives_optional_sensor_normalization():
     assert ("temperature", "invalid_source_value") in {
         (error["field"], error["reason"]) for error in errors
     }
+
+
+@pytest.mark.parametrize("payload", [None, [], "not telemetry"])
+def test_telemetry_payload_must_be_an_object(payload):
+    assert validate_agent_telemetry(payload) == [
+        {"field": "telemetry", "reason": "must_be_object"}
+    ]
+
+
+@pytest.mark.parametrize(
+    "metadata",
+    ["temperature", ["temperature"] * 33, ["temperature", "", None]],
+)
+def test_invalid_source_metadata_is_bounded_and_typed(metadata):
+    errors = validate_agent_telemetry(
+        {"hashrate_hs": 1e12, "_invalid_fields": metadata}
+    )
+
+    assert ("telemetry", "invalid_source_metadata") in {
+        (error["field"], error["reason"]) for error in errors
+    }
+
+
+def test_source_metadata_field_names_are_sanitized_before_logging():
+    errors = validate_agent_telemetry(
+        {"hashrate_hs": 1e12, "_invalid_fields": ["sensor\nsecret"]}
+    )
+
+    assert errors == [{"field": "sensor_secret", "reason": "invalid_source_value"}]
+
+
+@pytest.mark.parametrize(
+    ("payload", "field", "reason"),
+    [
+        ({"hashrate_hs": 1e12, "ts": None}, "ts", "invalid_type"),
+        (
+            {"hashrate_hs": 1e12, "shares_accepted": 1.5},
+            "shares_accepted",
+            "must_be_integer",
+        ),
+        (
+            {"hashrate_hs": 1e12, "shares_accepted": 10**1000},
+            "shares_accepted",
+            "not_finite",
+        ),
+        ({"hashrate_hs": 1e12, "pool_diff": []}, "pool_diff", "invalid_type"),
+        (
+            {"hashrate_hs": 1e12, "last_share_ts": float("nan")},
+            "last_share_ts",
+            "not_finite",
+        ),
+        ({"hashrate_hs": 1e12, "pool_diff": -1}, "pool_diff", "out_of_range"),
+        ({"hashrate_hs": 1e12, "pool_url": None}, "pool_url", "invalid_type"),
+        (
+            {"hashrate_hs": 1e12, "mining_paused": "false"},
+            "mining_paused",
+            "invalid_type",
+        ),
+    ],
+)
+def test_edge_types_and_ranges_are_rejected(payload, field, reason):
+    errors = validate_agent_telemetry(payload)
+
+    assert (field, reason) in {(error["field"], error["reason"]) for error in errors}
+
+
+def test_nested_non_finite_values_report_a_sanitized_path():
+    errors = validate_agent_telemetry(
+        {"hashrate_hs": 1e12, "extension\nfield": [{"reading": float("inf")}]}
+    )
+
+    assert ("extension_field[0].reading", "not_finite") in {
+        (error["field"], error["reason"]) for error in errors
+    }
+
+
+def test_flexible_source_strings_keep_documented_formats():
+    assert validate_agent_telemetry(
+        {
+            "hashrate_hs": 1e12,
+            "pool_diff": "256M",
+            "last_share_ts": "2026-09-30T12:00:00Z",
+        }
+    ) == []
+
+
+@pytest.mark.parametrize("field", ["pool_diff", "last_share_ts"])
+def test_optional_flexible_fields_may_be_absent(field):
+    assert validate_agent_telemetry({"hashrate_hs": 1e12, field: None}) == []
