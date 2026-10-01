@@ -23,7 +23,9 @@ protocol-only slice.
 - The seeded fixture value replays for the same integer seed and varies across
   the three tested seeds. This does not model ASIC physics or runtime.
 - The E2E harness drives one virtual-only restart, a one-response 503 reboot
-  window, and recovery; it never sends a command to real hardware.
+  window, and recovery through the Fleet API. It verifies the last-good sample
+  survives the outage and the recovered sample is persisted; no real hardware
+  command is sent.
 
 ## What is deliberately not implemented / not proved
 

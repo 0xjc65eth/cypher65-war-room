@@ -133,9 +133,32 @@ def test_scan_register_telemetry_and_fleet_listing(fleet_pipeline, monkeypatch, 
             known={host: {"type": "bitaxe"}},
         )
         assert restarted == (True, "HTTP 200")
-        assert agent._poll_telemetry(discovered[0]) == {}
+        outage_sample = agent._poll_telemetry(discovered[0])
+        assert outage_sample == {}
+        outage_push = client.post(
+            "/api/agent/telemetry",
+            headers=agent_headers,
+            json={"ip": host, "telemetry": outage_sample},
+        )
+        assert outage_push.status_code == 200
+        during_outage = client.get("/api/axe-fleet/devices", headers=viewer_headers)
+        retained = during_outage.get_json()["devices"][0]
+        assert retained["telemetry"]["uptime_seconds"] == uptime
+        assert retained["telemetry"]["hashrate_hs"] == 4_800_000_000_000
+
         recovered = agent._poll_telemetry(discovered[0])
         assert recovered["uptime_seconds"] == 3
+        recovery_push = client.post(
+            "/api/agent/telemetry",
+            headers=agent_headers,
+            json={"ip": host, "telemetry": recovered},
+        )
+        assert recovery_push.status_code == 200
+        after_recovery = client.get("/api/axe-fleet/devices", headers=viewer_headers)
+        recovered_device = after_recovery.get_json()["devices"][0]
+        assert recovered_device["telemetry"]["uptime_seconds"] == 3
+        assert recovered_device["telemetry"]["hashrate_hs"] == 4_800_000_000_000
+        assert recovered_device["tenant_id"] == "sim-tenant"
 
 
 def test_seeded_profile_uptime_replays_and_varies():
