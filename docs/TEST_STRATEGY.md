@@ -27,6 +27,19 @@ reforçado ali em vez de duplicado.
 | OPS-003 | Integração | Reconexão após queda do ASIC/pool | falha transitória seguida de payload válido | estado `offline` → `online`, backoff respeitado e uma única transição auditada | `tests/test_polling_reconnection.py` |
 | TEL-001 | Integração de armazenamento | Telemetria repetida/replay | mesmo `device_id`, timestamp e idempotency key | apenas um ponto/histórico; agregados não duplicam | `tests/test_telemetry_idempotency.py` |
 | TEL-002 | Unitário + integração | Telemetria inválida ou fora de faixa | chaves ausentes, tipos errados, temperatura/hashrate não finitos | rejeição/quarentena com motivo, sem alterar último dado bom | `tests/test_telemetry_validation.py` |
+
+**Política TEL-002 (#609):** `telemetry: {}` continua sendo heartbeat válido.
+Uma amostra não vazia exige `hashrate_hs`; campos numéricos conhecidos devem
+ser numéricos, finitos e não negativos, exceto RSSI (-150..0 dBm) e temperaturas
+(-40..150 °C). Hashrate (medido ou esperado) é limitado a 1 EH/s por dispositivo;
+`fan_speed` é 0..100%, `fan_rpm` até 100.000 e percentuais 0..100. Campos
+opcionais não expostos pelo firmware podem ser omitidos ou `null`. Campo
+desconhecido segue ignorado; amostra inválida é rejeitada por inteiro com HTTP
+422, motivo/campos e audit sem valores da amostra. A rejeição não grava
+telemetria nem atualiza status/last_seen. Para device cadastrado, persiste-se
+somente instante, nomes de campos e motivos (sem payload), expostos como alerta
+na resposta Fleet; heartbeat vazio não limpa o alerta e amostra válida não vazia
+limpa.
 | TIME-001 | Unitário | Conversão de timestamp e DST | UTC antes/depois de mudança de horário em `America/Sao_Paulo` e `Europe/Brussels` | persistência em UTC; ordenação e duração idênticas na UI | `tests/test_timezones.py` |
 | NUM-001 | Unitário | Divisão por zero de shares/custos | total shares, TH/s, preço e rede iguais a 0 | campos contratuais `0`/`None`, nunca exceção ou infinito | `tests/test_mining_formula_contracts.py`, `tests/core/test_safety.py` |
 | NUM-002 | Property-based | Valores extremos mas finitos | floats entre limites operacionais e bordas IEEE-754 | invariantes: probabilidades em [0,1], saída serializável e sem `NaN` | `tests/test_numeric_properties.py` |
@@ -117,7 +130,7 @@ equivalente, o teste deve ser reforçado ali em vez de duplicado"*)?
 | OPS-002 | não auditado | `tests/test_polling_integration.py` existe; comportamento não verificado nesta rodada |
 | OPS-003 | **lacuna** | `tests/test_polling_reconnection.py` não existe → #610 |
 | TEL-001 | **implementado** | `tests/test_telemetry_idempotency.py`: event key opcional por tenant/device; replay idêntico é no-op, payload diferente retorna 409; clientes antigos sem key permanecem compatíveis, sem garantia de deduplicação |
-| TEL-002 | **lacuna** | `tests/test_telemetry_validation.py` não existe → #609 |
+| TEL-002 | implementado | `tests/test_telemetry_validation.py`, `tests/test_agent_api.py`; normalização REST e quarentena preservam amostra válida → #609 |
 | TIME-001 | **lacuna** | `tests/test_timezones.py` não existe; **0** usos de fuso nomeado no repo → #604 |
 | NUM-001 | parcial | o plano declara *"parte de `NUM-001`"* |
 | NUM-002 | implementado (PR #605 wave W3) | `tests/test_numeric_properties.py`: hypothesis sobre o núcleo numérico puro — solo prob, lender, break-even, `fiat_convert`; invariantes [0,1]/serializável/sem NaN + bordas IEEE-754 e Decimal |
