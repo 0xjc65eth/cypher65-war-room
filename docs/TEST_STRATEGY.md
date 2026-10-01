@@ -9,7 +9,7 @@ O primeiro gate de cada PR é determinístico e sem rede. Integrações usam
 adaptadores locais/fakes de protocolo, nunca ASICs, pools ou credenciais reais.
 E2E roda contra a aplicação local com dados explícitos.
 
-Os IDs `MF`, `API`, `OPS`, `TEL`, `SEC`, `CMD`, `AUD`, `PER`, `UI` e `LOAD`
+Os IDs `MF`, `API`, `OPS`, `TEL`, `SEC`, `CMD`, `AUD`, `PER`, `UI`, `LOAD` e `OBS`
 permitem rastrear a exigência no CI e em incidentes. Os arquivos sugeridos são
 o destino inicial; quando já houver cobertura equivalente, o teste deve ser
 reforçado ali em vez de duplicado.
@@ -18,7 +18,7 @@ reforçado ali em vez de duplicado.
 | --- | --- | --- | --- | --- | --- |
 | MF-001 | Unitário | Probabilidade Poisson conhecida | hash do minerador = hash da rede; janela = 600 s | λ=1, `P(>=1)=1-e^-1`, complemento de `P(0)`, aviso de expectativa | `tests/test_mining_formula_contracts.py` |
 | MF-002 | Unitário | Probabilidade com zero, negativo, `NaN`, `Infinity` e overflow | parâmetros de hashrate/duração inválidos ou extremos | resposta JSON finita e erro explícito; nunca promessa de bloco | `tests/test_mining_formula_contracts.py` |
-| MF-003 | Unitário | Rentabilidade pool/rental/power e yield marginal BTC/TH/s/dia por vetor conhecido | TH/s, reward, fees, BTC/USD, custos e network hashrate finito/positivo | receita, custo e break-even seguem a fórmula; yield marginal é estimado, finito e preserva valor não nulo sem network hashrate indisponível | `tests/test_pool_rental_break_even.py`, `tests/test_poll_compute.py` |
+| MF-003 | Unitário | Rentabilidade pool/rental/power por vetor conhecido | TH/s, recompensa, fees, BTC/USD e custos fixos | receita, custo e break-even seguem a fórmula e arredondamento contratado | `tests/test_pool_rental_break_even.py`, `tests/test_poll_compute.py` |
 | MF-004 | Unitário | Dados insuficientes para rentabilidade | hashrate da rede 0, cotação ausente, custo 0 | sem divisão por zero e campos em fiat indisponíveis, não estimados | `tests/test_poll_compute.py` |
 | API-001 | Integração HTTP | Corpo JSON malformado ou não objeto | JSON inválido, lista e escalar em comando | HTTP 400 JSON, sem `AttributeError`/500 | `tests/core/test_app_device_routes.py` |
 | API-002 | Integração HTTP | Tipos e schema de comando inválidos | `command` numérico, `parameters` lista, comando desconhecido | HTTP 400 com erro específico; nenhum adaptador chamado | `tests/core/test_app_device_routes.py` |
@@ -27,7 +27,6 @@ reforçado ali em vez de duplicado.
 | OPS-003 | Integração | Reconexão após queda do ASIC/pool | falha transitória seguida de payload válido | estado `offline` → `online`, backoff respeitado e uma única transição auditada | `tests/test_polling_reconnection.py` |
 | TEL-001 | Integração de armazenamento | Telemetria repetida/replay | mesmo `device_id`, timestamp e idempotency key | apenas um ponto/histórico; agregados não duplicam | `tests/test_telemetry_idempotency.py` |
 | TEL-002 | Unitário + integração | Telemetria inválida ou fora de faixa | chaves ausentes, tipos errados, temperatura/hashrate não finitos | rejeição/quarentena com motivo, sem alterar último dado bom | `tests/test_telemetry_validation.py` |
-| TIME-001 | Unitário | Conversão de timestamp e DST | UTC antes/depois de mudança de horário em `America/Sao_Paulo` e `Europe/Brussels` | persistência em UTC; ordenação e duração idênticas na UI | `tests/test_timezones.py` |
 | TIME-001 | Unitário | Conversão de timestamp e DST | UTC antes/depois de mudança de horário em `America/Sao_Paulo` e `Europe/Brussels` | persistência de epoch e duração relativa da UI independentes do fuso; ordenação visual de listas permanece por cobrir | `tests/test_timezones.py` |
 | NUM-001 | Unitário | Divisão por zero de shares/custos | total shares, TH/s, preço e rede iguais a 0 | campos contratuais `0`/`None`, nunca exceção ou infinito | `tests/test_mining_formula_contracts.py`, `tests/core/test_safety.py` |
 | NUM-002 | Property-based | Valores extremos mas finitos | floats entre limites operacionais e bordas IEEE-754 | invariantes: probabilidades em [0,1], saída serializável e sem `NaN` | `tests/test_numeric_properties.py` |
@@ -108,66 +107,74 @@ Os endpoints de confirmação e execução exigem papel RBAC `member` (ou
 
 ---
 
-## Mapa de cobertura — auditoria de 2026-09-16 (wave W3)
+## Mapa de cobertura — auditoria de 2026-10-01 (Issue #614)
 
 A tabela do início deste documento é o **plano**. Esta seção registra o **estado real** de cada ID
 depois da wave W3 (`docs/MULTI_AGENT_TEAM.md` §8). A distinção existe porque as duas divergiam em
-silêncio: o plano lista 24 IDs e o §"Implementado neste lote" declara apenas onze deles.
+silêncio: o plano lista 25 IDs e o §"Implementado neste lote" declara apenas onze deles.
 
-**Como a auditoria foi feita — e o que ela não fez.** A varredura foi por **arquivo sugerido** e
-depois por **comportamento**, não por ID, porque nenhum teste do repositório cita um ID da matriz
-(achado transversal abaixo). Para cada ID: (1) o arquivo sugerido existe? (2) se não, a exigência
-está coberta sob outro nome — o que a própria matriz autoriza (*"quando já houver cobertura
-equivalente, o teste deve ser reforçado ali em vez de duplicado"*)?
+**Snapshot histórico de 2026-09-16 (wave W3).** A auditoria então foi por **arquivo sugerido** e
+depois por **comportamento**, não por ID. O contrato automatizado e os markers desta revisão são
+posteriores e registram o estado atual; não reinterpretam as conclusões históricas abaixo.
 
 | ID | Estado | Evidência / Issue |
 | --- | --- | --- |
 | MF-001 | implementado | `tests/test_mining_formula_contracts.py`; declarado no §"Implementado neste lote" |
 | MF-002 | implementado | idem |
-| MF-003 | **implementado** | vetores de fórmula em `tests/test_pool_rental_break_even.py` e `tests/test_poll_compute.py`; yield marginal é estimativa por 1 TH/s durante 1 dia, não receita observada. A chave do payload é mantida para compatibilidade; sem consumidor UI identificado, não é exposta visualmente até existir desenho de produto → #613, #622 |
+| MF-003 | **implementado** | vetores de fórmula completa + arredondamento contratado em `tests/test_pool_rental_break_even.py` (2026-09-17, wave W3) → #613 |
 | MF-004 | **implementado** | indisponível ≠ 0: cotação ausente/rede 0/worker 0/custo 0 nunca produzem fiat estimado nem divisão por zero (idem) → #613 |
-| API-001 | implementado | `tests/core/test_app_device_routes.py` |
-| API-002 | implementado | idem |
-| OPS-001 | implementado | idem |
-| OPS-002 | não auditado | `tests/test_polling_integration.py` existe; comportamento não verificado nesta rodada |
-| OPS-003 | **lacuna** | `tests/test_polling_reconnection.py` não existe → #610 |
-| TEL-001 | **implementado** | `tests/test_telemetry_idempotency.py`: event key opcional por tenant/device; replay idêntico é no-op, payload diferente retorna 409; clientes antigos sem key permanecem compatíveis, sem garantia de deduplicação |
-| OBS-001 | **implementado; revisão de aceite pendente** | `tests/test_fleet_observability_events.py`: envelope seguro/correlacionado, scan com contagens por categoria de rejeição (auth/timeout/refused/invalid response/reachable-unidentified), inclusão manual, transições online/offline/stale, provider pool e shares com serialização de snapshots concorrentes. Os eventos não carregam IPs; o caminho de pool está coberto pelo helper/cache, não por chamada real do provider externo. |
-| TEL-002 | implementado; regressão standalone reaberta | `tests/test_telemetry_validation.py`, `tests/test_agent_api.py`; PR #701 corrige o fallback standalone do agente → #609 |
-| TIME-001 | **lacuna** | `tests/test_timezones.py` não existe; **0** usos de fuso nomeado no repo → #604 |
-| TEL-002 | implementado, regressão standalone reaberta | `tests/test_telemetry_validation.py`, `tests/test_agent_api.py`; #609 acompanha correção adicional do fallback do agente standalone |
-| TIME-001 | **parcial** | `tests/test_timezones.py` cobre conversão ISO, bucket UTC, persistência e idade relativa na UI nos dois fusos; ordenação visual de listas ainda precisa de cobertura → #604 |
+| API-001 | parcial | testa JSON semanticamente inválido (lista/esquema), ainda não cobre sintaxe malformada |
+| API-002 | parcial | erros de schema estão cobertos; ainda falta afirmar explicitamente que nenhum adaptador é chamado |
+| OPS-001 | parcial | resposta offline negada está coberta; falta verificar audit persistido e ausência de I/O do adaptador |
+| OPS-002 | parcial | `tests/test_polling_integration.py` cobre fallback stale para falha de pool, não todos os timeouts/5xx/campos |
+| OPS-003 | lacuna | `tests/test_polling_reconnection.py` não existe → #610 |
+| TEL-001 | implementado | `tests/test_telemetry_idempotency.py`: replay idempotente, conflito para payload alterado, isolamento por tenant e duplicata concorrente (PR #692 no master atual) |
+| OBS-001 | implementado | `tests/test_fleet_observability_events.py`: envelope seguro/correlacionado, scan, inclusão manual, transições online/offline/stale, provider pool e shares concorrentes; caminho externo de provider não é exercitado |
+| TEL-002 | implementado | `tests/test_telemetry_validation.py` e `tests/test_agent_api.py`: rejeição/quarentena com motivo, preservação do último dado bom e fallback standalone inválido (#609 / PR #704) |
+| TIME-001 | parcial | `tests/test_timezones.py` cobre conversão ISO, bucket UTC, persistência e idade relativa na UI nos dois fusos; ordenação visual de listas ainda precisa de cobertura → #604 |
 | NUM-001 | parcial | o plano declara *"parte de `NUM-001`"* |
 | NUM-002 | implementado (PR #605 wave W3) | `tests/test_numeric_properties.py`: hypothesis sobre o núcleo numérico puro — solo prob, lender, break-even, `fiat_convert`; invariantes [0,1]/serializável/sem NaN + bordas IEEE-754 e Decimal |
-| SEC-001 | não auditado | `tests/test_tenant_b2_isolation.py` existe; comportamento não verificado |
+| SEC-001 | parcial | `tests/test_tenant_b2_isolation.py`: isolamento em rotas/registry coberto; não demonstra todo acesso a device/log descrito |
 | SEC-002 | implementado | `tests/core/test_app_device_routes.py` |
 | CMD-001 | implementado | idem |
-| CMD-002 | implementado | Issue #368 |
-| AUD-001 | **parcial** | o plano declara só *"verificação de histórico"*; `tests/test_audit_log.py` não existe → #611 |
-| PER-001 | reconciliar | cobertura equivalente em `tests/test_persistence.py` (nome difere do sugerido) |
-| UI-001 | reconciliar | cobertura equivalente parcial em `tests/e2e/topbar-responsive.spec.js` |
-| UI-002 | implementado neste lote | `tests/e2e/accessibility.spec.js`: teclado no fluxo de Pause, foco contido em `<dialog>`, cancelamento por Escape, anúncio do resultado, reduced motion e Axe crítico |
-| LOAD-001 | **lacuna** | `tests/performance/` **não existe** no repositório → #606 |
-| LOAD-002 | **lacuna** | idem → #607 |
+| CMD-002 | parcial | integração cobre token de uso único; fluxo E2E/UX de confirmação segue sem spec dedicado |
+| AUD-001 | parcial | audit log, redação, append-only e ordenação cobertos pelo recorder; falta validar os outcomes blocked/success/error integralmente pela rota HTTP |
+| PER-001 | parcial | `tests/test_persistence.py` cobre endereço persistido, não reinício completo de device/telemetria/config/audit |
+| UI-001 | parcial | `tests/e2e/topbar-responsive.spec.js` cobre topbar em viewports, não todas as telas/medidas da matriz |
+| UI-002 | lacuna | axe gate não substitui E2E de teclado/foco/labels; spec ausente → #612 |
+| LOAD-001 | bloqueado | `tests/performance/` não existe; falta SLO aprovado → #606 |
+| LOAD-002 | bloqueado | `tests/performance/` não existe; falta SLO aprovado → #607 |
 
-**Estados:** `implementado` (teste existe e corresponde ao critério) · `parcial` (cobre parte do
-critério) · `lacuna` (Issue própria aberta) · `reconciliar` (cobertura existe sob outro nome —
-reforçar ali, não duplicar) · `não auditado`.
+**Estados:** `implementado` (teste ligado ao ID existe e corresponde ao critério declarado) ·
+`parcial` (cobre apenas parte do critério) · `lacuna` (Issue de cobertura permanece aberta) ·
+`bloqueado` (dependência externa; veja exceção explícita abaixo). Os links são pytest markers
+`@pytest.mark.covers(ID)` ou comentário `test-requirement` em spec Playwright coletável. O teste
+`test_traceability_contract.py` compara o plano, o mapa, os itens pytest realmente coletados e as
+exceções; IDs desconhecidos, duplicados, sem vínculo ou com classificação divergente falham no CI.
 
-### O que esta auditoria não conclui
+### Exceções explícitas de rastreabilidade
 
-- **Não** afirma que os testes marcados `implementado` estão corretos ou passando — só que existem e
-  correspondem ao critério declarado. Nenhum teste foi executado para inferir os estados acima.
-- **Não** cobre os IDs marcados `não auditado`. Eles **não** devem ser tratados como cobertos.
+| ID | Categoria | Justificativa | Acompanhamento |
+| --- | --- | --- | --- |
+| OPS-003 | lacuna | Fluxo de reconexão e backoff ainda não tem teste dedicado | Issue #610 |
+| UI-002 | lacuna | Falta spec E2E de acessibilidade de dashboard e comando | Issue #612 |
+| LOAD-001 | bloqueado | SLO de latência/memória não foi aprovado; não inventar limite para fazer gate | Issue #606 |
+| LOAD-002 | bloqueado | SLO de ingestão/backlog não foi aprovado; não inventar limite para fazer gate | Issue #607 |
+
+### Limites da auditoria histórica de 2026-09-16
+
+- Na auditoria original, os estados foram inferidos por arquivo/comportamento e nenhum teste foi
+  executado. Os markers e o contrato atuais corrigem a rastreabilidade; não tornam cobertura
+  parcial em completa.
+- **Não** cobre IDs sem vínculo ou marcados `lacuna`/`bloqueado`; eles **não** devem ser tratados como cobertos.
 - **Não** mede cobertura de linha: a matriz é sobre exigências, e o gate de linha é outro
   (`--cov-fail-under=80`).
 
 ### Achado transversal
 
-**Nenhum dos 24 IDs é referenciado em nenhum arquivo de `tests/`.** O esquema descrito no
-§"Objetivo e prioridades" — *"os IDs ... permitem rastrear a exigência no CI e em incidentes"* —
-**não está implementado**. Isso obrigou esta auditoria a inferir cobertura por nome de arquivo e
-comportamento, um método mais frágil, que confunde cobertura equivalente com lacuna. Issue #614.
+O contrato automatizado evita regressão silenciosa: todo ID do plano tem vínculo com teste coletado
+ou exceção explícita e revisável. A presença do vínculo, por si só, não prova suficiência semântica;
+estados `parcial` e `bloqueado` permanecem visíveis e não são promovidos automaticamente.
 
 ### Bloqueio declarado em `LOAD-001`/`LOAD-002`
 

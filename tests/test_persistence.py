@@ -62,6 +62,7 @@ class TestRestoreWithAddress:
         finally:
             _app_module.BTC_ADDRESS = original
 
+    @pytest.mark.covers("PER-001", status="partial")
     def test_returns_true(self, monkeypatch, mock_conn_with_address):
         """Should return True when a valid address is found in DB."""
         monkeypatch.setattr(_app_module, "get_db", lambda: mock_conn_with_address)

@@ -39,6 +39,7 @@ def client(monkeypatch):
     return app.test_client(), {"Authorization": f"Bearer {token}"}
 
 
+@pytest.mark.covers("TEL-001")
 def test_agent_replay_keeps_one_history_point_and_aggregate(client, registry):
     """Same tenant/device/key/timestamp/payload is acknowledged exactly once."""
     flask_client, headers = client
@@ -65,6 +66,7 @@ def test_agent_replay_keeps_one_history_point_and_aggregate(client, registry):
     assert series["hashrate_hs"] == [4_800_000_000_000]
 
 
+@pytest.mark.covers("TEL-001")
 def test_local_agent_retries_the_same_timestamped_event(monkeypatch):
     """Transient failures reuse the same key and sample timestamp."""
     event = local_agent._build_telemetry_event("192.168.88.24", {"hashrate_hs": 6_000})
@@ -89,6 +91,7 @@ def test_local_agent_retries_the_same_timestamped_event(monkeypatch):
     assert sent[0] is sent[1] is event
 
 
+@pytest.mark.covers("TEL-001")
 def test_reusing_key_for_changed_sample_returns_conflict_without_overwrite(
     client, registry
 ):
@@ -123,6 +126,7 @@ def test_reusing_key_for_changed_sample_returns_conflict_without_overwrite(
     assert history[0]["payload"]["hashrate_hs"] == 1_000
 
 
+@pytest.mark.covers("TEL-001")
 def test_keyed_request_requires_a_stable_sample_timestamp(client, registry):
     """A keyed event cannot depend on server arrival time for its identity."""
     flask_client, headers = client
@@ -146,6 +150,7 @@ def test_keyed_request_requires_a_stable_sample_timestamp(client, registry):
     )
 
 
+@pytest.mark.covers("TEL-001")
 def test_concurrent_identical_replays_insert_one_row(registry):
     """The unique database constraint closes concurrent retry races."""
     device = registry.upsert_agent_device("192.168.88.22", tenant_id="acme")
@@ -165,6 +170,7 @@ def test_concurrent_identical_replays_insert_one_row(registry):
     assert len(registry.get_recent_telemetry(device["id"], tenant_id="acme")) == 1
 
 
+@pytest.mark.covers("TEL-001")
 def test_replay_status_does_not_observe_pre_update_device_state(registry, monkeypatch):
     """A replay during the insert/status-update window returns sample status."""
     device = registry.upsert_agent_device("192.168.88.26", tenant_id="acme")
@@ -207,6 +213,7 @@ def test_replay_status_does_not_observe_pre_update_device_state(registry, monkey
     assert replay_status == "ONLINE"
 
 
+@pytest.mark.covers("TEL-001")
 def test_replay_repairs_device_state_after_interrupted_first_write(
     registry, monkeypatch
 ):
@@ -246,6 +253,7 @@ def test_replay_repairs_device_state_after_interrupted_first_write(
     assert len(registry.get_recent_telemetry(device["id"], tenant_id="acme")) == 1
 
 
+@pytest.mark.covers("TEL-001")
 def test_idempotency_key_is_scoped_to_tenant(registry):
     """Separate tenants can independently use the same event key."""
     sample = {"ts": 1_790_000_003, "hashrate_hs": 4_000}
@@ -266,6 +274,7 @@ def test_idempotency_key_is_scoped_to_tenant(registry):
     assert len(registry.get_recent_telemetry("shared-device-id", tenant_id="beta")) == 1
 
 
+@pytest.mark.covers("TEL-001")
 def test_legacy_calls_without_key_remain_append_only(registry):
     """Older clients remain compatible but do not receive replay protection."""
     device = registry.upsert_agent_device("192.168.88.23", tenant_id="acme")
@@ -275,6 +284,7 @@ def test_legacy_calls_without_key_remain_append_only(registry):
     assert len(registry.get_recent_telemetry(device["id"], tenant_id="acme")) == 2
 
 
+@pytest.mark.covers("TEL-001")
 def test_existing_telemetry_rows_survive_schema_migration(tmp_path):
     """Upgrade a pre-key table in place without dropping historical rows."""
     db_path = str(tmp_path / "legacy-telemetry.sqlite")

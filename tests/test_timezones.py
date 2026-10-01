@@ -32,6 +32,7 @@ import pytest
         ("America/Sao_Paulo", "2026-04-01T02:30:00", 1775010600, "2026-04"),
     ],
 )
+@pytest.mark.covers("TIME-001", status="partial")
 def test_iso_and_utc_month_bucket_ignore_host_timezone(
     zone, iso_utc, expected_ts, expected_month
 ):
@@ -84,6 +85,7 @@ def test_iso_and_utc_month_bucket_ignore_host_timezone(
         ),
     ],
 )
+@pytest.mark.covers("TIME-001", status="partial")
 def test_dst_boundary_elapsed_time_and_epoch_order_are_timezone_independent(
     zone, before_iso, after_iso
 ):

@@ -45,6 +45,7 @@ def audit_db(tmp_path, monkeypatch):
     ],
     ids=("success", "blocked", "error"),
 )
+@pytest.mark.covers("AUD-001", status="partial")
 def test_command_audit_persists_actor_scope_outcome_and_utc(
     audit_db, monkeypatch, result, expected_success
 ):
@@ -101,6 +102,7 @@ def test_command_audit_persists_actor_scope_outcome_and_utc(
         assert row["details"]["parameters"][key] == "[REDACTED]"
 
 
+@pytest.mark.covers("AUD-001", status="partial")
 def test_audit_rows_reject_updates_and_deletes(audit_db):
     """Persisted audit evidence is immutable at the database boundary."""
     from services.tenant import log_audit, recent_audit_logs
@@ -146,6 +148,7 @@ def test_audit_rows_reject_updates_and_deletes(audit_db):
     assert rows[0]["action"] == "device.command"
 
 
+@pytest.mark.covers("AUD-001", status="partial")
 def test_audit_history_orders_same_second_by_newest_id(audit_db, monkeypatch):
     """Tied timestamps have a deterministic newest-first ordering."""
     import services.tenant as tenant

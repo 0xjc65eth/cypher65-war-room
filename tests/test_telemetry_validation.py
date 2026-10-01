@@ -4,6 +4,8 @@ import pytest
 
 from axe_fleet.models import validate_agent_telemetry
 
+pytestmark = pytest.mark.covers("TEL-002")
+
 
 @pytest.mark.parametrize(
     ("payload", "field", "reason"),

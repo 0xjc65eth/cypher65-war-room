@@ -73,6 +73,7 @@ async function expectNoOverflow(page, container, tol = 2) {
 
 test.describe('Topbar — Responsive Breakpoints (single load)', () => {
 
+  // test-requirement: UI-001 status=partial
   test('all breakpoints adapt correctly', async ({ page }) => {
     test.skip(
       test.info().project.name === 'mobile-chrome',

@@ -420,6 +420,7 @@ class TestPollOnceWalletNotFound:
 class TestPollOncePoolFailure:
     """Tests when pool API fails, triggering stale data fallback."""
 
+    @pytest.mark.covers("OPS-002", status="partial")
     def test_pool_failure_falls_back_prev(self, config, mock_state, monkeypatch):
         """When pool-stats returns None, fall back to prev_pool with _stale flag."""
         from services import polling
