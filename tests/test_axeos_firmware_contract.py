@@ -145,6 +145,23 @@ class TestAgentUsesOfficialContract:
         assert tel["uptime_seconds"] == 7200
         assert tel["model"] == "NerdQaxe++"
 
+    @pytest.mark.parametrize(
+        "raw_hashrate", ["N/A", float("nan"), float("inf"), -1, 1e19]
+    )
+    def test_standalone_fallback_marks_invalid_hashrate_without_coercing_to_zero(
+        self, raw_hashrate
+    ):
+        info = {**OFFICIAL, "hashRate": raw_hashrate}
+        with patch.object(
+            agent_mod, "_probe_axeos", return_value=info
+        ), patch.object(agent_mod, "_extract_axeos_telemetry", None):
+            tel = agent_mod._poll_telemetry(
+                {"ip": "192.168.1.50", "type": "bitaxe"}
+            )
+
+        assert tel["hashrate_hs"] is None
+        assert tel["_invalid_fields"] == ["hashrate_hs"]
+
     def test_poll_telemetry_reads_official_fields(self):
         with patch.object(agent_mod, "_probe_axeos", return_value=OFFICIAL):
             tel = agent_mod._poll_telemetry({"ip": "192.168.1.50", "type": "bitaxe"})

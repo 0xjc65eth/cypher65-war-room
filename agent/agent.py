@@ -396,6 +396,34 @@ def _probe_axeos_payload(info):
     return any(key in info for key in _AXEOS_MARKERS)
 
 
+def _axeos_hashrate_hs(info):
+    """Normalize an AxeOS hashrate without turning invalid input into zero.
+
+    The standalone agent mirrors the shared contract because its installer is
+    intentionally stdlib-only. Official camelCase ``hashRate`` values below
+    1e6 are GH/s; legacy lowercase ``hashrate`` values are already H/s.
+    """
+    if not isinstance(info, dict):
+        return None
+    if info.get("hashRate") is not None:
+        raw = info.get("hashRate")
+        camel_hashrate = True
+    elif info.get("hashrate") is not None:
+        raw = info.get("hashrate")
+        camel_hashrate = False
+    else:
+        return None
+
+    number = _finite_number(raw)
+    if number is None or number < 0 or number > 1e18:
+        return None
+    if camel_hashrate and 0 < number < 1e6:
+        number *= 1e9
+        if not math.isfinite(number) or number > 1e18:
+            return None
+    return int(number)
+
+
 def _identity_from_axeos(ip, info):
     """Discovery dict from a validated ESP-Miner info payload."""
     tel = {}
@@ -406,20 +434,10 @@ def _identity_from_axeos(ip, info):
             tel = {}
     hr = tel.get("hashrate_hs")
     if hr is None:
-        raw = info.get("hashRate")
-        camel = raw is not None
-        if raw is None:
-            raw = info.get("hashrate")
-        try:
-            n = float(raw)
-        except (TypeError, ValueError):
-            n = None
-        if n is None:
-            hr = 0
-        elif camel and 0 < abs(n) < 1e6:
-            hr = int(n * 1e9)
-        else:
-            hr = int(n or 0)
+        hr = _axeos_hashrate_hs(info)
+    else:
+        number = _finite_number(hr)
+        hr = int(number) if number is not None and 0 <= number <= 1e18 else None
     return {
         "ip": ip,
         "type": "bitaxe",
@@ -434,7 +452,7 @@ def _identity_from_axeos(ip, info):
         "version": str(tel.get("version") or info.get("version") or ""),
         "hostname": str(tel.get("hostname") or info.get("hostname") or ""),
         "mac": str(tel.get("mac") or info.get("macAddr") or info.get("mac") or ""),
-        "hashrate_hs": int(hr or 0),
+        "hashrate_hs": hr,
     }
 
 
@@ -801,7 +819,8 @@ def _poll_telemetry(dev):
             "mining_paused": info.get("miningPaused") is True,
         }
         invalid_fields = []
-        if any(info.get(key) is not None for key in ("hashRate", "hashrate")) and fallback_tel["hashrate_hs"] is None:
+        has_hashrate_field = any(key in info for key in ("hashRate", "hashrate"))
+        if has_hashrate_field and fallback_tel["hashrate_hs"] is None:
             invalid_fields.append("hashrate_hs")
         for field, keys in {
             "temperature": ("temp", "temperature"),
