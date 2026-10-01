@@ -73,8 +73,9 @@ def derive_network_values(bc_diff_val, bc_hashrate_val):
     return current_difficulty, net_hashrate
 
 
-def _effective_btc_per_th_per_day(net_hr, blocks_per_day, reward_per_block,
-                                  pool_fee_pct, orphan_pct):
+def _effective_btc_per_th_per_day(
+    net_hr, blocks_per_day, reward_per_block, pool_fee_pct, orphan_pct
+):
     """Return a finite marginal BTC yield for one TH/s, or ``None``.
 
     The value is an estimate from constant network/reward/fee inputs, not
