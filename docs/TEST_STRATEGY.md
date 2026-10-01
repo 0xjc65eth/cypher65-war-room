@@ -18,7 +18,7 @@ reforçado ali em vez de duplicado.
 | --- | --- | --- | --- | --- | --- |
 | MF-001 | Unitário | Probabilidade Poisson conhecida | hash do minerador = hash da rede; janela = 600 s | λ=1, `P(>=1)=1-e^-1`, complemento de `P(0)`, aviso de expectativa | `tests/test_mining_formula_contracts.py` |
 | MF-002 | Unitário | Probabilidade com zero, negativo, `NaN`, `Infinity` e overflow | parâmetros de hashrate/duração inválidos ou extremos | resposta JSON finita e erro explícito; nunca promessa de bloco | `tests/test_mining_formula_contracts.py` |
-| MF-003 | Unitário | Rentabilidade pool/rental/power por vetor conhecido | TH/s, recompensa, fees, BTC/USD e custos fixos | receita, custo e break-even seguem a fórmula e arredondamento contratado | `tests/test_pool_rental_break_even.py`, `tests/test_poll_compute.py` |
+| MF-003 | Unitário | Rentabilidade pool/rental/power e yield marginal BTC/TH/s/dia por vetor conhecido | TH/s, reward, fees, BTC/USD, custos e network hashrate finito/positivo | receita, custo e break-even seguem a fórmula; yield marginal é estimado, finito e preserva valor não nulo sem network hashrate indisponível | `tests/test_pool_rental_break_even.py`, `tests/test_poll_compute.py` |
 | MF-004 | Unitário | Dados insuficientes para rentabilidade | hashrate da rede 0, cotação ausente, custo 0 | sem divisão por zero e campos em fiat indisponíveis, não estimados | `tests/test_poll_compute.py` |
 | API-001 | Integração HTTP | Corpo JSON malformado ou não objeto | JSON inválido, lista e escalar em comando | HTTP 400 JSON, sem `AttributeError`/500 | `tests/core/test_app_device_routes.py` |
 | API-002 | Integração HTTP | Tipos e schema de comando inválidos | `command` numérico, `parameters` lista, comando desconhecido | HTTP 400 com erro específico; nenhum adaptador chamado | `tests/core/test_app_device_routes.py` |
@@ -109,14 +109,14 @@ equivalente, o teste deve ser reforçado ali em vez de duplicado"*)?
 | --- | --- | --- |
 | MF-001 | implementado | `tests/test_mining_formula_contracts.py`; declarado no §"Implementado neste lote" |
 | MF-002 | implementado | idem |
-| MF-003 | **implementado** | vetores de fórmula completa + arredondamento contratado em `tests/test_pool_rental_break_even.py` (2026-09-17, wave W3) → #613 |
+| MF-003 | **implementado** | vetores de fórmula em `tests/test_pool_rental_break_even.py` e `tests/test_poll_compute.py`; yield marginal é estimativa por 1 TH/s durante 1 dia, não receita observada. A chave do payload é mantida para compatibilidade; sem consumidor UI identificado, não é exposta visualmente até existir desenho de produto → #613, #622 |
 | MF-004 | **implementado** | indisponível ≠ 0: cotação ausente/rede 0/worker 0/custo 0 nunca produzem fiat estimado nem divisão por zero (idem) → #613 |
 | API-001 | implementado | `tests/core/test_app_device_routes.py` |
 | API-002 | implementado | idem |
 | OPS-001 | implementado | idem |
 | OPS-002 | não auditado | `tests/test_polling_integration.py` existe; comportamento não verificado nesta rodada |
 | OPS-003 | **lacuna** | `tests/test_polling_reconnection.py` não existe → #610 |
-| TEL-001 | **lacuna** | nenhum teste de idempotência de telemetria de **device** → #608 |
+| TEL-001 | **implementado** | `tests/test_telemetry_idempotency.py`: event key opcional por tenant/device; replay idêntico é no-op, payload diferente retorna 409; clientes antigos sem key permanecem compatíveis, sem garantia de deduplicação |
 | TEL-002 | **lacuna** | `tests/test_telemetry_validation.py` não existe → #609 |
 | TIME-001 | **lacuna** | `tests/test_timezones.py` não existe; **0** usos de fuso nomeado no repo → #604 |
 | NUM-001 | parcial | o plano declara *"parte de `NUM-001`"* |

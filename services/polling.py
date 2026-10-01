@@ -34,6 +34,7 @@ import concurrent.futures
 import services.state as state
 import services.proximity as proximity
 import services.names as names  # name normalization + sanitization
+from services.poll_compute import _effective_btc_per_th_per_day
 
 from helpers import (
     parse_diff_to_float,
@@ -1410,17 +1411,12 @@ def poll_once():
                     # Legacy only: keep its marginal BTC/TH/s/day field
                     # aligned with compute_profitability; no network rate
                     # means the quantity is unavailable, never a fabricated 0.
-                    "effective_btc_per_th_per_day": (
-                        round(
-                            (1e12 / net_hr)
-                            * blocks_per_day
-                            * total_reward_per_block
-                            * (1 - pool_fee_pct / 100.0)
-                            * (1 - orphan_pct / 100.0),
-                            16,
-                        )
-                        if net_hr > 0
-                        else None
+                    "effective_btc_per_th_per_day": _effective_btc_per_th_per_day(
+                        net_hr,
+                        blocks_per_day,
+                        total_reward_per_block,
+                        pool_fee_pct,
+                        orphan_pct,
                     ),
                     # Pool fee info
                     "pool_fee_info": f"Pool fee: {pool_fee_pct}% · Orphan rate: {orphan_pct}% · Reward: {reward}+{fee} BTC/block",
