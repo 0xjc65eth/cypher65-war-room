@@ -516,7 +516,24 @@ class TestAgentProtocolEvidence:
         }
         monkeypatch.setattr(agent, "_probe_braiins_rest", lambda ip: payload)
 
-        assert agent._braiins_rest_telemetry("10.0.0.5") == {}
+        assert agent._braiins_rest_telemetry("10.0.0.5") == {
+            "_invalid_fields": ["hashrate_hs"]
+        }
+
+    def test_agent_braiins_non_finite_sensor_survives_normalization(self, monkeypatch):
+        import agent.agent as agent
+
+        payload = {
+            "miner_stats": {"hashrate_avg": 110000, "board_temp_avg": float("nan")},
+            "pool_stats": {},
+            "power_stats": {},
+        }
+        monkeypatch.setattr(agent, "_probe_braiins_rest", lambda ip: payload)
+
+        tel = agent._braiins_rest_telemetry("10.0.0.5")
+
+        assert tel["temperature"] is None
+        assert tel["_invalid_fields"] == ["temperature"]
 
     def test_agent_braiins_preserves_a_measured_zero_hashrate(self, monkeypatch):
         import agent.agent as agent

@@ -147,6 +147,26 @@ def validate_agent_telemetry(payload: dict) -> list[dict]:
         return []
 
     errors = []
+    source_invalid_fields = payload.get("_invalid_fields")
+    if source_invalid_fields is not None:
+        if (
+            not isinstance(source_invalid_fields, list)
+            or len(source_invalid_fields) > 32
+        ):
+            errors.append({"field": "telemetry", "reason": "invalid_source_metadata"})
+        else:
+            for field in source_invalid_fields:
+                if not isinstance(field, str) or not field:
+                    errors.append(
+                        {"field": "telemetry", "reason": "invalid_source_metadata"}
+                    )
+                    continue
+                errors.append(
+                    {
+                        "field": _valid_field_name(field),
+                        "reason": "invalid_source_value",
+                    }
+                )
     if "hashrate_hs" not in payload or payload.get("hashrate_hs") is None:
         errors.append({"field": "hashrate_hs", "reason": "required_for_sample"})
 

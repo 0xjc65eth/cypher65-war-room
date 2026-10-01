@@ -80,8 +80,13 @@ def axeos_rate_to_hs(value: Any, *, camel_hashrate: bool) -> int | None:
         return None
     if number == 0:
         return 0
+    # Do not let firmware values outside the server's generous per-device
+    # ceiling become enormous Python integers before the API can validate them.
+    if abs(number) > 1e18:
+        return None
     if camel_hashrate and abs(number) < _GHS_TO_HS_THRESHOLD:
-        return int(number * 1e9)
+        scaled = number * 1e9
+        return int(scaled) if math.isfinite(scaled) else None
     return int(number)
 
 
@@ -173,6 +178,38 @@ def extract_axeos_telemetry(info: dict) -> dict:
         "firmware": str(info.get("firmware") or info.get("axeOSVersion") or ""),
         "version": str(info.get("version") or ""),
     }
+    numeric_aliases = {
+        "expected_hashrate": ("expectedHashrate",),
+        "hashrate_1m": ("hashRate_1m", "hashRate1m"),
+        "hashrate_10m": ("hashRate_10m", "hashRate10m"),
+        "hashrate_1h": ("hashRate_1h", "hashRate1hr", "hashRate1h"),
+        "temperature": ("temp", "temperature"),
+        "temp_asic": ("tempChip", "temp_asic"),
+        "temp_vreg": ("vrTemp", "temp2", "temp_vreg"),
+        "fan_speed": ("fanspeed", "fanSpeed"),
+        "fan_rpm": ("fanrpm", "fanRPM"),
+        "power_watts": ("power",),
+        "voltage_mv": ("coreVoltage", "voltage"),
+        "voltage_actual_mv": ("coreVoltageActual",),
+        "frequency_mhz": ("frequency", "actualFrequency"),
+        "current_ma": ("current",),
+        "shares_accepted": ("sharesAccepted",),
+        "shares_rejected": ("sharesRejected",),
+        "shares_stale": ("sharesStale", "staleShares"),
+        "uptime_seconds": ("uptimeSeconds", "uptime"),
+        "free_heap": ("freeHeap",),
+        "wifi_rssi": ("wifiRSSI",),
+    }
+    invalid_fields = []
+    hashrate_keys = ("hashRate", "hashrate")
+    if any(info.get(key) is not None for key in hashrate_keys) and hr is None:
+        invalid_fields.append("hashrate_hs")
+    for field, keys in numeric_aliases.items():
+        raw = _first(info, keys)
+        if raw is not None and finite_number(raw) is None:
+            invalid_fields.append(field)
+    if invalid_fields:
+        tel["_invalid_fields"] = sorted(set(invalid_fields))
     hr_hs = tel["hashrate_hs"]
     pwr = tel["power_watts"]
     if hr_hs and pwr and pwr > 0:

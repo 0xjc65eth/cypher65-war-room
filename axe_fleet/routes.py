@@ -74,6 +74,15 @@ def init_routes(registry: DeviceRegistry):
     _registry = registry
 
 
+def _safe_telemetry_quarantines(tenant_id: str) -> dict:
+    """Read quarantine metadata when the injected registry supports it."""
+    getter = getattr(_registry, "get_telemetry_quarantines", None)
+    if not callable(getter):
+        return {}
+    quarantines = getter(tenant_id=tenant_id)
+    return quarantines if isinstance(quarantines, dict) else {}
+
+
 axe_fleet_bp = Blueprint("axe_fleet", __name__)
 
 
@@ -1370,7 +1379,7 @@ def fleet_summary(tenant_id: str = ""):
     # Reconcile the stored status with the newest trusted telemetry. Reading
     # only the device row can leave ONLINE frozen after the agent stops.
     devices = _registry.list_devices(tenant_id=tenant_id, with_telemetry=True)
-    quarantines = _registry.get_telemetry_quarantines(tenant_id=tenant_id)
+    quarantines = _safe_telemetry_quarantines(tenant_id)
     total = len(devices)
     # Reachability via the shared helper (ONLINE/WARNING/HASHING). WARNING is
     # kept in its own bucket (mirrors fleet_health) — a degraded-but-reachable
@@ -3210,7 +3219,7 @@ def fleet_health(tenant_id: str = ""):
     # The registry's freshness-aware read degrades old ONLINE/HASHING rows to
     # STALE. The bare device row cannot prove current health.
     devices = _registry.list_devices(tenant_id=tenant_id, with_telemetry=True)
-    quarantines = _registry.get_telemetry_quarantines(tenant_id=tenant_id)
+    quarantines = _safe_telemetry_quarantines(tenant_id)
     now = int(time.time())
 
     from .models import infer_health_score
@@ -3978,7 +3987,7 @@ def agent_telemetry(agent_tenant_id: str = ""):
     if errors:
         reasons = sorted({error["reason"] for error in errors})
         fields = sorted({error["field"] for error in errors})
-        is_new_quarantine = True
+        is_new_quarantine = False
         if device:
             is_new_quarantine = _registry.record_telemetry_quarantine(
                 device["id"], fields, reasons, tenant_id=agent_tenant_id
@@ -4005,7 +4014,7 @@ def agent_telemetry(agent_tenant_id: str = ""):
                     "code": "INVALID_TELEMETRY",
                     "reason": ",".join(reasons),
                     "fields": fields,
-                    "quarantined": True,
+                    "quarantined": bool(device),
                 }
             ),
             422,

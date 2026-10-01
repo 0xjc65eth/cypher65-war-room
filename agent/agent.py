@@ -523,7 +523,11 @@ def _probe_host(ip):
         if ghps is None:
             ghps = _finite_number(miner.get("hashrate_ghps"))
         hashrate_hs = ghps * 1e9 if ghps is not None else None
-        if hashrate_hs is not None and math.isfinite(hashrate_hs):
+        if (
+            hashrate_hs is not None
+            and math.isfinite(hashrate_hs)
+            and 0 <= hashrate_hs <= 1e18
+        ):
             return {
                 "ip": ip,
                 "type": "braiins",
@@ -712,12 +716,25 @@ def _braiins_rest_telemetry(ip):
     if ghps is None:
         ghps = _num(miner.get("hashrate_ghps"))
     if ghps is None:
-        return {}
+        return {"_invalid_fields": ["hashrate_hs"]}
     hashrate_hs = ghps * 1e9
-    if not math.isfinite(hashrate_hs):
-        return {}
+    if not math.isfinite(hashrate_hs) or hashrate_hs > 1e18:
+        return {"_invalid_fields": ["hashrate_hs"]}
     hr = int(hashrate_hs)
     power_w = _num(power.get("power_avg") or power.get("power_w"))
+    invalid_fields = []
+    numeric_sources = {
+        "temperature": (miner, "board_temp_avg"),
+        "temp_asic": (miner, "chip_temp_avg"),
+        "power_watts": (power, "power_avg"),
+        "shares_accepted": (miner, "accepted_shares"),
+        "shares_rejected": (miner, "rejected_shares"),
+        "shares_stale": (miner, "stale_shares"),
+        "uptime_seconds": (miner, "uptime_s"),
+    }
+    for field, (source, key) in numeric_sources.items():
+        if source.get(key) is not None and _num(source.get(key)) is None:
+            invalid_fields.append(field)
     tel = {
         "hashrate_hs": hr,
         "temperature": _num(miner.get("board_temp_avg")),
@@ -725,22 +742,18 @@ def _braiins_rest_telemetry(ip):
         "fan_rpm": None,  # REST exposes fans under /api/v1/cooling/state
         "power_watts": power_w,
         "best_diff": _best_diff(miner.get("best_share")),
-        "shares_accepted": _num(
-            miner.get("accepted_shares") or pool.get("accepted"), int
-        )
-        or 0,
-        "shares_rejected": _num(
-            miner.get("rejected_shares") or pool.get("rejected"), int
-        )
-        or 0,
-        "shares_stale": _num(miner.get("stale_shares") or pool.get("stale"), int) or 0,
-        "uptime_seconds": _num(miner.get("uptime_s") or miner.get("uptime"), int) or 0,
+        "shares_accepted": _num(miner.get("accepted_shares") or pool.get("accepted")),
+        "shares_rejected": _num(miner.get("rejected_shares") or pool.get("rejected")),
+        "shares_stale": _num(miner.get("stale_shares") or pool.get("stale")),
+        "uptime_seconds": _num(miner.get("uptime_s") or miner.get("uptime")),
         "pool_url": str(pool.get("url") or ""),
         "pool_user": str(pool.get("user") or ""),
         "model": str(miner.get("model") or miner.get("miner_type") or "Braiins OS+"),
     }
     if hr and power_w:
         tel["efficiency_jth"] = round(power_w / (hr / 1e12), 2)
+    if invalid_fields:
+        tel["_invalid_fields"] = sorted(set(invalid_fields))
     return tel
 
 
@@ -759,7 +772,7 @@ def _poll_telemetry(dev):
                 tel = _extract_axeos_telemetry(info)
             except Exception:
                 tel = {}
-            if tel:
+        if tel:
                 log.info(
                     "[FLEET_TELEMETRY] ip=%s hashrate=%s temp=%s accepted=%s "
                     "rejected=%s best_diff=%s",
@@ -772,7 +785,7 @@ def _poll_telemetry(dev):
                 )
                 return tel
         ident = _identity_from_axeos(ip, info)
-        return {
+        fallback_tel = {
             "hashrate_hs": ident.get("hashrate_hs"),
             "temperature": _finite_number(info.get("temp")),
             "best_diff": _best_diff(info.get("bestDiff")),
@@ -786,6 +799,21 @@ def _poll_telemetry(dev):
             "model": ident.get("model") or "Bitaxe",
             "mining_paused": info.get("miningPaused") is True,
         }
+        invalid_fields = []
+        if any(info.get(key) is not None for key in ("hashRate", "hashrate")) and fallback_tel["hashrate_hs"] is None:
+            invalid_fields.append("hashrate_hs")
+        for field, keys in {
+            "temperature": ("temp", "temperature"),
+            "shares_accepted": ("sharesAccepted",),
+            "shares_rejected": ("sharesRejected",),
+            "uptime_seconds": ("uptimeSeconds", "uptime"),
+        }.items():
+            raw = next((info.get(key) for key in keys if info.get(key) is not None), None)
+            if raw is not None and _finite_number(raw) is None:
+                invalid_fields.append(field)
+        if invalid_fields:
+            fallback_tel["_invalid_fields"] = sorted(set(invalid_fields))
+        return fallback_tel
     if dev.get("type") == "braiins":
         # Braiins OS+ REST carries the full telemetry. When the REST API does
         # not answer (older firmware, /api/v1 disabled) fall through to the
@@ -814,13 +842,29 @@ def _poll_telemetry(dev):
         )
         if not isinstance(s, dict):
             s = {}
-        ghs = float(s.get("GHS 5s", s.get("GHS av", 0)) or 0)
+        raw_ghs = s.get("GHS 5s")
+        if raw_ghs is None:
+            raw_ghs = s.get("GHS av")
+        ghs = _finite_number(raw_ghs)
+        if ghs is None or ghs < 0 or ghs * 1e9 > 1e18:
+            return {"_invalid_fields": ["hashrate_hs"]}
+        hashrate_hs = ghs * 1e9
+        if not math.isfinite(hashrate_hs):
+            return {"_invalid_fields": ["hashrate_hs"]}
 
         temperature = None
         fan_rpm = None
+        invalid_fields = []
         stats = _cgminer_cmd(ip, "stats")
         _st = (stats or {}).get("STATS") or []
         if len(_st) > 1 and isinstance(_st[1], dict):
+            for field, keys in {
+                "temperature": ("temp2_0", "temp"),
+                "fan_rpm": ("fan1", "fan2"),
+            }.items():
+                raw = next((_st[1].get(key) for key in keys if _st[1].get(key) is not None), None)
+                if raw is not None and _finite_number(raw) is None:
+                    invalid_fields.append(field)
             temperature = _finite_number(
                 _st[1].get("temp2_0") or _st[1].get("temp")
             )
@@ -835,20 +879,35 @@ def _poll_telemetry(dev):
                 pool_url = str(_p.get("URL") or "")
                 pool_user = str(_p.get("User") or "")
 
-        return {
-            "hashrate_hs": int(ghs * 1e9),
+        for field, key in {
+            "shares_accepted": "Accepted",
+            "shares_rejected": "Rejected",
+            "uptime_seconds": "Elapsed",
+        }.items():
+            raw = s.get(key)
+            number = _finite_number(raw) if raw is not None else None
+            if raw is not None and (
+                number is None or number < 0 or not number.is_integer()
+            ):
+                invalid_fields.append(field)
+
+        telemetry = {
+            "hashrate_hs": int(hashrate_hs),
             "temperature": temperature,
             "fan_rpm": fan_rpm,
             "power_watts": None,
             "best_diff": _best_diff(s.get("Best Share")),
-            "shares_accepted": int(s.get("Accepted", 0)),
-            "shares_rejected": int(s.get("Rejected", 0)),
-            "uptime_seconds": int(s.get("Elapsed", 0)),
+            "shares_accepted": int(_finite_number(s.get("Accepted"))) if _finite_number(s.get("Accepted")) is not None else None,
+            "shares_rejected": int(_finite_number(s.get("Rejected"))) if _finite_number(s.get("Rejected")) is not None else None,
+            "uptime_seconds": int(_finite_number(s.get("Elapsed"))) if _finite_number(s.get("Elapsed")) is not None else None,
             "pool_url": pool_url,
             "pool_user": pool_user,
             "model": dev.get("model") or "cgminer",
         }
-    except (ValueError, TypeError, AttributeError, IndexError):
+        if invalid_fields:
+            telemetry["_invalid_fields"] = sorted(set(invalid_fields))
+        return telemetry
+    except (ValueError, TypeError, AttributeError, IndexError, OverflowError):
         return {}
 
 

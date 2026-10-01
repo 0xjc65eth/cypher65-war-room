@@ -819,6 +819,7 @@ class TestTelemetryQuarantine:
             row
             for row in recent_audit_logs("acme")
             if row["action"] == "agent.telemetry_quarantined"
+            and row["target"] == "192.168.1.93"
         ]
         assert audit
         assert audit[-1]["details"] == {

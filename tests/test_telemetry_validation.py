@@ -40,3 +40,13 @@ def test_unknown_fields_do_not_override_the_numeric_contract():
         validate_agent_telemetry({"hashrate_hs": 1e12, "firmware_extension": "v2"})
         == []
     )
+
+
+def test_agent_source_error_survives_optional_sensor_normalization():
+    errors = validate_agent_telemetry(
+        {"hashrate_hs": 5e12, "temperature": None, "_invalid_fields": ["temperature"]}
+    )
+
+    assert ("temperature", "invalid_source_value") in {
+        (error["field"], error["reason"]) for error in errors
+    }
