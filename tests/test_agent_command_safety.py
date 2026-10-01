@@ -95,10 +95,96 @@ def test_pull_blocks_when_physical_policy_is_disabled(
     }
 
 
+def test_read_only_probe_is_delivered_with_physical_commands_disabled(
+    client, agent_token, registry, monkeypatch
+):
+    monkeypatch.delenv("ENABLE_PHYSICAL_COMMANDS", raising=False)
+    queued = registry.enqueue_agent_command(
+        "_probe",
+        "probe",
+        params={"ip": "192.168.10.21", "name": "lab"},
+        tenant_id="acme",
+    )
+
+    response = _pull(client, agent_token, registry)
+
+    assert response.get_json()["commands"] == [
+        {
+            "id": queued["id"],
+            "device_id": "_probe",
+            "ip_address": "192.168.10.21",
+            "command": "probe",
+            "params": {"ip": "192.168.10.21"},
+        }
+    ]
+    # A second pull cannot replay the one-shot probe.
+    assert _pull(client, agent_token, registry).get_json()["commands"] == []
+    # A different tenant cannot pull or consume the command.
+    other_token = create_token(
+        subject="brave", extra_claims={"agent": True, "role": "agent"}
+    )
+    assert _pull(client, other_token, registry).get_json()["commands"] == []
+
+
+@pytest.mark.parametrize(
+    "target",
+    [
+        "127.0.0.1",
+        "169.254.169.254",
+        "8.8.8.8",
+        "::1",
+        "192.168.1.1:80",
+        "0.1.2.3",
+        "192.0.2.1",
+        "198.18.0.1",
+        "203.0.113.1",
+    ],
+)
+def test_read_only_probe_rejects_out_of_scope_target(
+    client, agent_token, registry, monkeypatch, target
+):
+    monkeypatch.delenv("ENABLE_PHYSICAL_COMMANDS", raising=False)
+    queued = registry.enqueue_agent_command(
+        "_probe", "probe", params={"ip": target}, tenant_id="acme"
+    )
+
+    response = _pull(client, agent_token, registry)
+
+    assert response.get_json()["commands"] == []
+    assert _command_row(registry, queued["id"]) == {
+        "status": "blocked",
+        "result": "probe_target_invalid",
+    }
+
+
 def test_pull_expires_old_command(client, agent_token, registry, monkeypatch):
     monkeypatch.setenv("ENABLE_PHYSICAL_COMMANDS", "true")
     device = _active_device(registry)
     queued = registry.enqueue_agent_command(device["id"], "restart", tenant_id="acme")
+    conn = registry._get_db()
+    conn.execute(
+        "UPDATE axe_agent_commands SET created_at=? WHERE id=?",
+        (int(time.time()) - AGENT_COMMAND_TTL_S - 1, queued["id"]),
+    )
+    conn.commit()
+    conn.close()
+
+    response = _pull(client, agent_token, registry)
+
+    assert response.get_json()["commands"] == []
+    assert _command_row(registry, queued["id"]) == {
+        "status": "expired",
+        "result": "command_expired",
+    }
+
+
+def test_read_only_probe_expires_with_agent_command_ttl(
+    client, agent_token, registry, monkeypatch
+):
+    monkeypatch.delenv("ENABLE_PHYSICAL_COMMANDS", raising=False)
+    queued = registry.enqueue_agent_command(
+        "_probe", "probe", params={"ip": "192.168.10.21"}, tenant_id="acme"
+    )
     conn = registry._get_db()
     conn.execute(
         "UPDATE axe_agent_commands SET created_at=? WHERE id=?",

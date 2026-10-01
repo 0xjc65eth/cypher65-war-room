@@ -1055,7 +1055,7 @@ class TestTombstoneNoZombies:
                 registry.get_device_by_ip(ip, tenant_id="brave")["id"]
 
     def test_cloud_private_add_queues_without_ssrf_and_clears_tombstone(
-        self, client, agent_token, registry
+        self, client, agent_token, registry, monkeypatch
     ):
         """Cloud POST of a private IP never probes the LAN; restore intent
         still unblocks the agent."""
@@ -1086,6 +1086,47 @@ class TestTombstoneNoZombies:
         assert "AGENTE LOCAL" in data["message"]
         mock_conn.assert_not_called()
         assert registry.get_device_by_ip(ip, tenant_id="acme") == {}
+        # Reproduce the user-facing dead end: the queued command currently
+        # collides with the physical-command gate and is never delivered.
+        with patch("axe_fleet.routes._registry", registry):
+            pull = client.post(
+                "/api/agent/commands/pull", headers=_headers(agent_token), json={}
+            )
+        assert pull.status_code == 200
+        commands = pull.get_json()["commands"]
+        assert len(commands) == 1
+        assert commands[0]["command"] == "probe"
+        assert commands[0]["params"]["ip"] == ip
+        assert commands[0]["device_id"] == "_probe"
+
+        # Exercise the real agent command consumer without opening a socket;
+        # the recognized device is registered back through the authenticated API.
+        import agent.agent as local_agent
+
+        monkeypatch.setattr(
+            local_agent,
+            "_probe_host",
+            lambda target: {"ip": target, "type": "bitaxe", "model": "Fixture"},
+        )
+
+        def post_retry(path, payload):
+            response = client.post(
+                path, headers=_headers(agent_token), json=payload
+            )
+            return response.status_code, response.get_json()
+
+        monkeypatch.setattr(local_agent, "_post_retry", post_retry)
+        with patch("axe_fleet.routes._registry", registry), \
+                patch("axe_fleet.routes._can_add_worker", return_value=True):
+            ok, message = local_agent._exec_command(commands[0], known={})
+            ack = client.post(
+                f"/api/agent/commands/{commands[0]['id']}/ack",
+                headers=_headers(agent_token),
+                json={"success": ok, "result": message},
+            )
+        assert ok is True
+        assert registry.get_device_by_ip(ip, tenant_id="acme")
+        assert ack.status_code == 200 and ack.get_json()["success"] is True
         with patch("axe_fleet.routes._registry", registry), \
                 patch("axe_fleet.routes._can_add_worker", return_value=True):
             again = client.post(
