@@ -23,6 +23,7 @@ from services.auth import create_token, verify_token
 from services.tenant import get_current_role
 from axe_fleet.registry import DeviceRegistry
 from axe_fleet.models import validate_agent_telemetry
+import agent.agent as agent_mod
 
 
 @pytest.fixture
@@ -908,6 +909,62 @@ class TestTelemetryQuarantine:
             "reasons": ["not_finite"],
         }
         assert "must-not-be-logged" not in str(audit[-1])
+
+    def test_invalid_standalone_axeos_hashrate_is_quarantined_without_overwrite(
+        self, client, agent_token, registry
+    ):
+        from axe_fleet.axeos_contract import official_esp_miner_info
+
+        ip = "192.168.1.95"
+        with patch("axe_fleet.routes._registry", registry):
+            client.post(
+                "/api/agent/register",
+                headers=_headers(agent_token),
+                json={"devices": [{"ip": ip}]},
+            )
+            accepted = client.post(
+                "/api/agent/telemetry",
+                headers=_headers(agent_token),
+                json={
+                    "ip": ip,
+                    "telemetry": {"hashrate_hs": 5e12, "temperature": 62},
+                },
+            )
+            assert accepted.status_code == 200
+            device = registry.get_device_by_ip(ip, tenant_id="acme")
+            before = registry.get_recent_telemetry(
+                device["id"], limit=10, tenant_id="acme"
+            )
+            last_seen_before = device["last_seen"]
+
+            info = official_esp_miner_info(hashRate="N/A")
+            with patch.object(
+                agent_mod, "_probe_axeos", return_value=info
+            ), patch.object(agent_mod, "_extract_axeos_telemetry", None):
+                telemetry = agent_mod._poll_telemetry(
+                    {"ip": ip, "type": "bitaxe"}
+                )
+            assert telemetry["hashrate_hs"] is None
+            assert telemetry["_invalid_fields"] == ["hashrate_hs"]
+
+            rejected = client.post(
+                "/api/agent/telemetry",
+                headers=_headers(agent_token),
+                json={"ip": ip, "telemetry": telemetry},
+            )
+
+        assert rejected.status_code == 422
+        assert rejected.get_json()["fields"] == ["hashrate_hs"]
+        assert registry.get_recent_telemetry(
+            device["id"], limit=10, tenant_id="acme"
+        ) == before
+        unchanged = registry.get_device(device["id"], tenant_id="acme")
+        assert unchanged["status"] == "ONLINE"
+        assert unchanged["last_seen"] == last_seen_before
+        quarantine = registry.get_telemetry_quarantines(tenant_id="acme")[
+            device["id"]
+        ]
+        assert quarantine["fields"] == ["hashrate_hs"]
 
     def test_health_reports_quarantine_without_overwriting_last_good_status(
         self, client, agent_token, user_token, registry
