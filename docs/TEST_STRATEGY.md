@@ -27,6 +27,19 @@ reforçado ali em vez de duplicado.
 | OPS-003 | Integração | Reconexão após queda do ASIC/pool | falha transitória seguida de payload válido | estado `offline` → `online`, backoff respeitado e uma única transição auditada | `tests/test_polling_reconnection.py` |
 | TEL-001 | Integração de armazenamento | Telemetria repetida/replay | mesmo `device_id`, timestamp e idempotency key | apenas um ponto/histórico; agregados não duplicam | `tests/test_telemetry_idempotency.py` |
 | TEL-002 | Unitário + integração | Telemetria inválida ou fora de faixa | chaves ausentes, tipos errados, temperatura/hashrate não finitos | rejeição/quarentena com motivo, sem alterar último dado bom | `tests/test_telemetry_validation.py` |
+| TIME-001 | Unitário | Conversão de timestamp e DST | UTC antes/depois de mudança de horário em `America/Sao_Paulo` e `Europe/Brussels` | persistência de epoch e duração relativa da UI independentes do fuso; ordenação visual de listas permanece por cobrir | `tests/test_timezones.py` |
+| NUM-001 | Unitário | Divisão por zero de shares/custos | total shares, TH/s, preço e rede iguais a 0 | campos contratuais `0`/`None`, nunca exceção ou infinito | `tests/test_mining_formula_contracts.py`, `tests/core/test_safety.py` |
+| NUM-002 | Property-based | Valores extremos mas finitos | floats entre limites operacionais e bordas IEEE-754 | invariantes: probabilidades em [0,1], saída serializável e sem `NaN` | `tests/test_numeric_properties.py` |
+| SEC-001 | Integração | Isolamento por tenant | token do tenant A tentando ler device/log do B | HTTP 404/403 sem metadados do tenant B | `tests/test_tenant_b2_isolation.py` |
+| SEC-002 | Integração | RBAC de leitura vs operação | viewer/member/admin em `POST /command` | só `member`/`admin` pode confirmar ou executar; nega `viewer` antes do adaptador | `tests/core/test_app_device_routes.py` |
+| CMD-001 | Integração | Comando remoto em dry-run | `POST /api/devices/:id/test` com restart | `simulated=true`; adaptador, rede e ASIC não são acionados | `tests/core/test_app_device_routes.py` |
+| CMD-002 | E2E + integração | Confirmação humana para ação destrutiva | restart/pause e texto/token de confirmação correto, incorreto e reuso | incorreto/reuso não executa; correto é único, vinculado a ação/device/tenant e auditado | `tests/core/test_app_device_routes.py`, `tests/e2e/live-mining.spec.js` |
+| AUD-001 | Integração | Audit log de sucesso, bloqueio e erro | comandos permitidos/bloqueados e falha de adaptador | actor, tenant, device, comando, resultado e UTC persistidos; append-only | `tests/core/test_app_device_routes.py`, `tests/test_audit_log.py` |
+| PER-001 | Integração SQLite | Reinício da aplicação | device, telemetria, configuração e audit gravados; reabrir registry | estado e tenant sobrevivem sem duplicar pontos ou segredos | `tests/core/test_registry.py`, `tests/test_persistence_restart.py` |
+| UI-001 | E2E visual | Responsividade das telas críticas | viewports 320, 375, 768, 1024 e 1440 px | sem overflow horizontal, controles alcançáveis e dados essenciais visíveis | `tests/e2e/responsive.spec.js` |
+| UI-002 | E2E acessibilidade | Dashboard e fluxo de comando | teclado, foco contido em diálogo modal, labels e `prefers-reduced-motion` emulado | Axe sem violações críticas; foco retorna ao acionador e live region anuncia o resultado | `tests/e2e/accessibility.spec.js` |
+| LOAD-001 | Performance | Resumo com muitos ASICs | 100 e 500 devices; telemetria atual e stale | p95 do resumo abaixo do SLO acordado, memória limitada, contagens corretas | `tests/performance/test_fleet_scale.py` |
+| LOAD-002 | Performance + integração | Ingestão concorrente de telemetria | 10k eventos, duplicatas e 50 devices concorrentes | sem perda/duplicação fora da política; latência e backlog dentro do SLO | `tests/performance/test_telemetry_ingest.py` |
 
 **Política TEL-002 (#609):** `telemetry: {}` continua sendo heartbeat válido.
 Uma amostra não vazia exige `hashrate_hs`; campos numéricos conhecidos devem
@@ -40,19 +53,6 @@ telemetria nem atualiza status/last_seen. Para device cadastrado, persiste-se
 somente instante, nomes de campos e motivos (sem payload), expostos como alerta
 na resposta Fleet; heartbeat vazio não limpa o alerta e amostra válida não vazia
 limpa.
-| TIME-001 | Unitário | Conversão de timestamp e DST | UTC antes/depois de mudança de horário em `America/Sao_Paulo` e `Europe/Brussels` | persistência em UTC; ordenação e duração idênticas na UI | `tests/test_timezones.py` |
-| NUM-001 | Unitário | Divisão por zero de shares/custos | total shares, TH/s, preço e rede iguais a 0 | campos contratuais `0`/`None`, nunca exceção ou infinito | `tests/test_mining_formula_contracts.py`, `tests/core/test_safety.py` |
-| NUM-002 | Property-based | Valores extremos mas finitos | floats entre limites operacionais e bordas IEEE-754 | invariantes: probabilidades em [0,1], saída serializável e sem `NaN` | `tests/test_numeric_properties.py` |
-| SEC-001 | Integração | Isolamento por tenant | token do tenant A tentando ler device/log do B | HTTP 404/403 sem metadados do tenant B | `tests/test_tenant_b2_isolation.py` |
-| SEC-002 | Integração | RBAC de leitura vs operação | viewer/member/admin em `POST /command` | só `member`/`admin` pode confirmar ou executar; nega `viewer` antes do adaptador | `tests/core/test_app_device_routes.py` |
-| CMD-001 | Integração | Comando remoto em dry-run | `POST /api/devices/:id/test` com restart | `simulated=true`; adaptador, rede e ASIC não são acionados | `tests/core/test_app_device_routes.py` |
-| CMD-002 | E2E + integração | Confirmação humana para ação destrutiva | restart/pause e texto/token de confirmação correto, incorreto e reuso | incorreto/reuso não executa; correto é único, vinculado a ação/device/tenant e auditado | `tests/core/test_app_device_routes.py`, `tests/e2e/live-mining.spec.js` |
-| AUD-001 | Integração | Audit log de sucesso, bloqueio e erro | comandos permitidos/bloqueados e falha de adaptador | actor, tenant, device, comando, resultado e UTC persistidos; append-only | `tests/core/test_app_device_routes.py`, `tests/test_audit_log.py` |
-| PER-001 | Integração SQLite | Reinício da aplicação | device, telemetria, configuração e audit gravados; reabrir registry | estado e tenant sobrevivem sem duplicar pontos ou segredos | `tests/core/test_registry.py`, `tests/test_persistence_restart.py` |
-| UI-001 | E2E visual | Responsividade das telas críticas | viewports 320, 375, 768, 1024 e 1440 px | sem overflow horizontal, controles alcançáveis e dados essenciais visíveis | `tests/e2e/responsive.spec.js` |
-| UI-002 | E2E acessibilidade | Dashboard e fluxo de comando | teclado, foco contido em diálogo modal, labels e `prefers-reduced-motion` emulado | Axe sem violações críticas; foco retorna ao acionador e live region anuncia o resultado | `tests/e2e/accessibility.spec.js` |
-| LOAD-001 | Performance | Resumo com muitos ASICs | 100 e 500 devices; telemetria atual e stale | p95 do resumo abaixo do SLO acordado, memória limitada, contagens corretas | `tests/performance/test_fleet_scale.py` |
-| LOAD-002 | Performance + integração | Ingestão concorrente de telemetria | 10k eventos, duplicatas e 50 devices concorrentes | sem perda/duplicação fora da política; latência e backlog dentro do SLO | `tests/performance/test_telemetry_ingest.py` |
 
 ## Gate de execução
 
@@ -130,8 +130,8 @@ equivalente, o teste deve ser reforçado ali em vez de duplicado"*)?
 | OPS-002 | não auditado | `tests/test_polling_integration.py` existe; comportamento não verificado nesta rodada |
 | OPS-003 | **lacuna** | `tests/test_polling_reconnection.py` não existe → #610 |
 | TEL-001 | **implementado** | `tests/test_telemetry_idempotency.py`: event key opcional por tenant/device; replay idêntico é no-op, payload diferente retorna 409; clientes antigos sem key permanecem compatíveis, sem garantia de deduplicação |
-| TEL-002 | implementado | `tests/test_telemetry_validation.py`, `tests/test_agent_api.py`; normalização REST e quarentena preservam amostra válida → #609 |
-| TIME-001 | **lacuna** | `tests/test_timezones.py` não existe; **0** usos de fuso nomeado no repo → #604 |
+| TEL-002 | implementado, regressão standalone reaberta | `tests/test_telemetry_validation.py`, `tests/test_agent_api.py`; #609 acompanha correção adicional do fallback do agente standalone |
+| TIME-001 | **parcial** | `tests/test_timezones.py` cobre conversão ISO, bucket UTC, persistência e idade relativa na UI nos dois fusos; ordenação visual de listas ainda precisa de cobertura → #604 |
 | NUM-001 | parcial | o plano declara *"parte de `NUM-001`"* |
 | NUM-002 | implementado (PR #605 wave W3) | `tests/test_numeric_properties.py`: hypothesis sobre o núcleo numérico puro — solo prob, lender, break-even, `fiat_convert`; invariantes [0,1]/serializável/sem NaN + bordas IEEE-754 e Decimal |
 | SEC-001 | não auditado | `tests/test_tenant_b2_isolation.py` existe; comportamento não verificado |

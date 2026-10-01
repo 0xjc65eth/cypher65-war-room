@@ -767,23 +767,24 @@ def _poll_telemetry(dev):
         info = _probe_axeos(ip)
         if not isinstance(info, dict):
             return {}
+        tel = {}
         if _extract_axeos_telemetry is not None:
             try:
                 tel = _extract_axeos_telemetry(info)
             except Exception:
                 tel = {}
         if tel:
-                log.info(
-                    "[FLEET_TELEMETRY] ip=%s hashrate=%s temp=%s accepted=%s "
-                    "rejected=%s best_diff=%s",
-                    ip,
-                    tel.get("hashrate_hs"),
-                    tel.get("temperature"),
-                    tel.get("shares_accepted"),
-                    tel.get("shares_rejected"),
-                    tel.get("best_diff"),
-                )
-                return tel
+            log.info(
+                "[FLEET_TELEMETRY] ip=%s hashrate=%s temp=%s accepted=%s "
+                "rejected=%s best_diff=%s",
+                ip,
+                tel.get("hashrate_hs"),
+                tel.get("temperature"),
+                tel.get("shares_accepted"),
+                tel.get("shares_rejected"),
+                tel.get("best_diff"),
+            )
+            return tel
         ident = _identity_from_axeos(ip, info)
         fallback_tel = {
             "hashrate_hs": ident.get("hashrate_hs"),
