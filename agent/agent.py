@@ -531,9 +531,7 @@ def _probe_host(ip):
                     miner.get("model") or miner.get("miner_type") or "Braiins OS+"
                 ),
                 "firmware": "Braiins OS+",
-                "version": str(
-                    miner.get("version") or miner.get("firmware_version") or ""
-                ),
+                "version": str(miner.get("version") or miner.get("firmware_version") or ""),
                 "hostname": "",
                 "mac": "",
                 "hashrate_hs": int(hashrate_hs),
@@ -823,7 +821,9 @@ def _poll_telemetry(dev):
         stats = _cgminer_cmd(ip, "stats")
         _st = (stats or {}).get("STATS") or []
         if len(_st) > 1 and isinstance(_st[1], dict):
-            temperature = _finite_number(_st[1].get("temp2_0") or _st[1].get("temp"))
+            temperature = _finite_number(
+                _st[1].get("temp2_0") or _st[1].get("temp")
+            )
             fan_rpm = _finite_number(_st[1].get("fan1") or _st[1].get("fan2"))
 
         pool_url = ""
