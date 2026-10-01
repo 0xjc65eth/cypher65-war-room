@@ -40,6 +40,7 @@ reforçado ali em vez de duplicado.
 | UI-002 | E2E acessibilidade | Dashboard e fluxo de comando | teclado, foco contido em diálogo modal, labels e `prefers-reduced-motion` emulado | Axe sem violações críticas; foco retorna ao acionador e live region anuncia o resultado | `tests/e2e/accessibility.spec.js` |
 | LOAD-001 | Performance | Resumo com muitos ASICs | 100 e 500 devices; telemetria atual e stale | p95 do resumo abaixo do SLO acordado, memória limitada, contagens corretas | `tests/performance/test_fleet_scale.py` |
 | LOAD-002 | Performance + integração | Ingestão concorrente de telemetria | 10k eventos, duplicatas e 50 devices concorrentes | sem perda/duplicação fora da política; latência e backlog dentro do SLO | `tests/performance/test_telemetry_ingest.py` |
+| OBS-001 | Observabilidade + integração | Transições Fleet estruturadas | status ONLINE → OFFLINE/STALE → ONLINE, request context ativo/ausente, logger com falha | evento JSON com tenant/device/request_id, sem segredo/payload bruto; uma emissão por transição; logging não afeta ingestão | `tests/test_fleet_observability_events.py` |
 
 **Política TEL-002 (#609):** `telemetry: {}` continua sendo heartbeat válido.
 Uma amostra não vazia exige `hashrate_hs`; campos numéricos conhecidos devem
@@ -128,7 +129,8 @@ posteriores e registram o estado atual; não reinterpretam as conclusões histó
 | OPS-002 | parcial | `tests/test_polling_integration.py` cobre fallback stale para falha de pool, não todos os timeouts/5xx/campos |
 | OPS-003 | lacuna | `tests/test_polling_reconnection.py` não existe → #610 |
 | TEL-001 | implementado | `tests/test_telemetry_idempotency.py`: replay idempotente, conflito para payload alterado, isolamento por tenant e duplicata concorrente (PR #692 no master atual) |
-| TEL-002 | parcial | validação/quarentena cobertas; o fallback standalone para valores inválidos aguarda #609 / PR #704 |
+| OBS-001 | implementado | `tests/test_fleet_observability_events.py`: envelope seguro/correlacionado, scan, inclusão manual, transições online/offline/stale, provider pool e shares concorrentes; caminho externo de provider não é exercitado |
+| TEL-002 | parcial | validação/quarentena e fallback standalone inválido cobertos por #609 / PR #704; a cobertura listada não comprova a apresentação visual da quarentena |
 | TIME-001 | parcial | `tests/test_timezones.py` cobre conversão ISO, bucket UTC, persistência e idade relativa na UI nos dois fusos; ordenação visual de listas ainda precisa de cobertura → #604 |
 | NUM-001 | parcial | o plano declara *"parte de `NUM-001`"* |
 | NUM-002 | implementado (PR #605 wave W3) | `tests/test_numeric_properties.py`: hypothesis sobre o núcleo numérico puro — solo prob, lender, break-even, `fiat_convert`; invariantes [0,1]/serializável/sem NaN + bordas IEEE-754 e Decimal |
@@ -155,7 +157,7 @@ exceções; IDs desconhecidos, duplicados, sem vínculo ou com classificação d
 | ID | Categoria | Justificativa | Acompanhamento |
 | --- | --- | --- | --- |
 | OPS-003 | lacuna | Fluxo de reconexão e backoff ainda não tem teste dedicado | Issue #610 |
-| TEL-002 | parcial | Testes cobrem a quarentena; valores inválidos no fallback standalone seguem em correção | Issue #609 / PR #704 |
+| TEL-002 | parcial | Validação/quarentena e fallback standalone inválido foram cobertos por #609 / PR #704; apresentação visual não é afirmada por esta matriz | Issue #609 / PR #704 |
 | UI-002 | lacuna | Falta spec E2E de acessibilidade de dashboard e comando | Issue #612 |
 | LOAD-001 | bloqueado | SLO de latência/memória não foi aprovado; não inventar limite para fazer gate | Issue #606 |
 | LOAD-002 | bloqueado | SLO de ingestão/backlog não foi aprovado; não inventar limite para fazer gate | Issue #607 |

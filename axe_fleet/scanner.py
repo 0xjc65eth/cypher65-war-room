@@ -241,7 +241,9 @@ def _probe_cgminer_version(
                 pass
 
 
-def probe_host(ip: str, timeout: float = HTTP_PROBE_TIMEOUT) -> dict:
+def probe_host(
+    ip: str, timeout: float = HTTP_PROBE_TIMEOUT, failure_reason_out: dict | None = None
+) -> dict:
     """Probe a single host for miner identity.
 
     Uses ``detect_firmware()`` (core/registry/detector.py) as the primary
@@ -265,6 +267,16 @@ def probe_host(ip: str, timeout: float = HTTP_PROBE_TIMEOUT) -> dict:
 
     fw = detect_firmware(ip, timeout=timeout)
     if not fw or not fw.get("reachable"):
+        if failure_reason_out is not None:
+            reason = (fw or {}).get("failure_reason")
+            if reason in {
+                "auth",
+                "timeout",
+                "refused",
+                "invalid_response",
+                "unreachable",
+            }:
+                failure_reason_out["reason"] = reason
         return None
 
     adapter_type = fw.get("adapter_type", "unknown")
@@ -613,6 +625,7 @@ def scan_subnet(
             "found": [],
             "alive": 0,
             "alive_ips": [],
+            "rejected_reasons": {},
             "hint": None,
             "elapsed_ms": 0,
             "error": "invalid or empty subnet",
@@ -620,18 +633,26 @@ def scan_subnet(
     hosts = hosts[:max_hosts]
     found = []
     alive_ips = []
+    rejected_reasons = {}
     scanned = 0
+
+    def _probe(ip):
+        failure = {}
+        found_device = probe_host(ip, timeout, failure_reason_out=failure)
+        return found_device, failure.get("reason")
+
     try:
         with ThreadPoolExecutor(max_workers=min(workers, max(1, len(hosts)))) as ex:
-            futures = {ex.submit(probe_host, ip, timeout): ip for ip in hosts}
+            futures = {ex.submit(_probe, ip): ip for ip in hosts}
             for fut in as_completed(futures):
                 scanned += 1
                 ip = futures[fut]
                 try:
-                    result = fut.result()
+                    result, failure_reason = fut.result()
                 except Exception as e:  # noqa: BLE001 — per-host isolation
                     log.debug("[scan] probe exception: %s", e)
                     result = None
+                    failure_reason = None
                 if result:
                     found.append(result)
                 elif _tcp_open(ip, BITAXE_PORT) or _tcp_open(ip, CGMINER_PORT):
@@ -640,6 +661,8 @@ def scan_subnet(
                     # firewalled/authenticated API. Reported separately so the
                     # operator knows the subnet is reachable.
                     alive_ips.append(ip)
+                    reason = failure_reason or "reachable_but_unidentified"
+                    rejected_reasons[reason] = rejected_reasons.get(reason, 0) + 1
                 if progress_cb:
                     try:
                         progress_cb(scanned, len(hosts))
@@ -652,6 +675,7 @@ def scan_subnet(
             "found": found,
             "alive": len(alive_ips),
             "alive_ips": alive_ips,
+            "rejected_reasons": rejected_reasons,
             "hint": None,
             "elapsed_ms": int((time.time() - t0) * 1000),
             "error": str(e),
@@ -669,6 +693,7 @@ def scan_subnet(
         "found": found,
         "alive": len(alive_ips),
         "alive_ips": alive_ips,
+        "rejected_reasons": rejected_reasons,
         "hint": hint,
         "elapsed_ms": int((time.time() - t0) * 1000),
         "error": None,
