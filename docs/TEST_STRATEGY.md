@@ -114,7 +114,7 @@ posteriores e registram o estado atual; não reinterpretam as conclusões histó
 | OPS-001 | parcial | resposta offline negada está coberta; falta verificar audit persistido e ausência de I/O do adaptador |
 | OPS-002 | parcial | `tests/test_polling_integration.py` cobre fallback stale para falha de pool, não todos os timeouts/5xx/campos |
 | OPS-003 | lacuna | `tests/test_polling_reconnection.py` não existe → #610 |
-| TEL-001 | lacuna | estado remoto do PR #692 requer verificação antes de contar esta cobertura no master → #608 |
+| TEL-001 | implementado | `tests/test_telemetry_idempotency.py`: replay idempotente, conflito para payload alterado, isolamento por tenant e duplicata concorrente (PR #692 no master atual) |
 | TEL-002 | lacuna | `tests/test_telemetry_validation.py` não existe → #609 |
 | TIME-001 | parcial | `tests/test_timezones.py` verifica persistência UTC e buckets em fusos nomeados; UI/ordenação/duração continuam sem contrato → #604 |
 | NUM-001 | parcial | o plano declara *"parte de `NUM-001`"* |
@@ -142,7 +142,6 @@ exceções; IDs desconhecidos, duplicados, sem vínculo ou com classificação d
 | ID | Categoria | Justificativa | Acompanhamento |
 | --- | --- | --- | --- |
 | OPS-003 | lacuna | Fluxo de reconexão e backoff ainda não tem teste dedicado | Issue #610 |
-| TEL-001 | lacuna | Estado de integração do PR #692 não foi possível confirmar nesta auditoria; não contar cobertura sem validar master | Issue #608 / PR #692 |
 | TEL-002 | lacuna | Validação/quarentena não tem suíte dedicada | Issue #609 |
 | UI-002 | lacuna | Falta spec E2E de acessibilidade de dashboard e comando | Issue #612 |
 | LOAD-001 | bloqueado | SLO de latência/memória não foi aprovado; não inventar limite para fazer gate | Issue #606 |
