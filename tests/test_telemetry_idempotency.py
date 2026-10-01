@@ -172,10 +172,17 @@ def test_replay_status_does_not_observe_pre_update_device_state(registry, monkey
     update_started = threading.Event()
     allow_update = threading.Event()
     original_update = registry.update_device
+    update_calls = 0
+    call_lock = threading.Lock()
 
     def delayed_update(*args, **kwargs):
-        update_started.set()
-        assert allow_update.wait(timeout=5)
+        nonlocal update_calls
+        with call_lock:
+            update_calls += 1
+            is_first = update_calls == 1
+        if is_first:
+            update_started.set()
+            assert allow_update.wait(timeout=5)
         return original_update(*args, **kwargs)
 
     monkeypatch.setattr(registry, "update_device", delayed_update)
@@ -198,6 +205,45 @@ def test_replay_status_does_not_observe_pre_update_device_state(registry, monkey
         assert first.result(timeout=5) == "ONLINE"
 
     assert replay_status == "ONLINE"
+
+
+def test_replay_repairs_device_state_after_interrupted_first_write(
+    registry, monkeypatch
+):
+    """Retry repairs denormalized status when initial update failed after insert."""
+    device = registry.upsert_agent_device("192.168.88.27", tenant_id="acme")
+    before = device["last_seen"]
+    sample = {"ts": int(time.time()), "hashrate_hs": 8_000}
+    original_update = registry.update_device
+    first_attempt = True
+
+    def fail_once(*args, **kwargs):
+        nonlocal first_attempt
+        if first_attempt:
+            first_attempt = False
+            raise RuntimeError("simulated stop after telemetry commit")
+        return original_update(*args, **kwargs)
+
+    monkeypatch.setattr(registry, "update_device", fail_once)
+    with pytest.raises(RuntimeError, match="simulated stop"):
+        registry.save_agent_telemetry(
+            device["id"],
+            sample,
+            tenant_id="acme",
+            idempotency_key="sample-event-retry01",
+        )
+
+    replay_status = registry.save_agent_telemetry(
+        device["id"],
+        sample,
+        tenant_id="acme",
+        idempotency_key="sample-event-retry01",
+    )
+    recovered = registry.get_device(device["id"], tenant_id="acme")
+    assert replay_status == recovered["status"] == "ONLINE"
+    assert recovered["agent_managed"] == 1
+    assert recovered["last_seen"] >= before
+    assert len(registry.get_recent_telemetry(device["id"], tenant_id="acme")) == 1
 
 
 def test_idempotency_key_is_scoped_to_tenant(registry):

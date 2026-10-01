@@ -703,9 +703,9 @@ class DeviceRegistry:
                 # Fresh-enough measured reading exists: keep its live status
                 # (PAUSED survives a heartbeat; IDLE stays IDLE).
                 status = derive_device_status(latest)
-        # Compute the status before inserting. An identical concurrent replay
-        # can then return the event-derived state even if another request has
-        # not committed its status update yet.
+        # Compute status before inserting so concurrent replays can repair
+        # denormalized device state even if a writer stopped after the event
+        # row committed but before update_device completed.
         if idempotency_key:
             inserted = self.save_telemetry(
                 device_id,
@@ -714,7 +714,13 @@ class DeviceRegistry:
                 idempotency_key=idempotency_key,
             )
             if not inserted:
-                return status
+                latest = self._latest_measured_telemetry(device_id, tenant_id=tenant_id)
+                if latest and latest.get("ts", 0) > payload.get("ts", 0):
+                    status = derive_device_status(latest)
+                    if status != "PAUSED" and is_telemetry_stale(
+                        latest.get("ts"), now=now
+                    ):
+                        status = STATUS_STALE
         else:
             # Preserve the established call shape for legacy instrumentation
             # wrappers around save_telemetry.
