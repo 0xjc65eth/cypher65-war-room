@@ -52,7 +52,7 @@ commands:
     request: '{"command":"restart"}'
     response_section: STATUS
     fidelity: source
-    simulator_policy: no command is sent by default validation; virtual-only if explicitly enabled
+    simulator_policy: command behavior is exercised only by local TCP fixtures in tests/test_agent_protocol.py; no physical miner or non-loopback target is used
 framing:
   request: TCP JSON line in CYPHER65 implementation
   response_terminator: NUL in current test server; cgminer API upstream documents API data format but not the exact firmware-specific terminator as a universal guarantee
