@@ -40,6 +40,7 @@ reforçado ali em vez de duplicado.
 | UI-002 | E2E acessibilidade | Dashboard e fluxo de comando | teclado, foco contido em diálogo modal, labels e `prefers-reduced-motion` emulado | Axe sem violações críticas; foco retorna ao acionador e live region anuncia o resultado | `tests/e2e/accessibility.spec.js` |
 | LOAD-001 | Performance | Resumo com muitos ASICs | 100 e 500 devices; telemetria atual e stale | p95 do resumo abaixo do SLO acordado, memória limitada, contagens corretas | `tests/performance/test_fleet_scale.py` |
 | LOAD-002 | Performance + integração | Ingestão concorrente de telemetria | 10k eventos, duplicatas e 50 devices concorrentes | sem perda/duplicação fora da política; latência e backlog dentro do SLO | `tests/performance/test_telemetry_ingest.py` |
+| OBS-001 | Observabilidade + integração | Transições Fleet estruturadas | status ONLINE → OFFLINE/STALE → ONLINE, request context ativo/ausente, logger com falha | evento JSON com tenant/device/request_id, sem segredo/payload bruto; uma emissão por transição; logging não afeta ingestão | `tests/test_fleet_observability_events.py` |
 
 ## Gate de execução
 
@@ -117,6 +118,7 @@ equivalente, o teste deve ser reforçado ali em vez de duplicado"*)?
 | OPS-002 | não auditado | `tests/test_polling_integration.py` existe; comportamento não verificado nesta rodada |
 | OPS-003 | **lacuna** | `tests/test_polling_reconnection.py` não existe → #610 |
 | TEL-001 | **implementado** | `tests/test_telemetry_idempotency.py`: event key opcional por tenant/device; replay idêntico é no-op, payload diferente retorna 409; clientes antigos sem key permanecem compatíveis, sem garantia de deduplicação |
+| OBS-001 | **implementado; revisão de aceite pendente** | `tests/test_fleet_observability_events.py`: envelope seguro/correlacionado, scan com contagens por categoria de rejeição (auth/timeout/refused/invalid response/reachable-unidentified), inclusão manual, transições online/offline/stale, provider pool e shares com serialização de snapshots concorrentes. Os eventos não carregam IPs; o caminho de pool está coberto pelo helper/cache, não por chamada real do provider externo. |
 | TEL-002 | **lacuna** | `tests/test_telemetry_validation.py` não existe → #609 |
 | TIME-001 | **lacuna** | `tests/test_timezones.py` não existe; **0** usos de fuso nomeado no repo → #604 |
 | NUM-001 | parcial | o plano declara *"parte de `NUM-001`"* |

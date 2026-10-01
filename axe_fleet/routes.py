@@ -39,6 +39,13 @@ from services.command_confirmation import (
     issue_confirmation,
     requires_confirmation,
 )
+from services.observability import (
+    emit_event,
+    get_request_id,
+    new_request_id,
+    set_request_id,
+    clear_request_id,
+)
 from services.tenant import (
     auth_configured,
     get_tenant_id as _get_tenant_id,
@@ -397,6 +404,7 @@ def add_device(tenant_id: str = ""):
 
     if not ip:
         return jsonify({"error": "ip_address is required"}), 400
+    emit_event("manual_add.started", tenant_id=tenant_id)
 
     # Check if already registered (tenant-scoped — the same IP may exist in
     # another tenant's fleet and must not 409 this request). Runs BEFORE the
@@ -404,6 +412,7 @@ def add_device(tenant_id: str = ""):
     # (the operator may have registered it before this deployment change).
     existing = _registry.get_device_by_ip(ip, tenant_id=tenant_id)
     if existing:
+        emit_event("manual_add.failed", tenant_id=tenant_id, reason="duplicate")
         return jsonify({"error": "device already registered", "device": existing}), 409
 
     # ── SaaS topology guard: on a cloud deploy a private LAN IP is
@@ -427,6 +436,11 @@ def add_device(tenant_id: str = ""):
             params={"ip": ip, "name": name},
             tenant_id=tenant_id,
         )
+        emit_event(
+            "manual_add.success" if queued else "manual_add.failed",
+            tenant_id=tenant_id,
+            reason="queued_for_local_agent" if queued else "agent_queue_unavailable",
+        )
         _log_audit(
             tenant_id,
             "fleet.device_probe_queued",
@@ -437,25 +451,26 @@ def add_device(tenant_id: str = ""):
                 "tombstone_cleared": bool(restored),
             },
         )
-        return (
-            jsonify(
-                {
-                    "success": True,
-                    "queued": True,
-                    "is_cloud": True,
-                    "restored": bool(restored),
-                    "command_id": (queued or {}).get("id"),
-                    "error": None,
-                    "message": "IP privado enfileirado para o AGENTE LOCAL. Com o agente online na mesma LAN, o miner será sondado e registrado automaticamente — o Render nunca conecta em 192.168.x.x.",
-                }
+        response = {
+            "success": bool(queued),
+            "queued": bool(queued),
+            "is_cloud": True,
+            "restored": bool(restored),
+            "command_id": (queued or {}).get("id"),
+            "error": None if queued else "agent command queue unavailable",
+            "message": (
+                "IP privado enfileirado para o AGENTE LOCAL. Com o agente online na mesma LAN, o miner será sondado e registrado automaticamente — o Render nunca conecta em 192.168.x.x."
+                if queued
+                else "Não foi possível enfileirar o probe. O IP foi restaurado; tente novamente quando a fila do agente estiver disponível."
             ),
-            202,
-        )
+        }
+        return jsonify(response), (202 if queued else 503)
 
     # ── Fase 4 · B3: plan enforcement — the FREE tier caps workers per
     #    tenant. Honest rejection: the operator sees the limit and usage
     #    instead of a silent success that exceeds the plan.
     if not _can_add_worker(tenant_id):
+        emit_event("manual_add.failed", tenant_id=tenant_id, reason="plan_limit")
         plan = _get_tenant_plan(tenant_id)
         _log_audit(
             tenant_id,
@@ -482,6 +497,9 @@ def add_device(tenant_id: str = ""):
     try:
         device = _registry.add_device(ip, name or ip, tenant_id=tenant_id)
     except Exception as e:
+        emit_event(
+            "manual_add.failed", tenant_id=tenant_id, reason="registration_error"
+        )
         log.error("[axe] add_device error: %s", e)
         return jsonify({"error": f"failed to add device: {str(e)}"}), 500
 
@@ -489,6 +507,7 @@ def add_device(tenant_id: str = ""):
     model = ""
     version = ""
     status = "OFFLINE"
+    probe_failure_reason = None
     try:
         from concurrent.futures import ThreadPoolExecutor
         from concurrent.futures import TimeoutError as FuturesTimeout
@@ -497,7 +516,10 @@ def add_device(tenant_id: str = ""):
         try:
             probe_ip = resolve_private_target(ip)
         except ValueError as exc:
-            log.info("[axe] add_device skip firmware probe for %s: %s", ip, exc)
+            probe_failure_reason = (
+                "dns" if "could not be resolved" in str(exc).lower() else "unreachable"
+            )
+            log.info("[axe] add_device skip firmware probe for %s", ip)
             probe_ip = None
 
         fw = None
@@ -506,6 +528,7 @@ def add_device(tenant_id: str = ""):
             try:
                 fw = pool.submit(detect_firmware, probe_ip).result(timeout=1.0)
             except FuturesTimeout:
+                probe_failure_reason = "timeout"
                 log.warning(
                     "[axe] add_device firmware probe timed out for %s", probe_ip
                 )
@@ -518,7 +541,17 @@ def add_device(tenant_id: str = ""):
             model = fw.get("model", "")
             version = fw.get("version", "")
             status = "ONLINE" if fw.get("adapter_type") else "OFFLINE"
+        elif fw:
+            reason = fw.get("failure_reason")
+            probe_failure_reason = (
+                reason
+                if reason in {"dns", "timeout", "refused", "auth"}
+                else "unreachable"
+            )
+        else:
+            probe_failure_reason = probe_failure_reason or "unreachable"
     except Exception:
+        probe_failure_reason = probe_failure_reason or "unreachable"
         log.warning("[axe] add_device firmware probe failed for %s", ip, exc_info=True)
 
     try:
@@ -541,6 +574,20 @@ def add_device(tenant_id: str = ""):
             except Exception:
                 pass  # enrichment is best-effort; base device is still valid
 
+        if probe_failure_reason:
+            emit_event(
+                "manual_add.failed",
+                tenant_id=tenant_id,
+                device_id=device.get("id", ""),
+                stage="probe",
+                reason=probe_failure_reason,
+            )
+        emit_event(
+            "manual_add.success",
+            tenant_id=tenant_id,
+            device_id=device.get("id", ""),
+            status=str(device.get("status") or "OFFLINE").upper(),
+        )
         _log_audit(
             tenant_id,
             "fleet.device_added",
@@ -1873,12 +1920,20 @@ def start_scan(tenant_id: str = ""):
     # Local reference for the daemon thread's closures (the store dict itself
     # is the source of truth; mutations below are visible to readers).
     scan = _scans[scan_id]
+    scan_request_id = get_request_id() or new_request_id("scan")
+    emit_event(
+        "fleet.discovery.started",
+        correlation_id=scan_request_id,
+        tenant_id=tenant_id,
+        scan_id=scan_id,
+    )
 
     def _progress(scanned, total):
         scan["scanned"] = scanned
         scan["total"] = total
 
     def _run():
+        set_request_id(scan_request_id)
         try:
             result = scan_subnet(cidr, progress_cb=_progress)
             scan["total"] = result.get("total", scan.get("total", 0))
@@ -1889,6 +1944,50 @@ def start_scan(tenant_id: str = ""):
             scan["hint"] = result.get("hint")
             scan["error"] = result.get("error")
             scan["status"] = "done" if not result.get("error") else "error"
+            for detected in scan["found"]:
+                device_type = str(detected.get("type") or "unknown").lower()
+                if device_type not in {"bitaxe", "braiins", "cgminer"}:
+                    device_type = "unknown"
+                emit_event(
+                    "fleet.discovery.device_found",
+                    correlation_id=scan_request_id,
+                    tenant_id=tenant_id,
+                    scan_id=scan_id,
+                    device_type=device_type,
+                )
+            rejected_reasons = result.get("rejected_reasons") or {}
+            if not rejected_reasons and scan["alive"]:
+                rejected_reasons = {"reachable_but_unidentified": scan["alive"]}
+            for reason, rejected_count in rejected_reasons.items():
+                if reason not in {
+                    "auth",
+                    "timeout",
+                    "refused",
+                    "invalid_response",
+                    "unreachable",
+                    "reachable_but_unidentified",
+                }:
+                    continue
+                emit_event(
+                    "fleet.discovery.device_rejected",
+                    correlation_id=scan_request_id,
+                    tenant_id=tenant_id,
+                    scan_id=scan_id,
+                    reason=reason,
+                    count=max(0, int(rejected_count or 0)),
+                )
+            emit_event(
+                "fleet.discovery.finished",
+                correlation_id=scan_request_id,
+                tenant_id=tenant_id,
+                scan_id=scan_id,
+                outcome=scan["status"],
+                duration_ms=max(0, int((time.time() - now) * 1000)),
+                total=scan["total"],
+                scanned=scan["scanned"],
+                found_count=len(scan["found"]),
+                alive_count=scan["alive"],
+            )
             log.info(
                 "[axe] scan %s (%s) done: %d/%d found",
                 scan_id,
@@ -1899,7 +1998,21 @@ def start_scan(tenant_id: str = ""):
         except Exception as e:  # noqa: BLE001
             scan["error"] = str(e)
             scan["status"] = "error"
+            emit_event(
+                "fleet.discovery.finished",
+                correlation_id=scan_request_id,
+                tenant_id=tenant_id,
+                scan_id=scan_id,
+                outcome="error",
+                duration_ms=max(0, int((time.time() - now) * 1000)),
+                total=scan["total"],
+                scanned=scan["scanned"],
+                found_count=len(scan["found"]),
+                alive_count=scan["alive"],
+            )
             log.error("[axe] scan %s failed: %s", scan_id, e)
+        finally:
+            clear_request_id()
 
     t = threading.Thread(target=_run, daemon=True, name=f"axe-scan-{scan_id}")
     t.start()
@@ -3752,21 +3865,31 @@ def agent_revoke_tokens(tenant_id: str = ""):
 
 _agent_heartbeats = {}
 _agent_heartbeats_lock = threading.Lock()
+_agent_liveness = {}
 _AGENT_HEARTBEAT_TTL_S = 90
 
 
-def _store_agent_heartbeat(tenant_id: str, payload: dict) -> dict:
+def _store_agent_heartbeat(tenant_id: str, payload: dict, now=None) -> dict:
     """Refresh presence without replaying a completed scan (Issue #669).
 
     An empty payload is presence only. Legacy scan payloads remain supported;
     scan_received_at is server receipt time, not a claimed device observation.
     """
-    now = int(time.time())
+    now = int(now or time.time())
+    key = tenant_id or "default"
     if not payload:
         with _agent_heartbeats_lock:
-            clean = dict(_agent_heartbeats.get(tenant_id or "default") or {})
+            previous = _agent_heartbeats.get(key) or {}
+            previous_seen = int(previous.get("seen_at") or 0)
+            was_alive = (
+                previous_seen > 0 and now - previous_seen <= _AGENT_HEARTBEAT_TTL_S
+            )
+            clean = dict(previous)
             clean["seen_at"] = now
-            _agent_heartbeats[tenant_id or "default"] = clean
+            _agent_heartbeats[key] = clean
+            _agent_liveness[key] = True
+        if not was_alive:
+            emit_event("fleet.agent.connected", tenant_id=key, source="heartbeat")
         return clean
     allowed = {
         "result",
@@ -3797,8 +3920,15 @@ def _store_agent_heartbeat(tenant_id: str, payload: dict) -> dict:
     clean["explicit"] = bool(clean.get("explicit"))
     clean["seen_at"] = now
     clean["scan_received_at"] = now
+    key = tenant_id or "default"
     with _agent_heartbeats_lock:
-        _agent_heartbeats[tenant_id or "default"] = clean
+        previous = _agent_heartbeats.get(key) or {}
+        previous_seen = int(previous.get("seen_at") or 0)
+        was_alive = previous_seen > 0 and now - previous_seen <= _AGENT_HEARTBEAT_TTL_S
+        _agent_heartbeats[key] = clean
+        _agent_liveness[key] = True
+    if not was_alive:
+        emit_event("fleet.agent.connected", tenant_id=key, source="heartbeat")
     return clean
 
 
@@ -3806,12 +3936,24 @@ def agent_presence(tenant_id: str, now=None) -> dict:
     """Alive vs no-telemetry: a heartbeat proves the agent is running even
     when zero miners answered."""
     now = int(now or time.time())
+    key = tenant_id or "default"
+    event_name = None
     with _agent_heartbeats_lock:
-        row = dict(_agent_heartbeats.get(tenant_id or "default") or {})
-    if not row:
-        return {"alive": False, "last_seen": None, "scan": None}
-    last = int(row.get("seen_at") or 0)
-    alive = last > 0 and (now - last) <= _AGENT_HEARTBEAT_TTL_S
+        row = dict(_agent_heartbeats.get(key) or {})
+        if not row:
+            return {"alive": False, "last_seen": None, "scan": None}
+        last = int(row.get("seen_at") or 0)
+        alive = last > 0 and (now - last) <= _AGENT_HEARTBEAT_TTL_S
+        was_alive = _agent_liveness.get(key)
+        if was_alive is None:
+            _agent_liveness[key] = alive
+        elif was_alive != alive:
+            _agent_liveness[key] = alive
+            event_name = (
+                "fleet.agent.connected" if alive else "fleet.agent.disconnected"
+            )
+    if event_name:
+        emit_event(event_name, tenant_id=key, last_seen=last)
     scan = {
         "result": row.get("result"),
         "host_count": row.get("host_count"),
