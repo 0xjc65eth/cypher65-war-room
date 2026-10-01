@@ -29,6 +29,8 @@ import threading
 import time
 from typing import Any, Callable, Mapping
 
+from services.observability import emit_event
+
 log = logging.getLogger("cypher65.pool_detection")
 
 # How many recent telemetry rows to scan for a pool report. A pool URL only
@@ -45,6 +47,7 @@ STATS_TTL = 60
 _LOCK = threading.Lock()
 _REPORT_CACHE: dict[str, tuple[float, dict]] = {}
 _STATS_CACHE: dict[tuple[str, str, str], tuple[float, dict]] = {}
+_LAST_DETECTED_PROVIDER: dict[tuple[str, str], str] = {}
 
 
 def _default_get_db() -> Callable[[], Any]:
@@ -75,6 +78,31 @@ def clear_cache() -> None:
     with _LOCK:
         _REPORT_CACHE.clear()
         _STATS_CACHE.clear()
+        _LAST_DETECTED_PROVIDER.clear()
+
+
+def _emit_detected_pool(
+    tenant_id: str, report: Mapping[str, Any], result: Mapping[str, Any]
+):
+    """Emit one event when an ASIC's recognized pool provider changes."""
+    detection = result.get("detection") or {}
+    provider_id = str(detection.get("provider_id") or "")
+    device_id = str(report.get("device_id") or "")
+    if not provider_id or provider_id == "unknown" or not device_id:
+        return
+    key = (str(tenant_id or "default"), device_id)
+    with _LOCK:
+        if _LAST_DETECTED_PROVIDER.get(key) == provider_id:
+            return
+        _LAST_DETECTED_PROVIDER[key] = provider_id
+    pool_type = str(detection.get("pool_type") or "unknown")
+    emit_event(
+        "miner.pool.detected",
+        tenant_id=key[0],
+        device_id=device_id,
+        provider_id=provider_id[:80],
+        pool_type=pool_type[:40],
+    )
 
 
 def asic_pool_report(
@@ -185,13 +213,16 @@ def detected_pool_for(
 
     with _LOCK:
         cached = _STATS_CACHE.get(key)
-        if cached is not None and timestamp - cached[0] < STATS_TTL:
-            return dict(cached[1])
+    if cached is not None and timestamp - cached[0] < STATS_TTL:
+        result = dict(cached[1])
+        _emit_detected_pool(tid, report, result)
+        return result
 
     result = _resolve(address, pool_url, report, fetcher)
     if not result:
         # Do not cache a failure: the next poll should retry.
         return {}
+    _emit_detected_pool(tid, report, result)
     if _is_api_miss(result):
         return dict(result)
 

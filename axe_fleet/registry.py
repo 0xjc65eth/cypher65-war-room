@@ -27,6 +27,7 @@ from .models import (
     validate_agent_telemetry,
 )
 from .connector import AxeOSConnector, AxeOSConnectorError
+from services.observability import emit_event
 
 log = logging.getLogger("cypher65.axe.registry")
 
@@ -706,6 +707,12 @@ class DeviceRegistry:
         payload = dict(telemetry or {})
         payload["ts"] = payload.get("ts") or now
         payload["device_id"] = device_id
+        share_fields = (
+            "best_diff",
+            "shares_accepted",
+            "shares_rejected",
+            "shares_stale",
+        )
         has_measurements = any(
             payload.get(k) not in (None, "")
             for k in ("hashrate_hs", "temperature", "shares_accepted", "best_diff")
@@ -750,7 +757,28 @@ class DeviceRegistry:
             # Preserve the established call shape for legacy instrumentation
             # wrappers around save_telemetry.
             self.save_telemetry(device_id, payload, tenant_id=tenant_id)
-        self.update_device(
+        transition_events = []
+        if status == STATUS_STALE and any(
+            payload.get(key) not in (None, "") for key in share_fields
+        ):
+            transition_events.append(
+                (
+                    "share.stale",
+                    {
+                        "sample_ts": (
+                            payload.get("ts")
+                            if isinstance(payload.get("ts"), int)
+                            else None
+                        ),
+                        "changed_fields": ",".join(
+                            key
+                            for key in share_fields
+                            if payload.get(key) not in (None, "")
+                        ),
+                    },
+                )
+            )
+        updated = self.update_device(
             device_id,
             {
                 "last_seen": now,
@@ -758,9 +786,19 @@ class DeviceRegistry:
                 "agent_managed": 1,
             },
             tenant_id=tenant_id,
+            transition_events=transition_events,
         )
         if telemetry:
             self.clear_telemetry_quarantine(device_id, tenant_id=tenant_id)
+        sample_ts = payload.get("ts")
+        if updated and has_measurements and status != STATUS_STALE:
+            emit_event(
+                "miner.telemetry.received",
+                tenant_id=tenant_id,
+                device_id=device_id,
+                sample_ts=sample_ts if isinstance(sample_ts, int) else None,
+                status=status,
+            )
         return status
 
     def record_telemetry_quarantine(
@@ -843,7 +881,13 @@ class DeviceRegistry:
         finally:
             conn.close()
 
-    def update_device(self, device_id: str, updates: dict, tenant_id: str = "") -> bool:
+    def update_device(
+        self,
+        device_id: str,
+        updates: dict,
+        tenant_id: str = "",
+        transition_events=None,
+    ) -> bool:
         """Update device fields. Keys in 'updates' overwrite stored values.
         Returns True if device exists and was updated.
         If tenant_id is provided, only updates devices belonging to that tenant."""
@@ -885,10 +929,60 @@ class DeviceRegistry:
 
         conn = self._get_db()
         c = conn.cursor()
-        c.execute(sql, tuple(vals))
-        updated = c.rowcount > 0
-        conn.commit()
-        conn.close()
+        previous_status = None
+        event_tenant_id = tenant_id
+        try:
+            if "status" in updates:
+                # Serialize status transitions so concurrent pollers cannot
+                # both observe the same previous value and emit duplicate edges.
+                is_sqlite = type(conn).__module__.startswith("sqlite3")
+                c.execute("BEGIN IMMEDIATE" if is_sqlite else "BEGIN")
+                lookup = "SELECT status, tenant_id FROM axe_devices WHERE id=?"
+                if not is_sqlite:
+                    lookup += " FOR UPDATE"
+                lookup_values = [device_id]
+                if tenant_id:
+                    lookup += " AND tenant_id=?"
+                    lookup_values.append(tenant_id)
+                c.execute(lookup, tuple(lookup_values))
+                previous = c.fetchone()
+                if previous is not None:
+                    previous_status = str(previous["status"] or "").upper()
+                    event_tenant_id = str(previous["tenant_id"] or tenant_id or "")
+            c.execute(sql, tuple(vals))
+            updated = c.rowcount > 0
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+        current_status = str(updates.get("status") or "").upper()
+        if updated and previous_status and previous_status != current_status:
+            event_name = None
+            if current_status == STATUS_OFFLINE:
+                event_name = "miner.offline"
+            elif current_status == STATUS_STALE:
+                event_name = "miner.telemetry.stale"
+            elif previous_status in {STATUS_OFFLINE, STATUS_STALE} and current_status:
+                event_name = "miner.online"
+            if event_name:
+                emit_event(
+                    event_name,
+                    tenant_id=event_tenant_id,
+                    device_id=device_id,
+                    previous_status=previous_status,
+                    status=current_status,
+                )
+            for extra_name, extra_fields in transition_events or ():
+                emit_event(
+                    extra_name,
+                    tenant_id=event_tenant_id,
+                    device_id=device_id,
+                    status=current_status,
+                    **extra_fields,
+                )
         return updated
 
     # ── Telemetry persistence (tenant-aware) ──────────────────────────
@@ -909,7 +1003,41 @@ class DeviceRegistry:
         serialized = json.dumps(telemetry, sort_keys=True, separators=(",", ":"))
         conn = self._get_db()
         c = conn.cursor()
+        changed_share_fields = []
+        share_fields = (
+            "best_diff",
+            "shares_accepted",
+            "shares_rejected",
+            "shares_stale",
+        )
         try:
+            c.execute("BEGIN IMMEDIATE")
+            c.execute(
+                "SELECT payload FROM axe_telemetry WHERE device_id=? AND tenant_id=? "
+                "ORDER BY rowid DESC LIMIT 50",
+                (device_id, tenant_id),
+            )
+            previous_sample = None
+            for row in c.fetchall():
+                try:
+                    candidate = json.loads(row["payload"])
+                except (TypeError, ValueError):
+                    continue
+                if (
+                    isinstance(candidate, dict)
+                    and any(
+                        candidate.get(key) not in (None, "") for key in share_fields
+                    )
+                    and not is_telemetry_stale(candidate.get("ts"))
+                ):
+                    previous_sample = candidate
+                    break
+            changed_share_fields = [
+                key
+                for key in share_fields
+                if telemetry.get(key) not in (None, "")
+                and (previous_sample or {}).get(key) != telemetry.get(key)
+            ]
             if idempotency_key:
                 c.execute(
                     """INSERT OR IGNORE INTO axe_telemetry
@@ -951,12 +1079,29 @@ class DeviceRegistry:
                     ),
                 )
             conn.commit()
-            return True
+            inserted = True
         except Exception:
             conn.rollback()
             raise
         finally:
             conn.close()
+        if (
+            inserted
+            and changed_share_fields
+            and not is_telemetry_stale(telemetry.get("ts"))
+        ):
+            emit_event(
+                "share.updated",
+                tenant_id=tenant_id,
+                device_id=device_id,
+                sample_ts=(
+                    telemetry.get("ts")
+                    if isinstance(telemetry.get("ts"), int)
+                    else None
+                ),
+                changed_fields=",".join(changed_share_fields),
+            )
+        return inserted
 
     def get_recent_telemetry(
         self, device_id: str, limit: int = 120, tenant_id: str = ""

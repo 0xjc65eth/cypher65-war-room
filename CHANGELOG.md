@@ -12,6 +12,25 @@ e versionamento semântico ([SemVer](https://semver.org/lang/pt-BR/)).
 - E2E exercita Tab/Shift+Tab/Enter, anúncio no live region, Axe sem violações
   críticas e movimento reduzido no browser; o spec roda no gate E2E do CI.
 
+### Adicionado — eventos estruturados de transição Fleet (#629)
+- `services.observability.emit_event()` publica eventos no contexto JSON existente
+  com timestamp e correlação; campos com nomes de credenciais são redigidos e
+  falhas do logger não interrompem o caminho de negócio.
+- Transições persistidas para `miner.offline`, `miner.telemetry.stale` e
+  `miner.online` são emitidas apenas quando o status muda. Leituras medidas
+  frescas geram `miner.telemetry.received`; nenhum payload bruto, IP, pool URL,
+  usuário ou credencial é incluído.
+- Discovery registra início, conclusão, devices encontrados e hosts alcançáveis
+  não identificados; inclusão manual registra início/falha/sucesso. Presença do
+  agente e detecção de provider são edge-triggered. Mudanças de shares são
+  serializadas junto à gravação para evitar duplicatas concorrentes.
+- Cobertura caplog verifica correlação, redaction, tolerância a falha de logging,
+  scan, inclusão manual, transições stale/online, shares concorrentes e ausência
+  de spam em heartbeats offline repetidos. Discovery propaga somente contagens
+  por motivo seguro (auth/timeout/refused/invalid response/reachable-unidentified),
+  sem endereços dos hosts rejeitados. A chamada externa real do provider pool
+  continua fora do teste hermético.
+
 ### Corrigido — yield marginal BTC/TH/s/dia (#622, MF-003)
 - Corrige a normalização H/s → TH/s na fórmula de `effective_btc_per_th_per_day`
   e preserva 16 casas decimais para não arredondar a zero valores de rede real.
