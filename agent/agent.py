@@ -35,6 +35,7 @@ import re
 import socket
 import time
 import threading
+import uuid
 import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -174,6 +175,23 @@ def _post_retry(path, payload, timeout=10.0, attempts=4):
             time.sleep(delay)
             delay = min(delay * 2, 30)
     return last
+
+
+def _build_telemetry_event(ip, telemetry):
+    """Build a timestamped sample with one ID reused by all retry attempts."""
+    sample = dict(telemetry or {})
+    if not sample.get("ts"):
+        sample["ts"] = int(time.time())
+    return {"ip": ip, "telemetry": sample, "idempotency_key": uuid.uuid4().hex}
+
+
+def _push_telemetry_event(event):
+    """Push one sample and retry transient failures using the same event ID."""
+    timeout = 3.0 if not event["telemetry"] else 10.0
+    code, response = _post("/api/agent/telemetry", event, timeout=timeout)
+    if code in (0, 429, 500, 502, 503):
+        return _post_retry("/api/agent/telemetry", event, timeout=timeout, attempts=3)
+    return code, response
 
 
 def _get_json(url, timeout=HTTP_TIMEOUT):
@@ -1004,23 +1022,13 @@ def _run_main():
             if ip in blocked_ips or _identity_unresolved(dev):
                 continue
             tel = _poll_telemetry(dev)
+            telemetry_event = _build_telemetry_event(ip, tel)
             # Push UNCONDITIONALLY: `telemetry: {}` is legal presence evidence,
             # not proof of device health. The server preserves/degrades status
             # according to the last real reading. Empty heartbeats
             # use a shorter timeout so unreachable devices can't stall the
             # poll loop on a cloud hiccup.
-            code, resp = _post(
-                "/api/agent/telemetry",
-                {"ip": ip, "telemetry": tel},
-                timeout=3.0 if not tel else 10.0,
-            )
-            if code in (0, 429, 500, 502, 503):
-                code, resp = _post_retry(
-                    "/api/agent/telemetry",
-                    {"ip": ip, "telemetry": tel},
-                    timeout=3.0 if not tel else 10.0,
-                    attempts=3,
-                )
+            code, resp = _push_telemetry_event(telemetry_event)
             if code == 410 and resp.get("removed"):
                 # Operator removed this device on the dashboard — drop it from
                 # the poll set so we stop pushing a device that can never come

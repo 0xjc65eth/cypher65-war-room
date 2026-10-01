@@ -114,7 +114,7 @@ equivalente, o teste deve ser reforçado ali em vez de duplicado"*)?
 | OPS-001 | implementado | idem |
 | OPS-002 | não auditado | `tests/test_polling_integration.py` existe; comportamento não verificado nesta rodada |
 | OPS-003 | **lacuna** | `tests/test_polling_reconnection.py` não existe → #610 |
-| TEL-001 | **lacuna** | nenhum teste de idempotência de telemetria de **device** → #608 |
+| TEL-001 | **implementado** | `tests/test_telemetry_idempotency.py`: event key opcional por tenant/device; replay idêntico é no-op, payload diferente retorna 409; clientes antigos sem key permanecem compatíveis, sem garantia de deduplicação |
 | TEL-002 | **lacuna** | `tests/test_telemetry_validation.py` não existe → #609 |
 | TIME-001 | **lacuna** | `tests/test_timezones.py` não existe; **0** usos de fuso nomeado no repo → #604 |
 | NUM-001 | parcial | o plano declara *"parte de `NUM-001`"* |
