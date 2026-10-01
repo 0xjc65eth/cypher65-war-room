@@ -28,6 +28,7 @@ reforçado ali em vez de duplicado.
 | TEL-001 | Integração de armazenamento | Telemetria repetida/replay | mesmo `device_id`, timestamp e idempotency key | apenas um ponto/histórico; agregados não duplicam | `tests/test_telemetry_idempotency.py` |
 | TEL-002 | Unitário + integração | Telemetria inválida ou fora de faixa | chaves ausentes, tipos errados, temperatura/hashrate não finitos | rejeição/quarentena com motivo, sem alterar último dado bom | `tests/test_telemetry_validation.py` |
 | TIME-001 | Unitário | Conversão de timestamp e DST | UTC antes/depois de mudança de horário em `America/Sao_Paulo` e `Europe/Brussels` | persistência em UTC; ordenação e duração idênticas na UI | `tests/test_timezones.py` |
+| TIME-001 | Unitário | Conversão de timestamp e DST | UTC antes/depois de mudança de horário em `America/Sao_Paulo` e `Europe/Brussels` | persistência de epoch e duração relativa da UI independentes do fuso; ordenação visual de listas permanece por cobrir | `tests/test_timezones.py` |
 | NUM-001 | Unitário | Divisão por zero de shares/custos | total shares, TH/s, preço e rede iguais a 0 | campos contratuais `0`/`None`, nunca exceção ou infinito | `tests/test_mining_formula_contracts.py`, `tests/core/test_safety.py` |
 | NUM-002 | Property-based | Valores extremos mas finitos | floats entre limites operacionais e bordas IEEE-754 | invariantes: probabilidades em [0,1], saída serializável e sem `NaN` | `tests/test_numeric_properties.py` |
 | SEC-001 | Integração | Isolamento por tenant | token do tenant A tentando ler device/log do B | HTTP 404/403 sem metadados do tenant B | `tests/test_tenant_b2_isolation.py` |
@@ -134,6 +135,8 @@ equivalente, o teste deve ser reforçado ali em vez de duplicado"*)?
 | OBS-001 | **implementado; revisão de aceite pendente** | `tests/test_fleet_observability_events.py`: envelope seguro/correlacionado, scan com contagens por categoria de rejeição (auth/timeout/refused/invalid response/reachable-unidentified), inclusão manual, transições online/offline/stale, provider pool e shares com serialização de snapshots concorrentes. Os eventos não carregam IPs; o caminho de pool está coberto pelo helper/cache, não por chamada real do provider externo. |
 | TEL-002 | implementado; regressão standalone reaberta | `tests/test_telemetry_validation.py`, `tests/test_agent_api.py`; PR #701 corrige o fallback standalone do agente → #609 |
 | TIME-001 | **lacuna** | `tests/test_timezones.py` não existe; **0** usos de fuso nomeado no repo → #604 |
+| TEL-002 | implementado, regressão standalone reaberta | `tests/test_telemetry_validation.py`, `tests/test_agent_api.py`; #609 acompanha correção adicional do fallback do agente standalone |
+| TIME-001 | **parcial** | `tests/test_timezones.py` cobre conversão ISO, bucket UTC, persistência e idade relativa na UI nos dois fusos; ordenação visual de listas ainda precisa de cobertura → #604 |
 | NUM-001 | parcial | o plano declara *"parte de `NUM-001`"* |
 | NUM-002 | implementado (PR #605 wave W3) | `tests/test_numeric_properties.py`: hypothesis sobre o núcleo numérico puro — solo prob, lender, break-even, `fiat_convert`; invariantes [0,1]/serializável/sem NaN + bordas IEEE-754 e Decimal |
 | SEC-001 | não auditado | `tests/test_tenant_b2_isolation.py` existe; comportamento não verificado |
