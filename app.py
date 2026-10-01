@@ -2044,12 +2044,19 @@ def _record_command(
     """
     safe_parameters = redact_command_data(parameters or {})
     safe_result = redact_command_data(result)
+    command_succeeded = bool(safe_result.get("success"))
+    # Adapter/provider error text is not a safe audit field: it can embed
+    # credentials even when the surrounding object has been key-redacted.
+    # Keep a stable outcome code in both history and persistent audit instead.
+    for field in ("error", "reason"):
+        if safe_result.get(field):
+            safe_result[field] = "" if command_succeeded else "command_failed"
     entry = {
         "device_id": device_id,
         "command": command,
         "parameters": safe_parameters,
         "timestamp": int(time.time()),
-        "success": bool(safe_result.get("success")),
+        "success": command_succeeded,
         "result": safe_result,
     }
     from services.tenant import get_tenant_id
@@ -2073,7 +2080,8 @@ def _record_command(
             details={
                 "command": command,
                 "parameters": safe_parameters,
-                "success": bool(safe_result.get("success")),
+                "success": command_succeeded,
+                "outcome": "success" if command_succeeded else "failure",
                 "error": safe_result.get("error", ""),
                 "operation_id": safe_result.get("operation_id"),
                 "ack_state": safe_result.get("ack_state"),

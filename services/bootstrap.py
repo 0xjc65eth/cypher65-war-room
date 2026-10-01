@@ -631,6 +631,31 @@ def init_db():
     c.execute(
         "CREATE INDEX IF NOT EXISTS idx_audit_logs_tenant_ts ON audit_logs(tenant_id, ts)"
     )
+    # AUD-001: audit records are evidence, not mutable application state.
+    # Enforce append-only semantics in SQLite so accidental UPDATE/DELETE paths
+    # fail closed instead of relying only on service-layer convention.
+    c.execute(
+        """CREATE TRIGGER IF NOT EXISTS audit_logs_reject_update
+        BEFORE UPDATE ON audit_logs
+        BEGIN
+            SELECT RAISE(ABORT, 'audit_logs is append-only');
+        END"""
+    )
+    c.execute(
+        """CREATE TRIGGER IF NOT EXISTS audit_logs_reject_delete
+        BEFORE DELETE ON audit_logs
+        BEGIN
+            SELECT RAISE(ABORT, 'audit_logs is append-only');
+        END"""
+    )
+    c.execute(
+        """CREATE TRIGGER IF NOT EXISTS audit_logs_reject_replacement
+        BEFORE INSERT ON audit_logs
+        WHEN EXISTS (SELECT 1 FROM audit_logs WHERE id=NEW.id)
+        BEGIN
+            SELECT RAISE(ABORT, 'audit_logs is append-only');
+        END"""
+    )
     c.execute(
         """CREATE TABLE IF NOT EXISTS users (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
