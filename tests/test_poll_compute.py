@@ -574,6 +574,30 @@ def test_profitability_effective_btc_per_th_day_returns_none_without_network_rat
     assert "effective_btc_per_th_per_day" not in p
 
 
+@pytest.mark.parametrize(
+    "network_rate", [0.0, -1.0, float("inf"), float("-inf"), float("nan")]
+)
+def test_profitability_non_finite_or_non_positive_network_rate_is_unavailable(
+    network_rate,
+):
+    p, _, normalized_network_rate = compute_profitability(
+        {"hashrate": 100e12}, network_rate, _prices(), {}, 1e-8,
+        {"ts": 0, "data": None}, {},
+    )
+
+    assert normalized_network_rate == 0.0
+    assert p["unavailable_reason"] == "no hashrate or network hashrate"
+    assert "effective_btc_per_th_per_day" not in p
+
+
+def test_effective_btc_per_th_per_day_overflow_is_unavailable():
+    from services.poll_compute import _effective_btc_per_th_per_day
+
+    assert _effective_btc_per_th_per_day(
+        5e-324, 144.0, 3.175, 0.0, 0.0
+    ) is None
+
+
 def test_profitability_worker_zero_hashrate_hoists_cur_hr():
     """cur_hr is hoisted before the try — a worker with hashrate 0 yields
     cur_hr 0.0 and the unavailable branch, not a crash."""
@@ -668,4 +692,3 @@ def test_event_stats_same_timestamps_no_division_by_zero():
           "share_submit_history": [100, 100], "last_submit_ts": 100}
     es, _, _ = compute_event_stats(tl, now=1000)
     assert es["rolling_shares_per_hour"] == 0.0  # span == 0 → guard
-
