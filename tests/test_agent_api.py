@@ -1141,7 +1141,7 @@ class TestTombstoneNoZombies:
 
 
 class TestAgentHeartbeat:
-    @pytest.mark.parametrize("payload", [[], False, 0, "", None])
+    @pytest.mark.parametrize("payload", [[], False, 0, ""])
     def test_non_object_json_does_not_refresh_presence(
         self, client, agent_token, payload
     ):
@@ -1149,6 +1149,16 @@ class TestAgentHeartbeat:
             "/api/agent/heartbeat",
             headers=_headers(agent_token),
             json=payload,
+        )
+        assert resp.status_code == 400
+        assert resp.get_json() == {"error": "invalid_payload"}
+
+    def test_json_null_does_not_refresh_presence(self, client, agent_token):
+        resp = client.post(
+            "/api/agent/heartbeat",
+            headers=_headers(agent_token),
+            data="null",
+            content_type="application/json",
         )
         assert resp.status_code == 400
         assert resp.get_json() == {"error": "invalid_payload"}
