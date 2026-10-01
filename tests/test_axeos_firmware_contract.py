@@ -87,6 +87,19 @@ class TestHashrateUnits:
         assert hashrate_hs_from_axeos({"hashRate": float("inf")}) is None
         assert hashrate_hs_from_axeos({"hashRate": "Infinity"}) is None
 
+    def test_invalid_optional_sensor_is_preserved_as_source_error(self):
+        tel = extract_axeos_telemetry({"hashRate": 5.0, "temp": float("nan")})
+
+        assert tel["hashrate_hs"] == 5_000_000_000
+        assert tel["temperature"] is None
+        assert tel["_invalid_fields"] == ["temperature"]
+
+    def test_hashrate_overflow_is_reported_without_crashing(self):
+        tel = extract_axeos_telemetry({"hashRate": 1e308})
+
+        assert tel["hashrate_hs"] is None
+        assert tel["_invalid_fields"] == ["hashrate_hs"]
+
 
 class TestFieldAliases:
     def test_official_worker_mac_uptime(self):

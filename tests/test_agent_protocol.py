@@ -272,6 +272,17 @@ class TestDiscovery:
 
 
 class TestTelemetry:
+    def test_cgminer_infinite_hashrate_is_reported_not_raised(self, monkeypatch):
+        monkeypatch.setattr(
+            agent,
+            "_cgminer_cmd",
+            lambda ip, command: {"SUMMARY": [{"GHS av": float("inf")}]},
+        )
+
+        tel = agent._poll_telemetry({"ip": "127.0.0.1", "type": "cgminer"})
+
+        assert tel == {"_invalid_fields": ["hashrate_hs"]}
+
     def test_cgminer_poll_includes_stats_temps_and_pools(
         self, monkeypatch, cgminer_mock
     ):
