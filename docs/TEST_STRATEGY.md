@@ -111,7 +111,7 @@ Os endpoints de confirmação e execução exigem papel RBAC `member` (ou
 
 A tabela do início deste documento é o **plano**. Esta seção registra o **estado real** de cada ID
 depois da wave W3 (`docs/MULTI_AGENT_TEAM.md` §8). A distinção existe porque as duas divergiam em
-silêncio: o plano lista 24 IDs e o §"Implementado neste lote" declara apenas onze deles.
+silêncio: o plano lista 25 IDs e o §"Implementado neste lote" declara apenas onze deles.
 
 **Snapshot histórico de 2026-09-16 (wave W3).** A auditoria então foi por **arquivo sugerido** e
 depois por **comportamento**, não por ID. O contrato automatizado e os markers desta revisão são

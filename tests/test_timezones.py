@@ -85,6 +85,7 @@ def test_iso_and_utc_month_bucket_ignore_host_timezone(
         ),
     ],
 )
+@pytest.mark.covers("TIME-001", status="partial")
 def test_dst_boundary_elapsed_time_and_epoch_order_are_timezone_independent(
     zone, before_iso, after_iso
 ):
