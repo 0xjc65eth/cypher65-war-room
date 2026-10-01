@@ -30,6 +30,7 @@ Run:  python3 agent.py        (stdlib only — no pip install needed)
 import json
 import ipaddress
 import logging
+import math
 import os
 import re
 import socket
@@ -518,24 +519,27 @@ def _probe_host(ip):
     if isinstance(rest, dict):
         miner = rest.get("miner_stats") or {}
         pool = rest.get("pool_stats") or {}
-        try:
-            ghps = float(miner.get("hashrate_avg") or miner.get("hashrate_ghps") or 0)
-        except (TypeError, ValueError):
-            ghps = 0.0
-        return {
-            "ip": ip,
-            "type": "braiins",
-            "model": str(
-                miner.get("model") or miner.get("miner_type") or "Braiins OS+"
-            ),
-            "firmware": "Braiins OS+",
-            "version": str(miner.get("version") or miner.get("firmware_version") or ""),
-            "hostname": "",
-            "mac": "",
-            "hashrate_hs": int(ghps * 1e9),
-            "pool_url": str(pool.get("url") or ""),
-            "pool_user": str(pool.get("user") or ""),
-        }
+        ghps = _finite_number(miner.get("hashrate_avg"))
+        if ghps is None:
+            ghps = _finite_number(miner.get("hashrate_ghps"))
+        hashrate_hs = ghps * 1e9 if ghps is not None else None
+        if hashrate_hs is not None and math.isfinite(hashrate_hs):
+            return {
+                "ip": ip,
+                "type": "braiins",
+                "model": str(
+                    miner.get("model") or miner.get("miner_type") or "Braiins OS+"
+                ),
+                "firmware": "Braiins OS+",
+                "version": str(
+                    miner.get("version") or miner.get("firmware_version") or ""
+                ),
+                "hostname": "",
+                "mac": "",
+                "hashrate_hs": int(hashrate_hs),
+                "pool_url": str(pool.get("url") or ""),
+                "pool_user": str(pool.get("user") or ""),
+            }
     ver = _probe_cgminer(ip)
     if ver and ver.get("STATUS"):
         model = ""
@@ -654,6 +658,17 @@ def scan_lan_with_report():
 # ── Normalizers (mirror axe_fleet/models.best_diff_from_value — the agent
 #    is stdlib-only, so the shared helper lives on the server; this mirror
 #    must stay in sync, guarded by tests/test_fleet_audit_regressions.py) ──
+def _finite_number(value):
+    """Parse a firmware number, rejecting booleans and non-finite values."""
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return number if math.isfinite(number) else None
+
+
 def _best_diff(value):
     """Best Share ("P Share") normalization: None → "", 0 → "0" (a verified
     zero is a number, not "unsupported"), anything else → its string.
@@ -687,13 +702,23 @@ def _braiins_rest_telemetry(ip):
     power = data.get("power_stats") or {}
 
     def _num(value, cast=float):
-        try:
-            return cast(value)
-        except (TypeError, ValueError):
+        number = _finite_number(value)
+        if number is None:
             return None
+        return cast(number)
 
-    ghps = _num(miner.get("hashrate_avg") or miner.get("hashrate_ghps"))
-    hr = int((ghps or 0.0) * 1e9)
+    # Preserve a measured zero, but never turn a missing/invalid REST reading
+    # into zero. The server treats 0 H/s as valid telemetry, so inventing it
+    # here could overwrite the last known-good sample.
+    ghps = _num(miner.get("hashrate_avg"))
+    if ghps is None:
+        ghps = _num(miner.get("hashrate_ghps"))
+    if ghps is None:
+        return {}
+    hashrate_hs = ghps * 1e9
+    if not math.isfinite(hashrate_hs):
+        return {}
+    hr = int(hashrate_hs)
     power_w = _num(power.get("power_avg") or power.get("power_w"))
     tel = {
         "hashrate_hs": hr,
@@ -751,11 +776,13 @@ def _poll_telemetry(dev):
         ident = _identity_from_axeos(ip, info)
         return {
             "hashrate_hs": ident.get("hashrate_hs"),
-            "temperature": info.get("temp"),
+            "temperature": _finite_number(info.get("temp")),
             "best_diff": _best_diff(info.get("bestDiff")),
-            "shares_accepted": info.get("sharesAccepted"),
-            "shares_rejected": info.get("sharesRejected"),
-            "uptime_seconds": info.get("uptimeSeconds") or info.get("uptime"),
+            "shares_accepted": _finite_number(info.get("sharesAccepted")),
+            "shares_rejected": _finite_number(info.get("sharesRejected")),
+            "uptime_seconds": _finite_number(
+                info.get("uptimeSeconds") or info.get("uptime")
+            ),
             "pool_url": str(info.get("stratumURL") or info.get("pool") or ""),
             "pool_user": str(info.get("stratumUser") or info.get("poolUser") or ""),
             "model": ident.get("model") or "Bitaxe",
@@ -796,8 +823,8 @@ def _poll_telemetry(dev):
         stats = _cgminer_cmd(ip, "stats")
         _st = (stats or {}).get("STATS") or []
         if len(_st) > 1 and isinstance(_st[1], dict):
-            temperature = _st[1].get("temp2_0") or _st[1].get("temp")
-            fan_rpm = _st[1].get("fan1") or _st[1].get("fan2")
+            temperature = _finite_number(_st[1].get("temp2_0") or _st[1].get("temp"))
+            fan_rpm = _finite_number(_st[1].get("fan1") or _st[1].get("fan2"))
 
         pool_url = ""
         pool_user = ""
