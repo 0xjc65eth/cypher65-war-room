@@ -338,7 +338,8 @@ def init_db():
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             ts INTEGER NOT NULL,
             device_id TEXT NOT NULL,
-            payload TEXT NOT NULL
+            payload TEXT NOT NULL,
+            idempotency_key TEXT
         )"""
     )
     # ── Maintenance history table (Milestone 5) ──
