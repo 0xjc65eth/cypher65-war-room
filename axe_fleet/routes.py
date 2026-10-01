@@ -3754,7 +3754,18 @@ _AGENT_HEARTBEAT_TTL_S = 90
 
 
 def _store_agent_heartbeat(tenant_id: str, payload: dict) -> dict:
-    """Keep the last sanitized scan diagnostic per tenant (Issue #638)."""
+    """Refresh presence without replaying a completed scan (Issue #669).
+
+    An empty payload is presence only. Legacy scan payloads remain supported;
+    scan_received_at is server receipt time, not a claimed device observation.
+    """
+    now = int(time.time())
+    if not payload:
+        with _agent_heartbeats_lock:
+            clean = dict(_agent_heartbeats.get(tenant_id or "default") or {})
+            clean["seen_at"] = now
+            _agent_heartbeats[tenant_id or "default"] = clean
+        return clean
     allowed = {
         "result",
         "host_count",
@@ -3782,7 +3793,8 @@ def _store_agent_heartbeat(tenant_id: str, payload: dict) -> dict:
     clean["result"] = result
     clean["truncated"] = bool(clean.get("truncated"))
     clean["explicit"] = bool(clean.get("explicit"))
-    clean["seen_at"] = int(time.time())
+    clean["seen_at"] = now
+    clean["scan_received_at"] = now
     with _agent_heartbeats_lock:
         _agent_heartbeats[tenant_id or "default"] = clean
     return clean
@@ -3806,7 +3818,10 @@ def agent_presence(tenant_id: str, now=None) -> dict:
         "subnet_count": row.get("subnet_count"),
         "prefix_lens": row.get("prefix_lens") or [],
         "explicit": row.get("explicit"),
+        "received_at": row.get("scan_received_at"),
     }
+    if "result" not in row:
+        scan = None
     return {"alive": alive, "last_seen": last or None, "scan": scan}
 
 
@@ -3814,7 +3829,10 @@ def agent_presence(tenant_id: str, now=None) -> dict:
 @_require_agent
 def agent_heartbeat(agent_tenant_id: str = ""):
     """Agent-alive diagnostic with no device IPs (Issue #638)."""
-    data = request.get_json(silent=True) or {}
+    raw_body = request.get_data(cache=True)
+    data = request.get_json(silent=True) if raw_body else {}
+    if not isinstance(data, dict):
+        return jsonify({"error": "invalid_payload"}), 400
     _store_agent_heartbeat(agent_tenant_id, data)
     return jsonify({"success": True, "agent": agent_presence(agent_tenant_id)})
 
