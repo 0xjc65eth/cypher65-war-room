@@ -121,6 +121,12 @@ python3 agent/agent.py
 Devices agent-managed **não** são pollados pelo servidor (não haveria como
 alcançá-los) — o skip é automático no `_do_poll`.
 
+No modo cloud, adicionar um IP privado pede ao agente uma única sondagem
+read-only por IP literal na rede privada. Ela não altera o miner nem herda
+permissões de restart/configuração; loopback, link-local, IPv6 e IPs públicos
+são recusados antes de qualquer conexão. O resultado só é registrado quando o
+agente local reconhece um firmware suportado.
+
 ## Segurança
 
 - Autenticação por JWT de agente (claims `agent_tenant_id`), validado em todas

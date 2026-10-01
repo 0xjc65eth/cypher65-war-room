@@ -19,6 +19,7 @@ Endpoints:
   GET    /api/axe-fleet/health           — fleet-wide health stats
 """
 
+import ipaddress
 import json
 import logging
 import math
@@ -3754,7 +3755,18 @@ _AGENT_HEARTBEAT_TTL_S = 90
 
 
 def _store_agent_heartbeat(tenant_id: str, payload: dict) -> dict:
-    """Keep the last sanitized scan diagnostic per tenant (Issue #638)."""
+    """Refresh presence without replaying a completed scan (Issue #669).
+
+    An empty payload is presence only. Legacy scan payloads remain supported;
+    scan_received_at is server receipt time, not a claimed device observation.
+    """
+    now = int(time.time())
+    if not payload:
+        with _agent_heartbeats_lock:
+            clean = dict(_agent_heartbeats.get(tenant_id or "default") or {})
+            clean["seen_at"] = now
+            _agent_heartbeats[tenant_id or "default"] = clean
+        return clean
     allowed = {
         "result",
         "host_count",
@@ -3782,7 +3794,8 @@ def _store_agent_heartbeat(tenant_id: str, payload: dict) -> dict:
     clean["result"] = result
     clean["truncated"] = bool(clean.get("truncated"))
     clean["explicit"] = bool(clean.get("explicit"))
-    clean["seen_at"] = int(time.time())
+    clean["seen_at"] = now
+    clean["scan_received_at"] = now
     with _agent_heartbeats_lock:
         _agent_heartbeats[tenant_id or "default"] = clean
     return clean
@@ -3806,7 +3819,10 @@ def agent_presence(tenant_id: str, now=None) -> dict:
         "subnet_count": row.get("subnet_count"),
         "prefix_lens": row.get("prefix_lens") or [],
         "explicit": row.get("explicit"),
+        "received_at": row.get("scan_received_at"),
     }
+    if "result" not in row:
+        scan = None
     return {"alive": alive, "last_seen": last or None, "scan": scan}
 
 
@@ -3814,7 +3830,10 @@ def agent_presence(tenant_id: str, now=None) -> dict:
 @_require_agent
 def agent_heartbeat(agent_tenant_id: str = ""):
     """Agent-alive diagnostic with no device IPs (Issue #638)."""
-    data = request.get_json(silent=True) or {}
+    raw_body = request.get_data(cache=True)
+    data = request.get_json(silent=True) if raw_body else {}
+    if not isinstance(data, dict):
+        return jsonify({"error": "invalid_payload"}), 400
     _store_agent_heartbeat(agent_tenant_id, data)
     return jsonify({"success": True, "agent": agent_presence(agent_tenant_id)})
 
@@ -3985,6 +4004,27 @@ def agent_telemetry(agent_tenant_id: str = ""):
     )
 
 
+def _valid_agent_probe_target(target) -> bool:
+    """Allow one literal RFC1918/CGNAT IPv4 target for read-only probing."""
+    if not isinstance(target, str) or not target or target != target.strip():
+        return False
+    try:
+        address = ipaddress.ip_address(target)
+    except ValueError:
+        return False
+    allowed_networks = (
+        ipaddress.ip_network("10.0.0.0/8"),
+        ipaddress.ip_network("172.16.0.0/12"),
+        ipaddress.ip_network("192.168.0.0/16"),
+        ipaddress.ip_network("100.64.0.0/10"),
+    )
+    return (
+        address.version == 4
+        and any(address in network for network in allowed_networks)
+        and not (address.is_loopback or address.is_link_local)
+    )
+
+
 @agent_bp.route("/commands/pull", methods=["POST"])
 @_require_agent
 def agent_pull_commands(agent_tenant_id: str = ""):
@@ -4007,6 +4047,32 @@ def agent_pull_commands(agent_tenant_id: str = ""):
         if age < 0 or age > AGENT_COMMAND_TTL_S:
             reason = "command_expired"
             terminal_status = "expired"
+        elif command == "probe":
+            params = c.get("params")
+            target = params.get("ip") if isinstance(params, dict) else None
+            if not _valid_agent_probe_target(target):
+                reason = "probe_target_invalid"
+            elif _registry.mark_command_pulled(
+                c["id"],
+                tenant_id=agent_tenant_id,
+                max_age=AGENT_COMMAND_TTL_S,
+            ):
+                # Discovery is read-only and explicitly requested by an
+                # authenticated tenant. It does not inherit physical command
+                # gates, but it remains private-address, tenant and TTL scoped.
+                pulled.append(
+                    {
+                        "id": c["id"],
+                        "device_id": "_probe",
+                        "ip_address": target,
+                        "command": "probe",
+                        "params": {"ip": target},
+                    }
+                )
+                continue
+            else:
+                # Another concurrent pull claimed a valid probe first.
+                continue
         elif not can_execute_physical_command():
             reason = "deployment_policy_disabled"
         elif not dev:
