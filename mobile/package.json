@@ -51,7 +51,7 @@
   },
   "devDependencies": {
     "@babel/core": "^7.24.0",
-    "@biomejs/biome": "^2.0.0",
+    "@biomejs/biome": "^2.5.14",
     "@react-native/jest-preset": "^0.87.1",
     "@stryker-mutator/core": "10.0.0",
     "@stryker-mutator/jest-runner": "10.0.0",
