@@ -93,17 +93,15 @@ Os endpoints de confirmação e execução exigem papel RBAC `member` (ou
 
 ---
 
-## Mapa de cobertura — auditoria de 2026-09-16 (wave W3)
+## Mapa de cobertura — auditoria de 2026-10-01 (Issue #614)
 
 A tabela do início deste documento é o **plano**. Esta seção registra o **estado real** de cada ID
 depois da wave W3 (`docs/MULTI_AGENT_TEAM.md` §8). A distinção existe porque as duas divergiam em
 silêncio: o plano lista 24 IDs e o §"Implementado neste lote" declara apenas onze deles.
 
-**Como a auditoria foi feita — e o que ela não fez.** A varredura foi por **arquivo sugerido** e
-depois por **comportamento**, não por ID, porque nenhum teste do repositório cita um ID da matriz
-(achado transversal abaixo). Para cada ID: (1) o arquivo sugerido existe? (2) se não, a exigência
-está coberta sob outro nome — o que a própria matriz autoriza (*"quando já houver cobertura
-equivalente, o teste deve ser reforçado ali em vez de duplicado"*)?
+**Snapshot histórico de 2026-09-16 (wave W3).** A auditoria então foi por **arquivo sugerido** e
+depois por **comportamento**, não por ID. O contrato automatizado e os markers desta revisão são
+posteriores e registram o estado atual; não reinterpretam as conclusões históricas abaixo.
 
 | ID | Estado | Evidência / Issue |
 | --- | --- | --- |
@@ -111,45 +109,59 @@ equivalente, o teste deve ser reforçado ali em vez de duplicado"*)?
 | MF-002 | implementado | idem |
 | MF-003 | **implementado** | vetores de fórmula completa + arredondamento contratado em `tests/test_pool_rental_break_even.py` (2026-09-17, wave W3) → #613 |
 | MF-004 | **implementado** | indisponível ≠ 0: cotação ausente/rede 0/worker 0/custo 0 nunca produzem fiat estimado nem divisão por zero (idem) → #613 |
-| API-001 | implementado | `tests/core/test_app_device_routes.py` |
-| API-002 | implementado | idem |
-| OPS-001 | implementado | idem |
-| OPS-002 | não auditado | `tests/test_polling_integration.py` existe; comportamento não verificado nesta rodada |
-| OPS-003 | **lacuna** | `tests/test_polling_reconnection.py` não existe → #610 |
-| TEL-001 | **lacuna** | nenhum teste de idempotência de telemetria de **device** → #608 |
-| TEL-002 | **lacuna** | `tests/test_telemetry_validation.py` não existe → #609 |
-| TIME-001 | **lacuna** | `tests/test_timezones.py` não existe; **0** usos de fuso nomeado no repo → #604 |
+| API-001 | parcial | testa JSON semanticamente inválido (lista/esquema), ainda não cobre sintaxe malformada |
+| API-002 | parcial | erros de schema estão cobertos; ainda falta afirmar explicitamente que nenhum adaptador é chamado |
+| OPS-001 | parcial | resposta offline negada está coberta; falta verificar audit persistido e ausência de I/O do adaptador |
+| OPS-002 | parcial | `tests/test_polling_integration.py` cobre fallback stale para falha de pool, não todos os timeouts/5xx/campos |
+| OPS-003 | lacuna | `tests/test_polling_reconnection.py` não existe → #610 |
+| TEL-001 | lacuna | estado remoto do PR #692 requer verificação antes de contar esta cobertura no master → #608 |
+| TEL-002 | lacuna | `tests/test_telemetry_validation.py` não existe → #609 |
+| TIME-001 | parcial | `tests/test_timezones.py` verifica persistência UTC e buckets em fusos nomeados; UI/ordenação/duração continuam sem contrato → #604 |
 | NUM-001 | parcial | o plano declara *"parte de `NUM-001`"* |
 | NUM-002 | implementado (PR #605 wave W3) | `tests/test_numeric_properties.py`: hypothesis sobre o núcleo numérico puro — solo prob, lender, break-even, `fiat_convert`; invariantes [0,1]/serializável/sem NaN + bordas IEEE-754 e Decimal |
-| SEC-001 | não auditado | `tests/test_tenant_b2_isolation.py` existe; comportamento não verificado |
+| SEC-001 | parcial | `tests/test_tenant_b2_isolation.py`: isolamento em rotas/registry coberto; não demonstra todo acesso a device/log descrito |
 | SEC-002 | implementado | `tests/core/test_app_device_routes.py` |
 | CMD-001 | implementado | idem |
-| CMD-002 | implementado | Issue #368 |
-| AUD-001 | **parcial** | o plano declara só *"verificação de histórico"*; `tests/test_audit_log.py` não existe → #611 |
-| PER-001 | reconciliar | cobertura equivalente em `tests/test_persistence.py` (nome difere do sugerido) |
-| UI-001 | reconciliar | cobertura equivalente parcial em `tests/e2e/topbar-responsive.spec.js` |
-| UI-002 | **lacuna** | guardas de axe existem em outra camada; o spec e2e nomeado não → #612 |
-| LOAD-001 | **lacuna** | `tests/performance/` **não existe** no repositório → #606 |
-| LOAD-002 | **lacuna** | idem → #607 |
+| CMD-002 | parcial | integração cobre token de uso único; fluxo E2E/UX de confirmação segue sem spec dedicado |
+| AUD-001 | parcial | audit log, redação, append-only e ordenação cobertos pelo recorder; falta validar os outcomes blocked/success/error integralmente pela rota HTTP |
+| PER-001 | parcial | `tests/test_persistence.py` cobre endereço persistido, não reinício completo de device/telemetria/config/audit |
+| UI-001 | parcial | `tests/e2e/topbar-responsive.spec.js` cobre topbar em viewports, não todas as telas/medidas da matriz |
+| UI-002 | lacuna | axe gate não substitui E2E de teclado/foco/labels; spec ausente → #612 |
+| LOAD-001 | bloqueado | `tests/performance/` não existe; falta SLO aprovado → #606 |
+| LOAD-002 | bloqueado | `tests/performance/` não existe; falta SLO aprovado → #607 |
 
-**Estados:** `implementado` (teste existe e corresponde ao critério) · `parcial` (cobre parte do
-critério) · `lacuna` (Issue própria aberta) · `reconciliar` (cobertura existe sob outro nome —
-reforçar ali, não duplicar) · `não auditado`.
+**Estados:** `implementado` (teste ligado ao ID existe e corresponde ao critério declarado) ·
+`parcial` (cobre apenas parte do critério) · `lacuna` (Issue de cobertura permanece aberta) ·
+`bloqueado` (dependência externa; veja exceção explícita abaixo). Os links são pytest markers
+`@pytest.mark.covers(ID)` ou comentário `test-requirement` em spec Playwright coletável. O teste
+`test_traceability_contract.py` compara o plano, o mapa, os itens pytest realmente coletados e as
+exceções; IDs desconhecidos, duplicados, sem vínculo ou com classificação divergente falham no CI.
 
-### O que esta auditoria não conclui
+### Exceções explícitas de rastreabilidade
 
-- **Não** afirma que os testes marcados `implementado` estão corretos ou passando — só que existem e
-  correspondem ao critério declarado. Nenhum teste foi executado para inferir os estados acima.
-- **Não** cobre os IDs marcados `não auditado`. Eles **não** devem ser tratados como cobertos.
+| ID | Categoria | Justificativa | Acompanhamento |
+| --- | --- | --- | --- |
+| OPS-003 | lacuna | Fluxo de reconexão e backoff ainda não tem teste dedicado | Issue #610 |
+| TEL-001 | lacuna | Estado de integração do PR #692 não foi possível confirmar nesta auditoria; não contar cobertura sem validar master | Issue #608 / PR #692 |
+| TEL-002 | lacuna | Validação/quarentena não tem suíte dedicada | Issue #609 |
+| UI-002 | lacuna | Falta spec E2E de acessibilidade de dashboard e comando | Issue #612 |
+| LOAD-001 | bloqueado | SLO de latência/memória não foi aprovado; não inventar limite para fazer gate | Issue #606 |
+| LOAD-002 | bloqueado | SLO de ingestão/backlog não foi aprovado; não inventar limite para fazer gate | Issue #607 |
+
+### Limites da auditoria histórica de 2026-09-16
+
+- Na auditoria original, os estados foram inferidos por arquivo/comportamento e nenhum teste foi
+  executado. Os markers e o contrato atuais corrigem a rastreabilidade; não tornam cobertura
+  parcial em completa.
+- **Não** cobre IDs sem vínculo ou marcados `lacuna`/`bloqueado`; eles **não** devem ser tratados como cobertos.
 - **Não** mede cobertura de linha: a matriz é sobre exigências, e o gate de linha é outro
   (`--cov-fail-under=80`).
 
 ### Achado transversal
 
-**Nenhum dos 24 IDs é referenciado em nenhum arquivo de `tests/`.** O esquema descrito no
-§"Objetivo e prioridades" — *"os IDs ... permitem rastrear a exigência no CI e em incidentes"* —
-**não está implementado**. Isso obrigou esta auditoria a inferir cobertura por nome de arquivo e
-comportamento, um método mais frágil, que confunde cobertura equivalente com lacuna. Issue #614.
+O contrato automatizado evita regressão silenciosa: todo ID do plano tem vínculo com teste coletado
+ou exceção explícita e revisável. A presença do vínculo, por si só, não prova suficiência semântica;
+estados `parcial` e `bloqueado` permanecem visíveis e não são promovidos automaticamente.
 
 ### Bloqueio declarado em `LOAD-001`/`LOAD-002`
 

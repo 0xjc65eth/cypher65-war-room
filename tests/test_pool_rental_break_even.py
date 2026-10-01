@@ -25,6 +25,7 @@ import sys
 
 import pytest
 
+
 from helpers import compute_pool_rental_break_even
 
 sys.path.insert(0, ".")
@@ -36,6 +37,7 @@ from services.poll_compute import compute_profitability  # noqa: E402
 # Known-value lock
 # ══════════════════════════════════════════════════════════════════════
 
+@pytest.mark.covers("MF-003")
 class TestKnownValues:
     """Hand-computed scenario: 10 TH, pool net 0.0005 BTC/d, BTC = $60,000.
 
@@ -159,6 +161,7 @@ def _settings(usd=100000.0, **over):
     return s
 
 
+@pytest.mark.covers("MF-003")
 class TestFullFormulaVector:
     """Hand-computed scenario: 100 TH, 5 EH/s network, reward 3.125+0.05,
     pool fee 1.5%, orphan 0.5%, rental $0.02/TH/d, BTC=$100k.
@@ -278,6 +281,7 @@ class TestFeeSensitivity:
             base["pool_net_usd_per_day"] * 2 + 2.0, rel=1e-9)
 
 
+@pytest.mark.covers("MF-004")
 class TestInsufficientDataNoEstimates:
     """Issue #613 · MF-004: missing inputs must yield EXPLICIT unavailability —
     never a zero masquerading as money and never an invented estimate.

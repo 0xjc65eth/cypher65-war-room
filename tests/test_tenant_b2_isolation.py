@@ -226,6 +226,7 @@ class TestAutomationEngineTenant:
 #  API routes isolation (Bearer tenant)
 # ══════════════════════════════════════════════════════════════════════
 
+@pytest.mark.covers("SEC-001", status="partial")
 class TestApiTenantIsolation:
     def test_named_tenant_snapshot_excludes_operator_wallet_payload(self, client, monkeypatch):
         import services.state as state

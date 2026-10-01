@@ -23,6 +23,7 @@ import pytest
         ("Europe/Brussels", "2026-03-29T01:00:00Z", 1774746000, "2026-03"),
     ],
 )
+@pytest.mark.covers("TIME-001", status="partial")
 def test_iso_and_utc_month_bucket_ignore_host_timezone(
     zone, iso_utc, expected_ts, expected_month
 ):
