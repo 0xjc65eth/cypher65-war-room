@@ -2,7 +2,7 @@
 
 Date: 2026-10-02. PR: [#715](https://github.com/0xjc65eth/cypher65-war-room/pull/715).
 Original implementation and validation base: `c597304efb867716c0b8cf45ec72d1de8a98dc53`.
-Latest base synchronized locally: `7c40f9d003aa4506eb261963fda93dd0cae4b02b`.
+Latest base synchronized locally: `4e2cc2e5827cfa19e16e78f56c229138557a0742`.
 
 ## Scope and evidence boundary
 
@@ -104,6 +104,15 @@ do not change the pool provider/resolver/statistics production inputs. The
 merged-source bundle drift and JS core (1565 assertions) were rechecked. The
 629-test and 16-E2E runs above retain their actual earlier source revisions;
 they are not mislabeled as reruns on this later integration.
+
+Master `4e2cc2e5827cfa19e16e78f56c229138557a0742` was then merged normally,
+producing `76de9473d360cfdbf8b207a48c3d4e903b760023`. Incoming #728 changes only
+`docs/RENTALS_TOOLBAR.md`; all tracked paths outside `docs/`, including provider
+production inputs, are byte-identical to pre-integration head `48bb7d8`.
+Bundle drift, JS core (**1565 assertions**) and JS syntax passed on that merged
+revision. This checkpoint update is also documentation-only. No Python/E2E
+suite or app server was rerun; the 629-test and 16-E2E records retain their
+actual earlier source revisions and do not constitute current-head GitHub gates.
 
 ## Release gates
 
