@@ -1,0 +1,639 @@
+{
+  "requirement": "LOAD-001",
+  "issue": 606,
+  "status": "diagnostic_only_acceptance_blocked_unapproved_slo",
+  "approved_thresholds": null,
+  "source": {
+    "git_head": "ed14e1865c4a87778dbb45feaff81dbd4e6c11c2",
+    "working_tree_dirty": false,
+    "measured_file_sha256": {
+      "scripts/measure_fleet_scale.py": "1dfcf351d57a110070e75d1dda631c3a4769847570ff64964249ace683564a00",
+      "axe_fleet/registry.py": "cf4f915fe293a620517346e5308160a5a40b9769ca9e502cc25a01815940f89d",
+      "axe_fleet/routes.py": "8e4fad50bb73ce83785b084d1230f025f4b1f87ff39e86228f2b34f0e2d99221",
+      "axe_fleet/models.py": "c92a43a9431e5e0af2a58c9add9b7ae23a2c87809827c6911d850b8a1a6a0a0b",
+      "core/models/device.py": "1029ff45984eb67e50b9f7fc8bd9f3ea99e90ce76225ee5af6f73e80edd22210",
+      "services/tenant.py": "a2f185f87f1c1ba5ec7896b146c9e2f9e674513b6bdc46c46a037443d778f1cf",
+      "services/auth.py": "83fea5e525749b359a8375f37859f997e081059aa17458c89b7d88515a516a8e"
+    }
+  },
+  "environment": {
+    "platform": "macOS-26.5-arm64-arm-64bit-Mach-O",
+    "machine": "arm64",
+    "cpu_count": 8,
+    "python": "3.13.13",
+    "sqlite": "3.53.4",
+    "flask": "3.1.3"
+  },
+  "method": {
+    "endpoint": "/api/axe-fleet/summary",
+    "client": "in-process Flask test client; real blueprint/JWT tenant+viewer RBAC",
+    "latency_scope": "buffered GET with auth, registry SQLite reads and JSON serialization; no TCP, app middleware, background poll, JSON decode or invariant check",
+    "database": "fresh temporary file per worker; real registry, WAL/synchronous=NORMAL/busy_timeout=3000; 1 measurement per measured device",
+    "auth": "synthetic transient viewer JWT, API-key auth enabled; revocation persistence disabled",
+    "isolation": "sequential disposable worker per workload; transport-only fail-closed mocks, asserted unused",
+    "clock": "unmocked perf_counter_ns; telemetry timestamps generated from real wall clock",
+    "limitations": [
+      "synthetic agent-managed fleet only; no self-host miner-probe cost",
+      "single-process sequential warm-cache latency, not throughput or concurrency",
+      "process peak RSS and Python allocations are distinct and must not be added",
+      "mixed offline bucket includes IDLE according to current summary schema",
+      "small-sample p99 nearest-rank can equal maximum; repeat on target deployment before SLO approval"
+    ]
+  },
+  "cases": [
+    {
+      "kind": "diagnostic_measurement_not_acceptance_gate",
+      "load": {
+        "agent_managed_devices": 100,
+        "telemetry_mode": "fresh",
+        "synthetic": true,
+        "tenant_count": 2,
+        "other_tenant_sentinel_devices": 1,
+        "telemetry_observed_at": 1790966214,
+        "staleness_horizon_s": 900,
+        "statuses": {
+          "ONLINE": 100,
+          "STALE": 0,
+          "IDLE": 0,
+          "OFFLINE": 0
+        }
+      },
+      "started_at_utc": "2026-10-02T18:36:54.326081+00:00",
+      "completed_at_utc": "2026-10-02T18:36:56.471726+00:00",
+      "warmups": 3,
+      "latency": {
+        "unit": "ms",
+        "samples": [
+          43.736416,
+          45.991542,
+          65.332416,
+          55.200833,
+          48.074708,
+          56.921291,
+          65.589125,
+          46.824875,
+          44.321625,
+          43.841292,
+          43.796083,
+          43.554583,
+          54.236833,
+          47.903833,
+          44.935958,
+          67.927083,
+          45.022834,
+          43.119166,
+          42.948375,
+          44.887084,
+          44.77725,
+          43.065791,
+          44.629166,
+          44.042,
+          47.419833
+        ],
+        "n": 25,
+        "percentile_method": "nearest-rank: sorted[ceil(q*N)-1], no interpolation",
+        "p50_ms": 44.935958,
+        "p95_ms": 65.589125,
+        "p99_ms": 67.927083,
+        "min_ms": 42.948375,
+        "max_ms": 67.927083
+      },
+      "response_bytes_last_sample": 138635,
+      "python_allocations": {
+        "method": "tracemalloc; separate instrumented requests after latency",
+        "scope": "Python-tracked request allocations, including JSON decode/invariant check; excludes SQLite/C allocations and fixture setup; not RSS",
+        "samples": [
+          {
+            "before_bytes": 40,
+            "current_bytes": 50715,
+            "peak_bytes": 772460,
+            "incremental_peak_bytes": 772420
+          },
+          {
+            "before_bytes": 1024,
+            "current_bytes": 51761,
+            "peak_bytes": 773456,
+            "incremental_peak_bytes": 772432
+          },
+          {
+            "before_bytes": 2006,
+            "current_bytes": 52583,
+            "peak_bytes": 774278,
+            "incremental_peak_bytes": 772272
+          }
+        ]
+      },
+      "process_peak_rss": {
+        "method": "resource.getrusage(RUSAGE_SELF).ru_maxrss",
+        "native_value": 59899904,
+        "native_unit": "bytes",
+        "bytes": 59899904,
+        "unit": "bytes",
+        "scope": "worker-process RSS high-water at capture; imports, fixture setup, latency and separate allocation runs included; not current RSS or fleet memory"
+      },
+      "invariants": {
+        "tenant_count_hash_stale_latest": true,
+        "store_unchanged": true,
+        "other_tenant_summary_isolated": true,
+        "anonymous_caller_blocked": true,
+        "fixture_store_sha256": "ec22814c70a667235a97116311a165352a8bb3e31bd42945f54da0c6a61b72d3",
+        "outbound_transport_attempts": 0
+      }
+    },
+    {
+      "kind": "diagnostic_measurement_not_acceptance_gate",
+      "load": {
+        "agent_managed_devices": 100,
+        "telemetry_mode": "stale",
+        "synthetic": true,
+        "tenant_count": 2,
+        "other_tenant_sentinel_devices": 1,
+        "telemetry_observed_at": 1790966216,
+        "staleness_horizon_s": 900,
+        "statuses": {
+          "ONLINE": 0,
+          "STALE": 100,
+          "IDLE": 0,
+          "OFFLINE": 0
+        }
+      },
+      "started_at_utc": "2026-10-02T18:36:56.606707+00:00",
+      "completed_at_utc": "2026-10-02T18:36:58.801499+00:00",
+      "warmups": 3,
+      "latency": {
+        "unit": "ms",
+        "samples": [
+          47.594375,
+          45.201292,
+          44.492,
+          45.733042,
+          45.480709,
+          44.175583,
+          49.016208,
+          49.612208,
+          43.403,
+          44.338458,
+          46.076292,
+          54.545375,
+          49.584334,
+          47.567542,
+          45.503125,
+          45.766875,
+          44.756833,
+          45.608292,
+          49.509375,
+          44.631042,
+          49.065417,
+          45.334375,
+          48.396042,
+          46.248083,
+          47.444583
+        ],
+        "n": 25,
+        "percentile_method": "nearest-rank: sorted[ceil(q*N)-1], no interpolation",
+        "p50_ms": 45.766875,
+        "p95_ms": 49.612208,
+        "p99_ms": 54.545375,
+        "min_ms": 43.403,
+        "max_ms": 54.545375
+      },
+      "response_bytes_last_sample": 137914,
+      "python_allocations": {
+        "method": "tracemalloc; separate instrumented requests after latency",
+        "scope": "Python-tracked request allocations, including JSON decode/invariant check; excludes SQLite/C allocations and fixture setup; not RSS",
+        "samples": [
+          {
+            "before_bytes": 40,
+            "current_bytes": 50765,
+            "peak_bytes": 768477,
+            "incremental_peak_bytes": 768437
+          },
+          {
+            "before_bytes": 1074,
+            "current_bytes": 51816,
+            "peak_bytes": 769528,
+            "incremental_peak_bytes": 768454
+          },
+          {
+            "before_bytes": 2061,
+            "current_bytes": 52803,
+            "peak_bytes": 770515,
+            "incremental_peak_bytes": 768454
+          }
+        ]
+      },
+      "process_peak_rss": {
+        "method": "resource.getrusage(RUSAGE_SELF).ru_maxrss",
+        "native_value": 55705600,
+        "native_unit": "bytes",
+        "bytes": 55705600,
+        "unit": "bytes",
+        "scope": "worker-process RSS high-water at capture; imports, fixture setup, latency and separate allocation runs included; not current RSS or fleet memory"
+      },
+      "invariants": {
+        "tenant_count_hash_stale_latest": true,
+        "store_unchanged": true,
+        "other_tenant_summary_isolated": true,
+        "anonymous_caller_blocked": true,
+        "fixture_store_sha256": "41672b45a8200dc82feb8ca9bfc4d447d6025108c03b05f281e428cdbad2d3cf",
+        "outbound_transport_attempts": 0
+      }
+    },
+    {
+      "kind": "diagnostic_measurement_not_acceptance_gate",
+      "load": {
+        "agent_managed_devices": 100,
+        "telemetry_mode": "mixed",
+        "synthetic": true,
+        "tenant_count": 2,
+        "other_tenant_sentinel_devices": 1,
+        "telemetry_observed_at": 1790966219,
+        "staleness_horizon_s": 900,
+        "statuses": {
+          "ONLINE": 25,
+          "STALE": 25,
+          "IDLE": 25,
+          "OFFLINE": 25
+        }
+      },
+      "started_at_utc": "2026-10-02T18:36:58.914200+00:00",
+      "completed_at_utc": "2026-10-02T18:37:01.110385+00:00",
+      "warmups": 3,
+      "latency": {
+        "unit": "ms",
+        "samples": [
+          50.075458,
+          45.526042,
+          44.29025,
+          45.08625,
+          49.77525,
+          45.374209,
+          46.48775,
+          44.915125,
+          46.10475,
+          51.140166,
+          52.364916,
+          71.328125,
+          47.949375,
+          47.564208,
+          45.047125,
+          99.88425,
+          64.329292,
+          57.473333,
+          50.979458,
+          50.666209,
+          58.182375,
+          68.647,
+          46.3765,
+          51.630042,
+          48.895333
+        ],
+        "n": 25,
+        "percentile_method": "nearest-rank: sorted[ceil(q*N)-1], no interpolation",
+        "p50_ms": 49.77525,
+        "p95_ms": 71.328125,
+        "p99_ms": 99.88425,
+        "min_ms": 44.29025,
+        "max_ms": 99.88425
+      },
+      "response_bytes_last_sample": 133558,
+      "python_allocations": {
+        "method": "tracemalloc; separate instrumented requests after latency",
+        "scope": "Python-tracked request allocations, including JSON decode/invariant check; excludes SQLite/C allocations and fixture setup; not RSS",
+        "samples": [
+          {
+            "before_bytes": 40,
+            "current_bytes": 49158,
+            "peak_bytes": 737350,
+            "incremental_peak_bytes": 737310
+          },
+          {
+            "before_bytes": 867,
+            "current_bytes": 50044,
+            "peak_bytes": 738236,
+            "incremental_peak_bytes": 737369
+          },
+          {
+            "before_bytes": 1689,
+            "current_bytes": 50976,
+            "peak_bytes": 739168,
+            "incremental_peak_bytes": 737479
+          }
+        ]
+      },
+      "process_peak_rss": {
+        "method": "resource.getrusage(RUSAGE_SELF).ru_maxrss",
+        "native_value": 59670528,
+        "native_unit": "bytes",
+        "bytes": 59670528,
+        "unit": "bytes",
+        "scope": "worker-process RSS high-water at capture; imports, fixture setup, latency and separate allocation runs included; not current RSS or fleet memory"
+      },
+      "invariants": {
+        "tenant_count_hash_stale_latest": true,
+        "store_unchanged": true,
+        "other_tenant_summary_isolated": true,
+        "anonymous_caller_blocked": true,
+        "fixture_store_sha256": "fc85dd5994e20ae9bc0cd15e7ddc3ac1db998716e700f28d984529a8e7f3c669",
+        "outbound_transport_attempts": 0
+      }
+    },
+    {
+      "kind": "diagnostic_measurement_not_acceptance_gate",
+      "load": {
+        "agent_managed_devices": 500,
+        "telemetry_mode": "fresh",
+        "synthetic": true,
+        "tenant_count": 2,
+        "other_tenant_sentinel_devices": 1,
+        "telemetry_observed_at": 1790966221,
+        "staleness_horizon_s": 900,
+        "statuses": {
+          "ONLINE": 500,
+          "STALE": 0,
+          "IDLE": 0,
+          "OFFLINE": 0
+        }
+      },
+      "started_at_utc": "2026-10-02T18:37:01.227381+00:00",
+      "completed_at_utc": "2026-10-02T18:37:12.543428+00:00",
+      "warmups": 3,
+      "latency": {
+        "unit": "ms",
+        "samples": [
+          239.649125,
+          238.437667,
+          252.73075,
+          345.728625,
+          290.307791,
+          266.156,
+          256.78825,
+          270.394667,
+          269.838792,
+          247.048583,
+          242.708,
+          276.959459,
+          261.610166,
+          257.382375,
+          268.762125,
+          247.875416,
+          264.469125,
+          259.12375,
+          249.488292,
+          370.330917,
+          292.247334,
+          258.446375,
+          272.129834,
+          258.448333,
+          239.703833
+        ],
+        "n": 25,
+        "percentile_method": "nearest-rank: sorted[ceil(q*N)-1], no interpolation",
+        "p50_ms": 259.12375,
+        "p95_ms": 345.728625,
+        "p99_ms": 370.330917,
+        "min_ms": 238.437667,
+        "max_ms": 370.330917
+      },
+      "response_bytes_last_sample": 694177,
+      "python_allocations": {
+        "method": "tracemalloc; separate instrumented requests after latency",
+        "scope": "Python-tracked request allocations, including JSON decode/invariant check; excludes SQLite/C allocations and fixture setup; not RSS",
+        "samples": [
+          {
+            "before_bytes": 40,
+            "current_bytes": 149265,
+            "peak_bytes": 3800250,
+            "incremental_peak_bytes": 3800210
+          },
+          {
+            "before_bytes": 1074,
+            "current_bytes": 150313,
+            "peak_bytes": 3801348,
+            "incremental_peak_bytes": 3800274
+          },
+          {
+            "before_bytes": 2058,
+            "current_bytes": 151292,
+            "peak_bytes": 3802277,
+            "incremental_peak_bytes": 3800219
+          }
+        ]
+      },
+      "process_peak_rss": {
+        "method": "resource.getrusage(RUSAGE_SELF).ru_maxrss",
+        "native_value": 58130432,
+        "native_unit": "bytes",
+        "bytes": 58130432,
+        "unit": "bytes",
+        "scope": "worker-process RSS high-water at capture; imports, fixture setup, latency and separate allocation runs included; not current RSS or fleet memory"
+      },
+      "invariants": {
+        "tenant_count_hash_stale_latest": true,
+        "store_unchanged": true,
+        "other_tenant_summary_isolated": true,
+        "anonymous_caller_blocked": true,
+        "fixture_store_sha256": "3f1e6dcb8aa9d01de6101e0879ab97e075b322ee52af827bfedbb16d7d5f8e12",
+        "outbound_transport_attempts": 0
+      }
+    },
+    {
+      "kind": "diagnostic_measurement_not_acceptance_gate",
+      "load": {
+        "agent_managed_devices": 500,
+        "telemetry_mode": "stale",
+        "synthetic": true,
+        "tenant_count": 2,
+        "other_tenant_sentinel_devices": 1,
+        "telemetry_observed_at": 1790966233,
+        "staleness_horizon_s": 900,
+        "statuses": {
+          "ONLINE": 0,
+          "STALE": 500,
+          "IDLE": 0,
+          "OFFLINE": 0
+        }
+      },
+      "started_at_utc": "2026-10-02T18:37:12.765346+00:00",
+      "completed_at_utc": "2026-10-02T18:37:25.165063+00:00",
+      "warmups": 3,
+      "latency": {
+        "unit": "ms",
+        "samples": [
+          382.96525,
+          337.872167,
+          348.984625,
+          242.228416,
+          632.575583,
+          300.6255,
+          280.562083,
+          244.707083,
+          257.445625,
+          241.339584,
+          250.209833,
+          281.281333,
+          278.057541,
+          243.077333,
+          264.565792,
+          291.188875,
+          331.515875,
+          310.144958,
+          305.583583,
+          256.602375,
+          241.410834,
+          264.184167,
+          265.232916,
+          273.309708,
+          289.059667
+        ],
+        "n": 25,
+        "percentile_method": "nearest-rank: sorted[ceil(q*N)-1], no interpolation",
+        "p50_ms": 278.057541,
+        "p95_ms": 382.96525,
+        "p99_ms": 632.575583,
+        "min_ms": 241.339584,
+        "max_ms": 632.575583
+      },
+      "response_bytes_last_sample": 690156,
+      "python_allocations": {
+        "method": "tracemalloc; separate instrumented requests after latency",
+        "scope": "Python-tracked request allocations, including JSON decode/invariant check; excludes SQLite/C allocations and fixture setup; not RSS",
+        "samples": [
+          {
+            "before_bytes": 40,
+            "current_bytes": 149265,
+            "peak_bytes": 3779667,
+            "incremental_peak_bytes": 3779627
+          },
+          {
+            "before_bytes": 1074,
+            "current_bytes": 150305,
+            "peak_bytes": 3780707,
+            "incremental_peak_bytes": 3779633
+          },
+          {
+            "before_bytes": 2050,
+            "current_bytes": 151138,
+            "peak_bytes": 3781540,
+            "incremental_peak_bytes": 3779490
+          }
+        ]
+      },
+      "process_peak_rss": {
+        "method": "resource.getrusage(RUSAGE_SELF).ru_maxrss",
+        "native_value": 57901056,
+        "native_unit": "bytes",
+        "bytes": 57901056,
+        "unit": "bytes",
+        "scope": "worker-process RSS high-water at capture; imports, fixture setup, latency and separate allocation runs included; not current RSS or fleet memory"
+      },
+      "invariants": {
+        "tenant_count_hash_stale_latest": true,
+        "store_unchanged": true,
+        "other_tenant_summary_isolated": true,
+        "anonymous_caller_blocked": true,
+        "fixture_store_sha256": "3880300a92359dd1ee5b35910e5c919c927b2f64da2f16fbd6861b7a9547fd8a",
+        "outbound_transport_attempts": 0
+      }
+    },
+    {
+      "kind": "diagnostic_measurement_not_acceptance_gate",
+      "load": {
+        "agent_managed_devices": 500,
+        "telemetry_mode": "mixed",
+        "synthetic": true,
+        "tenant_count": 2,
+        "other_tenant_sentinel_devices": 1,
+        "telemetry_observed_at": 1790966245,
+        "staleness_horizon_s": 900,
+        "statuses": {
+          "ONLINE": 125,
+          "STALE": 125,
+          "IDLE": 125,
+          "OFFLINE": 125
+        }
+      },
+      "started_at_utc": "2026-10-02T18:37:25.318578+00:00",
+      "completed_at_utc": "2026-10-02T18:37:35.542881+00:00",
+      "warmups": 3,
+      "latency": {
+        "unit": "ms",
+        "samples": [
+          271.361166,
+          246.530459,
+          270.827709,
+          264.3505,
+          257.881,
+          251.364792,
+          255.901584,
+          256.005625,
+          303.340541,
+          265.6225,
+          256.964541,
+          239.664041,
+          252.461375,
+          228.785208,
+          267.187542,
+          243.764875,
+          241.7865,
+          245.162167,
+          235.414792,
+          231.422458,
+          236.62575,
+          241.156583,
+          251.067542,
+          230.541917,
+          238.194209
+        ],
+        "n": 25,
+        "percentile_method": "nearest-rank: sorted[ceil(q*N)-1], no interpolation",
+        "p50_ms": 251.067542,
+        "p95_ms": 271.361166,
+        "p99_ms": 303.340541,
+        "min_ms": 228.785208,
+        "max_ms": 303.340541
+      },
+      "response_bytes_last_sample": 668304,
+      "python_allocations": {
+        "method": "tracemalloc; separate instrumented requests after latency",
+        "scope": "Python-tracked request allocations, including JSON decode/invariant check; excludes SQLite/C allocations and fixture setup; not RSS",
+        "samples": [
+          {
+            "before_bytes": 40,
+            "current_bytes": 142166,
+            "peak_bytes": 3628225,
+            "incremental_peak_bytes": 3628185
+          },
+          {
+            "before_bytes": 975,
+            "current_bytes": 143162,
+            "peak_bytes": 3629221,
+            "incremental_peak_bytes": 3628246
+          },
+          {
+            "before_bytes": 1907,
+            "current_bytes": 144092,
+            "peak_bytes": 3630651,
+            "incremental_peak_bytes": 3628744
+          }
+        ]
+      },
+      "process_peak_rss": {
+        "method": "resource.getrusage(RUSAGE_SELF).ru_maxrss",
+        "native_value": 58163200,
+        "native_unit": "bytes",
+        "bytes": 58163200,
+        "unit": "bytes",
+        "scope": "worker-process RSS high-water at capture; imports, fixture setup, latency and separate allocation runs included; not current RSS or fleet memory"
+      },
+      "invariants": {
+        "tenant_count_hash_stale_latest": true,
+        "store_unchanged": true,
+        "other_tenant_summary_isolated": true,
+        "anonymous_caller_blocked": true,
+        "fixture_store_sha256": "ef873cbeca2852b402f703824b7dc9c210310026ba75628945e0a0eaabe0609b",
+        "outbound_transport_attempts": 0
+      }
+    }
+  ]
+}
