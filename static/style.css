@@ -2244,6 +2244,27 @@ tr:hover td { background: var(--bg-hover); }
 .mkt-sort-arrow { display: inline-block; width: 10px; font-size: 8px; color: var(--brand); }
 /* ── Rentals (painel operador) ───────────────────────────────────── */
 #rentals-panel { --rentals-accent: var(--brand); }
+/* Issue #722: keep every action reachable without widening the document.
+   Desktop retains its single-row toolbar; mobile wraps instead of clipping. */
+#rentals-panel > .panel__header .chip:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: 2px;
+}
+@media (max-width: 768px) {
+  #rentals-panel > .panel__header {
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  #rentals-panel > .panel__header > .panel__tools {
+    flex: 1 1 100%;
+    flex-wrap: wrap;
+    min-width: 0;
+  }
+  #rentals-panel > .panel__header .chip {
+    min-width: 44px;
+    min-height: 44px;
+  }
+}
 .rentals-strip { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 8px; margin-bottom: 10px; }
 .rentals-strip__card {
   background: var(--bg-surface);
