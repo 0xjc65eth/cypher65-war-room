@@ -713,6 +713,7 @@ class PollWorkerPool:
                 snapshot = _build_snapshot(
                     worker.address, worker.worker_name, worker.tenant_id
                 )
+                worker._collect_rental_evidence(snapshot)
                 worker._dispatch_tenant_alerts(snapshot)
                 worker._sm.update_snapshot(worker.session_id, snapshot)
                 worker._consecutive_errors = 0
@@ -1041,9 +1042,32 @@ class UserPollingWorker:
         by tests. Does not consume a pool worker — runs in the caller's
         thread (no thread-per-session, ever)."""
         snapshot = _build_snapshot(self.address, self.worker_name, self.tenant_id)
+        self._collect_rental_evidence(snapshot)
         self._dispatch_tenant_alerts(snapshot)
         self._sm.update_snapshot(self.session_id, snapshot)
         return snapshot
+
+    def _collect_rental_evidence(self, snapshot: dict) -> None:
+        """Consume private retrieval metadata once, before publishing a snapshot."""
+        reading = snapshot.pop("_rental_pool_observation", None)
+        if not reading:
+            return
+        try:
+            from services.rental_evidence import alert_message, collect
+
+            events = collect(self.tenant_id, snapshot.get("btc_address", ""), **reading)
+            for event in events:
+                snapshot.setdefault("alerts_recent", []).append(
+                    make_memory_alert(
+                        int(event["observed_at"]),
+                        "WARN",
+                        "rental_delivery",
+                        alert_message(event),
+                    )
+                )
+        except Exception:
+            # Do not log wallet, worker, payload or credentials on failure.
+            log.exception("rental_evidence_collection_failed")
 
     def update_address(self, address: str, worker_name: str = ""):
         """Change the address this session polls."""
