@@ -164,6 +164,21 @@ def test_bounded_subprocess_reaps_owned_group_with_hung_descendant(
             hung.communicate()
 
 
+def test_cli_help_labels_worker_cap_and_cleanup_separately() -> None:
+    result = subprocess.run(
+        [sys.executable, str(SCRIPT), "--help"],
+        capture_output=True,
+        text=True,
+        timeout=5,
+        check=True,
+    )
+    help_text = " ".join(result.stdout.split())
+    assert "worker execution cap" in help_text
+    assert "3 seconds of process-group cleanup may follow" in help_text
+    assert "parent hashing and artifact I/O are outside this cap" in help_text
+    assert "total cap" not in help_text
+
+
 def test_default_artifact_name_uses_the_harness_sha_without_parent_git() -> None:
     harness_sha = hashlib.sha256(SCRIPT.read_bytes()).hexdigest()[:12]
     assert HARNESS._default_output_path() == Path(
@@ -181,7 +196,7 @@ def test_default_artifact_name_uses_the_harness_sha_without_parent_git() -> None
     assert output.name == HARNESS._default_output_path().name
     git_command.assert_not_called()
     assert failure["schema_version"] == 2
-    assert failure["hard_wall_cap_seconds"] == 33
+    assert failure["worker_wall_cap_with_cleanup_seconds"] == 33
     assert failure["supervisor_overhead"]["parent_git_subprocesses"] == 0
     assert (
         "not hard-bounded"

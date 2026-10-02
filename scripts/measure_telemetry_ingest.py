@@ -1047,7 +1047,7 @@ def _failure_artifact(args: argparse.Namespace, error: str) -> dict[str, Any]:
         "run_count_completed": 0,
         "runs": [],
         "harness_error": error,
-        "hard_wall_cap_seconds": args.max_wall_seconds + 3,
+        "worker_wall_cap_with_cleanup_seconds": args.max_wall_seconds + 3,
         "supervisor_overhead": {
             "parent_git_subprocesses": 0,
             "source_hashing": "synchronous local file reads after worker cleanup; outside worker cap",
@@ -1208,7 +1208,14 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--runs", type=int, default=3, help="repeats, from 1 to 5")
     parser.add_argument(
-        "--max-wall-seconds", type=int, default=180, help="total cap, 30 to 300 seconds"
+        "--max-wall-seconds",
+        type=int,
+        default=180,
+        help=(
+            "worker execution cap; up to 3 seconds of process-group cleanup may "
+            "follow; parent hashing and artifact I/O are outside this cap "
+            "(30 to 300 seconds)"
+        ),
     )
     parser.add_argument("--output", type=Path)
     parser.add_argument(
