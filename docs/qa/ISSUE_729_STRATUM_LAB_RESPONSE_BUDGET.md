@@ -2,7 +2,7 @@
 
 Issue: [#729](https://github.com/0xjc65eth/cypher65-war-room/issues/729).
 Date: 2026-10-02. Base: `4e2cc2e5827cfa19e16e78f56c229138557a0742`.
-Test source validated: `b78a1b50557a663f7f11f4073b9f6b6f71d48737`.
+Final test source validated: `61c7f3b5840b82e1a3c0da4c454e43f5db0d9a77`.
 This subsequent checkpoint is documentation-only, not a new measured source.
 
 ## Original failure and limits
@@ -24,17 +24,20 @@ claim to resolve that failure or make the original full run green.
 a separate handler thread. **Hypothesis:** handler scheduling or response
 arrival beyond 50 ms could explain the mismatch, but the original cause was
 not instrumented and remains unproven. Five isolated passes do not establish
-absence of a load-sensitive failure. The failing test's JUnit duration of
+absence of a load-sensitive failure, nor does a later green full suite prove
+the original cause. The failing test's JUnit duration of
 0.616 seconds includes fixture cleanup and is not a probe latency measurement.
 
 ## Scoped correction
 
 - Non-silent exact classification cases in the adapter and Fleet suites use
-  an explicit, bounded **1.0 second test-only response budget**. Intentional
-  silence still uses **0.05 seconds** and must return exactly `timeout`.
+  an explicit **1.0 second test-only per-socket-operation response budget**,
+  not a whole-probe wall-clock cap. Intentional silence still uses **0.05
+  seconds** per socket operation and must return exactly `timeout`.
 - The local fixture accepts a finite response delay from 0 to 0.5 seconds;
-  invalid/boolean/nonfinite values fail before server creation. Silence does
-  not take this response delay.
+  invalid/boolean/nonfinite values, including enormous positive/negative
+  integers, fail before server creation. Range validation precedes float
+  conversion to avoid `OverflowError`. Silence does not take this response delay.
 - New cases delay a valid success frame and a valid unsupported-message frame
   by 100 ms, then require their exact protocol/capability/failure outcomes and
   one request. Real `perf_counter` elapsed time is measured around the probe
@@ -55,8 +58,10 @@ cases used the historical 50 ms budget and **both failed with `timeout`**:
 two failed, 17 deselected, exit 1, 1.46 seconds. This demonstrates the synthetic
 failure mechanism, not the unobserved cause of the earlier full-suite failure.
 
-On frozen source `b78a1b5`, adapter plus Fleet V2 suites passed **42 tests**,
-no failures or skips, exit 0, 6.80 seconds. The named adapter + lab line-coverage
+On initial frozen source `b78a1b50557a663f7f11f4073b9f6b6f71d48737`, adapter
+plus Fleet V2 suites passed **42 tests**, exit 0, 6.80 seconds. After fixture
+validation hardening, final frozen source `61c7f3b` passed **44 tests**, no
+failures or skips, exit 0, 7.60 seconds. The named adapter + lab line-coverage
 scope passed the unchanged 80% threshold at **88.93%** (lab 96.15%, unchanged
 production adapter 85.87%). This focused scope is not the repository-wide gate.
 
@@ -67,10 +72,10 @@ env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin PYTHON_DOTENV_DISABLED=1 \
   /private/tmp/cypher65-runtime599/bin/python -m pytest \
   tests/test_stratum_v2_adapter.py tests/test_fleet_stratum_v2_pipeline.py \
   -q --tb=short \
-  --junitxml=/private/tmp/cypher65-729-response-budget.k4b7Kq/frozen-focused.xml \
+  --junitxml=/private/tmp/cypher65-729-response-budget.k4b7Kq/final-focused.xml \
   --cov=tests.virtual_pool.stratum_v2_lab --cov=services.pool_intelligence.stratum_v2 \
   --cov-report=term-missing \
-  --cov-report=xml:/private/tmp/cypher65-729-response-budget.k4b7Kq/frozen-focused-coverage.xml \
+  --cov-report=xml:/private/tmp/cypher65-729-response-budget.k4b7Kq/final-focused-coverage.xml \
   --cov-fail-under=80
 ```
 
@@ -100,3 +105,6 @@ and `/private/tmp/cypher65-607-root-full-coverage.xml`. New files below are in
 | `frozen-focused.log` | `b7d5cf4d7fdc7e9cec27993282fb3479c1e46f9f10b1d1be8daa4f25ad16948d` |
 | `frozen-focused.xml` | `9b9faac830da5b1171f09cd639241658ddabe0868a730742de2ff966ad43e03c` |
 | `frozen-focused-coverage.xml` | `0fbcf92fac3b6dd2e7e300cdd9b2e309a184aa06502030ac73a341da933bb7c9` |
+| `final-focused.log` | `09068c0b9b13dd0bf3e33183c991839200acc5f756d041206c5884b188503a7d` |
+| `final-focused.xml` | `e350bc8074034fd7e36d26cbf3c3ebb1adbce6948072a27800514cae74494baa` |
+| `final-focused-coverage.xml` | `a16fbdd3b940c56407ae737dab64203000d5542120d3e6240607dd515ca5061c` |
