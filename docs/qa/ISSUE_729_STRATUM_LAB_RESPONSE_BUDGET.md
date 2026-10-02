@@ -85,8 +85,34 @@ Initial Black checking identified new test-line wrapping; formatting corrected
 it before the frozen source run. The patch changes only tests and this document;
 production files remain byte-identical to the base. No full suite, benchmark,
 application server, GitHub write, push, merge or deploy was run during local
-preparation. Independent review and root's later full regression/exact-head CI
-are still required; this checkpoint is not GitHub approval.
+preparation. At the end of that phase, independent review and root's full
+regression were pending; their subsequent results are recorded below.
+Exact-head CI and an independent GitHub approval remain required.
+
+## Subsequent root full regression
+
+Independent source/documentation review cleared P0/P1/P2 on frozen
+`62e0d214801e47f2d019ef097d74401f224868b9`. Root then ran the full Python
+suite on that exact source with the existing application coverage scope and
+unchanged 80% gate: **4084 passed, 3 skipped, 557 warnings**, 223.47 seconds,
+**85.58%** aggregate coverage, exit0. Detailed warning output was suppressed
+with `--disable-warnings`; no tests or failures were filtered. This is a
+different source branch than the earlier #607 regression, not a retest of
+that branch or proof of the original timeout's cause.
+
+Root independently confirmed all production paths are byte-identical to
+the declared master base. No production socket budget, adapter or destination
+policy changed. The original failing regression and regression-first cases
+remain retained. This later evidence update is documentation-only, not a
+newly tested source or GitHub approval. No root merge or deploy was performed.
+
+Root full artifacts are local only, not uploaded CI reports:
+
+- `/private/tmp/cypher65-729-root-full-tests.xml`, SHA256
+  `14886ad426fe9d3975f94f1ab8394738587c2d8ea55cbf4b3dee16c1938135f8`;
+  JUnit confirms4087 collected,0 failures/errors,3 skipped.
+- `/private/tmp/cypher65-729-root-full-coverage.xml`, SHA256
+  `64d0de4577d8aa76f9af2f52cd964611a3fca90f7a8add7788b059ec2e68c017`.
 
 ## Retained local artifacts
 
