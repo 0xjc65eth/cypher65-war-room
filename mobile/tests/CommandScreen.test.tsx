@@ -25,12 +25,7 @@ describe('CommandScreen', () => {
       refresh: jest.fn(),
     });
 
-    render(<CommandScreen />);
-    // Flush the already-resolved share request explicitly. Polling for its UI
-    // made this test depend on runner scheduling during cold suite startup.
-    await act(async () => {
-      await Promise.resolve();
-    });
+    await render(<CommandScreen />);
     expect(screen.getByText('Command Center')).toBeTruthy();
     expect(screen.getByText(/No shares yet/)).toBeTruthy();
   });
@@ -43,10 +38,7 @@ describe('CommandScreen', () => {
       refresh: jest.fn(),
     });
 
-    render(<CommandScreen />);
-    await act(async () => {
-      await Promise.resolve();
-    });
+    await render(<CommandScreen />);
     expect(screen.getByText('Share Difficulty')).toBeTruthy();
     expect(screen.getByText(/P\(block\) → Block Model/)).toBeTruthy();
     // The mocked client returns an empty session — chart falls back gracefully.

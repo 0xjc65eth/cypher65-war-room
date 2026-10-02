@@ -28,7 +28,7 @@ describe('useSnapshot', () => {
     (client.fetchSnapshot as jest.Mock).mockResolvedValue({ ts: 123, worker: {} });
     (client.fetchAlerts as jest.Mock).mockResolvedValue([{ id: 1, severity: 'CRIT' }]);
 
-    renderHook(() => useSnapshot());
+    await renderHook(() => useSnapshot());
 
     await waitFor(() => {
       expect(useAppStore.getState().snapshot).toEqual({ ts: 123, worker: {} });
@@ -40,7 +40,7 @@ describe('useSnapshot', () => {
   it('treats a non-array alerts payload as empty', async () => {
     (client.fetchSnapshot as jest.Mock).mockResolvedValue({ ts: 1 });
     (client.fetchAlerts as jest.Mock).mockResolvedValue({ not: 'an-array' });
-    renderHook(() => useSnapshot());
+    await renderHook(() => useSnapshot());
     await waitFor(() => {
       expect(useAppStore.getState().snapshot).toEqual({ ts: 1 });
     });
@@ -54,7 +54,7 @@ describe('useSnapshot', () => {
       snapshot: { ts: 9 },
       ts: 9,
     });
-    const { result } = renderHook(() => useSnapshot());
+    const { result } = await renderHook(() => useSnapshot());
     await waitFor(() => {
       expect(useAppStore.getState().snapshot).toEqual({ ts: 9 });
     });
@@ -65,7 +65,7 @@ describe('useSnapshot', () => {
     (client.fetchSnapshot as jest.Mock).mockRejectedValue(new Error('unreachable'));
     (client.fetchAlerts as jest.Mock).mockRejectedValue(new Error('unreachable'));
     (offline.getCachedSnapshot as jest.Mock).mockResolvedValue(null);
-    const { result } = renderHook(() => useSnapshot());
+    const { result } = await renderHook(() => useSnapshot());
     await waitFor(() => {
       expect(result.current.error).toBe('unreachable');
     });

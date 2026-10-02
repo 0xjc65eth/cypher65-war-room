@@ -10,57 +10,57 @@ describe('useBatteryMode', () => {
     jest.clearAllTimers();
   });
 
-  it('does not schedule a timer in max_battery (manual only)', () => {
+  it('does not schedule a timer in max_battery (manual only)', async () => {
     useAppStore.setState({ batteryMode: 'max_battery' });
     const cb = jest.fn();
-    const { result } = renderHook(() => useBatteryMode());
-    act(() => {
+    const { result } = await renderHook(() => useBatteryMode());
+    await act(() => {
       result.current.schedule(cb);
     });
-    act(() => {
-      jest.advanceTimersByTime(120000);
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(120000);
     });
     expect(cb).not.toHaveBeenCalled();
   });
 
-  it('schedules 60s in balanced and 15s in real_time', () => {
+  it('schedules 60s in balanced and 15s in real_time', async () => {
     const cb = jest.fn();
-    const { result, rerender } = renderHook(() => useBatteryMode());
-    act(() => {
+    const { result, rerender } = await renderHook(() => useBatteryMode());
+    await act(() => {
       result.current.schedule(cb);
     });
-    act(() => {
-      jest.advanceTimersByTime(59999);
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(59999);
     });
     expect(cb).not.toHaveBeenCalled();
-    act(() => {
-      jest.advanceTimersByTime(1);
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(1);
     });
     expect(cb).toHaveBeenCalledTimes(1);
 
-    act(() => {
+    await act(() => {
       result.current.setBatteryMode('real_time');
     });
-    rerender();
+    await rerender();
     const cb2 = jest.fn();
-    act(() => {
+    await act(() => {
       result.current.schedule(cb2);
     });
-    act(() => {
-      jest.advanceTimersByTime(15000);
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(15000);
     });
     expect(cb2).toHaveBeenCalledTimes(1);
   });
 
-  it('cleanup clears a running interval', () => {
+  it('cleanup clears a running interval', async () => {
     const cb = jest.fn();
-    const { result } = renderHook(() => useBatteryMode());
-    act(() => {
+    const { result } = await renderHook(() => useBatteryMode());
+    await act(() => {
       result.current.schedule(cb);
       result.current.cleanup();
     });
-    act(() => {
-      jest.advanceTimersByTime(60000);
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(60000);
     });
     expect(cb).not.toHaveBeenCalled();
   });

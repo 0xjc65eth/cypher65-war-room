@@ -25,7 +25,7 @@ describe('useFleet', () => {
     (client.fetchDevices as jest.Mock).mockResolvedValue({ devices });
     (client.fetchFleetSummary as jest.Mock).mockResolvedValue(summary);
 
-    const { result } = renderHook(() => useFleet());
+    const { result } = await renderHook(() => useFleet());
 
     await waitFor(() => {
       expect(result.current.devices).toHaveLength(1);
@@ -45,7 +45,7 @@ describe('useFleet', () => {
     (client.refreshDevice as jest.Mock).mockResolvedValue({ success: true, device: updated });
     useAppStore.setState({ devices: [old] });
 
-    const { result } = renderHook(() => useFleet());
+    const { result } = await renderHook(() => useFleet());
 
     // Wait for the initial load() to settle so it can't race the refresh.
     await waitFor(() => {
