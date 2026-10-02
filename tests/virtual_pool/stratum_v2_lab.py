@@ -1,9 +1,15 @@
 """Stateful local Stratum V2 Common-layer simulator used only by tests."""
 
 from contextlib import AbstractContextManager
+import math
 import socketserver
 import threading
 import time
+
+# Classification tests allow local handler scheduling; silence stays a short timeout.
+LAB_RESPONSE_TIMEOUT_SECONDS = 1.0
+LAB_SILENCE_TIMEOUT_SECONDS = 0.05
+MAX_RESPONSE_DELAY_SECONDS = 0.5
 
 MSG_SETUP_CONNECTION = 0x00
 MSG_SETUP_CONNECTION_SUCCESS = 0x01
@@ -30,6 +36,8 @@ class _Handler(socketserver.StreamRequestHandler):
         if lab.mode == "silent":
             time.sleep(lab.silent_seconds)
             return
+        if lab.response_delay_seconds:
+            time.sleep(lab.response_delay_seconds)
         if lab.mode == "noise":
             self.wfile.write(
                 b"\x01\x00" + b"\x00" + (48).to_bytes(3, "little") + b"N" * 48
@@ -71,16 +79,35 @@ class _Server(socketserver.ThreadingTCPServer):
 
 
 class StratumV2Lab(AbstractContextManager):
+    """Serve synthetic loopback responses with an optional bounded delay.
+
+    Example::
+
+        with StratumV2Lab(response_delay_seconds=0.1) as lab:
+            assert lab.port > 0
+
+    The delay applies only to responses, never to the explicit silence mode.
+    """
+
     def __init__(
         self,
         *,
         mode: str = "success",
         silent_seconds: float = 0.2,
         oversized_bytes: int = 8192,
+        response_delay_seconds: float = 0.0,
     ) -> None:
+        if (
+            isinstance(response_delay_seconds, bool)
+            or not isinstance(response_delay_seconds, (int, float))
+            or not 0 <= response_delay_seconds <= MAX_RESPONSE_DELAY_SECONDS
+            or not math.isfinite(response_delay_seconds)
+        ):
+            raise ValueError("response delay must be finite and between 0 and 0.5s")
         self.mode = mode
         self.silent_seconds = silent_seconds
         self.oversized_bytes = oversized_bytes
+        self.response_delay_seconds = response_delay_seconds
         self.request_count = 0
         self.last_request = b""
         self._lock = threading.Lock()
