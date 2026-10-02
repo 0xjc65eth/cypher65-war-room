@@ -120,8 +120,9 @@ environment warnings and intended negative-fixture messages.
 
 Independent engineering review of the retained validation does not constitute
 the repository-required GitHub approval. Exact-current-head GitHub CI,
-independent review and required approvals remain merge gates. No new heavy
-tests, GitHub changes, push, merge or deploy accompany this docs correction.
+independent review and required approvals remain merge gates. Local preparation
+did not rerun heavy tests or modify GitHub. Publication through a reviewable PR
+does not approve or deploy code.
 
 ## Independent engineering review
 
