@@ -347,7 +347,7 @@ def test_cached_user_fetch_miss_fetches_and_caches(monkeypatch):
     def _fetcher(*a):
         return {"data": "fresh"}
 
-    monkeypatch.setattr(sa, "_update_global", lambda key, val: stored.__setitem__(key, val))
+    monkeypatch.setattr(sa, "_update_global", lambda key, val, **meta: stored.__setitem__(key, val))
     assert up._cached_user_fetch("user_bc1q", _fetcher) == {"data": "fresh"}
     assert stored.get("user_bc1q") == {"data": "fresh"}
 

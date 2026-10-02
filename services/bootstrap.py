@@ -736,6 +736,9 @@ def init_db():
     c.execute("PRAGMA synchronous=NORMAL")
     c.execute("PRAGMA cache_size=-8000")  # 8MB cache
     c.execute("PRAGMA busy_timeout=3000")
+    from services.rental_evidence import ensure_schema as ensure_rental_evidence_schema
+
+    ensure_rental_evidence_schema(conn)
     # Stamp the schema revision so the DB layout is verifiable (audit #5).
     _record_schema_version(conn)
     conn.commit()
