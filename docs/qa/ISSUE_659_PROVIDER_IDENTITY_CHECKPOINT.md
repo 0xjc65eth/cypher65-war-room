@@ -1,7 +1,8 @@
 # Issue #659 — BTC PoW Lab identity checkpoint
 
 Date: 2026-10-02. PR: [#715](https://github.com/0xjc65eth/cypher65-war-room/pull/715).
-Base synchronized locally: `c597304efb867716c0b8cf45ec72d1de8a98dc53`.
+Original implementation and validation base: `c597304efb867716c0b8cf45ec72d1de8a98dc53`.
+Latest base synchronized locally: `31e108a6d9ff1f57fdce9d9245954c9b2d0eb797`.
 
 ## Scope and evidence boundary
 
@@ -55,11 +56,53 @@ Local artifacts (not uploaded):
 - `/private/tmp/cypher65-659-pool-pytest.xml`, SHA-256
   `ca16955d39d88e426a2394eb151b1b5bd578188742ac7292b9ca4dcd23623058`.
 
+## Validation after external security/rental merges
+
+Root normally integrated master `31d21e31adc4f8ad2eb4aaf0c5ee23b3f68de1fa`
+into this isolated branch, producing `d640f880c74ec8336df405b3b80d96381961ea01`.
+On that revision, the pool/Stratum/freshness-snapshot and rental-evidence
+selection passed **629 tests**, with 22 SQLite resource warnings and **95.71%**
+coverage of `services.pool_intelligence` (threshold 80%). JS core passed
+**1565** assertions; generated-bundle drift, syntax, diff, commitlint, Black
+on the four changed Python files, fatal Flake8 and Bandit medium/high passed.
+
+The first identical Python attempt in the restricted sandbox produced
+601 passes and 28 failures at synthetic loopback `socket.bind` (`EPERM`).
+The authorized loopback rerun above passed; the first run is not called green.
+An extra Black check on unchanged `tests/test_pool_detection.py` failed a
+pre-existing formatting difference; that file has no diff against master and
+was not reformatted as part of this provider change.
+
+Local rerun artifacts, not uploaded:
+
+- `/private/tmp/cypher65-659-postmerge-allowed-pytest.xml`, SHA-256
+  `5546021df355622b2954f7ce01d905c3d2fdefaadbf56d46c9f11ea502dadcb9`.
+- `/private/tmp/cypher65-659-postmerge-allowed-coverage.xml`, SHA-256
+  `cea5cc1fddb7efaca06b1d8a90467423676565a8ebdf2c4e4b886325c49daaf6`.
+
+Master `31e108a6d9ff1f57fdce9d9245954c9b2d0eb797` was subsequently integrated
+normally, adding the already merged #725 audit fix without changing pool
+production inputs, producing `1512c31003a6f271ebc2b6615c807db753f95eaf`.
+On that source revision, affected Playwright passed **16 tests** in 1.3 minutes
+across desktop/mobile and normal/reduced-motion modes; synthetic pool reports,
+not real provider integration. The isolated E2E server was stopped afterward.
+The strict frontend pipeline passed with 1565 JS assertions, zero console/page
+errors or overflow, and one actually intercepted snapshot HTTP 500 with zero
+remaining skeletons in each desktop/mobile viewport. Axe reported zero
+violations and 100/100 proxy scores, with one mobile `incomplete` check retained.
+The monkeypatch-target guard and nine snapshot-failure helper tests passed.
+Pipeline output is retained at
+`/private/tmp/cypher65-659-postmerge-frontend.log`; affected E2E HTML at this
+worktree's `e2e-report/index.html`. The normal local boot may read public market
+data; it is not production, customer-LAN or physical-ASIC evidence. Exact-head
+remote CI and independent GitHub approval remain required before any merge.
+
 ## Release gates
 
 Independent technical review is not GitHub approval. Require all protected
 checks green on the exact published head, current base, resolved review
 threads, and an independent GitHub approval before squash merge. The mobile
-dependency security mitigation remains in PR #723; do not duplicate it here
-or bypass its gate. Issue #659 remains open until its API acceptance criteria
+dependency security mitigation from PR #723 is now in this base; the earlier
+mobile failure does not describe the new head. Do not bypass any gate. Issue
+#659 remains open until its API acceptance criteria
 are implemented from verified evidence.
