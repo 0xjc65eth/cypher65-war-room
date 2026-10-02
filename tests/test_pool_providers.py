@@ -172,7 +172,7 @@ class TestDetectProvider:
         assert detection.matched_pattern == "btcpowlab-pool.com"
         assert detection.provider.has_stats_api is False
         assert detection.stats_url is None
-        assert "https://btcpowlab-pool.com" in detection.docs
+        assert "https://btcpowlab-pool.com" in detection.provider.docs
 
     @pytest.mark.parametrize(
         "host",
