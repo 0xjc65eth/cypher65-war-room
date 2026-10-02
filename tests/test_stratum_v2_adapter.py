@@ -1,6 +1,7 @@
 """Security and protocol tests for the bounded Stratum V2 adapter."""
 
 import socket
+import time
 
 import pytest
 
@@ -19,7 +20,11 @@ from services.pool_intelligence import (
     probe_stratum_v2,
     validate_stratum_v2_setup_response,
 )
-from tests.virtual_pool.stratum_v2_lab import StratumV2Lab
+from tests.virtual_pool.stratum_v2_lab import (
+    LAB_RESPONSE_TIMEOUT_SECONDS,
+    LAB_SILENCE_TIMEOUT_SECONDS,
+    StratumV2Lab,
+)
 
 
 def _resolution(address: str, port: int, *, tls: bool = False) -> PoolResolution:
@@ -141,7 +146,11 @@ def test_virtual_lab_failures_are_bounded_and_sanitized(
     with StratumV2Lab(mode=mode, oversized_bytes=8192) as lab:
         result = probe_stratum_v2(
             _resolution("8.8.8.8", lab.port),
-            timeout_seconds=0.05,
+            timeout_seconds=(
+                LAB_SILENCE_TIMEOUT_SECONDS
+                if mode == "silent"
+                else LAB_RESPONSE_TIMEOUT_SECONDS
+            ),
             maximum_frame_bytes=maximum_bytes,
             socket_factory=_lab_socket_factory(lab.port),
         )
@@ -160,3 +169,48 @@ def test_probe_rejects_malformed_timeout_and_empty_resolution():
         probe_stratum_v2(_resolution("8.8.8.8", 3333), timeout_seconds=True)
     with pytest.raises(StratumV2ProbeError, match="PoolResolution"):
         probe_stratum_v2("not-a-resolution")
+
+
+@pytest.mark.parametrize(
+    ("mode", "failure_code"), [("success", None), ("wrong_type", "unsupported_message")]
+)
+def test_delayed_lab_response_is_classified_without_a_silence_budget(
+    mode: str, failure_code: str | None
+) -> None:
+    """A real delayed response must reach parsing, not become a scheduling timeout."""
+    response_delay_seconds = 0.1
+    with StratumV2Lab(mode=mode, response_delay_seconds=response_delay_seconds) as lab:
+        probe_started = time.perf_counter()
+        result = probe_stratum_v2(
+            _resolution("8.8.8.8", lab.port),
+            timeout_seconds=LAB_RESPONSE_TIMEOUT_SECONDS,
+            socket_factory=_lab_socket_factory(lab.port),
+        )
+        probe_elapsed_seconds = time.perf_counter() - probe_started
+        assert lab.request_count == 1
+
+    assert result.failure_code == failure_code
+    assert result.healthy is (failure_code is None)
+    assert result.protocol is (
+        PoolProtocol.STRATUM_V2 if failure_code is None else PoolProtocol.UNKNOWN
+    )
+    assert result.capability is (
+        CapabilityState.SUPPORTED if failure_code is None else CapabilityState.ERROR
+    )
+    # Measure only probe time, not the fixture's server shutdown/join overhead.
+    assert probe_elapsed_seconds >= response_delay_seconds
+    assert "secret-error-detail" not in repr(result)
+
+
+@pytest.mark.parametrize("delay", [True, -0.1, 0.51, float("nan"), float("inf"), "0.1"])
+def test_lab_rejects_invalid_response_delay_before_opening_a_socket(
+    delay: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The fixture's explicit response wait must stay finite and bounded."""
+
+    def unexpected_server(*args, **kwargs):
+        raise AssertionError("invalid delay must fail before server creation")
+
+    monkeypatch.setattr("tests.virtual_pool.stratum_v2_lab._Server", unexpected_server)
+    with pytest.raises(ValueError, match="response delay"):
+        StratumV2Lab(response_delay_seconds=delay)
