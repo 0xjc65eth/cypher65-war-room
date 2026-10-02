@@ -127,7 +127,7 @@ posteriores e registram o estado atual; não reinterpretam as conclusões histó
 | API-002 | parcial | erros de schema estão cobertos; ainda falta afirmar explicitamente que nenhum adaptador é chamado |
 | OPS-001 | parcial | resposta offline negada está coberta; falta verificar audit persistido e ausência de I/O do adaptador |
 | OPS-002 | parcial | `tests/test_polling_integration.py` cobre fallback stale para falha de pool, não todos os timeouts/5xx/campos |
-| OPS-003 | lacuna | `tests/test_polling_reconnection.py` não existe → #610 |
+| OPS-003 | implementado | `tests/test_polling_reconnection.py` cobre backoff, recuperação e transições auditadas → #610 |
 | TEL-001 | implementado | `tests/test_telemetry_idempotency.py`: replay idempotente, conflito para payload alterado, isolamento por tenant e duplicata concorrente (PR #692 no master atual) |
 | OBS-001 | implementado | `tests/test_fleet_observability_events.py`: envelope seguro/correlacionado, scan, inclusão manual, transições online/offline/stale, provider pool e shares concorrentes; caminho externo de provider não é exercitado |
 | TEL-002 | implementado | `tests/test_telemetry_validation.py` e `tests/test_agent_api.py`: rejeição/quarentena com motivo, preservação do último dado bom e fallback standalone inválido (#609 / PR #704) |
@@ -156,7 +156,6 @@ exceções; IDs desconhecidos, duplicados, sem vínculo ou com classificação d
 
 | ID | Categoria | Justificativa | Acompanhamento |
 | --- | --- | --- | --- |
-| OPS-003 | lacuna | Fluxo de reconexão e backoff ainda não tem teste dedicado | Issue #610 |
 | UI-002 | lacuna | Falta spec E2E de acessibilidade de dashboard e comando | Issue #612 |
 | LOAD-001 | bloqueado | SLO de latência/memória não foi aprovado; não inventar limite para fazer gate | Issue #606 |
 | LOAD-002 | bloqueado | SLO de ingestão/backlog não foi aprovado; não inventar limite para fazer gate | Issue #607 |
