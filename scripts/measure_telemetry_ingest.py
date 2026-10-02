@@ -24,6 +24,7 @@ import os
 import platform
 import queue
 import secrets
+import signal
 import socket
 import sqlite3
 import subprocess
@@ -1077,19 +1078,44 @@ def _write_artifact_exclusive(
     print(encoded, end="")
 
 
-def _communicate_bounded(worker, timeout_seconds: float) -> tuple[str, str, bool]:
-    """Wait for a child and terminate/reap it after its hard timeout."""
+def _signal_owned_process_group(
+    worker: subprocess.Popen, process_group_id: int | None, sig: int
+) -> None:
+    """Signal only the supervisor-owned isolated process group when available."""
+    if process_group_id is not None and os.name == "posix":
+        try:
+            os.killpg(process_group_id, sig)
+            return
+        except ProcessLookupError:
+            return
+    if sig == signal.SIGTERM:
+        worker.terminate()
+    else:
+        worker.kill()
+
+
+def _communicate_bounded(
+    worker,
+    timeout_seconds: float,
+    process_group_id: int | None = None,
+) -> tuple[str, str, bool]:
+    """Wait for a child; terminate its owned group within timeout plus 3 seconds."""
     try:
         stdout, stderr = worker.communicate(timeout=timeout_seconds)
         return stdout, stderr, False
     except subprocess.TimeoutExpired:
-        worker.terminate()
+        cleanup_deadline = time.monotonic() + 3.0
+        _signal_owned_process_group(worker, process_group_id, signal.SIGTERM)
         try:
             stdout, stderr = worker.communicate(timeout=1.0)
+            # The supervisor timed out even if its direct child exited during
+            # TERM handling; remove any descendant that closed inherited pipes.
+            _signal_owned_process_group(worker, process_group_id, signal.SIGKILL)
         except subprocess.TimeoutExpired:
-            worker.kill()
+            _signal_owned_process_group(worker, process_group_id, signal.SIGKILL)
+            remaining = max(0.0, cleanup_deadline - time.monotonic())
             try:
-                stdout, stderr = worker.communicate(timeout=1.0)
+                stdout, stderr = worker.communicate(timeout=remaining)
             except subprocess.TimeoutExpired:
                 for stream in (worker.stdout, worker.stderr):
                     if stream is not None:
@@ -1129,7 +1155,9 @@ def _run_in_worker_process(args: argparse.Namespace) -> dict[str, Any]:
         start_new_session=True,
     )
     stdout, stderr, timed_out = _communicate_bounded(
-        worker, timeout_seconds=args.max_wall_seconds + 3
+        worker,
+        timeout_seconds=args.max_wall_seconds,
+        process_group_id=worker.pid if os.name == "posix" else None,
     )
     temporary = output.with_name(f".{output.name}.{temporary_tag}.tmp")
     if timed_out:

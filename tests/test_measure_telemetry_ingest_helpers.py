@@ -9,6 +9,7 @@ import math
 import os
 from pathlib import Path
 import secrets
+import signal
 import socket
 import subprocess
 import sys
@@ -100,7 +101,9 @@ def test_transport_guard_counts_an_attempt_before_raising() -> None:
     assert guard.attempts == 1
 
 
-def test_bounded_subprocess_reaps_normal_and_hung_children() -> None:
+def test_bounded_subprocess_reaps_owned_group_with_hung_descendant(
+    tmp_path: Path,
+) -> None:
     normal = subprocess.Popen(
         [sys.executable, "-c", "print('child-ok')"],
         stdout=subprocess.PIPE,
@@ -113,24 +116,51 @@ def test_bounded_subprocess_reaps_normal_and_hung_children() -> None:
     assert not timed_out
     assert normal.returncode == 0
 
+    marker = tmp_path / "descendant-survived.txt"
+    descendant_code = (
+        "import pathlib,signal,time; "
+        "signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+        "time.sleep(5); pathlib.Path(" + repr(str(marker)) + ").write_text('alive')"
+    )
+    parent_code = (
+        "import signal,subprocess,sys,time; "
+        "signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+        "child=subprocess.Popen([sys.executable,'-c',sys.argv[1]]); "
+        "print(child.pid,flush=True); time.sleep(30)"
+    )
     hung = subprocess.Popen(
-        [
-            sys.executable,
-            "-c",
-            "import signal,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(30)",
-        ],
+        [sys.executable, "-c", parent_code, descendant_code],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
         start_new_session=True,
     )
     try:
-        _, _, timed_out = HARNESS._communicate_bounded(hung, 0.5)
+        started = time.monotonic()
+        stdout, stderr, timed_out = HARNESS._communicate_bounded(
+            hung, 0.25, process_group_id=hung.pid
+        )
+        elapsed = time.monotonic() - started
         assert timed_out
         assert hung.returncode is not None
+        assert elapsed <= 3.75  # requested wait plus three-second cleanup grace
+        assert not stderr
+        descendant_pid = int(stdout.strip())
+        for _ in range(20):
+            try:
+                os.kill(descendant_pid, 0)
+            except ProcessLookupError:
+                break
+            time.sleep(0.01)
+        else:
+            raise AssertionError("owned descendant remained after group kill")
+        assert not marker.exists()
     finally:
+        try:
+            os.killpg(hung.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
         if hung.poll() is None:
-            hung.kill()
             hung.communicate()
 
 
@@ -145,6 +175,10 @@ def test_default_artifact_name_uses_the_committed_revision() -> None:
     assert HARNESS._default_output_path() == Path(
         f"artifacts/load-002-baseline-{revision}.json"
     )
+    failure = HARNESS._failure_artifact(
+        SimpleNamespace(runs=1, max_wall_seconds=30), "bounded test"
+    )
+    assert failure["hard_wall_cap_seconds"] == 33
     result = HARNESS._latency_summary([1_000_000, 4_000_000])
     assert result == {
         "count": 2,
