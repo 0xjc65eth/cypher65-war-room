@@ -153,6 +153,31 @@ class TestDetectProvider:
         assert detection.provider_id == "unknown"
         assert detection.host == "notbraiins.com"
 
+    @pytest.mark.parametrize(
+        "host",
+        ["btcpowlab-pool.com", "eu.btcpowlab-pool.com", "stratum.eu.btcpowlab-pool.com"],
+    )
+    def test_detects_btc_powlab_exact_host_and_subdomains(self, host):
+        detection = detect_provider(f"stratum+tcp://{host}:3333")
+
+        assert detection.provider_id == "btcpowlab"
+        assert detection.label == "BTC PoW Lab"
+        assert detection.chain is Chain.BTC
+        assert detection.kind is PoolKind.POOL
+        assert detection.matched_pattern == "btcpowlab-pool.com"
+        assert detection.has_stats_api is False
+        assert detection.stats_url is None
+        assert "https://btcpowlab-pool.com" in detection.docs
+
+    @pytest.mark.parametrize(
+        "host",
+        ["notbtcpowlab-pool.com", "evil-btcpowlab-pool.com", "btcpowlab-pool.com.evil.test"],
+    )
+    def test_rejects_btc_powlab_lookalike_domains(self, host):
+        detection = detect_provider(f"stratum+tcp://{host}:3333")
+
+        assert detection.provider_id == "unknown"
+
     def test_subdomain_of_a_registered_pool_matches(self):
         detection = detect_provider("stratum+tcp://eu.stratum.braiins.com:3333")
 
@@ -500,6 +525,22 @@ class TestResolvePoolStats:
         assert stats.provider_id == "ocean"
         assert stats.source == "asic"
         assert stats.hashrate_hs == pytest.approx(1e12)
+
+    def test_btc_powlab_without_api_falls_back_to_hardware(self):
+        def fetcher(url):  # pragma: no cover — no API is configured
+            raise AssertionError("BTC PoW Lab API must not be requested")
+
+        stats = resolve_pool_stats(
+            ADDR,
+            fetcher=fetcher,
+            asic_pool_url="stratum+tcp://stratum.btcpowlab-pool.com:3333",
+            asic_telemetry={"hashrate_hs": 8e11, "shares_accepted": 12},
+        )
+
+        assert stats.provider_id == "btcpowlab"
+        assert stats.source == "asic"
+        assert stats.hashrate_hs == pytest.approx(8e11)
+        assert stats.shares_accepted == 12
 
     def test_unregistered_asic_pool_is_honoured_not_replaced(self):
         """The hardware says where it mines — do not report another pool's
