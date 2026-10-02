@@ -1,0 +1,8 @@
+tree a06e6684c05f42fbfcc082b4d8a8501e8a046b4a
+parent c597304efb867716c0b8cf45ec72d1de8a98dc53
+author BountyHunter <bounty@autonomous.dev> 1790965832 +0200
+committer BountyHunter <bounty@autonomous.dev> 1790965832 +0200
+
+test(fleet): add local diagnostic scale measurement
+
+Refs #606. Measure the real authenticated Fleet summary with synthetic SQLite fixtures and fail-closed transport guards; keep unapproved SLO acceptance blocked.
