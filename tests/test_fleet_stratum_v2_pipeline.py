@@ -42,7 +42,11 @@ from services.pool_intelligence import (
     validate_stratum_v2_setup_response,
 )
 from services.pool_intelligence.endpoint import EndpointError
-from tests.virtual_pool.stratum_v2_lab import StratumV2Lab
+from tests.virtual_pool.stratum_v2_lab import (
+    LAB_RESPONSE_TIMEOUT_SECONDS,
+    LAB_SILENCE_TIMEOUT_SECONDS,
+    StratumV2Lab,
+)
 
 ADDR = "bc1qexampleaddress000000000000000000000"
 
@@ -212,7 +216,11 @@ class TestFleetSv2ProbePipeline:
         with StratumV2Lab(mode=mode, oversized_bytes=8192) as lab:
             result = probe_stratum_v2(
                 _resolution("8.8.8.8", lab.port),
-                timeout_seconds=0.05,
+                timeout_seconds=(
+                    LAB_SILENCE_TIMEOUT_SECONDS
+                    if mode == "silent"
+                    else LAB_RESPONSE_TIMEOUT_SECONDS
+                ),
                 maximum_frame_bytes=maximum_bytes,
                 socket_factory=_lab_socket_factory(lab.port),
             )
