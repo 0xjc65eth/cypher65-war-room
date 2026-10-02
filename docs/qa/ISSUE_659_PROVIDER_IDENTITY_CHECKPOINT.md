@@ -2,7 +2,7 @@
 
 Date: 2026-10-02. PR: [#715](https://github.com/0xjc65eth/cypher65-war-room/pull/715).
 Original implementation and validation base: `c597304efb867716c0b8cf45ec72d1de8a98dc53`.
-Latest base synchronized locally: `31e108a6d9ff1f57fdce9d9245954c9b2d0eb797`.
+Latest base synchronized locally: `7c40f9d003aa4506eb261963fda93dd0cae4b02b`.
 
 ## Scope and evidence boundary
 
@@ -96,6 +96,14 @@ Pipeline output is retained at
 worktree's `e2e-report/index.html`. The normal local boot may read public market
 data; it is not production, customer-LAN or physical-ASIC evidence. Exact-head
 remote CI and independent GitHub approval remain required before any merge.
+
+After external #726 and #727 merges, master
+`7c40f9d003aa4506eb261963fda93dd0cae4b02b` was integrated normally. The incoming
+changes are the scoped Rentals toolbar and the separate #606 diagnostic; they
+do not change the pool provider/resolver/statistics production inputs. The
+merged-source bundle drift and JS core (1565 assertions) were rechecked. The
+629-test and 16-E2E runs above retain their actual earlier source revisions;
+they are not mislabeled as reruns on this later integration.
 
 ## Release gates
 
