@@ -48,5 +48,42 @@ verdict; there is no independent sign-off for this candidate.
 4. Publish a draft PR, run exact-head CI and obtain repository-required approval.
 5. Revalidate merge rules and only then consider the authorized squash merge.
 
+## Resumed final-head validation
+
+The account usage query subsequently returned `ordinaryUsageAllowed: true`.
+Work resumed through the same approved execution path, without a workaround.
+The completed final round used commit
+`dedc342256d7ad6782a39bfb15e446c11826a145` and **CI npm 10.9.2**:
+
+| Check | Final result |
+| --- | --- |
+| Fresh-cache `npm ci`, SSH configuration disabled | Passed |
+| `npm run test:security-node-forge` | Passed: forgery rejected; valid RSA verifies; tampering rejected |
+| `npm audit --audit-level=high` | Passed, zero reported vulnerabilities |
+| `npm ls node-forge --all`, test-renderer presence | Passed, one pinned forge version, no unrelated lockfile churn |
+| Expo Doctor | 21/21 passed |
+| Biome lint / TypeScript | Passed |
+| Full Jest | **16/16 suites, 91/91 tests passed** |
+| iOS / Android / web exports | Passed |
+
+The earlier `AiOperatorScreen` timeout did not recur in two subsequent complete
+suites or ten targeted repetitions. It remains historical intermittent evidence,
+not a demonstrated product regression; the test was not changed, skipped or
+weakened. Exact-head GitHub CI must still run and is not replaced by local results.
+
+The clean HTTPS fetch of the full upstream SHA (cache miss) is recorded at line
+1180 of
+`/private/tmp/cypher65-710-final-ci-npm1092-cache/_logs/2026-10-02T16_33_34_500Z-debug-0.log`.
+These logs are local temporary evidence, not uploaded Actions artifacts.
+
+The independent Security reviewer technically approved the cryptographic patch
+and immutable temporary pin, reporting no P0/P1 finding. The reviewer verified
+the nested DigestAlgorithm child-count guard, upstream vector and transitive
+Expo CLI/code-signing use sites; no direct application import was found. The
+upstream PR remains open with no official patched release, so this approval is
+for a temporary candidate backport, not a claim of maintainer release approval.
+The reviewer did not independently repeat installation. This is engineering
+sign-off, **not the required GitHub approval or merge authorization**.
+
 No required audit gate, approval or CI check was bypassed. No direct push to
 `master`, merge or deployment occurred at this checkpoint.
