@@ -192,6 +192,8 @@ const classifyRevokeRefusal = _fleet.classifyRevokeRefusal;
 const cloudWizardView = _fleet.cloudWizardView;
 const deviceAddOutcome = _fleet.deviceAddOutcome;
 const poolDetectionView = _dashboard.poolDetectionView;
+const _rentalEvidence = loadFragment('46-rentals.js',
+  '{ _rentalEvidenceStatus, _rentalEvidenceUtc, _rentalEvidenceNumber }');
 
 // ── Test counters ─────────────────────────────────────────────────────────
 let passed = 0;
@@ -5498,6 +5500,50 @@ for (const [origin, token] of [
   assertEqual('cloud error prefers message over error', denied.message, 'Instale o AGENTE LOCAL');
   assertEqual('cloud error keeps is_cloud', denied.isCloud, true);
 })();
+
+// Sampled rental evidence never turns stale/missing values into delivery.
+assertEqual('rental evidence preserves observed zero', _rentalEvidence._rentalEvidenceNumber(0, ' TH/s'), '0 TH/s');
+assertEqual('rental evidence null is absent', _rentalEvidence._rentalEvidenceNumber(null, ' TH/s'), '—');
+assertEqual('rental evidence empty is absent', _rentalEvidence._rentalEvidenceNumber('', ' TH/s'), '—');
+assertEqual('rental evidence nonfinite is absent', _rentalEvidence._rentalEvidenceNumber(Infinity, '%'), '—');
+assertEqual('rental evidence observation UTC', _rentalEvidence._rentalEvidenceUtc(1800000000), '2027-01-15 08:00:00 UTC');
+assertEqual('rental evidence missing observation has no invented timestamp', _rentalEvidence._rentalEvidenceUtc(null), '—');
+assertEqual('rental evidence invalid timestamp has no invented timestamp', _rentalEvidence._rentalEvidenceUtc(-1), '—');
+assertEqual('rental evidence stale stays warning', _rentalEvidence._rentalEvidenceStatus({status: 'stale'}), {label: 'Dados antigos', tone: 'is-warn'});
+assertEqual('rental evidence missing stays warning', _rentalEvidence._rentalEvidenceStatus({status: 'missing'}), {label: 'Sem observações', tone: 'is-warn'});
+assertEqual('rental evidence confirmed verdict is sampled', _rentalEvidence._rentalEvidenceStatus({status: 'under_delivery'}), {label: 'Leituras abaixo do limite', tone: 'is-bad'});
+assertEqual('rental evidence unknown verdict is unavailable', _rentalEvidence._rentalEvidenceStatus({status: 'unexpected'}), {label: 'Avaliação indisponível', tone: 'is-warn'});
+let evidenceReads = 0;
+const evidenceRetry = loadFragment('46-rentals.js', '_rentalEvidenceRequest', {
+  AbortController, setTimeout, clearTimeout,
+  authFetch: async () => {
+    evidenceReads++;
+    return evidenceReads === 1 ? {ok: false, status: 503} : {ok: true, json: async () => ({success: true, binding: null})};
+  },
+});
+assertEqual('rental evidence safe GET retry returns server payload', await evidenceRetry('/api/evidence'), {success: true, binding: null});
+assertEqual('rental evidence safe GET retries once', evidenceReads, 2);
+let evidenceWrites = 0;
+const evidenceWrite = loadFragment('46-rentals.js', '_rentalEvidenceRequest', {
+  AbortController, setTimeout, clearTimeout,
+  authFetch: async () => { evidenceWrites++; return {ok: false, status: 503}; },
+});
+try { await evidenceWrite('/api/evidence', {method: 'POST'}); } catch (error) { /* Expected server failure. */ }
+assertEqual('rental evidence uncertain write never retries', evidenceWrites, 1);
+let evidenceTimeouts = 0;
+const evidenceSignals = [];
+const evidenceTimeout = loadFragment('46-rentals.js', '_rentalEvidenceRequest', {
+  AbortController, clearTimeout,
+  setTimeout: callback => setTimeout(callback, 0),
+  authFetch: (url, options) => {
+    evidenceTimeouts++;
+    evidenceSignals.push(options.signal);
+    return new Promise(() => {});
+  },
+});
+try { await evidenceTimeout('/api/evidence'); } catch (error) { /* Expected bounded read failure. */ }
+assertEqual('rental evidence stalled auth/read remains bounded', evidenceTimeouts, 2);
+assertTruthy('rental evidence timeout aborts every attempted read', evidenceSignals.every(signal => signal.aborted));
 
 //  RESULTS
 // ═══════════════════════════════════════════════════════════════════════════

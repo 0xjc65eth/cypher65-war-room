@@ -1054,6 +1054,44 @@
     <div class="rentals-detail__autoex rentals-detail__autoex--auth" id="rentals-detail-auth" hidden></div>
     <div class="rentals-detail__grid" id="rentals-detail-grid"></div>
     <div class="rentals-perf" id="rentals-detail-perf"></div>
+    <section class="rentals-evidence" id="rentals-evidence" aria-labelledby="rentals-evidence-title" hidden>
+      <div class="rentals-evidence__head">
+        <h3 id="rentals-evidence-title">Evidência do pool de destino</h3>
+        <button type="button" class="chip" id="rentals-evidence-refresh">Atualizar evidência</button>
+      </div>
+      <p class="rentals-evidence__note" id="rentals-evidence-limitations">Leituras do pool de destino, vínculo e contrato declarados pelo operador. Janela média do pool não informada; amostragem não comprova entrega contínua.</p>
+      <div class="rentals-evidence__summary" id="rentals-evidence-summary" aria-busy="false"></div>
+      <p class="rentals-evidence__message" id="rentals-evidence-message" role="status" aria-live="polite"></p>
+      <form class="rentals-evidence__form" id="rentals-evidence-form">
+        <label for="rentals-evidence-source">Worker do pool de destino
+          <select id="rentals-evidence-source" required aria-describedby="rentals-evidence-source-help"><option value="">Selecione um worker</option></select>
+        </label>
+        <label for="rentals-evidence-contract">Contrato declarado (TH/s)
+          <input id="rentals-evidence-contract" type="number" min="0.000000001" max="1000000000" step="any" required>
+        </label>
+        <label for="rentals-evidence-threshold">Limite de entrega (%)
+          <input id="rentals-evidence-threshold" type="number" min="0.000000001" max="100" step="any" required>
+        </label>
+        <label for="rentals-evidence-duration">Duração da regra (segundos)
+          <input id="rentals-evidence-duration" type="number" min="15" max="86400" step="1" required>
+        </label>
+        <label for="rentals-evidence-gap">Lacuna máxima (segundos)
+          <input id="rentals-evidence-gap" type="number" min="15" max="3600" step="1" required aria-describedby="rentals-evidence-rule-help">
+        </label>
+        <p class="rentals-evidence__help" id="rentals-evidence-source-help">Somente workers das carteiras conectadas à sua sessão aparecem aqui. A coleta ocorre enquanto a sessão da carteira está ativa.</p>
+        <p class="rentals-evidence__help" id="rentals-evidence-rule-help">O alerta usa leituras abaixo do limite durante a duração informada. A lacuna máxima deve ser menor ou igual a essa duração. Dados ausentes ou antigos não comprovam subentrega.</p>
+        <label class="rentals-evidence__exclusive" for="rentals-evidence-exclusive">
+          <input id="rentals-evidence-exclusive" type="checkbox" required>
+          Declaro que este worker recebe exclusivamente o hashrate deste aluguel e que o valor contratado acima está correto.
+        </label>
+        <div class="rentals-evidence__actions">
+          <button type="submit" class="btn btn--mini" id="rentals-evidence-save">Salvar vínculo e regra</button>
+          <button type="button" class="chip" id="rentals-evidence-export" disabled>Exportar evidência CSV</button>
+          <button type="button" class="chip" id="rentals-evidence-remove" hidden>Desativar vínculo</button>
+        </div>
+      </form>
+      <div class="rentals-evidence__observations" id="rentals-evidence-observations"></div>
+    </section>
     <div class="rentals-trust" id="rentals-detail-trust" hidden></div>
     <div class="rentals-rig" id="rentals-detail-rig" hidden></div>
     <div class="chart-wrap rentals-detail__chart"><canvas id="rentals-detail-chart"></canvas></div>

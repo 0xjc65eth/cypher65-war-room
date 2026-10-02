@@ -28,6 +28,7 @@ módulo. Patche `services.snapshot_assembly` quando o alvo for o fetch layer.
 """
 
 import concurrent.futures
+import json
 import logging
 import threading
 import time
@@ -53,7 +54,7 @@ _global_lock = threading.Lock()
 GLOBAL_CACHE_TTL = 15  # seconds — matches POLL_INTERVAL
 
 
-def _update_global(key: str, value: Any):
+def _update_global(key: str, value: Any, collection_started_at: float | None = None):
     """Cache a value under key, evicting the oldest entry when over cap.
 
     The shared cache is a plain dict; when it exceeds _GLOBAL_CACHE_MAX the
@@ -67,7 +68,13 @@ def _update_global(key: str, value: Any):
                 del _global_cache[oldest]
             except StopIteration:
                 pass
-        _global_cache[key] = {"data": value, "ts": int(time.time())}
+        completed_at = time.time()
+        _global_cache[key] = {
+            "data": value,
+            "ts": int(completed_at),
+            "collection_started_at": collection_started_at,
+            "collection_completed_at": completed_at,
+        }
 
 
 # ── Per-ADDRESS fetch cache (Phase: 1000+ user scale) ──────────────────────
@@ -88,8 +95,9 @@ def _cached_user_fetch(key: str, fetcher, *args):
     cached = _get_global(key, ttl=USER_FETCH_TTL)
     if cached is not None:
         return cached
+    started_at = time.time()
     data = fetcher(*args)
-    _update_global(key, data)
+    _update_global(key, data, collection_started_at=started_at)
     return data
 
 
@@ -104,6 +112,8 @@ def _get_global(key: str, ttl: int = GLOBAL_CACHE_TTL) -> Any:
 # ── API fetch helpers ────────────────────────────────────────────────────────
 FETCH_MAX_RETRIES = 2
 FETCH_BACKOFF_BASE = 1.5
+MAX_USER_RESPONSE_BYTES = 2 * 1024 * 1024
+MAX_USER_WORKERS = 250
 PARASITE_API = "https://parasite.space/api"
 MEMPOOL_API = "https://mempool.space/api"
 BTC_PRICE_CACHE_TTL = 300  # 5 min for CoinGecko
@@ -113,17 +123,47 @@ btc_price_cache: dict = {"ts": 0, "data": None}
 def _fetch_json(url: str, timeout: int = 10) -> Any:
     """Fetch JSON with retry + backoff."""
     last_err = None
+    is_user_reading = url.startswith(f"{PARASITE_API}/user/")
     for attempt in range(FETCH_MAX_RETRIES + 1):
+        r = None
         try:
             r = requests.get(
-                url, timeout=timeout, headers={"User-Agent": "cypher65-war-room/1.0"}
+                url,
+                timeout=timeout,
+                headers={"User-Agent": "cypher65-war-room/1.0"},
+                **(
+                    {"stream": True, "allow_redirects": False}
+                    if is_user_reading
+                    else {}
+                ),
             )
             r.raise_for_status()
+            if is_user_reading:
+                if r.status_code != 200:
+                    raise requests.RequestException("Unexpected pool response status")
+                chunks = []
+                size = 0
+                deadline = time.monotonic() + timeout
+                for chunk in r.iter_content(chunk_size=8192):
+                    size += len(chunk)
+                    if size > MAX_USER_RESPONSE_BYTES or time.monotonic() > deadline:
+                        log.warning("pool_user_reading_exceeds_collection_budget")
+                        return {"_rental_quality": "oversized"}
+                    chunks.append(chunk)
+                data = json.loads(b"".join(chunks))
+                workers = data.get("workerData") if isinstance(data, dict) else None
+                if isinstance(workers, list) and len(workers) > MAX_USER_WORKERS:
+                    log.warning("pool_user_reading_exceeds_worker_budget")
+                    return {"_rental_quality": "oversized"}
+                return data
             return r.json()
         except Exception as e:
             last_err = e
             if attempt < FETCH_MAX_RETRIES:
                 time.sleep(FETCH_BACKOFF_BASE * attempt)
+        finally:
+            if is_user_reading and r is not None:
+                r.close()
     log.warning("[fetch] %s error: %s", url, last_err)
     return None
 
@@ -360,6 +400,23 @@ def _build_snapshot(address: str, worker_name: str, tenant_id: str = "") -> dict
     try:
         # ── Fetch per-user data ──
         user = _fetch_user_data(address)
+        # Preserve the ORIGINAL retrieval interval on cache hits. The collector
+        # uses raw workerData, never the sanitized/deduplicated primary worker.
+        # Object identity prevents a concurrent cache replacement from pairing
+        # this payload with a different response's timestamps.
+        if tenant_id:
+            with _global_lock:
+                reading = _global_cache.get(f"user_{address}")
+                if (
+                    reading
+                    and reading["data"] is user
+                    and reading.get("collection_started_at") is not None
+                ):
+                    snapshot["_rental_pool_observation"] = {
+                        "payload": user,
+                        "collection_started_at": reading["collection_started_at"],
+                        "collection_completed_at": reading["collection_completed_at"],
+                    }
         account_data = _fetch_account(address)
 
         # ── Fetch global data ──
