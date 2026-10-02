@@ -202,7 +202,9 @@ def test_delayed_lab_response_is_classified_without_a_silence_budget(
     assert "secret-error-detail" not in repr(result)
 
 
-@pytest.mark.parametrize("delay", [True, -0.1, 0.51, float("nan"), float("inf"), "0.1"])
+@pytest.mark.parametrize(
+    "delay", [True, -0.1, 0.51, float("nan"), float("inf"), "0.1", 10**400, -(10**400)]
+)
 def test_lab_rejects_invalid_response_delay_before_opening_a_socket(
     delay: object, monkeypatch: pytest.MonkeyPatch
 ) -> None:

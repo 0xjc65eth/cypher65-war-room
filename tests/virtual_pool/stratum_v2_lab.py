@@ -100,8 +100,8 @@ class StratumV2Lab(AbstractContextManager):
         if (
             isinstance(response_delay_seconds, bool)
             or not isinstance(response_delay_seconds, (int, float))
-            or not math.isfinite(response_delay_seconds)
             or not 0 <= response_delay_seconds <= MAX_RESPONSE_DELAY_SECONDS
+            or not math.isfinite(response_delay_seconds)
         ):
             raise ValueError("response delay must be finite and between 0 and 0.5s")
         self.mode = mode
