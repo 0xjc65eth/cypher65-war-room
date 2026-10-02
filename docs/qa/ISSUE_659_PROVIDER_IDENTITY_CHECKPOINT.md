@@ -2,7 +2,7 @@
 
 Date: 2026-10-02. PR: [#715](https://github.com/0xjc65eth/cypher65-war-room/pull/715).
 Original implementation and validation base: `c597304efb867716c0b8cf45ec72d1de8a98dc53`.
-Latest base synchronized locally: `cd4925df6079faa6b493a7590f1bf518e241ca9e`.
+Latest base synchronized locally: `39fa95b5833ea0f61c8f578df1cabb388d8a61e4`.
 
 ## Scope and evidence boundary
 
@@ -123,6 +123,28 @@ revision, JS core (**1565 assertions**), bundle drift, syntax and the
 monkeypatch-target guard passed. No full suite, E2E, server or benchmark was
 rerun for this bounded synchronization. The earlier 629-test and 16-E2E
 records remain tied to their original sources, not this new integration.
+
+Following externally merged #731, an ordinary local merge of master
+`39fa95b5833ea0f61c8f578df1cabb388d8a61e4` produced
+`49ab5a61cf87ca0f4c31f6490b55192cdc43a8e3`. Incoming changes comprise only
+the three #729 fixture/test files and its QA checkpoint. All production files,
+including pool/provider inputs, remain byte-identical to pre-integration
+`542b6e4ea2ce4d2c3e16a95ea5dedaba24523062`. JS core (**1565 assertions**),
+bundle drift, syntax and monkeypatch-target guard passed on that merged source.
+No full suite, E2E, application server or benchmark was rerun here; the earlier
+629-test and 16-E2E runs retain their actual source revisions. This synchronizes
+the feature branch only, not an agent-performed protected-branch merge or approval.
+
+Latest light artifacts remain local, out of tree and not uploaded, in
+`/private/tmp/cypher65-715-39fa-integration.JFITFy/`. The subsequent checkpoint
+edit changes documentation only; it is not a new measured production source.
+
+| Artifact | SHA256 |
+| --- | --- |
+| `bundle-drift.log` | `a96b5918454bd04b48a3526ce8cf0ce44431a81fe21af34c8ae06db728efe65b` |
+| `js-core.log` | `14ca31c7f5dfd3e5489f65e9b3f2d4ed0d66a3b51abeab4d586f51583b82b8ab` |
+| `js-syntax.log` | `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855` |
+| `monkeypatch-guard.log` | `b9f3743163a0fc72822b7bb4f8501cfbc9f575dd84b972dfd21e084dc3606196` |
 
 ## Release gates
 
