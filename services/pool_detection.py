@@ -170,8 +170,8 @@ def _read_latest_report(get_db: Callable[[], Any], tenant_id: str) -> dict:
         pool_url = str(payload.get("pool_url") or "").strip()
         if not pool_url:
             continue
-        # The whole payload travels with the report: it is the source of the
-        # numbers for pools that publish no public API.
+        # Retain hardware telemetry for the ASIC fallback when a verified
+        # public API integration is unavailable or returns no usable data.
         return {
             "pool_url": pool_url,
             "pool_user": str(payload.get("pool_user") or "").strip(),
@@ -197,9 +197,9 @@ def detected_pool_for(
     numbers came from the pool's API (``"api"``) or from the miner itself
     (``"asic"``).
 
-    Cached per (address, tenant, pool) for ``STATS_TTL`` — except when the pool
-    publishes a stats API and that API did not answer. That case is reported (the
-    numbers are the miner's own, which is real) but deliberately NOT cached, so
+    Cached per (address, tenant, pool) for ``STATS_TTL`` — except when a
+    configured stats API did not answer. That case is reported with the miner's
+    own values but deliberately NOT cached, so
     the next poll retries instead of serving ASIC figures for a whole minute.
     """
     report = asic_pool_report(tenant_id, get_db=get_db, now=now)

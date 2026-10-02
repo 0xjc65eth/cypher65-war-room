@@ -8,13 +8,13 @@ verified — ckpool ``/users/{address}`` and public-pool ``/api/client/{address}
 Priority rules, and the reason for them:
 
 * If the ASIC told us which pool it is on, that is authoritative — it is
-  measured at the hardware, not inferred. We fetch that provider's API when it
-  has one.
-* Otherwise we ask each provider with a public API whether it knows the
-  address (``resolve_pool_stats``). The first one that answers with data is the
+  reported by the hardware, not inferred. We fetch that provider's API when a
+  verified integration is configured.
+* Otherwise we ask each provider with a verified API integration whether it
+  knows the address (``resolve_pool_stats``). The first that answers with data is the
   pool for that address — this is what makes detection happen automatically
   when the operator connects a wallet.
-* If no API knows the address (or the pool publishes none), we return
+* If no integrated API returns usable data for the address, we return
   ``source="asic"`` with whatever the hardware reported. Never fabricated
   numbers, never silent zeros: an honest "the miner is the source" label.
 
@@ -558,9 +558,9 @@ def normalize_asic_telemetry(
 ) -> PoolWorkerStats:
     """Build statistics from the ASIC's own telemetry.
 
-    This is the answer to "the pool has no public API": the miner measures its
-    own hashrate, best share and share counters, and that is real data from the
-    hardware — strictly better than the zeros the dashboard used to show.
+    Used when a verified API integration is unavailable or returns no usable
+    response. The values are reported by the hardware, not the pool API; this
+    fallback does not establish whether the pool publishes a public API.
     """
     tel = telemetry if isinstance(telemetry, Mapping) else {}
     found = [key for key in tel.keys() if key in _HASHRATE_KEYS + _BEST_DIFF_KEYS]
@@ -595,9 +595,10 @@ def resolve_pool_stats(
     Order of evidence:
 
     1. **ASIC-reported endpoint.** If the hardware says which pool it is on,
-       that wins outright: it is measured, not inferred. Its API is used when
-       it has one; otherwise the numbers come from the ASIC.
-    2. **Probe the providers that publish a public API.** The first that
+       that wins outright: it is reported, not inferred. A verified API
+       integration is used when configured and usable; otherwise the numbers
+       come from the ASIC.
+    2. **Probe the configured, verified API integrations.** The first that
        answers with data IS the pool for this address — this is the automatic
        detection that happens when an operator connects a wallet.
     3. **Unknown pool.** Labelled with the raw endpoint (or "unknown pool") and
