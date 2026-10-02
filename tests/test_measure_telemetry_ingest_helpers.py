@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import importlib.util
+import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import secrets
 import socket
+import subprocess
 import sys
 import tempfile
 import time
@@ -30,6 +33,15 @@ SMALL_WORKLOAD = HARNESS.Workload(
     tenant_probes_per_device=1,
     queue_capacity_per_device=1,
     late_arrival_sequence=4,
+)
+BURST_WORKLOAD = HARNESS.Workload(
+    device_count=4,
+    unique_per_device=20,
+    replay_per_device=10,
+    conflict_per_device=2,
+    tenant_probes_per_device=2,
+    queue_capacity_per_device=1,
+    late_arrival_sequence=18,
 )
 
 
@@ -75,6 +87,64 @@ def test_latency_summary_uses_milliseconds_and_empty_shape() -> None:
         "p99_ms": None,
         "max_ms": None,
     }
+
+
+def test_transport_guard_counts_an_attempt_before_raising() -> None:
+    guard = HARNESS.TransportGuard()
+    try:
+        guard.block("attempted transport")
+    except AssertionError as error:
+        assert "external transport is prohibited" in str(error)
+    else:
+        raise AssertionError("transport guard allowed an external attempt")
+    assert guard.attempts == 1
+
+
+def test_bounded_subprocess_reaps_normal_and_hung_children() -> None:
+    normal = subprocess.Popen(
+        [sys.executable, "-c", "print('child-ok')"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    stdout, stderr, timed_out = HARNESS._communicate_bounded(normal, 5.0)
+    assert stdout.strip() == "child-ok"
+    assert not stderr
+    assert not timed_out
+    assert normal.returncode == 0
+
+    hung = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            "import signal,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(30)",
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        start_new_session=True,
+    )
+    try:
+        _, _, timed_out = HARNESS._communicate_bounded(hung, 0.5)
+        assert timed_out
+        assert hung.returncode is not None
+    finally:
+        if hung.poll() is None:
+            hung.kill()
+            hung.communicate()
+
+
+def test_default_artifact_name_uses_the_committed_revision() -> None:
+    revision = subprocess.run(
+        ["git", "rev-parse", "--short=12", "HEAD"],
+        cwd=Path(__file__).resolve().parents[1],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    assert HARNESS._default_output_path() == Path(
+        f"artifacts/load-002-baseline-{revision}.json"
+    )
     result = HARNESS._latency_summary([1_000_000, 4_000_000])
     assert result == {
         "count": 2,
@@ -227,27 +297,63 @@ def test_tiny_real_queue_worker_run_reconciles_and_emits_full_exclusive_artifact
 ) -> None:
     destination = tmp_path / "diagnostic.json"
     args = SimpleNamespace(runs=1, max_wall_seconds=30, output=destination)
-    result = HARNESS._run(args, SMALL_WORKLOAD)
+    result = HARNESS._run(args, BURST_WORKLOAD)
     stdout_artifact = json.loads(capsys.readouterr().out)
     assert result["integrity_status"] == "PASS"
+    assert result["environment"]["external_transport_attempts"] == 0
     assert stdout_artifact == result
     assert json.loads(destination.read_text(encoding="utf-8")) == result
     run = result["runs"][0]
-    assert run["submitted"] == 20
-    assert run["admitted"] == run["sent"] == run["completed"] == 20
-    assert run["accepted_new_observed_by_declared_kind"] == 14
-    assert run["replayed_observed_by_declared_kind"] == 4
-    assert run["rejected_conflict_observed"] == 2
-    assert run["persisted"] == 14
-    assert run["persisted_by_tenant"] == {"load002-alpha": 12, "load002-beta": 2}
-    assert run["distinct_worker_clients"] == 2
+    assert run["submitted"] == 136
+    assert run["admitted"] == run["sent"] == run["completed"] == 136
+    assert run["accepted_new_observed_by_declared_kind"] == 88
+    assert run["replayed_observed_by_declared_kind"] == 40
+    assert run["rejected_conflict_observed"] == 8
+    assert run["persisted"] == 88
+    assert run["persisted_by_tenant"] == {"load002-alpha": 80, "load002-beta": 8}
+    assert run["distinct_worker_clients"] == 4
     assert run["invariant_checks"]["queue_bound_respected"]
     assert run["invariant_checks"]["active_handler_bound_respected"]
-    assert result["source_provenance"]["git_dirty"]
-    assert (
-        "scripts/measure_telemetry_ingest.py"
-        in result["source_provenance"]["input_sha256"]
-    )
+    assert run["invariant_checks"]["all_worker_clients_started"]
+    assert run["invariant_checks"]["no_external_transport_attempts"]
+    raw = run["raw_timings_ns"]
+    assert len(json.loads(raw["offered_to_http_completion_json"])) == 136
+    post_wall_ns = json.loads(raw["client_post_handler_wall_time_json"])
+    assert len(post_wall_ns) == 136
+    by_kind = json.loads(raw["by_operation_kind_json"])
+    assert len(by_kind["unique"]["post_wall"]) == 80
+    for kind, phases in by_kind.items():
+        for samples in phases.values():
+            assert all(type(sample) is int and sample >= 0 for sample in samples)
+    sorted_post_ms = sorted(sample / 1_000_000 for sample in post_wall_ns)
+    percentile_summary = run["latency"]["client_post_handler_wall_time"]
+    for label, percentile in (("p50_ms", 0.50), ("p95_ms", 0.95), ("p99_ms", 0.99)):
+        expected_index = math.ceil(percentile * len(sorted_post_ms)) - 1
+        assert percentile_summary[label] == round(sorted_post_ms[expected_index], 6)
+    status = subprocess.run(
+        ["git", "status", "--porcelain", "--untracked-files=all"],
+        cwd=Path(__file__).resolve().parents[1],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.splitlines()
+    assert result["source_provenance"]["git_dirty"] is bool(status)
+    hashes = result["source_provenance"]["input_sha256"]
+    repo = Path(__file__).resolve().parents[1]
+    for relative in (
+        "scripts/measure_telemetry_ingest.py",
+        "tests/test_measure_telemetry_ingest_helpers.py",
+        "axe_fleet/routes.py",
+        "axe_fleet/registry.py",
+        "axe_fleet/models.py",
+        "services/auth.py",
+        "services/bootstrap.py",
+    ):
+        assert (
+            hashes[relative]
+            == hashlib.sha256((repo / relative).read_bytes()).hexdigest()
+        )
+    assert result["harness_sha256"] == hashes["scripts/measure_telemetry_ingest.py"]
     assert not result["slo"]["approved"]
     assert destination.exists()
     try:

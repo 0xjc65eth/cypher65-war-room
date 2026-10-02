@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 from dataclasses import dataclass
 import hashlib
+import http.client
 import json
 import math
 import os
@@ -30,8 +31,10 @@ import sys
 import tempfile
 import threading
 import time
+import urllib.request
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import ExitStack
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -130,6 +133,16 @@ def _latency_summary(samples_ns: list[int]) -> dict[str, float | int | None]:
         "p99_ms": _percentile(milliseconds, 0.99),
         "max_ms": round(max(milliseconds), 6) if milliseconds else None,
     }
+
+
+def _canonical_json(value: Any) -> str:
+    """Serialize deterministic JSON and reject non-standard NaN/Infinity values."""
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False)
+
+
+def _compact_int_array(values: list[int]) -> str:
+    """Preserve every raw nanosecond sample in compact, independently parseable JSON."""
+    return json.dumps(values, separators=(",", ":"), allow_nan=False)
 
 
 def _make_operations(
@@ -281,9 +294,11 @@ def _run_once(
         queue.Queue(maxsize=workload.queue_capacity_per_device)
         for _ in range(workload.device_count)
     ]
+    queue_wakeups = [threading.Semaphore(0) for _ in range(workload.device_count)]
     start_barrier = threading.Barrier(workload.device_count + 1)
     stop_event = threading.Event()
     lock = threading.Lock()
+    admission_condition = threading.Condition(lock)
     queued = active = admitted = sent = completed = 0
     max_queued = max_active = max_outstanding = 0
     by_kind_admitted: Counter[str] = Counter()
@@ -298,6 +313,15 @@ def _run_once(
     post_wall: list[int] = []
     offer_to_admit: list[int] = []
     latency_by_kind: dict[str, list[int]] = {kind: [] for kind in workload.expected}
+    phase_timings_by_kind: dict[str, dict[str, list[int]]] = {
+        kind: {
+            "offered_to_completion": [],
+            "admission_queue_wait": [],
+            "post_wall": [],
+            "producer_backpressure": [],
+        }
+        for kind in workload.expected
+    }
     first_offer_ns: int | None = None
     final_complete_ns: int | None = None
 
@@ -308,22 +332,22 @@ def _run_once(
             client_threads.add(threading.current_thread().name)
         start_barrier.wait(timeout=10)
         while True:
-            try:
-                item = queues[device_index].get(timeout=0.1)
-            except queue.Empty:
+            if not queue_wakeups[device_index].acquire(timeout=0.1):
                 if stop_event.is_set():
                     return
                 continue
+            with admission_condition:
+                try:
+                    item = queues[device_index].get_nowait()
+                except queue.Empty:
+                    errors.append("worker wakeup had no corresponding queued operation")
+                    continue
+                queued -= 1
+                active += 1
+                max_active = max(max_active, active)
+                admission_condition.notify_all()
             try:
-                if not item["admission_ready"].wait(timeout=2.0):
-                    raise TimeoutError(
-                        "producer did not finalize successful queue admission"
-                    )
                 started = time.perf_counter_ns()
-                with lock:
-                    queued -= 1
-                    active += 1
-                    max_active = max(max_active, active)
                 if started >= deadline_ns:
                     raise TimeoutError(
                         "overall time bound reached before handler start"
@@ -356,6 +380,18 @@ def _run_once(
                     post_wall.append(finished - post_start)
                     offer_to_admit.append(item["admitted_ns"] - item["offered_ns"])
                     latency_by_kind[item["kind"]].append(finished - post_start)
+                    phase_timings_by_kind[item["kind"]]["offered_to_completion"].append(
+                        finished - item["offered_ns"]
+                    )
+                    phase_timings_by_kind[item["kind"]]["admission_queue_wait"].append(
+                        started - item["admitted_ns"]
+                    )
+                    phase_timings_by_kind[item["kind"]]["post_wall"].append(
+                        finished - post_start
+                    )
+                    phase_timings_by_kind[item["kind"]]["producer_backpressure"].append(
+                        item["admitted_ns"] - item["offered_ns"]
+                    )
             except Exception as exc:
                 finished = time.perf_counter_ns()
                 with lock:
@@ -388,27 +424,34 @@ def _run_once(
                     raise TimeoutError("overall time bound reached during admission")
                 item = dict(all_ops[device_index][operation_index])
                 item["offered_ns"] = time.perf_counter_ns()
-                item["admission_ready"] = threading.Event()
                 if first_offer_ns is None:
                     first_offer_ns = item["offered_ns"]
-                remaining = max(
-                    0.001, min(0.25, (deadline_ns - time.perf_counter_ns()) / 1e9)
-                )
-                try:
-                    queues[device_index].put(item, timeout=remaining)
-                except queue.Full as exc:
-                    raise TimeoutError(
-                        "bounded per-device admission queue remained full"
-                    ) from exc
-                admitted_at = time.perf_counter_ns()
-                with lock:
-                    item["admitted_ns"] = admitted_at
-                    admitted += 1
-                    queued += 1
-                    by_kind_admitted[item["kind"]] += 1
-                    max_queued = max(max_queued, queued)
-                    max_outstanding = max(max_outstanding, admitted - completed)
-                item["admission_ready"].set()
+                with admission_condition:
+                    while True:
+                        try:
+                            # Nonblocking insertion under the accounting lock
+                            # makes queue occupancy and `queued` one atomic fact.
+                            queues[device_index].put_nowait(item)
+                        except queue.Full:
+                            remaining_ns = deadline_ns - time.perf_counter_ns()
+                            if remaining_ns <= 0:
+                                raise TimeoutError(
+                                    "overall time bound reached waiting for queue admission"
+                                )
+                            # Wake on real dequeue; timeout only rechecks the
+                            # global wall bound, never imposes a latency budget.
+                            admission_condition.wait(
+                                timeout=min(0.25, remaining_ns / 1e9)
+                            )
+                            continue
+                        item["admitted_ns"] = time.perf_counter_ns()
+                        admitted += 1
+                        queued += 1
+                        by_kind_admitted[item["kind"]] += 1
+                        max_queued = max(max_queued, queued)
+                        max_outstanding = max(max_outstanding, admitted - completed)
+                        queue_wakeups[device_index].release()
+                        break
     except Exception as exc:
         errors.append(f"producer {type(exc).__name__}: {exc}")
     finally:
@@ -448,14 +491,14 @@ def _run_once(
                 "GROUP BY tenant_id, device_id, idempotency_key HAVING COUNT(*) > 1)"
             ).fetchone()[0]
         )
-        alpha_received: dict[str, list[int]] = {}
+        alpha_received: dict[str, list[Any]] = {}
         for row in conn.execute(
             "SELECT device_id,payload FROM axe_telemetry WHERE tenant_id=? ORDER BY id",
             (TENANT_A,),
         ):
             payload = json.loads(row[1])
             alpha_received.setdefault(str(row[0]), []).append(
-                int(payload["load002_sequence"])
+                payload.get("load002_sequence")
             )
         canonical_ok = True
         for d, device in enumerate(device_rows):
@@ -473,13 +516,13 @@ def _run_once(
                         canonical_ok = False
                         continue
                     payload = json.loads(row[1])
-                    if (
-                        int(payload.get("load002_sequence", -1)) != seq
-                        or int(payload.get("ts", -1))
-                        != _sample_ts(base_ts, seq, workload.late_arrival_sequence)
-                        or int(payload.get("hashrate_hs", -1))
-                        != 5_000_000_000_000 + d * 1_000_000 + seq
-                    ):
+                    expected_payload = {
+                        "ts": _sample_ts(base_ts, seq, workload.late_arrival_sequence),
+                        "hashrate_hs": 5_000_000_000_000 + d * 1_000_000 + seq,
+                        "load002_sequence": seq,
+                        "device_id": device_id,
+                    }
+                    if _canonical_json(payload) != _canonical_json(expected_payload):
                         canonical_ok = False
         conflict_preserved = 0
         for d in range(workload.device_count):
@@ -489,17 +532,22 @@ def _run_once(
                     "SELECT payload FROM axe_telemetry WHERE tenant_id=? AND idempotency_key=?",
                     (TENANT_A, key),
                 ).fetchone()
-                if (
-                    row
-                    and int(json.loads(row[0])["hashrate_hs"])
-                    == 5_000_000_000_000 + d * 1_000_000 + seq
+                expected_payload = {
+                    "ts": _sample_ts(base_ts, seq, workload.late_arrival_sequence),
+                    "hashrate_hs": 5_000_000_000_000 + d * 1_000_000 + seq,
+                    "load002_sequence": seq,
+                    "device_id": device_rows[d]["alpha_id"],
+                }
+                if row and _canonical_json(json.loads(row[0])) == _canonical_json(
+                    expected_payload
                 ):
                     conflict_preserved += 1
     finally:
         conn.close()
 
     receive_order_ok = all(
-        alpha_received.get(row["alpha_id"], [])
+        all(type(value) is int for value in alpha_received.get(row["alpha_id"], []))
+        and alpha_received.get(row["alpha_id"], [])
         == list(range(workload.unique_per_device))
         for row in device_rows
     )
@@ -513,9 +561,9 @@ def _run_once(
             limit=workload.unique_per_device + 10,
             tenant_id=TENANT_A,
         )
-        latest = int(history[0]["payload"].get("load002_sequence")) if history else None
+        latest = history[0]["payload"].get("load002_sequence") if history else None
         latest_sequences.append(latest)
-        if latest != workload.unique_per_device - 1:
+        if type(latest) is not int or latest != workload.unique_per_device - 1:
             beta_latest_ok = False
         beta_history = registry.get_recent_telemetry(
             row["beta_id"], limit=10, tenant_id=TENANT_B
@@ -523,7 +571,8 @@ def _run_once(
         expected_beta_latest = max(workload.tenant_probe_sequences)
         if (
             not beta_history
-            or int(beta_history[0]["payload"].get("load002_sequence", -1))
+            or type(beta_history[0]["payload"].get("load002_sequence")) is not int
+            or beta_history[0]["payload"].get("load002_sequence")
             != expected_beta_latest
         ):
             beta_latest_ok = False
@@ -641,7 +690,29 @@ def _run_once(
                 kind: _latency_summary(values)
                 for kind, values in latency_by_kind.items()
             },
-            "units": "milliseconds, nearest-rank percentiles from perf_counter_ns",
+            "units": "milliseconds for summaries; raw arrays are nanoseconds from perf_counter_ns",
+            "percentile_method": "nearest-rank: sorted[ceil(p*n)-1], clamped to valid indices",
+        },
+        "raw_timings_ns": {
+            "array_encoding": "each *_json field is the complete compact JSON integer array; parse with json.loads",
+            "offered_to_http_completion_json": _compact_int_array(offer_to_complete),
+            "admission_to_handler_start_json": _compact_int_array(admission_to_start),
+            "client_post_handler_wall_time_json": _compact_int_array(post_wall),
+            "producer_offer_to_queue_admission_json": _compact_int_array(
+                offer_to_admit
+            ),
+            "by_operation_kind_json": json.dumps(
+                {
+                    kind: {
+                        phase: json.loads(_compact_int_array(samples))
+                        for phase, samples in phases.items()
+                    }
+                    for kind, phases in phase_timings_by_kind.items()
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            ),
         },
         "integrity": {
             "idempotency_duplicate_groups": duplicate_groups,
@@ -673,12 +744,38 @@ def _blocked_transport(*_args, **_kwargs):
     raise AssertionError("external transport is prohibited in LOAD-002 local harness")
 
 
+class TransportGuard:
+    """Count and fail any socket/DNS request attempted by product code."""
+
+    def __init__(self) -> None:
+        self._attempts = 0
+        self._lock = threading.Lock()
+
+    @property
+    def attempts(self) -> int:
+        with self._lock:
+            return self._attempts
+
+    def block(self, *_args, **_kwargs):
+        with self._lock:
+            self._attempts += 1
+        raise AssertionError(
+            "external transport is prohibited in LOAD-002 local harness"
+        )
+
+
 def _source_provenance(repo_root: Path) -> dict[str, Any]:
     """Hash source inputs and report whether the checkout contains local edits."""
     inputs = (
         Path(__file__).resolve(),
         repo_root / "tests/test_measure_telemetry_ingest_helpers.py",
         repo_root / "docs/telemetry-ingest-load-baseline.md",
+        repo_root / "docs/TEST_STRATEGY.md",
+        repo_root / "axe_fleet/routes.py",
+        repo_root / "axe_fleet/registry.py",
+        repo_root / "axe_fleet/models.py",
+        repo_root / "services/auth.py",
+        repo_root / "services/bootstrap.py",
     )
     hashes = {
         path.relative_to(repo_root)
@@ -715,6 +812,7 @@ def _run(
     deadline_ns = time.perf_counter_ns() + args.max_wall_seconds * 1_000_000_000
     records: list[dict[str, Any]] = []
     run_error: str | None = None
+    transport_guard = TransportGuard()
     local_secret = secrets.token_urlsafe(48)
     with tempfile.TemporaryDirectory(prefix="cypher65-load002-") as temp_root:
         root = Path(temp_root)
@@ -727,18 +825,48 @@ def _run(
         }
         with patch.dict(os.environ, env):
             # Guards are active before any product module/blueprint is imported.
-            with patch.object(
-                socket.socket, "connect", _blocked_transport
-            ), patch.object(socket.socket, "connect_ex", _blocked_transport), patch(
-                "socket.create_connection", _blocked_transport
-            ):
+            with ExitStack() as guards:
+                for method_name in (
+                    "connect",
+                    "connect_ex",
+                    "send",
+                    "sendall",
+                    "sendto",
+                ):
+                    guards.enter_context(
+                        patch.object(socket.socket, method_name, transport_guard.block)
+                    )
+                if hasattr(socket.socket, "sendmsg"):
+                    guards.enter_context(
+                        patch.object(socket.socket, "sendmsg", transport_guard.block)
+                    )
+                guards.enter_context(
+                    patch("socket.create_connection", transport_guard.block)
+                )
+                guards.enter_context(patch("socket.getaddrinfo", transport_guard.block))
+                guards.enter_context(
+                    patch("socket.gethostbyname", transport_guard.block)
+                )
+                guards.enter_context(
+                    patch("socket.gethostbyname_ex", transport_guard.block)
+                )
+                guards.enter_context(
+                    patch.object(
+                        http.client.HTTPConnection, "connect", transport_guard.block
+                    )
+                )
+                guards.enter_context(
+                    patch.object(urllib.request, "urlopen", transport_guard.block)
+                )
                 flask_app, agent_routes, DeviceRegistry, create_token = _prepare_app(
                     local_secret
                 )
                 original_registry = agent_routes._registry
                 try:
                     with patch.object(
-                        agent_routes, "AxeOSConnector", side_effect=_blocked_transport
+                        agent_routes,
+                        "AxeOSConnector",
+                        side_effect=transport_guard.block,
                     ):
                         for run_index in range(args.runs):
                             if time.perf_counter_ns() >= deadline_ns:
@@ -747,18 +875,26 @@ def _run(
                                 )
                             run_dir = root / f"run-{run_index:02d}"
                             run_dir.mkdir()
-                            records.append(
-                                _run_once(
-                                    run_index=run_index,
-                                    run_dir=run_dir,
-                                    flask_app=flask_app,
-                                    agent_routes=agent_routes,
-                                    DeviceRegistry=DeviceRegistry,
-                                    create_token=create_token,
-                                    deadline_ns=deadline_ns,
-                                    workload=workload,
-                                )
+                            record = _run_once(
+                                run_index=run_index,
+                                run_dir=run_dir,
+                                flask_app=flask_app,
+                                agent_routes=agent_routes,
+                                DeviceRegistry=DeviceRegistry,
+                                create_token=create_token,
+                                deadline_ns=deadline_ns,
+                                workload=workload,
                             )
+                            record["external_transport_attempts"] = (
+                                transport_guard.attempts
+                            )
+                            record["invariant_checks"][
+                                "no_external_transport_attempts"
+                            ] = (transport_guard.attempts == 0)
+                            record["invariants_pass"] = all(
+                                record["invariant_checks"].values()
+                            )
+                            records.append(record)
                 except Exception as exc:
                     run_error = f"{type(exc).__name__}: {exc}"
                 finally:
@@ -793,6 +929,7 @@ def _run(
             "logical_cpu_count": os.cpu_count(),
             "runtime_profile": "local Flask test_client -> real agent blueprint/route -> DeviceRegistry -> isolated temporary SQLite",
             "external_network": "socket and AxeOSConnector guards raise before product imports/route transport",
+            "external_transport_attempts": transport_guard.attempts,
             "physical_asic": False,
             "render_or_deployed_service": False,
             "rss_scope": "not measured; no host/container memory inference",
@@ -843,9 +980,193 @@ def _run(
     ):
         artifact["integrity_status"] = "FAIL"
         artifact["harness_error"] = "non-finite aggregate timing metric"
-    with output.open("x", encoding="utf-8") as artifact_file:
-        artifact_file.write(json.dumps(artifact, indent=2, sort_keys=True) + "\n")
-    print(json.dumps(artifact, indent=2, sort_keys=True))
+    _write_artifact_exclusive(
+        output, artifact, temporary_tag=getattr(args, "_artifact_temp_tag", None)
+    )
+    return artifact
+
+
+def _default_output_path() -> Path:
+    """Name the artifact after the exact committed source revision."""
+    result = subprocess.run(
+        ["git", "rev-parse", "--short=12", "HEAD"],
+        cwd=Path(__file__).resolve().parents[1],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    revision = result.stdout.strip() if result.returncode == 0 else "unversioned"
+    if not revision or any(char not in "0123456789abcdef" for char in revision):
+        revision = "unversioned"
+    return Path("artifacts") / f"load-002-baseline-{revision}.json"
+
+
+def _failure_artifact(args: argparse.Namespace, error: str) -> dict[str, Any]:
+    """Create bounded-process failure evidence when its child cannot finish."""
+    repo_root = Path(__file__).resolve().parents[1]
+    revision_result = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=repo_root,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    revision = (
+        revision_result.stdout.strip()
+        if revision_result.returncode == 0
+        else "unavailable"
+    )
+    return {
+        "schema_version": 1,
+        "benchmark": "LOAD-002 local in-process telemetry integration diagnostic",
+        "classification": "diagnostic_only_not_an_approved_performance_gate",
+        "started_at_utc": datetime.now(timezone.utc).isoformat(),
+        "finished_at_utc": datetime.now(timezone.utc).isoformat(),
+        "source_commit": revision,
+        "harness_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+        "source_provenance": _source_provenance(repo_root),
+        "environment": {
+            "python": sys.version,
+            "platform": platform.platform(),
+            "sqlite": sqlite3.sqlite_version,
+            "physical_asic": False,
+            "render_or_deployed_service": False,
+            "rss_scope": "not measured",
+        },
+        "workload": {
+            "total_submissions_per_run": FULL_WORKLOAD.total_submissions,
+            "concurrent_device_streams": FULL_WORKLOAD.device_count,
+        },
+        "slo": {
+            "approved": False,
+            "performance_gate": "NOT_EVALUATED_NO_APPROVED_SLO",
+        },
+        "run_count_requested": args.runs,
+        "run_count_completed": 0,
+        "runs": [],
+        "harness_error": error,
+        "hard_wall_cap_seconds": args.max_wall_seconds + 3,
+        "integrity_status": "FAIL",
+    }
+
+
+def _write_artifact_exclusive(
+    output: Path, artifact: dict[str, Any], temporary_tag: str | None = None
+) -> None:
+    """Write one strict JSON artifact without replacing existing evidence."""
+    output.parent.mkdir(parents=True, exist_ok=True)
+    encoded = json.dumps(artifact, indent=2, sort_keys=True, allow_nan=False) + "\n"
+    tag = temporary_tag or secrets.token_hex(8)
+    temporary = output.with_name(f".{output.name}.{tag}.tmp")
+    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        remaining = memoryview(encoded.encode("utf-8"))
+        while remaining:
+            written = os.write(descriptor, remaining)
+            if written <= 0:
+                raise OSError("short write while creating evidence artifact")
+            remaining = remaining[written:]
+        os.fsync(descriptor)
+        os.close(descriptor)
+        descriptor = -1
+        os.link(temporary, output)
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        temporary.unlink(missing_ok=True)
+    print(encoded, end="")
+
+
+def _communicate_bounded(worker, timeout_seconds: float) -> tuple[str, str, bool]:
+    """Wait for a child and terminate/reap it after its hard timeout."""
+    try:
+        stdout, stderr = worker.communicate(timeout=timeout_seconds)
+        return stdout, stderr, False
+    except subprocess.TimeoutExpired:
+        worker.terminate()
+        try:
+            stdout, stderr = worker.communicate(timeout=1.0)
+        except subprocess.TimeoutExpired:
+            worker.kill()
+            try:
+                stdout, stderr = worker.communicate(timeout=1.0)
+            except subprocess.TimeoutExpired:
+                for stream in (worker.stdout, worker.stderr):
+                    if stream is not None:
+                        stream.close()
+                return "", "worker did not reap within kill grace", True
+        return stdout, stderr, True
+
+
+def _run_in_worker_process(args: argparse.Namespace) -> dict[str, Any]:
+    """Bound a stuck route/handler by isolating the whole run in a child process."""
+    output = args.output.resolve()
+    if output.exists():
+        raise FileExistsError(
+            f"refusing to overwrite existing evidence artifact: {output}"
+        )
+    worker_command = [
+        sys.executable,
+        str(Path(__file__).resolve()),
+        "--runs",
+        str(args.runs),
+        "--max-wall-seconds",
+        str(args.max_wall_seconds),
+        "--output",
+        str(output),
+        "--_worker-process",
+        "--_artifact-temp-tag",
+        secrets.token_hex(16),
+    ]
+    temporary_tag = worker_command[-1]
+    args._artifact_temp_tag = temporary_tag
+    worker = subprocess.Popen(
+        worker_command,
+        cwd=Path.cwd(),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        start_new_session=True,
+    )
+    stdout, stderr, timed_out = _communicate_bounded(
+        worker, timeout_seconds=args.max_wall_seconds + 3
+    )
+    temporary = output.with_name(f".{output.name}.{temporary_tag}.tmp")
+    if timed_out:
+        temporary.unlink(missing_ok=True)
+        if output.exists():
+            try:
+                artifact = json.loads(output.read_text(encoding="utf-8"))
+                print(json.dumps(artifact, indent=2, sort_keys=True, allow_nan=False))
+                return artifact
+            except (OSError, ValueError, TypeError):
+                pass
+        artifact = _failure_artifact(
+            args,
+            f"worker process exceeded hard cap of {args.max_wall_seconds + 3}s; termination attempted",
+        )
+        _write_artifact_exclusive(output, artifact)
+        return artifact
+
+    if output.exists():
+        try:
+            artifact = json.loads(output.read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError) as exc:
+            artifact = _failure_artifact(
+                args, f"worker wrote unreadable artifact: {exc}"
+            )
+            print(json.dumps(artifact, indent=2, sort_keys=True, allow_nan=False))
+            return artifact
+        print(json.dumps(artifact, indent=2, sort_keys=True, allow_nan=False))
+        return artifact
+
+    diagnostic = (stderr or stdout).strip()[-2000:]
+    temporary.unlink(missing_ok=True)
+    artifact = _failure_artifact(
+        args,
+        f"worker exited {worker.returncode} without artifact: {diagnostic or 'no diagnostic output'}",
+    )
+    _write_artifact_exclusive(output, artifact)
     return artifact
 
 
@@ -855,21 +1176,25 @@ def main() -> int:
     parser.add_argument(
         "--max-wall-seconds", type=int, default=180, help="total cap, 30 to 300 seconds"
     )
+    parser.add_argument("--output", type=Path)
     parser.add_argument(
-        "--output", type=Path, default=Path("artifacts/load-002-baseline-c597304.json")
+        "--_worker-process", action="store_true", help=argparse.SUPPRESS
     )
+    parser.add_argument("--_artifact-temp-tag", help=argparse.SUPPRESS)
     args = parser.parse_args()
     if not 1 <= args.runs <= 5:
         parser.error("--runs must be between 1 and 5")
     if not 30 <= args.max_wall_seconds <= 300:
         parser.error("--max-wall-seconds must be between 30 and 300")
+    if args.output is None:
+        args.output = _default_output_path()
     if (
         FULL_WORKLOAD.total_submissions != 10_000
         or sum(FULL_WORKLOAD.counts.values()) != 10_000
     ):
         parser.error("workload composition must sum to exactly 10,000")
     try:
-        artifact = _run(args)
+        artifact = _run(args) if args._worker_process else _run_in_worker_process(args)
     except Exception as exc:
         parser.error(
             f"harness setup failed without creating evidence: {type(exc).__name__}: {exc}"
