@@ -3303,13 +3303,37 @@ def _poll_axe_fleet(ts: int) -> None:
                     continue
                 did = device["id"]
                 last = _shared_state.axe_last_poll_ts.get(did, 0)
-                if ts - last >= _shared_state.AXE_POLL_INTERVAL:
+                errors = _shared_state.axe_poll_error_counts.get(did, 0)
+                if ts - last >= _axe_poll_interval(errors):
                     _shared_state.axe_last_poll_ts[did] = ts
-                    tel = _axe_registry.poll_device(did)
+                    try:
+                        tel = _axe_registry.poll_device(did)
+                    except Exception as e:
+                        _shared_state.axe_poll_error_counts[did] = errors + 1
+                        log.warning("[axe poll] error for device %s: %s", did, e)
+                        continue
                     if tel:
+                        _shared_state.axe_poll_error_counts.pop(did, None)
                         _cache_axe_telemetry(did, tel)
+                    else:
+                        _shared_state.axe_poll_error_counts[did] = errors + 1
     except Exception as e:
         log.warning("[axe poll] error: %s", e)
+
+
+def _axe_poll_interval(consecutive_errors: int) -> int:
+    """Return the bounded exponential retry interval for a device poll.
+
+    Healthy devices retain ``AXE_POLL_INTERVAL`` cadence. After each failed
+    attempt the next interval doubles, capped at ``AXE_POLL_MAX_BACKOFF``.
+    """
+    interval = max(1, int(_shared_state.AXE_POLL_INTERVAL))
+    maximum = max(interval, int(_shared_state.AXE_POLL_MAX_BACKOFF))
+    for _ in range(max(0, int(consecutive_errors))):
+        interval = min(interval * 2, maximum)
+        if interval == maximum:
+            break
+    return interval
 
 
 def _do_poll():

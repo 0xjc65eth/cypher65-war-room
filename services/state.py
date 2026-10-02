@@ -97,5 +97,11 @@ axe_telemetry_cache = {}
 # Format: {device_id: unix_ts}
 axe_last_poll_ts = {}
 
+# Consecutive failed server-side device polls; successful telemetry resets the
+# counter. Used to apply bounded exponential backoff without slowing healthy
+# devices.
+axe_poll_error_counts = {}
+
 # Axe fleet polling interval (seconds) — conservative to avoid network load
 AXE_POLL_INTERVAL = 60
+AXE_POLL_MAX_BACKOFF = 300
