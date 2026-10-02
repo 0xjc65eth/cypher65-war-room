@@ -66,17 +66,28 @@ def validate(records: object) -> list[str]:
         if missing:
             errors.append(f"{prefix} missing: {', '.join(missing)}")
             continue
-        run_id = str(record["run_id"])
-        if run_id in ids:
+        run_id = record["run_id"]
+        if not isinstance(run_id, str) or not run_id.strip():
+            errors.append(f"{prefix} invalid run_id")
+        elif run_id in ids:
             errors.append(f"{prefix} duplicate run_id: {run_id}")
-        ids.add(run_id)
+        else:
+            ids.add(run_id)
         mode = record["mode"]
-        if mode not in {"dry_run", "human_command"}:
+        if not isinstance(mode, str) or mode not in {"dry_run", "human_command"}:
             errors.append(f"{prefix} invalid mode")
             continue
         counts[mode] += 1
-        families.add(str(record["device_family"]).lower())
-        firmwares.add(str(record["firmware_family"]).lower())
+        device_family = record["device_family"]
+        if not isinstance(device_family, str) or not device_family.strip():
+            errors.append(f"{prefix} invalid device_family")
+        else:
+            families.add(device_family.strip().lower())
+        firmware_family = record["firmware_family"]
+        if not isinstance(firmware_family, str) or not firmware_family.strip():
+            errors.append(f"{prefix} invalid firmware_family")
+        else:
+            firmwares.add(firmware_family.strip().lower())
         scenario = record["scenario"]
         if not isinstance(scenario, str) or scenario not in REQUIRED_SCENARIOS:
             errors.append(f"{prefix} invalid scenario")
@@ -88,7 +99,8 @@ def validate(records: object) -> list[str]:
             errors.append(f"{prefix} target was not validated")
         if record["passed"] is not True:
             errors.append(f"{prefix} did not pass")
-        if not str(record["evidence_ref"]).strip():
+        evidence_ref = record["evidence_ref"]
+        if not isinstance(evidence_ref, str) or not evidence_ref.strip():
             errors.append(f"{prefix} has no evidence reference")
         if mode == "human_command":
             for field in (
