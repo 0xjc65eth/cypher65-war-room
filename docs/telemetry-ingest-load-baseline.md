@@ -17,13 +17,12 @@ No 10,000-submission measurement has yet been run for this change. The first and
 Suggested command (explicit diagnostic invocation only):
 
 ```bash
-python scripts/measure_telemetry_ingest.py --runs 3 \
-  --output artifacts/load-002-baseline-c597304.json
+python scripts/measure_telemetry_ingest.py --runs 3
 ```
 
-The resulting report includes commit and harness hashes, UTC timestamps, runtime/SQLite/platform details, each repeat's integrity checks, latency percentiles, throughput, queue/active bounds, and the exact request/persistence reconciliation. A successful integrity result does not mean latency or capacity passed an SLO.
+The resulting report includes commit and source-input hashes, UTC timestamps, runtime/SQLite/platform details, each repeat's integrity checks, latency percentiles, throughput, queue/active bounds, and exact request/persistence reconciliation. Full-precision timing samples are retained as compact, independently parseable JSON integer arrays inside the report. A successful integrity result does not mean latency or capacity passed an SLO. The CLI supervisor kills/reaps an isolated worker process at the configured wall cap plus a bounded three-second termination grace; the worker writes its artifact atomically and without replacing an existing file.
 
-The fast named coverage check exercises a parameterized two-device/20-submission real route-and-SQLite run plus admitted-work drain and already-expired-deadline cleanup. It is contract/lifecycle coverage, not baseline timing evidence:
+The fast named coverage check exercises a parameterized four-device/136-submission real route-and-SQLite burst, two-device admitted-work drain and already-expired-deadline cleanup, and a real hung-child termination path. It is contract/lifecycle coverage, not baseline timing evidence:
 
 ```bash
 python -m coverage erase
