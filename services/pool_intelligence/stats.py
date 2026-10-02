@@ -124,7 +124,8 @@ class PoolWorkerStats:
 
     ``source`` is the contract that matters: ``"api"`` means the numbers came
     from the pool's own public API; ``"asic"`` means they came from the miner
-    itself because no API was available or reachable. ``fields_found`` lists
+    itself because no configured API integration returned usable data.
+    ``fields_found`` lists
     the payload keys we understood, so an all-None result is traceable to
     either an empty pool response or an unrecognized shape.
     """

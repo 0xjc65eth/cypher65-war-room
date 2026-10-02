@@ -10,8 +10,8 @@ This module is the glue. On each snapshot it:
 
 1. reads the newest pool report for the tenant out of fleet telemetry,
 2. turns it into a detected provider,
-3. resolves that provider's statistics — from the pool's public API when it has
-   one, and from the ASIC's own telemetry when it does not.
+3. resolves that provider's statistics — from a configured, verified API
+   integration when usable, otherwise from the ASIC's own telemetry.
 
 Two properties are deliberate:
 
@@ -279,10 +279,10 @@ def attach_to_snapshot(
 
 
 def _is_api_miss(result: Mapping[str, Any]) -> bool:
-    """True when a pool that HAS a public API fell back to the miner's numbers.
+    """True when a configured API integration fell back to the miner's numbers.
 
-    ``source: "asic"`` is terminal truth for a ``stratum_only`` pool — there is
-    no API to retry. For a pool that does publish one, it means the request
+    ``source: "asic"`` is terminal for a ``stratum_only`` registry entry — there
+    is no configured API request to retry. With an integration, it means the request
     failed, and that distinction is exactly what keeps a transient pool-API blip
     from freezing the panel on ASIC figures for the whole TTL.
     """

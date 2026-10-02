@@ -24,7 +24,8 @@ zeros. It does not establish whether the provider publishes a public API.
 
 Nothing here performs network I/O and nothing here is a guess: a provider is
 only given a ``stats_url`` when the endpoint is the provider's own documented
-API. Every other provider is ``stratum_only``.
+API. Every other registry entry is ``stratum_only``: no verified integration
+is configured, regardless of whether the provider publishes an API.
 """
 
 from dataclasses import dataclass
@@ -120,7 +121,8 @@ def _p(
 # ── Registry ────────────────────────────────────────────────────────────
 # Verified public per-worker stats APIs are marked ``stats_kind``. Everything
 # else is deliberately ``stratum_only``: recognised, labelled, chain-tagged,
-# and fed by the ASIC. Adding a real API later is a one-line change here.
+# and fed by the ASIC. Adding a verified integration requires a documented
+# schema, a tested normalizer, and a configured stats URL.
 PROVIDERS: tuple[PoolProvider, ...] = (
     # ── Bitcoin · solo ──────────────────────────────────────────────
     # Fleet audit (Issue #627): atlaspool verified by LIVE passive Stratum
