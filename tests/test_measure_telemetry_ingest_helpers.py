@@ -164,21 +164,36 @@ def test_bounded_subprocess_reaps_owned_group_with_hung_descendant(
             hung.communicate()
 
 
-def test_default_artifact_name_uses_the_committed_revision() -> None:
-    revision = subprocess.run(
-        ["git", "rev-parse", "--short=12", "HEAD"],
-        cwd=Path(__file__).resolve().parents[1],
-        capture_output=True,
-        text=True,
-        check=True,
-    ).stdout.strip()
+def test_default_artifact_name_uses_the_harness_sha_without_parent_git() -> None:
+    harness_sha = hashlib.sha256(SCRIPT.read_bytes()).hexdigest()[:12]
     assert HARNESS._default_output_path() == Path(
-        f"artifacts/load-002-baseline-{revision}.json"
+        f"artifacts/load-002-baseline-harness-{harness_sha}.json"
     )
-    failure = HARNESS._failure_artifact(
-        SimpleNamespace(runs=1, max_wall_seconds=30), "bounded test"
-    )
+    with patch.object(
+        subprocess,
+        "run",
+        side_effect=subprocess.TimeoutExpired(cmd="git", timeout=0.01),
+    ) as git_command:
+        output = HARNESS._default_output_path()
+        failure = HARNESS._failure_artifact(
+            SimpleNamespace(runs=1, max_wall_seconds=30), "bounded test"
+        )
+    assert output.name == HARNESS._default_output_path().name
+    git_command.assert_not_called()
+    assert failure["schema_version"] == 2
     assert failure["hard_wall_cap_seconds"] == 33
+    assert failure["supervisor_overhead"]["parent_git_subprocesses"] == 0
+    assert (
+        "not hard-bounded"
+        in failure["supervisor_overhead"]["artifact_serialization_and_write"]
+    )
+    assert failure["source_commit"] == "unavailable_after_supervisor_failure"
+    assert failure["source_provenance"]["git_dirty"] is None
+    assert failure["source_provenance"]["git_status_porcelain"] is None
+    assert (
+        failure["source_provenance"]["git_status_state"]
+        == "unknown_after_supervisor_failure"
+    )
     result = HARNESS._latency_summary([1_000_000, 4_000_000])
     assert result == {
         "count": 2,

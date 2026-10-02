@@ -146,6 +146,15 @@ def _compact_int_array(values: list[int]) -> str:
     return json.dumps(values, separators=(",", ":"), allow_nan=False)
 
 
+def _platform_summary() -> str:
+    """Describe the host without platform.platform's subprocess-based processor probe."""
+    return " ".join(
+        value
+        for value in (platform.system(), platform.release(), platform.machine())
+        if value
+    )
+
+
 def _make_operations(
     device_index: int,
     run_index: int,
@@ -765,8 +774,8 @@ class TransportGuard:
         )
 
 
-def _source_provenance(repo_root: Path) -> dict[str, Any]:
-    """Hash source inputs and report whether the checkout contains local edits."""
+def _source_hashes(repo_root: Path) -> dict[str, str]:
+    """Hash harness, product, and documentation files used by the diagnostic."""
     inputs = (
         Path(__file__).resolve(),
         repo_root / "tests/test_measure_telemetry_ingest_helpers.py",
@@ -778,13 +787,17 @@ def _source_provenance(repo_root: Path) -> dict[str, Any]:
         repo_root / "services/auth.py",
         repo_root / "services/bootstrap.py",
     )
-    hashes = {
+    return {
         path.relative_to(repo_root)
         .as_posix(): hashlib.sha256(path.read_bytes())
         .hexdigest()
         for path in inputs
         if path.exists()
     }
+
+
+def _source_provenance(repo_root: Path) -> dict[str, Any]:
+    """Hash source inputs and report whether the checkout contains local edits."""
     status_result = subprocess.run(
         ["git", "status", "--porcelain", "--untracked-files=all"],
         cwd=repo_root,
@@ -792,11 +805,15 @@ def _source_provenance(repo_root: Path) -> dict[str, Any]:
         capture_output=True,
         text=True,
     )
-    status = status_result.stdout.splitlines() if status_result.returncode == 0 else []
+    status_ok = status_result.returncode == 0
+    status = status_result.stdout.splitlines() if status_ok else None
     return {
-        "git_dirty": bool(status) or status_result.returncode != 0,
+        "git_dirty": (not status_ok) or bool(status),
         "git_status_porcelain": status,
-        "input_sha256": hashes,
+        "git_status_state": (
+            "available" if status_ok else f"unavailable_exit_{status_result.returncode}"
+        ),
+        "input_sha256": _source_hashes(repo_root),
     }
 
 
@@ -915,7 +932,7 @@ def _run(
     repo_root = Path(__file__).resolve().parents[1]
     provenance = _source_provenance(repo_root)
     artifact = {
-        "schema_version": 1,
+        "schema_version": 2,
         "benchmark": "LOAD-002 local in-process telemetry integration diagnostic",
         "classification": "diagnostic_only_not_an_approved_performance_gate",
         "started_at_utc": start_utc,
@@ -925,7 +942,7 @@ def _run(
         "source_provenance": provenance,
         "environment": {
             "python": sys.version,
-            "platform": platform.platform(),
+            "platform": _platform_summary(),
             "sqlite": sqlite3.sqlite_version,
             "logical_cpu_count": os.cpu_count(),
             "runtime_profile": "local Flask test_client -> real agent blueprint/route -> DeviceRegistry -> isolated temporary SQLite",
@@ -988,47 +1005,31 @@ def _run(
 
 
 def _default_output_path() -> Path:
-    """Name the artifact after the exact committed source revision."""
-    result = subprocess.run(
-        ["git", "rev-parse", "--short=12", "HEAD"],
-        cwd=Path(__file__).resolve().parents[1],
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    revision = result.stdout.strip() if result.returncode == 0 else "unversioned"
-    if not revision or any(char not in "0123456789abcdef" for char in revision):
-        revision = "unversioned"
-    return Path("artifacts") / f"load-002-baseline-{revision}.json"
+    """Name the artifact after the harness SHA, without a Git preflight call."""
+    digest = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()[:12]
+    return Path("artifacts") / f"load-002-baseline-harness-{digest}.json"
 
 
 def _failure_artifact(args: argparse.Namespace, error: str) -> dict[str, Any]:
-    """Create bounded-process failure evidence when its child cannot finish."""
+    """Create fail-closed failure evidence without launching parent-side Git."""
     repo_root = Path(__file__).resolve().parents[1]
-    revision_result = subprocess.run(
-        ["git", "rev-parse", "HEAD"],
-        cwd=repo_root,
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    revision = (
-        revision_result.stdout.strip()
-        if revision_result.returncode == 0
-        else "unavailable"
-    )
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "benchmark": "LOAD-002 local in-process telemetry integration diagnostic",
         "classification": "diagnostic_only_not_an_approved_performance_gate",
         "started_at_utc": datetime.now(timezone.utc).isoformat(),
         "finished_at_utc": datetime.now(timezone.utc).isoformat(),
-        "source_commit": revision,
+        "source_commit": "unavailable_after_supervisor_failure",
         "harness_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
-        "source_provenance": _source_provenance(repo_root),
+        "source_provenance": {
+            "git_dirty": None,
+            "git_status_porcelain": None,
+            "git_status_state": "unknown_after_supervisor_failure",
+            "input_sha256": _source_hashes(repo_root),
+        },
         "environment": {
             "python": sys.version,
-            "platform": platform.platform(),
+            "platform": _platform_summary(),
             "sqlite": sqlite3.sqlite_version,
             "physical_asic": False,
             "render_or_deployed_service": False,
@@ -1047,6 +1048,11 @@ def _failure_artifact(args: argparse.Namespace, error: str) -> dict[str, Any]:
         "runs": [],
         "harness_error": error,
         "hard_wall_cap_seconds": args.max_wall_seconds + 3,
+        "supervisor_overhead": {
+            "parent_git_subprocesses": 0,
+            "source_hashing": "synchronous local file reads after worker cleanup; outside worker cap",
+            "artifact_serialization_and_write": "synchronous local filesystem work after worker cleanup; outside worker cap and not hard-bounded",
+        },
         "integrity_status": "FAIL",
     }
 
