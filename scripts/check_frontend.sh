@@ -121,6 +121,7 @@ step node --test tests/test_app_js_core.js
 step node tests/test_sw_push.cjs
 step node scripts/check-mobile-xss.cjs
 step node tests/test_mobile_xss_guards.js
+step node --test tests/test_audit_failed_snapshot.cjs
 step node scripts/audit_ui.cjs --all
 step node scripts/check-axe.cjs --report
 step node tests/test_axe_gate.js
