@@ -66,9 +66,21 @@ def isolated_runtime(temporary: Path):
             socket.socket, "connect_ex", blocked
         ), patch("socket.create_connection", blocked):
             app, routes, registry_type, create_token = HARNESS._prepare_app(secret)
+            import axe_fleet.routes as agent_routes
+
+            assert agent_routes is routes
             previous_registry = routes._registry
             try:
-                with patch.object(routes, "AxeOSConnector", side_effect=blocked):
+                with patch.object(
+                    agent_routes, "AxeOSConnector", side_effect=blocked
+                ) as connector_patch:
+                    try:
+                        agent_routes.AxeOSConnector("192.0.2.1")
+                    except AssertionError as error:
+                        assert "external transport" in str(error)
+                    else:
+                        raise AssertionError("connector guard did not intercept")
+                    assert connector_patch.call_count == 1
                     yield app, routes, registry_type, create_token
             finally:
                 routes._registry = previous_registry
@@ -284,6 +296,9 @@ def test_real_blueprint_and_sqlite_idempotency_contract_without_app_bootstrap() 
                 socket.socket, "connect_ex", blocked
             ), patch("socket.create_connection", blocked):
                 app, routes, registry_type, create_token = HARNESS._prepare_app(secret)
+                import axe_fleet.routes as agent_routes
+
+                assert agent_routes is routes
                 previous_registry = routes._registry
                 previous_connector = routes.AxeOSConnector
                 try:
