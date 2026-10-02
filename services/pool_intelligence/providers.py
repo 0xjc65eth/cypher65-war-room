@@ -202,6 +202,14 @@ PROVIDERS: tuple[PoolProvider, ...] = (
     _p("antpool", "AntPool", Chain.BTC, PoolKind.POOL, "antpool.com"),
     _p("f2pool", "F2Pool", Chain.BTC, PoolKind.POOL, "f2pool.com"),
     _p(
+        "btcpowlab",
+        "BTC PoW Lab",
+        Chain.BTC,
+        PoolKind.POOL,
+        "btcpowlab-pool.com",
+        docs="https://btcpowlab-pool.com (public miner telemetry; API schema not yet verified)",
+    ),
+    _p(
         "viabtc",
         "ViaBTC",
         Chain.BTC,
