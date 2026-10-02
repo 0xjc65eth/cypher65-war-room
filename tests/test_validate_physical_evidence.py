@@ -122,6 +122,58 @@ def test_required_scenario_matrix_is_enforced():
     assert any("missing device families" in error for error in errors)
 
 
+def test_unsupported_firmware_labels_do_not_satisfy_matrix():
+    records = [
+        _record(
+            i,
+            "dry_run",
+            ("bitaxe", "nerdqaxe", "farm_asic")[i % 3],
+            ("custom-fw-a", "custom-fw-b")[i % 2],
+        )
+        for i in range(200)
+    ]
+    records += [
+        _record(
+            200 + i,
+            "human_command",
+            ("bitaxe", "nerdqaxe", "farm_asic")[i % 3],
+            ("custom-fw-a", "custom-fw-b")[i % 2],
+        )
+        for i in range(50)
+    ]
+
+    errors = validate(records)
+
+    assert any("unsupported firmware_family" in error for error in errors)
+
+
+def test_aliases_of_one_firmware_family_count_once():
+    records = [
+        _record(
+            i,
+            "dry_run",
+            ("bitaxe", "nerdqaxe", "farm_asic")[i % 3],
+            ("esp-miner", "axeos")[i % 2],
+        )
+        for i in range(200)
+    ]
+    records += [
+        _record(
+            200 + i,
+            "human_command",
+            ("bitaxe", "nerdqaxe", "farm_asic")[i % 3],
+            ("esp-miner", "axeos")[i % 2],
+        )
+        for i in range(50)
+    ]
+
+    errors = validate(records)
+
+    assert any(
+        "fewer than two supported firmware families" in error for error in errors
+    )
+
+
 def test_cli_success_does_not_claim_physical_approval(tmp_path, capsys):
     records = [
         _record(
