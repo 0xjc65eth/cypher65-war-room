@@ -19,7 +19,7 @@ describe('useCommands', () => {
       success: true,
       dry_run: true,
     });
-    const { result } = renderHook(() => useCommands('d1'));
+    const { result } = await renderHook(() => useCommands('d1'));
 
     let response: any;
     await act(async () => {
@@ -39,7 +39,7 @@ describe('useCommands', () => {
 
   it('handles command errors', async () => {
     (client.sendDeviceCommand as jest.Mock).mockRejectedValue(new Error('Device offline'));
-    const { result } = renderHook(() => useCommands('d1'));
+    const { result } = await renderHook(() => useCommands('d1'));
 
     let response: any;
     await act(async () => {
@@ -56,7 +56,7 @@ describe('useCommands', () => {
       confirmation_token: 'one-time-token',
     });
     (client.sendDeviceCommand as jest.Mock).mockResolvedValue({ success: true });
-    const { result } = renderHook(() => useCommands('d1'));
+    const { result } = await renderHook(() => useCommands('d1'));
 
     let response: any;
     await act(async () => {
@@ -85,7 +85,7 @@ describe('useCommands', () => {
       success: false,
       error: 'human confirmation required',
     });
-    const { result } = renderHook(() => useCommands('d1'));
+    const { result } = await renderHook(() => useCommands('d1'));
 
     await act(async () => {
       await result.current.sendCommand('restart');
@@ -118,7 +118,7 @@ describe('useCommands', () => {
       reconciliation: { state: 'confirmed' },
       audit: { state: 'recorded' },
     });
-    const { result } = renderHook(() => useCommands('d1'));
+    const { result } = await renderHook(() => useCommands('d1'));
 
     await act(async () => {
       await result.current.sendCommand('restart', {}, 'CONFIRM RESTART');
@@ -137,10 +137,10 @@ describe('useCommands', () => {
         releaseRequest = resolve;
       })
     );
-    const { result } = renderHook(() => useCommands('d1'));
+    const { result } = await renderHook(() => useCommands('d1'));
 
     let first!: Promise<unknown>;
-    act(() => {
+    await act(() => {
       first = result.current.sendCommand('restart');
     });
     let duplicate: any;
@@ -162,7 +162,7 @@ describe('useCommands', () => {
     (client.sendDeviceCommand as jest.Mock)
       .mockRejectedValueOnce(new Error('Network timeout'))
       .mockResolvedValueOnce({ success: true, dry_run: true });
-    const { result } = renderHook(() => useCommands('d1'));
+    const { result } = await renderHook(() => useCommands('d1'));
 
     await act(async () => {
       await result.current.sendCommand('restart');
@@ -183,7 +183,7 @@ describe('useCommands', () => {
       reconciliation: { state: 'confirmed' },
       audit: { state: 'recorded' },
     });
-    const { result } = renderHook(() => useCommands('d1'));
+    const { result } = await renderHook(() => useCommands('d1'));
 
     await act(async () => {
       await result.current.sendCommand('restart');
@@ -203,13 +203,13 @@ describe('useCommands', () => {
       })
     );
     const consoleError = jest.spyOn(console, 'error').mockImplementation(() => undefined);
-    const { result, unmount } = renderHook(() => useCommands('d1'));
+    const { result, unmount } = await renderHook(() => useCommands('d1'));
 
     let request!: Promise<unknown>;
-    act(() => {
+    await act(() => {
       request = result.current.sendCommand('restart');
     });
-    unmount();
+    await unmount();
     await act(async () => {
       releaseRequest({ success: true, dry_run: true });
       await request;
@@ -227,13 +227,13 @@ describe('useCommands', () => {
       })
     );
     const consoleError = jest.spyOn(console, 'error').mockImplementation(() => undefined);
-    const { result, unmount } = renderHook(() => useCommands('d1'));
+    const { result, unmount } = await renderHook(() => useCommands('d1'));
 
     let request!: Promise<unknown>;
-    act(() => {
+    await act(() => {
       request = result.current.getHistory();
     });
-    unmount();
+    await unmount();
     await act(async () => {
       rejectHistory(new Error('history unavailable'));
       await request;
@@ -257,7 +257,7 @@ describe('useCommands', () => {
         reconciliation: { state: 'confirmed' },
         audit: { state: 'recorded' },
       });
-    const { result } = renderHook(() => useCommands('d1'));
+    const { result } = await renderHook(() => useCommands('d1'));
 
     await act(async () => {
       await result.current.sendCommand('restart');

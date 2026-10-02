@@ -56,16 +56,16 @@ describe('targetLineX', () => {
 });
 
 describe('ShareDistChart', () => {
-  it('renders the target badge and the purple reference line', () => {
-    render(<ShareDistChart data={fixture} loading={false} error={null} />);
+  it('renders the target badge and the purple reference line', async () => {
+    await render(<ShareDistChart data={fixture} loading={false} error={null} />);
     expect(screen.getByText('target')).toBeTruthy();
     expect(screen.getByText('71.90 M')).toBeTruthy();
     expect(screen.getByText('12 shares')).toBeTruthy();
     expect(screen.getByTestId('share-dist-target-line')).toBeTruthy();
   });
 
-  it('shows an empty state when the session has no shares', () => {
-    render(
+  it('shows an empty state when the session has no shares', async () => {
+    await render(
       <ShareDistChart
         data={{ labels: [], count: 0, target_diff: null, target_bucket: null, datasets: [] }}
         loading={false}
@@ -75,8 +75,8 @@ describe('ShareDistChart', () => {
     expect(screen.getByText(/No shares yet/)).toBeTruthy();
   });
 
-  it('renders no target line when the server sends null target', () => {
-    render(
+  it('renders no target line when the server sends null target', async () => {
+    await render(
       <ShareDistChart
         data={{ ...fixture, target_diff: null, target_bucket: null }}
         loading={false}

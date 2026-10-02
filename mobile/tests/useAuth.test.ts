@@ -24,7 +24,7 @@ describe('useAuth', () => {
 
   it('hydrates a stored token on mount', async () => {
     (SecureStore.getItemAsync as jest.Mock).mockResolvedValue('stored-token');
-    const { result } = renderHook(() => useAuth());
+    const { result } = await renderHook(() => useAuth());
     await waitFor(() => expect(result.current.loading).toBe(false));
     expect(result.current.token).toBe('stored-token');
     expect(result.current.isAuthenticated).toBe(true);
@@ -32,14 +32,14 @@ describe('useAuth', () => {
 
   it('treats a SecureStore read failure as logged out', async () => {
     (SecureStore.getItemAsync as jest.Mock).mockRejectedValue(new Error('keystore'));
-    const { result } = renderHook(() => useAuth());
+    const { result } = await renderHook(() => useAuth());
     await waitFor(() => expect(result.current.loading).toBe(false));
     expect(result.current.token).toBeNull();
     expect(result.current.isAuthenticated).toBe(false);
   });
 
   it('persists a successful login and returns the API error message on failure', async () => {
-    const { result } = renderHook(() => useAuth());
+    const { result } = await renderHook(() => useAuth());
     await waitFor(() => expect(result.current.loading).toBe(false));
 
     (client.login as jest.Mock).mockResolvedValue({ token: 'new-token' });
@@ -62,7 +62,7 @@ describe('useAuth', () => {
   it('clears the token even when remote logout fails', async () => {
     useAppStore.getState().setToken('live');
     (client.logoutRemote as jest.Mock).mockRejectedValue(new Error('offline'));
-    const { result } = renderHook(() => useAuth());
+    const { result } = await renderHook(() => useAuth());
     await waitFor(() => expect(result.current.loading).toBe(false));
     await act(async () => {
       await result.current.logout();
