@@ -23,7 +23,7 @@ further I/O, but neither path is arbitrary discovery or can change a pool.
 | 092 Pool dry-run | PASS | Bitaxe `update_pool` dry-run and confirmation compose canonical validation, one DNS resolution, public-destination/port policy and credential-free V1 subscribe; failure returns only controlled state/latencies and prevents a confirmation token. |
 | 093 Confirmation | FAIL | The Bitaxe route binds canonical config to a one-time server token; the universal pool engine and other firmware paths are not integrated. |
 | 094 Reconciliation | FAIL | Bitaxe can compare fresh firmware telemetry to the request hash and never treats HTTP ACK as verified; auth/jobs/hashrate evidence and other firmware remain absent. |
-| 095 Rollback | FAIL | Previous known-good pool model absent. |
+| 095 Rollback | FAIL | Partial implementation: an encrypted, tenant/device/operation-bound previous pool configuration is captured from recent complete telemetry; rollback requires fresh preflight, one-time confirmation and a single dispatch claim, then reconciles the configuration against later telemetry. Hermetic store/route tests exist; known-good mining recovery, physical rollback evidence (#386) and universal firmware integration remain unproven. |
 | 096 Canary | PASS | Immutable, bounded state machine releases a mandatory canary then deterministic batches; any failed/unknown reconciliation halts before another batch. |
 | 097 Virtual Pool Lab | PASS | Stateful local V1 simulator covers successive sessions, timeout, invalid JSON and oversized responses. |
 | 098 Fuzzing | PASS | Public bounded response validator survives a seeded corpus of 6,000 arbitrary/structured payloads plus duplicate-key, deep-nesting and oversized cases with controlled failures only. |
