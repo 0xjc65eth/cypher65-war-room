@@ -91,6 +91,26 @@ def test_non_utc_timestamp_is_rejected():
     assert any("timestamp must be ISO-8601 UTC" in error for error in validate(records))
 
 
+def test_missing_or_non_string_evidence_fields_fail_closed():
+    records = [_record(1, "dry_run", "bitaxe", "esp-miner")]
+    records[0]["evidence_ref"] = None
+    records[0]["run_id"] = " "
+    records[0]["firmware_family"] = None
+
+    errors = validate(records)
+
+    assert any("invalid run_id" in error for error in errors)
+    assert any("invalid firmware_family" in error for error in errors)
+    assert any("has no evidence reference" in error for error in errors)
+
+
+def test_unhashable_mode_is_rejected_without_crashing():
+    record = _record(1, "dry_run", "bitaxe", "esp-miner")
+    record["mode"] = []
+
+    assert any("invalid mode" in error for error in validate([record]))
+
+
 def test_required_scenario_matrix_is_enforced():
     records = [_record(i, "dry_run", "bitaxe", "esp-miner") for i in range(200)]
     for record in records:
