@@ -10,6 +10,14 @@ from pathlib import Path
 
 
 REQUIRED_DEVICE_FAMILIES = {"bitaxe", "nerdqaxe", "farm_asic"}
+SUPPORTED_FIRMWARE_ALIASES = {
+    "esp-miner": "esp-miner/axeos",
+    "axeos": "esp-miner/axeos",
+    "cgminer": "cgminer/bmminer",
+    "bmminer": "cgminer/bmminer",
+    "braiins os": "braiins os",
+    "braiins-os": "braiins os",
+}
 MIN_DRY_RUNS = 200
 MIN_HUMAN_COMMANDS = 50
 REQUIRED_SCENARIOS = {
@@ -87,7 +95,12 @@ def validate(records: object) -> list[str]:
         if not isinstance(firmware_family, str) or not firmware_family.strip():
             errors.append(f"{prefix} invalid firmware_family")
         else:
-            firmwares.add(firmware_family.strip().lower())
+            firmware_key = " ".join(firmware_family.strip().lower().split())
+            canonical_firmware = SUPPORTED_FIRMWARE_ALIASES.get(firmware_key)
+            if canonical_firmware is None:
+                errors.append(f"{prefix} unsupported firmware_family")
+            else:
+                firmwares.add(canonical_firmware)
         scenario = record["scenario"]
         if not isinstance(scenario, str) or scenario not in REQUIRED_SCENARIOS:
             errors.append(f"{prefix} invalid scenario")
@@ -132,7 +145,7 @@ def validate(records: object) -> list[str]:
     if missing_families:
         errors.append("missing device families: " + ", ".join(missing_families))
     if len(firmwares) < 2:
-        errors.append("fewer than two firmware families validated")
+        errors.append("fewer than two supported firmware families validated")
     missing_scenarios = sorted(REQUIRED_SCENARIOS - scenarios)
     if missing_scenarios:
         errors.append("missing scenarios: " + ", ".join(missing_scenarios))
