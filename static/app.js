@@ -9224,6 +9224,9 @@ function renderAccount(acct) {
   let _rentalsAutoTabbed = false;  // UX: auto-lands on the first tab that has data
   let _rentalsDetailChart = null;
   let _rentalsRigChart = null;     // mini bar chart of same-rig % history
+  let _rentalsDetailGeneration = 0;
+  let _rentalsEvidenceGeneration = 0;
+  let _rentalsEvidenceContext = null;
 
   function _setRentalsFilter(name) {
     _rentalsFilter = name;
@@ -10390,9 +10393,375 @@ function renderAccount(acct) {
     listEl.innerHTML = items.map(_rentalCardHtml).join('');
   }
 
+  /**
+   * Present the server's sampled-evidence verdict without estimating delivery.
+   * @param {Object} evaluation Server evaluation with an explicit status.
+   * @returns {{label: string, tone: string}} Portuguese operator-facing status.
+   * @example _rentalEvidenceStatus({status: 'stale'}).label // 'Dados antigos'
+   */
+  function _rentalEvidenceStatus(evaluation) {
+    const labels = {
+      unconfigured: ['Sem vínculo configurado', ''],
+      missing: ['Sem observações', 'is-warn'],
+      stale: ['Dados antigos', 'is-warn'],
+      insufficient: ['Amostras insuficientes', 'is-warn'],
+      healthy: ['Leituras dentro do limite', 'is-good'],
+      watching: ['Acompanhando leituras baixas', 'is-warn'],
+      under_delivery: ['Leituras abaixo do limite', 'is-bad'],
+    };
+    const entry = labels[(evaluation || {}).status] || ['Avaliação indisponível', 'is-warn'];
+    return { label: entry[0], tone: entry[1] };
+  }
+
+  /**
+   * Format a server observation time as explicit UTC, retaining missing data.
+   * @param {number|null} seconds Unix seconds supplied by the evidence API.
+   * @returns {string} UTC ISO timestamp or an em dash.
+   * @example _rentalEvidenceUtc(null) // '—'
+   */
+  function _rentalEvidenceUtc(seconds) {
+    if (seconds === null || seconds === undefined || seconds === '') return '—';
+    const value = Number(seconds);
+    if (!isFinite(value) || value <= 0) return '—';
+    const date = new Date(value * 1000);
+    return isFinite(date.getTime()) ? date.toISOString().replace('T', ' ').replace('.000Z', 'Z').replace(/Z$/, ' UTC') : '—';
+  }
+
+  /** Format a nullable observation; a real zero must remain visible. */
+  function _rentalEvidenceNumber(value, suffix) {
+    if (value === null || value === undefined || value === '') return '—';
+    const number = Number(value);
+    return isFinite(number) ? number.toLocaleString('pt-BR', { maximumFractionDigits: 6 }) + suffix : '—';
+  }
+
+  function _rentalEvidenceUrl(context, exportCsv) {
+    return '/api/rentals/' + encodeURIComponent(context.id) + '/evidence' +
+      (exportCsv ? '/export' : '') + '?provider=' + encodeURIComponent(context.provider);
+  }
+
+  // Only safe reads retry. Writes can succeed before a connection drops, so
+  // retrying a save/delete automatically could change a newer binding.
+  async function _rentalEvidenceRequest(url, options, exportCsv) {
+    const opts = options || {};
+    const attempts = !opts.method || opts.method === 'GET' ? 2 : 1;
+    for (let attempt = 0; attempt < attempts; attempt++) {
+      const controller = new AbortController();
+      let timer;
+      const timeout = new Promise((resolve, reject) => {
+        timer = setTimeout(() => {
+          controller.abort();
+          reject(new Error('Evidence request timed out'));
+        }, 15000);
+      });
+      try {
+        // Bound token refresh, response headers and body parsing together.
+        const reading = (async () => {
+          const response = await authFetch(url, Object.assign({}, opts, { signal: controller.signal }));
+          if (!response.ok) {
+            const error = new Error('HTTP ' + response.status);
+            error.httpStatus = response.status;
+            if (response.status === 400) {
+              const details = await response.json().catch(() => null);
+              if (details && typeof details.error === 'string') error.publicMessage = details.error.slice(0, 500);
+            }
+            throw error;
+          }
+          const payload = exportCsv ? await response.blob() : await response.json();
+          if (!exportCsv && (!payload || payload.success !== true)) throw new Error('Invalid evidence response');
+          return payload;
+        })();
+        return await Promise.race([reading, timeout]);
+      } catch (error) {
+        if ((error.httpStatus && error.httpStatus < 500) || attempt + 1 >= attempts) throw error;
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+  }
+
+  function _rentalEvidenceMessage(text, error) {
+    const element = document.getElementById('rentals-evidence-message');
+    if (!element) return;
+    element.textContent = text;
+    element.classList.toggle('is-error', !!error);
+  }
+
+  function _rentalEvidenceBusy(busy) {
+    const form = document.getElementById('rentals-evidence-form');
+    if (form) Array.from(form.elements).forEach(element => { element.disabled = busy; });
+    const refresh = document.getElementById('rentals-evidence-refresh');
+    if (refresh) {
+      refresh.disabled = busy;
+      refresh.textContent = busy ? 'Aguarde…' : 'Atualizar evidência';
+    }
+    const exportButton = document.getElementById('rentals-evidence-export');
+    if (exportButton) exportButton.disabled = busy || !_rentalsEvidenceContext || !_rentalsEvidenceContext.data;
+    const summary = document.getElementById('rentals-evidence-summary');
+    if (summary) summary.setAttribute('aria-busy', busy ? 'true' : 'false');
+  }
+
+  function _rentalEvidenceMetric(container, label, value, tone) {
+    const metric = document.createElement('div');
+    metric.className = 'rentals-evidence__metric' + (tone ? ' ' + tone : '');
+    const name = document.createElement('span');
+    name.textContent = label;
+    const text = document.createElement('strong');
+    text.textContent = value;
+    metric.append(name, text);
+    container.appendChild(metric);
+  }
+
+  function _renderRentalEvidence(data) {
+    const binding = data.binding || null;
+    const sources = Array.isArray(data.sources) ? data.sources : [];
+    const evaluation = data.evaluation || {};
+    const status = _rentalEvidenceStatus(evaluation);
+    const linkedSource = binding ? sources.find(source => String(source.id) === String(binding.source_id)) : null;
+    const summary = document.getElementById('rentals-evidence-summary');
+    if (summary) {
+      summary.replaceChildren();
+      _rentalEvidenceMetric(summary, 'Avaliação das amostras', status.label, status.tone);
+      _rentalEvidenceMetric(summary, 'Fonte das leituras', 'Parasite · pool de destino');
+      if (binding) {
+        _rentalEvidenceMetric(summary, 'Worker vinculado', linkedSource ? String(linkedSource.worker_key) + ': ' + String(linkedSource.worker_value) : String(binding.source_id));
+        _rentalEvidenceMetric(summary, 'Carteira de destino', linkedSource ? String(linkedSource.address) : 'Indisponível na sessão');
+        _rentalEvidenceMetric(summary, 'Contrato declarado', _rentalEvidenceNumber(binding.contract_th, ' TH/s'));
+      }
+      _rentalEvidenceMetric(summary, 'Última observação (UTC)', _rentalEvidenceUtc(evaluation.last_observed_at));
+      _rentalEvidenceMetric(summary, 'Trecho de leituras baixas (UTC)', _rentalEvidenceUtc(evaluation.window_start) + ' → ' + _rentalEvidenceUtc(evaluation.window_end));
+      _rentalEvidenceMetric(summary, 'Amostras baixas consecutivas', _rentalEvidenceNumber(evaluation.samples, ''));
+      _rentalEvidenceMetric(summary, 'Hashrate observado', _rentalEvidenceNumber(evaluation.observed_th, ' TH/s'));
+      _rentalEvidenceMetric(summary, 'Entrega amostrada', _rentalEvidenceNumber(evaluation.delivery_pct, '%'));
+      if (binding) _rentalEvidenceMetric(summary, 'Regra declarada', _rentalEvidenceNumber(binding.threshold_pct, '%') + ' · ' + _rentalEvidenceNumber(binding.duration_s, ' s') + ' · lacuna ≤ ' + _rentalEvidenceNumber(binding.max_gap_s, ' s'));
+    }
+    const select = document.getElementById('rentals-evidence-source');
+    if (select) {
+      select.replaceChildren();
+      const empty = document.createElement('option');
+      empty.value = '';
+      empty.textContent = sources.length ? 'Selecione um worker' : 'Nenhum worker observado na sessão';
+      select.appendChild(empty);
+      sources.forEach(source => {
+        const option = document.createElement('option');
+        option.value = String(source.id);
+        option.textContent = String(source.worker_key || 'worker') + '=' + String(source.worker_value || source.id) +
+          ' · ' + String(source.address || 'carteira indisponível');
+        select.appendChild(option);
+      });
+      if (binding && !sources.some(source => String(source.id) === String(binding.source_id))) {
+        const previous = document.createElement('option');
+        previous.value = String(binding.source_id);
+        previous.textContent = 'Fonte vinculada indisponível · ' + String(binding.source_id);
+        previous.disabled = true;
+        select.appendChild(previous);
+      }
+      select.value = binding ? String(binding.source_id) : '';
+    }
+    [
+      ['rentals-evidence-contract', 'contract_th'],
+      ['rentals-evidence-threshold', 'threshold_pct'],
+      ['rentals-evidence-duration', 'duration_s'],
+      ['rentals-evidence-gap', 'max_gap_s'],
+    ].forEach(([id, key]) => {
+      const input = document.getElementById(id);
+      if (input) input.value = binding && binding[key] != null ? String(binding[key]) : '';
+    });
+    const exclusive = document.getElementById('rentals-evidence-exclusive');
+    if (exclusive) exclusive.checked = !!binding;
+    const remove = document.getElementById('rentals-evidence-remove');
+    if (remove) remove.hidden = !binding;
+    const exportButton = document.getElementById('rentals-evidence-export');
+    if (exportButton) {
+      exportButton.disabled = false;
+      exportButton.textContent = 'Exportar evidência CSV';
+    }
+    const save = document.getElementById('rentals-evidence-save');
+    if (save) save.disabled = !sources.length;
+    _rentalEvidenceMessage(status.label + '. ' + (binding ? 'Vínculo declarado ativo. A avaliação usa somente as leituras deste worker.' :
+      (sources.length ? 'Escolha o worker e informe sua regra. Nenhum limite é definido automaticamente.' : 'Conecte a carteira do pool de destino e aguarde uma leitura de seus workers.')), false);
+    const points = Array.isArray(data.points) ? data.points.slice(-20) : [];
+    const observations = document.getElementById('rentals-evidence-observations');
+    if (observations) {
+      observations.replaceChildren();
+      if (points.length) {
+        const latest = points[points.length - 1];
+        if (summary) {
+          _rentalEvidenceMetric(summary, 'Última coleta (UTC)', _rentalEvidenceUtc(latest.collection_started_at) + ' → ' + _rentalEvidenceUtc(latest.collection_completed_at));
+          _rentalEvidenceMetric(summary, 'Janela média do pool', 'Não informada');
+          _rentalEvidenceMetric(summary, 'Horário de medição do pool', 'Não informado');
+          _rentalEvidenceMetric(summary, 'Origem da última coleta', String(latest.source_url || 'Parasite · pool de destino'), 'is-wide');
+        }
+        const heading = document.createElement('h4');
+        heading.textContent = 'Últimas ' + points.length + ' observações · retenção de até 30 dias / 10.000 pontos';
+        observations.appendChild(heading);
+        const list = document.createElement('div');
+        list.setAttribute('role', 'list');
+        observations.appendChild(list);
+        const qualityLabels = {
+          observed: 'Leitura observada', missing: 'Valor ausente', unmapped: 'Worker ausente',
+          ambiguous: 'Worker ambíguo', api_error: 'Falha na API do pool',
+        };
+        points.slice().reverse().forEach(point => {
+          const row = document.createElement('div');
+          row.className = 'rentals-evidence__observation';
+          row.setAttribute('role', 'listitem');
+          [
+            _rentalEvidenceUtc(point.observed_at),
+            qualityLabels[point.quality] || 'Qualidade desconhecida',
+            _rentalEvidenceNumber(point.hashrate_th, ' TH/s'),
+            _rentalEvidenceNumber(point.delivery_pct, '%'),
+            'Parasite · ' + String(point.worker_key || '—') + ': ' + String(point.worker_value || '—'),
+            'Coleta: ' + _rentalEvidenceUtc(point.collection_started_at) + ' → ' + _rentalEvidenceUtc(point.collection_completed_at),
+            'Regra: revisão ' + String(point.revision == null ? '—' : point.revision),
+          ].forEach(value => {
+            const cell = document.createElement('span');
+            cell.textContent = value;
+            row.appendChild(cell);
+          });
+          list.appendChild(row);
+        });
+      }
+    }
+  }
+
+  async function _loadRentalEvidence(context) {
+    if (_rentalsEvidenceContext !== context) return;
+    const generation = ++_rentalsEvidenceGeneration;
+    context.data = null;
+    const section = document.getElementById('rentals-evidence');
+    const summary = document.getElementById('rentals-evidence-summary');
+    if (!section || !summary) return;
+    const firstReveal = section.hidden;
+    section.hidden = false;
+    section.classList.toggle('is-entering', firstReveal);
+    summary.replaceChildren();
+    const observations = document.getElementById('rentals-evidence-observations');
+    if (observations) observations.replaceChildren();
+    _rentalEvidenceBusy(true);
+    _rentalEvidenceMessage('Carregando evidência do pool de destino…', false);
+    skelShow(summary, 'table');
+    try {
+      const data = await _rentalEvidenceRequest(_rentalEvidenceUrl(context));
+      if (_rentalsEvidenceContext !== context || generation !== _rentalsEvidenceGeneration) return;
+      context.data = data;
+      _rentalEvidenceBusy(false);
+      _renderRentalEvidence(data);
+    } catch (error) {
+      if (_rentalsEvidenceContext !== context || generation !== _rentalsEvidenceGeneration) return;
+      context.data = null;
+      _rentalEvidenceBusy(false);
+      _rentalEvidenceMessage('Não foi possível carregar a evidência. Atualize para tentar novamente.', true);
+      const exportButton = document.getElementById('rentals-evidence-export');
+      if (exportButton) exportButton.disabled = true;
+    } finally {
+      if (_rentalsEvidenceContext === context && generation === _rentalsEvidenceGeneration) {
+        skelHide(summary);
+        summary.setAttribute('aria-busy', 'false');
+      }
+    }
+  }
+
+  async function _saveRentalEvidence(event) {
+    event.preventDefault();
+    const context = _rentalsEvidenceContext;
+    const form = document.getElementById('rentals-evidence-form');
+    if (!context || !form) return;
+    const gap = document.getElementById('rentals-evidence-gap');
+    const duration = document.getElementById('rentals-evidence-duration');
+    gap.setCustomValidity(Number(gap.value) > Number(duration.value) ? 'A lacuna máxima deve ser menor ou igual à duração da regra.' : '');
+    if (!form.reportValidity()) return;
+    const payload = {
+      source_id: Number(document.getElementById('rentals-evidence-source').value),
+      contract_th: Number(document.getElementById('rentals-evidence-contract').value),
+      threshold_pct: Number(document.getElementById('rentals-evidence-threshold').value),
+      duration_s: Number(duration.value),
+      max_gap_s: Number(gap.value),
+      exclusive_worker: document.getElementById('rentals-evidence-exclusive').checked,
+    };
+    context.data = null;
+    const summary = document.getElementById('rentals-evidence-summary');
+    if (summary) summary.replaceChildren();
+    _rentalEvidenceBusy(true);
+    const saveButton = document.getElementById('rentals-evidence-save');
+    if (saveButton) saveButton.textContent = 'Salvando…';
+    _rentalEvidenceMessage('Salvando vínculo e regra…', false);
+    try {
+      await _rentalEvidenceRequest(_rentalEvidenceUrl(context), {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
+      });
+      if (_rentalsEvidenceContext === context) await _loadRentalEvidence(context);
+    } catch (error) {
+      if (_rentalsEvidenceContext !== context) return;
+      _rentalEvidenceBusy(false);
+      const exportButton = document.getElementById('rentals-evidence-export');
+      if (exportButton) exportButton.disabled = true;
+      _rentalEvidenceMessage(error.publicMessage || 'Não foi possível confirmar o vínculo. Verifique os valores e atualize a evidência antes de tentar novamente.', true);
+    } finally {
+      if (_rentalsEvidenceContext === context && saveButton) saveButton.textContent = 'Salvar vínculo e regra';
+    }
+  }
+
+  async function _removeRentalEvidence() {
+    const context = _rentalsEvidenceContext;
+    if (!context) return;
+    context.data = null;
+    const summary = document.getElementById('rentals-evidence-summary');
+    if (summary) summary.replaceChildren();
+    _rentalEvidenceBusy(true);
+    const removeButton = document.getElementById('rentals-evidence-remove');
+    if (removeButton) removeButton.textContent = 'Desativando…';
+    _rentalEvidenceMessage('Desativando vínculo…', false);
+    try {
+      await _rentalEvidenceRequest(_rentalEvidenceUrl(context), { method: 'DELETE' });
+      if (_rentalsEvidenceContext === context) await _loadRentalEvidence(context);
+    } catch (error) {
+      if (_rentalsEvidenceContext !== context) return;
+      _rentalEvidenceBusy(false);
+      const exportButton = document.getElementById('rentals-evidence-export');
+      if (exportButton) exportButton.disabled = true;
+      _rentalEvidenceMessage('Não foi possível confirmar a desativação. Atualize a evidência antes de tentar novamente.', true);
+    } finally {
+      if (_rentalsEvidenceContext === context && removeButton) removeButton.textContent = 'Desativar vínculo';
+    }
+  }
+
+  async function _exportRentalEvidence() {
+    const context = _rentalsEvidenceContext;
+    const button = document.getElementById('rentals-evidence-export');
+    if (!context || !context.data || !button) return;
+    const generation = _rentalsEvidenceGeneration;
+    button.disabled = true;
+    button.textContent = 'Exportando…';
+    try {
+      const blob = await _rentalEvidenceRequest(_rentalEvidenceUrl(context, true), {}, true);
+      if (_rentalsEvidenceContext !== context || generation !== _rentalsEvidenceGeneration) return;
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = 'rental_evidence_' + String(context.id).replace(/[^a-zA-Z0-9_-]/g, '_') + '.csv';
+      document.body.appendChild(link);
+      link.click();
+      setTimeout(() => { URL.revokeObjectURL(url); link.remove(); }, 2000);
+      _rentalEvidenceMessage('Evidência CSV exportada. O arquivo preserva origem e horários das leituras.', false);
+    } catch (error) {
+      if (_rentalsEvidenceContext === context && generation === _rentalsEvidenceGeneration) _rentalEvidenceMessage('Não foi possível exportar a evidência. Tente novamente.', true);
+    } finally {
+      if (_rentalsEvidenceContext === context && generation === _rentalsEvidenceGeneration) {
+        button.disabled = false;
+        button.textContent = 'Exportar evidência CSV';
+      }
+    }
+  }
+
   async function openRentalDetail(id, provider) {
     const panel = document.getElementById('rentals-detail');
     if (!panel) return;
+    const detailGeneration = ++_rentalsDetailGeneration;
+    _rentalsEvidenceGeneration++;
+    _rentalsEvidenceContext = { id: String(id), provider: provider, data: null };
+    const evidenceContext = _rentalsEvidenceContext;
+    const evidenceSection = document.getElementById('rentals-evidence');
+    if (evidenceSection) evidenceSection.hidden = true;
     // Reset the auto-exclusion banner immediately — a stale
     // 'AUTO-EXCLUSÃO DISPARADA' from a previous detail must never linger
     // while the next detail's fetch is in flight (Issue #110).
@@ -10423,6 +10792,7 @@ function renderAccount(acct) {
       });
       if (!r.ok) return;
       const data = await r.json();
+      if (detailGeneration !== _rentalsDetailGeneration) return;
       // Auth-rejection guide (Issue #174): a CONFIGURED but rejected key
       // (Bad Nonce / 401/403) on the detail click explains the SAME fix the
       // list already shows — regenerate the key, not a generic error.
@@ -10807,6 +11177,7 @@ function renderAccount(acct) {
           : '<div class="rentals-detail__log-item">no log entries</div>';
       }
       panel.hidden = false;
+      _loadRentalEvidence(evidenceContext);
     } catch (e) { /* fail-closed: keep panel hidden */ }
   }
 
@@ -10841,7 +11212,30 @@ function renderAccount(acct) {
     const exportAnalysisBtn = document.getElementById('rentals-export-analysis');
     if (exportAnalysisBtn) exportAnalysisBtn.addEventListener('click', () => _downloadRentalsExport('analysis', 'rentals_analysis.csv'));
     const closeBtn = document.getElementById('rentals-detail-close');
-    if (closeBtn) closeBtn.addEventListener('click', () => { const p = document.getElementById('rentals-detail'); if (p) p.hidden = true; });
+    if (closeBtn) closeBtn.addEventListener('click', () => {
+      const p = document.getElementById('rentals-detail');
+      if (p) p.hidden = true;
+      _rentalsDetailGeneration++;
+      _rentalsEvidenceGeneration++;
+      _rentalsEvidenceContext = null;
+    });
+    const evidenceForm = document.getElementById('rentals-evidence-form');
+    if (evidenceForm) evidenceForm.addEventListener('submit', _saveRentalEvidence);
+    const evidenceRefresh = document.getElementById('rentals-evidence-refresh');
+    if (evidenceRefresh) evidenceRefresh.addEventListener('click', () => {
+      if (_rentalsEvidenceContext) _loadRentalEvidence(_rentalsEvidenceContext);
+    });
+    const evidenceRemove = document.getElementById('rentals-evidence-remove');
+    if (evidenceRemove) evidenceRemove.addEventListener('click', _removeRentalEvidence);
+    const evidenceExport = document.getElementById('rentals-evidence-export');
+    if (evidenceExport) evidenceExport.addEventListener('click', _exportRentalEvidence);
+    ['rentals-evidence-duration', 'rentals-evidence-gap'].forEach(id => {
+      const input = document.getElementById(id);
+      if (input) input.addEventListener('input', () => {
+        const gap = document.getElementById('rentals-evidence-gap');
+        if (gap) gap.setCustomValidity('');
+      });
+    });
     const filters = document.querySelectorAll('[data-rentals-filter]');
     filters.forEach(chip => {
       chip.addEventListener('click', () => {
