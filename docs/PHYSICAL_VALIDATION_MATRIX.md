@@ -47,6 +47,12 @@ Validação do gate:
 python scripts/validate_physical_evidence.py caminho/evidence.json
 ```
 
+`PASS` valida apenas a estrutura, os volumes e a cobertura mínima do ledger. O
+script não autentica a origem física das referências nem certifica que hardware
+foi conectado; a aprovação física continua pendente até revisão humana das
+evidências capturadas em laboratório. Fixtures, dry-runs simulados e referências
+de teste nunca contam como execução física.
+
 O arquivo real de evidências deve ficar fora do Git se contiver endereços LAN
 ou identificadores operacionais. Publique apenas artefatos sanitizados.
 
