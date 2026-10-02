@@ -1,7 +1,8 @@
 # Issue #599 implementation checkpoint — 2026-10-02
 
-Status: implemented locally, not merged or deployed. The complete frontend
-pipeline and exact-head CI are **not green** at this checkpoint.
+Status at initial checkpoint: implemented locally, not merged or deployed. The
+complete frontend pipeline and exact-head CI were **not green**. A subsequently
+completed frontend rerun is recorded below; exact-head GitHub CI remains pending.
 
 ## Scope and isolation
 
@@ -110,3 +111,23 @@ them before cleaning the temporary checkouts.
    head. The open mobile node-forge issue #710 may affect repository-wide CI.
 4. Obtain the required independent GitHub approval. Only then consider the
    authorized squash merge. No merge/deploy was attempted at this checkpoint.
+
+## Resumed frontend validation
+
+After the current usage query returned `ordinaryUsageAllowed: true`, execution
+resumed through the same approval path. A first attempt failed to start because
+the shell lacked `python`; this environment failure is not a source-test result.
+Activating `/private/tmp/cypher65-runtime599` resolved the executable boundary.
+
+`source /private/tmp/cypher65-runtime599/bin/activate && npm run check:frontend`
+then completed with exit 0 against implementation commit
+`065cda9e2441d98a4225947948f564b0316e1547`: bundle drift, DOM/a11y/token/mobile
+guards and their self-tests, JS core (1560 assertions), SW push, desktop/mobile
+visual audit, axe (100/100 at both viewports), fetcher-unit and mutation guards
+all passed. The earlier failed run remains recorded, not reclassified.
+
+This rerun used the existing audit, whose HTTP 500 interception reliability
+defect is still tracked in #721. A green command does not erase that limitation;
+the strengthened guard must be independently tested and run in exact-head CI.
+The baseline toolbar defect #722 is likewise independent of this passing boot
+audit, which does not activate Rentals.
