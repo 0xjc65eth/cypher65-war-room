@@ -155,7 +155,12 @@ class TestDetectProvider:
 
     @pytest.mark.parametrize(
         "host",
-        ["btcpowlab-pool.com", "stratum.btcpowlab-pool.com", "eu.btcpowlab-pool.com", "stratum.eu.btcpowlab-pool.com"],
+        [
+            "btcpowlab-pool.com",
+            "stratum.btcpowlab-pool.com",
+            "eu.btcpowlab-pool.com",
+            "stratum.eu.btcpowlab-pool.com",
+        ],
     )
     def test_detects_btc_powlab_exact_host_and_subdomains(self, host):
         detection = detect_provider(f"stratum+tcp://{host}:3333")
@@ -171,7 +176,11 @@ class TestDetectProvider:
 
     @pytest.mark.parametrize(
         "host",
-        ["notbtcpowlab-pool.com", "evil-btcpowlab-pool.com", "btcpowlab-pool.com.evil.test"],
+        [
+            "notbtcpowlab-pool.com",
+            "evil-btcpowlab-pool.com",
+            "btcpowlab-pool.com.evil.test",
+        ],
     )
     def test_rejects_btc_powlab_lookalike_domains(self, host):
         detection = detect_provider(f"stratum+tcp://{host}:3333")
