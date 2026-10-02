@@ -170,7 +170,7 @@ class TestDetectProvider:
         assert detection.chain is Chain.BTC
         assert detection.kind is PoolKind.POOL
         assert detection.matched_pattern == "btcpowlab-pool.com"
-        assert detection.has_stats_api is False
+        assert detection.provider.has_stats_api is False
         assert detection.stats_url is None
         assert "https://btcpowlab-pool.com" in detection.docs
 
