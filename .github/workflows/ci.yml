@@ -413,6 +413,7 @@ jobs:
           done
           npx playwright test tests/e2e/dashboard.spec.js tests/e2e/modals.spec.js \
             tests/e2e/alert-center-tabs.spec.js tests/e2e/rentals.spec.js \
+            tests/e2e/rentals-evidence.spec.js \
             tests/e2e/accessibility.spec.js tests/e2e/timezone-alert-order.spec.js \
             tests/e2e/upgrade-btc.spec.js \
             --project=chromium
