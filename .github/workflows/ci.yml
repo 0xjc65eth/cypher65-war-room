@@ -280,6 +280,9 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Verify pinned node-forge ASN.1 fix
+        run: npm run test:security-node-forge
+
       - name: Expo SDK compatibility
         run: npm run doctor
 
