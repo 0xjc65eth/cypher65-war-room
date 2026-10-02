@@ -15,6 +15,7 @@ from axe_fleet.registry import DeviceRegistry
 @pytest.fixture
 def client(monkeypatch):
     """Flask test client with an isolated test JWT secret."""
+    previous_testing = _app.config.get("TESTING")
     _app.config["TESTING"] = True
     previous_secret = _app.config.get("JWT_SECRET_KEY")
     secret = "polling-reconnect-test-secret-0123456789abcdef"
@@ -25,6 +26,10 @@ def client(monkeypatch):
         _app.config.pop("JWT_SECRET_KEY", None)
     else:
         _app.config["JWT_SECRET_KEY"] = previous_secret
+    if previous_testing is None:
+        _app.config.pop("TESTING", None)
+    else:
+        _app.config["TESTING"] = previous_testing
 
 
 @pytest.fixture
@@ -52,12 +57,23 @@ def registry(tmp_path):
     return device_registry
 
 
+@pytest.fixture
+def enable_info_logging():
+    """Temporarily override conftest's process-wide log suppression."""
+    previous_disable = logging.root.manager.disable
+    logging.disable(logging.NOTSET)
+    try:
+        yield
+    finally:
+        logging.disable(previous_disable)
+
+
 def _headers(token):
     return {"Authorization": f"Bearer {token}"}
 
 
 def test_agent_telemetry_recovery_emits_one_online_edge(
-    client, agent_token, registry, caplog
+    client, agent_token, registry, caplog, enable_info_logging
 ):
     """Empty heartbeats preserve OFFLINE/STALE semantics through recovery."""
     caplog.set_level(logging.INFO, logger="cypher65")
