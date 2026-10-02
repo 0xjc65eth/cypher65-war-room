@@ -2,7 +2,7 @@
 
 Date: 2026-10-02. PR: [#715](https://github.com/0xjc65eth/cypher65-war-room/pull/715).
 Original implementation and validation base: `c597304efb867716c0b8cf45ec72d1de8a98dc53`.
-Latest base synchronized locally: `4e2cc2e5827cfa19e16e78f56c229138557a0742`.
+Latest base synchronized locally: `cd4925df6079faa6b493a7590f1bf518e241ca9e`.
 
 ## Scope and evidence boundary
 
@@ -113,6 +113,16 @@ Bundle drift, JS core (**1565 assertions**) and JS syntax passed on that merged
 revision. This checkpoint update is also documentation-only. No Python/E2E
 suite or app server was rerun; the 629-test and 16-E2E records retain their
 actual earlier source revisions and do not constitute current-head GitHub gates.
+
+After external #730, master `cd4925df6079faa6b493a7590f1bf518e241ca9e` was
+integrated normally as `3865a74acd9ae50c1ab1b7510fbb7f7671951712`. Incoming
+changes add the separate #607 diagnostic CLI, its test helper and documentation;
+they do not change pool/provider or other production runtime files compared
+with pre-integration `d6957a4867d91eff87a05ae49e20c44964ff52e2`. On the merged
+revision, JS core (**1565 assertions**), bundle drift, syntax and the
+monkeypatch-target guard passed. No full suite, E2E, server or benchmark was
+rerun for this bounded synchronization. The earlier 629-test and 16-E2E
+records remain tied to their original sources, not this new integration.
 
 ## Release gates
 
