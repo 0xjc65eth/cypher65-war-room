@@ -143,7 +143,7 @@ posteriores e registram o estado atual; não reinterpretam as conclusões histó
 | UI-001 | parcial | `tests/e2e/topbar-responsive.spec.js` cobre topbar em viewports, não todas as telas/medidas da matriz |
 | UI-002 | lacuna | axe gate não substitui E2E de teclado/foco/labels; spec ausente → #612 |
 | LOAD-001 | bloqueado | Falta SLO aprovado; diagnóstico local autorizado em `scripts/measure_fleet_scale.py` + `docs/FLEET_SCALE_BASELINE.md` não implementa o gate → #606 |
-| LOAD-002 | bloqueado | `tests/performance/` não existe; falta SLO aprovado → #607 |
+| LOAD-002 | bloqueado | `scripts/measure_telemetry_ingest.py` e testes focados cobrem diagnóstico local; falta SLO aprovado para aceitação → #607 |
 
 **Estados:** `implementado` (teste ligado ao ID existe e corresponde ao critério declarado) ·
 `parcial` (cobre apenas parte do critério) · `lacuna` (Issue de cobertura permanece aberta) ·
@@ -158,7 +158,7 @@ exceções; IDs desconhecidos, duplicados, sem vínculo ou com classificação d
 | --- | --- | --- | --- |
 | UI-002 | lacuna | Falta spec E2E de acessibilidade de dashboard e comando | Issue #612 |
 | LOAD-001 | bloqueado | SLO de latência/memória não aprovado; baseline diagnóstico e propostas não aprovadas documentados em `docs/FLEET_SCALE_BASELINE.md`, sem gate | Issue #606 |
-| LOAD-002 | bloqueado | SLO de ingestão/backlog não foi aprovado; não inventar limite para fazer gate | Issue #607 |
+| LOAD-002 | bloqueado | SLO de ingestão/backlog não foi aprovado; diagnóstico autorizado não equivale à aceitação de desempenho | Issue #607 |
 
 ### Limites da auditoria histórica de 2026-09-16
 
