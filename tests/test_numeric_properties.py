@@ -33,7 +33,7 @@ import sys
 from decimal import Decimal
 
 import pytest
-from hypothesis import Phase, given, settings
+from hypothesis import Phase, example, given, settings
 from hypothesis import strategies as st
 
 from helpers import (
@@ -237,6 +237,7 @@ class TestLenderProfitabilityProperties:
             assert out["lender_vs_mining_usd_per_day"] is None
 
     @settings(max_examples=150, deadline=None)
+    @example(ths=75.0, rate=78187493531.0, mining=1.416015625, price=0.375)
     @given(
         ths=positive_finite,
         rate=positive_finite,
