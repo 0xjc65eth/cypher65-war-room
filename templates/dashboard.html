@@ -419,7 +419,7 @@
 <!-- HOST CORE + HERO -->
 <section class="panel panel--large" id="hero-worker" data-module="dashboard" role="region" aria-label="Worker principal">
   <div class="panel__header">
-    <div class="panel__eyebrow">>> HOST CORE :: CENTRAL NERVOUS SYSTEM</div>
+    <div class="panel__eyebrow">TELEMETRIA DO WORKER</div>
     <div class="panel__tools">
       <span class="badge" id="worker-rank-badge">RANK ?</span>
       <span class="badge badge--mute" id="worker-uptime-badge">UP —</span>
@@ -428,7 +428,7 @@
 
   <div class="host-core">
     <div class="host-core__header">
-      <div class="host-core__title">COLONY STATUS — REAL-TIME TELEMETRY</div>
+      <div class="host-core__title">Estado do worker</div>
       <div class="host-core__badges">
         <span class="host-core__badge" id="hc-hr-badge">—</span>
         <span class="host-core__badge" id="hc-net-badge">—</span>
@@ -436,7 +436,7 @@
     </div>
     <div class="host-core__meta">
       <div class="host-core__stat">
-        <span class="host-core__stat-label">COLONY HR</span>
+        <span class="host-core__stat-label">HASHRATE WORKER / REDE</span>
         <span class="host-core__stat-val" id="hc-colony-hr">—</span>
       </div>
       <div class="host-core__stat">
@@ -444,7 +444,7 @@
         <span class="host-core__stat-val" id="hc-best-diff">—</span>
       </div>
       <div class="host-core__stat">
-        <span class="host-core__stat-label">NETWORK</span>
+        <span class="host-core__stat-label">ALTURA DA REDE</span>
         <span class="host-core__stat-val" id="hc-network">—</span>
       </div>
       <div class="host-core__stat">
@@ -784,7 +784,7 @@
 <!-- ─── HASHMARKET ─── -->
 <section class="panel panel--market panel--large" id="market-panel" data-module="market">
   <div class="panel__header">
-    <div class="panel__eyebrow">⟐ HASHRATEPULSE ENTERPRISE · SHA-256 MARKET INTELLIGENCE</div>
+    <div class="panel__eyebrow">HASH MARKET · SHA-256</div>
     <div class="panel__tools">
       <span class="badge badge--btc" id="mkt-best-price-badge">best —</span>
       <span class="badge badge--mute" id="mkt-count-badge">0 venues</span>
@@ -795,7 +795,7 @@
 
   <!-- ── Executive Snapshot (collapsible: progressive disclosure, M6) ── -->
   <details class="mkt-snapshot" id="mkt-snapshot" open>
-    <summary class="mkt-snapshot__summary">EXECUTIVE SNAPSHOT <span id="mkt-snap-age" class="mkt-snapshot__age"></span><span class="mkt-snapshot__caret"></span></summary>
+    <summary class="mkt-snapshot__summary">RESUMO DO MERCADO <span id="mkt-snap-age" class="mkt-snapshot__age"></span><span class="mkt-snapshot__caret"></span></summary>
     <div class="mkt-snapshot__grid">
       <div class="mkt-snapshot__item"><span class="mkt-snapshot__label">Best Execution</span><span class="mkt-snapshot__val mkt-snapshot__val--green" id="mkt-snap-best">—</span></div>
       <div class="mkt-snapshot__item"><span class="mkt-snapshot__label">Spread vs 2nd</span><span class="mkt-snapshot__val" id="mkt-snap-spread">—</span></div>
@@ -846,7 +846,7 @@
 
   <!-- ── Institutional Notes (collapsible, M6) ── -->
   <details class="mkt-notes" id="mkt-notes" style="display:none">
-    <summary class="mkt-notes__title">◆ INSTITUTIONAL NOTES <span class="mkt-snapshot__caret"></span></summary>
+    <summary class="mkt-notes__title">NOTAS SOBRE AS FONTES <span class="mkt-snapshot__caret"></span></summary>
     <div class="mkt-notes__body" id="mkt-notes-body"></div>
   </details>
 
@@ -858,7 +858,7 @@
     <div class="chart-wrap"><canvas id="mkt-trend-chart"></canvas></div>
     <div class="mkt-trend__legend" id="mkt-trend-legend"></div>
   </div>
-  <div class="mkt-footnote" id="mkt-footnote">HashratePulse Enterprise · Prices normalized in BTC/PH/day · Verify on each venue before execution</div>
+  <div class="mkt-footnote" id="mkt-footnote">Preços normalizados em BTC/TH/dia (sats/TH/dia para valores pequenos). Confira preço, taxas e disponibilidade no provedor antes de contratar.</div>
 </section>
 
 <!-- ─── DECISION MATRIX (P0-2) — solo vs pool vs lease ─── -->

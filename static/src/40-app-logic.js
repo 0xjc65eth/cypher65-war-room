@@ -542,11 +542,11 @@
 
   // → domínio Automations/Alerts/Auto-Pilot/Decision Matrix extraído para `static/src/41-automations.js` (RFC 478, Issue 540)
 
-  function _initAiChat() {
-    const input = document.getElementById('ai-input');
-    const send = document.getElementById('ai-send');
-    const clear = document.getElementById('ai-clear');
-    const messages = document.getElementById('ai-messages');
+  function _initAiChat(suffix = '') {
+    const input = document.getElementById('ai-input' + suffix);
+    const send = document.getElementById('ai-send' + suffix);
+    const clear = document.getElementById('ai-clear' + suffix);
+    const messages = document.getElementById('ai-messages' + suffix);
     if (!input || !send || !messages) return;
 
     const responses = {
@@ -704,7 +704,8 @@
           typingDiv.remove();
           const response = getResponse(text);
           const formatted = response.replace(/\*\*(.*?)\*\*/g, '<strong style="color:var(--accent-btc)">$1</strong>');
-          addMessage('assistant', formatted);
+          const age = document.getElementById('topbar-freshness')?.textContent || 'age unavailable';
+          addMessage('assistant', '<strong>Local guide · no provider response.</strong> Snapshot context: ' + escapeHtml(age) + '.<br>' + formatted);
         }
       } finally {
         send.disabled = false;
@@ -713,7 +714,7 @@
 
     send.addEventListener('click', handleSend);
     input.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); } });
-    clear.addEventListener('click', () => {
+    clear?.addEventListener('click', () => {
       messages.innerHTML = '';
       addMessage('assistant', 'Chat cleared. Ask me anything about your mining operation.');
     });
@@ -1689,13 +1690,6 @@
     }
   };
 
-  // ── Initialize Institutional UI after DOM ready ──
-  if (document.readyState !== 'loading') {
-    InstitutionalUI.init();
-  } else {
-    document.addEventListener('DOMContentLoaded', function() { InstitutionalUI.init(); });
-  }
-
   // ════════════════════════════════════════════════════════════════════════
   // INSTITUTIONAL DASHBOARD · CORE DATA BINDER
   // ════════════════════════════════════════════════════════════════════════
@@ -1780,15 +1774,29 @@
       var panel = document.getElementById('off-canvas-ai');
       var closeBtn = document.getElementById('off-canvas-ai-close');
       if (!toggleBtn || !panel) return;
+      _initAiChat('-offcanvas');
       toggleBtn.addEventListener('click', function(e) {
         e.stopPropagation();
         panel.classList.toggle('active');
+        if (panel.classList.contains('active')) {
+          var input = document.getElementById('ai-input-offcanvas');
+          requestAnimationFrame(function() {
+            if (input && panel.classList.contains('active')) input.focus({preventScroll: true});
+          });
+        } else { toggleBtn.focus(); }
       });
       if (closeBtn) {
         closeBtn.addEventListener('click', function() {
           panel.classList.remove('active');
+          toggleBtn.focus();
         });
       }
+      panel.addEventListener('keydown', function(e) {
+        if (e.key === 'Escape' && panel.classList.contains('active')) {
+          panel.classList.remove('active');
+          toggleBtn.focus();
+        }
+      });
       document.addEventListener('click', function(e) {
         if (panel.classList.contains('active') && !panel.contains(e.target) && !toggleBtn.contains(e.target)) {
           panel.classList.remove('active');
@@ -1796,9 +1804,17 @@
       });
     };
 
-    // Note: init() is called by existing DOMContentLoaded listener
-    // (which fires after this sync extension, so the overridden methods are active)
-  }    // ── Wire DashboardCore into the existing render cycle ──
+  }
+
+  // Bind only after the drawer extension exists. Deferred/cached scripts
+  // can run with an already-ready DOM; initializing above skipped its binding.
+  if (document.readyState !== 'loading') {
+    InstitutionalUI.init();
+  } else {
+    document.addEventListener('DOMContentLoaded', function() { InstitutionalUI.init(); });
+  }
+
+  // ── Wire DashboardCore into the existing render cycle ──
     var _origRender = render;
     render = function(snap) {
       _origRender(snap);
