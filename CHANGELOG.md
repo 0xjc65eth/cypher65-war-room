@@ -6,6 +6,7 @@ e versionamento semântico ([SemVer](https://semver.org/lang/pt-BR/)).
 
 ## [Unreleased]
 
+- Mark hashrate comparisons unavailable without a matching worker/window estimate; require both pool and lease estimates before ranking strategies (#733).
 - Replace decorative worker/market labels with operational names, align market footer units with BTC/TH/day, and contain Fleet controls and the closed AI drawer on narrow screens (#738).
 - Remove public Fleet seed control and deny synthetic seed on cloud deployments even when DEBUG_MOCK=1 (#734).
 
