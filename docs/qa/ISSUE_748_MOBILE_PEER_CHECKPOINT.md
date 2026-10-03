@@ -14,7 +14,7 @@ Official registry metadata captured by the parent task:
 - `react-reconciler@0.33.0` integrity: `sha512-KetWRytFv1epdpJc3J4G75I4WrplZE5jOL7Yq0p34+OVOKF4Se7WrdIdVC45XsSSmUTlht2FM/fM1FZb1mfQeA==`.
 - The raw registry metadata is retained at `/private/tmp/cypher65-737-upstream-tests.72v3Wb/test-renderer-1.2-metadata.json` and `/private/tmp/cypher65-737-upstream-tests.72v3Wb/react-reconciler-0.33-metadata.json`.
 
-## Validation checkpoint
+## Isolated validation checkpoint — before parent integration
 
 Executed on Node.js 22.22.0 with npm 10.9.2, from a clean mobile install in the isolated Issue #748 worktree, on 2026-10-03:
 
@@ -64,4 +64,4 @@ npm ls --all
 npm ls test-renderer react-reconciler react --depth=2
 ```
 
-Then run the existing mobile checks as listed in `.github/workflows/ci.yml`. The validation worktree is `/private/tmp/cypher65-issue748.KHqCLF`, branch `fix/748-mobile-test-renderer-peer`, based on `60eda10d3c9fbd6373029e73750bff41bdd1b3ad` before this change. Root is expected to integrate this child fix with reviewed #737 work before final joint validation.
+Then run the existing mobile checks as listed in `.github/workflows/ci.yml`. The isolated validation worktree is `/private/tmp/cypher65-issue748.KHqCLF`, branch `fix/748-mobile-test-renderer-peer`, based on `60eda10d3c9fbd6373029e73750bff41bdd1b3ad` before this change. Its reviewed commit `481f4c36d4f0c9575509057866efe8cacd50911f` was cherry-picked without conflicts into parent Issue #737 at integrated source HEAD `f31d68b4c6196f22369365a56b1e0457b0b08f72`. The results above deliberately remain the pre-integration evidence. Joint consumer results belong in `ISSUE_737_BRACES_DEPTH_MITIGATION.md`; the original failing audit is retained rather than overwritten.

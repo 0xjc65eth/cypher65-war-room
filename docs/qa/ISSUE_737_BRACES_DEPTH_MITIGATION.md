@@ -1,7 +1,7 @@
 # Issue 737 — braces depth-only mitigation evidence
 
-Status: source/checker review and most consumer gates passed; dependency-tree
-adoption blocked by linked sub-Issue 748; **not merge-approved**.
+Status: reviewed parent/sub-Issue integration passes required local blocking gates;
+remote exact-head CI and independent GitHub approval pending; **not merge-approved**.
 Issue: https://github.com/0xjc65eth/cypher65-war-room/issues/737
 Owned branch: `security/737-braces-depth-mitigation`.
 Base at preparation: `60eda10d3c9fbd6373029e73750bff41bdd1b3ad`.
@@ -88,7 +88,7 @@ Baseline reproduction log:
 The first reproduction lacked fill-range resolution; its setup failure is
 retained separately, not counted as a successful vulnerability reproduction.
 
-## Consumer validation — completed results and explicit blocker
+## Initial isolated consumer validation — completed results and explicit blocker
 
 Runtime: Node 22.22.0 with disposable npm **10.9.2**. CI's Node version and
 remote exact-head checks remain separate requirements. Clean consumer install
@@ -120,10 +120,11 @@ The failing dependency tree is independently traced to existing
 application pins React 19.2.3. The relevant lock entries are identical to the
 master baseline: the braces patch does not introduce this mismatch. Root
 created [sub-Issue 748](https://github.com/0xjc65eth/cypher65-war-room/issues/748)
-and verified its parent is Issue 737. Its implementation and validation remain
-isolated on `fix/748-mobile-test-renderer-peer`; no peer check is suppressed,
-no unsupported React upgrade or forced install is used. Adoption review is
-withheld until a reviewed integration passes clean install, full tree and audit.
+and verified its parent is Issue 737. Its initial implementation and validation
+were isolated on `fix/748-mobile-test-renderer-peer`; no peer check is suppressed,
+no unsupported React upgrade or forced install is used. Initial adoption review
+was withheld pending reviewed integration, clean install, full tree and audit;
+the completed joint results are recorded separately below.
 
 Final checker SHA256:
 `c11ff5b981b9341ee4ca0b381024580117c4c654797fc85b4f51d319f33f7036`.
@@ -152,9 +153,81 @@ Consumer evidence directory: `/private/tmp/cypher65-737-red.z3ybvm/`.
 | `export-android.log` | `bc14dd635f2f65f561682f2b752645d583fed1018064d039a05270dbb59587b7` |
 | `export-web.log` | `9a449306db52c796a32f69897c7069a0bad45d8c543464bcd8243c066a5058a8` |
 
+## Reviewed parent/sub-Issue integration — local gates passed
+
+Sub-Issue 748's reviewed commit `481f4c36d4f0c9575509057866efe8cacd50911f`
+was cherry-picked without conflicts onto the parent security branch. Integrated
+source HEAD: `f31d68b4c6196f22369365a56b1e0457b0b08f72`, still based on freshly
+fetched master `60eda10d3c9fbd6373029e73750bff41bdd1b3ad`. This follows the
+workflow's explicit parent/sub-Issue exception; no protected branch was merged.
+
+BackendCore repeated **clean npm 10.9.2 install and all blocking mobile gates** on the
+integrated source. Root inspected actual results and independently recomputed
+the hashes below. Clean install added 962 packages; `npm ls --all`, both security
+checkers (including 10/10 tamper self-tests), unfiltered audit (zero reported
+vulnerabilities), Expo Doctor (21/21), Biome, TypeScript, Jest (16 suites / 91
+tests) and iOS/Android/web exports all passed. No package/source/lock/archive
+changed during these gates. Initial audit and Doctor attempts failed on the
+restricted network (audit endpoint error / DNS ENOTFOUND); their logs are kept,
+and individually approved network retries passed. These are not silently green
+first attempts. The successful export command emitted an Expo forceful-shutdown
+warning after all three exports and exited 0. All launched tool sessions ended;
+global process enumeration is unavailable, so no system-wide orphan claim is made.
+
+Frozen integrated manifest SHA256:
+`23cff752bf14a756565c634b099b405f849d4954e0a32992b06b3759ea35f03a`.
+Frozen integrated lock SHA256:
+`459bc8a0c3d003924783c921ead0d25791e495a7fbd783e60b1753f4cd46aa89`.
+Checker and archive hashes remain exactly as recorded above.
+
+Evidence: `/private/tmp/cypher65-737-748-joint-qa-20261003/`.
+
+| Artifact | SHA256 |
+| --- | --- |
+| `npm-ci.log` | `13fa96275a3f37aeb74634cb27c25b6d04f5b4c1c1f06d882446521591dd31c9` |
+| `npm-ls-all.log` | `de3ebf8964ff3687d9a5b90a21a6d9453e5a33f3fb56a3b688eb1ec636869da5` |
+| `security-braces.log` | `5f04c5bde4ad4ab14f76bc4f3080345462d0e6f7631db40b6ac0daa162e5f67a` |
+| `security-node-forge.log` | `20cfa0996cc5e5f24a27ec079bb1cbae0a86f14ff3d6fde5b7b917baf64bc3e5` |
+| `npm-audit.log` (network failure) | `620a1108d34009c0c70e52c9b876ad06a8fff5580c4cccb2b9d11ae2d398d2fe` |
+| `npm-audit-network-retry.log` | `6d8c5c8f3d7684adb070417bd608d01ae90aa3dc26a65af03ffda4955f38d9a3` |
+| `expo-doctor.log` (network failure) | `b215fe9429cbc15cc20e951e3691eba06645c5b245823a6ef15cdfa304aee409` |
+| `expo-doctor-network-retry.log` | `7f0ec03013d71bc250cc258ef8a907af9fbf5493fdab2024b0be93268ac153d1` |
+| `biome-lint.log` | `39adce62d290c2720dfdec48d252fc0c648427b570d9b205bcbc194ef4b34be2` |
+| `typecheck.log` | `c714b26fb9614d20d049a0117ecd01f35cc487ef1bfb2db75f774fcc546deb9e` |
+| `jest.log` | `11aa67ae05d17842348e2b84963b7ab7b965eed2184efa570dbf5503632f1381` |
+| `mobile-build.log` | `e15991d306259181424866771493a43809dca921e873859dc1c106c576d09479` |
+
+Root additionally re-ran the existing Knip advisory on the integrated tree:
+exit 1. It reports seven vendored source files and the explicit braces peer
+anchor as unused in its static graph, plus the existing react-test-renderer,
+node-forge declaration and three exported-type findings. These findings are
+retained, not called green or hidden with new exclusions. Vendored source is
+installed via the immutable archive and exercised by installed-source checks;
+the direct braces declaration anchors the dependency override rather than an
+application import. CI's pre-existing Knip step remains advisory
+(`continue-on-error`), unchanged by this patch. `knip.log` SHA256:
+`e3c484781a8afdb1c6e1d4933b5882163d80b643b5c179341f7eac5ef5202b0a`.
+
+SecurityOps independently inspected integrated source/configuration, frozen
+hashes and actual joint logs, and cleared **local integrated adoption** on
+`f31d68b4c6196f22369365a56b1e0457b0b08f72` without P0/P1/P2 findings.
+This does not count as an independent GitHub approval or authorize a merge.
+
+Root also ran the unchanged real-source JavaScript core: **1585 passing**,
+generated `app.js` drift check, DOM regression guards and mobile XSS guards:
+all passed. These are not a new full Python or full UI E2E run; unrelated
+required suites must still execute on remote exact-head CI.
+
+Additional root artifacts in `/private/tmp/cypher65-737-red.z3ybvm/`:
+
+| Artifact | SHA256 |
+| --- | --- |
+| `js-core.log` | `fac291aff614d579402a5d89ed5bb0eaa47ec91c8d479a56bb580095d5a34c9a` |
+| `dom-guards.log` | `8eb88d3dfe550f65a9123aafd53bcf3ea338ac745ac44df6258b236112448c4d` |
+| `mobile-xss.log` | `0dc8497afd8cb056b8747d5ee83c7c39744d9136222125d5c51eeac65084e080` |
+
 ## Required merge gates — pending
 
-- Reviewed integration of sub-Issue 748 and clean integrated consumer gates.
 - Conventional commit, normal Issue-branch push, linked PR, all required current-head
   checks against current master, resolved review threads and independent GitHub approval.
 
