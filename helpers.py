@@ -789,16 +789,18 @@ def build_decision_matrix(
 
     Returns:
       - rows: pool / solo / lease dicts with only the fields the panel needs
-      - best_option: 'pool' | 'lease' | 'solo' | 'insufficient'
+      - best_option: 'pool' | 'lease' | 'insufficient'
       - recommendation: human string
       - breakeven_cost_per_th_day (pass-through)
 
-    Deterministic tie-break: pool vs lease are both deterministic USD/day
-    figures, so the higher wins; solo is probabilistic (expected time) and is
-    only crowned when neither pool nor lease has a usable number.
+    Compare pool and lease only when both modeled USD/day figures exist.
+    Solo probability and model mean are informative, not a comparable payout
+    or a deadline. A single available strategy cannot be declared a winner.
     """
 
     def _num(v):
+        if isinstance(v, bool):
+            return None
         try:
             f = float(v)
             return f if (f == f and f != float("inf") and f != float("-inf")) else None
@@ -808,7 +810,11 @@ def build_decision_matrix(
     pool_usd = _num(pool_net_usd_per_day)
     lease_usd = _num(lender_net_usd_per_day)
     exp_days = _num(solo_expected_time_days)
+    if exp_days is not None and exp_days < 0:
+        exp_days = None
     p_year = _num(solo_p_year_pct)
+    if p_year is not None and not 0 <= p_year <= 100:
+        p_year = None
     be = _num(breakeven_cost_per_th_day)
     rec = str(lender_recommendation or "").lower()
 
@@ -818,7 +824,7 @@ def build_decision_matrix(
             "net_btc_per_day": None,  # filled by caller when available
         },
         "solo": {
-            "expected_time_days": round(exp_days, 1) if exp_days else None,
+            "expected_time_days": round(exp_days, 1) if exp_days is not None else None,
             "p_year_pct": round(p_year, 4) if p_year is not None else None,
         },
         "lease": {
@@ -829,26 +835,20 @@ def build_decision_matrix(
 
     if pool_usd is not None and lease_usd is not None:
         best = "pool" if pool_usd >= lease_usd else "lease"
-    elif pool_usd is not None:
-        best = "pool"
-    elif lease_usd is not None:
-        best = "lease"
-    elif exp_days is not None:
-        best = "solo"
     else:
         best = "insufficient"
 
     if best == "pool":
-        recommendation = "Pool mining nets the highest deterministic USD/day."
+        recommendation = "Pool has the higher modeled net USD/day among pool and lease. Actual earnings may vary."
     elif best == "lease":
-        recommendation = "Renting out hashrate (lease) nets more than pool mining."
-    elif best == "solo":
-        recommendation = (
-            "Only probabilistic data available — expected %.0f days to a block."
-            % exp_days
-        )
+        recommendation = "Lease has the higher modeled net USD/day among pool and lease. Actual earnings may vary."
     else:
         recommendation = "Not enough data to compare strategies yet."
+        if exp_days is not None:
+            recommendation += (
+                " Solo model mean: %.1f days; not a deadline or guaranteed payout."
+                % exp_days
+            )
 
     return {
         "rows": rows,

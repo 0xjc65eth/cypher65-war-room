@@ -6,6 +6,8 @@ e versionamento semântico ([SemVer](https://semver.org/lang/pt-BR/)).
 
 ## [Unreleased]
 
+- Mark hashrate comparisons unavailable without a matching worker/window estimate; require both pool and lease estimates before ranking strategies (#733).
+
 ### Corrigido — acessibilidade no fluxo de comando Fleet (#612, UI-002)
 - Confirmação de pausa/reinício/identificação usa diálogo modal nativo com
   foco contido, cancelamento por Escape e retorno do foco ao acionador.

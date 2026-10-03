@@ -7153,11 +7153,13 @@ function renderAccount(acct) {
     const soloSub = el('dm-solo-sub');
     if (soloSub) {
       const py = rows.solo && rows.solo.p_year_pct;
-      soloSub.textContent = (py != null && isFinite(py)) ? 'P(bloco no ano) ' + pct(py) : 'tempo esperado até bloco';
+      soloSub.textContent = (py != null && isFinite(py)) ? 'P(bloco no ano) ' + pct(py) : 'média do modelo; não é prazo';
     }
     const leaseEl = el('dm-lease-usd'); if (leaseEl) leaseEl.textContent = usd(rows.lease && rows.lease.net_usd_per_day);
-    const bestEl = el('dm-best-badge'); if (bestEl) bestEl.textContent = dm ? 'BEST: ' + String(dm.best_option || '—').toUpperCase() : '—';
-    const recoEl = el('dm-reco'); if (recoEl && dm && dm.recommendation) recoEl.textContent = dm.recommendation;
+    const comparable = Number.isFinite(rows.pool && rows.pool.net_usd_per_day) && Number.isFinite(rows.lease && rows.lease.net_usd_per_day);
+    const best = comparable && dm && ['pool', 'lease'].includes(dm.best_option) ? dm.best_option : null;
+    const bestEl = el('dm-best-badge'); if (bestEl) bestEl.textContent = best ? 'BEST: ' + best.toUpperCase() : 'INSUFFICIENT DATA';
+    const recoEl = el('dm-reco'); if (recoEl) recoEl.textContent = best ? dm.recommendation : 'Comparable pool and lease estimates are required. Solo shows a model mean, not a deadline or guaranteed payout.';
     const beEl = el('dm-breakeven');
     if (beEl) {
       const be = dm && dm.breakeven_cost_per_th_day;
@@ -8537,31 +8539,21 @@ function renderAccount(acct) {
     }
   }
 
-  // ── Hashrate Comparison: worker (reported) vs pool-observed (share-derived) ──
-  // The panel footnote says "Pool-observed hashrate is estimated from submitted
-  // shares" — so `observed` comes from the worker's share_calc_history
-  // instantaneous hashrate (mean of the last 8 shares), NOT the pool-wide
-  // total (which would always skew deviation to ≈ -100%).
+  // The legacy ticker records realized share difficulty / gap, not accepted
+  // work at an assigned difficulty over a known worker window. Averaging it
+  // cannot establish pool-observed hashrate. Keep this comparison unavailable
+  // until the API supplies a validated same-entity, same-window measurement.
   function renderComparison(snap) {
-    const w = snap.worker || {};
-    const prox = snap.proximity || {};
-    const reported = Number(w.hashrate || 0);
-    let observed = 0;
-    const ticker = (prox.live_calc && prox.live_calc.ticker) || [];
-    const hrs = ticker.map(e => Number(e.instantaneous_hr_hps || 0)).filter(h => h > 0);
-    if (hrs.length) observed = hrs.reduce((a, b) => a + b, 0) / hrs.length;
-    const dash = '\u2014';
-    if (dom.hrReported) dom.hrReported.textContent = reported > 0 ? fmt.hashrate(reported) : dash;
-    if (dom.hrObserved) dom.hrObserved.textContent = observed > 0 ? fmt.hashrate(observed) : dash;
-    let dev = null;
-    if (reported > 0 && observed > 0) dev = ((reported - observed) / observed) * 100;
-    if (dom.hrDeviationVal) dom.hrDeviationVal.textContent = dev != null ? (dev >= 0 ? '+' : '') + dev.toFixed(1) + '%' : dash;
+    const reported = snap.worker && snap.worker.hashrate;
+    if (dom.hrReported) dom.hrReported.textContent = Number.isFinite(reported) && reported >= 0 ? fmt.hashrate(reported) : '—';
+    if (dom.hrObserved) dom.hrObserved.textContent = '—';
+    if (dom.hrDeviationVal) dom.hrDeviationVal.textContent = '—';
     if (dom.hrDeviationBadge) {
-      if (dev == null) { dom.hrDeviationBadge.textContent = dash; dom.hrDeviationBadge.className = 'badge badge--mute'; }
-      else if (Math.abs(dev) < 10) { dom.hrDeviationBadge.textContent = 'NOMINAL'; dom.hrDeviationBadge.className = 'badge badge--green'; }
-      else if (dev > 0) { dom.hrDeviationBadge.textContent = 'REPORTED > OBSERVED'; dom.hrDeviationBadge.className = 'badge badge--gold'; }
-      else { dom.hrDeviationBadge.textContent = 'REPORTED < OBSERVED'; dom.hrDeviationBadge.className = 'badge badge--red'; }
+      dom.hrDeviationBadge.textContent = 'NOT COMPARABLE';
+      dom.hrDeviationBadge.className = 'badge badge--mute';
     }
+    const status = document.getElementById('hr-status');
+    if (status) status.textContent = 'Matching window unavailable';
   }
 
   // ── SOLO & STATS — writes proximity payload into solo-* ids ──

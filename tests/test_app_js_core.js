@@ -5545,6 +5545,13 @@ try { await evidenceTimeout('/api/evidence'); } catch (error) { /* Expected boun
 assertEqual('rental evidence stalled auth/read remains bounded', evidenceTimeouts, 2);
 assertTruthy('rental evidence timeout aborts every attempted read', evidenceSignals.every(signal => signal.aborted));
 
+const comparisonDom = { hrReported: {}, hrObserved: {}, hrDeviationVal: {}, hrDeviationBadge: {} };
+const renderEvidenceComparison = loadFragment('42-probability.js', 'renderComparison', { window: {}, dom: comparisonDom, fmt, document: { getElementById: () => null } });
+renderEvidenceComparison({worker: {hashrate: 82.2e12}, proximity: {live_calc: {ticker: [{instantaneous_hr_hps: 3.19e18}]}}});
+assertEqual('unscoped share difficulty is not observed hashrate', comparisonDom.hrObserved.textContent, '—');
+assertEqual('incomparable data cannot yield deviation', comparisonDom.hrDeviationVal.textContent, '—');
+assertEqual('comparison explains missing evidence', comparisonDom.hrDeviationBadge.textContent, 'NOT COMPARABLE');
+
 //  RESULTS
 // ═══════════════════════════════════════════════════════════════════════════
 
