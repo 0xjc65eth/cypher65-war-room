@@ -273,4 +273,59 @@ test('real login and logout invalidate a pending history response across tenants
   await expect(page.locator('#console-history-stats')).not.toContainText('99.00 TH/s');
   await clickToolbarAction(page,'#auth-toggle');await page.locator('#auth-logout').click();
   await expect(page.locator('#console-visual circle')).toHaveCount(0);
+// Issue #750: exercise the actual render/refresh path with synthetic telemetry.
+for (const reducedMotion of ['no-preference', 'reduce']) {
+  test('signed Celsius remains observed in table and detail ('+reducedMotion+')',async({page},info)=>{
+    await page.emulateMedia({reducedMotion});
+    const local=fleet();local.device_health[0].telemetry.temperature=-5;
+    await fixture(page,{local});
+    const row=page.locator('#console-table-body tr').filter({has:page.locator('[data-console-id="desk-01"]')});
+    const temperature=await row.locator('[data-label="Temperatura"]').textContent();
+    await page.locator('[data-console-id="desk-01"]').click();
+    await expect(page.locator('#console-detail')).toBeVisible();
+    await page.screenshot({path:info.outputPath('signed-celsius.png'),fullPage:true});
+    expect.soft(temperature).toContain('-5.0 °C');
+    await expect(page.locator('#console-detail-fields')).toContainText('-5.0 °C');
+  });
+
+  test('removed observation dismisses current-looking detail and restores focus ('+reducedMotion+')',async({page},info)=>{
+    await page.emulateMedia({reducedMotion});
+    const local=fleet();let reads=0;
+    const writes=[];page.on('request',r=>{if(r.url().includes('/api/axe-fleet')&&r.method()!=='GET')writes.push(r.method());});
+    await fixture(page,{local});
+    await page.locator('[data-console-id="desk-01"]').focus();
+    await page.locator('[data-console-id="desk-01"]').press('Enter');
+    await expect(page.locator('#console-detail-status')).toContainText('Online');
+    await page.route('**/api/axe-fleet/health*',r=>{reads++;return r.fulfill({json:{fleet_stats:{total_devices:1},device_health:[local.device_health[1]]}});});
+    // Same refresh handler as the existing polling test, not a synthetic renderer.
+    await page.evaluate(()=>document.getElementById('refresh-now').click());
+    await expect.poll(()=>reads).toBeGreaterThan(0);
+    await expect(page.locator('#console-table-body tr')).toHaveCount(1);
+    await expect(page.locator('[data-console-id="desk-01"]')).toHaveCount(0);
+    await page.screenshot({path:info.outputPath('removed-observation.png'),fullPage:true});
+    await expect(page.locator('#console-detail')).toBeHidden();
+    await expect(page.locator('#console-search')).toBeFocused();
+    expect(writes).toEqual([]);
+  });
+}
+
+test('detail motion is restrained for pointer, instant for keyboard and reduced motion',async({page})=>{
+  await page.emulateMedia({reducedMotion:'no-preference'});
+  await fixture(page,{local:fleet()});
+  const entity=page.locator('[data-console-id="desk-01"]');
+  await entity.click();
+  const timing=await page.locator('#console-detail').evaluate(e=>({name:getComputedStyle(e).animationName,duration:getComputedStyle(e).animationDuration}));
+  expect(timing.name).toBe('console-detail-enter');expect(timing.duration).toBe('0.16s');
+  await page.keyboard.press('Escape');
+  for(let i=0;i<20;i++) {
+    await entity.press('Enter');
+    await expect(page.locator('#console-detail')).toBeVisible();
+    expect(await page.locator('#console-detail').evaluate(e=>getComputedStyle(e).animationName)).toBe('none');
+    await page.keyboard.press('Escape');await expect(entity).toBeFocused();
+  }
+  await page.emulateMedia({reducedMotion:'reduce'});
+  await entity.click();
+  expect(await page.locator('#console-detail').evaluate(e=>getComputedStyle(e).animationName)).toBe('none');
+  await page.keyboard.press('Escape');await expect(entity).toBeFocused();
+  await noOverflow(page);
 });
