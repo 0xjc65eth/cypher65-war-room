@@ -1215,6 +1215,27 @@ class TestSeedTestDevices:
         assert offline_tel["chip_temp"] is None
         assert offline_tel["hashrate_1h"] is None
 
+    @pytest.mark.parametrize(
+        "flag", ["RENDER", "RENDER_SERVICE_ID", "RENDER_INSTANCE_ID", "CLOUD_MODE"]
+    )
+    def test_cloud_rejects_seed_even_with_debug_enabled(
+        self, client, monkeypatch, flag
+    ):
+        monkeypatch.setenv("DEBUG_MOCK", "1")
+        monkeypatch.setenv(flag, "true")
+        registry = MagicMock()
+        registry.list_devices.return_value = []
+        with patch("axe_fleet.routes._registry", registry):
+            response = client.post(self.ENDPOINT)
+        assert response.status_code == 403
+        registry.list_devices.assert_not_called()
+        registry.add_device.assert_not_called()
+
+    def test_public_dashboard_has_no_seed_control(self, client):
+        response = client.get("/")
+        assert response.status_code == 200
+        assert b"axe-seed-btn" not in response.data
+
     def test_seed_disabled_without_debug_mock(self, client, monkeypatch):
         """Without DEBUG_MOCK=1 the endpoint must be locked down (403)."""
         monkeypatch.delenv("DEBUG_MOCK", raising=False)
