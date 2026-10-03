@@ -421,6 +421,9 @@ jobs:
             tests/e2e/upgrade-btc.spec.js tests/e2e/rentals-toolbar.spec.js \
             --project=chromium
 
+          npx playwright test tests/e2e/navigation-loading.spec.js \
+            tests/e2e/fleet-agentless-manual-add.spec.js tests/e2e/topbar-responsive.spec.js --project=chromium
+
       - name: Upload e2e report
         if: always()
         uses: actions/upload-artifact@v7
