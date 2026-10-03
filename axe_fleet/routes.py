@@ -1446,8 +1446,11 @@ def fleet_summary(tenant_id: str = ""):
     total_hr = 0
     enriched_devices = []
     for d in devices:
-        tel = _registry.get_recent_telemetry(d["id"], limit=1, tenant_id=tenant_id)
-        p = _latest_telemetry(tel)
+        # list_devices(with_telemetry=True) already selected the latest
+        # trusted sample for this tenant in one batch. Do not issue a second
+        # per-device query (or synthesize data when the batch has no sample).
+        p = d.get("telemetry")
+        p = p if _is_trusted_payload(p) else {}
         measured_hr = p.get("hashrate_hs")
         status = d.get("status", "OFFLINE")
         reported_hr = _nonnegative_finite_int(measured_hr)
@@ -3357,11 +3360,10 @@ def fleet_health(tenant_id: str = ""):
 
     for d in devices:
         did = d["id"]
-        tel_raw = _registry.get_recent_telemetry(did, limit=50, tenant_id=tenant_id)
-        # Hardening: trust only well-formed telemetry payloads. Legacy rows
-        # written before the poll fix may be a bare {"device_id": ...} stub —
-        # treat those as empty so the UI never shows zeroed fake data.
-        tel = _latest_telemetry(tel_raw)
+        # Reuse the batch-selected trusted sample. In particular, absence of
+        # a measured sample must not trigger a per-device history fallback.
+        tel = d.get("telemetry")
+        tel = tel if _is_trusted_payload(tel) else {}
         status = d.get("status", "OFFLINE")
         from .models import STATUS_STALE, is_telemetry_stale
 

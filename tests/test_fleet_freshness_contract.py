@@ -14,8 +14,8 @@ def client():
         yield flask_client
 
 
-def _device(status="STALE"):
-    return {
+def _device(status="STALE", telemetry=None):
+    device = {
         "id": "d1",
         "name": "Old miner",
         "model": "Bitaxe",
@@ -24,16 +24,20 @@ def _device(status="STALE"):
         "status": status,
         "capabilities": {},
     }
+    if telemetry is not None:
+        device["telemetry"] = telemetry
+    return device
 
 
 def test_health_uses_registry_freshness_status(client):
     registry = MagicMock()
-    registry.list_devices.return_value = [_device()]
-    registry.get_recent_telemetry.return_value = [
-        {
-            "ts": 1_700_000_000,
-            "payload": {"hashrate_hs": 1_200_000_000_000, "ts": 1_700_000_000},
-        }
+    registry.list_devices.return_value = [
+        _device(
+            telemetry={
+                "hashrate_hs": 1_200_000_000_000,
+                "ts": 1_700_000_000,
+            }
+        )
     ]
 
     with patch("axe_fleet.routes._registry", registry):
@@ -48,16 +52,18 @@ def test_health_uses_registry_freshness_status(client):
     registry.list_devices.assert_called_once_with(
         tenant_id="default", with_telemetry=True
     )
+    registry.get_recent_telemetry.assert_not_called()
 
 
 def test_summary_excludes_stale_hashrate_from_live_total(client):
     registry = MagicMock()
-    registry.list_devices.return_value = [_device()]
-    registry.get_recent_telemetry.return_value = [
-        {
-            "ts": 1_700_000_000,
-            "payload": {"hashrate_hs": 1_200_000_000_000, "ts": 1_700_000_000},
-        }
+    registry.list_devices.return_value = [
+        _device(
+            telemetry={
+                "hashrate_hs": 1_200_000_000_000,
+                "ts": 1_700_000_000,
+            }
+        )
     ]
 
     with patch("axe_fleet.routes._registry", registry):
@@ -74,12 +80,12 @@ def test_summary_excludes_stale_hashrate_from_live_total(client):
     registry.list_devices.assert_called_once_with(
         tenant_id="default", with_telemetry=True
     )
+    registry.get_recent_telemetry.assert_not_called()
 
 
 def test_summary_preserves_missing_measurements(client):
     registry = MagicMock()
     registry.list_devices.return_value = [_device()]
-    registry.get_recent_telemetry.return_value = []
 
     with patch("axe_fleet.routes._registry", registry):
         response = client.get("/api/axe-fleet/summary")
@@ -91,3 +97,4 @@ def test_summary_preserves_missing_measurements(client):
     assert telemetry["uptime_seconds"] is None
     assert telemetry["ts"] is None
     assert telemetry["age_seconds"] is None
+    registry.get_recent_telemetry.assert_not_called()

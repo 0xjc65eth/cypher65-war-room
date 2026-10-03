@@ -26,10 +26,10 @@ def fleet_context(tmp_path, monkeypatch):
 
     registry = DeviceRegistry(get_db)
     registry.ensure_tables()
-    monkeypatch.setattr(app, "testing", True)
-    app.config["TESTING"] = True
-    previous_secret = app.config.get("JWT_SECRET_KEY")
-    app.config["JWT_SECRET_KEY"] = "issue735-test-secret-0123456789abcdef"
+    monkeypatch.setitem(app.config, "TESTING", True)
+    monkeypatch.setitem(
+        app.config, "JWT_SECRET_KEY", "issue735-test-secret-0123456789abcdef"
+    )
     monkeypatch.setenv("SECRET_KEY", "issue735-test-secret-0123456789abcdef")
     monkeypatch.setenv("TENANT_API_KEYS", "auth-enabled-for-rbac-test")
     monkeypatch.setattr(
@@ -38,10 +38,6 @@ def fleet_context(tmp_path, monkeypatch):
     )
     with patch("axe_fleet.routes._registry", registry):
         yield registry, app.test_client()
-    if previous_secret is None:
-        app.config.pop("JWT_SECRET_KEY", None)
-    else:
-        app.config["JWT_SECRET_KEY"] = previous_secret
 
 
 def _token(tenant="measure", role="admin"):
@@ -111,6 +107,37 @@ def test_routes_reuse_latest_trusted_sample_across_heartbeats_and_invalid_rows(
     }
     registry.save_telemetry(device["id"], first, tenant_id="measure")
     registry.save_telemetry(device["id"], later_tie, tenant_id="measure")
+
+    tie_response = client.get(f"/api/axe-fleet/{endpoint}", headers=_headers())
+    assert tie_response.status_code == 200
+    tie_body = tie_response.get_json()
+    tie_row = (
+        tie_body["devices"][0]
+        if endpoint == "summary"
+        else tie_body["device_health"][0]
+    )
+    tie_telemetry = (
+        tie_row["_telemetry"] if endpoint == "summary" else tie_row["telemetry"]
+    )
+    assert tie_telemetry["hashrate_hs"] == later_tie["hashrate_hs"]
+    assert tie_telemetry["shares_accepted"] == later_tie["shares_accepted"]
+
+    delayed_older = {**first, "ts": sample_ts - 1, "hashrate_hs": 8_800_000_000}
+    registry.save_telemetry(device["id"], delayed_older, tenant_id="measure")
+    older_response = client.get(f"/api/axe-fleet/{endpoint}", headers=_headers())
+    assert older_response.status_code == 200
+    older_body = older_response.get_json()
+    older_row = (
+        older_body["devices"][0]
+        if endpoint == "summary"
+        else older_body["device_health"][0]
+    )
+    older_telemetry = (
+        older_row["_telemetry"] if endpoint == "summary" else older_row["telemetry"]
+    )
+    assert older_telemetry["hashrate_hs"] == later_tie["hashrate_hs"]
+    assert older_telemetry["ts"] == sample_ts
+
     for offset in range(1, 53):
         _insert_raw_telemetry(
             registry, device["id"], "measure", sample_ts + offset, "{}"
@@ -118,9 +145,6 @@ def test_routes_reuse_latest_trusted_sample_across_heartbeats_and_invalid_rows(
     invalid = ["{", "[]", '{"temperature":61}', '{"hashrate_hs":null}']
     for index, raw in enumerate(invalid, start=53):
         _insert_raw_telemetry(registry, device["id"], "measure", sample_ts + index, raw)
-    delayed_older = {**first, "ts": sample_ts - 1, "hashrate_hs": 8_800_000_000}
-    registry.save_telemetry(device["id"], delayed_older, tenant_id="measure")
-
     response = client.get(f"/api/axe-fleet/{endpoint}", headers=_headers())
     assert response.status_code == 200
     body = response.get_json()
@@ -171,15 +195,26 @@ def test_summary_and_health_keep_zero_stale_absent_tenant_and_quarantine_contrac
         {"ts": stale_ts, "hashrate_hs": 77_000_000, "hashrate_1h": 77_000_000},
         tenant_id="measure",
     )
+    rejected_sample = client.post(
+        "/api/agent/telemetry",
+        headers={
+            "Authorization": "Bearer "
+            + create_token(
+                subject="measure",
+                extra_claims={"agent": True, "role": "agent"},
+            )
+        },
+        json={
+            "ip": stale["ip_address"],
+            "telemetry": {"hashrate_hs": 78_000_000, "temperature": 151},
+        },
+    )
+    assert rejected_sample.status_code == 422
     registry.save_telemetry(
         other_tenant["id"],
         {"ts": now, "hashrate_hs": 999_000_000},
         tenant_id="other",
     )
-    registry.record_telemetry_quarantine(
-        stale["id"], ["temperature"], ["out_of_range"], tenant_id="measure"
-    )
-
     aggregate_results = {}
     for endpoint in ("summary", "health"):
         response = client.get(f"/api/axe-fleet/{endpoint}", headers=_headers())
@@ -210,7 +245,8 @@ def test_summary_and_health_keep_zero_stale_absent_tenant_and_quarantine_contrac
         assert stale_tel["ts"] == stale_ts
         assert stale_tel["last_known_hashrate_hs"] == 77_000_000
         assert stale_row["telemetry_quarantine"]["fields"] == ["temperature"]
-        assert isinstance(stale_row["capabilities"], list)
+        assert set(stale_row["capabilities"]) == {"telemetry", "restart", "identify"}
+        assert any("telemetry quarantined" in text for text in stale_row["advice"])
         aggregate_results[endpoint] = rows_by_id
 
         other_response = client.get(
@@ -247,5 +283,15 @@ def test_fleet_aggregate_routes_keep_viewer_role_gate(fleet_context):
             f"/api/axe-fleet/{endpoint}",
             headers=_headers(role="anonymous"),
             environ_base={"REMOTE_ADDR": "203.0.113.10"},
+        )
+        assert response.status_code == 403
+
+
+def test_fleet_aggregate_routes_reject_anonymous_remote_callers(fleet_context):
+    _, client = fleet_context
+    for endpoint in ("summary", "health"):
+        response = client.get(
+            f"/api/axe-fleet/{endpoint}",
+            environ_base={"REMOTE_ADDR": "203.0.113.11"},
         )
         assert response.status_code == 403
