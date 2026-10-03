@@ -72,7 +72,7 @@
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 </head>
-<body class="terminal-ui operation-ui">
+<body class="terminal-ui operation-ui premium-ui">
 
 <div class="app-shell" id="app-shell">
 
@@ -222,7 +222,7 @@
 
 <section class="operation-console" id="operation-console" data-module="dashboard" role="main" aria-labelledby="console-title" aria-busy="true">
   <div class="console-heading">
-    <div><p class="console-kicker">VISIBILIDADE DA OPERAÇÃO</p><h2 id="console-title">Carregando fontes…</h2><p id="console-coverage">Aguardando o snapshot da pool e a consulta de equipamentos.</p></div>
+    <div><p class="console-kicker">CYPHER65 / WAR ROOM</p><h1 id="console-title">Carregando fontes…</h1><p id="console-coverage">Aguardando o snapshot da pool e a consulta de equipamentos.</p></div>
   </div>
   <div class="console-source-tabs" role="group" aria-label="Fonte da operação">
     <button id="console-source-pool" aria-pressed="true">Pool</button>
@@ -230,51 +230,78 @@
     <button class="console-button" id="console-open-fleet">Equipamentos <span aria-hidden="true">↗</span></button>
   </div>
   <div class="kpi-row" id="kpi-row" data-module="dashboard" role="region" aria-label="Métricas do worker e da pool">
-  <div class="kpi-card" data-kpi-target="live" title="Ir para Live Mining — telemetria em tempo real">
+  <button type="button" class="kpi-card" data-kpi-target="live" title="Abrir atividade da pool">
     <span class="kpi-label">Hashrate do worker <span class="tip-wrap" data-tip="Taxa de processamento do minerador principal"><span class="tip-wrap__icon">?</span></span></span>
-    <div class="kpi-value-row">
+    <span class="kpi-value-row">
       <span class="kpi-value" id="kpi-hashrate">—</span>
       <span class="kpi-spark" id="kpi-spark-hashrate"></span>
-    </div>
+    </span>
     <span class="kpi-sub" id="console-worker-scope">worker · nome não informado</span>
-  </div>
-  <div class="kpi-card" data-kpi-target="probability" title="Ir para Block Model — estatísticas sem prazo ou previsão">
+  </button>
+  <button type="button" class="kpi-card" data-kpi-target="probability" title="Ir para Block Model — estatísticas sem prazo ou previsão">
     <span class="kpi-label">Melhor share <span class="tip-wrap" data-tip="Maior dificuldade de share já encontrada"><span class="tip-wrap__icon">?</span></span></span>
-    <div class="kpi-value-row">
+    <span class="kpi-value-row">
       <span class="kpi-value kpi-value--gold" id="kpi-bestdiff">—</span>
       <span class="kpi-spark" id="kpi-spark-bestdiff"></span>
-    </div>
+    </span>
     <span class="kpi-sub" id="console-best-scope">histórico do worker</span>
-  </div>
-  <div class="kpi-card" data-kpi-target="live" title="Ir para Live Mining — activity feed de shares">
-    <span class="kpi-label">Shares <span class="tip-wrap" data-tip="Estimativa por hora ou contagem da sessão, conforme a fonte disponível"><span class="tip-wrap__icon">?</span></span></span>
-    <div class="kpi-value-row">
-      <span class="kpi-value" id="kpi-shares">—</span>
+  </button>
+  <button type="button" class="kpi-card" data-kpi-target="live" title="Ver workers da pool em Eventos">
+    <span class="kpi-label">Workers observados</span>
+    <span class="kpi-value-row">
+      <span class="kpi-value" id="console-worker-count">—</span><span id="kpi-shares" hidden>—</span>
       <span class="kpi-spark" id="kpi-spark-shares"></span>
-    </div>
-    <span class="kpi-sub" id="console-shares-scope">sem contagem informada</span>
-  </div>
-  <div class="kpi-card" data-kpi-target="probability" title="Ir para Block Model — estatísticas de rede e pool">
-    <span class="kpi-label">Hashrate da pool <span class="tip-wrap" data-tip="Taxa de processamento total da pool"><span class="tip-wrap__icon">?</span></span></span>
-    <div class="kpi-value-row">
-      <span class="kpi-value kpi-value--cyan" id="kpi-poolhr">—</span>
+    </span>
+    <span class="kpi-sub" id="console-worker-count-scope">nomes informados pela pool</span><span id="console-shares-scope" hidden>sem contagem informada</span>
+  </button>
+  <button type="button" class="kpi-card" data-kpi-target="live" title="Abrir eventos e shares do worker">
+    <span class="kpi-label">Última share do worker</span>
+    <span class="kpi-value-row">
+      <span class="kpi-value" id="console-last-share">—</span>
       <span class="kpi-spark" id="kpi-spark-poolhr"></span>
-    </div>
-    <span class="kpi-sub">total informado pela pool</span>
-  </div>
+    </span>
+    <span class="kpi-sub" id="console-last-share-scope">worker selecionado</span>
+  </button>
 </div>
   <div class="console-fleet-summary" id="console-fleet-summary">
-    <div><span>Inventário local</span><strong id="console-total">—</strong><small>equipamentos cadastrados</small></div>
     <div><span>Exigem atenção</span><strong id="console-attention-count">—</strong><small id="console-attention-coverage">cobertura não verificada</small></div>
     <div><span>Hashrate informado</span><strong id="console-hashrate">—</strong><small id="console-hashrate-coverage">medição local indisponível</small></div>
+    <div><span>Potência medida</span><strong id="console-power">—</strong><small id="console-power-scope">cobertura não verificada</small></div>
     <div><span>Amostras recentes</span><strong id="console-measured">—</strong><small id="console-recent-scope">amostras com até 150 s</small></div>
   </div>
   <div class="console-notice" id="console-notice" hidden><div><strong id="console-notice-title"></strong><p id="console-notice-detail"></p></div><button class="console-button" id="console-notice-action">Ver equipamentos</button></div>
-  <div class="console-table-heading"><div><h3 id="console-table-title">Workers da pool</h3><p id="console-table-note">Dados da pool não incluem temperatura ou potência do equipamento.</p></div><label class="console-search">Filtrar <input id="console-search" type="search" placeholder="Nome ou modelo" autocomplete="off"></label></div>
+  <div class="console-insights">
+    <section class="console-performance" aria-labelledby="console-visual-title">
+      <div class="console-card-heading"><div><p class="console-section-label">PRODUÇÃO</p><h2 id="console-visual-title">Hashrate por worker</h2></div><span class="console-origin" id="console-visual-origin">Pool</span></div>
+      <div class="console-history-controls" id="console-history-controls" hidden>
+        <label>Equipamento <select id="console-history-device"></select></label>
+        <label>Métrica <select id="console-history-metric"><option value="hashrate">Hashrate</option><option value="temperature">Temperatura</option><option value="power_watts">Potência</option></select></label>
+        <button class="console-button" id="console-history-refresh" aria-label="Atualizar histórico do equipamento">↻</button>
+      </div>
+      <div class="console-visual" id="console-visual" aria-busy="false"></div>
+      <p class="console-visual-note" id="console-visual-note">Valores reportados pela fonte.</p>
+      <div class="console-history-stats" id="console-history-stats" hidden></div>
+      <details class="console-history-data" id="console-history-data" hidden><summary>Consultar amostras do gráfico</summary><div id="console-history-samples"></div></details>
+    </section>
+    <aside class="console-observations" aria-labelledby="console-observations-title">
+      <div class="console-card-heading"><div><p class="console-section-label">CONTEXTO OPERACIONAL</p><h2 id="console-observations-title">Atividade e cobertura</h2></div><span class="console-origin" id="console-observation-origin">Pool</span></div>
+      <details class="console-observation-disclosure" id="console-observation-disclosure" open><summary>Atividade e cobertura da operação</summary><div id="console-observations-body"></div>
+      <div class="console-pool-context" id="console-pool-context"><span>Hashrate global da pool</span><strong id="kpi-poolhr">—</strong><small>Contexto da pool, independente dos workers acima.</small></div></details>
+    </aside>
+  </div>
+  <div class="console-inventory">
+  <div class="console-table-heading"><div><h2 id="console-table-title">Workers da pool</h2><p id="console-table-note">Dados da pool não incluem temperatura ou potência do equipamento.</p></div><label class="console-search">Filtrar <input id="console-search" type="search" placeholder="Nome ou modelo" autocomplete="off"></label></div>
   <div class="console-table-wrap"><table class="console-table" id="console-table"><caption class="sr-only">Entidades observadas pela fonte selecionada</caption><thead id="console-table-head"></thead><tbody id="console-table-body"><tr><td>Aguardando dados…</td></tr></tbody></table></div>
   <div class="console-table-footer"><span id="console-row-count">—</span><span>Selecione uma linha para investigar <span aria-hidden="true">↗</span></span></div>
+  </div>
+  <section class="console-market-strip" aria-label="Contexto da rede Bitcoin">
+    <div class="console-market-heading"><span class="console-bitcoin" aria-hidden="true">₿</span><div><strong>Bitcoin</strong><small>CONTEXTO DE REDE</small></div></div>
+    <div><span>Preço BTC / USD</span><strong id="console-btc-price">—</strong><small id="console-btc-scope">fonte não informada</small></div>
+    <div><span>Altura da rede</span><strong id="console-network-height">—</strong><small id="console-network-scope">fonte não informada</small></div>
+    <div><span>Dificuldade</span><strong id="console-network-diff">—</strong><small>referência da rede Bitcoin</small></div>
+  </section>
   <div class="console-sources" aria-label="Origem e idade dos dados"><span id="console-pool-source">Pool: aguardando</span><span id="console-fleet-source">Frota: aguardando</span><span id="console-network-source">Rede: aguardando</span></div>
-  <div class="console-context-link"><span>Rede, taxas e cenários ficam em Análise.</span><button class="console-text-button" id="console-open-analysis">Abrir Análise <span aria-hidden="true">→</span></button></div>
+  <div class="console-context-link"><span>Explore taxas, modelos e cenários.</span><button class="console-text-button" id="console-open-analysis">Abrir Análise <span aria-hidden="true">→</span></button></div>
 </section>
 <dialog class="console-detail" id="console-detail" aria-labelledby="console-detail-title">
   <div class="console-detail-header"><span id="console-detail-source">Detalhe da observação</span><button id="console-detail-close" class="console-button" aria-label="Fechar detalhe">Fechar <span aria-hidden="true">×</span></button></div>
