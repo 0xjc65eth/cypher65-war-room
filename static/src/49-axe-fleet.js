@@ -129,6 +129,7 @@
       if (!r.ok) throw new Error('fleet health failed (' + r.status + ')');
       const data = await r.json();
       _operationalFleetData = data;
+      _operationalFleetReadAt = Date.now() / 1000;
       _operationalFleetError = false;
       renderAxeFleet(data);
       renderOperationalOverview(_lastSnapshot || {}, data, false);

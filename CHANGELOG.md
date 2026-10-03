@@ -6,7 +6,7 @@ e versionamento semântico ([SemVer](https://semver.org/lang/pt-BR/)).
 
 ## [Unreleased]
 
-- Refine the dashboard as a compact terminal: grouped navigation, aligned numeric rows, worker details on demand, two-column pool/network context, readable labels, instantaneous module switches and mobile drawer layering. Preserve data bindings and use an honest empty diagnostic state (#746).
+- Rebuild Operation around observed pool workers or local equipment: one scoped summary, entity tables, explicit source ages, last observations preserved on Fleet API failure, accessible detail dialog and compact mobile rows. Move network/scenario context to Analysis; retain all existing modules and controls (#746).
 
 - Reject older full snapshots across poll/SSE, keep freshness aging during offline failures, and wire the Refresh button to the existing fetch path (#742).
 

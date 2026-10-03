@@ -3574,6 +3574,171 @@ dom.walletSave?.addEventListener('click', async () => {
       : ('Atualizado há ' + ageText + ' · ' + sourceText);
   }
 
+  // Operation console: inventory, measurements and source failures are distinct.
+  let _consoleSource = '';
+  let _consoleQuery = '';
+  let _consoleRows = [];
+  let _consoleSelection = null;
+  let _operationalFleetReadAt = null;
+
+  function consoleNumber(value) {
+    if (typeof value !== 'number' && typeof value !== 'string') return null;
+    if (typeof value === 'string' && !value.trim()) return null;
+    const number = Number(value);
+    return Number.isFinite(number) && number >= 0 ? number : null;
+  }
+  function consoleAge(ts, now) {
+    const raw = consoleNumber(ts);
+    const seconds = raw !== null && raw > 1e11 ? raw / 1000 : raw;
+    return seconds !== null && seconds > 0 && seconds <= now ? now - seconds : null;
+  }
+  function consoleAgeText(age) { return age === null ? 'horário não informado' : 'há ' + fmt.secsToHuman(age); }
+
+  function buildOperationConsoleModel(snap, fleetData, fleetError, source, readAt, now) {
+    now = now || Date.now() / 1000;
+    snap = snap || {};
+    const devices = fleetData && Array.isArray(fleetData.device_health) ? fleetData.device_health : [];
+    const stats = fleetData && fleetData.fleet_stats;
+    const snapshotAge = consoleAge(snap.ts, now);
+    const pool = snap.pool || {};
+    const poolStale = pool.stale === true || pool._stale === true || !!(snap.worker && (snap.worker.stale || snap.worker._stale)) || (snapshotAge !== null && snapshotAge > 150);
+    const snapshotPresent = !!snap.ts;
+    const localRows = devices.map(function(device) {
+      const telemetry = device.telemetry || {};
+      let age = consoleAge(telemetry.ts, now);
+      if ((telemetry.ts === null || telemetry.ts === undefined) && consoleNumber(telemetry.age_seconds) !== null) age = Number(telemetry.age_seconds) + (readAt ? Math.max(0, now - readAt) : 0);
+      const old = fleetError || age === null || age > 150 || String(device.status).toUpperCase() === 'STALE';
+      const reportedStatus = String(device.status || 'UNKNOWN').toUpperCase();
+      const statuses = { ONLINE: 'Online', HASHING: 'Minerando', IDLE: 'Ocioso', WARNING: 'Atenção', OFFLINE: 'Offline', PAUSED: 'Pausado', MAINTENANCE: 'Manutenção', STALE: 'Dados antigos' };
+      const state = fleetError || old ? 'Último estado: ' + (statuses[reportedStatus] || 'não informado') : (statuses[reportedStatus] || 'Estado não informado');
+      const needsAttention = old || !['ONLINE', 'HASHING', 'IDLE'].includes(reportedStatus);
+      const last = consoleNumber(telemetry.last_known_hashrate_hs);
+      const hash = reportedStatus === 'OFFLINE' && last !== null ? last : consoleNumber(telemetry.hashrate_hs);
+      return { id: String(device.id || ''), kind: 'fleet', name: String(device.name || device.hostname || device.id || 'Equipamento sem nome'), model: String(device.model || ''), state: state, reportedState: statuses[reportedStatus] || reportedStatus, tone: old ? 'warning' : reportedStatus === 'OFFLINE' ? 'critical' : reportedStatus === 'WARNING' ? 'warning' : 'neutral', old: old, attention: needsAttention, hash: hash, hashNote: old || reportedStatus === 'OFFLINE' ? 'última observação' : 'informado pelo equipamento', temperature: consoleNumber(telemetry.temperature), power: consoleNumber(telemetry.power_watts), age: age, shareAge: consoleAge(telemetry.last_share_ts, now), accepted: consoleNumber(telemetry.shares_accepted), rejected: consoleNumber(telemetry.shares_rejected), telemetry: telemetry };
+    }).sort(function(a, b) { return Number(b.attention) - Number(a.attention) || a.name.localeCompare(b.name); });
+    const workers = Array.isArray(snap.all_workers) ? snap.all_workers : [];
+    // Never distribute the selected worker's hashrate over reported worker names.
+    const identified = workers.filter(function(worker) { return worker && (worker.name || worker.workername || worker.id); });
+    const workerRows = identified.map(function(worker) {
+      const age = consoleAge(worker.lastSubmission, now);
+      return { id: String(worker.name || worker.workername || worker.id), kind: 'pool', name: String(worker.name || worker.workername || worker.id), model: '', state: poolStale ? 'Fonte desatualizada' : 'Reportado pela pool', reportedState: 'Reportado pela pool', tone: poolStale ? 'warning' : 'neutral', old: poolStale, attention: poolStale, hash: consoleNumber(worker.hashrate), hashNote: 'janela não informada', age: age, accepted: consoleNumber(worker.shares), rejected: consoleNumber(worker.rejected), shareAge: age };
+    });
+    if (!workerRows.length && snap.worker) {
+      const worker = snap.worker;
+      workerRows.push({ id: 'selected-worker', kind: 'pool', name: String(worker.name || worker.workername || 'Worker selecionado'), model: '', state: poolStale ? 'Fonte desatualizada' : 'Reportado pela pool', reportedState: 'Reportado pela pool', tone: poolStale ? 'warning' : 'neutral', old: poolStale, attention: poolStale, hash: consoleNumber(worker.hashrate), hashNote: 'janela não informada', age: consoleAge(worker.lastSubmission, now), shareAge: consoleAge(worker.lastSubmission, now), accepted: consoleNumber(worker.shares), rejected: consoleNumber(worker.rejected) });
+    }
+    const mode = source === 'pool' || source === 'fleet' && localRows.length ? source : localRows.length ? 'fleet' : 'pool';
+    const fresh = localRows.filter(function(row) { return !row.old; });
+    const measured = fresh.filter(function(row) { return row.hash !== null && ['Online', 'Minerando', 'Ocioso', 'Atenção'].includes(row.reportedState); });
+    const recent = localRows.filter(function(row) { return row.age !== null && row.age <= 150; });
+    const unknown = localRows.length - fresh.length;
+    const exception = localRows.find(function(row) { return row.attention; });
+    let notice = null;
+    if (fleetError) notice = { title: 'Consulta à frota indisponível', detail: localRows.length ? 'A tabela mantém as últimas observações. O estado atual dos equipamentos não pôde ser confirmado.' : 'Sem dados locais disponíveis. A observação pela pool continua independente.', action: 'Tentar novamente', target: 'retry' };
+    else if (mode === 'fleet' && unknown) notice = { title: 'Telemetria local incompleta ou antiga', detail: unknown + ' equipamento(s) sem amostra recente. Confira a comunicação do agente antes de concluir o estado atual.', action: 'Ver equipamentos', target: 'fleet' };
+    else if (mode === 'fleet' && exception) notice = { title: exception.name + ' · ' + exception.state.toLowerCase(), detail: 'Última amostra ' + consoleAgeText(exception.age) + '. Investigue a observação antes de executar uma ação.', action: 'Ver detalhe', target: 'detail', id: exception.id };
+    else if (poolStale && mode === 'pool') notice = { title: 'Dados da pool desatualizados', detail: 'O snapshot está antigo ou a fonte sinalizou cache. Os valores exibidos são as últimas observações disponíveis.', action: 'Atualizar', target: 'retry' };
+    const fleetKnown = !!stats && !fleetError;
+    const inventory = stats ? consoleNumber(stats.total_devices) : null;
+    const agentAge = fleetData && fleetData.agent ? consoleAge(fleetData.agent.last_seen, now) : null;
+    return { mode: mode, rows: mode === 'fleet' ? localRows : workerRows, localRows: localRows, title: mode === 'fleet' ? (fleetError ? 'Últimas observações dos equipamentos' : 'Equipamentos monitorados') : 'Mineração observada pela pool', coverage: mode === 'fleet' ? 'Telemetria local · inventário e amostras dos equipamentos' : 'Pool · temperatura e potência exigem telemetria local', notice: notice, total: inventory, measured: measured.length, recent: recent.length, verified: fresh.length, unknown: unknown, attention: fleetError || !fresh.length ? null : fresh.filter(function(row) { return row.attention; }).length, hashrate: measured.length ? measured.reduce(function(sum, row) { return sum + row.hash; }, 0) : null, poolSource: 'Snapshot da pool: ' + (poolStale ? 'dados antigos · ' : '') + consoleAgeText(snapshotAge), fleetSource: 'ASICs locais: ' + (fleetError ? 'consulta indisponível' : fleetKnown ? inventory === 0 ? 'nenhum cadastrado' : inventory === null ? 'inventário não informado' : inventory + ' cadastrado(s)' : 'aguardando consulta') + (agentAge !== null ? ' · agente ' + consoleAgeText(agentAge) : ''), networkSource: 'Rede Bitcoin: ' + (snap.network && snap.network.height ? '#' + snap.network.height + (snap.network.stale ? ' · cache' : '') : 'sem dados'), loading: !snapshotPresent && !fleetData && !fleetError };
+  }
+
+  function renderOperationConsole(snap, fleetData, fleetError) {
+    const root = document.getElementById('operation-console');
+    if (!root) return;
+    const model = buildOperationConsoleModel(snap, fleetData, fleetError, _consoleSource, _operationalFleetReadAt);
+    _consoleRows = model.rows;
+    root.dataset.source = model.mode;
+    root.setAttribute('aria-busy', String(model.loading));
+    const tableWrap = root.querySelector('.console-table-wrap');
+    if (model.loading) skelShow(tableWrap, 'table'); else skelHide(tableWrap);
+    const put = function(id, value) { const node = document.getElementById(id); if (node) node.textContent = value; };
+    put('console-title', model.title); put('console-coverage', model.coverage);
+    put('console-total', model.total === null ? '—' : model.total);
+    put('console-attention-count', model.attention === null ? '—' : model.attention);
+    put('console-attention-coverage', model.attention === null ? 'estado atual não verificado' : 'entre ' + model.verified + ' amostras verificadas');
+    put('console-hashrate', model.hashrate === null ? '—' : fmt.hashrate(model.hashrate));
+    put('console-hashrate-coverage', fleetError ? 'hashrate atual não confirmado' : model.measured + ' de ' + model.localRows.length + ' equipamentos com medição recente');
+    put('console-measured', model.recent + ' / ' + model.localRows.length);
+    put('console-recent-scope', fleetError ? 'consulta indisponível · estado atual não confirmado' : 'amostras com até 150 s');
+    const primary = (Array.isArray(snap.all_workers) ? snap.all_workers : []).find(function(worker) { return worker.is_primary; });
+    const selectedName = primary && (primary.name || primary.id) || snap.worker && (snap.worker.name || snap.worker.workername) || 'nome não informado';
+    put('console-worker-scope', 'worker · ' + selectedName);
+    put('console-best-scope', 'histórico · ' + selectedName);
+    put('console-pool-source', model.poolSource); put('console-fleet-source', model.fleetSource); put('console-network-source', model.networkSource);
+    document.getElementById('console-source-pool').setAttribute('aria-pressed', String(model.mode === 'pool'));
+    const fleetButton = document.getElementById('console-source-fleet');
+    fleetButton.disabled = !model.localRows.length;
+    fleetButton.setAttribute('aria-pressed', String(model.mode === 'fleet'));
+    const notice = document.getElementById('console-notice');
+    notice.hidden = !model.notice;
+    if (model.notice) {
+      put('console-notice-title', model.notice.title); put('console-notice-detail', model.notice.detail);
+      const action = document.getElementById('console-notice-action'); action.textContent = model.notice.action; action.dataset.target = model.notice.target; action.dataset.id = model.notice.id || '';
+    }
+    put('console-table-title', model.mode === 'fleet' ? 'Equipamentos' : 'Workers da pool');
+    put('console-table-note', model.mode === 'fleet' ? 'Ordenados por atenção. Dados antigos permanecem identificados.' : 'Valores individuais, conforme informados pela pool.');
+    const labels = model.mode === 'fleet' ? ['Equipamento', 'Estado observado', 'Hashrate', 'Temperatura', 'Potência', 'Última amostra'] : ['Worker', 'Fonte / estado', 'Hashrate', 'Última share'];
+    document.getElementById('console-table-head').innerHTML = '<tr>' + labels.map(function(label) { return '<th scope="col">' + label + '</th>'; }).join('') + '</tr>';
+    const rows = model.rows.filter(function(row) { return (row.name + ' ' + row.model + ' ' + row.state).toLowerCase().includes(_consoleQuery); });
+    const html = rows.map(function(row) {
+      const values = model.mode === 'fleet' ? [null, row.state, row.hash === null ? '—' : fmt.hashrate(row.hash), row.temperature === null ? '—' : row.temperature.toFixed(1) + ' °C', row.power === null ? '—' : row.power.toFixed(0) + ' W', consoleAgeText(row.age)] : [null, row.state, row.hash === null ? '—' : fmt.hashrate(row.hash), consoleAgeText(row.age)];
+      return '<tr class="console-row console-row--' + row.tone + '">' + values.map(function(value, index) {
+        if (index === 0) return '<th scope="row"><button class="console-entity" data-console-id="' + escapeHtml(row.id) + '">' + escapeHtml(row.name) + '<span aria-hidden="true">↗</span></button>' + (row.model ? '<small>' + escapeHtml(row.model) + '</small>' : '') + '</th>';
+        return '<td data-label="' + labels[index] + '"' + (index > 1 ? ' class="console-numeric"' : '') + '>' + escapeHtml(value) + (index === 1 && row.old && row.kind === 'fleet' ? '<small>' + (fleetError ? 'consulta indisponível' : 'amostra antiga ou idade não informada') + '</small>' : '') + (index === 2 && row.hash !== null ? '<small>' + escapeHtml(row.hashNote) + '</small>' : '') + '</td>';
+      }).join('') + '</tr>';
+    }).join('');
+    const focusedId = document.activeElement && document.activeElement.dataset.consoleId;
+    setHtmlIfChanged(document.getElementById('console-table-body'), html || '<tr><td colspan="' + labels.length + '" class="console-table-empty">' + (_consoleQuery ? 'Nenhum resultado para esse filtro.' : model.loading ? 'Aguardando dados das fontes…' : model.mode === 'pool' ? 'Nenhum worker identificado pela pool. Conecte seu endereço ou confira a configuração da pool.' : 'Nenhum equipamento identificado.') + '</td></tr>');
+    if (focusedId && !document.getElementById('console-detail').open) {
+      const replacement = Array.from(root.querySelectorAll('[data-console-id]')).find(function(button) { return button.dataset.consoleId === focusedId; });
+      if (replacement) replacement.focus({ preventScroll: true });
+    }
+    put('console-row-count', rows.length + ' de ' + model.rows.length + (model.mode === 'fleet' ? ' equipamentos' : ' workers identificados'));
+    if (_consoleSelection) renderConsoleDetail(_consoleSelection);
+  }
+
+  function renderConsoleDetail(id) {
+    const row = _consoleRows.find(function(item) { return item.id === id; });
+    if (!row) return;
+    document.getElementById('console-detail-title').textContent = row.name;
+    document.getElementById('console-detail-source').textContent = row.kind === 'fleet' ? 'TELEMETRIA LOCAL' : 'OBSERVAÇÃO PELA POOL';
+    document.getElementById('console-detail-status').textContent = row.state + ' · ' + (row.kind === 'pool' ? 'última share ' : 'amostra ') + consoleAgeText(row.age) + (row.old ? ' · último estado informado: ' + row.reportedState : '');
+    const fields = [['Hashrate', row.hash === null ? 'Não informado' : fmt.hashrate(row.hash) + ' · ' + row.hashNote], ['Shares aceitas', row.accepted === null ? 'Não informado' : row.accepted], ['Shares rejeitadas', row.rejected === null ? 'Não informado' : row.rejected]];
+    if (row.kind === 'fleet') fields.push(['Modelo', row.model || 'Não informado'], ['Temperatura', row.temperature === null ? 'Não informado' : row.temperature.toFixed(1) + ' °C'], ['Potência', row.power === null ? 'Não informado' : row.power.toFixed(0) + ' W']);
+    else fields.push(['Temperatura / potência', 'Exigem telemetria local']);
+    document.getElementById('console-detail-fields').innerHTML = fields.map(function(field) { return '<div><dt>' + field[0] + '</dt><dd>' + escapeHtml(String(field[1])) + '</dd></div>'; }).join('');
+    const diagnostic = document.getElementById('console-detail-diagnostic'); diagnostic.textContent = row.kind === 'fleet' ? 'Abrir diagnóstico do equipamento' : 'Abrir eventos da pool'; diagnostic.dataset.kind = row.kind; diagnostic.dataset.id = row.id;
+  }
+  function initOperationConsoleControls() {
+    const root = document.getElementById('operation-console');
+    if (!root) return;
+    const update = function() { renderOperationConsole(_lastSnapshot || {}, _operationalFleetData, _operationalFleetError); };
+    ['pool', 'fleet'].forEach(function(source) { document.getElementById('console-source-' + source).addEventListener('click', function() { _consoleSource = source; update(); }); });
+    document.getElementById('console-search').addEventListener('input', function(event) { _consoleQuery = event.target.value.toLowerCase(); update(); });
+    document.getElementById('console-open-fleet').addEventListener('click', function() { activateModule('fleet'); });
+    document.getElementById('console-open-analysis').addEventListener('click', function() { activateModule('analysis'); });
+    const dialog = document.getElementById('console-detail');
+    const openDetail = function(id, keyboard) { _consoleSelection = id; renderConsoleDetail(id); dialog.classList.toggle('console-detail--instant', keyboard); if (!dialog.open) dialog.showModal(); };
+    document.getElementById('console-table-body').addEventListener('click', function(event) { const button = event.target.closest('[data-console-id]'); if (button) openDetail(button.dataset.consoleId, event.detail === 0); });
+    document.getElementById('console-detail-close').addEventListener('click', function() { dialog.close(); });
+    dialog.addEventListener('close', function() {
+      const selected = _consoleSelection; _consoleSelection = null;
+      if (document.body.dataset.activeModule !== 'dashboard') return;
+      const origin = Array.from(root.querySelectorAll('[data-console-id]')).find(function(button) { return button.dataset.consoleId === selected; });
+      (origin || document.getElementById('console-search')).focus({ preventScroll: true });
+    });
+    document.getElementById('console-detail-diagnostic').addEventListener('click', function(event) { const button = event.currentTarget; dialog.close(); activateModule(button.dataset.kind === 'fleet' ? 'fleet' : 'live'); if (button.dataset.kind === 'fleet') openAxeDetail(button.dataset.id); });
+    document.getElementById('console-notice-action').addEventListener('click', async function(event) {
+      const button = event.currentTarget;
+      if (button.dataset.target === 'detail') { openDetail(button.dataset.id, event.detail === 0); return; }
+      if (button.dataset.target === 'fleet') { activateModule('fleet'); return; }
+      button.disabled = true; button.textContent = 'Atualizando…';
+      try { await Promise.all([fetchSnapshot(), fetchAxeFleet()]); } finally { update(); button.disabled = false; }
+    });
+  }
+
   // ── Operational Overview (Issue 367) ─────────────────────────────────
   // Combines the real snapshot with the independently polled fleet health
   // endpoint. The model is pure and mirrored in the JS core suite. A missing
@@ -3731,6 +3896,7 @@ dom.walletSave?.addEventListener('click', async () => {
   }
 
   function renderOperationalOverview(snap, fleetData, fleetError) {
+    renderOperationConsole(snap, fleetData, fleetError);
     const root = document.getElementById('operational-overview');
     if (!root) return;
     const model = buildOperationalOverviewModel(snap, fleetData, fleetError);
@@ -3744,7 +3910,7 @@ dom.walletSave?.addEventListener('click', async () => {
     if (badge) badge.className = 'badge ' + (model.tone === 'critical' ? 'badge--red' : model.tone === 'warning' ? 'badge--amber' : model.tone === 'healthy' ? 'badge--green' : 'badge--mute');
     put('op-health', model.health);
     put('op-health-detail', model.healthDetail);
-    put('op-attention', model.attention === null ? '—' : String(model.attention));
+    put('op-attention', model.empty || model.attention === null ? 'INDISPONÍVEL' : String(model.attention));
     put('op-attention-detail', model.attentionDetail);
     put('op-lost-hashrate', model.lostHashrateHs === null ? '—' : fmt.hashrate(model.lostHashrateHs));
     put('op-lost-hashrate-detail', model.lossBaselineDevices > 0 ? 'Baseline available for ' + model.lossBaselineDevices + ' ASIC' + (model.lossBaselineDevices === 1 ? '' : 's') : 'Baseline unavailable');
@@ -3764,6 +3930,7 @@ dom.walletSave?.addEventListener('click', async () => {
     }
   }
   function initOperationalOverviewControls() {
+    initOperationConsoleControls();
     const action = document.getElementById('op-action');
     if (!action) return;
     action.addEventListener('click', function() {
@@ -4664,6 +4831,8 @@ function renderPool(pool, luck) {
     var pool = snap.pool || {};
     var prox = snap.proximity || {};
     var workers = snap.all_workers || [];
+    const shareScope = document.getElementById('console-shares-scope');
+    if (shareScope) shareScope.textContent = prox.share_rate_hourly > 0 ? 'estimativa por hora' : prox.live_calc?.session_totals?.shares_so_far > 0 ? 'sessão observada' : 'sem contagem informada';
 
     if (dom.kpiHashrate) dom.kpiHashrate.textContent = fmt.hashrate(w.hashrate);
     if (dom.kpiBestdiff) dom.kpiBestdiff.textContent = fmt.diff(w.bestDifficulty || w.best_diff);
@@ -5694,7 +5863,7 @@ function renderPool(pool, luck) {
   // ── Keyboard shortcuts ──
   dom.refreshNow?.addEventListener('click', fetchSnapshot);
   document.addEventListener('keydown', (e) => {
-    const anyModalOpen = () => !!document.querySelector('.modal-overlay.modal--open');
+    const anyModalOpen = () => !!document.querySelector('.modal-overlay.modal--open, dialog[open]');
     if (e.key.toLowerCase() === 'r' && !anyModalOpen() && document.activeElement.tagName !== 'INPUT' && !e.metaKey && !e.ctrlKey) fetchSnapshot();
     else if (e.key === 'Escape') { closeWalletModal(); closeSettingsModal(); closeExportModal(); }
     else if (e.key.toLowerCase() === 'w' && !anyModalOpen() && document.activeElement.tagName !== 'INPUT' && !e.metaKey && !e.ctrlKey) {
@@ -5882,7 +6051,8 @@ function renderPool(pool, luck) {
 
   // MODULE_MAP — módulo → título/descrição do header
   const MODULE_MAP = {
-    'dashboard':   { title: 'DASHBOARD',     desc: 'Visão geral — pool, worker e rede' },
+    'dashboard':   { title: 'OPERAÇÃO', desc: 'Fontes, equipamentos e workers' },
+    'analysis': { title: 'ANÁLISE', desc: 'Rede Bitcoin, pool e cenários' },
     'wallet':      { title: 'WALLET',        desc: 'Conexão e status da wallet' },
     'fleet':       { title: 'FLEET',         desc: 'Visão dos miners' },
     'live':        { title: 'LIVE MINING',   desc: 'Dados ao vivo' },
@@ -13166,6 +13336,7 @@ function renderAccount(acct) {
       if (!r.ok) throw new Error('fleet health failed (' + r.status + ')');
       const data = await r.json();
       _operationalFleetData = data;
+      _operationalFleetReadAt = Date.now() / 1000;
       _operationalFleetError = false;
       renderAxeFleet(data);
       renderOperationalOverview(_lastSnapshot || {}, data, false);

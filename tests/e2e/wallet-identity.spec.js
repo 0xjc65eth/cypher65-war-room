@@ -35,6 +35,7 @@
  */
 
 import { test, expect } from '@playwright/test';
+import { clickToolbarAction } from './support/toolbar.js';
 
 const BASE_URL = process.env.BASE_URL || 'http://127.0.0.1:8765';
 
@@ -50,7 +51,7 @@ const TEST_ADDR_CK = TEST_ADDR.slice(-6); // 'hx0wlh'
 /** Wait for the app shell + topbar to be ready (no data dependency). */
 async function waitForDashboard(page) {
   await page.waitForSelector('#app-shell', { timeout: 15000 });
-  await page.waitForSelector('#open-wallet', { timeout: 10000 });
+  await page.waitForSelector('#open-wallet', { state: 'attached', timeout: 10000 });
   await page.waitForFunction(() => {
     return document.querySelectorAll('.skel-overlay').length === 0;
   }, { timeout: 10000 }).catch(() => {});
@@ -151,7 +152,7 @@ test.describe('WALLET IDENTITY — QR + checksum + health (P0-4)', () => {
       if (!alreadyConnected) {
         didConnect = true;
         // ── CONNECT via UI: modal → endereço → SAVE ──
-        await page.locator('#open-wallet').click();
+        await clickToolbarAction(page, '#open-wallet');
         await expectModalOpen(page, 'wallet-modal');
 
         await page.locator('#wallet-address-input').fill(TEST_ADDR);
@@ -165,7 +166,7 @@ test.describe('WALLET IDENTITY — QR + checksum + health (P0-4)', () => {
         await expectModalClosed(page, 'wallet-modal');
       } else {
         // Já conectado (rerun no mesmo server): abre o modal direto.
-        await page.locator('#open-wallet').click();
+        await clickToolbarAction(page, '#open-wallet');
         await expectModalOpen(page, 'wallet-modal');
       }
 
@@ -173,7 +174,7 @@ test.describe('WALLET IDENTITY — QR + checksum + health (P0-4)', () => {
       //    ramo connect o modal fechou sozinho após o SAVE; no rerun
       //    já-conectado ele já está aberto. ──
       if (!(await page.locator('#wallet-modal').evaluate(el => el.classList.contains('modal--open')))) {
-        await page.locator('#open-wallet').click();
+        await clickToolbarAction(page, '#open-wallet');
         await expectModalOpen(page, 'wallet-modal');
       }
 
