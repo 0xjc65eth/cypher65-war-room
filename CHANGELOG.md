@@ -6,6 +6,7 @@ e versionamento semântico ([SemVer](https://semver.org/lang/pt-BR/)).
 
 ## [Unreleased]
 
+- Rebuild Operation as a richer premium dashboard: observed-worker comparison, authenticated per-device hashrate/temperature/power history, explicit gaps and last-valid measurement age, current power coverage, activity and Bitcoin context. Preserve entity investigation, source failures, session isolation and all modules; add native keyboard metric navigation and a complete text alternative for charts (#746).
 - Rebuild Operation as a richer premium dashboard: observed-worker comparison, authenticated per-device hashrate/temperature/power history, explicit gaps and last-valid measurement age, current power coverage, activity and Bitcoin context. Preserve entity investigation, source failures, session isolation and all modules; add native keyboard metric navigation and a complete text alternative for charts (#752).
 
 - Reject older full snapshots across poll/SSE, keep freshness aging during offline failures, and wire the Refresh button to the existing fetch path (#742).
