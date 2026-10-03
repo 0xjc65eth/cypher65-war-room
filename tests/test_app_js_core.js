@@ -5614,6 +5614,20 @@ const consoleFuture = {fleet_stats:{total_devices:1},device_health:[{id:'future'
 assertEqual('future timestamp cannot become fresh via age fallback', consoleModel(consoleSnap,consoleFuture,false,'fleet',consoleNow,consoleNow).recent, 0);
 assertEqual('explicit pool choice survives available Fleet', consoleModel(consoleSnap,consoleFleet,false,'pool',consoleNow,consoleNow).mode, 'pool');
 
+// Issue #750: Celsius is signed and bounded, unlike power/rate/counter values.
+for (const temperature of [-40, -5, 0, 150, '-5', '53.5']) {
+  const sample = {device_health:[{id:'signed',status:'ONLINE',telemetry:{ts:consoleNow,temperature,hashrate_hs:-1,power_watts:-1,shares_accepted:-1}}]};
+  const observed = consoleModel(consoleSnap,sample,false,'fleet',consoleNow,consoleNow).rows[0];
+  assertEqual('console retains valid Celsius '+temperature, observed.temperature, Number(temperature));
+  assertEqual('signed Celsius does not permit negative power '+temperature, observed.power, null);
+  assertEqual('signed Celsius does not permit negative rate '+temperature, observed.hash, null);
+  assertEqual('signed Celsius does not permit negative shares '+temperature, observed.accepted, null);
+}
+for (const temperature of [-41, 151, Infinity, NaN, null, undefined, true, false, '', ' ', [], {}, 'invalid']) {
+  const sample = {device_health:[{id:'invalid',status:'ONLINE',telemetry:{ts:consoleNow,temperature}}]};
+  assertEqual('console rejects invalid Celsius '+String(temperature), consoleModel(consoleSnap,sample,false,'fleet',consoleNow,consoleNow).rows[0].temperature, null);
+}
+
 //  RESULTS
 // ═══════════════════════════════════════════════════════════════════════════
 
