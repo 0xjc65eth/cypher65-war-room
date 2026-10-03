@@ -5,6 +5,7 @@ Unit tests for helpers.build_decision_matrix() — the pure aggregation that
 compares solo vs pool vs lease for the Decision Matrix panel in the market
 module. Hermetic: no network, no DB, no app import needed.
 """
+
 import pytest
 
 from helpers import build_decision_matrix
@@ -36,9 +37,9 @@ class TestDecisionMatrix:
         assert dm["best_option"] == "lease"
         assert "lease" in dm["recommendation"].lower()
 
-    def test_solo_fallback_when_no_deterministic_data(self):
+    def test_solo_is_not_ranked_against_missing_alternatives(self):
         dm = build_decision_matrix(solo_expected_time_days=200.0, solo_p_year_pct=20.0)
-        assert dm["best_option"] == "solo"
+        assert dm["best_option"] == "insufficient"
         assert "200" in dm["recommendation"]
 
     def test_insufficient_when_nothing_available(self):
@@ -48,14 +49,16 @@ class TestDecisionMatrix:
 
     def test_pool_only(self):
         dm = build_decision_matrix(pool_net_usd_per_day=5.0)
-        assert dm["best_option"] == "pool"
+        assert dm["best_option"] == "insufficient"
 
     def test_lease_only(self):
         dm = build_decision_matrix(lender_net_usd_per_day=7.0)
-        assert dm["best_option"] == "lease"
+        assert dm["best_option"] == "insufficient"
 
     def test_tie_breaks_to_pool(self):
-        dm = build_decision_matrix(pool_net_usd_per_day=10.0, lender_net_usd_per_day=10.0)
+        dm = build_decision_matrix(
+            pool_net_usd_per_day=10.0, lender_net_usd_per_day=10.0
+        )
         assert dm["best_option"] == "pool"
 
     def test_non_numeric_inputs_never_raise(self):
@@ -66,10 +69,12 @@ class TestDecisionMatrix:
             solo_p_year_pct=None,
             lender_recommendation=12345,
         )
-        assert dm["best_option"] in ("insufficient", "solo")
+        assert dm["best_option"] == "insufficient"
         assert dm["rows"]["pool"]["net_usd_per_day"] is None
 
     def test_negative_usd_treated_as_numeric(self):
         # A loss-making mode is still a real number (could be a legit negative).
-        dm = build_decision_matrix(pool_net_usd_per_day=-3.0, lender_net_usd_per_day=2.0)
+        dm = build_decision_matrix(
+            pool_net_usd_per_day=-3.0, lender_net_usd_per_day=2.0
+        )
         assert dm["best_option"] == "lease"

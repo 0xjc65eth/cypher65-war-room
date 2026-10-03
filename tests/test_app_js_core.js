@@ -1,8 +1,7 @@
 #!/usr/bin/env node
 /**
  * CYPHER65 // WAR ROOM — Core JS Unit Tests
- * ===========================================
- *
+ * ==================================== *
  * Testa funções puras críticas do cliente. Como `static/app.js` é ARTEFATO
  * GERADO de `static/src/*.js` (RFC #478 · Issue #489), os helpers puros são
  * carregados do FRAGMENTO REAL via `loadFragment()` — o mesmo código que roda
@@ -5574,6 +5573,12 @@ topbarRender({ts: 1, worker: {hashrate: 1}});
 assertEqual('old snapshot does not present topbar as online', topbarNodes['tbar-status'].textContent, 'STALE');
 topbarRender({worker: {hashrate: 1}});
 assertEqual('unknown snapshot age does not present topbar as online', topbarNodes['tbar-status'].textContent, 'UNKNOWN');
+const comparisonDom = { hrReported: {}, hrObserved: {}, hrDeviationVal: {}, hrDeviationBadge: {} };
+const renderEvidenceComparison = loadFragment('42-probability.js', 'renderComparison', { window: {}, dom: comparisonDom, fmt, document: { getElementById: () => null } });
+renderEvidenceComparison({worker: {hashrate: 82.2e12}, proximity: {live_calc: {ticker: [{instantaneous_hr_hps: 3.19e18}]}}});
+assertEqual('unscoped share difficulty is not observed hashrate', comparisonDom.hrObserved.textContent, '—');
+assertEqual('incomparable data cannot yield deviation', comparisonDom.hrDeviationVal.textContent, '—');
+assertEqual('comparison explains missing evidence', comparisonDom.hrDeviationBadge.textContent, 'NOT COMPARABLE');
 
 //  RESULTS
 // ═══════════════════════════════════════════════════════════════════════════
