@@ -6,6 +6,8 @@ e versionamento semântico ([SemVer](https://semver.org/lang/pt-BR/)).
 
 ## [Unreleased]
 
+- Refine the dashboard as a compact terminal: grouped navigation, aligned numeric rows, worker details on demand, two-column pool/network context, readable labels, instantaneous module switches and mobile drawer layering. Preserve data bindings and use an honest empty diagnostic state (#746).
+
 - Reject older full snapshots across poll/SSE, keep freshness aging during offline failures, and wire the Refresh button to the existing fetch path (#742).
 
 - Fix dashboard difficulty/height overwrite, pool block height versus timestamp, stale-aware topbar metrics and fixed pool subtitle (#732). Future stored block timestamps are normalized; historical rows are unchanged.

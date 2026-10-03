@@ -1348,7 +1348,8 @@
   let _moduleNavToken = 0;
   function activateModule(name) {
     document.body.classList.add('module-mode');
-    const reduceMotion = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    // A compact console is used repeatedly: module switches are immediate.
+    const reduceMotion = document.body.classList.contains('terminal-ui') || (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
     const token = ++_moduleNavToken;
     if (!reduceMotion) {
       let leavingCount = 0;
@@ -1371,6 +1372,7 @@
     _doActivateModule(name, reduceMotion);
   }
   function _doActivateModule(name, reduceMotion) {
+    document.body.dataset.activeModule = name;
     // Mostra/esconde cada painel com data-module — MAS nunca os links da
     // sidebar (eles também têm data-module; escondê-los quebraria a navegação)
     document.querySelectorAll('[data-module]').forEach(function(el) {

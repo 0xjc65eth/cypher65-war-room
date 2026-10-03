@@ -381,8 +381,8 @@ function renderAccount(acct) {
         grid.innerHTML = (
           '<div class="empty-state" style="grid-column:1/-1;border:none;padding:10px">' +
           '<div class="empty-state__icon">⌘</div>' +
-          '<div class="empty-state__title">All systems nominal</div>' +
-          '<div class="empty-state__desc">No action needed right now — the dashboard is monitoring your operation.</div>' +
+          '<div class="empty-state__title">Sem diagnósticos</div>' +
+          '<div class="empty-state__desc">Nenhum diagnóstico foi gerado para a telemetria disponível.</div>' +
           '</div>'
         );
       } else {

@@ -6032,7 +6032,8 @@ function renderPool(pool, luck) {
   let _moduleNavToken = 0;
   function activateModule(name) {
     document.body.classList.add('module-mode');
-    const reduceMotion = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    // A compact console is used repeatedly: module switches are immediate.
+    const reduceMotion = document.body.classList.contains('terminal-ui') || (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
     const token = ++_moduleNavToken;
     if (!reduceMotion) {
       let leavingCount = 0;
@@ -6055,6 +6056,7 @@ function renderPool(pool, luck) {
     _doActivateModule(name, reduceMotion);
   }
   function _doActivateModule(name, reduceMotion) {
+    document.body.dataset.activeModule = name;
     // Mostra/esconde cada painel com data-module — MAS nunca os links da
     // sidebar (eles também têm data-module; escondê-los quebraria a navegação)
     document.querySelectorAll('[data-module]').forEach(function(el) {
@@ -7302,8 +7304,8 @@ function renderAccount(acct) {
         grid.innerHTML = (
           '<div class="empty-state" style="grid-column:1/-1;border:none;padding:10px">' +
           '<div class="empty-state__icon">⌘</div>' +
-          '<div class="empty-state__title">All systems nominal</div>' +
-          '<div class="empty-state__desc">No action needed right now — the dashboard is monitoring your operation.</div>' +
+          '<div class="empty-state__title">Sem diagnósticos</div>' +
+          '<div class="empty-state__desc">Nenhum diagnóstico foi gerado para a telemetria disponível.</div>' +
           '</div>'
         );
       } else {
