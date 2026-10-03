@@ -1446,8 +1446,11 @@ def fleet_summary(tenant_id: str = ""):
     total_hr = 0
     enriched_devices = []
     for d in devices:
-        tel = _registry.get_recent_telemetry(d["id"], limit=1, tenant_id=tenant_id)
-        p = _latest_telemetry(tel)
+        # list_devices(with_telemetry=True) already selected the latest
+        # trusted sample for this tenant in one batch. Do not issue a second
+        # per-device query (or synthesize data when the batch has no sample).
+        p = d.get("telemetry")
+        p = p if _is_trusted_payload(p) else {}
         measured_hr = p.get("hashrate_hs")
         status = d.get("status", "OFFLINE")
         reported_hr = _nonnegative_finite_int(measured_hr)
@@ -1562,8 +1565,9 @@ def seed_test_devices(tenant_id: str = ""):
     Creates 4 devices with realistic telemetry (hashrate, temp, fan, power,
     uptime, best diff) and capabilities (restart, identify, pause).
 
-    GATED by DEBUG_MOCK (config.py): disabled in production so mock devices
-    are never exposed via the public API. Set DEBUG_MOCK=1 for local dev.
+    GATED by DEBUG_MOCK and cloud detection: cloud deployments always deny
+    synthetic seeding, even with DEBUG_MOCK=1. Local dev additionally needs
+    tenant/member authorization.
 
     Tenant-scoped: seeded devices are persisted under the caller's tenant
     so they never pollute another tenant's fleet.
@@ -1571,9 +1575,13 @@ def seed_test_devices(tenant_id: str = ""):
     Use DELETE /api/axe-fleet/devices/<id> to remove individual devices
     after testing.
     """
-    if os.environ.get("DEBUG_MOCK") != "1":
+    from config import is_cloud_deploy
+
+    if is_cloud_deploy() or os.environ.get("DEBUG_MOCK") != "1":
         return (
-            jsonify({"error": "test-devices endpoint disabled (set DEBUG_MOCK=1)"}),
+            jsonify(
+                {"error": "test-devices endpoint disabled (local DEBUG_MOCK=1 only)"}
+            ),
             403,
         )
     if _registry is None:
@@ -3357,11 +3365,10 @@ def fleet_health(tenant_id: str = ""):
 
     for d in devices:
         did = d["id"]
-        tel_raw = _registry.get_recent_telemetry(did, limit=50, tenant_id=tenant_id)
-        # Hardening: trust only well-formed telemetry payloads. Legacy rows
-        # written before the poll fix may be a bare {"device_id": ...} stub —
-        # treat those as empty so the UI never shows zeroed fake data.
-        tel = _latest_telemetry(tel_raw)
+        # Reuse the batch-selected trusted sample. In particular, absence of
+        # a measured sample must not trigger a per-device history fallback.
+        tel = d.get("telemetry")
+        tel = tel if _is_trusted_payload(tel) else {}
         status = d.get("status", "OFFLINE")
         from .models import STATUS_STALE, is_telemetry_stale
 

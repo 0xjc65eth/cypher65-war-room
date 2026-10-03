@@ -5572,6 +5572,12 @@ for (const [worker, expected] of [[{hashrate: 0}, 'IDLE'], [{hashrate: -1}, 'NO 
 }
 topbarRender({ts: 1, worker: {hashrate: 1}});
 assertEqual('old snapshot does not present topbar as online', topbarNodes['tbar-status'].textContent, 'STALE');
+const comparisonDom = { hrReported: {}, hrObserved: {}, hrDeviationVal: {}, hrDeviationBadge: {} };
+const renderEvidenceComparison = loadFragment('42-probability.js', 'renderComparison', { window: {}, dom: comparisonDom, fmt, document: { getElementById: () => null } });
+renderEvidenceComparison({worker: {hashrate: 82.2e12}, proximity: {live_calc: {ticker: [{instantaneous_hr_hps: 3.19e18}]}}});
+assertEqual('unscoped share difficulty is not observed hashrate', comparisonDom.hrObserved.textContent, '—');
+assertEqual('incomparable data cannot yield deviation', comparisonDom.hrDeviationVal.textContent, '—');
+assertEqual('comparison explains missing evidence', comparisonDom.hrDeviationBadge.textContent, 'NOT COMPARABLE');
 
 //  RESULTS
 // ═══════════════════════════════════════════════════════════════════════════
