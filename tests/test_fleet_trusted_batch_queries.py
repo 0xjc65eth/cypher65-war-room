@@ -46,8 +46,8 @@ def test_telemetry_query_count_is_constant(
     with connect() as connection:
         connection.executemany(
             "INSERT INTO axe_devices "
-            "(id, name, ip_address, tenant_id, agent_managed, status, last_seen) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "(id, name, ip_address, tenant_id, agent_managed, status, last_seen, "
+            "added_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             [
                 (
                     f"synthetic-{index}",
@@ -60,6 +60,8 @@ def test_telemetry_query_count_is_constant(
                     "query-contract",
                     1,
                     "ONLINE" if measured else "OFFLINE",
+                    now,
+                    now,
                     now,
                 )
                 for index in range(count)
