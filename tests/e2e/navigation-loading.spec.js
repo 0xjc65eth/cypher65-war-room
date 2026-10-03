@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { revealToolbar } from './support/toolbar.js';
 
 test.use({ serviceWorkers: 'block' });
 
@@ -16,6 +17,7 @@ test('AI drawer keyboard access, reduced motion and reflow', async ({page}) => {
   const drawer = page.locator('#off-canvas-ai');
   const toggle = page.locator('#ai-panel-toggle');
   await expect(drawer).not.toBeVisible();
+  await revealToolbar(page);
   await toggle.press('Enter');
   await expect(drawer).toBeVisible();
   await expect(page.locator('#ai-input-offcanvas')).toBeFocused();

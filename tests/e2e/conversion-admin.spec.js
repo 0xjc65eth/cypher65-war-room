@@ -21,7 +21,7 @@ const BASE_URL = process.env.BASE_URL || 'http://127.0.0.1:8765';
 /** Wait for the app shell + topbar to be ready. */
 async function waitForDashboard(page) {
   await page.waitForSelector('#app-shell', { timeout: 15000 });
-  await page.waitForSelector('#open-wallet', { timeout: 10000 });
+  await page.waitForSelector('#open-wallet', { state: 'attached', timeout: 10000 });
   await page.waitForFunction(() => {
     return document.querySelectorAll('.skel-overlay').length === 0;
   }, { timeout: 10000 }).catch(() => {});

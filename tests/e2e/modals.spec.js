@@ -14,6 +14,7 @@
  */
 
 import { test, expect } from '@playwright/test';
+import { clickToolbarAction } from './support/toolbar.js';
 
 const BASE_URL = process.env.BASE_URL || 'http://127.0.0.1:8765';
 
@@ -24,7 +25,7 @@ const BASE_URL = process.env.BASE_URL || 'http://127.0.0.1:8765';
 /** Wait for the app shell + topbar to be ready (no data dependency). */
 async function waitForDashboard(page) {
   await page.waitForSelector('#app-shell', { timeout: 15000 });
-  await page.waitForSelector('#open-wallet', { timeout: 10000 });
+  await page.waitForSelector('#open-wallet', { state: 'attached', timeout: 10000 });
   // Wait for skeleton loading overlays to detach so they can never race a
   // click (skeletons are now pointer-events:none too, so this is belt+braces).
   // Timeout kept short: skeletons normally detach after the first poll render,
@@ -110,13 +111,13 @@ test.describe('CYPHER65 — Modals (wallet / settings / export)', () => {
   test.describe('01 — Wallet Modal', () => {
 
     test('opens VISIBLY when clicking CONNECT and shows its title', async ({ page }) => {
-      await page.locator('#open-wallet').click();
+      await clickToolbarAction(page, '#open-wallet');
       await expectModalOpen(page, 'wallet-modal');
       await expect(page.locator('#wallet-modal .modal__title')).toContainText('CONNECT WALLET');
     });
 
     test('closes via the ✕ close button', async ({ page }) => {
-      await page.locator('#open-wallet').click();
+      await clickToolbarAction(page, '#open-wallet');
       await expectModalOpen(page, 'wallet-modal');
 
       await closeViaXButton(page, 'wallet-modal');
@@ -124,7 +125,7 @@ test.describe('CYPHER65 — Modals (wallet / settings / export)', () => {
     });
 
     test('closes via the Escape key', async ({ page }) => {
-      await page.locator('#open-wallet').click();
+      await clickToolbarAction(page, '#open-wallet');
       await expectModalOpen(page, 'wallet-modal');
 
       await page.keyboard.press('Escape');
@@ -170,7 +171,7 @@ test.describe('CYPHER65 — Modals (wallet / settings / export)', () => {
     test('opens VISIBLY and shows JSON/CSV export buttons', async ({ page }) => {
       // Use button#open-exports: a stray <span id="open-exports"> exists in
       // the DOM, so the bare #open-exports selector would be ambiguous.
-      await page.locator('button#open-exports').click();
+      await clickToolbarAction(page, 'button#open-exports');
       await expectModalOpen(page, 'export-modal');
       await expect(page.locator('#export-modal .modal__title')).toContainText('EXPORT');
       await expect(page.locator('#export-json')).toBeVisible();
@@ -178,7 +179,7 @@ test.describe('CYPHER65 — Modals (wallet / settings / export)', () => {
     });
 
     test('closes via the ✕ close button (data-close)', async ({ page }) => {
-      await page.locator('button#open-exports').click();
+      await clickToolbarAction(page, 'button#open-exports');
       await expectModalOpen(page, 'export-modal');
 
       await page.locator('#export-modal [data-close]').click();
@@ -186,7 +187,7 @@ test.describe('CYPHER65 — Modals (wallet / settings / export)', () => {
     });
 
     test('closes via the Escape key', async ({ page }) => {
-      await page.locator('button#open-exports').click();
+      await clickToolbarAction(page, 'button#open-exports');
       await expectModalOpen(page, 'export-modal');
 
       await page.keyboard.press('Escape');
@@ -202,7 +203,7 @@ test.describe('CYPHER65 — Modals (wallet / settings / export)', () => {
 
     test('sequential open/close across all modals leaves no lingering overlay', async ({ page }) => {
       // wallet → close → settings → close → export → close → wallet again
-      await page.locator('#open-wallet').click();
+      await clickToolbarAction(page, '#open-wallet');
       await expectModalOpen(page, 'wallet-modal');
       await closeViaXButton(page, 'wallet-modal');
       await expectModalClosed(page, 'wallet-modal');
@@ -212,13 +213,13 @@ test.describe('CYPHER65 — Modals (wallet / settings / export)', () => {
       await closeViaXButton(page, 'settings-modal');
       await expectModalClosed(page, 'settings-modal');
 
-      await page.locator('button#open-exports').click();
+      await clickToolbarAction(page, 'button#open-exports');
       await expectModalOpen(page, 'export-modal');
       await page.locator('#export-modal [data-close]').click();
       await expectModalClosed(page, 'export-modal');
 
       // Everything closed again → every topbar button still reachable
-      await page.locator('#open-wallet').click();
+      await clickToolbarAction(page, '#open-wallet');
       await expectModalOpen(page, 'wallet-modal');
 
       // No modal may remain open at the end
@@ -227,7 +228,7 @@ test.describe('CYPHER65 — Modals (wallet / settings / export)', () => {
     });
 
     test('while a modal is open, its overlay blocks other topbar buttons', async ({ page }) => {
-      await page.locator('#open-wallet').click();
+      await clickToolbarAction(page, '#open-wallet');
       await expectModalOpen(page, 'wallet-modal');
 
       // Force the click through the overlay (a real user click would land on
@@ -241,7 +242,7 @@ test.describe('CYPHER65 — Modals (wallet / settings / export)', () => {
     });
 
     test('after closing, a previously blocked button works immediately', async ({ page }) => {
-      await page.locator('#open-wallet').click();
+      await clickToolbarAction(page, '#open-wallet');
       await expectModalOpen(page, 'wallet-modal');
 
       // Simulate a click that lands on the overlay (no-op)
@@ -262,7 +263,7 @@ test.describe('CYPHER65 — Modals (wallet / settings / export)', () => {
     test('no critical console errors during modal interactions', async ({ page }) => {
       const capture = setupErrorCapture(page);
 
-      await page.locator('#open-wallet').click();
+      await clickToolbarAction(page, '#open-wallet');
       await expectModalOpen(page, 'wallet-modal');
       await closeViaXButton(page, 'wallet-modal');
 
@@ -270,7 +271,7 @@ test.describe('CYPHER65 — Modals (wallet / settings / export)', () => {
       await expectModalOpen(page, 'settings-modal');
       await page.keyboard.press('Escape');
 
-      await page.locator('button#open-exports').click();
+      await clickToolbarAction(page, 'button#open-exports');
       await expectModalOpen(page, 'export-modal');
       await page.locator('#export-modal [data-close]').click();
 
