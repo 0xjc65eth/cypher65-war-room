@@ -4178,16 +4178,24 @@ function renderPool(pool, luck) {
   // endpoint nenhum. O view-model sai de uma função PURA (sem DOM, sem global)
   // para a suíte JS core fixar os rótulos exatos a partir do fonte real.
   //
-  // Dois fatos ficam separados de propósito, porque juntá-los mentiria:
-  //   · pool `stratum_only` NÃO publica API — o minerador é a única fonte que
-  //     existe ali, e isso é normal;
-  //   · pool que PUBLICA API e ainda assim respondeu pelo minerador significa
-  //     que a chamada à API falhou — transitório, e o painel diz isso em vez de
-  //     exibir um selo confiante.
+  // Registry capability is not evidence that a provider has no public API:
+  // stratum-only entries lack a verified integration, so their source is ASIC.
+  // An integrated API that falls back to ASIC is a separate degraded state.
   const POOL_SOURCE_LABELS = { api: 'API DA POOL', asic: 'ASIC' };
   const POOL_KIND_LABELS = { solo: 'SOLO', pool: 'POOL', both: 'SOLO/POOL' };
   const _pdStr = (v) => (v === null || v === undefined ? '' : String(v).trim());
 
+  /**
+   * Describe pool identity and the source actually used for this snapshot.
+   * An unintegrated API is not treated as absent or as a failed request.
+   * @param {Object|null} snap Snapshot containing pool_detection and pool_worker.
+   * @returns {Object|null} Presentation labels, or null when no report exists.
+   * @example
+   * poolDetectionView({
+   *   pool_detection: { provider_id: 'btcpowlab', has_stats_api: false },
+   *   pool_worker: { source: 'asic' }
+   * }).sourceSub; // 'API não integrada'
+   */
   function poolDetectionView(snap) {
     const det = (snap && snap.pool_detection) || null;
     const worker = (snap && snap.pool_worker) || null;
@@ -4220,7 +4228,7 @@ function renderPool(pool, luck) {
     const apiMiss = hasApi && source === 'asic';
     const sourceLabel = source ? POOL_SOURCE_LABELS[source] : '—';
     const sourceSub = apiMiss ? 'API da pool não respondeu'
-      : source === 'asic' ? 'pool sem API pública'
+      : source === 'asic' ? 'API não integrada'
       : source === 'api' ? 'dados públicos da pool'
       : 'sem leitura';
     // Detalhe no hover: a URL pública que respondeu, ou o erro que a derrubou.

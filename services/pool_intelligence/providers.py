@@ -14,17 +14,18 @@ Two facts drive this module:
 So the registry answers two questions:
 
 * :func:`detect_provider` — which provider is this stratum endpoint?
-* :func:`stats_url_for` — where do we fetch its per-worker statistics, *when*
-  the provider publishes a public API?
+* :func:`stats_url_for` — where do we fetch its per-worker statistics when a
+  verified API integration is configured?
 
-Providers that publish no public per-worker API are still recognised (label,
-chain, kind). Their numbers come from the ASIC itself: the miner is the source
-of truth for its own hashrate, best share and share counters, so "no API" must
-degrade to *hardware data*, never to silent zeros.
+Providers without a verified public per-worker API integration are still
+recognised (label, chain, kind). Their numbers come from the ASIC itself:
+unconfigured API capability must degrade to *hardware data*, never to silent
+zeros. It does not establish whether the provider publishes a public API.
 
 Nothing here performs network I/O and nothing here is a guess: a provider is
 only given a ``stats_url`` when the endpoint is the provider's own documented
-API. Every other provider is ``stratum_only``.
+API. Every other registry entry is ``stratum_only``: no verified integration
+is configured, regardless of whether the provider publishes an API.
 """
 
 from dataclasses import dataclass
@@ -74,9 +75,10 @@ class PoolProvider:
     a subdomain of the pattern — so ``eu.stratum.braiins.com`` matches
     ``braiins.com`` without matching an unrelated ``notbraiins.com``.
 
-    ``stats_kind`` names the parser in ``.stats``. It is None for providers
-    with no public per-worker API, which is the majority: the registry still
-    recognises them, and the numbers come from the ASIC.
+    ``stats_kind`` names the parser in ``.stats``. It is None when no verified
+    public per-worker API integration is configured: the registry still
+    recognises the provider, and the numbers come from the ASIC. This is not
+    a claim that the provider has no public API.
     """
 
     provider_id: str
@@ -90,6 +92,7 @@ class PoolProvider:
 
     @property
     def has_stats_api(self) -> bool:
+        """Whether a verified stats URL and parser are configured locally."""
         return bool(self.stats_kind and self.stats_url)
 
 
@@ -118,7 +121,8 @@ def _p(
 # ── Registry ────────────────────────────────────────────────────────────
 # Verified public per-worker stats APIs are marked ``stats_kind``. Everything
 # else is deliberately ``stratum_only``: recognised, labelled, chain-tagged,
-# and fed by the ASIC. Adding a real API later is a one-line change here.
+# and fed by the ASIC. Adding a verified integration requires a documented
+# schema, a tested normalizer, and a configured stats URL.
 PROVIDERS: tuple[PoolProvider, ...] = (
     # ── Bitcoin · solo ──────────────────────────────────────────────
     # Fleet audit (Issue #627): atlaspool verified by LIVE passive Stratum
@@ -201,6 +205,14 @@ PROVIDERS: tuple[PoolProvider, ...] = (
     ),
     _p("antpool", "AntPool", Chain.BTC, PoolKind.POOL, "antpool.com"),
     _p("f2pool", "F2Pool", Chain.BTC, PoolKind.POOL, "f2pool.com"),
+    _p(
+        "btcpowlab",
+        "BTC PoW Lab",
+        Chain.BTC,
+        PoolKind.POOL,
+        "btcpowlab-pool.com",
+        docs="https://btcpowlab-pool.com (public miner telemetry; API schema not yet verified)",
+    ),
     _p(
         "viabtc",
         "ViaBTC",
@@ -304,7 +316,7 @@ def provider_by_id(provider_id: str) -> PoolProvider | None:
 
 
 def stats_api_providers() -> tuple[PoolProvider, ...]:
-    """Providers with a public per-worker API, in registry (priority) order.
+    """Providers with a verified API integration, in registry (priority) order.
 
     The order is meaningful: :mod:`services.pool_intelligence.stats` probes
     these in sequence when no ASIC has told us which pool is in use.
@@ -488,7 +500,7 @@ class PoolDetection:
 
 
 def stats_url_for(provider: PoolProvider | None, address: str = "") -> str | None:
-    """Build the per-worker stats URL, or None when there is no public API.
+    """Build the configured stats URL, or None without a URL or address.
 
     ``{address}`` is substituted with the URL-quoted address. An empty address
     returns None rather than a URL with a hole in it: a stats request without

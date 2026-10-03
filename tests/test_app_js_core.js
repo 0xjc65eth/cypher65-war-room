@@ -5263,7 +5263,7 @@ console.log('\n📊 SUITE 38: poolDetectionView() — pool detectada a partir do
   assertEqual('pool detection: hover da fonte é a URL pública', viaApi.sourceTitle, 'https://parasite.space/api/address/xyz');
   assertEqual('pool detection: pool do registro não é aviso', viaApi.accent, '');
 
-  // Pool `stratum_only`: NÃO existe API pública — o minerador é a fonte que há.
+  // A stratum-only registry entry has no integrated API; existence is unknown.
   const stratumOnly = poolDetectionView({
     pool_detection: {
       provider_id: 'ocean', label: 'OCEAN', kind: 'pool', chain: 'btc',
@@ -5272,9 +5272,25 @@ console.log('\n📊 SUITE 38: poolDetectionView() — pool detectada a partir do
     pool_worker: { source: 'asic', chain: 'btc', kind: 'pool' },
   });
   assertEqual('pool detection: fonte ASIC em pool stratum_only', stratumOnly.sourceLabel, 'ASIC');
-  assertEqual('pool detection: stratum_only explica a ausência de API', stratumOnly.sourceSub, 'pool sem API pública');
+  assertEqual('pool detection: stratum_only declara ausência de integração', stratumOnly.sourceSub, 'API não integrada');
   assertEqual('pool detection: stratum_only é normal, não aviso', stratumOnly.accent, '');
   assertEqual('pool detection: stratum_only não inventa detalhe', stratumOnly.sourceTitle, '');
+
+  // Public telemetry can exist without a verified API integration (Issue #659).
+  const btcPowLab = poolDetectionView({
+    pool_detection: {
+      provider_id: 'btcpowlab', label: 'BTC PoW Lab', kind: 'pool', chain: 'btc',
+      chain_source: 'provider_registry', host: 'stratum.btcpowlab-pool.com',
+      has_stats_api: false, stats_url: null,
+      docs: 'Public miner telemetry; API schema not yet verified',
+    },
+    pool_worker: { source: 'asic', chain: 'btc', kind: 'pool', stats_url: null },
+  });
+  assertEqual('pool detection: BTC PoW Lab identity is retained', btcPowLab.provider, 'BTC PoW Lab');
+  assertEqual('pool detection: BTC PoW Lab remains ASIC sourced', btcPowLab.sourceLabel, 'ASIC');
+  assertEqual('pool detection: BTC PoW Lab does not deny a public API', btcPowLab.sourceSub, 'API não integrada');
+  assertEqual('pool detection: unintegrated API is not a failed request', btcPowLab.accent, '');
+  assertEqual('pool detection: unintegrated API has no fabricated request detail', btcPowLab.sourceTitle, '');
 
   // Pool QUE TEM API e ainda assim respondeu pelo ASIC = a chamada falhou.
   const apiMiss = poolDetectionView({

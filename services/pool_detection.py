@@ -10,8 +10,8 @@ This module is the glue. On each snapshot it:
 
 1. reads the newest pool report for the tenant out of fleet telemetry,
 2. turns it into a detected provider,
-3. resolves that provider's statistics — from the pool's public API when it has
-   one, and from the ASIC's own telemetry when it does not.
+3. resolves that provider's statistics — from a configured, verified API
+   integration when usable, otherwise from the ASIC's own telemetry.
 
 Two properties are deliberate:
 
@@ -170,8 +170,8 @@ def _read_latest_report(get_db: Callable[[], Any], tenant_id: str) -> dict:
         pool_url = str(payload.get("pool_url") or "").strip()
         if not pool_url:
             continue
-        # The whole payload travels with the report: it is the source of the
-        # numbers for pools that publish no public API.
+        # Retain hardware telemetry for the ASIC fallback when a verified
+        # public API integration is unavailable or returns no usable data.
         return {
             "pool_url": pool_url,
             "pool_user": str(payload.get("pool_user") or "").strip(),
@@ -197,9 +197,9 @@ def detected_pool_for(
     numbers came from the pool's API (``"api"``) or from the miner itself
     (``"asic"``).
 
-    Cached per (address, tenant, pool) for ``STATS_TTL`` — except when the pool
-    publishes a stats API and that API did not answer. That case is reported (the
-    numbers are the miner's own, which is real) but deliberately NOT cached, so
+    Cached per (address, tenant, pool) for ``STATS_TTL`` — except when a
+    configured stats API did not answer. That case is reported with the miner's
+    own values but deliberately NOT cached, so
     the next poll retries instead of serving ASIC figures for a whole minute.
     """
     report = asic_pool_report(tenant_id, get_db=get_db, now=now)
@@ -279,10 +279,10 @@ def attach_to_snapshot(
 
 
 def _is_api_miss(result: Mapping[str, Any]) -> bool:
-    """True when a pool that HAS a public API fell back to the miner's numbers.
+    """True when a configured API integration fell back to the miner's numbers.
 
-    ``source: "asic"`` is terminal truth for a ``stratum_only`` pool — there is
-    no API to retry. For a pool that does publish one, it means the request
+    ``source: "asic"`` is terminal for a ``stratum_only`` registry entry — there
+    is no configured API request to retry. With an integration, it means the request
     failed, and that distinction is exactly what keeps a transient pool-API blip
     from freezing the panel on ASIC figures for the whole TTL.
     """
