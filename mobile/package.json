@@ -67,6 +67,7 @@
     "jest-expo": "~57.0.5",
     "knip": "^6.38.0",
     "react-test-renderer": "19.2.3",
+    "test-renderer": "1.2.0",
     "typescript": "~6.0.3"
   },
   "private": true,
