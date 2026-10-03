@@ -1,8 +1,7 @@
 #!/usr/bin/env node
 /**
  * CYPHER65 // WAR ROOM — Core JS Unit Tests
- * ===========================================
- *
+ * ==================================== *
  * Testa funções puras críticas do cliente. Como `static/app.js` é ARTEFATO
  * GERADO de `static/src/*.js` (RFC #478 · Issue #489), os helpers puros são
  * carregados do FRAGMENTO REAL via `loadFragment()` — o mesmo código que roda
@@ -5545,6 +5544,35 @@ try { await evidenceTimeout('/api/evidence'); } catch (error) { /* Expected boun
 assertEqual('rental evidence stalled auth/read remains bounded', evidenceTimeouts, 2);
 assertTruthy('rental evidence timeout aborts every attempted read', evidenceSignals.every(signal => signal.aborted));
 
+const poolBlockView = loadFragment('39b-dashboard.js', 'poolLastBlock');
+const blockNow = 1800000000;
+for (const payload of [{lastBlockTime: 958527}, {}, {lastBlockTime: 0}, {lastBlockTime: NaN}, {lastBlockTimestamp: Infinity}, {lastBlockTimestamp: blockNow + 1}]) {
+  assertEqual('pool block does not fabricate a timestamp: ' + JSON.stringify(payload), poolBlockView(payload, blockNow).timestamp, null);
+}
+assertEqual('legacy block height', poolBlockView({lastBlockTime: 958527}, blockNow).height, 958527);
+for (const timestamp of [blockNow - 60, (blockNow - 60) * 1000, String(blockNow - 60)]) {
+  const view = poolBlockView({lastBlockHeight: 958527, lastBlockTime: timestamp}, blockNow);
+  assertEqual('explicit height with timestamp', view.height, 958527);
+  assertEqual('seconds and milliseconds normalized', view.timestamp, blockNow - 60);
+}
+assertEqual('timestamp alone never becomes height', poolBlockView({lastBlockTime: blockNow - 60}, blockNow).height, null);
+const blockDom = { pLastBlock: {}, pLastBlockTime: {} };
+const renderBlockPool = loadFragment('39b-dashboard.js', 'renderPool', { dom: blockDom, fmt, document: {getElementById: () => null} });
+renderBlockPool({lastBlockHeight: 958527, lastBlockTimestamp: blockNow - 60});
+renderBlockPool(null);
+assertEqual('missing pool clears old block age', blockDom.pLastBlockTime.textContent, 'Timestamp unavailable');
+assertEqual('missing pool clears old block height', blockDom.pLastBlock.textContent, '—');
+
+const topbarNodes = Object.fromEntries(['tbar-status', 'tbar-best', 'tbar-workers', 'tbar-btc'].map(id => [id, {}]));
+const topbarRender = loadFragment('39b-dashboard.js', 'renderTopbarMetrics', { fmt, snapshotFreshness, document: {getElementById: id => topbarNodes[id]} });
+for (const [worker, expected] of [[{hashrate: 0}, 'IDLE'], [{hashrate: -1}, 'NO DATA'], [{hashrate: 1, stale: true}, 'STALE'], [null, 'NO DATA']]) {
+  topbarRender({ts: Date.now()/1000, worker, all_workers: []});
+  assertEqual('topbar distinguishes missing, zero and stale', topbarNodes['tbar-status'].textContent, expected);
+}
+topbarRender({ts: 1, worker: {hashrate: 1}});
+assertEqual('old snapshot does not present topbar as online', topbarNodes['tbar-status'].textContent, 'STALE');
+topbarRender({worker: {hashrate: 1}});
+assertEqual('unknown snapshot age does not present topbar as online', topbarNodes['tbar-status'].textContent, 'UNKNOWN');
 const comparisonDom = { hrReported: {}, hrObserved: {}, hrDeviationVal: {}, hrDeviationBadge: {} };
 const renderEvidenceComparison = loadFragment('42-probability.js', 'renderComparison', { window: {}, dom: comparisonDom, fmt, document: { getElementById: () => null } });
 renderEvidenceComparison({worker: {hashrate: 82.2e12}, proximity: {live_calc: {ticker: [{instantaneous_hr_hps: 3.19e18}]}}});

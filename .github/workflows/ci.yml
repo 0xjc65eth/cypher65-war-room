@@ -421,6 +421,7 @@ jobs:
             tests/e2e/upgrade-btc.spec.js tests/e2e/rentals-toolbar.spec.js \
             --project=chromium
 
+          npx playwright test tests/e2e/dashboard-telemetry.spec.js tests/e2e/snapshot-ordering.spec.js --project=chromium
           npx playwright test tests/e2e/comparison-evidence.spec.js --project=chromium
           npx playwright test tests/e2e/navigation-loading.spec.js \
             tests/e2e/fleet-agentless-manual-add.spec.js tests/e2e/topbar-responsive.spec.js --project=chromium
