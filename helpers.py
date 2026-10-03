@@ -16,6 +16,49 @@ from typing import Any, Optional
 
 log = logging.getLogger("cypher65")
 
+
+def pool_last_block(pool, now=None):
+    """Return (height, Unix seconds); legacy lastBlockTime can be a height.
+
+    Accept only finite Bitcoin-era timestamps, normalizing milliseconds.
+    Missing/invalid values stay None; this does not repair historical rows.
+    """
+    pool = pool or {}
+    now = time.time() if now is None else now
+
+    def number(value):
+        if isinstance(value, bool):
+            return None
+        try:
+            value = float(value)
+            return value if math.isfinite(value) else None
+        except (TypeError, ValueError, OverflowError):
+            return None
+
+    raw_height = pool.get("lastBlockHeight")
+    if raw_height is None:
+        raw_height = pool.get("lastBlock")
+    if raw_height is None:
+        raw_height = pool.get("lastBlockTime")
+    height = number(raw_height)
+    height = (
+        int(height)
+        if height and height.is_integer() and 0 < height < 1231006505
+        else None
+    )
+    legacy = number(pool.get("lastBlockTime"))
+    timestamp = (
+        number(pool.get("lastBlockTimestamp"))
+        if pool.get("lastBlockTimestamp") is not None
+        else legacy
+    )
+    if timestamp is not None and timestamp >= 1e12:
+        timestamp /= 1000
+    if timestamp is None or not 1231006505 <= timestamp <= now:
+        timestamp = None
+    return height, timestamp
+
+
 # ── Braiins Hashpower price unit (audit 17-Aug, Issue #267) ────────────────
 # The official contract (docs/reference/braiins-hashpower-api-openapi.yml)
 # states: "Spot-market price fields use the hashrate unit returned by

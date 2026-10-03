@@ -28,6 +28,7 @@ from markupsafe import Markup
 import solo_mining
 
 from helpers import (
+    pool_last_block,
     parse_diff_to_float,
     fmt_diff,
     fmt_hashrate,
@@ -3843,16 +3844,8 @@ def _do_poll():
                 pool.get("workers") if pool else None,
                 pool.get("users") if pool else None,
                 pool.get("highestDifficulty") if pool else None,
-                # The pool API exposes the last block HEIGHT under the
-                # lastBlockTime field (the old lastBlockHeight key no longer
-                # exists — it was 100% NULL). Fall back to lastBlockTime so
-                # pool_last_block_height finally gets real data.
-                (
-                    (pool.get("lastBlockHeight") or pool.get("lastBlockTime"))
-                    if pool
-                    else None
-                ),
-                pool.get("lastBlockTime") if pool else None,
+                pool_last_block(pool)[0],
+                pool_last_block(pool)[1],
                 pool.get("workSinceLastBlock") if pool else None,
                 account.get("total_diff") if isinstance(account, dict) else None,
                 meta.get("block_count") if isinstance(meta, dict) else None,

@@ -6,6 +6,8 @@ e versionamento semântico ([SemVer](https://semver.org/lang/pt-BR/)).
 
 ## [Unreleased]
 
+- Fix dashboard difficulty/height overwrite, pool block height versus timestamp, stale-aware topbar metrics and fixed pool subtitle (#732). Future stored block timestamps are normalized; historical rows are unchanged.
+
 ### Corrigido — acessibilidade no fluxo de comando Fleet (#612, UI-002)
 - Confirmação de pausa/reinício/identificação usa diálogo modal nativo com
   foco contido, cancelamento por Escape e retorno do foco ao acionador.

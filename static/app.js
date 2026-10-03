@@ -3462,6 +3462,30 @@ dom.walletSave?.addEventListener('click', async () => {
     if (dom.hudPoolhr) dom.hudPoolhr.textContent = fmt.hashrate(pool.hashrate);
   }
 
+  // Pool adapters historically put a height in lastBlockTime. Never feed
+  // that legacy height to fmt.age; timestamps must belong to Bitcoin's era.
+  function poolLastBlock(pool, nowSec = Date.now() / 1000) {
+    pool = pool || {};
+    const number = v => (typeof v === 'number' || (typeof v === 'string' && v.trim())) ? Number(v) : NaN;
+    const height = v => { const n = number(v); return Number.isSafeInteger(n) && n > 0 && n < 1231006505 ? n : null; };
+    const legacy = number(pool.lastBlockTime);
+    const blockHeight = height(pool.lastBlockHeight ?? pool.lastBlock ?? pool.lastBlockTime);
+    let timestamp = number(pool.lastBlockTimestamp ?? (legacy >= 1231006505 ? legacy : null));
+    if (timestamp >= 1e12) timestamp /= 1000;
+    if (!Number.isFinite(timestamp) || timestamp < 1231006505 || timestamp > nowSec) timestamp = null;
+    return { height: blockHeight, timestamp };
+  }
+
+  function renderTopbarMetrics(snap) {
+    const w = snap.worker;
+    const set = (id, text) => { const el = document.getElementById(id); if (el) el.textContent = text; };
+    const stale = snapshotFreshness(snap).stale || (w && (w.stale || w._stale));
+    set('tbar-status', !w ? 'NO DATA' : (stale ? 'STALE' : (!Number.isFinite(w.hashrate) || w.hashrate < 0 ? 'NO DATA' : (w.hashrate > 0 ? 'ONLINE' : 'IDLE'))));
+    set('tbar-best', w && w.bestDifficulty != null ? fmt.diff(w.bestDifficulty) : '—');
+    set('tbar-workers', Array.isArray(snap.all_workers) ? String(snap.all_workers.length) : '—');
+    set('tbar-btc', snap.btc_price && snap.btc_price.usd != null ? fmt.usd(snap.btc_price.usd) : '—');
+  }
+
   function renderStatusBar(snap) {
     const w = snap.worker || {};
     const pool = snap.pool || {};
@@ -3487,9 +3511,8 @@ dom.walletSave?.addEventListener('click', async () => {
     // Pool block
     if (dom.sbPoolHr) dom.sbPoolHr.textContent = fmt.hashrate(pool.hashrate);
     if (dom.sbPoolWorkers) dom.sbPoolWorkers.textContent = `${pool.workers || 0}`;
-    // The pool API exposes the last block height under lastBlockTime (the
-    // old lastBlock key no longer exists). Accept both for backward compat.
-    const poolBlock = pool.lastBlock || pool.lastBlockTime;
+    // Share the block contract with the pool panel; never render a timestamp as height.
+    const poolBlock = poolLastBlock(pool).height;
     if (dom.sbPoolBlock) dom.sbPoolBlock.textContent = poolBlock ? `#${poolBlock.toLocaleString()}` : '\u2014';
 
     // Network block
@@ -3943,7 +3966,7 @@ dom.walletSave?.addEventListener('click', async () => {
   }
 
 function renderPool(pool, luck) {
-    if (!pool) return;
+    pool = pool || {};
     // ── FASE 1: Stale data indicator ──
     const isStale = pool._stale === true;
     const panel = document.getElementById('pool-overview');
@@ -3961,13 +3984,14 @@ function renderPool(pool, luck) {
     if (dom.pHighDiff) dom.pHighDiff.textContent = fmt.diff(pool.highestDiff);
     // FIX: p-last-block — truncate hash to short label + show full hash on hover
     if (dom.pLastBlock) {
-      // Use lastBlockTime as block number (API returns height, not timestamp)
-      var blockNum = pool.lastBlockTime || 0;
+      // Normalize legacy height separately from explicit timestamp fields.
+      var blockNum = poolLastBlock(pool).height;
       var refHash = pool.lastBlockHash || '';
       dom.pLastBlock.textContent = blockNum > 0 ? '#' + blockNum.toLocaleString() : '\u2014';
       dom.pLastBlock.title = refHash || '';
     }
-    if (dom.pLastBlockTime && pool.lastBlockTime) dom.pLastBlockTime.textContent = fmt.age(pool.lastBlockTime);
+    const blockTimestamp = poolLastBlock(pool).timestamp;
+    if (dom.pLastBlockTime) dom.pLastBlockTime.textContent = blockTimestamp === null ? 'Timestamp unavailable' : fmt.age(blockTimestamp);
     // FIX: p-work-fill — use round_progress_pct from luck_estimate
     if (dom.pWorkFill && luck && luck.round_progress_pct != null) {
       var pct = Math.min(100, Math.max(0, luck.round_progress_pct));
@@ -4206,6 +4230,7 @@ function renderPool(pool, luck) {
     toggleWalletCTA();
     renderHUD(snap);
     renderStatusBar(snap);
+    renderTopbarMetrics(snap);
     renderSnapshotFreshness(snap);
     renderOperationalOverview(snap, _operationalFleetData, _operationalFleetError);
     // P0-4 fix: an empty shortAddr('') collapses the topbar span to a
@@ -6363,9 +6388,7 @@ function renderPool(pool, luck) {
     updateTopbar: function(net, fees, btc, alerts) {
       var btcPrice = btc && btc.usd ? '$' + Number(btc.usd).toLocaleString() : '--';
       this.setText('n-btc-usd', btcPrice);
-      this.setText('n-diff', net ? this.formatHashrate(net.difficulty) : '--');
-      this.setText('n-hashrate', net ? this.formatHashrate(net.hashrate) : '--');
-      this.setText('n-height', net && net.height ? '#' + net.height : '--');
+      // Network metrics belong to renderNetwork(), including stale badges.
       this.setText('fee-fastest', fees && fees.fastestFee != null ? fees.fastestFee + ' sat/vB' : '--');
       var alertBadge = document.getElementById('alerts-count-badge');
       if (alertBadge && alerts) {
@@ -6379,8 +6402,6 @@ function renderPool(pool, luck) {
       // (m-hashrate, m-state, hc-*, hero grid). The hero values are owned by
       // renderHero()/renderHostCore() (called by the original render).
       // p-hashrate, p-workers handled by renderPool() — do not duplicate
-      this.setText('p-high-diff', pool ? String(pool.highestDifficulty || '--') : '--');
-      this.setText('hc-network', pool ? String(pool.hashrate || '--') : '--');
       if (profit) {
         this.setText('p-btc-day', profit.net_btc_per_day_pool != null ? profit.net_btc_per_day_pool.toFixed(6) + ' BTC' : '--');
         var fiatDay = profit.fiat_per_day_pool ? profit.fiat_per_day_pool.USD : null;
