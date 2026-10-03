@@ -6,6 +6,13 @@ e versionamento semântico ([SemVer](https://semver.org/lang/pt-BR/)).
 
 ## [Unreleased]
 
+- Reject older full snapshots across poll/SSE, keep freshness aging during offline failures, and wire the Refresh button to the existing fetch path (#742).
+
+- Fix dashboard difficulty/height overwrite, pool block height versus timestamp, stale-aware topbar metrics and fixed pool subtitle (#732). Future stored block timestamps are normalized; historical rows are unchanged.
+- Mark hashrate comparisons unavailable without a matching worker/window estimate; require both pool and lease estimates before ranking strategies (#733).
+- Replace decorative worker/market labels with operational names, align market footer units with BTC/TH/day, and contain Fleet controls and the closed AI drawer on narrow screens (#738).
+- Remove public Fleet seed control and deny synthetic seed on cloud deployments even when DEBUG_MOCK=1 (#734).
+
 ### Corrigido — acessibilidade no fluxo de comando Fleet (#612, UI-002)
 - Confirmação de pausa/reinício/identificação usa diálogo modal nativo com
   foco contido, cancelamento por Escape e retorno do foco ao acionador.

@@ -136,9 +136,11 @@ test.describe('Topbar — Responsive Breakpoints (single load)', () => {
     await expect(page.locator('.topbar__brand')).toBeVisible();
     await expect(page.locator('#clock')).toBeVisible();
 
-    // All 4 metric containers still in DOM (may wrap/hide via CSS)
+    // Five metrics: temperature was added after this responsive spec.
+    // Verify its identity too, rather than only changing the count.
     const metricCount600 = await page.locator('.topbar__metric').count();
-    expect(metricCount600).toBe(4);
+    expect(metricCount600).toBe(5);
+    await expect(page.locator('#tbar-temp')).toBeAttached();
     await expect(page.locator('#tbar-hr')).toBeAttached();
     await expect(page.locator('button#open-settings')).toBeVisible();
     await expect(page.locator('button#theme-toggle')).toBeVisible();

@@ -37,6 +37,7 @@ import services.names as names  # name normalization + sanitization
 from services.poll_compute import _effective_btc_per_th_per_day
 
 from helpers import (
+    pool_last_block,
     parse_diff_to_float,
     fmt_diff,
     fmt_hashrate,
@@ -912,8 +913,8 @@ def poll_once():
                 pool.get("workers") if pool else None,
                 pool.get("users") if pool else None,
                 pool.get("highestDifficulty") if pool else None,
-                pool.get("lastBlockHeight") if pool else None,
-                pool.get("lastBlockTime") if pool else None,
+                pool_last_block(pool)[0],
+                pool_last_block(pool)[1],
                 pool.get("workSinceLastBlock") if pool else None,
                 account.get("total_diff") if isinstance(account, dict) else None,
                 meta.get("block_count") if isinstance(meta, dict) else None,
