@@ -280,8 +280,14 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Verify complete dependency tree
+        run: npm ls --all
+
       - name: Verify pinned node-forge ASN.1 fix
         run: npm run test:security-node-forge
+
+      - name: Verify vendored braces depth fix
+        run: npm run test:security-braces
 
       - name: Expo SDK compatibility
         run: npm run doctor
@@ -422,6 +428,7 @@ jobs:
             --project=chromium
 
           npx playwright test tests/e2e/dashboard-telemetry.spec.js tests/e2e/snapshot-ordering.spec.js --project=chromium
+          npx playwright test tests/e2e/terminal-console.spec.js --project=chromium
           npx playwright test tests/e2e/comparison-evidence.spec.js --project=chromium
           npx playwright test tests/e2e/navigation-loading.spec.js \
             tests/e2e/fleet-agentless-manual-add.spec.js tests/e2e/topbar-responsive.spec.js --project=chromium

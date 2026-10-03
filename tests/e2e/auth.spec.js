@@ -25,6 +25,7 @@
  */
 
 import { test, expect } from '@playwright/test';
+import { clickToolbarAction, revealToolbar } from './support/toolbar.js';
 import { denyServiceWorker } from './support/sw-guard.js';
 
 const BASE_URL = process.env.BASE_URL || 'http://127.0.0.1:8765';
@@ -47,7 +48,7 @@ async function waitForDashboard(page) {
     await page.goto(BASE_URL, { waitUntil: 'domcontentloaded' });
     await page.waitForSelector('#app-shell', { timeout: 30000 });
   }
-  await page.waitForSelector('#auth-toggle', { timeout: 10000 });
+  await page.waitForSelector('#auth-toggle', { state: 'attached', timeout: 10000 });
   await page.waitForFunction(() => {
     return document.querySelectorAll('.skel-overlay').length === 0;
   }, { timeout: 10000 }).catch(() => {});
@@ -134,7 +135,7 @@ async function mockAuthEndpoints(page, { loginStatus = 200 } = {}) {
 }
 
 async function openAuthModal(page) {
-  await page.locator('#auth-toggle').click();
+  await clickToolbarAction(page, '#auth-toggle');
   await expectModalOpen(page, 'auth-modal');
 }
 
@@ -159,6 +160,7 @@ async function expectLogoutDisplay(page, value) {
 }
 
 async function expectAuthToggle(page, label) {
+  await revealToolbar(page);
   const toggle = page.locator('#auth-toggle');
   await expect(toggle).toHaveText(label);
   await expect(toggle).toHaveAccessibleName(label);

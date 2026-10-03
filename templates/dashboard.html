@@ -60,7 +60,7 @@
   }
 </script>
 {% endif %}
-<link rel="stylesheet" href="/static/style.css?v56">
+<link rel="stylesheet" href="/static/style.css?v746b">
 <link rel="icon" href="/static/favicon.ico" sizes="any">
 <link rel="icon" type="image/png" sizes="32x32" href="/static/icon-32x32.png">
 <link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
@@ -72,7 +72,7 @@
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 </head>
-<body>
+<body class="terminal-ui operation-ui">
 
 <div class="app-shell" id="app-shell">
 
@@ -93,25 +93,31 @@
         <button class="sidebar__toggle" id="sidebar-collapse" title="Recolher sidebar" aria-label="Recolher sidebar">◀</button>
       </div>
   <nav class="sidebar__nav" aria-label="Navegação principal">
+    <div class="sidebar__group">Operação</div>
     <button class="sidebar__link active" data-module="dashboard" aria-label="Dashboard">
       <span class="icon"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="7" height="9" x="3" y="3"/><rect width="7" height="5" x="14" y="3"/><rect width="7" height="9" x="14" y="12"/><rect width="7" height="5" x="3" y="16"/></svg></span>
-      <span class="label">Dashboard</span>
+      <span class="label">Operação</span>
     </button>
     <button class="sidebar__link" data-module="wallet" aria-label="Wallet">
       <span class="icon"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 7V4a1 1 0 0 0-1-1H5a2 2 0 0 0 0 4h15a1 1 0 0 1 1 1v4h-3a2 2 0 0 0 0 4h3a1 1 0 0 0 1-1v-2a1 1 0 0 0-1-1"/><path d="M3 5v14a2 2 0 0 0 2 2h15a1 1 0 0 0 1-1v-4"/></svg></span>
-      <span class="label">Wallet</span>
+      <span class="label">Carteira</span>
     </button>
     <button class="sidebar__link" data-module="fleet" aria-label="Fleet">
       <span class="icon"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" x2="2" y1="12" y2="12"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/><line x1="6" x2="6.01" y1="16" y2="16"/><line x1="10" x2="10.01" y1="16" y2="16"/></svg></span>
-      <span class="label">Fleet</span>
+      <span class="label">Equipamentos</span>
     </button>
     <button class="sidebar__link" data-module="live" aria-label="Live Mining">
       <span class="icon"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12h-2.48a2 2 0 0 0-1.93 1.46l-2.35 8.36a.25.25 0 0 1-.48 0L9.24 2.18a.25.25 0 0 0-.48 0l-2.35 8.36A2 2 0 0 1 4.49 12H2"/></svg></span>
-      <span class="label">Live Mining</span>
+      <span class="label">Eventos</span>
+    </button>
+    <div class="sidebar__group">Análise e mercado</div>
+    <button class="sidebar__link" data-module="analysis" aria-label="Análise">
+      <span class="icon"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/></svg></span>
+      <span class="label">Análise</span>
     </button>
     <button class="sidebar__link" data-module="probability" aria-label="Block model">
       <span class="icon"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/></svg></span>
-      <span class="label">Block Model</span>
+      <span class="label">Modelos</span>
     </button>
     <button class="sidebar__link" data-module="market" aria-label="Hash Market">
       <span class="icon"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/><polyline points="16 7 22 7 22 13"/></svg></span>
@@ -119,28 +125,31 @@
     </button>
     <button class="sidebar__link" data-module="rentals" aria-label="Rentals">
       <span class="icon"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5V19A9 3 0 0 0 21 19V5"/><path d="M3 12A9 3 0 0 0 21 12"/></svg></span>
-      <span class="label">Rentals</span>
+      <span class="label">Aluguéis</span>
     </button>
+    <div class="sidebar__group">Gestão</div>
     <button class="sidebar__link" data-module="alerts" aria-label="Alerts">
       <span class="icon"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.268 21a2 2 0 0 0 3.464 0"/><path d="M3.262 15.326A1 1 0 0 0 4 17h16a1 1 0 0 0 .74-1.673C19.41 13.956 18 12.499 18 8A6 6 0 0 0 6 8c0 4.499-1.411 5.956-2.738 7.326"/></svg></span>
-      <span class="label">Alerts</span>
+      <span class="label">Alertas</span>
     </button>
     <button class="sidebar__link" data-module="automations" aria-label="Automations">
       <span class="icon"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg></span>
-      <span class="label">Automations</span>
+      <span class="label">Automações</span>
     </button>
+    <div class="sidebar__group">Referência</div>
     <button class="sidebar__link" data-module="docs" aria-label="Docs">
       <span class="icon"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 7v14"/><path d="M3 18a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h5a4 4 0 0 1 4 4 4 4 0 0 1 4-4h5a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1h-6a3 3 0 0 0-3 3 3 3 0 0 0-3-3z"/></svg></span>
-      <span class="label">Docs</span>
+      <span class="label">Documentação</span>
     </button>
     <button class="sidebar__link" data-module="learning" aria-label="Learning">
       <span class="icon"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H20v20H6.5a2.5 2.5 0 0 1 0-5H20"/></svg></span>
-      <span class="label">Learning</span>
+      <span class="label">Aprender</span>
     </button>
     <button class="sidebar__link" data-module="support" aria-label="Support">
       <span class="icon"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 14c1.49-1.46 3-3.21 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.76 0-3 .5-4.5 2-1.5-1.5-2.74-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4.05 3 5.5l7 7Z"/></svg></span>
-      <span class="label">Support</span>
+      <span class="label">Suporte</span>
     </button>
+    <div class="sidebar__group">Administração</div>
     <button class="sidebar__link" data-module="admin" aria-label="Admin">
       <span class="icon"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v16a2 2 0 0 0 2 2h16"/><path d="M18 17V9"/><path d="M13 17V5"/><path d="M8 17v-3"/></svg></span>
       <span class="label">Admin</span>
@@ -198,17 +207,7 @@
       <span class="topbar__metric-label">BTC/USD</span>
       <span class="topbar__metric-val topbar__metric-val--green" id="tbar-btc">—</span>
     </div>
-    <div class="topbar__actions">
-      <button id="refresh-now" class="topbar__btn" title="Refresh now"><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></svg></button>
-      <button id="open-exports" class="topbar__btn" title="Exports"><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg></button>
-      <button id="open-settings" class="topbar__btn" title="Settings"><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg></button>
-      <button id="theme-toggle" class="topbar__btn" title="Alternar tema" aria-label="Alternar tema"><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px"><circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/></svg></button>
-      <button id="ai-panel-toggle" class="topbar__btn" title="AI Assistant"><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9.937 15.5A2 2 0 0 0 8.5 14.063l-6.135-1.582a.5.5 0 0 1 0-.962L8.5 9.936A2 2 0 0 0 9.937 8.5l1.582-6.135a.5.5 0 0 1 .963 0L14.063 8.5A2 2 0 0 0 15.5 9.937l6.135 1.581a.5.5 0 0 1 0 .964L15.5 14.063a2 2 0 0 0-1.437 1.437l-1.582 6.135a.5.5 0 0 1-.963 0z"/><path d="M20 3v4"/><path d="M22 5h-4"/><path d="M4 17v2"/><path d="M5 18H3"/></svg></button>
-      <button id="sidebar-toggle" class="topbar__btn" title="Toggle Sidebar"><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M9 3v18"/></svg></button>
-      <button id="auth-toggle" class="topbar__btn topbar__btn--auth" title="Tenant Login"><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/><polyline points="10 17 15 12 10 7"/><line x1="15" y1="12" x2="3" y2="12"/></svg> LOGIN</button>
-      <button id="open-wallet" class="topbar__btn topbar__btn--wallet" title="Connect Wallet"><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 14a1 1 0 0 1-.78-1.63l9.9-10.2a.5.5 0 0 1 .86.46l-1.92 6.02A1 1 0 0 0 13 10h7a1 1 0 0 1 .78 1.63l-9.9 10.2a.5.5 0 0 1-.86-.46l1.92-6.02A1 1 0 0 0 11 14z"/></svg> CONNECT</button>
-      <span id="status-pill" style="display:none"></span>
-    </div>
+    <div class="topbar__actions"><button id="refresh-now" class="topbar__btn" title="Refresh now"><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></svg><span>Atualizar</span></button><button id="open-settings" class="topbar__btn" title="Settings"><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg><span>Configurações</span></button><button id="theme-toggle" class="topbar__btn" title="Alternar tema" aria-label="Alternar tema"><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px"><circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/></svg></button><details class="console-tools" id="console-tools"><summary>Mais</summary><div class="console-menu"><button id="open-exports" class="topbar__btn" title="Exports"><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg></button><button id="ai-panel-toggle" class="topbar__btn" title="AI Assistant"><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9.937 15.5A2 2 0 0 0 8.5 14.063l-6.135-1.582a.5.5 0 0 1 0-.962L8.5 9.936A2 2 0 0 0 9.937 8.5l1.582-6.135a.5.5 0 0 1 .963 0L14.063 8.5A2 2 0 0 0 15.5 9.937l6.135 1.581a.5.5 0 0 1 0 .964L15.5 14.063a2 2 0 0 0-1.437 1.437l-1.582 6.135a.5.5 0 0 1-.963 0z"/><path d="M20 3v4"/><path d="M22 5h-4"/><path d="M4 17v2"/><path d="M5 18H3"/></svg></button><button id="sidebar-toggle" class="topbar__btn" title="Toggle Sidebar"><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M9 3v18"/></svg></button><button id="auth-toggle" class="topbar__btn topbar__btn--auth" title="Tenant Login"><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/><polyline points="10 17 15 12 10 7"/><line x1="15" y1="12" x2="3" y2="12"/></svg> LOGIN</button><button id="open-wallet" class="topbar__btn topbar__btn--wallet" title="Connect Wallet"><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 14a1 1 0 0 1-.78-1.63l9.9-10.2a.5.5 0 0 1 .86.46l-1.92 6.02A1 1 0 0 0 13 10h7a1 1 0 0 1 .78 1.63l-9.9 10.2a.5.5 0 0 1-.86-.46l1.92-6.02A1 1 0 0 0 11 14z"/></svg> CONNECT</button></div></details><span id="status-pill" style="display:none"></span></div>
   </div>
 </header>
 
@@ -221,23 +220,76 @@
   <span class="module-header__desc" id="module-header-desc">Visão geral — pool, worker e rede</span>
 </div>
 
-<!-- ══════════════════════════════════════════════════════════════════════
-     SECTION 0: HUD FIXO — sempre visível, dados críticos
-     ══════════════════════════════════════════════════════════════════════ -->
-<div id="hud-bar" style="display:none">
-  <div class="hud-item"><span class="hud-label">HR</span><span class="hud-val" id="hud-hashrate">—</span></div>
-  <div class="hud-sep"></div>
-  <div class="hud-item"><span class="hud-label">BEST</span><span class="hud-val hud-val--gold" id="hud-bestdiff">—</span></div>
-  <div class="hud-sep"></div>
-  <div class="hud-item"><span class="hud-label">SHARES</span><span class="hud-val hud-val--cyan" id="hud-shares">—</span></div>
-  <div class="hud-sep"></div>
-  <div class="hud-item"><span class="hud-label">POOL</span><span class="hud-val" id="hud-poolhr">—</span></div>
+<section class="operation-console" id="operation-console" data-module="dashboard" role="main" aria-labelledby="console-title" aria-busy="true">
+  <div class="console-heading">
+    <div><p class="console-kicker">VISIBILIDADE DA OPERAÇÃO</p><h2 id="console-title">Carregando fontes…</h2><p id="console-coverage">Aguardando o snapshot da pool e a consulta de equipamentos.</p></div>
+  </div>
+  <div class="console-source-tabs" role="group" aria-label="Fonte da operação">
+    <button id="console-source-pool" aria-pressed="true">Pool</button>
+    <button id="console-source-fleet" aria-pressed="false" disabled>Telemetria local</button>
+    <button class="console-button" id="console-open-fleet">Equipamentos <span aria-hidden="true">↗</span></button>
+  </div>
+  <div class="kpi-row" id="kpi-row" data-module="dashboard" role="region" aria-label="Métricas do worker e da pool">
+  <div class="kpi-card" data-kpi-target="live" title="Ir para Live Mining — telemetria em tempo real">
+    <span class="kpi-label">Hashrate do worker <span class="tip-wrap" data-tip="Taxa de processamento do minerador principal"><span class="tip-wrap__icon">?</span></span></span>
+    <div class="kpi-value-row">
+      <span class="kpi-value" id="kpi-hashrate">—</span>
+      <span class="kpi-spark" id="kpi-spark-hashrate"></span>
+    </div>
+    <span class="kpi-sub" id="console-worker-scope">worker · nome não informado</span>
+  </div>
+  <div class="kpi-card" data-kpi-target="probability" title="Ir para Block Model — estatísticas sem prazo ou previsão">
+    <span class="kpi-label">Melhor share <span class="tip-wrap" data-tip="Maior dificuldade de share já encontrada"><span class="tip-wrap__icon">?</span></span></span>
+    <div class="kpi-value-row">
+      <span class="kpi-value kpi-value--gold" id="kpi-bestdiff">—</span>
+      <span class="kpi-spark" id="kpi-spark-bestdiff"></span>
+    </div>
+    <span class="kpi-sub" id="console-best-scope">histórico do worker</span>
+  </div>
+  <div class="kpi-card" data-kpi-target="live" title="Ir para Live Mining — activity feed de shares">
+    <span class="kpi-label">Shares <span class="tip-wrap" data-tip="Estimativa por hora ou contagem da sessão, conforme a fonte disponível"><span class="tip-wrap__icon">?</span></span></span>
+    <div class="kpi-value-row">
+      <span class="kpi-value" id="kpi-shares">—</span>
+      <span class="kpi-spark" id="kpi-spark-shares"></span>
+    </div>
+    <span class="kpi-sub" id="console-shares-scope">sem contagem informada</span>
+  </div>
+  <div class="kpi-card" data-kpi-target="probability" title="Ir para Block Model — estatísticas de rede e pool">
+    <span class="kpi-label">Hashrate da pool <span class="tip-wrap" data-tip="Taxa de processamento total da pool"><span class="tip-wrap__icon">?</span></span></span>
+    <div class="kpi-value-row">
+      <span class="kpi-value kpi-value--cyan" id="kpi-poolhr">—</span>
+      <span class="kpi-spark" id="kpi-spark-poolhr"></span>
+    </div>
+    <span class="kpi-sub">total informado pela pool</span>
+  </div>
 </div>
+  <div class="console-fleet-summary" id="console-fleet-summary">
+    <div><span>Inventário local</span><strong id="console-total">—</strong><small>equipamentos cadastrados</small></div>
+    <div><span>Exigem atenção</span><strong id="console-attention-count">—</strong><small id="console-attention-coverage">cobertura não verificada</small></div>
+    <div><span>Hashrate informado</span><strong id="console-hashrate">—</strong><small id="console-hashrate-coverage">medição local indisponível</small></div>
+    <div><span>Amostras recentes</span><strong id="console-measured">—</strong><small id="console-recent-scope">amostras com até 150 s</small></div>
+  </div>
+  <div class="console-notice" id="console-notice" hidden><div><strong id="console-notice-title"></strong><p id="console-notice-detail"></p></div><button class="console-button" id="console-notice-action">Ver equipamentos</button></div>
+  <div class="console-table-heading"><div><h3 id="console-table-title">Workers da pool</h3><p id="console-table-note">Dados da pool não incluem temperatura ou potência do equipamento.</p></div><label class="console-search">Filtrar <input id="console-search" type="search" placeholder="Nome ou modelo" autocomplete="off"></label></div>
+  <div class="console-table-wrap"><table class="console-table" id="console-table"><caption class="sr-only">Entidades observadas pela fonte selecionada</caption><thead id="console-table-head"></thead><tbody id="console-table-body"><tr><td>Aguardando dados…</td></tr></tbody></table></div>
+  <div class="console-table-footer"><span id="console-row-count">—</span><span>Selecione uma linha para investigar <span aria-hidden="true">↗</span></span></div>
+  <div class="console-sources" aria-label="Origem e idade dos dados"><span id="console-pool-source">Pool: aguardando</span><span id="console-fleet-source">Frota: aguardando</span><span id="console-network-source">Rede: aguardando</span></div>
+  <div class="console-context-link"><span>Rede, taxas e cenários ficam em Análise.</span><button class="console-text-button" id="console-open-analysis">Abrir Análise <span aria-hidden="true">→</span></button></div>
+</section>
+<dialog class="console-detail" id="console-detail" aria-labelledby="console-detail-title">
+  <div class="console-detail-header"><span id="console-detail-source">Detalhe da observação</span><button id="console-detail-close" class="console-button" aria-label="Fechar detalhe">Fechar <span aria-hidden="true">×</span></button></div>
+  <h2 id="console-detail-title">Equipamento</h2><p id="console-detail-status"></p><dl id="console-detail-fields"></dl>
+  <p class="console-detail-note">Valores da última observação disponível. A data da amostra define sua atualidade.</p>
+  <button class="console-button" id="console-detail-diagnostic">Abrir diagnóstico completo</button>
+</dialog>
 
+<!-- ══════════════════════════════════════════════════════════════════════
+     SECTION 0: CONTEXTO GLOBAL — fontes e estado da operação
+     ══════════════════════════════════════════════════════════════════════ -->
 <!-- ══════════════════════════════════════════════════════════════════════
      STATUS BAR — 6 blocos compactos
      ══════════════════════════════════════════════════════════════════════ -->
-<div class="status-bar" id="status-bar" data-module="dashboard" role="region" aria-label="Status do sistema">
+<div class="status-bar" id="status-bar" data-module="analysis" role="region" aria-label="Status do sistema">
   <div class="status-block status-block--system" id="sb-system">
     <div class="status-block__label">SYSTEM</div>
     <div class="status-block__row">
@@ -293,10 +345,10 @@
 <!-- Operational decision strip: one scan answers health, loss, cost,
      freshness and the next SAFE diagnostic step. It never dispatches a
      hardware command; the CTA only navigates to an existing module. -->
-<section class="operational-overview" id="operational-overview" data-module="dashboard" role="region" aria-labelledby="operational-overview-title" aria-busy="true">
+<section class="operational-overview" id="operational-overview" data-module="analysis" role="region" aria-labelledby="operational-overview-title" aria-busy="true">
   <div class="operational-overview__header">
     <div>
-      <div class="operational-overview__eyebrow">OPERATIONAL OVERVIEW · DECIDE IN SECONDS</div>
+      <div class="operational-overview__eyebrow">OPERAÇÃO / ASICs</div>
       <h2 class="operational-overview__title" id="operational-overview-title">Estado da operação</h2>
     </div>
     <span class="badge badge--mute" id="op-overall-status">LOADING</span>
@@ -340,41 +392,6 @@
 <!-- ══════════════════════════════════════════════════════════════════════
      KPI CARDS — 4 métricas principais
      ══════════════════════════════════════════════════════════════════════ -->
-<div class="kpi-row" id="kpi-row" data-module="dashboard" role="region" aria-label="Métricas principais">
-  <div class="kpi-card" data-kpi-target="live" title="Ir para Live Mining — telemetria em tempo real">
-    <span class="kpi-label">Hashrate <span class="tip-wrap" data-tip="Taxa de processamento do minerador principal"><span class="tip-wrap__icon">?</span></span></span>
-    <div class="kpi-value-row">
-      <span class="kpi-value" id="kpi-hashrate">—</span>
-      <span class="kpi-spark" id="kpi-spark-hashrate"></span>
-    </div>
-    <span class="kpi-sub">primary worker</span>
-  </div>
-  <div class="kpi-card" data-kpi-target="probability" title="Ir para Block Model — estatísticas sem prazo ou previsão">
-    <span class="kpi-label">Best Difficulty <span class="tip-wrap" data-tip="Maior dificuldade de share já encontrada"><span class="tip-wrap__icon">?</span></span></span>
-    <div class="kpi-value-row">
-      <span class="kpi-value kpi-value--gold" id="kpi-bestdiff">—</span>
-      <span class="kpi-spark" id="kpi-spark-bestdiff"></span>
-    </div>
-    <span class="kpi-sub">all-time</span>
-  </div>
-  <div class="kpi-card" data-kpi-target="live" title="Ir para Live Mining — activity feed de shares">
-    <span class="kpi-label">Share Rate <span class="tip-wrap" data-tip="Shares submetidos na última hora"><span class="tip-wrap__icon">?</span></span></span>
-    <div class="kpi-value-row">
-      <span class="kpi-value" id="kpi-shares">—</span>
-      <span class="kpi-spark" id="kpi-spark-shares"></span>
-    </div>
-    <span class="kpi-sub">last hour</span>
-  </div>
-  <div class="kpi-card" data-kpi-target="probability" title="Ir para Block Model — estatísticas de rede e pool">
-    <span class="kpi-label">Pool Hashrate <span class="tip-wrap" data-tip="Taxa de processamento total da pool"><span class="tip-wrap__icon">?</span></span></span>
-    <div class="kpi-value-row">
-      <span class="kpi-value kpi-value--cyan" id="kpi-poolhr">—</span>
-      <span class="kpi-spark" id="kpi-spark-poolhr"></span>
-    </div>
-    <span class="kpi-sub">pool aggregate</span>
-  </div>
-</div>
-
 <!-- ══════════════════════════════════════════════════════════════════════
      WALLET CTA — onboarding quando nenhuma wallet está conectada
      (honest telemetry: sem endereço conectado não há dados de wallet)
@@ -383,8 +400,8 @@
   <div class="wallet-cta__lead">
     <div class="wallet-cta__icon"><svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg></div>
     <div>
-      <div class="wallet-cta__title">CONNECT YOUR WALLET</div>
-      <div class="wallet-cta__sub">No wallet connected — this dashboard only shows data for the BTC address you own. Connect yours to start monitoring hashrate, shares and profitability.</div>
+      <div class="wallet-cta__title">Observe sua mineração pela pool</div>
+      <div class="wallet-cta__sub">Informe seu endereço público de Bitcoin para consultar os workers da pool. Telemetria dos equipamentos exige um agente local.</div>
     </div>
   </div>
   <div class="wallet-cta__steps">
@@ -393,16 +410,16 @@
     <div class="wallet-cta__step"><span class="wallet-cta__step-num">3</span><span>Done — telemetry starts streaming within seconds</span></div>
   </div>
   <div class="wallet-cta__actions">
-    <button class="btn btn--primary" id="wallet-cta-open"><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:4px"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>CONNECT WALLET</button>
-    <span class="wallet-cta__hint">Your address is stored locally · never shared</span>
+    <button class="btn btn--primary" id="wallet-cta-open"><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:4px"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>Conectar endereço</button>
+    <span class="wallet-cta__hint">Use um endereço público sob seu controle</span>
   </div>
 </div>
 
 <!-- ══════════════════════════════════════════════════════════════════════
      SECTION 1: WORKER FLEET — Raio X + Host Core + Hero
      ══════════════════════════════════════════════════════════════════════ -->
-<section class="section" id="section-fleet" data-module="dashboard fleet" role="region" aria-label="Worker fleet">
-  <div class="section__header">SECTION 1 :: WORKER FLEET</div>
+<section class="section" id="section-fleet" data-module="analysis fleet" role="region" aria-label="Worker fleet">
+  <div class="section__header">WORKERS / POOL</div>
   <div class="section__body">
 
 <!-- Raio X -->
@@ -417,14 +434,26 @@
 </section>
 
 <!-- HOST CORE + HERO -->
-<section class="panel panel--large" id="hero-worker" data-module="dashboard" role="region" aria-label="Worker principal">
+<details class="terminal-details" id="worker-details" data-module="analysis">
+  <summary>Worker / telemetria detalhada e modelo estatístico</summary>
+<section class="panel panel--large" id="hero-worker" data-module="analysis" role="region" aria-label="Worker principal">
   <div class="panel__header">
-    <div class="panel__eyebrow">TELEMETRIA DO WORKER</div>
+    <h2 class="panel__eyebrow">TELEMETRIA DO WORKER</h2>
     <div class="panel__tools">
       <span class="badge" id="worker-rank-badge">RANK ?</span>
       <span class="badge badge--mute" id="worker-uptime-badge">UP —</span>
     </div>
   </div>
+
+<div id="hud-bar" style="display:none">
+  <div class="hud-item"><span class="hud-label">HR</span><span class="hud-val" id="hud-hashrate">—</span></div>
+  <div class="hud-sep"></div>
+  <div class="hud-item"><span class="hud-label">BEST</span><span class="hud-val hud-val--gold" id="hud-bestdiff">—</span></div>
+  <div class="hud-sep"></div>
+  <div class="hud-item"><span class="hud-label">SHARES</span><span class="hud-val hud-val--cyan" id="hud-shares">—</span></div>
+  <div class="hud-sep"></div>
+  <div class="hud-item"><span class="hud-label">POOL</span><span class="hud-val" id="hud-poolhr">—</span></div>
+</div>
 
   <div class="host-core">
     <div class="host-core__header">
@@ -492,6 +521,7 @@
     <div class="cell__label">MODEL MEAN / BLOCK <span class="tip-wrap" data-tip="Média estatística sob hashrate e dificuldade constantes; não é prazo nem contagem regressiva. Fonte: snapshot atual; unidade: tempo."><span class="tip-wrap__icon">?</span></span></div><div class="cell__val" id="m-expected-block">—</div>
   </div>
 </section>
+</details>
 
   </div>
 </section>
@@ -513,9 +543,9 @@
 <main class="grid" aria-label="Painel principal">
 
 <!-- ── COMMAND CENTER (P0-3) — 3 ações contextuais ── -->
-<section class="panel panel--command-center panel--large" id="command-center-panel" data-module="dashboard">
+<section class="panel panel--command-center panel--large" id="command-center-panel" data-module="analysis">
   <div class="panel__header">
-    <div class="panel__eyebrow">⌘ COMMAND CENTER · ADVISORY</div>
+    <h2 class="panel__eyebrow">DIAGNÓSTICOS</h2>
     <div class="panel__tools">
       <span class="badge badge--purple" id="cc-mode-badge" title="Diagnóstico somente leitura: os cards orientam a investigação e nunca executam comandos ou abrem compras.">READ-ONLY</span>
       <span class="badge badge--mute" id="cc-status-badge">—</span>
@@ -524,16 +554,16 @@
   <div class="cc-grid" id="cc-grid">
     <div class="empty-state" style="grid-column:1/-1;border:none;padding:10px">
       <div class="empty-state__icon">⌘</div>
-      <div class="empty-state__title">All systems nominal</div>
+      <div class="empty-state__title">Aguardando telemetria</div>
       <div class="empty-state__desc">Operational cards appear when real telemetry identifies something worth reviewing — an offline worker, a hashrate drop, a hot miner or an automation rule ready for inspection.</div>
     </div>
   </div>
 </section>
 
 <!-- ── POOL OVERVIEW ── -->
-<section class="panel panel--large panel--collapsible" id="pool-overview" data-module="dashboard">
+<section class="panel panel--large panel--collapsible" id="pool-overview" data-module="analysis">
   <div class="panel__header">
-    <div class="panel__eyebrow"># POOL CONTEXT <span class="badge badge--amber" id="p-stale-badge" style="display:none">STALE</span></div>
+    <div class="panel__eyebrow">POOL / CONTEXTO <span class="badge badge--amber" id="p-stale-badge" style="display:none">STALE</span></div>
     <div class="panel__tools"><span class="badge badge--mute" id="pool-uptime">up —</span><button class="panel__toggle" data-panel="pool-overview" aria-label="Alternar painel do pool"></button></div>
   </div>
   <!-- Pool detectada a partir do que o próprio ASIC reporta (Issue #574). Fica
@@ -577,7 +607,7 @@
 <!-- ── ACCOUNT ── -->
 <section class="panel panel--large panel--collapsible" id="account-panel" data-module="wallet">
   <div class="panel__header">
-    <div class="panel__eyebrow">§ ACCOUNT</div>
+    <h2 class="panel__eyebrow">CONTA</h2>
     <div class="panel__tools"><span class="badge badge--gold" id="acct-blocks-badge">0 BLOCKS</span><button class="panel__toggle" data-panel="account-panel" aria-label="Alternar painel da conta"></button></div>
   </div>
   <div class="account-grid">
@@ -591,9 +621,9 @@
 </section>
 
 <!-- ── NETWORK ── -->
-<section class="panel panel--large panel--collapsible" id="network-panel" data-module="dashboard">
+<section class="panel panel--large panel--collapsible" id="network-panel" data-module="analysis">
   <div class="panel__header">
-    <div class="panel__eyebrow">⌬ NETWORK · MEMPOOL</div>
+    <h2 class="panel__eyebrow">REDE BITCOIN</h2>
     <div class="panel__tools"><span class="badge badge--mute" id="net-status">fetching</span><button class="panel__toggle" data-panel="network-panel" aria-label="Alternar painel da rede"></button></div>
   </div>
   <div class="stat-row stat-row--compact">
@@ -611,9 +641,9 @@
 </section>
 
 <!-- ── HALVING ── -->
-<section class="panel panel--large panel--collapsible" id="halving-panel" data-module="dashboard">
+<section class="panel panel--large panel--collapsible" id="halving-panel" data-module="analysis">
   <div class="panel__header">
-    <div class="panel__eyebrow">⚒ HALVING COUNTDOWN</div>
+    <h2 class="panel__eyebrow">HALVING</h2>
     <div class="panel__tools"><span class="badge" id="halving-epoch-badge">epoch —</span><button class="panel__toggle" data-panel="halving-panel" aria-label="Alternar painel do halving"></button></div>
   </div>
   <div class="stat-row stat-row--compact">
@@ -626,9 +656,9 @@
 </section>
 
 <!-- ── MEMPOOL FEES ── -->
-<section class="panel panel--large panel--collapsible" id="fees-panel" data-module="dashboard">
+<section class="panel panel--large panel--collapsible" id="fees-panel" data-module="analysis">
   <div class="panel__header">
-    <div class="panel__eyebrow">⛽ FEE TIERS · SAT/VB</div>
+    <h2 class="panel__eyebrow">TAXAS / SAT/VB</h2>
     <div class="panel__tools"><span class="badge badge--mute" id="fees-status">—</span><button class="panel__toggle" data-panel="fees-panel" aria-label="Alternar painel de taxas"></button></div>
   </div>
   <div class="fee-row">
@@ -641,9 +671,9 @@
 </section>
 
 <!-- ── PROFITABILITY ── -->
-<section class="panel panel--profit panel--large panel--collapsible" id="profit-panel" data-module="dashboard">
+<section class="panel panel--profit panel--large panel--collapsible" id="profit-panel" data-module="analysis">
   <div class="panel__header">
-    <div class="panel__eyebrow">Ξ SCENARIO ECONOMICS</div>
+    <h2 class="panel__eyebrow">CENÁRIOS / ESTIMATIVAS</h2>
     <div class="panel__tools">
       <span class="badge badge--amber" id="profit-estimated-badge" title="Modeled scenario, not a pool payout">ESTIMATED</span>
       <span class="badge badge--green" id="profit-share-badge">0%</span>
@@ -691,9 +721,9 @@
 </section>
 
 <!-- ─── NETWORK-SHARE GAUGE ─── -->
-<section class="panel panel--large" id="gauge-panel" data-module="dashboard">
+<section class="panel panel--large" id="gauge-panel" data-module="analysis">
   <div class="panel__header">
-    <div class="panel__eyebrow">◉ NETWORK-SHARE GAUGE</div>
+    <h2 class="panel__eyebrow">PARTICIPAÇÃO NA REDE</h2>
     <div class="panel__tools"><span class="badge badge--mute" id="gauge-label">—</span></div>
   </div>
   <div class="gauge-grid">
@@ -725,9 +755,9 @@
 </section>
 
 <!-- ─── MILESTONES ─── -->
-<section class="panel panel--large" id="milestones-panel" data-module="dashboard">
+<section class="panel panel--large" id="milestones-panel" data-module="analysis">
   <div class="panel__header">
-    <div class="panel__eyebrow">★ ACHIEVEMENTS</div>
+    <h2 class="panel__eyebrow">MARCOS</h2>
     <div class="panel__tools"><span class="badge badge--mute" id="milestones-count">0 unlocked</span></div>
   </div>
   <div class="badges-strip" id="badges-strip">
@@ -742,7 +772,7 @@
 <!-- ─── BLOCK HUNT ─── -->
 <section class="panel panel--block-hunt panel--large" id="block-hunt-panel" data-module="probability">
   <div class="panel__header">
-    <div class="panel__eyebrow">◈ BLOCK HUNT</div>
+    <h2 class="panel__eyebrow">MODELO DE BLOCO</h2>
     <div class="panel__tools">
       <span class="badge" id="bh-chance-badge">—</span>
       <span class="badge badge--mute" id="bh-difficulty-badge">diff —</span>
@@ -784,7 +814,7 @@
 <!-- ─── HASHMARKET ─── -->
 <section class="panel panel--market panel--large" id="market-panel" data-module="market">
   <div class="panel__header">
-    <div class="panel__eyebrow">HASH MARKET · SHA-256</div>
+    <h2 class="panel__eyebrow">HASH MARKET · SHA-256</h2>
     <div class="panel__tools">
       <span class="badge badge--btc" id="mkt-best-price-badge">best —</span>
       <span class="badge badge--mute" id="mkt-count-badge">0 venues</span>
@@ -864,7 +894,7 @@
 <!-- ─── DECISION MATRIX (P0-2) — solo vs pool vs lease ─── -->
 <section class="panel panel--decision panel--large" id="decision-matrix-panel" data-module="market">
   <div class="panel__header">
-    <div class="panel__eyebrow">◈ DECISION MATRIX · ONDE SEU HASHRATE RENDE MAIS?</div>
+    <h2 class="panel__eyebrow">COMPARAÇÃO / CENÁRIOS</h2>
     <div class="panel__tools">
       <span class="badge badge--purple" id="dm-best-badge">—</span>
       <span class="badge badge--mute" id="dm-breakeven">break-even —</span>
@@ -897,7 +927,7 @@
 <!-- ─── RENTALS (P2) — performance dos aluguéis do operador (MRR + Braiins) ─── -->
 <section class="panel panel--rentals panel--large" id="rentals-panel" data-module="rentals">
   <div class="panel__header">
-    <div class="panel__eyebrow">⛁ RENTALS · PERFORMANCE</div>
+    <h2 class="panel__eyebrow">ALUGUÉIS / DESEMPENHO</h2>
     <div class="panel__tools">
       <span class="badge badge--mute" id="rentals-count-badge">—</span>
       <button class="chip chip--affiliate" id="rentals-buy" aria-label="Comprar hashrate" title="Comprar hashrate no spot da Braiins (real money)"><svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:4px"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>COMPRAR</button>
@@ -1102,7 +1132,7 @@
 <!-- ─── AI OPERATOR ─── -->
 <section class="panel panel--ai-operator panel--large" id="ai-operator-panel" data-module="automations">
   <div class="panel__header">
-    <div class="panel__eyebrow">◆ AI OPERATOR · INTELLIGENCE</div>
+    <h2 class="panel__eyebrow">ASSISTENTE / MINERAÇÃO</h2>
     <div class="panel__tools">
       <span class="badge badge--green" id="ai-status-badge">ACTIVE</span>
       <button class="chip ap-arm-chip" id="ap-armed-btn" title="Auto-Pilot: quando ARMADO, as regras de automação executam ações sozinhas dentro do orçamento. Requer confirmação por digitação.">
@@ -1140,7 +1170,7 @@
       <div class="ai-context__row"><span class="lbl">Net HR</span><span class="val" id="ai-ctx-nethr">—</span></div>
       <div class="ai-context__row"><span class="lbl">Height</span><span class="val" id="ai-ctx-net-height">—</span></div>
       <div class="ai-context__row"><span class="lbl">Price</span><span class="val" id="ai-ctx-price">—</span></div>
-      <div class="ai-context__row"><span class="lbl">Fleet</span><span class="val" id="ai-ctx-fleet">—</span></div>
+      <div class="ai-context__row"><span class="lbl">Equipamentos</span><span class="val" id="ai-ctx-fleet">—</span></div>
       <div class="ai-context__row"><span class="lbl">P(Block)</span><span class="val" id="ai-ctx-pblock">—</span></div>
     </div>
   </div>
@@ -1149,7 +1179,7 @@
 <!-- ── Auto-Pilot ADVISORY (Issue #20 · Fase 2) — recomendações por device ── -->
 <section class="panel panel--ap-advisory panel--large" id="ap-advisory-panel" data-module="automations">
   <div class="panel__header">
-    <div class="panel__eyebrow">⌘ AUTO-PILOT · ADVISORY MODE</div>
+    <h2 class="panel__eyebrow">AUTOMAÇÕES / ORIENTAÇÕES</h2>
     <div class="panel__tools">
       <span class="badge badge--purple" id="ap-recs-badge" title="Recomendações ativas — o piloto sugere, você decide">0</span>
       <button class="chip" id="ap-recs-refresh" title="Refresh recomendações">⟳</button>
@@ -1174,7 +1204,7 @@
 <!-- ── Auto-Pilot DRY-RUN (Issue #76 · Fase 3) — simulação do piloto armado ── -->
 <section class="panel panel--ap-dryrun panel--large" id="ap-dryrun-panel" data-module="automations">
   <div class="panel__header">
-    <div class="panel__eyebrow">◈ AUTO-PILOT · DRY-RUN</div>
+    <h2 class="panel__eyebrow">AUTOMAÇÕES / SIMULAÇÃO</h2>
     <div class="panel__tools">
       <span class="badge badge--purple" id="ap-dr-badge" title="Simulação — nenhuma ação real é executada">SIMULAÇÃO</span>
       <button class="chip" id="ap-dr-refresh" title="Rodar simulação (agora + replay 24h)">⟳ SIMULAR</button>
@@ -1264,7 +1294,7 @@
 <!-- ─── AXE FLEET ─── -->
 <section class="panel panel--axe-fleet panel--large" id="axe-fleet-panel" data-module="fleet">
   <div class="panel__header">
-    <div class="panel__eyebrow">⚙ AXE FLEET COMMAND</div>
+    <h2 class="panel__eyebrow">DISPOSITIVOS / SHA-256</h2>
     <div class="panel__tools">
       <span class="badge badge--green" id="axe-fleet-status-badge">INIT</span>
       <span class="badge badge--mute" id="axe-fleet-count-badge">0 devices</span>
@@ -1448,7 +1478,7 @@
 <!-- ─── HIGH-DIFF EVENTS TABLE ─── -->
 <section class="panel panel--large" id="events-panel" data-module="alerts">
   <div class="panel__header">
-    <div class="panel__eyebrow">⌖ HIGH-DIFF EVENTS · POOL</div>
+    <h2 class="panel__eyebrow">EVENTOS / SHARES</h2>
     <div class="panel__tools">
       <button class="chip active" id="events-toggle-all">all</button>
       <button class="chip" id="events-toggle-mine">mine</button>
@@ -1463,9 +1493,9 @@
 </section>
 
 <!-- ─── LEADERBOARD ─── -->
-<section class="panel panel--large" id="leaderboard-panel" data-module="dashboard">
+<section class="panel panel--large" id="leaderboard-panel" data-module="analysis">
   <div class="panel__header">
-    <div class="panel__eyebrow">⌬ POOL LEADERBOARD</div>
+    <h2 class="panel__eyebrow">POOL / RANKING</h2>
     <div class="panel__tools"><span class="badge badge--mute" id="leaderboard-total">0 miners</span></div>
   </div>
   <div class="table-wrap">
@@ -1482,7 +1512,7 @@
 <!-- ─── SHARE TIMELINE ─── -->
 <section class="panel panel--timeline panel--large" id="timeline-panel" data-module="live">
   <div class="panel__header">
-    <div class="panel__eyebrow">▤ SHARE TIMELINE</div>
+    <h2 class="panel__eyebrow">SHARES / ATIVIDADE</h2>
     <div class="panel__tools">
       <span class="badge badge--green" id="timeline-shares-badge">0</span>
       <span class="badge badge--gold" id="timeline-bumps-badge">0 best</span>
@@ -1507,7 +1537,7 @@
 <!-- ─── REMOTE ACCESS ─── -->
 <section class="panel panel--remote panel--large" id="remote-panel" data-module="fleet">
   <div class="panel__header">
-    <div class="panel__eyebrow">📡 REMOTE ACCESS · TAILSCALE</div>
+    <h2 class="panel__eyebrow">AGENTE LOCAL / TAILSCALE</h2>
     <div class="panel__tools">
       <span class="badge badge--mute" id="remote-status-badge">checking</span>
       <button class="chip" id="remote-test-btn" title="Test connection">⟳ TEST</button>
@@ -1612,7 +1642,7 @@
 <!-- ─── ALERTS ─── -->
 <section class="panel panel--alerts panel--large" id="alerts-panel" data-module="alerts">
   <div class="panel__header">
-    <div class="panel__eyebrow">⚠ OPERATIONAL ALERTS · SEVERITY FIRST</div>
+    <h2 class="panel__eyebrow">ALERTAS / OPERAÇÃO</h2>
     <div class="panel__tools"><span class="badge badge--mute">READ-ONLY</span><span class="badge badge--mute" id="alerts-count-badge">0 active</span></div>
   </div>
   <ul class="alerts-list" id="alerts-list">
@@ -1623,7 +1653,7 @@
 <!-- ─── ADMIN (CFO/CRO — operador) ─── -->
 <section class="panel panel--admin panel--large" id="admin-panel" data-module="admin">
   <div class="panel__header">
-    <div class="panel__eyebrow">📊 ADMIN · CFO/CRO — operador</div>
+    <h2 class="panel__eyebrow">ADMINISTRAÇÃO</h2>
     <div class="panel__tools">
       <span class="badge badge--mute" id="admin-gate-badge">access —</span>
       <button class="chip" id="admin-refresh-btn" title="Refresh">⟳</button>
@@ -1898,7 +1928,7 @@
 <section class="panel panel--chart panel--large" id="chart-hashrate-panel" data-module="live">
   <div class="panel__header">
     <div style="display:flex;align-items:center;gap:8px">
-      <div class="panel__eyebrow">▤ WORKER HASHRATE</div>
+      <h2 class="panel__eyebrow">▤ WORKER HASHRATE</h2>
       <span class="chart-live" id="chart-hashrate-live">
         <span class="chart-live__dot"></span>
         <span class="chart-live__label">now</span>
@@ -1922,7 +1952,7 @@
 <section class="panel panel--chart panel--large" id="chart-pool-panel" data-module="live">
   <div class="panel__header">
     <div style="display:flex;align-items:center;gap:8px">
-      <div class="panel__eyebrow">▤ POOL HASHRATE</div>
+      <h2 class="panel__eyebrow">▤ POOL HASHRATE</h2>
       <span class="chart-live" id="chart-pool-live">
         <span class="chart-live__dot"></span>
         <span class="chart-live__label">now</span>
@@ -1944,7 +1974,7 @@
 
 <section class="panel panel--chart panel--large" id="chart-bestdiff-panel" data-module="live">
   <div class="panel__header">
-    <div class="panel__eyebrow">▤ BEST DIFFICULTY</div>
+    <h2 class="panel__eyebrow">▤ BEST DIFFICULTY</h2>
     <div class="panel__tools chart-range" data-target="chart-bestdiff">
       <button data-range="1h" class="chip">1h</button>
       <button data-range="6h" class="chip">6h</button>
@@ -1960,7 +1990,7 @@
 
 <section class="panel panel--chart panel--large" id="chart-net-panel" data-module="live">
   <div class="panel__header">
-    <div class="panel__eyebrow">▤ NETWORK DIFFICULTY</div>
+    <h2 class="panel__eyebrow">▤ NETWORK DIFFICULTY</h2>
     <div class="panel__tools chart-range" data-target="chart-net">
       <button data-range="24h" class="chip active">24h</button>
       <button data-range="7d" class="chip">7d</button>
@@ -1984,7 +2014,7 @@
 <!-- ─── HASH PROXIMITY METER ─── -->
 <section class="panel panel--proximity panel--large" id="proximity-panel" data-module="probability">
   <div class="panel__header">
-    <div class="panel__eyebrow">⌖ BEST-SHARE / NETWORK TARGET</div>
+    <h2 class="panel__eyebrow">⌖ BEST-SHARE / NETWORK TARGET</h2>
     <div class="panel__tools">
       <span class="badge" id="prox-pct-badge">—</span>
       <span class="badge" id="prox-alltime-badge">peak —</span>
@@ -2081,7 +2111,7 @@
 <!-- ─── CUMULATIVE PROBABILITY CHART ─── -->
 <section class="panel panel--chart panel--large" id="chart-cumulative-p-panel" data-module="probability">
   <div class="panel__header">
-    <div class="panel__eyebrow">⬡ SESSION P(≥1) ESTIMATE · OBSERVED WORK</div>
+    <h2 class="panel__eyebrow">⬡ SESSION P(≥1) ESTIMATE · OBSERVED WORK</h2>
     <div class="panel__tools"><span class="badge badge--green" id="cum-p-status-badge">live</span></div>
   </div>
   <div class="chart-wrap"><canvas id="chart-cumulative-p"></canvas></div>
@@ -2090,7 +2120,7 @@
 <!-- ─── SHARE DISTRIBUTION HISTOGRAM ─── -->
 <section class="panel panel--chart panel--large" id="chart-share-dist-panel" data-module="probability">
   <div class="panel__header">
-    <div class="panel__eyebrow">▦ SHARE DIFFICULTY DISTRIBUTION</div>
+    <h2 class="panel__eyebrow">▦ SHARE DIFFICULTY DISTRIBUTION</h2>
     <div class="panel__tools">
       <span class="badge badge--mute" id="share-dist-count-badge">0 shares</span>
       <span class="badge badge--purple" id="share-dist-target-badge" title="Network target difficulty — quão longe seus shares estão da difficulty de bloco">target —</span>
@@ -2128,7 +2158,7 @@
 <!-- ─── HR COMPARISON: REPORTED vs POOL ─── -->
 <section class="panel panel--large" id="hr-compare-panel" data-module="fleet">
   <div class="panel__header">
-    <div class="panel__eyebrow">⤒ HASHRATE COMPARISON · REPORTED vs POOL</div>
+    <h2 class="panel__eyebrow">⤒ HASHRATE COMPARISON · REPORTED vs POOL</h2>
     <div class="panel__tools"><span class="badge" id="hr-deviation-badge">—</span></div>
   </div>
   <div class="hr-compare-grid">
@@ -2269,7 +2299,7 @@
   <main class="grid" aria-label="Painel de estatísticas solo">
     <section class="panel panel--large" id="solo-stats-panel" data-module="probability">
       <div class="panel__header">
-        <div class="panel__eyebrow">☀ SOLO & STATS</div>
+        <h2 class="panel__eyebrow">☀ SOLO & STATS</h2>
         <div class="panel__tools">
           <span class="badge" id="solo-status-badge">—</span>
         </div>
@@ -2294,7 +2324,7 @@
   <main class="grid" aria-label="Painel do terminal">
     <section class="panel panel--large" id="terminal-panel" data-module="live">
       <div class="panel__header">
-        <div class="panel__eyebrow">>> LIVE TERMINAL</div>
+        <h2 class="panel__eyebrow">>> LIVE TERMINAL</h2>
         <div class="panel__tools">
           <span class="badge badge--mute" id="terminal-line-count">0 lines</span>
           <button class="chip" id="terminal-clear">clear</button>
@@ -2354,7 +2384,7 @@
     </div>
     <section class="panel panel--large" id="terminal-events-panel" data-module="live">
       <div class="panel__header">
-        <div class="panel__eyebrow">* EVENT STREAM</div>
+        <h2 class="panel__eyebrow">* EVENT STREAM</h2>
         <div class="panel__tools"><span class="badge badge--mute" id="terminal-event-count">0</span></div>
       </div>
       <div class="terminal-events-list" id="terminal-events-list">
@@ -2717,7 +2747,7 @@
 <section class="section" id="learning-panel" data-module="learning">
   <div class="panel panel--large">
     <div class="panel__header">
-      <div class="panel__eyebrow">📚 LEARNING · BITCOIN ACADEMY</div>
+      <h2 class="panel__eyebrow">📚 LEARNING · BITCOIN ACADEMY</h2>
       <div class="panel__tools"><span class="badge badge--gold">FREE</span></div>
     </div>
 

@@ -1010,7 +1010,7 @@
   // ── Keyboard shortcuts ──
   dom.refreshNow?.addEventListener('click', fetchSnapshot);
   document.addEventListener('keydown', (e) => {
-    const anyModalOpen = () => !!document.querySelector('.modal-overlay.modal--open');
+    const anyModalOpen = () => !!document.querySelector('.modal-overlay.modal--open, dialog[open]');
     if (e.key.toLowerCase() === 'r' && !anyModalOpen() && document.activeElement.tagName !== 'INPUT' && !e.metaKey && !e.ctrlKey) fetchSnapshot();
     else if (e.key === 'Escape') { closeWalletModal(); closeSettingsModal(); closeExportModal(); }
     else if (e.key.toLowerCase() === 'w' && !anyModalOpen() && document.activeElement.tagName !== 'INPUT' && !e.metaKey && !e.ctrlKey) {
@@ -1198,7 +1198,8 @@
 
   // MODULE_MAP — módulo → título/descrição do header
   const MODULE_MAP = {
-    'dashboard':   { title: 'DASHBOARD',     desc: 'Visão geral — pool, worker e rede' },
+    'dashboard':   { title: 'OPERAÇÃO', desc: 'Fontes, equipamentos e workers' },
+    'analysis': { title: 'ANÁLISE', desc: 'Rede Bitcoin, pool e cenários' },
     'wallet':      { title: 'WALLET',        desc: 'Conexão e status da wallet' },
     'fleet':       { title: 'FLEET',         desc: 'Visão dos miners' },
     'live':        { title: 'LIVE MINING',   desc: 'Dados ao vivo' },
@@ -1348,7 +1349,8 @@
   let _moduleNavToken = 0;
   function activateModule(name) {
     document.body.classList.add('module-mode');
-    const reduceMotion = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    // A compact console is used repeatedly: module switches are immediate.
+    const reduceMotion = document.body.classList.contains('terminal-ui') || (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
     const token = ++_moduleNavToken;
     if (!reduceMotion) {
       let leavingCount = 0;
@@ -1371,6 +1373,7 @@
     _doActivateModule(name, reduceMotion);
   }
   function _doActivateModule(name, reduceMotion) {
+    document.body.dataset.activeModule = name;
     // Mostra/esconde cada painel com data-module — MAS nunca os links da
     // sidebar (eles também têm data-module; escondê-los quebraria a navegação)
     document.querySelectorAll('[data-module]').forEach(function(el) {

@@ -28,6 +28,7 @@
  */
 
 import { test, expect } from '@playwright/test';
+import { clickToolbarAction } from './support/toolbar.js';
 
 const BASE_URL = process.env.BASE_URL || 'http://127.0.0.1:8765';
 
@@ -41,7 +42,7 @@ const VALID_BTC = 'bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq';
 /** Wait for the app shell + topbar to be ready (no data dependency). */
 async function waitForDashboard(page) {
   await page.waitForSelector('#app-shell', { timeout: 15000 });
-  await page.waitForSelector('#open-wallet', { timeout: 10000 });
+  await page.waitForSelector('#open-wallet', { state: 'attached', timeout: 10000 });
   // Skeletons are pointer-events:none now, but wait for them to detach so a
   // click can never race the first render.
   await page.waitForFunction(() => {
@@ -139,7 +140,7 @@ async function injectMockWebLN(page, opts = {}) {
 
 /** Open the wallet modal + click ⚡ LN WALLET (entry point of connectWebLN). */
 async function startConnectWebLN(page) {
-  await page.locator('#open-wallet').click();
+  await clickToolbarAction(page, '#open-wallet');
   await expectModalOpen(page, 'wallet-modal');
   await page.locator('#webln-connect-btn').click();
 }
@@ -147,6 +148,13 @@ async function startConnectWebLN(page) {
 // ══════════════════════════════════════════════════════════════════════
 //  Tests
 // ══════════════════════════════════════════════════════════════════════
+
+async function openSupportDetails(page) {
+  const toggle=page.locator('#sidebar-mobile-toggle');
+  if(await toggle.isVisible() && !(await page.locator('#sidebar').evaluate(el=>el.classList.contains('open')))) await toggle.click();
+  await page.locator('.sidebar__link[data-module="analysis"]').click();
+  await page.locator('#support-expand-btn').click();
+}
 
 test.describe('CYPHER65 — WebLN flow (mock Alby/Joule provider)', () => {
 
@@ -220,7 +228,7 @@ test.describe('CYPHER65 — WebLN flow (mock Alby/Joule provider)', () => {
       await waitForDashboard(page);
 
       // Start detection with NO provider present (the 4s listen window opens)…
-      await page.locator('#open-wallet').click();
+      await clickToolbarAction(page, '#open-wallet');
       await expectModalOpen(page, 'wallet-modal');
       await page.locator('#webln-connect-btn').click();
 
@@ -320,7 +328,7 @@ test.describe('CYPHER65 — WebLN flow (mock Alby/Joule provider)', () => {
     test('support panel opens from the ◈ Details button (display:none fix regression)', async ({ page }) => {
       await page.goto(BASE_URL);
       await waitForDashboard(page);
-      await page.locator('#support-expand-btn').click();
+      await openSupportDetails(page);
       await expectModalOpen(page, 'support-panel');
     });
 
@@ -329,7 +337,7 @@ test.describe('CYPHER65 — WebLN flow (mock Alby/Joule provider)', () => {
       await page.goto(BASE_URL);
       await waitForDashboard(page);
 
-      await page.locator('#support-expand-btn').click();
+      await openSupportDetails(page);
       await expectModalOpen(page, 'support-panel');
 
       await page.locator('#ln-invoice-input').fill('lnbc1mockinvoice');
@@ -347,7 +355,7 @@ test.describe('CYPHER65 — WebLN flow (mock Alby/Joule provider)', () => {
       await page.goto(BASE_URL);
       await waitForDashboard(page);
 
-      await page.locator('#support-expand-btn').click();
+      await openSupportDetails(page);
       await expectModalOpen(page, 'support-panel');
 
       await page.locator('#ln-pay-btn').click();
@@ -365,7 +373,7 @@ test.describe('CYPHER65 — WebLN flow (mock Alby/Joule provider)', () => {
       await page.goto(BASE_URL);
       await waitForDashboard(page);
 
-      await page.locator('#support-expand-btn').click();
+      await openSupportDetails(page);
       await expectModalOpen(page, 'support-panel');
 
       await page.locator('#ln-invoice-input').fill('not-an-invoice');
@@ -415,7 +423,7 @@ test.describe('CYPHER65 — WebLN flow (mock Alby/Joule provider)', () => {
       await expectModalClosed(page, 'wallet-modal');
 
       // support panel: open + pay
-      await page.locator('#support-expand-btn').click();
+      await openSupportDetails(page);
       await expectModalOpen(page, 'support-panel');
       await page.locator('#ln-invoice-input').fill('lnbc1mockinvoice');
       await page.locator('#ln-pay-btn').click();

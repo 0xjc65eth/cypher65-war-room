@@ -86,7 +86,7 @@ function checkoutWebln() {
 
 async function waitForDashboard(page) {
   await page.waitForSelector('#app-shell', { timeout: 15000 });
-  await page.waitForSelector('#open-wallet', { timeout: 10000 });
+  await page.waitForSelector('#open-wallet', { state: 'attached', timeout: 10000 });
   await page.waitForFunction(() => {
     return document.querySelectorAll('.skel-overlay').length === 0;
   }, { timeout: 10000 }).catch(() => {});

@@ -5596,6 +5596,40 @@ assertEqual('unscoped share difficulty is not observed hashrate', comparisonDom.
 assertEqual('incomparable data cannot yield deviation', comparisonDom.hrDeviationVal.textContent, '—');
 assertEqual('comparison explains missing evidence', comparisonDom.hrDeviationBadge.textContent, 'NOT COMPARABLE');
 
+// Issue #746: source-real coverage and freshness regressions.
+const consoleModel = loadFragment('39b-dashboard.js', 'buildOperationConsoleModel', {fmt});
+const numConsole = loadFragment('39b-dashboard.js', 'consoleNumber');
+for (const value of [null, undefined, true, false, '', ' ', [], {}, -1, Infinity]) {
+  assertEqual('console rejects absent/invalid numbers ' + String(value), numConsole(value), null);
+}
+assertEqual('observed zero is retained', numConsole(0), 0);
+const consoleNow = 2000000000;
+const consoleSnap = {ts:consoleNow,worker:{hashrate:82e12},all_workers:[{name:'one'},{name:'two'}]};
+const consolePool = consoleModel(consoleSnap,{fleet_stats:{total_devices:0},device_health:[]},false,'',consoleNow,consoleNow);
+assertEqual('pool-only boot has useful pool rows', consolePool.rows.length, 2);
+assertEqual('pool-only boot has no healthy zero', consolePool.attention, null);
+assertEqual('selected worker HR never distributed', consolePool.rows[0].hash, null);
+const consoleFleet = {fleet_stats:{total_devices:2},device_health:[
+  {id:'on',name:'Online ASIC',status:'ONLINE',telemetry:{ts:consoleNow-10,hashrate_hs:1e12}},
+  {id:'off',name:'Offline ASIC',status:'OFFLINE',telemetry:{ts:consoleNow-30,hashrate_hs:0,last_known_hashrate_hs:2e12}}
+]};
+const consoleLive = consoleModel(consoleSnap,consoleFleet,false,'',consoleNow,consoleNow);
+assertEqual('default uses observed Fleet entities', consoleLive.mode, 'fleet');
+assertEqual('attention first sorting', consoleLive.rows[0].id, 'off');
+assertEqual('offline historical HR remains visible', consoleLive.rows[0].hash, 2e12);
+assertEqual('offline historical HR excluded from current sum', consoleLive.hashrate, 1e12);
+assertEqual('attention count requires recent evidence', consoleLive.attention, 1);
+const consoleFailed = consoleModel(consoleSnap,consoleFleet,true,'fleet',consoleNow,consoleNow);
+assertEqual('failed request retains last rows', consoleFailed.rows.length, 2);
+assertEqual('failed request does not invent offline state', consoleFailed.rows[1].state, 'Último estado: Online');
+assertEqual('failed request has unknown attention', consoleFailed.attention, null);
+assertEqual('failed request has no current hashrate sum', consoleFailed.hashrate, null);
+assertEqual('failed request does not alter sample timestamp age', consoleFailed.recent, 2);
+assertEqual('old telemetry ages between HTTP reads', consoleModel(consoleSnap,consoleFleet,false,'fleet',consoleNow,consoleNow+180).recent, 0);
+const consoleFuture = {fleet_stats:{total_devices:1},device_health:[{id:'future',status:'ONLINE',telemetry:{ts:consoleNow+30,age_seconds:0,hashrate_hs:1e12}}]};
+assertEqual('future timestamp cannot become fresh via age fallback', consoleModel(consoleSnap,consoleFuture,false,'fleet',consoleNow,consoleNow).recent, 0);
+assertEqual('explicit pool choice survives available Fleet', consoleModel(consoleSnap,consoleFleet,false,'pool',consoleNow,consoleNow).mode, 'pool');
+
 //  RESULTS
 // ═══════════════════════════════════════════════════════════════════════════
 

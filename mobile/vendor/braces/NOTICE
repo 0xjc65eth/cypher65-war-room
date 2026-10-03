@@ -1,0 +1,16 @@
+CYPHER65 maintained security backport — Issue #737
+
+Original software: braces 3.0.3, Jon Schlinkert and contributors.
+Upstream repository: https://github.com/micromatch/braces
+Release source commit: 74b2db2938fad48a2ea54a9c8bf27a37a62c350d
+The original MIT copyright and license are retained in LICENSE.
+
+Depth-guard reference: micromatch/braces PR #72 by FSDevelop,
+commit d0d575e55e74a4e0218e5248fafb79efc3e54ebb.
+https://github.com/micromatch/braces/pull/72
+
+This derivative applies bounded parser/container traversal to release 3.0.3,
+retains the original stringify parent handling and normalizes maxDepth
+uniformly. It does not incorporate other unreleased upstream parser changes.
+It is not an official upstream release and is not published to npm.
+The package name remains braces; no audit exclusion or alias is used.
