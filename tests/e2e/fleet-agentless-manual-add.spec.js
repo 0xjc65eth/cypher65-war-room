@@ -10,6 +10,9 @@
 
 import { test, expect } from '@playwright/test';
 
+// Cloud fixtures must reach page.route; SW fetches bypass these handlers.
+test.use({ serviceWorkers: 'block' });
+
 /** Mobile: the sidebar is off-canvas — open it before clicking a module. */
 async function ensureSidebarOpen(page) {
   const isOpen = await page.evaluate(() => {

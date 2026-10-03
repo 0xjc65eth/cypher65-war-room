@@ -24,6 +24,34 @@ def client():
         yield c
 
 
+def _attach_batch_payloads(mock_registry, telemetry_results):
+    """Adapt legacy route fixtures to list_devices(with_telemetry=True)."""
+    devices = mock_registry.list_devices.return_value
+    assert len(devices) == len(telemetry_results)
+    for device, rows in zip(devices, telemetry_results):
+        payload = {}
+        for row in rows or []:
+            candidate = row.get("payload") if isinstance(row, dict) else None
+            if isinstance(candidate, dict) and candidate.get("hashrate_hs") is not None:
+                payload = candidate
+                break
+        device["telemetry"] = payload
+
+
+def _adapt_legacy_telemetry_fixture(mock_registry):
+    """Move test telemetry from removed per-device reads onto batch rows."""
+    devices = mock_registry.list_devices.return_value
+    side_effect = mock_registry.get_recent_telemetry.side_effect
+    if side_effect is not None:
+        results = list(side_effect)
+    else:
+        results = [mock_registry.get_recent_telemetry.return_value] * len(devices)
+    _attach_batch_payloads(mock_registry, results)
+    mock_registry.get_recent_telemetry.side_effect = AssertionError(
+        "fleet aggregate must use list_devices(with_telemetry=True)"
+    )
+
+
 # ══════════════════════════════════════════════════════════════════════════
 #  GET /api/axe-fleet/remote/status
 # ══════════════════════════════════════════════════════════════════════════
@@ -737,6 +765,7 @@ class TestFleetHealth:
             ),
             self._telemetry(0, None, 0, "", 0, None, 0.0),
         ]
+        _adapt_legacy_telemetry_fixture(mock_registry)
 
         with patch("axe_fleet.routes._registry", mock_registry):
             with patch("axe_fleet.models.infer_health_score", return_value=70):
@@ -791,6 +820,7 @@ class TestFleetHealth:
         online["payload"]["hashrate_1h"] = 5_000_000_000_000
         offline = self._telemetry(3_000_000_000_000)[0]
         mock_registry.get_recent_telemetry.side_effect = [[online], [offline]]
+        _adapt_legacy_telemetry_fixture(mock_registry)
 
         with patch("axe_fleet.routes._registry", mock_registry):
             with patch("axe_fleet.models.infer_health_score", return_value=70):
@@ -825,6 +855,7 @@ class TestFleetHealth:
         telemetry = self._telemetry("NaN")[0]
         telemetry["payload"]["hashrate_1h"] = "Infinity"
         mock_registry.get_recent_telemetry.return_value = [telemetry]
+        _adapt_legacy_telemetry_fixture(mock_registry)
 
         with patch("axe_fleet.routes._registry", mock_registry):
             with patch("axe_fleet.models.infer_health_score", return_value=0):
@@ -851,6 +882,7 @@ class TestFleetHealth:
                 3800000000000, 82, 38, "28.3T", 43200, 10.0, 3.5, 5872, 215, 500, 1250
             ),
         ]
+        _adapt_legacy_telemetry_fixture(mock_registry)
 
         with patch("axe_fleet.routes._registry", mock_registry):
             with patch("axe_fleet.models.infer_health_score", return_value=65):
@@ -894,6 +926,7 @@ class TestFleetHealth:
             self._telemetry(3000000000000, 82, 30, "7T", 300, 10.0),
             self._telemetry(0, None, 0),
         ]
+        _adapt_legacy_telemetry_fixture(mock_registry)
 
         with patch("axe_fleet.routes._registry", mock_registry):
             with patch("axe_fleet.models.infer_health_score", return_value=50):
@@ -945,6 +978,7 @@ class TestFleetHealth:
         mock_registry.get_recent_telemetry.return_value = [
             {"ts": 1700000000, "payload": tel}
         ]
+        _adapt_legacy_telemetry_fixture(mock_registry)
 
         with patch("axe_fleet.routes._registry", mock_registry):
             with patch("axe_fleet.models.infer_health_score", return_value=80):
@@ -976,6 +1010,7 @@ class TestFleetHealth:
         mock_registry.get_recent_telemetry.return_value = [
             {"ts": 1700000000, "payload": {"device_id": "d1"}}
         ]
+        _adapt_legacy_telemetry_fixture(mock_registry)
 
         with patch("axe_fleet.routes._registry", mock_registry):
             with patch("axe_fleet.models.infer_health_score", return_value=45):
@@ -1109,6 +1144,7 @@ class TestFleetSummary:
             ],
             [{"ts": 1700000000, "payload": {"hashrate_hs": 0, "temperature": None}}],
         ]
+        _adapt_legacy_telemetry_fixture(mock_registry)
 
         with patch("axe_fleet.routes._registry", mock_registry):
             with patch(
@@ -1214,6 +1250,27 @@ class TestSeedTestDevices:
         offline_tel = next(t for t in saved if t.get("hashrate_hs", 0) == 0)
         assert offline_tel["chip_temp"] is None
         assert offline_tel["hashrate_1h"] is None
+
+    @pytest.mark.parametrize(
+        "flag", ["RENDER", "RENDER_SERVICE_ID", "RENDER_INSTANCE_ID", "CLOUD_MODE"]
+    )
+    def test_cloud_rejects_seed_even_with_debug_enabled(
+        self, client, monkeypatch, flag
+    ):
+        monkeypatch.setenv("DEBUG_MOCK", "1")
+        monkeypatch.setenv(flag, "true")
+        registry = MagicMock()
+        registry.list_devices.return_value = []
+        with patch("axe_fleet.routes._registry", registry):
+            response = client.post(self.ENDPOINT)
+        assert response.status_code == 403
+        registry.list_devices.assert_not_called()
+        registry.add_device.assert_not_called()
+
+    def test_public_dashboard_has_no_seed_control(self, client):
+        response = client.get("/")
+        assert response.status_code == 200
+        assert b"axe-seed-btn" not in response.data
 
     def test_seed_disabled_without_debug_mock(self, client, monkeypatch):
         """Without DEBUG_MOCK=1 the endpoint must be locked down (403)."""
@@ -1396,6 +1453,7 @@ class TestFleetHealthTelemetryGaps:
             self._device("d1", "Garage Bitaxe", "ONLINE")
         ]
         mock_registry.get_recent_telemetry.return_value = self._telemetry()
+        _adapt_legacy_telemetry_fixture(mock_registry)
 
         with patch("axe_fleet.routes._registry", mock_registry):
             with patch(
@@ -1414,6 +1472,7 @@ class TestFleetHealthTelemetryGaps:
             self._device("d1", "Basement S19", "OFFLINE", ip="192.168.1.200")
         ]
         mock_registry.get_recent_telemetry.return_value = self._telemetry(hashrate_hs=0)
+        _adapt_legacy_telemetry_fixture(mock_registry)
 
         with patch("axe_fleet.routes._registry", mock_registry):
             with patch("axe_fleet.routes._probe_miner_latency_ms") as probe:
@@ -1439,6 +1498,7 @@ class TestFleetHealthTelemetryGaps:
             wifi_rssi=-80,
             stratum_status="connected",
         )
+        _adapt_legacy_telemetry_fixture(mock_registry)
 
         with patch("axe_fleet.routes._registry", mock_registry):
             with patch("axe_fleet.routes._probe_miner_latency_ms", return_value=180):
@@ -1459,6 +1519,7 @@ class TestFleetHealthTelemetryGaps:
             self._device("d1", "Healthy", "ONLINE")
         ]
         mock_registry.get_recent_telemetry.return_value = self._telemetry()
+        _adapt_legacy_telemetry_fixture(mock_registry)
 
         with patch("axe_fleet.routes._registry", mock_registry):
             with patch("axe_fleet.routes._probe_miner_latency_ms", return_value=20):
@@ -1473,6 +1534,7 @@ class TestFleetHealthTelemetryGaps:
             self._device("d1", "Dead", "OFFLINE", ip="192.168.1.200")
         ]
         mock_registry.get_recent_telemetry.return_value = self._telemetry(hashrate_hs=0)
+        _adapt_legacy_telemetry_fixture(mock_registry)
 
         with patch("axe_fleet.routes._registry", mock_registry):
             resp = client.get(self.ENDPOINT)
@@ -1491,6 +1553,7 @@ class TestFleetHealthTelemetryGaps:
         )
         tel[0]["payload"]["pool_user"] = "bc1abc.worker1"
         mock_registry.get_recent_telemetry.return_value = tel
+        _adapt_legacy_telemetry_fixture(mock_registry)
 
         with patch("axe_fleet.routes._registry", mock_registry):
             with patch("axe_fleet.routes._probe_miner_latency_ms", return_value=30):
