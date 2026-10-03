@@ -851,6 +851,7 @@
     const s = authLoadSession();
     const connected = authSessionValid(s);
     const tenant = connected ? (s.tenant_id || 'default') : 'default';
+    if (typeof syncConsoleHistorySession === 'function') syncConsoleHistorySession(tenant, connected);
     const toggle = dom.authToggle;
     if (toggle) {
       toggle.innerHTML = _ic('key', 12, true) + escapeHtml(connected ? tenant.toUpperCase() : 'LOGIN');

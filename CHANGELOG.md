@@ -6,7 +6,7 @@ e versionamento semântico ([SemVer](https://semver.org/lang/pt-BR/)).
 
 ## [Unreleased]
 
-- Rebuild Operation around observed pool workers or local equipment: one scoped summary, entity tables, explicit source ages, last observations preserved on Fleet API failure, accessible detail dialog and compact mobile rows. Move network/scenario context to Analysis; retain all existing modules and controls (#746).
+- Rebuild Operation as a richer premium dashboard: observed-worker comparison, authenticated per-device hashrate/temperature/power history, explicit gaps and last-valid measurement age, current power coverage, activity and Bitcoin context. Preserve entity investigation, source failures, session isolation and all modules; add native keyboard metric navigation and a complete text alternative for charts (#746).
 
 - Reject older full snapshots across poll/SSE, keep freshness aging during offline failures, and wire the Refresh button to the existing fetch path (#742).
 

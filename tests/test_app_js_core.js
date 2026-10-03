@@ -5614,6 +5614,51 @@ const consoleFuture = {fleet_stats:{total_devices:1},device_health:[{id:'future'
 assertEqual('future timestamp cannot become fresh via age fallback', consoleModel(consoleSnap,consoleFuture,false,'fleet',consoleNow,consoleNow).recent, 0);
 assertEqual('explicit pool choice survives available Fleet', consoleModel(consoleSnap,consoleFleet,false,'pool',consoleNow,consoleNow).mode, 'pool');
 
+// Premium visualization: real source regressions (zero, gaps and current scope).
+const consoleHistorySeries = loadFragment('39b-dashboard.js', 'buildConsoleHistorySeries');
+const historySeries = consoleHistorySeries([
+  {ts:consoleNow-100,hashrate:0,temperature:51},
+  {ts:consoleNow-80,hashrate:null},
+  {ts:consoleNow-60,hashrate:2e12},
+  {ts:consoleNow-40,hashrate:'3e12'},
+  {ts:consoleNow-20,hashrate:true},
+  {ts:consoleNow+1,hashrate:8e12},
+  {ts:'invalid',hashrate:9e12}
+], 'hashrate', consoleNow);
+assertEqual('history retains genuine zero hashrate', historySeries.measured[0].value, 0);
+assertEqual('history ignores future and invalid timestamps', historySeries.points.length, 5);
+assertEqual('absent/boolean measurements create gaps', historySeries.measured.length, 3);
+assertEqual('unknown points do not become continuous curves', historySeries.segments.length, 2);
+assertEqual('history min includes zero', historySeries.min, 0);
+assertEqual('history max includes numeric source string', historySeries.max, 3e12);
+const separatedHistory = consoleHistorySeries([{ts:(consoleNow-1000)*1000,hashrate:1e12},{ts:consoleNow-500,hashrate:2e12}], 'hashrate', consoleNow);
+assertEqual('millisecond timestamps normalize', separatedHistory.points[0].ts, consoleNow-1000);
+assertEqual('telemetry gaps over 150s are not connected', separatedHistory.segments.length, 2);
+assertEqual('one-point history has one observation without invented points', consoleHistorySeries([{ts:consoleNow-5,hashrate:1e12}], 'hashrate', consoleNow).points.length, 1);
+assertEqual('missing metric does not fall back to another measurement', consoleHistorySeries([{ts:consoleNow-5,hashrate:1e12}], 'temperature', consoleNow).measured.length, 0);
+const premiumModel = loadFragment('39b-dashboard.js', 'buildPremiumOperationModel');
+const poweredFleet = structuredClone(consoleFleet);
+poweredFleet.device_health[0].telemetry.power_watts = 19;
+poweredFleet.device_health[1].telemetry.power_watts = 3500;
+const premiumLive = premiumModel(consoleModel(consoleSnap,poweredFleet,false,'fleet',consoleNow,consoleNow),consoleSnap);
+assertEqual('offline power excluded from measured fleet total', premiumLive.power, 19);
+assertEqual('power coverage counts only current contributing devices', premiumLive.powered, 1);
+assertEqual('failed Fleet query cannot report current power', premiumModel(consoleModel(consoleSnap,poweredFleet,true,'fleet',consoleNow,consoleNow),consoleSnap).power, null);
+assertEqual('stale Fleet query cannot report current power', premiumModel(consoleModel(consoleSnap,poweredFleet,false,'fleet',consoleNow,consoleNow+300),consoleSnap).power, null);
+const comparisonRows = {rows:[{kind:'pool',name:'unknown',hash:null},{kind:'pool',name:'zero',hash:0},{kind:'pool',name:'high',hash:10}],localRows:[],recent:0,unknown:0};
+assertEqual('worker comparison excludes unknown but retains zero', premiumModel(comparisonRows,{}).workers.length, 2);
+assertEqual('comparison sorting uses absolute source hashrate', premiumModel(comparisonRows,{}).workers[0].name, 'high');
+
+const historySession = loadFragment('39b-dashboard.js', '{syncConsoleHistorySession,seed:()=>{_consoleHistory.rows=[{ts:1,hashrate:1}];_consoleHistory.id="one";},state:()=>_consoleHistory,request:()=>_consoleHistoryRequest}', {document:{getElementById:()=>null}});
+historySession.syncConsoleHistorySession('one',true);historySession.seed();
+historySession.syncConsoleHistorySession('one',true);
+assertEqual('same session keeps history observations',historySession.state().rows.length,1);
+historySession.syncConsoleHistorySession('two',true);
+assertEqual('tenant switch drops cached individual history',historySession.state().rows.length,0);
+assertEqual('tenant switch invalidates pending history request',historySession.request(),1);
+historySession.seed();historySession.syncConsoleHistorySession('default',false);
+assertEqual('logout drops individual history cache',historySession.state().rows.length,0);
+
 //  RESULTS
 // ═══════════════════════════════════════════════════════════════════════════
 
