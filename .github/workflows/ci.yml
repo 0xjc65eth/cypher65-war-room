@@ -280,8 +280,14 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Verify complete dependency tree
+        run: npm ls --all
+
       - name: Verify pinned node-forge ASN.1 fix
         run: npm run test:security-node-forge
+
+      - name: Verify vendored braces depth fix
+        run: npm run test:security-braces
 
       - name: Expo SDK compatibility
         run: npm run doctor
