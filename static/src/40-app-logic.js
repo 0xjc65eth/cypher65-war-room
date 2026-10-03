@@ -1008,6 +1008,7 @@
   dom.openExports?.addEventListener('click', openExportModal);
 
   // ── Keyboard shortcuts ──
+  dom.refreshNow?.addEventListener('click', fetchSnapshot);
   document.addEventListener('keydown', (e) => {
     const anyModalOpen = () => !!document.querySelector('.modal-overlay.modal--open');
     if (e.key.toLowerCase() === 'r' && !anyModalOpen() && document.activeElement.tagName !== 'INPUT' && !e.metaKey && !e.ctrlKey) fetchSnapshot();
@@ -1156,15 +1157,14 @@
               return;
             }
             if (msg && msg.ts) {
-              _lastSnapshot = msg;
-              render(msg);
+              if (!applyFullSnapshot(msg)) return;
               var now = Date.now();
               if (now - sseLastFleetFetch > 10000) {
                 sseLastFleetFetch = now;
                 fetchAxeFleet();
               }
             }
-          } catch(err) { /* ignore parse errors */ }
+          } catch(err) { logMessage('SSE', 'Invalid snapshot message', 'WARN'); }
         };
         es.onerror = function() {
           var now = Date.now();
@@ -1720,9 +1720,7 @@
     updateTopbar: function(net, fees, btc, alerts) {
       var btcPrice = btc && btc.usd ? '$' + Number(btc.usd).toLocaleString() : '--';
       this.setText('n-btc-usd', btcPrice);
-      this.setText('n-diff', net ? this.formatHashrate(net.difficulty) : '--');
-      this.setText('n-hashrate', net ? this.formatHashrate(net.hashrate) : '--');
-      this.setText('n-height', net && net.height ? '#' + net.height : '--');
+      // Network metrics belong to renderNetwork(), including stale badges.
       this.setText('fee-fastest', fees && fees.fastestFee != null ? fees.fastestFee + ' sat/vB' : '--');
       var alertBadge = document.getElementById('alerts-count-badge');
       if (alertBadge && alerts) {
@@ -1736,8 +1734,6 @@
       // (m-hashrate, m-state, hc-*, hero grid). The hero values are owned by
       // renderHero()/renderHostCore() (called by the original render).
       // p-hashrate, p-workers handled by renderPool() — do not duplicate
-      this.setText('p-high-diff', pool ? String(pool.highestDifficulty || '--') : '--');
-      this.setText('hc-network', pool ? String(pool.hashrate || '--') : '--');
       if (profit) {
         this.setText('p-btc-day', profit.net_btc_per_day_pool != null ? profit.net_btc_per_day_pool.toFixed(6) + ' BTC' : '--');
         var fiatDay = profit.fiat_per_day_pool ? profit.fiat_per_day_pool.USD : null;
