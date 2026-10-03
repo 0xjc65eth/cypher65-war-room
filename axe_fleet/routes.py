@@ -1562,8 +1562,9 @@ def seed_test_devices(tenant_id: str = ""):
     Creates 4 devices with realistic telemetry (hashrate, temp, fan, power,
     uptime, best diff) and capabilities (restart, identify, pause).
 
-    GATED by DEBUG_MOCK (config.py): disabled in production so mock devices
-    are never exposed via the public API. Set DEBUG_MOCK=1 for local dev.
+    GATED by DEBUG_MOCK and cloud detection: cloud deployments always deny
+    synthetic seeding, even with DEBUG_MOCK=1. Local dev additionally needs
+    tenant/member authorization.
 
     Tenant-scoped: seeded devices are persisted under the caller's tenant
     so they never pollute another tenant's fleet.
@@ -1571,9 +1572,13 @@ def seed_test_devices(tenant_id: str = ""):
     Use DELETE /api/axe-fleet/devices/<id> to remove individual devices
     after testing.
     """
-    if os.environ.get("DEBUG_MOCK") != "1":
+    from config import is_cloud_deploy
+
+    if is_cloud_deploy() or os.environ.get("DEBUG_MOCK") != "1":
         return (
-            jsonify({"error": "test-devices endpoint disabled (set DEBUG_MOCK=1)"}),
+            jsonify(
+                {"error": "test-devices endpoint disabled (local DEBUG_MOCK=1 only)"}
+            ),
             403,
         )
     if _registry is None:
