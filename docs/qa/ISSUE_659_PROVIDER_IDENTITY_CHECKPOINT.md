@@ -1,8 +1,8 @@
 # Issue #659 — BTC PoW Lab identity checkpoint
 
-Date: 2026-10-02. PR: [#715](https://github.com/0xjc65eth/cypher65-war-room/pull/715).
+Updated: 2026-10-03. PR: [#715](https://github.com/0xjc65eth/cypher65-war-room/pull/715).
 Original implementation and validation base: `c597304efb867716c0b8cf45ec72d1de8a98dc53`.
-Latest base synchronized locally: `39fa95b5833ea0f61c8f578df1cabb388d8a61e4`.
+Latest base synchronized locally: `60eda10d3c9fbd6373029e73750bff41bdd1b3ad`.
 
 ## Scope and evidence boundary
 
@@ -135,7 +135,7 @@ No full suite, E2E, application server or benchmark was rerun here; the earlier
 629-test and 16-E2E runs retain their actual source revisions. This synchronizes
 the feature branch only, not an agent-performed protected-branch merge or approval.
 
-Latest light artifacts remain local, out of tree and not uploaded, in
+The preceding light artifacts remain local, out of tree and not uploaded, in
 `/private/tmp/cypher65-715-39fa-integration.JFITFy/`. The subsequent checkpoint
 edit changes documentation only; it is not a new measured production source.
 
@@ -146,12 +146,79 @@ edit changes documentation only; it is not a new measured production source.
 | `js-syntax.log` | `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855` |
 | `monkeypatch-guard.log` | `b9f3743163a0fc72822b7bb4f8501cfbc9f575dd84b972dfd21e084dc3606196` |
 
+## Current-base full validation — 2026-10-03
+
+An ordinary merge of master `60eda10d3c9fbd6373029e73750bff41bdd1b3ad`
+produced frozen source `2fc47706ec9e438ed397060c1883b812059028d0`, tree
+`d6ddd2df3971c19310162fca15c694234388b68c`. This preserves the externally
+merged cloud seed, trusted telemetry batching, dashboard/snapshot freshness,
+comparability and profitability-oracle changes. The diff against this base
+still contains the nine original #659 paths; no provider API was enabled.
+
+Validation on that exact frozen source:
+
+- Full Python suite: **4149 passed, 3 skipped, 573 warnings**, 281.43 seconds;
+  **85.61%** total line coverage across the CI application scopes, with the
+  unchanged 80% gate. Two collection skips are Render blueprint tests because
+  this existing runtime lacks `yaml`; the third explicitly requires real
+  private-Gist credentials. No credential was supplied. Warnings and skips
+  remain disclosed, not characterized as tested integrations.
+- JS core: **1590 passed**. Bundle drift checks all 17 source fragments;
+  JavaScript syntax and orphan-monkeypatch guard passed.
+- CI-equivalent production Black, Flake8 and Bandit medium/high gates passed;
+  Black left 105 files unchanged. Bandit emitted benign `nosec` warnings.
+  Diff and commitlint passed. An initial non-login commitlint capture failed
+  with exit 127 because Node was absent from that shell's PATH; rerunning with
+  the existing Node 22.22.0 binary passed, without installing dependencies.
+- Affected Playwright: **8 desktop + 8 mobile passed**, including normal and
+  reduced-motion provider cases. Each viewport ran against a fresh scratch
+  server with the real application/source, no background workers and outbound
+  transport denied. Synthetic pool reports exercise the renderer contract,
+  not the provider API, real mining results or physical ASIC compatibility.
+- The first combined Playwright run had **15 passes and 1 failure**: the
+  final mobile page received HTTP 429 at `/`, with `Too Many Requests` in the
+  recorded page snapshot, before `#app-shell` could load. Its logs, screenshot,
+  video and trace are retained in `ui-first-test-results/`. Restarting the
+  disposable server separately for each viewport isolated accumulated
+  rate-limit state. No application limit, assertion, timeout or test source
+  was weakened. The original failed run is not relabeled green.
+
+All three owned QA servers were stopped. Each shutdown recorded
+`OUTBOUND_ATTEMPTS []`. The harness only substitutes unrelated market/subnet
+consumers and does not validate production, customer-LAN or live pool access.
+This later checkpoint edit is documentation-only; these test counts belong
+to source `2fc4770`, not to an untested final documentation commit or remote CI.
+Independent source review found no actionable P0/P1/P2 findings, including
+the interaction with the current snapshot/dashboard freshness consumers;
+that is not independent GitHub approval.
+
+Artifacts remain local, not uploaded, under
+`/private/tmp/cypher65-715-current-validation.1VE090/`:
+
+| Artifact | SHA256 |
+| --- | --- |
+| `full-tests.xml` | `00fc1ba9030027892c010b3ef90d7738a7eee391233bd318855d5d9d6a38d69d` |
+| `full-coverage.xml` | `68d9f5aa9c5791f06fd51978463a262d26dfb4ab1316f7b9dd676d20bde04d8f` |
+| `js-core.log` | `133e84b29ca68891d7e0d98466833bf3a52cd9aebc95941ce4692e05a3217d89` |
+| `ui-tests.log` (first, failed) | `5a7db1cc193da97dc808f91c68466c9386f214dac39189bf24d77ab025afd50b` |
+| `ui-server.log` (first) | `7f77c1e2d49ea49cc229282d10f0050bf23bd23da57a7b1d1a83292d5e35873e` |
+| `ui-desktop-tests.log` | `90495aa533134195fb1e552c5180cd38177efbb3be50f572d25b1efe2285854e` |
+| `ui-server-desktop.log` | `c90c9d03f76c85c288cbe837d93d58e2f251d4e2ddbd7249b4bb65d6eedb2e50` |
+| `ui-mobile-tests.log` | `004725d36dc320751fc41791938b61b66e5505032f23c642098a808ae6f41228` |
+| `ui-server-mobile.log` | `977469033ad9f7172cd1de756a08e1eeedb07a77b654ac6065f68c76e0c7df5b` |
+
+Static-gate logs remain under `/private/tmp/cypher65-715-*.log`; they are
+separate from the full-suite and viewport artifacts above.
+
 ## Release gates
 
 Independent technical review is not GitHub approval. Require all protected
 checks green on the exact published head, current base, resolved review
-threads, and an independent GitHub approval before squash merge. The mobile
-dependency security mitigation from PR #723 is now in this base; the earlier
-mobile failure does not describe the new head. Do not bypass any gate. Issue
-#659 remains open until its API acceptance criteria
-are implemented from verified evidence.
+threads, and an independent GitHub approval before squash merge. PR #723
+addressed the historical #710 dependency issue, not the new unpatched
+`braces` advisory tracked by #737. The old eight-green CI result on `7e0abf4`
+against `39fa95b` cannot satisfy current-head/current-base gates. Local Python,
+JS and UI success does not override a failing mobile security audit. Do not
+bypass any gate. Issue #659 remains open until its API acceptance criteria
+are implemented from verified evidence. No root protected merge or deploy
+was performed.
