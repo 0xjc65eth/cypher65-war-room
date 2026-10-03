@@ -1007,6 +1007,7 @@
   dom.openExports?.addEventListener('click', openExportModal);
 
   // ── Keyboard shortcuts ──
+  dom.refreshNow?.addEventListener('click', fetchSnapshot);
   document.addEventListener('keydown', (e) => {
     const anyModalOpen = () => !!document.querySelector('.modal-overlay.modal--open');
     if (e.key.toLowerCase() === 'r' && !anyModalOpen() && document.activeElement.tagName !== 'INPUT' && !e.metaKey && !e.ctrlKey) fetchSnapshot();
@@ -1155,15 +1156,14 @@
               return;
             }
             if (msg && msg.ts) {
-              _lastSnapshot = msg;
-              render(msg);
+              if (!applyFullSnapshot(msg)) return;
               var now = Date.now();
               if (now - sseLastFleetFetch > 10000) {
                 sseLastFleetFetch = now;
                 fetchAxeFleet();
               }
             }
-          } catch(err) { /* ignore parse errors */ }
+          } catch(err) { logMessage('SSE', 'Invalid snapshot message', 'WARN'); }
         };
         es.onerror = function() {
           var now = Date.now();

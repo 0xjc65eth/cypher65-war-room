@@ -5572,6 +5572,8 @@ for (const [worker, expected] of [[{hashrate: 0}, 'IDLE'], [{hashrate: -1}, 'NO 
 }
 topbarRender({ts: 1, worker: {hashrate: 1}});
 assertEqual('old snapshot does not present topbar as online', topbarNodes['tbar-status'].textContent, 'STALE');
+topbarRender({worker: {hashrate: 1}});
+assertEqual('unknown snapshot age does not present topbar as online', topbarNodes['tbar-status'].textContent, 'UNKNOWN');
 
 //  RESULTS
 // ═══════════════════════════════════════════════════════════════════════════

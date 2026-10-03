@@ -6,6 +6,8 @@ e versionamento semântico ([SemVer](https://semver.org/lang/pt-BR/)).
 
 ## [Unreleased]
 
+- Reject older full snapshots across poll/SSE, keep freshness aging during offline failures, and wire the Refresh button to the existing fetch path (#742).
+
 - Fix dashboard difficulty/height overwrite, pool block height versus timestamp, stale-aware topbar metrics and fixed pool subtitle (#732). Future stored block timestamps are normalized; historical rows are unchanged.
 
 ### Corrigido — acessibilidade no fluxo de comando Fleet (#612, UI-002)

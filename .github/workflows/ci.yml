@@ -421,7 +421,7 @@ jobs:
             tests/e2e/upgrade-btc.spec.js tests/e2e/rentals-toolbar.spec.js \
             --project=chromium
 
-          npx playwright test tests/e2e/dashboard-telemetry.spec.js --project=chromium
+          npx playwright test tests/e2e/dashboard-telemetry.spec.js tests/e2e/snapshot-ordering.spec.js --project=chromium
 
       - name: Upload e2e report
         if: always()

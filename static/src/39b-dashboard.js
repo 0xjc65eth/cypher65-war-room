@@ -95,8 +95,9 @@
   function renderTopbarMetrics(snap) {
     const w = snap.worker;
     const set = (id, text) => { const el = document.getElementById(id); if (el) el.textContent = text; };
-    const stale = snapshotFreshness(snap).stale || (w && (w.stale || w._stale));
-    set('tbar-status', !w ? 'NO DATA' : (stale ? 'STALE' : (!Number.isFinite(w.hashrate) || w.hashrate < 0 ? 'NO DATA' : (w.hashrate > 0 ? 'ONLINE' : 'IDLE'))));
+    const freshness = snapshotFreshness(snap);
+    const stale = freshness.stale || (w && (w.stale || w._stale));
+    set('tbar-status', !w || !Number.isFinite(w.hashrate) || w.hashrate < 0 ? 'NO DATA' : (stale ? 'STALE' : (freshness.age === null ? 'UNKNOWN' : (w.hashrate > 0 ? 'ONLINE' : 'IDLE'))));
     set('tbar-best', w && w.bestDifficulty != null ? fmt.diff(w.bestDifficulty) : '—');
     set('tbar-workers', Array.isArray(snap.all_workers) ? String(snap.all_workers.length) : '—');
     set('tbar-btc', snap.btc_price && snap.btc_price.usd != null ? fmt.usd(snap.btc_price.usd) : '—');
@@ -1219,8 +1220,31 @@ function renderPool(pool, luck) {
   }
 
   // ── Clock ──
+  let _freshnessClockUpdatedAt = 0;
   function updateClock() {
     if (dom.clock) dom.clock.textContent = new Date().toLocaleTimeString();
+    // Age continues to increase even when every network request fails.
+    // Reuse the clock; no additional polling, chart rendering or timer.
+    if (_lastSnapshot && Date.now() - _freshnessClockUpdatedAt >= 5000) {
+      _freshnessClockUpdatedAt = Date.now();
+      renderSnapshotFreshness(_lastSnapshot);
+      renderTopbarMetrics(_lastSnapshot);
+      renderOperationalOverview(_lastSnapshot, _operationalFleetData, _operationalFleetError);
+    }
+  }
+
+  function applyFullSnapshot(snap) {
+    if (!snap || typeof snap !== 'object' || Array.isArray(snap) ||
+        !Number.isFinite(snap.ts) || snap.ts < 0) throw new Error('Invalid snapshot timestamp');
+    const timestamp = snap.ts > 1e11 ? snap.ts / 1000 : snap.ts;
+    const previousTs = _lastSnapshot && _lastSnapshot.ts;
+    const previous = previousTs > 1e11 ? previousTs / 1000 : previousTs;
+    // Poll and SSE share one full-snapshot contract. Equal timestamps may
+    // contain updates produced within the same second and remain valid.
+    if (Number.isFinite(previous) && timestamp < previous) return false;
+    _lastSnapshot = snap;
+    render(snap);
+    return true;
   }
 
   // ── Snapshot fetch dedup ──
@@ -1236,9 +1260,7 @@ function renderPool(pool, luck) {
       const r = await fetch('/api/snapshot');
       if (!r.ok) throw new Error('snapshot failed');
       const snap = await r.json();
-      _lastSnapshot = snap;
-      render(snap);
-      fetchAxeFleet();
+      if (applyFullSnapshot(snap)) fetchAxeFleet();
       updateNextPoll();
     } catch (e) {
       // Sev-1 (UI audit 2026-08): a failed first fetch must NEVER leave the
