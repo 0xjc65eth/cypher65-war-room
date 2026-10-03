@@ -24,6 +24,7 @@ No celular, cada linha mostra nome/estado e hashrate/idade. Temperatura, potênc
 - Console, auth, WebLN e cabeçalho: 61 PASS, 1 SKIP previsto no projeto mobile para a sequência explícita de breakpoints. Inclui 14/14 cenários do console nos dois projetos; teclado, foco depois de refresh, falha/recuperação, dados antigos, todos os módulos, estado vazio, tema claro e zoom CSS 200%.
 - Dashboard, modais, navegação/loading, telemetria e ordenação de snapshots: 110 PASS nos dois projetos. O caso de cabeçalho foi verificado na rodada acima após alinhar a expectativa ao tema escuro padrão, que usa ausência de atributo.
 - Upgrade BTC e identidade da carteira: 20 PASS na rodada que também detectou os caminhos secundários depois corrigidos nos testes auth/WebLN. Compras/WebLN usam mocks; não houve pagamento real.
+- Comando de minerador por teclado: 2 PASS (desktop/mobile), incluindo foco contido, cancelamento por Escape sem POST, confirmação mock e anúncios de status. A espera inicial acompanha o console de operação; as asserções de segurança e acessibilidade foram mantidas.
 - Toolbar de aluguéis: 8 PASS, preservando alinhamento desktop, controles mobile e os dois downloads por teclado.
 - Python completo: 4.154 PASS, 1 SKIP; cobertura 85,51%, acima do gate de 80%.
 - `git diff --check` e `build_app_js --check`: PASS.

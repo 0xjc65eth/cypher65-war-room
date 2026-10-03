@@ -15,7 +15,7 @@ test.use({ serviceWorkers: 'block' });
 
 async function waitForDashboard(page) {
   await page.waitForSelector('#app-shell', { timeout: 15000 });
-  await page.waitForSelector('#status-bar', { timeout: 15000 });
+  await page.waitForSelector('#operation-console', { timeout: 15000 });
 }
 
 async function expectNoCriticalAxeViolations(page, contextName) {
@@ -94,6 +94,11 @@ test('miner command confirmation is keyboard accessible and honors reduced motio
   await page.addScriptTag({ path: axeSource });
   await expectNoCriticalAxeViolations(page, 'dashboard');
 
+  const mobileMenu = page.locator('#sidebar-mobile-toggle');
+  if (await mobileMenu.isVisible()) {
+    await mobileMenu.focus();
+    await mobileMenu.press('Enter');
+  }
   const liveLink = page.locator('.sidebar__link[data-module="live"]');
   await liveLink.focus();
   await page.keyboard.press('Enter');
