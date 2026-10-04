@@ -3582,11 +3582,6 @@ dom.walletSave?.addEventListener('click', async () => {
   let _consoleSelection = null;
   let _operationalFleetReadAt = null;
 
-  function consoleNumber(value) {
-    if (typeof value !== 'number' && typeof value !== 'string') return null;
-    if (typeof value === 'string' && !value.trim()) return null;
-    const number = Number(value);
-    return Number.isFinite(number) && number >= 0 ? number : null;
   /**
    * Parse a finite measurement within inclusive field-specific bounds.
    * @param {unknown} value Raw telemetry number or numeric string.
@@ -3629,7 +3624,6 @@ dom.walletSave?.addEventListener('click', async () => {
       const needsAttention = old || !['ONLINE', 'HASHING', 'IDLE'].includes(reportedStatus);
       const last = consoleNumber(telemetry.last_known_hashrate_hs);
       const hash = reportedStatus === 'OFFLINE' && last !== null ? last : consoleNumber(telemetry.hashrate_hs);
-      return { id: String(device.id || ''), kind: 'fleet', name: String(device.name || device.hostname || device.id || 'Equipamento sem nome'), model: String(device.model || ''), state: state, reportedState: statuses[reportedStatus] || reportedStatus, tone: old ? 'warning' : reportedStatus === 'OFFLINE' ? 'critical' : reportedStatus === 'WARNING' ? 'warning' : 'neutral', old: old, attention: needsAttention, hash: hash, hashNote: old || reportedStatus === 'OFFLINE' ? 'última observação' : 'informado pelo equipamento', temperature: consoleNumber(telemetry.temperature), power: consoleNumber(telemetry.power_watts), age: age, shareAge: consoleAge(telemetry.last_share_ts, now), accepted: consoleNumber(telemetry.shares_accepted), rejected: consoleNumber(telemetry.shares_rejected), telemetry: telemetry };
       return { id: String(device.id || ''), kind: 'fleet', name: String(device.name || device.hostname || device.id || 'Equipamento sem nome'), model: String(device.model || ''), state: state, reportedState: statuses[reportedStatus] || reportedStatus, tone: old ? 'warning' : reportedStatus === 'OFFLINE' ? 'critical' : reportedStatus === 'WARNING' ? 'warning' : 'neutral', old: old, attention: needsAttention, hash: hash, hashNote: old || reportedStatus === 'OFFLINE' ? 'última observação' : 'informado pelo equipamento', temperature: consoleNumber(telemetry.temperature, -40, 150), power: consoleNumber(telemetry.power_watts), age: age, shareAge: consoleAge(telemetry.last_share_ts, now), accepted: consoleNumber(telemetry.shares_accepted), rejected: consoleNumber(telemetry.shares_rejected), telemetry: telemetry };
     }).sort(function(a, b) { return Number(b.attention) - Number(a.attention) || a.name.localeCompare(b.name); });
     const workers = Array.isArray(snap.all_workers) ? snap.all_workers : [];
@@ -3904,7 +3898,6 @@ dom.walletSave?.addEventListener('click', async () => {
 
   function renderConsoleDetail(id) {
     const row = _consoleRows.find(function(item) { return item.id === id; });
-    if (!row) return;
     if (!row) {
       // A successful refresh supersedes the old observation. The native close
       // handler restores focus to the surviving entity or the search fallback.

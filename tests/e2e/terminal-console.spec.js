@@ -273,6 +273,8 @@ test('real login and logout invalidate a pending history response across tenants
   await expect(page.locator('#console-history-stats')).not.toContainText('99.00 TH/s');
   await clickToolbarAction(page,'#auth-toggle');await page.locator('#auth-logout').click();
   await expect(page.locator('#console-visual circle')).toHaveCount(0);
+});
+
 // Issue #750: exercise the actual render/refresh path with synthetic telemetry.
 for (const reducedMotion of ['no-preference', 'reduce']) {
   test('signed Celsius remains observed in table and detail ('+reducedMotion+')',async({page},info)=>{
