@@ -200,11 +200,15 @@ test.describe('CYPHER65 War Room — Dashboard E2E', () => {
       await expect(page.locator('#console-pool-source')).toBeVisible();
     });
 
-    test('KPI cards show hashrate / best diff / shares / pool HR', async ({ page }) => {
+    test('operational KPIs show worker metrics and separate global pool context', async ({ page }) => {
       await expect(page.locator('#kpi-hashrate')).toBeVisible();
       await expect(page.locator('#kpi-bestdiff')).toBeVisible();
-      await expect(page.locator('#kpi-shares')).toBeVisible();
-      await expect(page.locator('#kpi-poolhr')).toBeVisible();
+      await expect(page.locator('#console-worker-count')).toBeVisible();
+      await expect(page.locator('#console-last-share')).toBeVisible();
+      await expect(page.locator('#kpi-row button')).toHaveCount(4);
+      const context = page.locator('#console-observation-disclosure');
+      if ((await context.getAttribute('open')) === null) await context.locator('summary').click();
+      await expect(page.locator('#console-pool-context #kpi-poolhr')).toBeVisible();
     });
 
     test('worker hashrate displays a value', async ({ page }) => {

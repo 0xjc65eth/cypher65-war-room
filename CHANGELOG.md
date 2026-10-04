@@ -6,6 +6,8 @@ e versionamento semântico ([SemVer](https://semver.org/lang/pt-BR/)).
 
 ## [Unreleased]
 
+- **UI boot (#756):** remove malformed merge residues that stopped all dashboard initialization, preserving signed Celsius bounds and dialog focus restoration.
+
 - Rebuild Operation as a richer premium dashboard: observed-worker comparison, authenticated per-device hashrate/temperature/power history, explicit gaps and last-valid measurement age, current power coverage, activity and Bitcoin context. Preserve entity investigation, source failures, session isolation and all modules; add native keyboard metric navigation and a complete text alternative for charts (#746).
 - Rebuild Operation as a richer premium dashboard: observed-worker comparison, authenticated per-device hashrate/temperature/power history, explicit gaps and last-valid measurement age, current power coverage, activity and Bitcoin context. Preserve entity investigation, source failures, session isolation and all modules; add native keyboard metric navigation and a complete text alternative for charts (#752).
 
