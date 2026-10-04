@@ -545,6 +545,17 @@
     document.getElementById('console-search').addEventListener('input', function(event) { _consoleQuery = event.target.value.toLowerCase(); update(); });
     document.getElementById('console-open-fleet').addEventListener('click', function() { activateModule('fleet'); });
     document.getElementById('console-open-analysis').addEventListener('click', function() { activateModule('analysis'); });
+    const commandForm = document.getElementById('desk-command');
+    if (commandForm) commandForm.addEventListener('submit', function(event) {
+      event.preventDefault();
+      const input = document.getElementById('desk-command-input');
+      const command = input.value.trim().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+      input.value = '';
+      if (command === 'pool') { _consoleSource = 'pool'; update(); return; }
+      if (command === 'frota') { _consoleSource = 'fleet'; update(); return; }
+      const modules = { fleet: 'fleet', equipamentos: 'fleet', alerta: 'alerts', alertas: 'alerts', analise: 'analysis', mercado: 'market' };
+      if (Object.prototype.hasOwnProperty.call(modules, command)) activateModule(modules[command]);
+    });
     const dialog = document.getElementById('console-detail');
     const openDetail = function(id, keyboard) { _consoleSelection = id; renderConsoleDetail(id); dialog.classList.toggle('console-detail--instant', keyboard); if (!dialog.open) dialog.showModal(); };
     document.getElementById('console-table-body').addEventListener('click', function(event) { const button = event.target.closest('[data-console-id]'); if (button) openDetail(button.dataset.consoleId, event.detail === 0); });
