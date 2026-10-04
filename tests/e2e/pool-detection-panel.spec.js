@@ -99,7 +99,7 @@ test.describe('Pool detectada pelo ASIC — faixa do painel Pool Context', () =>
     await expect(page.locator('#pool-detect')).not.toHaveClass(/pool-detect--unknown/);
   });
 
-  test('pool sem API pública: a fonte honesta é o ASIC', async ({ page }) => {
+  test('API não integrada: a fonte honesta é o ASIC', async ({ page }) => {
     await openWithPoolReport(page, {
       detection: {
         provider_id: 'ocean', label: 'OCEAN', kind: 'pool', chain: 'btc',
@@ -115,10 +115,35 @@ test.describe('Pool detectada pelo ASIC — faixa do painel Pool Context', () =>
 
     await expect(page.locator('#pd-provider')).toHaveText('OCEAN');
     await expect(page.locator('#pd-source')).toHaveText('ASIC');
-    await expect(page.locator('#pd-source-sub')).toHaveText('pool sem API pública');
+    await expect(page.locator('#pd-source-sub')).toHaveText('API não integrada');
     // `stratum_only` é o estado normal — não vira aviso.
     await expect(page.locator('#pool-detect')).not.toHaveClass(/pool-detect--degraded/);
   });
+
+  for (const reducedMotion of ['no-preference', 'reduce']) {
+    test(`BTC PoW Lab: ASIC source without denying public API (${reducedMotion})`, async ({ page }) => {
+      await page.emulateMedia({ reducedMotion });
+      await openWithPoolReport(page, {
+        detection: {
+          provider_id: 'btcpowlab', label: 'BTC PoW Lab', kind: 'pool', chain: 'btc',
+          chain_source: 'provider_registry', host: 'stratum.btcpowlab-pool.com',
+          matched_pattern: 'btcpowlab-pool.com', stats_url: null, has_stats_api: false,
+          docs: 'Public miner telemetry; API schema not yet verified',
+        },
+        worker: {
+          provider_id: 'btcpowlab', label: 'BTC PoW Lab', chain: 'btc', kind: 'pool',
+          source: 'asic', stats_url: null, error: '',
+        },
+      });
+      await waitForStrip(page);
+
+      await expect(page.locator('#pd-provider')).toHaveText('BTC PoW Lab');
+      await expect(page.locator('#pd-source')).toHaveText('ASIC');
+      await expect(page.locator('#pd-source-sub')).toHaveText('API não integrada');
+      await expect(page.locator('#pd-source')).not.toHaveAttribute('title', /https:\/\//);
+      await expect(page.locator('#pool-detect')).not.toHaveClass(/pool-detect--degraded/);
+    });
+  }
 
   test('pool COM API que não respondeu: aviso âmbar, não "sem API"', async ({ page }) => {
     await openWithPoolReport(page, {
