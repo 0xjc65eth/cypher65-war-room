@@ -5600,6 +5600,14 @@ const consoleFleet = {fleet_stats:{total_devices:2},device_health:[
 const consoleLive = consoleModel(consoleSnap,consoleFleet,false,'',consoleNow,consoleNow);
 assertEqual('default uses observed Fleet entities', consoleLive.mode, 'fleet');
 assertEqual('attention first sorting', consoleLive.rows[0].id, 'off');
+const rankedFleet = {fleet_stats:{total_devices:4},device_health:[
+  {id:'on',name:'Online',status:'ONLINE',telemetry:{ts:consoleNow-10,hashrate_hs:1e12}},
+  {id:'off',name:'Offline',status:'OFFLINE',telemetry:{ts:consoleNow-10,hashrate_hs:1e12}},
+  {id:'stale',name:'Stale',status:'STALE',telemetry:{ts:consoleNow-10,hashrate_hs:1e12}},
+  {id:'pause',name:'Paused',status:'PAUSED',telemetry:{ts:consoleNow-10,hashrate_hs:1e12}}
+]};
+const rankedRows = consoleModel(consoleSnap,rankedFleet,false,'fleet',consoleNow,consoleNow).rows.map(function(row) { return row.id; });
+assertEqual('paused, stale and offline outrank a healthy machine', rankedRows.join(','), 'pause,stale,off,on');
 assertEqual('offline historical HR remains visible', consoleLive.rows[0].hash, 2e12);
 assertEqual('offline historical HR excluded from current sum', consoleLive.hashrate, 1e12);
 assertEqual('attention count requires recent evidence', consoleLive.attention, 1);
