@@ -6,7 +6,7 @@
 <title>CYPHER65 // PARASITE POOL WAR ROOM</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
 <!-- Issue #186: defer no Chart.js — CDN nunca mais bloqueia o parse do DOM
      (o retry hack _mktGridRetried no app.js era sintoma deste bloqueio).
      Quem usa Chart guarda com `typeof Chart === 'undefined'` e re-renderiza
@@ -60,7 +60,7 @@
   }
 </script>
 {% endif %}
-<link rel="stylesheet" href="/static/style.css?v746b">
+<link rel="stylesheet" href="/static/style.css?v760">
 <link rel="icon" href="/static/favicon.ico" sizes="any">
 <link rel="icon" type="image/png" sizes="32x32" href="/static/icon-32x32.png">
 <link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
@@ -215,14 +215,14 @@
      MODULE HEADER — indica o módulo ativo
      ══════════════════════════════════════════════════════════════════════ -->
 <div class="module-header" id="module-header" role="region" aria-label="Cabeçalho do módulo">
-  <span class="module-header__eyebrow">MODULE</span>
+  <span class="module-header__eyebrow">Módulo</span>
   <h1 class="module-header__title" id="module-header-title">DASHBOARD</h1>
   <span class="module-header__desc" id="module-header-desc">Visão geral — pool, worker e rede</span>
 </div>
 
 <section class="operation-console" id="operation-console" data-module="dashboard" role="main" aria-labelledby="console-title" aria-busy="true">
   <div class="console-heading">
-    <div><p class="console-kicker">CYPHER65 / WAR ROOM</p><h1 id="console-title">Carregando fontes…</h1><p id="console-coverage">Aguardando o snapshot da pool e a consulta de equipamentos.</p></div>
+    <div><p class="console-kicker">Turno</p><h1 id="console-title">Carregando fontes…</h1><p id="console-coverage">Aguardando o snapshot da pool e a consulta de equipamentos.</p></div>
   </div>
   <div class="console-source-tabs" role="group" aria-label="Fonte da operação">
     <button id="console-source-pool" aria-pressed="true">Pool</button>
@@ -270,9 +270,14 @@
     <div><span>Amostras recentes</span><strong id="console-measured">—</strong><small id="console-recent-scope">amostras com até 150 s</small></div>
   </div>
   <div class="console-notice" id="console-notice" hidden><div><strong id="console-notice-title"></strong><p id="console-notice-detail"></p></div><button class="console-button" id="console-notice-action">Ver equipamentos</button></div>
+  <div class="console-inventory">
+  <div class="console-table-heading"><div><h2 id="console-table-title">Workers da pool</h2><p id="console-table-note">Dados da pool não incluem temperatura ou potência do equipamento.</p></div><label class="console-search">Filtrar <input id="console-search" type="search" placeholder="Nome ou modelo" autocomplete="off"></label></div>
+  <div class="console-table-wrap"><table class="console-table" id="console-table"><caption class="sr-only">Entidades observadas pela fonte selecionada</caption><thead id="console-table-head"></thead><tbody id="console-table-body"><tr><td>Aguardando dados…</td></tr></tbody></table></div>
+  <div class="console-table-footer"><span id="console-row-count">—</span><span>Selecione uma linha para investigar <span aria-hidden="true">↗</span></span></div>
+  </div>
   <div class="console-insights">
     <section class="console-performance" aria-labelledby="console-visual-title">
-      <div class="console-card-heading"><div><p class="console-section-label">PRODUÇÃO</p><h2 id="console-visual-title">Hashrate por worker</h2></div><span class="console-origin" id="console-visual-origin">Pool</span></div>
+      <div class="console-card-heading"><div><p class="console-section-label">Produção</p><h2 id="console-visual-title">Hashrate por worker</h2></div><span class="console-origin" id="console-visual-origin">Pool</span></div>
       <div class="console-history-controls" id="console-history-controls" hidden>
         <label>Equipamento <select id="console-history-device"></select></label>
         <label>Métrica <select id="console-history-metric"><option value="hashrate">Hashrate</option><option value="temperature">Temperatura</option><option value="power_watts">Potência</option></select></label>
@@ -284,18 +289,13 @@
       <details class="console-history-data" id="console-history-data" hidden><summary>Consultar amostras do gráfico</summary><div id="console-history-samples"></div></details>
     </section>
     <aside class="console-observations" aria-labelledby="console-observations-title">
-      <div class="console-card-heading"><div><p class="console-section-label">CONTEXTO OPERACIONAL</p><h2 id="console-observations-title">Atividade e cobertura</h2></div><span class="console-origin" id="console-observation-origin">Pool</span></div>
+      <div class="console-card-heading"><div><p class="console-section-label">Contexto</p><h2 id="console-observations-title">Atividade e cobertura</h2></div><span class="console-origin" id="console-observation-origin">Pool</span></div>
       <details class="console-observation-disclosure" id="console-observation-disclosure" open><summary>Atividade e cobertura da operação</summary><div id="console-observations-body"></div>
       <div class="console-pool-context" id="console-pool-context"><span>Hashrate global da pool</span><strong id="kpi-poolhr">—</strong><small>Contexto da pool, independente dos workers acima.</small></div></details>
     </aside>
   </div>
-  <div class="console-inventory">
-  <div class="console-table-heading"><div><h2 id="console-table-title">Workers da pool</h2><p id="console-table-note">Dados da pool não incluem temperatura ou potência do equipamento.</p></div><label class="console-search">Filtrar <input id="console-search" type="search" placeholder="Nome ou modelo" autocomplete="off"></label></div>
-  <div class="console-table-wrap"><table class="console-table" id="console-table"><caption class="sr-only">Entidades observadas pela fonte selecionada</caption><thead id="console-table-head"></thead><tbody id="console-table-body"><tr><td>Aguardando dados…</td></tr></tbody></table></div>
-  <div class="console-table-footer"><span id="console-row-count">—</span><span>Selecione uma linha para investigar <span aria-hidden="true">↗</span></span></div>
-  </div>
   <section class="console-market-strip" aria-label="Contexto da rede Bitcoin">
-    <div class="console-market-heading"><span class="console-bitcoin" aria-hidden="true">₿</span><div><strong>Bitcoin</strong><small>CONTEXTO DE REDE</small></div></div>
+    <div class="console-market-heading"><span class="console-bitcoin" aria-hidden="true">₿</span><div><strong>Bitcoin</strong><small>Contexto de rede</small></div></div>
     <div><span>Preço BTC / USD</span><strong id="console-btc-price">—</strong><small id="console-btc-scope">fonte não informada</small></div>
     <div><span>Altura da rede</span><strong id="console-network-height">—</strong><small id="console-network-scope">fonte não informada</small></div>
     <div><span>Dificuldade</span><strong id="console-network-diff">—</strong><small>referência da rede Bitcoin</small></div>
@@ -3342,7 +3342,7 @@
     <span id="next-poll"></span>
   </div>
 
-  <script src="/static/app.js?v64" defer></script>
+  <script src="/static/app.js?v760" defer></script>
 </div> <!-- end #app-main -->
 </div> <!-- end #app-layout -->
   <!-- DESIGN SYSTEM v2: matrix rain canvas removido (zero decorativo) —
