@@ -8,6 +8,7 @@ jest.useFakeTimers();
 describe('useBatteryMode', () => {
   let onChange: ((state: AppStateStatus) => void) | undefined;
   let remove: jest.Mock;
+  let intervals: Set<ReturnType<typeof setInterval>>;
 
   const changeState = async (state: AppStateStatus) => {
     await act(() => {
@@ -25,6 +26,18 @@ describe('useBatteryMode', () => {
   beforeEach(() => {
     useAppStore.setState({ batteryMode: 'balanced' });
     jest.clearAllTimers();
+    intervals = new Set();
+    const createInterval = global.setInterval.bind(global);
+    const cancelInterval = global.clearInterval.bind(global);
+    jest.spyOn(global, 'setInterval').mockImplementation((callback, period, ...args) => {
+      const id = createInterval(callback, period, ...args);
+      intervals.add(id);
+      return id;
+    });
+    jest.spyOn(global, 'clearInterval').mockImplementation((id) => {
+      intervals.delete(id as ReturnType<typeof setInterval>);
+      cancelInterval(id);
+    });
     onChange = undefined;
     remove = jest.fn();
     Object.defineProperty(AppState, 'currentState', { value: 'active', configurable: true });
@@ -46,6 +59,7 @@ describe('useBatteryMode', () => {
     await act(() => {
       result.current.schedule(cb);
     });
+    expect(intervals.size).toBe(0);
     await act(async () => {
       await jest.advanceTimersByTimeAsync(120000);
     });
@@ -88,6 +102,7 @@ describe('useBatteryMode', () => {
       result.current.schedule(cb);
       result.current.cleanup();
     });
+    expect(intervals.size).toBe(0);
     await act(async () => {
       await jest.advanceTimersByTimeAsync(60000);
     });
@@ -101,9 +116,11 @@ describe('useBatteryMode', () => {
       const callback = jest.fn();
       const { result } = await renderHook(() => useBatteryMode());
       await act(() => result.current.schedule(callback));
+      expect(intervals.size).toBe(0);
       await advance(120000);
       expect(callback).not.toHaveBeenCalled();
       await changeState('active');
+      expect(intervals.size).toBe(1);
       expect(callback).toHaveBeenCalledTimes(1);
       await advance(60000);
       expect(callback).toHaveBeenCalledTimes(2);
@@ -117,10 +134,12 @@ describe('useBatteryMode', () => {
     await advance(59000);
     await changeState('inactive');
     await changeState('background');
+    expect(intervals.size).toBe(0);
     await advance(180000);
     expect(callback).not.toHaveBeenCalled();
     await changeState('active');
     await changeState('active');
+    expect(intervals.size).toBe(1);
     expect(callback).toHaveBeenCalledTimes(1);
     await advance(59999);
     expect(callback).toHaveBeenCalledTimes(1);
@@ -133,8 +152,10 @@ describe('useBatteryMode', () => {
     const callback = jest.fn();
     const { result } = await renderHook(() => useBatteryMode());
     await act(() => result.current.schedule(callback));
+    expect(intervals.size).toBe(0);
     await changeState('background');
     await changeState('active');
+    expect(intervals.size).toBe(0);
     await advance(120000);
     expect(callback).not.toHaveBeenCalled();
   });
@@ -146,12 +167,15 @@ describe('useBatteryMode', () => {
     await act(() => result.current.schedule(callback));
     await act(() => result.current.setBatteryMode('real_time'));
     expect(result.current.schedule).toBe(initialSchedule);
+    expect(intervals.size).toBe(1);
     await advance(15000);
     expect(callback).toHaveBeenCalledTimes(1);
     await act(() => result.current.setBatteryMode('max_battery'));
+    expect(intervals.size).toBe(0);
     await advance(120000);
     expect(callback).toHaveBeenCalledTimes(1);
     await act(() => result.current.setBatteryMode('balanced'));
+    expect(intervals.size).toBe(1);
     await advance(60000);
     expect(callback).toHaveBeenCalledTimes(2);
   });
@@ -166,6 +190,7 @@ describe('useBatteryMode', () => {
       result.current.setBatteryMode('real_time');
       result.current.schedule(latest);
     });
+    expect(intervals.size).toBe(0);
     await advance(60000);
     expect(oldCallback).not.toHaveBeenCalled();
     expect(latest).not.toHaveBeenCalled();
@@ -203,6 +228,7 @@ describe('useBatteryMode', () => {
     await changeState('background');
     await changeState('active');
     await act(() => result.current.cleanup());
+    expect(intervals.size).toBe(0);
     await act(async () => resolve());
     await changeState('background');
     await changeState('active');
@@ -216,6 +242,7 @@ describe('useBatteryMode', () => {
     await act(() => result.current.schedule(callback));
     await unmount();
     expect(remove).toHaveBeenCalledTimes(1);
+    expect(intervals.size).toBe(0);
     await changeState('background');
     await changeState('active');
     await advance(120000);
@@ -235,6 +262,7 @@ describe('useBatteryMode', () => {
     await advance(120000);
     expect(callback).toHaveBeenCalledTimes(1);
     expect(remove).toHaveBeenCalledTimes(1);
+    expect(intervals.size).toBe(0);
   });
 
   it('replaces active timers and does not replay missed background intervals', async () => {
@@ -244,6 +272,7 @@ describe('useBatteryMode', () => {
     await act(() => result.current.schedule(oldCallback));
     await advance(59000);
     await act(() => result.current.schedule(latest));
+    expect(intervals.size).toBe(1);
     await advance(59000);
     expect(oldCallback).not.toHaveBeenCalled();
     expect(latest).not.toHaveBeenCalled();
@@ -265,4 +294,23 @@ describe('useBatteryMode', () => {
     await advance(180000);
     expect(callback).toHaveBeenCalledTimes(3);
   });
+
+  it.each(['background', 'max_battery', 'cleanup', 'unmount'] as const)(
+    'ignores an already queued timer callback after %s',
+    async (transition) => {
+      const timer = jest.spyOn(global, 'setInterval');
+      const callback = jest.fn();
+      const { result, unmount } = await renderHook(() => useBatteryMode());
+      await act(() => result.current.schedule(callback));
+      const tick = timer.mock.calls[timer.mock.calls.length - 1][0] as () => void;
+      if (transition === 'background') await changeState('background');
+      else if (transition === 'max_battery') {
+        await act(() => result.current.setBatteryMode('max_battery'));
+      } else if (transition === 'cleanup') await act(() => result.current.cleanup());
+      else await unmount();
+      await act(() => tick());
+      expect(callback).not.toHaveBeenCalled();
+      expect(intervals.size).toBe(0);
+    }
+  );
 });
