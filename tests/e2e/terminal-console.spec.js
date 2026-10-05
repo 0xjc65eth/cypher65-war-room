@@ -331,3 +331,22 @@ test('detail motion is restrained for pointer, instant for keyboard and reduced 
   await page.keyboard.press('Escape');await expect(entity).toBeFocused();
   await noOverflow(page);
 });
+
+test('desk quote stays above the register and commands open the shift',async({page})=>{
+  await fixture(page,{local:fleet()});
+  const quote=await page.locator('.desk-quote').boundingBox();
+  const table=await page.locator('#console-table').boundingBox();
+  expect(quote.y).toBeLessThan(table.y);
+  await expect(page.locator('#console-btc-price')).toHaveCSS('color','rgb(247, 147, 26)');
+  await expect(page.locator('#desk-command-input')).not.toHaveCount(0);
+  await expect(page.locator('#console-detail #desk-command-input')).toHaveCount(0);
+  await page.locator('#desk-command-input').fill('pool');
+  await page.locator('#desk-command-input').press('Enter');
+  await expect(page.locator('#operation-console')).toHaveAttribute('data-source','pool');
+  await expect(page.locator('#desk-command-input')).toHaveValue('');
+  await page.locator('#desk-command-input').fill('análise');
+  await page.locator('#desk-command-input').press('Enter');
+  await expect(page.locator('#network-panel')).toBeVisible();
+  await expect(page.locator('#operation-console')).toBeHidden();
+  await noOverflow(page);
+});
