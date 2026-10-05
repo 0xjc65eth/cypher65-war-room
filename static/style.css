@@ -4181,12 +4181,53 @@ dimmed so they never read as a discovered miner. */
 
 .operation-ui #rentals-panel > .panel__header > .panel__tools { align-items: flex-start; }
 
+/* Mesa CY65 — warm paper on espresso. Orange is the mark and the BTC price. */
+.premium-ui {
+  --radius-sm: 2px; --radius-md: 2px; --sidebar-width: 216px;
+  --bg-deep: #100e0c;
+  --bg-surface: #181512;
+  --bg-elevated: #221e1a;
+  --bg-hover: #2a251f;
+  --bg-input: #16130f;
+  --bg-subtle: #1c1814;
+  --border-subtle: #3a332c;
+  --border-default: #4a4036;
+  --border-strong: #5c5146;
+  --text-primary: #f4efe6;
+  --text-secondary: #b7aa9a;
+  --text-tertiary: #8c7f70;
+  --brand: #f7931a;
+  --brand-dim: #c5760f;
+  --brand-bg: rgba(247, 147, 26, 0.12);
 /* Operation dashboard keeps the industrial tokens. Radius and type stay quiet. */
 .premium-ui {
   --radius-sm: 2px; --radius-md: 2px; --sidebar-width: 216px;
   --console-series: var(--text-secondary);
   background: var(--bg-deep);
+  color: var(--text-primary);
 }
+:root[data-theme='light'] .premium-ui {
+  --bg-deep: #f6f1e8;
+  --bg-surface: #fffdf8;
+  --bg-elevated: #efe8dc;
+  --bg-hover: #e7dfd2;
+  --bg-input: #fffdf8;
+  --bg-subtle: #efe8dc;
+  --border-subtle: #ddd4c6;
+  --border-default: #c9bba8;
+  --border-strong: #b3a492;
+  --text-primary: #1c1612;
+  --text-secondary: #5c5146;
+  --text-tertiary: #7a6e62;
+  --brand: #c5760f;
+  --brand-dim: #9e5e0a;
+  --brand-bg: rgba(197, 118, 15, 0.12);
+  --console-series: var(--text-secondary);
+}
+.premium-ui .sidebar { background: var(--bg-surface); border-right: 1px solid var(--border-subtle); }
+.premium-ui .sidebar__logo { height: 72px; padding: 0 18px; }
+.premium-ui .sidebar__brand { display: inline-flex; align-items: center; font-family: var(--font-sans); font-size: 13px; font-weight: 600; letter-spacing: 0.04em; color: var(--text-primary); }
+.premium-ui .sidebar__brand::before, .premium-ui .desk-mark { content: ""; display: inline-block; width: 8px; height: 8px; margin-right: 8px; background: var(--brand); flex-shrink: 0; }
 :root[data-theme='light'] .premium-ui { --console-series: var(--text-secondary); }
 .premium-ui .sidebar { background: var(--bg-surface); border-right: 1px solid var(--border-subtle); }
 .premium-ui .sidebar__logo { height: 72px; padding: 0 18px; }
@@ -4206,6 +4247,9 @@ dimmed so they never read as a discovered miner. */
 .premium-ui .console-kicker { font: 500 12px var(--font-sans); color: var(--text-secondary); letter-spacing: 0; margin-bottom: 4px; }
 .premium-ui .console-heading h1 { font-size: 20px; font-weight: 600; letter-spacing: -0.02em; }
 .premium-ui .console-heading p:not(.console-kicker) { font-size: 13px; }
+.premium-ui .console-source-tabs { gap: 4px; border-bottom: 1px solid var(--border-subtle); margin-bottom: 16px; }
+.premium-ui .console-source-tabs button { padding: 8px 12px; border: 0; border-bottom: 2px solid transparent; border-radius: 0; }
+.premium-ui .console-source-tabs button[aria-pressed='true'] { background: transparent; border-bottom-color: var(--brand); color: var(--text-primary); }
 .premium-ui .console-source-tabs { gap: 6px; border-bottom: 0; margin-bottom: 16px; }
 .premium-ui .console-source-tabs button { padding: 8px 12px; border: 1px solid transparent; border-radius: 2px; }
 .premium-ui .console-source-tabs button[aria-pressed='true'] { background: var(--bg-elevated); border-color: var(--border-default); color: var(--brand); }
@@ -4290,12 +4334,17 @@ dimmed so they never read as a discovered miner. */
 .premium-ui .console-search input { background: var(--bg-input); border-color: var(--border-default); border-radius: 2px; }
 .premium-ui .console-table thead th { background: var(--bg-elevated); border-color: var(--border-subtle); padding: 10px 16px; text-transform: none; font-size: 11px; letter-spacing: 0; }
 .premium-ui .console-table thead th:first-child, .premium-ui .console-table tbody th { padding-left: 0; }
+.premium-ui .console-table tbody th, .premium-ui .console-table tbody td { padding-top: 8px; padding-bottom: 8px; font-size: 12px; }
+.premium-ui .console-table .console-numeric { font-size: 13px; }
 .premium-ui .console-table tbody th, .premium-ui .console-table tbody td { padding-top: 14px; padding-bottom: 14px; font-size: 12px; }
 .premium-ui .console-table tbody td { padding-left: 16px; padding-right: 16px; }
 .premium-ui .console-table-footer { padding: 12px 0; }
 .premium-ui .console-row--warning td:nth-child(2), .premium-ui .console-row--critical td:nth-child(2) { font-weight: 500; }
 .premium-ui .console-sources { border-top: 0; font: 10px var(--font-sans); padding-top: 16px; }
 .premium-ui .console-context-link { margin-top: 4px; }
+.premium-ui .console-detail { border-left: 2px solid var(--brand); background: var(--bg-surface); }
+.premium-ui .console-detail::backdrop { background: rgba(16, 14, 12, 0.55); }
+:root[data-theme='light'] .premium-ui .console-detail::backdrop { background: rgba(28, 22, 18, 0.28); }
 .premium-ui .console-detail { border-left: 1px solid var(--border-default); }
 .premium-ui .console-detail dl > div { padding: 12px 0; margin-top: 0; border: 0; border-top: 1px solid var(--border-subtle); border-radius: 0; background: transparent; }
 @media (max-width: 1120px) {
@@ -4376,4 +4425,67 @@ dimmed so they never read as a discovered miner. */
   .operation-console[data-source='fleet'] .console-performance { padding: 16px; }
   .operation-console[data-source='fleet'] .console-card-heading { margin-bottom: 12px; }
   .operation-console[data-source='fleet'] .console-visual-note { margin-top: 8px; }
+}
+
+/* Desk: quote strip, register beside the chart, command on the last line. */
+.premium-ui .desk-quote.console-market-strip {
+  display: flex; flex-wrap: nowrap; align-items: baseline; gap: 22px;
+  position: sticky; top: 0; z-index: 20;
+  overflow-x: auto; max-width: 100%; min-width: 0;
+  margin: 0; padding: 8px 0;
+  border: 0; border-bottom: 1px solid var(--border-subtle); border-radius: 0;
+  background: var(--bg-deep);
+}
+.premium-ui .desk-quote > div { display: flex; align-items: baseline; gap: 8px; flex: 0 0 auto; min-width: 0; }
+.premium-ui .desk-quote span:not(.desk-mark),
+.premium-ui .desk-quote small,
+.premium-ui .desk-quote strong { display: inline; margin: 0; }
+.premium-ui .desk-quote span:not(.desk-mark),
+.premium-ui .desk-quote small { font: 11px/1.3 var(--font-sans); color: var(--text-tertiary); }
+.premium-ui .desk-quote .desk-mark { display: inline-block; width: 8px; height: 8px; margin-right: 8px; background: var(--brand); }
+.premium-ui .desk-quote strong { font: 500 13px/1 var(--font-mono); color: var(--text-primary); }
+.premium-ui .desk-quote .console-market-heading { gap: 0; }
+.premium-ui .desk-quote .console-market-heading strong { font: 600 12px/1 var(--font-sans); letter-spacing: 0.08em; color: var(--text-primary); }
+.premium-ui .desk-quote .console-market-heading small { margin-left: 8px; letter-spacing: 0; }
+.premium-ui .desk-quote #console-btc-price { color: var(--brand); font-size: 15px; }
+.premium-ui .desk-mark { margin-right: 8px; }
+.premium-ui .desk-workspace {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(280px, 360px);
+  grid-template-areas: "head side" "table side";
+  column-gap: 20px;
+  align-items: start;
+  min-width: 0;
+}
+.premium-ui .desk-head { grid-area: head; min-width: 0; }
+.premium-ui .desk-inventory { grid-area: table; min-width: 0; }
+.premium-ui .desk-secondary { grid-area: side; min-width: 0; border-left: 1px solid var(--border-subtle); padding-left: 16px; }
+.premium-ui .desk-secondary .console-insights { grid-template-columns: minmax(0, 1fr); gap: 0; margin: 0; }
+.premium-ui .desk-secondary .console-performance,
+.premium-ui .desk-secondary .console-observations { border-top: 0; padding-top: 12px; }
+.premium-ui .desk-command {
+  display: flex; align-items: center; gap: 12px;
+  margin-top: 8px; padding: 8px 0 4px;
+  background: var(--bg-deep);
+  border-top: 1px solid var(--border-subtle);
+}
+.premium-ui .desk-command__mark { font: 600 11px/1 var(--font-mono); letter-spacing: 0.08em; color: var(--brand); }
+.premium-ui .desk-command input {
+  flex: 1; min-width: 0; border: 0; background: transparent;
+  color: var(--text-primary); font: 13px/1.4 var(--font-mono); padding: 6px 0;
+}
+.premium-ui .desk-command input::placeholder { color: var(--text-tertiary); }
+.premium-ui .desk-command input:focus { outline: none; }
+.premium-ui .desk-command input:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }
+@media (max-width: 900px) {
+  .premium-ui .desk-workspace {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas: "head" "side" "table";
+  }
+  .premium-ui .desk-secondary { border-left: 0; padding-left: 0; border-top: 1px solid var(--border-subtle); }
+  .premium-ui .operation-console[data-source='pool'] .console-visual { min-height: 0; }
+}
+@media (max-width: 768px) {
+  .premium-ui .desk-quote.console-market-strip { gap: 16px; padding: 8px 0; }
+  .premium-ui .desk-quote strong { font-size: 13px; }
 }
