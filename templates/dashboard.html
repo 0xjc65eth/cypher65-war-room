@@ -61,6 +61,7 @@
 </script>
 {% endif %}
 <link rel="stylesheet" href="/static/style.css?v762">
+<link rel="stylesheet" href="/static/style.css?v760">
 <link rel="icon" href="/static/favicon.ico" sizes="any">
 <link rel="icon" type="image/png" sizes="32x32" href="/static/icon-32x32.png">
 <link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
@@ -280,6 +281,7 @@
   <div class="console-notice" id="console-notice" hidden><div><strong id="console-notice-title"></strong><p id="console-notice-detail"></p></div><button class="console-button" id="console-notice-action">Ver equipamentos</button></div>
   </div>
   <div class="console-inventory desk-inventory">
+  <div class="console-inventory">
   <div class="console-table-heading"><div><h2 id="console-table-title">Workers da pool</h2><p id="console-table-note">Dados da pool não incluem temperatura ou potência do equipamento.</p></div><label class="console-search">Filtrar <input id="console-search" type="search" placeholder="Nome ou modelo" autocomplete="off"></label></div>
   <div class="console-table-wrap"><table class="console-table" id="console-table"><caption class="sr-only">Entidades observadas pela fonte selecionada</caption><thead id="console-table-head"></thead><tbody id="console-table-body"><tr><td>Aguardando dados…</td></tr></tbody></table></div>
   <div class="console-table-footer"><span id="console-row-count">—</span><span>Selecione uma linha para investigar <span aria-hidden="true">↗</span></span></div>
@@ -306,6 +308,12 @@
   </div>
   </div>
   </div>
+  <section class="console-market-strip" aria-label="Contexto da rede Bitcoin">
+    <div class="console-market-heading"><span class="console-bitcoin" aria-hidden="true">₿</span><div><strong>Bitcoin</strong><small>Contexto de rede</small></div></div>
+    <div><span>Preço BTC / USD</span><strong id="console-btc-price">—</strong><small id="console-btc-scope">fonte não informada</small></div>
+    <div><span>Altura da rede</span><strong id="console-network-height">—</strong><small id="console-network-scope">fonte não informada</small></div>
+    <div><span>Dificuldade</span><strong id="console-network-diff">—</strong><small>referência da rede Bitcoin</small></div>
+  </section>
   <div class="console-sources" aria-label="Origem e idade dos dados"><span id="console-pool-source">Pool: aguardando</span><span id="console-fleet-source">Frota: aguardando</span><span id="console-network-source">Rede: aguardando</span></div>
   <div class="console-context-link"><span>Explore taxas, modelos e cenários.</span><button class="console-text-button" id="console-open-analysis">Abrir Análise <span aria-hidden="true">→</span></button></div>
   <form class="desk-command" id="desk-command" autocomplete="off">
@@ -3354,6 +3362,7 @@
   </div>
 
   <script src="/static/app.js?v762" defer></script>
+  <script src="/static/app.js?v760" defer></script>
 </div> <!-- end #app-main -->
 </div> <!-- end #app-layout -->
   <!-- DESIGN SYSTEM v2: matrix rain canvas removido (zero decorativo) —

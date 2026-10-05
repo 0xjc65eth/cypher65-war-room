@@ -4199,6 +4199,9 @@ dimmed so they never read as a discovered miner. */
   --brand: #f7931a;
   --brand-dim: #c5760f;
   --brand-bg: rgba(247, 147, 26, 0.12);
+/* Operation dashboard keeps the industrial tokens. Radius and type stay quiet. */
+.premium-ui {
+  --radius-sm: 2px; --radius-md: 2px; --sidebar-width: 216px;
   --console-series: var(--text-secondary);
   background: var(--bg-deep);
   color: var(--text-primary);
@@ -4225,6 +4228,10 @@ dimmed so they never read as a discovered miner. */
 .premium-ui .sidebar__logo { height: 72px; padding: 0 18px; }
 .premium-ui .sidebar__brand { display: inline-flex; align-items: center; font-family: var(--font-sans); font-size: 13px; font-weight: 600; letter-spacing: 0.04em; color: var(--text-primary); }
 .premium-ui .sidebar__brand::before, .premium-ui .desk-mark { content: ""; display: inline-block; width: 8px; height: 8px; margin-right: 8px; background: var(--brand); flex-shrink: 0; }
+:root[data-theme='light'] .premium-ui { --console-series: var(--text-secondary); }
+.premium-ui .sidebar { background: var(--bg-surface); border-right: 1px solid var(--border-subtle); }
+.premium-ui .sidebar__logo { height: 72px; padding: 0 18px; }
+.premium-ui .sidebar__brand { font-size: 13px; letter-spacing: 0.02em; }
 .premium-ui .sidebar__nav { padding: 8px 12px 20px; }
 .premium-ui .sidebar__group { font-size: 11px; padding: 18px 10px 6px; letter-spacing: 0.01em; text-transform: none; color: var(--text-tertiary); }
 .premium-ui .sidebar__link { border-radius: 2px; margin: 1px 0; padding: 8px 10px; gap: 10px; font-size: 13px; }
@@ -4243,6 +4250,9 @@ dimmed so they never read as a discovered miner. */
 .premium-ui .console-source-tabs { gap: 4px; border-bottom: 1px solid var(--border-subtle); margin-bottom: 16px; }
 .premium-ui .console-source-tabs button { padding: 8px 12px; border: 0; border-bottom: 2px solid transparent; border-radius: 0; }
 .premium-ui .console-source-tabs button[aria-pressed='true'] { background: transparent; border-bottom-color: var(--brand); color: var(--text-primary); }
+.premium-ui .console-source-tabs { gap: 6px; border-bottom: 0; margin-bottom: 16px; }
+.premium-ui .console-source-tabs button { padding: 8px 12px; border: 1px solid transparent; border-radius: 2px; }
+.premium-ui .console-source-tabs button[aria-pressed='true'] { background: var(--bg-elevated); border-color: var(--border-default); color: var(--brand); }
 .premium-ui .console-source-tabs #console-open-fleet { border-color: var(--border-default); padding: 8px 12px; color: var(--text-primary); }
 .premium-ui #kpi-row, .premium-ui .console-fleet-summary { gap: 12px; padding: 0; border: 0; margin-bottom: 18px; }
 .premium-ui #kpi-row .kpi-card, .premium-ui .console-fleet-summary > div {
@@ -4326,6 +4336,7 @@ dimmed so they never read as a discovered miner. */
 .premium-ui .console-table thead th:first-child, .premium-ui .console-table tbody th { padding-left: 0; }
 .premium-ui .console-table tbody th, .premium-ui .console-table tbody td { padding-top: 8px; padding-bottom: 8px; font-size: 12px; }
 .premium-ui .console-table .console-numeric { font-size: 13px; }
+.premium-ui .console-table tbody th, .premium-ui .console-table tbody td { padding-top: 14px; padding-bottom: 14px; font-size: 12px; }
 .premium-ui .console-table tbody td { padding-left: 16px; padding-right: 16px; }
 .premium-ui .console-table-footer { padding: 12px 0; }
 .premium-ui .console-row--warning td:nth-child(2), .premium-ui .console-row--critical td:nth-child(2) { font-weight: 500; }
@@ -4334,6 +4345,7 @@ dimmed so they never read as a discovered miner. */
 .premium-ui .console-detail { border-left: 2px solid var(--brand); background: var(--bg-surface); }
 .premium-ui .console-detail::backdrop { background: rgba(16, 14, 12, 0.55); }
 :root[data-theme='light'] .premium-ui .console-detail::backdrop { background: rgba(28, 22, 18, 0.28); }
+.premium-ui .console-detail { border-left: 1px solid var(--border-default); }
 .premium-ui .console-detail dl > div { padding: 12px 0; margin-top: 0; border: 0; border-top: 1px solid var(--border-subtle); border-radius: 0; background: transparent; }
 @media (max-width: 1120px) {
   .console-insights { grid-template-columns: minmax(0, 1.6fr) minmax(240px, 1fr); }
