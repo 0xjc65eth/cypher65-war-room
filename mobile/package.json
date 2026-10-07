@@ -68,7 +68,7 @@
     "knip": "^6.39.0",
     "react-test-renderer": "19.2.8",
     "test-renderer": "1.3.0",
-    "typescript": "~6.0.3"
+    "typescript": "~7.0.2"
   },
   "private": true,
   "engines": {
