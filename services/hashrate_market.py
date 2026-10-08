@@ -340,12 +340,21 @@ def compute_metrics(
 
     Revenue is estimated from the rented hashrate's share of the network
     times the daily block reward. It is a rough expected value only.
+
+    ``network_hashrate`` MUST be a value already resolved against the
+    shared Metric Provenance Contract. Callers MUST NOT pass raw API
+    values here: a missing network hashrate is reported as 0 and the
+    caller records how the value was obtained, so this function can never
+    silently turn a real 0 into 600 EH/s.
     """
-    net_hr = (
-        network_hashrate
-        if network_hashrate and network_hashrate > 0
-        else DEFAULT_NETWORK_HASHRATE
-    )
+    supplied = network_hashrate if network_hashrate is not None else 0.0
+    net_hr = supplied if supplied > 0 else DEFAULT_NETWORK_HASHRATE
+    if network_hashrate is None:
+        network_hashrate_source = "UNKNOWN"
+    elif supplied > 0:
+        network_hashrate_source = "LIVE"
+    else:
+        network_hashrate_source = "FALLBACK"
 
     hashrate_hps = offer.hashrate * 1e12
     daily_revenue_btc = (hashrate_hps / net_hr) * BLOCKS_PER_DAY * BTC_BLOCK_REWARD
@@ -378,18 +387,40 @@ def compute_metrics(
         "expected_value_btc": round(expected_value, 8),
         "risk_level": risk,
         "network_hashrate": net_hr,
+        "network_hashrate_source": network_hashrate_source,
         "duration_days": duration_days,
     }
+
+
+def _source_for_network_hashrate(network_hashrate: Optional[float]) -> str:
+    """Match the Metric Contract's network-hashrate provenance values.
+
+    LIVE when a real network sample is present, FALLBACK when this module
+    had to substitute the 600 EH/s default, UNKNOWN when nothing was
+    supplied at all.
+    """
+    if network_hashrate is None:
+        return "UNKNOWN"
+    return "LIVE" if network_hashrate > 0 else "FALLBACK"
+
 
 
 def score_offer(
     offer: NormalizedOffer, network_hashrate: Optional[float] = None
 ) -> Dict[str, Any]:
-    """Convenience wrapper: full dict of offer + metrics."""
+    """Convenience wrapper: full dict of offer + metrics.
+
+    ``network_hashrate`` follows the same contract as compute_metrics:
+    LIQUE, UNKNOWN, or FALLBACK. When the caller passes a real sample
+    from snapshot, the score uses it and advertises LIVE; when only the
+    600 EH/s default is available, the score is still computed but the
+    payload says FALLBACK and the frontend must render it as estimated.
+    """
     return {
         "id": f"{offer.provider}_{offer.price_per_th_day:.6f}",
         **offer.to_dict(),
         "metrics": compute_metrics(offer, network_hashrate),
+        "network_hashrate_source": _source_for_network_hashrate(network_hashrate),
     }
 
 
@@ -421,6 +452,7 @@ def enrich_opportunity_dict(
         network_hashrate = (snapshot.get("network") or {}).get("hashrate")
 
     opp["metrics"] = compute_metrics(offer, network_hashrate)
+    opp["network_hashrate_source"] = _source_for_network_hashrate(network_hashrate)
     return opp
 
 

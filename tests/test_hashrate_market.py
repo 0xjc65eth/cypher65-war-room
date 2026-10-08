@@ -773,6 +773,7 @@ class TestComputeMetrics:
             "expected_value_btc",
             "risk_level",
             "network_hashrate",
+            "network_hashrate_source",
             "duration_days",
         }
         assert set(m.keys()) == expected_keys
@@ -812,6 +813,42 @@ class TestScoreOffer:
         assert "metrics" in s
         assert s["metrics"]["risk_level"] in ("LOW", "MEDIUM", "HIGH")
 
+    def test_score_offer_with_real_network_hashrate_is_live(self):
+        o = NormalizedOffer(
+            provider="nicehash",
+            hashrate=500.0,
+            price_per_th_day=1e-7,
+            duration_days=1.0,
+            fee_pct=0.0,
+            algorithm="sha256",
+        )
+        out = score_offer(o, network_hashrate=6e20)
+        assert out["network_hashrate_source"] == "LIVE"
+
+    def test_score_offer_without_network_hashrate_is_unknown(self):
+        o = NormalizedOffer(
+            provider="nicehash",
+            hashrate=500.0,
+            price_per_th_day=1e-7,
+            duration_days=1.0,
+            fee_pct=0.0,
+            algorithm="sha256",
+        )
+        out = score_offer(o)  # no network_hashrate
+        assert out["network_hashrate_source"] == "UNKNOWN"
+
+    def test_score_offer_network_hashrate_zero_is_fallback(self):
+        o = NormalizedOffer(
+            provider="nicehash",
+            hashrate=500.0,
+            price_per_th_day=1e-7,
+            duration_days=1.0,
+            fee_pct=0.0,
+            algorithm="sha256",
+        )
+        out = score_offer(o, network_hashrate=0)
+        assert out["network_hashrate_source"] == "FALLBACK"
+
 
 # ══════════════════════════════════════════════════════════════════════
 #  enrich_opportunity_dict
@@ -836,6 +873,16 @@ class TestEnrichOpportunityDict:
         opp = {"platform": "mrr"}
         result = enrich_opportunity_dict(opp, network_hashrate=6e20)
         assert result["metrics"]["risk_level"] == "UNKNOWN"
+
+    def test_enrich_opportunity_without_network_hashrate_is_unknown(self):
+        opp = {"platform": "mrr", "price": 0.000500}
+        result = enrich_opportunity_dict(opp)  # no network_hashrate
+        assert result["network_hashrate_source"] == "UNKNOWN"
+
+    def test_enrich_opportunity_network_hashrate_zero_is_fallback(self):
+        opp = {"platform": "mrr", "price": 0.000500}
+        result = enrich_opportunity_dict(opp, network_hashrate=0)
+        assert result["network_hashrate_source"] == "FALLBACK"
 
     def test_inherits_network_from_snapshot(self):
         """network_hashrate=None but snapshot has network.hashrate."""
